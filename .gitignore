@@ -6,3 +6,10 @@ venv
 .venv/
 .venv
 
+__pycache__/
+__pycache__
+
+*.npy
+*.csv
+*.json
+*.pyc

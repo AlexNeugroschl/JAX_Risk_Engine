@@ -1,0 +1,752 @@
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:139) : Parameters:
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = markets : fxcalibration = default
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = markets : lgmcalibration = default
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = markets : pricing = default
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = markets : sensitivity = default
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = markets : simulation = default
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = npv : active = Y
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = npv : baseCurrency = EUR
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = npv : outputFileName = npv.csv
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = parametricVar : active = Y
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = parametricVar : breakdown = Y
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = parametricVar : covarianceInputFile = ../covariance.csv
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = parametricVar : mcSamples = 1000
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = parametricVar : mcSeed = 42
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = parametricVar : method = MonteCarlo
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = parametricVar : outputFile = var.csv
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = parametricVar : portfolioFilter = PF1|PF2
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = parametricVar : quantiles = 0.01,0.05,0.95,0.99
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = parametricVar : sensitivityInputFile = ../ParametricVar/sensitivity.csv
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : asofDate = 2019-12-30
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : baseCurrency = EUR
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : conventionsFile = conventions.xml
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : curveConfigFile = curveconfig.xml
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : fixingDataFile = fixings.txt
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : implyTodaysFixings = N
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : inputPath = Input/HistSimVar
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : logFile = log.txt
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : logMask = 31
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : marketConfigFile = todaysmarket.xml
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : marketDataFile = market.txt
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : nThreads = 1
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : observationModel = None
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : outputPath = Output/MonteCarlo
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : portfolioFile = portfolio.xml
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = setup : pricingEnginesFile = pricingengine.xml
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = simulation : active = Y
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = simulation : aggregationScenarioDataFileName = scenariodata.csv.gz
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = simulation : baseCurrency = EUR
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = simulation : cubeFile = cube.csv.gz
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = simulation : pricingEnginesFile = pricingengine.xml
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = simulation : simulationConfigFile = ../simulation.xml
+NOTICE   [2026-Jul-22 09:53:00.625041]    (OREAnalytics\orea\app\parameters.cpp:144) : group = simulation : storeScenarios = N
+NOTICE   [2026-Jul-22 09:53:00.625041]        (OREAnalytics\orea\app\oreapp.cpp:655) : load OREAppInputParameters called
+NOTICE   [2026-Jul-22 09:53:00.625041]        (OREAnalytics\orea\app\oreapp.cpp:668) : MarketContext::fxcalibration = default
+NOTICE   [2026-Jul-22 09:53:00.628455]        (OREAnalytics\orea\app\oreapp.cpp:668) : MarketContext::lgmcalibration = default
+NOTICE   [2026-Jul-22 09:53:00.628455]        (OREAnalytics\orea\app\oreapp.cpp:668) : MarketContext::pricing = default
+NOTICE   [2026-Jul-22 09:53:00.628455]        (OREAnalytics\orea\app\oreapp.cpp:668) : MarketContext::sensitivity = default
+NOTICE   [2026-Jul-22 09:53:00.628455]        (OREAnalytics\orea\app\oreapp.cpp:668) : MarketContext::simulation = default
+NOTICE   [2026-Jul-22 09:53:00.628455]    (OREData\ored\portfolio\portfolio.cpp:107) : Finished Parsing XML doc
+NOTICE   [2026-Jul-22 09:53:00.628455]  (...lytics\orea\app\inputparameters.cpp:192) : Observation Mode is None
+NOTICE   [2026-Jul-22 09:53:00.628455]       (OREAnalytics\orea\app\oreapp.cpp:1050) : SIMM
+NOTICE   [2026-Jul-22 09:53:00.628455]       (OREAnalytics\orea\app\oreapp.cpp:1153) : IM SCHEDULE
+NOTICE   [2026-Jul-22 09:53:00.628455]       (OREAnalytics\orea\app\oreapp.cpp:1688) : analytics: 3
+NOTICE   [2026-Jul-22 09:53:00.628455]       (OREAnalytics\orea\app\oreapp.cpp:1690) : analytic: EXPOSURE
+NOTICE   [2026-Jul-22 09:53:00.628455]       (OREAnalytics\orea\app\oreapp.cpp:1690) : analytic: NPV
+NOTICE   [2026-Jul-22 09:53:00.628455]       (OREAnalytics\orea\app\oreapp.cpp:1690) : analytic: PARAMETRIC_VAR
+NOTICE   [2026-Jul-22 09:53:00.628455]       (OREAnalytics\orea\app\oreapp.cpp:1692) : buildInputParameters done
+NOTICE   [2026-Jul-22 09:53:00.628455]  (...lytics\orea\app\inputparameters.cpp:919) : OutputFileNameMap called
+NOTICE   [2026-Jul-22 09:53:00.628455]  (...ytics\orea\app\inputparameters.cpp:1016) : OutputFileNameMap complete
+NOTICE   [2026-Jul-22 09:53:00.628455]        (OREAnalytics\orea\app\oreapp.cpp:402) : initFromParameters done, requested analytics:EXPOSURE,NPV,PARAMETRIC_VAR
+NOTICE   [2026-Jul-22 09:53:00.628455]        (OREAnalytics\orea\app\oreapp.cpp:460) : Global IncludeTodaysCashFlows is set false, value: na
+NOTICE   [2026-Jul-22 09:53:00.628455]        (OREAnalytics\orea\app\oreapp.cpp:238) : ORE analytics starting
+WARNING  [2026-Jul-22 09:53:00.628455]        (OREAnalytics\orea\app\oreapp.cpp:239) : Starting OREApp::analytics(): 172564480|172568576 (peakMemoryUsage (bytes) | memoryUsage (bytes))
+NOTICE   [2026-Jul-22 09:53:00.630468]       (OREData\ored\marketdata\market.cpp:87) : No Default Correlation present
+WARNING  [2026-Jul-22 09:53:00.630468]        (OREAnalytics\orea\app\oreapp.cpp:219) : dividend data file not found
+WARNING  [2026-Jul-22 09:53:00.630468]        (OREAnalytics\orea\app\oreapp.cpp:227) : fixing cutoff date not set
+NOTICE   [2026-Jul-22 09:53:00.630468]   (OREData\ored\marketdata\csvloader.cpp:101) : CSVLoader loading from Input/HistSimVar/market.txt
+NOTICE   [2026-Jul-22 09:53:00.654882]   (OREData\ored\marketdata\csvloader.cpp:194) : CSVLoader completed processing Input/HistSimVar/market.txt
+NOTICE   [2026-Jul-22 09:53:00.658412]    (OREData\ored\marketdata\csvloader.cpp:80) : CSVLoader loaded 7172 market data points for December 30th, 2019
+NOTICE   [2026-Jul-22 09:53:00.658412]   (OREData\ored\marketdata\csvloader.cpp:101) : CSVLoader loading from Input/HistSimVar/fixings.txt
+NOTICE   [2026-Jul-22 09:53:00.658412]   (OREData\ored\marketdata\csvloader.cpp:194) : CSVLoader completed processing Input/HistSimVar/fixings.txt
+NOTICE   [2026-Jul-22 09:53:00.658412]    (OREData\ored\marketdata\csvloader.cpp:85) : CSVLoader loaded 903 fixings
+NOTICE   [2026-Jul-22 09:53:00.658412]    (OREData\ored\marketdata\csvloader.cpp:90) : CSVLoader loaded 0 dividends
+NOTICE   [2026-Jul-22 09:53:00.658412]    (OREData\ored\marketdata\csvloader.cpp:92) : CSVLoader complete.
+WARNING  [2026-Jul-22 09:53:00.660418]  (...rio\scenariosimmarketparameters.cpp:748) : ScenarioSimMarket parameter Extrapolation should be FlatFwd or FlatZero, mapping deprecated boolean 'Y' to FlatFwd. Please change this in your configuration.
+WARNING  [2026-Jul-22 09:53:00.660418]  (...rio\scenariosimmarketparameters.cpp:820) : ScenarioSimMarketParameters: SwaptionVolatilities/Currencies is deprecated, use Keys instead.
+WARNING  [2026-Jul-22 09:53:00.660418]  (...rio\scenariosimmarketparameters.cpp:989) : ScenarioSimMarketParameters: CapFloorVolatilities/Currencies is deprecated, use Keys instead.
+NOTICE   [2026-Jul-22 09:53:00.660418]  (...lytics\orea\app\inputparameters.hpp:304) : InputParameters::loadParameterXML(): Failed loading parameter (simulation,simulationConfigFile) from XML string: <Simulation>
+	<Market>
+		<BaseCurrency>EUR</BaseCurrency>
+		<Currencies>
+			<Currency>EUR</Currency>
+			<Currency>USD</Currency>
+			<Currency>GBP</Currency>
+		</Currencies>
+		<YieldCurves>
+			<Configuration>
+				<Tenors>2W,1M,3M,6M,9M,1Y,2Y,3Y,4Y,5Y,7Y,10Y,15Y,20Y,25Y,30Y</Tenors>
+				<Interpolation>LogLinear</Interpolation>
+				<Extrapolation>Y</Extrapolation>
+			</Configuration>
+		</YieldCurves>
+		<Indices>
+			<Index>EUR-EURIBOR-6M</Index>
+			<Index>EUR-EURIBOR-3M</Index>
+			<Index>EUR-EURIBOR-1M</Index>
+			<Index>EUR-EONIA</Index>
+			<Index>USD-LIBOR-3M</Index>
+			<Index>USD-LIBOR-6M</Index>
+			<Index>USD-FedFunds</Index>
+			<Index>GBP-LIBOR-6M</Index>
+			<Index>GBP-LIBOR-3M</Index>
+			<Index>GBP-SONIA</Index>
+		</Indices>
+		<SwapIndices>
+			<SwapIndex>
+				<Name>EUR-CMS-1Y</Name>
+				<DiscountingIndex>EUR-EONIA</DiscountingIndex>
+			</SwapIndex>
+			<SwapIndex>
+				<Name>EUR-CMS-30Y</Name>
+				<DiscountingIndex>EUR-EONIA</DiscountingIndex>
+			</SwapIndex>
+		</SwapIndices>
+		<DefaultCurves>
+			<Names>
+				<Name>CPTY_A</Name>
+				<Name>CPTY_B</Name>
+				<Name>CPTY_C</Name>
+				<Name>CPTY_D</Name>
+				<Name>CDXIG</Name>
+				<Name>CPTY_1</Name>
+				<Name>CPTY_2</Name>
+				<Name>CPTY_3</Name>
+			</Names>
+			<Tenors>6M,1Y,2Y,3Y,4Y,5Y,7Y,10Y,12Y,15Y,20Y</Tenors>
+			<SimulateSurvivalProbabilities>true</SimulateSurvivalProbabilities>
+		</DefaultCurves>
+		<Equities>
+			<Names>
+				<Name>FTSE</Name>
+				<Name>SPX</Name>
+				<Name>SPXE</Name>
+				<Name>Lufthansa</Name>
+				<Name>SP5E</Name>
+			</Names>
+			<DividendTenors>6M,1Y,2Y</DividendTenors>
+		</Equities>
+		<SwaptionVolatilities>
+			<Simulate>true</Simulate>
+			<ReactionToTimeDecay>ForwardVariance</ReactionToTimeDecay>
+			<Currencies>
+				<Currency>EUR</Currency>
+				<Currency>USD</Currency>
+				<Currency>GBP</Currency>
+			</Currencies>
+			<Expiries>6M,1Y,2Y,3Y,5Y,10Y,12Y,15Y,20Y</Expiries>
+			<Terms>1Y,2Y,3Y,4Y,5Y,7Y,10Y,15Y,20Y,30Y</Terms>
+		</SwaptionVolatilities>
+		<CapFloorVolatilities>
+			<Simulate>true</Simulate>
+			<ReactionToTimeDecay>ForwardVariance</ReactionToTimeDecay>
+			<Currencies>
+				<Currency>EUR</Currency>
+				<Currency>USD</Currency>
+			</Currencies>
+			<Expiries>6M,1Y,2Y,3Y,5Y,7Y,10Y,15Y,20Y</Expiries>
+			<Strikes>0.00,0.01,0.02,0.03,0.04,0.05,0.06</Strikes>
+		</CapFloorVolatilities>
+		<CDSVolatilities>
+			<Simulate>true</Simulate>
+			<ReactionToTimeDecay>ForwardVariance</ReactionToTimeDecay>
+			<Names>
+				<Name>CDXIG</Name>
+			</Names>
+			<Expiries>3M,6M,1Y</Expiries>
+		</CDSVolatilities>
+		<FxVolatilities>
+			<Simulate>true</Simulate>
+			<ReactionToTimeDecay>ForwardVariance</ReactionToTimeDecay>
+			<CurrencyPairs>
+				<CurrencyPair>USDEUR</CurrencyPair>
+				<CurrencyPair>GBPEUR</CurrencyPair>
+			</CurrencyPairs>
+			<Expiries>6M,1Y,2Y,3Y,4Y,5Y,7Y,10Y</Expiries>
+			<Surface>
+				<Moneyness>0.5,0.6,0.7,0.8,0.9,0.95,1.0,1.05,1.1,1.2,1.3,1.4,1.5,1.6,1.7,1.8,1.9,2.0,2.5,3.0</Moneyness>
+			</Surface>
+		</FxVolatilities>
+		<EquityVolatilities>
+			<Simulate>true</Simulate>
+			<ReactionToTimeDecay>ForwardVariance</ReactionToTimeDecay>
+			<Names>
+				<Name>FTSE</Name>
+				<Name>SPX</Name>
+			</Names>
+			<Expiries>2W,1M,3M,6M,1Y,2Y,3Y,5Y,10Y,15Y,20Y,30Y</Expiries>
+			<SimulateATMOnly>true</SimulateATMOnly>
+		</EquityVolatilities>
+		<BenchmarkCurves/>
+		<Securities>
+			<Simulate>true</Simulate>
+			<Names>
+				<Name>SECURITY_1</Name>
+				<Name>SECURITY_2</Name>
+				<Name>SECURITY_3</Name>
+			</Names>
+		</Securities>
+		<ZeroInflationIndexCurves>
+			<Names>
+				<Name>EUHICPXT</Name>
+				<Name>UKRPI</Name>
+			</Names>
+			<Tenors>6M,1Y,2Y,3Y,4Y,5Y,7Y,10Y,15Y,20Y,25Y,30Y</Tenors>
+		</ZeroInflationIndexCurves>
+		<YYInflationIndexCurves>
+			<Names>
+				<Name>EUHICPXT</Name>
+			</Names>
+			<Tenors>6M,1Y,2Y,3Y,4Y,5Y,7Y,10Y,15Y,20Y,25Y,30Y</Tenors>
+		</YYInflationIndexCurves>
+		<BaseCorrelations>
+			<Simulate>true</Simulate>
+			<IndexNames>
+				<IndexName>CDXIG</IndexName>
+			</IndexNames>
+			<Terms>1D</Terms>
+			<DetachmentPoints>0.03, 0.06, 0.10, 0.20, 1.0</DetachmentPoints>
+		</BaseCorrelations>
+		<AggregationScenarioDataCurrencies>
+			<Currency>EUR</Currency>
+			<Currency>USD</Currency>
+		</AggregationScenarioDataCurrencies>
+		<AggregationScenarioDataIndices>
+			<Index>EUR-EURIBOR-3M</Index>
+			<Index>EUR-EONIA</Index>
+			<Index>USD-LIBOR-3M</Index>
+		</AggregationScenarioDataIndices>
+	</Market>
+</Simulation>
+
+ , error: Simulation / CrossAssetModel not found, can not read cross asset model data
+NOTICE   [2026-Jul-22 09:53:00.660418]  (...\orea\app\analytics\xvaanalytic.cpp:108) : ScenarioGenerator data not found
+NOTICE   [2026-Jul-22 09:53:00.660418]  (...lytics\orea\app\inputparameters.hpp:304) : InputParameters::loadParameterXML(): Failed loading parameter (simulation,simulationConfigFile) from XML string: <Simulation>
+	<Market>
+		<BaseCurrency>EUR</BaseCurrency>
+		<Currencies>
+			<Currency>EUR</Currency>
+			<Currency>USD</Currency>
+			<Currency>GBP</Currency>
+		</Currencies>
+		<YieldCurves>
+			<Configuration>
+				<Tenors>2W,1M,3M,6M,9M,1Y,2Y,3Y,4Y,5Y,7Y,10Y,15Y,20Y,25Y,30Y</Tenors>
+				<Interpolation>LogLinear</Interpolation>
+				<Extrapolation>Y</Extrapolation>
+			</Configuration>
+		</YieldCurves>
+		<Indices>
+			<Index>EUR-EURIBOR-6M</Index>
+			<Index>EUR-EURIBOR-3M</Index>
+			<Index>EUR-EURIBOR-1M</Index>
+			<Index>EUR-EONIA</Index>
+			<Index>USD-LIBOR-3M</Index>
+			<Index>USD-LIBOR-6M</Index>
+			<Index>USD-FedFunds</Index>
+			<Index>GBP-LIBOR-6M</Index>
+			<Index>GBP-LIBOR-3M</Index>
+			<Index>GBP-SONIA</Index>
+		</Indices>
+		<SwapIndices>
+			<SwapIndex>
+				<Name>EUR-CMS-1Y</Name>
+				<DiscountingIndex>EUR-EONIA</DiscountingIndex>
+			</SwapIndex>
+			<SwapIndex>
+				<Name>EUR-CMS-30Y</Name>
+				<DiscountingIndex>EUR-EONIA</DiscountingIndex>
+			</SwapIndex>
+		</SwapIndices>
+		<DefaultCurves>
+			<Names>
+				<Name>CPTY_A</Name>
+				<Name>CPTY_B</Name>
+				<Name>CPTY_C</Name>
+				<Name>CPTY_D</Name>
+				<Name>CDXIG</Name>
+				<Name>CPTY_1</Name>
+				<Name>CPTY_2</Name>
+				<Name>CPTY_3</Name>
+			</Names>
+			<Tenors>6M,1Y,2Y,3Y,4Y,5Y,7Y,10Y,12Y,15Y,20Y</Tenors>
+			<SimulateSurvivalProbabilities>true</SimulateSurvivalProbabilities>
+		</DefaultCurves>
+		<Equities>
+			<Names>
+				<Name>FTSE</Name>
+				<Name>SPX</Name>
+				<Name>SPXE</Name>
+				<Name>Lufthansa</Name>
+				<Name>SP5E</Name>
+			</Names>
+			<DividendTenors>6M,1Y,2Y</DividendTenors>
+		</Equities>
+		<SwaptionVolatilities>
+			<Simulate>true</Simulate>
+			<ReactionToTimeDecay>ForwardVariance</ReactionToTimeDecay>
+			<Currencies>
+				<Currency>EUR</Currency>
+				<Currency>USD</Currency>
+				<Currency>GBP</Currency>
+			</Currencies>
+			<Expiries>6M,1Y,2Y,3Y,5Y,10Y,12Y,15Y,20Y</Expiries>
+			<Terms>1Y,2Y,3Y,4Y,5Y,7Y,10Y,15Y,20Y,30Y</Terms>
+		</SwaptionVolatilities>
+		<CapFloorVolatilities>
+			<Simulate>true</Simulate>
+			<ReactionToTimeDecay>ForwardVariance</ReactionToTimeDecay>
+			<Currencies>
+				<Currency>EUR</Currency>
+				<Currency>USD</Currency>
+			</Currencies>
+			<Expiries>6M,1Y,2Y,3Y,5Y,7Y,10Y,15Y,20Y</Expiries>
+			<Strikes>0.00,0.01,0.02,0.03,0.04,0.05,0.06</Strikes>
+		</CapFloorVolatilities>
+		<CDSVolatilities>
+			<Simulate>true</Simulate>
+			<ReactionToTimeDecay>ForwardVariance</ReactionToTimeDecay>
+			<Names>
+				<Name>CDXIG</Name>
+			</Names>
+			<Expiries>3M,6M,1Y</Expiries>
+		</CDSVolatilities>
+		<FxVolatilities>
+			<Simulate>true</Simulate>
+			<ReactionToTimeDecay>ForwardVariance</ReactionToTimeDecay>
+			<CurrencyPairs>
+				<CurrencyPair>USDEUR</CurrencyPair>
+				<CurrencyPair>GBPEUR</CurrencyPair>
+			</CurrencyPairs>
+			<Expiries>6M,1Y,2Y,3Y,4Y,5Y,7Y,10Y</Expiries>
+			<Surface>
+				<Moneyness>0.5,0.6,0.7,0.8,0.9,0.95,1.0,1.05,1.1,1.2,1.3,1.4,1.5,1.6,1.7,1.8,1.9,2.0,2.5,3.0</Moneyness>
+			</Surface>
+		</FxVolatilities>
+		<EquityVolatilities>
+			<Simulate>true</Simulate>
+			<ReactionToTimeDecay>ForwardVariance</ReactionToTimeDecay>
+			<Names>
+				<Name>FTSE</Name>
+				<Name>SPX</Name>
+			</Names>
+			<Expiries>2W,1M,3M,6M,1Y,2Y,3Y,5Y,10Y,15Y,20Y,30Y</Expiries>
+			<SimulateATMOnly>true</SimulateATMOnly>
+		</EquityVolatilities>
+		<BenchmarkCurves/>
+		<Securities>
+			<Simulate>true</Simulate>
+			<Names>
+				<Name>SECURITY_1</Name>
+				<Name>SECURITY_2</Name>
+				<Name>SECURITY_3</Name>
+			</Names>
+		</Securities>
+		<ZeroInflationIndexCurves>
+			<Names>
+				<Name>EUHICPXT</Name>
+				<Name>UKRPI</Name>
+			</Names>
+			<Tenors>6M,1Y,2Y,3Y,4Y,5Y,7Y,10Y,15Y,20Y,25Y,30Y</Tenors>
+		</ZeroInflationIndexCurves>
+		<YYInflationIndexCurves>
+			<Names>
+				<Name>EUHICPXT</Name>
+			</Names>
+			<Tenors>6M,1Y,2Y,3Y,4Y,5Y,7Y,10Y,15Y,20Y,25Y,30Y</Tenors>
+		</YYInflationIndexCurves>
+		<BaseCorrelations>
+			<Simulate>true</Simulate>
+			<IndexNames>
+				<IndexName>CDXIG</IndexName>
+			</IndexNames>
+			<Terms>1D</Terms>
+			<DetachmentPoints>0.03, 0.06, 0.10, 0.20, 1.0</DetachmentPoints>
+		</BaseCorrelations>
+		<AggregationScenarioDataCurrencies>
+			<Currency>EUR</Currency>
+			<Currency>USD</Currency>
+		</AggregationScenarioDataCurrencies>
+		<AggregationScenarioDataIndices>
+			<Index>EUR-EURIBOR-3M</Index>
+			<Index>EUR-EONIA</Index>
+			<Index>USD-LIBOR-3M</Index>
+		</AggregationScenarioDataIndices>
+	</Market>
+</Simulation>
+
+ , error: XML Node is NULL (expected Parameters)
+NOTICE   [2026-Jul-22 09:53:00.660418]  (...\orea\app\analytics\xvaanalytic.cpp:439) : XvaAnalytic::setUpConfigurations() called
+NOTICE   [2026-Jul-22 09:53:00.660418]  (...lytics\orea\app\analyticsmanager.cpp:55) : register analytic with label 'XVA' and sub-analytics EXPOSURE,PFE,XVA
+NOTICE   [2026-Jul-22 09:53:00.660418]  (...lytics\orea\app\analyticsmanager.cpp:55) : register analytic with label 'PRICING' and sub-analytics CASHFLOW,CASHFLOWNPV,NPV,SENSITIVITY
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ics\orea\app\analytics\utilities.cpp:83) : Read 114 valid covariance data lines
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ea\engine\sensitivityfilestream.cpp:111) : The file Input/HistSimVar\../ParametricVar/sensitivity.csv has been opened for streaming
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...lytics\orea\app\analyticsmanager.cpp:55) : register analytic with label 'PARAMETRIC_VAR' and sub-analytics PARAMETRIC_VAR
+NOTICE   [2026-Jul-22 09:53:00.662424]        (OREAnalytics\orea\app\oreapp.cpp:263) : Available analytics: CASHFLOW,CASHFLOWNPV,EXPOSURE,NPV,PARAMETRIC_VAR,PFE,SENSITIVITY,XVA
+NOTICE   [2026-Jul-22 09:53:00.662424]        (OREAnalytics\orea\app\oreapp.cpp:266) : Requested analytics: EXPOSURE,NPV,PARAMETRIC_VAR
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ytics\orea\app\analyticsmanager.cpp:127) : AnalyticsManager::runAnalytics: populate loader for dates: December 30th, 2019
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ytics\orea\app\marketdataloader.cpp:186) : Asking portfolio for its required fixings
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ytics\orea\app\marketdataloader.cpp:193) : The portfolio depends on fixings from 0 indices
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ytics\orea\app\marketdataloader.cpp:198) : Add fixings possibly required for bootstrapping TodaysMarket
+NOTICE   [2026-Jul-22 09:53:00.662424]  (OREData\ored\portfolio\fixingdates.cpp:928) : Start adding market fixing dates for configuration 'default'
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ata\ored\portfolio\fixingdates.cpp:1125) : Finished adding market fixing dates for configuration 'default'
+NOTICE   [2026-Jul-22 09:53:00.662424]  (OREData\ored\portfolio\fixingdates.cpp:928) : Start adding market fixing dates for configuration 'inccy'
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ata\ored\portfolio\fixingdates.cpp:1125) : Finished adding market fixing dates for configuration 'inccy'
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ytics\orea\app\marketdataloader.cpp:202) : Add fixing possibly required for equity index delta risk decomposition
+NOTICE   [2026-Jul-22 09:53:00.662424]  (OREData\ored\portfolio\fixingdates.cpp:928) : Start adding market fixing dates for configuration 'default'
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ata\ored\portfolio\fixingdates.cpp:1125) : Finished adding market fixing dates for configuration 'default'
+NOTICE   [2026-Jul-22 09:53:00.662424]  (OREData\ored\portfolio\fixingdates.cpp:928) : Start adding market fixing dates for configuration 'inccy'
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ata\ored\portfolio\fixingdates.cpp:1125) : Finished adding market fixing dates for configuration 'inccy'
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ytics\orea\app\marketdataloader.cpp:202) : Add fixing possibly required for equity index delta risk decomposition
+NOTICE   [2026-Jul-22 09:53:00.662424]  (OREData\ored\portfolio\fixingdates.cpp:928) : Start adding market fixing dates for configuration 'default'
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ata\ored\portfolio\fixingdates.cpp:1125) : Finished adding market fixing dates for configuration 'default'
+NOTICE   [2026-Jul-22 09:53:00.662424]  (OREData\ored\portfolio\fixingdates.cpp:928) : Start adding market fixing dates for configuration 'inccy'
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ata\ored\portfolio\fixingdates.cpp:1125) : Finished adding market fixing dates for configuration 'inccy'
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ytics\orea\app\marketdataloader.cpp:202) : Add fixing possibly required for equity index delta risk decomposition
+NOTICE   [2026-Jul-22 09:53:00.662424]  (...ics\orea\app\marketdatacsvloader.cpp:71) : MarketDataCsvLoader::retrieveFixings called: all fixings ? Y
+NOTICE   [2026-Jul-22 09:53:00.667815]      (OREData\ored\marketdata\fixings.cpp:68) : Added 899 of 903 fixings in 0.001265 seconds
+NOTICE   [2026-Jul-22 09:53:00.667815]  (...ytics\orea\app\marketdataloader.cpp:280) : Adding the loaded fixings to the IndexManager
+NOTICE   [2026-Jul-22 09:53:00.667815]  (...ytics\orea\app\marketdataloader.cpp:281) : Fixings size = 7
+NOTICE   [2026-Jul-22 09:53:00.667815]  (...ytics\orea\app\marketdataloader.cpp:284) : Generating market datum set
+NOTICE   [2026-Jul-22 09:53:00.667815]  (...ytics\orea\app\marketdataloader.cpp:302) : CurveConfigs require 195 quotes
+NOTICE   [2026-Jul-22 09:53:00.670823]  (...ytics\orea\app\marketdataloader.cpp:310) : Got market data
+NOTICE   [2026-Jul-22 09:53:00.670823]  (...nalytics\orea\app\reportwriter.cpp:1186) : Writing MarketData report
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...nalytics\orea\app\reportwriter.cpp:1225) : MarketData report written
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...nalytics\orea\app\reportwriter.cpp:1230) : Writing Fixings report
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...nalytics\orea\app\reportwriter.cpp:1239) : Fixings report written
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...nalytics\orea\app\reportwriter.cpp:1244) : Writing Dividends report
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...nalytics\orea\app\reportwriter.cpp:1256) : Dividends report written
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...ytics\orea\app\analyticsmanager.cpp:153) : run analytic with label 'XVA'
+WARNING  [2026-Jul-22 09:53:00.672829]      (OREAnalytics\orea\app\analytic.cpp:131) : Starting XVA Analytic::runAnalytic(): 183021568|183021568 (peakMemoryUsage (bytes) | memoryUsage (bytes))
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...orea\app\analytics\xvaanalytic.cpp:1274) : XVA analytic is running with amc cg mode 'Disabled'.
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...orea\app\analytics\xvaanalytic.cpp:1289) : Simulation IncludeReferenceDateEvents is set to true
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...orea\app\analytics\xvaanalytic.cpp:1320) : XVA analytic called with asof 2019-12-30
+NOTICE   [2026-Jul-22 09:53:00.672829]          (OREData\ored\utilities\log.cpp:127) : ProgressMessage { "@timestamp": "2026-07-22T13:53:00.672829", "key": "Running XVA Analytic", "progress": 0, "total": 1 }
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...orea\app\analytics\xvaanalytic.cpp:1339) : XVA: Build Today's Market
+NOTICE   [2026-Jul-22 09:53:00.672829]          (OREData\ored\utilities\log.cpp:127) : ProgressMessage { "@timestamp": "2026-07-22T13:53:00.672829", "key": "XVA: Build Today's Market", "progress": 0, "total": 1 }
+NOTICE   [2026-Jul-22 09:53:00.672829]      (OREAnalytics\orea\app\analytic.cpp:277) : Analytic::buildMarket called
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...\ored\marketdata\bondspreadimply.cpp:51) : identify securities that require a spread imply for configuration default
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...\ored\marketdata\bondspreadimply.cpp:51) : identify securities that require a spread imply for configuration inccy
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...ored\marketdata\bondspreadimply.cpp:108) : got 0 securities
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...\ored\marketdata\fxtriangulation.cpp:65) : FXTriangulation: initializing
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...ored\marketdata\fxtriangulation.cpp:112) : FXTriangulation: initialized with 92 quotes, 47 currencies.
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...ta\ored\marketdata\todaysmarket.cpp:230) : Build objects in TodaysMarket lazily, i.e. when requested.
+NOTICE   [2026-Jul-22 09:53:00.672829]      (OREAnalytics\orea\app\analytic.cpp:315) : Market Build time 0.000620 sec
+NOTICE   [2026-Jul-22 09:53:00.672829]          (OREData\ored\utilities\log.cpp:127) : ProgressMessage { "@timestamp": "2026-07-22T13:53:00.672829", "key": "XVA: Build Today's Market", "progress": 1, "total": 1 }
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...orea\app\analytics\xvaanalytic.cpp:1381) : XVA: Build simulation market
+NOTICE   [2026-Jul-22 09:53:00.672829]  (...orea\scenario\scenariosimmarket.cpp:381) : building ScenarioSimMarket...
+ALERT    [2026-Jul-22 09:53:00.676847]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: DiscountCurve/GBP: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object GBP of type discount curve under configuration 'default' or 'default' in YieldCurves
+WARNING  [2026-Jul-22 09:53:00.751755]  (...\ored\configuration\conventions.cpp:673) : payFrequency_ empty set to index tenor.
+ALERT    [2026-Jul-22 09:53:00.759766]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: IndexCurve/EUR-EURIBOR-1M: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'EUR-EURIBOR-1M' of type ibor index under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.759766]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: IndexCurve/GBP-LIBOR-3M: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'GBP-LIBOR-3M' of type ibor index under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.759766]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: IndexCurve/GBP-LIBOR-6M: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'GBP-LIBOR-6M' of type ibor index under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.759766]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: IndexCurve/GBP-SONIA: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'GBP-SONIA' of type ibor index under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]          (OREData\ored\utilities\log.cpp:215) : StructuredMessage { "category": "Error", "group": "Curve", "message": "did not find swaption curve for key 'EUR'", "sub_fields": [ { "name": "curveId", "value": "SwaptionVolatility/EUR" }, { "name": "exceptionType", "value": "skipping this object in scenario sim market (scenario data was not written for this object.)" } ] }
+ALERT    [2026-Jul-22 09:53:00.761771]          (OREData\ored\utilities\log.cpp:215) : StructuredMessage { "category": "Error", "group": "Curve", "message": "did not find swaption curve for key 'GBP'", "sub_fields": [ { "name": "curveId", "value": "SwaptionVolatility/GBP" }, { "name": "exceptionType", "value": "skipping this object in scenario sim market (scenario data was not written for this object.)" } ] }
+ALERT    [2026-Jul-22 09:53:00.761771]          (OREData\ored\utilities\log.cpp:215) : StructuredMessage { "category": "Error", "group": "Curve", "message": "did not find swaption curve for key 'USD'", "sub_fields": [ { "name": "curveId", "value": "SwaptionVolatility/USD" }, { "name": "exceptionType", "value": "skipping this object in scenario sim market (scenario data was not written for this object.)" } ] }
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...rea\scenario\scenariosimmarket.cpp:1169) : building EUR cap/floor volatility curve...
+ALERT    [2026-Jul-22 09:53:00.761771]          (OREData\ored\utilities\log.cpp:215) : StructuredMessage { "category": "Error", "group": "Curve", "message": "did not find capfloor curve for key 'EUR'", "sub_fields": [ { "name": "curveId", "value": "OptionletVolatility/EUR" }, { "name": "exceptionType", "value": "skipping this object in scenario sim market (scenario data was not written for this object.)" } ] }
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...rea\scenario\scenariosimmarket.cpp:1169) : building USD cap/floor volatility curve...
+ALERT    [2026-Jul-22 09:53:00.761771]          (OREData\ored\utilities\log.cpp:215) : StructuredMessage { "category": "Error", "group": "Curve", "message": "did not find capfloor curve for key 'USD'", "sub_fields": [ { "name": "curveId", "value": "OptionletVolatility/USD" }, { "name": "exceptionType", "value": "skipping this object in scenario sim market (scenario data was not written for this object.)" } ] }
+WARNING  [2026-Jul-22 09:53:00.761771]  (...\ored\marketdata\fxtriangulation.cpp:56) : FXTriangulation: could not get market discount curve 'GBP' (requested for configuration 'default') - discounted fx spot rates will be replaced by non-discounted rates in future calculations, which might lead to inaccuracies
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...\ored\marketdata\fxtriangulation.cpp:65) : FXTriangulation: initializing
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...ored\marketdata\fxtriangulation.cpp:112) : FXTriangulation: initialized with 2 quotes, 3 currencies.
+ALERT    [2026-Jul-22 09:53:00.761771]          (OREData\ored\utilities\log.cpp:215) : StructuredMessage { "category": "Error", "group": "Curve", "message": "did not find fx vol object GBPEUR", "sub_fields": [ { "name": "curveId", "value": "FXVolatility/GBPEUR" }, { "name": "exceptionType", "value": "skipping this object in scenario sim market (scenario data was not written for this object.)" } ] }
+ALERT    [2026-Jul-22 09:53:00.761771]          (OREData\ored\utilities\log.cpp:215) : StructuredMessage { "category": "Error", "group": "Curve", "message": "did not find fx vol object USDEUR", "sub_fields": [ { "name": "curveId", "value": "FXVolatility/USDEUR" }, { "name": "exceptionType", "value": "skipping this object in scenario sim market (scenario data was not written for this object.)" } ] }
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: EquitySpot/FTSE: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'FTSE' of type equity spot under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: EquitySpot/Lufthansa: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'Lufthansa' of type equity spot under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: EquitySpot/SP5E: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'SP5E' of type equity spot under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: EquitySpot/SPX: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'SPX' of type equity spot under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: EquitySpot/SPXE: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'SPXE' of type equity spot under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: DividendYield/FTSE: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object FTSE of type yield curve / ibor index under configuration 'default' or 'default' in YieldCurves
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: DividendYield/Lufthansa: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object Lufthansa of type yield curve / ibor index under configuration 'default' or 'default' in YieldCurves
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: DividendYield/SP5E: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object SP5E of type yield curve / ibor index under configuration 'default' or 'default' in YieldCurves
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: DividendYield/SPX: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object SPX of type yield curve / ibor index under configuration 'default' or 'default' in YieldCurves
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: DividendYield/SPXE: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object SPXE of type yield curve / ibor index under configuration 'default' or 'default' in YieldCurves
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: EquityVolatility/FTSE: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'FTSE' of type equity vol curve under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: EquityVolatility/SPX: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'SPX' of type equity vol curve under configuration 'default' or 'default'
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...rea\scenario\scenariosimmarket.cpp:1566) : building CDXIG default curve..
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: SurvivalProbability/CDXIG: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CDXIG' of type default curve under configuration 'default' or 'default'
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...rea\scenario\scenariosimmarket.cpp:1566) : building CPTY_1 default curve..
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: SurvivalProbability/CPTY_1: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CPTY_1' of type default curve under configuration 'default' or 'default'
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...rea\scenario\scenariosimmarket.cpp:1566) : building CPTY_2 default curve..
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: SurvivalProbability/CPTY_2: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CPTY_2' of type default curve under configuration 'default' or 'default'
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...rea\scenario\scenariosimmarket.cpp:1566) : building CPTY_3 default curve..
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: SurvivalProbability/CPTY_3: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CPTY_3' of type default curve under configuration 'default' or 'default'
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...rea\scenario\scenariosimmarket.cpp:1566) : building CPTY_A default curve..
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: SurvivalProbability/CPTY_A: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CPTY_A' of type default curve under configuration 'default' or 'default'
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...rea\scenario\scenariosimmarket.cpp:1566) : building CPTY_B default curve..
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: SurvivalProbability/CPTY_B: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CPTY_B' of type default curve under configuration 'default' or 'default'
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...rea\scenario\scenariosimmarket.cpp:1566) : building CPTY_C default curve..
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: SurvivalProbability/CPTY_C: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CPTY_C' of type default curve under configuration 'default' or 'default'
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...rea\scenario\scenariosimmarket.cpp:1566) : building CPTY_D default curve..
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: SurvivalProbability/CPTY_D: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CPTY_D' of type default curve under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: RecoveryRate/CDXIG: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CDXIG' of type recovery rate under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: RecoveryRate/CPTY_1: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CPTY_1' of type recovery rate under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: RecoveryRate/CPTY_2: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CPTY_2' of type recovery rate under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: RecoveryRate/CPTY_3: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CPTY_3' of type recovery rate under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: RecoveryRate/CPTY_A: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CPTY_A' of type recovery rate under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: RecoveryRate/CPTY_B: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CPTY_B' of type recovery rate under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: RecoveryRate/CPTY_C: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CPTY_C' of type recovery rate under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: RecoveryRate/CPTY_D: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CPTY_D' of type recovery rate under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: CDSVolatility/CDXIG: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CDXIG' of type cds vol curve under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: BaseCorrelation/CDXIG: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'CDXIG' of type base correlation curve under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: ZeroInflationCurve/EUHICPXT: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'EUHICPXT' of type zero inflation index under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: ZeroInflationCurve/UKRPI: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'UKRPI' of type zero inflation index under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]  (...orea\scenario\scenariosimmarket.cpp:144) : CurveID: YoYInflationCurve/EUHICPXT: skipping this object in scenario sim market (scenario data was not written for this object.): did not find object 'EUHICPXT' of type yoy inflation index under configuration 'default' or 'default'
+ALERT    [2026-Jul-22 09:53:00.761771]          (OREData\ored\utilities\log.cpp:215) : StructuredMessage { "category": "Error", "group": "Curve", "message": "Failure in MarketImpl::addSwapIndex() with index EUR-CMS-1Y : Convention 'EUR-CMS-1Y' not found.", "sub_fields": [ { "name": "exceptionType", "value": "skipping this object in scenario sim market" } ] }
+ALERT    [2026-Jul-22 09:53:00.761771]          (OREData\ored\utilities\log.cpp:215) : StructuredMessage { "category": "Error", "group": "Curve", "message": "Failure in MarketImpl::addSwapIndex() with index EUR-CMS-30Y : Convention 'EUR-CMS-30Y' not found.", "sub_fields": [ { "name": "exceptionType", "value": "skipping this object in scenario sim market" } ] }
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...rea\scenario\scenariosimmarket.cpp:3836) : Applying 0 curve algebra rules...
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...rea\scenario\scenariosimmarket.cpp:3362) : building base scenario
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...rea\scenario\scenariosimmarket.cpp:3390) : building base scenario done
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...orea\app\analytics\xvaanalytic.cpp:1384) : XVA: Build Scenario Generator
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...\orea\app\analytics\xvaanalytic.cpp:643) : XVA: Build Simulation Model (continueOnCalibrationError = true, allowModelFallbacks = false)
+ALERT    [2026-Jul-22 09:53:00.761771]          (OREData\ored\utilities\log.cpp:215) : StructuredMessage { "category": "Error", "group": "Analytics", "message": "missing IR configurations", "sub_fields": [ { "name": "analyticType", "value": "XVA" }, { "name": "exceptionType", "value": "Failed Analytic" } ] }
+NOTICE   [2026-Jul-22 09:53:00.761771]  (...ytics\orea\app\analyticsmanager.cpp:162) : run analytic with label 'XVA' finished.
+NOTICE   [2026-Jul-22 09:53:00.765216]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve EUR-EONIA for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:00.768714]      (OREAnalytics\orea\app\analytic.cpp:118) : Analytic::releaseMemory() called for XVA
+WARNING  [2026-Jul-22 09:53:00.768714]      (OREAnalytics\orea\app\analytic.cpp:119) : Before releaseMemory() XVA: 204640256|204640256 (peakMemoryUsage (bytes) | memoryUsage (bytes))
+WARNING  [2026-Jul-22 09:53:00.768714]      (OREAnalytics\orea\app\analytic.cpp:126) : After releaseMemory() XVA: 204640256|204640256 (peakMemoryUsage (bytes) | memoryUsage (bytes))
+NOTICE   [2026-Jul-22 09:53:00.768714]  (...ytics\orea\app\analyticsmanager.cpp:153) : run analytic with label 'PRICING'
+WARNING  [2026-Jul-22 09:53:00.768714]      (OREAnalytics\orea\app\analytic.cpp:131) : Starting PRICING Analytic::runAnalytic(): 204640256|204640256 (peakMemoryUsage (bytes) | memoryUsage (bytes))
+NOTICE   [2026-Jul-22 09:53:00.768714]      (OREAnalytics\orea\app\analytic.cpp:277) : Analytic::buildMarket called
+NOTICE   [2026-Jul-22 09:53:00.768714]  (...\ored\marketdata\bondspreadimply.cpp:51) : identify securities that require a spread imply for configuration default
+NOTICE   [2026-Jul-22 09:53:00.768714]  (...\ored\marketdata\bondspreadimply.cpp:51) : identify securities that require a spread imply for configuration inccy
+NOTICE   [2026-Jul-22 09:53:00.768714]  (...ored\marketdata\bondspreadimply.cpp:108) : got 0 securities
+NOTICE   [2026-Jul-22 09:53:00.768714]  (...\ored\marketdata\fxtriangulation.cpp:65) : FXTriangulation: initializing
+NOTICE   [2026-Jul-22 09:53:00.768714]  (...ored\marketdata\fxtriangulation.cpp:112) : FXTriangulation: initialized with 92 quotes, 47 currencies.
+NOTICE   [2026-Jul-22 09:53:00.768714]  (...ta\ored\marketdata\todaysmarket.cpp:230) : Build objects in TodaysMarket lazily, i.e. when requested.
+NOTICE   [2026-Jul-22 09:53:00.768714]      (OREAnalytics\orea\app\analytic.cpp:315) : Market Build time 0.000672 sec
+NOTICE   [2026-Jul-22 09:53:00.768714]     (OREData\ored\portfolio\portfolio.cpp:49) : Reset portfolio of size 2
+NOTICE   [2026-Jul-22 09:53:00.768714]      (OREAnalytics\orea\app\analytic.cpp:332) : Build the portfolio
+NOTICE   [2026-Jul-22 09:53:00.768714]      (OREAnalytics\orea\app\analytic.cpp:233) : Analytic::engineFactory() called
+NOTICE   [2026-Jul-22 09:53:00.768714]      (OREAnalytics\orea\app\analytic.cpp:243) : MarketContext::pricing = default
+NOTICE   [2026-Jul-22 09:53:00.768714]    (OREData\ored\portfolio\portfolio.cpp:141) : Building Portfolio of size 2 for context = 'analytic/PRICING'
+NOTICE   [2026-Jul-22 09:53:00.855512]    (OREData\ored\portfolio\portfolio.cpp:169) : Built Portfolio. Initial size = 2, size now 2, built 0 failed trades, context is analytic/PRICING
+NOTICE   [2026-Jul-22 09:53:00.855512]    (OREData\ored\portfolio\portfolio.cpp:170) : Build stats:
+NOTICE   [2026-Jul-22 09:53:00.855512]    (OREData\ored\portfolio\portfolio.cpp:174) : FxForward                         1           81.5 ms (avg = 81.5)
+NOTICE   [2026-Jul-22 09:53:00.855512]    (OREData\ored\portfolio\portfolio.cpp:174) : Swap                              1          0.543 ms (avg = 0.543)
+NOTICE   [2026-Jul-22 09:53:00.855512]      (OREAnalytics\orea\app\analytic.cpp:341) : Filter trades that expire before December 30th, 2019
+NOTICE   [2026-Jul-22 09:53:00.855512]   (OREAnalytics\orea\app\reportwriter.cpp:73) : portfolio valuation
+NOTICE   [2026-Jul-22 09:53:00.855512]  (OREAnalytics\orea\app\reportwriter.cpp:136) : NPV file written
+WARNING  [2026-Jul-22 09:53:00.855512]      (OREAnalytics\orea\app\analytic.cpp:136) : Finishing PRICING Analytic::runAnalytic(): 208314368|208314368 (peakMemoryUsage (bytes) | memoryUsage (bytes))
+NOTICE   [2026-Jul-22 09:53:00.855512]  (...ytics\orea\app\analyticsmanager.cpp:162) : run analytic with label 'PRICING' finished.
+NOTICE   [2026-Jul-22 09:53:00.855512]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve EUR-EONIA for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:00.855512]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve USD-IN-EUR for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:00.855512]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve EUR-EONIA for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:00.855512]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve EUR-EURIBOR-3M for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:00.855512]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve EUR-EURIBOR-6M for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:00.855512]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve USD-FedFunds for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:00.855512]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve USD-LIBOR-3M for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:00.859136]      (OREAnalytics\orea\app\analytic.cpp:118) : Analytic::releaseMemory() called for PRICING
+WARNING  [2026-Jul-22 09:53:00.859136]      (OREAnalytics\orea\app\analytic.cpp:119) : Before releaseMemory() PRICING: 208359424|208359424 (peakMemoryUsage (bytes) | memoryUsage (bytes))
+WARNING  [2026-Jul-22 09:53:00.859136]      (OREAnalytics\orea\app\analytic.cpp:126) : After releaseMemory() PRICING: 208359424|208359424 (peakMemoryUsage (bytes) | memoryUsage (bytes))
+NOTICE   [2026-Jul-22 09:53:00.859136]  (...ytics\orea\app\analyticsmanager.cpp:153) : run analytic with label 'PARAMETRIC_VAR'
+WARNING  [2026-Jul-22 09:53:00.859136]      (OREAnalytics\orea\app\analytic.cpp:131) : Starting PARAMETRIC_VAR Analytic::runAnalytic(): 208359424|208359424 (peakMemoryUsage (bytes) | memoryUsage (bytes))
+NOTICE   [2026-Jul-22 09:53:00.859136]  (...\orea\app\analytics\varanalytic.cpp:104) : Running parametric VaR
+NOTICE   [2026-Jul-22 09:53:00.859136]  (...\orea\app\analytics\varanalytic.cpp:109) : VAR: Build Market
+NOTICE   [2026-Jul-22 09:53:00.859136]      (OREAnalytics\orea\app\analytic.cpp:277) : Analytic::buildMarket called
+NOTICE   [2026-Jul-22 09:53:00.859136]  (...\ored\marketdata\bondspreadimply.cpp:51) : identify securities that require a spread imply for configuration default
+NOTICE   [2026-Jul-22 09:53:00.859136]  (...\ored\marketdata\bondspreadimply.cpp:51) : identify securities that require a spread imply for configuration inccy
+NOTICE   [2026-Jul-22 09:53:00.859136]  (...ored\marketdata\bondspreadimply.cpp:108) : got 0 securities
+NOTICE   [2026-Jul-22 09:53:00.859136]  (...\ored\marketdata\fxtriangulation.cpp:65) : FXTriangulation: initializing
+NOTICE   [2026-Jul-22 09:53:00.859136]  (...ored\marketdata\fxtriangulation.cpp:112) : FXTriangulation: initialized with 92 quotes, 47 currencies.
+NOTICE   [2026-Jul-22 09:53:00.859136]  (...ta\ored\marketdata\todaysmarket.cpp:230) : Build objects in TodaysMarket lazily, i.e. when requested.
+NOTICE   [2026-Jul-22 09:53:00.859136]      (OREAnalytics\orea\app\analytic.cpp:315) : Market Build time 0.000625 sec
+NOTICE   [2026-Jul-22 09:53:00.859136]     (OREData\ored\portfolio\portfolio.cpp:49) : Reset portfolio of size 2
+NOTICE   [2026-Jul-22 09:53:00.859136]      (OREAnalytics\orea\app\analytic.cpp:332) : Build the portfolio
+NOTICE   [2026-Jul-22 09:53:00.859136]      (OREAnalytics\orea\app\analytic.cpp:233) : Analytic::engineFactory() called
+NOTICE   [2026-Jul-22 09:53:00.859136]      (OREAnalytics\orea\app\analytic.cpp:243) : MarketContext::pricing = default
+NOTICE   [2026-Jul-22 09:53:00.859136]    (OREData\ored\portfolio\portfolio.cpp:141) : Building Portfolio of size 2 for context = 'analytic/PARAMETRIC_VAR'
+NOTICE   [2026-Jul-22 09:53:00.934830]    (OREData\ored\portfolio\portfolio.cpp:169) : Built Portfolio. Initial size = 2, size now 2, built 0 failed trades, context is analytic/PARAMETRIC_VAR
+NOTICE   [2026-Jul-22 09:53:00.934830]    (OREData\ored\portfolio\portfolio.cpp:170) : Build stats:
+NOTICE   [2026-Jul-22 09:53:00.934830]    (OREData\ored\portfolio\portfolio.cpp:174) : FxForward                         1           72.8 ms (avg = 72.8)
+NOTICE   [2026-Jul-22 09:53:00.934830]    (OREData\ored\portfolio\portfolio.cpp:174) : Swap                              1          0.412 ms (avg = 0.412)
+NOTICE   [2026-Jul-22 09:53:00.934830]      (OREAnalytics\orea\app\analytic.cpp:341) : Filter trades that expire before December 30th, 2019
+NOTICE   [2026-Jul-22 09:53:00.934830]  (...\orea\app\analytics\varanalytic.cpp:154) : Build trade to portfolio id mapping
+NOTICE   [2026-Jul-22 09:53:00.934830]  (...\orea\app\analytics\varanalytic.cpp:161) : Build VaR calculator
+NOTICE   [2026-Jul-22 09:53:00.934830]  (...\orea\app\analytics\varanalytic.cpp:121) : Call VaR calculation
+NOTICE   [2026-Jul-22 09:53:00.934830]  (...cs\orea\engine\marketriskreport.cpp:191) : Portfolio filter: PF1|PF2
+NOTICE   [2026-Jul-22 09:53:00.934830]  (...cs\orea\engine\marketriskreport.cpp:266) : Creating reports
+NOTICE   [2026-Jul-22 09:53:00.934830]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 1 out of 28) = [All, All]
+NOTICE   [2026-Jul-22 09:53:00.944951]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [All, All], TradeGroup: All
+WARNING  [2026-Jul-22 09:53:00.944951]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/11
+WARNING  [2026-Jul-22 09:53:00.944951]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/12
+WARNING  [2026-Jul-22 09:53:00.944951]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/11
+WARNING  [2026-Jul-22 09:53:00.944951]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/12
+NOTICE   [2026-Jul-22 09:53:00.944951]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [All, All], TradeGroup: PF1
+WARNING  [2026-Jul-22 09:53:00.944951]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/11
+WARNING  [2026-Jul-22 09:53:00.944951]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/12
+WARNING  [2026-Jul-22 09:53:00.944951]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/11
+WARNING  [2026-Jul-22 09:53:00.944951]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/12
+NOTICE   [2026-Jul-22 09:53:00.944951]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 2 out of 28) = [All, DeltaGamma]
+NOTICE   [2026-Jul-22 09:53:00.948957]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [All, DeltaGamma], TradeGroup: All
+WARNING  [2026-Jul-22 09:53:00.950959]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/11
+WARNING  [2026-Jul-22 09:53:00.950959]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/12
+WARNING  [2026-Jul-22 09:53:00.950959]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/11
+WARNING  [2026-Jul-22 09:53:00.950959]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/12
+NOTICE   [2026-Jul-22 09:53:00.950959]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [All, DeltaGamma], TradeGroup: PF1
+WARNING  [2026-Jul-22 09:53:00.950959]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/11
+WARNING  [2026-Jul-22 09:53:00.950959]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/12
+WARNING  [2026-Jul-22 09:53:00.950959]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/11
+WARNING  [2026-Jul-22 09:53:00.950959]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/12
+NOTICE   [2026-Jul-22 09:53:00.950959]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 3 out of 28) = [All, Vega]
+NOTICE   [2026-Jul-22 09:53:00.956251]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [All, Vega], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:00.956251]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [All, Vega], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:00.956251]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 4 out of 28) = [All, BaseCorrelation]
+NOTICE   [2026-Jul-22 09:53:00.958259]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [All, BaseCorrelation], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:00.958259]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [All, BaseCorrelation], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:00.958259]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 5 out of 28) = [InterestRate, All]
+NOTICE   [2026-Jul-22 09:53:00.962263]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [InterestRate, All], TradeGroup: All
+WARNING  [2026-Jul-22 09:53:00.962263]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/11
+WARNING  [2026-Jul-22 09:53:00.962263]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/12
+WARNING  [2026-Jul-22 09:53:00.962263]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/11
+WARNING  [2026-Jul-22 09:53:00.962263]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/12
+NOTICE   [2026-Jul-22 09:53:00.964266]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [InterestRate, All], TradeGroup: PF1
+WARNING  [2026-Jul-22 09:53:00.964266]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/11
+WARNING  [2026-Jul-22 09:53:00.964266]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/12
+WARNING  [2026-Jul-22 09:53:00.964266]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/11
+WARNING  [2026-Jul-22 09:53:00.964266]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/12
+NOTICE   [2026-Jul-22 09:53:00.964266]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 6 out of 28) = [InterestRate, DeltaGamma]
+NOTICE   [2026-Jul-22 09:53:00.968271]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [InterestRate, DeltaGamma], TradeGroup: All
+WARNING  [2026-Jul-22 09:53:00.968271]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/11
+WARNING  [2026-Jul-22 09:53:00.968271]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/12
+WARNING  [2026-Jul-22 09:53:00.968271]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/11
+WARNING  [2026-Jul-22 09:53:00.968271]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/12
+NOTICE   [2026-Jul-22 09:53:00.968271]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [InterestRate, DeltaGamma], TradeGroup: PF1
+WARNING  [2026-Jul-22 09:53:00.968271]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/11
+WARNING  [2026-Jul-22 09:53:00.968271]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/EUR/12
+WARNING  [2026-Jul-22 09:53:00.968271]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/11
+WARNING  [2026-Jul-22 09:53:00.968271]  (...cs\orea\engine\marketriskreport.cpp:407) : Zero variance assigned to sensitivity key DiscountCurve/USD/12
+NOTICE   [2026-Jul-22 09:53:00.970273]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 7 out of 28) = [InterestRate, Vega]
+NOTICE   [2026-Jul-22 09:53:00.973777]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [InterestRate, Vega], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:00.973777]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [InterestRate, Vega], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:00.973777]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 8 out of 28) = [InterestRate, BaseCorrelation]
+NOTICE   [2026-Jul-22 09:53:00.977781]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [InterestRate, BaseCorrelation], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:00.977781]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [InterestRate, BaseCorrelation], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:00.977781]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 9 out of 28) = [Inflation, All]
+NOTICE   [2026-Jul-22 09:53:00.979783]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Inflation, All], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:00.979783]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Inflation, All], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:00.979783]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 10 out of 28) = [Inflation, DeltaGamma]
+NOTICE   [2026-Jul-22 09:53:00.984436]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Inflation, DeltaGamma], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:00.984436]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Inflation, DeltaGamma], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:00.984436]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 11 out of 28) = [Inflation, Vega]
+NOTICE   [2026-Jul-22 09:53:00.988440]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Inflation, Vega], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:00.988440]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Inflation, Vega], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:00.988440]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 12 out of 28) = [Inflation, BaseCorrelation]
+NOTICE   [2026-Jul-22 09:53:00.992445]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Inflation, BaseCorrelation], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:00.992445]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Inflation, BaseCorrelation], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:00.992445]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 13 out of 28) = [Credit, All]
+NOTICE   [2026-Jul-22 09:53:00.996601]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Credit, All], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:00.996601]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Credit, All], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:00.996601]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 14 out of 28) = [Credit, DeltaGamma]
+NOTICE   [2026-Jul-22 09:53:00.999605]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Credit, DeltaGamma], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:00.999605]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Credit, DeltaGamma], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:00.999605]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 15 out of 28) = [Credit, Vega]
+NOTICE   [2026-Jul-22 09:53:01.003609]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Credit, Vega], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:01.003609]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Credit, Vega], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:01.003609]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 16 out of 28) = [Credit, BaseCorrelation]
+NOTICE   [2026-Jul-22 09:53:01.007614]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Credit, BaseCorrelation], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:01.007614]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Credit, BaseCorrelation], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:01.007614]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 17 out of 28) = [Equity, All]
+NOTICE   [2026-Jul-22 09:53:01.011358]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Equity, All], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:01.011358]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Equity, All], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:01.011358]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 18 out of 28) = [Equity, DeltaGamma]
+NOTICE   [2026-Jul-22 09:53:01.014557]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Equity, DeltaGamma], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:01.014557]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Equity, DeltaGamma], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:01.014557]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 19 out of 28) = [Equity, Vega]
+NOTICE   [2026-Jul-22 09:53:01.018567]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Equity, Vega], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:01.018567]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Equity, Vega], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:01.018567]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 20 out of 28) = [Equity, BaseCorrelation]
+NOTICE   [2026-Jul-22 09:53:01.020569]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Equity, BaseCorrelation], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:01.020569]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Equity, BaseCorrelation], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:01.020569]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 21 out of 28) = [FX, All]
+NOTICE   [2026-Jul-22 09:53:01.024572]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [FX, All], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:01.024572]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [FX, All], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:01.026574]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 22 out of 28) = [FX, DeltaGamma]
+NOTICE   [2026-Jul-22 09:53:01.029081]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [FX, DeltaGamma], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:01.031149]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [FX, DeltaGamma], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:01.031149]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 23 out of 28) = [FX, Vega]
+NOTICE   [2026-Jul-22 09:53:01.034153]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [FX, Vega], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:01.034153]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [FX, Vega], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:01.034153]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 24 out of 28) = [FX, BaseCorrelation]
+NOTICE   [2026-Jul-22 09:53:01.037260]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [FX, BaseCorrelation], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:01.037260]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [FX, BaseCorrelation], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:01.037260]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 25 out of 28) = [Commodity, All]
+NOTICE   [2026-Jul-22 09:53:01.041268]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Commodity, All], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:01.041268]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Commodity, All], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:01.041268]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 26 out of 28) = [Commodity, DeltaGamma]
+NOTICE   [2026-Jul-22 09:53:01.045514]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Commodity, DeltaGamma], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:01.045514]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Commodity, DeltaGamma], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:01.045514]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 27 out of 28) = [Commodity, Vega]
+NOTICE   [2026-Jul-22 09:53:01.049519]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Commodity, Vega], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:01.049519]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Commodity, Vega], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:01.049519]  (...cs\orea\engine\marketriskreport.cpp:286) : [progress] Processing RiskGroup 28 out of 28) = [Commodity, BaseCorrelation]
+NOTICE   [2026-Jul-22 09:53:01.053524]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Commodity, BaseCorrelation], TradeGroup: All
+NOTICE   [2026-Jul-22 09:53:01.053524]  (...cs\orea\engine\marketriskreport.cpp:325) : Start processing for RiskGroup: [Commodity, BaseCorrelation], TradeGroup: PF1
+NOTICE   [2026-Jul-22 09:53:01.053524]  (...\orea\app\analytics\varanalytic.cpp:134) : VaR completed
+WARNING  [2026-Jul-22 09:53:01.053524]      (OREAnalytics\orea\app\analytic.cpp:136) : Finishing PARAMETRIC_VAR Analytic::runAnalytic(): 211841024|211841024 (peakMemoryUsage (bytes) | memoryUsage (bytes))
+NOTICE   [2026-Jul-22 09:53:01.053524]  (...ytics\orea\app\analyticsmanager.cpp:162) : run analytic with label 'PARAMETRIC_VAR' finished.
+NOTICE   [2026-Jul-22 09:53:01.053524]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve EUR-EONIA for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:01.053524]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve USD-IN-EUR for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:01.053524]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve EUR-EONIA for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:01.053524]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve EUR-EURIBOR-3M for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:01.053524]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve EUR-EURIBOR-6M for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:01.053524]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve USD-FedFunds for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:01.053524]  (...rea\app\marketcalibrationreport.cpp:351) : Skipping curve USD-LIBOR-3M for label  as it has already been added
+NOTICE   [2026-Jul-22 09:53:01.063018]      (OREAnalytics\orea\app\analytic.cpp:118) : Analytic::releaseMemory() called for PARAMETRIC_VAR
+WARNING  [2026-Jul-22 09:53:01.063018]      (OREAnalytics\orea\app\analytic.cpp:119) : Before releaseMemory() PARAMETRIC_VAR: 211902464|211902464 (peakMemoryUsage (bytes) | memoryUsage (bytes))
+WARNING  [2026-Jul-22 09:53:01.063018]      (OREAnalytics\orea\app\analytic.cpp:126) : After releaseMemory() PARAMETRIC_VAR: 211902464|211902464 (peakMemoryUsage (bytes) | memoryUsage (bytes))
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...nalytics\orea\app\reportwriter.cpp:1261) : Writing Pricing stats report
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...nalytics\orea\app\reportwriter.cpp:1277) : Pricing stats report written
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...nalytics\orea\app\reportwriter.cpp:1282) : Writing runtimes report
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...nalytics\orea\app\reportwriter.cpp:1306) : Finished writing runtimes report
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...ytics\orea\app\analyticsmanager.cpp:252) : report name dividends occurs 1 times
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...ytics\orea\app\analyticsmanager.cpp:252) : report name fixings occurs 1 times
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...ytics\orea\app\analyticsmanager.cpp:252) : report name marketdata occurs 1 times
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...ytics\orea\app\analyticsmanager.cpp:252) : report name npv occurs 1 times
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...ytics\orea\app\analyticsmanager.cpp:252) : report name pricingstats occurs 1 times
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...ytics\orea\app\analyticsmanager.cpp:252) : report name runtimes occurs 1 times
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...ytics\orea\app\analyticsmanager.cpp:252) : report name todaysmarketcalibration occurs 1 times
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...ytics\orea\app\analyticsmanager.cpp:252) : report name todaysmarketcalibration_cashflows occurs 1 times
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...ytics\orea\app\analyticsmanager.cpp:252) : report name var occurs 1 times
+NOTICE   [2026-Jul-22 09:53:01.063018]       (OREData\ored\report\csvreport.cpp:131) : Opening CSV file report 'Output/MonteCarlo/dividends.csv'
+NOTICE   [2026-Jul-22 09:53:01.063018]       (OREData\ored\report\csvreport.cpp:220) : CSV file report 'Output/MonteCarlo/dividends.csv' closed.
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...ytics\orea\app\analyticsmanager.cpp:305) : report dividends written to Output/MonteCarlo/dividends.csv
+NOTICE   [2026-Jul-22 09:53:01.063018]       (OREData\ored\report\csvreport.cpp:131) : Opening CSV file report 'Output/MonteCarlo/fixings.csv'
+NOTICE   [2026-Jul-22 09:53:01.063018]       (OREData\ored\report\csvreport.cpp:220) : CSV file report 'Output/MonteCarlo/fixings.csv' closed.
+NOTICE   [2026-Jul-22 09:53:01.063018]  (...ytics\orea\app\analyticsmanager.cpp:305) : report fixings written to Output/MonteCarlo/fixings.csv
+NOTICE   [2026-Jul-22 09:53:01.063018]       (OREData\ored\report\csvreport.cpp:131) : Opening CSV file report 'Output/MonteCarlo/todaysmarketcalibration.csv'
+NOTICE   [2026-Jul-22 09:53:01.066612]       (OREData\ored\report\csvreport.cpp:220) : CSV file report 'Output/MonteCarlo/todaysmarketcalibration.csv' closed.
+NOTICE   [2026-Jul-22 09:53:01.066612]  (...ytics\orea\app\analyticsmanager.cpp:305) : report todaysmarketcalibration written to Output/MonteCarlo/todaysmarketcalibration.csv
+NOTICE   [2026-Jul-22 09:53:01.066612]       (OREData\ored\report\csvreport.cpp:131) : Opening CSV file report 'Output/MonteCarlo/todaysmarketcalibration_cashflows.csv'
+NOTICE   [2026-Jul-22 09:53:01.093333]       (OREData\ored\report\csvreport.cpp:220) : CSV file report 'Output/MonteCarlo/todaysmarketcalibration_cashflows.csv' closed.
+NOTICE   [2026-Jul-22 09:53:01.093333]  (...ytics\orea\app\analyticsmanager.cpp:305) : report todaysmarketcalibration_cashflows written to Output/MonteCarlo/todaysmarketcalibration_cashflows.csv
+NOTICE   [2026-Jul-22 09:53:01.093333]       (OREData\ored\report\csvreport.cpp:131) : Opening CSV file report 'Output/MonteCarlo/marketdata.csv'
+NOTICE   [2026-Jul-22 09:53:01.093333]       (OREData\ored\report\csvreport.cpp:220) : CSV file report 'Output/MonteCarlo/marketdata.csv' closed.
+NOTICE   [2026-Jul-22 09:53:01.093333]  (...ytics\orea\app\analyticsmanager.cpp:305) : report marketdata written to Output/MonteCarlo/marketdata.csv
+NOTICE   [2026-Jul-22 09:53:01.093333]       (OREData\ored\report\csvreport.cpp:131) : Opening CSV file report 'Output/MonteCarlo/npv.csv'
+NOTICE   [2026-Jul-22 09:53:01.093333]       (OREData\ored\report\csvreport.cpp:220) : CSV file report 'Output/MonteCarlo/npv.csv' closed.
+NOTICE   [2026-Jul-22 09:53:01.093333]  (...ytics\orea\app\analyticsmanager.cpp:305) : report npv written to Output/MonteCarlo/npv.csv
+NOTICE   [2026-Jul-22 09:53:01.093333]       (OREData\ored\report\csvreport.cpp:131) : Opening CSV file report 'Output/MonteCarlo/var.csv'
+NOTICE   [2026-Jul-22 09:53:01.093333]       (OREData\ored\report\csvreport.cpp:220) : CSV file report 'Output/MonteCarlo/var.csv' closed.
+NOTICE   [2026-Jul-22 09:53:01.093333]  (...ytics\orea\app\analyticsmanager.cpp:305) : report var written to Output/MonteCarlo/var.csv
+NOTICE   [2026-Jul-22 09:53:01.093333]       (OREData\ored\report\csvreport.cpp:131) : Opening CSV file report 'Output/MonteCarlo/pricingstats.csv'
+NOTICE   [2026-Jul-22 09:53:01.093333]       (OREData\ored\report\csvreport.cpp:220) : CSV file report 'Output/MonteCarlo/pricingstats.csv' closed.
+NOTICE   [2026-Jul-22 09:53:01.093333]  (...ytics\orea\app\analyticsmanager.cpp:305) : report pricingstats written to Output/MonteCarlo/pricingstats.csv
+NOTICE   [2026-Jul-22 09:53:01.093333]       (OREData\ored\report\csvreport.cpp:131) : Opening CSV file report 'Output/MonteCarlo/runtimes.csv'
+NOTICE   [2026-Jul-22 09:53:01.093333]       (OREData\ored\report\csvreport.cpp:220) : CSV file report 'Output/MonteCarlo/runtimes.csv' closed.
+NOTICE   [2026-Jul-22 09:53:01.093333]  (...ytics\orea\app\analyticsmanager.cpp:305) : report runtimes written to Output/MonteCarlo/runtimes.csv
+ALERT    [2026-Jul-22 09:53:01.093333]        (OREAnalytics\orea\app\oreapp.cpp:330) : Error in ORE analytics: Failed to run analytics XVA
+WARNING  [2026-Jul-22 09:53:01.093333]        (OREAnalytics\orea\app\oreapp.cpp:331) : Finishing OREApp::analytics(): 212029440|212029440 (peakMemoryUsage (bytes) | memoryUsage (bytes))
+WARNING  [2026-Jul-22 09:53:01.093333]          (OREData\ored\utilities\log.cpp:215) : StructuredMessage { "category": "Warning", "group": "Analytics", "message": "Error in ORE analytics: Failed to run analytics XVA", "sub_fields": [ { "name": "analyticType", "value": "OREApp::run()" }, { "name": "warningType", "value": "Error" } ] }
