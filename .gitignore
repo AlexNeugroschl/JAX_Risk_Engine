@@ -1,0 +1,8 @@
+/venv
+venv/
+venv
+.pytest_cache__/
+.pytest_cache/
+.venv/
+.venv
+
