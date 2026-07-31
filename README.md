@@ -13,25 +13,28 @@ The engine is structured as a 3-stage pipeline:
 *   **Stage 1: ETL & Parameter Ingestion (CPU):** 
     *   *Dual Ingestion:* Supports parsing ORE XML/CSV files (`xml.etree.ElementTree`) for validation testing, alongside a FastAPI/gRPC endpoint for real-time TraderX payloads.
     *   *Transform:* Pre-computes deterministic affine matrices ($A$ and $B$) on the CPU and passes the strictly typed payload to JAX.
+    *   **Update (Phase 2):** `engine/instruments/` extends this beyond XML-only validation — it imports the `ORE` Python package (`open-source-risk-engine`) as a **hard runtime dependency**, using `ORE.MakeVanillaSwap`/`ORE.Schedule`/day-count classes directly to build real trade schedules and coupon accrual (not reimplemented in numpy), matching the "use ORE directly for CPU-side, non-performance-heavy work" approach. GPU/JAX code stays ORE-free. This means Phase 8's TraderX microservice will need `ORE` installed wherever `engine/instruments/` runs, not just in test/validation environments.
 *   **Stage 2: The Cross-Asset Time Machine (GPU):** A `jax.lax.scan` loop executing Quasi-Monte Carlo (Sobol + Brownian Bridge) paths for Equities, FX (Uncovered Interest Parity), and Interest Rates (Hull-White 1-Factor).
 *   **Stage 3: Vectorized Pricing & Risk (GPU):** Consumes the generated 4D Yield Curve cubes and asset paths to output Net Present Value (NPV) cubes and aggregate risk metrics.
 
 ## 3. Development Roadmap
 We will build this system out in the following sequential phases:
 
-### Phase 1: Port the Market Simulations to JAX (Current)
+### Phase 1: Port the Market Simulations to JAX (Done)
 *   **Goal:** Finalize the exact replica of ORE's Cross-Asset Model (CAM).
 *   **Tasks:** 
-    *   Extract ORE’s exact recursive Brownian Bridge matrix.
-    *   Extract calibrated today's yield curves for the Hull-White $A(t,T)$ parameter.
-    *   Implement exact piecewise variance integration.
+    *   Extract ORE’s exact recursive Brownian Bridge matrix. ✅ `engine/market_simulations.py::_build_bridge_matrix` — QuantLib/ORE's recursive bisection construction, verified to exactly reproduce Brownian motion's covariance structure.
+    *   Extract calibrated today's yield curves for the Hull-White $A(t,T)$ parameter. ✅ `compute_hw_A_matrix`, calibrated from a caller-supplied `initial_zero_curve`, verified to exactly reprice the input curve at $t \to 0$.
+    *   Implement exact piecewise variance integration. ✅ closed-form HW1F transition variance per step (`_simulate_cross_asset_paths_jit`).
 
-### Phase 2: Port Interest Rate Swaps
+### Phase 2: Port Interest Rate Swaps (Current)
 *   **Goal:** Build the foundational linear pricing engine.
 *   **Tasks:** 
-    *   Write a vectorized cash-flow mapping function.
-    *   Consume the 4D Yield Curve cube to calculate Swap NPVs via tensor dot-products.
-    *   Output a structured `[Scenarios, TimeSteps, Trades]` NPV cube.
+    *   Write a vectorized cash-flow mapping function. ✅ `engine/instruments/interest_rate_swap.py::price_swaps`.
+    *   Consume the 4D Yield Curve cube to calculate Swap NPVs via tensor dot-products. ✅, with **full multi-curve discounting** (a `discount_curve_index` and a separate `forward_curve_index` per swap, into the yield curve cube's `NumRates` axis) — mirrors ORE's `DiscountingSwapEngine` + `IborIndex.forwardingTermStructure()` split rather than assuming a single curve.
+    *   Output a structured `[Scenarios, TimeSteps, Trades]` NPV cube. ✅.
+    *   Trade schedules and coupon accrual are built with ORE's own `MakeVanillaSwap`/day-count classes (see Stage 1 update above), not reimplemented — cross-checked directly against `ORE.VanillaSwap.NPV()` in `tests/test_interest_rate_swap.py` (`< 1e-6` relative tolerance).
+    *   **Known limitation:** cashflow dates must land exactly on a configured `maturities` pillar (no curve interpolation yet) — the caller must configure the simulation's `rates.maturities` to be the union of both legs' payment/accrual dates.
 
 ### Phase 3: Port VaR (Value at Risk) Calculations
 *   **Goal:** Implement the primary market risk metric.

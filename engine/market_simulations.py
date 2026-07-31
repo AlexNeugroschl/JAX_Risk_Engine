@@ -1,5 +1,11 @@
 import jax
-# Enforce 64-bit precision for financial stability
+# Default to 64-bit precision at import time. generate_paths() overrides this
+# per-call based on its `precision` argument, so the end-to-end pipeline
+# honors dtype correctly. Calling generate_sobol_normals/apply_brownian_bridge
+# directly (bypassing generate_paths) does NOT: jax.scipy.stats.norm.ppf
+# silently upcasts to float64 whenever x64 mode is globally on, regardless of
+# the dtype passed in, so a direct call requesting float32 will still return
+# float64 unless jax_enable_x64 has been explicitly disabled beforehand.
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
@@ -15,6 +21,14 @@ def generate_sobol_normals(num_scenarios: int, num_steps: int, num_assets: int, 
     CPU: Generates Sobol sequences.
     GPU: Converts to Normal shocks.
     Returns: [TimeSteps, Scenarios, Assets]
+
+    CAVEAT: the output dtype tracks `dtype` faithfully only when the global
+    jax_enable_x64 flag is False at call time -- jax.scipy.stats.norm.ppf
+    upcasts to float64 internally whenever x64 mode is on, so a direct call
+    with dtype=jnp.float32 while x64 mode is enabled (the module's import-time
+    default) silently returns float64. generate_paths() manages this
+    correctly by toggling jax_enable_x64 before calling this function; a
+    caller invoking it standalone must do the same.
     """
     total_dimensions = num_steps * num_assets
     
@@ -139,6 +153,26 @@ def _simulate_cross_asset_paths_jit(
     hw_r0: jax.Array, hw_theta_t: jax.Array, hw_sigma_t: jax.Array, hw_a: jax.Array,
     L_t: jax.Array, dt_t: jax.Array, Z_bridged: jax.Array
 ):
+    """
+    GPU: joint Hull-White 1-Factor (rates) + correlated GBM (equities/FX)
+    Monte Carlo path simulation, stepped chronologically via jax.lax.scan.
+
+    Per step: correlates the bridged shocks via the (per-step) Cholesky
+    factor L_t, evolves each rate factor with the exact HW1F transition
+    (mean-reverting Ornstein-Uhlenbeck), evolves each equity/FX path via GBM
+    with a dynamic drift derived from the simulated short rates (Uncovered
+    Interest Rate Parity: rate_mapping maps each equity/FX to the rate
+    factor(s) it depends on), and accrues a money-market numeraire off rate
+    factor index 0 only (single base-currency discounting account -- see
+    "Using Index 0 as base discount curve" below).
+
+    Shapes: eq_S0/hw_r0 are [NumEq]/[NumHW]; eq_div_t/eq_sigma_t/hw_theta_t/
+    hw_sigma_t are [TimeSteps, NumEq or NumHW]; rate_mapping is
+    [NumEq, NumHW]; L_t is [TimeSteps, NumEq+NumHW, NumEq+NumHW]; dt_t is
+    [TimeSteps]; Z_bridged is [TimeSteps, Scenarios, NumEq+NumHW].
+    Returns (eq_paths, hw_paths, numeraire_paths), each
+    [Scenarios, TimeSteps, ...].
+    """
     num_scenarios = Z_bridged.shape[1]
     num_eq = eq_S0.shape[0]
     num_hw = hw_r0.shape[0]
@@ -259,6 +293,38 @@ def reconstruct_yield_curves(hw_paths: jax.Array, A: jax.Array, B: jax.Array) ->
 # PHASE 4: PUBLIC API WRAPPER
 # =============================================================================
 def generate_paths(config: Dict[str, Any], precision: int = 64) -> Dict[str, jax.Array]:
+    """
+    Runs the full Sobol -> Brownian bridge -> cross-asset Monte Carlo ->
+    yield curve reconstruction pipeline from a plain dict config.
+
+    config schema:
+        time_grid: [float, ...]      -- absolute times, ascending, starts at 0.0
+        scenarios: int                -- default 10000
+        equities: {
+            initial_prices, dividend_yields: [float] * NumEq
+            rate_mapping: [[float] * NumHW] * NumEq  -- UIP drift coefficients
+        }
+        rates: {
+            initial_rates, theta, mean_reversion: [float] * NumHW
+            maturities: [float, ...]  -- OPTIONAL; presence triggers yield_curves output
+            initial_zero_curve: {times, rates}  -- required iff maturities given
+        }
+        joint_covariance: [[float] * (NumEq+NumHW)] * (NumEq+NumHW)
+            -- equities first, then rates, in the same order as above
+
+    precision: 64 for float64 (default; required for the FP64 "ground truth"
+        runs), 32 for float32 (Phase 9 lower-precision comparison runs).
+        NOTE: this only reliably controls dtype for calls that go through
+        this function. generate_sobol_normals/apply_brownian_bridge called
+        directly are affected by whatever jax_enable_x64 state is globally
+        active at call time (jax.scipy.stats.norm.ppf silently upcasts to
+        float64 when x64 mode is on, regardless of the input dtype) -- see
+        the module-level comment above the jax_enable_x64 default.
+
+    Returns a dict with "equities" [S,T,NumEq], "rates" [S,T,NumHW],
+    "numeraire" [S,T], and (if config["rates"]["maturities"] is set)
+    "yield_curves" [S,T,Maturities,NumHW].
+    """
     jax.config.update("jax_enable_x64", precision == 64)
     dtype = jnp.float64 if precision == 64 else jnp.float32
 

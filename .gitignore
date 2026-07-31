@@ -13,3 +13,4 @@ __pycache__
 *.csv
 *.json
 *.pyc
+.claude/

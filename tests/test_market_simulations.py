@@ -1,13 +1,8 @@
-import sys
-from pathlib import Path
-
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine"))
-
-from market_simulations import (  # noqa: E402
+from engine.market_simulations import (
     _build_bridge_matrix,
     apply_brownian_bridge,
     compute_hw_A_matrix,

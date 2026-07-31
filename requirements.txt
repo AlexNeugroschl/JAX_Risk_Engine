@@ -1,3 +1,5 @@
+# Runtime dependency of engine/instruments (schedule/day-count generation),
+# not just a validation-only tool.
 open-source-risk-engine
 pandas
 jax
