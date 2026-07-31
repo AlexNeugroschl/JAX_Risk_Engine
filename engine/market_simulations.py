@@ -2,6 +2,7 @@ import jax
 # Enforce 64-bit precision for financial stability
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
+import numpy as np
 from jax.scipy.stats import norm
 from scipy.stats.qmc import Sobol
 from typing import Dict, Any
@@ -32,18 +33,88 @@ def generate_sobol_normals(num_scenarios: int, num_steps: int, num_assets: int, 
     Z = normal_shocks.reshape((num_scenarios, num_steps, num_assets))
     return jnp.transpose(Z, (1, 0, 2))
 
+def _build_bridge_matrix(time_grid: np.ndarray) -> np.ndarray:
+    """
+    CPU: Constructs the Brownian Bridge path-construction matrix B such that
+    W(t_1..t_n) = B @ Z, where Z are independent N(0,1) draws ordered by
+    Sobol-dimension significance (dimension 0 = path endpoint, dimension 1 =
+    midpoint, etc.), following the standard recursive bisection algorithm
+    used by QuantLib/ORE's BrownianBridge.
+    """
+    times = np.asarray(time_grid, dtype=np.float64)[1:]  # drop t=0
+    n = times.shape[0]
+    B = np.zeros((n, n), dtype=np.float64)
+
+    left_index = np.zeros(n, dtype=np.int64)
+    right_index = np.zeros(n, dtype=np.int64)
+    bridge_index = np.zeros(n, dtype=np.int64)
+    left_weight = np.zeros(n, dtype=np.float64)
+    right_weight = np.zeros(n, dtype=np.float64)
+    std_dev = np.zeros(n, dtype=np.float64)
+
+    # map_[k] != 0 marks slot k as already assigned a construction order;
+    # each iteration bisects the widest unfilled gap (QuantLib BrownianBridge).
+    map_ = np.zeros(n, dtype=np.int64)
+    map_[n - 1] = 1
+    bridge_index[0] = n - 1
+    std_dev[0] = np.sqrt(times[-1])
+
+    for i in range(1, n):
+        j = 0
+        while map_[j] != 0:
+            j += 1
+        k = j
+        while map_[k] == 0:
+            k += 1
+        # Choose the midpoint index between the two known bounds j-1..k
+        l = j + ((k - 1 - j) // 2)
+        map_[l] = i
+
+        left_index[i] = j
+        right_index[i] = k
+        bridge_index[i] = l
+
+        left_t = times[j - 1] if j != 0 else 0.0
+        right_t = times[k]
+        mid_t = times[l]
+
+        left_weight[i] = (right_t - mid_t) / (right_t - left_t)
+        right_weight[i] = (mid_t - left_t) / (right_t - left_t)
+        std_dev[i] = np.sqrt(
+            (mid_t - left_t) * (right_t - mid_t) / (right_t - left_t)
+        )
+
+    # Translate the (left/right/bridge) recursion into an explicit linear map
+    # from Z (Sobol-ordered independent normals) to W (path values at each
+    # grid time), so it can be applied as a single matrix multiply.
+    B[n - 1, 0] = std_dev[0]
+    for i in range(1, n):
+        row = bridge_index[i]
+        B[row, i] += std_dev[i]
+        if left_index[i] != 0:
+            B[row, :] += left_weight[i] * B[left_index[i] - 1, :]
+        if right_index[i] != n:
+            B[row, :] += right_weight[i] * B[right_index[i], :]
+
+    return B
+
+
 @jax.jit
+def _apply_bridge_matrix(B_matrix: jax.Array, Z: jax.Array) -> jax.Array:
+    return jnp.tensordot(B_matrix, Z, axes=([1], [0]))
+
+
 def apply_brownian_bridge(Z: jax.Array, time_grid: jax.Array) -> jax.Array:
     """
     Transforms independent Normal shocks into Bridged Chronological Shocks.
     """
     num_steps, num_scenarios, num_assets = Z.shape
-    
-    # Placeholder: In production, replace jnp.eye with ORE's extracted Bridge Matrix
-    B_matrix = jnp.eye(num_steps, dtype=Z.dtype)
-    
+
+    B_matrix_np = _build_bridge_matrix(np.asarray(time_grid))
+    B_matrix = jnp.asarray(B_matrix_np, dtype=Z.dtype)
+
     # Apply Bridge Matrix to reorder variance
-    W_paths = jnp.tensordot(B_matrix, Z, axes=([1], [0]))
+    W_paths = _apply_bridge_matrix(B_matrix, Z)
     
     # Convert absolute paths back to sequential steps (dW)
     W_paths_with_zero = jnp.concatenate(
@@ -122,6 +193,53 @@ def _simulate_cross_asset_paths_jit(
 # =============================================================================
 # PHASE 3: YIELD CURVE RECONSTRUCTION
 # =============================================================================
+def _initial_log_discount(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.ndarray) -> np.ndarray:
+    """Continuously-compounded log discount factor ln P(0,t) via linear
+    interpolation on zero rates, flat-extrapolated at the curve ends."""
+    r_t = np.interp(t, zero_times, zero_rates)
+    return -r_t * t
+
+
+def compute_hw_A_matrix(
+    zero_times: np.ndarray,
+    zero_rates: np.ndarray,
+    hw_a: np.ndarray,
+    hw_sigma: np.ndarray,
+    step_times: np.ndarray,
+    maturities: np.ndarray,
+    B_matrix: np.ndarray,
+) -> np.ndarray:
+    """
+    CPU: Closed-form Hull-White 1-Factor A(t,T):
+        A(t,T) = [P(0,T)/P(0,t)] *
+                 exp(B(t,T)*f(0,t) - (sigma^2/4a)*(1-exp(-2at))*B(t,T)^2)
+    where f(0,t) = -d/dt ln P(0,t) is the initial instantaneous forward rate,
+    calibrating the simulated short rate to today's market curve per rate factor.
+    Shapes: step_times [TimeSteps], maturities [Maturities], B_matrix
+    [TimeSteps, Maturities, NumRates] -> returns A [TimeSteps, Maturities, NumRates].
+    """
+    eps = 1e-6
+    log_P0_t = _initial_log_discount(zero_times, zero_rates, step_times)
+    log_P0_T = _initial_log_discount(zero_times, zero_rates, maturities)
+    fwd_0_t = -(
+        _initial_log_discount(zero_times, zero_rates, step_times + eps) - log_P0_t
+    ) / eps
+
+    ratio = np.exp(log_P0_T[None, :] - log_P0_t[:, None])  # [TimeSteps, Maturities]
+
+    num_hw = hw_a.shape[0]
+    A = np.empty_like(B_matrix)
+    for k in range(num_hw):
+        a = hw_a[k]
+        sigma = hw_sigma[k]
+        variance_term = (sigma ** 2 / (4.0 * a)) * (1.0 - np.exp(-2.0 * a * step_times))
+        exponent = (
+            B_matrix[:, :, k] * fwd_0_t[:, None] - variance_term[:, None] * B_matrix[:, :, k] ** 2
+        )
+        A[:, :, k] = ratio * np.exp(exponent)
+    return A
+
+
 @jax.jit
 def reconstruct_yield_curves(hw_paths: jax.Array, A: jax.Array, B: jax.Array) -> jax.Array:
     """
@@ -191,19 +309,29 @@ def generate_paths(config: Dict[str, Any], precision: int = 64) -> Dict[str, jax
     # 6. Yield Curve Reconstruction (If requested in config)
     if "maturities" in hw_cfg:
         maturities = jnp.array(hw_cfg["maturities"], dtype=dtype)
-        num_maturities = maturities.shape[0]
-        
-        # Generate Mock A and B Matrices for standalone execution
-        A_matrix = jnp.ones((num_steps, num_maturities, num_hw), dtype=dtype)
-        
+
         step_times = time_grid[1:] # We evaluate AT the step ends
         T_minus_t = jnp.maximum(maturities[None, :] - step_times[:, None], 0.0)
-        
+
         # B(t,T) formula. Shape mapping: T_minus_t is [TimeSteps, Maturities]
         # hw_a is [NumRates]. We broadcast appropriately.
-        hw_a_bcast = hw_a[None, None, :] 
+        hw_a_bcast = hw_a[None, None, :]
         B_matrix = (1.0 - jnp.exp(-hw_a_bcast * T_minus_t[:, :, None])) / hw_a_bcast
-        
+
+        # A(t,T): calibrated to today's market zero curve per rate factor,
+        # so simulated discount factors reprice the initial term structure.
+        curve_cfg = hw_cfg["initial_zero_curve"]
+        A_matrix_np = compute_hw_A_matrix(
+            zero_times=np.asarray(curve_cfg["times"], dtype=np.float64),
+            zero_rates=np.asarray(curve_cfg["rates"], dtype=np.float64),
+            hw_a=np.asarray(hw_cfg["mean_reversion"], dtype=np.float64),
+            hw_sigma=np.asarray(hw_sigma_t[0], dtype=np.float64),
+            step_times=np.asarray(step_times, dtype=np.float64),
+            maturities=np.asarray(maturities, dtype=np.float64),
+            B_matrix=np.asarray(B_matrix, dtype=np.float64),
+        )
+        A_matrix = jnp.asarray(A_matrix_np, dtype=dtype)
+
         yield_cube = reconstruct_yield_curves(hw_paths, A_matrix, B_matrix)
         results["yield_curves"] = yield_cube
 
@@ -229,7 +357,14 @@ if __name__ == "__main__":
             "initial_rates": [0.03, 0.02],         # USD SOFR, EURIBOR
             "theta": [0.03, 0.02],
             "mean_reversion": [0.1, 0.15],
-            "maturities": [1.0, 2.0, 5.0, 10.0]    # Output curves out to 10Y
+            "maturities": [1.0, 2.0, 5.0, 10.0],   # Output curves out to 10Y
+            "initial_zero_curve": {
+                # Today's market zero curve per rate factor pillar, used to
+                # calibrate the HW A(t,T) term so simulated discount factors
+                # reprice the initial term structure (flat here for the demo).
+                "times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0],
+                "rates": [0.03, 0.03, 0.03, 0.03, 0.03, 0.03]
+            }
         },
         "joint_covariance": [
             [0.0400, 0.0000, 0.0010, 0.0005],  # AAPL

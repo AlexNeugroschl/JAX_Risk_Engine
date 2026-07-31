@@ -3,3 +3,5 @@ pandas
 jax
 jaxlib
 numpy
+scipy
+pytest
