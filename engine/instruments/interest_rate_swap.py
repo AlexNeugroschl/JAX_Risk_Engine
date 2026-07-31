@@ -33,8 +33,9 @@ class SwapConfig:
 
     discount_curve_index / forward_curve_index index into the NumRates axis
     of the simulation's yield_curves cube (engine.market_simulations
-    generate_paths' "rates" config -- each index is one Hull-White factor /
-    initial_zero_curve). Both legs discount off discount_curve_index; the
+    generate_paths' "rates" config -- each index is one Hull-White factor,
+    calibrated against its own entry in initial_zero_curves). Both legs
+    discount off discount_curve_index; the
     floating leg's forward rates are read off forward_curve_index. Equal
     indices reduce to single-curve discounting; distinct indices reproduce
     ORE's multi-curve DiscountingSwapEngine (discount curve) + IborIndex
@@ -265,40 +266,9 @@ def price_swaps(yield_curves: jax.Array, maturities: np.ndarray, swap_configs: L
 # =============================================================================
 if __name__ == "__main__":
     from engine.market_simulations import generate_paths
+    from engine.scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES, single_currency_swap_demo_config
 
-    eval_date = ORE.Date(30, 7, 2026)
-
-    payload = {
-        "time_grid": [0.0, 0.5, 1.0, 1.5, 2.0],
-        "scenarios": 4096,
-        "equities": {
-            "initial_prices": [150.0],
-            "dividend_yields": [0.0],
-            "rate_mapping": [[1.0, 0.0]],
-        },
-        "rates": {
-            # Two correlated USD factors: 0 = OIS/discounting, 1 = Euribor-style forwarding
-            "initial_rates": [0.030, 0.035],
-            "theta": [0.030, 0.035],
-            "mean_reversion": [0.03, 0.03],
-            # Union of both legs' accrual/payment dates (annual fixed, semi-annual float,
-            # including the swap's spot-lag effective date as the first float accrual start)
-            "maturities": [
-                0.010958904109589041, 0.5150684931506849, 1.010958904109589,
-                1.515068493150685, 2.0136986301369864,
-            ],
-            "initial_zero_curve": {
-                "times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0],
-                "rates": [0.030, 0.030, 0.030, 0.030, 0.030, 0.030],
-            },
-        },
-        "joint_covariance": [
-            [0.0400, 0.0000, 0.0000],
-            [0.0000, 0.0001, 0.00005],
-            [0.0000, 0.00005, 0.0001],
-        ],
-    }
-    market_cubes = generate_paths(payload)
+    market_cubes = generate_paths(single_currency_swap_demo_config())
 
     swap_cfg = SwapConfig(
         notional=1_000_000.0,
@@ -307,9 +277,9 @@ if __name__ == "__main__":
         discount_curve_index=0,
         forward_curve_index=1,
         swap_tenor="2Y",
-        evaluation_date=eval_date,
+        evaluation_date=EVAL_DATE,
     )
 
-    npv_cube = price_swaps(market_cubes["yield_curves"], payload["rates"]["maturities"], [swap_cfg])
+    npv_cube = price_swaps(market_cubes["yield_curves"], SWAP_DEMO_MATURITIES, [swap_cfg])
     print("NPV cube shape:", npv_cube.shape)
     print("Mean t=0 NPV across scenarios:", float(jnp.mean(npv_cube[:, 0, 0])))

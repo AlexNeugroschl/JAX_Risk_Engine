@@ -1,17 +1,20 @@
 import jax
-# Default to 64-bit precision at import time. generate_paths() overrides this
-# per-call based on its `precision` argument, so the end-to-end pipeline
-# honors dtype correctly. Calling generate_sobol_normals/apply_brownian_bridge
-# directly (bypassing generate_paths) does NOT: jax.scipy.stats.norm.ppf
-# silently upcasts to float64 whenever x64 mode is globally on, regardless of
-# the dtype passed in, so a direct call requesting float32 will still return
-# float64 unless jax_enable_x64 has been explicitly disabled beforehand.
+# JAX requires jax_enable_x64 to be set once, globally, before any float64
+# array can be created at all -- it is not a per-array/per-call setting (a
+# JAX/XLA constraint, not a design choice in this codebase). Default to
+# 64-bit precision at import time; generate_paths() re-toggles this per call
+# based on its `precision` argument, which is the correct, idiomatic JAX
+# pattern for supporting both precisions in one process (verified: sequential
+# calls with different `precision` values produce correctly-typed output
+# each time). Every function in this module that accepts an explicit `dtype`
+# honors it regardless of the ambient global flag (see generate_sobol_normals).
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 from jax.scipy.stats import norm
 from scipy.stats.qmc import Sobol
-from typing import Dict, Any
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
 # =============================================================================
 # PHASE 1: QUASI-MONTE CARLO (CPU -> GPU)
@@ -22,27 +25,25 @@ def generate_sobol_normals(num_scenarios: int, num_steps: int, num_assets: int, 
     GPU: Converts to Normal shocks.
     Returns: [TimeSteps, Scenarios, Assets]
 
-    CAVEAT: the output dtype tracks `dtype` faithfully only when the global
-    jax_enable_x64 flag is False at call time -- jax.scipy.stats.norm.ppf
-    upcasts to float64 internally whenever x64 mode is on, so a direct call
-    with dtype=jnp.float32 while x64 mode is enabled (the module's import-time
-    default) silently returns float64. generate_paths() manages this
-    correctly by toggling jax_enable_x64 before calling this function; a
-    caller invoking it standalone must do the same.
+    `dtype` is always honored on output, regardless of the ambient global
+    jax_enable_x64 state: jax.scipy.stats.norm.ppf computes internally in
+    float64 whenever x64 mode is on (even for a float32 input), so the
+    result is explicitly cast back to `dtype` before returning rather than
+    trusting norm.ppf's output dtype directly.
     """
     total_dimensions = num_steps * num_assets
-    
+
     # Scramble adds necessary randomness to the deterministic Sobol points
     sobol_engine = Sobol(d=total_dimensions, scramble=True, seed=42)
     uniform_draws = sobol_engine.random(n=num_scenarios)
-    
+
     # Transfer to JAX and convert to standard normals
     uniform_jax = jnp.array(uniform_draws, dtype=dtype)
     epsilon = jnp.finfo(dtype).eps
     uniform_clipped = jnp.clip(uniform_jax, epsilon, 1.0 - epsilon)
-    
-    normal_shocks = norm.ppf(uniform_clipped)
-    
+
+    normal_shocks = norm.ppf(uniform_clipped).astype(dtype)
+
     # Reshape to match JAX loop expectations
     Z = normal_shocks.reshape((num_scenarios, num_steps, num_assets))
     return jnp.transpose(Z, (1, 0, 2))
@@ -235,8 +236,7 @@ def _initial_log_discount(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.
 
 
 def compute_hw_A_matrix(
-    zero_times: np.ndarray,
-    zero_rates: np.ndarray,
+    zero_curves: List["ZeroCurveConfig"],
     hw_a: np.ndarray,
     hw_sigma: np.ndarray,
     step_times: np.ndarray,
@@ -244,26 +244,38 @@ def compute_hw_A_matrix(
     B_matrix: np.ndarray,
 ) -> np.ndarray:
     """
-    CPU: Closed-form Hull-White 1-Factor A(t,T):
+    CPU: Closed-form Hull-White 1-Factor A(t,T), calibrated independently
+    per rate factor against that factor's OWN initial zero curve:
         A(t,T) = [P(0,T)/P(0,t)] *
                  exp(B(t,T)*f(0,t) - (sigma^2/4a)*(1-exp(-2at))*B(t,T)^2)
-    where f(0,t) = -d/dt ln P(0,t) is the initial instantaneous forward rate,
-    calibrating the simulated short rate to today's market curve per rate factor.
+    where f(0,t) = -d/dt ln P(0,t) is the k-th factor's initial instantaneous
+    forward rate. Matches ORE's Cross-Asset Model: every IrLgm1fParametrization
+    is constructed with its own (Currency, YieldTermStructureHandle) pair --
+    live-verified against the installed ORE package that no shared-curve
+    constructor path exists (a 2-currency CrossAssetModel with distinct USD
+    3%/EUR 2% flat curves retains each currency's own discount factors
+    throughout, never cross-contaminating). One shared curve across factors
+    would be a bug, not a legitimate simplification of ORE's design.
+
+    zero_curves: one ZeroCurveConfig per rate factor (len == hw_a.shape[0]),
+    in the same order as hw_a/hw_sigma/maturities' NumRates axis.
     Shapes: step_times [TimeSteps], maturities [Maturities], B_matrix
     [TimeSteps, Maturities, NumRates] -> returns A [TimeSteps, Maturities, NumRates].
     """
     eps = 1e-6
-    log_P0_t = _initial_log_discount(zero_times, zero_rates, step_times)
-    log_P0_T = _initial_log_discount(zero_times, zero_rates, maturities)
-    fwd_0_t = -(
-        _initial_log_discount(zero_times, zero_rates, step_times + eps) - log_P0_t
-    ) / eps
-
-    ratio = np.exp(log_P0_T[None, :] - log_P0_t[:, None])  # [TimeSteps, Maturities]
-
     num_hw = hw_a.shape[0]
     A = np.empty_like(B_matrix)
     for k in range(num_hw):
+        zero_times = np.asarray(zero_curves[k].times, dtype=np.float64)
+        zero_rates = np.asarray(zero_curves[k].rates, dtype=np.float64)
+
+        log_P0_t = _initial_log_discount(zero_times, zero_rates, step_times)
+        log_P0_T = _initial_log_discount(zero_times, zero_rates, maturities)
+        fwd_0_t = -(
+            _initial_log_discount(zero_times, zero_rates, step_times + eps) - log_P0_t
+        ) / eps
+        ratio = np.exp(log_P0_T[None, :] - log_P0_t[:, None])  # [TimeSteps, Maturities]
+
         a = hw_a[k]
         sigma = hw_sigma[k]
         variance_term = (sigma ** 2 / (4.0 * a)) * (1.0 - np.exp(-2.0 * a * step_times))
@@ -292,64 +304,109 @@ def reconstruct_yield_curves(hw_paths: jax.Array, A: jax.Array, B: jax.Array) ->
 # =============================================================================
 # PHASE 4: PUBLIC API WRAPPER
 # =============================================================================
-def generate_paths(config: Dict[str, Any], precision: int = 64) -> Dict[str, jax.Array]:
+@dataclass
+class ZeroCurveConfig:
+    """Today's market zero curve pillars for one rate factor, used to
+    calibrate the Hull-White A(t,T) term (see compute_hw_A_matrix)."""
+    times: List[float]
+    rates: List[float]
+
+
+@dataclass
+class EquityConfig:
+    """Equity/FX leg of the cross-asset model. rate_mapping[i] gives the
+    Uncovered-Interest-Rate-Parity drift coefficients for equity/FX i
+    against every Hull-White rate factor (row length == RatesConfig's
+    NumHW)."""
+    initial_prices: List[float]
+    dividend_yields: List[float]
+    rate_mapping: List[List[float]]
+
+
+@dataclass
+class RatesConfig:
+    """Hull-White 1-Factor rates leg. initial_rates/theta/mean_reversion
+    are one entry per rate factor. maturities is optional -- its presence
+    triggers yield_curves output in generate_paths' return dict; when set,
+    initial_zero_curves is required: one ZeroCurveConfig PER rate factor, in
+    the same order as initial_rates/theta/mean_reversion (len must match).
+    This mirrors ORE's Cross-Asset Model exactly -- every
+    IrLgm1fParametrization is constructed with its own (Currency,
+    YieldTermStructureHandle) pair, never a curve shared across factors
+    (live-verified against the installed ORE package; see
+    compute_hw_A_matrix's docstring for the evidence)."""
+    initial_rates: List[float]
+    theta: List[float]
+    mean_reversion: List[float]
+    maturities: Optional[List[float]] = None
+    initial_zero_curves: Optional[List[ZeroCurveConfig]] = None
+
+
+@dataclass
+class SimulationConfig:
+    """
+    Typed configuration for generate_paths, mirroring the engine's actual
+    parameter structure 1:1 (see each nested dataclass's docstring). This
+    is the canonical, IDE- and API-friendly entry point -- catches
+    misspelled/missing fields at construction time via Python's own
+    dataclass machinery, rather than a KeyError deep inside generate_paths.
+    Also the natural shape for a future Pydantic schema (Phase 8: TraderX
+    API integration) to mirror or subclass.
+
+    time_grid: absolute times, ascending, starting at 0.0.
+    joint_covariance: [NumEq+NumHW, NumEq+NumHW], equities first then rates,
+        in the same order as equities.initial_prices / rates.initial_rates.
+    """
+    time_grid: List[float]
+    equities: EquityConfig
+    rates: RatesConfig
+    joint_covariance: List[List[float]]
+    scenarios: int = 10000
+
+
+def generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, jax.Array]:
     """
     Runs the full Sobol -> Brownian bridge -> cross-asset Monte Carlo ->
-    yield curve reconstruction pipeline from a plain dict config.
-
-    config schema:
-        time_grid: [float, ...]      -- absolute times, ascending, starts at 0.0
-        scenarios: int                -- default 10000
-        equities: {
-            initial_prices, dividend_yields: [float] * NumEq
-            rate_mapping: [[float] * NumHW] * NumEq  -- UIP drift coefficients
-        }
-        rates: {
-            initial_rates, theta, mean_reversion: [float] * NumHW
-            maturities: [float, ...]  -- OPTIONAL; presence triggers yield_curves output
-            initial_zero_curve: {times, rates}  -- required iff maturities given
-        }
-        joint_covariance: [[float] * (NumEq+NumHW)] * (NumEq+NumHW)
-            -- equities first, then rates, in the same order as above
+    yield curve reconstruction pipeline from a SimulationConfig.
 
     precision: 64 for float64 (default; required for the FP64 "ground truth"
         runs), 32 for float32 (Phase 9 lower-precision comparison runs).
-        NOTE: this only reliably controls dtype for calls that go through
-        this function. generate_sobol_normals/apply_brownian_bridge called
-        directly are affected by whatever jax_enable_x64 state is globally
-        active at call time (jax.scipy.stats.norm.ppf silently upcasts to
-        float64 when x64 mode is on, regardless of the input dtype) -- see
-        the module-level comment above the jax_enable_x64 default.
+        jax_enable_x64 must be a process-global JAX/XLA setting (not a
+        per-array choice -- see the module-level comment above its default),
+        so this toggles it for the duration of this call; sequential calls
+        with different `precision` values each produce correctly-typed
+        output. generate_sobol_normals honors `dtype` directly regardless of
+        this global state, so calling it standalone is also safe.
 
     Returns a dict with "equities" [S,T,NumEq], "rates" [S,T,NumHW],
-    "numeraire" [S,T], and (if config["rates"]["maturities"] is set)
+    "numeraire" [S,T], and (if config.rates.maturities is set)
     "yield_curves" [S,T,Maturities,NumHW].
     """
     jax.config.update("jax_enable_x64", precision == 64)
     dtype = jnp.float64 if precision == 64 else jnp.float32
 
     # 1. Base Setup
-    time_grid = jnp.array(config["time_grid"], dtype=dtype)
+    time_grid = jnp.array(config.time_grid, dtype=dtype)
     dt_t = jnp.diff(time_grid)
     num_steps = dt_t.shape[0]
-    num_scenarios = int(config.get("scenarios", 10000))
+    num_scenarios = int(config.scenarios)
 
     # 2. Equities
-    eq_cfg = config["equities"]
-    eq_S0 = jnp.array(eq_cfg["initial_prices"], dtype=dtype)
-    eq_div_t = jnp.tile(jnp.array(eq_cfg["dividend_yields"], dtype=dtype), (num_steps, 1))
-    rate_mapping = jnp.array(eq_cfg["rate_mapping"], dtype=dtype)
+    eq_cfg = config.equities
+    eq_S0 = jnp.array(eq_cfg.initial_prices, dtype=dtype)
+    eq_div_t = jnp.tile(jnp.array(eq_cfg.dividend_yields, dtype=dtype), (num_steps, 1))
+    rate_mapping = jnp.array(eq_cfg.rate_mapping, dtype=dtype)
     num_eq = eq_S0.shape[0]
-    
+
     # 3. Rates
-    hw_cfg = config["rates"]
-    hw_r0 = jnp.array(hw_cfg["initial_rates"], dtype=dtype)
-    hw_theta_t = jnp.tile(jnp.array(hw_cfg["theta"], dtype=dtype), (num_steps, 1))
-    hw_a = jnp.array(hw_cfg["mean_reversion"], dtype=dtype)
+    hw_cfg = config.rates
+    hw_r0 = jnp.array(hw_cfg.initial_rates, dtype=dtype)
+    hw_theta_t = jnp.tile(jnp.array(hw_cfg.theta, dtype=dtype), (num_steps, 1))
+    hw_a = jnp.array(hw_cfg.mean_reversion, dtype=dtype)
     num_hw = hw_r0.shape[0]
 
     # 4. Joint Matrix
-    cov_raw = jnp.array(config["joint_covariance"], dtype=dtype)
+    cov_raw = jnp.array(config.joint_covariance, dtype=dtype)
     cov_t = jnp.tile(cov_raw[None, :, :], (num_steps, 1, 1))
     L_t = jnp.linalg.cholesky(cov_t)
     joint_sigma_t = jnp.sqrt(jnp.diagonal(cov_t, axis1=1, axis2=2))
@@ -359,10 +416,10 @@ def generate_paths(config: Dict[str, Any], precision: int = 64) -> Dict[str, jax
     # 5. Core Simulation Pipeline
     Z_sobol = generate_sobol_normals(num_scenarios, num_steps, num_eq + num_hw, dtype)
     Z_bridged = apply_brownian_bridge(Z_sobol, time_grid)
-    
+
     eq_paths, hw_paths, numeraire_paths = _simulate_cross_asset_paths_jit(
-        eq_S0, eq_div_t, rate_mapping, eq_sigma_t, 
-        hw_r0, hw_theta_t, hw_sigma_t, hw_a, 
+        eq_S0, eq_div_t, rate_mapping, eq_sigma_t,
+        hw_r0, hw_theta_t, hw_sigma_t, hw_a,
         L_t, dt_t, Z_bridged
     )
 
@@ -373,8 +430,8 @@ def generate_paths(config: Dict[str, Any], precision: int = 64) -> Dict[str, jax
     }
 
     # 6. Yield Curve Reconstruction (If requested in config)
-    if "maturities" in hw_cfg:
-        maturities = jnp.array(hw_cfg["maturities"], dtype=dtype)
+    if hw_cfg.maturities is not None:
+        maturities = jnp.array(hw_cfg.maturities, dtype=dtype)
 
         step_times = time_grid[1:] # We evaluate AT the step ends
         T_minus_t = jnp.maximum(maturities[None, :] - step_times[:, None], 0.0)
@@ -384,13 +441,19 @@ def generate_paths(config: Dict[str, Any], precision: int = 64) -> Dict[str, jax
         hw_a_bcast = hw_a[None, None, :]
         B_matrix = (1.0 - jnp.exp(-hw_a_bcast * T_minus_t[:, :, None])) / hw_a_bcast
 
-        # A(t,T): calibrated to today's market zero curve per rate factor,
-        # so simulated discount factors reprice the initial term structure.
-        curve_cfg = hw_cfg["initial_zero_curve"]
+        # A(t,T): calibrated to today's market zero curve, independently per
+        # rate factor, so each factor's simulated discount factors reprice
+        # its OWN initial term structure (matches ORE's Cross-Asset Model --
+        # see compute_hw_A_matrix's docstring).
+        if len(hw_cfg.initial_zero_curves) != num_hw:
+            raise ValueError(
+                f"rates.initial_zero_curves must have exactly one curve per "
+                f"rate factor: got {len(hw_cfg.initial_zero_curves)} curves "
+                f"for {num_hw} rate factors."
+            )
         A_matrix_np = compute_hw_A_matrix(
-            zero_times=np.asarray(curve_cfg["times"], dtype=np.float64),
-            zero_rates=np.asarray(curve_cfg["rates"], dtype=np.float64),
-            hw_a=np.asarray(hw_cfg["mean_reversion"], dtype=np.float64),
+            zero_curves=hw_cfg.initial_zero_curves,
+            hw_a=np.asarray(hw_cfg.mean_reversion, dtype=np.float64),
             hw_sigma=np.asarray(hw_sigma_t[0], dtype=np.float64),
             step_times=np.asarray(step_times, dtype=np.float64),
             maturities=np.asarray(maturities, dtype=np.float64),
@@ -408,40 +471,10 @@ def generate_paths(config: Dict[str, Any], precision: int = 64) -> Dict[str, jax
 # EXECUTION DEMONSTRATION
 # =============================================================================
 if __name__ == "__main__":
-    payload = {
-        "time_grid": [0.0, 0.25, 0.50, 0.75, 1.0], 
-        "scenarios": 4096,                         
-        "equities": {
-            "initial_prices": [150.0, 1.10],       # AAPL, EUR/USD
-            "dividend_yields": [0.01, 0.00],       
-            "rate_mapping": [
-                [1.0, 0.0],                        # AAPL relies purely on USD rate (index 0)
-                [1.0, -1.0]                        # EUR/USD relies on USD - EUR
-            ]
-        },
-        "rates": {
-            "initial_rates": [0.03, 0.02],         # USD SOFR, EURIBOR
-            "theta": [0.03, 0.02],
-            "mean_reversion": [0.1, 0.15],
-            "maturities": [1.0, 2.0, 5.0, 10.0],   # Output curves out to 10Y
-            "initial_zero_curve": {
-                # Today's market zero curve per rate factor pillar, used to
-                # calibrate the HW A(t,T) term so simulated discount factors
-                # reprice the initial term structure (flat here for the demo).
-                "times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0],
-                "rates": [0.03, 0.03, 0.03, 0.03, 0.03, 0.03]
-            }
-        },
-        "joint_covariance": [
-            [0.0400, 0.0000, 0.0010, 0.0005],  # AAPL
-            [0.0000, 0.0100, 0.0002, -0.0001], # EUR/USD
-            [0.0010, 0.0002, 0.0001, 0.00008], # USD SOFR
-            [0.0005, -0.0001, 0.00008, 0.0002] # EURIBOR
-        ]
-    }
+    from engine.scenarios import cross_asset_demo_config
 
     print("Initializing QMC Pipeline & JIT Compilation...")
-    market_cubes = generate_paths(payload)
+    market_cubes = generate_paths(cross_asset_demo_config())
 
     print("\n--- Base Tensors ---")
     print(f"Equities/FX:  {market_cubes['equities'].shape}")
