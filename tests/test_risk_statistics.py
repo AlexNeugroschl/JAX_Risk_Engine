@@ -165,3 +165,114 @@ class TestRobustAcrossInstrumentSources:
         metrics = compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))
         assert metrics["VaR_95"].shape == (n_steps,)
         assert jnp.all(metrics["VaR_99"] >= metrics["VaR_95"] - 1e-6)
+
+
+class TestValueAtRiskEdgeCases:
+    def test_all_losses_matches_ore(self):
+        """Every prior test's sample has a mix of gains and losses -- an
+        entirely loss-making sample (no gains at all) exercises a different
+        branch of the ordering/index math and must still match ORE exactly."""
+        pnl_np = np.arange(-200, -100, 1.0)  # 100 values, all losses
+        stats = _ore_risk_stats(pnl_np)
+        pnl = jnp.asarray(pnl_np[:, None], dtype=jnp.float64)
+
+        for p in [0.90, 0.95, 0.99]:
+            var = float(value_at_risk(pnl, p)[0])
+            es = float(expected_shortfall(pnl, p)[0])
+            np.testing.assert_allclose(var, stats.valueAtRisk(p), atol=1e-9)
+            np.testing.assert_allclose(es, stats.expectedShortfall(p), atol=1e-9)
+
+    def test_single_scenario_matches_ore(self):
+        """N=1 is the smallest possible sample -- floor(N*(1-p)) collapses
+        to index 0 regardless of p, which is a real edge case for the
+        clamping logic in value_at_risk (idx = min(max(idx,0), N-1))."""
+        stats = ORE.RiskStatistics()
+        stats.add(-50.0, 1.0)
+        pnl = jnp.asarray([[-50.0]], dtype=jnp.float64)  # [Scenarios=1, TimeSteps=1]
+
+        for p in [0.90, 0.95, 0.99]:
+            var = float(value_at_risk(pnl, p)[0])
+            np.testing.assert_allclose(var, stats.valueAtRisk(p), atol=1e-9)
+
+    def test_single_scenario_expected_shortfall_is_nan(self):
+        """With N=1, the strict tail (pnl < -VaR) is always empty (the one
+        observation IS the VaR boundary) -- matches ORE raising
+        RuntimeError('no data below the target') for the same input."""
+        stats = ORE.RiskStatistics()
+        stats.add(-50.0, 1.0)
+        with pytest.raises(RuntimeError, match="no data below the target"):
+            stats.expectedShortfall(0.95)
+
+        pnl = jnp.asarray([[-50.0]], dtype=jnp.float64)
+        es = float(expected_shortfall(pnl, 0.95)[0])
+        assert jnp.isnan(es)
+
+    def test_boundary_percentile_0_9_matches_ore(self):
+        """ORE's own RiskStatistics.valueAtRisk restricts percentile to
+        [0.9, 1.0) (live-verified: values outside that range raise
+        RuntimeError) -- 0.9 itself is the closed lower boundary and must
+        match exactly, not just percentiles safely in the interior like
+        0.95/0.99 every other test uses."""
+        pnl_np = np.arange(-9, 1, 1.0)  # N=10
+        stats = _ore_risk_stats(pnl_np)
+        pnl = jnp.asarray(pnl_np[:, None], dtype=jnp.float64)
+
+        var = float(value_at_risk(pnl, 0.9)[0])
+        np.testing.assert_allclose(var, stats.valueAtRisk(0.9), atol=1e-9)
+
+    def test_ore_rejects_percentile_outside_0_9_to_1(self):
+        """Documents the range this module's formula is actually validated
+        against: ORE.RiskStatistics itself raises outside [0.9, 1.0), so
+        this module's own lack of validation at those percentiles is by
+        design (matching ORE's supported range, not silently extending
+        past what's been cross-checked) rather than an oversight."""
+        stats = ORE.RiskStatistics()
+        stats.add(-50.0, 1.0)
+        for p in [0.0, 0.5, 0.89, 1.0]:
+            with pytest.raises(RuntimeError, match="out of range"):
+                stats.valueAtRisk(p)
+
+    def test_negative_base_npv(self):
+        """base_npv is a caller-supplied scalar with no sign constraint --
+        a negative baseline (portfolio already underwater at t=0) must
+        shift the P&L distribution correctly, not just the common
+        positive-baseline case."""
+        npv_cube = jnp.asarray([[[100.0]], [[50.0]], [[-20.0]]], dtype=jnp.float64)  # [S=3,T=1,Trades=1]
+        pnl = portfolio_pnl(npv_cube, base_npv=-30.0)
+        expected = jnp.asarray([[130.0], [80.0], [10.0]], dtype=jnp.float64)
+        np.testing.assert_allclose(np.asarray(pnl), np.asarray(expected))
+
+    def test_zero_variance_sample_all_identical_values(self):
+        """A degenerate sample where every scenario has the exact same P&L
+        (zero variance) -- VaR/ES should both collapse to that single
+        value's magnitude, matching ORE, rather than dividing by zero
+        variance anywhere (this module's formulas don't use variance
+        directly, but this guards against any hidden assumption that the
+        sample is non-degenerate)."""
+        pnl_np = np.full(50, -75.0)
+        stats = _ore_risk_stats(pnl_np)
+        pnl = jnp.asarray(pnl_np[:, None], dtype=jnp.float64)
+
+        var = float(value_at_risk(pnl, 0.95)[0])
+        np.testing.assert_allclose(var, stats.valueAtRisk(0.95), atol=1e-9)
+        np.testing.assert_allclose(var, 75.0)
+
+        # ES's strict tail is empty here too (every value tied at VaR)
+        es = float(expected_shortfall(pnl, 0.95)[0])
+        assert jnp.isnan(es)
+        with pytest.raises(RuntimeError, match="no data below the target"):
+            stats.expectedShortfall(0.95)
+
+
+class TestComputeRiskMetricsNaNPropagation:
+    """compute_risk_metrics must propagate expected_shortfall's NaN through
+    to its output dict rather than masking it (e.g. via a downstream
+    comparison that silently treats NaN as 0) -- exercised at the
+    dict-returning public entry point, not just the lower-level function."""
+
+    def test_nan_es_reaches_public_entry_point(self):
+        # every scenario tied at the same loss -> ES's strict tail is empty
+        npv_cube = jnp.full((50, 1, 1), -75.0, dtype=jnp.float64)
+        metrics = compute_risk_metrics(npv_cube, base_npv=0.0, percentiles=(0.95,))
+        assert bool(jnp.isnan(metrics["ES_95"][0]))
+        assert not bool(jnp.isnan(metrics["VaR_95"][0]))

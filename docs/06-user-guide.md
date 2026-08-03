@@ -32,9 +32,9 @@ below with `venv\Scripts\python.exe` (or activate the venv first with
 
 ## Running the demos
 
-Each of the three pipeline stages has a runnable demo in its own `if __name__ ==
-"__main__":` block, showing that stage's public API used end-to-end against a shared
-example scenario (see [`engine/scenarios.py`](../engine/scenarios.py)).
+Each pipeline module has a runnable demo in its own `if __name__ == "__main__":` block,
+showing that module's public API used end-to-end against a shared example scenario (see
+[`engine/scenarios.py`](../engine/scenarios.py)).
 
 **Stage 1 — market simulation:**
 ```bash
@@ -50,6 +50,14 @@ python -m engine.instruments.interest_rate_swap
 ```
 Prints the resulting NPV cube's shape and its mean value at the first simulated time
 step.
+
+**Stage 2 — swaption pricing** (runs Stage 1 internally first, against a scenario sized
+so several simulated steps land before the demo swaption's own exercise date):
+```bash
+python -m engine.instruments.european_swaption
+```
+Prints the resulting NPV cube's shape and its mean value at every simulated time step —
+increasing as the exercise date approaches, then exactly `0.00` after it.
 
 **Stage 3 — risk statistics** (runs Stages 1 and 2 internally first):
 ```bash
@@ -190,6 +198,69 @@ print(npv_cube.shape)              # (1024, 2, 1)  ->  [Scenarios, TimeSteps, Tr
 `price_swaps` accepts a *list* of `SwapConfig` objects — pass several to price a whole
 portfolio at once; the output's last axis (`Trades`) will have one entry per swap, in
 the order given.
+
+## Pricing a swaption
+
+Unlike `price_swaps`, `price_swaptions` works directly off the simulated Hull-White rate
+paths (`generate_paths(...)["rates"]`), not the yield-curve cube — so `rates.maturities`
+doesn't need to be set at all, and there's no maturity-pillar-alignment requirement to
+satisfy. It does need the simulation's own `hw_a`/`hw_sigma`/zero-curve for the rate
+factor being priced off (see
+[Instruments: European Swaptions](08-swaptions.md#1-describing-a-swaption-swaptionconfig)
+for why). This is a self-contained, verified-working example for a swaption exercisable
+in 3 years, on a 2-year underlying swap:
+
+```python
+import jax.numpy as jnp
+import ORE
+from engine.market_simulations import (
+    SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths,
+)
+from engine.instruments.european_swaption import SwaptionConfig, price_swaptions
+
+config = SimulationConfig(
+    time_grid=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0],  # simulate out to 5 years
+    scenarios=1024,
+    equities=EquityConfig(initial_prices=[100.0], dividend_yields=[0.0], rate_mapping=[[0.0]]),
+    rates=RatesConfig(
+        initial_rates=[0.03],
+        theta=[0.03],
+        mean_reversion=[0.03],
+        # no `maturities` needed -- the swaption pricer works off the raw
+        # rate paths, not a yield_curves cube.
+    ),
+    joint_covariance=[
+        [0.0400, 0.0000],
+        [0.0000, 0.0001],
+    ],
+)
+market = generate_paths(config)
+
+swaption = SwaptionConfig(
+    notional=1_000_000.0,
+    fixed_rate=0.03,
+    payer=True,
+    rate_factor_index=0,
+    hw_a=0.03,              # must match config.rates.mean_reversion[0]
+    hw_sigma=0.01,          # must match the volatility implied by joint_covariance for this factor
+    initial_zero_curve=ZeroCurveConfig(
+        times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.03] * 6,
+    ),
+    swap_tenor="2Y",
+    forward_start=ORE.Period(3, ORE.Years),  # exercisable in 3 years
+    evaluation_date=ORE.Date(30, 7, 2026),
+)
+
+step_times = jnp.array(config.time_grid[1:])
+npv_cube = price_swaptions(market["rates"], step_times, [swaption])
+print(npv_cube.shape)                         # (1024, 5, 1)  ->  [Scenarios, TimeSteps, Trades]
+print(float(npv_cube[:, 2, 0].mean()))         # mean NPV at t=3.0 (just before exercise): > 0
+print(float(npv_cube[:, 4, 0].mean()))         # mean NPV at t=5.0 (after exercise): exactly 0.0
+```
+
+`price_swaptions` accepts a *list* of `SwaptionConfig` objects, exactly like `price_swaps`
+— several swaptions price into one `[Scenarios, TimeSteps, Trades]` cube, one entry per
+trade in `Trades`, in the order given.
 
 ## Computing risk metrics
 

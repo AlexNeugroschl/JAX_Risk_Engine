@@ -14,6 +14,31 @@ Multi-curve: each swap names a `discount_curve_index` and a
 leg's forward rates are read off `forward_curve_index`. This mirrors ORE's
 `DiscountingSwapEngine` (single discount curve) + `IborIndex` (its own,
 possibly different, `forwardingTermStructure`) split.
+
+**Known limitation: no representation of an already-fixed/elapsed coupon.**
+`_price_one_swap` computes every cashflow's forward rate and discount factor
+using `yield_curves[scenario, step, ...]`, which represents the model's
+conditional discount factor P(step_time, maturity) -- a well-defined
+quantity only for maturity >= step_time (see
+market_simulations.reconstruct_yield_curves' B(t,T) clamp at T<t). For a
+swap whose accrual has ALREADY STARTED by a given simulated step_time (true
+of every step after the swap's own first accrual date -- i.e. every step
+after t=0 for a spot-starting swap, which is every existing demo/test
+scenario's swap), the floating leg's first coupon's accrual-start date is
+in the past relative to that step, and P(step_time, accrual_start) is not
+meaningful (it silently returns a clamped, non-discount-factor value rather
+than raising). This produces a small but real, previously-undetected NPV
+error at every step beyond t=0 for the AGED portion of a swap's floating
+leg -- caught via a direct cross-check against ORE at a future evaluation
+date (an implied curve rebuilt from the same conditional Hull-White
+discount factors) in tests/test_interest_rate_swap.py's
+TestAgedSwapKnownLimitation, which pins down the current (imperfect)
+behavior as a documented gap rather than a silent one. This does NOT affect
+t=0 pricing (every cashflow is in the future there) or forward-starting
+trades priced before their own accrual begins -- both remain exact, as
+every other test in this suite demonstrates. Fixing this properly (tracking
+already-fixed rates per scenario/step, or excluding elapsed cashflows from
+the sum) is intentionally out of scope here and left for a follow-up.
 """
 from dataclasses import dataclass, field
 from typing import Any, Dict, List

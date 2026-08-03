@@ -189,10 +189,20 @@ def _simulate_cross_asset_paths_jit(
         Z_hw = Z_corr[:, num_eq:]
         
         # 1. HW1F (Interest Rates)
+        # Exact Ornstein-Uhlenbeck transition: E[r(t+dt)|r(t)] = r(t)*decay +
+        # theta*(1-decay), NOT r(t)*decay + theta -- the latter treats theta
+        # as a flat per-step drift increment rather than the long-run mean
+        # target, causing r(t) to diverge upward (or downward) without
+        # bound every step instead of reverting toward theta. This was
+        # invisible in every prior demo/test because they all set
+        # theta == initial_rates (a fixed point ONLY under the correct
+        # formula); confirmed against the closed-form OU transition mean
+        # directly (e.g. a=0.03, dt=0.5, theta != r0 diverges by several
+        # points after just a few steps under the old formula).
         decay = jnp.exp(-hw_a * dt_i)
         variance_hw = (1.0 - jnp.exp(-2.0 * hw_a * dt_i)) / (2.0 * hw_a)
         shock_hw = sig_hw * jnp.sqrt(variance_hw) * Z_hw
-        r_next = r_t * decay + theta_hw + shock_hw
+        r_next = r_t * decay + theta_hw * (1.0 - decay) + shock_hw
         
         # 2. GBM (Equities / FX) with Dynamic Drift (Uncovered Interest Rate Parity)
         dynamic_mu = jnp.dot(r_t, rate_mapping.T) - div_eq
@@ -406,10 +416,24 @@ def generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, j
     num_hw = hw_r0.shape[0]
 
     # 4. Joint Matrix
+    # L_t must carry CORRELATION only (unit diagonal), not the raw
+    # covariance magnitude -- step_fn separately multiplies each factor's
+    # correlated shock by its own sig_eq/hw_sigma_t (below), so a Cholesky
+    # factor built from the raw covariance matrix would double-apply every
+    # factor's volatility (once via L_t's own diagonal scale, once via the
+    # explicit sig_eq/sig_hw multiplication downstream). Confirmed as a
+    # real, previously-undetected bug: with the raw-covariance Cholesky, a
+    # configured 20% equity vol produced an actual simulated log-return std
+    # of ~4% (0.2^2), and a configured 1.5% rate vol produced an actual
+    # simulated short-rate std smaller by the same squared factor -- caught
+    # by checking simulated variance against the closed-form HW1F/GBM
+    # transition variance directly, not just cross-checking formulas at a
+    # single point.
     cov_raw = jnp.array(config.joint_covariance, dtype=dtype)
     cov_t = jnp.tile(cov_raw[None, :, :], (num_steps, 1, 1))
-    L_t = jnp.linalg.cholesky(cov_t)
     joint_sigma_t = jnp.sqrt(jnp.diagonal(cov_t, axis1=1, axis2=2))
+    corr_t = cov_t / (joint_sigma_t[:, :, None] * joint_sigma_t[:, None, :])
+    L_t = jnp.linalg.cholesky(corr_t)
     eq_sigma_t = joint_sigma_t[:, :num_eq]
     hw_sigma_t = joint_sigma_t[:, num_eq:]
 

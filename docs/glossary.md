@@ -36,6 +36,13 @@ interest rates: higher rates mean lower discount factors.
 precision: `float64` (64-bit, more precise, slower) or `float32` (32-bit, less precise,
 faster). See **precision**.
 
+**European swaption** — See **Swaption**.
+
+**Exercise (an option)** — To actually use the right an option grants — e.g. exercising a
+payer swaption means actually entering into the underlying swap on the agreed terms,
+rather than letting the option lapse unused. Only ever done when it's favorable to the
+holder. See [Instruments: European Swaptions](08-swaptions.md).
+
 **Expected Shortfall (ES)** — Also called **Conditional VaR (CVaR)**. The average loss,
 given that a loss at least as bad as the Value at Risk cutoff has occurred. Answers "how
 bad does it get in the worst case," where VaR alone only answers "how often does it get
@@ -44,6 +51,11 @@ bad." See [Risk Statistics](05-risk-statistics.md).
 **Fixed leg / floating leg** — The two sides of an interest rate swap. The fixed leg
 pays a rate agreed today and locked in; the floating leg pays a rate that resets
 periodically based on actual market conditions. See [Instruments](04-instruments.md).
+
+**Forward-starting (swap or swaption)** — A trade whose accrual/exercise begins at some
+point in the future rather than immediately (beyond the standard few-day settlement lag).
+E.g. a swaption exercisable in 5Y, on a swap that itself doesn't start accruing interest
+until that 5Y point. See [Instruments: European Swaptions](08-swaptions.md#2-building-the-real-trade-_build_ore_swap-prepare_swaption).
 
 **FX (foreign exchange)** — The market for exchanging one currency for another; an "FX
 rate" is the price of one currency in terms of another (e.g. how many US dollars one
@@ -60,6 +72,11 @@ randomness per curve, as opposed to more complex multi-factor rate models. Named
 its inventors, John Hull and Alan White. See
 [Market Simulation](03-market-simulation.md#phase-2--the-cross-asset-model-engine).
 
+**In-the-money / at-the-money / out-of-the-money** — How favorable an option currently
+is to exercise. In-the-money means exercising now would be profitable; out-of-the-money
+means it wouldn't; at-the-money is the boundary between the two (e.g. a payer swaption's
+fixed rate exactly equals the market's current rate for that swap).
+
 **JAX** — A Python library, made by Google, for fast numerical computing that can run on
 CPUs, GPUs, or TPUs, and that automatically compiles Python math code into efficient,
 hardware-accelerated instructions. This project is built on top of it.
@@ -72,6 +89,12 @@ otherwise do slowly).
 **jax.lax.scan** — A JAX construct for efficiently repeating an operation many times in a
 row (e.g. "take one simulation step" repeated for every time step), without writing an
 ordinary, slow Python loop. Used throughout the simulation engine.
+
+**Jamshidian's trick** — A closed-form technique for pricing a European swaption under a
+Hull-White model, by breaking the option on a multi-coupon bond into a portfolio of
+simpler options, each on a single zero-coupon bond. Avoids needing a slow, nested
+simulation. Named after its inventor, Farshid Jamshidian. See
+[Instruments: European Swaptions](08-swaptions.md#why-its-built-this-way-jamshidians-trick).
 
 **Mean reversion** — A property of some random processes (interest rates, in this
 project) where the value tends to drift back toward some long-run average over time,
@@ -131,6 +154,12 @@ See **QMC**.
 payments on a shared notional amount — one side pays a fixed rate, the other pays a
 floating rate. See [Instruments](04-instruments.md).
 
+**Swaption (European swaption)** — The *right, but not the obligation,* to enter into an
+interest rate swap at a fixed rate agreed today, on a specific future exercise date.
+Unlike the underlying swap itself, a swaption's value depends on the probability that
+exercising will turn out to be favorable, not just on expected future cashflows. See
+[Instruments: European Swaptions](08-swaptions.md).
+
 **TraderX** — The name (per this project's roadmap in the root [README.md](../README.md))
 of an external system this engine is eventually meant to serve as a live API for, rather
 than only running as an offline script.
@@ -144,6 +173,13 @@ least that much. See [Risk Statistics](05-risk-statistics.md).
 (e.g. "add these two lists of a million numbers together") instead of looping over each
 number one at a time in Python. Essential for anything to run fast on a GPU, and a hard
 requirement throughout this codebase's JIT-compiled code.
+
+**Zero-coupon bond** — The simplest possible bond: a single promise to pay a fixed amount
+(conventionally $1) at one future maturity date, with no interim interest payments. Its
+price today is exactly a discount factor. Jamshidian's trick works by breaking a
+swaption's complex payoff down into options on zero-coupon bonds, since those have a
+simple closed-form price under the Hull-White model. See
+[Instruments: European Swaptions](08-swaptions.md).
 
 **Volatility** — How much a price or rate tends to fluctuate randomly; a higher
 volatility means bigger, more frequent swings. Usually written as `σ` (sigma) in

@@ -26,6 +26,8 @@ and the code, starting with a plain-language summary before getting technical:
    trade against every simulated future.
 3. **[Risk Statistics: VaR & ES](05-risk-statistics.md)** — turns simulated trade values
    into standard risk numbers.
+4. **[Instruments: European Swaptions](08-swaptions.md)** — prices the option to enter a
+   swap, via Jamshidian's decomposition.
 
 ## Document conventions
 

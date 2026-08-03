@@ -123,6 +123,38 @@ def single_currency_swap_demo_config() -> SimulationConfig:
     )
 
 
+def swaption_demo_config() -> SimulationConfig:
+    """
+    One rate factor (USD, 3%), simulated out to 5Y in six-month steps -- the
+    scenario used by engine.instruments.european_swaption's own demo and
+    test suite. Unlike single_currency_swap_demo_config, `rates.maturities`
+    is left unset: european_swaption prices directly off the simulated
+    `hw_paths` (via its own on-demand A(t,T)/B(t,T), not the maturities-
+    pillar yield_curves cube), so no output maturity grid is needed here.
+    Carries one placeholder equity with a zero UIP drift coefficient (the
+    simulation engine requires at least one equity/FX factor) -- its path
+    is simulated but unused by the swaption pricer. A 5Y time grid (vs. the
+    swap demo's 2Y) exists specifically so several simulated time steps
+    land BEFORE the exercise date of the swaption this scenario is paired
+    with in the module's __main__ demo, illustrating both a still-alive
+    option (early steps) and a post-exercise, zeroed NPV (later steps).
+    """
+    return SimulationConfig(
+        time_grid=[0.0, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0],
+        scenarios=4096,
+        equities=EquityConfig(initial_prices=[100.0], dividend_yields=[0.0], rate_mapping=[[0.0]]),
+        rates=RatesConfig(
+            initial_rates=[0.03],
+            theta=[0.03],
+            mean_reversion=[0.03],
+        ),
+        joint_covariance=[
+            [0.0400, 0.0000],
+            [0.0000, 0.0001],
+        ],
+    )
+
+
 def flat_yield_curves(disc_rate: float, fwd_rate: float, maturities=SWAP_DEMO_MATURITIES,
                        eval_date: ORE.Date = EVAL_DATE):
     """

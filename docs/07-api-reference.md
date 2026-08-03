@@ -136,6 +136,56 @@ per swap in `swap_configs` (in the order given).
 
 ---
 
+## `engine.instruments.european_swaption`
+
+### `SwaptionConfig`
+
+Describes one European swaption (the option to enter a vanilla fixed-vs-floating swap at
+a future exercise date). See [Instruments: European Swaptions](08-swaptions.md) for the
+Jamshidian's-trick pricing model.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `notional` | `float` | *required* | Notional amount of the underlying swap. |
+| `fixed_rate` | `float` | *required* | The underlying swap's agreed fixed rate. |
+| `payer` | `bool` | *required* | `True` = the option to enter a swap paying fixed, receiving floating. `False` = the reverse. |
+| `rate_factor_index` | `int` | *required* | Which simulation Hull-White factor prices BOTH the underlying swap and the option (Jamshidian's trick is single-model — see [Instruments: European Swaptions](08-swaptions.md#1-describing-a-swaption-swaptionconfig)). |
+| `hw_a` | `float` | *required* | That rate factor's own Hull-White mean-reversion speed — must match `RatesConfig.mean_reversion[rate_factor_index]` in the simulation this swaption is priced against. |
+| `hw_sigma` | `float` | *required* | That rate factor's own Hull-White volatility — must match the per-step volatility implied by the simulation's `joint_covariance` for this factor. |
+| `initial_zero_curve` | `ZeroCurveConfig` | *required* | That rate factor's own today's-market zero curve — must match `RatesConfig.initial_zero_curves[rate_factor_index]`. |
+| `swap_tenor` | `str` | `"5Y"` | ORE `Period` string for the underlying swap's length, e.g. `"5Y"`, `"18M"`. |
+| `index_tenor_months` | `int` | `6` | Floating leg reset frequency in months (`6` = semi-annual). |
+| `floating_spread` | `float` | `0.0` | Fixed spread added to every floating payment. |
+| `forward_start` | `ORE.Period` | `ORE.Period(0, ORE.Days)` | How far in the future the underlying swap's accrual is delayed beyond the standard 2-day spot lag — e.g. `ORE.Period(5, ORE.Years)` for a swaption exercisable in ~5Y. |
+| `exercise_lag_days` | `int` | `2` | Business days from `evaluation_date + forward_start` to the exercise date (standard spot-lag convention). |
+| `evaluation_date` | `ORE.Date` | today's global ORE evaluation date | The swaption's "as-of" date. |
+
+### `price_swaptions(hw_paths: jax.Array, step_times: jax.Array, swaption_configs: List[SwaptionConfig]) -> jax.Array`
+
+**Parameters**
+- `hw_paths` — `[Scenarios, TimeSteps, NumHW]`, typically
+  `generate_paths(...)["rates"]`. Unlike `price_swaps`, this pricer needs the raw
+  simulated short-rate paths directly (not the yield-curve cube), since Jamshidian's
+  trick needs the model's own conditional bond-price formula, not just pre-tabulated
+  discount factors.
+- `step_times` — `[TimeSteps]` absolute simulation times (year-fractions from
+  `evaluation_date`) — the same values as `config.time_grid[1:]`.
+- `swaption_configs` — a list of one or more `SwaptionConfig` objects.
+
+**Returns** `[Scenarios, TimeSteps, Trades]` — one NPV value per scenario, per time step,
+per swaption in `swaption_configs` (in the order given). NPV is exactly `0` for any
+`(scenario, step)` at or after that swaption's own exercise date (see
+[Instruments: European Swaptions](08-swaptions.md#6-conditional-future-time-pricing)).
+
+### Lower-level functions
+
+| Function | Signature | Notes |
+|---|---|---|
+| `prepare_swaption` | `(cfg: SwaptionConfig) -> _PreparedSwaption` | CPU-only, per-trade one-time setup. Builds the real ORE underlying swap and extracts its cashflow times/amounts, exercise time, and accrual start time. |
+| `compute_hw_A` | `(zero_times, zero_rates, t, T, a, sigma) -> np.ndarray` | Plain NumPy (CPU-only). Closed-form Hull-White `A(t,T)` at an arbitrary `(t,T)` pair (not a fixed pillar grid) — see [Instruments: European Swaptions](08-swaptions.md#3-the-closed-form-building-blocks-compute_hw_a-_hw_b-_bond_option_sigma-_bond_call_bond_put). |
+
+---
+
 ## `engine.aggregate_statistics.risk_statistics`
 
 Every function here is instrument-agnostic — see
@@ -193,4 +243,5 @@ pipeline itself, but used throughout the codebase's demos and tests. See
 | `SWAP_DEMO_MATURITIES` | `List[float]` | The maturity pillars required by `single_currency_swap_demo_config()`'s swap. |
 | `cross_asset_demo_config()` | `() -> SimulationConfig` | Two-equity, two-currency (USD/EUR) example scenario. |
 | `single_currency_swap_demo_config()` | `() -> SimulationConfig` | One-currency, two-rate-factor (discounting + forwarding) example scenario, sized for a 2Y demo swap. |
+| `swaption_demo_config()` | `() -> SimulationConfig` | One rate factor (USD, 3%), simulated out to 5Y in six-month steps -- used by `engine.instruments.european_swaption`'s demo (`rates.maturities` left unset, since the swaption pricer works directly off simulated rate paths rather than a yield-curve cube). |
 | `flat_yield_curves(disc_rate, fwd_rate, maturities=SWAP_DEMO_MATURITIES, eval_date=EVAL_DATE)` | `(...) -> jax.Array` | Builds a deterministic `[1, 1, len(maturities), 2]` yield curve cube directly from ORE's own flat curve objects — no simulation randomness. Used for VaR's `base_npv` baseline and for ORE cross-check tests. |

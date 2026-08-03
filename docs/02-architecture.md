@@ -20,13 +20,15 @@ JAX_Risk_Engine/
 │   ├── market_simulations.py             Station 1: simulate the market
 │   ├── scenarios.py                      Shared demo/reference configurations
 │   ├── instruments/
-│   │   └── interest_rate_swap.py         Station 2: price interest rate swaps
+│   │   ├── interest_rate_swap.py         Station 2a: price interest rate swaps
+│   │   └── european_swaption.py          Station 2b: price European swaptions
 │   └── aggregate_statistics/
 │       └── risk_statistics.py            Station 3: compute VaR / Expected Shortfall
 └── tests/
     ├── conftest.py                       Shared pytest fixtures
     ├── test_market_simulations.py
     ├── test_interest_rate_swap.py
+    ├── test_european_swaption.py
     └── test_risk_statistics.py
 ```
 
@@ -53,7 +55,13 @@ required in application code or tests.
                      │   price_swaps()          │
                     └─────────────────────────┘
                                   │
-                                  │ NPV cube
+   rates path        ┌─────────────────────────┐
+   (hw_paths)         │   engine/instruments/    │  NPV cube
+   ───────────────► │   european_swaption.py   │  [Scenarios, TimeSteps, Trades]
+   SwaptionConfig(s)  │   price_swaptions()      │  (same shape, stacks alongside
+                     └─────────────────────────┘   the swap pricer's cube)
+                                  │
+                                  │ NPV cube(s)
                                   ▼
                     ┌─────────────────────────┐
    base_npv          │   engine/aggregate_      │  {"VaR_95": [...], "ES_95": [...],
@@ -76,17 +84,26 @@ This is the only stage with no dependency on ORE at runtime — it's pure JAX/Nu
 so it can, in principle, run on a GPU with no external process involved. See
 [Market Simulation](03-market-simulation.md) for the math.
 
-### Stage 2 — Instrument Pricing (`engine/instruments/interest_rate_swap.py`)
+### Stage 2 — Instrument Pricing (`engine/instruments/`)
 
-**Input:** the yield curve cube from Stage 1, plus one or more `SwapConfig` objects
-describing specific trades.
+**Input:** market data from Stage 1 (the yield curve cube for the swap pricer; the raw
+simulated rate paths for the swaption pricer), plus one or more trade configs.
 **Output:** an NPV ("Net Present Value" — what a trade is worth today) cube.
 
-This stage **does** depend on ORE at runtime (see [ORE as a dependency](#ore-as-a-dependency)
-below) — it uses ORE's own trade-schedule and day-count-convention machinery so that
+Two pricers currently live here, each a peer module rather than one depending on the
+other:
+
+- `interest_rate_swap.py` — linear (no optionality) swap pricing. See
+  [Instruments: Interest Rate Swaps](04-instruments.md).
+- `european_swaption.py` — non-linear (optionality) swaption pricing via Jamshidian's
+  trick, priced directly off Stage 1's simulated Hull-White rate paths rather than the
+  yield-curve cube (it needs the model's own parameters, not just discount factors — see
+  [Instruments: European Swaptions](08-swaptions.md)).
+
+Both stages **depend** on ORE at runtime (see [ORE as a dependency](#ore-as-a-dependency)
+below) — they use ORE's own trade-schedule and day-count-convention machinery so that
 "when does this swap pay cash, and how much" is computed exactly the way a real trading
-desk's software would compute it, rather than being reimplemented from scratch. See
-[Instruments](04-instruments.md) for the math.
+desk's software would compute it, rather than being reimplemented from scratch.
 
 ### Stage 3 — Risk Aggregation (`engine/aggregate_statistics/risk_statistics.py`)
 
@@ -103,17 +120,20 @@ At the Python-module level, Stage 2 and Stage 3 do **not** import Stage 1 (or ea
 other) at the top of the file — `from engine.market_simulations import generate_paths`
 only appears inside each module's `if __name__ == "__main__":` demo block, not in the
 library code itself. `price_swaps()` only needs *some* array shaped
-`[Scenarios, TimeSteps, Maturities, NumRates]`; it doesn't care whether that array came
-from `generate_paths()`, a hand-built NumPy array, or a completely different simulation
+`[Scenarios, TimeSteps, Maturities, NumRates]`; `price_swaptions()` only needs *some*
+array shaped `[Scenarios, TimeSteps, NumHW]`; neither cares whether that array came from
+`generate_paths()`, a hand-built NumPy array, or a completely different simulation
 engine. The same is true of `compute_risk_metrics()`: it only needs *some* array shaped
-`[Scenarios, TimeSteps, Trades]`.
+`[Scenarios, TimeSteps, Trades]` — which is exactly what both pricers produce, despite
+consuming different-shaped inputs and using entirely different pricing math (linear
+cashflow summation vs. Jamshidian's option decomposition).
 
 This is what makes the pipeline modular in practice, not just in diagrams — it's directly
 exercised by the test suite (`tests/test_risk_statistics.py`'s
 `TestRobustAcrossInstrumentSources` tests feed `risk_statistics.py` both a fabricated,
 non-swap-derived cube and a real swap-pricer cube, and assert both work identically) and
-it's what will let future instrument types (options, bonds, etc.) plug into the exact
-same risk-aggregation code without any changes to `risk_statistics.py`.
+it's what let `european_swaption.py` — a second, genuinely different instrument type —
+plug into `risk_statistics.py` with zero changes to that module.
 
 ## `engine/scenarios.py`: shared example configurations
 
@@ -146,16 +166,17 @@ in two different roles, and it's important to keep them distinct:
 
 1. **As a design reference.** Every formula in this engine (the Brownian bridge
    construction, the Hull-White affine bond-price formula, the swap pricing formulas,
-   the VaR/ES formulas) was checked against ORE's actual behavior — either by reading
-   ORE's Python bindings' source directly, or by running small scripts against the
-   installed `ORE` package and comparing numbers. This is *validation*, not a runtime
-   dependency.
+   Jamshidian's swaption formula, the VaR/ES formulas) was checked against ORE's actual
+   behavior — either by reading ORE's Python bindings' source directly, or by running
+   small scripts against the installed `ORE` package and comparing numbers. This is
+   *validation*, not a runtime dependency.
 2. **As a runtime dependency, in `engine/instruments/` only.** `interest_rate_swap.py`
-   imports the `ORE` Python package (`open-source-risk-engine` on PyPI) and calls it
-   directly — `ORE.MakeVanillaSwap`, `ORE.Actual365Fixed`, and related classes build the
-   swap's payment schedule and compute each payment's day-count fraction. This is a
-   deliberate choice: schedule/day-count logic is fiddly, well-tested in ORE already, and
-   not performance-critical (it runs once per trade, not once per simulated scenario), so
+   and `european_swaption.py` both import the `ORE` Python package
+   (`open-source-risk-engine` on PyPI) and call it directly — `ORE.MakeVanillaSwap`,
+   `ORE.Actual365Fixed`, and related classes build the underlying swap's payment schedule
+   and compute each payment's day-count fraction. This is a deliberate choice:
+   schedule/day-count logic is fiddly, well-tested in ORE already, and not
+   performance-critical (it runs once per trade, not once per simulated scenario), so
    there is no benefit to reimplementing it in JAX. `engine/market_simulations.py` and
    `engine/aggregate_statistics/risk_statistics.py` have **no** runtime ORE dependency —
    only pure JAX/NumPy.
@@ -192,8 +213,8 @@ elsewhere in the same process.
 ## Typed configuration
 
 Every stage takes a Python `@dataclass` as its primary input — `SimulationConfig` (and
-its nested `EquityConfig`, `RatesConfig`, `ZeroCurveConfig`) for Stage 1, `SwapConfig` for
-Stage 2. This was a deliberate choice over passing plain dictionaries: a typo in a
+its nested `EquityConfig`, `RatesConfig`, `ZeroCurveConfig`) for Stage 1, `SwapConfig` and
+`SwaptionConfig` for Stage 2. This was a deliberate choice over passing plain dictionaries: a typo in a
 dictionary key silently produces a confusing error deep inside the pipeline, while a
 typo in a dataclass field name fails immediately, at the point the config object is
 constructed, with a clear Python error. It's also the natural shape for the eventual
