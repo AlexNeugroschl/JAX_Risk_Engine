@@ -3,13 +3,13 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.aggregate_statistics.risk_statistics import (
+from engine.risk.statistics import (
     compute_risk_metrics,
     expected_shortfall,
     portfolio_pnl,
     value_at_risk,
 )
-from engine.instruments.interest_rate_swap import SwapConfig, price_swaps
+from engine.instruments.swap import SwapConfig, price_swaps
 from engine.scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES
 
 MATURITIES = np.array(SWAP_DEMO_MATURITIES)
@@ -148,7 +148,7 @@ class TestRobustAcrossInstrumentSources:
 
         # Fabricate a tiny "Monte Carlo" cube by jittering the deterministic
         # curve across a handful of scenarios/steps -- exercises price_swaps'
-        # real code path without needing a full market_simulations run.
+        # real code path without needing a full simulation run.
         rng = np.random.default_rng(3)
         n_scenarios, n_steps = 200, 2
         jitter = 1.0 + rng.normal(0.0, 0.01, size=(n_scenarios, n_steps, len(MATURITIES), 2))

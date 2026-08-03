@@ -13,7 +13,7 @@ including time zero itself).
 
 ---
 
-## `engine.market_simulations`
+## `engine.simulation`
 
 ### `SimulationConfig`
 
@@ -93,7 +93,7 @@ mathematically.
 
 ---
 
-## `engine.instruments.interest_rate_swap`
+## `engine.instruments.swap`
 
 ### `SwapConfig`
 
@@ -186,7 +186,89 @@ per swaption in `swaption_configs` (in the order given). NPV is exactly `0` for 
 
 ---
 
-## `engine.aggregate_statistics.risk_statistics`
+## `engine.instruments.bermudan_swaption`
+
+Prices a swaption with a discrete list of exercise dates via a numeric LGM
+backward-induction engine (Hagan's Gaussian-quadrature convolution) — see
+[Instruments: American & Bermudan Swaptions](10-american-swaptions.md) for the full
+algorithm.
+
+### `BermudanSwaptionConfig`
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `notional` | `float` | *required* | Notional amount of the underlying swap. |
+| `fixed_rate` | `float` | *required* | The underlying swap's agreed fixed rate. |
+| `payer` | `bool` | *required* | `True` = the option to enter a swap paying fixed, receiving floating. `False` = the reverse. |
+| `rate_factor_index` | `int` | *required* | Which simulation Hull-White factor prices the underlying swap and the option. |
+| `hw_a` | `float` | *required* | That rate factor's mean-reversion speed — must match the simulation this swaption is priced against. |
+| `hw_sigma` | `float` | *required* | That rate factor's volatility — must match the simulation's `joint_covariance` for this factor. |
+| `initial_zero_curve` | `ZeroCurveConfig` | *required* | That rate factor's today's-market zero curve. |
+| `exercise_times` | `Sequence[float]` | *required* | Year-fractions from `evaluation_date`, each a date the holder may exercise into the (then-remaining) swap — must coincide with the underlying's own reset dates (see [10-american-swaptions.md](10-american-swaptions.md#known-limitation-no-mid-coupon-proration)). |
+| `swap_tenor` | `str` | `"5Y"` | ORE `Period` string for the underlying swap's length. |
+| `index_tenor_months` | `int` | `6` | Floating leg reset frequency in months. |
+| `floating_spread` | `float` | `0.0` | Fixed spread added to every floating payment. |
+| `n_per_std` | `int` | `48` | State-grid resolution: points per standard deviation of the model's conditional distribution. |
+| `std_devs` | `float` | `6.0` | How many standard deviations the state grid spans. |
+| `evaluation_date` | `ORE.Date` | today's global ORE evaluation date | The swaption's "as-of" date. |
+
+### `price_bermudan_swaption_base(cfg: BermudanSwaptionConfig) -> float`
+
+The t=0 NPV of a single Bermudan swaption (no simulated conditioning) — read off the
+backward induction's own `x=0` node.
+
+### `price_bermudan_swaptions(bermudan_configs: List[BermudanSwaptionConfig], hw_paths: jax.Array, step_times: jax.Array) -> jax.Array`
+
+**Parameters**
+- `bermudan_configs` — a list of one or more `BermudanSwaptionConfig` objects.
+- `hw_paths` — `[Scenarios, TimeSteps, NumHW]`, typically `generate_paths(...)["rates"]`.
+- `step_times` — `[TimeSteps]` absolute simulation times, same values as
+  `config.time_grid[1:]`.
+
+**Returns** `[Scenarios, TimeSteps, Trades]` — one NPV value per scenario, per time step,
+per trade in `bermudan_configs` (in the order given). NPV is exactly `0` at or after each
+trade's own last exercise date.
+
+### Lower-level functions
+
+| Function | Signature | Notes |
+|---|---|---|
+| `prepare_bermudan` | `(cfg: BermudanSwaptionConfig) -> _PreparedBermudan` | CPU-only, per-trade one-time setup. Extracts both legs' full cashflow schedules (unlike Jamshidian, early exercise needs the actual remaining swap value at every node). |
+| `_lgm_bond` | `(zero_times, zero_rates, a, sigma, t, T, x) -> np.ndarray` | Plain NumPy (CPU-only). LGM's own closed-form `P(t,T,x)`, live-verified against `ORE.LinearGaussMarkovModel.discountBond` — deliberately NOT `compute_hw_A`/`_hw_B` (a different model realization for `t>0`, see [10-american-swaptions.md](10-american-swaptions.md#3-the-model-lgm-not-plain-hull-white--and-why-that-distinction-matters-here)). |
+
+---
+
+## `engine.instruments.american_swaption`
+
+A thin wrapper around `engine.instruments.bermudan_swaption` — American exercise is
+priced by discretizing the exercise window into a dense grid of dates and running the
+same Bermudan engine, exactly matching ORE's own design. See
+[Instruments: American & Bermudan Swaptions](10-american-swaptions.md).
+
+### `AmericanSwaptionConfig`
+
+Same fields as `BermudanSwaptionConfig` above, except `exercise_times` is replaced by:
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `first_exercise` | `float` | *required* | Start of the continuous exercise window, year-fractions from `evaluation_date`. |
+| `last_exercise` | `float` | *required* | End of the exercise window. |
+| `exercise_time_steps_per_year` | `int` | `24` | ORE's own `ExerciseTimeStepsPerYear` model parameter — how finely the window is discretized. |
+
+### `AmericanSwaptionConfig.to_bermudan() -> BermudanSwaptionConfig`
+
+Expands the continuous window into ORE's own discretized exercise-date grid
+(`steps = round((last_exercise - first_exercise) * exercise_time_steps_per_year)` equally
+spaced dates, including both endpoints).
+
+### `price_american_swaptions(american_configs: List[AmericanSwaptionConfig], hw_paths: jax.Array, step_times: jax.Array) -> jax.Array`
+
+Same parameter/return shape as `price_bermudan_swaptions` above — expands each config via
+`.to_bermudan()` and delegates entirely to `bermudan_swaption.price_bermudan_swaptions`.
+
+---
+
+## `engine.risk.statistics`
 
 Every function here is instrument-agnostic — see
 [Risk Statistics](05-risk-statistics.md) and

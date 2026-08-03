@@ -28,6 +28,11 @@ and the code, starting with a plain-language summary before getting technical:
    into standard risk numbers.
 4. **[Instruments: European Swaptions](08-swaptions.md)** — prices the option to enter a
    swap, via Jamshidian's decomposition.
+5. **[Instruments: American & Bermudan Swaptions](10-american-swaptions.md)** — prices
+   early-exercise swaptions via a numeric LGM backward-induction (Hagan convolution) engine,
+   matching ORE's `NumericLgmMultiLegOptionEngine`.
+6. **[ORE Parity](09-ore-parity.md)** — maps every algorithm in this codebase to its exact
+   counterpart in ORE's own C++ source (`reference/ORE`), file and function name.
 
 ## Document conventions
 
@@ -36,7 +41,7 @@ and the code, starting with a plain-language summary before getting technical:
 - Every deep-dive doc ends with a **"Tested by"** section pointing to the exact test file
   and test classes that verify what's described.
 - Code is referenced by path and, where helpful, by function/class name — e.g.
-  `engine/market_simulations.py::generate_paths`.
+  `engine/simulation.py::generate_paths`.
 - Where a claim about ORE's own behavior is made (a formula, a convention, a design
   decision), it's backed by either a citation of what was read in ORE's own source, or a
   description of how it was live-tested against the installed ORE package — not assumed

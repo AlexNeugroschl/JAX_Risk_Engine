@@ -3,8 +3,8 @@ European swaption pricing via Jamshidian's decomposition.
 
 Trade structure (the underlying swap's schedule, day-count accrual, coupon
 amounts) is built with ORE's own `MakeVanillaSwap` machinery, exactly as in
-`engine.instruments.interest_rate_swap` -- date generation and accrual math
-match ORE exactly rather than being reimplemented.
+`engine.instruments.swap` -- date generation and accrual math match ORE
+exactly rather than being reimplemented.
 
 Pricing model: Jamshidian's trick, the same closed-form decomposition
 `ORE.JamshidianSwaptionEngine` uses for a European swaption under a
@@ -38,13 +38,13 @@ underlies both legs of the swap and the option itself.
 
 Conditional (future-time) pricing: to produce a
 `[Scenarios, TimeSteps, Trades]` NPV cube -- the same contract every other
-pricer in this codebase returns, required for `engine.aggregate_statistics`
+pricer in this codebase returns, required for `engine.risk`
 -- this module evaluates Jamshidian's formula not just at t=0 but at every
 simulated (scenario, time step) pair, conditional on that scenario's
 simulated short rate at that step. This is a direct consequence of HW1F's
 Markov property: the model's own closed-form conditional bond price,
 `P(t,T) = A(t,T) * exp(-B(t,T) * r(t))`, is exactly the formula
-`engine.market_simulations.compute_hw_A_matrix`/`reconstruct_yield_curves`
+`engine.simulation.compute_hw_A_matrix`/`reconstruct_yield_curves`
 already use to build the yield curve cube -- Jamshidian's decomposition
 still applies verbatim with `t` (the simulated time) in place of "today".
 This conditional generalization was itself live-verified against ORE (by
@@ -63,7 +63,7 @@ import numpy as np
 import ORE
 from jax.scipy.stats import norm
 
-from engine.market_simulations import ZeroCurveConfig
+from engine.simulation import ZeroCurveConfig
 
 DAY_COUNTER = ORE.Actual365Fixed()
 
@@ -85,15 +85,15 @@ class SwaptionConfig:
     way to recover them from the simulated paths alone.
 
     swap_tenor/index_tenor_months/floating_spread: same meaning as
-    engine.instruments.interest_rate_swap.SwapConfig, describing the
-    underlying swap ORE builds via MakeVanillaSwap.
+    engine.instruments.swap.SwapConfig, describing the underlying swap ORE
+    builds via MakeVanillaSwap.
 
     forward_start: an ORE.Period the underlying swap's first accrual is
     delayed by beyond the standard spot lag (e.g. ORE.Period(5, ORE.Years)
     for a swaption exercisable in 5Y -- the common case, since a spot-lag-
     only exercise date is only ~2 days away and expires almost immediately
     in any simulation with a coarser time grid). Defaults to no delay (just
-    the standard 2-day spot lag, like interest_rate_swap.SwapConfig).
+    the standard 2-day spot lag, like swap.SwapConfig).
 
     exercise_lag_days: business days from evaluation_date + forward_start to
     the option's exercise date (2 = standard spot lag, matching
@@ -119,7 +119,7 @@ class SwaptionConfig:
 
 def _build_ore_swap(cfg: SwaptionConfig) -> ORE.VanillaSwap:
     """CPU: builds the real ORE underlying swap (schedules, day counts,
-    conventions) -- see interest_rate_swap._build_ore_swap for the same
+    conventions) -- see swap._build_ore_swap for the same
     pattern and the rationale for explicit Actual/365Fixed on both legs."""
     ORE.Settings.instance().evaluationDate = cfg.evaluation_date
     dummy_forward_curve = ORE.YieldTermStructureHandle(
@@ -173,7 +173,7 @@ def prepare_swaption(cfg: SwaptionConfig) -> _PreparedSwaption:
     at the swap's own first accrual start `T_start` and paying it back at
     the final date `T_last`, with every intermediate reset cancelling. This
     is the same identity `float_leg_pv` in
-    interest_rate_swap._price_one_swap computes explicitly per-period; here
+    swap._price_one_swap computes explicitly per-period; here
     it is used in its closed (telescoping) form, which is exact for a
     genuinely at-par floater (spread=0, forwarding curve == discounting
     curve -- both true here since Jamshidian's trick is single-curve).
@@ -232,7 +232,7 @@ def prepare_swaption(cfg: SwaptionConfig) -> _PreparedSwaption:
 # =============================================================================
 def _initial_log_discount(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.ndarray) -> np.ndarray:
     """Continuously-compounded log discount factor ln P(0,t), identical to
-    market_simulations._initial_log_discount (linear interpolation on zero
+    simulation._initial_log_discount (linear interpolation on zero
     rates, flat-extrapolated at the curve ends)."""
     r_t = np.interp(t, zero_times, zero_rates)
     return -r_t * t
@@ -246,7 +246,7 @@ def compute_hw_A(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.ndarray, 
         A(t,T) = [P(0,T)/P(0,t)] *
                  exp(B(t,T)*f(0,t) - (sigma^2/4a)*(1-exp(-2at))*B(t,T)^2)
     where f(0,t) = -d/dt ln P(0,t) is the initial instantaneous forward
-    rate. Identical formula to market_simulations.compute_hw_A_matrix,
+    rate. Identical formula to simulation.compute_hw_A_matrix,
     generalized from a pillar grid to any (t,T) values -- Jamshidian's
     trick needs A evaluated at two distinct anchor points per swaption
     (today -> exercise time, and exercise time -> each coupon date), not a
@@ -266,7 +266,7 @@ def compute_hw_A(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.ndarray, 
 
 def _hw_B(t: jax.Array, T: jax.Array, a: float) -> jax.Array:
     """B(t,T) = (1 - exp(-a*(T-t))) / a -- identical formula to
-    market_simulations.generate_paths' B_matrix, evaluated here at
+    simulation.generate_paths' B_matrix, evaluated here at
     arbitrary (t,T) pairs rather than pre-tabulated maturity pillars."""
     return (1.0 - jnp.exp(-a * (T - t))) / a
 
@@ -460,7 +460,7 @@ def _price_one_swaption(
 def price_swaptions(hw_paths: jax.Array, step_times: jax.Array, swaption_configs: List[SwaptionConfig]) -> jax.Array:
     """
     hw_paths: [Scenarios, TimeSteps, NumHW], typically
-        engine.market_simulations.generate_paths(...)["rates"].
+        engine.simulation.generate_paths(...)["rates"].
     step_times: [TimeSteps] absolute simulation times (year-fractions from
         evaluation_date) -- the same `time_grid[1:]` values
         generate_paths uses internally.
@@ -478,7 +478,7 @@ def price_swaptions(hw_paths: jax.Array, step_times: jax.Array, swaption_configs
 # EXECUTION DEMONSTRATION
 # =============================================================================
 if __name__ == "__main__":
-    from engine.market_simulations import generate_paths
+    from engine.simulation import generate_paths
     from engine.scenarios import EVAL_DATE, swaption_demo_config
 
     config = swaption_demo_config()

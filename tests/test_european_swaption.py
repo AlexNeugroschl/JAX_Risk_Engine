@@ -3,7 +3,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.market_simulations import ZeroCurveConfig
+from engine.simulation import ZeroCurveConfig
 from engine.instruments.european_swaption import (
     SwaptionConfig,
     prepare_swaption,
@@ -560,7 +560,7 @@ class TestPortfolioOfSwaptions:
         """An empty swaption_configs list is a degenerate caller error, not
         a "zero trades" NPV cube -- jnp.stack([]) has no way to infer the
         Scenarios/TimeSteps shape from zero inputs, so it raises. This is
-        the same pre-existing behavior interest_rate_swap.price_swaps has
+        the same pre-existing behavior swap.price_swaps has
         for an empty swap_configs list (not a swaption-specific gap) --
         documented here as a known, tested boundary rather than an
         assumption that was never checked."""

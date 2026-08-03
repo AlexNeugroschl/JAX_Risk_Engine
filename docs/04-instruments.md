@@ -1,6 +1,6 @@
 # Instruments: Interest Rate Swaps
 
-**Module:** [`engine/instruments/interest_rate_swap.py`](../engine/instruments/interest_rate_swap.py)
+**Module:** [`engine/instruments/swap.py`](../engine/instruments/swap.py)
 **Public entry point:** `price_swaps(yield_curves, maturities, swap_configs)`
 
 ## Plain-language summary
@@ -171,17 +171,17 @@ checked whether a date was valid using a *clipped* array index, but then returne
 pillar (e.g. from ordinary floating-point rounding) could silently pass validation while
 still producing an out-of-bounds index, which JAX does not raise an error for by default
 (it silently clips to the nearest valid index instead). This has been fixed, and
-`tests/test_interest_rate_swap.py::TestMaturityIndicesBounds` locks the fix in.
+`tests/test_swap.py::TestMaturityIndicesBounds` locks the fix in.
 
 ## Tested by
 
-- `tests/test_interest_rate_swap.py::TestPriceSwapsAgainstORE` — builds the *same* swap
+- `tests/test_swap.py::TestPriceSwapsAgainstORE` — builds the *same* swap
   two ways (once through this module, once through `ORE.VanillaSwap` +
   `ORE.DiscountingSwapEngine` directly) and asserts the resulting NPVs match to `1e-6`
   relative tolerance. Covers a payer swap, a receiver swap, a swap priced at its exact
   par rate (which should be worth ~0), and confirms paying vs. receiving are exact
   negations of each other.
-- `tests/test_interest_rate_swap.py::TestPriceSwapsShape` — output shape correctness and
+- `tests/test_swap.py::TestPriceSwapsShape` — output shape correctness and
   the maturity-mismatch error path.
-- `tests/test_interest_rate_swap.py::TestMaturityIndicesBounds` — the out-of-bounds-index
+- `tests/test_swap.py::TestMaturityIndicesBounds` — the out-of-bounds-index
   regression described above.

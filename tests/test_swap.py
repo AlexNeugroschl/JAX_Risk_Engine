@@ -3,7 +3,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.instruments.interest_rate_swap import SwapConfig, price_swaps, _maturity_indices
+from engine.instruments.swap import SwapConfig, price_swaps, _maturity_indices
 from engine.scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES
 
 TODAY = EVAL_DATE
@@ -20,7 +20,7 @@ def _single_scenario_yield_curves(make_flat_yield_curves) -> jnp.ndarray:
 
 
 def _reference_ore_swap(payer: bool, notional: float, fixed_rate: float):
-    """Mirrors engine.instruments.interest_rate_swap._build_ore_swap exactly
+    """Mirrors engine.instruments.swap._build_ore_swap exactly
     (same custom IborIndex, same explicit Act/365Fixed on both legs) so this
     is a true apples-to-apples cross-check, not just "some ORE swap"."""
     ORE.Settings.instance().evaluationDate = TODAY
@@ -325,7 +325,7 @@ class TestPriceSwapsAdditionalOREChecks:
 
 class TestAgedSwapKnownLimitation:
     """Documents and pins down a real, previously-undetected limitation
-    (see interest_rate_swap module docstring): price_swaps has no
+    (see swap module docstring): price_swaps has no
     representation of an already-fixed/elapsed floating coupon. Pricing a
     swap at a simulated step_time AFTER its own first accrual date (true of
     EVERY step beyond t=0 for a spot-starting swap -- i.e. every existing
@@ -413,7 +413,7 @@ class TestAgedSwapKnownLimitation:
         # Build the SAME conditional discount cube this module's own
         # reconstruct_yield_curves formula would produce for MATURITIES at
         # step_time, conditional on r_eval.
-        from engine.market_simulations import compute_hw_A_matrix, ZeroCurveConfig
+        from engine.simulation import compute_hw_A_matrix, ZeroCurveConfig
         zero_curves = [
             ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[flat_rate] * 6),
             ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[flat_rate] * 6),

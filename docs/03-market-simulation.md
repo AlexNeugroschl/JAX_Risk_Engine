@@ -1,6 +1,6 @@
 # Market Simulation
 
-**Module:** [`engine/market_simulations.py`](../engine/market_simulations.py)
+**Module:** [`engine/simulation.py`](../engine/simulation.py)
 **Public entry point:** `generate_paths(config: SimulationConfig, precision: int = 64)`
 
 ## Plain-language summary
@@ -71,7 +71,7 @@ specific call. This function now explicitly converts its result back to the requ
 `dtype` before returning, so calling it directly with `dtype=float32` reliably returns
 32-bit numbers. (See [Adjustable Precision](02-architecture.md#adjustable-precision) for
 why this global-setting behavior exists in the first place, and
-`tests/test_market_simulations.py::TestGenerateSobolNormals` for the regression test.)
+`tests/test_simulation.py::TestGenerateSobolNormals` for the regression test.)
 
 **The Brownian Bridge.** Sobol sequences are most accurate in their *first* few
 dimensions and progressively noisier in later ones. A naive mapping (dimension 1 → time
@@ -93,7 +93,7 @@ matrix for every scenario, so it's cheap to compute once.
 *Verified:* `B @ B.T` (the matrix multiplied by its own transpose) is checked to exactly
 equal the true covariance structure of Brownian motion, `Cov(W(s), W(t)) = min(s, t)`
 — this is a strong, closed-form correctness check on the whole construction, and it's
-enforced by `tests/test_market_simulations.py::TestBrownianBridge::test_matrix_reproduces_bm_covariance`.
+enforced by `tests/test_simulation.py::TestBrownianBridge::test_matrix_reproduces_bm_covariance`.
 
 ```python
 def apply_brownian_bridge(Z: jax.Array, time_grid: jax.Array) -> jax.Array:
@@ -204,7 +204,7 @@ multiple currencies or factors. This was confirmed by directly constructing a li
 verifying each currency's discount factors stayed independent throughout. An earlier
 version of this module *did* share one curve across every factor; that was a real bug,
 now fixed and covered by
-`tests/test_market_simulations.py::TestHullWhiteAMatrix::test_reprices_distinct_curves_per_rate_factor`.
+`tests/test_simulation.py::TestHullWhiteAMatrix::test_reprices_distinct_curves_per_rate_factor`.
 
 *Verified:* given a flat (constant-rate) input curve, the reconstructed discount factors
 exactly match the simple closed-form `e^(−rate × time)` formula, to `1e-6`
@@ -239,7 +239,7 @@ and the [User Guide](06-user-guide.md) for a runnable example.
 
 ## Tested by
 
-- `tests/test_market_simulations.py` — every class in this file maps to one phase above:
+- `tests/test_simulation.py` — every class in this file maps to one phase above:
   `TestBrownianBridge` (Phase 1), `TestGenerateSobolNormals` (Phase 1 dtype regression),
   `TestHullWhiteAMatrix` (Phase 3, including the per-factor-curve regression test),
   `TestGeneratePaths` (end-to-end Phase 4 shape/sanity/determinism checks).

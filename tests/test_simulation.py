@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from engine.market_simulations import (
+from engine.simulation import (
     EquityConfig,
     RatesConfig,
     SimulationConfig,
@@ -105,7 +105,7 @@ class TestHullWhiteAMatrix:
         """generate_paths must reject a rates config whose
         initial_zero_curves length doesn't match the number of rate
         factors, rather than silently reusing/misaligning curves."""
-        from engine.market_simulations import EquityConfig, RatesConfig, SimulationConfig
+        from engine.simulation import EquityConfig, RatesConfig, SimulationConfig
 
         cfg = SimulationConfig(
             time_grid=[0.0, 1.0],

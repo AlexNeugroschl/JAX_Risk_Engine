@@ -23,7 +23,7 @@ pip install -r requirements.txt
 
 The examples on this page assume you're running from the repository root, so that
 `engine` is importable as a top-level package (it has an `__init__.py`, so
-`python -m engine.market_simulations` and `from engine.market_simulations import ...`
+`python -m engine.simulation` and `from engine.simulation import ...`
 both work without any extra path setup).
 
 If you're using the project's own `venv/` on Windows, replace `python` in the commands
@@ -38,7 +38,7 @@ showing that module's public API used end-to-end against a shared example scenar
 
 **Stage 1 — market simulation:**
 ```bash
-python -m engine.market_simulations
+python -m engine.simulation
 ```
 Prints the shapes of the simulated equity/rate paths and a sample of reconstructed
 discount factors.
@@ -46,7 +46,7 @@ discount factors.
 **Stage 2 — swap pricing** (runs Stage 1 internally first, to get a yield curve cube to
 price against):
 ```bash
-python -m engine.instruments.interest_rate_swap
+python -m engine.instruments.swap
 ```
 Prints the resulting NPV cube's shape and its mean value at the first simulated time
 step.
@@ -61,7 +61,7 @@ increasing as the exercise date approaches, then exactly `0.00` after it.
 
 **Stage 3 — risk statistics** (runs Stages 1 and 2 internally first):
 ```bash
-python -m engine.aggregate_statistics.risk_statistics
+python -m engine.risk.statistics
 ```
 Prints the portfolio's baseline (t=0) value and the VaR/ES numbers at each requested
 confidence level, for every simulated time step.
@@ -76,8 +76,8 @@ This runs the full suite — see each deep-dive doc's "Tested by" section for wh
 covered where, and [Architecture: Testing philosophy](02-architecture.md#testing-philosophy)
 for the general approach (every formula is checked both for internal mathematical
 correctness and against ORE's own installed software directly). As of this writing, the
-suite has 31 tests across `tests/test_market_simulations.py`,
-`tests/test_interest_rate_swap.py`, and `tests/test_risk_statistics.py`, all passing.
+suite has 31 tests across `tests/test_simulation.py`,
+`tests/test_swap.py`, and `tests/test_statistics.py`, all passing.
 
 `tests/conftest.py` provides shared `pytest` fixtures (the example scenario
 configurations from `engine/scenarios.py`, wrapped as fixtures) so individual test files
@@ -90,7 +90,7 @@ don't each need to build their own copy of the same setup.
 Here's a minimal, verified-working example with one equity and one interest rate curve:
 
 ```python
-from engine.market_simulations import (
+from engine.simulation import (
     SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths,
 )
 
@@ -147,10 +147,10 @@ year swap:
 
 ```python
 import ORE
-from engine.market_simulations import (
+from engine.simulation import (
     SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths,
 )
-from engine.instruments.interest_rate_swap import SwapConfig, price_swaps
+from engine.instruments.swap import SwapConfig, price_swaps
 
 # These specific times are the swap's own accrual/payment dates -- for a 1Y swap
 # with a 6-month floating index, starting at the standard 2-day spot lag. Computing
@@ -213,7 +213,7 @@ in 3 years, on a 2-year underlying swap:
 ```python
 import jax.numpy as jnp
 import ORE
-from engine.market_simulations import (
+from engine.simulation import (
     SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths,
 )
 from engine.instruments.european_swaption import SwaptionConfig, price_swaptions
@@ -265,7 +265,7 @@ trade in `Trades`, in the order given.
 ## Computing risk metrics
 
 ```python
-from engine.aggregate_statistics.risk_statistics import compute_risk_metrics
+from engine.risk.statistics import compute_risk_metrics
 
 # base_npv: the portfolio's actual value today, from a separate zero-shock
 # revaluation -- see engine/scenarios.py's flat_yield_curves() for a worked

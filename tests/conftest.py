@@ -3,8 +3,8 @@ Shared pytest fixtures for the engine test suite.
 
 Every test file used to hand-roll its own copy of the demo scenario config
 (and, for the swap/risk-statistics tests, its own ORE flat-curve builder) --
-already duplicated across engine/instruments/interest_rate_swap.py,
-engine/aggregate_statistics/risk_statistics.py, and the test files
+already duplicated across engine/instruments/swap.py,
+engine/risk/statistics.py, and the test files
 themselves, and drifting slightly out of sync between copies. This module
 re-exports the canonical scenario builders from engine.scenarios as
 fixtures so every test file draws from one source.

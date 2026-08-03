@@ -42,10 +42,10 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.market_simulations import SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths
-from engine.instruments.interest_rate_swap import SwapConfig, price_swaps
+from engine.simulation import SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths
+from engine.instruments.swap import SwapConfig, price_swaps
 from engine.instruments.european_swaption import SwaptionConfig, prepare_swaption, _price_one_swaption, price_swaptions
-from engine.aggregate_statistics.risk_statistics import compute_risk_metrics
+from engine.risk.statistics import compute_risk_metrics
 from engine.scenarios import flat_yield_curves
 
 TODAY = ORE.Date(30, 7, 2026)
@@ -66,7 +66,7 @@ ZERO_CURVE = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[FLAT
 
 
 def _build_portfolio():
-    """One 2Y payer swap (priced at t=0 -- see interest_rate_swap's "Known
+    """One 2Y payer swap (priced at t=0 -- see swap's "Known
     limitation" docstring on why an aged swap is out of scope here) plus
     two forward-starting swaptions (a 5Y payer exercisable in 3Y, a 7Y
     receiver exercisable in 2Y) -- both genuinely still alive at the

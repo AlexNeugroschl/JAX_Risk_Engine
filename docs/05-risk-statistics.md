@@ -1,6 +1,6 @@
 # Risk Statistics: Value at Risk & Expected Shortfall
 
-**Module:** [`engine/aggregate_statistics/risk_statistics.py`](../engine/aggregate_statistics/risk_statistics.py)
+**Module:** [`engine/risk/statistics.py`](../engine/risk/statistics.py)
 **Public entry point:** `compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))`
 
 ## Plain-language summary

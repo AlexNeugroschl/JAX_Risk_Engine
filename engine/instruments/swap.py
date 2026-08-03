@@ -20,7 +20,7 @@ possibly different, `forwardingTermStructure`) split.
 using `yield_curves[scenario, step, ...]`, which represents the model's
 conditional discount factor P(step_time, maturity) -- a well-defined
 quantity only for maturity >= step_time (see
-market_simulations.reconstruct_yield_curves' B(t,T) clamp at T<t). For a
+simulation.reconstruct_yield_curves' B(t,T) clamp at T<t). For a
 swap whose accrual has ALREADY STARTED by a given simulated step_time (true
 of every step after the swap's own first accrual date -- i.e. every step
 after t=0 for a spot-starting swap, which is every existing demo/test
@@ -31,7 +31,7 @@ than raising). This produces a small but real, previously-undetected NPV
 error at every step beyond t=0 for the AGED portion of a swap's floating
 leg -- caught via a direct cross-check against ORE at a future evaluation
 date (an implied curve rebuilt from the same conditional Hull-White
-discount factors) in tests/test_interest_rate_swap.py's
+discount factors) in tests/test_swap.py's
 TestAgedSwapKnownLimitation, which pins down the current (imperfect)
 behavior as a documented gap rather than a silent one. This does NOT affect
 t=0 pricing (every cashflow is in the future there) or forward-starting
@@ -57,7 +57,7 @@ class SwapConfig:
     One vanilla fixed-vs-floating interest rate swap.
 
     discount_curve_index / forward_curve_index index into the NumRates axis
-    of the simulation's yield_curves cube (engine.market_simulations
+    of the simulation's yield_curves cube (engine.simulation
     generate_paths' "rates" config -- each index is one Hull-White factor,
     calibrated against its own entry in initial_zero_curves). Both legs
     discount off discount_curve_index; the
@@ -242,7 +242,7 @@ def _price_one_swap(yield_curves: jax.Array, swap: _PreparedSwap) -> jax.Array:
         is the simulated forward rate implied by the forwarding curve
         (single-period, at-par coupon convention -- matches ORE's
         IborCoupon.usingAtParCoupons() default, live-verified against
-        ORE.VanillaSwap.floatingLegNPV() in tests/test_interest_rate_swap.py).
+        ORE.VanillaSwap.floatingLegNPV() in tests/test_swap.py).
     NPV(t) = floatLegPV(t) - fixedLegPV(t), negated for payer=False --
         matches ORE.VanillaSwap.Payer/.Receiver sign convention.
 
@@ -275,7 +275,7 @@ def _price_one_swap(yield_curves: jax.Array, swap: _PreparedSwap) -> jax.Array:
 def price_swaps(yield_curves: jax.Array, maturities: np.ndarray, swap_configs: List[SwapConfig]) -> jax.Array:
     """
     yield_curves: [Scenarios, TimeSteps, Maturities, NumRates], from
-        engine.market_simulations.generate_paths(...)["yield_curves"].
+        engine.simulation.generate_paths(...)["yield_curves"].
     maturities: the same absolute-time pillar array passed as
         config["rates"]["maturities"] to generate_paths.
     Returns: [Scenarios, TimeSteps, Trades] NPV cube.
@@ -290,7 +290,7 @@ def price_swaps(yield_curves: jax.Array, maturities: np.ndarray, swap_configs: L
 # EXECUTION DEMONSTRATION
 # =============================================================================
 if __name__ == "__main__":
-    from engine.market_simulations import generate_paths
+    from engine.simulation import generate_paths
     from engine.scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES, single_currency_swap_demo_config
 
     market_cubes = generate_paths(single_currency_swap_demo_config())
