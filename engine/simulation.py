@@ -199,8 +199,21 @@ def _simulate_cross_asset_paths_jit(
         # formula); confirmed against the closed-form OU transition mean
         # directly (e.g. a=0.03, dt=0.5, theta != r0 diverges by several
         # points after just a few steps under the old formula).
+        # hw_a==0.0 (arithmetic Brownian motion, the mathematically valid
+        # a->0 limit of OU mean reversion) is a removable 0/0 singularity
+        # in variance_hw as literally written -- guarded by evaluating the
+        # formula on a safe placeholder a (never actually 0) and selecting
+        # the analytic limit (variance_hw->dt) via jnp.where instead,
+        # rather than letting hw_a==0.0 divide by zero into NaN. Both
+        # branches are evaluated unconditionally (branch-free/jit-
+        # friendly), the placeholder is just discarded when hw_a != 0.
+        hw_a_safe = jnp.where(hw_a == 0.0, 1.0, hw_a)
         decay = jnp.exp(-hw_a * dt_i)
-        variance_hw = (1.0 - jnp.exp(-2.0 * hw_a * dt_i)) / (2.0 * hw_a)
+        variance_hw = jnp.where(
+            hw_a == 0.0,
+            dt_i,
+            (1.0 - jnp.exp(-2.0 * hw_a_safe * dt_i)) / (2.0 * hw_a_safe),
+        )
         shock_hw = sig_hw * jnp.sqrt(variance_hw) * Z_hw
         r_next = r_t * decay + theta_hw * (1.0 - decay) + shock_hw
         
@@ -288,7 +301,16 @@ def compute_hw_A_matrix(
 
         a = hw_a[k]
         sigma = hw_sigma[k]
-        variance_term = (sigma ** 2 / (4.0 * a)) * (1.0 - np.exp(-2.0 * a * step_times))
+        # a==0.0 (arithmetic Brownian motion, the mathematically valid
+        # a->0 limit of OU mean reversion) is a removable 0/0 singularity
+        # here as literally written; the analytic limit of
+        # (sigma^2/4a)*(1-exp(-2a*t)) as a->0 is sigma^2*t/2 (first-order
+        # Taylor expansion of the exponential), used directly instead of
+        # dividing by zero into NaN.
+        if a == 0.0:
+            variance_term = 0.5 * sigma ** 2 * step_times
+        else:
+            variance_term = (sigma ** 2 / (4.0 * a)) * (1.0 - np.exp(-2.0 * a * step_times))
         exponent = (
             B_matrix[:, :, k] * fwd_0_t[:, None] - variance_term[:, None] * B_matrix[:, :, k] ** 2
         )
@@ -404,16 +426,56 @@ def generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, j
     # 2. Equities
     eq_cfg = config.equities
     eq_S0 = jnp.array(eq_cfg.initial_prices, dtype=dtype)
+    num_eq = eq_S0.shape[0]
+    if len(eq_cfg.dividend_yields) != num_eq:
+        raise ValueError(
+            f"equities.dividend_yields must have exactly one entry per "
+            f"equity: got {len(eq_cfg.dividend_yields)} entries for "
+            f"{num_eq} equities."
+        )
+    if len(eq_cfg.rate_mapping) != num_eq:
+        raise ValueError(
+            f"equities.rate_mapping must have exactly one row per equity: "
+            f"got {len(eq_cfg.rate_mapping)} rows for {num_eq} equities."
+        )
     eq_div_t = jnp.tile(jnp.array(eq_cfg.dividend_yields, dtype=dtype), (num_steps, 1))
     rate_mapping = jnp.array(eq_cfg.rate_mapping, dtype=dtype)
-    num_eq = eq_S0.shape[0]
 
     # 3. Rates
     hw_cfg = config.rates
     hw_r0 = jnp.array(hw_cfg.initial_rates, dtype=dtype)
+    num_hw = hw_r0.shape[0]
+    if len(hw_cfg.theta) != num_hw:
+        raise ValueError(
+            f"rates.theta must have exactly one entry per rate factor: "
+            f"got {len(hw_cfg.theta)} entries for {num_hw} rate factors."
+        )
+    if len(hw_cfg.mean_reversion) != num_hw:
+        raise ValueError(
+            f"rates.mean_reversion must have exactly one entry per rate "
+            f"factor: got {len(hw_cfg.mean_reversion)} entries for "
+            f"{num_hw} rate factors."
+        )
+    if rate_mapping.shape[1] != num_hw:
+        raise ValueError(
+            f"equities.rate_mapping rows must have one column per rate "
+            f"factor: got {rate_mapping.shape[1]} columns for {num_hw} "
+            f"rate factors."
+        )
     hw_theta_t = jnp.tile(jnp.array(hw_cfg.theta, dtype=dtype), (num_steps, 1))
     hw_a = jnp.array(hw_cfg.mean_reversion, dtype=dtype)
-    num_hw = hw_r0.shape[0]
+
+    num_joint = num_eq + num_hw
+    if (
+        len(config.joint_covariance) != num_joint
+        or any(len(row) != num_joint for row in config.joint_covariance)
+    ):
+        raise ValueError(
+            f"joint_covariance must be a square "
+            f"({num_joint}x{num_joint}) matrix (equities first, then "
+            f"rate factors, {num_eq} equities + {num_hw} rate factors): "
+            f"got a matrix with {len(config.joint_covariance)} rows."
+        )
 
     # 4. Joint Matrix
     # L_t must carry CORRELATION only (unit diagonal), not the raw
@@ -432,7 +494,23 @@ def generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, j
     cov_raw = jnp.array(config.joint_covariance, dtype=dtype)
     cov_t = jnp.tile(cov_raw[None, :, :], (num_steps, 1, 1))
     joint_sigma_t = jnp.sqrt(jnp.diagonal(cov_t, axis1=1, axis2=2))
-    corr_t = cov_t / (joint_sigma_t[:, :, None] * joint_sigma_t[:, None, :])
+    # A factor with exactly zero variance makes its row/column of
+    # sigma_i*sigma_j a literal 0/0 -- NaN, which jnp.linalg.cholesky then
+    # propagates through the ENTIRE factor matrix (not just that factor's
+    # own row/column), silently poisoning every other, perfectly
+    # well-defined factor too. That factor's shock is multiplied by its
+    # own sigma=0 downstream (shock_hw/shock_eq) regardless of what
+    # correlation value it carries here, so its off-diagonal correlation
+    # entries are numerically irrelevant -- guarded by substituting the
+    # identity row/column (0 off-diagonal, 1 on-diagonal) for any
+    # zero-variance factor before Cholesky, which keeps every other
+    # factor's real correlation structure and Cholesky factor intact.
+    sigma_is_zero = joint_sigma_t == 0.0
+    pair_is_zero = sigma_is_zero[:, :, None] | sigma_is_zero[:, None, :]
+    joint_sigma_t_safe = jnp.where(sigma_is_zero, 1.0, joint_sigma_t)
+    corr_t_raw = cov_t / (joint_sigma_t_safe[:, :, None] * joint_sigma_t_safe[:, None, :])
+    identity = jnp.eye(num_eq + num_hw, dtype=dtype)[None, :, :]
+    corr_t = jnp.where(pair_is_zero, identity, corr_t_raw)
     L_t = jnp.linalg.cholesky(corr_t)
     eq_sigma_t = joint_sigma_t[:, :num_eq]
     hw_sigma_t = joint_sigma_t[:, num_eq:]
@@ -462,8 +540,17 @@ def generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, j
 
         # B(t,T) formula. Shape mapping: T_minus_t is [TimeSteps, Maturities]
         # hw_a is [NumRates]. We broadcast appropriately.
+        # hw_a==0.0 is a removable 0/0 singularity here too -- its
+        # analytic a->0 limit is B(t,T)=T-t (guarded the same way as
+        # variance_hw above: evaluate on a safe placeholder a, then select
+        # the limit via jnp.where).
         hw_a_bcast = hw_a[None, None, :]
-        B_matrix = (1.0 - jnp.exp(-hw_a_bcast * T_minus_t[:, :, None])) / hw_a_bcast
+        hw_a_bcast_safe = jnp.where(hw_a_bcast == 0.0, 1.0, hw_a_bcast)
+        B_matrix = jnp.where(
+            hw_a_bcast == 0.0,
+            T_minus_t[:, :, None],
+            (1.0 - jnp.exp(-hw_a_bcast_safe * T_minus_t[:, :, None])) / hw_a_bcast_safe,
+        )
 
         # A(t,T): calibrated to today's market zero curve, independently per
         # rate factor, so each factor's simulated discount factors reprice

@@ -172,11 +172,28 @@ def _maturity_indices(times: np.ndarray, maturities: np.ndarray) -> np.ndarray:
     out-of-bounds index reaching yield_curves[..., idx] downstream would
     silently price the cashflow off the wrong (last) pillar instead of
     failing loudly here.
+
+    searchsorted's default side='left' picks the insertion point BEFORE
+    any equal element, so a time that's within atol but a hair ABOVE its
+    pillar (float roundoff from day-count/schedule arithmetic, not a real
+    difference) gets an index pointing at the *next* pillar instead of the
+    intended one -- rejecting a cashflow that's genuinely within
+    tolerance, while the same-magnitude roundoff BELOW a pillar matches
+    fine. Fixed by also considering the LEFT neighbor of searchsorted's
+    raw index and picking whichever of the two candidate pillars is
+    actually closer to `times`, before the tolerance check -- this makes
+    the tolerance symmetric regardless of which side of the pillar the
+    roundoff lands on, while still requiring genuine closeness (a time
+    truly between two pillars, more than atol from both, is still
+    rejected).
     """
-    indices = np.searchsorted(maturities, times)
-    in_bounds = indices < len(maturities)
-    matches = np.zeros_like(in_bounds)
-    matches[in_bounds] = np.isclose(maturities[indices[in_bounds]], times[in_bounds], atol=1e-6)
+    atol = 1e-6
+    raw = np.searchsorted(maturities, times)
+    left = np.clip(raw - 1, 0, len(maturities) - 1)
+    right = np.clip(raw, 0, len(maturities) - 1)
+    use_left = np.abs(maturities[left] - times) <= np.abs(maturities[right] - times)
+    indices = np.where(use_left, left, right)
+    matches = np.isclose(maturities[indices], times, atol=atol)
     if not np.all(matches):
         raise ValueError(
             "Swap cashflow times must be a subset of the simulation's "

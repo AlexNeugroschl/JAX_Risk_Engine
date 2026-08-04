@@ -335,9 +335,43 @@ def _solve_rstar(
     Bisection (rather than Newton's method) is used because it vectorizes
     across every (scenario, time step) pair with a fixed iteration count
     under jax.jit, with no data-dependent stopping condition needed.
+
+    Bracket width: a fixed [-2, 2] (a +-200% short rate) safely brackets
+    r* for any realistic trade, but a sufficiently deep-ITM payer (an
+    extreme negative fixed_rate) pushes the true root outside it -- the
+    coupon bond value is then the SAME sign at both lo and hi (monotone
+    decreasing, never crossing zero inside the bracket), so plain
+    bisection's `val_mid > 0.0` update collapses `hi` onto `lo` every
+    iteration and silently returns the bracket's own edge as a fake root,
+    rather than raising or converging to the true (out-of-bracket) value.
+    Guarded by doubling the bracket outward (still branch-free/jit-
+    friendly, a fixed iteration count) whenever the initial bracket
+    doesn't actually contain a sign change, before bisecting -- this keeps
+    the common in-bracket case at its original cost while making the rare
+    out-of-bracket case converge to the true root instead of a silently
+    wrong value.
     """
     lo = -jnp.ones(t_shape) * 2.0
     hi = jnp.ones(t_shape) * 2.0
+
+    def expand_body(_, carry):
+        lo, hi = carry
+        val_lo = coupon_bond_value_fn(lo)
+        val_hi = coupon_bond_value_fn(hi)
+        # Monotone decreasing: a real bracket has val_lo > 0 > val_hi. If
+        # val_hi is still positive, the root is above hi -- shift the
+        # whole window up by its own width. If val_lo is already
+        # negative, the root is below lo -- shift down. Width stays fixed
+        # (a shift, not a widen), which keeps the bisection step size
+        # well-behaved regardless of how many expansions are needed.
+        width = hi - lo
+        shift_up = val_hi > 0.0
+        shift_down = val_lo < 0.0
+        new_lo = jnp.where(shift_up, hi, jnp.where(shift_down, lo - width, lo))
+        new_hi = jnp.where(shift_up, hi + width, jnp.where(shift_down, lo, hi))
+        return (new_lo, new_hi)
+
+    lo, hi = jax.lax.fori_loop(0, 20, expand_body, (lo, hi))
 
     def body(_, carry):
         lo, hi = carry
