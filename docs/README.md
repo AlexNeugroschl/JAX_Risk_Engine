@@ -3,36 +3,62 @@
 Documentation for the JAX Risk Engine — a GPU-accelerated market simulation and trade
 pricing engine built in JAX, designed to mathematically mirror
 [ORE (Open Source Risk Engine)](https://www.opensourcerisk.org/). See the root
-[README.md](../README.md) for the project's overall goals and development roadmap.
+[README.md](../README.md) for a quick overview and setup.
 
 ## Where to start
 
 | If you want to... | Read... |
 |---|---|
-| Understand what this project does, no finance/math background needed | [Overview](01-overview.md) |
-| Understand how the code is organized as software | [Architecture](02-architecture.md) |
-| Actually run the code | [User Guide](06-user-guide.md) |
-| Look up exact function signatures and data shapes | [API Reference](07-api-reference.md) |
-| Understand a term you don't recognize | [Glossary](glossary.md) |
+| Understand what this project does, no finance/math background needed | [Overview](getting-started/overview.md) |
+| Actually run the code | [User Guide](getting-started/user-guide.md) |
+| Understand how the code is organized as software | [Architecture](concepts/architecture.md) |
+| Look up exact function signatures and data shapes | [API Reference](reference/api-reference.md) |
+| Understand a term you don't recognize | [Glossary](concepts/glossary.md) |
 
-## Deep dives, one per pipeline stage
+## Concepts
 
-The engine is a three-stage pipeline; each stage has its own doc covering both the math
-and the code, starting with a plain-language summary before getting technical:
+- **[Architecture](concepts/architecture.md)** — how the codebase is organized: the
+  repository layout, how the pieces connect, typed configuration, and testing philosophy.
+- **[Market Simulation](concepts/market-simulation.md)** — the math behind simulating
+  interest rates, equities, and FX rates (Sobol QMC, Brownian bridge, Hull-White 1-Factor,
+  Geometric Brownian Motion, yield curve reconstruction).
+- **[Coding Style & Technical Constraints](concepts/coding-style.md)** — the rules that
+  apply throughout the codebase (JAX purity/vectorization constraints, how ORE's C++ gets
+  translated into JAX).
+- **[Glossary](concepts/glossary.md)** — plain-language definitions for every finance and
+  engineering term used in these docs.
 
-1. **[Market Simulation](03-market-simulation.md)** — simulates thousands of alternate
-   futures for interest rates, stock prices, and FX rates.
-2. **[Instruments: Interest Rate Swaps](04-instruments.md)** — prices a specific type of
-   trade against every simulated future.
-3. **[Risk Statistics: VaR & ES](05-risk-statistics.md)** — turns simulated trade values
-   into standard risk numbers.
-4. **[Instruments: European Swaptions](08-swaptions.md)** — prices the option to enter a
-   swap, via Jamshidian's decomposition.
-5. **[Instruments: American & Bermudan Swaptions](10-american-swaptions.md)** — prices
-   early-exercise swaptions via a numeric LGM backward-induction (Hagan convolution) engine,
-   matching ORE's `NumericLgmMultiLegOptionEngine`.
-6. **[ORE Parity](09-ore-parity.md)** — maps every algorithm in this codebase to its exact
-   counterpart in ORE's own C++ source (`reference/ORE`), file and function name.
+## Instruments
+
+Each of these prices a specific trade type against the simulated market data, producing a
+common `[Scenarios, TimeSteps, Trades]` NPV cube:
+
+- **[Interest Rate Swaps](instruments/swaps.md)** — linear (no optionality) pricing via
+  discounted cashflows.
+- **[European Swaptions](instruments/european-swaptions.md)** — single-exercise-date
+  options via Jamshidian's closed-form decomposition.
+- **[American & Bermudan Swaptions](instruments/american-bermudan-swaptions.md)** —
+  multi/continuous-exercise-date options via a numeric LGM backward-induction engine
+  (Hagan's quadrature convolution), matching ORE's actual production engine.
+
+## Risk
+
+- **[VaR & Expected Shortfall](risk/statistics.md)** — turns any instrument's NPV cube
+  into standard risk numbers, matching `ORE.RiskStatistics` exactly.
+
+## Reference
+
+- **[API Reference](reference/api-reference.md)** — exact inputs/outputs for every public
+  function and config dataclass.
+- **[ORE Parity](reference/ore-parity.md)** — maps every algorithm in this codebase to its
+  exact counterpart in ORE's own C++ source (`reference/ORE`), file and function name.
+
+## Planning
+
+- **[Roadmap & Development History](planning/roadmap-and-history.md)** — the phased
+  build-out plan and notable bugs found and fixed along the way.
+- **[TraderX Integration Plan](planning/traderx-integration.md)** — what's needed to
+  safely accept arbitrary portfolios from an external trading system.
 
 ## Document conventions
 
@@ -45,4 +71,5 @@ and the code, starting with a plain-language summary before getting technical:
 - Where a claim about ORE's own behavior is made (a formula, a convention, a design
   decision), it's backed by either a citation of what was read in ORE's own source, or a
   description of how it was live-tested against the installed ORE package — not assumed
-  from general finance knowledge. See [Architecture: ORE as a dependency](02-architecture.md#ore-as-a-dependency).
+  from general finance knowledge. See
+  [Architecture: ORE as a dependency](concepts/architecture.md#ore-as-a-dependency).

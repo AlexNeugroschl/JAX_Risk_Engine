@@ -13,7 +13,7 @@ and the one this project uses (matching ORE's own default).
 that the numbers with the best statistical properties are used for the parts of the
 simulated path that matter most (typically, the final and midpoint values). Named after
 Brownian motion, the mathematical model of a continuously random path. See
-[Market Simulation](03-market-simulation.md#phase-1--quasi-monte-carlo-shock-generation).
+[Market Simulation](market-simulation.md#phase-1--quasi-monte-carlo-shock-generation).
 
 **Confidence level / percentile** — In the context of VaR, "how far into the bad
 outcomes are we willing to look." 95% VaR looks at the worst 5% of outcomes; 99% VaR
@@ -36,26 +36,26 @@ interest rates: higher rates mean lower discount factors.
 precision: `float64` (64-bit, more precise, slower) or `float32` (32-bit, less precise,
 faster). See **precision**.
 
-**European swaption** — See **Swaption**.
+**European swaption** — See **Swaption (European swaption)**.
 
 **Exercise (an option)** — To actually use the right an option grants — e.g. exercising a
 payer swaption means actually entering into the underlying swap on the agreed terms,
 rather than letting the option lapse unused. Only ever done when it's favorable to the
-holder. See [Instruments: European Swaptions](08-swaptions.md).
+holder. See [Instruments: European Swaptions](../instruments/european-swaptions.md).
 
 **Expected Shortfall (ES)** — Also called **Conditional VaR (CVaR)**. The average loss,
 given that a loss at least as bad as the Value at Risk cutoff has occurred. Answers "how
 bad does it get in the worst case," where VaR alone only answers "how often does it get
-bad." See [Risk Statistics](05-risk-statistics.md).
+bad." See [Risk Statistics](../risk/statistics.md).
 
 **Fixed leg / floating leg** — The two sides of an interest rate swap. The fixed leg
 pays a rate agreed today and locked in; the floating leg pays a rate that resets
-periodically based on actual market conditions. See [Instruments](04-instruments.md).
+periodically based on actual market conditions. See [Instruments](../instruments/swaps.md).
 
 **Forward-starting (swap or swaption)** — A trade whose accrual/exercise begins at some
 point in the future rather than immediately (beyond the standard few-day settlement lag).
 E.g. a swaption exercisable in 5Y, on a swap that itself doesn't start accruing interest
-until that 5Y point. See [Instruments: European Swaptions](08-swaptions.md#2-building-the-real-trade-_build_ore_swap-prepare_swaption).
+until that 5Y point. See [Instruments: European Swaptions](../instruments/european-swaptions.md#2-building-the-real-trade-_build_ore_swap-prepare_swaption).
 
 **FX (foreign exchange)** — The market for exchanging one currency for another; an "FX
 rate" is the price of one currency in terms of another (e.g. how many US dollars one
@@ -64,13 +64,13 @@ euro buys).
 **GBM (Geometric Brownian Motion)** — The standard mathematical model for how stock
 prices (and similar assets) are assumed to move randomly over time, where it's the
 *percentage* change that's random and roughly bell-curve-shaped, not the absolute dollar
-change. See [Market Simulation](03-market-simulation.md#phase-2--the-cross-asset-model-engine).
+change. See [Market Simulation](market-simulation.md#phase-2--the-cross-asset-model-engine).
 
 **Hull-White model (HW1F)** — The standard mathematical model this project uses for how
 interest rates move randomly over time. "1F" means "one factor" — one source of
 randomness per curve, as opposed to more complex multi-factor rate models. Named after
 its inventors, John Hull and Alan White. See
-[Market Simulation](03-market-simulation.md#phase-2--the-cross-asset-model-engine).
+[Market Simulation](market-simulation.md#phase-2--the-cross-asset-model-engine).
 
 **In-the-money / at-the-money / out-of-the-money** — How favorable an option currently
 is to exercise. In-the-money means exercising now would be profitable; out-of-the-money
@@ -94,7 +94,7 @@ ordinary, slow Python loop. Used throughout the simulation engine.
 Hull-White model, by breaking the option on a multi-coupon bond into a portfolio of
 simpler options, each on a single zero-coupon bond. Avoids needing a slow, nested
 simulation. Named after its inventor, Farshid Jamshidian. See
-[Instruments: European Swaptions](08-swaptions.md#why-its-built-this-way-jamshidians-trick).
+[Instruments: European Swaptions](../instruments/european-swaptions.md#why-its-built-this-way-jamshidians-trick).
 
 **Mean reversion** — A property of some random processes (interest rates, in this
 project) where the value tends to drift back toward some long-run average over time,
@@ -104,13 +104,13 @@ parameter (`a`, or `mean_reversion` in this codebase's config).
 **Monte Carlo simulation** — A general technique for answering "what's likely to happen"
 by simulating many random possible outcomes and looking at the pattern across all of
 them, rather than solving an equation directly. Named after the Monte Carlo casino,
-referencing the role of randomness. See [Market Simulation](03-market-simulation.md).
+referencing the role of randomness. See [Market Simulation](market-simulation.md).
 
 **Multi-curve discounting** — The modern (post-2008) practice of using two *different*
 interest rate curves for a single trade: one to figure out what a floating payment will
 actually be (the "forwarding curve," tied to a specific lending benchmark), and a
 separate one to discount all cashflows back to today (the "discounting curve," usually
-tied to an overnight/OIS rate). See [Instruments](04-instruments.md#2-building-the-real-trade-_build_ore_swap-prepare_swap).
+tied to an overnight/OIS rate). See [Instruments](../instruments/swaps.md#2-building-the-real-trade-_build_ore_swap-prepare_swap).
 
 **Notional** — The reference amount of money a trade's payments are calculated from,
 without that amount itself ever actually changing hands (in an interest rate swap,
@@ -121,22 +121,22 @@ single number, accounting for all its future cashflows discounted back to the pr
 
 **Numéraire** — A reference asset (in this project, a money-market account that accrues
 at a simulated interest rate) used as a bookkeeping device in certain pricing approaches.
-See [Market Simulation: the numéraire](03-market-simulation.md#phase-2--the-cross-asset-model-engine).
+See [Market Simulation: the numéraire](market-simulation.md#phase-2--the-cross-asset-model-engine).
 
 **ORE (Open Source Risk Engine)** — A real, widely-used, open-source risk engine
 software package that this project both learns its math from and validates its own
-output against. See [Architecture: ORE as a dependency](02-architecture.md#ore-as-a-dependency).
+output against. See [Architecture: ORE as a dependency](architecture.md#ore-as-a-dependency).
 
 **P&L (Profit and Loss)** — How much money was gained or lost, relative to some starting
 point. Central to VaR/ES, which are computed *from* a P&L distribution. See
-[Risk Statistics: the P&L baseline](05-risk-statistics.md#the-pl-baseline-what-are-gainslosses-measured-against).
+[Risk Statistics: the P&L baseline](../risk/statistics.md#the-pl-baseline-what-are-gainslosses-measured-against).
 
 **Precision (numeric)** — How many digits of accuracy a computer keeps when doing math.
 64-bit ("double precision," `float64`) keeps more digits and is more accurate but
 slower; 32-bit ("single precision," `float32`) keeps fewer digits and is faster but
 noisier. This project's long-term research question is about whether lower precision,
 run many more times, can match higher precision's risk answers. See
-[Architecture: Adjustable precision](02-architecture.md#adjustable-precision).
+[Architecture: Adjustable precision](architecture.md#adjustable-precision).
 
 **QMC (Quasi-Monte Carlo)** — A refinement of ordinary Monte Carlo simulation that uses
 specially constructed, evenly-spread sequences of numbers (like a **Sobol sequence**)
@@ -152,22 +152,25 @@ See **QMC**.
 
 **Swap (interest rate swap)** — A common trade where two parties exchange interest
 payments on a shared notional amount — one side pays a fixed rate, the other pays a
-floating rate. See [Instruments](04-instruments.md).
+floating rate. See [Instruments](../instruments/swaps.md).
 
 **Swaption (European swaption)** — The *right, but not the obligation,* to enter into an
 interest rate swap at a fixed rate agreed today, on a specific future exercise date.
 Unlike the underlying swap itself, a swaption's value depends on the probability that
 exercising will turn out to be favorable, not just on expected future cashflows. See
-[Instruments: European Swaptions](08-swaptions.md).
+[Instruments: European Swaptions](../instruments/european-swaptions.md). Bermudan/American
+variants, which allow exercise on multiple dates rather than just one, also exist — see
+[Instruments: American/Bermudan Swaptions](../instruments/american-bermudan-swaptions.md).
 
-**TraderX** — The name (per this project's roadmap in the root [README.md](../README.md))
-of an external system this engine is eventually meant to serve as a live API for, rather
-than only running as an offline script.
+**TraderX** — The name (per this project's roadmap in
+[Roadmap & Development History](../planning/roadmap-and-history.md)) of an external system
+this engine is eventually meant to serve as a live API for, rather than only running as
+an offline script. See also the [TraderX Integration Plan](../planning/traderx-integration.md).
 
 **Value at Risk (VaR)** — The most standard risk number in finance: "what's the cutoff
 loss such that we expect to lose *more* than that only X% of the time?" E.g. 95% VaR of
 $1M means: in 95% of simulated outcomes, the loss is under $1M; in the worst 5%, it's at
-least that much. See [Risk Statistics](05-risk-statistics.md).
+least that much. See [Risk Statistics](../risk/statistics.md).
 
 **Vectorization** — Doing a mathematical operation on an entire array of numbers at once
 (e.g. "add these two lists of a million numbers together") instead of looping over each
@@ -179,7 +182,7 @@ requirement throughout this codebase's JIT-compiled code.
 price today is exactly a discount factor. Jamshidian's trick works by breaking a
 swaption's complex payoff down into options on zero-coupon bonds, since those have a
 simple closed-form price under the Hull-White model. See
-[Instruments: European Swaptions](08-swaptions.md).
+[Instruments: European Swaptions](../instruments/european-swaptions.md).
 
 **Volatility** — How much a price or rate tends to fluctuate randomly; a higher
 volatility means bigger, more frequent swings. Usually written as `σ` (sigma) in
@@ -187,4 +190,4 @@ formulas.
 
 **Yield curve** — A full set of interest rates (or, equivalently, discount factors)
 across every future maturity date, as observed (or, in this project, simulated) at one
-point in time. See [Market Simulation: Phase 3](03-market-simulation.md#phase-3--yield-curve-reconstruction).
+point in time. See [Market Simulation: Phase 3](market-simulation.md#phase-3--yield-curve-reconstruction).

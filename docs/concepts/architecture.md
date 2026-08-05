@@ -2,41 +2,51 @@
 
 ## Plain-language summary
 
-The codebase is organized as three independent "stations" on an assembly line, plus a
-shared library of example configurations and a test suite that checks every station's
-output against ORE. Each station reads the output of the one before it, but none of them
-know about each other's internal details — they agree only on the *shape* of the data
-passed between them. That decoupling is deliberate: it means a fourth station (say, an
-options pricer) could be added later without touching the first two at all.
+The codebase is organized as three independent modules — the simulation module, the
+instrument pricers, and the risk aggregation module — plus a shared library of example
+configurations and a test suite that checks every module's output against ORE. Each
+module reads the output of the one before it, but none of them know about each other's
+internal details — they agree only on the *shape* of the data passed between them. That
+decoupling is deliberate: it means another module (say, a new instrument pricer) could be
+added later without touching the others at all.
 
 ## The repository layout
 
 ```
 JAX_Risk_Engine/
-├── README.md                            High-level goals + phased roadmap
+├── README.md                            Project pitch, status, quick start
 ├── requirements.txt                      Python dependencies
-├── docs/                                 You are here
+├── docs/                                 Organized by topic (you are here)
+│   ├── getting-started/                  Overview, user guide
+│   ├── concepts/                         Architecture, market simulation, glossary,
+│   │                                     coding style
+│   ├── instruments/                      Swaps, European/Bermudan/American swaptions
+│   ├── risk/                             VaR / Expected Shortfall
+│   ├── reference/                        API reference, ORE parity mapping
+│   └── planning/                         Roadmap/history, TraderX integration plan
 ├── engine/
-│   ├── simulation.py                     Station 1: simulate the market
+│   ├── simulation.py                     Simulates the market
 │   ├── scenarios.py                      Shared demo/reference configurations
 │   ├── instruments/
-│   │   ├── swap.py                       Station 2a: price interest rate swaps
-│   │   ├── european_swaption.py          Station 2b: price European swaptions
-│   │   ├── bermudan_swaption.py          Station 2c: price Bermudan swaptions
+│   │   ├── swap.py                       Prices interest rate swaps
+│   │   ├── european_swaption.py          Prices European swaptions
+│   │   ├── bermudan_swaption.py          Prices Bermudan swaptions
 │   │   │                                 (the numeric LGM backward-induction engine)
-│   │   └── american_swaption.py          Station 2d: price American swaptions
+│   │   └── american_swaption.py          Prices American swaptions
 │   │                                     (a thin wrapper around bermudan_swaption.py)
 │   └── risk/
-│       └── statistics.py                 Station 3: compute VaR / Expected Shortfall
+│       └── statistics.py                 Computes VaR / Expected Shortfall
 └── tests/
     ├── conftest.py                       Shared pytest fixtures
     ├── test_simulation.py
+    ├── test_scenarios.py
     ├── test_swap.py
     ├── test_european_swaption.py
     ├── test_bermudan_swaption.py
     ├── test_american_swaption.py
     ├── test_statistics.py
     ├── test_end_to_end.py
+    ├── test_diverse_portfolio_e2e.py
     └── test_ore_parity.py
 ```
 
@@ -51,13 +61,13 @@ config wrapper that expands a continuous exercise window into a discrete list of
 `bermudan_swaption.py`'s pricing engine — this mirrors ORE's own design, where American
 swaptions are priced by discretizing the exercise window and running the exact same
 numeric engine Bermudan swaptions use (`QuantExt::NumericLgmMultiLegOptionEngine`, see
-[10-american-swaptions.md](10-american-swaptions.md)). Keeping the actual backward-
+[American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)). Keeping the actual backward-
 induction engine (state grid, Hagan's quadrature, numeraire-deflated rollback) in its own
 `bermudan_swaption.py` file, separate from the thin American-specific wrapper, makes clear
 that Bermudan swaptions are a fully independent, directly-usable capability — not a
 byproduct of American support.
 
-## The three-stage pipeline
+## The simulation-to-risk data flow
 
 ```
                     ┌─────────────────────────┐
@@ -104,38 +114,39 @@ byproduct of American support.
                     └─────────────────────────┘
 ```
 
-Full field-level detail on every input/output is in the [API Reference](07-api-reference.md);
+Full field-level detail on every input/output is in the [API Reference](../reference/api-reference.md);
 this page is about *why* the pieces are shaped the way they are.
 
-### Stage 1 — Market Simulation (`engine/simulation.py`)
+### Market Simulation (`engine/simulation.py`)
 
 **Input:** a `SimulationConfig` (time grid, starting prices/rates, correlations).
 **Output:** simulated paths for equities/FX, interest rates, and (optionally) a full
 4D "yield curve cube" of discount factors.
 
-This is the only stage with no dependency on ORE at runtime — it's pure JAX/NumPy/SciPy,
+This is the only module with no dependency on ORE at runtime — it's pure JAX/NumPy/SciPy,
 so it can, in principle, run on a GPU with no external process involved. See
-[Market Simulation](03-market-simulation.md) for the math.
+[Market Simulation](market-simulation.md) for the math.
 
-### Stage 2 — Instrument Pricing (`engine/instruments/`)
+### Instrument Pricing (`engine/instruments/`)
 
-**Input:** market data from Stage 1 (the yield curve cube for the swap pricer; the raw
-simulated rate paths for every swaption pricer), plus one or more trade configs.
+**Input:** market data from the simulation module (the yield curve cube for the swap
+pricer; the raw simulated rate paths for every swaption pricer), plus one or more trade
+configs.
 **Output:** an NPV ("Net Present Value" — what a trade is worth today) cube.
 
 Four pricers currently live here:
 
 - `swap.py` — linear (no optionality) swap pricing. See
-  [Instruments: Interest Rate Swaps](04-instruments.md).
+  [Instruments: Interest Rate Swaps](../instruments/swaps.md).
 - `european_swaption.py` — non-linear (single exercise date) swaption pricing via
-  Jamshidian's trick, priced directly off Stage 1's simulated Hull-White rate paths
-  rather than the yield-curve cube (it needs the model's own parameters, not just
-  discount factors — see [Instruments: European Swaptions](08-swaptions.md)).
+  Jamshidian's trick, priced directly off the simulation module's simulated Hull-White
+  rate paths rather than the yield-curve cube (it needs the model's own parameters, not
+  just discount factors — see [Instruments: European Swaptions](../instruments/european-swaptions.md)).
 - `bermudan_swaption.py` — non-linear (multiple discrete exercise dates) swaption
   pricing via a numeric LGM backward-induction engine (Hagan's Gaussian-quadrature
   convolution), matching ORE's own `NumericLgmMultiLegOptionEngine` — early exercise
   has no closed form, so this is the pricing engine every other Bermudan/American
-  capability builds on (see [Instruments: American & Bermudan Swaptions](10-american-swaptions.md)).
+  capability builds on (see [Instruments: American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)).
 - `american_swaption.py` — a thin wrapper: discretizes a continuous exercise window
   into a dense list of dates (`AmericanSwaptionConfig.to_bermudan()`) and prices
   through `bermudan_swaption.py`'s engine, exactly the way ORE itself treats American
@@ -150,19 +161,19 @@ below) — they use ORE's own trade-schedule and day-count-convention machinery 
 "when does this swap pay cash, and how much" is computed exactly the way a real trading
 desk's software would compute it, rather than being reimplemented from scratch.
 
-### Stage 3 — Risk Aggregation (`engine/risk/statistics.py`)
+### Risk Aggregation (`engine/risk/statistics.py`)
 
 **Input:** any NPV cube shaped `[Scenarios, TimeSteps, Trades]` (not necessarily from
-Stage 2 — see below) plus a baseline value.
+the instrument pricers — see below) plus a baseline value.
 **Output:** Value at Risk and Expected Shortfall numbers, one per requested confidence
 level, one per time step.
 
-See [Risk Statistics](05-risk-statistics.md) for the math.
+See [Risk Statistics](../risk/statistics.md) for the math.
 
-## Design principle: stages agree on shapes, not code
+## Design principle: modules agree on shapes, not code
 
-At the Python-module level, Stage 2 and Stage 3 do **not** import Stage 1 (or each
-other) at the top of the file — `from engine.simulation import generate_paths`
+At the Python-module level, the instrument pricers and the risk aggregation module do
+**not** import the simulation module (or each other) at the top of the file — `from engine.simulation import generate_paths`
 only appears inside each module's `if __name__ == "__main__":` demo block, not in the
 library code itself. `price_swaps()` only needs *some* array shaped
 `[Scenarios, TimeSteps, Maturities, NumRates]`; every swaption pricer only needs *some*
@@ -189,18 +200,18 @@ Every module's `__main__` demo block, and every test file, needs *some* realisti
 by hand; `engine/scenarios.py` now centralizes two canonical example scenarios:
 
 - `cross_asset_demo_config()` — two equities/FX pairs and two interest rate
-  currencies (USD, EUR), used to show off the full breadth of what Stage 1 can
-  simulate.
+  currencies (USD, EUR), used to show off the full breadth of what the simulation module
+  can simulate.
 - `single_currency_swap_demo_config()` — one currency with two correlated interest
   rate factors (a discounting curve and a separate forwarding curve), sized to exactly
-  match a demo 2-year interest rate swap. Used by the Stage 2 and Stage 3 demos and by
-  the ORE cross-check tests.
+  match a demo 2-year interest rate swap. Used by the instrument-pricing and
+  risk-aggregation demos and by the ORE cross-check tests.
 
 It also provides `flat_yield_curves()`, a helper that builds a deterministic (no random
 simulation noise) yield curve cube directly from ORE's own curve objects — used
 whenever code needs a "today's actual market, no what-if" baseline, most importantly for
-Stage 3's `base_npv` input and for the tests that compare this engine's output directly
-against ORE's.
+the risk aggregation module's `base_npv` input and for the tests that compare this
+engine's output directly against ORE's.
 
 `engine/scenarios.py` depends on `engine/simulation.py` (it constructs
 `SimulationConfig` objects) but nothing depends on `engine/scenarios.py` except demo
@@ -233,12 +244,12 @@ This means `pip install`-ing this project's core simulation and risk-statistics
 functionality does not strictly require ORE, but pricing any real trade currently does
 (every pricer lives under `engine/instruments/`, the only directory with a runtime ORE
 dependency). If the eventual TraderX API (see the roadmap in the root
-[README.md](../README.md)) is deployed as a microservice, whatever machine runs the
+[README.md](../../README.md)) is deployed as a microservice, whatever machine runs the
 pricing endpoint needs ORE installed.
 
 ## Adjustable precision
 
-One of the project's core long-term research goals (see [Overview](01-overview.md)) is
+One of the project's core long-term research goals (see [Overview](../getting-started/overview.md)) is
 comparing risk results computed with different numeric precision — 64-bit ("double",
 very precise, slower) versus 32-bit ("single", less precise, faster). This shows up in
 the code as the `precision` argument to `generate_paths(config, precision=64)`.
@@ -261,14 +272,14 @@ elsewhere in the same process.
 
 ## Typed configuration
 
-Every stage takes a Python `@dataclass` as its primary input — `SimulationConfig` (and
-its nested `EquityConfig`, `RatesConfig`, `ZeroCurveConfig`) for Stage 1, `SwapConfig` and
-`SwaptionConfig` for Stage 2. This was a deliberate choice over passing plain dictionaries: a typo in a
+Every module takes a Python `@dataclass` as its primary input — `SimulationConfig` (and
+its nested `EquityConfig`, `RatesConfig`, `ZeroCurveConfig`) for the simulation module,
+`SwapConfig` and `SwaptionConfig` for the instrument pricers. This was a deliberate choice over passing plain dictionaries: a typo in a
 dictionary key silently produces a confusing error deep inside the pipeline, while a
 typo in a dataclass field name fails immediately, at the point the config object is
 constructed, with a clear Python error. It's also the natural shape for the eventual
 TraderX API layer to build a request/response schema around directly (see the roadmap's
-Phase 8 in the root [README.md](../README.md)).
+Phase 8 in the root [README.md](../../README.md)).
 
 ## Testing philosophy
 
@@ -282,5 +293,5 @@ Every non-trivial formula in this codebase is tested two ways:
    tolerance, or exactly for things like VaR/ES where the formula involves no
    floating-point-sensitive steps like matrix decompositions).
 
-See the [User Guide](06-user-guide.md#running-the-tests) for how to run these, and each
+See the [User Guide](../getting-started/user-guide.md#running-the-tests) for how to run these, and each
 deep-dive doc's "Tested by" section for what's covered where.

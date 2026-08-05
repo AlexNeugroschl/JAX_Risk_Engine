@@ -1,6 +1,6 @@
 # Market Simulation
 
-**Module:** [`engine/simulation.py`](../engine/simulation.py)
+**Module:** [`engine/simulation.py`](../../engine/simulation.py)
 **Public entry point:** `generate_paths(config: SimulationConfig, precision: int = 64)`
 
 ## Plain-language summary
@@ -27,8 +27,8 @@ The output isn't just "the interest rate at each future date" — it's expanded 
 full **yield curve** at every simulated date, in every simulated scenario. A yield curve
 answers "what is $1 promised at some future date T worth today, if I'm standing at future
 date t?" for every combination of t and T the caller asked for. That expanded object is
-what lets [Stage 2 (Instrument Pricing)](04-instruments.md) actually price a real trade's
-cashflows, which land on many different future dates.
+what lets instrument pricing (see [Interest Rate Swaps](../instruments/swaps.md)) actually
+price a real trade's cashflows, which land on many different future dates.
 
 ## Why it's built this way: matching ORE's Cross-Asset Model
 
@@ -69,7 +69,7 @@ the bell-curve conversion) always computes internally in 64-bit precision whenev
 64-bit mode is globally turned on, *regardless* of what precision was requested for this
 specific call. This function now explicitly converts its result back to the requested
 `dtype` before returning, so calling it directly with `dtype=float32` reliably returns
-32-bit numbers. (See [Adjustable Precision](02-architecture.md#adjustable-precision) for
+32-bit numbers. (See [Adjustable Precision](architecture.md#adjustable-precision) for
 why this global-setting behavior exists in the first place, and
 `tests/test_simulation.py::TestGenerateSobolNormals` for the regression test.)
 
@@ -143,15 +143,15 @@ an FX rate depends on the *difference* between two currencies' rates).
 **The numéraire.** Alongside the simulated paths, the model also tracks a money-market
 account value ("numéraire") that accrues at the simulated short rate of *one* designated
 base curve (curve index 0). This is a standard risk-neutral-pricing bookkeeping device;
-this project's current instrument pricer ([Instruments](04-instruments.md)) doesn't
-actually use it (it discounts using the yield curve cube directly instead — see that
-doc for why), but it's part of a faithful CAM reimplementation and is exposed in the
+this project's current instrument pricer ([Interest Rate Swaps](../instruments/swaps.md))
+doesn't actually use it (it discounts using the yield curve cube directly instead — see
+that doc for why), but it's part of a faithful CAM reimplementation and is exposed in the
 output for future use.
 
 All of this is wrapped in a single `@jax.jit`-compiled function using `jax.lax.scan` to
 step through time — the JAX idiom for "run this per-step update function T times in a
 row, efficiently, without a Python-level loop." This is a hard requirement from the
-project's own coding constraints (see the root [README.md](../README.md)'s Technical
+project's own coding constraints (see the root [README.md](../../README.md)'s Technical
 Constraints section): no ordinary Python `for` loops inside JIT-compiled code.
 
 ### Phase 3 — Yield curve reconstruction
@@ -194,7 +194,7 @@ a small finite-difference step.
 **Important: one curve per rate factor, not one shared curve.** `compute_hw_A_matrix`
 calibrates *each* rate factor independently, against *that factor's own* entry in
 `config.rates.initial_zero_curves` (a list, one `ZeroCurveConfig` per factor — see
-[API Reference](07-api-reference.md#ratesconfig)). This matches ORE's actual Cross-Asset
+[API Reference](../reference/api-reference.md#ratesconfig)). This matches ORE's actual Cross-Asset
 Model design: every one of ORE's `IrLgm1fParametrization` objects (its equivalent of one
 Hull-White factor) is constructed with its own specific `(Currency, YieldTermStructureHandle)`
 pair, and `ORE.CrossAssetModel` only ever combines a list of these already-curve-bound
@@ -225,8 +225,8 @@ GPU.
 Wires all three phases together: reads the typed `SimulationConfig`, builds the Sobol
 shocks, bridges them, runs the cross-asset simulation, and (if the config's
 `rates.maturities` field is set) reconstructs the full yield curve cube. See the
-[API Reference](07-api-reference.md#generate_paths) for the exact input/output schema,
-and the [User Guide](06-user-guide.md) for a runnable example.
+[API Reference](../reference/api-reference.md#generate_paths) for the exact input/output schema,
+and the [User Guide](../getting-started/user-guide.md) for a runnable example.
 
 ## Output shapes at a glance
 

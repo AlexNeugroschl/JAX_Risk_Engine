@@ -1,14 +1,14 @@
-# ORE Parity: Algorithm-by-Algorithm Correspondence
+﻿# ORE Parity: Algorithm-by-Algorithm Correspondence
 
 This page maps every mathematical algorithm implemented in this codebase to its exact
 counterpart in ORE's own C++ source, now available locally under
-[`reference/ORE`](../reference/ORE) (a full clone of the
+[`reference/ORE`](../../reference/ORE) (a full clone of the
 [OpenSourceRisk/Engine](https://github.com/OpenSourceRisk/Engine) repository, including
 its `QuantLib` and `QuantExt` submodules). Everywhere a formula or algorithm is described
 below, it was verified by directly reading the cited C++ file — not assumed from
 documentation, textbooks, or memory of earlier live-testing sessions (which is how every
 prior formula claim in this project was verified, before this C++ source was available
-locally; see [Architecture: ORE as a dependency](02-architecture.md#ore-as-a-dependency)).
+locally; see [Architecture: ORE as a dependency](../concepts/architecture.md#ore-as-a-dependency)).
 Where earlier live-testing (calling the installed `ORE` Python package directly and
 comparing numbers) had already established a result, this page cross-checks that result
 against the actual C++ that produces it, closing the gap between "the numbers match" and
@@ -50,8 +50,8 @@ given algorithm:
 `scipy.stats.qmc.Sobol`.
 
 **ORE:** `QuantLib::SobolRsg` —
-[`QuantLib/ql/math/randomnumbers/sobolrsg.hpp`](../reference/ORE/QuantLib/ql/math/randomnumbers/sobolrsg.hpp),
-[`sobolrsg.cpp`](../reference/ORE/QuantLib/ql/math/randomnumbers/sobolrsg.cpp).
+[`QuantLib/ql/math/randomnumbers/sobolrsg.hpp`](../../reference/ORE/QuantLib/ql/math/randomnumbers/sobolrsg.hpp),
+[`sobolrsg.cpp`](../../reference/ORE/QuantLib/ql/math/randomnumbers/sobolrsg.cpp).
 
 **Correspondence:** Not a numerical-parity claim, and deliberately so. Both this engine
 and QuantLib generate a **Sobol low-discrepancy sequence** — the same well-known class of
@@ -73,8 +73,8 @@ literal random numbers.
 `apply_brownian_bridge`.
 
 **ORE:** `QuantLib::BrownianBridge` —
-[`QuantLib/ql/methods/montecarlo/brownianbridge.hpp`](../reference/ORE/QuantLib/ql/methods/montecarlo/brownianbridge.hpp),
-[`brownianbridge.cpp`](../reference/ORE/QuantLib/ql/methods/montecarlo/brownianbridge.cpp)
+[`QuantLib/ql/methods/montecarlo/brownianbridge.hpp`](../../reference/ORE/QuantLib/ql/methods/montecarlo/brownianbridge.hpp),
+[`brownianbridge.cpp`](../../reference/ORE/QuantLib/ql/methods/montecarlo/brownianbridge.cpp)
 — specifically `BrownianBridge::initialize()` (construction) and
 `BrownianBridge::transform()` (application to one path).
 
@@ -116,17 +116,17 @@ the property this construction exists to guarantee) and
 
 **ORE, two equivalent formulations:**
 - The plain, single-currency `QuantLib::HullWhite` model —
-  [`QuantLib/ql/models/shortrate/onefactormodels/hullwhite.hpp`](../reference/ORE/QuantLib/ql/models/shortrate/onefactormodels/hullwhite.hpp),
-  [`hullwhite.cpp`](../reference/ORE/QuantLib/ql/models/shortrate/onefactormodels/hullwhite.cpp)
+  [`QuantLib/ql/models/shortrate/onefactormodels/hullwhite.hpp`](../../reference/ORE/QuantLib/ql/models/shortrate/onefactormodels/hullwhite.hpp),
+  [`hullwhite.cpp`](../../reference/ORE/QuantLib/ql/models/shortrate/onefactormodels/hullwhite.cpp)
   (specifically `HullWhite::A`, inherited `Vasicek::B`, `HullWhite::discountBondOption`) —
   this is the class every direct ORE cross-check test in this project's test suite
   actually uses.
 - The multi-currency `QuantExt::CrossAssetModel`'s rates leg,
   `QuantExt::Lgm1fConstantParametrization` —
-  [`QuantExt/qle/models/irlgm1fparametrization.hpp`](../reference/ORE/QuantExt/qle/models/irlgm1fparametrization.hpp),
-  [`irlgm1fconstantparametrization.hpp`](../reference/ORE/QuantExt/qle/models/irlgm1fconstantparametrization.hpp),
+  [`QuantExt/qle/models/irlgm1fparametrization.hpp`](../../reference/ORE/QuantExt/qle/models/irlgm1fparametrization.hpp),
+  [`irlgm1fconstantparametrization.hpp`](../../reference/ORE/QuantExt/qle/models/irlgm1fconstantparametrization.hpp),
   and the bond-pricing formulas in `QuantExt::LinearGaussMarkovModel` —
-  [`QuantExt/qle/models/lgm.hpp`](../reference/ORE/QuantExt/qle/models/lgm.hpp) — this is
+  [`QuantExt/qle/models/lgm.hpp`](../../reference/ORE/QuantExt/qle/models/lgm.hpp) — this is
   the class `ORE.CrossAssetModel` actually instantiates (live-verified via the SWIG
   bindings in an earlier session: `ORE.IrLgm1fConstantParametrization`, not
   `ORE.HullWhite`, is what a `CrossAssetModel` is built from). See
@@ -153,7 +153,7 @@ below.
 
 **Regression note:** this exact transition formula is the one whose `theta*(1-decay)`
 term was found missing (and fixed) during this project's most recent thorough-testing
-pass — see the root [README.md](../README.md)'s "Correctness fixes (post-Phase-5)"
+pass — see the root [README.md](../../README.md)'s "Correctness fixes (post-Phase-5)"
 section. This C++ source read is additional, independent confirmation that
 `theta*(1-decay)`, not a bare `theta`, is the mathematically correct term: it is exactly
 the standard OU/Vasicek/Hull-White transition mean any textbook derivation (or a
@@ -239,7 +239,7 @@ diagonal, off-diagonal entries in `[-1,1]`) as a first-class, separate object fr
 factor's own `alpha`/`sigma` volatility parameter — i.e. ORE's own class design already
 enforces the same separation this engine's `L_t`-from-correlation-not-covariance fix
 established. This is a useful independent design confirmation for the double-applied-
-volatility bug described in the root [README.md](../README.md)'s "Correctness fixes
+volatility bug described in the root [README.md](../../README.md)'s "Correctness fixes
 (post-Phase-5)" section: ORE's own model never conflates "correlation structure" and
 "marginal volatility" into one matrix in the first place, which is exactly the
 distinction whose absence caused that bug.
@@ -249,9 +249,9 @@ distinction whose absence caused that bug.
 **This engine:** `engine/instruments/swap.py::_price_one_swap`.
 
 **ORE:** `QuantLib::DiscountingSwapEngine::calculate()` —
-[`QuantLib/ql/pricingengines/swap/discountingswapengine.cpp`](../reference/ORE/QuantLib/ql/pricingengines/swap/discountingswapengine.cpp)
+[`QuantLib/ql/pricingengines/swap/discountingswapengine.cpp`](../../reference/ORE/QuantLib/ql/pricingengines/swap/discountingswapengine.cpp)
 — plus the underlying coupon-amount formula, `QuantLib::IborCoupon::indexFixing()` —
-[`QuantLib/ql/cashflows/iborcoupon.cpp`](../reference/ORE/QuantLib/ql/cashflows/iborcoupon.cpp),
+[`QuantLib/ql/cashflows/iborcoupon.cpp`](../../reference/ORE/QuantLib/ql/cashflows/iborcoupon.cpp),
 lines 119-137.
 
 **Correspondence:** `DiscountingSwapEngine::calculate()` is thin orchestration: for each
@@ -285,7 +285,7 @@ relative tolerance, across payer/receiver/par/spread/single-curve cases).
 
 **ORE:** `QuantLib::JamshidianSwaptionEngine::calculate()` (and its private
 `rStarFinder` functor) —
-[`QuantLib/ql/pricingengines/swaption/jamshidianswaptionengine.cpp`](../reference/ORE/QuantLib/ql/pricingengines/swaption/jamshidianswaptionengine.cpp)
+[`QuantLib/ql/pricingengines/swaption/jamshidianswaptionengine.cpp`](../../reference/ORE/QuantLib/ql/pricingengines/swaption/jamshidianswaptionengine.cpp)
 — plus `HullWhite::discountBondOption`
 (`QuantLib/ql/models/shortrate/onefactormodels/hullwhite.cpp`, lines 89-131) for the
 zero-coupon bond option closed form.
@@ -313,7 +313,7 @@ zero-coupon bond option closed form.
    `bond_fn = _bond_put if swaption.payer else _bond_call` sign convention.
 
 **This confirms, from the actual C++ source, exactly the fix this project made for
-forward-starting swaptions** (see the root [README.md](../README.md)'s Phase 5 section):
+forward-starting swaptions** (see the root [README.md](../../README.md)'s Phase 5 section):
 an earlier version of this engine incorrectly assumed the exercise date `T0` and the
 underlying swap's accrual start `T_start` were the same point (true only for a
 spot-starting swaption, where the two coincide up to the standard settlement lag).
@@ -342,7 +342,7 @@ engine's `_bond_option_sigma`) matching QuantLib's `v = sigma()*B(maturity,
 bondMaturity)*sqrt(0.5*(1-exp(-2a*maturity))/a)` term-for-term (QuantLib's `maturity`
 here is this engine's `T_opt - t`, i.e. QuantLib always conditions from `t=0`, while
 this engine's conditional-pricing generalization allows an arbitrary `t` — see
-[Instruments: European Swaptions](08-swaptions.md#6-conditional-future-time-pricing)).
+[Instruments: European Swaptions](../instruments/european-swaptions.md#6-conditional-future-time-pricing)).
 
 **Verified:** `tests/test_european_swaption.py::TestAgainstOREJamshidianEngine` (direct
 NPV comparison against real `ORE.Swaption` + `ORE.JamshidianSwaptionEngine`, spot- and
@@ -360,16 +360,16 @@ exercise window into a `bermudan_swaption.BermudanSwaptionConfig` and delegates 
 to this same engine.
 
 **ORE:** `QuantExt::NumericLgmMultiLegOptionEngineBase::calculate()` —
-[`QuantExt/qle/pricingengines/numericlgmmultilegoptionengine.cpp`](../reference/ORE/QuantExt/qle/pricingengines/numericlgmmultilegoptionengine.cpp)
+[`QuantExt/qle/pricingengines/numericlgmmultilegoptionengine.cpp`](../../reference/ORE/QuantExt/qle/pricingengines/numericlgmmultilegoptionengine.cpp)
 — backed by `QuantExt::LgmConvolutionSolver2` —
-[`QuantExt/qle/models/lgmconvolutionsolver2.hpp/.cpp`](../reference/ORE/QuantExt/qle/models/lgmconvolutionsolver2.cpp)
+[`QuantExt/qle/models/lgmconvolutionsolver2.hpp/.cpp`](../../reference/ORE/QuantExt/qle/models/lgmconvolutionsolver2.cpp)
 — built on `QuantExt::LinearGaussMarkovModel` —
-[`QuantExt/qle/models/lgm.hpp`](../reference/ORE/QuantExt/qle/models/lgm.hpp). Trade-level
+[`QuantExt/qle/models/lgm.hpp`](../../reference/ORE/QuantExt/qle/models/lgm.hpp). Trade-level
 routing confirmed in
-[`OREData/ored/portfolio/builders/swaption.hpp`](../reference/ORE/OREData/ored/portfolio/builders/swaption.hpp)/`.cpp`.
+[`OREData/ored/portfolio/builders/swaption.hpp`](../../reference/ORE/OREData/ored/portfolio/builders/swaption.hpp)/`.cpp`.
 
 **Correspondence: full algorithm-by-algorithm writeup in
-[10-american-swaptions.md](10-american-swaptions.md)**, which is more extensive than a
+[american-bermudan-swaptions.md](../instruments/american-bermudan-swaptions.md)**, which is more extensive than a
 single-section summary can cover — includes the exercise-window discretization formula
 (American-as-fine-Bermudan), the state-grid/quadrature construction, and the
 numeraire-deflation requirement for the backward induction to be mathematically valid at
@@ -390,7 +390,7 @@ independently-parametrized model object).
 
 **Verified:** `tests/test_bermudan_swaption.py` (the engine) and
 `tests/test_american_swaption.py` (the discretization wrapper) — see
-[10-american-swaptions.md](10-american-swaptions.md)'s "Tested by" section for the full
+[american-bermudan-swaptions.md](../instruments/american-bermudan-swaptions.md)'s "Tested by" section for the full
 breakdown (closed-form primitives vs. live ORE LGM objects, single-exercise-date
 convergence to an independent Jamshidian-style closed form, monotonicity bounds, and the
 American-discretization/mid-coupon edge cases).
@@ -402,9 +402,9 @@ American-discretization/mid-coupon edge cases).
 
 **ORE:** `QuantLib::GenericRiskStatistics<GaussianStatistics>::valueAtRisk`,
 `::expectedShortfall` (the `QuantLib::RiskStatistics` typedef) —
-[`QuantLib/ql/math/statistics/riskstatistics.hpp`](../reference/ORE/QuantLib/ql/math/statistics/riskstatistics.hpp),
+[`QuantLib/ql/math/statistics/riskstatistics.hpp`](../../reference/ORE/QuantLib/ql/math/statistics/riskstatistics.hpp),
 lines 178-205 — built on `QuantLib::GeneralStatistics::percentile` —
-[`QuantLib/ql/math/statistics/generalstatistics.cpp`](../reference/ORE/QuantLib/ql/math/statistics/generalstatistics.cpp),
+[`QuantLib/ql/math/statistics/generalstatistics.cpp`](../../reference/ORE/QuantLib/ql/math/statistics/generalstatistics.cpp),
 lines 88-110.
 
 **Correspondence: confirmed exactly, formula and edge cases both.**

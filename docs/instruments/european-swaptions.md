@@ -1,40 +1,40 @@
 # Instruments: European Swaptions
 
-**Module:** [`engine/instruments/european_swaption.py`](../engine/instruments/european_swaption.py)
+**Module:** [`engine/instruments/european_swaption.py`](../../engine/instruments/european_swaption.py)
 **Public entry point:** `price_swaptions(hw_paths, step_times, swaption_configs)`
 
 ## Plain-language summary
 
 A **swaption** ("swap option") is the *right, but not the obligation,* to enter into an
-[interest rate swap](04-instruments.md) at a fixed rate agreed today, on a specific future
+[interest rate swap](swaps.md) at a fixed rate agreed today, on a specific future
 date. A **European swaption** can only be exercised on that one specific date — not any
-time before it (that's a *Bermudan* swaption, a harder problem left for a later phase of
-this project's roadmap).
+time before it (that's a *Bermudan* swaption — see
+[American & Bermudan Swaptions](american-bermudan-swaptions.md)).
 
 Whoever holds a swaption will only choose to exercise it if doing so is worth more than
 not doing so — e.g. the holder of a *payer* swaption (the right to enter a swap paying
 fixed) will only exercise if the fixed rate they locked in is now *below* where the
 market actually ended up, so they come out ahead. That "only exercise if favorable"
 feature is exactly what makes a swaption a genuinely different, harder pricing problem
-than the [underlying swap](04-instruments.md) itself: a swap's value is just its expected
+than the [underlying swap](swaps.md) itself: a swap's value is just its expected
 future cashflows, but a swaption's value also has to account for the *option* to walk
 away, which requires reasoning about the probability that exercising will actually be
 worthwhile.
 
-This module answers the same kind of question [Stage 2](04-instruments.md) does — *"given
+This module answers the same kind of question the [swap pricing module](swaps.md) does — *"given
 thousands of simulated alternate futures, what is this specific trade worth in each one,
 at each point in time?"* — but for a swaption instead of a plain swap, producing the same
-kind of NPV cube [Stage 3](05-risk-statistics.md) needs.
+kind of NPV cube risk aggregation (see [VaR & Expected Shortfall](../risk/statistics.md)) needs.
 
 ## Why it's built this way: Jamshidian's trick
 
 Pricing an option generally requires either a closed-form formula (fast, but only exists
 for specific, simple cases) or running a *second*, nested simulation from every point a
 decision might be made (always works, but is extremely slow). This project's root
-[README.md](../README.md) calls for **Jamshidian's trick** — a clever closed-form
+[README.md](../../README.md) calls for **Jamshidian's trick** — a clever closed-form
 shortcut that applies specifically to swaptions priced under a
-[Hull-White 1-Factor model](03-market-simulation.md#phase-2--the-cross-asset-model-engine)
-(the same model [Stage 1](03-market-simulation.md) already simulates interest rates
+[Hull-White 1-Factor model](../concepts/market-simulation.md#phase-2--the-cross-asset-model-engine)
+(the same model the [market simulation module](../concepts/market-simulation.md) already simulates interest rates
 with), avoiding the need for any nested simulation at all.
 
 **The key mathematical insight:** a swap's fixed leg (plus the notional exchanged with
@@ -51,7 +51,7 @@ This is the same approach ORE's own `ORE.JamshidianSwaptionEngine` uses. **The f
 this module was not written from a textbook — it was reverse-engineered and verified by
 directly testing the installed ORE package**, the same methodology used throughout this
 codebase for every ORE-parity claim (see
-[Architecture: ORE as a dependency](02-architecture.md#ore-as-a-dependency)). An
+[Architecture: ORE as a dependency](../concepts/architecture.md#ore-as-a-dependency)). An
 independent implementation was checked against `ORE.JamshidianSwaptionEngine.NPV()`
 across payer and receiver swaptions, in-the-money/at-the-money/out-of-the-money cases,
 and several tenors and forward-start dates, matching to a relative precision of
@@ -63,12 +63,12 @@ and several tenors and forward-start dates, matching to a relative precision of
 
 A `SwaptionConfig` describes one swaption: the underlying swap's terms (`notional`,
 `fixed_rate`, `payer`, `swap_tenor` — the same meaning as
-[`SwapConfig`](04-instruments.md#1-describing-a-swap-swapconfig)), which simulated
+[`SwapConfig`](swaps.md#1-describing-a-swap-swapconfig)), which simulated
 Hull-White rate factor prices it (`rate_factor_index`), that factor's own model
 parameters (`hw_a`, `hw_sigma`, `initial_zero_curve` — see
 [below](#why-a-swaption-needs-its-own-copy-of-the-models-parameters)), and, optionally,
 `forward_start` — how far in the future the option can first be exercised. See
-[API Reference](07-api-reference.md#swaptionconfig) for every field.
+[API Reference](../reference/api-reference.md#swaptionconfig) for every field.
 
 **Why a swaption needs its own copy of the model's parameters.** Unlike the linear swap
 pricer, which only needs *discount factors* (already baked into the yield curve cube),
@@ -78,7 +78,7 @@ is left between now and the exercise date, which is exactly what the option's va
 depends on. There is no way to recover these from the simulated rate paths alone, so they
 must be passed in explicitly, matching the same values used to configure that rate
 factor in the simulation's own `RatesConfig` (see
-[Market Simulation](03-market-simulation.md)).
+[Market Simulation](../concepts/market-simulation.md)).
 
 **Single-model pricing, not multi-curve.** Unlike the swap pricer's independent
 `discount_curve_index`/`forward_curve_index` split, Jamshidian's trick prices the
@@ -90,10 +90,10 @@ multi-curve version of this formula in ORE either.
 
 ### 2. Building the real trade: `_build_ore_swap()`, `prepare_swaption()`
 
-Exactly like [the swap pricer](04-instruments.md#2-building-the-real-trade-_build_ore_swap-prepare_swap),
+Exactly like [the swap pricer](swaps.md#2-building-the-real-trade-_build_ore_swap-prepare_swap),
 the underlying swap's schedule, day-count accrual, and coupon amounts are built with
 ORE's own `MakeVanillaSwap` machinery rather than reimplemented — see
-[Instruments: using ORE for the fiddly parts](04-instruments.md#why-its-built-this-way-using-ore-for-the-fiddly-parts)
+[Instruments: using ORE for the fiddly parts](swaps.md#why-its-built-this-way-using-ore-for-the-fiddly-parts)
 for why. `prepare_swaption()` additionally extracts two dates unique to a swaption:
 
 - **The exercise date `T0`** — when the option holder must decide whether to exercise.
@@ -120,7 +120,7 @@ for the regression coverage.
 
 These implement the Hull-White 1-Factor closed forms Jamshidian's trick is built from —
 the same `A(t,T)`/`B(t,T)` affine bond-price formula
-[Market Simulation](03-market-simulation.md#phase-3--yield-curve-reconstruction) already
+[Market Simulation](../concepts/market-simulation.md#phase-3--yield-curve-reconstruction) already
 uses to reconstruct discount factors, generalized here to *any* `(t,T)` pair (not just
 pre-tabulated maturity pillars), since Jamshidian's trick needs it evaluated at two
 distinct anchor points per swaption (today → exercise date, and exercise date → each
@@ -159,7 +159,7 @@ def _solve_rstar(coupon_bond_value_fn, t_shape, iterations=100) -> jax.Array:
 Finds Jamshidian's critical short rate `r*` — the rate at which the (signed) coupon bond
 is worth exactly zero — via **vectorized bisection**, run once per `(scenario, time
 step)` pair simultaneously under `jax.jit`, directly implementing the root's
-[README.md](../README.md) goal of "vectorize the calculation of the exercise boundary."
+[README.md](../../README.md) goal of "vectorize the calculation of the exercise boundary."
 Bisection (rather than Newton's method) is used because it needs no derivative and
 converges within a fixed, data-independent number of iterations — which is what makes it
 `jax.jit`-friendly (JAX requires a fixed amount of work per compiled call, not a
@@ -168,7 +168,7 @@ data-dependent "stop when converged" loop).
 ### 5. Why T_start matters: the floating leg's notional timing
 
 The par-floating-leg identity this module relies on (see
-[Instruments: multi-curve discounting](04-instruments.md#2-building-the-real-trade-_build_ore_swap-prepare_swap))
+[Instruments: multi-curve discounting](swaps.md#2-building-the-real-trade-_build_ore_swap-prepare_swap))
 is, conditional on the exercise date `T0`:
 
 ```

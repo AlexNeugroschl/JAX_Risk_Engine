@@ -2,7 +2,7 @@
 
 ## Plain-language summary
 
-A **European swaption** (see [08-swaptions.md](08-swaptions.md)) gives its holder exactly
+A **European swaption** (see [European Swaptions](european-swaptions.md)) gives its holder exactly
 one date on which to decide whether to enter a swap. A **Bermudan swaption** gives the
 holder several such dates — say, once a year for five years — and lets them pick the best
 one. An **American swaption** goes further and lets the holder exercise on *any* day within
@@ -22,7 +22,7 @@ This module builds that backward-working grid.
 
 ## Why not Jamshidian's decomposition
 
-[08-swaptions.md](08-swaptions.md#why-its-built-this-way-jamshidians-trick) explains
+[European Swaptions](european-swaptions.md#why-its-built-this-way-jamshidians-trick) explains
 Jamshidian's trick: a European swaption is equivalent to an option on a coupon-bearing
 bond, and that bond option can be split into a handful of independent zero-coupon bond
 options, each of which has a textbook closed form under a one-factor model. This works
@@ -95,7 +95,7 @@ Bermudan/American baskets.
 ### 2. Building the trade and extracting cashflows: `prepare_bermudan()`
 
 Unlike the European module, Jamshidian's telescoping-notional shortcut for the floating leg
-(see [08-swaptions.md](08-swaptions.md#5-why-t_start-matters-the-floating-legs-notional-timing))
+(see [European Swaptions](european-swaptions.md#5-why-t_start-matters-the-floating-legs-notional-timing))
 cannot be used here: early exercise means the continuation value at each node needs the
 *actual* remaining swap value, not just a closed-form identity valid only for the full,
 unexercised swap. `prepare_bermudan()` therefore extracts every fixed and floating coupon's
@@ -109,7 +109,7 @@ exactly, not a reimplementation.
 Every other pricer in this codebase (`simulation.py`, `swap.py`,
 `european_swaption.py`) is built on this codebase's own direct short-rate closed form,
 `compute_hw_A`/`_hw_B`, live-verified against `QuantLib::HullWhite` (see
-[09-ore-parity.md](09-ore-parity.md)). This module deliberately does **not** reuse that
+[ORE Parity](../reference/ore-parity.md)). This module deliberately does **not** reuse that
 formula, using instead a *separate* closed form, `_lgm_bond`, parametrized directly in
 `QuantExt`'s own LGM state variable `x`:
 
@@ -123,7 +123,7 @@ discountBond` (`QuantExt/qle/models/lgm.hpp`, lines 252-280).
 **This split exists because of a finding made while building this module, not stylistic
 preference.** `ORE.HullWhite` (`QuantLib::HullWhite`) and `ORE.LinearGaussMarkovModel`
 (`QuantExt::CrossAssetModel`'s own rates leg) were assumed, going into this task, to be two
-equivalent parametrizations of the *same* model — [09-ore-parity.md](09-ore-parity.md#a-parametrization-note-lgm-vs-plain-hull-white)
+equivalent parametrizations of the *same* model — [ORE Parity](../reference/ore-parity.md#a-parametrization-note-lgm-vs-plain-hull-white)
 documents exactly that equivalence claim, verified at `t=0`. Building this module's
 backward induction required evaluating both classes at `t>0`, and a live, direct comparison
 showed they are **not** numerically the same model realization there:
@@ -194,7 +194,7 @@ weights against a linearly-interpolated value function, using `x`'s own driftles
 transition law (`E[x_from | x_to] = x_to`, `Var[x_from | x_to] = zeta(t_from) - zeta(t_to)`
 — LGM's state variable is driftless by construction, confirmed directly from
 `QuantExt::IrLgm1fStateProcess::expectation()` returning its input unchanged; see
-[09-ore-parity.md section 3a](09-ore-parity.md#3a-short-rate-transition-monte-carlo-step)).
+[ORE Parity section 3a](../reference/ore-parity.md#3a-short-rate-transition-monte-carlo-step)).
 
 This convolution is only a valid way to compute a conditional expectation if what's being
 rolled back is itself a **Q-martingale** under `x`'s own transition law. A raw bond or swap
@@ -256,7 +256,7 @@ can. `price_bermudan_swaptions` therefore re-runs the backward induction once pe
 snapshotting the value function at every requested `step_time` before its own last exercise
 date as the walk passes through, then interpolates each scenario's simulated short rate
 (`hw_paths`) against the appropriate snapshot's `r`-grid — the same Markov-conditioning
-principle [08-swaptions.md](08-swaptions.md#6-conditional-future-time-pricing) uses, applied
+principle [European Swaptions](european-swaptions.md#6-conditional-future-time-pricing) uses, applied
 to a numerically-rolled-back value function instead of a closed form. Steps at or after a
 trade's last exercise date are priced as exactly `0`, matching this codebase's (and ORE's
 `Instrument.NPV()`'s) convention for an already-lapsed option.
@@ -289,7 +289,7 @@ not assumed) avoids it entirely.
 Full mid-coupon proration (matching ORE's own `couponRatio` construction) is intentionally
 out of scope for this module, following this project's established pattern of documenting
 known gaps as explicit, tested limitations rather than leaving them silent (see
-`swap.py`'s own aged-swap limitation, [04-instruments.md](04-instruments.md)).
+`swap.py`'s own aged-swap limitation, [Instruments: Interest Rate Swaps](swaps.md)).
 
 ## Tested by
 

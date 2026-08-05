@@ -1,6 +1,6 @@
 # Instruments: Interest Rate Swaps
 
-**Module:** [`engine/instruments/swap.py`](../engine/instruments/swap.py)
+**Module:** [`engine/instruments/swap.py`](../../engine/instruments/swap.py)
 **Public entry point:** `price_swaps(yield_curves, maturities, swap_configs)`
 
 ## Plain-language summary
@@ -15,10 +15,10 @@ rates rise above what was fixed, the floating-rate payer comes out ahead; if the
 the fixed-rate payer does.
 
 This module answers: *"given [thousands of simulated alternate futures for interest
-rates](03-market-simulation.md), what is this specific swap worth in each of them, at
+rates](../concepts/market-simulation.md), what is this specific swap worth in each of them, at
 each point in time?"* The output is the **NPV cube** — a big table of "what this trade is
-worth," organized by scenario and by time. That's the raw material [Stage 3](05-risk-statistics.md)
-needs to compute risk numbers.
+worth," organized by scenario and by time. That's the raw material risk aggregation (see
+[VaR & Expected Shortfall](../risk/statistics.md)) needs to compute risk numbers.
 
 ## Why it's built this way: using ORE for the fiddly parts
 
@@ -40,7 +40,7 @@ subtle bug would produce numbers that are wrong in a way that's hard to detect j
 looking at them. So this module uses [ORE](https://www.opensourcerisk.org/)'s own
 trade-building code directly (`ORE.MakeVanillaSwap`, `ORE.Actual365Fixed`, and related
 classes) to build the schedule and compute accrual fractions — see
-[Architecture: ORE as a dependency](02-architecture.md#ore-as-a-dependency) for the
+[Architecture: ORE as a dependency](../concepts/architecture.md#ore-as-a-dependency) for the
 broader design rationale. Only the actual "add up the simulated cashflows" math is
 custom, GPU-accelerated JAX code.
 
@@ -51,9 +51,10 @@ custom, GPU-accelerated JAX code.
 A `SwapConfig` describes one trade: how much money (`notional`), what fixed rate is
 being paid, whether *this side* of the deal is paying fixed or receiving it (`payer`),
 how long the swap runs (`swap_tenor`), and — importantly — *which* of the simulated
-interest rate curves from [Stage 1](03-market-simulation.md) should be used to discount
+interest rate curves from the market simulation module (see
+[Market Simulation](../concepts/market-simulation.md)) should be used to discount
 this swap's cashflows versus to figure out its floating payments (`discount_curve_index`,
-`forward_curve_index`). See [API Reference](07-api-reference.md#swapconfig) for every
+`forward_curve_index`). See [API Reference](../reference/api-reference.md#swapconfig) for every
 field.
 
 **Why two separate curve indices?** In modern practice, the interest rate used to
@@ -136,7 +137,7 @@ value at any future scenario/step is just the expected value of its remaining ca
 computed with *that* scenario's simulated curve. No nested simulation is needed (unlike,
 say, an option, where you'd need to simulate what happens *after* a decision point too).
 This is also why this module doesn't use the "numéraire" that
-[Stage 1](03-market-simulation.md#phase-2--the-cross-asset-model-engine) produces —
+the [market simulation module](../concepts/market-simulation.md#phase-2--the-cross-asset-model-engine) produces —
 discounting directly off the simulated yield curve cube is simpler and exactly
 equivalent for a linear instrument like this.
 
@@ -145,11 +146,12 @@ def price_swaps(yield_curves, maturities, swap_configs: List[SwapConfig]) -> jax
 ```
 The public entry point: prepares and prices every swap in the list, and stacks the
 results into one NPV cube shaped `[Scenarios, TimeSteps, Trades]` — the standard shape
-[Stage 3](05-risk-statistics.md) expects from *any* pricer, not just this one.
+risk aggregation (see [VaR & Expected Shortfall](../risk/statistics.md)) expects from
+*any* pricer, not just this one.
 
 ## A known limitation: maturity-pillar alignment
 
-The simulated yield curve cube ([Stage 1](03-market-simulation.md)) only contains
+The simulated yield curve cube (see [Market Simulation](../concepts/market-simulation.md)) only contains
 discount factors for a specific, fixed list of future dates (`maturities`) — it doesn't
 support asking for an arbitrary date that wasn't explicitly requested when the simulation
 was configured. This means **every one of a swap's payment/accrual dates must land
@@ -160,9 +162,9 @@ would be a subtle pricing error) if a swap's dates don't line up.
 
 In practice, this means: when setting up a simulation that's meant to price a specific
 swap, `config.rates.maturities` must be set to the union of every payment/accrual date
-that swap will need. See the [User Guide](06-user-guide.md#pricing-a-swap) for a worked
+that swap will need. See the [User Guide](../getting-started/user-guide.md#pricing-a-swap) for a worked
 example, and
-[`engine/scenarios.py`](../engine/scenarios.py)'s `SWAP_DEMO_MATURITIES` for a concrete
+[`engine/scenarios.py`](../../engine/scenarios.py)'s `SWAP_DEMO_MATURITIES` for a concrete
 instance of this being done correctly.
 
 **A subtle correctness detail this limitation caught:** the original lookup logic

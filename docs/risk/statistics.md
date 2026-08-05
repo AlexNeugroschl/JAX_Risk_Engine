@@ -1,6 +1,6 @@
 # Risk Statistics: Value at Risk & Expected Shortfall
 
-**Module:** [`engine/risk/statistics.py`](../engine/risk/statistics.py)
+**Module:** [`engine/risk/statistics.py`](../../engine/risk/statistics.py)
 **Public entry point:** `compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))`
 
 ## Plain-language summary
@@ -26,11 +26,11 @@ potential loss** — even though the underlying scenario values might be gains o
 in either direction.
 
 This module is completely **instrument-agnostic**: it has no idea what a "swap" is and
-never imports anything from [`engine/instruments/`](04-instruments.md). It only requires
+never imports anything from `engine/instruments/`. It only requires
 *some* NPV cube shaped `[Scenarios, TimeSteps, Trades]` — which means the exact same code
 will work unmodified for any future instrument type this engine adds (options, bonds,
 whatever comes next), with zero changes needed here. See
-[Architecture: stages agree on shapes, not code](02-architecture.md#design-principle-stages-agree-on-shapes-not-code).
+[Architecture: stages agree on shapes, not code](../concepts/architecture.md#design-principle-stages-agree-on-shapes-not-code).
 
 ## Why it's built this way: matching ORE's exact formula
 
@@ -78,7 +78,7 @@ boundary — in which case they diverge, and only the value-based filter matches
 was caught by constructing a test P&L sample with deliberate ties at the VaR cutoff and
 comparing against `ORE.RiskStatistics.expectedShortfall()` directly; the positional
 formula gave a visibly wrong answer (`72.7` instead of ORE's actual `100.0`) on that test
-case. See `tests/test_risk_statistics.py::TestExpectedShortfallAgainstORE::test_matches_ore_with_ties_at_var_boundary`.
+case. See `tests/test_statistics.py::TestExpectedShortfallAgainstORE::test_matches_ore_with_ties_at_var_boundary`.
 
 **What happens when the tail is empty?** If every one of the worst observations is
 exactly tied at the VaR cutoff, the strict `<` filter can end up with nothing in it.
@@ -102,7 +102,7 @@ P&L(scenario, t)  =  portfolio_NPV(scenario, t)  −  base_npv
 where `base_npv` is a single number: **the portfolio's actual value today, before any
 simulated shocks** — supplied explicitly by the caller (typically by pricing the same
 trade(s) against today's real, un-simulated market curve; see
-[`engine/scenarios.py`](../engine/scenarios.py)'s `flat_yield_curves()` helper for how the
+[`engine/scenarios.py`](../../engine/scenarios.py)'s `flat_yield_curves()` helper for how the
 demos build this). This is applied identically at *every* simulated future time step,
 matching ORE's own historical-VaR P&L definition literally.
 
@@ -112,7 +112,7 @@ resulting risk profile reflects both market risk *and* a trade's ordinary
 value-changes-over-time as it approaches maturity) versus measuring each future time
 step against *that step's own* average simulated value (which would isolate pure market
 risk from ordinary time-decay, but doesn't match ORE's definition). See the root
-[README.md](../README.md)'s Phase 3 notes for where this decision is recorded.
+[README.md](../../README.md)'s Phase 3 notes for where this decision is recorded.
 
 ## The functions
 
@@ -130,7 +130,7 @@ def expected_shortfall(pnl: jax.Array, percentile: float) -> jax.Array:
 `[Scenarios, TimeSteps] → [TimeSteps]`. Implement the formulas above, vectorized across
 every time step at once via `jnp.sort` — sorting the whole scenario axis is the
 "expensive" part of this computation, and it's exactly the kind of operation GPUs are
-efficient at, which is what the root [README.md](../README.md)'s "sorting/percentile
+efficient at, which is what the root [README.md](../../README.md)'s "sorting/percentile
 logic that remains highly efficient on GPUs" goal is about.
 
 ```python
@@ -143,7 +143,7 @@ returns them in a dictionary keyed like `"VaR_95"`, `"ES_95"`, `"VaR_99"`, `"ES_
 
 ## Tested by
 
-- `tests/test_risk_statistics.py::TestValueAtRiskAgainstORE` /
+- `tests/test_statistics.py::TestValueAtRiskAgainstORE` /
   `TestExpectedShortfallAgainstORE` — direct numeric comparison against
   `ORE.RiskStatistics`, including the tie-at-boundary and empty-tail edge cases described
   above.

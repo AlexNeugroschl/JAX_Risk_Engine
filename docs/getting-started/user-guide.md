@@ -1,16 +1,16 @@
 # User Guide
 
 This page is about *running* the code. For how it works internally, see
-[Architecture](02-architecture.md) and the per-stage deep dives
-([Market Simulation](03-market-simulation.md), [Instruments](04-instruments.md),
-[Risk Statistics](05-risk-statistics.md)).
+[Architecture](../concepts/architecture.md) and the per-stage deep dives
+([Market Simulation](../concepts/market-simulation.md), [Instruments](../instruments/swaps.md),
+[Risk Statistics](../risk/statistics.md)).
 
 ## Prerequisites
 
 - Python 3.11 (the project's `venv/` was built against this version).
-- The dependencies listed in [`requirements.txt`](../requirements.txt):
+- The dependencies listed in [`requirements.txt`](../../requirements.txt):
   `open-source-risk-engine` (the ORE Python bindings — see
-  [Architecture: ORE as a dependency](02-architecture.md#ore-as-a-dependency)), `pandas`,
+  [Architecture: ORE as a dependency](../concepts/architecture.md#ore-as-a-dependency)), `pandas`,
   `jax`, `jaxlib`, `numpy`, `scipy`, `pytest`.
 
 ## Setting up
@@ -34,16 +34,16 @@ below with `venv\Scripts\python.exe` (or activate the venv first with
 
 Each pipeline module has a runnable demo in its own `if __name__ == "__main__":` block,
 showing that module's public API used end-to-end against a shared example scenario (see
-[`engine/scenarios.py`](../engine/scenarios.py)).
+[`engine/scenarios.py`](../../engine/scenarios.py)).
 
-**Stage 1 — market simulation:**
+**Market simulation:**
 ```bash
 python -m engine.simulation
 ```
 Prints the shapes of the simulated equity/rate paths and a sample of reconstructed
 discount factors.
 
-**Stage 2 — swap pricing** (runs Stage 1 internally first, to get a yield curve cube to
+**Swap pricing** (runs the simulation internally first, to get a yield curve cube to
 price against):
 ```bash
 python -m engine.instruments.swap
@@ -51,15 +51,33 @@ python -m engine.instruments.swap
 Prints the resulting NPV cube's shape and its mean value at the first simulated time
 step.
 
-**Stage 2 — swaption pricing** (runs Stage 1 internally first, against a scenario sized
-so several simulated steps land before the demo swaption's own exercise date):
+**European swaption pricing** (runs the simulation internally first, against a scenario
+sized so several simulated steps land before the demo swaption's own exercise date):
 ```bash
 python -m engine.instruments.european_swaption
 ```
 Prints the resulting NPV cube's shape and its mean value at every simulated time step —
 increasing as the exercise date approaches, then exactly `0.00` after it.
 
-**Stage 3 — risk statistics** (runs Stages 1 and 2 internally first):
+**Bermudan swaption pricing** (runs the simulation internally first; prices a Bermudan
+swaption with several exercise dates against the simulated paths):
+```bash
+python -m engine.instruments.bermudan_swaption
+```
+Prints the swaption's baseline (t=0) NPV, then the resulting NPV cube's shape and its
+mean value at every simulated time step.
+
+**American swaption pricing** (runs the simulation internally first; prices an American
+swaption, discretized into a grid of exercise dates over its exercise window, against the
+simulated paths):
+```bash
+python -m engine.instruments.american_swaption
+```
+Prints how many discretized exercise dates the exercise window was converted into, the
+resulting baseline (t=0) NPV, then the NPV cube's shape and its mean value at every
+simulated time step.
+
+**Risk statistics** (runs simulation and pricing internally first):
 ```bash
 python -m engine.risk.statistics
 ```
@@ -73,11 +91,10 @@ python -m pytest tests/ -v
 ```
 
 This runs the full suite — see each deep-dive doc's "Tested by" section for what's
-covered where, and [Architecture: Testing philosophy](02-architecture.md#testing-philosophy)
+covered where, and [Architecture: Testing philosophy](../concepts/architecture.md#testing-philosophy)
 for the general approach (every formula is checked both for internal mathematical
 correctness and against ORE's own installed software directly). As of this writing, the
-suite has 31 tests across `tests/test_simulation.py`,
-`tests/test_swap.py`, and `tests/test_statistics.py`, all passing.
+suite has 502 tests across `tests/`, all passing.
 
 `tests/conftest.py` provides shared `pytest` fixtures (the example scenario
 configurations from `engine/scenarios.py`, wrapped as fixtures) so individual test files
@@ -86,7 +103,7 @@ don't each need to build their own copy of the same setup.
 ## Writing your own market simulation config
 
 `generate_paths()` takes a `SimulationConfig` — see
-[API Reference: SimulationConfig](07-api-reference.md#simulationconfig) for every field.
+[API Reference: SimulationConfig](../reference/api-reference.md#simulationconfig) for every field.
 Here's a minimal, verified-working example with one equity and one interest rate curve:
 
 ```python
@@ -127,7 +144,7 @@ A few things worth knowing before writing your own config:
 - **`joint_covariance`'s row/column order is equities first, then rates**, in the same
   order they appear in `equities.initial_prices` and `rates.initial_rates`.
 - **`rates.initial_zero_curves` must have exactly one entry per rate factor** — see
-  [Market Simulation: one curve per rate factor](03-market-simulation.md#phase-3--yield-curve-reconstruction).
+  [Market Simulation: one curve per rate factor](../concepts/market-simulation.md#phase-3--yield-curve-reconstruction).
   A mismatched count raises a clear `ValueError`.
 - **`rates.maturities` is optional** — omit it (and `initial_zero_curves`) if you only
   need the raw simulated rate/equity paths and not a full discount-factor cube. It's
@@ -137,10 +154,10 @@ A few things worth knowing before writing your own config:
 
 Pricing a swap requires **two** things to line up with each other: the simulation needs
 at least two rate factors (one to discount cashflows, one to set floating payments — see
-[Instruments: multi-curve discounting](04-instruments.md#1-describing-a-swap-swapconfig)),
+[Instruments: multi-curve discounting](../instruments/swaps.md#1-describing-a-swap-swapconfig)),
 and `rates.maturities` must be set to the *exact* payment/accrual dates the swap will
 generate (see
-[Instruments: maturity-pillar alignment](04-instruments.md#a-known-limitation-maturity-pillar-alignment))
+[Instruments: maturity-pillar alignment](../instruments/swaps.md#a-known-limitation-maturity-pillar-alignment))
 — it is **not** simply "any list of future dates you want discount factors for," as the
 minimal example above used. This is a self-contained, verified-working example for a 1
 year swap:
@@ -155,7 +172,7 @@ from engine.instruments.swap import SwapConfig, price_swaps
 # These specific times are the swap's own accrual/payment dates -- for a 1Y swap
 # with a 6-month floating index, starting at the standard 2-day spot lag. Computing
 # these by hand is exactly the fiddly work ORE's schedule-building code does for
-# you (see docs/04-instruments.md) -- in practice, build the swap first, inspect
+# you (see docs/instruments/swaps.md) -- in practice, build the swap first, inspect
 # its schedule, and pass those dates into the simulation config's maturities.
 maturities = [0.010958904109589041, 0.5150684931506849, 1.010958904109589]
 
@@ -206,7 +223,7 @@ paths (`generate_paths(...)["rates"]`), not the yield-curve cube — so `rates.m
 doesn't need to be set at all, and there's no maturity-pillar-alignment requirement to
 satisfy. It does need the simulation's own `hw_a`/`hw_sigma`/zero-curve for the rate
 factor being priced off (see
-[Instruments: European Swaptions](08-swaptions.md#1-describing-a-swaption-swaptionconfig)
+[Instruments: European Swaptions](../instruments/european-swaptions.md#1-describing-a-swaption-swaptionconfig)
 for why). This is a self-contained, verified-working example for a swaption exercisable
 in 3 years, on a 2-year underlying swap:
 
@@ -262,6 +279,14 @@ print(float(npv_cube[:, 4, 0].mean()))         # mean NPV at t=5.0 (after exerci
 — several swaptions price into one `[Scenarios, TimeSteps, Trades]` cube, one entry per
 trade in `Trades`, in the order given.
 
+For swaptions with multiple exercise dates (Bermudan) or a continuous exercise window
+(American), see
+[American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md) and
+[API Reference](../reference/api-reference.md#engineinstrumentsbermudan_swaption) —
+`BermudanSwaptionConfig`/`price_bermudan_swaptions` and
+`AmericanSwaptionConfig`/`price_american_swaptions` follow the same
+list-of-configs-in, NPV-cube-out pattern as `price_swaptions` above.
+
 ## Computing risk metrics
 
 ```python
@@ -276,17 +301,17 @@ print(metrics["VaR_95"])   # [TimeSteps] array
 print(metrics["ES_99"])    # [TimeSteps] array
 ```
 
-See [Risk Statistics: the P&L baseline](05-risk-statistics.md#the-pl-baseline-what-are-gainslosses-measured-against)
+See [Risk Statistics: the P&L baseline](../risk/statistics.md#the-pl-baseline-what-are-gainslosses-measured-against)
 for exactly what `base_npv` should be and why it can't be inferred automatically from
 the NPV cube itself. **`ES_*` values can be `NaN`** for a given time step if there were
 no simulated losses severe enough to have anything "worse than the VaR cutoff" — check
 for this explicitly rather than assuming a numeric result (see
-[Risk Statistics: the formulas](05-risk-statistics.md#the-formulas)).
+[Risk Statistics: the formulas](../risk/statistics.md#the-formulas)).
 
 ## Precision (float32 vs float64)
 
 `generate_paths(config, precision=64)` (the default) runs in 64-bit precision. Pass
 `precision=32` to run in 32-bit instead — see
-[Architecture: Adjustable precision](02-architecture.md#adjustable-precision) for what
+[Architecture: Adjustable precision](../concepts/architecture.md#adjustable-precision) for what
 this changes and why it's a single, per-call argument rather than something set once
 globally by the caller.
