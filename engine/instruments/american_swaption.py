@@ -28,15 +28,16 @@ ORE, simply "Bermudan with a very fine, evenly-spaced exercise schedule" --
 LGM state grid, Hagan's quadrature convolution, numeraire-deflated backward
 induction, early-exercise comparison) lives in that module -- see
 `engine.instruments.bermudan_swaption`'s own docstring and
-docs/10-american-swaptions.md for the full algorithm writeup.
+docs/instruments/american-bermudan-swaptions.md for the full algorithm writeup.
 """
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Union
 
 import jax
 import ORE
 
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, price_bermudan_swaptions
+from engine.models.lgm import Sigma
 from engine.simulation import ZeroCurveConfig
 
 
@@ -56,6 +57,13 @@ class AmericanSwaptionConfig:
     model parameter; ORE's own shipped example config
     (Examples/Products/Input/pricingengine.xml) uses 24 (~monthly) for
     American swaptions, which is this field's default.
+
+    hw_sigma accepts either a plain float or an `engine.models.lgm.Sigma`
+    (a genuine piecewise-constant term structure, e.g. from
+    `engine.calibration`) -- forwarded as-is to `BermudanSwaptionConfig`
+    by `to_bermudan()` below, which already accepts both (see that
+    dataclass's own docstring); this module never branches on which case
+    it's handling.
 
     **Known limitation: no mid-coupon proration.** ORE's own American
     engine supports exercise landing INSIDE an accrual period (a "broken"
@@ -84,7 +92,7 @@ class AmericanSwaptionConfig:
     payer: bool
     rate_factor_index: int
     hw_a: float
-    hw_sigma: float
+    hw_sigma: Union[float, Sigma]
     initial_zero_curve: ZeroCurveConfig
     first_exercise: float
     last_exercise: float

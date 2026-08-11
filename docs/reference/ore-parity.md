@@ -397,7 +397,7 @@ American-discretization/mid-coupon edge cases).
 
 ## 8. Value at Risk & Expected Shortfall
 
-**This engine:** `engine/risk/statistics.py::value_at_risk`,
+**This engine:** `engine/risk/var_es.py::value_at_risk`,
 `expected_shortfall`.
 
 **ORE:** `QuantLib::GenericRiskStatistics<GaussianStatistics>::valueAtRisk`,
@@ -416,7 +416,7 @@ unit weights (confirmed identical by direct construction: with every weight equa
 walking forward until cumulative count reaches `percent*N` is exactly indexing
 `sorted[floor(percent*N)]` for the standard 0-indexed convention `percentile.cpp` uses,
 confirmed to `1e-9` absolute tolerance against `ORE.RiskStatistics.valueAtRisk` directly
-in `tests/test_statistics.py`).
+in `tests/test_var_es.py`).
 
 `RiskStatistics::valueAtRisk(centile)` calls `percentile(1-centile)`, floors at `0.0`,
 and negates — exactly this engine's `max(-sorted_pnl[idx], 0.0)`.
@@ -425,7 +425,7 @@ averages every sample **strictly less than** `target` (`xi < target`, a value-ba
 filter, not a positional slice of the sorted array) — exactly this engine's
 `tail_mask = pnl < -var`, confirmed as the deliberately-chosen-over-a-positional-slice
 formula in this project's own regression test
-(`tests/test_statistics.py::TestExpectedShortfallAgainstORE::
+(`tests/test_var_es.py::TestExpectedShortfallAgainstORE::
 test_matches_ore_with_ties_at_var_boundary`, written before this C++ source was
 available, purely from adversarial live-testing — this read confirms that test's
 positional-vs-value-based conclusion was correct by reading the actual source, not just
@@ -433,7 +433,7 @@ inferring it from output numbers).
 
 Both `valueAtRisk` and `expectedShortfall` require `centile` in `[0.9, 1.0)`
 (`QL_REQUIRE(centile>=0.9 && centile<1.0, ...)`) — the exact range this project's own
-`tests/test_statistics.py::TestValueAtRiskEdgeCases::
+`tests/test_var_es.py::TestValueAtRiskEdgeCases::
 test_ore_rejects_percentile_outside_0_9_to_1` locks in from live-testing; this read
 confirms it's an explicit, deliberate `QL_REQUIRE` in the source, not an implementation
 accident. The empty-tail case (`expectedShortfall` with no samples below `target`) is
@@ -441,8 +441,171 @@ guarded by `QL_ENSURE(N != 0, "no data below the target")` — the exact error m
 string this project's own tests assert against, confirmed here as the literal C++
 source text (not independently re-derived).
 
-**Verified:** `tests/test_statistics.py` (all classes; direct `ORE.RiskStatistics`
+**Verified:** `tests/test_var_es.py` (all classes; direct `ORE.RiskStatistics`
 comparison, including the tie-at-VaR-boundary and empty-tail edge cases).
+
+## 9. Delta, Gamma, Vega, and Theta
+
+**This engine:** `engine/risk/greeks.py::swap_delta_gamma`, `swap_theta`,
+`swaption_delta_gamma`, `swaption_theta`, `bermudan_delta_gamma`, `bermudan_theta`,
+`bermudan_vega`.
+
+**ORE:** `OREAnalytics::SensitivityAnalysis::generateSensitivities` —
+[`OREAnalytics/orea/engine/sensitivityanalysis.cpp`](../../reference/ORE/OREAnalytics/orea/engine/sensitivityanalysis.cpp)
+— backed by `OREAnalytics::SensitivityScenarioGenerator`/`ShiftScenarioGenerator` —
+[`OREAnalytics/orea/scenario/sensitivityscenariogenerator.cpp`](../../reference/ORE/OREAnalytics/orea/scenario/sensitivityscenariogenerator.cpp),
+[`shiftscenariogenerator.cpp`](../../reference/ORE/OREAnalytics/orea/scenario/shiftscenariogenerator.cpp)
+— and `OREAnalytics::SensitivityCube` —
+[`OREAnalytics/orea/cube/sensitivitycube.cpp`](../../reference/ORE/OREAnalytics/orea/cube/sensitivitycube.cpp).
+
+**Correspondence: the same numerical quantity ORE reports, computed via automatic
+differentiation instead of literal bump-and-revalue.** ORE's production path is finite
+differences: `SensitivityScenarioGenerator` builds one perturbed market scenario per
+curve pillar (a triangular-weighted bump, `ShiftScenarioGenerator::applyShift`, ORE's own
+example config using `ShiftType=Absolute`, `ShiftSize=0.0001` — 1bp), reprices the whole
+portfolio under each scenario, and `SensitivityCube` differences the resulting NPVs
+(`delta = NPV_up - NPV_base`, `gamma = NPV_up - 2*NPV_base + NPV_down`). This engine
+computes the exact analytic derivative of the SAME NPV with respect to the SAME curve
+pillars (`jax.grad`/`jax.hessian`, via a JAX-differentiable curve interpolation,
+`greeks.ZeroCurve`/`_zero_rate_at`, using the identical piecewise-linear-on-zero-rates
+shape `compute_hw_A`/`_initial_log_discount` already use elsewhere in this codebase), then
+scales by the same 1bp `bump_size` — giving ORE's own "dollar Delta/Gamma for a 1bp move,"
+without finite-difference truncation error. This mirrors ORE's own use of closed-form
+`DiscountingSwapEngineDeltaGamma`/`BlackSwaptionEngineDeltaGamma` engines
+([`QuantExt/qle/pricingengines/discountingswapenginedeltagamma.hpp`](../../reference/ORE/QuantExt/qle/pricingengines/discountingswapenginedeltagamma.hpp),
+[`blackswaptionenginedeltagamma.hpp`](../../reference/ORE/QuantExt/qle/pricingengines/blackswaptionenginedeltagamma.hpp))
+as an independent, closed-form cross-check on its own bump-and-revalue numbers
+(exercised by
+[`OREAnalytics/test/sensitivityvsanalytic.cpp`](../../reference/ORE/OREAnalytics/test/sensitivityvsanalytic.cpp))
+— this engine uses that closed-form route as its primary implementation, not just a
+validation side-channel.
+
+**Rho:** confirmed absent from ORE entirely — `QuantExt::RiskFactorKey::KeyType`
+([`QuantExt/qle/termstructures/scenario.hpp`](../../reference/ORE/QuantExt/qle/termstructures/scenario.hpp))
+has no rho-specific entry, and `ReportWriter::writeSensitivityReport`
+([`OREAnalytics/orea/app/reportwriter.cpp`](../../reference/ORE/OREAnalytics/orea/app/reportwriter.cpp))
+emits only "Delta"/"Gamma" columns for whatever risk factor was bumped, curves included —
+so this engine's own interest-rate-curve Delta is ORE's exact equivalent of a textbook
+Rho, and no separate function exists for it.
+
+**Vega: implemented for Bermudan/American, via `engine/calibration/`.**
+`SensitivityScenarioGenerator::generateSwaptionVolScenarios` bumps the market-quoted
+implied-volatility surface used to CALIBRATE ORE's model — there is no
+`RiskFactorKey::KeyType` anywhere for a raw model parameter, so `d(NPV)/d(hw_sigma)` was
+never a well-defined ORE-equivalent Vega on its own. This was a genuine blocker, not
+merely a missing function: until [`engine/calibration/`](calibration.md) existed to
+calibrate a piecewise LGM `Sigma` to a basket of market swaption vols
+(`ore::data::LgmBuilder::calibrate()`'s own `Bootstrap` path), there was no
+market-vol-to-model relationship for this engine to differentiate through either.
+`greeks.bermudan_vega` now computes `d(NPV)/d(market_vol_i)` for each basket instrument by
+differentiating through `calibrate_lgm_sigma`'s bootstrap via the implicit function
+theorem — see [Delta, Gamma, and Theta: Vega](../risk/greeks.md#vega-bermudanamerican-only)
+for the full derivation, including two real bugs found while building it. Vega for
+`swap.py`/`european_swaption.py` remains out of scope: a swap has no volatility exposure
+at all, and `SwaptionConfig` (the European swaption pricer's config) was never migrated to
+accept a calibrated `Sigma` the way `BermudanSwaptionConfig` was, so there is still no
+market-vol-to-model relationship to differentiate through for a European swaption.
+
+**Theta:** `SensitivityAnalysis::generateSensitivities`'s theta branch (lines ~253-307 of
+the same file cited above) advances the evaluation date by a configured period (default
+1 day), holds every market quote fixed, rebuilds term structures at the new reference
+date, reprices, and adds back any interim cashflow —
+`Theta = NPV(t+dt, same curve) - NPV(t) + CF(t, t+dt)`. This engine's `swap_theta`/
+`swaption_theta`/`bermudan_theta` reproduce this literally; unlike Delta/Gamma, this is a
+genuine forward difference along the time axis in both engines, not an autodiff
+computation in either.
+
+**Scope: every instrument in this codebase, not a formula gap.** This engine's Greeks used
+to cover `swap.py` and `european_swaption.py` only, since `bermudan_swaption.py`/
+`american_swaption.py`'s backward induction ran entirely in plain NumPy (a CPU grid
+method), with no JAX computational graph for `jax.grad` to differentiate at all. Porting
+that backward induction to `jax.lax.scan` (see
+[American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)) removed
+that blocker; `bermudan_delta_gamma`/`bermudan_theta` now cover Bermudan/American exactly
+as `swap_delta_gamma`/`swap_theta` cover swaps. See
+[Delta, Gamma, and Theta: Scope](../risk/greeks.md#scope-every-instrument-in-this-codebase).
+
+**Two bugs found while building this correspondence, unrelated to the correspondence
+itself, both the same root cause.** Naively differentiating through a bisection-based
+root-find gives a silently *wrong*, not merely imprecise, gradient — a bisection's own
+comparison (`jnp.where(val > 0.0, ...)`) has zero gradient everywhere, so `jax.grad`
+straight through the unrolled loop ignores how the converged root actually moves with the
+function's own inputs:
+
+1. **`european_swaption.py::_solve_rstar`** (Jamshidian's bisection for the exercise
+   boundary `r*`) — its naive gradient was silently `0.0` everywhere, regardless of the
+   true root's actual sensitivity. Fixed via `jax.custom_jvp` implementing the implicit
+   function theorem directly.
+2. **`engine.calibration.basket._bisect_xstar`** — the LGM analogue of `_solve_rstar`,
+   found while building `bermudan_vega`: understated `price_lgm_swaption`'s own gradient
+   with respect to sigma by ~6%, rather than dropping it to exactly zero (a different
+   magnitude of the same class of error, since this bisection's root feeds into a further
+   set of formulas rather than being returned directly). Fixed with the identical
+   `custom_jvp`/implicit-function-theorem pattern, plus registering
+   `engine.models.lgm.Sigma` as a proper JAX pytree so a tangent can propagate into its
+   `values` field when nested inside a larger argument tuple. See
+   [Calibration](calibration.md#the-_bisect_xstar-gradient-bug) for the full incident.
+
+See [Delta, Gamma, and Theta: Two real bugs this module found and
+fixed](../risk/greeks.md#two-real-bugs-this-module-found-and-fixed) for the full account of
+both, and each function's own docstring in `european_swaption.py`/`engine/calibration/basket.py`.
+
+**Verified:** `tests/test_greeks.py` — finite-difference bump-and-revalue cross-checks
+(the literal ORE-style computation) for both swap and swaption Delta/Gamma, plus a direct
+cross-check against a real `ORE.VanillaSwap`/`ORE.Swaption` repriced under a bumped
+`ORE.FlatForward` curve. `tests/test_greeks_bermudan.py` — the same style of check for
+Bermudan/American Delta/Gamma/Theta, plus Vega against a literal finite-difference
+recalibration (bump one basket instrument's market vol, rerun
+`calibrate_lgm_sigma`, reprice).
+
+## 10. LGM calibration: bootstrap fit of a piecewise sigma to market swaption vols
+
+**This engine:** `engine/calibration/basket.py::build_coterminal_basket`,
+`price_lgm_swaption`; `engine/calibration/lgm.py::calibrate_lgm_sigma`.
+
+**ORE:** `ore::data::IrModelBuilder::buildSwaptionBasket()`
+(`OREData/ored/model/irmodelbuilder.cpp`) for the basket; `ore::data::LgmBuilder::calibrate()`
+(`OREData/ored/model/lgmbuilder.cpp`, lines 209-212, `calibrateVolatilitiesIterative`) for
+the bootstrap itself, which calls `QuantLib::CalibratedModel::calibrateIterative`; the LGM
+analogue of `QuantExt::AnalyticLgmSwaptionEngine` (`QuantExt/qle/pricingengines/`) for the
+per-instrument pricer.
+
+**Full writeup in [Calibration](calibration.md)**, which is more extensive than a
+single-section summary can cover here — includes the `aTimes = swaptionExpiries[:-1]`
+triangular-bootstrap construction, why mean reversion is never calibrated, and the
+`_bisect_xstar` gradient bug (cross-referenced above in section 9). Two findings worth
+calling out directly on this page:
+
+**`price_lgm_swaption` could not be checked against ORE's own engine directly.**
+`QuantExt::AnalyticLgmSwaptionEngine`'s constructor is not exposed through this codebase's
+installed ORE Python bindings — confirmed by reading
+`ORE-SWIG/QuantExt-SWIG/SWIG/qle_pricingengines.i` directly, which declares only
+`enableCache`/`clearCache`/`setZetaShift`/`resetZetaShift` for
+`ORE.AnalyticLgmSwaptionEngine`, no usable constructor. Verification therefore runs two
+independent routes instead of a single direct NPV comparison: every individual formula
+piece (`bond_price`, `bond_option_sigma`, `numeraire`) checked to machine precision against
+`ORE.LinearGaussMarkovModel`'s own exposed methods, and the full swaption price
+cross-checked against a numeraire-deflated Monte Carlo simulation of `x(T0) ~ N(0,
+zeta(T0))` — LGM's own exact terminal distribution, per
+`QuantExt::IrLgm1fStateProcess::variance`. See [Calibration: two-route
+verification](calibration.md#two-route-verification) for the full account, including the
+Monte Carlo test's own bug (naive `P(0,T0)` discounting instead of numeraire deflation,
+initially showing a spurious ~11% "error" that was fixed once the test correctly deflated
+by `engine.models.lgm.numeraire` — a lesson about LGM's own measure, not a pricer defect).
+
+**The `HullWhite` vs. `LinearGaussMarkovModel` non-equivalence, confirmed relevant here
+too.** Section 3's ["parametrization note"](#a-parametrization-note-lgm-vs-plain-hull-white)
+already documents that `ORE.HullWhite` and `ORE.LinearGaussMarkovModel` are not the same
+numerical model realization for `t>0`, despite sharing `(a, sigma)` and today's curve (a
+~0.6% bond-price divergence at `t=3y`, found while building `bermudan_swaption.py`).
+`engine/calibration/` inherits this directly: `price_lgm_swaption` is built exclusively on
+`engine.models.lgm`, never `engine.models.hull_white`, for the same reason
+`bermudan_swaption.py` is — the model being calibrated is the one ORE's own Bermudan engine
+actually uses.
+
+**Verified:** `tests/test_calibration_basket.py` (16 tests), `tests/test_calibration_lgm.py`
+(9 tests), `tests/test_calibration_integration.py` (3 tests) — see
+[Calibration: Tested by](calibration.md#tested-by) for the full breakdown.
 
 ## Summary table
 
@@ -461,6 +624,12 @@ comparison, including the tie-at-VaR-boundary and empty-tail edge cases).
 | American exercise-window discretization | `american_swaption.AmericanSwaptionConfig.to_bermudan` | `NumericLgmMultiLegOptionEngineBase::calculate`'s American branch |
 | VaR | `value_at_risk` | `QuantLib::RiskStatistics::valueAtRisk` → `GeneralStatistics::percentile` |
 | Expected Shortfall | `expected_shortfall` | `QuantLib::RiskStatistics::expectedShortfall` |
+| Delta / Gamma (curve pillar bump-and-revalue, via autodiff) | `greeks.swap_delta_gamma`, `greeks.swaption_delta_gamma`, `greeks.bermudan_delta_gamma` | `SensitivityScenarioGenerator`/`ShiftScenarioGenerator::applyShift`, `SensitivityCube::delta`/`gamma` |
+| Theta (evaluation-date roll) | `greeks.swap_theta`, `greeks.swaption_theta`, `greeks.bermudan_theta` | `SensitivityAnalysis::generateSensitivities`'s theta branch |
+| Vega (Bermudan/American, via calibration) | `greeks.bermudan_vega` | `SensitivityScenarioGenerator::generateSwaptionVolScenarios`, bumping the vol surface calibration itself consumes |
+| Co-terminal swaption calibration basket | `calibration.basket.build_coterminal_basket` | `ore::data::IrModelBuilder::buildSwaptionBasket` (`OREData/ored/model/irmodelbuilder.cpp`) |
+| LGM closed-form swaption pricer | `calibration.basket.price_lgm_swaption` | LGM analogue of `QuantExt::AnalyticLgmSwaptionEngine` (constructor not exposed via SWIG bindings — see section 10) |
+| LGM sigma bootstrap calibration | `calibration.lgm.calibrate_lgm_sigma` | `ore::data::LgmBuilder::calibrate` → `calibrateVolatilitiesIterative` (`OREData/ored/model/lgmbuilder.cpp`), `QuantLib::CalibratedModel::calibrateIterative` |
 
 ## Tested by
 
@@ -474,3 +643,10 @@ comparison, including the tie-at-VaR-boundary and empty-tail edge cases).
   *installed* `ORE` package's actual runtime behavior — this page's own contribution is
   connecting those already-passing behavioral tests to the specific C++ source lines that
   produce that behavior.
+- `tests/test_models_piecewise_sigma.py`, `tests/test_calibration_basket.py`,
+  `tests/test_calibration_lgm.py`, `tests/test_calibration_integration.py`,
+  `tests/test_greeks_bermudan.py` — the tests specific to sections 9-10's newer additions
+  (Bermudan/American Greeks and Vega, LGM calibration); see
+  [Delta, Gamma, and Theta](../risk/greeks.md#tested-by),
+  [Models & Trades](models-and-trades.md#tested-by), and
+  [Calibration](calibration.md#tested-by) for the full per-file breakdown.

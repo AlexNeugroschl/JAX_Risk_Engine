@@ -1,7 +1,7 @@
 """
 Algorithm-level parity tests against ORE's own C++ source (reference/ORE, a
 full clone of OpenSourceRisk/Engine including its QuantLib and QuantExt
-submodules -- see docs/09-ore-parity.md for the full file-by-file mapping
+submodules -- see docs/reference/ore-parity.md for the full file-by-file mapping
 and rationale).
 
 Every test here reimplements a small piece of a QuantLib/QuantExt C++
@@ -39,7 +39,7 @@ from engine.instruments.european_swaption import (
     _hw_B,
     _solve_rstar,
 )
-from engine.risk.statistics import value_at_risk, expected_shortfall
+from engine.risk.var_es import value_at_risk, expected_shortfall
 
 TODAY = ORE.Date(30, 7, 2026)
 FLAT_RATE = 0.03
@@ -135,8 +135,8 @@ class TestJamshidianRStarParity:
     "strike equation", not a transcription of rStarFinder's C++), and
     cross-checked against this engine's own _solve_rstar, which expresses
     the identical condition differently (as a signed extra cashflow rather
-    than an explicit division) -- see docs/09-ore-parity.md#6 for why the
-    two are algebraically the same condition. Agreement here is strong
+    than an explicit division) -- see docs/reference/ore-parity.md#6 for why
+    the two are algebraically the same condition. Agreement here is strong
     evidence this engine's exercise-boundary equation is the mathematically
     correct one QuantLib's own reference engine uses, not merely a formula
     that happens to reproduce recorded NPV numbers."""
@@ -190,11 +190,12 @@ class TestJamshidianRStarParity:
         ))
         B_T0 = _hw_B(T0, jnp.asarray(all_times), a)
 
-        def coupon_bond_value(r):
-            prices = A_T0[None, None, :] * jnp.exp(-B_T0[None, None, :] * r[..., None])
-            return jnp.sum(prices * all_amounts[None, None, :], axis=-1)
+        def coupon_bond_value(r, params):
+            A_T0_p, all_amounts_p = params
+            prices = A_T0_p[None, None, :] * jnp.exp(-B_T0[None, None, :] * r[..., None])
+            return jnp.sum(prices * all_amounts_p[None, None, :], axis=-1)
 
-        rstar = _solve_rstar(coupon_bond_value, (1, 1))
+        rstar = _solve_rstar(coupon_bond_value, (A_T0, all_amounts), (1, 1))
         return float(rstar[0, 0])
 
     @pytest.mark.parametrize("tenor,forward_years", [("5Y", 0), ("2Y", 3), ("10Y", 5)])

@@ -92,6 +92,20 @@ dates (see "Known limitation" below) — the standard "coterminal" structure ORE
 calibration machinery (`SwaptionEngineBuilder::model()`) is itself built around for
 Bermudan/American baskets.
 
+`hw_sigma` (`BermudanSwaptionConfig.hw_sigma`, and `AmericanSwaptionConfig.hw_sigma`,
+forwarded unchanged via `to_bermudan()`) is typed `Union[float, engine.models.lgm.Sigma]`
+— it accepts either a flat scalar volatility (the original, still-supported case) or a
+genuine calibrated piecewise `Sigma` term structure produced by
+`engine.calibration.lgm.calibrate_lgm_sigma` (see [Calibration](../reference/calibration.md)).
+No other code in this module branches on which case it received: every downstream formula
+calls `engine.models.lgm.zeta(sigma, t)`, which handles both transparently via
+`as_sigma`'s automatic upgrade of a bare float to a one-bucket `Sigma` (see
+[Models & Trades](../reference/models-and-trades.md#sigma-a-piecewise-constant-volatility-term-structure)).
+This is what let calibration integrate with zero changes to the pricing engine itself —
+`prepare_bermudan`, `_run_backward_induction`, and every Greek in
+[`engine.risk.greeks`](../risk/greeks.md) work identically whether `hw_sigma` came from a
+hand-picked flat number or a market-calibrated term structure.
+
 ### 2. Building the trade and extracting cashflows: `prepare_bermudan()`
 
 Unlike the European module, Jamshidian's telescoping-notional shortcut for the floating leg
@@ -187,6 +201,28 @@ checking it against known Gaussian expectation identities — `E[X]=0`, `E[X^2]=
 `E[max(X-k,0)]` matching the standard normal's known closed form — before it was ever used
 in the pricer itself.
 
+### The `_state_grid`/`sqrt` gradient bug
+
+`_state_grid(sigma, t, n_per_std, std_devs)` and the backward induction's own per-step
+`std_step` computation (`_run_backward_induction`) both compute `sqrt(zeta(...))` — the
+grid spacing/transition standard deviation is, by definition, the square root of a
+variance. `sqrt`'s own derivative, `1/(2*sqrt(x))`, is a `0/0` indeterminate form exactly
+at `x=0` — which genuinely happens at `t=0`, where `zeta(0)=0` by construction (see
+`engine.models.lgm.zeta`). The *forward* value was always correct (`sqrt(0) = 0` is
+perfectly well-defined), but `jax.grad`/`jax.hessian` through either function produced
+`NaN`, since JAX still backpropagates through both branches of any computation that feeds
+into a value used downstream, even a value that is numerically `0`.
+
+This was found while building Bermudan Greeks (see
+[Delta, Gamma, and Theta](../risk/greeks.md)): `d(NPV)/d(sigma_values[0])` came back `NaN`
+until this guard was added, the first caller in this codebase to differentiate through
+`_state_grid` at all — no forward-only pricing call had ever needed a gradient through it
+before. Fixed via the same standard branch-free `jnp.where` pattern already used throughout
+`engine.models.hull_white`/`engine.models.lgm` for their own removable singularities
+(evaluate `sqrt` on a safe placeholder that is never actually `0`, select the correct
+branch with `jnp.where`, discard the placeholder) — the same general pattern, just applied
+to a different singularity (`sqrt` at `0`, rather than division by `a` at `0`).
+
 ### 5. Numeraire deflation — the step that makes the rollback mathematically valid
 
 `_rollback_one_step` computes `E[values(x_from) | x_to]` by convolving the quadrature
@@ -261,6 +297,35 @@ to a numerically-rolled-back value function instead of a closed form. Steps at o
 trade's last exercise date are priced as exactly `0`, matching this codebase's (and ORE's
 `Instrument.NPV()`'s) convention for an already-lapsed option.
 
+## Delta, Gamma, Theta, and Vega
+
+Bermudan/American swaptions have full Greeks support — `engine.risk.greeks.
+bermudan_delta_gamma`, `bermudan_theta`, and `bermudan_vega`. This was not always true:
+an earlier version of this codebase ran the backward induction described above in plain
+NumPy, with no JAX computational graph for `jax.grad` to differentiate through at all, so
+Bermudan/American Greeks were an explicitly documented gap. Porting
+`_run_backward_induction` to `jax.lax.scan` (part of this module's own port to a fully
+JAX-native pipeline) removed that blocker — the backward induction is now differentiable
+end-to-end, exactly like the swap and European swaption pricers, and `bermudan_delta_
+gamma`/`bermudan_theta` follow the identical pattern/units as their swap/European
+counterparts (per-pillar $-per-1bp Delta/Gamma, a 1-day-repricing-difference Theta).
+
+Vega required a second prerequisite beyond JAX-nativeness: a real market-vol-to-model
+relationship, supplied by [`engine/calibration/`](../reference/calibration.md).
+`bermudan_vega` differentiates `d(NPV)/d(market_vol_i)` for each basket instrument through
+`calibrate_lgm_sigma`'s own bootstrap via the implicit function theorem, rather than
+literally re-running calibration once per bumped market vol. See
+[Delta, Gamma, and Theta: Vega](../risk/greeks.md#vega-bermudanamerican-only) for the full
+derivation, including two real bugs (a missing cross-bucket Jacobian term in `bermudan_
+vega` itself, and the `_bisect_xstar` gradient bug documented in
+[Calibration](../reference/calibration.md#the-_bisect_xstar-gradient-bug)) found and fixed
+while building it.
+
+American swaptions have no separate Greeks function: `AmericanSwaptionConfig.
+to_bermudan()` expands into a `BermudanSwaptionConfig`, so `bermudan_delta_gamma(cfg.
+to_bermudan(), curve)` covers both, matching this module's own "American is just a finely-
+discretized Bermudan" design throughout.
+
 ## Known limitation: no mid-coupon proration
 
 ORE's own American engine supports exercise landing *inside* an accrual period, prorating
@@ -316,3 +381,16 @@ which American exercise is priced through:
 - `TestAmericanAsFineBermudan` — the American-exercise discretization matches ORE's own
   construction exactly, converges as it's refined, and a reset-aligned American exactly
   reproduces the equivalent explicit Bermudan.
+
+`tests/test_greeks_bermudan.py` (11 tests) — Delta/Gamma/Theta/Vega for this module's own
+pricer, via `engine.risk.greeks`: see
+[Delta, Gamma, and Theta: Tested by](../risk/greeks.md#tested-by) for the full breakdown,
+including the Gamma finite-difference methodology (finite-differencing the *gradient*
+rather than the price, since a naive price-level central difference is numerically
+unreliable for this pricer at a realistic bump size) and the Vega cross-check against a
+literal finite-difference recalibration.
+
+`tests/test_calibration_integration.py` (3 tests) — a calibrated `Sigma` from
+`engine.calibration.lgm.calibrate_lgm_sigma` fed into `BermudanSwaptionConfig.hw_sigma`
+and priced end-to-end through this module, confirming the `Union[float, Sigma]` interface
+works identically to a flat scalar throughout the full pipeline.

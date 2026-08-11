@@ -48,7 +48,13 @@ import jax.numpy as jnp
 import numpy as np
 import ORE
 
-DAY_COUNTER = ORE.Actual365Fixed()
+from engine.trades.ore_builders import (
+    DAY_COUNTER,
+    LegCashflows as _LegCashflows,
+    build_vanilla_swap,
+    fixed_leg_cashflows as _fixed_leg_cashflows,
+    floating_leg_cashflows as _floating_leg_cashflows,
+)
 
 
 @dataclass
@@ -80,84 +86,15 @@ class SwapConfig:
     evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
 
 
-@dataclass
-class _LegCashflows:
-    payment_times: np.ndarray       # [N] year-fractions from evaluation_date
-    accrual_start_times: np.ndarray  # [N]
-    accrual_end_times: np.ndarray    # [N]
-    accrual_fractions: np.ndarray    # [N]
-    notional: float
-
-
 def _build_ore_swap(cfg: SwapConfig) -> ORE.VanillaSwap:
-    """CPU: builds the real ORE trade (schedules, day counts, conventions).
-
-    Both legs explicitly use Actual/365Fixed (DAY_COUNTER) rather than
-    relying on MakeVanillaSwap's implicit per-index defaults (which differ
-    unpredictably by index/currency, e.g. Euribor6M defaults to 30/360 fixed
-    vs Act/360 float) -- this keeps the convention a documented, deliberate
-    choice consistent with the simulation's own year-fraction time axis.
-    """
-    ORE.Settings.instance().evaluationDate = cfg.evaluation_date
-    dummy_forward_curve = ORE.YieldTermStructureHandle(
-        ORE.FlatForward(cfg.evaluation_date, 0.0, DAY_COUNTER)
-    )
-    index = ORE.IborIndex(
-        "SimIndex", ORE.Period(cfg.index_tenor_months, ORE.Months), 2,
-        ORE.USDCurrency(), ORE.TARGET(), ORE.ModifiedFollowing, False,
-        DAY_COUNTER, dummy_forward_curve,
-    )
-    swap_type = ORE.VanillaSwap.Payer if cfg.payer else ORE.VanillaSwap.Receiver
-    swap = ORE.MakeVanillaSwap(
-        ORE.Period(cfg.swap_tenor), index, cfg.fixed_rate,
-        nominal=cfg.notional,
-        swapType=swap_type,
-        floatingLegSpread=cfg.floating_spread,
-        fixedLegDayCount=DAY_COUNTER,
-        floatingLegDayCount=DAY_COUNTER,
-    )
-    return swap
-
-
-def _fixed_leg_cashflows(swap: ORE.VanillaSwap, today: ORE.Date) -> _LegCashflows:
-    """CPU: extracts each fixed coupon's payment/accrual dates (as
-    year-fractions from `today`) and ORE's own accrualPeriod() for each,
-    from the real ORE-generated schedule -- no date/day-count math
-    reimplemented here."""
-    payment_times, accrual_starts, accrual_ends, fractions = [], [], [], []
-    for cf in swap.fixedLeg():
-        c = ORE.as_fixed_rate_coupon(cf)
-        payment_times.append(DAY_COUNTER.yearFraction(today, c.date()))
-        accrual_starts.append(DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
-        accrual_ends.append(DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
-        fractions.append(c.accrualPeriod())
-    return _LegCashflows(
-        payment_times=np.array(payment_times),
-        accrual_start_times=np.array(accrual_starts),
-        accrual_end_times=np.array(accrual_ends),
-        accrual_fractions=np.array(fractions),
-        notional=swap.fixedNominals()[0] if swap.fixedNominals() else swap.nominal(),
-    )
-
-
-def _floating_leg_cashflows(swap: ORE.VanillaSwap, today: ORE.Date) -> _LegCashflows:
-    """CPU: same extraction as _fixed_leg_cashflows, for the floating leg's
-    coupons. accrual_start/end_times are what forward rates get computed
-    from in _price_one_swap -- ORE's own fixing is not used, since the
-    whole point is repricing under the JAX-simulated scenarios."""
-    payment_times, accrual_starts, accrual_ends, fractions = [], [], [], []
-    for cf in swap.floatingLeg():
-        c = ORE.as_floating_rate_coupon(cf)
-        payment_times.append(DAY_COUNTER.yearFraction(today, c.date()))
-        accrual_starts.append(DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
-        accrual_ends.append(DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
-        fractions.append(c.accrualPeriod())
-    return _LegCashflows(
-        payment_times=np.array(payment_times),
-        accrual_start_times=np.array(accrual_starts),
-        accrual_end_times=np.array(accrual_ends),
-        accrual_fractions=np.array(fractions),
-        notional=swap.floatingNominals()[0] if swap.floatingNominals() else swap.nominal(),
+    """CPU: builds the real ORE trade (schedules, day counts, conventions)
+    -- see `engine.trades.ore_builders.build_vanilla_swap`, the single
+    shared implementation of this construction (used identically by
+    `european_swaption.py`/`bermudan_swaption.py`)."""
+    return build_vanilla_swap(
+        notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
+        swap_tenor=cfg.swap_tenor, index_tenor_months=cfg.index_tenor_months,
+        floating_spread=cfg.floating_spread, evaluation_date=cfg.evaluation_date,
     )
 
 

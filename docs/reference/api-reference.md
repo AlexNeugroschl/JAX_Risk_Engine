@@ -3,7 +3,7 @@
 Exact inputs and outputs for every public function and configuration dataclass. For the
 *why* behind these shapes, see the per-stage deep dives
 ([Market Simulation](../concepts/market-simulation.md), [Instruments](../instruments/swaps.md),
-[Risk Statistics](../risk/statistics.md)). For runnable examples, see the
+[Risk Statistics](../risk/var_es.md)). For runnable examples, see the
 [User Guide](../getting-started/user-guide.md).
 
 **Notation:** `[Scenarios, TimeSteps, ...]` describes an array's shape. `Scenarios` is
@@ -268,10 +268,10 @@ Same parameter/return shape as `price_bermudan_swaptions` above — expands each
 
 ---
 
-## `engine.risk.statistics`
+## `engine.risk.var_es`
 
 Every function here is instrument-agnostic — see
-[Risk Statistics](../risk/statistics.md) and
+[Risk Statistics](../risk/var_es.md) and
 [Architecture: stages agree on shapes, not code](../concepts/architecture.md#design-principle-stages-agree-on-shapes-not-code).
 
 ### `portfolio_pnl(npv_cube: jax.Array, base_npv: float) -> jax.Array`
@@ -279,7 +279,7 @@ Every function here is instrument-agnostic — see
 **Parameters**
 - `npv_cube` — `[Scenarios, TimeSteps, Trades]`, from any pricer.
 - `base_npv` — the portfolio's value today (t=0), from a separate zero-shock
-  revaluation. See [Risk Statistics: the P&L baseline](../risk/statistics.md#the-pl-baseline-what-are-gainslosses-measured-against).
+  revaluation. See [Risk Statistics: the P&L baseline](../risk/var_es.md#the-pl-baseline-what-are-gainslosses-measured-against).
 
 **Returns** `[Scenarios, TimeSteps]` — `sum(npv_cube, axis=Trades) - base_npv`.
 
@@ -295,7 +295,7 @@ Every function here is instrument-agnostic — see
 
 Same signature as `value_at_risk`. **Returns `NaN`** for any time step whose loss tail
 (strictly worse than that step's VaR) is empty — see
-[Risk Statistics: the formulas](../risk/statistics.md#the-formulas). Callers must check
+[Risk Statistics: the formulas](../risk/var_es.md#the-formulas). Callers must check
 for this explicitly.
 
 ### `compute_risk_metrics(npv_cube: jax.Array, base_npv: float, percentiles: Sequence[float] = (0.95, 0.99)) -> Dict[str, jax.Array]`
@@ -310,6 +310,75 @@ The main entry point — combines the three functions above.
 **Returns** a `dict` with one `"VaR_<pct>"` and one `"ES_<pct>"` key per entry in
 `percentiles` (e.g. `percentiles=(0.95, 0.99)` produces `"VaR_95"`, `"ES_95"`, `"VaR_99"`,
 `"ES_99"`), each shaped `[TimeSteps]`.
+
+---
+
+## `engine.risk.greeks`
+
+Delta, Gamma, and Theta for `engine.instruments.swap` and
+`engine.instruments.european_swaption` only — see [Delta, Gamma, and Theta](../risk/greeks.md)
+for the full explanation, including why Bermudan/American swaptions and Vega are out of
+scope.
+
+### `ZeroCurve`
+
+A zero curve as JAX arrays (unlike `engine.simulation.ZeroCurveConfig`, whose `rates` is
+a plain Python list) — the differentiable input every Greek in this module is computed
+with respect to.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `pillar_times` | `jax.Array` | Zero-curve pillar times. Not differentiated (ORE never bumps a pillar's own time, only its rate). |
+| `pillar_rates` | `jax.Array` | Zero rate at each pillar — what Delta/Gamma differentiate with respect to. |
+
+`ZeroCurve.flat(rate: float, pillar_times: List[float]) -> ZeroCurve` — a convenience
+constructor for a flat curve (the same rate at every pillar).
+
+### `swap_delta_gamma(cfg: SwapConfig, disc_curve: ZeroCurve, fwd_curve: ZeroCurve, bump_size: float = DEFAULT_RATE_BUMP) -> Dict[str, jax.Array]`
+
+**Parameters**
+- `cfg` — a `SwapConfig` (see `engine.instruments.swap` above). Its own
+  `discount_curve_index`/`forward_curve_index` are ignored — internally, `disc_curve` and
+  `fwd_curve` always play those two roles respectively.
+- `disc_curve`/`fwd_curve` — the swap's discount and forward `ZeroCurve`s. Pass the same
+  object for both to compute single-curve-discounting Greeks (see Returns below).
+- `bump_size` — the zero-rate move each unit of Delta/Gamma represents, matching ORE's
+  own 1bp (`0.0001`) default.
+
+**Returns** a `dict`: `"discount_delta"`, `"discount_gamma"` (w.r.t. `disc_curve.pillar_rates`)
+and `"forward_delta"`, `"forward_gamma"` (w.r.t. `fwd_curve.pillar_rates`), each shaped
+`[len(pillar_rates)]`. If `disc_curve is fwd_curve`, summing `discount_delta +
+forward_delta` pillar-by-pillar recovers the total sensitivity to that one shared curve.
+
+### `swap_theta(cfg: SwapConfig, disc_curve: ZeroCurve, fwd_curve: ZeroCurve, theta_days: int = DEFAULT_THETA_DAYS) -> float`
+
+**Returns** a single number: `NPV(today + theta_days, same curves) − NPV(today) +`
+cashflow paid in between (ORE's own Theta definition — see
+[Delta, Gamma, and Theta: Theta](../risk/greeks.md#theta-advance-the-evaluation-date-hold-the-market-fixed)).
+
+### `swaption_delta_gamma(cfg: SwaptionConfig, curve: ZeroCurve, bump_size: float = DEFAULT_RATE_BUMP) -> Dict[str, jax.Array]`
+
+**Parameters**
+- `cfg` — a `SwaptionConfig` (see `engine.instruments.european_swaption` above).
+- `curve` — the swaption's Hull-White calibration curve, as a `ZeroCurve`. Should carry
+  the same pillar times/rates as `cfg.initial_zero_curve` (this function does not read
+  `cfg.initial_zero_curve` itself, since it's a plain-Python `ZeroCurveConfig`, not JAX
+  array).
+- `bump_size` — same meaning as `swap_delta_gamma` above.
+
+**Returns** a `dict`: `"delta"`, `"gamma"`, each shaped `[len(curve.pillar_rates)]`.
+
+### `swaption_theta(cfg: SwaptionConfig, curve: ZeroCurve, theta_days: int = DEFAULT_THETA_DAYS) -> float`
+
+**Returns** a single number: `NPV(today + theta_days, same curve) − NPV(today)` — no
+interim-cashflow term (a European swaption pays no cashflow before its own exercise date).
+
+### Constants
+
+| Name | Value | Meaning |
+|---|---|---|
+| `DEFAULT_RATE_BUMP` | `0.0001` | ORE's own example-config default: 1 basis point, absolute. |
+| `DEFAULT_THETA_DAYS` | `1` | ORE's own default Theta horizon: 1 calendar day. |
 
 ---
 

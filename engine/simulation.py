@@ -16,6 +16,8 @@ from scipy.stats.qmc import Sobol
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from engine.models.hull_white import A as _hw_A, B as _hw_B, ZeroCurve as _HwZeroCurve
+
 # =============================================================================
 # PHASE 1: QUASI-MONTE CARLO (CPU -> GPU)
 # =============================================================================
@@ -253,9 +255,14 @@ def _simulate_cross_asset_paths_jit(
 # =============================================================================
 def _initial_log_discount(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.ndarray) -> np.ndarray:
     """Continuously-compounded log discount factor ln P(0,t) via linear
-    interpolation on zero rates, flat-extrapolated at the curve ends."""
-    r_t = np.interp(t, zero_times, zero_rates)
-    return -r_t * t
+    interpolation on zero rates, flat-extrapolated at the curve ends. Thin
+    NumPy-facing wrapper around `engine.models.hull_white.log_discount` --
+    kept for existing NumPy call sites/tests; the underlying formula lives
+    in exactly one place (`engine/models/hull_white.py`), not re-derived
+    here."""
+    curve = _HwZeroCurve(pillar_times=jnp.asarray(zero_times), pillar_rates=jnp.asarray(zero_rates))
+    from engine.models.hull_white import log_discount
+    return np.asarray(log_discount(curve, jnp.asarray(t)))
 
 
 def compute_hw_A_matrix(
@@ -267,55 +274,51 @@ def compute_hw_A_matrix(
     B_matrix: np.ndarray,
 ) -> np.ndarray:
     """
-    CPU: Closed-form Hull-White 1-Factor A(t,T), calibrated independently
-    per rate factor against that factor's OWN initial zero curve:
-        A(t,T) = [P(0,T)/P(0,t)] *
-                 exp(B(t,T)*f(0,t) - (sigma^2/4a)*(1-exp(-2at))*B(t,T)^2)
-    where f(0,t) = -d/dt ln P(0,t) is the k-th factor's initial instantaneous
-    forward rate. Matches ORE's Cross-Asset Model: every IrLgm1fParametrization
-    is constructed with its own (Currency, YieldTermStructureHandle) pair --
-    live-verified against the installed ORE package that no shared-curve
-    constructor path exists (a 2-currency CrossAssetModel with distinct USD
-    3%/EUR 2% flat curves retains each currency's own discount factors
-    throughout, never cross-contaminating). One shared curve across factors
-    would be a bug, not a legitimate simplification of ORE's design.
+    Closed-form Hull-White 1-Factor A(t,T), calibrated independently per
+    rate factor against that factor's OWN initial zero curve -- a thin
+    per-rate-factor `jax.vmap` wrapper around
+    `engine.models.hull_white.A` (the single shared implementation of this
+    formula; see that module's docstring for the math and the ORE
+    correspondence). Matches ORE's Cross-Asset Model: every
+    IrLgm1fParametrization is constructed with its own (Currency,
+    YieldTermStructureHandle) pair -- live-verified against the installed
+    ORE package that no shared-curve constructor path exists (a
+    2-currency CrossAssetModel with distinct USD 3%/EUR 2% flat curves
+    retains each currency's own discount factors throughout, never
+    cross-contaminating). One shared curve across factors would be a bug,
+    not a legitimate simplification of ORE's design.
 
     zero_curves: one ZeroCurveConfig per rate factor (len == hw_a.shape[0]),
     in the same order as hw_a/hw_sigma/maturities' NumRates axis.
     Shapes: step_times [TimeSteps], maturities [Maturities], B_matrix
     [TimeSteps, Maturities, NumRates] -> returns A [TimeSteps, Maturities, NumRates].
+
+    Returns a plain `np.ndarray` (this function's existing, NumPy-facing
+    contract used by `generate_paths` below and by this module's own
+    tests) even though the computation itself now runs through JAX.
     """
-    eps = 1e-6
     num_hw = hw_a.shape[0]
-    A = np.empty_like(B_matrix)
+    step_times_j = jnp.asarray(step_times, dtype=jnp.float64)
+    maturities_j = jnp.asarray(maturities, dtype=jnp.float64)
+    t_grid = step_times_j[:, None]        # [TimeSteps, 1]
+    T_grid = maturities_j[None, :]        # [1, Maturities]
+    B_matrix_j = jnp.asarray(B_matrix, dtype=jnp.float64)
+
+    A_per_factor = []
     for k in range(num_hw):
-        zero_times = np.asarray(zero_curves[k].times, dtype=np.float64)
-        zero_rates = np.asarray(zero_curves[k].rates, dtype=np.float64)
-
-        log_P0_t = _initial_log_discount(zero_times, zero_rates, step_times)
-        log_P0_T = _initial_log_discount(zero_times, zero_rates, maturities)
-        fwd_0_t = -(
-            _initial_log_discount(zero_times, zero_rates, step_times + eps) - log_P0_t
-        ) / eps
-        ratio = np.exp(log_P0_T[None, :] - log_P0_t[:, None])  # [TimeSteps, Maturities]
-
-        a = hw_a[k]
-        sigma = hw_sigma[k]
-        # a==0.0 (arithmetic Brownian motion, the mathematically valid
-        # a->0 limit of OU mean reversion) is a removable 0/0 singularity
-        # here as literally written; the analytic limit of
-        # (sigma^2/4a)*(1-exp(-2a*t)) as a->0 is sigma^2*t/2 (first-order
-        # Taylor expansion of the exponential), used directly instead of
-        # dividing by zero into NaN.
-        if a == 0.0:
-            variance_term = 0.5 * sigma ** 2 * step_times
-        else:
-            variance_term = (sigma ** 2 / (4.0 * a)) * (1.0 - np.exp(-2.0 * a * step_times))
-        exponent = (
-            B_matrix[:, :, k] * fwd_0_t[:, None] - variance_term[:, None] * B_matrix[:, :, k] ** 2
+        curve = _HwZeroCurve(
+            pillar_times=jnp.asarray(zero_curves[k].times, dtype=jnp.float64),
+            pillar_rates=jnp.asarray(zero_curves[k].rates, dtype=jnp.float64),
         )
-        A[:, :, k] = ratio * np.exp(exponent)
-    return A
+        # B_override=the caller's own B_matrix slice (see A()'s docstring
+        # on B_override for why this must be threaded through rather than
+        # recomputed from t_grid/T_grid here).
+        A_k = _hw_A(
+            curve, t_grid, T_grid, float(hw_a[k]), float(hw_sigma[k]),
+            B_override=B_matrix_j[:, :, k],
+        )  # [TimeSteps, Maturities]
+        A_per_factor.append(A_k)
+    return np.asarray(jnp.stack(A_per_factor, axis=-1))
 
 
 @jax.jit
@@ -538,19 +541,13 @@ def generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, j
         step_times = time_grid[1:] # We evaluate AT the step ends
         T_minus_t = jnp.maximum(maturities[None, :] - step_times[:, None], 0.0)
 
-        # B(t,T) formula. Shape mapping: T_minus_t is [TimeSteps, Maturities]
-        # hw_a is [NumRates]. We broadcast appropriately.
-        # hw_a==0.0 is a removable 0/0 singularity here too -- its
-        # analytic a->0 limit is B(t,T)=T-t (guarded the same way as
-        # variance_hw above: evaluate on a safe placeholder a, then select
-        # the limit via jnp.where).
-        hw_a_bcast = hw_a[None, None, :]
-        hw_a_bcast_safe = jnp.where(hw_a_bcast == 0.0, 1.0, hw_a_bcast)
-        B_matrix = jnp.where(
-            hw_a_bcast == 0.0,
-            T_minus_t[:, :, None],
-            (1.0 - jnp.exp(-hw_a_bcast_safe * T_minus_t[:, :, None])) / hw_a_bcast_safe,
-        )
+        # B(t,T) formula via the single shared implementation
+        # (engine.models.hull_white.B, vmapped across rate factors). Uses
+        # T_minus_t (clamped at 0 for a cashflow past its own maturity,
+        # e.g. a pillar earlier than the current step) rather than raw
+        # T-t directly -- B's own a==0 removable-singularity guard still
+        # applies unchanged since it operates on this already-clamped gap.
+        B_matrix = jax.vmap(lambda a: _hw_B(0.0, T_minus_t, a), out_axes=-1)(hw_a)
 
         # A(t,T): calibrated to today's market zero curve, independently per
         # rate factor, so each factor's simulated discount factors reprice

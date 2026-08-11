@@ -39,7 +39,7 @@ itself against.
 3. **Measure the risk.** Look at the full spread of "what-if" trade values across every
    scenario and compute standard risk numbers: **Value at Risk (VaR)** ("in the worst 5%
    of outcomes, how much do we lose?") and **Expected Shortfall (ES)** ("on average, how
-   bad is that worst 5%?"). See [Risk Statistics: VaR & ES](../risk/statistics.md).
+   bad is that worst 5%?"). See [Risk Statistics: VaR & ES](../risk/var_es.md).
 
 Each step produces a bigger, richer version of the same idea: a big table of numbers,
 organized by *simulated scenario* and *point in time*. The engine literally calls this a
@@ -92,7 +92,7 @@ ambitions (see the root [README.md](../../README.md) for the full roadmap):
   [Instruments: Interest Rate Swaps](../instruments/swaps.md),
   [European Swaptions](../instruments/european-swaptions.md),
   [American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md),
-  [Risk Statistics](../risk/statistics.md)) starts
+  [Risk Statistics](../risk/var_es.md)) starts
   with a "Plain-language summary" section before getting into formulas.
 - **Want to actually run the code?** See the [User Guide](user-guide.md).
 - **Want to understand how the pieces fit together as software?** See

@@ -3,7 +3,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.risk.statistics import (
+from engine.risk.var_es import (
     compute_risk_metrics,
     expected_shortfall,
     portfolio_pnl,

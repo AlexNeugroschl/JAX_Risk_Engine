@@ -18,7 +18,7 @@ This module answers: *"given [thousands of simulated alternate futures for inter
 rates](../concepts/market-simulation.md), what is this specific swap worth in each of them, at
 each point in time?"* The output is the **NPV cube** — a big table of "what this trade is
 worth," organized by scenario and by time. That's the raw material risk aggregation (see
-[VaR & Expected Shortfall](../risk/statistics.md)) needs to compute risk numbers.
+[VaR & Expected Shortfall](../risk/var_es.md)) needs to compute risk numbers.
 
 ## Why it's built this way: using ORE for the fiddly parts
 
@@ -146,7 +146,7 @@ def price_swaps(yield_curves, maturities, swap_configs: List[SwapConfig]) -> jax
 ```
 The public entry point: prepares and prices every swap in the list, and stacks the
 results into one NPV cube shaped `[Scenarios, TimeSteps, Trades]` — the standard shape
-risk aggregation (see [VaR & Expected Shortfall](../risk/statistics.md)) expects from
+risk aggregation (see [VaR & Expected Shortfall](../risk/var_es.md)) expects from
 *any* pricer, not just this one.
 
 ## A known limitation: maturity-pillar alignment

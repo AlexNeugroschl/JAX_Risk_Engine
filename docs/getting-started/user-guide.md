@@ -3,7 +3,7 @@
 This page is about *running* the code. For how it works internally, see
 [Architecture](../concepts/architecture.md) and the per-stage deep dives
 ([Market Simulation](../concepts/market-simulation.md), [Instruments](../instruments/swaps.md),
-[Risk Statistics](../risk/statistics.md)).
+[Risk Statistics](../risk/var_es.md)).
 
 ## Prerequisites
 
@@ -79,7 +79,7 @@ simulated time step.
 
 **Risk statistics** (runs simulation and pricing internally first):
 ```bash
-python -m engine.risk.statistics
+python -m engine.risk.var_es
 ```
 Prints the portfolio's baseline (t=0) value and the VaR/ES numbers at each requested
 confidence level, for every simulated time step.
@@ -290,7 +290,7 @@ list-of-configs-in, NPV-cube-out pattern as `price_swaptions` above.
 ## Computing risk metrics
 
 ```python
-from engine.risk.statistics import compute_risk_metrics
+from engine.risk.var_es import compute_risk_metrics
 
 # base_npv: the portfolio's actual value today, from a separate zero-shock
 # revaluation -- see engine/scenarios.py's flat_yield_curves() for a worked
@@ -301,12 +301,12 @@ print(metrics["VaR_95"])   # [TimeSteps] array
 print(metrics["ES_99"])    # [TimeSteps] array
 ```
 
-See [Risk Statistics: the P&L baseline](../risk/statistics.md#the-pl-baseline-what-are-gainslosses-measured-against)
+See [Risk Statistics: the P&L baseline](../risk/var_es.md#the-pl-baseline-what-are-gainslosses-measured-against)
 for exactly what `base_npv` should be and why it can't be inferred automatically from
 the NPV cube itself. **`ES_*` values can be `NaN`** for a given time step if there were
 no simulated losses severe enough to have anything "worse than the VaR cutoff" — check
 for this explicitly rather than assuming a numeric result (see
-[Risk Statistics: the formulas](../risk/statistics.md#the-formulas)).
+[Risk Statistics: the formulas](../risk/var_es.md#the-formulas)).
 
 ## Precision (float32 vs float64)
 

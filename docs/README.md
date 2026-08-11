@@ -43,13 +43,23 @@ common `[Scenarios, TimeSteps, Trades]` NPV cube:
 
 ## Risk
 
-- **[VaR & Expected Shortfall](risk/statistics.md)** — turns any instrument's NPV cube
+- **[VaR & Expected Shortfall](risk/var_es.md)** — turns any instrument's NPV cube
   into standard risk numbers, matching `ORE.RiskStatistics` exactly.
+- **[Delta, Gamma, Vega, and Theta](risk/greeks.md)** — per-curve-pillar sensitivities for
+  every instrument in this codebase (including Bermudan/American Vega, via
+  `engine/calibration/`), via JAX automatic differentiation scaled to ORE's own
+  bump-and-revalue convention.
 
 ## Reference
 
 - **[API Reference](reference/api-reference.md)** — exact inputs/outputs for every public
   function and config dataclass.
+- **[Models & Trades](reference/models-and-trades.md)** — the shared foundation layer
+  (`engine/models/`, `engine/trades/`) every instrument pricer is built on: Hull-White and
+  LGM closed-form math, and shared ORE trade-building/cashflow extraction.
+- **[Calibration](reference/calibration.md)** — `engine/calibration/`'s bootstrap fit of a
+  piecewise LGM volatility term structure to market swaption quotes, matching
+  `ore::data::LgmBuilder::calibrate()`'s own bootstrap convention.
 - **[ORE Parity](reference/ore-parity.md)** — maps every algorithm in this codebase to its
   exact counterpart in ORE's own C++ source (`reference/ORE`), file and function name.
 

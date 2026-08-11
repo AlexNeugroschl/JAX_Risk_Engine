@@ -3,12 +3,14 @@
 ## Plain-language summary
 
 The codebase is organized as three independent modules — the simulation module, the
-instrument pricers, and the risk aggregation module — plus a shared library of example
-configurations and a test suite that checks every module's output against ORE. Each
-module reads the output of the one before it, but none of them know about each other's
-internal details — they agree only on the *shape* of the data passed between them. That
-decoupling is deliberate: it means another module (say, a new instrument pricer) could be
-added later without touching the others at all.
+instrument pricers, and the risk aggregation module — plus a shared foundation layer
+(model math and ORE trade-building, factored out of the instrument pricers so no formula
+or schedule-building loop is implemented twice), a calibration engine, a shared library of
+example configurations, and a test suite that checks every module's output against ORE.
+Each module reads the output of the one before it, but none of them know about each
+other's internal details — they agree only on the *shape* of the data passed between
+them. That decoupling is deliberate: it means another module (say, a new instrument
+pricer) could be added later without touching the others at all.
 
 ## The repository layout
 
@@ -21,12 +23,28 @@ JAX_Risk_Engine/
 │   ├── concepts/                         Architecture, market simulation, glossary,
 │   │                                     coding style
 │   ├── instruments/                      Swaps, European/Bermudan/American swaptions
-│   ├── risk/                             VaR / Expected Shortfall
-│   ├── reference/                        API reference, ORE parity mapping
+│   ├── risk/                             VaR / Expected Shortfall, Delta/Gamma/Vega/Theta
+│   ├── reference/                        API reference, ORE parity mapping, models &
+│   │                                     trades, calibration
 │   └── planning/                         Roadmap/history, TraderX integration plan
 ├── engine/
 │   ├── simulation.py                     Simulates the market
 │   ├── scenarios.py                      Shared demo/reference configurations
+│   ├── models/
+│   │   ├── hull_white.py                 HW1F closed-form math (constant sigma only) --
+│   │   │                                 single source of truth, used by swap.py,
+│   │   │                                 european_swaption.py, simulation.py, greeks.py
+│   │   └── lgm.py                        Linear Gauss-Markov closed-form math
+│   │                                     (piecewise-constant Sigma) -- used by
+│   │                                     bermudan_swaption.py and engine/calibration/
+│   ├── trades/
+│   │   └── ore_builders.py               Shared ORE VanillaSwap construction and
+│   │                                     cashflow extraction -- used by every pricer
+│   ├── calibration/
+│   │   ├── basket.py                     Co-terminal swaption basket construction and
+│   │   │                                 LGM's own closed-form swaption pricer
+│   │   └── lgm.py                        Bootstrap calibration of a piecewise LGM Sigma
+│   │                                     to market swaption volatilities
 │   ├── instruments/
 │   │   ├── swap.py                       Prices interest rate swaps
 │   │   ├── european_swaption.py          Prices European swaptions
@@ -35,7 +53,8 @@ JAX_Risk_Engine/
 │   │   └── american_swaption.py          Prices American swaptions
 │   │                                     (a thin wrapper around bermudan_swaption.py)
 │   └── risk/
-│       └── statistics.py                 Computes VaR / Expected Shortfall
+│       ├── var_es.py                     Computes VaR / Expected Shortfall
+│       └── greeks.py                     Computes Delta / Gamma / Theta / Vega
 └── tests/
     ├── conftest.py                       Shared pytest fixtures
     ├── test_simulation.py
@@ -44,14 +63,20 @@ JAX_Risk_Engine/
     ├── test_european_swaption.py
     ├── test_bermudan_swaption.py
     ├── test_american_swaption.py
-    ├── test_statistics.py
+    ├── test_models_piecewise_sigma.py
+    ├── test_calibration_basket.py
+    ├── test_calibration_lgm.py
+    ├── test_calibration_integration.py
+    ├── test_var_es.py
+    ├── test_greeks.py
+    ├── test_greeks_bermudan.py
     ├── test_end_to_end.py
     ├── test_diverse_portfolio_e2e.py
     └── test_ore_parity.py
 ```
 
 Every `engine/` subpackage has an `__init__.py`, so the whole thing is importable as
-`engine.simulation`, `engine.instruments.swap`, and `engine.risk.statistics` from the
+`engine.simulation`, `engine.instruments.swap`, and `engine.risk.var_es` from the
 repository root — no path hacks required in application code or tests.
 
 `bermudan_swaption.py` and `american_swaption.py` are two separate files rather than one,
@@ -66,6 +91,48 @@ induction engine (state grid, Hagan's quadrature, numeraire-deflated rollback) i
 `bermudan_swaption.py` file, separate from the thin American-specific wrapper, makes clear
 that Bermudan swaptions are a fully independent, directly-usable capability — not a
 byproduct of American support.
+
+## The shared foundation layer: `engine/models/` and `engine/trades/`
+
+Every instrument pricer needs two kinds of thing that have nothing to do with what makes
+that instrument distinctive: closed-form interest-rate model math (bond prices, bond
+options, discount factors) and a real ORE trade object with a real payment schedule to
+price against. Both used to be implemented **separately inside each instrument file** —
+the same Hull-White formula written four times with slightly different call shapes across
+`simulation.py`, `european_swaption.py`, and `greeks.py`; the same ORE swap-building code
+written three times with nearly identical bodies across `swap.py`, `european_swaption.py`,
+and `bermudan_swaption.py`.
+
+`engine/models/hull_white.py` and `engine/models/lgm.py` are now the single source of
+truth for that math — one JAX-native implementation of each formula, used by every pricer
+that needs it, rather than N near-identical copies drifting apart over time.
+`engine/trades/ore_builders.py` is the equivalent consolidation for ORE trade-building and
+cashflow extraction. See [Models & Trades](../reference/models-and-trades.md) for the full
+breakdown of both directories, including a genuine finding this consolidation surfaced:
+Hull-White and LGM (`hull_white.py` and `lgm.py` respectively) are **not** the same model
+for `t>0`, despite sharing `(a, sigma)` and today's curve — a real ORE parametrization
+difference between `QuantLib::HullWhite` and `QuantExt::LinearGaussMarkovModel`, not a bug
+in this codebase.
+
+## `engine/calibration/`: fitting LGM's volatility to market swaption quotes
+
+Every pricer's `hw_sigma` used to be a config input a caller simply supplied. A real
+trading desk doesn't do that — it calibrates a model's volatility parameter to reproduce
+the market-quoted prices of simpler, liquid options first, and only then prices a more
+complex, illiquid trade off that fitted parameter. `engine/calibration/basket.py` and
+`engine/calibration/lgm.py` implement exactly that step for Bermudan/American swaptions: a
+co-terminal basket of market European swaption volatilities goes in, a piecewise-constant
+`engine.models.lgm.Sigma` term structure that exactly reprices every one of them comes out,
+via the same bootstrap algorithm ORE itself uses by default
+(`ore::data::LgmBuilder::calibrate()`'s `Bootstrap` path). See
+[Calibration](../reference/calibration.md) for the full algorithm, including the two
+independent verification routes used since ORE's own `AnalyticLgmSwaptionEngine` isn't
+constructible through this codebase's installed Python bindings.
+
+This module exists specifically because [Bermudan/American
+Vega](../risk/greeks.md#vega-bermudanamerican-only) has no meaning without it — "how much
+does this Bermudan's value change if a market quote moves" is only a well-posed question
+once there is an actual market-quote-to-model relationship to differentiate through.
 
 ## The simulation-to-risk data flow
 
@@ -109,7 +176,7 @@ byproduct of American support.
                                   ▼
                     ┌─────────────────────────┐
    base_npv          │   engine/risk/            │  {"VaR_95": [...], "ES_95": [...],
-   ───────────────► │   statistics.py          │   "VaR_99": [...], "ES_99": [...]}
+   ───────────────► │   var_es.py              │   "VaR_99": [...], "ES_99": [...]}
                      │   compute_risk_metrics() │
                     └─────────────────────────┘
 ```
@@ -157,18 +224,41 @@ Four pricers currently live here:
 depend on either of the other two pricers.
 
 Every pricer **depends** on ORE at runtime (see [ORE as a dependency](#ore-as-a-dependency)
-below) — they use ORE's own trade-schedule and day-count-convention machinery so that
-"when does this swap pay cash, and how much" is computed exactly the way a real trading
-desk's software would compute it, rather than being reimplemented from scratch.
+below) — they use ORE's own trade-schedule and day-count-convention machinery, via
+`engine/trades/ore_builders.py`, so that "when does this swap pay cash, and how much" is
+computed exactly the way a real trading desk's software would compute it, rather than
+being reimplemented from scratch. Their own model math (bond prices, bond options) comes
+from `engine/models/hull_white.py` (`swap.py`, `european_swaption.py`) or
+`engine/models/lgm.py` (`bermudan_swaption.py`/`american_swaption.py`) — see
+[Models & Trades](../reference/models-and-trades.md).
 
-### Risk Aggregation (`engine/risk/statistics.py`)
+### Risk Aggregation (`engine/risk/var_es.py`)
 
 **Input:** any NPV cube shaped `[Scenarios, TimeSteps, Trades]` (not necessarily from
 the instrument pricers — see below) plus a baseline value.
 **Output:** Value at Risk and Expected Shortfall numbers, one per requested confidence
 level, one per time step.
 
-See [Risk Statistics](../risk/statistics.md) for the math.
+See [Risk Statistics](../risk/var_es.md) for the math.
+
+### Sensitivities (`engine/risk/greeks.py`)
+
+**Input:** one `SwapConfig`/`SwaptionConfig`/`BermudanSwaptionConfig` plus its own
+`ZeroCurve` (a JAX-array counterpart of `ZeroCurveConfig` — see below), and, for Vega, a
+list of `CalibrationTarget`s.
+**Output:** per-curve-pillar Delta/Gamma, a single Theta number, and (Bermudan/American
+only) per-basket-instrument Vega, for that one trade.
+
+Unlike `var_es.py`, this module is **not** instrument-agnostic — it imports directly from
+`engine.instruments.swap`/`engine.instruments.european_swaption`/
+`engine.instruments.bermudan_swaption` and reuses their own JAX-native pricing building
+blocks (via automatic differentiation, `jax.grad`/`jax.hessian`), rather than only
+consuming a generic NPV cube. It covers every instrument in this codebase — Bermudan/
+American Greeks became possible once `bermudan_swaption.py`'s backward induction was
+ported to `jax.lax.scan`, and Vega became well-defined once `engine/calibration/` existed
+to supply a genuine market-vol-to-model relationship. See
+[Delta, Gamma, and Theta](../risk/greeks.md) for the full story, including two real
+autodiff-through-bisection gradient bugs found and fixed while building this.
 
 ## Design principle: modules agree on shapes, not code
 
@@ -186,12 +276,12 @@ cashflow summation, Jamshidian's closed-form option decomposition, or numeric LG
 backward induction).
 
 This is what makes the pipeline modular in practice, not just in diagrams — it's directly
-exercised by the test suite (`tests/test_statistics.py`'s
-`TestRobustAcrossInstrumentSources` tests feed `risk/statistics.py` both a fabricated,
+exercised by the test suite (`tests/test_var_es.py`'s
+`TestRobustAcrossInstrumentSources` tests feed `risk/var_es.py` both a fabricated,
 non-swap-derived cube and a real swap-pricer cube, and assert both work identically) and
 it's what let `european_swaption.py`, `bermudan_swaption.py`, and `american_swaption.py`
 — three more, genuinely different instrument types after the original swap pricer —
-each plug into `risk/statistics.py` with zero changes to that module.
+each plug into `risk/var_es.py` with zero changes to that module.
 
 ## `engine/scenarios.py`: shared example configurations
 
@@ -238,7 +328,7 @@ in two different roles, and it's important to keep them distinct:
    schedule/day-count logic is fiddly, well-tested in ORE already, and not
    performance-critical (it runs once per trade, not once per simulated scenario), so
    there is no benefit to reimplementing it in JAX. `engine/simulation.py` and
-   `engine/risk/statistics.py` have **no** runtime ORE dependency — only pure JAX/NumPy.
+   `engine/risk/var_es.py` have **no** runtime ORE dependency — only pure JAX/NumPy.
 
 This means `pip install`-ing this project's core simulation and risk-statistics
 functionality does not strictly require ORE, but pricing any real trade currently does

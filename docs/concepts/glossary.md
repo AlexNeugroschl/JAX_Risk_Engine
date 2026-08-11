@@ -46,7 +46,7 @@ holder. See [Instruments: European Swaptions](../instruments/european-swaptions.
 **Expected Shortfall (ES)** — Also called **Conditional VaR (CVaR)**. The average loss,
 given that a loss at least as bad as the Value at Risk cutoff has occurred. Answers "how
 bad does it get in the worst case," where VaR alone only answers "how often does it get
-bad." See [Risk Statistics](../risk/statistics.md).
+bad." See [Risk Statistics](../risk/var_es.md).
 
 **Fixed leg / floating leg** — The two sides of an interest rate swap. The fixed leg
 pays a rate agreed today and locked in; the floating leg pays a rate that resets
@@ -129,7 +129,7 @@ output against. See [Architecture: ORE as a dependency](architecture.md#ore-as-a
 
 **P&L (Profit and Loss)** — How much money was gained or lost, relative to some starting
 point. Central to VaR/ES, which are computed *from* a P&L distribution. See
-[Risk Statistics: the P&L baseline](../risk/statistics.md#the-pl-baseline-what-are-gainslosses-measured-against).
+[Risk Statistics: the P&L baseline](../risk/var_es.md#the-pl-baseline-what-are-gainslosses-measured-against).
 
 **Precision (numeric)** — How many digits of accuracy a computer keeps when doing math.
 64-bit ("double precision," `float64`) keeps more digits and is more accurate but
@@ -170,7 +170,7 @@ an offline script. See also the [TraderX Integration Plan](../planning/traderx-i
 **Value at Risk (VaR)** — The most standard risk number in finance: "what's the cutoff
 loss such that we expect to lose *more* than that only X% of the time?" E.g. 95% VaR of
 $1M means: in 95% of simulated outcomes, the loss is under $1M; in the worst 5%, it's at
-least that much. See [Risk Statistics](../risk/statistics.md).
+least that much. See [Risk Statistics](../risk/var_es.md).
 
 **Vectorization** — Doing a mathematical operation on an entire array of numbers at once
 (e.g. "add these two lists of a million numbers together") instead of looping over each

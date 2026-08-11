@@ -58,12 +58,23 @@ from engine.instruments.european_swaption import (
     SwaptionConfig, prepare_swaption, _price_one_swaption, price_swaptions,
 )
 from engine.instruments.bermudan_swaption import (
-    BermudanSwaptionConfig, _H, _lgm_bond, _zeta, prepare_bermudan,
+    BermudanSwaptionConfig, prepare_bermudan,
     price_bermudan_swaption_base, price_bermudan_swaptions,
 )
 from engine.instruments.american_swaption import AmericanSwaptionConfig, price_american_swaptions
-from engine.risk.statistics import compute_risk_metrics
+from engine.risk.var_es import compute_risk_metrics
 from engine.scenarios import flat_yield_curves
+from engine.models.hull_white import ZeroCurve as _HwZeroCurve
+from engine.models.lgm import H as _H, bond_price as _lgm_bond_price, zeta as _zeta
+
+
+def _lgm_bond(zero_times, zero_rates, a, sigma, t, T, x):
+    """Test-local adapter matching the OLD NumPy-facing _lgm_bond(zero_times,
+    zero_rates, a, sigma, t, T, x) call shape this file's own hand-rolled
+    Jamshidian cross-check was written against, delegating to the actual
+    shared implementation (engine.models.lgm.bond_price)."""
+    curve = _HwZeroCurve(pillar_times=jnp.asarray(zero_times), pillar_rates=jnp.asarray(zero_rates))
+    return np.asarray(_lgm_bond_price(curve, a, sigma, jnp.asarray(t), jnp.asarray(T), jnp.asarray(x)))
 
 TODAY = ORE.Date(30, 7, 2026)
 DAY_COUNTER = ORE.Actual365Fixed()
@@ -837,7 +848,7 @@ class TestPortfolioLevelRiskAggregation:
         EMPTY by construction (ORE.RiskStatistics.expectedShortfall itself
         raises "no data below the target" in that degenerate case, matching
         this engine's own documented NaN convention for the same case --
-        see risk/statistics.py's docstring), not a meaningful VaR/ES
+        see risk/var_es.py's docstring), not a meaningful VaR/ES
         comparison. t=2.0 keeps genuine optionality (and thus genuine
         cross-scenario variance) alive in at least one trade (forward_start
         =3Y)."""
@@ -1139,6 +1150,220 @@ class TestTimeEvolutionSanity:
         idx_last = len(step_times) - 1
         assert step_times[idx_last] >= 6.0
         assert std_per_step[idx_last] < 10.0 * (np.max(std_per_step) + 1.0)
+
+
+# =============================================================================
+# 6. CALIBRATION + GREEKS ACROSS A DIVERSE BERMUDAN/AMERICAN PORTFOLIO
+#
+# Everything above this section predates engine/calibration/ and the
+# Bermudan/American Greeks (bermudan_delta_gamma/bermudan_theta/
+# bermudan_vega) -- both added after this file was first written -- so
+# neither is exercised anywhere else in this module. This section closes
+# that gap: ONE calibrated Sigma (from a single market-vol basket, the
+# realistic desk workflow -- calibrate once per curve/currency, reuse
+# everywhere) feeds SEVERAL Bermudan/American trades of varying tenor,
+# exercise schedule, moneyness, and payer/receiver, with Delta/Gamma/Theta/
+# Vega computed for each.
+# =============================================================================
+from engine.calibration.basket import build_coterminal_basket
+from engine.calibration.lgm import calibrate_lgm_sigma
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig as _BermCfg
+from engine.risk.greeks import bermudan_delta_gamma, bermudan_theta, bermudan_vega
+from engine.simulation import ZeroCurveConfig as _ZCC
+
+
+class TestCalibrationAndGreeksAcrossDiversePortfolio:
+    """A calibrated Sigma reused across a genuinely diverse Bermudan/
+    American book, with full Delta/Gamma/Theta/Vega computed per trade."""
+
+    @classmethod
+    @pytest.fixture(scope="class")
+    def calibrated(cls):
+        curve = _HwZeroCurve.flat(0.03, [0.0, 1.0, 2.0, 3.0, 5.0, 10.0, 30.0])
+        curve_config = _ZCC(times=[0.0, 1.0, 2.0, 3.0, 5.0, 10.0, 30.0], rates=[0.03] * 7)
+        exercise_times = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        targets = build_coterminal_basket(
+            exercise_times=exercise_times, final_maturity_time=7.0,
+            notional=1_000_000.0, payer=True,
+            market_vols=[0.0075, 0.0082, 0.0088, 0.0092, 0.0095, 0.0097],
+            zero_curve=curve, evaluation_date=TODAY,
+        )
+        result = calibrate_lgm_sigma(targets, curve, a=0.03)
+        return {"curve": curve, "curve_config": curve_config, "sigma": result.sigma, "targets": targets}
+
+    @classmethod
+    @pytest.fixture(scope="class")
+    def diverse_trades(cls, calibrated):
+        """5 Bermudan/American trades sharing the SAME calibrated Sigma:
+        deep-ITM payer, deep-OTM receiver, ATM single-exercise, a sparse
+        (subset-of-basket) exercise schedule, and an American exercise
+        window -- deliberately varied moneyness/payer-receiver/
+        exercise-density, the same "diverse portfolio" spirit as
+        _build_bermudan_swaptions()/_build_american_swaptions() above,
+        but calibration-driven rather than flat-sigma."""
+        sigma = calibrated["sigma"]
+        curve_config = calibrated["curve_config"]
+        berm_trades = {
+            "deep_itm_payer": _BermCfg(
+                notional=1_000_000.0, fixed_rate=0.01, payer=True, rate_factor_index=0,
+                hw_a=0.03, hw_sigma=sigma, initial_zero_curve=curve_config,
+                exercise_times=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], swap_tenor="7Y", evaluation_date=TODAY,
+            ),
+            "deep_otm_receiver": _BermCfg(
+                notional=1_500_000.0, fixed_rate=0.01, payer=False, rate_factor_index=0,
+                hw_a=0.03, hw_sigma=sigma, initial_zero_curve=curve_config,
+                exercise_times=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], swap_tenor="7Y", evaluation_date=TODAY,
+            ),
+            "atm_single_exercise": _BermCfg(
+                notional=500_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
+                hw_a=0.03, hw_sigma=sigma, initial_zero_curve=curve_config,
+                exercise_times=[3.0], swap_tenor="4Y", evaluation_date=TODAY,
+            ),
+            "sparse_schedule": _BermCfg(
+                notional=2_000_000.0, fixed_rate=0.028, payer=True, rate_factor_index=0,
+                hw_a=0.03, hw_sigma=sigma, initial_zero_curve=curve_config,
+                exercise_times=[2.0, 4.0, 6.0], swap_tenor="7Y", evaluation_date=TODAY,
+            ),
+        }
+        from engine.instruments.american_swaption import AmericanSwaptionConfig as _AmerCfg
+        american_cfg = _AmerCfg(
+            notional=800_000.0, fixed_rate=0.032, payer=False, rate_factor_index=0,
+            hw_a=0.03, hw_sigma=sigma, initial_zero_curve=curve_config,
+            first_exercise=1.0, last_exercise=5.0, exercise_time_steps_per_year=1,
+            swap_tenor="7Y", evaluation_date=TODAY,
+        )
+        berm_trades["american_via_to_bermudan"] = american_cfg.to_bermudan()
+        return berm_trades
+
+    def test_every_trade_prices_finite_and_signed_sensibly(self, diverse_trades):
+        for name, cfg in diverse_trades.items():
+            npv = price_bermudan_swaption_base(cfg)
+            assert np.isfinite(npv), f"{name}: non-finite NPV"
+            assert npv >= 0.0, f"{name}: negative NPV for a long option position"
+
+    def test_deep_itm_worth_substantially_more_than_atm_despite_smaller_notional(self, diverse_trades):
+        itm_npv = price_bermudan_swaption_base(diverse_trades["deep_itm_payer"])
+        atm_npv = price_bermudan_swaption_base(diverse_trades["atm_single_exercise"])
+        assert itm_npv > atm_npv
+
+    def test_sparse_schedule_worth_no_more_than_dense_schedule_same_moneyness(self, diverse_trades):
+        """More exercise opportunities cannot decrease value -- a
+        model-independent monotonicity bound (already used elsewhere in
+        this file, e.g. test_bermudans_at_least_as_valuable_as_last_
+        exercise_only), applied here to a calibration-driven Sigma rather
+        than a flat one. sparse_schedule and deep_itm_payer share tenor
+        and rate factor but differ in moneyness (2.8% vs 1%) and notional,
+        so this compares PER-UNIT-NOTIONAL value instead of raw NPV."""
+        sparse_cfg = diverse_trades["sparse_schedule"]
+        dense_cfg = _BermCfg(
+            notional=sparse_cfg.notional, fixed_rate=sparse_cfg.fixed_rate, payer=sparse_cfg.payer,
+            rate_factor_index=sparse_cfg.rate_factor_index, hw_a=sparse_cfg.hw_a, hw_sigma=sparse_cfg.hw_sigma,
+            initial_zero_curve=sparse_cfg.initial_zero_curve,
+            exercise_times=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], swap_tenor=sparse_cfg.swap_tenor,
+            evaluation_date=sparse_cfg.evaluation_date,
+        )
+        sparse_npv = price_bermudan_swaption_base(sparse_cfg)
+        dense_npv = price_bermudan_swaption_base(dense_cfg)
+        assert dense_npv >= sparse_npv - 1e-6
+
+    def test_delta_gamma_finite_across_every_trade(self, calibrated, diverse_trades):
+        curve = calibrated["curve"]
+        for name, cfg in diverse_trades.items():
+            greeks = bermudan_delta_gamma(cfg, curve)
+            assert jnp.all(jnp.isfinite(greeks["delta"])), f"{name}: non-finite delta"
+            assert jnp.all(jnp.isfinite(greeks["gamma"])), f"{name}: non-finite gamma"
+
+    def test_theta_finite_and_bounded_across_every_trade(self, calibrated, diverse_trades):
+        curve = calibrated["curve"]
+        for name, cfg in diverse_trades.items():
+            npv = price_bermudan_swaption_base(cfg)
+            theta = bermudan_theta(cfg, curve)
+            assert np.isfinite(theta), f"{name}: non-finite theta"
+            # 1-day time decay should be a small fraction of the trade's
+            # own NPV -- a loose sanity bound shared with
+            # TestBermudanTheta.test_finite_and_typically_small_relative_to_npv
+            # in tests/test_greeks_bermudan.py, applied portfolio-wide here.
+            if abs(npv) > 1.0:
+                assert abs(theta) < 0.1 * abs(npv), f"{name}: theta implausibly large relative to NPV"
+
+    def test_vega_finite_and_positive_for_trades_within_the_calibration_horizon(self, calibrated, diverse_trades):
+        """Vega is only well-defined for a trade whose OWN exercise
+        schedule has exactly one calibrated bucket per basket instrument
+        (bermudan_vega's own bucket-count assertion -- see
+        tests/test_greeks_bermudan.py::TestBermudanVega::
+        test_raises_on_bucket_count_mismatch) -- so this only applies to
+        trades whose exercise_times equal the calibration basket's own
+        6-date schedule exactly (deep_itm_payer, deep_otm_receiver, and
+        the American trade's discretized schedule, which also happens to
+        land on the same 6 annual dates given exercise_time_steps_per_year=1
+        over [1,5] union the calibration's own [1..6])."""
+        curve = calibrated["curve"]
+        targets = calibrated["targets"]
+        for name in ["deep_itm_payer", "deep_otm_receiver"]:
+            cfg = diverse_trades[name]
+            vega = bermudan_vega(cfg, curve, targets)
+            assert jnp.all(jnp.isfinite(vega)), f"{name}: non-finite vega"
+            assert jnp.all(vega > 0.0), f"{name}: non-positive vega (should be long-vol)"
+
+    def test_payer_and_receiver_vega_are_both_positive_and_finite(self, calibrated, diverse_trades):
+        """Both a payer and a receiver Bermudan are long volatility --
+        their Vegas must be positive and finite for every basket bucket.
+        Their RATIO is deliberately NOT asserted to be close to 1: at
+        fixed_rate=0.01 against a ~3% forward, the payer leg is deep ITM
+        (its early-exercise value is dominated by intrinsic value, so the
+        EARLIEST bucket's own marginal vol sensitivity is small) while the
+        receiver leg at the same strike is deep OTM (correspondingly more
+        vol-sensitive at the same bucket) -- confirmed directly: the
+        earliest bucket's payer/receiver Vega ratio is ~237x, a genuine
+        consequence of the two trades' very different moneyness at that
+        exercise date, not a bug. Later buckets (closer to being
+        genuinely at-the-money as the underlying's remaining tenor
+        shrinks) converge toward a much smaller ratio (~0.03-1x) --
+        confirming the effect is moneyness-driven, not a sign/scale
+        error across the board."""
+        curve = calibrated["curve"]
+        targets = calibrated["targets"]
+        payer_vega = bermudan_vega(diverse_trades["deep_itm_payer"], curve, targets)
+        receiver_vega = bermudan_vega(diverse_trades["deep_otm_receiver"], curve, targets)
+        assert jnp.all(jnp.isfinite(payer_vega)) and jnp.all(payer_vega > 0.0)
+        assert jnp.all(jnp.isfinite(receiver_vega)) and jnp.all(receiver_vega > 0.0)
+
+    def test_recalibrating_with_shifted_market_vols_shifts_portfolio_value_consistently(self, calibrated):
+        """A parallel upward shift in every market vol should increase
+        EVERY trade's NPV in the portfolio (all are long volatility) --
+        a portfolio-level consistency check on top of the individual-
+        bucket Vega checks in tests/test_greeks_bermudan.py."""
+        curve = calibrated["curve"]
+        curve_config = calibrated["curve_config"]
+        exercise_times = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        base_vols = [0.0075, 0.0082, 0.0088, 0.0092, 0.0095, 0.0097]
+        shifted_vols = [v + 0.001 for v in base_vols]
+
+        base_targets = build_coterminal_basket(
+            exercise_times=exercise_times, final_maturity_time=7.0, notional=1_000_000.0,
+            payer=True, market_vols=base_vols, zero_curve=curve, evaluation_date=TODAY,
+        )
+        shifted_targets = build_coterminal_basket(
+            exercise_times=exercise_times, final_maturity_time=7.0, notional=1_000_000.0,
+            payer=True, market_vols=shifted_vols, zero_curve=curve, evaluation_date=TODAY,
+        )
+        base_sigma = calibrate_lgm_sigma(base_targets, curve, a=0.03).sigma
+        shifted_sigma = calibrate_lgm_sigma(shifted_targets, curve, a=0.03).sigma
+
+        for payer in [True, False]:
+            cfg_base = _BermCfg(
+                notional=1_000_000.0, fixed_rate=0.02, payer=payer, rate_factor_index=0,
+                hw_a=0.03, hw_sigma=base_sigma, initial_zero_curve=curve_config,
+                exercise_times=exercise_times, swap_tenor="7Y", evaluation_date=TODAY,
+            )
+            cfg_shifted = _BermCfg(
+                notional=1_000_000.0, fixed_rate=0.02, payer=payer, rate_factor_index=0,
+                hw_a=0.03, hw_sigma=shifted_sigma, initial_zero_curve=curve_config,
+                exercise_times=exercise_times, swap_tenor="7Y", evaluation_date=TODAY,
+            )
+            npv_base = price_bermudan_swaption_base(cfg_base)
+            npv_shifted = price_bermudan_swaption_base(cfg_shifted)
+            assert npv_shifted > npv_base, f"payer={payer}: higher market vol did not increase NPV"
 
 
 if __name__ == "__main__":

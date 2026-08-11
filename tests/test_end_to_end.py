@@ -45,7 +45,7 @@ import pytest
 from engine.simulation import SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths
 from engine.instruments.swap import SwapConfig, price_swaps
 from engine.instruments.european_swaption import SwaptionConfig, prepare_swaption, _price_one_swaption, price_swaptions
-from engine.risk.statistics import compute_risk_metrics
+from engine.risk.var_es import compute_risk_metrics
 from engine.scenarios import flat_yield_curves
 
 TODAY = ORE.Date(30, 7, 2026)
@@ -123,8 +123,8 @@ def _price_portfolio_engine(scenarios: int):
 
     # t=0 baseline: swap's own t=0 value + each swaption's own t=0 value
     # (a real, deterministic zero-shock revaluation of the whole
-    # portfolio, not a proxy) -- see risk_statistics' P&L baseline
-    # convention (docs/05-risk-statistics.md).
+    # portfolio, not a proxy) -- see var_es' P&L baseline
+    # convention (docs/risk/var_es.md).
     prep_a = prepare_swaption(swaption_a)
     prep_b = prepare_swaption(swaption_b)
     t0_step = jnp.array([0.0])

@@ -61,11 +61,30 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import ORE
-from jax.scipy.stats import norm
 
 from engine.simulation import ZeroCurveConfig
+from engine.trades.ore_builders import DAY_COUNTER, build_vanilla_swap
+from engine.models.hull_white import (
+    A as _hw_A,
+    B as _hw_B,
+    ZeroCurve as _HwZeroCurve,
+    bond_call as _bond_call,
+    bond_option_sigma as _bond_option_sigma,
+    bond_put as _bond_put,
+)
 
-DAY_COUNTER = ORE.Actual365Fixed()
+
+def compute_hw_A(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.ndarray, T: np.ndarray, a: float, sigma: float) -> np.ndarray:
+    """Thin NumPy-facing wrapper around `engine.models.hull_white.A` --
+    kept under this module's original name/signature (`zero_times`/
+    `zero_rates` arrays rather than a `ZeroCurve`) since it's part of this
+    module's own public surface (imported directly by
+    `tests/test_ore_parity.py` and others) and since `_PreparedSwaption`
+    stores the curve as plain NumPy arrays. The formula itself lives in
+    exactly one place -- `engine/models/hull_white.py` -- not re-derived
+    here."""
+    curve = _HwZeroCurve(pillar_times=jnp.asarray(zero_times), pillar_rates=jnp.asarray(zero_rates))
+    return np.asarray(_hw_A(curve, jnp.asarray(t), jnp.asarray(T), a, sigma))
 
 
 @dataclass
@@ -119,28 +138,14 @@ class SwaptionConfig:
 
 def _build_ore_swap(cfg: SwaptionConfig) -> ORE.VanillaSwap:
     """CPU: builds the real ORE underlying swap (schedules, day counts,
-    conventions) -- see swap._build_ore_swap for the same
-    pattern and the rationale for explicit Actual/365Fixed on both legs."""
-    ORE.Settings.instance().evaluationDate = cfg.evaluation_date
-    dummy_forward_curve = ORE.YieldTermStructureHandle(
-        ORE.FlatForward(cfg.evaluation_date, 0.0, DAY_COUNTER)
+    conventions) -- see `engine.trades.ore_builders.build_vanilla_swap`,
+    the single shared implementation of this construction."""
+    return build_vanilla_swap(
+        notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
+        swap_tenor=cfg.swap_tenor, index_tenor_months=cfg.index_tenor_months,
+        floating_spread=cfg.floating_spread, evaluation_date=cfg.evaluation_date,
+        forward_start=cfg.forward_start,
     )
-    index = ORE.IborIndex(
-        "SimIndex", ORE.Period(cfg.index_tenor_months, ORE.Months), 2,
-        ORE.USDCurrency(), ORE.TARGET(), ORE.ModifiedFollowing, False,
-        DAY_COUNTER, dummy_forward_curve,
-    )
-    swap_type = ORE.VanillaSwap.Payer if cfg.payer else ORE.VanillaSwap.Receiver
-    swap = ORE.MakeVanillaSwap(
-        ORE.Period(cfg.swap_tenor), index, cfg.fixed_rate,
-        nominal=cfg.notional,
-        swapType=swap_type,
-        floatingLegSpread=cfg.floating_spread,
-        fixedLegDayCount=DAY_COUNTER,
-        floatingLegDayCount=DAY_COUNTER,
-        forwardStart=cfg.forward_start,
-    )
-    return swap
 
 
 @dataclass
@@ -229,128 +234,19 @@ def prepare_swaption(cfg: SwaptionConfig) -> _PreparedSwaption:
 
 # =============================================================================
 # HULL-WHITE 1-FACTOR CLOSED-FORM BUILDING BLOCKS
+#
+# `compute_hw_A` (this module's own NumPy-facing wrapper, defined above)
+# and `_hw_B`/`_bond_option_sigma`/`_bond_call`/`_bond_put` (imported
+# directly from `engine.models.hull_white`) are the single shared
+# implementation of every HW1F closed form this module needs -- see that
+# module's docstring for the math and the ORE correspondence. Nothing here
+# re-derives them.
 # =============================================================================
-def _initial_log_discount(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.ndarray) -> np.ndarray:
-    """Continuously-compounded log discount factor ln P(0,t), identical to
-    simulation._initial_log_discount (linear interpolation on zero
-    rates, flat-extrapolated at the curve ends)."""
-    r_t = np.interp(t, zero_times, zero_rates)
-    return -r_t * t
-
-
-def compute_hw_A(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.ndarray, T: np.ndarray, a: float, sigma: float) -> np.ndarray:
-    """
-    CPU/NumPy: closed-form Hull-White 1-Factor A(t,T) at an ARBITRARY (t,T)
-    pair (not a fixed maturities pillar array), calibrated against today's
-    market zero curve:
-        A(t,T) = [P(0,T)/P(0,t)] *
-                 exp(B(t,T)*f(0,t) - (sigma^2/4a)*(1-exp(-2at))*B(t,T)^2)
-    where f(0,t) = -d/dt ln P(0,t) is the initial instantaneous forward
-    rate. Identical formula to simulation.compute_hw_A_matrix,
-    generalized from a pillar grid to any (t,T) values -- Jamshidian's
-    trick needs A evaluated at two distinct anchor points per swaption
-    (today -> exercise time, and exercise time -> each coupon date), not a
-    single shared step_times/maturities grid.
-
-    t, T: broadcastable arrays of times (year-fractions from today).
-    """
-    eps = 1e-6
-    log_P0_t = _initial_log_discount(zero_times, zero_rates, t)
-    log_P0_T = _initial_log_discount(zero_times, zero_rates, T)
-    fwd_0_t = -(_initial_log_discount(zero_times, zero_rates, t + eps) - log_P0_t) / eps
-    ratio = np.exp(log_P0_T - log_P0_t)
-    B_t_T = (1.0 - np.exp(-a * (T - t))) / a
-    variance_term = (sigma ** 2 / (4.0 * a)) * (1.0 - np.exp(-2.0 * a * t))
-    return ratio * np.exp(B_t_T * fwd_0_t - variance_term * B_t_T ** 2)
-
-
-def _hw_B(t: jax.Array, T: jax.Array, a: float) -> jax.Array:
-    """B(t,T) = (1 - exp(-a*(T-t))) / a -- identical formula to
-    simulation.generate_paths' B_matrix, evaluated here at
-    arbitrary (t,T) pairs rather than pre-tabulated maturity pillars."""
-    return (1.0 - jnp.exp(-a * (T - t))) / a
-
-
-def _bond_option_sigma(T_opt: jax.Array, S: jax.Array, t: jax.Array, a: float, sigma: float) -> jax.Array:
-    """sigma_p: the volatility (as seen from t) of the zero-coupon bond
-    price P(T_opt,S) -- the standard HW1F bond-option volatility (Brigo-
-    Mercurio 3.41), live-verified bit-for-bit against
-    ORE.HullWhite.discountBondOption in this module's tests."""
-    B_Topt_S = _hw_B(T_opt, S, a)
-    return sigma * B_Topt_S * jnp.sqrt(jnp.clip(1.0 - jnp.exp(-2.0 * a * (T_opt - t)), 0.0, None) / (2.0 * a))
-
-
-def _bond_call(P_t_Topt: jax.Array, P_t_S: jax.Array, K: jax.Array, sigma_p: jax.Array) -> jax.Array:
-    """Black-formula call on a zero-coupon bond -- ORE's
-    HullWhite::discountBondOption closed form, live-verified bit-for-bit
-    against the installed ORE package in this module's tests.
-
-    sigma_p == 0 occurs in two distinct situations this module hits in
-    practice: pricing exactly at the option's own expiry (t == T_opt), and
-    a bond leg whose own maturity coincides with the option's expiry
-    (S == T_opt -- always true of the notional-received-at-T_start leg for
-    a non-forward-starting swaption, where the spot lag makes T_start ==
-    T0 exactly). Both collapse to the deterministic intrinsic payoff
-    max(P_S - K*P_T, 0) in the zero-vol limit (no time for uncertainty to
-    resolve) -- guarded here directly (not left to the caller) so every
-    call site is correct by construction, using jnp.where to stay
-    branch-free/jit-friendly (the Black-formula branch is still evaluated
-    on a safe placeholder sigma_p to avoid a 0/0 NaN contaminating the
-    gradient-safe branch, then discarded)."""
-    sigma_p_safe = jnp.where(sigma_p > 0.0, sigma_p, 1.0)
-    h = (1.0 / sigma_p_safe) * jnp.log(P_t_S / (P_t_Topt * K)) + sigma_p_safe / 2.0
-    black = P_t_S * norm.cdf(h) - K * P_t_Topt * norm.cdf(h - sigma_p_safe)
-    intrinsic = jnp.maximum(P_t_S - K * P_t_Topt, 0.0)
-    return jnp.where(sigma_p > 0.0, black, intrinsic)
-
-
-def _bond_put(P_t_Topt: jax.Array, P_t_S: jax.Array, K: jax.Array, sigma_p: jax.Array) -> jax.Array:
-    """Put-call parity on the same zero-coupon bond call above."""
-    call = _bond_call(P_t_Topt, P_t_S, K, sigma_p)
-    return call - (P_t_S - K * P_t_Topt)
-
-
-def _solve_rstar(
-    coupon_bond_value_fn, t_shape,
-    iterations: int = 100,
-) -> jax.Array:
-    """
-    Vectorized bisection for Jamshidian's critical short rate r*(scenario,
-    step): the short rate at the exercise date at which the signed coupon
-    bond (every fixed cashflow, plus final notional, minus the notional
-    received back at the swap's own accrual start -- see
-    prepare_swaption's docstring) is worth exactly 0 -- the exercise
-    boundary shared by every zero-coupon leg of the decomposition (see
-    module docstring).
-
-    Monotonic and well-posed in practice: every POSITIVE-amount leg's bond
-    price P(T0,Ti;r) is strictly decreasing in r (B(T0,Ti) > 0 for every
-    Ti > T0), while the single NEGATIVE-amount leg (the T_start notional
-    receipt) is strictly increasing in r -- but B(T0,T_start) is tiny
-    (T_start is only `exercise_lag_days` after T0, a couple of days,
-    versus years for every other leg), so its contribution is dominated by
-    every other leg's for any realistic swaption and the sum remains
-    monotonically decreasing across the whole practical rate range
-    (verified numerically in this module's tests, not just assumed).
-    Bisection (rather than Newton's method) is used because it vectorizes
-    across every (scenario, time step) pair with a fixed iteration count
-    under jax.jit, with no data-dependent stopping condition needed.
-
-    Bracket width: a fixed [-2, 2] (a +-200% short rate) safely brackets
-    r* for any realistic trade, but a sufficiently deep-ITM payer (an
-    extreme negative fixed_rate) pushes the true root outside it -- the
-    coupon bond value is then the SAME sign at both lo and hi (monotone
-    decreasing, never crossing zero inside the bracket), so plain
-    bisection's `val_mid > 0.0` update collapses `hi` onto `lo` every
-    iteration and silently returns the bracket's own edge as a fake root,
-    rather than raising or converging to the true (out-of-bracket) value.
-    Guarded by doubling the bracket outward (still branch-free/jit-
-    friendly, a fixed iteration count) whenever the initial bracket
-    doesn't actually contain a sign change, before bisecting -- this keeps
-    the common in-bracket case at its original cost while making the rare
-    out-of-bracket case converge to the true root instead of a silently
-    wrong value.
-    """
+def _bisect_rstar(coupon_bond_value_fn, t_shape, iterations: int) -> jax.Array:
+    """The bisection itself (forward value only, no gradient guarantees --
+    see `_solve_rstar`, which wraps this with a differentiable correction).
+    Kept as a standalone function so `_solve_rstar`'s `jax.custom_jvp`
+    primal can call it directly under `jax.lax.stop_gradient`."""
     lo = -jnp.ones(t_shape) * 2.0
     hi = jnp.ones(t_shape) * 2.0
 
@@ -383,6 +279,122 @@ def _solve_rstar(
 
     lo, hi = jax.lax.fori_loop(0, iterations, body, (lo, hi))
     return 0.5 * (lo + hi)
+
+
+def _solve_rstar(coupon_bond_value_fn, params, t_shape, iterations: int = 100) -> jax.Array:
+    """
+    Vectorized bisection for Jamshidian's critical short rate r*(scenario,
+    step): the short rate at the exercise date at which the signed coupon
+    bond (every fixed cashflow, plus final notional, minus the notional
+    received back at the swap's own accrual start -- see
+    prepare_swaption's docstring) is worth exactly 0 -- the exercise
+    boundary shared by every zero-coupon leg of the decomposition (see
+    module docstring).
+
+    `coupon_bond_value_fn(r, params) -> value`: unlike a plain closure
+    over whatever the caller needs, `params` is an EXPLICIT pytree
+    argument holding every value the caller wants `_solve_rstar`'s output
+    to be differentiable with respect to (e.g. `A_T0_Ti`, `B_T0_Ti`,
+    `all_amounts` in `_price_one_swaption` below) -- required by
+    `jax.custom_jvp` (see "Gradient correctness" below), which needs an
+    explicit primal argument to define a JVP rule against; a plain Python
+    closure's captured tracers cannot be attached to a `custom_jvp` rule
+    directly. Any value `coupon_bond_value_fn` needs that the caller does
+    NOT want a gradient with respect to (e.g. `T0`, day-count-derived
+    times) can still be closed over normally -- only pass through `params`
+    what should flow into Delta/Gamma.
+
+    Monotonic and well-posed in practice: every POSITIVE-amount leg's bond
+    price P(T0,Ti;r) is strictly decreasing in r (B(T0,Ti) > 0 for every
+    Ti > T0), while the single NEGATIVE-amount leg (the T_start notional
+    receipt) is strictly increasing in r -- but B(T0,T_start) is tiny
+    (T_start is only `exercise_lag_days` after T0, a couple of days,
+    versus years for every other leg), so its contribution is dominated by
+    every other leg's for any realistic swaption and the sum remains
+    monotonically decreasing across the whole practical rate range
+    (verified numerically in this module's tests, not just assumed).
+    Bisection (rather than Newton's method) is used because it vectorizes
+    across every (scenario, time step) pair with a fixed iteration count
+    under jax.jit, with no data-dependent stopping condition needed.
+
+    Bracket width: a fixed [-2, 2] (a +-200% short rate) safely brackets
+    r* for any realistic trade, but a sufficiently deep-ITM payer (an
+    extreme negative fixed_rate) pushes the true root outside it -- the
+    coupon bond value is then the SAME sign at both lo and hi (monotone
+    decreasing, never crossing zero inside the bracket), so plain
+    bisection's `val_mid > 0.0` update collapses `hi` onto `lo` every
+    iteration and silently returns the bracket's own edge as a fake root,
+    rather than raising or converging to the true (out-of-bracket) value.
+    Guarded by doubling the bracket outward (still branch-free/jit-
+    friendly, a fixed iteration count) whenever the initial bracket
+    doesn't actually contain a sign change, before bisecting -- this keeps
+    the common in-bracket case at its original cost while making the rare
+    out-of-bracket case converge to the true root instead of a silently
+    wrong value.
+
+    **Gradient correctness (implicit function theorem), not just the
+    forward value.** Naively differentiating through 100 iterations of a
+    comparison-based bisection loop (`jnp.where(val_mid > 0.0, ...)`) does
+    NOT produce a correct gradient -- the comparison itself has zero
+    gradient everywhere, so a plain `jax.grad` through the unrolled loop
+    silently returns 0 regardless of how the true root actually moves with
+    the function's own parameters (verified directly: a toy
+    `f(r,c) = c - r` bisected this way gives `d(rstar)/dc = 0.0` under
+    naive autodiff, vs. the true value `1.0` -- this is what
+    `engine/risk/greeks.py`'s Delta/Gamma computation surfaced, since it's
+    the first caller in this codebase to differentiate through
+    `_solve_rstar`; `price_swaptions` itself never needed a gradient of
+    its own root-find).
+
+    Fixed via `jax.custom_jvp` implementing the implicit function theorem
+    directly: at a root of `f(r*, params) = 0`,
+    `dr*/dparams . v = -(df/dparams . v) / (df/dr)` for any tangent
+    direction `v` -- computed here via one `jax.grad` (for `df/dr`, at the
+    stop-gradient'd converged root) and one `jax.jvp` (for the directional
+    derivative `df/dparams . v`), both cheap relative to the 100-iteration
+    bisection itself. This is DELIBERATELY a `custom_jvp`, not the simpler
+    "differentiable Newton correction after stop_gradient" trick (tried
+    first, and it works correctly for `jax.grad` alone) -- that simpler
+    trick's own correction expression is not itself well-defined for a
+    SECOND differentiation pass (`jax.hessian`, i.e. Gamma), since the
+    `stop_gradient` sits directly in the expression `jax.hessian`
+    differentiates, rather than inside a `custom_jvp` rule (which JAX
+    knows how to re-differentiate through correctly, because a
+    `custom_jvp` rule is itself an ordinary, twice-differentiable Python
+    function of the SAME `params`, evaluated fresh on each differentiation
+    pass -- confirmed directly: a toy cubic root-find
+    (`f(r,c) = c - r**3`, closed-form `d^2(rstar)/dc^2` known exactly)
+    matches this implementation's `jax.hessian` output to machine
+    precision, whereas the simpler stop_gradient-only trick gives exactly
+    `0.0` for the second derivative).
+
+    `df/dr` is computed via `jax.grad` on the SUM of `coupon_bond_value_fn`
+    across the batch -- valid here (not just convenient) because this
+    function is applied strictly elementwise across `t_shape`: each batch
+    entry's output depends only on that same entry's own `params` (the
+    per-(scenario,step) A/B/cashflow terms in `_price_one_swaption`), so
+    summing before differentiating recovers each element's own partial
+    derivative exactly, with no cross-element contamination -- confirmed
+    directly against literal finite-difference bump-and-revalue in
+    `tests/test_greeks.py`.
+    """
+    @jax.custom_jvp
+    def solve(p):
+        f = lambda r: coupon_bond_value_fn(r, p)
+        rstar = _bisect_rstar(f, t_shape, iterations)
+        return jax.lax.stop_gradient(rstar)
+
+    @solve.defjvp
+    def solve_jvp(primals, tangents):
+        p, = primals
+        p_dot, = tangents
+        rstar_val = solve(p)
+        df_dr = jax.grad(lambda r: jnp.sum(coupon_bond_value_fn(r, p)))(rstar_val)
+        _, df_dparams_dot = jax.jvp(lambda pp: coupon_bond_value_fn(rstar_val, pp), (p,), (p_dot,))
+        rstar_dot = -df_dparams_dot / df_dr
+        return rstar_val, rstar_dot
+
+    return solve(params)
 
 
 def _price_one_swaption(
@@ -446,15 +458,22 @@ def _price_one_swaption(
     )
     B_T0_Ti = _hw_B(T0, jnp.asarray(all_times, dtype=hw_paths.dtype), a)  # [N+1]
 
-    def coupon_bond_value(rstar):
-        # rstar: [S, T] -> prices: [S, T, N+1]
-        prices = A_T0_Ti[None, None, :] * jnp.exp(-B_T0_Ti[None, None, :] * rstar[..., None])
-        return jnp.sum(prices * all_amounts[None, None, :], axis=-1)
+    def coupon_bond_value(rstar, params):
+        # rstar: [S, T] -> prices: [S, T, N+1]. params carries every value
+        # _solve_rstar's caller might want Delta/Gamma with respect to
+        # (see that function's docstring on why this must be an explicit
+        # argument, not a closure) -- A_T0_Ti (curve-dependent) here;
+        # B_T0_Ti (mean-reversion-only) stays closed over since this
+        # module's Greeks are curve sensitivities, not model-parameter
+        # ones (see engine/risk/greeks.py's module docstring on Vega scope).
+        A_T0_Ti_p, all_amounts_p = params
+        prices = A_T0_Ti_p[None, None, :] * jnp.exp(-B_T0_Ti[None, None, :] * rstar[..., None])
+        return jnp.sum(prices * all_amounts_p[None, None, :], axis=-1)
 
     r_t = hw_paths[:, :, swaption.rate_factor_index]  # [S, T]
     num_scenarios, num_steps = r_t.shape
 
-    rstar = _solve_rstar(coupon_bond_value, (num_scenarios, num_steps))
+    rstar = _solve_rstar(coupon_bond_value, (A_T0_Ti, all_amounts), (num_scenarios, num_steps))
     K = A_T0_Ti[None, None, :] * jnp.exp(-B_T0_Ti[None, None, :] * rstar[..., None])  # [S,T,N+1] strikes
 
     # A(t, Ti) and A(t, T0) -- conditioning point t varies per step, so

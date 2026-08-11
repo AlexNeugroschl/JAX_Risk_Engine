@@ -24,7 +24,7 @@ worthwhile.
 This module answers the same kind of question the [swap pricing module](swaps.md) does — *"given
 thousands of simulated alternate futures, what is this specific trade worth in each one,
 at each point in time?"* — but for a swaption instead of a plain swap, producing the same
-kind of NPV cube risk aggregation (see [VaR & Expected Shortfall](../risk/statistics.md)) needs.
+kind of NPV cube risk aggregation (see [VaR & Expected Shortfall](../risk/var_es.md)) needs.
 
 ## Why it's built this way: Jamshidian's trick
 

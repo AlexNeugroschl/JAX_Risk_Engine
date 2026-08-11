@@ -1,6 +1,6 @@
 # Risk Statistics: Value at Risk & Expected Shortfall
 
-**Module:** [`engine/risk/statistics.py`](../../engine/risk/statistics.py)
+**Module:** [`engine/risk/var_es.py`](../../engine/risk/var_es.py)
 **Public entry point:** `compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))`
 
 ## Plain-language summary
@@ -78,7 +78,7 @@ boundary — in which case they diverge, and only the value-based filter matches
 was caught by constructing a test P&L sample with deliberate ties at the VaR cutoff and
 comparing against `ORE.RiskStatistics.expectedShortfall()` directly; the positional
 formula gave a visibly wrong answer (`72.7` instead of ORE's actual `100.0`) on that test
-case. See `tests/test_statistics.py::TestExpectedShortfallAgainstORE::test_matches_ore_with_ties_at_var_boundary`.
+case. See `tests/test_var_es.py::TestExpectedShortfallAgainstORE::test_matches_ore_with_ties_at_var_boundary`.
 
 **What happens when the tail is empty?** If every one of the worst observations is
 exactly tied at the VaR cutoff, the strict `<` filter can end up with nothing in it.
@@ -143,7 +143,7 @@ returns them in a dictionary keyed like `"VaR_95"`, `"ES_95"`, `"VaR_99"`, `"ES_
 
 ## Tested by
 
-- `tests/test_statistics.py::TestValueAtRiskAgainstORE` /
+- `tests/test_var_es.py::TestValueAtRiskAgainstORE` /
   `TestExpectedShortfallAgainstORE` — direct numeric comparison against
   `ORE.RiskStatistics`, including the tie-at-boundary and empty-tail edge cases described
   above.

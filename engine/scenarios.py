@@ -3,7 +3,7 @@ Canonical demo/reference scenarios and shared ORE curve-construction
 helpers, factored out of the individual modules' __main__ demo blocks
 (where the same configuration used to be hand-copied and had already begun
 drifting out of sync between engine/instruments/swap.py and
-engine/risk/statistics.py).
+engine/risk/var_es.py).
 
 This module has no engine.instruments/engine.risk dependency of its own --
 it only builds SimulationConfig objects and plain ORE curve handles, so
@@ -83,7 +83,7 @@ def single_currency_swap_demo_config() -> SimulationConfig:
     One equity, two correlated USD rate factors (0 = OIS/discounting,
     1 = Euribor-style forwarding) -- the minimal multi-curve scenario used
     by engine/instruments/swap.py and
-    engine/risk/statistics.py's demos, and by the
+    engine/risk/var_es.py's demos, and by the
     corresponding test suites' ORE cross-checks. Maturity pillars are
     SWAP_DEMO_MATURITIES: the exact accrual/payment dates of the 2Y demo
     swap built by swap_demo_config().
@@ -163,7 +163,7 @@ def flat_yield_curves(disc_rate: float, fwd_rate: float, maturities=SWAP_DEMO_MA
     actual market, no simulated noise" base case used for VaR's t=0
     baseline and for cross-checking a pricer's output directly against
     ORE.VanillaSwap.NPV() (see tests/test_swap.py and
-    tests/test_statistics.py).
+    tests/test_var_es.py).
     """
     dc = ORE.Actual365Fixed()
     disc_curve = ORE.YieldTermStructureHandle(ORE.FlatForward(eval_date, disc_rate, dc))

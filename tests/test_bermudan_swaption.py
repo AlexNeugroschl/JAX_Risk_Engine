@@ -25,6 +25,7 @@ the way the swap/European-swaption/VaR modules are. Instead:
     opportunities, put/call sign convention, ITM > OTM, grid convergence)
     are checked directly.
 """
+import jax.numpy as jnp
 import numpy as np
 import ORE
 import pytest
@@ -32,16 +33,26 @@ import pytest
 from engine.simulation import ZeroCurveConfig
 from engine.instruments.bermudan_swaption import (
     BermudanSwaptionConfig,
-    _H,
     _hagan_quadrature_weights,
-    _lgm_bond,
     _state_grid,
-    _zeta,
     prepare_bermudan,
     price_bermudan_swaption_base,
     price_bermudan_swaptions,
 )
 from engine.instruments.european_swaption import SwaptionConfig, prepare_swaption
+from engine.models.hull_white import ZeroCurve as HwZeroCurve
+from engine.models.lgm import H as _H, bond_price as _lgm_bond_price, zeta as _zeta
+
+
+def _lgm_bond(zero_times, zero_rates, a, sigma, t, T, x):
+    """Test-local adapter matching the OLD NumPy-facing _lgm_bond(zero_times,
+    zero_rates, a, sigma, t, T, x) call shape this file's tests were written
+    against, delegating to the actual shared implementation
+    (engine.models.lgm.bond_price, which takes a ZeroCurve and is
+    JAX-native) -- keeps these tests' own hand-rolled Jamshidian cross-check
+    logic unchanged while testing the real, current implementation."""
+    curve = HwZeroCurve(pillar_times=jnp.asarray(zero_times), pillar_rates=jnp.asarray(zero_rates))
+    return np.asarray(_lgm_bond_price(curve, a, sigma, jnp.asarray(t), jnp.asarray(T), jnp.asarray(x)))
 
 FLAT_CURVE = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.03] * 6)
 EVAL_DATE = ORE.Date(30, 7, 2026)
@@ -546,8 +557,9 @@ class TestDegenerateSingleExerciseCases:
         cfg = _make_bermudan(fixed_rate=0.001, payer=True, exercise_times=[3.0])
         npv = price_bermudan_swaption_base(cfg)
         swap = prepare_bermudan(cfg)
-        from engine.instruments.bermudan_swaption import _hw_swap_value_at_nodes
-        intrinsic_at_exercise = float(_hw_swap_value_at_nodes(np.array([0.0]), 3.0, swap)[0])
+        from engine.instruments.bermudan_swaption import _hw_swap_value_at_nodes, _zero_curve_of
+        curve = _zero_curve_of(swap)
+        intrinsic_at_exercise = float(_hw_swap_value_at_nodes(swap, curve, jnp.array([0.0]), jnp.array(3.0))[0])
         discounted_intrinsic = intrinsic_at_exercise * np.exp(-0.03 * 3.0)
         assert np.isfinite(npv)
         assert npv == pytest.approx(discounted_intrinsic, rel=0.1)

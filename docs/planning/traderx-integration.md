@@ -36,7 +36,7 @@ boundary: a `PortfolioRequest`-style entry point that either produces a valid `S
 | European swaption trades | `SwaptionConfig` (adds `hw_a`/`hw_sigma`/`initial_zero_curve`, duplicated per-trade from the matching rate factor) | `engine/instruments/european_swaption.py` |
 | Bermudan swaption trades | `BermudanSwaptionConfig` (adds `exercise_times`, `n_per_std`/`std_devs` grid resolution) | `engine/instruments/bermudan_swaption.py` |
 | American swaption trades | `AmericanSwaptionConfig` (adds `first_exercise`/`last_exercise`/`exercise_time_steps_per_year`) | `engine/instruments/american_swaption.py` |
-| Portfolio base NPV / percentiles | `compute_risk_metrics(npv_cube, base_npv, percentiles)` | `engine/risk/statistics.py` |
+| Portfolio base NPV / percentiles | `compute_risk_metrics(npv_cube, base_npv, percentiles)` | `engine/risk/var_es.py` |
 
 ## Gaps to close, in priority order
 

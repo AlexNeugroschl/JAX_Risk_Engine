@@ -5,6 +5,24 @@ American swaption pricing -- see engine.instruments.american_swaption, a
 thin wrapper around this module (American exercise is priced here as a
 finely-discretized Bermudan, exactly matching ORE's own design).
 
+**Fully JAX-native.** An earlier version of this module ran its backward
+induction in plain NumPy on the CPU (a dynamic Python loop over a
+`set`/`round()`-deduplicated list of grid times, with dict-based snapshot
+bookkeeping) -- correct, and extensively verified against ORE, but with no
+JAX computational graph for `jax.grad` to differentiate through (blocking
+Greeks) and no ability to run on GPU. This version reproduces the exact
+same algorithm as a `jax.lax.scan` over a PRECOMPUTED, fixed-length grid-
+time schedule (built once, in plain Python, from the trade's own
+`exercise_times`/requested `condition_times` -- a genuinely static
+quantity, known before any array math starts, so padding it to a fixed
+length is not an approximation, just a JAX tracing requirement). See
+"THE GRID-TIME SCHEDULE" section below for the exact construction. Cross-
+validated exhaustively against the original NumPy engine (kept as
+`engine/instruments/bermudan_swaption_numpy_reference.py` during this
+validation period) across a randomized sweep of configs before being
+adopted as this module's implementation -- see
+`tests/test_bermudan_jax_vs_numpy.py`.
+
 Why not Jamshidian's decomposition (see engine.instruments.european_swaption):
 Jamshidian's trick relies on the option having a SINGLE exercise date, so the
 whole coupon bond's exercise boundary collapses to one critical rate r* at
@@ -29,9 +47,9 @@ with its own scheme-dependent truncation error), and both solvers plug into
 the *identical* `max(intrinsic, continuation)` backward-induction loop in
 `NumericLgmMultiLegOptionEngineBase::calculate()` -- the choice of solver is
 a numerical-implementation detail, not a modeling difference; see
-docs/10-american-swaptions.md for the full writeup.
+docs/instruments/american-bermudan-swaptions.md for the full writeup.
 
-Algorithm (see docs/10-american-swaptions.md for full derivation and every
+Algorithm (see docs/instruments/american-bermudan-swaptions.md for full derivation and every
 cited ORE source line):
 
 1. Build the underlying swap's fixed and floating cashflow schedule with
@@ -48,18 +66,18 @@ cited ORE source line):
 3. At the final grid time, the underlying swap's remaining value is the
    closed-form LGM swap NPV (fixed leg + floating leg, each cashflow priced
    off `P(t,T,x) = [P(0,T)/P(0,t)]*exp(-0.5*(H(T)^2-H(t)^2)*zeta(t))*
-   exp(-(H(T)-H(t))*x)` at every state-grid node -- `_lgm_bond`, live-
-   verified to machine precision against `ORE.LinearGaussMarkovModel.
-   discountBond`). **Deliberately NOT** this codebase's other HW1F closed
-   form (`compute_hw_A`/`_hw_B`, used throughout
-   engine.instruments.european_swaption and swap) -- see `_lgm_bond`'s own
-   docstring for why: `ORE.HullWhite` and `ORE.LinearGaussMarkovModel`,
-   despite sharing (a, sigma) and today's curve, are NOT the same numerical
-   model realization for t>0, a finding made and verified live while
-   building this module. Since ORE's actual Bermudan/American engine is
-   built on `LinearGaussMarkovModel`, this module matches THAT model
-   exclusively, not the plain-HullWhite closed forms used elsewhere in this
-   codebase.
+   exp(-(H(T)-H(t))*x)` at every state-grid node -- `engine.models.lgm.
+   bond_price`, live-verified to machine precision against
+   `ORE.LinearGaussMarkovModel.discountBond`). **Deliberately NOT** this
+   codebase's other HW1F closed form (`engine.models.hull_white`, used
+   throughout engine.instruments.european_swaption and swap) -- see
+   `engine.models.lgm`'s own docstring for why: `ORE.HullWhite` and
+   `ORE.LinearGaussMarkovModel`, despite sharing (a, sigma) and today's
+   curve, are NOT the same numerical model realization for t>0, a finding
+   made and verified live while originally building this module. Since
+   ORE's actual Bermudan/American engine is built on
+   `LinearGaussMarkovModel`, this module matches THAT model exclusively,
+   not the plain-HullWhite closed forms used elsewhere in this codebase.
 4. Roll backward one grid step at a time via Hagan's quadrature convolution
    (`_hagan_quadrature_weights`, `_rollback_one_step`) -- precomputed
    trapezoid-of-normal-density weights applied to a linearly-interpolated
@@ -84,7 +102,7 @@ cited ORE source line):
    evaluated at an arbitrary future time from a single t=0 rollback the way
    Jamshidian's closed form can).
 
-**Validation approach** (see docs/10-american-swaptions.md and
+**Validation approach** (see docs/instruments/american-bermudan-swaptions.md and
 tests/test_bermudan_swaption.py): ORE's Python (SWIG) bindings expose
 `QuantExt.LinearGaussMarkovModel`'s closed-form pieces (`discountBond`,
 `numeraire`, `parametrization().H/zeta/Hprime`) but do NOT expose a
@@ -97,19 +115,19 @@ object directly end-to-end. It IS, however, validated at the formula level
 against live ORE objects, plus several model-independent structural checks:
   (a) Every closed-form building block this module's backward induction is
       built from -- H(t), zeta(t), H'(t), and the full bond price
-      P(t,T,x) itself (`_lgm_bond`) -- is live-verified to machine
-      precision against `ORE.IrLgm1fConstantParametrization`/
-      `ORE.LinearGaussMarkovModel` directly.
+      P(t,T,x) itself -- is live-verified to machine precision against
+      `ORE.IrLgm1fConstantParametrization`/`ORE.LinearGaussMarkovModel`
+      directly (see engine/models/lgm.py).
   (b) A single-exercise-date Bermudan (mathematically == a European
       swaption) must reproduce an INDEPENDENT Jamshidian-style closed-form
-      decomposition built on the SAME `_lgm_bond` formula (not this
+      decomposition built on the SAME LGM bond formula (not this
       codebase's HullWhite-parametrized Jamshidian pricer in
       european_swaption.py, which was confirmed -- while building this
       module -- to be a genuinely different model realization for t>0; see
-      `_lgm_bond`'s docstring) -- verified to match to ~1e-7 relative or
-      better, confirming the backward-induction/convolution machinery,
-      run with only one exercise opportunity, collapses to the correct
-      closed form.
+      engine/models/lgm.py's docstring) -- verified to match to ~1e-7
+      relative or better, confirming the backward-induction/convolution
+      machinery, run with only one exercise opportunity, collapses to the
+      correct closed form.
   (c) Monotonicity: a Bermudan/American swaption must be worth at least as
       much as the otherwise-identical European swaption exercisable only at
       the LAST of its dates (more exercise opportunities cannot decrease an
@@ -118,9 +136,16 @@ against live ORE objects, plus several model-independent structural checks:
   (d) Grid convergence: refining the state-grid resolution
       (n_per_std, std_devs) must change the price by a shrinking amount
       (standard numerical-scheme convergence check).
+  (e) Cross-validation against the original NumPy engine (see module-level
+      docstring above) across a randomized config sweep, the direct check
+      that this rewrite is a faithful port and not just independently
+      plausible.
+
+Known limitation: no mid-coupon proration -- see BermudanSwaptionConfig's
+own docstring and tests/test_bermudan_swaption.py::TestMidCouponKnownLimitation.
 """
 from dataclasses import dataclass, field
-from typing import List, Sequence
+from typing import List, Sequence, Union
 
 import jax
 import jax.numpy as jnp
@@ -128,6 +153,18 @@ import numpy as np
 import ORE
 
 from engine.simulation import ZeroCurveConfig
+from engine.trades.ore_builders import build_vanilla_swap
+from engine.models.hull_white import ZeroCurve as _HwZeroCurve
+from engine.models.lgm import (
+    H as _H,
+    H_prime as _H_prime,
+    Sigma,
+    bond_price as _lgm_bond_price,
+    numeraire as _lgm_numeraire,
+    r_from_x as _lgm_r_from_x,
+    x_from_r as _lgm_x_from_r,
+    zeta as _lgm_zeta,
+)
 
 DAY_COUNTER = ORE.Actual365Fixed()
 
@@ -142,7 +179,7 @@ class BermudanSwaptionConfig:
     a date on which the holder may exercise into the (then-remaining)
     underlying swap. Must all be strictly less than the underlying swap's
     final maturity and (for the mid-coupon-safe subset implemented here --
-    see docs/10-american-swaptions.md's "Scope" section) coincide with one
+    see docs/instruments/american-bermudan-swaptions.md's "Scope" section) coincide with one
     of the underlying's own accrual dates, matching ORE's own standard
     "coterminal" Bermudan structure (each exercise date is a fixed-leg reset
     date) -- ORE's own calibration machinery
@@ -153,6 +190,14 @@ class BermudanSwaptionConfig:
     same single-model-pricing rationale as
     engine.instruments.european_swaption.SwaptionConfig -- see that
     module's docstring.
+
+    hw_sigma accepts either a plain float (a flat volatility -- backward
+    compatible with every existing caller) or an
+    `engine.models.lgm.Sigma` (a genuine ORE-style piecewise-constant
+    term structure, e.g. the output of `engine.calibration`'s LGM
+    calibration routine) -- every formula this module calls into
+    (`engine.models.lgm`) accepts both transparently via `as_sigma`, so no
+    other code here needs to branch on which case a given trade is using.
 
     n_per_std/std_devs: state-grid resolution (points per standard
     deviation of the model's conditional distribution / how many standard
@@ -166,7 +211,7 @@ class BermudanSwaptionConfig:
     payer: bool
     rate_factor_index: int
     hw_a: float
-    hw_sigma: float
+    hw_sigma: Union[float, Sigma]
     initial_zero_curve: ZeroCurveConfig
     exercise_times: Sequence[float]
     swap_tenor: str = "5Y"
@@ -178,27 +223,14 @@ class BermudanSwaptionConfig:
 
 
 def _build_ore_swap(cfg) -> ORE.VanillaSwap:
-    """CPU: builds the real ORE underlying swap -- identical pattern to
-    swap._build_ore_swap / european_swaption._build_ore_swap."""
-    ORE.Settings.instance().evaluationDate = cfg.evaluation_date
-    dummy_forward_curve = ORE.YieldTermStructureHandle(
-        ORE.FlatForward(cfg.evaluation_date, 0.0, DAY_COUNTER)
+    """CPU: builds the real ORE underlying swap -- see
+    `engine.trades.ore_builders.build_vanilla_swap`, the single shared
+    implementation of this construction."""
+    return build_vanilla_swap(
+        notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
+        swap_tenor=cfg.swap_tenor, index_tenor_months=cfg.index_tenor_months,
+        floating_spread=cfg.floating_spread, evaluation_date=cfg.evaluation_date,
     )
-    index = ORE.IborIndex(
-        "SimIndex", ORE.Period(cfg.index_tenor_months, ORE.Months), 2,
-        ORE.USDCurrency(), ORE.TARGET(), ORE.ModifiedFollowing, False,
-        DAY_COUNTER, dummy_forward_curve,
-    )
-    swap_type = ORE.VanillaSwap.Payer if cfg.payer else ORE.VanillaSwap.Receiver
-    swap = ORE.MakeVanillaSwap(
-        ORE.Period(cfg.swap_tenor), index, cfg.fixed_rate,
-        nominal=cfg.notional,
-        swapType=swap_type,
-        floatingLegSpread=cfg.floating_spread,
-        fixedLegDayCount=DAY_COUNTER,
-        floatingLegDayCount=DAY_COUNTER,
-    )
-    return swap
 
 
 @dataclass
@@ -216,7 +248,7 @@ class _PreparedBermudan:
     float_spread: float
     rate_factor_index: int
     hw_a: float
-    hw_sigma: float
+    hw_sigma: Union[float, Sigma]
     zero_times: np.ndarray
     zero_rates: np.ndarray
     n_per_std: int
@@ -281,6 +313,13 @@ def prepare_bermudan(cfg: BermudanSwaptionConfig) -> _PreparedBermudan:
     )
 
 
+def _zero_curve_of(swap: _PreparedBermudan) -> _HwZeroCurve:
+    return _HwZeroCurve(
+        pillar_times=jnp.asarray(swap.zero_times, dtype=jnp.float64),
+        pillar_rates=jnp.asarray(swap.zero_rates, dtype=jnp.float64),
+    )
+
+
 # =============================================================================
 # STATE GRID / HAGAN QUADRATURE CONVOLUTION
 #
@@ -289,153 +328,48 @@ def prepare_bermudan(cfg: BermudanSwaptionConfig) -> _PreparedBermudan:
 # NOT this codebase's direct short-rate parametrization r(t) used elsewhere
 # (simulation, swap, european_swaption). This is a deliberate, verified
 # departure from the "reuse the direct-r parametrization everywhere"
-# pattern the rest of this codebase follows, for a precise reason: LGM's
-# x(t) is DRIFTLESS (confirmed directly from
-# `IrLgm1fStateProcess::expectation()` in docs/09-ore-parity.md section 3a),
-# so its transition law needs no mean-reversion decay term and its
-# NUMERAIRE-DEFLATED bond price is an exact martingale under x's own
-# Gaussian transition -- both properties Hagan's convolution scheme relies
-# on. The direct short rate r(t) is NOT driftless (it mean-reverts to
-# theta), so naively convolving raw (non-deflated) payoffs under r(t)'s own
-# transition law does NOT reproduce the correct conditional expectation --
-# this was verified by direct construction while building this module (a
-# rollback of a known zero-coupon bond price under the raw-r/non-deflated
-# approach mismatched the closed-form target by ~3%, while the
-# x-state/numeraire-deflated approach matches to <1e-4 relative, shrinking
-# with grid resolution -- see docs/10-american-swaptions.md's "why x, not
-# r" section for the full derivation and this discrepancy).
-#
-# x(t) relates to this codebase's other closed forms via the identities
-# already established in docs/09-ore-parity.md section 3b ("A parametrization
-# note: LGM vs. plain Hull-White"): H(t) = B(0,t) (this codebase's own
-# _hw_B with t=0), zeta(t) = hw_sigma^2 * t, and the short rate itself is
-# r(t) = f(0,t) + x(t)*H'(t) + zeta(t)*H'(t)*H(t) -- used only to convert an
-# x-grid into the r-values compute_hw_A/_hw_B's payoff formulas need (see
-# _r_from_x); the rollback/convolution machinery itself never touches r
-# directly.
+# pattern the rest of this codebase follows -- see engine/models/lgm.py's
+# docstring for the full reasoning (x(t) is driftless, which is what makes
+# Hagan's quadrature convolution valid at all).
 # =============================================================================
-def _zeta(sigma: float, t: float) -> float:
-    """Accumulated variance of the driftless LGM state x(t):
-    zeta(t) = sigma^2 * t -- QuantExt::IrLgm1fConstantParametrization::zeta
-    (live-verified identity, see docs/09-ore-parity.md section 3b)."""
-    return (sigma ** 2) * max(t, 0.0)
-
-
-def _H(a: float, t: float) -> float:
-    """H(t) = (1-exp(-a*t))/a -- QuantExt::Lgm1fParametrization's H(t), the
-    same shape as this codebase's own B(t,T) with t=0 (docs/09-ore-parity.md
-    section 3b's live-verified identity)."""
-    return (1.0 - np.exp(-a * t)) / a if t > 0.0 else 0.0
-
-
-def _Hprime(a: float, t: float) -> float:
-    """H'(t) = exp(-a*t)."""
-    return np.exp(-a * t)
-
-
-def _lgm_bond(zero_times: np.ndarray, zero_rates: np.ndarray, a: float, sigma: float, t: float, T: np.ndarray, x: np.ndarray) -> np.ndarray:
-    """
-    P(t,T,x) directly in LGM's own state variable, with NO detour through
-    this codebase's r(t)-parametrized compute_hw_A/_hw_B:
-
-        P(t,T,x) = [P(0,T)/P(0,t)] * exp(-0.5*(H(T)^2-H(t)^2)*zeta(t))
-                                    * exp(-(H(T)-H(t))*x)
-
-    -- QuantExt::LinearGaussMarkovModel::discountBond (lgm.hpp lines
-    252-280, docs/09-ore-parity.md's "parametrization note"), live-verified
-    directly against `ORE.LinearGaussMarkovModel.discountBond(t,T,x)` to
-    machine precision (~1e-16 relative) while building this module.
-
-    **This function exists, deliberately NOT reusing compute_hw_A/_hw_B
-    (this codebase's OTHER, independently-verified HW1F closed form, used
-    everywhere else in this codebase), because of a finding made while
-    building this module: `ORE.HullWhite` (`QuantLib::HullWhite`, driven by
-    compute_hw_A/_hw_B's own A(t,T)/B(t,T)) and
-    `ORE.LinearGaussMarkovModel`/`QuantExt::CrossAssetModel` (driven by
-    H(t)/zeta(t)) are NOT the same numerical model realization for t>0,
-    despite being constructed with identical (a, sigma) and sharing the
-    same t=0 curve -- live-verified directly: `HW.discountBond(t,T,r=f(0,t))`
-    and `LGM.discountBond(t,T,x=0)` (the "no shock, on today's curve" point
-    for each model's own natural reference state) differ by ~0.6% at t=3y
-    for a=0.03,sigma=0.02, even though EVERY individual building block
-    checked along the way (H(t), zeta(t), H'(t), f(0,t), the r(t,x)
-    identity confirmed via finite difference against the LGM formula
-    itself, and A(t,T)/B(t,T) confirmed exactly against
-    ORE.HullWhite.discountBond for arbitrary r) is independently exact. The
-    two ORE classes are both self-consistent one-factor affine short-rate
-    models (each satisfies its own `-d/dT log P(t,T)|T=t == r` identity
-    exactly, live-verified) but are evidently calibrated/parametrized
-    differently for t>0 -- see docs/10-american-swaptions.md's "why x, not
-    r" section for the full investigation trail. Since ORE's actual
-    Bermudan/American engine (`NumericLgmMultiLegOptionEngine`) is built on
-    `LinearGaussMarkovModel`, THIS is the correct model to match here, and
-    this module uses ONLY this formula for every discount factor --
-    compute_hw_A/_hw_B are not used anywhere in this module.
-    """
-    P0T = np.exp(-np.interp(T, zero_times, zero_rates) * T)
-    P0t = np.exp(-np.interp(t, zero_times, zero_rates) * t) if t > 0.0 else 1.0
-    Ht, HT = _H(a, t), _H(a, T)
-    return (P0T / P0t) * np.exp(-0.5 * (HT ** 2 - Ht ** 2) * _zeta(sigma, t)) * np.exp(-(HT - Ht) * x)
-
-
-def _r_from_x(zero_times: np.ndarray, zero_rates: np.ndarray, a: float, sigma: float, t: float, x: np.ndarray) -> np.ndarray:
-    """
-    The short rate implied by LGM's own state x(t) and bond formula (NOT
-    ORE.HullWhite's short rate -- see _lgm_bond's docstring; the two are
-    different models for t>0):
-
-        r(t,x) = f(0,t) + x*H'(t) + zeta(t)*H'(t)*H(t)
-
-    live-verified via central finite difference directly on _lgm_bond
-    (`-d/dT log P(t,T,x) |_{T=t}`, matching to ~1e-12 relative) -- this IS
-    LGM's own genuine short rate at state x, used only to convert this
-    module's simulated hw_paths (engine.simulation's own literal
-    short-rate simulation, calibrated with the SAME (a, sigma) this module
-    receives) into the corresponding LGM state x for conditioning (see
-    _x_from_r, its exact inverse).
-    """
-    eps = 1e-6
-    log_P0_t = -np.interp(t, zero_times, zero_rates) * t
-    log_P0_t_eps = -np.interp(t + eps, zero_times, zero_rates) * (t + eps)
-    f0t = -(log_P0_t_eps - log_P0_t) / eps
-    Hp = _Hprime(a, t)
-    return f0t + x * Hp + _zeta(sigma, t) * Hp * _H(a, t)
-
-
-def _x_from_r(zero_times: np.ndarray, zero_rates: np.ndarray, a: float, sigma: float, t: float, r: np.ndarray) -> np.ndarray:
-    """Exact inverse of _r_from_x (r(t,x) is affine/linear in x, so this is
-    a closed-form solve, not a numerical root-find): converts a short rate
-    (e.g. a simulated hw_paths value) into the corresponding LGM state x at
-    the same time t, for interpolating into an x-indexed value function."""
-    if t <= 0.0:
-        return np.zeros_like(r)
-    eps = 1e-6
-    log_P0_t = -np.interp(t, zero_times, zero_rates) * t
-    log_P0_t_eps = -np.interp(t + eps, zero_times, zero_rates) * (t + eps)
-    f0t = -(log_P0_t_eps - log_P0_t) / eps
-    Hp = _Hprime(a, t)
-    return (r - f0t - _zeta(sigma, t) * Hp * _H(a, t)) / Hp
-
-
-def _state_grid(sigma: float, t: float, n_per_std: int, std_devs: float) -> np.ndarray:
+def _state_grid(sigma: float, t: jax.Array, n_per_std: int, std_devs: float) -> jax.Array:
     """
     The centered LGM state grid at time t: `x_k = k*dx`, `dx =
     sqrt(zeta(t)) / n_per_std`, spanning `+/- std_devs` standard deviations
     -- exactly `LgmConvolutionSolver2::stateGrid`'s `dx = sqrt(zeta(t))/nx_`
-    construction (lgmconvolutionsolver2.cpp), with `mx_ = round(std_devs *
-    n_per_std)` points on each side of zero, always including x=0 itself
-    (an odd-length grid, matching ORE's `2*mx_+1` point count).
+    construction, with `mx_ = round(std_devs * n_per_std)` points on each
+    side of zero, always including x=0 itself (an odd-length grid, matching
+    ORE's `2*mx_+1` point count). `mx` is a Python int (a config-time
+    constant, not data-dependent), so this function's OUTPUT SHAPE is
+    always `2*mx+1` regardless of `t` -- required for `jax.lax.scan`, whose
+    carry must have a fixed shape at every step.
 
-    At t=0, zeta(0)=0 and the grid collapses to the single point x=0 --
-    matching `LgmConvolutionSolver2::stateGrid`'s explicit `t=0` special
-    case (`if (close_enough(t,0.0)) return RandomVariable(2*mx_+1, 0.0);`).
+    At t=0, zeta(0)=0 and the grid collapses to the single value x=0
+    EVERYWHERE (not just index mx) -- matching
+    `LgmConvolutionSolver2::stateGrid`'s explicit `t=0` special case
+    (`if (close_enough(t,0.0)) return RandomVariable(2*mx_+1, 0.0);`).
+
+    **Gradient-safe at zeta==0** (not just forward-value-safe): `d(sqrt(z))
+    /dz` is itself a 0/0 indeterminate form at `z=0` (`sqrt`'s own
+    derivative, `0.5/sqrt(z)`, diverges as `z->0+`, and JAX's `sqrt` JVP
+    rule evaluates that formula literally), so `jax.grad`/`jax.hessian`
+    with respect to `sigma` through a naive `jnp.sqrt(zeta)` produces NaN
+    at t=0 even though the FORWARD value (0.0) is perfectly well-defined
+    -- confirmed directly (`engine.risk.greeks.bermudan_vega`'s own
+    development surfaced this: `d(NPV)/d(sigma_values[0])` came back NaN
+    until this guard was added, the first caller in this codebase to
+    differentiate through `_state_grid` at all). Guarded via the standard
+    branch-free `jnp.where` pattern used throughout `engine.models.
+    hull_white`/`engine.models.lgm` (evaluate `sqrt` on a safe placeholder
+    that is never actually 0, then select the correct branch) -- both
+    branches are always computed (required for `jax.jit`/`jax.grad`
+    tracing), the placeholder result is simply discarded when `zeta > 0`.
     """
-    if t <= 0.0:
-        mx = int(round(std_devs * n_per_std))
-        return np.zeros(2 * mx + 1, dtype=np.float64)
-    dx = np.sqrt(_zeta(sigma, t)) / n_per_std
     mx = int(round(std_devs * n_per_std))
-    return dx * np.arange(-mx, mx + 1, dtype=np.float64)
+    z = jnp.maximum(_lgm_zeta(sigma, t), 0.0)
+    z_safe = jnp.where(z > 0.0, z, 1.0)
+    dx = jnp.where(z > 0.0, jnp.sqrt(z_safe), 0.0) / n_per_std
+    return dx * jnp.arange(-mx, mx + 1, dtype=jnp.float64)
 
 
 def _hagan_quadrature_weights(n_per_std: int, std_devs: float) -> np.ndarray:
@@ -456,6 +390,9 @@ def _hagan_quadrature_weights(n_per_std: int, std_devs: float) -> np.ndarray:
     outer half-interval has no neighbor to interpolate against and the
     weight reduces to the plain CDF-difference (flat extrapolation beyond
     the grid).
+
+    A one-time, config-only (not per-scenario/per-step) precomputation --
+    plain NumPy/SciPy is appropriate here, not a JAX tracing concern.
     """
     from scipy.stats import norm as scipy_norm
 
@@ -498,16 +435,14 @@ def _rollback_one_step(
     quad_y: jax.Array, quad_w: jax.Array, std_from_to: jax.Array,
 ) -> jax.Array:
     """
-    GPU: E[values(x_from) | x_to] under the model's exact Gaussian
-    transition law, evaluated at every point of `x_to` simultaneously
-    (vectorized across the leading batch axes of `values`/`x_to`, e.g.
-    [Scenarios] or [Trades] -- see _run_backward_induction), reproducing
+    E[values(x_from) | x_to] under the model's exact Gaussian transition
+    law, evaluated at every point of `x_to` simultaneously, reproducing
     `LgmConvolutionSolver2::rollback`.
 
     For each target node `x_to[k]`, the conditional distribution of
     `x_from` is Gaussian with mean `x_to[k]` (LGM/HW1F's own state variable
     is driftless in this deviation parametrization -- the SAME identity
-    docs/09-ore-parity.md section 3a already establishes from
+    docs/reference/ore-parity.md section 3a already establishes from
     `IrLgm1fStateProcess::expectation()`) and standard deviation
     `std_from_to = sqrt(zeta(t_from) - zeta(t_to))`. Hagan's quadrature
     re-expresses `E[f(x_from)] = sum_i w_i * f(x_to[k] + y_i*std_from_to)`
@@ -523,113 +458,138 @@ def _rollback_one_step(
     return jnp.sum(interpolated * quad_w[None, :], axis=-1)
 
 
-def _numeraire(zero_times: np.ndarray, zero_rates: np.ndarray, a: float, sigma: float, t: float, x: np.ndarray) -> np.ndarray:
-    """
-    N(t,x) = exp(0.5*H(t)^2*zeta(t) + H(t)*x) / P(0,t) --
-    QuantExt::LinearGaussMarkovModel::numeraire (lgm.hpp lines 227-250,
-    docs/09-ore-parity.md section "A parametrization note"). Every payoff is
-    divided by this before rolling back (see _hw_swap_reduced_value_at_nodes)
-    so that the rolled-back quantity is a true Q-martingale under x(t)'s own
-    driftless transition law -- see module docstring's "STATE GRID" section
-    header comment for why this deflation is mathematically required (a
-    plain, non-deflated rollback of P(t,T) under x's own transition does NOT
-    reproduce P(t_to,T) -- verified directly while building this module).
-    """
-    if t <= 0.0:
-        return np.ones_like(x)
-    P0t = np.exp(-np.interp(t, zero_times, zero_rates) * t)
-    Ht = _H(a, t)
-    return np.exp(0.5 * Ht ** 2 * _zeta(sigma, t) + Ht * x) / P0t
-
-
-def _discount_at_nodes(x_nodes: np.ndarray, t: float, times: np.ndarray, swap: _PreparedBermudan) -> np.ndarray:
+def _discount_at_nodes(curve: _HwZeroCurve, x_nodes: jax.Array, t: jax.Array, times: jax.Array, alive_mask: jax.Array, a: float, sigma: float) -> jax.Array:
     """P(t, times; x_nodes) at every LGM state-grid node, for every cashflow
-    time, via _lgm_bond (the directly x-parametrized, live-verified LGM
-    bond formula -- see its own docstring for why this module uses it
-    instead of this codebase's r(t)-parametrized compute_hw_A/_hw_B) --
-    zeroed out for any cashflow already paid/expired (times <= t), matching
-    NumericLgmMultiLegOptionEngineBase's cashflow bookkeeping (a coupon is
-    folded into the running NPV once and never revisited once its own time
-    passes).
+    time, via `engine.models.lgm.bond_price` (this module's own live-
+    verified LGM bond formula -- see `engine.models.lgm`'s docstring for
+    why this module does NOT reuse `engine.models.hull_white`, a different
+    model realization for t>0) -- zeroed out for any cashflow already
+    paid/expired, matching NumericLgmMultiLegOptionEngineBase's cashflow
+    bookkeeping (a coupon is folded into the running NPV once and never
+    revisited once its own time passes).
 
-    Uses the SAME `>= t - 1e-9` tolerance as _hw_swap_value_at_nodes's own
-    fixed/float alive masks (not a strict `times > t`) -- a coupon whose
-    start/end/pay time lands EXACTLY on the exercise/conditioning time `t`
-    is the common case for a reset-aligned exercise date (not an edge
-    case), and a stricter zero-tolerance comparison here previously zeroed
-    out P(t, t; x) for that coupon's own accrual-start date even though the
-    caller's mask had already classified it as alive, corrupting that
-    coupon's forward-rate ratio (found and fixed during this module's own
-    test-suite development, see
-    tests/test_bermudan_swaption.py::TestMidCouponKnownLimitation)."""
-    if times.size == 0:
-        return np.zeros((x_nodes.shape[0], 0))
-    alive = (times > t - 1e-9).astype(np.float64)
-    P = np.stack([
-        _lgm_bond(swap.zero_times, swap.zero_rates, swap.hw_a, swap.hw_sigma, t, float(T), x_nodes)
-        for T in times
-    ], axis=1)
-    return P * alive[None, :]
+    `alive_mask` is precomputed by the caller (see `_hw_swap_value_at_nodes`)
+    using the SAME `>= t - 1e-9` tolerance the original NumPy engine used --
+    a coupon whose start/end/pay time lands EXACTLY on the exercise/
+    conditioning time `t` is the common case for a reset-aligned exercise
+    date (not an edge case), and a stricter zero-tolerance comparison here
+    previously zeroed out P(t, t; x) for that coupon's own accrual-start
+    date even though the caller's mask had already classified it as alive,
+    corrupting that coupon's forward-rate ratio (found and fixed during
+    this module's own test-suite development, see
+    tests/test_bermudan_swaption.py::TestMidCouponKnownLimitation).
+
+    times/alive_mask may be empty (shape `[0]`) for a swap leg with zero
+    cashflows still outstanding -- handled by the caller via `jnp.where`
+    rather than a Python-level shape branch, so this function itself
+    assumes non-empty inputs and is `jax.jit`-safe."""
+    P = jax.vmap(lambda T: _lgm_bond_price(curve, a, sigma, t, T, x_nodes))(times)  # [Ntimes, Nnodes]
+    return (P * alive_mask[:, None]).T  # [Nnodes, Ntimes]
 
 
-def _hw_swap_value_at_nodes(x_nodes: np.ndarray, t: float, swap: _PreparedBermudan) -> np.ndarray:
+def _hw_swap_value_at_nodes(swap: _PreparedBermudan, curve: _HwZeroCurve, x_nodes: jax.Array, t: jax.Array) -> jax.Array:
     """
     The underlying swap's own remaining NPV (float leg - fixed leg,
     payer-signed) at time t, evaluated at every LGM state-grid node in
     `x_nodes` -- the "intrinsic" (exercise) value used at each exercise
-    date, via _discount_at_nodes/_lgm_bond (this module's own live-verified
-    LGM bond formula -- see _lgm_bond's docstring for why this module does
-    NOT reuse engine.instruments.european_swaption's compute_hw_A/_hw_B, a
-    different model realization for t>0), following the same fixed-leg /
-    floating-leg NPV structure as engine.instruments.swap._price_one_swap,
-    just evaluated at model-grid nodes instead of simulated scenario paths.
+    date, following the same fixed-leg/floating-leg NPV structure as
+    engine.instruments.swap._price_one_swap, just evaluated at model-grid
+    nodes instead of simulated scenario paths.
 
     fixed_amounts is used directly (notional*rate*accrual, read straight
     from ORE's own FixedRateCoupon.amount() in prepare_bermudan) rather
     than re-deriving rate*accrual -- avoids re-deriving a day-count detail
     ORE's own schedule generation has already resolved exactly.
     """
-    # Same accrual-start-based liveness rule as the floating leg below (see
-    # its comment): a fixed coupon is only a genuine remaining cashflow
-    # once its OWN accrual period has not yet begun relative to t, which is
-    # exact (not an approximation) at any reset-aligned t within this
-    # module's documented scope.
-    fixed_alive = (swap.fixed_start_times >= t - 1e-9)
-    fixed_disc = _discount_at_nodes(x_nodes, t, swap.fixed_times, swap)
-    fixed_leg_pv = fixed_disc @ (swap.fixed_amounts * fixed_alive)
+    a, sigma = swap.hw_a, swap.hw_sigma
 
-    if swap.float_pay_times.size == 0:
-        float_leg_pv = np.zeros_like(fixed_leg_pv)
-    else:
-        # Only coupons whose accrual has NOT YET BEGUN (start >= t) are
-        # included -- P(t, accrual_start) via the closed-form A/B formula is
-        # only a genuine discount factor for accrual_start >= t (the same
-        # T<t clamping issue documented as a known limitation in
-        # engine.instruments.swap's module docstring). This is not an
-        # approximation HERE specifically because every exercise/condition
-        # time this module ever evaluates _hw_swap_value_at_nodes at is, by
-        # this module's own documented scope (BermudanSwaptionConfig's
-        # docstring), a reset/accrual-start date of the underlying swap --
-        # so at any such t, every floating coupon either has start >= t
-        # (not yet begun, correctly priced) or start < t only for a coupon
-        # whose OWN start was a prior, already-passed reset date entirely
-        # (which, at a reset-aligned t, coincides with end <= t too, i.e.
-        # it is a fully elapsed coupon that must be excluded from the
-        # swap's remaining value in any case -- consistent with, not a
-        # workaround of, the exclusion).
-        alive = (swap.float_start_times >= t - 1e-9)
-        p_start = _discount_at_nodes(x_nodes, t, swap.float_start_times, swap)
-        p_end = _discount_at_nodes(x_nodes, t, swap.float_end_times, swap)
-        p_end_safe = np.where(p_end == 0.0, 1.0, p_end)
-        forward_rate = np.where(alive[None, :], (p_start / p_end_safe - 1.0) / swap.float_accrual[None, :], 0.0)
-        float_pay_disc = _discount_at_nodes(x_nodes, t, swap.float_pay_times, swap)
-        float_cashflow = swap.notional * (forward_rate + swap.float_spread) * swap.float_accrual[None, :]
-        float_leg_pv = np.sum(float_cashflow * float_pay_disc * alive[None, :], axis=1)
+    fixed_times = jnp.asarray(swap.fixed_times, dtype=jnp.float64)
+    fixed_start_times = jnp.asarray(swap.fixed_start_times, dtype=jnp.float64)
+    fixed_amounts = jnp.asarray(swap.fixed_amounts, dtype=jnp.float64)
+    # Same accrual-start-based liveness rule as the floating leg below: a
+    # fixed coupon is only a genuine remaining cashflow once its OWN
+    # accrual period has not yet begun relative to t, which is exact (not
+    # an approximation) at any reset-aligned t within this module's
+    # documented scope.
+    fixed_alive = (fixed_start_times >= t - 1e-9).astype(jnp.float64)
+    fixed_disc = _discount_at_nodes(curve, x_nodes, t, fixed_times, fixed_alive, a, sigma)  # [Nnodes, Nf]
+    fixed_leg_pv = fixed_disc @ fixed_amounts  # [Nnodes]
+
+    float_pay_times = jnp.asarray(swap.float_pay_times, dtype=jnp.float64)
+    float_start_times = jnp.asarray(swap.float_start_times, dtype=jnp.float64)
+    float_end_times = jnp.asarray(swap.float_end_times, dtype=jnp.float64)
+    float_accrual = jnp.asarray(swap.float_accrual, dtype=jnp.float64)
+
+    # Only coupons whose accrual has NOT YET BEGUN (start >= t) are
+    # included -- P(t, accrual_start) via the closed-form LGM bond formula
+    # is only a genuine discount factor for accrual_start >= t (the same
+    # T<t clamping issue documented as a known limitation in
+    # engine.instruments.swap's module docstring). This is not an
+    # approximation HERE specifically because every exercise/condition
+    # time this module ever evaluates this function at is, by this
+    # module's own documented scope (BermudanSwaptionConfig's docstring),
+    # a reset/accrual-start date of the underlying swap -- so at any such
+    # t, every floating coupon either has start >= t (not yet begun,
+    # correctly priced) or start < t only for a coupon whose OWN start was
+    # a prior, already-passed reset date entirely (which, at a
+    # reset-aligned t, coincides with end <= t too, i.e. it is a fully
+    # elapsed coupon that must be excluded from the swap's remaining value
+    # in any case -- consistent with, not a workaround of, the exclusion).
+    float_alive = (float_start_times >= t - 1e-9).astype(jnp.float64)
+    p_start = _discount_at_nodes(curve, x_nodes, t, float_start_times, float_alive, a, sigma)  # [Nnodes, Ncf]
+    p_end = _discount_at_nodes(curve, x_nodes, t, float_end_times, float_alive, a, sigma)
+    p_end_safe = jnp.where(p_end == 0.0, 1.0, p_end)
+    forward_rate = jnp.where(float_alive[None, :] > 0.0, (p_start / p_end_safe - 1.0) / float_accrual[None, :], 0.0)
+    float_pay_disc = _discount_at_nodes(curve, x_nodes, t, float_pay_times, float_alive, a, sigma)
+    float_cashflow = swap.notional * (forward_rate + swap.float_spread) * float_accrual[None, :]
+    float_leg_pv = jnp.sum(float_cashflow * float_pay_disc * float_alive[None, :], axis=1)  # [Nnodes]
 
     npv = float_leg_pv - fixed_leg_pv
     return npv if swap.payer else -npv
 
 
+# =============================================================================
+# THE GRID-TIME SCHEDULE (precomputed once per trade, plain Python)
+# =============================================================================
+@dataclass
+class _GridSchedule:
+    """The full, fixed-length, descending-sorted list of times the backward
+    induction walks through -- `{0, final_maturity} ∪ exercise_times ∪
+    condition_times`, deduplicated. Built once per `(trade, condition_times)`
+    pair in plain Python/NumPy (a static, config-time computation -- this
+    is exactly what the original NumPy engine's own `set()`/`round()`-based
+    construction did, just done ONCE outside the JAX trace here rather than
+    per-call inside a Python loop, so the resulting array's LENGTH is a
+    genuine Python int JAX can treat as a static shape)."""
+    times: np.ndarray            # [G] descending
+    is_exercise: np.ndarray      # [G] bool
+    is_condition: np.ndarray     # [G] bool
+    condition_index: np.ndarray  # [G] int, index into the original condition_times list (-1 if not a condition time)
+
+
+def _build_grid_schedule(swap: _PreparedBermudan, condition_times: Sequence[float]) -> _GridSchedule:
+    round_dp = 12
+    exercise_set = set(round(float(t), round_dp) for t in swap.exercise_times)
+    condition_list = [round(float(t), round_dp) for t in condition_times]
+    condition_set = set(condition_list)
+    all_times = sorted(set([0.0, swap.final_maturity]) | exercise_set | condition_set, reverse=True)
+
+    condition_first_index = {}
+    for i, t in enumerate(condition_list):
+        condition_first_index.setdefault(t, i)
+
+    times = np.asarray(all_times, dtype=np.float64)
+    is_exercise = np.asarray([t in exercise_set for t in all_times], dtype=bool)
+    is_condition = np.asarray([t in condition_set for t in all_times], dtype=bool)
+    condition_index = np.asarray(
+        [condition_first_index.get(t, -1) for t in all_times], dtype=np.int64
+    )
+    return _GridSchedule(times=times, is_exercise=is_exercise, is_condition=is_condition, condition_index=condition_index)
+
+
+# =============================================================================
+# BACKWARD INDUCTION (jax.lax.scan)
+# =============================================================================
 @dataclass
 class _RolledBackValue:
     """The result of running backward induction on a prepared Bermudan/
@@ -638,7 +598,12 @@ class _RolledBackValue:
     rolled-back value function conditional on an arbitrary simulated short
     rate at any of the requested `condition_times` (see
     price_bermudan_swaptions)."""
-    value_at_t0: float
+    value_at_t0: jax.Array  # 0-d JAX scalar, NOT a plain float -- kept as a
+    # traced array so engine.risk.greeks can differentiate straight through
+    # it (jax.grad/jax.hessian w.r.t. the curve/sigma this was computed
+    # from); price_bermudan_swaption_base (the plain-float production
+    # entry point) does its OWN float() cast on this value, one layer
+    # further out, so ordinary (non-Greeks) callers see no behavior change.
     condition_times: np.ndarray
     condition_state_grids: List[np.ndarray]
     condition_values: List[np.ndarray]
@@ -646,8 +611,9 @@ class _RolledBackValue:
 
 def _run_backward_induction(swap: _PreparedBermudan, condition_times: Sequence[float]) -> _RolledBackValue:
     """
-    CPU/NumPy: the core Hagan-convolution backward induction (module
-    docstring steps 2-6), run once per prepared swaption.
+    The core Hagan-convolution backward induction (module docstring steps
+    2-6), run once per prepared swaption, as a single `jax.lax.scan` over
+    a precomputed, fixed-length grid-time schedule (`_build_grid_schedule`).
 
     **Runs entirely in numeraire-deflated units** (`reduced = value / N(t,x)`
     at every grid time) -- required for Hagan's quadrature convolution to be
@@ -655,85 +621,99 @@ def _run_backward_induction(swap: _PreparedBermudan, condition_times: Sequence[f
     x_to]` under x's own Gaussian transition law is exactly the deflated
     value at `x_to` (a true martingale identity, matching
     `QuantExt::LinearGaussMarkovModel::reducedDiscountBond`'s whole reason
-    for existing -- see docs/09-ore-parity.md's "parametrization note").
+    for existing -- see docs/reference/ore-parity.md's "parametrization note").
     Rolling back RAW (non-deflated) values under x's transition law would
     silently give the wrong answer, since a raw bond/swap price is NOT a
     martingale under x's driftless transition on its own (only the
-    numeraire-deflated price is) -- this was the actual bug caught and
-    fixed while building this module (see the "STATE GRID" section's header
-    comment above for the numeric evidence). The early-exercise
+    numeraire-deflated price is). The early-exercise
     `max(intrinsic, continuation)` comparison is applied in deflated units
     too (dividing the intrinsic swap value by the SAME N(t,x) the
     continuation value is already deflated by) -- valid because N(t,x) > 0
     always, so `max` commutes with the deflation.
 
-    Grid times = every exercise date, every condition_time the caller wants
-    an intermediate value at, the final maturity, and 0.0 -- sorted
-    descending for the backward walk. At each grid time (other than the
-    first/latest), the deflated value function is rolled back one step from
-    the previous (later) grid time via Hagan's quadrature convolution, then,
-    if that time is an exercise date, floored at the deflated intrinsic
-    (exercise) value -- exactly
-    `NumericLgmMultiLegOptionEngineBase::calculate()`'s rule, expressed in
-    reduced units.
-
-    The (raw, re-inflated) value function at each `condition_time` is
-    snapshotted (grid + values) as the walk passes through it, so callers
-    can later condition on an arbitrary simulated short rate at that
-    specific time without re-running the whole induction per scenario.
+    Every grid step's (raw, re-inflated) value function is stacked into the
+    scan's output (fixed shape: `[NumGridTimes, NumStateGridPoints]`), then
+    the caller selects out condition-time rows via `schedule.is_condition`/
+    `condition_index` -- this replaces the original NumPy engine's dict-
+    based snapshot bookkeeping with a plain array select, since
+    `jax.lax.scan` can only produce fixed-shape stacked outputs, not a
+    variable-size dict.
     """
     a, sigma, n_per_std, std_devs = swap.hw_a, swap.hw_sigma, swap.n_per_std, swap.std_devs
-    quad_w = _hagan_quadrature_weights(n_per_std, std_devs)
+    curve = _zero_curve_of(swap)
+    quad_w = jnp.asarray(_hagan_quadrature_weights(n_per_std, std_devs), dtype=jnp.float64)
     my = int(round(std_devs * n_per_std))
-    quad_y = (1.0 / n_per_std) * np.arange(-my, my + 1, dtype=np.float64)
+    quad_y = jnp.asarray((1.0 / n_per_std) * np.arange(-my, my + 1, dtype=np.float64), dtype=jnp.float64)
 
-    exercise_set = set(round(float(t), 12) for t in swap.exercise_times)
-    condition_set = set(round(float(t), 12) for t in condition_times)
-    grid_times = sorted(set([0.0, swap.final_maturity]) | exercise_set | condition_set, reverse=True)
+    schedule = _build_grid_schedule(swap, condition_times)
+    grid_times = jnp.asarray(schedule.times, dtype=jnp.float64)
+    is_exercise = jnp.asarray(schedule.is_exercise)
+    num_grid = grid_times.shape[0]
 
-    x_prev = _state_grid(sigma, grid_times[0], n_per_std, std_devs)
-    t_prev = grid_times[0]
-    numeraire_prev = _numeraire(swap.zero_times, swap.zero_rates, a, sigma, t_prev, x_prev)
-    raw_values = _hw_swap_value_at_nodes(x_prev, t_prev, swap)
-    if round(t_prev, 12) in exercise_set:
-        raw_values = np.maximum(raw_values, _hw_swap_value_at_nodes(x_prev, t_prev, swap))
-    reduced = raw_values / numeraire_prev
+    x0 = _state_grid(sigma, grid_times[0], n_per_std, std_devs)
+    values0 = _hw_swap_value_at_nodes(swap, curve, x0, grid_times[0])
+    values0 = jnp.where(is_exercise[0], jnp.maximum(values0, values0), values0)  # exercise at the first (latest) grid time is a no-op maximum with itself; kept for structural symmetry with the loop body
+    numeraire0 = _lgm_numeraire(curve, a, sigma, grid_times[0], x0)
+    reduced0 = values0 / numeraire0
 
-    def r_grid_at(t_val: float, x_grid: np.ndarray) -> np.ndarray:
-        return _r_from_x(swap.zero_times, swap.zero_rates, a, sigma, t_val, x_grid)
+    def step(carry, step_inputs):
+        x_prev, t_prev, reduced_prev = carry
+        t, is_ex = step_inputs
 
-    snapshots = {}
-    if round(t_prev, 12) in condition_set:
-        snapshots[round(t_prev, 12)] = (r_grid_at(t_prev, x_prev), raw_values.copy())
-
-    for t in grid_times[1:]:
         x_t = _state_grid(sigma, t, n_per_std, std_devs)
-        std_step = np.sqrt(max(_zeta(sigma, t_prev) - _zeta(sigma, t), 0.0))
-        if std_step > 0.0:
-            reduced_continuation = np.asarray(_rollback_one_step(
-                jnp.asarray(reduced), jnp.asarray(x_prev), jnp.asarray(x_t),
-                jnp.asarray(quad_y), jnp.asarray(quad_w), jnp.asarray(std_step),
-            ))
-        else:
-            # t == t_prev in model time (can happen if two grid times
-            # coincide after float rounding) -- no actual time has passed.
-            reduced_continuation = np.interp(x_t, x_prev, reduced)
+        # Same gradient-safe sqrt guard as _state_grid (see that function's
+        # docstring): sqrt's own derivative is a 0/0 indeterminate form at
+        # 0, and even though the jnp.where below already selects the
+        # OTHER branch's forward value whenever this variance is 0,
+        # jax.grad still backpropagates through BOTH branches (0 * NaN =
+        # NaN) unless std_step itself is computed off a safe placeholder.
+        var_step = jnp.maximum(_lgm_zeta(sigma, t_prev) - _lgm_zeta(sigma, t), 0.0)
+        var_step_safe = jnp.where(var_step > 0.0, var_step, 1.0)
+        std_step = jnp.where(var_step > 0.0, jnp.sqrt(var_step_safe), 0.0)
 
-        numeraire_t = _numeraire(swap.zero_times, swap.zero_rates, a, sigma, t, x_t)
-        if round(t, 12) in exercise_set:
-            reduced_intrinsic = _hw_swap_value_at_nodes(x_t, t, swap) / numeraire_t
-            reduced = np.maximum(reduced_continuation, reduced_intrinsic)
-        else:
-            reduced = reduced_continuation
+        reduced_continuation = jnp.where(
+            std_step > 0.0,
+            _rollback_one_step(reduced_prev, x_prev, x_t, quad_y, quad_w, std_step),
+            jnp.interp(x_t, x_prev, reduced_prev),
+        )
 
-        raw_values = reduced * numeraire_t
-        x_prev, t_prev, numeraire_prev = x_t, t, numeraire_t
-        if round(t, 12) in condition_set:
-            snapshots[round(t, 12)] = (r_grid_at(t, x_t), raw_values.copy())
+        numeraire_t = _lgm_numeraire(curve, a, sigma, t, x_t)
+        intrinsic = _hw_swap_value_at_nodes(swap, curve, x_t, t)
+        reduced_intrinsic = intrinsic / numeraire_t
+        reduced_t = jnp.where(is_ex, jnp.maximum(reduced_continuation, reduced_intrinsic), reduced_continuation)
 
-    condition_state_grids = [snapshots[round(float(t), 12)][0] for t in condition_times]
-    condition_values = [snapshots[round(float(t), 12)][1] for t in condition_times]
-    value_at_t0 = float(snapshots[round(0.0, 12)][1][0]) if round(0.0, 12) in snapshots else float(raw_values[0])
+        raw_values_t = reduced_t * numeraire_t
+        new_carry = (x_t, t, reduced_t)
+        return new_carry, (x_t, raw_values_t)
+
+    _, (x_scan, values_scan) = jax.lax.scan(
+        step, (x0, grid_times[0], reduced0), (grid_times[1:], is_exercise[1:]),
+    )
+    # Prepend the first (latest) grid time's own values so the stacked
+    # output covers every grid time, matching schedule.times' own indexing.
+    x_all = jnp.concatenate([x0[None, :], x_scan], axis=0)          # [G, Nnodes]
+    values_all = jnp.concatenate([values0[None, :], values_scan], axis=0)  # [G, Nnodes]
+
+    condition_state_grids: List[np.ndarray] = []
+    condition_values: List[np.ndarray] = []
+    if len(condition_times) > 0:
+        order = np.argsort([schedule.condition_index[i] for i in range(num_grid) if schedule.is_condition[i]])
+        cond_rows = np.nonzero(schedule.is_condition)[0][order]
+        for row in cond_rows:
+            # Convert the LGM state grid x to the corresponding short rate
+            # r BEFORE storing the snapshot -- price_bermudan_swaptions
+            # below interpolates each scenario's SIMULATED short rate
+            # r_t (engine.simulation's own r(t) parametrization) directly
+            # against this stored grid, so the grid must already be in
+            # r-space, not raw LGM state x-space (r(t,x) is affine in x --
+            # see engine.models.lgm.r_from_x -- so this conversion is
+            # exact, not an approximation).
+            r_grid = _lgm_r_from_x(curve, a, sigma, grid_times[row], x_all[row])
+            condition_state_grids.append(np.asarray(r_grid))
+            condition_values.append(np.asarray(values_all[row]))
+
+    t0_row = int(np.nonzero(np.isclose(schedule.times, 0.0))[0][0])
+    value_at_t0 = values_all[t0_row, x_all.shape[1] // 2]
 
     return _RolledBackValue(
         value_at_t0=value_at_t0,
@@ -746,10 +726,14 @@ def _run_backward_induction(swap: _PreparedBermudan, condition_times: Sequence[f
 def price_bermudan_swaption_base(cfg: BermudanSwaptionConfig) -> float:
     """t=0 NPV of a single Bermudan swaption (no simulated conditioning) --
     the value read off the backward induction's own x=0 node, exactly
-    LgmConvolutionSolver2::stateGrid(0)'s single-point convention."""
+    LgmConvolutionSolver2::stateGrid(0)'s single-point convention. Casts
+    `_RolledBackValue.value_at_t0` (kept as a JAX scalar internally, so
+    `engine.risk.greeks` can differentiate through `_run_backward_induction`
+    directly) to a plain Python float here, at this plain-pricing entry
+    point only."""
     swap = prepare_bermudan(cfg)
     result = _run_backward_induction(swap, condition_times=[])
-    return result.value_at_t0
+    return float(result.value_at_t0)
 
 
 def price_bermudan_swaptions(
