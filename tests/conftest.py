@@ -6,8 +6,8 @@ Every test file used to hand-roll its own copy of the demo scenario config
 already duplicated across engine/instruments/swap.py,
 engine/risk/var_es.py, and the test files
 themselves, and drifting slightly out of sync between copies. This module
-re-exports the canonical scenario builders from engine.scenarios as
-fixtures so every test file draws from one source.
+re-exports the canonical scenario builders from engine.simulation.demo_scenarios
+as fixtures so every test file draws from one source.
 
 x64 is enabled here at collection time (before any test constructs a
 float64 array) so individual test files don't each need their own
@@ -20,7 +20,7 @@ import dataclasses
 
 import pytest
 
-from engine.scenarios import (
+from engine.simulation.demo_scenarios import (
     EVAL_DATE,
     SWAP_DEMO_MATURITIES,
     cross_asset_demo_config,
@@ -48,7 +48,7 @@ def swap_demo_maturities():
 
 @pytest.fixture(scope="session")
 def cross_asset_config():
-    """Two-equity, two-rate-factor scenario (see engine.scenarios docstring)."""
+    """Two-equity, two-rate-factor scenario (see engine.simulation.demo_scenarios docstring)."""
     return cross_asset_demo_config()
 
 

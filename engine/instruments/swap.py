@@ -244,8 +244,8 @@ def price_swaps(yield_curves: jax.Array, maturities: np.ndarray, swap_configs: L
 # EXECUTION DEMONSTRATION
 # =============================================================================
 if __name__ == "__main__":
-    from engine.simulation import generate_paths
-    from engine.scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES, single_currency_swap_demo_config
+    from engine.simulation.market_model import generate_paths
+    from engine.simulation.demo_scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES, single_currency_swap_demo_config
 
     market_cubes = generate_paths(single_currency_swap_demo_config())
 

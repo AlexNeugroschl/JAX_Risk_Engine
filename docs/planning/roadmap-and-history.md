@@ -340,3 +340,26 @@ including the 44+16+9+3+11 new tests these four phases added
 (`tests/test_models_piecewise_sigma.py`, `tests/test_calibration_basket.py`,
 `tests/test_calibration_lgm.py`, `tests/test_calibration_integration.py`,
 `tests/test_greeks_bermudan.py`).
+
+### Market simulation moved into its own package
+
+`engine/simulation.py` and `engine/scenarios.py` were the last two loose files sitting
+directly under `engine/` — every other pricing/risk concern (`instruments/`, `risk/`,
+`models/`, `trades/`, `calibration/`) already lived in its own subpackage, which made the
+market-simulation code look like an afterthought rather than the module every other stage
+in the pipeline reads its input from. Moved into `engine/simulation/`, renamed to describe
+what each file actually does rather than just repeating the package name:
+`engine/simulation.py` → `engine/simulation/market_model.py` (the Sobol/Brownian-bridge/
+cross-asset Hull-White path generator and yield-curve reconstruction — the module doing the
+actual modeling work), `engine/scenarios.py` → `engine/simulation/demo_scenarios.py` (the
+canonical demo/reference `SimulationConfig` builders, which are reference data *about* the
+model, not the model itself — a distinction the shared `scenarios.py` name obscured).
+`tests/test_simulation.py`/`tests/test_scenarios.py` renamed to match
+(`tests/test_market_model.py`/`tests/test_demo_scenarios.py`), continuing the same
+test-file-mirrors-source-file-name convention every other module in this codebase already
+follows. Every import across `engine/instruments/`, `engine/risk/`, and every test file
+was updated to the new `engine.simulation.market_model`/`engine.simulation.demo_scenarios`
+paths; `engine/simulation/__init__.py` is empty, matching every other subpackage's own
+`__init__.py`. Pure reorganization, following the exact precedent set by the "Reorganization
+(post robustness-testing pass)" entry above — no pricing logic, formula, or test assertion
+changed. Full regression suite: 659/659 tests passing unchanged before and after.

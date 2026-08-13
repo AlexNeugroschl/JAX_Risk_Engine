@@ -28,8 +28,11 @@ JAX_Risk_Engine/
 │   │                                     trades, calibration
 │   └── planning/                         Roadmap/history, TraderX integration plan
 ├── engine/
-│   ├── simulation.py                     Simulates the market
-│   ├── scenarios.py                      Shared demo/reference configurations
+│   ├── simulation/
+│   │   ├── market_model.py               Simulates the market (Sobol/Brownian bridge,
+│   │   │                                 cross-asset Hull-White paths, yield-curve
+│   │   │                                 reconstruction)
+│   │   └── demo_scenarios.py             Shared demo/reference SimulationConfig builders
 │   ├── models/
 │   │   ├── hull_white.py                 HW1F closed-form math (constant sigma only) --
 │   │   │                                 single source of truth, used by swap.py,
@@ -57,8 +60,8 @@ JAX_Risk_Engine/
 │       └── greeks.py                     Computes Delta / Gamma / Theta / Vega
 └── tests/
     ├── conftest.py                       Shared pytest fixtures
-    ├── test_simulation.py
-    ├── test_scenarios.py
+    ├── test_market_model.py
+    ├── test_demo_scenarios.py
     ├── test_swap.py
     ├── test_european_swaption.py
     ├── test_bermudan_swaption.py
@@ -76,8 +79,8 @@ JAX_Risk_Engine/
 ```
 
 Every `engine/` subpackage has an `__init__.py`, so the whole thing is importable as
-`engine.simulation`, `engine.instruments.swap`, and `engine.risk.var_es` from the
-repository root — no path hacks required in application code or tests.
+`engine.simulation.market_model`, `engine.instruments.swap`, and `engine.risk.var_es`
+from the repository root — no path hacks required in application code or tests.
 
 `bermudan_swaption.py` and `american_swaption.py` are two separate files rather than one,
 even though `american_swaption.py`'s content is small: `AmericanSwaptionConfig` is a
@@ -184,7 +187,7 @@ once there is an actual market-quote-to-model relationship to differentiate thro
 Full field-level detail on every input/output is in the [API Reference](../reference/api-reference.md);
 this page is about *why* the pieces are shaped the way they are.
 
-### Market Simulation (`engine/simulation.py`)
+### Market Simulation (`engine/simulation/market_model.py`)
 
 **Input:** a `SimulationConfig` (time grid, starting prices/rates, correlations).
 **Output:** simulated paths for equities/FX, interest rates, and (optionally) a full
@@ -263,7 +266,7 @@ autodiff-through-bisection gradient bugs found and fixed while building this.
 ## Design principle: modules agree on shapes, not code
 
 At the Python-module level, the instrument pricers and the risk aggregation module do
-**not** import the simulation module (or each other) at the top of the file — `from engine.simulation import generate_paths`
+**not** import the simulation module (or each other) at the top of the file — `from engine.simulation.market_model import generate_paths`
 only appears inside each module's `if __name__ == "__main__":` demo block, not in the
 library code itself. `price_swaps()` only needs *some* array shaped
 `[Scenarios, TimeSteps, Maturities, NumRates]`; every swaption pricer only needs *some*
@@ -283,11 +286,12 @@ it's what let `european_swaption.py`, `bermudan_swaption.py`, and `american_swap
 — three more, genuinely different instrument types after the original swap pricer —
 each plug into `risk/var_es.py` with zero changes to that module.
 
-## `engine/scenarios.py`: shared example configurations
+## `engine/simulation/demo_scenarios.py`: shared example configurations
 
 Every module's `__main__` demo block, and every test file, needs *some* realistic
 `SimulationConfig` to run against. Originally each file built its own copy of this
-by hand; `engine/scenarios.py` now centralizes two canonical example scenarios:
+by hand; `engine/simulation/demo_scenarios.py` now centralizes two canonical example
+scenarios:
 
 - `cross_asset_demo_config()` — two equities/FX pairs and two interest rate
   currencies (USD, EUR), used to show off the full breadth of what the simulation module
@@ -303,9 +307,10 @@ whenever code needs a "today's actual market, no what-if" baseline, most importa
 the risk aggregation module's `base_npv` input and for the tests that compare this
 engine's output directly against ORE's.
 
-`engine/scenarios.py` depends on `engine/simulation.py` (it constructs
-`SimulationConfig` objects) but nothing depends on `engine/scenarios.py` except demo
-code and tests — it is never required for the pipeline itself to function.
+`engine/simulation/demo_scenarios.py` depends on `engine/simulation/market_model.py`
+(it constructs `SimulationConfig` objects) but nothing depends on
+`engine/simulation/demo_scenarios.py` except demo code and tests — it is never required
+for the pipeline itself to function.
 
 ## ORE as a dependency
 
@@ -327,8 +332,8 @@ in two different roles, and it's important to keep them distinct:
    and compute each payment's day-count fraction. This is a deliberate choice:
    schedule/day-count logic is fiddly, well-tested in ORE already, and not
    performance-critical (it runs once per trade, not once per simulated scenario), so
-   there is no benefit to reimplementing it in JAX. `engine/simulation.py` and
-   `engine/risk/var_es.py` have **no** runtime ORE dependency — only pure JAX/NumPy.
+   there is no benefit to reimplementing it in JAX. `engine/simulation/market_model.py`
+   and `engine/risk/var_es.py` have **no** runtime ORE dependency — only pure JAX/NumPy.
 
 This means `pip install`-ing this project's core simulation and risk-statistics
 functionality does not strictly require ORE, but pricing any real trade currently does

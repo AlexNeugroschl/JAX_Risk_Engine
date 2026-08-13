@@ -14,7 +14,7 @@ import ORE
 import pytest
 
 from engine.models.hull_white import ZeroCurve
-from engine.simulation import ZeroCurveConfig
+from engine.simulation.market_model import ZeroCurveConfig
 from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.lgm import calibrate_lgm_sigma
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, price_bermudan_swaption_base

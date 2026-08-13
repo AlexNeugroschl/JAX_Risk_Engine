@@ -30,7 +30,7 @@ import pytest
 
 from engine.instruments.swap import SwapConfig
 from engine.instruments.european_swaption import SwaptionConfig, _solve_rstar
-from engine.simulation import ZeroCurveConfig
+from engine.simulation.market_model import ZeroCurveConfig
 from engine.risk.greeks import (
     DEFAULT_RATE_BUMP,
     DEFAULT_THETA_DAYS,
@@ -42,7 +42,7 @@ from engine.risk.greeks import (
     swaption_delta_gamma,
     swaption_theta,
 )
-from engine.scenarios import EVAL_DATE
+from engine.simulation.demo_scenarios import EVAL_DATE
 
 TODAY = EVAL_DATE
 PILLAR_TIMES = [1.0, 2.0, 5.0, 10.0, 30.0]

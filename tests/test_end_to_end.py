@@ -42,11 +42,11 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.simulation import SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths
+from engine.simulation.market_model import SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths
 from engine.instruments.swap import SwapConfig, price_swaps
 from engine.instruments.european_swaption import SwaptionConfig, prepare_swaption, _price_one_swaption, price_swaptions
 from engine.risk.var_es import compute_risk_metrics
-from engine.scenarios import flat_yield_curves
+from engine.simulation.demo_scenarios import flat_yield_curves
 
 TODAY = ORE.Date(30, 7, 2026)
 FLAT_RATE = 0.03

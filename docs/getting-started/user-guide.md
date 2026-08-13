@@ -23,8 +23,8 @@ pip install -r requirements.txt
 
 The examples on this page assume you're running from the repository root, so that
 `engine` is importable as a top-level package (it has an `__init__.py`, so
-`python -m engine.simulation` and `from engine.simulation import ...`
-both work without any extra path setup).
+`python -m engine.simulation.market_model` and
+`from engine.simulation.market_model import ...` both work without any extra path setup).
 
 If you're using the project's own `venv/` on Windows, replace `python` in the commands
 below with `venv\Scripts\python.exe` (or activate the venv first with
@@ -34,11 +34,11 @@ below with `venv\Scripts\python.exe` (or activate the venv first with
 
 Each pipeline module has a runnable demo in its own `if __name__ == "__main__":` block,
 showing that module's public API used end-to-end against a shared example scenario (see
-[`engine/scenarios.py`](../../engine/scenarios.py)).
+[`engine/simulation/demo_scenarios.py`](../../engine/simulation/demo_scenarios.py)).
 
 **Market simulation:**
 ```bash
-python -m engine.simulation
+python -m engine.simulation.market_model
 ```
 Prints the shapes of the simulated equity/rate paths and a sample of reconstructed
 discount factors.
@@ -97,8 +97,8 @@ correctness and against ORE's own installed software directly). As of this writi
 suite has 502 tests across `tests/`, all passing.
 
 `tests/conftest.py` provides shared `pytest` fixtures (the example scenario
-configurations from `engine/scenarios.py`, wrapped as fixtures) so individual test files
-don't each need to build their own copy of the same setup.
+configurations from `engine/simulation/demo_scenarios.py`, wrapped as fixtures) so
+individual test files don't each need to build their own copy of the same setup.
 
 ## Writing your own market simulation config
 
@@ -107,7 +107,7 @@ don't each need to build their own copy of the same setup.
 Here's a minimal, verified-working example with one equity and one interest rate curve:
 
 ```python
-from engine.simulation import (
+from engine.simulation.market_model import (
     SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths,
 )
 
@@ -164,7 +164,7 @@ year swap:
 
 ```python
 import ORE
-from engine.simulation import (
+from engine.simulation.market_model import (
     SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths,
 )
 from engine.instruments.swap import SwapConfig, price_swaps
@@ -230,7 +230,7 @@ in 3 years, on a 2-year underlying swap:
 ```python
 import jax.numpy as jnp
 import ORE
-from engine.simulation import (
+from engine.simulation.market_model import (
     SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths,
 )
 from engine.instruments.european_swaption import SwaptionConfig, price_swaptions
@@ -293,8 +293,8 @@ list-of-configs-in, NPV-cube-out pattern as `price_swaptions` above.
 from engine.risk.var_es import compute_risk_metrics
 
 # base_npv: the portfolio's actual value today, from a separate zero-shock
-# revaluation -- see engine/scenarios.py's flat_yield_curves() for a worked
-# example of building one directly from ORE's own curve objects.
+# revaluation -- see engine/simulation/demo_scenarios.py's flat_yield_curves()
+# for a worked example of building one directly from ORE's own curve objects.
 metrics = compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))
 
 print(metrics["VaR_95"])   # [TimeSteps] array

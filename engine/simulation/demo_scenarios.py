@@ -14,7 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 import ORE
 
-from engine.simulation import EquityConfig, RatesConfig, SimulationConfig, ZeroCurveConfig
+from engine.simulation.market_model import EquityConfig, RatesConfig, SimulationConfig, ZeroCurveConfig
 
 # Shared evaluation date for every demo/test scenario in this module, so a
 # single change here keeps every dependent cashflow schedule consistent.
@@ -36,7 +36,7 @@ def cross_asset_demo_config() -> SimulationConfig:
     Two-equity (AAPL, EUR/USD), two-rate-factor (USD, EUR) cross-asset
     scenario -- illustrates the full market simulation surface (equities,
     FX via UIP, multiple correlated rate factors, 4 output maturity
-    pillars). Used by engine/simulation.py's own demo.
+    pillars). Used by engine/simulation/market_model.py's own demo.
     """
     return SimulationConfig(
         time_grid=[0.0, 0.25, 0.50, 0.75, 1.0],

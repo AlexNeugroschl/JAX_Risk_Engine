@@ -17,7 +17,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.simulation import ZeroCurveConfig
+from engine.simulation.market_model import ZeroCurveConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, price_bermudan_swaption_base
 from engine.instruments.american_swaption import AmericanSwaptionConfig, price_american_swaptions
 
@@ -111,8 +111,8 @@ class TestAmericanAsFineBermudan:
 
     def test_price_american_swaptions_matches_base(self):
         import jax.numpy as jnp
-        from engine.simulation import generate_paths
-        from engine.scenarios import swaption_demo_config
+        from engine.simulation.market_model import generate_paths
+        from engine.simulation.demo_scenarios import swaption_demo_config
 
         config = swaption_demo_config()
         cubes = generate_paths(config)
@@ -255,8 +255,8 @@ class TestAmericanPortfolio:
 
     def test_mixed_portfolio_shape_and_per_trade_independence(self):
         import jax.numpy as jnp
-        from engine.simulation import generate_paths
-        from engine.scenarios import swaption_demo_config
+        from engine.simulation.market_model import generate_paths
+        from engine.simulation.demo_scenarios import swaption_demo_config
 
         config = swaption_demo_config()
         cubes = generate_paths(config)

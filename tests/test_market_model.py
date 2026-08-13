@@ -5,7 +5,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.simulation import (
+from engine.simulation.market_model import (
     EquityConfig,
     RatesConfig,
     SimulationConfig,
@@ -109,7 +109,7 @@ class TestHullWhiteAMatrix:
         """generate_paths must reject a rates config whose
         initial_zero_curves length doesn't match the number of rate
         factors, rather than silently reusing/misaligning curves."""
-        from engine.simulation import EquityConfig, RatesConfig, SimulationConfig
+        from engine.simulation.market_model import EquityConfig, RatesConfig, SimulationConfig
 
         cfg = SimulationConfig(
             time_grid=[0.0, 1.0],
@@ -513,11 +513,11 @@ class TestVolatilityIsNotDoubleApplied:
         """Two rate factors with DIFFERENT volatilities and nonzero
         cross-correlation -- confirms the fix generalizes beyond the
         single-equity/single-rate case to a multi-rate-factor covariance
-        block, matching engine.scenarios.cross_asset_demo_config's actual
-        shape."""
+        block, matching engine.simulation.demo_scenarios.cross_asset_demo_config's
+        actual shape."""
         sig_a, sig_b, rho = 0.012, 0.008, -0.3
         # generate_paths requires >=1 equity/FX factor (see
-        # engine.scenarios.swaption_demo_config's own placeholder pattern)
+        # engine.simulation.demo_scenarios.swaption_demo_config's own placeholder pattern)
         # -- use one zero-drift placeholder equity to isolate the two rate
         # factors' own covariance block.
         config = SimulationConfig(

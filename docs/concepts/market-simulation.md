@@ -1,6 +1,6 @@
 # Market Simulation
 
-**Module:** [`engine/simulation.py`](../../engine/simulation.py)
+**Module:** [`engine/simulation/market_model.py`](../../engine/simulation/market_model.py)
 **Public entry point:** `generate_paths(config: SimulationConfig, precision: int = 64)`
 
 ## Plain-language summary

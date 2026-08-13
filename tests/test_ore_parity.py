@@ -27,7 +27,7 @@ import ORE
 import pytest
 from scipy.optimize import brentq
 
-from engine.simulation import (
+from engine.simulation.market_model import (
     ZeroCurveConfig,
     _build_bridge_matrix,
     compute_hw_A_matrix,

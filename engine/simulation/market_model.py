@@ -579,7 +579,7 @@ def generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, j
 # EXECUTION DEMONSTRATION
 # =============================================================================
 if __name__ == "__main__":
-    from engine.scenarios import cross_asset_demo_config
+    from engine.simulation.demo_scenarios import cross_asset_demo_config
 
     print("Initializing QMC Pipeline & JIT Compilation...")
     market_cubes = generate_paths(cross_asset_demo_config())

@@ -13,7 +13,7 @@ including time zero itself).
 
 ---
 
-## `engine.simulation`
+## `engine.simulation.market_model`
 
 ### `SimulationConfig`
 
@@ -322,7 +322,7 @@ scope.
 
 ### `ZeroCurve`
 
-A zero curve as JAX arrays (unlike `engine.simulation.ZeroCurveConfig`, whose `rates` is
+A zero curve as JAX arrays (unlike `engine.simulation.market_model.ZeroCurveConfig`, whose `rates` is
 a plain Python list) — the differentiable input every Greek in this module is computed
 with respect to.
 
@@ -382,11 +382,11 @@ interim-cashflow term (a European swaption pays no cashflow before its own exerc
 
 ---
 
-## `engine.scenarios`
+## `engine.simulation.demo_scenarios`
 
 Reference/demo configurations and shared test helpers — not part of the pricing
 pipeline itself, but used throughout the codebase's demos and tests. See
-[Architecture: engine/scenarios.py](../concepts/architecture.md#enginescenariospy-shared-example-configurations).
+[Architecture: engine/simulation/demo_scenarios.py](../concepts/architecture.md#enginesimulationdemo_scenariospy-shared-example-configurations).
 
 | Name | Type | Meaning |
 |---|---|---|

@@ -6,7 +6,7 @@ is built from.
 
 **The single source of truth for this codebase's Hull-White math.**
 Before this module existed, the SAME closed forms were implemented four
-separate times: `engine/simulation.py::compute_hw_A_matrix` (NumPy,
+separate times: `engine/simulation/market_model.py::compute_hw_A_matrix` (NumPy,
 pillar-grid), `engine/instruments/european_swaption.py::compute_hw_A`/
 `_hw_B` (NumPy A, JAX B, arbitrary (t,T) pairs), and
 `engine/risk/greeks.py::_compute_hw_A_jax` (a JAX transliteration of the

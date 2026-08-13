@@ -77,7 +77,7 @@ common `[Scenarios, TimeSteps, Trades]` NPV cube:
 - Every deep-dive doc ends with a **"Tested by"** section pointing to the exact test file
   and test classes that verify what's described.
 - Code is referenced by path and, where helpful, by function/class name — e.g.
-  `engine/simulation.py::generate_paths`.
+  `engine/simulation/market_model.py::generate_paths`.
 - Where a claim about ORE's own behavior is made (a formula, a convention, a design
   decision), it's backed by either a citation of what was read in ORE's own source, or a
   description of how it was live-tested against the installed ORE package — not assumed

@@ -46,7 +46,7 @@ given algorithm:
 
 ## 1. Sobol sequence generation
 
-**This engine:** `engine/simulation.py::generate_sobol_normals`, via
+**This engine:** `engine/simulation/market_model.py::generate_sobol_normals`, via
 `scipy.stats.qmc.Sobol`.
 
 **ORE:** `QuantLib::SobolRsg` —
@@ -69,7 +69,7 @@ literal random numbers.
 
 ## 2. Brownian bridge construction
 
-**This engine:** `engine/simulation.py::_build_bridge_matrix`,
+**This engine:** `engine/simulation/market_model.py::_build_bridge_matrix`,
 `apply_brownian_bridge`.
 
 **ORE:** `QuantLib::BrownianBridge` —
@@ -111,7 +111,7 @@ the property this construction exists to guarantee) and
 
 ## 3. Interest rate model: Hull-White 1-Factor
 
-**This engine:** `engine/simulation.py::_simulate_cross_asset_paths_jit`
+**This engine:** `engine/simulation/market_model.py::_simulate_cross_asset_paths_jit`
 (short-rate step), `compute_hw_A_matrix` (today's-curve calibration).
 
 **ORE, two equivalent formulations:**

@@ -3,7 +3,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.simulation import ZeroCurveConfig
+from engine.simulation.market_model import ZeroCurveConfig
 from engine.instruments.european_swaption import (
     SwaptionConfig,
     prepare_swaption,

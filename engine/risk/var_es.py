@@ -124,9 +124,9 @@ def compute_risk_metrics(
 # EXECUTION DEMONSTRATION
 # =============================================================================
 if __name__ == "__main__":
-    from engine.simulation import generate_paths
+    from engine.simulation.market_model import generate_paths
     from engine.instruments.swap import SwapConfig, price_swaps
-    from engine.scenarios import SWAP_DEMO_MATURITIES, flat_yield_curves, single_currency_swap_demo_config
+    from engine.simulation.demo_scenarios import SWAP_DEMO_MATURITIES, flat_yield_curves, single_currency_swap_demo_config
 
     market_cubes = generate_paths(single_currency_swap_demo_config())
 

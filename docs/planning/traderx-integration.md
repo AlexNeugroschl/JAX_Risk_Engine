@@ -5,13 +5,13 @@
 ## Context
 
 Phase 8 of the roadmap ([`README.md`](../../README.md)) calls for wrapping this engine as a stateless API
-consumed by TraderX. `SimulationConfig` (`engine/simulation.py`) and each instrument's own
+consumed by TraderX. `SimulationConfig` (`engine/simulation/market_model.py`) and each instrument's own
 config dataclass (`SwapConfig`, `SwaptionConfig`, `BermudanSwaptionConfig`,
 `AmericanSwaptionConfig`) already form a typed, IDE-friendly input surface — the
 `SimulationConfig` docstring explicitly calls this out as "the natural shape for a future
 Pydantic schema to mirror or subclass." That surface is sufficient for the demo scenarios in
-`engine/scenarios.py`, which are hand-built, internally consistent, and never exercise the
-gaps below.
+`engine/simulation/demo_scenarios.py`, which are hand-built, internally consistent, and never
+exercise the gaps below.
 
 A real TraderX portfolio will not arrive hand-built or internally consistent. It will have
 irregular cashflow dates across many trades, correlation/vol data assembled from disparate
@@ -27,11 +27,11 @@ boundary: a `PortfolioRequest`-style entry point that either produces a valid `S
 
 | Input | Dataclass / field | Source module |
 |---|---|---|
-| Per-factor short-rate calibration | `RatesConfig.initial_rates` / `theta` / `mean_reversion` | `engine/simulation.py` |
-| Per-factor today's zero curve | `RatesConfig.initial_zero_curves` (one `ZeroCurveConfig` per factor) | `engine/simulation.py` |
-| Cross-asset covariance | `SimulationConfig.joint_covariance` (equities/FX first, then rates) | `engine/simulation.py` |
-| Equity/FX legs + UIP drift mapping | `EquityConfig.initial_prices` / `dividend_yields` / `rate_mapping` | `engine/simulation.py` |
-| Output discount-curve pillars | `RatesConfig.maturities` | `engine/simulation.py` |
+| Per-factor short-rate calibration | `RatesConfig.initial_rates` / `theta` / `mean_reversion` | `engine/simulation/market_model.py` |
+| Per-factor today's zero curve | `RatesConfig.initial_zero_curves` (one `ZeroCurveConfig` per factor) | `engine/simulation/market_model.py` |
+| Cross-asset covariance | `SimulationConfig.joint_covariance` (equities/FX first, then rates) | `engine/simulation/market_model.py` |
+| Equity/FX legs + UIP drift mapping | `EquityConfig.initial_prices` / `dividend_yields` / `rate_mapping` | `engine/simulation/market_model.py` |
+| Output discount-curve pillars | `RatesConfig.maturities` | `engine/simulation/market_model.py` |
 | Swap trades | `SwapConfig` (notional, fixed_rate, payer, discount/forward curve index, tenor, index tenor, spread) | `engine/instruments/swap.py` |
 | European swaption trades | `SwaptionConfig` (adds `hw_a`/`hw_sigma`/`initial_zero_curve`, duplicated per-trade from the matching rate factor) | `engine/instruments/european_swaption.py` |
 | Bermudan swaption trades | `BermudanSwaptionConfig` (adds `exercise_times`, `n_per_std`/`std_devs` grid resolution) | `engine/instruments/bermudan_swaption.py` |
@@ -42,7 +42,7 @@ boundary: a `PortfolioRequest`-style entry point that either produces a valid `S
 
 ### 1. `joint_covariance` PSD validation/repair (highest priority)
 
-**Problem:** `generate_paths` (`engine/simulation.py`) calls `jnp.linalg.cholesky` on the
+**Problem:** `generate_paths` (`engine/simulation/market_model.py`) calls `jnp.linalg.cholesky` on the
 correlation matrix derived from `joint_covariance` with no upstream validation. An invalid
 (non-PSD) matrix — the expected case when correlations are assembled from independently
 estimated pairwise correlations across many currencies/assets, a classic real-world
@@ -51,7 +51,7 @@ silently NaNs every simulated path with no error raised anywhere (confirmed in t
 `TestCholeskyOnDegenerateCorrelation`).
 
 **Plan:**
-- Add a `validate_joint_covariance(matrix) -> None` check in `engine/simulation.py`, run at
+- Add a `validate_joint_covariance(matrix) -> None` check in `engine/simulation/market_model.py`, run at
   the top of `generate_paths` before any JAX computation: confirm symmetry (within float
   tolerance) and confirm positive semi-definiteness via eigenvalue check (`np.linalg.eigvalsh`,
   cheap on CPU since this runs once per call, not per scenario). Raise `ValueError` with the
@@ -77,7 +77,7 @@ prices against a silently self-inconsistent model with no error.
 
 **Plan:**
 - Add a `validate_portfolio_against_simulation(sim_config, trade_configs) -> None` helper
-  (new module, `engine/portfolio.py`, or a function in `engine/scenarios.py` if that's judged
+  (new module, `engine/portfolio.py`, or a function in `engine/simulation/demo_scenarios.py` if that's judged
   the more natural home) that, for every trade with a `rate_factor_index`, cross-checks
   `hw_a`/`hw_sigma`/`initial_zero_curve` against `sim_config.rates.mean_reversion[idx]` /
   the implied per-step vol from `sim_config.joint_covariance` / `sim_config.rates.initial_zero_curves[idx]`,
@@ -104,7 +104,7 @@ silently in production.
   `_build_ore_swap`-style construction already in `swap.py`/`bermudan_swaption.py`, not
   reimplementing schedule logic) and returns the sorted union of every leg's accrual/payment
   year-fractions — i.e., automates what `SWAP_DEMO_MATURITIES` currently does by hand in
-  `engine/scenarios.py`.
+  `engine/simulation/demo_scenarios.py`.
 - This becomes the standard way `RatesConfig.maturities` gets populated for a TraderX
   portfolio, rather than a manually maintained list.
 - Tests: feed a multi-trade, multi-tenor portfolio through the helper, confirm every trade's

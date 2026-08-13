@@ -38,7 +38,7 @@ import ORE
 
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, price_bermudan_swaptions
 from engine.models.lgm import Sigma
-from engine.simulation import ZeroCurveConfig
+from engine.simulation.market_model import ZeroCurveConfig
 
 
 @dataclass
@@ -150,8 +150,8 @@ if __name__ == "__main__":
     import jax.numpy as jnp
 
     from engine.instruments.bermudan_swaption import price_bermudan_swaption_base
-    from engine.simulation import generate_paths
-    from engine.scenarios import EVAL_DATE, swaption_demo_config
+    from engine.simulation.market_model import generate_paths
+    from engine.simulation.demo_scenarios import EVAL_DATE, swaption_demo_config
 
     config = swaption_demo_config()
     market_cubes = generate_paths(config)

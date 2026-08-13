@@ -10,7 +10,7 @@ from engine.risk.var_es import (
     value_at_risk,
 )
 from engine.instruments.swap import SwapConfig, price_swaps
-from engine.scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES
+from engine.simulation.demo_scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES
 
 MATURITIES = np.array(SWAP_DEMO_MATURITIES)
 

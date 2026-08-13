@@ -62,7 +62,7 @@ import jax.numpy as jnp
 import numpy as np
 import ORE
 
-from engine.simulation import ZeroCurveConfig
+from engine.simulation.market_model import ZeroCurveConfig
 from engine.trades.ore_builders import DAY_COUNTER, build_vanilla_swap
 from engine.models.hull_white import (
     A as _hw_A,
@@ -531,8 +531,8 @@ def price_swaptions(hw_paths: jax.Array, step_times: jax.Array, swaption_configs
 # EXECUTION DEMONSTRATION
 # =============================================================================
 if __name__ == "__main__":
-    from engine.simulation import generate_paths
-    from engine.scenarios import EVAL_DATE, swaption_demo_config
+    from engine.simulation.market_model import generate_paths
+    from engine.simulation.demo_scenarios import EVAL_DATE, swaption_demo_config
 
     config = swaption_demo_config()
     market_cubes = generate_paths(config)

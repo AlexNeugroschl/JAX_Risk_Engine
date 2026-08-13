@@ -1,6 +1,6 @@
 """
-Coverage for engine/scenarios.py's own internal-consistency invariants:
-the demo SimulationConfig builders (cross_asset_demo_config,
+Coverage for engine/simulation/demo_scenarios.py's own internal-consistency
+invariants: the demo SimulationConfig builders (cross_asset_demo_config,
 single_currency_swap_demo_config, swaption_demo_config) and the
 flat_yield_curves ORE-curve helper.
 
@@ -17,7 +17,7 @@ import pytest
 
 import ORE
 
-from engine.scenarios import (
+from engine.simulation.demo_scenarios import (
     EVAL_DATE,
     SWAP_DEMO_MATURITIES,
     cross_asset_demo_config,
@@ -25,7 +25,7 @@ from engine.scenarios import (
     single_currency_swap_demo_config,
     swaption_demo_config,
 )
-from engine.simulation import generate_paths
+from engine.simulation.market_model import generate_paths
 
 
 class TestFlatYieldCurves:

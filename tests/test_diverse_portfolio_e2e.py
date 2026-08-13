@@ -52,7 +52,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.simulation import SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths
+from engine.simulation.market_model import SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths
 from engine.instruments.swap import SwapConfig, price_swaps, prepare_swap, _price_one_swap
 from engine.instruments.european_swaption import (
     SwaptionConfig, prepare_swaption, _price_one_swaption, price_swaptions,
@@ -63,7 +63,7 @@ from engine.instruments.bermudan_swaption import (
 )
 from engine.instruments.american_swaption import AmericanSwaptionConfig, price_american_swaptions
 from engine.risk.var_es import compute_risk_metrics
-from engine.scenarios import flat_yield_curves
+from engine.simulation.demo_scenarios import flat_yield_curves
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from engine.models.lgm import H as _H, bond_price as _lgm_bond_price, zeta as _zeta
 
@@ -87,7 +87,7 @@ DAY_COUNTER = ORE.Actual365Fixed()
 # so swaps/swaptions can be assigned genuinely different discount/forward
 # curve pairs across more than 2 rate factors) -- a realistic extension of
 # single_currency_swap_demo_config's existing 2-factor shape in
-# engine/scenarios.py, not an invented config surface (RatesConfig already
+# engine/simulation/demo_scenarios.py, not an invented config surface (RatesConfig already
 # accepts an arbitrary-length initial_rates/theta/mean_reversion/
 # initial_zero_curves list, one entry per factor; joint_covariance is just a
 # bigger correlation block of the same [equities..., rates...] shape).
@@ -902,9 +902,9 @@ class TestPortfolioLevelRiskAggregation:
 # 3. MULTI-CURVE BREADTH (3 rate factors, varying curve assignment per trade)
 # =============================================================================
 class TestMultiCurveBreadth:
-    """engine/scenarios.py's RatesConfig already supports an arbitrary
-    number of rate factors (single_currency_swap_demo_config uses 2;
-    cross_asset_demo_config uses 2 across 2 currencies) -- this extends that
+    """engine/simulation/market_model.py's RatesConfig already supports an
+    arbitrary number of rate factors (single_currency_swap_demo_config uses
+    2; cross_asset_demo_config uses 2 across 2 currencies) -- this extends that
     existing, supported shape to 3 factors within one currency (OIS +
     2 distinct forwarding curves), which _sim_config above builds. These
     tests confirm the 3-factor simulation and multi-curve swap pricing
@@ -1169,7 +1169,7 @@ from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.lgm import calibrate_lgm_sigma
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig as _BermCfg
 from engine.risk.greeks import bermudan_delta_gamma, bermudan_theta, bermudan_vega
-from engine.simulation import ZeroCurveConfig as _ZCC
+from engine.simulation.market_model import ZeroCurveConfig as _ZCC
 
 
 class TestCalibrationAndGreeksAcrossDiversePortfolio:

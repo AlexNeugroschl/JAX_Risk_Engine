@@ -28,7 +28,7 @@ this consolidation happening first.
 
 **The single source of truth for this codebase's Hull-White 1-Factor (HW1F) closed-form
 math.** Before this module existed, the same formulas were implemented four separate
-times: `engine/simulation.py::compute_hw_A_matrix` (NumPy, pillar-grid), `engine/
+times: `engine/simulation/market_model.py::compute_hw_A_matrix` (NumPy, pillar-grid), `engine/
 instruments/european_swaption.py::compute_hw_A`/`_hw_B` (NumPy `A`, JAX `B`, arbitrary
 `(t,T)` pairs), and `engine/risk/greeks.py::_compute_hw_A_jax` (a JAX transliteration of
 the NumPy version, built only because `np.interp` isn't traceable and Delta/Gamma need
@@ -36,7 +36,7 @@ the NumPy version, built only because `np.interp` isn't traceable and Delta/Gamm
 ("identical formula to `simulation.compute_hw_A_matrix`", "JAX-differentiable
 reimplementation of `european_swaption.compute_hw_A` — the SAME closed form"). This module
 replaces all four with one JAX-native implementation (via `jnp.interp`, which *is*
-traceable), used everywhere: by `engine.simulation` for the pillar-grid yield-curve cube,
+traceable), used everywhere: by `engine.simulation.market_model` for the pillar-grid yield-curve cube,
 by `engine.instruments.swap`/`european_swaption` for arbitrary-`(t,T)` bond/bond-option
 pricing, and by `engine.risk.greeks` for autodiff Delta/Gamma.
 
@@ -58,10 +58,10 @@ caller's `ZeroCurve`.
 
 | Name | What it does |
 |---|---|
-| `ZeroCurve` | Today's market zero curve as `jax.Array`s (`pillar_times`/`pillar_rates`) — differentiable end-to-end via `jnp.interp`, unlike `engine.simulation.ZeroCurveConfig`'s plain Python lists. `ZeroCurve.from_config` builds one from any object with `.times`/`.rates`; `ZeroCurve.flat` builds a flat curve for demos/tests. |
+| `ZeroCurve` | Today's market zero curve as `jax.Array`s (`pillar_times`/`pillar_rates`) — differentiable end-to-end via `jnp.interp`, unlike `engine.simulation.market_model.ZeroCurveConfig`'s plain Python lists. `ZeroCurve.from_config` builds one from any object with `.times`/`.rates`; `ZeroCurve.flat` builds a flat curve for demos/tests. |
 | `zero_rate`, `log_discount`, `discount`, `forward_rate` | Curve interpolation and the derived discount/forward quantities every formula below needs. |
 | `B(t, T, a)` | `(1-exp(-a*(T-t)))/a`, guarded at `a==0` (see below). |
-| `A(curve, t, T, a, sigma, B_override=None)` | The today's-curve calibration term. `B_override` exists solely so `engine.simulation.compute_hw_A_matrix` can reproduce its own long-standing "clamped `B` for an aged pillar" convention bit-for-bit — ordinary callers never pass it. |
+| `A(curve, t, T, a, sigma, B_override=None)` | The today's-curve calibration term. `B_override` exists solely so `engine.simulation.market_model.compute_hw_A_matrix` can reproduce its own long-standing "clamped `B` for an aged pillar" convention bit-for-bit — ordinary callers never pass it. |
 | `bond_price`, `bond_option_sigma`, `bond_call`, `bond_put` | The full affine bond price, the HW1F bond-option volatility (Brigo-Mercurio 3.41), and the Black-formula-on-a-bond payoff, each live-verified against `ORE.HullWhite`'s equivalent methods. |
 
 **Constant sigma only — deliberately, not an oversight.** Unlike `engine.models.lgm.Sigma`
@@ -71,7 +71,7 @@ cut: `QuantLib::HullWhite` itself (`QuantLib/ql/models/shortrate/onefactormodels
 hullwhite.hpp`) has no piecewise-constant-volatility variant anywhere in ORE — confirmed
 by reading the class hierarchy directly. There is no ORE counterpart this module would be
 approximating by staying constant-only; matching `QuantLib::HullWhite` exactly means
-staying constant-only. `swap.py`, `european_swaption.py`, `engine.simulation`, and
+staying constant-only. `swap.py`, `european_swaption.py`, `engine.simulation.market_model`, and
 `engine.risk.greeks` all use this module and therefore all stay constant-sigma; only
 `bermudan_swaption.py` (via `engine.models.lgm`) supports a genuine term structure, because
 only `QuantExt::LinearGaussMarkovModel`/`Lgm1fPiecewiseConstantParametrization` supports one
@@ -264,7 +264,7 @@ valuation.
 ```
 engine/models/hull_white.py  ──┬──►  engine/instruments/swap.py
                                 ├──►  engine/instruments/european_swaption.py
-                                ├──►  engine/simulation.py (yield-curve cube)
+                                ├──►  engine/simulation/market_model.py (yield-curve cube)
                                 └──►  engine/risk/greeks.py (swap/European swaption Delta/Gamma)
 
 engine/models/lgm.py          ──┬──►  engine/instruments/bermudan_swaption.py

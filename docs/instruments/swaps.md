@@ -164,8 +164,8 @@ In practice, this means: when setting up a simulation that's meant to price a sp
 swap, `config.rates.maturities` must be set to the union of every payment/accrual date
 that swap will need. See the [User Guide](../getting-started/user-guide.md#pricing-a-swap) for a worked
 example, and
-[`engine/scenarios.py`](../../engine/scenarios.py)'s `SWAP_DEMO_MATURITIES` for a concrete
-instance of this being done correctly.
+[`engine/simulation/demo_scenarios.py`](../../engine/simulation/demo_scenarios.py)'s
+`SWAP_DEMO_MATURITIES` for a concrete instance of this being done correctly.
 
 **A subtle correctness detail this limitation caught:** the original lookup logic
 checked whether a date was valid using a *clipped* array index, but then returned the

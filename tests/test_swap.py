@@ -4,7 +4,7 @@ import ORE
 import pytest
 
 from engine.instruments.swap import SwapConfig, price_swaps, _maturity_indices
-from engine.scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES
+from engine.simulation.demo_scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES
 
 TODAY = EVAL_DATE
 MATURITIES = np.array(SWAP_DEMO_MATURITIES)
@@ -419,7 +419,7 @@ class TestAgedSwapKnownLimitation:
         # Build the SAME conditional discount cube this module's own
         # reconstruct_yield_curves formula would produce for MATURITIES at
         # step_time, conditional on r_eval.
-        from engine.simulation import compute_hw_A_matrix, ZeroCurveConfig
+        from engine.simulation.market_model import compute_hw_A_matrix, ZeroCurveConfig
         zero_curves = [
             ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[flat_rate] * 6),
             ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[flat_rate] * 6),
@@ -465,9 +465,10 @@ def _ore_cashflow_pillars(payer: bool, notional: float, fixed_rate: float, swap_
     private helpers from beyond what's already exposed) and returns every
     cashflow-related year-fraction (payment/accrual-start/accrual-end, both
     legs) as a sorted, deduped maturity-pillar array -- the same recipe used
-    to hand-derive SWAP_DEMO_MATURITIES in engine.scenarios, generalized to
-    any tenor/index-tenor so edge-tenor swaps (single cashflow, 30Y+) get a
-    correctly-sized yield_curves cube instead of hand-guessed pillars."""
+    to hand-derive SWAP_DEMO_MATURITIES in engine.simulation.demo_scenarios,
+    generalized to any tenor/index-tenor so edge-tenor swaps (single
+    cashflow, 30Y+) get a correctly-sized yield_curves cube instead of
+    hand-guessed pillars."""
     ORE.Settings.instance().evaluationDate = evaluation_date
     dc = ORE.Actual365Fixed()
     dummy_fwd = ORE.YieldTermStructureHandle(ORE.FlatForward(evaluation_date, 0.0, dc))
@@ -499,7 +500,7 @@ def _ore_cashflow_pillars(payer: bool, notional: float, fixed_rate: float, swap_
 
 def _flat_cube_for_pillars(maturities: np.ndarray, disc_rate: float, fwd_rate: float,
                             evaluation_date=TODAY) -> jnp.ndarray:
-    """Same recipe as engine.scenarios.flat_yield_curves, but for an
+    """Same recipe as engine.simulation.demo_scenarios.flat_yield_curves, but for an
     arbitrary pillar array (not just SWAP_DEMO_MATURITIES) -- needed for
     edge-tenor swaps (6M, 30Y) whose cashflow dates don't land on the 2Y
     demo's pillars."""

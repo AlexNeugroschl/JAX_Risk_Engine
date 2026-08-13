@@ -102,7 +102,8 @@ P&L(scenario, t)  =  portfolio_NPV(scenario, t)  −  base_npv
 where `base_npv` is a single number: **the portfolio's actual value today, before any
 simulated shocks** — supplied explicitly by the caller (typically by pricing the same
 trade(s) against today's real, un-simulated market curve; see
-[`engine/scenarios.py`](../../engine/scenarios.py)'s `flat_yield_curves()` helper for how the
+[`engine/simulation/demo_scenarios.py`](../../engine/simulation/demo_scenarios.py)'s
+`flat_yield_curves()` helper for how the
 demos build this). This is applied identically at *every* simulated future time step,
 matching ORE's own historical-VaR P&L definition literally.
 

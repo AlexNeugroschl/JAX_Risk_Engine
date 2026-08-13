@@ -152,7 +152,7 @@ import jax.numpy as jnp
 import numpy as np
 import ORE
 
-from engine.simulation import ZeroCurveConfig
+from engine.simulation.market_model import ZeroCurveConfig
 from engine.trades.ore_builders import build_vanilla_swap
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from engine.models.lgm import (
@@ -788,8 +788,8 @@ def price_bermudan_swaptions(
 # EXECUTION DEMONSTRATION
 # =============================================================================
 if __name__ == "__main__":
-    from engine.simulation import generate_paths
-    from engine.scenarios import EVAL_DATE, swaption_demo_config
+    from engine.simulation.market_model import generate_paths
+    from engine.simulation.demo_scenarios import EVAL_DATE, swaption_demo_config
 
     config = swaption_demo_config()
     market_cubes = generate_paths(config)

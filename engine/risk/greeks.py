@@ -732,7 +732,7 @@ def bermudan_vega(
 # EXECUTION DEMONSTRATION
 # =============================================================================
 if __name__ == "__main__":
-    from engine.scenarios import EVAL_DATE
+    from engine.simulation.demo_scenarios import EVAL_DATE
 
     pillar_times = [1.0, 2.0, 5.0, 10.0, 30.0]
 
@@ -752,7 +752,7 @@ if __name__ == "__main__":
     print("Theta (1 day):", round(swap_theta(swap_cfg, disc_curve, fwd_curve), 4))
 
     # --- European swaption Delta/Gamma/Theta ---
-    from engine.simulation import ZeroCurveConfig
+    from engine.simulation.market_model import ZeroCurveConfig
 
     swaption_curve = ZeroCurve.flat(0.03, pillar_times)
     swaption_cfg = SwaptionConfig(

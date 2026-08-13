@@ -30,7 +30,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.simulation import ZeroCurveConfig
+from engine.simulation.market_model import ZeroCurveConfig
 from engine.instruments.bermudan_swaption import (
     BermudanSwaptionConfig,
     _hagan_quadrature_weights,
@@ -270,8 +270,8 @@ class TestMonotonicity:
 class TestPortfolioAndShape:
     def test_multiple_trades_stack_correctly(self):
         import jax.numpy as jnp
-        from engine.simulation import generate_paths
-        from engine.scenarios import swaption_demo_config
+        from engine.simulation.market_model import generate_paths
+        from engine.simulation.demo_scenarios import swaption_demo_config
 
         config = swaption_demo_config()
         cubes = generate_paths(config)
@@ -289,8 +289,8 @@ class TestPortfolioAndShape:
 
     def test_npv_is_zero_after_last_exercise_date(self):
         import jax.numpy as jnp
-        from engine.simulation import generate_paths
-        from engine.scenarios import swaption_demo_config
+        from engine.simulation.market_model import generate_paths
+        from engine.simulation.demo_scenarios import swaption_demo_config
 
         config = swaption_demo_config()  # time_grid up to 5.0
         cubes = generate_paths(config)
@@ -593,8 +593,8 @@ class TestPayerReceiverAndPortfolio:
 
     def test_diverse_portfolio_shape_and_per_trade_independence(self):
         import jax.numpy as jnp
-        from engine.simulation import generate_paths
-        from engine.scenarios import swaption_demo_config
+        from engine.simulation.market_model import generate_paths
+        from engine.simulation.demo_scenarios import swaption_demo_config
 
         config = swaption_demo_config()
         cubes = generate_paths(config)
