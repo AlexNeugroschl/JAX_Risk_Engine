@@ -254,13 +254,12 @@ payer-signed, matching `swap.py`'s own sign convention) is computed directly
 from the extracted cashflow schedule via `_lgm_bond`. A coupon is included only if its own
 accrual has not yet started as of the evaluation time `t` (`start_time >= t`, using the same
 `1e-9` tolerance throughout the module, including inside `_discount_at_nodes`'s own P(t,T,x)
-computation — an earlier version of this function used a stricter, inconsistent zero-
-tolerance comparison there, which silently zeroed out a coupon's own discount factor
-whenever its start time landed *exactly* on the exercise time — the common case for a
-reset-aligned exercise date, not an edge case — corrupting that coupon's forward rate; found
-and fixed via `tests/test_bermudan_swaption.py`'s exact-reset-date test cases). This is
-exact for any exercise/conditioning time that coincides with a reset date; see "Known
-limitation" below for what happens otherwise.
+computation — a consistent non-zero tolerance is required there so that a coupon whose
+start time lands *exactly* on the exercise time, the common case for a reset-aligned
+exercise date, is not silently excluded and its forward rate corrupted; see
+`tests/test_bermudan_swaption.py`'s exact-reset-date test cases). This is exact for any
+exercise/conditioning time that coincides with a reset date; see "Known limitation" below
+for what happens otherwise.
 
 ### 7. Backward induction and early exercise: `_run_backward_induction`
 
@@ -300,15 +299,11 @@ trade's last exercise date are priced as exactly `0`, matching this codebase's (
 ## Delta, Gamma, Theta, and Vega
 
 Bermudan/American swaptions have full Greeks support — `engine.risk.greeks.
-bermudan_delta_gamma`, `bermudan_theta`, and `bermudan_vega`. This was not always true:
-an earlier version of this codebase ran the backward induction described above in plain
-NumPy, with no JAX computational graph for `jax.grad` to differentiate through at all, so
-Bermudan/American Greeks were an explicitly documented gap. Porting
-`_run_backward_induction` to `jax.lax.scan` (part of this module's own port to a fully
-JAX-native pipeline) removed that blocker — the backward induction is now differentiable
-end-to-end, exactly like the swap and European swaption pricers, and `bermudan_delta_
-gamma`/`bermudan_theta` follow the identical pattern/units as their swap/European
-counterparts (per-pillar $-per-1bp Delta/Gamma, a 1-day-repricing-difference Theta).
+bermudan_delta_gamma`, `bermudan_theta`, and `bermudan_vega`. `_run_backward_induction` is
+implemented via `jax.lax.scan`, so it is differentiable end-to-end, exactly like the swap
+and European swaption pricers, and `bermudan_delta_gamma`/`bermudan_theta` follow the
+identical pattern/units as their swap/European counterparts (per-pillar $-per-1bp
+Delta/Gamma, a 1-day-repricing-difference Theta).
 
 Vega required a second prerequisite beyond JAX-nativeness: a real market-vol-to-model
 relationship, supplied by [`engine/calibration/`](../reference/calibration.md).

@@ -104,14 +104,13 @@ for why. `prepare_swaption()` additionally extracts two dates unique to a swapti
   matters.
 - **The underlying swap's own accrual start date `T_start`.**
 
-**A bug this distinction caught during development.** An earlier version of this module
-assumed `T_start` always equals `T0` — true only for a swaption with no `forward_start`
-(where the 2-day spot lag and the "exercise lag" happen to coincide), but false for any
-genuinely forward-starting swaption, where `T_start` is 2 business days *after* `T0`, not
-equal to it. That assumption showed up as an ~1% NPV mismatch against
-`ORE.JamshidianSwaptionEngine` for a forward-starting test case — traced down to the fact
-that the underlying's floating leg doesn't redeem its notional exactly at `T0`, but at
-`T_start`, which is a real (if small) discount factor away, not an identity. See
+**Why this distinction matters.** `T_start` equals `T0` only for a swaption with no
+`forward_start` (where the 2-day spot lag and the "exercise lag" happen to coincide); for
+any genuinely forward-starting swaption, `T_start` is 2 business days *after* `T0`, not
+equal to it. The underlying's floating leg doesn't redeem its notional exactly at `T0`,
+but at `T_start`, which is a real (if small) discount factor away, not an identity —
+getting this wrong produces an ~1% NPV mismatch against `ORE.JamshidianSwaptionEngine`
+for a forward-starting swaption. See
 [the mathematics section below](#why-t_start-matters-the-floating-legs-notional-timing)
 and `tests/test_european_swaption.py::TestAgainstOREJamshidianEngine::test_matches_ore_forward_starting`
 for the regression coverage.

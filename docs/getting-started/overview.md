@@ -61,7 +61,8 @@ ambitions (see the root [README.md](../../README.md) for the full roadmap):
   accurate but slower; lower precision is faster but noisier. The project's long-term
   research goal is to test whether running *many more* lower-precision simulations
   reaches the same risk answer, in the same amount of compute time, as running *fewer*
-  high-precision ones. That's why every piece of this engine is built to support
+  high-precision ones — pushing well past FP32, down to 8-bit and even 4-bit formats
+  (e.g. FP8/INT8 and INT4/NF4). That's why every piece of this engine is built to support
   switching precision on and off (see [Adjustable Precision](../concepts/architecture.md#adjustable-precision)).
 - **Correctness against a known-good reference.** Rather than inventing new math, this
   project continuously checks its own output against ORE's — a mature, real-world risk

@@ -162,8 +162,8 @@ exercising will turn out to be favorable, not just on expected future cashflows.
 variants, which allow exercise on multiple dates rather than just one, also exist — see
 [Instruments: American/Bermudan Swaptions](../instruments/american-bermudan-swaptions.md).
 
-**TraderX** — The name (per this project's roadmap in
-[Roadmap & Development History](../planning/roadmap-and-history.md)) of an external system
+**TraderX** — The name (per this project's [Roadmap](../planning/roadmap-and-history.md))
+of an external system
 this engine is eventually meant to serve as a live API for, rather than only running as
 an offline script. See also the [TraderX Integration Plan](../planning/traderx-integration.md).
 

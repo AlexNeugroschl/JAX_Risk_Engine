@@ -33,21 +33,15 @@ This module computes three of the most standard Greeks:
 This module computes Delta/Gamma/Theta for [interest rate swaps](../instruments/swaps.md),
 [European swaptions](../instruments/european-swaptions.md), and
 [Bermudan/American swaptions](../instruments/american-bermudan-swaptions.md), plus Vega
-for Bermudan/American swaptions (see [Vega](#vega-bermudanamerican-only) below). This is a
-change from an earlier version of this module, which covered only swaps/European
-swaptions and explicitly documented Bermudan/American Greeks and Vega as scoped-out gaps
-(see [Roadmap & Development History](../planning/roadmap-and-history.md) for that
-history) — both gaps closed once the prerequisite work landed:
+for Bermudan/American swaptions (see [Vega](#vega-bermudanamerican-only) below).
 
-- **Bermudan/American Greeks** became possible once `bermudan_swaption.py`'s
-  backward-induction engine was ported from plain NumPy to `jax.lax.scan`
-  (see [American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)) —
-  it is now a genuine JAX computational graph end-to-end, so `jax.grad`/`jax.hessian`
-  work exactly as they do for the swap/European swaption pricers.
-- **Vega** became well-defined once [`engine/calibration/`](../reference/calibration.md)
-  was built — a real market-vol-to-model-parameter calibration step that did not exist
-  before (see [Vega](#vega-bermudanamerican-only) below for why that was the missing
-  prerequisite, not merely an implementation gap).
+- **Bermudan/American Greeks** work because `bermudan_swaption.py`'s backward-induction
+  engine (see [American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md))
+  is implemented via `jax.lax.scan` — a genuine JAX computational graph end-to-end, so
+  `jax.grad`/`jax.hessian` work exactly as they do for the swap/European swaption pricers.
+- **Vega** is well-defined because [`engine/calibration/`](../reference/calibration.md)
+  provides a real market-vol-to-model-parameter calibration step (see
+  [Vega](#vega-bermudanamerican-only) below for why that's the required prerequisite).
 
 ## Why it's built this way: matching ORE's exact convention, via autodiff instead of finite differences
 
@@ -150,27 +144,20 @@ so `jax.grad` cannot trace through it directly. Instead:
    derivatives, then combines it with step 1's vector via a single dot product to get
    the final Vega for every basket instrument at once.
 
-**A real bug this derivation caught, twice.** The first version of `bermudan_vega`
-assumed `d(s_j)/d(v_i) = 0` for every `j != i` (a diagonal-only Jacobian) — this is
-correct for `j < i` (the bootstrap is triangular forward in time; an earlier bucket
-genuinely cannot depend on a later target) but **wrong** for `j > i`. Finite-difference
-cross-checking (bump one market vol, literally rerun `calibrate_lgm_sigma`, reprice)
-caught a 45-78% error in every bucket except the very last one (which, having no later
-bucket to affect, was the one case where the wrong diagonal-only assumption happened to
-be correct) — the size and pattern of the error is what pinpointed the missing
-cross-bucket term. Separately, `price_lgm_swaption` itself (the model-price half of each
-bucket's calibration equation) had its own pre-existing gradient bug: its exercise-boundary
-root-find (`_bisect_xstar`) used a plain bisection loop, whose `jnp.where(val > 0.0, ...)`
-comparison has zero gradient everywhere — silently dropping the *indirect* contribution
-`d(price)/d(x*) * d(x*)/d(sigma)` and understating `d(price)/d(sigma)` by about 6%. Both
-bugs are fixed now (`_bisect_xstar` via the same
-[implicit-function-theorem `custom_jvp` pattern](#two-real-bugs-this-module-found-and-fixed)
-already used for `_solve_rstar`, and `engine.models.lgm.Sigma` registered as a proper JAX
-pytree so tangents propagate through its `values` field when nested inside a larger
-argument tuple) — see [Calibration](../reference/calibration.md) for the full incident,
-and `tests/test_calibration_basket.py`/`tests/test_greeks_bermudan.py` for the
-finite-difference regression tests that catch a regression of either bug (both matching
-to within ~0.005%-0.03% of a literal finite-difference recalibration).
+**Why the full Jacobian matters, not just the diagonal.** `d(s_j)/d(v_i) = 0` for `j < i`
+(the bootstrap is triangular forward in time; an earlier bucket cannot depend on a later
+target), but is generally **nonzero** for `j > i` — a change to an earlier bucket's
+calibrated sigma cascades forward into every later bucket's own calibration equation.
+Assuming a diagonal-only Jacobian understates Vega by 45-78% in every bucket except the
+last. `price_lgm_swaption`'s exercise-boundary root-find (`_bisect_xstar`) uses the same
+[implicit-function-theorem `custom_jvp` pattern](#differentiating-through-bisection-root-finds)
+as `_solve_rstar` so its gradient with respect to sigma is exact, and
+`engine.models.lgm.Sigma` is registered as a proper JAX pytree so tangents propagate
+through its `values` field when nested inside a larger argument tuple. See
+[Calibration](../reference/calibration.md) for the full derivation, and
+`tests/test_calibration_basket.py`/`tests/test_greeks_bermudan.py` for the
+finite-difference regression tests (matching to within ~0.005%-0.03% of a literal
+finite-difference recalibration).
 
 **`cfg.hw_sigma` must be the exact `Sigma` `calibrate_lgm_sigma` produced** from the same
 `calibration_targets` list, in the same order — `bermudan_vega` does not re-run
@@ -258,38 +245,34 @@ to_bermudan()` expands into a `BermudanSwaptionConfig`, so `bermudan_delta_gamma
 to_bermudan(), curve)` covers both, matching `american_swaption.py`'s own "American is
 just a finely-discretized Bermudan" design.
 
-## Two real bugs this module found and fixed
+## Differentiating through bisection root-finds
 
-Both bugs share the same root cause: **naively differentiating through a bisection-based
-root-find gives a silently wrong (not merely imprecise) gradient**, because a bisection's
-comparison (`jnp.where(val > 0.0, ...)`) has zero gradient everywhere — `jax.grad`
-straight through the unrolled loop ignores how the converged root actually moves with the
-function's own inputs. Both were invisible until Greeks needed to differentiate through a
-root-find that the forward pricer itself never needed a gradient of.
+Naively differentiating through a bisection-based root-find gives a silently wrong (not
+merely imprecise) gradient, because a bisection's comparison (`jnp.where(val > 0.0, ...)`)
+has zero gradient everywhere — `jax.grad` straight through the unrolled loop ignores how
+the converged root actually moves with the function's own inputs. Two root-finds in this
+codebase need a gradient through them and both use the same fix:
 
 **1. `european_swaption._solve_rstar`** — the vectorized bisection that finds
-Jamshidian's critical exercise-boundary short rate `r*`. Fixed via `jax.custom_jvp`,
+Jamshidian's critical exercise-boundary short rate `r*`. Uses `jax.custom_jvp`,
 implementing the
 [implicit function theorem](https://en.wikipedia.org/wiki/Implicit_function_theorem)
 directly: at a root of `f(r*, params) = 0`, `d(r*)/d(params) = −(∂f/∂params) / (∂f/∂r)`,
 computed cheaply relative to the 100-iteration bisection itself (one `jax.grad` and one
-`jax.jvp` call). Required changing `_solve_rstar`'s own signature so the values Delta/
-Gamma should be differentiable with respect to are passed as an explicit `params`
-argument rather than only captured in a Python closure — `jax.custom_jvp` requires an
-explicit primal argument to attach a gradient rule to. See `_solve_rstar`'s own docstring
-in `european_swaption.py` for the full explanation, including why the *value* returned by
-`price_swaptions` is completely unaffected (confirmed by the entire pre-existing
-`test_european_swaption.py` suite passing unchanged).
+`jax.jvp` call). `_solve_rstar`'s signature takes the values Delta/Gamma need to
+differentiate with respect to as an explicit `params` argument rather than capturing them
+in a Python closure — `jax.custom_jvp` requires an explicit primal argument to attach a
+gradient rule to. See `_solve_rstar`'s own docstring in `european_swaption.py` for the
+full explanation.
 
 **2. `engine.calibration.basket._bisect_xstar`** — the LGM analogue of `_solve_rstar`,
-found while building `bermudan_vega` (see [Vega](#vega-bermudanamerican-only) above for
-the full incident, including the second, independent bug — the missing cross-bucket
-Jacobian term — this same investigation uncovered). Fixed with the identical
-`custom_jvp`/implicit-function-theorem pattern, plus registering `engine.models.lgm.Sigma`
-as a proper JAX pytree (`@register_pytree_node_class`) so a tangent can propagate into its
-`values` field when `Sigma` is nested inside a larger `params` tuple/pytree rather than
-passed as a bare array — an unregistered dataclass is treated as an opaque leaf by
-`jax.tree_util`, silently blocking any tangent from reaching its fields at all.
+used by `bermudan_vega` (see [Vega](#vega-bermudanamerican-only) above). Uses the
+identical `custom_jvp`/implicit-function-theorem pattern, plus
+`engine.models.lgm.Sigma` is registered as a proper JAX pytree
+(`@register_pytree_node_class`) so a tangent can propagate into its `values` field when
+`Sigma` is nested inside a larger `params` tuple/pytree rather than passed as a bare
+array — an unregistered dataclass is treated as an opaque leaf by `jax.tree_util`, which
+would otherwise block any tangent from reaching its fields.
 
 ## The functions
 
@@ -346,10 +329,10 @@ but returns only its diagonal, for parity with what ORE itself reports.
 
 ## Tested by
 
-- `tests/test_greeks.py::TestSolveRstarGradientCorrectness` — the `_solve_rstar` gradient
-  bug described above, tested directly against toy root-finding problems with known
-  closed-form derivatives (both first and second order), independent of the swaption
-  pricer itself.
+- `tests/test_greeks.py::TestSolveRstarGradientCorrectness` — `_solve_rstar`'s
+  `custom_jvp` gradient rule, tested directly against toy root-finding problems with
+  known closed-form derivatives (both first and second order), independent of the
+  swaption pricer itself.
 - `TestSwapDeltaGamma`/`TestSwaptionDeltaGamma` — direct comparison against literal
   finite-difference bump-and-revalue (the same computation ORE itself performs), across
   payer/receiver, deep ITM/OTM, and a spread of Hull-White parameters.
@@ -379,6 +362,6 @@ but returns only its diagonal, for parity with what ORE itself reports.
   Greeks function exists).
 - `tests/test_calibration_basket.py::TestPriceLgmSwaptionSanity::
   test_gradient_wrt_sigma_matches_finite_difference_value`/
-  `test_gradient_wrt_piecewise_sigma_bucket_matches_finite_difference` — the
-  `_bisect_xstar`/`Sigma`-pytree-registration bug fix, value-level (not just sign/
-  finiteness) cross-checks against finite difference.
+  `test_gradient_wrt_piecewise_sigma_bucket_matches_finite_difference` — value-level (not
+  just sign/finiteness) cross-checks of `_bisect_xstar`'s gradient and `Sigma`'s pytree
+  registration against finite difference.

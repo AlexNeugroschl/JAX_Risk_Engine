@@ -70,15 +70,14 @@ tail  =  { pnl values that are STRICTLY worse than −VaR(percentile) }
 ES(percentile)  =  −mean(tail)
 ```
 
-**The strict-inequality detail matters, and was easy to get wrong.** An earlier version
-of this formula used a *positional* slice of the sorted array (the worst `index` entries)
-instead of this *value-based* filter (every entry strictly worse than the VaR cutoff).
-The two give the same answer *unless* there are tied values sitting exactly at the VaR
-boundary — in which case they diverge, and only the value-based filter matches ORE. This
-was caught by constructing a test P&L sample with deliberate ties at the VaR cutoff and
-comparing against `ORE.RiskStatistics.expectedShortfall()` directly; the positional
-formula gave a visibly wrong answer (`72.7` instead of ORE's actual `100.0`) on that test
-case. See `tests/test_var_es.py::TestExpectedShortfallAgainstORE::test_matches_ore_with_ties_at_var_boundary`.
+**The strict-inequality detail matters.** This formula uses a *value-based* filter (every
+entry strictly worse than the VaR cutoff), not a *positional* slice of the sorted array
+(the worst `index` entries). The two give the same answer *unless* there are tied values
+sitting exactly at the VaR boundary — in which case they diverge, and only the
+value-based filter matches ORE. This is verified with a test P&L sample containing
+deliberate ties at the VaR cutoff, cross-checked against
+`ORE.RiskStatistics.expectedShortfall()` directly. See
+`tests/test_var_es.py::TestExpectedShortfallAgainstORE::test_matches_ore_with_ties_at_var_boundary`.
 
 **What happens when the tail is empty?** If every one of the worst observations is
 exactly tied at the VaR cutoff, the strict `<` filter can end up with nothing in it.
@@ -131,8 +130,7 @@ def expected_shortfall(pnl: jax.Array, percentile: float) -> jax.Array:
 `[Scenarios, TimeSteps] → [TimeSteps]`. Implement the formulas above, vectorized across
 every time step at once via `jnp.sort` — sorting the whole scenario axis is the
 "expensive" part of this computation, and it's exactly the kind of operation GPUs are
-efficient at, which is what the root [README.md](../../README.md)'s "sorting/percentile
-logic that remains highly efficient on GPUs" goal is about.
+efficient at.
 
 ```python
 def compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99)) -> Dict[str, jax.Array]:

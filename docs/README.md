@@ -65,8 +65,8 @@ common `[Scenarios, TimeSteps, Trades]` NPV cube:
 
 ## Planning
 
-- **[Roadmap & Development History](planning/roadmap-and-history.md)** — the phased
-  build-out plan and notable bugs found and fixed along the way.
+- **[Roadmap](planning/roadmap-and-history.md)** — the phased build-out plan and what's
+  done vs. planned.
 - **[TraderX Integration Plan](planning/traderx-integration.md)** — what's needed to
   safely accept arbitrary portfolios from an external trading system.
 

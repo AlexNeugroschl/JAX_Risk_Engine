@@ -94,7 +94,7 @@ This runs the full suite — see each deep-dive doc's "Tested by" section for wh
 covered where, and [Architecture: Testing philosophy](../concepts/architecture.md#testing-philosophy)
 for the general approach (every formula is checked both for internal mathematical
 correctness and against ORE's own installed software directly). As of this writing, the
-suite has 502 tests across `tests/`, all passing.
+suite has 659 tests across `tests/`, all passing.
 
 `tests/conftest.py` provides shared `pytest` fixtures (the example scenario
 configurations from `engine/simulation/demo_scenarios.py`, wrapped as fixtures) so

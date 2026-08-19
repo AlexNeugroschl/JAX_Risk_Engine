@@ -193,8 +193,8 @@ or equivalent), not forward from `evaluation_date` by a tenor. This is a genuine
 requirement — no existing config in this codebase takes an absolute maturity date, only a
 relative tenor — and it is worth flagging early because it touches the same "date arithmetic"
 territory the existing e2e test suite's own docstrings warn about repeatedly (calendar-day vs.
-business-day advance, `ORE.Period` fractional parsing — the latter a real bug this codebase hit
-and fixed in `engine/calibration/basket.py`, worth re-checking for at `BondConfig` build time).
+business-day advance, `ORE.Period` fractional parsing — a known trap in `engine/calibration/basket.py`,
+worth re-checking for at `BondConfig` build time).
 
 **Accrued interest — build it, don't inherit the exclusion.** TraderX's own extract excludes
 accrued interest by explicit design (`closingMark` is a clean price). That is the right choice

@@ -4,7 +4,7 @@
 
 ## Context
 
-Phase 8 of the roadmap ([`README.md`](../../README.md)) calls for wrapping this engine as a stateless API
+The [Roadmap](roadmap-and-history.md) calls for wrapping this engine as a stateless API
 consumed by TraderX. `SimulationConfig` (`engine/simulation/market_model.py`) and each instrument's own
 config dataclass (`SwapConfig`, `SwaptionConfig`, `BermudanSwaptionConfig`,
 `AmericanSwaptionConfig`) already form a typed, IDE-friendly input surface — the

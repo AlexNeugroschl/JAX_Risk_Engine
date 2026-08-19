@@ -151,8 +151,8 @@ output for future use.
 All of this is wrapped in a single `@jax.jit`-compiled function using `jax.lax.scan` to
 step through time — the JAX idiom for "run this per-step update function T times in a
 row, efficiently, without a Python-level loop." This is a hard requirement from the
-project's own coding constraints (see the root [README.md](../../README.md)'s Technical
-Constraints section): no ordinary Python `for` loops inside JIT-compiled code.
+project's own [coding constraints](coding-style.md): no ordinary Python `for` loops
+inside JIT-compiled code.
 
 ### Phase 3 — Yield curve reconstruction
 
@@ -201,9 +201,7 @@ pair, and `ORE.CrossAssetModel` only ever combines a list of these already-curve
 objects — there is no code path anywhere in ORE that shares a single curve across
 multiple currencies or factors. This was confirmed by directly constructing a live,
 2-currency `ORE.CrossAssetModel` (USD at 3%, EUR at 2%, distinct flat curves) and
-verifying each currency's discount factors stayed independent throughout. An earlier
-version of this module *did* share one curve across every factor; that was a real bug,
-now fixed and covered by
+verifying each currency's discount factors stayed independent throughout, covered by
 `tests/test_simulation.py::TestHullWhiteAMatrix::test_reprices_distinct_curves_per_rate_factor`.
 
 *Verified:* given a flat (constant-rate) input curve, the reconstructed discount factors

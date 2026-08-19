@@ -100,15 +100,11 @@ byproduct of American support.
 Every instrument pricer needs two kinds of thing that have nothing to do with what makes
 that instrument distinctive: closed-form interest-rate model math (bond prices, bond
 options, discount factors) and a real ORE trade object with a real payment schedule to
-price against. Both used to be implemented **separately inside each instrument file** —
-the same Hull-White formula written four times with slightly different call shapes across
-`simulation.py`, `european_swaption.py`, and `greeks.py`; the same ORE swap-building code
-written three times with nearly identical bodies across `swap.py`, `european_swaption.py`,
-and `bermudan_swaption.py`.
+price against.
 
-`engine/models/hull_white.py` and `engine/models/lgm.py` are now the single source of
+`engine/models/hull_white.py` and `engine/models/lgm.py` are the single source of
 truth for that math — one JAX-native implementation of each formula, used by every pricer
-that needs it, rather than N near-identical copies drifting apart over time.
+that needs it.
 `engine/trades/ore_builders.py` is the equivalent consolidation for ORE trade-building and
 cashflow extraction. See [Models & Trades](../reference/models-and-trades.md) for the full
 breakdown of both directories, including a genuine finding this consolidation surfaced:
@@ -119,8 +115,8 @@ in this codebase.
 
 ## `engine/calibration/`: fitting LGM's volatility to market swaption quotes
 
-Every pricer's `hw_sigma` used to be a config input a caller simply supplied. A real
-trading desk doesn't do that — it calibrates a model's volatility parameter to reproduce
+A real
+trading desk doesn't treat `hw_sigma` as an arbitrary config input — it calibrates a model's volatility parameter to reproduce
 the market-quoted prices of simpler, liquid options first, and only then prices a more
 complex, illiquid trade off that fitted parameter. `engine/calibration/basket.py` and
 `engine/calibration/lgm.py` implement exactly that step for Bermudan/American swaptions: a
@@ -346,7 +342,8 @@ pricing endpoint needs ORE installed.
 
 One of the project's core long-term research goals (see [Overview](../getting-started/overview.md)) is
 comparing risk results computed with different numeric precision — 64-bit ("double",
-very precise, slower) versus 32-bit ("single", less precise, faster). This shows up in
+very precise, slower) versus 32-bit ("single", less precise, faster), and eventually
+pushing well below that to 8-bit and 4-bit formats. This shows up in
 the code as the `precision` argument to `generate_paths(config, precision=64)`.
 
 The tricky part: JAX (the numerical library this project is built on) can only create
@@ -360,10 +357,9 @@ later in the same program each produce correctly-sized numbers, in sequence.
 
 The one function that does **not** automatically manage this is
 `generate_sobol_normals()`, if called directly instead of through `generate_paths()` —
-its `dtype` argument is honored (an earlier bug where it wasn't has been fixed and is
-covered by a regression test), but the global `jax_enable_x64` setting still needs to
-already be in the state the caller wants before other, unrelated JAX code runs
-elsewhere in the same process.
+its `dtype` argument is honored (covered by a regression test), but the global
+`jax_enable_x64` setting still needs to already be in the state the caller wants before
+other, unrelated JAX code runs elsewhere in the same process.
 
 ## Typed configuration
 
@@ -373,8 +369,8 @@ its nested `EquityConfig`, `RatesConfig`, `ZeroCurveConfig`) for the simulation 
 dictionary key silently produces a confusing error deep inside the pipeline, while a
 typo in a dataclass field name fails immediately, at the point the config object is
 constructed, with a clear Python error. It's also the natural shape for the eventual
-TraderX API layer to build a request/response schema around directly (see the roadmap's
-Phase 8 in the root [README.md](../../README.md)).
+TraderX API layer to build a request/response schema around directly (see the
+[Roadmap](../planning/roadmap-and-history.md)).
 
 ## Testing philosophy
 

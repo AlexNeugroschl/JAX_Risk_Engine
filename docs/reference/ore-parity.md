@@ -128,7 +128,7 @@ the property this construction exists to guarantee) and
   and the bond-pricing formulas in `QuantExt::LinearGaussMarkovModel` —
   [`QuantExt/qle/models/lgm.hpp`](../../reference/ORE/QuantExt/qle/models/lgm.hpp) — this is
   the class `ORE.CrossAssetModel` actually instantiates (live-verified via the SWIG
-  bindings in an earlier session: `ORE.IrLgm1fConstantParametrization`, not
+  bindings: `ORE.IrLgm1fConstantParametrization`, not
   `ORE.HullWhite`, is what a `CrossAssetModel` is built from). See
   [below](#a-parametrization-note-lgm-vs-plain-hull-white) for why both formulations are
   the same model.
@@ -151,11 +151,8 @@ The `variance` term matches `QuantExt::IrLgm1fStateProcess::variance()`
 (`QuantExt/qle/processes/irlgm1fstateprocess.hpp`) under the LGM-to-short-rate identity
 below.
 
-**Regression note:** this exact transition formula is the one whose `theta*(1-decay)`
-term was found missing (and fixed) during this project's most recent thorough-testing
-pass — see the root [README.md](../../README.md)'s "Correctness fixes (post-Phase-5)"
-section. This C++ source read is additional, independent confirmation that
-`theta*(1-decay)`, not a bare `theta`, is the mathematically correct term: it is exactly
+**Why `theta*(1-decay)`, not a bare `theta`.** This C++ source confirms
+`theta*(1-decay)` is the mathematically correct term: it is exactly
 the standard OU/Vasicek/Hull-White transition mean any textbook derivation (or a
 from-scratch derivation of the SDE's solution) produces, and is consistent with
 `IrLgm1fStateProcess::expectation()` returning the *unchanged* state value (LGM's own
@@ -238,11 +235,9 @@ explicitly inside `step_fn`.
 diagonal, off-diagonal entries in `[-1,1]`) as a first-class, separate object from each
 factor's own `alpha`/`sigma` volatility parameter — i.e. ORE's own class design already
 enforces the same separation this engine's `L_t`-from-correlation-not-covariance fix
-established. This is a useful independent design confirmation for the double-applied-
-volatility bug described in the root [README.md](../../README.md)'s "Correctness fixes
-(post-Phase-5)" section: ORE's own model never conflates "correlation structure" and
-"marginal volatility" into one matrix in the first place, which is exactly the
-distinction whose absence caused that bug.
+established. This is a useful independent design confirmation for this engine's own
+`L_t`-from-correlation-not-covariance approach: ORE's own model never conflates
+"correlation structure" and "marginal volatility" into one matrix.
 
 ## 5. Vanilla interest rate swap pricing
 
@@ -271,8 +266,8 @@ simple-forward-rate-from-two-discount-factors identity, and corresponds to
 `IborIndex::forecastFixing(valueDate, endDate, spanningTime)` — the same "single forward
 rate spanning the whole accrual period" convention (as opposed to a compounded
 sub-period average), matching this engine's own single-period forward-rate formula and
-this project's own `IborCoupon.usingAtParCoupons()` default, both live-verified in an
-earlier session and confirmed here to be the actual C++ code path.
+this project's own `IborCoupon.usingAtParCoupons()` default, both live-verified to be
+the actual C++ code path.
 
 **Verified:** `tests/test_swap.py::TestPriceSwapsAgainstORE` (direct NPV
 comparison against a real `ORE.VanillaSwap` + `ORE.DiscountingSwapEngine`, `<1e-6`
@@ -312,18 +307,15 @@ zero-coupon bond option closed form.
 5. `w = Payer ? Put : Call` — confirmed exactly this engine's own
    `bond_fn = _bond_put if swaption.payer else _bond_call` sign convention.
 
-**This confirms, from the actual C++ source, exactly the fix this project made for
-forward-starting swaptions** (see the root [README.md](../../README.md)'s Phase 5 section):
-an earlier version of this engine incorrectly assumed the exercise date `T0` and the
-underlying swap's accrual start `T_start` were the same point (true only for a
-spot-starting swaption, where the two coincide up to the standard settlement lag).
-Reading `JamshidianSwaptionEngine::calculate()` here shows QuantLib's own reference
-implementation was *never* making that assumption — `valueTime` is explicitly read from
-`fixedResetDates[0]`, independent of `maturity` (`T0`), for every swaption regardless of
-whether it is spot- or forward-starting. This engine's fix (adding the `P(T0,T_start)`
-leg with a negative amount, so the sum is normalized relative to `T_start` the same way
-QuantLib's `B`-division does) is confirmed here to be the mathematically correct
-approach, not merely a fix that happened to make test numbers match.
+**This confirms, from the actual C++ source, that this engine handles forward-starting
+swaptions correctly.** The exercise date `T0` and the underlying swap's accrual start
+`T_start` are not generally the same point — they coincide only for a spot-starting
+swaption, up to the standard settlement lag. Reading `JamshidianSwaptionEngine::calculate()`
+shows QuantLib's own reference implementation never assumes otherwise: `valueTime` is
+explicitly read from `fixedResetDates[0]`, independent of `maturity` (`T0`), for every
+swaption regardless of whether it is spot- or forward-starting. This engine mirrors that:
+the `P(T0,T_start)` leg is included with a negative amount, so the sum is normalized
+relative to `T_start` the same way QuantLib's `B`-division does.
 
 **One presentational difference, not a formula difference:** this engine represents
 QuantLib's `.../B` normalization (every price divided by `discountBond(maturity,

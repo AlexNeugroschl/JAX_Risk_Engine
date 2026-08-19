@@ -199,22 +199,15 @@ distribution at any time is Gaussian with variance `zeta`, per
 `QuantExt::IrLgm1fStateProcess::variance`) — pricing the same swaption's payoff at each
 sampled `x(T0)` and averaging.
 
-**The lesson this route surfaced: LGM's own measure is not the T0-forward measure.** An
-earlier version of this Monte Carlo test discounted each sampled payoff naively, by
-`P(0,T0)` (the same thing a T-forward-measure Monte Carlo would do) — and the result
-disagreed with the closed form by roughly 11%, a large, non-noise-shaped error that
-initially looked like a bug in `price_lgm_swaption` itself. It was not: it was a bug in the
-*test's own methodology*. LGM's state variable `x` is defined under LGM's own measure, not
-the `T0`-forward measure — a payoff sampled from `x(T0)`'s own distribution must be
-deflated by the model's own numeraire, `N(T0,x) = exp(0.5*H(T0)^2*zeta(T0) + H(T0)*x) /
-P(0,T0)` (`engine.models.lgm.numeraire`, the same numeraire
+**The key requirement: LGM's own measure is not the T0-forward measure.** LGM's state
+variable `x` is defined under LGM's own measure, not the `T0`-forward measure — a payoff
+sampled from `x(T0)`'s own distribution must be deflated by the model's own numeraire,
+`N(T0,x) = exp(0.5*H(T0)^2*zeta(T0) + H(T0)*x) / P(0,T0)` (`engine.models.lgm.numeraire`,
+the same numeraire
 [`bermudan_swaption.py`'s backward induction](../instruments/american-bermudan-swaptions.md#5-numeraire-deflation--the-step-that-makes-the-rollback-mathematically-valid)
 deflates by, for exactly the same underlying reason), not simply discounted by `P(0,T0)`.
-Once the Monte Carlo test was corrected to divide each sampled payoff by `N(T0,x)` rather
-than discount by `P(0,T0)`, it matched the closed form to ~0.05% — well within Monte Carlo
-standard error for `N=3,000,000` paths — confirming `price_lgm_swaption` was correct all
-along, and that the original 11% figure was entirely an artifact of the test's own
-mismeasured discounting, not a pricer defect.
+Dividing each sampled payoff by `N(T0,x)` matches the closed form to ~0.05% — well within
+Monte Carlo standard error for `N=3,000,000` paths.
 
 This is the same "raw values aren't martingales, only numeraire-deflated ones are" lesson
 `bermudan_swaption.py`'s own backward induction ran into independently while first being
