@@ -186,7 +186,9 @@ Mirrors `engine.portfolio.PortfolioRequest`:
 | `market` | `SimulationConfigSchema` | Mirrors `SimulationConfig` field-for-field. |
 | `trades` | `List[TradeSchema]` | A discriminated union on each trade object's own `trade_type` field: `"swap"`, `"european_swaption"`, `"bermudan_swaption"`, or `"american_swaption"`. |
 | `percentiles` | `List[float]` | Default `[0.95, 0.99]`. |
+| `calibration_basket` | `CalibrationBasketRequestSchema \| null` | Optional. Required if any Bermudan/American trade has `hw_sigma: null` — see "Automatic calibration" below. |
 | `compute_greeks` | `bool` | Default `false`. |
+| `precision` | `PrecisionConfigSchema \| null` | Optional (default `null`). `null`/omitted behaves identically to an explicit all-64 block — see "Precision control" below. |
 
 Every trade schema mirrors its dataclass field-for-field, with two representational
 differences (SWIG-bound `ORE` types aren't natively Pydantic-serializable):
@@ -197,11 +199,81 @@ differences (SWIG-bound `ORE` types aren't natively Pydantic-serializable):
   `"0D"`), parsed via `ORE.Period(str)` — the same parse
   `engine.portfolio.validation._validate_tenor` already validates for `swap_tenor`.
 
+### Automatic calibration: `hw_sigma: null` + `calibration_basket`
+
 `BermudanSwaptionConfigSchema`/`AmericanSwaptionConfigSchema`'s `hw_sigma` accepts `null`
-(Python `None`) to request automatic calibration — see [The Portfolio Entry Point:
-Automatic calibration](portfolio-entrypoint.md#automatic-calibration). Piecewise
-(post-calibration) `Sigma` term structures are not currently expressible directly in a
-request body — a request always starts from either a flat `hw_sigma` or `null`.
+(Python `None`) to request automatic calibration — mirroring
+`engine.portfolio.PortfolioRequest.calibration_targets` (see [The Portfolio Entry Point:
+Automatic calibration](portfolio-entrypoint.md#automatic-calibration)) — but the dataclass
+field takes an already-built `List[CalibrationTarget]`, which isn't directly expressible in
+a JSON request body (each target carries full ORE-derived cashflow arrays, not raw market
+data). `PortfolioRequestSchema.calibration_basket` bridges this: it mirrors
+`engine.calibration.basket.build_coterminal_basket`'s own raw inputs instead —
+
+| Field | Type | Meaning |
+|---|---|---|
+| `exercise_times` | `List[float]` | One per basket instrument, ascending. |
+| `final_maturity_time` | `float` | Every basket instrument's underlying swap matures here (the co-terminal/diagonal convention). |
+| `notional` | `float` | Shared by every basket instrument. |
+| `payer` | `bool` | Shared by every basket instrument. |
+| `market_vols` | `List[float]` | Market normal (Bachelier) volatility per `exercise_times` entry, same length/order. |
+
+and the server builds the actual `CalibrationTarget` list from it: the curve, mean
+reversion (`hw_a`), and `evaluation_date`/`index_tenor_months` used to build the basket come
+from the *first* trade in `trades` with `hw_sigma: null` (matching
+`_fill_calibrated_sigma`'s own "one shared basket, applied per `rate_factor_index`
+that needs it" design — there is currently no way to submit more than one basket per
+request). Submitting `calibration_basket` when no trade actually needs it returns `400`;
+leaving it unset while a trade has `hw_sigma: null` fails once pricing actually runs (the
+job reaches `status: "failed"` with the same `"calibration_targets was not supplied"`
+message `price_portfolio` itself raises).
+
+Piecewise (post-calibration) `Sigma` term structures still aren't expressible directly —
+a request always starts from either a flat `hw_sigma`, `null` (paired with
+`calibration_basket`), or is a validation error.
+
+### Precision control: `PrecisionConfigSchema`
+
+Mirrors `engine.portfolio.PrecisionConfig` field-for-field (see [The Portfolio Entry
+Point: PrecisionConfig](portfolio-entrypoint.md#precisionconfig) and
+[Architecture](../concepts/architecture.md#adjustable-precision) for the full mechanism):
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `simulation` | `int` (`32`\|`64`) | `64` | Monte Carlo path generation dtype. |
+| `pricing` | `int` (`32`\|`64`) | `64` | Instrument NPV / `npv_cube` dtype. |
+| `risk` | `int` (`32`\|`64`) | `64` | VaR/ES + Greeks dtype (one shared setting). |
+
+`precision` on `PortfolioRequestSchema` is `Optional`, not a populated default, so "no
+`precision` key sent" and "explicit all-64 sent" resolve identically (both become
+`PrecisionConfig()`). Any value outside `{32, 64}` fails `PrecisionConfig.__post_init__`'s
+own validation, which `POST /portfolio/price` already runs synchronously (as part of the
+same up-front `request.to_dataclass()` call that validates the rest of the body) — so an
+invalid precision returns an immediate `400` with that validator's own message, not a
+`202` followed by a failed job:
+
+```json
+{
+  "evaluation_date": "2026-07-30",
+  "market": { "...": "..." },
+  "trades": [ "..." ],
+  "precision": { "simulation": 64, "pricing": 32, "risk": 32 }
+}
+```
+
+```
+POST /portfolio/price
+{"precision": {"simulation": 16}}
+-> 400 {"detail": "PrecisionConfig.simulation must be 32 or 64, got 16"}
+```
+
+**Concurrency note:** because `precision` is now request-controllable, and
+`jax_enable_x64` (the JAX/XLA flag `precision.simulation` drives) is process-global, two
+concurrent `/portfolio/price` jobs now serialize behind a process-wide lock rather than
+running in true parallel — see
+[Architecture](../concepts/architecture.md#concurrency-jax_enable_x64-and-price_portfolios-pricing-lock).
+This changes queuing behavior, not correctness: each job's own result is unaffected, it
+simply may wait longer for a concurrently-submitted job to finish first.
 
 ## Response schema: `PortfolioResultSchema`
 
@@ -273,6 +345,14 @@ process needed:
   `"done"` with a result that matches a direct `price_portfolio` call on the equivalent
   dataclass request, bit-for-bit after the schema round-trip; Greeks are included when
   requested.
+- `TestCalibratedBermudanOverHttp` — `calibration_basket` resolving an uncalibrated
+  Bermudan/American trade end to end; the `400`/failed-job error paths when it's missing
+  or unnecessary.
+- `TestPortfolioPriceAtScale` — a 20-trade mixed-instrument portfolio and a 10-trade
+  bit-for-bit HTTP-vs-direct-call cross-check submitted as real JSON bodies (the schema
+  round-trip at a payload size well beyond the 1-2 trade bodies used elsewhere); an empty
+  `trades` list; many identical trades pricing identically; two concurrent jobs in the
+  shared in-process job store not cross-contaminating each other's results.
 - `TestPortfolioPriceInvalidPayload` — non-PSD covariance and a mismatched
   `rate_factor_index` both return a `4xx` with the underlying validator's own message, not
   a `500`; malformed/missing/invalid-discriminator bodies return `422`.

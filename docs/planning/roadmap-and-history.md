@@ -17,7 +17,7 @@ This page tracks the project's phased build-out. For current architecture, see
 | 9. LGM calibration | Bootstrap-fit a piecewise LGM `Sigma` to market swaption vols, matching `ore::data::LgmBuilder::calibrate()` | ✅ Done — see [Calibration](../reference/calibration.md) |
 | 10. XVA (CVA/DVA) | Convert NPV cube to exposure, aggregate expected exposure | 🔜 Planned |
 | 11. TraderX API integration | FastAPI microservice wrapping the pricing pipeline (`engine/portfolio/request.py::price_portfolio` + `engine/api/`) — gRPC was evaluated and explicitly not chosen | ✅ Done — see [TraderX Integration Plan](traderx-integration.md), [The Portfolio Entry Point](../reference/portfolio-entrypoint.md), [HTTP API](../reference/http-api.md) |
-| 12. Compute-precision research | Statistical parity study of low-precision compute (down to 8-bit and 4-bit formats, e.g. FP8/INT8 and INT4/NF4) against FP64/FP32 baselines, at scale | 🔜 Planned |
+| 12. Compute-precision research | 3-knob (simulation/pricing/risk) FP64/FP32 control via `PrecisionConfig`, reachable from `PortfolioRequest` and the HTTP API — see [Architecture](../concepts/architecture.md#adjustable-precision), [The Portfolio Entry Point](../reference/portfolio-entrypoint.md#precisionconfig); uncovered and fixed a live `jax_enable_x64` cross-thread race in `price_portfolio` as a prerequisite (concurrent jobs now serialize behind a lock — see [Architecture](../concepts/architecture.md#concurrency-jax_enable_x64-and-price_portfolios-pricing-lock)). bfloat16/float16 confirmed broken on this stack (`jnp.linalg.cholesky`/`jax.scipy.stats.norm.ppf` both raise) and documented as a blocker; FP8/INT8/INT4/NF4 still planned | ✅ 3-knob FP64/FP32 done — lower-precision formats 🔜 Planned |
 
 ## Validation
 

@@ -414,23 +414,160 @@ pricing endpoint needs ORE installed.
 One of the project's core long-term research goals (see [Overview](../getting-started/overview.md)) is
 comparing risk results computed with different numeric precision — 64-bit ("double",
 very precise, slower) versus 32-bit ("single", less precise, faster), and eventually
-pushing well below that to 8-bit and 4-bit formats. This shows up in
-the code as the `precision` argument to `generate_paths(config, precision=64)`.
+pushing well below that to 8-bit and 4-bit formats.
 
-The tricky part: JAX (the numerical library this project is built on) can only create
-64-bit numbers at all if a single global setting, `jax_enable_x64`, is turned on — and
-that setting applies to the *entire process*, not to individual function calls. This
-isn't a limitation of this codebase; it's how JAX itself works, because 64-bit support
-changes how JAX talks to the GPU. `generate_paths()` toggles this global setting itself,
-right before doing any math, based on the `precision` argument it was given — so calling
-`generate_paths(config, precision=64)` and then `generate_paths(config, precision=32)`
-later in the same program each produce correctly-sized numbers, in sequence.
+As of `PrecisionConfig` (`engine/portfolio/request.py`), this is exposed as **three
+independent knobs**, not one:
+
+```python
+@dataclass(frozen=True)
+class PrecisionConfig:
+    simulation: int = 64  # Monte Carlo path generation (generate_paths)
+    pricing: int = 64     # instrument NPV / npv_cube dtype
+    risk: int = 64        # VaR/ES + Greeks (one shared setting)
+```
+
+Passed as `PortfolioRequest(..., precision=PrecisionConfig(simulation=64, pricing=32, risk=32))`
+(or, over HTTP, a `"precision": {"simulation": 64, "pricing": 32, "risk": 32}` block on
+`POST /portfolio/price` — see [HTTP API](../reference/http-api.md)). All three default to
+64, byte-identical to this project's behavior before `PrecisionConfig` existed.
+
+**`simulation`** works exactly as before: it's passed straight through to
+`generate_paths(config, precision=...)`.
+
+**`pricing`** is *not* a parameter any pricer function accepts. `price_swaps`/
+`price_swaptions`/`price_bermudan_swaptions`/`price_american_swaptions` already derive
+their own working dtype from whatever JAX array they're handed (`yield_curves.dtype`,
+`hw_paths.dtype`, etc.) — the actual gap was `engine/portfolio/request.py` constructing
+some of *its own* arrays (`step_times`, `_base_npv`'s swaption zero-shock path,
+`_flat_curve_cube`'s output) as hardcoded `float64` before ever reaching a pricer.
+`pricing` fixes that at the source: `price_portfolio` builds every one of these arrays at
+`precision.pricing`'s dtype, and the pricers propagate it onward exactly as they already
+did. There is deliberately no signature change to any of the four pricer modules.
+
+Two subtler gaps surfaced during implementation, beyond what the initial code-reading
+pass found, and both needed a real fix rather than just dtype plumbing in `request.py`:
+
+- `price_portfolio`'s main (non-base) pricing path was originally handing `price_swaps`/
+  `price_swaptions`/etc. `generate_paths`' own output (`market["rates"]`/
+  `market["yield_curves"]`) directly — which is governed by `precision.simulation`, not
+  `precision.pricing`. Since the pricers derive dtype from *whichever* JAX array they're
+  handed, `pricing=32` with `simulation=64` (the plan's own explicit end-to-end
+  verification scenario) had no effect on `npv_cube` at all until `price_portfolio` was
+  changed to re-cast `market["rates"]`/`market["yield_curves"]` to `precision.pricing`'s
+  dtype before routing to the pricers (a no-op cast, and free, whenever the two knobs
+  already agree — the common case).
+- `european_swaption.py`'s Jamshidian root-find (`_solve_rstar`/`_bisect_rstar`)
+  initialized its bisection bracket via bare `jnp.ones(t_shape) * 2.0` — `jnp.ones` with
+  no explicit `dtype` silently picks up JAX's *ambient* default float dtype (float64
+  whenever `jax_enable_x64` is on, regardless of what dtype the rest of the pricing
+  computation actually wants), which upcast the solved root `r*` back to float64 and, in
+  turn, every downstream Black-formula quantity built from it — even though `A_T0_Ti`/
+  `B_T0_Ti`/every other array in `_price_one_swaption` was already correctly float32.
+  This was invisible in the pre-`PrecisionConfig` codebase because every caller used the
+  same precision throughout; it surfaced immediately once `pricing=32` was exercised with
+  `jax_enable_x64` left on by a `simulation=64` sibling knob. Fixed by deriving `dtype`
+  from `params`' own leaves (`jax.tree_util.tree_leaves` + `jnp.result_type`) in
+  `_solve_rstar` and threading it through to `_bisect_rstar`'s bracket construction.
+
+Both fixes were found by literally exercising `pricing=32` end-to-end (per-pricer-type,
+not just a per-array code read) rather than trusting the initial "these four pricers need
+no changes" research alone — the plan that scoped this feature flagged exactly this kind
+of gap as something to re-verify during implementation, not assume away.
+
+**`risk`** governs VaR/ES (`compute_risk_metrics`, already fully dtype-agnostic — it just
+reflects whatever dtype the precision-controlled `npv_cube` already has) and Greeks
+(`engine/risk/greeks.py`). The mechanism here is curve-driven, not a new Greeks
+parameter: `_compute_all_greeks` builds each trade's `ZeroCurve` at `precision.risk`'s
+dtype (via `ZeroCurve.from_config(config, dtype=...)`), and every Greeks closure that
+used to hardcode `jnp.float64` for its own intermediate arrays (cashflow times/amounts,
+the Bermudan/American state grid's quadrature weights and trade-schedule arrays, the
+Vega Jacobian's accumulator) now derives that dtype from the `curve`/`x_nodes` parameter
+it's already handed. This mattered more than it looks: because `jax_enable_x64` is a
+single process-global flag (see below), any *one* hardcoded-`float64` array left in this
+chain silently upcasts a `risk=32` computation back to float64 the moment it's combined
+with the correctly-sized array — confirmed directly (`jnp.interp`/elementwise ops promote
+a float32/float64 mix to float64 whenever `jax_enable_x64` is on, regardless of which
+operand is which dtype). Getting this right for `bermudan_swaption.py`'s `_state_grid`/
+`_run_backward_induction`/`_hw_swap_value_at_nodes` in particular required tracing the
+*entire* chain of arrays feeding the backward induction, not just the one function whose
+docstring already mentioned a dtype, since that function is shared between plain
+(non-Greeks) Bermudan/American pricing — which must stay governed by `pricing`, not
+`risk` — and Greeks. The scoping trick: `_zero_curve_of` (both the one in `request.py`
+and `bermudan_swaption.py`'s own copy) preserves whatever dtype it's handed rather than
+hardcoding one, so plain pricing's curve stays float64 (built from a plain `np.ndarray`)
+while Greeks' curve carries whatever `risk`-precision JAX array
+`engine.risk.greeks._bermudan_price_fn` substituted in — one signal, two correct
+behaviors, no separate parameter needed.
+
+**The `jax_enable_x64` process-global-flag mechanism itself is unchanged**: JAX (the
+numerical library this project is built on) can only create 64-bit numbers at all if a
+single global setting, `jax_enable_x64`, is turned on — and that setting applies to the
+*entire process*, not to individual function calls or threads. This isn't a limitation of
+this codebase; it's how JAX itself works, because 64-bit support changes how JAX talks to
+the GPU. `generate_paths()` toggles this global setting itself, right before doing any
+math, based on the `precision` argument it was given.
 
 The one function that does **not** automatically manage this is
 `generate_sobol_normals()`, if called directly instead of through `generate_paths()` —
 its `dtype` argument is honored (covered by a regression test), but the global
 `jax_enable_x64` setting still needs to already be in the state the caller wants before
 other, unrelated JAX code runs elsewhere in the same process.
+
+### Concurrency: `jax_enable_x64` and `price_portfolio`'s pricing lock
+
+Because `jax_enable_x64` is process-global state, not thread-local, two threads each
+calling `price_portfolio` with *different* precisions can race: thread B's
+`generate_paths` call can flip the flag while thread A is still mid-flight through its
+own simulation/pricing/Greeks — silently corrupting thread A's in-progress computation
+(wrong dtype, or worse, a dtype-correct-looking but numerically wrong array). This is a
+genuinely live bug, not a theoretical one, given `engine/api/routes.py`'s async job
+pattern runs `price_portfolio` inside FastAPI `BackgroundTasks`' shared thread pool — it
+was invisible only as long as every caller happened to request the same precision.
+
+`price_portfolio` now serializes its entire JAX-executing body — calibration
+(`_fill_calibrated_sigma`), `generate_paths`, every pricer, and Greeks — behind a
+module-level `threading.Lock()` (`_PRICING_LOCK` in `engine/portfolio/request.py`).
+Calibration runs genuine JAX work (bisection root-finds, hardcoded-float64 array
+construction in `engine/calibration/lgm.py`) just as sensitive to the ambient
+`jax_enable_x64` state as simulation/pricing, so it sits inside the lock too, not before
+it. `generate_paths` itself also leaves `jax_enable_x64` set to whatever
+`precision.simulation` requested when it returns — since `pricing`/`risk` can
+independently request a *different* precision (including `64` after a `simulation=32`
+run), `price_portfolio` explicitly re-enables `jax_enable_x64` immediately after
+`generate_paths` returns, before doing any of that downstream work. (Re-enabling is
+always safe: building a float32 array under `jax_enable_x64=True` behaves identically to
+building it under `False` — the flag only ever restricts *creating* float64, never
+float32 — so this only fixes the direction that was actually broken, requesting `64`
+after `simulation=32`, without affecting the `32` case.) **User-facing consequence: concurrent `/portfolio/price`
+jobs now queue rather than running in true parallel.** This is an accepted throughput
+tradeoff, not an oversight — this system's runtime is already serial and
+JIT-compile-dominated (a single pricing job's own wall time is dominated by JAX
+compilation and Monte Carlo simulation, not by anything the lock would have let run
+concurrently), and its documented scope is a single-consumer, low-volume deployment (see
+[HTTP API](../reference/http-api.md)). The lock lives in `engine/portfolio/request.py`,
+not `engine/simulation/market_model.py`, because `generate_paths` is also called
+directly, sequentially, by other code/tests and shouldn't own cross-request
+serialization policy that only matters for `price_portfolio`'s own multi-thread HTTP job
+pattern.
+
+### Out of scope for v1
+
+- **bfloat16/float16.** Confirmed broken on this stack today, not merely untested:
+  `jnp.linalg.cholesky` raises `NotImplementedError` and `jax.scipy.stats.norm.ppf`
+  raises a `TypeError` on both dtypes, on the installed `jax==0.10.2`/`jaxlib==0.10.2` CPU
+  backend. `PrecisionConfig` accepts only `{32, 64}` by design — a future attempt at
+  either lower-precision format needs to work around (or wait for upstream fixes to)
+  these two specific failures before it can even reach the point of comparing numerical
+  accuracy.
+- **Per-instrument-type or per-Greek precision.** `PrecisionConfig` has exactly three
+  knobs (`simulation`/`pricing`/`risk`); VaR/ES and every Greek (Delta/Gamma/Vega/Theta)
+  share the single `risk` setting, and there is no way to, say, price swaps at float32
+  while pricing Bermudans at float64 in the same request. A finer-grained design is a
+  plausible future extension but was explicitly out of scope for this pass.
+- **FP8/INT8/INT4/NF4** remain a further-out research goal (see
+  [Overview](../getting-started/overview.md)) — nothing in this codebase attempts them
+  yet.
 
 ## Typed configuration
 

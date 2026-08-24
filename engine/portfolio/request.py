@@ -35,7 +35,25 @@ docs/planning/traderx-integration.md gap item 5):**
   `american_swaption` (see `docs/instruments/american-bermudan-swaptions.md`)
   -- `validate_portfolio_against_simulation` below warns (not raises) when
   it detects this, rather than silently pricing a slightly-wrong number.
+
+**Concurrency: `price_portfolio` calls now serialize.** `generate_paths`
+toggles `jax_enable_x64`, a process-global JAX/XLA flag, not a thread-local
+or per-array setting -- confirmed live: two threads each calling
+`price_portfolio` with different precisions can have thread B's flag flip
+land while thread A is still mid-flight through `generate_paths`/the
+pricers/Greeks that follow it, silently corrupting thread A's own
+in-progress computation (wrong dtype, or a dtype-correct-looking but
+numerically wrong array). `engine/api/routes.py`'s async job pattern runs
+`price_portfolio` in FastAPI `BackgroundTasks`' shared thread pool, so this
+is a live, reachable race, not a theoretical one -- it is invisible only as
+long as every caller happens to use the same precision. `_PRICING_LOCK`
+below serializes the entire JAX-executing body of `price_portfolio`
+(`generate_paths` through Greeks) so concurrent jobs queue instead of
+racing; this is an accepted throughput tradeoff for this system's already
+serial, JIT-compile-dominated, single-consumer/low-volume scope (see
+docs/concepts/architecture.md's "Adjustable precision" section).
 """
+import threading
 import warnings
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Sequence, Union
@@ -65,6 +83,44 @@ from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from engine.portfolio.validation import _validate_common_fields, _validate_tenor  # noqa: F401
 
 TradeConfig = Union[SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig]
+
+# Serializes price_portfolio's entire JAX-executing body against
+# jax_enable_x64's process-global-flag race -- see this module's docstring's
+# "Concurrency" section. Lives here (not in engine.simulation.market_model)
+# because generate_paths is also called directly, sequentially, by other
+# code/tests and shouldn't own cross-request serialization policy that only
+# matters for price_portfolio's own multi-thread HTTP job pattern.
+_PRICING_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class PrecisionConfig:
+    """Three independently-settable dtype knobs, each 32 (float32) or 64
+    (float64, default): `simulation` (Monte Carlo path generation, passed to
+    `generate_paths`), `pricing` (instrument NPV/npv_cube dtype), and `risk`
+    (VaR/ES + Greeks -- one shared setting, not split further; see
+    docs/concepts/architecture.md's "Adjustable precision" section for why
+    exactly these three and not finer-grained control). Defaults to all-64,
+    byte-identical to this codebase's behavior before this dataclass existed.
+
+    bfloat16/float16 are NOT supported -- confirmed broken on this stack
+    today (`jnp.linalg.cholesky` and `jax.scipy.stats.norm.ppf` both raise on
+    those dtypes on the installed jax/jaxlib CPU backend); see
+    docs/concepts/architecture.md's "Out of scope for v1" note.
+    """
+    simulation: int = 64
+    pricing: int = 64
+    risk: int = 64
+
+    def __post_init__(self):
+        for name in ("simulation", "pricing", "risk"):
+            value = getattr(self, name)
+            if value not in (32, 64):
+                raise ValueError(f"PrecisionConfig.{name} must be 32 or 64, got {value!r}")
+
+
+def _dtype_of(precision_bits: int):
+    return jnp.float64 if precision_bits == 64 else jnp.float32
 
 
 # =============================================================================
@@ -266,6 +322,9 @@ class PortfolioRequest:
     compute_greeks: if `True`, `price_portfolio` additionally computes
         Delta/Gamma (every trade type) and Theta (every trade type) via
         `engine.risk.greeks`, keyed by each trade's own index in `trades`.
+    precision: independent simulation/pricing/risk dtype control -- see
+        `PrecisionConfig`. Defaults to all-64, byte-identical to this
+        module's behavior before `PrecisionConfig` existed.
 
     A future `BondConfig` instrument type (see
     docs/planning/traderx-bond-integration-roadmap.md) would join `trades`'
@@ -276,6 +335,7 @@ class PortfolioRequest:
     percentiles: Sequence[float] = (0.95, 0.99)
     calibration_targets: Optional[List[CalibrationTarget]] = None
     compute_greeks: bool = False
+    precision: PrecisionConfig = field(default_factory=PrecisionConfig)
 
 
 # =============================================================================
@@ -292,11 +352,8 @@ class PortfolioResult:
     warnings: List[str] = field(default_factory=list)
 
 
-def _zero_curve_of(cfg, curve_config) -> _HwZeroCurve:
-    return _HwZeroCurve(
-        pillar_times=jnp.asarray(curve_config.times, dtype=jnp.float64),
-        pillar_rates=jnp.asarray(curve_config.rates, dtype=jnp.float64),
-    )
+def _zero_curve_of(cfg, curve_config, dtype=jnp.float64) -> _HwZeroCurve:
+    return _HwZeroCurve.from_config(curve_config, dtype=dtype)
 
 
 def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
@@ -312,14 +369,21 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
        (`validate_portfolio_against_simulation`).
     3. Auto-derive `request.market.rates.maturities` via
        `derive_maturity_pillars` if the caller left it unset.
-    4. Simulate the market (`generate_paths`).
-    5. Calibrate any Bermudan/American trade's `hw_sigma` left as `None`,
+    4. Calibrate any Bermudan/American trade's `hw_sigma` left as `None`,
        once per distinct `rate_factor_index` needing it.
+    5. Simulate the market (`generate_paths`).
     6. Route every trade to its pricer by type, concatenate into one NPV
        cube in the caller's original trade order.
     7. Reprice every trade against zero-shock curves for the base (t=0) NPV.
     8. Aggregate VaR/ES (`compute_risk_metrics`).
     9. Optionally compute Greeks per trade.
+
+    Steps 4-9 (calibration through Greeks) run under `_PRICING_LOCK` -- see
+    this module's docstring's "Concurrency" section: calibration is genuine
+    JAX work just as sensitive to the ambient `jax_enable_x64` state as
+    `generate_paths`/the pricers that follow it. Steps 1-3 above run
+    unlocked: none of them touch `jax_enable_x64` or run JIT code, so there
+    is no race to serialize against.
     """
     from engine.simulation.market_model import validate_joint_covariance
 
@@ -352,20 +416,64 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
         market_config = replace(market_config, rates=replace(market_config.rates, maturities=pillars))
 
     trades = list(request.trades)
-    trades = _fill_calibrated_sigma(trades, request.calibration_targets, market_config)
 
-    market = generate_paths(market_config)
-    step_times = jnp.array(market_config.time_grid[1:], dtype=jnp.float64)
-    maturities_np = np.asarray(market_config.rates.maturities) if market_config.rates.maturities else np.asarray([])
+    with _PRICING_LOCK:
+        # _fill_calibrated_sigma runs genuine JAX work (calibrate_lgm_sigma's
+        # bisection root-finds, hardcoded-float64 Sigma construction in
+        # engine/models/lgm.py) that is just as sensitive to the ambient
+        # jax_enable_x64 state as generate_paths/the pricers below -- it must
+        # be inside the lock too, not run unprotected before it, or a
+        # concurrent thread's generate_paths call could flip the flag
+        # mid-calibration the same way it could mid-pricing.
+        trades = _fill_calibrated_sigma(trades, request.calibration_targets, market_config)
+        market = generate_paths(market_config, precision=request.precision.simulation)
+        # generate_paths leaves jax_enable_x64 set to (precision.simulation == 64)
+        # -- a process-global flag, not scoped to that call. Everything below this
+        # point (pricing/risk/Greeks) may independently want float64 via `pricing`/
+        # `risk`, regardless of what `simulation` requested. If simulation=32 left
+        # x64 disabled, any float64 construction below (e.g. pricing=64's own
+        # arrays, or _base_npv's/_compute_all_greeks' curve construction) would
+        # silently truncate to float32 instead of raising -- confirmed directly:
+        # PrecisionConfig(simulation=32, pricing=64) produced an all-float32
+        # npv_cube with no error, only a buried UserWarning, before this line was
+        # added. Re-enabling x64 here is always safe: creating float32 arrays
+        # under x64=True works identically to under x64=False (x64 only restricts
+        # *creating* float64, never float32), so this doesn't affect `pricing`/
+        # `risk` requesting 32 -- it only fixes the case where they request 64
+        # after a simulation=32 run.
+        jax.config.update("jax_enable_x64", True)
+        pricing_dtype = _dtype_of(request.precision.pricing)
+        step_times = jnp.array(market_config.time_grid[1:], dtype=pricing_dtype)
+        maturities_np = np.asarray(market_config.rates.maturities) if market_config.rates.maturities else np.asarray([])
 
-    npv_cube, order = _price_by_type(trades, market, maturities_np, step_times)
-    base_npv = _base_npv(trades, maturities_np, market_config)
+        # generate_paths' own output dtype is governed by precision.simulation
+        # (its "rates"/"yield_curves" arrays are what price_swaps/price_swaptions/
+        # price_bermudan_swaptions/price_american_swaptions derive THEIR OWN
+        # working dtype from -- see this module's docstring's "Concurrency"
+        # section and PrecisionConfig's docstring: none of the four pricers
+        # take a dtype parameter, they inherit it from whatever JAX array
+        # they're handed). So precision.pricing independently controlling
+        # npv_cube's dtype (the plan's own explicit requirement, exercised
+        # end-to-end with simulation=64/pricing=32) requires re-casting
+        # market["rates"]/market["yield_curves"] to pricing_dtype here
+        # whenever it differs from the simulation dtype -- a no-op cast
+        # (jnp.asarray with a dtype already matching is free) when the two
+        # knobs agree, which is the common case.
+        market_for_pricing = market
+        if market["rates"].dtype != pricing_dtype:
+            market_for_pricing = dict(market)
+            market_for_pricing["rates"] = jnp.asarray(market["rates"], dtype=pricing_dtype)
+            if "yield_curves" in market:
+                market_for_pricing["yield_curves"] = jnp.asarray(market["yield_curves"], dtype=pricing_dtype)
 
-    risk = compute_risk_metrics(npv_cube, base_npv, percentiles=request.percentiles)
+        npv_cube, order = _price_by_type(trades, market_for_pricing, maturities_np, step_times)
+        base_npv = _base_npv(trades, maturities_np, market_config, request.precision)
 
-    greeks_out = None
-    if request.compute_greeks:
-        greeks_out = _compute_all_greeks(trades)
+        risk = compute_risk_metrics(npv_cube, base_npv, percentiles=request.percentiles)
+
+        greeks_out = None
+        if request.compute_greeks:
+            greeks_out = _compute_all_greeks(trades, request.precision)
 
     return PortfolioResult(
         base_npv=base_npv, npv_cube=npv_cube, risk=risk, greeks=greeks_out,
@@ -453,25 +561,37 @@ def _price_by_type(trades, market, maturities_np, step_times):
     return npv_cube, order
 
 
-def _base_npv(trades: List[TradeConfig], maturities_np: np.ndarray, market_config: SimulationConfig) -> float:
+def _base_npv(
+    trades: List[TradeConfig], maturities_np: np.ndarray, market_config: SimulationConfig,
+    precision: PrecisionConfig,
+) -> float:
     """t=0 NPV of the whole portfolio, against zero-shock (today's actual)
     curves -- generalizes `demo.py`'s hand-written per-type sum into a loop
-    over the routed trades, one instrument type at a time."""
+    over the routed trades, one instrument type at a time.
+
+    Every array this function constructs itself (as opposed to what the
+    pricers derive from their own JAX-array inputs) carries `precision.
+    pricing`'s dtype -- see `PrecisionConfig`'s docstring and this module's
+    own docstring's "Concurrency" section for why this matters: none of
+    `price_swaps`/`price_swaptions`/`price_bermudan_swaption_base` need a
+    new parameter to respect it, since each already derives its working
+    dtype from the JAX-array inputs this function hands them."""
+    dtype = _dtype_of(precision.pricing)
     total = 0.0
     swap_cfgs = [cfg for cfg in trades if isinstance(cfg, SwapConfig)]
     if swap_cfgs:
         for cfg in swap_cfgs:
             disc_curve = market_config.rates.initial_zero_curves[cfg.discount_curve_index]
             fwd_curve = market_config.rates.initial_zero_curves[cfg.forward_curve_index]
-            base_cube = _flat_curve_cube(disc_curve, fwd_curve, maturities_np, cfg.evaluation_date)
+            base_cube = _flat_curve_cube(disc_curve, fwd_curve, maturities_np, cfg.evaluation_date, dtype=dtype)
             remapped = replace(cfg, discount_curve_index=0, forward_curve_index=1)
             total += float(price_swaps(base_cube, maturities_np, [remapped])[0, 0, 0])
 
     for cfg in trades:
         if isinstance(cfg, SwaptionConfig):
-            r0_path = jnp.zeros((1, 1, len(market_config.rates.initial_rates)), dtype=jnp.float64)
-            r0_path = r0_path.at[0, 0, :].set(jnp.asarray(market_config.rates.initial_rates, dtype=jnp.float64))
-            total += float(price_swaptions(r0_path, jnp.array([0.0]), [cfg])[0, 0, 0])
+            r0_path = jnp.zeros((1, 1, len(market_config.rates.initial_rates)), dtype=dtype)
+            r0_path = r0_path.at[0, 0, :].set(jnp.asarray(market_config.rates.initial_rates, dtype=dtype))
+            total += float(price_swaptions(r0_path, jnp.array([0.0], dtype=dtype), [cfg])[0, 0, 0])
         elif isinstance(cfg, BermudanSwaptionConfig):
             total += price_bermudan_swaption_base(cfg)
         elif isinstance(cfg, AmericanSwaptionConfig):
@@ -480,14 +600,20 @@ def _base_npv(trades: List[TradeConfig], maturities_np: np.ndarray, market_confi
     return total
 
 
-def _flat_curve_cube(disc_curve_cfg, fwd_curve_cfg, maturities_np: np.ndarray, eval_date: ORE.Date) -> jax.Array:
+def _flat_curve_cube(
+    disc_curve_cfg, fwd_curve_cfg, maturities_np: np.ndarray, eval_date: ORE.Date, dtype=jnp.float64,
+) -> jax.Array:
     """Builds a `[1, 1, len(maturities), 2]` deterministic (zero-shock)
     yield curve cube directly from two `ZeroCurveConfig`s' own pillar
     rates/times (linear-interpolated onto `maturities_np`), matching
     `engine.simulation.demo_scenarios.flat_yield_curves`'s output shape but
     generalized to an arbitrary (non-flat) curve rather than a single flat
     rate -- required since a real portfolio's discount/forward curves need
-    not be flat."""
+    not be flat. The interpolation itself always runs in float64 NumPy
+    (`disc_times`/`disc_rates`/etc. below) regardless of `dtype` -- only the
+    final cast (this function's actual output) carries the requested
+    precision; there is no meaningful "float32 interpolation" step worth
+    plumbing through np.interp here."""
     disc_times = np.asarray(disc_curve_cfg.times, dtype=np.float64)
     disc_rates = np.asarray(disc_curve_cfg.rates, dtype=np.float64)
     fwd_times = np.asarray(fwd_curve_cfg.times, dtype=np.float64)
@@ -498,16 +624,26 @@ def _flat_curve_cube(disc_curve_cfg, fwd_curve_cfg, maturities_np: np.ndarray, e
     disc_df = np.exp(-disc_z * maturities_np)
     fwd_df = np.exp(-fwd_z * maturities_np)
     cube = np.stack([disc_df, fwd_df], axis=-1)
-    return jnp.asarray(cube[None, None, :, :], dtype=jnp.float64)
+    return jnp.asarray(cube[None, None, :, :], dtype=dtype)
 
 
-def _compute_all_greeks(trades: List[TradeConfig]) -> Dict[int, Dict[str, jax.Array]]:
+def _compute_all_greeks(
+    trades: List[TradeConfig], precision: PrecisionConfig = PrecisionConfig(),
+) -> Dict[int, Dict[str, jax.Array]]:
     """Delta/Gamma/Theta for every trade, keyed by its own index in the
     caller's original `trades` order -- routed to the matching
     `engine.risk.greeks` function per instrument type. Vega is only
     well-defined for a Bermudan/American trade whose `hw_sigma` is a
     genuine calibrated `Sigma` (see `engine.risk.greeks`'s own module
-    docstring); it's included here whenever that's the case."""
+    docstring); it's included here whenever that's the case.
+
+    `precision.risk`'s dtype governs the `ZeroCurve` each Greeks function is
+    handed -- every hardcoded-`jnp.float64` closure inside `engine.risk.
+    greeks` itself derives its own working dtype from that curve (see that
+    module's docstring), so passing a `risk`-dtype curve here is sufficient
+    to make the whole Greeks computation honor `precision.risk`, with no
+    further parameters needed on the public Greeks entry points."""
+    dtype = _dtype_of(precision.risk)
     out: Dict[int, Dict[str, jax.Array]] = {}
     for i, cfg in enumerate(trades):
         if isinstance(cfg, SwapConfig):
@@ -519,13 +655,13 @@ def _compute_all_greeks(trades: List[TradeConfig]) -> Dict[int, Dict[str, jax.Ar
             # against a placeholder curve.
             continue
         elif isinstance(cfg, SwaptionConfig):
-            curve = _zero_curve_of(cfg, cfg.initial_zero_curve)
+            curve = _zero_curve_of(cfg, cfg.initial_zero_curve, dtype=dtype)
             trade_greeks = dict(_greeks.swaption_delta_gamma(cfg, curve))
             trade_greeks["theta"] = _greeks.swaption_theta(cfg, curve)
             out[i] = trade_greeks
         elif isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
             berm_cfg = cfg.to_bermudan() if isinstance(cfg, AmericanSwaptionConfig) else cfg
-            curve = _zero_curve_of(berm_cfg, berm_cfg.initial_zero_curve)
+            curve = _zero_curve_of(berm_cfg, berm_cfg.initial_zero_curve, dtype=dtype)
             trade_greeks = dict(_greeks.bermudan_delta_gamma(berm_cfg, curve))
             trade_greeks["theta"] = _greeks.bermudan_theta(berm_cfg, curve)
             out[i] = trade_greeks

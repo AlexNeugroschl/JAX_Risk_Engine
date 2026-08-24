@@ -209,7 +209,17 @@ def _swap_price_fn(cfg: SwapConfig, disc_curve: ZeroCurve, fwd_curve: ZeroCurve)
         + floating.accrual_start_times.tolist() + floating.accrual_end_times.tolist()
     ))
     prepared_swap = prepare_swap(local_cfg, np.asarray(maturities))
-    maturities_jax = jnp.asarray(maturities, dtype=jnp.float64)
+    # Derived from disc_curve's own dtype (not hardcoded) -- disc_curve/
+    # fwd_curve carry whatever dtype the caller built them at (governed by
+    # PrecisionConfig.risk when reached via engine.portfolio.request), and
+    # mixing a hardcoded-float64 array with a float32 curve inside price_fn
+    # below would silently upcast the curve back to float64 under
+    # jax_enable_x64=True (confirmed: jnp.interp promotes a float32/float64
+    # mix to float64 whenever x64 is enabled, regardless of which operand is
+    # which dtype) -- see this module's docstring and engine.portfolio.
+    # request's "Concurrency" section on why jax_enable_x64 being process-
+    # global makes this a genuine, not theoretical, correctness gap.
+    maturities_jax = jnp.asarray(maturities, dtype=disc_curve.pillar_rates.dtype)
 
     def price_fn(disc_rates: jax.Array, fwd_rates: jax.Array) -> jax.Array:
         dc = ZeroCurve(pillar_times=disc_curve.pillar_times, pillar_rates=disc_rates)
@@ -366,12 +376,17 @@ def _swaption_price_fn(cfg: SwaptionConfig, curve: ZeroCurve):
     T_start = swaption.accrual_start_time
     cf_times = swaption.fixed_cashflow_times
     notional = swaption.notional
+    # Derived from curve's own dtype (not hardcoded) -- see
+    # _swap_price_fn's maturities_jax comment above for why a hardcoded
+    # dtype here would silently upcast curve.pillar_rates back to float64
+    # under jax_enable_x64=True whenever a caller requests risk=32.
+    _dtype = curve.pillar_rates.dtype
     all_times = jnp.asarray(
-        np.concatenate([cf_times, cf_times[-1:], [T_start]]), dtype=jnp.float64
+        np.concatenate([cf_times, cf_times[-1:], [T_start]]), dtype=_dtype
     )
     all_amounts = jnp.concatenate([
-        jnp.asarray(swaption.fixed_cashflow_amounts, dtype=jnp.float64),
-        jnp.asarray([notional, -notional], dtype=jnp.float64),
+        jnp.asarray(swaption.fixed_cashflow_amounts, dtype=_dtype),
+        jnp.asarray([notional, -notional], dtype=_dtype),
     ])
     B_T0_Ti = _hw_B(T0, all_times, a)  # [N+1]
 
@@ -699,9 +714,15 @@ def bermudan_vega(
     price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
     d_npv_d_s = jax.grad(price_fn, argnums=1)(curve.pillar_rates, sigma_values)  # [n]
 
+    # Derived from curve's own dtype (not hardcoded) -- same reasoning as
+    # _swaption_price_fn's all_times/all_amounts above: J is combined with
+    # d_npv_d_s (which follows curve/sigma_values' own dtype) via the final
+    # d_npv_d_s @ J matmul below, so a hardcoded float64 here would silently
+    # upcast a risk=32 request's float32 Vega computation back to float64.
+    _dtype = curve.pillar_rates.dtype
     # Full lower-triangular Jacobian J[j, i] = d(s_j)/d(v_i), built by
     # forward substitution over j (increasing bucket index).
-    J = jnp.zeros((n, n), dtype=jnp.float64)
+    J = jnp.zeros((n, n), dtype=_dtype)
 
     for j, target_j in enumerate(calibration_targets):
         bucket_times_j = sigma.times[:j]
@@ -720,7 +741,7 @@ def bermudan_vega(
         # g_j := model_price - market_price, so dg_j/dv_j = -d(market_price)/dv_j.
         dg_j_dv_j = -jax.grad(market_price_wrt_v_j)(jnp.asarray(target_j.market_vol))
 
-        cross_term = jnp.sum(dg_j_ds[:j, None] * J[:j, :], axis=0) if j > 0 else jnp.zeros((n,), dtype=jnp.float64)
+        cross_term = jnp.sum(dg_j_ds[:j, None] * J[:j, :], axis=0) if j > 0 else jnp.zeros((n,), dtype=_dtype)
         row = -(cross_term.at[j].add(dg_j_dv_j)) / dg_j_ds[j]
         J = J.at[j, :].set(row)
 

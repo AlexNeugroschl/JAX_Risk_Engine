@@ -38,10 +38,43 @@ parameters.
 | `percentiles` | `Sequence[float]` | `(0.95, 0.99)` | Confidence levels `compute_risk_metrics` computes VaR/ES at. |
 | `calibration_targets` | `Optional[List[CalibrationTarget]]` | `None` | Used when any Bermudan/American trade's `hw_sigma` is left as `None` (uncalibrated) — see "Automatic calibration" below. |
 | `compute_greeks` | `bool` | `False` | If `True`, also computes Delta/Gamma/Theta (and, implicitly, Vega where the trade's own calibration makes it well-defined) per trade — see "Greeks" below. |
+| `precision` | `PrecisionConfig` | `PrecisionConfig()` (all-64) | Independent simulation/pricing/risk dtype control — see "`PrecisionConfig`" below. |
 
 A future `BondConfig` instrument type (see
 [TraderX Bond Integration Roadmap](../planning/traderx-bond-integration-roadmap.md)) would
 join `trades`' `Union` here once it exists — out of scope for this module today.
+
+## `PrecisionConfig`
+
+Three independent dtype knobs, each `32` (float32) or `64` (float64, default) — see
+[Architecture](../concepts/architecture.md#adjustable-precision) for the full mechanism
+and why `pricing`/`risk` need no new parameters on any pricer or Greeks function.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `simulation` | `int` (`32`\|`64`) | `64` | Passed straight through to `generate_paths(config, precision=...)`. |
+| `pricing` | `int` (`32`\|`64`) | `64` | Governs every array `price_portfolio` constructs itself (`step_times`, the swaption zero-shock `r0_path`, `_flat_curve_cube`'s output) before handing it to a pricer — `npv_cube`/`base_npv`'s dtype follows from this. |
+| `risk` | `int` (`32`\|`64`) | `64` | Governs the `ZeroCurve` built for VaR/ES and Greeks (`_compute_all_greeks`) — every Greeks closure derives its own working dtype from that curve. |
+
+`__post_init__` raises `ValueError` if any field is outside `{32, 64}` — bfloat16/float16
+are not supported (see Architecture's "Out of scope for v1"). Constructing
+`PortfolioRequest()` without a `precision` argument defaults to `PrecisionConfig()`
+(all-64), byte-identical to this project's behavior before `PrecisionConfig` existed.
+
+```python
+from engine.portfolio import PortfolioRequest, PrecisionConfig
+
+request = PortfolioRequest(
+    market=market_config, trades=trades,
+    precision=PrecisionConfig(simulation=64, pricing=32, risk=32),
+)
+```
+
+**Concurrency note:** `price_portfolio` now serializes its entire JAX-executing body
+behind a process-wide lock, since `jax_enable_x64` (which `generate_paths` toggles per
+`precision.simulation`) is process-global state, not thread-local — see
+[Architecture](../concepts/architecture.md#concurrency-jax_enable_x64-and-price_portfolios-pricing-lock)
+for the full race and why concurrent jobs now queue instead of running in parallel.
 
 ## `PortfolioResult`
 
@@ -179,3 +212,11 @@ behalf. Compute swap Greeks directly via `engine.risk.greeks.swap_delta_gamma` i
 - `TestPricePortfolioCalibration` — the `hw_sigma=None` auto-calibration path, and the
   clear error when `calibration_targets` is missing.
 - `TestPricePortfolioGreeks` — per-trade Greeks keyed by original request order.
+- `tests/test_portfolio_scale_and_edge_cases.py` — `price_portfolio` at varying portfolio
+  sizes (1, 12, and 50 trades), across multiple rate factors (untested at the entry-point
+  level elsewhere), and composition edge cases: empty portfolios, single-instrument-type
+  portfolios at scale, duplicate trades, zero/negative/very-large notionals, and large
+  offsetting positions netting to near-zero risk end to end.
+- `tests/test_portfolio.py::TestCrossFieldValidation`'s two-rate-factor cases — confirm
+  `validate_portfolio_against_simulation` indexes into the *correct* factor's own curve/
+  mean-reversion/vol at factor counts above one, not factor 0 by coincidence.

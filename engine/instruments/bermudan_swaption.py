@@ -334,9 +334,24 @@ def prepare_bermudan(cfg: BermudanSwaptionConfig) -> _PreparedBermudan:
 
 
 def _zero_curve_of(swap: _PreparedBermudan) -> _HwZeroCurve:
+    """Builds the `ZeroCurve` `_run_backward_induction` prices against.
+
+    Deliberately does NOT hardcode a dtype the way this used to (a bare
+    `jnp.asarray(..., dtype=jnp.float64)`): `swap.zero_rates` is a plain
+    `np.ndarray` for ordinary (non-Greeks) pricing (`prepare_bermudan`
+    always builds it that way), but `engine.risk.greeks._bermudan_price_fn`
+    substitutes a differentiable JAX array there (via `dataclasses.replace`)
+    to carry the `risk`-precision `pillar_rates` a caller's `PrecisionConfig`
+    requested -- a hardcoded cast here would silently upcast that array
+    back to float64 regardless, breaking the `risk` knob for Bermudan/
+    American Greeks specifically. `jnp.asarray` on an already-JAX array with
+    no explicit `dtype` is a no-op (preserves whatever dtype it already
+    has); on a plain `np.ndarray` it defaults to that array's own NumPy
+    dtype (float64, from `prepare_bermudan`'s own construction) -- so both
+    callers get exactly the dtype they need with no explicit branching."""
     return _HwZeroCurve(
-        pillar_times=jnp.asarray(swap.zero_times, dtype=jnp.float64),
-        pillar_rates=jnp.asarray(swap.zero_rates, dtype=jnp.float64),
+        pillar_times=jnp.asarray(swap.zero_times),
+        pillar_rates=jnp.asarray(swap.zero_rates),
     )
 
 
@@ -352,7 +367,7 @@ def _zero_curve_of(swap: _PreparedBermudan) -> _HwZeroCurve:
 # docstring for the full reasoning (x(t) is driftless, which is what makes
 # Hagan's quadrature convolution valid at all).
 # =============================================================================
-def _state_grid(sigma: float, t: jax.Array, n_per_std: int, std_devs: float) -> jax.Array:
+def _state_grid(sigma: float, t: jax.Array, n_per_std: int, std_devs: float, dtype=jnp.float64) -> jax.Array:
     """
     The centered LGM state grid at time t: `x_k = k*dx`, `dx =
     sqrt(zeta(t)) / n_per_std`, spanning `+/- std_devs` standard deviations
@@ -384,12 +399,31 @@ def _state_grid(sigma: float, t: jax.Array, n_per_std: int, std_devs: float) -> 
     that is never actually 0, then select the correct branch) -- both
     branches are always computed (required for `jax.jit`/`jax.grad`
     tracing), the placeholder result is simply discarded when `zeta > 0`.
+
+    `dtype`: an EXPLICIT parameter, not derived from `sigma`/`t` -- this
+    function (via `_run_backward_induction`) is shared between plain
+    Bermudan/American pricing (which must stay float64-internal regardless
+    of `PrecisionConfig.risk`, governed only by `PrecisionConfig.pricing`
+    -- and, per `price_bermudan_swaptions`' own final `hw_paths.dtype`
+    cast, is actually pricing-precision-agnostic internally either way) and
+    `engine.risk.greeks.bermudan_vega`/`bermudan_delta_gamma` (which must
+    honor `PrecisionConfig.risk`). `_run_backward_induction` passes
+    `curve.pillar_rates.dtype` here -- already the correct dtype for both
+    callers, since `_zero_curve_of` derives it from `swap.zero_rates`
+    (plain `np.ndarray`, hence float64, for ordinary pricing; whatever
+    `risk`-dtype JAX array Greeks substituted in otherwise) -- rather than
+    blindly deriving from `sigma`, which would be wrong: `t`/`sigma` are
+    the SAME hardcoded-float64 `grid_times`/`sigma` pairing whether or not
+    Greeks are in play, so deriving a "requested" dtype from them here
+    would either always read float64 (no risk=32 effect at all) or require
+    yet another parameter threaded from further up -- an explicit
+    caller-supplied dtype is the simplest correct fix.
     """
     mx = int(round(std_devs * n_per_std))
     z = jnp.maximum(_lgm_zeta(sigma, t), 0.0)
     z_safe = jnp.where(z > 0.0, z, 1.0)
     dx = jnp.where(z > 0.0, jnp.sqrt(z_safe), 0.0) / n_per_std
-    return dx * jnp.arange(-mx, mx + 1, dtype=jnp.float64)
+    return dx * jnp.arange(-mx, mx + 1, dtype=dtype)
 
 
 def _hagan_quadrature_weights(n_per_std: int, std_devs: float) -> np.ndarray:
@@ -522,23 +556,32 @@ def _hw_swap_value_at_nodes(swap: _PreparedBermudan, curve: _HwZeroCurve, x_node
     ORE's own schedule generation has already resolved exactly.
     """
     a, sigma = swap.hw_a, swap.hw_sigma
+    # Derived from x_nodes' own dtype (not hardcoded) -- x_nodes is
+    # `_state_grid`'s output, already correctly float64 for ordinary
+    # pricing or risk-dtype for Greeks (see _state_grid's docstring); these
+    # trade-schedule arrays (fixed_times/fixed_amounts/etc., read straight
+    # off `_PreparedBermudan`, always plain np.ndarray/float64 regardless of
+    # caller) would otherwise silently upcast x_nodes/curve back to float64
+    # under jax_enable_x64=True the moment they're combined via
+    # _discount_at_nodes below.
+    dtype = x_nodes.dtype
 
-    fixed_times = jnp.asarray(swap.fixed_times, dtype=jnp.float64)
-    fixed_start_times = jnp.asarray(swap.fixed_start_times, dtype=jnp.float64)
-    fixed_amounts = jnp.asarray(swap.fixed_amounts, dtype=jnp.float64)
+    fixed_times = jnp.asarray(swap.fixed_times, dtype=dtype)
+    fixed_start_times = jnp.asarray(swap.fixed_start_times, dtype=dtype)
+    fixed_amounts = jnp.asarray(swap.fixed_amounts, dtype=dtype)
     # Same accrual-start-based liveness rule as the floating leg below: a
     # fixed coupon is only a genuine remaining cashflow once its OWN
     # accrual period has not yet begun relative to t, which is exact (not
     # an approximation) at any reset-aligned t within this module's
     # documented scope.
-    fixed_alive = (fixed_start_times >= t - 1e-9).astype(jnp.float64)
+    fixed_alive = (fixed_start_times >= t - 1e-9).astype(dtype)
     fixed_disc = _discount_at_nodes(curve, x_nodes, t, fixed_times, fixed_alive, a, sigma)  # [Nnodes, Nf]
     fixed_leg_pv = fixed_disc @ fixed_amounts  # [Nnodes]
 
-    float_pay_times = jnp.asarray(swap.float_pay_times, dtype=jnp.float64)
-    float_start_times = jnp.asarray(swap.float_start_times, dtype=jnp.float64)
-    float_end_times = jnp.asarray(swap.float_end_times, dtype=jnp.float64)
-    float_accrual = jnp.asarray(swap.float_accrual, dtype=jnp.float64)
+    float_pay_times = jnp.asarray(swap.float_pay_times, dtype=dtype)
+    float_start_times = jnp.asarray(swap.float_start_times, dtype=dtype)
+    float_end_times = jnp.asarray(swap.float_end_times, dtype=dtype)
+    float_accrual = jnp.asarray(swap.float_accrual, dtype=dtype)
 
     # Only coupons whose accrual has NOT YET BEGUN (start >= t) are
     # included -- P(t, accrual_start) via the closed-form LGM bond formula
@@ -555,7 +598,7 @@ def _hw_swap_value_at_nodes(swap: _PreparedBermudan, curve: _HwZeroCurve, x_node
     # reset-aligned t, coincides with end <= t too, i.e. it is a fully
     # elapsed coupon that must be excluded from the swap's remaining value
     # in any case -- consistent with, not a workaround of, the exclusion).
-    float_alive = (float_start_times >= t - 1e-9).astype(jnp.float64)
+    float_alive = (float_start_times >= t - 1e-9).astype(dtype)
     p_start = _discount_at_nodes(curve, x_nodes, t, float_start_times, float_alive, a, sigma)  # [Nnodes, Ncf]
     p_end = _discount_at_nodes(curve, x_nodes, t, float_end_times, float_alive, a, sigma)
     p_end_safe = jnp.where(p_end == 0.0, 1.0, p_end)
@@ -661,16 +704,27 @@ def _run_backward_induction(swap: _PreparedBermudan, condition_times: Sequence[f
     """
     a, sigma, n_per_std, std_devs = swap.hw_a, swap.hw_sigma, swap.n_per_std, swap.std_devs
     curve = _zero_curve_of(swap)
-    quad_w = jnp.asarray(_hagan_quadrature_weights(n_per_std, std_devs), dtype=jnp.float64)
+    # Derived from curve's own dtype (not hardcoded) -- see _state_grid's
+    # docstring for why this is the correct signal to key off of: float64
+    # for ordinary pricing (curve.pillar_rates is always a plain np.ndarray
+    # there), the requested risk-precision dtype for engine.risk.greeks'
+    # Bermudan/American Delta/Gamma/Vega/Theta. Without this, quad_w/quad_y/
+    # grid_times being hardcoded float64 would silently upcast a risk=32
+    # Greeks computation back to float64 under jax_enable_x64=True the
+    # moment they combine with sigma/x -- confirmed directly (a float32
+    # array times a hardcoded-float64 array promotes to float64 whenever
+    # x64 is enabled, regardless of which operand is which dtype).
+    dtype = curve.pillar_rates.dtype
+    quad_w = jnp.asarray(_hagan_quadrature_weights(n_per_std, std_devs), dtype=dtype)
     my = int(round(std_devs * n_per_std))
-    quad_y = jnp.asarray((1.0 / n_per_std) * np.arange(-my, my + 1, dtype=np.float64), dtype=jnp.float64)
+    quad_y = jnp.asarray((1.0 / n_per_std) * np.arange(-my, my + 1, dtype=np.float64), dtype=dtype)
 
     schedule = _build_grid_schedule(swap, condition_times)
-    grid_times = jnp.asarray(schedule.times, dtype=jnp.float64)
+    grid_times = jnp.asarray(schedule.times, dtype=dtype)
     is_exercise = jnp.asarray(schedule.is_exercise)
     num_grid = grid_times.shape[0]
 
-    x0 = _state_grid(sigma, grid_times[0], n_per_std, std_devs)
+    x0 = _state_grid(sigma, grid_times[0], n_per_std, std_devs, dtype=dtype)
     values0 = _hw_swap_value_at_nodes(swap, curve, x0, grid_times[0])
     values0 = jnp.where(is_exercise[0], jnp.maximum(values0, values0), values0)  # exercise at the first (latest) grid time is a no-op maximum with itself; kept for structural symmetry with the loop body
     numeraire0 = _lgm_numeraire(curve, a, sigma, grid_times[0], x0)
@@ -680,7 +734,7 @@ def _run_backward_induction(swap: _PreparedBermudan, condition_times: Sequence[f
         x_prev, t_prev, reduced_prev = carry
         t, is_ex = step_inputs
 
-        x_t = _state_grid(sigma, t, n_per_std, std_devs)
+        x_t = _state_grid(sigma, t, n_per_std, std_devs, dtype=dtype)
         # Same gradient-safe sqrt guard as _state_grid (see that function's
         # docstring): sqrt's own derivative is a 0/0 indeterminate form at
         # 0, and even though the jnp.where below already selects the

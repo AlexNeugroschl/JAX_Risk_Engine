@@ -32,7 +32,9 @@ from engine.instruments.swap import SwapConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.american_swaption import AmericanSwaptionConfig
-from engine.portfolio import PortfolioRequest, PortfolioResult
+from engine.calibration.basket import build_coterminal_basket
+from engine.models.hull_white import ZeroCurve as _HwZeroCurve
+from engine.portfolio import PortfolioRequest, PortfolioResult, PrecisionConfig
 
 
 def _parse_ore_date(value: str) -> ORE.Date:
@@ -223,25 +225,99 @@ TradeSchema = Annotated[
 ]
 
 
+class CalibrationBasketRequestSchema(BaseModel):
+    """Mirrors `engine.calibration.basket.build_coterminal_basket`'s own
+    inputs (minus `zero_curve`/`evaluation_date`/`index_tenor_months`,
+    which `PortfolioRequestSchema.to_dataclass()` fills in from whichever
+    Bermudan/American trade's own `initial_zero_curve`/`evaluation_date`
+    actually needs the resulting basket -- see that method for why).
+    Supplying this on a `PortfolioRequestSchema` is what makes
+    `hw_sigma: null` on a Bermudan/American trade actually work end-to-end
+    over HTTP: without it, `price_portfolio` raises `"calibration_targets
+    was not supplied"` (mirroring `engine.portfolio.PortfolioRequest.
+    calibration_targets`'s own dataclass-level requirement)."""
+    exercise_times: List[float]
+    final_maturity_time: float
+    notional: float
+    payer: bool
+    market_vols: List[float]
+
+
+class PrecisionConfigSchema(BaseModel):
+    """Mirrors `engine.portfolio.PrecisionConfig` field-for-field --
+    independent simulation/pricing/risk dtype control (32 or 64), each
+    validated by `PrecisionConfig.__post_init__` itself once
+    `.to_dataclass()` constructs it (no duplicate Pydantic-level validator
+    needed here)."""
+    simulation: int = 64
+    pricing: int = 64
+    risk: int = 64
+
+    def to_dataclass(self) -> PrecisionConfig:
+        return PrecisionConfig(simulation=self.simulation, pricing=self.pricing, risk=self.risk)
+
+
 class PortfolioRequestSchema(BaseModel):
     """Mirrors `engine.portfolio.PortfolioRequest` field-for-field.
     `evaluation_date` is a request-scoped default applied to any trade that
     doesn't specify its own (matching every dataclass's own
     `ORE.Settings.instance().evaluationDate`-defaulting `field`, made
     explicit here since there's no ambient global evaluation date to fall
-    back on across HTTP requests)."""
+    back on across HTTP requests).
+
+    `precision` is `Optional`, not a populated default -- makes "no
+    `precision` key sent" and "explicit all-64 sent" behave identically
+    (both resolve to `PrecisionConfig()`), and is more accurate in the
+    generated OpenAPI schema than a default that looks like it was always
+    required."""
     evaluation_date: str = Field(..., description="ISO date (YYYY-MM-DD), e.g. '2026-07-30'")
     market: SimulationConfigSchema
     trades: List[TradeSchema]
     percentiles: List[float] = Field(default_factory=lambda: [0.95, 0.99])
+    calibration_basket: Optional[CalibrationBasketRequestSchema] = None
     compute_greeks: bool = False
+    precision: Optional[PrecisionConfigSchema] = None
 
     def to_dataclass(self) -> PortfolioRequest:
         eval_date = _parse_ore_date(self.evaluation_date)
         trades = [t.to_dataclass(eval_date) for t in self.trades]
+
+        calibration_targets = None
+        if self.calibration_basket is not None:
+            # build_coterminal_basket needs ONE curve/a to build the
+            # basket's own ATM strikes against -- engine.portfolio.request.
+            # _fill_calibrated_sigma already assumes a single shared basket
+            # applies uniformly per rate_factor_index that needs
+            # calibration (see its own docstring), so this mirrors that:
+            # the first uncalibrated Bermudan/American trade's own curve/a/
+            # evaluation_date is what the basket (and therefore every
+            # calibration derived from it) is built against.
+            first_uncalibrated = next(
+                (t for t in trades if isinstance(t, (BermudanSwaptionConfig, AmericanSwaptionConfig)) and t.hw_sigma is None),
+                None,
+            )
+            if first_uncalibrated is None:
+                raise ValueError(
+                    "calibration_basket was supplied but no trade has hw_sigma=null "
+                    "(uncalibrated) to calibrate it for"
+                )
+            curve_jax = _HwZeroCurve.from_config(first_uncalibrated.initial_zero_curve)
+            calibration_targets = build_coterminal_basket(
+                exercise_times=self.calibration_basket.exercise_times,
+                final_maturity_time=self.calibration_basket.final_maturity_time,
+                notional=self.calibration_basket.notional,
+                payer=self.calibration_basket.payer,
+                market_vols=self.calibration_basket.market_vols,
+                zero_curve=curve_jax,
+                evaluation_date=first_uncalibrated.evaluation_date,
+                index_tenor_months=first_uncalibrated.index_tenor_months,
+            )
+
         return PortfolioRequest(
             market=self.market.to_dataclass(), trades=trades,
-            percentiles=tuple(self.percentiles), compute_greeks=self.compute_greeks,
+            percentiles=tuple(self.percentiles), calibration_targets=calibration_targets,
+            compute_greeks=self.compute_greeks,
+            precision=self.precision.to_dataclass() if self.precision is not None else PrecisionConfig(),
         )
 
 

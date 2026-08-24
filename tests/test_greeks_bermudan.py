@@ -25,6 +25,7 @@ import ORE
 import pytest
 
 from engine.models.hull_white import ZeroCurve
+from engine.models.lgm import Sigma
 from engine.simulation.market_model import ZeroCurveConfig
 from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.lgm import calibrate_lgm_sigma
@@ -400,3 +401,83 @@ class TestBermudanGreeksEdgeCases:
             vega = bermudan_vega(cfg, FLAT_CURVE, targets)
             assert jnp.all(jnp.isfinite(vega)), f"a={a}: non-finite vega"
             assert jnp.all(vega > 0.0), f"a={a}: non-positive vega"
+
+
+class TestBermudanGreeksPrecisionDtype:
+    """engine.portfolio.request._compute_all_greeks hands bermudan_
+    delta_gamma/bermudan_vega a `curve: ZeroCurve` built at
+    PrecisionConfig.risk's dtype; this module (bermudan_delta_gamma) and
+    bermudan_swaption.py's own _zero_curve_of/_state_grid must then derive
+    their working dtype from that curve rather than silently upcasting
+    back to float64 -- see bermudan_swaption.py's _state_grid docstring for
+    why this is the trickiest part of the whole PrecisionConfig feature
+    (quad_w/quad_y/grid_times/the fixed-leg/floating-leg schedule arrays
+    all needed the same treatment, not just _state_grid's own jnp.arange).
+
+    Note: engine.calibration.lgm.calibrate_lgm_sigma's own bootstrap
+    internals stay hardcoded float64 by design (calibration precision is
+    NOT one of PrecisionConfig's three knobs -- see PrecisionConfig's own
+    docstring) -- these tests build a `Sigma` directly at float32 rather
+    than through calibrate_lgm_sigma, to isolate bermudan_delta_gamma/
+    bermudan_vega's OWN dtype handling from that deliberately-untouched
+    calibration bootstrap."""
+
+    PILLAR_TIMES_32 = [0.0, 1.0, 2.0, 3.0, 5.0, 10.0, 30.0]
+
+    def _flat_curve32(self):
+        return ZeroCurve.flat(0.03, self.PILLAR_TIMES_32, dtype=jnp.float32)
+
+    def _cfg32(self, curve32, sigma32, exercise_times=(1.0, 2.0, 3.0), swap_tenor="4Y"):
+        curve_cfg = ZeroCurveConfig(times=self.PILLAR_TIMES_32, rates=[0.03] * len(self.PILLAR_TIMES_32))
+        return BermudanSwaptionConfig(
+            notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
+            hw_a=0.03, hw_sigma=sigma32, initial_zero_curve=curve_cfg,
+            exercise_times=list(exercise_times), swap_tenor=swap_tenor, evaluation_date=TODAY,
+        )
+
+    def test_bermudan_delta_gamma_float32_curve_stays_float32(self):
+        curve32 = self._flat_curve32()
+        cfg = self._cfg32(curve32, sigma32=jnp.asarray(0.01, dtype=jnp.float32))
+        greeks = bermudan_delta_gamma(cfg, curve32)
+        assert greeks["delta"].dtype == jnp.float32
+        assert greeks["gamma"].dtype == jnp.float32
+        assert jnp.all(jnp.isfinite(greeks["delta"]))
+
+    def test_bermudan_delta_gamma_float32_vs_float64_numerically_close(self):
+        curve32 = self._flat_curve32()
+        curve64 = ZeroCurve.flat(0.03, self.PILLAR_TIMES_32, dtype=jnp.float64)
+        cfg32 = self._cfg32(curve32, sigma32=jnp.asarray(0.01, dtype=jnp.float32))
+        cfg64 = self._cfg32(curve64, sigma32=0.01)
+        greeks32 = bermudan_delta_gamma(cfg32, curve32)
+        greeks64 = bermudan_delta_gamma(cfg64, curve64)
+        np.testing.assert_allclose(
+            np.asarray(greeks32["delta"]), np.asarray(greeks64["delta"]), rtol=1e-3, atol=1.0,
+        )
+
+    def test_bermudan_theta_float32_curve_produces_finite_float(self):
+        curve32 = self._flat_curve32()
+        cfg = self._cfg32(curve32, sigma32=jnp.asarray(0.01, dtype=jnp.float32))
+        theta = bermudan_theta(cfg, curve32)
+        assert np.isfinite(theta)
+
+    def test_bermudan_vega_float32_curve_and_sigma_stays_float32(self):
+        """Exercises bermudan_vega's own Jacobian path (the trickiest
+        Greeks computation in this codebase -- see bermudan_vega's own
+        docstring) at float32, independent of calibrate_lgm_sigma's
+        deliberately-untouched float64 bootstrap."""
+        curve32 = self._flat_curve32()
+        exercise_times = [1.0, 2.0, 3.0]
+        sigma32 = Sigma(
+            times=jnp.asarray(exercise_times[:-1], dtype=jnp.float32),
+            values=jnp.asarray([0.01, 0.011, 0.012], dtype=jnp.float32),
+        )
+        targets = build_coterminal_basket(
+            exercise_times=exercise_times, final_maturity_time=4.0,
+            notional=1_000_000.0, payer=True, market_vols=[0.008, 0.009, 0.0095],
+            zero_curve=curve32, evaluation_date=TODAY,
+        )
+        cfg = self._cfg32(curve32, sigma32=sigma32, exercise_times=exercise_times)
+        vega = bermudan_vega(cfg, curve32, targets)
+        assert vega.dtype == jnp.float32
+        assert jnp.all(jnp.isfinite(vega))
+        assert jnp.all(vega > 0.0)

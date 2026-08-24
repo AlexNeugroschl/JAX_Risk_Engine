@@ -41,6 +41,7 @@ from engine.portfolio.validation import _validate_common_fields, _validate_tenor
 __all__ = [
     "PortfolioRequest",
     "PortfolioResult",
+    "PrecisionConfig",
     "TradeConfig",
     "price_portfolio",
     "validate_portfolio_against_simulation",

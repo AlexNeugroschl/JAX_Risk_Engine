@@ -58,6 +58,26 @@ def _swaption_trade_schema(**overrides):
     return trade
 
 
+def _bermudan_trade_schema(**overrides):
+    trade = {
+        "trade_type": "bermudan_swaption", "notional": 1_000_000.0, "fixed_rate": 0.030, "payer": True,
+        "rate_factor_index": 0, "hw_a": HW_A, "hw_sigma": None,
+        "initial_zero_curve": ZERO_CURVE_SCHEMA, "exercise_times": [1.0, 2.0],
+        "swap_tenor": "3Y", "n_per_std": 32, "std_devs": 6.0,
+    }
+    trade.update(overrides)
+    return trade
+
+
+CALIBRATION_BASKET_SCHEMA = {
+    "exercise_times": [1.0, 2.0],
+    "final_maturity_time": 3.0,
+    "notional": 1_000_000.0,
+    "payer": True,
+    "market_vols": [0.0080, 0.0088],
+}
+
+
 class TestHealthAndVersion:
     def test_health_returns_ok(self, test_client):
         r = test_client.get("/health")
@@ -140,6 +160,235 @@ class TestPortfolioPriceHappyPath:
         assert "0" in data["result"]["greeks"] or 0 in data["result"]["greeks"]
 
 
+class TestCalibratedBermudanOverHttp:
+    """`hw_sigma: null` on a Bermudan/American trade needs a
+    `calibration_basket` on the request to resolve -- without it,
+    price_portfolio's own ValueError ("calibration_targets was not
+    supplied") must surface as a 4xx, not a 500 inside the background job.
+    With it, the job must complete and match calibrating+pricing directly
+    via price_portfolio on the equivalent dataclass request."""
+
+    def _submit_and_poll(self, client, body, timeout_s=60):
+        r = client.post("/portfolio/price", json=body)
+        assert r.status_code == 202, r.text
+        job_id = r.json()["job_id"]
+
+        deadline = time.time() + timeout_s
+        data = None
+        while time.time() < deadline:
+            r = client.get(f"/portfolio/price/{job_id}")
+            assert r.status_code == 200
+            data = r.json()
+            if data["status"] in ("done", "failed"):
+                break
+            time.sleep(0.2)
+        assert data is not None, "job never reached a terminal state"
+        return data
+
+    def test_uncalibrated_bermudan_without_basket_fails_the_job(self, test_client):
+        body = {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(),
+            "trades": [_bermudan_trade_schema()],
+            "percentiles": [0.95],
+        }
+        data = self._submit_and_poll(test_client, body)
+        assert data["status"] == "failed"
+        assert "calibration_targets was not supplied" in data["error"]
+
+    def test_calibration_basket_with_no_uncalibrated_trade_returns_400(self, test_client):
+        body = {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(),
+            "trades": [_swap_trade_schema()],
+            "percentiles": [0.95],
+            "calibration_basket": CALIBRATION_BASKET_SCHEMA,
+        }
+        r = test_client.post("/portfolio/price", json=body)
+        assert r.status_code == 400
+        assert "no trade has hw_sigma=null" in r.json()["detail"]
+
+    def test_calibration_basket_resolves_uncalibrated_bermudan(self, test_client):
+        body = {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(),
+            "trades": [_bermudan_trade_schema()],
+            "percentiles": [0.95],
+            "calibration_basket": CALIBRATION_BASKET_SCHEMA,
+        }
+        data = self._submit_and_poll(test_client, body)
+        assert data["status"] == "done", data.get("error")
+        assert isinstance(data["result"]["base_npv"], float)
+
+    def test_result_matches_direct_price_portfolio_call(self, test_client):
+        body = {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(),
+            "trades": [_bermudan_trade_schema()],
+            "percentiles": [0.95],
+            "calibration_basket": CALIBRATION_BASKET_SCHEMA,
+        }
+        data = self._submit_and_poll(test_client, body)
+        assert data["status"] == "done", data.get("error")
+
+        direct_request = PortfolioRequestSchema(**body).to_dataclass()
+        direct_result = price_portfolio(direct_request)
+
+        np.testing.assert_allclose(data["result"]["base_npv"], direct_result.base_npv, rtol=1e-9)
+        http_npv = np.asarray(data["result"]["npv_cube"])
+        np.testing.assert_allclose(http_npv, np.asarray(direct_result.npv_cube), rtol=1e-9)
+
+
+class TestPortfolioPriceAtScale:
+    """Larger and edge-composition portfolios submitted as real JSON bodies
+    -- exercises the schema round-trip (discriminated-union trade parsing,
+    JSON nesting of a wider npv_cube) at a scale beyond the 1-2 trade
+    bodies used elsewhere in this file. Complements
+    tests/test_portfolio_scale_and_edge_cases.py, which covers the same
+    scale/edge-case space at the dataclass level (price_portfolio called
+    directly) -- this class's own focus is the HTTP/JSON boundary itself."""
+
+    def _submit_and_poll(self, client, body, timeout_s=90):
+        r = client.post("/portfolio/price", json=body)
+        assert r.status_code == 202, r.text
+        job_id = r.json()["job_id"]
+
+        deadline = time.time() + timeout_s
+        data = None
+        while time.time() < deadline:
+            r = client.get(f"/portfolio/price/{job_id}")
+            assert r.status_code == 200
+            data = r.json()
+            if data["status"] in ("done", "failed"):
+                break
+            time.sleep(0.2)
+        assert data is not None, "job never reached a terminal state"
+        return data
+
+    def test_twenty_trade_mixed_portfolio_over_http(self, test_client):
+        trades = (
+            [_swap_trade_schema(notional=1_000_000.0 * (i + 1), swap_tenor=f"{2 + i % 3}Y") for i in range(8)]
+            + [_swaption_trade_schema(notional=500_000.0 * (i + 1), forward_start=f"{1 + i % 2}Y") for i in range(6)]
+            + [_bermudan_trade_schema(notional=800_000.0 * (i + 1), hw_sigma=HW_SIGMA) for i in range(3)]
+            + [
+                {
+                    "trade_type": "american_swaption", "notional": 600_000.0 * (i + 1),
+                    "fixed_rate": 0.0295, "payer": bool(i % 2), "rate_factor_index": 0,
+                    "hw_a": HW_A, "hw_sigma": HW_SIGMA, "initial_zero_curve": ZERO_CURVE_SCHEMA,
+                    "first_exercise": 1.0, "last_exercise": 2.0, "exercise_time_steps_per_year": 1,
+                    "n_per_std": 32, "std_devs": 6.0,
+                }
+                for i in range(3)
+            ]
+        )
+        assert len(trades) == 20
+        body = {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(scenarios=64),
+            "trades": trades,
+            "percentiles": [0.95, 0.99],
+        }
+        data = self._submit_and_poll(test_client, body)
+        assert data["status"] == "done", data.get("error")
+        npv_cube = data["result"]["npv_cube"]
+        assert len(npv_cube[0][0]) == 20  # trade axis
+        flat = [v for scenario in npv_cube for step in scenario for v in step]
+        assert all(np.isfinite(v) for v in flat)
+
+    def test_result_matches_direct_call_for_a_larger_portfolio(self, test_client):
+        """The bit-for-bit HTTP-vs-direct-call cross-check other tests do
+        for 1-2 trades, repeated at 10 trades -- confirms the schema
+        round-trip stays exact (no drift/rounding introduced by JSON
+        serialization) as the response payload grows substantially larger."""
+        trades = (
+            [_swap_trade_schema(notional=1_000_000.0 * (i + 1)) for i in range(5)]
+            + [_swaption_trade_schema(notional=500_000.0 * (i + 1)) for i in range(5)]
+        )
+        body = {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(scenarios=64),
+            "trades": trades,
+            "percentiles": [0.95, 0.99],
+        }
+        data = self._submit_and_poll(test_client, body)
+        assert data["status"] == "done", data.get("error")
+
+        direct_request = PortfolioRequestSchema(**body).to_dataclass()
+        direct_result = price_portfolio(direct_request)
+
+        http_npv = np.asarray(data["result"]["npv_cube"])
+        np.testing.assert_allclose(http_npv, np.asarray(direct_result.npv_cube), rtol=1e-9)
+        np.testing.assert_allclose(data["result"]["base_npv"], direct_result.base_npv, rtol=1e-9)
+
+    def test_empty_trades_list_is_accepted_and_prices_to_a_zero_width_result(self, test_client):
+        """An empty trades list is valid at the dataclass level
+        (price_portfolio returns a zero-width result, see
+        test_portfolio_scale_and_edge_cases.py) but Pydantic's List field
+        has no explicit min_length here -- confirming the actual current
+        behavior (accepted, not rejected) rather than assuming either way,
+        since this is exactly the kind of boundary a schema change could
+        silently flip."""
+        body = {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(),
+            "trades": [],
+            "percentiles": [0.95],
+        }
+        data = self._submit_and_poll(test_client, body)
+        assert data["status"] == "done", data.get("error")
+        # [Scenarios, TimeSteps, 0] JSON-serializes as a nested list of
+        # empty inner lists, e.g. [[[], []], [[], []], ...] -- not "[]".
+        npv_cube = data["result"]["npv_cube"]
+        assert all(len(time_step) == 0 for scenario in npv_cube for time_step in scenario)
+        assert data["result"]["base_npv"] == 0.0
+
+    def test_many_identical_trades_over_http_price_identically(self, test_client):
+        trades = [_swap_trade_schema() for _ in range(8)]
+        body = {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(),
+            "trades": trades,
+            "percentiles": [0.95],
+        }
+        data = self._submit_and_poll(test_client, body)
+        assert data["status"] == "done", data.get("error")
+        npv_cube = np.asarray(data["result"]["npv_cube"])
+        for j in range(1, 8):
+            np.testing.assert_allclose(npv_cube[:, :, j], npv_cube[:, :, 0], rtol=1e-9)
+
+    def test_multiple_concurrent_jobs_do_not_cross_contaminate_results(self, test_client):
+        """Submits two DIFFERENT portfolios back-to-back (both jobs pending/
+        running in the shared in-process job store at once) and confirms
+        each job_id's own result matches ONLY its own request -- a direct
+        test of engine/api/routes.py's _JOBS dict keying, guarding against a
+        bug where one job's result could leak into another's slot."""
+        body_a = {
+            "evaluation_date": TODAY_ISO, "market": _market_schema(),
+            "trades": [_swap_trade_schema(notional=1_000_000.0)], "percentiles": [0.95],
+        }
+        body_b = {
+            "evaluation_date": TODAY_ISO, "market": _market_schema(),
+            "trades": [_swap_trade_schema(notional=9_000_000.0)], "percentiles": [0.95],
+        }
+        job_a = test_client.post("/portfolio/price", json=body_a).json()["job_id"]
+        job_b = test_client.post("/portfolio/price", json=body_b).json()["job_id"]
+        assert job_a != job_b
+
+        deadline = time.time() + 90
+        data_a = data_b = None
+        while time.time() < deadline and (data_a is None or data_a["status"] not in ("done", "failed")
+                                           or data_b is None or data_b["status"] not in ("done", "failed")):
+            data_a = test_client.get(f"/portfolio/price/{job_a}").json()
+            data_b = test_client.get(f"/portfolio/price/{job_b}").json()
+            time.sleep(0.2)
+
+        assert data_a["status"] == "done", data_a.get("error")
+        assert data_b["status"] == "done", data_b.get("error")
+        npv_a = np.asarray(data_a["result"]["npv_cube"])[:, :, 0]
+        npv_b = np.asarray(data_b["result"]["npv_cube"])[:, :, 0]
+        np.testing.assert_allclose(npv_b, npv_a * 9.0, rtol=1e-9)
+
+
 class TestPortfolioPriceInvalidPayload:
     def test_non_psd_covariance_returns_4xx_with_actionable_message(self, test_client):
         body = {
@@ -210,3 +459,119 @@ class TestCalibrationEndpoint:
     def test_calibration_malformed_schema_returns_422(self, test_client):
         r = test_client.post("/calibration/lgm", json={"evaluation_date": TODAY_ISO})
         assert r.status_code == 422
+
+
+class TestPortfolioPricePrecision:
+    """PrecisionConfigSchema/PortfolioRequestSchema.precision -- the HTTP
+    surface over engine.portfolio.PrecisionConfig (see
+    tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision for the
+    dataclass-level equivalent). No `precision` key sent must behave
+    identically to an explicit all-64 block (Optional, not a populated
+    default -- see PortfolioRequestSchema's own docstring)."""
+
+    def _submit_and_poll(self, client, body, timeout_s=60):
+        r = client.post("/portfolio/price", json=body)
+        assert r.status_code == 202, r.text
+        job_id = r.json()["job_id"]
+
+        deadline = time.time() + timeout_s
+        data = None
+        while time.time() < deadline:
+            r = client.get(f"/portfolio/price/{job_id}")
+            assert r.status_code == 200
+            data = r.json()
+            if data["status"] in ("done", "failed"):
+                break
+            time.sleep(0.2)
+        assert data is not None, "job never reached a terminal state"
+        return data
+
+    def test_explicit_precision_block_matches_direct_call(self, test_client):
+        """Submitting an explicit `"precision"` block over HTTP must match
+        calling price_portfolio directly with the equivalent PrecisionConfig
+        -- validates the schema wiring end-to-end (PrecisionConfigSchema ->
+        .to_dataclass() -> PrecisionConfig)."""
+        body = {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(),
+            "trades": [_swap_trade_schema(), _swaption_trade_schema()],
+            "percentiles": [0.95],
+            "precision": {"simulation": 64, "pricing": 32, "risk": 32},
+        }
+        data = self._submit_and_poll(test_client, body)
+        assert data["status"] == "done", data.get("error")
+
+        direct_request = PortfolioRequestSchema(**body).to_dataclass()
+        direct_result = price_portfolio(direct_request)
+
+        assert direct_result.npv_cube.dtype.itemsize == 4  # float32
+        np.testing.assert_allclose(data["result"]["base_npv"], direct_result.base_npv, rtol=1e-9)
+        http_npv = np.asarray(data["result"]["npv_cube"])
+        np.testing.assert_allclose(http_npv, np.asarray(direct_result.npv_cube), rtol=1e-9)
+
+    def test_omitted_precision_matches_explicit_all_64(self, test_client):
+        """No `precision` key sent must resolve to exactly PrecisionConfig()
+        (all-64) -- the same result as sending an explicit all-64 block."""
+        base_body = {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(),
+            "trades": [_swap_trade_schema()],
+            "percentiles": [0.95],
+        }
+        explicit_body = dict(base_body, precision={"simulation": 64, "pricing": 64, "risk": 64})
+
+        data_omitted = self._submit_and_poll(test_client, base_body)
+        data_explicit = self._submit_and_poll(test_client, explicit_body)
+        assert data_omitted["status"] == "done", data_omitted.get("error")
+        assert data_explicit["status"] == "done", data_explicit.get("error")
+
+        np.testing.assert_allclose(
+            np.asarray(data_omitted["result"]["npv_cube"]),
+            np.asarray(data_explicit["result"]["npv_cube"]),
+            rtol=1e-12,
+        )
+        np.testing.assert_allclose(
+            data_omitted["result"]["base_npv"], data_explicit["result"]["base_npv"], rtol=1e-12,
+        )
+
+    def test_float32_precision_response_close_but_not_identical_to_float64(self, test_client):
+        """The honest signal available at the JSON boundary: JSON floats
+        carry no dtype metadata, so a float32-precision response's values
+        are checked with pytest.approx (a tolerance), not exact equality,
+        against the equivalent float64 request."""
+        base_body = {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(),
+            "trades": [_swap_trade_schema()],
+            "percentiles": [0.95],
+        }
+        body_64 = dict(base_body, precision={"simulation": 64, "pricing": 64, "risk": 64})
+        body_32 = dict(base_body, precision={"simulation": 64, "pricing": 32, "risk": 64})
+
+        data_64 = self._submit_and_poll(test_client, body_64)
+        data_32 = self._submit_and_poll(test_client, body_32)
+        assert data_64["status"] == "done", data_64.get("error")
+        assert data_32["status"] == "done", data_32.get("error")
+
+        npv_64 = data_64["result"]["base_npv"]
+        npv_32 = data_32["result"]["base_npv"]
+        assert npv_32 == pytest.approx(npv_64, rel=1e-3)
+        assert npv_32 != npv_64  # a genuinely lower-precision computation, not a no-op
+
+    def test_invalid_precision_value_returns_400_not_a_failed_job(self, test_client):
+        """A malformed precision value ({"simulation": 16}) fails
+        PrecisionConfig.__post_init__'s validation, which
+        submit_portfolio_price already runs synchronously (via
+        request.to_dataclass()) before a job_id is ever created -- so this
+        must be an immediate 400 with the validator's own message, not a
+        202 followed by a failed job."""
+        body = {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(),
+            "trades": [_swap_trade_schema()],
+            "percentiles": [0.95],
+            "precision": {"simulation": 16},
+        }
+        r = test_client.post("/portfolio/price", json=body)
+        assert r.status_code == 400
+        assert "must be 32 or 64" in r.json()["detail"]

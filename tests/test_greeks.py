@@ -691,3 +691,70 @@ class TestSwaptionTheta:
         cfg = self._cfg(curve)
         theta = swaption_theta(cfg, curve, theta_days=0)
         assert theta == pytest.approx(0.0, abs=1e-6)
+
+
+# =============================================================================
+# PRECISION (PrecisionConfig.risk) -- direct dtype checks
+# =============================================================================
+class TestGreeksPrecisionDtype:
+    """engine.portfolio.request._compute_all_greeks hands each Greeks
+    function a `curve: ZeroCurve` built at PrecisionConfig.risk's dtype;
+    this module's own closures must then derive their working dtype from
+    that curve (see this module's docstring on why no new parameter is
+    needed on the public entry points) rather than silently upcasting back
+    to float64 -- these tests call the Greeks functions directly, at a
+    curve built with dtype=jnp.float32, independent of the price_portfolio
+    integration path (that path is covered by
+    tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision)."""
+
+    def test_swap_delta_gamma_float32_curve_stays_float32(self):
+        disc_curve = ZeroCurve.flat(0.03, PILLAR_TIMES, dtype=jnp.float32)
+        fwd_curve = ZeroCurve.flat(0.035, PILLAR_TIMES, dtype=jnp.float32)
+        cfg = SwapConfig(
+            notional=1_000_000.0, fixed_rate=0.032, payer=True,
+            discount_curve_index=0, forward_curve_index=1,
+            swap_tenor="5Y", evaluation_date=TODAY,
+        )
+        greeks = swap_delta_gamma(cfg, disc_curve, fwd_curve)
+        for key, val in greeks.items():
+            assert jnp.asarray(val).dtype == jnp.float32, f"{key} not float32"
+        assert bool(jnp.all(jnp.isfinite(jnp.asarray(greeks["discount_delta"]))))
+
+    def test_swaption_delta_gamma_float32_curve_stays_float32(self):
+        curve = ZeroCurve.flat(0.03, PILLAR_TIMES, dtype=jnp.float32)
+        cfg = SwaptionConfig(
+            notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
+            hw_a=0.03, hw_sigma=0.01,
+            initial_zero_curve=ZeroCurveConfig(times=PILLAR_TIMES, rates=[0.03] * len(PILLAR_TIMES)),
+            swap_tenor="5Y", forward_start=ORE.Period(3, ORE.Years), evaluation_date=TODAY,
+        )
+        greeks = swaption_delta_gamma(cfg, curve)
+        assert greeks["delta"].dtype == jnp.float32
+        assert greeks["gamma"].dtype == jnp.float32
+        assert bool(jnp.all(jnp.isfinite(greeks["delta"])))
+
+    def test_swaption_float32_and_float64_deltas_numerically_close(self):
+        curve32 = ZeroCurve.flat(0.03, PILLAR_TIMES, dtype=jnp.float32)
+        curve64 = ZeroCurve.flat(0.03, PILLAR_TIMES, dtype=jnp.float64)
+        cfg = SwaptionConfig(
+            notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
+            hw_a=0.03, hw_sigma=0.01,
+            initial_zero_curve=ZeroCurveConfig(times=PILLAR_TIMES, rates=[0.03] * len(PILLAR_TIMES)),
+            swap_tenor="5Y", forward_start=ORE.Period(3, ORE.Years), evaluation_date=TODAY,
+        )
+        greeks32 = swaption_delta_gamma(cfg, curve32)
+        greeks64 = swaption_delta_gamma(cfg, curve64)
+        np.testing.assert_allclose(
+            np.asarray(greeks32["delta"]), np.asarray(greeks64["delta"]), rtol=1e-3, atol=1e-2,
+        )
+
+    def test_swaption_theta_float32_curve_produces_finite_float(self):
+        curve = ZeroCurve.flat(0.03, PILLAR_TIMES, dtype=jnp.float32)
+        cfg = SwaptionConfig(
+            notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
+            hw_a=0.03, hw_sigma=0.01,
+            initial_zero_curve=ZeroCurveConfig(times=PILLAR_TIMES, rates=[0.03] * len(PILLAR_TIMES)),
+            swap_tenor="5Y", forward_start=ORE.Period(3, ORE.Years), evaluation_date=TODAY,
+        )
+        theta = swaption_theta(cfg, curve)
+        assert np.isfinite(theta)

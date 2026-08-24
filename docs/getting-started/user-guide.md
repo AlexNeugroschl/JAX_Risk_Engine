@@ -55,6 +55,22 @@ show piece-by-piece, but as a single, realistic entry-point call rather than han
 pipeline plumbing. Start here if you want to see the whole system working end to end before
 digging into any one stage.
 
+**The same portfolio, over the real HTTP API:**
+```bash
+python demo_api.py
+```
+Requires the `api` extra (see [Running the API](#running-the-api) below). Launches its own
+`uvicorn` server (or reuses one already running at `http://127.0.0.1:8000` if
+`JAX_RISK_ENGINE_DEMO_SKIP_SERVER=1` is set), builds the same market/portfolio as `demo.py`
+as a `PortfolioRequestSchema` JSON body, submits it to `POST /portfolio/price`, polls
+`GET /portfolio/price/{job_id}` until it completes, and prints the same NPV/risk/Greeks
+summary read back out of the JSON response — see [HTTP API](../reference/http-api.md) for
+what's actually happening on the wire. Bermudan/American trades are priced off a flat
+`hw_sigma` here rather than a calibrated one: `PortfolioRequestSchema` doesn't yet expose a
+`calibration_targets` field, so (unlike `demo.py`, which passes the calibrated Sigma
+directly into the dataclass) a request through the HTTP API can't drive server-side
+calibration end-to-end today — the script calls out this gap where it matters.
+
 Each pipeline module also has its own runnable demo in its own
 `if __name__ == "__main__":` block, showing that module's public API used end-to-end
 against a shared example scenario (see

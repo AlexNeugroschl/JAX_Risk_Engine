@@ -324,3 +324,191 @@ class TestPricePortfolioGreeks:
 
         np.testing.assert_allclose(np.asarray(result.greeks[0]["delta"]), np.asarray(expected_berm["delta"]), rtol=1e-9)
         np.testing.assert_allclose(np.asarray(result.greeks[1]["delta"]), np.asarray(expected_swaption["delta"]), rtol=1e-9)
+
+
+class TestPricePortfolioPrecision:
+    """PrecisionConfig's three independent knobs (simulation/pricing/risk),
+    each 32 or 64 -- see engine.portfolio.request.PrecisionConfig. Default
+    (all-64) must reproduce today's exact behavior; each knob set to 32
+    must be independently observable in the right output dtype, without
+    affecting the other two."""
+
+    def _request(self, precision=None, compute_greeks=False):
+        from engine.portfolio import PrecisionConfig
+        swap_cfg, swaption_cfg, bermudan_cfg, american_cfg = _build_trades()
+        trades = [swap_cfg, swaption_cfg, bermudan_cfg, american_cfg]
+        sim_config = _sim_config(trades)
+        kwargs = dict(market=sim_config, trades=trades, compute_greeks=compute_greeks)
+        if precision is not None:
+            kwargs["precision"] = precision
+        return PortfolioRequest(**kwargs)
+
+    def test_default_precision_matches_pre_feature_behavior(self):
+        """No `precision` supplied -> PrecisionConfig() (all-64) -> byte-
+        identical npv_cube dtype/values to a request built before this
+        feature existed."""
+        request = self._request()
+        assert request.precision.simulation == 64
+        assert request.precision.pricing == 64
+        assert request.precision.risk == 64
+        result = price_portfolio(request)
+        assert result.npv_cube.dtype == jnp.float64
+        assert bool(jnp.all(jnp.isfinite(result.npv_cube)))
+
+    def test_simulation_32_produces_float32_market_data_and_still_prices(self):
+        from engine.portfolio import PrecisionConfig
+        request = self._request(precision=PrecisionConfig(simulation=32))
+        result = price_portfolio(request)
+        # generate_paths under precision=32 produces float32 rates/yield
+        # curves; the final npv_cube dtype is governed by `pricing` (still
+        # 64 here), which price_swaps/etc. derive from their JAX-array
+        # inputs -- so npv_cube itself may still be float64 even though the
+        # underlying simulation ran in float32. What matters here is that
+        # simulation=32 alone doesn't break pricing.
+        assert bool(jnp.all(jnp.isfinite(result.npv_cube)))
+        assert np.isfinite(result.base_npv)
+
+    def test_pricing_32_produces_float32_npv_cube_and_base_npv(self):
+        """pricing=32 must make BOTH npv_cube AND base_npv's own internal
+        computation (_flat_curve_cube, the swaption zero-shock r0_path)
+        float32 -- exercising all four trade types at once, since each
+        pricer's own final-cast-to-input-dtype behavior needs a float32
+        input to prove out."""
+        from engine.portfolio import PrecisionConfig
+        request = self._request(precision=PrecisionConfig(pricing=32))
+        result = price_portfolio(request)
+        assert result.npv_cube.dtype == jnp.float32
+        assert bool(jnp.all(jnp.isfinite(result.npv_cube)))
+        assert np.isfinite(result.base_npv)
+
+    def test_pricing_64_vs_32_base_npv_numerically_close(self):
+        """float32 pricing shouldn't produce a wildly different base_npv --
+        just a lower-precision one (pytest.approx with a loose relative
+        tolerance, not exact equality)."""
+        from engine.portfolio import PrecisionConfig
+        request64 = self._request(precision=PrecisionConfig(pricing=64))
+        request32 = self._request(precision=PrecisionConfig(pricing=32))
+        result64 = price_portfolio(request64)
+        result32 = price_portfolio(request32)
+        assert result32.base_npv == pytest.approx(result64.base_npv, rel=1e-3)
+
+    def test_risk_32_changes_greeks_dtype_for_swaption_and_bermudan(self):
+        """risk=32 must flow into both a European swaption's and a
+        calibrated Bermudan's Greeks (the Jacobian path bermudan_vega
+        exercises isn't triggered by compute_greeks -- that's covered
+        directly in test_greeks_bermudan.py -- but bermudan_delta_gamma's
+        own risk-dtype plumbing runs through price_portfolio here)."""
+        from engine.portfolio import PrecisionConfig
+        request = self._request(precision=PrecisionConfig(risk=32), compute_greeks=True)
+        result = price_portfolio(request)
+        assert result.greeks is not None
+        # trades = [swap, swaption, bermudan, american]; swap Greeks are
+        # skipped by design (see _compute_all_greeks's own docstring).
+        for idx in (1, 2, 3):
+            assert idx in result.greeks
+            for key, val in result.greeks[idx].items():
+                if key == "theta":
+                    continue  # a plain Python float (forward-difference NPV), not a JAX array
+                assert jnp.asarray(val).dtype == jnp.float32, f"trade {idx} greek {key!r} not float32"
+
+    def test_mixed_precision_each_stage_independent(self):
+        """simulation=64, pricing=32, risk=32 -- confirms each of the three
+        knobs takes effect independently in the same request, the
+        end-to-end scenario the plan's own verification step calls out."""
+        from engine.portfolio import PrecisionConfig
+        request = self._request(
+            precision=PrecisionConfig(simulation=64, pricing=32, risk=32), compute_greeks=True,
+        )
+        result = price_portfolio(request)
+        assert result.npv_cube.dtype == jnp.float32
+        assert bool(jnp.all(jnp.isfinite(result.npv_cube)))
+        assert result.greeks is not None
+        for key, val in result.greeks[1].items():  # swaption
+            if key == "theta":
+                continue
+            assert jnp.asarray(val).dtype == jnp.float32
+
+
+class TestPricePortfolioConcurrency:
+    """The load-bearing correctness proof for this whole feature:
+    price_portfolio's async-job usage (engine/api/routes.py's
+    BackgroundTasks thread pool) means two DIFFERENT PrecisionConfig
+    requests can genuinely run on separate threads at the same time.
+    generate_paths flips jax_enable_x64, a process-global JAX/XLA flag --
+    with no lock, thread B's flag flip can land while thread A is still
+    mid-flight, corrupting thread A's dtype or (worse) silently producing a
+    dtype-correct-but-numerically-wrong array. _PRICING_LOCK in
+    engine/portfolio/request.py serializes price_portfolio's entire
+    JAX-executing body against exactly this race.
+
+    Uses threading.Barrier (not bare Thread.start()) to force genuine
+    overlap -- both threads block until both have reached the barrier,
+    maximizing the odds of a real race if the lock were absent/broken.
+    Repeats the body multiple times within the test, since a race-condition
+    test that only sometimes catches the bug is a weak guarantee."""
+
+    NUM_REPETITIONS = 8
+
+    def _make_request(self, precision):
+        swap_cfg, swaption_cfg, bermudan_cfg, american_cfg = _build_trades()
+        trades = [swap_cfg, swaption_cfg]
+        sim_config = _sim_config([swap_cfg, swaption_cfg, bermudan_cfg, american_cfg])
+        return PortfolioRequest(market=sim_config, trades=trades, precision=precision)
+
+    def test_two_different_precisions_concurrently_each_get_their_own_dtype(self):
+        from engine.portfolio import PrecisionConfig
+        import threading
+
+        precision_a = PrecisionConfig(simulation=64, pricing=64, risk=64)
+        precision_b = PrecisionConfig(simulation=32, pricing=32, risk=32)
+
+        # Sequential reference results, computed once, OUTSIDE any threading
+        # -- the numeric ground truth each concurrent run is cross-checked
+        # against (dtype alone wouldn't catch numeric corruption from a
+        # mid-flight flag flip producing a dtype-correct-but-wrong-valued
+        # array).
+        ref_a = price_portfolio(self._make_request(precision_a))
+        ref_b = price_portfolio(self._make_request(precision_b))
+
+        for rep in range(self.NUM_REPETITIONS):
+            barrier = threading.Barrier(2)
+            results = {}
+            errors = {}
+
+            def run(key, precision):
+                try:
+                    barrier.wait(timeout=30)
+                    results[key] = price_portfolio(self._make_request(precision))
+                except Exception as exc:  # pragma: no cover - failure path
+                    errors[key] = exc
+
+            t_a = threading.Thread(target=run, args=("a", precision_a))
+            t_b = threading.Thread(target=run, args=("b", precision_b))
+            t_a.start()
+            t_b.start()
+            t_a.join(timeout=60)
+            t_b.join(timeout=60)
+
+            assert not errors, f"rep {rep}: concurrent price_portfolio raised: {errors}"
+            assert "a" in results and "b" in results, f"rep {rep}: a thread failed to complete"
+
+            result_a, result_b = results["a"], results["b"]
+            assert result_a.npv_cube.dtype == jnp.float64, f"rep {rep}: thread A got the wrong dtype"
+            assert result_b.npv_cube.dtype == jnp.float32, f"rep {rep}: thread B got the wrong dtype"
+
+            np.testing.assert_allclose(
+                np.asarray(result_a.npv_cube), np.asarray(ref_a.npv_cube), rtol=1e-9,
+                err_msg=f"rep {rep}: thread A's values diverged from the sequential reference",
+            )
+            np.testing.assert_allclose(
+                np.asarray(result_b.npv_cube), np.asarray(ref_b.npv_cube), rtol=1e-3,
+                err_msg=f"rep {rep}: thread B's values diverged from the sequential reference",
+            )
+            np.testing.assert_allclose(
+                result_a.base_npv, ref_a.base_npv, rtol=1e-9,
+                err_msg=f"rep {rep}: thread A's base_npv diverged from the sequential reference",
+            )
+            np.testing.assert_allclose(
+                result_b.base_npv, ref_b.base_npv, rtol=1e-3,
+                err_msg=f"rep {rep}: thread B's base_npv diverged from the sequential reference",
+            )

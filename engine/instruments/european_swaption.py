@@ -249,13 +249,25 @@ def prepare_swaption(cfg: SwaptionConfig) -> _PreparedSwaption:
 # module's docstring for the math and the ORE correspondence. Nothing here
 # re-derives them.
 # =============================================================================
-def _bisect_rstar(coupon_bond_value_fn, t_shape, iterations: int) -> jax.Array:
+def _bisect_rstar(coupon_bond_value_fn, t_shape, iterations: int, dtype=jnp.float64) -> jax.Array:
     """The bisection itself (forward value only, no gradient guarantees --
     see `_solve_rstar`, which wraps this with a differentiable correction).
     Kept as a standalone function so `_solve_rstar`'s `jax.custom_jvp`
-    primal can call it directly under `jax.lax.stop_gradient`."""
-    lo = -jnp.ones(t_shape) * 2.0
-    hi = jnp.ones(t_shape) * 2.0
+    primal can call it directly under `jax.lax.stop_gradient`.
+
+    `dtype`: an explicit parameter, not `jnp.ones(t_shape)`'s own implicit
+    default -- `jnp.ones`/`jnp.zeros` with no `dtype` argument silently pick
+    up JAX's ambient default float dtype (float64 whenever `jax_enable_x64`
+    is on, REGARDLESS of what dtype the surrounding pricing computation
+    actually wants), which used to upcast `rstar` back to float64 even when
+    every other array in `_price_one_swaption` (A_T0_Ti/B_T0_Ti/etc.) was
+    correctly float32 under `PrecisionConfig.pricing=32` -- confirmed
+    directly (see PrecisionConfig's docstring for why any one hardcoded/
+    implicitly-defaulted array anywhere in this chain silently promotes the
+    whole downstream computation back to float64 whenever `jax_enable_x64`
+    is process-globally on)."""
+    lo = -jnp.ones(t_shape, dtype=dtype) * 2.0
+    hi = jnp.ones(t_shape, dtype=dtype) * 2.0
 
     def expand_body(_, carry):
         lo, hi = carry
@@ -385,10 +397,20 @@ def _solve_rstar(coupon_bond_value_fn, params, t_shape, iterations: int = 100) -
     directly against literal finite-difference bump-and-revalue in
     `tests/test_greeks.py`.
     """
+    # Derived from params' own leaves (not hardcoded/left to jnp.ones'
+    # implicit default) -- see _bisect_rstar's docstring for why. Every
+    # caller of _solve_rstar passes at least one JAX array carrying the
+    # dtype rstar itself should have (A_T0_Ti in _price_one_swaption/
+    # engine.risk.greeks._swaption_price_fn); a plain Python float leaf
+    # (e.g. all_amounts before being made a JAX array) would fall back to
+    # float64 here via jnp.result_type's own weak-type promotion, matching
+    # this function's prior always-float64 behavior for such a case.
+    dtype = jnp.result_type(*[leaf for leaf in jax.tree_util.tree_leaves(params)])
+
     @jax.custom_jvp
     def solve(p):
         f = lambda r: coupon_bond_value_fn(r, p)
-        rstar = _bisect_rstar(f, t_shape, iterations)
+        rstar = _bisect_rstar(f, t_shape, iterations, dtype=dtype)
         return jax.lax.stop_gradient(rstar)
 
     @solve.defjvp

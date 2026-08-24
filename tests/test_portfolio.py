@@ -102,6 +102,43 @@ class TestCrossFieldValidation:
         )
         validate_portfolio_against_simulation(sim, [swap_cfg])  # must not raise
 
+    def _two_factor_sim(self):
+        curve_a = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.03] * 6)
+        curve_b = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.025] * 6)
+        return _sim_config(
+            equities=EquityConfig(initial_prices=[100.0], dividend_yields=[0.0], rate_mapping=[[0.0, 0.0]]),
+            rates=RatesConfig(
+                initial_rates=[0.03, 0.025], theta=[0.03, 0.025], mean_reversion=[0.03, 0.028],
+                maturities=[0.0, 1.0, 2.0, 5.0], initial_zero_curves=[curve_a, curve_b],
+            ),
+            joint_covariance=[[0.04, 0.0, 0.0], [0.0, 0.03 ** 2, 0.0], [0.0, 0.0, 0.027 ** 2]],
+        ), curve_a, curve_b
+
+    def test_second_factor_curve_correctly_cross_checked_not_just_factor_zero(self):
+        """A trade on rate_factor_index=1 whose own curve is actually
+        factor 0's curve must still be rejected -- confirms the validator
+        indexes into the RIGHT factor's own curve/mean_reversion/vol at
+        factor counts > 1, not always factor 0 by coincidence (every other
+        test in this class uses exactly one factor, where this distinction
+        is unobservable)."""
+        sim, curve_a, curve_b = self._two_factor_sim()
+        wrong_curve_for_factor_1 = _swaption_cfg(
+            rate_factor_index=1, hw_a=0.028, hw_sigma=0.027, initial_zero_curve=curve_a,
+        )
+        with pytest.raises(ValueError, match="initial_zero_curve"):
+            validate_portfolio_against_simulation(sim, [wrong_curve_for_factor_1])
+
+    def test_second_factor_correctly_matched_config_passes(self):
+        sim, curve_a, curve_b = self._two_factor_sim()
+        correct = _swaption_cfg(rate_factor_index=1, hw_a=0.028, hw_sigma=0.027, initial_zero_curve=curve_b)
+        validate_portfolio_against_simulation(sim, [correct])  # must not raise
+
+    def test_second_factor_mismatched_hw_a_pinpoints_the_right_factor_in_the_message(self):
+        sim, curve_a, curve_b = self._two_factor_sim()
+        bad = _swaption_cfg(rate_factor_index=1, hw_a=0.099, hw_sigma=0.027, initial_zero_curve=curve_b)
+        with pytest.raises(ValueError, match=r"mean_reversion\[1\]"):
+            validate_portfolio_against_simulation(sim, [bad])
+
     def test_mixed_portfolio_pinpoints_the_bad_trade(self):
         sim = _sim_config()
         good = _swaption_cfg()
