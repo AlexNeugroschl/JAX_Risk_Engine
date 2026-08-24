@@ -12,28 +12,42 @@ synchronous HTTP response held open that long is fragile (client/proxy
 timeouts, no progress visibility, no retry-without-recompute), so
 `POST /portfolio/price` validates synchronously (fast -- Phase 1's
 validators do no JAX work) and returns `202 Accepted` + a `job_id`
-immediately, running `price_portfolio` in a FastAPI `BackgroundTasks` task;
-`GET /portfolio/price/{job_id}` polls for the result.
+immediately, dispatching `price_portfolio` to `engine.portfolio.worker_pool`
+(a `ProcessPoolExecutor`-backed, per-precision-tier pool -- see that
+module's own docstring); `GET /portfolio/price/{job_id}` polls the
+resulting `Future` for the result.
 
-**Job store: in-process dict.** Matches this system's low-volume,
-single-consumer scope (see docs/planning/roadmap-and-history.md's roadmap
-entry and docs/reference/http-api.md). A multi-process deployment (more than
-one uvicorn worker) would need a shared store (Redis, a DB table) instead --
-out of scope for this phase; each worker process would otherwise have its
-own, mutually invisible job dict.
+**Job store: in-process `job_id -> Future` table, still single-process.**
+This dispatcher process itself still keeps job state in a plain in-process
+dict -- no Redis/DB in this phase (see `docs/reference/http-api.md`'s "Job
+store" section for the two distinct reasons a shared store might eventually
+be needed: HTTP-scaling to multiple uvicorn workers, still deferred, versus
+process-isolated precision/device concurrency, now solved one layer down by
+`engine.portfolio.worker_pool` rather than by this dict). What changed from
+the previous architecture is what a job_id maps to and where the actual
+`price_portfolio` call runs: previously, a FastAPI `BackgroundTasks` thread
+mutated `_JOBS[job_id]` directly, in-process, serialized against every other
+concurrent job by `_PRICING_LOCK`; now, `_JOBS[job_id]` holds a
+`concurrent.futures.Future` returned by `worker_pool.submit_pricing_job`,
+whose actual work runs in a separate OS process, genuinely concurrently with
+other jobs (including other precision tiers) -- polling just checks
+`future.done()`/`future.result()` instead of a dict a background thread
+mutated directly.
 """
 import platform
 import subprocess
 import traceback
 import uuid
+from concurrent.futures import Future
 from typing import Dict
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, HTTPException, status
 
 from engine.portfolio import price_portfolio, validate_portfolio_against_simulation
+from engine.portfolio.worker_pool import submit_pricing_job
 from engine.simulation.market_model import validate_joint_covariance
 from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.lgm import calibrate_lgm_sigma
@@ -46,9 +60,10 @@ from engine.api.schemas import (
 
 router = APIRouter()
 
-# In-process job store: job_id -> {"status": ..., "result": PortfolioResultSchema | None, "error": str | None}.
-# See module docstring's "Job store" section.
-_JOBS: Dict[str, dict] = {}
+# In-process job store: job_id -> concurrent.futures.Future[PortfolioResult],
+# returned by engine.portfolio.worker_pool.submit_pricing_job. See module
+# docstring's "Job store" section.
+_JOBS: Dict[str, "Future"] = {}
 
 
 @router.get("/health", response_model=HealthSchema)
@@ -86,28 +101,17 @@ def version() -> VersionSchema:
     return VersionSchema(engine_version=engine_version, jax_backend=f"{backend} ({platform.system()})", git_commit=git_commit)
 
 
-def _run_pricing_job(job_id: str, request_schema: PortfolioRequestSchema) -> None:
-    """Runs in FastAPI's BackgroundTasks executor (a thread) after the
-    202 response has already been sent -- see module docstring."""
-    try:
-        _JOBS[job_id]["status"] = "running"
-        request = request_schema.to_dataclass()
-        result = price_portfolio(request)
-        _JOBS[job_id]["status"] = "done"
-        _JOBS[job_id]["result"] = PortfolioResultSchema.from_dataclass(result)
-    except Exception as exc:
-        _JOBS[job_id]["status"] = "failed"
-        _JOBS[job_id]["error"] = f"{exc}\n{traceback.format_exc()}"
-
-
 @router.post("/portfolio/price", status_code=status.HTTP_202_ACCEPTED)
-def submit_portfolio_price(request: PortfolioRequestSchema, background_tasks: BackgroundTasks) -> dict:
+def submit_portfolio_price(request: PortfolioRequestSchema) -> dict:
     """Validates synchronously (cheap -- no JAX work) by attempting the
-    dataclass conversion + Phase 1 validators up front, THEN schedules the
-    actual (expensive) `price_portfolio` call as a background task. A
-    validation failure here is returned as a `4xx` immediately, before a
-    job_id is ever created -- a request that will never succeed shouldn't
-    occupy a job slot."""
+    dataclass conversion + Phase 1 validators up front, THEN dispatches the
+    actual (expensive) `price_portfolio` call to
+    `engine.portfolio.worker_pool.submit_pricing_job`, which routes it to
+    the worker pool matching `request.precision.simulation` and returns a
+    `Future` immediately -- the real pricing work runs in a separate OS
+    process, not a thread in this one. A validation failure here is
+    returned as a `4xx` immediately, before a job_id is ever created -- a
+    request that will never succeed shouldn't occupy a job slot."""
     try:
         dataclass_request = request.to_dataclass()
         validate_joint_covariance(dataclass_request.market.joint_covariance)
@@ -116,17 +120,35 @@ def submit_portfolio_price(request: PortfolioRequestSchema, background_tasks: Ba
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     job_id = str(uuid.uuid4())
-    _JOBS[job_id] = {"status": "pending", "result": None, "error": None}
-    background_tasks.add_task(_run_pricing_job, job_id, request)
+    _JOBS[job_id] = submit_pricing_job(dataclass_request)
     return {"job_id": job_id}
 
 
 @router.get("/portfolio/price/{job_id}", response_model=JobStatusSchema)
 def get_portfolio_price(job_id: str) -> JobStatusSchema:
-    job = _JOBS.get(job_id)
-    if job is None:
+    """Polls `future.done()`/`future.result()` instead of reading a dict a
+    background thread mutated directly -- see module docstring. `"pending"`
+    covers both "genuinely queued behind this tier's pool" and "actively
+    running in a worker" (the worker process can't cheaply report its own
+    sub-states back to this dispatcher without a mechanism this phase
+    doesn't build -- see docs/reference/http-api.md); `"done"`/`"failed"`
+    are reported once `future.done()` is true, matching the previous
+    architecture's exception-handling/error-message behavior exactly (the
+    worker-side exception, raised again by `future.result()`, is formatted
+    the same way `_run_pricing_job` used to format it in-process)."""
+    future = _JOBS.get(job_id)
+    if future is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
-    return JobStatusSchema(status=job["status"], result=job["result"], error=job["error"])
+
+    if not future.done():
+        return JobStatusSchema(status="pending", result=None, error=None)
+
+    try:
+        result = future.result()
+    except Exception as exc:
+        return JobStatusSchema(status="failed", result=None, error=f"{exc}\n{traceback.format_exc()}")
+
+    return JobStatusSchema(status="done", result=PortfolioResultSchema.from_dataclass(result), error=None)
 
 
 @router.post("/calibration/lgm", response_model=CalibrationResultSchema)

@@ -129,7 +129,7 @@ def expected_shortfall(pnl: jax.Array, percentile: float) -> jax.Array:
 ```
 `[Scenarios, TimeSteps] → [TimeSteps]`. Implement the formulas above, vectorized across
 every time step at once via `jnp.sort` — sorting the whole scenario axis is the
-"expensive" part of this computation, and it's exactly the kind of operation GPUs are
+"expensive" part of this computation, and it's exactly the kind of operation GPUs/TPUs are
 efficient at.
 
 ```python

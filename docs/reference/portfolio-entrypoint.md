@@ -70,11 +70,16 @@ request = PortfolioRequest(
 )
 ```
 
-**Concurrency note:** `price_portfolio` now serializes its entire JAX-executing body
-behind a process-wide lock, since `jax_enable_x64` (which `generate_paths` toggles per
-`precision.simulation`) is process-global state, not thread-local — see
-[Architecture](../concepts/architecture.md#concurrency-jax_enable_x64-and-price_portfolios-pricing-lock)
-for the full race and why concurrent jobs now queue instead of running in parallel.
+**Concurrency note:** calling `price_portfolio` directly, yourself, from more than one
+thread in your own process is still unsafe without external serialization — `_PRICING_LOCK`
+inside this module protects against exactly that (`jax_enable_x64`, which `generate_paths`
+toggles per `precision.simulation`, is process-global state, not thread-local). Via
+`engine/api/routes.py`'s HTTP layer, this is no longer the primary concurrency mechanism:
+concurrent jobs are now dispatched to `engine.portfolio.worker_pool`'s per-precision-tier
+`ProcessPoolExecutor` pools, which achieve genuine cross-process concurrency instead of
+queuing behind one lock — see [Architecture: Concurrency](../concepts/architecture.md) for
+the full mechanism and why the lock is kept as narrower defense-in-depth rather than
+removed.
 
 ## `PortfolioResult`
 

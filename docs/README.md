@@ -1,9 +1,11 @@
 # Documentation
 
-Documentation for the JAX Risk Engine — a GPU-accelerated market simulation and trade
-pricing engine built in JAX, designed to mathematically mirror
-[ORE (Open Source Risk Engine)](https://www.opensourcerisk.org/). See the root
-[README.md](../README.md) for a quick overview and setup.
+Documentation for the JAX Risk Engine — a JAX-based market simulation and trade pricing
+engine built to run across multiple TPUs (deployed on a Google Cloud TPU VM) and study
+precision tradeoffs on that hardware, designed to mathematically mirror
+[ORE (Open Source Risk Engine)](https://www.opensourcerisk.org/) for correctness. It also
+runs correctly on CPU/GPU — the architecture is backend-agnostic by construction — but is
+optimized for TPU. See the root [README.md](../README.md) for a quick overview and setup.
 
 ## Where to start
 

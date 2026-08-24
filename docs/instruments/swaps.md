@@ -33,7 +33,7 @@ every single payment:
    days"), and getting the wrong convention produces a real, model-independent pricing
    error.
 
-Neither of these is a place where "reimplement it in JAX for GPU speed" makes sense —
+Neither of these is a place where "reimplement it in JAX for accelerator speed" makes sense —
 they run **once per trade**, not once per simulated scenario, so there's no performance
 benefit to a from-scratch implementation, and they're exactly the kind of thing where a
 subtle bug would produce numbers that are wrong in a way that's hard to detect just by
@@ -42,7 +42,7 @@ trade-building code directly (`ORE.MakeVanillaSwap`, `ORE.Actual365Fixed`, and r
 classes) to build the schedule and compute accrual fractions — see
 [Architecture: ORE as a dependency](../concepts/architecture.md#ore-as-a-dependency) for the
 broader design rationale. Only the actual "add up the simulated cashflows" math is
-custom, GPU-accelerated JAX code.
+custom, accelerator-run (GPU/TPU) JAX code.
 
 ## The pipeline, step by step
 
@@ -97,7 +97,7 @@ simulation's `maturities` array (see
 [the maturity-pillar-alignment requirement](#a-known-limitation-maturity-pillar-alignment)
 below). This whole step is a one-time, CPU-only, per-trade setup cost — it does **not**
 run per scenario, which is why it's fine for it to call into ORE (a regular Python
-library, not a GPU-friendly one).
+library, not an accelerator-friendly one).
 
 ### 3. Actually pricing it: `_price_one_swap()`, `price_swaps()`
 

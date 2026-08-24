@@ -61,13 +61,21 @@ Liveness only — confirms the process is up. Does no engine work.
 
 ### `GET /version`
 
-Engine package version, JAX backend (CPU/GPU), and git commit (best-effort — `null` if
+Engine package version, JAX backend (CPU/GPU/TPU), and git commit (best-effort — `null` if
 this isn't a git checkout).
 
 **Response:**
 ```json
 {"engine_version": "0.1.0", "jax_backend": "cpu (Windows)", "git_commit": "abc1234..."}
 ```
+
+**Known nuance, not solved in this phase:** `jax_backend` reports `jax.default_backend()`
+*of the dispatcher process itself*, which does no JAX work (see `engine/api/routes.py`'s
+module docstring) — it does not necessarily reflect the actual device a given
+`/portfolio/price` job ran on, since that job's real work happens inside a separate
+`engine.portfolio.worker_pool` worker process with its own independent JAX runtime. On this
+single-`CpuDevice` dev machine dispatcher and worker report the same backend, so the
+distinction is invisible; on a real multi-TPU-chip host it would not be.
 
 ### `POST /portfolio/price`
 
@@ -100,7 +108,14 @@ Poll for a job's status/result.
 
 `status` is one of `pending` / `running` / `done` / `failed`. `result` is `null` until
 `status == "done"`. `error` is `null` unless `status == "failed"`, in which case it carries
-the exception message and traceback.
+the exception message and traceback. `pending` currently covers both "genuinely queued
+behind this tier's worker pool" and "actively running in a worker process" — the worker
+can't cheaply report its own sub-states back to the dispatcher without a mechanism this
+phase doesn't build (see `engine/api/routes.py`'s `get_portfolio_price` docstring); a
+`done`/`failed` job's error message/traceback come from
+`concurrent.futures.Future.result()` re-raising the worker-side exception, which
+`concurrent.futures.process` automatically annotates with the full remote (worker-process)
+traceback.
 
 **Unknown `job_id`:** `404 Not Found`.
 
@@ -159,22 +174,42 @@ single synchronous call: re-derive this reasoning first.** The measured latency 
 the reason this exists, not a design preference — a synchronous version would need to
 re-solve the timeout/retry/progress problems this pattern already avoids.
 
-## Job store: in-process, single-process only
+## Job store: in-process `job_id -> Future` table, over a multi-process worker pool
 
-The job store backing `GET /portfolio/price/{job_id}` is a plain in-process Python `dict`
-(see `engine/api/routes.py`'s own module docstring) — appropriate for this system's
-current scope (low request volume, a single downstream consumer per the roadmap, not
-public internet traffic). **This does not survive a multi-worker deployment**: running
-more than one uvicorn worker process means each worker has its own, mutually invisible job
-dict, so a `job_id` returned by one worker will 404 against another. A production
-multi-process deployment would need a shared store (Redis, a database table) instead —
-explicitly out of scope for this phase.
+**This section describes a genuine architecture change**, not a terminology fix. The job
+store backing `GET /portfolio/price/{job_id}` is still a plain in-process Python `dict` in
+the dispatcher (`engine/api/routes.py`'s `_JOBS`) — that part hasn't changed. What changed
+is what it maps to and where the actual pricing work runs: `_JOBS[job_id]` now holds a
+`concurrent.futures.Future`, returned by `engine.portfolio.worker_pool.submit_pricing_job`,
+whose underlying `price_portfolio` call executes in a separate OS process — one of a fixed
+pool of worker processes, sized per precision tier (float32/float64), each with its own
+independent JAX/XLA runtime pinned to its own `jax_enable_x64` setting at boot. Polling
+`GET /portfolio/price/{job_id}` now checks `future.done()`/`future.result()` instead of
+reading fields a background thread mutated directly, but the response shape/status values
+are unchanged. See [Architecture: Concurrency](../concepts/architecture.md) and
+`engine/portfolio/worker_pool.py`'s own module docstring for the full mechanism and why
+multi-process (not multi-thread, and not single-process device sharding) is the only model
+compatible with "different precision tiers running genuinely concurrently" under JAX's
+real constraints.
 
-Similarly, `BackgroundTasks` runs the pricing job in a thread from FastAPI's own worker
-thread pool, not a separate process — fine for a first cut, but JAX/XLA compilation is not
-safely shared across threads the way async I/O is. If concurrent-job throughput becomes a
-real requirement, upgrading to a process-pool executor is the natural next step (flagged
-here as a future scaling note, not something this phase implements).
+There remain **two separate, distinct motivations for a future shared store (Redis, a
+database table)**, worth keeping apart:
+
+1. **HTTP-scaling to multiple uvicorn worker processes.** Running more than one uvicorn
+   worker still means each worker process has its own, mutually invisible `_JOBS` dict (and
+   its own separate `engine.portfolio.worker_pool` pools underneath it) — a `job_id`
+   returned by one uvicorn worker would still 404 against another. This motivation is
+   **still deferred, still out of scope** — nothing in this phase changes it; it's a
+   question about the *HTTP/dispatcher* layer's own process count, one level above the
+   pricing worker pool.
+2. **Process-isolated precision/device concurrency.** This was the *other* reason a shared
+   store might once have seemed necessary — if the fix for `_PRICING_LOCK`'s serialization
+   had been "spread jobs across multiple dispatcher processes" instead of "give
+   `price_portfolio` itself a multi-process worker pool underneath one dispatcher." **This
+   motivation is now solved**, by `engine.portfolio.worker_pool`'s `ProcessPoolExecutor`-based
+   per-tier pools, not by Redis/a database — the dispatcher itself can stay a single
+   process while still achieving genuine cross-precision, cross-device concurrency one
+   layer down.
 
 ## Request schema: `PortfolioRequestSchema`
 
@@ -267,13 +302,15 @@ POST /portfolio/price
 -> 400 {"detail": "PrecisionConfig.simulation must be 32 or 64, got 16"}
 ```
 
-**Concurrency note:** because `precision` is now request-controllable, and
-`jax_enable_x64` (the JAX/XLA flag `precision.simulation` drives) is process-global, two
-concurrent `/portfolio/price` jobs now serialize behind a process-wide lock rather than
-running in true parallel — see
-[Architecture](../concepts/architecture.md#concurrency-jax_enable_x64-and-price_portfolios-pricing-lock).
-This changes queuing behavior, not correctness: each job's own result is unaffected, it
-simply may wait longer for a concurrently-submitted job to finish first.
+**Concurrency note:** concurrent `/portfolio/price` jobs now genuinely parallelize across
+precision tiers — a `simulation: 32` job and a `simulation: 64` job submitted back-to-back
+run in separate worker processes at the same time, not serialized behind one process-wide
+lock (see [Architecture: Concurrency](../concepts/architecture.md) for the full mechanism,
+`engine.portfolio.worker_pool`). Same-tier jobs beyond that tier's own worker-pool size
+still queue for a free worker — expected pool exhaustion, not a bug, and no different in
+kind from any fixed-size worker pool. Either way, correctness is unaffected: each job's own
+result is always independent of what else is running concurrently, whether it runs
+immediately or waits for a worker to free up.
 
 ## Response schema: `PortfolioResultSchema`
 

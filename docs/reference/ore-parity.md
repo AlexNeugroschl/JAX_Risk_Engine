@@ -99,7 +99,7 @@ prices one Monte Carlo path at a time. This engine instead *unrolls that same re
 once into an explicit linear operator* — a matrix `B` such that `W = B @ Z` reproduces
 exactly what `transform()` would compute for any input `Z` — so that every simulated
 scenario can be bridged in a single batched matrix multiply (`_apply_bridge_matrix`)
-rather than a per-path loop, which is what makes it JAX/GPU-vectorizable. The final step
+rather than a per-path loop, which is what makes it JAX-vectorizable across accelerators (GPU/TPU). The final step
 in both — converting the bridged absolute path values back into standardized sequential
 increments (`output[i] -= output[i-1]; output[i] /= sqrtdt_[i]` in QuantLib, `dW =
 diff(W); dW / sqrt(dt)` in `apply_brownian_bridge`) — is identical.

@@ -1,10 +1,15 @@
 # JAX Risk Engine
 
-A GPU-accelerated market simulation and trade-pricing engine built in
-[JAX](https://github.com/google/jax), designed to mathematically mirror
-[ORE (Open Source Risk Engine)](https://www.opensourcerisk.org/) — a mature, real-world
-risk engine used by actual financial institutions — while running orders of magnitude
-faster by exploiting GPU vectorization instead of ORE's CPU-based C++.
+A [JAX](https://github.com/google/jax)-based market simulation and trade-pricing engine
+built to run pricing/simulation across multiple TPUs — the intended deployment target is
+a Google Cloud TPU VM, which is how TPU access actually happens for this project — and to
+study precision (float32 vs. float64) tradeoffs on that hardware. It's designed to
+mathematically mirror [ORE (Open Source Risk Engine)](https://www.opensourcerisk.org/) —
+a mature, real-world risk engine used by actual financial institutions — for correctness,
+while exploiting JAX's vectorization and multi-device execution instead of ORE's
+single-threaded CPU-based C++. The architecture is backend-agnostic by construction (it
+runs correctly on CPU and GPU too, and the current dev/test suite runs entirely on CPU)
+but is optimized specifically for TPU.
 
 Every pricing and risk formula in this codebase has been checked, line-by-line where
 possible, against ORE's own installed software and C++ source, not against a textbook

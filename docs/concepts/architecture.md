@@ -505,8 +505,8 @@ numerical library this project is built on) can only create 64-bit numbers at al
 single global setting, `jax_enable_x64`, is turned on — and that setting applies to the
 *entire process*, not to individual function calls or threads. This isn't a limitation of
 this codebase; it's how JAX itself works, because 64-bit support changes how JAX talks to
-the GPU. `generate_paths()` toggles this global setting itself, right before doing any
-math, based on the `precision` argument it was given.
+the accelerator (CPU, GPU, or TPU). `generate_paths()` toggles this global setting itself,
+right before doing any math, based on the `precision` argument it was given.
 
 The one function that does **not** automatically manage this is
 `generate_sobol_normals()`, if called directly instead of through `generate_paths()` —
@@ -514,42 +514,78 @@ its `dtype` argument is honored (covered by a regression test), but the global
 `jax_enable_x64` setting still needs to already be in the state the caller wants before
 other, unrelated JAX code runs elsewhere in the same process.
 
-### Concurrency: `jax_enable_x64` and `price_portfolio`'s pricing lock
+### Concurrency: a multi-process worker pool, with `_PRICING_LOCK` as defense-in-depth
 
-Because `jax_enable_x64` is process-global state, not thread-local, two threads each
-calling `price_portfolio` with *different* precisions can race: thread B's
-`generate_paths` call can flip the flag while thread A is still mid-flight through its
-own simulation/pricing/Greeks — silently corrupting thread A's in-progress computation
-(wrong dtype, or worse, a dtype-correct-looking but numerically wrong array). This is a
-genuinely live bug, not a theoretical one, given `engine/api/routes.py`'s async job
-pattern runs `price_portfolio` inside FastAPI `BackgroundTasks`' shared thread pool — it
-was invisible only as long as every caller happened to request the same precision.
+**This section describes a genuine architecture change**, not a terminology fix over the
+previous "single-consumer, low-volume, queue behind a lock" design. That previous design
+directly contradicted this project's actual purpose (see [Overview](../getting-started/overview.md)):
+running pricing/simulation across *multiple* TPU devices concurrently is the point, and a
+single process-wide lock caps the whole process at one device's worth of work in flight at
+a time, no matter how many devices are available.
 
-`price_portfolio` now serializes its entire JAX-executing body — calibration
-(`_fill_calibrated_sigma`), `generate_paths`, every pricer, and Greeks — behind a
-module-level `threading.Lock()` (`_PRICING_LOCK` in `engine/portfolio/request.py`).
-Calibration runs genuine JAX work (bisection root-finds, hardcoded-float64 array
-construction in `engine/calibration/lgm.py`) just as sensitive to the ambient
-`jax_enable_x64` state as simulation/pricing, so it sits inside the lock too, not before
-it. `generate_paths` itself also leaves `jax_enable_x64` set to whatever
-`precision.simulation` requested when it returns — since `pricing`/`risk` can
-independently request a *different* precision (including `64` after a `simulation=32`
-run), `price_portfolio` explicitly re-enables `jax_enable_x64` immediately after
-`generate_paths` returns, before doing any of that downstream work. (Re-enabling is
-always safe: building a float32 array under `jax_enable_x64=True` behaves identically to
-building it under `False` — the flag only ever restricts *creating* float64, never
-float32 — so this only fixes the direction that was actually broken, requesting `64`
-after `simulation=32`, without affecting the `32` case.) **User-facing consequence: concurrent `/portfolio/price`
-jobs now queue rather than running in true parallel.** This is an accepted throughput
-tradeoff, not an oversight — this system's runtime is already serial and
-JIT-compile-dominated (a single pricing job's own wall time is dominated by JAX
-compilation and Monte Carlo simulation, not by anything the lock would have let run
-concurrently), and its documented scope is a single-consumer, low-volume deployment (see
-[HTTP API](../reference/http-api.md)). The lock lives in `engine/portfolio/request.py`,
-not `engine/simulation/market_model.py`, because `generate_paths` is also called
-directly, sequentially, by other code/tests and shouldn't own cross-request
-serialization policy that only matters for `price_portfolio`'s own multi-thread HTTP job
-pattern.
+**The underlying JAX fact hasn't changed and can't be worked around**: `jax_enable_x64` is
+process-global state, not thread-local, and JAX provides no per-thread, per-device, or
+per-mesh scoped alternative (confirmed at the JAX source level: `jax/_src/config.py`'s own
+maintainers explicitly excluded this one flag from the context-manager-scoping mechanism
+every other JAX config flag gets). Two *threads* in one process wanting different
+precisions at the same time cannot both be correct without serializing. Two *processes*,
+each fixing `jax_enable_x64` once at boot and never touching it again, have entirely
+independent JAX/XLA runtimes and never race each other — that's the mechanism this
+architecture uses to get real concurrency instead of accepting the lock's serialization as
+a permanent ceiling.
+
+**The architecture**: `engine/portfolio/worker_pool.py` maintains one
+`ProcessPoolExecutor`-backed pool per precision tier (float32 and float64 — the two values
+`PrecisionConfig.simulation` allows), not one pool per raw device. Each worker process, via
+the executor's `initializer=` parameter (`_worker_init`, a plain top-level function — see
+that module's own docstring for why it can't be a lambda/closure), does exactly two things
+once at worker boot and never again for its lifetime: sets `jax.config.update("jax_enable_x64", ...)`
+matching its own fixed tier, and pins itself to one device via process-launch-time
+environment configuration (a deliberate no-op on this CPU-only dev machine, which has
+exactly one `CpuDevice` — see that module's docstring for the real-TPU-deployment shape
+this leaves ready without implementing against hardware this repo cannot test). Each
+worker then processes jobs strictly sequentially, one at a time, by construction — which is
+what makes `_PRICING_LOCK` unnecessary *at the worker level*: no second thread in that
+process ever calls into JAX-executing code while a job is in flight. `N` workers in a
+tier's pool means `N` jobs of that tier can run genuinely concurrently; a float32-tier job
+and a float64-tier job run in separate pools/processes and are therefore always genuinely
+concurrent with each other, not time-sliced behind one flag.
+
+`submit_pricing_job(request)` routes purely by `request.precision.simulation` — the one
+knob that actually drives `generate_paths`'s own `jax.config.update` call.
+`pricing`/`risk` stay independently-settable dtypes *within* a job, honored by
+`price_portfolio`'s own explicit casts once inside whichever tier's worker the job landed
+on (including the existing re-enable-`jax_enable_x64`-after-`generate_paths` logic
+described above, unchanged). `PrecisionConfig`'s/`PortfolioRequest`'s public shape did not
+change at all for this — `simulation` already was the natural routing selector.
+
+**`_PRICING_LOCK` is kept, not removed — its role narrowed to defense-in-depth.** No code
+change to the lock itself. The underlying JAX fact it protects against doesn't go away
+just because the worker pool makes it unreachable through the normal HTTP path: anything
+that ever puts two threads of the *same* process inside `price_portfolio` concurrently — a
+worker-pool sizing bug, or a future direct Python caller spinning up their own threads
+against `engine.portfolio` directly (that module is deliberately zero-Pydantic/FastAPI-
+dependency, designed to be called directly, not only through the HTTP/worker-pool layer) —
+would hit the exact same corruption bug the lock was built to prevent. The lock is cheap
+(uncontended-lock overhead is negligible next to a JIT-compile-dominated multi-second job)
+and remains correctness-critical whenever "one job per worker process" doesn't hold; it is
+no longer, however, the *primary* mechanism limiting concurrency — that role now belongs to
+the worker pool's process boundaries.
+
+**What this buys, and what it doesn't (yet).** Concurrent `/portfolio/price` jobs across
+*different* precision tiers now genuinely run in parallel, on separate OS processes, rather
+than queuing behind one lock. Same-tier jobs beyond that tier's own pool size still queue —
+expected pool exhaustion, not a bug, and no different in kind from any fixed-size worker
+pool. A real cost worth stating honestly: JIT compilation cache was shared process-wide
+across threads under the old design; under N worker processes, each process pays its own
+compilation cost independently, since compiled XLA programs aren't shared across separate
+OS processes. Real device-count-aware pool sizing (matching `len(jax.devices())` on an
+actual Cloud TPU VM host) and TPU-specific environment-variable device pinning
+(`JAX_PLATFORMS=tpu`/`TPU_VISIBLE_CHIPS`) are deferred to actual TPU deployment, not
+designed here — see [Roadmap & History](../planning/roadmap-and-history.md). See
+[HTTP API](../reference/http-api.md) for the dispatcher-level job-store details and
+[`engine/portfolio/worker_pool.py`](../../engine/portfolio/worker_pool.py) for the full
+implementation and its own extensive docstring.
 
 ### Out of scope for v1
 

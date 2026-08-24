@@ -36,22 +36,45 @@ docs/planning/traderx-integration.md gap item 5):**
   -- `validate_portfolio_against_simulation` below warns (not raises) when
   it detects this, rather than silently pricing a slightly-wrong number.
 
-**Concurrency: `price_portfolio` calls now serialize.** `generate_paths`
+**Concurrency: `_PRICING_LOCK` is a defense-in-depth invariant guard, not
+this system's primary concurrency-limiting mechanism.** `generate_paths`
 toggles `jax_enable_x64`, a process-global JAX/XLA flag, not a thread-local
 or per-array setting -- confirmed live: two threads each calling
-`price_portfolio` with different precisions can have thread B's flag flip
-land while thread A is still mid-flight through `generate_paths`/the
-pricers/Greeks that follow it, silently corrupting thread A's own
-in-progress computation (wrong dtype, or a dtype-correct-looking but
-numerically wrong array). `engine/api/routes.py`'s async job pattern runs
-`price_portfolio` in FastAPI `BackgroundTasks`' shared thread pool, so this
-is a live, reachable race, not a theoretical one -- it is invisible only as
-long as every caller happens to use the same precision. `_PRICING_LOCK`
-below serializes the entire JAX-executing body of `price_portfolio`
-(`generate_paths` through Greeks) so concurrent jobs queue instead of
-racing; this is an accepted throughput tradeoff for this system's already
-serial, JIT-compile-dominated, single-consumer/low-volume scope (see
-docs/concepts/architecture.md's "Adjustable precision" section).
+`price_portfolio` with different precisions, inside the SAME process, can
+have thread B's flag flip land while thread A is still mid-flight through
+`generate_paths`/the pricers/Greeks that follow it, silently corrupting
+thread A's own in-progress computation (wrong dtype, or a
+dtype-correct-looking but numerically wrong array). `_PRICING_LOCK` below
+serializes the entire JAX-executing body of `price_portfolio`
+(`generate_paths` through Greeks) so two threads of one process queue
+instead of racing.
+
+Real concurrency for `engine/api/routes.py`'s HTTP job pattern now comes
+from a layer above this module, not from running multiple threads through
+this lock: `engine.portfolio.worker_pool` dispatches each job to one of a
+fixed pool of worker PROCESSES, sized per precision tier (float32/float64),
+each with its own independent JAX/XLA runtime that fixes `jax_enable_x64`
+once at process boot and never touches it again -- see that module's own
+docstring for the full mechanism. Because each worker processes jobs
+strictly sequentially, no second thread inside a worker process ever calls
+into JAX-executing code while a job is in flight, which is what makes
+`_PRICING_LOCK` unnecessary *at the worker-pool level*. This lock stays
+here anyway, unconditionally, as a narrower defense-in-depth guard: the
+underlying JAX fact it protects against doesn't disappear just because the
+worker pool makes it unreachable through the normal HTTP path. Anything
+that ever puts two threads of the SAME process inside `price_portfolio`
+concurrently -- a worker-pool sizing bug, or a future direct Python caller
+spinning up their own threads against `engine.portfolio` directly (this
+module has "Zero Pydantic/FastAPI dependency, deliberately," per this
+docstring's own section above -- it's designed to be called directly, not
+only through the HTTP/worker-pool layer) -- hits the exact same corruption
+bug. The lock is cheap (uncontended-lock overhead is negligible next to a
+JIT-compile-dominated multi-second job) and correctness-critical whenever
+"one job per process" doesn't hold, even though it is no longer the primary
+thing standing between concurrent requests and true parallelism (see
+docs/concepts/architecture.md's "Concurrency" section for the full
+worker-pool architecture and docs/concepts/architecture.md's "Adjustable
+precision" section for `PrecisionConfig` itself).
 """
 import threading
 import warnings
@@ -84,12 +107,17 @@ from engine.portfolio.validation import _validate_common_fields, _validate_tenor
 
 TradeConfig = Union[SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig]
 
-# Serializes price_portfolio's entire JAX-executing body against
-# jax_enable_x64's process-global-flag race -- see this module's docstring's
-# "Concurrency" section. Lives here (not in engine.simulation.market_model)
-# because generate_paths is also called directly, sequentially, by other
-# code/tests and shouldn't own cross-request serialization policy that only
-# matters for price_portfolio's own multi-thread HTTP job pattern.
+# Defense-in-depth guard against jax_enable_x64's process-global-flag race
+# WITHIN a single process -- see this module's docstring's "Concurrency"
+# section. Real concurrency for engine/api/routes.py's HTTP job pattern now
+# comes from engine.portfolio.worker_pool's multi-process, per-precision-tier
+# pools, one layer up; this lock is kept unconditionally anyway since nothing
+# here statically prevents a caller from putting two threads of one process
+# through price_portfolio directly. Lives here (not in
+# engine.simulation.market_model) because generate_paths is also called
+# directly, sequentially, by other code/tests and shouldn't own this
+# invariant-guard policy, which only matters for price_portfolio's own
+# multi-thread-reachable callers.
 _PRICING_LOCK = threading.Lock()
 
 

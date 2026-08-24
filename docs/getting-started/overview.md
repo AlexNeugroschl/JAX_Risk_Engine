@@ -15,11 +15,15 @@ futures, and then look at the *spread* of outcomes. If a trade loses money in th
 5% of those simulated futures, that tells the bank how much risk it's carrying.
 
 This project is a from-scratch reimplementation of that pipeline, built in
-[JAX](https://github.com/google/jax) (a Python library for fast, GPU-accelerated numerical
-computing) so it can run on GPUs and be dramatically faster than the traditional CPU-based
-tools banks use today — specifically [ORE (Open Source Risk Engine)](https://www.opensourcerisk.org/),
-a widely-used open-source risk engine that this project both learns from and validates
-itself against.
+[JAX](https://github.com/google/jax) (a Python library for fast, hardware-accelerated
+numerical computing) specifically to run across **multiple TPUs** — Google's custom chips
+for exactly this kind of "do the same math millions of times in parallel" workload,
+accessed via a Google Cloud TPU VM — and be dramatically faster than the traditional
+CPU-based tools banks use today, specifically
+[ORE (Open Source Risk Engine)](https://www.opensourcerisk.org/), a widely-used open-source
+risk engine that this project both learns from and validates itself against. The engine's
+architecture is backend-agnostic by construction (it runs correctly on CPU and GPU as
+well), but it's built and tuned for TPU specifically.
 
 ## The three-step pipeline, in plain language
 
@@ -51,19 +55,26 @@ one axis is "how far in the future," and one axis is "which trade."
 This isn't just "redo ORE in Python" — it's built around three specific, longer-term
 ambitions (see the root [README.md](../../README.md) for the full roadmap):
 
-- **Speed via GPUs.** Traditional risk engines like ORE run on CPUs. This engine is
-  written in JAX specifically so the heavy numerical work (generating scenarios,
-  pricing trades across all of them at once) can run on a GPU, which is dramatically
-  faster for this kind of "do the same math millions of times in parallel" workload.
-- **A research question about precision.** Computers can do math with different levels
-  of numeric precision — think of it like the difference between calculating in exact
-  decimals versus rounding to fewer digits at each step. Higher precision is more
-  accurate but slower; lower precision is faster but noisier. The project's long-term
-  research goal is to test whether running *many more* lower-precision simulations
-  reaches the same risk answer, in the same amount of compute time, as running *fewer*
-  high-precision ones — pushing well past FP32, down to 8-bit and even 4-bit formats
-  (e.g. FP8/INT8 and INT4/NF4). That's why every piece of this engine is built to support
-  switching precision on and off (see [Adjustable Precision](../concepts/architecture.md#adjustable-precision)).
+- **Speed and precision research via multiple TPUs, as one goal, not two.** Traditional
+  risk engines like ORE run single-threaded on CPUs. This engine is written in JAX
+  specifically to run pricing/simulation across *multiple* TPU chips at once (the intended
+  deployment is a Google Cloud TPU VM, which is standardly a single host with several TPU
+  chips attached) — and that multi-TPU execution is the actual *vehicle* for the project's
+  precision research, not a separate goal running alongside it. Computers can do math with
+  different levels of numeric precision — think of it like the difference between
+  calculating in exact decimals versus rounding to fewer digits at each step. Higher
+  precision is more accurate but slower; lower precision is faster but noisier. The
+  project's long-term research goal is to test whether running *many more*
+  lower-precision simulations, spread across multiple TPU devices running concurrently,
+  reaches the same risk answer, in the same amount of wall-clock time, as running *fewer*
+  high-precision ones on fewer devices — pushing well past FP32, down to 8-bit and even
+  4-bit formats (e.g. FP8/INT8 and INT4/NF4) — which only becomes a meaningful throughput
+  question once multiple devices are actually in flight at once, not a single device
+  running one precision at a time. That's why every piece of this engine is built to
+  support switching precision on and off (see
+  [Adjustable Precision](../concepts/architecture.md#adjustable-precision)) *and* to
+  dispatch different-precision jobs to genuinely concurrent, process-isolated workers (see
+  [Architecture: Concurrency](../concepts/architecture.md)).
 - **Correctness against a known-good reference.** Rather than inventing new math, this
   project continuously checks its own output against ORE's — a mature, real-world risk
   engine used by actual financial institutions. Every pricing formula and risk formula

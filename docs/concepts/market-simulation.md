@@ -100,7 +100,7 @@ def apply_brownian_bridge(Z: jax.Array, time_grid: jax.Array) -> jax.Array:
 ```
 Applies that matrix to the raw Sobol-derived shocks (via a small `@jax.jit`-compiled
 helper, `_apply_bridge_matrix`, since this multiplication *is* data-dependent and worth
-running on the GPU), then converts the result from "the bridged path's absolute value at
+running on the accelerator), then converts the result from "the bridged path's absolute value at
 each time" back into "the standardized shock *between* each consecutive pair of time
 steps" — which is the form the actual simulation step function (Phase 2) needs.
 
@@ -174,7 +174,7 @@ rate `r(t)`, plus two deterministic (non-random) terms `A` and `B` that only dep
 the model's parameters and on today's actual market curve — not on any specific
 simulated scenario. Because `A` and `B` don't depend on the scenario, they're computed
 **once**, on the CPU, in plain NumPy — not once per scenario, not inside the
-GPU-accelerated simulation loop.
+accelerator-run (GPU/TPU) simulation loop.
 
 ```
 B(t, T) = (1 − e^(−a·(T−t))) / a
@@ -214,7 +214,7 @@ def reconstruct_yield_curves(hw_paths: jax.Array, A: jax.Array, B: jax.Array) ->
 The `@jax.jit`-compiled function that combines the (per-scenario, per-step, simulated)
 short rate paths with the (deterministic) `A`/`B` matrices into the full 4D discount
 factor cube — this part **does** scale with the number of scenarios, so it runs on the
-GPU.
+accelerator (CPU, GPU, or TPU).
 
 ### Phase 4 — Public API
 

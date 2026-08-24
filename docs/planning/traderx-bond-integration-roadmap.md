@@ -337,8 +337,8 @@ in the Monte Carlo sense. What *does* parallelize, and where JAX still earns its
     scaling question, not a bond-pricing-math one.
 - **Autodiff Greeks, which the existing engine already treats as "free" parallelization.**
   `bond_delta_gamma` (section 3.4) computing key-rate DV01 across every curve pillar for every
-  bond in the portfolio is one `jax.vmap(jax.grad(...))` call — this is where GPU throughput
-  genuinely matters, especially once the calculation is repeated across the full simulated
+  bond in the portfolio is one `jax.vmap(jax.grad(...))` call — this is where accelerator
+  (GPU/TPU) throughput genuinely matters, especially once the calculation is repeated across the full simulated
   scenario grid for a VaR run (next point).
 
 ### 4.2 VaR/ES over simulated scenarios: this is where the real parallel workload is — and it is the SAME workload the engine already runs, not a new kind of one
