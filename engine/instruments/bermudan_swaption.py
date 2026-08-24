@@ -145,7 +145,7 @@ Known limitation: no mid-coupon proration -- see BermudanSwaptionConfig's
 own docstring and tests/test_bermudan_swaption.py::TestMidCouponKnownLimitation.
 """
 from dataclasses import dataclass, field
-from typing import List, Sequence, Union
+from typing import List, Optional, Sequence, Union
 
 import jax
 import jax.numpy as jnp
@@ -153,7 +153,8 @@ import numpy as np
 import ORE
 
 from engine.simulation.market_model import ZeroCurveConfig
-from engine.trades.ore_builders import build_vanilla_swap
+from engine.models.ore_builders import build_vanilla_swap
+from engine.portfolio.validation import _validate_common_fields, _validate_tenor
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from engine.models.lgm import (
     H as _H,
@@ -211,7 +212,7 @@ class BermudanSwaptionConfig:
     payer: bool
     rate_factor_index: int
     hw_a: float
-    hw_sigma: Union[float, Sigma]
+    hw_sigma: Optional[Union[float, Sigma]]
     initial_zero_curve: ZeroCurveConfig
     exercise_times: Sequence[float]
     swap_tenor: str = "5Y"
@@ -221,10 +222,29 @@ class BermudanSwaptionConfig:
     std_devs: float = 6.0
     evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
 
+    def __post_init__(self) -> None:
+        _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
+        _validate_tenor(self.swap_tenor, "swap_tenor")
+        # None is a valid sentinel meaning "uncalibrated" -- engine.portfolio.
+        # price_portfolio fills it in via engine.calibration.lgm.
+        # calibrate_lgm_sigma before this config ever reaches a pricer; a
+        # bare BermudanSwaptionConfig(hw_sigma=None) constructed outside
+        # that flow is likewise valid to build (just not directly priceable
+        # until hw_sigma is filled in).
+        if self.hw_sigma is not None:
+            sigma_values = self.hw_sigma.values if isinstance(self.hw_sigma, Sigma) else [self.hw_sigma]
+            if any(v != v or v in (float("inf"), float("-inf")) for v in np.asarray(sigma_values, dtype=np.float64).tolist()):
+                raise ValueError(f"hw_sigma must be finite; got {self.hw_sigma}")
+        if len(self.exercise_times) == 0:
+            raise ValueError("exercise_times must be non-empty")
+        times_list = [float(t) for t in self.exercise_times]
+        if times_list != sorted(times_list):
+            raise ValueError(f"exercise_times must be sorted ascending; got {times_list}")
+
 
 def _build_ore_swap(cfg) -> ORE.VanillaSwap:
     """CPU: builds the real ORE underlying swap -- see
-    `engine.trades.ore_builders.build_vanilla_swap`, the single shared
+    `engine.models.ore_builders.build_vanilla_swap`, the single shared
     implementation of this construction."""
     return build_vanilla_swap(
         notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,

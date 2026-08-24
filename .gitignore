@@ -14,3 +14,8 @@ __pycache__
 *.json
 *.pyc
 .claude/
+
+# Build artifact from `pip install -e .` (pyproject.toml editable install)
+*.egg-info/
+
+/reference/

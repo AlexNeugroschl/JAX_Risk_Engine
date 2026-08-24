@@ -25,6 +25,17 @@ FLAT_CURVE = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.03
 EVAL_DATE = ORE.Date(30, 7, 2026)
 
 
+def _make_american(**overrides) -> AmericanSwaptionConfig:
+    defaults = dict(
+        notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
+        hw_a=0.03, hw_sigma=0.02, initial_zero_curve=FLAT_CURVE,
+        first_exercise=1.0, last_exercise=4.0, swap_tenor="5Y",
+        evaluation_date=EVAL_DATE, n_per_std=96, std_devs=7.0,
+    )
+    defaults.update(overrides)
+    return AmericanSwaptionConfig(**defaults)
+
+
 def _make_bermudan(**overrides) -> BermudanSwaptionConfig:
     defaults = dict(
         notional=1_000_000.0,
@@ -287,3 +298,40 @@ class TestAmericanPortfolio:
 
         assert not np.allclose(np.asarray(cube[:, :, 0]), np.asarray(cube[:, :, 1]))
         assert not np.allclose(np.asarray(cube[:, :, 1]), np.asarray(cube[:, :, 2]))
+
+
+class TestAmericanSwaptionConfigValidation:
+    """AmericanSwaptionConfig.__post_init__ (docs/planning/
+    traderx-integration.md gap item 4) -- rejects non-finite notional/
+    fixed_rate/hw_sigma, unparseable swap_tenor, and
+    first_exercise > last_exercise at construction time."""
+
+    def test_nan_notional_rejected(self):
+        with pytest.raises(ValueError, match="notional"):
+            _make_american(notional=float("nan"))
+
+    def test_inf_fixed_rate_rejected(self):
+        with pytest.raises(ValueError, match="fixed_rate"):
+            _make_american(fixed_rate=float("inf"))
+
+    def test_nan_hw_sigma_rejected(self):
+        with pytest.raises(ValueError, match="hw_sigma"):
+            _make_american(hw_sigma=float("nan"))
+
+    def test_unparseable_swap_tenor_rejected(self):
+        with pytest.raises(ValueError, match="swap_tenor"):
+            _make_american(swap_tenor="bogus")
+
+    def test_first_exercise_after_last_exercise_rejected(self):
+        with pytest.raises(ValueError, match="first_exercise"):
+            _make_american(first_exercise=4.0, last_exercise=1.0)
+
+    def test_equal_first_and_last_exercise_still_valid(self):
+        """Zero-width window is explicitly supported (see
+        TestAmericanAsFineBermudan.test_zero_width_window_produces_single_
+        exercise_date above) -- first_exercise == last_exercise must not
+        raise."""
+        _make_american(first_exercise=2.0, last_exercise=2.0)  # must not raise
+
+    def test_valid_config_constructs_without_error(self):
+        _make_american()  # must not raise

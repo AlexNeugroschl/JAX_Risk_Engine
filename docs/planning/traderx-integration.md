@@ -1,6 +1,11 @@
 # TraderX Integration Readiness Plan
 
-**Status:** Not started — planning document only, nothing in this file has been implemented.
+**Status:** Implemented — see [`engine/portfolio/request.py`](../../engine/portfolio/request.py) and
+[The Portfolio Entry Point](../reference/portfolio-entrypoint.md) for the shipped design
+(the validation/assembly layer described below), plus
+[HTTP API](../reference/http-api.md) for the FastAPI wrapper built on top of it. This
+document is kept as the original gap analysis/design rationale; each gap item below now
+points at the actual landed function and test class rather than a "Plan:".
 
 ## Context
 
@@ -50,21 +55,20 @@ occurrence, not an edge case — silently produces an all-NaN Cholesky factor, w
 silently NaNs every simulated path with no error raised anywhere (confirmed in this session's
 `TestCholeskyOnDegenerateCorrelation`).
 
-**Plan:**
-- Add a `validate_joint_covariance(matrix) -> None` check in `engine/simulation/market_model.py`, run at
-  the top of `generate_paths` before any JAX computation: confirm symmetry (within float
-  tolerance) and confirm positive semi-definiteness via eigenvalue check (`np.linalg.eigvalsh`,
-  cheap on CPU since this runs once per call, not per scenario). Raise `ValueError` with the
-  offending eigenvalue(s) reported, not a bare failure.
-- Add an optional `nearest_psd(matrix) -> matrix` repair utility (standard eigenvalue-clipping
-  projection: clip negative eigenvalues to ~0, reconstruct, re-symmetrize) for the TraderX
-  assembly layer to call explicitly when it wants "best effort" rather than "reject" — this
-  must be an opt-in call, not silently applied inside `generate_paths` itself, so a genuinely
-  bad correlation input is never priced without the caller knowing it was altered.
-- Tests: a `TestCovarianceValidation` class feeding known-invalid matrices (implied rho > 1,
-  a matrix with one negative eigenvalue by construction) and confirming both the raise path and
-  the repair path (repaired matrix passes validation, and produces finite `generate_paths`
-  output).
+**Implemented:**
+- `validate_joint_covariance(matrix) -> None` in `engine/simulation/market_model.py`, called
+  at the top of `generate_paths` before any JAX computation: confirms symmetry (within float
+  tolerance) and positive semi-definiteness via eigenvalue check (`np.linalg.eigvalsh`).
+  Raises `ValueError` naming the offending eigenvalue(s)/index.
+- `nearest_psd(matrix, epsilon=1e-10) -> np.ndarray` repair utility (eigenvalue-clipping
+  projection, clipping to a small positive `epsilon` rather than literally `0.0` — an
+  exact-zero clip produces a numerically rank-deficient matrix that still fails Cholesky, see
+  the function's own docstring) — opt-in only, never called automatically by `generate_paths`
+  or `engine.portfolio`.
+- Tests: `tests/test_market_model.py::TestCovarianceValidation` (implied rho > 1, a matrix
+  with a deliberately negative eigenvalue, the repair path producing finite `generate_paths`
+  output) and `TestCholeskyOnDegenerateCorrelation` (the original silent-NaN behavior this
+  closes, updated to assert the new raise).
 
 ### 2. Cross-field consistency between `RatesConfig` and each instrument's duplicated fields
 
@@ -75,19 +79,19 @@ this. A caller (or an assembly layer with a bug) can point a swaption at
 `rate_factor_index=1` while its `hw_a` was copied from factor 0's calibration, and the trade
 prices against a silently self-inconsistent model with no error.
 
-**Plan:**
-- Add a `validate_portfolio_against_simulation(sim_config, trade_configs) -> None` helper
-  (new module, `engine/portfolio.py`, or a function in `engine/simulation/demo_scenarios.py` if that's judged
-  the more natural home) that, for every trade with a `rate_factor_index`, cross-checks
-  `hw_a`/`hw_sigma`/`initial_zero_curve` against `sim_config.rates.mean_reversion[idx]` /
-  the implied per-step vol from `sim_config.joint_covariance` / `sim_config.rates.initial_zero_curves[idx]`,
-  raising `ValueError` naming the trade and the specific mismatched field on any divergence
-  beyond a small float tolerance.
-- This closes the door on the single most likely TraderX-integration bug class: an assembly
-  layer that builds `RatesConfig` and per-trade swaption configs from the same upstream
-  market-data source but has a transcription bug between the two.
-- Tests: construct a `SimulationConfig` + a swaption config with a deliberately mismatched
-  `hw_a`, confirm the validator raises; confirm a correctly-matched config passes.
+**Implemented:**
+- `validate_portfolio_against_simulation(sim_config, trade_configs) -> None` in
+  `engine/portfolio/request.py`, cross-checking every trade with a `rate_factor_index` against
+  `sim_config.rates.mean_reversion[idx]` / the implied per-step vol from
+  `sim_config.joint_covariance` / `sim_config.rates.initial_zero_curves[idx]`. Raises
+  `ValueError` naming the trade (index/type/notional) and the specific mismatched field.
+  A trade whose `hw_sigma` is a genuinely piecewise (calibrated) `Sigma` is deliberately
+  **not** cross-checked against `joint_covariance`'s flat per-step vol — see
+  [The Portfolio Entry Point](../reference/portfolio-entrypoint.md#validate_portfolio_against_simulationsim_config-trade_configs---none)
+  for why that divergence is legitimate, not the transcription-bug class this item targets.
+- Called automatically as step 2 of `price_portfolio`'s own orchestration — a caller doesn't
+  need to remember to call this separately.
+- Tests: `tests/test_portfolio.py::TestCrossFieldValidation`.
 
 ### 3. Automatic maturity-pillar assembly for arbitrary portfolios
 
@@ -98,19 +102,18 @@ cashflow dates. A real TraderX portfolio has many trades with irregular dates; h
 pillars does not scale and is exactly the kind of manual step that will drift and break
 silently in production.
 
-**Plan:**
-- Add a `derive_maturity_pillars(trade_configs, evaluation_date) -> List[float]` helper that,
-  given a list of trade configs, builds each trade's ORE schedule (reusing the existing
-  `_build_ore_swap`-style construction already in `swap.py`/`bermudan_swaption.py`, not
-  reimplementing schedule logic) and returns the sorted union of every leg's accrual/payment
-  year-fractions — i.e., automates what `SWAP_DEMO_MATURITIES` currently does by hand in
-  `engine/simulation/demo_scenarios.py`.
-- This becomes the standard way `RatesConfig.maturities` gets populated for a TraderX
-  portfolio, rather than a manually maintained list.
-- Tests: feed a multi-trade, multi-tenor portfolio through the helper, confirm every trade's
-  own cashflow dates are a subset of the returned pillar list (i.e. `_maturity_indices` would
-  accept all of them), and confirm a portfolio requiring >1 trade's dates produces a strictly
-  larger pillar set than either trade alone.
+**Implemented:**
+- `derive_maturity_pillars(trade_configs, evaluation_date) -> List[float]` in
+  `engine/portfolio/request.py`, building each `SwapConfig`'s real ORE schedule (via
+  `engine.models.ore_builders.build_vanilla_swap`, the same shared construction every
+  pricer uses) and returning the sorted union of every leg's accrual/payment
+  year-fractions. Swaption-family trades contribute no pillars (they price directly off
+  simulated `hw_paths`, not the maturity-pillar cube).
+- `price_portfolio` calls this automatically (step 3 of its own orchestration) whenever the
+  caller leaves `SimulationConfig.rates.maturities` unset — the standard way pillars get
+  populated for an arbitrary portfolio now, rather than a manually maintained list.
+- Tests: `tests/test_portfolio.py::TestPillarAssembly` and
+  `tests/test_portfolio_entrypoint.py::TestPricePortfolioAutoDerivesMaturityPillars`.
 
 ### 4. Trade-level input validation (notional, rate ranges, tenor sanity)
 
@@ -121,19 +124,24 @@ inputs), silently mis-prices (pre-fix state), or raises an opaque low-level `ORE
 A production integration point receiving arbitrary TraderX trade payloads needs a clear
 `ValueError` naming the bad field, not a stack trace from inside `ORE.MakeVanillaSwap`.
 
-**Plan:**
-- Add `__post_init__` validation to each `*Config` dataclass (or a shared
-  `_validate_common_fields` helper called from each): notional is finite and (for now)
-  documented as to whether zero/negative is intentionally supported (it already is, per this
-  session's tests — just needs an explicit docstring statement, not silent support), fixed
-  rates are finite, tenors parse as valid `ORE.Period` strings before use, exercise
-  schedules are internally ordered (`first_exercise <= last_exercise`, `exercise_times`
-  sorted and within the underlying's maturity).
-- This is deliberately scoped to *reject clearly malformed input early*, not to impose
-  business-rule limits (e.g. "no rate above 20%") — those belong in a TraderX-side policy
-  layer, not the pricing engine.
-- Tests: one test per validated field per config class, confirming a bad value raises
-  `ValueError` at construction time rather than later inside `generate_paths`/a pricer.
+**Implemented:**
+- `__post_init__` on `SwapConfig`, `SwaptionConfig`, `BermudanSwaptionConfig`, and
+  `AmericanSwaptionConfig` (each in its own module), calling a shared
+  `_validate_common_fields(notional, fixed_rate, evaluation_date)` helper from
+  `engine/portfolio/validation.py` (a leaf module separate from `engine/portfolio/request.py` to
+  avoid a circular import — see that module's own docstring) plus `_validate_tenor` for
+  every `swap_tenor`. Notional/`fixed_rate` finiteness is checked; zero and negative values
+  are explicitly documented and tested as supported (see e.g.
+  `tests/test_swap.py::TestZeroNotional`), not silently allowed. Bermudan/American
+  `hw_sigma` accepts `None` as a valid "uncalibrated" sentinel (see
+  [The Portfolio Entry Point](../reference/portfolio-entrypoint.md#automatic-calibration)).
+  `BermudanSwaptionConfig.exercise_times` must be non-empty and sorted ascending;
+  `AmericanSwaptionConfig` requires `first_exercise <= last_exercise`.
+- Deliberately scoped to reject malformed input, not impose business-rule limits (no "no
+  rate above 20%" check) — matches this plan's original scope boundary.
+- Tests: `TestSwapConfigValidation`/`TestSwaptionConfigValidation`/
+  `TestBermudanSwaptionConfigValidation`/`TestAmericanSwaptionConfigValidation` in each
+  instrument's own `tests/test_*.py` file.
 
 ### 5. Known limitations to surface explicitly in the integration layer (not fixed, by design)
 
@@ -144,16 +152,21 @@ scope, not silently produce a slightly-wrong number:
 - **Aged-swap limitation** (`swap.py`, `TestAgedSwapKnownLimitation`): conditional pricing at
   any simulated time past a swap's first accrual date doesn't represent an already-fixed
   floating coupon. Fine for t=0 valuation; a real gap for any time-stepped exposure/XVA
-  profile — which is exactly what a risk system built on top of this would want. **Action for
-  this plan:** flag in the integration-layer docstring/API response that exposure profiles
-  (as opposed to t=0 NPV/VaR) inherit this approximation, and consider whether closing this
-  gap in `swap.py` itself becomes a separate, later plan.
+  profile — which is exactly what a risk system built on top of this would want.
+  **Implemented:** documented (not fixed) in `engine/portfolio/request.py`'s own module docstring —
+  any exposure profile (t>0 valuation) for a swap inherits this gap; closing it in `swap.py`
+  itself remains a separate, not-yet-started future plan.
 - **Mid-coupon Bermudan/American exercise** (`bermudan_swaption.py`/`american_swaption.py`,
   `TestMidCouponKnownLimitation`): exact only when exercise dates are reset-aligned;
-  otherwise a conservative (understating) approximation. TraderX-submitted trades won't
-  naturally respect this. **Action:** the trade-level validation in item 4 above should emit
-  a warning (not a hard reject — this is a documented approximation, not an error) when an
-  American/Bermudan trade's exercise schedule isn't reset-aligned with its underlying.
+  otherwise a conservative (understating) approximation. **Implemented:**
+  `validate_portfolio_against_simulation` (item 2) emits a `UserWarning` (not a hard reject)
+  naming the trade when any American/Bermudan exercise date isn't reset-aligned with its own
+  underlying's accrual schedule, pointing at
+  [american-bermudan-swaptions.md](../instruments/american-bermudan-swaptions.md)'s
+  mid-coupon-approximation section. `price_portfolio` collects these into
+  `PortfolioResult.warnings` rather than only printing to stderr. Tests:
+  `tests/test_portfolio.py::TestCrossFieldValidation::test_bermudan_mid_coupon_exercise_time_warns`/
+  `test_american_mid_coupon_exercise_window_warns`.
 
 ## Suggested build order
 
@@ -168,13 +181,16 @@ scope, not silently produce a slightly-wrong number:
 
 ## Verification
 
-- Each item above gets its own test class, run via the existing
+- Each item above got its own test class, run via the existing
   `venv/Scripts/python.exe -m pytest tests/ -q` workflow.
-- End-to-end check once items 1-4 exist: build a synthetic "TraderX-shaped" portfolio request
-  (irregular trade dates, a correlation matrix assembled from independent pairwise estimates
-  that is *not* exactly PSD, a couple of trades with deliberately mismatched
-  `rate_factor_index` calibration) and confirm the new validation layer rejects it with clear,
-  specific errors — then fix the synthetic input and confirm the same portfolio flows through
-  `generate_paths` → pricers → `compute_risk_metrics` end to end.
-- No changes to existing pricer math are in scope for this plan — the existing 502-test suite
-  must continue to pass unchanged throughout.
+- This plan's own validation layer is now Phase 1 of a larger effort — see
+  [The Portfolio Entry Point](../reference/portfolio-entrypoint.md) (Phase 2: the
+  `price_portfolio` entry point built on top of it) and [HTTP API](../reference/http-api.md)
+  (Phase 3: the FastAPI wrapper). `tests/test_portfolio_entrypoint.py` is the end-to-end
+  check this section originally called for: a multi-instrument-type portfolio request,
+  validated, priced through `generate_paths` → every pricer → `compute_risk_metrics` via
+  `price_portfolio`, cross-checked bit-for-bit against the equivalent hand-orchestrated
+  sequence.
+- No changes to existing pricer math were made — the full test suite (659 tests before this
+  work, growing with each new test file this plan and its follow-on phases added) continued
+  to pass unchanged throughout, per the original scope boundary.

@@ -1,22 +1,21 @@
 # Models & Trades: The Shared Foundation Layer
 
 **Modules:** [`engine/models/`](../../engine/models) —
-[`hull_white.py`](../../engine/models/hull_white.py), [`lgm.py`](../../engine/models/lgm.py)
-— and [`engine/trades/`](../../engine/trades) —
-[`ore_builders.py`](../../engine/trades/ore_builders.py)
+[`hull_white.py`](../../engine/models/hull_white.py), [`lgm.py`](../../engine/models/lgm.py),
+[`ore_builders.py`](../../engine/models/ore_builders.py)
 
 ## Plain-language summary
 
 Every instrument pricer in this codebase (`swap.py`, `european_swaption.py`,
 `bermudan_swaption.py`) needs the same two kinds of thing: (1) closed-form interest-rate
 model mathematics — bond prices, bond options, discount factors — and (2) a real ORE
-trade object, with a real ORE-generated payment schedule, to price against. Before these
-two directories existed, both were implemented **separately inside each instrument file**
-— the same Hull-White formula written four times with slightly different call shapes, the
-same ORE swap-building code written three times with nearly identical bodies. `engine/models/`
-and `engine/trades/` are the result of pulling all of that out into one place each, so
-there is exactly one implementation of each formula and each piece of trade-building
-machinery, used by every pricer that needs it.
+trade object, with a real ORE-generated payment schedule, to price against. Before
+`engine/models/` held all of it, both were implemented **separately inside each instrument
+file** — the same Hull-White formula written four times with slightly different call
+shapes, the same ORE swap-building code written three times with nearly identical bodies.
+`engine/models/` is the result of pulling all of that out into one place, so there is
+exactly one implementation of each formula and each piece of trade-building machinery,
+used by every pricer that needs it.
 
 This split also did real, not just cosmetic, work: extracting the model math into its own
 module made it possible to make sigma piecewise (`Sigma`, below) in exactly one place and
@@ -218,7 +217,7 @@ See [Calibration: the `_bisect_xstar` gradient bug](calibration.md#the-_bisect_x
 and [Delta, Gamma, and Theta: two real bugs](../risk/greeks.md#two-real-bugs-this-module-found-and-fixed)
 for the full incident this bug was caught inside.
 
-## `engine/trades/ore_builders.py`
+## `engine/models/ore_builders.py`
 
 **The single source of truth for turning a trade config into a real ORE object and its
 cashflow schedule.** Before this module existed, `_build_ore_swap` was defined three
@@ -271,7 +270,7 @@ engine/models/lgm.py          ──┬──►  engine/instruments/bermudan_sw
                                  ├──►  engine/calibration/basket.py, lgm.py
                                  └──►  engine/risk/greeks.py (Bermudan Delta/Gamma/Theta/Vega)
 
-engine/trades/ore_builders.py ──┬──►  engine/instruments/swap.py
+engine/models/ore_builders.py ──┬──►  engine/instruments/swap.py
                                  ├──►  engine/instruments/european_swaption.py
                                  ├──►  engine/instruments/bermudan_swaption.py
                                  └──►  engine/calibration/basket.py
@@ -294,9 +293,9 @@ the repository layout as a whole.
   explicit regression test documenting the `HullWhite` vs. `LinearGaussMarkovModel`
   divergence for `t>0` described above.
 - `tests/test_swap.py`, `tests/test_european_swaption.py` — indirectly exercise
-  `engine.models.hull_white` and `engine.trades.ore_builders` through the pricers built on
+  `engine.models.hull_white` and `engine.models.ore_builders` through the pricers built on
   them; see [ORE Parity](ore-parity.md) for the specific formula-level correspondences
   these tests check.
-- `tests/test_calibration_basket.py` — `engine.trades.ore_builders.build_vanilla_swap`'s
+- `tests/test_calibration_basket.py` — `engine.models.ore_builders.build_vanilla_swap`'s
   reuse inside `build_coterminal_basket`, and the `Sigma` pytree registration's real-world
   consequence (the `_bisect_xstar` gradient fix — see [Calibration](calibration.md)).

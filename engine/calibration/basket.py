@@ -66,7 +66,7 @@ import ORE
 
 from engine.models.hull_white import ZeroCurve, bond_call, bond_put, discount
 from engine.models.lgm import Sigma, bond_option_sigma, bond_price
-from engine.trades.ore_builders import DAY_COUNTER, build_vanilla_swap, fixed_leg_cashflows
+from engine.models.ore_builders import DAY_COUNTER, build_vanilla_swap, fixed_leg_cashflows
 
 
 @dataclass

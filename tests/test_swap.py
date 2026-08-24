@@ -1070,3 +1070,63 @@ class TestMaturityIndicesFloatRoundoff:
         # combined isclose tolerance at this magnitude comfortably covers
         # float32 roundoff (~1e-7), consistent with the match above.
         assert f32_roundoff < 1e-6 + 1e-5 * maturities[1]
+
+
+class TestSwapConfigValidation:
+    """SwapConfig.__post_init__ (docs/planning/traderx-integration.md gap
+    item 4) -- rejects non-finite notional/fixed_rate and unparseable
+    swap_tenor strings at construction time, before any pricer/ORE call.
+    Zero and negative notional/fixed_rate remain valid (see
+    TestZeroNotional above and TestNegativeNotionalMirrorsSignFlip) -- only
+    non-finite values are rejected."""
+
+    def _base_kwargs(self):
+        return dict(
+            notional=1_000_000.0, fixed_rate=0.03, payer=True,
+            discount_curve_index=0, forward_curve_index=1,
+            swap_tenor="2Y", evaluation_date=TODAY,
+        )
+
+    def test_nan_notional_rejected(self):
+        kwargs = self._base_kwargs()
+        kwargs["notional"] = float("nan")
+        with pytest.raises(ValueError, match="notional"):
+            SwapConfig(**kwargs)
+
+    def test_inf_notional_rejected(self):
+        kwargs = self._base_kwargs()
+        kwargs["notional"] = float("inf")
+        with pytest.raises(ValueError, match="notional"):
+            SwapConfig(**kwargs)
+
+    def test_nan_fixed_rate_rejected(self):
+        kwargs = self._base_kwargs()
+        kwargs["fixed_rate"] = float("nan")
+        with pytest.raises(ValueError, match="fixed_rate"):
+            SwapConfig(**kwargs)
+
+    def test_negative_inf_fixed_rate_rejected(self):
+        kwargs = self._base_kwargs()
+        kwargs["fixed_rate"] = float("-inf")
+        with pytest.raises(ValueError, match="fixed_rate"):
+            SwapConfig(**kwargs)
+
+    def test_unparseable_swap_tenor_rejected(self):
+        kwargs = self._base_kwargs()
+        kwargs["swap_tenor"] = "not-a-tenor"
+        with pytest.raises(ValueError, match="swap_tenor"):
+            SwapConfig(**kwargs)
+
+    def test_zero_and_negative_notional_still_valid(self):
+        """Explicit non-regression check: this __post_init__ must not
+        reintroduce a rejection of the zero/negative notional cases
+        TestZeroNotional/TestNegativeNotionalMirrorsSignFlip already prove
+        are supported pricing inputs."""
+        kwargs = self._base_kwargs()
+        kwargs["notional"] = 0.0
+        SwapConfig(**kwargs)  # must not raise
+        kwargs["notional"] = -1_000_000.0
+        SwapConfig(**kwargs)  # must not raise
+
+    def test_valid_config_constructs_without_error(self):
+        SwapConfig(**self._base_kwargs())

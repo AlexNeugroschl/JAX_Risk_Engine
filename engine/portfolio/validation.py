@@ -1,0 +1,52 @@
+"""
+Leaf-level field validators shared by every trade config's `__post_init__`
+(`SwapConfig`, `SwaptionConfig`, `BermudanSwaptionConfig`,
+`AmericanSwaptionConfig`).
+
+**Why this is a separate module from `engine/portfolio/request.py`, despite
+the plan calling for `engine.portfolio._validate_common_fields`.** Each
+instrument module (`engine/instruments/swap.py`,
+`european_swaption.py`, etc.) needs this helper at `__post_init__` time,
+so it must import it. `engine/portfolio/request.py` itself needs to import
+those SAME instrument modules' config classes (for `PortfolioRequest`'s
+trade union and `derive_maturity_pillars`) -- so `engine/portfolio/
+request.py` importing the instrument modules, and the instrument modules
+importing `_validate_common_fields` back out of `engine/portfolio/
+request.py`, is a genuine circular import, not just an ordering
+inconvenience. This module breaks the cycle: it has zero dependency on any
+instrument config, and `engine/portfolio/request.py` re-exports
+`_validate_common_fields`/`_validate_tenor` from here (`from
+engine.portfolio.validation import ...`) so
+`engine.portfolio._validate_common_fields` still resolves exactly as the
+plan names it -- this split is an implementation detail invisible to any
+caller of `engine.portfolio`.
+
+Deliberately scoped to reject malformed input, not impose business-rule
+policy limits (e.g. no "no rate above 20%" check) -- notional/fixed_rate
+sign and magnitude are otherwise unconstrained (zero and negative notional
+are explicitly supported, see tests/test_swap.py::TestZeroNotional and
+similar classes in the other instrument test files); only non-finite
+(NaN/Inf) values are rejected here.
+"""
+import ORE
+
+
+def _validate_common_fields(notional: float, fixed_rate: float, evaluation_date: ORE.Date) -> None:
+    """Finite notional, finite fixed_rate -- called from every trade
+    config's `__post_init__`. Zero and negative notional/fixed_rate are
+    valid (see module docstring); only non-finite values are rejected."""
+    if notional != notional or notional in (float("inf"), float("-inf")):
+        raise ValueError(f"notional must be finite; got {notional}")
+    if fixed_rate != fixed_rate or fixed_rate in (float("inf"), float("-inf")):
+        raise ValueError(f"fixed_rate must be finite; got {fixed_rate}")
+
+
+def _validate_tenor(period_str: str, field_name: str) -> None:
+    """Confirms `period_str` parses as a valid `ORE.Period` (e.g. "5Y",
+    "18M"), re-raising ORE's own parse failure as a `ValueError` naming the
+    offending field -- rather than letting a malformed tenor string surface
+    as an opaque error deep inside `ORE.MakeVanillaSwap` at pricing time."""
+    try:
+        ORE.Period(period_str)
+    except Exception as exc:
+        raise ValueError(f"{field_name} is not a valid ORE.Period string: {period_str!r} ({exc})") from exc

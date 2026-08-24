@@ -33,7 +33,7 @@ document follows the repo, not the memo.
 
 Treat a fixed-rate Treasury as **a swap's fixed leg plus a bullet principal repayment**,
 discounted off a zero curve calibrated to the same five Treasuries' own market prices — reusing
-`engine/trades/ore_builders.py`'s cashflow-schedule machinery and `engine/models/hull_white.py`'s
+`engine/models/ore_builders.py`'s cashflow-schedule machinery and `engine/models/hull_white.py`'s
 discounting, adding one new thin instrument module and one new curve-bootstrapping module, and
 wiring a batch ingestion path that reads TraderX's EOD risk extract (schema 2) directly.
 
@@ -150,7 +150,7 @@ template):
 @dataclass
 class BondConfig:
     """A fixed-rate bullet Treasury: a fixed coupon leg (ORE.MakeVanillaSwap's
-    fixed leg, reused via engine.trades.ore_builders) plus principal
+    fixed leg, reused via engine.models.ore_builders) plus principal
     redemption at maturity -- no floating leg, no optionality."""
     face_amount: float
     coupon_rate: float          # annual, e.g. 0.04125 for 4.125%
@@ -169,7 +169,7 @@ floating leg at all — building one via `SwapConfig` would mean threading a pha
 fragile and undocumented. A dedicated `BondConfig`/`_build_ore_bond` (via
 `ORE.FixedRateBond` or, more simply, `ORE.MakeVanillaSwap`'s fixed leg alone plus a manually
 appended redemption cashflow) is a few dozen lines and avoids leaning on an accident of a
-different instrument's math. `engine/trades/ore_builders.py`'s `fixed_leg_cashflows` and
+different instrument's math. `engine/models/ore_builders.py`'s `fixed_leg_cashflows` and
 `DAY_COUNTER` are reused unchanged — this is exactly the kind of shared building block that
 module exists for.
 

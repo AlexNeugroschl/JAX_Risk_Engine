@@ -1,0 +1,333 @@
+"""
+Pydantic v2 request/response schemas -- the HTTP boundary's own copy of
+`engine.portfolio`/`engine/instruments/*.py`'s dataclasses, field-for-field.
+
+**Wrap, not replace** (see docs/concepts/architecture.md's "Typed
+configuration" section): the dataclasses stay the single source of truth
+for the engine's own internal shape. Every schema here has a
+`.to_dataclass()` method converting to the real engine dataclass, and every
+result schema has a `.from_dataclass()` classmethod for the reverse
+direction. Pydantic exists ONLY in this HTTP boundary layer -- nothing under
+`engine/portfolio/` or below imports Pydantic or FastAPI, preserving the
+existing principle that core simulation/risk functionality shouldn't require
+the heavy optional `api` dependency extra.
+
+`ORE.Date`/`ORE.Period` fields (SWIG-bound types, not natively
+Pydantic-serializable) are represented here as plain strings: dates as ISO
+`YYYY-MM-DD` (parsed via `ORE.DateParser.parseISO`), tenors/periods as ORE's
+own period-string syntax (e.g. `"5Y"`, `"18M"`, `"0D"`), parsed via
+`ORE.Period(str)` -- the exact same parse `engine.portfolio.validation.
+_validate_tenor` already validates for the underlying dataclasses.
+"""
+from typing import Annotated, Dict, List, Literal, Optional, Sequence, Union
+
+import numpy as np
+import ORE
+from pydantic import BaseModel, Field
+
+from engine.simulation.market_model import (
+    EquityConfig, RatesConfig, SimulationConfig, ZeroCurveConfig,
+)
+from engine.instruments.swap import SwapConfig
+from engine.instruments.european_swaption import SwaptionConfig
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.instruments.american_swaption import AmericanSwaptionConfig
+from engine.portfolio import PortfolioRequest, PortfolioResult
+
+
+def _parse_ore_date(value: str) -> ORE.Date:
+    try:
+        return ORE.DateParser.parseISO(value)
+    except Exception as exc:
+        raise ValueError(f"not a valid ISO date (YYYY-MM-DD): {value!r} ({exc})") from exc
+
+
+def _parse_ore_period(value: str) -> ORE.Period:
+    try:
+        return ORE.Period(value)
+    except Exception as exc:
+        raise ValueError(f"not a valid ORE period string (e.g. '5Y', '18M'): {value!r} ({exc})") from exc
+
+
+class ZeroCurveConfigSchema(BaseModel):
+    times: List[float]
+    rates: List[float]
+
+    def to_dataclass(self) -> ZeroCurveConfig:
+        return ZeroCurveConfig(times=self.times, rates=self.rates)
+
+    @classmethod
+    def from_dataclass(cls, cfg: ZeroCurveConfig) -> "ZeroCurveConfigSchema":
+        return cls(times=list(cfg.times), rates=list(cfg.rates))
+
+
+class EquityConfigSchema(BaseModel):
+    initial_prices: List[float]
+    dividend_yields: List[float]
+    rate_mapping: List[List[float]]
+
+    def to_dataclass(self) -> EquityConfig:
+        return EquityConfig(
+            initial_prices=self.initial_prices, dividend_yields=self.dividend_yields,
+            rate_mapping=self.rate_mapping,
+        )
+
+
+class RatesConfigSchema(BaseModel):
+    initial_rates: List[float]
+    theta: List[float]
+    mean_reversion: List[float]
+    maturities: Optional[List[float]] = None
+    initial_zero_curves: Optional[List[ZeroCurveConfigSchema]] = None
+
+    def to_dataclass(self) -> RatesConfig:
+        return RatesConfig(
+            initial_rates=self.initial_rates, theta=self.theta, mean_reversion=self.mean_reversion,
+            maturities=self.maturities,
+            initial_zero_curves=(
+                [c.to_dataclass() for c in self.initial_zero_curves]
+                if self.initial_zero_curves is not None else None
+            ),
+        )
+
+
+class SimulationConfigSchema(BaseModel):
+    time_grid: List[float]
+    equities: EquityConfigSchema
+    rates: RatesConfigSchema
+    joint_covariance: List[List[float]]
+    scenarios: int = 10000
+
+    def to_dataclass(self) -> SimulationConfig:
+        return SimulationConfig(
+            time_grid=self.time_grid, equities=self.equities.to_dataclass(),
+            rates=self.rates.to_dataclass(), joint_covariance=self.joint_covariance,
+            scenarios=self.scenarios,
+        )
+
+
+class SwapConfigSchema(BaseModel):
+    trade_type: Literal["swap"] = "swap"
+    notional: float
+    fixed_rate: float
+    payer: bool
+    discount_curve_index: int
+    forward_curve_index: int
+    swap_tenor: str = "5Y"
+    index_tenor_months: int = 6
+    floating_spread: float = 0.0
+    evaluation_date: Optional[str] = None
+
+    def to_dataclass(self, default_evaluation_date: ORE.Date) -> SwapConfig:
+        return SwapConfig(
+            notional=self.notional, fixed_rate=self.fixed_rate, payer=self.payer,
+            discount_curve_index=self.discount_curve_index, forward_curve_index=self.forward_curve_index,
+            swap_tenor=self.swap_tenor, index_tenor_months=self.index_tenor_months,
+            floating_spread=self.floating_spread,
+            evaluation_date=_parse_ore_date(self.evaluation_date) if self.evaluation_date else default_evaluation_date,
+        )
+
+
+class SwaptionConfigSchema(BaseModel):
+    trade_type: Literal["european_swaption"] = "european_swaption"
+    notional: float
+    fixed_rate: float
+    payer: bool
+    rate_factor_index: int
+    hw_a: float
+    hw_sigma: float
+    initial_zero_curve: ZeroCurveConfigSchema
+    swap_tenor: str = "5Y"
+    index_tenor_months: int = 6
+    floating_spread: float = 0.0
+    forward_start: str = "0D"
+    exercise_lag_days: int = 2
+    evaluation_date: Optional[str] = None
+
+    def to_dataclass(self, default_evaluation_date: ORE.Date) -> SwaptionConfig:
+        return SwaptionConfig(
+            notional=self.notional, fixed_rate=self.fixed_rate, payer=self.payer,
+            rate_factor_index=self.rate_factor_index, hw_a=self.hw_a, hw_sigma=self.hw_sigma,
+            initial_zero_curve=self.initial_zero_curve.to_dataclass(),
+            swap_tenor=self.swap_tenor, index_tenor_months=self.index_tenor_months,
+            floating_spread=self.floating_spread, forward_start=_parse_ore_period(self.forward_start),
+            exercise_lag_days=self.exercise_lag_days,
+            evaluation_date=_parse_ore_date(self.evaluation_date) if self.evaluation_date else default_evaluation_date,
+        )
+
+
+class BermudanSwaptionConfigSchema(BaseModel):
+    trade_type: Literal["bermudan_swaption"] = "bermudan_swaption"
+    notional: float
+    fixed_rate: float
+    payer: bool
+    rate_factor_index: int
+    hw_a: float
+    hw_sigma: Optional[float] = None  # None -> uncalibrated, filled in by price_portfolio
+    initial_zero_curve: ZeroCurveConfigSchema
+    exercise_times: List[float]
+    swap_tenor: str = "5Y"
+    index_tenor_months: int = 6
+    floating_spread: float = 0.0
+    n_per_std: int = 48
+    std_devs: float = 6.0
+    evaluation_date: Optional[str] = None
+
+    def to_dataclass(self, default_evaluation_date: ORE.Date) -> BermudanSwaptionConfig:
+        return BermudanSwaptionConfig(
+            notional=self.notional, fixed_rate=self.fixed_rate, payer=self.payer,
+            rate_factor_index=self.rate_factor_index, hw_a=self.hw_a, hw_sigma=self.hw_sigma,
+            initial_zero_curve=self.initial_zero_curve.to_dataclass(),
+            exercise_times=self.exercise_times, swap_tenor=self.swap_tenor,
+            index_tenor_months=self.index_tenor_months, floating_spread=self.floating_spread,
+            n_per_std=self.n_per_std, std_devs=self.std_devs,
+            evaluation_date=_parse_ore_date(self.evaluation_date) if self.evaluation_date else default_evaluation_date,
+        )
+
+
+class AmericanSwaptionConfigSchema(BaseModel):
+    trade_type: Literal["american_swaption"] = "american_swaption"
+    notional: float
+    fixed_rate: float
+    payer: bool
+    rate_factor_index: int
+    hw_a: float
+    hw_sigma: Optional[float] = None
+    initial_zero_curve: ZeroCurveConfigSchema
+    first_exercise: float
+    last_exercise: float
+    swap_tenor: str = "5Y"
+    index_tenor_months: int = 6
+    floating_spread: float = 0.0
+    exercise_time_steps_per_year: int = 24
+    n_per_std: int = 48
+    std_devs: float = 6.0
+    evaluation_date: Optional[str] = None
+
+    def to_dataclass(self, default_evaluation_date: ORE.Date) -> AmericanSwaptionConfig:
+        return AmericanSwaptionConfig(
+            notional=self.notional, fixed_rate=self.fixed_rate, payer=self.payer,
+            rate_factor_index=self.rate_factor_index, hw_a=self.hw_a, hw_sigma=self.hw_sigma,
+            initial_zero_curve=self.initial_zero_curve.to_dataclass(),
+            first_exercise=self.first_exercise, last_exercise=self.last_exercise,
+            swap_tenor=self.swap_tenor, index_tenor_months=self.index_tenor_months,
+            floating_spread=self.floating_spread, exercise_time_steps_per_year=self.exercise_time_steps_per_year,
+            n_per_std=self.n_per_std, std_devs=self.std_devs,
+            evaluation_date=_parse_ore_date(self.evaluation_date) if self.evaluation_date else default_evaluation_date,
+        )
+
+
+TradeSchema = Annotated[
+    Union[SwapConfigSchema, SwaptionConfigSchema, BermudanSwaptionConfigSchema, AmericanSwaptionConfigSchema],
+    Field(discriminator="trade_type"),
+]
+
+
+class PortfolioRequestSchema(BaseModel):
+    """Mirrors `engine.portfolio.PortfolioRequest` field-for-field.
+    `evaluation_date` is a request-scoped default applied to any trade that
+    doesn't specify its own (matching every dataclass's own
+    `ORE.Settings.instance().evaluationDate`-defaulting `field`, made
+    explicit here since there's no ambient global evaluation date to fall
+    back on across HTTP requests)."""
+    evaluation_date: str = Field(..., description="ISO date (YYYY-MM-DD), e.g. '2026-07-30'")
+    market: SimulationConfigSchema
+    trades: List[TradeSchema]
+    percentiles: List[float] = Field(default_factory=lambda: [0.95, 0.99])
+    compute_greeks: bool = False
+
+    def to_dataclass(self) -> PortfolioRequest:
+        eval_date = _parse_ore_date(self.evaluation_date)
+        trades = [t.to_dataclass(eval_date) for t in self.trades]
+        return PortfolioRequest(
+            market=self.market.to_dataclass(), trades=trades,
+            percentiles=tuple(self.percentiles), compute_greeks=self.compute_greeks,
+        )
+
+
+class RiskMetricsSchema(BaseModel):
+    values: Dict[str, List[Optional[float]]]
+
+    @classmethod
+    def from_dataclass(cls, risk: Dict[str, "np.ndarray"]) -> "RiskMetricsSchema":
+        out = {}
+        for key, arr in risk.items():
+            arr_np = np.asarray(arr)
+            out[key] = [None if np.isnan(v) else float(v) for v in arr_np.tolist()]
+        return cls(values=out)
+
+
+class GreeksSchema(BaseModel):
+    values: Dict[str, List[float]] = Field(default_factory=dict)
+    theta: Optional[float] = None
+
+    @classmethod
+    def from_dataclass(cls, greeks: Dict[str, "np.ndarray"]) -> "GreeksSchema":
+        values = {}
+        theta = None
+        for key, val in greeks.items():
+            if key == "theta":
+                theta = float(val)
+            else:
+                values[key] = [float(v) for v in np.asarray(val).tolist()]
+        return cls(values=values, theta=theta)
+
+
+class PortfolioResultSchema(BaseModel):
+    base_npv: float
+    npv_cube: List[List[List[float]]]  # [Scenarios, TimeSteps, Trades]
+    risk: RiskMetricsSchema
+    greeks: Optional[Dict[int, GreeksSchema]] = None
+    warnings: List[str] = Field(default_factory=list)
+
+    @classmethod
+    def from_dataclass(cls, result: PortfolioResult) -> "PortfolioResultSchema":
+        return cls(
+            base_npv=result.base_npv,
+            npv_cube=np.asarray(result.npv_cube).tolist(),
+            risk=RiskMetricsSchema.from_dataclass(result.risk),
+            greeks=(
+                {i: GreeksSchema.from_dataclass(g) for i, g in result.greeks.items()}
+                if result.greeks is not None else None
+            ),
+            warnings=list(result.warnings),
+        )
+
+
+class JobStatusSchema(BaseModel):
+    status: Literal["pending", "running", "done", "failed"]
+    result: Optional[PortfolioResultSchema] = None
+    error: Optional[str] = None
+
+
+class HealthSchema(BaseModel):
+    status: Literal["ok"] = "ok"
+
+
+class VersionSchema(BaseModel):
+    engine_version: str
+    jax_backend: str
+    git_commit: Optional[str] = None
+
+
+class CalibrationRequestSchema(BaseModel):
+    """Inputs to `engine.calibration.basket.build_coterminal_basket` +
+    `engine.calibration.lgm.calibrate_lgm_sigma` -- a caller wanting a
+    fitted `Sigma` back without submitting a full portfolio request."""
+    evaluation_date: str
+    exercise_times: List[float]
+    final_maturity_time: float
+    notional: float
+    payer: bool
+    market_vols: List[float]
+    zero_curve: ZeroCurveConfigSchema
+    hw_a: float
+    index_tenor_months: int = 6
+
+
+class CalibrationResultSchema(BaseModel):
+    sigma_times: List[float]
+    sigma_values: List[float]
+    market_prices: List[float]
+    model_prices: List[float]
+    rmse: float

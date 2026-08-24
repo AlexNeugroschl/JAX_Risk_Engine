@@ -8,10 +8,13 @@ This page is about *running* the code. For how it works internally, see
 ## Prerequisites
 
 - Python 3.11 (the project's `venv/` was built against this version).
-- The dependencies listed in [`requirements.txt`](../../requirements.txt):
+- The core dependencies declared in [`pyproject.toml`](../../pyproject.toml):
   `open-source-risk-engine` (the ORE Python bindings — see
   [Architecture: ORE as a dependency](../concepts/architecture.md#ore-as-a-dependency)), `pandas`,
-  `jax`, `jaxlib`, `numpy`, `scipy`, `pytest`.
+  `jax`, `jaxlib`, `numpy`, `scipy`.
+- Two optional extras: `api` (`fastapi`, `pydantic`, `uvicorn[standard]` — needed only to
+  run [the HTTP API](../reference/http-api.md)) and `dev` (`pytest`, `httpx` — needed to run
+  the test suite, `httpx` being required by FastAPI's own `TestClient`).
 
 ## Setting up
 
@@ -20,6 +23,14 @@ From the repository root, with your Python environment activated:
 ```bash
 pip install -r requirements.txt
 ```
+
+This installs the package itself (editable) plus both optional extras — equivalent to
+`pip install -e .[api,dev]`, which `requirements.txt` wraps (see
+[`pyproject.toml`](../../pyproject.toml) for the actual dependency declarations; that file,
+not `requirements.txt`, is the source of truth for versions). If you only need the core
+engine as a library (no HTTP API, no test suite), `pip install -e .` alone is enough — see
+[Architecture: ORE as a dependency](../concepts/architecture.md#ore-as-a-dependency) for
+what stays a hard runtime dependency either way.
 
 The examples on this page assume you're running from the repository root, so that
 `engine` is importable as a top-level package (it has an `__init__.py`, so
@@ -32,9 +43,23 @@ below with `venv\Scripts\python.exe` (or activate the venv first with
 
 ## Running the demos
 
-Each pipeline module has a runnable demo in its own `if __name__ == "__main__":` block,
-showing that module's public API used end-to-end against a shared example scenario (see
-[`engine/simulation/demo_scenarios.py`](../../engine/simulation/demo_scenarios.py)).
+**The whole pipeline in one call:**
+```bash
+python demo.py
+```
+Simulates a market, calibrates a volatility term structure, prices one of each instrument
+type (swap, European/Bermudan/American swaption) via
+[`engine.portfolio.price_portfolio`](../reference/portfolio-entrypoint.md), and prints
+NPVs, VaR/ES, and Bermudan Greeks — the same walkthrough the individual module demos below
+show piece-by-piece, but as a single, realistic entry-point call rather than hand-wired
+pipeline plumbing. Start here if you want to see the whole system working end to end before
+digging into any one stage.
+
+Each pipeline module also has its own runnable demo in its own
+`if __name__ == "__main__":` block, showing that module's public API used end-to-end
+against a shared example scenario (see
+[`engine/simulation/demo_scenarios.py`](../../engine/simulation/demo_scenarios.py)) — useful
+when you want to see one stage in isolation.
 
 **Market simulation:**
 ```bash
@@ -97,8 +122,51 @@ correctness and against ORE's own installed software directly). As of this writi
 suite has 659 tests across `tests/`, all passing.
 
 `tests/conftest.py` provides shared `pytest` fixtures (the example scenario
-configurations from `engine/simulation/demo_scenarios.py`, wrapped as fixtures) so
-individual test files don't each need to build their own copy of the same setup.
+configurations from `engine/simulation/demo_scenarios.py`, wrapped as fixtures, plus a
+`portfolio_request` fixture and a `test_client` fixture for `engine.portfolio`/`engine.api`
+tests) so individual test files don't each need to build their own copy of the same setup.
+
+## Running the API
+
+Requires the `api` extra (`pip install -e .[api]` — already included if you installed via
+`requirements.txt`). Start the server:
+
+```bash
+venv/Scripts/python.exe -m uvicorn engine.api.app:app --reload
+```
+
+Then visit `http://127.0.0.1:8000/docs` for FastAPI's interactive Swagger UI, or submit a
+request directly:
+
+```bash
+curl -X POST http://127.0.0.1:8000/portfolio/price \
+  -H "Content-Type: application/json" \
+  -d '{
+    "evaluation_date": "2026-07-30",
+    "market": {
+      "time_grid": [0.0, 0.5, 1.0, 1.5, 2.0],
+      "equities": {"initial_prices": [100.0], "dividend_yields": [0.0], "rate_mapping": [[0.0]]},
+      "rates": {"initial_rates": [0.03], "theta": [0.03], "mean_reversion": [0.03],
+                "initial_zero_curves": [{"times": [0.0,1.0,2.0,5.0,10.0,30.0], "rates": [0.03,0.03,0.03,0.03,0.03,0.03]}]},
+      "joint_covariance": [[0.04, 0.0], [0.0, 0.0001]],
+      "scenarios": 4096
+    },
+    "trades": [{"trade_type": "swap", "notional": 1000000.0, "fixed_rate": 0.032, "payer": true,
+                "discount_curve_index": 0, "forward_curve_index": 0, "swap_tenor": "2Y"}],
+    "percentiles": [0.95, 0.99]
+  }'
+```
+
+This returns `202 Accepted` with a `job_id` — pricing runs in the background (see
+[HTTP API: Why async, not sync](../reference/http-api.md#why-async-not-sync-the-measured-latency)
+for why). Poll for the result:
+
+```bash
+curl http://127.0.0.1:8000/portfolio/price/<job_id>
+```
+
+See [HTTP API](../reference/http-api.md) for the full endpoint reference, request/response
+schemas, and the async job pattern's reasoning.
 
 ## Writing your own market simulation config
 

@@ -48,13 +48,14 @@ import jax.numpy as jnp
 import numpy as np
 import ORE
 
-from engine.trades.ore_builders import (
+from engine.models.ore_builders import (
     DAY_COUNTER,
     LegCashflows as _LegCashflows,
     build_vanilla_swap,
     fixed_leg_cashflows as _fixed_leg_cashflows,
     floating_leg_cashflows as _floating_leg_cashflows,
 )
+from engine.portfolio.validation import _validate_common_fields, _validate_tenor
 
 
 @dataclass
@@ -85,10 +86,14 @@ class SwapConfig:
     floating_spread: float = 0.0
     evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
 
+    def __post_init__(self) -> None:
+        _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
+        _validate_tenor(self.swap_tenor, "swap_tenor")
+
 
 def _build_ore_swap(cfg: SwapConfig) -> ORE.VanillaSwap:
     """CPU: builds the real ORE trade (schedules, day counts, conventions)
-    -- see `engine.trades.ore_builders.build_vanilla_swap`, the single
+    -- see `engine.models.ore_builders.build_vanilla_swap`, the single
     shared implementation of this construction (used identically by
     `european_swaption.py`/`bermudan_swaption.py`)."""
     return build_vanilla_swap(

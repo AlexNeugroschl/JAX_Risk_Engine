@@ -120,7 +120,7 @@ from engine.instruments.bermudan_swaption import (
     _run_backward_induction,
     prepare_bermudan,
 )
-from engine.trades.ore_builders import build_vanilla_swap, fixed_leg_cashflows, floating_leg_cashflows
+from engine.models.ore_builders import build_vanilla_swap, fixed_leg_cashflows, floating_leg_cashflows
 from engine.models.hull_white import A as _hw_A, ZeroCurve, discount as _discount_at, zero_rate as _zero_rate_at
 from engine.models.lgm import Sigma, as_sigma
 

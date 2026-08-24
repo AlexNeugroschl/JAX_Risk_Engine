@@ -91,6 +91,26 @@ mathematically.
 | `compute_hw_A_matrix` | `(zero_curves: List[ZeroCurveConfig], hw_a, hw_sigma, step_times, maturities, B_matrix) -> np.ndarray` | Plain NumPy (CPU-only). Returns `[TimeSteps, Maturities, NumRates]`. |
 | `reconstruct_yield_curves` | `(hw_paths: jax.Array, A: jax.Array, B: jax.Array) -> jax.Array` | `@jax.jit`-compiled. Returns `[Scenarios, TimeSteps, Maturities, NumRates]`. |
 
+### `validate_joint_covariance(matrix: List[List[float]] | np.ndarray) -> None`
+
+Called at the very top of `generate_paths`, before any JAX computation. Confirms `matrix`
+is square, symmetric (within float tolerance), and positive semi-definite (via
+`np.linalg.eigvalsh`). **Raises** `ValueError` naming the offending eigenvalue(s)/index, or
+the symmetry mismatch, rather than letting an invalid matrix silently NaN every simulated
+path through `jnp.linalg.cholesky` — see
+[docs/planning/traderx-integration.md](../planning/traderx-integration.md#1-joint_covariance-psd-validationrepair-highest-priority).
+
+### `nearest_psd(matrix, epsilon: float = 1e-10) -> np.ndarray`
+
+Opt-in "best effort" repair for a `joint_covariance` that fails `validate_joint_covariance`
+— standard eigenvalue-clipping projection onto the nearest PSD matrix, clipping every
+eigenvalue below `epsilon` up to `epsilon` (not literally `0.0` — see the function's own
+docstring for why an exact-zero clip produces a numerically rank-deficient matrix that
+would still NaN downstream). **Never called automatically** by `generate_paths` or
+`engine.portfolio` — a genuinely invalid correlation input is always rejected, never
+silently altered and priced anyway; a caller who wants "close enough" behavior calls this
+explicitly.
+
 ---
 
 ## `engine.instruments.swap`
@@ -110,6 +130,13 @@ Describes one vanilla fixed-vs-floating interest rate swap.
 | `index_tenor_months` | `int` | `6` | Floating leg reset frequency in months (`6` = semi-annual). |
 | `floating_spread` | `float` | `0.0` | Fixed spread added to every floating payment. |
 | `evaluation_date` | `ORE.Date` | today's global ORE evaluation date | The swap's "as-of" date. |
+
+**Validated at construction (`__post_init__`)**: `notional`/`fixed_rate` must be finite
+(zero and negative values are explicitly supported — only `NaN`/`Inf` are rejected);
+`swap_tenor` must parse as a valid `ORE.Period`. Raises `ValueError` naming the bad field.
+This is deliberately scoped to reject malformed input, not impose business-rule limits
+(e.g. no "no rate above 20%" check) — see
+[docs/planning/traderx-integration.md](../planning/traderx-integration.md#4-trade-level-input-validation-notional-rate-ranges-tenor-sanity).
 
 ### `price_swaps(yield_curves: jax.Array, maturities: np.ndarray, swap_configs: List[SwapConfig]) -> jax.Array`
 
@@ -159,6 +186,9 @@ Jamshidian's-trick pricing model.
 | `forward_start` | `ORE.Period` | `ORE.Period(0, ORE.Days)` | How far in the future the underlying swap's accrual is delayed beyond the standard 2-day spot lag — e.g. `ORE.Period(5, ORE.Years)` for a swaption exercisable in ~5Y. |
 | `exercise_lag_days` | `int` | `2` | Business days from `evaluation_date + forward_start` to the exercise date (standard spot-lag convention). |
 | `evaluation_date` | `ORE.Date` | today's global ORE evaluation date | The swaption's "as-of" date. |
+
+**Validated at construction (`__post_init__`)**: same `notional`/`fixed_rate`/`swap_tenor`
+checks as `SwapConfig`, plus `hw_sigma` must be finite.
 
 ### `price_swaptions(hw_paths: jax.Array, step_times: jax.Array, swaption_configs: List[SwaptionConfig]) -> jax.Array`
 
@@ -212,6 +242,12 @@ algorithm.
 | `std_devs` | `float` | `6.0` | How many standard deviations the state grid spans. |
 | `evaluation_date` | `ORE.Date` | today's global ORE evaluation date | The swaption's "as-of" date. |
 
+**Validated at construction (`__post_init__`)**: same `notional`/`fixed_rate`/`swap_tenor`
+checks as `SwapConfig`; `hw_sigma` (a plain `float` or a piecewise `Sigma` — every bucket
+value is checked) must be finite, **or exactly `None`** (a valid sentinel meaning
+"uncalibrated" — see [The Portfolio Entry Point: Automatic calibration](portfolio-entrypoint.md#automatic-calibration));
+`exercise_times` must be non-empty and sorted ascending.
+
 ### `price_bermudan_swaption_base(cfg: BermudanSwaptionConfig) -> float`
 
 The t=0 NPV of a single Bermudan swaption (no simulated conditioning) — read off the
@@ -254,6 +290,10 @@ Same fields as `BermudanSwaptionConfig` above, except `exercise_times` is replac
 | `first_exercise` | `float` | *required* | Start of the continuous exercise window, year-fractions from `evaluation_date`. |
 | `last_exercise` | `float` | *required* | End of the exercise window. |
 | `exercise_time_steps_per_year` | `int` | `24` | ORE's own `ExerciseTimeStepsPerYear` model parameter — how finely the window is discretized. |
+
+**Validated at construction (`__post_init__`)**: same `notional`/`fixed_rate`/`swap_tenor`/
+`hw_sigma`(-or-`None`) checks as `BermudanSwaptionConfig`, plus `first_exercise <=
+last_exercise` (equal values — a zero-width window — are valid).
 
 ### `AmericanSwaptionConfig.to_bermudan() -> BermudanSwaptionConfig`
 
@@ -373,12 +413,211 @@ cashflow paid in between (ORE's own Theta definition — see
 **Returns** a single number: `NPV(today + theta_days, same curve) − NPV(today)` — no
 interim-cashflow term (a European swaption pays no cashflow before its own exercise date).
 
+### `bermudan_delta_gamma(cfg: BermudanSwaptionConfig, curve: ZeroCurve, bump_size: float = DEFAULT_RATE_BUMP) -> Dict[str, jax.Array]`
+
+Per-pillar Delta and Gamma of one Bermudan/American swaption's t=0 NPV with respect to its
+own LGM calibration curve — same signature/return shape and same `curve`-shares-
+`cfg.initial_zero_curve`'s-pillar-times convention as `swaption_delta_gamma` above. Works
+for `AmericanSwaptionConfig` too via `.to_bermudan()` (see
+[American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)) — there is
+no separate `american_delta_gamma` function.
+
+**Returns** a `dict`: `"delta"`, `"gamma"`, each shaped `[len(curve.pillar_rates)]`.
+
+### `bermudan_theta(cfg: BermudanSwaptionConfig, curve: ZeroCurve, theta_days: int = DEFAULT_THETA_DAYS) -> float`
+
+**Returns** a single number: `NPV(today + theta_days, same curve) − NPV(today)` — no
+interim-cashflow term, same reasoning as `swaption_theta` (see
+[Delta, Gamma, and Theta: Theta](../risk/greeks.md#theta-advance-the-evaluation-date-hold-the-market-fixed)).
+
+### `bermudan_vega(cfg: BermudanSwaptionConfig, curve: ZeroCurve, calibration_targets: List[CalibrationTarget], market_vol_bump: float = 0.0001) -> jax.Array`
+
+Per-basket-instrument Vega: dollar NPV change for a `market_vol_bump` (1bp of normal vol by
+default) move in **one** market swaption's own quoted volatility, holding every other
+market quote fixed — computed via the implicit function theorem through
+`engine.calibration.lgm.calibrate_lgm_sigma`'s own bootstrap root-find, not by literally
+re-running calibration once per bumped market vol (see
+[Delta, Gamma, and Theta: Vega](../risk/greeks.md#vega-bermudanamerican-only) for the full
+derivation, including the cross-bucket Jacobian term a naive first attempt missed).
+
+**Parameters**
+- `cfg.hw_sigma` **must** be the exact `Sigma` `calibrate_lgm_sigma` produced from
+  `calibration_targets` (same order) — this function differentiates through that
+  relationship, it does not re-run calibration itself.
+
+**Returns** `[len(calibration_targets)]` — Vega to each basket instrument's own market vol,
+in dollars per `market_vol_bump`.
+
 ### Constants
 
 | Name | Value | Meaning |
 |---|---|---|
 | `DEFAULT_RATE_BUMP` | `0.0001` | ORE's own example-config default: 1 basis point, absolute. |
 | `DEFAULT_THETA_DAYS` | `1` | ORE's own default Theta horizon: 1 calendar day. |
+
+---
+
+## `engine.calibration.basket`
+
+Co-terminal calibration basket construction and LGM's own closed-form swaption pricer used
+during calibration — see [Calibration](calibration.md) for the full algorithm and its
+two-route verification against ORE.
+
+### `CalibrationTarget`
+
+One co-terminal European swaption calibration target.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `expiry_time` | `float` | T0, year-fraction from `evaluation_date`. |
+| `accrual_start_time` | `float` | The underlying's own first accrual date. |
+| `fixed_cashflow_times` | `np.ndarray` | `[N]` year-fractions from `evaluation_date`. |
+| `fixed_cashflow_amounts` | `np.ndarray` | `[N]`, at the ATM fixed rate. |
+| `fixed_accrual_fractions` | `np.ndarray` | `[N]`, ORE's own `accrualPeriod()` per coupon. |
+| `notional` | `float` | |
+| `payer` | `bool` | |
+| `forward_rate` | `float` | The underlying's own par/ATM rate (== strike, by construction). |
+| `market_vol` | `float` | Normal (basis-point) volatility. |
+
+### `build_coterminal_basket(exercise_times, final_maturity_time, notional, payer, market_vols, zero_curve, evaluation_date, index_tenor_months=6) -> List[CalibrationTarget]`
+
+Builds one co-terminal `CalibrationTarget` per exercise date — see
+[Calibration: The co-terminal calibration basket](calibration.md#the-co-terminal-calibration-basket).
+
+### `price_lgm_swaption(curve: ZeroCurve, a: float, sigma: Union[float, Sigma], target: CalibrationTarget) -> jax.Array`
+
+t=0 NPV of one co-terminal European swaption under LGM, for a trial `(a, sigma)` — the
+model-price half of calibration's error function. Differentiable end-to-end in `sigma`
+(and `a`) via an implicit-function-theorem-corrected bisection — see
+[Calibration: the `_bisect_xstar` gradient bug](calibration.md#the-_bisect_xstar-gradient-bug).
+
+### `bachelier_swaption_price(target: CalibrationTarget, curve: ZeroCurve) -> jax.Array`
+
+Market price implied by `target.market_vol` via the Bachelier (normal) formula — the
+target `price_lgm_swaption` is calibrated to match.
+
+---
+
+## `engine.calibration.lgm`
+
+### `CalibrationResult`
+
+Output of `calibrate_lgm_sigma`.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `sigma` | `Sigma` | The fitted piecewise volatility term structure. |
+| `market_prices` | `jax.Array` | `[N]`, Bachelier price implied by each target's `market_vol`. |
+| `model_prices` | `jax.Array` | `[N]`, `price_lgm_swaption` at the final calibrated `Sigma`. |
+| `rmse` | `float` | `sqrt(mean((model-market)^2))` — ORE's own `error_` metric. |
+
+### `calibrate_lgm_sigma(targets: List[CalibrationTarget], curve: ZeroCurve, a: float) -> CalibrationResult`
+
+Bootstrap-calibrates a piecewise `Sigma` to `targets` (in increasing expiry order,
+asserted explicitly) — see [Calibration: Why bootstrap, not joint least-squares](calibration.md#why-bootstrap-not-joint-least-squares)
+for the full algorithm. `a` (mean reversion) is always an input, never calibrated (see
+[Calibration: Why mean reversion is never calibrated](calibration.md#why-mean-reversion-is-never-calibrated)).
+
+**Raises** an `AssertionError` if `targets` is empty or not in increasing expiry order.
+
+---
+
+## `engine.models.hull_white`
+
+The single source of truth for this codebase's Hull-White 1-Factor closed-form math — see
+[Models & Trades](models-and-trades.md#enginemodelshull_whitepy).
+
+| Name | Signature | Notes |
+|---|---|---|
+| `ZeroCurve` | dataclass: `pillar_times: jax.Array`, `pillar_rates: jax.Array` | JAX-array counterpart of `engine.simulation.market_model.ZeroCurveConfig`, differentiable via `jnp.interp`. `ZeroCurve.flat(rate, pillar_times)` is a convenience constructor. |
+| `B` | `(t, T, a) -> jax.Array` | `B(t,T) = (1-exp(-a*(T-t)))/a`, with the `a==0` limit handled explicitly. |
+| `A` | `(curve, t, T, a, sigma, B_override=None) -> jax.Array` | `A(t,T)` calibrated to `curve`'s own market. |
+| `discount` | `(curve, t) -> jax.Array` | `P(0,t) = exp(-zero_rate(t)*t)`. |
+| `zero_rate` | `(curve, t) -> jax.Array` | Linear interpolation on `curve`'s own zero rates, flat-extrapolated at the ends. |
+| `log_discount` | `(curve, t) -> jax.Array` | `ln P(0,t)`. |
+| `bond_option_sigma` | `(T0, T, t, a, sigma) -> jax.Array` | The bond-option volatility term Jamshidian's formula needs. |
+| `bond_call` / `bond_put` | `(P_t_T0, P_t_Ti, K, sigma_p) -> jax.Array` | Black-on-bond formulas. |
+
+---
+
+## `engine.models.lgm`
+
+Linear Gauss-Markov closed-form math (piecewise-constant `Sigma`) — the model
+`bermudan_swaption.py`/`american_swaption.py` and `engine/calibration/` are built on. See
+[Models & Trades](models-and-trades.md#enginemodelslgmpy) for why this is **not**
+interchangeable with `engine.models.hull_white` for `t>0`, despite sharing `(a, sigma)` and
+today's curve.
+
+| Name | Signature | Notes |
+|---|---|---|
+| `Sigma` | dataclass (JAX pytree): `times: jax.Array`, `values: jax.Array` | Piecewise-constant vol; `len(values) == len(times) + 1`. `Sigma.flat(sigma)` builds a one-bucket flat `Sigma`. |
+| `as_sigma` | `(sigma: float \| jax.Array \| Sigma) -> Sigma` | Upgrades a plain scalar to a one-bucket `Sigma`; the normalization point every function below calls first. |
+| `H` / `H_prime` | `(a, t) -> jax.Array` | LGM's own state-space mapping function and its derivative. |
+| `zeta` | `(sigma, t) -> jax.Array` | Cumulative variance; accepts `sigma` as `Sigma` or scalar. |
+| `bond_price` | `(curve, a, sigma, t, T, x) -> jax.Array` | `P(t,T,x)`, live-verified against `ORE.LinearGaussMarkovModel.discountBond`. |
+| `numeraire` | `(curve, a, sigma, t, x) -> jax.Array` | LGM's own numeraire — required for correct martingale-measure discounting (see [Calibration](calibration.md#route-2-the-full-price-checked-against-a-numeraire-deflated-monte-carlo-simulation)). |
+| `bond_option_sigma` | `(a, sigma, T0, T, t) -> jax.Array` | LGM analogue of the Hull-White version above. |
+| `r_from_x` / `x_from_r` | `(curve, a, sigma, t, x_or_r) -> jax.Array` | Converts between LGM's own state variable `x` and the direct short rate `r` (affine, exact). |
+
+---
+
+## `engine.models.ore_builders`
+
+Shared ORE trade-building and cashflow-extraction helpers — the single source of truth for
+turning a trade config into a real ORE object and its cashflow schedule, used by every
+pricer in `engine/instruments/`. See
+[Models & Trades](models-and-trades.md#enginemodelsore_builderspy).
+
+| Name | Signature | Notes |
+|---|---|---|
+| `DAY_COUNTER` | `ORE.Actual365Fixed()` | The single day-count convention used throughout this codebase, on both legs of every trade. |
+| `build_vanilla_swap` | `(notional, fixed_rate, payer, swap_tenor, index_tenor_months, floating_spread, evaluation_date, forward_start=None) -> ORE.VanillaSwap` | Builds a real ORE swap via `ORE.MakeVanillaSwap`. |
+| `LegCashflows` | dataclass: `payment_times`, `accrual_start_times`, `accrual_end_times`, `accrual_fractions` (each `np.ndarray`), `notional: float` | One leg's cashflow schedule, as year-fractions from `today`. |
+| `fixed_leg_cashflows` / `floating_leg_cashflows` | `(swap, today) -> LegCashflows` | Extracts each coupon's dates/accrual fraction from a real ORE-generated schedule. |
+
+---
+
+## `engine.portfolio`
+
+The top-level entry point tying every module above together — see
+[The Portfolio Entry Point](portfolio-entrypoint.md) for the full write-up (this table is
+the field-level quick reference; that doc explains the *why*).
+
+### `PortfolioRequest`
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `market` | `SimulationConfig` | *required* | Curves, vols, correlations. |
+| `trades` | `List[SwapConfig \| SwaptionConfig \| BermudanSwaptionConfig \| AmericanSwaptionConfig]` | *required* | Heterogeneous, any order/mix. |
+| `percentiles` | `Sequence[float]` | `(0.95, 0.99)` | |
+| `calibration_targets` | `Optional[List[CalibrationTarget]]` | `None` | Used when any Bermudan/American trade's `hw_sigma is None`. |
+| `compute_greeks` | `bool` | `False` | |
+
+### `PortfolioResult`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `base_npv` | `float` | |
+| `npv_cube` | `jax.Array` | `[Scenarios, TimeSteps, Trades]`, caller's own `trades` order. |
+| `risk` | `Dict[str, jax.Array]` | `compute_risk_metrics`'s own output. |
+| `greeks` | `Optional[Dict[int, Dict[str, jax.Array]]]` | Keyed by trade index in `request.trades`. |
+| `warnings` | `List[str]` | Known-limitation warnings surfaced during validation. |
+
+### `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
+
+The main entry point — see [The Portfolio Entry Point](portfolio-entrypoint.md#price_portfoliorequest-portfoliorequest---portfolioresult)
+for the full 9-step orchestration.
+
+### `validate_portfolio_against_simulation(sim_config: SimulationConfig, trade_configs: Sequence[...]) -> None`
+
+Cross-checks every trade's duplicated `hw_a`/`hw_sigma`/`initial_zero_curve` against
+`sim_config`. **Raises** `ValueError` naming the trade and the mismatched field. See
+[The Portfolio Entry Point](portfolio-entrypoint.md#validate_portfolio_against_simulationsim_config-trade_configs---none).
+
+### `derive_maturity_pillars(trade_configs: Sequence[...], evaluation_date: ORE.Date) -> List[float]`
+
+Automatic maturity-pillar assembly from every `SwapConfig`'s real ORE schedule. See
+[The Portfolio Entry Point](portfolio-entrypoint.md#derive_maturity_pillarstrade_configs-evaluation_date---listfloat).
 
 ---
 
@@ -396,3 +635,19 @@ pipeline itself, but used throughout the codebase's demos and tests. See
 | `single_currency_swap_demo_config()` | `() -> SimulationConfig` | One-currency, two-rate-factor (discounting + forwarding) example scenario, sized for a 2Y demo swap. |
 | `swaption_demo_config()` | `() -> SimulationConfig` | One rate factor (USD, 3%), simulated out to 5Y in six-month steps -- used by `engine.instruments.european_swaption`'s demo (`rates.maturities` left unset, since the swaption pricer works directly off simulated rate paths rather than a yield-curve cube). |
 | `flat_yield_curves(disc_rate, fwd_rate, maturities=SWAP_DEMO_MATURITIES, eval_date=EVAL_DATE)` | `(...) -> jax.Array` | Builds a deterministic `[1, 1, len(maturities), 2]` yield curve cube directly from ORE's own flat curve objects — no simulation randomness. Used for VaR's `base_npv` baseline and for ORE cross-check tests. |
+
+---
+
+## `engine.api`
+
+The HTTP boundary over `engine.portfolio.price_portfolio` — see [HTTP API](http-api.md)
+for the full endpoint reference, the sync-vs-async job pattern's reasoning, and request/
+response schema tables. Requires the `api` optional-dependency extra
+(`pip install -e .[api]`) — `engine.portfolio` and everything below it has zero dependency
+on this package or its own dependencies (FastAPI, Pydantic, uvicorn).
+
+| Module | Contents |
+|---|---|
+| `engine.api.app` | `create_app() -> FastAPI` / `app` — the FastAPI application factory. Run with `uvicorn engine.api.app:app`. |
+| `engine.api.routes` | `router: APIRouter` — `GET /health`, `GET /version`, `POST /portfolio/price`, `GET /portfolio/price/{job_id}`, `POST /calibration/lgm`. |
+| `engine.api.schemas` | Pydantic v2 models mirroring `engine.portfolio`/`engine/instruments/*.py`'s dataclasses field-for-field, each with `.to_dataclass()`/`.from_dataclass()` — see [HTTP API: Request/response schemas](http-api.md#request-schema-portfoliorequestschema). |

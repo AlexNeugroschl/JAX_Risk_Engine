@@ -629,3 +629,44 @@ class TestPayerReceiverAndPortfolio:
         assert not np.allclose(np.asarray(cube[:, :, 0]), np.asarray(cube[:, :, 1]))
         assert not np.allclose(np.asarray(cube[:, :, 1]), np.asarray(cube[:, :, 2]))
         assert not np.allclose(np.asarray(cube[:, :, 0]), np.asarray(cube[:, :, 2]))
+
+
+class TestBermudanSwaptionConfigValidation:
+    """BermudanSwaptionConfig.__post_init__ (docs/planning/
+    traderx-integration.md gap item 4) -- rejects non-finite notional/
+    fixed_rate/hw_sigma, unparseable swap_tenor, empty exercise_times, and
+    unsorted exercise_times at construction time. Zero notional remains
+    valid (see TestZeroNotional-equivalent zero-notional coverage above)."""
+
+    def test_nan_notional_rejected(self):
+        with pytest.raises(ValueError, match="notional"):
+            _make_bermudan(notional=float("nan"))
+
+    def test_inf_fixed_rate_rejected(self):
+        with pytest.raises(ValueError, match="fixed_rate"):
+            _make_bermudan(fixed_rate=float("inf"))
+
+    def test_nan_flat_hw_sigma_rejected(self):
+        with pytest.raises(ValueError, match="hw_sigma"):
+            _make_bermudan(hw_sigma=float("nan"))
+
+    def test_nan_piecewise_sigma_bucket_rejected(self):
+        from engine.models.lgm import Sigma
+        bad_sigma = Sigma(times=jnp.asarray([1.0, 2.0]), values=jnp.asarray([0.01, float("nan"), 0.02]))
+        with pytest.raises(ValueError, match="hw_sigma"):
+            _make_bermudan(hw_sigma=bad_sigma)
+
+    def test_unparseable_swap_tenor_rejected(self):
+        with pytest.raises(ValueError, match="swap_tenor"):
+            _make_bermudan(swap_tenor="not-a-tenor")
+
+    def test_empty_exercise_times_rejected(self):
+        with pytest.raises(ValueError, match="exercise_times"):
+            _make_bermudan(exercise_times=[])
+
+    def test_unsorted_exercise_times_rejected(self):
+        with pytest.raises(ValueError, match="exercise_times"):
+            _make_bermudan(exercise_times=[2.0, 1.0, 3.0])
+
+    def test_valid_config_constructs_without_error(self):
+        _make_bermudan()  # must not raise

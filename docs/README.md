@@ -13,6 +13,8 @@ pricing engine built in JAX, designed to mathematically mirror
 | Actually run the code | [User Guide](getting-started/user-guide.md) |
 | Understand how the code is organized as software | [Architecture](concepts/architecture.md) |
 | Look up exact function signatures and data shapes | [API Reference](reference/api-reference.md) |
+| Price a whole portfolio in one call, from Python | [The Portfolio Entry Point](reference/portfolio-entrypoint.md) |
+| Price a whole portfolio over HTTP | [HTTP API](reference/http-api.md) |
 | Understand a term you don't recognize | [Glossary](concepts/glossary.md) |
 
 ## Concepts
@@ -54,8 +56,15 @@ common `[Scenarios, TimeSteps, Trades]` NPV cube:
 
 - **[API Reference](reference/api-reference.md)** — exact inputs/outputs for every public
   function and config dataclass.
+- **[The Portfolio Entry Point](reference/portfolio-entrypoint.md)** — `engine/portfolio/`'s
+  `PortfolioRequest`/`PortfolioResult`/`price_portfolio`, the single call that ties every
+  module together, plus the validation/assembly layer it's built on
+  (`docs/planning/traderx-integration.md`).
+- **[HTTP API](reference/http-api.md)** — the FastAPI wrapper (`engine/api/`) over
+  `price_portfolio`: endpoint-by-endpoint reference, the async job pattern and why, request/
+  response schemas.
 - **[Models & Trades](reference/models-and-trades.md)** — the shared foundation layer
-  (`engine/models/`, `engine/trades/`) every instrument pricer is built on: Hull-White and
+  (`engine/models/`) every instrument pricer is built on: Hull-White and
   LGM closed-form math, and shared ORE trade-building/cashflow extraction.
 - **[Calibration](reference/calibration.md)** — `engine/calibration/`'s bootstrap fit of a
   piecewise LGM volatility term structure to market swaption quotes, matching
@@ -67,8 +76,10 @@ common `[Scenarios, TimeSteps, Trades]` NPV cube:
 
 - **[Roadmap](planning/roadmap-and-history.md)** — the phased build-out plan and what's
   done vs. planned.
-- **[TraderX Integration Plan](planning/traderx-integration.md)** — what's needed to
-  safely accept arbitrary portfolios from an external trading system.
+- **[TraderX Integration Plan](planning/traderx-integration.md)** — the original gap
+  analysis for safely accepting arbitrary portfolios from an external trading system, and
+  what actually landed (now implemented — see
+  [The Portfolio Entry Point](reference/portfolio-entrypoint.md)).
 
 ## Document conventions
 

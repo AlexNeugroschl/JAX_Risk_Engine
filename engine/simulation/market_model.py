@@ -321,6 +321,85 @@ def compute_hw_A_matrix(
     return np.asarray(jnp.stack(A_per_factor, axis=-1))
 
 
+def validate_joint_covariance(matrix) -> None:
+    """
+    Guards `generate_paths` against a non-PSD `joint_covariance` -- without
+    this check, `jnp.linalg.cholesky` on an invalid correlation matrix
+    silently produces an all-NaN factor, which then silently NaNs every
+    simulated path with no error raised anywhere (see
+    docs/planning/traderx-integration.md's gap item 1). Cheap: this runs
+    once per `generate_paths` call, on the CPU, not once per scenario.
+
+    Checks (in order): square, symmetric (within float tolerance), and
+    positive semi-definite (every eigenvalue >= -tol, via
+    `np.linalg.eigvalsh` -- the standard, numerically stable eigenvalue
+    routine for symmetric matrices). Raises `ValueError` naming the
+    specific problem; for a non-PSD matrix, names every offending
+    (negative) eigenvalue and its index in the ascending-sorted spectrum
+    `eigvalsh` returns.
+    """
+    m = np.asarray(matrix, dtype=np.float64)
+    if m.ndim != 2 or m.shape[0] != m.shape[1]:
+        raise ValueError(f"joint_covariance must be a square 2D matrix; got shape {m.shape}")
+
+    tol = 1e-8
+    asymmetry = np.abs(m - m.T)
+    if np.any(asymmetry > tol):
+        i, j = np.unravel_index(np.argmax(asymmetry), asymmetry.shape)
+        raise ValueError(
+            f"joint_covariance must be symmetric (within {tol}); largest "
+            f"asymmetry {asymmetry[i, j]:.3e} at ({i}, {j}): "
+            f"matrix[{i}][{j}]={m[i, j]} vs matrix[{j}][{i}]={m[j, i]}"
+        )
+
+    eigenvalues = np.linalg.eigvalsh(m)
+    negative = np.nonzero(eigenvalues < -tol)[0]
+    if negative.size > 0:
+        offenders = ", ".join(f"eigenvalue[{i}]={eigenvalues[i]:.3e}" for i in negative)
+        raise ValueError(
+            f"joint_covariance is not positive semi-definite: {offenders} "
+            f"(full spectrum: {np.round(eigenvalues, 8).tolist()}). A "
+            f"correlation/covariance matrix assembled from independently "
+            f"estimated pairwise entries is a common way to end up here -- "
+            f"see nearest_psd() for an opt-in repair utility."
+        )
+
+
+def nearest_psd(matrix, epsilon: float = 1e-10) -> np.ndarray:
+    """
+    Opt-in "best effort" repair for a `joint_covariance` that fails
+    `validate_joint_covariance`: standard eigenvalue-clipping projection
+    onto the nearest positive semi-definite matrix (clip every eigenvalue
+    below `epsilon` up to `epsilon`, reconstruct from the clipped spectrum,
+    re-symmetrize to cancel floating-point asymmetry introduced by the
+    reconstruction).
+
+    Clips to `epsilon` (a small positive number), not literally 0 --
+    clipping all the way to exactly 0 produces a mathematically-PSD-but-
+    numerically-rank-deficient matrix, which is a real floating-point
+    Cholesky failure mode in its own right (the same singular-boundary
+    phenomenon as an exact rho=+-1 correlation: `jnp.linalg.cholesky`
+    silently returns NaN at exact rank deficiency, confirmed directly in
+    `tests/test_market_model.py::TestCholeskyOnDegenerateCorrelation`) --
+    so a repair that clips to exactly 0 would frequently hand
+    `generate_paths` a matrix that still NaNs downstream, defeating the
+    entire point of "opt-in best-effort repair." `epsilon` trades a
+    negligible amount of variance for a matrix that is genuinely usable.
+
+    Deliberately never called automatically by `generate_paths` or
+    anything in `engine/portfolio/request.py` -- a genuinely bad correlation input
+    must be rejected loudly, not silently altered and priced anyway. A
+    caller who explicitly wants "close enough" behavior calls this
+    directly and is then responsible for having done so knowingly.
+    """
+    m = np.asarray(matrix, dtype=np.float64)
+    symmetric = 0.5 * (m + m.T)
+    eigenvalues, eigenvectors = np.linalg.eigh(symmetric)
+    clipped = np.maximum(eigenvalues, epsilon)
+    repaired = eigenvectors @ np.diag(clipped) @ eigenvectors.T
+    return 0.5 * (repaired + repaired.T)
+
+
 @jax.jit
 def reconstruct_yield_curves(hw_paths: jax.Array, A: jax.Array, B: jax.Array) -> jax.Array:
     """
@@ -385,8 +464,9 @@ class SimulationConfig:
     is the canonical, IDE- and API-friendly entry point -- catches
     misspelled/missing fields at construction time via Python's own
     dataclass machinery, rather than a KeyError deep inside generate_paths.
-    Also the natural shape for a future Pydantic schema (Phase 8: TraderX
-    API integration) to mirror or subclass.
+    Also the natural shape for the Pydantic schema in `engine/api/schemas.py`
+    to mirror -- see the roadmap's "TraderX API integration" phase
+    (docs/planning/roadmap-and-history.md) for status.
 
     time_grid: absolute times, ascending, starting at 0.0.
     joint_covariance: [NumEq+NumHW, NumEq+NumHW], equities first then rates,
@@ -417,6 +497,8 @@ def generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, j
     "numeraire" [S,T], and (if config.rates.maturities is set)
     "yield_curves" [S,T,Maturities,NumHW].
     """
+    validate_joint_covariance(config.joint_covariance)
+
     jax.config.update("jax_enable_x64", precision == 64)
     dtype = jnp.float64 if precision == 64 else jnp.float32
 

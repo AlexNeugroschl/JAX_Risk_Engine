@@ -1025,3 +1025,45 @@ class TestShapeAndAPIRobustness:
         assert npv_three.shape == (3, 2, 3)
         np.testing.assert_allclose(np.asarray(npv_three[:, :, 0]), np.asarray(npv_one[:, :, 0]), rtol=1e-9)
         np.testing.assert_allclose(np.asarray(npv_three[:, :, 1]), np.asarray(npv_one[:, :, 0]), rtol=1e-9)
+
+
+class TestSwaptionConfigValidation:
+    """SwaptionConfig.__post_init__ (docs/planning/traderx-integration.md
+    gap item 4) -- rejects non-finite notional/fixed_rate/hw_sigma and
+    unparseable swap_tenor strings at construction time. Zero notional
+    remains valid (see TestZeroNotional above)."""
+
+    def test_nan_notional_rejected(self):
+        with pytest.raises(ValueError, match="notional"):
+            SwaptionConfig(
+                notional=float("nan"), fixed_rate=0.03, payer=True, rate_factor_index=0,
+                hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
+                swap_tenor="5Y", evaluation_date=TODAY,
+            )
+
+    def test_inf_fixed_rate_rejected(self):
+        with pytest.raises(ValueError, match="fixed_rate"):
+            SwaptionConfig(
+                notional=1_000_000.0, fixed_rate=float("inf"), payer=True, rate_factor_index=0,
+                hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
+                swap_tenor="5Y", evaluation_date=TODAY,
+            )
+
+    def test_nan_hw_sigma_rejected(self):
+        with pytest.raises(ValueError, match="hw_sigma"):
+            SwaptionConfig(
+                notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
+                hw_a=HW_A, hw_sigma=float("nan"), initial_zero_curve=ZERO_CURVE,
+                swap_tenor="5Y", evaluation_date=TODAY,
+            )
+
+    def test_unparseable_swap_tenor_rejected(self):
+        with pytest.raises(ValueError, match="swap_tenor"):
+            SwaptionConfig(
+                notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
+                hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
+                swap_tenor="bogus", evaluation_date=TODAY,
+            )
+
+    def test_valid_config_constructs_without_error(self):
+        _make_cfg(0.03, True, "5Y")  # must not raise

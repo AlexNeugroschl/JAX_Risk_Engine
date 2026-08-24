@@ -13,10 +13,10 @@ This page tracks the project's phased build-out. For current architecture, see
 | 5. European swaptions | Jamshidian's decomposition under Hull-White 1F | ✅ Done |
 | 6. Bermudan & American swaptions | Numeric LGM backward induction (Hagan convolution), matching ORE's actual production engine | ✅ Done |
 | 7. Greeks (Delta, Gamma, Theta, Vega) | Curve-pillar and volatility sensitivities for swaps, European swaptions, and Bermudan/American swaptions via JAX autodiff, matching ORE's bump-and-revalue convention | ✅ Done |
-| 8. Models/trades consolidation | Shared Hull-White/LGM math and ORE trade-building in `engine/models/`, `engine/trades/` | ✅ Done |
+| 8. Models/trades consolidation | Shared Hull-White/LGM math and ORE trade-building in `engine/models/` | ✅ Done |
 | 9. LGM calibration | Bootstrap-fit a piecewise LGM `Sigma` to market swaption vols, matching `ore::data::LgmBuilder::calibrate()` | ✅ Done — see [Calibration](../reference/calibration.md) |
 | 10. XVA (CVA/DVA) | Convert NPV cube to exposure, aggregate expected exposure | 🔜 Planned |
-| 11. TraderX API integration | FastAPI/gRPC microservice wrapping the pricing pipeline | 🔜 Planned — see [TraderX Integration Plan](traderx-integration.md) |
+| 11. TraderX API integration | FastAPI microservice wrapping the pricing pipeline (`engine/portfolio/request.py::price_portfolio` + `engine/api/`) — gRPC was evaluated and explicitly not chosen | ✅ Done — see [TraderX Integration Plan](traderx-integration.md), [The Portfolio Entry Point](../reference/portfolio-entrypoint.md), [HTTP API](../reference/http-api.md) |
 | 12. Compute-precision research | Statistical parity study of low-precision compute (down to 8-bit and 4-bit formats, e.g. FP8/INT8 and INT4/NF4) against FP64/FP32 baselines, at scale | 🔜 Planned |
 
 ## Validation

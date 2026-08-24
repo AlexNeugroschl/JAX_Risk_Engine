@@ -27,6 +27,9 @@ from engine.simulation.demo_scenarios import (
     flat_yield_curves,
     single_currency_swap_demo_config,
 )
+from engine.simulation.market_model import EquityConfig, RatesConfig, SimulationConfig, ZeroCurveConfig
+from engine.instruments.swap import SwapConfig
+from engine.portfolio import PortfolioRequest
 
 
 # session-scoped: every fixture below returns either an immutable value or a
@@ -70,3 +73,43 @@ def with_scenarios(config, scenarios: int):
     """Small helper (not a fixture) for tests that need the shared demo
     scenario at a different Monte Carlo sample size than the default."""
     return dataclasses.replace(config, scenarios=scenarios)
+
+
+@pytest.fixture
+def portfolio_request():
+    """A minimal, valid PortfolioRequest (one swap, small scenario count)
+    for tests of engine.portfolio.price_portfolio / engine/api that just
+    need SOME well-formed request, not a specific portfolio shape --
+    function-scoped (not session) since engine.portfolio.price_portfolio
+    mutates nothing on the request itself, but tests commonly want their
+    own independent copy to modify via dataclasses.replace."""
+    zero_curve = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.03] * 6)
+    swap_cfg = SwapConfig(
+        notional=1_000_000.0, fixed_rate=0.032, payer=True,
+        discount_curve_index=0, forward_curve_index=0,
+        swap_tenor="2Y", evaluation_date=EVAL_DATE,
+    )
+    market = SimulationConfig(
+        time_grid=[0.0, 0.5, 1.0, 1.5, 2.0],
+        scenarios=64,
+        equities=EquityConfig(initial_prices=[100.0], dividend_yields=[0.0], rate_mapping=[[0.0]]),
+        rates=RatesConfig(
+            initial_rates=[0.03], theta=[0.03], mean_reversion=[0.03],
+            initial_zero_curves=[zero_curve],
+        ),
+        joint_covariance=[[0.04, 0.0], [0.0, 0.0001]],
+    )
+    return PortfolioRequest(market=market, trades=[swap_cfg], percentiles=(0.95,))
+
+
+@pytest.fixture(scope="session")
+def test_client():
+    """FastAPI TestClient over engine.api.app -- in-process, no running
+    server needed (backed by httpx). Session-scoped: the app itself is
+    stateless aside from the in-process job store, which tests should treat
+    as append-only (unique job_ids per submission), so sharing one client
+    across tests is safe and avoids re-constructing the FastAPI app
+    per-test."""
+    from fastapi.testclient import TestClient
+    from engine.api.app import app
+    return TestClient(app)

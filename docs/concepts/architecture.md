@@ -17,7 +17,9 @@ pricer) could be added later without touching the others at all.
 ```
 JAX_Risk_Engine/
 ├── README.md                            Project pitch, status, quick start
-├── requirements.txt                      Python dependencies
+├── pyproject.toml                        Package metadata, core deps, api/dev extras
+├── requirements.txt                      Thin `-e .[api,dev]` wrapper around pyproject.toml
+├── demo.py                                End-to-end walkthrough via price_portfolio
 ├── docs/                                 Organized by topic (you are here)
 │   ├── getting-started/                  Overview, user guide
 │   ├── concepts/                         Architecture, market simulation, glossary,
@@ -25,22 +27,41 @@ JAX_Risk_Engine/
 │   ├── instruments/                      Swaps, European/Bermudan/American swaptions
 │   ├── risk/                             VaR / Expected Shortfall, Delta/Gamma/Vega/Theta
 │   ├── reference/                        API reference, ORE parity mapping, models &
-│   │                                     trades, calibration
+│   │                                     trades, calibration, portfolio entry point,
+│   │                                     HTTP API
 │   └── planning/                         Roadmap/history, TraderX integration plan
 ├── engine/
+│   ├── portfolio/
+│   │   ├── __init__.py                   Re-exports request.py's/validation.py's public
+│   │   │                                 surface, so engine.portfolio's callers see the
+│   │   │                                 same names whether it's a module or a package
+│   │   ├── request.py                    Top-level entry point: PortfolioRequest/
+│   │   │                                 PortfolioResult/price_portfolio, plus the
+│   │   │                                 validation/assembly layer (cross-field checks,
+│   │   │                                 automatic maturity-pillar assembly)
+│   │   └── validation.py                 Leaf-level field validators shared by every
+│   │                                     trade config's __post_init__ (kept separate from
+│   │                                     request.py to avoid a circular import -- see
+│   │                                     its own module docstring)
+│   ├── api/                              FastAPI HTTP boundary over price_portfolio
+│   │   ├── app.py                        FastAPI app factory
+│   │   ├── routes.py                     /health, /version, /portfolio/price (async job
+│   │   │                                 pattern), /calibration/lgm
+│   │   └── schemas.py                    Pydantic v2 request/response schemas, each with
+│   │                                     .to_dataclass()/.from_dataclass()
 │   ├── simulation/
 │   │   ├── market_model.py               Simulates the market (Sobol/Brownian bridge,
 │   │   │                                 cross-asset Hull-White paths, yield-curve
-│   │   │                                 reconstruction)
+│   │   │                                 reconstruction); also validate_joint_covariance/
+│   │   │                                 nearest_psd
 │   │   └── demo_scenarios.py             Shared demo/reference SimulationConfig builders
 │   ├── models/
 │   │   ├── hull_white.py                 HW1F closed-form math (constant sigma only) --
 │   │   │                                 single source of truth, used by swap.py,
 │   │   │                                 european_swaption.py, simulation.py, greeks.py
-│   │   └── lgm.py                        Linear Gauss-Markov closed-form math
-│   │                                     (piecewise-constant Sigma) -- used by
-│   │                                     bermudan_swaption.py and engine/calibration/
-│   ├── trades/
+│   │   ├── lgm.py                        Linear Gauss-Markov closed-form math
+│   │   │                                 (piecewise-constant Sigma) -- used by
+│   │   │                                 bermudan_swaption.py and engine/calibration/
 │   │   └── ore_builders.py               Shared ORE VanillaSwap construction and
 │   │                                     cashflow extraction -- used by every pricer
 │   ├── calibration/
@@ -75,7 +96,10 @@ JAX_Risk_Engine/
     ├── test_greeks_bermudan.py
     ├── test_end_to_end.py
     ├── test_diverse_portfolio_e2e.py
-    └── test_ore_parity.py
+    ├── test_ore_parity.py
+    ├── test_portfolio.py                 Cross-field validation, maturity-pillar assembly
+    ├── test_portfolio_entrypoint.py       price_portfolio vs. hand-orchestrated pricing
+    └── test_api.py                       FastAPI TestClient tests for engine/api/
 ```
 
 Every `engine/` subpackage has an `__init__.py`, so the whole thing is importable as
@@ -95,7 +119,7 @@ induction engine (state grid, Hagan's quadrature, numeraire-deflated rollback) i
 that Bermudan swaptions are a fully independent, directly-usable capability — not a
 byproduct of American support.
 
-## The shared foundation layer: `engine/models/` and `engine/trades/`
+## The shared foundation layer: `engine/models/`
 
 Every instrument pricer needs two kinds of thing that have nothing to do with what makes
 that instrument distinctive: closed-form interest-rate model math (bond prices, bond
@@ -105,9 +129,9 @@ price against.
 `engine/models/hull_white.py` and `engine/models/lgm.py` are the single source of
 truth for that math — one JAX-native implementation of each formula, used by every pricer
 that needs it.
-`engine/trades/ore_builders.py` is the equivalent consolidation for ORE trade-building and
+`engine/models/ore_builders.py` is the equivalent consolidation for ORE trade-building and
 cashflow extraction. See [Models & Trades](../reference/models-and-trades.md) for the full
-breakdown of both directories, including a genuine finding this consolidation surfaced:
+breakdown of this shared layer, including a genuine finding this consolidation surfaced:
 Hull-White and LGM (`hull_white.py` and `lgm.py` respectively) are **not** the same model
 for `t>0`, despite sharing `(a, sigma)` and today's curve — a real ORE parametrization
 difference between `QuantLib::HullWhite` and `QuantExt::LinearGaussMarkovModel`, not a bug
@@ -135,7 +159,22 @@ once there is an actual market-quote-to-model relationship to differentiate thro
 
 ## The simulation-to-risk data flow
 
+`engine/portfolio/request.py::price_portfolio` sits above every stage below and drives all of them
+in sequence — see [The Public API](#the-public-api) and
+[The Portfolio Entry Point](../reference/portfolio-entrypoint.md) for the full picture.
+The diagram below is the same stage-by-stage flow `price_portfolio` orchestrates
+internally; a caller using the pricers directly (as `demo.py` used to, before Phase 2)
+still wires these together by hand.
+
 ```
+                    ┌─────────────────────────┐
+   PortfolioRequest │   engine/                │  PortfolioResult
+   ───────────────► │   portfolio.py           │  {base_npv, npv_cube, risk,
+                     │   price_portfolio()      │   greeks, warnings}
+                    └─────────────────────────┘
+                                  │  validates, derives maturity pillars,
+                                  │  calibrates, then drives every stage below
+                                  ▼
                     ┌─────────────────────────┐
    SimulationConfig │   engine/                │  {"equities": [...],
    ───────────────► │   simulation.py          │  "rates": [...],
@@ -224,7 +263,7 @@ depend on either of the other two pricers.
 
 Every pricer **depends** on ORE at runtime (see [ORE as a dependency](#ore-as-a-dependency)
 below) — they use ORE's own trade-schedule and day-count-convention machinery, via
-`engine/trades/ore_builders.py`, so that "when does this swap pay cash, and how much" is
+`engine/models/ore_builders.py`, so that "when does this swap pay cash, and how much" is
 computed exactly the way a real trading desk's software would compute it, rather than
 being reimplemented from scratch. Their own model math (bond prices, bond options) comes
 from `engine/models/hull_white.py` (`swap.py`, `european_swaption.py`) or
@@ -258,6 +297,38 @@ ported to `jax.lax.scan`, and Vega became well-defined once `engine/calibration/
 to supply a genuine market-vol-to-model relationship. See
 [Delta, Gamma, and Theta](../risk/greeks.md) for the full story, including two real
 autodiff-through-bisection gradient bugs found and fixed while building this.
+
+## The Public API
+
+**Input:** a `PortfolioRequest` (`engine/portfolio/request.py`) — market data, a heterogeneous
+list of trades, and risk parameters, everything the pipeline above needs, in one object.
+**Output:** a `PortfolioResult` — prices, risk, and (optionally) Greeks, for the whole
+portfolio, in one object.
+
+`engine/portfolio/request.py::price_portfolio` is the single entry point that ties every stage
+above together — the "one function to call" answer to "what should a caller of the whole
+system hand over, and what do they get back." It also carries the validation/assembly
+layer that makes an arbitrary (not hand-built) portfolio safe to run through this pipeline:
+cross-checking every trade's own duplicated `hw_a`/`hw_sigma`/`initial_zero_curve` against
+the simulation's `RatesConfig` (`validate_portfolio_against_simulation`), automatically
+deriving `RatesConfig.maturities` from every swap's real ORE schedule
+(`derive_maturity_pillars`) instead of requiring a caller to hand-compute pillars the way
+early demos did, and surfacing (not silently absorbing) known scope boundaries like a
+Bermudan's mid-coupon exercise approximation as warnings. See
+[The Portfolio Entry Point](../reference/portfolio-entrypoint.md) for the full field-level
+reference and [`docs/planning/traderx-integration.md`](../planning/traderx-integration.md)
+for the gap analysis this validation layer closes.
+
+`engine/api/` (`app.py`/`routes.py`/`schemas.py`) wraps `price_portfolio` behind a FastAPI
+HTTP API — a thin transport layer, not a second place orchestration logic lives. Pydantic
+models in `engine/api/schemas.py` mirror `PortfolioRequest`/`PortfolioResult`/every
+instrument config field-for-field, converting to/from the real dataclasses at the HTTP
+boundary; `engine.portfolio` and everything below it has zero Pydantic/FastAPI dependency,
+so the core simulation/pricing/risk engine still doesn't require the heavier `api` extra to
+use as a plain Python library. See [HTTP API](../reference/http-api.md) for the endpoint
+reference, including why `POST /portfolio/price` returns a job id and polls rather than
+blocking (a measured ~52-second wall-clock time for a modest portfolio, dominated by JAX
+JIT compilation and Monte Carlo simulation).
 
 ## Design principle: modules agree on shapes, not code
 
@@ -365,12 +436,13 @@ other, unrelated JAX code runs elsewhere in the same process.
 
 Every module takes a Python `@dataclass` as its primary input — `SimulationConfig` (and
 its nested `EquityConfig`, `RatesConfig`, `ZeroCurveConfig`) for the simulation module,
-`SwapConfig` and `SwaptionConfig` for the instrument pricers. This was a deliberate choice over passing plain dictionaries: a typo in a
+`SwapConfig` and `SwaptionConfig` for the instrument pricers, `PortfolioRequest` for the
+top-level entry point (see [The Public API](#the-public-api)). This was a deliberate choice over passing plain dictionaries: a typo in a
 dictionary key silently produces a confusing error deep inside the pipeline, while a
 typo in a dataclass field name fails immediately, at the point the config object is
-constructed, with a clear Python error. It's also the natural shape for the eventual
-TraderX API layer to build a request/response schema around directly (see the
-[Roadmap](../planning/roadmap-and-history.md)).
+constructed, with a clear Python error. It's also the shape the HTTP API's own Pydantic
+schemas (`engine/api/schemas.py`) mirror field-for-field and convert to/from at the HTTP
+boundary — see [HTTP API](../reference/http-api.md).
 
 ## Testing philosophy
 

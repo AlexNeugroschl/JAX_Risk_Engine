@@ -31,14 +31,16 @@ induction, early-exercise comparison) lives in that module -- see
 docs/instruments/american-bermudan-swaptions.md for the full algorithm writeup.
 """
 from dataclasses import dataclass, field
-from typing import List, Union
+from typing import List, Optional, Union
 
 import jax
+import numpy as np
 import ORE
 
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, price_bermudan_swaptions
 from engine.models.lgm import Sigma
 from engine.simulation.market_model import ZeroCurveConfig
+from engine.portfolio.validation import _validate_common_fields, _validate_tenor
 
 
 @dataclass
@@ -92,7 +94,7 @@ class AmericanSwaptionConfig:
     payer: bool
     rate_factor_index: int
     hw_a: float
-    hw_sigma: Union[float, Sigma]
+    hw_sigma: Optional[Union[float, Sigma]]
     initial_zero_curve: ZeroCurveConfig
     first_exercise: float
     last_exercise: float
@@ -103,6 +105,21 @@ class AmericanSwaptionConfig:
     n_per_std: int = 48
     std_devs: float = 6.0
     evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
+
+    def __post_init__(self) -> None:
+        _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
+        _validate_tenor(self.swap_tenor, "swap_tenor")
+        # None is a valid sentinel meaning "uncalibrated" -- see
+        # BermudanSwaptionConfig.__post_init__'s identical handling.
+        if self.hw_sigma is not None:
+            sigma_values = self.hw_sigma.values if isinstance(self.hw_sigma, Sigma) else [self.hw_sigma]
+            if any(v != v or v in (float("inf"), float("-inf")) for v in np.asarray(sigma_values, dtype=np.float64).tolist()):
+                raise ValueError(f"hw_sigma must be finite; got {self.hw_sigma}")
+        if self.first_exercise > self.last_exercise:
+            raise ValueError(
+                f"first_exercise ({self.first_exercise}) must be <= last_exercise "
+                f"({self.last_exercise})"
+            )
 
     def to_bermudan(self) -> BermudanSwaptionConfig:
         """

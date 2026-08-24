@@ -63,7 +63,8 @@ import numpy as np
 import ORE
 
 from engine.simulation.market_model import ZeroCurveConfig
-from engine.trades.ore_builders import DAY_COUNTER, build_vanilla_swap
+from engine.models.ore_builders import DAY_COUNTER, build_vanilla_swap
+from engine.portfolio.validation import _validate_common_fields, _validate_tenor
 from engine.models.hull_white import (
     A as _hw_A,
     B as _hw_B,
@@ -135,10 +136,16 @@ class SwaptionConfig:
     exercise_lag_days: int = 2
     evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
 
+    def __post_init__(self) -> None:
+        _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
+        _validate_tenor(self.swap_tenor, "swap_tenor")
+        if self.hw_sigma != self.hw_sigma or self.hw_sigma in (float("inf"), float("-inf")):
+            raise ValueError(f"hw_sigma must be finite; got {self.hw_sigma}")
+
 
 def _build_ore_swap(cfg: SwaptionConfig) -> ORE.VanillaSwap:
     """CPU: builds the real ORE underlying swap (schedules, day counts,
-    conventions) -- see `engine.trades.ore_builders.build_vanilla_swap`,
+    conventions) -- see `engine.models.ore_builders.build_vanilla_swap`,
     the single shared implementation of this construction."""
     return build_vanilla_swap(
         notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,

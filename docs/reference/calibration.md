@@ -140,7 +140,7 @@ par-swap-rate identity: `par_rate = (P(0,T_start) - P(0,T_end)) / annuity`) — 
 "use the ATM strike," whenever no explicit strike is configured (the common case this
 module targets). Both the swap schedule and the par rate are computed from a real
 `ORE.VanillaSwap`/`ORE.MakeVanillaSwap` build (via
-[`engine.trades.ore_builders`](models-and-trades.md#enginetradesore_builderspy)) against
+[`engine.models.ore_builders`](models-and-trades.md#enginemodelsore_builderspy)) against
 the *caller-supplied* `ZeroCurve`, not ORE's own discount curve — deliberately, so
 calibration prices consistently against the same curve `engine.models.lgm` itself
 discounts with.

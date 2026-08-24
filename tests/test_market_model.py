@@ -16,6 +16,8 @@ from engine.simulation.market_model import (
     compute_hw_A_matrix,
     generate_paths,
     generate_sobol_normals,
+    nearest_psd,
+    validate_joint_covariance,
 )
 
 from conftest import with_scenarios
@@ -912,21 +914,28 @@ class TestZeroVolatilityAndSingularMeanReversion:
 
 
 class TestCholeskyOnDegenerateCorrelation:
-    """rho=+-1 and non-PSD covariance matrices are not validated anywhere
-    in generate_paths before jnp.linalg.cholesky is called on the
-    correlation matrix. This class documents the actual (silent-NaN, not
-    a raised error) behavior, and confirms it's an inherent floating-point
-    fact about Cholesky at exact rank-deficient boundaries (also reproduced
-    with plain numpy/scipy, not a JAX-specific defect) rather than
-    something generate_paths could trivially avoid by swapping libraries."""
+    """rho=+-1 and non-PSD covariance matrices used to reach
+    jnp.linalg.cholesky completely unvalidated, silently producing an
+    all-NaN correlation factor (and, downstream, an all-NaN simulated
+    path) instead of a raised error -- exactly the failure mode
+    docs/planning/traderx-integration.md's gap item 1 identified.
+    generate_paths now calls validate_joint_covariance (engine/simulation/
+    market_model.py) before any JAX computation, so this class's headline
+    case now raises instead of silently NaN-ing (see
+    test_non_positive_semidefinite_covariance_now_raises_instead_of_
+    silently_producing_nan below); test_boundary_rho_equals_one_... still
+    documents the underlying floating-point Cholesky behavior directly
+    (bypassing generate_paths entirely), which is unaffected by this
+    validation and remains a genuine floating-point fact, not a JAX
+    defect."""
 
-    def test_non_positive_semidefinite_covariance_silently_produces_nan(self):
+    def test_non_positive_semidefinite_covariance_now_raises_instead_of_silently_producing_nan(self):
         """rho implied by off-diagonal/sqrt(diag product) > 1 is not a
-        valid correlation at all (mathematically invalid input) -- no
-        validation catches this before jnp.linalg.cholesky, which does not
-        raise; it silently returns NaN, which then propagates through
-        every downstream path silently instead of failing loudly at the
-        config-validation boundary."""
+        valid correlation at all (mathematically invalid input).
+        generate_paths now rejects this outright via
+        validate_joint_covariance, called before any jnp.linalg.cholesky
+        work -- see TestCovarianceValidation for the standalone validator
+        tests."""
         cfg = SimulationConfig(
             time_grid=[0.0, 1.0],
             scenarios=32,
@@ -935,13 +944,8 @@ class TestCholeskyOnDegenerateCorrelation:
             # off-diagonal 0.05 vs sqrt(0.04*0.0001) ~= 0.002 -- invalid, implies rho >> 1
             joint_covariance=[[0.04, 0.05], [0.05, 0.0001]],
         )
-        result = generate_paths(cfg)
-        assert bool(jnp.any(jnp.isnan(result["rates"]))), (
-            "Expected generate_paths to silently propagate NaN for a "
-            "non-PSD joint_covariance (jnp.linalg.cholesky does not raise "
-            "on invalid input); if this now raises or produces finite "
-            "output, generate_paths' validation behavior has changed."
-        )
+        with pytest.raises(ValueError, match="not positive semi-definite"):
+            generate_paths(cfg)
 
     def test_boundary_rho_equals_one_is_numerically_singular_not_a_jax_defect(self):
         """rho=1.0 is theoretically PSD (rank-deficient, smallest eigenvalue
@@ -1149,3 +1153,104 @@ class TestInitialLogDiscountExtrapolation:
         log_p = _initial_log_discount(zero_times, zero_rates, np.array([10.0, 100.0]))
         expected = -0.035 * np.array([10.0, 100.0])
         np.testing.assert_allclose(log_p, expected, atol=1e-12)
+
+
+class TestCovarianceValidation:
+    """validate_joint_covariance/nearest_psd (docs/planning/
+    traderx-integration.md gap item 1): an invalid joint_covariance must be
+    rejected loudly, not silently NaN every simulated path via
+    jnp.linalg.cholesky."""
+
+    def test_implied_correlation_above_one_is_rejected(self):
+        """cov[0][1] implies rho = 0.05/sqrt(0.02*0.02) = 2.5 > 1 -- not a
+        valid covariance matrix at all (Cauchy-Schwarz violation)."""
+        matrix = [[0.02, 0.05], [0.05, 0.02]]
+        with pytest.raises(ValueError, match="not positive semi-definite"):
+            validate_joint_covariance(matrix)
+
+    def test_deliberately_negative_eigenvalue_is_rejected(self):
+        """A symmetric matrix built from an explicit eigendecomposition with
+        one negative eigenvalue -- constructed directly (not via a
+        correlation-implied route) so the failure mode is unambiguous."""
+        eigenvectors, _ = np.linalg.qr(np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 0.0]]))
+        eigenvalues = np.array([2.0, 1.0, -0.5])
+        matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+        with pytest.raises(ValueError, match="not positive semi-definite"):
+            validate_joint_covariance(matrix)
+        eigs = np.linalg.eigvalsh(matrix)
+        assert np.any(eigs < -1e-8)
+
+    def test_asymmetric_matrix_is_rejected(self):
+        matrix = [[0.02, 0.01], [0.03, 0.02]]
+        with pytest.raises(ValueError, match="symmetric"):
+            validate_joint_covariance(matrix)
+
+    def test_non_square_matrix_is_rejected(self):
+        matrix = [[0.02, 0.01, 0.0], [0.01, 0.02, 0.0]]
+        with pytest.raises(ValueError, match="square"):
+            validate_joint_covariance(matrix)
+
+    def test_valid_diagonal_covariance_passes(self):
+        validate_joint_covariance([[0.04, 0.0], [0.0, 0.0001]])
+
+    def test_valid_correlated_covariance_passes(self):
+        validate_joint_covariance([[0.04, 0.001], [0.001, 0.0001]])
+
+    def test_generate_paths_raises_on_invalid_covariance_instead_of_producing_nan(self):
+        """Direct regression coverage for the exact silent-NaN failure mode
+        docs/planning/traderx-integration.md's gap item 1 describes:
+        generate_paths must now raise before any JAX computation, rather
+        than letting jnp.linalg.cholesky silently NaN every path."""
+        cfg = SimulationConfig(
+            time_grid=[0.0, 0.5, 1.0],
+            scenarios=16,
+            equities=EquityConfig(initial_prices=[100.0], dividend_yields=[0.0], rate_mapping=[[1.0]]),
+            rates=RatesConfig(initial_rates=[0.03], theta=[0.03], mean_reversion=[0.1]),
+            joint_covariance=[[0.02, 0.05], [0.05, 0.02]],
+        )
+        with pytest.raises(ValueError, match="not positive semi-definite"):
+            generate_paths(cfg)
+
+    def test_nearest_psd_repaired_matrix_passes_validation(self):
+        eigenvectors, _ = np.linalg.qr(np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 0.0]]))
+        eigenvalues = np.array([2.0, 1.0, -0.5])
+        bad_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+        repaired = nearest_psd(bad_matrix)
+        validate_joint_covariance(repaired)  # must not raise
+
+    def test_nearest_psd_repaired_matrix_produces_finite_generate_paths_output(self):
+        """nearest_psd clips to a small positive epsilon, not literally 0
+        (see its own docstring) -- specifically so a repaired matrix like
+        this one (built from a deliberately negative eigenvalue) is not
+        left numerically rank-deficient, which would otherwise reproduce
+        the same singular-Cholesky-boundary NaN documented in
+        TestCholeskyOnDegenerateCorrelation."""
+        eigenvectors, _ = np.linalg.qr(np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 0.0]]))
+        eigenvalues = np.array([0.04, 0.0001, -0.00002])
+        bad_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+        repaired = nearest_psd(bad_matrix)
+
+        cfg = SimulationConfig(
+            time_grid=[0.0, 0.5, 1.0],
+            scenarios=64,
+            equities=EquityConfig(initial_prices=[100.0], dividend_yields=[0.0], rate_mapping=[[1.0, 0.0]]),
+            rates=RatesConfig(initial_rates=[0.03, 0.03], theta=[0.03, 0.03], mean_reversion=[0.1, 0.1]),
+            joint_covariance=repaired.tolist(),
+        )
+        result = generate_paths(cfg)
+        assert bool(jnp.all(jnp.isfinite(result["rates"])))
+        assert bool(jnp.all(jnp.isfinite(result["equities"])))
+
+    def test_nearest_psd_never_called_automatically_by_generate_paths(self):
+        """generate_paths must still reject a bad matrix outright -- confirms
+        nearest_psd is opt-in only, never silently applied on the caller's
+        behalf."""
+        cfg = SimulationConfig(
+            time_grid=[0.0, 0.5, 1.0],
+            scenarios=16,
+            equities=EquityConfig(initial_prices=[100.0], dividend_yields=[0.0], rate_mapping=[[1.0]]),
+            rates=RatesConfig(initial_rates=[0.03], theta=[0.03], mean_reversion=[0.1]),
+            joint_covariance=[[0.02, 0.05], [0.05, 0.02]],
+        )
+        with pytest.raises(ValueError):
+            generate_paths(cfg)
