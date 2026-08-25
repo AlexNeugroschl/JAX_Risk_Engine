@@ -43,9 +43,12 @@ below with `venv\Scripts\python.exe` (or activate the venv first with
 
 ## Running the demos
 
+All three demos live in [`demos/`](../../demos/) and must be run from the repository root
+(they import `engine`, which is only importable from there — see "Setting up" above).
+
 **The whole pipeline in one call:**
 ```bash
-python demo.py
+python demos/demo.py
 ```
 Simulates a market, calibrates a volatility term structure, prices one of each instrument
 type (swap, European/Bermudan/American swaption) via
@@ -57,7 +60,7 @@ digging into any one stage.
 
 **The same portfolio, over the real HTTP API:**
 ```bash
-python demo_api.py
+python demos/demo_api.py
 ```
 Requires the `api` extra (see [Running the API](#running-the-api) below). Launches its own
 `uvicorn` server (or reuses one already running at `http://127.0.0.1:8000` if
@@ -65,11 +68,24 @@ Requires the `api` extra (see [Running the API](#running-the-api) below). Launch
 as a `PortfolioRequestSchema` JSON body, submits it to `POST /portfolio/price`, polls
 `GET /portfolio/price/{job_id}` until it completes, and prints the same NPV/risk/Greeks
 summary read back out of the JSON response — see [HTTP API](../reference/http-api.md) for
-what's actually happening on the wire. Bermudan/American trades are priced off a flat
-`hw_sigma` here rather than a calibrated one: `PortfolioRequestSchema` doesn't yet expose a
-`calibration_targets` field, so (unlike `demo.py`, which passes the calibrated Sigma
-directly into the dataclass) a request through the HTTP API can't drive server-side
-calibration end-to-end today — the script calls out this gap where it matters.
+what's actually happening on the wire. Both Bermudan/American trades are left uncalibrated
+(`hw_sigma: null`) and resolved server-side via a `calibration_basket` on the request — see
+[HTTP API: Automatic calibration](../reference/http-api.md#automatic-calibration-hw_sigma-null--calibration_basket).
+
+**The same portfolio again, restructured to show the shape of a real integration:**
+```bash
+python demos/demo_structured.py
+```
+Functionally identical to `demo_api.py` (same market, same portfolio, same HTTP calls), but
+organized into four explicit, clearly labeled stages: **given inputs** (plain market/
+portfolio facts — curve, model parameters, trades, market vol quotes — with zero server/
+schema concepts in sight), **server setup** (pure infrastructure: get a running server,
+independent of what portfolio you're about to price), **server inputs** (the mechanical
+translation from stage 1's facts into `PortfolioRequestSchema`'s exact JSON shape), and
+**submit and print** (send, poll, display). Useful as a template to copy from when wiring up
+a real integration, since it makes explicit which parts of the script would change for a
+different portfolio (stage 1) versus which parts wouldn't (stage 2) versus which parts are
+pure boilerplate reshaping (stage 3).
 
 Each pipeline module also has its own runnable demo in its own
 `if __name__ == "__main__":` block, showing that module's public API used end-to-end

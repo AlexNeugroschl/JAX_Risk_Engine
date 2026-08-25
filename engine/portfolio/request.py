@@ -122,33 +122,124 @@ _PRICING_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
-class PrecisionConfig:
-    """Three independently-settable dtype knobs, each 32 (float32) or 64
-    (float64, default): `simulation` (Monte Carlo path generation, passed to
-    `generate_paths`), `pricing` (instrument NPV/npv_cube dtype), and `risk`
-    (VaR/ES + Greeks -- one shared setting, not split further; see
-    docs/concepts/architecture.md's "Adjustable precision" section for why
-    exactly these three and not finer-grained control). Defaults to all-64,
-    byte-identical to this codebase's behavior before this dataclass existed.
-
-    bfloat16/float16 are NOT supported -- confirmed broken on this stack
-    today (`jnp.linalg.cholesky` and `jax.scipy.stats.norm.ppf` both raise on
-    those dtypes on the installed jax/jaxlib CPU backend); see
-    docs/concepts/architecture.md's "Out of scope for v1" note.
+class PricingPrecisionOverride:
+    """Optional per-instrument-type drill-down for `PrecisionConfig.pricing`.
+    Any field left `None` falls back to `default`. Purely additive: a caller
+    who only sets `default` gets today's flat-`pricing=N` behavior exactly --
+    see `_resolve_pricing_dtype` below, the single place this is resolved.
     """
-    simulation: int = 64
-    pricing: int = 64
-    risk: int = 64
+    default: int = 64
+    swap: Optional[int] = None
+    european_swaption: Optional[int] = None
+    bermudan_swaption: Optional[int] = None
+    american_swaption: Optional[int] = None
 
     def __post_init__(self):
-        for name in ("simulation", "pricing", "risk"):
+        for name in ("default", "swap", "european_swaption", "bermudan_swaption", "american_swaption"):
+            value = getattr(self, name)
+            if value is not None and value not in (32, 64):
+                raise ValueError(f"PricingPrecisionOverride.{name} must be 32 or 64, got {value!r}")
+
+
+@dataclass(frozen=True)
+class RiskPrecisionOverride:
+    """Optional per-Greek/per-metric drill-down for `PrecisionConfig.risk`.
+    `delta_gamma` is ONE knob for both Delta and Gamma -- they're derived
+    from a single jax.grad+jax.hessian pair against one curve inside one
+    `engine.risk.greeks` call, so they can't be split further without
+    invasive surgery there (see docs/concepts/architecture.md's "Adjustable
+    precision" section). `var_es` is NOT curve-driven like the other three
+    -- `price_portfolio` re-casts `npv_cube`/`base_npv` immediately before
+    calling `compute_risk_metrics`, since VaR/ES has no curve of its own.
+    """
+    default: int = 64
+    delta_gamma: Optional[int] = None
+    theta: Optional[int] = None
+    vega: Optional[int] = None
+    var_es: Optional[int] = None
+
+    def __post_init__(self):
+        for name in ("default", "delta_gamma", "theta", "vega", "var_es"):
+            value = getattr(self, name)
+            if value is not None and value not in (32, 64):
+                raise ValueError(f"RiskPrecisionOverride.{name} must be 32 or 64, got {value!r}")
+
+
+@dataclass(frozen=True)
+class PrecisionConfig:
+    """Four independently-settable dtype knobs, each 32 (float32) or 64
+    (float64, default): `simulation` (Monte Carlo path generation, passed to
+    `generate_paths`), `pricing` (instrument NPV/npv_cube dtype), `risk`
+    (VaR/ES + Greeks), and `calibration` (LGM sigma bootstrap dtype).
+    Defaults to all-64, byte-identical to this codebase's behavior before
+    this dataclass existed.
+
+    `pricing` and `risk` each additionally accept a structured override
+    (`PricingPrecisionOverride`/`RiskPrecisionOverride`) instead of a flat
+    `int`, for optional per-instrument-type / per-Greek drill-down -- a flat
+    `int` is sugar for "every sub-field at this precision," resolved through
+    the exact same `_resolve_pricing_dtype`/`_resolve_risk_dtype` helpers a
+    structured override uses, never a separate code path. `simulation` and
+    `calibration` stay flat `int`-only: each has exactly one call site, so no
+    drill-down axis applies.
+
+    bfloat16/float16/FP8/FP4 are NOT supported for any of these four knobs --
+    confirmed broken on this stack today (`jnp.linalg.cholesky` and
+    `jax.scipy.stats.norm.ppf` both raise on every sub-float32 dtype tested,
+    not just bfloat16, on the installed jax/jaxlib CPU backend); see
+    docs/concepts/architecture.md's "Option B: why uniform sub-float32
+    precision is not achievable today" section. A separate, narrower FP8/FP4
+    mechanism scoped ONLY to the two matmul-shaped sub-steps inside
+    `generate_paths` (`MatmulPrecisionConfig`) has been designed but not yet
+    implemented in this codebase -- see the same architecture doc section.
+    """
+    simulation: int = 64
+    pricing: Union[int, PricingPrecisionOverride] = 64
+    risk: Union[int, RiskPrecisionOverride] = 64
+    calibration: int = 64
+
+    def __post_init__(self):
+        for name in ("simulation", "calibration"):
             value = getattr(self, name)
             if value not in (32, 64):
                 raise ValueError(f"PrecisionConfig.{name} must be 32 or 64, got {value!r}")
+        if isinstance(self.pricing, int) and self.pricing not in (32, 64):
+            raise ValueError(f"PrecisionConfig.pricing must be 32, 64, or a PricingPrecisionOverride, got {self.pricing!r}")
+        if isinstance(self.risk, int) and self.risk not in (32, 64):
+            raise ValueError(f"PrecisionConfig.risk must be 32, 64, or a RiskPrecisionOverride, got {self.risk!r}")
 
 
 def _dtype_of(precision_bits: int):
     return jnp.float64 if precision_bits == 64 else jnp.float32
+
+
+_PRICING_TYPE_FIELD = {
+    SwapConfig: "swap",
+    SwaptionConfig: "european_swaption",
+    BermudanSwaptionConfig: "bermudan_swaption",
+    AmericanSwaptionConfig: "american_swaption",
+}
+
+
+def _resolve_pricing_dtype(pricing: Union[int, PricingPrecisionOverride], trade_type: type):
+    """Single place PrecisionConfig.pricing's flat-int-or-override shape is
+    resolved to a concrete dtype for one trade type -- every pricing dispatch
+    point calls this instead of re-deriving the branch itself."""
+    if isinstance(pricing, int):
+        return _dtype_of(pricing)
+    bits = getattr(pricing, _PRICING_TYPE_FIELD[trade_type]) or pricing.default
+    return _dtype_of(bits)
+
+
+def _resolve_risk_dtype(risk: Union[int, RiskPrecisionOverride], metric: str):
+    """Single place PrecisionConfig.risk's flat-int-or-override shape is
+    resolved to a concrete dtype for one metric ('delta_gamma'/'theta'/
+    'vega'/'var_es') -- every risk dispatch point calls this instead of
+    re-deriving the branch itself."""
+    if isinstance(risk, int):
+        return _dtype_of(risk)
+    bits = getattr(risk, metric) or risk.default
+    return _dtype_of(bits)
 
 
 # =============================================================================
@@ -350,8 +441,9 @@ class PortfolioRequest:
     compute_greeks: if `True`, `price_portfolio` additionally computes
         Delta/Gamma (every trade type) and Theta (every trade type) via
         `engine.risk.greeks`, keyed by each trade's own index in `trades`.
-    precision: independent simulation/pricing/risk dtype control -- see
-        `PrecisionConfig`. Defaults to all-64, byte-identical to this
+    precision: independent simulation/pricing/risk/calibration dtype
+        control, with optional per-instrument-type/per-Greek drill-down --
+        see `PrecisionConfig`. Defaults to all-64, byte-identical to this
         module's behavior before `PrecisionConfig` existed.
 
     A future `BondConfig` instrument type (see
@@ -453,7 +545,7 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
         # be inside the lock too, not run unprotected before it, or a
         # concurrent thread's generate_paths call could flip the flag
         # mid-calibration the same way it could mid-pricing.
-        trades = _fill_calibrated_sigma(trades, request.calibration_targets, market_config)
+        trades = _fill_calibrated_sigma(trades, request.calibration_targets, market_config, request.precision)
         market = generate_paths(market_config, precision=request.precision.simulation)
         # generate_paths leaves jax_enable_x64 set to (precision.simulation == 64)
         # -- a process-global flag, not scoped to that call. Everything below this
@@ -470,34 +562,31 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
         # `risk` requesting 32 -- it only fixes the case where they request 64
         # after a simulation=32 run.
         jax.config.update("jax_enable_x64", True)
-        pricing_dtype = _dtype_of(request.precision.pricing)
-        step_times = jnp.array(market_config.time_grid[1:], dtype=pricing_dtype)
         maturities_np = np.asarray(market_config.rates.maturities) if market_config.rates.maturities else np.asarray([])
 
-        # generate_paths' own output dtype is governed by precision.simulation
-        # (its "rates"/"yield_curves" arrays are what price_swaps/price_swaptions/
-        # price_bermudan_swaptions/price_american_swaptions derive THEIR OWN
-        # working dtype from -- see this module's docstring's "Concurrency"
-        # section and PrecisionConfig's docstring: none of the four pricers
-        # take a dtype parameter, they inherit it from whatever JAX array
-        # they're handed). So precision.pricing independently controlling
-        # npv_cube's dtype (the plan's own explicit requirement, exercised
-        # end-to-end with simulation=64/pricing=32) requires re-casting
-        # market["rates"]/market["yield_curves"] to pricing_dtype here
-        # whenever it differs from the simulation dtype -- a no-op cast
-        # (jnp.asarray with a dtype already matching is free) when the two
-        # knobs agree, which is the common case.
-        market_for_pricing = market
-        if market["rates"].dtype != pricing_dtype:
-            market_for_pricing = dict(market)
-            market_for_pricing["rates"] = jnp.asarray(market["rates"], dtype=pricing_dtype)
-            if "yield_curves" in market:
-                market_for_pricing["yield_curves"] = jnp.asarray(market["yield_curves"], dtype=pricing_dtype)
-
-        npv_cube, order = _price_by_type(trades, market_for_pricing, maturities_np, step_times)
+        # _price_by_type now resolves and casts to each instrument type's own
+        # dtype internally (via _resolve_pricing_dtype), since
+        # precision.pricing may be a per-instrument-type PricingPrecisionOverride
+        # rather than one flat int shared by every trade -- see that
+        # function's docstring for the jnp.stack widest-dtype-wins consequence
+        # this produces on npv_cube itself when buckets disagree.
+        step_times = jnp.array(market_config.time_grid[1:], dtype=jnp.float64)
+        npv_cube, order = _price_by_type(trades, market, maturities_np, step_times, request.precision.pricing)
         base_npv = _base_npv(trades, maturities_np, market_config, request.precision)
 
-        risk = compute_risk_metrics(npv_cube, base_npv, percentiles=request.percentiles)
+        # risk.var_es is NOT curve-driven like delta_gamma/theta/vega -- it has
+        # no curve of its own, so honoring an override that differs from
+        # `pricing` means an explicit re-cast of npv_cube immediately before
+        # compute_risk_metrics, not a substituted input array upstream.
+        # base_npv is a plain Python float -- JAX's scalar-promotion rules
+        # already resolve `portfolio_npv - base_npv` to the ARRAY operand's
+        # dtype (confirmed in engine.risk.var_es.portfolio_pnl), so it needs
+        # no separate cast. This can only ever narrow precision relative to
+        # what `pricing` already produced -- it can't recover precision
+        # `pricing` already lost.
+        var_es_dtype = _resolve_risk_dtype(request.precision.risk, "var_es")
+        npv_cube_for_risk = npv_cube if npv_cube.dtype == var_es_dtype else jnp.asarray(npv_cube, dtype=var_es_dtype)
+        risk = compute_risk_metrics(npv_cube_for_risk, base_npv, percentiles=request.percentiles)
 
         greeks_out = None
         if request.compute_greeks:
@@ -511,11 +600,16 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
 
 def _fill_calibrated_sigma(
     trades: List[TradeConfig], calibration_targets: Optional[List[CalibrationTarget]], market_config: SimulationConfig,
+    precision: PrecisionConfig = PrecisionConfig(),
 ) -> List[TradeConfig]:
     """Fills in `hw_sigma=None` on any Bermudan/American trade by
     calibrating once per distinct `rate_factor_index` that needs it (not
     once per trade -- every trade sharing a rate factor shares the same
-    calibrated `Sigma`)."""
+    calibrated `Sigma`). `precision.calibration`'s dtype governs the curve
+    handed to `calibrate_lgm_sigma`, which now derives its own working dtype
+    from `curve.pillar_rates.dtype` (see that function's docstring) rather
+    than hardcoding float64, mirroring the same curve-driven pattern
+    `_compute_all_greeks` uses for `precision.risk`."""
     needs_calibration = [
         cfg for cfg in trades
         if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)) and cfg.hw_sigma is None
@@ -528,13 +622,14 @@ def _fill_calibrated_sigma(
             "request.calibration_targets was not supplied"
         )
 
+    calib_dtype = _dtype_of(precision.calibration)
     cache: Dict[int, "Sigma"] = {}
     updated = []
     for cfg in trades:
         if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)) and cfg.hw_sigma is None:
             idx = cfg.rate_factor_index
             if idx not in cache:
-                curve = _zero_curve_of(cfg, cfg.initial_zero_curve)
+                curve = _zero_curve_of(cfg, cfg.initial_zero_curve, dtype=calib_dtype)
                 result = calibrate_lgm_sigma(calibration_targets, curve, a=cfg.hw_a)
                 cache[idx] = result.sigma
             updated.append(replace(cfg, hw_sigma=cache[idx]))
@@ -543,14 +638,27 @@ def _fill_calibrated_sigma(
     return updated
 
 
-def _price_by_type(trades, market, maturities_np, step_times):
+def _price_by_type(trades, market, maturities_np, step_times, pricing: Union[int, PricingPrecisionOverride] = 64):
     """Groups `trades` by type for pricing (each pricer only accepts a
     homogeneous list), prices each group, then reassembles one
     `[Scenarios, TimeSteps, Trades]` cube in the CALLER's original trade
     order -- the routing this function's docstring in `PortfolioRequest`
     promises. Returns `(npv_cube, order)`, `order` being the index
     permutation applied (kept for callers that want to trace it, unused by
-    `price_portfolio` itself beyond the reordering)."""
+    `price_portfolio` itself beyond the reordering).
+
+    `pricing` may be a flat int or a `PricingPrecisionOverride` -- each
+    instrument-type bucket resolves and casts to ITS OWN dtype via
+    `_resolve_pricing_dtype` before pricing, independent of the others.
+
+    Consequence to know, not a bug: when buckets resolve to different
+    dtypes, the final `jnp.stack` below promotes `npv_cube` to the WIDEST
+    dtype present (confirmed: `jnp.stack([float64, float32], axis=-1).dtype
+    == float64`) -- a mixed-precision request still controls the *cost* of
+    computing each bucket's own cube (an expensive Bermudan tree running
+    cheaper while a trivial swap stays exact), but `npv_cube.dtype` itself
+    reflects the widest bucket present, not necessarily the one a caller
+    drilled down on."""
     groups: Dict[type, List[int]] = {SwapConfig: [], SwaptionConfig: [], BermudanSwaptionConfig: [], AmericanSwaptionConfig: []}
     for i, cfg in enumerate(trades):
         groups[type(cfg)].append(i)
@@ -559,27 +667,34 @@ def _price_by_type(trades, market, maturities_np, step_times):
     num_steps = market["rates"].shape[1]
     per_trade_cubes: Dict[int, jax.Array] = {}
 
+    def _cast(arr, dtype):
+        return arr if arr.dtype == dtype else jnp.asarray(arr, dtype=dtype)
+
     if groups[SwapConfig]:
+        dtype = _resolve_pricing_dtype(pricing, SwapConfig)
         swap_cfgs = [trades[i] for i in groups[SwapConfig]]
-        cube = price_swaps(market["yield_curves"], maturities_np, swap_cfgs)
+        cube = price_swaps(_cast(market["yield_curves"], dtype), maturities_np, swap_cfgs)
         for slot, i in enumerate(groups[SwapConfig]):
             per_trade_cubes[i] = cube[:, :, slot]
 
     if groups[SwaptionConfig]:
+        dtype = _resolve_pricing_dtype(pricing, SwaptionConfig)
         swaption_cfgs = [trades[i] for i in groups[SwaptionConfig]]
-        cube = price_swaptions(market["rates"], step_times, swaption_cfgs)
+        cube = price_swaptions(_cast(market["rates"], dtype), _cast(step_times, dtype), swaption_cfgs)
         for slot, i in enumerate(groups[SwaptionConfig]):
             per_trade_cubes[i] = cube[:, :, slot]
 
     if groups[BermudanSwaptionConfig]:
+        dtype = _resolve_pricing_dtype(pricing, BermudanSwaptionConfig)
         berm_cfgs = [trades[i] for i in groups[BermudanSwaptionConfig]]
-        cube = price_bermudan_swaptions(berm_cfgs, market["rates"], step_times)
+        cube = price_bermudan_swaptions(berm_cfgs, _cast(market["rates"], dtype), _cast(step_times, dtype))
         for slot, i in enumerate(groups[BermudanSwaptionConfig]):
             per_trade_cubes[i] = cube[:, :, slot]
 
     if groups[AmericanSwaptionConfig]:
+        dtype = _resolve_pricing_dtype(pricing, AmericanSwaptionConfig)
         amer_cfgs = [trades[i] for i in groups[AmericanSwaptionConfig]]
-        cube = price_american_swaptions(amer_cfgs, market["rates"], step_times)
+        cube = price_american_swaptions(amer_cfgs, _cast(market["rates"], dtype), _cast(step_times, dtype))
         for slot, i in enumerate(groups[AmericanSwaptionConfig]):
             per_trade_cubes[i] = cube[:, :, slot]
 
@@ -599,24 +714,29 @@ def _base_npv(
 
     Every array this function constructs itself (as opposed to what the
     pricers derive from their own JAX-array inputs) carries `precision.
-    pricing`'s dtype -- see `PrecisionConfig`'s docstring and this module's
-    own docstring's "Concurrency" section for why this matters: none of
-    `price_swaps`/`price_swaptions`/`price_bermudan_swaption_base` need a
-    new parameter to respect it, since each already derives its working
-    dtype from the JAX-array inputs this function hands them."""
-    dtype = _dtype_of(precision.pricing)
+    pricing`'s resolved per-instrument-type dtype (via
+    `_resolve_pricing_dtype`, mirroring `_price_by_type`) -- see
+    `PrecisionConfig`'s docstring and this module's own docstring's
+    "Concurrency" section for why this matters: none of `price_swaps`/
+    `price_swaptions`/`price_bermudan_swaption_base` need a new parameter to
+    respect it, since each already derives its working dtype from the
+    JAX-array inputs this function hands them. `price_bermudan_swaption_base`
+    itself takes no dtype input at all -- a pre-existing scope boundary this
+    function doesn't attempt to fix."""
     total = 0.0
     swap_cfgs = [cfg for cfg in trades if isinstance(cfg, SwapConfig)]
     if swap_cfgs:
+        swap_dtype = _resolve_pricing_dtype(precision.pricing, SwapConfig)
         for cfg in swap_cfgs:
             disc_curve = market_config.rates.initial_zero_curves[cfg.discount_curve_index]
             fwd_curve = market_config.rates.initial_zero_curves[cfg.forward_curve_index]
-            base_cube = _flat_curve_cube(disc_curve, fwd_curve, maturities_np, cfg.evaluation_date, dtype=dtype)
+            base_cube = _flat_curve_cube(disc_curve, fwd_curve, maturities_np, cfg.evaluation_date, dtype=swap_dtype)
             remapped = replace(cfg, discount_curve_index=0, forward_curve_index=1)
             total += float(price_swaps(base_cube, maturities_np, [remapped])[0, 0, 0])
 
     for cfg in trades:
         if isinstance(cfg, SwaptionConfig):
+            dtype = _resolve_pricing_dtype(precision.pricing, SwaptionConfig)
             r0_path = jnp.zeros((1, 1, len(market_config.rates.initial_rates)), dtype=dtype)
             r0_path = r0_path.at[0, 0, :].set(jnp.asarray(market_config.rates.initial_rates, dtype=dtype))
             total += float(price_swaptions(r0_path, jnp.array([0.0], dtype=dtype), [cfg])[0, 0, 0])
@@ -670,8 +790,21 @@ def _compute_all_greeks(
     greeks` itself derives its own working dtype from that curve (see that
     module's docstring), so passing a `risk`-dtype curve here is sufficient
     to make the whole Greeks computation honor `precision.risk`, with no
-    further parameters needed on the public Greeks entry points."""
-    dtype = _dtype_of(precision.risk)
+    further parameters needed on the public Greeks entry points.
+
+    `precision.risk` may be a flat int or a `RiskPrecisionOverride` -- when
+    it's an override, `delta_gamma` and `theta` are each resolved (via
+    `_resolve_risk_dtype`) and built against their OWN separately-constructed
+    `ZeroCurve`, so the two can differ. `delta_gamma` stays one shared knob
+    for both Delta and Gamma (see `RiskPrecisionOverride`'s docstring for
+    why). When both resolve to the same dtype (the common flat-`risk=N`
+    case), this pays one small, redundant extra curve-construction call --
+    a deliberate simplicity-over-micro-optimization choice, since building a
+    `ZeroCurve` is a cheap pillar-count array build, not a JIT-compiled
+    trace. Note: this function does not call `bermudan_vega` today (a
+    pre-existing gap, not introduced by this precision redesign);
+    `RiskPrecisionOverride.vega` exists for `bermudan_vega`'s direct callers
+    and forward compatibility."""
     out: Dict[int, Dict[str, jax.Array]] = {}
     for i, cfg in enumerate(trades):
         if isinstance(cfg, SwapConfig):
@@ -683,14 +816,16 @@ def _compute_all_greeks(
             # against a placeholder curve.
             continue
         elif isinstance(cfg, SwaptionConfig):
-            curve = _zero_curve_of(cfg, cfg.initial_zero_curve, dtype=dtype)
-            trade_greeks = dict(_greeks.swaption_delta_gamma(cfg, curve))
-            trade_greeks["theta"] = _greeks.swaption_theta(cfg, curve)
+            dg_curve = _zero_curve_of(cfg, cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "delta_gamma"))
+            theta_curve = _zero_curve_of(cfg, cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
+            trade_greeks = dict(_greeks.swaption_delta_gamma(cfg, dg_curve))
+            trade_greeks["theta"] = _greeks.swaption_theta(cfg, theta_curve)
             out[i] = trade_greeks
         elif isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
             berm_cfg = cfg.to_bermudan() if isinstance(cfg, AmericanSwaptionConfig) else cfg
-            curve = _zero_curve_of(berm_cfg, berm_cfg.initial_zero_curve, dtype=dtype)
-            trade_greeks = dict(_greeks.bermudan_delta_gamma(berm_cfg, curve))
-            trade_greeks["theta"] = _greeks.bermudan_theta(berm_cfg, curve)
+            dg_curve = _zero_curve_of(berm_cfg, berm_cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "delta_gamma"))
+            theta_curve = _zero_curve_of(berm_cfg, berm_cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
+            trade_greeks = dict(_greeks.bermudan_delta_gamma(berm_cfg, dg_curve))
+            trade_greeks["theta"] = _greeks.bermudan_theta(berm_cfg, theta_curve)
             out[i] = trade_greeks
     return out

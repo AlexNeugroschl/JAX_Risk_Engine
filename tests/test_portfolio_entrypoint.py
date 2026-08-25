@@ -327,11 +327,14 @@ class TestPricePortfolioGreeks:
 
 
 class TestPricePortfolioPrecision:
-    """PrecisionConfig's three independent knobs (simulation/pricing/risk),
-    each 32 or 64 -- see engine.portfolio.request.PrecisionConfig. Default
-    (all-64) must reproduce today's exact behavior; each knob set to 32
-    must be independently observable in the right output dtype, without
-    affecting the other two."""
+    """PrecisionConfig's four independent knobs (simulation/pricing/risk/
+    calibration), each 32 or 64 -- see engine.portfolio.request.
+    PrecisionConfig. `pricing`/`risk` may each additionally be a structured
+    override (PricingPrecisionOverride/RiskPrecisionOverride) for optional
+    per-instrument-type/per-Greek drill-down. Default (all-64) must
+    reproduce today's exact behavior; each knob set to 32 (flat or via an
+    override) must be independently observable in the right output dtype,
+    without affecting the others."""
 
     def _request(self, precision=None, compute_greeks=False):
         from engine.portfolio import PrecisionConfig
@@ -346,11 +349,17 @@ class TestPricePortfolioPrecision:
     def test_default_precision_matches_pre_feature_behavior(self):
         """No `precision` supplied -> PrecisionConfig() (all-64) -> byte-
         identical npv_cube dtype/values to a request built before this
-        feature existed."""
+        feature existed. Also proves omitting overrides produces plain
+        ints for pricing/risk, not silently-promoted override objects --
+        the literal backward-compat regression proof for the hierarchy
+        redesign."""
         request = self._request()
         assert request.precision.simulation == 64
         assert request.precision.pricing == 64
         assert request.precision.risk == 64
+        assert request.precision.calibration == 64
+        assert isinstance(request.precision.pricing, int)
+        assert isinstance(request.precision.risk, int)
         result = price_portfolio(request)
         assert result.npv_cube.dtype == jnp.float64
         assert bool(jnp.all(jnp.isfinite(result.npv_cube)))
@@ -427,6 +436,131 @@ class TestPricePortfolioPrecision:
             if key == "theta":
                 continue
             assert jnp.asarray(val).dtype == jnp.float32
+
+    def test_pricing_per_instrument_type_override(self):
+        """PricingPrecisionOverride(default=64, bermudan_swaption=32) --
+        each bucket casts to its OWN dtype internally; npv_cube's own dtype
+        reflects the WIDEST bucket present (jnp.stack promotion), not the
+        one that was drilled down -- this assertion documents that
+        consequence rather than hiding it."""
+        from engine.portfolio import PrecisionConfig, PricingPrecisionOverride
+
+        override = PricingPrecisionOverride(default=64, bermudan_swaption=32)
+        request32 = self._request(precision=PrecisionConfig(pricing=override))
+        request64 = self._request(precision=PrecisionConfig(pricing=64))
+        result32 = price_portfolio(request32)
+        result64 = price_portfolio(request64)
+
+        assert result32.npv_cube.dtype == jnp.float64
+        assert bool(jnp.all(jnp.isfinite(result32.npv_cube)))
+        assert result32.base_npv == pytest.approx(result64.base_npv, rel=1e-3)
+
+    def test_risk_per_greek_override(self):
+        """RiskPrecisionOverride(default=64, theta=32) -- delta_gamma and
+        theta must resolve to DIFFERENT dtypes via _resolve_risk_dtype, and
+        that difference must be observable in the actual Greeks output
+        (delta/gamma stay float64 while theta's own float32 resolution is
+        checked directly, since theta returns a plain Python float with no
+        observable dtype)."""
+        from engine.portfolio import PrecisionConfig, RiskPrecisionOverride
+        from engine.portfolio.request import _resolve_risk_dtype
+
+        override = RiskPrecisionOverride(default=64, theta=32)
+        assert _resolve_risk_dtype(override, "delta_gamma") == jnp.float64
+        assert _resolve_risk_dtype(override, "theta") == jnp.float32
+
+        request = self._request(precision=PrecisionConfig(risk=override), compute_greeks=True)
+        result = price_portfolio(request)
+        assert result.greeks is not None
+        for idx in (1, 2, 3):
+            for key, val in result.greeks[idx].items():
+                if key == "theta":
+                    continue
+                assert jnp.asarray(val).dtype == jnp.float64, f"trade {idx} greek {key!r} not float64"
+
+    def test_risk_var_es_override_recasts_npv_cube_for_risk_only(self):
+        """RiskPrecisionOverride(default=64, var_es=32) -- the cast happens
+        ONLY on the copy fed to compute_risk_metrics; npv_cube itself (what
+        `pricing` produced) is untouched."""
+        from engine.portfolio import PrecisionConfig, RiskPrecisionOverride
+
+        override = RiskPrecisionOverride(default=64, var_es=32)
+        request = self._request(precision=PrecisionConfig(pricing=64, risk=override))
+        result = price_portfolio(request)
+        assert result.npv_cube.dtype == jnp.float64
+        for key, arr in result.risk.items():
+            assert jnp.asarray(arr).dtype == jnp.float32, f"risk metric {key!r} not float32"
+
+    def test_calibration_precision_flows_through_lgm_bootstrap(self):
+        """calibration=32 vs 64 must produce a genuinely different-dtype
+        calibrated Sigma via _fill_calibrated_sigma, with numerically close
+        (not equal) pricing -- exercised through a Bermudan trade with
+        hw_sigma=None so calibration actually runs."""
+        from dataclasses import replace as _replace
+        from engine.portfolio import PrecisionConfig
+        from engine.portfolio.request import _fill_calibrated_sigma
+        from engine.calibration.basket import build_coterminal_basket
+        from engine.models.hull_white import ZeroCurve as HwZeroCurve
+
+        swap_cfg, swaption_cfg, bermudan_cfg, american_cfg = _build_trades()
+        uncalibrated = _replace(bermudan_cfg, hw_sigma=None)
+        trades = [uncalibrated]
+        sim_config = _sim_config([swap_cfg, swaption_cfg, bermudan_cfg, american_cfg])
+
+        curve64 = HwZeroCurve.from_config(uncalibrated.initial_zero_curve)
+        targets = build_coterminal_basket(
+            exercise_times=uncalibrated.exercise_times, final_maturity_time=3.0,
+            notional=uncalibrated.notional, payer=uncalibrated.payer,
+            market_vols=[0.01, 0.01], zero_curve=curve64,
+            evaluation_date=uncalibrated.evaluation_date, index_tenor_months=3,
+        )
+
+        filled_64 = _fill_calibrated_sigma(trades, targets, sim_config, PrecisionConfig(calibration=64))
+        filled_32 = _fill_calibrated_sigma(trades, targets, sim_config, PrecisionConfig(calibration=32))
+
+        sigma_64 = filled_64[0].hw_sigma
+        sigma_32 = filled_32[0].hw_sigma
+        assert sigma_64.values.dtype == jnp.float64
+        assert sigma_32.values.dtype == jnp.float32
+        assert np.asarray(sigma_32.values) == pytest.approx(np.asarray(sigma_64.values), rel=1e-3)
+
+    def test_precision_knobs_fully_independent_four_way(self):
+        """All four axes set independently and simultaneously -- a mechanism
+        proof via direct resolver checks, since four independently-varying
+        axes make a single end-to-end numeric assertion weak."""
+        from engine.portfolio import PrecisionConfig, PricingPrecisionOverride, RiskPrecisionOverride
+        from engine.portfolio.request import _resolve_pricing_dtype, _resolve_risk_dtype
+
+        pricing = PricingPrecisionOverride(default=64, bermudan_swaption=32)
+        risk = RiskPrecisionOverride(default=64, vega=32)
+        precision = PrecisionConfig(simulation=64, pricing=pricing, risk=risk, calibration=32)
+
+        assert precision.simulation == 64
+        assert precision.calibration == 32
+        assert _resolve_pricing_dtype(precision.pricing, BermudanSwaptionConfig) == jnp.float32
+        assert _resolve_pricing_dtype(precision.pricing, SwapConfig) == jnp.float64
+        assert _resolve_risk_dtype(precision.risk, "vega") == jnp.float32
+        assert _resolve_risk_dtype(precision.risk, "delta_gamma") == jnp.float64
+
+        request = self._request(precision=precision, compute_greeks=True)
+        result = price_portfolio(request)
+        assert bool(jnp.all(jnp.isfinite(result.npv_cube)))
+        assert np.isfinite(result.base_npv)
+
+
+class TestPrecisionOverrideValidation:
+    """PricingPrecisionOverride/RiskPrecisionOverride validate every field
+    exactly like PrecisionConfig.__post_init__ already does."""
+
+    def test_pricing_override_rejects_invalid_bits(self):
+        from engine.portfolio import PricingPrecisionOverride
+        with pytest.raises(ValueError):
+            PricingPrecisionOverride(swap=48)
+
+    def test_risk_override_rejects_invalid_bits(self):
+        from engine.portfolio import RiskPrecisionOverride
+        with pytest.raises(ValueError):
+            RiskPrecisionOverride(vega=48)
 
 
 class TestPricePortfolioConcurrency:

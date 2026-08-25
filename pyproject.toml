@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "jax-risk-engine"
 version = "0.1.0"
-description = "GPU-accelerated market simulation and trade pricing engine built in JAX, mirroring ORE (Open Source Risk Engine)."
+description = "JAX-based market simulation and trade pricing engine built to run across multiple TPUs, mirroring ORE (Open Source Risk Engine)."
 requires-python = ">=3.11"
 dependencies = [
     "open-source-risk-engine",

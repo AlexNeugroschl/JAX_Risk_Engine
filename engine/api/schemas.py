@@ -34,7 +34,9 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.calibration.basket import build_coterminal_basket
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
-from engine.portfolio import PortfolioRequest, PortfolioResult, PrecisionConfig
+from engine.portfolio import (
+    PortfolioRequest, PortfolioResult, PrecisionConfig, PricingPrecisionOverride, RiskPrecisionOverride,
+)
 
 
 def _parse_ore_date(value: str) -> ORE.Date:
@@ -243,18 +245,54 @@ class CalibrationBasketRequestSchema(BaseModel):
     market_vols: List[float]
 
 
+class PricingPrecisionOverrideSchema(BaseModel):
+    """Mirrors `engine.portfolio.PricingPrecisionOverride` field-for-field --
+    optional per-instrument-type drill-down for `PrecisionConfigSchema.
+    pricing`, validated by the dataclass's own `__post_init__` once
+    `.to_dataclass()` constructs it."""
+    default: int = 64
+    swap: Optional[int] = None
+    european_swaption: Optional[int] = None
+    bermudan_swaption: Optional[int] = None
+    american_swaption: Optional[int] = None
+
+    def to_dataclass(self) -> PricingPrecisionOverride:
+        return PricingPrecisionOverride(**self.model_dump())
+
+
+class RiskPrecisionOverrideSchema(BaseModel):
+    """Mirrors `engine.portfolio.RiskPrecisionOverride` field-for-field --
+    optional per-Greek/per-metric drill-down for `PrecisionConfigSchema.
+    risk`, validated by the dataclass's own `__post_init__` once
+    `.to_dataclass()` constructs it."""
+    default: int = 64
+    delta_gamma: Optional[int] = None
+    theta: Optional[int] = None
+    vega: Optional[int] = None
+    var_es: Optional[int] = None
+
+    def to_dataclass(self) -> RiskPrecisionOverride:
+        return RiskPrecisionOverride(**self.model_dump())
+
+
 class PrecisionConfigSchema(BaseModel):
     """Mirrors `engine.portfolio.PrecisionConfig` field-for-field --
-    independent simulation/pricing/risk dtype control (32 or 64), each
-    validated by `PrecisionConfig.__post_init__` itself once
+    independent simulation/pricing/risk/calibration dtype control (32 or
+    64), each validated by `PrecisionConfig.__post_init__` itself once
     `.to_dataclass()` constructs it (no duplicate Pydantic-level validator
-    needed here)."""
+    needed here). `pricing`/`risk` each additionally accept a structured
+    override object instead of a flat int, for optional per-instrument-type/
+    per-Greek drill-down -- Pydantic v2 resolves `Union[int, ...Schema]`
+    natively from the request JSON shape, no explicit discriminator needed."""
     simulation: int = 64
-    pricing: int = 64
-    risk: int = 64
+    pricing: Union[int, PricingPrecisionOverrideSchema] = 64
+    risk: Union[int, RiskPrecisionOverrideSchema] = 64
+    calibration: int = 64
 
     def to_dataclass(self) -> PrecisionConfig:
-        return PrecisionConfig(simulation=self.simulation, pricing=self.pricing, risk=self.risk)
+        pricing = self.pricing if isinstance(self.pricing, int) else self.pricing.to_dataclass()
+        risk = self.risk if isinstance(self.risk, int) else self.risk.to_dataclass()
+        return PrecisionConfig(simulation=self.simulation, pricing=pricing, risk=risk, calibration=self.calibration)
 
 
 class PortfolioRequestSchema(BaseModel):

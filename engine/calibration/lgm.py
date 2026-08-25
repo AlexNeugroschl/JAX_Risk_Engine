@@ -127,19 +127,27 @@ def calibrate_lgm_sigma(
     at that final Sigma (an exact bootstrap reprices every instrument
     exactly, up to root-find tolerance -- unlike a joint BestFit, whose
     RMSE is generally nonzero even at convergence).
+
+    `curve.pillar_rates.dtype` governs every array this function builds
+    internally (bucket times/values, the final `Sigma`) -- mirroring
+    `engine.risk.greeks`'s own derive-from-curve pattern instead of
+    hardcoding `jnp.float64`, so `engine.portfolio.request.PrecisionConfig
+    .calibration` can control this bootstrap's working precision by simply
+    handing it a differently-dtyped `curve`.
     """
     assert len(targets) >= 1, "calibrate_lgm_sigma requires at least one basket instrument"
     expiries = sorted(t.expiry_time for t in targets)
     assert expiries == [t.expiry_time for t in targets], "targets must be supplied in increasing expiry order"
 
+    dtype = curve.pillar_rates.dtype
     bucket_times: List[float] = []       # interior breakpoints calibrated so far
     bucket_values: List[float] = []      # calibrated sigma per bucket so far
 
     for i, target in enumerate(targets):
-        times_arr = jnp.asarray(bucket_times, dtype=jnp.float64)
+        times_arr = jnp.asarray(bucket_times, dtype=dtype)
 
         def price_fn(new_sigma, _times=times_arr, _values=bucket_values, _target=target):
-            values_arr = jnp.asarray(_values + [new_sigma], dtype=jnp.float64)
+            values_arr = jnp.asarray(_values + [new_sigma], dtype=dtype)
             sigma = Sigma(times=_times, values=values_arr)
             return price_lgm_swaption(curve, a, sigma, _target)
 
@@ -151,8 +159,8 @@ def calibrate_lgm_sigma(
             bucket_times.append(target.expiry_time)
 
     final_sigma = Sigma(
-        times=jnp.asarray(bucket_times, dtype=jnp.float64),
-        values=jnp.asarray(bucket_values, dtype=jnp.float64),
+        times=jnp.asarray(bucket_times, dtype=dtype),
+        values=jnp.asarray(bucket_values, dtype=dtype),
     )
 
     market_prices = jnp.asarray([float(bachelier_swaption_price(t, curve)) for t in targets])

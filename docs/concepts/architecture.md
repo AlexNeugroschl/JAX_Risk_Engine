@@ -19,7 +19,12 @@ JAX_Risk_Engine/
 ├── README.md                            Project pitch, status, quick start
 ├── pyproject.toml                        Package metadata, core deps, api/dev extras
 ├── requirements.txt                      Thin `-e .[api,dev]` wrapper around pyproject.toml
-├── demo.py                                End-to-end walkthrough via price_portfolio
+├── demos/                                Runnable end-to-end walkthroughs (see
+│   ├── demo.py                            User Guide: Running the demos)
+│   ├── demo_api.py                        - direct price_portfolio call, over the HTTP
+│   └── demo_structured.py                  API, and the HTTP API split into explicit
+│                                           given-inputs/server-setup/server-inputs/
+│                                           submit-and-print stages
 ├── docs/                                 Organized by topic (you are here)
 │   ├── getting-started/                  Overview, user guide
 │   ├── concepts/                         Architecture, market simulation, glossary,
@@ -416,21 +421,73 @@ comparing risk results computed with different numeric precision — 64-bit ("do
 very precise, slower) versus 32-bit ("single", less precise, faster), and eventually
 pushing well below that to 8-bit and 4-bit formats.
 
-As of `PrecisionConfig` (`engine/portfolio/request.py`), this is exposed as **three
-independent knobs**, not one:
+As of `PrecisionConfig` (`engine/portfolio/request.py`), this is exposed as **four
+independent knobs**, two of which optionally drill down further:
 
 ```python
 @dataclass(frozen=True)
 class PrecisionConfig:
-    simulation: int = 64  # Monte Carlo path generation (generate_paths)
-    pricing: int = 64     # instrument NPV / npv_cube dtype
-    risk: int = 64        # VaR/ES + Greeks (one shared setting)
+    simulation: int = 64                                     # Monte Carlo path generation (generate_paths)
+    pricing: Union[int, PricingPrecisionOverride] = 64        # instrument NPV / npv_cube dtype
+    risk: Union[int, RiskPrecisionOverride] = 64              # VaR/ES + Greeks
+    calibration: int = 64                                     # LGM sigma bootstrap dtype
 ```
 
 Passed as `PortfolioRequest(..., precision=PrecisionConfig(simulation=64, pricing=32, risk=32))`
 (or, over HTTP, a `"precision": {"simulation": 64, "pricing": 32, "risk": 32}` block on
-`POST /portfolio/price` — see [HTTP API](../reference/http-api.md)). All three default to
+`POST /portfolio/price` — see [HTTP API](../reference/http-api.md)). All four default to
 64, byte-identical to this project's behavior before `PrecisionConfig` existed.
+
+**`pricing` and `risk` each optionally accept a structured override** instead of a flat
+`int`, for finer-than-module-level control:
+
+```python
+@dataclass(frozen=True)
+class PricingPrecisionOverride:
+    default: int = 64
+    swap: Optional[int] = None
+    european_swaption: Optional[int] = None
+    bermudan_swaption: Optional[int] = None
+    american_swaption: Optional[int] = None
+
+@dataclass(frozen=True)
+class RiskPrecisionOverride:
+    default: int = 64
+    delta_gamma: Optional[int] = None   # ONE knob for both -- see below
+    theta: Optional[int] = None
+    vega: Optional[int] = None
+    var_es: Optional[int] = None
+```
+
+A flat `int` is sugar for "every sub-field at this precision" — it resolves through the
+exact same `_resolve_pricing_dtype`/`_resolve_risk_dtype` helpers a structured override
+uses, never a separate code path, so `PrecisionConfig(pricing=32)` (today's exact call
+shape) keeps working byte-identically. Any override field left `None` falls back to that
+override's own `default`. `simulation` and `calibration` stay flat-`int`-only: each has
+exactly one call site in the pipeline (`generate_paths`, the LGM bootstrap), so no
+drill-down axis applies to either.
+
+`delta_gamma` is one shared field, not split further into Delta/Gamma: `swaption_delta_gamma`/
+`bermudan_delta_gamma` each derive both from a single `jax.grad`+`jax.hessian` pair against
+one curve inside one function call — splitting them would mean either duplicating the
+curve-build and the autodiff trace, or restructuring `engine/risk/greeks.py`'s public
+functions themselves, out of scope for a wrap-don't-invade config redesign.
+
+`var_es` is structurally different from the other three `risk` sub-fields: `compute_risk_metrics`
+derives its dtype from `npv_cube`/`base_npv` (i.e. from `pricing`'s own output), not from any
+curve. `price_portfolio` honors a `var_es` override that differs from `pricing` via an
+explicit re-cast of `npv_cube`/`base_npv` immediately before calling `compute_risk_metrics`
+— not a curve substitution like `delta_gamma`/`theta`/`vega`. This means `risk.var_es` can
+only ever *narrow* precision relative to whatever `pricing` already produced; it can't
+recover precision `pricing` already lost.
+
+A real, honest consequence of per-instrument-type `pricing`: when different buckets resolve
+to different dtypes, `_price_by_type`'s final `jnp.stack` promotes the assembled `npv_cube`
+to the WIDEST dtype present (confirmed directly: `jnp.stack([float64_arr, float32_arr],
+axis=-1).dtype == float64`). A mixed-precision pricing request still controls the *cost* of
+computing each bucket's own cube — an expensive Bermudan tree running cheaper while a
+trivial swap stays exact — but `npv_cube.dtype` itself reflects the widest bucket present,
+not necessarily the one a caller drilled down on.
 
 **`simulation`** works exactly as before: it's passed straight through to
 `generate_paths(config, precision=...)`.
@@ -499,6 +556,31 @@ hardcoding one, so plain pricing's curve stays float64 (built from a plain `np.n
 while Greeks' curve carries whatever `risk`-precision JAX array
 `engine.risk.greeks._bermudan_price_fn` substituted in — one signal, two correct
 behaviors, no separate parameter needed.
+
+When `risk` is a `RiskPrecisionOverride` with `delta_gamma` and `theta` resolving to
+different dtypes, `_compute_all_greeks` builds two separate `ZeroCurve`s per trade (one per
+metric) rather than one shared curve — the same curve-driven mechanism, just invoked twice.
+When both resolve to the same dtype (the common flat-`risk=N` case), this pays one small,
+redundant extra curve-construction call: a deliberate simplicity-over-micro-optimization
+choice, since building a `ZeroCurve` is a cheap pillar-count array build, not a
+JIT-compiled trace.
+
+**`calibration`** governs the LGM sigma bootstrap (`engine/calibration/lgm.py::calibrate_lgm_sigma`,
+invoked by `_fill_calibrated_sigma` once per distinct `rate_factor_index` needing
+calibration). Unlike `risk`, this was *not* free: `calibrate_lgm_sigma` hardcoded
+`jnp.float64` at four internal sites (the bisection's per-bucket `times`/`values` arrays and
+the final `Sigma`'s own arrays) regardless of what curve it was handed. Fixed by deriving
+`dtype = curve.pillar_rates.dtype` once at the top of the function and using it at all four
+sites — the same derive-from-curve pattern `engine/risk/greeks.py` already established, so
+`_fill_calibrated_sigma` controls it purely by handing `calibrate_lgm_sigma` a curve built
+at `precision.calibration`'s dtype, with no new parameter on the calibration function
+itself. One caveat worth stating plainly rather than assuming away: the bisection's
+`market_price`/`new_value` round-trip through plain Python `float` (always float64-precision
+in CPython) between bucket iterations, even at `calibration=32` — verified end-to-end (see
+`tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision::
+test_calibration_precision_flows_through_lgm_bootstrap`) to be immaterial: `jnp.asarray`
+downcasts the Python float back to float32 correctly on the very next line, and the
+resulting `Sigma`'s own dtype is confirmed float32 throughout.
 
 **The `jax_enable_x64` process-global-flag mechanism itself is unchanged**: JAX (the
 numerical library this project is built on) can only create 64-bit numbers at all if a
@@ -587,23 +669,84 @@ designed here — see [Roadmap & History](../planning/roadmap-and-history.md). S
 [`engine/portfolio/worker_pool.py`](../../engine/portfolio/worker_pool.py) for the full
 implementation and its own extensive docstring.
 
+### Option B: why uniform sub-float32 precision is not achievable today
+
+This project's long-term research goal includes pushing precision down to 8-bit and 4-bit
+formats *throughout* the pipeline, not just at isolated points. Two materially different
+paths exist, and it matters which one this codebase has:
+
+- **Option A (designed, not yet implemented in this codebase — `MatmulPrecisionConfig`).**
+  FP8/FP4 applied only at two matmul-shaped sub-steps inside `generate_paths`, paired with
+  float32 accumulation — deliberately narrow, targeting exactly the operations where a
+  low-precision matmul kernel exists and is numerically sound. Everything else stays at
+  `PrecisionConfig`'s float32-or-float64 knobs described above. This is a separate,
+  previously-scoped piece of work, tracked on its own; it does not exist as code yet.
+- **Option B (NOT implemented, this section).** Uniform sub-float32 precision *everywhere*,
+  including the two operations Option A targets. A fundamentally different, larger
+  undertaking — not a natural extension of Option A or of the `PrecisionConfig` hierarchy
+  this document otherwise describes.
+
+**What's confirmed broken, on which exact backend.** Live-tested against this project's
+installed `jax==0.10.2`/`jaxlib==0.10.2` CPU backend: `jnp.linalg.cholesky` raises
+`NotImplementedError` for `bfloat16`, `float16`, `float8_e4m3fn`, `float8_e5m2`, and
+`float4_e2m1fn` alike — the CPU backend's LAPACK-backed linalg path has no reduced-precision
+kernel at all, for any format below float32, not specifically for bfloat16 or the FP8/FP4
+family. `jax.scipy.stats.norm.ppf` raises `TypeError` on the same set of dtypes — an
+independently confirmed, not inferred, second instance of the same class of gap.
+`PrecisionConfig` therefore accepts only `{32, 64}` for every one of its four knobs.
+
+**A previously-considered belief, corrected.** An earlier planning pass considered bfloat16
+specifically "a first-class XLA dtype with full CPU kernel coverage," reasoning from its
+broad ML-training use. Tested live, this doesn't hold: `cholesky`/`norm.ppf` fail on
+bfloat16 with the *exact same* signature as FP8/FP4 — there is no meaningfully
+easier-to-reach reduced-precision tier on this backend.
+
+**Why these two operations are architecturally central, not a peripheral gap.**
+`jnp.linalg.cholesky` factorizes the joint covariance matrix into the correlation structure
+coupling every rate/equity factor's simulated shocks — this *is* how cross-asset correlation
+enters the simulation. `jax.scipy.stats.norm.ppf` converts each Sobol uniform draw into a
+normal shock — the fundamental step every path/factor/time-step consumes. Both run once per
+(scenario, time step, factor), not once per simulation — there's no way to "work around"
+them the way Option A already routes around the two matmul sub-steps; Option B means running
+these operations *themselves* below float32, which is exactly the part with no kernel to
+fall back to.
+
+**What would actually need to be built.** Two independent, from-scratch numerical-kernel
+efforts: (1) a custom low-precision Cholesky avoiding LAPACK entirely, built from primitives
+that *do* have low-precision coverage — matmul, proven by Option A's own two insertion
+points — via Newton-Schulz iteration (matmul-only, quadratically convergent) or
+blocked/recursive elimination; (2) a custom inverse-normal-CDF avoiding `norm.ppf`'s
+special-function kernel, built from pure elementwise arithmetic — a rational/polynomial
+minimax approximation (e.g. Wichura's AS 241) or an Acklam/Beasley-Springer-Moro-style
+closed-form approximation. Both would then need this codebase's own established validation
+bar, not a lighter one: cross-checked against the float64 originals for numerical agreement,
+*and* a separate pass confirming every downstream computation (pricing, VaR/ES, Greeks)
+stays within an acceptable error band at the target precision.
+
+**Honest sizing.** This is materially larger and higher-risk than the `PrecisionConfig`
+hierarchy this document otherwise describes — not a quick follow-on. The hierarchy is
+dtype-plumbing through code paths that already work correctly at every precision they
+support; Option B means designing, implementing, and independently validating two new
+numerical algorithms from scratch, each replacing a library primitive this codebase has
+relied on since its first ORE cross-check. No timeline is given deliberately — an honest
+estimate needs a working prototype of at least one candidate first, which is research work,
+not implementation work with a knowable estimate.
+
+**TPU behavior: an explicit, labeled, unverified hypothesis.** Everything above was tested
+on this CPU-only dev machine. It is *plausible* — genuinely unverified, not merely "probably
+fine" — that a Cloud TPU's native XLA backend has broader low-precision kernel coverage,
+since bfloat16 is TPU's own native compute format. This cannot be tested on this repo's
+current CPU-only environment and is not claimed as fact. Confirming or refuting it is real
+TPU deployment work, listed here once, not duplicated speculatively elsewhere.
+
 ### Out of scope for v1
 
-- **bfloat16/float16.** Confirmed broken on this stack today, not merely untested:
-  `jnp.linalg.cholesky` raises `NotImplementedError` and `jax.scipy.stats.norm.ppf`
-  raises a `TypeError` on both dtypes, on the installed `jax==0.10.2`/`jaxlib==0.10.2` CPU
-  backend. `PrecisionConfig` accepts only `{32, 64}` by design — a future attempt at
-  either lower-precision format needs to work around (or wait for upstream fixes to)
-  these two specific failures before it can even reach the point of comparing numerical
-  accuracy.
-- **Per-instrument-type or per-Greek precision.** `PrecisionConfig` has exactly three
-  knobs (`simulation`/`pricing`/`risk`); VaR/ES and every Greek (Delta/Gamma/Vega/Theta)
-  share the single `risk` setting, and there is no way to, say, price swaps at float32
-  while pricing Bermudans at float64 in the same request. A finer-grained design is a
-  plausible future extension but was explicitly out of scope for this pass.
-- **FP8/INT8/INT4/NF4** remain a further-out research goal (see
-  [Overview](../getting-started/overview.md)) — nothing in this codebase attempts them
-  yet.
+- **Sub-float32 precision outside Option A's two targeted matmul sub-steps.** See "Option B"
+  above for the full accounting of what's blocked, why, and what building it would require.
+- **FP8/INT8/INT4/NF4 anywhere in this codebase**, including Option A's own
+  `MatmulPrecisionConfig` mechanism, remain a further-out research goal not yet implemented
+  (see [Overview](../getting-started/overview.md)) — this pass built `PrecisionConfig`'s
+  {32, 64} hierarchy (Option C) and documented Option A/B; it did not build Option A itself.
 
 ## Typed configuration
 

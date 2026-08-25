@@ -42,6 +42,8 @@ __all__ = [
     "PortfolioRequest",
     "PortfolioResult",
     "PrecisionConfig",
+    "PricingPrecisionOverride",
+    "RiskPrecisionOverride",
     "TradeConfig",
     "price_portfolio",
     "validate_portfolio_against_simulation",
