@@ -41,6 +41,7 @@ already-fixed rates per scenario/step, or excluding elapsed cashflows from
 the sum) is intentionally out of scope here and left for a follow-up.
 """
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Dict, List
 
 import jax
@@ -48,6 +49,7 @@ import jax.numpy as jnp
 import numpy as np
 import ORE
 
+from engine.models.static_key import StaticKeyMixin
 from engine.models.ore_builders import (
     DAY_COUNTER,
     LegCashflows as _LegCashflows,
@@ -145,8 +147,18 @@ def _maturity_indices(times: np.ndarray, maturities: np.ndarray) -> np.ndarray:
     return indices
 
 
-@dataclass
-class _PreparedSwap:
+@dataclass(frozen=True, eq=False)
+class _PreparedSwap(StaticKeyMixin):
+    """Every field is compile-time-constant trade structure, resolved once by
+    `prepare_swap` -- nothing here varies per scenario/step.
+
+    `frozen=True` plus `StaticKeyMixin`'s by-value `__hash__`/`__eq__` make
+    this usable as a `jax.jit` STATIC argument (see `_price_one_swap`), which
+    is what lets the whole pricing kernel compile once and then be reused --
+    see `engine.models.static_key` for why the generated dataclass
+    `__hash__`/`__eq__` cannot do this and why by-value (not by-identity)
+    matters here.
+    """
     payer: bool
     fixed_notional: float
     fixed_rate: float
@@ -189,6 +201,7 @@ def prepare_swap(cfg: SwapConfig, maturities: np.ndarray) -> _PreparedSwap:
     )
 
 
+@partial(jax.jit, static_argnums=1)
 def _price_one_swap(yield_curves: jax.Array, swap: _PreparedSwap) -> jax.Array:
     """
     GPU: [Scenarios, TimeSteps] NPV for a single prepared swap, vectorized

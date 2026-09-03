@@ -14,6 +14,7 @@ import numpy as np
 from jax.scipy.stats import norm
 from scipy.stats.qmc import Sobol
 from dataclasses import dataclass
+from functools import partial
 from typing import Dict, List, Optional
 
 from engine.models.hull_white import A as _hw_A, B as _hw_B, ZeroCurve as _HwZeroCurve
@@ -39,8 +40,26 @@ def generate_sobol_normals(num_scenarios: int, num_steps: int, num_assets: int, 
     sobol_engine = Sobol(d=total_dimensions, scramble=True, seed=42)
     uniform_draws = sobol_engine.random(n=num_scenarios)
 
-    # Transfer to JAX and convert to standard normals
-    uniform_jax = jnp.array(uniform_draws, dtype=dtype)
+    # Transfer to JAX and convert to standard normals. The JAX half is
+    # factored into a jitted helper below: without a jit boundary each of
+    # clip/ppf/reshape/transpose dispatches eagerly (separately traced,
+    # lowered, compiled, executed and discarded), which measurably dominated
+    # this function's cost -- it was the single largest source of XLA
+    # compilations in a whole pricing job.
+    return _sobol_uniforms_to_normals(uniform_draws, num_scenarios, num_steps, num_assets, dtype)
+
+
+@partial(jax.jit, static_argnums=(1, 2, 3, 4))
+def _sobol_uniforms_to_normals(uniform_draws, num_scenarios: int, num_steps: int, num_assets: int, dtype) -> jax.Array:
+    """GPU half of `generate_sobol_normals`: clip the CPU-generated Sobol
+    uniforms off the open-interval endpoints, map them through the inverse
+    normal CDF, and reshape to [TimeSteps, Scenarios, Assets].
+
+    Everything except `uniform_draws` is static (plain ints and a dtype), so
+    one compiled kernel is reused for every call with the same simulation
+    shape. See `generate_sobol_normals`'s docstring on why the explicit
+    `.astype(dtype)` is required regardless of the ambient x64 state."""
+    uniform_jax = jnp.asarray(uniform_draws, dtype=dtype)
     epsilon = jnp.finfo(dtype).eps
     uniform_clipped = jnp.clip(uniform_jax, epsilon, 1.0 - epsilon)
 

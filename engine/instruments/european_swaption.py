@@ -55,6 +55,7 @@ exercise time `T0`, NPV is reported as exactly 0 (a European option carries
 no value after its own expiry).
 """
 from dataclasses import dataclass, field
+from functools import partial
 from typing import List
 
 import jax
@@ -63,6 +64,7 @@ import numpy as np
 import ORE
 
 from engine.simulation.market_model import ZeroCurveConfig
+from engine.models.static_key import StaticKeyMixin
 from engine.models.ore_builders import DAY_COUNTER, build_vanilla_swap
 from engine.portfolio.validation import _validate_common_fields, _validate_tenor
 from engine.models.hull_white import (
@@ -155,8 +157,17 @@ def _build_ore_swap(cfg: SwaptionConfig) -> ORE.VanillaSwap:
     )
 
 
-@dataclass
-class _PreparedSwaption:
+@dataclass(frozen=True, eq=False)
+class _PreparedSwaption(StaticKeyMixin):
+    """Every field is compile-time-constant trade/model structure, resolved
+    once by `prepare_swaption` -- nothing here varies per scenario/step.
+
+    Hashable by value via `StaticKeyMixin`, so it can be passed as a
+    `jax.jit` STATIC argument to `_price_one_swaption` -- which is what lets
+    that whole kernel, including `_solve_rstar`'s 100 fixed bisection
+    iterations, compile once and then be reused. See
+    `engine.models.static_key` for the full rationale.
+    """
     payer: bool
     notional: float
     exercise_time: float               # T0, year-fraction from evaluation_date
@@ -426,6 +437,7 @@ def _solve_rstar(coupon_bond_value_fn, params, t_shape, iterations: int = 100) -
     return solve(params)
 
 
+@partial(jax.jit, static_argnums=2)
 def _price_one_swaption(
     hw_paths: jax.Array, step_times: jax.Array, swaption: _PreparedSwaption,
 ) -> jax.Array:
@@ -479,10 +491,19 @@ def _price_one_swaption(
     ])
 
     # A(T0, Ti) for every coupon/notional date -- depends only on T0 and
-    # today's curve, computed once on CPU via compute_hw_A (NOT per
-    # scenario/step).
+    # today's curve (NOT per scenario/step). Calls the JAX-native
+    # `hull_white.A` directly rather than this module's `compute_hw_A`
+    # NumPy-facing wrapper: that wrapper's `np.asarray` return would
+    # concretize a traced value and break this function's `jax.jit`
+    # (TracerArrayConversionError). Same formula either way -- the wrapper
+    # is a thin NumPy adapter over exactly this call, kept for its external
+    # callers (tests/test_ore_parity.py, tests/test_greeks.py).
+    _curve = _HwZeroCurve(
+        pillar_times=jnp.asarray(swaption.zero_times),
+        pillar_rates=jnp.asarray(swaption.zero_rates),
+    )
     A_T0_Ti = jnp.asarray(
-        compute_hw_A(swaption.zero_times, swaption.zero_rates, np.full_like(all_times, T0), all_times, a, sigma),
+        _hw_A(_curve, jnp.full_like(jnp.asarray(all_times), T0), jnp.asarray(all_times), a, sigma),
         dtype=hw_paths.dtype,
     )
     B_T0_Ti = _hw_B(T0, jnp.asarray(all_times, dtype=hw_paths.dtype), a)  # [N+1]
@@ -508,13 +529,17 @@ def _price_one_swaption(
     # A(t, Ti) and A(t, T0) -- conditioning point t varies per step, so
     # these ARE computed per (scenario-independent) step, once per swaption
     # (not per scenario -- only depends on the step's t, not r(t)).
+    # Same JAX-native `hull_white.A` call as A_T0_Ti above (see the comment
+    # there on why not this module's NumPy-facing `compute_hw_A` wrapper) --
+    # `step_times` is a traced argument here, so it must stay a JAX array.
+    _step_times_j = jnp.asarray(step_times)
+    _all_times_j = jnp.asarray(all_times)
     A_t_Ti = jnp.asarray(
-        compute_hw_A(swaption.zero_times, swaption.zero_rates,
-                     np.asarray(step_times)[:, None], all_times[None, :], a, sigma),
+        _hw_A(_curve, _step_times_j[:, None], _all_times_j[None, :], a, sigma),
         dtype=hw_paths.dtype,
     )  # [TimeSteps, N+1]
     A_t_T0 = jnp.asarray(
-        compute_hw_A(swaption.zero_times, swaption.zero_rates, np.asarray(step_times), np.full_like(np.asarray(step_times), T0), a, sigma),
+        _hw_A(_curve, _step_times_j, jnp.full_like(_step_times_j, T0), a, sigma),
         dtype=hw_paths.dtype,
     )  # [TimeSteps]
 

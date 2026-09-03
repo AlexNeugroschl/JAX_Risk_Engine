@@ -47,6 +47,8 @@ alternative of measuring deviation from each step's own cross-scenario mean
 (which would isolate pure risk from drift; that was considered and rejected
 in favor of ORE's literal semantics).
 """
+import math
+from functools import partial
 from typing import Dict, Sequence
 
 import jax
@@ -69,9 +71,27 @@ def value_at_risk(pnl: jax.Array, percentile: float) -> jax.Array:
     (e.g. 0.99 for 99% VaR), matching ORE.RiskStatistics.valueAtRisk exactly:
     the lower/nearest-rank-below order statistic of the ascending-sorted
     per-step P&L sample, sign-flipped to a positive loss and clamped at 0.
+
+    `percentile` is coerced to a plain Python float before reaching the
+    jitted implementation below. It is a jit STATIC argument there (the rank
+    index it produces is a compile-time constant, not a traced value), and
+    static arguments must be hashable -- a 0-d `np.ndarray` or JAX scalar
+    is not, and would otherwise raise "Non-hashable static arguments are not
+    supported". Coercing here keeps every scalar-like `percentile` this
+    function has always accepted working unchanged.
     """
+    return _value_at_risk_jit(pnl, float(percentile))
+
+
+@partial(jax.jit, static_argnums=1)
+def _value_at_risk_jit(pnl: jax.Array, percentile: float) -> jax.Array:
     num_scenarios = pnl.shape[0]
-    idx = int(jnp.floor(num_scenarios * (1.0 - percentile)))
+    # Plain Python math, deliberately not jnp: `percentile` is a static
+    # argument and `num_scenarios` comes from the shape, so this rank index
+    # is a compile-time constant. Computing it via `jnp.floor` would build a
+    # traced array and then need `int()` to index with it, which raises
+    # ConcretizationTypeError under jit.
+    idx = int(math.floor(num_scenarios * (1.0 - percentile)))
     idx = min(max(idx, 0), num_scenarios - 1)
     sorted_pnl = jnp.sort(pnl, axis=0)
     return jnp.maximum(-sorted_pnl[idx], 0.0)
@@ -91,8 +111,16 @@ def expected_shortfall(pnl: jax.Array, percentile: float) -> jax.Array:
     expectedShortfall raises RuntimeError("no data below the target").
     Callers must check `jnp.isnan(...)` explicitly; this is a real,
     data-dependent edge case, not an oversight.
+
+    `percentile` is coerced to a plain Python float for the same
+    static-argument-hashability reason as `value_at_risk` above.
     """
-    var = value_at_risk(pnl, percentile)
+    return _expected_shortfall_jit(pnl, float(percentile))
+
+
+@partial(jax.jit, static_argnums=1)
+def _expected_shortfall_jit(pnl: jax.Array, percentile: float) -> jax.Array:
+    var = _value_at_risk_jit(pnl, percentile)
     tail_mask = pnl < -var[None, :]
     masked = jnp.where(tail_mask, pnl, jnp.nan)
     return -jnp.nanmean(masked, axis=0)

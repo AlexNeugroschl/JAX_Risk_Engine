@@ -162,12 +162,46 @@ def _run_pricing_job(frozen_request: PortfolioRequest) -> PortfolioResult:
     `jax_enable_x64` tier by the time this ever runs. Thaws the frozen
     (string-dated) trades back into real ORE objects, then delegates to
     `price_portfolio` unchanged -- this module does not reimplement or
-    wrap any pricing logic."""
+    wrap any pricing logic.
+
+    Opt-in profiling: if `JAX_RISK_PROFILE_DIR` is set in this process's
+    environment, the `price_portfolio` call is wrapped in `jax.profiler.trace`,
+    writing an XProf/TensorBoard-profiler trace into
+    `$JAX_RISK_PROFILE_DIR/pid-<pid>/` (one subdir per process, so it's safe
+    whether this is called directly in one process or fans out across pool
+    workers -- each writes its own). This traces the job as it actually runs
+    in a fresh worker: XLA lowering/compilation included, not just steady-state
+    execution. That is deliberate -- for this engine the compilation cost is a
+    first-class thing to measure (the tree pricers and the calibration
+    bisection lower a large number of `jit` programs), and larger portfolios
+    are where the execution-vs-compilation ratio gets meaningful. View with
+    `xprof --port 8791 <dir>`; Tools -> `op_profile` / `framework_op_stats`
+    give the aggregate on-device-vs-on-host breakdown, `trace_viewer` the
+    timeline. Unset (the default, including every test and the HTTP path in
+    CI) -> completely inert: no `import jax` here, byte-identical to before
+    this hook existed."""
     from engine.portfolio.request import price_portfolio
 
-    trades = [_thaw_trade(cfg) for cfg in frozen_request.trades]
-    request = replace(frozen_request, trades=trades)
-    return price_portfolio(request)
+    def _run() -> PortfolioResult:
+        trades = [_thaw_trade(cfg) for cfg in frozen_request.trades]
+        request = replace(frozen_request, trades=trades)
+        return price_portfolio(request)
+
+    profile_dir = os.environ.get("JAX_RISK_PROFILE_DIR")
+    if not profile_dir:
+        return _run()
+
+    import jax  # local: keep jax out of module import, mirroring _worker_init
+
+    out_dir = os.path.join(profile_dir, f"pid-{os.getpid()}")
+    with jax.profiler.trace(out_dir):
+        result = _run()
+        # The trace must not end before device execution does, or the timeline
+        # is truncated (JAX profiling docs are explicit about this). npv_cube
+        # is the dominant device-side tail; base_npv is already a plain Python
+        # float by the time price_portfolio returns.
+        jax.block_until_ready(result.npv_cube)
+    return result
 
 
 def _pool_for(precision_bits: int, pool_size: int = _DEFAULT_POOL_SIZE) -> ProcessPoolExecutor:

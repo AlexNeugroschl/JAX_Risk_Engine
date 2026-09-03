@@ -145,6 +145,7 @@ Known limitation: no mid-coupon proration -- see BermudanSwaptionConfig's
 own docstring and tests/test_bermudan_swaption.py::TestMidCouponKnownLimitation.
 """
 from dataclasses import dataclass, field
+from functools import partial
 from typing import List, Optional, Sequence, Union
 
 import jax
@@ -153,6 +154,7 @@ import numpy as np
 import ORE
 
 from engine.simulation.market_model import ZeroCurveConfig
+from engine.models.static_key import StaticKeyMixin
 from engine.models.ore_builders import build_vanilla_swap
 from engine.portfolio.validation import _validate_common_fields, _validate_tenor
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
@@ -253,8 +255,8 @@ def _build_ore_swap(cfg) -> ORE.VanillaSwap:
     )
 
 
-@dataclass
-class _PreparedBermudan:
+@dataclass(frozen=True, eq=False)
+class _PreparedBermudan(StaticKeyMixin):
     payer: bool
     notional: float
     exercise_times: np.ndarray          # [E] sorted ascending
@@ -614,8 +616,8 @@ def _hw_swap_value_at_nodes(swap: _PreparedBermudan, curve: _HwZeroCurve, x_node
 # =============================================================================
 # THE GRID-TIME SCHEDULE (precomputed once per trade, plain Python)
 # =============================================================================
-@dataclass
-class _GridSchedule:
+@dataclass(frozen=True, eq=False)
+class _GridSchedule(StaticKeyMixin):
     """The full, fixed-length, descending-sorted list of times the backward
     induction walks through -- `{0, final_maturity} ∪ exercise_times ∪
     condition_times`, deduplicated. Built once per `(trade, condition_times)`
@@ -702,6 +704,69 @@ def _run_backward_induction(swap: _PreparedBermudan, condition_times: Sequence[f
     `jax.lax.scan` can only produce fixed-shape stacked outputs, not a
     variable-size dict.
     """
+    schedule = _build_grid_schedule(swap, condition_times)
+    num_grid = len(schedule.times)
+    # The array-producing core (state grids + the lax.scan rollback) is
+    # factored out below; the NumPy snapshot bookkeeping stays here, since it
+    # concretizes (np.asarray) and indexes with Python ints.
+    #
+    # Deliberately NOT jax.jit'd with `swap`/`schedule` as static arguments,
+    # unlike the swap/European-swaption pricers' own `_Prepared*` structures:
+    # `engine.risk.greeks` differentiates Bermudan/American Delta/Gamma/Vega
+    # straight THROUGH this function, calling it with a `_PreparedBermudan`
+    # whose `zero_rates` (and, for Vega, `hw_sigma`) are live `jax.grad`
+    # tracers rather than concrete arrays. A jit static argument must be
+    # hashable and concrete, so a tracer-carrying `_PreparedBermudan` can
+    # never be one -- and `hw_sigma` may be a `Sigma`, a JAX pytree of
+    # arrays, which is unhashable for the same reason. The `lax.scan` below
+    # is itself a single fused primitive, so the eager-dispatch cost here is
+    # far lower than it would be for an unfused elementwise pricer.
+    x_all, values_all = _backward_induction_arrays(swap, schedule)
+    grid_times = jnp.asarray(schedule.times, dtype=_zero_curve_of(swap).pillar_rates.dtype)
+    curve = _zero_curve_of(swap)
+    a, sigma = swap.hw_a, swap.hw_sigma
+
+    condition_state_grids: List[np.ndarray] = []
+    condition_values: List[np.ndarray] = []
+    if len(condition_times) > 0:
+        order = np.argsort([schedule.condition_index[i] for i in range(num_grid) if schedule.is_condition[i]])
+        cond_rows = np.nonzero(schedule.is_condition)[0][order]
+        for row in cond_rows:
+            # Convert the LGM state grid x to the corresponding short rate
+            # r BEFORE storing the snapshot -- price_bermudan_swaptions
+            # below interpolates each scenario's SIMULATED short rate
+            # r_t (engine.simulation's own r(t) parametrization) directly
+            # against this stored grid, so the grid must already be in
+            # r-space, not raw LGM state x-space (r(t,x) is affine in x --
+            # see engine.models.lgm.r_from_x -- so this conversion is
+            # exact, not an approximation).
+            r_grid = _lgm_r_from_x(curve, a, sigma, grid_times[row], x_all[row])
+            condition_state_grids.append(np.asarray(r_grid))
+            condition_values.append(np.asarray(values_all[row]))
+
+    t0_row = int(np.nonzero(np.isclose(schedule.times, 0.0))[0][0])
+    value_at_t0 = values_all[t0_row, x_all.shape[1] // 2]
+
+    return _RolledBackValue(
+        value_at_t0=value_at_t0,
+        condition_times=np.asarray(condition_times, dtype=np.float64),
+        condition_state_grids=condition_state_grids,
+        condition_values=condition_values,
+    )
+
+
+def _backward_induction_arrays(swap: _PreparedBermudan, schedule: "_GridSchedule"):
+    """The array core of `_run_backward_induction`: builds the LGM state grid
+    at every scheduled grid time and rolls the value function backward
+    through them with one `jax.lax.scan`, returning the stacked
+    `(x_all, values_all)` of shape `[NumGridTimes, NumStateGridPoints]`.
+
+    Kept as a separate function purely for readability -- see the caller on
+    why this is deliberately not `jax.jit`-wrapped (it must stay traceable by
+    `jax.grad` with tracer-carrying arguments). The `np.asarray`-based
+    snapshot selection stays in the caller for the complementary reason: it
+    concretizes values and indexes with Python ints.
+    """
     a, sigma, n_per_std, std_devs = swap.hw_a, swap.hw_sigma, swap.n_per_std, swap.std_devs
     curve = _zero_curve_of(swap)
     # Derived from curve's own dtype (not hardcoded) -- see _state_grid's
@@ -719,10 +784,8 @@ def _run_backward_induction(swap: _PreparedBermudan, condition_times: Sequence[f
     my = int(round(std_devs * n_per_std))
     quad_y = jnp.asarray((1.0 / n_per_std) * np.arange(-my, my + 1, dtype=np.float64), dtype=dtype)
 
-    schedule = _build_grid_schedule(swap, condition_times)
     grid_times = jnp.asarray(schedule.times, dtype=dtype)
     is_exercise = jnp.asarray(schedule.is_exercise)
-    num_grid = grid_times.shape[0]
 
     x0 = _state_grid(sigma, grid_times[0], n_per_std, std_devs, dtype=dtype)
     values0 = _hw_swap_value_at_nodes(swap, curve, x0, grid_times[0])
@@ -767,34 +830,7 @@ def _run_backward_induction(swap: _PreparedBermudan, condition_times: Sequence[f
     # output covers every grid time, matching schedule.times' own indexing.
     x_all = jnp.concatenate([x0[None, :], x_scan], axis=0)          # [G, Nnodes]
     values_all = jnp.concatenate([values0[None, :], values_scan], axis=0)  # [G, Nnodes]
-
-    condition_state_grids: List[np.ndarray] = []
-    condition_values: List[np.ndarray] = []
-    if len(condition_times) > 0:
-        order = np.argsort([schedule.condition_index[i] for i in range(num_grid) if schedule.is_condition[i]])
-        cond_rows = np.nonzero(schedule.is_condition)[0][order]
-        for row in cond_rows:
-            # Convert the LGM state grid x to the corresponding short rate
-            # r BEFORE storing the snapshot -- price_bermudan_swaptions
-            # below interpolates each scenario's SIMULATED short rate
-            # r_t (engine.simulation's own r(t) parametrization) directly
-            # against this stored grid, so the grid must already be in
-            # r-space, not raw LGM state x-space (r(t,x) is affine in x --
-            # see engine.models.lgm.r_from_x -- so this conversion is
-            # exact, not an approximation).
-            r_grid = _lgm_r_from_x(curve, a, sigma, grid_times[row], x_all[row])
-            condition_state_grids.append(np.asarray(r_grid))
-            condition_values.append(np.asarray(values_all[row]))
-
-    t0_row = int(np.nonzero(np.isclose(schedule.times, 0.0))[0][0])
-    value_at_t0 = values_all[t0_row, x_all.shape[1] // 2]
-
-    return _RolledBackValue(
-        value_at_t0=value_at_t0,
-        condition_times=np.asarray(condition_times, dtype=np.float64),
-        condition_state_grids=condition_state_grids,
-        condition_values=condition_values,
-    )
+    return x_all, values_all
 
 
 def price_bermudan_swaption_base(cfg: BermudanSwaptionConfig) -> float:

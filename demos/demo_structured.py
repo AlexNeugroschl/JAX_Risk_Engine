@@ -9,7 +9,11 @@ stages, in the order a real integrator actually encounters them:
                             concepts at all.
   2. SERVER SETUP        -- getting a running engine.api server to talk to.
                             Infrastructure, not data -- would look identical
-                            for a completely different portfolio.
+                            for a completely different portfolio. This demo
+                            launches that server with the pricing-job
+                            profiler ON by default (JAX_RISK_PROFILE_DIR set),
+                            so each priced job writes an XProf/TensorBoard-
+                            profiler trace -- see PROFILE_DIR below.
   3. SERVER INPUTS        -- translating stage 1's given inputs into the
                             exact JSON shape engine.api.schemas.
                             PortfolioRequestSchema expects. This is where
@@ -124,6 +128,16 @@ COMPUTE_GREEKS = True
 API_BASE = "http://127.0.0.1:8000"
 _MANAGE_SERVER = os.environ.get("JAX_RISK_ENGINE_DEMO_SKIP_SERVER") != "1"
 
+# This demo turns the pricing-job profiler ON by default: the uvicorn server it
+# launches below is started with JAX_RISK_PROFILE_DIR set, so every job the
+# worker pool runs is wrapped in jax.profiler.trace (see
+# engine/portfolio/worker_pool.py::_run_pricing_job) and writes an
+# XProf/TensorBoard-profiler trace here -- one pid-<worker-pid>/ subdir per pool
+# worker. Requires the `profiling` extra (`pip install -e .[api,profiling]`).
+# Open the timeline with:  xprof --port 8791 <dir>
+# Override the location from the environment, or set it to "" to opt out.
+PROFILE_DIR = os.environ.get("JAX_RISK_PROFILE_DIR", ".profile-out")
+
 
 def wait_until_healthy(timeout_s: float = 60.0) -> None:
     deadline = time.time() + timeout_s
@@ -140,9 +154,17 @@ def wait_until_healthy(timeout_s: float = 60.0) -> None:
 
 
 def start_server() -> subprocess.Popen:
+    # Pass the profiler dir explicitly to the server's environment (rather than
+    # relying on implicit inheritance) so PROFILE_DIR's own default applies even
+    # when this script's caller didn't set JAX_RISK_PROFILE_DIR themselves. The
+    # spawned ProcessPoolExecutor workers inherit it from uvicorn in turn.
+    env = os.environ.copy()
+    if PROFILE_DIR:
+        env["JAX_RISK_PROFILE_DIR"] = PROFILE_DIR
     process = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "engine.api.app:app", "--host", "127.0.0.1", "--port", "8000"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env=env,
     )
     print(f"launched uvicorn (pid {process.pid}), waiting for {API_BASE}/health ...")
     try:
@@ -311,6 +333,13 @@ def main() -> None:
     if server_process is None:
         wait_until_healthy()
         print(f"reusing an already-running server at {API_BASE}")
+        if PROFILE_DIR:
+            print("note: profiling is only active if THAT server was itself "
+                  "started with JAX_RISK_PROFILE_DIR set -- this script can't "
+                  "set the environment of a server it didn't launch")
+    elif PROFILE_DIR:
+        print(f"pricing-job profiler ON -> traces in {PROFILE_DIR!r} "
+              f"(view: xprof --port 8791 {PROFILE_DIR})")
 
     try:
         print("\n=== stage 3: server inputs ===")

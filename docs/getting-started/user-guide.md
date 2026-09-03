@@ -12,9 +12,11 @@ This page is about *running* the code. For how it works internally, see
   `open-source-risk-engine` (the ORE Python bindings — see
   [Architecture: ORE as a dependency](../concepts/architecture.md#ore-as-a-dependency)), `pandas`,
   `jax`, `jaxlib`, `numpy`, `scipy`.
-- Two optional extras: `api` (`fastapi`, `pydantic`, `uvicorn[standard]` — needed only to
-  run [the HTTP API](../reference/http-api.md)) and `dev` (`pytest`, `httpx` — needed to run
-  the test suite, `httpx` being required by FastAPI's own `TestClient`).
+- Three optional extras: `api` (`fastapi`, `pydantic`, `uvicorn[standard]` — needed only to
+  run [the HTTP API](../reference/http-api.md)), `dev` (`pytest`, `httpx` — needed to run
+  the test suite, `httpx` being required by FastAPI's own `TestClient`), and `profiling`
+  (`xprof` — needed only to collect/view a profiler trace of a pricing job, see
+  [Profiling a pricing job](#profiling-a-pricing-job)).
 
 ## Setting up
 
@@ -415,3 +417,85 @@ for this explicitly rather than assuming a numeric result (see
 [Architecture: Adjustable precision](../concepts/architecture.md#adjustable-precision) for what
 this changes and why it's a single, per-call argument rather than something set once
 globally by the caller.
+
+## Profiling a pricing job
+
+To see where a pricing job's wall clock goes — XLA compilation, XLA execution, or Python
+(ORE calls, dispatch, the calibration bisection) — collect an
+[XProf](https://github.com/openxla/xprof) trace and open it in the TensorBoard-style
+profiler UI.
+
+**1. Install the `profiling` extra** (`xprof`, which bundles the profiler plugin and a
+standalone `xprof` viewer):
+
+```bash
+pip install -e .[api,profiling]
+```
+
+**2. Run a job with the profiler enabled.** The hook lives in
+`engine.portfolio.worker_pool._run_pricing_job` and is **opt-in**: it does nothing unless
+the environment variable `JAX_RISK_PROFILE_DIR` is set, in which case it wraps the
+`price_portfolio` call in `jax.profiler.trace(...)` and writes a trace into
+`$JAX_RISK_PROFILE_DIR/pid-<pid>/` (one subdir per process — safe whether the job runs
+directly or fans out across pool workers).
+
+This traces the job **as it actually runs in a fresh worker — XLA lowering and compilation
+included**, not just steady-state execution. That is on purpose: for this engine the
+compilation cost is a first-class thing to measure (the Bermudan/American tree pricers and
+the LGM calibration bisection lower a large number of `jit` programs — on a small portfolio
+that compilation *is* most of the wall time, and the trace's "mostly Python" flame graph is
+largely XLA lowering, which is real work). The execution-versus-compilation ratio only
+becomes meaningful on **larger portfolios**, where more trades and more scenarios grow the
+kernel execution time while the per-program compile cost stays roughly fixed — profile one
+of those to see JAX compute dominate.
+
+The turnkey way is [`demos/demo_structured.py`](../../demos/demo_structured.py), which
+launches its own API server **with the profiler already on** (it sets `JAX_RISK_PROFILE_DIR`
+for that server, defaulting to `./.profile-out`):
+
+```bash
+python demos/demo_structured.py
+# -> "pricing-job profiler ON -> traces in '.profile-out' ..."
+# -> .profile-out/pid-<worker-pid>/plugins/profile/<timestamp>/*.xplane.pb
+```
+
+To profile a single job directly, with no server or pool, set the variable yourself and
+call `_run_pricing_job` on a frozen request:
+
+```python
+import os
+os.environ["JAX_RISK_PROFILE_DIR"] = ".profile-out"   # set before the call
+
+from dataclasses import replace
+from engine.portfolio.worker_pool import _run_pricing_job, _freeze_trade
+# build `request` as a PortfolioRequest (see "Running the demos" / demos/demo.py)
+frozen = replace(request, trades=[_freeze_trade(t) for t in request.trades])
+_run_pricing_job(frozen)
+```
+
+**3. Open the timeline:**
+
+```bash
+xprof --port 8791 .profile-out
+```
+
+Then open `http://localhost:8791`, pick the `pid-<pid>` entry under **Runs**, then pick a
+tool from the **Tools** dropdown:
+
+- **`overview_page`** — start here. It splits the step time into compilation vs. execution
+  vs. input/other, which is the top-level number for this engine.
+- **`framework_op_stats`** / **`hlo_stats`** / **`op_profile`** — aggregate every op with an
+  on-device vs. on-host column; use these for which ops dominate.
+- **`trace_viewer`** — the timeline. On the **CPU backend there is no separate device row**:
+  XLA kernels run on the same host threads as the Python driver (`tf_XLAPjRtCpuClient`,
+  `Thread_*`), tagged as `xla_op`, interleaved with dispatch. `tf_PjRtCompilerThreadPool`
+  and `tf_xla-cpu-codegen` are the background compilation threads. A tall Python stack
+  (`price_portfolio` → `scan` → `_run_python_pjit` → `_uncached_lowering` →
+  `compile_or_get_cached`) is XLA *lowering/compilation*, not the math.
+
+If a small-portfolio trace looks entirely compile-bound, that is the real result — see
+step 2. Profile a bigger portfolio (more trades, `scenarios` 16k+) to see execution take
+over; drop `compute_greeks` if you only care about the forward pricing path.
+
+Unset `JAX_RISK_PROFILE_DIR` (or run any other demo/test — none of them set it) to go back
+to zero-overhead normal runs; the hook is completely inert when the variable is absent.

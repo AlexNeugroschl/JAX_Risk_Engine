@@ -26,6 +26,13 @@ dev = [
     "pytest",
     "httpx",
 ]
+profiling = [
+    # XProf bundles the TensorBoard Profiler plugin + a standalone `xprof`
+    # viewer. Only needed to collect/view a `jax.profiler.trace` timeline of a
+    # pricing job -- see engine/portfolio/worker_pool.py::_run_pricing_job's
+    # JAX_RISK_PROFILE_DIR opt-in and docs/getting-started/user-guide.md.
+    "xprof",
+]
 
 [tool.setuptools.packages.find]
 include = ["engine*"]
