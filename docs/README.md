@@ -17,7 +17,9 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 | Look up exact function signatures and data shapes | [API Reference](reference/api-reference.md) |
 | Price a whole portfolio in one call, from Python | [The Portfolio Entry Point](reference/portfolio-entrypoint.md) |
 | Price a whole portfolio over HTTP | [HTTP API](reference/http-api.md) |
+| Consume a TraderX end-of-day bundle (and know what gets refused) | [EOD Integration Boundary](reference/eod-integration.md) |
 | Profile a pricing job's JAX vs. Python time | [User Guide](getting-started/user-guide.md#profiling-a-pricing-job) |
+| Understand the tracer, and why Greeks used to dominate a trace | [Profiling & the Tracer](concepts/profiling.md) |
 | Understand a term you don't recognize | [Glossary](concepts/glossary.md) |
 | **Know what's broken, approximated, or missing before trusting a number** | **[Known Issues](known-issues.md)** |
 
@@ -31,6 +33,9 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 - **[Coding Style & Technical Constraints](concepts/coding-style.md)** — the rules that
   apply throughout the codebase (JAX purity/vectorization constraints, how ORE's C++ gets
   translated into JAX).
+- **[Profiling & the Tracer](concepts/profiling.md)** — how the XProf hook works, what a
+  trace contains, why the Bermudan Greeks path used to compile ~600 XLA programs per job
+  (and now compiles 13), and how to read a trace's phase annotations.
 - **[Glossary](concepts/glossary.md)** — plain-language definitions for every finance and
   engineering term used in these docs.
 
@@ -67,6 +72,11 @@ common `[Scenarios, TimeSteps, Trades]` NPV cube:
 - **[HTTP API](reference/http-api.md)** — the FastAPI wrapper (`engine/api/`) over
   `price_portfolio`: endpoint-by-endpoint reference, the async job pattern and why, request/
   response schemas.
+- **[EOD Integration Boundary](reference/eod-integration.md)** — `engine/integration/`'s
+  hash-verified TraderX bundle ingestion, terms join, unit normalization, convention
+  allowlist and per-calculation coverage model. **W0 delivered: this layer refuses, it does
+  not price.** Read it for the zero-coupon accrued rule, the CRLF hash trap, and why a
+  USD-SOFR booking is refused rather than routed through the generic swap builder.
 - **[Models & Trades](reference/models-and-trades.md)** — the shared foundation layer
   (`engine/models/`) every instrument pricer is built on: Hull-White and
   LGM closed-form math, and shared ORE trade-building/cashflow extraction.
@@ -95,6 +105,16 @@ common `[Scenarios, TimeSteps, Trades]` NPV cube:
 - **[EOD Contract Proposal](planning/eod-contract-proposal.md)** — the proposed request/
   result contracts for the TraderX end-of-day batch integration, and the capability matrix
   of what this engine can and cannot price today.
+- **[EOD Contract Response v2](planning/eod-contract-response-v2.md)** — the reply to
+  TraderX's response: corrections accepted (sensitivity method, gamma convention, units),
+  where this side pushes back (W1 instrument scope, in-memory job state), and the open
+  decisions blocking W0/W2.
+- **[EOD Contract Response v3](planning/eod-contract-response-v3.md)** — reply to TraderX's
+  v2 package: accepted answers, the zero-coupon accrued-interest normalization rule, durable
+  attempt/lookup semantics, and what is blocked on delivery vs. on build work.
+- **[TraderX Integration Plan](planning/traderx-integration-plan.md)** — **the actionable
+  plan.** Consolidates the whole contract exchange into ordered W0/W1/W2 tasks with steps,
+  tests, and the traps each one avoids. Start here to do the work.
 
 ## Document conventions
 

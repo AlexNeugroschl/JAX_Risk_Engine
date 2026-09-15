@@ -76,6 +76,8 @@ floats/dicts, no ORE types) pickles as-is with no translation needed for the
 return trip -- confirmed directly.
 """
 import os
+import time
+import warnings
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import replace
 from typing import Optional
@@ -197,19 +199,25 @@ def _profile_options(jax):
     exists to answer are all still answerable -- in fact more clearly than
     before, since the whole job is now covered instead of its first 1.6s.
 
-    **What is genuinely lost.** Per-`PjitFunction` events name the JAX
-    primitive (`PjitFunction(scan)`, `PjitFunction(_interp)`), NOT the
-    engine function that called it: no event in the trace carries a Python
-    source file/line (confirmed directly -- 0 of 926,463 events have
-    `source_file`/`source_line`/`long_name` args). Attributing a dispatch
-    back to, say, `_hw_swap_value_at_nodes` versus `_lgm_numeraire` is what
+    **What is genuinely lost, and how it is bought back.** Per-`PjitFunction`
+    events name the JAX primitive (`PjitFunction(scan)`,
+    `PjitFunction(_interp)`), NOT the engine function that called it: no
+    event in the trace carries a Python source file/line (confirmed
+    directly -- 0 of 926,463 events have `source_file`/`source_line`/
+    `long_name` args). Attributing a dispatch back to, say,
+    `_hw_swap_value_at_nodes` versus `_lgm_numeraire` is what
     `JAX_RISK_PROFILE_PYTHON_TRACER=1` buys, and the only thing it buys.
-    Two cheaper ways to get that attribution without it:
-      - `jax.named_scope`/`jax.profiler.TraceAnnotation` around a region of
-        interest -- adds a named lane to the timeline at negligible cost,
-        and is the standard way to label phases in a JAX profile.
-      - Trace one phase at a time (see this module's callers), so the
-        events in the trace can only have come from that phase."""
+
+    PHASE-level attribution -- which is what one actually wants most of the
+    time -- is already provided without it, by
+    `engine.portfolio.profiling.phase`: `price_portfolio` wraps each stage
+    (calibration / simulation / pricing / base_npv / risk / greeks, plus one
+    region per trade inside greeks) in a `jax.profiler.TraceAnnotation` +
+    `jax.named_scope` pair, which shows up as named regions on the timeline
+    at negligible cost. See that module's docstring for why BOTH mechanisms
+    are needed, and `docs/concepts/profiling.md` for what the resulting
+    breakdown looks like. Only per-CALLSITE attribution within a phase still
+    requires the Python tracer."""
     options = jax.profiler.ProfileOptions()
     options.python_tracer_level = 1 if os.environ.get("JAX_RISK_PROFILE_PYTHON_TRACER") == "1" else 0
     return options
@@ -301,6 +309,7 @@ def _run_pricing_job(frozen_request: PortfolioRequest) -> PortfolioResult:
         jax.block_until_ready(_run().npv_cube)
 
     out_dir = os.path.join(profile_dir, f"pid-{os.getpid()}")
+    started = time.time()
     with jax.profiler.trace(out_dir, profiler_options=_profile_options(jax)):
         result = _run()
         # The trace must not end before device execution does, or the timeline
@@ -308,7 +317,76 @@ def _run_pricing_job(frozen_request: PortfolioRequest) -> PortfolioResult:
         # is the dominant device-side tail; base_npv is already a plain Python
         # float by the time price_portfolio returns.
         jax.block_until_ready(result.npv_cube)
+    _warn_if_trace_truncated(out_dir, time.time() - started)
     return result
+
+
+# The profiler's event buffer is a fixed cap with no backpressure: once it
+# fills, remaining events are dropped silently and the resulting trace looks
+# exactly like a complete one. This is the threshold to start worrying at.
+_TRACE_EVENT_CAP = 1_000_000
+_TRACE_EVENT_WARN = 950_000
+# Fraction of the job's wall time the captured events must span before the
+# trace is considered to cover the run. Generous: the profiler legitimately
+# starts a moment after, and stops a moment before, the wall-clock window
+# measured around it, so a complete trace still falls somewhat short of 1.0.
+_TRACE_COVERAGE_WARN = 0.5
+
+
+def _warn_if_trace_truncated(out_dir: str, wall_seconds: float) -> None:
+    """Warns when a just-written trace looks TRUNCATED rather than complete.
+
+    **Why this is not optional bookkeeping.** A trace that overruns the
+    profiler's ~1M-event buffer reports success, writes a well-formed file,
+    and is byte-indistinguishable from a complete capture -- it simply stops
+    partway through the job. That failure mode already bit this engine once
+    (see `_run_pricing_job`'s docstring: the Python tracer silently capped a
+    ~90s job's trace at its first 1.6s), and the only cheap way to catch it
+    is to compare the captured events' own timestamp span against the wall
+    time of the run they were supposed to cover.
+
+    Emits a `UserWarning` rather than raising: a truncated trace is a
+    degraded diagnostic, never a reason to fail a pricing job that has
+    already computed its result correctly. Any error reading the trace back
+    is likewise swallowed -- profiling must not be able to break pricing.
+    """
+    try:
+        newest, total_bytes = None, 0
+        for root, _dirs, files in os.walk(out_dir):
+            for name in files:
+                path = os.path.join(root, name)
+                total_bytes += os.path.getsize(path)
+                if name.endswith(".trace.json.gz"):
+                    if newest is None or os.path.getmtime(path) > os.path.getmtime(newest):
+                        newest = path
+        if newest is None:
+            return
+
+        import gzip
+        import json
+        events = json.load(gzip.open(newest, "rt"))["traceEvents"]
+        stamps = [e["ts"] for e in events if "ts" in e]
+        span = (max(stamps) - min(stamps)) / 1e6 if stamps else 0.0
+
+        if len(events) >= _TRACE_EVENT_WARN:
+            warnings.warn(
+                f"profiler trace in {out_dir!r} has {len(events):,} events, at or near "
+                f"the profiler's ~{_TRACE_EVENT_CAP:,}-event buffer cap -- it is probably "
+                f"TRUNCATED and silently covers only part of this job. Shrink the "
+                f"portfolio, turn Greeks off, or unset JAX_RISK_PROFILE_PYTHON_TRACER.",
+                UserWarning, stacklevel=2,
+            )
+        elif wall_seconds > 1.0 and span < _TRACE_COVERAGE_WARN * wall_seconds:
+            warnings.warn(
+                f"profiler trace in {out_dir!r} spans only {span:.1f}s of a "
+                f"{wall_seconds:.1f}s job ({span / wall_seconds:.0%}) -- it is probably "
+                f"truncated or was stopped early; treat the timeline as partial.",
+                UserWarning, stacklevel=2,
+            )
+    except Exception:
+        # A profiling self-check must never break, or even noisily interfere
+        # with, a pricing job whose result is already computed and correct.
+        pass
 
 
 def _pool_for(precision_bits: int, pool_size: int = _DEFAULT_POOL_SIZE) -> ProcessPoolExecutor:

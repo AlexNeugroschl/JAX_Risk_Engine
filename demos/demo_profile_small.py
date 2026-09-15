@@ -7,17 +7,18 @@ under `jax.profiler.trace`.
 
 **Why this exists.** `demo_structured.py`'s portfolio (4096 scenarios, a
 9-point time grid, `n_per_std=64`, 4 exercise dates, Greeks on) produces a
-~50MB raw trace from ~1200 separate XLA compilations, which xprof then
-expands to ~99MB on disk when it ingests it. That is a perfectly good
-representation of a real pricing job -- it is just an awkward thing to load,
-scrub through, and re-run while you are actually learning the timeline. This
-script trades portfolio realism for trace ergonomics and nothing else: same
-code path, same profiler configuration, same instrument coverage, ~1/5 the
-trace.
+large raw trace which xprof then expands further when it ingests it. That is
+a perfectly good representation of a real pricing job -- it is just an
+awkward thing to load, scrub through, and re-run while you are actually
+learning the timeline. This script trades portfolio realism for trace
+ergonomics and nothing else: same code path, same profiler configuration,
+same instrument coverage, a fraction of the trace.
 
 **What was actually shrunk, and why those knobs.** Measured per-knob on this
 machine (fresh process each, `python_tracer_level=0`, raw trace bytes before
-any xprof ingest):
+any xprof ingest). These were taken BEFORE the JIT-structure work described
+in `docs/concepts/profiling.md`, and are kept here because the SHAPE of the
+result is what justifies this demo's design:
 
     baseline: demo_structured.py's own portfolio        ~50 MB   ~36 s
     scenarios 4096 -> 256, grid 9 -> 4 points            ~42 MB   ~31 s
@@ -30,26 +31,27 @@ for TRACE SIZE, none of the obvious "make the numbers smaller" knobs matter
 much. Scenario count, time-grid length, tree resolution, exercise count and
 curve pillar count are all nearly free -- they change how big each XLA
 program's ARRAYS are, not how MANY programs get compiled and dispatched, and
-it is the program count that the trace records. Greeks is the one knob that
-moves it, because `engine.risk.greeks` runs `jax.grad`/`jax.hessian` through
-`engine.instruments.bermudan_swaption._run_backward_induction`, which is
-deliberately not `jax.jit`-wrapped (see that function's own docstring for
-why -- it must stay traceable with tracer-carrying arguments), so every
-elementwise op around its `lax.scan` dispatches as its own tiny program.
+it is the program count that the trace records. Greeks was the one knob that
+moved it.
 
-Attributing that cost per trade (same measurement, adding one trade at a
-time):
+**What changed since.** That Greeks cost had a specific, fixable cause:
+`engine.instruments.bermudan_swaption._run_backward_induction` could not be
+`jax.jit`-wrapped, because `engine.risk.greeks` differentiates through it
+with tracer-carrying arguments and a jit STATIC argument must be concrete.
+Splitting `_PreparedBermudan` into differentiable pytree children plus static
+aux data removed that constraint (see `docs/concepts/profiling.md` for the
+full writeup). On the reference single-trade Greeks job that took XLA
+compilations from 602 to 13; on this demo's own 4-trade portfolio:
 
-    swap + European swaption only                        ~7.8 MB   ~8 s
-    + Bermudan swaption                                 ~29.8 MB  ~27 s
-    + American swaption (instead of Bermudan)           ~29.9 MB  ~27 s
-    all four                                            ~41.6 MB  ~31 s
+    greeks off:   ~11 MB / ~9 s   ->   ~5.6 MB / ~5.4 s
+    greeks on:    ~42 MB / ~31 s  ->  ~29.9 MB / ~19.2 s
 
-Each tree-priced trade adds a fixed ~22MB of trace regardless of how small
-its grid is. So this demo keeps ALL FOUR instrument types (dropping one
-would stop it being representative, which is the whole point) and instead
-keeps Greeks on for only ONE of the two tree trades -- see GREEKS_MODE
-below. That is the single decision that makes this trace small.
+Greeks is still roughly a 5x multiplier on trace size, but what remains is
+genuine compilation of a few LARGE fused programs rather than thousands of
+tiny ones -- the trace is now dominated by MLIR pass events, not by
+op-by-op dispatch. So this demo still keeps ALL FOUR instrument types
+(dropping one would stop it being representative, which is the whole point)
+and still defaults Greeks off -- see GREEKS_MODE below.
 
 Run with: venv/Scripts/python.exe demos/demo_profile_small.py
 View with: xprof --port 8791 .profile-out-small
@@ -133,19 +135,23 @@ RISK_PERCENTILES = [0.95, 0.99]
 # docstring). `compute_greeks` is portfolio-wide in PortfolioRequestSchema --
 # there is no per-trade Greeks flag -- so the two settings here are:
 #
-#   "off"  -- ~11MB trace, ~9s. Calibration + simulation + all four pricers +
-#             VaR/ES, no Greeks at all. The cheapest run that still covers
-#             every pricing path.
-#   "on"   -- ~42MB trace, ~31s. Adds Delta/Gamma/Theta for the European,
-#             Bermudan and American trades (a swap's Greeks are skipped by
-#             engine.portfolio.request._compute_all_greeks, which has no
-#             curve for it). Each tree-priced trade costs a fixed ~22MB.
+#   "off"  -- ~5.6MB trace, ~5.4s. Calibration + simulation + all four
+#             pricers + VaR/ES, no Greeks at all. The cheapest run that
+#             still covers every pricing path.
+#   "on"   -- ~30MB trace, ~19s. Adds Delta/Gamma/Theta for the European,
+#             Bermudan and American trades, plus Vega on the calibrated
+#             ones (a swap's Greeks are computed too, via
+#             engine.portfolio.request._compute_all_greeks).
 #
 # Default "off": this demo's job is to produce a trace you can open, and the
 # no-Greeks run already exercises calibration, simulation, and all four
 # pricers -- i.e. it is representative of the pricing path. Flip to "on"
 # (JAX_RISK_DEMO_GREEKS=1) when the Greeks path is specifically what you
-# want on the timeline, and accept the 4x.
+# want on the timeline, and accept the ~5x.
+#
+# Either way the timeline is labelled by phase (calibration / simulation /
+# pricing / base_npv / risk / greeks, plus one region per trade) -- see
+# docs/concepts/profiling.md on how those annotations work.
 GREEKS_MODE = os.environ.get("JAX_RISK_DEMO_GREEKS", "0") == "1"
 
 
@@ -318,11 +324,21 @@ def print_result(result: dict) -> None:
         print("\nGreeks (per trade index):")
         for idx, greeks in sorted(result["greeks"].items(), key=lambda kv: int(kv[0])):
             name = trade_names[int(idx)]
-            delta = [round(v, 2) for v in greeks["values"]["delta"]]
-            print(f"  [{idx}] {name:>18}: delta={delta} theta={greeks['theta']:,.2f}")
+            values = greeks["values"]
+            # A swap reports discount_delta/forward_delta (one per curve --
+            # it has two), every option type reports a single delta against
+            # its one calibration curve. Print whichever this trade has
+            # rather than assuming "delta": engine.portfolio.request's
+            # _compute_all_greeks covers swaps too, so both shapes occur in
+            # this very portfolio.
+            shown = [k for k in ("delta", "discount_delta", "forward_delta") if k in values]
+            deltas = " ".join(
+                f"{k}={[round(v, 2) for v in values[k]]}" for k in shown
+            )
+            print(f"  [{idx}] {name:>18}: {deltas} theta={greeks['theta']:,.2f}")
     else:
         print("\nGreeks: not computed (set JAX_RISK_DEMO_GREEKS=1 to include them"
-              " -- roughly 4x the trace)")
+              " -- roughly 5x the trace)")
 
 
 def report_trace_size() -> None:
@@ -335,15 +351,33 @@ def report_trace_size() -> None:
     does it every run rather than leaving it to be noticed later."""
     if not PROFILE_DIR or not os.path.isdir(PROFILE_DIR):
         return
+
+    # Size is reported PER RUN (per pid- subdirectory), not for the whole
+    # directory. Each run writes a new `pid-<pid>/`, and the profiler never
+    # cleans up after itself, so summing the directory reports the total of
+    # every run ever done into it -- which reads as a trace that grows every
+    # time you run the demo, and hid a genuine size REDUCTION behind three
+    # older runs the first time this was measured.
+    runs = [
+        os.path.join(PROFILE_DIR, name) for name in os.listdir(PROFILE_DIR)
+        if name.startswith("pid-") and os.path.isdir(os.path.join(PROFILE_DIR, name))
+    ]
+    if not runs:
+        return
+    this_run = max(runs, key=os.path.getmtime)
+
     total = 0
     newest = None
-    for root, _dirs, files in os.walk(PROFILE_DIR):
+    for root, _dirs, files in os.walk(this_run):
         for name in files:
             path = os.path.join(root, name)
             total += os.path.getsize(path)
             if name.endswith(".trace.json.gz") and (newest is None or os.path.getmtime(path) > os.path.getmtime(newest)):
                 newest = path
-    print(f"\ntrace written to {PROFILE_DIR!r}: {total / 1e6:.1f} MB")
+    print(f"\ntrace written to {this_run!r}: {total / 1e6:.1f} MB")
+    if len(runs) > 1:
+        print(f"  ({len(runs) - 1} older run(s) also in {PROFILE_DIR!r}"
+              f" -- delete it between runs for a clean comparison)")
 
     if newest is None:
         return

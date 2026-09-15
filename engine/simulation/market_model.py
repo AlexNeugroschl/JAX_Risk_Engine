@@ -440,9 +440,35 @@ def reconstruct_yield_curves(hw_paths: jax.Array, A: jax.Array, B: jax.Array) ->
 @dataclass
 class ZeroCurveConfig:
     """Today's market zero curve pillars for one rate factor, used to
-    calibrate the Hull-White A(t,T) term (see compute_hw_A_matrix)."""
+    calibrate the Hull-White A(t,T) term (see compute_hw_A_matrix).
+
+    `provenance` records where these numbers came from -- an observed
+    bootstrap, a named assumed profile, or synthetic fixture data. It is
+    **optional and defaults to None**, so every existing caller is
+    unaffected and unchanged: this field is metadata only, read by nothing
+    in the simulation math below, and `generate_paths` never branches on
+    it.
+
+    **Why it exists at all** (plan §W0.6, part of I-11): before it, this
+    dataclass carried times and rates and nothing else, so a flat 3%
+    assumption and a bootstrapped market curve were *the same object* and
+    no downstream code could tell them apart. A result computed against an
+    assumption looked exactly like one computed against the market. The
+    engine now carries the distinction internally rather than only at its
+    edges -- see `engine.integration.market_inputs.CurveProvenance`.
+
+    `None` means "unstated", which is honestly different from
+    `inputOrigin: "observed"`. Nothing infers observedness from a missing
+    provenance; `engine.integration` treats unstated as not-observed when
+    it computes a result's top-level `marketProvenance`.
+    """
     times: List[float]
     rates: List[float]
+    # Typed as Optional[object] rather than Optional[CurveProvenance] to
+    # keep this module free of any engine.integration import: the
+    # dependency runs integration -> simulation, and reversing it here
+    # would make the simulation layer depend on the TraderX boundary.
+    provenance: Optional[object] = None
 
 
 @dataclass

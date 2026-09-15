@@ -1,0 +1,58 @@
+{
+  "entries": [
+    {
+      "identity": {
+        "security": "UST-NOTE-20261215",
+        "source": "positions"
+      },
+      "instrumentType": "TREASURY",
+      "missingTerms": [],
+      "provenance": {
+        "description": "Synthetic reference supplement. Coupon/maturity/currency agree with exporter. Issue, denomination, redemption and explicit regular schedule are fixture assumptions. Calendar NONE, unadjusted payments, zero lag and same-day settlement deliberately match the exporter session-date accrual basis; these are not asserted market conventions.",
+        "origin": "synthetic"
+      },
+      "terms": {
+        "businessDayAdjustment": "UNADJUSTED",
+        "calendar": "NONE",
+        "couponFrequency": "6M",
+        "couponRatePercent": "4.0",
+        "currency": "USD",
+        "dayCount": "ACT/ACT (ICMA)",
+        "faceDenomination": "100",
+        "firstCouponDate": "2025-06-15",
+        "issueDate": "2024-12-15",
+        "maturityDate": "2026-12-15",
+        "paymentLagBusinessDays": 0,
+        "penultimateCouponDate": "2026-06-15",
+        "priceBasis": "clean-fraction-of-par",
+        "quantityUnit": "signed-currency-face",
+        "redemptionFraction": "1",
+        "schedule": [
+          {
+            "endDate": "2025-06-15",
+            "paymentDate": "2025-06-15",
+            "startDate": "2024-12-15"
+          },
+          {
+            "endDate": "2025-12-15",
+            "paymentDate": "2025-12-15",
+            "startDate": "2025-06-15"
+          },
+          {
+            "endDate": "2026-06-15",
+            "paymentDate": "2026-06-15",
+            "startDate": "2025-12-15"
+          },
+          {
+            "endDate": "2026-12-15",
+            "paymentDate": "2026-12-15",
+            "startDate": "2026-06-15"
+          }
+        ],
+        "settlementDays": 0,
+        "stubConvention": "NONE"
+      }
+    }
+  ],
+  "schema": "traderx.instrument-terms.v1"
+}

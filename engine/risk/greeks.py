@@ -15,10 +15,11 @@ the resulting NPVs (`OREAnalytics/orea/cube/sensitivitycube.cpp`:
 `delta = NPV_up - NPV_base`, `gamma = NPV_up - 2*NPV_base + NPV_down`, for
 a `Forward`-scheme, single-bump-size configuration -- ORE's own default).
 This module computes the mathematically identical quantity a different
-way: `jax.grad`/`jax.hessian` of NPV with respect to each curve pillar's
-zero rate, scaled by the same 1bp bump size, giving ORE's exact "dollar
-Delta/Gamma for a 1bp move" with no finite-difference truncation error and
-no arbitrary step-size choice. This mirrors ORE's own design decision to
+way: the gradient and Hessian diagonal of NPV with respect to each curve
+pillar's zero rate (via `jax.grad` and Hessian-vector products -- see
+`_grad_and_hessian_diagonal`), scaled by the same 1bp bump size, giving
+ORE's exact "dollar Delta/Gamma for a 1bp move" with no finite-difference
+truncation error and no arbitrary step-size choice. This mirrors ORE's own design decision to
 maintain closed-form `DiscountingSwapEngineDeltaGamma`/
 `BlackSwaptionEngineDeltaGamma` engines as an independent check on its
 bump-and-revalue numbers (`QuantExt/qle/pricingengines/
@@ -146,6 +147,76 @@ DAY_COUNTER = ORE.Actual365Fixed()
 
 
 # =============================================================================
+# GRADIENT + HESSIAN-DIAGONAL (shared by every Delta/Gamma function below)
+# =============================================================================
+def _grad_and_hessian_diagonal(price_fn, x, *rest):
+    """`(d f/d x_i, d^2 f/d x_i^2)` for every `i` -- the gradient and the
+    DIAGONAL of the Hessian, without ever materializing the Hessian.
+
+    **Why not `jnp.diagonal(jax.hessian(f)(x))`.** Every Delta/Gamma
+    function in this module reports only the same-pillar second partial
+    (ORE's own `SensitivityCube::gamma` is a cross-SCENARIO second
+    difference, so it has no cross-pillar term to match -- see
+    `swap_delta_gamma`'s docstring). Building the full `[n, n]` Hessian to
+    keep `n` of its entries means `jax.hessian`'s forward-over-reverse
+    (`jacfwd(jacrev(f))`) traces the whole pricer `n` times over and
+    discards `n^2 - n` of the results. This computes each diagonal entry as
+    one Hessian-vector product against a basis vector instead:
+    `hvp(f, x, e_i)[i] == d^2 f / d x_i^2`, at one gradient's cost each.
+
+    The two are mathematically identical for any twice-differentiable `f`
+    (the HVP *is* a Hessian row; taking its `i`-th entry picks the diagonal
+    element), which
+    `tests/test_profiling_and_jit.py::TestHessianDiagonalEquivalence` pins
+    directly against `jnp.diagonal(jax.hessian(...))` for all three
+    instrument types, plus an analytic case with a known closed form.
+
+    `rest` carries any further positional arguments `price_fn` takes and
+    which are held FIXED here (e.g. `_bermudan_price_fn`'s `sigma_values`,
+    or the opposite curve in the two-curve swap case) -- differentiation is
+    always with respect to the FIRST argument, `x`.
+
+    **One jitted program for both outputs.** Gradient and Hessian diagonal
+    are computed inside a single `jax.jit`, so the whole derivative -- not
+    just the pricer it differentiates -- compiles to one XLA program instead
+    of dispatching its elementwise work op-by-op. On the reference Bermudan
+    trade this is the difference between 470 compilations and 5.
+
+    **Known residue: one compile per CALL, not per curve shape.** `price_fn`
+    is a fresh closure every time (each `_*_price_fn` rebuilds it, capturing
+    that trade's own prepared structure), and `jax.jit` treats a new Python
+    function object as a new function -- so `combined` below recompiles on
+    each call even for an identical trade. Measured: a repeated
+    `bermudan_delta_gamma` costs 1 compilation rather than 0. That is a
+    ~40-70x improvement on where this started and is dominated by the tree
+    pricer's own single fused program, so it is left as-is rather than
+    papered over with a closure cache keyed on trade identity -- which would
+    have to key on the full `_Prepared*` structure to be correct, and would
+    risk returning a stale program for a mutated config. Revisit if repeated
+    same-trade Greeks calls (e.g. an intraday re-risk loop) ever become the
+    dominant access pattern; see `docs/concepts/profiling.md`.
+    """
+    def combined(xi, *fixed):
+        def f(inner):
+            return price_fn(inner, *fixed)
+
+        grad = jax.grad(f)(xi)
+
+        # vmap over the basis vectors runs all n HVPs as one batched program
+        # rather than n separate dispatches -- the same reason jax.hessian
+        # itself is written as a vmap'd jacfwd internally.
+        basis = jnp.eye(xi.shape[0], dtype=xi.dtype)
+
+        def hvp(v):
+            return jax.jvp(jax.grad(f), (xi,), (v,))[1]
+
+        rows = jax.vmap(hvp)(basis)   # [n, n]; only its diagonal escapes
+        return grad, jnp.diagonal(rows)
+
+    return jax.jit(combined)(x, *rest)
+
+
+# =============================================================================
 # SWAP: DELTA / GAMMA
 # =============================================================================
 def _yield_curves_from_zero_curves(
@@ -259,17 +330,22 @@ def swap_delta_gamma(
     """
     price_fn = _swap_price_fn(cfg, disc_curve, fwd_curve)
 
-    grad_disc, grad_fwd = jax.grad(price_fn, argnums=(0, 1))(
-        disc_curve.pillar_rates, fwd_curve.pillar_rates
+    # `_grad_and_hessian_diagonal` jits internally (see its docstring) and
+    # always differentiates its FIRST array argument, so the forward-curve
+    # call passes the two curves in swapped order behind a small adapter.
+    disc_delta, disc_gamma = _grad_and_hessian_diagonal(
+        price_fn, disc_curve.pillar_rates, fwd_curve.pillar_rates
     )
-    hess_disc_full = jax.hessian(price_fn, argnums=0)(disc_curve.pillar_rates, fwd_curve.pillar_rates)
-    hess_fwd_full = jax.hessian(price_fn, argnums=1)(disc_curve.pillar_rates, fwd_curve.pillar_rates)
+    fwd_delta, fwd_gamma = _grad_and_hessian_diagonal(
+        lambda fwd_rates, disc_rates: price_fn(disc_rates, fwd_rates),
+        fwd_curve.pillar_rates, disc_curve.pillar_rates,
+    )
 
     return {
-        "discount_delta": grad_disc * bump_size,
-        "discount_gamma": jnp.diagonal(hess_disc_full) * bump_size ** 2,
-        "forward_delta": grad_fwd * bump_size,
-        "forward_gamma": jnp.diagonal(hess_fwd_full) * bump_size ** 2,
+        "discount_delta": disc_delta * bump_size,
+        "discount_gamma": disc_gamma * bump_size ** 2,
+        "forward_delta": fwd_delta * bump_size,
+        "forward_gamma": fwd_gamma * bump_size ** 2,
     }
 
 
@@ -298,8 +374,14 @@ def swap_theta(
     forward difference along the time axis, exactly mirroring ORE's own
     finite-difference-in-time Theta.
     """
+    # Both valuations jitted: each is one compiled program instead of an
+    # eager op-by-op walk through the whole pricer (see
+    # `docs/concepts/profiling.md`). The two dates produce two DIFFERENT
+    # trade structures (different cashflow year-fractions), so they are
+    # genuinely two programs, not a cache hit -- jitting still collapses
+    # each one's own internal dispatch.
     base_price_fn = _swap_price_fn(cfg, disc_curve, fwd_curve)
-    base_npv = float(base_price_fn(disc_curve.pillar_rates, fwd_curve.pillar_rates))
+    base_npv = float(jax.jit(base_price_fn)(disc_curve.pillar_rates, fwd_curve.pillar_rates))
 
     theta_date = ORE.TARGET().advance(cfg.evaluation_date, theta_days, ORE.Days)
     theta_cfg = SwapConfig(
@@ -309,7 +391,7 @@ def swap_theta(
         floating_spread=cfg.floating_spread, evaluation_date=theta_date,
     )
     theta_price_fn = _swap_price_fn(theta_cfg, disc_curve, fwd_curve)
-    theta_npv = float(theta_price_fn(disc_curve.pillar_rates, fwd_curve.pillar_rates))
+    theta_npv = float(jax.jit(theta_price_fn)(disc_curve.pillar_rates, fwd_curve.pillar_rates))
 
     period_flow = _swap_cashflows_in_period(cfg, cfg.evaluation_date, theta_date)
 
@@ -455,16 +537,16 @@ def swaption_delta_gamma(
 
     Returns `{"delta": [...], "gamma": [...]}`, each shaped
     `[len(curve.pillar_rates)]`. Gamma is the pure second partial at each
-    pillar (the diagonal of `jax.hessian`), matching ORE's own
-    `SensitivityCube::gamma` scope -- see `swap_delta_gamma`'s docstring
+    pillar (the Hessian's diagonal, computed via Hessian-vector products
+    rather than by building the matrix -- see `_grad_and_hessian_diagonal`),
+    matching ORE's own `SensitivityCube::gamma` scope -- see `swap_delta_gamma`'s docstring
     for why only the diagonal is reported.
     """
     price_fn = _swaption_price_fn(cfg, curve)
-    grad = jax.grad(price_fn)(curve.pillar_rates)
-    hess = jax.hessian(price_fn)(curve.pillar_rates)
+    delta, gamma = _grad_and_hessian_diagonal(price_fn, curve.pillar_rates)
     return {
-        "delta": grad * bump_size,
-        "gamma": jnp.diagonal(hess) * bump_size ** 2,
+        "delta": delta * bump_size,
+        "gamma": gamma * bump_size ** 2,
     }
 
 
@@ -491,8 +573,13 @@ def swaption_theta(
     two DETERMINISTIC valuations (today vs. today+1) under the SAME
     (unshocked) curve, not a simulated scenario.
     """
+    # Jitted for the same reason as `swap_theta`'s own pair -- see the
+    # comment there and `docs/concepts/profiling.md`. This one mattered
+    # most: measured at 56 separate XLA compilations before jitting (the
+    # Jamshidian r* solve dispatches a long elementwise chain eagerly),
+    # against 11 for the whole grad+Hessian-diagonal Delta/Gamma pair.
     base_price_fn = _swaption_price_fn(cfg, curve)
-    base_npv = float(base_price_fn(curve.pillar_rates))
+    base_npv = float(jax.jit(base_price_fn)(curve.pillar_rates))
 
     theta_date = ORE.TARGET().advance(cfg.evaluation_date, theta_days, ORE.Days)
     theta_cfg = SwaptionConfig(
@@ -504,7 +591,7 @@ def swaption_theta(
         evaluation_date=theta_date,
     )
     theta_price_fn = _swaption_price_fn(theta_cfg, curve)
-    theta_npv = float(theta_price_fn(curve.pillar_rates))
+    theta_npv = float(jax.jit(theta_price_fn)(curve.pillar_rates))
 
     return theta_npv - base_npv
 
@@ -579,15 +666,15 @@ def bermudan_delta_gamma(
 
     Returns `{"delta": [...], "gamma": [...]}`, each shaped
     `[len(curve.pillar_rates)]`. Gamma is the pure second partial at each
-    pillar (the diagonal of `jax.hessian`), matching ORE's own
-    `SensitivityCube::gamma` scope.
+    pillar (the Hessian's diagonal, computed via Hessian-vector products
+    rather than by building the matrix -- see `_grad_and_hessian_diagonal`),
+    matching ORE's own `SensitivityCube::gamma` scope.
     """
     price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
-    grad = jax.grad(price_fn, argnums=0)(curve.pillar_rates, sigma_values)
-    hess = jax.hessian(price_fn, argnums=0)(curve.pillar_rates, sigma_values)
+    delta, gamma = _grad_and_hessian_diagonal(price_fn, curve.pillar_rates, sigma_values)
     return {
-        "delta": grad * bump_size,
-        "gamma": jnp.diagonal(hess) * bump_size ** 2,
+        "delta": delta * bump_size,
+        "gamma": gamma * bump_size ** 2,
     }
 
 
@@ -606,8 +693,13 @@ def bermudan_theta(
     coterminal-exercise-date scope -- see `bermudan_swaption.py`'s own
     "Known limitation" docstring on mid-coupon exercise).
     """
+    # Jitted for the same reason as `swap_theta`/`swaption_theta` above.
+    # `_run_backward_induction` is itself jitted one layer down now (see
+    # `bermudan_swaption._backward_induction_arrays`), so this outer jit
+    # only folds in the small amount of surrounding work -- but it keeps
+    # the Theta path consistent with the others and costs nothing.
     price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
-    base_npv = float(price_fn(curve.pillar_rates, sigma_values))
+    base_npv = float(jax.jit(price_fn)(curve.pillar_rates, sigma_values))
 
     theta_date = ORE.TARGET().advance(cfg.evaluation_date, theta_days, ORE.Days)
     theta_cfg = BermudanSwaptionConfig(
@@ -619,7 +711,7 @@ def bermudan_theta(
         evaluation_date=theta_date,
     )
     theta_price_fn, theta_sigma_values = _bermudan_price_fn(theta_cfg, curve)
-    theta_npv = float(theta_price_fn(curve.pillar_rates, theta_sigma_values))
+    theta_npv = float(jax.jit(theta_price_fn)(curve.pillar_rates, theta_sigma_values))
 
     return theta_npv - base_npv
 
@@ -712,7 +804,7 @@ def bermudan_vega(
     )
 
     price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
-    d_npv_d_s = jax.grad(price_fn, argnums=1)(curve.pillar_rates, sigma_values)  # [n]
+    d_npv_d_s = jax.jit(jax.grad(price_fn, argnums=1))(curve.pillar_rates, sigma_values)  # [n]
 
     # Derived from curve's own dtype (not hardcoded) -- same reasoning as
     # _swaption_price_fn's all_times/all_amounts above: J is combined with
@@ -722,7 +814,16 @@ def bermudan_vega(
     _dtype = curve.pillar_rates.dtype
     # Full lower-triangular Jacobian J[j, i] = d(s_j)/d(v_i), built by
     # forward substitution over j (increasing bucket index).
-    J = jnp.zeros((n, n), dtype=_dtype)
+    #
+    # The forward substitution is a genuine sequential Python loop -- row j
+    # reads rows <j, so it cannot be vectorized away -- but each row's own
+    # two gradients ARE jitted below. Left un-jitted, each bucket dispatched
+    # its whole `price_lgm_swaption` gradient op-by-op, and the running
+    # `J.at[j, :].set(row)` writes showed up in the profiler trace as
+    # ~1000 eager `dynamic_update_index_in_dim` dispatches. Accumulating the
+    # rows in a plain Python list and stacking ONCE at the end removes those
+    # entirely (one `jnp.stack` instead of n scatter-writes).
+    rows = []
 
     for j, target_j in enumerate(calibration_targets):
         bucket_times_j = sigma.times[:j]
@@ -732,19 +833,23 @@ def bermudan_vega(
 
         # dg_j/ds_k for every k <= j, via one jax.grad w.r.t. the whole
         # [s_0,...,s_j] prefix (cheaper than j+1 separate scalar grads).
-        dg_j_ds = jax.grad(model_price_wrt_prefix)(sigma.values[: j + 1])  # [j+1]
+        dg_j_ds = jax.jit(jax.grad(model_price_wrt_prefix))(sigma.values[: j + 1])  # [j+1]
 
         def market_price_wrt_v_j(v_j, _target=target_j):
             bumped = _replace(_target, market_vol=v_j)
             return bachelier_swaption_price(bumped, curve)
 
         # g_j := model_price - market_price, so dg_j/dv_j = -d(market_price)/dv_j.
-        dg_j_dv_j = -jax.grad(market_price_wrt_v_j)(jnp.asarray(target_j.market_vol))
+        dg_j_dv_j = -jax.jit(jax.grad(market_price_wrt_v_j))(jnp.asarray(target_j.market_vol))
 
-        cross_term = jnp.sum(dg_j_ds[:j, None] * J[:j, :], axis=0) if j > 0 else jnp.zeros((n,), dtype=_dtype)
-        row = -(cross_term.at[j].add(dg_j_dv_j)) / dg_j_ds[j]
-        J = J.at[j, :].set(row)
+        if j > 0:
+            prev = jnp.stack(rows)                       # [j, n], rows already computed
+            cross_term = jnp.sum(dg_j_ds[:j, None] * prev, axis=0)
+        else:
+            cross_term = jnp.zeros((n,), dtype=_dtype)
+        rows.append(-(cross_term.at[j].add(dg_j_dv_j)) / dg_j_ds[j])
 
+    J = jnp.stack(rows)  # [n, n], lower-triangular by construction
     vega_per_unit_vol = d_npv_d_s @ J  # [n]
     return vega_per_unit_vol * market_vol_bump
 

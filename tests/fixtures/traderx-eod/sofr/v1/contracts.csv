@@ -1,0 +1,21 @@
+# traderx-swap-contracts schema=2
+# consensusSequence=4
+# sessionDate=2025-06-02
+# priceSnapshotVersion=1
+# cutSha256=245492d23f07acc8de71fb2bf47018b7d0eff7f93589009ebc1d9905d0710e11
+# contracts=1
+# cutConsistency=every row is the replicated state machine's state at consensusSequence on the totally-ordered consensus log, not a read-model query
+# companionArtifact=the netted position extract rendered from this same cut, at this same consensusSequence and cutSha256, carries equities, treasuries and listed options; no row appears in both files
+# netting=NONE, and none is possible. Rows are one per booked contract. Two offsetting swaps do NOT cancel: receive-fixed 4.2% and pay-fixed 4.3% on the same notional and dates net to zero quantity at an (account, instrument) grain while leaving a real locked-in rate differential. Netting these rows destroys that
+# valuation=ABSENT BY DESIGN. This file states TERMS, not values: no NPV, no mark, no discount factors, no curve, no par rate, no sensitivities. An absent valuation column does not mean zero exposure
+# payReceive=direction of the FIXED leg from the booking account's point of view; the float leg is the opposite side of the same contract
+# notionalConvention=whole currency units of the currency column, not scaled
+# fixedRateConvention=annual decimal fraction, six decimals (0.042000 = 4.2%)
+# lifecycle=NOT MODELLED. Terms are as booked: no resets, no coupon payments, no accrual, no amortisation, no unwinds or terminations. A contract past its maturityDate is still listed here exactly as booked
+# contractIdentity=SW-<consensusSequence> for a swap, SWPT-<consensusSequence> for a swaption; unique within the cluster epoch by construction and reproducible from the log alone
+# productType=SWAP or SWAPTION. A SWAPTION is an option on a swap: every column to the left of productType describes its UNDERLYING swap, so fixedRate is the STRIKE and payReceive is the direction of the underlying's fixed leg (PAY_FIXED = a payer swaption). expiryDate and exerciseStyle are empty for a SWAP
+# exerciseStyle=EUROPEAN, BERMUDAN or AMERICAN. A TERM, published because two swaptions identical in every other column are different instruments if their styles differ. No exercise EVENT is modelled (see lifecycle above): a swaption past its expiryDate is still listed here exactly as booked
+# swaptionNotionalConvention=notional is the UNDERLYING swap's notional, not a premium. This file states no premium and no valuation
+# conventionSource=floatIndex, paymentFrequency and dayCount are resolved from the committed convention index by a table compiled into the engine, so every member and every replay resolves them identically
+contractId,accountId,payReceive,notional,fixedRate,floatIndex,effectiveDate,maturityDate,paymentFrequency,dayCount,currency,counterpartyId,nettingSetId,productType,expiryDate,exerciseStyle
+SW-3,22214,PAY_FIXED,1000000,0.040000,USD-SOFR,2025-06-03,2030-06-03,1Y,ACT/360,USD,SYNTH-BUY,SYNTH-NS-B,SWAP,,

@@ -20,7 +20,9 @@ suite did not surface them — in one case a test actively asserted the buggy be
 | **FLAGGED** | Inaccuracy **unchanged**. The engine now warns instead of staying silent. Not a fix. |
 | **OPEN** | Not addressed. Numbers are wrong or absent today. |
 
-Last full verification: **824 tests passing** (baseline before this work: 802).
+Last full verification: **1175 tests passing** (856 before the W0 EOD integration work; W0.1–
+W0.5/0.7/0.9 added 236, W0.6 a further 83). The figure previously recorded here (824) was
+stale.
 
 ---
 
@@ -32,13 +34,13 @@ Last full verification: **824 tests passing** (baseline before this work: 802).
 | [I-02](#i-02) | Bermudan Vega never computed | Medium | ✅ FIXED |
 | [I-03](#i-03) | No per-instrument NPV; totals unattributable | Medium | ✅ FIXED |
 | [I-04](#i-04) | Aged swaps mispriced at every step past first accrual | **High** | ⚠️ FLAGGED |
-| [I-05](#i-05) | No faithful USD-SOFR/ACT360 swap construction | **High** | ❌ OPEN |
+| [I-05](#i-05) | No faithful USD-SOFR/ACT360 swap construction | **High** | ❌ OPEN — refusal path landed (W0.4) |
 | [I-06](#i-06) | Mid-coupon Bermudan/American exercise understates value | Medium | ⚠️ FLAGGED |
 | [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN |
 | [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ❌ OPEN |
 | [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN |
-| [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN |
-| [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ❌ OPEN |
+| [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary (W0.7) |
+| [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ❌ OPEN — measure + MC diagnostics landed (W0.6) |
 | [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN |
 
 **The two that matter most for financial correctness are [I-04](#i-04) and [I-05](#i-05).**
@@ -241,13 +243,27 @@ builder. There is no cross-check against a real booked contract.
    time axis, and the full test suite pins that behavior.
 3. **A hard refusal path:** any booking whose conventions fall outside the supported subset
    must be returned as explicitly *unsupported with a reason*, never approximated by the
-   generic builder.
+   generic builder. — ✅ **Done at the EOD integration boundary (W0.4).**
 4. **Acceptance against a same-terms ORE reference** — not this engine's own test suite.
 
-**Interim mitigation (recommended, not yet implemented).** Until the builder exists, reject
-any trade carrying SOFR/overnight-index or ACT/360 metadata rather than routing it through
-the generic path. This cannot be implemented today because `SwapConfig` has no field in which
-such metadata could arrive — which is itself part of the work.
+**Interim mitigation — ✅ implemented for the EOD path (W0.4).**
+[`engine/integration/conventions.py`](../engine/integration/conventions.py) refuses any
+booking whose conventions fall outside an explicit **positive** allowlist (today: generic
+`SimIndex*` term IBOR, ACT/365 legs, no overnight compounding), returning
+`CONVENTION_NOT_SUPPORTED` with the offending fields named — **before any pricing object is
+constructed**, which is the point at which the wrong conventions would otherwise be applied.
+A booking that states *no* conventions is refused too, never defaulted into the generic
+builder. The TraderX SOFR fixture now returns an identified refusal naming all 13 of its
+`missingTerms`. See [the EOD integration boundary](reference/eod-integration.md#w04--convention-allowlist-and-refusal--closes-part-of-i-05).
+
+**Scope of that mitigation, stated precisely.** It covers bookings arriving through
+`engine/integration/` — the TraderX EOD path. It does **not** change
+`build_vanilla_swap`, and it does **not** guard a caller who constructs a `SwapConfig`
+directly in Python: `SwapConfig` still has no field in which convention metadata could
+arrive, so there is nothing there to refuse on. The W0.4 allowlist is a gate on the external
+boundary, not a property of the pricer. **The underlying defect is unchanged** — this engine
+still cannot faithfully price USD-SOFR — which is why this issue stays **OPEN** rather than
+moving to FLAGGED or FIXED.
 
 ---
 
@@ -323,6 +339,20 @@ response would silently misattribute results. Identity should not depend on list
 **What closing it requires.** An `instrumentId`/`accountId` pair on every trade config,
 echoed on every result row. Mechanically small; touches request, result, and schema layers.
 
+**Partially closed (W0.7) — at the EOD boundary only.**
+[`engine/integration/identity.py`](../engine/integration/identity.py) gives every row
+reaching the TraderX EOD path an opaque, reproducible `itemId` plus a source identity block
+(`{kind, accountId, security | contractId}` + `clusterEpoch`), carried on **refused rows
+too**, with item ordering published as its own hashed artifact rather than inferred from
+array position. `ItemResult` cannot be constructed without an identity, so an unidentified
+row is unrepresentable rather than merely discouraged.
+
+**This does not close the issue.** `PortfolioRequest.trades` and `PortfolioResult.greeks`
+are unchanged and still positional — the W0.7 identity lives in a separate result type
+(`engine.integration.result.RiskResult`) that does not yet flow through `price_portfolio`.
+A direct Python caller of `engine.portfolio` still has no trade identity. Status stays
+**OPEN** until `instrumentId`/`accountId` reach the trade configs themselves.
+
 ---
 
 ### I-11 — Risk measure unlabelled; no Monte Carlo error reported {#i-11}
@@ -339,6 +369,27 @@ sparse-tail estimate is indistinguishable from a well-converged one.
 (`risk-neutral-pricing` / `historical-forecast` / `deterministic-stress`), plus effective
 sample size and MC standard error on every tail statistic. Small change; prevents a whole
 category of misreading. See [proposal §3.6/§4](planning/eod-contract-proposal.md).
+
+**Substantially addressed (W0.6), but not closed.** Both halves now exist:
+
+- **The `measure` label.** `RISK_MEASURE_*` in
+  [`engine/risk/var_es.py`](../engine/risk/var_es.py) defines the three-value vocabulary, and
+  `ENGINE_RISK_MEASURE` records what this engine actually produces
+  (`risk-neutral-pricing`). `engine.integration.result.RiskResult` carries it on every
+  published result, and `capabilities()` advertises it so a consumer knows *before*
+  submitting.
+- **Convergence diagnostics.** `compute_risk_metrics` now returns `ES_<p>_tailCount`
+  (effective sample size — the observations the ES mean actually averaged) and
+  `ES_<p>_standardError` (`s/sqrt(n)`, `ddof=1`) beside every tail statistic. Purely
+  additive: existing keys and values are untouched, and `include_diagnostics=False` returns
+  the prior key set exactly. `standardError` is **NaN, never 0.0**, when `n < 2` — 0.0 would
+  read as "perfectly converged" for the least trustworthy case.
+
+**Why it stays OPEN.** `PortfolioResult.risk` is still a bare `Dict[str, jax.Array]` with no
+`measure` field of its own — the label lives on `RiskResult`, which only the TraderX EOD path
+produces. A direct Python caller of `price_portfolio` still gets unlabelled `VaR_95` keys,
+which is exactly what this issue reports. Closing it means putting `measure` on
+`PortfolioResult` itself.
 
 ---
 
@@ -368,4 +419,6 @@ on the result itself, rather than from the dispatcher.
 - **Related reading:**
   [EOD Contract Proposal](planning/eod-contract-proposal.md) (integration context and the
   full field-level requirements), [HTTP API](reference/http-api.md),
-  [The Portfolio Entry Point](reference/portfolio-entrypoint.md).
+  [The Portfolio Entry Point](reference/portfolio-entrypoint.md),
+  [Profiling & the Tracer](concepts/profiling.md) (how to measure where a job's time
+  actually goes, and the known cost characteristics of the Greeks path).

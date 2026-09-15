@@ -1,0 +1,10 @@
+{
+  "example": "bill",
+  "expectationIsObservedResult": false,
+  "expectedWorkerOutcome": "financial-validation-pending",
+  "exportReceiptChecks": "hashes-counts-cut-adjacent-witness",
+  "quiesceWitnessSequence": "9",
+  "reason": "Alex must price using an explicitly selected assumed curve; no market inputs supplied",
+  "schema": "traderx.shared-example.v1",
+  "synthetic": true
+}

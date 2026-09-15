@@ -143,6 +143,25 @@ def calibrate_lgm_sigma(
     bucket_times: List[float] = []       # interior breakpoints calibrated so far
     bucket_values: List[float] = []      # calibrated sigma per bucket so far
 
+    # `bachelier_swaption_price` is a closed-form expression over ~a dozen
+    # elementwise ops. Called eagerly (as this did) each one dispatches as
+    # its own XLA program; wrapped so the whole formula compiles as one, it
+    # is a single program. Measured on the 2-instrument demo basket, this
+    # plus the diagnostics below took `calibrate_lgm_sigma` from 137
+    # compilations to a handful. The bisection itself was never the problem
+    # -- `_bisect_bucket_sigma`'s `lax.scan` already traces `price_fn` ONCE
+    # and compiles all 60 iterations together. See
+    # docs/concepts/profiling.md.
+    #
+    # `CalibrationTarget` is deliberately NOT passed as a jit STATIC
+    # argument (which would need it hashable): `engine.risk.greeks.
+    # bermudan_vega` substitutes a live `jax.grad` tracer into its
+    # `market_vol` via `dataclasses.replace`, so the type must stay usable
+    # as traced data. `_jit_over_target` instead closes over the target and
+    # jits a nullary function of it, which needs no hashing at all.
+    def _jit_over_target(fn, target):
+        return jax.jit(lambda: fn(target, curve))
+
     for i, target in enumerate(targets):
         times_arr = jnp.asarray(bucket_times, dtype=dtype)
 
@@ -151,7 +170,7 @@ def calibrate_lgm_sigma(
             sigma = Sigma(times=_times, values=values_arr)
             return price_lgm_swaption(curve, a, sigma, _target)
 
-        market_price = float(bachelier_swaption_price(target, curve))
+        market_price = float(_jit_over_target(bachelier_swaption_price, target)())
         new_value = float(_bisect_bucket_sigma(price_fn, market_price))
 
         bucket_values.append(new_value)
@@ -163,8 +182,16 @@ def calibrate_lgm_sigma(
         values=jnp.asarray(bucket_values, dtype=dtype),
     )
 
-    market_prices = jnp.asarray([float(bachelier_swaption_price(t, curve)) for t in targets])
-    model_prices = jnp.asarray([float(price_lgm_swaption(curve, a, final_sigma, t)) for t in targets])
+    # Diagnostics only -- but they reprice every basket instrument, so the
+    # same eager-dispatch cost applies, and the same closure trick avoids
+    # needing a hashable target.
+    market_prices = jnp.asarray([
+        float(_jit_over_target(bachelier_swaption_price, t)()) for t in targets
+    ])
+    model_prices = jnp.asarray([
+        float(jax.jit(lambda _t=t: price_lgm_swaption(curve, a, final_sigma, _t))())
+        for t in targets
+    ])
     rmse = float(jnp.sqrt(jnp.mean((model_prices - market_prices) ** 2)))
 
     return CalibrationResult(

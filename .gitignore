@@ -15,10 +15,23 @@ __pycache__
 *.pyc
 .claude/
 
+# ...but the hash-pinned TraderX EOD fixtures are source, not output. The
+# blanket *.csv / *.json rules above would silently swallow them, leaving
+# tests/test_integration_*.py passing locally and failing on a fresh clone.
+# The directory must be un-ignored before its contents can be.
+# See also .gitattributes -- these files must never be CRLF-translated.
+!tests/fixtures/
+!tests/fixtures/**/
+!tests/fixtures/**/*.csv
+!tests/fixtures/**/*.json
+
 # Build artifact from `pip install -e .` (pyproject.toml editable install)
 *.egg-info/
 
 /reference/
 
+# Profiler traces (JAX_RISK_PROFILE_DIR) -- .profile-out/.profile-out-small are
+# the demos' own defaults; the glob covers ad-hoc dirs from a manual capture.
 .profile-out
 .profile-out-small
+.profile-*/

@@ -1,0 +1,37 @@
+{
+  "entries": [
+    {
+      "identity": {
+        "security": "UST-BILL-20251202",
+        "source": "positions"
+      },
+      "instrumentType": "TREASURY",
+      "missingTerms": [],
+      "provenance": {
+        "description": "Synthetic reference supplement. Coupon/maturity/currency agree with exporter. Issue, denomination, redemption and explicit regular schedule are fixture assumptions. Calendar NONE, unadjusted payments, zero lag and same-day settlement deliberately match the exporter session-date accrual basis; these are not asserted market conventions.",
+        "origin": "synthetic"
+      },
+      "terms": {
+        "businessDayAdjustment": "UNADJUSTED",
+        "calendar": "NONE",
+        "couponFrequency": "NONE",
+        "couponRatePercent": "0",
+        "currency": "USD",
+        "dayCount": "NOT_APPLICABLE",
+        "faceDenomination": "100",
+        "firstCouponDate": null,
+        "issueDate": "2025-06-02",
+        "maturityDate": "2025-12-02",
+        "paymentLagBusinessDays": 0,
+        "penultimateCouponDate": null,
+        "priceBasis": "clean-fraction-of-par",
+        "quantityUnit": "signed-currency-face",
+        "redemptionFraction": "1",
+        "schedule": [],
+        "settlementDays": 0,
+        "stubConvention": "NONE"
+      }
+    }
+  ],
+  "schema": "traderx.instrument-terms.v1"
+}

@@ -105,6 +105,7 @@ from engine.models.lgm import Sigma
 # lives in engine/portfolio/validation.py to avoid a circular import (see
 # that module's own docstring for why).
 from engine.portfolio.validation import _validate_common_fields, _validate_tenor  # noqa: F401
+from engine.portfolio.profiling import phase as _phase
 
 TradeConfig = Union[SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig]
 
@@ -627,8 +628,18 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
         # be inside the lock too, not run unprotected before it, or a
         # concurrent thread's generate_paths call could flip the flag
         # mid-calibration the same way it could mid-pricing.
-        trades = _fill_calibrated_sigma(trades, request.calibration_targets, market_config, request.precision)
-        market = generate_paths(market_config, precision=request.precision.simulation)
+        # `jax.named_scope` labels each phase as its own region in an xprof
+        # timeline, at negligible runtime cost. This is what makes a trace
+        # readable WITHOUT `python_tracer_level=1`: with the Python tracer
+        # off (the default -- see engine/portfolio/worker_pool.py's own
+        # docstring for the 97%-of-events/silent-truncation reasoning), no
+        # event in the trace carries a Python source file or line, so
+        # "which phase is this dispatch from?" would otherwise be
+        # unanswerable. See docs/concepts/profiling.md.
+        with _phase("calibration"):
+            trades = _fill_calibrated_sigma(trades, request.calibration_targets, market_config, request.precision)
+        with _phase("simulation"):
+            market = generate_paths(market_config, precision=request.precision.simulation)
         # generate_paths leaves jax_enable_x64 set to (precision.simulation == 64)
         # -- a process-global flag, not scoped to that call. Everything below this
         # point (pricing/risk/Greeks) may independently want float64 via `pricing`/
@@ -653,9 +664,11 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
         # function's docstring for the jnp.stack widest-dtype-wins consequence
         # this produces on npv_cube itself when buckets disagree.
         step_times = jnp.array(market_config.time_grid[1:], dtype=jnp.float64)
-        npv_cube, order = _price_by_type(trades, market, maturities_np, step_times, request.precision.pricing)
-        base_npv_per_trade = _base_npv_per_trade(trades, maturities_np, market_config, request.precision)
-        base_npv = float(sum(base_npv_per_trade))
+        with _phase("pricing"):
+            npv_cube, order = _price_by_type(trades, market, maturities_np, step_times, request.precision.pricing)
+        with _phase("base_npv"):
+            base_npv_per_trade = _base_npv_per_trade(trades, maturities_np, market_config, request.precision)
+            base_npv = float(sum(base_npv_per_trade))
 
         # risk.var_es is NOT curve-driven like delta_gamma/theta/vega -- it has
         # no curve of its own, so honoring an override that differs from
@@ -669,14 +682,16 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
         # `pricing` already lost.
         var_es_dtype = _resolve_risk_dtype(request.precision.risk, "var_es")
         npv_cube_for_risk = npv_cube if npv_cube.dtype == var_es_dtype else jnp.asarray(npv_cube, dtype=var_es_dtype)
-        risk = compute_risk_metrics(npv_cube_for_risk, base_npv, percentiles=request.percentiles)
+        with _phase("risk"):
+            risk = compute_risk_metrics(npv_cube_for_risk, base_npv, percentiles=request.percentiles)
 
         greeks_out = None
         if request.compute_greeks:
-            greeks_out = _compute_all_greeks(
-                trades, market_config, request.precision,
-                calibration_targets=request.calibration_targets,
-            )
+            with _phase("greeks"):
+                greeks_out = _compute_all_greeks(
+                    trades, market_config, request.precision,
+                    calibration_targets=request.calibration_targets,
+                )
 
     return PortfolioResult(
         base_npv=base_npv, npv_cube=npv_cube, risk=risk, greeks=greeks_out,
@@ -937,47 +952,78 @@ def _compute_all_greeks(
     silently pricing Greeks off the wrong pillar."""
     out: Dict[int, Dict[str, jax.Array]] = {}
     for i, cfg in enumerate(trades):
-        if isinstance(cfg, SwapConfig):
-            disc_cfg, fwd_cfg = _swap_curve_configs(cfg, market_config, i)
-            dg_dtype = _resolve_risk_dtype(precision.risk, "delta_gamma")
-            theta_dtype = _resolve_risk_dtype(precision.risk, "theta")
-            trade_greeks = dict(_greeks.swap_delta_gamma(
-                cfg,
-                _zero_curve_of(cfg, disc_cfg, dtype=dg_dtype),
-                _zero_curve_of(cfg, fwd_cfg, dtype=dg_dtype),
-            ))
-            trade_greeks["theta"] = _greeks.swap_theta(
-                cfg,
-                _zero_curve_of(cfg, disc_cfg, dtype=theta_dtype),
-                _zero_curve_of(cfg, fwd_cfg, dtype=theta_dtype),
+        # One named scope per trade, labelled by index and instrument type,
+        # so an xprof timeline attributes Greeks cost to the specific TRADE
+        # that incurred it -- the per-trade attribution otherwise lost with
+        # the Python tracer off (see `price_portfolio`'s own named_scope
+        # comment and docs/concepts/profiling.md).
+        with _phase(f"greeks/trade{i}/{type(cfg).__name__}"):
+            trade_greeks = _greeks_for_one_trade(
+                cfg, i, market_config, precision, calibration_targets,
             )
-            out[i] = trade_greeks
-        elif isinstance(cfg, SwaptionConfig):
-            dg_curve = _zero_curve_of(cfg, cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "delta_gamma"))
-            theta_curve = _zero_curve_of(cfg, cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
-            trade_greeks = dict(_greeks.swaption_delta_gamma(cfg, dg_curve))
-            trade_greeks["theta"] = _greeks.swaption_theta(cfg, theta_curve)
-            out[i] = trade_greeks
-        elif isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
-            berm_cfg = cfg.to_bermudan() if isinstance(cfg, AmericanSwaptionConfig) else cfg
-            dg_curve = _zero_curve_of(berm_cfg, berm_cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "delta_gamma"))
-            theta_curve = _zero_curve_of(berm_cfg, berm_cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
-            trade_greeks = dict(_greeks.bermudan_delta_gamma(berm_cfg, dg_curve))
-            trade_greeks["theta"] = _greeks.bermudan_theta(berm_cfg, theta_curve)
-            # Vega is only well-defined when hw_sigma is a genuine CALIBRATED
-            # Sigma term structure produced from `calibration_targets` (in
-            # that same order) -- `bermudan_vega` differentiates through the
-            # bootstrap relating each target's market_vol to that Sigma, so a
-            # flat/hand-set hw_sigma has no market quote to be sensitive TO.
-            # Skipped (not raised) in that case: a flat-sigma Bermudan is a
-            # legitimate request, it simply has no Vega to report.
-            if calibration_targets and isinstance(berm_cfg.hw_sigma, Sigma):
-                vega_curve = _zero_curve_of(
-                    berm_cfg, berm_cfg.initial_zero_curve,
-                    dtype=_resolve_risk_dtype(precision.risk, "vega"),
-                )
-                trade_greeks["vega"] = _greeks.bermudan_vega(
-                    berm_cfg, vega_curve, calibration_targets,
-                )
+        if trade_greeks is not None:
             out[i] = trade_greeks
     return out
+
+
+def _greeks_for_one_trade(
+    cfg: TradeConfig,
+    index: int,
+    market_config: SimulationConfig,
+    precision: PrecisionConfig,
+    calibration_targets: Optional[List[CalibrationTarget]],
+) -> Optional[Dict[str, jax.Array]]:
+    """Delta/Gamma/Theta (+Vega where well-defined) for ONE trade, routed by
+    instrument type -- the per-trade body of `_compute_all_greeks`, split out
+    so that function's `jax.named_scope` wrapper stays a plain, conventionally
+    indented `with` block rather than re-indenting the whole routing chain.
+
+    Returns `None` for a trade type with no Greeks routing (the same
+    silently-skipped behavior `_compute_all_greeks` had inline before)."""
+    if isinstance(cfg, SwapConfig):
+        disc_cfg, fwd_cfg = _swap_curve_configs(cfg, market_config, index)
+        dg_dtype = _resolve_risk_dtype(precision.risk, "delta_gamma")
+        theta_dtype = _resolve_risk_dtype(precision.risk, "theta")
+        trade_greeks = dict(_greeks.swap_delta_gamma(
+            cfg,
+            _zero_curve_of(cfg, disc_cfg, dtype=dg_dtype),
+            _zero_curve_of(cfg, fwd_cfg, dtype=dg_dtype),
+        ))
+        trade_greeks["theta"] = _greeks.swap_theta(
+            cfg,
+            _zero_curve_of(cfg, disc_cfg, dtype=theta_dtype),
+            _zero_curve_of(cfg, fwd_cfg, dtype=theta_dtype),
+        )
+        return trade_greeks
+
+    if isinstance(cfg, SwaptionConfig):
+        dg_curve = _zero_curve_of(cfg, cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "delta_gamma"))
+        theta_curve = _zero_curve_of(cfg, cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
+        trade_greeks = dict(_greeks.swaption_delta_gamma(cfg, dg_curve))
+        trade_greeks["theta"] = _greeks.swaption_theta(cfg, theta_curve)
+        return trade_greeks
+
+    if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
+        berm_cfg = cfg.to_bermudan() if isinstance(cfg, AmericanSwaptionConfig) else cfg
+        dg_curve = _zero_curve_of(berm_cfg, berm_cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "delta_gamma"))
+        theta_curve = _zero_curve_of(berm_cfg, berm_cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
+        trade_greeks = dict(_greeks.bermudan_delta_gamma(berm_cfg, dg_curve))
+        trade_greeks["theta"] = _greeks.bermudan_theta(berm_cfg, theta_curve)
+        # Vega is only well-defined when hw_sigma is a genuine CALIBRATED
+        # Sigma term structure produced from `calibration_targets` (in
+        # that same order) -- `bermudan_vega` differentiates through the
+        # bootstrap relating each target's market_vol to that Sigma, so a
+        # flat/hand-set hw_sigma has no market quote to be sensitive TO.
+        # Skipped (not raised) in that case: a flat-sigma Bermudan is a
+        # legitimate request, it simply has no Vega to report.
+        if calibration_targets and isinstance(berm_cfg.hw_sigma, Sigma):
+            vega_curve = _zero_curve_of(
+                berm_cfg, berm_cfg.initial_zero_curve,
+                dtype=_resolve_risk_dtype(precision.risk, "vega"),
+            )
+            trade_greeks["vega"] = _greeks.bermudan_vega(
+                berm_cfg, vega_curve, calibration_targets,
+            )
+        return trade_greeks
+
+    return None

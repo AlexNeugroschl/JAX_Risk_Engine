@@ -55,6 +55,7 @@ Hull-White `A(t,T)` term (see
 |---|---|---|
 | `times` | `List[float]` | Zero-curve pillar times, e.g. `[0.0, 1.0, 2.0, 5.0, 10.0, 30.0]`. |
 | `rates` | `List[float]` | Zero rate at each pillar, same length/order as `times`. |
+| `provenance` | `Optional[CurveProvenance]` = `None` | **Metadata only — never read by the simulation math.** Where these numbers came from (`curveId`, `inputOrigin` ∈ `observed\|assumed\|mixed\|synthetic`, `construction`, `inputHashes`). Added by W0.6 so assumed and observed curves are distinguishable *inside* the engine, not only at its edges; see [EOD Integration: W0.6](eod-integration.md#w06--market-input-selection--closes-part-of-i-11). `None` means **unstated**, which is deliberately not the same as `observed`. |
 
 ### `generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, jax.Array]`
 
@@ -338,7 +339,7 @@ Same signature as `value_at_risk`. **Returns `NaN`** for any time step whose los
 [Risk Statistics: the formulas](../risk/var_es.md#the-formulas). Callers must check
 for this explicitly.
 
-### `compute_risk_metrics(npv_cube: jax.Array, base_npv: float, percentiles: Sequence[float] = (0.95, 0.99)) -> Dict[str, jax.Array]`
+### `compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99), include_diagnostics=True) -> Dict[str, jax.Array]`
 
 The main entry point — combines the three functions above.
 
@@ -346,10 +347,29 @@ The main entry point — combines the three functions above.
 - `npv_cube` — `[Scenarios, TimeSteps, Trades]`.
 - `base_npv` — see `portfolio_pnl` above.
 - `percentiles` — which confidence levels to compute VaR/ES at. Default `(0.95, 0.99)`.
+- `include_diagnostics` — attach per-percentile convergence diagnostics. Default `True`;
+  `False` returns exactly the pre-W0.6 key set.
 
-**Returns** a `dict` with one `"VaR_<pct>"` and one `"ES_<pct>"` key per entry in
-`percentiles` (e.g. `percentiles=(0.95, 0.99)` produces `"VaR_95"`, `"ES_95"`, `"VaR_99"`,
-`"ES_99"`), each shaped `[TimeSteps]`.
+**Returns** a `dict`, every value shaped `[TimeSteps]`, with these keys per entry in
+`percentiles` (shown for `0.99`):
+
+| Key | Meaning |
+|---|---|
+| `VaR_99` | Value at Risk. |
+| `ES_99` | Expected Shortfall. NaN where the strict tail is empty. |
+| `ES_99_tailCount` | **Effective sample size** — how many observations the ES mean actually averaged. At 99% over 10,000 scenarios this is ~100, so the estimate rests on 1% of the sample. |
+| `ES_99_standardError` | Monte Carlo standard error of the ES mean (`s/√n`, `ddof=1`). **NaN, never `0.0`, when `n < 2`** — `0.0` would read as "perfectly converged" for the least trustworthy case. |
+
+The two diagnostic keys are additive (W0.6, part of [I-11](../known-issues.md#i-11)); the
+`VaR_*`/`ES_*` keys and values are unchanged. See
+[EOD Integration: tail diagnostics](eod-integration.md#tail-statistics-carry-their-own-convergence-diagnostics).
+
+### Risk measure constants
+
+`RISK_MEASURES` = `("risk-neutral-pricing", "historical-forecast", "deterministic-stress")`,
+and `ENGINE_RISK_MEASURE` = `"risk-neutral-pricing"` — what this engine actually produces. A
+risk-neutral exposure is **not** a calibrated forecast of tomorrow's loss; reporting one where
+the other is expected is a category error no numerical accuracy fixes.
 
 ---
 

@@ -496,15 +496,36 @@ class TestPricePortfolioPrecision:
     def test_risk_var_es_override_recasts_npv_cube_for_risk_only(self):
         """RiskPrecisionOverride(default=64, var_es=32) -- the cast happens
         ONLY on the copy fed to compute_risk_metrics; npv_cube itself (what
-        `pricing` produced) is untouched."""
+        `pricing` produced) is untouched.
+
+        `ES_*_tailCount` is excluded deliberately: it is a **count of
+        observations**, not a statistic, so it is integer-typed at every
+        precision. Casting it to float32 would be actively wrong -- float32
+        cannot represent integers exactly above 2**24, so a large-scenario
+        count would silently round. `ES_*_standardError` IS a statistic and
+        is checked like the rest.
+        """
         from engine.portfolio import PrecisionConfig, RiskPrecisionOverride
 
         override = RiskPrecisionOverride(default=64, var_es=32)
         request = self._request(precision=PrecisionConfig(pricing=64, risk=override))
         result = price_portfolio(request)
         assert result.npv_cube.dtype == jnp.float64
-        for key, arr in result.risk.items():
+
+        statistics = {k: v for k, v in result.risk.items() if not k.endswith("_tailCount")}
+        assert statistics, "expected at least the VaR/ES statistics"
+        for key, arr in statistics.items():
             assert jnp.asarray(arr).dtype == jnp.float32, f"risk metric {key!r} not float32"
+
+        # The counts are present, integral, and non-negative -- asserted
+        # rather than merely skipped, so excluding them cannot hide their
+        # disappearance.
+        counts = {k: v for k, v in result.risk.items() if k.endswith("_tailCount")}
+        assert counts, "expected per-percentile tail counts"
+        for key, arr in counts.items():
+            values = jnp.asarray(arr)
+            assert jnp.issubdtype(values.dtype, jnp.integer), f"{key!r} should be integral"
+            assert bool(jnp.all(values >= 0)), f"{key!r} has a negative count"
 
     def test_calibration_precision_flows_through_lgm_bootstrap(self):
         """calibration=32 vs 64 must produce a genuinely different-dtype

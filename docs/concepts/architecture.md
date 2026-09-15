@@ -22,13 +22,15 @@ JAX_Risk_Engine/
 ├── demos/                                Runnable end-to-end walkthroughs (see
 │   ├── demo.py                            User Guide: Running the demos)
 │   ├── demo_api.py                        - direct price_portfolio call, over the HTTP
-│   └── demo_structured.py                  API, and the HTTP API split into explicit
-│                                           given-inputs/server-setup/server-inputs/
-│                                           submit-and-print stages
+│   ├── demo_structured.py                  API, and the HTTP API split into explicit
+│   │                                       given-inputs/server-setup/server-inputs/
+│   │                                       submit-and-print stages
+│   └── demo_profile_small.py             Same end-to-end path, sized so its profiler
+│                                         trace is small enough to actually open
 ├── docs/                                 Organized by topic (you are here)
 │   ├── getting-started/                  Overview, user guide
 │   ├── concepts/                         Architecture, market simulation, glossary,
-│   │                                     coding style
+│   │                                     coding style, profiling & the tracer
 │   ├── instruments/                      Swaps, European/Bermudan/American swaptions
 │   ├── risk/                             VaR / Expected Shortfall, Delta/Gamma/Vega/Theta
 │   ├── reference/                        API reference, ORE parity mapping, models &
@@ -44,16 +46,36 @@ JAX_Risk_Engine/
 │   │   │                                 PortfolioResult/price_portfolio, plus the
 │   │   │                                 validation/assembly layer (cross-field checks,
 │   │   │                                 automatic maturity-pillar assembly)
-│   │   └── validation.py                 Leaf-level field validators shared by every
-│   │                                     trade config's __post_init__ (kept separate from
-│   │                                     request.py to avoid a circular import -- see
-│   │                                     its own module docstring)
+│   │   ├── validation.py                 Leaf-level field validators shared by every
+│   │   │                                 trade config's __post_init__ (kept separate from
+│   │   │                                 request.py to avoid a circular import -- see
+│   │   │                                 its own module docstring)
+│   │   ├── worker_pool.py                One process pool per precision tier, plus the
+│   │   │                                 opt-in XProf profiler hook and its
+│   │   │                                 silent-truncation guard (see profiling.md)
+│   │   └── profiling.py                  phase() -- the TraceAnnotation/named_scope pair
+│   │                                     that labels each pricing stage on a trace
 │   ├── api/                              FastAPI HTTP boundary over price_portfolio
 │   │   ├── app.py                        FastAPI app factory
 │   │   ├── routes.py                     /health, /version, /portfolio/price (async job
 │   │   │                                 pattern), /calibration/lgm
 │   │   └── schemas.py                    Pydantic v2 request/response schemas, each with
 │   │                                     .to_dataclass()/.from_dataclass()
+│   ├── integration/                      TraderX EOD boundary (W0) -- hash-verified bundle
+│   │   │                                 in, identified REFUSING result out. Imports no
+│   │   │                                 pricer, deliberately (see eod-integration.md)
+│   │   ├── bundle.py                     W0.1 read + hash-verify a v1/v2 bundle, in binary
+│   │   ├── terms.py                      W0.2 join instrument-terms.json onto rows
+│   │   ├── normalize.py                  W0.3 source units -> engine units, incl. the
+│   │   │                                 zero-coupon accrued rule (key on terms, not blanks)
+│   │   ├── conventions.py                W0.4 positive allowlist + refusal, BEFORE any
+│   │   │                                 pricing object is constructed (part of I-05)
+│   │   ├── result.py                     W0.5 RiskResult + per-calculation coverage model
+│   │   ├── market_inputs.py              W0.6 explicit market-input mode (no silent
+│   │   │                                 fallback), curve provenance, measure label
+│   │   ├── identity.py                   W0.7 opaque itemId + source identity (I-10)
+│   │   ├── capabilities.py               W0.9 supported product x convention x calculation
+│   │   └── pipeline.py                   Composition of the above: price_bundle()
 │   ├── simulation/
 │   │   ├── market_model.py               Simulates the market (Sobol/Brownian bridge,
 │   │   │                                 cross-asset Hull-White paths, yield-curve
@@ -104,7 +126,13 @@ JAX_Risk_Engine/
     ├── test_ore_parity.py
     ├── test_portfolio.py                 Cross-field validation, maturity-pillar assembly
     ├── test_portfolio_entrypoint.py       price_portfolio vs. hand-orchestrated pricing
-    └── test_api.py                       FastAPI TestClient tests for engine/api/
+    ├── test_api.py                       FastAPI TestClient tests for engine/api/
+    ├── test_integration_*.py             engine/integration/, one file per W0 task, run
+    │                                     against the delivered TraderX fixtures
+    └── fixtures/traderx-eod/             Real TraderX YU18 bundles (bill/note/sofr, each
+                                          v1+v2), hash-pinned. LF bytes committed and held
+                                          that way by .gitattributes -- CRLF translation
+                                          breaks every hash (see eod-integration.md)
 ```
 
 Every `engine/` subpackage has an `__init__.py`, so the whole thing is importable as
@@ -468,9 +496,10 @@ exactly one call site in the pipeline (`generate_paths`, the LGM bootstrap), so 
 drill-down axis applies to either.
 
 `delta_gamma` is one shared field, not split further into Delta/Gamma: `swaption_delta_gamma`/
-`bermudan_delta_gamma` each derive both from a single `jax.grad`+`jax.hessian` pair against
-one curve inside one function call — splitting them would mean either duplicating the
-curve-build and the autodiff trace, or restructuring `engine/risk/greeks.py`'s public
+`bermudan_delta_gamma` each derive both from a single `_grad_and_hessian_diagonal` call
+against one curve (one gradient plus one batched Hessian-vector-product pass — see
+[Profiling & the Tracer §3.4](profiling.md)) — splitting them would mean either duplicating
+the curve-build and the autodiff trace, or restructuring `engine/risk/greeks.py`'s public
 functions themselves, out of scope for a wrap-don't-invade config redesign.
 
 `var_es` is structurally different from the other three `risk` sub-fields: `compute_risk_metrics`

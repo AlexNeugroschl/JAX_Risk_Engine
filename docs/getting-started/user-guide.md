@@ -152,8 +152,17 @@ python -m pytest tests/ -v
 This runs the full suite — see each deep-dive doc's "Tested by" section for what's
 covered where, and [Architecture: Testing philosophy](../concepts/architecture.md#testing-philosophy)
 for the general approach (every formula is checked both for internal mathematical
-correctness and against ORE's own installed software directly). As of this writing, the
-suite has 659 tests across `tests/`, all passing.
+correctness and against ORE's own installed software directly).
+
+**The full suite takes roughly 20 minutes**, because the Monte Carlo and ORE-parity tests
+genuinely simulate and reprice. For a fast inner loop while working on the TraderX EOD
+boundary, the integration tests are a self-contained subset that runs in about a second —
+they load no JAX and no ORE (see
+[the EOD boundary doc](../reference/eod-integration.md#module-map)):
+
+```bash
+python -m pytest tests/test_integration_*.py -q
+```
 
 `tests/conftest.py` provides shared `pytest` fixtures (the example scenario
 configurations from `engine/simulation/demo_scenarios.py`, wrapped as fixtures, plus a
@@ -442,12 +451,18 @@ directly or fans out across pool workers).
 This traces the job **as it actually runs in a fresh worker — XLA lowering and compilation
 included**, not just steady-state execution. That is on purpose: for this engine the
 compilation cost is a first-class thing to measure (the Bermudan/American tree pricers and
-the LGM calibration bisection lower a large number of `jit` programs — on a small portfolio
-that compilation *is* most of the wall time, and the trace's "mostly Python" flame graph is
-largely XLA lowering, which is real work). The execution-versus-compilation ratio only
-becomes meaningful on **larger portfolios**, where more trades and more scenarios grow the
-kernel execution time while the per-program compile cost stays roughly fixed — profile one
-of those to see JAX compute dominate.
+the LGM calibration bisection lower a number of `jit` programs — on a small portfolio that
+compilation *is* most of the wall time, and the trace's "mostly Python" flame graph is
+largely XLA lowering, which is real work).
+
+Set `JAX_RISK_PROFILE_WARMUP=1` to run the job once and discard it before the trace opens,
+so the traced run measures **warm steady-state execution** against populated compilation
+caches instead. Which default you want depends on the question: leave it off for "what does
+this job cost from cold," turn it on for "where does the *execution* time go."
+
+> **Background:** why compilation dominates, and what was done to reduce it (the Bermudan
+> Greeks path went from ~600 XLA compilations per job to 13), is written up in
+> [Profiling & the Tracer](../concepts/profiling.md).
 
 The turnkey way is [`demos/demo_structured.py`](../../demos/demo_structured.py), which
 launches its own API server **with the profiler already on** (it sets `JAX_RISK_PROFILE_DIR`
@@ -493,9 +508,21 @@ tool from the **Tools** dropdown:
   (`price_portfolio` → `scan` → `_run_python_pjit` → `_uncached_lowering` →
   `compile_or_get_cached`) is XLA *lowering/compilation*, not the math.
 
+**Finding your way around the timeline.** The pricing path is annotated with named regions
+— `calibration`, `simulation`, `pricing`, `base_npv`, `risk`, `greeks`, and one
+`greeks/trade<i>/<Type>` per trade — so you can attribute time per phase and per trade
+without turning the (very expensive) Python tracer on. See
+[Profiling & the Tracer §4](../concepts/profiling.md).
+
 If a small-portfolio trace looks entirely compile-bound, that is the real result — see
 step 2. Profile a bigger portfolio (more trades, `scenarios` 16k+) to see execution take
-over; drop `compute_greeks` if you only care about the forward pricing path.
+over; drop `compute_greeks` if you only care about the forward pricing path, which is
+roughly a 5x difference in trace size.
+
+**A truncated trace looks exactly like a complete one.** The profiler's event buffer is a
+fixed ~1M-event cap with no backpressure — once full, the rest is dropped silently. Every
+traced job now self-checks for this and emits a `UserWarning` if the captured events span
+far less than the job's wall time; heed it rather than trusting a partial timeline.
 
 Unset `JAX_RISK_PROFILE_DIR` (or run any other demo/test — none of them set it) to go back
 to zero-overhead normal runs; the hook is completely inert when the variable is absent.

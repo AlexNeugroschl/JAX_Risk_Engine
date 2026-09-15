@@ -54,6 +54,42 @@ from typing import Dict, Sequence
 import jax
 import jax.numpy as jnp
 
+# =============================================================================
+# RISK MEASURE VOCABULARY (plan §W0.6; part of I-11)
+#
+# **A risk number without its measure is unactionable.** `VaR_95 = 2.1mm`
+# means materially different things depending on what generated it, and
+# nothing in a bare float distinguishes them:
+#
+#   - risk-neutral-pricing   an exposure simulation under the pricing
+#                            measure. Correct for CVA/exposure/limits. NOT
+#                            a forecast of tomorrow's P&L -- the drift is
+#                            the risk-neutral one, not the real-world one.
+#   - historical-forecast    a calibrated real-world forecast of realised
+#                            loss. What a capital or backtesting process
+#                            wants, and what this engine does NOT produce.
+#   - deterministic-stress   a prescribed scenario's revaluation. No
+#                            probability attaches to it at all.
+#
+# Everything this engine computes today is `risk-neutral-pricing`: it
+# simulates under the pricing measure. Reporting a risk-neutral exposure
+# where a consumer expects a historical forecast is a category error that
+# no amount of numerical accuracy fixes, which is why the label travels
+# with the number rather than living in documentation.
+# =============================================================================
+RISK_MEASURE_RISK_NEUTRAL = "risk-neutral-pricing"
+RISK_MEASURE_HISTORICAL = "historical-forecast"
+RISK_MEASURE_STRESS = "deterministic-stress"
+RISK_MEASURES = (
+    RISK_MEASURE_RISK_NEUTRAL,
+    RISK_MEASURE_HISTORICAL,
+    RISK_MEASURE_STRESS,
+)
+
+#: What `generate_paths` + this module actually produce. Not a default a
+#: caller may override -- it is a statement of fact about the simulation.
+ENGINE_RISK_MEASURE = RISK_MEASURE_RISK_NEUTRAL
+
 
 def portfolio_pnl(npv_cube: jax.Array, base_npv: float) -> jax.Array:
     """
@@ -126,10 +162,87 @@ def _expected_shortfall_jit(pnl: jax.Array, percentile: float) -> jax.Array:
     return -jnp.nanmean(masked, axis=0)
 
 
+def tail_sample_size(pnl: jax.Array, percentile: float) -> jax.Array:
+    """
+    [Scenarios, TimeSteps] P&L -> [TimeSteps] count of observations that
+    actually entered the Expected Shortfall mean at `percentile`.
+
+    **This is the effective sample size for a tail statistic** (plan §W0.6),
+    and it is usually far smaller than the scenario count: at 99% over
+    10,000 scenarios roughly 100 observations carry the estimate, and every
+    one of them is in the part of the distribution the Monte Carlo sampled
+    least. The tail count is what makes a sparse estimate distinguishable
+    from a well-converged one -- without it, `ES_99` computed from 3
+    observations and from 300 are the same number on the wire.
+
+    Counts the STRICT value-based tail (`pnl < -VaR`), i.e. exactly the
+    observations `expected_shortfall` averages -- not a positional
+    `floor(N*(1-p))` slice, which would disagree whenever there are ties at
+    the VaR boundary (see this module's docstring, point 2). A count of 0
+    is the case where `expected_shortfall` returns NaN.
+    """
+    return _tail_sample_size_jit(pnl, float(percentile))
+
+
+@partial(jax.jit, static_argnums=1)
+def _tail_sample_size_jit(pnl: jax.Array, percentile: float) -> jax.Array:
+    var = _value_at_risk_jit(pnl, percentile)
+    return jnp.sum(pnl < -var[None, :], axis=0)
+
+
+def expected_shortfall_standard_error(pnl: jax.Array, percentile: float) -> jax.Array:
+    """
+    [Scenarios, TimeSteps] P&L -> [TimeSteps] Monte Carlo standard error of
+    the Expected Shortfall estimate at `percentile`.
+
+    The plain standard error of the tail mean: `s / sqrt(n)`, where `s` is
+    the sample standard deviation of the tail observations and `n` is
+    `tail_sample_size`. ES is an average over the tail, so the standard
+    error of that average is what quantifies its Monte Carlo noise.
+
+    **Why report it.** `ES_99 = 1,240,000` reads as a precise figure. With
+    a standard error of 380,000 it is not one, and nothing else in the
+    result would say so -- a sparse tail and a converged one are otherwise
+    indistinguishable (I-11). This does not make the estimate better; it
+    makes its uncertainty visible, which is the difference between a number
+    a reader can weigh and one they must simply trust.
+
+    Uses the sample standard deviation (`ddof=1`, dividing by `n-1`): the
+    tail IS a sample, and the population form would understate the spread.
+
+    Returns NaN where `n < 2` -- with one observation there is no spread to
+    estimate, and with none there is no estimate at all. That is the honest
+    answer, and it is deliberately NOT 0.0, which would read as "perfectly
+    converged" for the single worst case where the estimate is least
+    trustworthy. Callers must check `jnp.isnan(...)`, exactly as they
+    already must for `expected_shortfall` itself.
+    """
+    return _es_standard_error_jit(pnl, float(percentile))
+
+
+@partial(jax.jit, static_argnums=1)
+def _es_standard_error_jit(pnl: jax.Array, percentile: float) -> jax.Array:
+    var = _value_at_risk_jit(pnl, percentile)
+    tail_mask = pnl < -var[None, :]
+    masked = jnp.where(tail_mask, pnl, jnp.nan)
+
+    count = jnp.sum(tail_mask, axis=0)
+    # ddof=1 on the masked tail. `jnp.nanstd` has no ddof, so the Bessel
+    # correction is applied by rescaling: s_sample = s_pop * sqrt(n/(n-1)).
+    population_std = jnp.nanstd(masked, axis=0)
+    safe_count = jnp.maximum(count, 2)  # guards the n<2 slots; masked out below
+    sample_std = population_std * jnp.sqrt(safe_count / (safe_count - 1))
+
+    standard_error = sample_std / jnp.sqrt(safe_count)
+    # n < 2: no spread is estimable. NaN, not 0.0 -- see the docstring.
+    return jnp.where(count >= 2, standard_error, jnp.nan)
+
+
 def compute_risk_metrics(
     npv_cube: jax.Array,
     base_npv: float,
     percentiles: Sequence[float] = (0.95, 0.99),
+    include_diagnostics: bool = True,
 ) -> Dict[str, jax.Array]:
     """
     Public entry point: [Scenarios, TimeSteps, Trades] NPV cube + t=0
@@ -138,6 +251,30 @@ def compute_risk_metrics(
     matching ORE's convention of always reporting VaR and ES together at
     each configured quantile (see module docstring / plan for the recovered
     ore_histsimvar.xml evidence).
+
+    **Convergence diagnostics** (plan §W0.6, part of I-11) are added
+    alongside, two per percentile:
+
+        "ES_99_tailCount"      effective sample size -- how many
+                               observations the ES mean actually averaged
+        "ES_99_standardError"  Monte Carlo standard error of that mean
+
+    `include_diagnostics=False` returns exactly the pre-W0.6 key set, for a
+    caller that wants the bare statistics.
+
+    **The existing VaR_*/ES_* keys and values are unchanged**, deliberately.
+    This is purely additive: the diagnostics sit beside the statistics
+    rather than wrapping them, so every existing consumer keeps working
+    untouched and no number moves. What was missing was never the tail
+    statistics themselves -- it was any way to tell a sparse estimate from
+    a converged one.
+
+    **What this does NOT do.** It does not label the measure. A risk-neutral
+    exposure simulation is not a calibrated forecast of tomorrow's loss, and
+    that distinction belongs to the run, not to a single cube -- this
+    function cannot know which it was handed. `RISK_MEASURE_*` below and
+    `engine.integration.result` carry it at the level that does know. See
+    I-11 in docs/known-issues.md.
     """
     pnl = portfolio_pnl(npv_cube, base_npv)
     metrics: Dict[str, jax.Array] = {}
@@ -145,6 +282,9 @@ def compute_risk_metrics(
         label = f"{int(round(p * 100))}"
         metrics[f"VaR_{label}"] = value_at_risk(pnl, p)
         metrics[f"ES_{label}"] = expected_shortfall(pnl, p)
+        if include_diagnostics:
+            metrics[f"ES_{label}_tailCount"] = tail_sample_size(pnl, p)
+            metrics[f"ES_{label}_standardError"] = expected_shortfall_standard_error(pnl, p)
     return metrics
 
 

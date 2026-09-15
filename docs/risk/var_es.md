@@ -133,12 +133,62 @@ every time step at once via `jnp.sort` — sorting the whole scenario axis is th
 efficient at.
 
 ```python
-def compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99)) -> Dict[str, jax.Array]:
+def compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99),
+                         include_diagnostics=True) -> Dict[str, jax.Array]:
 ```
 The public entry point. Computes both VaR and ES at every requested confidence level (by
 default, both 95% and 99% — matching ORE's convention of always reporting VaR and ES
 together, at multiple confidence levels, rather than a single number in isolation), and
 returns them in a dictionary keyed like `"VaR_95"`, `"ES_95"`, `"VaR_99"`, `"ES_99"`.
+
+## Convergence diagnostics — how much to trust the tail
+
+`ES_99 = 1,240,000` reads as a precise figure. Computed from 3 tail observations it is not
+one, and a bare float cannot tell you which you have. So each percentile also gets:
+
+```python
+def tail_sample_size(pnl, percentile)                 -> jax.Array  # [TimeSteps]
+def expected_shortfall_standard_error(pnl, percentile) -> jax.Array  # [TimeSteps]
+```
+
+surfaced through `compute_risk_metrics` as `"ES_99_tailCount"` and
+`"ES_99_standardError"`.
+
+**`tailCount` is the effective sample size** — the number of observations that actually
+entered the ES mean. It is usually far smaller than the scenario count: **at 99% over 10,000
+scenarios roughly 100 observations carry the estimate**, and every one of them sits in the
+part of the distribution the Monte Carlo sampled least. It counts the same *strict
+value-based* tail (`pnl < -VaR`) that `expected_shortfall` averages — not a positional
+`floor(N·(1−p))` slice, which disagrees whenever there are ties at the VaR boundary (the
+same distinction described above for ES itself).
+
+**`standardError`** is the standard error of that tail mean, `s/√n`, with the *sample*
+standard deviation (`ddof=1`) — the tail is a sample, and the population form would
+understate the spread. It is **NaN, never `0.0`, when `n < 2`**: with one observation the ES
+is defined but its spread is not, and `0.0` would read as "perfectly converged" for exactly
+the case where the estimate is least trustworthy.
+
+This does not make any estimate better. It makes the uncertainty visible — the difference
+between a number a reader can weigh and one they must simply trust. Part of
+[I-11](../known-issues.md#i-11); added by
+[W0.6](../reference/eod-integration.md#w06--market-input-selection--closes-part-of-i-11),
+purely additively, so every pre-existing key and value is unchanged.
+
+## The measure a risk number is unactionable without
+
+`RISK_MEASURES` names the three things a VaR figure can be, and `ENGINE_RISK_MEASURE`
+records which one this engine produces:
+
+| Measure | What it is |
+|---|---|
+| `risk-neutral-pricing` | Exposure under the pricing measure. **What this engine computes.** Correct for CVA/exposure/limits. |
+| `historical-forecast` | A calibrated real-world forecast of realised loss. **Not produced here.** |
+| `deterministic-stress` | A prescribed scenario's revaluation. No probability attaches to it. |
+
+A risk-neutral exposure simulation is *not* a forecast of tomorrow's P&L — its drift is the
+risk-neutral one. Reporting it where a capital or backtesting process expects a historical
+forecast is a category error that no amount of numerical accuracy fixes, which is why the
+label travels with the number rather than living only in documentation.
 
 ## Tested by
 
@@ -153,3 +203,18 @@ returns them in a dictionary keyed like `"VaR_95"`, `"ES_95"`, `"VaR_99"`, `"ES_
 - `TestRobustAcrossInstrumentSources` — the instrument-agnostic property described above:
   runs the same code against both a synthetic, non-swap-derived cube and a real
   swap-pricer cube.
+
+`tests/test_var_es_diagnostics.py` covers the convergence diagnostics and the measure
+vocabulary:
+
+- `TestTailSampleSize` — counts the strict value-based tail, including the tie-at-boundary
+  case where a positional implementation would disagree.
+- `TestExpectedShortfallStandardError` — cross-checked against numpy's `ddof=1` computation
+  on the same tail; `test_single_observation_is_nan_not_zero` pins the `n < 2` behavior.
+- **`TestAdditiveOnly`** — every pre-existing key and value is unchanged, which is what lets
+  `engine/api/schemas.py`, `engine/portfolio/request.py` and the other consumers keep working
+  untouched.
+- `TestDiagnosticsReachTheHttpBoundary` — the new keys serialize through `RiskMetricsSchema`,
+  with a NaN standard error arriving as `null` rather than a readable float.
+- `TestRiskMeasureVocabulary` — the three measures, and that this engine reports
+  `risk-neutral-pricing`.

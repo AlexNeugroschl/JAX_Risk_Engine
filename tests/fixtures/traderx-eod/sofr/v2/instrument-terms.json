@@ -1,0 +1,43 @@
+{
+  "entries": [
+    {
+      "identity": {
+        "clusterEpoch": "synthetic-shared-examples-v1",
+        "contractId": "SW-3",
+        "source": "contracts"
+      },
+      "instrumentType": "SWAP",
+      "missingTerms": [
+        "businessDayAdjustment",
+        "calendar",
+        "fixedPaymentLagBusinessDays",
+        "fixedSchedule",
+        "fixingCalendar",
+        "fixingHistoryReference",
+        "floatingDayCount",
+        "floatingPaymentLagBusinessDays",
+        "floatingSchedule",
+        "lockoutBusinessDays",
+        "lookbackBusinessDays",
+        "observationShift",
+        "overnightCompounding"
+      ],
+      "provenance": {
+        "description": "Synthetic booking using the current compiled USD-SOFR-1Y-ACT360 convention. Only exported terms supplied; no inferred calendars, floating tenor, schedules or compounding.",
+        "origin": "synthetic"
+      },
+      "terms": {
+        "currency": "USD",
+        "effectiveDate": "2025-06-03",
+        "fixedDayCount": "ACT/360",
+        "fixedPaymentFrequency": "1Y",
+        "fixedRate": "0.040000",
+        "floatIndex": "USD-SOFR",
+        "maturityDate": "2030-06-03",
+        "notional": "1000000",
+        "payReceive": "PAY_FIXED"
+      }
+    }
+  ],
+  "schema": "traderx.instrument-terms.v1"
+}

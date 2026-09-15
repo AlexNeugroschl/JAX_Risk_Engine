@@ -323,9 +323,21 @@ Per-basket-instrument Vega: dollar NPV change for a 1bp move in each of
 **Gamma is the diagonal only, not a full cross-pillar Hessian.** ORE's own
 `SensitivityCube::gamma` is a cross-*scenario* second difference at one pillar, and so
 only ever reports this same-pillar term — never a genuine cross-pillar second derivative
-(how Delta at pillar A changes as pillar B moves). This module matches that scope: it
-computes the full `jax.hessian` internally (which *would* contain the cross-pillar terms)
-but returns only its diagonal, for parity with what ORE itself reports.
+(how Delta at pillar A changes as pillar B moves). This module matches that scope.
+
+It also *computes* only that diagonal. An earlier version built the full `jax.hessian`
+and returned `jnp.diagonal` of it, which meant forward-over-reverse-differentiating the
+whole pricer `n` times and discarding `n² − n` of the results. `_grad_and_hessian_diagonal`
+now gets each diagonal entry from one Hessian-vector product against a basis vector
+(`hvp(f, x, eᵢ)[i] == ∂²f/∂xᵢ²`), batched under `vmap`. The two are mathematically
+identical, and `tests/test_profiling_and_jit.py::TestHessianDiagonalEquivalence` pins that
+they agree numerically for all three instrument types as well as for an analytic case with
+a known closed-form answer. See [Profiling & the Tracer](../concepts/profiling.md) for why
+this mattered.
+
+> If cross-pillar curvature (curve-twist risk) is ever wanted, the full Hessian is still
+> one `jax.hessian` call away — the diagonal-only choice is ORE parity, not a limitation
+> of the autodiff.
 
 ## Tested by
 
@@ -360,6 +372,12 @@ but returns only its diagonal, for parity with what ORE itself reports.
 - `TestAmericanSwaptionSharesTheSameGreeksPath` — confirms `AmericanSwaptionConfig.
   to_bermudan()` feeds `bermudan_delta_gamma` correctly (no separate American-specific
   Greeks function exists).
+- `tests/test_profiling_and_jit.py::TestHessianDiagonalEquivalence` — the HVP-based Gamma
+  equals `jnp.diagonal(jax.hessian(...))` for swap, European swaption and Bermudan, and
+  equals a known analytic second derivative on a closed-form case.
+- `TestGradientsSurviveTheJitBoundary` — guards the failure mode the `_PreparedBermudan`
+  pytree split could introduce: a differentiable field placed in *static* aux data, for
+  which JAX does not raise but silently returns a **zero** gradient.
 - `tests/test_calibration_basket.py::TestPriceLgmSwaptionSanity::
   test_gradient_wrt_sigma_matches_finite_difference_value`/
   `test_gradient_wrt_piecewise_sigma_bucket_matches_finite_difference` — value-level (not

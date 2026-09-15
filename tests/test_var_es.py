@@ -147,9 +147,22 @@ class TestRobustAcrossInstrumentSources:
         rng = np.random.default_rng(2)
         npv_cube = jnp.asarray(rng.normal(1000.0, 50.0, size=(2000, 4, 5)), dtype=jnp.float64)
         metrics = compute_risk_metrics(npv_cube, base_npv=5000.0, percentiles=(0.95, 0.99))
-        assert set(metrics.keys()) == {"VaR_95", "ES_95", "VaR_99", "ES_99"}
+        # The statistics themselves. W0.6 additionally attaches per-percentile
+        # convergence diagnostics (`ES_*_tailCount`/`ES_*_standardError`), so
+        # this asserts the statistics are present rather than that they are
+        # the only keys -- `include_diagnostics=False` below pins the bare set.
+        assert {"VaR_95", "ES_95", "VaR_99", "ES_99"} <= set(metrics.keys())
         for arr in metrics.values():
             assert arr.shape == (4,)
+
+    def test_synthetic_cube_without_diagnostics(self):
+        """The pre-W0.6 key set, still available exactly."""
+        rng = np.random.default_rng(2)
+        npv_cube = jnp.asarray(rng.normal(1000.0, 50.0, size=(2000, 4, 5)), dtype=jnp.float64)
+        metrics = compute_risk_metrics(
+            npv_cube, base_npv=5000.0, percentiles=(0.95, 0.99), include_diagnostics=False,
+        )
+        assert set(metrics.keys()) == {"VaR_95", "ES_95", "VaR_99", "ES_99"}
 
     def test_real_swap_pricer_cube(self, make_flat_yield_curves):
         # base: [1, 1, Maturities, 2] deterministic (zero-shock) curve cube.

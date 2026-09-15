@@ -144,7 +144,7 @@ against live ORE objects, plus several model-independent structural checks:
 Known limitation: no mid-coupon proration -- see BermudanSwaptionConfig's
 own docstring and tests/test_bermudan_swaption.py::TestMidCouponKnownLimitation.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from functools import partial
 from typing import List, Optional, Sequence, Union
 
@@ -152,6 +152,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import ORE
+from jax.tree_util import register_pytree_node_class
 
 from engine.simulation.market_model import ZeroCurveConfig
 from engine.models.static_key import StaticKeyMixin
@@ -255,8 +256,44 @@ def _build_ore_swap(cfg) -> ORE.VanillaSwap:
     )
 
 
+@register_pytree_node_class
 @dataclass(frozen=True, eq=False)
 class _PreparedBermudan(StaticKeyMixin):
+    """One Bermudan/American swaption's prepared (CPU-resolved) structure.
+
+    **Registered as a JAX pytree, split between traced children and static
+    aux data** (`_TRACED` below is the authoritative list):
+
+      - `zero_rates`, `hw_sigma` -- the genuine DIFFERENTIATION targets
+        (Delta/Gamma w.r.t. the curve's pillar rates, Vega w.r.t. the
+        calibrated Sigma's bucket values -- see
+        `engine.risk.greeks._bermudan_price_fn`, which substitutes live
+        `jax.grad` tracers into exactly these two via `dataclasses.replace`).
+      - `notional`, `fixed_amounts` -- pure numeric SCALE. Not
+        differentiated, but traced anyway so trades differing only in size
+        share one compiled kernel instead of recompiling per notional.
+      - everything else -- the ORE-resolved cashflow schedule, exercise
+        times, grid resolution -- is compile-time-constant trade STRUCTURE
+        and goes into the aux-data (static) slot, where it keys the cache.
+
+    **Why the split matters.** Before it existed, this whole object had to
+    be a `jax.jit` STATIC argument (hashable and concrete, via
+    `StaticKeyMixin`), which a tracer-carrying copy can never be -- so
+    `_backward_induction_arrays` could not be jitted at all whenever it was
+    reached from `engine.risk.greeks`, and every elementwise op around its
+    `lax.scan` dispatched as its own tiny XLA program. Measured on the
+    4-trade demo portfolio that cost ~22MB of profiler trace and hundreds
+    of separate compilations PER tree-priced trade (see
+    `docs/concepts/profiling.md`). Splitting differentiable children from
+    static aux data is what lets tracers flow through as pytree LEAVES --
+    exactly what pytrees are for -- while `jax.jit` still keys its cache on
+    the static structure, so the induction compiles ONCE per trade shape and
+    is reused by the forward pricer, `jax.grad` and `jax.hessian` alike.
+
+    `StaticKeyMixin` is retained (not redundant): the aux-data tuple this
+    pytree hands to `jax.jit` must itself be hashable/comparable by value,
+    and `static_key` is what normalizes the NumPy schedule arrays in it.
+    """
     payer: bool
     notional: float
     exercise_times: np.ndarray          # [E] sorted ascending
@@ -276,6 +313,70 @@ class _PreparedBermudan(StaticKeyMixin):
     n_per_std: int
     std_devs: float
     final_maturity: float
+
+    # Fields carried as pytree CHILDREN (traced), in tree_flatten's own
+    # child order. `zero_rates`/`hw_sigma` are the genuine differentiation
+    # targets; `notional`/`fixed_amounts` are here for a different reason --
+    # they are pure numeric SCALE, not structure, so keeping them traced
+    # means two trades differing only in size (the common case across a real
+    # portfolio) share ONE compiled kernel instead of forcing a recompile
+    # per notional. Confirmed directly: before this, a second trade
+    # identical but for its notional compiled a fresh
+    # `_backward_induction_arrays`; after, it compiles none.
+    _TRACED = ("zero_rates", "hw_sigma", "notional", "fixed_amounts")
+
+    def tree_flatten(self):
+        """Children: the `_TRACED` fields above -- differentiation targets
+        plus the pure-scale numerics. `hw_sigma` may itself be a `Sigma` (a
+        registered pytree of arrays) or a plain float; either way JAX
+        recurses into it correctly as a child.
+        Aux data: every other field, as a hashable by-value tuple, so two
+        preparations of the same trade collapse onto one compiled kernel
+        (the same by-value-not-by-identity reasoning `static_key`'s own
+        docstring gives)."""
+        children = tuple(getattr(self, name) for name in self._TRACED)
+        static_fields = tuple(
+            (f.name, _norm_static(getattr(self, f.name)))
+            for f in fields(self) if f.name not in self._TRACED
+        )
+        return children, static_fields
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        kwargs = {name: _denorm_static(value) for name, value in aux_data}
+        kwargs.update(dict(zip(cls._TRACED, children)))
+        return cls(**kwargs)
+
+
+def _norm_static(value):
+    """NumPy arrays -> a hashable `(bytes, shape, dtype)` triple, so the
+    aux-data tuple `tree_flatten` produces can be used as a `jax.jit` cache
+    key. Mirrors `engine.models.static_key._norm`'s own normalization (the
+    same by-value, content-based scheme), but must be REVERSIBLE here --
+    `tree_unflatten` has to rebuild the real array -- which is why this is a
+    separate function rather than a reuse of `_norm`."""
+    if isinstance(value, np.ndarray):
+        return ("__ndarray__", value.tobytes(), value.shape, str(value.dtype))
+    return value
+
+
+def _denorm_static(value):
+    """Inverse of `_norm_static` -- rebuilds the NumPy array from its
+    content triple. `tree_unflatten` must reconstruct a genuinely equivalent
+    object, since JAX round-trips a pytree through flatten/unflatten on
+    every `jit`/`grad` boundary crossing.
+
+    The `.copy()` is deliberate: `np.frombuffer` returns a READ-ONLY view
+    onto the bytes object, and nothing in this module mutates a schedule
+    array today -- but handing back a silently-immutable array where the
+    original was writable is the kind of difference that surfaces much
+    later, far from here, as a confusing `ValueError: assignment destination
+    is read-only`. A schedule array is a handful of floats; the copy is
+    free next to the compilation this whole path exists to avoid."""
+    if isinstance(value, tuple) and len(value) == 4 and value[0] == "__ndarray__":
+        _, raw, shape, dtype = value
+        return np.frombuffer(raw, dtype=np.dtype(dtype)).reshape(shape).copy()
+    return value
 
 
 def prepare_bermudan(cfg: BermudanSwaptionConfig) -> _PreparedBermudan:
@@ -707,20 +808,18 @@ def _run_backward_induction(swap: _PreparedBermudan, condition_times: Sequence[f
     schedule = _build_grid_schedule(swap, condition_times)
     num_grid = len(schedule.times)
     # The array-producing core (state grids + the lax.scan rollback) is
-    # factored out below; the NumPy snapshot bookkeeping stays here, since it
-    # concretizes (np.asarray) and indexes with Python ints.
+    # factored out below and IS `jax.jit`-wrapped; the NumPy snapshot
+    # bookkeeping stays here, since it concretizes (np.asarray) and indexes
+    # with Python ints.
     #
-    # Deliberately NOT jax.jit'd with `swap`/`schedule` as static arguments,
-    # unlike the swap/European-swaption pricers' own `_Prepared*` structures:
-    # `engine.risk.greeks` differentiates Bermudan/American Delta/Gamma/Vega
-    # straight THROUGH this function, calling it with a `_PreparedBermudan`
-    # whose `zero_rates` (and, for Vega, `hw_sigma`) are live `jax.grad`
-    # tracers rather than concrete arrays. A jit static argument must be
-    # hashable and concrete, so a tracer-carrying `_PreparedBermudan` can
-    # never be one -- and `hw_sigma` may be a `Sigma`, a JAX pytree of
-    # arrays, which is unhashable for the same reason. The `lax.scan` below
-    # is itself a single fused primitive, so the eager-dispatch cost here is
-    # far lower than it would be for an unfused elementwise pricer.
+    # `swap` crosses that jit boundary as a PYTREE, not as a static argument
+    # (see `_PreparedBermudan`'s own docstring): its differentiable fields
+    # (`zero_rates`, `hw_sigma`) are children, so `engine.risk.greeks` can
+    # keep differentiating straight through this function with live
+    # `jax.grad` tracers in exactly those two slots, while the trade's
+    # static structure rides along as hashable aux data that keys the jit
+    # cache. `schedule` stays a genuine static argument -- it is pure
+    # config-time NumPy, built before any array math starts.
     x_all, values_all = _backward_induction_arrays(swap, schedule)
     grid_times = jnp.asarray(schedule.times, dtype=_zero_curve_of(swap).pillar_rates.dtype)
     curve = _zero_curve_of(swap)
@@ -755,17 +854,37 @@ def _run_backward_induction(swap: _PreparedBermudan, condition_times: Sequence[f
     )
 
 
+@partial(jax.jit, static_argnums=1)
 def _backward_induction_arrays(swap: _PreparedBermudan, schedule: "_GridSchedule"):
     """The array core of `_run_backward_induction`: builds the LGM state grid
     at every scheduled grid time and rolls the value function backward
     through them with one `jax.lax.scan`, returning the stacked
     `(x_all, values_all)` of shape `[NumGridTimes, NumStateGridPoints]`.
 
-    Kept as a separate function purely for readability -- see the caller on
-    why this is deliberately not `jax.jit`-wrapped (it must stay traceable by
-    `jax.grad` with tracer-carrying arguments). The `np.asarray`-based
-    snapshot selection stays in the caller for the complementary reason: it
-    concretizes values and indexes with Python ints.
+    **`jax.jit`-wrapped, with `swap` as a PYTREE argument and `schedule` as
+    a static one.** This is the single change that makes Bermudan/American
+    Greeks affordable. `swap`'s differentiable fields (`zero_rates`,
+    `hw_sigma`) are pytree children, so a `jax.grad`/`jax.hessian` tracer
+    substituted into either one flows across this boundary as an ordinary
+    traced leaf -- while the trade's static structure (cashflow schedule,
+    exercise times, grid resolution) rides in the aux-data slot and keys the
+    compilation cache, exactly as the swap/European-swaption pricers already
+    do with their own `_Prepared*` structs. See `_PreparedBermudan`'s
+    docstring for why this could not be done while the whole object had to be
+    a single hashable static argument, and `docs/concepts/profiling.md` for
+    the measured before/after (602 -> 5 XLA compilations on the reference
+    single-trade Greeks job).
+
+    Everything inside compiles into ONE program per distinct trade shape:
+    the `lax.scan` was already a fused primitive, but the elementwise work
+    around it (`_state_grid`, the numeraire divisions, the `jnp.where`
+    guards, `_hw_swap_value_at_nodes`' whole cashflow evaluation) previously
+    dispatched op-by-op. `jax.grad` of a jitted function differentiates the
+    compiled program rather than re-tracing eagerly, which is why the
+    gradient and Hessian costs collapse along with the forward one.
+
+    The `np.asarray`-based snapshot selection stays in the caller for the
+    complementary reason: it concretizes values and indexes with Python ints.
     """
     a, sigma, n_per_std, std_devs = swap.hw_a, swap.hw_sigma, swap.n_per_std, swap.std_devs
     curve = _zero_curve_of(swap)

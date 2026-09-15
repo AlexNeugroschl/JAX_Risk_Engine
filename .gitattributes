@@ -1,0 +1,18 @@
+# Hashed fixtures MUST NOT be line-ending translated.
+#
+# The TraderX EOD bundles under tests/fixtures/traderx-eod/ are pinned by
+# SHA-256 hashes over their exact committed bytes. On a Windows checkout with
+# core.autocrlf=true (Git for Windows' installer default), git rewrites
+# LF -> CRLF on checkout for anything it considers text -- which includes
+# .json and .csv. Every artifact hash then fails, with nothing in the error
+# pointing at the cause.
+#
+# This is not hypothetical. It is exactly what happened to the vendored
+# reference/traderX checkout in this repository, and it had already broken
+# TraderX's own verifier before that. See engine/integration/bundle.py's
+# module docstring and docs/planning/traderx-integration-plan.md §W0.1.
+#
+# `-text` disables all line-ending translation in both directions, so the
+# bytes in the working tree are always the committed bytes.
+*.json -text
+*.csv  -text

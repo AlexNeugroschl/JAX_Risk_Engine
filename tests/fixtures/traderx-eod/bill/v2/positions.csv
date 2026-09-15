@@ -1,0 +1,26 @@
+# traderx-risk-extract schema=3
+# consensusSequence=8
+# sessionDate=2025-06-02
+# priceSnapshotVersion=1
+# cutSha256=ca93efcb545ae518edde9fc81bfa74991e6fd3f73fe3231b58a2e2201e043469
+# rows=2
+# cutConsistency=every row is the replicated state machine's state at consensusSequence on the totally-ordered consensus log, not a read-model query
+# netting=none; rows are un-netted at (accountId, security) grain
+# quantityConvention=signed net position in contracts (options), shares (equity) or USD face amount (treasuries)
+# costBasisConvention=weighted average trade price per contract or share, excludes fees and excludes the contract multiplier
+# marketValueConvention=quantity * closingMark * contractMultiplier
+# unrealizedPnlConvention=(closingMark - costBasis) * quantity * contractMultiplier
+# markSourceLegend=EOD_SNAPSHOT=YU06 published closing price for (sessionDate, priceSnapshotVersion); CLUSTER_LAST_TRADE_AT_N=matching-engine last trade price at consensusSequence
+# optionIdentity=OCC symbol; underlying, expiry, call/put and strike are derivable from the security field
+# treasuryPriceConvention=costBasis and closingMark for instrumentType=TREASURY are clean prices as a FRACTION of par (0.998780 = 99.878%), six decimals; the contract multiplier is 1, so marketValue = face * fraction
+# treasuryStatic=coupon (annual %, fixed, semiannual) and maturityDate are joined from instrument reference data; empty for non-treasury rows
+# treasuryAccrualUnit=accruedInterestFraction is a FRACTION OF PAR in the same unit as closingMark, so dirtyPrice = closingMark + accruedInterestFraction and settlementValue = quantity * dirtyPrice; marketValue above stays CLEAN
+# instrumentTypeLegend=EQUITY | OPTION | TREASURY | CORPORATE. CORPORATE and TREASURY are both fixed-rate bullet debt and share every bond column; they are separated because they carry DIFFERENT DAY COUNTS and different credit risk. The split comes from the reference-data join, never from prefix-parsing the security (ADR-059) - a consumer that does not care may treat both as debt
+# bondDayCount=the accrual convention this file USED, per row, stated rather than assumed: ACT/ACT (ICMA) for TREASURY, 30/360 for CORPORATE. They disagree by real money - on the seeded GS 5.750% of 2036 the same position accrues 0.004514 of par more under 30/360, which is $4,514 on $1m face - so a consumer reconciling against its own model must use the convention named here, not a default
+# treasuryAccrualConvention=ACT/ACT (ICMA) semiannual: (days from lastCouponDate to sessionDate / days in that coupon period) * coupon/2. Accrual runs to sessionDate ITSELF, not to a T+1 settlement date, because every other column here is as-of sessionDate and this system carries no holiday calendar. A consumer wanting settlement-date accrual has lastCouponDate and coupon to roll it forward
+# treasuryCouponSchedule=generated backwards from maturityDate in 6-month steps measured from maturity, so nextCouponDate = lastCouponDate + 6 months; a short or long first coupon is NOT modelled
+# treasuryZeroCoupon=a bill or STRIP (coupon 0) has NO coupon schedule, so lastCouponDate and accruedInterestFraction are both EMPTY, never 0.000000. Empty means no schedule exists; a zero in the accrual column would mean one exists and nothing has accrued, which is a different and false claim. coupon and maturityDate are still populated - 0 and the maturity are facts about the instrument. For these rows dirtyPrice == closingMark, with no accrual to add
+# treasuryAccrualRounding=the only rounded value in this file (elapsed/period does not terminate); HALF_EVEN at 6 decimals. Every other value is exact
+accountId,security,instrumentType,quantity,contractMultiplier,costBasis,closingMark,markSource,markQuality,marketValue,unrealizedPnl,currency,counterpartyId,nettingSetId,coupon,maturityDate,lastCouponDate,accruedInterestFraction
+22214,UST-BILL-20251202,TREASURY,100000,1,0.985000,0.985000,EOD_SNAPSHOT,SYNTHETIC,98500.000000,0.000000,USD,SYNTH-BUY,SYNTH-NS-B,0,2025-12-02,,
+42422,UST-BILL-20251202,TREASURY,-100000,1,0.985000,0.985000,EOD_SNAPSHOT,SYNTHETIC,-98500.000000,0.000000,USD,SYNTH-SELL,SYNTH-NS-S,0,2025-12-02,,
