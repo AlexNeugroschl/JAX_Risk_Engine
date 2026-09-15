@@ -19,6 +19,7 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 | Price a whole portfolio over HTTP | [HTTP API](reference/http-api.md) |
 | Profile a pricing job's JAX vs. Python time | [User Guide](getting-started/user-guide.md#profiling-a-pricing-job) |
 | Understand a term you don't recognize | [Glossary](concepts/glossary.md) |
+| **Know what's broken, approximated, or missing before trusting a number** | **[Known Issues](known-issues.md)** |
 
 ## Concepts
 
@@ -75,6 +76,14 @@ common `[Scenarios, TimeSteps, Trades]` NPV cube:
 - **[ORE Parity](reference/ore-parity.md)** — maps every algorithm in this codebase to its
   exact counterpart in ORE's own C++ source (`reference/ORE`), file and function name.
 
+## Known issues
+
+- **[Known Issues and Limitations Register](known-issues.md)** — every known defect and
+  scope gap, what each does to a number a user would see, and what closing it actually
+  requires. Read this before trusting an exposure, VaR/ES, or multi-day number: the two
+  highest-severity entries (aged-swap pricing and USD-SOFR conventions) are **not fixed**,
+  and the register is explicit about the difference between *fixed* and *warned about*.
+
 ## Planning
 
 - **[Roadmap](planning/roadmap-and-history.md)** — the phased build-out plan and what's
@@ -83,6 +92,9 @@ common `[Scenarios, TimeSteps, Trades]` NPV cube:
   analysis for safely accepting arbitrary portfolios from an external trading system, and
   what actually landed (now implemented — see
   [The Portfolio Entry Point](reference/portfolio-entrypoint.md)).
+- **[EOD Contract Proposal](planning/eod-contract-proposal.md)** — the proposed request/
+  result contracts for the TraderX end-of-day batch integration, and the capability matrix
+  of what this engine can and cannot price today.
 
 ## Document conventions
 

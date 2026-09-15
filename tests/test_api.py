@@ -674,3 +674,71 @@ class TestPortfolioPriceWorkerPoolDispatch:
             data = test_client.get(f"/portfolio/price/{job_id}").json()
             time.sleep(0.1)
         assert data["status"] == "done", data.get("error")
+
+
+class TestGapFixesSurviveTheHttpBoundary:
+    """The three closed gaps from tests/test_portfolio_gap_fixes.py must
+    also survive serialization AND the worker-process boundary, not just a
+    direct in-process `price_portfolio` call.
+
+    This matters because `POST /portfolio/price` runs the real work in a
+    separate OS process (`engine.portfolio.worker_pool`): a `warnings.warn`
+    raised in the worker, and any newly added result field, has to make it
+    back through `PortfolioResultSchema` to the polling caller. An
+    in-process test cannot prove that.
+    """
+
+    @staticmethod
+    def _submit_and_poll(client, body, timeout_s=120):
+        r = client.post("/portfolio/price", json=body)
+        assert r.status_code == 202, r.text
+        job_id = r.json()["job_id"]
+        deadline = time.time() + timeout_s
+        data = None
+        while time.time() < deadline:
+            data = client.get(f"/portfolio/price/{job_id}").json()
+            if data["status"] in ("done", "failed"):
+                break
+            time.sleep(0.2)
+        assert data is not None and data["status"] == "done", (
+            data.get("error") if data else "job never reached a terminal state"
+        )
+        return data["result"]
+
+    def test_swap_greeks_present_over_http(self, test_client):
+        """Pre-fix, `greeks` came back as an empty object for a swap-only
+        portfolio -- 202, then a successful job with nothing in it."""
+        result = self._submit_and_poll(test_client, {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(),
+            "trades": [_swap_trade_schema()],
+            "compute_greeks": True,
+        })
+        assert result["greeks"], "no Greeks returned for a swap-only portfolio"
+        # JSON object keys are strings, per PortfolioResultSchema's own contract.
+        entry = result["greeks"]["0"]
+        assert "discount_delta" in entry["values"]
+        assert "forward_delta" in entry["values"]
+        assert entry["theta"] is not None
+
+    def test_per_trade_base_npv_present_and_reconciles_over_http(self, test_client):
+        result = self._submit_and_poll(test_client, {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(),
+            "trades": [_swap_trade_schema(), _swap_trade_schema(notional=250_000.0)],
+        })
+        per_trade = result["base_npv_per_trade"]
+        assert len(per_trade) == 2
+        assert result["base_npv"] == pytest.approx(sum(per_trade), rel=0.0, abs=1e-9)
+
+    def test_aged_swap_warning_crosses_the_worker_boundary(self, test_client):
+        """A `warnings.warn` raised inside the worker PROCESS must arrive in
+        the polled JSON result -- the case an in-process test can't cover."""
+        result = self._submit_and_poll(test_client, {
+            "evaluation_date": TODAY_ISO,
+            "market": _market_schema(),
+            "trades": [_swap_trade_schema()],
+        })
+        assert any("already started accruing" in w for w in result["warnings"]), (
+            f"aged-swap warning lost crossing the worker boundary: {result['warnings']!r}"
+        )

@@ -156,6 +156,65 @@ def _thaw_trade(cfg):
     return replace(cfg, **updates)
 
 
+def _profile_options(jax):
+    """`jax.profiler.ProfileOptions` for `_run_pricing_job`'s trace, with
+    the Python tracer OFF (see that function's docstring for the measured
+    97.1%-of-events / silent-1.6s-truncation reasoning behind overriding
+    JAX's own `python_tracer_level=1` default).
+
+    `jax` is passed in rather than imported here so this module keeps its
+    "no `import jax` at module scope" property -- the caller has already
+    done the local import by the time it needs these options.
+
+    `host_tracer_level` and `enable_hlo_proto` are left at JAX's defaults
+    (2 and True): the HLO protos are what give xprof's `op_profile` view
+    its per-op attribution, which is the main thing worth opening a trace
+    for here, and they are not what made the trace unusable.
+
+    **What the trace contains with `python_tracer_level=0`.** The host
+    tracer still instruments everything JAX/XLA does on the host; what is
+    dropped is ONLY the CPython interpreter's own call/return events. The
+    resulting trace has five lanes, measured on the 4-trade demo portfolio
+    (event counts and summed durations; durations exceed wall time because
+    the lanes run concurrently and nest):
+
+        /host:CPU (main)             301,105 events   107.2s
+        tf_PjRtCompilerThreadPool    237,300 events    81.2s
+        tf_xla-cpu-codegen           241,552 events    47.1s
+        tf_XLAEigen                  132,769 events     2.9s
+        tf_XLAPjRtCpuClient           13,737 events     1.4s
+
+    Classifying that by what the event names mean:
+
+        XLA compilation      ~118.6s  (backend_compile_and_load,
+                                       CpuCompiler::RunBackend, Codegen,
+                                       FusionCompiler::Compile, MLIR passes)
+        pjit dispatch (host)  ~76.3s  (PjitFunction(scan/multiply/_interp/...))
+        JAX tracing            ~3.1s  (trace_to_jaxpr_nounits)
+        device execute         ~3.0s  (ThunkExecutor::Execute)
+
+    So the compile-vs-execute and dispatch-vs-device questions this hook
+    exists to answer are all still answerable -- in fact more clearly than
+    before, since the whole job is now covered instead of its first 1.6s.
+
+    **What is genuinely lost.** Per-`PjitFunction` events name the JAX
+    primitive (`PjitFunction(scan)`, `PjitFunction(_interp)`), NOT the
+    engine function that called it: no event in the trace carries a Python
+    source file/line (confirmed directly -- 0 of 926,463 events have
+    `source_file`/`source_line`/`long_name` args). Attributing a dispatch
+    back to, say, `_hw_swap_value_at_nodes` versus `_lgm_numeraire` is what
+    `JAX_RISK_PROFILE_PYTHON_TRACER=1` buys, and the only thing it buys.
+    Two cheaper ways to get that attribution without it:
+      - `jax.named_scope`/`jax.profiler.TraceAnnotation` around a region of
+        interest -- adds a named lane to the timeline at negligible cost,
+        and is the standard way to label phases in a JAX profile.
+      - Trace one phase at a time (see this module's callers), so the
+        events in the trace can only have come from that phase."""
+    options = jax.profiler.ProfileOptions()
+    options.python_tracer_level = 1 if os.environ.get("JAX_RISK_PROFILE_PYTHON_TRACER") == "1" else 0
+    return options
+
+
 def _run_pricing_job(frozen_request: PortfolioRequest) -> PortfolioResult:
     """Runs inside the worker process (submitted to the pool, not called
     directly). `_worker_init` has already set this worker's fixed
@@ -179,7 +238,48 @@ def _run_pricing_job(frozen_request: PortfolioRequest) -> PortfolioResult:
     give the aggregate on-device-vs-on-host breakdown, `trace_viewer` the
     timeline. Unset (the default, including every test and the HTTP path in
     CI) -> completely inert: no `import jax` here, byte-identical to before
-    this hook existed."""
+    this hook existed.
+
+    **`python_tracer_level=0`, always** (see `_profile_options`). JAX's own
+    default (`python_tracer_level=1`) instruments the CPython interpreter,
+    not just this engine's own frames, which for a dispatch-heavy workload
+    like this one buries the actual computation: measured on the 4-trade
+    demo portfolio, 971,080 of the trace's 1,000,115 events (97.1%) were
+    Python-interpreter frames -- `isinstance` x 90,235, `append` x 33,156,
+    `len` x 21,073 -- from inside JAX's own dispatch machinery. Worse, the
+    profiler's event buffer is a fixed ~1M-event cap with no backpressure
+    and no truncation warning, so those interpreter frames saturated it
+    during startup and the trace SILENTLY covered only the first 1.6s of a
+    ~90s job (confirmed by the captured events' own timestamp span) --
+    a partial trace that reports success and looks exactly like a complete
+    one. Turning the Python tracer off is what makes the whole job fit:
+    467MB -> 50MB, 82.7s -> 45.4s, and 2% -> 93% of the job's wall time
+    actually covered by the trace, with `base_npv` identical.
+
+    This does NOT make the trace "JAX-only": the host tracer still records
+    all of JAX/XLA's own host-side work, so XLA compilation, pjit dispatch,
+    JAX tracing and device execution each stay separately visible and
+    separately attributable (see `_profile_options` for the per-lane
+    breakdown and the measured compile-vs-dispatch-vs-execute split). What
+    is dropped is CPython's own interpreter frames, and with them the
+    ability to attribute a dispatch back to the specific ENGINE function
+    that issued it. Set `JAX_RISK_PROFILE_PYTHON_TRACER=1` to opt back in
+    when that per-callsite attribution is specifically what's needed --
+    accepting the ~9x size, the ~2x slowdown, and near-certain silent
+    truncation on any job this size or larger.
+
+    **Warmup: `JAX_RISK_PROFILE_WARMUP=1`** (default off) runs the job once
+    BEFORE opening the trace and discards it, so the traced run measures
+    warm steady-state execution against already-populated compilation
+    caches -- the conventional shape for a profiler capture, and the only
+    way the timeline reflects execution rather than XLA lowering. Left OFF
+    by default precisely because this hook's stated purpose above is to
+    measure cold-start compilation too; turn it on when the question is
+    "where does the *execution* time go," leave it off when the question is
+    "what does this job cost from cold." Note it roughly doubles wall time
+    (the job runs twice) and that JAX's compilation cache is process-global,
+    so the discarded run's effect is exactly the cache population the
+    traced run then benefits from."""
     from engine.portfolio.request import price_portfolio
 
     def _run() -> PortfolioResult:
@@ -193,8 +293,15 @@ def _run_pricing_job(frozen_request: PortfolioRequest) -> PortfolioResult:
 
     import jax  # local: keep jax out of module import, mirroring _worker_init
 
+    if os.environ.get("JAX_RISK_PROFILE_WARMUP") == "1":
+        # Discarded on purpose -- run once before the trace opens so the
+        # traced run below hits warm compilation caches (see docstring).
+        # block_until_ready for the same reason as the traced run: the
+        # caches aren't fully populated until device execution finishes.
+        jax.block_until_ready(_run().npv_cube)
+
     out_dir = os.path.join(profile_dir, f"pid-{os.getpid()}")
-    with jax.profiler.trace(out_dir):
+    with jax.profiler.trace(out_dir, profiler_options=_profile_options(jax)):
         result = _run()
         # The trace must not end before device execution does, or the timeline
         # is truncated (JAX profiling docs are explicit about this). npv_cube

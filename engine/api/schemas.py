@@ -393,11 +393,16 @@ class PortfolioResultSchema(BaseModel):
     risk: RiskMetricsSchema
     greeks: Optional[Dict[int, GreeksSchema]] = None
     warnings: List[str] = Field(default_factory=list)
+    # Per-trade t=0 NPV in the request's own `trades` order; `base_npv` is
+    # their sum. Lets a caller reconcile the portfolio total against
+    # identified positions/contracts instead of only seeing an aggregate.
+    base_npv_per_trade: List[float] = Field(default_factory=list)
 
     @classmethod
     def from_dataclass(cls, result: PortfolioResult) -> "PortfolioResultSchema":
         return cls(
             base_npv=result.base_npv,
+            base_npv_per_trade=[float(v) for v in result.base_npv_per_trade],
             npv_cube=np.asarray(result.npv_cube).tolist(),
             risk=RiskMetricsSchema.from_dataclass(result.risk),
             greeks=(

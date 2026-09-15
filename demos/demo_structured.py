@@ -136,6 +136,24 @@ _MANAGE_SERVER = os.environ.get("JAX_RISK_ENGINE_DEMO_SKIP_SERVER") != "1"
 # worker. Requires the `profiling` extra (`pip install -e .[api,profiling]`).
 # Open the timeline with:  xprof --port 8791 <dir>
 # Override the location from the environment, or set it to "" to opt out.
+#
+# Two further knobs, both read by _run_pricing_job (see its docstring for the
+# measurements behind each), passed through to the server below:
+#   JAX_RISK_PROFILE_WARMUP=1        -- run the job once and discard it before
+#       opening the trace, so the traced run measures WARM execution instead of
+#       cold-start XLA compilation. Roughly doubles wall time (the job runs
+#       twice). Off by default: this demo's profiler hook deliberately includes
+#       compilation, which is a first-class cost for this engine.
+#   JAX_RISK_PROFILE_PYTHON_TRACER=1 -- re-enable JAX's Python-interpreter
+#       tracer (off by default here; JAX's own default is ON). Off does NOT
+#       mean "JAX-only": XLA compilation, pjit dispatch, JAX tracing and
+#       device execution all stay in the trace and stay separable -- what's
+#       dropped is CPython's own frames, i.e. the ability to attribute a
+#       dispatch back to the engine function that issued it. Turn it on only
+#       when that per-callsite attribution is the actual question: on this
+#       4-trade portfolio it made 97% of the trace's events CPython frames
+#       and silently truncated the capture to the first 1.6s of a ~90s job,
+#       at 469MB instead of 50MB.
 PROFILE_DIR = os.environ.get("JAX_RISK_PROFILE_DIR", ".profile-out")
 
 

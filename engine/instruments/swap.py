@@ -39,6 +39,14 @@ trades priced before their own accrual begins -- both remain exact, as
 every other test in this suite demonstrates. Fixing this properly (tracking
 already-fixed rates per scenario/step, or excluding elapsed cashflows from
 the sum) is intentionally out of scope here and left for a follow-up.
+
+Registered as **I-04** in docs/known-issues.md, which records its full blast
+radius (every npv_cube value past first accrual, and therefore every VaR/ES
+number derived from it) and the fact that closing it needs historical
+published fixings that no current input source supplies -- engine work alone
+cannot close it. `engine.portfolio.request._warn_if_aged_swap_exposure` now
+warns per affected swap into `PortfolioResult.warnings`, so the gap is
+advertised rather than silent; the pricing itself is unchanged.
 """
 from dataclasses import dataclass, field
 from functools import partial

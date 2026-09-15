@@ -342,9 +342,18 @@ class TestCompositionEdgeCases:
     def test_all_four_instrument_types_each_represented_multiple_times(self):
         """A broader composition check than the dozen-trade test above:
         several of EACH type, with compute_greeks enabled, confirming
-        Greeks routing (which skips SwapConfig by design, see
-        engine/portfolio/request.py::_compute_all_greeks) still returns a
-        correctly-keyed dict at a larger, mixed trade count."""
+        Greeks routing returns a correctly-keyed dict at a larger, mixed
+        trade count.
+
+        This test previously asserted `set(result.greeks) == set(range(3, 12))`
+        -- i.e. that SwapConfig trades were SKIPPED "by design". That was
+        pinning a bug, not a design: `engine.risk.greeks.swap_delta_gamma`/
+        `swap_theta` were implemented and tested, but `_compute_all_greeks`
+        had no access to the `SimulationConfig` a swap's curve INDEXES
+        resolve against, so it silently dropped every swap. Now that it
+        receives the market config, all 12 trades report Greeks. See
+        tests/test_portfolio_gap_fixes.py::TestSwapGreeksReachThePortfolioPath.
+        """
         swaps = [_swap(i) for i in range(3)]
         swaptions = [_swaption(i) for i in range(3)]
         bermudans = [_bermudan(i) for i in range(3)]
@@ -354,11 +363,14 @@ class TestCompositionEdgeCases:
         result = price_portfolio(PortfolioRequest(market=sim, trades=trades, compute_greeks=True))
         _assert_finite_result(result, 12)
         assert result.greeks is not None
-        # SwapConfig trades (indices 0-2) are skipped by design; every
-        # swaption/bermudan/american trade (indices 3-11) must have Greeks.
-        assert set(result.greeks.keys()) == set(range(3, 12))
-        for idx in range(3, 12):
+        # EVERY trade -- swaps (0-2) included -- must now have Greeks.
+        assert set(result.greeks.keys()) == set(range(12))
+        for idx in range(12):
             assert np.isfinite(result.greeks[idx]["theta"])
+        # Swaps report per-curve deltas; the swaption family reports one.
+        for idx in range(3):
+            assert "discount_delta" in result.greeks[idx]
+            assert "forward_delta" in result.greeks[idx]
 
 
 # =============================================================================

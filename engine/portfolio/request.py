@@ -98,6 +98,7 @@ from engine.calibration.lgm import calibrate_lgm_sigma, CalibrationTarget
 from engine.risk.var_es import compute_risk_metrics
 from engine.risk import greeks as _greeks
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
+from engine.models.lgm import Sigma
 
 # Re-exported so `engine.portfolio._validate_common_fields` resolves exactly
 # where the design calls for it, even though the actual leaf implementation
@@ -259,10 +260,18 @@ def validate_portfolio_against_simulation(
     index/notional/type) and the specific mismatched field on any divergence
     beyond a small float tolerance.
 
-    Also emits `warnings.warn` (not a hard error) for a Bermudan/American
-    trade whose `exercise_times` aren't reset-aligned with its own
-    underlying's accrual/payment dates -- see docs/planning/
-    traderx-integration.md gap item 5 and this module's own docstring.
+    Also emits `warnings.warn` (not a hard error) for two known-limitation
+    cases, both collected into `PortfolioResult.warnings` by
+    `price_portfolio`:
+
+    - a Bermudan/American trade whose `exercise_times` aren't reset-aligned
+      with its own underlying's accrual/payment dates -- see docs/planning/
+      traderx-integration.md gap item 5 and this module's own docstring;
+    - a `SwapConfig` that will be AGED (its floating leg already accruing)
+      at one or more simulated steps beyond t=0 -- see
+      `_warn_if_aged_swap_exposure`. This is the one check here that applies
+      to `SwapConfig`, which otherwise carries no `rate_factor_index` to
+      cross-check.
     """
     tol = 1e-9
     num_eq = len(sim_config.equities.initial_prices)
@@ -338,6 +347,73 @@ def validate_portfolio_against_simulation(
 
         if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
             _warn_if_not_reset_aligned(label, cfg, i)
+
+    _warn_if_aged_swap_exposure(sim_config, trade_configs)
+
+
+def _warn_if_aged_swap_exposure(sim_config: SimulationConfig, trade_configs) -> None:
+    """Emits a `UserWarning` for every `SwapConfig` whose floating leg will
+    have ALREADY STARTED accruing at one or more of the simulation's own
+    `time_grid` steps beyond t=0.
+
+    This surfaces the documented aged-swap limitation (see
+    `engine.instruments.swap`'s module docstring and
+    `tests/test_swap.py::TestAgedSwapKnownLimitation`): `price_swaps` has no
+    representation of an already-fixed floating coupon, so at any simulated
+    step past a swap's first accrual start the elapsed period is discounted
+    with a clamped, non-meaningful P(t,T) for T<t instead of being excluded
+    or fixed. t=0 valuation is unaffected and exact.
+
+    **Why a warning and not a fix here:** fixing it requires per-scenario
+    already-fixed rates (or exclusion of elapsed cashflows) inside the
+    pricing kernel, AND the historical fixings to populate them -- neither
+    of which exists in this engine or in the current TraderX export. What
+    this function removes is the SILENCE: before it, a caller requesting a
+    multi-step `npv_cube` (and therefore every VaR/ES number derived from
+    it) inherited a known inaccuracy with nothing in the result saying so.
+    `price_portfolio` collects these into `PortfolioResult.warnings`.
+
+    Only steps STRICTLY after t=0 are considered, and a forward-starting
+    swap is only flagged once the grid actually reaches its accrual start --
+    both remain exact otherwise, so neither should warn."""
+    steps_after_zero = [t for t in sim_config.time_grid if float(t) > 0.0]
+    if not steps_after_zero:
+        return
+    last_step = max(float(t) for t in steps_after_zero)
+
+    for i, cfg in enumerate(trade_configs):
+        if not isinstance(cfg, SwapConfig):
+            continue
+        swap = build_vanilla_swap(
+            notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
+            swap_tenor=cfg.swap_tenor, index_tenor_months=cfg.index_tenor_months,
+            floating_spread=cfg.floating_spread, evaluation_date=cfg.evaluation_date,
+        )
+        today = cfg.evaluation_date
+        starts = [
+            DAY_COUNTER.yearFraction(today, ORE.as_floating_rate_coupon(cf).accrualStartDate())
+            for cf in swap.floatingLeg()
+        ]
+        if not starts:
+            continue
+        first_accrual_start = min(starts)
+        # Aged only if the grid actually advances past the first accrual
+        # start. A forward-starting swap whose accrual begins after the last
+        # simulated step is never aged within this simulation.
+        if last_step > first_accrual_start:
+            aged_steps = [t for t in steps_after_zero if float(t) > first_accrual_start]
+            warnings.warn(
+                f"trade[{i}] (SwapConfig, notional={cfg.notional}): floating leg has "
+                f"already started accruing (first accrual start t="
+                f"{first_accrual_start:.6f}) at {len(aged_steps)} simulated time step(s) "
+                f"beyond t=0 (up to t={last_step:.6f}). Conditional NPV at those steps "
+                f"uses the documented aged-swap approximation -- an already-fixed "
+                f"floating coupon is not represented, so npv_cube values at those "
+                f"steps, and any VaR/ES/exposure derived from them, carry a known "
+                f"inaccuracy. t=0 base NPV is unaffected. See "
+                f"engine/instruments/swap.py's module docstring.",
+                stacklevel=2,
+            )
 
 
 def _warn_if_not_reset_aligned(label: str, cfg, index: int) -> None:
@@ -470,6 +546,12 @@ class PortfolioResult:
     risk: Dict[str, jax.Array]                             # compute_risk_metrics(...) output
     greeks: Optional[Dict[int, Dict[str, jax.Array]]] = None  # trade index (in request.trades order) -> greeks dict
     warnings: List[str] = field(default_factory=list)
+    # t=0 NPV of each trade individually, in request.trades order.
+    # `base_npv` is by construction `sum(base_npv_per_trade)` -- the total and
+    # the breakdown are computed once and cannot disagree. Required to
+    # reconcile a portfolio total against identified positions/contracts
+    # rather than reporting only an unattributable aggregate.
+    base_npv_per_trade: List[float] = field(default_factory=list)
 
 
 def _zero_curve_of(cfg, curve_config, dtype=jnp.float64) -> _HwZeroCurve:
@@ -572,7 +654,8 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
         # this produces on npv_cube itself when buckets disagree.
         step_times = jnp.array(market_config.time_grid[1:], dtype=jnp.float64)
         npv_cube, order = _price_by_type(trades, market, maturities_np, step_times, request.precision.pricing)
-        base_npv = _base_npv(trades, maturities_np, market_config, request.precision)
+        base_npv_per_trade = _base_npv_per_trade(trades, maturities_np, market_config, request.precision)
+        base_npv = float(sum(base_npv_per_trade))
 
         # risk.var_es is NOT curve-driven like delta_gamma/theta/vega -- it has
         # no curve of its own, so honoring an override that differs from
@@ -590,11 +673,14 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
 
         greeks_out = None
         if request.compute_greeks:
-            greeks_out = _compute_all_greeks(trades, request.precision)
+            greeks_out = _compute_all_greeks(
+                trades, market_config, request.precision,
+                calibration_targets=request.calibration_targets,
+            )
 
     return PortfolioResult(
         base_npv=base_npv, npv_cube=npv_cube, risk=risk, greeks=greeks_out,
-        warnings=collected_warnings,
+        warnings=collected_warnings, base_npv_per_trade=base_npv_per_trade,
     )
 
 
@@ -704,13 +790,22 @@ def _price_by_type(trades, market, maturities_np, step_times, pricing: Union[int
     return npv_cube, order
 
 
-def _base_npv(
+def _base_npv_per_trade(
     trades: List[TradeConfig], maturities_np: np.ndarray, market_config: SimulationConfig,
     precision: PrecisionConfig,
-) -> float:
-    """t=0 NPV of the whole portfolio, against zero-shock (today's actual)
-    curves -- generalizes `demo.py`'s hand-written per-type sum into a loop
-    over the routed trades, one instrument type at a time.
+) -> List[float]:
+    """t=0 NPV of EACH trade, against zero-shock (today's actual) curves,
+    returned in the caller's own `trades` order -- generalizes `demo.py`'s
+    hand-written per-type sum into a loop over the routed trades, one
+    instrument type at a time.
+
+    **Returns per-trade values, not just their sum.** `PortfolioResult.
+    base_npv` is then defined as `sum(...)` of this list, so the reported
+    total and the reported per-trade breakdown cannot disagree -- they are
+    the same numbers. Before this function returned a list, only the
+    aggregate float existed, and a portfolio total could not be reconciled
+    against identified rows at all (the integration requirement behind
+    `PortfolioResult.base_npv_per_trade`).
 
     Every array this function constructs itself (as opposed to what the
     pricers derive from their own JAX-array inputs) carries `precision.
@@ -723,29 +818,26 @@ def _base_npv(
     JAX-array inputs this function hands them. `price_bermudan_swaption_base`
     itself takes no dtype input at all -- a pre-existing scope boundary this
     function doesn't attempt to fix."""
-    total = 0.0
-    swap_cfgs = [cfg for cfg in trades if isinstance(cfg, SwapConfig)]
-    if swap_cfgs:
-        swap_dtype = _resolve_pricing_dtype(precision.pricing, SwapConfig)
-        for cfg in swap_cfgs:
+    per_trade: List[float] = [0.0] * len(trades)
+    for i, cfg in enumerate(trades):
+        if isinstance(cfg, SwapConfig):
+            swap_dtype = _resolve_pricing_dtype(precision.pricing, SwapConfig)
             disc_curve = market_config.rates.initial_zero_curves[cfg.discount_curve_index]
             fwd_curve = market_config.rates.initial_zero_curves[cfg.forward_curve_index]
             base_cube = _flat_curve_cube(disc_curve, fwd_curve, maturities_np, cfg.evaluation_date, dtype=swap_dtype)
             remapped = replace(cfg, discount_curve_index=0, forward_curve_index=1)
-            total += float(price_swaps(base_cube, maturities_np, [remapped])[0, 0, 0])
-
-    for cfg in trades:
-        if isinstance(cfg, SwaptionConfig):
+            per_trade[i] = float(price_swaps(base_cube, maturities_np, [remapped])[0, 0, 0])
+        elif isinstance(cfg, SwaptionConfig):
             dtype = _resolve_pricing_dtype(precision.pricing, SwaptionConfig)
             r0_path = jnp.zeros((1, 1, len(market_config.rates.initial_rates)), dtype=dtype)
             r0_path = r0_path.at[0, 0, :].set(jnp.asarray(market_config.rates.initial_rates, dtype=dtype))
-            total += float(price_swaptions(r0_path, jnp.array([0.0], dtype=dtype), [cfg])[0, 0, 0])
+            per_trade[i] = float(price_swaptions(r0_path, jnp.array([0.0], dtype=dtype), [cfg])[0, 0, 0])
         elif isinstance(cfg, BermudanSwaptionConfig):
-            total += price_bermudan_swaption_base(cfg)
+            per_trade[i] = price_bermudan_swaption_base(cfg)
         elif isinstance(cfg, AmericanSwaptionConfig):
-            total += price_bermudan_swaption_base(cfg.to_bermudan())
+            per_trade[i] = price_bermudan_swaption_base(cfg.to_bermudan())
 
-    return total
+    return per_trade
 
 
 def _flat_curve_cube(
@@ -775,8 +867,35 @@ def _flat_curve_cube(
     return jnp.asarray(cube[None, None, :, :], dtype=dtype)
 
 
+def _swap_curve_configs(cfg: SwapConfig, market_config: SimulationConfig, trade_index: int):
+    """Resolves one `SwapConfig`'s `discount_curve_index`/
+    `forward_curve_index` into the two `ZeroCurveConfig`s they name in
+    `market_config.rates.initial_zero_curves`.
+
+    Raises `ValueError` naming the trade and the offending index if either
+    is out of range. This is deliberately a hard failure rather than a
+    clamp or a fallback to curve 0: an out-of-range index means the request
+    is internally inconsistent, and silently substituting SOME curve would
+    produce a plausible-looking sensitivity computed against a curve the
+    trade was never booked against -- precisely the class of silent
+    mispricing this module's other validators exist to prevent."""
+    curves = market_config.rates.initial_zero_curves
+    for name, idx in (("discount_curve_index", cfg.discount_curve_index),
+                      ("forward_curve_index", cfg.forward_curve_index)):
+        if not 0 <= idx < len(curves):
+            raise ValueError(
+                f"trade[{trade_index}] (SwapConfig, notional={cfg.notional}): "
+                f"{name}={idx} is out of range for "
+                f"sim_config.rates.initial_zero_curves (length {len(curves)})"
+            )
+    return curves[cfg.discount_curve_index], curves[cfg.forward_curve_index]
+
+
 def _compute_all_greeks(
-    trades: List[TradeConfig], precision: PrecisionConfig = PrecisionConfig(),
+    trades: List[TradeConfig],
+    market_config: SimulationConfig,
+    precision: PrecisionConfig = PrecisionConfig(),
+    calibration_targets: Optional[List[CalibrationTarget]] = None,
 ) -> Dict[int, Dict[str, jax.Array]]:
     """Delta/Gamma/Theta for every trade, keyed by its own index in the
     caller's original `trades` order -- routed to the matching
@@ -801,20 +920,38 @@ def _compute_all_greeks(
     case), this pays one small, redundant extra curve-construction call --
     a deliberate simplicity-over-micro-optimization choice, since building a
     `ZeroCurve` is a cheap pillar-count array build, not a JIT-compiled
-    trace. Note: this function does not call `bermudan_vega` today (a
-    pre-existing gap, not introduced by this precision redesign);
-    `RiskPrecisionOverride.vega` exists for `bermudan_vega`'s direct callers
-    and forward compatibility."""
+    trace.
+
+    `market_config` supplies the simulation's own
+    `rates.initial_zero_curves`, which is what makes SWAP Greeks reachable
+    here: a `SwapConfig` carries curve INDEXES
+    (`discount_curve_index`/`forward_curve_index`) rather than its own
+    `ZeroCurveConfig`, so resolving them needs the very
+    `SimulationConfig` those indexes are defined against. Before this
+    parameter existed, this function had no access to it and skipped every
+    swap outright -- `compute_greeks=True` silently returned a result with
+    no entry for any swap, even though `engine.risk.greeks.swap_delta_gamma`
+    /`swap_theta` were fully implemented and tested. The curves are resolved
+    explicitly from the request's own market, never guessed or defaulted; an
+    out-of-range index raises (see `_swap_curve_configs`) rather than
+    silently pricing Greeks off the wrong pillar."""
     out: Dict[int, Dict[str, jax.Array]] = {}
     for i, cfg in enumerate(trades):
         if isinstance(cfg, SwapConfig):
-            # SwapConfig alone doesn't carry its own ZeroCurveConfig (it
-            # indexes into the simulation's curves instead) -- Greeks for a
-            # swap need an explicit ZeroCurve the caller must supply
-            # separately (see engine.risk.greeks.swap_delta_gamma); skipped
-            # here rather than guessed, to avoid silently pricing Greeks
-            # against a placeholder curve.
-            continue
+            disc_cfg, fwd_cfg = _swap_curve_configs(cfg, market_config, i)
+            dg_dtype = _resolve_risk_dtype(precision.risk, "delta_gamma")
+            theta_dtype = _resolve_risk_dtype(precision.risk, "theta")
+            trade_greeks = dict(_greeks.swap_delta_gamma(
+                cfg,
+                _zero_curve_of(cfg, disc_cfg, dtype=dg_dtype),
+                _zero_curve_of(cfg, fwd_cfg, dtype=dg_dtype),
+            ))
+            trade_greeks["theta"] = _greeks.swap_theta(
+                cfg,
+                _zero_curve_of(cfg, disc_cfg, dtype=theta_dtype),
+                _zero_curve_of(cfg, fwd_cfg, dtype=theta_dtype),
+            )
+            out[i] = trade_greeks
         elif isinstance(cfg, SwaptionConfig):
             dg_curve = _zero_curve_of(cfg, cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "delta_gamma"))
             theta_curve = _zero_curve_of(cfg, cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
@@ -827,5 +964,20 @@ def _compute_all_greeks(
             theta_curve = _zero_curve_of(berm_cfg, berm_cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
             trade_greeks = dict(_greeks.bermudan_delta_gamma(berm_cfg, dg_curve))
             trade_greeks["theta"] = _greeks.bermudan_theta(berm_cfg, theta_curve)
+            # Vega is only well-defined when hw_sigma is a genuine CALIBRATED
+            # Sigma term structure produced from `calibration_targets` (in
+            # that same order) -- `bermudan_vega` differentiates through the
+            # bootstrap relating each target's market_vol to that Sigma, so a
+            # flat/hand-set hw_sigma has no market quote to be sensitive TO.
+            # Skipped (not raised) in that case: a flat-sigma Bermudan is a
+            # legitimate request, it simply has no Vega to report.
+            if calibration_targets and isinstance(berm_cfg.hw_sigma, Sigma):
+                vega_curve = _zero_curve_of(
+                    berm_cfg, berm_cfg.initial_zero_curve,
+                    dtype=_resolve_risk_dtype(precision.risk, "vega"),
+                )
+                trade_greeks["vega"] = _greeks.bermudan_vega(
+                    berm_cfg, vega_curve, calibration_targets,
+                )
             out[i] = trade_greeks
     return out

@@ -136,7 +136,19 @@ class Sigma:
 
     @staticmethod
     def flat(sigma: float, dtype=jnp.float64) -> "Sigma":
-        return Sigma(times=jnp.zeros((0,), dtype=dtype), values=jnp.asarray([sigma], dtype=dtype))
+        # `jnp.reshape(jnp.asarray(sigma), (1,))` rather than
+        # `jnp.asarray([sigma])`: wrapping a value in a Python LIST forces JAX
+        # to treat that list as a constant to be materialized, which fails
+        # outright for a traced value ("No constant handler for type:
+        # DynamicJaxprTracer") whenever this is reached from inside a
+        # jax.jit/jax.grad trace with a scalar sigma -- e.g. differentiating
+        # `price_lgm_swaption` with respect to a plain float sigma. Converting
+        # the scalar first and then reshaping keeps a tracer a tracer, and is
+        # exactly equivalent for a concrete input.
+        return Sigma(
+            times=jnp.zeros((0,), dtype=dtype),
+            values=jnp.reshape(jnp.asarray(sigma, dtype=dtype), (1,)),
+        )
 
     def tree_flatten(self):
         return (self.times, self.values), None

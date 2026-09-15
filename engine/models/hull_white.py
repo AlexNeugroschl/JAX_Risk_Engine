@@ -53,6 +53,7 @@ import jax.numpy as jnp
 from jax.scipy.stats import norm
 
 
+@jax.tree_util.register_pytree_node_class
 @dataclass
 class ZeroCurve:
     """Today's market zero curve, as JAX arrays -- differentiable
@@ -66,9 +67,27 @@ class ZeroCurve:
     `from_config` builds one from a plain `engine.simulation.ZeroCurveConfig`
     (or any object with `.times`/`.rates`) for the common case of starting
     from a non-differentiable config and only later needing gradients.
+
+    **Registered as a JAX pytree** (`@register_pytree_node_class`), exactly
+    as `engine.models.lgm.Sigma` is and for the same reason: both fields are
+    JAX arrays, so a `ZeroCurve` can be passed straight through a
+    `jax.jit`/`jax.grad` boundary as an ordinary traced argument (JAX
+    flattens it to its two arrays and rebuilds it on the other side).
+    Without this, any jitted function taking a `ZeroCurve` fails with
+    "Error interpreting argument ... as an abstract array". This does not
+    change how the class is constructed or used anywhere -- it only teaches
+    JAX how to look inside it.
     """
     pillar_times: jax.Array
     pillar_rates: jax.Array
+
+    def tree_flatten(self):
+        return (self.pillar_times, self.pillar_rates), None
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        pillar_times, pillar_rates = children
+        return cls(pillar_times=pillar_times, pillar_rates=pillar_rates)
 
     @staticmethod
     def from_config(config, dtype=jnp.float64) -> "ZeroCurve":

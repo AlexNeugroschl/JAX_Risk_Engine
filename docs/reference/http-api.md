@@ -318,10 +318,11 @@ Mirrors `engine.portfolio.PortfolioResult`:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `base_npv` | `float` | |
+| `base_npv` | `float` | Portfolio total. By construction `sum(base_npv_per_trade)` — the total and the breakdown are the same numbers, not two independent computations. |
+| `base_npv_per_trade` | `List[float]` | Per-trade t=0 NPV, in the request's own `trades` order. Lets a caller reconcile the portfolio total against identified positions/contracts instead of receiving only an unattributable aggregate. |
 | `npv_cube` | `List[List[List[float]]]` | `[Scenarios, TimeSteps, Trades]`, JSON-nested. |
 | `risk` | `{"values": {"VaR_95": [...], "ES_95": [...], ...}}` | `NaN` values (an empty-tail Expected Shortfall — see [Risk Statistics](../risk/var_es.md)) serialize as JSON `null`, not the non-standard literal `NaN`. |
-| `greeks` | `{"<trade_index>": {"values": {"delta": [...], "gamma": [...]}, "theta": ...}} \| null` | `null` unless the request set `compute_greeks: true`. Keys are trade indices (as strings, JSON's own object-key requirement) matching the request's own `trades` order. |
+| `greeks` | `{"<trade_index>": {"values": {"delta": [...], "gamma": [...]}, "theta": ...}} \| null` | `null` unless the request set `compute_greeks: true`. Keys are trade indices (as strings, JSON's own object-key requirement) matching the request's own `trades` order. **Swaps** report `discount_delta`/`discount_gamma`/`forward_delta`/`forward_gamma` (differentiated against the curves their own `discount_curve_index`/`forward_curve_index` name) plus `theta`; swaptions report `delta`/`gamma`/`theta`. A **calibrated** Bermudan/American trade additionally reports `vega`, one entry per `calibration_basket` instrument — omitted for a flat (hand-set) `hw_sigma`, which has no market quote to be sensitive to. |
 | `warnings` | `List[str]` | Known-limitation warnings (mid-coupon exercise misalignment, etc.) — see [The Portfolio Entry Point: Known-limitation flagging](portfolio-entrypoint.md#known-limitation-flagging). |
 
 ## Example: a Python `requests` session

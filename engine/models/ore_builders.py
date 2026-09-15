@@ -27,6 +27,25 @@ Euribor6M defaults to 30/360 fixed vs Act/360 float) -- this keeps the
 day-count convention a single, deliberate, documented choice consistent
 with the simulation's own year-fraction time axis, not an accident of
 whatever `MakeVanillaSwap` happens to default to.
+
+**Scope warning -- this builder is GENERIC TERM-IBOR ONLY.** It produces a
+`SimIndex<N>M` term index, ACT/365 on both legs, a TARGET calendar, and a
+schedule derived from a TENOR STRING ("5Y") rather than explicit booked
+dates. A real USD-SOFR contract is an OVERNIGHT index, ACT/360, daily
+compounded in arrears, on a US calendar, with explicit effective/maturity
+dates plus lookback/lockout/payment-lag terms this signature cannot even
+express. Routing such a booking through here produces a confident, WRONG
+number: ACT/360-vs-ACT/365 alone shifts every accrual factor by 1.389%
+(~$1,906 on a $1mm 5Y fixed leg, roughly 46x a 1bp DV01), and no test in
+this repository would catch it, because every test builds its inputs with
+this same builder.
+
+Registered as **I-05** in docs/known-issues.md. The ACT/365 choice above is
+deliberate and should stay; a faithful SOFR path belongs in a SEPARATE
+builder alongside this one (every swaption pricer depends on this one's
+consistency with the simulation time axis), gated on the convention set
+agreed in decisions D03/D04, with unsupported conventions REFUSED rather
+than approximated here.
 """
 from dataclasses import dataclass
 

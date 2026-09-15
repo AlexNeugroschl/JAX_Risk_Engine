@@ -163,7 +163,22 @@ class TestPricePortfolioMatchesHandOrchestration:
             )
 
     def test_no_warnings_for_a_clean_reset_aligned_portfolio(self, via_entrypoint):
-        assert via_entrypoint.warnings == []
+        """This portfolio's Bermudan/American exercise dates ARE reset-aligned,
+        so none of the mid-coupon-approximation warnings must fire.
+
+        Originally `assert warnings == []`. It now excludes the aged-swap
+        warning, which is a DIFFERENT, correct warning about a different
+        limitation: this portfolio's swap is spot-starting and priced over a
+        multi-step grid, so it genuinely is aged past its first accrual date
+        (see engine/instruments/swap.py's module docstring and
+        tests/test_portfolio_gap_fixes.py::TestAgedSwapWarningIsNotSilent).
+        Suppressing that warning to keep this assertion literal would restore
+        exactly the silence that warning exists to remove -- so this test
+        narrows to its actual subject (reset alignment) instead.
+        """
+        unrelated = [w for w in via_entrypoint.warnings
+                     if "already started accruing" not in w]
+        assert unrelated == []
 
     def test_greeks_are_none_when_not_requested(self, via_entrypoint):
         assert via_entrypoint.greeks is None
