@@ -112,6 +112,14 @@ common `[Scenarios, TimeSteps, Trades]` NPV cube:
 - **[EOD Contract Response v3](planning/eod-contract-response-v3.md)** — reply to TraderX's
   v2 package: accepted answers, the zero-coupon accrued-interest normalization rule, durable
   attempt/lookup semantics, and what is blocked on delivery vs. on build work.
+- **[EOD Contract Response v4](planning/eod-contract-response-v4.md)** — reply to TraderX's
+  source review: W0 shipped, the SOFR refusal running against the real fixture, and **I-13**
+  reproduced and fixed.
+- **[EOD Contract Response v5](planning/eod-contract-response-v5.md)** — reply to TraderX's
+  **independent verification of the priced results** (they reproduced every bill/note figure
+  from our shared fixtures). Two defects they found — **I-19** (the accrual tolerance rounded
+  its own bound) and **I-20** (impossible calendar dates aborted the whole bundle) — fixed
+  with regression evidence, and the plan resequenced to put the contract interface first.
 - **[TraderX Integration Plan](planning/traderx-integration-plan.md)** — **the actionable
   plan.** Consolidates the whole contract exchange into ordered W0/W1/W2 tasks with steps,
   tests, and the traps each one avoids. Start here to do the work.

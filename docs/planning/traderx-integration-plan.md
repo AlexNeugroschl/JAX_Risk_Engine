@@ -1,6 +1,6 @@
 # TraderX Integration — Actionable Plan
 
-**Date:** 2026-09-15 · **Owner:** Alex (JAX Risk Engine side)
+**Date:** 2026-09-15 (last revised 2026-09-16) · **Owner:** Alex (JAX Risk Engine side)
 **Status:** Working plan. Supersedes nothing; it consolidates the agreed outcome of the
 four-document exchange into executable tasks.
 
@@ -13,6 +13,9 @@ four-document exchange into executable tasks.
 5. [Response v3](eod-contract-response-v3.md) — my reply; hashes verified
 6. `eod-response-to-alex-v3.md` → their compatibility work + the source review that found **I-13**
 7. [Response v4](eod-contract-response-v4.md) — my reply; W0 shipped, I-13 reproduced
+8. `eod-response-to-alex-v5.md` → their **independent verification of the priced results**,
+   plus two reproducible defects (**I-19**, **I-20**)
+9. [Response v5](eod-contract-response-v5.md) — my reply; both fixed, W1.6 inserted ahead of W1.5
 
 **Companion:** [Known Issues](../known-issues.md) — the defect register. Task IDs below
 reference issue IDs (`I-NN`) where they close one.
@@ -83,14 +86,20 @@ the first real pricers. W2 adds faithful USD-SOFR and is gated on an external de
 
 ### Suite status — stated honestly
 
-Full run 2026-09-16, **after the W1.3 note pricer, the I-17 fix and the W1.4 equity
-refusal**: **1,384 passed, 2 failed**. (Previously 1,324 / 2 after W1.3 alone, and
+Full run 2026-09-16, **after the I-19 and I-20 fixes from TraderX's v5 review**:
+**1,452 passed, 1 failed**. (Previously 1,384 / 2, then 1,324 / 2 after W1.3, and
 1,217 / 2 on 2026-09-15 after W1.2.)
 
-The 2 remaining failures are an **environment gap, not a code defect**: both need `pydantic`,
-a declared dependency (`pyproject.toml`) that is not installed here. Confirmed pre-existing by
-stashing the fixes and re-running — identical failures. `tests/test_api.py` does not collect
-for the same reason. `pip install -e .` resolves both. **Engine-side, every test passes.**
+The single failure is
+`test_worker_pool.py::TestWorkerPoolConcurrency::test_cross_tier_jobs_correct_and_concurrent`
+— a **timing-sensitive concurrency assertion, not a code defect**. It requires two jobs'
+wall-clock intervals to genuinely overlap; under full-suite load the OS can serialize them,
+while every correctness assertion in the same test passes. Verified: passes 3/3 in isolation,
+and passes against stashed pre-fix code, so it is unrelated to the v5 fixes. Same failure mode
+as **I-15** in a sibling test; recorded in the register rather than re-run until green.
+
+The 2 previously-recorded `pydantic` failures are **resolved** — the dependency is now
+installed (2.13.5), and the run contains zero `ModuleNotFoundError`.
 
 Previously 1,138 passed / 3 failed; the three failures were I-13's suite (now fixed), I-14 and
 I-15. Earlier figures in this exchange (824, then 1175) were stale or unreproducible.
@@ -116,6 +125,8 @@ I-15. Earlier figures in this exchange (824, then 1175) were stale or unreproduc
 | `_swap_curve_configs` validates only the Greeks path | Their v3 source review → **I-13**, now fixed |
 | I-14 first diagnosed as `price_portfolio` leaking x64 across jobs — **wrong**; it re-enables the flag deliberately. The leak was one level down, in `generate_paths` | Probed while fixing → entry corrected |
 | I-15 first diagnosed as a flaky timing assertion — **incomplete**; the test's premise was unsound (warm-JIT jobs take ~15ms and never coexist) | Surfaced when the first fix also failed |
+| **Accrual tolerance rounded the rounding bound** — `round(err, 2) + 0.01` truncates the quantity it exists to bound. At 124,000 face the agreed rule gives 0.072, the code gave 0.07: **tighter than agreed**, so it could refuse a reconciliation inside the exporter's own stated rounding error. The 100,000 fixture hides it exactly | Their v5 §3; **fixed** → **I-19** |
+| **Impossible calendar dates aborted the whole bundle** — `ORE.Date` raises `RuntimeError` (SWIG over C++ `std::runtime_error`) for `2025-02-30`, and the parsers caught only `(ValueError, TypeError)`. One typo'd date returned *nothing* for 200 good rows, breaking this boundary's core contract | Their v5 §3; **fixed** → **I-20** |
 
 ---
 
@@ -684,6 +695,39 @@ and the API schemas.
 
 ---
 
+### W1.6 — The contract interface · ⏭ **NEXT, ahead of W1.5** (added 2026-09-16)
+
+**Why this was inserted, and why it jumps the queue.** TraderX's v5 review independently
+reproduced every priced number on the shared fixtures, and their remaining blockers are
+*all* interface, not pricing: terms v2, a versioned result/capability schema, an
+`accrualSource` alignment, and the HTTP service. Their own next step — independent
+validation, then connecting their local result intake — is **blocked on the contract
+surface, not on more instruments.**
+
+W1.5 is internal plumbing: it wires the new instruments into `price_portfolio`/`greeks` for
+*this engine's own* callers. Nothing on TraderX's side consumes that path. So W1.5 delivers
+no unblocking to the counterparty, while W1.6 unblocks their entire next work item.
+**Sequencing W1.6 first is the higher-value ordering**, and it does not make W1.5 harder —
+the two touch disjoint code.
+
+| Task | Deliverable |
+|---|---|
+| **W1.6.1** | Accept `traderx.instrument-terms.v2` alongside v1, validating `accrualBasis`. **Terms version is independent of bundle version** — a v2 bundle may carry either terms version. |
+| **W1.6.2** | `resultSchema`/`capabilitySchema` version on every published document, plus machine-readable JSON Schema for both. Emit the version *before* extending intake, so their validator can pin it. |
+| **W1.6.3** | Carry `accrualSource` onto the standalone `accruedInterest` outcome, aligned with the NPV payload's label. **Keep `structural-zero` distinct from an exported-fraction conversion** — that distinction is W0.3's whole point and must survive the alignment. |
+| **W1.6.4** | The EOD HTTP routes (`GET /capabilities`, submission) — this is where **W0.8** and **W0.9**'s unrouted function finally land. Fold W0.8 in here rather than leaving it stranded. |
+
+**Acceptance:** TraderX's `note-structured-basis` bundle joins rather than raising
+`TermsJoinError`, and their new pricing acceptance profile validates a priced result against
+the published schema.
+
+> **Note on their W0 validator.** They will keep the existing no-market profile (which
+> correctly *rejects* priced output) and add a separate pricing profile rather than weakening
+> it. That is the right call and matches working rule 3 — a validator relaxed to accept both
+> would stop proving either.
+
+---
+
 ## 4. W2 — Faithful USD-SOFR · **I-05** · blocked on D03/D04
 
 **Do not start on assumed conventions.** Guessing produces confident wrong numbers — the exact
@@ -729,11 +773,19 @@ W0.1 bundle+hash ─┬─ W0.2 terms join ─┬─ W0.3 normalize ─┐
 
 W0.10 curve-index validation ✅ I-13/I-14 (ran ahead of W1, as planned)
 
-W1.1 day count ✅ ─→ W1.2 bill ✅ ─→ W1.3 note ✅ ─→ W1.5 wire-through ─→ ★ Treasury end-to-end
-                     W1.4 equity ✅ (refusal) ┘
+W1.1 day count ✅ ─→ W1.2 bill ✅ ─→ W1.3 note ✅ ─┬─→ W1.6 contract interface ⏭ NEXT
+                     W1.4 equity ✅ (refusal) ─────────┤    (terms v2, schema versions,
+                                                      │     accrualSource, HTTP + W0.8)
+                                                      └─→ W1.5 wire-through (internal)
 
 W2  ⛔ blocked on D03/D04
 ```
+
+**W1.6 now precedes W1.5** (2026-09-16). TraderX's v5 review reproduced every priced number
+and found no pricing defects; their remaining blockers are entirely interface. W1.5 wires
+instruments into *this engine's own* `price_portfolio` path, which nothing on their side
+consumes — so it unblocks nobody, while W1.6 unblocks their whole next work item. The two
+touch disjoint code, so the reorder costs nothing.
 
 **★ First real result — delivered.** The SOFR `CONVENTION_NOT_SUPPORTED` output needed no
 pricer, only W0.1/0.2/0.4/0.5/0.7. It runs against the real fixture and is the substance of
@@ -754,9 +806,14 @@ agree, rather than a single discount factor.
 validated, and refused with the missing market input named. It is the first task in this
 plan whose *correct* deliverable was "no number", and the reasoning is in **I-18**.
 
-**Next:** W1.5 (wire the new instruments through the portfolio path — note the I-01
-regression class called out in that task). Equity *valuation* is blocked on a spot/FX
-source, which is a market-data decision rather than engine work.
+**★ v5 — priced results independently verified by TraderX.** Running our adapter against
+their own files, they reproduced **every** number: bill ±98,507.15, note dirty ±103,308.33,
+accrued ±1,857.10, +1bp sensitivity ∓15.28, with 529 focused tests passing. This is the first
+time our two systems have agreed on a *price* rather than on a refusal. They also found two
+real defects, both now fixed with regression evidence (§7).
+
+**Next:** W1.6 (the contract interface), then W1.5. Equity *valuation* remains blocked on a
+spot/FX source, which is a market-data decision rather than engine work.
 
 ---
 

@@ -363,13 +363,44 @@ class TestAccruedReconcilesToTraderX:
 
 
 class TestToleranceIsDerivedNotConstant:
-    """Plan §1: `round(0.5 x 10^-decimals x |face|, 2) + 0.01`, derived
-    from the stated rounding and never a fixed constant."""
+    """Plan §1: `0.5 x 10^-decimals x |face| + 0.01`, derived from the
+    stated rounding and never a fixed constant."""
 
     def test_matches_the_agreed_formula(self):
         assert accrual_mismatch_tolerance(FACE, 6) == pytest.approx(
-            round(0.5 * 1e-6 * FACE, 2) + 0.01
+            0.5 * 1e-6 * FACE + 0.01
         )
+
+    def test_the_rounding_bound_is_not_itself_rounded(self):
+        """**Regression (TraderX v4/v5).** The bound was computed as
+        `round(rounding_error, 2) + 0.01`, which truncates the very
+        quantity it exists to bound.
+
+        At 124,000 face the true rounding error is 0.062, so the agreed
+        tolerance is 0.072 — but rounding gave 0.06 and a tolerance of
+        0.07. That is *tighter* than agreed, so it can refuse a
+        reconciliation that sits inside the exporter's own stated rounding
+        error.
+
+        The $100,000 fixture does not expose this: 0.05 rounds to 0.05 and
+        both formulas give 0.06. That is precisely why it survived until
+        TraderX tried another face amount.
+        """
+        assert accrual_mismatch_tolerance(124_000.0, 6) == pytest.approx(0.072)
+        # The rounded implementation returns this instead.
+        assert accrual_mismatch_tolerance(124_000.0, 6) != pytest.approx(0.07)
+
+    def test_the_fixture_face_is_unchanged_by_the_fix(self):
+        """The correction must not move the delivered case."""
+        assert accrual_mismatch_tolerance(FACE, 6) == pytest.approx(0.06)
+
+    @pytest.mark.parametrize("face", [124_000.0, 3_000.0, 17_500.0, 999_999.0])
+    def test_never_narrower_than_the_exporters_rounding_error(self, face):
+        """The general statement of the bug: for ANY face, the tolerance
+        must be at least the exporter's worst-case rounding plus the cent
+        allowance. Rounding the first term breaks this for any face whose
+        rounding error is not already a whole number of cents."""
+        assert accrual_mismatch_tolerance(face, 6) >= 0.5e-6 * face + 0.01
 
     def test_scales_with_face(self):
         """A constant tolerance would be vacuous on a large position."""
@@ -928,6 +959,138 @@ class TestIsNote:
             missing_terms=(), provenance={}, identity={},
         )
         assert is_bill(bill) and not is_note(bill)
+
+
+class TestImpossibleCalendarDates:
+    """**Regression (TraderX v5).** A date that parses as three integers
+    but names a day that cannot exist aborted the entire bundle.
+
+    `ORE.Date(30, 2, 2025)` raises **`RuntimeError`** ("day outside month
+    (2) day-range [1,28]") — SWIG surfacing QuantLib's C++
+    `std::runtime_error`. The parsers caught `(ValueError, TypeError)`, so
+    `not-a-date` was handled correctly while `2025-02-30` escaped every
+    handler and propagated out of `price_bundle`.
+
+    That breaks the contract this boundary is built on: **one unpriceable
+    row must not cost the other 200 their results.** A bundle of 200 good
+    positions and one typo'd date returned nothing at all.
+
+    Exercised **through the public bundle entry point**, as TraderX asked
+    — the escape happened between the pricer and the pipeline, so a test
+    against `price_note` alone would have passed throughout.
+    """
+
+    @staticmethod
+    def _bundle_with_date(tmp_path, bad_date, case="note"):
+        """A real bundle copy whose terms carry `bad_date`, with the
+        manifest hash re-pinned so the *date* is under test rather than
+        the integrity check."""
+        import hashlib
+        import shutil
+
+        root = tmp_path / f"{case}-{abs(hash(bad_date))}"
+        shutil.copytree(FIXTURES / case / "v2", root)
+
+        terms_path = root / "instrument-terms.json"
+        terms = json.loads(terms_path.read_bytes())
+        terms["entries"][0]["terms"]["maturityDate"] = bad_date
+        raw = json.dumps(terms, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+        terms_path.write_bytes(raw)
+
+        manifest_path = root / "manifest.json"
+        manifest = json.loads(manifest_path.read_bytes())
+        manifest["artifacts"]["instrumentTerms"]["sha256"] = hashlib.sha256(raw).hexdigest()
+        manifest_path.write_bytes(
+            json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+        )
+        return root
+
+    #: `not-a-date` failed on `int()` (ValueError) and always worked.
+    #: The rest parse as integers and die inside ORE with RuntimeError.
+    BAD_DATES = ("2025-02-30", "2025-13-01", "2025-00-10", "2025-02-29", "not-a-date")
+
+    @pytest.mark.parametrize("bad_date", BAD_DATES)
+    def test_the_bundle_still_returns(self, tmp_path, bad_date):
+        """Pre-fix, `2025-02-30` raised straight out of `price_bundle`."""
+        result = price_bundle(self._bundle_with_date(tmp_path, bad_date), MARKET)
+        assert result.items
+
+    @pytest.mark.parametrize("bad_date", BAD_DATES)
+    def test_every_row_survives(self, tmp_path, bad_date):
+        """Both delivered positions must still be reported. A shrinking
+        portfolio is the failure the coverage model exists to prevent."""
+        result = price_bundle(self._bundle_with_date(tmp_path, bad_date), MARKET)
+        assert len(result.items) == 2
+
+    @pytest.mark.parametrize("bad_date", BAD_DATES)
+    def test_it_is_an_item_level_refusal(self, tmp_path, bad_date):
+        result = price_bundle(self._bundle_with_date(tmp_path, bad_date), MARKET)
+        for item in result.items:
+            npv = item.calculations["npv"]
+            assert npv.status == "unsupported"
+            assert npv.reason == TERMS_INCOMPLETE
+
+    @pytest.mark.parametrize("bad_date", BAD_DATES)
+    def test_the_refusal_is_identified(self, tmp_path, bad_date):
+        """An unattributable refusal is useless (W0.7 step 3) — and this
+        path had no identity at all before, because it never produced a
+        result."""
+        result = price_bundle(self._bundle_with_date(tmp_path, bad_date), MARKET)
+        for item in result.items:
+            assert item.item_id
+            assert item.identity.account_id
+            assert item.identity.security == "UST-NOTE-20261215"
+
+    @pytest.mark.parametrize("bad_date", BAD_DATES)
+    def test_the_detail_names_the_offending_value(self, tmp_path, bad_date):
+        """A consumer has to be able to find the bad field without
+        guessing."""
+        result = price_bundle(self._bundle_with_date(tmp_path, bad_date), MARKET)
+        detail = result.items[0].calculations["npv"].detail
+        assert "maturityDate" in detail
+        assert bad_date in detail
+
+    def test_coverage_still_sums(self, tmp_path):
+        """The result document stays internally consistent even when every
+        row refused."""
+        result = price_bundle(self._bundle_with_date(tmp_path, "2025-02-30"), MARKET)
+        assert result.coverage.all_outcomes_accounted_for
+        assert result.coverage.all_applicable_computed is False
+
+    @pytest.mark.parametrize("bad_date", ("2025-02-30", "not-a-date"))
+    def test_the_bill_path_is_hardened_too(self, tmp_path, bad_date):
+        """`bill.py` had the identical parser and the identical gap. The
+        fixture the reviewer happened to try was the note; the bug was in
+        both."""
+        result = price_bundle(self._bundle_with_date(tmp_path, bad_date, case="bill"), MARKET)
+        assert len(result.items) == 2
+        for item in result.items:
+            assert item.calculations["npv"].status == "unsupported"
+
+    def test_a_real_leap_day_is_still_accepted(self):
+        """The guard must reject impossible dates without rejecting real
+        ones. 2028 is a leap year, so 2028-02-29 exists and must parse;
+        2025 is not, so 2025-02-29 must refuse.
+
+        Asserted against the parser rather than through a bundle: changing
+        a fixture's `maturityDate` to another year makes its coupon
+        schedule inconsistent, so the bundle would refuse for a correct
+        but unrelated reason and prove nothing about date validity.
+        """
+        from engine.integration.note import _parse_date
+
+        assert _parse_date("2028-02-29", "maturityDate") == ORE.Date(29, 2, 2028)
+
+        with pytest.raises(NotePricingError) as excinfo:
+            _parse_date("2025-02-29", "maturityDate")
+        assert excinfo.value.reason == TERMS_INCOMPLETE
+
+    def test_the_unchanged_fixture_still_prices(self):
+        """TraderX's own framing: this is a negative-input finding, and
+        the delivered bundles must be untouched by the fix."""
+        result = price_bundle(FIXTURES / "note" / "v2", MARKET)
+        for item in result.items:
+            assert item.calculations["npv"].status == "ok"
 
 
 class TestPipelineEndToEnd:

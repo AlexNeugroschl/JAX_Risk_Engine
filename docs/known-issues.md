@@ -20,10 +20,21 @@ suite did not surface them — in one case a test actively asserted the buggy be
 | **FLAGGED** | Inaccuracy **unchanged**. The engine now warns instead of staying silent. Not a fix. |
 | **OPEN** | Not addressed. Numbers are wrong or absent today. |
 
-Last full verification (2026-09-16, after the W1.3 note pricer, the I-17 fix and the W1.4
-equity refusal): **1,384 passed, 2 failed**. Previously 1,324/2 after W1.3 alone, and
-1,217/2 on 2026-09-15 after the W1.2 bill pricer; the increases are W1.3's 104 new
-integration tests, the transitive import guard, and W1.4's 60.
+Last full verification (2026-09-16, after the **I-19** and **I-20** fixes from TraderX's v5
+review): **1,452 passed, 1 failed**. Previously 1,384/2, then 1,324/2 after W1.3, and
+1,217/2 on 2026-09-15 after W1.2.
+
+**The single failure is a timing-sensitive concurrency test, not a code defect.**
+`tests/test_worker_pool.py::TestWorkerPoolConcurrency::test_cross_tier_jobs_correct_and_concurrent`
+asserts that two jobs' wall-clock intervals genuinely *overlap*. Under full-suite load the OS
+can serialize them, so the assertion fails while every correctness assertion in the same test
+(dtypes, NPV parity against a reference run) passes. Verified: it passes 3/3 in isolation, and
+it also passes against stashed pre-fix code, so it is unrelated to the v5 fixes. This is
+[I-15](#i-15)'s failure mode in a sibling test — I-15 fixed
+`test_same_tier_jobs_also_overlap_across_pool_workers`, and `test_cross_tier_jobs...` carries
+the same wall-clock premise. Tracked as a follow-up rather than silently re-run until green.
+
+(The 2 pydantic failures recorded previously are resolved — that dependency is now installed.)
 
 **The 2 failures are an environment gap, not a code defect.** Both are in
 `tests/test_var_es_diagnostics.py::TestDiagnosticsReachTheHttpBoundary` and fail with
@@ -62,6 +73,8 @@ own header overstates its verification undermines every status in it.
 | [I-16](#i-16) | `rateSensitivity` is parallel-only; no per-pillar decomposition | Medium | ❌ OPEN — labelled honestly, blocked on a real curve |
 | [I-17](#i-17) | A malformed note date failed the entire bundle, not just its row | Medium | ✅ FIXED |
 | [I-18](#i-18) | No equity spot or FX source; equity positions are refused, not valued | Medium | ❌ OPEN — refusal path landed (W1.4) |
+| [I-19](#i-19) | Accrual tolerance rounded the bound it exists to enforce | Medium | ✅ FIXED |
+| [I-20](#i-20) | Impossible calendar dates aborted the whole bundle | **High** | ✅ FIXED |
 
 **The two that matter most for financial correctness are [I-04](#i-04) and [I-05](#i-05).**
 Both are unfixed. Both need inputs or decisions that do not exist yet — not more engineering
@@ -833,6 +846,96 @@ formatter with no exception behaviour, is still shared.
 verified to fail against the pre-fix code. Three pin the exception type and the wording; the
 fourth pins the consequence that actually mattered, asserting through the pipeline that a
 malformed row comes back as a refused *item* rather than taking the bundle down with it.
+
+---
+
+### I-19 — Accrual tolerance rounded the bound it exists to enforce {#i-19}
+
+**Severity:** Medium · **Status:** ✅ FIXED · **Found:** 2026-09-16 by TraderX's v5 review
+
+**Symptom a consumer would see.** A perfectly good note bundle refused with
+`ACCRUAL_MISMATCH` at certain face amounts, reporting a reconciliation failure where none
+existed.
+
+**Cause.** `accrual_mismatch_tolerance` computed
+
+```python
+round(0.5 * 10**-fraction_decimals * abs(face), 2) + 0.01   # wrong
+```
+
+The first term is the exporter's worst-case HALF_EVEN rounding error. Rounding *that* to
+cents truncates the very quantity the tolerance exists to admit, making the bound **tighter
+than agreed**. At 124,000 face the true error is 0.062, so the agreed tolerance is 0.072 —
+but rounding gave 0.06 and a tolerance of 0.07.
+
+Because `ACCRUAL_MISMATCH` is a hard refusal, a too-tight tolerance turns a safety check into
+an outage: it rejects data that is within the exporter's own stated rounding.
+
+**Why no existing test caught it.** Every test used the delivered fixture's **$100,000**
+face, where the rounding error is exactly 0.05 — already a whole number of cents, so
+`round(0.05, 2) == 0.05` and both formulas agree at 0.06. The bug was invisible at the one
+face amount the suite ever used. `test_covers_the_exporters_worst_case_rounding_at_every_size`
+parametrised over face sizes but compared against `>= 0.5e-6 * face`, omitting the `+0.01`,
+so it passed too.
+
+**Fix.** Return `rounding_error + 0.01`, unrounded.
+
+**Regression tests** — `tests/test_integration_note.py::TestToleranceIsDerivedNotConstant`:
+`test_the_rounding_bound_is_not_itself_rounded` (the 124,000 case, asserting both the correct
+0.072 and the absence of the wrong 0.07), `test_the_fixture_face_is_unchanged_by_the_fix`,
+and a parametrised `test_never_narrower_than_the_exporters_rounding_error`. Verified to fail
+against the pre-fix code.
+
+---
+
+### I-20 — Impossible calendar dates aborted the whole bundle {#i-20}
+
+**Severity:** **High** · **Status:** ✅ FIXED · **Found:** 2026-09-16 by TraderX's v5 review
+
+**Symptom a consumer would see.** A single instrument whose terms carried a date that
+*parses* as three integers but names a day that cannot exist — `2025-02-30`, `2025-13-01`,
+`2025-02-29` — failed the **entire job** with an unhandled `RuntimeError`. A 200-row bundle
+returned nothing at all because of one typo.
+
+**Cause.** `ORE.Date(30, 2, 2025)` raises **`RuntimeError`** ("day outside month (2)
+day-range [1,28]") — SWIG surfacing QuantLib's C++ `std::runtime_error`. Both date parsers
+caught only `(ValueError, TypeError)`:
+
+```python
+except (ValueError, TypeError) as exc:   # never matched ORE's RuntimeError
+```
+
+So `not-a-date` was handled correctly (it fails at `int()`, a `ValueError`) while
+`2025-02-30` escaped every handler — the pricer's, the pipeline's, and `price_bundle`'s.
+
+**Relationship to [I-17](#i-17) — the same symptom, a different cause.** I-17 was an
+exception *type* mismatch (a note raising `BillPricingError`); this is an exception *class*
+gap (an exception neither module anticipated). **The I-17 fix could not have prevented it**,
+and its regression test did not catch it, because that test constructs a note whose date is
+merely *absent* rather than impossible. Two independent routes to the same contract
+violation, found six hours apart.
+
+**Why no existing test caught it.** Every malformed-date test in the suite used
+`"not-a-date"` — a string that fails at `int()` and so takes the `ValueError` path. Nothing
+tested a date that was numerically well-formed but calendrically impossible, which is the
+only input that reaches `ORE.Date` and raises.
+
+**Fix.** Three layers, because the date parser was one instance of a general hazard rather
+than the whole of it:
+
+1. `bill._parse_date` and `note._parse_date` catch `RuntimeError` alongside the Python date
+   exceptions, refusing with `TERMS_INCOMPLETE`.
+2. All three pipeline handlers (`_bill_outcomes`, `_note_outcomes`, `_equity_outcomes`) catch
+   `RuntimeError` too. **Every pricer calls into ORE**, so any ORE precondition failure —
+   not just a date — arrives as `RuntimeError`; the narrow handler would have let all of
+   them abort the bundle.
+
+**Regression tests** — `tests/test_integration_note.py::TestImpossibleCalendarDates`, 20+
+cases exercised **through `price_bundle`** as TraderX asked: the bundle still returns, both
+rows survive, the outcome is an identified item-level refusal naming the offending value, and
+coverage still sums. The bill path is covered too — it had the identical parser and the
+identical gap; the reviewer happened to try the note. Verified to fail against the pre-fix
+code.
 
 ---
 

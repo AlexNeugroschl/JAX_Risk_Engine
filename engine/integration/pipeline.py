@@ -318,9 +318,18 @@ def _bill_outcomes(
         # terms). `unsupported`, not `failed`: nothing errored, the engine
         # declined.
         return {"npv": CalculationOutcome.unsupported(reason=exc.reason, detail=exc.detail)}
-    except (ValueError, TypeError, ArithmeticError) as exc:
+    except (ValueError, TypeError, ArithmeticError, RuntimeError) as exc:
         # Something was genuinely attempted and broke. `failed` is the
         # honest status, and one bad row must not cost the rest theirs.
+        #
+        # **`RuntimeError` is load-bearing here, not defensive breadth.**
+        # Every pricer below this line calls into ORE, and SWIG surfaces
+        # QuantLib's C++ `std::runtime_error` as a Python `RuntimeError` --
+        # an impossible calendar date ("2025-02-30") is one instance, but
+        # any ORE precondition failure arrives the same way. Omitting it
+        # lets a single malformed row escape this handler and abort the
+        # WHOLE bundle, which is precisely the contract this `except`
+        # exists to uphold. Narrowing it back would reintroduce that.
         return {"npv": CalculationOutcome.failed(
             reason="PRICING_FAILED", detail=f"{type(exc).__name__}: {exc}",
         )}
@@ -357,7 +366,7 @@ def _note_outcomes(
     except NotePricingError as exc:
         refusal = CalculationOutcome.unsupported(reason=exc.reason, detail=exc.detail)
         return {"npv": refusal, "rateSensitivity": refusal}
-    except (ValueError, TypeError, ArithmeticError) as exc:
+    except (ValueError, TypeError, ArithmeticError, RuntimeError) as exc:
         failure = CalculationOutcome.failed(
             reason="PRICING_FAILED", detail=f"{type(exc).__name__}: {exc}",
         )
@@ -415,7 +424,7 @@ def _equity_outcomes(joined: JoinedRow) -> Dict[str, CalculationOutcome]:
             payload=exc.payload or None,
         )
         return {"npv": refusal}
-    except (ValueError, TypeError, ArithmeticError) as exc:
+    except (ValueError, TypeError, ArithmeticError, RuntimeError) as exc:
         return {"npv": CalculationOutcome.failed(
             reason="PRICING_FAILED", detail=f"{type(exc).__name__}: {exc}",
         )}

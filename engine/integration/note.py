@@ -313,7 +313,7 @@ def accrual_mismatch_tolerance(
 ) -> float:
     """The agreed accrued-interest reconciliation tolerance (plan §1).
 
-        round(0.5 x 10^-fractionDecimals x |face|, 2) + 0.01
+        0.5 x 10^-fractionDecimals x |face| + 0.01
 
     **Derived from the stated rounding, never a fixed constant.** The first
     term is the largest error the exporter's own HALF_EVEN rounding at
@@ -321,9 +321,19 @@ def accrual_mismatch_tolerance(
     absorbs cent-level rounding in the monetary comparison itself. Scaling
     with face is the whole point -- a constant tolerance is either useless
     on a $1 position or vacuous on a $1bn one.
+
+    **The rounding bound is NOT itself rounded** (TraderX v4/v5). An earlier
+    implementation computed `round(rounding_error, 2) + 0.01`, which
+    truncates the very quantity it is meant to bound: at 124,000 face the
+    true bound is 0.062 and rounding gives 0.06, so the tolerance came out
+    0.07 instead of 0.072. That is *tighter* than agreed -- it can reject a
+    reconciliation that is within the exporter's own stated rounding error,
+    reporting a mismatch where none exists.
     """
     rounding_error = 0.5 * (10.0 ** -fraction_decimals) * abs(signed_face_amount)
-    return round(rounding_error, 2) + 0.01
+    # Deliberately unrounded. See the docstring: rounding the bound makes it
+    # narrower than the error it is supposed to admit.
+    return rounding_error + 0.01
 
 
 def _parse_date(raw: Optional[str], field: str) -> ORE.Date:
@@ -348,9 +358,18 @@ def _parse_date(raw: Optional[str], field: str) -> ORE.Date:
     try:
         year, month, day = (int(part) for part in str(raw).split("-"))
         return ORE.Date(day, month, year)
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, RuntimeError) as exc:
+        # `RuntimeError` is not defensive breadth -- it is the exception
+        # `ORE.Date` actually raises for a date that PARSES but cannot
+        # exist ("2025-02-30" -> "day outside month (2) day-range [1,28]",
+        # "2025-13-01" -> "month 13 outside ... range"). SWIG surfaces
+        # QuantLib's C++ `std::runtime_error` that way, so the Python date
+        # exceptions alone miss exactly the malformed-but-numeric case.
+        # Without it the error escapes `_note_outcomes`' handler in the
+        # pipeline and fails the WHOLE bundle on one bad row -- see
+        # `tests/test_integration_note.py::TestImpossibleCalendarDates`.
         raise NotePricingError(
-            TERMS_INCOMPLETE, f"{field}={raw!r} is not an ISO YYYY-MM-DD date",
+            TERMS_INCOMPLETE, f"{field}={raw!r} is not a valid ISO YYYY-MM-DD date ({exc})",
         ) from exc
 
 

@@ -151,9 +151,18 @@ def _parse_date(raw: Optional[str], field: str) -> ORE.Date:
     try:
         year, month, day = (int(part) for part in str(raw).split("-"))
         return ORE.Date(day, month, year)
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, RuntimeError) as exc:
+        # `RuntimeError` is not defensive breadth -- it is the exception
+        # `ORE.Date` actually raises for a date that PARSES but cannot
+        # exist ("2025-02-30" -> "day outside month (2) day-range [1,28]",
+        # "2025-13-01" -> "month 13 outside ... range"). SWIG surfaces
+        # QuantLib's C++ `std::runtime_error` that way, so the Python date
+        # exceptions alone miss exactly the malformed-but-numeric case.
+        # Without it the error escapes `_bill_outcomes`' handler in the
+        # pipeline and fails the WHOLE bundle on one bad row -- see
+        # `tests/test_integration_bill.py::TestImpossibleCalendarDates`.
         raise BillPricingError(
-            TERMS_INCOMPLETE, f"{field}={raw!r} is not an ISO YYYY-MM-DD date",
+            TERMS_INCOMPLETE, f"{field}={raw!r} is not a valid ISO YYYY-MM-DD date ({exc})",
         ) from exc
 
 
