@@ -1,0 +1,30 @@
+{
+  "artifacts": {
+    "contracts": {
+      "path": "contracts.csv",
+      "rows": 1,
+      "schema": 2,
+      "sha256": "d542657b2e2a358bcf7838408f1f012713c5aa3d1b0f577817dc34a8bbea27dc"
+    },
+    "positions": {
+      "path": "positions.csv",
+      "rows": 1,
+      "schema": 3,
+      "sha256": "659086e493b402293b667a83b943268571fdb0e06fd8c657ee9ffe9f852c4758"
+    }
+  },
+  "bundleId": "9a0cb99550dd2e18c15ea92a1b05b03d1035f0bb44eb1717a296312dec7c5d36",
+  "clusterEpoch": "synthetic-golden",
+  "cut": {
+    "consensusSequence": "42",
+    "cutSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "priceSnapshotVersion": "1",
+    "sessionDate": "2025-06-02"
+  },
+  "inputOrigin": "synthetic",
+  "marketInputs": {
+    "status": "NOT_SUPPLIED"
+  },
+  "schema": "traderx.eod-bundle.v1",
+  "valuationTime": "2025-06-02T16:00:00-04:00"
+}

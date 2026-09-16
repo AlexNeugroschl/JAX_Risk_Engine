@@ -1,0 +1,6 @@
+# traderx-otc-contracts schema=2
+# consensusSequence=8
+# sessionDate=2025-06-02
+# cutSha256=e5e737ed7469250809536a7484f37ca751f401a64c0bb8acdbff1d80aec5b84e
+# rows=0
+contractId,accountId,productType,notional,currency,effectiveDate,maturityDate,fixedRate,floatIndex,payerReceiver,counterpartyId,nettingSetId

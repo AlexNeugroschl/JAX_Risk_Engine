@@ -20,13 +20,15 @@ own module docstring for why that shortcut is valid there specifically).
 This module replaces all of it with one implementation, used by every
 instrument pricer.
 
-Every pricer still explicitly uses `Actual/365Fixed` (`DAY_COUNTER`) on
-both legs, rather than relying on `MakeVanillaSwap`'s implicit per-index
-day-count defaults (which differ unpredictably by index/currency -- e.g.
-Euribor6M defaults to 30/360 fixed vs Act/360 float) -- this keeps the
-day-count convention a single, deliberate, documented choice consistent
-with the simulation's own year-fraction time axis, not an accident of
-whatever `MakeVanillaSwap` happens to default to.
+Day counts are always set explicitly here, never left to
+`MakeVanillaSwap`'s implicit per-index defaults (which differ unpredictably
+by index/currency -- e.g. Euribor6M defaults to 30/360 fixed vs Act/360
+float). Which day count, though, depends on WHICH OF TWO ROLES is being
+filled -- see the TWO ROLES block below `import ORE`. The simulation time
+axis is `TIME_AXIS_DAY_COUNTER` and is permanently ACT/365; a trade's own
+coupon accrual is `build_vanilla_swap`'s `accrual_day_count` argument,
+which defaults to ACT/365 so this module's long-standing behavior is
+unchanged for every caller that does not ask for something else (W1.1).
 
 **Scope warning -- this builder is GENERIC TERM-IBOR ONLY.** It produces a
 `SimIndex<N>M` term index, ACT/365 on both legs, a TARGET calendar, and a
@@ -52,7 +54,62 @@ from dataclasses import dataclass
 import numpy as np
 import ORE
 
-DAY_COUNTER = ORE.Actual365Fixed()
+# =============================================================================
+# THE TWO ROLES Actual/365Fixed PLAYS HERE, AND WHY THEY MUST BE NAMED APART
+#
+# `Actual365Fixed` was used for two unrelated jobs under one name, which is
+# what made "make the day count per-instrument" look like a one-line change
+# when it is not (plan §W1.1).
+#
+#   1. SIMULATION TIME AXIS -- converting an ORE.Date into the year-fraction
+#      that indexes `time_grid`, `maturities` and `hw_paths`. **This must
+#      stay ACT/365 forever.** Every pricer's cashflow times are looked up
+#      against the simulated curve cube's own axis (see
+#      `engine.instruments.swap._maturity_indices`, which requires each
+#      cashflow time to land EXACTLY on a simulation maturity pillar).
+#      Changing this silently desynchronizes every pricer from the cube --
+#      no error, just wrong discount factors.
+#
+#   2. INSTRUMENT ACCRUAL -- the day count a contract's coupons actually
+#      accrue on. **This is a property of the booking, not of the engine**,
+#      and must be per-instrument: the TraderX note is ACT/ACT (ICMA), a
+#      USD-SOFR swap is ACT/360.
+#
+# `TIME_AXIS_DAY_COUNTER` is role 1 and is not configurable. Role 2 is the
+# `accrual_day_count` argument on `build_vanilla_swap` below, defaulting to
+# ACT/365 so every pre-existing caller is byte-identical.
+#
+# `DAY_COUNTER` remains as a deprecated alias for role 1 so no import
+# breaks; prefer the explicit name in new code.
+# =============================================================================
+TIME_AXIS_DAY_COUNTER = ORE.Actual365Fixed()
+
+#: Deprecated alias for `TIME_AXIS_DAY_COUNTER`. Kept so existing imports
+#: keep working; it always meant the time axis, never instrument accrual.
+DAY_COUNTER = TIME_AXIS_DAY_COUNTER
+
+#: ---------------------------------------------------------------------
+#: The accrual day-count vocabulary lives in `engine.day_count` and is
+#: re-exported here so every existing caller and test keeps working
+#: unchanged.
+#:
+#: **Why it moved (W1.3).** `engine/integration/note.py` needs the same
+#: allowlist, and `engine/integration/` is forbidden from importing
+#: `engine.models` -- this module is where `build_vanilla_swap` lives, the
+#: exact object W0.4's refusal keeps unreachable (I-05). Borrowing the
+#: table by importing this module would put that builder one attribute
+#: access from the refusal boundary, so the table moved to a leaf module
+#: that imports only ORE. See `engine.day_count` for the full rationale.
+#:
+#: The *time axis* role above deliberately did NOT move: it is a property
+#: of this engine's simulated curve cube, not of any contract.
+#: ---------------------------------------------------------------------
+from engine.day_count import (  # noqa: E402  (re-export, see above)
+    DEFAULT_ACCRUAL_DAY_COUNT,
+    SUPPORTED_ACCRUAL_DAY_COUNTS,
+    UnsupportedDayCountError,
+    resolve_accrual_day_count,
+)
 
 
 def build_vanilla_swap(
@@ -64,6 +121,7 @@ def build_vanilla_swap(
     floating_spread: float,
     evaluation_date: ORE.Date,
     forward_start: ORE.Period = None,
+    accrual_day_count=None,
 ) -> ORE.VanillaSwap:
     """Builds a real `ORE.VanillaSwap` (schedules, day counts, conventions)
     via `ORE.MakeVanillaSwap` -- date generation and accrual math match ORE
@@ -72,23 +130,41 @@ def build_vanilla_swap(
     standard spot lag) defaults to no delay; only
     `engine.instruments.european_swaption` currently passes a non-default
     value (a swaption's own `forward_start`), but any instrument needing a
-    forward-starting underlying can use it the same way."""
+    forward-starting underlying can use it the same way.
+
+    `accrual_day_count` is the **instrument accrual** role (see this
+    module's TWO ROLES block): the day count this swap's coupons accrue on,
+    by name from `SUPPORTED_ACCRUAL_DAY_COUNTS` or as an `ORE.DayCounter`.
+    Defaults to ACT/365, which is what every caller got before this
+    parameter existed, so existing behavior is byte-identical.
+
+    Note what does NOT take it: the index's own day count and the dummy
+    forward curve's, both of which stay `TIME_AXIS_DAY_COUNTER`. The index
+    day count feeds ORE's forward-rate calculation, but this engine never
+    reads ORE's forwards -- it reprices against the JAX-simulated cube
+    whose axis is ACT/365 (see `floating_leg_cashflows`' docstring). Only
+    the LEG accrual fractions, which `fixed_leg_cashflows` reads back out
+    via `accrualPeriod()`, are the contract's own accrual.
+    """
     ORE.Settings.instance().evaluationDate = evaluation_date
+    accrual = resolve_accrual_day_count(accrual_day_count)
     dummy_forward_curve = ORE.YieldTermStructureHandle(
-        ORE.FlatForward(evaluation_date, 0.0, DAY_COUNTER)
+        ORE.FlatForward(evaluation_date, 0.0, TIME_AXIS_DAY_COUNTER)
     )
     index = ORE.IborIndex(
         "SimIndex", ORE.Period(index_tenor_months, ORE.Months), 2,
         ORE.USDCurrency(), ORE.TARGET(), ORE.ModifiedFollowing, False,
-        DAY_COUNTER, dummy_forward_curve,
+        TIME_AXIS_DAY_COUNTER, dummy_forward_curve,
     )
     swap_type = ORE.VanillaSwap.Payer if payer else ORE.VanillaSwap.Receiver
     kwargs = dict(
         nominal=notional,
         swapType=swap_type,
         floatingLegSpread=floating_spread,
-        fixedLegDayCount=DAY_COUNTER,
-        floatingLegDayCount=DAY_COUNTER,
+        # The two accrual-role lines -- everything else in this function is
+        # the time axis.
+        fixedLegDayCount=accrual,
+        floatingLegDayCount=accrual,
     )
     if forward_start is not None:
         kwargs["forwardStart"] = forward_start
@@ -113,9 +189,9 @@ def fixed_leg_cashflows(swap: ORE.VanillaSwap, today: ORE.Date) -> LegCashflows:
     payment_times, accrual_starts, accrual_ends, fractions = [], [], [], []
     for cf in swap.fixedLeg():
         c = ORE.as_fixed_rate_coupon(cf)
-        payment_times.append(DAY_COUNTER.yearFraction(today, c.date()))
-        accrual_starts.append(DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
-        accrual_ends.append(DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
+        payment_times.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.date()))
+        accrual_starts.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
+        accrual_ends.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
         fractions.append(c.accrualPeriod())
     return LegCashflows(
         payment_times=np.array(payment_times),
@@ -135,9 +211,9 @@ def floating_leg_cashflows(swap: ORE.VanillaSwap, today: ORE.Date) -> LegCashflo
     payment_times, accrual_starts, accrual_ends, fractions = [], [], [], []
     for cf in swap.floatingLeg():
         c = ORE.as_floating_rate_coupon(cf)
-        payment_times.append(DAY_COUNTER.yearFraction(today, c.date()))
-        accrual_starts.append(DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
-        accrual_ends.append(DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
+        payment_times.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.date()))
+        accrual_starts.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
+        accrual_ends.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
         fractions.append(c.accrualPeriod())
     return LegCashflows(
         payment_times=np.array(payment_times),

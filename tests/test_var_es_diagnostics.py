@@ -200,6 +200,59 @@ class TestAdditiveOnly:
         assert statistics == {"VaR_95", "ES_95"}
 
 
+class TestDiagnosticsRespectInputPrecision:
+    """**Regression.** The first implementation of
+    `expected_shortfall_standard_error` promoted float32 P&L to a float64
+    result, because `jnp.maximum(count, 2)` is integer-typed and the
+    integer arithmetic in the Bessel correction promoted the whole
+    expression under `jax_enable_x64`.
+
+    That silently defeated a `RiskPrecisionOverride(var_es=32)`: the
+    override is applied by casting the input cube, so a statistic's output
+    dtype IS how a caller observes it. Every other statistic here inherits
+    the input dtype by construction; this one had to be told.
+
+    Caught by `tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision`,
+    which sweeps every key in `result.risk`.
+    """
+
+    @pytest.mark.parametrize("dtype", (jnp.float32, jnp.float64))
+    def test_standard_error_matches_the_input_dtype(self, dtype):
+        rng = np.random.default_rng(7)
+        pnl = jnp.asarray(rng.normal(0.0, 1e5, size=(2000, 3)), dtype=dtype)
+        assert expected_shortfall_standard_error(pnl, 0.95).dtype == dtype
+
+    @pytest.mark.parametrize("dtype", (jnp.float32, jnp.float64))
+    def test_standard_error_agrees_with_the_other_statistics(self, dtype):
+        """The contract it broke: every statistic in this module carries
+        the P&L's own dtype."""
+        rng = np.random.default_rng(7)
+        pnl = jnp.asarray(rng.normal(0.0, 1e5, size=(2000, 3)), dtype=dtype)
+
+        assert value_at_risk(pnl, 0.95).dtype == dtype
+        assert expected_shortfall(pnl, 0.95).dtype == dtype
+        assert expected_shortfall_standard_error(pnl, 0.95).dtype == dtype
+
+    def test_tail_count_stays_integral_at_every_precision(self):
+        """The deliberate exception. A count is not a statistic: float32
+        cannot represent integers exactly above 2**24, so casting it to
+        follow the precision override would let a large-scenario count
+        silently round."""
+        rng = np.random.default_rng(7)
+        for dtype in (jnp.float32, jnp.float64):
+            pnl = jnp.asarray(rng.normal(0.0, 1e5, size=(2000, 3)), dtype=dtype)
+            assert jnp.issubdtype(tail_sample_size(pnl, 0.95).dtype, jnp.integer)
+
+    def test_float32_values_still_reconcile(self):
+        """Honouring the dtype must not change the number beyond float32's
+        own resolution."""
+        rng = np.random.default_rng(7)
+        sample = rng.normal(0.0, 1e5, size=(4000, 1))
+        wide = expected_shortfall_standard_error(jnp.asarray(sample, dtype=jnp.float64), 0.95)
+        narrow = expected_shortfall_standard_error(jnp.asarray(sample, dtype=jnp.float32), 0.95)
+        assert float(narrow[0]) == pytest.approx(float(wide[0]), rel=1e-4)
+
+
 class TestDiagnosticsReachTheHttpBoundary:
     """`RiskMetricsSchema` is a generic `Dict[str, List[Optional[float]]]`,
     so the new keys pass through with no schema change. Pinned because

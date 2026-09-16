@@ -1,0 +1,43 @@
+{
+  "entries": [
+    {
+      "identity": {
+        "security": "SYNTH-EQ",
+        "source": "positions"
+      },
+      "instrumentType": "EQUITY",
+      "missingTerms": [],
+      "provenance": {
+        "description": "Synthetic reference supplement for a cash equity. Multiplier, currency and settlement are fixture assumptions chosen to match the exporter's stated marketValue convention (quantity * closingMark * contractMultiplier); they are not asserted market conventions.",
+        "origin": "synthetic"
+      },
+      "terms": {
+        "contractMultiplier": "1",
+        "currency": "USD",
+        "priceBasis": "price-per-share",
+        "quantityUnit": "signed-shares",
+        "settlementDays": 0
+      }
+    },
+    {
+      "identity": {
+        "security": "SYNTH-EQ-EUR",
+        "source": "positions"
+      },
+      "instrumentType": "EQUITY",
+      "missingTerms": [],
+      "provenance": {
+        "description": "Synthetic EUR-denominated cash equity. Present so the FX branch is exercised: this engine holds no FX source, so a position whose currency is not the reporting currency must be refused rather than valued at an assumed parity.",
+        "origin": "synthetic"
+      },
+      "terms": {
+        "contractMultiplier": "1",
+        "currency": "EUR",
+        "priceBasis": "price-per-share",
+        "quantityUnit": "signed-shares",
+        "settlementDays": 0
+      }
+    }
+  ],
+  "schema": "traderx.instrument-terms.v1"
+}

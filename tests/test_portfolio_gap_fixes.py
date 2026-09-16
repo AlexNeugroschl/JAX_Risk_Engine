@@ -247,6 +247,98 @@ class TestSwapGreeksReachThePortfolioPath:
 
 
 # =============================================================================
+# GAP 1b (I-13): CURVE INDICES WERE VALIDATED ONLY ON THE GREEKS PATH
+# =============================================================================
+class TestCurveIndexValidatedBeforeAllPricing:
+    """An invalid curve index must fail loudly on EVERY pricing path, not
+    only when `compute_greeks=True`.
+
+    **The bug (I-13), found by TraderX source review.** `_swap_curve_configs`
+    validates, but only `_compute_all_greeks` called it, and that runs after
+    `_base_npv_per_trade` and only when Greeks are requested. Base pricing
+    indexed the curve list directly, so with the DEFAULT
+    `compute_greeks=False` a negative index silently wrapped (-1 -> last
+    curve) and the trade priced against a curve it was never booked against.
+
+    Every test here is driven through `price_portfolio`, deliberately.
+    `TestSwapGreeksReachThePortfolioPath::
+    test_out_of_range_curve_index_raises_naming_the_trade` already covers
+    the helper directly and passed throughout -- testing the guard proved
+    nothing about the caller that skipped it. That is the whole lesson of
+    this issue, so these tests enter where a real caller enters.
+    """
+
+    @staticmethod
+    def _price(disc_idx, fwd_idx, compute_greeks, n_curves=1):
+        curves = [ZERO_CURVE, STEEP_CURVE][:n_curves]
+        trades = [_swap(disc_idx=disc_idx, fwd_idx=fwd_idx)]
+        return price_portfolio(PortfolioRequest(
+            market=_sim_config(trades, curves=curves, n_factors=n_curves),
+            trades=trades, compute_greeks=compute_greeks,
+        ))
+
+    @pytest.mark.parametrize("compute_greeks", [False, True])
+    @pytest.mark.parametrize("disc_idx,fwd_idx,offender", [
+        (0, -1, "forward_curve_index=-1"),
+        (-1, 0, "discount_curve_index=-1"),
+        (0, 7, "forward_curve_index=7"),
+        (7, 0, "discount_curve_index=7"),
+    ])
+    def test_invalid_index_raises_on_both_paths(self, disc_idx, fwd_idx,
+                                                offender, compute_greeks):
+        """The full 2x2 TraderX asked for: negative AND out-of-range, with
+        compute_greeks both True and False.
+
+        Against the pre-fix code the two NEGATIVE cases at
+        compute_greeks=False do not raise at all -- they return a plausible
+        NPV. The out-of-range cases raise a bare `IndexError` from list
+        indexing, which names neither the trade nor the field.
+        """
+        with pytest.raises(ValueError, match=rf"{offender}.*out of range"):
+            self._price(disc_idx, fwd_idx, compute_greeks)
+
+    def test_error_names_the_trade_and_the_field(self):
+        """A caller with hundreds of trades needs to know WHICH trade and
+        WHICH of its two indices -- an `IndexError` from list subscripting
+        says neither."""
+        with pytest.raises(ValueError) as exc:
+            self._price(0, -1, compute_greeks=False)
+        message = str(exc.value)
+        assert "trade[0]" in message
+        assert "forward_curve_index=-1" in message
+        assert "SwapConfig" in message
+
+    def test_negative_index_does_not_price_against_the_wrapped_curve(self):
+        """The specific silent mispricing, pinned.
+
+        With two DIFFERENT curves, `fwd_idx=-1` wrapped to curve 1 and
+        returned curve 1's NPV -- finite, plausible, no warning. Pinning
+        that the valid index still prices, and that the invalid one raises
+        INSTEAD OF returning that value, is what makes this a regression
+        test rather than a restatement of the one above.
+        """
+        booked = self._price(0, 0, compute_greeks=False, n_curves=2)
+        wrapped = self._price(0, 1, compute_greeks=False, n_curves=2)
+        booked_npv = booked.base_npv_per_trade[0]
+        wrapped_npv = wrapped.base_npv_per_trade[0]
+
+        assert abs(booked_npv - wrapped_npv) > 1e-6, (
+            "test setup is degenerate: the two curves must price differently "
+            "for the wrap to be detectable at all"
+        )
+        with pytest.raises(ValueError):
+            self._price(0, -1, compute_greeks=False, n_curves=2)
+
+    @pytest.mark.parametrize("compute_greeks", [False, True])
+    def test_valid_indices_are_unaffected(self, compute_greeks):
+        """The guard must not become an obstacle: every in-range index,
+        including the last curve named POSITIVELY, still prices."""
+        result = self._price(0, 1, compute_greeks, n_curves=2)
+        assert np.isfinite(result.base_npv_per_trade[0])
+        assert result.base_npv_per_trade[0] != 0.0
+
+
+# =============================================================================
 # GAP 2: BERMUDAN VEGA WAS NEVER CALLED
 # =============================================================================
 class TestBermudanVegaReachesThePortfolioPath:

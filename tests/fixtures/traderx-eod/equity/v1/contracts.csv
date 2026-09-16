@@ -1,0 +1,8 @@
+# traderx-swap-contracts schema=2
+# consensusSequence=42
+# sessionDate=2025-06-02
+# priceSnapshotVersion=1
+# cutSha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+# contracts=1
+contractId,accountId,payReceive,notional,fixedRate,floatIndex,effectiveDate,maturityDate,paymentFrequency,dayCount,currency,counterpartyId,nettingSetId,productType,expiryDate,exerciseStyle
+SW-41,demo-account,PAY_FIXED,1000000,0.04,USD-SOFR,2025-06-03,2030-06-03,1Y,ACT/360,USD,,,SWAP,,

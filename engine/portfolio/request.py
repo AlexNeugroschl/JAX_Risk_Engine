@@ -93,7 +93,7 @@ from engine.instruments.bermudan_swaption import (
     BermudanSwaptionConfig, price_bermudan_swaptions, price_bermudan_swaption_base,
 )
 from engine.instruments.american_swaption import AmericanSwaptionConfig, price_american_swaptions
-from engine.models.ore_builders import DAY_COUNTER, build_vanilla_swap
+from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER, build_vanilla_swap
 from engine.calibration.lgm import calibrate_lgm_sigma, CalibrationTarget
 from engine.risk.var_es import compute_risk_metrics
 from engine.risk import greeks as _greeks
@@ -349,7 +349,58 @@ def validate_portfolio_against_simulation(
         if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
             _warn_if_not_reset_aligned(label, cfg, i)
 
+    _validate_swap_curve_indices(sim_config, trade_configs)
     _warn_if_aged_swap_exposure(sim_config, trade_configs)
+
+
+def _validate_swap_curve_indices(
+    sim_config: SimulationConfig, trade_configs: Sequence[TradeConfig],
+) -> None:
+    """Range-checks every `SwapConfig`'s `discount_curve_index`/
+    `forward_curve_index` against `sim_config.rates.initial_zero_curves`,
+    for ALL trades, BEFORE any pricing runs.
+
+    This is the `SwapConfig` analogue of the `rate_factor_index` check its
+    caller performs for every other trade type: a swap carries curve
+    INDEXES rather than a `rate_factor_index`, so the loop above skips it
+    entirely (`rate_factor_index is None` -> `continue`).
+
+    **The bug this closes (I-13).** `_swap_curve_configs` performs exactly
+    this check, but only on the Greeks path, which runs AFTER
+    `_base_npv_per_trade` and only when `compute_greeks=True`. Base pricing
+    indexed `initial_zero_curves` directly, so with the default
+    `compute_greeks=False` a NEGATIVE index was not an error at all: Python
+    wraps -1 to the LAST curve, and the trade priced cleanly, finitely, and
+    silently against a curve it was never booked against. Measured on a
+    two-curve portfolio: -5,857.01 returned instead of the booked
+    -5,913.93, a 56.92 USD divergence on 2mm notional that scales without
+    bound as the curves separate.
+
+    Validating here rather than hardening `_base_npv_per_trade` is
+    deliberate: `price_portfolio` already calls this function before any
+    JAX work, so one check covers every pricing path (base NPV, the cube,
+    Greeks) instead of each indexing site having to remember to guard
+    itself -- which is the exact omission that produced I-13.
+
+    Negative indices are rejected explicitly by `0 <= idx`, not left to
+    `idx < len`: that half of the comparison is what a negative index
+    silently passes.
+    """
+    curves = sim_config.rates.initial_zero_curves
+    for i, cfg in enumerate(trade_configs):
+        if not isinstance(cfg, SwapConfig):
+            continue
+        label = f"trade[{i}] ({type(cfg).__name__}, notional={cfg.notional})"
+        for name, idx in (("discount_curve_index", cfg.discount_curve_index),
+                          ("forward_curve_index", cfg.forward_curve_index)):
+            if not 0 <= idx < len(curves):
+                raise ValueError(
+                    f"{label}: {name}={idx} is out of range for "
+                    f"sim_config.rates.initial_zero_curves (length {len(curves)}). "
+                    f"A negative index would otherwise select a curve by wrapping "
+                    f"(-1 -> the last curve), pricing the trade against a curve it "
+                    f"was never booked against."
+                )
 
 
 def _warn_if_aged_swap_exposure(sim_config: SimulationConfig, trade_configs) -> None:
@@ -392,7 +443,7 @@ def _warn_if_aged_swap_exposure(sim_config: SimulationConfig, trade_configs) -> 
         )
         today = cfg.evaluation_date
         starts = [
-            DAY_COUNTER.yearFraction(today, ORE.as_floating_rate_coupon(cf).accrualStartDate())
+            TIME_AXIS_DAY_COUNTER.yearFraction(today, ORE.as_floating_rate_coupon(cf).accrualStartDate())
             for cf in swap.floatingLeg()
         ]
         if not starts:
@@ -433,10 +484,10 @@ def _warn_if_not_reset_aligned(label: str, cfg, index: int) -> None:
     reset_dates = set()
     for cf in swap.fixedLeg():
         c = ORE.as_fixed_rate_coupon(cf)
-        reset_dates.add(round(DAY_COUNTER.yearFraction(today, c.accrualStartDate()), 9))
+        reset_dates.add(round(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()), 9))
     for cf in swap.floatingLeg():
         c = ORE.as_floating_rate_coupon(cf)
-        reset_dates.add(round(DAY_COUNTER.yearFraction(today, c.accrualStartDate()), 9))
+        reset_dates.add(round(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()), 9))
 
     misaligned = [t for t in berm_cfg.exercise_times if round(float(t), 9) not in reset_dates]
     if misaligned:
@@ -481,13 +532,13 @@ def derive_maturity_pillars(trade_configs: Sequence[TradeConfig], evaluation_dat
         today = evaluation_date
         for cf in swap.fixedLeg():
             c = ORE.as_fixed_rate_coupon(cf)
-            pillars.add(DAY_COUNTER.yearFraction(today, c.date()))
-            pillars.add(DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
+            pillars.add(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.date()))
+            pillars.add(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
         for cf in swap.floatingLeg():
             c = ORE.as_floating_rate_coupon(cf)
-            pillars.add(DAY_COUNTER.yearFraction(today, c.date()))
-            pillars.add(DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
-            pillars.add(DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
+            pillars.add(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.date()))
+            pillars.add(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
+            pillars.add(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
     return sorted(pillars)
 
 

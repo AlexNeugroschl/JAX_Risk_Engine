@@ -239,17 +239,74 @@ all of it with one implementation, used by every instrument pricer and by
 
 | Name | What it does |
 |---|---|
-| `DAY_COUNTER` | `ORE.Actual365Fixed()` — the single, deliberate day-count convention used on both legs by every pricer in this codebase. |
-| `build_vanilla_swap(...)` | Builds a real `ORE.VanillaSwap` via `ORE.MakeVanillaSwap` — schedules, day counts, and conventions all come from ORE's own machinery, not a reimplementation. `forward_start` (an `ORE.Period` delaying the first accrual beyond the standard spot lag) defaults to `None`; `european_swaption.py` and `engine.calibration.basket.build_coterminal_basket` are the callers that pass a non-default value. |
+| `TIME_AXIS_DAY_COUNTER` | `ORE.Actual365Fixed()` — the **simulation time axis**. Permanently ACT/365, not configurable. |
+| `DAY_COUNTER` | Deprecated alias for `TIME_AXIS_DAY_COUNTER`. Kept so existing imports work; it always meant the time axis. |
+| `SUPPORTED_ACCRUAL_DAY_COUNTS` | The **instrument accrual** allowlist: `ACT/365` (default) and `ACT/ACT (ICMA)`. **Defined in [`engine/day_count.py`](../../engine/day_count.py) and re-exported here** — see below. |
+| `resolve_accrual_day_count(name)` | Name → `ORE.DayCounter`, raising `UnsupportedDayCountError` for anything outside the allowlist. Also re-exported from `engine/day_count.py`. |
+| `build_vanilla_swap(...)` | Builds a real `ORE.VanillaSwap` via `ORE.MakeVanillaSwap` — schedules, day counts, and conventions all come from ORE's own machinery, not a reimplementation. `forward_start` (an `ORE.Period` delaying the first accrual beyond the standard spot lag) defaults to `None`; `european_swaption.py` and `engine.calibration.basket.build_coterminal_basket` are the callers that pass a non-default value. `accrual_day_count` defaults to ACT/365. |
 | `LegCashflows` | One leg's schedule as year-fractions from `today`: `payment_times`, `accrual_start_times`, `accrual_end_times`, `accrual_fractions`, `notional`. |
 | `fixed_leg_cashflows`, `floating_leg_cashflows` | Extract a `LegCashflows` from a real `ORE.VanillaSwap`'s fixed/floating leg. |
 
-**Why `Actual/365Fixed` is forced explicitly, not left to `MakeVanillaSwap`'s defaults.**
-`ORE.MakeVanillaSwap` has implicit per-index day-count defaults that differ unpredictably
-by index/currency (e.g. Euribor6M defaults to 30/360 fixed vs. Act/360 float). Every
-pricer in this codebase instead explicitly passes `DAY_COUNTER` on both legs — a single,
-deliberate, documented choice consistent with the simulation module's own year-fraction
-time axis, rather than an accident of whatever a given index happens to default to.
+### Where the accrual vocabulary lives (moved in W1.3)
+
+`SUPPORTED_ACCRUAL_DAY_COUNTS`, `DEFAULT_ACCRUAL_DAY_COUNT`, `resolve_accrual_day_count` and
+`UnsupportedDayCountError` are **defined in [`engine/day_count.py`](../../engine/day_count.py)**
+and re-exported from this module, so every existing import and all 27 of
+`tests/test_day_count_roles.py` are unchanged.
+
+**Why they moved.** W1.3's note pricer
+([`engine/integration/note.py`](../../engine/integration/note.py)) needs ACT/ACT (ICMA), but
+`engine/integration/` is **forbidden** to import `engine.models` — this module is where
+`build_vanilla_swap` lives, the exact object the EOD boundary's convention refusal exists to
+keep unreachable ([I-05](../known-issues.md#i-05)). Importing it just to borrow a dictionary
+would put that builder one attribute access from the refusal boundary. The dictionary moved to
+a leaf module that imports only `ORE` and can therefore pull nothing in behind it.
+
+**`TIME_AXIS_DAY_COUNTER` deliberately did *not* move.** It is a property of this engine's
+simulated curve cube, not of any contract, so keeping the two roles in separate modules makes
+the distinction below structural rather than a naming convention.
+
+### The two roles `Actual/365Fixed` plays — and why they are named apart (W1.1)
+
+One day count was doing two unrelated jobs under one name, which is what made "make the day
+count per-instrument" look like a one-line change when it is not:
+
+| Role | Constant | Configurable? |
+|---|---|---|
+| **Simulation time axis** — dates → year-fractions indexing `time_grid`, `maturities`, `hw_paths` | `TIME_AXIS_DAY_COUNTER` | **No, permanently ACT/365.** Every pricer's cashflow times are looked up against the simulated cube's own axis; [`_maturity_indices`](../../engine/instruments/swap.py) requires each to land *exactly* on a maturity pillar. Changing it silently desynchronizes every pricer — no error, just wrong discount factors. |
+| **Instrument accrual** — the day count a contract's coupons accrue on | `accrual_day_count` | **Yes, per-instrument.** A property of the booking, not the engine: the TraderX note is ACT/ACT (ICMA), a USD-SOFR swap is ACT/360. |
+
+Tracing every use: **49 are the time axis, 2 are the accrual**
+([`ore_builders.py:90-91`](../../engine/models/ore_builders.py#L90-L91)'s
+`fixedLegDayCount`/`floatingLegDayCount`). So the risky part of this change — what a contract
+accrues on — is two lines; everything else is a rename that must not move a number.
+
+Note what does *not* take `accrual_day_count`: the `SimIndex` index's own day count and the
+dummy forward curve's. The index day count feeds ORE's forward-rate calculation, and this
+engine never reads ORE's forwards — it reprices against the JAX-simulated cube.
+
+**Defaults are byte-identical.** `accrual_day_count` defaults to ACT/365, which is what every
+caller got before it existed. This is load-bearing: **38 tests across 10 files pin
+`ORE.Actual365Fixed()` directly**, and the full suite passing unchanged is the acceptance
+test for the rename.
+
+**An unsupported day count is refused, never defaulted** — the same refuse-don't-infer rule
+as [I-05](../known-issues.md#i-05), one layer down. `ACT/360` raises
+`UnsupportedDayCountError` at `SwapConfig` construction, where the offending trade is
+identifiable, rather than deep inside ORE at pricing time. A day count silently replaced by
+ACT/365 shifts every accrual by 1.389%.
+
+**Why the day count is forced explicitly at all, rather than left to `MakeVanillaSwap`'s
+defaults.** `ORE.MakeVanillaSwap` has implicit per-index defaults that differ unpredictably
+by index/currency (e.g. Euribor6M defaults to 30/360 fixed vs. Act/360 float). Both roles are
+therefore always set here deliberately, rather than inherited by accident from whatever a
+given index happens to default to.
+
+**Three `TIME_AXIS_DAY_COUNTER` definitions exist** —
+[`ore_builders.py`](../../engine/models/ore_builders.py),
+[`bermudan_swaption.py`](../../engine/instruments/bermudan_swaption.py) and
+[`greeks.py`](../../engine/risk/greeks.py) — for import-cycle reasons, not because they may
+differ. `TestTimeAxisConstantsAgree` pins all three to ACT/365.
 
 **Why `floating_leg_cashflows` never reads ORE's own fixing.** `accrual_start`/
 `accrual_end` times are what forward rates get computed from downstream, in whichever
@@ -292,6 +349,12 @@ the repository layout as a whole.
   closed forms checked directly against live `ORE.LinearGaussMarkovModel` objects, plus the
   explicit regression test documenting the `HullWhite` vs. `LinearGaussMarkovModel`
   divergence for `t>0` described above.
+- `tests/test_day_count_roles.py` (27 tests) — the W1.1 time-axis/accrual split:
+  **`TestOnlyTheAccrualRoleIsConfigurable`** (changing the accrual must move accrual
+  fractions and leave cashflow *times* exactly where they were),
+  `TestDefaultsAreByteIdentical`, `TestActActIcmaIsSupported`,
+  `TestUnsupportedDayCountIsRefused`, `TestTimeAxisConstantsAgree`. Verified to fail
+  against the dangerous wrong fix — making the time axis follow the instrument accrual.
 - `tests/test_swap.py`, `tests/test_european_swaption.py` — indirectly exercise
   `engine.models.hull_white` and `engine.models.ore_builders` through the pricers built on
   them; see [ORE Parity](ore-parity.md) for the specific formula-level correspondences

@@ -42,6 +42,81 @@ from engine.integration.bundle import SUPPORTED_BUNDLE_SCHEMAS
 
 ENGINE_VERSION = "0.1.0"
 
+#: The delivery stage this build implements. W1 began when the first pricer
+#: landed (W1.2, the bill), W1.3 added the note, and W1.4 resolved the
+#: equity case to a *refusal* rather than a price. The stage is not "W1"
+#: complete -- the portfolio wire-through (W1.5) is still to come -- which
+#: is what `stageSummary` spells out.
+DELIVERY_STAGE = "W1.4"
+
+#: What actually computes a number today, per instrument type.
+#:
+#: **The single source of truth for the `products` block**, so the advertised
+#: matrix cannot drift from the code: adding a pricer means adding it here,
+#: and a consumer reading this document before submitting sees exactly what
+#: it will get back.
+#:
+#: Deliberately narrow, and **stated per instrument shape** rather than per
+#: instrument type, because the two Treasury shapes no longer answer the
+#: same set. A bill answers `npv` alone (W1.2); a note answers `npv` and
+#: `rateSensitivity` (W1.3). Collapsing them into one TREASURY entry would
+#: advertise a bill sensitivity that does not exist.
+#:
+#: It does NOT imply:
+#:
+#: - that `rateGamma`/`theta` are available for anything -- they are not,
+#:   for either shape;
+#: - that a corporate bond prices. It is refused (I-07): a
+#:   Treasury-discounted corporate is not credit pricing.
+#:
+#: A v1 bundle also prices nothing, whatever this says: without a terms
+#: artifact the engine cannot establish which shape a row IS, and it will
+#: not infer that from a coupon column.
+PRICED_CALCULATIONS_BY_SHAPE: Dict[str, Dict[str, tuple]] = {
+    "TREASURY": {
+        "zero-coupon": ("npv",),
+        "coupon-bearing": ("npv", "rateSensitivity"),
+    },
+}
+
+#: The union per instrument type -- what a consumer sees if it does not
+#: distinguish the shapes. Derived, never hand-written, so it cannot drift
+#: from the per-shape table above.
+PRICED_CALCULATIONS: Dict[str, tuple] = {
+    instrument_type: tuple(
+        sorted({calc for calcs in shapes.values() for calc in calcs})
+    )
+    for instrument_type, shapes in PRICED_CALCULATIONS_BY_SHAPE.items()
+}
+
+#: Calculations this engine understands but cannot compute for want of a
+#: **market input**, keyed by instrument type -> {calculation: reason}.
+#:
+#: **Distinct from "no pricer", and the distinction is the point.** A
+#: coordinator reading `NO_PRICER_AT_THIS_STAGE` should wait for a release;
+#: one reading `SPOT_SOURCE_NOT_SUPPLIED` should send a spot. Advertising
+#: the second as the first would tell them to do nothing when they hold the
+#: fix.
+#:
+#: EQUITY is the only entry today (W1.4). The arithmetic is trivial and
+#: fully understood -- `signedQuantity x multiplier x spot x fx` -- and two
+#: of those four factors have no source at this boundary. See
+#: `engine.integration.equity` and I-18.
+BLOCKED_ON_MARKET_INPUT = {
+    "EQUITY": {
+        "npv": {
+            "reason": "SPOT_SOURCE_NOT_SUPPLIED",
+            "requires": ["spot", "fx (non-USD positions only)"],
+            "detail": (
+                "a cash equity needs a spot price, and marketInputs registers "
+                "flat interest-rate profiles only. The position's own closingMark "
+                "is an exported observation, not a price this engine computed, so "
+                "it is not substituted."
+            ),
+        },
+    },
+}
+
 #: Known limitations a coordinator should weigh before submitting, keyed by
 #: their id in `docs/known-issues.md`. Kept deliberately short: these are
 #: the ones that change what a consumer should *do*, not the full register.
@@ -69,8 +144,31 @@ KNOWN_LIMITATIONS = (
     {
         "id": "I-07",
         "status": "OPEN",
-        "summary": "No bond, equity or listed-option pricer. W1 adds bill, note and equity.",
-        "blockedOn": "nothing; scheduled work",
+        "summary": (
+            "Partial. Both Treasury shapes in a v2 bundle now price: a zero-coupon "
+            "bill (W1.2, npv) and a coupon-bearing note (W1.3, npv and "
+            "rateSensitivity). An equity position is understood but REFUSED for "
+            "want of a spot source (W1.4, SPOT_SOURCE_NOT_SUPPLIED -- see I-18). "
+            "A corporate bond and a listed option still have no pricer at all."
+        ),
+        "blockedOn": (
+            "equity needs a spot/FX market-data source (I-18); corporate bonds "
+            "need a credit/spread model; listed options need a vol surface"
+        ),
+    },
+    {
+        "id": "I-18",
+        "status": "OPEN",
+        "summary": (
+            "No equity spot or FX source. A cash equity position is refused with "
+            "SPOT_SOURCE_NOT_SUPPLIED (or FX_SOURCE_NOT_SUPPLIED when its currency "
+            "is not USD) rather than valued at its exported closingMark, which "
+            "would echo the exporter's own number back as an engine valuation."
+        ),
+        "blockedOn": (
+            "a market-data decision: either marketInputs grows a registered "
+            "spot/FX surface, or the bundle supplies one"
+        ),
     },
 )
 
@@ -78,34 +176,62 @@ KNOWN_LIMITATIONS = (
 def capabilities() -> Dict:
     """The capability document.
 
-    W0 prices nothing, and this says so plainly: every calculation is
-    advertised as `refusal-only`. That is the honest description of an
-    engine whose contract machinery works and whose pricers do not exist
-    yet -- claiming otherwise here would be the overclaim the whole
-    integration is built to avoid (plan working rule 4: "ORE can represent
-    it" is not "my engine prices it").
+    **What is priced is derived from `PRICED_CALCULATIONS_BY_SHAPE`, not
+    asserted here.** At W0 every entry was empty and `priced: False`
+    throughout, which was then the honest description. W1.2 priced a
+    bill's `npv`; W1.3 adds a note's `npv` and `rateSensitivity`, so
+    exactly those appear -- and nothing else does.
+
+    **The per-shape split is load-bearing.** A bill's `rateSensitivity` is
+    absent from its own list even though a note now has one: W1.3 earned
+    the note sensitivity with a parity test and earned nothing for the
+    bill. Advertising a capability the engine has not demonstrated is the
+    overclaim this whole integration exists to avoid (plan working rule 4:
+    "ORE can represent it" is not "my engine prices it").
     """
     return {
         "engineVersion": ENGINE_VERSION,
         "mappingVersion": MAPPING_VERSION,
-        "deliveryStage": "W0",
+        "deliveryStage": DELIVERY_STAGE,
         "stageSummary": (
-            "Contract and refusal machinery. Bundles are ingested, hash-verified, "
-            "joined, normalized and identified; every calculation is refused. No "
-            "pricing is performed at this stage."
+            "Contract and refusal machinery, plus the Treasury pricers. Bundles "
+            "are ingested, hash-verified, joined, normalized and identified. Both "
+            "Treasury shapes in a v2 bundle are priced as discounted cashflows "
+            "against an explicitly requested curve -- a zero-coupon bill returns "
+            "npv, a coupon-bearing note returns npv and a bumped-revaluation "
+            "rateSensitivity. A cash equity is understood and identified but "
+            "REFUSED: it needs a spot price, and this boundary has no spot or FX "
+            "source. Every other calculation is still refused."
         ),
         "bundleSchemas": list(SUPPORTED_BUNDLE_SCHEMAS),
         "calculations": {
             "names": list(CALCULATIONS),
             "statuses": list(STATUSES),
-            # W0: the machinery is real, the pricers are not.
-            "mode": "refusal-only",
+            # "partial": some calculations price, most still refuse.
+            "mode": "partial",
         },
         "products": {
             instrument_type: {
-                # No product computes anything in W0.
-                "calculations": [],
-                "priced": False,
+                "calculations": list(PRICED_CALCULATIONS.get(instrument_type, ())),
+                "priced": bool(PRICED_CALCULATIONS.get(instrument_type)),
+                # Per-shape, because the two Treasury shapes answer
+                # different sets and the union above would advertise a
+                # bill sensitivity that does not exist.
+                "byShape": {
+                    shape: list(calcs)
+                    for shape, calcs in PRICED_CALCULATIONS_BY_SHAPE.get(
+                        instrument_type, {}
+                    ).items()
+                },
+                # Understood, but awaiting a market input rather than a
+                # release. Advertised separately from "not priced" so a
+                # coordinator can tell which gaps it can close itself.
+                "blockedOnMarketInput": {
+                    calc: dict(spec)
+                    for calc, spec in BLOCKED_ON_MARKET_INPUT.get(
+                        instrument_type, {}
+                    ).items()
+                },
             }
             for instrument_type in SUPPORTED_INSTRUMENT_TYPES
         },

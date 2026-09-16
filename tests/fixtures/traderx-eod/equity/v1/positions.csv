@@ -1,0 +1,8 @@
+# traderx-risk-extract schema=3
+# consensusSequence=42
+# sessionDate=2025-06-02
+# priceSnapshotVersion=1
+# cutSha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+# rows=1
+accountId,security,instrumentType,quantity,contractMultiplier,costBasis,closingMark,markSource,markQuality,marketValue,unrealizedPnl,currency,counterpartyId,nettingSetId,coupon,maturityDate,lastCouponDate,accruedInterestFraction
+demo-account,SYNTH,EQUITY,10,1,9,10,EOD_SNAPSHOT,SYNTHETIC,100,10,USD,,,,,,

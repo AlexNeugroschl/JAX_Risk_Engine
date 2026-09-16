@@ -229,22 +229,38 @@ class TestMarketProvenance:
         assert price_bundle(FIXTURES / "note" / "v2").market_provenance is None
 
 
-class TestPackageImportsNoPricer:
-    """The package's central architectural claim, asserted rather than
-    trusted to a docstring.
+class TestPackageImportsNoSimulationPricer:
+    """The package's central architectural claim, narrowed by W1.2 rather
+    than abandoned.
 
-    W0.4's whole premise is that refusal happens **before** any pricing
-    object is constructed -- because constructing one is what applies the
-    wrong conventions. An import of `engine.models.ore_builders` here would
-    mean that ordering is no longer structurally guaranteed.
+    **What changed.** At W0 this asserted that `engine/integration/`
+    imported no pricer, no ORE and no JAX at all -- true because W0 priced
+    nothing. W1.2 adds `bill.py`, which genuinely needs `ORE` for its date
+    and day-count arithmetic, so a blanket ban is no longer the right
+    statement.
+
+    **What has NOT changed, and is what this test actually protects.** The
+    bill pricer is a closed-form discounted cashflow: dates, a day count,
+    one `exp()`. It does not touch the Monte Carlo simulation, the JAX
+    pricing kernels, or `build_vanilla_swap` -- the last of which is the
+    specific thing W0.4's refusal path exists to keep away from a booking
+    whose conventions are unsupported (I-05). Importing *those* here would
+    mean an unsupported convention could reach a pricing object after all,
+    which is the ordering guarantee this test exists to enforce.
+
+    So the ban is now on the simulation/model layer, and `ORE` alone is
+    permitted.
     """
 
-    def test_no_pricer_ore_or_jax_import(self):
+    def test_no_simulation_or_model_pricer_import(self):
         import ast
         from pathlib import Path
 
+        # `ORE` is deliberately absent: bill.py needs ORE.Date/day counts.
+        # `engine.models` stays banned -- it is where build_vanilla_swap
+        # lives, the exact object W0.4 refuses before constructing.
         banned = (
-            "ORE", "jax", "numpy",
+            "jax",
             "engine.instruments", "engine.models", "engine.risk",
             "engine.simulation", "engine.portfolio",
         )
@@ -264,8 +280,70 @@ class TestPackageImportsNoPricer:
                         violations.append(f"{source.name} imports {module}")
 
         assert violations == [], (
-            "engine/integration/ must not import a pricer, ORE, or JAX: "
-            + "; ".join(violations)
+            "engine/integration/ must not import the simulation/model pricing "
+            "layer -- an unsupported convention could then reach a pricing "
+            "object despite W0.4's refusal (see I-05): " + "; ".join(violations)
+        )
+
+    def test_bill_pricer_does_not_reach_the_swap_builder(self):
+        """The specific thing the ban above is about, stated directly: the
+        bill pricer must not construct a generic vanilla swap, whatever
+        else it imports."""
+        from pathlib import Path
+
+        source = (Path(__file__).parents[1] / "engine" / "integration" / "bill.py").read_text(encoding="utf-8")
+        assert "build_vanilla_swap" not in source
+        assert "ore_builders" not in source
+
+    def test_note_pricer_does_not_reach_the_swap_builder(self):
+        """The same, for W1.3's note pricer.
+
+        The note needs the ACT/ACT (ICMA) day count, which lived in
+        `engine.models.ore_builders` until W1.3 moved it to the leaf
+        module `engine.day_count`. That move happened *because* of this
+        ban rather than around it -- see `engine/day_count.py`.
+        """
+        from pathlib import Path
+
+        source = (Path(__file__).parents[1] / "engine" / "integration" / "note.py").read_text(encoding="utf-8")
+        assert "build_vanilla_swap" not in source
+        assert "ore_builders" not in source
+
+    def test_importing_the_package_does_not_pull_in_the_model_layer(self):
+        """**Transitive closure, not just direct imports.**
+
+        The AST test above reads each file's own import statements, so it
+        catches `integration/x.py` importing `engine.models` directly --
+        but not `integration/x.py` importing a leaf that imports it. That
+        gap is real: W1.3's day-count extraction created exactly such a
+        leaf (`engine.day_count`), and if it ever grew an import back into
+        `engine.models`, the AST test would stay green while the pricing
+        layer became reachable from the refusal boundary again.
+
+        This asserts the property that actually matters -- after importing
+        the integration package in a clean interpreter, the model and
+        simulation modules are **not loaded**.
+        """
+        import subprocess
+        import sys
+
+        probe = (
+            "import sys; import engine.integration; "
+            "banned = [m for m in sys.modules "
+            "if m.startswith(('engine.models', 'engine.instruments', "
+            "'engine.simulation', 'engine.portfolio', 'engine.risk', 'jax'))]; "
+            "print(','.join(sorted(banned)))"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True,
+            cwd=str(Path(__file__).parents[1]),
+        )
+        assert completed.returncode == 0, completed.stderr
+        loaded = [m for m in completed.stdout.strip().split(",") if m]
+        assert loaded == [], (
+            "importing engine.integration transitively loaded the "
+            "simulation/model layer: " + ", ".join(loaded)
         )
 
 
@@ -273,11 +351,56 @@ class TestCapabilities:
     """W0.9 -- the supported matrix, so a coordinator can tell *before
     submitting* whether a bundle is priceable."""
 
-    def test_reports_the_w0_stage_honestly(self):
+    def test_reports_the_delivery_stage_honestly(self):
+        """The document must say exactly what is priced -- neither still
+        claiming `refusal-only` (false since W1.2) nor implying the whole
+        product is priced (still false at W1.3).
+
+        **Updated from the W1.2 form of this test.** It asserted
+        `deliveryStage == "W1.2"` and `TREASURY == ["npv"]`, both of which
+        W1.3 deliberately changes by adding the note's `rateSensitivity`.
+        The narrowness it was protecting is preserved below, one level
+        finer: per *shape* rather than per type.
+        """
         doc = capabilities()
-        assert doc["deliveryStage"] == "W0"
-        assert doc["calculations"]["mode"] == "refusal-only"
-        assert all(not p["priced"] for p in doc["products"].values())
+        # The floor, not the exact string: a literal stage pin has broken
+        # on every W1 increment. What matters is that the document has
+        # advanced past refusal-only, which the contents below verify
+        # specifically.
+        assert doc["deliveryStage"].startswith("W1.")
+        assert float(doc["deliveryStage"][1:]) >= 1.3
+        assert doc["calculations"]["mode"] == "partial"
+
+        treasury = doc["products"]["TREASURY"]
+        assert treasury["priced"] is True
+        assert set(treasury["calculations"]) == {"npv", "rateSensitivity"}
+
+        # The claim stays narrow where it must: a BILL still has no
+        # sensitivity. W1.3 earned the note's with a parity test and
+        # earned nothing for the bill.
+        assert treasury["byShape"]["zero-coupon"] == ["npv"]
+
+    def test_does_not_advertise_unearned_calculations(self):
+        """The specific overclaim to avoid: a priced NPV must not be read
+        as a priced risk number.
+
+        `rateSensitivity` left this list for the *note* in W1.3, backed by
+        an ORE parity test. `rateGamma`, `theta` and `vega` remain
+        unearned for everything, and the bill's sensitivity remains
+        unearned too -- asserted per shape.
+        """
+        doc = capabilities()
+        for product, entry in doc["products"].items():
+            for banned in ("rateGamma", "theta", "vega"):
+                assert banned not in entry["calculations"], (
+                    f"{product} advertises {banned}, which no pricer computes"
+                )
+            for shape, calcs in entry.get("byShape", {}).items():
+                for banned in ("rateGamma", "theta", "vega"):
+                    assert banned not in calcs, (
+                        f"{product}/{shape} advertises {banned}, which no "
+                        f"pricer computes"
+                    )
 
     def test_derived_from_the_allowlist_not_hand_maintained(self):
         """A stale capability document makes a promise the engine no longer

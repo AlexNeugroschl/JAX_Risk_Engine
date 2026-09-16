@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.scipy.stats import norm
 from scipy.stats.qmc import Sobol
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import Dict, List, Optional
@@ -538,13 +539,49 @@ def generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, j
         output. generate_sobol_normals honors `dtype` directly regardless of
         this global state, so calling it standalone is also safe.
 
+        **The flag is RESTORED on exit (I-14)**, which is what makes "for the
+        duration of this call" true rather than aspirational. It previously
+        leaked: `precision=32` left x64 disabled process-wide, so the NEXT
+        float64 work in that process silently produced float32 -- JAX
+        truncates a float64 request to float32 under x64=False with only a
+        `UserWarning`, so the result was finite, plausible, and wrong in its
+        last digits. `price_portfolio` never hit this (it re-enables x64
+        immediately after calling here, deliberately), but any direct caller
+        did, and this module is called directly by demos, tests, and every
+        `engine/instruments/*` __main__ block.
+
     Returns a dict with "equities" [S,T,NumEq], "rates" [S,T,NumHW],
     "numeraire" [S,T], and (if config.rates.maturities is set)
     "yield_curves" [S,T,Maturities,NumHW].
     """
     validate_joint_covariance(config.joint_covariance)
 
-    jax.config.update("jax_enable_x64", precision == 64)
+    with _x64_enabled(precision == 64):
+        return _generate_paths_inner(config, precision)
+
+
+@contextmanager
+def _x64_enabled(enabled: bool):
+    """Sets the process-global `jax_enable_x64` flag for the body and
+    restores whatever it was before, so a `precision=32` run cannot leave
+    float64 silently disabled for unrelated work that follows it (I-14).
+
+    Restoring the PRIOR value rather than unconditionally re-enabling is
+    deliberate: a caller who legitimately runs under x64=False (an
+    all-float32 process) should be left in that state, not quietly promoted
+    to float64 by having called a simulation."""
+    previous = jax.config.jax_enable_x64
+    jax.config.update("jax_enable_x64", enabled)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", previous)
+
+
+def _generate_paths_inner(config: SimulationConfig, precision: int) -> Dict[str, jax.Array]:
+    """`generate_paths`'s body, split out only so the x64 flag can be
+    scoped by a context manager without re-indenting the whole pipeline.
+    Call `generate_paths`, not this."""
     dtype = jnp.float64 if precision == 64 else jnp.float32
 
     # 1. Base Setup

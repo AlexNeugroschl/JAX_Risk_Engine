@@ -170,7 +170,13 @@ from engine.models.lgm import (
     zeta as _lgm_zeta,
 )
 
-DAY_COUNTER = ORE.Actual365Fixed()
+#: The simulation TIME AXIS day count -- see engine.models.ore_builders'
+#: TWO ROLES block. Permanently ACT/365: every time here indexes the
+#: simulated curve cube's own axis. Never an instrument's accrual basis.
+TIME_AXIS_DAY_COUNTER = ORE.Actual365Fixed()
+
+#: Deprecated alias, kept so existing references keep working.
+DAY_COUNTER = TIME_AXIS_DAY_COUNTER
 
 
 @dataclass
@@ -399,16 +405,16 @@ def prepare_bermudan(cfg: BermudanSwaptionConfig) -> _PreparedBermudan:
     fixed_times, fixed_start_times, fixed_amounts = [], [], []
     for cf in swap.fixedLeg():
         c = ORE.as_fixed_rate_coupon(cf)
-        fixed_times.append(DAY_COUNTER.yearFraction(today, c.date()))
-        fixed_start_times.append(DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
+        fixed_times.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.date()))
+        fixed_start_times.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
         fixed_amounts.append(c.amount())
 
     float_pay, float_start, float_end, float_accrual = [], [], [], []
     for cf in swap.floatingLeg():
         c = ORE.as_floating_rate_coupon(cf)
-        float_pay.append(DAY_COUNTER.yearFraction(today, c.date()))
-        float_start.append(DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
-        float_end.append(DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
+        float_pay.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.date()))
+        float_start.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
+        float_end.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
         float_accrual.append(c.accrualPeriod())
 
     exercise_times = np.asarray(sorted(cfg.exercise_times), dtype=np.float64)

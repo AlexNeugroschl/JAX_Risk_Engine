@@ -135,7 +135,13 @@ DEFAULT_RATE_BUMP = 0.0001
 # date by one calendar day, holding the market curve's shape/quotes fixed.
 DEFAULT_THETA_DAYS = 1
 
-DAY_COUNTER = ORE.Actual365Fixed()
+#: The simulation TIME AXIS day count -- see engine.models.ore_builders'
+#: TWO ROLES block. Permanently ACT/365; used only to turn dates into
+#: year-fractions on the simulation axis, never as an accrual basis.
+TIME_AXIS_DAY_COUNTER = ORE.Actual365Fixed()
+
+#: Deprecated alias, kept so existing references keep working.
+DAY_COUNTER = TIME_AXIS_DAY_COUNTER
 
 # `ZeroCurve`, curve interpolation (`_zero_rate_at`/`_discount_at`), and the
 # JAX-differentiable A(t,T) formula all now come directly from
@@ -422,8 +428,8 @@ def _swap_cashflows_in_period(cfg: SwapConfig, start: ORE.Date, end: ORE.Date) -
     )
     fixed = fixed_leg_cashflows(swap, cfg.evaluation_date)
 
-    start_frac = DAY_COUNTER.yearFraction(cfg.evaluation_date, start)
-    end_frac = DAY_COUNTER.yearFraction(cfg.evaluation_date, end)
+    start_frac = TIME_AXIS_DAY_COUNTER.yearFraction(cfg.evaluation_date, start)
+    end_frac = TIME_AXIS_DAY_COUNTER.yearFraction(cfg.evaluation_date, end)
     in_window = (fixed.payment_times > start_frac) & (fixed.payment_times <= end_frac)
     fixed_flow = float(np.sum(
         in_window * fixed.notional * cfg.fixed_rate * fixed.accrual_fractions

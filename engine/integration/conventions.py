@@ -87,11 +87,23 @@ SUPPORTED_SWAP_DAY_COUNTS = ("ACT/365",)
 #: compounding method is refused rather than treated as a term-index reset.
 SUPPORTED_OVERNIGHT_COMPOUNDING: Tuple[str, ...] = ()
 
-#: Instrument types this boundary knows how to reason about. TREASURY is
-#: accepted *as a type* here, but W0 prices nothing -- its calculations come
-#: back `unsupported` for want of a pricer, not for want of conventions.
-#: W1.2/W1.3 change that.
-SUPPORTED_INSTRUMENT_TYPES = ("SWAP", "TREASURY")
+#: Instrument types this boundary knows how to reason about.
+#:
+#: **"Supported" here means "the engine can establish its conventions",
+#: not "the engine prices it".** Those are different claims and this
+#: module only makes the first (see `check_conventions`). TREASURY passes
+#: and is priced (W1.2/W1.3); SWAP passes and is refused downstream for
+#: want of a faithful USD-SOFR build (I-05); EQUITY passes and is refused
+#: downstream for want of a spot source (W1.4, I-18).
+#:
+#: **Why EQUITY is here rather than absent.** Absent, it refused as
+#: `INSTRUMENT_TYPE_NOT_SUPPORTED` -- "outside this engine's scope", which
+#: is the wrong fact. A cash equity *is* in scope, is fully understood, and
+#: needs one market input nobody has supplied. Those two refusals point at
+#: different remedies: the first says "this engine will never do that", the
+#: second says "supply a spot". Conflating them tells a coordinator to give
+#: up when it should be sending data.
+SUPPORTED_INSTRUMENT_TYPES = ("SWAP", "TREASURY", "EQUITY")
 
 #: Terms that must be present and allowlisted before a swap could be priced.
 #: Used to detect the "no stated conventions" case (step 4) -- a booking
@@ -245,6 +257,9 @@ def check_conventions(joined: JoinedRow) -> Optional[ConventionRefusal]:
     if entry.instrument_type == "SWAP":
         return _check_swap(entry)
 
-    # TREASURY with complete terms: conventions are fine. W0 still prices
-    # nothing -- see this function's docstring.
+    # TREASURY or EQUITY with complete terms: conventions are fine. That
+    # is NOT a claim either one prices -- a Treasury does (W1.2/W1.3), an
+    # equity does not, and the equity's refusal is raised by
+    # `engine.integration.equity` naming the missing market input rather
+    # than here naming its type.
     return None

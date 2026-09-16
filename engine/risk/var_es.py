@@ -230,12 +230,29 @@ def _es_standard_error_jit(pnl: jax.Array, percentile: float) -> jax.Array:
     # ddof=1 on the masked tail. `jnp.nanstd` has no ddof, so the Bessel
     # correction is applied by rescaling: s_sample = s_pop * sqrt(n/(n-1)).
     population_std = jnp.nanstd(masked, axis=0)
-    safe_count = jnp.maximum(count, 2)  # guards the n<2 slots; masked out below
-    sample_std = population_std * jnp.sqrt(safe_count / (safe_count - 1))
+
+    # **Every intermediate stays in the P&L's own dtype.** `count` is
+    # integer, and integer arithmetic (or an untyped literal) inside the
+    # expression below promotes the whole result to float64 under
+    # jax_enable_x64 -- which silently defeats a float32 `var_es` precision
+    # override, since this function's output dtype IS how that override is
+    # observed. Every other statistic here inherits the input dtype by
+    # construction; this one has to be told.
+    # **Every intermediate stays in the P&L's own dtype.** `count` is
+    # integer, and integer arithmetic (or an untyped literal) inside the
+    # expression below promotes the whole result to float64 under
+    # jax_enable_x64 -- which silently defeats a float32 `var_es` precision
+    # override, since this function's output dtype IS how that override is
+    # observed. Every other statistic here inherits the input dtype by
+    # construction; this one has to be told.
+    dtype = population_std.dtype
+    safe_count = jnp.maximum(count, 2).astype(dtype)  # guards n<2; masked out below
+    one = jnp.asarray(1, dtype=dtype)
+    sample_std = population_std * jnp.sqrt(safe_count / (safe_count - one))
 
     standard_error = sample_std / jnp.sqrt(safe_count)
     # n < 2: no spread is estimable. NaN, not 0.0 -- see the docstring.
-    return jnp.where(count >= 2, standard_error, jnp.nan)
+    return jnp.where(count >= 2, standard_error, jnp.asarray(jnp.nan, dtype=dtype))
 
 
 def compute_risk_metrics(

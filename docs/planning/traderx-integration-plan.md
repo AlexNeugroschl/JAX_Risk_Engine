@@ -11,6 +11,8 @@ four-document exchange into executable tasks.
 3. [Response v2](eod-contract-response-v2.md) — my reply to their corrections
 4. `eod-response-to-alex-v2.md` → their answers + the YU18 package
 5. [Response v3](eod-contract-response-v3.md) — my reply; hashes verified
+6. `eod-response-to-alex-v3.md` → their compatibility work + the source review that found **I-13**
+7. [Response v4](eod-contract-response-v4.md) — my reply; W0 shipped, I-13 reproduced
 
 **Companion:** [Known Issues](../known-issues.md) — the defect register. Task IDs below
 reference issue IDs (`I-NN`) where they close one.
@@ -52,15 +54,46 @@ the first real pricers. W2 adds faithful USD-SOFR and is gated on an external de
 | Cube output | Artifact reference with shape/dtype/ordering/hash + separate hashed item-order file — never inlined JSON |
 | Attempt semantics | Lookup returns most recent **successful** attempt; attempts immutable; result manifest is the commit point |
 | W1 scope | Bill **and** note, separate acceptance checks, plus equity positions |
+| Accrued source label | Value is taken from the **export** (`accrualSource: "exported-fraction"`); `"recomputed-schedule"` is the alternative, so the label is always explicit |
+| Accrual tolerance | `round(0.5 × 10^(−fractionDecimals) × \|face\|, 2) + 0.01` — derived from `accrualBasis`, never a fixed constant. **Never compare the two monetary paths as exact equals** |
+| Accrued sign, restated | `fraction × signed face` in **one step**. No separate `sign()` factor — a second multiplication makes a short position positive |
+| `accrualBasis` artifact | `traderx.accrual-basis.v1` field shape **confirmed and frozen** |
+| Missing-accrual fixture | Two boundaries: TraderX **rejects before publication**; my mapper treats the same bytes as a **negative test** → `unavailable` / `ACCRUED_NOT_SUPPLIED` |
+| `synthetic` vs `assumed` | Distinct values. Their `provenance.origin` stays `synthetic`\|`supplied`; my curve `inputOrigin` is separate. `supplied` ≠ observed |
+| Lookup states | Never a bare 404 for accepted work: `UNKNOWN_WORKLOAD` / `running` / `failed` / `completed` are four distinct responses |
+| Submission identity | Caller-generated idempotent `submissionId`; retrying recovers the same attempt. `reuseExistingResult:false` means "don't serve cache", **not** "always start a new attempt" |
+| Publication recovery | Manifest is the commit point **and** discoverability no longer depends on the pointer — lookup falls back to a scan/reconcile. The pointer is a cache |
 
 ### Verified working (evidence, not claims)
 
 - **All 14 golden-vector hashes reproduce** from an independent stdlib implementation.
 - **ORE reproduces the note fixture schedule exactly** (4 periods, ACT/ACT ICMA, unadjusted).
 - **Accrued interest agrees to exported precision**: mine `0.0185714286` vs theirs `0.018571`.
-- **1092 engine tests passed** at the W0.1–W0.5/0.7/0.9 milestone. 856 were passing before
-  the W0 integration work (the "824" recorded earlier in this exchange was already stale).
-  W0.6 adds a further 83, for 1175. Full suite ~13 min.
+  **Monetary value corrected in v4** — see the accrual-rounding row below.
+- **The SOFR refusal runs against the real fixture**, echoing all 13 `missingTerms` plus
+  `contractId` / `clusterEpoch` / `accountId`. v1 refuses distinctly with
+  `TERMS_NOT_SUPPLIED`.
+- **The bill prices, exactly** (W1.2): **+98,507.15 / −98,507.15** long/short, **zero
+  difference** against an independent ORE valuation at machine precision.
+- **The note prices, exactly** (W1.3): **+103,308.33 / −103,308.33** long/short, **zero
+  difference** against an independent `ORE.FixedRateBond`, with accrued interest
+  reconciling to their exported `0.018571` at the §2 derived tolerance. This is the
+  half of the W1 exit criterion where the two systems' numbers actually had to agree.
+  **491 integration tests** pass in under a second.
+
+### Suite status — stated honestly
+
+Full run 2026-09-16, **after the W1.3 note pricer, the I-17 fix and the W1.4 equity
+refusal**: **1,384 passed, 2 failed**. (Previously 1,324 / 2 after W1.3 alone, and
+1,217 / 2 on 2026-09-15 after W1.2.)
+
+The 2 remaining failures are an **environment gap, not a code defect**: both need `pydantic`,
+a declared dependency (`pyproject.toml`) that is not installed here. Confirmed pre-existing by
+stashing the fixes and re-running — identical failures. `tests/test_api.py` does not collect
+for the same reason. `pip install -e .` resolves both. **Engine-side, every test passes.**
+
+Previously 1,138 passed / 3 failed; the three failures were I-13's suite (now fixed), I-14 and
+I-15. Earlier figures in this exchange (824, then 1175) were stale or unreproducible.
 
 ### Blocked, and on what
 
@@ -68,19 +101,36 @@ the first real pricers. W2 adds faithful USD-SOFR and is gated on an external de
 |---|---|---|
 | Faithful USD-SOFR pricing | D03/D04 convention agreement | ❌ External |
 | Aged-swap correctness (**I-04**) | Historical fixings TraderX doesn't export | ❌ External |
-| Priced bill/note results | W0 + W1.1–W1.3 build work | ✅ Mine |
+| Independent check of TraderX's `.gitattributes` work | Their push + commit SHA | ❌ External |
+| ~~Priced **bill** results~~ | — | ✅ **Done** (W1.2) |
+| ~~Priced **note** results~~ | — | ✅ **Done** (W1.3) |
+| ~~I-13 / I-14 fixes (W0.10)~~ | — | ✅ **Done** |
 | Everything else | Nothing | ✅ Start now |
+
+### Corrections I owe, or have made
+
+| Correction | Source |
+|---|---|
+| v3 §3.3 claimed v1 bill/note rows are indistinguishable — **wrong**, v1 carries coupon and maturity | Their v3; conceded in v4 §1.2 |
+| v3 §2.2 reported accrued as `+1,857.14` as though it were *the* value — it is the **recomputed-unrounded** path; the export path gives `1,857.10` | Their v3; conceded in v4 §2 |
+| `_swap_curve_configs` validates only the Greeks path | Their v3 source review → **I-13**, now fixed |
+| I-14 first diagnosed as `price_portfolio` leaking x64 across jobs — **wrong**; it re-enables the flag deliberately. The leak was one level down, in `generate_paths` | Probed while fixing → entry corrected |
+| I-15 first diagnosed as a flaky timing assertion — **incomplete**; the test's premise was unsound (warm-JIT jobs take ~15ms and never coexist) | Surfaced when the first fix also failed |
 
 ---
 
 ## 2. W0 — Contract and refusal machinery
 
-> **Status as of 2026-09-15: exit criterion met.** Every W0 task except **W0.8** is
-> implemented, with 318 tests (295 in `engine/integration/`, 23 for the tail diagnostics in
-> `engine/risk/var_es.py`). The SOFR case returns `CONVENTION_NOT_SUPPORTED` naming all 13
-> missing terms, and bill/note return structurally valid results with `npv: unsupported`.
-> See the per-task markers below and
+> **Status as of 2026-09-15: exit criterion met.** Every W0 task except **W0.8** and the
+> newly-added **W0.10** is implemented, with 318 tests (295 in `engine/integration/`, 23 for
+> the tail diagnostics in `engine/risk/var_es.py`). The SOFR case returns
+> `CONVENTION_NOT_SUPPORTED` naming all 13 missing terms, and bill/note return structurally
+> valid results with `npv: unsupported`. See the per-task markers below and
 > [the boundary's own doc](../reference/eod-integration.md).
+>
+> **W0.10 was added after the exit criterion was met**, from TraderX's v3 source review. It
+> does not gate the SOFR refusal (already delivered) but **does run ahead of W1**: it is the
+> only open item that produces a wrong number today.
 >
 > Seven plausible-but-wrong implementations were patched in and verified to fail the new
 > tests (working rule 3): naive `blank accrued → 0.0`; USD-SOFR/ACT-360 added to the
@@ -329,13 +379,39 @@ valuation time.
 Crash before (3) → orphaned artifacts no lookup reaches. Crash after → complete discoverable
 result. **No window where a partial write is reachable.**
 
+> **Gap TraderX found in v3, closed in v4 §4.1.** The protocol above left the window
+> *between* (3) and (4) unspecified: a crash there published a complete result that no
+> lookup could find. **Discoverability no longer depends on the pointer** — lookup falls
+> back to a scan/reconcile over published manifests when the pointer is behind, and advances
+> it as a side effect. A published manifest is the durable record; **the pointer is a cache.**
+
+**Lookup must distinguish four states** (v4 §4.2 — a bare 404 for both "unknown" and
+"running" invites a duplicate overnight batch):
+
+| State | Response |
+|---|---|
+| Never submitted | `404 UNKNOWN_WORKLOAD` |
+| Accepted, running | `200 {"state": "running", "attemptId": ...}` |
+| Accepted, failed | `200 {"state": "failed", "attemptId": ..., "reason": ...}` |
+| Completed | `200 {"state": "completed", ...result...}` |
+
+**Submission identity** (v4 §4.3): a caller-generated idempotent `submissionId`. Retrying a
+lost submission response **recovers the same attempt**; a deliberate second benchmark
+repetition uses a **new** `submissionId`. `reuseExistingResult:false` means "don't serve me a
+cached result" — **not** "start a new attempt every time you see this request."
+
+> **I-08 caveat, on the record.** The job table is still an in-process dict, so a restart can
+> lose *running*-state knowledge. That is precisely why the manifest scan matters: recovery
+> goes through content-addressed artifacts, **never** process memory. A lost in-memory job is
+> an infrastructure event, not a financial failure.
+
 Lookup returns the most recent **successful** attempt — never failed, partial, or in-flight.
 Attempts are immutable and permanently addressable by `attemptId`.
-`{"execution": {"reuseExistingResult": false}}` forces a fresh attempt **without overwriting**.
 
 **Tests:** kill between artifact write and manifest publish → lookup finds nothing (no partial);
-kill after publish → lookup finds complete result; second attempt doesn't overwrite first;
-`reuseExistingResult:false` creates a new attempt, both retained; **different precision →
+kill after publish → lookup finds complete result; **kill between publish and pointer advance →
+lookup still finds it via scan**; four lookup states distinguished; same `submissionId` recovers
+one attempt, not two; second attempt doesn't overwrite first; **different precision →
 different workload key** (no cache reuse).
 
 ---
@@ -351,6 +427,60 @@ engine/model/build versions, and known-limitation flags, so the coordinator can 
 *before submitting* whether a bundle is priceable. This is what makes "no silent exclusions"
 enforceable rather than aspirational.
 
+Currently reports `"deliveryStage": "W0"`, `"calculations.mode": "refusal-only"`, and
+`conventions.swap.overnightCompounding: []` — an explicitly empty list, so a consumer sees
+SOFR is unsupported without inferring it from a refusal.
+
+---
+
+### W0.10 — Validate curve indices before **all** pricing · closes **I-13** and **I-14** · ✅ DONE
+
+> **Ran ahead of W1**, as planned — this was the one open item producing a **wrong number
+> today**, and it was found by TraderX reading a pushed commit, not by my suite.
+>
+> `_validate_swap_curve_indices` in `engine/portfolio/request.py`, called from the existing
+> `validate_portfolio_against_simulation` (which already ran before any JAX work), so **one
+> check covers every pricing path** rather than each indexing site having to guard itself —
+> the omission that caused I-13 in the first place.
+>
+> **I-14 was also fixed, and its cause turned out to be different from the original
+> diagnosis.** `price_portfolio` was never affected (it re-enables x64 deliberately); the
+> leak was in `generate_paths`, which set the process-global flag and never restored it,
+> contradicting its own docstring. Now scoped by an `_x64_enabled` context manager that
+> restores the prior value.
+>
+> **I-15 fixed too**, and the investigation is the interesting part: the first attempted fix
+> (assert distinct worker PIDs) *also* failed, which revealed the test's premise was unsound
+> — after priming, jobs take ~15ms and both ran on one worker, so it could never observe
+> concurrency. Now uses a 1.0s job and asserts mechanism **and** overlap, deterministically.
+
+**Deliverable:** no pricing path can index a curve list without validation. ✅
+
+**Steps:**
+1. ✅ Curve-index validation hoisted to **request admission** — before any pricing,
+   independent of `compute_greeks`.
+2. ✅ Negatives rejected explicitly, so `-1` can no longer wrap to the last curve.
+3. ✅ **I-14** closed at its actual source (`generate_paths` restoring the x64 flag).
+   **Residual, deliberately not done:** `PortfolioResult` still carries no *realized* dtype,
+   so a truncation from some other cause would stay invisible in the result. That belongs
+   with **I-12**'s worker-device reporting, not here — doing it now would be scope creep on
+   a fix that is already complete.
+
+> **⚠ The bug this closes.** `fwd_idx=-1` prices silently against the **last** curve:
+> measured `-5,857.0074` instead of the booked `-5,913.9266` — a 56.92 USD error on 2mm
+> notional, **unbounded in principle** since it scales with curve separation. The failure is
+> invisible: finite, plausible, no warning. `_swap_curve_configs`'s own docstring promises
+> this cannot happen.
+
+**Tests:** ✅ `TestCurveIndexValidatedBeforeAllPricing` (12 tests) drives the full **2×2** —
+negative and out-of-range × `compute_greeks` both ways — **through `price_portfolio`**, not
+through the helper. **8 of 12 fail against the pre-fix code**, including both negative cases
+at `compute_greeks=False` (which returned a plausible NPV instead of raising); the 4 that
+pass pre-fix are the valid-index controls and the two cases the Greeks path already guarded.
+
+Plus `TestGeneratePathsEdgeCases::test_precision_32_restores_the_global_x64_flag` (I-14) and
+the rewritten same-tier concurrency test (I-15), both verified to fail pre-fix.
+
 ---
 
 ## 3. W1 — First real pricers
@@ -358,9 +488,36 @@ enforceable rather than aspirational.
 **Exit criterion:** one exported Treasury case consumed end-to-end and returned as a
 validated, identified financial result — TraderX's stated target.
 
+> **Met by W1.2 and W1.3, for Treasuries.** Both cases now do exactly this: consumed from
+> the hash-verified bundle, identified, priced, and returned with a reconcilable payload,
+> each exact against an independent ORE valuation.
+>
+> **The note was the harder half, and it is the one that closed the criterion.** It needed
+> the coupon schedule and the ACT/ACT (ICMA) accrual, and it is the case where our two
+> systems' numbers actually had to agree — their `0.018571`, at the §2 derived tolerance,
+> which it does. A bill agreeing on a single discount factor was a weaker claim than it
+> looked, which is precisely why the plan ordered it first.
+>
+> **What remains in W1 is not this criterion:** the wire-through to the portfolio path
+> (W1.5). Equity positions (W1.4) are resolved to a refusal — valuing them needs a spot
+> source, not engine work (**I-18**).
+
 ---
 
-### W1.1 — Day count as a per-instrument input ⚠ **prerequisite for everything below**
+### W1.1 — Day count as a per-instrument input ⚠ **prerequisite for everything below** · ✅ DONE
+
+> `TIME_AXIS_DAY_COUNTER` (permanently ACT/365) split from a per-instrument
+> `accrual_day_count`, defaulting to ACT/365 so the whole suite is byte-identical.
+> `ACT/ACT (ICMA)` added; anything else — `ACT/360` included — is **refused** at
+> `SwapConfig` construction, never defaulted. 27 tests in
+> `tests/test_day_count_roles.py`, verified to fail against the dangerous wrong fix
+> (making the time axis follow the instrument accrual).
+>
+> **Two corrections to the analysis below.** There are **three** `DAY_COUNTER` constants,
+> not two — `engine/risk/greeks.py:138` is the third — used across **seven** modules, not
+> five. All three are the time-axis role. And tracing every use: **49 are the time axis,
+> only 2 are the accrual** (`ore_builders.py`'s `fixedLegDayCount`/`floatingLegDayCount`),
+> so the risky part of this change was two lines.
 
 **The subtlety that makes this more than adding a parameter.** `Actual365Fixed` is used in
 **two distinct roles**, and there are **two independent `DAY_COUNTER` constants**
@@ -384,33 +541,133 @@ schedule; a trade requesting an unsupported day count is **refused**, not silent
 
 ---
 
-### W1.2 — Bill pricer
+### W1.2 — Bill pricer · ✅ DONE
+
+> `engine/integration/bill.py` — **the first number this boundary returns.**
+> `signedFace × redemptionFraction × P(valuationDate, maturity)`. Long/short on the delivered
+> fixture: **+98,507.15 / −98,507.15**, summing to zero.
+>
+> **ORE parity is exact** — zero difference at machine precision against an independent
+> `ORE.FlatForward` + `ORE.CashFlows.npv` valuation, built from ORE's own machinery rather
+> than by re-deriving `exp(-rt)` (which would restate the implementation and pass even if
+> both were wrong together).
+>
+> **Four plausible-but-wrong implementations** were patched in and verified to fail (working
+> rule 3): simple instead of continuous discounting (4 tests), a separate position sign on
+> top of signed face (5), pricing a matured bill instead of refusing (2), and **treating any
+> Treasury as a bill** — a note priced with the wrong model (3). The last is the dangerous
+> one: a confident, plausible number for the wrong instrument.
+>
+> **Scope held deliberately narrow.** A priced `npv` does **not** make the other calculations
+> answerable: `rateSensitivity`/`rateGamma`/`theta` still return `unsupported`, and
+> `capabilities()` advertises `TREASURY: ["npv"]` and nothing more. W1.2 delivers a price,
+> not a sensitivity.
 
 Single discounted cashflow: `faceAmount × redemptionFraction × P(valuationDate, maturity)`.
 No coupon schedule, no Monte Carlo, no calibration. Serves as the transport/identity smoke
 test with trivial pricing math.
 
-**Tests:** ORE parity at matched terms; long/short signs; **maturity-date boundary**; accrued
-= structural zero.
+**Conventions, stated rather than assumed:** ACT/365 Fixed discounting (matching the
+simulation time axis and the W0.4 allowlist), and **continuous** compounding to match the
+assumed profiles' own stated convention — simple discounting would shift the price ~$3.6 per
+$100k face, small enough to read as rounding.
+
+**Refuses, each naming a reason:** `NOT_A_BILL` (coupon-bearing or scheduled),
+`INSTRUMENT_MATURED` (maturity on/before valuation — **not** priced at face),
+`TERMS_INCOMPLETE`. A v1 bundle and a request with no `marketInputs` both price nothing.
+
+**Tests:** ✅ `tests/test_integration_bill.py` (27 tests) — ORE parity at matched terms;
+long/short signs; **maturity-date boundary**; accrued = structural zero; plus the pipeline
+end-to-end, the v1 refusal, and proof the note and SOFR refusals are unchanged.
 
 ---
 
-### W1.3 — Note pricer
+### W1.3 — Note pricer · ✅ DONE
 
-Fixed coupons + bullet principal, discounted off the requested curve.
+> `engine/integration/note.py`. Fixed coupons + bullet principal, discounted off the
+> requested curve. Long/short on the delivered fixture: **+103,308.33 / −103,308.33**,
+> summing to zero.
+>
+> **ORE parity is exact** — zero difference at machine precision against an independent
+> `ORE.FixedRateBond` + `ORE.DiscountingBondEngine`, built from ORE's own bond machinery
+> rather than by re-deriving `Σ cᵢ·exp(−r·tᵢ)`. Every coupon is checked against ORE's own
+> cashflows one by one, so a dropped coupon and a compensating discount-factor error cannot
+> cancel.
+>
+> **Accrued reconciles to TraderX's `0.018571`.** Both paths are carried: the
+> `exported-fraction` ($1,857.10) is what the result *reports*, and the
+> `recomputed-schedule` ($1,857.14) is the cross-check. They differ by $0.04 — the
+> exporter's own HALF_EVEN rounding — so they are compared at the §2 derived tolerance,
+> never as exact equals. Beyond tolerance is a **refusal**, not a warning.
+>
+> **This exercised the ACT/ACT (ICMA) half of W1.1 that the bill never touched.** Pricing
+> the note on the engine's ACT/365 default instead shifts accrued by **$5.09 on $100k** —
+> about 85× the $0.06 tolerance — so the accrual check catches that bug too, which a test
+> pins.
+>
+> **`rateSensitivity` is delivered for the note, and labelled honestly.** A bumped
+> revaluation at an explicit 1bp, `shockedFactor: "zero-curve-parallel"`. The plan asked for
+> *per-pillar*; every registered assumed profile is a flat constant with no pillar structure
+> to shift, so a per-pillar vector would be arithmetic theatre — recorded as **I-16**,
+> closed by W2's `mode: "package"`. **The bill still has no sensitivity**, and
+> `capabilities()` now reports per *shape* so that stays visible.
+>
+> **Two things this work found.** **I-17**: reusing the bill's date parser meant a malformed
+> note date raised `BillPricingError`, which the pipeline's `except NotePricingError` never
+> caught — one bad row failed the **whole bundle**. Fixed, with four regression tests.
+> And the `engine.models` import ban fired on the ACT/ACT (ICMA) lookup: rather than relax
+> it, the day-count vocabulary moved to the leaf module `engine/day_count.py`, and a new
+> test closes the AST guard's transitive blind spot.
 
-**Tests:** ORE parity; **accrued reconciles to TraderX's `0.018571`** (already independently
-verified in Python — this test moves it into the engine); clean vs dirty reconciliation;
-long/short; per-pillar `rateSensitivity` non-zero across the curve.
+**Tests:** ✅ `tests/test_integration_note.py` (104 tests) — ORE parity including every
+coupon and discount factor; accrued reconciliation to `0.018571`; the derived tolerance;
+clean vs dirty; long/short mirrors; `rateSensitivity` sign, magnitude and maturity scaling;
+schedule validation (gap, overlap, zero-length, maturity disagreement); every refusal;
+plus the pipeline end-to-end, the v1 refusal, and proof the bill and SOFR paths are
+unchanged.
 
 ---
 
-### W1.4 — Equity position pricer
+### W1.4 — Equity position pricer · ✅ DONE (as a **refusal**)
 
-`signedQuantity × multiplier × spot × fx`. **Note:** `SimulationConfig.equities` drives
-correlated risk-factor *paths* — it is **not** a position pricer. This is new code.
+> `engine/integration/equity.py`. `signedQuantity × multiplier × spot × fx` — and **two of
+> those four factors have no source at this boundary**, so W1.4 ships an honest refusal
+> rather than a number. `marketInputs` registers flat *interest-rate* profiles only;
+> `SimulationConfig.equities` drives correlated risk-factor *paths*, takes no share count,
+> and lives in a package this one may not import. Recorded as **I-18**.
+>
+> **The tempting wrong answer was `closingMark`.** `quantity × closingMark × multiplier`
+> reproduces the exporter's own `marketValue` column *exactly* — which is what makes it
+> dangerous. It would be an **echo, not a valuation**: TraderX's own number handed back as
+> though the engine had priced it, reconciling perfectly and proving nothing, under a
+> provenance derived from a *rate* curve it was never computed against. Patched in at both
+> the pricer and pipeline level, it fails **20 of 60** tests (working rule 3).
+>
+> **Three distinct refusals, because they have different fixes.**
+> `SPOT_SOURCE_NOT_SUPPLIED` (USD: send a spot), `FX_SOURCE_NOT_SUPPLIED` (non-USD: a spot
+> alone still would not price it), `TERMS_INCOMPLETE` (a broken row, not missing market
+> data). An absent currency is treated as **foreign, not assumed USD**.
+>
+> **The refusal is diagnosable.** It carries `signedQuantity`, `contractMultiplier` and
+> `multipliedQuantity` — multiplier applied **exactly once** — so sign and size are already
+> correct the day a spot arrives.
+>
+> **`EQUITY` joined the W0.4 allowlist deliberately.** It previously refused as
+> `INSTRUMENT_TYPE_NOT_SUPPORTED` ("outside this engine's scope"), which is the wrong fact:
+> a cash equity *is* in scope and fully understood, and needs one market input nobody
+> supplied. `capabilities()` now reports `blockedOnMarketInput` as a third state alongside
+> "priced" and "no pricer" — the only one the **consumer** can clear.
+>
+> **Fixtures:** `equity/v1` is **vendored from TraderX's own `golden-v1/basic`**, LF-exact
+> (the source was CRLF — the W0.1 trap) and verifies against their published `bundleId`;
+> `equity/v2` is authored and clearly labelled synthetic, carrying a long/short USD pair
+> plus a EUR row.
 
-**Tests:** long/short; multiplier applied **exactly once**; currency/FX handling.
+**Tests:** ✅ `tests/test_integration_equity.py` (60 tests) — long/short mirrors; multiplier
+applied exactly once (asserted against a multiplier that is **not 1**, the only way the test
+can fail); currency/FX handling including the absent-currency case; the mark-echo guard;
+malformed rows; I-17's exception-type regression class; plus the pipeline end-to-end in both
+bundle versions and proof the Treasury pricers are unchanged.
 
 ---
 
@@ -470,28 +727,63 @@ W0.1 bundle+hash ─┬─ W0.2 terms join ─┬─ W0.3 normalize ─┐
                      W0.8 durable lookup  (independent)
                      W0.9 capabilities    (independent)
 
-W1.1 day count ⚠ ─→ W1.2 bill ─→ W1.3 note ─→ W1.5 wire-through ─→ ★ Treasury end-to-end
-                    W1.4 equity ────────────┘
+W0.10 curve-index validation ✅ I-13/I-14 (ran ahead of W1, as planned)
+
+W1.1 day count ✅ ─→ W1.2 bill ✅ ─→ W1.3 note ✅ ─→ W1.5 wire-through ─→ ★ Treasury end-to-end
+                     W1.4 equity ✅ (refusal) ┘
 
 W2  ⛔ blocked on D03/D04
 ```
 
-**★ First real result:** the SOFR `CONVENTION_NOT_SUPPORTED` output — needs no pricer, only
-W0.1/0.2/0.4/0.5/0.7. Deliver this before any pricing work.
+**★ First real result — delivered.** The SOFR `CONVENTION_NOT_SUPPORTED` output needed no
+pricer, only W0.1/0.2/0.4/0.5/0.7. It runs against the real fixture and is the substance of
+[response v4](eod-contract-response-v4.md) §3.
+
+**★ Second real result — delivered.** The bill prices: **+98,507.15 / −98,507.15** on the
+delivered fixture, exact against ORE, with a fully reconcilable payload. This is the first
+result carrying a *number* rather than a refusal, and the first thing TraderX can validate
+against their own model rather than merely parse.
+
+**★ Third real result — delivered.** The note prices: **+103,308.33 / −103,308.33** on the
+delivered fixture, exact against an independent `ORE.FixedRateBond`, with accrued interest
+reconciling to TraderX's own `0.018571` at the §2 derived tolerance. This completes the
+W1 exit criterion's harder half — the case where our two systems' numbers actually had to
+agree, rather than a single discount factor.
+
+**★ W1.4 delivered as a refusal.** The equity case is resolved: understood, identified,
+validated, and refused with the missing market input named. It is the first task in this
+plan whose *correct* deliverable was "no number", and the reasoning is in **I-18**.
+
+**Next:** W1.5 (wire the new instruments through the portfolio path — note the I-01
+regression class called out in that task). Equity *valuation* is blocked on a spot/FX
+source, which is a market-data decision rather than engine work.
 
 ---
 
 ## 7. Open items with TraderX
 
-**Wanted (non-blocking):**
+**All four v3 asks were answered in their v3 — closed:**
 
-1. **`.gitattributes` with `*.json -text` / `*.csv -text`** — highest value, smallest change.
-   Without it their vectors are unverifiable from a default Windows checkout.
-2. **Blank-accrued coupon-bearing note fixture** — expects `unavailable`, not `0.0`. Nothing
-   currently exercises the wrong branch.
-3. **Machine-readable accrual-basis caveat** on security terms, so fixture assumptions are
-   structurally distinguishable from real conventions.
-4. Confirm `origin: "synthetic"` as distinct from `assumed`.
+| Ask | Outcome |
+|---|---|
+| `.gitattributes` for hash-critical bytes | Implemented, **scoped to the fixture directory** — better than my repo-wide proposal. Pins exactly the hashed bytes, including cut/preimage files |
+| Blank-accrued note fixture | Supplied as `compatibility/note-missing-accrual/`, long **and** short |
+| Machine-readable accrual basis | Implemented as `traderx.instrument-terms.v2` + `traderx.accrual-basis.v1` |
+| `synthetic` distinct from `assumed` | Confirmed |
+
+**Open, asked in v4:**
+
+1. **Push the compatibility work and send the commit SHA.** My submodule is pinned at
+   `a102e498`; there is no `.gitattributes` at that commit and
+   `scripts/test-state-YU18-checkout.py` is absent from my tree. **Their 99 tests and the Git
+   checkout-filter proof are therefore their verification, not a shared one** — I will re-run
+   both independently, as I did the golden hashes, rather than recording a pass on report.
+2. **`accrual-basis` versioning:** do new `dateBasis`/`settlementAdjustment` values land in
+   `v1`, or force a `v2`? I want to **refuse an unrecognized basis**, not parse it
+   optimistically. If values are added in place I pin the exact accepted set.
+3. **Confirm `accrualSource: "exported-fraction"`** is the expected return.
+4. **Review the W0 result shape** ([v4](eod-contract-response-v4.md) §3.1) before I freeze it —
+   particularly whether `sourceIdentity` carries everything their validator needs to join back.
 
 **Blocking W2 only:** D03/D04 SOFR conventions.
 
@@ -517,3 +809,15 @@ These are what the exchange actually established. They apply to every task above
 6. **Read bytes in binary for anything hashed.** Line-ending translation silently breaks every
    hash.
 7. **Identity never rides on array position.**
+8. **Test the caller, not just the guard.** A unit test asserting a validator raises proves
+   nothing about paths that never call it. **I-13** lived behind a passing test of exactly
+   this shape: `_swap_curve_configs` was tested directly and correctly, while the pricing path
+   that skipped it went unexercised. Every guard needs at least one test that reaches it
+   *through the public entry point*.
+9. **A green suite is evidence about the tests, not about the code.** 1,138 tests passed
+   while I-13 sat in the default pricing path. Two of the three defects found in this exchange
+   came from reading source and predicting a failure mode; none came from running the suite.
+10. **Never report a stale or rounded-up test count.** This document has now carried three
+    (824, 1092, 1175). Numbers that describe verification must be reproducible by running the
+    thing, and a red suite is reported as red — an intermittently red suite trains people to
+    ignore red, which is how I-13 survived.

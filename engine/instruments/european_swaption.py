@@ -65,7 +65,7 @@ import ORE
 
 from engine.simulation.market_model import ZeroCurveConfig
 from engine.models.static_key import StaticKeyMixin
-from engine.models.ore_builders import DAY_COUNTER, build_vanilla_swap
+from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER, build_vanilla_swap
 from engine.portfolio.validation import _validate_common_fields, _validate_tenor
 from engine.models.hull_white import (
     A as _hw_A,
@@ -232,14 +232,14 @@ def prepare_swaption(cfg: SwaptionConfig) -> _PreparedSwaption:
     fixed_times, fixed_amounts = [], []
     for cf in swap.fixedLeg():
         c = ORE.as_fixed_rate_coupon(cf)
-        fixed_times.append(DAY_COUNTER.yearFraction(today, c.date()))
+        fixed_times.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.date()))
         fixed_amounts.append(c.amount())
 
     return _PreparedSwaption(
         payer=cfg.payer,
         notional=swap.fixedNominals()[0] if swap.fixedNominals() else swap.nominal(),
-        exercise_time=DAY_COUNTER.yearFraction(today, exercise_date),
-        accrual_start_time=DAY_COUNTER.yearFraction(today, accrual_start_date),
+        exercise_time=TIME_AXIS_DAY_COUNTER.yearFraction(today, exercise_date),
+        accrual_start_time=TIME_AXIS_DAY_COUNTER.yearFraction(today, accrual_start_date),
         fixed_cashflow_times=np.array(fixed_times),
         fixed_cashflow_amounts=np.array(fixed_amounts),
         rate_factor_index=cfg.rate_factor_index,

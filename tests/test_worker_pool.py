@@ -20,6 +20,7 @@ interpreter (see `engine.portfolio.worker_pool`'s module docstring) --
 Windows process-spawn + first-import + first-JIT-compile overhead dominates
 this file's wall time, not the (deliberately tiny) portfolios themselves.
 """
+import os
 import time
 from concurrent.futures import Future, wait as futures_wait
 
@@ -55,11 +56,32 @@ def _timed_job(frozen_request: PortfolioRequest):
     can't share Python objects (e.g. a shared clock/counter) with the test
     process directly -- timestamps have to be captured on the worker side
     and shipped back, or the measurement wouldn't reflect when the work
-    itself actually ran."""
+    itself actually ran.
+
+    Also reports `os.getpid()` so a test can assert the DISPATCH MECHANISM
+    (two jobs landed on two distinct worker processes) rather than only the
+    observable SYMPTOM (their wall-clock intervals overlapped). The symptom
+    depends on the OS scheduler and on jobs being slow enough to still be
+    running when the second one starts; the mechanism does not. See I-15."""
     start = time.monotonic()
     result = _run_pricing_job(frozen_request)
     end = time.monotonic()
-    return start, end, result
+    return start, end, result, os.getpid()
+
+
+def _sleep_job(seconds: float):
+    """Top-level (picklable) pool task that occupies a worker for a known
+    duration and reports its own process id and monotonic interval.
+
+    Used by the same-tier concurrency test to keep a worker genuinely busy:
+    a warm-JIT pricing job finishes in ~15ms, which is too fast to prove
+    anything about a 2-worker pool (see that test's docstring, and I-15).
+    Deliberately does no JAX work -- the pool's DISPATCH behavior is what
+    is under test, and real pricing concurrency is covered by
+    `test_cross_tier_jobs_correct_and_concurrent`."""
+    start = time.monotonic()
+    time.sleep(seconds)
+    return start, time.monotonic(), os.getpid()
 
 
 def _submit_timed(request: PortfolioRequest, pool_size: int = 2) -> "Future":
@@ -180,8 +202,8 @@ class TestWorkerPoolConcurrency:
             req_a, req_b = self._make_requests()
             fut_a = _submit_timed(req_a)
             fut_b = _submit_timed(req_b)
-            start_a, end_a, result_a = fut_a.result(timeout=120)
-            start_b, end_b, result_b = fut_b.result(timeout=120)
+            start_a, end_a, result_a, _ = fut_a.result(timeout=120)
+            start_b, end_b, result_b, _ = fut_b.result(timeout=120)
 
             assert result_a.npv_cube.dtype == jnp.float64
             assert result_b.npv_cube.dtype == jnp.float32
@@ -208,26 +230,53 @@ class TestWorkerPoolConcurrency:
 
     def test_same_tier_jobs_also_overlap_across_pool_workers(self):
         """Two SAME-tier (both float64) jobs, submitted to a 2-worker pool,
-        should also be able to run concurrently against each other (one per
-        worker process) -- this is what "N workers per tier = N devices of
-        that tier running genuinely concurrently" (see worker_pool's module
-        docstring) means in practice, distinct from the cross-tier case
-        above."""
-        precision = PrecisionConfig(simulation=64, pricing=64, risk=64)
-        # Prime the pool once, unmeasured (see test above for why).
-        futures_wait([_submit_timed(_make_request(precision))])
+        must run on two worker PROCESSES concurrently -- this is what
+        "N workers per tier = N devices of that tier running genuinely
+        concurrently" (see worker_pool's module docstring) means in
+        practice, distinct from the cross-tier case above.
 
-        NUM_ROUNDS = 4
-        overlap_count = 0
-        for _ in range(NUM_ROUNDS):
-            fut_1 = _submit_timed(_make_request(precision))
-            fut_2 = _submit_timed(_make_request(precision))
-            start_1, end_1, _ = fut_1.result(timeout=120)
-            start_2, end_2, _ = fut_2.result(timeout=120)
-            if start_1 < end_2 and start_2 < end_1:
-                overlap_count += 1
+        **Why this test measures a deliberately SLOW job (I-15).** It
+        previously primed the pool and then submitted the same tiny
+        portfolio the other tests use. After priming, that portfolio's JIT
+        cache is warm and each job completes in ~15ms -- so job 1 routinely
+        finished before the executor even handed job 2 to a worker. Both
+        jobs then ran on ONE process, and the old `overlap_count >= 1`
+        assertion failed intermittently even though the pool was behaving
+        correctly. The pool was never the problem: the probe is what was
+        unsound, since two jobs that never coexist in time cannot
+        demonstrate concurrency at all.
 
-        assert overlap_count >= 1, (
-            f"expected at least one of {NUM_ROUNDS} same-tier job pairs "
-            f"(submitted to a 2-worker pool) to show genuine wall-clock overlap"
+        `_sleep_job` below makes the work last long enough that a second
+        worker is genuinely required, which turns both the mechanism
+        (distinct PIDs) and the payoff (wall-clock overlap) into
+        deterministic assertions rather than races against the scheduler.
+        It sleeps rather than pricing because what is under test here is
+        the POOL's dispatch behavior; `test_cross_tier_jobs_correct_and_
+        concurrent` above already covers concurrency with real pricing work
+        plus numerical correctness.
+        """
+        pool = _pool_for(64, pool_size=2)
+        # Prime BOTH workers, so process-spawn cost (seconds on Windows --
+        # see module docstring) is not inside the measured interval and
+        # cannot itself serialize the pair.
+        futures_wait([pool.submit(_sleep_job, 0.05) for _ in range(2)])
+
+        JOB_SECONDS = 1.0
+        fut_1 = pool.submit(_sleep_job, JOB_SECONDS)
+        fut_2 = pool.submit(_sleep_job, JOB_SECONDS)
+        start_1, end_1, pid_1 = fut_1.result(timeout=120)
+        start_2, end_2, pid_2 = fut_2.result(timeout=120)
+
+        assert pid_1 != pid_2, (
+            f"both jobs ran in worker process {pid_1} -- a 2-worker pool "
+            f"serialized two concurrently-submitted same-tier jobs, so the "
+            f"tier has no real concurrency"
+        )
+
+        # The two intervals are measured inside their own workers against
+        # the same monotonic clock, so overlap here is genuine wall-clock
+        # concurrency, not an artifact of submission order.
+        assert start_1 < end_2 and start_2 < end_1, (
+            f"two {JOB_SECONDS}s jobs on distinct workers did not overlap in "
+            f"wall-clock time: [{start_1}, {end_1}] vs [{start_2}, {end_2}]"
         )

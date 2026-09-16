@@ -66,7 +66,7 @@ import ORE
 
 from engine.models.hull_white import ZeroCurve, bond_call, bond_put, discount
 from engine.models.lgm import Sigma, bond_option_sigma, bond_price
-from engine.models.ore_builders import DAY_COUNTER, build_vanilla_swap, fixed_leg_cashflows
+from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER, build_vanilla_swap, fixed_leg_cashflows
 
 
 @dataclass
@@ -164,7 +164,7 @@ def build_coterminal_basket(
         exercise_date = ORE.TARGET().advance(accrual_start_date, -2, ORE.Days)
 
         fixed = fixed_leg_cashflows(placeholder, today)
-        T_start = DAY_COUNTER.yearFraction(today, accrual_start_date)
+        T_start = TIME_AXIS_DAY_COUNTER.yearFraction(today, accrual_start_date)
         annuity = float(jnp.sum(jnp.asarray(fixed.accrual_fractions) * discount(zero_curve, jnp.asarray(fixed.payment_times))))
         P_start = float(discount(zero_curve, T_start))
         P_end = float(discount(zero_curve, fixed.payment_times[-1]))
@@ -173,7 +173,7 @@ def build_coterminal_basket(
         fixed_amounts = np.asarray(fixed.accrual_fractions) * par_rate * notional
 
         targets.append(CalibrationTarget(
-            expiry_time=DAY_COUNTER.yearFraction(today, exercise_date),
+            expiry_time=TIME_AXIS_DAY_COUNTER.yearFraction(today, exercise_date),
             accrual_start_time=T_start,
             fixed_cashflow_times=fixed.payment_times,
             fixed_cashflow_amounts=fixed_amounts,

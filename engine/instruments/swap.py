@@ -59,7 +59,9 @@ import ORE
 
 from engine.models.static_key import StaticKeyMixin
 from engine.models.ore_builders import (
-    DAY_COUNTER,
+    DEFAULT_ACCRUAL_DAY_COUNT,
+    TIME_AXIS_DAY_COUNTER,
+    resolve_accrual_day_count,
     LegCashflows as _LegCashflows,
     build_vanilla_swap,
     fixed_leg_cashflows as _fixed_leg_cashflows,
@@ -95,10 +97,22 @@ class SwapConfig:
     index_tenor_months: int = 6
     floating_spread: float = 0.0
     evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
+    #: The day count this swap's COUPONS accrue on -- a property of the
+    #: booking, not of the engine (W1.1). Defaults to ACT/365, which is what
+    #: every swap got before this field existed, so existing behavior is
+    #: unchanged. A name outside `SUPPORTED_ACCRUAL_DAY_COUNTS` is REFUSED at
+    #: construction, never defaulted.
+    #:
+    #: Distinct from the simulation time axis, which is permanently ACT/365 --
+    #: see `engine.models.ore_builders`' TWO ROLES block.
+    accrual_day_count: str = DEFAULT_ACCRUAL_DAY_COUNT
 
     def __post_init__(self) -> None:
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
         _validate_tenor(self.swap_tenor, "swap_tenor")
+        # Fail at construction, where the offending trade is identifiable,
+        # rather than deep inside ORE at pricing time.
+        resolve_accrual_day_count(self.accrual_day_count)
 
 
 def _build_ore_swap(cfg: SwapConfig) -> ORE.VanillaSwap:
@@ -110,6 +124,7 @@ def _build_ore_swap(cfg: SwapConfig) -> ORE.VanillaSwap:
         notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
         swap_tenor=cfg.swap_tenor, index_tenor_months=cfg.index_tenor_months,
         floating_spread=cfg.floating_spread, evaluation_date=cfg.evaluation_date,
+        accrual_day_count=cfg.accrual_day_count,
     )
 
 

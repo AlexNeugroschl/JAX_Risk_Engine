@@ -1,5 +1,6 @@
 import dataclasses
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import ORE
@@ -220,6 +221,42 @@ class TestGeneratePathsEdgeCases:
         assert r64a["equities"].dtype == jnp.float64
         assert r32["equities"].dtype == jnp.float32
         assert r64b["equities"].dtype == jnp.float64
+
+    def test_precision_32_restores_the_global_x64_flag(self, cross_asset_config):
+        """I-14: `generate_paths(precision=32)` must not leave float64
+        disabled process-wide for whatever runs next.
+
+        The flag is a process-global JAX setting, and this function's
+        docstring promises it is toggled "for the duration of this call".
+        It previously set it and never restored it, so after ANY float32
+        simulation a float64 request silently produced float32 -- JAX
+        truncates rather than raising, emitting only a UserWarning.
+
+        `test_sequential_precision_switches_produce_correct_dtype_each_time`
+        above passes either way: every call re-sets the flag on entry, so
+        alternating calls are always self-correcting. Only code that asks
+        for float64 WITHOUT going through `generate_paths` first sees the
+        leak -- which is why this asserts on the ambient flag and on a
+        plain float64 array, not on the simulation's own output.
+        """
+        cfg = with_scenarios(cross_asset_config, scenarios=128)
+        before = jax.config.jax_enable_x64
+        assert before, "this test needs x64 enabled going in (see conftest)"
+
+        result = generate_paths(cfg, precision=32)
+
+        assert result["equities"].dtype == jnp.float32, (
+            "the float32 run must still produce float32 -- restoring the flag "
+            "must not silently promote the simulation's own output"
+        )
+        assert jax.config.jax_enable_x64 == before, (
+            "generate_paths(precision=32) leaked jax_enable_x64=False to the "
+            "rest of the process"
+        )
+        assert jnp.zeros(3, dtype=jnp.float64).dtype == jnp.float64, (
+            "a float64 request after a float32 simulation silently truncated "
+            "to float32 -- the I-14 failure mode"
+        )
 
     def test_no_maturities_omits_yield_curves_key(self, cross_asset_config):
         import dataclasses
