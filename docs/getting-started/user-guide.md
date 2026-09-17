@@ -7,16 +7,27 @@ This page is about *running* the code. For how it works internally, see
 
 ## Prerequisites
 
-- Python 3.11 (the project's `venv/` was built against this version).
+- Python 3.11 (`requires-python = ">=3.11"`; the project's `.venv/` was built against this
+  version).
 - The core dependencies declared in [`pyproject.toml`](../../pyproject.toml):
   `open-source-risk-engine` (the ORE Python bindings — see
   [Architecture: ORE as a dependency](../concepts/architecture.md#ore-as-a-dependency)), `pandas`,
   `jax`, `jaxlib`, `numpy`, `scipy`.
-- Three optional extras: `api` (`fastapi`, `pydantic`, `uvicorn[standard]` — needed only to
-  run [the HTTP API](../reference/http-api.md)), `dev` (`pytest`, `httpx` — needed to run
-  the test suite, `httpx` being required by FastAPI's own `TestClient`), and `profiling`
+- Three optional extras: `api` (`fastapi`, `pydantic>=2`, `uvicorn[standard]` — needed only
+  to run [the HTTP API](../reference/http-api.md)), `dev` (`pytest`, `httpx`, `jsonschema` —
+  needed to run the test suite; `httpx` is required by FastAPI's own `TestClient`, and
+  `jsonschema` is deliberately test-only, since the engine must emit correct EOD documents
+  without depending on a validator to produce them — see
+  [the EOD boundary doc](../reference/eod-integration.md)), and `profiling`
   (`xprof` — needed only to collect/view a profiler trace of a pricing job, see
   [Profiling a pricing job](#profiling-a-pricing-job)).
+
+> **⚠ Run everything through the venv's own interpreter**, e.g.
+> `.venv/Scripts/python.exe` on Windows (`.venv/bin/python` on Linux/macOS). A bare `python`
+> may resolve to a system interpreter where `pydantic` and `jsonschema` are absent, which
+> makes whole test files **silently uncollectable** rather than failing — see
+> [I-25](../known-issues.md#i-25). The commands below write `python` for brevity; substitute
+> the venv interpreter.
 
 ## Setting up
 
@@ -26,27 +37,32 @@ From the repository root, with your Python environment activated:
 pip install -r requirements.txt
 ```
 
-This installs the package itself (editable) plus both optional extras — equivalent to
-`pip install -e .[api,dev]`, which `requirements.txt` wraps (see
+This installs the package itself (editable) plus the `api` and `dev` extras — equivalent to
+`pip install -e .[api,dev]`, which `requirements.txt` wraps (`profiling` is not included;
+install it separately if you need it). See
 [`pyproject.toml`](../../pyproject.toml) for the actual dependency declarations; that file,
 not `requirements.txt`, is the source of truth for versions). If you only need the core
 engine as a library (no HTTP API, no test suite), `pip install -e .` alone is enough — see
 [Architecture: ORE as a dependency](../concepts/architecture.md#ore-as-a-dependency) for
 what stays a hard runtime dependency either way.
 
-The examples on this page assume you're running from the repository root, so that
-`engine` is importable as a top-level package (it has an `__init__.py`, so
+The examples on this page assume you're running from the repository root. `engine` itself
+is importable from anywhere once installed — `pip install -e .` puts it on the path, so
 `python -m engine.simulation.market_model` and
-`from engine.simulation.market_model import ...` both work without any extra path setup).
+`from engine.simulation.market_model import ...` work without any extra path setup and
+without `cd`-ing anywhere in particular. What the repository root buys you is that the
+**relative paths in these examples resolve**: `tests/fixtures/traderx-eod/...`,
+`demos/demo.py`, `tests/`.
 
-If you're using the project's own `venv/` on Windows, replace `python` in the commands
-below with `venv\Scripts\python.exe` (or activate the venv first with
-`venv\Scripts\activate`).
+If you're using the project's own `.venv/` on Windows, replace `python` in the commands
+below with `.venv\Scripts\python.exe` (or activate the venv first with
+`.venv\Scripts\activate`). On Linux/macOS the interpreter is `.venv/bin/python`.
 
 ## Running the demos
 
-All three demos live in [`demos/`](../../demos/) and must be run from the repository root
-(they import `engine`, which is only importable from there — see "Setting up" above).
+All four demos live in [`demos/`](../../demos/). Run them from the repository root, as
+written below — they import `engine`, which an editable install makes importable from any
+directory, but the paths in these commands are relative to the root.
 
 **The whole pipeline in one call:**
 ```bash
@@ -88,6 +104,20 @@ translation from stage 1's facts into `PortfolioRequestSchema`'s exact JSON shap
 a real integration, since it makes explicit which parts of the script would change for a
 different portfolio (stage 1) versus which parts wouldn't (stage 2) versus which parts are
 pure boilerplate reshaping (stage 3).
+
+**The same end-to-end path, sized so its profiler trace is readable:**
+```bash
+python demos/demo_profile_small.py
+```
+Exercises exactly what `demo_structured.py` does — calibration, simulation, all four
+instrument pricers, risk and Greeks, over the real HTTP API, in a real pool worker, under
+`jax.profiler.trace` — on a deliberately small portfolio, producing roughly a 41 MB trace in
+about 25 seconds under `.profile-out-small/`. It trades portfolio realism for trace
+ergonomics and nothing else. Note that it leaves Greeks **on**: Greeks is the one knob that
+genuinely moves trace size (~5x), which is precisely why a trace without it would not
+represent where this engine spends its time. See
+[Profiling a pricing job](#profiling-a-pricing-job) below and
+[Profiling & the Tracer](../concepts/profiling.md).
 
 Each pipeline module also has its own runnable demo in its own
 `if __name__ == "__main__":` block, showing that module's public API used end-to-end
@@ -143,6 +173,13 @@ python -m engine.risk.var_es
 Prints the portfolio's baseline (t=0) value and the VaR/ES numbers at each requested
 confidence level, for every simulated time step.
 
+> **⚠ This one currently crashes** with a maturity-pillar `ValueError` before printing
+> anything. Its `SwapConfig` omits `evaluation_date`, so the swap schedules off *today* while
+> the pillars it is priced against are pinned to 2026-07-30 — see
+> [I-28](../known-issues.md#i-28). The other five module demos above are unaffected, and
+> `compute_risk_metrics` itself is fine: `demos/demo.py` exercises the same VaR/ES path
+> end to end.
+
 ## Running the tests
 
 ```bash
@@ -154,15 +191,22 @@ covered where, and [Architecture: Testing philosophy](../concepts/architecture.m
 for the general approach (every formula is checked both for internal mathematical
 correctness and against ORE's own installed software directly).
 
-**The full suite takes roughly 20 minutes**, because the Monte Carlo and ORE-parity tests
-genuinely simulate and reprice. For a fast inner loop while working on the TraderX EOD
-boundary, the integration tests are a self-contained subset that runs in about a second —
-they load no JAX and no ORE (see
-[the EOD boundary doc](../reference/eod-integration.md#module-map)):
+**The full suite takes roughly 17 minutes** (1,777 tests, last measured at 16m55s — see
+[Known Issues](../known-issues.md) for the current verified figure), because the Monte Carlo
+and ORE-parity tests genuinely simulate and reprice. For a fast inner loop while working on
+the TraderX EOD boundary, the integration tests are a self-contained subset — 751 tests in
+a few seconds:
 
 ```bash
 python -m pytest tests/test_integration_*.py -q
 ```
+
+They are fast because [`engine.integration`](../reference/eod-integration.md#module-map)
+imports **no simulation pricer, no ORE builder and no curve construction** — it does import
+`ORE` itself, which W1.2 permitted for date and day-count arithmetic, but nothing that
+builds a pricing object. (Running them via `tests/` rather than by path still pays for
+`tests/conftest.py`, which imports JAX at collection time to enable x64 for the rest of the
+suite.)
 
 `tests/conftest.py` provides shared `pytest` fixtures (the example scenario
 configurations from `engine/simulation/demo_scenarios.py`, wrapped as fixtures, plus a
@@ -175,7 +219,7 @@ Requires the `api` extra (`pip install -e .[api]` — already included if you in
 `requirements.txt`). Start the server:
 
 ```bash
-venv/Scripts/python.exe -m uvicorn engine.api.app:app --reload
+.venv/Scripts/python.exe -m uvicorn engine.api.app:app --reload
 ```
 
 Then visit `http://127.0.0.1:8000/docs` for FastAPI's interactive Swagger UI, or submit a
@@ -210,6 +254,129 @@ curl http://127.0.0.1:8000/portfolio/price/<job_id>
 
 See [HTTP API](../reference/http-api.md) for the full endpoint reference, request/response
 schemas, and the async job pattern's reasoning.
+
+The same app also mounts a second router at `/eod`, the TraderX overnight batch contract —
+see [Pricing a TraderX EOD bundle](#pricing-a-traderx-eod-bundle) below.
+
+## Pricing a TraderX EOD bundle
+
+The same server also exposes a **second, separate contract** under `/eod` — the overnight
+batch boundary for TraderX. It is worth knowing which one you are talking to, because they
+behave differently on purpose:
+
+| | `/portfolio/price` | `/eod/price` |
+|---|---|---|
+| Shape | **Asynchronous** — `202` + `job_id`, then poll | **Synchronous** — one call returns the result |
+| Body | `PortfolioRequestSchema` (Pydantic) | `EodSubmissionSchema`, pointing at a bundle on disk |
+| Durability | In-memory `_JOBS`, lost on restart ([I-08](../known-issues.md#i-08)) | Published to a crash-safe store; survives restart |
+| Refusals | An unsupported trade is an error | An unsupported instrument is a **`200`** whose coverage names the refusal |
+
+That last row is the design: returning an HTTP error for a refusal would make "we correctly
+declined to guess" indistinguishable from "we broke." See
+[the EOD boundary doc](../reference/eod-integration.md) for the reasoning behind all four.
+
+**Ask what the engine can price, before submitting anything:**
+
+```bash
+curl http://127.0.0.1:8000/eod/capabilities
+```
+
+Returns the capability document — supported products, conventions, calculations, market-input
+modes and known limitations — derived from the allowlist on every call, so it cannot go stale
+relative to the engine serving it. This is what makes "no silent exclusions" checkable in
+advance rather than discovered afterwards.
+
+**Price a bundle:**
+
+```bash
+curl -X POST http://127.0.0.1:8000/eod/price \
+  -H "Content-Type: application/json" \
+  -d '{
+    "bundlePath": "tests/fixtures/traderx-eod/bill/v2",
+    "marketInputs": {"mode": "assumed-profile", "assumedProfileId": "flat-3pct-v1"},
+    "submissionId": "batch-2025-06-02-001"
+  }'
+```
+
+Only `bundlePath` is required, and it must point at a **versioned** bundle directory
+(`.../bill/v2`, not `.../bill`). The vendored fixtures under
+[`tests/fixtures/traderx-eod/`](../../tests/fixtures/traderx-eod/) — `bill`, `note`, `sofr`,
+`equity`, each with a `v1` and `v2` — are real delivered TraderX bundles and are the easiest
+thing to try this against.
+
+- **`marketInputs` is optional, and omitting it prices nothing** rather than falling back to
+  an assumed curve. There is deliberately no default profile at this layer: the fallback this
+  contract refuses to have would have to be introduced right here, so its absence is stated
+  rather than implied.
+- **`submissionId` is a caller-generated idempotency key.** Retrying a lost response with the
+  same value recovers the *same* attempt instead of launching a second overnight batch — and
+  since W0.8 that holds across an engine restart too. Reusing it with *different* inputs is a
+  `409`, not a silently different answer.
+- **`reuseExistingResult`** (default `true`) controls whether a previously completed result
+  may be served. `false` means "don't serve me a cache" — it does not disable `submissionId`
+  idempotency.
+
+The response is a completed attempt. Against the `bill/v2` fixture above:
+
+```json
+{
+  "workloadKey": "sha256:0564833c09a8e927...",
+  "attemptId": "...",
+  "state": "completed",
+  "reused": false,
+  "result": {
+    "itemOrder": {"scheme": "traderx-item-v1", "itemCount": 2, "itemIds": ["389c658c...", "f453f240..."], "sha256": "5475633f..."},
+    "items": [
+      {
+        "itemId": "389c658c1cc130bc4acea7496b59bd82",
+        "sourceIdentity": {"kind": "position", "accountId": "22214", "security": "UST-BILL-20251202"},
+        "calculations": {
+          "npv": {
+            "status": "ok",
+            "value": 98507.14563826029,
+            "method": "discounted-cashflow",
+            "discountFactor": 0.9850714563826029,
+            "dayCount": "ACT/365 (Fixed)",
+            "curveProvenance": {"curveId": "flat-3pct-v1", "inputOrigin": "assumed", "construction": "flat-constant"}
+          }
+        }
+      }
+    ],
+    "coverage": {"byCalculation": {"npv": {"ok": 2, "unsupported": 0, "unavailable": 0, "failed": 0, "notApplicable": 0}}}
+  }
+}
+```
+
+Two things in there carry most of the contract. **Every calculation has a `status`**, so a
+number and a refusal are distinguishable per instrument per calculation rather than lumped
+into one job-level verdict — and `coverage` counts those statuses so a coordinator can assert
+a batch was complete without walking every item. **`curveProvenance` travels with the
+number**, so `"inputOrigin": "assumed"` is visible on the price itself rather than buried in
+a submission you would have to go back and find.
+
+Try the same call against `tests/fixtures/traderx-eod/bill/v1` to see the other half: it
+returns `200` with `npv` counted as `unsupported: 2` — a refusal, reported rather than raised.
+
+**Look a result up again**, either by its workload key (the content-addressed identity of the
+computation) or by attempt id:
+
+```bash
+curl http://127.0.0.1:8000/eod/results/by-workload/<workload_key>
+curl http://127.0.0.1:8000/eod/attempts/<attempt_id>
+```
+
+Both survive a restart, because terminal attempts are published to a durable store rather
+than held in memory — see
+[EOD: W0.8](../reference/eod-integration.md#w08--crash-safe-publication-and-the-durable-result-store)
+for the four-step protocol and where the store lives (`JAX_EOD_STORE_ROOT`, else a per-user
+directory under the system temp root).
+
+The published JSON Schemas for the result and capability documents are served alongside:
+
+```bash
+curl http://127.0.0.1:8000/eod/schemas/result
+curl http://127.0.0.1:8000/eod/schemas/capabilities
+```
 
 ## Writing your own market simulation config
 

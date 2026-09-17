@@ -377,7 +377,7 @@ which American exercise is priced through:
   construction exactly, converges as it's refined, and a reset-aligned American exactly
   reproduces the equivalent explicit Bermudan.
 
-`tests/test_greeks_bermudan.py` (11 tests) — Delta/Gamma/Theta/Vega for this module's own
+`tests/test_greeks_bermudan.py` (26 tests) — Delta/Gamma/Theta/Vega for this module's own
 pricer, via `engine.risk.greeks`: see
 [Delta, Gamma, and Theta: Tested by](../risk/greeks.md#tested-by) for the full breakdown,
 including the Gamma finite-difference methodology (finite-differencing the *gradient*
@@ -385,7 +385,7 @@ rather than the price, since a naive price-level central difference is numerical
 unreliable for this pricer at a realistic bump size) and the Vega cross-check against a
 literal finite-difference recalibration.
 
-`tests/test_calibration_integration.py` (3 tests) — a calibrated `Sigma` from
+`tests/test_calibration_integration.py` (6 tests) — a calibrated `Sigma` from
 `engine.calibration.lgm.calibrate_lgm_sigma` fed into `BermudanSwaptionConfig.hw_sigma`
 and priced end-to-end through this module, confirming the `Union[float, Sigma]` interface
 works identically to a flat scalar throughout the full pipeline.

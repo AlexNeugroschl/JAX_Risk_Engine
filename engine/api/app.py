@@ -1,7 +1,7 @@
 """
 FastAPI app factory. Run directly with uvicorn:
 
-    venv/Scripts/python.exe -m uvicorn engine.api.app:app --reload
+    .venv/Scripts/python.exe -m uvicorn engine.api.app:app --reload
 
 See docs/reference/http-api.md for the full endpoint reference and the
 sync-vs-async job pattern's reasoning (measured ~52s wall time for a

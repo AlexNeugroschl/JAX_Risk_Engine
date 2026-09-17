@@ -11,7 +11,7 @@ this codebase's JAX code.
   numerical work accepts a `dtype` parameter, to support switching between 64-bit and
   32-bit precision (see [Architecture: Adjustable precision](architecture.md#adjustable-precision)).
   `PrecisionConfig`'s `pricing`/`risk` knobs brought `engine/portfolio/request.py`
-  (`step_times`, `_base_npv`, `_flat_curve_cube`, `_zero_curve_of`), `engine/risk/greeks.py`'s
+  (`step_times`, `_base_npv`, `_flat_curve_cube`), `engine/risk/greeks.py`'s
   Delta/Gamma/Vega closures, `bermudan_swaption.py`'s own `_zero_curve_of`/
   `_state_grid`/`_run_backward_induction`/`_hw_swap_value_at_nodes`, and
   `european_swaption.py`'s `_solve_rstar`/`_bisect_rstar` into compliance — each now

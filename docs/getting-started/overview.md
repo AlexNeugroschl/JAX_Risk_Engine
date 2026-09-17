@@ -38,7 +38,9 @@ well), but it's built and tuned for TPU specifically.
    payments) as well as European, Bermudan, and American swaptions (options on swaps) —
    see [Instruments: Interest Rate Swaps](../instruments/swaps.md),
    [European Swaptions](../instruments/european-swaptions.md), and
-   [American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md).
+   [American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md). US
+   Treasury bills and notes are also priced, but only for *today* — they have no scenario
+   dimension, which is why they get no VaR (see step 3).
 
 3. **Measure the risk.** Look at the full spread of "what-if" trade values across every
    scenario and compute standard risk numbers: **Value at Risk (VaR)** ("in the worst 5%
@@ -81,9 +83,12 @@ ambitions (see the root [README.md](../../README.md) for the full roadmap):
   in this codebase has been checked line-by-line against ORE's own installed software,
   and the test suite includes tests that run ORE itself and compare answers directly. This
   is described more in [Architecture](../concepts/architecture.md).
-- **Eventually, a live API.** The long-term plan is to expose this engine as a web API
-  that another system ("TraderX") can call in real time, not just run as an overnight
-  batch script.
+- **A live API, now built.** The engine is exposed as a web API that another system
+  ("TraderX") can call, rather than only running as an overnight batch script. Two separate
+  contracts are served: a general portfolio-pricing one, and a stricter end-of-day one for
+  TraderX's hash-verified overnight bundles. See [HTTP API](../reference/http-api.md) and
+  [EOD Integration](../reference/eod-integration.md). What remains planned is *coverage* —
+  the range of instruments the end-of-day path can price without refusing.
 
 ## What's actually built right now
 
@@ -93,9 +98,20 @@ ambitions (see the root [README.md](../../README.md) for the full roadmap):
 | Interest rate swap pricing | Prices interest rate swaps across every simulated scenario | ✅ Working |
 | European swaption pricing | Prices single-exercise-date swaptions (Jamshidian's closed-form decomposition) | ✅ Working |
 | Bermudan & American swaption pricing | Prices multi/continuous-exercise-date swaptions (numeric LGM backward induction) | ✅ Working |
+| Treasury bills & notes | Prices US Treasuries by discounted cashflows — **today's value only**, no scenarios and therefore no VaR/ES | ✅ Working |
 | Value at Risk / Expected Shortfall | Turns trade values into risk numbers | ✅ Working |
+| Sensitivities ("Greeks") | How much a trade's value moves when rates or volatility move | ✅ Working |
+| Calibration | Fits the model's volatility to real market swaption quotes | ✅ Working |
+| Portfolio entry point | Prices a whole mixed portfolio in one call | ✅ Working |
+| Live API | A running web service other systems can call over HTTP | ✅ Working |
+| TraderX end-of-day integration | Accepts TraderX's overnight book snapshot, prices Treasuries, and **explicitly refuses** everything it cannot price faithfully | ⚠️ Partial |
 | XVA (valuation adjustments) | Not yet built | 🔜 Planned |
-| Live API | Not yet built | 🔜 Planned |
+
+**On that "explicitly refuses".** The end-of-day boundary is built around one rule: it never
+guesses. If it cannot price something faithfully — a USD-SOFR swap, a cash equity, a corporate
+bond — it returns a *named refusal* saying exactly what it would need, rather than a
+confident-looking number that happens to be wrong. See
+[EOD Integration](../reference/eod-integration.md).
 
 ## Where to go next
 

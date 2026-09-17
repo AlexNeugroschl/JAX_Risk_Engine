@@ -28,12 +28,22 @@ This module computes three of the most standard Greeks:
   because moving one day closer to maturity changes discounting and, for options,
   changes how much time is left for the market to move before the exercise decision.
 
-## Scope: every instrument in this codebase
+## Scope: every rate-derivative instrument in this codebase
 
 This module computes Delta/Gamma/Theta for [interest rate swaps](../instruments/swaps.md),
 [European swaptions](../instruments/european-swaptions.md), and
 [Bermudan/American swaptions](../instruments/american-bermudan-swaptions.md), plus Vega
 for Bermudan/American swaptions (see [Vega](#vega-bermudanamerican-only) below).
+
+**Bonds are the exception, and their Greeks are not computed here.**
+`engine/instruments/treasury.py` is plain `math.exp` arithmetic rather than JAX, so there
+is no computational graph for `jax.grad` to traverse. A `BondConfig`'s Delta/Gamma/Theta
+come from `engine/portfolio/request.py::_bond_greeks` by **bumped revaluation** instead —
+a ±1bp central difference for Delta and Gamma, and a one-calendar-day reprice for Theta —
+and they are **scalars**, not the per-pillar vectors this module returns. There is no
+bond Vega: a fixed-coupon bond off a deterministic curve has no volatility input, so it is
+*omitted* rather than reported as `0.0`. See
+[The Portfolio Entry Point: Greeks](../reference/portfolio-entrypoint.md#greeks).
 
 - **Bermudan/American Greeks** work because `bermudan_swaption.py`'s backward-induction
   engine (see [American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md))

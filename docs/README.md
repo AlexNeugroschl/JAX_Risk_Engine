@@ -18,6 +18,7 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 | Price a whole portfolio in one call, from Python | [The Portfolio Entry Point](reference/portfolio-entrypoint.md) |
 | Price a whole portfolio over HTTP | [HTTP API](reference/http-api.md) |
 | Consume a TraderX end-of-day bundle (and know what gets refused) | [EOD Integration Boundary](reference/eod-integration.md) |
+| Actually submit an EOD bundle over HTTP, end to end | [User Guide: Pricing a TraderX EOD bundle](getting-started/user-guide.md#pricing-a-traderx-eod-bundle) |
 | Profile a pricing job's JAX vs. Python time | [User Guide](getting-started/user-guide.md#profiling-a-pricing-job) |
 | Understand the tracer, and why Greeks used to dominate a trace | [Profiling & the Tracer](concepts/profiling.md) |
 | Understand a term you don't recognize | [Glossary](concepts/glossary.md) |
@@ -34,8 +35,10 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
   apply throughout the codebase (JAX purity/vectorization constraints, how ORE's C++ gets
   translated into JAX).
 - **[Profiling & the Tracer](concepts/profiling.md)** — how the XProf hook works, what a
-  trace contains, why the Bermudan Greeks path used to compile ~600 XLA programs per job
-  (and now compiles 13), and how to read a trace's phase annotations.
+  trace contains, why a cold pricing job compiled ~600 XLA programs (208 on the current
+  4-trade demo portfolio, of which **31 still recompile on every warm repeat** — 23 of
+  them in `engine/risk/greeks.py`, tracked as [I-21](known-issues.md#i-21)), and how to
+  read a trace's phase annotations.
 - **[Glossary](concepts/glossary.md)** — plain-language definitions for every finance and
   engineering term used in these docs.
 
@@ -66,9 +69,12 @@ counterparts live at the integration boundary
 - **[VaR & Expected Shortfall](risk/var_es.md)** — turns any instrument's NPV cube
   into standard risk numbers, matching `ORE.RiskStatistics` exactly.
 - **[Delta, Gamma, Vega, and Theta](risk/greeks.md)** — per-curve-pillar sensitivities for
-  every instrument in this codebase (including Bermudan/American Vega, via
+  every *rate-derivative* instrument (including Bermudan/American Vega, via
   `engine/calibration/`), via JAX automatic differentiation scaled to ORE's own
-  bump-and-revalue convention.
+  bump-and-revalue convention. **Bonds are the exception**: they are not JAX, so their
+  Delta/Gamma/Theta are bumped revaluations computed in `engine/portfolio/request.py`, as
+  scalars rather than per-pillar vectors, with no Vega — see
+  [The Portfolio Entry Point](reference/portfolio-entrypoint.md#greeks).
 
 ## Reference
 
@@ -84,11 +90,12 @@ counterparts live at the integration boundary
   deliberately different contract governed by a published JSON Schema rather than Pydantic.
 - **[EOD Integration Boundary](reference/eod-integration.md)** — `engine/integration/`'s
   hash-verified TraderX bundle ingestion, terms join, unit normalization, convention
-  allowlist and per-calculation coverage model, plus both Treasury pricers and (W1.6) the
-  versioned contract interface served over HTTP under `/eod`. Read it for the zero-coupon
-  accrued rule, the CRLF hash trap, why a USD-SOFR booking is refused rather than routed
-  through the generic swap builder, and why an equity is refused rather than valued at its
-  own exported mark.
+  allowlist and per-calculation coverage model, plus both Treasury pricers, (W1.6) the
+  versioned contract interface served over HTTP under `/eod`, and (W0.8) the crash-safe
+  durable result store behind it. Read it for the zero-coupon accrued rule, the CRLF hash
+  trap, why a USD-SOFR booking is refused rather than routed through the generic swap
+  builder, why an equity is refused rather than valued at its own exported mark, and why
+  a published manifest — not a pointer file — is the commit point for a result.
 - **[Models & Trades](reference/models-and-trades.md)** — the shared foundation layer
   (`engine/models/`) every instrument pricer is built on: Hull-White and
   LGM closed-form math, and shared ORE trade-building/cashflow extraction.

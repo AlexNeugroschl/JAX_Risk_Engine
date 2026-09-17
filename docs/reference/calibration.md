@@ -263,7 +263,7 @@ itself, whose bisections never need `price_lgm_swaption`'s gradient) could have 
 **The fix.** `_bisect_xstar` wraps `_bisect_xstar_raw` with the same
 [implicit function theorem](https://en.wikipedia.org/wiki/Implicit_function_theorem)
 correction `european_swaption._solve_rstar` already uses (see
-[Delta, Gamma, and Theta](../risk/greeks.md#two-real-bugs-this-module-found-and-fixed)) —
+[Delta, Gamma, and Theta](../risk/greeks.md#differentiating-through-bisection-root-finds)) —
 a `jax.custom_jvp` implementing, at a root of `f(x*, params) = 0`:
 
 ```
@@ -300,7 +300,7 @@ finite-difference recalibration — see
 
 ## Tested by
 
-- `tests/test_calibration_basket.py` (16 tests) — `build_coterminal_basket`'s schedule/par-
+- `tests/test_calibration_basket.py` (15 tests) — `build_coterminal_basket`'s schedule/par-
   rate construction, `price_lgm_swaption`'s two-route verification described above (formula
   pieces against live `ORE.LinearGaussMarkovModel` objects, full price against the
   numeraire-deflated Monte Carlo), monotonicity, and the `_bisect_xstar` gradient-
@@ -310,7 +310,7 @@ finite-difference recalibration — see
   reprice of every basket instrument (RMSE ~`1e-10`), the triangular
   `aTimes = swaptionExpiries[:-1]` bucket construction, ordering assertions, and
   `CalibrationResult`'s diagnostic fields.
-- `tests/test_calibration_integration.py` (3 tests) — end-to-end: build a basket, calibrate
+- `tests/test_calibration_integration.py` (6 tests) — end-to-end: build a basket, calibrate
   a `Sigma`, feed it into `BermudanSwaptionConfig.hw_sigma`, price the Bermudan, confirming
   the calibrated `Sigma` behaves correctly as a drop-in replacement for a flat scalar
   throughout the full pricing pipeline.

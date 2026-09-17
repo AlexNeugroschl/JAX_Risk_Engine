@@ -30,7 +30,7 @@ never imports anything from `engine/instruments/`. It only requires
 *some* NPV cube shaped `[Scenarios, TimeSteps, Trades]` — which means the exact same code
 will work unmodified for any future instrument type this engine adds (options, bonds,
 whatever comes next), with zero changes needed here. See
-[Architecture: stages agree on shapes, not code](../concepts/architecture.md#design-principle-stages-agree-on-shapes-not-code).
+[Architecture: stages agree on shapes, not code](../concepts/architecture.md#design-principle-modules-agree-on-shapes-not-code).
 
 ## Why it's built this way: matching ORE's exact formula
 

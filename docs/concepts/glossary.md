@@ -4,16 +4,44 @@ Plain-language definitions for terms used throughout these docs. Finance terms a
 math/engineering terms are mixed together alphabetically — if you only know one side,
 skim for the terms you don't recognize.
 
+**Accrued interest** — Interest a bond has earned but not yet paid out, because the next
+coupon date hasn't arrived. A buyer pays it on top of the quoted price, which is why a
+bond has two prices — see **clean price / dirty price**. See
+[EOD Integration](../reference/eod-integration.md).
+
 **At-par (coupon pricing)** — A convention for pricing a floating-rate payment using a
 single forward interest rate covering its whole accrual period, rather than
 compounding several shorter fixings within that period. The standard/default approach,
 and the one this project uses (matching ORE's own default).
+
+**Bermudan / American swaption** — A swaption exercisable on *several* dates (Bermudan) or
+at *any* time in a window (American), rather than on one date only (European). Early
+exercise has no closed-form price, so these are valued by working backwards through a grid
+of possible future rates. See
+[American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md).
+
+**Bill / note (Treasury)** — Two shapes of US government debt. A **bill** is
+zero-coupon — one payment at maturity. A **note** pays periodic coupons plus the face
+amount at maturity. In this codebase both are one `BondConfig` type, a bill being the
+degenerate case with no coupon schedule. See
+[The Portfolio Entry Point: Bonds](../reference/portfolio-entrypoint.md#bonds).
 
 **Brownian bridge** — A technique for reordering random numbers used in a simulation so
 that the numbers with the best statistical properties are used for the parts of the
 simulated path that matter most (typically, the final and midpoint values). Named after
 Brownian motion, the mathematical model of a continuously random path. See
 [Market Simulation](market-simulation.md#phase-1--quasi-monte-carlo-shock-generation).
+
+**Calibration** — Adjusting a model's internal parameters until it reproduces prices
+actually quoted in the market. This project fits the LGM model's volatility term structure
+to market swaption quotes, so the model agrees with observable prices before it is used to
+value anything else. See [Calibration](../reference/calibration.md).
+
+**Clean price / dirty price** — A bond's **dirty** (or *full*) price is what you actually
+pay: the present value of every remaining cashflow. The **clean** price is the dirty price
+minus **accrued interest**, and is the one conventionally quoted. Confusing the two is a
+real error of roughly the accrued amount — about $1,857 on a $100k note — large enough to
+matter and small enough to look like a curve difference.
 
 **Confidence level / percentile** — In the context of VaR, "how far into the bad
 outcomes are we willing to look." 95% VaR looks at the worst 5% of outcomes; 99% VaR
@@ -24,6 +52,13 @@ prices and interest rates are correlated, knowing one tells you something about 
 likely direction of the other. A **covariance matrix** is the mathematical object that
 encodes correlation (and individual variance/volatility) between every pair of things
 being simulated at once.
+
+**Day count convention** — The rule for converting two dates into a fraction of a year
+(ACT/360, ACT/365 Fixed, ACT/ACT (ICMA), 30/360, …). It decides how much interest accrues
+between two dates, so using the wrong one silently misprices every coupon. This codebase
+keeps two *roles* distinct: the **time axis** used for discounting, and the **accrual**
+convention the instrument itself specifies. An unsupported convention is refused, never
+defaulted.
 
 **Discount factor** — A number between 0 and 1 answering "how much is $1, promised at
 some future date, worth today?" A discount factor of 0.95 means $1 in the future is
@@ -65,6 +100,12 @@ euro buys).
 prices (and similar assets) are assumed to move randomly over time, where it's the
 *percentage* change that's random and roughly bell-curve-shaped, not the absolute dollar
 change. See [Market Simulation](market-simulation.md#phase-2--the-cross-asset-model-engine).
+
+**Greeks (Delta, Gamma, Vega, Theta)** — Sensitivities: how much a trade's value moves
+when something else moves. **Delta** — per unit change in interest rates. **Gamma** — how
+Delta itself changes (curvature). **Vega** — per unit change in volatility. **Theta** — per
+day of time passing, holding the market fixed. Named for Greek letters by convention. See
+[Delta, Gamma, Vega, and Theta](../risk/greeks.md).
 
 **Hull-White model (HW1F)** — The standard mathematical model this project uses for how
 interest rates move randomly over time. "1F" means "one factor" — one source of
@@ -143,6 +184,12 @@ specially constructed, evenly-spread sequences of numbers (like a **Sobol sequen
 instead of ordinary randomness, so that fewer simulated scenarios are needed to get a
 stable answer.
 
+**Refusal (`unsupported`)** — This project's central design rule at the TraderX boundary:
+when it cannot price something faithfully, it returns an explicit, named refusal saying
+what it would need, rather than a plausible-looking number. An explicit refusal is
+recoverable; a confidently wrong number is not. See
+[EOD Integration](../reference/eod-integration.md).
+
 **Scenario** — One simulated "alternate future" — one complete, self-consistent
 simulated path for every rate/price being modeled, from today out to the simulation's
 final time step. This project typically simulates thousands of scenarios at once.
@@ -162,10 +209,12 @@ exercising will turn out to be favorable, not just on expected future cashflows.
 variants, which allow exercise on multiple dates rather than just one, also exist — see
 [Instruments: American/Bermudan Swaptions](../instruments/american-bermudan-swaptions.md).
 
-**TraderX** — The name (per this project's [Roadmap](../planning/roadmap-and-history.md))
-of an external system
-this engine is eventually meant to serve as a live API for, rather than only running as
-an offline script. See also the [TraderX Integration Plan](../planning/traderx-integration.md).
+**TraderX** — An external trading system this engine serves, rather than only running as
+an offline script. Two integrations exist: the general portfolio API
+([HTTP API](../reference/http-api.md)), and the stricter **end-of-day (EOD)** contract,
+which accepts a hash-pinned overnight snapshot of TraderX's book and returns an identified
+result per position ([EOD Integration](../reference/eod-integration.md)). See also the
+[TraderX Integration Plan](../planning/traderx-integration.md).
 
 **Value at Risk (VaR)** — The most standard risk number in finance: "what's the cutoff
 loss such that we expect to lose *more* than that only X% of the time?" E.g. 95% VaR of
@@ -177,17 +226,23 @@ least that much. See [Risk Statistics](../risk/var_es.md).
 number one at a time in Python. Essential for anything to run fast on a GPU, and a hard
 requirement throughout this codebase's JIT-compiled code.
 
+**Volatility** — How much a price or rate tends to fluctuate randomly; a higher
+volatility means bigger, more frequent swings. Usually written as `σ` (sigma) in
+formulas.
+
+**Workload key** — At the EOD boundary, a hash over *everything that can change a number*
+(bundle identity, market inputs, requested calculations, mapping/engine/schema versions,
+precision). Two submissions with the same key are the same computation, so a retry can
+return the stored result instead of recomputing it. Deliberately excludes the
+`submissionId`, which identifies a *request* rather than a computation.
+
+**Yield curve** — A full set of interest rates (or, equivalently, discount factors)
+across every future maturity date, as observed (or, in this project, simulated) at one
+point in time. See [Market Simulation: Phase 3](market-simulation.md#phase-3--yield-curve-reconstruction).
+
 **Zero-coupon bond** — The simplest possible bond: a single promise to pay a fixed amount
 (conventionally $1) at one future maturity date, with no interim interest payments. Its
 price today is exactly a discount factor. Jamshidian's trick works by breaking a
 swaption's complex payoff down into options on zero-coupon bonds, since those have a
 simple closed-form price under the Hull-White model. See
 [Instruments: European Swaptions](../instruments/european-swaptions.md).
-
-**Volatility** — How much a price or rate tends to fluctuate randomly; a higher
-volatility means bigger, more frequent swings. Usually written as `σ` (sigma) in
-formulas.
-
-**Yield curve** — A full set of interest rates (or, equivalently, discount factors)
-across every future maturity date, as observed (or, in this project, simulated) at one
-point in time. See [Market Simulation: Phase 3](market-simulation.md#phase-3--yield-curve-reconstruction).

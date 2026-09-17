@@ -20,6 +20,7 @@ suite did not surface them — in one case a test actively asserted the buggy be
 | **FLAGGED** | Inaccuracy **unchanged**. The engine now warns instead of staying silent. Not a fix. |
 | **OPEN** | Not addressed. Numbers are wrong or absent today. |
 | **ASSUMPTION** | Nothing known to be broken. The engine acts on an **unconfirmed reading** of an external contract, and the reading may be wrong. Registered so a deliberate interpretation does not pass for a settled fact. |
+| **PARTIAL** | Closed on one path and open on another. Used only where the split is real and nameable — not as a softer word for OPEN. [I-08](#i-08) is the current case: the EOD path is durable, the portfolio path is not. |
 
 **On ASSUMPTION, added 2026-09-16 with [I-23](#i-23).** The other three statuses all describe
 something the code gets wrong. This one describes a decision made in the absence of an answer
@@ -28,16 +29,36 @@ the code behaves exactly as designed. An entry here is a standing question to an
 party, not a bug queue item, and it closes when the question is answered rather than when
 code changes.
 
-Last full verification (2026-09-17, after **W1.5**): **1,716 passed, 0 failed** (11m24s) —
-the complete suite, nothing excluded. That is 1,618 + the 98 W1.5 tests, so the delta
-reconciles exactly. Previously 1,618/0 after W1.6, 1,452/1 after the v5 fixes, 1,384/2 after
-W1.4, 1,324/2 after W1.3, 1,217/2 after W1.2.
+Last full verification (2026-09-17, after **W0.8**): **1,777 passed, 0 failed** (16m55s) —
+the complete suite, nothing excluded, summary line printed, exit code 0. That is 1,718 at the
+previous commit plus W0.8's 59 new tests (51 in `tests/test_integration_publication.py`, and
+8 net added to `tests/test_integration_eod_routes.py`, which goes 56 → 64), so the delta
+reconciles exactly: 1,718 + 51 + 8 = 1,777.
+
+**Two corrections to figures previously recorded here**, both found by re-collecting rather
+than re-reading:
+
+1. The total here briefly read **1,770**, reconciled as "52 new tests (44 + 8)". Both halves
+   were wrong. `tests/test_integration_publication.py` collects **51**, not 44 — the 44 was a
+   count of `def test_` lines, which undercounts every parameterized case. And 1,770 was
+   taken before the last of the `eod_routes` tests landed.
+2. Before that it read **1,716 after W1.5**, reconciled as "1,618 + the 98 W1.5 tests".
+   Re-collecting that commit (`pytest --collect-only` at `1e078f3`) yields **1,718** — so
+   that total and its arithmetic were off by two.
+
+Counts here are now taken from `pytest --collect-only`, never transcribed from a remembered
+summary line and never derived by grepping for `def test_`. A register whose own header
+overstates its verification undermines every status in it. Earlier figures, for history:
+1,618/0 after W1.6, 1,452/1 after the v5 fixes, 1,384/2 after W1.4, 1,324/2 after W1.3,
+1,217/2 after W1.2.
 
 **One caveat, and it is about the runner rather than the code.** [I-27](#i-27) makes a
 whole-suite run *intermittently* hard-abort inside XLA compilation, killing the process with
-no summary at all. This run completed cleanly; an earlier identical one did not. So a green
-result here is real but **not reliably repeatable on demand** — always confirm a summary line
-was actually printed before calling a run green.
+no summary at all. This run completed cleanly; an earlier identical one did not — and during
+this same session a run interrupted by an unrelated `git stash` of the working tree also
+terminated without a summary, which is a reminder that the tree must be left alone for the
+duration of a run. So a green result here is real but **not reliably repeatable on demand** —
+always confirm a summary line was actually printed before calling a run green.
 
 A green suite is evidence about the *tests*, not proof about the *code* — working rule 9,
 which this register exists to embody. Of the defects found during this integration, three came
@@ -56,15 +77,23 @@ Two previously-recorded header caveats are now resolved:
   > **⚠ Always run `.venv/Scripts/python.exe -m pytest`, never the bare `python`.** During
   > W1.5 the system interpreter was used by mistake, where `pydantic` and `jsonschema` are
   > absent. That made `tests/test_api.py` and `tests/test_integration_schema.py`
-  > **uncollectable — 46 tests silently missing** — and produced a full-suite count of 1,663
-  > against the venv's 1,709, a discrepancy that looked like a regression and was purely
-  > environmental. A count taken from the wrong interpreter is not comparable to anything
-  > recorded here. See [I-25](#i-25).
-- `test_cross_tier_jobs_correct_and_concurrent` — the long-running flake — **passed** here
-  after failing in every full run since W1.2. That is consistent with its diagnosis as a
-  load-dependent wall-clock overlap assertion rather than a defect (it always passed in
-  isolation and against stashed pre-fix code). **A green run is not proof it is fixed**: the
-  assertion is still timing-sensitive, it shares [I-15](#i-15)'s premise, and it remains a
+  > **uncollectable — 77 tests silently missing at today's counts** (31 + 46) — and produced
+  > a full-suite count of 1,663 against the venv's 1,709, a discrepancy that looked like a
+  > regression and was purely environmental. A count taken from the wrong interpreter is not
+  > comparable to anything recorded here. See [I-25](#i-25). (This bullet previously said
+  > "46", which was `test_integration_schema.py`'s share alone.)
+- `test_cross_tier_jobs_correct_and_concurrent` — the long-running flake — **failed again**.
+  W0.8 ran the full suite twice: run 1 passed it (1,770 / 0), run 2 failed it
+  (1,771 passed, 1 failed). An earlier version of this bullet claimed it had "passed again …
+  its second consecutive clean full-suite pass" — that was written from run 1 and **run 2
+  falsified it**. The intermittency is the whole point: it passes in isolation (12.28s,
+  re-run immediately after run 2), it failed in every full run from W1.2 through W1.5, and it
+  has now passed and failed in full runs of the *same* code an hour apart. A **third** full
+  run, taken during the documentation pass that added [I-28](#i-28), passed it again
+  (1,777 / 0, 16m55s) — so the tally across W0.8 stands at two passes and one failure, which
+  changes nothing. That is consistent with a load-dependent wall-clock overlap assertion
+  rather than a defect, and it is a standing warning that **a single green run of this test
+  means nothing in either direction**. It shares [I-15](#i-15)'s premise and remains a
   follow-up.
 
 **This line reports what a full run actually produces.** Earlier figures here (824, 1092,
@@ -84,7 +113,7 @@ own header overstates its verification undermines every status in it.
 | [I-05](#i-05) | No faithful USD-SOFR/ACT360 swap construction | **High** | ❌ OPEN — refusal path landed (W0.4) |
 | [I-06](#i-06) | Mid-coupon Bermudan/American exercise understates value | Medium | ⚠️ FLAGGED |
 | [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — both Treasury pricers landed (W1.2 bill, W1.3 note) |
-| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ❌ OPEN — attempt semantics + 4 lookup states landed on the EOD path (W1.6.4) |
+| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8); the portfolio path's `_JOBS` dict is unchanged |
 | [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN |
 | [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary (W0.7) |
 | [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ❌ OPEN — measure + MC diagnostics landed (W0.6) |
@@ -104,6 +133,7 @@ own header overstates its verification undermines every status in it.
 | [I-25](#i-25) | A **scalar** Greek crashed the HTTP result serializer | Medium | ✅ FIXED |
 | [I-26](#i-26) | Greeks for a bond maturing **tomorrow** crashed on the theta reprice | Low | ✅ FIXED |
 | [I-27](#i-27) | Long full-suite runs **hard-abort inside XLA compilation**, with no summary line | Medium | ❌ OPEN — located, not root-caused |
+| [I-28](#i-28) | `python -m engine.risk.var_es`'s **own demo crashes**: it omits `evaluation_date`, so its swap schedules off today | Low | ❌ OPEN |
 
 **The two that matter most for financial correctness are [I-04](#i-04) and [I-05](#i-05).**
 Both are unfixed. Both need inputs or decisions that do not exist yet — not more engineering
@@ -339,9 +369,15 @@ moving to FLAGGED or FIXED.
 
 **Severity:** Medium · **Status:** ❌ OPEN
 
-`engine/instruments/` contains exactly four modules, all rate derivatives (swap, European /
-Bermudan / American swaption). There is **no pricer** for Treasuries, corporate bonds, cash
-equities/ETFs, or listed options — all of which appear in TraderX's schema-3 position export.
+**As originally written (pre-W1.2):** `engine/instruments/` contained exactly four modules,
+all rate derivatives (swap, European / Bermudan / American swaption), and there was **no
+pricer** for Treasuries, corporate bonds, cash equities/ETFs, or listed options — all of
+which appear in TraderX's schema-3 position export.
+
+**Today** Treasuries price on both paths (W1.2/W1.3 at the integration boundary, W1.5 as
+`engine/instruments/treasury.py`, now a fifth module). Corporate bonds, cash equities and
+listed options remain unpriced — see "Scope of that, stated precisely" below for exactly
+which of those is missing a *pricer* versus missing *market data*.
 
 **Important distinction:** `SimulationConfig.equities` drives correlated equity *risk-factor
 paths*. It is **not** an equity position pricer — nothing takes a signed share count and
@@ -514,7 +550,8 @@ the arithmetic is not what is missing.
 
 ### I-08 — Job store is in-process and lost on restart {#i-08}
 
-**Severity:** Medium · **Status:** ❌ OPEN
+**Severity:** Medium · **Status:** ⚠️ PARTIAL — **EOD path durable (W0.8, 2026-09-17); the
+portfolio path's `_JOBS` dict is unchanged**
 
 `_JOBS` in [`engine/api/routes.py`](../engine/api/routes.py) is a plain Python dict in the
 dispatcher process. A restart loses every job id; a second uvicorn worker would 404 on ids
@@ -541,15 +578,45 @@ attempt cannot overwrite a first's outcome), and the **four distinguishable look
 so an accepted-but-running job no longer looks like an unknown one, which is what previously
 invited a duplicate overnight batch.
 
-**What is still open, and why the status has not changed.** The store is still an in-process
-dict, so a restart still loses *running*-state knowledge. The crash-safety design in
-[plan §W0.8](planning/traderx-integration-plan.md) — publish via a content-addressed manifest,
-with lookup falling back to a **scan** rather than trusting a pointer — is deliberately not
-built, because there is no persistent artifact store to scan. This is the difference between
-*fixed* and *mitigated* (working rule 5): the state machine is right, and nothing durable
-backs it yet. Note also that the portfolio path's `_JOBS` dict in
-[`engine/api/routes.py`](../engine/api/routes.py) is **untouched** by this — the mitigation is
-EOD-only.
+**Closed on the EOD path by W0.8's second half (2026-09-17).**
+[`engine/integration/publication.py`](../engine/integration/publication.py) adds the durable
+store the earlier mitigation was missing, and with it the crash-safety design from
+[plan §W0.8](planning/traderx-integration-plan.md):
+
+- **The four-step publication protocol** — stage to a temp path, verify the hash of what was
+  *actually written* (not what was meant to be), atomically publish the manifest, then advance
+  the pointer. Every crash window leaves a coherent store: nothing partial is ever
+  discoverable.
+- **The manifest is the commit point; the pointer is a cache.** Lookup falls back to a
+  **scan** over published manifests whenever the pointer is missing, torn, or behind, and
+  reconciles the pointer as a side effect. This closes the window TraderX found in v3 — a
+  crash between publish and pointer advance previously left a complete result that no lookup
+  could find.
+- **Completed and failed attempts survive a restart**, addressable by `attemptId`, and
+  **idempotent submission survives it too**: a coordinator retrying a lost response after a
+  bounce recovers its original attempt rather than starting a duplicate overnight batch.
+
+**What remains true, and is deliberate.** A *running* attempt is still memory-only and is
+still lost on restart — it is never published, because writing one would make an in-flight
+computation discoverable as a finished answer. After a restart such a job reports as unknown,
+the coordinator resubmits, and the workload key makes the recomputation identical. That is an
+infrastructure event, not a financial one.
+
+**One ordering defect was found after the fact and fixed.** Publication originally ran
+*after* the in-memory transition, so a store failure left an attempt `completed` in memory
+with nothing on disk — a result this process reported as finished and no restart could find,
+and which the immutability guard then refused to let anyone retry. The transition now happens
+only if the manifest lands, applying the store's own commit-first rule to the in-memory
+attempt. The *failure* path deliberately keeps the opposite ordering: `fail()` marks the
+attempt failed whether or not publication succeeds, because leaving it `running` would report
+an in-flight job to a coordinator that would wait forever, which is worse than the
+`UNKNOWN_WORKLOAD` a restart yields.
+
+**Still open, and why this issue is not fully closed.** The portfolio path's `_JOBS` dict in
+[`engine/api/routes.py`](../engine/api/routes.py) is **untouched** — this work is EOD-only.
+The store is also single-machine: it is thread-safe within a process (an unguarded sequence
+counter was measured issuing 2 distinct values across 30 concurrent publications, now locked),
+but two engines on two machines do not coordinate.
 
 ---
 
@@ -1039,6 +1106,58 @@ unsafely across the parent and its spawned workers.
 **Related:** [I-15](#i-15) and `test_cross_tier_jobs_correct_and_concurrent` share the
 worker-pool/timing premise. Whether they are the same underlying problem is **not**
 established.
+
+---
+
+### I-28 — The `var_es` module demo crashes on a date that moved {#i-28}
+
+**Severity:** Low · **Status:** ❌ OPEN — **root-caused, one-line fix, not applied here**
+**Found:** 2026-09-17, while verifying that every command in
+[the User Guide](getting-started/user-guide.md#running-the-demos) actually runs.
+
+`python -m engine.risk.var_es` — a documented command — aborts before printing anything:
+
+```
+ValueError: Swap cashflow times must be a subset of the simulation's rates.maturities
+pillars; got cashflow times [0.5095890410958904, 1.010958904109589, 1.5095890410958903,
+2.0136986301369864] against maturities [0.010958904109589041, 0.5150684931506849,
+1.010958904109589, 1.515068493150685, 2.0136986301369864]
+```
+
+**The cause is one missing keyword argument.** The demo block at
+[`engine/risk/var_es.py:321`](../engine/risk/var_es.py) builds its `SwapConfig` without an
+`evaluation_date`, so the field falls back to its default —
+`ORE.Settings.instance().evaluationDate`, i.e. *today*. It then prices that swap against
+`SWAP_DEMO_MATURITIES`, which is pinned to `EVAL_DATE = ORE.Date(30, 7, 2026)` in
+`engine/simulation/demo_scenarios.py`. Once the wall clock left 2026-07-30 the two stopped
+agreeing, and the maturity-pillar-alignment check in
+[`engine/instruments/swap.py:165`](../engine/instruments/swap.py) correctly refused the
+mismatch. Adding `evaluation_date=EVAL_DATE` to that config — which the other module demos
+already pass, e.g. `engine/instruments/swap.py:300` — makes it run; that was confirmed
+directly rather than assumed.
+
+**Why it is filed rather than fixed here.** This register entry came out of a documentation
+pass, and the fix is a code change. It is recorded so the documented command and the
+register agree about reality in the meantime.
+
+**Two things worth drawing out of it.**
+
+- **The failure is the guardrail working.** This is the maturity-pillar-alignment
+  constraint the [User Guide](getting-started/user-guide.md#pricing-a-swap) and
+  [Instruments: swaps](instruments/swaps.md#a-known-limitation-maturity-pillar-alignment)
+  both warn about, doing exactly what it exists to do. A loud `ValueError` naming both lists
+  is the good outcome; silently discounting a cashflow against the nearest pillar is the bad
+  one.
+- **It is a time bomb by construction, and only this demo carries it.** A default that reads
+  the wall clock, combined with a constant pinned to a fixed date, is a test that passes
+  until a date passes. The rest of the suite is immune because `tests/conftest.py` and
+  `demo_scenarios.py` thread `EVAL_DATE` explicitly — which is why 1,777 tests stay green
+  while a documented demo does not. The lesson is the one the guide already gives for
+  user-written configs: pass `evaluation_date` explicitly rather than inheriting ORE's
+  global.
+
+**Related:** the same alignment rule is discussed at
+[Instruments: swaps](instruments/swaps.md#a-known-limitation-maturity-pillar-alignment).
 
 ---
 

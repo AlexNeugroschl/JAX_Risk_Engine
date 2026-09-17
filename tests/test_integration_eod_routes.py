@@ -21,8 +21,10 @@ import pytest
 pytest.importorskip("fastapi", reason="the api extra is optional")
 from fastapi.testclient import TestClient
 
+from engine.api import eod_routes
 from engine.api.app import create_app
 from engine.api.eod_routes import STORE
+from engine.integration.publication import PublicationError, ResultStore
 from engine.integration.capabilities import ENGINE_VERSION
 from engine.integration.normalize import MAPPING_VERSION
 from engine.integration.schema_version import (
@@ -43,12 +45,28 @@ MARKET = {"mode": "assumed-profile", "assumedProfileId": "flat-3pct-v1"}
 
 
 @pytest.fixture
-def client():
+def client(tmp_path, monkeypatch):
     """A fresh client with an empty attempt store, so one test's attempts
-    cannot satisfy another's lookup."""
-    STORE.clear()
+    cannot satisfy another's lookup.
+
+    **The durable store (W0.8) is redirected to `tmp_path` per test.**
+    Attempts now outlive the process, and a workload key is deterministic,
+    so a result published by one test -- or by an earlier *run* -- would
+    otherwise be found by the next one and look like a legitimate cache hit
+    rather than like leaked state.
+    """
+    isolated = ResultStore(tmp_path / "eod-store")
+    monkeypatch.setattr(eod_routes, "RESULT_STORE", isolated)
+    # **Redirect the store the routes already use; never attach one.**
+    # Setting `_store` unconditionally would give the attempt store durable
+    # backing even when the module under test wired none -- which would make
+    # every restart test below pass against the pre-W0.8 in-process dict,
+    # proving nothing (working rule 3).
+    if eod_routes.STORE._store is not None:
+        monkeypatch.setattr(eod_routes.STORE, "_store", isolated)
+    eod_routes.STORE.clear()
     yield TestClient(create_app())
-    STORE.clear()
+    eod_routes.STORE.clear()
 
 
 def _submit(client, case="note", version="v2", **overrides):
@@ -455,3 +473,140 @@ class TestExistingRoutesUnaffected:
         portfolio contract."""
         assert client.get("/capabilities").status_code == 404
         assert client.get("/eod/capabilities").status_code == 200
+
+
+class TestResultsSurviveARestartOverHttp:
+    """W0.8's durable half, driven through the routes rather than the store.
+
+    **A restart is simulated by replacing the in-memory attempt store while
+    leaving the durable one in place** -- which is exactly the state a
+    bounced uvicorn comes up in. Every test here passes trivially against
+    the pre-W0.8 in-process dict *only* if the dict survives; that is the
+    point, so each one is verified to fail when `RESULT_STORE` is removed.
+    """
+
+    def _restart(self):
+        """Drops in-process state, keeps whatever durable store the module
+        wired -- a restart.
+
+        **The new store inherits `_store` from the old one rather than
+        being handed `RESULT_STORE`.** Passing the durable store explicitly
+        would reconstruct it even for a build that never wired one, which
+        is exactly how these tests would come to pass against the pre-W0.8
+        in-process dict.
+        """
+        restarted = AttemptStore(store=eod_routes.STORE._store)
+        eod_routes.STORE = restarted
+        return restarted
+
+    @pytest.fixture(autouse=True)
+    def _restore_store(self):
+        original = eod_routes.STORE
+        yield
+        eod_routes.STORE = original
+
+    def test_a_completed_result_is_still_found_after_a_restart(self, client):
+        key = _submit(client).json()["workloadKey"]
+        self._restart()
+        response = client.get(f"/eod/results/by-workload/{key}")
+        assert response.status_code == 200
+        assert response.json()["state"] == STATE_COMPLETED
+        assert response.json()["result"]["resultSchema"] == RESULT_SCHEMA_VERSION
+
+    def test_the_numbers_survive_the_restart_unchanged(self, client):
+        """Not just *a* result -- the same one. A restart that returned a
+        structurally valid result with different numbers would be worse
+        than losing it."""
+        before = _submit(client).json()
+        key = before["workloadKey"]
+        self._restart()
+        after = client.get(f"/eod/results/by-workload/{key}").json()
+        assert after["result"] == before["result"]
+        assert after["attemptId"] == before["attemptId"]
+
+    def test_an_attempt_is_still_addressable_by_id_after_a_restart(self, client):
+        attempt_id = _submit(client).json()["attemptId"]
+        self._restart()
+        response = client.get(f"/eod/attempts/{attempt_id}")
+        assert response.status_code == 200
+        assert response.json()["state"] == STATE_COMPLETED
+
+    def test_a_retried_submission_does_not_recompute_after_a_restart(self, client):
+        """**The duplicate overnight batch, reached through a restart.**
+        A coordinator retrying a lost response after the engine bounced
+        must recover the attempt it already has, not start a second one."""
+        first = _submit(client, submissionId="sub-restart").json()
+        self._restart()
+        second = _submit(client, submissionId="sub-restart").json()
+        assert second["attemptId"] == first["attemptId"]
+        assert second["reused"] is True
+
+    def test_an_unrelated_workload_is_still_unknown_after_a_restart(self, client):
+        """The store must not turn every lookup into a hit. A key that was
+        never submitted stays a 404 with its own reason."""
+        _submit(client)
+        self._restart()
+        response = client.get("/eod/results/by-workload/sha256:never-submitted")
+        assert response.status_code == 404
+        assert response.json()["detail"]["reason"] == UNKNOWN_WORKLOAD
+
+
+class TestAnUnpublishedResultIsNotReportedAsSuccess:
+    """**The computation succeeded and the record of it did not land.**
+
+    Reporting 200 here would tell the coordinator its result is published
+    and discoverable when a lookup will not find it -- and the coordinator's
+    next move on a 200 is to stop retrying. So the one thing this must not
+    do is look like success.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_store(self):
+        original = eod_routes.STORE
+        yield
+        eod_routes.STORE = original
+
+    def _break_publication(self, monkeypatch):
+        def refuse(**kwargs):
+            raise PublicationError("simulated store failure")
+
+        monkeypatch.setattr(eod_routes.STORE._store, "publish", refuse)
+
+    def test_a_publication_failure_is_a_500_not_a_200(self, client, monkeypatch):
+        self._break_publication(monkeypatch)
+        response = _submit(client)
+        assert response.status_code == 500
+        assert response.json()["detail"]["reason"] == "RESULT_NOT_PUBLISHED"
+
+    def test_the_unpublished_result_is_not_discoverable(self, client, monkeypatch):
+        """The 500 must be the truth, not a pessimistic guess: a lookup for
+        that workload really does find nothing.
+
+        **The key is taken from a successful submission of the same
+        bundle**, not hand-built. A hand-built key that does not match what
+        the route computes asserts `None` for a workload nobody ever
+        submitted, and passes no matter what the code does.
+        """
+        key = _submit(client).json()["workloadKey"]
+        assert eod_routes.STORE._store.lookup(key) is not None  # control
+
+        eod_routes.STORE.clear()
+        self._break_publication(monkeypatch)
+        response = _submit(client)
+        assert response.status_code == 500
+
+        monkeypatch.undo()
+        assert eod_routes.STORE._store.lookup(key) is None
+
+    def test_a_failed_attempt_still_reports_the_real_cause(self, client, monkeypatch):
+        """**A store failure must not mask a pricing failure.** Letting it
+        replace MARKET_INPUTS_NOT_SUPPLIED with a disk message would hide
+        the thing the caller has to fix, and would turn a 400 they must not
+        retry into a 500 they will."""
+        self._break_publication(monkeypatch)
+        response = _submit(
+            client,
+            marketInputs={"mode": "assumed-profile", "assumedProfileId": "no-such"},
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"]["reason"] == "MARKET_INPUTS_NOT_SUPPLIED"

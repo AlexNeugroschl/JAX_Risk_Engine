@@ -35,9 +35,16 @@ JAX_Risk_Engine/
 │   ├── risk/                             VaR / Expected Shortfall, Delta/Gamma/Vega/Theta
 │   ├── reference/                        API reference, ORE parity mapping, models &
 │   │                                     trades, calibration, portfolio entry point,
-│   │                                     HTTP API
-│   └── planning/                         Roadmap/history, TraderX integration plan
+│   │                                     HTTP API, EOD integration boundary
+│   ├── known-issues.md                   The defect/scope-gap register -- read before
+│   │                                     trusting any number
+│   └── planning/                         Roadmap/history, TraderX integration plan and
+│                                         the EOD contract exchange
 ├── engine/
+│   ├── day_count.py                      Accrual day-count vocabulary, and nothing else.
+│   │                                     A leaf because both models/ore_builders.py and
+│   │                                     integration/note.py need the table, and
+│   │                                     integration/ may not import models/ (see I-05)
 │   ├── portfolio/
 │   │   ├── __init__.py                   Re-exports request.py's/validation.py's public
 │   │   │                                 surface, so engine.portfolio's callers see the
@@ -91,6 +98,11 @@ JAX_Risk_Engine/
 │   │   │                                 calculation/status vocabulary, never hand-written
 │   │   ├── workload.py                   W1.6.4 canonical workload key + immutable attempt
 │   │   │                                 store, four lookup states (part of I-08)
+│   │   ├── publication.py                W0.8 crash-safe publication + the durable result
+│   │   │                                 store: stage -> verify what was written ->
+│   │   │                                 atomically publish -> advance pointer, with
+│   │   │                                 lookup falling back to a manifest scan so a
+│   │   │                                 stale pointer never loses a result (I-08)
 │   │   └── pipeline.py                   Composition of the above: price_bundle()
 │   ├── simulation/
 │   │   ├── market_model.py               Simulates the market (Sobol/Brownian bridge,
@@ -105,8 +117,11 @@ JAX_Risk_Engine/
 │   │   ├── lgm.py                        Linear Gauss-Markov closed-form math
 │   │   │                                 (piecewise-constant Sigma) -- used by
 │   │   │                                 bermudan_swaption.py and engine/calibration/
-│   │   └── ore_builders.py               Shared ORE VanillaSwap construction and
-│   │                                     cashflow extraction -- used by every pricer
+│   │   ├── ore_builders.py               Shared ORE VanillaSwap construction and
+│   │   │                                 cashflow extraction -- used by every pricer
+│   │   └── static_key.py                 By-value hashing for the _Prepared* trade
+│   │                                     structures, so they can be jax.jit STATIC
+│   │                                     arguments instead of recompiling every call
 │   ├── calibration/
 │   │   ├── basket.py                     Co-terminal swaption basket construction and
 │   │   │                                 LGM's own closed-form swaption pricer
@@ -117,10 +132,15 @@ JAX_Risk_Engine/
 │   │   ├── european_swaption.py          Prices European swaptions
 │   │   ├── bermudan_swaption.py          Prices Bermudan swaptions
 │   │   │                                 (the numeric LGM backward-induction engine)
-│   │   ├── american_swaption.py          Prices American swaptions
-│   │   └── treasury.py                   Prices Treasury bills and notes (BondConfig);
-│   │                                     t=0 only -- no scenario cube, no VaR (I-24)
-│   │                                     (a thin wrapper around bermudan_swaption.py)
+│   │   ├── american_swaption.py          Prices American swaptions (a thin config
+│   │   │                                 wrapper that discretizes the exercise window
+│   │   │                                 and delegates to bermudan_swaption.py)
+│   │   └── treasury.py                   W1.5 prices Treasury bills and notes
+│   │                                     (BondConfig) by closed-form discounted
+│   │                                     cashflows against one deterministic curve --
+│   │                                     t=0 only, so no scenario cube and no VaR/ES
+│   │                                     (I-24). The only non-JAX pricer here; imports
+│   │                                     no other pricer
 │   └── risk/
 │       ├── var_es.py                     Computes VaR / Expected Shortfall
 │       └── greeks.py                     Computes Delta / Gamma / Theta / Vega
@@ -136,17 +156,29 @@ JAX_Risk_Engine/
     ├── test_calibration_basket.py
     ├── test_calibration_lgm.py
     ├── test_calibration_integration.py
+    ├── test_calibration_edge_cases.py
     ├── test_var_es.py
+    ├── test_var_es_diagnostics.py        Monte Carlo standard error / tail-count
     ├── test_greeks.py
     ├── test_greeks_bermudan.py
+    ├── test_treasury_instrument.py       W1.5 BondConfig, incl. the refused scenario path
+    ├── test_day_count_roles.py           engine/day_count.py's convention table
     ├── test_end_to_end.py
     ├── test_diverse_portfolio_e2e.py
     ├── test_ore_parity.py
     ├── test_portfolio.py                 Cross-field validation, maturity-pillar assembly
     ├── test_portfolio_entrypoint.py       price_portfolio vs. hand-orchestrated pricing
+    ├── test_portfolio_gap_fixes.py       Regressions for I-01/I-03 and friends
+    ├── test_portfolio_scale_and_edge_cases.py
+    ├── test_portfolio_bond_wire_through.py  Bonds reaching price_portfolio, pinned
+    │                                     bit-exact against the integration pricers
+    ├── test_worker_pool.py               Per-precision process pools
+    ├── test_profiling_and_jit.py         phase() annotations + XLA compile counts
     ├── test_api.py                       FastAPI TestClient tests for engine/api/
+    ├── test_api_bond_schemas.py          Pydantic round-trip for BondConfig
     ├── test_integration_*.py             engine/integration/, one file per task, run
     │                                     against the delivered TraderX fixtures
+    │                                     (incl. test_integration_publication.py, W0.8)
     └── fixtures/traderx-eod/             Real TraderX YU18 bundles (bill/note/sofr/equity,
                                           each v1+v2), hash-pinned. LF bytes committed and
                                           held that way by .gitattributes -- CRLF translation
@@ -350,12 +382,22 @@ Unlike `var_es.py`, this module is **not** instrument-agnostic — it imports di
 `engine.instruments.swap`/`engine.instruments.european_swaption`/
 `engine.instruments.bermudan_swaption` and reuses their own JAX-native pricing building
 blocks (via automatic differentiation, `jax.grad`/`jax.hessian`), rather than only
-consuming a generic NPV cube. It covers every instrument in this codebase — Bermudan/
-American Greeks became possible once `bermudan_swaption.py`'s backward induction was
-ported to `jax.lax.scan`, and Vega became well-defined once `engine/calibration/` existed
-to supply a genuine market-vol-to-model relationship. See
+consuming a generic NPV cube. It covers every *rate-derivative* instrument in this
+codebase — Bermudan/American Greeks became possible once `bermudan_swaption.py`'s backward
+induction was ported to `jax.lax.scan`, and Vega became well-defined once
+`engine/calibration/` existed to supply a genuine market-vol-to-model relationship. See
 [Delta, Gamma, and Theta](../risk/greeks.md) for the full story, including two real
 autodiff-through-bisection gradient bugs found and fixed while building this.
+
+**Bonds are the exception, and their Greeks do not live here.** `BondConfig` is priced by
+`engine/instruments/treasury.py`, which is plain `math.exp` arithmetic rather than JAX, so
+there is nothing for `jax.grad` to differentiate. Its Delta/Gamma/Theta are computed by
+`engine/portfolio/request.py::_bond_greeks` as **bumped revaluations** instead — a central
+difference at ±1bp for Delta and Gamma, and a one-calendar-day reprice for Theta. Vega is
+*omitted* rather than reported as zero (a fixed-coupon bond off a deterministic curve has
+no volatility input), and Theta is likewise omitted for a bond maturing tomorrow, where
+there is no next day on which the instrument still exists. See
+[The Portfolio Entry Point](../reference/portfolio-entrypoint.md#greeks).
 
 ## The Public API
 

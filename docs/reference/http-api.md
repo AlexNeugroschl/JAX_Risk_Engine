@@ -65,9 +65,31 @@ in a Pydantic model, because its contract is the published schema — re-describ
 would create a second definition that can drift from the one consumers pin against. Keeping
 the routers separate keeps either free to change.
 
+**Every route on the app, so one page answers "what is served here?":**
+
+| Route | Contract | Documented in |
+|---|---|---|
+| `GET /health` | portfolio | below |
+| `GET /version` | portfolio | below |
+| `POST /portfolio/price` | portfolio | below |
+| `GET /portfolio/price/{job_id}` | portfolio | below |
+| `POST /calibration/lgm` | portfolio | below |
+| `GET /eod/capabilities` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
+| `GET /eod/schemas/result` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
+| `GET /eod/schemas/capabilities` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
+| `POST /eod/price` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
+| `GET /eod/results/by-workload/{key}` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
+| `GET /eod/attempts/{attemptId}` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
+
 The EOD routes are documented in full in
 [The EOD Integration Boundary](eod-integration.md#w164--the-eod-http-routes); this page covers
 the portfolio contract.
+
+**One behavioural difference worth knowing up front.** `POST /portfolio/price` is
+**asynchronous** (`202` + a `job_id` to poll, because a 4096-scenario Monte Carlo measured
+~52s — see below), while `POST /eod/price` is **synchronous**: the EOD path is closed-form
+discounted cashflows over a handful of rows and returns the priced result in the response.
+The two contracts differ here on purpose, not by accident of implementation order.
 
 ---
 
@@ -230,6 +252,16 @@ database table)**, worth keeping apart:
    per-tier pools, not by Redis/a database — the dispatcher itself can stay a single
    process while still achieving genuine cross-precision, cross-device concurrency one
    layer down.
+
+**The EOD path already has the durable store this section defers.** Since W0.8,
+`POST /eod/price` publishes every *terminal* attempt through a crash-safe filesystem store
+(`engine/integration/publication.py`), so an EOD result survives a restart and stays
+addressable by `attemptId`. That work is deliberately **EOD-only**: `_JOBS` above is
+untouched, and a `job_id` from `/portfolio/price` is still lost on restart. The two paths
+have different durability guarantees today, which is a real difference a caller needs to
+know rather than an inconsistency to gloss over — see
+[I-08](../known-issues.md#i-08) and
+[EOD Integration](eod-integration.md#w164--the-eod-http-routes).
 
 ## Request schema: `PortfolioRequestSchema`
 

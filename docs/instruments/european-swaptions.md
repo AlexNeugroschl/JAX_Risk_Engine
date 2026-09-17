@@ -70,6 +70,8 @@ parameters (`hw_a`, `hw_sigma`, `initial_zero_curve` — see
 `forward_start` — how far in the future the option can first be exercised. See
 [API Reference](../reference/api-reference.md#swaptionconfig) for every field.
 
+<a id="why-a-swaption-needs-its-own-copy-of-the-models-parameters"></a>
+
 **Why a swaption needs its own copy of the model's parameters.** Unlike the linear swap
 pricer, which only needs *discount factors* (already baked into the yield curve cube),
 Jamshidian's trick needs the underlying Hull-White model's own `a` (mean reversion speed)
@@ -111,7 +113,7 @@ equal to it. The underlying's floating leg doesn't redeem its notional exactly a
 but at `T_start`, which is a real (if small) discount factor away, not an identity —
 getting this wrong produces an ~1% NPV mismatch against `ORE.JamshidianSwaptionEngine`
 for a forward-starting swaption. See
-[the mathematics section below](#why-t_start-matters-the-floating-legs-notional-timing)
+[the mathematics section below](#5-why-t_start-matters-the-floating-legs-notional-timing)
 and `tests/test_european_swaption.py::TestAgainstOREJamshidianEngine::test_matches_ore_forward_starting`
 for the regression coverage.
 

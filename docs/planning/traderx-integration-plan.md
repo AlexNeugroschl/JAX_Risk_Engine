@@ -89,9 +89,24 @@ the first real pricers. W2 adds faithful USD-SOFR and is gated on an external de
 
 ### Suite status — stated honestly
 
-Full run 2026-09-17, **after W1.5**: **1,716 passed, 0 failed** (11m24s) — the complete
-suite, nothing excluded. That is 1,618 + the **98** W1.5 tests (40 treasury, 37 wire-through,
-21 API schemas), so the delta reconciles exactly.
+Full run 2026-09-17, **after W0.8**, run **twice**:
+
+| Run | Result | Wall clock |
+|---|---|---|
+| 1 | **1,770 passed, 0 failed** | 19m10s |
+| 2 | **1,771 passed, 1 failed** | 13m24s |
+
+Run 2 is the authoritative count: run 1 predates the last two tests (the step-3 `OSError`
+translation), so 1,770 + 2 = 1,772 collected, of which 1,771 passed. The **one failure is
+`test_cross_tier_jobs_correct_and_concurrent`** — the long-running wall-clock flake, not a
+W0.8 regression. It passes in isolation (12.28s, re-run immediately after) and touches no
+code W0.8 changed. See the caveat below and [I-15](../known-issues.md#i-15).
+
+Both runs predate the publication-ordering fix found afterwards (see §W0.8), which added a
+further 5 tests. The two W0.8 suites now run **115 passed in 1.47s** — 51 in
+`test_integration_publication.py` and 64 in `test_integration_eod_routes.py`. **A third full
+run is owed** before any count above is quoted as current; the figures in the table describe
+the code as it stood at 16:29, not as it stands now.
 
 **A caveat about the runner, not the code:** an earlier identical invocation **hard-aborted**
 inside XLA compilation with no summary line at all
@@ -109,8 +124,11 @@ Previously 1,618 / 0 after W1.6, 1,452 / 1 after the v5 fixes, 1,384 / 2 after W
 >    for green because `echo EXIT=$?` captured a redirect rather than pytest (real exit: 3).
 >    **Confirm a summary line was printed.**
 
-**This is the first fully green full run in this exchange.** Worth stating plainly, because
-working rule 9 cuts the other way too: a green suite is evidence about the tests, not proof
+**Run 2 was not green, and the exit code said it was.** `[exited with code 0]` was printed
+alongside `1 failed, 1771 passed` — hazard 2 above, caught only because the summary line was
+read rather than the exit status. This is the second time in this exchange that exact trap has
+been walked into; the guard works only if the summary line is actually read every time.
+Working rule 9 cuts the other way too: a green suite is evidence about the tests, not proof
 about the code. Two of the three defects found in this exchange came from reading source, and
 the W1.6 `submissionId` bug came from reviewing my own code — none came from running this.
 
@@ -148,6 +166,7 @@ Earlier figures in this exchange (824, 1092, 1175) were stale or unreproducible.
 | ~~Priced **note** results~~ | — | ✅ **Done** (W1.3) |
 | ~~I-13 / I-14 fixes (W0.10)~~ | — | ✅ **Done** |
 | ~~Terms v2 / schema versions / `accrualSource` / HTTP~~ | — | ✅ **Done** (W1.6) |
+| ~~Durable result publication (W0.8's second half)~~ | — | ✅ **Done** (2026-09-17) |
 | Everything else | Nothing | ✅ Start now |
 
 ### Corrections I owe, or have made
@@ -402,17 +421,42 @@ identity; item-order artifact hash matches result ordering.
 
 ---
 
-### W0.8 — Durable result lookup · mitigates **I-08** · ⚠️ **PARTIAL** (absorbed into W1.6.4)
+### W0.8 — Durable result lookup · closes the EOD half of **I-08** · ✅ **DONE** (2026-09-17)
 
 > **Landed in W1.6.4:** the HTTP endpoint (`GET /eod/results/by-workload/{key}`), the
 > canonical **workload key** (`engine/integration/workload.py`), **idempotent submission**
 > via `submissionId`, **immutable terminal attempts**, and the **four distinguishable lookup
 > states** — so an accepted-but-running job no longer looks like an unknown one.
 >
-> **Still not built:** the publication protocol and manifest-scan recovery below. Those need
-> a persistent artifact store to scan, and there is none — so the store is still an
-> in-process dict and a restart still loses *running*-state knowledge. The state machine is
-> right; nothing durable backs it yet. **Mitigated, not fixed** (working rule 5).
+> **The second half landed 2026-09-17** in `engine/integration/publication.py`: the durable
+> store the state machine had been waiting for, and with it the full four-step publication
+> protocol and the manifest-scan recovery below. **`AttemptStore` now takes an optional
+> `ResultStore`**; without one it behaves exactly as before, so nothing that used the
+> in-memory store changed behaviour.
+>
+> **Three things the implementation decided, that the plan text did not specify:**
+>
+> 1. **Step 2 verifies bytes read back from disk, not bytes in hand.** Hashing what was
+>    *meant* to be written proves nothing — a short write nobody re-reads is a durable
+>    artifact that verifies against nothing.
+> 2. **Publication order is recorded, not inferred.** Each manifest carries a
+>    `publicationSequence`, recovered from disk rather than held in memory. A process-local
+>    counter restarts at zero, so after a bounce a new attempt claims to predate everything
+>    stored — and lookup then serves a **stale result while reporting it as the most
+>    recent**. Nothing about that output looks wrong: it is a real, complete, correctly-priced
+>    result for the right workload key, just not the current one.
+> 3. **A publication failure on the success path is a `500`, not a `200`.** A caller told its
+>    result is published stops retrying; if the record did not land, that is the one thing it
+>    must not do. On the *failure* path the rule inverts and a store error is swallowed —
+>    letting it replace `TERMS_ARTIFACT_UNUSABLE` with a disk message would hide the real
+>    cause and turn a `422` the coordinator must not retry into a `500` it will.
+>
+> **What is deliberately still memory-only:** *running* state. A running attempt is never
+> published, because writing one would make an in-flight computation discoverable as a
+> finished answer. After a restart it reports as unknown, the coordinator resubmits, and the
+> workload key makes the recomputation identical — an infrastructure event, not a financial
+> one. **[I-08](../known-issues.md#i-08) stays PARTIAL** because the portfolio path's `_JOBS`
+> dict is untouched; this work is EOD-only.
 
 **Deliverable:** `GET /risk/results/by-workload/{workloadKey}`.
 
@@ -452,19 +496,68 @@ lost submission response **recovers the same attempt**; a deliberate second benc
 repetition uses a **new** `submissionId`. `reuseExistingResult:false` means "don't serve me a
 cached result" — **not** "start a new attempt every time you see this request."
 
-> **I-08 caveat, on the record.** The job table is still an in-process dict, so a restart can
-> lose *running*-state knowledge. That is precisely why the manifest scan matters: recovery
-> goes through content-addressed artifacts, **never** process memory. A lost in-memory job is
-> an infrastructure event, not a financial failure.
+> **I-08 caveat, on the record — now narrowed.** *Running* state is still in-process, so a
+> restart can lose knowledge of an in-flight job. Completed and failed attempts are durable.
+> That is precisely why the manifest scan matters: recovery goes through content-addressed
+> artifacts, **never** process memory. A lost in-memory job is an infrastructure event, not a
+> financial failure.
 
 Lookup returns the most recent **successful** attempt — never failed, partial, or in-flight.
 Attempts are immutable and permanently addressable by `attemptId`.
 
-**Tests:** kill between artifact write and manifest publish → lookup finds nothing (no partial);
-kill after publish → lookup finds complete result; **kill between publish and pointer advance →
-lookup still finds it via scan**; four lookup states distinguished; same `submissionId` recovers
-one attempt, not two; second attempt doesn't overwrite first; **different precision →
-different workload key** (no cache reuse).
+**Tests:** ✅ `tests/test_integration_publication.py` (**51 tests**) drives each crash window by
+putting the store into exactly the state that crash would leave: staged-but-unpublished bytes
+are not discoverable; a truncated or foreign-schema manifest reads as **absent** rather than as
+a result with missing fields; **a dropped, torn, superseded, or wrong-workload pointer still
+resolves via the scan**, which reconciles the pointer as a side effect. Plus restart survival
+(completed and failed attempts, addressability by `attemptId`, and idempotent `submissionId`),
+and the concurrency guard on `publicationSequence`.
+
+Plus **10 new tests** in `tests/test_integration_eod_routes.py` (64 total) driving the same
+guarantees over HTTP, and the `RESULT_NOT_PUBLISHED` path. The two files run **115 passed in
+1.47s**.
+
+> **A defect found after the fact, by measuring rather than by a failing test.** `complete()`
+> originally set `state = completed` and *then* published. When publication raised, the attempt
+> was left terminal in memory with **nothing on disk**: an in-process lookup reported
+> `completed` for a result no restart could find, and the immutability guard then refused the
+> retry that would have fixed it (`already completed` — a transient store failure permanently
+> bricked the attempt). The HTTP route already returned `500 RESULT_NOT_PUBLISHED`, so the
+> coordinator did learn to retry; what it retried against was a process whose memory
+> contradicted its disk. **The fix applies the store's own rule to the in-memory attempt:
+> commit first, update the cache second.** Four tests cover it and all four were verified to
+> fail against the old ordering, with the `already completed` lock reproducing exactly.
+>
+> **The failure path deliberately goes the other way**, and reversing it blindly would have
+> introduced a worse bug. `fail()` sets the state in a `finally`, so a publication failure
+> still marks the attempt failed. There is no result to retry for, the attempt *did* fail, and
+> leaving it `running` would report an in-flight job to a coordinator that would wait forever
+> for an answer that is never coming — worse than the `UNKNOWN_WORKLOAD` a restart gives. The
+> `_record_failure` docstring, which had claimed the degraded state was `UNKNOWN_WORKLOAD`,
+> was corrected: the cost is bounded to durability, not to this process's own answer.
+
+**Six plausible-but-wrong implementations were patched in and verified to fail** (working
+rule 3): pointer-only lookup with no scan (**9 fail**, every one in the v3-gap class);
+trusting the write instead of reading it back (**2 of 2**); publishing and serving non-terminal
+states (**5 fail**); a process-local sequence counter (**3 fail**); memory-only idempotency
+(**1 fail** — the restart case); and an unlocked sequence increment (**1 fail**). Against the
+**pre-W0.8** routes, **4 of the 5** HTTP restart tests fail; the fifth is the
+"unknown workload stays unknown" control that must pass either way.
+
+> **Two of those found gaps in the tests rather than the code**, the same shape as W1.5's
+> placeholder-Greeks finding. The process-local counter passed **38 of 39** because the test
+> used uuid4 attempt ids, so the sequence tie-break landed correctly by luck about half the
+> time; it now pins ids that make the tie-break point the *wrong* way. And an attempt-store
+> fixture that attached a durable store unconditionally made every HTTP restart test pass
+> against the pre-W0.8 in-process dict — it now redirects the store the module already wired
+> and never attaches one.
+>
+> **One limit is recorded rather than papered over.** `_rehydrate`'s guard against replacing a
+> live in-memory attempt is **defensive and unreachable** through the current call paths:
+> `get`, `lookup` and `start` all check memory first and return before touching the store. A
+> rehydration that clobbers passes the whole file. The guard stays because it is cheap and a
+> future scan-first caller would need it, but the test says what it actually pins — memory
+> precedence — rather than implying coverage that is not there (working rule 9).
 
 ---
 
@@ -918,7 +1011,8 @@ W0.1 bundle+hash ─┬─ W0.2 terms join ─┬─ W0.3 normalize ─┐
                   └─ W0.7 identity ───────────────────── ├─→ SOFR refusal ★ first real result
                      W0.5 result schema ─────────────────┤
                      W0.6 market inputs ─────────────────┘
-                     W0.8 durable lookup  (independent)
+                     W0.8 durable lookup  (independent) ✅ state machine W1.6.4
+                                                         ✅ durable store 2026-09-17
                      W0.9 capabilities    (independent)
 
 W0.10 curve-index validation ✅ I-13/I-14 (ran ahead of W1, as planned)
@@ -976,10 +1070,18 @@ the API schemas, pinned bit-exact against the integration pricers. **Bonds have 
 a broadcast zero ([I-24](../known-issues.md#i-24)). Two bugs found and fixed on the way
 ([I-25](../known-issues.md#i-25) — a scalar Greek crashed the HTTP result serializer).
 
+**★ W0.8 completed — results are durable.** The publication protocol, the manifest-scan
+recovery and the persistent store all landed, so a restart no longer loses a completed result
+and a retried `submissionId` no longer launches a duplicate overnight batch. The crash window
+TraderX found in v3 is closed with a test that drives exactly that on-disk state. **Every
+numbered task in this plan except W2 is now done.**
+
 **Next:** W2 / USD-SOFR, still blocked externally on D03/D04. Equity *valuation* remains
 blocked on a spot/FX source, which is a market-data decision rather than engine work. The
 nearest unblocked engine work is a **bond scenario model** (I-24) — that is what would give
-a bond VaR.
+a bond VaR — followed by [I-27](../known-issues.md#i-27), the full-suite XLA abort, which
+matters more than its Medium severity suggests: while a green run is not repeatable on demand,
+every claim resting on the suite is weaker than it looks.
 
 **Still open with TraderX, and now load-bearing:** the `accrual-basis` versioning question
 from v4 §1.3 (new values in place, or a new schema version?). W1.6.1 implements the strict

@@ -29,7 +29,7 @@ Greeks path is the interesting part of the timeline, and a trace that omits
 it is not representative of what this engine actually spends its time on.
 `docs/concepts/profiling.md` has the full per-knob measurements.
 
-Run with:  venv/Scripts/python.exe demos/demo_profile_small.py
+Run with:  .venv/Scripts/python.exe demos/demo_profile_small.py
 View with: xprof --port 8791 .profile-out-small
 
 Delete `.profile-out-small` between runs when comparing: the profiler writes

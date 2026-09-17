@@ -36,22 +36,29 @@ partial, or in-flight one. Attempts are immutable once terminal and
 permanently addressable by `attemptId`, so a second attempt never overwrites
 a first.
 
-**Storage is in-process, and that is a stated limitation, not an
-oversight.** `docs/known-issues.md` I-08 records it: a restart loses
-*running*-state knowledge. The recovery design that makes this survivable --
-publication via a content-addressed manifest, with lookup falling back to a
-scan rather than trusting a pointer -- is specified in plan §W0.8 and is not
-built here, because there is no persistent artifact store to scan yet. What
-*is* built is the state machine and the key, so the day a store arrives the
-semantics do not change. A lost in-memory job is an infrastructure event;
-this module's job is to make sure it is never a *financial* one, by never
-serving a partial or stale result as a complete one.
+**Storage is in-process, with an optional durable backing store.** By
+default this module keeps attempts in memory only, and a restart loses them
+-- the limitation `docs/known-issues.md` I-08 records. Given a
+`engine.integration.publication.ResultStore`, terminal attempts are also
+**published** through the four-step protocol in plan §W0.8, and lookup falls
+back to the store's manifest scan when memory does not have the answer. The
+state machine is identical either way; what the store changes is whether it
+survives the process.
+
+**Running state is still memory-only, and deliberately so.** Only *terminal*
+attempts are published. A running attempt has no result to commit, and
+writing one would make an in-flight computation discoverable as a finished
+answer -- so after a restart a job that was running is reported as unknown
+rather than as something it is not. That is an infrastructure event, not a
+financial one: the coordinator resubmits and the workload key makes the
+recomputation identical. What must never happen, and does not, is a partial
+or stale result being served as a complete one.
 """
 import hashlib
 import json
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 #: The four lookup states (plan §W0.8). `UNKNOWN_WORKLOAD` is the only one
@@ -141,6 +148,13 @@ class Attempt:
     so a second attempt can never overwrite a first's outcome (plan §W0.8).
     An attempt is permanently addressable by `attempt_id` regardless of how
     it ended -- a failed attempt is still a record of what was tried.
+
+    **Publication happens on the terminal transition**, through the optional
+    `_store`. It is done *inside* `complete()`/`fail()` rather than left to
+    the caller because a caller that forgets produces an attempt that is
+    complete in memory and absent from disk -- which looks exactly like a
+    successful publication until a restart, and then looks exactly like work
+    that was never submitted.
     """
     attempt_id: str
     workload_key: str
@@ -148,6 +162,11 @@ class Attempt:
     state: str = STATE_RUNNING
     result: Optional[Dict] = None
     reason: Optional[str] = None
+    #: The durable store, if this attempt's `AttemptStore` has one. Excluded
+    #: from equality and repr: it is plumbing, not part of the attempt's
+    #: identity, and two attempts do not differ because they were published
+    #: through different store objects.
+    _store: Optional[object] = field(default=None, compare=False, repr=False)
 
     @property
     def is_terminal(self) -> bool:
@@ -160,38 +179,125 @@ class Attempt:
                 f"immutable once terminal so a retry cannot overwrite a recorded "
                 f"outcome"
             )
+        # **Publish first, transition second.** If publication raises, this
+        # attempt must be left exactly as it was -- still running, still
+        # retryable -- because an attempt marked terminal in memory with no
+        # manifest on disk is a result the process reports as completed and
+        # no restart can ever find. See `_publish`.
+        self._publish(state=STATE_COMPLETED, result=result)
         self.state = STATE_COMPLETED
         self.result = result
 
     def fail(self, reason: str) -> None:
+        """Records this attempt as failed, publishing it if there is a store.
+
+        **Unlike `complete()`, the in-memory transition survives a
+        publication failure.** The two paths differ because what is at
+        stake differs. On the success path a failed publication must undo
+        the transition: there is a real result, it is worth retrying for,
+        and an attempt left `completed` with nothing on disk claims a
+        durability it does not have. Here there is no result to save and
+        nothing to retry -- the attempt *did* fail, that is a fact about
+        this attempt regardless of whether the record of it landed, and
+        leaving it `running` would report an in-flight job to a coordinator
+        that would then wait forever for an answer that is never coming.
+
+        So publication is attempted first and its failure is re-raised for
+        the caller to decide about (`eod_routes._record_failure` swallows
+        it, for reasons documented there), but the state is set either way.
+        The degraded outcome is a failure that a *restart* cannot see --
+        reported as `UNKNOWN_WORKLOAD`, which is honest -- rather than one
+        this process misreports as still running.
+        """
         if self.is_terminal:
             raise ValueError(
                 f"attempt {self.attempt_id} is already {self.state}; attempts are "
                 f"immutable once terminal"
             )
-        self.state = STATE_FAILED
-        self.reason = reason
+        try:
+            self._publish(state=STATE_FAILED, reason=reason)
+        finally:
+            self.state = STATE_FAILED
+            self.reason = reason
+
+    def _publish(
+        self,
+        *,
+        state: str,
+        result: Optional[Dict] = None,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Commits this terminal attempt to the durable store, if there is
+        one.
+
+        **The outcome is passed in rather than read off `self`,** because
+        this runs *before* the attempt transitions. That ordering is the
+        point: the manifest is the commit point for the in-memory attempt
+        too, so a store failure leaves nothing half-applied.
+
+        **A publication failure is raised, not swallowed.** The caller is
+        about to tell a coordinator its work is done; if the record of that
+        work did not land, the coordinator must find out now rather than
+        discover it after a restart, when the same submission looks like it
+        was never made. This is the one place where failing loudly costs a
+        successful computation and is still right -- the computation is
+        reproducible from the workload key, a false "published" is not
+        recoverable at all.
+        """
+        if self._store is None:
+            return
+        self._store.publish(
+            attempt_id=self.attempt_id,
+            workload_key=self.workload_key,
+            state=state,
+            result=result,
+            reason=reason,
+            submission_id=self.submission_id,
+        )
+
+
+def _attempt_from_manifest(manifest: Dict) -> Attempt:
+    """Rebuilds an `Attempt` from a published manifest.
+
+    Deliberately **not** given the store: a rehydrated attempt is already
+    terminal, so it must never publish again. `complete()`/`fail()` would
+    refuse anyway, but leaving the store off makes the intent structural
+    rather than dependent on that guard.
+    """
+    return Attempt(
+        attempt_id=manifest["attemptId"],
+        workload_key=manifest["workloadKey"],
+        submission_id=manifest.get("submissionId"),
+        state=manifest["state"],
+        result=manifest.get("result"),
+        reason=manifest.get("reason"),
+    )
 
 
 class AttemptStore:
-    """In-process attempt store keyed by workload key and submission id.
+    """Attempt store keyed by workload key and submission id.
 
     **Thread-safe**, because the FastAPI app serves requests from a thread
     pool: two concurrent submissions of the same `submissionId` must
     resolve to one attempt, and the check-then-create that guarantees it is
     not atomic on its own.
 
-    See the module docstring for why this is in-process and what that does
-    and does not cost (I-08).
+    **In-memory by default; durable when given a store.** With a
+    `engine.integration.publication.ResultStore`, terminal attempts are
+    published as they finish and every read falls back to the store when
+    memory does not have the answer -- so a restart loses running state
+    but never a completed result. See the module docstring and I-08.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, store=None) -> None:
         self._lock = threading.Lock()
         self._attempts: Dict[str, Attempt] = {}
         #: workload key -> attempt ids, most recent last.
         self._by_workload: Dict[str, List[str]] = {}
         #: submission id -> attempt id, for idempotent retry recovery.
         self._by_submission: Dict[str, str] = {}
+        #: Durable backing store, or None for memory-only.
+        self._store = store
 
     def start(self, key: str, submission_id: Optional[str] = None) -> Attempt:
         """Creates a running attempt, or returns the existing one for a
@@ -214,6 +320,18 @@ class AttemptStore:
         with self._lock:
             if submission_id is not None:
                 existing = self._by_submission.get(submission_id)
+                if existing is None and self._store is not None:
+                    # **Idempotency has to survive a restart to be worth
+                    # anything.** Without this lookup, a coordinator
+                    # retrying a lost response after the engine bounced
+                    # gets a *second* attempt for work that already
+                    # completed -- the exact duplicate-overnight-batch this
+                    # id exists to prevent, just reached through a restart
+                    # instead of through a race.
+                    published = self._store.find_by_submission(submission_id)
+                    if published is not None:
+                        attempt = self._rehydrate(published)
+                        existing = attempt.attempt_id
                 if existing is not None:
                     attempt = self._attempts[existing]
                     if attempt.workload_key != key:
@@ -231,6 +349,7 @@ class AttemptStore:
                 attempt_id=str(uuid.uuid4()),
                 workload_key=key,
                 submission_id=submission_id,
+                _store=self._store,
             )
             self._attempts[attempt.attempt_id] = attempt
             self._by_workload.setdefault(key, []).append(attempt.attempt_id)
@@ -238,9 +357,43 @@ class AttemptStore:
                 self._by_submission[submission_id] = attempt.attempt_id
             return attempt
 
+    def _rehydrate(self, manifest: Dict) -> Attempt:
+        """Indexes a published attempt back into memory.
+
+        Caller must hold `self._lock`. Idempotent: a manifest already in
+        memory returns the in-memory attempt rather than replacing it, so a
+        scan can never overwrite live state with a copy read off disk.
+        """
+        attempt_id = manifest["attemptId"]
+        cached = self._attempts.get(attempt_id)
+        if cached is not None:
+            return cached
+        attempt = _attempt_from_manifest(manifest)
+        self._attempts[attempt_id] = attempt
+        ids = self._by_workload.setdefault(attempt.workload_key, [])
+        if attempt_id not in ids:
+            ids.append(attempt_id)
+        if attempt.submission_id is not None:
+            self._by_submission.setdefault(attempt.submission_id, attempt_id)
+        return attempt
+
     def get(self, attempt_id: str) -> Optional[Attempt]:
+        """One attempt by id, from memory or from the durable store.
+
+        The store fallback is what keeps `attemptId` *permanently*
+        addressable (plan §W0.8) rather than addressable for as long as the
+        process happens to live.
+        """
         with self._lock:
-            return self._attempts.get(attempt_id)
+            cached = self._attempts.get(attempt_id)
+            if cached is not None:
+                return cached
+            if self._store is None:
+                return None
+            manifest = self._store.read_attempt(attempt_id)
+            if manifest is None:
+                return None
+            return self._rehydrate(manifest)
 
     def lookup(self, key: str) -> Optional[Attempt]:
         """The attempt a lookup should report for this workload key.
@@ -250,21 +403,46 @@ class AttemptStore:
         most recent attempt's state -- so a later failure never hides an
         earlier success, and a running retry never masks a completed
         result the coordinator could already use.
+
+        **The durable store is consulted before giving up**, not before
+        memory. Memory is authoritative for *running* state, which is never
+        published; the store is authoritative across restarts. Consulting
+        the store first would let a completed attempt shadow a running
+        retry that memory knows about, inverting the precedence above.
         """
         with self._lock:
-            ids = self._by_workload.get(key)
-            if not ids:
-                return None
+            ids = self._by_workload.get(key) or []
             attempts = [self._attempts[i] for i in ids]
             completed = [a for a in attempts if a.state == STATE_COMPLETED]
             if completed:
                 return completed[-1]
-            return attempts[-1]
+
+            if self._store is not None:
+                # Only a *successful* published attempt is served here --
+                # `ResultStore.lookup` enforces that, and it is also where
+                # the pointer/scan reconciliation lives (the v3 crash
+                # window between publish and pointer advance).
+                published = self._store.lookup(key)
+                if published is not None:
+                    return self._rehydrate(published)
+
+            if attempts:
+                return attempts[-1]
+            return None
 
     def clear(self) -> None:
-        """Drops every attempt. Test support only -- there is deliberately
-        no HTTP route that reaches this."""
+        """Drops every attempt, in memory **and** in the durable store.
+
+        Test support only -- there is deliberately no HTTP route that
+        reaches this. Clearing the durable store too is what keeps tests
+        isolated now that attempts outlive the process: a memory-only clear
+        would leave published manifests on disk for the next test (and the
+        next *run*) to find, and a workload key is deterministic, so that
+        leak would look like a cache hit rather than like stale state.
+        """
         with self._lock:
             self._attempts.clear()
             self._by_workload.clear()
             self._by_submission.clear()
+            if self._store is not None:
+                self._store.clear()

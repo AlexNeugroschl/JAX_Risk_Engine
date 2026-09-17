@@ -92,7 +92,7 @@ _NOT_OBSERVED = (ORIGIN_ASSUMED, ORIGIN_MIXED, ORIGIN_SYNTHETIC)
 # published result -- and this package must not import `engine.risk`,
 # which pulls in JAX and would break the "imports no pricer" invariant
 # that `engine/integration/` is built on (asserted by
-# `TestPackageImportsNoPricer`). Copying three constants is the cheaper
+# `TestPackageImportsNoSimulationPricer`). Copying three constants is the cheaper
 # price than inverting that dependency.
 #
 # `tests/test_integration_market_inputs.py::TestMeasureVocabularyMatchesVarEs`

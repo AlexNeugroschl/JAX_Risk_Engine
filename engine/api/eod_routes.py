@@ -10,7 +10,7 @@ that lands both, plus bundle submission.
 **Direction of dependency: `engine.api` imports `engine.integration`, never
 the reverse.** `engine/integration/` deliberately imports no FastAPI, no
 Pydantic, no JAX and no pricer from the simulation path -- an invariant
-enforced by `tests/test_integration_pipeline.py::TestPackageImportsNoPricer`.
+enforced by `tests/test_integration_pipeline.py::TestPackageImportsNoSimulationPricer`.
 Putting routes inside that package would break it, so they live here.
 
 **The EOD result is returned as a plain dict, not a Pydantic model.** That
@@ -48,6 +48,11 @@ from engine.integration.capabilities import ENGINE_VERSION, capabilities
 from engine.integration.market_inputs import MarketInputsNotSupplied
 from engine.integration.normalize import MAPPING_VERSION
 from engine.integration.pipeline import price_bundle
+from engine.integration.publication import (
+    PublicationError,
+    ResultStore,
+    default_store_root,
+)
 from engine.integration.schema import (
     RESULT_SCHEMA_VERSION,
     capability_schema,
@@ -65,10 +70,22 @@ from engine.integration.workload import (
 
 router = APIRouter(prefix="/eod", tags=["eod"])
 
-#: The process-wide attempt store. In-process by design at this stage --
-#: see `engine.integration.workload`'s docstring and I-08 for exactly what
-#: that costs and why it is not a financial risk.
-STORE = AttemptStore()
+#: The durable result store backing the attempt store (W0.8). Rooted at
+#: `JAX_EOD_STORE_ROOT` when set -- see
+#: `engine.integration.publication.default_store_root`.
+#:
+#: **Constructed at import, not per request.** A store object is a path and
+#: a lock; making one per request would be harmless but would also make
+#: "which store am I talking to?" a per-request question, and the whole
+#: point of the durable store is that it is the *same* one across requests
+#: and across restarts.
+RESULT_STORE = ResultStore(default_store_root())
+
+#: The process-wide attempt store, backed by the durable store above.
+#: Running state remains in-process (it is never published, deliberately --
+#: an in-flight computation is not a result); completed and failed attempts
+#: survive a restart. See `engine.integration.workload` and I-08.
+STORE = AttemptStore(store=RESULT_STORE)
 
 
 class EodSubmissionSchema(BaseModel):
@@ -165,6 +182,33 @@ def _key_for(request: EodSubmissionSchema, bundle) -> str:
     )
 
 
+def _record_failure(attempt, reason: str) -> None:
+    """Marks an attempt failed without letting bookkeeping mask the cause.
+
+    **A publication failure here is swallowed, and that is the opposite of
+    the rule on the success path** -- deliberately. On success, an
+    unpublished result must become a loud error, because the caller would
+    otherwise be told work is discoverable when it is not. Here the caller
+    is already receiving an error that names the real problem: letting a
+    store write failure replace `TERMS_ARTIFACT_UNUSABLE` with a disk
+    message would hide the thing they actually need to fix, and would
+    change a `422` the coordinator must not retry into a `500` it will.
+
+    The cost is bounded to durability: `Attempt.fail` sets the state
+    whether or not publication succeeds, so *this* process still reports
+    the attempt as `failed`. Only a lookup after a **restart** loses it,
+    and it then reads `UNKNOWN_WORKLOAD` -- the weaker of the two states
+    but not a wrong one. What must not happen, and does not, is the
+    attempt being left `running`: that would tell a coordinator to wait for
+    an answer that is never coming. The failure also reached the caller
+    synchronously, which is where it matters.
+    """
+    try:
+        attempt.fail(reason)
+    except PublicationError:
+        pass
+
+
 @router.post("/price")
 def submit_eod_price(request: EodSubmissionSchema) -> Dict:
     """Prices one EOD bundle and publishes the attempt.
@@ -242,13 +286,13 @@ def submit_eod_price(request: EodSubmissionSchema) -> Dict:
     try:
         result = price_bundle(bundle, request.marketInputs)
     except MarketInputsNotSupplied as exc:
-        attempt.fail(f"MARKET_INPUTS_NOT_SUPPLIED: {exc}")
+        _record_failure(attempt, f"MARKET_INPUTS_NOT_SUPPLIED: {exc}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"reason": "MARKET_INPUTS_NOT_SUPPLIED", "detail": str(exc)},
         ) from exc
     except TermsJoinError as exc:
-        attempt.fail(f"TERMS_ARTIFACT_UNUSABLE: {exc}")
+        _record_failure(attempt, f"TERMS_ARTIFACT_UNUSABLE: {exc}")
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"reason": "TERMS_ARTIFACT_UNUSABLE", "detail": str(exc)},
@@ -257,10 +301,29 @@ def submit_eod_price(request: EodSubmissionSchema) -> Dict:
         # The attempt is recorded as failed before the error propagates, so
         # a later lookup reports `failed` with a reason rather than
         # `UNKNOWN_WORKLOAD` -- which would wrongly invite a resubmission.
-        attempt.fail(f"{type(exc).__name__}: {exc}")
+        _record_failure(attempt, f"{type(exc).__name__}: {exc}")
         raise
 
-    attempt.complete(result.to_dict())
+    try:
+        attempt.complete(result.to_dict())
+    except PublicationError as exc:
+        # **The computation succeeded and the record of it did not land.**
+        # Reporting 200 here would tell the coordinator its result is
+        # published and discoverable when a lookup will not find it -- so
+        # the one thing it must not do is stop retrying. A 500 is right:
+        # this is an infrastructure failure on my side, the request was
+        # valid, and the workload key makes the retry the same computation.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "reason": "RESULT_NOT_PUBLISHED",
+                "detail": (
+                    f"the bundle priced successfully but the result could not be "
+                    f"durably published, so it is not discoverable by lookup: {exc}"
+                ),
+            },
+        ) from exc
+
     return {
         "workloadKey": key,
         "attemptId": attempt.attempt_id,

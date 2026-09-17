@@ -61,7 +61,16 @@ constant column measures out to VaR `0.00` and ES `NaN` — see
 Its Greeks are bumped revaluations (`delta` central-difference at 1bp, `gamma` a second
 difference, `theta` a one-day reprice), all **scalars** rather than per-pillar vectors, and
 **no `vega`** — a fixed-coupon bond off a deterministic curve has no volatility input, so it
-is omitted rather than reported as `0.0`.
+is omitted rather than reported as `0.0`. `theta` is likewise **omitted for a bond maturing
+tomorrow**: the one-day reprice would land exactly on maturity, a state `BondConfig` refuses
+to construct, and the decay is genuinely undefined across that boundary rather than zero
+([I-26](../known-issues.md#i-26)). `delta`/`gamma` are unaffected and still reported.
+
+Note that this `delta` is **not bit-identical** to the EOD boundary's `rateSensitivity` for
+the same bond, deliberately: this is a central difference, while the published contract at
+[EOD Integration](eod-integration.md) is the one-sided `P(+1bp) − P(0)` TraderX agreed to
+reconcile against. On a 6-month bill at 100k face they differ by ~1.4e-4 — the curvature
+term, not an error in either.
 
 ## `PrecisionConfig`
 
@@ -130,11 +139,16 @@ Orchestrates, in order:
    `price_bermudan_swaptions`/`price_american_swaptions`), concatenating into one NPV cube
    reassembled in the caller's original `trades` order — this is exactly what unifies the
    four pricers' different input shapes (`yield_curves`+pillars for swaps, `hw_paths`+
-   `step_times` for every swaption type) behind one call.
+   `step_times` for every swaption type) behind one call. **Skipped entirely when
+   `scenario_risk=False`**, which instead yields a deliberately *zero-width* cube rather
+   than a zero-filled one — see "Bonds" above.
 7. **Compute the base (t=0) NPV** by repricing every trade against zero-shock curves —
-   generalizes what `demo.py` used to do by hand, per instrument type.
-8. **Aggregate VaR/ES** (`compute_risk_metrics`).
-9. **Optionally compute Greeks** per trade (below).
+   generalizes what `demo.py` used to do by hand, per instrument type. This step runs
+   either way, which is what lets a bond portfolio still return real numbers.
+8. **Aggregate VaR/ES** (`compute_risk_metrics`). Also skipped when `scenario_risk=False`,
+   leaving `risk` an **empty dict** — a missing key asserts nothing, where a `0.00` would
+   assert a measured absence of risk.
+9. **Optionally compute Greeks** per trade (below). Runs either way.
 
 ## Validation and assembly helpers
 

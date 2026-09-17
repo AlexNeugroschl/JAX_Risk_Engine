@@ -104,7 +104,7 @@ in both — converting the bridged absolute path values back into standardized s
 increments (`output[i] -= output[i-1]; output[i] /= sqrtdt_[i]` in QuantLib, `dW =
 diff(W); dW / sqrt(dt)` in `apply_brownian_bridge`) — is identical.
 
-**Verified:** `tests/test_simulation.py::TestBrownianBridge` (the resulting
+**Verified:** `tests/test_market_model.py::TestBrownianBridge` (the resulting
 matrix reproduces the exact covariance structure `min(s,t)` real Brownian motion has —
 the property this construction exists to guarantee) and
 `tests/test_ore_parity.py::TestBrownianBridgeParity` (below).
@@ -515,7 +515,7 @@ that backward induction to `jax.lax.scan` (see
 [American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)) removed
 that blocker; `bermudan_delta_gamma`/`bermudan_theta` now cover Bermudan/American exactly
 as `swap_delta_gamma`/`swap_theta` cover swaps. See
-[Delta, Gamma, and Theta: Scope](../risk/greeks.md#scope-every-instrument-in-this-codebase).
+[Delta, Gamma, and Theta: Scope](../risk/greeks.md#scope-every-rate-derivative-instrument-in-this-codebase).
 
 **Two bugs found while building this correspondence, unrelated to the correspondence
 itself, both the same root cause.** Naively differentiating through a bisection-based
@@ -539,7 +539,7 @@ function's own inputs:
    [Calibration](calibration.md#the-_bisect_xstar-gradient-bug) for the full incident.
 
 See [Delta, Gamma, and Theta: Two real bugs this module found and
-fixed](../risk/greeks.md#two-real-bugs-this-module-found-and-fixed) for the full account of
+fixed](../risk/greeks.md#differentiating-through-bisection-root-finds) for the full account of
 both, and each function's own docstring in `european_swaption.py`/`engine/calibration/basket.py`.
 
 **Verified:** `tests/test_greeks.py` — finite-difference bump-and-revalue cross-checks
@@ -595,8 +595,8 @@ numerical model realization for `t>0`, despite sharing `(a, sigma)` and today's 
 `bermudan_swaption.py` is — the model being calibrated is the one ORE's own Bermudan engine
 actually uses.
 
-**Verified:** `tests/test_calibration_basket.py` (16 tests), `tests/test_calibration_lgm.py`
-(9 tests), `tests/test_calibration_integration.py` (3 tests) — see
+**Verified:** `tests/test_calibration_basket.py` (15 tests), `tests/test_calibration_lgm.py`
+(9 tests), `tests/test_calibration_integration.py` (6 tests) — see
 [Calibration: Tested by](calibration.md#tested-by) for the full breakdown.
 
 ## Summary table

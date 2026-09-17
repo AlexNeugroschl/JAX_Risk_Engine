@@ -214,7 +214,7 @@ field mistakenly marked static would silently drop its own gradient, while a
 non-differentiable field marked as a child costs nothing (its cotangent is simply unused).
 
 See [Calibration: the `_bisect_xstar` gradient bug](calibration.md#the-_bisect_xstar-gradient-bug)
-and [Delta, Gamma, and Theta: two real bugs](../risk/greeks.md#two-real-bugs-this-module-found-and-fixed)
+and [Delta, Gamma, and Theta: two real bugs](../risk/greeks.md#differentiating-through-bisection-root-finds)
 for the full incident this bug was caught inside.
 
 ## `engine/models/ore_builders.py`
@@ -360,7 +360,7 @@ the repository layout as a whole.
   closed forms checked directly against live `ORE.LinearGaussMarkovModel` objects, plus the
   explicit regression test documenting the `HullWhite` vs. `LinearGaussMarkovModel`
   divergence for `t>0` described above.
-- `tests/test_day_count_roles.py` (27 tests) — the W1.1 time-axis/accrual split:
+- `tests/test_day_count_roles.py` (29 tests) — the W1.1 time-axis/accrual split:
   **`TestOnlyTheAccrualRoleIsConfigurable`** (changing the accrual must move accrual
   fractions and leave cashflow *times* exactly where they were),
   `TestDefaultsAreByteIdentical`, `TestActActIcmaIsSupported`,

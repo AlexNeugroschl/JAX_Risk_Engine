@@ -1,10 +1,11 @@
 # The TraderX EOD Integration Boundary (`engine/integration/`)
 
-**Status: W0 delivered, plus W1.2–W1.4.** Contract and refusal machinery, Treasuries that
-return **real numbers**, and an equity case resolved to a *precise refusal* rather than a
-guess. Everything else still refuses.
+**Status: W0 delivered (including W0.8), plus W1.2–W1.4 and W1.6.** Contract and refusal
+machinery, Treasuries that return **real numbers**, an equity case resolved to a *precise
+refusal* rather than a guess, a versioned contract served over HTTP, and a crash-safe
+durable store behind it. Everything else still refuses.
 
-Implements W0, W1.2, W1.3 and W1.4 of the
+Implements W0, W1.2, W1.3, W1.4 and W1.6 of the
 [TraderX Integration Plan](../planning/traderx-integration-plan.md).
 
 | | |
@@ -13,7 +14,15 @@ Implements W0, W1.2, W1.3 and W1.4 of the
 | **Plus one sensitivity** | `rateSensitivity` for a **note only**, as a labelled 1bp parallel bump ([I-16](../known-issues.md#i-16)) |
 | **Answers without a model** | `accruedInterest` — a unit conversion of an exported value, not a model output |
 | **Refuses, naming what it needs** | A cash equity, for want of a spot/FX source ([W1.4](#w14--the-equity-position-pricer-which-refuses), [I-18](../known-issues.md#i-18)) |
+| **Reachable over HTTP** | Six routes under `/eod`, returning plain dicts governed by a published JSON Schema ([W1.6](#w16--the-contract-interface)) |
+| **Durable** | Completed and failed attempts survive a restart; a lost pointer never loses a result ([W0.8](#w08--crash-safe-publication-and-the-durable-result-store), [I-08](../known-issues.md#i-08)) |
 | **Still refuses** | Everything else: corporate bonds, listed options, `rateGamma`/`theta`, a bill's sensitivity, and any unsupported convention |
+
+> **One thing to know before reading further.** `capabilities()` currently reports
+> `deliveryStage: "W1.6"` and lists `knownLimitations` `I-04`/`I-05`/`I-07`/`I-18`. Neither
+> has been updated for W0.8, so the published capability document understates what landed
+> and omits [I-08](../known-issues.md#i-08) and [I-24](../known-issues.md#i-24). That is a
+> gap in `engine/integration/capabilities.py`, not in this page.
 
 ---
 
@@ -121,7 +130,8 @@ That list of 13 is not a diagnostic this engine composed — it is TraderX's own
 | [`equity.py`](../../engine/integration/equity.py) | W1.4 | Cash equity — a refusal naming the missing spot/FX |
 | [`schema_version.py`](../../engine/integration/schema_version.py) | W1.6.2 | The two document versions — a dependency-free leaf |
 | [`schema.py`](../../engine/integration/schema.py) | W1.6.2 | JSON Schema for the result and capability documents |
-| [`workload.py`](../../engine/integration/workload.py) | W1.6.4 / W0.8 | Workload key + the durable attempt store |
+| [`workload.py`](../../engine/integration/workload.py) | W1.6.4 / W0.8 | Workload key + the attempt state machine |
+| [`publication.py`](../../engine/integration/publication.py) | W0.8 | Crash-safe publication + the durable result store ([below](#w08--crash-safe-publication-and-the-durable-result-store)) |
 | [`pipeline.py`](../../engine/integration/pipeline.py) | — | Composition of the above |
 
 The HTTP routes are **not** in this package — see
@@ -153,9 +163,9 @@ Enforced by tests, not just asserted here:
 spot by asserting the **transitive** property — importing `engine.integration` in a clean
 interpreter must not load the model layer through *any* chain of leaves.
 
-A side benefit of the same constraint: all 692 tests in this layer run in well under a
-second, because none of them loads a numerical runtime — ORE's date arithmetic is cheap and
-JAX is still absent. (The 23 tail-diagnostic tests live in
+A side benefit of the same constraint: all 751 tests in this layer run in a few seconds,
+because none of them loads a numerical runtime — ORE's date arithmetic is cheap and
+JAX is still absent. (The 29 tail-diagnostic tests live in
 `tests/test_var_es_diagnostics.py` instead, since they exercise `engine/risk/var_es.py` and
 do need JAX.)
 
@@ -806,7 +816,7 @@ lives, the exact object W0.4's refusal keeps unreachable
 
 The guard caught the import. Rather than relax it, the day-count vocabulary moved to a new
 leaf module **`engine/day_count.py`** that imports only `ORE`; `ore_builders` re-exports it so
-every existing caller and W1.1's 27 tests are untouched. The *time axis* role deliberately
+every existing caller and W1.1's day-count tests are untouched. The *time axis* role deliberately
 did **not** move — it is a property of the simulated curve cube, not of any contract.
 
 A new test also closes the gap the guard had: it was AST-based and saw only *direct* imports,
@@ -1168,11 +1178,9 @@ overnight batch against work already in flight. Lookup returns the most recent *
 attempt — a later failure never hides an earlier success, and attempts are immutable once
 terminal.
 
-> **[I-08](../known-issues.md#i-08) remains open.** The attempt store is still in-process, so a
-> restart loses *running*-state knowledge. What W1.6.4 delivers is the state machine and the
-> key; the manifest-scan recovery in plan §W0.8 needs a persistent artifact store that does not
-> exist yet. A lost in-memory job is an infrastructure event, and this module's job is to ensure
-> it is never a *financial* one — by never serving a partial or stale result as a complete one.
+> **Results are durable since W0.8 (2026-09-17)** — see
+> [the next section](#w08--crash-safe-publication-and-the-durable-result-store) for the
+> protocol that makes lookup survive both a restart and a crash at any point.
 
 ### A worked submission
 
@@ -1214,11 +1222,151 @@ coverage model exists to guarantee:
 
 ---
 
+## W0.8 — Crash-safe publication and the durable result store
+
+**W1.6.4 landed the state machine; this landed the thing it stands on.** Until W0.8 the
+workload key, idempotent submission, immutable terminal attempts and the four lookup states
+all lived in one in-process dict, so a restart lost everything and the crash-safety design
+in plan §W0.8 had nothing behind it. `engine/integration/publication.py` is that store, plus
+the protocol that makes writing to it survivable.
+
+### The four-step protocol, and what each step buys
+
+| Step | Action |
+|---|---|
+| 1 | Write the manifest to a **temporary path** |
+| 2 | **Verify the hash of what was actually written**, by reading it back |
+| 3 | **Atomically publish** the manifest (`os.replace`) |
+| 4 | **Then** advance the workload pointer |
+
+The ordering is the whole design, chosen so that *every* crash window leaves a coherent
+store rather than a plausible-looking wrong one:
+
+- **Crash before (3)** → orphaned bytes under a temp path no lookup reaches. A partial
+  result is never discoverable, so it can never be served as a complete one.
+- **Crash between (3) and (4)** → a complete, discoverable result whose pointer is stale.
+  **This is the window TraderX found in v3**, and it is why step 4 is not the commit point.
+- **Crash after (4)** → the ordinary complete case.
+
+**Step 2 is not ceremony.** Hashing what was written rather than what was *meant* to be
+written is what makes a truncated or partially-flushed file a publication *failure* instead
+of a durable artifact that verifies against nothing. A short write nobody checks is exactly
+the "plausible wrong number" this boundary exists to refuse — it just arrives as bytes
+rather than as a price.
+
+### The manifest is the commit point; the pointer is a cache
+
+A result is published the instant its manifest lands atomically at step 3. Discoverability
+deliberately does **not** depend on the pointer file: if the pointer is missing, torn or
+behind, `lookup` falls back to a **scan** over published manifests and advances the pointer
+as a side effect, so the cost is paid once per crash rather than on every later lookup.
+
+The asymmetry is what makes this worth being precise about. Trusting a stale pointer returns
+`UNKNOWN_WORKLOAD` for work that **is** complete — which invites a coordinator to resubmit an
+overnight batch it already has the answer to. The scan is slower and always correct; the
+pointer is fast and sometimes behind. Reading the cache first and the record second gives
+both.
+
+Ordering comes from a `publicationSequence` counter written **into the bytes that are
+hashed**, not from directory order (arbitrary) or file mtime (the filesystem's opinion, at a
+platform-dependent resolution that a backup or a copy rewrites).
+
+### Layout, and two platform details that are not incidental
+
+```
+attempts/<attemptId>.json        one attempt's manifest — the commit point
+pointers/<workloadKeyDigest>     the most recent successful attemptId
+tmp/<attemptId>.<uuid>.json      step-1 scratch; never read by lookup
+sequence                         high-water mark, advisory only
+```
+
+`tmp/` is a **sibling** of `attempts/` on purpose: `os.replace` is only atomic within a
+filesystem, and a temp directory elsewhere on the machine can be on a different one. A
+cross-device rename raises rather than silently copying — but only at publication time, on a
+machine that may differ from the developer's, so the layout removes the possibility rather
+than relying on a test to notice it.
+
+**The workload key is digested before use as a filename.** A key is `sha256:<hex>`, and the
+colon is not legal in a Windows filename (it opens an alternate data stream). Digesting
+rather than escaping keeps one rule on every platform.
+
+### What is published, and what deliberately is not
+
+**Only *terminal* attempts are published.** A running attempt has no result to commit, and
+writing one would make an in-flight computation discoverable as a finished answer. So after a
+restart, a job that was running reports as **unknown** rather than as something it is not;
+the coordinator resubmits, and the workload key makes the recomputation identical. That is an
+infrastructure event, not a financial one.
+
+**Idempotency survives the restart too.** `find_by_submission` scans published manifests, so
+a coordinator retrying a lost response after the engine bounced recovers its original attempt
+instead of starting a second — the exact duplicate-overnight-batch that `submissionId` exists
+to prevent, just reached through a restart rather than through a race.
+
+### A publication failure is loud on success and quiet on failure
+
+Two opposite rules, deliberately:
+
+- **On the success path, a failed publish becomes a `500 RESULT_NOT_PUBLISHED`.** The
+  computation succeeded and the record of it did not land. Reporting `200` would tell the
+  coordinator its result is discoverable when a lookup will not find it — and the one thing
+  it must not then do is stop retrying. The request was valid, so this is honestly an
+  infrastructure failure on the engine's side, and the workload key makes the retry the same
+  computation.
+- **On the failure path, a failed publish is swallowed.** The caller is already receiving an
+  error naming the real problem; letting a disk write failure replace
+  `TERMS_ARTIFACT_UNUSABLE` with a storage message would hide what they actually need to fix,
+  and would turn a `422` they must *not* retry into a `500` they will. The cost is bounded to
+  durability: `Attempt.fail` sets the state in a `finally`, so *this* process still reports
+  the attempt as `failed`; only a lookup after a restart loses it and reads
+  `UNKNOWN_WORKLOAD` — weaker, but not wrong, and the failure already reached the caller
+  synchronously.
+
+### The in-memory attempt commits when the manifest does
+
+The store's rule — commit first, update the cache second — applies to the in-memory attempt
+too, and for the same reason. `complete()` publishes *before* it sets
+`state = completed`, so a publication failure leaves the attempt exactly as it was: still
+running, still retryable. The original ordering set the state first, which meant a store
+failure left an attempt this process reported as `completed` while nothing was on disk — a
+result no restart could find — and the immutability guard then rejected the very retry that
+would have repaired it, so a transient disk error permanently bricked the attempt.
+
+**`fail()` deliberately keeps the opposite ordering.** It sets the state in a `finally`, so
+the attempt is marked failed whether or not the manifest lands. The asymmetry is the point:
+on the success path there is a real result worth retrying for, and claiming a durability that
+does not exist is the defect. On the failure path there is no result and nothing to retry —
+the attempt *did* fail — and leaving it `running` because the *record* of the failure did not
+land would report an in-flight job to a coordinator that would wait forever for an answer
+that is never coming.
+
+### Where it is configured
+
+`JAX_EOD_STORE_ROOT` if set, else a per-user directory under the system temp root —
+deliberately **not** the working directory, which would scatter stores wherever the service
+happened to be started from and make "did this restart see the same store?" depend on how it
+was launched.
+
+### What this is still not
+
+**A distributed store.** Within one process it is thread-safe: a lock makes the
+read-then-increment of `publicationSequence` atomic, which matters because FastAPI serves
+from a thread pool — an unguarded version was measured issuing **2 distinct sequences across
+30 concurrent publications**. Across *processes* it does not coordinate: two engines
+publishing at the same instant can issue the same sequence. That is a tie, and ties resolve
+deterministically by attempt id, which is safe precisely because two successful attempts
+under one workload key are the same computation by construction.
+
+And it is **EOD-only**. The portfolio path's `_JOBS` dict is untouched, which is why
+[I-08](../known-issues.md#i-08) is `PARTIAL` rather than closed.
+
+---
+
 ## Not yet implemented
 
 | Task | Status | Why |
 |---|---|---|
-| **W0.8** crash-safe publication | Partial | The four lookup states, the workload key and attempt immutability landed in W1.6.4. The manifest-scan recovery still needs a persistent artifact store ([I-08](../known-issues.md#i-08)). |
+| **W0.8** crash-safe publication | Done (2026-09-17) | The four lookup states, the workload key and attempt immutability landed in W1.6.4; the durable store, the four-step publication protocol and manifest-scan recovery landed in W0.8's second half. Still EOD-only, and *running* state is deliberately not published ([I-08](../known-issues.md#i-08)). |
 | **W1.5** wire-through to the portfolio path | Done (2026-09-17) | `engine/instruments/treasury.py`'s `BondConfig` reaches `price_portfolio`'s base NPV and Greeks, pinned bit-exact against the two pricers here. **No VaR/ES** — a deterministic bond has no scenario column, refused rather than broadcast ([I-24](../known-issues.md#i-24)). No effect on this boundary. |
 | Equity **valuation** | Blocked | The refusal path landed (W1.4); pricing needs a spot/FX source ([I-18](../known-issues.md#i-18)). |
 | Per-pillar `rateSensitivity` | Blocked | Needs a curve with pillar structure - `mode: "package"`, i.e. W2 ([I-16](../known-issues.md#i-16)). |
@@ -1243,18 +1391,22 @@ Unblocked — sequencing, not dependency.
 | [`tests/test_integration_bill.py`](../../tests/test_integration_bill.py) | W1.2 — **`TestOreParity`**, `TestSigns`, **`TestMaturityBoundary`**, `TestRefusesWhatItCannotPrice`, `TestThroughTheBundlePipeline` |
 | [`tests/test_integration_note.py`](../../tests/test_integration_note.py) | W1.3 — **`TestOreParity`**, **`TestAccruedReconcilesToTraderX`**, `TestToleranceIsDerivedNotConstant`, `TestCleanDirtyReconciliation`, `TestLongShort`, `TestRateSensitivity`, **`TestWrongDayCountIsCaught`**, `TestAccrualMismatchIsRefused`, `TestScheduleIsUsedNotRegenerated`, `TestRefusals`, **`TestRefusalsAreNotePricingErrors`**, `TestIsNote`, `TestPipelineEndToEnd`, **`TestBillIsUnchangedByW13`**, `TestCapabilitiesAdvertiseW13` |
 | [`tests/test_integration_equity.py`](../../tests/test_integration_equity.py) | W1.4 — `TestRefusesRatherThanPrices`, **`TestDoesNotEchoTheExportedMark`**, `TestLongShort`, **`TestMultiplierAppliedExactlyOnce`**, `TestCurrencyAndFx`, `TestIsEquity`, `TestMalformedRows`, **`TestRefusalsAreEquityPricingErrors`**, `TestPipelineEndToEnd`, **`TestTreasuriesAreUnchangedByW14`**, `TestCapabilitiesAdvertiseW14` |
-| [`tests/test_day_count_roles.py`](../../tests/test_day_count_roles.py) | W1.1 — the two day-count roles; 27 tests, unchanged by W1.3's move of the accrual vocabulary to `engine/day_count.py` |
+| [`tests/test_day_count_roles.py`](../../tests/test_day_count_roles.py) | W1.1 — the two day-count roles; 29 tests, unchanged by W1.3's move of the accrual vocabulary to `engine/day_count.py` |
 | [`tests/test_integration_terms_v2.py`](../../tests/test_integration_terms_v2.py) | W1.6.1 — `TestV2IsAccepted`, **`TestTermsVersionIsIndependentOfBundleVersion`**, **`TestUnrecognizedValuesAreRefused`**, `TestFractionDecimalsIsValidated`, `TestSelfContradictoryDocumentsAreRefused`, **`TestV1BundlesAreUnchanged`**, **`TestFractionDecimalsActuallyReachesTheTolerance`**, `TestAccrualBasisType` |
 | [`tests/test_integration_schema.py`](../../tests/test_integration_schema.py) | W1.6.2 — `TestSchemasAreThemselvesValid`, `TestRealDocumentsValidate`, **`TestResultSchemaIsStrict`**, `TestCapabilitySchemaIsStrict`, **`TestSchemaIsDerivedNotHandWritten`**, `TestVersionsAreEmittedAndSeparate`, `TestNoImportCycle` |
 | [`tests/test_integration_accrual_source.py`](../../tests/test_integration_accrual_source.py) | W1.6.3 — `TestLabelIsPresentAndAligned`, **`TestStructuralZeroSurvivesTheAlignment`**, `TestMappingFunction`, `TestUnavailableAccrualCarriesNoLabel`, **`TestExistingBehaviourUnchanged`** |
-| [`tests/test_integration_eod_routes.py`](../../tests/test_integration_eod_routes.py) | W1.6.4 — `TestCapabilitiesIsRouted`, `TestSchemasAreServed`, `TestPricingOverHttp`, **`TestRefusalsAreNotHttpErrors`**, `TestTransportErrorsAreTruthful`, **`TestFourLookupStates`**, `TestIdempotentSubmission`, **`TestWorkloadKey`**, `TestAttemptImmutability`, **`TestExistingRoutesUnaffected`** |
+| [`tests/test_integration_eod_routes.py`](../../tests/test_integration_eod_routes.py) | W1.6.4 + W0.8 — `TestCapabilitiesIsRouted`, `TestSchemasAreServed`, `TestPricingOverHttp`, **`TestRefusalsAreNotHttpErrors`**, `TestTransportErrorsAreTruthful`, **`TestFourLookupStates`**, `TestIdempotentSubmission`, **`TestSubmissionIdCannotCrossWorkloads`**, `TestAttemptAddressing`, **`TestWorkloadKey`**, `TestAttemptImmutability`, **`TestExistingRoutesUnaffected`**, **`TestResultsSurviveARestartOverHttp`**, **`TestAnUnpublishedResultIsNotReportedAsSuccess`** |
+| [`tests/test_integration_publication.py`](../../tests/test_integration_publication.py) | W0.8 — `TestTheStoreLayoutIsWhatTheProtocolNeeds`, **`TestCrashBeforeManifestPublish`**, `TestCrashAfterPublish`, **`TestCrashBetweenPublishAndPointerAdvance`**, `TestOnlySuccessfulAttemptsAreServed`, **`TestStep2VerifiesWhatWasActuallyWritten`**, `TestCanonicalSerialization`, **`TestRestartSurvival`**, `TestMemoryAndStorePrecedence`, `TestMemoryOnlyRemainsTheDefault`, `TestDefaultStoreRoot`, **`TestConcurrentPublication`**, `TestStep3FailureIsAPublicationError`, **`TestAFailedPublicationLeavesNoTerminalAttemptInMemory`** |
 
-**692 tests in `tests/test_integration_*.py`** — 140 for W1.3's note pricer, 60 for W1.4's
-equity refusal, and **165 added by W1.6** (46 terms-v2, 46 schema, 17 accrual-source, 56 HTTP
-routes) — plus 29 for the tail diagnostics in `engine/risk/var_es.py` and 27 for the W1.1
-day-count split. (The note and tail-diagnostic figures were previously recorded as 104 and 23;
-both were stale — re-counted and corrected here, per working rule 10.) They run against the real delivered TraderX YU18 fixtures (bill, note, sofr,
-equity — each in v1 and v2) and complete in ~2.3s.
+**751 tests in `tests/test_integration_*.py`** — 140 for W1.3's note pricer, 60 for W1.4's
+equity refusal, **173 added by W1.6** (46 terms-v2, 46 schema, 17 accrual-source, 64 HTTP
+routes) and **51 added by W0.8's durable store** — plus 29 for the tail diagnostics in
+`engine/risk/var_es.py` and 29 for the W1.1 day-count split. (Earlier revisions of this
+section recorded 744, before that 692, and before that 104 note / 23 tail-diagnostic tests;
+all were stale — re-counted from `pytest --collect-only` and corrected here, per working
+rule 10.) They run
+against the real delivered TraderX YU18 fixtures (bill, note, sofr, equity — each in v1 and
+v2) and complete in ~2.3s.
 
 Two dependency notes: `jsonschema` is a **test-only** dev extra (the engine emits the schema
 and must never depend on a validator to produce a correct document — it is the tests that

@@ -309,11 +309,108 @@ Same parameter/return shape as `price_bermudan_swaptions` above — expands each
 
 ---
 
+## `engine.instruments.treasury`
+
+W1.5. Treasury bills and notes, priced by **closed-form discounted cashflows against a single
+deterministic curve**. The odd one out in this package in two ways: it is the only pricer that
+is **not JAX** (plain `math.exp` over ORE day-count arithmetic), and the only one that produces
+**no NPV cube** — so no VaR/ES. See
+[The Portfolio Entry Point: Bonds](portfolio-entrypoint.md#bonds) and
+[I-24](../known-issues.md#i-24).
+
+### `CouponPeriod`
+
+One explicit coupon period. **Supplied, never generated** — a schedule derived by stepping
+back from maturity that disagreed with the booked one would silently reprice every coupon.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `start_date` | `ORE.Date` | *required* | Accrual period start. |
+| `end_date` | `ORE.Date` | *required* | Accrual period end. |
+| `payment_date` | `Optional[ORE.Date]` | `None` | Payment date; falls back to `end_date`. Read via the `.payment()` method. |
+
+### `BondConfig`
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `face_amount` | `float` | *required* | **Signed** — a short position is a negative face and yields a negative NPV directly. There is no separate sign factor, and applying one on top would flip a short position positive. |
+| `maturity_date` | `ORE.Date` | *required* | Must be strictly after `evaluation_date`, else `BondPricingError` — a matured bond is a settlement question, not a pricing one. |
+| `evaluation_date` | `ORE.Date` | *required* | Valuation date. |
+| `initial_zero_curve` | `ZeroCurveConfig` | *required* | **This bond's own curve**, not an index into `SimulationConfig.rates.initial_zero_curves` — the same shape the swaption family uses, and the reason a bond cannot reproduce [I-01](../known-issues.md#i-01). |
+| `coupon_rate` | `float` | `0.0` | Annual coupon as a **decimal** (`0.04` == 4%), not a percent. |
+| `coupon_schedule` | `Tuple[CouponPeriod, ...]` | `()` | Empty ⇒ this is a **bill** (the degenerate zero-coupon case, not a separate type). |
+| `redemption_fraction` | `float` | `1.0` | Redemption as a fraction of face. Must be non-negative. |
+| `accrual_day_count` | `str` | `"ACT/ACT (ICMA)"` | The instrument's own **accrual** day count (W1.1), resolved at construction and **refused if unsupported** — never defaulted. Ignored when there are no coupons. |
+
+**Properties:** `is_bill` (no coupon schedule), `notional` (alias for `face_amount`, so the
+shared `trade[i] (Type, notional=…)` labelling helpers work without a special case).
+
+**Construction refuses four contradictions**, each naming the reason: a maturity at or before
+the evaluation date; a negative `redemption_fraction`; a non-empty schedule with
+`coupon_rate=0.0`; and a non-zero `coupon_rate` with no schedule. The day count is resolved
+**eagerly**, so an unsupported convention fails at construction naming the trade rather than
+mid-pricing.
+
+### Discounting convention
+
+**Continuously compounded over an ACT/365 Fixed year fraction**, matching
+`engine.integration.bill`/`note` exactly. The curve's zero rate is **linearly interpolated
+between pillars and held flat beyond both ends** — flat extrapolation is stated rather than
+assumed, because extrapolating a slope past the last pillar produces a confident number from
+no data, and for a long bond that error compounds through every discount factor.
+
+### `price_bond_base(cfg: BondConfig, rate_shift: float = 0.0) -> float`
+
+t=0 **dirty** (full) NPV — every remaining cashflow discounted. Dirty rather than clean
+deliberately, matching `engine.integration.note.NotePrice.npv`: a "bond NPV" that silently
+meant the clean value would be off by the accrued interest (~$1,857 on a $100k note), which
+is large enough to matter and small enough to look like a curve difference. A coupon already
+paid on or before the evaluation date is excluded, not discounted from the past.
+`rate_shift` parallel-shifts the curve.
+
+### `accrued_interest(cfg: BondConfig) -> float`
+
+Accrued interest in currency, recomputed from the coupon schedule and position-signed via
+`face_amount`. Returns `0.0` for a bill and `0.0` before the first period starts — both
+structural facts, not missing values. This is the **`recomputed-schedule` path only**; the
+integration boundary additionally reconciles against the exporter's published fraction and
+reports that one (see [EOD Integration](eod-integration.md)).
+
+### `clean_npv_of(cfg: BondConfig) -> float`
+
+`price_bond_base(cfg) - accrued_interest(cfg)`. Carried because a quoted bond price is
+conventionally clean, so a consumer reconciling against a market quote compares like with
+like.
+
+### `rate_sensitivity(cfg: BondConfig, bump: float = RATE_BUMP) -> float`
+
+Change in dirty NPV for a `bump` (default `RATE_BUMP = 1e-4`, i.e. 1bp) parallel curve shift.
+A **bumped revaluation through the same code path**, not a differentiated formula — a
+sensitivity derived from an expression that has drifted from the pricer measures the
+expression, not the price. Parallel-only ([I-16](../known-issues.md#i-16)).
+
+### `price_bond_scenarios(*args, **kwargs)`
+
+**Always raises `ScenarioPricingNotSupported`.** It exists so the refusal has a name and a
+docstring where a contributor would look for the missing capability, rather than being an
+absence someone fills in with a broadcast. Filling it in naively produces a zero-variance
+column measuring out to **VaR `0.00` and ES `NaN`** — a position reported as risk-measured
+when its risk was never modelled ([I-24](../known-issues.md#i-24)).
+
+### Exceptions
+
+| Exception | Raised when |
+|---|---|
+| `BondPricingError` | A bond could not be priced, or a `BondConfig` is self-contradictory. Distinct from `ValueError` so a caller can tell a *pricing* refusal from a malformed request. |
+| `ScenarioPricingNotSupported` | A `BondConfig` reached the scenario/`npv_cube` path. Subclass of `BondPricingError`. |
+
+---
+
 ## `engine.risk.var_es`
 
 Every function here is instrument-agnostic — see
 [Risk Statistics](../risk/var_es.md) and
-[Architecture: stages agree on shapes, not code](../concepts/architecture.md#design-principle-stages-agree-on-shapes-not-code).
+[Architecture: modules agree on shapes, not code](../concepts/architecture.md#design-principle-modules-agree-on-shapes-not-code).
 
 ### `portfolio_pnl(npv_cube: jax.Array, base_npv: float) -> jax.Array`
 
@@ -575,7 +672,7 @@ today's curve.
 | `H` / `H_prime` | `(a, t) -> jax.Array` | LGM's own state-space mapping function and its derivative. |
 | `zeta` | `(sigma, t) -> jax.Array` | Cumulative variance; accepts `sigma` as `Sigma` or scalar. |
 | `bond_price` | `(curve, a, sigma, t, T, x) -> jax.Array` | `P(t,T,x)`, live-verified against `ORE.LinearGaussMarkovModel.discountBond`. |
-| `numeraire` | `(curve, a, sigma, t, x) -> jax.Array` | LGM's own numeraire — required for correct martingale-measure discounting (see [Calibration](calibration.md#route-2-the-full-price-checked-against-a-numeraire-deflated-monte-carlo-simulation)). |
+| `numeraire` | `(curve, a, sigma, t, x) -> jax.Array` | LGM's own numeraire — required for correct martingale-measure discounting (see [Calibration](calibration.md#two-route-verification)). |
 | `bond_option_sigma` | `(a, sigma, T0, T, t) -> jax.Array` | LGM analogue of the Hull-White version above. |
 | `r_from_x` / `x_from_r` | `(curve, a, sigma, t, x_or_r) -> jax.Array` | Converts between LGM's own state variable `x` and the direct short rate `r` (affine, exact). |
 
@@ -670,4 +767,38 @@ on this package or its own dependencies (FastAPI, Pydantic, uvicorn).
 |---|---|
 | `engine.api.app` | `create_app() -> FastAPI` / `app` — the FastAPI application factory. Run with `uvicorn engine.api.app:app`. |
 | `engine.api.routes` | `router: APIRouter` — `GET /health`, `GET /version`, `POST /portfolio/price`, `GET /portfolio/price/{job_id}`, `POST /calibration/lgm`. |
+| `engine.api.eod_routes` | `router: APIRouter` (prefix `/eod`) — the TraderX EOD contract: `GET /eod/capabilities`, `GET /eod/schemas/result`, `GET /eod/schemas/capabilities`, `POST /eod/price`, `GET /eod/results/by-workload/{key}`, `GET /eod/attempts/{attemptId}`. Returns **plain dicts**, not Pydantic models — the contract is the published JSON Schema, and a second definition could drift from it. See [EOD Integration](eod-integration.md#w164--the-eod-http-routes). |
 | `engine.api.schemas` | Pydantic v2 models mirroring `engine.portfolio`/`engine/instruments/*.py`'s dataclasses field-for-field, each with `.to_dataclass()`/`.from_dataclass()` — see [HTTP API: Request/response schemas](http-api.md#request-schema-portfoliorequestschema). |
+
+---
+
+## `engine.integration`
+
+The TraderX EOD boundary: a hash-verified bundle in, an **identified** risk result out. Its
+governing rule is that **nothing is ever silently approximated** — an explicit `unsupported`
+is recoverable, a plausible wrong number is not.
+
+Documented in full in [The EOD Integration Boundary](eod-integration.md); this table is the
+module index. **This package imports no FastAPI, no Pydantic, no JAX, and no simulation
+pricer** — only `ORE`, for date and day-count arithmetic. The dependency runs
+`engine.api` → `engine.integration`, never the reverse, and it is enforced by
+`tests/test_integration_pipeline.py::TestPackageImportsNoSimulationPricer`.
+
+| Module | Task | Contents |
+|---|---|---|
+| `bundle` | W0.1 | `load_bundle(root) -> Bundle`, `Bundle`, `BundleIntegrityError`. Reads and hash-verifies every artifact **in binary, exactly as read** — see the CRLF trap. |
+| `terms` | W0.2 / W1.6.1 | `join_terms`, `TermsEntry`, `AccrualBasis`, `TermsJoinError`, `SUPPORTED_TERMS_SCHEMAS`. |
+| `normalize` | W0.3 | `normalize_position`, `NormalizedPosition`, `Quantity`, `MAPPING_VERSION`. |
+| `conventions` | W0.4 | `check_conventions`, `ConventionRefusal` — a positive **allowlist**, applied before any pricing object is constructed ([I-05](../known-issues.md#i-05)). |
+| `result` | W0.5 | `RiskResult`, `ItemResult`, `Coverage`, `CALCULATIONS`, `STATUSES`. |
+| `market_inputs` | W0.6 | `resolve_market_inputs`, `MarketInputs`, `MarketInputsNotSupplied`, `ASSUMED_PROFILES`, `CurveProvenance`, `ENGINE_RISK_MEASURE`. No silent fallback ([I-11](../known-issues.md#i-11)). |
+| `identity` | W0.7 | `item_id`, `ItemIdentity` — an opaque, stable id plus the source identity block, on **every** row including refusals ([I-10](../known-issues.md#i-10)). |
+| `publication` | W0.8 | `ResultStore`, `PublicationError`, `default_store_root` — the crash-safe durable result store ([I-08](../known-issues.md#i-08)). |
+| `capabilities` | W0.9 | `capabilities()` — the supported (product × convention × calculation) matrix. |
+| `bill` | W1.2 | `price_bill`, `BillPrice`, `is_bill`, `BillPricingError`. |
+| `note` | W1.3 | `price_note`, `NotePrice`, `rate_sensitivity`, `AccruedReconciliation`, `accrual_mismatch_tolerance`, `is_note`. |
+| `equity` | W1.4 | `price_equity`, `EquityPosition`, `read_position`, `is_equity` — a **refusal** naming the missing spot/FX source ([I-18](../known-issues.md#i-18)). |
+| `schema_version` | W1.6.2 | `RESULT_SCHEMA_VERSION`, `CAPABILITY_SCHEMA_VERSION` — a dependency-free leaf that breaks the `result` ↔ `schema` cycle. |
+| `schema` | W1.6.2 | `result_schema()`, `capability_schema()` — JSON Schema **derived** from the frozen vocabulary, never hand-written. |
+| `workload` | W1.6.4 / W0.8 | `workload_key`, `AttemptStore`, `Attempt`, `UNKNOWN_WORKLOAD` — the attempt state machine and the four lookup states. |
+| `pipeline` | — | `price_bundle(bundle_or_path, market_inputs=None) -> RiskResult` — the composition of all of the above. Accepts a loaded `Bundle` or a path to load one from. |

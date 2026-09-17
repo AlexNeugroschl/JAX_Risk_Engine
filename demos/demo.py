@@ -14,7 +14,7 @@ engine/simulation/demo_scenarios.py was created to avoid for shared example
 configs -- see docs/reference/portfolio-entrypoint.md for what happens
 "under the hood" of the one call below.
 
-Run with: venv/Scripts/python.exe demo.py
+Run with: .venv/Scripts/python.exe demo.py
 """
 import numpy as np
 import ORE

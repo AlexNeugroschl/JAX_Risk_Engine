@@ -587,9 +587,11 @@ class PortfolioRequest:
         see `PrecisionConfig`. Defaults to all-64, byte-identical to this
         module's behavior before `PrecisionConfig` existed.
 
-    A future `BondConfig` instrument type (see
-    docs/planning/traderx-bond-integration-roadmap.md) would join `trades`'
-    `Union` here once it exists -- out of scope for this module today.
+    `BondConfig` (W1.5) is in `trades`' `Union` alongside the four rate
+    derivatives, but it is priced differently: closed-form discounted
+    cashflows at t=0 only, with no scenario cube, so it contributes no
+    VaR/ES (I-24) and its Greeks come from bumped revaluation in
+    `_bond_greeks` rather than from `jax.grad`/`jax.hessian`.
     """
     market: SimulationConfig
     trades: List[TradeConfig]

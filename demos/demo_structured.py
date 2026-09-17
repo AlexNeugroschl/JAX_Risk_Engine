@@ -28,7 +28,7 @@ caller must supply (stage 1), what's just deployment mechanics (stage 2),
 and what's translation boilerplate (stage 3) -- useful as a template to copy
 from when wiring up a real integration, not just a demo to run once.
 
-Run with: venv/Scripts/python.exe demos/demo_structured.py
+Run with: .venv/Scripts/python.exe demos/demo_structured.py
 """
 import os
 import subprocess
