@@ -642,10 +642,6 @@ class PortfolioResult:
     scenario_risk_available: bool = True
 
 
-def _zero_curve_of(cfg, curve_config, dtype=jnp.float64) -> _HwZeroCurve:
-    return _HwZeroCurve.from_config(curve_config, dtype=dtype)
-
-
 def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
     """
     The single entry point: `PortfolioRequest` in, `PortfolioResult` out.
@@ -833,7 +829,7 @@ def _fill_calibrated_sigma(
         if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)) and cfg.hw_sigma is None:
             idx = cfg.rate_factor_index
             if idx not in cache:
-                curve = _zero_curve_of(cfg, cfg.initial_zero_curve, dtype=calib_dtype)
+                curve = _HwZeroCurve.from_config(cfg.initial_zero_curve, dtype=calib_dtype)
                 result = calibrate_lgm_sigma(calibration_targets, curve, a=cfg.hw_a)
                 cache[idx] = result.sigma
             updated.append(replace(cfg, hw_sigma=cache[idx]))
@@ -1127,27 +1123,27 @@ def _greeks_for_one_trade(
         theta_dtype = _resolve_risk_dtype(precision.risk, "theta")
         trade_greeks = dict(_greeks.swap_delta_gamma(
             cfg,
-            _zero_curve_of(cfg, disc_cfg, dtype=dg_dtype),
-            _zero_curve_of(cfg, fwd_cfg, dtype=dg_dtype),
+            _HwZeroCurve.from_config(disc_cfg, dtype=dg_dtype),
+            _HwZeroCurve.from_config(fwd_cfg, dtype=dg_dtype),
         ))
         trade_greeks["theta"] = _greeks.swap_theta(
             cfg,
-            _zero_curve_of(cfg, disc_cfg, dtype=theta_dtype),
-            _zero_curve_of(cfg, fwd_cfg, dtype=theta_dtype),
+            _HwZeroCurve.from_config(disc_cfg, dtype=theta_dtype),
+            _HwZeroCurve.from_config(fwd_cfg, dtype=theta_dtype),
         )
         return trade_greeks
 
     if isinstance(cfg, SwaptionConfig):
-        dg_curve = _zero_curve_of(cfg, cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "delta_gamma"))
-        theta_curve = _zero_curve_of(cfg, cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
+        dg_curve = _HwZeroCurve.from_config(cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "delta_gamma"))
+        theta_curve = _HwZeroCurve.from_config(cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
         trade_greeks = dict(_greeks.swaption_delta_gamma(cfg, dg_curve))
         trade_greeks["theta"] = _greeks.swaption_theta(cfg, theta_curve)
         return trade_greeks
 
     if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
         berm_cfg = cfg.to_bermudan() if isinstance(cfg, AmericanSwaptionConfig) else cfg
-        dg_curve = _zero_curve_of(berm_cfg, berm_cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "delta_gamma"))
-        theta_curve = _zero_curve_of(berm_cfg, berm_cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
+        dg_curve = _HwZeroCurve.from_config(berm_cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "delta_gamma"))
+        theta_curve = _HwZeroCurve.from_config(berm_cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
         trade_greeks = dict(_greeks.bermudan_delta_gamma(berm_cfg, dg_curve))
         trade_greeks["theta"] = _greeks.bermudan_theta(berm_cfg, theta_curve)
         # Vega is only well-defined when hw_sigma is a genuine CALIBRATED
@@ -1158,8 +1154,8 @@ def _greeks_for_one_trade(
         # Skipped (not raised) in that case: a flat-sigma Bermudan is a
         # legitimate request, it simply has no Vega to report.
         if calibration_targets and isinstance(berm_cfg.hw_sigma, Sigma):
-            vega_curve = _zero_curve_of(
-                berm_cfg, berm_cfg.initial_zero_curve,
+            vega_curve = _HwZeroCurve.from_config(
+                berm_cfg.initial_zero_curve,
                 dtype=_resolve_risk_dtype(precision.risk, "vega"),
             )
             trade_greeks["vega"] = _greeks.bermudan_vega(

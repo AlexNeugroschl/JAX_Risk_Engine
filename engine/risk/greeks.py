@@ -121,7 +121,13 @@ from engine.instruments.bermudan_swaption import (
     _run_backward_induction,
     prepare_bermudan,
 )
-from engine.models.ore_builders import build_vanilla_swap, fixed_leg_cashflows, floating_leg_cashflows
+from engine.models.ore_builders import (  # noqa: F401  (DAY_COUNTER is a re-export)
+    DAY_COUNTER,
+    TIME_AXIS_DAY_COUNTER,
+    build_vanilla_swap,
+    fixed_leg_cashflows,
+    floating_leg_cashflows,
+)
 from engine.models.hull_white import A as _hw_A, ZeroCurve, discount as _discount_at, zero_rate as _zero_rate_at
 from engine.models.lgm import Sigma, as_sigma
 
@@ -135,13 +141,11 @@ DEFAULT_RATE_BUMP = 0.0001
 # date by one calendar day, holding the market curve's shape/quotes fixed.
 DEFAULT_THETA_DAYS = 1
 
-#: The simulation TIME AXIS day count -- see engine.models.ore_builders'
-#: TWO ROLES block. Permanently ACT/365; used only to turn dates into
-#: year-fractions on the simulation axis, never as an accrual basis.
-TIME_AXIS_DAY_COUNTER = ORE.Actual365Fixed()
-
-#: Deprecated alias, kept so existing references keep working.
-DAY_COUNTER = TIME_AXIS_DAY_COUNTER
+#: The simulation TIME AXIS day count and its deprecated `DAY_COUNTER`
+#: alias are imported from `engine.models.ore_builders` (see the import
+#: above), not re-constructed here -- see that module's TWO ROLES block.
+#: Permanently ACT/365; used only to turn dates into year-fractions on the
+#: simulation axis, never as an accrual basis.
 
 # `ZeroCurve`, curve interpolation (`_zero_rate_at`/`_discount_at`), and the
 # JAX-differentiable A(t,T) formula all now come directly from

@@ -302,11 +302,22 @@ by index/currency (e.g. Euribor6M defaults to 30/360 fixed vs. Act/360 float). B
 therefore always set here deliberately, rather than inherited by accident from whatever a
 given index happens to default to.
 
-**Three `TIME_AXIS_DAY_COUNTER` definitions exist** —
-[`ore_builders.py`](../../engine/models/ore_builders.py),
+**There is exactly one `TIME_AXIS_DAY_COUNTER`**, defined in
+[`ore_builders.py`](../../engine/models/ore_builders.py) and *imported* by
 [`bermudan_swaption.py`](../../engine/instruments/bermudan_swaption.py) and
-[`greeks.py`](../../engine/risk/greeks.py) — for import-cycle reasons, not because they may
-differ. `TestTimeAxisConstantsAgree` pins all three to ACT/365.
+[`greeks.py`](../../engine/risk/greeks.py).
+
+Those two modules previously constructed their own `ORE.Actual365Fixed()`, which was
+described here as being "for import-cycle reasons" — that was not accurate. Both already
+imported `ore_builders` for `build_vanilla_swap`, so no cycle ever required it; the
+duplication was incidental. Three equal-but-distinct objects are a real hazard for a value
+whose defining property is that it is *not configurable*: a change to one would leave the
+others silently on the old value, and the tests of the day could not tell the difference
+(`TestTimeAxisConstantsAgree` checks each constant's `.name()` independently, which three
+separate ACT/365 objects satisfy just as well as one shared one).
+
+`TestTimeAxisIsOneObject` now pins **identity** across all three modules, and additionally
+AST-scans `engine/` to fail if any module re-introduces a local construction.
 
 **Why `floating_leg_cashflows` never reads ORE's own fixing.** `accrual_start`/
 `accrual_end` times are what forward rates get computed from downstream, in whichever

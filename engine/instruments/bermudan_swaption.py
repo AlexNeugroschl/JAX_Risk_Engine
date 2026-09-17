@@ -156,7 +156,11 @@ from jax.tree_util import register_pytree_node_class
 
 from engine.simulation.market_model import ZeroCurveConfig
 from engine.models.static_key import StaticKeyMixin
-from engine.models.ore_builders import build_vanilla_swap
+from engine.models.ore_builders import (  # noqa: F401  (DAY_COUNTER is a re-export)
+    DAY_COUNTER,
+    TIME_AXIS_DAY_COUNTER,
+    build_vanilla_swap,
+)
 from engine.portfolio.validation import _validate_common_fields, _validate_tenor
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from engine.models.lgm import (
@@ -170,13 +174,11 @@ from engine.models.lgm import (
     zeta as _lgm_zeta,
 )
 
-#: The simulation TIME AXIS day count -- see engine.models.ore_builders'
-#: TWO ROLES block. Permanently ACT/365: every time here indexes the
-#: simulated curve cube's own axis. Never an instrument's accrual basis.
-TIME_AXIS_DAY_COUNTER = ORE.Actual365Fixed()
-
-#: Deprecated alias, kept so existing references keep working.
-DAY_COUNTER = TIME_AXIS_DAY_COUNTER
+#: The simulation TIME AXIS day count and its deprecated `DAY_COUNTER`
+#: alias are imported from `engine.models.ore_builders` (see the import
+#: above), not re-constructed here -- see that module's TWO ROLES block.
+#: Permanently ACT/365: every time here indexes the simulated curve cube's
+#: own axis. Never an instrument's accrual basis.
 
 
 @dataclass

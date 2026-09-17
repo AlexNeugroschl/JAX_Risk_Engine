@@ -46,7 +46,11 @@ refuses to do.
 from dataclasses import dataclass
 from typing import Optional
 
-from engine.integration.terms import JoinedRow, TermsEntry
+from engine.integration.terms import (  # noqa: F401  (NO_TERMS_ARTIFACT is a re-export)
+    NO_TERMS_ARTIFACT,
+    JoinedRow,
+    TermsEntry,
+)
 
 #: Revision of the rules in this module. Echoed in every result and part of
 #: the workload key -- bump it whenever a conversion changes, so a cached
@@ -66,8 +70,14 @@ STRUCTURAL_ZERO = "structural-zero"
 CONVERTED = "converted"
 
 #: Reason codes for an `unavailable` quantity.
+#:
+#: `NO_TERMS_ARTIFACT` is re-exported from `engine.integration.terms`, not
+#: redefined: it is one fact ("the bundle shipped no terms artifact")
+#: reported by both layers, and `terms` is where the join that discovers it
+#: lives. Two independent string literals would let a future rename land in
+#: one module and not the other, silently splitting one reason code into
+#: two values that no longer compare equal.
 ACCRUED_NOT_SUPPLIED = "ACCRUED_NOT_SUPPLIED"
-NO_TERMS_ARTIFACT = "NO_TERMS_ARTIFACT"
 
 
 class NormalizationError(ValueError):

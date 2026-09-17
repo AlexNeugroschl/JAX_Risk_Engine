@@ -93,7 +93,7 @@ from engine.integration.market_inputs import (
 from engine.integration.normalize import (
     CONVERTED as NORMALIZE_CONVERTED,
     MAPPING_VERSION,
-    NO_TERMS_ARTIFACT as NORMALIZE_NO_TERMS_ARTIFACT,
+    NO_TERMS_ARTIFACT,
     STRUCTURAL_ZERO as NORMALIZE_STRUCTURAL_ZERO,
     NormalizationError,
     normalize_position,
@@ -565,7 +565,7 @@ def _accrued_outcome(joined: JoinedRow) -> Tuple[Optional[CalculationOutcome], O
         if accrual_source is not None:
             payload["accrualSource"] = accrual_source
         outcome = CalculationOutcome.ok(accrued.value, payload=payload)
-    elif accrued.reason == NORMALIZE_NO_TERMS_ARTIFACT:
+    elif accrued.reason == NO_TERMS_ARTIFACT:
         outcome = CalculationOutcome.unavailable(
             reason=accrued.reason,
             detail=(

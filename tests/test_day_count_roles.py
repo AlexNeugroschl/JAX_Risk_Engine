@@ -235,9 +235,26 @@ class TestSwapConfigThreadsItThrough:
 
 
 class TestTimeAxisConstantsAgree:
-    """All three `TIME_AXIS_DAY_COUNTER` definitions must stay identical --
-    they index the same simulated cube. Three separate constants exist for
-    import-cycle reasons, not because they may differ."""
+    """All three `TIME_AXIS_DAY_COUNTER` references must stay identical --
+    they index the same simulated cube.
+
+    **There is now exactly ONE constant, re-exported twice.**
+    `engine.instruments.bermudan_swaption` and `engine.risk.greeks` import
+    the object from `engine.models.ore_builders`; they used to construct
+    their own `ORE.Actual365Fixed()`. The earlier "three separate constants
+    exist for import-cycle reasons" rationale was not accurate: both
+    modules already imported `ore_builders` for `build_vanilla_swap`, so no
+    cycle ever forced the duplication.
+
+    That mattered because the two tests below could not catch a divergence
+    between modules. `test_all_three_are_act365` compares each constant's
+    `.name()` against ACT/365 independently, and
+    `test_deprecated_aliases_all_still_resolve` compares each module's alias
+    against *its own* constant -- so three independently-constructed ACT/365
+    objects satisfied both while still being three separate values that a
+    future edit could desynchronize one of. `TestTimeAxisIsOneObject` below
+    closes that gap by asserting identity ACROSS modules.
+    """
 
     def test_all_three_are_act365(self):
         from engine.instruments import bermudan_swaption
@@ -257,3 +274,70 @@ class TestTimeAxisConstantsAgree:
         assert bermudan_swaption.DAY_COUNTER is bermudan_swaption.TIME_AXIS_DAY_COUNTER
         assert greeks.DAY_COUNTER is greeks.TIME_AXIS_DAY_COUNTER
         assert ore_builders.DAY_COUNTER is ore_builders.TIME_AXIS_DAY_COUNTER
+
+
+class TestTimeAxisIsOneObject:
+    """The time axis is ONE object engine-wide, not three equal ones.
+
+    **Why identity (`is`) and not equality.** Two independently-constructed
+    `ORE.Actual365Fixed()` instances report the same `.name()`, so a
+    name-based check passes just as happily on three separate objects as on
+    one shared one -- which is exactly the state this codebase was in before
+    the duplicates were removed. Only identity proves there is a single
+    source of truth, and a single source of truth is the entire point: role
+    1 is *not configurable* (see this module's header table), and that
+    guarantee is only as strong as the number of places the value can be
+    changed.
+
+    The failure this prevents is silent. Someone re-introducing a local
+    `TIME_AXIS_DAY_COUNTER = ORE.Actual365Fixed()` in either module would
+    leave every other test in this file green while restoring the drift
+    risk; this one goes red immediately.
+    """
+
+    def test_every_module_exposes_the_canonical_object(self):
+        from engine.instruments import bermudan_swaption
+        from engine.risk import greeks
+        from engine.models import ore_builders
+
+        canonical = ore_builders.TIME_AXIS_DAY_COUNTER
+        assert bermudan_swaption.TIME_AXIS_DAY_COUNTER is canonical
+        assert greeks.TIME_AXIS_DAY_COUNTER is canonical
+        assert bermudan_swaption.DAY_COUNTER is canonical
+        assert greeks.DAY_COUNTER is canonical
+
+    def test_no_module_constructs_its_own_time_axis_day_counter(self):
+        """The source-level statement of the rule above.
+
+        Identity can be satisfied today and quietly regressed tomorrow by a
+        new local construction that shadows the import. Reading the source
+        catches the re-introduction itself, at the line that causes it,
+        rather than only its downstream effect.
+        """
+        import ast
+        from pathlib import Path
+
+        engine_root = Path(__file__).parents[1] / "engine"
+        offenders = []
+        for source in sorted(engine_root.rglob("*.py")):
+            # `ore_builders` is the one place allowed to construct it.
+            if source.name == "ore_builders.py":
+                continue
+            for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+                if not isinstance(node, ast.Assign):
+                    continue
+                targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                if "TIME_AXIS_DAY_COUNTER" not in targets and "DAY_COUNTER" not in targets:
+                    continue
+                # An assignment is only an offense if it CONSTRUCTS a day
+                # counter; `DAY_COUNTER = TIME_AXIS_DAY_COUNTER` is a fine
+                # local alias of the imported object.
+                if isinstance(node.value, ast.Call):
+                    offenders.append(f"{source.relative_to(engine_root)}:{node.lineno}")
+
+        assert offenders == [], (
+            "the simulation time axis must be imported from "
+            "engine.models.ore_builders, never re-constructed -- three "
+            "equal-but-distinct copies can drift apart silently: "
+            + "; ".join(offenders)
+        )

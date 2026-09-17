@@ -82,6 +82,12 @@ import ORE
 # `DAY_COUNTER` remains as a deprecated alias for role 1 so no import
 # breaks; prefer the explicit name in new code.
 # =============================================================================
+#: **The single source of truth for role 1.** `engine.instruments.
+#: bermudan_swaption` and `engine.risk.greeks` import this object rather
+#: than constructing their own; they used to do the latter, which left
+#: three equal-but-distinct copies of a value whose entire point is that it
+#: is fixed engine-wide, with only this one pinned by a test. Identity is
+#: asserted by `tests/test_day_count_roles.py::TestTimeAxisIsOneObject`.
 TIME_AXIS_DAY_COUNTER = ORE.Actual365Fixed()
 
 #: Deprecated alias for `TIME_AXIS_DAY_COUNTER`. Kept so existing imports

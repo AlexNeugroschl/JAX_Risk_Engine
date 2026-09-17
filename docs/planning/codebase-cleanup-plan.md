@@ -175,7 +175,29 @@ is the strongest argument for doing Phase 2 now rather than later.
 
 ---
 
-## 3. Phase 2 — Duplicated constants *(do this first; highest value)*
+## 3. Phase 2 — Duplicated constants ✅ **IMPLEMENTED 2026-09-17**
+
+> **Status: done.** What landed, and what was deliberately not done:
+>
+> | Item | Outcome |
+> |---|---|
+> | §3.1 `TIME_AXIS_DAY_COUNTER` ×3 → ×1 | ✅ Done. `bermudan_swaption` and `greeks` now import the canonical object. |
+> | §3.1 added test | ✅ `TestTimeAxisIsOneObject`, 2 tests (identity + an AST guard against re-introduction). |
+> | §3.4 dead `_zero_curve_of` wrapper | ✅ Deleted; inlined at all 10 call sites. |
+> | §3.3 `NO_TERMS_ARTIFACT` ×2 → ×1 | ✅ Done as a one-line re-export — **no new module**. |
+> | §3.3 `vocabulary.py` leaf module | ❌ **Skipped deliberately** — see §3.3. |
+> | §3.3 `OK`/`UNAVAILABLE` merge | ❌ **Skipped deliberately** — they are different vocabularies. See §3.3. |
+> | §3.2 `RATE_BUMP` ×3 | ❌ Skipped — see §3.2. |
+> | §3.5 `_HwZeroCurve` alias rename | ❌ Skipped — cosmetic, 6 files, no correctness value. |
+>
+> **Verification:** collection went 1716 → 1718, diff showing *only* the two
+> added tests; no existing test renamed, removed, or altered. The regression
+> guard was proven by injecting a duplicate `ORE.Actual365Fixed()` into
+> `greeks.py` and confirming all three relevant tests go red, then reverting.
+
+---
+
+### Original analysis
 
 Phase ordering note: Phase 1 (§7, unused imports) is listed later because it is
 trivial. **Phase 2 is the one that matters.** Each item is a live
@@ -215,13 +237,18 @@ from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER, DAY_COUNTER  # noq
 Keep `DAY_COUNTER` re-exported from both — it is public surface that
 `test_day_count_roles.py` reaches for.
 
-**`treasury.py`'s `DISCOUNT_DAY_COUNT` is a separate judgment.** It is *named* for
-a different role (discounting, not time axis) and the module deliberately imports
-neither integration pricer (§6.3). Options: leave it (defensible — different
-role), or point it at the canonical object
-(`DISCOUNT_DAY_COUNT = TIME_AXIS_DAY_COUNTER`) since `ore_builders` is not a
-banned import for `engine.instruments`. **Decide deliberately; do not fuse two
-roles just because their values match.**
+**`treasury.py`'s `DISCOUNT_DAY_COUNT` — ✅ decided: left as its own object.**
+It is a **third role**, and its own docstring says so explicitly: *"This is the
+*discounting* convention and is distinct from the instrument's own *accrual*
+convention (the W1.1 split)."* It is used once
+([treasury.py:280](../../engine/instruments/treasury.py#L280)) to discount a bond's
+cashflows, never to index the simulated cube — W1.1's whole point is that roles
+with different reasons to change get different names, so collapsing a third role
+into role 1 because both are currently ACT/365 would undo that split rather than
+honor it.
+
+The AST guard added in this phase checks only `TIME_AXIS_DAY_COUNTER` and
+`DAY_COUNTER` by name, so it correctly leaves this constant alone (verified).
 
 **Then add one test** — the only addition in this plan, closing the gap that
 allowed the drift. Identity (`is`), not equality, because two distinct
@@ -251,10 +278,14 @@ All three are the same 1bp bump, sourced from the same ORE sensitivity-config
 default. `greeks.py` and `note.py` cannot share (integration must not import
 risk), but the *value and its provenance* could live in a leaf.
 
-**Lower priority than §3.1** — a bump size that drifts produces a differently-
-scaled sensitivity, not a wrong one, and each is independently tested. Fold into
-§3.3's `vocabulary.py` only if it lands there naturally. **Do not create a module
-just for this.**
+**❌ Skipped, deliberately.** A bump size that drifts produces a differently-
+*scaled* sensitivity, not a wrong one, and each of the three is independently
+tested. More importantly the three cannot share a home without inventing one:
+`greeks.py` (risk layer) and `note.py` (integration layer) are separated by the
+tested import ban, and `treasury.py`'s copy is part of the deliberate
+instrument-layer independence described in §6.3. Since §3.3's `vocabulary.py` was
+not created either, there is nowhere natural for it to land — and creating a
+module solely to host `1e-4` would be ceremony. The three stay as they are.
 
 ### 3.3 Status and reason-code strings defined twice
 
@@ -270,17 +301,39 @@ disambiguate with aliased imports (`NO_TERMS_ARTIFACT as
 NORMALIZE_NO_TERMS_ARTIFACT`) — the importer has to remember *which module's*
 copy of the same string it holds.
 
-**Fix — a new leaf, `engine/integration/vocabulary.py`.** This follows a
-precedent the codebase set twice for exactly this reason:
-[day_count.py](../../engine/day_count.py) and
-[schema_version.py](../../engine/integration/schema_version.py). The latter's
-docstring states the rule: *"Nothing but constants belongs here. The moment this
-module needs an import, the cycle it exists to prevent is back."*
+### ✅ What was actually done — and why it is much smaller than proposed
 
-**Compatibility requirement:** every module that defines one today must import it
-from `vocabulary` and **keep re-exporting it under its current name**, because
-tests reach for `normalize.STRUCTURAL_ZERO` and similar. Then drop the
-`NORMALIZE_*` aliases in `pipeline.py`.
+The original proposal here was a new `engine/integration/vocabulary.py` leaf
+holding all of these. **On inspection that was over-engineering, and the two
+halves of the problem turned out to be genuinely different.**
+
+**`NO_TERMS_ARTIFACT` — fixed, in one line.** It really is one fact ("the bundle
+shipped no terms artifact"), used as a reason code by both modules with identical
+meaning. `normalize.py` **already imported from `terms.py`**
+([normalize.py:49](../../engine/integration/normalize.py#L49)), so no cycle and no
+new module was needed — `normalize` now re-exports it from `terms`, which is where
+the join that discovers the condition lives. The
+`NO_TERMS_ARTIFACT as NORMALIZE_NO_TERMS_ARTIFACT` alias in `pipeline.py` was
+dropped, since the ambiguity it worked around no longer exists. Creating a whole
+module to rehome a single string would have been ceremony, not engineering.
+
+**`OK` / `UNAVAILABLE` — deliberately NOT merged.** The hazard flagged below was
+real, and the source settles it.
+[normalize.py:56-57](../../engine/integration/normalize.py#L56-L57) describes its
+constants as *"`Quantity.status` values. A deliberately small vocabulary
+**mirroring** the per-calculation statuses in `engine.integration.result`."*
+Mirroring — not the same thing. `Quantity.status` has **two** values (a
+normalization outcome); `result.STATUSES` has **five** (a per-calculation
+reporting status, including `unsupported`/`failed`/`not-applicable`, which are
+meaningless for a unit conversion). They coincide on two strings today by
+design, and are free to diverge.
+
+Merging them would have fused two layers' vocabularies because two string
+literals happened to match — *precisely the "worse bug than the duplication"*
+warned about below. They stay separate.
+
+With both halves resolved this way, `vocabulary.py` had nothing left to hold, so
+it was never created.
 
 > ### ⚠ Two hazards, both load-bearing
 >
