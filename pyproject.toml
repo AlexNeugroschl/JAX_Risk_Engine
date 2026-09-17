@@ -25,6 +25,12 @@ api = [
 dev = [
     "pytest",
     "httpx",
+    # Validates published EOD documents against the JSON Schemas
+    # `engine.integration.schema` derives (W1.6.2). Test-only on purpose:
+    # the engine emits the schema and must never depend on a validator to
+    # produce a correct document. It is the *tests* that prove the two
+    # agree -- see tests/test_integration_schema.py.
+    "jsonschema",
 ]
 profiling = [
     # XProf bundles the TensorBoard Profiler plugin + a standalone `xprof`

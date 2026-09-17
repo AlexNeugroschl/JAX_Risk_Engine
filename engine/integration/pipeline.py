@@ -91,12 +91,16 @@ from engine.integration.market_inputs import (
     resolve_market_inputs,
 )
 from engine.integration.normalize import (
+    CONVERTED as NORMALIZE_CONVERTED,
     MAPPING_VERSION,
     NO_TERMS_ARTIFACT as NORMALIZE_NO_TERMS_ARTIFACT,
+    STRUCTURAL_ZERO as NORMALIZE_STRUCTURAL_ZERO,
     NormalizationError,
     normalize_position,
 )
 from engine.integration.note import (
+    ACCRUAL_EXPORTED,
+    DEFAULT_FRACTION_DECIMALS,
     RATE_BUMP,
     SENSITIVITY_METHOD,
     NotePricingError,
@@ -252,6 +256,54 @@ def _exported_accrued_fraction(joined: JoinedRow) -> Optional[float]:
         return None
 
 
+def _accrual_source(provenance: Optional[str]) -> Optional[str]:
+    """The `accrualSource` label for a normalized accrued value (W1.6.3).
+
+    Aligns the standalone `accruedInterest` outcome with the vocabulary the
+    note's NPV payload already uses, so a consumer reading either one sees
+    the same fact described the same way.
+
+    **`structural-zero` stays distinct, and that is the whole point.** A
+    bill's zero is not an exported fraction that happened to be zero -- it
+    is zero because the instrument has no coupon schedule at all. Mapping it
+    onto `exported-fraction` would erase exactly the distinction W0.3 exists
+    to preserve: the difference between "measured as zero" and "structurally
+    zero" is the difference between a bill and a coupon-bearing note whose
+    accrual the exporter omitted. So it is carried through under its own
+    name rather than folded into either accrual path.
+
+    Returns `None` for a provenance with no meaningful source label, rather
+    than inventing one -- an absent label is honest, a wrong one is not.
+    """
+    if provenance == NORMALIZE_CONVERTED:
+        # A converted value came from the extract's own
+        # `accruedInterestFraction`, which is precisely what the note
+        # pricer labels `exported-fraction`.
+        return ACCRUAL_EXPORTED
+    if provenance == NORMALIZE_STRUCTURAL_ZERO:
+        return NORMALIZE_STRUCTURAL_ZERO
+    return None
+
+
+def _fraction_decimals(entry) -> int:
+    """The exporter's declared accrual precision for this entry (W1.6.1).
+
+    A v2 terms entry's `accrualBasis.fractionDecimals` when present,
+    otherwise `DEFAULT_FRACTION_DECIMALS`. The fallback is not a guess: it
+    is the precision the positions preamble states ("HALF_EVEN at 6
+    decimals") and the value this code used before v2 existed, so a v1
+    bundle reconciles exactly as it did.
+
+    **The value is already validated** by `engine.integration.terms`, which
+    refuses an out-of-range or non-integer one at parse time rather than
+    letting it reach the tolerance arithmetic it scales.
+    """
+    basis = getattr(entry, "accrual_basis", None)
+    if basis is None:
+        return DEFAULT_FRACTION_DECIMALS
+    return basis.fraction_decimals
+
+
 def _priced_outcomes(
     joined: JoinedRow, market: Optional[MarketInputs], valuation_date: Optional[str],
 ) -> Dict[str, CalculationOutcome]:
@@ -352,13 +404,24 @@ def _note_outcomes(
     reason is reported for the sensitivity: a sensitivity of a price the
     engine would not publish is meaningless, and returning one would imply
     a valuation that was explicitly refused.
+
+    **W1.6.1: the reconciliation tolerance now comes from the terms when
+    they state one.** A v2 entry's `accrualBasis.fractionDecimals` is the
+    exporter's own declared precision, so using it makes the tolerance
+    derived rather than assumed. A v1 entry (or a v2 entry without the
+    optional block) falls back to `DEFAULT_FRACTION_DECIMALS`, which is
+    what this code already did -- so the delivered fixtures are unchanged
+    byte for byte, and the fallback is the *documented* exporter precision
+    rather than a guess.
     """
     valuation = _ore_date(valuation_date)
     exported_accrued = _exported_accrued_fraction(joined)
+    fraction_decimals = _fraction_decimals(joined.entry)
 
     try:
         priced = price_note(
             joined.entry, signed_face, valuation, market.profile, exported_accrued,
+            fraction_decimals=fraction_decimals,
         )
         sensitivity = rate_sensitivity(
             joined.entry, signed_face, valuation, market.profile, exported_accrued,
@@ -485,17 +548,23 @@ def _accrued_outcome(joined: JoinedRow) -> Tuple[Optional[CalculationOutcome], O
 
     accrued = normalized.accrued_interest
     if accrued.is_ok:
-        outcome = CalculationOutcome.ok(
-            accrued.value,
-            payload={
-                "provenance": accrued.provenance,
-                "currency": normalized.currency,
-                # Echoed in its source unit so a consumer can reconcile
-                # against the extract without re-deriving the conversion.
-                "observedCleanPrice": normalized.observed_clean_price,
-                "signedFaceAmount": normalized.signed_face_amount,
-            },
-        )
+        payload = {
+            "provenance": accrued.provenance,
+            "currency": normalized.currency,
+            # Echoed in its source unit so a consumer can reconcile
+            # against the extract without re-deriving the conversion.
+            "observedCleanPrice": normalized.observed_clean_price,
+            "signedFaceAmount": normalized.signed_face_amount,
+        }
+        # W1.6.3: align the standalone outcome's label with the one the NPV
+        # payload already carries. Before this, a consumer reading
+        # `accruedInterest` alone saw `provenance: "converted"` while the
+        # note's NPV payload said `accrualSource: "exported-fraction"` --
+        # two vocabularies for the same fact, and neither cross-referenced.
+        accrual_source = _accrual_source(accrued.provenance)
+        if accrual_source is not None:
+            payload["accrualSource"] = accrual_source
+        outcome = CalculationOutcome.ok(accrued.value, payload=payload)
     elif accrued.reason == NORMALIZE_NO_TERMS_ARTIFACT:
         outcome = CalculationOutcome.unavailable(
             reason=accrued.reason,

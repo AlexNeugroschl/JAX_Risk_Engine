@@ -97,15 +97,36 @@ near-certain silent truncation.
 
 `JAX_RISK_PROFILE_WARMUP` defaults to **off**, so the traced run includes XLA lowering and
 compilation. For this engine that is the point: compilation is a first-class cost. Set it
-to `1` to run the job once and discard it first, so the traced run measures warm
-steady-state execution instead.
-
-Which default is right depends on the question:
+to `1` to run the job once and discard it first, so the traced run hits populated caches.
 
 | Question | Setting |
 |---|---|
 | "What does this job cost from cold?" | warmup **off** (default) |
-| "Where does the *execution* time go?" | `JAX_RISK_PROFILE_WARMUP=1` |
+| "What does a *repeat* of this job cost?" | `JAX_RISK_PROFILE_WARMUP=1` |
+
+**Warmup reduces compilation; it does not eliminate it.** Measured on the 4-trade demo
+portfolio, three consecutive `price_portfolio` calls in one process:
+
+| Run | Compilations | Wall |
+|---|---:|---:|
+| 1 (cold) | 208 | 26.5 s |
+| 2 | **31** | 17.8 s |
+| 3 | **31** | 16.0 s |
+
+The 31 never go away, and compilation still visibly dominates a warm timeline (~27k MLIR
+pass events against ~630 `ThunkExecutor::Execute`). Two distinct reasons:
+
+1. **Those 31 are genuine recompiles.** `engine.risk.greeks` builds a fresh `price_fn`
+   closure per call and `jax.jit` keys on function identity — the §3.5 residue, at
+   portfolio scale rather than single-trade scale.
+2. **Event count is not proportional to time.** 31 compilations of *large fused* programs
+   emit far more trace events than 630 kernel executions over 256 scenarios.
+
+So warmup answers "what does a steady-state repeat cost," not "show me execution only." A
+genuinely execution-dominated timeline needs the closure-identity recompile fixed first.
+All 31 are enumerated with exact callsites, root cause and a vetted fix plan in
+[Known Issues I-21 and I-22](../known-issues.md#i-21) — two different mechanisms needing
+two different fixes, which is why they are filed separately.
 
 ### 1.5 `block_until_ready` before the context exits
 
@@ -280,10 +301,14 @@ a hand-built request with flat `hw_sigma` (no calibration, no Vega):
 
 | | Before | After |
 |---|---:|---:|
-| `demo_profile_small.py`, Greeks **off** | ~11 MB, ~9 s | **8.5 MB, 6.5 s** |
-| `demo_profile_small.py`, Greeks **on** | ~42 MB, ~31 s | **41.1 MB, 25.6 s** |
-| flat-sigma portfolio, Greeks **off** | — | **5.6 MB, 5.4 s** |
+| `demo_profile_small.py`, Greeks **on** (what it ships as) | ~42 MB, ~31 s | **41.1 MB, 25.6 s** |
+| same portfolio, Greeks off | ~11 MB, ~9 s | **8.5 MB, 6.5 s** |
 | flat-sigma portfolio, Greeks **on** | — | **29.9 MB, 19.2 s** |
+| flat-sigma portfolio, Greeks off | — | **5.6 MB, 5.4 s** |
+
+The Greeks-off rows are recorded for the ~5x comparison only; the demo no longer has a
+switch for them (it always computes Greeks — a trace without them is not representative of
+where this engine spends its time).
 
 Note the demo's Greeks-on trace barely shrank in BYTES (42 → 41 MB) while its wall time
 fell ~20%. That is the §3.6 effect: the remaining trace is per-compilation MLIR pass
@@ -333,7 +358,8 @@ Two honest limits remain:
   is a large HLO module. It compiles once and is cached, but the first one is not cheap.
 - **Trace size no longer tracks program count linearly**, because per-compilation MLIR
   pass events now dominate. Shrinking further means compiling *fewer distinct programs*
-  (already near the floor: 13) or not compiling at all (`JAX_RISK_PROFILE_WARMUP=1`).
+  (already near the floor: 13 on the single-trade job), not warming the cache — warmup
+  leaves 31 genuine recompiles on this portfolio, per §1.4.
 
 **On returning to `python_tracer_level=1`:** it is still the wrong trade. The Greeks-on
 trace is ~262k events; the Python tracer multiplied event count by ~35x in the original
@@ -417,10 +443,16 @@ was previously only in `demos/demo_profile_small.py`; it now guards the producti
 ## 6. How to collect and read a trace
 
 ```bash
-pip install -e .[api,profiling]       # brings in xprof
-python demos/demo_profile_small.py    # small, openable trace
+pip install -e ".[api,profiling]"     # brings in xprof; quote it in PowerShell
+rm -rf .profile-out-small             # the profiler never cleans up after itself
+python demos/demo_profile_small.py    # small, openable trace (~41 MB, ~25 s)
 xprof --port 8791 .profile-out-small
 ```
+
+`xprof` is an optional extra, not a core dependency — collecting a trace needs only JAX,
+so a missing `xprof` means you can still capture but not view. If the command is not found
+after installing, `.venv/Scripts` is probably not on `PATH`; `python -m xprof --port 8791
+.profile-out-small` sidesteps that.
 
 Open `http://localhost:8791`, pick the `pid-<pid>` run, then a tool:
 
@@ -435,7 +467,7 @@ Environment variables:
 | Variable | Default | Effect |
 |---|---|---|
 | `JAX_RISK_PROFILE_DIR` | unset | Enables profiling; traces to `$DIR/pid-<pid>/` |
-| `JAX_RISK_PROFILE_WARMUP` | `0` | `1` = discard one run first, measure warm execution |
+| `JAX_RISK_PROFILE_WARMUP` | `0` | `1` = discard one run first, so the trace shows a repeat (§1.4) |
 | `JAX_RISK_PROFILE_PYTHON_TRACER` | `0` | `1` = CPython frames (~9x size; see §1.3) |
 
 ---

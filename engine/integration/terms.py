@@ -34,6 +34,38 @@ join in which every row is unjoined, with reason `NO_TERMS_ARTIFACT`. That
 is not an error -- v1 is a valid bundle version -- but it does mean every
 instrument needing terms is `unsupported` downstream. This module reports
 that state; `engine.integration.conventions` acts on it.
+
+**W1.6.1 -- `traderx.instrument-terms.v2`, and its `accrualBasis`.**
+
+The terms artifact now has two accepted schema versions, and **the terms
+version is independent of the bundle version**: a `traderx.eod-bundle.v2`
+bundle may carry either `instrument-terms.v1` or `.v2`. They are separately
+versioned documents that happen to travel together, so pinning one to the
+other would reject a valid combination. `SUPPORTED_TERMS_SCHEMAS` is
+therefore its own list, checked on its own.
+
+v2 adds one thing this consumer reads: an optional per-entry `accrualBasis`
+block (`traderx.accrual-basis.v1`) making the exporter's accrual convention
+machine-readable rather than conventional prose. Its `fractionDecimals` is
+what turns W1.3's reconciliation tolerance from a negotiated constant into a
+*derived* one -- see `engine.integration.note.accrual_mismatch_tolerance`.
+
+**Unrecognized enum values are refused, not parsed optimistically.** This
+was an open question to TraderX (response v4 §1.3: do new `dateBasis` /
+`settlementAdjustment` values land in `accrual-basis.v1`, or force a `.v2`?)
+and it was never answered. The strict reading is the safe one and is what
+the plan's settled row asks for: pin the exact accepted value set and refuse
+anything outside it. The failure mode this prevents is the one this whole
+boundary exists to prevent -- a real-market settlement basis silently
+inheriting the synthetic fixture's same-day semantics, which would shift
+accrued interest with no error anywhere. If TraderX later confirms values
+are added in place, widening a tuple here is a one-line change; recovering
+from months of optimistically-parsed wrong accruals is not.
+
+**A v2 entry with no `accrualBasis` is legal.** The block is optional, and
+its absence means "the exporter did not state one", which is exactly the v1
+state. It is not an error, and it does not become a default -- consumers
+that need one ask `TermsEntry.accrual_basis` and handle `None`.
 """
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -45,6 +77,40 @@ from engine.integration.bundle import Bundle
 #: instead of vanishing.
 NO_TERMS_ARTIFACT = "NO_TERMS_ARTIFACT"
 TERMS_ENTRY_NOT_FOUND = "TERMS_ENTRY_NOT_FOUND"
+
+#: Terms artifact schemas this consumer accepts (W1.6.1).
+#:
+#: **Independent of the bundle schema version** -- see the module docstring.
+#: v1 has no `accrualBasis`; v2 may carry one per entry.
+TERMS_SCHEMA_V1 = "traderx.instrument-terms.v1"
+TERMS_SCHEMA_V2 = "traderx.instrument-terms.v2"
+SUPPORTED_TERMS_SCHEMAS = (TERMS_SCHEMA_V1, TERMS_SCHEMA_V2)
+
+#: The `accrualBasis` block's own schema. Versioned separately again,
+#: because the exporter's accrual convention can change without the terms
+#: document's shape changing.
+ACCRUAL_BASIS_SCHEMA_V1 = "traderx.accrual-basis.v1"
+SUPPORTED_ACCRUAL_BASIS_SCHEMAS = (ACCRUAL_BASIS_SCHEMA_V1,)
+
+#: The exact accepted value set for each `accrualBasis` enum, pinned rather
+#: than parsed open-endedly (module docstring, and response v4 §1.3).
+#:
+#: `SESSION_DATE` means the exporter accrues to the session date itself,
+#: with no settlement offset -- which is why `engine.integration.note`
+#: supports a settlement lag of zero only. A `dateBasis` this consumer does
+#: not recognize is refused, because the alternative is pricing accrued
+#: interest to a date that is not the one the number describes.
+SUPPORTED_DATE_BASES = ("SESSION_DATE",)
+SUPPORTED_SETTLEMENT_ADJUSTMENTS = ("NONE",)
+SUPPORTED_ACCRUAL_ROUNDING = ("HALF_EVEN",)
+
+#: Bounds on `fractionDecimals`. Not a style check: this value *scales the
+#: reconciliation tolerance*, so a nonsensical one silently widens or
+#: collapses the check that catches accrual bugs. Zero would make the
+#: tolerance a full unit of face; an absurdly large value would make it
+#: tighter than float64 can represent.
+MIN_FRACTION_DECIMALS = 1
+MAX_FRACTION_DECIMALS = 12
 
 
 class TermsJoinError(Exception):
@@ -58,6 +124,111 @@ class TermsJoinError(Exception):
     of a well-formed artifact, whereas everything here means the artifact
     itself cannot be trusted to describe the bundle.
     """
+
+
+@dataclass(frozen=True)
+class AccrualBasis:
+    """The exporter's stated accrual convention, from a v2 terms entry.
+
+    **This describes what the exporter did, not what any model supports.**
+    It makes an otherwise-conventional assumption explicit: that accrued
+    interest was computed to the session date, unadjusted, and rounded
+    HALF_EVEN at `fraction_decimals`. Accepting it is not an assertion that
+    those are correct market conventions -- it is a record of the basis the
+    exported number was produced on, which is precisely what makes the
+    number reconcilable.
+
+    `fraction_decimals` is the load-bearing field: it *derives* W1.3's
+    reconciliation tolerance. If the exporter ever publishes more precision,
+    the tolerance tightens automatically instead of staying at a stale
+    constant.
+    """
+    date_basis: str
+    settlement_adjustment: str
+    rounding: str
+    fraction_decimals: int
+    schema: str = ACCRUAL_BASIS_SCHEMA_V1
+
+    def to_dict(self) -> Dict:
+        return {
+            "schema": self.schema,
+            "dateBasis": self.date_basis,
+            "settlementAdjustment": self.settlement_adjustment,
+            "rounding": self.rounding,
+            "fractionDecimals": self.fraction_decimals,
+        }
+
+
+def _parse_accrual_basis(raw, index: int) -> Optional[AccrualBasis]:
+    """Parses and *validates* one entry's `accrualBasis`.
+
+    Returns `None` when the block is absent, which is legal (see the module
+    docstring). Every other failure raises `TermsJoinError` naming the
+    field and the accepted set -- an unrecognized value is refused rather
+    than carried through, because a basis this consumer does not understand
+    means the accrued number was produced on terms it cannot reconcile
+    against.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TermsJoinError(
+            f"terms entry [{index}] accrualBasis must be an object; got {raw!r}"
+        )
+
+    schema = raw.get("schema")
+    if schema not in SUPPORTED_ACCRUAL_BASIS_SCHEMAS:
+        raise TermsJoinError(
+            f"terms entry [{index}] accrualBasis has unsupported schema {schema!r}; "
+            f"this consumer accepts {list(SUPPORTED_ACCRUAL_BASIS_SCHEMAS)}. A new "
+            f"accrual-basis version may change how the exported fraction was "
+            f"produced, so it is refused rather than parsed on v1 assumptions."
+        )
+
+    for key in ("dateBasis", "settlementAdjustment", "rounding", "fractionDecimals"):
+        if key not in raw:
+            raise TermsJoinError(
+                f"terms entry [{index}] accrualBasis is missing required key {key!r}"
+            )
+
+    # Each enum is pinned to its accepted set. An unrecognized value is the
+    # case response v4 §1.3 asked about and never got an answer to; refusing
+    # is the reading that cannot silently reinterpret an accrued number.
+    for key, value, accepted in (
+        ("dateBasis", raw["dateBasis"], SUPPORTED_DATE_BASES),
+        ("settlementAdjustment", raw["settlementAdjustment"], SUPPORTED_SETTLEMENT_ADJUSTMENTS),
+        ("rounding", raw["rounding"], SUPPORTED_ACCRUAL_ROUNDING),
+    ):
+        if value not in accepted:
+            raise TermsJoinError(
+                f"terms entry [{index}] accrualBasis.{key}={value!r} is not recognized; "
+                f"this consumer accepts {list(accepted)}. Refusing rather than "
+                f"assuming the v1 meaning: an unrecognized basis may describe an "
+                f"accrual this engine would reconcile against the wrong date."
+            )
+
+    decimals = raw["fractionDecimals"]
+    # bool is an int subclass; True would otherwise pass as 1 decimal.
+    if isinstance(decimals, bool) or not isinstance(decimals, int):
+        raise TermsJoinError(
+            f"terms entry [{index}] accrualBasis.fractionDecimals must be an integer; "
+            f"got {decimals!r}"
+        )
+    if not (MIN_FRACTION_DECIMALS <= decimals <= MAX_FRACTION_DECIMALS):
+        raise TermsJoinError(
+            f"terms entry [{index}] accrualBasis.fractionDecimals={decimals} is outside "
+            f"the accepted range [{MIN_FRACTION_DECIMALS}, {MAX_FRACTION_DECIMALS}]. "
+            f"This value scales the accrual reconciliation tolerance, so an "
+            f"out-of-range one would silently widen or collapse that check."
+        )
+
+    return AccrualBasis(
+        date_basis=raw["dateBasis"],
+        settlement_adjustment=raw["settlementAdjustment"],
+        rounding=raw["rounding"],
+        fraction_decimals=decimals,
+        schema=schema,
+    )
 
 
 @dataclass(frozen=True)
@@ -76,6 +247,14 @@ class TermsEntry:
     missing_terms: Tuple[str, ...]
     provenance: Dict
     identity: Dict
+    #: The exporter's stated accrual convention (v2 only), or `None` when
+    #: the entry is v1 or a v2 entry that omitted the optional block.
+    #: **Optional with a default**, so every existing construction site --
+    #: tests included -- stays valid unchanged (W1.6.1).
+    accrual_basis: Optional[AccrualBasis] = None
+    #: Which terms schema this entry came from. Carried so a consumer can
+    #: tell "v1, so no basis was possible" from "v2 that omitted one".
+    terms_schema: str = TERMS_SCHEMA_V1
 
     @property
     def is_complete(self) -> bool:
@@ -125,7 +304,7 @@ class TermsJoin:
         return tuple(r for r in self.rows if not r.is_joined)
 
 
-def _parse_entry(raw: Dict, index: int) -> TermsEntry:
+def _parse_entry(raw: Dict, index: int, terms_schema: str = TERMS_SCHEMA_V1) -> TermsEntry:
     for key in ("identity", "instrumentType", "terms", "missingTerms"):
         if key not in raw:
             raise TermsJoinError(f"terms entry [{index}] is missing required key {key!r}")
@@ -140,6 +319,21 @@ def _parse_entry(raw: Dict, index: int) -> TermsEntry:
             f"terms entry [{index}] missingTerms must be a list of strings; got {missing!r}"
         )
 
+    # `accrualBasis` is a v2 feature. An entry carrying one under a v1
+    # schema label is refused rather than accepted leniently: the document
+    # is then self-contradictory, and the schema label is the thing every
+    # other parsing decision here keys on. Accepting it would mean trusting
+    # a version marker the document has already disproved.
+    raw_basis = raw.get("accrualBasis")
+    if raw_basis is not None and terms_schema == TERMS_SCHEMA_V1:
+        raise TermsJoinError(
+            f"terms entry [{index}] carries an accrualBasis block, but the artifact "
+            f"declares schema {TERMS_SCHEMA_V1!r}, which has no such field. Either "
+            f"the artifact should declare {TERMS_SCHEMA_V2!r} or the block should be "
+            f"absent -- a document that contradicts its own version marker cannot be "
+            f"parsed on that marker's assumptions."
+        )
+
     return TermsEntry(
         instrument_type=raw["instrumentType"],
         terms=raw["terms"],
@@ -149,6 +343,8 @@ def _parse_entry(raw: Dict, index: int) -> TermsEntry:
         missing_terms=tuple(missing),
         provenance=raw.get("provenance", {}),
         identity=identity,
+        accrual_basis=_parse_accrual_basis(raw_basis, index),
+        terms_schema=terms_schema,
     )
 
 
@@ -180,15 +376,18 @@ def _entry_key(identity: Dict, index: int) -> Tuple:
 def _index_entries(terms: Dict, bundle_epoch: str) -> Dict[Tuple, TermsEntry]:
     """Builds the identity -> entry index, rejecting duplicates and
     wrong-epoch contract entries (W0.2 step 4)."""
+    # Terms version is checked independently of the bundle version: a v2
+    # bundle may legitimately carry either terms schema (W1.6.1).
     schema = terms.get("schema")
-    if schema != "traderx.instrument-terms.v1":
+    if schema not in SUPPORTED_TERMS_SCHEMAS:
         raise TermsJoinError(
-            f"unsupported terms schema {schema!r}; expected 'traderx.instrument-terms.v1'"
+            f"unsupported terms schema {schema!r}; this consumer accepts "
+            f"{list(SUPPORTED_TERMS_SCHEMAS)}"
         )
 
     index: Dict[Tuple, TermsEntry] = {}
     for i, raw in enumerate(terms.get("entries", [])):
-        entry = _parse_entry(raw, i)
+        entry = _parse_entry(raw, i, terms_schema=schema)
         key = _entry_key(entry.identity, i)
 
         if key[0] == "contracts" and key[2] != bundle_epoch:

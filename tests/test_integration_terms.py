@@ -244,8 +244,20 @@ class TestDuplicateAndUnjoinable:
             join_terms(bundle)
 
     def test_unsupported_terms_schema_is_rejected(self, terms_bundle):
+        """**Updated by W1.6.1**, which added `instrument-terms.v2` to the
+        accepted set.
+
+        This test previously used `.v2` as its example of an unsupported
+        schema, which was correct at W0.2 -- v2 did not exist yet. W1.6.1 is
+        chartered to accept it, so the assertion now uses a version that is
+        genuinely unknown. The *contract* under test is unchanged: a terms
+        artifact declaring a schema this consumer has not validated against
+        is refused rather than parsed on v1 assumptions.
+
+        v2's acceptance is covered by `tests/test_integration_terms_v2.py`.
+        """
         def bump(terms):
-            terms["schema"] = "traderx.instrument-terms.v2"
+            terms["schema"] = "traderx.instrument-terms.v99"
 
         bundle = terms_bundle("note", bump)
         with pytest.raises(TermsJoinError, match="unsupported terms schema"):

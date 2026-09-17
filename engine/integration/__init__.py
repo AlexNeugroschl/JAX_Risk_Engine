@@ -36,7 +36,16 @@ Module map, in dependency order:
   `bill.py`         W1.2  the first pricer: zero-coupon Treasury NPV
   `note.py`         W1.3  coupon-bearing Treasury NPV + rate sensitivity
   `equity.py`       W1.4  cash equity -- a refusal naming the missing spot
+  `schema_version.py` W1.6.2  the two document versions (dependency-free leaf)
+  `schema.py`       W1.6.2  JSON Schema for the published documents
+  `workload.py`     W1.6.4  workload key + the durable attempt store
   `pipeline.py`     the composition of the above into one call
+
+**W1.6 made this boundary reachable over HTTP** -- but the routes are NOT
+here. They live in `engine/api/eod_routes.py`, because this package
+deliberately imports no FastAPI, Pydantic, JAX or simulation pricer, and
+routes inside it would break that invariant. The dependency runs
+`engine.api` -> `engine.integration`, never the reverse.
 
 The single governing rule, from which most of this code follows: **nothing
 is ever silently approximated.** An explicit `unsupported` is recoverable;
@@ -99,7 +108,26 @@ from engine.integration.result import (
     ItemResult,
     RiskResult,
 )
-from engine.integration.terms import TermsJoinError, TermsEntry, join_terms
+from engine.integration.schema import (
+    CAPABILITY_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION,
+    capability_schema,
+    result_schema,
+)
+from engine.integration.terms import (
+    SUPPORTED_ACCRUAL_BASIS_SCHEMAS,
+    SUPPORTED_TERMS_SCHEMAS,
+    AccrualBasis,
+    TermsJoinError,
+    TermsEntry,
+    join_terms,
+)
+from engine.integration.workload import (
+    UNKNOWN_WORKLOAD,
+    Attempt,
+    AttemptStore,
+    workload_key,
+)
 
 __all__ = [
     "BillPrice", "BillPricingError", "is_bill", "price_bill",
@@ -108,7 +136,11 @@ __all__ = [
     "EquityPosition", "EquityPricingError", "is_equity", "price_equity",
     "read_position",
     "Bundle", "BundleIntegrityError", "load_bundle",
-    "TermsEntry", "TermsJoinError", "join_terms",
+    "AccrualBasis", "TermsEntry", "TermsJoinError", "join_terms",
+    "SUPPORTED_ACCRUAL_BASIS_SCHEMAS", "SUPPORTED_TERMS_SCHEMAS",
+    "CAPABILITY_SCHEMA_VERSION", "RESULT_SCHEMA_VERSION",
+    "capability_schema", "result_schema",
+    "UNKNOWN_WORKLOAD", "Attempt", "AttemptStore", "workload_key",
     "MAPPING_VERSION", "NormalizedPosition", "Quantity", "normalize_position",
     "ConventionRefusal", "check_conventions",
     "ItemIdentity", "item_id",

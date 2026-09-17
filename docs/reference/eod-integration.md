@@ -119,7 +119,14 @@ That list of 13 is not a diagnostic this engine composed — it is TraderX's own
 | [`bill.py`](../../engine/integration/bill.py) | W1.2 | Zero-coupon Treasury NPV — the first pricer |
 | [`note.py`](../../engine/integration/note.py) | W1.3 | Coupon-bearing Treasury NPV + `rateSensitivity` |
 | [`equity.py`](../../engine/integration/equity.py) | W1.4 | Cash equity — a refusal naming the missing spot/FX |
+| [`schema_version.py`](../../engine/integration/schema_version.py) | W1.6.2 | The two document versions — a dependency-free leaf |
+| [`schema.py`](../../engine/integration/schema.py) | W1.6.2 | JSON Schema for the result and capability documents |
+| [`workload.py`](../../engine/integration/workload.py) | W1.6.4 / W0.8 | Workload key + the durable attempt store |
 | [`pipeline.py`](../../engine/integration/pipeline.py) | — | Composition of the above |
+
+The HTTP routes are **not** in this package — see
+[`engine/api/eod_routes.py`](../../engine/api/eod_routes.py) and W1.6.4 below. `engine.api`
+imports `engine.integration`; never the reverse.
 
 **This package imports no simulation pricer, no ORE builder, and no curve construction.**
 At W0 the ban was total — no ORE, JAX or NumPy at all. W1.2 narrowed it: `bill.py` genuinely
@@ -938,11 +945,270 @@ here, because the wrong answer is a plausible, well-formed, perfectly reconcilin
 
 ---
 
+## W1.6 — The contract interface
+
+Everything above was a well-tested library with **no service in front of it**. `capabilities()`
+existed from W0.9 and was never routed; the durable lookup (W0.8) had no endpoint at all. W1.6
+is the task that makes this boundary reachable, and it was sequenced ahead of W1.5 because
+TraderX's remaining blockers were entirely interface, not pricing — they had already
+reproduced every number independently.
+
+### W1.6.1 — `traderx.instrument-terms.v2` and `accrualBasis`
+
+**The terms version is independent of the bundle version.** A `traderx.eod-bundle.v2` bundle
+may carry either `instrument-terms.v1` or `.v2` — they are separately versioned documents that
+happen to travel together, so `SUPPORTED_TERMS_SCHEMAS` is checked on its own. Pinning one to
+the other would reject a valid combination, and a test class asserts both pairings join.
+
+v2 adds an optional per-entry `accrualBasis` block:
+
+```jsonc
+"accrualBasis": {
+  "schema": "traderx.accrual-basis.v1",
+  "dateBasis": "SESSION_DATE",
+  "settlementAdjustment": "NONE",
+  "rounding": "HALF_EVEN",
+  "fractionDecimals": 6
+}
+```
+
+#### Unrecognized values are refused, not parsed optimistically
+
+Response v4 §1.3 asked TraderX whether new `dateBasis`/`settlementAdjustment` values would land
+in `accrual-basis.v1` or force a `.v2`. **That question was never answered**, so this consumer
+implements the strict reading the plan's settled row asks for: the exact accepted value set is
+pinned, and anything outside it raises `TermsJoinError`.
+
+The failure mode this prevents is the one the whole boundary exists to prevent — a real-market
+settlement basis silently inheriting the synthetic fixture's same-day semantics, shifting
+accrued interest with no error anywhere. Widening a tuple later is a one-line change; recovering
+from months of optimistically-parsed wrong accruals is not.
+
+A **v1 artifact carrying an `accrualBasis`** is also refused: the document has contradicted its
+own version marker, and that marker is what every other parsing decision keys on.
+
+#### `fractionDecimals` is load-bearing, not decoration
+
+This is the field that makes v2 worth supporting. It **derives** W1.3's reconciliation
+tolerance rather than leaving it a negotiated constant:
+
+| Declared decimals | Tolerance at 100,000 face |
+|---|---|
+| 3 | 50.01 |
+| 4 | 5.01 |
+| **6** (the exporter's actual precision) | **0.06** |
+| 8 | 0.0105 |
+
+The delivered note's two accrual paths differ by **$0.04** — the exporter's own HALF_EVEN
+rounding. So at 8 declared decimals that difference *exceeds* tolerance and the note is
+**refused** with `ACCRUAL_MISMATCH`; at 4 it prices. A pipeline that parses the block and then
+ignores it keeps pricing at the 6-decimal default in both cases.
+
+> **This gap was real.** An implementation that validated `accrualBasis` and never used it
+> passed **59 of 59** tests. `TestFractionDecimalsActuallyReachesTheTolerance` was written
+> specifically to fail against it — the decorative-field bug is a failure by *omission*, which
+> no test of the parser alone can catch.
+
+`fractionDecimals` is validated at parse time (integer, in `[1, 12]`, and explicitly **not** a
+`bool` — `True` is `1` in Python and would silently widen the tolerance by five orders of
+magnitude), because it must never reach the tolerance arithmetic it scales.
+
+### W1.6.2 — Schema versions and machine-readable JSON Schema
+
+Every published document now carries its own version, emitted **before** intake is extended so
+a consumer can pin it:
+
+```jsonc
+{"resultSchema": "jaxrisk.eod-result.v1", ...}      // every result
+{"capabilitySchema": "jaxrisk.eod-capabilities.v1", ...}  // capabilities()
+```
+
+**Two separately versioned documents, deliberately.** A new pricer changes what `capabilities()`
+advertises without changing the result's shape at all. One shared version would force a lockstep
+neither side wants and make "did the result schema change?" unanswerable.
+
+The JSON Schemas ([`engine/integration/schema.py`](../../engine/integration/schema.py)) are
+**derived from `CALCULATIONS` and `STATUSES`**, never hand-written — adding a calculation
+updates the published schema automatically. A stale schema is worse than none: it certifies
+documents that no longer match it.
+
+#### The schema is strict, and that is tested separately
+
+A schema that accepts everything validates every document and proves nothing. So the suite
+asserts strictness explicitly — each of these mutations of a real priced result is rejected:
+
+missing/wrong `resultSchema` · unknown top-level field · any of the seven calculations omitted ·
+unknown calculation name · invalid status · any of the five coverage keys missing · negative
+count · empty `itemId` · missing `sourceIdentity` · missing `itemOrder`
+
+#### An import cycle, and where it is broken
+
+`schema.py` derives itself from `result.py`, but `result.py` must stamp its own version onto
+every document — which would import `schema.py` right back. The bare constants therefore live
+in [`engine/integration/schema_version.py`](../../engine/integration/schema_version.py), a leaf
+that imports nothing. Same shape as `engine/day_count.py`, created for the same reason during
+W1.3: **a vocabulary several layers need belongs below all of them.** Deferring an import
+inside a function would have hidden the dependency; duplicating the constants would let the
+published version drift from the schema describing it.
+
+### W1.6.3 — `accrualSource` on the standalone outcome
+
+Before this, a consumer reading the standalone `accruedInterest` outcome saw
+`provenance: "converted"`, while the note's NPV payload described the same fact as
+`accrualSource: "exported-fraction"`. Two vocabularies, neither cross-referenced.
+
+Now both carry the same label. **And `structural-zero` stays distinct**, which is the whole
+constraint:
+
+| Instrument | `provenance` | `accrualSource` |
+|---|---|---|
+| Note (exported fraction converted) | `converted` | `exported-fraction` |
+| Bill (no coupon schedule) | `structural-zero` | **`structural-zero`** |
+
+A bill's zero is not an exported fraction that happened to be zero — it is zero because the
+instrument has no coupon schedule. Folding it into `exported-fraction` would erase exactly the
+distinction W0.3 exists to preserve. Patched in, that collapse fails **4 tests**, including
+`test_bill_is_not_labelled_exported_fraction`, which asserts it negatively and by name.
+
+An `unavailable` accrual carries **no** label at all — there is no source, and a label would
+imply one.
+
+### W1.6.4 — The EOD HTTP routes
+
+| Route | Purpose |
+|---|---|
+| `GET /eod/capabilities` | W0.9's document, finally reachable |
+| `GET /eod/schemas/result` | The result JSON Schema |
+| `GET /eod/schemas/capabilities` | The capability JSON Schema |
+| `POST /eod/price` | Submit a bundle; returns the workload key, attempt id and result |
+| `GET /eod/results/by-workload/{key}` | W0.8's durable lookup |
+| `GET /eod/attempts/{attemptId}` | One attempt, permanently addressable |
+
+**`engine/api` imports `engine/integration`, never the reverse.** The integration package
+deliberately imports no FastAPI, Pydantic, JAX or simulation pricer — an invariant enforced by
+`TestPackageImportsNoSimulationPricer`. Routes inside that package would break it, so they live
+in `engine/api/eod_routes.py`.
+
+**The result is returned as a plain dict, not a Pydantic model** — a deliberate departure from
+`engine/api/schemas.py`'s wrap-every-dataclass approach. The result document's contract *is*
+the published JSON Schema; re-describing it in Pydantic would create a second definition that
+can drift from the first.
+
+#### A refusal is a `200`, not an HTTP error
+
+| Condition | Status |
+|---|---|
+| Instrument refused (SOFR, equity) | **`200`** — the refusal is the answer |
+| Bundle fails hash verification, or is missing | `422` |
+| Terms artifact structurally unusable | `422` |
+| Market inputs unresolvable | `400` |
+| `submissionId` reused for a **different** workload | `409` |
+| Workload never submitted | `404` — the only one |
+
+Returning an HTTP error for a refusal would make *"we correctly declined to guess"*
+indistinguishable from *"we broke"*, and the entire design rests on that being distinguishable.
+
+A **missing bundle is a `422`, not a `404`** — W0.1 step 4 already established that a missing
+artifact is an *integrity failure* rather than an absence. Re-classifying it at the transport
+layer would reintroduce the exact conflation W0.1 exists to hold.
+
+#### The workload key
+
+A canonical hash over everything that can change a number: bundle identity, market inputs,
+calculation set, mapping/engine/schema versions, precision. **Both directions of error are
+bugs** — omitting an input that matters means a cache hit returns a result computed against
+something else; including something irrelevant means the cache never hits.
+
+`calculations` is sorted and JSON keys are canonicalized before hashing, so `["npv","theta"]`
+and `["theta","npv"]` are one computation. **`submissionId` is deliberately absent**: it
+identifies a *request*, not a *computation*. In the key, every retry would recompute — the
+opposite of idempotent. Patching it in fails `test_different_submission_ids_are_distinct_attempts`.
+
+#### A bug found in review, before this shipped
+
+The first implementation of `AttemptStore.start` returned the existing attempt for **any**
+repeated `submissionId`, without checking the workload matched. So:
+
+```python
+submit(bundle="note", submissionId="dup")   # → 103,308.33
+submit(bundle="bill", submissionId="dup")   # → 103,308.33  ← the NOTE's number
+```
+
+A bill submission came back carrying the note's priced result. **This is the
+silently-wrong-number failure the whole boundary exists to prevent**, reached through the
+idempotency path rather than through a pricer — and it would have reconciled to nothing,
+under a bundle id that did not produce it.
+
+A reused id against a different workload is now a **`409 SUBMISSION_ID_CONFLICT`**.
+Idempotency means *"this exact request, again"*; it cannot mean *"whatever I sent last time
+under this name"*. Four regression tests, verified to fail against the pre-fix code — plus a
+fifth that passes both ways by design, confirming the guard did not break idempotency itself.
+
+#### Four lookup states
+
+| State | Response |
+|---|---|
+| Never submitted | `404 UNKNOWN_WORKLOAD` |
+| Accepted, running | `200 {"state": "running"}` |
+| Accepted, failed | `200 {"state": "failed", "reason": ...}` |
+| Completed | `200 {"state": "completed", "result": ...}` |
+
+A bare 404 for both *unknown* and *running* is what invites a coordinator to launch a duplicate
+overnight batch against work already in flight. Lookup returns the most recent **successful**
+attempt — a later failure never hides an earlier success, and attempts are immutable once
+terminal.
+
+> **[I-08](../known-issues.md#i-08) remains open.** The attempt store is still in-process, so a
+> restart loses *running*-state knowledge. What W1.6.4 delivers is the state machine and the
+> key; the manifest-scan recovery in plan §W0.8 needs a persistent artifact store that does not
+> exist yet. A lost in-memory job is an infrastructure event, and this module's job is to ensure
+> it is never a *financial* one — by never serving a partial or stale result as a complete one.
+
+### A worked submission
+
+Request:
+
+```jsonc
+POST /eod/price
+{
+  "bundlePath": "…/note/v2",
+  "marketInputs": {"mode": "assumed-profile", "assumedProfileId": "flat-3pct-v1"},
+  "submissionId": "eod-2025-06-02-001"
+}
+```
+
+Response envelope (real output, note fixture):
+
+```jsonc
+{
+  "workloadKey": "sha256:7daed17b49a440beabef702f7306145d44625951185c13912dd9b1fd45e0dfb4",
+  "attemptId": "b4863ccd-38ad-483a-a2b9-a4ec71571623",
+  "state": "completed",
+  "reused": false,
+  "result": { "resultSchema": "jaxrisk.eod-result.v1", … }
+}
+```
+
+Per-calculation statuses for the long note — **every one explicit**, which is what the
+coverage model exists to guarantee:
+
+| Calculation | Status | Why |
+|---|---|---|
+| `npv` | `ok` | +103,308.33 |
+| `accruedInterest` | `ok` | +1,857.10, `accrualSource: exported-fraction` |
+| `rateSensitivity` | `ok` | −15.28 at +1bp, `bumped-revaluation` |
+| `rateGamma` | `unsupported` | No pricer at this stage |
+| `theta` | `unsupported` | No pricer at this stage |
+| `vega` | `not-applicable` | A Treasury has no optionality — **not a coverage gap** |
+| `varEs` | `not-applicable` | Portfolio-level, not per-item |
+
+---
+
 ## Not yet implemented
 
 | Task | Status | Why |
 |---|---|---|
-| **W0.8** durable result lookup | Not started | Needs a persistent store + HTTP endpoint; the crash-safety semantics are the substance and can't be meaningfully tested against the in-process job store ([I-08](../known-issues.md#i-08)). |
+| **W0.8** crash-safe publication | Partial | The four lookup states, the workload key and attempt immutability landed in W1.6.4. The manifest-scan recovery still needs a persistent artifact store ([I-08](../known-issues.md#i-08)). |
 | **W1.5** wire-through to the portfolio path | Not started | Both bond pricers live at this boundary; `engine/instruments/` is still four rate-derivative modules. |
 | Equity **valuation** | Blocked | The refusal path landed (W1.4); pricing needs a spot/FX source ([I-18](../known-issues.md#i-18)). |
 | Per-pillar `rateSensitivity` | Blocked | Needs a curve with pillar structure - `mode: "package"`, i.e. W2 ([I-16](../known-issues.md#i-16)). |
@@ -968,17 +1234,21 @@ Unblocked — sequencing, not dependency.
 | [`tests/test_integration_note.py`](../../tests/test_integration_note.py) | W1.3 — **`TestOreParity`**, **`TestAccruedReconcilesToTraderX`**, `TestToleranceIsDerivedNotConstant`, `TestCleanDirtyReconciliation`, `TestLongShort`, `TestRateSensitivity`, **`TestWrongDayCountIsCaught`**, `TestAccrualMismatchIsRefused`, `TestScheduleIsUsedNotRegenerated`, `TestRefusals`, **`TestRefusalsAreNotePricingErrors`**, `TestIsNote`, `TestPipelineEndToEnd`, **`TestBillIsUnchangedByW13`**, `TestCapabilitiesAdvertiseW13` |
 | [`tests/test_integration_equity.py`](../../tests/test_integration_equity.py) | W1.4 — `TestRefusesRatherThanPrices`, **`TestDoesNotEchoTheExportedMark`**, `TestLongShort`, **`TestMultiplierAppliedExactlyOnce`**, `TestCurrencyAndFx`, `TestIsEquity`, `TestMalformedRows`, **`TestRefusalsAreEquityPricingErrors`**, `TestPipelineEndToEnd`, **`TestTreasuriesAreUnchangedByW14`**, `TestCapabilitiesAdvertiseW14` |
 | [`tests/test_day_count_roles.py`](../../tests/test_day_count_roles.py) | W1.1 — the two day-count roles; 27 tests, unchanged by W1.3's move of the accrual vocabulary to `engine/day_count.py` |
+| [`tests/test_integration_terms_v2.py`](../../tests/test_integration_terms_v2.py) | W1.6.1 — `TestV2IsAccepted`, **`TestTermsVersionIsIndependentOfBundleVersion`**, **`TestUnrecognizedValuesAreRefused`**, `TestFractionDecimalsIsValidated`, `TestSelfContradictoryDocumentsAreRefused`, **`TestV1BundlesAreUnchanged`**, **`TestFractionDecimalsActuallyReachesTheTolerance`**, `TestAccrualBasisType` |
+| [`tests/test_integration_schema.py`](../../tests/test_integration_schema.py) | W1.6.2 — `TestSchemasAreThemselvesValid`, `TestRealDocumentsValidate`, **`TestResultSchemaIsStrict`**, `TestCapabilitySchemaIsStrict`, **`TestSchemaIsDerivedNotHandWritten`**, `TestVersionsAreEmittedAndSeparate`, `TestNoImportCycle` |
+| [`tests/test_integration_accrual_source.py`](../../tests/test_integration_accrual_source.py) | W1.6.3 — `TestLabelIsPresentAndAligned`, **`TestStructuralZeroSurvivesTheAlignment`**, `TestMappingFunction`, `TestUnavailableAccrualCarriesNoLabel`, **`TestExistingBehaviourUnchanged`** |
+| [`tests/test_integration_eod_routes.py`](../../tests/test_integration_eod_routes.py) | W1.6.4 — `TestCapabilitiesIsRouted`, `TestSchemasAreServed`, `TestPricingOverHttp`, **`TestRefusalsAreNotHttpErrors`**, `TestTransportErrorsAreTruthful`, **`TestFourLookupStates`**, `TestIdempotentSubmission`, **`TestWorkloadKey`**, `TestAttemptImmutability`, **`TestExistingRoutesUnaffected`** |
 
-**491 tests in `engine/integration/`** — 104 for W1.3's note pricer and 60 for W1.4's equity refusal, plus 23 for the tail
-diagnostics in `engine/risk/var_es.py` and 27 for the W1.1 day-count split. The integration
-tests run against the real delivered TraderX YU18 fixtures (bill, note, sofr — each in v1
-and v2), and complete in under a second.
+**687 tests in `tests/test_integration_*.py`** — 104 for W1.3's note pricer, 60 for W1.4's
+equity refusal, and **160 added by W1.6** (42 terms-v2, 46 schema, 17 accrual-source, 51 HTTP
+routes) — plus 23 for the tail diagnostics in `engine/risk/var_es.py` and 27 for the W1.1
+day-count split. They run against the real delivered TraderX YU18 fixtures (bill, note, sofr,
+equity — each in v1 and v2) and complete in under two seconds.
 
-Full suite, run 2026-09-16 after W1.4: **1,384 passed, 2 failed**. The 2 failures are the
-documented `pydantic` environment gap (`tests/test_var_es_diagnostics.py::TestDiagnosticsReachTheHttpBoundary`),
-a declared dependency that is not installed here — not a code defect, and confirmed
-pre-existing. `tests/test_api.py` does not collect for the same reason. Engine-side, every
-test passes.
+Two dependency notes: `jsonschema` is a **test-only** dev extra (the engine emits the schema
+and must never depend on a validator to produce a correct document — it is the tests that
+prove the two agree), and the previously-documented `pydantic` environment gap is **resolved**
+— it is installed (2.13.5) and `tests/test_api.py` now collects.
 
 ### Regression tests verified against the wrong implementation
 
@@ -999,3 +1269,22 @@ implementations were patched in and confirmed to fail:
 | Pricing the note on **ACT/365** instead of ACT/ACT (ICMA) | Caught by the accrual reconciliation itself — the error is $5.09 on $100k against a $0.06 derived tolerance, ~85× |
 | A note's refusal raised as a **`BillPricingError`** (**a real bug this caught** — [I-17](../known-issues.md#i-17)) | 4 failed in `TestRefusalsAreNotePricingErrors`; the one that mattered asserts a malformed row does not take the whole bundle down |
 | **Echoing `closingMark` as an equity `npv`** | **20 of 60** failed, incl. the dedicated `TestDoesNotEchoTheExportedMark` — patched in at both the pricer and the pipeline level. The dangerous one: it reconciles perfectly against TraderX because it *is* TraderX's number |
+| Parsing `accrualBasis` enums **optimistically** instead of refusing unknown values (W1.6.1) | 6 failed across `TestUnrecognizedValuesAreRefused` — every `dateBasis`/`settlementAdjustment`/`rounding` case |
+| **`accrualBasis` parsed, validated, then ignored** (W1.6.1) — *the decorative-field bug* | **0 failed at first — this found a real gap in my own suite.** See the note below |
+| Pinning the terms version to the **bundle** version (W1.6.1) | 9 failed, incl. the whole `TestTermsVersionIsIndependentOfBundleVersion` class |
+| Folding `structural-zero` into `exported-fraction` (W1.6.3) | 4 failed, incl. `test_bill_is_not_labelled_exported_fraction` and `test_bill_and_note_labels_are_different` |
+| A **permissive** result schema (`additionalProperties: true` throughout) (W1.6.2) | 2 failed — precisely the two unknown-field tests; the `required`/`enum`/`minimum` constraints are orthogonal and correctly unaffected |
+| `submissionId` leaking into the **workload key** (W1.6.4) | 1 failed — `test_different_submission_ids_are_distinct_attempts`, which also pins that the keys stay equal |
+| **`submissionId` honoured across different workloads** (W1.6.4) — *a real bug, found in review* | 4 failed in `TestSubmissionIdCannotCrossWorkloads`; a fifth passes both ways by design, proving the guard did not break idempotency itself |
+
+> **One of these found a gap in the tests rather than in the code, and it is worth recording.**
+> The "decorative field" implementation — `accrualBasis` parsed, validated, and then never
+> used — passed **59 of 59** W1.6.1 tests. Every test of the *parser* still held: the block was
+> read, bad values refused, good ones accepted. What nothing asserted was that the value
+> reached the tolerance it exists to derive.
+>
+> This is the failure mode working rule 3 is actually for: a bug of **omission** produces no
+> wrong output anywhere a parser test can see it. `TestFractionDecimalsActuallyReachesTheTolerance`
+> was written afterwards and verified to fail against that implementation, driving an
+> end-to-end consequence (an 8-decimal declared precision must *refuse* the note with
+> `ACCRUAL_MISMATCH`) rather than inspecting the parsed value.

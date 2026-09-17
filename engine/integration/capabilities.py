@@ -36,6 +36,14 @@ from engine.integration.market_inputs import (
 )
 from engine.integration.normalize import MAPPING_VERSION
 from engine.integration.result import CALCULATIONS, STATUSES
+from engine.integration.schema_version import (
+    CAPABILITY_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION,
+)
+from engine.integration.terms import (
+    SUPPORTED_ACCRUAL_BASIS_SCHEMAS,
+    SUPPORTED_TERMS_SCHEMAS,
+)
 
 #: Bundle schemas the ingestion path accepts.
 from engine.integration.bundle import SUPPORTED_BUNDLE_SCHEMAS
@@ -43,11 +51,12 @@ from engine.integration.bundle import SUPPORTED_BUNDLE_SCHEMAS
 ENGINE_VERSION = "0.1.0"
 
 #: The delivery stage this build implements. W1 began when the first pricer
-#: landed (W1.2, the bill), W1.3 added the note, and W1.4 resolved the
-#: equity case to a *refusal* rather than a price. The stage is not "W1"
+#: landed (W1.2, the bill), W1.3 added the note, W1.4 resolved the equity
+#: case to a *refusal* rather than a price, and W1.6 made the whole boundary
+#: reachable over HTTP with versioned documents. The stage is not "W1"
 #: complete -- the portfolio wire-through (W1.5) is still to come -- which
 #: is what `stageSummary` spells out.
-DELIVERY_STAGE = "W1.4"
+DELIVERY_STAGE = "W1.6"
 
 #: What actually computes a number today, per instrument type.
 #:
@@ -190,6 +199,9 @@ def capabilities() -> Dict:
     "ORE can represent it" is not "my engine prices it").
     """
     return {
+        # W1.6.2: first, so a consumer can decide whether it understands
+        # this document before reading anything else in it.
+        "capabilitySchema": CAPABILITY_SCHEMA_VERSION,
         "engineVersion": ENGINE_VERSION,
         "mappingVersion": MAPPING_VERSION,
         "deliveryStage": DELIVERY_STAGE,
@@ -201,9 +213,27 @@ def capabilities() -> Dict:
             "npv, a coupon-bearing note returns npv and a bumped-revaluation "
             "rateSensitivity. A cash equity is understood and identified but "
             "REFUSED: it needs a spot price, and this boundary has no spot or FX "
-            "source. Every other calculation is still refused."
+            "source. Every other calculation is still refused. W1.6 added the "
+            "contract interface: instrument-terms v2 with a validated accrualBasis, "
+            "versioned result and capability documents with machine-readable JSON "
+            "Schema, and HTTP routes under /eod."
         ),
         "bundleSchemas": list(SUPPORTED_BUNDLE_SCHEMAS),
+        # W1.6.1: advertised separately from `bundleSchemas` because the two
+        # are independently versioned -- a v2 bundle may carry either terms
+        # version, so collapsing them would misdescribe what is accepted.
+        "termsSchemas": list(SUPPORTED_TERMS_SCHEMAS),
+        "accrualBasisSchemas": list(SUPPORTED_ACCRUAL_BASIS_SCHEMAS),
+        # The versions of the two published documents, so a coordinator can
+        # pin its validator before submitting rather than discovering a
+        # schema change from a parse failure (W1.6.2).
+        "schemas": {
+            "resultSchema": RESULT_SCHEMA_VERSION,
+            "capabilitySchema": CAPABILITY_SCHEMA_VERSION,
+            # Where the machine-readable definitions are served.
+            "resultSchemaUrl": "/eod/schemas/result",
+            "capabilitySchemaUrl": "/eod/schemas/capabilities",
+        },
         "calculations": {
             "names": list(CALCULATIONS),
             "statuses": list(STATUSES),

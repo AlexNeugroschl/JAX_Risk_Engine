@@ -277,15 +277,18 @@ class TestCompileCounts:
         assert result.rmse < 1e-8
 
     def test_repeated_greeks_call_costs_one_compile_not_zero(self):
-        """Pins a KNOWN residue rather than an aspiration (see
-        `_grad_and_hessian_diagonal`'s docstring): `price_fn` is a fresh
-        closure per call, and `jax.jit` keys on function identity, so the
-        combined grad+Hessian-diagonal program recompiles once per call even
-        for an identical trade. One compile, not the ~470 this started at.
+        """Pins a KNOWN residue rather than an aspiration -- filed as
+        **docs/known-issues.md I-21**: `price_fn` is a fresh closure per
+        call, and `jax.jit` keys on function identity, so the combined
+        grad+Hessian-diagonal program recompiles once per call even for an
+        identical trade. One compile, not the ~470 this started at.
 
-        If someone later adds a closure cache and this drops to 0, that is
-        an improvement -- update the bound rather than deleting the test, so
-        the property stays pinned in whichever direction it moves."""
+        When I-21 is fixed this drops to 0. TIGHTEN the bound then rather
+        than deleting the test, so the property stays pinned in whichever
+        direction it moves -- and pair it with I-21's required negative
+        test (a trade differing only in notional/fixed_rate/tenor must still
+        get its own correct, DIFFERENT answer), since a count-only assertion
+        would pass against a broken always-hit cache."""
         cfg = bermudan_cfg()
         curve = jax_curve()
         jax.block_until_ready(bermudan_delta_gamma(cfg, curve)["delta"])  # warm

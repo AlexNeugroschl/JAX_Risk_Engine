@@ -55,6 +55,10 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from engine.integration.identity import ItemIdentity, item_order_artifact
+# The bare version string, from the dependency-free leaf. `schema.py`
+# derives the JSON Schema *from this module*, so importing it here would be
+# a cycle -- see `engine.integration.schema_version`.
+from engine.integration.schema_version import RESULT_SCHEMA_VERSION
 
 #: The frozen calculation names (plan §W0.5). Frozen means a consumer can
 #: switch on them exhaustively; adding one is a contract change.
@@ -390,6 +394,11 @@ class RiskResult:
 
     def to_dict(self) -> Dict:
         return {
+            # W1.6.2: the schema version comes first, so a consumer can
+            # decide whether it understands this document before reading
+            # anything else in it. Emitted even while the value stays at
+            # `.v1` -- a version that was never published cannot be pinned.
+            "resultSchema": RESULT_SCHEMA_VERSION,
             "bundleId": self.bundle_id,
             "clusterEpoch": self.cluster_epoch,
             "sessionDate": self.session_date,

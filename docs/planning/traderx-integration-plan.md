@@ -16,6 +16,9 @@ four-document exchange into executable tasks.
 8. `eod-response-to-alex-v5.md` → their **independent verification of the priced results**,
    plus two reproducible defects (**I-19**, **I-20**)
 9. [Response v5](eod-contract-response-v5.md) — my reply; both fixed, W1.6 inserted ahead of W1.5
+10. [Response v6](eod-contract-response-v6.md) — my reply; **W1.6 delivered**, all four of
+    their compatibility items implemented, plus the `accrual-basis` versioning question
+    restated as load-bearing
 
 **Companion:** [Known Issues](../known-issues.md) — the defect register. Task IDs below
 reference issue IDs (`I-NN`) where they close one.
@@ -114,6 +117,7 @@ I-15. Earlier figures in this exchange (824, then 1175) were stale or unreproduc
 | ~~Priced **bill** results~~ | — | ✅ **Done** (W1.2) |
 | ~~Priced **note** results~~ | — | ✅ **Done** (W1.3) |
 | ~~I-13 / I-14 fixes (W0.10)~~ | — | ✅ **Done** |
+| ~~Terms v2 / schema versions / `accrualSource` / HTTP~~ | — | ✅ **Done** (W1.6) |
 | Everything else | Nothing | ✅ Start now |
 
 ### Corrections I owe, or have made
@@ -368,10 +372,17 @@ identity; item-order artifact hash matches result ordering.
 
 ---
 
-### W0.8 — Durable result lookup · mitigates **I-08** · ❌ NOT STARTED
+### W0.8 — Durable result lookup · mitigates **I-08** · ⚠️ **PARTIAL** (absorbed into W1.6.4)
 
-> Needs a persistent store plus an HTTP endpoint. The crash-safety semantics are the
-> substance here and cannot be meaningfully tested against the current in-process job store.
+> **Landed in W1.6.4:** the HTTP endpoint (`GET /eod/results/by-workload/{key}`), the
+> canonical **workload key** (`engine/integration/workload.py`), **idempotent submission**
+> via `submissionId`, **immutable terminal attempts**, and the **four distinguishable lookup
+> states** — so an accepted-but-running job no longer looks like an unknown one.
+>
+> **Still not built:** the publication protocol and manifest-scan recovery below. Those need
+> a persistent artifact store to scan, and there is none — so the store is still an
+> in-process dict and a restart still loses *running*-state knowledge. The state machine is
+> right; nothing durable backs it yet. **Mitigated, not fixed** (working rule 5).
 
 **Deliverable:** `GET /risk/results/by-workload/{workloadKey}`.
 
@@ -427,20 +438,22 @@ different workload key** (no cache reuse).
 
 ---
 
-### W0.9 — `GET /capabilities` · ✅ DONE (as a function; not yet routed)
+### W0.9 — `GET /capabilities` · ✅ DONE and **routed** (W1.6.4)
 
 > `engine/integration/capabilities.py::capabilities()` returns the document, derived from the
-> allowlist rather than hand-maintained. Wiring it to an actual HTTP route belongs with
-> W0.8's endpoint work.
+> allowlist rather than hand-maintained. **Served at `GET /eod/capabilities`** since W1.6.4 —
+> it had existed as unreachable code since W0.
 
 Return the supported (product × convention × calculation) matrix, precision/device profiles,
 engine/model/build versions, and known-limitation flags, so the coordinator can determine
 *before submitting* whether a bundle is priceable. This is what makes "no silent exclusions"
 enforceable rather than aspirational.
 
-Currently reports `"deliveryStage": "W0"`, `"calculations.mode": "refusal-only"`, and
-`conventions.swap.overnightCompounding: []` — an explicitly empty list, so a consumer sees
-SOFR is unsupported without inferring it from a refusal.
+Now reports `"deliveryStage": "W1.6"` and `"calculations.mode": "partial"` (it read `"W0"` /
+`"refusal-only"` while nothing priced). `conventions.swap.overnightCompounding: []` is still
+an explicitly empty list, so a consumer sees SOFR is unsupported without inferring it from a
+refusal. W1.6.2 added `capabilitySchema`, `termsSchemas`, `accrualBasisSchemas` and a
+`schemas` block naming both document versions and where to fetch them.
 
 ---
 
@@ -695,7 +708,52 @@ and the API schemas.
 
 ---
 
-### W1.6 — The contract interface · ⏭ **NEXT, ahead of W1.5** (added 2026-09-16)
+### W1.6 — The contract interface · ✅ **DONE** (added and delivered 2026-09-16)
+
+> **All four sub-tasks landed, ahead of W1.5 as planned.** The boundary is now
+> reachable over HTTP: `GET /eod/capabilities` finally routes W0.9's function,
+> and W0.8's durable lookup has an endpoint with its four states distinguished.
+>
+> **W1.6.1** `engine/integration/terms.py` — `traderx.instrument-terms.v2`
+> accepted alongside v1, **checked independently of the bundle version**. The
+> optional `accrualBasis` block is parsed and its enums pinned to an exact
+> accepted set; an unrecognized `dateBasis`/`settlementAdjustment`/`rounding`,
+> a future `accrual-basis.v2`, or a v1 artifact carrying the block at all is
+> **refused**. `fractionDecimals` is threaded into the reconciliation tolerance,
+> so the exporter's declared precision now *derives* the check rather than a
+> constant standing in for it.
+>
+> **W1.6.2** `schema.py` + `schema_version.py` — `resultSchema` and
+> `capabilitySchema` on every published document, plus machine-readable JSON
+> Schema (Draft 2020-12) **derived from the frozen vocabulary** rather than
+> hand-written. The two versions are separate because a new pricer changes the
+> capability document without touching the result's shape. `schema_version.py`
+> is a dependency-free leaf breaking the `result` ↔ `schema` cycle at its
+> narrowest point — the same shape as `engine/day_count.py` in W1.3.
+>
+> **W1.6.3** `pipeline.py` — `accrualSource` on the standalone `accruedInterest`
+> outcome, matching the NPV payload's label. **`structural-zero` stays distinct**
+> from an exported-fraction conversion; folding them together fails 4 tests.
+>
+> **W1.6.4** `engine/api/eod_routes.py` + `workload.py` — six routes, the
+> canonical workload key, and an immutable attempt store. `engine.api` imports
+> `engine.integration`, never the reverse, so the no-pricer invariant survives.
+>
+> **Six plausible-but-wrong implementations** were patched in and verified to
+> fail (working rule 3) — and **one of them found a gap in the tests rather than
+> the code**: an implementation that parsed and validated `accrualBasis` and
+> then *ignored* it passed 59 of 59. A bug of omission produces no wrong output
+> anywhere a parser test can see it.
+> `TestFractionDecimalsActuallyReachesTheTolerance` was written afterwards,
+> driving an end-to-end consequence (8 declared decimals must *refuse* the note
+> with `ACCRUAL_MISMATCH`), and verified to fail against it.
+>
+> **One stale test was updated, not deleted.**
+> `test_unsupported_terms_schema_is_rejected` used `.v2` as its example of an
+> unsupported schema — correct at W0.2, and exactly what W1.6.1 is chartered to
+> change. It now uses `.v99`, so the contract it protects is unchanged.
+
+**Original plan text follows.**
 
 **Why this was inserted, and why it jumps the queue.** TraderX's v5 review independently
 reproduced every priced number on the shared fixtures, and their remaining blockers are
@@ -773,10 +831,10 @@ W0.1 bundle+hash ─┬─ W0.2 terms join ─┬─ W0.3 normalize ─┐
 
 W0.10 curve-index validation ✅ I-13/I-14 (ran ahead of W1, as planned)
 
-W1.1 day count ✅ ─→ W1.2 bill ✅ ─→ W1.3 note ✅ ─┬─→ W1.6 contract interface ⏭ NEXT
+W1.1 day count ✅ ─→ W1.2 bill ✅ ─→ W1.3 note ✅ ─┬─→ W1.6 contract interface ✅ DONE
                      W1.4 equity ✅ (refusal) ─────────┤    (terms v2, schema versions,
                                                       │     accrualSource, HTTP + W0.8)
-                                                      └─→ W1.5 wire-through (internal)
+                                                      └─→ W1.5 wire-through ⏭ NEXT (internal)
 
 W2  ⛔ blocked on D03/D04
 ```
@@ -812,8 +870,20 @@ accrued ±1,857.10, +1bp sensitivity ∓15.28, with 529 focused tests passing. T
 time our two systems have agreed on a *price* rather than on a refusal. They also found two
 real defects, both now fixed with regression evidence (§7).
 
-**Next:** W1.6 (the contract interface), then W1.5. Equity *valuation* remains blocked on a
-spot/FX source, which is a market-data decision rather than engine work.
+**★ W1.6 delivered — the boundary is reachable.** Six HTTP routes under `/eod`, terms v2 with
+a validated `accrualBasis` whose declared precision now derives the reconciliation tolerance,
+versioned result/capability documents with machine-readable JSON Schema, and `accrualSource`
+aligned across both places it appears — with `structural-zero` still distinct. W0.9's
+capability function and W0.8's lookup, both stranded since W0, finally have endpoints.
+
+**Next:** W1.5 (the internal wire-through). Equity *valuation* remains blocked on a spot/FX
+source, which is a market-data decision rather than engine work.
+
+**Still open with TraderX, and now load-bearing:** the `accrual-basis` versioning question
+from v4 §1.3 (new values in place, or a new schema version?). W1.6.1 implements the strict
+reading — the exact value set is pinned and anything else is refused — so if they intend to
+add values in place, that is a one-line widening they need to tell me about rather than
+discover through a refusal.
 
 ---
 
@@ -835,12 +905,16 @@ spot/FX source, which is a market-data decision rather than engine work.
    `scripts/test-state-YU18-checkout.py` is absent from my tree. **Their 99 tests and the Git
    checkout-filter proof are therefore their verification, not a shared one** — I will re-run
    both independently, as I did the golden hashes, rather than recording a pass on report.
-2. **`accrual-basis` versioning:** do new `dateBasis`/`settlementAdjustment` values land in
-   `v1`, or force a `v2`? I want to **refuse an unrecognized basis**, not parse it
-   optimistically. If values are added in place I pin the exact accepted set.
-3. **Confirm `accrualSource: "exported-fraction"`** is the expected return.
-4. **Review the W0 result shape** ([v4](eod-contract-response-v4.md) §3.1) before I freeze it —
-   particularly whether `sourceIdentity` carries everything their validator needs to join back.
+2. **`accrual-basis` versioning — still unanswered, and now load-bearing.** Do new
+   `dateBasis`/`settlementAdjustment` values land in `v1`, or force a `v2`? **W1.6.1 shipped
+   the strict reading**: the exact value set is pinned and anything outside it — including a
+   future `accrual-basis.v2` — is refused. If they add values in place, that is a one-line
+   widening they must tell me about rather than discover through a refusal. Restated in
+   [v6](eod-contract-response-v6.md) §2.3.
+3. ~~**Confirm `accrualSource: "exported-fraction"`**~~ — **implemented** (W1.6.3), aligned
+   across the standalone outcome and the NPV payload, with `structural-zero` kept distinct.
+4. **Review the result shape** — now **machine-readable** at `GET /eod/schemas/result`
+   (W1.6.2), so this can be a schema check rather than a document review.
 
 **Blocking W2 only:** D03/D04 SOFR conventions.
 

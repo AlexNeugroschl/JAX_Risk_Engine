@@ -194,13 +194,13 @@ def _grad_and_hessian_diagonal(price_fn, x, *rest):
     function object as a new function -- so `combined` below recompiles on
     each call even for an identical trade. Measured: a repeated
     `bermudan_delta_gamma` costs 1 compilation rather than 0. That is a
-    ~40-70x improvement on where this started and is dominated by the tree
-    pricer's own single fused program, so it is left as-is rather than
-    papered over with a closure cache keyed on trade identity -- which would
-    have to key on the full `_Prepared*` structure to be correct, and would
-    risk returning a stale program for a mutated config. Revisit if repeated
-    same-trade Greeks calls (e.g. an intraday re-risk loop) ever become the
-    dominant access pattern; see `docs/concepts/profiling.md`.
+    ~40-70x improvement on where this started, so it was not addressed in the
+    same change. It is now filed as **`docs/known-issues.md` I-21**, with the
+    full callsite enumeration and a prototyped fix (memoize the jitted wrapper
+    on `static_key(prepared)`, verified to reach zero steady-state recompiles
+    with bit-identical output and no key collisions). Read that entry before
+    attempting it -- a memo keyed wrongly returns a program compiled for a
+    DIFFERENT trade, which is silently wrong numbers rather than slowness.
     """
     def combined(xi, *fixed):
         def f(inner):

@@ -9,6 +9,7 @@ sync-vs-async job pattern's reasoning (measured ~52s wall time for a
 """
 from fastapi import FastAPI
 
+from engine.api.eod_routes import router as eod_router
 from engine.api.routes import router
 
 
@@ -24,6 +25,12 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
     app.include_router(router)
+    # W1.6.4: the TraderX EOD boundary, under its own `/eod` prefix. A
+    # separate router rather than more handlers on the portfolio one --
+    # the two speak different contracts (a JSON-Schema-published result
+    # document versus Pydantic-wrapped engine dataclasses) and share no
+    # state, so keeping them apart keeps either free to change.
+    app.include_router(eod_router)
     return app
 
 

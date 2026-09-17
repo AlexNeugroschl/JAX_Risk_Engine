@@ -51,6 +51,26 @@ Then visit `http://127.0.0.1:8000/docs` for FastAPI's interactive Swagger UI (a 
 supplement to this doc, not a replacement for it — this page stays the authoritative
 narrative reference, matching every other doc in this repository).
 
+## Two contracts on one app
+
+This app serves **two independent contracts**, mounted as separate routers:
+
+| Prefix | Contract | Shape |
+|---|---|---|
+| *(none)* | The portfolio API — simulate, price, aggregate | Pydantic-wrapped engine dataclasses |
+| `/eod` | The [TraderX EOD boundary](eod-integration.md) (W1.6.4) | Plain dicts governed by a **published JSON Schema** |
+
+They share no state and speak deliberately different shapes. The EOD result is *not* wrapped
+in a Pydantic model, because its contract is the published schema — re-describing it here
+would create a second definition that can drift from the one consumers pin against. Keeping
+the routers separate keeps either free to change.
+
+The EOD routes are documented in full in
+[The EOD Integration Boundary](eod-integration.md#w164--the-eod-http-routes); this page covers
+the portfolio contract.
+
+---
+
 ## Endpoints
 
 ### `GET /health`

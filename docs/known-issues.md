@@ -62,7 +62,7 @@ own header overstates its verification undermines every status in it.
 | [I-05](#i-05) | No faithful USD-SOFR/ACT360 swap construction | **High** | ❌ OPEN — refusal path landed (W0.4) |
 | [I-06](#i-06) | Mid-coupon Bermudan/American exercise understates value | Medium | ⚠️ FLAGGED |
 | [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — both Treasury pricers landed (W1.2 bill, W1.3 note) |
-| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ❌ OPEN |
+| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ❌ OPEN — attempt semantics + 4 lookup states landed on the EOD path (W1.6.4) |
 | [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN |
 | [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary (W0.7) |
 | [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ❌ OPEN — measure + MC diagnostics landed (W0.6) |
@@ -75,6 +75,8 @@ own header overstates its verification undermines every status in it.
 | [I-18](#i-18) | No equity spot or FX source; equity positions are refused, not valued | Medium | ❌ OPEN — refusal path landed (W1.4) |
 | [I-19](#i-19) | Accrual tolerance rounded the bound it exists to enforce | Medium | ✅ FIXED |
 | [I-20](#i-20) | Impossible calendar dates aborted the whole bundle | **High** | ✅ FIXED |
+| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call (fresh closures) | Medium | ❌ OPEN |
+| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call (baked-in constants) | Low | ❌ OPEN |
 
 **The two that matter most for financial correctness are [I-04](#i-04) and [I-05](#i-05).**
 Both are unfixed. Both need inputs or decisions that do not exist yet — not more engineering
@@ -501,6 +503,25 @@ re-submitting identical immutable inputs is safe, and structured failure classes
 `infrastructure`) so only retryable failures are retried. See
 [proposal §6.3](planning/eod-contract-proposal.md).
 
+**Partially mitigated by W1.6.4 (2026-09-16), on the EOD path only.**
+[`engine/integration/workload.py`](../engine/integration/workload.py) adds the
+*attempt*-ownership half of the preferred design: a canonical **workload key** over every
+input that can change a number, **idempotent submission** (a repeated `submissionId` recovers
+the same attempt rather than starting a second), **immutable terminal attempts** (a second
+attempt cannot overwrite a first's outcome), and the **four distinguishable lookup states** —
+so an accepted-but-running job no longer looks like an unknown one, which is what previously
+invited a duplicate overnight batch.
+
+**What is still open, and why the status has not changed.** The store is still an in-process
+dict, so a restart still loses *running*-state knowledge. The crash-safety design in
+[plan §W0.8](planning/traderx-integration-plan.md) — publish via a content-addressed manifest,
+with lookup falling back to a **scan** rather than trusting a pointer — is deliberately not
+built, because there is no persistent artifact store to scan. This is the difference between
+*fixed* and *mitigated* (working rule 5): the state machine is right, and nothing durable
+backs it yet. Note also that the portfolio path's `_JOBS` dict in
+[`engine/api/routes.py`](../engine/api/routes.py) is **untouched** by this — the mitigation is
+EOD-only.
+
 ---
 
 ### I-09 — Whole scenario cube serialized into JSON responses {#i-09}
@@ -598,6 +619,162 @@ conclusions about which device produced a result.
 
 **What closing it requires.** Report device and actual per-stage precision **from the worker**,
 on the result itself, rather than from the dispatcher.
+
+---
+
+### I-21 — Greeks recompile 23 XLA programs on every call {#i-21}
+
+**Severity:** Medium · **Status:** ❌ OPEN — **performance only; every number is correct**
+
+**Symptom.** A second, byte-identical `price_portfolio(request)` call in the same warm
+process recompiles 31 XLA programs (23 of them in `engine/risk/greeks.py`) instead of
+reusing cached ones. Nothing is *wrong* with the output — this costs wall time and makes a
+profiler trace look compile-bound even after warmup.
+
+Measured, three consecutive identical calls on the 4-trade demo portfolio:
+
+| Run | Compilations | Wall |
+|---|---:|---:|
+| 1 (cold) | 208 | 26.5 s |
+| 2 | **31** | 17.8 s |
+| 3 | **31** | 16.0 s |
+
+**The 23 Greeks recompiles, with exact callsites** (instrumented at
+`jax._src.compiler.backend_compile_and_load`, the same event an xprof trace labels as XLA
+compilation; cache hits do not reach it):
+
+| Count | Program | Callsite |
+|---:|---|---|
+| 10 | `jit_price_fn` | `greeks.py:390,400` (`swap_theta`), `:588,600` (`swaption_theta`), `:708,720` (`bermudan_theta`), `:813` (`bermudan_vega`) |
+| 5 | `jit_combined` | `greeks.py:222` (`_grad_and_hessian_diagonal`) |
+| 4 | `jit_model_price_wrt_prefix` | `greeks.py:842` (`bermudan_vega`) |
+| 4 | `jit_market_price_wrt_v_j` | `greeks.py:849` (`bermudan_vega`) |
+
+**Cause — one mechanism, seven sites.** `jax.jit` keys its cache on **function identity**,
+and every one of these jits a **closure built fresh on each call**. `_swap_price_fn`,
+`_swaption_price_fn` and `_bermudan_price_fn` each return a new function object that has
+captured that trade's prepared structure; `jax.jit(that_new_object)` is, as far as JAX is
+concerned, a function it has never seen. Demonstrated in isolation:
+
+```
+fresh closure + jax.jit each call : 5 compiles for 3 calls
+stable fn, constant as argument   : 1 compile  for 3 calls
+ONE jitted closure, reused        : 1 compile  for 3 calls
+```
+
+This was introduced *by* the jitting work that removed ~600 eager dispatches
+(see [Profiling & the Tracer](concepts/profiling.md) §3) — a large net win that left this
+residue behind. It is recorded here rather than silently accepted because it is the only
+thing now standing between this engine and an execution-dominated profile.
+
+**What closing it requires — memoize the jitted wrapper, keyed on prepared structure.**
+
+Cache `jax.jit(price_fn)` in a module-level dict keyed on the *prepared trade* rather than
+on the closure's identity, so two calls with the same economics reuse one compiled program.
+The key must be `static_key(prepared)` — the codebase's existing by-value normalizer
+([`engine/models/static_key.py`](../engine/models/static_key.py)) — plus the curve's shape
+and dtype.
+
+Prototyped and verified on the European swaption path:
+
+| | Call 1 | Call 2 | Call 3 | Result |
+|---|---:|---:|---:|---|
+| today | 11 | 1 | 1 | 10273.553365459014 |
+| memoized | 1 | **0** | **0** | 10273.553365459014 |
+
+Bit-identical output, and steady-state recompiles reach **zero**.
+
+**The risk this must not introduce, and why the design avoids it.** A memo that returns a
+program compiled for a *different* trade is silently wrong numbers — far worse than the
+slowness it fixes. Two properties make that safe:
+
+1. **The key must distinguish everything economically meaningful.** Verified directly
+   against `static_key(prepare_swaption(cfg))`: `notional`, `fixed_rate`, `payer`,
+   `swap_tenor`, `hw_sigma`, `hw_a` and `forward_start` each produce a *different* key,
+   while an identical config reproduces the same one. No collisions. This works because
+   `static_key` hashes NumPy arrays by **content** (`tobytes()`), not identity — the same
+   property that already lets `_Prepared*` objects be `jax.jit` static arguments.
+2. **Key on the PREPARED object, never the config.** `prepare_*` is what resolves a config
+   into the schedule the compiled program actually depends on. Keying on the raw config
+   would miss anything ORE's date generation derives (holiday rolls, accrual fractions), and
+   those genuinely change the program.
+
+**Bounded growth.** The cache must be an LRU (`functools.lru_cache`, or an explicit dict
+with a cap), not an unbounded dict: one entry retains a compiled XLA executable, and a
+long-lived server pricing thousands of distinct trades would otherwise leak. A pool worker
+is long-lived by design, so this is a real constraint, not a theoretical one. `jax` exposes
+`jax.clear_caches()` and each wrapper a `_clear_cache()` if an explicit eviction hook is
+wanted.
+
+**What it must not do.** It must not key on `id()` (each `prepare_*` call returns a fresh
+object — every lookup would miss, and recycled ids could collide), must not be keyed on
+anything mutable, and must not be applied to `bermudan_vega`'s per-bucket closures without
+the same content-based key (they capture `bucket_times`/`bucket_values` prefixes that differ
+per bucket, and must *not* share a program).
+
+**Regression test.** Assert the steady-state recompile count is **0** for a repeated
+identical Greeks call, and — the important negative — that a config differing only in
+`notional`, `fixed_rate` or `swap_tenor` still produces its own correct, *different* answer.
+A test that only checks the count would pass against a broken always-hit cache.
+`tests/test_profiling_and_jit.py::TestCompileCounts::test_repeated_greeks_call_costs_one_compile_not_zero`
+currently pins the *present* behavior and must be updated, not deleted, when this lands.
+
+---
+
+### I-22 — Calibration recompiles 8 XLA programs per call {#i-22}
+
+**Severity:** Low · **Status:** ❌ OPEN — **performance only; every number is correct**
+
+**Symptom.** The remaining 8 of I-21's 31 steady-state recompiles are in
+`engine/calibration/lgm.py`:
+
+| Count | Program | Callsite |
+|---:|---|---|
+| 6 | `jit__lambda` | `lgm.py:173`, `:189`, `:192` (`calibrate_lgm_sigma`) |
+| 2 | `jit_scan` | `lgm.py:98` (`_bisect_bucket_sigma`) |
+
+**Cause — a DIFFERENT mechanism from I-21, which is why it needs a different fix.** These
+are not merely fresh closures; they bake **Python float constants** into the traced program:
+
+- `_bisect_bucket_sigma` closes over `market_price` as a concrete `float`, so every bucket
+  and every call traces a structurally identical `lax.scan` with a different embedded
+  constant.
+- `calibrate_lgm_sigma`'s `_jit_over_target` closures capture `target` and `final_sigma`
+  the same way.
+
+Confirmed in isolation — the distinction is exactly constant-vs-argument:
+
+```
+market_price baked in as a constant : 4, 1, 1 compiles across 3 differing calls
+market_price as a traced argument   : 1, 0, 0
+```
+
+**A memo (I-21's fix) would NOT help here** and would actively hurt: the constants differ
+legitimately per bucket, so a content-keyed cache would simply miss every time while adding
+lookup cost and retention. Applying I-21's fix mechanically to this file would be the wrong
+call.
+
+**What closing it requires — promote the constants to traced arguments.**
+
+Make `_bisect_bucket_sigma` take `market_price` as a JAX array argument rather than closing
+over a float, and give it a stable (module-level, `@partial(jax.jit, static_argnums=...)`)
+identity so the `lax.scan` compiles once and is reused across buckets and calls. Same for
+the diagnostics repricing: pass the target's arrays in rather than capturing them.
+
+**The constraint that makes this non-trivial, and must not be broken.** `price_fn` itself is
+genuinely different per bucket — bucket *j*'s pricer depends on the `[s_0..s_{j-1}]` prefix
+already calibrated, which is the whole structure of a bootstrap. So `price_fn` cannot become
+a traced argument; it has to stay a static one, and only `market_price` moves. That caps the
+achievable win at **one compile per distinct bucket count**, not zero. Realistically this
+takes 8 → ~2.
+
+**Why this is Low and I-21 is Medium.** Calibration runs once per distinct `rate_factor_index`
+per job; Greeks run per trade. On the demo portfolio calibration is ~1.3 s against Greeks'
+~18 s. Fix I-21 first — and note the two are independent, so I-21 can land alone.
+
+**Do not "fix" this by raising the bisection tolerance or lowering `iterations`.** The 60
+iterations are a correctness property (`rmse < 1e-8` is asserted); trading calibration
+accuracy for compile count would be a real regression disguised as an optimization.
 
 ---
 

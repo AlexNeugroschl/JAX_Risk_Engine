@@ -71,12 +71,15 @@ common `[Scenarios, TimeSteps, Trades]` NPV cube:
   (`docs/planning/traderx-integration.md`).
 - **[HTTP API](reference/http-api.md)** — the FastAPI wrapper (`engine/api/`) over
   `price_portfolio`: endpoint-by-endpoint reference, the async job pattern and why, request/
-  response schemas.
+  response schemas. The same app also serves the EOD contract under `/eod` — a second,
+  deliberately different contract governed by a published JSON Schema rather than Pydantic.
 - **[EOD Integration Boundary](reference/eod-integration.md)** — `engine/integration/`'s
   hash-verified TraderX bundle ingestion, terms join, unit normalization, convention
-  allowlist and per-calculation coverage model. **W0 delivered: this layer refuses, it does
-  not price.** Read it for the zero-coupon accrued rule, the CRLF hash trap, and why a
-  USD-SOFR booking is refused rather than routed through the generic swap builder.
+  allowlist and per-calculation coverage model, plus both Treasury pricers and (W1.6) the
+  versioned contract interface served over HTTP under `/eod`. Read it for the zero-coupon
+  accrued rule, the CRLF hash trap, why a USD-SOFR booking is refused rather than routed
+  through the generic swap builder, and why an equity is refused rather than valued at its
+  own exported mark.
 - **[Models & Trades](reference/models-and-trades.md)** — the shared foundation layer
   (`engine/models/`) every instrument pricer is built on: Hull-White and
   LGM closed-form math, and shared ORE trade-building/cashflow extraction.
@@ -120,6 +123,11 @@ common `[Scenarios, TimeSteps, Trades]` NPV cube:
   from our shared fixtures). Two defects they found — **I-19** (the accrual tolerance rounded
   its own bound) and **I-20** (impossible calendar dates aborted the whole bundle) — fixed
   with regression evidence, and the plan resequenced to put the contract interface first.
+- **[EOD Contract Response v6](planning/eod-contract-response-v6.md)** — **W1.6 delivered**:
+  all four of their open compatibility items (terms v2 with a validated `accrualBasis`,
+  versioned documents with JSON Schema, `accrualSource` alignment, the EOD HTTP routes). Also
+  reports a bug my own suite missed — an implementation that parsed `accrualBasis` and then
+  ignored it passed 59 of 59 tests — and asks the one question that is now load-bearing.
 - **[TraderX Integration Plan](planning/traderx-integration-plan.md)** — **the actionable
   plan.** Consolidates the whole contract exchange into ordered W0/W1/W2 tasks with steps,
   tests, and the traps each one avoids. Start here to do the work.

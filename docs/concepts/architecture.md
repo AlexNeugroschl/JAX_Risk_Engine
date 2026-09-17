@@ -55,17 +55,23 @@ JAX_Risk_Engine/
 │   │   │                                 silent-truncation guard (see profiling.md)
 │   │   └── profiling.py                  phase() -- the TraceAnnotation/named_scope pair
 │   │                                     that labels each pricing stage on a trace
-│   ├── api/                              FastAPI HTTP boundary over price_portfolio
-│   │   ├── app.py                        FastAPI app factory
+│   ├── api/                              FastAPI HTTP boundary -- TWO separate contracts
+│   │   ├── app.py                        FastAPI app factory, mounting both routers
 │   │   ├── routes.py                     /health, /version, /portfolio/price (async job
 │   │   │                                 pattern), /calibration/lgm
+│   │   ├── eod_routes.py                 W1.6.4 /eod/* -- the TraderX EOD contract. Plain
+│   │   │                                 dicts under a published JSON Schema, NOT Pydantic:
+│   │   │                                 one contract definition, not two that can drift
 │   │   └── schemas.py                    Pydantic v2 request/response schemas, each with
 │   │                                     .to_dataclass()/.from_dataclass()
-│   ├── integration/                      TraderX EOD boundary (W0) -- hash-verified bundle
-│   │   │                                 in, identified REFUSING result out. Imports no
-│   │   │                                 pricer, deliberately (see eod-integration.md)
+│   ├── integration/                      TraderX EOD boundary -- hash-verified bundle in,
+│   │   │                                 identified result out: both Treasury shapes price,
+│   │   │                                 everything else is REFUSED. Imports no simulation
+│   │   │                                 pricer, no FastAPI, no Pydantic, no JAX
+│   │   │                                 (see eod-integration.md)
 │   │   ├── bundle.py                     W0.1 read + hash-verify a v1/v2 bundle, in binary
-│   │   ├── terms.py                      W0.2 join instrument-terms.json onto rows
+│   │   ├── terms.py                      W0.2 join instrument-terms.json onto rows; W1.6.1
+│   │   │                                 terms v2 + validated accrualBasis
 │   │   ├── normalize.py                  W0.3 source units -> engine units, incl. the
 │   │   │                                 zero-coupon accrued rule (key on terms, not blanks)
 │   │   ├── conventions.py                W0.4 positive allowlist + refusal, BEFORE any
@@ -75,6 +81,16 @@ JAX_Risk_Engine/
 │   │   │                                 fallback), curve provenance, measure label
 │   │   ├── identity.py                   W0.7 opaque itemId + source identity (I-10)
 │   │   ├── capabilities.py               W0.9 supported product x convention x calculation
+│   │   ├── bill.py                       W1.2 zero-coupon Treasury NPV -- the first pricer
+│   │   ├── note.py                       W1.3 coupon-bearing Treasury NPV + rateSensitivity
+│   │   ├── equity.py                     W1.4 cash equity -- a REFUSAL naming the missing
+│   │   │                                 spot/FX source (I-18)
+│   │   ├── schema_version.py             W1.6.2 the two document versions -- a leaf that
+│   │   │                                 imports nothing, breaking result <-> schema
+│   │   ├── schema.py                     W1.6.2 JSON Schema, DERIVED from the frozen
+│   │   │                                 calculation/status vocabulary, never hand-written
+│   │   ├── workload.py                   W1.6.4 canonical workload key + immutable attempt
+│   │   │                                 store, four lookup states (part of I-08)
 │   │   └── pipeline.py                   Composition of the above: price_bundle()
 │   ├── simulation/
 │   │   ├── market_model.py               Simulates the market (Sobol/Brownian bridge,
@@ -127,11 +143,11 @@ JAX_Risk_Engine/
     ├── test_portfolio.py                 Cross-field validation, maturity-pillar assembly
     ├── test_portfolio_entrypoint.py       price_portfolio vs. hand-orchestrated pricing
     ├── test_api.py                       FastAPI TestClient tests for engine/api/
-    ├── test_integration_*.py             engine/integration/, one file per W0 task, run
+    ├── test_integration_*.py             engine/integration/, one file per task, run
     │                                     against the delivered TraderX fixtures
-    └── fixtures/traderx-eod/             Real TraderX YU18 bundles (bill/note/sofr, each
-                                          v1+v2), hash-pinned. LF bytes committed and held
-                                          that way by .gitattributes -- CRLF translation
+    └── fixtures/traderx-eod/             Real TraderX YU18 bundles (bill/note/sofr/equity,
+                                          each v1+v2), hash-pinned. LF bytes committed and
+                                          held that way by .gitattributes -- CRLF translation
                                           breaks every hash (see eod-integration.md)
 ```
 
