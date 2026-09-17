@@ -90,11 +90,20 @@ Two previously-recorded header caveats are now resolved:
   re-run immediately after run 2), it failed in every full run from W1.2 through W1.5, and it
   has now passed and failed in full runs of the *same* code an hour apart. A **third** full
   run, taken during the documentation pass that added [I-28](#i-28), passed it again
-  (1,777 / 0, 16m55s) — so the tally across W0.8 stands at two passes and one failure, which
-  changes nothing. That is consistent with a load-dependent wall-clock overlap assertion
-  rather than a defect, and it is a standing warning that **a single green run of this test
-  means nothing in either direction**. It shares [I-15](#i-15)'s premise and remains a
-  follow-up.
+  (1,777 / 0, 16m55s), and so did a **fourth** after the publication-ordering fix
+  (1,777 / 0, 14m58s) — so the tally across W0.8 stands at three passes and one failure,
+  which changes nothing. That is consistent with a load-dependent wall-clock overlap
+  assertion rather than a defect, and it is a standing warning that **a single green run of
+  this test means nothing in either direction**. It shares [I-15](#i-15)'s premise and
+  remains a follow-up.
+
+- **Both documented verification hazards fired during W0.8 and both were caught by
+  arithmetic, not by the runner.** One run reported `1 failed` alongside
+  `[exited with code 0]`; a later one on the bare `python` reported a clean-looking
+  `1731 passed, 1 skipped` that was really 46 tests silently uncollectable. The first was
+  caught by reading the summary line, the second by noticing that 1,731 would not reconcile
+  against the previous run's 1,772. **A count that does not reconcile is a signal to find out
+  why, not a new number to record.**
 
 **This line reports what a full run actually produces.** Earlier figures here (824, 1092,
 1175) were stale or recorded a passing count a full run did not reproduce. A register whose

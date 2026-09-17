@@ -89,31 +89,35 @@ the first real pricers. W2 adds faithful USD-SOFR and is gated on an external de
 
 ### Suite status — stated honestly
 
-Full run 2026-09-17, **after W0.8**, run **twice**:
+Full run 2026-09-17, **after W0.8**, run **four times** (all via `.venv/Scripts/python.exe`):
 
-| Run | Result | Wall clock |
-|---|---|---|
-| 1 | **1,770 passed, 0 failed** | 19m10s |
-| 2 | **1,771 passed, 1 failed** | 13m24s |
+| Run | Collected | Result | Wall clock |
+|---|---|---|---|
+| 1 | 1,770 | **1,770 passed, 0 failed** | 19m10s |
+| 2 | 1,772 | **1,771 passed, 1 failed** | 13m24s |
+| 3 | 1,777 | **1,777 passed, 0 failed** | 16m55s |
+| **4 — authoritative** | **1,777** | **1,777 passed, 0 failed** | **14m58s** |
 
-Run 2 is the authoritative count: run 1 predates the last two tests (the step-3 `OSError`
-translation), so 1,770 + 2 = 1,772 collected, of which 1,771 passed. The **one failure is
-`test_cross_tier_jobs_correct_and_concurrent`** — the long-running wall-clock flake, not a
-W0.8 regression. It passes in isolation (12.28s, re-run immediately after) and touches no
-code W0.8 changed. See the caveat below and [I-15](../known-issues.md#i-15).
+**Run 4 is the count of record**, taken after the publication-ordering fix below. The
+collected totals reconcile exactly: run 1 predates the 2 step-3 `OSError` tests
+(1,770 + 2 = 1,772), and run 2 predates the 5 ordering tests (1,772 + 5 = 1,777).
 
-Both runs predate the publication-ordering fix found afterwards (see §W0.8), which added a
-further 5 tests. The two W0.8 suites now run **115 passed in 1.47s** — 51 in
-`test_integration_publication.py` and 64 in `test_integration_eod_routes.py`. **A third full
-run is owed** before any count above is quoted as current; the figures in the table describe
-the code as it stood at 16:29, not as it stands now.
+Run 2's **one failure was `test_cross_tier_jobs_correct_and_concurrent`** — the long-running
+wall-clock flake, not a W0.8 regression. It passed in isolation (12.28s), passed in runs 1, 3
+and 4, and touches no code W0.8 changed. See [I-15](../known-issues.md#i-15).
+
+Against W1.5's 1,716 that is **+61**: the 51 `test_integration_publication.py` tests plus the
+10 added to `test_integration_eod_routes.py`.
+
+The two W0.8 suites on their own run **115 passed in 1.62s** — 51 in
+`test_integration_publication.py` and 64 in `test_integration_eod_routes.py`.
 
 **A caveat about the runner, not the code:** an earlier identical invocation **hard-aborted**
 inside XLA compilation with no summary line at all
 (**[I-27](../known-issues.md#i-27)**). A green full run is therefore real when it happens but
 **not reliably repeatable on demand**.
 
-Previously 1,618 / 0 after W1.6, 1,452 / 1 after the v5 fixes, 1,384 / 2 after W1.4,
+Previously 1,716 / 0 after W1.5, 1,618 / 0 after W1.6, 1,452 / 1 after the v5 fixes, 1,384 / 2 after W1.4,
 1,324 / 2 after W1.3, 1,217 / 2 after W1.2.
 
 > ⚠ **Two verification hazards found during W1.5, both now guarded against.**
@@ -124,10 +128,13 @@ Previously 1,618 / 0 after W1.6, 1,452 / 1 after the v5 fixes, 1,384 / 2 after W
 >    for green because `echo EXIT=$?` captured a redirect rather than pytest (real exit: 3).
 >    **Confirm a summary line was printed.**
 
-**Run 2 was not green, and the exit code said it was.** `[exited with code 0]` was printed
-alongside `1 failed, 1771 passed` — hazard 2 above, caught only because the summary line was
-read rather than the exit status. This is the second time in this exchange that exact trap has
-been walked into; the guard works only if the summary line is actually read every time.
+**Both hazards below fired during W0.8's verification, and neither guard is theoretical.**
+Run 2 printed `[exited with code 0]` alongside `1 failed, 1771 passed` (hazard 2), caught only
+because the summary line was read rather than the exit status. A later run was then started
+with the bare `python` and returned a clean-looking `1731 passed, 1 skipped` (hazard 1) —
+46 tests silently uncollectable, caught only because 1,731 failed to reconcile against 1,772.
+**Both were caught by arithmetic, not by the runner.** A count that does not reconcile against
+the previous one is the signal; the exit code and the word "passed" are not.
 Working rule 9 cuts the other way too: a green suite is evidence about the tests, not proof
 about the code. Two of the three defects found in this exchange came from reading source, and
 the W1.6 `submissionId` bug came from reviewing my own code — none came from running this.
