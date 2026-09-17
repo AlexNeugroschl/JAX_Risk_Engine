@@ -239,11 +239,39 @@ Mirrors `engine.portfolio.PortfolioRequest`:
 |---|---|---|
 | `evaluation_date` | `str` (ISO `YYYY-MM-DD`) | Default evaluation date applied to any trade that doesn't specify its own. |
 | `market` | `SimulationConfigSchema` | Mirrors `SimulationConfig` field-for-field. |
-| `trades` | `List[TradeSchema]` | A discriminated union on each trade object's own `trade_type` field: `"swap"`, `"european_swaption"`, `"bermudan_swaption"`, or `"american_swaption"`. |
+| `trades` | `List[TradeSchema]` | A discriminated union on each trade object's own `trade_type` field: `"swap"`, `"european_swaption"`, `"bermudan_swaption"`, `"american_swaption"`, or `"bond"`. |
 | `percentiles` | `List[float]` | Default `[0.95, 0.99]`. |
 | `calibration_basket` | `CalibrationBasketRequestSchema \| null` | Optional. Required if any Bermudan/American trade has `hw_sigma: null` — see "Automatic calibration" below. |
 | `compute_greeks` | `bool` | Default `false`. |
 | `precision` | `PrecisionConfigSchema \| null` | Optional (default `null`). `null`/omitted behaves identically to an explicit all-64 block — see "Precision control" below. |
+| `scenario_risk` | `bool` | Default `true`. **Must be `false` for any portfolio containing a `"bond"`** — see "Bonds and scenario risk" below. |
+
+### Bonds and scenario risk
+
+`trade_type: "bond"` (W1.5) is a Treasury bill or note. A **bill** is simply a bond with
+`coupon_schedule` omitted and `coupon_rate` left at `0.0`; a **note** supplies an explicit
+schedule. `face_amount` is **signed** — a short position is a negative face, and there is no
+separate sign field.
+
+A bond is priced by closed-form discounting against its **own** `initial_zero_curve`, so it
+has **no scenario NPV**: no stochastic driver, no time evolution, and therefore no VaR or ES.
+
+| `scenario_risk` | Portfolio contains a bond | Outcome |
+|---|---|---|
+| `true` (default) | no | Normal: full `npv_cube`, VaR/ES. |
+| `true` | **yes** | **Refused**, naming the offending trade. |
+| `false` | either | `base_npv`, `base_npv_per_trade` and `greeks` are real; `npv_cube` is empty and `risk` is `{}`. |
+
+The response carries **`scenario_risk_available`** saying which happened. When it is `false`,
+the VaR/ES numbers are **absent, not zero** — an empty `risk` asserts nothing, whereas a
+`VaR_95` of `0.00` would assert a *measured* absence of risk. See
+[I-24](../known-issues.md#i-24) for why a constant column is refused rather than broadcast.
+
+A bond's `delta`/`gamma` are **scalars** (one parallel 1bp bump against its single curve),
+unlike a swap's per-pillar `discount_delta`/`forward_delta` vectors. They are still delivered
+as one-element lists so `greeks.values` stays uniformly a list per Greek. No `vega` is
+reported: a fixed-coupon bond off a deterministic curve has no volatility input, and it is
+omitted rather than reported as `0.0`.
 
 Every trade schema mirrors its dataclass field-for-field, with two representational
 differences (SWIG-bound `ORE` types aren't natively Pydantic-serializable):

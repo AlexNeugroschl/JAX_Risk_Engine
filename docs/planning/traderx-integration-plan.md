@@ -63,7 +63,7 @@ the first real pricers. W2 adds faithful USD-SOFR and is gated on an external de
 | Accrued source label | Value is taken from the **export** (`accrualSource: "exported-fraction"`); `"recomputed-schedule"` is the alternative, so the label is always explicit |
 | Accrual tolerance | `round(0.5 × 10^(−fractionDecimals) × \|face\|, 2) + 0.01` — derived from `accrualBasis`, never a fixed constant. **Never compare the two monetary paths as exact equals** |
 | Accrued sign, restated | `fraction × signed face` in **one step**. No separate `sign()` factor — a second multiplication makes a short position positive |
-| `accrualBasis` artifact | `traderx.accrual-basis.v1` field shape **confirmed and frozen** |
+| `accrualBasis` artifact | `traderx.accrual-basis.v1` **field shape** confirmed and frozen. **Its value *vocabulary* is not** — whether new enum values force a new schema version is unanswered, and W1.6.1 refuses unrecognized ones on an unconfirmed reading. Registered as **[I-23](../known-issues.md#i-23)**, status ASSUMPTION |
 | Missing-accrual fixture | Two boundaries: TraderX **rejects before publication**; my mapper treats the same bytes as a **negative test** → `unavailable` / `ACCRUED_NOT_SUPPLIED` |
 | `synthetic` vs `assumed` | Distinct values. Their `provenance.origin` stays `synthetic`\|`supplied`; my curve `inputOrigin` is separate. `supplied` ≠ observed |
 | Lookup states | Never a bare 404 for accepted work: `UNKNOWN_WORKLOAD` / `running` / `failed` / `completed` are four distinct responses |
@@ -85,27 +85,57 @@ the first real pricers. W2 adds faithful USD-SOFR and is gated on an external de
   difference** against an independent `ORE.FixedRateBond`, with accrued interest
   reconciling to their exported `0.018571` at the §2 derived tolerance. This is the
   half of the W1 exit criterion where the two systems' numbers actually had to agree.
-  **491 integration tests** pass in under a second.
+  **692 integration tests** pass in ~2.3s (491 at W1.3; W1.6 added 165).
 
 ### Suite status — stated honestly
 
-Full run 2026-09-16, **after the I-19 and I-20 fixes from TraderX's v5 review**:
-**1,452 passed, 1 failed**. (Previously 1,384 / 2, then 1,324 / 2 after W1.3, and
-1,217 / 2 on 2026-09-15 after W1.2.)
+Full run 2026-09-17, **after W1.5**: **1,716 passed, 0 failed** (11m24s) — the complete
+suite, nothing excluded. That is 1,618 + the **98** W1.5 tests (40 treasury, 37 wire-through,
+21 API schemas), so the delta reconciles exactly.
 
-The single failure is
-`test_worker_pool.py::TestWorkerPoolConcurrency::test_cross_tier_jobs_correct_and_concurrent`
-— a **timing-sensitive concurrency assertion, not a code defect**. It requires two jobs'
-wall-clock intervals to genuinely overlap; under full-suite load the OS can serialize them,
-while every correctness assertion in the same test passes. Verified: passes 3/3 in isolation,
-and passes against stashed pre-fix code, so it is unrelated to the v5 fixes. Same failure mode
-as **I-15** in a sibling test; recorded in the register rather than re-run until green.
+**A caveat about the runner, not the code:** an earlier identical invocation **hard-aborted**
+inside XLA compilation with no summary line at all
+(**[I-27](../known-issues.md#i-27)**). A green full run is therefore real when it happens but
+**not reliably repeatable on demand**.
+
+Previously 1,618 / 0 after W1.6, 1,452 / 1 after the v5 fixes, 1,384 / 2 after W1.4,
+1,324 / 2 after W1.3, 1,217 / 2 after W1.2.
+
+> ⚠ **Two verification hazards found during W1.5, both now guarded against.**
+> 1. **Run `.venv/Scripts/python.exe -m pytest`, never the bare `python`.** The system
+>    interpreter lacks `pydantic` and `jsonschema`, making 46 tests **silently
+>    uncollectable** and yielding a count that looked like a regression.
+> 2. **A shell exit code is not a pass.** A run that hard-aborted at 4% was briefly taken
+>    for green because `echo EXIT=$?` captured a redirect rather than pytest (real exit: 3).
+>    **Confirm a summary line was printed.**
+
+**This is the first fully green full run in this exchange.** Worth stating plainly, because
+working rule 9 cuts the other way too: a green suite is evidence about the tests, not proof
+about the code. Two of the three defects found in this exchange came from reading source, and
+the W1.6 `submissionId` bug came from reviewing my own code — none came from running this.
+
+**Two failures were seen during W1.6 and both were resolved rather than waived:**
+
+1. `test_integration_equity.py::TestCapabilitiesAdvertiseW14::test_stage_is_w14` pinned the
+   literal `"W1.4"`, so the W1.6 stage bump broke it. That is a **test design defect** — it
+   fails on every future stage bump regardless of whether the equity contract changed. Now
+   asserts the stage has *reached* W1.4, and verified to still fail if the stage regresses
+   below it. The equity contract itself is pinned by the four other tests in that class.
+2. `test_integration_terms.py::test_unsupported_terms_schema_is_rejected` used `.v2` as its
+   example of an unsupported schema — correct at W0.2, and precisely what W1.6.1 is chartered
+   to change. Now uses `.v99`; the contract it protects is unchanged.
+
+**On the flaky concurrency test.** `test_cross_tier_jobs_correct_and_concurrent` failed in
+every full run from W1.2 through the v5 fixes, and **passed** in the W1.6 runs. That is
+consistent with the recorded diagnosis — a wall-clock overlap assertion that the OS can
+serialize under load, not a code defect (it passes 3/3 in isolation and against stashed
+pre-fix code). It is load-dependent, so a green run is not proof it is fixed; the underlying
+assertion is still timing-sensitive and remains a follow-up.
 
 The 2 previously-recorded `pydantic` failures are **resolved** — the dependency is now
 installed (2.13.5), and the run contains zero `ModuleNotFoundError`.
 
-Previously 1,138 passed / 3 failed; the three failures were I-13's suite (now fixed), I-14 and
-I-15. Earlier figures in this exchange (824, then 1175) were stale or unreproducible.
+Earlier figures in this exchange (824, 1092, 1175) were stale or unreproducible.
 
 ### Blocked, and on what
 
@@ -643,7 +673,8 @@ end-to-end, the v1 refusal, and proof the note and SOFR refusals are unchanged.
 > it, the day-count vocabulary moved to the leaf module `engine/day_count.py`, and a new
 > test closes the AST guard's transitive blind spot.
 
-**Tests:** ✅ `tests/test_integration_note.py` (104 tests) — ORE parity including every
+**Tests:** ✅ `tests/test_integration_note.py` (140 tests; recorded as 104 at W1.3 — stale,
+re-counted 2026-09-16) — ORE parity including every
 coupon and discount factor; accrued reconciliation to `0.018571`; the derived tolerance;
 clean vs dirty; long/short mirrors; `rateSensitivity` sign, magnitude and maturity scaling;
 schedule validation (gap, overlap, zero-length, maturity disagreement); every refusal;
@@ -695,7 +726,62 @@ bundle versions and proof the Treasury pricers are unchanged.
 
 ---
 
-### W1.5 — Wire the new instruments through the portfolio path
+### W1.5 — Wire the new instruments through the portfolio path · ✅ **DONE** (2026-09-17)
+
+> **Delivered, with one deliberate deviation from the task list below.** Four of the five
+> named targets landed as written. **`_price_by_type` did not**, and the reason is the
+> substantive finding of this stage — see "The scenario dimension" below.
+>
+> **`engine/instruments/treasury.py`** — a new `BondConfig` covering both Treasuries, with
+> a bill as the degenerate `coupon_schedule=()` case rather than a second type. It carries
+> **its own `ZeroCurveConfig`** (like the swaption family, unlike `SwapConfig`'s curve
+> indexes), which is what makes I-01's failure mode *structurally* unreachable: there is no
+> index to resolve, so there is no resolution step to forget.
+>
+> **Why a new module rather than reusing `engine.integration.bill`/`note`.** Dependency
+> direction: `integration` imports `instruments`, never the reverse. Importing the
+> integration pricers into the instrument layer to share ~20 lines of `exp(-r*t)` would
+> couple `engine/instruments/` to the TraderX bundle format permanently.
+> `TestAgreesWithTheIntegrationPricers` prices the *same* instrument through both paths and
+> asserts agreement to the cent — verified **exact to the bit** on both the bill NPV and the
+> note's dirty NPV, and on the ACT/ACT (ICMA) accrued (`1,857.142857`). A drift fails a test.
+>
+> **⚠ The scenario dimension is refused, not broadcast.** `npv_cube` is
+> `[Scenarios, TimeSteps, Trades]` and feeds VaR/ES. A bond priced against one deterministic
+> curve has **no such column**: the only way to fill it is one t=0 number broadcast across
+> every entry. That was implemented and measured through the real `price_portfolio` — on a
+> $100k bill it returns **VaR 0.00 and ES NaN**, a position reading as risk-measured whose
+> risk was never modelled. So `_price_by_type` **raises** naming the trade, and
+> `scenario_risk=False` gives a caller real `base_npv`/`base_npv_per_trade`/`greeks` with
+> `risk` **empty** (not zero-filled) and `PortfolioResult.scenario_risk_available` saying so
+> on the result. Registered as **[I-24](../known-issues.md#i-24)**.
+>
+> **One real bug found and fixed:** **[I-25](../known-issues.md#i-25)** — a **scalar** Greek
+> crashed the HTTP serializer (`TypeError: 'float' object is not iterable`). Every pre-W1.5
+> Greek is a per-pillar *vector*; a bond's delta/gamma are the first 0-d arrays in the
+> codebase. The job priced correctly and then 500'd on the way out. Found by reading the
+> conversion code, not by a test — nothing existed to exercise the path.
+>
+> ⚠ **Process finding: run the venv, not the system Python.** Much of this stage was run
+> against the system interpreter, where `tests/test_api.py` and
+> `tests/test_integration_schema.py` are uncollectable (no `pydantic`, no `jsonschema`) —
+> **46 tests silently absent**, and a full-suite count of 1,663 against the venv's 1,709 that
+> looked like a regression and was purely environmental. `.venv/` has always had both.
+> Recorded in [I-25](../known-issues.md#i-25) because the lesson outlives the bug.
+>
+> **Four wrong implementations were patched in and verified to fail** (working rule 3):
+> deleting the Greeks branch (**19 of 19** I-01 tests fail, and the broken version raises
+> *no error* — exactly I-01's signature); broadcasting a constant column (**4 of 5** fail);
+> placeholder `gamma`/`theta = 0.0`; and returning the **clean** instead of dirty NPV.
+>
+> **The last two each found a gap in my own tests rather than the code** — the same shape as
+> W1.6's decorative-`fractionDecimals` bug. The placeholder Greeks passed **27 of 28**, and
+> the clean/dirty swap passed **67 of 68** (caught only by the integration cross-check, not
+> by any bond-only test). Both gaps were closed by pinning each quantity to an *independent
+> recomputation* rather than to a sign or a presence check, and the new tests verified to
+> fail against those implementations.
+
+**Original plan text follows.**
 
 Add to the `TradeConfig` union, `_price_by_type`, `_base_npv_per_trade`, `_compute_all_greeks`,
 and the API schemas.
@@ -722,6 +808,12 @@ and the API schemas.
 > **refused**. `fractionDecimals` is threaded into the reconciliation tolerance,
 > so the exporter's declared precision now *derives* the check rather than a
 > constant standing in for it.
+>
+> ⚠️ **The strictness rule rests on an unanswered question and is registered as
+> [I-23](../known-issues.md#i-23) (status ASSUMPTION).** If TraderX adds enum
+> values in place rather than versioning the schema, this refuses bundles they
+> consider valid. It fails safe, but it is not a settled contract and must not
+> be recorded as one.
 >
 > **W1.6.2** `schema.py` + `schema_version.py` — `resultSchema` and
 > `capabilitySchema` on every published document, plus machine-readable JSON
@@ -834,7 +926,8 @@ W0.10 curve-index validation ✅ I-13/I-14 (ran ahead of W1, as planned)
 W1.1 day count ✅ ─→ W1.2 bill ✅ ─→ W1.3 note ✅ ─┬─→ W1.6 contract interface ✅ DONE
                      W1.4 equity ✅ (refusal) ─────────┤    (terms v2, schema versions,
                                                       │     accrualSource, HTTP + W0.8)
-                                                      └─→ W1.5 wire-through ⏭ NEXT (internal)
+                                                      └─→ W1.5 wire-through ✅ DONE (internal)
+                                                           (BondConfig; no VaR/ES — I-24)
 
 W2  ⛔ blocked on D03/D04
 ```
@@ -876,8 +969,17 @@ versioned result/capability documents with machine-readable JSON Schema, and `ac
 aligned across both places it appears — with `structural-zero` still distinct. W0.9's
 capability function and W0.8's lookup, both stranded since W0, finally have endpoints.
 
-**Next:** W1.5 (the internal wire-through). Equity *valuation* remains blocked on a spot/FX
-source, which is a market-data decision rather than engine work.
+**★ W1.5 delivered — bonds reach the portfolio path.** `engine/instruments/treasury.py`'s
+`BondConfig` is in the `TradeConfig` union, `_base_npv_per_trade`, `_compute_all_greeks` and
+the API schemas, pinned bit-exact against the integration pricers. **Bonds have no VaR/ES**
+— a deterministic instrument has no scenario column, and the refusal is explicit rather than
+a broadcast zero ([I-24](../known-issues.md#i-24)). Two bugs found and fixed on the way
+([I-25](../known-issues.md#i-25) — a scalar Greek crashed the HTTP result serializer).
+
+**Next:** W2 / USD-SOFR, still blocked externally on D03/D04. Equity *valuation* remains
+blocked on a spot/FX source, which is a market-data decision rather than engine work. The
+nearest unblocked engine work is a **bond scenario model** (I-24) — that is what would give
+a bond VaR.
 
 **Still open with TraderX, and now load-bearing:** the `accrual-basis` versioning question
 from v4 §1.3 (new values in place, or a new schema version?). W1.6.1 implements the strict

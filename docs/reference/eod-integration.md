@@ -153,7 +153,7 @@ Enforced by tests, not just asserted here:
 spot by asserting the **transitive** property — importing `engine.integration` in a clean
 interpreter must not load the model layer through *any* chain of leaves.
 
-A side benefit of the same constraint: all 491 tests in this layer run in well under a
+A side benefit of the same constraint: all 692 tests in this layer run in well under a
 second, because none of them loads a numerical runtime — ORE's date arithmetic is cheap and
 JAX is still absent. (The 23 tail-diagnostic tests live in
 `tests/test_var_es_diagnostics.py` instead, since they exercise `engine/risk/var_es.py` and
@@ -984,6 +984,16 @@ settlement basis silently inheriting the synthetic fixture's same-day semantics,
 accrued interest with no error anywhere. Widening a tuple later is a one-line change; recovering
 from months of optimistically-parsed wrong accruals is not.
 
+> **⚠ This rule is an assumption, and it is registered as one — [I-23](../known-issues.md#i-23).**
+> The question is still unanswered. If TraderX adds values **in place**, this engine will
+> **refuse bundles they consider valid**, starting the day they first export a real settlement
+> calendar. That fails safe — a loud refusal, not a wrong number — but it is an operational
+> break that arrives without warning and will look like a defect to whoever is on call.
+>
+> **A `dateBasis` / `settlementAdjustment` / `rounding` refusal is therefore not proof of a
+> bad export.** Check the accepted set first; the allowlist may simply be narrower than the
+> exporter's current vocabulary. I-23 closes when TraderX answers, not when code changes.
+
 A **v1 artifact carrying an `accrualBasis`** is also refused: the document has contradicted its
 own version marker, and that marker is what every other parsing decision keys on.
 
@@ -1209,7 +1219,7 @@ coverage model exists to guarantee:
 | Task | Status | Why |
 |---|---|---|
 | **W0.8** crash-safe publication | Partial | The four lookup states, the workload key and attempt immutability landed in W1.6.4. The manifest-scan recovery still needs a persistent artifact store ([I-08](../known-issues.md#i-08)). |
-| **W1.5** wire-through to the portfolio path | Not started | Both bond pricers live at this boundary; `engine/instruments/` is still four rate-derivative modules. |
+| **W1.5** wire-through to the portfolio path | Done (2026-09-17) | `engine/instruments/treasury.py`'s `BondConfig` reaches `price_portfolio`'s base NPV and Greeks, pinned bit-exact against the two pricers here. **No VaR/ES** — a deterministic bond has no scenario column, refused rather than broadcast ([I-24](../known-issues.md#i-24)). No effect on this boundary. |
 | Equity **valuation** | Blocked | The refusal path landed (W1.4); pricing needs a spot/FX source ([I-18](../known-issues.md#i-18)). |
 | Per-pillar `rateSensitivity` | Blocked | Needs a curve with pillar structure - `mode: "package"`, i.e. W2 ([I-16](../known-issues.md#i-16)). |
 
@@ -1239,16 +1249,29 @@ Unblocked — sequencing, not dependency.
 | [`tests/test_integration_accrual_source.py`](../../tests/test_integration_accrual_source.py) | W1.6.3 — `TestLabelIsPresentAndAligned`, **`TestStructuralZeroSurvivesTheAlignment`**, `TestMappingFunction`, `TestUnavailableAccrualCarriesNoLabel`, **`TestExistingBehaviourUnchanged`** |
 | [`tests/test_integration_eod_routes.py`](../../tests/test_integration_eod_routes.py) | W1.6.4 — `TestCapabilitiesIsRouted`, `TestSchemasAreServed`, `TestPricingOverHttp`, **`TestRefusalsAreNotHttpErrors`**, `TestTransportErrorsAreTruthful`, **`TestFourLookupStates`**, `TestIdempotentSubmission`, **`TestWorkloadKey`**, `TestAttemptImmutability`, **`TestExistingRoutesUnaffected`** |
 
-**687 tests in `tests/test_integration_*.py`** — 104 for W1.3's note pricer, 60 for W1.4's
-equity refusal, and **160 added by W1.6** (42 terms-v2, 46 schema, 17 accrual-source, 51 HTTP
-routes) — plus 23 for the tail diagnostics in `engine/risk/var_es.py` and 27 for the W1.1
-day-count split. They run against the real delivered TraderX YU18 fixtures (bill, note, sofr,
-equity — each in v1 and v2) and complete in under two seconds.
+**692 tests in `tests/test_integration_*.py`** — 140 for W1.3's note pricer, 60 for W1.4's
+equity refusal, and **165 added by W1.6** (46 terms-v2, 46 schema, 17 accrual-source, 56 HTTP
+routes) — plus 29 for the tail diagnostics in `engine/risk/var_es.py` and 27 for the W1.1
+day-count split. (The note and tail-diagnostic figures were previously recorded as 104 and 23;
+both were stale — re-counted and corrected here, per working rule 10.) They run against the real delivered TraderX YU18 fixtures (bill, note, sofr,
+equity — each in v1 and v2) and complete in ~2.3s.
 
 Two dependency notes: `jsonschema` is a **test-only** dev extra (the engine emits the schema
 and must never depend on a validator to produce a correct document — it is the tests that
 prove the two agree), and the previously-documented `pydantic` environment gap is **resolved**
 — it is installed (2.13.5) and `tests/test_api.py` now collects.
+
+**Full suite after W1.6: 1,618 passed, 0 failed** (12m39s). Two tests broke during
+W1.6 and both were **fixed rather than waived**: one pinned the literal delivery stage
+`"W1.4"` (a test-design defect that would break on every future bump — now asserts the stage
+has *reached* W1.4, and verified to still fail on a regression below it), and one used `.v2`
+as its example of an unsupported terms schema, which is exactly what W1.6.1 changes (now
+`.v99`).
+
+The long-flaky `test_cross_tier_jobs_correct_and_concurrent` **passed** in the W1.6 runs after
+failing since W1.2 — consistent with its recorded diagnosis as a load-dependent wall-clock
+assertion rather than a defect. A green run is not proof it is fixed; the assertion is still
+timing-sensitive.
 
 ### Regression tests verified against the wrong implementation
 

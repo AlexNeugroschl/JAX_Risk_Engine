@@ -32,6 +32,7 @@ from engine.instruments.swap import SwapConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.american_swaption import AmericanSwaptionConfig
+from engine.instruments.treasury import BondConfig, CouponPeriod
 from engine.calibration.basket import build_coterminal_basket
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from engine.portfolio import (
@@ -221,8 +222,82 @@ class AmericanSwaptionConfigSchema(BaseModel):
         )
 
 
+class CouponPeriodSchema(BaseModel):
+    """One explicit coupon period of a `BondConfigSchema`.
+
+    Enumerated rather than generated from a frequency, matching
+    `engine.integration.note`'s rule: a schedule this engine derived by
+    stepping back from maturity that disagreed with the booked one would
+    silently reprice every coupon.
+    """
+    start_date: str
+    end_date: str
+    #: Defaults to `end_date` when absent -- an unadjusted schedule has
+    #: them equal. A present-but-unparseable value still raises.
+    payment_date: Optional[str] = None
+
+
+class BondConfigSchema(BaseModel):
+    """A Treasury bill or note (W1.5).
+
+    **A bill is simply `coupon_schedule` omitted with `coupon_rate` left at
+    0.0** -- the degenerate case of the same type, not a separate one.
+
+    `face_amount` is **signed**: a short position is a negative face. There
+    is no separate sign field, and adding one would risk the double-sign
+    bug TraderX flagged in their v3 §2.
+
+    **A bond carries its own `initial_zero_curve`** rather than an index
+    into the simulation's curves, like the swaption family and unlike
+    `SwapConfig`. See `engine.instruments.treasury`: that is what makes
+    I-01's silent-skip class unreachable for this type.
+
+    ⚠ **A portfolio containing a bond must set `scenario_risk: false`.** A
+    bond has no scenario NPV, so it cannot appear in `npv_cube` and has no
+    VaR/ES. Submitting one with `scenario_risk: true` (the default) is
+    **refused** with an explicit message rather than served a fabricated
+    zero -- see `PortfolioRequestSchema.scenario_risk` and I-24.
+    """
+    trade_type: Literal["bond"] = "bond"
+    face_amount: float
+    maturity_date: str
+    initial_zero_curve: ZeroCurveConfigSchema
+    #: Annual coupon rate as a DECIMAL (0.04 == 4%), not a percent --
+    #: the same unit `engine.instruments.treasury.BondConfig` states.
+    coupon_rate: float = 0.0
+    coupon_schedule: List[CouponPeriodSchema] = Field(default_factory=list)
+    redemption_fraction: float = 1.0
+    accrual_day_count: str = "ACT/ACT (ICMA)"
+    evaluation_date: Optional[str] = None
+
+    def to_dataclass(self, default_evaluation_date: ORE.Date) -> BondConfig:
+        return BondConfig(
+            face_amount=self.face_amount,
+            maturity_date=_parse_ore_date(self.maturity_date),
+            evaluation_date=(
+                _parse_ore_date(self.evaluation_date) if self.evaluation_date
+                else default_evaluation_date
+            ),
+            initial_zero_curve=self.initial_zero_curve.to_dataclass(),
+            coupon_rate=self.coupon_rate,
+            coupon_schedule=tuple(
+                CouponPeriod(
+                    start_date=_parse_ore_date(p.start_date),
+                    end_date=_parse_ore_date(p.end_date),
+                    payment_date=_parse_ore_date(p.payment_date) if p.payment_date else None,
+                )
+                for p in self.coupon_schedule
+            ),
+            redemption_fraction=self.redemption_fraction,
+            accrual_day_count=self.accrual_day_count,
+        )
+
+
 TradeSchema = Annotated[
-    Union[SwapConfigSchema, SwaptionConfigSchema, BermudanSwaptionConfigSchema, AmericanSwaptionConfigSchema],
+    Union[
+        SwapConfigSchema, SwaptionConfigSchema, BermudanSwaptionConfigSchema,
+        AmericanSwaptionConfigSchema, BondConfigSchema,
+    ],
     Field(discriminator="trade_type"),
 ]
 
@@ -315,6 +390,14 @@ class PortfolioRequestSchema(BaseModel):
     calibration_basket: Optional[CalibrationBasketRequestSchema] = None
     compute_greeks: bool = False
     precision: Optional[PrecisionConfigSchema] = None
+    #: Whether to build `npv_cube` and derive VaR/ES. `true` (the default)
+    #: is the pre-W1.5 behaviour exactly.
+    #:
+    #: **Must be `false` for a portfolio containing a bond**, which has no
+    #: scenario representation. The response then carries an empty
+    #: `npv_cube` and an empty `risk`, with `scenario_risk_available:
+    #: false` saying so -- absent rather than a fabricated zero (I-24).
+    scenario_risk: bool = True
 
     def to_dataclass(self) -> PortfolioRequest:
         eval_date = _parse_ore_date(self.evaluation_date)
@@ -356,6 +439,7 @@ class PortfolioRequestSchema(BaseModel):
             percentiles=tuple(self.percentiles), calibration_targets=calibration_targets,
             compute_greeks=self.compute_greeks,
             precision=self.precision.to_dataclass() if self.precision is not None else PrecisionConfig(),
+            scenario_risk=self.scenario_risk,
         )
 
 
@@ -383,7 +467,17 @@ class GreeksSchema(BaseModel):
             if key == "theta":
                 theta = float(val)
             else:
-                values[key] = [float(v) for v in np.asarray(val).tolist()]
+                # A 0-d array's `.tolist()` returns a bare Python float, not
+                # a list, so iterating it raises `TypeError: 'float' object
+                # is not iterable`. Every rate-derivative Greek is a
+                # per-pillar VECTOR, so this never arose before W1.5 -- but
+                # a BondConfig's delta/gamma are scalars (one parallel bump
+                # against a single curve), and serializing one crashed here.
+                # `np.atleast_1d` normalizes the scalar case to a
+                # one-element list, keeping `values` uniformly a list-per-
+                # Greek rather than sometimes a float. Pinned by
+                # `TestBondGreeksSerializeOverHttp`.
+                values[key] = [float(v) for v in np.atleast_1d(np.asarray(val)).tolist()]
         return cls(values=values, theta=theta)
 
 
@@ -397,6 +491,11 @@ class PortfolioResultSchema(BaseModel):
     # their sum. Lets a caller reconcile the portfolio total against
     # identified positions/contracts instead of only seeing an aggregate.
     base_npv_per_trade: List[float] = Field(default_factory=list)
+    # Whether `npv_cube`/`risk` were actually computed. `false` means they
+    # are EMPTY because the run was `scenario_risk: false` -- the VaR/ES
+    # numbers are absent, not zero. Without this field an empty `risk` is
+    # ambiguous between "not requested" and "computed as nothing" (I-24).
+    scenario_risk_available: bool = True
 
     @classmethod
     def from_dataclass(cls, result: PortfolioResult) -> "PortfolioResultSchema":
@@ -410,6 +509,7 @@ class PortfolioResultSchema(BaseModel):
                 if result.greeks is not None else None
             ),
             warnings=list(result.warnings),
+            scenario_risk_available=result.scenario_risk_available,
         )
 
 

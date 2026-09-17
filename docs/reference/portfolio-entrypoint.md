@@ -34,15 +34,34 @@ parameters.
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `market` | `SimulationConfig` | *required* | Curves, vols (via `joint_covariance`), correlations — the same config `generate_paths` consumes (see [API Reference](api-reference.md#enginesimulationmarket_model)). If `market.rates.maturities` is left unset, `price_portfolio` derives it automatically (see `derive_maturity_pillars` below). |
-| `trades` | `List[SwapConfig \| SwaptionConfig \| BermudanSwaptionConfig \| AmericanSwaptionConfig]` | *required* | Heterogeneous, any order or mix. `PortfolioResult`'s NPV cube and `greeks` dict are always reported back in this same order, regardless of how `price_portfolio` internally groups trades by type for pricing. |
+| `trades` | `List[SwapConfig \| SwaptionConfig \| BermudanSwaptionConfig \| AmericanSwaptionConfig \| BondConfig]` | *required* | Heterogeneous, any order or mix. `PortfolioResult`'s NPV cube and `greeks` dict are always reported back in this same order, regardless of how `price_portfolio` internally groups trades by type for pricing. |
 | `percentiles` | `Sequence[float]` | `(0.95, 0.99)` | Confidence levels `compute_risk_metrics` computes VaR/ES at. |
 | `calibration_targets` | `Optional[List[CalibrationTarget]]` | `None` | Used when any Bermudan/American trade's `hw_sigma` is left as `None` (uncalibrated) — see "Automatic calibration" below. |
 | `compute_greeks` | `bool` | `False` | If `True`, also computes Delta/Gamma/Theta (and, implicitly, Vega where the trade's own calibration makes it well-defined) per trade — see "Greeks" below. |
 | `precision` | `PrecisionConfig` | `PrecisionConfig()` (all-64) | Independent simulation/pricing/risk dtype control — see "`PrecisionConfig`" below. |
+| `scenario_risk` | `bool` | `True` | Whether to build `npv_cube` and derive VaR/ES from it. **Must be `False` for any portfolio containing a `BondConfig`** — see "Bonds" below. |
 
-A future `BondConfig` instrument type (see
-[TraderX Bond Integration Roadmap](../planning/traderx-bond-integration-roadmap.md)) would
-join `trades`' `Union` here once it exists — out of scope for this module today.
+### Bonds
+
+`BondConfig` (W1.5, `engine.instruments.treasury`) covers Treasury bills and notes. A **bill**
+is the degenerate case: `coupon_schedule=()` with `coupon_rate=0.0`. `face_amount` is
+**signed**, so a short position is a negative face and yields a negative NPV directly.
+
+Unlike `SwapConfig`, a bond carries **its own `initial_zero_curve`** rather than an index
+into `market.rates.initial_zero_curves` — the same shape the swaption family uses, and the
+reason a bond cannot reproduce [I-01](../known-issues.md#i-01)'s silent-skip failure.
+
+**A bond has no scenario NPV**, so it never enters `npv_cube` and has no VaR/ES. Submitting
+one with the default `scenario_risk=True` raises `ScenarioPricingNotSupported`, naming the
+trade. With `scenario_risk=False` you get real `base_npv`, `base_npv_per_trade` and `greeks`,
+with `risk` **empty** and `npv_cube` zero-width. The refusal is deliberate: a broadcast
+constant column measures out to VaR `0.00` and ES `NaN` — see
+[I-24](../known-issues.md#i-24).
+
+Its Greeks are bumped revaluations (`delta` central-difference at 1bp, `gamma` a second
+difference, `theta` a one-day reprice), all **scalars** rather than per-pillar vectors, and
+**no `vega`** — a fixed-coupon bond off a deterministic curve has no volatility input, so it
+is omitted rather than reported as `0.0`.
 
 ## `PrecisionConfig`
 
@@ -90,6 +109,8 @@ removed.
 | `risk` | `Dict[str, jax.Array]` | `compute_risk_metrics`'s own output — `"VaR_95"`, `"ES_95"`, etc., each `[TimeSteps]`. |
 | `greeks` | `Optional[Dict[int, Dict[str, jax.Array]]]` | `None` unless `request.compute_greeks=True`. Keyed by each trade's own index in `request.trades` (not by pricing-group order — see "Greeks" below). |
 | `warnings` | `List[str]` | Known-limitation warnings surfaced during validation (see "Known-limitation flagging" below) — e.g. a Bermudan exercise date that isn't reset-aligned with its own underlying. |
+| `base_npv_per_trade` | `List[float]` | Each trade's own t=0 NPV, in `request.trades` order. `base_npv` is by construction their sum, so the total and the breakdown cannot disagree. |
+| `scenario_risk_available` | `bool` | `False` when the run was `scenario_risk=False`, meaning `risk` is **empty** and `npv_cube` zero-width. Carried on the *result* because a consumer holding one has no access to the request — without it, an empty `risk` is ambiguous between "not requested" and "computed as nothing". |
 
 ## `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 
@@ -188,19 +209,24 @@ module surfaces them rather than silently producing a slightly-wrong number:
 
 ## Greeks
 
-When `request.compute_greeks=True`, `price_portfolio` computes Delta/Gamma/Theta for every
-`SwaptionConfig`/`BermudanSwaptionConfig`/`AmericanSwaptionConfig` trade (routing to
-`engine.risk.greeks.swaption_delta_gamma`/`swaption_theta` or
-`bermudan_delta_gamma`/`bermudan_theta` respectively), keyed by **the trade's own index in
-`request.trades`** — not by internal pricing-group order, so `result.greeks[3]` always
-means "Greeks for `request.trades[3]`" regardless of how many other trades of other types
-sit between them in the request.
+When `request.compute_greeks=True`, `price_portfolio` computes Delta/Gamma/Theta for **every**
+trade type, keyed by **the trade's own index in `request.trades`** — not by internal
+pricing-group order, so `result.greeks[3]` always means "Greeks for `request.trades[3]`"
+regardless of how many other trades of other types sit between them in the request.
 
-`SwapConfig` trades are **skipped**: `engine.risk.greeks.swap_delta_gamma` needs an
-explicit `ZeroCurve` the caller must supply separately (a `SwapConfig` indexes into the
-simulation's own curves rather than carrying its own `ZeroCurveConfig` the way every
-swaption-family config does), so `price_portfolio` does not guess one on the caller's
-behalf. Compute swap Greeks directly via `engine.risk.greeks.swap_delta_gamma` if needed.
+| Trade type | Routed to | Shape |
+|---|---|---|
+| `SwapConfig` | `swap_delta_gamma` / `swap_theta` | per-pillar vectors, named `discount_delta`/`forward_delta` per curve |
+| `SwaptionConfig` | `swaption_delta_gamma` / `swaption_theta` | per-pillar vectors |
+| `BermudanSwaptionConfig`/`AmericanSwaptionConfig` | `bermudan_delta_gamma` / `bermudan_theta` (+ `bermudan_vega` where calibrated) | per-pillar vectors |
+| `BondConfig` | `_bond_greeks` (bumped revaluation) | **scalars**; no `vega` |
+
+> **Historical note — this section previously said `SwapConfig` trades are "skipped".** That
+> was [I-01](../known-issues.md#i-01): swaps silently returned no Greeks because
+> `_compute_all_greeks` had no access to the `SimulationConfig` their curve *indexes* resolve
+> against. It was fixed by passing `market_config` through, and the documentation above is
+> corrected to match. Swap Greeks have been computed by `price_portfolio` since that fix; the
+> old text survived it.
 
 ## Tested by
 
@@ -225,3 +251,13 @@ behalf. Compute swap Greeks directly via `engine.risk.greeks.swap_delta_gamma` i
 - `tests/test_portfolio.py::TestCrossFieldValidation`'s two-rate-factor cases — confirm
   `validate_portfolio_against_simulation` indexes into the *correct* factor's own curve/
   mean-reversion/vol at factor counts above one, not factor 0 by coincidence.
+- `tests/test_treasury_instrument.py` (40) — `BondConfig` in isolation: bill and note
+  pricing, ACT/ACT (ICMA) accrual, refusals, curve interpolation, and the bit-exact
+  cross-check against `engine.integration.bill`/`note`.
+- `tests/test_portfolio_bond_wire_through.py` (36) — the wire-through through
+  `price_portfolio` itself. `TestBondGreeksReachThePortfolioPath` is the
+  [I-01](../known-issues.md#i-01) regression class (**19 of 19 verified to fail** with the
+  Greeks branch deleted); `TestScenarioRiskIsRefusedForBonds` pins
+  [I-24](../known-issues.md#i-24).
+- `tests/test_api_bond_schemas.py` (21) — the HTTP surface, including
+  [I-25](../known-issues.md#i-25)'s scalar-Greek serialization.

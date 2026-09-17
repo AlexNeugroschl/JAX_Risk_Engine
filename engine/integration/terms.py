@@ -62,6 +62,16 @@ accrued interest with no error anywhere. If TraderX later confirms values
 are added in place, widening a tuple here is a one-line change; recovering
 from months of optimistically-parsed wrong accruals is not.
 
+> **This rule is an ASSUMPTION, not a confirmed contract -- see I-23 in
+> `docs/known-issues.md`.** The question above is still unanswered. If
+> TraderX intends to add values *in place*, this module will refuse bundles
+> they consider valid on the day they first export a real settlement
+> calendar. That fails safe (a loud refusal, not a wrong number) but it is
+> an operational break that will arrive without warning and will look like
+> a defect. Before treating a `dateBasis` / `settlementAdjustment` /
+> `rounding` refusal as a bad export, check it against the pinned sets
+> below -- the allowlist may simply be narrower than their vocabulary.
+
 **A v2 entry with no `accrualBasis` is legal.** The block is optional, and
 its absence means "the exporter did not state one", which is exactly the v1
 state. It is not an error, and it does not become a default -- consumers
@@ -100,6 +110,12 @@ SUPPORTED_ACCRUAL_BASIS_SCHEMAS = (ACCRUAL_BASIS_SCHEMA_V1,)
 #: supports a settlement lag of zero only. A `dateBasis` this consumer does
 #: not recognize is refused, because the alternative is pricing accrued
 #: interest to a date that is not the one the number describes.
+#:
+#: **These sets encode an unconfirmed assumption (I-23).** They are correct
+#: if TraderX versions the schema on every new value, and too narrow if they
+#: add values in place. Widening is deliberately a one-line change per
+#: value -- but it is a change to *which* values are allowlisted, never to
+#: *whether* there is an allowlist.
 SUPPORTED_DATE_BASES = ("SESSION_DATE",)
 SUPPORTED_SETTLEMENT_ADJUSTMENTS = ("NONE",)
 SUPPORTED_ACCRUAL_ROUNDING = ("HALF_EVEN",)

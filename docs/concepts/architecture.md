@@ -117,7 +117,9 @@ JAX_Risk_Engine/
 │   │   ├── european_swaption.py          Prices European swaptions
 │   │   ├── bermudan_swaption.py          Prices Bermudan swaptions
 │   │   │                                 (the numeric LGM backward-induction engine)
-│   │   └── american_swaption.py          Prices American swaptions
+│   │   ├── american_swaption.py          Prices American swaptions
+│   │   └── treasury.py                   Prices Treasury bills and notes (BondConfig);
+│   │                                     t=0 only -- no scenario cube, no VaR (I-24)
 │   │                                     (a thin wrapper around bermudan_swaption.py)
 │   └── risk/
 │       ├── var_es.py                     Computes VaR / Expected Shortfall
@@ -288,7 +290,7 @@ pricer; the raw simulated rate paths for every swaption pricer), plus one or mor
 configs.
 **Output:** an NPV ("Net Present Value" — what a trade is worth today) cube.
 
-Four pricers currently live here:
+Five pricers currently live here:
 
 - `swap.py` — linear (no optionality) swap pricing. See
   [Instruments: Interest Rate Swaps](../instruments/swaps.md).
@@ -305,6 +307,14 @@ Four pricers currently live here:
   into a dense list of dates (`AmericanSwaptionConfig.to_bermudan()`) and prices
   through `bermudan_swaption.py`'s engine, exactly the way ORE itself treats American
   exercise as a finely-discretized Bermudan.
+- `treasury.py` (W1.5) — Treasury bills and notes (`BondConfig`), closed-form
+  discounted cashflows against the bond's **own** zero curve. **The odd one out in two
+  ways.** It is the only pricer here that is not JAX — plain `math.exp` over an ORE day
+  count, since there is no cube to vectorize over and nothing to differentiate. And it
+  is the only one that produces **no NPV cube**: a bond has no stochastic driver, so it
+  has no scenario dimension and therefore no VaR/ES. That is refused explicitly rather
+  than filled with a broadcast constant, which would report VaR 0.00 / ES NaN for a
+  position whose risk was never modelled — see [I-24](../known-issues.md#i-24).
 
 `swap.py` and `european_swaption.py` are peer modules (neither depends on the other);
 `american_swaption.py` depends on `bermudan_swaption.py` (its engine), which does not

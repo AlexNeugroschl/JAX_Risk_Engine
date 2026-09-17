@@ -19,33 +19,55 @@ suite did not surface them — in one case a test actively asserted the buggy be
 | **FIXED** | Defect removed. Regression test verified to fail against the pre-fix code. |
 | **FLAGGED** | Inaccuracy **unchanged**. The engine now warns instead of staying silent. Not a fix. |
 | **OPEN** | Not addressed. Numbers are wrong or absent today. |
+| **ASSUMPTION** | Nothing known to be broken. The engine acts on an **unconfirmed reading** of an external contract, and the reading may be wrong. Registered so a deliberate interpretation does not pass for a settled fact. |
 
-Last full verification (2026-09-16, after the **I-19** and **I-20** fixes from TraderX's v5
-review): **1,452 passed, 1 failed**. Previously 1,384/2, then 1,324/2 after W1.3, and
-1,217/2 on 2026-09-15 after W1.2.
+**On ASSUMPTION, added 2026-09-16 with [I-23](#i-23).** The other three statuses all describe
+something the code gets wrong. This one describes a decision made in the absence of an answer
+— where the risk is not a wrong number but a **wrong premise**, invisible precisely because
+the code behaves exactly as designed. An entry here is a standing question to an external
+party, not a bug queue item, and it closes when the question is answered rather than when
+code changes.
 
-**The single failure is a timing-sensitive concurrency test, not a code defect.**
-`tests/test_worker_pool.py::TestWorkerPoolConcurrency::test_cross_tier_jobs_correct_and_concurrent`
-asserts that two jobs' wall-clock intervals genuinely *overlap*. Under full-suite load the OS
-can serialize them, so the assertion fails while every correctness assertion in the same test
-(dtypes, NPV parity against a reference run) passes. Verified: it passes 3/3 in isolation, and
-it also passes against stashed pre-fix code, so it is unrelated to the v5 fixes. This is
-[I-15](#i-15)'s failure mode in a sibling test — I-15 fixed
-`test_same_tier_jobs_also_overlap_across_pool_workers`, and `test_cross_tier_jobs...` carries
-the same wall-clock premise. Tracked as a follow-up rather than silently re-run until green.
+Last full verification (2026-09-17, after **W1.5**): **1,716 passed, 0 failed** (11m24s) —
+the complete suite, nothing excluded. That is 1,618 + the 98 W1.5 tests, so the delta
+reconciles exactly. Previously 1,618/0 after W1.6, 1,452/1 after the v5 fixes, 1,384/2 after
+W1.4, 1,324/2 after W1.3, 1,217/2 after W1.2.
 
-(The 2 pydantic failures recorded previously are resolved — that dependency is now installed.)
+**One caveat, and it is about the runner rather than the code.** [I-27](#i-27) makes a
+whole-suite run *intermittently* hard-abort inside XLA compilation, killing the process with
+no summary at all. This run completed cleanly; an earlier identical one did not. So a green
+result here is real but **not reliably repeatable on demand** — always confirm a summary line
+was actually printed before calling a run green.
 
-**The 2 failures are an environment gap, not a code defect.** Both are in
-`tests/test_var_es_diagnostics.py::TestDiagnosticsReachTheHttpBoundary` and fail with
-`ModuleNotFoundError: pydantic` — a dependency this project *declares*
-(`pyproject.toml`: `pydantic>=2`, `fastapi`) but which is not installed in this environment.
-`tests/test_api.py` does not collect for the same reason. Verified pre-existing by stashing
-the fixes and re-running: identical failures. `pip install -e .` resolves both.
+A green suite is evidence about the *tests*, not proof about the *code* — working rule 9,
+which this register exists to embody. Of the defects found during this integration, three came
+from TraderX reading source or independently reproducing numbers ([I-13](#i-13),
+[I-19](#i-19), [I-20](#i-20)), three from reviewing or reasoning about my own code
+([I-25](#i-25), [I-26](#i-26) and the W1.6 `submissionId` bug), and **none from running this
+suite**.
 
-Engine-side, every test passes.
+Two previously-recorded header caveats are now resolved:
 
-**This line reports what a full run actually produces.** Earlier figures here (824, then
+- The `pydantic` environment gap is gone — the dependency is installed (2.13.5),
+  `tests/test_api.py` collects, and the run contains zero `ModuleNotFoundError`. (The old
+  header both claimed this was resolved *and* described the failures as current; that
+  contradiction is removed.)
+
+  > **⚠ Always run `.venv/Scripts/python.exe -m pytest`, never the bare `python`.** During
+  > W1.5 the system interpreter was used by mistake, where `pydantic` and `jsonschema` are
+  > absent. That made `tests/test_api.py` and `tests/test_integration_schema.py`
+  > **uncollectable — 46 tests silently missing** — and produced a full-suite count of 1,663
+  > against the venv's 1,709, a discrepancy that looked like a regression and was purely
+  > environmental. A count taken from the wrong interpreter is not comparable to anything
+  > recorded here. See [I-25](#i-25).
+- `test_cross_tier_jobs_correct_and_concurrent` — the long-running flake — **passed** here
+  after failing in every full run since W1.2. That is consistent with its diagnosis as a
+  load-dependent wall-clock overlap assertion rather than a defect (it always passed in
+  isolation and against stashed pre-fix code). **A green run is not proof it is fixed**: the
+  assertion is still timing-sensitive, it shares [I-15](#i-15)'s premise, and it remains a
+  follow-up.
+
+**This line reports what a full run actually produces.** Earlier figures here (824, 1092,
 1175) were stale or recorded a passing count a full run did not reproduce. A register whose
 own header overstates its verification undermines every status in it.
 
@@ -77,6 +99,11 @@ own header overstates its verification undermines every status in it.
 | [I-20](#i-20) | Impossible calendar dates aborted the whole bundle | **High** | ✅ FIXED |
 | [I-21](#i-21) | Greeks recompile 23 XLA programs on every call (fresh closures) | Medium | ❌ OPEN |
 | [I-22](#i-22) | Calibration recompiles 8 XLA programs per call (baked-in constants) | Low | ❌ OPEN |
+| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** on an unanswered question | Medium | ⚠️ ASSUMPTION — may refuse bundles TraderX considers valid |
+| [I-24](#i-24) | Bonds have no scenario NPV, so no VaR/ES — refused, not approximated | Medium | ❌ OPEN — refusal path landed (W1.5) |
+| [I-25](#i-25) | A **scalar** Greek crashed the HTTP result serializer | Medium | ✅ FIXED |
+| [I-26](#i-26) | Greeks for a bond maturing **tomorrow** crashed on the theta reprice | Low | ✅ FIXED |
+| [I-27](#i-27) | Long full-suite runs **hard-abort inside XLA compilation**, with no summary line | Medium | ❌ OPEN — located, not root-caused |
 
 **The two that matter most for financial correctness are [I-04](#i-04) and [I-05](#i-05).**
 Both are unfixed. Both need inputs or decisions that do not exist yet — not more engineering
@@ -356,14 +383,16 @@ $0.04 on $100k by construction. Both paths travel in the published payload under
   and earned nothing for the bill;
 - **`rateGamma`/`theta` are `unsupported` for every instrument**, including both priced
   Treasuries;
-- `engine/instruments/` is **unchanged** — still exactly four rate-derivative modules. A
-  direct Python caller of `engine.portfolio` has no bond pricer, because both bond pricers
-  live at the integration boundary rather than in the instrument layer (W1.5 is the
-  wire-through).
+- ~~`engine/instruments/` is **unchanged**~~ — **closed by W1.5 (2026-09-17).**
+  `engine/instruments/treasury.py` adds `BondConfig`, and a direct Python caller of
+  `price_portfolio` now gets a bond's t=0 NPV, its per-trade breakdown entry, and
+  Delta/Gamma/Theta. **With one bounded exception:** a bond has no scenario NPV, so no
+  VaR/ES — refused explicitly rather than approximated, tracked as [I-24](#i-24).
 
 Status stays **OPEN**: the issue is "no bond, equity, or listed-option pricer". Treasuries
-now price; an equity is refused for a *market-data* reason rather than a missing pricer
-([I-18](#i-18)); corporate bonds and listed options are still absent entirely.
+now price *and* are reachable from the portfolio path; an equity is refused for a
+*market-data* reason rather than a missing pricer ([I-18](#i-18)); corporate bonds and
+listed options are still absent entirely.
 
 ---
 
@@ -778,6 +807,241 @@ accuracy for compile count would be a real regression disguised as an optimizati
 
 ---
 
+### I-24 — A bond has no scenario NPV, so no VaR/ES {#i-24}
+
+**Severity:** Medium · **Status:** ❌ OPEN — **refusal path landed (W1.5); the model has not**
+
+**Symptom.** A `BondConfig` in a `PortfolioRequest` cannot produce VaR or ES. Submitting one
+with the default `scenario_risk=True` is **refused** with `ScenarioPricingNotSupported`,
+naming the trade. The caller must set `scenario_risk=False`, which returns real
+`base_npv`/`base_npv_per_trade`/`greeks` alongside an **empty** `risk` dict and a
+zero-width `npv_cube`.
+
+**Cause.** `price_portfolio`'s `npv_cube` is `[Scenarios, TimeSteps, Trades]` — each column
+is a trade's *conditional* NPV at each simulated future step, and `engine.risk.var_es` turns
+those columns into VaR/ES. The four rate-derivative types fill their columns from simulated
+Hull-White paths. A bond, as priced by `engine.instruments.treasury`, is closed-form
+arithmetic against **one deterministic curve**: no stochastic driver, no time evolution, and
+therefore nothing to vary across a scenario axis.
+
+**Why this is a refusal and not a zero — measured, not argued.** The only way to fill the
+column without a model is to broadcast one t=0 number across every entry. That was
+implemented and run through the real `price_portfolio`, on a $100,000 bill priced at
+$98,401.95:
+
+| Metric | Broadcast-constant column |
+|---|---|
+| `VaR_95` / `VaR_99` | **0.00** |
+| `ES_95` / `ES_99` | **NaN** |
+
+A consumer reading `VaR_95 = 0.00` concludes the position carries no risk. It is not
+conservative, not approximate, and not labelled — the risk is **absent, wearing the shape of
+a measurement**. (The NaN does *not* propagate to the portfolio aggregate, which was also
+checked: ES differences the P&L across trades first, so a constant column cancels. That
+makes the failure quieter, not safer — the per-trade number is the one that misleads.)
+
+**Why `risk` is empty rather than zero-filled.** An empty dict asserts nothing; a `VaR` key
+holding 0.00 asserts a *measured absence of risk*. Only the first is true.
+`PortfolioResult.scenario_risk_available` carries the distinction onto the **result**, since
+a consumer holding a result object has no access to the request that produced it — without
+it, an empty `risk` is ambiguous between "not requested" and "computed and found to be
+nothing".
+
+**What closing it requires — a bond scenario model, not plumbing.** Each simulated scenario's
+rate state must be repriced through the bond's own schedule: build a zero curve per
+`[scenario, step]` from the Hull-White state, then rerun the discounting. That is genuine
+modelling work with its own validation burden (a bond repriced off an HW short rate needs
+its discount curve reconstructed consistently with how the swap pricer does it, or the two
+instruments carry incompatible risk in one portfolio total).
+
+**Do not close it by broadcasting, zero-filling, or defaulting `scenario_risk` to `False`.**
+The first two produce the table above. The third would silently strip VaR/ES from every
+existing swap portfolio that never asked for it — turning a bond-shaped gap into a
+portfolio-wide regression.
+
+**Verified.** `tests/test_treasury_instrument.py::TestScenarioPricingIsRefused` (4 tests,
+one of which *measures* the VaR-0/ES-NaN outcome so the justification is pinned rather than
+remembered) and `tests/test_portfolio_bond_wire_through.py::TestScenarioRiskIsRefusedForBonds`
+(5 tests). The broadcast implementation was patched in and **4 of 5 fail against it**
+(working rule 3).
+
+---
+
+### I-25 — A scalar Greek crashed the HTTP result serializer {#i-25}
+
+**Severity:** Medium · **Status:** ✅ FIXED · **Found:** 2026-09-17, during W1.5
+
+**Symptom.** `GET`ting a completed job whose portfolio contained a bond with
+`compute_greeks=True` raised `TypeError: 'float' object is not iterable` inside
+`PortfolioResultSchema.from_dataclass`. The job **priced correctly** — the failure was
+purely in serializing the answer, so the work was done and then thrown away with a 500.
+
+**Cause.** `engine/api/schemas.py`'s `GreeksSchema.from_dataclass` converted every non-theta
+Greek with:
+
+```python
+values[key] = [float(v) for v in np.asarray(val).tolist()]
+```
+
+A 0-dimensional array's `.tolist()` returns a **bare Python float**, not a list, so the
+comprehension tries to iterate a scalar.
+
+**Why it went unnoticed until W1.5.** Every pre-existing Greek is a per-pillar **vector** —
+`swap_delta_gamma` returns `discount_delta`/`forward_delta` arrays, one entry per curve
+pillar. The unconditional iteration was correct for all four rate-derivative types. A
+`BondConfig` prices off a single curve with one parallel bump, so its `delta`/`gamma` are
+genuine **scalars** — the first 0-d Greek in the codebase.
+
+**Fix.** `np.atleast_1d` before `.tolist()`, normalizing the scalar case to a one-element
+list so `values` stays uniformly a list-per-Greek rather than sometimes a float. One line;
+the vector path is byte-identical.
+
+**Verified.** `tests/test_api_bond_schemas.py::TestBondGreeksSerializeOverHttp` (5 tests).
+**3 fail against the pre-fix code**, including `test_a_full_bond_result_serializes_end_to_end`
+which drives the real `price_portfolio` → `from_dataclass` → `model_dump_json` path.
+`test_a_vector_greek_is_unchanged` is the negative control confirming the fix did not alter
+the existing per-pillar behaviour.
+
+**Note on how this was found.** By reading the conversion code while adding the bond schema
+and predicting that a 0-d array would break it — then confirming it in one line before
+writing any test. No existing test could have caught it: the bond is the first scalar Greek,
+so there was nothing to exercise the path.
+
+> **⚠ Process finding, worth more than the bug.** This was found while running the **system
+> Python**, where `tests/test_api.py` was uncollectable for want of `pydantic`. The project
+> has a **`.venv/`** that has always had it — so the HTTP tests were passing there all along,
+> and the "uncollectable" state was an artifact of the wrong interpreter, not a real gap.
+>
+> The same mistake hid 46 further tests (`tests/test_integration_schema.py`, which needs
+> `jsonschema`) and produced a full-suite count of **1,663** against the venv's **1,709** —
+> a 46-test discrepancy that looked like a regression and was purely environmental.
+> **Always run `.venv/Scripts/python.exe -m pytest`, not the system `python`.** A suite that
+> cannot import a module reports nothing for it, and a count taken from the wrong interpreter
+> is not comparable to the recorded baseline (working rules 9 and 10).
+
+---
+
+### I-26 — Greeks for a bond maturing tomorrow crashed on the theta reprice {#i-26}
+
+**Severity:** Low · **Status:** ✅ FIXED · **Found:** 2026-09-17, during W1.5
+
+**Symptom.** `compute_greeks=True` on a portfolio containing a bond whose maturity is
+**exactly one day** after the evaluation date raised:
+
+```
+BondPricingError: maturity_date 2025-06-03 is not after evaluation_date 2025-06-03.
+A matured bond has no remaining cashflow to discount ...
+```
+
+The bond was **not** matured, priced perfectly well in the same run, and the error named a
+date the caller never supplied. `base_npv` succeeded; only the Greeks call died — so a
+single near-maturity position failed the whole portfolio's Greeks.
+
+**Cause.** `_bond_greeks` computes theta by repricing with `evaluation_date + 1`. For a bond
+maturing tomorrow that lands **exactly on** maturity, which `BondConfig.__post_init__`
+refuses to construct — correctly, since a bond with no remaining cashflow is a settlement
+question rather than a pricing one. The refusal is right for the reprice and wrong as a
+failure of the entire Greeks call.
+
+**Fix.** Guard the reprice on `maturity_date > evaluation_date + 1`. Delta and Gamma are
+unaffected and still reported; **theta is omitted**, not zeroed. There is no next day on
+which the instrument still exists, so its decay is *undefined*, not nil — and `0.0` would
+assert a measured absence of time decay on precisely the bond that decays fastest. Same
+reasoning as the omitted Vega.
+
+**Verified.** `tests/test_portfolio_bond_wire_through.py::TestBondGreeksReachThePortfolioPath`
+— `test_a_bond_maturing_tomorrow_does_not_crash_the_greeks` and
+`test_theta_is_omitted_not_zeroed_at_the_maturity_boundary`, **both verified to fail against
+the pre-fix code**. `test_theta_is_present_one_day_the_other_side_of_the_boundary` is the
+control: a bond maturing in *two* days still has theta, so an unconditional omission would
+not pass.
+
+**How it was found.** By asking what `replace(cfg, evaluation_date=+1)` does at the edge of
+the constructor's own validity, and checking — not by a failing test. No fixture had a bond
+that close to maturity.
+
+---
+
+### I-27 — Long full-suite runs hard-abort inside XLA compilation {#i-27}
+
+**Severity:** Medium · **Status:** ❌ OPEN — **located, not yet root-caused**
+**Found:** 2026-09-17, while verifying W1.5
+
+**Symptom.** A long `pytest tests/` run dies with `Fatal Python error: Aborted` and
+**no summary line at all**. There is no failure report — the process is gone. Separately,
+`tests/test_bermudan_swaption.py` has been seen to fail intermittently
+(`3 failed, 52 passed`, then `4 failed`, then clean) without aborting.
+
+**Where the abort actually is.** The faulthandler traceback puts the crashing thread inside
+**JAX's XLA compiler**, not in any pricer:
+
+```
+jax/_src/compiler.py:353  backend_compile_and_load
+jax/_src/pjit.py:1175     _pjit_call_impl_python
+engine/simulation/market_model.py:689  _generate_paths_inner
+engine/portfolio/request.py:729        price_portfolio
+tests/test_api_bond_schemas.py:173     test_a_full_bond_result_serializes_end_to_end
+```
+
+Other threads sit in `concurrent/futures/process.py` and `multiprocessing/queues.py` — i.e.
+**a `ProcessPoolExecutor` is alive while the parent process compiles an XLA program**.
+
+**The leading hypothesis, and its limits.** `engine/portfolio/worker_pool.py` caches pools in
+a module-level `_POOLS` dict that lives for the interpreter's lifetime.
+`tests/test_worker_pool.py` tears its pools down in an autouse fixture whose own comment says
+it exists *"so later test modules don't inherit idle worker processes"* — but
+**`tests/test_api.py` creates pools and never calls `shutdown_pools`**. A later in-process
+XLA compile then runs with live worker children attached.
+
+**That hypothesis is not proven.** Pairing the modules directly does *not* reproduce it:
+
+| Attempted reproduction | Result |
+|---|---|
+| `test_api.py` + `test_api_bond_schemas.py`, 3× | **passed** (52 each time) |
+| `test_worker_pool.py` + `test_api_bond_schemas.py` | passed (that module cleans up) |
+| `test_api_bond_schemas.py` alone, repeatedly | passed (21) |
+| `test_bermudan_swaption.py` alone, 6× consecutively | passed (55 each) |
+| Same, under deliberate CPU contention from 2 concurrent JAX pytest processes | passed |
+| Full suite (~1,100 tests in, Bermudan file *excluded*) | **ABORTED** |
+| The *same* full-suite command, rerun | **1,661 passed, 0 failed** (10m55s), clean summary |
+| Full suite again, Bermudan file **included** | **1,716 passed, 0 failed** (11m24s), clean summary |
+
+So it needs accumulated whole-suite state, not any two modules — and even then it is
+**intermittent**: the identical command that aborted later completed cleanly end to end.
+**The abort is not specific to the Bermudan file** — it happened with that file excluded
+entirely, in `tests/test_api_bond_schemas.py`.
+
+**Not caused by W1.5.** `git stash` of all W1.5 work reproduced the Bermudan failures on
+pristine code. W1.5's only contact with Bermudan code is adding `BondConfig` to the
+`TradeConfig` union plus two comments. The W1.5 test named in the traceback is simply the
+*victim* — it is the point where a fresh XLA compile happens late in a long run.
+
+**Why Medium.** Two subsequent full runs completed cleanly (1,661 and 1,716, both with real
+summary lines), so the suite *is* green — but it makes that result **not reliably obtainable
+on demand**, and it fails
+in the most deceptive way available: a dead process with no summary. That is how a run dying
+at 4% was briefly taken for a pass — the shell's `echo EXIT=$?` had captured the redirect
+rather than pytest (pytest's real exit was `3`). **Any future "the suite is green" claim must
+confirm a summary line was actually printed**, not infer it from an exit code.
+
+**What would characterize it.** Add a `shutdown_pools()` autouse fixture to
+`tests/test_api.py` mirroring `tests/test_worker_pool.py`'s, then run the full suite
+repeatedly and see whether the abort stops. That is a cheap, low-risk experiment — but it
+is an *experiment*, and it was deliberately not applied as a "fix" here.
+
+> **The intermittency is precisely why.** The same full-suite command that aborted later
+> passed 1,661/1,661 with no change at all. Had the fixture been added first, that green run
+> would have looked like proof it worked — and the register would now carry a "FIXED" entry
+> resting on a coincidence. Any candidate fix for this needs *repeated* clean full runs
+> against a known-bad baseline, not one. Also worth checking whether XLA's on-disk compilation cache is shared
+unsafely across the parent and its spawned workers.
+
+**Related:** [I-15](#i-15) and `test_cross_tier_jobs_correct_and_concurrent` share the
+worker-pool/timing premise. Whether they are the same underlying problem is **not**
+established.
+
+---
+
 ## FIXED — found during the TraderX EOD exchange (2026-09-15)
 
 > Kept in ID order here rather than moved up into the FIXED section above, so the
@@ -1113,6 +1377,74 @@ rows survive, the outcome is an identified item-level refusal naming the offendi
 coverage still sums. The bill path is covered too — it had the identical parser and the
 identical gap; the reviewer happened to try the note. Verified to fail against the pre-fix
 code.
+
+---
+
+### I-23 — The `accrualBasis` strictness rule is an assumption, not a confirmed contract {#i-23}
+
+**Severity:** Medium · **Status:** ⚠️ ASSUMPTION — unconfirmed · **Raised:** 2026-09-16 with W1.6.1
+
+**This entry is a different kind from the others.** Everything above records something the
+code *does wrong*. This records something the code does **deliberately, on an unverified
+reading of an unanswered question** — which is worth registering precisely because it will
+otherwise look settled. Nothing here is known to be broken; what is unknown is whether the
+interpretation matches TraderX's intent.
+
+**The question, asked and never answered.** [Response v4](planning/eod-contract-response-v4.md)
+§1.3 asked: when a real settlement calendar arrives, does `traderx.accrual-basis.v1` **gain
+new `dateBasis` / `settlementAdjustment` values**, or does it become `accrual-basis.v2`? That
+went out on 2026-09-16 and TraderX's v5 reply did not address it. It was asked again in
+[response v6](planning/eod-contract-response-v6.md) §2.3.
+
+**What W1.6.1 implemented in the absence of an answer.**
+[`engine/integration/terms.py`](../engine/integration/terms.py) pins each enum to an exact
+accepted set and **refuses everything else**:
+
+| Field | Accepted |
+|---|---|
+| `dateBasis` | `SESSION_DATE` |
+| `settlementAdjustment` | `NONE` |
+| `rounding` | `HALF_EVEN` |
+| `accrualBasis.schema` | `traderx.accrual-basis.v1` |
+
+**Why this direction was chosen.** The alternative — parsing an unrecognized basis
+optimistically — means reconciling accrued interest against a date convention this engine
+does not actually understand, with no error anywhere. That is the silent-approximation
+failure the whole boundary exists to prevent (working rule 1), and it is unrecoverable after
+the fact. Refusing is loud, and widening a tuple later is a one-line change.
+
+**What could be wrong about it, stated plainly.** If TraderX intends to add values **in
+place** — keeping `accrual-basis.v1` and extending its enums — then this engine will
+**refuse bundles they consider valid**, on the day they first export a real calendar. The
+refusal would be correct by this engine's stated rule and wrong by their intent. That is a
+false rejection, not a wrong number, so it fails safe; but it is an operational break that
+will look like a defect to whoever is on call, and it will arrive without warning.
+
+**What a consumer should know now.** A `TermsJoinError` naming
+`accrualBasis.dateBasis` / `.settlementAdjustment` / `.rounding` is **not necessarily a bad
+bundle**. It may be this engine's allowlist being narrower than the exporter's current
+vocabulary. Check the accepted set above before treating it as an export defect.
+
+**What closing it requires — one of two answers from TraderX:**
+
+1. *"New values force a new schema version."* → The implementation is already correct; this
+   entry closes with no code change.
+2. *"Values are added in place."* → Pin the expanded set in
+   `SUPPORTED_DATE_BASES` / `SUPPORTED_SETTLEMENT_ADJUSTMENTS` / `SUPPORTED_ACCRUAL_ROUNDING`,
+   and add a test per newly-accepted value. Still an allowlist — the change is *which* values
+   are on it, never *whether* there is one.
+
+**Related.** The same strictness refuses a **v1-labelled artifact carrying an
+`accrualBasis`** at all, on the grounds that the document has contradicted its own version
+marker. That reading is firmer — a self-contradictory document cannot be parsed on the
+assumptions its version marker implies — but it shares this entry's root cause: the version
+semantics were specified by one side and never jointly confirmed.
+
+**No regression test can close this**, which is why it is an assumption rather than a bug.
+The behaviour is fully tested
+([`tests/test_integration_terms_v2.py::TestUnrecognizedValuesAreRefused`](../tests/test_integration_terms_v2.py),
+6 cases, verified to fail against a lenient parser). What the tests cannot establish is
+whether the rule they pin is the *agreed* one.
 
 ---
 

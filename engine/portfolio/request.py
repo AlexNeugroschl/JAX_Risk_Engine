@@ -93,6 +93,9 @@ from engine.instruments.bermudan_swaption import (
     BermudanSwaptionConfig, price_bermudan_swaptions, price_bermudan_swaption_base,
 )
 from engine.instruments.american_swaption import AmericanSwaptionConfig, price_american_swaptions
+from engine.instruments.treasury import (
+    RATE_BUMP, BondConfig, ScenarioPricingNotSupported, price_bond_base,
+)
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER, build_vanilla_swap
 from engine.calibration.lgm import calibrate_lgm_sigma, CalibrationTarget
 from engine.risk.var_es import compute_risk_metrics
@@ -107,7 +110,17 @@ from engine.models.lgm import Sigma
 from engine.portfolio.validation import _validate_common_fields, _validate_tenor  # noqa: F401
 from engine.portfolio.profiling import phase as _phase
 
-TradeConfig = Union[SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig]
+TradeConfig = Union[
+    SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig, BondConfig,
+]
+
+#: Trade types with no scenario (`npv_cube`) representation -- see
+#: `engine.instruments.treasury`'s module docstring. These reach `base_npv`,
+#: `base_npv_per_trade` and the Greeks path, all of which are real for them;
+#: they do NOT reach `npv_cube`/VaR/ES, and `_price_by_type` raises rather
+#: than broadcasting a constant column (which would report VaR 0.00 / ES NaN
+#: for a position whose risk was never modelled). Tracked as I-24.
+DETERMINISTIC_ONLY_TYPES = (BondConfig,)
 
 # Defense-in-depth guard against jax_enable_x64's process-global-flag race
 # WITHIN a single process -- see this module's docstring's "Concurrency"
@@ -584,6 +597,19 @@ class PortfolioRequest:
     calibration_targets: Optional[List[CalibrationTarget]] = None
     compute_greeks: bool = False
     precision: PrecisionConfig = field(default_factory=PrecisionConfig)
+    #: Whether to build `npv_cube` and derive VaR/ES from it. `True` (the
+    #: default) is the pre-W1.5 behaviour exactly.
+    #:
+    #: Set `False` for a portfolio containing a **deterministic-only** trade
+    #: type (`DETERMINISTIC_ONLY_TYPES`, e.g. `BondConfig`), which has no
+    #: scenario representation at all. The run then returns real
+    #: `base_npv`/`base_npv_per_trade`/`greeks` with an EMPTY `npv_cube` and
+    #: an empty `risk` dict -- absent rather than zero, so a consumer cannot
+    #: read a fabricated 0.00 VaR as a measurement. `PortfolioResult.
+    #: scenario_risk_available` says which of the two happened, so the
+    #: distinction survives into the result rather than living only in the
+    #: request.
+    scenario_risk: bool = True
 
 
 # =============================================================================
@@ -604,6 +630,16 @@ class PortfolioResult:
     # reconcile a portfolio total against identified positions/contracts
     # rather than reporting only an unattributable aggregate.
     base_npv_per_trade: List[float] = field(default_factory=list)
+    # Whether `npv_cube`/`risk` were actually computed. `False` means the
+    # run was `scenario_risk=False`, so `risk` is EMPTY and `npv_cube` has
+    # zero time steps -- the VaR/ES numbers are absent, not zero.
+    #
+    # Carried on the RESULT, not just the request, because a consumer
+    # reading a result object has no access to the request that produced it.
+    # Without this flag an empty `risk` dict is ambiguous between "not
+    # requested" and "computed and found to be nothing", and those two must
+    # never be confused (W1.5 / I-24).
+    scenario_risk_available: bool = True
 
 
 def _zero_curve_of(cfg, curve_config, dtype=jnp.float64) -> _HwZeroCurve:
@@ -715,8 +751,16 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
         # function's docstring for the jnp.stack widest-dtype-wins consequence
         # this produces on npv_cube itself when buckets disagree.
         step_times = jnp.array(market_config.time_grid[1:], dtype=jnp.float64)
-        with _phase("pricing"):
-            npv_cube, order = _price_by_type(trades, market, maturities_np, step_times, request.precision.pricing)
+        if request.scenario_risk:
+            with _phase("pricing"):
+                npv_cube, order = _price_by_type(trades, market, maturities_np, step_times, request.precision.pricing)
+        else:
+            # An EMPTY cube, not a zero-filled one. Zeros would be
+            # indistinguishable from genuinely-zero NPVs and would feed
+            # compute_risk_metrics a fabricated distribution; a zero-width
+            # trade axis makes the absence structural and unmistakable.
+            num_scenarios = market["rates"].shape[0]
+            npv_cube = jnp.zeros((num_scenarios, 0, 0))
         with _phase("base_npv"):
             base_npv_per_trade = _base_npv_per_trade(trades, maturities_np, market_config, request.precision)
             base_npv = float(sum(base_npv_per_trade))
@@ -731,10 +775,17 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
         # no separate cast. This can only ever narrow precision relative to
         # what `pricing` already produced -- it can't recover precision
         # `pricing` already lost.
-        var_es_dtype = _resolve_risk_dtype(request.precision.risk, "var_es")
-        npv_cube_for_risk = npv_cube if npv_cube.dtype == var_es_dtype else jnp.asarray(npv_cube, dtype=var_es_dtype)
-        with _phase("risk"):
-            risk = compute_risk_metrics(npv_cube_for_risk, base_npv, percentiles=request.percentiles)
+        if request.scenario_risk:
+            var_es_dtype = _resolve_risk_dtype(request.precision.risk, "var_es")
+            npv_cube_for_risk = npv_cube if npv_cube.dtype == var_es_dtype else jnp.asarray(npv_cube, dtype=var_es_dtype)
+            with _phase("risk"):
+                risk = compute_risk_metrics(npv_cube_for_risk, base_npv, percentiles=request.percentiles)
+        else:
+            # Empty, not zero-valued. See `PortfolioResult.
+            # scenario_risk_available`: a VaR of 0.00 asserts a measured
+            # absence of risk, while a missing key asserts nothing at all --
+            # and only the second is true here.
+            risk = {}
 
         greeks_out = None
         if request.compute_greeks:
@@ -747,6 +798,7 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
     return PortfolioResult(
         base_npv=base_npv, npv_cube=npv_cube, risk=risk, greeks=greeks_out,
         warnings=collected_warnings, base_npv_per_trade=base_npv_per_trade,
+        scenario_risk_available=request.scenario_risk,
     )
 
 
@@ -811,6 +863,34 @@ def _price_by_type(trades, market, maturities_np, step_times, pricing: Union[int
     cheaper while a trivial swap stays exact), but `npv_cube.dtype` itself
     reflects the widest bucket present, not necessarily the one a caller
     drilled down on."""
+    # A deterministic-only trade has no [Scenarios, TimeSteps] column to
+    # contribute. Refuse by name BEFORE any pricing runs, rather than
+    # letting it fall through to a KeyError on `groups[type(cfg)]` or --
+    # far worse -- be filled with a broadcast constant. See
+    # `engine.instruments.treasury`'s module docstring: a zero-variance
+    # column produces VaR 0.00 and ES NaN, a position that reads as
+    # risk-measured when its risk was never modelled.
+    deterministic = [
+        (i, cfg) for i, cfg in enumerate(trades)
+        if isinstance(cfg, DETERMINISTIC_ONLY_TYPES)
+    ]
+    if deterministic:
+        names = ", ".join(
+            f"trade[{i}] ({type(cfg).__name__}, notional={cfg.notional})"
+            for i, cfg in deterministic
+        )
+        raise ScenarioPricingNotSupported(
+            f"{names}: no scenario NPV, so cannot appear in npv_cube. "
+            f"Such a trade is closed-form arithmetic against a single deterministic "
+            f"curve -- there is no stochastic driver to vary across scenarios and no "
+            f"time evolution to step. Its t=0 value IS available: call "
+            f"`_base_npv_per_trade`/`price_bond_base` directly, or use "
+            f"`price_portfolio(..., scenario_risk=False)` to get base NPV and Greeks "
+            f"without VaR/ES. Refused rather than broadcast: a constant column's VaR "
+            f"is 0.00 and its ES is NaN, which reports a position as risk-measured "
+            f"when its risk was never modelled (I-24)."
+        )
+
     groups: Dict[type, List[int]] = {SwapConfig: [], SwaptionConfig: [], BermudanSwaptionConfig: [], AmericanSwaptionConfig: []}
     for i, cfg in enumerate(trades):
         groups[type(cfg)].append(i)
@@ -902,6 +982,16 @@ def _base_npv_per_trade(
             per_trade[i] = price_bermudan_swaption_base(cfg)
         elif isinstance(cfg, AmericanSwaptionConfig):
             per_trade[i] = price_bermudan_swaption_base(cfg.to_bermudan())
+        elif isinstance(cfg, BondConfig):
+            # The DIRTY (full) present value, matching
+            # `engine.integration.note.NotePrice.npv` -- see that module on
+            # why a silently-clean bond NPV is the wrong default. No dtype
+            # resolution: this pricer is float arithmetic against the
+            # bond's own curve, not a JAX kernel, so `precision.pricing`
+            # has nothing to govern here. Stated rather than silently
+            # ignored -- see this function's own note on
+            # `price_bermudan_swaption_base` having the same property.
+            per_trade[i] = price_bond_base(cfg)
 
     return per_trade
 
@@ -1077,4 +1167,86 @@ def _greeks_for_one_trade(
             )
         return trade_greeks
 
+    if isinstance(cfg, BondConfig):
+        # **This branch is what I-01 is about.** A new type reaching this
+        # function with no branch returns None below and is SILENTLY
+        # SKIPPED -- no Greeks, no error. That is exactly how swaps lost
+        # theirs, and the test that pinned it even called the skip
+        # intentional. `TestBondGreeksReachThePortfolioPath` asserts these
+        # keys are present, and is verified to fail if this branch is
+        # deleted.
+        #
+        # Delta/Gamma are bumped revaluations rather than AD: a BondConfig
+        # prices through plain Python float arithmetic (`math.exp` over an
+        # ORE day count), not a JAX-traceable kernel, so `jax.grad` cannot
+        # differentiate it. Saying `ad-first-order` here would claim
+        # machinery that is not there -- the same call
+        # `engine.integration.note.SENSITIVITY_METHOD` already makes.
+        # `precision.risk` therefore governs nothing here and is not
+        # consulted, rather than being accepted and quietly ignored.
+        return _bond_greeks(cfg)
+
     return None
+
+
+def _bond_greeks(cfg: BondConfig) -> Dict[str, jax.Array]:
+    """Delta/Gamma/Theta for one `BondConfig`, by bumped revaluation.
+
+    **Delta** is the change in dirty NPV per 1bp parallel curve shift, in
+    the same per-bp unit as `engine.integration.note`'s `rateSensitivity`.
+
+    **The two are not bit-identical, deliberately.** This is a *central*
+    difference `(P(+1bp) - P(-1bp)) / 2`; the integration boundary reports a
+    *one-sided* `P(+1bp) - P(0)`, because that is the bumped revaluation
+    TraderX agreed to reconcile against. Central is the better derivative
+    estimate (second-order accurate, and symmetric so +1bp and -1bp give a
+    consistent answer); one-sided is the published contract. On a 6-month
+    bill at 100k face they differ by ~1.4e-4 -- the curvature term, not an
+    error in either. Do not "fix" the difference by making this one-sided:
+    that would trade a better number for a false appearance of agreement.
+
+    **Gamma** is the second difference under the same bump -- a genuine
+    central second difference, not a reused first-order number.
+
+    **Theta** is the one-day time decay: the bond repriced with its
+    evaluation date advanced by one calendar day, holding the curve fixed.
+    A bond one day nearer maturity discounts over a shorter year fraction,
+    so this is a real quantity rather than a placeholder zero.
+
+    **No Vega.** A fixed-coupon bond off a deterministic curve has no
+    volatility input to be sensitive to. It is OMITTED rather than reported
+    as 0.0: a zero Vega asserts "measured, and found to be nil", which
+    would be a claim about a quantity that is not defined here. This is the
+    same distinction `_greeks_for_one_trade` already draws for a flat-sigma
+    Bermudan.
+    """
+    base = price_bond_base(cfg)
+    up = price_bond_base(cfg, rate_shift=RATE_BUMP)
+    down = price_bond_base(cfg, rate_shift=-RATE_BUMP)
+
+    # Central difference: more accurate than the one-sided bump and
+    # symmetric, so a caller comparing +1bp against -1bp gets a consistent
+    # number rather than one biased by the direction of the shift.
+    delta = (up - down) / 2.0
+    gamma = up - 2.0 * base + down
+
+    out = {"delta": jnp.asarray(delta), "gamma": jnp.asarray(gamma)}
+
+    # Theta advances the evaluation date by one day, which for a bond
+    # maturing TOMORROW lands exactly on maturity -- a state `BondConfig`
+    # refuses to construct, since a bond with no remaining cashflow is a
+    # settlement question rather than a pricing one.
+    #
+    # That refusal is correct for the *reprice* and wrong as a failure of
+    # the whole Greeks call: the bond itself is perfectly priceable today,
+    # and it used to crash here with a "matured bond" error naming a date
+    # the caller never supplied. Theta is genuinely undefined across that
+    # boundary -- there is no next day on which this instrument still
+    # exists -- so it is OMITTED, the same way Vega is omitted rather than
+    # reported as a zero that would assert a measured absence of decay.
+    # Delta and Gamma are unaffected and still reported.
+    if cfg.maturity_date > cfg.evaluation_date + 1:
+        one_day_on = replace(cfg, evaluation_date=cfg.evaluation_date + 1)
+        out["theta"] = jnp.asarray(price_bond_base(one_day_on) - base)
+
+    return out

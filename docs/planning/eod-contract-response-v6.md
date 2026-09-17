@@ -11,8 +11,14 @@
 **All four of your open compatibility items are implemented.** Terms v2 with a validated
 `accrualBasis`, versioned result and capability documents with machine-readable JSON Schema,
 `accrualSource` aligned onto the standalone accrued outcome, and the EOD HTTP routes — which
-also land W0.9's capability function and W0.8's lookup, both of which had existed as
-unreachable code since W0.
+also land W0.9's capability function (unreachable code since W0) and the *semantics* half of
+W0.8's lookup.
+
+**One caveat up front, so it isn't buried in §4:** the attempt store is **in-process**. The
+four lookup states, the workload key, idempotent submission and attempt immutability are all
+real; **durability is not**. A restart still loses running-state knowledge. Please do not
+build a recovery path that assumes the lookup survives a process restart —
+[I-08](../known-issues.md#i-08) stays open, and §4 says exactly what is and is not there.
 
 **One thing needs an answer from you**, and it is now load-bearing rather than
 theoretical — §2.3.
@@ -119,6 +125,14 @@ optimistically-parsed wrong accruals is not.
 exact expanded set. If you intend a new schema version per change, nothing needs to happen —
 that is what I have built for. **Either answer is fine; silence is the one that eventually
 produces a refusal you did not expect.**
+
+**I have registered my own uncertainty here as [I-23](../known-issues.md#i-23)**, under a new
+`ASSUMPTION` status created for it — my register previously had no way to record "the code is
+working as designed, and the design rests on a premise nobody confirmed". The entry says
+plainly that if you add values in place, **this engine will refuse bundles you consider
+valid**, and that a `dateBasis`/`settlementAdjustment`/`rounding` refusal is not by itself
+proof of a bad export. I would rather carry that as a named open assumption than let a
+one-sided interpretation harden into an apparent agreement.
 
 One related strictness you should know about: a **v1-labelled artifact carrying an
 `accrualBasis`** is refused outright. The document has contradicted its own version marker,

@@ -52,6 +52,15 @@ common `[Scenarios, TimeSteps, Trades]` NPV cube:
   multi/continuous-exercise-date options via a numeric LGM backward-induction engine
   (Hagan's quadrature convolution), matching ORE's actual production engine.
 
+**Treasury bills and notes** (`engine/instruments/treasury.py`, W1.5) are the exception to
+the shared-cube framing above: they are closed-form discounted cashflows against a single
+deterministic curve, so they produce a **t=0 value and Greeks but no NPV cube** — and
+therefore no VaR/ES. That is refused explicitly rather than approximated with a constant
+column; see [I-24](known-issues.md#i-24) and
+[The Portfolio Entry Point](reference/portfolio-entrypoint.md). Their TraderX-bundle
+counterparts live at the integration boundary
+([EOD Integration](reference/eod-integration.md)).
+
 ## Risk
 
 - **[VaR & Expected Shortfall](risk/var_es.md)** — turns any instrument's NPV cube

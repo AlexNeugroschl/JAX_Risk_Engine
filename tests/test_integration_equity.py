@@ -530,8 +530,24 @@ class TestCapabilitiesAdvertiseW14:
     """A coordinator reads this *before* submitting. It must be able to
     tell 'wait for a release' from 'send me a spot'."""
 
-    def test_stage_is_w14(self):
-        assert capabilities()["deliveryStage"] == "W1.4"
+    def test_stage_is_at_least_w14(self):
+        """**Updated by W1.6**, which bumped the stage to `W1.6`.
+
+        This previously pinned the literal `"W1.4"`, which made it fail on
+        every future stage bump regardless of whether anything about the
+        equity contract changed — a test that breaks for reasons unrelated
+        to what it is named for. What W1.4 actually needs to hold is that
+        the advertised stage has *reached* W1.4, so the equity capability
+        below is the one being described. The equity-specific assertions in
+        this class are what pin the contract itself.
+        """
+        stage = capabilities()["deliveryStage"]
+        assert stage.startswith("W1.")
+        major, minor = stage.removeprefix("W").split(".")[:2]
+        assert (int(major), int(minor)) >= (1, 4), (
+            f"deliveryStage {stage!r} is earlier than W1.4, which is when the "
+            f"equity refusal this class describes was delivered"
+        )
 
     def test_equity_is_a_known_type(self):
         assert EQUITY in capabilities()["products"]
