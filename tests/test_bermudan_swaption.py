@@ -8,8 +8,21 @@ tests/test_american_swaption.py).
 Validation strategy (see the module's own docstring for the full account):
 ORE's Python bindings do not expose a constructible
 `NumericLgmMultiLegOptionEngine`, so this module's full backward-induction
-engine cannot be cross-checked against a live ORE engine object end-to-end
-the way the swap/European-swaption/VaR modules are. Instead:
+engine cannot be cross-checked against ORE's OWN LGM Bermudan engine --
+the like-for-like comparison the swap/European-swaption/VaR modules get.
+Instead:
+
+  NOTE (2026-09-18): "not against ORE's own LGM engine" is not the same as
+  "not against ORE at all", which is how this docstring previously read.
+  `ORE.TreeSwaptionEngine` and `ORE.FdHullWhiteSwaptionEngine` ARE
+  constructible and DO price a genuine multi-exercise
+  `ORE.BermudanExercise`; they are Hull-White-parametrized rather than
+  LGM-parametrized, so the comparison is a model-level one of a few
+  percent rather than a 1e-4 numerical parity. That external oracle now
+  exists in `tests/test_ore_bermudan_oracle.py`, together with the
+  controls that attribute the residual gap to the parametrization rather
+  than to the induction. The checks below remain this module's primary,
+  tightest validation and are unchanged.
 
   - Every closed-form building block (`_H`, `_zeta`, `_lgm_bond`) is
     live-verified here against `ORE.IrLgm1fConstantParametrization` /

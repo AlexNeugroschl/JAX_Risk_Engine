@@ -29,11 +29,27 @@ the code behaves exactly as designed. An entry here is a standing question to an
 party, not a bug queue item, and it closes when the question is answered rather than when
 code changes.
 
-Last full verification (2026-09-17, after **W0.8**): **1,777 passed, 0 failed** (16m55s) —
-the complete suite, nothing excluded, summary line printed, exit code 0. That is 1,718 at the
-previous commit plus W0.8's 59 new tests (51 in `tests/test_integration_publication.py`, and
-8 net added to `tests/test_integration_eod_routes.py`, which goes 56 → 64), so the delta
-reconciles exactly: 1,718 + 51 + 8 = 1,777.
+Last full verification (2026-09-18, after the ORE-oracle work): **1,863 passed, 0 failed**
+(4h08m) — the complete suite (`.venv/Scripts/python.exe -m pytest tests/`), nothing
+excluded, summary line printed, exit code 0, zero `FAILED`/`ERROR` lines. That is 1,777 at
+the previous commit plus 86 new tests (50 in `tests/test_ore_bermudan_oracle.py`, 36 in
+`tests/test_ore_coverage_hardening.py`), so the delta reconciles exactly:
+1,777 + 50 + 36 = 1,863. Both counts taken from `pytest --collect-only -q tests/`.
+
+> **⚠ The 4h08m wall-clock is a 15x regression against the 16m55s this line previously
+> recorded, and it is unexplained.** The count reconciles and nothing failed, so this is
+> not a correctness signal, but it is not nothing either: candidates are the two new files'
+> ORE tree/FD engines (800x800 PDE grids and 800-step trees, the slowest single assertions
+> in the suite — though those two files run in ~50s *combined* in isolation, which does not
+> account for the gap), XLA recompilation pressure from the mutation tests' repeated
+> `clear_cache()` calls, or machine load during an unattended run. **Do not record a
+> faster figure here without re-measuring.** Timing the suite per-file
+> (`--durations=25`) is the obvious next step and has not been done.
+
+Previous verification (2026-09-17, after **W0.8**): **1,777 passed, 0 failed** (16m55s).
+That was 1,718 at the previous commit plus W0.8's 59 new tests (51 in
+`tests/test_integration_publication.py`, and 8 net added to
+`tests/test_integration_eod_routes.py`, which goes 56 → 64): 1,718 + 51 + 8 = 1,777.
 
 **Two corrections to figures previously recorded here**, both found by re-collecting rather
 than re-reading:
@@ -67,6 +83,19 @@ from TraderX reading source or independently reproducing numbers ([I-13](#i-13),
 ([I-25](#i-25), [I-26](#i-26) and the W1.6 `submissionId` bug), and **none from running this
 suite**.
 
+**[I-29](#i-29) and [I-30](#i-30) (2026-09-18) came from a fourth route: building a new
+external oracle, and then attacking the suite's own tolerances.** Neither is a mispricing.
+The Bermudan engine was cross-checked end to end against real `ORE.TreeSwaptionEngine` /
+`ORE.FdHullWhiteSwaptionEngine` objects for the first time (`tests/test_ore_bermudan_oracle.py`;
+see [ore-parity.md §7a](reference/ore-parity.md#7a-an-external-multi-exercise-oracle-does-exist-correction-2026-09-18),
+which corrects this project's standing claim that no such oracle existed) and **no pricing
+defect was found** — every apparent discrepancy resolved to the new test being wrong or to
+the already-documented HW/LGM parametrization difference. What the exercise did surface was
+one silent input sensitivity ([I-29](#i-29)) and one place where the suite's own `rtol=1e-4`
+cannot see a deleted term of the core bond-price formula ([I-30](#i-30)) — the latter found
+by deliberately corrupting the formula and checking whether the suite noticed, which is the
+only technique on this list that interrogates the tests rather than the code.
+
 Two previously-recorded header caveats are now resolved:
 
 - The `pydantic` environment gap is gone — the dependency is installed (2.13.5),
@@ -95,7 +124,11 @@ Two previously-recorded header caveats are now resolved:
   which changes nothing. That is consistent with a load-dependent wall-clock overlap
   assertion rather than a defect, and it is a standing warning that **a single green run of
   this test means nothing in either direction**. It shares [I-15](#i-15)'s premise and
-  remains a follow-up.
+  remains a follow-up. The 2026-09-18 run passed it as well (tally now four passes, one
+  failure) — and notably did so during the slowest full run on record (4h08m), which is
+  mild evidence *against* the load-dependence hypothesis rather than for it, since a
+  wall-clock overlap assertion should be most likely to fail under exactly those
+  conditions. Still not enough to reclassify.
 
 - **Both documented verification hazards fired during W0.8 and both were caught by
   arithmetic, not by the runner.** One run reported `1 failed` alongside
@@ -121,6 +154,8 @@ own header overstates its verification undermines every status in it.
 | [I-04](#i-04) | Aged swaps mispriced at every step past first accrual | **High** | ⚠️ FLAGGED |
 | [I-05](#i-05) | No faithful USD-SOFR/ACT360 swap construction | **High** | ❌ OPEN — refusal path landed (W0.4) |
 | [I-06](#i-06) | Mid-coupon Bermudan/American exercise understates value | Medium | ⚠️ FLAGGED |
+| [I-29](#i-29) | A rounded exercise time silently drops a whole coupon | Medium | ⚠️ FLAGGED |
+| [I-30](#i-30) | The `A(t,T)` variance term is nearly uncovered at `t=0` (test gap, not a defect) | Medium | ⚠️ FLAGGED |
 | [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — both Treasury pricers landed (W1.2 bill, W1.3 note) |
 | [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8); the portfolio path's `_JOBS` dict is unchanged |
 | [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN |
@@ -301,6 +336,97 @@ plus agreement on the settlement convention for a mid-period exercise — see de
 in the TraderX pack. Engine-side work; no external data dependency.
 
 **Documented by.** `tests/test_bermudan_swaption.py::TestMidCouponKnownLimitation`.
+
+**Related.** [I-29](#i-29) is the same alignment requirement seen from the opposite side:
+not a mid-period exercise date, but a reset-*aligned* one supplied with enough
+floating-point rounding to miss the alignment by ~1e-6.
+
+---
+
+### I-29 — A rounded exercise time silently drops a whole coupon {#i-29}
+
+**Severity:** Medium · **Status:** ⚠️ FLAGGED · **Found:** 2026-09-18, while building the
+external Bermudan oracle (`tests/test_ore_bermudan_oracle.py`)
+
+**What is wrong.** `BermudanSwaptionConfig.exercise_times` are year-fractions supplied by
+the caller, and the engine does **not** snap them onto the underlying's actual accrual
+schedule. `_hw_swap_value_at_nodes` decides which coupons are still alive at exercise with
+`fixed_start_times >= t - 1e-9`. A caller who writes a *rounded* exercise time — `2.0137`
+for a true accrual start of `2.0136986301369864` — lands **1.4e-6 late**, which is ~1400x
+that 1e-9 tolerance. The coupon starting on that very date then reads as already-elapsed
+and is dropped from the exercise value entirely.
+
+Measured: at `sigma -> 1e-6`, where the Bermudan must collapse to its intrinsic value of
+**1211.47**, the rounded input instead prices at **14336.12** — an ~12x overstatement,
+independent of volatility. The engine returns a plausible, finite, confidently-formatted
+number with no warning, which is exactly the invisible-from-outside class of problem this
+register exists for.
+
+**Why this is FLAGGED and not OPEN.** This is arguably correct behavior on out-of-contract
+input rather than a defect: `BermudanSwaptionConfig`'s own docstring already requires
+exercise dates to coincide with the underlying's accrual dates, and
+[I-06](#i-06) already covers genuinely misaligned dates. Nothing computes a wrong answer
+for an input that honors the contract. But the contract is stated in prose, the violation
+here is a rounding artifact rather than an obviously wrong date, and the failure is silent
+and large — so the sensitivity is registered rather than left to be rediscovered.
+
+**What closing it requires.** `prepare_bermudan` is the natural place: it already builds
+the ORE swap and reads `fixed_start_times` off it, so it can compare each supplied
+`exercise_time` against those and either **snap** it (when within, say, 1e-4 of an accrual
+boundary) or **raise** (when not). Validating in `__post_init__` instead would catch the
+mistake earlier but would force an `ORE.MakeVanillaSwap` call on every config
+construction, including for the `hw_sigma=None` "uncalibrated" configs that are built and
+passed around before they are ever priceable — so `prepare_bermudan` is the better site
+despite being later. Snapping is preferable to raising here: a caller supplying a
+4-decimal year-fraction is expressing the right *date*, and refusing it would reject input
+that is unambiguous in intent. Engine-side work; no external data dependency.
+
+**Documented by.** `tests/test_ore_bermudan_oracle.py::TestExerciseTimeAlignment` — pins
+both halves: that the exact accrual-start time reproduces ORE's intrinsic to 1e-3, and that
+the rounded one still overstates by >5x. Every comparison in that file reads its exercise
+times back off `prepare_bermudan` rather than writing a literal, which is the workaround
+any caller should copy until this is closed.
+
+---
+
+### I-30 — The `A(t,T)` variance term is nearly uncovered at `t=0` {#i-30}
+
+**Severity:** Medium · **Status:** ⚠️ FLAGGED · **Found:** 2026-09-18, by mutation-testing
+the ORE comparisons (`tests/test_ore_coverage_hardening.py`)
+
+**What is wrong.** This is a gap in the **tests**, not in the code — the only entry here of
+that kind, and it is recorded because this register's own premise is that a green suite is
+evidence about the tests rather than proof about the code.
+
+The variance term of the Hull-White `A(t,T)` carries a factor `(1 - exp(-2at))` that is
+**identically zero at `t=0`**. So at `t=0` the term contributes nothing, and deleting it
+outright changes an ATM swaption price by ~**7e-6** relative — an order of magnitude
+*inside* the `rtol=1e-4` that this suite's ORE swaption comparisons assert. The great
+majority of those comparisons price at `t=0`.
+
+Measured against the real suite: deleting the entire term fails exactly **one** test in
+`tests/test_european_swaption.py` (131 tests) —
+`TestConditionalPricingAndExpiry::test_conditional_pricing_matches_ore_rebuilt_at_later_date`,
+the one that prices at a later evaluation date. That single test carries the whole suite's
+coverage of a term of the core bond-price formula. Deleting or weakening it would leave the
+formula effectively unchecked while the suite stayed green.
+
+**What is *not* wrong.** The formula itself is independently verified — against QuantLib's
+own C++ in [ore-parity.md](reference/ore-parity.md) §3b, against the algebraic identity
+`0.25*(sigma*B(t,T))^2*B(0,2t) == (sigma^2/4a)*(1-exp(-2at))*B(t,T)^2` in
+`tests/test_ore_parity.py`, and against live `ORE.HullWhite.discountBond` at `t>0`. No
+mispricing is known or suspected.
+
+**What closing it requires.** More `t>0` conditional-pricing comparisons against ORE, so
+the term's coverage does not rest on one test. Cheap to do — the conditional-pricing
+harness already exists in `tests/test_european_swaption.py`; it simply needs more
+`(t, r)` points.
+
+**Documented by.** `tests/test_ore_coverage_hardening.py::TestVarianceTermIsActuallyChecked`
+— which asserts the mutation is *invisible* at `t=0` (recording why `t=0` comparisons
+cannot be the whole story) and *visible* at `t>0`, and includes
+`test_conditional_pricing_coverage_is_load_bearing` so that the dependency on that one
+test is explicit.
 
 ---
 

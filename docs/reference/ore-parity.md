@@ -380,12 +380,71 @@ everywhere else in this codebase. This nuances, but does not contradict, section
 either at `t=0` or via the model's own Markov-conditional formula rather than a second,
 independently-parametrized model object).
 
+### 7a. An external multi-exercise oracle does exist (correction, 2026-09-18)
+
+**This project recorded, in `tests/test_bermudan_swaption.py`'s own module docstring and
+in §10 below, that the full backward induction could not be cross-checked against a live
+ORE engine end to end** — on the grounds that `ORE.NumericLgmMultiLegOptionEngine` is not
+constructible through the installed SWIG bindings. **The premise is correct and still
+holds** — re-verified 2026-09-18: both `ORE.NumericLgmMultiLegOptionEngine` and
+`ORE.AnalyticLgmSwaptionEngine` expose no usable constructor. **The conclusion drawn from
+it was too broad.** Two *other* multi-exercise engines in the same bindings are fully
+constructible and price a genuine `ORE.BermudanExercise`:
+
+- `ORE.TreeSwaptionEngine` — QuantLib's Hull-White trinomial tree.
+- `ORE.FdHullWhiteSwaptionEngine` — QuantLib's Hull-White finite-difference solver.
+
+So multi-exercise Bermudan values *can* be cross-checked end to end against a real,
+independent ORE engine, and now are: `tests/test_ore_bermudan_oracle.py` (50 tests).
+
+**What that comparison shows, and what it does not.** ORE's two engines are
+`HullWhite`-parametrized while this module is `LinearGaussMarkovModel`-parametrized — the
+very non-equivalence this section documents above. The agreement is therefore a
+**model-level** agreement of a few percent (measured: ~3% at the money, up to ~15% deep
+out of the money where the option is worth ~830 on a 1e6 notional), not the ~1e-4
+numerical parity the European-swaption tests get against `ORE.JamshidianSwaptionEngine`,
+where both sides share a parametrization. Three controls in that file attribute the
+residual gap to the parametrization rather than to the backward induction:
+
+1. **ORE's own two engines agree with each other to ≤1.3e-3** despite being entirely
+   different numerical schemes (tree vs. PDE) — so the target value is not in doubt.
+2. **This engine is fully grid-converged**: refining `n_per_std` from 48 to 384 moves the
+   price by ~1e-5 relative, so the gap is not discretization error.
+3. **The same-sized gap appears with a *single* exercise date**, where
+   `tests/test_bermudan_swaption.py::TestSingleExerciseMatchesLgmJamshidian` already
+   proves this engine matches its own LGM closed form to 2e-4. A discrepancy present with
+   one exercise date and no larger with four is not coming from the early-exercise logic.
+
+A fourth check is parametrization-free and therefore holds tightly: at `sigma -> 0` the
+Bermudan must collapse to the intrinsic value of the forward-starting underlying, which
+ORE values with a plain `DiscountingSwapEngine` and no model at all. This engine
+reproduces it to **1e-3** (1211.47 both sides).
+
+**No pricing defect was found.** The three apparent discrepancies hit while building this
+oracle all resolved to the test, not the engine: a ~40x error from building the ORE side's
+underlying with `build_vanilla_swap` (whose 0% dummy forward curve is correct for this
+engine and fatal for an ORE pricing engine, which actually reads it); a ~1e-2 curve-shape
+error from building ORE's comparison curve with log-linear discount interpolation instead
+of linear zero-rate; and a 12x overstatement at low vol from passing a *rounded* exercise
+time. That last one is worth recording as a **sensitivity, not a bug**: an exercise time
+of `2.0137` instead of the true `2.0136986301369864` is 1.4e-6 late, which is ~1400x
+`_hw_swap_value_at_nodes`' own `>= t - 1e-9` coupon-liveness tolerance, so that date's
+fixed coupon reads as already-elapsed and is dropped from the exercise value entirely.
+`BermudanSwaptionConfig`'s documented scope already requires exercise times to coincide
+with the underlying's accrual dates, so this is correct behavior on out-of-contract input
+— but the failure is silent and large, so
+`tests/test_ore_bermudan_oracle.py::TestExerciseTimeAlignment` pins it deliberately, and
+every comparison in that file reads its exercise times back off `prepare_bermudan` rather
+than writing a rounded literal.
+
 **Verified:** `tests/test_bermudan_swaption.py` (the engine) and
 `tests/test_american_swaption.py` (the discretization wrapper) — see
 [american-bermudan-swaptions.md](../instruments/american-bermudan-swaptions.md)'s "Tested by" section for the full
 breakdown (closed-form primitives vs. live ORE LGM objects, single-exercise-date
 convergence to an independent Jamshidian-style closed form, monotonicity bounds, and the
-American-discretization/mid-coupon edge cases).
+American-discretization/mid-coupon edge cases) — plus
+`tests/test_ore_bermudan_oracle.py` (50 tests), the external multi-exercise oracle
+described in 7a above.
 
 ## 8. Value at Risk & Expected Shortfall
 
@@ -585,11 +644,21 @@ Monte Carlo test's own bug (naive `P(0,T0)` discounting instead of numeraire def
 initially showing a spurious ~11% "error" that was fixed once the test correctly deflated
 by `engine.models.lgm.numeraire` — a lesson about LGM's own measure, not a pricer defect).
 
+**Scope note:** the missing constructor blocks a direct NPV comparison for
+`price_lgm_swaption` specifically, against the *analytic* LGM engine. It does **not** mean
+Bermudan/American values have no external oracle — `ORE.TreeSwaptionEngine` and
+`ORE.FdHullWhiteSwaptionEngine` are constructible and supply one; see
+[7a](#7a-an-external-multi-exercise-oracle-does-exist-correction-2026-09-18).
+
 **The `HullWhite` vs. `LinearGaussMarkovModel` non-equivalence, confirmed relevant here
 too.** Section 3's ["parametrization note"](#a-parametrization-note-lgm-vs-plain-hull-white)
 already documents that `ORE.HullWhite` and `ORE.LinearGaussMarkovModel` are not the same
 numerical model realization for `t>0`, despite sharing `(a, sigma)` and today's curve (a
-~0.6% bond-price divergence at `t=3y`, found while building `bermudan_swaption.py`).
+~0.6% bond-price divergence at `t=3y`, found while building `bermudan_swaption.py`;
+`tests/test_ore_coverage_hardening.py::TestHullWhiteVersusLgmBondPrices` now measures this
+directly across a grid of `(t,T)` rather than leaving it as a single remembered figure,
+and bounds it from *below* as well as above so that a future ORE version making the two
+agree fails loudly rather than silently leaving percent-level tolerances unjustified).
 `engine/calibration/` inherits this directly: `price_lgm_swaption` is built exclusively on
 `engine.models.lgm`, never `engine.models.hull_white`, for the same reason
 `bermudan_swaption.py` is — the model being calibrated is the one ORE's own Bermudan engine
@@ -612,7 +681,7 @@ actually uses.
 | Jamshidian swaption decomposition | `_price_one_swaption`, `_solve_rstar` | `QuantLib::JamshidianSwaptionEngine::calculate`, `rStarFinder` |
 | Bond option (Black-on-bond) | `_bond_call`/`_bond_put` | `QuantLib::HullWhite::discountBondOption` |
 | American/Bermudan LGM bond price | `bermudan_swaption._lgm_bond` | `QuantExt::LinearGaussMarkovModel::discountBond` (`qle/models/lgm.hpp`) |
-| American/Bermudan backward induction | `bermudan_swaption._run_backward_induction` | `QuantExt::NumericLgmMultiLegOptionEngineBase::calculate`, `LgmConvolutionSolver2` |
+| American/Bermudan backward induction | `bermudan_swaption._run_backward_induction` | `QuantExt::NumericLgmMultiLegOptionEngineBase::calculate`, `LgmConvolutionSolver2` (not constructible via SWIG) — cross-checked end-to-end against `ORE.TreeSwaptionEngine`/`ORE.FdHullWhiteSwaptionEngine` instead, see [7a](#7a-an-external-multi-exercise-oracle-does-exist-correction-2026-09-18) |
 | American exercise-window discretization | `american_swaption.AmericanSwaptionConfig.to_bermudan` | `NumericLgmMultiLegOptionEngineBase::calculate`'s American branch |
 | VaR | `value_at_risk` | `QuantLib::RiskStatistics::valueAtRisk` → `GeneralStatistics::percentile` |
 | Expected Shortfall | `expected_shortfall` | `QuantLib::RiskStatistics::expectedShortfall` |
@@ -631,6 +700,32 @@ actually uses.
   walk), each cross-checked against this engine's own output, so a future change to this
   engine's formulas that silently drifts from the *algorithm* (not just from a
   previously-recorded ORE output number) fails loudly.
+- `tests/test_ore_bermudan_oracle.py` (50 tests) — the external multi-exercise Bermudan
+  oracle described in [7a](#7a-an-external-multi-exercise-oracle-does-exist-correction-2026-09-18):
+  this engine's backward induction against real `ORE.TreeSwaptionEngine` /
+  `ORE.FdHullWhiteSwaptionEngine` objects, plus the controls that attribute the residual
+  ~3% to the HW/LGM parametrization rather than to the induction, plus a
+  parametrization-free `sigma -> 0` collapse to intrinsic that holds to 1e-3.
+- `tests/test_ore_coverage_hardening.py` (36 tests) — tests *about* the discriminating
+  power of the ORE comparisons themselves, plus the curve shapes the rest of the suite
+  never exercises. Two findings of record, both pinned as assertions:
+  - **A t=0 blind spot for the variance term of `A(t,T)`.** That term carries a factor
+    `(1 - exp(-2at))` which is identically zero at `t=0`, so at `t=0` deleting it entirely
+    moves an ATM swaption price by ~7e-6 relative — an order of magnitude *inside* the
+    `rtol=1e-4` those comparisons assert. Most of this suite's ORE swaption comparisons
+    price at `t=0`. Measured against the real suite: deleting the whole term fails exactly
+    **one** test in `tests/test_european_swaption.py` (131 tests),
+    `TestConditionalPricingAndExpiry::test_conditional_pricing_matches_ore_rebuilt_at_later_date`
+    — that single test carries the suite's entire coverage of the term. This is a gap in
+    the *tests*, not a defect in the formula (which is independently verified against
+    QuantLib's C++ in section 3b and against live `ORE.HullWhite.discountBond`).
+  - **Non-flat curves agree off-pillar to ~1e-8** (upward, inverted, humped, and
+    negative-rate), but **at a pillar** the two disagree by up to ~1.5e-2. Neither library
+    is wrong: under linear zero-rate interpolation `f(0,t)` has a genuine kink at each
+    pillar (left and right derivatives differ), so the instantaneous forward is undefined
+    exactly there. Pinned rather than fixed, with both an upper and a lower bound, so that
+    a future move to a smooth interpolation fails the test and prompts folding pillar
+    times into the off-pillar check.
 - Every other test file listed in each section above, which cross-check against the
   *installed* `ORE` package's actual runtime behavior — this page's own contribution is
   connecting those already-passing behavioral tests to the specific C++ source lines that
