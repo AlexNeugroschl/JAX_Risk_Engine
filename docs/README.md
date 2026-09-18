@@ -117,34 +117,34 @@ counterparts live at the integration boundary
 
 - **[Roadmap](planning/roadmap-and-history.md)** — the phased build-out plan and what's
   done vs. planned.
-- **[TraderX Integration Plan](planning/traderx-integration.md)** — the original gap
+- **[TraderX Integration Plan](planning/traderX_integration/traderx-integration.md)** — the original gap
   analysis for safely accepting arbitrary portfolios from an external trading system, and
   what actually landed (now implemented — see
   [The Portfolio Entry Point](reference/portfolio-entrypoint.md)).
-- **[EOD Contract Proposal](planning/eod-contract-proposal.md)** — the proposed request/
+- **[EOD Contract Proposal](planning/traderX_integration/eod-contract-proposal.md)** — the proposed request/
   result contracts for the TraderX end-of-day batch integration, and the capability matrix
   of what this engine can and cannot price today.
-- **[EOD Contract Response v2](planning/eod-contract-response-v2.md)** — the reply to
+- **[EOD Contract Response v2](planning/traderX_integration/eod-contract-response-v2.md)** — the reply to
   TraderX's response: corrections accepted (sensitivity method, gamma convention, units),
   where this side pushes back (W1 instrument scope, in-memory job state), and the open
   decisions blocking W0/W2.
-- **[EOD Contract Response v3](planning/eod-contract-response-v3.md)** — reply to TraderX's
+- **[EOD Contract Response v3](planning/traderX_integration/eod-contract-response-v3.md)** — reply to TraderX's
   v2 package: accepted answers, the zero-coupon accrued-interest normalization rule, durable
   attempt/lookup semantics, and what is blocked on delivery vs. on build work.
-- **[EOD Contract Response v4](planning/eod-contract-response-v4.md)** — reply to TraderX's
+- **[EOD Contract Response v4](planning/traderX_integration/eod-contract-response-v4.md)** — reply to TraderX's
   source review: W0 shipped, the SOFR refusal running against the real fixture, and **I-13**
   reproduced and fixed.
-- **[EOD Contract Response v5](planning/eod-contract-response-v5.md)** — reply to TraderX's
+- **[EOD Contract Response v5](planning/traderX_integration/eod-contract-response-v5.md)** — reply to TraderX's
   **independent verification of the priced results** (they reproduced every bill/note figure
   from our shared fixtures). Two defects they found — **I-19** (the accrual tolerance rounded
   its own bound) and **I-20** (impossible calendar dates aborted the whole bundle) — fixed
   with regression evidence, and the plan resequenced to put the contract interface first.
-- **[EOD Contract Response v6](planning/eod-contract-response-v6.md)** — **W1.6 delivered**:
+- **[EOD Contract Response v6](planning/traderX_integration/eod-contract-response-v6.md)** — **W1.6 delivered**:
   all four of their open compatibility items (terms v2 with a validated `accrualBasis`,
   versioned documents with JSON Schema, `accrualSource` alignment, the EOD HTTP routes). Also
   reports a bug my own suite missed — an implementation that parsed `accrualBasis` and then
   ignored it passed 59 of 59 tests — and asks the one question that is now load-bearing.
-- **[TraderX Integration Plan](planning/traderx-integration-plan.md)** — **the actionable
+- **[TraderX Integration Plan](planning/traderX_integration/traderx-integration-plan.md)** — **the actionable
   plan.** Consolidates the whole contract exchange into ordered W0/W1/W2 tasks with steps,
   tests, and the traps each one avoids. Start here to do the work.
 

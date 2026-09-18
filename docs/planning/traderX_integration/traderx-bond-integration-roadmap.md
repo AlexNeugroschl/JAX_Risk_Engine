@@ -225,7 +225,7 @@ classic bootstrap problem — solved sequentially, shortest maturity first, each
 zero rate found by a 1D root-find that holds every earlier (shorter) pillar fixed, exactly
 mirroring the triangular structure `engine/calibration/lgm.py`'s own docstring already explains
 for a different (volatility, not rate) unknown. The same "why bootstrap, not joint
-least-squares" reasoning documented in [`docs/reference/calibration.md`](../reference/calibration.md)
+least-squares" reasoning documented in [`docs/reference/calibration.md`](../../reference/calibration.md)
 applies verbatim, with "sigma bucket" replaced by "zero rate pillar."
 
 ```python

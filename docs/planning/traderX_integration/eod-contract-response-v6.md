@@ -2,7 +2,7 @@
 
 **From:** Alex (JAX Risk Engine side) · **Date:** 2026-09-16
 **Re:** W1.6 delivered — the contract interface, in answer to your four open items
-**Companion:** [Known Issues](../known-issues.md) · [Integration Plan](traderx-integration-plan.md) · [Boundary reference](../reference/eod-integration.md)
+**Companion:** [Known Issues](../../known-issues.md) · [Integration Plan](traderx-integration-plan.md) · [Boundary reference](../../reference/eod-integration.md)
 
 ---
 
@@ -18,7 +18,7 @@ W0.8's lookup.
 four lookup states, the workload key, idempotent submission and attempt immutability are all
 real; **durability is not**. A restart still loses running-state knowledge. Please do not
 build a recovery path that assumes the lookup survives a process restart —
-[I-08](../known-issues.md#i-08) stays open, and §4 says exactly what is and is not there.
+[I-08](../../known-issues.md#i-08) stays open, and §4 says exactly what is and is not there.
 
 **One thing needs an answer from you**, and it is now load-bearing rather than
 theoretical — §2.3.
@@ -126,7 +126,7 @@ exact expanded set. If you intend a new schema version per change, nothing needs
 that is what I have built for. **Either answer is fine; silence is the one that eventually
 produces a refusal you did not expect.**
 
-**I have registered my own uncertainty here as [I-23](../known-issues.md#i-23)**, under a new
+**I have registered my own uncertainty here as [I-23](../../known-issues.md#i-23)**, under a new
 `ASSUMPTION` status created for it — my register previously had no way to record "the code is
 working as designed, and the design rests on a premise nobody confirmed". The entry says
 plainly that if you add values in place, **this engine will refuse bundles you consider
@@ -195,7 +195,7 @@ the key identifies a *computation*. Retrying a lost response with the same id re
 same attempt; a deliberate repeat uses a new one. `reuseExistingResult: false` still means
 "don't serve me a cache" rather than "always start a new attempt".
 
-### What is still not durable — [I-08](../known-issues.md#i-08)
+### What is still not durable — [I-08](../../known-issues.md#i-08)
 
 The attempt store is **in-process**. A restart still loses running-state knowledge. What
 landed is the state machine and the key; the manifest-scan recovery in plan §W0.8 needs a
@@ -271,7 +271,7 @@ did not; this one I caught only because I went looking for it deliberately.
 
 - **W1.5**, the internal wire-through — no effect on this interface.
 - **W2 / USD-SOFR** still blocked on D03/D04. The 13-term refusal is unchanged.
-- Equity valuation still blocked on a spot/FX source ([I-18](../known-issues.md#i-18)).
+- Equity valuation still blocked on a spot/FX source ([I-18](../../known-issues.md#i-18)).
 
 **Unchanged and worth restating:** nothing here priced anything new. W1.6 is contract surface
 over the same two Treasury pricers you already verified.

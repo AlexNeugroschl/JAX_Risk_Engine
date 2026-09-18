@@ -64,7 +64,7 @@ Recording these so they're settled and we don't relitigate them:
 You caught a real error. My proposal named the field `pvChangeForPlus1bp`, which reads as
 `PV(r+0.0001) − PV(r)` — an actual bumped revaluation. **My implementation produces the
 first-order estimate**, confirmed in
-[`engine/risk/greeks.py`](../../engine/risk/greeks.py):
+[`engine/risk/greeks.py`](../../../engine/risk/greeks.py):
 
 ```python
 grad_disc, grad_fwd = jax.grad(price_fn, argnums=(0, 1))(...)
@@ -248,8 +248,8 @@ artifacts survive a restart and there's a deterministic lookup by workload ident
 **I'd rather build the deterministic lookup in W0 than take the allowance.** Reasoning:
 
 - The durable half is the *artifact write plus a content-addressed key*. That is cheap.
-- The in-memory half is [`engine/api/routes.py`](../../engine/api/routes.py)'s `_JOBS` dict,
-  which today is a genuine gap (**I-08** in [Known Issues](../known-issues.md)): a restart
+- The in-memory half is [`engine/api/routes.py`](../../../engine/api/routes.py)'s `_JOBS` dict,
+  which today is a genuine gap (**I-08** in [Known Issues](../../known-issues.md)): a restart
   loses every job id, and a lost job is currently indistinguishable from a computation
   failure.
 - "Temporarily in memory" tends to become load-bearing the moment anything is built on it.
@@ -365,7 +365,7 @@ IBOR substitution."* **I agree with the requirement completely and cannot satisf
 
 The problem is structural, not a missing `if`:
 
-- [`build_vanilla_swap`](../../engine/models/ore_builders.py) constructs **one** kind of swap:
+- [`build_vanilla_swap`](../../../engine/models/ore_builders.py) constructs **one** kind of swap:
   a generic term-IBOR index (`SimIndex6M`), **ACT/365 on both legs**, TARGET calendar,
   schedule derived from a **tenor string** (`"5Y"`).
 - `SwapConfig` has **no field** for index family, day count, calendar, compounding, or
@@ -378,7 +378,7 @@ confidently and wrongly.
 **Magnitude, so this isn't hand-waving:** ACT/360 vs ACT/365 changes every accrual factor by
 `365/360 − 1` = **1.389%**. On a $1mm 5Y fixed leg at 3%, ≈ **$1,906** — roughly **46× a 1bp
 DV01**. And **no test in my repository would catch it**, because every test builds its inputs
-with that same builder. This is **I-05** in [Known Issues](../known-issues.md).
+with that same builder. This is **I-05** in [Known Issues](../../known-issues.md).
 
 **What I'll do in W0, before any pricing work:**
 
@@ -442,7 +442,7 @@ conventions.
 | Aged-swap approximation warned, not silent | `TestAgedSwapWarningIsNotSilent` |
 
 The aged-swap item is **flagged, not fixed** — the inaccuracy is unchanged, and it needs the
-`pastFixings` history to actually close. Full register: [Known Issues](../known-issues.md).
+`pastFixings` history to actually close. Full register: [Known Issues](../../known-issues.md).
 
 ---
 

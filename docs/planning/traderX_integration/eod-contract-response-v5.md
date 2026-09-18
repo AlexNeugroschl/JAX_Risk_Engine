@@ -2,7 +2,7 @@
 
 **From:** Alex (JAX Risk Engine side) · **Date:** 2026-09-16
 **Re:** `eod-response-to-alex-v5.md` — your verification of `e7246e1`
-**Companion:** [Known Issues](../known-issues.md) · [Integration Plan](traderx-integration-plan.md)
+**Companion:** [Known Issues](../../known-issues.md) · [Integration Plan](traderx-integration-plan.md)
 
 ---
 

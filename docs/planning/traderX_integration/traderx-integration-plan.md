@@ -20,7 +20,7 @@ four-document exchange into executable tasks.
     their compatibility items implemented, plus the `accrual-basis` versioning question
     restated as load-bearing
 
-**Companion:** [Known Issues](../known-issues.md) — the defect register. Task IDs below
+**Companion:** [Known Issues](../../known-issues.md) — the defect register. Task IDs below
 reference issue IDs (`I-NN`) where they close one.
 
 ---
@@ -63,7 +63,7 @@ the first real pricers. W2 adds faithful USD-SOFR and is gated on an external de
 | Accrued source label | Value is taken from the **export** (`accrualSource: "exported-fraction"`); `"recomputed-schedule"` is the alternative, so the label is always explicit |
 | Accrual tolerance | `round(0.5 × 10^(−fractionDecimals) × \|face\|, 2) + 0.01` — derived from `accrualBasis`, never a fixed constant. **Never compare the two monetary paths as exact equals** |
 | Accrued sign, restated | `fraction × signed face` in **one step**. No separate `sign()` factor — a second multiplication makes a short position positive |
-| `accrualBasis` artifact | `traderx.accrual-basis.v1` **field shape** confirmed and frozen. **Its value *vocabulary* is not** — whether new enum values force a new schema version is unanswered, and W1.6.1 refuses unrecognized ones on an unconfirmed reading. Registered as **[I-23](../known-issues.md#i-23)**, status ASSUMPTION |
+| `accrualBasis` artifact | `traderx.accrual-basis.v1` **field shape** confirmed and frozen. **Its value *vocabulary* is not** — whether new enum values force a new schema version is unanswered, and W1.6.1 refuses unrecognized ones on an unconfirmed reading. Registered as **[I-23](../../known-issues.md#i-23)**, status ASSUMPTION |
 | Missing-accrual fixture | Two boundaries: TraderX **rejects before publication**; my mapper treats the same bytes as a **negative test** → `unavailable` / `ACCRUED_NOT_SUPPLIED` |
 | `synthetic` vs `assumed` | Distinct values. Their `provenance.origin` stays `synthetic`\|`supplied`; my curve `inputOrigin` is separate. `supplied` ≠ observed |
 | Lookup states | Never a bare 404 for accepted work: `UNKNOWN_WORKLOAD` / `running` / `failed` / `completed` are four distinct responses |
@@ -104,7 +104,7 @@ collected totals reconcile exactly: run 1 predates the 2 step-3 `OSError` tests
 
 Run 2's **one failure was `test_cross_tier_jobs_correct_and_concurrent`** — the long-running
 wall-clock flake, not a W0.8 regression. It passed in isolation (12.28s), passed in runs 1, 3
-and 4, and touches no code W0.8 changed. See [I-15](../known-issues.md#i-15).
+and 4, and touches no code W0.8 changed. See [I-15](../../known-issues.md#i-15).
 
 Against W1.5's 1,716 that is **+61**: the 51 `test_integration_publication.py` tests plus the
 10 added to `test_integration_eod_routes.py`.
@@ -114,7 +114,7 @@ The two W0.8 suites on their own run **115 passed in 1.62s** — 51 in
 
 **A caveat about the runner, not the code:** an earlier identical invocation **hard-aborted**
 inside XLA compilation with no summary line at all
-(**[I-27](../known-issues.md#i-27)**). A green full run is therefore real when it happens but
+(**[I-27](../../known-issues.md#i-27)**). A green full run is therefore real when it happens but
 **not reliably repeatable on demand**.
 
 Previously 1,716 / 0 after W1.5, 1,618 / 0 after W1.6, 1,452 / 1 after the v5 fixes, 1,384 / 2 after W1.4,
@@ -197,7 +197,7 @@ Earlier figures in this exchange (824, 1092, 1175) were stale or unreproducible.
 > the tail diagnostics in `engine/risk/var_es.py`). The SOFR case returns
 > `CONVENTION_NOT_SUPPORTED` naming all 13 missing terms, and bill/note return structurally
 > valid results with `npv: unsupported`. See the per-task markers below and
-> [the boundary's own doc](../reference/eod-integration.md).
+> [the boundary's own doc](../../reference/eod-integration.md).
 >
 > **W0.10 was added after the exit criterion was met**, from TraderX's v3 source review. It
 > does not gate the SOFR refusal (already delivered) but **does run ahead of W1**: it is the
@@ -462,7 +462,7 @@ identity; item-order artifact hash matches result ordering.
 > published, because writing one would make an in-flight computation discoverable as a
 > finished answer. After a restart it reports as unknown, the coordinator resubmits, and the
 > workload key makes the recomputation identical — an infrastructure event, not a financial
-> one. **[I-08](../known-issues.md#i-08) stays PARTIAL** because the portfolio path's `_JOBS`
+> one. **[I-08](../../known-issues.md#i-08) stays PARTIAL** because the portfolio path's `_JOBS`
 > dict is untouched; this work is EOD-only.
 
 **Deliverable:** `GET /risk/results/by-workload/{workloadKey}`.
@@ -854,9 +854,9 @@ bundle versions and proof the Treasury pricers are unchanged.
 > risk was never modelled. So `_price_by_type` **raises** naming the trade, and
 > `scenario_risk=False` gives a caller real `base_npv`/`base_npv_per_trade`/`greeks` with
 > `risk` **empty** (not zero-filled) and `PortfolioResult.scenario_risk_available` saying so
-> on the result. Registered as **[I-24](../known-issues.md#i-24)**.
+> on the result. Registered as **[I-24](../../known-issues.md#i-24)**.
 >
-> **One real bug found and fixed:** **[I-25](../known-issues.md#i-25)** — a **scalar** Greek
+> **One real bug found and fixed:** **[I-25](../../known-issues.md#i-25)** — a **scalar** Greek
 > crashed the HTTP serializer (`TypeError: 'float' object is not iterable`). Every pre-W1.5
 > Greek is a per-pillar *vector*; a bond's delta/gamma are the first 0-d arrays in the
 > codebase. The job priced correctly and then 500'd on the way out. Found by reading the
@@ -867,7 +867,7 @@ bundle versions and proof the Treasury pricers are unchanged.
 > `tests/test_integration_schema.py` are uncollectable (no `pydantic`, no `jsonschema`) —
 > **46 tests silently absent**, and a full-suite count of 1,663 against the venv's 1,709 that
 > looked like a regression and was purely environmental. `.venv/` has always had both.
-> Recorded in [I-25](../known-issues.md#i-25) because the lesson outlives the bug.
+> Recorded in [I-25](../../known-issues.md#i-25) because the lesson outlives the bug.
 >
 > **Four wrong implementations were patched in and verified to fail** (working rule 3):
 > deleting the Greeks branch (**19 of 19** I-01 tests fail, and the broken version raises
@@ -910,7 +910,7 @@ and the API schemas.
 > constant standing in for it.
 >
 > ⚠️ **The strictness rule rests on an unanswered question and is registered as
-> [I-23](../known-issues.md#i-23) (status ASSUMPTION).** If TraderX adds enum
+> [I-23](../../known-issues.md#i-23) (status ASSUMPTION).** If TraderX adds enum
 > values in place rather than versioning the schema, this refuses bundles they
 > consider valid. It fails safe, but it is not a settled contract and must not
 > be recorded as one.
@@ -1074,8 +1074,8 @@ capability function and W0.8's lookup, both stranded since W0, finally have endp
 `BondConfig` is in the `TradeConfig` union, `_base_npv_per_trade`, `_compute_all_greeks` and
 the API schemas, pinned bit-exact against the integration pricers. **Bonds have no VaR/ES**
 — a deterministic instrument has no scenario column, and the refusal is explicit rather than
-a broadcast zero ([I-24](../known-issues.md#i-24)). Two bugs found and fixed on the way
-([I-25](../known-issues.md#i-25) — a scalar Greek crashed the HTTP result serializer).
+a broadcast zero ([I-24](../../known-issues.md#i-24)). Two bugs found and fixed on the way
+([I-25](../../known-issues.md#i-25) — a scalar Greek crashed the HTTP result serializer).
 
 **★ W0.8 completed — results are durable.** The publication protocol, the manifest-scan
 recovery and the persistent store all landed, so a restart no longer loses a completed result
@@ -1086,7 +1086,7 @@ numbered task in this plan except W2 is now done.**
 **Next:** W2 / USD-SOFR, still blocked externally on D03/D04. Equity *valuation* remains
 blocked on a spot/FX source, which is a market-data decision rather than engine work. The
 nearest unblocked engine work is a **bond scenario model** (I-24) — that is what would give
-a bond VaR — followed by [I-27](../known-issues.md#i-27), the full-suite XLA abort, which
+a bond VaR — followed by [I-27](../../known-issues.md#i-27), the full-suite XLA abort, which
 matters more than its Medium severity suggests: while a green run is not repeatable on demand,
 every claim resting on the suite is weaker than it looks.
 

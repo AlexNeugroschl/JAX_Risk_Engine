@@ -3,7 +3,7 @@
 **Purpose.** One authoritative list of every known defect and scope gap in this engine, what
 each one does to a number a user would see, and what closing it actually requires. Written
 during the TraderX EOD integration review (see
-[EOD Contract Proposal](planning/eod-contract-proposal.md)), which is where several of these
+[EOD Contract Proposal](planning/traderX_integration/eod-contract-proposal.md)), which is where several of these
 were first identified.
 
 **Why this file exists.** Every issue below was, at the time it was found, *invisible from
@@ -270,7 +270,7 @@ boundary into the HTTP result. **The pricing is unchanged.**
 2. **Data that does not exist:** historical published fixings for each floating index, back
    to each live trade's effective date. **TraderX does not currently export these** — it is
    the `pastFixings` field requested in
-   [the proposal §2.2](planning/eod-contract-proposal.md). Without them there is nothing to
+   [the proposal §2.2](planning/traderX_integration/eod-contract-proposal.md). Without them there is nothing to
    populate a fixed coupon *with*.
 
 Item 2 is the binding constraint. Engine work alone cannot close this.
@@ -342,7 +342,7 @@ builder. There is no cross-check against a real booked contract.
    compounding method, lookback, lockout, payment lag, calendar, business-day convention,
    roll convention, stub handling, separate fixed/float frequencies. These are decisions
    **D03/D04** in the TraderX pack and
-   [proposal §2.2](planning/eod-contract-proposal.md#22-usd-sofr-swap--the-w2-blocker-set).
+   [proposal §2.2](planning/traderX_integration/eod-contract-proposal.md#22-usd-sofr-swap--the-w2-blocker-set).
    *Guessing them produces confident wrong numbers, which is exactly this issue's failure
    mode.*
 2. **A new builder alongside the existing one** — not a modification of it. Every current
@@ -395,7 +395,7 @@ returns a position value.
 **What closing it requires.** Per instrument: a config dataclass, a pricer, ORE parity tests.
 A fixed-rate Treasury is the cheapest (deterministic discounted cashflows, no Monte Carlo, no
 calibration) and already has a written plan —
-[traderx-bond-integration-roadmap.md](planning/traderx-bond-integration-roadmap.md). Corporate
+[traderx-bond-integration-roadmap.md](planning/traderX_integration/traderx-bond-integration-roadmap.md). Corporate
 bonds additionally need a credit/spread model; **a Treasury-discounted corporate is not credit
 pricing** and should be refused rather than approximated.
 
@@ -576,7 +576,7 @@ that the coordinator owns the durable logical job while this engine owns only th
 re-submitting identical immutable inputs is safe, and structured failure classes
 (`bad-terms` / `missing-market-data` / `unsupported-product` / `numerical-failure` /
 `infrastructure`) so only retryable failures are retried. See
-[proposal §6.3](planning/eod-contract-proposal.md).
+[proposal §6.3](planning/traderX_integration/eod-contract-proposal.md).
 
 **Partially mitigated by W1.6.4 (2026-09-16), on the EOD path only.**
 [`engine/integration/workload.py`](../engine/integration/workload.py) adds the
@@ -590,7 +590,7 @@ invited a duplicate overnight batch.
 **Closed on the EOD path by W0.8's second half (2026-09-17).**
 [`engine/integration/publication.py`](../engine/integration/publication.py) adds the durable
 store the earlier mitigation was missing, and with it the crash-safety design from
-[plan §W0.8](planning/traderx-integration-plan.md):
+[plan §W0.8](planning/traderX_integration/traderx-integration-plan.md):
 
 - **The four-step publication protocol** — stage to a temp path, verify the hash of what was
   *actually written* (not what was meant to be), atomically publish the manifest, then advance
@@ -639,7 +639,7 @@ browser or a control message, and a memory risk on both ends.
 
 **What closing it requires.** Write the cube to a chunked artifact (shape, dtype, axis
 ordering, hash, and an instrument-id ordering file) and return a *reference* plus compact
-summaries. See [proposal §6.4](planning/eod-contract-proposal.md).
+summaries. See [proposal §6.4](planning/traderX_integration/eod-contract-proposal.md).
 
 ---
 
@@ -687,7 +687,7 @@ sparse-tail estimate is indistinguishable from a well-converged one.
 **What closing it requires.** An explicit `measure` label
 (`risk-neutral-pricing` / `historical-forecast` / `deterministic-stress`), plus effective
 sample size and MC standard error on every tail statistic. Small change; prevents a whole
-category of misreading. See [proposal §3.6/§4](planning/eod-contract-proposal.md).
+category of misreading. See [proposal §3.6/§4](planning/traderX_integration/eod-contract-proposal.md).
 
 **Substantially addressed (W0.6), but not closed.** Both halves now exist:
 
@@ -1518,11 +1518,11 @@ reading of an unanswered question** — which is worth registering precisely bec
 otherwise look settled. Nothing here is known to be broken; what is unknown is whether the
 interpretation matches TraderX's intent.
 
-**The question, asked and never answered.** [Response v4](planning/eod-contract-response-v4.md)
+**The question, asked and never answered.** [Response v4](planning/traderX_integration/eod-contract-response-v4.md)
 §1.3 asked: when a real settlement calendar arrives, does `traderx.accrual-basis.v1` **gain
 new `dateBasis` / `settlementAdjustment` values**, or does it become `accrual-basis.v2`? That
 went out on 2026-09-16 and TraderX's v5 reply did not address it. It was asked again in
-[response v6](planning/eod-contract-response-v6.md) §2.3.
+[response v6](planning/traderX_integration/eod-contract-response-v6.md) §2.3.
 
 **What W1.6.1 implemented in the absence of an answer.**
 [`engine/integration/terms.py`](../engine/integration/terms.py) pins each enum to an exact
@@ -1585,7 +1585,7 @@ whether the rule they pin is the *agreed* one.
   plausible-but-wrong fix exists (e.g. substituting a default curve), add a test that fails
   against *that* too.
 - **Related reading:**
-  [EOD Contract Proposal](planning/eod-contract-proposal.md) (integration context and the
+  [EOD Contract Proposal](planning/traderX_integration/eod-contract-proposal.md) (integration context and the
   full field-level requirements), [HTTP API](reference/http-api.md),
   [The Portfolio Entry Point](reference/portfolio-entrypoint.md),
   [Profiling & the Tracer](concepts/profiling.md) (how to measure where a job's time

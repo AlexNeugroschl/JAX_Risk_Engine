@@ -153,7 +153,7 @@ Orchestrates, in order:
 ## Validation and assembly helpers
 
 These implement
-[`docs/planning/traderx-integration.md`](../planning/traderx-integration.md)'s
+[`docs/planning/traderx-integration.md`](../planning/traderX_integration/traderx-integration.md)'s
 validation/assembly layer — see that plan for the full gap analysis; the sections below
 cover what actually shipped.
 

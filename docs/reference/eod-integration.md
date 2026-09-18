@@ -6,7 +6,7 @@ refusal* rather than a guess, a versioned contract served over HTTP, and a crash
 durable store behind it. Everything else still refuses.
 
 Implements W0, W1.2, W1.3, W1.4 and W1.6 of the
-[TraderX Integration Plan](../planning/traderx-integration-plan.md).
+[TraderX Integration Plan](../planning/traderX_integration/traderx-integration-plan.md).
 
 | | |
 |---|---|

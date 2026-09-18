@@ -174,7 +174,7 @@ to be direct that **I cannot return that on receipt of the fixtures.**
 
 **My engine has no bond pricer.** `engine/instruments/` contains exactly four modules, all
 rate derivatives (swap, European/Bermudan/American swaption). No bill pricer, no note pricer,
-no equity position pricer. That's **I-07** in [Known Issues](../known-issues.md).
+no equity position pricer. That's **I-07** in [Known Issues](../../known-issues.md).
 
 There's a second, more specific blocker I found while checking your fixture:
 
@@ -360,7 +360,7 @@ with my simulation's time axis).
 | Aged-swap approximation warned, not silent | `TestAgedSwapWarningIsNotSilent` |
 
 Aged-swap is **flagged, not fixed** — inaccuracy unchanged, needs fixing history to close.
-Full register: [Known Issues](../known-issues.md).
+Full register: [Known Issues](../../known-issues.md).
 
 ---
 

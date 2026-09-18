@@ -43,24 +43,24 @@ The number is small only because my test curves are close together. The mechanis
 bound: it's "priced against an arbitrary other curve," and the error scales with how far
 apart the two curves are.
 
-What makes this the bad kind of bug is that [`_swap_curve_configs`](../../engine/portfolio/request.py#L885)
+What makes this the bad kind of bug is that [`_swap_curve_configs`](../../../engine/portfolio/request.py#L885)
 has a docstring explicitly promising this cannot happen — it says a hard failure is
 deliberate because silently substituting *some* curve "would produce a plausible-looking
 sensitivity computed against a curve the trade was never booked against." That is a precise
 description of what the base pricing path does two hundred lines earlier at
-[request.py:840-841](engine/portfolio/request.py#L840-L841), which indexes the list raw:
+[request.py:840-841](../../../engine/portfolio/request.py#L840-L841), which indexes the list raw:
 
 ```python
 disc_curve = market_config.rates.initial_zero_curves[cfg.discount_curve_index]
 fwd_curve  = market_config.rates.initial_zero_curves[cfg.forward_curve_index]
 ```
 
-Base pricing runs at [request.py:670](engine/portfolio/request.py#L670); the validating
-Greeks path runs at [request.py:691](engine/portfolio/request.py#L691) — *after*, and only
+Base pricing runs at [request.py:670](../../../engine/portfolio/request.py#L670); the validating
+Greeks path runs at [request.py:691](../../../engine/portfolio/request.py#L691) — *after*, and only
 when the flag is set.
 
 **Why my 800-test suite missed it:** the existing coverage calls `_swap_curve_configs`
-directly ([test_portfolio_gap_fixes.py:237](tests/test_portfolio_gap_fixes.py#L237)) and
+directly ([test_portfolio_gap_fixes.py:237](../../../tests/test_portfolio_gap_fixes.py#L237)) and
 asserts it raises. It never routes a bad index through `price_portfolio`. The validator was
 tested; the pricing path's *use* of it was not. A unit test on a guard proves nothing about
 callers that skip the guard.
@@ -201,7 +201,7 @@ tolerance tightens automatically instead of staying at a stale constant. **Agree
 monetary values must never be compared as exact equals.**
 
 **Signed face — confirmed, and already implemented that way.**
-[`normalize.py:159-174`](engine/integration/normalize.py#L159-L174) multiplies
+[`normalize.py:159-174`](../../../engine/integration/normalize.py#L159-L174) multiplies
 `fraction × signed_face` in one step, and the docstring states there is no separate `sign()`
 factor. The double-sign bug you warned about — which would flip a short to positive — is
 structurally impossible here rather than merely avoided.

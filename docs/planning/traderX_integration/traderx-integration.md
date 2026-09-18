@@ -1,15 +1,15 @@
 # TraderX Integration Readiness Plan
 
-**Status:** Implemented — see [`engine/portfolio/request.py`](../../engine/portfolio/request.py) and
-[The Portfolio Entry Point](../reference/portfolio-entrypoint.md) for the shipped design
+**Status:** Implemented — see [`engine/portfolio/request.py`](../../../engine/portfolio/request.py) and
+[The Portfolio Entry Point](../../reference/portfolio-entrypoint.md) for the shipped design
 (the validation/assembly layer described below), plus
-[HTTP API](../reference/http-api.md) for the FastAPI wrapper built on top of it. This
+[HTTP API](../../reference/http-api.md) for the FastAPI wrapper built on top of it. This
 document is kept as the original gap analysis/design rationale; each gap item below now
 points at the actual landed function and test class rather than a "Plan:".
 
 ## Context
 
-The [Roadmap](roadmap-and-history.md) calls for wrapping this engine as a stateless API
+The [Roadmap](../roadmap-and-history.md) calls for wrapping this engine as a stateless API
 consumed by TraderX. `SimulationConfig` (`engine/simulation/market_model.py`) and each instrument's own
 config dataclass (`SwapConfig`, `SwaptionConfig`, `BermudanSwaptionConfig`,
 `AmericanSwaptionConfig`) already form a typed, IDE-friendly input surface — the
@@ -87,7 +87,7 @@ prices against a silently self-inconsistent model with no error.
   `ValueError` naming the trade (index/type/notional) and the specific mismatched field.
   A trade whose `hw_sigma` is a genuinely piecewise (calibrated) `Sigma` is deliberately
   **not** cross-checked against `joint_covariance`'s flat per-step vol — see
-  [The Portfolio Entry Point](../reference/portfolio-entrypoint.md#validate_portfolio_against_simulationsim_config-trade_configs---none)
+  [The Portfolio Entry Point](../../reference/portfolio-entrypoint.md#validate_portfolio_against_simulationsim_config-trade_configs---none)
   for why that divergence is legitimate, not the transcription-bug class this item targets.
 - Called automatically as step 2 of `price_portfolio`'s own orchestration — a caller doesn't
   need to remember to call this separately.
@@ -134,7 +134,7 @@ A production integration point receiving arbitrary TraderX trade payloads needs 
   are explicitly documented and tested as supported (see e.g.
   `tests/test_swap.py::TestZeroNotional`), not silently allowed. Bermudan/American
   `hw_sigma` accepts `None` as a valid "uncalibrated" sentinel (see
-  [The Portfolio Entry Point](../reference/portfolio-entrypoint.md#automatic-calibration)).
+  [The Portfolio Entry Point](../../reference/portfolio-entrypoint.md#automatic-calibration)).
   `BermudanSwaptionConfig.exercise_times` must be non-empty and sorted ascending;
   `AmericanSwaptionConfig` requires `first_exercise <= last_exercise`.
 - Deliberately scoped to reject malformed input, not impose business-rule limits (no "no
@@ -162,7 +162,7 @@ scope, not silently produce a slightly-wrong number:
   `validate_portfolio_against_simulation` (item 2) emits a `UserWarning` (not a hard reject)
   naming the trade when any American/Bermudan exercise date isn't reset-aligned with its own
   underlying's accrual schedule, pointing at
-  [american-bermudan-swaptions.md](../instruments/american-bermudan-swaptions.md)'s
+  [american-bermudan-swaptions.md](../../instruments/american-bermudan-swaptions.md)'s
   mid-coupon-approximation section. `price_portfolio` collects these into
   `PortfolioResult.warnings` rather than only printing to stderr. Tests:
   `tests/test_portfolio.py::TestCrossFieldValidation::test_bermudan_mid_coupon_exercise_time_warns`/
@@ -184,8 +184,8 @@ scope, not silently produce a slightly-wrong number:
 - Each item above got its own test class, run via the existing
   `venv/Scripts/python.exe -m pytest tests/ -q` workflow.
 - This plan's own validation layer is now Phase 1 of a larger effort — see
-  [The Portfolio Entry Point](../reference/portfolio-entrypoint.md) (Phase 2: the
-  `price_portfolio` entry point built on top of it) and [HTTP API](../reference/http-api.md)
+  [The Portfolio Entry Point](../../reference/portfolio-entrypoint.md) (Phase 2: the
+  `price_portfolio` entry point built on top of it) and [HTTP API](../../reference/http-api.md)
   (Phase 3: the FastAPI wrapper). `tests/test_portfolio_entrypoint.py` is the end-to-end
   check this section originally called for: a multi-instrument-type portfolio request,
   validated, priced through `generate_paths` → every pricer → `compute_risk_metrics` via

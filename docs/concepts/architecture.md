@@ -417,7 +417,7 @@ deriving `RatesConfig.maturities` from every swap's real ORE schedule
 early demos did, and surfacing (not silently absorbing) known scope boundaries like a
 Bermudan's mid-coupon exercise approximation as warnings. See
 [The Portfolio Entry Point](../reference/portfolio-entrypoint.md) for the full field-level
-reference and [`docs/planning/traderx-integration.md`](../planning/traderx-integration.md)
+reference and [`docs/planning/traderx-integration.md`](../planning/traderX_integration/traderx-integration.md)
 for the gap analysis this validation layer closes.
 
 `engine/api/` (`app.py`/`routes.py`/`schemas.py`) wraps `price_portfolio` behind a FastAPI

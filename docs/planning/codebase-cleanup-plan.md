@@ -739,7 +739,7 @@ the two FIXED sections, keeping "found during the TraderX EOD exchange" as a
 ### 8.3 `docs/planning/` — six versioned response docs, no index
 
 These are **dated correspondence with a counterparty**, cited by
-[traderx-integration-plan.md](traderx-integration-plan.md) as *"the negotiation, in
+[traderx-integration-plan.md](traderX_integration/traderx-integration-plan.md) as *"the negotiation, in
 order."* **Do not delete or merge them.**
 
 But the directory mixes three kinds of document with no signposting:

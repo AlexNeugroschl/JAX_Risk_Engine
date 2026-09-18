@@ -9,7 +9,7 @@
 Everything described in [The Portfolio Entry Point](portfolio-entrypoint.md) is reachable
 from plain Python already — `price_portfolio(request)`. This module wraps that same
 function behind an HTTP API, for a caller (like TraderX — see
-[TraderX Integration Plan](../planning/traderx-integration.md)) that isn't a Python process
+[TraderX Integration Plan](../planning/traderX_integration/traderx-integration.md)) that isn't a Python process
 sharing this codebase's own memory space.
 
 **Wrap, not replace.** `engine.portfolio.PortfolioRequest`/`PortfolioResult` and every

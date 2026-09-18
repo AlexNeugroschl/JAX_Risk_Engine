@@ -99,7 +99,7 @@ is square, symmetric (within float tolerance), and positive semi-definite (via
 `np.linalg.eigvalsh`). **Raises** `ValueError` naming the offending eigenvalue(s)/index, or
 the symmetry mismatch, rather than letting an invalid matrix silently NaN every simulated
 path through `jnp.linalg.cholesky` — see
-[docs/planning/traderx-integration.md](../planning/traderx-integration.md#1-joint_covariance-psd-validationrepair-highest-priority).
+[docs/planning/traderx-integration.md](../planning/traderX_integration/traderx-integration.md#1-joint_covariance-psd-validationrepair-highest-priority).
 
 ### `nearest_psd(matrix, epsilon: float = 1e-10) -> np.ndarray`
 
@@ -137,7 +137,7 @@ Describes one vanilla fixed-vs-floating interest rate swap.
 `swap_tenor` must parse as a valid `ORE.Period`. Raises `ValueError` naming the bad field.
 This is deliberately scoped to reject malformed input, not impose business-rule limits
 (e.g. no "no rate above 20%" check) — see
-[docs/planning/traderx-integration.md](../planning/traderx-integration.md#4-trade-level-input-validation-notional-rate-ranges-tenor-sanity).
+[docs/planning/traderx-integration.md](../planning/traderX_integration/traderx-integration.md#4-trade-level-input-validation-notional-rate-ranges-tenor-sanity).
 
 ### `price_swaps(yield_curves: jax.Array, maturities: np.ndarray, swap_configs: List[SwapConfig]) -> jax.Array`
 
