@@ -378,6 +378,46 @@ class TestMidCouponKnownLimitation:
         assert np.isfinite(npv)
         assert npv >= 0.0
 
+    @pytest.mark.parametrize("payer,fixed_rate", [
+        (True, 0.02), (True, 0.03), (True, 0.04),
+        (False, 0.02), (False, 0.03), (False, 0.04),
+    ])
+    def test_the_error_direction_follows_the_trade_direction(self, payer, fixed_rate):
+        """The mid-coupon error is NOT conservative, and its sign is the
+        sign of the trade. Pinned because this class asserted only
+        magnitude bounds for months while this module's docstring, I-06 and
+        the instruments doc all claimed the approximation was
+        "conservative (value-understating)" -- which is **false for a
+        payer**.
+
+        Dropping the in-progress FIXED coupon removes a payment: for a
+        payer that is money owed, so the remaining swap looks MORE
+        valuable (overstated, measured up to 7.4x at `sigma=0.005` and
+        ~12x as sigma -> 0); for a receiver it is money due, so it looks
+        less (understated, down to 0.16x).
+
+        Asserting the direction per trade type is the check whose absence
+        let the wrong claim stand. When I-06 is closed by prorating the
+        coupon, both halves should converge on the aligned price and this
+        test should be replaced by an equality, not deleted.
+        """
+        swap = prepare_bermudan(_make_bermudan(payer=payer, fixed_rate=fixed_rate))
+        reset_t = float(swap.fixed_start_times[2])
+
+        def price(t):
+            return price_bermudan_swaption_base(_make_bermudan(
+                payer=payer, fixed_rate=fixed_rate, hw_sigma=0.005,
+                exercise_times=[t]))
+
+        aligned, mid = price(reset_t), price(reset_t + 1e-3)
+        if payer:
+            assert mid > aligned, (
+                "a payer's mid-coupon exercise OVERstates -- if this now "
+                "understates or matches, the proration in I-06 has landed "
+                "and this test should become an equality")
+        else:
+            assert mid < aligned, "a receiver's mid-coupon exercise understates"
+
     def test_mid_coupon_exercise_is_finite_and_of_plausible_magnitude(self):
         # Exercising slightly after a reset date (still inside the coupon
         # that started there) forfeits that entire in-progress coupon

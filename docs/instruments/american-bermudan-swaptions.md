@@ -333,11 +333,31 @@ accrual has already started by the exercise time is excluded **entirely**, not p
 This is exact whenever every exercise date coincides with a reset date (the scope
 `BermudanSwaptionConfig`'s own docstring documents), but for a genuinely mid-coupon
 American exercise date it forfeits the holder's entire already-accrued claim on that
-period's payment rather than crediting a prorated share — a conservative (understating, not
-overstating) approximation, verified not to produce nonsensical output
-(`tests/test_bermudan_swaption.py::TestMidCouponKnownLimitation`), but a real, measurable
-gap (observed to shift the priced value by an amount comparable to a full coupon's PV, not
-merely a few days' accrual — this is NOT a small effect, and callers choosing
+period's payment rather than crediting a prorated share.
+
+> **⚠ Corrected 2026-09-18: this is not a conservative understatement.** This page, and
+> `AmericanSwaptionConfig`'s docstring, previously called the approximation "conservative
+> (understating, not overstating)". Measured, that is **false for a payer**. Dropping the
+> in-progress *fixed* coupon removes a payment, so the sign of the error follows the sign
+> of the trade:
+>
+> | Type | Aligned | Mid-coupon | Ratio | |
+> |---|---:|---:|---:|---|
+> | payer, strike 0.04 | 588 | 4,327 | **7.36x** | **overstates** |
+> | payer, strike 0.03 | 7,617 | 15,540 | 2.04x | **overstates** |
+> | receiver, strike 0.03 | 6,405 | 1,203 | 0.19x | understates |
+> | receiver, strike 0.04 | 26,004 | 7,483 | 0.29x | understates |
+>
+> (5Y annual-fixed underlying, exercise 1e-3 past an accrual start, `sigma=0.005`. The
+> payer overstatement reaches ~12x as `sigma → 0`.) A book of payers and receivers gets
+> errors of opposite sign that partly cancel in the portfolio total while every individual
+> position is wrong. Pinned by
+> `TestMidCouponKnownLimitation::test_the_error_direction_follows_the_trade_direction`;
+> the older tests in that class asserted only magnitude bounds, which is why the wrong
+> claim stood. Tracked as [I-06](../known-issues.md#i-06).
+
+It is a real, measurable gap (observed to shift the priced value by an amount comparable to
+a full coupon's PV, not merely a few days' accrual — this is NOT a small effect, and callers choosing
 `exercise_time_steps_per_year` values that don't evenly divide the underlying's own reset
 frequency should expect it). Choosing `exercise_time_steps_per_year` values that evenly
 divide the reset frequency (verified concretely, not just estimated: for a semiannual-reset
@@ -350,6 +370,43 @@ Full mid-coupon proration (matching ORE's own `couponRatio` construction) is int
 out of scope for this module, following this project's established pattern of documenting
 known gaps as explicit, tested limitations rather than leaving them silent (see
 `swap.py`'s own aged-swap limitation, [Instruments: Interest Rate Swaps](swaps.md)).
+
+## Exercise times are snapped onto the accrual schedule
+
+A Bermudan's exercise times are year-fractions supplied by the caller, and the rule above
+(*"any coupon whose accrual has already started by the exercise time is excluded"*) is
+decided with a tolerance of `1e-9`. That makes an exercise time written as a **rounded
+literal** dangerous out of all proportion to the rounding: `2.0137` for a true accrual start
+of `2.0136986301369864` lands 1.4e-6 *late*, ~1400x that tolerance, so the coupon starting
+on that very date reads as already-elapsed and is dropped entirely. Measured at
+`sigma → 1e-6`, where the price must collapse to its intrinsic **1211.47**, the rounded
+input instead priced **14336.12** — a ~12x overstatement, silent and finite.
+
+`prepare_bermudan` therefore **snaps** any exercise time within `EXERCISE_SNAP_TOLERANCE`
+(1e-4 years, ~53 minutes) of a fixed accrual start onto that accrual start exactly. A
+caller writing a 4-decimal year-fraction is naming an unambiguous date, so the repair is
+unambiguous too. This was [I-29](../known-issues.md#i-29).
+
+**What snapping deliberately does not do.** Anything further away than the tolerance is
+passed through **untouched** — *not* refused. A genuinely mid-period exercise date is a
+supported trade whose understatement is the limitation documented immediately above, so
+enforcing alignment outright would convert a documented approximation into a hard failure.
+(That was tried: it failed 66 tests.) Snapping repairs a damaged *spelling* of an accrual
+date and changes nothing else.
+
+The band is wide on both sides: a 4-to-6-decimal literal is off by ≤1.4e-6 (~70x inside),
+while one calendar day is 2.74e-3 (~27x outside) and accrual starts are ≥0.99 years apart,
+so a snap can never be ambiguous between two boundaries. The honest limit is that a
+**3-decimal** literal (3e-4 out, a tenth of a day) falls outside the band and still drops
+the coupon — at that coarseness a typo is indistinguishable from an intentional mid-period
+date. Use **`exercisable_times(cfg)`**, which returns the underlying's accrual starts
+exactly, rather than writing exercise times as literals.
+
+**American configs are exempt.** `AmericanSwaptionConfig.to_bermudan` sets
+`exercise_times_are_discretized=True` on the config it builds. Its uniform grid over a
+continuous window is unaligned by construction, so a grid point landing near an accrual
+start is a coincidence of the spacing rather than a damaged date — snapping it would
+silently *move* one of the exercise opportunities the discretization is made of.
 
 ## Tested by
 

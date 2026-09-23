@@ -198,6 +198,18 @@ class BermudanSwaptionConfig:
     (SwaptionEngineBuilder::model()) is built around exactly this
     coterminal-date assumption for Bermudan/American calibration baskets.
 
+    A near-miss spelling of an accrual date is REPAIRED rather than left to
+    misprice: `prepare_bermudan` snaps any exercise time within
+    `EXERCISE_SNAP_TOLERANCE` of an accrual start onto it exactly, because a
+    4-decimal rounding of one used to silently drop a whole coupon and
+    overstate a zero-vol price ~12x (I-29 in docs/known-issues.md). Use
+    `exercisable_times(cfg)` to get the admissible times exactly rather than
+    writing them as literals.
+
+    A time further away than that is NOT an error and is passed through
+    untouched -- a genuine mid-period exercise date is supported, and its
+    conservative value-understating approximation is the documented I-06.
+
     rate_factor_index/hw_a/hw_sigma/initial_zero_curve: same meaning and
     same single-model-pricing rationale as
     engine.instruments.european_swaption.SwaptionConfig -- see that
@@ -232,6 +244,22 @@ class BermudanSwaptionConfig:
     n_per_std: int = 48
     std_devs: float = 6.0
     evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
+    #: True when `exercise_times` is a NUMERICAL DISCRETIZATION of a
+    #: continuous exercise window rather than a list of contractual dates --
+    #: set only by `AmericanSwaptionConfig.to_bermudan`, never by a caller
+    #: booking a real Bermudan.
+    #:
+    #: It exempts this config from `prepare_bermudan`'s near-miss snapping
+    #: (I-29). On a uniform grid, a point landing within the snap tolerance
+    #: of an accrual start is a coincidence of the spacing rather than a
+    #: damaged date, so snapping it would silently MOVE an exercise
+    #: opportunity and distort the discretization the caller asked for.
+    #:
+    #: The provenance rides on the config rather than being a parameter each
+    #: pricing call must pass, because a `to_bermudan()` result is priced at
+    #: ~14 call sites across the engine, tests and demos -- a flag every one
+    #: of them had to remember would eventually be forgotten at one.
+    exercise_times_are_discretized: bool = False
 
     def __post_init__(self) -> None:
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
@@ -387,6 +415,122 @@ def _denorm_static(value):
     return value
 
 
+# ~53 minutes, in year fractions. An exercise time within this distance of a
+# fixed accrual start is treated as NAMING that accrual date and is snapped
+# onto it exactly; anything further away is left exactly as the caller wrote
+# it. See `_snap_exercise_times` for why this specific value.
+EXERCISE_SNAP_TOLERANCE = 1e-4
+
+
+def _snap_exercise_times(times: Sequence[float],
+                         fixed_start_times: np.ndarray) -> np.ndarray:
+    """Snap a near-miss exercise time onto the accrual start it plainly names.
+
+    WHY THIS EXISTS. `BermudanSwaptionConfig` documents that exercise times
+    must coincide with the underlying's own accrual dates, but that contract
+    was stated only in prose and never enforced -- and the failure mode when
+    it was broken was silent and large. `_hw_swap_value_at_nodes` decides
+    which coupons are still alive at exercise with
+    `fixed_start_times >= t - 1e-9`, so an exercise time written as a rounded
+    literal (`2.0137` for a true `2.0136986301369864`) lands 1.4e-6 LATE --
+    ~1400x that liveness tolerance. The coupon starting on that very date
+    then reads as already-elapsed and is dropped from the exercise value
+    entirely: measured at `sigma -> 1e-6`, where the price must collapse to
+    its intrinsic 1211.47, the rounded input instead priced 14336.12.
+    Registered as I-29 in docs/known-issues.md.
+
+    WHY CORRECT RATHER THAN REFUSE. A caller writing a 4-decimal year
+    fraction is expressing an unambiguous DATE, so the repair is unambiguous
+    too. Raising instead would reject input whose intent is clear and push
+    callers toward hand-copied 16-digit literals -- which is how this class
+    of mistake is made in the first place.
+
+    WHY A FAR-AWAY TIME IS LEFT ALONE RATHER THAN REFUSED. This is the
+    important half, and it is why this function corrects a near miss instead
+    of policing alignment generally. A genuinely mid-period exercise date is
+    NOT an error in this engine: it is supported, in scope, and its
+    value-understating approximation is documented and tracked as I-06.
+    `tests/test_bermudan_swaption.py::TestSingleExerciseMatchesLgmJamshidian`
+    prices at 1.0/2.5/4.0 against an independent closed form that applies the
+    same liveness rule, and `TestMidCouponKnownLimitation` pins the
+    approximation deliberately. Refusing unaligned times broke 66 such tests
+    when tried -- correctly so: it would have converted a documented
+    approximation into a hard failure and removed a working capability.
+
+    So the scope here is narrow on purpose: repair inputs that are obviously
+    a damaged spelling of an accrual date, and change nothing else.
+
+    WHY 1e-4, AND WHY THIS IS NOT A MAGIC NUMBER. It sits in a wide empty
+    band between the two populations it must separate, measured on this
+    engine's own schedules rather than assumed:
+
+      - Rounding artifacts it must CATCH: a 4-, 5- or 6-decimal year
+        fraction is off by at most 1.4e-6, so 1e-4 clears the realistic
+        mistake by ~70x.
+      - Deliberate dates it must NOT touch: one calendar day is 2.74e-3, so
+        1e-4 is 27x too small to reach even a neighbouring day, let alone a
+        neighbouring accrual date. The mid-period times used in the tests
+        above sit ~1e-2 away, ~100x outside the band.
+      - Ambiguity between two boundaries is impossible: `build_vanilla_swap`
+        puts fixed accrual starts >=0.99 years apart (annual fixed leg), so
+        the nearest boundary is ~10,000x the tolerance away from the second
+        nearest.
+
+    A 3-decimal literal (off by up to 3e-4, a tenth of a day) falls outside
+    the band and is therefore left alone rather than guessed at -- at that
+    coarseness the intended date is no longer unambiguous, and snapping it
+    would be exactly the silent approximation this engine refuses elsewhere.
+
+    ONE CALLER IS EXEMPTED ENTIRELY. `AmericanSwaptionConfig.to_bermudan`
+    discretizes a CONTINUOUS exercise window onto a uniform grid (ORE's own
+    construction), where a grid point landing near an accrual start is a
+    coincidence of the spacing rather than a damaged date -- snapping it
+    would silently MOVE an exercise opportunity and distort the
+    discretization. It opts out via `exercise_times_are_discretized`.
+    """
+    snapped = []
+    for t in times:
+        t = float(t)
+        distances = np.abs(fixed_start_times - t)
+        nearest = int(np.argmin(distances))
+        if distances[nearest] <= EXERCISE_SNAP_TOLERANCE:
+            snapped.append(float(fixed_start_times[nearest]))
+        else:
+            snapped.append(t)
+    return np.asarray(snapped, dtype=np.float64)
+
+
+def exercisable_times(cfg: BermudanSwaptionConfig) -> List[float]:
+    """The exercise times this underlying actually admits: the year fractions
+    of its own fixed accrual starts, in ascending order.
+
+    The valid exercise dates are a property of the underlying swap's
+    ORE-generated schedule, so they cannot be known until that schedule is
+    built -- which left a caller wanting to name one with no way to ask.
+    (`tests/test_ore_bermudan_oracle.py` reached for it by constructing a
+    throwaway config with a dummy `exercise_times=[0.0]` and reading
+    `prepare_bermudan(...).fixed_start_times` back off the result, which
+    stopped working once `_snap_exercise_times` began validating that dummy.)
+
+    `exercise_times` on the returned list are exact, so passing any of them
+    through needs no snapping and is the recommended way to build a config:
+
+        cfg = replace(probe, exercise_times=exercisable_times(probe)[2:])
+
+    Every element is a valid exercise time: the last one starts the final
+    accrual period, which still begins strictly before final maturity (the
+    last PAYMENT date), so `prepare_bermudan` accepts it -- exercising into a
+    swap with one period left to run is a legitimate trade.
+    """
+    swap = _build_ore_swap(cfg)
+    today = cfg.evaluation_date
+    return [
+        TIME_AXIS_DAY_COUNTER.yearFraction(
+            today, ORE.as_fixed_rate_coupon(cf).accrualStartDate())
+        for cf in swap.fixedLeg()
+    ]
+
+
 def prepare_bermudan(cfg: BermudanSwaptionConfig) -> _PreparedBermudan:
     """CPU: build the ORE underlying swap and extract both legs' full
     cashflow schedules (unlike Jamshidian, early exercise means the
@@ -400,7 +544,13 @@ def prepare_bermudan(cfg: BermudanSwaptionConfig) -> _PreparedBermudan:
     FixedRateCoupon.amount(), the same source
     engine.instruments.european_swaption.prepare_swaption uses) rather than
     a separate accrual-fraction array -- _hw_swap_value_at_nodes discounts
-    these amounts directly, with no need to re-multiply by rate/accrual."""
+    these amounts directly, with no need to re-multiply by rate/accrual.
+
+    Repairs a near-miss exercise time by snapping it onto the accrual start
+    it plainly names (`_snap_exercise_times`, I-29), leaving deliberately
+    mid-period times untouched, and skipping the repair entirely for a config
+    flagged `exercise_times_are_discretized` -- an American's grid. See that
+    function and that field for the reasoning."""
     swap = _build_ore_swap(cfg)
     today = cfg.evaluation_date
 
@@ -419,7 +569,12 @@ def prepare_bermudan(cfg: BermudanSwaptionConfig) -> _PreparedBermudan:
         float_end.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
         float_accrual.append(c.accrualPeriod())
 
-    exercise_times = np.asarray(sorted(cfg.exercise_times), dtype=np.float64)
+    if cfg.exercise_times_are_discretized:
+        exercise_times = np.asarray(sorted(cfg.exercise_times), dtype=np.float64)
+    else:
+        exercise_times = _snap_exercise_times(
+            sorted(cfg.exercise_times), np.asarray(fixed_start_times)
+        )
     final_maturity = max(fixed_times[-1], float_pay[-1])
     if np.any(exercise_times >= final_maturity):
         raise ValueError(

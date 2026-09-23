@@ -90,6 +90,7 @@ from engine.simulation.market_model import SimulationConfig, generate_paths
 from engine.instruments.swap import SwapConfig, price_swaps
 from engine.instruments.european_swaption import SwaptionConfig, price_swaptions
 from engine.instruments.bermudan_swaption import (
+    EXERCISE_SNAP_TOLERANCE,
     BermudanSwaptionConfig, price_bermudan_swaptions, price_bermudan_swaption_base,
 )
 from engine.instruments.american_swaption import AmericanSwaptionConfig, price_american_swaptions
@@ -486,7 +487,12 @@ def _warn_if_not_reset_aligned(label: str, cfg, index: int) -> None:
     dates don't coincide with one of the underlying swap's own
     accrual/payment dates -- see docs/planning/traderx-integration.md gap
     item 5 and docs/instruments/american-bermudan-swaptions.md's mid-coupon
-    approximation."""
+    approximation.
+
+    "Coincide" means within `EXERCISE_SNAP_TOLERANCE`, matching what
+    `prepare_bermudan` actually prices (I-29), NOT exact equality -- a
+    near-miss is repaired before pricing, so warning about it would report
+    an approximation that does not occur."""
     berm_cfg = cfg.to_bermudan() if isinstance(cfg, AmericanSwaptionConfig) else cfg
     swap = build_vanilla_swap(
         notional=berm_cfg.notional, fixed_rate=berm_cfg.fixed_rate, payer=berm_cfg.payer,
@@ -502,7 +508,18 @@ def _warn_if_not_reset_aligned(label: str, cfg, index: int) -> None:
         c = ORE.as_floating_rate_coupon(cf)
         reset_dates.add(round(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()), 9))
 
-    misaligned = [t for t in berm_cfg.exercise_times if round(float(t), 9) not in reset_dates]
+    # Matched with the SAME tolerance `prepare_bermudan` snaps with, not by
+    # exact set membership. A time within `EXERCISE_SNAP_TOLERANCE` of an
+    # accrual start is repaired before pricing (I-29), so reporting it as
+    # "will use the mid-coupon approximation" would describe a mispricing
+    # that no longer happens -- the warning must agree with what the pricer
+    # actually does. Anything genuinely mid-period is still reported.
+    sorted_resets = sorted(reset_dates)
+    misaligned = [
+        t for t in berm_cfg.exercise_times
+        if min((abs(float(t) - r) for r in sorted_resets), default=float("inf"))
+        > EXERCISE_SNAP_TOLERANCE
+    ]
     if misaligned:
         warnings.warn(
             f"{label}: exercise_times {misaligned} are not reset-aligned with the "

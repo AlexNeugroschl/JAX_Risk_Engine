@@ -124,6 +124,8 @@ pass events against ~630 `ThunkExecutor::Execute`). Two distinct reasons:
 
 So warmup answers "what does a steady-state repeat cost," not "show me execution only." A
 genuinely execution-dominated timeline needs the closure-identity recompile fixed first.
+§2.2 is the full warm lane/category breakdown, which quantifies exactly that: 79%
+compilation against 1.6% arithmetic even after the cache is warm.
 All 31 are enumerated with exact callsites, root cause and a vetted fix plan in
 [Known Issues I-21 and I-22](../known-issues.md#i-21) — two different mechanisms needing
 two different fixes, which is why they are filed separately.
@@ -136,6 +138,8 @@ queued, the timeline is truncated. `npv_cube` is the dominant device-side tail.
 ---
 
 ## 2. What the trace contains
+
+### 2.1 Cold (warmup off — the default)
 
 With the Python tracer off, the host tracer still records everything JAX and XLA do.
 Measured lane breakdown on the 4-trade demo portfolio (durations exceed wall time because
@@ -160,6 +164,82 @@ below**:
 | **Device execute (the actual math)** | **~3.0 s** |
 
 **~98% of the job was compile and dispatch overhead around 3 seconds of arithmetic.**
+
+### 2.2 Warm (`JAX_RISK_PROFILE_WARMUP=1` — what `demo_profile_small.py` ships as)
+
+The cold table above answers "what does this job cost from scratch." It is **not** the
+steady-state picture, and the difference is large enough that quoting the cold numbers for
+a repeat job is simply wrong. Measured on the same 4-trade demo portfolio, warm, via
+`demos/demo_profile_small.py` unmodified (`WARM_CACHE = True`):
+
+Job wall time **15.19 s**, 278,534 events. Lane breakdown, top-level spans only so nested
+events are not double-counted:
+
+```
+main Python thread (tid)      34,143 events   15.19s   <- the job itself
+tf_xla-cpu-codegen           153,021 events   29.12s   (24 threads, concurrent)
+tf_PjRtCompilerThreadPool     38,011 events   10.78s   (1 thread, concurrent)
+tf_XLAEigen                   39,668 events    0.14s   <- actual kernels
+tf_XLAPjRtCpuClient           13,135 events    0.11s   <- actual kernels
+```
+
+The codegen and compiler-pool lanes exceed wall time because they are background threads
+running concurrently with the main thread and with each other; only the main-thread column
+is a wall-clock budget.
+
+Where the 15.19 s actually goes:
+
+| Category | Time | Share |
+|---|---:|---:|
+| **XLA compilation** (31× `backend_compile_and_load`) | **11.98 s** | **79%** |
+| Everything else on the main thread (tracing, dispatch, Python) | ~3.2 s | 21% |
+| **Device execute (the actual math)** | **~0.25 s** | **1.6%** |
+
+Device execute is `ThunkExecutor::Execute`, 1,131 spans totalling 0.246 s, corroborated
+independently by the two kernel lanes (`tf_XLAEigen` 0.14 s + `tf_XLAPjRtCpuClient` 0.11 s).
+
+By phase annotation (§4), the concentration is extreme:
+
+| Phase | Wall |
+|---|---:|
+| greeks | **14.04 s** |
+| calibration | 1.12 s |
+| pricing | 0.01 s |
+| base_npv | 0.01 s |
+| simulation | 0.01 s |
+| risk | 0.00 s |
+
+And inside `greeks`, per trade — every entry is dominated by two jitted programs:
+
+| Trade | Wall | `combined` | `price_fn` | other |
+|---|---:|---:|---:|---:|
+| trade2 `BermudanSwaptionConfig` | 5.40 s | 2.85 s | 1.81 s | 0.72 s |
+| trade3 `AmericanSwaptionConfig` | 5.03 s | 2.58 s | 1.69 s | 0.73 s |
+| trade1 `SwaptionConfig` | 2.96 s | 2.53 s | 0.41 s | 0.02 s |
+| trade0 `SwapConfig` | 0.65 s | 0.49 s | 0.15 s | 0.01 s |
+
+**What this means.** Warming the cache removes 177 of the 208 cold compilations (208 → 31,
+verified by counting `backend_compile_and_load` inside the trace window) and cuts wall time
+~26 s → ~15 s. It does **not** change the shape of the answer: compilation still accounts
+for ~79% of a warm job against ~1.6% real arithmetic, with the remaining ~19% being
+main-thread tracing and dispatch. Warmup buys back absolute seconds, not a different
+verdict — the job is overwhelmingly overhead either way.
+
+The reason is entirely §3.5's residual recompile. All 31 warm compilations sit under
+`PjitFunction(combined)` and `PjitFunction(price_fn)` in the Greeks phase — `price_fn` is a
+fresh closure per call and `jax.jit` keys on function identity, so the grad+Hessian-diagonal
+program recompiles on every Greeks call even for an identical trade. That is the whole warm
+cost. Fixing it (Known Issues [I-21](../known-issues.md#i-21)/[I-22](../known-issues.md#i-22))
+is what would turn this into an execution-dominated timeline; nothing else on the list would
+move the number meaningfully, because there is only 0.25 s of arithmetic to expose.
+
+**On "Python vs JAX".** This trace cannot answer that question, and neither can any trace
+this engine collects by default: `python_tracer_level=0` (§1.3) means **no event carries a
+Python source file or line**. What it separates is *compilation* (11.98 s, XLA's own C++/MLIR
+machinery, not your Python), *device execute* (0.25 s), and a ~3.2 s residue of main-thread
+tracing, dispatch and interpreter time that is **not further attributable from this trace**.
+Engine-Python attribution needs a separate `cProfile` run — not
+`JAX_RISK_PROFILE_PYTHON_TRACER=1`, which at this event count would blow the ~1M cap (§5).
 
 ### Reading the timeline on CPU
 

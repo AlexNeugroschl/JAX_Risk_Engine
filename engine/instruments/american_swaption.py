@@ -77,13 +77,22 @@ class AmericanSwaptionConfig:
     is excluded entirely from the remaining swap value -- see that
     function's docstring) which is exact when every exercise date coincides
     with a reset date (BermudanSwaptionConfig's own documented scope) but,
-    for a mid-coupon American exercise date, understates the true value
-    slightly (the holder forfeits the ALREADY-ACCRUED portion of the
-    in-progress coupon entirely, rather than receiving its prorated share
-    as ORE's engine would). This is a conservative (understating, not
-    overstating) approximation, not a silent/dangerous error -- verified
-    not to produce nonsensical output (see
-    tests/test_bermudan_swaption.py's TestMidCouponKnownLimitation), and
+    for a mid-coupon American exercise date, misprices it -- the holder
+    forfeits the ALREADY-ACCRUED portion of the in-progress coupon
+    entirely, rather than receiving its prorated share as ORE's engine
+    would.
+
+    **This is NOT a conservative understatement, though this docstring
+    claimed exactly that until 2026-09-18.** Dropping the in-progress FIXED
+    coupon removes a payment, so the sign of the error is the sign of the
+    trade: a PAYER (that payment was money owed) is OVERSTATED -- measured
+    up to 7.4x at sigma=0.005 and ~12x as sigma -> 0 -- while a RECEIVER is
+    understated, down to 0.16x. A book of both gets errors of opposite sign
+    that partly cancel in the total while every position is wrong. See I-06
+    in docs/known-issues.md for the measured table, and
+    tests/test_bermudan_swaption.py's TestMidCouponKnownLimitation::
+    test_the_error_direction_follows_the_trade_direction, which pins the
+    direction -- the check whose absence let the wrong claim stand. Also
     `exercise_time_steps_per_year` values that evenly divide the
     underlying's own reset frequency (e.g. a semi-annual-reset swap with
     `exercise_time_steps_per_year` a multiple of 2) avoid it entirely by
@@ -130,6 +139,13 @@ class AmericanSwaptionConfig:
         (`optionTimes.insert(t1); for i in 0..steps: optionTimes.insert(t1 +
         i*(t2-t1)/steps)`, which inserts `t1` itself twice into a std::set,
         a no-op, and always includes `t2` at `i=steps`).
+
+        The result is flagged `exercise_times_are_discretized`, which exempts
+        it from `prepare_bermudan`'s near-miss snapping (I-29). On a uniform
+        grid, a point landing very close to an accrual start is a
+        coincidence of the spacing rather than a damaged date, so snapping it
+        would silently MOVE an exercise opportunity and distort the
+        discretization this method exists to produce.
         """
         t1, t2 = self.first_exercise, self.last_exercise
         steps = max(1, round((t2 - t1) * self.exercise_time_steps_per_year))
@@ -143,6 +159,7 @@ class AmericanSwaptionConfig:
             swap_tenor=self.swap_tenor, index_tenor_months=self.index_tenor_months,
             floating_spread=self.floating_spread, n_per_std=self.n_per_std, std_devs=self.std_devs,
             evaluation_date=self.evaluation_date,
+            exercise_times_are_discretized=True,
         )
 
 

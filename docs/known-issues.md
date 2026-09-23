@@ -29,6 +29,8 @@ the code behaves exactly as designed. An entry here is a standing question to an
 party, not a bug queue item, and it closes when the question is answered rather than when
 code changes.
 
+## Verification status
+
 Last full verification (2026-09-18, after the ORE-oracle work): **1,863 passed, 0 failed**
 (4h08m) — the complete suite (`.venv/Scripts/python.exe -m pytest tests/`), nothing
 excluded, summary line printed, exit code 0, zero `FAILED`/`ERROR` lines. That is 1,777 at
@@ -36,162 +38,241 @@ the previous commit plus 86 new tests (50 in `tests/test_ore_bermudan_oracle.py`
 `tests/test_ore_coverage_hardening.py`), so the delta reconciles exactly:
 1,777 + 50 + 36 = 1,863. Both counts taken from `pytest --collect-only -q tests/`.
 
-> **⚠ The 4h08m wall-clock is a 15x regression against the 16m55s this line previously
-> recorded, and it is unexplained.** The count reconciles and nothing failed, so this is
-> not a correctness signal, but it is not nothing either: candidates are the two new files'
-> ORE tree/FD engines (800x800 PDE grids and 800-step trees, the slowest single assertions
-> in the suite — though those two files run in ~50s *combined* in isolation, which does not
-> account for the gap), XLA recompilation pressure from the mutation tests' repeated
-> `clear_cache()` calls, or machine load during an unattended run. **Do not record a
-> faster figure here without re-measuring.** Timing the suite per-file
-> (`--durations=25`) is the obvious next step and has not been done.
+> **⚠ That total is now stale by +16, and a full suite has NOT been re-run since.**
+> Collection now reports **1,879** (`pytest --collect-only -q tests/`), reconciling as
+> 1,863 + 10 + 6:
+>
+> | Δ | Source |
+> |---:|---|
+> | +10 | the [I-29](#i-29) fix — `tests/test_ore_bermudan_oracle.py` goes 50 → 60 |
+> | +6 | the [I-06](#i-06) direction tests — `tests/test_bermudan_swaption.py` goes 55 → 61 |
+>
+> What *was* run against these changes: the twelve suites touching Bermudan/American
+> pricing, calibration and the portfolio path — **327 passed, 0 failed** (7m59s) — and,
+> after the I-06 work, the three Bermudan/American/oracle suites — **143 passed, 0 failed**
+> (2m15s), reconciling exactly as 61 + 22 + 60. Both runs printed a summary line and exited 0.
+>
+> **This line stays wrong until someone re-runs the whole suite**, and is deliberately not
+> silently updated to 1,879: a total nobody measured is exactly what rules 2 and 4 above
+> exist to prevent. The collection delta is confirmed; the pass count is not.
 
-Previous verification (2026-09-17, after **W0.8**): **1,777 passed, 0 failed** (16m55s).
-That was 1,718 at the previous commit plus W0.8's 59 new tests (51 in
-`tests/test_integration_publication.py`, and 8 net added to
-`tests/test_integration_eod_routes.py`, which goes 56 → 64): 1,718 + 51 + 8 = 1,777.
+Earlier figures, for history: 1,777/0 after W0.8 (16m55s), 1,718/0 at `1e078f3`, 1,618/0
+after W1.6, 1,452/1 after the v5 fixes, 1,384/2 after W1.4, 1,324/2 after W1.3, 1,217/2
+after W1.2.
 
-**Two corrections to figures previously recorded here**, both found by re-collecting rather
-than re-reading:
+**Four standing rules for any figure recorded here**, each one written after it was violated:
 
-1. The total here briefly read **1,770**, reconciled as "52 new tests (44 + 8)". Both halves
-   were wrong. `tests/test_integration_publication.py` collects **51**, not 44 — the 44 was a
-   count of `def test_` lines, which undercounts every parameterized case. And 1,770 was
-   taken before the last of the `eod_routes` tests landed.
-2. Before that it read **1,716 after W1.5**, reconciled as "1,618 + the 98 W1.5 tests".
-   Re-collecting that commit (`pytest --collect-only` at `1e078f3`) yields **1,718** — so
-   that total and its arithmetic were off by two.
+1. **Run `.venv/Scripts/python.exe -m pytest`, never the bare `python`.** The system
+   interpreter lacks `pydantic` and `jsonschema`, which makes `tests/test_api.py` and
+   `tests/test_integration_schema.py` silently uncollectable — 77 tests at today's counts.
+   A count from the wrong interpreter is not comparable to anything here. See [I-25](#i-25).
+2. **Take counts from `pytest --collect-only`** — never from a remembered summary line, and
+   never by grepping `def test_`, which undercounts every parameterized case.
+3. **Confirm a summary line was actually printed.** [I-27](#i-27) can kill the process with
+   no summary at all, and an exit code read from the wrong place has been mistaken for a
+   pass. Leave the working tree alone for the duration of a run — an unrelated `git stash`
+   mid-run also terminates it without a summary.
+4. **A count that does not reconcile is a signal to find out why, not a new number to
+   record.** Both hazards above have fired and both were caught by arithmetic rather than by
+   the runner.
 
-Counts here are now taken from `pytest --collect-only`, never transcribed from a remembered
-summary line and never derived by grepping for `def test_`. A register whose own header
-overstates its verification undermines every status in it. Earlier figures, for history:
-1,618/0 after W1.6, 1,452/1 after the v5 fixes, 1,384/2 after W1.4, 1,324/2 after W1.3,
-1,217/2 after W1.2.
+> **⚠ The 4h08m wall-clock is a 15x regression against the previous 16m55s, and it is
+> unexplained.** The count reconciles and nothing failed, so this is not a correctness
+> signal — but it is not nothing. Candidates: the two new files' ORE tree/FD engines
+> (800x800 PDE grids, 800-step trees — though they run in ~50s *combined* in isolation,
+> which does not account for the gap), XLA recompilation pressure from the mutation tests'
+> repeated `clear_cache()` calls, or machine load during an unattended run. **Do not record
+> a faster figure without re-measuring.** Timing per-file (`--durations=25`) is the obvious
+> next step and has not been done.
 
-**One caveat, and it is about the runner rather than the code.** [I-27](#i-27) makes a
-whole-suite run *intermittently* hard-abort inside XLA compilation, killing the process with
-no summary at all. This run completed cleanly; an earlier identical one did not — and during
-this same session a run interrupted by an unrelated `git stash` of the working tree also
-terminated without a summary, which is a reminder that the tree must be left alone for the
-duration of a run. So a green result here is real but **not reliably repeatable on demand** —
-always confirm a summary line was actually printed before calling a run green.
+**The long-running flake.** `test_cross_tier_jobs_correct_and_concurrent` has now passed
+four full runs and failed one, on identical code. It passes in isolation (12.28s) and failed
+every full run from W1.2 through W1.5. The 2026-09-18 pass came during the *slowest* run on
+record (4h08m), which is mild evidence *against* the load-dependence hypothesis, since a
+wall-clock overlap assertion should be most likely to fail under exactly those conditions.
+**A single green run of this test means nothing in either direction.** Shares
+[I-15](#i-15)'s premise; still not enough to reclassify.
 
-A green suite is evidence about the *tests*, not proof about the *code* — working rule 9,
-which this register exists to embody. Of the defects found during this integration, three came
-from TraderX reading source or independently reproducing numbers ([I-13](#i-13),
-[I-19](#i-19), [I-20](#i-20)), three from reviewing or reasoning about my own code
-([I-25](#i-25), [I-26](#i-26) and the W1.6 `submissionId` bug), and **none from running this
-suite**.
+**How the defects here were actually found — none by running this suite.** A green suite is
+evidence about the *tests*, not proof about the *code* (working rule 9), which is the premise
+this register exists to embody. Of the defects found during this integration:
 
-**[I-29](#i-29) and [I-30](#i-30) (2026-09-18) came from a fourth route: building a new
-external oracle, and then attacking the suite's own tolerances.** Neither is a mispricing.
-The Bermudan engine was cross-checked end to end against real `ORE.TreeSwaptionEngine` /
-`ORE.FdHullWhiteSwaptionEngine` objects for the first time (`tests/test_ore_bermudan_oracle.py`;
-see [ore-parity.md §7a](reference/ore-parity.md#7a-an-external-multi-exercise-oracle-does-exist-correction-2026-09-18),
+| Route | Issues |
+|---|---|
+| TraderX reading source or reproducing numbers | [I-13](#i-13), [I-19](#i-19), [I-20](#i-20) |
+| Reviewing or reasoning about my own code | [I-25](#i-25), [I-26](#i-26), the W1.6 `submissionId` bug |
+| Building a new external oracle | [I-29](#i-29) (fixed 2026-09-18) |
+| Mutation-testing the suite's own tolerances | [I-30](#i-30) |
+| **Measuring a claim the docs made but no test asserted** | **[I-06](#i-06)'s error direction** |
+| Running the test suite | **none** |
+
+**The newest route is the cheapest, and it found the worst result.** [I-06](#i-06) had been
+described as a "conservative (value-understating)" approximation here, in a module
+docstring and in the instruments doc. Nothing measured it — `TestMidCouponKnownLimitation`
+asserted only that the price was finite, non-negative and within one order of magnitude.
+Actually pricing a payer and a receiver either side of an accrual boundary took one script
+and showed the approximation **overstates a payer up to 7.4x**. A documented property that
+no test asserts is a hypothesis wearing the costume of a fact; this register now carries
+its own instance of the thing it was created to catch.
+
+The last two routes are new as of 2026-09-18. The Bermudan engine was cross-checked end to
+end against real `ORE.TreeSwaptionEngine` / `ORE.FdHullWhiteSwaptionEngine` objects for the
+first time (see [ore-parity.md §7a](reference/ore-parity.md#7a-an-external-multi-exercise-oracle-does-exist-correction-2026-09-18),
 which corrects this project's standing claim that no such oracle existed) and **no pricing
 defect was found** — every apparent discrepancy resolved to the new test being wrong or to
-the already-documented HW/LGM parametrization difference. What the exercise did surface was
-one silent input sensitivity ([I-29](#i-29)) and one place where the suite's own `rtol=1e-4`
-cannot see a deleted term of the core bond-price formula ([I-30](#i-30)) — the latter found
-by deliberately corrupting the formula and checking whether the suite noticed, which is the
-only technique on this list that interrogates the tests rather than the code.
+the already-documented HW/LGM parametrization difference. What it surfaced instead was one
+silent input sensitivity ([I-29](#i-29)) and one place where the suite's own `rtol=1e-4`
+cannot see a deleted term of the core bond-price formula ([I-30](#i-30)).
 
-Two previously-recorded header caveats are now resolved:
+---
 
-- The `pydantic` environment gap is gone — the dependency is installed (2.13.5),
-  `tests/test_api.py` collects, and the run contains zero `ModuleNotFoundError`. (The old
-  header both claimed this was resolved *and* described the failures as current; that
-  contradiction is removed.)
+## Priority order for fixing
 
-  > **⚠ Always run `.venv/Scripts/python.exe -m pytest`, never the bare `python`.** During
-  > W1.5 the system interpreter was used by mistake, where `pydantic` and `jsonschema` are
-  > absent. That made `tests/test_api.py` and `tests/test_integration_schema.py`
-  > **uncollectable — 77 tests silently missing at today's counts** (31 + 46) — and produced
-  > a full-suite count of 1,663 against the venv's 1,709, a discrepancy that looked like a
-  > regression and was purely environmental. A count taken from the wrong interpreter is not
-  > comparable to anything recorded here. See [I-25](#i-25). (This bullet previously said
-  > "46", which was `test_integration_schema.py`'s share alone.)
-- `test_cross_tier_jobs_correct_and_concurrent` — the long-running flake — **failed again**.
-  W0.8 ran the full suite twice: run 1 passed it (1,770 / 0), run 2 failed it
-  (1,771 passed, 1 failed). An earlier version of this bullet claimed it had "passed again …
-  its second consecutive clean full-suite pass" — that was written from run 1 and **run 2
-  falsified it**. The intermittency is the whole point: it passes in isolation (12.28s,
-  re-run immediately after run 2), it failed in every full run from W1.2 through W1.5, and it
-  has now passed and failed in full runs of the *same* code an hour apart. A **third** full
-  run, taken during the documentation pass that added [I-28](#i-28), passed it again
-  (1,777 / 0, 16m55s), and so did a **fourth** after the publication-ordering fix
-  (1,777 / 0, 14m58s) — so the tally across W0.8 stands at three passes and one failure,
-  which changes nothing. That is consistent with a load-dependent wall-clock overlap
-  assertion rather than a defect, and it is a standing warning that **a single green run of
-  this test means nothing in either direction**. It shares [I-15](#i-15)'s premise and
-  remains a follow-up. The 2026-09-18 run passed it as well (tally now four passes, one
-  failure) — and notably did so during the slowest full run on record (4h08m), which is
-  mild evidence *against* the load-dependence hypothesis rather than for it, since a
-  wall-clock overlap assertion should be most likely to fail under exactly those
-  conditions. Still not enough to reclassify.
+Ranked by **criticality** (how wrong is a number a user would act on?) against **difficulty**
+(can someone start today, or is it blocked on an input that does not exist?). FIXED entries
+are excluded. The tiers are the unit of decision here — within a tier, order is a judgement
+call and the rank column should not be read as precise.
 
-- **Both documented verification hazards fired during W0.8 and both were caught by
-  arithmetic, not by the runner.** One run reported `1 failed` alongside
-  `[exited with code 0]`; a later one on the bare `python` reported a clean-looking
-  `1731 passed, 1 skipped` that was really 46 tests silently uncollectable. The first was
-  caught by reading the summary line, the second by noticing that 1,731 would not reconcile
-  against the previous run's 1,772. **A count that does not reconcile is a signal to find out
-  why, not a new number to record.**
+**The one-line read:** everything in Tier 1 is blocked on someone else, so start at Tier 2.
+([I-29](#i-29), previously rank 3 and called the best first move, was fixed on 2026-09-18.)
 
-**This line reports what a full run actually produces.** Earlier figures here (824, 1092,
-1175) were stale or recorded a passing count a full run did not reproduce. A register whose
-own header overstates its verification undermines every status in it.
+### Tier 1 — Highest criticality, blocked on external input
+
+Neither can be closed by engineering effort alone. Both produce confidently wrong numbers
+today. **Chase the dependency, not the code.**
+
+| # | Issue | Severity | Difficulty | What actually unblocks it |
+|---:|---|---|---|---|
+| 1 | [I-04](#i-04) — aged swaps mispriced past first accrual | High | **Blocked** + hard | Historical `pastFixings` from TraderX, which they do not export. Then real kernel work in `swap.py`. |
+| 2 | [I-05](#i-05) — no faithful USD-SOFR/ACT-360 construction | High | **Blocked** + moderate | The D03/D04 convention agreement. *Guessing the conventions reproduces exactly this issue's failure mode.* |
+
+I-04 is ranked first because its blast radius is wider: every `npv_cube` value past first
+accrual, and therefore **every VaR/ES number**, on the default path — `SwapConfig` has no
+`forward_start`, so every swap in the engine is spot-starting. I-05 is confined to bookings
+whose conventions actually differ, and the EOD boundary already refuses those (W0.4).
+
+### Tier 2 — Real correctness exposure, unblocked, cheap
+
+**This is where to start.** Every one is engine-side work with no external dependency, and
+each is small relative to what it buys.
+
+| # | Issue | Severity | Difficulty | Why it ranks here |
+|---:|---|---|---|---|
+| 3 | [I-06](#i-06) — mid-coupon exercise misprices, direction-dependent | **High** | Moderate | **Reclassified 2026-09-18.** Not the conservative understatement this register claimed for months: a payer is **overstated up to 7.4x** (~12x at low vol), a receiver understated to 0.16x, so a mixed book's errors cancel in the total while every position is wrong. Needs proration in `_hw_swap_value_at_nodes` plus the D16 settlement convention. |
+| 4 | [I-30](#i-30) — `A(t,T)` variance term nearly uncovered at `t=0` | Medium | **Low** | A test gap, not a defect — but one test carries the whole suite's coverage of a core formula term. The harness exists; it needs more `(t, r)` points. |
+| 5 | [I-11](#i-11) — risk measure unlabelled on `PortfolioResult` | Medium | **Low** | Vocabulary and diagnostics already exist (W0.6); closing it means putting `measure` on `PortfolioResult` itself. A risk-neutral number read as a loss forecast is a category error, not a rounding one. |
+| 6 | [I-10](#i-10) — no trade identity; results keyed by array position | Medium | **Low-moderate** | Ordering is correct and tested *today*; any future reorder or partial response silently misattributes. Mechanically small, touches three layers. |
+| 7 | [I-28](#i-28) — `var_es` demo crashes on a date that moved | Low | **One line** | Root-caused, fix confirmed, not applied. A documented command that aborts. Cheapest item in the register. |
+
+[I-06](#i-06) leads this tier, and the whole actionable list, because it is the only
+unblocked issue that silently reports a **wrong price** for a plausible trade — and because
+it was mis-ranked as a Medium scope gap until its error direction was actually measured on
+2026-09-18. I-30 follows: it came out of the same oracle work with its fix site already
+located, as did [I-29](#i-29), which topped this tier until it was fixed the same day.
+I-11 and I-10 are ranked above I-28 despite I-28 being cheaper because they are about
+numbers a consumer misreads, not a demo that fails loudly.
+
+### Tier 3 — Blocks confidence in the suite itself
+
+| # | Issue | Severity | Difficulty | Note |
+|---:|---|---|---|---|
+| 8 | [I-27](#i-27) — full-suite runs hard-abort inside XLA | Medium | **Hard to diagnose** | Intermittent, not reproducible on demand, and fails in the most deceptive way available: a dead process with no summary. The cheap experiment (a `shutdown_pools()` autouse fixture in `tests/test_api.py`) is identified but needs *repeated* clean runs against a known-bad baseline — one green run would look like proof and would not be. |
+
+Ranked below Tier 2 because it costs no user a wrong number, and above Tier 4 because every
+status in this register rests on being able to run the suite.
+
+### Tier 4 — Scope gaps, correctly refused rather than approximated
+
+None of these produces a wrong number. Each is an absent capability that the engine already
+refuses loudly. **Priority here is driven by demand, not by risk** — reorder freely as
+consumers ask.
+
+| # | Issue | Severity | Difficulty | Blocked on |
+|---:|---|---|---|---|
+| 9 | [I-18](#i-18) — no equity spot or FX source | Medium | **Blocked**, then trivial | Market data. The pricer is four multiplications. *Do not close it with `closingMark`* — that is an echo, not a valuation. |
+| 10 | [I-16](#i-16) — `rateSensitivity` parallel-only | Medium | **Blocked** | A curve with genuine pillar structure (W2, same D03/D04 dependency as I-05). *Do not close it by bumping the flat profile per-pillar.* |
+| 11 | [I-07](#i-07) — no corporate bond / equity / listed-option pricer | Medium | Moderate–hard | Corporate bonds need a credit model; a Treasury-discounted corporate is not credit pricing. |
+| 12 | [I-24](#i-24) — bonds have no scenario NPV, so no VaR/ES | Medium | Moderate | Genuine modelling work with its own validation burden. *Do not broadcast, zero-fill, or flip the `scenario_risk` default.* |
+| 13 | [I-08](#i-08) — portfolio path's `_JOBS` dict still in-process | Medium | Moderate | The EOD half is done (W0.8); porting `publication.py`'s design to the portfolio path is the remaining work. |
+| 14 | [I-09](#i-09) — whole scenario cube serialized into JSON | Medium | Moderate | ~20M floats in one HTTP body at realistic sizes. Needs a chunked artifact plus a reference. |
+
+### Tier 5 — Performance and cosmetic
+
+Every number is correct. Nothing here is a financial risk.
+
+| # | Issue | Severity | Difficulty | Note |
+|---:|---|---|---|---|
+| 15 | [I-21](#i-21) — Greeks recompile 23 XLA programs per call | Medium | **Moderate, fully designed** | Prototyped, bit-identical output, steady-state recompiles reach zero. Ranked highest in this tier because the design and its safety argument are already written. **The risk is a memo returning a program compiled for a different trade** — key on `static_key(prepared)`, never the config, never `id()`. |
+| 16 | [I-22](#i-22) — calibration recompiles 8 programs per call | Low | Moderate | **A different mechanism from I-21** — baked-in Python float constants, not fresh closures. I-21's fix would actively hurt here. Caps out at 8 → ~2. Fix I-21 first; they are independent. |
+| 17 | [I-12](#i-12) — `/version` reports dispatcher, not worker device | Low | Low | Invisible on a single-CPU box; would mislead a precision/hardware study on a multi-device host. Composes with [I-14](#i-14)'s residual (realized dtype on the result). |
+
+### Tier 6 — Awaiting an answer, not an engineer
+
+| # | Issue | Severity | Difficulty | Note |
+|---:|---|---|---|---|
+| 18 | [I-23](#i-23) — `accrualBasis` strictness is an assumption | Medium | **Not a code task** | Closes when TraderX answers, asked twice (v4 §1.3, v6 §2.3). If they add enum values *in place*, this engine refuses bundles they consider valid, on the day they first export a real calendar — a false rejection, so it fails safe, but it will arrive without warning and look like a defect to whoever is on call. |
+
+### What the ordering deliberately does not do
+
+- **It does not rank by severity alone.** [I-28](#i-28) is Low severity and near the top of
+  the actionable work because it is one line; [I-04](#i-04) is High and cannot be started.
+- **It does not treat "refused" as "broken".** Tier 4 entries return an identified refusal
+  rather than a number. That is the designed behavior, and closing them is capability work.
+- **It does not promise that Tier 1 gets fixed by trying harder.** Both entries need someone
+  else to supply something. Escalating the dependency is the work.
 
 ---
 
 ## Summary
 
-| ID | Issue | Severity | Status |
-|---|---|---|---|
-| [I-01](#i-01) | Swap Delta/Gamma/Theta silently absent from portfolio results | High | ✅ FIXED |
-| [I-02](#i-02) | Bermudan Vega never computed | Medium | ✅ FIXED |
-| [I-03](#i-03) | No per-instrument NPV; totals unattributable | Medium | ✅ FIXED |
-| [I-04](#i-04) | Aged swaps mispriced at every step past first accrual | **High** | ⚠️ FLAGGED |
-| [I-05](#i-05) | No faithful USD-SOFR/ACT360 swap construction | **High** | ❌ OPEN — refusal path landed (W0.4) |
-| [I-06](#i-06) | Mid-coupon Bermudan/American exercise understates value | Medium | ⚠️ FLAGGED |
-| [I-29](#i-29) | A rounded exercise time silently drops a whole coupon | Medium | ⚠️ FLAGGED |
-| [I-30](#i-30) | The `A(t,T)` variance term is nearly uncovered at `t=0` (test gap, not a defect) | Medium | ⚠️ FLAGGED |
-| [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — both Treasury pricers landed (W1.2 bill, W1.3 note) |
-| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8); the portfolio path's `_JOBS` dict is unchanged |
-| [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN |
-| [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary (W0.7) |
-| [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ❌ OPEN — measure + MC diagnostics landed (W0.6) |
-| [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN |
-| [I-13](#i-13) | Negative curve index silently prices against the wrong curve | **High** | ✅ FIXED |
-| [I-14](#i-14) | `generate_paths(precision=32)` leaks `jax_enable_x64=False`; float64 silently truncates | **High** | ✅ FIXED |
-| [I-15](#i-15) | Worker-pool concurrency test could not observe concurrency | Low | ✅ FIXED |
-| [I-16](#i-16) | `rateSensitivity` is parallel-only; no per-pillar decomposition | Medium | ❌ OPEN — labelled honestly, blocked on a real curve |
-| [I-17](#i-17) | A malformed note date failed the entire bundle, not just its row | Medium | ✅ FIXED |
-| [I-18](#i-18) | No equity spot or FX source; equity positions are refused, not valued | Medium | ❌ OPEN — refusal path landed (W1.4) |
-| [I-19](#i-19) | Accrual tolerance rounded the bound it exists to enforce | Medium | ✅ FIXED |
-| [I-20](#i-20) | Impossible calendar dates aborted the whole bundle | **High** | ✅ FIXED |
-| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call (fresh closures) | Medium | ❌ OPEN |
-| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call (baked-in constants) | Low | ❌ OPEN |
-| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** on an unanswered question | Medium | ⚠️ ASSUMPTION — may refuse bundles TraderX considers valid |
-| [I-24](#i-24) | Bonds have no scenario NPV, so no VaR/ES — refused, not approximated | Medium | ❌ OPEN — refusal path landed (W1.5) |
-| [I-25](#i-25) | A **scalar** Greek crashed the HTTP result serializer | Medium | ✅ FIXED |
-| [I-26](#i-26) | Greeks for a bond maturing **tomorrow** crashed on the theta reprice | Low | ✅ FIXED |
-| [I-27](#i-27) | Long full-suite runs **hard-abort inside XLA compilation**, with no summary line | Medium | ❌ OPEN — located, not root-caused |
-| [I-28](#i-28) | `python -m engine.risk.var_es`'s **own demo crashes**: it omits `evaluation_date`, so its swap schedules off today | Low | ❌ OPEN |
+Sorted by ID. For **what to fix first**, see
+[Priority order for fixing](#priority-order-for-fixing) above; the rank column below points
+back into it.
+
+| ID | Issue | Severity | Status | Rank |
+|---|---|---|---|---|
+| [I-01](#i-01) | Swap Delta/Gamma/Theta silently absent from portfolio results | High | ✅ FIXED | — |
+| [I-02](#i-02) | Bermudan Vega never computed | Medium | ✅ FIXED | — |
+| [I-03](#i-03) | No per-instrument NPV; totals unattributable | Medium | ✅ FIXED | — |
+| [I-04](#i-04) | Aged swaps mispriced at every step past first accrual | **High** | ⚠️ FLAGGED | **1** |
+| [I-05](#i-05) | No faithful USD-SOFR/ACT360 swap construction | **High** | ❌ OPEN — refusal path landed (W0.4) | **2** |
+| [I-06](#i-06) | Mid-coupon exercise misprices — **overstates a payer up to 7.4x**, understates a receiver | **High** | ⚠️ FLAGGED | **3** |
+| [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — both Treasury pricers landed (W1.2 bill, W1.3 note) | 11 |
+| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8); the portfolio path's `_JOBS` dict is unchanged | 13 |
+| [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN | 14 |
+| [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary (W0.7) | 6 |
+| [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ❌ OPEN — measure + MC diagnostics landed (W0.6) | 5 |
+| [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN | 17 |
+| [I-13](#i-13) | Negative curve index silently prices against the wrong curve | **High** | ✅ FIXED | — |
+| [I-14](#i-14) | `generate_paths(precision=32)` leaks `jax_enable_x64=False`; float64 silently truncates | **High** | ✅ FIXED | — |
+| [I-15](#i-15) | Worker-pool concurrency test could not observe concurrency | Low | ✅ FIXED | — |
+| [I-16](#i-16) | `rateSensitivity` is parallel-only; no per-pillar decomposition | Medium | ❌ OPEN — labelled honestly, blocked on a real curve | 10 |
+| [I-17](#i-17) | A malformed note date failed the entire bundle, not just its row | Medium | ✅ FIXED | — |
+| [I-18](#i-18) | No equity spot or FX source; equity positions are refused, not valued | Medium | ❌ OPEN — refusal path landed (W1.4) | 9 |
+| [I-19](#i-19) | Accrual tolerance rounded the bound it exists to enforce | Medium | ✅ FIXED | — |
+| [I-20](#i-20) | Impossible calendar dates aborted the whole bundle | **High** | ✅ FIXED | — |
+| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call (fresh closures) | Medium | ❌ OPEN | 15 |
+| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call (baked-in constants) | Low | ❌ OPEN | 16 |
+| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** on an unanswered question | Medium | ⚠️ ASSUMPTION — may refuse bundles TraderX considers valid | 18 |
+| [I-24](#i-24) | Bonds have no scenario NPV, so no VaR/ES — refused, not approximated | Medium | ❌ OPEN — refusal path landed (W1.5) | 12 |
+| [I-25](#i-25) | A **scalar** Greek crashed the HTTP result serializer | Medium | ✅ FIXED | — |
+| [I-26](#i-26) | Greeks for a bond maturing **tomorrow** crashed on the theta reprice | Low | ✅ FIXED | — |
+| [I-27](#i-27) | Long full-suite runs **hard-abort inside XLA compilation**, with no summary line | Medium | ❌ OPEN — located, not root-caused | 8 |
+| [I-28](#i-28) | `python -m engine.risk.var_es`'s **own demo crashes**: it omits `evaluation_date`, so its swap schedules off today | Low | ❌ OPEN | 7 |
+| [I-29](#i-29) | A rounded exercise time silently drops a whole coupon | Medium | ✅ FIXED | — |
+| [I-30](#i-30) | The `A(t,T)` variance term is nearly uncovered at `t=0` (test gap, not a defect) | Medium | ⚠️ FLAGGED | 4 |
+
+**Counts:** 30 issues — 12 FIXED, 13 OPEN, 3 FLAGGED, 1 PARTIAL, 1 ASSUMPTION. The 18
+unfixed entries are ranked above.
 
 **The two that matter most for financial correctness are [I-04](#i-04) and [I-05](#i-05).**
 Both are unfixed. Both need inputs or decisions that do not exist yet — not more engineering
-time on the current code.
-
-**[I-13](#i-13) and [I-14](#i-14) were found on 2026-09-15** and are the first defects in
-this register found by *reading source and predicting a failure* rather than by running the
-suite — I-13 by TraderX's review of a pushed commit, I-14 while reproducing it. Both produced
-plausible wrong numbers with no error. **Both are now fixed**, each with a regression test
-verified to fail against the pre-fix code.
+time on the current code, which is why neither heads the actionable work in
+[the priority order](#tier-2--real-correctness-exposure-unblocked-cheap).
 
 ---
 
-## FIXED
+## FIXED — defect removed, regression test verified against the pre-fix code
 
 ### I-01 — Swap Delta/Gamma/Theta were silently absent {#i-01}
 
@@ -260,1050 +341,6 @@ same numbers**, computed once, so they cannot drift apart. Exposed through
 sign/order attribution via a payer/receiver mirror pair.
 
 ---
-
-## FLAGGED — inaccuracy unchanged, silence removed
-
-> These are **not fixes.** The numbers are as wrong as they were before. What changed is that
-> the engine now says so.
-
-### I-04 — Aged swaps are mispriced at every step past first accrual {#i-04}
-
-**Severity:** High · **Status:** ⚠️ FLAGGED (inaccuracy unchanged)
-
-**What is wrong.** `price_swaps` has no representation of an already-fixed floating coupon.
-At any simulated time `t` past a swap's first accrual start, the elapsed period is discounted
-using `P(t, accrual_start)` for `accrual_start < t` — which is not a discount factor at all,
-but a clamped, meaningless value (see
-[`reconstruct_yield_curves`](../engine/simulation/market_model.py)'s `B(t,T)` clamp).
-
-**Blast radius — this is the widest of any issue here:**
-
-- t=0 base NPV — **unaffected and exact**.
-- Every `npv_cube` value at every step past first accrual — **inaccurate**.
-- **Every VaR/ES number derived from that cube — inaccurate**, since they aggregate it.
-- Any exposure profile, XVA-style calculation, or multi-day experiment — inaccurate.
-- Theta past the first reset — inaccurate.
-
-Measured divergence against an ORE reference at a future evaluation date is ~1e-4 to 1e-3
-relative, **growing** with distance past the aged dates
-(`tests/test_swap.py::TestAgedSwapKnownLimitation`).
-
-**Scope note.** `SwapConfig` has no `forward_start` field, so **every swap in this engine is
-spot-starting**. Therefore *every* multi-step swap portfolio is affected. This is not an edge
-case; it is the default path.
-
-**What changed.** `price_portfolio` now emits a warning per affected swap into
-`PortfolioResult.warnings`, naming the trade, its first accrual start, how many steps are
-affected, and explicitly that t=0 base NPV is unaffected. Warnings cross the worker-process
-boundary into the HTTP result. **The pricing is unchanged.**
-
-**What closing it requires** — two things, neither of which exists today:
-
-1. **Engine work:** track already-fixed rates per scenario/step inside the pricing kernel, or
-   exclude elapsed cashflows from the sum. This is real work in
-   [`engine/instruments/swap.py`](../engine/instruments/swap.py), not orchestration.
-2. **Data that does not exist:** historical published fixings for each floating index, back
-   to each live trade's effective date. **TraderX does not currently export these** — it is
-   the `pastFixings` field requested in
-   [the proposal §2.2](planning/traderX_integration/eod-contract-proposal.md). Without them there is nothing to
-   populate a fixed coupon *with*.
-
-Item 2 is the binding constraint. Engine work alone cannot close this.
-
-**Verified (the warning, not the fix):**
-`tests/test_portfolio_gap_fixes.py::TestAgedSwapWarningIsNotSilent` (5 tests) and
-`tests/test_api.py::TestGapFixesSurviveTheHttpBoundary`.
-
----
-
-### I-06 — Mid-coupon Bermudan/American exercise understates value {#i-06}
-
-**Severity:** Medium · **Status:** ⚠️ FLAGGED
-
-**What is wrong.** Bermudan/American pricing is exact **only** when exercise dates are
-reset-aligned with the underlying's accrual schedule. For an exercise date falling inside an
-accrual period, the in-progress coupon is **excluded entirely rather than prorated** — a
-deliberate, conservative (value-understating) approximation. The error is an entire coupon's
-PV, not a few days' accrual.
-
-**What changed.** `validate_portfolio_against_simulation` warns per misaligned trade, and
-`price_portfolio` collects these into `PortfolioResult.warnings`. (This predates the current
-review; recorded here for completeness.)
-
-**What closing it requires.** Proration logic in `_hw_swap_value_at_nodes`
-([`engine/instruments/bermudan_swaption.py`](../engine/instruments/bermudan_swaption.py)),
-plus agreement on the settlement convention for a mid-period exercise — see decision **D16**
-in the TraderX pack. Engine-side work; no external data dependency.
-
-**Documented by.** `tests/test_bermudan_swaption.py::TestMidCouponKnownLimitation`.
-
-**Related.** [I-29](#i-29) is the same alignment requirement seen from the opposite side:
-not a mid-period exercise date, but a reset-*aligned* one supplied with enough
-floating-point rounding to miss the alignment by ~1e-6.
-
----
-
-### I-29 — A rounded exercise time silently drops a whole coupon {#i-29}
-
-**Severity:** Medium · **Status:** ⚠️ FLAGGED · **Found:** 2026-09-18, while building the
-external Bermudan oracle (`tests/test_ore_bermudan_oracle.py`)
-
-**What is wrong.** `BermudanSwaptionConfig.exercise_times` are year-fractions supplied by
-the caller, and the engine does **not** snap them onto the underlying's actual accrual
-schedule. `_hw_swap_value_at_nodes` decides which coupons are still alive at exercise with
-`fixed_start_times >= t - 1e-9`. A caller who writes a *rounded* exercise time — `2.0137`
-for a true accrual start of `2.0136986301369864` — lands **1.4e-6 late**, which is ~1400x
-that 1e-9 tolerance. The coupon starting on that very date then reads as already-elapsed
-and is dropped from the exercise value entirely.
-
-Measured: at `sigma -> 1e-6`, where the Bermudan must collapse to its intrinsic value of
-**1211.47**, the rounded input instead prices at **14336.12** — an ~12x overstatement,
-independent of volatility. The engine returns a plausible, finite, confidently-formatted
-number with no warning, which is exactly the invisible-from-outside class of problem this
-register exists for.
-
-**Why this is FLAGGED and not OPEN.** This is arguably correct behavior on out-of-contract
-input rather than a defect: `BermudanSwaptionConfig`'s own docstring already requires
-exercise dates to coincide with the underlying's accrual dates, and
-[I-06](#i-06) already covers genuinely misaligned dates. Nothing computes a wrong answer
-for an input that honors the contract. But the contract is stated in prose, the violation
-here is a rounding artifact rather than an obviously wrong date, and the failure is silent
-and large — so the sensitivity is registered rather than left to be rediscovered.
-
-**What closing it requires.** `prepare_bermudan` is the natural place: it already builds
-the ORE swap and reads `fixed_start_times` off it, so it can compare each supplied
-`exercise_time` against those and either **snap** it (when within, say, 1e-4 of an accrual
-boundary) or **raise** (when not). Validating in `__post_init__` instead would catch the
-mistake earlier but would force an `ORE.MakeVanillaSwap` call on every config
-construction, including for the `hw_sigma=None` "uncalibrated" configs that are built and
-passed around before they are ever priceable — so `prepare_bermudan` is the better site
-despite being later. Snapping is preferable to raising here: a caller supplying a
-4-decimal year-fraction is expressing the right *date*, and refusing it would reject input
-that is unambiguous in intent. Engine-side work; no external data dependency.
-
-**Documented by.** `tests/test_ore_bermudan_oracle.py::TestExerciseTimeAlignment` — pins
-both halves: that the exact accrual-start time reproduces ORE's intrinsic to 1e-3, and that
-the rounded one still overstates by >5x. Every comparison in that file reads its exercise
-times back off `prepare_bermudan` rather than writing a literal, which is the workaround
-any caller should copy until this is closed.
-
----
-
-### I-30 — The `A(t,T)` variance term is nearly uncovered at `t=0` {#i-30}
-
-**Severity:** Medium · **Status:** ⚠️ FLAGGED · **Found:** 2026-09-18, by mutation-testing
-the ORE comparisons (`tests/test_ore_coverage_hardening.py`)
-
-**What is wrong.** This is a gap in the **tests**, not in the code — the only entry here of
-that kind, and it is recorded because this register's own premise is that a green suite is
-evidence about the tests rather than proof about the code.
-
-The variance term of the Hull-White `A(t,T)` carries a factor `(1 - exp(-2at))` that is
-**identically zero at `t=0`**. So at `t=0` the term contributes nothing, and deleting it
-outright changes an ATM swaption price by ~**7e-6** relative — an order of magnitude
-*inside* the `rtol=1e-4` that this suite's ORE swaption comparisons assert. The great
-majority of those comparisons price at `t=0`.
-
-Measured against the real suite: deleting the entire term fails exactly **one** test in
-`tests/test_european_swaption.py` (131 tests) —
-`TestConditionalPricingAndExpiry::test_conditional_pricing_matches_ore_rebuilt_at_later_date`,
-the one that prices at a later evaluation date. That single test carries the whole suite's
-coverage of a term of the core bond-price formula. Deleting or weakening it would leave the
-formula effectively unchecked while the suite stayed green.
-
-**What is *not* wrong.** The formula itself is independently verified — against QuantLib's
-own C++ in [ore-parity.md](reference/ore-parity.md) §3b, against the algebraic identity
-`0.25*(sigma*B(t,T))^2*B(0,2t) == (sigma^2/4a)*(1-exp(-2at))*B(t,T)^2` in
-`tests/test_ore_parity.py`, and against live `ORE.HullWhite.discountBond` at `t>0`. No
-mispricing is known or suspected.
-
-**What closing it requires.** More `t>0` conditional-pricing comparisons against ORE, so
-the term's coverage does not rest on one test. Cheap to do — the conditional-pricing
-harness already exists in `tests/test_european_swaption.py`; it simply needs more
-`(t, r)` points.
-
-**Documented by.** `tests/test_ore_coverage_hardening.py::TestVarianceTermIsActuallyChecked`
-— which asserts the mutation is *invisible* at `t=0` (recording why `t=0` comparisons
-cannot be the whole story) and *visible* at `t>0`, and includes
-`test_conditional_pricing_coverage_is_load_bearing` so that the dependency on that one
-test is explicit.
-
----
-
-## OPEN — not addressed
-
-### I-05 — No faithful USD-SOFR / ACT-360 swap construction {#i-05}
-
-**Severity:** High · **Status:** ❌ OPEN — **blocked on external agreement, not effort**
-
-**What is wrong.** [`build_vanilla_swap`](../engine/models/ore_builders.py) constructs, for
-*every* swap, a generic term-IBOR swap. Verified empirically against the live builder:
-
-| Property | This engine builds | A USD-SOFR booking is |
-|---|---|---|
-| Index | `SimIndex6M` (term IBOR) | USD-SOFR (overnight) |
-| Fixed leg day count | `Actual/365 (Fixed)` | `ACT/360` |
-| Float leg day count | `Actual/365 (Fixed)` | `ACT/360` |
-| Calendar | `TARGET` (European) | `US-SIFMA` / FedFunds |
-| Compounding | none (term rate) | daily compounded in arrears |
-| Schedule source | tenor string (`"5Y"`) | explicit effective/maturity dates |
-| Lookback / lockout / payment lag | not represented | contractual, per booking |
-
-**Why the ACT/365 choice is not itself a bug.** It is deliberate and documented — it keeps
-day count consistent with the simulation's own year-fraction time axis. It is a sound
-*internal* decision that becomes an *external* incompatibility the moment a real SOFR
-contract arrives.
-
-**Magnitude — this is not rounding.** ACT/360 vs ACT/365 changes every accrual factor by
-`365/360 - 1` = **1.389%**. On a $1mm 5Y fixed leg at 3% that is **~$1,906**, roughly **46x a
-1bp DV01**. A wrong-convention swap prices confidently and wrongly.
-
-**Current behavior with a SOFR booking:** it would produce a number, and **no test in this
-repository would catch it**, because every test builds its inputs with the same generic
-builder. There is no cross-check against a real booked contract.
-
-**What closing it requires:**
-
-1. **Agreement first (blocking):** the full convention set — fixed/float day counts,
-   compounding method, lookback, lockout, payment lag, calendar, business-day convention,
-   roll convention, stub handling, separate fixed/float frequencies. These are decisions
-   **D03/D04** in the TraderX pack and
-   [proposal §2.2](planning/traderX_integration/eod-contract-proposal.md#22-usd-sofr-swap--the-w2-blocker-set).
-   *Guessing them produces confident wrong numbers, which is exactly this issue's failure
-   mode.*
-2. **A new builder alongside the existing one** — not a modification of it. Every current
-   swaption pricer depends on `build_vanilla_swap`'s ACT/365 consistency with the simulation
-   time axis, and the full test suite pins that behavior.
-3. **A hard refusal path:** any booking whose conventions fall outside the supported subset
-   must be returned as explicitly *unsupported with a reason*, never approximated by the
-   generic builder. — ✅ **Done at the EOD integration boundary (W0.4).**
-4. **Acceptance against a same-terms ORE reference** — not this engine's own test suite.
-
-**Interim mitigation — ✅ implemented for the EOD path (W0.4).**
-[`engine/integration/conventions.py`](../engine/integration/conventions.py) refuses any
-booking whose conventions fall outside an explicit **positive** allowlist (today: generic
-`SimIndex*` term IBOR, ACT/365 legs, no overnight compounding), returning
-`CONVENTION_NOT_SUPPORTED` with the offending fields named — **before any pricing object is
-constructed**, which is the point at which the wrong conventions would otherwise be applied.
-A booking that states *no* conventions is refused too, never defaulted into the generic
-builder. The TraderX SOFR fixture now returns an identified refusal naming all 13 of its
-`missingTerms`. See [the EOD integration boundary](reference/eod-integration.md#w04--convention-allowlist-and-refusal--closes-part-of-i-05).
-
-**Scope of that mitigation, stated precisely.** It covers bookings arriving through
-`engine/integration/` — the TraderX EOD path. It does **not** change
-`build_vanilla_swap`, and it does **not** guard a caller who constructs a `SwapConfig`
-directly in Python: `SwapConfig` still has no field in which convention metadata could
-arrive, so there is nothing there to refuse on. The W0.4 allowlist is a gate on the external
-boundary, not a property of the pricer. **The underlying defect is unchanged** — this engine
-still cannot faithfully price USD-SOFR — which is why this issue stays **OPEN** rather than
-moving to FLAGGED or FIXED.
-
----
-
-### I-07 — No bond, equity, or listed-option pricer {#i-07}
-
-**Severity:** Medium · **Status:** ❌ OPEN
-
-**As originally written (pre-W1.2):** `engine/instruments/` contained exactly four modules,
-all rate derivatives (swap, European / Bermudan / American swaption), and there was **no
-pricer** for Treasuries, corporate bonds, cash equities/ETFs, or listed options — all of
-which appear in TraderX's schema-3 position export.
-
-**Today** Treasuries price on both paths (W1.2/W1.3 at the integration boundary, W1.5 as
-`engine/instruments/treasury.py`, now a fifth module). Corporate bonds, cash equities and
-listed options remain unpriced — see "Scope of that, stated precisely" below for exactly
-which of those is missing a *pricer* versus missing *market data*.
-
-**Important distinction:** `SimulationConfig.equities` drives correlated equity *risk-factor
-paths*. It is **not** an equity position pricer — nothing takes a signed share count and
-returns a position value.
-
-**What closing it requires.** Per instrument: a config dataclass, a pricer, ORE parity tests.
-A fixed-rate Treasury is the cheapest (deterministic discounted cashflows, no Monte Carlo, no
-calibration) and already has a written plan —
-[traderx-bond-integration-roadmap.md](planning/traderX_integration/traderx-bond-integration-roadmap.md). Corporate
-bonds additionally need a credit/spread model; **a Treasury-discounted corporate is not credit
-pricing** and should be refused rather than approximated.
-
-**Partially closed (W1.2, W1.3) — both Treasury shapes, and nothing else.**
-[`engine/integration/bill.py`](../engine/integration/bill.py) prices a bill as a single
-discounted cashflow; [`engine/integration/note.py`](../engine/integration/note.py) prices a
-coupon-bearing note as a fixed-coupon strip plus bullet redemption. Both are verified to
-**zero difference** against an independent ORE valuation — the bill against
-`ORE.CashFlows.npv`, the note against a real `ORE.FixedRateBond` + `DiscountingBondEngine`.
-Long and short on the delivered fixtures return exact mirrors (bill +98,507.15 / −98,507.15;
-note +103,308.33 / −103,308.33).
-
-**The note additionally reconciles to TraderX's own books.** Its accrued interest agrees
-with their exported `0.018571` of par, at the §2 derived tolerance rather than as an exact
-equality — the exporter rounds HALF_EVEN at 6 decimals, so the two monetary paths differ by
-$0.04 on $100k by construction. Both paths travel in the published payload under an explicit
-`accrualSource` label, and a disagreement beyond tolerance is **refused, not warned about**.
-
-**Scope of that, stated precisely.** It covers a Treasury arriving through
-`engine/integration/` in a **v2** bundle, and nothing else:
-
-- an **equity position** is now understood, identified and validated, but **refused** for
-  want of a spot source (W1.4 — see [I-18](#i-18)). Its multiplier, sign and currency are
-  read and echoed; what is missing is market data, not engine code;
-- **listed options** are untouched;
-- a **corporate bond** is still refused. It shares every column with a Treasury and a
-  Treasury-discounted corporate is *not* credit pricing;
-- **`rateSensitivity` is available for the note only** (bumped revaluation, 1bp, parallel —
-  see [I-16](#i-16)). The **bill still has none**: W1.3 earned the note's with a parity test
-  and earned nothing for the bill;
-- **`rateGamma`/`theta` are `unsupported` for every instrument**, including both priced
-  Treasuries;
-- ~~`engine/instruments/` is **unchanged**~~ — **closed by W1.5 (2026-09-17).**
-  `engine/instruments/treasury.py` adds `BondConfig`, and a direct Python caller of
-  `price_portfolio` now gets a bond's t=0 NPV, its per-trade breakdown entry, and
-  Delta/Gamma/Theta. **With one bounded exception:** a bond has no scenario NPV, so no
-  VaR/ES — refused explicitly rather than approximated, tracked as [I-24](#i-24).
-
-Status stays **OPEN**: the issue is "no bond, equity, or listed-option pricer". Treasuries
-now price *and* are reachable from the portfolio path; an equity is refused for a
-*market-data* reason rather than a missing pricer ([I-18](#i-18)); corporate bonds and
-listed options are still absent entirely.
-
----
-
-### I-16 — `rateSensitivity` is parallel-only; no per-pillar decomposition {#i-16}
-
-**Severity:** Medium · **Status:** ❌ OPEN — labelled honestly, not silently approximated
-
-**Found:** 2026-09-16, while implementing W1.3.
-
-The note pricer returns a `rateSensitivity`, and the plan (§W1.3) asked for "per-pillar
-`rateSensitivity` **non-zero across the curve**". What is delivered is a **parallel** shift
-of the whole zero curve, not a per-pillar decomposition.
-
-**Why, and why it is not a defect in the pricer.** The only market input this boundary can
-be handed today is a registered *assumed profile*, and every registered profile is a **flat
-constant** — `flat-3pct-v1` is one rate materialized onto pillars that all carry the same
-value. There is no per-pillar structure to shift independently, so a per-pillar sensitivity
-against it would be arithmetic theatre: it would either report the parallel number once per
-pillar, or attribute the whole move to one arbitrary pillar. Both are worse than saying
-"parallel", because both look like a decomposition a consumer could hedge against.
-
-**What the engine does instead.** The number is labelled for exactly what it is, in the
-published payload:
-
-```json
-"shockedFactor": "zero-curve-parallel",
-"method": "bumped-revaluation",
-"bump": 0.0001
-```
-
-`shockedFactor` deliberately names a *parallel shift* rather than a pillar. A consumer
-reading the payload cannot mistake it for a bucketed sensitivity, which is the whole
-mitigation — this is the "no silent approximation" rule applied to a *label* rather than to
-a refusal.
-
-**A consumer relying on bucketed rate risk does not have it.** Parallel DV01 is a correct
-aggregate and a poor hedge instruction: it cannot distinguish a 2y position from a 10y one
-with the same duration, and it says nothing about curve-shape risk.
-
-**What closing it requires.** A curve with genuine pillar structure, which means
-`marketInputs.mode: "package"` — observed market data with bootstrapped pillars. That is
-**W2** and is blocked on the D03/D04 convention agreement, the same external dependency as
-[I-05](#i-05). Once such a curve exists, the bump loop shifts one pillar at a time and
-`shockedFactor` names the pillar; the pricer itself needs no change, because it already
-re-prices through its own public path rather than differentiating a closed form.
-
-**Do not close this by bumping the flat profile per-pillar.** That is the plausible-wrong
-fix: it produces a full-looking bucketed vector whose entries are either all equal or all
-but one zero, and it would pass any test that only checks the vector's shape.
-
----
-
-### I-18 — No equity spot or FX source; equity positions are refused {#i-18}
-
-**Severity:** Medium · **Status:** ❌ OPEN — refusal path landed (W1.4), valuation blocked on
-market data
-
-**Found:** 2026-09-16, while implementing W1.4.
-
-A cash equity position is worth
-
-```
-signedQuantity × contractMultiplier × spot × fx
-```
-
-and **two of those four factors have no source at this boundary**.
-[`engine/integration/market_inputs.py`](../engine/integration/market_inputs.py) registers
-*flat interest-rate profiles* and nothing else — an `AssumedProfile` is a single
-`flat_rate`. There is no equity spot in it, no FX rate, and no `mode` that supplies either.
-
-**`SimulationConfig.equities` is not a substitute**, and the distinction is the same one
-[I-07](#i-07) draws: it drives correlated risk-factor *paths* for a Monte Carlo. Nothing in
-it takes a signed share count and returns a position value. It also lives in
-`engine.simulation`, which `engine/integration/` is forbidden to import.
-
-**What the engine does.** It reads the position — quantity, multiplier, currency — validates
-it, and refuses with the missing input named:
-
-| Condition | Reason |
-|---|---|
-| USD position | `SPOT_SOURCE_NOT_SUPPLIED` |
-| Non-USD position | `FX_SOURCE_NOT_SUPPLIED` — supplying a spot alone would still not price it |
-| Malformed quantity/multiplier | `TERMS_INCOMPLETE` — a broken row, not missing market data |
-
-The refusal carries `signedQuantity`, `contractMultiplier` and `multipliedQuantity`, so a
-consumer can confirm the engine read the position correctly even though it would not value
-it.
-
-**The tempting wrong fix is `closingMark`.** The positions extract carries one, and
-`quantity × closingMark × contractMultiplier` reproduces the exporter's own `marketValue`
-column **exactly**. That is what makes it dangerous:
-
-- it is an **echo, not a valuation**. The engine would hand TraderX their own number back as
-  though it had priced it, and any reconciliation against it would always agree — proving
-  nothing while looking like independent confirmation;
-- `closingMark` is an **observation at the session cut**, not a curve this run was priced
-  against. Publishing it under `npv` with a `marketProvenance` derived from the requested
-  *rate* profile would label an observed number with a provenance it does not have;
-- it silently answers a **different question** than every other `npv` in the result. The
-  bill and note NPVs are present values off an explicitly requested curve; an equity "NPV"
-  taken from the mark is a mark. Summing them into one portfolio total would mix two
-  incompatible quantities under one heading.
-
-`tests/test_integration_equity.py::TestDoesNotEchoTheExportedMark` is the guard, and it was
-verified to fail against exactly that implementation — patched in at both the pricer and the
-pipeline level, 20 tests failed.
-
-**What closing it requires — a market-data decision, not engine work.** Either
-`marketInputs` grows a registered spot/FX surface (extending the W0.6 contract, with the
-same "named, versioned, requested by id" discipline the rate profiles already have), or
-TraderX supplies observed spots in the bundle. The pricer itself is four multiplications;
-the arithmetic is not what is missing.
-
-**Advertised, not hidden.** `capabilities()` reports equity `npv` under
-`blockedOnMarketInput` rather than as an absent calculation, so a coordinator can tell
-"wait for a release" from "send me a spot" — only the second is something they can act on.
-
----
-
-### I-08 — Job store is in-process and lost on restart {#i-08}
-
-**Severity:** Medium · **Status:** ⚠️ PARTIAL — **EOD path durable (W0.8, 2026-09-17); the
-portfolio path's `_JOBS` dict is unchanged**
-
-`_JOBS` in [`engine/api/routes.py`](../engine/api/routes.py) is a plain Python dict in the
-dispatcher process. A restart loses every job id; a second uvicorn worker would 404 on ids
-issued by the first. Job states are `pending`/`running`/`done`/`failed` only — there is no
-`partial`, no `superseded`, no attempt history, and no structured failure classification.
-
-**Consequence for a batch caller:** a lost in-memory job is indistinguishable from a
-computation failure, and a coordinator cannot tell which failures are worth retrying.
-
-**What closing it requires.** Either a durable store, or — preferred, per **D13** — accept
-that the coordinator owns the durable logical job while this engine owns only the computation
-*attempt*. That needs: a worker boot epoch exposed so restarts are detectable, idempotency so
-re-submitting identical immutable inputs is safe, and structured failure classes
-(`bad-terms` / `missing-market-data` / `unsupported-product` / `numerical-failure` /
-`infrastructure`) so only retryable failures are retried. See
-[proposal §6.3](planning/traderX_integration/eod-contract-proposal.md).
-
-**Partially mitigated by W1.6.4 (2026-09-16), on the EOD path only.**
-[`engine/integration/workload.py`](../engine/integration/workload.py) adds the
-*attempt*-ownership half of the preferred design: a canonical **workload key** over every
-input that can change a number, **idempotent submission** (a repeated `submissionId` recovers
-the same attempt rather than starting a second), **immutable terminal attempts** (a second
-attempt cannot overwrite a first's outcome), and the **four distinguishable lookup states** —
-so an accepted-but-running job no longer looks like an unknown one, which is what previously
-invited a duplicate overnight batch.
-
-**Closed on the EOD path by W0.8's second half (2026-09-17).**
-[`engine/integration/publication.py`](../engine/integration/publication.py) adds the durable
-store the earlier mitigation was missing, and with it the crash-safety design from
-[plan §W0.8](planning/traderX_integration/traderx-integration-plan.md):
-
-- **The four-step publication protocol** — stage to a temp path, verify the hash of what was
-  *actually written* (not what was meant to be), atomically publish the manifest, then advance
-  the pointer. Every crash window leaves a coherent store: nothing partial is ever
-  discoverable.
-- **The manifest is the commit point; the pointer is a cache.** Lookup falls back to a
-  **scan** over published manifests whenever the pointer is missing, torn, or behind, and
-  reconciles the pointer as a side effect. This closes the window TraderX found in v3 — a
-  crash between publish and pointer advance previously left a complete result that no lookup
-  could find.
-- **Completed and failed attempts survive a restart**, addressable by `attemptId`, and
-  **idempotent submission survives it too**: a coordinator retrying a lost response after a
-  bounce recovers its original attempt rather than starting a duplicate overnight batch.
-
-**What remains true, and is deliberate.** A *running* attempt is still memory-only and is
-still lost on restart — it is never published, because writing one would make an in-flight
-computation discoverable as a finished answer. After a restart such a job reports as unknown,
-the coordinator resubmits, and the workload key makes the recomputation identical. That is an
-infrastructure event, not a financial one.
-
-**One ordering defect was found after the fact and fixed.** Publication originally ran
-*after* the in-memory transition, so a store failure left an attempt `completed` in memory
-with nothing on disk — a result this process reported as finished and no restart could find,
-and which the immutability guard then refused to let anyone retry. The transition now happens
-only if the manifest lands, applying the store's own commit-first rule to the in-memory
-attempt. The *failure* path deliberately keeps the opposite ordering: `fail()` marks the
-attempt failed whether or not publication succeeds, because leaving it `running` would report
-an in-flight job to a coordinator that would wait forever, which is worse than the
-`UNKNOWN_WORKLOAD` a restart yields.
-
-**Still open, and why this issue is not fully closed.** The portfolio path's `_JOBS` dict in
-[`engine/api/routes.py`](../engine/api/routes.py) is **untouched** — this work is EOD-only.
-The store is also single-machine: it is thread-safe within a process (an unguarded sequence
-counter was measured issuing 2 distinct values across 30 concurrent publications, now locked),
-but two engines on two machines do not coordinate.
-
----
-
-### I-09 — Whole scenario cube serialized into JSON responses {#i-09}
-
-**Severity:** Medium · **Status:** ❌ OPEN
-
-`PortfolioResultSchema.npv_cube` serializes `[Scenarios, TimeSteps, Trades]` as nested JSON.
-At a realistic 4096 × 24 × 211 that is ~20M floats in a single HTTP body — unusable through a
-browser or a control message, and a memory risk on both ends.
-
-**What closing it requires.** Write the cube to a chunked artifact (shape, dtype, axis
-ordering, hash, and an instrument-id ordering file) and return a *reference* plus compact
-summaries. See [proposal §6.4](planning/traderX_integration/eod-contract-proposal.md).
-
----
-
-### I-10 — No trade identity; results keyed by array position {#i-10}
-
-**Severity:** Medium · **Status:** ❌ OPEN
-
-`PortfolioRequest.trades` is positional; `PortfolioResult.greeks` and
-`base_npv_per_trade` are keyed/ordered by index. There is no opaque
-account/position/contract id anywhere in the request or result, so **array position is
-load-bearing** for joining a result back to a booking.
-
-Ordering is correct and tested today — but any reordering, filtering, or partial-coverage
-response would silently misattribute results. Identity should not depend on list order.
-
-**What closing it requires.** An `instrumentId`/`accountId` pair on every trade config,
-echoed on every result row. Mechanically small; touches request, result, and schema layers.
-
-**Partially closed (W0.7) — at the EOD boundary only.**
-[`engine/integration/identity.py`](../engine/integration/identity.py) gives every row
-reaching the TraderX EOD path an opaque, reproducible `itemId` plus a source identity block
-(`{kind, accountId, security | contractId}` + `clusterEpoch`), carried on **refused rows
-too**, with item ordering published as its own hashed artifact rather than inferred from
-array position. `ItemResult` cannot be constructed without an identity, so an unidentified
-row is unrepresentable rather than merely discouraged.
-
-**This does not close the issue.** `PortfolioRequest.trades` and `PortfolioResult.greeks`
-are unchanged and still positional — the W0.7 identity lives in a separate result type
-(`engine.integration.result.RiskResult`) that does not yet flow through `price_portfolio`.
-A direct Python caller of `engine.portfolio` still has no trade identity. Status stays
-**OPEN** until `instrumentId`/`accountId` reach the trade configs themselves.
-
----
-
-### I-11 — Risk measure unlabelled; no Monte Carlo error reported {#i-11}
-
-**Severity:** Medium · **Status:** ❌ OPEN
-
-`PortfolioResult.risk` returns keys like `VaR_95` with **no statement of what measure they
-are**. A risk-neutral exposure simulation is *not* a calibrated forecast of tomorrow's loss,
-and nothing in the result distinguishes the two. No effective sample size, Monte Carlo
-standard error, or convergence diagnostic is reported alongside the tail statistic, so a
-sparse-tail estimate is indistinguishable from a well-converged one.
-
-**What closing it requires.** An explicit `measure` label
-(`risk-neutral-pricing` / `historical-forecast` / `deterministic-stress`), plus effective
-sample size and MC standard error on every tail statistic. Small change; prevents a whole
-category of misreading. See [proposal §3.6/§4](planning/traderX_integration/eod-contract-proposal.md).
-
-**Substantially addressed (W0.6), but not closed.** Both halves now exist:
-
-- **The `measure` label.** `RISK_MEASURE_*` in
-  [`engine/risk/var_es.py`](../engine/risk/var_es.py) defines the three-value vocabulary, and
-  `ENGINE_RISK_MEASURE` records what this engine actually produces
-  (`risk-neutral-pricing`). `engine.integration.result.RiskResult` carries it on every
-  published result, and `capabilities()` advertises it so a consumer knows *before*
-  submitting.
-- **Convergence diagnostics.** `compute_risk_metrics` now returns `ES_<p>_tailCount`
-  (effective sample size — the observations the ES mean actually averaged) and
-  `ES_<p>_standardError` (`s/sqrt(n)`, `ddof=1`) beside every tail statistic. Purely
-  additive: existing keys and values are untouched, and `include_diagnostics=False` returns
-  the prior key set exactly. `standardError` is **NaN, never 0.0**, when `n < 2` — 0.0 would
-  read as "perfectly converged" for the least trustworthy case.
-
-**Why it stays OPEN.** `PortfolioResult.risk` is still a bare `Dict[str, jax.Array]` with no
-`measure` field of its own — the label lives on `RiskResult`, which only the TraderX EOD path
-produces. A direct Python caller of `price_portfolio` still gets unlabelled `VaR_95` keys,
-which is exactly what this issue reports. Closing it means putting `measure` on
-`PortfolioResult` itself.
-
----
-
-### I-12 — `/version` reports dispatcher backend, not worker device {#i-12}
-
-**Severity:** Low · **Status:** ❌ OPEN
-
-`GET /version` reports `jax.default_backend()` of the **dispatcher** process, which performs
-no JAX work. Actual pricing runs in a separate `worker_pool` process with its own JAX runtime.
-On a single-CPU dev machine these agree, so the discrepancy is invisible; on a multi-TPU host
-it would not be — and a precision/hardware study that trusted this field would draw wrong
-conclusions about which device produced a result.
-
-**What closing it requires.** Report device and actual per-stage precision **from the worker**,
-on the result itself, rather than from the dispatcher.
-
----
-
-### I-21 — Greeks recompile 23 XLA programs on every call {#i-21}
-
-**Severity:** Medium · **Status:** ❌ OPEN — **performance only; every number is correct**
-
-**Symptom.** A second, byte-identical `price_portfolio(request)` call in the same warm
-process recompiles 31 XLA programs (23 of them in `engine/risk/greeks.py`) instead of
-reusing cached ones. Nothing is *wrong* with the output — this costs wall time and makes a
-profiler trace look compile-bound even after warmup.
-
-Measured, three consecutive identical calls on the 4-trade demo portfolio:
-
-| Run | Compilations | Wall |
-|---|---:|---:|
-| 1 (cold) | 208 | 26.5 s |
-| 2 | **31** | 17.8 s |
-| 3 | **31** | 16.0 s |
-
-**The 23 Greeks recompiles, with exact callsites** (instrumented at
-`jax._src.compiler.backend_compile_and_load`, the same event an xprof trace labels as XLA
-compilation; cache hits do not reach it):
-
-| Count | Program | Callsite |
-|---:|---|---|
-| 10 | `jit_price_fn` | `greeks.py:390,400` (`swap_theta`), `:588,600` (`swaption_theta`), `:708,720` (`bermudan_theta`), `:813` (`bermudan_vega`) |
-| 5 | `jit_combined` | `greeks.py:222` (`_grad_and_hessian_diagonal`) |
-| 4 | `jit_model_price_wrt_prefix` | `greeks.py:842` (`bermudan_vega`) |
-| 4 | `jit_market_price_wrt_v_j` | `greeks.py:849` (`bermudan_vega`) |
-
-**Cause — one mechanism, seven sites.** `jax.jit` keys its cache on **function identity**,
-and every one of these jits a **closure built fresh on each call**. `_swap_price_fn`,
-`_swaption_price_fn` and `_bermudan_price_fn` each return a new function object that has
-captured that trade's prepared structure; `jax.jit(that_new_object)` is, as far as JAX is
-concerned, a function it has never seen. Demonstrated in isolation:
-
-```
-fresh closure + jax.jit each call : 5 compiles for 3 calls
-stable fn, constant as argument   : 1 compile  for 3 calls
-ONE jitted closure, reused        : 1 compile  for 3 calls
-```
-
-This was introduced *by* the jitting work that removed ~600 eager dispatches
-(see [Profiling & the Tracer](concepts/profiling.md) §3) — a large net win that left this
-residue behind. It is recorded here rather than silently accepted because it is the only
-thing now standing between this engine and an execution-dominated profile.
-
-**What closing it requires — memoize the jitted wrapper, keyed on prepared structure.**
-
-Cache `jax.jit(price_fn)` in a module-level dict keyed on the *prepared trade* rather than
-on the closure's identity, so two calls with the same economics reuse one compiled program.
-The key must be `static_key(prepared)` — the codebase's existing by-value normalizer
-([`engine/models/static_key.py`](../engine/models/static_key.py)) — plus the curve's shape
-and dtype.
-
-Prototyped and verified on the European swaption path:
-
-| | Call 1 | Call 2 | Call 3 | Result |
-|---|---:|---:|---:|---|
-| today | 11 | 1 | 1 | 10273.553365459014 |
-| memoized | 1 | **0** | **0** | 10273.553365459014 |
-
-Bit-identical output, and steady-state recompiles reach **zero**.
-
-**The risk this must not introduce, and why the design avoids it.** A memo that returns a
-program compiled for a *different* trade is silently wrong numbers — far worse than the
-slowness it fixes. Two properties make that safe:
-
-1. **The key must distinguish everything economically meaningful.** Verified directly
-   against `static_key(prepare_swaption(cfg))`: `notional`, `fixed_rate`, `payer`,
-   `swap_tenor`, `hw_sigma`, `hw_a` and `forward_start` each produce a *different* key,
-   while an identical config reproduces the same one. No collisions. This works because
-   `static_key` hashes NumPy arrays by **content** (`tobytes()`), not identity — the same
-   property that already lets `_Prepared*` objects be `jax.jit` static arguments.
-2. **Key on the PREPARED object, never the config.** `prepare_*` is what resolves a config
-   into the schedule the compiled program actually depends on. Keying on the raw config
-   would miss anything ORE's date generation derives (holiday rolls, accrual fractions), and
-   those genuinely change the program.
-
-**Bounded growth.** The cache must be an LRU (`functools.lru_cache`, or an explicit dict
-with a cap), not an unbounded dict: one entry retains a compiled XLA executable, and a
-long-lived server pricing thousands of distinct trades would otherwise leak. A pool worker
-is long-lived by design, so this is a real constraint, not a theoretical one. `jax` exposes
-`jax.clear_caches()` and each wrapper a `_clear_cache()` if an explicit eviction hook is
-wanted.
-
-**What it must not do.** It must not key on `id()` (each `prepare_*` call returns a fresh
-object — every lookup would miss, and recycled ids could collide), must not be keyed on
-anything mutable, and must not be applied to `bermudan_vega`'s per-bucket closures without
-the same content-based key (they capture `bucket_times`/`bucket_values` prefixes that differ
-per bucket, and must *not* share a program).
-
-**Regression test.** Assert the steady-state recompile count is **0** for a repeated
-identical Greeks call, and — the important negative — that a config differing only in
-`notional`, `fixed_rate` or `swap_tenor` still produces its own correct, *different* answer.
-A test that only checks the count would pass against a broken always-hit cache.
-`tests/test_profiling_and_jit.py::TestCompileCounts::test_repeated_greeks_call_costs_one_compile_not_zero`
-currently pins the *present* behavior and must be updated, not deleted, when this lands.
-
----
-
-### I-22 — Calibration recompiles 8 XLA programs per call {#i-22}
-
-**Severity:** Low · **Status:** ❌ OPEN — **performance only; every number is correct**
-
-**Symptom.** The remaining 8 of I-21's 31 steady-state recompiles are in
-`engine/calibration/lgm.py`:
-
-| Count | Program | Callsite |
-|---:|---|---|
-| 6 | `jit__lambda` | `lgm.py:173`, `:189`, `:192` (`calibrate_lgm_sigma`) |
-| 2 | `jit_scan` | `lgm.py:98` (`_bisect_bucket_sigma`) |
-
-**Cause — a DIFFERENT mechanism from I-21, which is why it needs a different fix.** These
-are not merely fresh closures; they bake **Python float constants** into the traced program:
-
-- `_bisect_bucket_sigma` closes over `market_price` as a concrete `float`, so every bucket
-  and every call traces a structurally identical `lax.scan` with a different embedded
-  constant.
-- `calibrate_lgm_sigma`'s `_jit_over_target` closures capture `target` and `final_sigma`
-  the same way.
-
-Confirmed in isolation — the distinction is exactly constant-vs-argument:
-
-```
-market_price baked in as a constant : 4, 1, 1 compiles across 3 differing calls
-market_price as a traced argument   : 1, 0, 0
-```
-
-**A memo (I-21's fix) would NOT help here** and would actively hurt: the constants differ
-legitimately per bucket, so a content-keyed cache would simply miss every time while adding
-lookup cost and retention. Applying I-21's fix mechanically to this file would be the wrong
-call.
-
-**What closing it requires — promote the constants to traced arguments.**
-
-Make `_bisect_bucket_sigma` take `market_price` as a JAX array argument rather than closing
-over a float, and give it a stable (module-level, `@partial(jax.jit, static_argnums=...)`)
-identity so the `lax.scan` compiles once and is reused across buckets and calls. Same for
-the diagnostics repricing: pass the target's arrays in rather than capturing them.
-
-**The constraint that makes this non-trivial, and must not be broken.** `price_fn` itself is
-genuinely different per bucket — bucket *j*'s pricer depends on the `[s_0..s_{j-1}]` prefix
-already calibrated, which is the whole structure of a bootstrap. So `price_fn` cannot become
-a traced argument; it has to stay a static one, and only `market_price` moves. That caps the
-achievable win at **one compile per distinct bucket count**, not zero. Realistically this
-takes 8 → ~2.
-
-**Why this is Low and I-21 is Medium.** Calibration runs once per distinct `rate_factor_index`
-per job; Greeks run per trade. On the demo portfolio calibration is ~1.3 s against Greeks'
-~18 s. Fix I-21 first — and note the two are independent, so I-21 can land alone.
-
-**Do not "fix" this by raising the bisection tolerance or lowering `iterations`.** The 60
-iterations are a correctness property (`rmse < 1e-8` is asserted); trading calibration
-accuracy for compile count would be a real regression disguised as an optimization.
-
----
-
-### I-24 — A bond has no scenario NPV, so no VaR/ES {#i-24}
-
-**Severity:** Medium · **Status:** ❌ OPEN — **refusal path landed (W1.5); the model has not**
-
-**Symptom.** A `BondConfig` in a `PortfolioRequest` cannot produce VaR or ES. Submitting one
-with the default `scenario_risk=True` is **refused** with `ScenarioPricingNotSupported`,
-naming the trade. The caller must set `scenario_risk=False`, which returns real
-`base_npv`/`base_npv_per_trade`/`greeks` alongside an **empty** `risk` dict and a
-zero-width `npv_cube`.
-
-**Cause.** `price_portfolio`'s `npv_cube` is `[Scenarios, TimeSteps, Trades]` — each column
-is a trade's *conditional* NPV at each simulated future step, and `engine.risk.var_es` turns
-those columns into VaR/ES. The four rate-derivative types fill their columns from simulated
-Hull-White paths. A bond, as priced by `engine.instruments.treasury`, is closed-form
-arithmetic against **one deterministic curve**: no stochastic driver, no time evolution, and
-therefore nothing to vary across a scenario axis.
-
-**Why this is a refusal and not a zero — measured, not argued.** The only way to fill the
-column without a model is to broadcast one t=0 number across every entry. That was
-implemented and run through the real `price_portfolio`, on a $100,000 bill priced at
-$98,401.95:
-
-| Metric | Broadcast-constant column |
-|---|---|
-| `VaR_95` / `VaR_99` | **0.00** |
-| `ES_95` / `ES_99` | **NaN** |
-
-A consumer reading `VaR_95 = 0.00` concludes the position carries no risk. It is not
-conservative, not approximate, and not labelled — the risk is **absent, wearing the shape of
-a measurement**. (The NaN does *not* propagate to the portfolio aggregate, which was also
-checked: ES differences the P&L across trades first, so a constant column cancels. That
-makes the failure quieter, not safer — the per-trade number is the one that misleads.)
-
-**Why `risk` is empty rather than zero-filled.** An empty dict asserts nothing; a `VaR` key
-holding 0.00 asserts a *measured absence of risk*. Only the first is true.
-`PortfolioResult.scenario_risk_available` carries the distinction onto the **result**, since
-a consumer holding a result object has no access to the request that produced it — without
-it, an empty `risk` is ambiguous between "not requested" and "computed and found to be
-nothing".
-
-**What closing it requires — a bond scenario model, not plumbing.** Each simulated scenario's
-rate state must be repriced through the bond's own schedule: build a zero curve per
-`[scenario, step]` from the Hull-White state, then rerun the discounting. That is genuine
-modelling work with its own validation burden (a bond repriced off an HW short rate needs
-its discount curve reconstructed consistently with how the swap pricer does it, or the two
-instruments carry incompatible risk in one portfolio total).
-
-**Do not close it by broadcasting, zero-filling, or defaulting `scenario_risk` to `False`.**
-The first two produce the table above. The third would silently strip VaR/ES from every
-existing swap portfolio that never asked for it — turning a bond-shaped gap into a
-portfolio-wide regression.
-
-**Verified.** `tests/test_treasury_instrument.py::TestScenarioPricingIsRefused` (4 tests,
-one of which *measures* the VaR-0/ES-NaN outcome so the justification is pinned rather than
-remembered) and `tests/test_portfolio_bond_wire_through.py::TestScenarioRiskIsRefusedForBonds`
-(5 tests). The broadcast implementation was patched in and **4 of 5 fail against it**
-(working rule 3).
-
----
-
-### I-25 — A scalar Greek crashed the HTTP result serializer {#i-25}
-
-**Severity:** Medium · **Status:** ✅ FIXED · **Found:** 2026-09-17, during W1.5
-
-**Symptom.** `GET`ting a completed job whose portfolio contained a bond with
-`compute_greeks=True` raised `TypeError: 'float' object is not iterable` inside
-`PortfolioResultSchema.from_dataclass`. The job **priced correctly** — the failure was
-purely in serializing the answer, so the work was done and then thrown away with a 500.
-
-**Cause.** `engine/api/schemas.py`'s `GreeksSchema.from_dataclass` converted every non-theta
-Greek with:
-
-```python
-values[key] = [float(v) for v in np.asarray(val).tolist()]
-```
-
-A 0-dimensional array's `.tolist()` returns a **bare Python float**, not a list, so the
-comprehension tries to iterate a scalar.
-
-**Why it went unnoticed until W1.5.** Every pre-existing Greek is a per-pillar **vector** —
-`swap_delta_gamma` returns `discount_delta`/`forward_delta` arrays, one entry per curve
-pillar. The unconditional iteration was correct for all four rate-derivative types. A
-`BondConfig` prices off a single curve with one parallel bump, so its `delta`/`gamma` are
-genuine **scalars** — the first 0-d Greek in the codebase.
-
-**Fix.** `np.atleast_1d` before `.tolist()`, normalizing the scalar case to a one-element
-list so `values` stays uniformly a list-per-Greek rather than sometimes a float. One line;
-the vector path is byte-identical.
-
-**Verified.** `tests/test_api_bond_schemas.py::TestBondGreeksSerializeOverHttp` (5 tests).
-**3 fail against the pre-fix code**, including `test_a_full_bond_result_serializes_end_to_end`
-which drives the real `price_portfolio` → `from_dataclass` → `model_dump_json` path.
-`test_a_vector_greek_is_unchanged` is the negative control confirming the fix did not alter
-the existing per-pillar behaviour.
-
-**Note on how this was found.** By reading the conversion code while adding the bond schema
-and predicting that a 0-d array would break it — then confirming it in one line before
-writing any test. No existing test could have caught it: the bond is the first scalar Greek,
-so there was nothing to exercise the path.
-
-> **⚠ Process finding, worth more than the bug.** This was found while running the **system
-> Python**, where `tests/test_api.py` was uncollectable for want of `pydantic`. The project
-> has a **`.venv/`** that has always had it — so the HTTP tests were passing there all along,
-> and the "uncollectable" state was an artifact of the wrong interpreter, not a real gap.
->
-> The same mistake hid 46 further tests (`tests/test_integration_schema.py`, which needs
-> `jsonschema`) and produced a full-suite count of **1,663** against the venv's **1,709** —
-> a 46-test discrepancy that looked like a regression and was purely environmental.
-> **Always run `.venv/Scripts/python.exe -m pytest`, not the system `python`.** A suite that
-> cannot import a module reports nothing for it, and a count taken from the wrong interpreter
-> is not comparable to the recorded baseline (working rules 9 and 10).
-
----
-
-### I-26 — Greeks for a bond maturing tomorrow crashed on the theta reprice {#i-26}
-
-**Severity:** Low · **Status:** ✅ FIXED · **Found:** 2026-09-17, during W1.5
-
-**Symptom.** `compute_greeks=True` on a portfolio containing a bond whose maturity is
-**exactly one day** after the evaluation date raised:
-
-```
-BondPricingError: maturity_date 2025-06-03 is not after evaluation_date 2025-06-03.
-A matured bond has no remaining cashflow to discount ...
-```
-
-The bond was **not** matured, priced perfectly well in the same run, and the error named a
-date the caller never supplied. `base_npv` succeeded; only the Greeks call died — so a
-single near-maturity position failed the whole portfolio's Greeks.
-
-**Cause.** `_bond_greeks` computes theta by repricing with `evaluation_date + 1`. For a bond
-maturing tomorrow that lands **exactly on** maturity, which `BondConfig.__post_init__`
-refuses to construct — correctly, since a bond with no remaining cashflow is a settlement
-question rather than a pricing one. The refusal is right for the reprice and wrong as a
-failure of the entire Greeks call.
-
-**Fix.** Guard the reprice on `maturity_date > evaluation_date + 1`. Delta and Gamma are
-unaffected and still reported; **theta is omitted**, not zeroed. There is no next day on
-which the instrument still exists, so its decay is *undefined*, not nil — and `0.0` would
-assert a measured absence of time decay on precisely the bond that decays fastest. Same
-reasoning as the omitted Vega.
-
-**Verified.** `tests/test_portfolio_bond_wire_through.py::TestBondGreeksReachThePortfolioPath`
-— `test_a_bond_maturing_tomorrow_does_not_crash_the_greeks` and
-`test_theta_is_omitted_not_zeroed_at_the_maturity_boundary`, **both verified to fail against
-the pre-fix code**. `test_theta_is_present_one_day_the_other_side_of_the_boundary` is the
-control: a bond maturing in *two* days still has theta, so an unconditional omission would
-not pass.
-
-**How it was found.** By asking what `replace(cfg, evaluation_date=+1)` does at the edge of
-the constructor's own validity, and checking — not by a failing test. No fixture had a bond
-that close to maturity.
-
----
-
-### I-27 — Long full-suite runs hard-abort inside XLA compilation {#i-27}
-
-**Severity:** Medium · **Status:** ❌ OPEN — **located, not yet root-caused**
-**Found:** 2026-09-17, while verifying W1.5
-
-**Symptom.** A long `pytest tests/` run dies with `Fatal Python error: Aborted` and
-**no summary line at all**. There is no failure report — the process is gone. Separately,
-`tests/test_bermudan_swaption.py` has been seen to fail intermittently
-(`3 failed, 52 passed`, then `4 failed`, then clean) without aborting.
-
-**Where the abort actually is.** The faulthandler traceback puts the crashing thread inside
-**JAX's XLA compiler**, not in any pricer:
-
-```
-jax/_src/compiler.py:353  backend_compile_and_load
-jax/_src/pjit.py:1175     _pjit_call_impl_python
-engine/simulation/market_model.py:689  _generate_paths_inner
-engine/portfolio/request.py:729        price_portfolio
-tests/test_api_bond_schemas.py:173     test_a_full_bond_result_serializes_end_to_end
-```
-
-Other threads sit in `concurrent/futures/process.py` and `multiprocessing/queues.py` — i.e.
-**a `ProcessPoolExecutor` is alive while the parent process compiles an XLA program**.
-
-**The leading hypothesis, and its limits.** `engine/portfolio/worker_pool.py` caches pools in
-a module-level `_POOLS` dict that lives for the interpreter's lifetime.
-`tests/test_worker_pool.py` tears its pools down in an autouse fixture whose own comment says
-it exists *"so later test modules don't inherit idle worker processes"* — but
-**`tests/test_api.py` creates pools and never calls `shutdown_pools`**. A later in-process
-XLA compile then runs with live worker children attached.
-
-**That hypothesis is not proven.** Pairing the modules directly does *not* reproduce it:
-
-| Attempted reproduction | Result |
-|---|---|
-| `test_api.py` + `test_api_bond_schemas.py`, 3× | **passed** (52 each time) |
-| `test_worker_pool.py` + `test_api_bond_schemas.py` | passed (that module cleans up) |
-| `test_api_bond_schemas.py` alone, repeatedly | passed (21) |
-| `test_bermudan_swaption.py` alone, 6× consecutively | passed (55 each) |
-| Same, under deliberate CPU contention from 2 concurrent JAX pytest processes | passed |
-| Full suite (~1,100 tests in, Bermudan file *excluded*) | **ABORTED** |
-| The *same* full-suite command, rerun | **1,661 passed, 0 failed** (10m55s), clean summary |
-| Full suite again, Bermudan file **included** | **1,716 passed, 0 failed** (11m24s), clean summary |
-
-So it needs accumulated whole-suite state, not any two modules — and even then it is
-**intermittent**: the identical command that aborted later completed cleanly end to end.
-**The abort is not specific to the Bermudan file** — it happened with that file excluded
-entirely, in `tests/test_api_bond_schemas.py`.
-
-**Not caused by W1.5.** `git stash` of all W1.5 work reproduced the Bermudan failures on
-pristine code. W1.5's only contact with Bermudan code is adding `BondConfig` to the
-`TradeConfig` union plus two comments. The W1.5 test named in the traceback is simply the
-*victim* — it is the point where a fresh XLA compile happens late in a long run.
-
-**Why Medium.** Two subsequent full runs completed cleanly (1,661 and 1,716, both with real
-summary lines), so the suite *is* green — but it makes that result **not reliably obtainable
-on demand**, and it fails
-in the most deceptive way available: a dead process with no summary. That is how a run dying
-at 4% was briefly taken for a pass — the shell's `echo EXIT=$?` had captured the redirect
-rather than pytest (pytest's real exit was `3`). **Any future "the suite is green" claim must
-confirm a summary line was actually printed**, not infer it from an exit code.
-
-**What would characterize it.** Add a `shutdown_pools()` autouse fixture to
-`tests/test_api.py` mirroring `tests/test_worker_pool.py`'s, then run the full suite
-repeatedly and see whether the abort stops. That is a cheap, low-risk experiment — but it
-is an *experiment*, and it was deliberately not applied as a "fix" here.
-
-> **The intermittency is precisely why.** The same full-suite command that aborted later
-> passed 1,661/1,661 with no change at all. Had the fixture been added first, that green run
-> would have looked like proof it worked — and the register would now carry a "FIXED" entry
-> resting on a coincidence. Any candidate fix for this needs *repeated* clean full runs
-> against a known-bad baseline, not one. Also worth checking whether XLA's on-disk compilation cache is shared
-unsafely across the parent and its spawned workers.
-
-**Related:** [I-15](#i-15) and `test_cross_tier_jobs_correct_and_concurrent` share the
-worker-pool/timing premise. Whether they are the same underlying problem is **not**
-established.
-
----
-
-### I-28 — The `var_es` module demo crashes on a date that moved {#i-28}
-
-**Severity:** Low · **Status:** ❌ OPEN — **root-caused, one-line fix, not applied here**
-**Found:** 2026-09-17, while verifying that every command in
-[the User Guide](getting-started/user-guide.md#running-the-demos) actually runs.
-
-`python -m engine.risk.var_es` — a documented command — aborts before printing anything:
-
-```
-ValueError: Swap cashflow times must be a subset of the simulation's rates.maturities
-pillars; got cashflow times [0.5095890410958904, 1.010958904109589, 1.5095890410958903,
-2.0136986301369864] against maturities [0.010958904109589041, 0.5150684931506849,
-1.010958904109589, 1.515068493150685, 2.0136986301369864]
-```
-
-**The cause is one missing keyword argument.** The demo block at
-[`engine/risk/var_es.py:321`](../engine/risk/var_es.py) builds its `SwapConfig` without an
-`evaluation_date`, so the field falls back to its default —
-`ORE.Settings.instance().evaluationDate`, i.e. *today*. It then prices that swap against
-`SWAP_DEMO_MATURITIES`, which is pinned to `EVAL_DATE = ORE.Date(30, 7, 2026)` in
-`engine/simulation/demo_scenarios.py`. Once the wall clock left 2026-07-30 the two stopped
-agreeing, and the maturity-pillar-alignment check in
-[`engine/instruments/swap.py:165`](../engine/instruments/swap.py) correctly refused the
-mismatch. Adding `evaluation_date=EVAL_DATE` to that config — which the other module demos
-already pass, e.g. `engine/instruments/swap.py:300` — makes it run; that was confirmed
-directly rather than assumed.
-
-**Why it is filed rather than fixed here.** This register entry came out of a documentation
-pass, and the fix is a code change. It is recorded so the documented command and the
-register agree about reality in the meantime.
-
-**Two things worth drawing out of it.**
-
-- **The failure is the guardrail working.** This is the maturity-pillar-alignment
-  constraint the [User Guide](getting-started/user-guide.md#pricing-a-swap) and
-  [Instruments: swaps](instruments/swaps.md#a-known-limitation-maturity-pillar-alignment)
-  both warn about, doing exactly what it exists to do. A loud `ValueError` naming both lists
-  is the good outcome; silently discounting a cashflow against the nearest pillar is the bad
-  one.
-- **It is a time bomb by construction, and only this demo carries it.** A default that reads
-  the wall clock, combined with a constant pinned to a fixed date, is a test that passes
-  until a date passes. The rest of the suite is immune because `tests/conftest.py` and
-  `demo_scenarios.py` thread `EVAL_DATE` explicitly — which is why 1,777 tests stay green
-  while a documented demo does not. The lesson is the one the guide already gives for
-  user-written configs: pass `evaluation_date` explicitly rather than inheriting ORE's
-  global.
-
-**Related:** the same alignment rule is discussed at
-[Instruments: swaps](instruments/swaps.md#a-known-limitation-maturity-pillar-alignment).
-
----
-
-## FIXED — found during the TraderX EOD exchange (2026-09-15)
-
-> Kept in ID order here rather than moved up into the FIXED section above, so the
-> register reads chronologically and the I-NN anchors stay stable. All four are
-> **FIXED**, each with a regression test verified to fail against the pre-fix code.
->
-> **I-17 was found on 2026-09-16 during W1.3** and is listed here rather than in a new
-> section because it belongs to the same integration work.
 
 ### I-13 — A negative curve index silently prices against the wrong curve {#i-13}
 
@@ -1633,6 +670,1199 @@ identical gap; the reviewer happened to try the note. Verified to fail against t
 code.
 
 ---
+
+### I-25 — A scalar Greek crashed the HTTP result serializer {#i-25}
+
+**Severity:** Medium · **Status:** ✅ FIXED · **Found:** 2026-09-17, during W1.5
+
+**Symptom.** `GET`ting a completed job whose portfolio contained a bond with
+`compute_greeks=True` raised `TypeError: 'float' object is not iterable` inside
+`PortfolioResultSchema.from_dataclass`. The job **priced correctly** — the failure was
+purely in serializing the answer, so the work was done and then thrown away with a 500.
+
+**Cause.** `engine/api/schemas.py`'s `GreeksSchema.from_dataclass` converted every non-theta
+Greek with:
+
+```python
+values[key] = [float(v) for v in np.asarray(val).tolist()]
+```
+
+A 0-dimensional array's `.tolist()` returns a **bare Python float**, not a list, so the
+comprehension tries to iterate a scalar.
+
+**Why it went unnoticed until W1.5.** Every pre-existing Greek is a per-pillar **vector** —
+`swap_delta_gamma` returns `discount_delta`/`forward_delta` arrays, one entry per curve
+pillar. The unconditional iteration was correct for all four rate-derivative types. A
+`BondConfig` prices off a single curve with one parallel bump, so its `delta`/`gamma` are
+genuine **scalars** — the first 0-d Greek in the codebase.
+
+**Fix.** `np.atleast_1d` before `.tolist()`, normalizing the scalar case to a one-element
+list so `values` stays uniformly a list-per-Greek rather than sometimes a float. One line;
+the vector path is byte-identical.
+
+**Verified.** `tests/test_api_bond_schemas.py::TestBondGreeksSerializeOverHttp` (5 tests).
+**3 fail against the pre-fix code**, including `test_a_full_bond_result_serializes_end_to_end`
+which drives the real `price_portfolio` → `from_dataclass` → `model_dump_json` path.
+`test_a_vector_greek_is_unchanged` is the negative control confirming the fix did not alter
+the existing per-pillar behaviour.
+
+**Note on how this was found.** By reading the conversion code while adding the bond schema
+and predicting that a 0-d array would break it — then confirming it in one line before
+writing any test. No existing test could have caught it: the bond is the first scalar Greek,
+so there was nothing to exercise the path.
+
+> **⚠ Process finding, worth more than the bug.** This was found while running the **system
+> Python**, where `tests/test_api.py` was uncollectable for want of `pydantic`. The project
+> has a **`.venv/`** that has always had it — so the HTTP tests were passing there all along,
+> and the "uncollectable" state was an artifact of the wrong interpreter, not a real gap.
+>
+> The same mistake hid 46 further tests (`tests/test_integration_schema.py`, which needs
+> `jsonschema`) and produced a full-suite count of **1,663** against the venv's **1,709** —
+> a 46-test discrepancy that looked like a regression and was purely environmental.
+> **Always run `.venv/Scripts/python.exe -m pytest`, not the system `python`.** A suite that
+> cannot import a module reports nothing for it, and a count taken from the wrong interpreter
+> is not comparable to the recorded baseline (working rules 9 and 10).
+
+---
+
+### I-26 — Greeks for a bond maturing tomorrow crashed on the theta reprice {#i-26}
+
+**Severity:** Low · **Status:** ✅ FIXED · **Found:** 2026-09-17, during W1.5
+
+**Symptom.** `compute_greeks=True` on a portfolio containing a bond whose maturity is
+**exactly one day** after the evaluation date raised:
+
+```
+BondPricingError: maturity_date 2025-06-03 is not after evaluation_date 2025-06-03.
+A matured bond has no remaining cashflow to discount ...
+```
+
+The bond was **not** matured, priced perfectly well in the same run, and the error named a
+date the caller never supplied. `base_npv` succeeded; only the Greeks call died — so a
+single near-maturity position failed the whole portfolio's Greeks.
+
+**Cause.** `_bond_greeks` computes theta by repricing with `evaluation_date + 1`. For a bond
+maturing tomorrow that lands **exactly on** maturity, which `BondConfig.__post_init__`
+refuses to construct — correctly, since a bond with no remaining cashflow is a settlement
+question rather than a pricing one. The refusal is right for the reprice and wrong as a
+failure of the entire Greeks call.
+
+**Fix.** Guard the reprice on `maturity_date > evaluation_date + 1`. Delta and Gamma are
+unaffected and still reported; **theta is omitted**, not zeroed. There is no next day on
+which the instrument still exists, so its decay is *undefined*, not nil — and `0.0` would
+assert a measured absence of time decay on precisely the bond that decays fastest. Same
+reasoning as the omitted Vega.
+
+**Verified.** `tests/test_portfolio_bond_wire_through.py::TestBondGreeksReachThePortfolioPath`
+— `test_a_bond_maturing_tomorrow_does_not_crash_the_greeks` and
+`test_theta_is_omitted_not_zeroed_at_the_maturity_boundary`, **both verified to fail against
+the pre-fix code**. `test_theta_is_present_one_day_the_other_side_of_the_boundary` is the
+control: a bond maturing in *two* days still has theta, so an unconditional omission would
+not pass.
+
+**How it was found.** By asking what `replace(cfg, evaluation_date=+1)` does at the edge of
+the constructor's own validity, and checking — not by a failing test. No fixture had a bond
+that close to maturity.
+
+---
+
+### I-29 — A rounded exercise time silently drops a whole coupon {#i-29}
+
+**Severity:** Medium · **Status:** ✅ FIXED (2026-09-18) · **Found:** 2026-09-18, while
+building the external Bermudan oracle (`tests/test_ore_bermudan_oracle.py`)
+
+**What was wrong.** `BermudanSwaptionConfig.exercise_times` are year-fractions supplied by
+the caller, and the engine did **not** snap them onto the underlying's actual accrual
+schedule. `_hw_swap_value_at_nodes` decides which coupons are still alive at exercise with
+`fixed_start_times >= t - 1e-9`. A caller who wrote a *rounded* exercise time — `2.0137`
+for a true accrual start of `2.0136986301369864` — landed **1.4e-6 late**, which is ~1400x
+that 1e-9 tolerance. The coupon starting on that very date then read as already-elapsed
+and was dropped from the exercise value entirely.
+
+Measured: at `sigma -> 1e-6`, where the Bermudan must collapse to its intrinsic value of
+**1211.47**, the rounded input instead priced **14336.12** — an ~12x overstatement,
+independent of volatility. The engine returns a plausible, finite, confidently-formatted
+number with no warning, which is exactly the invisible-from-outside class of problem this
+register exists for.
+
+**Fix.** `_snap_exercise_times` in
+[`engine/instruments/bermudan_swaption.py`](../engine/instruments/bermudan_swaption.py),
+called from `prepare_bermudan` — which already builds the ORE swap and reads
+`fixed_start_times` off it, so the schedule is in hand at no extra cost. Any exercise time
+within `EXERCISE_SNAP_TOLERANCE` (**1e-4** years, ~53 minutes) of a fixed accrual start is
+replaced by that accrual start exactly; anything further away is passed through untouched.
+The rounded input now prices **1211.47**, bit-identical to the exact one.
+
+`__post_init__` was rejected as the site: it would catch the mistake earlier but force an
+`ORE.MakeVanillaSwap` call on every config construction, including the `hw_sigma=None`
+"uncalibrated" configs that are built and passed around before they are ever priceable.
+
+**The original plan said "snap or raise". Raising was wrong, and the tests said so.**
+This entry previously proposed refusing any time that is not within tolerance of an accrual
+boundary. Implemented that way it **failed 66 tests** across
+`tests/test_bermudan_swaption.py`, `test_american_swaption.py`, `test_greeks_bermudan.py`
+and `test_calibration_lgm.py` — correctly, because a genuinely mid-period exercise date is
+**in scope** for this engine rather than invalid input: `TestSingleExerciseMatchesLgmJamshidian`
+prices at 1.0/2.5/4.0 against an independent closed form that applies the same liveness
+rule, and `TestMidCouponKnownLimitation` exercises it deliberately. Refusing would have
+converted a documented approximation into a hard failure and deleted a working capability.
+
+**That does not mean those prices are right.** Investigating this fix's residual is what
+showed [I-06](#i-06)'s approximation is **not** the "conservative understatement" this
+register had claimed — it overstates a payer up to 7.4x. So the correct reading is: a
+mid-period date must keep *pricing* (many callers legitimately supply one), and what it
+prices is separately wrong and now tracked at the top of the actionable list.
+
+So the fix repairs a damaged *spelling* of an accrual date and changes nothing else. That
+is a narrower claim than "the alignment contract is now enforced", and it is the true one.
+
+**The tolerance is chosen from measured data, not picked.** It separates two populations
+with wide margins on both sides: a 4-, 5- or 6-decimal year fraction is off by at most
+1.4e-6 (~70x inside the band), while one calendar day is 2.74e-3 (~27x outside it) and the
+mid-period times used in the tests above sit ~1e-2 away. Fixed accrual starts are ≥0.99
+years apart, so a snap can never be ambiguous between two boundaries.
+
+**What is still wrong, stated at full scope.** The residual is **not** a precision
+question, and an earlier draft of this entry framed it too narrowly as "3-decimal
+rounding". Measured by sweeping the offset around a 2.0136986301369864 accrual start:
+
+| Offset from the accrual start | Price | |
+|---|---:|---|
+| −1e-2, −1e-3, −3e-4, −1.1e-4 | 1211.47 | correct |
+| 0 (exact), ±within 1e-4 | 1211.47 | correct (snapped) |
+| **+1.1e-4, +3e-4, +1e-3, +1e-2** | **14336.12** | **coupon dropped, ~12x** |
+
+**The failure is entirely one-sided.** An exercise time landing *before* an accrual start
+keeps that coupon alive and prices correctly at any distance. One landing *after* it — by
+any amount past the snap band — drops the coupon. So what remains is not "coarse
+roundings"; it is **every late-landing unaligned exercise time**, which is precisely the
+[I-06](#i-06) mid-coupon case seen from the input side. A 3-decimal rounding is just the
+cheapest way to stumble into it.
+
+This is why the fix is scoped to near-misses and why widening the band is not the answer:
+the band cannot grow far enough to cover a genuine mid-period date without *moving* one,
+and moving it would answer a different question than the caller asked. Closing the residual
+means **prorating the in-progress coupon** (I-06), not snapping harder.
+
+Pinned by `test_a_coarsely_rounded_time_is_still_not_repaired`, which asserts the
+overstatement survives — so the day I-06 is fixed, that test fails and says so.
+
+**New helper: `exercisable_times(cfg)`.** The valid exercise times are a property of the
+ORE-generated schedule, so a caller had no way to ask for them without already having one.
+(The oracle test reached for them by preparing a throwaway config with a dummy
+`exercise_times=[0.0]`.) It returns the underlying's fixed accrual starts, and is now the
+documented way to build a config.
+
+**A second, quieter defect found while fixing this one.**
+`_warn_if_not_reset_aligned` in [`engine/portfolio/request.py`](../engine/portfolio/request.py)
+warns that a misaligned trade *"will use the documented mid-coupon approximation"*, and it
+matched accrual dates by **exact set membership** (`round(t, 9) in reset_dates`). Once
+near-misses are snapped, that warning fired on trades the engine now prices **exactly** —
+reporting an approximation that no longer happens, on the very input the fix repairs. It
+now matches on the same `EXERCISE_SNAP_TOLERANCE`, so the warning and the pricer agree.
+Genuinely mid-period trades still warn, which is verified in both directions by
+`test_the_portfolio_warning_agrees_with_what_is_priced`. Found by running `demos/demo.py`
+and reading its warnings against what the pricer had just been changed to do.
+
+**The American path is exempt, by a flag on the config.**
+`AmericanSwaptionConfig.to_bermudan` discretizes a *continuous* exercise window onto a
+uniform grid (ORE's own construction), where a grid point landing near an accrual start is
+a coincidence of the spacing rather than a damaged date — snapping it would silently *move*
+an exercise opportunity. It sets `exercise_times_are_discretized=True` on the config it
+builds. The provenance rides on the config rather than a parameter each pricing call passes,
+because a `to_bermudan()` result is priced at ~14 call sites across engine, tests and demos,
+and a flag every one of them had to remember would eventually be forgotten at one.
+
+**Verified.** `tests/test_ore_bermudan_oracle.py::TestExerciseTimeAlignment` — **12 tests**,
+replacing the 2 that pinned the defect, so that file goes **50 → 60** collected
+(`pytest --collect-only -q`).
+**5 fail against the pre-fix code** — the three rounding cases plus the two snapping-mechanism
+tests. The rest assert behavior the fix must *not* change (mid-period pass-through, the
+American exemption, the coarse-rounding limit) and so pass either way by design; the
+exemption test was separately confirmed to fail when the exemption alone is disabled.
+
+The twelve suites touching Bermudan/American pricing, calibration and the portfolio path
+run **327 passed, 0 failed** (7m59s, summary line printed, exit code 0) — including the
+four the raising version broke. `demos/demo.py`, which prices a Bermudan and an American
+through `price_portfolio`, runs end to end, as do both module demos. **A full suite has not
+been re-run**; see the caveat in the header.
+
+---
+
+---
+
+## FLAGGED — inaccuracy unchanged, silence removed
+
+> These are **not fixes.** The numbers are as wrong as they were before. What changed is that
+> the engine now says so. [I-30](#i-30) is the one entry of a different kind: a gap in the
+> *tests* rather than in the code.
+
+### I-04 — Aged swaps are mispriced at every step past first accrual {#i-04}
+
+**Severity:** High · **Status:** ⚠️ FLAGGED (inaccuracy unchanged)
+
+**What is wrong.** `price_swaps` has no representation of an already-fixed floating coupon.
+At any simulated time `t` past a swap's first accrual start, the elapsed period is discounted
+using `P(t, accrual_start)` for `accrual_start < t` — which is not a discount factor at all,
+but a clamped, meaningless value (see
+[`reconstruct_yield_curves`](../engine/simulation/market_model.py)'s `B(t,T)` clamp).
+
+**Blast radius — this is the widest of any issue here:**
+
+- t=0 base NPV — **unaffected and exact**.
+- Every `npv_cube` value at every step past first accrual — **inaccurate**.
+- **Every VaR/ES number derived from that cube — inaccurate**, since they aggregate it.
+- Any exposure profile, XVA-style calculation, or multi-day experiment — inaccurate.
+- Theta past the first reset — inaccurate.
+
+Measured divergence against an ORE reference at a future evaluation date is ~1e-4 to 1e-3
+relative, **growing** with distance past the aged dates
+(`tests/test_swap.py::TestAgedSwapKnownLimitation`).
+
+**Scope note.** `SwapConfig` has no `forward_start` field, so **every swap in this engine is
+spot-starting**. Therefore *every* multi-step swap portfolio is affected. This is not an edge
+case; it is the default path.
+
+**What changed.** `price_portfolio` now emits a warning per affected swap into
+`PortfolioResult.warnings`, naming the trade, its first accrual start, how many steps are
+affected, and explicitly that t=0 base NPV is unaffected. Warnings cross the worker-process
+boundary into the HTTP result. **The pricing is unchanged.**
+
+**What closing it requires** — two things, neither of which exists today:
+
+1. **Engine work:** track already-fixed rates per scenario/step inside the pricing kernel, or
+   exclude elapsed cashflows from the sum. This is real work in
+   [`engine/instruments/swap.py`](../engine/instruments/swap.py), not orchestration.
+2. **Data that does not exist:** historical published fixings for each floating index, back
+   to each live trade's effective date. **TraderX does not currently export these** — it is
+   the `pastFixings` field requested in
+   [the proposal §2.2](planning/traderX_integration/eod-contract-proposal.md). Without them there is nothing to
+   populate a fixed coupon *with*.
+
+Item 2 is the binding constraint. Engine work alone cannot close this.
+
+**Verified (the warning, not the fix):**
+`tests/test_portfolio_gap_fixes.py::TestAgedSwapWarningIsNotSilent` (5 tests) and
+`tests/test_api.py::TestGapFixesSurviveTheHttpBoundary`.
+
+---
+
+### I-06 — Mid-coupon Bermudan/American exercise misprices in both directions {#i-06}
+
+**Severity:** **High** (raised from Medium, 2026-09-18) · **Status:** ⚠️ FLAGGED
+
+**What is wrong.** Bermudan/American pricing is exact **only** when exercise dates are
+reset-aligned with the underlying's accrual schedule. For an exercise date falling inside an
+accrual period, the in-progress coupon is **excluded entirely rather than prorated**. The
+error is an entire coupon's PV, not a few days' accrual.
+
+> **⚠ Correction (2026-09-18): this is NOT a conservative understatement, and this entry
+> said so for months.** The claim that the approximation is "conservative
+> (value-understating)" appears here, in `AmericanSwaptionConfig`'s docstring and in
+> [american-bermudan-swaptions.md](instruments/american-bermudan-swaptions.md) — and it is
+> **false for payer swaptions**. Measured on a 5Y annual-fixed underlying, exercise time
+> 1e-3 past an accrual start, at `sigma=0.005`:
+>
+> | Type | Strike | Aligned | Mid-coupon | Ratio | |
+> |---|---:|---:|---:|---:|---|
+> | payer | 0.02 | 28,248 | 31,893 | 1.13x | **overstates** |
+> | payer | 0.03 | 7,617 | 15,540 | 2.04x | **overstates** |
+> | payer | 0.04 | 588 | 4,327 | **7.36x** | **overstates** |
+> | receiver | 0.02 | 409 | 65 | 0.16x | understates |
+> | receiver | 0.03 | 6,405 | 1,203 | 0.19x | understates |
+> | receiver | 0.04 | 26,004 | 7,483 | 0.29x | understates |
+>
+> **The mechanism.** Dropping the in-progress *fixed* coupon removes a payment. For a payer
+> that is money owed, so the remaining swap looks **more** valuable; for a receiver it is
+> money due, so it looks less. The sign of the error is the sign of the trade.
+>
+> At low volatility the payer overstatement reaches **~12x** (1,211 → 14,336 at
+> `sigma → 1e-6`), because the intrinsic value it should collapse to is small while the
+> spurious gain from the dropped coupon is not.
+>
+> **Why no test caught it.** `TestMidCouponKnownLimitation` asserts only that the
+> mid-coupon price is finite, non-negative, and within one order of magnitude of the
+> aligned price (`abs(mid - reset) / reset < 1.0`). It never checks the **direction** of
+> the error, so the "conservative" claim was documented but never verified.
+>
+> **Why this raises the severity.** A conservative understatement is something a consumer
+> can knowingly accept. A **direction-dependent** error is not: a book of payers and
+> receivers gets errors of opposite sign that partially cancel in the portfolio total while
+> every individual position is wrong — the same "quieter, not safer" shape as
+> [I-24](#i-24)'s broadcast VaR.
+
+**What changed.** `validate_portfolio_against_simulation` warns per misaligned trade, and
+`price_portfolio` collects these into `PortfolioResult.warnings`. (This predates the current
+review; recorded here for completeness.)
+
+**What closing it requires.** Proration logic in `_hw_swap_value_at_nodes`
+([`engine/instruments/bermudan_swaption.py`](../engine/instruments/bermudan_swaption.py)),
+crediting the in-progress coupon its `couponRatio` share (ORE's own construction) instead
+of dropping it, plus agreement on the settlement convention for a mid-period exercise —
+decision **D16** in the TraderX pack. Engine-side work; no external data dependency, which
+is why this now heads the actionable list.
+
+**Two things the fix must prove, given how this issue was mis-described.**
+
+1. **Direction, per trade type, not just magnitude.** The existing
+   `test_the_error_direction_follows_the_trade_direction` asserts a payer overstates and a
+   receiver understates. A correct proration makes both converge on the aligned price, so
+   that test must be *tightened into an equality* — deleting it would remove the only check
+   that ever caught the real behavior.
+2. **A payer at a high strike, at low volatility.** That is where the error is worst
+   (7.4x at `sigma=0.005`, ~12x as `sigma → 0`) because the aligned intrinsic is small
+   while the spurious gain from the dropped coupon is not. A fix validated only at
+   at-the-money and ordinary vol would look convincing and leave the damaging case intact.
+
+**Do not close it by snapping mid-period dates onto the schedule.** That is the plausible
+wrong fix, and [I-29](#i-29)'s scoping exists to prevent it: moving a caller's exercise
+date answers a different question than the one asked, and an earlier draft that refused
+such dates outright failed 66 tests.
+
+**Documented by.** `tests/test_bermudan_swaption.py::TestMidCouponKnownLimitation`, which
+now carries `test_the_error_direction_follows_the_trade_direction` — **6 parametrized
+cases** (payer/receiver × three strikes) asserting the *sign* of the error per trade type.
+That file goes 55 → 61 collected; the three Bermudan/American/oracle suites run
+**143 passed, 0 failed**.
+
+**Note what these tests are and are not.** They are **not** regression tests — nothing in
+the pricer changed, so they pass against unmodified code. They pin behavior that was always
+present and always mis-described, which is precisely why the mistake lasted: the
+pre-existing tests in this class bound only magnitude (`abs(mid - reset) / reset < 1.0`),
+and a magnitude bound cannot contradict a claim about direction. When proration lands, both
+halves converge on the aligned price and these become equalities rather than being deleted.
+
+**Related.** [I-29](#i-29) was the same alignment requirement seen from the opposite side:
+not a mid-period exercise date, but a reset-*aligned* one supplied with enough
+floating-point rounding to miss the alignment by ~1e-6. **Its fix does not touch this
+issue, deliberately.** Snapping is scoped to near-misses (within 1e-4) precisely so that a
+genuine mid-period date — which is what this entry is about — is passed through untouched
+rather than moved or refused. An earlier draft of that fix enforced alignment outright and
+failed 66 tests, most of which exist to exercise exactly the behavior recorded here.
+
+---
+
+
+### I-30 — The `A(t,T)` variance term is nearly uncovered at `t=0` {#i-30}
+
+**Severity:** Medium · **Status:** ⚠️ FLAGGED · **Found:** 2026-09-18, by mutation-testing
+the ORE comparisons (`tests/test_ore_coverage_hardening.py`)
+
+**What is wrong.** This is a gap in the **tests**, not in the code — the only entry here of
+that kind, and it is recorded because this register's own premise is that a green suite is
+evidence about the tests rather than proof about the code.
+
+The variance term of the Hull-White `A(t,T)` carries a factor `(1 - exp(-2at))` that is
+**identically zero at `t=0`**. So at `t=0` the term contributes nothing, and deleting it
+outright changes an ATM swaption price by ~**7e-6** relative — an order of magnitude
+*inside* the `rtol=1e-4` that this suite's ORE swaption comparisons assert. The great
+majority of those comparisons price at `t=0`.
+
+Measured against the real suite: deleting the entire term fails exactly **one** test in
+`tests/test_european_swaption.py` (131 tests) —
+`TestConditionalPricingAndExpiry::test_conditional_pricing_matches_ore_rebuilt_at_later_date`,
+the one that prices at a later evaluation date. That single test carries the whole suite's
+coverage of a term of the core bond-price formula. Deleting or weakening it would leave the
+formula effectively unchecked while the suite stayed green.
+
+**What is *not* wrong.** The formula itself is independently verified — against QuantLib's
+own C++ in [ore-parity.md](reference/ore-parity.md) §3b, against the algebraic identity
+`0.25*(sigma*B(t,T))^2*B(0,2t) == (sigma^2/4a)*(1-exp(-2at))*B(t,T)^2` in
+`tests/test_ore_parity.py`, and against live `ORE.HullWhite.discountBond` at `t>0`. No
+mispricing is known or suspected.
+
+**What closing it requires.** More `t>0` conditional-pricing comparisons against ORE, so
+the term's coverage does not rest on one test. Cheap to do — the conditional-pricing
+harness already exists in `tests/test_european_swaption.py`; it simply needs more
+`(t, r)` points.
+
+**Documented by.** `tests/test_ore_coverage_hardening.py::TestVarianceTermIsActuallyChecked`
+— which asserts the mutation is *invisible* at `t=0` (recording why `t=0` comparisons
+cannot be the whole story) and *visible* at `t>0`, and includes
+`test_conditional_pricing_coverage_is_load_bearing` so that the dependency on that one
+test is explicit.
+
+---
+
+## OPEN — not addressed
+> Ordered by ID. For what to tackle first, see
+> [the priority order](#priority-order-for-fixing). [I-08](#i-08) is **PARTIAL** — closed on
+> the EOD path, open on the portfolio path — and is filed here because the open half is real
+> work.
+
+### I-05 — No faithful USD-SOFR / ACT-360 swap construction {#i-05}
+
+**Severity:** High · **Status:** ❌ OPEN — **blocked on external agreement, not effort**
+
+**What is wrong.** [`build_vanilla_swap`](../engine/models/ore_builders.py) constructs, for
+*every* swap, a generic term-IBOR swap. Verified empirically against the live builder:
+
+| Property | This engine builds | A USD-SOFR booking is |
+|---|---|---|
+| Index | `SimIndex6M` (term IBOR) | USD-SOFR (overnight) |
+| Fixed leg day count | `Actual/365 (Fixed)` | `ACT/360` |
+| Float leg day count | `Actual/365 (Fixed)` | `ACT/360` |
+| Calendar | `TARGET` (European) | `US-SIFMA` / FedFunds |
+| Compounding | none (term rate) | daily compounded in arrears |
+| Schedule source | tenor string (`"5Y"`) | explicit effective/maturity dates |
+| Lookback / lockout / payment lag | not represented | contractual, per booking |
+
+**Why the ACT/365 choice is not itself a bug.** It is deliberate and documented — it keeps
+day count consistent with the simulation's own year-fraction time axis. It is a sound
+*internal* decision that becomes an *external* incompatibility the moment a real SOFR
+contract arrives.
+
+**Magnitude — this is not rounding.** ACT/360 vs ACT/365 changes every accrual factor by
+`365/360 - 1` = **1.389%**. On a $1mm 5Y fixed leg at 3% that is **~$1,906**, roughly **46x a
+1bp DV01**. A wrong-convention swap prices confidently and wrongly.
+
+**Current behavior with a SOFR booking:** it would produce a number, and **no test in this
+repository would catch it**, because every test builds its inputs with the same generic
+builder. There is no cross-check against a real booked contract.
+
+**What closing it requires:**
+
+1. **Agreement first (blocking):** the full convention set — fixed/float day counts,
+   compounding method, lookback, lockout, payment lag, calendar, business-day convention,
+   roll convention, stub handling, separate fixed/float frequencies. These are decisions
+   **D03/D04** in the TraderX pack and
+   [proposal §2.2](planning/traderX_integration/eod-contract-proposal.md#22-usd-sofr-swap--the-w2-blocker-set).
+   *Guessing them produces confident wrong numbers, which is exactly this issue's failure
+   mode.*
+2. **A new builder alongside the existing one** — not a modification of it. Every current
+   swaption pricer depends on `build_vanilla_swap`'s ACT/365 consistency with the simulation
+   time axis, and the full test suite pins that behavior.
+3. **A hard refusal path:** any booking whose conventions fall outside the supported subset
+   must be returned as explicitly *unsupported with a reason*, never approximated by the
+   generic builder. — ✅ **Done at the EOD integration boundary (W0.4).**
+4. **Acceptance against a same-terms ORE reference** — not this engine's own test suite.
+
+**Interim mitigation — ✅ implemented for the EOD path (W0.4).**
+[`engine/integration/conventions.py`](../engine/integration/conventions.py) refuses any
+booking whose conventions fall outside an explicit **positive** allowlist (today: generic
+`SimIndex*` term IBOR, ACT/365 legs, no overnight compounding), returning
+`CONVENTION_NOT_SUPPORTED` with the offending fields named — **before any pricing object is
+constructed**, which is the point at which the wrong conventions would otherwise be applied.
+A booking that states *no* conventions is refused too, never defaulted into the generic
+builder. The TraderX SOFR fixture now returns an identified refusal naming all 13 of its
+`missingTerms`. See [the EOD integration boundary](reference/eod-integration.md#w04--convention-allowlist-and-refusal--closes-part-of-i-05).
+
+**Scope of that mitigation, stated precisely.** It covers bookings arriving through
+`engine/integration/` — the TraderX EOD path. It does **not** change
+`build_vanilla_swap`, and it does **not** guard a caller who constructs a `SwapConfig`
+directly in Python: `SwapConfig` still has no field in which convention metadata could
+arrive, so there is nothing there to refuse on. The W0.4 allowlist is a gate on the external
+boundary, not a property of the pricer. **The underlying defect is unchanged** — this engine
+still cannot faithfully price USD-SOFR — which is why this issue stays **OPEN** rather than
+moving to FLAGGED or FIXED.
+
+---
+
+### I-07 — No bond, equity, or listed-option pricer {#i-07}
+
+**Severity:** Medium · **Status:** ❌ OPEN
+
+**As originally written (pre-W1.2):** `engine/instruments/` contained exactly four modules,
+all rate derivatives (swap, European / Bermudan / American swaption), and there was **no
+pricer** for Treasuries, corporate bonds, cash equities/ETFs, or listed options — all of
+which appear in TraderX's schema-3 position export.
+
+**Today** Treasuries price on both paths (W1.2/W1.3 at the integration boundary, W1.5 as
+`engine/instruments/treasury.py`, now a fifth module). Corporate bonds, cash equities and
+listed options remain unpriced — see "Scope of that, stated precisely" below for exactly
+which of those is missing a *pricer* versus missing *market data*.
+
+**Important distinction:** `SimulationConfig.equities` drives correlated equity *risk-factor
+paths*. It is **not** an equity position pricer — nothing takes a signed share count and
+returns a position value.
+
+**What closing it requires.** Per instrument: a config dataclass, a pricer, ORE parity tests.
+A fixed-rate Treasury is the cheapest (deterministic discounted cashflows, no Monte Carlo, no
+calibration) and already has a written plan —
+[traderx-bond-integration-roadmap.md](planning/traderX_integration/traderx-bond-integration-roadmap.md). Corporate
+bonds additionally need a credit/spread model; **a Treasury-discounted corporate is not credit
+pricing** and should be refused rather than approximated.
+
+**Partially closed (W1.2, W1.3) — both Treasury shapes, and nothing else.**
+[`engine/integration/bill.py`](../engine/integration/bill.py) prices a bill as a single
+discounted cashflow; [`engine/integration/note.py`](../engine/integration/note.py) prices a
+coupon-bearing note as a fixed-coupon strip plus bullet redemption. Both are verified to
+**zero difference** against an independent ORE valuation — the bill against
+`ORE.CashFlows.npv`, the note against a real `ORE.FixedRateBond` + `DiscountingBondEngine`.
+Long and short on the delivered fixtures return exact mirrors (bill +98,507.15 / −98,507.15;
+note +103,308.33 / −103,308.33).
+
+**The note additionally reconciles to TraderX's own books.** Its accrued interest agrees
+with their exported `0.018571` of par, at the §2 derived tolerance rather than as an exact
+equality — the exporter rounds HALF_EVEN at 6 decimals, so the two monetary paths differ by
+$0.04 on $100k by construction. Both paths travel in the published payload under an explicit
+`accrualSource` label, and a disagreement beyond tolerance is **refused, not warned about**.
+
+**Scope of that, stated precisely.** It covers a Treasury arriving through
+`engine/integration/` in a **v2** bundle, and nothing else:
+
+- an **equity position** is now understood, identified and validated, but **refused** for
+  want of a spot source (W1.4 — see [I-18](#i-18)). Its multiplier, sign and currency are
+  read and echoed; what is missing is market data, not engine code;
+- **listed options** are untouched;
+- a **corporate bond** is still refused. It shares every column with a Treasury and a
+  Treasury-discounted corporate is *not* credit pricing;
+- **`rateSensitivity` is available for the note only** (bumped revaluation, 1bp, parallel —
+  see [I-16](#i-16)). The **bill still has none**: W1.3 earned the note's with a parity test
+  and earned nothing for the bill;
+- **`rateGamma`/`theta` are `unsupported` for every instrument**, including both priced
+  Treasuries;
+- ~~`engine/instruments/` is **unchanged**~~ — **closed by W1.5 (2026-09-17).**
+  `engine/instruments/treasury.py` adds `BondConfig`, and a direct Python caller of
+  `price_portfolio` now gets a bond's t=0 NPV, its per-trade breakdown entry, and
+  Delta/Gamma/Theta. **With one bounded exception:** a bond has no scenario NPV, so no
+  VaR/ES — refused explicitly rather than approximated, tracked as [I-24](#i-24).
+
+Status stays **OPEN**: the issue is "no bond, equity, or listed-option pricer". Treasuries
+now price *and* are reachable from the portfolio path; an equity is refused for a
+*market-data* reason rather than a missing pricer ([I-18](#i-18)); corporate bonds and
+listed options are still absent entirely.
+
+---
+
+### I-08 — Job store is in-process and lost on restart {#i-08}
+
+**Severity:** Medium · **Status:** ⚠️ PARTIAL — **EOD path durable (W0.8, 2026-09-17); the
+portfolio path's `_JOBS` dict is unchanged**
+
+`_JOBS` in [`engine/api/routes.py`](../engine/api/routes.py) is a plain Python dict in the
+dispatcher process. A restart loses every job id; a second uvicorn worker would 404 on ids
+issued by the first. Job states are `pending`/`running`/`done`/`failed` only — there is no
+`partial`, no `superseded`, no attempt history, and no structured failure classification.
+
+**Consequence for a batch caller:** a lost in-memory job is indistinguishable from a
+computation failure, and a coordinator cannot tell which failures are worth retrying.
+
+**What closing it requires.** Either a durable store, or — preferred, per **D13** — accept
+that the coordinator owns the durable logical job while this engine owns only the computation
+*attempt*. That needs: a worker boot epoch exposed so restarts are detectable, idempotency so
+re-submitting identical immutable inputs is safe, and structured failure classes
+(`bad-terms` / `missing-market-data` / `unsupported-product` / `numerical-failure` /
+`infrastructure`) so only retryable failures are retried. See
+[proposal §6.3](planning/traderX_integration/eod-contract-proposal.md).
+
+**Partially mitigated by W1.6.4 (2026-09-16), on the EOD path only.**
+[`engine/integration/workload.py`](../engine/integration/workload.py) adds the
+*attempt*-ownership half of the preferred design: a canonical **workload key** over every
+input that can change a number, **idempotent submission** (a repeated `submissionId` recovers
+the same attempt rather than starting a second), **immutable terminal attempts** (a second
+attempt cannot overwrite a first's outcome), and the **four distinguishable lookup states** —
+so an accepted-but-running job no longer looks like an unknown one, which is what previously
+invited a duplicate overnight batch.
+
+**Closed on the EOD path by W0.8's second half (2026-09-17).**
+[`engine/integration/publication.py`](../engine/integration/publication.py) adds the durable
+store the earlier mitigation was missing, and with it the crash-safety design from
+[plan §W0.8](planning/traderX_integration/traderx-integration-plan.md):
+
+- **The four-step publication protocol** — stage to a temp path, verify the hash of what was
+  *actually written* (not what was meant to be), atomically publish the manifest, then advance
+  the pointer. Every crash window leaves a coherent store: nothing partial is ever
+  discoverable.
+- **The manifest is the commit point; the pointer is a cache.** Lookup falls back to a
+  **scan** over published manifests whenever the pointer is missing, torn, or behind, and
+  reconciles the pointer as a side effect. This closes the window TraderX found in v3 — a
+  crash between publish and pointer advance previously left a complete result that no lookup
+  could find.
+- **Completed and failed attempts survive a restart**, addressable by `attemptId`, and
+  **idempotent submission survives it too**: a coordinator retrying a lost response after a
+  bounce recovers its original attempt rather than starting a duplicate overnight batch.
+
+**What remains true, and is deliberate.** A *running* attempt is still memory-only and is
+still lost on restart — it is never published, because writing one would make an in-flight
+computation discoverable as a finished answer. After a restart such a job reports as unknown,
+the coordinator resubmits, and the workload key makes the recomputation identical. That is an
+infrastructure event, not a financial one.
+
+**One ordering defect was found after the fact and fixed.** Publication originally ran
+*after* the in-memory transition, so a store failure left an attempt `completed` in memory
+with nothing on disk — a result this process reported as finished and no restart could find,
+and which the immutability guard then refused to let anyone retry. The transition now happens
+only if the manifest lands, applying the store's own commit-first rule to the in-memory
+attempt. The *failure* path deliberately keeps the opposite ordering: `fail()` marks the
+attempt failed whether or not publication succeeds, because leaving it `running` would report
+an in-flight job to a coordinator that would wait forever, which is worse than the
+`UNKNOWN_WORKLOAD` a restart yields.
+
+**Still open, and why this issue is not fully closed.** The portfolio path's `_JOBS` dict in
+[`engine/api/routes.py`](../engine/api/routes.py) is **untouched** — this work is EOD-only.
+The store is also single-machine: it is thread-safe within a process (an unguarded sequence
+counter was measured issuing 2 distinct values across 30 concurrent publications, now locked),
+but two engines on two machines do not coordinate.
+
+---
+
+### I-09 — Whole scenario cube serialized into JSON responses {#i-09}
+
+**Severity:** Medium · **Status:** ❌ OPEN
+
+`PortfolioResultSchema.npv_cube` serializes `[Scenarios, TimeSteps, Trades]` as nested JSON.
+At a realistic 4096 × 24 × 211 that is ~20M floats in a single HTTP body — unusable through a
+browser or a control message, and a memory risk on both ends.
+
+**What closing it requires.** Write the cube to a chunked artifact (shape, dtype, axis
+ordering, hash, and an instrument-id ordering file) and return a *reference* plus compact
+summaries. See [proposal §6.4](planning/traderX_integration/eod-contract-proposal.md).
+
+---
+
+### I-10 — No trade identity; results keyed by array position {#i-10}
+
+**Severity:** Medium · **Status:** ❌ OPEN
+
+`PortfolioRequest.trades` is positional; `PortfolioResult.greeks` and
+`base_npv_per_trade` are keyed/ordered by index. There is no opaque
+account/position/contract id anywhere in the request or result, so **array position is
+load-bearing** for joining a result back to a booking.
+
+Ordering is correct and tested today — but any reordering, filtering, or partial-coverage
+response would silently misattribute results. Identity should not depend on list order.
+
+**What closing it requires.** An `instrumentId`/`accountId` pair on every trade config,
+echoed on every result row. Mechanically small; touches request, result, and schema layers.
+
+**Partially closed (W0.7) — at the EOD boundary only.**
+[`engine/integration/identity.py`](../engine/integration/identity.py) gives every row
+reaching the TraderX EOD path an opaque, reproducible `itemId` plus a source identity block
+(`{kind, accountId, security | contractId}` + `clusterEpoch`), carried on **refused rows
+too**, with item ordering published as its own hashed artifact rather than inferred from
+array position. `ItemResult` cannot be constructed without an identity, so an unidentified
+row is unrepresentable rather than merely discouraged.
+
+**This does not close the issue.** `PortfolioRequest.trades` and `PortfolioResult.greeks`
+are unchanged and still positional — the W0.7 identity lives in a separate result type
+(`engine.integration.result.RiskResult`) that does not yet flow through `price_portfolio`.
+A direct Python caller of `engine.portfolio` still has no trade identity. Status stays
+**OPEN** until `instrumentId`/`accountId` reach the trade configs themselves.
+
+---
+
+### I-11 — Risk measure unlabelled; no Monte Carlo error reported {#i-11}
+
+**Severity:** Medium · **Status:** ❌ OPEN
+
+`PortfolioResult.risk` returns keys like `VaR_95` with **no statement of what measure they
+are**. A risk-neutral exposure simulation is *not* a calibrated forecast of tomorrow's loss,
+and nothing in the result distinguishes the two. No effective sample size, Monte Carlo
+standard error, or convergence diagnostic is reported alongside the tail statistic, so a
+sparse-tail estimate is indistinguishable from a well-converged one.
+
+**What closing it requires.** An explicit `measure` label
+(`risk-neutral-pricing` / `historical-forecast` / `deterministic-stress`), plus effective
+sample size and MC standard error on every tail statistic. Small change; prevents a whole
+category of misreading. See [proposal §3.6/§4](planning/traderX_integration/eod-contract-proposal.md).
+
+**Substantially addressed (W0.6), but not closed.** Both halves now exist:
+
+- **The `measure` label.** `RISK_MEASURE_*` in
+  [`engine/risk/var_es.py`](../engine/risk/var_es.py) defines the three-value vocabulary, and
+  `ENGINE_RISK_MEASURE` records what this engine actually produces
+  (`risk-neutral-pricing`). `engine.integration.result.RiskResult` carries it on every
+  published result, and `capabilities()` advertises it so a consumer knows *before*
+  submitting.
+- **Convergence diagnostics.** `compute_risk_metrics` now returns `ES_<p>_tailCount`
+  (effective sample size — the observations the ES mean actually averaged) and
+  `ES_<p>_standardError` (`s/sqrt(n)`, `ddof=1`) beside every tail statistic. Purely
+  additive: existing keys and values are untouched, and `include_diagnostics=False` returns
+  the prior key set exactly. `standardError` is **NaN, never 0.0**, when `n < 2` — 0.0 would
+  read as "perfectly converged" for the least trustworthy case.
+
+**Why it stays OPEN.** `PortfolioResult.risk` is still a bare `Dict[str, jax.Array]` with no
+`measure` field of its own — the label lives on `RiskResult`, which only the TraderX EOD path
+produces. A direct Python caller of `price_portfolio` still gets unlabelled `VaR_95` keys,
+which is exactly what this issue reports. Closing it means putting `measure` on
+`PortfolioResult` itself.
+
+---
+
+### I-12 — `/version` reports dispatcher backend, not worker device {#i-12}
+
+**Severity:** Low · **Status:** ❌ OPEN
+
+`GET /version` reports `jax.default_backend()` of the **dispatcher** process, which performs
+no JAX work. Actual pricing runs in a separate `worker_pool` process with its own JAX runtime.
+On a single-CPU dev machine these agree, so the discrepancy is invisible; on a multi-TPU host
+it would not be — and a precision/hardware study that trusted this field would draw wrong
+conclusions about which device produced a result.
+
+**What closing it requires.** Report device and actual per-stage precision **from the worker**,
+on the result itself, rather than from the dispatcher.
+
+---
+
+### I-16 — `rateSensitivity` is parallel-only; no per-pillar decomposition {#i-16}
+
+**Severity:** Medium · **Status:** ❌ OPEN — labelled honestly, not silently approximated
+
+**Found:** 2026-09-16, while implementing W1.3.
+
+The note pricer returns a `rateSensitivity`, and the plan (§W1.3) asked for "per-pillar
+`rateSensitivity` **non-zero across the curve**". What is delivered is a **parallel** shift
+of the whole zero curve, not a per-pillar decomposition.
+
+**Why, and why it is not a defect in the pricer.** The only market input this boundary can
+be handed today is a registered *assumed profile*, and every registered profile is a **flat
+constant** — `flat-3pct-v1` is one rate materialized onto pillars that all carry the same
+value. There is no per-pillar structure to shift independently, so a per-pillar sensitivity
+against it would be arithmetic theatre: it would either report the parallel number once per
+pillar, or attribute the whole move to one arbitrary pillar. Both are worse than saying
+"parallel", because both look like a decomposition a consumer could hedge against.
+
+**What the engine does instead.** The number is labelled for exactly what it is, in the
+published payload:
+
+```json
+"shockedFactor": "zero-curve-parallel",
+"method": "bumped-revaluation",
+"bump": 0.0001
+```
+
+`shockedFactor` deliberately names a *parallel shift* rather than a pillar. A consumer
+reading the payload cannot mistake it for a bucketed sensitivity, which is the whole
+mitigation — this is the "no silent approximation" rule applied to a *label* rather than to
+a refusal.
+
+**A consumer relying on bucketed rate risk does not have it.** Parallel DV01 is a correct
+aggregate and a poor hedge instruction: it cannot distinguish a 2y position from a 10y one
+with the same duration, and it says nothing about curve-shape risk.
+
+**What closing it requires.** A curve with genuine pillar structure, which means
+`marketInputs.mode: "package"` — observed market data with bootstrapped pillars. That is
+**W2** and is blocked on the D03/D04 convention agreement, the same external dependency as
+[I-05](#i-05). Once such a curve exists, the bump loop shifts one pillar at a time and
+`shockedFactor` names the pillar; the pricer itself needs no change, because it already
+re-prices through its own public path rather than differentiating a closed form.
+
+**Do not close this by bumping the flat profile per-pillar.** That is the plausible-wrong
+fix: it produces a full-looking bucketed vector whose entries are either all equal or all
+but one zero, and it would pass any test that only checks the vector's shape.
+
+---
+
+### I-18 — No equity spot or FX source; equity positions are refused {#i-18}
+
+**Severity:** Medium · **Status:** ❌ OPEN — refusal path landed (W1.4), valuation blocked on
+market data
+
+**Found:** 2026-09-16, while implementing W1.4.
+
+A cash equity position is worth
+
+```
+signedQuantity × contractMultiplier × spot × fx
+```
+
+and **two of those four factors have no source at this boundary**.
+[`engine/integration/market_inputs.py`](../engine/integration/market_inputs.py) registers
+*flat interest-rate profiles* and nothing else — an `AssumedProfile` is a single
+`flat_rate`. There is no equity spot in it, no FX rate, and no `mode` that supplies either.
+
+**`SimulationConfig.equities` is not a substitute**, and the distinction is the same one
+[I-07](#i-07) draws: it drives correlated risk-factor *paths* for a Monte Carlo. Nothing in
+it takes a signed share count and returns a position value. It also lives in
+`engine.simulation`, which `engine/integration/` is forbidden to import.
+
+**What the engine does.** It reads the position — quantity, multiplier, currency — validates
+it, and refuses with the missing input named:
+
+| Condition | Reason |
+|---|---|
+| USD position | `SPOT_SOURCE_NOT_SUPPLIED` |
+| Non-USD position | `FX_SOURCE_NOT_SUPPLIED` — supplying a spot alone would still not price it |
+| Malformed quantity/multiplier | `TERMS_INCOMPLETE` — a broken row, not missing market data |
+
+The refusal carries `signedQuantity`, `contractMultiplier` and `multipliedQuantity`, so a
+consumer can confirm the engine read the position correctly even though it would not value
+it.
+
+**The tempting wrong fix is `closingMark`.** The positions extract carries one, and
+`quantity × closingMark × contractMultiplier` reproduces the exporter's own `marketValue`
+column **exactly**. That is what makes it dangerous:
+
+- it is an **echo, not a valuation**. The engine would hand TraderX their own number back as
+  though it had priced it, and any reconciliation against it would always agree — proving
+  nothing while looking like independent confirmation;
+- `closingMark` is an **observation at the session cut**, not a curve this run was priced
+  against. Publishing it under `npv` with a `marketProvenance` derived from the requested
+  *rate* profile would label an observed number with a provenance it does not have;
+- it silently answers a **different question** than every other `npv` in the result. The
+  bill and note NPVs are present values off an explicitly requested curve; an equity "NPV"
+  taken from the mark is a mark. Summing them into one portfolio total would mix two
+  incompatible quantities under one heading.
+
+`tests/test_integration_equity.py::TestDoesNotEchoTheExportedMark` is the guard, and it was
+verified to fail against exactly that implementation — patched in at both the pricer and the
+pipeline level, 20 tests failed.
+
+**What closing it requires — a market-data decision, not engine work.** Either
+`marketInputs` grows a registered spot/FX surface (extending the W0.6 contract, with the
+same "named, versioned, requested by id" discipline the rate profiles already have), or
+TraderX supplies observed spots in the bundle. The pricer itself is four multiplications;
+the arithmetic is not what is missing.
+
+**Advertised, not hidden.** `capabilities()` reports equity `npv` under
+`blockedOnMarketInput` rather than as an absent calculation, so a coordinator can tell
+"wait for a release" from "send me a spot" — only the second is something they can act on.
+
+---
+
+### I-21 — Greeks recompile 23 XLA programs on every call {#i-21}
+
+**Severity:** Medium · **Status:** ❌ OPEN — **performance only; every number is correct**
+
+**Symptom.** A second, byte-identical `price_portfolio(request)` call in the same warm
+process recompiles 31 XLA programs (23 of them in `engine/risk/greeks.py`) instead of
+reusing cached ones. Nothing is *wrong* with the output — this costs wall time and makes a
+profiler trace look compile-bound even after warmup.
+
+Measured, three consecutive identical calls on the 4-trade demo portfolio:
+
+| Run | Compilations | Wall |
+|---|---:|---:|
+| 1 (cold) | 208 | 26.5 s |
+| 2 | **31** | 17.8 s |
+| 3 | **31** | 16.0 s |
+
+**The 23 Greeks recompiles, with exact callsites** (instrumented at
+`jax._src.compiler.backend_compile_and_load`, the same event an xprof trace labels as XLA
+compilation; cache hits do not reach it):
+
+| Count | Program | Callsite |
+|---:|---|---|
+| 10 | `jit_price_fn` | `greeks.py:390,400` (`swap_theta`), `:588,600` (`swaption_theta`), `:708,720` (`bermudan_theta`), `:813` (`bermudan_vega`) |
+| 5 | `jit_combined` | `greeks.py:222` (`_grad_and_hessian_diagonal`) |
+| 4 | `jit_model_price_wrt_prefix` | `greeks.py:842` (`bermudan_vega`) |
+| 4 | `jit_market_price_wrt_v_j` | `greeks.py:849` (`bermudan_vega`) |
+
+**Cause — one mechanism, seven sites.** `jax.jit` keys its cache on **function identity**,
+and every one of these jits a **closure built fresh on each call**. `_swap_price_fn`,
+`_swaption_price_fn` and `_bermudan_price_fn` each return a new function object that has
+captured that trade's prepared structure; `jax.jit(that_new_object)` is, as far as JAX is
+concerned, a function it has never seen. Demonstrated in isolation:
+
+```
+fresh closure + jax.jit each call : 5 compiles for 3 calls
+stable fn, constant as argument   : 1 compile  for 3 calls
+ONE jitted closure, reused        : 1 compile  for 3 calls
+```
+
+This was introduced *by* the jitting work that removed ~600 eager dispatches
+(see [Profiling & the Tracer](concepts/profiling.md) §3) — a large net win that left this
+residue behind. It is recorded here rather than silently accepted because it is the only
+thing now standing between this engine and an execution-dominated profile.
+
+**What closing it requires — memoize the jitted wrapper, keyed on prepared structure.**
+
+Cache `jax.jit(price_fn)` in a module-level dict keyed on the *prepared trade* rather than
+on the closure's identity, so two calls with the same economics reuse one compiled program.
+The key must be `static_key(prepared)` — the codebase's existing by-value normalizer
+([`engine/models/static_key.py`](../engine/models/static_key.py)) — plus the curve's shape
+and dtype.
+
+Prototyped and verified on the European swaption path:
+
+| | Call 1 | Call 2 | Call 3 | Result |
+|---|---:|---:|---:|---|
+| today | 11 | 1 | 1 | 10273.553365459014 |
+| memoized | 1 | **0** | **0** | 10273.553365459014 |
+
+Bit-identical output, and steady-state recompiles reach **zero**.
+
+**The risk this must not introduce, and why the design avoids it.** A memo that returns a
+program compiled for a *different* trade is silently wrong numbers — far worse than the
+slowness it fixes. Two properties make that safe:
+
+1. **The key must distinguish everything economically meaningful.** Verified directly
+   against `static_key(prepare_swaption(cfg))`: `notional`, `fixed_rate`, `payer`,
+   `swap_tenor`, `hw_sigma`, `hw_a` and `forward_start` each produce a *different* key,
+   while an identical config reproduces the same one. No collisions. This works because
+   `static_key` hashes NumPy arrays by **content** (`tobytes()`), not identity — the same
+   property that already lets `_Prepared*` objects be `jax.jit` static arguments.
+2. **Key on the PREPARED object, never the config.** `prepare_*` is what resolves a config
+   into the schedule the compiled program actually depends on. Keying on the raw config
+   would miss anything ORE's date generation derives (holiday rolls, accrual fractions), and
+   those genuinely change the program.
+
+**Bounded growth.** The cache must be an LRU (`functools.lru_cache`, or an explicit dict
+with a cap), not an unbounded dict: one entry retains a compiled XLA executable, and a
+long-lived server pricing thousands of distinct trades would otherwise leak. A pool worker
+is long-lived by design, so this is a real constraint, not a theoretical one. `jax` exposes
+`jax.clear_caches()` and each wrapper a `_clear_cache()` if an explicit eviction hook is
+wanted.
+
+**What it must not do.** It must not key on `id()` (each `prepare_*` call returns a fresh
+object — every lookup would miss, and recycled ids could collide), must not be keyed on
+anything mutable, and must not be applied to `bermudan_vega`'s per-bucket closures without
+the same content-based key (they capture `bucket_times`/`bucket_values` prefixes that differ
+per bucket, and must *not* share a program).
+
+**Regression test.** Assert the steady-state recompile count is **0** for a repeated
+identical Greeks call, and — the important negative — that a config differing only in
+`notional`, `fixed_rate` or `swap_tenor` still produces its own correct, *different* answer.
+A test that only checks the count would pass against a broken always-hit cache.
+`tests/test_profiling_and_jit.py::TestCompileCounts::test_repeated_greeks_call_costs_one_compile_not_zero`
+currently pins the *present* behavior and must be updated, not deleted, when this lands.
+
+---
+
+### I-22 — Calibration recompiles 8 XLA programs per call {#i-22}
+
+**Severity:** Low · **Status:** ❌ OPEN — **performance only; every number is correct**
+
+**Symptom.** The remaining 8 of I-21's 31 steady-state recompiles are in
+`engine/calibration/lgm.py`:
+
+| Count | Program | Callsite |
+|---:|---|---|
+| 6 | `jit__lambda` | `lgm.py:173`, `:189`, `:192` (`calibrate_lgm_sigma`) |
+| 2 | `jit_scan` | `lgm.py:98` (`_bisect_bucket_sigma`) |
+
+**Cause — a DIFFERENT mechanism from I-21, which is why it needs a different fix.** These
+are not merely fresh closures; they bake **Python float constants** into the traced program:
+
+- `_bisect_bucket_sigma` closes over `market_price` as a concrete `float`, so every bucket
+  and every call traces a structurally identical `lax.scan` with a different embedded
+  constant.
+- `calibrate_lgm_sigma`'s `_jit_over_target` closures capture `target` and `final_sigma`
+  the same way.
+
+Confirmed in isolation — the distinction is exactly constant-vs-argument:
+
+```
+market_price baked in as a constant : 4, 1, 1 compiles across 3 differing calls
+market_price as a traced argument   : 1, 0, 0
+```
+
+**A memo (I-21's fix) would NOT help here** and would actively hurt: the constants differ
+legitimately per bucket, so a content-keyed cache would simply miss every time while adding
+lookup cost and retention. Applying I-21's fix mechanically to this file would be the wrong
+call.
+
+**What closing it requires — promote the constants to traced arguments.**
+
+Make `_bisect_bucket_sigma` take `market_price` as a JAX array argument rather than closing
+over a float, and give it a stable (module-level, `@partial(jax.jit, static_argnums=...)`)
+identity so the `lax.scan` compiles once and is reused across buckets and calls. Same for
+the diagnostics repricing: pass the target's arrays in rather than capturing them.
+
+**The constraint that makes this non-trivial, and must not be broken.** `price_fn` itself is
+genuinely different per bucket — bucket *j*'s pricer depends on the `[s_0..s_{j-1}]` prefix
+already calibrated, which is the whole structure of a bootstrap. So `price_fn` cannot become
+a traced argument; it has to stay a static one, and only `market_price` moves. That caps the
+achievable win at **one compile per distinct bucket count**, not zero. Realistically this
+takes 8 → ~2.
+
+**Why this is Low and I-21 is Medium.** Calibration runs once per distinct `rate_factor_index`
+per job; Greeks run per trade. On the demo portfolio calibration is ~1.3 s against Greeks'
+~18 s. Fix I-21 first — and note the two are independent, so I-21 can land alone.
+
+**Do not "fix" this by raising the bisection tolerance or lowering `iterations`.** The 60
+iterations are a correctness property (`rmse < 1e-8` is asserted); trading calibration
+accuracy for compile count would be a real regression disguised as an optimization.
+
+---
+
+### I-24 — A bond has no scenario NPV, so no VaR/ES {#i-24}
+
+**Severity:** Medium · **Status:** ❌ OPEN — **refusal path landed (W1.5); the model has not**
+
+**Symptom.** A `BondConfig` in a `PortfolioRequest` cannot produce VaR or ES. Submitting one
+with the default `scenario_risk=True` is **refused** with `ScenarioPricingNotSupported`,
+naming the trade. The caller must set `scenario_risk=False`, which returns real
+`base_npv`/`base_npv_per_trade`/`greeks` alongside an **empty** `risk` dict and a
+zero-width `npv_cube`.
+
+**Cause.** `price_portfolio`'s `npv_cube` is `[Scenarios, TimeSteps, Trades]` — each column
+is a trade's *conditional* NPV at each simulated future step, and `engine.risk.var_es` turns
+those columns into VaR/ES. The four rate-derivative types fill their columns from simulated
+Hull-White paths. A bond, as priced by `engine.instruments.treasury`, is closed-form
+arithmetic against **one deterministic curve**: no stochastic driver, no time evolution, and
+therefore nothing to vary across a scenario axis.
+
+**Why this is a refusal and not a zero — measured, not argued.** The only way to fill the
+column without a model is to broadcast one t=0 number across every entry. That was
+implemented and run through the real `price_portfolio`, on a $100,000 bill priced at
+$98,401.95:
+
+| Metric | Broadcast-constant column |
+|---|---|
+| `VaR_95` / `VaR_99` | **0.00** |
+| `ES_95` / `ES_99` | **NaN** |
+
+A consumer reading `VaR_95 = 0.00` concludes the position carries no risk. It is not
+conservative, not approximate, and not labelled — the risk is **absent, wearing the shape of
+a measurement**. (The NaN does *not* propagate to the portfolio aggregate, which was also
+checked: ES differences the P&L across trades first, so a constant column cancels. That
+makes the failure quieter, not safer — the per-trade number is the one that misleads.)
+
+**Why `risk` is empty rather than zero-filled.** An empty dict asserts nothing; a `VaR` key
+holding 0.00 asserts a *measured absence of risk*. Only the first is true.
+`PortfolioResult.scenario_risk_available` carries the distinction onto the **result**, since
+a consumer holding a result object has no access to the request that produced it — without
+it, an empty `risk` is ambiguous between "not requested" and "computed and found to be
+nothing".
+
+**What closing it requires — a bond scenario model, not plumbing.** Each simulated scenario's
+rate state must be repriced through the bond's own schedule: build a zero curve per
+`[scenario, step]` from the Hull-White state, then rerun the discounting. That is genuine
+modelling work with its own validation burden (a bond repriced off an HW short rate needs
+its discount curve reconstructed consistently with how the swap pricer does it, or the two
+instruments carry incompatible risk in one portfolio total).
+
+**Do not close it by broadcasting, zero-filling, or defaulting `scenario_risk` to `False`.**
+The first two produce the table above. The third would silently strip VaR/ES from every
+existing swap portfolio that never asked for it — turning a bond-shaped gap into a
+portfolio-wide regression.
+
+**Verified.** `tests/test_treasury_instrument.py::TestScenarioPricingIsRefused` (4 tests,
+one of which *measures* the VaR-0/ES-NaN outcome so the justification is pinned rather than
+remembered) and `tests/test_portfolio_bond_wire_through.py::TestScenarioRiskIsRefusedForBonds`
+(5 tests). The broadcast implementation was patched in and **4 of 5 fail against it**
+(working rule 3).
+
+---
+
+### I-27 — Long full-suite runs hard-abort inside XLA compilation {#i-27}
+
+**Severity:** Medium · **Status:** ❌ OPEN — **located, not yet root-caused**
+**Found:** 2026-09-17, while verifying W1.5
+
+**Symptom.** A long `pytest tests/` run dies with `Fatal Python error: Aborted` and
+**no summary line at all**. There is no failure report — the process is gone. Separately,
+`tests/test_bermudan_swaption.py` has been seen to fail intermittently
+(`3 failed, 52 passed`, then `4 failed`, then clean) without aborting.
+
+**Where the abort actually is.** The faulthandler traceback puts the crashing thread inside
+**JAX's XLA compiler**, not in any pricer:
+
+```
+jax/_src/compiler.py:353  backend_compile_and_load
+jax/_src/pjit.py:1175     _pjit_call_impl_python
+engine/simulation/market_model.py:689  _generate_paths_inner
+engine/portfolio/request.py:729        price_portfolio
+tests/test_api_bond_schemas.py:173     test_a_full_bond_result_serializes_end_to_end
+```
+
+Other threads sit in `concurrent/futures/process.py` and `multiprocessing/queues.py` — i.e.
+**a `ProcessPoolExecutor` is alive while the parent process compiles an XLA program**.
+
+**The leading hypothesis, and its limits.** `engine/portfolio/worker_pool.py` caches pools in
+a module-level `_POOLS` dict that lives for the interpreter's lifetime.
+`tests/test_worker_pool.py` tears its pools down in an autouse fixture whose own comment says
+it exists *"so later test modules don't inherit idle worker processes"* — but
+**`tests/test_api.py` creates pools and never calls `shutdown_pools`**. A later in-process
+XLA compile then runs with live worker children attached.
+
+**That hypothesis is not proven.** Pairing the modules directly does *not* reproduce it:
+
+| Attempted reproduction | Result |
+|---|---|
+| `test_api.py` + `test_api_bond_schemas.py`, 3× | **passed** (52 each time) |
+| `test_worker_pool.py` + `test_api_bond_schemas.py` | passed (that module cleans up) |
+| `test_api_bond_schemas.py` alone, repeatedly | passed (21) |
+| `test_bermudan_swaption.py` alone, 6× consecutively | passed (55 each) |
+| Same, under deliberate CPU contention from 2 concurrent JAX pytest processes | passed |
+| Full suite (~1,100 tests in, Bermudan file *excluded*) | **ABORTED** |
+| The *same* full-suite command, rerun | **1,661 passed, 0 failed** (10m55s), clean summary |
+| Full suite again, Bermudan file **included** | **1,716 passed, 0 failed** (11m24s), clean summary |
+
+So it needs accumulated whole-suite state, not any two modules — and even then it is
+**intermittent**: the identical command that aborted later completed cleanly end to end.
+**The abort is not specific to the Bermudan file** — it happened with that file excluded
+entirely, in `tests/test_api_bond_schemas.py`.
+
+**Not caused by W1.5.** `git stash` of all W1.5 work reproduced the Bermudan failures on
+pristine code. W1.5's only contact with Bermudan code is adding `BondConfig` to the
+`TradeConfig` union plus two comments. The W1.5 test named in the traceback is simply the
+*victim* — it is the point where a fresh XLA compile happens late in a long run.
+
+**Why Medium.** Two subsequent full runs completed cleanly (1,661 and 1,716, both with real
+summary lines), so the suite *is* green — but it makes that result **not reliably obtainable
+on demand**, and it fails
+in the most deceptive way available: a dead process with no summary. That is how a run dying
+at 4% was briefly taken for a pass — the shell's `echo EXIT=$?` had captured the redirect
+rather than pytest (pytest's real exit was `3`). **Any future "the suite is green" claim must
+confirm a summary line was actually printed**, not infer it from an exit code.
+
+**What would characterize it.** Add a `shutdown_pools()` autouse fixture to
+`tests/test_api.py` mirroring `tests/test_worker_pool.py`'s, then run the full suite
+repeatedly and see whether the abort stops. That is a cheap, low-risk experiment — but it
+is an *experiment*, and it was deliberately not applied as a "fix" here.
+
+> **The intermittency is precisely why.** The same full-suite command that aborted later
+> passed 1,661/1,661 with no change at all. Had the fixture been added first, that green run
+> would have looked like proof it worked — and the register would now carry a "FIXED" entry
+> resting on a coincidence. Any candidate fix for this needs *repeated* clean full runs
+> against a known-bad baseline, not one. Also worth checking whether XLA's on-disk compilation cache is shared
+unsafely across the parent and its spawned workers.
+
+**Related:** [I-15](#i-15) and `test_cross_tier_jobs_correct_and_concurrent` share the
+worker-pool/timing premise. Whether they are the same underlying problem is **not**
+established.
+
+---
+
+### I-28 — The `var_es` module demo crashes on a date that moved {#i-28}
+
+**Severity:** Low · **Status:** ❌ OPEN — **root-caused, one-line fix, not applied here**
+**Found:** 2026-09-17, while verifying that every command in
+[the User Guide](getting-started/user-guide.md#running-the-demos) actually runs.
+
+`python -m engine.risk.var_es` — a documented command — aborts before printing anything:
+
+```
+ValueError: Swap cashflow times must be a subset of the simulation's rates.maturities
+pillars; got cashflow times [0.5095890410958904, 1.010958904109589, 1.5095890410958903,
+2.0136986301369864] against maturities [0.010958904109589041, 0.5150684931506849,
+1.010958904109589, 1.515068493150685, 2.0136986301369864]
+```
+
+**The cause is one missing keyword argument.** The demo block at
+[`engine/risk/var_es.py:321`](../engine/risk/var_es.py) builds its `SwapConfig` without an
+`evaluation_date`, so the field falls back to its default —
+`ORE.Settings.instance().evaluationDate`, i.e. *today*. It then prices that swap against
+`SWAP_DEMO_MATURITIES`, which is pinned to `EVAL_DATE = ORE.Date(30, 7, 2026)` in
+`engine/simulation/demo_scenarios.py`. Once the wall clock left 2026-07-30 the two stopped
+agreeing, and the maturity-pillar-alignment check in
+[`engine/instruments/swap.py:165`](../engine/instruments/swap.py) correctly refused the
+mismatch. Adding `evaluation_date=EVAL_DATE` to that config — which the other module demos
+already pass, e.g. `engine/instruments/swap.py:300` — makes it run; that was confirmed
+directly rather than assumed.
+
+**Why it is filed rather than fixed here.** This register entry came out of a documentation
+pass, and the fix is a code change. It is recorded so the documented command and the
+register agree about reality in the meantime.
+
+**Two things worth drawing out of it.**
+
+- **The failure is the guardrail working.** This is the maturity-pillar-alignment
+  constraint the [User Guide](getting-started/user-guide.md#pricing-a-swap) and
+  [Instruments: swaps](instruments/swaps.md#a-known-limitation-maturity-pillar-alignment)
+  both warn about, doing exactly what it exists to do. A loud `ValueError` naming both lists
+  is the good outcome; silently discounting a cashflow against the nearest pillar is the bad
+  one.
+- **It is a time bomb by construction, and only this demo carries it.** A default that reads
+  the wall clock, combined with a constant pinned to a fixed date, is a test that passes
+  until a date passes. The rest of the suite is immune because `tests/conftest.py` and
+  `demo_scenarios.py` thread `EVAL_DATE` explicitly — which is why 1,777 tests stay green
+  while a documented demo does not. The lesson is the one the guide already gives for
+  user-written configs: pass `evaluation_date` explicitly rather than inheriting ORE's
+  global.
+
+**Related:** the same alignment rule is discussed at
+[Instruments: swaps](instruments/swaps.md#a-known-limitation-maturity-pillar-alignment).
+
+---
+
+## ASSUMPTION — nothing known to be broken, premise unconfirmed
+
+> The code behaves exactly as designed. What is unverified is whether the design reads an
+> external contract correctly. Closes when the question is answered, not when code changes.
 
 ### I-23 — The `accrualBasis` strictness rule is an assumption, not a confirmed contract {#i-23}
 
