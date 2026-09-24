@@ -117,6 +117,9 @@ counterparts live at the integration boundary
 
 - **[Roadmap](planning/roadmap-and-history.md)** — the phased build-out plan and what's
   done vs. planned.
+- **[Basel III Compliance Plan](planning/basel-iii-compliance-plan.md)** — what conformance
+  can mean for this engine, the phased work (FRTB-SA, IMA, backtesting, CCR), and how each
+  regulatory figure is tested and proven.
 - **[TraderX Integration Plan](planning/traderX_integration/traderx-integration.md)** — the original gap
   analysis for safely accepting arbitrary portfolios from an external trading system, and
   what actually landed (now implemented — see

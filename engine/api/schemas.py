@@ -497,6 +497,9 @@ class PortfolioResultSchema(BaseModel):
     # numbers are absent, not zero. Without this field an empty `risk` is
     # ambiguous between "not requested" and "computed as nothing" (I-24).
     scenario_risk_available: bool = True
+    # Which measure `risk` is under -- `risk-neutral-pricing` whenever it
+    # was computed, `null` when `risk` is empty. Not a loss forecast (I-11).
+    measure: Optional[str] = None
 
     @classmethod
     def from_dataclass(cls, result: PortfolioResult) -> "PortfolioResultSchema":
@@ -511,6 +514,7 @@ class PortfolioResultSchema(BaseModel):
             ),
             warnings=list(result.warnings),
             scenario_risk_available=result.scenario_risk_available,
+            measure=result.measure,
         )
 
 

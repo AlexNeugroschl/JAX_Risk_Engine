@@ -120,6 +120,7 @@ removed.
 | `warnings` | `List[str]` | Known-limitation warnings surfaced during validation (see "Known-limitation flagging" below) — e.g. a Bermudan exercise date that isn't reset-aligned with its own underlying. |
 | `base_npv_per_trade` | `List[float]` | Each trade's own t=0 NPV, in `request.trades` order. `base_npv` is by construction their sum, so the total and the breakdown cannot disagree. |
 | `scenario_risk_available` | `bool` | `False` when the run was `scenario_risk=False`, meaning `risk` is **empty** and `npv_cube` zero-width. Carried on the *result* because a consumer holding one has no access to the request — without it, an empty `risk` is ambiguous between "not requested" and "computed as nothing". |
+| `measure` | `Optional[str]` | Which measure `risk` is under: `"risk-neutral-pricing"` (`engine.risk.var_es.ENGINE_RISK_MEASURE`) whenever `risk` was computed, `None` when `scenario_risk_available` is `False`. An exposure under the pricing measure, **not** a forecast of tomorrow's loss ([I-11](../known-issues.md#i-11)). |
 
 ## `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 

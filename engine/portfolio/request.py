@@ -92,7 +92,7 @@ from engine.instruments.treasury import (
 )
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER, build_vanilla_swap
 from engine.calibration.lgm import calibrate_lgm_sigma, CalibrationTarget
-from engine.risk.var_es import compute_risk_metrics
+from engine.risk.var_es import ENGINE_RISK_MEASURE, compute_risk_metrics
 from engine.risk import greeks as _greeks
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from engine.models.lgm import Sigma
@@ -599,6 +599,14 @@ class PortfolioResult:
     # requested" and "computed and found to be nothing", and those two must
     # never be confused (W1.5 / I-24).
     scenario_risk_available: bool = True
+    # Which measure the `risk` figures are under (`engine.risk.var_es`'s
+    # RISK MEASURE VOCABULARY). Always `ENGINE_RISK_MEASURE`
+    # (`risk-neutral-pricing`) when `risk` was computed: an exposure under
+    # the pricing measure, NOT a forecast of tomorrow's loss. `None` when
+    # `scenario_risk_available` is False -- there are no figures for a
+    # label to describe. Carried here, not only on the EOD path's
+    # `RiskResult`, so a direct `price_portfolio` caller gets it too (I-11).
+    measure: Optional[str] = None
 
 
 def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
@@ -754,6 +762,7 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
         base_npv=base_npv, npv_cube=npv_cube, risk=risk, greeks=greeks_out,
         warnings=collected_warnings, base_npv_per_trade=base_npv_per_trade,
         scenario_risk_available=request.scenario_risk,
+        measure=ENGINE_RISK_MEASURE if request.scenario_risk else None,
     )
 
 

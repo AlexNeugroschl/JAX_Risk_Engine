@@ -311,7 +311,7 @@ def compute_risk_metrics(
 if __name__ == "__main__":
     from engine.simulation.market_model import generate_paths
     from engine.instruments.swap import SwapConfig, price_swaps
-    from engine.simulation.demo_scenarios import SWAP_DEMO_MATURITIES, flat_yield_curves, single_currency_swap_demo_config
+    from engine.simulation.demo_scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES, flat_yield_curves, single_currency_swap_demo_config
 
     market_cubes = generate_paths(single_currency_swap_demo_config())
 
@@ -325,6 +325,10 @@ if __name__ == "__main__":
         discount_curve_index=0,
         forward_curve_index=1,
         swap_tenor="2Y",
+        # Explicit, not ORE's wall-clock default: SWAP_DEMO_MATURITIES is
+        # pinned to EVAL_DATE, and a schedule built off "today" stops lining
+        # up with its pillars once today moves (I-28).
+        evaluation_date=EVAL_DATE,
     )
     npv_cube = price_swaps(market_cubes["yield_curves"], SWAP_DEMO_MATURITIES, [swap_cfg])
 

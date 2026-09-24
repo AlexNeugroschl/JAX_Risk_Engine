@@ -173,12 +173,9 @@ python -m engine.risk.var_es
 Prints the portfolio's baseline (t=0) value and the VaR/ES numbers at each requested
 confidence level, for every simulated time step.
 
-> **⚠ This one currently crashes** with a maturity-pillar `ValueError` before printing
-> anything. Its `SwapConfig` omits `evaluation_date`, so the swap schedules off *today* while
-> the pillars it is priced against are pinned to 2026-07-30 — see
-> [I-28](../known-issues.md#i-28). The other five module demos above are unaffected, and
-> `compute_risk_metrics` itself is fine: `demos/demo.py` exercises the same VaR/ES path
-> end to end.
+This demo crashed until 2026-09-24, because its `SwapConfig` omitted `evaluation_date` and
+scheduled off *today* against pillars pinned to 2026-07-30 ([I-28](../known-issues.md#i-28)).
+`tests/test_risk_measure_label.py` now runs it.
 
 ## Running the tests
 

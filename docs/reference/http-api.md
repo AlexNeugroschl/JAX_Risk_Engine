@@ -299,6 +299,10 @@ the VaR/ES numbers are **absent, not zero** — an empty `risk` asserts nothing,
 `VaR_95` of `0.00` would assert a *measured* absence of risk. See
 [I-24](../known-issues.md#i-24) for why a constant column is refused rather than broadcast.
 
+It also carries **`measure`**: `"risk-neutral-pricing"` whenever `risk` was computed, `null`
+when it is empty. The VaR/ES figures are an exposure under the pricing measure, not a
+forecast of tomorrow's loss ([I-11](../known-issues.md#i-11)).
+
 A bond's `delta`/`gamma` are **scalars** (one parallel 1bp bump against its single curve),
 unlike a swap's per-pillar `discount_delta`/`forward_delta` vectors. They are still delivered
 as one-element lists so `greeks.values` stays uniformly a list per Greek. No `vega` is

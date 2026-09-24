@@ -146,7 +146,8 @@ call and the rank column should not be read as precise.
 
 **The one-line read:** everything in Tier 1 is blocked on someone else, so start at Tier 2.
 ([I-29](#i-29) was fixed on 2026-09-18; [I-06](#i-06) and [I-31](#i-31), which then led
-Tier 2, on 2026-09-23, and [I-30](#i-30) after them the same day.)
+Tier 2, on 2026-09-23, and [I-30](#i-30) after them the same day; [I-11](#i-11) and
+[I-28](#i-28) on 2026-09-24.)
 
 ### Tier 1 — Highest criticality, blocked on external input
 
@@ -170,22 +171,20 @@ each is small relative to what it buys.
 
 | # | Issue | Severity | Difficulty | Why it ranks here |
 |---:|---|---|---|---|
-| 3 | [I-11](#i-11) — risk measure unlabelled on `PortfolioResult` | Medium | **Low** | Vocabulary and diagnostics already exist (W0.6); closing it means putting `measure` on `PortfolioResult` itself. A risk-neutral number read as a loss forecast is a category error, not a rounding one. |
-| 4 | [I-10](#i-10) — no trade identity; results keyed by array position | Medium | **Low-moderate** | Ordering is correct and tested *today*; any future reorder or partial response silently misattributes. Mechanically small, touches three layers. |
-| 5 | [I-32](#i-32) — parity with ORE only for its Grid solver at `ShiftHorizon=0` | Medium | Moderate (shift) / hard (FD) | ORE's default `ShiftHorizon=0.5` moves Americans by up to 1.5e-4; its FD solver, used in ORE's shipped American config, by up to 1.6e-3. Needs a decision on which ORE configuration is the reference before any code. |
-| 6 | [I-28](#i-28) — `var_es` demo crashes on a date that moved | Low | **One line** | Root-caused, fix confirmed, not applied. A documented command that aborts. Cheapest item in the register. |
+| 3 | [I-10](#i-10) — no trade identity; results keyed by array position | Medium | **Low-moderate** | Ordering is correct and tested *today*; any future reorder or partial response silently misattributes. Mechanically small, touches three layers. |
+| 4 | [I-32](#i-32) — parity with ORE only for its Grid solver at `ShiftHorizon=0` | Medium | Moderate (shift) / hard (FD) | ORE's default `ShiftHorizon=0.5` moves Americans by up to 1.5e-4; its FD solver, used in ORE's shipped American config, by up to 1.6e-3. Needs a decision on which ORE configuration is the reference before any code. |
 
 [I-06](#i-06) and [I-31](#i-31), which led this tier, were fixed on 2026-09-23: Bermudan and
 American pricing now equal ORE's own engine to ~1e-11. [I-30](#i-30), which then led, was
-closed the same day by a 60-point conditional-pricing grid against ORE. [I-11](#i-11) now
-leads. I-11 and I-10 are ranked above I-28 despite I-28 being cheaper because they are about
-numbers a consumer misreads, not a demo that fails loudly.
+closed the same day by a 60-point conditional-pricing grid against ORE. [I-11](#i-11)
+(the measure label now on `PortfolioResult`) and [I-28](#i-28) (the `var_es` demo) were
+closed on 2026-09-24. [I-10](#i-10) now leads.
 
 ### Tier 3 — Blocks confidence in the suite itself
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 7 | [I-27](#i-27) — full-suite runs hard-abort inside XLA | Medium | **Hard to diagnose** | Intermittent, not reproducible on demand, and fails in the most deceptive way available: a dead process with no summary. The cheap experiment (a `shutdown_pools()` autouse fixture in `tests/test_api.py`) is identified but needs *repeated* clean runs against a known-bad baseline — one green run would look like proof and would not be. |
+| 5 | [I-27](#i-27) — full-suite runs hard-abort inside XLA | Medium | **Hard to diagnose** | Intermittent, not reproducible on demand, and fails in the most deceptive way available: a dead process with no summary. The cheap experiment (a `shutdown_pools()` autouse fixture in `tests/test_api.py`) is identified but needs *repeated* clean runs against a known-bad baseline — one green run would look like proof and would not be. |
 
 Ranked below Tier 2 because it costs no user a wrong number, and above Tier 4 because every
 status in this register rests on being able to run the suite.
@@ -198,12 +197,12 @@ consumers ask.
 
 | # | Issue | Severity | Difficulty | Blocked on |
 |---:|---|---|---|---|
-| 8 | [I-18](#i-18) — no equity spot or FX source | Medium | **Blocked**, then trivial | Market data. The pricer is four multiplications. *Do not close it with `closingMark`* — that is an echo, not a valuation. |
-| 9 | [I-16](#i-16) — `rateSensitivity` parallel-only | Medium | **Blocked** | A curve with genuine pillar structure (W2, same D03/D04 dependency as I-05). *Do not close it by bumping the flat profile per-pillar.* |
-| 10 | [I-07](#i-07) — no corporate bond / equity / listed-option pricer | Medium | Moderate–hard | Corporate bonds need a credit model; a Treasury-discounted corporate is not credit pricing. |
-| 11 | [I-24](#i-24) — bonds have no scenario NPV, so no VaR/ES | Medium | Moderate | Genuine modelling work with its own validation burden. *Do not broadcast, zero-fill, or flip the `scenario_risk` default.* |
-| 12 | [I-08](#i-08) — portfolio path's `_JOBS` dict still in-process | Medium | Moderate | The EOD half is done (W0.8); porting `publication.py`'s design to the portfolio path is the remaining work. |
-| 13 | [I-09](#i-09) — whole scenario cube serialized into JSON | Medium | Moderate | ~20M floats in one HTTP body at realistic sizes. Needs a chunked artifact plus a reference. |
+| 6 | [I-18](#i-18) — no equity spot or FX source | Medium | **Blocked**, then trivial | Market data. The pricer is four multiplications. *Do not close it with `closingMark`* — that is an echo, not a valuation. |
+| 7 | [I-16](#i-16) — `rateSensitivity` parallel-only | Medium | **Blocked** | A curve with genuine pillar structure (W2, same D03/D04 dependency as I-05). *Do not close it by bumping the flat profile per-pillar.* |
+| 8 | [I-07](#i-07) — no corporate bond / equity / listed-option pricer | Medium | Moderate–hard | Corporate bonds need a credit model; a Treasury-discounted corporate is not credit pricing. |
+| 9 | [I-24](#i-24) — bonds have no scenario NPV, so no VaR/ES | Medium | Moderate | Genuine modelling work with its own validation burden. *Do not broadcast, zero-fill, or flip the `scenario_risk` default.* |
+| 10 | [I-08](#i-08) — portfolio path's `_JOBS` dict still in-process | Medium | Moderate | The EOD half is done (W0.8); porting `publication.py`'s design to the portfolio path is the remaining work. |
+| 11 | [I-09](#i-09) — whole scenario cube serialized into JSON | Medium | Moderate | ~20M floats in one HTTP body at realistic sizes. Needs a chunked artifact plus a reference. |
 
 ### Tier 5 — Performance and cosmetic
 
@@ -211,20 +210,21 @@ Every number is correct. Nothing here is a financial risk.
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 14 | [I-21](#i-21) — Greeks recompile 23 XLA programs per call | Medium | **Moderate, fully designed** | Prototyped, bit-identical output, steady-state recompiles reach zero. Ranked highest in this tier because the design and its safety argument are already written. **The risk is a memo returning a program compiled for a different trade** — key on `static_key(prepared)`, never the config, never `id()`. |
-| 15 | [I-22](#i-22) — calibration recompiles 8 programs per call | Low | Moderate | **A different mechanism from I-21** — baked-in Python float constants, not fresh closures. I-21's fix would actively hurt here. Caps out at 8 → ~2. Fix I-21 first; they are independent. |
-| 16 | [I-12](#i-12) — `/version` reports dispatcher, not worker device | Low | Low | Invisible on a single-CPU box; would mislead a precision/hardware study on a multi-device host. Composes with [I-14](#i-14)'s residual (realized dtype on the result). |
+| 12 | [I-21](#i-21) — Greeks recompile 23 XLA programs per call | Medium | **Moderate, fully designed** | Prototyped, bit-identical output, steady-state recompiles reach zero. Ranked highest in this tier because the design and its safety argument are already written. **The risk is a memo returning a program compiled for a different trade** — key on `static_key(prepared)`, never the config, never `id()`. |
+| 13 | [I-22](#i-22) — calibration recompiles 8 programs per call | Low | Moderate | **A different mechanism from I-21** — baked-in Python float constants, not fresh closures. I-21's fix would actively hurt here. Caps out at 8 → ~2. Fix I-21 first; they are independent. |
+| 14 | [I-12](#i-12) — `/version` reports dispatcher, not worker device | Low | Low | Invisible on a single-CPU box; would mislead a precision/hardware study on a multi-device host. Composes with [I-14](#i-14)'s residual (realized dtype on the result). |
 
 ### Tier 6 — Awaiting an answer, not an engineer
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 17 | [I-23](#i-23) — `accrualBasis` strictness is an assumption | Medium | **Not a code task** | Closes when TraderX answers, asked twice (v4 §1.3, v6 §2.3). If they add enum values *in place*, this engine refuses bundles they consider valid, on the day they first export a real calendar — a false rejection, so it fails safe, but it will arrive without warning and look like a defect to whoever is on call. |
+| 15 | [I-23](#i-23) — `accrualBasis` strictness is an assumption | Medium | **Not a code task** | Closes when TraderX answers, asked twice (v4 §1.3, v6 §2.3). If they add enum values *in place*, this engine refuses bundles they consider valid, on the day they first export a real calendar — a false rejection, so it fails safe, but it will arrive without warning and look like a defect to whoever is on call. |
 
 ### What the ordering deliberately does not do
 
-- **It does not rank by severity alone.** [I-28](#i-28) is Low severity and near the top of
-  the actionable work because it is one line; [I-04](#i-04) is High and cannot be started.
+- **It does not rank by severity alone.** [I-28](#i-28) was Low severity yet sat near the
+  top of the actionable work because it was one line; [I-04](#i-04) is High and cannot be
+  started.
 - **It does not treat "refused" as "broken".** Tier 4 entries return an identified refusal
   rather than a number. That is the designed behavior, and closing them is capability work.
 - **It does not promise that Tier 1 gets fixed by trying harder.** Both entries need someone
@@ -246,34 +246,34 @@ back into it.
 | [I-04](#i-04) | Aged swaps mispriced at every step past first accrual | **High** | ⚠️ FLAGGED | **1** |
 | [I-05](#i-05) | No faithful USD-SOFR/ACT360 swap construction | **High** | ❌ OPEN — refusal path landed (W0.4) | **2** |
 | [I-06](#i-06) | American exercise ignored ORE's broken-period proration — payer overstated up to 6.0x vs ORE (mid-period Bermudans were always right) | **High** | ✅ FIXED | — |
-| [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — both Treasury pricers landed (W1.2 bill, W1.3 note) | 10 |
-| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8); the portfolio path's `_JOBS` dict is unchanged | 12 |
-| [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN | 13 |
-| [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary (W0.7) | 4 |
-| [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ❌ OPEN — measure + MC diagnostics landed (W0.6) | 3 |
-| [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN | 16 |
+| [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — both Treasury pricers landed (W1.2 bill, W1.3 note) | 8 |
+| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8); the portfolio path's `_JOBS` dict is unchanged | 10 |
+| [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN | 11 |
+| [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary (W0.7) | 3 |
+| [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ✅ FIXED | — |
+| [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN | 14 |
 | [I-13](#i-13) | Negative curve index silently prices against the wrong curve | **High** | ✅ FIXED | — |
 | [I-14](#i-14) | `generate_paths(precision=32)` leaks `jax_enable_x64=False`; float64 silently truncates | **High** | ✅ FIXED | — |
 | [I-15](#i-15) | Worker-pool concurrency test could not observe concurrency | Low | ✅ FIXED | — |
-| [I-16](#i-16) | `rateSensitivity` is parallel-only; no per-pillar decomposition | Medium | ❌ OPEN — labelled honestly, blocked on a real curve | 9 |
+| [I-16](#i-16) | `rateSensitivity` is parallel-only; no per-pillar decomposition | Medium | ❌ OPEN — labelled honestly, blocked on a real curve | 7 |
 | [I-17](#i-17) | A malformed note date failed the entire bundle, not just its row | Medium | ✅ FIXED | — |
-| [I-18](#i-18) | No equity spot or FX source; equity positions are refused, not valued | Medium | ❌ OPEN — refusal path landed (W1.4) | 8 |
+| [I-18](#i-18) | No equity spot or FX source; equity positions are refused, not valued | Medium | ❌ OPEN — refusal path landed (W1.4) | 6 |
 | [I-19](#i-19) | Accrual tolerance rounded the bound it exists to enforce | Medium | ✅ FIXED | — |
 | [I-20](#i-20) | Impossible calendar dates aborted the whole bundle | **High** | ✅ FIXED | — |
-| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call (fresh closures) | Medium | ❌ OPEN | 14 |
-| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call (baked-in constants) | Low | ❌ OPEN | 15 |
-| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** on an unanswered question | Medium | ⚠️ ASSUMPTION — may refuse bundles TraderX considers valid | 17 |
-| [I-24](#i-24) | Bonds have no scenario NPV, so no VaR/ES — refused, not approximated | Medium | ❌ OPEN — refusal path landed (W1.5) | 11 |
+| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call (fresh closures) | Medium | ❌ OPEN | 12 |
+| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call (baked-in constants) | Low | ❌ OPEN | 13 |
+| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** on an unanswered question | Medium | ⚠️ ASSUMPTION — may refuse bundles TraderX considers valid | 15 |
+| [I-24](#i-24) | Bonds have no scenario NPV, so no VaR/ES — refused, not approximated | Medium | ❌ OPEN — refusal path landed (W1.5) | 9 |
 | [I-25](#i-25) | A **scalar** Greek crashed the HTTP result serializer | Medium | ✅ FIXED | — |
 | [I-26](#i-26) | Greeks for a bond maturing **tomorrow** crashed on the theta reprice | Low | ✅ FIXED | — |
-| [I-27](#i-27) | Long full-suite runs **hard-abort inside XLA compilation**, with no summary line | Medium | ❌ OPEN — located, not root-caused | 7 |
-| [I-28](#i-28) | `python -m engine.risk.var_es`'s **own demo crashes**: it omits `evaluation_date`, so its swap schedules off today | Low | ❌ OPEN | 6 |
+| [I-27](#i-27) | Long full-suite runs **hard-abort inside XLA compilation**, with no summary line | Medium | ❌ OPEN — located, not root-caused | 5 |
+| [I-28](#i-28) | `python -m engine.risk.var_es`'s **own demo crashed**: it omitted `evaluation_date`, so its swap scheduled off today | Low | ✅ FIXED | — |
 | [I-29](#i-29) | A rounded exercise time silently drops a whole coupon | Medium | ✅ FIXED | — |
 | [I-30](#i-30) | The `A(t,T)` variance term was nearly uncovered at `t=0` (test gap, not a defect) | Medium | ✅ FIXED | — |
 | [I-31](#i-31) | Bermudan/American floating coupons projected over the accrual period, not ORE's index fixing period | Medium | ✅ FIXED | — |
-| [I-32](#i-32) | Parity with ORE holds only for its Grid solver at `ShiftHorizon=0`; ORE's defaults differ by up to 1.6e-3 | Medium | ❌ OPEN | 5 |
+| [I-32](#i-32) | Parity with ORE holds only for its Grid solver at `ShiftHorizon=0`; ORE's defaults differ by up to 1.6e-3 | Medium | ❌ OPEN | 4 |
 
-**Counts:** 32 issues — 15 FIXED, 14 OPEN, 1 FLAGGED, 1 PARTIAL, 1 ASSUMPTION. The 17
+**Counts:** 32 issues — 17 FIXED, 12 OPEN, 1 FLAGGED, 1 PARTIAL, 1 ASSUMPTION. The 15
 unfixed entries are ranked above.
 
 **The two that matter most for financial correctness are [I-04](#i-04) and [I-05](#i-05).**
@@ -409,6 +409,40 @@ documented as ORE's contract rather than an error:
 
 **Not closed, deliberately:** ORE's `midCouponExercise=true` Bermudans and notice periods
 are not exposed by these configs. The coupon model handles both by construction.
+
+---
+
+### I-11 — Risk measure unlabelled on the direct portfolio path {#i-11}
+
+**Severity:** Medium · **Status:** ✅ FIXED (2026-09-24) · **Found:** during the TraderX EOD
+integration review
+
+**What was wrong.** `PortfolioResult.risk` returned keys like `VaR_95` with **no statement of
+what measure they are**. A risk-neutral exposure simulation is *not* a calibrated forecast of
+tomorrow's loss, and nothing in the result distinguished the two. It was also silent about
+convergence, so a sparse-tail estimate could not be told apart from a well-converged one.
+
+**Fixed in two steps.**
+
+- **W0.6 — vocabulary and diagnostics, EOD path only.** `RISK_MEASURE_*` in
+  [`engine/risk/var_es.py`](../engine/risk/var_es.py) defines the three-value vocabulary
+  (`risk-neutral-pricing` / `historical-forecast` / `deterministic-stress`), and
+  `ENGINE_RISK_MEASURE` records what this engine actually produces (`risk-neutral-pricing`).
+  `engine.integration.result.RiskResult` carries it, and `capabilities()` advertises it.
+  `compute_risk_metrics` returns `ES_<p>_tailCount` (effective sample size) and
+  `ES_<p>_standardError` (`s/sqrt(n)`, `ddof=1`, **NaN, never 0.0**, when `n < 2`) beside every
+  tail statistic. That left the issue OPEN: the label lived only on `RiskResult`, so a direct
+  `price_portfolio` caller still got unlabelled `VaR_95` keys.
+- **2026-09-24 — the label reaches `PortfolioResult`.** `PortfolioResult.measure` is set to
+  `ENGINE_RISK_MEASURE` whenever `risk` was computed, and to `None` when
+  `scenario_risk=False` left `risk` empty. A label with no figures would describe numbers that
+  do not exist. This is the same rule the EOD pipeline already applies to `RiskResult.measure`.
+  `PortfolioResultSchema.measure` carries it over HTTP (`null` when absent).
+
+**Verified.** `tests/test_risk_measure_label.py::TestPortfolioResultStatesItsMeasure`
+(5 tests): risk-neutral on a scenario run, taken from `ENGINE_RISK_MEASURE` and inside
+`RISK_MEASURES`, `None` on a `scenario_risk=False` run, and both cases serialized over HTTP.
+**All 5 fail against the pre-fix code.**
 
 ---
 
@@ -833,6 +867,42 @@ not pass.
 **How it was found.** By asking what `replace(cfg, evaluation_date=+1)` does at the edge of
 the constructor's own validity, and checking — not by a failing test. No fixture had a bond
 that close to maturity.
+
+---
+
+### I-28 — The `var_es` module demo crashed on a date that moved {#i-28}
+
+**Severity:** Low · **Status:** ✅ FIXED (2026-09-24) · **Found:** 2026-09-17, while verifying
+that every command in [the User Guide](getting-started/user-guide.md#running-the-demos)
+actually runs
+
+**What was wrong.** `python -m engine.risk.var_es`, a documented command, aborted before
+printing anything:
+
+```
+ValueError: Swap cashflow times must be a subset of the simulation's rates.maturities
+pillars; got cashflow times [0.5095890410958904, 1.010958904109589, 1.5095890410958903,
+2.0136986301369864] against maturities [0.010958904109589041, 0.5150684931506849,
+1.010958904109589, 1.515068493150685, 2.0136986301369864]
+```
+
+The demo's `SwapConfig` omitted `evaluation_date`, so the swap took ORE's wall-clock *today*
+while `SWAP_DEMO_MATURITIES` stayed pinned to `EVAL_DATE = ORE.Date(30, 7, 2026)`. Once the
+clock left 2026-07-30 the two disagreed, and the maturity-pillar-alignment check in
+[`engine/instruments/swap.py`](../engine/instruments/swap.py) correctly refused the mismatch.
+The failure was the guardrail working: a loud `ValueError` naming both lists, not a cashflow
+silently discounted off the nearest pillar.
+
+**Fix.** Pass `evaluation_date=EVAL_DATE`, as the other module demos already do.
+
+**Verified.** `tests/test_risk_measure_label.py::TestVarEsDemoRuns` runs the documented
+command in a subprocess and asserts a clean exit and printed VaR output. It fails against the
+pre-fix code with the `ValueError` above. Before this there was no test at all, because a
+`__main__` block is not reachable by importing the module.
+
+**The lesson still stands.** A default that reads the wall clock, combined with a constant
+pinned to a fixed date, is a test that passes until a date passes. Pass `evaluation_date`
+explicitly rather than inheriting ORE's global.
 
 ---
 
@@ -1391,44 +1461,6 @@ A direct Python caller of `engine.portfolio` still has no trade identity. Status
 
 ---
 
-### I-11 — Risk measure unlabelled; no Monte Carlo error reported {#i-11}
-
-**Severity:** Medium · **Status:** ❌ OPEN
-
-`PortfolioResult.risk` returns keys like `VaR_95` with **no statement of what measure they
-are**. A risk-neutral exposure simulation is *not* a calibrated forecast of tomorrow's loss,
-and nothing in the result distinguishes the two. No effective sample size, Monte Carlo
-standard error, or convergence diagnostic is reported alongside the tail statistic, so a
-sparse-tail estimate is indistinguishable from a well-converged one.
-
-**What closing it requires.** An explicit `measure` label
-(`risk-neutral-pricing` / `historical-forecast` / `deterministic-stress`), plus effective
-sample size and MC standard error on every tail statistic. Small change; prevents a whole
-category of misreading. See [proposal §3.6/§4](planning/traderX_integration/eod-contract-proposal.md).
-
-**Substantially addressed (W0.6), but not closed.** Both halves now exist:
-
-- **The `measure` label.** `RISK_MEASURE_*` in
-  [`engine/risk/var_es.py`](../engine/risk/var_es.py) defines the three-value vocabulary, and
-  `ENGINE_RISK_MEASURE` records what this engine actually produces
-  (`risk-neutral-pricing`). `engine.integration.result.RiskResult` carries it on every
-  published result, and `capabilities()` advertises it so a consumer knows *before*
-  submitting.
-- **Convergence diagnostics.** `compute_risk_metrics` now returns `ES_<p>_tailCount`
-  (effective sample size — the observations the ES mean actually averaged) and
-  `ES_<p>_standardError` (`s/sqrt(n)`, `ddof=1`) beside every tail statistic. Purely
-  additive: existing keys and values are untouched, and `include_diagnostics=False` returns
-  the prior key set exactly. `standardError` is **NaN, never 0.0**, when `n < 2` — 0.0 would
-  read as "perfectly converged" for the least trustworthy case.
-
-**Why it stays OPEN.** `PortfolioResult.risk` is still a bare `Dict[str, jax.Array]` with no
-`measure` field of its own — the label lives on `RiskResult`, which only the TraderX EOD path
-produces. A direct Python caller of `price_portfolio` still gets unlabelled `VaR_95` keys,
-which is exactly what this issue reports. Closing it means putting `measure` on
-`PortfolioResult` itself.
-
----
-
 ### I-12 — `/version` reports dispatcher backend, not worker device {#i-12}
 
 **Severity:** Low · **Status:** ❌ OPEN
@@ -1853,58 +1885,6 @@ unsafely across the parent and its spawned workers.
 **Related:** [I-15](#i-15) and `test_cross_tier_jobs_correct_and_concurrent` share the
 worker-pool/timing premise. Whether they are the same underlying problem is **not**
 established.
-
----
-
-### I-28 — The `var_es` module demo crashes on a date that moved {#i-28}
-
-**Severity:** Low · **Status:** ❌ OPEN — **root-caused, one-line fix, not applied here**
-**Found:** 2026-09-17, while verifying that every command in
-[the User Guide](getting-started/user-guide.md#running-the-demos) actually runs.
-
-`python -m engine.risk.var_es` — a documented command — aborts before printing anything:
-
-```
-ValueError: Swap cashflow times must be a subset of the simulation's rates.maturities
-pillars; got cashflow times [0.5095890410958904, 1.010958904109589, 1.5095890410958903,
-2.0136986301369864] against maturities [0.010958904109589041, 0.5150684931506849,
-1.010958904109589, 1.515068493150685, 2.0136986301369864]
-```
-
-**The cause is one missing keyword argument.** The demo block at
-[`engine/risk/var_es.py:321`](../engine/risk/var_es.py) builds its `SwapConfig` without an
-`evaluation_date`, so the field falls back to its default —
-`ORE.Settings.instance().evaluationDate`, i.e. *today*. It then prices that swap against
-`SWAP_DEMO_MATURITIES`, which is pinned to `EVAL_DATE = ORE.Date(30, 7, 2026)` in
-`engine/simulation/demo_scenarios.py`. Once the wall clock left 2026-07-30 the two stopped
-agreeing, and the maturity-pillar-alignment check in
-[`engine/instruments/swap.py:165`](../engine/instruments/swap.py) correctly refused the
-mismatch. Adding `evaluation_date=EVAL_DATE` to that config — which the other module demos
-already pass, e.g. `engine/instruments/swap.py:300` — makes it run; that was confirmed
-directly rather than assumed.
-
-**Why it is filed rather than fixed here.** This register entry came out of a documentation
-pass, and the fix is a code change. It is recorded so the documented command and the
-register agree about reality in the meantime.
-
-**Two things worth drawing out of it.**
-
-- **The failure is the guardrail working.** This is the maturity-pillar-alignment
-  constraint the [User Guide](getting-started/user-guide.md#pricing-a-swap) and
-  [Instruments: swaps](instruments/swaps.md#a-known-limitation-maturity-pillar-alignment)
-  both warn about, doing exactly what it exists to do. A loud `ValueError` naming both lists
-  is the good outcome; silently discounting a cashflow against the nearest pillar is the bad
-  one.
-- **It is a time bomb by construction, and only this demo carries it.** A default that reads
-  the wall clock, combined with a constant pinned to a fixed date, is a test that passes
-  until a date passes. The rest of the suite is immune because `tests/conftest.py` and
-  `demo_scenarios.py` thread `EVAL_DATE` explicitly — which is why 1,777 tests stay green
-  while a documented demo does not. The lesson is the one the guide already gives for
-  user-written configs: pass `evaluation_date` explicitly rather than inheriting ORE's
-  global.
-
-**Related:** the same alignment rule is discussed at
-[Instruments: swaps](instruments/swaps.md#a-known-limitation-maturity-pillar-alignment).
 
 ---
 
