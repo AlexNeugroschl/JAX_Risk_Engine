@@ -81,7 +81,7 @@ import numpy as np
 import ORE
 
 from engine.simulation.market_model import SimulationConfig, generate_paths
-from engine.instruments.swap import SwapConfig, price_swaps
+from engine.instruments.swap import SwapConfig, _build_ore_swap, price_swaps
 from engine.instruments.european_swaption import SwaptionConfig, price_swaptions
 from engine.instruments.bermudan_swaption import (
     BermudanSwaptionConfig, price_bermudan_swaptions, price_bermudan_swaption_base,
@@ -90,7 +90,7 @@ from engine.instruments.american_swaption import AmericanSwaptionConfig, price_a
 from engine.instruments.treasury import (
     RATE_BUMP, BondConfig, ScenarioPricingNotSupported, price_bond_base,
 )
-from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER, build_vanilla_swap
+from engine.models.ore_builders import fixed_leg_cashflows, floating_leg_cashflows
 from engine.calibration.lgm import calibrate_lgm_sigma, CalibrationTarget
 from engine.risk.var_es import ENGINE_RISK_MEASURE, compute_risk_metrics
 from engine.risk import greeks as _greeks
@@ -351,8 +351,26 @@ def validate_portfolio_against_simulation(
                 f"{list(expected_curve.rates)}"
             )
 
+    _validate_single_evaluation_date(trade_configs)
     _validate_swap_curve_indices(sim_config, trade_configs)
     _warn_if_aged_swap_exposure(sim_config, trade_configs)
+
+
+def _validate_single_evaluation_date(trade_configs: Sequence[TradeConfig]) -> None:
+    """Every trade in one portfolio must share one `evaluation_date`.
+
+    Each pricer measures its cashflow and exercise times from its own
+    trade's `evaluation_date`, while the simulation has exactly one t=0.
+    A trade dated differently would be priced on a time axis shifted
+    against the simulated paths -- finite, plausible, and wrong."""
+    dates = {}
+    for i, cfg in enumerate(trade_configs):
+        dates.setdefault(cfg.evaluation_date.ISO(), i)
+    if len(dates) > 1:
+        listed = ", ".join(f"{iso} (first at trade[{i}])" for iso, i in dates.items())
+        raise ValueError(
+            f"all trades in one portfolio must share one evaluation_date; got {listed}"
+        )
 
 
 def _validate_swap_curve_indices(
@@ -438,19 +456,10 @@ def _warn_if_aged_swap_exposure(sim_config: SimulationConfig, trade_configs) -> 
     for i, cfg in enumerate(trade_configs):
         if not isinstance(cfg, SwapConfig):
             continue
-        swap = build_vanilla_swap(
-            notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
-            swap_tenor=cfg.swap_tenor, index_tenor_months=cfg.index_tenor_months,
-            floating_spread=cfg.floating_spread, evaluation_date=cfg.evaluation_date,
-        )
-        today = cfg.evaluation_date
-        starts = [
-            TIME_AXIS_DAY_COUNTER.yearFraction(today, ORE.as_floating_rate_coupon(cf).accrualStartDate())
-            for cf in swap.floatingLeg()
-        ]
-        if not starts:
+        starts = floating_leg_cashflows(_build_ore_swap(cfg), cfg.evaluation_date).accrual_start_times
+        if starts.size == 0:
             continue
-        first_accrual_start = min(starts)
+        first_accrual_start = float(starts.min())
         # Aged only if the grid actually advances past the first accrual
         # start. A forward-starting swap whose accrual begins after the last
         # simulated step is never aged within this simulation.
@@ -494,21 +503,14 @@ def derive_maturity_pillars(trade_configs: Sequence[TradeConfig], evaluation_dat
     for cfg in trade_configs:
         if not isinstance(cfg, SwapConfig):
             continue
-        swap = build_vanilla_swap(
-            notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
-            swap_tenor=cfg.swap_tenor, index_tenor_months=cfg.index_tenor_months,
-            floating_spread=cfg.floating_spread, evaluation_date=evaluation_date,
-        )
-        today = evaluation_date
-        for cf in swap.fixedLeg():
-            c = ORE.as_fixed_rate_coupon(cf)
-            pillars.add(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.date()))
-            pillars.add(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
-        for cf in swap.floatingLeg():
-            c = ORE.as_floating_rate_coupon(cf)
-            pillars.add(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.date()))
-            pillars.add(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
-            pillars.add(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
+        swap = _build_ore_swap(replace(cfg, evaluation_date=evaluation_date))
+        fixed = fixed_leg_cashflows(swap, evaluation_date)
+        floating = floating_leg_cashflows(swap, evaluation_date)
+        pillars.update(fixed.payment_times.tolist())
+        pillars.update(fixed.accrual_start_times.tolist())
+        pillars.update(floating.payment_times.tolist())
+        pillars.update(floating.accrual_start_times.tolist())
+        pillars.update(floating.accrual_end_times.tolist())
     return sorted(pillars)
 
 
@@ -690,20 +692,14 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
             trades = _fill_calibrated_sigma(trades, request.calibration_targets, market_config, request.precision)
         with _phase("simulation"):
             market = generate_paths(market_config, precision=request.precision.simulation)
-        # generate_paths leaves jax_enable_x64 set to (precision.simulation == 64)
-        # -- a process-global flag, not scoped to that call. Everything below this
-        # point (pricing/risk/Greeks) may independently want float64 via `pricing`/
-        # `risk`, regardless of what `simulation` requested. If simulation=32 left
-        # x64 disabled, any float64 construction below (e.g. pricing=64's own
-        # arrays, or _base_npv's/_compute_all_greeks' curve construction) would
-        # silently truncate to float32 instead of raising -- confirmed directly:
-        # PrecisionConfig(simulation=32, pricing=64) produced an all-float32
-        # npv_cube with no error, only a buried UserWarning, before this line was
-        # added. Re-enabling x64 here is always safe: creating float32 arrays
-        # under x64=True works identically to under x64=False (x64 only restricts
-        # *creating* float64, never float32), so this doesn't affect `pricing`/
-        # `risk` requesting 32 -- it only fixes the case where they request 64
-        # after a simulation=32 run.
+        # generate_paths restores jax_enable_x64 to its prior value on exit
+        # (I-14), but that prior value is whatever the calling process had --
+        # a 32-bit worker process boots with x64 off. Everything below
+        # (pricing/risk/Greeks) may independently want float64 via
+        # `pricing`/`risk`, and under x64=False a float64 construction
+        # silently truncates to float32 with only a UserWarning. Enabling x64
+        # here is always safe: float32 arrays are created identically either
+        # way, so `pricing`/`risk` requesting 32 are unaffected.
         jax.config.update("jax_enable_x64", True)
         maturities_np = np.asarray(market_config.rates.maturities) if market_config.rates.maturities else np.asarray([])
 
@@ -716,7 +712,7 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
         step_times = jnp.array(market_config.time_grid[1:], dtype=jnp.float64)
         if request.scenario_risk:
             with _phase("pricing"):
-                npv_cube, order = _price_by_type(trades, market, maturities_np, step_times, request.precision.pricing)
+                npv_cube = _price_by_type(trades, market, maturities_np, step_times, request.precision.pricing)
         else:
             # An EMPTY cube, not a zero-filled one. Zeros would be
             # indistinguishable from genuinely-zero NPVs and would feed
@@ -811,9 +807,7 @@ def _price_by_type(trades, market, maturities_np, step_times, pricing: Union[int
     homogeneous list), prices each group, then reassembles one
     `[Scenarios, TimeSteps, Trades]` cube in the CALLER's original trade
     order -- the routing this function's docstring in `PortfolioRequest`
-    promises. Returns `(npv_cube, order)`, `order` being the index
-    permutation applied (kept for callers that want to trace it, unused by
-    `price_portfolio` itself beyond the reordering).
+    promises.
 
     `pricing` may be a flat int or a `PricingPrecisionOverride` -- each
     instrument-type bucket resolves and casts to ITS OWN dtype via
@@ -895,9 +889,7 @@ def _price_by_type(trades, market, maturities_np, step_times, pricing: Union[int
             per_trade_cubes[i] = cube[:, :, slot]
 
     ordered = [per_trade_cubes[i] for i in range(len(trades))]
-    npv_cube = jnp.stack(ordered, axis=-1) if ordered else jnp.zeros((num_scenarios, num_steps, 0))
-    order = list(range(len(trades)))
-    return npv_cube, order
+    return jnp.stack(ordered, axis=-1) if ordered else jnp.zeros((num_scenarios, num_steps, 0))
 
 
 def _base_npv_per_trade(

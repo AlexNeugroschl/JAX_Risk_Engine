@@ -114,7 +114,7 @@ class TestCalibrateLgmSigmaSanity:
     def test_requires_increasing_expiry_order(self):
         targets = _basket([1.0, 2.0, 3.0], 5.0, [0.008, 0.009, 0.0095])
         targets_shuffled = [targets[1], targets[0], targets[2]]
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError):
             calibrate_lgm_sigma(targets_shuffled, FLAT_CURVE, a=0.03)
 
     def test_single_bucket_matches_flat_sigma_calibration(self):
@@ -150,3 +150,19 @@ class TestCalibrationResultGradientCorrectness:
         fd_grad = (bumped - base) / eps
         assert np.isfinite(fd_grad)
         assert fd_grad > 0.0
+
+
+class TestUnattainableMarketVolIsRefused:
+    """The bisection bracket is [1bp, 2000bp]. A market price outside what
+    that bracket can reach used to converge silently onto the bracket end
+    and be returned as the calibrated sigma."""
+
+    def test_market_vol_above_bracket_raises(self):
+        targets = _basket([1.0, 2.0], 5.0, [0.008, 5.0])
+        with pytest.raises(ValueError, match="not attainable"):
+            calibrate_lgm_sigma(targets, FLAT_CURVE, a=0.03)
+
+    def test_realistic_basket_still_calibrates(self):
+        targets = _basket([1.0, 2.0], 5.0, [0.008, 0.009])
+        result = calibrate_lgm_sigma(targets, FLAT_CURVE, a=0.03)
+        assert np.all(np.isfinite(np.asarray(result.sigma.values)))

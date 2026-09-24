@@ -80,7 +80,7 @@ import os
 import time
 import warnings
 from concurrent.futures import Future, ProcessPoolExecutor
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from typing import Optional
 
 from engine.portfolio.request import PortfolioRequest, PortfolioResult
@@ -144,7 +144,8 @@ class _OreValue:
 
 @dataclass(frozen=True)
 class _FrozenTrade:
-    """A trade config in picklable form: its class and its field values."""
+    """A trade config (or any dataclass nested inside one) in picklable
+    form: its class and its field values."""
     cls: type
     values: dict
 
@@ -158,6 +159,11 @@ def _freeze_value(value):
         return _OreValue("period", str(value))
     if isinstance(value, (list, tuple)):
         return type(value)(_freeze_value(v) for v in value)
+    if is_dataclass(value) and not isinstance(value, type):
+        # A nested dataclass can hold ORE values too -- a bond's
+        # `CouponPeriod`s carry `ORE.Date`s, which are unpicklable SWIG
+        # objects -- so it is frozen field by field like a top-level trade.
+        return _freeze_trade(value)
     return value
 
 
@@ -166,6 +172,8 @@ def _thaw_value(value):
 
     if isinstance(value, _OreValue):
         return ORE.DateParser.parseISO(value.text) if value.kind == "date" else ORE.Period(value.text)
+    if isinstance(value, _FrozenTrade):
+        return _thaw_trade(value)
     if isinstance(value, (list, tuple)):
         return type(value)(_thaw_value(v) for v in value)
     return value
@@ -174,7 +182,7 @@ def _thaw_value(value):
 def _freeze_trade(cfg) -> _FrozenTrade:
     """A trade config -> a picklable `_FrozenTrade`: every `ORE.Date`/
     `ORE.Period` field, including one inside a list (a Bermudan's exercise
-    dates), becomes text. Generic over every trade-config type -- nothing
+    dates) or a nested dataclass (a bond's coupon periods), becomes text. Generic over every trade-config type -- nothing
     here names a field."""
     return _FrozenTrade(type(cfg), {f.name: _freeze_value(getattr(cfg, f.name)) for f in fields(cfg)})
 

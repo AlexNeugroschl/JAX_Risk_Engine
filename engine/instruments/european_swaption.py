@@ -66,7 +66,7 @@ import ORE
 from engine.simulation.market_model import ZeroCurveConfig
 from engine.models.static_key import StaticKeyMixin
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER, build_vanilla_swap
-from engine.portfolio.validation import _validate_common_fields, _validate_tenor
+from engine.portfolio.validation import _validate_common_fields, _validate_hw_sigma, _validate_tenor
 from engine.models.hull_white import (
     A as _hw_A,
     B as _hw_B,
@@ -141,8 +141,9 @@ class SwaptionConfig:
     def __post_init__(self) -> None:
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
         _validate_tenor(self.swap_tenor, "swap_tenor")
-        if self.hw_sigma != self.hw_sigma or self.hw_sigma in (float("inf"), float("-inf")):
-            raise ValueError(f"hw_sigma must be finite; got {self.hw_sigma}")
+        if self.hw_sigma is None:
+            raise ValueError("hw_sigma is required for a European swaption")
+        _validate_hw_sigma(self.hw_sigma)
 
 
 def _build_ore_swap(cfg: SwaptionConfig) -> ORE.VanillaSwap:

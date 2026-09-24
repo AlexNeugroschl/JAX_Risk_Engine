@@ -28,6 +28,9 @@ are explicitly supported, see tests/test_swap.py::TestZeroNotional and
 similar classes in the other instrument test files); only non-finite
 (NaN/Inf) values are rejected here.
 """
+import math
+
+import numpy as np
 import ORE
 
 
@@ -35,10 +38,21 @@ def _validate_common_fields(notional: float, fixed_rate: float, evaluation_date:
     """Finite notional, finite fixed_rate -- called from every trade
     config's `__post_init__`. Zero and negative notional/fixed_rate are
     valid (see module docstring); only non-finite values are rejected."""
-    if notional != notional or notional in (float("inf"), float("-inf")):
+    if not math.isfinite(notional):
         raise ValueError(f"notional must be finite; got {notional}")
-    if fixed_rate != fixed_rate or fixed_rate in (float("inf"), float("-inf")):
+    if not math.isfinite(fixed_rate):
         raise ValueError(f"fixed_rate must be finite; got {fixed_rate}")
+
+
+def _validate_hw_sigma(hw_sigma) -> None:
+    """Every value of a flat `hw_sigma` or a piecewise `Sigma` must be
+    finite. `None` is accepted: it is the "calibrate me" sentinel on the
+    Bermudan/American configs, filled in by `price_portfolio`."""
+    if hw_sigma is None:
+        return
+    values = hw_sigma.values if hasattr(hw_sigma, "values") else [hw_sigma]
+    if not np.all(np.isfinite(np.asarray(values, dtype=np.float64))):
+        raise ValueError(f"hw_sigma must be finite; got {hw_sigma}")
 
 
 def _validate_tenor(period_str: str, field_name: str) -> None:

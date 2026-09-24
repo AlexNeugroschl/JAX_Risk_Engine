@@ -31,11 +31,19 @@ code changes.
 
 ## Verification status
 
-Last full verification (2026-09-23, after the I-30 fix): **1,960 passed, 0 failed**
-(19m29s) — the complete suite (`.venv/Scripts/python.exe -m pytest tests/ --durations=25`),
+Last full verification (2026-09-24, after the I-11/I-28 fixes): **1,966 passed, 0 failed**
+(25m12s) — the complete suite (`.venv/Scripts/python.exe -m pytest tests/ --durations=25`),
 nothing excluded, summary line printed, exit code 0, zero `FAILED`/`ERROR` lines. The
-count reconciles against the 1,897 below, per file against `HEAD` (`--collect-only` in a
-separate worktree):
+count reconciles against the 1,960 below: +6 from the new
+`tests/test_risk_measure_label.py` (5 for [I-11](#i-11), 1 for [I-28](#i-28)), and no other
+file changed. Slowest test 58.3s
+(`test_all_four_instrument_types_each_represented_multiple_times`, 41–42s in the two runs
+before). No single test explains the extra six minutes of wall clock; record it and watch
+the next run rather than read anything into one.
+
+The run before it (2026-09-23, after the I-30 fix): **1,960 passed, 0 failed**
+(19m29s), under the same conditions. That count reconciles against the 1,897 below, per file
+against `HEAD` (`--collect-only` in a separate worktree):
 
 | Δ | Source |
 |---:|---|

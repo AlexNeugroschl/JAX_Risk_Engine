@@ -106,7 +106,7 @@ import jax.numpy as jnp
 import numpy as np
 import ORE
 
-from engine.instruments.swap import SwapConfig, _price_one_swap, prepare_swap
+from engine.instruments.swap import SwapConfig, _build_ore_swap, _price_one_swap, prepare_swap
 from engine.instruments.european_swaption import (
     SwaptionConfig,
     _bond_call,
@@ -125,7 +125,6 @@ from engine.instruments.bermudan_swaption import (
 from engine.models.ore_builders import (  # noqa: F401  (DAY_COUNTER is a re-export)
     DAY_COUNTER,
     TIME_AXIS_DAY_COUNTER,
-    build_vanilla_swap,
     fixed_leg_cashflows,
     floating_leg_cashflows,
 )
@@ -267,17 +266,11 @@ def _swap_price_fn(cfg: SwapConfig, disc_curve: ZeroCurve, fwd_curve: ZeroCurve)
     constraint to satisfy here, since the yield-curve tensor is built
     fresh (via interpolation, not lookup) for exactly the dates this one
     trade needs."""
-    local_cfg = SwapConfig(
-        notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
-        discount_curve_index=0, forward_curve_index=1,
-        swap_tenor=cfg.swap_tenor, index_tenor_months=cfg.index_tenor_months,
-        floating_spread=cfg.floating_spread, evaluation_date=cfg.evaluation_date,
-    )
-    swap = build_vanilla_swap(
-        notional=local_cfg.notional, fixed_rate=local_cfg.fixed_rate, payer=local_cfg.payer,
-        swap_tenor=local_cfg.swap_tenor, index_tenor_months=local_cfg.index_tenor_months,
-        floating_spread=local_cfg.floating_spread, evaluation_date=local_cfg.evaluation_date,
-    )
+    # `dataclasses.replace`, not a hand-copied constructor call: a copy that
+    # lists fields explicitly silently drops any it forgets, which is how
+    # `accrual_day_count` used to fall back to ACT/365 on this path.
+    local_cfg = dataclasses.replace(cfg, discount_curve_index=0, forward_curve_index=1)
+    swap = _build_ore_swap(local_cfg)
     today = local_cfg.evaluation_date
     fixed = fixed_leg_cashflows(swap, today)
     floating = floating_leg_cashflows(swap, today)
@@ -395,55 +388,59 @@ def swap_theta(
     base_npv = float(jax.jit(base_price_fn)(disc_curve.pillar_rates, fwd_curve.pillar_rates))
 
     theta_date = ORE.TARGET().advance(cfg.evaluation_date, theta_days, ORE.Days)
-    theta_cfg = SwapConfig(
-        notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
-        discount_curve_index=cfg.discount_curve_index, forward_curve_index=cfg.forward_curve_index,
-        swap_tenor=cfg.swap_tenor, index_tenor_months=cfg.index_tenor_months,
-        floating_spread=cfg.floating_spread, evaluation_date=theta_date,
-    )
+    theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date)
     theta_price_fn = _swap_price_fn(theta_cfg, disc_curve, fwd_curve)
     theta_npv = float(jax.jit(theta_price_fn)(disc_curve.pillar_rates, fwd_curve.pillar_rates))
 
-    period_flow = _swap_cashflows_in_period(cfg, cfg.evaluation_date, theta_date)
+    period_flow = _swap_cashflows_in_period(cfg, cfg.evaluation_date, theta_date, fwd_curve)
 
     return theta_npv - base_npv + period_flow
 
 
-def _swap_cashflows_in_period(cfg: SwapConfig, start: ORE.Date, end: ORE.Date) -> float:
-    """Sums every fixed/floating cashflow (signed per cfg.payer, matching
+def _swap_cashflows_in_period(cfg: SwapConfig, start: ORE.Date, end: ORE.Date, fwd_curve: ZeroCurve) -> float:
+    """Sums every fixed and floating cashflow (signed per cfg.payer, matching
     _price_one_swap's own payer-negation convention) whose payment date
     falls in `(start, end]` -- ORE's own `aggregateTradeFlow` step in
     `SensitivityAnalysis::generateSensitivities`
     (`OREAnalytics/orea/engine/sensitivityanalysis.cpp`), which prevents a
     coupon paid during the Theta horizon from being misattributed as a
-    pure valuation loss. This module doesn't yet simulate what the
-    floating leg's rate WOULD be over (start, end] (a fixing that hasn't
-    happened yet as of `start`), so this only sums the FIXED leg's
-    cashflows in the window -- documented, not silent: a floating payment
-    landing inside a Theta window this short (the default is 1 day) is
-    the overwhelmingly common case where this simplification is exact
-    anyway, since a swap's floating leg pays only on its own (typically
-    monthly-or-longer) reset dates, essentially never within a single
-    day of `start`."""
-    ORE.Settings.instance().evaluationDate = cfg.evaluation_date
-    swap = build_vanilla_swap(
-        notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
-        swap_tenor=cfg.swap_tenor, index_tenor_months=cfg.index_tenor_months,
-        floating_spread=cfg.floating_spread, evaluation_date=cfg.evaluation_date,
-    )
+    pure valuation loss.
+
+    A floating coupon's amount is projected off `fwd_curve` exactly as
+    `_price_one_swap` projects it for the base NPV, so the flow added back
+    is the same amount the base valuation contained. Both legs must be
+    included: on a date where both pay, adding back only the fixed coupon
+    turns the floating coupon's disappearance from the NPV into a spurious
+    theta of roughly its full size."""
+    swap = _build_ore_swap(cfg)
     fixed = fixed_leg_cashflows(swap, cfg.evaluation_date)
+    floating = floating_leg_cashflows(swap, cfg.evaluation_date)
 
     start_frac = TIME_AXIS_DAY_COUNTER.yearFraction(cfg.evaluation_date, start)
     end_frac = TIME_AXIS_DAY_COUNTER.yearFraction(cfg.evaluation_date, end)
-    in_window = (fixed.payment_times > start_frac) & (fixed.payment_times <= end_frac)
+
+    def in_window(times):
+        return (times > start_frac) & (times <= end_frac)
+
     fixed_flow = float(np.sum(
-        in_window * fixed.notional * cfg.fixed_rate * fixed.accrual_fractions
+        in_window(fixed.payment_times) * fixed.notional * cfg.fixed_rate * fixed.accrual_fractions
     ))
-    # Fixed leg is PAID by a payer, so it's a cash outflow (negative to the
-    # payer's own NPV convention) -- matches _price_one_swap's
-    # `npv = float_leg_pv - fixed_leg_pv` sign, negated again for payer=False.
-    signed_flow = -fixed_flow if cfg.payer else fixed_flow
-    return signed_flow
+
+    float_mask = in_window(floating.payment_times)
+    float_flow = 0.0
+    if np.any(float_mask):
+        p_start = np.asarray(_discount_at(fwd_curve, jnp.asarray(floating.accrual_start_times[float_mask])), dtype=np.float64)
+        p_end = np.asarray(_discount_at(fwd_curve, jnp.asarray(floating.accrual_end_times[float_mask])), dtype=np.float64)
+        accrual = floating.accrual_fractions[float_mask]
+        # notional * (F + spread) * accrual, with F = (P_start/P_end - 1) / accrual.
+        float_flow = float(np.sum(
+            floating.notional * ((p_start / p_end - 1.0) + cfg.floating_spread * accrual)
+        ))
+
+    # Same sign convention as _price_one_swap: npv = float_leg - fixed_leg,
+    # negated for a receiver.
+    net = float_flow - fixed_flow
+    return net if cfg.payer else -net
 
 
 # =============================================================================
@@ -804,10 +801,12 @@ def bermudan_vega(
 
     sigma = as_sigma(cfg.hw_sigma)
     n = sigma.values.shape[0]
-    assert n == len(calibration_targets), (
-        "cfg.hw_sigma must be the Sigma calibrate_lgm_sigma produced from "
-        "calibration_targets, with one bucket per target"
-    )
+    if n != len(calibration_targets):
+        raise ValueError(
+            "cfg.hw_sigma must be the Sigma calibrate_lgm_sigma produced from "
+            f"calibration_targets, with one bucket per target; got {n} buckets "
+            f"for {len(calibration_targets)} targets"
+        )
 
     price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
     d_npv_d_s = jax.jit(jax.grad(price_fn, argnums=1))(curve.pillar_rates, sigma_values)  # [n]

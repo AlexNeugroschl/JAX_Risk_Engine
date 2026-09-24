@@ -42,3 +42,8 @@ profiling = [
 
 [tool.setuptools.packages.find]
 include = ["engine*"]
+
+[tool.pytest.ini_options]
+# `reference/` holds the ORE and TraderX submodules, with their own test
+# trees; a bare `pytest` from the repo root must not wander into them.
+testpaths = ["tests"]

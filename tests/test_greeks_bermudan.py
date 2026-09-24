@@ -220,7 +220,7 @@ class TestBermudanVega:
             zero_curve=FLAT_CURVE, evaluation_date=TODAY,
         )
         cfg = _cfg(hw_sigma=0.01, exercise_years=exercise_times)  # flat sigma, 1 bucket
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError):
             bermudan_vega(cfg, FLAT_CURVE, targets)  # targets has 4 instruments
 
 

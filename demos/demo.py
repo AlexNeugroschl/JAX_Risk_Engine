@@ -14,7 +14,7 @@ engine/simulation/demo_scenarios.py was created to avoid for shared example
 configs -- see docs/reference/portfolio-entrypoint.md for what happens
 "under the hood" of the one call below.
 
-Run with: .venv/Scripts/python.exe demo.py
+Run with: .venv/Scripts/python.exe demos/demo.py
 """
 import numpy as np
 import ORE
@@ -160,13 +160,18 @@ if result.warnings:
 # =============================================================================
 section("Risk aggregation")
 
-print("  time   " + "".join(f"{m:>12}" for m in result.risk))
+# Column labels drop the "ES_" prefix on the diagnostics so every label fits
+# its column: "95_tailCount" is ES_95's tail count, "95_standardError" its
+# Monte Carlo standard error.
+labels = {m: m.replace("ES_", "", 1) if m.count("_") > 1 else m for m in result.risk}
+width = max(12, max(len(label) for label in labels.values()) + 2)
+print("  time  " + "".join(f"{labels[m]:>{width}}" for m in result.risk))
 for i, t in enumerate(TIME_GRID[1:]):
     row = "".join(
-        f"{float(result.risk[m][i]):>12,.0f}" if not np.isnan(float(result.risk[m][i])) else f"{'nan':>12}"
+        f"{float(result.risk[m][i]):>{width},.0f}" if not np.isnan(float(result.risk[m][i])) else f"{'nan':>{width}}"
         for m in result.risk
     )
-    print(f"  {t:>4.2f}  " + row)
+    print(f"  {t:>4.2f}" + row)
 print("(nan = the loss tail was empty at that step, matching ORE's own edge case)")
 
 

@@ -40,7 +40,7 @@ from engine.instruments.bermudan_swaption import ExerciseStyle, price_bermudan_s
 from engine.models.lgm import Sigma
 from engine.models.ore_builders import time_from_reference
 from engine.simulation.market_model import ZeroCurveConfig
-from engine.portfolio.validation import _validate_common_fields, _validate_tenor
+from engine.portfolio.validation import _validate_common_fields, _validate_hw_sigma, _validate_tenor
 
 
 @dataclass
@@ -94,10 +94,7 @@ class AmericanSwaptionConfig:
         _validate_tenor(self.swap_tenor, "swap_tenor")
         # None is a valid sentinel meaning "uncalibrated" -- see
         # BermudanSwaptionConfig.__post_init__'s identical handling.
-        if self.hw_sigma is not None:
-            sigma_values = self.hw_sigma.values if isinstance(self.hw_sigma, Sigma) else [self.hw_sigma]
-            if any(v != v or v in (float("inf"), float("-inf")) for v in np.asarray(sigma_values, dtype=np.float64).tolist()):
-                raise ValueError(f"hw_sigma must be finite; got {self.hw_sigma}")
+        _validate_hw_sigma(self.hw_sigma)
         for name in ("first_exercise_date", "last_exercise_date"):
             if not isinstance(getattr(self, name), ORE.Date):
                 raise TypeError(f"{name} must be an ORE.Date; got {getattr(self, name)!r}")

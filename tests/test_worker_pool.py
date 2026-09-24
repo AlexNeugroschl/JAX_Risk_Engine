@@ -280,3 +280,33 @@ class TestWorkerPoolConcurrency:
             f"two {JOB_SECONDS}s jobs on distinct workers did not overlap in "
             f"wall-clock time: [{start_1}, {end_1}] vs [{start_2}, {end_2}]"
         )
+
+
+class TestTradeFreezingRoundTrip:
+    """`_freeze_trade` must make every trade config picklable, including
+    ORE values nested inside another dataclass. A coupon bond's
+    `CouponPeriod`s hold `ORE.Date`s (unpicklable SWIG objects), and before
+    nested dataclasses were frozen, submitting one to the pool failed."""
+
+    def test_coupon_bond_survives_pickling(self):
+        import pickle
+
+        import ORE
+
+        from engine.instruments.treasury import BondConfig, CouponPeriod
+        from engine.portfolio.worker_pool import _freeze_trade, _thaw_trade
+        from engine.simulation.market_model import ZeroCurveConfig
+
+        bond = BondConfig(
+            face_amount=100_000.0,
+            maturity_date=ORE.Date(1, 1, 2028),
+            evaluation_date=ORE.Date(1, 1, 2026),
+            initial_zero_curve=ZeroCurveConfig(times=[0.0, 1.0, 5.0], rates=[0.03, 0.03, 0.03]),
+            coupon_rate=0.04,
+            coupon_schedule=(
+                CouponPeriod(ORE.Date(1, 1, 2026), ORE.Date(1, 1, 2027)),
+                CouponPeriod(ORE.Date(1, 1, 2027), ORE.Date(1, 1, 2028)),
+            ),
+        )
+        restored = _thaw_trade(pickle.loads(pickle.dumps(_freeze_trade(bond))))
+        assert restored == bond

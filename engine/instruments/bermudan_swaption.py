@@ -82,7 +82,7 @@ from engine.models.ore_builders import (  # noqa: F401  (DAY_COUNTER is a re-exp
     build_vanilla_swap,
     time_from_reference,
 )
-from engine.portfolio.validation import _validate_common_fields, _validate_tenor
+from engine.portfolio.validation import _validate_common_fields, _validate_hw_sigma, _validate_tenor
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from engine.models.lgm import (
     H as _H,
@@ -188,10 +188,7 @@ class BermudanSwaptionConfig:
         # bare BermudanSwaptionConfig(hw_sigma=None) constructed outside
         # that flow is likewise valid to build (just not directly priceable
         # until hw_sigma is filled in).
-        if self.hw_sigma is not None:
-            sigma_values = self.hw_sigma.values if isinstance(self.hw_sigma, Sigma) else [self.hw_sigma]
-            if any(v != v or v in (float("inf"), float("-inf")) for v in np.asarray(sigma_values, dtype=np.float64).tolist()):
-                raise ValueError(f"hw_sigma must be finite; got {self.hw_sigma}")
+        _validate_hw_sigma(self.hw_sigma)
         if len(self.exercise_dates) == 0:
             raise ValueError("exercise_dates must be non-empty")
         if any(not isinstance(d, ORE.Date) for d in self.exercise_dates):

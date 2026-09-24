@@ -18,16 +18,23 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Dict, List, Optional
 
-from engine.models.hull_white import A as _hw_A, B as _hw_B, ZeroCurve as _HwZeroCurve
+from engine.models.hull_white import (
+    A as _hw_A, B as _hw_B, ZeroCurve as _HwZeroCurve, log_discount as _hw_log_discount,
+)
 
 # =============================================================================
 # PHASE 1: QUASI-MONTE CARLO (CPU -> GPU)
 # =============================================================================
-def generate_sobol_normals(num_scenarios: int, num_steps: int, num_assets: int, dtype) -> jax.Array:
+def generate_sobol_normals(num_scenarios: int, num_steps: int, num_assets: int, dtype, seed: int = 42) -> jax.Array:
     """
     CPU: Generates Sobol sequences.
     GPU: Converts to Normal shocks.
     Returns: [TimeSteps, Scenarios, Assets]
+
+    `seed` selects the Owen scrambling of the Sobol sequence. The same seed
+    always reproduces the same draw; different seeds give statistically
+    independent randomized-QMC replicates, which is what a Monte Carlo
+    error estimate across runs needs.
 
     `dtype` is always honored on output, regardless of the ambient global
     jax_enable_x64 state: jax.scipy.stats.norm.ppf computes internally in
@@ -38,7 +45,7 @@ def generate_sobol_normals(num_scenarios: int, num_steps: int, num_assets: int, 
     total_dimensions = num_steps * num_assets
 
     # Scramble adds necessary randomness to the deterministic Sobol points
-    sobol_engine = Sobol(d=total_dimensions, scramble=True, seed=42)
+    sobol_engine = Sobol(d=total_dimensions, scramble=True, seed=seed)
     uniform_draws = sobol_engine.random(n=num_scenarios)
 
     # Transfer to JAX and convert to standard normals. The JAX half is
@@ -281,8 +288,7 @@ def _initial_log_discount(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.
     in exactly one place (`engine/models/hull_white.py`), not re-derived
     here."""
     curve = _HwZeroCurve(pillar_times=jnp.asarray(zero_times), pillar_rates=jnp.asarray(zero_rates))
-    from engine.models.hull_white import log_discount
-    return np.asarray(log_discount(curve, jnp.asarray(t)))
+    return np.asarray(_hw_log_discount(curve, jnp.asarray(t)))
 
 
 def compute_hw_A_matrix(
@@ -517,12 +523,14 @@ class SimulationConfig:
     time_grid: absolute times, ascending, starting at 0.0.
     joint_covariance: [NumEq+NumHW, NumEq+NumHW], equities first then rates,
         in the same order as equities.initial_prices / rates.initial_rates.
+    seed: Sobol scrambling seed (see `generate_sobol_normals`).
     """
     time_grid: List[float]
     equities: EquityConfig
     rates: RatesConfig
     joint_covariance: List[List[float]]
     scenarios: int = 10000
+    seed: int = 42
 
 
 def generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, jax.Array]:
@@ -683,7 +691,7 @@ def _generate_paths_inner(config: SimulationConfig, precision: int) -> Dict[str,
     hw_sigma_t = joint_sigma_t[:, num_eq:]
 
     # 5. Core Simulation Pipeline
-    Z_sobol = generate_sobol_normals(num_scenarios, num_steps, num_eq + num_hw, dtype)
+    Z_sobol = generate_sobol_normals(num_scenarios, num_steps, num_eq + num_hw, dtype, seed=config.seed)
     Z_bridged = apply_brownian_bridge(Z_sobol, time_grid)
 
     eq_paths, hw_paths, numeraire_paths = _simulate_cross_asset_paths_jit(

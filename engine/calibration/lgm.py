@@ -73,8 +73,13 @@ class CalibrationResult:
     rmse: float                   # sqrt(mean((model-market)^2)), ORE's own `error_` metric
 
 
+#: The search bracket for one bucket's sigma: [1bp, 2000bp] annual vol.
+_SIGMA_BRACKET = (1e-6, 0.20)
+
+
 def _bisect_bucket_sigma(
-    price_fn, market_price: float, lo: float = 1e-6, hi: float = 0.20, iterations: int = 60,
+    price_fn, market_price: float, lo: float = _SIGMA_BRACKET[0], hi: float = _SIGMA_BRACKET[1],
+    iterations: int = 60,
 ) -> jax.Array:
     """Scalar bisection for one bucket's sigma value: `price_fn(sigma) ==
     market_price`. `price_fn` is strictly increasing in `sigma` (a
@@ -84,7 +89,8 @@ def _bisect_bucket_sigma(
     `european_swaption._bisect_rstar`) since a piecewise LGM sigma bucket
     calibrating outside a 0.01%-20% annual vol range indicates a
     misconfigured basket (e.g. a market vol far outside typical rates
-    levels), not a case this bootstrap should silently paper over."""
+    levels), not a case this bootstrap should silently paper over --
+    `calibrate_lgm_sigma` raises when the result lands on the ceiling."""
     lo_arr, hi_arr = jnp.array(lo), jnp.array(hi)
 
     def body(carry, _):
@@ -135,9 +141,11 @@ def calibrate_lgm_sigma(
     .calibration` can control this bootstrap's working precision by simply
     handing it a differently-dtyped `curve`.
     """
-    assert len(targets) >= 1, "calibrate_lgm_sigma requires at least one basket instrument"
+    if len(targets) < 1:
+        raise ValueError("calibrate_lgm_sigma requires at least one basket instrument")
     expiries = sorted(t.expiry_time for t in targets)
-    assert expiries == [t.expiry_time for t in targets], "targets must be supplied in increasing expiry order"
+    if expiries != [t.expiry_time for t in targets]:
+        raise ValueError("targets must be supplied in increasing expiry order")
 
     dtype = curve.pillar_rates.dtype
     bucket_times: List[float] = []       # interior breakpoints calibrated so far
@@ -172,6 +180,21 @@ def calibrate_lgm_sigma(
 
         market_price = float(_jit_over_target(bachelier_swaption_price, target)())
         new_value = float(_bisect_bucket_sigma(price_fn, market_price))
+        # Bisection cannot fail, only saturate. Saturating at the CEILING
+        # means the market vol is out of range, and returning 2000bp as the
+        # calibrated sigma would be silently wrong, so it is refused.
+        # Saturating at the FLOOR is different: it is the structural limit
+        # of a bootstrap on a spike-then-dip vol curve (earlier buckets have
+        # already locked in too much variance), handled gracefully and
+        # reported through `rmse` -- see test_calibration_edge_cases.py's
+        # test_large_dip_after_a_spike_cannot_reprice_exactly.
+        if new_value >= _SIGMA_BRACKET[1] * (1.0 - 1e-9):
+            raise ValueError(
+                f"calibration target {i} (expiry t={target.expiry_time}, market_vol="
+                f"{target.market_vol}) is not attainable with a bucket sigma in "
+                f"{list(_SIGMA_BRACKET)}; the bisection converged onto the bracket bound "
+                f"{new_value}. Check the market vol and the basket."
+            )
 
         bucket_values.append(new_value)
         if i < len(targets) - 1:

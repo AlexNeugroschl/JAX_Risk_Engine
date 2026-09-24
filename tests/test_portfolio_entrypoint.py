@@ -685,3 +685,25 @@ class TestPricePortfolioConcurrency:
                 result_b.base_npv, ref_b.base_npv, rtol=1e-3,
                 err_msg=f"rep {rep}: thread B's base_npv diverged from the sequential reference",
             )
+
+
+class TestSingleEvaluationDate:
+    """The simulation has one t=0; a trade dated differently would be
+    priced on a shifted time axis. Refused before any pricing runs."""
+
+    def test_mixed_evaluation_dates_are_refused(self):
+        import dataclasses
+
+        from engine.portfolio import validate_portfolio_against_simulation
+
+        trades = _build_trades()
+        shifted = dataclasses.replace(trades[1], evaluation_date=trades[1].evaluation_date + 1)
+        mixed = [trades[0], shifted] + list(trades[2:])
+        with pytest.raises(ValueError, match="one evaluation_date"):
+            validate_portfolio_against_simulation(_sim_config(trades), mixed)
+
+    def test_shared_evaluation_date_is_accepted(self):
+        from engine.portfolio import validate_portfolio_against_simulation
+
+        trades = _build_trades()
+        validate_portfolio_against_simulation(_sim_config(trades), trades)

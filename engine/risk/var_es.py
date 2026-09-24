@@ -238,13 +238,6 @@ def _es_standard_error_jit(pnl: jax.Array, percentile: float) -> jax.Array:
     # override, since this function's output dtype IS how that override is
     # observed. Every other statistic here inherits the input dtype by
     # construction; this one has to be told.
-    # **Every intermediate stays in the P&L's own dtype.** `count` is
-    # integer, and integer arithmetic (or an untyped literal) inside the
-    # expression below promotes the whole result to float64 under
-    # jax_enable_x64 -- which silently defeats a float32 `var_es` precision
-    # override, since this function's output dtype IS how that override is
-    # observed. Every other statistic here inherits the input dtype by
-    # construction; this one has to be told.
     dtype = population_std.dtype
     safe_count = jnp.maximum(count, 2).astype(dtype)  # guards n<2; masked out below
     one = jnp.asarray(1, dtype=dtype)

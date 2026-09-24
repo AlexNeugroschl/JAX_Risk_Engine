@@ -115,6 +115,9 @@ counterparts live at the integration boundary
 
 ## Planning
 
+- **[Engine Audit](planning/engine-audit.md)** — open problems from the 2026-09-24 audit of
+  the internal engine, tests and demos, ranked by urgency and ease of fixing. Read with the
+  Known Issues register: several findings correct or extend its entries.
 - **[Roadmap](planning/roadmap-and-history.md)** — the phased build-out plan and what's
   done vs. planned.
 - **[Basel III Compliance Plan](planning/basel-iii-compliance-plan.md)** — what conformance

@@ -19,7 +19,7 @@ terminal).
 See docs/reference/http-api.md for the full endpoint reference and the
 async job pattern's reasoning (why this polls instead of blocking).
 
-Run with: .venv/Scripts/python.exe demo_api.py
+Run with: .venv/Scripts/python.exe demos/demo_api.py
 """
 import os
 import subprocess

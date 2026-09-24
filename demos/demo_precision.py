@@ -74,10 +74,9 @@ from engine.simulation.market_model import (
     _simulate_cross_asset_paths_jit,
     apply_brownian_bridge,
     compute_hw_A_matrix,
+    generate_sobol_normals,
     reconstruct_yield_curves,
 )
-from jax.scipy.stats import norm
-from scipy.stats.qmc import Sobol
 
 
 def section(title: str) -> None:
@@ -202,29 +201,15 @@ print(f"ORE.DiscountingSwapEngine t=0 portfolio NPV: {ore_base:,.2f}")
 # run ONCE per simulation, not per path; everything that runs per path or per
 # scenario is genuinely at `dtype`.
 # =============================================================================
-def _sobol_normals(seed, num_steps):
-    """`generate_sobol_normals` with the Sobol seed exposed.
-
-    The engine's own function hardcodes seed=42 (it has no reason to vary
-    it). This demo needs a second and third seed to measure how much the
-    VaR/ES estimate moves from RESAMPLING alone -- the yardstick the whole
-    comparison rests on. Same construction otherwise: scrambled Sobol,
-    clipped away from 0/1, inverse-CDF to normals in float64, reshaped to
-    [TimeSteps, Scenarios, Factors].
-    """
-    engine = Sobol(d=num_steps * 2, scramble=True, seed=seed)
-    uniforms = np.clip(engine.random(n=SCENARIOS), 1e-10, 1 - 1e-10)
-    normals = np.asarray(norm.ppf(jnp.asarray(uniforms, dtype=jnp.float64)))
-    return jnp.asarray(normals.reshape(SCENARIOS, num_steps, 2).transpose(1, 0, 2))
-
-
 def simulate_and_price(dtype, seed=42):
     num_steps = len(TIME_GRID) - 1
     time_grid_64 = jnp.array(TIME_GRID, dtype=jnp.float64)
 
     # --- setup, float64 (no float16 kernel for norm.ppf / cholesky) ---
-    # seed=42 reproduces generate_sobol_normals' own draw exactly.
-    Z = _sobol_normals(seed, num_steps)
+    # Varying `seed` measures how much VaR/ES moves from resampling alone --
+    # the yardstick the whole comparison rests on. seed=42 is the engine's
+    # default draw.
+    Z = generate_sobol_normals(SCENARIOS, num_steps, 2, jnp.float64, seed=seed)
     Z_bridged = apply_brownian_bridge(Z, time_grid_64).astype(dtype)
 
     sigma = np.sqrt(np.diag(JOINT_COVARIANCE))

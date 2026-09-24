@@ -98,9 +98,9 @@ class TestSubYearAndFractionalTenors:
     def test_gap_that_rounds_to_zero_months_raises(self):
         """An exercise time landing within half a month of the final
         maturity rounds to a ZERO-length underlying swap -- must raise
-        clearly (an AssertionError from the tenor_months>0 guard), not
+        clearly (a ValueError from the tenor_months>0 guard), not
         silently build a garbage 0M swap the way the pre-fix code did."""
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError):
             build_coterminal_basket(
                 exercise_times=[4.999], final_maturity_time=5.0,
                 notional=1_000_000.0, payer=True, market_vols=[0.01],

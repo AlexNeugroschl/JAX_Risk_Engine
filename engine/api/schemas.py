@@ -102,12 +102,13 @@ class SimulationConfigSchema(BaseModel):
     rates: RatesConfigSchema
     joint_covariance: List[List[float]]
     scenarios: int = 10000
+    seed: int = 42
 
     def to_dataclass(self) -> SimulationConfig:
         return SimulationConfig(
             time_grid=self.time_grid, equities=self.equities.to_dataclass(),
             rates=self.rates.to_dataclass(), joint_covariance=self.joint_covariance,
-            scenarios=self.scenarios,
+            scenarios=self.scenarios, seed=self.seed,
         )
 
 

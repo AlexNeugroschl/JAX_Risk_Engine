@@ -302,4 +302,7 @@ if __name__ == "__main__":
 
     npv_cube = price_swaps(market_cubes["yield_curves"], SWAP_DEMO_MATURITIES, [swap_cfg])
     print("NPV cube shape:", npv_cube.shape)
-    print("Mean t=0 NPV across scenarios:", float(jnp.mean(npv_cube[:, 0, 0])))
+    # The cube's time axis is time_grid[1:] -- index 0 is the first simulated
+    # step, not t=0.
+    first_step = single_currency_swap_demo_config().time_grid[1]
+    print(f"Mean NPV across scenarios at t={first_step}:", float(jnp.mean(npv_cube[:, 0, 0])))

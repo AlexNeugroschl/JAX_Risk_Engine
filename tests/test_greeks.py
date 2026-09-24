@@ -758,3 +758,53 @@ class TestGreeksPrecisionDtype:
         )
         theta = swaption_theta(cfg, curve)
         assert np.isfinite(theta)
+
+
+class TestSwapGreeksHonourTheTradesOwnConventions:
+    """`_swap_price_fn` and `swap_theta` used to rebuild the SwapConfig
+    field by field and dropped `accrual_day_count`, so an ACT/ACT swap's
+    Greeks were computed on ACT/365 coupons."""
+
+    def _cfg(self, **overrides):
+        fields = dict(
+            notional=1_000_000.0, fixed_rate=0.032, payer=True,
+            discount_curve_index=0, forward_curve_index=1,
+            swap_tenor="5Y", evaluation_date=TODAY,
+        )
+        fields.update(overrides)
+        return SwapConfig(**fields)
+
+    def test_parallel_discount_delta_matches_bumped_reprice(self):
+        from engine.instruments.swap import price_swaps
+        from engine.portfolio.request import _flat_curve_cube, derive_maturity_pillars
+
+        cfg = self._cfg(accrual_day_count="ACT/ACT (ICMA)")
+        pillars = np.asarray(derive_maturity_pillars([cfg], TODAY))
+
+        def npv(disc_shift):
+            disc = ZeroCurveConfig(times=PILLAR_TIMES, rates=[0.03 + disc_shift] * len(PILLAR_TIMES))
+            fwd = ZeroCurveConfig(times=PILLAR_TIMES, rates=[0.035] * len(PILLAR_TIMES))
+            return float(price_swaps(_flat_curve_cube(disc, fwd, pillars, TODAY), pillars, [cfg])[0, 0, 0])
+
+        bumped = (npv(DEFAULT_RATE_BUMP) - npv(-DEFAULT_RATE_BUMP)) / 2.0
+        greeks = swap_delta_gamma(cfg, ZeroCurve.flat(0.03, PILLAR_TIMES), ZeroCurve.flat(0.035, PILLAR_TIMES))
+        assert float(jnp.sum(greeks["discount_delta"])) == pytest.approx(bumped, rel=1e-6)
+
+    def test_theta_period_flow_includes_floating_coupons(self):
+        """A floating coupon paid inside the theta window is added back
+        just like a fixed one. With a 1Y fixed / 6M floating schedule, the
+        window up to the first floating payment holds that coupon only."""
+        from engine.instruments.swap import _build_ore_swap
+        from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
+        from engine.risk.greeks import _swap_cashflows_in_period
+
+        cfg = self._cfg()
+        coupon = ORE.as_floating_rate_coupon(_build_ore_swap(cfg).floatingLeg()[0])
+        fwd_curve = ZeroCurve.flat(0.035, PILLAR_TIMES)
+
+        flow = _swap_cashflows_in_period(cfg, TODAY, coupon.date(), fwd_curve)
+
+        t_start = TIME_AXIS_DAY_COUNTER.yearFraction(TODAY, coupon.accrualStartDate())
+        t_end = TIME_AXIS_DAY_COUNTER.yearFraction(TODAY, coupon.accrualEndDate())
+        expected = cfg.notional * (np.exp(-0.035 * t_start) / np.exp(-0.035 * t_end) - 1.0)
+        assert flow == pytest.approx(expected, rel=1e-10)

@@ -1291,3 +1291,45 @@ class TestCovarianceValidation:
         )
         with pytest.raises(ValueError):
             generate_paths(cfg)
+
+
+class TestSobolSeed:
+    """`SimulationConfig.seed` selects the Sobol scrambling. The default
+    reproduces the engine's historical fixed seed of 42."""
+
+    def test_default_seed_is_42(self, cross_asset_config):
+        default = generate_paths(with_scenarios(cross_asset_config, 256))["rates"]
+        explicit = generate_paths(dataclasses.replace(with_scenarios(cross_asset_config, 256), seed=42))["rates"]
+        np.testing.assert_array_equal(np.asarray(default), np.asarray(explicit))
+
+    def test_different_seed_gives_different_paths(self, cross_asset_config):
+        a = generate_paths(dataclasses.replace(with_scenarios(cross_asset_config, 256), seed=1))["rates"]
+        b = generate_paths(dataclasses.replace(with_scenarios(cross_asset_config, 256), seed=2))["rates"]
+        assert not np.allclose(np.asarray(a), np.asarray(b))
+
+
+class TestForwardRatePrecision:
+    """`hull_white.forward_rate` used a 1e-6 forward finite difference on
+    ln P(0,t). In float32 that is pure cancellation noise -- forward rates
+    came out wrong by up to ~2 percentage points."""
+
+    TIMES = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
+    RATES = [0.03, 0.031, 0.032, 0.035, 0.037, 0.04]
+
+    def _exact(self, t):
+        # f = z + t*z' for a linearly interpolated zero curve; the right-hand
+        # segment's slope at a pillar, 0 outside the pillars.
+        times, rates = np.asarray(self.TIMES), np.asarray(self.RATES)
+        slopes = np.diff(rates) / np.diff(times)
+        idx = np.clip(np.searchsorted(times, t, side="right") - 1, 0, len(slopes) - 1)
+        slope = np.where((t >= times[0]) & (t < times[-1]), slopes[idx], 0.0)
+        return np.interp(t, times, rates) + t * slope
+
+    @pytest.mark.parametrize("dtype, atol", [(jnp.float64, 1e-12), (jnp.float32, 1e-6)])
+    def test_matches_exact_derivative(self, dtype, atol):
+        from engine.models.hull_white import ZeroCurve, forward_rate
+
+        t = np.array([0.0, 0.5, 1.0, 1.5, 3.0, 4.5, 7.0, 9.5, 30.0, 40.0])
+        curve = ZeroCurve(jnp.asarray(self.TIMES, dtype=dtype), jnp.asarray(self.RATES, dtype=dtype))
+        got = np.asarray(forward_rate(curve, jnp.asarray(t, dtype=dtype)), dtype=np.float64)
+        np.testing.assert_allclose(got, self._exact(t), atol=atol, rtol=0)

@@ -131,12 +131,30 @@ def discount(curve: ZeroCurve, t: jax.Array) -> jax.Array:
     return jnp.exp(log_discount(curve, t))
 
 
-def forward_rate(curve: ZeroCurve, t: jax.Array, eps: float = 1e-6) -> jax.Array:
-    """f(0,t) = -d/dt ln P(0,t), today's instantaneous forward rate at t,
-    via central-difference-free forward finite difference (matching every
-    prior implementation's own `eps=1e-6` convention exactly, for bit-
-    identical output to the NumPy versions this replaces)."""
-    return -(log_discount(curve, t + eps) - log_discount(curve, t)) / eps
+def forward_rate(curve: ZeroCurve, t: jax.Array) -> jax.Array:
+    """f(0,t) = -d/dt ln P(0,t) = z(t) + t*z'(t), today's instantaneous
+    forward rate at t, computed exactly from the linear zero-rate
+    interpolant rather than by finite difference.
+
+    `z'(t)` is the slope of the segment to the RIGHT of `t` (so a pillar
+    time takes the slope of the segment it starts), and 0 in the flat
+    extrapolation regions -- the same one-sided limit the forward finite
+    difference this replaced converged to.
+
+    The finite difference (`eps=1e-6` on `ln P`) differed from this by
+    `slope*eps`, about 1e-9, in float64, but in float32 it was cancellation
+    noise: `ln P` carries ~1e-8 absolute error, so dividing by 1e-6 gave
+    forward rates off by up to ~2 percentage points. Every float32
+    `A(t,T)`, LGM `r(t,x)` and swaption price inherited that error.
+    """
+    times, rates = curve.pillar_times, curve.pillar_rates
+    num_pillars = times.shape[0]
+    right = jnp.clip(jnp.searchsorted(times, t, side="right"), 1, num_pillars - 1)
+    left = right - 1
+    slope = (rates[right] - rates[left]) / (times[right] - times[left])
+    inside = (t >= times[0]) & (t < times[-1])
+    slope = jnp.where(inside, slope, jnp.zeros_like(slope))
+    return zero_rate(curve, t) + t * slope
 
 
 def B(t: jax.Array, T: jax.Array, a: float) -> jax.Array:

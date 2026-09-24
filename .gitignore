@@ -1,19 +1,20 @@
-/venv
+# Virtual environments
 venv/
-venv
-.pytest_cache__/
-.pytest_cache/
 .venv/
-.venv
 
+# Python / tooling caches and build artifacts
 __pycache__/
-__pycache__
+*.pyc
+.pytest_cache/
+*.egg-info/
 
+# Local agent state
+.claude/
+
+# Engine outputs. Generated cubes and reports are never source.
 *.npy
 *.csv
 *.json
-*.pyc
-.claude/
 
 # ...but the hash-pinned TraderX EOD fixtures are source, not output. The
 # blanket *.csv / *.json rules above would silently swallow them, leaving
@@ -25,13 +26,8 @@ __pycache__
 !tests/fixtures/**/*.csv
 !tests/fixtures/**/*.json
 
-# Build artifact from `pip install -e .` (pyproject.toml editable install)
-*.egg-info/
-
-/reference/
-
 # Profiler traces (JAX_RISK_PROFILE_DIR) -- .profile-out/.profile-out-small are
 # the demos' own defaults; the glob covers ad-hoc dirs from a manual capture.
-.profile-out
-.profile-out-small
-.profile-*/
+.profile-out*/
+
+# reference/ORE and reference/traderX are git submodules (see .gitmodules).

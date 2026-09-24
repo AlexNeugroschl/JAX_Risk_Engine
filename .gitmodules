@@ -1,0 +1,6 @@
+[submodule "reference/ORE"]
+	path = reference/ORE
+	url = https://github.com/OpenSourceRisk/Engine.git
+[submodule "reference/traderX"]
+	path = reference/traderX
+	url = https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX.git

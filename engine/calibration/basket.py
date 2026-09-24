@@ -123,11 +123,16 @@ def build_coterminal_basket(
     surface; `engine/calibration/lgm.py`'s own callers are expected to
     supply real market quotes).
     """
-    assert len(exercise_times) == len(market_vols)
+    if len(exercise_times) != len(market_vols):
+        raise ValueError(
+            f"exercise_times and market_vols must have the same length; got "
+            f"{len(exercise_times)} and {len(market_vols)}"
+        )
     targets = []
     for T0, vol in zip(exercise_times, market_vols):
         tenor_years = final_maturity_time - T0
-        assert tenor_years > 0.0, "co-terminal basket requires every exercise time to precede the final maturity"
+        if tenor_years <= 0.0:
+            raise ValueError("co-terminal basket requires every exercise time to precede the final maturity")
         forward_start_years = T0
         # Whole MONTHS, never a fractional-year string: `ORE.Period(str)`
         # only parses an integer count with a unit -- `ORE.Period("0.75Y")`
@@ -142,10 +147,11 @@ def build_coterminal_basket(
         # any exercise schedule, matching the day-count precision every
         # other period in this codebase is built to.
         tenor_months = int(round(tenor_years * 12))
-        assert tenor_months > 0, (
-            f"co-terminal basket requires a strictly positive whole-month tenor to final "
-            f"maturity; got {tenor_years} years ({tenor_months} months) for exercise time {T0}"
-        )
+        if tenor_months <= 0:
+            raise ValueError(
+                f"co-terminal basket requires a strictly positive whole-month tenor to final "
+                f"maturity; got {tenor_years} years ({tenor_months} months) for exercise time {T0}"
+            )
         swap_tenor = f"{tenor_months}M"
 
         # Build once at a placeholder rate to get the schedule/discount
