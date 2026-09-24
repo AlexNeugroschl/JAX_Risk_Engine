@@ -26,15 +26,15 @@ Two distinct concerns:
    IDENTICALLY ZERO, so at t=0 the term contributes nothing and deleting
    it entirely changes an ATM swaption price by ~7e-6 relative -- an order
    of magnitude INSIDE the rtol=1e-4 those tests assert. The great
-   majority of this suite's ORE swaption comparisons price at t=0. Run
-   against the real suite, deleting the whole variance term fails exactly
-   ONE test in tests/test_european_swaption.py (131 tests):
-   `TestConditionalPricingAndExpiry::test_conditional_pricing_matches_ore_rebuilt_at_later_date`,
-   the one that prices at a later evaluation date. That single test is
-   carrying the entire suite's coverage of this term. These tests make
-   that dependency explicit and load-bearing, so that deleting or
-   weakening that one test fails here loudly rather than silently
-   un-covering a term of the core bond-price formula.
+   majority of this suite's ORE swaption comparisons price at t=0. When
+   this was found, deleting the whole variance term failed exactly ONE
+   test in tests/test_european_swaption.py (131 tests):
+   `TestConditionalPricingAndExpiry::test_conditional_pricing_matches_ore_rebuilt_at_later_date`.
+   That was docs/known-issues.md I-30. It is closed by a 60-point
+   conditional grid in that file (`test_conditional_pricing_matches_ore_across_t_and_r`),
+   and `test_every_conditional_grid_point_catches_the_mutation` asserts
+   that each point on its own catches every mutation here, so the
+   coverage cannot quietly shrink back to one test.
 
 2. CURVE SHAPE (`TestNonFlatCurvesAgainstORE`). Every ORE comparison in
    the suite runs on a FLAT curve at a single rate (3%). A flat curve
@@ -65,6 +65,7 @@ import engine.models.hull_white as hull_white
 import engine.instruments.european_swaption as european_swaption
 from engine.simulation.market_model import ZeroCurveConfig, compute_hw_A_matrix
 from engine.instruments.european_swaption import SwaptionConfig, prepare_swaption
+from test_european_swaption import CONDITIONAL_GRID, _price_conditional
 
 EVAL_DATE = ORE.Date(30, 7, 2026)
 DC = ORE.Actual365Fixed()
@@ -235,16 +236,17 @@ class TestVarianceTermIsActuallyChecked:
         )
 
     def test_conditional_pricing_coverage_is_load_bearing(self):
-        """Makes explicit the dependency measured against the real suite:
-        with the variance term deleted, `tests/test_european_swaption.py`
-        fails exactly one test -- the conditional-pricing one at a later
-        evaluation date -- and its other 130 pass.
+        """The dependency that docs/known-issues.md I-30 recorded: before the
+        conditional grid existed, deleting the variance term failed exactly
+        one test in `tests/test_european_swaption.py`, the conditional-pricing
+        one at a later evaluation date.
 
         This reconstructs that test's own comparison point (t=1, priced
         conditional on a simulated short rate) and asserts the mutation is
         caught there. If conditional-pricing coverage were ever removed,
         deleting a whole term of the core bond-price formula would leave
-        the suite green.
+        the suite green. `test_every_conditional_grid_point_catches_the_mutation`
+        below covers the grid that closed I-30.
         """
         baseline = _swaption_price(1.0, 0.03)
         with _mutate_hull_white_A(scale_variance=0.0):
@@ -252,6 +254,35 @@ class TestVarianceTermIsActuallyChecked:
         assert abs(mutated - baseline) / abs(baseline) > SUITE_RTOL, (
             "deleting the variance term is no longer detectable even at t>0; "
             "the suite would not catch a wrong A(t,T) at all"
+        )
+
+    @pytest.mark.parametrize("name,kwargs", MUTATIONS, ids=[m[0] for m in MUTATIONS])
+    def test_every_conditional_grid_point_catches_the_mutation(self, name, kwargs):
+        """Closes I-30 by showing no single test carries this term any more.
+
+        For every point of
+        `test_european_swaption.py::test_conditional_pricing_matches_ore_across_t_and_r`,
+        the mutation must move the price by at least 10x the tolerance that
+        test asserts (rtol=1e-4, atol=1e-2). So every grid point fails on
+        its own when the term is corrupted, not just the grid as a whole.
+        Measured minimum is ~30x.
+
+        This compares the engine against itself, mutated and unmutated,
+        without calling ORE: the test being hardened already ties the
+        unmutated engine to ORE to ~2e-6.
+        """
+        points = [p.values for p in CONDITIONAL_GRID]
+        baselines = [_price_conditional(*p) for p in points]
+        with _mutate_hull_white_A(**kwargs):
+            mutated = [_price_conditional(*p) for p in points]
+        weak = [
+            (p, abs(m - b) / (SUITE_RTOL * abs(b) + 1e-2))
+            for p, b, m in zip(points, baselines, mutated)
+            if abs(m - b) < 10 * (SUITE_RTOL * abs(b) + 1e-2)
+        ]
+        assert not weak, (
+            f"{name} moves these conditional grid points by less than 10x the "
+            f"grid's tolerance (point, multiple of tolerance): {weak}"
         )
 
 

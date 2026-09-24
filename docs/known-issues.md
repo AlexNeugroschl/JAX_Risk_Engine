@@ -31,11 +31,22 @@ code changes.
 
 ## Verification status
 
-Last full verification (2026-09-23, after the I-06/I-31 fixes): **1,897 passed, 0 failed**
-(19m12s) — the complete suite (`.venv/Scripts/python.exe -m pytest tests/ --durations=25`),
+Last full verification (2026-09-23, after the I-30 fix): **1,960 passed, 0 failed**
+(19m29s) — the complete suite (`.venv/Scripts/python.exe -m pytest tests/ --durations=25`),
 nothing excluded, summary line printed, exit code 0, zero `FAILED`/`ERROR` lines. The
-count reconciles against the previous confirmed collection of 1,879, per file against the
-previous commit (`--collect-only` in a separate worktree at `HEAD`):
+count reconciles against the 1,897 below, per file against `HEAD` (`--collect-only` in a
+separate worktree):
+
+| Δ | Source |
+|---:|---|
+| +60 | `tests/test_european_swaption.py` 131 → 191 — the conditional-pricing grid ([I-30](#i-30)) |
+| +3 | `tests/test_ore_coverage_hardening.py` 36 → 39 — every grid point catches every mutation |
+
+1,897 + 60 + 3 = 1,960. Slowest test 42.1s; no outlier.
+
+The run before it (2026-09-23, after the I-06/I-31 fixes): **1,897 passed, 0 failed**
+(19m12s), under the same conditions. That count reconciles against the previous confirmed
+collection of 1,879, per file against the previous commit:
 
 | Δ | Source |
 |---:|---|
@@ -76,7 +87,7 @@ the suite. (That run still printed a full summary and exit code, so whatever int
 the pytest process survived; the pass count stands.) Keep recording durations.
 
 **The long-running flake.** `test_cross_tier_jobs_correct_and_concurrent` has now passed
-five full runs and failed one, on identical code (passed again 2026-09-23). It passes in isolation (12.28s) and failed
+six full runs and failed one, on identical code (passed in both 2026-09-23 runs). It passes in isolation (12.28s) and failed
 every full run from W1.2 through W1.5. The 2026-09-18 pass came during the *slowest* run on
 record (4h08m), which is mild evidence *against* the load-dependence hypothesis, since a
 wall-clock overlap assertion should be most likely to fail under exactly those conditions.
@@ -92,7 +103,7 @@ this register exists to embody. Of the defects found during this integration:
 | TraderX reading source or reproducing numbers | [I-13](#i-13), [I-19](#i-19), [I-20](#i-20) |
 | Reviewing or reasoning about my own code | [I-25](#i-25), [I-26](#i-26), the W1.6 `submissionId` bug |
 | Building a new external oracle | [I-29](#i-29) (fixed 2026-09-18) |
-| Mutation-testing the suite's own tolerances | [I-30](#i-30) |
+| Mutation-testing the suite's own tolerances | [I-30](#i-30) (fixed 2026-09-23) |
 | **Measuring a claim the docs made but no test asserted** | **[I-06](#i-06)'s error direction** |
 | **Pricing against the engine ORE actually uses** | **[I-06](#i-06) rescoped to American, [I-31](#i-31)** |
 | Running the test suite | **none** |
@@ -135,7 +146,7 @@ call and the rank column should not be read as precise.
 
 **The one-line read:** everything in Tier 1 is blocked on someone else, so start at Tier 2.
 ([I-29](#i-29) was fixed on 2026-09-18; [I-06](#i-06) and [I-31](#i-31), which then led
-Tier 2, on 2026-09-23.)
+Tier 2, on 2026-09-23, and [I-30](#i-30) after them the same day.)
 
 ### Tier 1 — Highest criticality, blocked on external input
 
@@ -159,23 +170,22 @@ each is small relative to what it buys.
 
 | # | Issue | Severity | Difficulty | Why it ranks here |
 |---:|---|---|---|---|
-| 3 | [I-30](#i-30) — `A(t,T)` variance term nearly uncovered at `t=0` | Medium | **Low** | A test gap, not a defect — but one test carries the whole suite's coverage of a core formula term. The harness exists; it needs more `(t, r)` points. |
-| 4 | [I-11](#i-11) — risk measure unlabelled on `PortfolioResult` | Medium | **Low** | Vocabulary and diagnostics already exist (W0.6); closing it means putting `measure` on `PortfolioResult` itself. A risk-neutral number read as a loss forecast is a category error, not a rounding one. |
-| 5 | [I-10](#i-10) — no trade identity; results keyed by array position | Medium | **Low-moderate** | Ordering is correct and tested *today*; any future reorder or partial response silently misattributes. Mechanically small, touches three layers. |
-| 6 | [I-32](#i-32) — parity with ORE only for its Grid solver at `ShiftHorizon=0` | Medium | Moderate (shift) / hard (FD) | ORE's default `ShiftHorizon=0.5` moves Americans by up to 1.5e-4; its FD solver, used in ORE's shipped American config, by up to 1.6e-3. Needs a decision on which ORE configuration is the reference before any code. |
-| 7 | [I-28](#i-28) — `var_es` demo crashes on a date that moved | Low | **One line** | Root-caused, fix confirmed, not applied. A documented command that aborts. Cheapest item in the register. |
+| 3 | [I-11](#i-11) — risk measure unlabelled on `PortfolioResult` | Medium | **Low** | Vocabulary and diagnostics already exist (W0.6); closing it means putting `measure` on `PortfolioResult` itself. A risk-neutral number read as a loss forecast is a category error, not a rounding one. |
+| 4 | [I-10](#i-10) — no trade identity; results keyed by array position | Medium | **Low-moderate** | Ordering is correct and tested *today*; any future reorder or partial response silently misattributes. Mechanically small, touches three layers. |
+| 5 | [I-32](#i-32) — parity with ORE only for its Grid solver at `ShiftHorizon=0` | Medium | Moderate (shift) / hard (FD) | ORE's default `ShiftHorizon=0.5` moves Americans by up to 1.5e-4; its FD solver, used in ORE's shipped American config, by up to 1.6e-3. Needs a decision on which ORE configuration is the reference before any code. |
+| 6 | [I-28](#i-28) — `var_es` demo crashes on a date that moved | Low | **One line** | Root-caused, fix confirmed, not applied. A documented command that aborts. Cheapest item in the register. |
 
 [I-06](#i-06) and [I-31](#i-31), which led this tier, were fixed on 2026-09-23: Bermudan and
-American pricing now equal ORE's own engine to ~1e-11. [I-30](#i-30) now leads. It came out
-of the 2026-09-18 oracle work with its fix site already located, as did [I-29](#i-29).
-I-11 and I-10 are ranked above I-28 despite I-28 being cheaper because they are about
+American pricing now equal ORE's own engine to ~1e-11. [I-30](#i-30), which then led, was
+closed the same day by a 60-point conditional-pricing grid against ORE. [I-11](#i-11) now
+leads. I-11 and I-10 are ranked above I-28 despite I-28 being cheaper because they are about
 numbers a consumer misreads, not a demo that fails loudly.
 
 ### Tier 3 — Blocks confidence in the suite itself
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 8 | [I-27](#i-27) — full-suite runs hard-abort inside XLA | Medium | **Hard to diagnose** | Intermittent, not reproducible on demand, and fails in the most deceptive way available: a dead process with no summary. The cheap experiment (a `shutdown_pools()` autouse fixture in `tests/test_api.py`) is identified but needs *repeated* clean runs against a known-bad baseline — one green run would look like proof and would not be. |
+| 7 | [I-27](#i-27) — full-suite runs hard-abort inside XLA | Medium | **Hard to diagnose** | Intermittent, not reproducible on demand, and fails in the most deceptive way available: a dead process with no summary. The cheap experiment (a `shutdown_pools()` autouse fixture in `tests/test_api.py`) is identified but needs *repeated* clean runs against a known-bad baseline — one green run would look like proof and would not be. |
 
 Ranked below Tier 2 because it costs no user a wrong number, and above Tier 4 because every
 status in this register rests on being able to run the suite.
@@ -188,12 +198,12 @@ consumers ask.
 
 | # | Issue | Severity | Difficulty | Blocked on |
 |---:|---|---|---|---|
-| 9 | [I-18](#i-18) — no equity spot or FX source | Medium | **Blocked**, then trivial | Market data. The pricer is four multiplications. *Do not close it with `closingMark`* — that is an echo, not a valuation. |
-| 10 | [I-16](#i-16) — `rateSensitivity` parallel-only | Medium | **Blocked** | A curve with genuine pillar structure (W2, same D03/D04 dependency as I-05). *Do not close it by bumping the flat profile per-pillar.* |
-| 11 | [I-07](#i-07) — no corporate bond / equity / listed-option pricer | Medium | Moderate–hard | Corporate bonds need a credit model; a Treasury-discounted corporate is not credit pricing. |
-| 12 | [I-24](#i-24) — bonds have no scenario NPV, so no VaR/ES | Medium | Moderate | Genuine modelling work with its own validation burden. *Do not broadcast, zero-fill, or flip the `scenario_risk` default.* |
-| 13 | [I-08](#i-08) — portfolio path's `_JOBS` dict still in-process | Medium | Moderate | The EOD half is done (W0.8); porting `publication.py`'s design to the portfolio path is the remaining work. |
-| 14 | [I-09](#i-09) — whole scenario cube serialized into JSON | Medium | Moderate | ~20M floats in one HTTP body at realistic sizes. Needs a chunked artifact plus a reference. |
+| 8 | [I-18](#i-18) — no equity spot or FX source | Medium | **Blocked**, then trivial | Market data. The pricer is four multiplications. *Do not close it with `closingMark`* — that is an echo, not a valuation. |
+| 9 | [I-16](#i-16) — `rateSensitivity` parallel-only | Medium | **Blocked** | A curve with genuine pillar structure (W2, same D03/D04 dependency as I-05). *Do not close it by bumping the flat profile per-pillar.* |
+| 10 | [I-07](#i-07) — no corporate bond / equity / listed-option pricer | Medium | Moderate–hard | Corporate bonds need a credit model; a Treasury-discounted corporate is not credit pricing. |
+| 11 | [I-24](#i-24) — bonds have no scenario NPV, so no VaR/ES | Medium | Moderate | Genuine modelling work with its own validation burden. *Do not broadcast, zero-fill, or flip the `scenario_risk` default.* |
+| 12 | [I-08](#i-08) — portfolio path's `_JOBS` dict still in-process | Medium | Moderate | The EOD half is done (W0.8); porting `publication.py`'s design to the portfolio path is the remaining work. |
+| 13 | [I-09](#i-09) — whole scenario cube serialized into JSON | Medium | Moderate | ~20M floats in one HTTP body at realistic sizes. Needs a chunked artifact plus a reference. |
 
 ### Tier 5 — Performance and cosmetic
 
@@ -201,15 +211,15 @@ Every number is correct. Nothing here is a financial risk.
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 15 | [I-21](#i-21) — Greeks recompile 23 XLA programs per call | Medium | **Moderate, fully designed** | Prototyped, bit-identical output, steady-state recompiles reach zero. Ranked highest in this tier because the design and its safety argument are already written. **The risk is a memo returning a program compiled for a different trade** — key on `static_key(prepared)`, never the config, never `id()`. |
-| 16 | [I-22](#i-22) — calibration recompiles 8 programs per call | Low | Moderate | **A different mechanism from I-21** — baked-in Python float constants, not fresh closures. I-21's fix would actively hurt here. Caps out at 8 → ~2. Fix I-21 first; they are independent. |
-| 17 | [I-12](#i-12) — `/version` reports dispatcher, not worker device | Low | Low | Invisible on a single-CPU box; would mislead a precision/hardware study on a multi-device host. Composes with [I-14](#i-14)'s residual (realized dtype on the result). |
+| 14 | [I-21](#i-21) — Greeks recompile 23 XLA programs per call | Medium | **Moderate, fully designed** | Prototyped, bit-identical output, steady-state recompiles reach zero. Ranked highest in this tier because the design and its safety argument are already written. **The risk is a memo returning a program compiled for a different trade** — key on `static_key(prepared)`, never the config, never `id()`. |
+| 15 | [I-22](#i-22) — calibration recompiles 8 programs per call | Low | Moderate | **A different mechanism from I-21** — baked-in Python float constants, not fresh closures. I-21's fix would actively hurt here. Caps out at 8 → ~2. Fix I-21 first; they are independent. |
+| 16 | [I-12](#i-12) — `/version` reports dispatcher, not worker device | Low | Low | Invisible on a single-CPU box; would mislead a precision/hardware study on a multi-device host. Composes with [I-14](#i-14)'s residual (realized dtype on the result). |
 
 ### Tier 6 — Awaiting an answer, not an engineer
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 18 | [I-23](#i-23) — `accrualBasis` strictness is an assumption | Medium | **Not a code task** | Closes when TraderX answers, asked twice (v4 §1.3, v6 §2.3). If they add enum values *in place*, this engine refuses bundles they consider valid, on the day they first export a real calendar — a false rejection, so it fails safe, but it will arrive without warning and look like a defect to whoever is on call. |
+| 17 | [I-23](#i-23) — `accrualBasis` strictness is an assumption | Medium | **Not a code task** | Closes when TraderX answers, asked twice (v4 §1.3, v6 §2.3). If they add enum values *in place*, this engine refuses bundles they consider valid, on the day they first export a real calendar — a false rejection, so it fails safe, but it will arrive without warning and look like a defect to whoever is on call. |
 
 ### What the ordering deliberately does not do
 
@@ -236,34 +246,34 @@ back into it.
 | [I-04](#i-04) | Aged swaps mispriced at every step past first accrual | **High** | ⚠️ FLAGGED | **1** |
 | [I-05](#i-05) | No faithful USD-SOFR/ACT360 swap construction | **High** | ❌ OPEN — refusal path landed (W0.4) | **2** |
 | [I-06](#i-06) | American exercise ignored ORE's broken-period proration — payer overstated up to 6.0x vs ORE (mid-period Bermudans were always right) | **High** | ✅ FIXED | — |
-| [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — both Treasury pricers landed (W1.2 bill, W1.3 note) | 11 |
-| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8); the portfolio path's `_JOBS` dict is unchanged | 13 |
-| [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN | 14 |
-| [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary (W0.7) | 5 |
-| [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ❌ OPEN — measure + MC diagnostics landed (W0.6) | 4 |
-| [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN | 17 |
+| [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — both Treasury pricers landed (W1.2 bill, W1.3 note) | 10 |
+| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8); the portfolio path's `_JOBS` dict is unchanged | 12 |
+| [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN | 13 |
+| [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary (W0.7) | 4 |
+| [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ❌ OPEN — measure + MC diagnostics landed (W0.6) | 3 |
+| [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN | 16 |
 | [I-13](#i-13) | Negative curve index silently prices against the wrong curve | **High** | ✅ FIXED | — |
 | [I-14](#i-14) | `generate_paths(precision=32)` leaks `jax_enable_x64=False`; float64 silently truncates | **High** | ✅ FIXED | — |
 | [I-15](#i-15) | Worker-pool concurrency test could not observe concurrency | Low | ✅ FIXED | — |
-| [I-16](#i-16) | `rateSensitivity` is parallel-only; no per-pillar decomposition | Medium | ❌ OPEN — labelled honestly, blocked on a real curve | 10 |
+| [I-16](#i-16) | `rateSensitivity` is parallel-only; no per-pillar decomposition | Medium | ❌ OPEN — labelled honestly, blocked on a real curve | 9 |
 | [I-17](#i-17) | A malformed note date failed the entire bundle, not just its row | Medium | ✅ FIXED | — |
-| [I-18](#i-18) | No equity spot or FX source; equity positions are refused, not valued | Medium | ❌ OPEN — refusal path landed (W1.4) | 9 |
+| [I-18](#i-18) | No equity spot or FX source; equity positions are refused, not valued | Medium | ❌ OPEN — refusal path landed (W1.4) | 8 |
 | [I-19](#i-19) | Accrual tolerance rounded the bound it exists to enforce | Medium | ✅ FIXED | — |
 | [I-20](#i-20) | Impossible calendar dates aborted the whole bundle | **High** | ✅ FIXED | — |
-| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call (fresh closures) | Medium | ❌ OPEN | 15 |
-| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call (baked-in constants) | Low | ❌ OPEN | 16 |
-| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** on an unanswered question | Medium | ⚠️ ASSUMPTION — may refuse bundles TraderX considers valid | 18 |
-| [I-24](#i-24) | Bonds have no scenario NPV, so no VaR/ES — refused, not approximated | Medium | ❌ OPEN — refusal path landed (W1.5) | 12 |
+| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call (fresh closures) | Medium | ❌ OPEN | 14 |
+| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call (baked-in constants) | Low | ❌ OPEN | 15 |
+| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** on an unanswered question | Medium | ⚠️ ASSUMPTION — may refuse bundles TraderX considers valid | 17 |
+| [I-24](#i-24) | Bonds have no scenario NPV, so no VaR/ES — refused, not approximated | Medium | ❌ OPEN — refusal path landed (W1.5) | 11 |
 | [I-25](#i-25) | A **scalar** Greek crashed the HTTP result serializer | Medium | ✅ FIXED | — |
 | [I-26](#i-26) | Greeks for a bond maturing **tomorrow** crashed on the theta reprice | Low | ✅ FIXED | — |
-| [I-27](#i-27) | Long full-suite runs **hard-abort inside XLA compilation**, with no summary line | Medium | ❌ OPEN — located, not root-caused | 8 |
-| [I-28](#i-28) | `python -m engine.risk.var_es`'s **own demo crashes**: it omits `evaluation_date`, so its swap schedules off today | Low | ❌ OPEN | 7 |
+| [I-27](#i-27) | Long full-suite runs **hard-abort inside XLA compilation**, with no summary line | Medium | ❌ OPEN — located, not root-caused | 7 |
+| [I-28](#i-28) | `python -m engine.risk.var_es`'s **own demo crashes**: it omits `evaluation_date`, so its swap schedules off today | Low | ❌ OPEN | 6 |
 | [I-29](#i-29) | A rounded exercise time silently drops a whole coupon | Medium | ✅ FIXED | — |
-| [I-30](#i-30) | The `A(t,T)` variance term is nearly uncovered at `t=0` (test gap, not a defect) | Medium | ⚠️ FLAGGED | 3 |
+| [I-30](#i-30) | The `A(t,T)` variance term was nearly uncovered at `t=0` (test gap, not a defect) | Medium | ✅ FIXED | — |
 | [I-31](#i-31) | Bermudan/American floating coupons projected over the accrual period, not ORE's index fixing period | Medium | ✅ FIXED | — |
-| [I-32](#i-32) | Parity with ORE holds only for its Grid solver at `ShiftHorizon=0`; ORE's defaults differ by up to 1.6e-3 | Medium | ❌ OPEN | 6 |
+| [I-32](#i-32) | Parity with ORE holds only for its Grid solver at `ShiftHorizon=0`; ORE's defaults differ by up to 1.6e-3 | Medium | ❌ OPEN | 5 |
 
-**Counts:** 32 issues — 14 FIXED, 14 OPEN, 2 FLAGGED, 1 PARTIAL, 1 ASSUMPTION. The 18
+**Counts:** 32 issues — 15 FIXED, 14 OPEN, 1 FLAGGED, 1 PARTIAL, 1 ASSUMPTION. The 17
 unfixed entries are ranked above.
 
 **The two that matter most for financial correctness are [I-04](#i-04) and [I-05](#i-05).**
@@ -970,6 +980,66 @@ been re-run**; see the caveat in the header.
 
 ---
 
+### I-30 — The `A(t,T)` variance term was nearly uncovered at `t=0` {#i-30}
+
+**Severity:** Medium · **Status:** ✅ FIXED (2026-09-23) · **Found:** 2026-09-18, by
+mutation-testing the ORE comparisons (`tests/test_ore_coverage_hardening.py`)
+
+**What was wrong.** A gap in the **tests**, not in the code. It was recorded because this
+register's premise is that a green suite is evidence about the tests, not proof about the
+code.
+
+The variance term of the Hull-White `A(t,T)` carries a factor `(1 - exp(-2at))` that is
+**identically zero at `t=0`**. So at `t=0` the term contributes nothing, and deleting it
+outright changes an ATM swaption price by ~**7e-6** relative — an order of magnitude
+*inside* the `rtol=1e-4` that this suite's ORE swaption comparisons assert. Most of those
+comparisons price at `t=0`. Deleting the entire term failed exactly **one** test in
+`tests/test_european_swaption.py` (131 tests):
+`TestConditionalPricingAndExpiry::test_conditional_pricing_matches_ore_rebuilt_at_later_date`.
+That single test carried the whole suite's coverage of a term of the core bond-price
+formula.
+
+**The formula itself was never in doubt.** It is independently verified against
+QuantLib's C++ in [ore-parity.md](reference/ore-parity.md) §3b, against the algebraic
+identity `0.25*(sigma*B(t,T))^2*B(0,2t) == (sigma^2/4a)*(1-exp(-2at))*B(t,T)^2` in
+`tests/test_ore_parity.py`, and against live `ORE.HullWhite.discountBond` at `t>0`. No
+pricing changed in this fix.
+
+**Fix.** A 60-point conditional-pricing grid against ORE's own `JamshidianSwaptionEngine`,
+`tests/test_european_swaption.py::TestConditionalPricingAndExpiry::test_conditional_pricing_matches_ore_across_t_and_r`:
+four dates from 0.5Y to 2.25Y (all off the curve pillars, because of the kink pinned in
+`test_pillar_times_differ_by_the_interpolation_kink`), short rates from 1% to 6%, payer and
+receiver, a 5Y and a 10Y underlying at two strikes, and **flat, upward and inverted
+curves**. Before this, every conditional check ran on a flat curve. Tolerance is the suite's
+own `rtol=1e-4, atol=1e-2`. Measured worst case is **2.1e-6** relative.
+
+**The reference had to be fixed before it could be trusted.** The existing test rebuilds
+ORE's market at `t` as a discount curve sampled at annual pillars, which is adequate on its
+flat curve. On a sloped curve, even monthly pillars disagreed with the engine by up to
+**7.6e-4**, which is outside the tolerance. The cause was not the engine: at `t=0`, priced directly on the
+same curves, the two agree to ~5e-7. Log-linear interpolation between pillars gives the
+rebuilt ORE model a stepwise instantaneous forward. With **daily** pillars the gap falls to
+2.1e-6. The reference also builds the swap **once, at today's date**, exactly as
+`prepare_swaption` does. Rebuilding it at `t` would move schedule dates across weekends and
+compare two different swaps. (`_reference_ore_conditional_npv` documents all this.)
+
+**Verified — the analogue of "fails against the pre-fix code" for a coverage gap.** Each
+mutation was applied to the real `engine/models/hull_white.py`, and the suite run against it:
+
+| Mutation of `A(t,T)` | `test_european_swaption.py` failures before | after |
+|---|---:|---:|
+| Delete the variance term | 1 of 131 | **61 of 191** (the whole grid plus the original test) |
+| Flip its sign | — | **65 of 191** |
+
+`tests/test_ore_coverage_hardening.py::TestVarianceTermIsActuallyChecked::test_every_conditional_grid_point_catches_the_mutation`
+(3 cases) keeps this true. For every grid point and every mutation in that file, it asserts
+the price moves by at least **10x** the grid's tolerance, so each point fails on its own,
+not only the grid as a whole. The measured minimum is ~30x. The existing
+`test_variance_mutation_is_invisible_at_t0` still pins why `t=0` comparisons cannot do this
+job.
+
+---
+
 ### I-31 — Bermudan/American floating coupons were projected over the wrong period {#i-31}
 
 **Severity:** Medium · **Status:** ✅ FIXED (2026-09-23) · **Found:** 2026-09-23, by the
@@ -1010,8 +1080,8 @@ before this fix and was the whole of the gap. Two pinned values moved by exactly
 ## FLAGGED — inaccuracy unchanged, silence removed
 
 > These are **not fixes.** The numbers are as wrong as they were before. What changed is that
-> the engine now says so. [I-30](#i-30) is the one entry of a different kind: a gap in the
-> *tests* rather than in the code.
+> the engine now says so. ([I-30](#i-30), a gap in the *tests* rather than the code, was
+> filed here until it was closed on 2026-09-23.)
 
 ### I-04 — Aged swaps are mispriced at every step past first accrual {#i-04}
 
@@ -1060,47 +1130,6 @@ Item 2 is the binding constraint. Engine work alone cannot close this.
 **Verified (the warning, not the fix):**
 `tests/test_portfolio_gap_fixes.py::TestAgedSwapWarningIsNotSilent` (5 tests) and
 `tests/test_api.py::TestGapFixesSurviveTheHttpBoundary`.
-
----
-
-### I-30 — The `A(t,T)` variance term is nearly uncovered at `t=0` {#i-30}
-
-**Severity:** Medium · **Status:** ⚠️ FLAGGED · **Found:** 2026-09-18, by mutation-testing
-the ORE comparisons (`tests/test_ore_coverage_hardening.py`)
-
-**What is wrong.** This is a gap in the **tests**, not in the code — the only entry here of
-that kind, and it is recorded because this register's own premise is that a green suite is
-evidence about the tests rather than proof about the code.
-
-The variance term of the Hull-White `A(t,T)` carries a factor `(1 - exp(-2at))` that is
-**identically zero at `t=0`**. So at `t=0` the term contributes nothing, and deleting it
-outright changes an ATM swaption price by ~**7e-6** relative — an order of magnitude
-*inside* the `rtol=1e-4` that this suite's ORE swaption comparisons assert. The great
-majority of those comparisons price at `t=0`.
-
-Measured against the real suite: deleting the entire term fails exactly **one** test in
-`tests/test_european_swaption.py` (131 tests) —
-`TestConditionalPricingAndExpiry::test_conditional_pricing_matches_ore_rebuilt_at_later_date`,
-the one that prices at a later evaluation date. That single test carries the whole suite's
-coverage of a term of the core bond-price formula. Deleting or weakening it would leave the
-formula effectively unchecked while the suite stayed green.
-
-**What is *not* wrong.** The formula itself is independently verified — against QuantLib's
-own C++ in [ore-parity.md](reference/ore-parity.md) §3b, against the algebraic identity
-`0.25*(sigma*B(t,T))^2*B(0,2t) == (sigma^2/4a)*(1-exp(-2at))*B(t,T)^2` in
-`tests/test_ore_parity.py`, and against live `ORE.HullWhite.discountBond` at `t>0`. No
-mispricing is known or suspected.
-
-**What closing it requires.** More `t>0` conditional-pricing comparisons against ORE, so
-the term's coverage does not rest on one test. Cheap to do — the conditional-pricing
-harness already exists in `tests/test_european_swaption.py`; it simply needs more
-`(t, r)` points.
-
-**Documented by.** `tests/test_ore_coverage_hardening.py::TestVarianceTermIsActuallyChecked`
-— which asserts the mutation is *invisible* at `t=0` (recording why `t=0` comparisons
-cannot be the whole story) and *visible* at `t>0`, and includes
-`test_conditional_pricing_coverage_is_load_bearing` so that the dependency on that one
-test is explicit.
 
 ---
 

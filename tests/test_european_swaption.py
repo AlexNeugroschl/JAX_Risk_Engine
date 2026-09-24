@@ -84,6 +84,128 @@ def _price_at_t0(cfg: SwaptionConfig) -> float:
     return float(npv[0, 0])
 
 
+# ---------------------------------------------------------------------------
+# Conditional (t > 0) pricing against ORE -- docs/known-issues.md I-30
+# ---------------------------------------------------------------------------
+# At t=0 the variance term of A(t,T) carries a factor (1 - exp(-2at)) that is
+# identically zero, so a t=0 comparison cannot see that term at all
+# (tests/test_ore_coverage_hardening.py measures this). Only conditional
+# pricing at t > 0 checks it, and until this grid existed a single test did.
+#
+# The dates are deliberately OFF the curve pillars (0, 1, 2, 5, 10, 30Y):
+# under linear zero-rate interpolation f(0,t) has a kink at each pillar and
+# this engine and ORE resolve it differently (pinned in
+# test_ore_coverage_hardening.py::test_pillar_times_differ_by_the_interpolation_kink).
+CONDITIONAL_PILLARS = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
+CONDITIONAL_CURVES = {
+    "flat": [FLAT_RATE] * 6,
+    "upward": [0.010, 0.015, 0.020, 0.030, 0.040, 0.050],
+    "inverted": [0.050, 0.045, 0.040, 0.030, 0.025, 0.020],
+}
+CONDITIONAL_DATES = {
+    "t0.50": ORE.Date(29, 1, 2027),
+    "t0.75": ORE.Date(30, 4, 2027),
+    "t1.51": ORE.Date(31, 1, 2028),
+    "t2.25": ORE.Date(30, 10, 2028),
+}
+# (short rate at t, payer, fixed rate, tenor, forward start in years)
+CONDITIONAL_TRADES = {
+    "r1%-payer": (0.010, True, 0.03, "5Y", 3),
+    "r3.5%-payer": (0.035, True, 0.03, "5Y", 3),
+    "r3.5%-receiver": (0.035, False, 0.03, "5Y", 3),
+    "r6%-payer": (0.060, True, 0.03, "5Y", 3),
+    "r3%-itm-payer-10Y": (0.030, True, 0.02, "10Y", 3),
+}
+CONDITIONAL_GRID = [
+    pytest.param(curve, date_id, trade_id, id=f"{curve}-{date_id}-{trade_id}")
+    for curve in CONDITIONAL_CURVES
+    for date_id in CONDITIONAL_DATES
+    for trade_id in CONDITIONAL_TRADES
+]
+
+
+def _conditional_cfg(curve: str, trade_id: str) -> SwaptionConfig:
+    _, payer, fixed_rate, tenor, forward_start_years = CONDITIONAL_TRADES[trade_id]
+    return SwaptionConfig(
+        notional=1_000_000.0, fixed_rate=fixed_rate, payer=payer, rate_factor_index=0,
+        hw_a=HW_A, hw_sigma=HW_SIGMA,
+        initial_zero_curve=ZeroCurveConfig(times=CONDITIONAL_PILLARS, rates=CONDITIONAL_CURVES[curve]),
+        swap_tenor=tenor, forward_start=ORE.Period(forward_start_years, ORE.Years),
+        evaluation_date=TODAY,
+    )
+
+
+def _price_conditional(curve: str, date_id: str, trade_id: str) -> float:
+    """This engine's NPV at the grid point's date, conditional on its short rate."""
+    t = ORE.Actual365Fixed().yearFraction(TODAY, CONDITIONAL_DATES[date_id])
+    r = CONDITIONAL_TRADES[trade_id][0]
+    prepared = prepare_swaption(_conditional_cfg(curve, trade_id))
+    return float(_price_one_swaption(jnp.array([[[r]]]), jnp.array([t]), prepared)[0, 0])
+
+
+def _reference_ore_conditional_npv(curve: str, date_id: str, trade_id: str) -> float:
+    """ORE's own price for the same swaption at a later date `t`, given the
+    short rate r(t).
+
+    Built so the only thing this engine and ORE share is the input:
+
+      * The swap is built ONCE at TODAY, exactly as `prepare_swaption` does,
+        so both sides price identical schedule dates. Rebuilding it at `t`
+        would move dates across weekends and compare different swaps.
+      * The market at `t` is ORE's own conditional curve,
+        `ORE.HullWhite(curve0).discountBond(t, T, r)` -- ORE's A(t,T),
+        variance term included, not this engine's.
+      * That curve is sampled at DAILY pillars. Monthly log-linear pillars
+        leave the rebuilt model a stepwise instantaneous forward, which
+        was measured to cost up to 7.6e-4 on a sloped curve -- reference
+        error bigger than the tolerance, not engine error. Daily pillars
+        bring the worst case over this grid to ~2e-6.
+      * ORE's JamshidianSwaptionEngine then prices at evaluation date `t`
+        under HullWhite(conditional curve, a, sigma). Conditioning on r(t)
+        and refitting to P(t, .) are the same model (the Markov property);
+        that equivalence is what this test checks the engine against.
+    """
+    rates = CONDITIONAL_CURVES[curve]
+    t_date = CONDITIONAL_DATES[date_id]
+    r_t, payer, fixed_rate, tenor, forward_start_years = CONDITIONAL_TRADES[trade_id]
+    dc = ORE.Actual365Fixed()
+
+    ORE.Settings.instance().evaluationDate = TODAY
+    try:
+        curve0 = ORE.YieldTermStructureHandle(ORE.ZeroCurve(
+            [TODAY + int(round(p * 365)) for p in CONDITIONAL_PILLARS], list(rates), dc))
+        hw0 = ORE.HullWhite(curve0, HW_A, HW_SIGMA)
+        market = ORE.RelinkableYieldTermStructureHandle(curve0.currentLink())
+        index = ORE.IborIndex(
+            "SimIndex", ORE.Period(6, ORE.Months), 2,
+            ORE.USDCurrency(), ORE.TARGET(), ORE.ModifiedFollowing, False,
+            dc, market,
+        )
+        swap = ORE.MakeVanillaSwap(
+            ORE.Period(tenor), index, fixed_rate,
+            nominal=1_000_000.0,
+            swapType=ORE.VanillaSwap.Payer if payer else ORE.VanillaSwap.Receiver,
+            fixedLegDayCount=dc, floatingLegDayCount=dc,
+            forwardStart=ORE.Period(forward_start_years, ORE.Years),
+        )
+        exercise_date = ORE.TARGET().advance(
+            ORE.TARGET().advance(TODAY, ORE.Period(forward_start_years, ORE.Years)), 2, ORE.Days)
+        assert exercise_date > t_date, "grid point must be before the option's expiry"
+
+        t = dc.yearFraction(TODAY, t_date)
+        horizon_days = (swap.maturityDate() - t_date) + 30
+        dates = [t_date] + [t_date + k for k in range(1, horizon_days)]
+        discounts = [1.0] + [hw0.discountBond(t, dc.yearFraction(TODAY, d), r_t) for d in dates[1:]]
+
+        ORE.Settings.instance().evaluationDate = t_date
+        market.linkTo(ORE.DiscountCurve(dates, discounts, dc))
+        swaption = ORE.Swaption(swap, ORE.EuropeanExercise(exercise_date))
+        swaption.setPricingEngine(ORE.JamshidianSwaptionEngine(ORE.HullWhite(market, HW_A, HW_SIGMA), market))
+        return swaption.NPV()
+    finally:
+        ORE.Settings.instance().evaluationDate = TODAY
+
+
 class TestAgainstOREJamshidianEngine:
     """Direct numeric cross-check against ORE.JamshidianSwaptionEngine --
     the same live-testing methodology used throughout this codebase (see
@@ -314,6 +436,24 @@ class TestConditionalPricingAndExpiry:
         mine = float(_price_one_swaption(hw_paths, step_times, prepared)[0, 0])
 
         np.testing.assert_allclose(mine, ore_npv, rtol=1e-4, atol=1e-2)
+
+    @pytest.mark.parametrize("curve,date_id,trade_id", CONDITIONAL_GRID)
+    def test_conditional_pricing_matches_ore_across_t_and_r(self, curve, date_id, trade_id):
+        """The same Markov cross-check as the test above, over a grid of
+        dates (0.5Y to 2.25Y), short rates (1% to 6%), payer and receiver,
+        two strikes/tenors and three curve shapes. It closes
+        docs/known-issues.md I-30: at t > 0 the variance term of A(t,T) is
+        no longer checked by one test alone.
+
+        Measured worst case over the grid is ~2e-6 relative, so rtol=1e-4
+        has ~50x headroom. Every variance-term mutation in
+        tests/test_ore_coverage_hardening.py moves every point here by at
+        least 3e-3, and that file asserts it does, so a corrupted term
+        cannot pass this grid.
+        """
+        mine = _price_conditional(curve, date_id, trade_id)
+        ore = _reference_ore_conditional_npv(curve, date_id, trade_id)
+        np.testing.assert_allclose(mine, ore, rtol=1e-4, atol=1e-2)
 
 
 class TestPriceSwaptionsShape:

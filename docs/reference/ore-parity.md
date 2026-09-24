@@ -752,19 +752,25 @@ actually uses.
   `ORE.FdHullWhiteSwaptionEngine` objects, plus the controls that attribute the residual
   ~3% to the HW/LGM parametrization rather than to the induction, plus a
   parametrization-free `sigma -> 0` collapse to intrinsic that holds to 1e-3.
-- `tests/test_ore_coverage_hardening.py` (36 tests) — tests *about* the discriminating
+- `tests/test_ore_coverage_hardening.py` (39 tests) — tests *about* the discriminating
   power of the ORE comparisons themselves, plus the curve shapes the rest of the suite
   never exercises. Two findings of record, both pinned as assertions:
   - **A t=0 blind spot for the variance term of `A(t,T)`.** That term carries a factor
     `(1 - exp(-2at))` which is identically zero at `t=0`, so at `t=0` deleting it entirely
     moves an ATM swaption price by ~7e-6 relative — an order of magnitude *inside* the
     `rtol=1e-4` those comparisons assert. Most of this suite's ORE swaption comparisons
-    price at `t=0`. Measured against the real suite: deleting the whole term fails exactly
-    **one** test in `tests/test_european_swaption.py` (131 tests),
-    `TestConditionalPricingAndExpiry::test_conditional_pricing_matches_ore_rebuilt_at_later_date`
-    — that single test carries the suite's entire coverage of the term. This is a gap in
-    the *tests*, not a defect in the formula (which is independently verified against
-    QuantLib's C++ in section 3b and against live `ORE.HullWhite.discountBond`).
+    price at `t=0`. When found, deleting the whole term failed exactly **one** test in
+    `tests/test_european_swaption.py` (131 tests),
+    `TestConditionalPricingAndExpiry::test_conditional_pricing_matches_ore_rebuilt_at_later_date`.
+    This was a gap in the *tests*, not a defect in the formula (which is independently
+    verified against QuantLib's C++ in section 3b and against live
+    `ORE.HullWhite.discountBond`). **Closed 2026-09-23**
+    ([I-30](../known-issues.md#i-30)): a 60-point conditional grid against ORE's
+    `JamshidianSwaptionEngine` over dates, short rates, strikes and flat/upward/inverted
+    curves (`test_conditional_pricing_matches_ore_across_t_and_r`, worst case 2.1e-6) now
+    fails 61 of 191 tests when the term is deleted, and
+    `test_every_conditional_grid_point_catches_the_mutation` asserts that every grid point
+    catches every mutation by at least 10x its tolerance.
   - **Non-flat curves agree off-pillar to ~1e-8** (upward, inverted, humped, and
     negative-rate), but **at a pillar** the two disagree by up to ~1.5e-2. Neither library
     is wrong: under linear zero-rate interpolation `f(0,t)` has a genuine kink at each

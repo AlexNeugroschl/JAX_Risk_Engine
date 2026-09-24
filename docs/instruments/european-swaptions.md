@@ -212,7 +212,13 @@ by mathematical argument: by rebuilding ORE's own evaluation date and implied yi
 at a later point in time and re-pricing a still-alive swaption with a fresh
 `JamshidianSwaptionEngine`, matching this module's conditional formula to the same
 ~1e-6 relative precision as the `t=0` case. See
-`tests/test_european_swaption.py::TestConditionalPricingAndExpiry::test_conditional_pricing_matches_ore_rebuilt_at_later_date`.
+`tests/test_european_swaption.py::TestConditionalPricingAndExpiry::test_conditional_pricing_matches_ore_rebuilt_at_later_date`,
+and `test_conditional_pricing_matches_ore_across_t_and_r` in the same class: 60 points
+over dates from 0.5Y to 2.25Y, short rates from 1% to 6%, payer and receiver, two
+strikes/tenors, and flat, upward and inverted curves, with a worst case of 2.1e-6. That
+grid is the suite's coverage of the variance term of `A(t,T)`, which vanishes at `t=0`
+and so cannot be checked by any `t=0` comparison (see
+[known-issues I-30](../known-issues.md#i-30)).
 
 **Once `t` reaches the option's own exercise time `T0`, NPV is reported as exactly 0** for
 that `(scenario, step)` — a European option carries no remaining value after its own
