@@ -19,7 +19,7 @@ own period-string syntax (e.g. `"5Y"`, `"18M"`, `"0D"`), parsed via
 `ORE.Period(str)` -- the exact same parse `engine.portfolio.validation.
 _validate_tenor` already validates for the underlying dataclasses.
 """
-from typing import Annotated, Dict, List, Literal, Optional, Sequence, Union
+from typing import Annotated, Dict, List, Literal, Optional, Union
 
 import numpy as np
 import ORE
@@ -35,6 +35,7 @@ from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
 from engine.calibration.basket import build_coterminal_basket
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
+from engine.risk.exposure import ExposureProfile
 from engine.portfolio import (
     PortfolioRequest, PortfolioResult, PrecisionConfig, PricingPrecisionOverride, RiskPrecisionOverride,
 )
@@ -256,7 +257,7 @@ class BondConfigSchema(BaseModel):
 
     ⚠ **A portfolio containing a bond must set `scenario_risk: false`.** A
     bond has no scenario NPV, so it cannot appear in `npv_cube` and has no
-    VaR/ES. Submitting one with `scenario_risk: true` (the default) is
+    exposure profile. Submitting one with `scenario_risk: true` (the default) is
     **refused** with an explicit message rather than served a fabricated
     zero -- see `PortfolioRequestSchema.scenario_risk` and I-24.
     """
@@ -346,7 +347,7 @@ class RiskPrecisionOverrideSchema(BaseModel):
     delta_gamma: Optional[int] = None
     theta: Optional[int] = None
     vega: Optional[int] = None
-    var_es: Optional[int] = None
+    exposure: Optional[int] = None
 
     def to_dataclass(self) -> RiskPrecisionOverride:
         return RiskPrecisionOverride(**self.model_dump())
@@ -388,17 +389,16 @@ class PortfolioRequestSchema(BaseModel):
     evaluation_date: str = Field(..., description="ISO date (YYYY-MM-DD), e.g. '2026-07-30'")
     market: SimulationConfigSchema
     trades: List[TradeSchema]
-    percentiles: List[float] = Field(default_factory=lambda: [0.95, 0.99])
+    pfe_quantiles: List[float] = Field(default_factory=lambda: [0.95, 0.99])
     calibration_basket: Optional[CalibrationBasketRequestSchema] = None
     compute_greeks: bool = False
     precision: Optional[PrecisionConfigSchema] = None
-    #: Whether to build `npv_cube` and derive VaR/ES. `true` (the default)
-    #: is the pre-W1.5 behaviour exactly.
+    #: Whether to build `npv_cube` and the exposure profiles derived from it.
     #:
     #: **Must be `false` for a portfolio containing a bond**, which has no
     #: scenario representation. The response then carries an empty
-    #: `npv_cube` and an empty `risk`, with `scenario_risk_available:
-    #: false` saying so -- absent rather than a fabricated zero (I-24).
+    #: `npv_cube` and no exposure, with `scenario_risk_available: false`
+    #: saying so -- absent rather than a fabricated zero (I-24).
     scenario_risk: bool = True
 
     def to_dataclass(self) -> PortfolioRequest:
@@ -438,7 +438,7 @@ class PortfolioRequestSchema(BaseModel):
 
         return PortfolioRequest(
             market=self.market.to_dataclass(), trades=trades,
-            percentiles=tuple(self.percentiles), calibration_targets=calibration_targets,
+            pfe_quantiles=tuple(self.pfe_quantiles), calibration_targets=calibration_targets,
             compute_greeks=self.compute_greeks,
             precision=self.precision.to_dataclass() if self.precision is not None else PrecisionConfig(),
             scenario_risk=self.scenario_risk,
@@ -446,15 +446,36 @@ class PortfolioRequestSchema(BaseModel):
 
 
 class RiskMetricsSchema(BaseModel):
+    """A `compute_risk_metrics` dict on the wire: key -> values, NaN as null."""
     values: Dict[str, List[Optional[float]]]
 
     @classmethod
     def from_dataclass(cls, risk: Dict[str, "np.ndarray"]) -> "RiskMetricsSchema":
         out = {}
         for key, arr in risk.items():
-            arr_np = np.asarray(arr)
+            arr_np = np.atleast_1d(np.asarray(arr))
             out[key] = [None if np.isnan(v) else float(v) for v in arr_np.tolist()]
         return cls(values=out)
+
+
+class ExposureProfileSchema(BaseModel):
+    """`engine.risk.exposure.ExposureProfile` on the wire. Every list has
+    one entry per date in `times`, the first being t=0."""
+    times: List[float]
+    epe: List[float]
+    ene: List[float]
+    ee_b: List[float]
+    eee_b: List[float]
+    pfe: Dict[str, List[float]]
+
+    @classmethod
+    def from_dataclass(cls, profile: ExposureProfile) -> "ExposureProfileSchema":
+        as_list = lambda values: [float(v) for v in np.asarray(values).tolist()]  # noqa: E731
+        return cls(
+            times=as_list(profile.times), epe=as_list(profile.epe), ene=as_list(profile.ene),
+            ee_b=as_list(profile.ee_b), eee_b=as_list(profile.eee_b),
+            pfe={key: as_list(values) for key, values in profile.pfe.items()},
+        )
 
 
 class GreeksSchema(BaseModel):
@@ -486,20 +507,23 @@ class GreeksSchema(BaseModel):
 class PortfolioResultSchema(BaseModel):
     base_npv: float
     npv_cube: List[List[List[float]]]  # [Scenarios, TimeSteps, Trades]
-    risk: RiskMetricsSchema
+    #: The whole portfolio as one netting set; null when
+    #: `scenario_risk_available` is false.
+    exposure: Optional[ExposureProfileSchema] = None
+    #: Standalone exposure per trade, in the request's `trades` order.
+    trade_exposures: List[ExposureProfileSchema] = Field(default_factory=list)
     greeks: Optional[Dict[int, GreeksSchema]] = None
     warnings: List[str] = Field(default_factory=list)
     # Per-trade t=0 NPV in the request's own `trades` order; `base_npv` is
     # their sum. Lets a caller reconcile the portfolio total against
     # identified positions/contracts instead of only seeing an aggregate.
     base_npv_per_trade: List[float] = Field(default_factory=list)
-    # Whether `npv_cube`/`risk` were actually computed. `false` means they
-    # are EMPTY because the run was `scenario_risk: false` -- the VaR/ES
-    # numbers are absent, not zero. Without this field an empty `risk` is
-    # ambiguous between "not requested" and "computed as nothing" (I-24).
+    # Whether `npv_cube`/`exposure` were actually computed. `false` means
+    # the run was `scenario_risk: false` -- the figures are absent, not
+    # zero (I-24).
     scenario_risk_available: bool = True
-    # Which measure `risk` is under -- `risk-neutral-pricing` whenever it
-    # was computed, `null` when `risk` is empty. Not a loss forecast (I-11).
+    # Which measure the exposure is under -- `risk-neutral-pricing` whenever
+    # it was computed, `null` otherwise. Not a loss forecast (I-11).
     measure: Optional[str] = None
 
     @classmethod
@@ -508,7 +532,11 @@ class PortfolioResultSchema(BaseModel):
             base_npv=result.base_npv,
             base_npv_per_trade=[float(v) for v in result.base_npv_per_trade],
             npv_cube=np.asarray(result.npv_cube).tolist(),
-            risk=RiskMetricsSchema.from_dataclass(result.risk),
+            exposure=(
+                ExposureProfileSchema.from_dataclass(result.exposure)
+                if result.exposure is not None else None
+            ),
+            trade_exposures=[ExposureProfileSchema.from_dataclass(p) for p in result.trade_exposures],
             greeks=(
                 {i: GreeksSchema.from_dataclass(g) for i, g in result.greeks.items()}
                 if result.greeks is not None else None

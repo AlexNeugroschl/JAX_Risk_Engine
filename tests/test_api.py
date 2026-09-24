@@ -115,7 +115,7 @@ class TestPortfolioPriceHappyPath:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [_swap_trade_schema()],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
         }
         data = self._submit_and_poll(test_client, body)
         assert data["status"] == "done", data.get("error")
@@ -129,7 +129,7 @@ class TestPortfolioPriceHappyPath:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [_swap_trade_schema(), _swaption_trade_schema()],
-            "percentiles": [0.95, 0.99],
+            "pfe_quantiles": [0.95, 0.99],
         }
         data = self._submit_and_poll(test_client, body)
         assert data["status"] == "done", data.get("error")
@@ -140,18 +140,21 @@ class TestPortfolioPriceHappyPath:
         np.testing.assert_allclose(data["result"]["base_npv"], direct_result.base_npv, rtol=1e-9)
         http_npv = np.asarray(data["result"]["npv_cube"])
         np.testing.assert_allclose(http_npv, np.asarray(direct_result.npv_cube), rtol=1e-9)
-        for key in direct_result.risk:
-            http_vals = [v if v is not None else float("nan") for v in data["result"]["risk"]["values"][key]]
+        http_exposure = data["result"]["exposure"]
+        for name in ("times", "epe", "ene", "ee_b", "eee_b"):
             np.testing.assert_allclose(
-                np.asarray(http_vals), np.asarray(direct_result.risk[key]), rtol=1e-9, equal_nan=True,
+                np.asarray(http_exposure[name]), np.asarray(getattr(direct_result.exposure, name)), rtol=1e-9,
             )
+        for key, values in direct_result.exposure.pfe.items():
+            np.testing.assert_allclose(np.asarray(http_exposure["pfe"][key]), np.asarray(values), rtol=1e-9)
+        assert len(data["result"]["trade_exposures"]) == len(direct_result.trade_exposures)
 
     def test_greeks_included_when_requested(self, test_client):
         body = {
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [_swaption_trade_schema()],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
             "compute_greeks": True,
         }
         data = self._submit_and_poll(test_client, body)
@@ -190,7 +193,7 @@ class TestCalibratedBermudanOverHttp:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [_bermudan_trade_schema()],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
         }
         data = self._submit_and_poll(test_client, body)
         assert data["status"] == "failed"
@@ -201,7 +204,7 @@ class TestCalibratedBermudanOverHttp:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [_swap_trade_schema()],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
             "calibration_basket": CALIBRATION_BASKET_SCHEMA,
         }
         r = test_client.post("/portfolio/price", json=body)
@@ -213,7 +216,7 @@ class TestCalibratedBermudanOverHttp:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [_bermudan_trade_schema()],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
             "calibration_basket": CALIBRATION_BASKET_SCHEMA,
         }
         data = self._submit_and_poll(test_client, body)
@@ -225,7 +228,7 @@ class TestCalibratedBermudanOverHttp:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [_bermudan_trade_schema()],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
             "calibration_basket": CALIBRATION_BASKET_SCHEMA,
         }
         data = self._submit_and_poll(test_client, body)
@@ -287,7 +290,7 @@ class TestPortfolioPriceAtScale:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(scenarios=64),
             "trades": trades,
-            "percentiles": [0.95, 0.99],
+            "pfe_quantiles": [0.95, 0.99],
         }
         data = self._submit_and_poll(test_client, body)
         assert data["status"] == "done", data.get("error")
@@ -309,7 +312,7 @@ class TestPortfolioPriceAtScale:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(scenarios=64),
             "trades": trades,
-            "percentiles": [0.95, 0.99],
+            "pfe_quantiles": [0.95, 0.99],
         }
         data = self._submit_and_poll(test_client, body)
         assert data["status"] == "done", data.get("error")
@@ -333,7 +336,7 @@ class TestPortfolioPriceAtScale:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
         }
         data = self._submit_and_poll(test_client, body)
         assert data["status"] == "done", data.get("error")
@@ -349,7 +352,7 @@ class TestPortfolioPriceAtScale:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": trades,
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
         }
         data = self._submit_and_poll(test_client, body)
         assert data["status"] == "done", data.get("error")
@@ -370,11 +373,11 @@ class TestPortfolioPriceAtScale:
         processes, not just that results don't cross-contaminate."""
         body_a = {
             "evaluation_date": TODAY_ISO, "market": _market_schema(),
-            "trades": [_swap_trade_schema(notional=1_000_000.0)], "percentiles": [0.95],
+            "trades": [_swap_trade_schema(notional=1_000_000.0)], "pfe_quantiles": [0.95],
         }
         body_b = {
             "evaluation_date": TODAY_ISO, "market": _market_schema(),
-            "trades": [_swap_trade_schema(notional=9_000_000.0)], "percentiles": [0.95],
+            "trades": [_swap_trade_schema(notional=9_000_000.0)], "pfe_quantiles": [0.95],
         }
         job_a = test_client.post("/portfolio/price", json=body_a).json()["job_id"]
         job_b = test_client.post("/portfolio/price", json=body_b).json()["job_id"]
@@ -401,7 +404,7 @@ class TestPortfolioPriceInvalidPayload:
             "evaluation_date": TODAY_ISO,
             "market": {**_market_schema(), "joint_covariance": [[0.02, 0.05], [0.05, 0.02]]},
             "trades": [_swap_trade_schema()],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
         }
         r = test_client.post("/portfolio/price", json=body)
         assert 400 <= r.status_code < 500
@@ -412,7 +415,7 @@ class TestPortfolioPriceInvalidPayload:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [_swaption_trade_schema(hw_a=0.099)],  # mismatched vs. market.rates.mean_reversion[0]=0.03
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
         }
         r = test_client.post("/portfolio/price", json=body)
         assert 400 <= r.status_code < 500
@@ -432,7 +435,7 @@ class TestPortfolioPriceInvalidPayload:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [{"trade_type": "not_a_real_type"}],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
         }
         r = test_client.post("/portfolio/price", json=body)
         assert r.status_code == 422
@@ -501,7 +504,7 @@ class TestPortfolioPricePrecision:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [_swap_trade_schema(), _swaption_trade_schema()],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
             "precision": {"simulation": 64, "pricing": 32, "risk": 32},
         }
         data = self._submit_and_poll(test_client, body)
@@ -522,7 +525,7 @@ class TestPortfolioPricePrecision:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [_swap_trade_schema()],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
         }
         explicit_body = dict(base_body, precision={"simulation": 64, "pricing": 64, "risk": 64})
 
@@ -549,7 +552,7 @@ class TestPortfolioPricePrecision:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [_swap_trade_schema()],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
         }
         body_64 = dict(base_body, precision={"simulation": 64, "pricing": 64, "risk": 64})
         body_32 = dict(base_body, precision={"simulation": 64, "pricing": 32, "risk": 64})
@@ -575,7 +578,7 @@ class TestPortfolioPricePrecision:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [_swap_trade_schema()],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
             "precision": {"simulation": 16},
         }
         r = test_client.post("/portfolio/price", json=body)
@@ -599,14 +602,14 @@ class TestPortfolioPriceWorkerPoolDispatch:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [_swap_trade_schema(), _swaption_trade_schema()],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
             "precision": {"simulation": 64, "pricing": 64, "risk": 64},
         }
         body_32 = {
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
             "trades": [_swap_trade_schema(), _swaption_trade_schema()],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
             "precision": {"simulation": 32, "pricing": 32, "risk": 32},
         }
 
@@ -653,7 +656,7 @@ class TestPortfolioPriceWorkerPoolDispatch:
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(scenarios=2048),
             "trades": [_swap_trade_schema(), _swaption_trade_schema(), _bermudan_trade_schema(hw_sigma=0.01)],
-            "percentiles": [0.95],
+            "pfe_quantiles": [0.95],
         }
         r = test_client.post("/portfolio/price", json=body)
         assert r.status_code == 202, r.text

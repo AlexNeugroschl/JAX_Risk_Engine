@@ -18,8 +18,8 @@ def create_app() -> FastAPI:
         title="JAX Risk Engine API",
         description=(
             "HTTP API over engine.portfolio.price_portfolio -- simulate, "
-            "validate, price, and aggregate risk for a portfolio of "
-            "interest-rate swaps and swaptions. See "
+            "validate, price, and profile exposure for a portfolio of "
+            "interest-rate swaps, swaptions and Treasuries. See "
             "docs/reference/http-api.md for the full reference."
         ),
         version="0.1.0",

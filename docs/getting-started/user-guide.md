@@ -60,7 +60,7 @@ below with `.venv\Scripts\python.exe` (or activate the venv first with
 
 ## Running the demos
 
-All four demos live in [`demos/`](../../demos/). Run them from the repository root, as
+All five demos live in [`demos/`](../../demos/). Run them from the repository root, as
 written below — they import `engine`, which an editable install makes importable from any
 directory, but the paths in these commands are relative to the root.
 
@@ -71,7 +71,8 @@ python demos/demo.py
 Simulates a market, calibrates a volatility term structure, prices one of each instrument
 type (swap, European/Bermudan/American swaption) via
 [`engine.portfolio.price_portfolio`](../reference/portfolio-entrypoint.md), and prints
-NPVs, VaR/ES, and Bermudan Greeks — the same walkthrough the individual module demos below
+NPVs, the exposure profile and Bermudan Greeks, then ends with a 10-day market-risk
+VaR/ES of the same portfolio — the same walkthrough the individual module demos below
 show piece-by-piece, but as a single, realistic entry-point call rather than hand-wired
 pipeline plumbing. Start here if you want to see the whole system working end to end before
 digging into any one stage.
@@ -118,6 +119,15 @@ genuinely moves trace size (~5x), which is precisely why a trace without it woul
 represent where this engine spends its time. See
 [Profiling a pricing job](#profiling-a-pricing-job) below and
 [Profiling & the Tracer](../concepts/profiling.md).
+
+**How much precision market risk needs:**
+```bash
+python demos/demo_precision.py
+```
+Runs `engine.market_risk.run_market_risk` on a sloped two-curve market and a mixed
+portfolio at FP64 and FP32 over five Sobol seeds, and compares the FP32 error in VaR 99%
+and ES 97.5% with the Monte Carlo noise those numbers already carry (the ES standard error
+and the spread across seeds).
 
 Each pipeline module also has its own runnable demo in its own
 `if __name__ == "__main__":` block, showing that module's public API used end-to-end
@@ -166,12 +176,13 @@ Prints how many discretized exercise dates the exercise window was converted int
 resulting baseline (t=0) NPV, then the NPV cube's shape and its mean value at every
 simulated time step.
 
-**Risk statistics** (runs simulation and pricing internally first):
+**Risk statistics on a simulated cube** (runs simulation and pricing internally first):
 ```bash
 python -m engine.risk.var_es
 ```
-Prints the portfolio's baseline (t=0) value and the VaR/ES numbers at each requested
-confidence level, for every simulated time step.
+Prints the portfolio's baseline (t=0) value and loss quantiles of the simulated cube at
+each requested confidence level, for every simulated time step. This exercises the
+statistics functions; the engine's market-risk VaR is `demos/demo.py`'s last section.
 
 This demo crashed until 2026-09-24, because its `SwapConfig` omitted `evaluation_date` and
 scheduled off *today* against pillars pinned to 2026-07-30 ([I-28](../known-issues.md#i-28)).
@@ -237,7 +248,7 @@ curl -X POST http://127.0.0.1:8000/portfolio/price \
     },
     "trades": [{"trade_type": "swap", "notional": 1000000.0, "fixed_rate": 0.032, "payer": true,
                 "discount_curve_index": 0, "forward_curve_index": 0, "swap_tenor": "2Y"}],
-    "percentiles": [0.95, 0.99]
+    "pfe_quantiles": [0.95, 0.99]
   }'
 ```
 
@@ -562,7 +573,31 @@ For swaptions with multiple exercise dates (Bermudan) or a continuous exercise w
 `AmericanSwaptionConfig`/`price_american_swaptions` follow the same
 list-of-configs-in, NPV-cube-out pattern as `price_swaptions` above.
 
-## Computing risk metrics
+## Computing market risk (VaR / ES)
+
+Short-horizon VaR and ES come from revaluing the portfolio at t=0 under shocked curves
+([Market Risk](../risk/market-risk.md)):
+
+```python
+from engine.market_risk import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
+
+factors = RateRiskFactors.from_curves([zero_curve_config], names=["USD"])
+scenarios = monte_carlo_scenarios(factors, covariance, horizon_days=10, num_scenarios=4096, seed=1)
+result = run_market_risk(MarketRiskRequest(trades, scenarios, quantiles=(0.99, 0.975)))
+print(result.risk["VaR_99"], result.risk["ES_97.5"])
+```
+
+`covariance` is the `[F, F]` covariance of 10-day absolute moves of the curve pillars, in
+`factors.labels()` order; `historical_scenarios(factors, history, horizon_days=10)` uses
+observed moves instead. The end of `demos/demo.py` is a complete example.
+
+## Exposure profiles
+
+`price_portfolio`'s multi-step simulation yields exposure through time, not VaR:
+`result.exposure.epe`, `.ene`, `.ee_b`, `.eee_b` and `.pfe["PFE_95"]`, one entry per date
+starting at t=0 ([Exposure](../risk/exposure.md)).
+
+## Computing VaR/ES statistics on your own cube
 
 ```python
 from engine.risk.var_es import compute_risk_metrics

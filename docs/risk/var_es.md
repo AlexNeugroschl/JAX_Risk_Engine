@@ -3,6 +3,14 @@
 **Module:** [`engine/risk/var_es.py`](../../engine/risk/var_es.py)
 **Public entry point:** `compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))`
 
+> **Where these statistics are used.** The engine's VaR/ES is
+> [Market Risk](market-risk.md): short-horizon shocks, full revaluation at t=0, and these
+> functions applied to the resulting P&L sample. The multi-step simulation in
+> `price_portfolio` no longer reports VaR/ES — a loss quantile of a risk-neutral,
+> multi-year cube is an exposure statistic, reported as such in [Exposure](exposure.md).
+> The functions below are unchanged and still accept any `[Scenarios, TimeSteps, Trades]`
+> cube.
+
 ## Plain-language summary
 
 This is the final step: turning "what a trade (or portfolio of trades) is worth in

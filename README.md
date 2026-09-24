@@ -21,7 +21,11 @@ double-precision simulations in the same wall-clock time.
 - LGM volatility calibration to market swaption quotes, following ORE's `LgmBuilder`
 - Delta, Gamma and Theta via automatic differentiation, scaled to ORE's bump-and-revalue
   convention, and Vega for Bermudan and American swaptions
-- VaR and Expected Shortfall matching `ORE.RiskStatistics`, with Monte Carlo error estimates
+- Short-horizon VaR and Expected Shortfall by full revaluation of the portfolio under
+  Monte Carlo or historical shocks of every curve pillar, with ORE's `RiskStatistics`
+  conventions and Monte Carlo error estimates
+- Exposure profiles (EPE, ENE, PFE through time) from the multi-step simulation, using ORE's
+  `ExposureCalculator` definitions
 - Independent FP64/FP32 precision settings for simulation, pricing, risk and calibration,
   with each precision tier running in its own worker processes
 - HTTP API for portfolio pricing and calibration, plus a versioned end-of-day contract for
@@ -44,8 +48,10 @@ Pricing and risk formulas are mapped to their counterparts in ORE's C++ source a
 against ORE running in the same process:
 
 - A mixed portfolio priced end to end agrees with ORE, on the same simulated rates, to
-  within `1e-3` relative error per scenario. VaR and Expected Shortfall agree to the same
-  tolerance.
+  within `1e-3` relative error per scenario.
+- Market-risk VaR and ES agree with ORE repricing every shocked scenario and running its
+  own `RiskStatistics`: swaps and bonds per scenario to about `1e-14`, Bermudans to `2e-13`,
+  European swaptions to `3e-7`.
 - Bermudan and American swaption prices agree with ORE's LGM grid engine to about `1e-12`.
 
 See [ORE Parity](docs/reference/ore-parity.md) for the full mapping.

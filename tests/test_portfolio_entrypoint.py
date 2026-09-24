@@ -25,7 +25,8 @@ from engine.instruments.american_swaption import AmericanSwaptionConfig, price_a
 from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.lgm import calibrate_lgm_sigma
 from engine.models.hull_white import ZeroCurve as HwZeroCurve
-from engine.risk.var_es import compute_risk_metrics
+from engine.models.hull_white import discount as hw_discount
+from engine.risk.exposure import netting_set_profile
 from engine.simulation.demo_scenarios import flat_yield_curves
 from engine.portfolio import PortfolioRequest, PortfolioResult, derive_maturity_pillars, price_portfolio
 
@@ -127,13 +128,19 @@ class TestPricePortfolioMatchesHandOrchestration:
             + price_bermudan_swaption_base(bermudan_cfg)
             + price_bermudan_swaption_base(american_cfg)
         )
-        risk = compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))
-        return {"npv_cube": npv_cube, "base_npv": base_npv, "risk": risk}
+        # The netting-set exposure, from the simulation's own numeraire and
+        # rate factor 0's curve -- the wiring price_portfolio must reproduce.
+        discount = hw_discount(HwZeroCurve.from_config(sim_config.rates.initial_zero_curves[0]), step_times)
+        exposure = netting_set_profile(
+            npv_cube, [base_npv], market["numeraire"], discount,
+            np.asarray(sim_config.time_grid[1:]), quantiles=(0.95, 0.99),
+        )
+        return {"npv_cube": npv_cube, "base_npv": base_npv, "exposure": exposure}
 
     @classmethod
     @pytest.fixture(scope="class")
     def via_entrypoint(cls, trades, sim_config):
-        request = PortfolioRequest(market=sim_config, trades=list(trades), percentiles=(0.95, 0.99))
+        request = PortfolioRequest(market=sim_config, trades=list(trades), pfe_quantiles=(0.95, 0.99))
         return price_portfolio(request)
 
     def test_returns_portfolio_result(self, via_entrypoint):
@@ -156,12 +163,23 @@ class TestPricePortfolioMatchesHandOrchestration:
     def test_base_npv_matches(self, via_entrypoint, manual):
         np.testing.assert_allclose(via_entrypoint.base_npv, manual["base_npv"], rtol=1e-9)
 
-    def test_risk_metrics_match(self, via_entrypoint, manual):
-        assert set(via_entrypoint.risk.keys()) == set(manual["risk"].keys())
-        for key in manual["risk"]:
+    def test_exposure_matches(self, via_entrypoint, manual):
+        got, expected = via_entrypoint.exposure, manual["exposure"]
+        np.testing.assert_array_equal(got.times, expected.times)
+        for name in ("epe", "ene", "ee_b", "eee_b"):
             np.testing.assert_allclose(
-                np.asarray(via_entrypoint.risk[key]), np.asarray(manual["risk"][key]), rtol=1e-9, equal_nan=True,
+                np.asarray(getattr(got, name)), np.asarray(getattr(expected, name)), rtol=1e-9, atol=1e-9,
             )
+        assert set(got.pfe) == set(expected.pfe) == {"PFE_95", "PFE_99"}
+        for key in expected.pfe:
+            np.testing.assert_allclose(np.asarray(got.pfe[key]), np.asarray(expected.pfe[key]), rtol=1e-9, atol=1e-9)
+
+    def test_one_standalone_exposure_per_trade(self, via_entrypoint):
+        assert len(via_entrypoint.trade_exposures) == 4
+        for i, profile in enumerate(via_entrypoint.trade_exposures):
+            npv0 = via_entrypoint.base_npv_per_trade[i]
+            assert float(profile.epe[0]) == pytest.approx(max(npv0, 0.0))
+            assert float(profile.ene[0]) == pytest.approx(max(-npv0, 0.0))
 
     def test_no_warnings_other_than_the_aged_swap_one(self, via_entrypoint):
         """Nothing about this portfolio's Bermudan/American trades warrants a
@@ -177,8 +195,11 @@ class TestPricePortfolioMatchesHandOrchestration:
         exactly the silence that warning exists to remove -- so this test
         narrows to its actual subject (the option trades) instead.
         """
+        # The expiry warning (audit M-3) is excluded for the same reason: it
+        # is about exposure after the last exercise date, not about how
+        # exercise itself is priced.
         unrelated = [w for w in via_entrypoint.warnings
-                     if "already started accruing" not in w]
+                     if "already started accruing" not in w and "last exercise" not in w]
         assert unrelated == []
 
     def test_greeks_are_none_when_not_requested(self, via_entrypoint):
@@ -495,39 +516,22 @@ class TestPricePortfolioPrecision:
                     continue
                 assert jnp.asarray(val).dtype == jnp.float64, f"trade {idx} greek {key!r} not float64"
 
-    def test_risk_var_es_override_recasts_npv_cube_for_risk_only(self):
-        """RiskPrecisionOverride(default=64, var_es=32) -- the cast happens
-        ONLY on the copy fed to compute_risk_metrics; npv_cube itself (what
-        `pricing` produced) is untouched.
-
-        `ES_*_tailCount` is excluded deliberately: it is a **count of
-        observations**, not a statistic, so it is integer-typed at every
-        precision. Casting it to float32 would be actively wrong -- float32
-        cannot represent integers exactly above 2**24, so a large-scenario
-        count would silently round. `ES_*_standardError` IS a statistic and
-        is checked like the rest.
-        """
+    def test_risk_exposure_override_recasts_npv_cube_for_exposure_only(self):
+        """RiskPrecisionOverride(default=64, exposure=32) -- the cast happens
+        ONLY on the copy fed to the exposure statistics; npv_cube itself
+        (what `pricing` produced) is untouched."""
         from engine.portfolio import PrecisionConfig, RiskPrecisionOverride
 
-        override = RiskPrecisionOverride(default=64, var_es=32)
+        override = RiskPrecisionOverride(default=64, exposure=32)
         request = self._request(precision=PrecisionConfig(pricing=64, risk=override))
         result = price_portfolio(request)
         assert result.npv_cube.dtype == jnp.float64
 
-        statistics = {k: v for k, v in result.risk.items() if not k.endswith("_tailCount")}
-        assert statistics, "expected at least the VaR/ES statistics"
-        for key, arr in statistics.items():
-            assert jnp.asarray(arr).dtype == jnp.float32, f"risk metric {key!r} not float32"
-
-        # The counts are present, integral, and non-negative -- asserted
-        # rather than merely skipped, so excluding them cannot hide their
-        # disappearance.
-        counts = {k: v for k, v in result.risk.items() if k.endswith("_tailCount")}
-        assert counts, "expected per-percentile tail counts"
-        for key, arr in counts.items():
-            values = jnp.asarray(arr)
-            assert jnp.issubdtype(values.dtype, jnp.integer), f"{key!r} should be integral"
-            assert bool(jnp.all(values >= 0)), f"{key!r} has a negative count"
+        profiles = [result.exposure] + list(result.trade_exposures)
+        for profile in profiles:
+            arrays = [profile.epe, profile.ene, profile.ee_b, profile.eee_b] + list(profile.pfe.values())
+            for arr in arrays:
+                assert jnp.asarray(arr).dtype == jnp.float32
 
     def test_calibration_precision_flows_through_lgm_bootstrap(self):
         """calibration=32 vs 64 must produce a genuinely different-dtype

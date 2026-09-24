@@ -35,10 +35,10 @@ do, this document links the entry and says what the register gets wrong or leave
 | [M-3](#m-3) | Options vanish at expiry instead of turning into the swap | High | Moderate |
 | [M-4](#m-4) | Trades are defined relative to the evaluation date | High | Hard |
 | [M-5](#m-5) | Theta re-rolls the trade instead of ageing it | High | Hard (after M-4) |
-| [R-1](#r-1) | The reported VaR/ES is not an end-of-day market-risk VaR | High | Hard (decision first) |
+| [R-1](#r-1) | The reported VaR/ES is not an end-of-day market-risk VaR | ✅ Resolved 2026-09-24 | — |
 | [P-1](#p-1) | Nothing runs on more than one device | High | Hard |
 | [P-2](#p-2) | Bermudan/American scenario pricing runs on the host in a Python loop | Medium | Moderate |
-| [P-3](#p-3) | The precision study does not exercise the engine's own low-precision path | Medium | Moderate |
+| [P-3](#p-3) | The precision study does not exercise the engine's own low-precision path | ✅ Resolved 2026-09-24 | — |
 | [A-1](#a-1) | Precision is controlled by toggling a process-global JAX flag | Medium | Hard |
 | [A-2](#a-2) | Two short-rate model families, bridged by a state conversion | Medium | Hard (with M-1) |
 | [A-3](#a-3) | Trade configs duplicate model parameters, then validate the copies | Medium | Moderate |
@@ -51,10 +51,18 @@ do, this document links the entry and says what the register gets wrong or leave
 | [Q-3](#q-3) | Test suite: slow, unmarked, and coupled to itself | Medium | Moderate |
 | [Q-4](#q-4) | Documentation sprawl and stale planning documents | Low | Moderate |
 
-Recommended order: **M-1, then M-2 and M-3** (together they decide whether any VaR/ES or
-exposure number beyond t=0 means anything), **then M-4/M-5**, then P-3 (cheap, and it
-protects the project's main research claim). The rest can follow the work that touches
-them.
+**Decision (2026-09-24, R-1).** The engine reports two different things under two names.
+Market-risk VaR/ES is a t=0 full revaluation under Monte Carlo or historical shocks
+(`engine.market_risk`, [Market Risk](../risk/market-risk.md)). The multi-step simulation
+reports exposure profiles (`engine.risk.exposure`, [Exposure](../risk/exposure.md)),
+flagged with a warning wherever M-1, M-2 or M-3 applies. Market risk does not use the
+simulated cube, so **M-1 to M-3 now affect only the exposure product**, and they are
+scheduled with the counterparty-risk work (Basel plan phase P5), not first. P-3 was
+closed by rebuilding the precision study on the market-risk path.
+
+Recommended order from here: **M-4/M-5** (trade dates; theta), then **P-1** (multi-device,
+the research goal), then **M-1 to M-3** when exposure or CVA is scheduled. The rest can
+follow the work that touches them.
 
 ---
 
@@ -203,6 +211,11 @@ evaluation date. The tests that pin current theta values will change.
 
 ### R-1 — The reported VaR/ES is not an end-of-day market-risk VaR {#r-1}
 
+**Status: ✅ Resolved 2026-09-24.** `price_portfolio` now reports exposure profiles
+(EPE/ENE/EE_B/EEE_B/PFE, ORE's `ExposureCalculator` definitions, numeraire-deflated)
+instead of VaR/ES; short-horizon VaR/ES is `engine.market_risk.run_market_risk`, validated
+scenario by scenario against ORE. What follows is the finding as originally written.
+
 **Urgency: High · Ease: Hard (needs a decision first)**
 
 **Problem.** `compute_risk_metrics` reports a VaR/ES per simulated step, where P&L is
@@ -260,7 +273,25 @@ per distinct trade structure (see [I-21](../known-issues.md#i-21) and
 `jnp.interp` over steps. The interpolation semantics are the same; expect differences at
 round-off level only.
 
+**Related, found while building `engine.market_risk` (2026-09-24).** Revaluing a
+Bermudan/American per scenario costs ~0.1–0.2s per scenario on CPU at `n_per_std=64`.
+Two things are unexplained and worth an XLA profile before any TPU work:
+- The first grid revaluation in a process sometimes runs up to 50× faster than any later
+  one, with bit-identical results. `jax.clear_caches()` does not restore it, and neither
+  does the batch size.
+- A plain `jit(vmap(...))` over batches is as slow as the slow case.
+
+Separately, the rollback's per-scenario working set (about 80 MB at `n_per_std=64`) made a
+fixed vmap batch of 256 need ~19 GB. `engine.market_risk.revaluation.scenario_batch_size`
+now caps it.
+
 ### P-3 — The precision study does not exercise the engine's own low-precision path {#p-3}
+
+**Status: ✅ Resolved 2026-09-24.** `demos/demo_precision.py` now runs
+`run_market_risk` itself at FP64 and FP32 on a sloped two-curve market with a mixed
+portfolio. Measured: the FP32 error in VaR 99% and ES 97.5% is about 4e-4 of the FP64
+spread across Sobol seeds. It dropped the FP16 comparison, which no pricer supports. The
+finding as originally written:
 
 **Urgency: Medium · Ease: Moderate**
 
@@ -455,3 +486,9 @@ test.
 | `reference/ORE` and `reference/traderX` were submodule gitlinks with no `.gitmodules`, so a fresh clone could not fetch them | `.gitmodules` | `git submodule status` |
 | Duplicated cashflow extraction in `derive_maturity_pillars` and the aged-swap warning; dead `order` return value; duplicated comment block; stale x64 comment; `x in (inf, -inf)` finite checks | `request.py`, `var_es.py`, `validation.py`, instrument configs | existing tests |
 | `.gitignore` duplicates and a typo (`.pytest_cache__/`); no pytest config (`testpaths`); demo `Run with` paths; demo risk-table headers ran together; swap demo labelled step 1 as "t=0" | repo root, `demos/`, `swap.py` | demo runs |
+| The multi-step cube's loss quantiles were reported as VaR/ES (R-1); it now reports exposure profiles, and market-risk VaR/ES is a new t=0 revaluation path | `engine/risk/exposure.py`, `engine/market_risk/` | `test_exposure.py`, `test_market_risk.py`, `test_market_risk_ore_parity.py` |
+| Swaption t=0 price function promoted float32 to float64 through two dtype-less constants, so `risk=32` swaption Greeks ran partly in float64 | `engine/risk/price_functions.py` | `test_market_risk.py::TestRevaluation::test_swaption_price_function_keeps_float32` |
+| VaR/ES keys rounded fractional quantiles: 0.975 was labelled `ES_98`, and 0.995 and 0.999 both `…_100` | `engine/risk/var_es.py` | `test_market_risk.py::TestRun::test_basel_quantile_is_labelled_97_5`, `test_exposure.py` |
+| The ORE LGM oracle wrote numpy scalars into ORE market data as `np.float64(...)`, which ORE cannot parse | `engine/validation/ore_lgm_oracle.py` | `test_market_risk_ore_parity.py` (Bermudan case) |
+| The bond pricer's cashflow list is now one definition shared by the float pricer and a new JAX price function | `engine/instruments/treasury.py` | `test_market_risk.py::TestRevaluation::test_bond_equals_the_float_pricer_including_a_parallel_shift` |
+

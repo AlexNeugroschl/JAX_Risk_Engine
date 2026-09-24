@@ -139,7 +139,7 @@ try:
                 "exercise_time_steps_per_year": 2, "n_per_std": 64, "std_devs": 6.0,
             },
         ],
-        "percentiles": [0.95, 0.99],
+        "pfe_quantiles": [0.95, 0.99],
         # Resolves both trades' hw_sigma=null above: the server builds a
         # co-terminal calibration basket from these inputs (the same
         # inputs build_coterminal_basket itself takes -- see
@@ -234,16 +234,14 @@ try:
     if result["warnings"]:
         print(f"warnings: {result['warnings']}")
 
-    section("Risk aggregation")
-    risk = result["risk"]["values"]
-    print("  time   " + "".join(f"{m:>12}" for m in risk))
-    for i, t in enumerate(TIME_GRID[1:]):
-        row = "".join(
-            f"{risk[m][i]:>12,.0f}" if risk[m][i] is not None else f"{'nan':>12}"
-            for m in risk
-        )
-        print(f"  {t:>4.2f}  " + row)
-    print("(nan = the loss tail was empty at that step, matching ORE's own edge case)")
+    section("Exposure profile")
+    exposure = result["exposure"]
+    columns = ["epe", "ene", "ee_b"] + list(exposure["pfe"])
+    print("  time  " + "".join(f"{c.upper():>12}" for c in columns))
+    for i, t in enumerate(exposure["times"]):
+        values = [exposure[c][i] if c in exposure else exposure["pfe"][c][i] for c in columns]
+        print(f"  {t:>4.2f}" + "".join(f"{v:>12,.0f}" for v in values))
+    print("(netting set; EPE/ENE/PFE discounted to today, EE_B undiscounted -- ORE's definitions)")
 
     section("Greeks")
     bermudan_index = str(TRADE_NAMES.index("bermudan"))

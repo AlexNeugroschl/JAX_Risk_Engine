@@ -159,9 +159,12 @@ class TestCrossFieldValidation:
             hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
             exercise_dates=[exercise_date], swap_tenor="3Y", evaluation_date=TODAY,
         )
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            validate_portfolio_against_simulation(sim, [cfg])  # must not warn/raise
+        # The only warning allowed is the unrelated expiry one (audit M-3):
+        # the exercise lies inside the simulated horizon.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            validate_portfolio_against_simulation(sim, [cfg])  # must not raise
+        assert [str(w.message) for w in caught if "last exercise" not in str(w.message)] == []
 
     def test_american_exercise_window_never_warns(self):
         """Nor does an American window, whose broken-period exercise is ORE's
@@ -173,9 +176,12 @@ class TestCrossFieldValidation:
             first_exercise_date=TODAY + 365, last_exercise_date=TODAY + 730, exercise_time_steps_per_year=3,
             swap_tenor="3Y", evaluation_date=TODAY,
         )
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            validate_portfolio_against_simulation(sim, [cfg])  # must not warn/raise
+        # The only warning allowed is the unrelated expiry one (audit M-3):
+        # the exercise lies inside the simulated horizon.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            validate_portfolio_against_simulation(sim, [cfg])  # must not raise
+        assert [str(w.message) for w in caught if "last exercise" not in str(w.message)] == []
 
 
 class TestPillarAssembly:
@@ -254,3 +260,47 @@ class TestPillarAssembly:
 
     def test_empty_portfolio_returns_just_t0(self):
         assert derive_maturity_pillars([], TODAY) == [0.0]
+
+
+def _recorded_warnings(sim, trades):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        validate_portfolio_against_simulation(sim, trades)
+    return [str(w.message) for w in caught]
+
+
+class TestExposureLimitationWarnings:
+    """The exposure cube's known limitations (docs/planning/engine-audit.md,
+    M-1..M-3) are announced per run, not left for a reader to discover."""
+
+    def test_flat_consistent_curve_does_not_warn_about_the_model(self):
+        assert not [w for w in _recorded_warnings(_sim_config(), []) if "rate factor 0" in w]
+
+    @pytest.mark.parametrize("rates_overrides", [
+        dict(initial_zero_curves=[ZeroCurveConfig(ZERO_CURVE.times, [0.03, 0.031, 0.032, 0.035, 0.037, 0.04])]),
+        dict(theta=[0.04]),
+        dict(initial_rates=[0.02]),
+    ], ids=["sloped-curve", "theta-off-level", "r0-off-level"])
+    def test_inconsistent_short_rate_warns(self, rates_overrides):
+        base = _sim_config().rates
+        rates = RatesConfig(**{**base.__dict__, **rates_overrides})
+        messages = _recorded_warnings(_sim_config(rates=rates), [])
+        assert any("rate factor 0" in w and "not arbitrage-free" in w for w in messages)
+
+    def test_option_expiring_inside_the_horizon_warns(self):
+        # 1Y-forward European: expiry ~1.0 inside a grid running to 2.0.
+        cfg = _swaption_cfg(forward_start=ORE.Period(1, ORE.Years))
+        messages = _recorded_warnings(_sim_config(), [cfg])
+        assert any("last exercise" in w and "trade[0]" in w and "M-3" in w for w in messages)
+
+    def test_option_expiring_after_the_horizon_does_not_warn(self):
+        cfg = _swaption_cfg(forward_start=ORE.Period(3, ORE.Years))
+        assert not [w for w in _recorded_warnings(_sim_config(), [cfg]) if "last exercise" in w]
+
+    def test_aged_swap_warning_names_paid_cashflows(self):
+        swap = SwapConfig(
+            notional=1_000_000.0, fixed_rate=0.03, payer=True, discount_curve_index=0,
+            forward_curve_index=0, swap_tenor="1Y", evaluation_date=TODAY,
+        )
+        messages = _recorded_warnings(_sim_config(), [swap])
+        assert any("already started accruing" in w and "already paid" in w for w in messages)

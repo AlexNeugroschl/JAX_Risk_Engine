@@ -2,7 +2,7 @@
 A deliberately SMALL portfolio, sized so its profiler trace is something you
 can actually open -- while still exercising the full end-to-end path
 `demo_structured.py` does: calibration -> simulation -> all four instrument
-pricers -> risk -> Greeks, over the real HTTP API, in a real pool worker,
+pricers -> exposure -> Greeks, over the real HTTP API, in a real pool worker,
 under `jax.profiler.trace`.
 
 **Why this exists.** `demo_structured.py`'s portfolio (4096 scenarios, a
@@ -15,7 +15,7 @@ coverage, a fraction of the trace.
 
 **What it produces:** ~41 MB, ~25 s, one `pid-<pid>/` directory under
 `.profile-out-small`. The timeline is labelled by phase (calibration /
-simulation / pricing / base_npv / risk / greeks, plus one region per trade
+simulation / pricing / base_npv / exposure / greeks, plus one region per trade
 inside greeks) -- see `docs/concepts/profiling.md` for how those annotations
 work and how to read the result.
 
@@ -250,7 +250,7 @@ def build_portfolio_request_schema() -> dict:
         "evaluation_date": EVALUATION_DATE,
         "market": build_market_schema(zero_curve),
         "trades": build_trades_schema(zero_curve),
-        "percentiles": RISK_PERCENTILES,
+        "pfe_quantiles": RISK_PERCENTILES,
         "calibration_basket": build_calibration_basket_schema(),
         # Always on -- see module docstring: the Greeks path is the
         # interesting part of this timeline, and a trace without it is not
@@ -305,20 +305,14 @@ def print_result(result: dict) -> None:
         for message in result["warnings"]:
             print(f"  - {message}")
 
-    print("\nrisk:")
-    risk = result["risk"]["values"]
-    # Column width is derived from the longest metric NAME rather than fixed:
-    # compute_risk_metrics reports Monte Carlo diagnostics alongside the
-    # headline VaR/ES (e.g. "ES_95_standardError", 19 chars), which a
-    # hardcoded width silently runs together into an unreadable header.
-    width = max(12, max(len(m) for m in risk) + 2)
-    print("  time  " + "".join(f"{m:>{width}}" for m in risk))
-    for i, t in enumerate(TIME_GRID_YEARS[1:]):
-        row = "".join(
-            f"{risk[m][i]:>{width},.0f}" if risk[m][i] is not None else f"{'nan':>{width}}"
-            for m in risk
-        )
-        print(f"  {t:>4.2f} " + row)
+    print("\nexposure profile:")
+    exposure = result["exposure"]
+    columns = ["epe", "ene", "ee_b"] + list(exposure["pfe"])
+    print("  time  " + "".join(f"{c.upper():>12}" for c in columns))
+    for i, t in enumerate(exposure["times"]):
+        values = [exposure[c][i] if c in exposure else exposure["pfe"][c][i] for c in columns]
+        print(f"  {t:>4.2f}" + "".join(f"{v:>12,.0f}" for v in values))
+    print("(netting set; EPE/ENE/PFE discounted to today, EE_B undiscounted -- ORE's definitions)")
 
     print("\nGreeks (per trade index):")
     for idx, greeks in sorted(result["greeks"].items(), key=lambda kv: int(kv[0])):

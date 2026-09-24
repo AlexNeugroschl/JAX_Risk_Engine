@@ -105,9 +105,10 @@ def _assert_finite_result(result, expected_trades):
     assert result.npv_cube.shape[-1] == expected_trades
     assert bool(jnp.all(jnp.isfinite(result.npv_cube)))
     assert np.isfinite(result.base_npv)
-    for key, arr in result.risk.items():
-        arr_np = np.asarray(arr)
-        assert np.all(np.isfinite(arr_np) | np.isnan(arr_np)), f"{key} produced a non-finite, non-NaN value"
+    profile = result.exposure
+    for name, arr in [("epe", profile.epe), ("ene", profile.ene), ("ee_b", profile.ee_b),
+                      ("eee_b", profile.eee_b), *profile.pfe.items()]:
+        assert np.all(np.isfinite(np.asarray(arr))), f"{name} produced a non-finite value"
 
 
 # =============================================================================
@@ -146,7 +147,7 @@ class TestPortfolioSizeScaling:
         )
         assert len(trades) == 50
         sim = _sim_config(trades, scenarios=128)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, percentiles=(0.95, 0.99)))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, pfe_quantiles=(0.95, 0.99)))
         _assert_finite_result(result, 50)
 
     def test_result_size_scales_linearly_in_trade_axis_only(self):
@@ -296,7 +297,7 @@ class TestCompositionEdgeCases:
         cube = np.asarray(result.npv_cube)
         np.testing.assert_allclose(cube[:, :, 0], 0.0, atol=1e-6)
         assert np.all(np.isfinite(cube[:, :, 1]))
-        assert np.all(np.isfinite(np.asarray(result.risk["VaR_95"])))
+        assert np.all(np.isfinite(np.asarray(result.exposure.pfe["PFE_95"])))
 
     def test_negative_notional_swap_is_the_mirror_image_of_positive(self):
         """Negative notional is explicitly supported (documented, not an
@@ -333,7 +334,7 @@ class TestCompositionEdgeCases:
         receivers = [_swap(i, payer=False, notional=1_000_000.0, fixed_rate=0.03, swap_tenor="3Y") for i in range(20)]
         trades = payers + receivers
         sim = _sim_config(trades, scenarios=256)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, percentiles=(0.95,)))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, pfe_quantiles=(0.95,)))
         cube = np.asarray(result.npv_cube)
         portfolio_npv_per_scenario = cube.sum(axis=-1)
         assert np.max(np.abs(portfolio_npv_per_scenario)) < 1e-6

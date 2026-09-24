@@ -25,14 +25,17 @@ JAX_Risk_Engine/
 │   ├── demo_structured.py                  API, and the HTTP API split into explicit
 │   │                                       given-inputs/server-setup/server-inputs/
 │   │                                       submit-and-print stages
-│   └── demo_profile_small.py             Same end-to-end path, sized so its profiler
-│                                         trace is small enough to actually open
+│   ├── demo_profile_small.py             Same end-to-end path, sized so its profiler
+│   │                                     trace is small enough to actually open
+│   └── demo_precision.py                 FP64 vs FP32 market-risk VaR/ES against
+│                                         Monte Carlo noise
 ├── docs/                                 Organized by topic (you are here)
 │   ├── getting-started/                  Overview, user guide
 │   ├── concepts/                         Architecture, market simulation, glossary,
 │   │                                     coding style, profiling & the tracer
 │   ├── instruments/                      Swaps, European/Bermudan/American swaptions
-│   ├── risk/                             VaR / Expected Shortfall, Delta/Gamma/Vega/Theta
+│   ├── risk/                             Market risk (VaR/ES), exposure, the VaR/ES
+│   │                                     statistics, Delta/Gamma/Vega/Theta
 │   ├── reference/                        API reference, ORE parity mapping, models &
 │   │                                     trades, calibration, portfolio entry point,
 │   │                                     HTTP API, EOD integration boundary
@@ -141,8 +144,18 @@ JAX_Risk_Engine/
 │   │                                     t=0 only, so no scenario cube and no VaR/ES
 │   │                                     (I-24). The only non-JAX pricer here; imports
 │   │                                     no other pricer
+│   ├── market_risk/                      Short-horizon VaR/ES by full revaluation at t=0:
+│   │   ├── factors.py                    RateRiskFactors -- curve pillars as risk factors
+│   │   ├── scenarios.py                  Monte Carlo and historical shock scenarios
+│   │   ├── revaluation.py                Every trade repriced under every scenario
+│   │   └── run.py                        MarketRiskRequest/Result, run_market_risk
 │   └── risk/
-│       ├── var_es.py                     Computes VaR / Expected Shortfall
+│       ├── var_es.py                     VaR / Expected Shortfall statistics (ORE's
+│       │                                 RiskStatistics conventions)
+│       ├── exposure.py                   EPE/ENE/EE_B/EEE_B/PFE over the simulated cube
+│       │                                 (ORE's ExposureCalculator definitions)
+│       ├── price_functions.py            Each trade's t=0 price as a JAX function of its
+│       │                                 curves -- shared by Greeks and market risk
 │       └── greeks.py                     Computes Delta / Gamma / Theta / Vega
 └── tests/
     ├── conftest.py                       Shared pytest fixtures
@@ -295,10 +308,21 @@ still wires these together by hand.
                                   │ NPV cube(s)
                                   ▼
                     ┌─────────────────────────┐
-   base_npv          │   engine/risk/            │  {"VaR_95": [...], "ES_95": [...],
-   ───────────────► │   var_es.py              │   "VaR_99": [...], "ES_99": [...]}
-                     │   compute_risk_metrics() │
+   base_npv,         │   engine/risk/            │  ExposureProfile: EPE, ENE, EE_B,
+   numeraire ─────► │   exposure.py            │   EEE_B, PFE_95, PFE_99 per date
+                     │   netting_set_profile()  │
                     └─────────────────────────┘
+```
+
+Market risk is a separate, shorter pipeline that does not simulate paths at all:
+
+```
+   ShockScenarios     ┌─────────────────────────┐   [S, N] P&L   ┌──────────────────┐
+   (Monte Carlo or ─► │ engine/market_risk/      │ ─────────────► │ engine/risk/      │ VaR_99,
+   historical)        │ revaluation.py: every    │                │ var_es.py         │ ES_97.5, ...
+   trades ──────────► │ trade repriced at t=0    │                │ compute_risk_     │
+                      │ under every shock        │                │ metrics()         │
+                     └─────────────────────────┘                └──────────────────┘
 ```
 
 Full field-level detail on every input/output is in the [API Reference](../reference/api-reference.md);
@@ -359,10 +383,23 @@ from `engine/models/hull_white.py` (`swap.py`, `european_swaption.py`) or
 `engine/models/lgm.py` (`bermudan_swaption.py`/`american_swaption.py`) — see
 [Models & Trades](../reference/models-and-trades.md).
 
-### Risk Aggregation (`engine/risk/var_es.py`)
+### Exposure (`engine/risk/exposure.py`)
 
-**Input:** any NPV cube shaped `[Scenarios, TimeSteps, Trades]` (not necessarily from
-the instrument pricers — see below) plus a baseline value.
+**Input:** the simulated NPV cube, the numeraire paths and today's discount factors.
+**Output:** ORE's exposure profile per date — EPE, ENE, EE_B, EEE_B, PFE — for the
+netting set and for each trade. See [Exposure](../risk/exposure.md).
+
+### Market Risk (`engine/market_risk/`)
+
+**Input:** trades and `ShockScenarios` (absolute moves of every curve pillar over a short
+horizon). **Output:** the P&L of every trade under every scenario, and its VaR/ES. It
+does not use the simulated cube. See [Market Risk](../risk/market-risk.md).
+
+### Risk Statistics (`engine/risk/var_es.py`)
+
+**Input:** any cube shaped `[Scenarios, TimeSteps, Trades]` (not necessarily from the
+instrument pricers — see below) plus a baseline value. The market-risk path passes its
+P&L sample as a one-date cube.
 **Output:** Value at Risk and Expected Shortfall numbers, one per requested confidence
 level, one per time step.
 
@@ -550,7 +587,7 @@ class RiskPrecisionOverride:
     delta_gamma: Optional[int] = None   # ONE knob for both -- see below
     theta: Optional[int] = None
     vega: Optional[int] = None
-    var_es: Optional[int] = None
+    exposure: Optional[int] = None
 ```
 
 A flat `int` is sugar for "every sub-field at this precision" — it resolves through the
@@ -568,13 +605,16 @@ against one curve (one gradient plus one batched Hessian-vector-product pass —
 the curve-build and the autodiff trace, or restructuring `engine/risk/greeks.py`'s public
 functions themselves, out of scope for a wrap-don't-invade config redesign.
 
-`var_es` is structurally different from the other three `risk` sub-fields: `compute_risk_metrics`
-derives its dtype from `npv_cube`/`base_npv` (i.e. from `pricing`'s own output), not from any
-curve. `price_portfolio` honors a `var_es` override that differs from `pricing` via an
-explicit re-cast of `npv_cube`/`base_npv` immediately before calling `compute_risk_metrics`
-— not a curve substitution like `delta_gamma`/`theta`/`vega`. This means `risk.var_es` can
-only ever *narrow* precision relative to whatever `pricing` already produced; it can't
-recover precision `pricing` already lost.
+`exposure` is structurally different from the other three `risk` sub-fields: the exposure
+statistics derive their dtype from `npv_cube` (i.e. from `pricing`'s own output), not from
+any curve. `price_portfolio` honors an `exposure` override that differs from `pricing` via
+an explicit re-cast of `npv_cube` immediately before computing the profiles — not a curve
+substitution like `delta_gamma`/`theta`/`vega`. This means `risk.exposure` can only ever
+*narrow* precision relative to whatever `pricing` already produced; it can't recover
+precision `pricing` already lost.
+
+(The market-risk path, `engine.market_risk`, has a single `precision` of its own: the
+revaluation and its VaR/ES statistics run at one dtype.)
 
 A real, honest consequence of per-instrument-type `pricing`: when different buckets resolve
 to different dtypes, `_price_by_type`'s final `jnp.stack` promotes the assembled `npv_cube`
@@ -627,8 +667,8 @@ not just a per-array code read) rather than trusting the initial "these four pri
 no changes" research alone — the plan that scoped this feature flagged exactly this kind
 of gap as something to re-verify during implementation, not assume away.
 
-**`risk`** governs VaR/ES (`compute_risk_metrics`, already fully dtype-agnostic — it just
-reflects whatever dtype the precision-controlled `npv_cube` already has) and Greeks
+**`risk`** governs the exposure statistics (`engine.risk.exposure`, fully dtype-agnostic — they
+reflect whatever dtype the precision-controlled `npv_cube` already has) and Greeks
 (`engine/risk/greeks.py`). The mechanism here is curve-driven, not a new Greeks
 parameter: `_compute_all_greeks` builds each trade's `ZeroCurve` at `precision.risk`'s
 dtype (via `ZeroCurve.from_config(config, dtype=...)`), and every Greeks closure that

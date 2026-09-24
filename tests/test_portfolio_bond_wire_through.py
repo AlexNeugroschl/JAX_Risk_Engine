@@ -451,11 +451,11 @@ class TestScenarioRiskIsRefusedForBonds:
 class TestScenarioRiskAbsentNotZero:
     """`scenario_risk=False` reports risk as ABSENT, never as zero."""
 
-    def test_risk_is_empty_not_zero_filled(self):
+    def test_exposure_is_absent_not_zero_filled(self):
         result = price_portfolio(bond_request([make_bill()]))
-        assert result.risk == {}, (
-            "an empty dict asserts nothing; a VaR of 0.00 would assert a "
-            "measured absence of risk"
+        assert result.exposure is None and result.trade_exposures == [], (
+            "an absent exposure asserts nothing; a zero exposure would assert "
+            "a measured absence of risk"
         )
 
     def test_the_result_says_scenario_risk_was_unavailable(self):
@@ -471,7 +471,7 @@ class TestScenarioRiskAbsentNotZero:
         swap = make_swap()
         result = price_portfolio(swap_request([swap]))
         assert result.scenario_risk_available is True
-        assert result.risk != {}
+        assert result.exposure is not None
 
 
 class TestExistingBehaviourUnchanged:
@@ -482,10 +482,10 @@ class TestExistingBehaviourUnchanged:
     than merely intended to be.
     """
 
-    def test_a_swap_only_portfolio_still_produces_risk(self):
+    def test_a_swap_only_portfolio_still_produces_exposure(self):
         swap = make_swap()
         result = price_portfolio(swap_request([swap]))
-        assert "VaR_95" in result.risk
+        assert "PFE_95" in result.exposure.pfe
         assert np.asarray(result.npv_cube).shape[-1] == 1
 
     def test_scenario_risk_defaults_to_true(self):

@@ -16,7 +16,13 @@ drifted out of sync with the simulation's own calibration.
 `engine.portfolio` answers the question "what should a caller of the whole system hand
 over, and what do they get back?" with two dataclasses — `PortfolioRequest` in,
 `PortfolioResult` out — and one function, `price_portfolio`, that does everything in
-between: validate, simulate, calibrate (if needed), price every trade, and aggregate risk.
+between: validate, simulate, calibrate (if needed), price every trade, and summarise
+exposure.
+
+**This is the exposure path.** Its simulation runs months to years forward under the
+risk-neutral measure, so its risk output is an exposure profile (EPE, ENE, PFE through
+time — [Exposure](../risk/exposure.md)), not a VaR. Short-horizon market-risk VaR/ES is
+`engine.market_risk.run_market_risk` ([Market Risk](../risk/market-risk.md)).
 `demo.py` is now a thin example calling this one function instead of hand-orchestrating
 ~200 lines of pipeline plumbing.
 
@@ -35,11 +41,11 @@ parameters.
 |---|---|---|---|
 | `market` | `SimulationConfig` | *required* | Curves, vols (via `joint_covariance`), correlations — the same config `generate_paths` consumes (see [API Reference](api-reference.md#enginesimulationmarket_model)). If `market.rates.maturities` is left unset, `price_portfolio` derives it automatically (see `derive_maturity_pillars` below). |
 | `trades` | `List[SwapConfig \| SwaptionConfig \| BermudanSwaptionConfig \| AmericanSwaptionConfig \| BondConfig]` | *required* | Heterogeneous, any order or mix. `PortfolioResult`'s NPV cube and `greeks` dict are always reported back in this same order, regardless of how `price_portfolio` internally groups trades by type for pricing. |
-| `percentiles` | `Sequence[float]` | `(0.95, 0.99)` | Confidence levels `compute_risk_metrics` computes VaR/ES at. |
+| `pfe_quantiles` | `Sequence[float]` | `(0.95, 0.99)` | Quantiles of the PFE profiles in the result's exposure. |
 | `calibration_targets` | `Optional[List[CalibrationTarget]]` | `None` | Used when any Bermudan/American trade's `hw_sigma` is left as `None` (uncalibrated) — see "Automatic calibration" below. |
 | `compute_greeks` | `bool` | `False` | If `True`, also computes Delta/Gamma/Theta (and, implicitly, Vega where the trade's own calibration makes it well-defined) per trade — see "Greeks" below. |
 | `precision` | `PrecisionConfig` | `PrecisionConfig()` (all-64) | Independent simulation/pricing/risk dtype control — see "`PrecisionConfig`" below. |
-| `scenario_risk` | `bool` | `True` | Whether to build `npv_cube` and derive VaR/ES from it. **Must be `False` for any portfolio containing a `BondConfig`** — see "Bonds" below. |
+| `scenario_risk` | `bool` | `True` | Whether to build `npv_cube` and derive the exposure profiles from it. **Must be `False` for any portfolio containing a `BondConfig`** — see "Bonds" below. |
 
 ### Bonds
 
@@ -115,12 +121,13 @@ removed.
 |---|---|---|
 | `base_npv` | `float` | The whole portfolio's t=0 NPV, against today's actual (zero-shock) curves — not read off the NPV cube. |
 | `npv_cube` | `jax.Array` | `[Scenarios, TimeSteps, Trades]`, one column per trade in `request.trades`' own order. |
-| `risk` | `Dict[str, jax.Array]` | `compute_risk_metrics`'s own output — `"VaR_95"`, `"ES_95"`, etc., each `[TimeSteps]`. |
+| `exposure` | `Optional[ExposureProfile]` | The whole portfolio as one netting set: `times`, `epe`, `ene`, `ee_b`, `eee_b` and `pfe` (`"PFE_95"` → profile), each with one entry per date including t=0. `None` when `scenario_risk_available` is `False`. See [Exposure](../risk/exposure.md). |
+| `trade_exposures` | `List[ExposureProfile]` | Each trade's standalone exposure, in `request.trades` order. Empty when `scenario_risk_available` is `False`. |
 | `greeks` | `Optional[Dict[int, Dict[str, jax.Array]]]` | `None` unless `request.compute_greeks=True`. Keyed by each trade's own index in `request.trades` (not by pricing-group order — see "Greeks" below). |
 | `warnings` | `List[str]` | Known-limitation warnings surfaced during validation (see "Known-limitation flagging" below) — e.g. a Bermudan exercise date that isn't reset-aligned with its own underlying. |
 | `base_npv_per_trade` | `List[float]` | Each trade's own t=0 NPV, in `request.trades` order. `base_npv` is by construction their sum, so the total and the breakdown cannot disagree. |
-| `scenario_risk_available` | `bool` | `False` when the run was `scenario_risk=False`, meaning `risk` is **empty** and `npv_cube` zero-width. Carried on the *result* because a consumer holding one has no access to the request — without it, an empty `risk` is ambiguous between "not requested" and "computed as nothing". |
-| `measure` | `Optional[str]` | Which measure `risk` is under: `"risk-neutral-pricing"` (`engine.risk.var_es.ENGINE_RISK_MEASURE`) whenever `risk` was computed, `None` when `scenario_risk_available` is `False`. An exposure under the pricing measure, **not** a forecast of tomorrow's loss ([I-11](../known-issues.md#i-11)). |
+| `scenario_risk_available` | `bool` | `False` when the run was `scenario_risk=False`, meaning `exposure` is **absent** and `npv_cube` zero-width. Carried on the *result* because a consumer holding one has no access to the request. |
+| `measure` | `Optional[str]` | Which measure the exposure is under: `"risk-neutral-pricing"` (`engine.risk.var_es.ENGINE_RISK_MEASURE`) whenever it was computed, `None` when `scenario_risk_available` is `False`. An exposure under the pricing measure, **not** a forecast of tomorrow's loss ([I-11](../known-issues.md#i-11)). |
 
 ## `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 
@@ -146,9 +153,10 @@ Orchestrates, in order:
 7. **Compute the base (t=0) NPV** by repricing every trade against zero-shock curves —
    generalizes what `demo.py` used to do by hand, per instrument type. This step runs
    either way, which is what lets a bond portfolio still return real numbers.
-8. **Aggregate VaR/ES** (`compute_risk_metrics`). Also skipped when `scenario_risk=False`,
-   leaving `risk` an **empty dict** — a missing key asserts nothing, where a `0.00` would
-   assert a measured absence of risk.
+8. **Exposure profiles** (`engine.risk.exposure`): the netting set and each trade, from
+   the cube deflated by the simulation's numeraire. Also skipped when
+   `scenario_risk=False`, leaving `exposure` **absent** — a missing profile asserts
+   nothing, where a zero would assert a measured absence of exposure.
 9. **Optionally compute Greeks** per trade (below). Runs either way.
 
 ## Validation and assembly helpers
@@ -175,9 +183,10 @@ desk workflow (calibrate once, reuse the fitted term structure across many trade
 simulate paths off one representative vol level) has these legitimately diverge. Only a
 flat `float` `hw_sigma` is checked against the implied per-step vol.
 
-This function also emits (via Python's `warnings` module — not a hard error) a warning for
-any swap that will be aged past its first accrual date at a simulated step — see
-"Known-limitation flagging" below. A Bermudan/American exercise date inside an accrual period
+This function also emits (via Python's `warnings` module — not a hard error) the
+exposure-limitation warnings described in "Known-limitation flagging" below. It raises if
+the trades do not all share one `evaluation_date`: the simulation has a single t=0, and a
+trade dated differently would be priced on a shifted time axis. A Bermudan/American exercise date inside an accrual period
 is not warned about: it is priced exactly as ORE prices it, not approximated.
 
 ### `derive_maturity_pillars(trade_configs, evaluation_date) -> List[float]`
@@ -208,15 +217,22 @@ check for it.
 
 ### Known-limitation flagging
 
-A documented, deliberate scope boundary exists elsewhere in this codebase; this module
-surfaces it rather than silently producing a slightly-wrong number:
+The simulated cube has three known weaknesses
+([engine audit](../planning/engine-audit.md), M-1 to M-3). They do not affect t=0
+values or Greeks, only `npv_cube` past t=0 and the exposure derived from it. Each is
+announced per run with a `UserWarning`, collected into `PortfolioResult.warnings`:
 
-- **Aged-swap discounting gap** (see [Interest Rate Swaps](../instruments/swaps.md)): this
-  module's own docstring documents (but does not fix) that any *exposure profile* (t>0
-  valuation, as opposed to a t=0 NPV/VaR run) of a swap inherits `engine.instruments.swap`'s
-  known aged-swap limitation. `_warn_if_aged_swap_exposure` flags every `SwapConfig` that
-  will be aged at one or more simulated steps with a `UserWarning` naming the trade,
-  collected into `PortfolioResult.warnings` by `price_portfolio`.
+- **`_warn_if_rates_inconsistent_with_curve` (M-1)** — a rate factor whose curve is not
+  flat, or whose `initial_rates`/`theta` differ from the curve's level: the simulated
+  discount factors are then not arbitrage-free against the curve.
+- **`_warn_if_aged_swap_exposure` (M-2, I-04)** — a swap aged past its first accrual date
+  at some simulated step: the accruing coupon is not fixed, and paid cashflows stay in the
+  NPV.
+- **`_warn_if_option_expires_within_simulation` (M-3)** — a swaption whose last exercise
+  falls inside the horizon: it is worth 0 on every path from then on, and exercise into
+  the underlying swap is not tracked.
+
+See [Exposure](../risk/exposure.md#known-limitations-of-the-simulated-cube).
 
 ## Greeks
 

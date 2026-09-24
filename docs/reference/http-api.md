@@ -272,7 +272,7 @@ Mirrors `engine.portfolio.PortfolioRequest`:
 | `evaluation_date` | `str` (ISO `YYYY-MM-DD`) | Default evaluation date applied to any trade that doesn't specify its own. |
 | `market` | `SimulationConfigSchema` | Mirrors `SimulationConfig` field-for-field. |
 | `trades` | `List[TradeSchema]` | A discriminated union on each trade object's own `trade_type` field: `"swap"`, `"european_swaption"`, `"bermudan_swaption"`, `"american_swaption"`, or `"bond"`. |
-| `percentiles` | `List[float]` | Default `[0.95, 0.99]`. |
+| `pfe_quantiles` | `List[float]` | Quantiles of the PFE profiles in the response's exposure. Default `[0.95, 0.99]`. |
 | `calibration_basket` | `CalibrationBasketRequestSchema \| null` | Optional. Required if any Bermudan/American trade has `hw_sigma: null` — see "Automatic calibration" below. |
 | `compute_greeks` | `bool` | Default `false`. |
 | `precision` | `PrecisionConfigSchema \| null` | Optional (default `null`). `null`/omitted behaves identically to an explicit all-64 block — see "Precision control" below. |
@@ -286,22 +286,24 @@ schedule. `face_amount` is **signed** — a short position is a negative face, a
 separate sign field.
 
 A bond is priced by closed-form discounting against its **own** `initial_zero_curve`, so it
-has **no scenario NPV**: no stochastic driver, no time evolution, and therefore no VaR or ES.
+has **no scenario NPV**: no stochastic driver, no time evolution, and therefore no exposure
+profile. (A bond's short-horizon market risk is available in Python through
+`engine.market_risk`; see [Market Risk](../risk/market-risk.md).)
 
 | `scenario_risk` | Portfolio contains a bond | Outcome |
 |---|---|---|
-| `true` (default) | no | Normal: full `npv_cube`, VaR/ES. |
+| `true` (default) | no | Normal: full `npv_cube` and exposure. |
 | `true` | **yes** | **Refused**, naming the offending trade. |
-| `false` | either | `base_npv`, `base_npv_per_trade` and `greeks` are real; `npv_cube` is empty and `risk` is `{}`. |
+| `false` | either | `base_npv`, `base_npv_per_trade` and `greeks` are real; `npv_cube` is empty, `exposure` is `null` and `trade_exposures` is `[]`. |
 
 The response carries **`scenario_risk_available`** saying which happened. When it is `false`,
-the VaR/ES numbers are **absent, not zero** — an empty `risk` asserts nothing, whereas a
-`VaR_95` of `0.00` would assert a *measured* absence of risk. See
-[I-24](../known-issues.md#i-24) for why a constant column is refused rather than broadcast.
+the exposure is **absent, not zero** — a missing profile asserts nothing, whereas a zero
+would assert a *measured* absence of exposure. See [I-24](../known-issues.md#i-24) for why a
+constant column is refused rather than broadcast.
 
-It also carries **`measure`**: `"risk-neutral-pricing"` whenever `risk` was computed, `null`
-when it is empty. The VaR/ES figures are an exposure under the pricing measure, not a
-forecast of tomorrow's loss ([I-11](../known-issues.md#i-11)).
+It also carries **`measure`**: `"risk-neutral-pricing"` whenever exposure was computed, `null`
+otherwise. The profiles are an exposure under the pricing measure, not a forecast of
+tomorrow's loss ([I-11](../known-issues.md#i-11)).
 
 A bond's `delta`/`gamma` are **scalars** (one parallel 1bp bump against its single curve),
 unlike a swap's per-pillar `discount_delta`/`forward_delta` vectors. They are still delivered
@@ -380,6 +382,10 @@ invalid precision returns an immediate `400` with that validator's own message, 
 }
 ```
 
+`risk` may also be an object that sets `delta_gamma`, `theta`, `vega` and `exposure`
+separately (a `RiskPrecisionOverrideSchema`); `exposure` sets the precision of the
+exposure statistics.
+
 ```
 POST /portfolio/price
 {"precision": {"simulation": 16}}
@@ -405,7 +411,8 @@ Mirrors `engine.portfolio.PortfolioResult`:
 | `base_npv` | `float` | Portfolio total. By construction `sum(base_npv_per_trade)` — the total and the breakdown are the same numbers, not two independent computations. |
 | `base_npv_per_trade` | `List[float]` | Per-trade t=0 NPV, in the request's own `trades` order. Lets a caller reconcile the portfolio total against identified positions/contracts instead of receiving only an unattributable aggregate. |
 | `npv_cube` | `List[List[List[float]]]` | `[Scenarios, TimeSteps, Trades]`, JSON-nested. |
-| `risk` | `{"values": {"VaR_95": [...], "ES_95": [...], ...}}` | `NaN` values (an empty-tail Expected Shortfall — see [Risk Statistics](../risk/var_es.md)) serialize as JSON `null`, not the non-standard literal `NaN`. |
+| `exposure` | `{"times": [...], "epe": [...], "ene": [...], "ee_b": [...], "eee_b": [...], "pfe": {"PFE_95": [...], ...}} \| null` | The whole portfolio as one netting set; every list has one entry per date in `times`, starting at t=0. See [Exposure](../risk/exposure.md). |
+| `trade_exposures` | `List[...]` | The same object per trade, in the request's `trades` order. |
 | `greeks` | `{"<trade_index>": {"values": {"delta": [...], "gamma": [...]}, "theta": ...}} \| null` | `null` unless the request set `compute_greeks: true`. Keys are trade indices (as strings, JSON's own object-key requirement) matching the request's own `trades` order. **Swaps** report `discount_delta`/`discount_gamma`/`forward_delta`/`forward_gamma` (differentiated against the curves their own `discount_curve_index`/`forward_curve_index` name) plus `theta`; swaptions report `delta`/`gamma`/`theta`. A **calibrated** Bermudan/American trade additionally reports `vega`, one entry per `calibration_basket` instrument — omitted for a flat (hand-set) `hw_sigma`, which has no market quote to be sensitive to. |
 | `warnings` | `List[str]` | Known-limitation warnings (e.g. a swap aged past its first accrual at a simulated step) — see [The Portfolio Entry Point: Known-limitation flagging](portfolio-entrypoint.md#known-limitation-flagging). |
 
@@ -433,7 +440,7 @@ body = {
         {"trade_type": "swap", "notional": 1_000_000.0, "fixed_rate": 0.032, "payer": True,
          "discount_curve_index": 0, "forward_curve_index": 0, "swap_tenor": "2Y"},
     ],
-    "percentiles": [0.95, 0.99],
+    "pfe_quantiles": [0.95, 0.99],
 }
 
 r = requests.post(f"{BASE}/portfolio/price", json=body)
@@ -452,7 +459,7 @@ if data["status"] == "failed":
     raise RuntimeError(data["error"])
 
 print("base NPV:", data["result"]["base_npv"])
-print("95% VaR at each step:", data["result"]["risk"]["values"]["VaR_95"])
+print("PFE 95% at each date:", data["result"]["exposure"]["pfe"]["PFE_95"])
 ```
 
 See a curl-only version in [User Guide: Running the API](../getting-started/user-guide.md#running-the-api).

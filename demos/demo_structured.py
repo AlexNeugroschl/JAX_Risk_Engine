@@ -110,8 +110,8 @@ CALIBRATION_EXERCISE_TIMES = [1.0, 2.0, 3.0, 4.0]
 CALIBRATION_FINAL_MATURITY = 5.0
 CALIBRATION_MARKET_VOLS = [0.0080, 0.0088, 0.0095, 0.0100]
 
-# Risk parameters: which VaR/ES confidence levels to report, and whether to
-# also compute Greeks.
+# Risk parameters: which PFE quantiles the exposure profile reports, and
+# whether to also compute Greeks.
 RISK_PERCENTILES = [0.95, 0.99]
 COMPUTE_GREEKS = True
 
@@ -264,7 +264,7 @@ def build_portfolio_request_schema() -> dict:
         "evaluation_date": EVALUATION_DATE,
         "market": build_market_schema(zero_curve),
         "trades": build_trades_schema(zero_curve),
-        "percentiles": RISK_PERCENTILES,
+        "pfe_quantiles": RISK_PERCENTILES,
         "calibration_basket": build_calibration_basket_schema(),
         "compute_greeks": COMPUTE_GREEKS,
     }
@@ -318,16 +318,14 @@ def print_result(result: dict) -> None:
     if result["warnings"]:
         print(f"warnings: {result['warnings']}")
 
-    print("\nrisk:")
-    risk = result["risk"]["values"]
-    print("  time   " + "".join(f"{m:>12}" for m in risk))
-    for i, t in enumerate(TIME_GRID_YEARS[1:]):
-        row = "".join(
-            f"{risk[m][i]:>12,.0f}" if risk[m][i] is not None else f"{'nan':>12}"
-            for m in risk
-        )
-        print(f"  {t:>4.2f}  " + row)
-    print("(nan = the loss tail was empty at that step, matching ORE's own edge case)")
+    print("\nexposure profile:")
+    exposure = result["exposure"]
+    columns = ["epe", "ene", "ee_b"] + list(exposure["pfe"])
+    print("  time  " + "".join(f"{c.upper():>12}" for c in columns))
+    for i, t in enumerate(exposure["times"]):
+        values = [exposure[c][i] if c in exposure else exposure["pfe"][c][i] for c in columns]
+        print(f"  {t:>4.2f}" + "".join(f"{v:>12,.0f}" for v in values))
+    print("(netting set; EPE/ENE/PFE discounted to today, EE_B undiscounted -- ORE's definitions)")
 
     if result["greeks"] is not None:
         bermudan_index = str(trade_names.index("bermudan_swaption"))

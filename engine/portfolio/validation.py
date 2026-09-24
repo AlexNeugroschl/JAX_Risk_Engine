@@ -64,3 +64,21 @@ def _validate_tenor(period_str: str, field_name: str) -> None:
         ORE.Period(period_str)
     except Exception as exc:
         raise ValueError(f"{field_name} is not a valid ORE.Period string: {period_str!r} ({exc})") from exc
+
+
+def validate_single_evaluation_date(trade_configs) -> None:
+    """Every trade in one run must share one `evaluation_date`.
+
+    Each pricer measures its cashflow and exercise times from its own
+    trade's `evaluation_date`, while a run has exactly one t=0 -- the
+    simulation's, or the market a shock is applied to. A trade dated
+    differently would be priced on a shifted time axis: finite, plausible,
+    and wrong."""
+    dates = {}
+    for i, cfg in enumerate(trade_configs):
+        dates.setdefault(cfg.evaluation_date.ISO(), i)
+    if len(dates) > 1:
+        listed = ", ".join(f"{iso} (first at trade[{i}])" for iso, i in dates.items())
+        raise ValueError(
+            f"all trades in one portfolio must share one evaluation_date; got {listed}"
+        )

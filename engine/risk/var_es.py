@@ -91,6 +91,16 @@ RISK_MEASURES = (
 ENGINE_RISK_MEASURE = RISK_MEASURE_RISK_NEUTRAL
 
 
+def quantile_label(q: float) -> str:
+    """A quantile as a result-key suffix: 0.95 -> "95", 0.975 -> "97.5".
+
+    Whole percentages keep the short form (`VaR_95`); anything finer keeps
+    its decimals, so the Basel 97.5% ES is `ES_97.5` rather than being
+    rounded to `ES_98`, and two quantiles can never share a key."""
+    percent = round(q * 100, 6)
+    return f"{int(percent)}" if percent == int(percent) else f"{percent:g}"
+
+
 def portfolio_pnl(npv_cube: jax.Array, base_npv: float) -> jax.Array:
     """
     [Scenarios, TimeSteps, Trades] -> [Scenarios, TimeSteps] portfolio P&L,
@@ -289,7 +299,7 @@ def compute_risk_metrics(
     pnl = portfolio_pnl(npv_cube, base_npv)
     metrics: Dict[str, jax.Array] = {}
     for p in percentiles:
-        label = f"{int(round(p * 100))}"
+        label = quantile_label(p)
         metrics[f"VaR_{label}"] = value_at_risk(pnl, p)
         metrics[f"ES_{label}"] = expected_shortfall(pnl, p)
         if include_diagnostics:

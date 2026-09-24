@@ -72,7 +72,7 @@ class TestPortfolioResultStatesItsMeasure:
 
     def test_a_scenario_run_is_labelled_risk_neutral(self):
         result = price_portfolio(_request([_swap()]))
-        assert "VaR_95" in result.risk
+        assert result.exposure is not None
         assert result.measure == RISK_MEASURE_RISK_NEUTRAL
 
     def test_the_label_is_the_engines_own_statement_not_a_literal(self):
@@ -83,10 +83,10 @@ class TestPortfolioResultStatesItsMeasure:
         assert result.measure in RISK_MEASURES
 
     def test_no_risk_figures_means_no_label(self):
-        """`scenario_risk=False` returns an empty `risk`; a measure label
-        would then describe numbers that do not exist."""
+        """`scenario_risk=False` returns no exposure; a measure label would
+        then describe numbers that do not exist."""
         result = price_portfolio(_request([_bill()], scenario_risk=False))
-        assert result.risk == {}
+        assert result.exposure is None
         assert result.measure is None
 
     def test_the_label_is_serialized_over_http(self):

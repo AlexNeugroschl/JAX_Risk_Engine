@@ -1,8 +1,15 @@
 """
-End-to-end walkthrough: simulate -> calibrate -> price -> aggregate risk.
+End-to-end walkthrough: calibrate -> simulate exposure -> Greeks -> market risk.
 
 Portfolio: one swap, one European swaption, one Bermudan swaption, one
-American swaption -- one of each instrument type this engine prices.
+American swaption -- one of each rate-derivative type this engine prices.
+
+The engine produces two different risk measures, and this demo shows both:
+
+  * an EXPOSURE PROFILE (EPE/ENE/PFE through time) from the multi-step
+    risk-neutral simulation, `price_portfolio`;
+  * short-horizon MARKET RISK (10-day VaR/ES) by revaluing the portfolio at
+    t=0 under shocked curves, `run_market_risk`.
 
 This demo used to hand-orchestrate every stage (build a swap first to get
 real maturity pillars, call generate_paths, calibrate a Sigma, call each
@@ -16,6 +23,8 @@ configs -- see docs/reference/portfolio-entrypoint.md for what happens
 
 Run with: .venv/Scripts/python.exe demos/demo.py
 """
+import dataclasses
+
 import numpy as np
 import ORE
 
@@ -31,6 +40,7 @@ from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.lgm import calibrate_lgm_sigma
 from engine.models.hull_white import ZeroCurve
 
+from engine.market_risk import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
 from engine.portfolio import PortfolioRequest, price_portfolio
 
 
@@ -138,7 +148,7 @@ section("Pricing the whole portfolio")
 request = PortfolioRequest(
     market=sim_config,
     trades=[swap_cfg, european_cfg, bermudan_cfg, american_cfg],
-    percentiles=(0.95, 0.99),
+    pfe_quantiles=(0.95, 0.99),
     compute_greeks=True,
 )
 result = price_portfolio(request)
@@ -156,23 +166,16 @@ if result.warnings:
 
 
 # =============================================================================
-# Risk aggregation: VaR and Expected Shortfall (computed inside price_portfolio).
+# Exposure: what the simulated cube measures (computed inside price_portfolio).
 # =============================================================================
-section("Risk aggregation")
+section("Exposure profile (the whole portfolio as one netting set)")
 
-# Column labels drop the "ES_" prefix on the diagnostics so every label fits
-# its column: "95_tailCount" is ES_95's tail count, "95_standardError" its
-# Monte Carlo standard error.
-labels = {m: m.replace("ES_", "", 1) if m.count("_") > 1 else m for m in result.risk}
-width = max(12, max(len(label) for label in labels.values()) + 2)
-print("  time  " + "".join(f"{labels[m]:>{width}}" for m in result.risk))
-for i, t in enumerate(TIME_GRID[1:]):
-    row = "".join(
-        f"{float(result.risk[m][i]):>{width},.0f}" if not np.isnan(float(result.risk[m][i])) else f"{'nan':>{width}}"
-        for m in result.risk
-    )
-    print(f"  {t:>4.2f}" + row)
-print("(nan = the loss tail was empty at that step, matching ORE's own edge case)")
+exposure = result.exposure
+columns = {"EPE": exposure.epe, "ENE": exposure.ene, "EE_B": exposure.ee_b, **exposure.pfe}
+print("  time  " + "".join(f"{name:>12}" for name in columns))
+for i, t in enumerate(exposure.times):
+    print(f"  {t:>4.2f}" + "".join(f"{float(values[i]):>12,.0f}" for values in columns.values()))
+print("(EPE/ENE/PFE discounted to today, EE_B undiscounted -- ORE's ExposureCalculator definitions)")
 
 
 # =============================================================================
@@ -185,3 +188,40 @@ bermudan_greeks = result.greeks[bermudan_index]
 print(f"delta per pillar: {np.round(np.asarray(bermudan_greeks['delta']), 2)}")
 print(f"gamma per pillar: {np.round(np.asarray(bermudan_greeks['gamma']), 4)}")
 print(f"theta (1-day decay): {bermudan_greeks['theta']:,.2f}")
+
+
+# =============================================================================
+# Market risk: 10-day VaR and ES by full revaluation at t=0.
+# =============================================================================
+section("Market risk (10-day, Monte Carlo)")
+
+# The risk factors are the curve's pillar zero rates. Their 10-day moves are
+# drawn from a Gaussian: 8bp daily vol per pillar, correlation decaying with
+# pillar distance. A real run would estimate this from history
+# (engine.market_risk.covariance_from_history) or use historical_scenarios.
+factors = RateRiskFactors.from_curves([zero_curve_config], names=["USD"])
+pillar_index = np.arange(factors.size)
+correlation = np.exp(-np.abs(pillar_index[:, None] - pillar_index[None, :]) / 3.0)
+covariance = correlation * 0.0008 ** 2 * 10
+scenarios = monte_carlo_scenarios(factors, covariance, horizon_days=10, num_scenarios=4096, seed=1)
+
+# Every scenario is a full revaluation. The Bermudan and American were priced
+# above on a fine exercise grid (n_per_std=64); for 4,096 revaluations they
+# use a risk-sized grid instead, and the base values show what that costs.
+risk_grid = dict(n_per_std=16, std_devs=5.0)
+risk_trades = [swap_cfg, european_cfg,
+               dataclasses.replace(bermudan_cfg, **risk_grid), dataclasses.replace(american_cfg, **risk_grid)]
+market_risk = run_market_risk(MarketRiskRequest(
+    trades=risk_trades, scenarios=scenarios, quantiles=(0.99, 0.975),
+))
+for name, fine, coarse in zip(TRADE_NAMES[2:], result.base_npv_per_trade[2:], market_risk.base_npv_per_trade[2:]):
+    print(f"  {name} base value: fine grid {fine:,.2f}, risk grid {coarse:,.2f} ({coarse / fine - 1:+.2e})")
+print(f"{market_risk.num_scenarios:,} scenarios over {market_risk.horizon_days} days "
+      f"({market_risk.source}, measure: {market_risk.measure})")
+for q in ("99", "97.5"):
+    print(f"  VaR {q:>4}%: {market_risk.risk[f'VaR_{q}']:>12,.0f}    "
+          f"ES {q:>4}%: {market_risk.risk[f'ES_{q}']:>12,.0f}  "
+          f"(+/- {market_risk.risk[f'ES_{q}_standardError']:,.0f}, "
+          f"{int(market_risk.risk[f'ES_{q}_tailCount'])} tail scenarios)")
+for message in market_risk.warnings:
+    print(f"  note: {message}")

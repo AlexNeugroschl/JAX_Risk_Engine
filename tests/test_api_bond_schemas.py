@@ -194,7 +194,8 @@ class TestScenarioRiskOverHttp:
         result = price_portfolio(parsed.to_dataclass())
         serialized = PortfolioResultSchema.from_dataclass(result)
         assert serialized.scenario_risk_available is False
-        assert serialized.risk.values == {}
+        assert serialized.exposure is None
+        assert serialized.trade_exposures == []
 
     def test_base_npv_is_still_reported_when_risk_is_absent(self):
         """The point of the whole design: a real price, with risk absent.

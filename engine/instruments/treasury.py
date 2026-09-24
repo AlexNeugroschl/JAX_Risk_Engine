@@ -71,6 +71,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
+import numpy as np
 import ORE
 
 from engine.day_count import UnsupportedDayCountError, resolve_accrual_day_count
@@ -152,6 +153,12 @@ class BondConfig:
     #: The instrument's own ACCRUAL day count (W1.1), resolved and refused
     #: if unsupported -- never defaulted. Ignored when there are no coupons.
     accrual_day_count: str = "ACT/ACT (ICMA)"
+    #: Index of the market curve this bond discounts on, in the curve list a
+    #: market-risk run shocks (`engine.market_risk.RateRiskFactors.curves`).
+    #: Needed only there, where every trade must say which shocked curve to
+    #: revalue against; `initial_zero_curve` must then equal that curve.
+    #: `None` everywhere else.
+    curve_index: Optional[int] = None
 
     def __post_init__(self):
         if self.maturity_date <= self.evaluation_date:
@@ -309,6 +316,33 @@ def accrued_interest(cfg: BondConfig) -> float:
     return 0.0
 
 
+def _remaining_cashflows(cfg: BondConfig) -> Tuple[Tuple[ORE.Date, float], ...]:
+    """Every cashflow still to be paid, as `(payment_date, amount per unit
+    face)`, coupons in schedule order and then the redemption.
+
+    The single definition of the bond's cashflows: `price_bond_base` and
+    `bond_price_function` both discount exactly this list, so the float and
+    the JAX pricer cannot disagree about what is being paid. A coupon paid
+    on or before the evaluation date is excluded -- it is not this
+    position's cashflow any more, and including it would double-count what
+    the accrued figure excludes.
+    """
+    flows = []
+    if cfg.coupon_schedule:
+        day_count = resolve_accrual_day_count(cfg.accrual_day_count)
+        for period in cfg.coupon_schedule:
+            payment = period.payment()
+            if payment <= cfg.evaluation_date:
+                continue
+            accrual_fraction = day_count.yearFraction(
+                period.start_date, period.end_date,
+                period.start_date, period.end_date,
+            )
+            flows.append((payment, cfg.coupon_rate * accrual_fraction))
+    flows.append((cfg.maturity_date, cfg.redemption_fraction))
+    return tuple(flows)
+
+
 def price_bond_base(cfg: BondConfig, rate_shift: float = 0.0) -> float:
     """t=0 **dirty** NPV of one bond: every remaining cashflow, discounted.
 
@@ -321,31 +355,46 @@ def price_bond_base(cfg: BondConfig, rate_shift: float = 0.0) -> float:
 
     `rate_shift` parallel-shifts the curve, which is what `rate_sensitivity`
     uses. A coupon already paid on or before the evaluation date is
-    excluded, not discounted from the past.
+    excluded, not discounted from the past (see `_remaining_cashflows`).
     """
     total_per_unit_face = 0.0
-    if cfg.coupon_schedule:
-        day_count = resolve_accrual_day_count(cfg.accrual_day_count)
-        for period in cfg.coupon_schedule:
-            payment = period.payment()
-            if payment <= cfg.evaluation_date:
-                # Already paid: not this position's cashflow. Including it
-                # would double-count what the accrued figure excludes.
-                continue
-            accrual_fraction = day_count.yearFraction(
-                period.start_date, period.end_date,
-                period.start_date, period.end_date,
-            )
-            df, _ = _discount_factor(
-                cfg.initial_zero_curve, cfg.evaluation_date, payment, rate_shift,
-            )
-            total_per_unit_face += cfg.coupon_rate * accrual_fraction * df
-
-    redemption_df, _ = _discount_factor(
-        cfg.initial_zero_curve, cfg.evaluation_date, cfg.maturity_date, rate_shift,
-    )
-    total_per_unit_face += cfg.redemption_fraction * redemption_df
+    for payment, amount in _remaining_cashflows(cfg):
+        df, _ = _discount_factor(cfg.initial_zero_curve, cfg.evaluation_date, payment, rate_shift)
+        total_per_unit_face += amount * df
     return cfg.face_amount * total_per_unit_face
+
+
+def bond_price_function(cfg: BondConfig):
+    """`f(pillar_rates) -> t=0 dirty NPV` as a JAX function, for revaluing
+    the bond under shocked curves (`engine.market_risk`) or differentiating
+    it per pillar.
+
+    Discounts `_remaining_cashflows` exactly as `price_bond_base` does --
+    linear interpolation of zero rates on `cfg.initial_zero_curve`'s pillar
+    times, flat beyond the ends, continuous compounding over ACT/365 -- but
+    with the pillar RATES as a traced argument. `price_bond_base(cfg)`
+    equals `f(initial_zero_curve.rates)`, and a parallel `rate_shift` equals
+    `f(rates + shift)`. The working dtype is that of `pillar_rates`.
+    """
+    import jax.numpy as jnp
+
+    flows = _remaining_cashflows(cfg)
+    times = np.asarray(
+        [DISCOUNT_DAY_COUNT.yearFraction(cfg.evaluation_date, payment) for payment, _ in flows],
+        dtype=np.float64,
+    )
+    amounts = np.asarray([amount for _, amount in flows], dtype=np.float64) * cfg.face_amount
+    pillar_times = np.asarray(cfg.initial_zero_curve.times, dtype=np.float64)
+    if pillar_times.size == 0:
+        raise BondPricingError("initial_zero_curve has no pillars")
+
+    def price(pillar_rates):
+        dtype = jnp.asarray(pillar_rates).dtype
+        t = jnp.asarray(times, dtype=dtype)
+        zero = jnp.interp(t, jnp.asarray(pillar_times, dtype=dtype), pillar_rates)
+        return jnp.sum(jnp.asarray(amounts, dtype=dtype) * jnp.exp(-zero * t))
+
+    return price
 
 
 def clean_npv_of(cfg: BondConfig) -> float:

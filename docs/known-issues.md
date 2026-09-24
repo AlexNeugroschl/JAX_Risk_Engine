@@ -447,6 +447,12 @@ convergence, so a sparse-tail estimate could not be told apart from a well-conve
   do not exist. This is the same rule the EOD pipeline already applies to `RiskResult.measure`.
   `PortfolioResultSchema.measure` carries it over HTTP (`null` when absent).
 
+**Superseded 2026-09-24 (engine audit R-1).** `PortfolioResult.risk` no longer exists: the
+portfolio path's cube statistics are now exposure profiles (`PortfolioResult.exposure`,
+[Exposure](risk/exposure.md)), still labelled `risk-neutral-pricing`. Short-horizon VaR/ES
+is `engine.market_risk`, labelled `historical-forecast` ([Market Risk](risk/market-risk.md)).
+The label rule above is unchanged.
+
 **Verified.** `tests/test_risk_measure_label.py::TestPortfolioResultStatesItsMeasure`
 (5 tests): risk-neutral on a scenario run, taken from `ENGINE_RISK_MEASURE` and inside
 `RISK_MEASURES`, `None` on a `scenario_risk=False` run, and both cases serialized over HTTP.

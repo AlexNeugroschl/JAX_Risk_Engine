@@ -635,4 +635,4 @@ class TestPhaseAnnotations:
         finally:
             request_module._phase = original
 
-        assert {"calibration", "simulation", "pricing", "base_npv", "risk"} <= set(seen)
+        assert {"calibration", "simulation", "pricing", "base_npv", "exposure"} <= set(seen)

@@ -207,13 +207,10 @@ class TestDiagnosticsRespectInputPrecision:
     integer arithmetic in the Bessel correction promoted the whole
     expression under `jax_enable_x64`.
 
-    That silently defeated a `RiskPrecisionOverride(var_es=32)`: the
-    override is applied by casting the input cube, so a statistic's output
-    dtype IS how a caller observes it. Every other statistic here inherits
-    the input dtype by construction; this one had to be told.
-
-    Caught by `tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision`,
-    which sweeps every key in `result.risk`.
+    That silently defeated a float32 precision request: precision is applied
+    by casting the input, so a statistic's output dtype IS how a caller
+    observes it. Every other statistic here inherits the input dtype by
+    construction; this one had to be told.
     """
 
     @pytest.mark.parametrize("dtype", (jnp.float32, jnp.float64))

@@ -82,7 +82,7 @@ import ORE
 
 from engine.simulation.market_model import SimulationConfig, generate_paths
 from engine.instruments.swap import SwapConfig, _build_ore_swap, price_swaps
-from engine.instruments.european_swaption import SwaptionConfig, price_swaptions
+from engine.instruments.european_swaption import SwaptionConfig, prepare_swaption, price_swaptions
 from engine.instruments.bermudan_swaption import (
     BermudanSwaptionConfig, price_bermudan_swaptions, price_bermudan_swaption_base,
 )
@@ -92,8 +92,10 @@ from engine.instruments.treasury import (
 )
 from engine.models.ore_builders import fixed_leg_cashflows, floating_leg_cashflows
 from engine.calibration.lgm import calibrate_lgm_sigma, CalibrationTarget
-from engine.risk.var_es import ENGINE_RISK_MEASURE, compute_risk_metrics
+from engine.risk.var_es import ENGINE_RISK_MEASURE
 from engine.risk import greeks as _greeks
+from engine.risk.exposure import ExposureProfile, exposure_profile, netting_set_profile
+from engine.models.hull_white import discount as _hw_discount
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from engine.models.lgm import Sigma
 
@@ -102,6 +104,7 @@ from engine.models.lgm import Sigma
 # lives in engine/portfolio/validation.py to avoid a circular import (see
 # that module's own docstring for why).
 from engine.portfolio.validation import _validate_common_fields, _validate_tenor  # noqa: F401
+from engine.portfolio.validation import validate_single_evaluation_date
 from engine.portfolio.profiling import phase as _phase
 
 TradeConfig = Union[
@@ -111,9 +114,11 @@ TradeConfig = Union[
 #: Trade types with no scenario (`npv_cube`) representation -- see
 #: `engine.instruments.treasury`'s module docstring. These reach `base_npv`,
 #: `base_npv_per_trade` and the Greeks path, all of which are real for them;
-#: they do NOT reach `npv_cube`/VaR/ES, and `_price_by_type` raises rather
-#: than broadcasting a constant column (which would report VaR 0.00 / ES NaN
-#: for a position whose risk was never modelled). Tracked as I-24.
+#: they do NOT reach `npv_cube`/exposure, and `_price_by_type` raises rather
+#: than broadcasting a constant column (which would report a riskless
+#: exposure profile for a position whose risk was never modelled). Tracked
+#: as I-24. Short-horizon market risk DOES cover them: see
+#: `engine.market_risk`, which revalues at t=0 under shocked curves.
 DETERMINISTIC_ONLY_TYPES = (BondConfig,)
 
 # Defense-in-depth guard against jax_enable_x64's process-global-flag race
@@ -157,18 +162,18 @@ class RiskPrecisionOverride:
     from a single jax.grad+jax.hessian pair against one curve inside one
     `engine.risk.greeks` call, so they can't be split further without
     invasive surgery there (see docs/concepts/architecture.md's "Adjustable
-    precision" section). `var_es` is NOT curve-driven like the other three
-    -- `price_portfolio` re-casts `npv_cube`/`base_npv` immediately before
-    calling `compute_risk_metrics`, since VaR/ES has no curve of its own.
+    precision" section). `exposure` is NOT curve-driven like the other three
+    -- `price_portfolio` re-casts `npv_cube` immediately before computing the
+    exposure profiles, since they have no curve of their own.
     """
     default: int = 64
     delta_gamma: Optional[int] = None
     theta: Optional[int] = None
     vega: Optional[int] = None
-    var_es: Optional[int] = None
+    exposure: Optional[int] = None
 
     def __post_init__(self):
-        for name in ("default", "delta_gamma", "theta", "vega", "var_es"):
+        for name in ("default", "delta_gamma", "theta", "vega", "exposure"):
             value = getattr(self, name)
             if value is not None and value not in (32, 64):
                 raise ValueError(f"RiskPrecisionOverride.{name} must be 32 or 64, got {value!r}")
@@ -179,7 +184,7 @@ class PrecisionConfig:
     """Four independently-settable dtype knobs, each 32 (float32) or 64
     (float64, default): `simulation` (Monte Carlo path generation, passed to
     `generate_paths`), `pricing` (instrument NPV/npv_cube dtype), `risk`
-    (VaR/ES + Greeks), and `calibration` (LGM sigma bootstrap dtype).
+    (exposure + Greeks), and `calibration` (LGM sigma bootstrap dtype).
     Defaults to all-64, byte-identical to this codebase's behavior before
     this dataclass existed.
 
@@ -243,7 +248,7 @@ def _resolve_pricing_dtype(pricing: Union[int, PricingPrecisionOverride], trade_
 def _resolve_risk_dtype(risk: Union[int, RiskPrecisionOverride], metric: str):
     """Single place PrecisionConfig.risk's flat-int-or-override shape is
     resolved to a concrete dtype for one metric ('delta_gamma'/'theta'/
-    'vega'/'var_es') -- every risk dispatch point calls this instead of
+    'vega'/'exposure') -- every risk dispatch point calls this instead of
     re-deriving the branch itself."""
     if isinstance(risk, int):
         return _dtype_of(risk)
@@ -351,26 +356,11 @@ def validate_portfolio_against_simulation(
                 f"{list(expected_curve.rates)}"
             )
 
-    _validate_single_evaluation_date(trade_configs)
+    validate_single_evaluation_date(trade_configs)
     _validate_swap_curve_indices(sim_config, trade_configs)
     _warn_if_aged_swap_exposure(sim_config, trade_configs)
-
-
-def _validate_single_evaluation_date(trade_configs: Sequence[TradeConfig]) -> None:
-    """Every trade in one portfolio must share one `evaluation_date`.
-
-    Each pricer measures its cashflow and exercise times from its own
-    trade's `evaluation_date`, while the simulation has exactly one t=0.
-    A trade dated differently would be priced on a time axis shifted
-    against the simulated paths -- finite, plausible, and wrong."""
-    dates = {}
-    for i, cfg in enumerate(trade_configs):
-        dates.setdefault(cfg.evaluation_date.ISO(), i)
-    if len(dates) > 1:
-        listed = ", ".join(f"{iso} (first at trade[{i}])" for iso, i in dates.items())
-        raise ValueError(
-            f"all trades in one portfolio must share one evaluation_date; got {listed}"
-        )
+    _warn_if_option_expires_within_simulation(sim_config, trade_configs)
+    _warn_if_rates_inconsistent_with_curve(sim_config)
 
 
 def _validate_swap_curve_indices(
@@ -436,14 +426,16 @@ def _warn_if_aged_swap_exposure(sim_config: SimulationConfig, trade_configs) -> 
     with a clamped, non-meaningful P(t,T) for T<t instead of being excluded
     or fixed. t=0 valuation is unaffected and exact.
 
-    **Why a warning and not a fix here:** fixing it requires per-scenario
-    already-fixed rates (or exclusion of elapsed cashflows) inside the
-    pricing kernel, AND the historical fixings to populate them -- neither
-    of which exists in this engine or in the current TraderX export. What
-    this function removes is the SILENCE: before it, a caller requesting a
-    multi-step `npv_cube` (and therefore every VaR/ES number derived from
-    it) inherited a known inaccuracy with nothing in the result saying so.
-    `price_portfolio` collects these into `PortfolioResult.warnings`.
+    The same kernel also keeps cashflows already PAID at a step in the NPV
+    (audit finding M-2), so once the grid passes a payment date the error
+    is no longer small: a matured swap still reports a non-zero value.
+
+    **Why a warning and not a fix here:** the fix belongs in the pricing
+    kernel (see docs/planning/engine-audit.md, M-2). What this function
+    removes is the SILENCE: a caller requesting a multi-step `npv_cube`
+    (and every exposure figure derived from it) is told the numbers carry a
+    known inaccuracy. `price_portfolio` collects these into
+    `PortfolioResult.warnings`.
 
     Only steps STRICTLY after t=0 are considered, and a forward-starting
     swap is only flagged once the grid actually reaches its accrual start --
@@ -471,10 +463,80 @@ def _warn_if_aged_swap_exposure(sim_config: SimulationConfig, trade_configs) -> 
                 f"{first_accrual_start:.6f}) at {len(aged_steps)} simulated time step(s) "
                 f"beyond t=0 (up to t={last_step:.6f}). Conditional NPV at those steps "
                 f"uses the documented aged-swap approximation -- an already-fixed "
-                f"floating coupon is not represented, so npv_cube values at those "
-                f"steps, and any VaR/ES/exposure derived from them, carry a known "
+                f"floating coupon is not represented, and cashflows already paid by a "
+                f"step are still counted in its NPV, so npv_cube values at those "
+                f"steps, and any exposure derived from them, carry a known "
                 f"inaccuracy. t=0 base NPV is unaffected. See "
-                f"engine/instruments/swap.py's module docstring.",
+                f"docs/planning/engine-audit.md (M-2).",
+                stacklevel=2,
+            )
+
+
+def _warn_if_option_expires_within_simulation(sim_config: SimulationConfig, trade_configs) -> None:
+    """Warns for every swaption whose last exercise date falls inside the
+    simulated horizon (audit finding M-3).
+
+    After its last exercise date an option's scenario NPV is set to 0 on
+    every path. A physically settled option exercised on a path is really
+    the underlying swap from then on; the engine does not track exercise,
+    so every step after expiry misstates the position and any exposure
+    derived from it."""
+    steps_after_zero = [float(t) for t in sim_config.time_grid if float(t) > 0.0]
+    if not steps_after_zero:
+        return
+    last_step = max(steps_after_zero)
+    for i, cfg in enumerate(trade_configs):
+        if isinstance(cfg, SwaptionConfig):
+            last_exercise = prepare_swaption(cfg).exercise_time
+        elif isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
+            option_times = cfg.option_times()
+            if not option_times:
+                continue  # refused by the pricer itself
+            last_exercise = max(option_times)
+        else:
+            continue
+        if last_exercise < last_step:
+            after = sum(1 for t in steps_after_zero if t >= last_exercise)
+            warnings.warn(
+                f"trade[{i}] ({type(cfg).__name__}, notional={cfg.notional}): last exercise "
+                f"at t={last_exercise:.6f} falls inside the simulated horizon (up to "
+                f"t={last_step:.6f}). Its npv_cube value is 0 at the {after} step(s) from "
+                f"then on; exercise into the underlying swap is not tracked, so exposure "
+                f"after expiry is misstated. See docs/planning/engine-audit.md (M-3).",
+                stacklevel=2,
+            )
+
+
+def _warn_if_rates_inconsistent_with_curve(sim_config: SimulationConfig) -> None:
+    """Warns when a rate factor's simulated short rate cannot reproduce its
+    own initial zero curve (audit finding M-1).
+
+    The simulation reverts the short rate to a constant `theta` from
+    `initial_rates`, while the discount factors built from it assume the
+    Hull-White drift fitted to the curve. The two agree -- up to a small
+    convexity term -- only when the curve is flat and `initial_rates` and
+    `theta` equal its level. Anything else produces simulated discount
+    factors that are not arbitrage-free against the curve: on an upward
+    3%->5% curve they miss E[P(t,T)/N(t)] = P(0,T) by 4-9% at t=2y."""
+    rates = sim_config.rates
+    tol = 1e-12
+    for k, curve in enumerate(rates.initial_zero_curves or []):
+        level = float(curve.rates[0])
+        flat = all(abs(float(r) - level) <= tol for r in curve.rates)
+        consistent = (
+            flat
+            and abs(float(rates.initial_rates[k]) - level) <= tol
+            and abs(float(rates.theta[k]) - level) <= tol
+        )
+        if not consistent:
+            warnings.warn(
+                f"rate factor {k}: the simulated short rate (initial_rates="
+                f"{rates.initial_rates[k]}, theta={rates.theta[k]}) is not consistent with "
+                f"its initial zero curve (rates {list(curve.rates)}), so simulated discount "
+                f"factors are not arbitrage-free against that curve and every npv_cube value "
+                f"past t=0, and the exposure derived from it, is biased. Only a flat curve "
+                f"with initial_rates == theta == its level is consistent. See "
+                f"docs/planning/engine-audit.md (M-1).",
                 stacklevel=2,
             )
 
@@ -532,8 +594,8 @@ class PortfolioRequest:
         Results in `PortfolioResult` are reported back in this same order,
         regardless of how `price_portfolio` internally groups trades by type
         for pricing.
-    percentiles: confidence levels `compute_risk_metrics` computes VaR/ES
-        at.
+    pfe_quantiles: quantiles of the PFE profiles in the result's exposure
+        (see `engine.risk.exposure`).
     calibration_targets: used when any Bermudan/American trade's `hw_sigma`
         is left as `None` (uncalibrated) -- `price_portfolio` calibrates it
         once per distinct `rate_factor_index` via
@@ -549,24 +611,28 @@ class PortfolioRequest:
     `BondConfig` (W1.5) is in `trades`' `Union` alongside the four rate
     derivatives, but it is priced differently: closed-form discounted
     cashflows at t=0 only, with no scenario cube, so it contributes no
-    VaR/ES (I-24) and its Greeks come from bumped revaluation in
+    exposure profile (I-24) and its Greeks come from bumped revaluation in
     `_bond_greeks` rather than from `jax.grad`/`jax.hessian`.
+
+    **This is the exposure path.** The cube is a multi-step simulation under
+    the risk-neutral measure, so what it yields is an exposure profile
+    (EPE/ENE/PFE through time, `engine.risk.exposure`), not market-risk
+    VaR/ES. Short-horizon VaR/ES is `engine.market_risk.run_market_risk`.
     """
     market: SimulationConfig
     trades: List[TradeConfig]
-    percentiles: Sequence[float] = (0.95, 0.99)
+    pfe_quantiles: Sequence[float] = (0.95, 0.99)
     calibration_targets: Optional[List[CalibrationTarget]] = None
     compute_greeks: bool = False
     precision: PrecisionConfig = field(default_factory=PrecisionConfig)
-    #: Whether to build `npv_cube` and derive VaR/ES from it. `True` (the
-    #: default) is the pre-W1.5 behaviour exactly.
+    #: Whether to build `npv_cube` and derive the exposure profiles from it.
     #:
     #: Set `False` for a portfolio containing a **deterministic-only** trade
     #: type (`DETERMINISTIC_ONLY_TYPES`, e.g. `BondConfig`), which has no
     #: scenario representation at all. The run then returns real
     #: `base_npv`/`base_npv_per_trade`/`greeks` with an EMPTY `npv_cube` and
-    #: an empty `risk` dict -- absent rather than zero, so a consumer cannot
-    #: read a fabricated 0.00 VaR as a measurement. `PortfolioResult.
+    #: no exposure -- absent rather than zero, so a consumer cannot read a
+    #: fabricated zero exposure as a measurement. `PortfolioResult.
     #: scenario_risk_available` says which of the two happened, so the
     #: distinction survives into the result rather than living only in the
     #: request.
@@ -578,11 +644,17 @@ class PortfolioRequest:
 # =============================================================================
 @dataclass
 class PortfolioResult:
-    """Output of `price_portfolio`: prices + risk for a whole
+    """Output of `price_portfolio`: prices, exposure and Greeks for a whole
     `PortfolioRequest`, in one object."""
     base_npv: float
     npv_cube: jax.Array                                   # [Scenarios, TimeSteps, Trades]
-    risk: Dict[str, jax.Array]                             # compute_risk_metrics(...) output
+    #: Exposure of the whole portfolio as one netting set (no collateral):
+    #: trade values net path by path before any statistic is taken. `None`
+    #: when `scenario_risk_available` is False.
+    exposure: Optional[ExposureProfile] = None
+    #: Standalone exposure of each trade, in request.trades order. Empty
+    #: when `scenario_risk_available` is False.
+    trade_exposures: List[ExposureProfile] = field(default_factory=list)
     greeks: Optional[Dict[int, Dict[str, jax.Array]]] = None  # trade index (in request.trades order) -> greeks dict
     warnings: List[str] = field(default_factory=list)
     # t=0 NPV of each trade individually, in request.trades order.
@@ -591,19 +663,17 @@ class PortfolioResult:
     # reconcile a portfolio total against identified positions/contracts
     # rather than reporting only an unattributable aggregate.
     base_npv_per_trade: List[float] = field(default_factory=list)
-    # Whether `npv_cube`/`risk` were actually computed. `False` means the
-    # run was `scenario_risk=False`, so `risk` is EMPTY and `npv_cube` has
-    # zero time steps -- the VaR/ES numbers are absent, not zero.
+    # Whether `npv_cube`/`exposure` were actually computed. `False` means the
+    # run was `scenario_risk=False`: `exposure` is None and `npv_cube` has
+    # zero time steps -- the figures are absent, not zero.
     #
     # Carried on the RESULT, not just the request, because a consumer
-    # reading a result object has no access to the request that produced it.
-    # Without this flag an empty `risk` dict is ambiguous between "not
-    # requested" and "computed and found to be nothing", and those two must
-    # never be confused (W1.5 / I-24).
+    # reading a result object has no access to the request that produced it
+    # (W1.5 / I-24).
     scenario_risk_available: bool = True
-    # Which measure the `risk` figures are under (`engine.risk.var_es`'s
+    # Which measure the exposure figures are under (`engine.risk.var_es`'s
     # RISK MEASURE VOCABULARY). Always `ENGINE_RISK_MEASURE`
-    # (`risk-neutral-pricing`) when `risk` was computed: an exposure under
+    # (`risk-neutral-pricing`) when exposure was computed: an exposure under
     # the pricing measure, NOT a forecast of tomorrow's loss. `None` when
     # `scenario_risk_available` is False -- there are no figures for a
     # label to describe. Carried here, not only on the EOD path's
@@ -630,7 +700,7 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
     6. Route every trade to its pricer by type, concatenate into one NPV
        cube in the caller's original trade order.
     7. Reprice every trade against zero-shock curves for the base (t=0) NPV.
-    8. Aggregate VaR/ES (`compute_risk_metrics`).
+    8. Exposure profiles (`engine.risk.exposure`): netting set and per trade.
     9. Optionally compute Greeks per trade.
 
     Steps 4-9 (calibration through Greeks) run under `_PRICING_LOCK` -- see
@@ -716,7 +786,7 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
         else:
             # An EMPTY cube, not a zero-filled one. Zeros would be
             # indistinguishable from genuinely-zero NPVs and would feed
-            # compute_risk_metrics a fabricated distribution; a zero-width
+            # the exposure statistics a fabricated distribution; a zero-width
             # trade axis makes the absence structural and unmistakable.
             num_scenarios = market["rates"].shape[0]
             npv_cube = jnp.zeros((num_scenarios, 0, 0))
@@ -724,27 +794,19 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
             base_npv_per_trade = _base_npv_per_trade(trades, maturities_np, market_config, request.precision)
             base_npv = float(sum(base_npv_per_trade))
 
-        # risk.var_es is NOT curve-driven like delta_gamma/theta/vega -- it has
-        # no curve of its own, so honoring an override that differs from
+        # risk.exposure is NOT curve-driven like delta_gamma/theta/vega -- it
+        # has no curve of its own, so honoring an override that differs from
         # `pricing` means an explicit re-cast of npv_cube immediately before
-        # compute_risk_metrics, not a substituted input array upstream.
-        # base_npv is a plain Python float -- JAX's scalar-promotion rules
-        # already resolve `portfolio_npv - base_npv` to the ARRAY operand's
-        # dtype (confirmed in engine.risk.var_es.portfolio_pnl), so it needs
-        # no separate cast. This can only ever narrow precision relative to
-        # what `pricing` already produced -- it can't recover precision
-        # `pricing` already lost.
+        # the statistics. It can only narrow precision `pricing` produced.
+        exposure = None
+        trade_exposures: List[ExposureProfile] = []
         if request.scenario_risk:
-            var_es_dtype = _resolve_risk_dtype(request.precision.risk, "var_es")
-            npv_cube_for_risk = npv_cube if npv_cube.dtype == var_es_dtype else jnp.asarray(npv_cube, dtype=var_es_dtype)
-            with _phase("risk"):
-                risk = compute_risk_metrics(npv_cube_for_risk, base_npv, percentiles=request.percentiles)
-        else:
-            # Empty, not zero-valued. See `PortfolioResult.
-            # scenario_risk_available`: a VaR of 0.00 asserts a measured
-            # absence of risk, while a missing key asserts nothing at all --
-            # and only the second is true here.
-            risk = {}
+            exposure_dtype = _resolve_risk_dtype(request.precision.risk, "exposure")
+            with _phase("exposure"):
+                exposure, trade_exposures = _exposure_profiles(
+                    npv_cube.astype(exposure_dtype), base_npv_per_trade, market, market_config,
+                    request.pfe_quantiles,
+                )
 
         greeks_out = None
         if request.compute_greeks:
@@ -755,11 +817,32 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
                 )
 
     return PortfolioResult(
-        base_npv=base_npv, npv_cube=npv_cube, risk=risk, greeks=greeks_out,
+        base_npv=base_npv, npv_cube=npv_cube, exposure=exposure, trade_exposures=trade_exposures,
+        greeks=greeks_out,
         warnings=collected_warnings, base_npv_per_trade=base_npv_per_trade,
         scenario_risk_available=request.scenario_risk,
         measure=ENGINE_RISK_MEASURE if request.scenario_risk else None,
     )
+
+
+def _exposure_profiles(npv_cube, base_npv_per_trade, market, market_config, quantiles):
+    """Netting-set and per-trade exposure profiles from the simulated cube.
+
+    The numeraire is the simulation's money-market account, which accrues on
+    rate factor 0, so `P(0,t)` for EE_B comes from that factor's curve."""
+    step_times = np.asarray(market_config.time_grid[1:], dtype=np.float64)
+    dtype = npv_cube.dtype
+    numeraire = jnp.asarray(market["numeraire"], dtype=dtype)
+    discount = _hw_discount(
+        _HwZeroCurve.from_config(market_config.rates.initial_zero_curves[0], dtype=dtype),
+        jnp.asarray(step_times, dtype=dtype),
+    )
+    netting_set = netting_set_profile(npv_cube, base_npv_per_trade, numeraire, discount, step_times, quantiles)
+    per_trade = [
+        exposure_profile(npv_cube[:, :, i], base_npv_per_trade[i], numeraire, discount, step_times, quantiles)
+        for i in range(npv_cube.shape[-1])
+    ]
+    return netting_set, per_trade
 
 
 def _fill_calibrated_sigma(
@@ -826,8 +909,8 @@ def _price_by_type(trades, market, maturities_np, step_times, pricing: Union[int
     # letting it fall through to a KeyError on `groups[type(cfg)]` or --
     # far worse -- be filled with a broadcast constant. See
     # `engine.instruments.treasury`'s module docstring: a zero-variance
-    # column produces VaR 0.00 and ES NaN, a position that reads as
-    # risk-measured when its risk was never modelled.
+    # column reads as a position whose risk was measured and found to be
+    # nil, when it was never modelled.
     deterministic = [
         (i, cfg) for i, cfg in enumerate(trades)
         if isinstance(cfg, DETERMINISTIC_ONLY_TYPES)
@@ -844,9 +927,9 @@ def _price_by_type(trades, market, maturities_np, step_times, pricing: Union[int
             f"time evolution to step. Its t=0 value IS available: call "
             f"`_base_npv_per_trade`/`price_bond_base` directly, or use "
             f"`price_portfolio(..., scenario_risk=False)` to get base NPV and Greeks "
-            f"without VaR/ES. Refused rather than broadcast: a constant column's VaR "
-            f"is 0.00 and its ES is NaN, which reports a position as risk-measured "
-            f"when its risk was never modelled (I-24)."
+            f"without an exposure profile, and `engine.market_risk` for short-horizon "
+            f"VaR/ES. Refused rather than broadcast: a constant column reports a "
+            f"position as risk-measured when its risk was never modelled (I-24)."
         )
 
     groups: Dict[type, List[int]] = {SwapConfig: [], SwaptionConfig: [], BermudanSwaptionConfig: [], AmericanSwaptionConfig: []}

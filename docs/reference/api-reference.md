@@ -709,8 +709,8 @@ the field-level quick reference; that doc explains the *why*).
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `market` | `SimulationConfig` | *required* | Curves, vols, correlations. |
-| `trades` | `List[SwapConfig \| SwaptionConfig \| BermudanSwaptionConfig \| AmericanSwaptionConfig]` | *required* | Heterogeneous, any order/mix. |
-| `percentiles` | `Sequence[float]` | `(0.95, 0.99)` | |
+| `trades` | `List[SwapConfig \| SwaptionConfig \| BermudanSwaptionConfig \| AmericanSwaptionConfig \| BondConfig]` | *required* | Heterogeneous, any order/mix. |
+| `pfe_quantiles` | `Sequence[float]` | `(0.95, 0.99)` | Quantiles of the PFE profiles. |
 | `calibration_targets` | `Optional[List[CalibrationTarget]]` | `None` | Used when any Bermudan/American trade's `hw_sigma is None`. |
 | `compute_greeks` | `bool` | `False` | |
 
@@ -720,7 +720,8 @@ the field-level quick reference; that doc explains the *why*).
 |---|---|---|
 | `base_npv` | `float` | |
 | `npv_cube` | `jax.Array` | `[Scenarios, TimeSteps, Trades]`, caller's own `trades` order. |
-| `risk` | `Dict[str, jax.Array]` | `compute_risk_metrics`'s own output. |
+| `exposure` | `Optional[ExposureProfile]` | Netting-set exposure profile (`engine.risk.exposure`); `None` when `scenario_risk=False`. |
+| `trade_exposures` | `List[ExposureProfile]` | Standalone exposure per trade. |
 | `greeks` | `Optional[Dict[int, Dict[str, jax.Array]]]` | Keyed by trade index in `request.trades`. |
 | `warnings` | `List[str]` | Known-limitation warnings surfaced during validation. |
 
@@ -728,6 +729,38 @@ the field-level quick reference; that doc explains the *why*).
 
 The main entry point — see [The Portfolio Entry Point](portfolio-entrypoint.md#price_portfoliorequest-portfoliorequest---portfolioresult)
 for the full 9-step orchestration.
+
+## `engine.risk.exposure`
+
+ORE's `ExposureCalculator` statistics over a simulated cube — see [Exposure](../risk/exposure.md).
+
+| Function | Returns |
+|---|---|
+| `exposure_profile(npv [S,T], npv0, numeraire [S,T], discount [T], times [T], quantiles)` | `ExposureProfile` for one trade: `times` (t=0 first), `epe`, `ene`, `ee_b`, `eee_b`, `pfe` (`"PFE_95"` → `[T+1]`) |
+| `netting_set_profile(npv_cube [S,T,N], npv0_per_trade, numeraire, discount, times, quantiles)` | The same for the netted sum of `N` trades |
+
+## `engine.market_risk`
+
+Short-horizon VaR/ES by full revaluation at t=0 — see [Market Risk](../risk/market-risk.md).
+
+| Name | Kind | Summary |
+|---|---|---|
+| `RateRiskFactors.from_curves(curves, names=None)` | class | The pillar zero rates of named curves; `size`, `slice_of(i)`, `base_rates()`, `labels()` |
+| `monte_carlo_scenarios(factors, covariance, horizon_days, num_scenarios, seed=42)` | function | Gaussian horizon moves via scrambled Sobol → `ShockScenarios` |
+| `historical_scenarios(factors, history, horizon_days, dates=None)` | function | Overlapping horizon moves of a `[dates, factors]` history → `ShockScenarios` |
+| `covariance_from_history(history, horizon_days)` | function | Sample covariance of those moves, `[F, F]` |
+| `horizon_moves(history, horizon_days)` | function | The overlapping moves themselves, `[D-h, F]` |
+| `ShockScenarios` | dataclass | `factors`, `shifts [S, F]`, `horizon_days`, `source`, `measure`, `windows` |
+| `MarketRiskRequest(trades, scenarios, quantiles=(0.99, 0.975), precision=64, batch_size=256)` | dataclass | |
+| `run_market_risk(request) -> MarketRiskResult` | function | `base_npv`, `base_npv_per_trade`, `pnl [S, N]`, `portfolio_pnl [S]`, `risk` (`VaR_99`, `ES_97.5`, tail counts, standard errors), `measure`, `source`, `horizon_days`, `num_scenarios`, `risk_factors`, `warnings` |
+
+## `engine.risk.price_functions`
+
+Each trade's t=0 price as a pure JAX function of its curves' pillar rates, shared by the
+Greeks and market-risk revaluation: `swap_price_function(cfg, disc, fwd)`,
+`swaption_price_function(cfg, curve)`, `bermudan_price_function(cfg, curve)` (returns
+`(f(rates, sigma_values), sigma_values)`) and `bond_price_function(cfg)` (from
+`engine.instruments.treasury`).
 
 ### `validate_portfolio_against_simulation(sim_config: SimulationConfig, trade_configs: Sequence[...]) -> None`
 

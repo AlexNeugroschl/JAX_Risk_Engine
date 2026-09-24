@@ -99,7 +99,7 @@ def portfolio_request():
         ),
         joint_covariance=[[0.04, 0.0], [0.0, 0.0001]],
     )
-    return PortfolioRequest(market=market, trades=[swap_cfg], percentiles=(0.95,))
+    return PortfolioRequest(market=market, trades=[swap_cfg], pfe_quantiles=(0.95,))
 
 
 @pytest.fixture(scope="session")

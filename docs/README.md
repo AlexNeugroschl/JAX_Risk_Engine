@@ -66,8 +66,13 @@ counterparts live at the integration boundary
 
 ## Risk
 
-- **[VaR & Expected Shortfall](risk/var_es.md)** — turns any instrument's NPV cube
-  into standard risk numbers, matching `ORE.RiskStatistics` exactly.
+- **[Market Risk](risk/market-risk.md)** — short-horizon VaR and Expected Shortfall by
+  revaluing the portfolio at t=0 under Monte Carlo or historical shocks of every curve
+  pillar; validated scenario by scenario against ORE.
+- **[Exposure](risk/exposure.md)** — EPE, ENE, EE_B and PFE through time from the
+  multi-step risk-neutral simulation, using ORE's `ExposureCalculator` definitions.
+- **[VaR & Expected Shortfall statistics](risk/var_es.md)** — the order-statistic and
+  tail-mean conventions behind every VaR/ES number, matching `ORE.RiskStatistics` exactly.
 - **[Delta, Gamma, Vega, and Theta](risk/greeks.md)** — per-curve-pillar sensitivities for
   every *rate-derivative* instrument (including Bermudan/American Vega, via
   `engine/calibration/`), via JAX automatic differentiation scaled to ORE's own

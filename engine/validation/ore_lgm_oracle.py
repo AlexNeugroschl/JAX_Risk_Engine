@@ -410,7 +410,9 @@ def ore_lgm_swaption_npv(
         inputs.insertAnalytic("NPV")
 
         stamp = _iso(evaluation_date).replace("-", "")
-        market = [f"{stamp} ZERO/RATE/{CCY}/{CURVE_ID}/A365/{_iso(d)} {r!r}"
+        # float(r)!r: full precision, and a plain number even for a numpy scalar
+        # (whose repr, "np.float64(...)", ORE cannot parse).
+        market = [f"{stamp} ZERO/RATE/{CCY}/{CURVE_ID}/A365/{_iso(d)} {float(r)!r}"
                   for d, r in zip(_curve_dates(evaluation_date, curve_times), curve_rates)]
         market.append(f"{stamp} SWAPTION/RATE_NVOL/{CCY}/1Y/1Y/ATM 0.01")
 
