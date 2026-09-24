@@ -395,7 +395,9 @@ constructible and price a genuine `ORE.BermudanExercise`:
 - `ORE.FdHullWhiteSwaptionEngine` — QuantLib's Hull-White finite-difference solver.
 
 So multi-exercise Bermudan values *can* be cross-checked end to end against a real,
-independent ORE engine, and now are: `tests/test_ore_bermudan_oracle.py` (50 tests).
+independent ORE engine, and now are: `tests/test_ore_bermudan_oracle.py` (51 tests).
+(And, since 2026-09-23, against ORE's own LGM engine itself — see
+[7b](#7b-ores-own-lgm-engine-reached-in-process-2026-09-23).)
 
 **What that comparison shows, and what it does not.** ORE's two engines are
 `HullWhite`-parametrized while this module is `LinearGaussMarkovModel`-parametrized — the
@@ -411,40 +413,82 @@ residual gap to the parametrization rather than to the backward induction:
 2. **This engine is fully grid-converged**: refining `n_per_std` from 48 to 384 moves the
    price by ~1e-5 relative, so the gap is not discretization error.
 3. **The same-sized gap appears with a *single* exercise date**, where
-   `tests/test_bermudan_swaption.py::TestSingleExerciseMatchesLgmJamshidian` already
-   proves this engine matches its own LGM closed form to 2e-4. A discrepancy present with
+   `tests/test_bermudan_swaption.py::TestSingleExerciseMatchesDirectIntegration` already
+   proves this engine matches an independent direct integration to 2e-5. A discrepancy present with
    one exercise date and no larger with four is not coming from the early-exercise logic.
 
 A fourth check is parametrization-free and therefore holds tightly: at `sigma -> 0` the
 Bermudan must collapse to the intrinsic value of the forward-starting underlying, which
-ORE values with a plain `DiscountingSwapEngine` and no model at all. This engine
-reproduces it to **1e-3** (1211.47 both sides).
+ORE values with a plain `DiscountingSwapEngine` and no model at all. It must be built with
+QuantLib's **indexed** Ibor coupons, which project over each index fixing period as ORE's
+LGM engine does; QuantLib's default at-par coupons project over the accrual period and
+differ by 2.3e-3 on this trade (1211.47 vs 1214.23, [I-31](../known-issues.md#i-31)).
 
-**No pricing defect was found.** The three apparent discrepancies hit while building this
+**No pricing defect was found *against these engines*.** (Against ORE's own LGM engine,
+two were — see [7b](#7b-ores-own-lgm-engine-reached-in-process-2026-09-23). A few-percent
+model gap is too coarse to see a 2e-4 projection error, and these Bermudan-only engines
+cannot see an American one.) The three apparent discrepancies hit while building this
 oracle all resolved to the test, not the engine: a ~40x error from building the ORE side's
 underlying with `build_vanilla_swap` (whose 0% dummy forward curve is correct for this
 engine and fatal for an ORE pricing engine, which actually reads it); a ~1e-2 curve-shape
 error from building ORE's comparison curve with log-linear discount interpolation instead
 of linear zero-rate; and a 12x overstatement at low vol from passing a *rounded* exercise
-time. That last one is worth recording as a **sensitivity, not a bug**: an exercise time
-of `2.0137` instead of the true `2.0136986301369864` is 1.4e-6 late, which is ~1400x
-`_hw_swap_value_at_nodes`' own `>= t - 1e-9` coupon-liveness tolerance, so that date's
-fixed coupon reads as already-elapsed and is dropped from the exercise value entirely.
-`BermudanSwaptionConfig`'s documented scope already requires exercise times to coincide
-with the underlying's accrual dates, so this is correct behavior on out-of-contract input
-— but the failure is silent and large, so
-`tests/test_ore_bermudan_oracle.py::TestExerciseTimeAlignment` pins it deliberately, and
-every comparison in that file reads its exercise times back off `prepare_bermudan` rather
-than writing a rounded literal.
+time. That last one was recorded as a **sensitivity, not a bug**: an exercise time of
+`2.0137` instead of the true `2.0136986301369864` is 1.4e-6 late, far outside the
+coupon-liveness tolerance then in use, so that date's fixed coupon was dropped from the
+exercise value entirely ([I-29](../known-issues.md#i-29)). It is gone by construction now:
+exercise is given in **dates**, as ORE takes it, and an exercise date equal to an accrual
+date maps to the identical time. `TestExerciseDatesAreExact` pins that.
+
+### 7b. ORE's own LGM engine, reached in-process (2026-09-23)
+
+The missing SWIG constructor blocks building `NumericLgmMultiLegOptionEngine` directly. It
+does not block reaching it: ORE users never build it directly either. They run an analytic
+over a trade, and ORE's engine factory builds it. `engine/validation/ore_lgm_oracle.py` does exactly
+that, in-process and entirely in memory: an `OREApp` run of the `NPV` analytic over a
+`Swaption` trade XML, priced by `LGMGridSwaptionEngineBuilder` →
+`NumericLgmMultiLegOptionEngine` with `Calibration=None`, on
+
+- the engine's own underlying, passed as explicit schedule dates;
+- a convention-defined `USD-SIMINDEX-6M` with `SimIndex`'s terms;
+- the engine's zero curve, date-quoted and linear in zero rate;
+- the engine's LGM parameters (`ReversionType=HullWhite`, `VolatilityType=Hagan`,
+  `ShiftHorizon=0`; a piecewise `Sigma` as `VolatilityTimes`/`Volatility`).
+
+Two inputs ORE requires but never reads for pricing are supplied so the model builder does
+not fall back to dummies. One of them, the swap index, is **not** inert:
+`IrModelBuilder` takes the LGM's own term structure from its discounting curve, so a
+fallback would silently replace the model curve with a flat 1%.
+
+**What it found, the first time it ran.** Three things the Hull-White comparison in 7a
+could not see:
+
+1. **American exercise was mispriced** — up to 6.0x for a payer, 0.09x for a receiver.
+   ORE keeps a coupon until its accrual *end* for an American and credits
+   `couponRatio(t)`; the engine priced Americans with the Bermudan rule
+   ([I-06](../known-issues.md#i-06)). The mid-period *Bermudan* behaviour the register had
+   called a 7.4x error turned out to be ORE's own rule.
+2. **Floating coupons were projected over the wrong period** — ORE's LGM engine uses the
+   index's fixing period, the engine used the accrual period; ~2e-4 on every trade
+   ([I-31](../known-issues.md#i-31)).
+3. **A closed-form exercise value is not ORE's number.** Mathematically it has the same
+   limit as ORE's rolled-back `underlyingNpv`; numerically it differs by up to 1e-4 at a
+   48-point grid (shrinking ~4x per doubling). The engine now replays ORE's cashflow
+   bookkeeping itself.
+
+After the changes, `tests/test_ore_lgm_parity.py` asserts equality to **1e-10** across 23
+cases (aligned and mid-period Bermudans, Americans including high strike at low vol and a
+truncating step count, piecewise volatility, zero vol); the measured worst case is
+**8.7e-12**. 22 of the 23 fail against the previous engine.
 
 **Verified:** `tests/test_bermudan_swaption.py` (the engine) and
-`tests/test_american_swaption.py` (the discretization wrapper) — see
+`tests/test_american_swaption.py` (American option times and broken periods) — see
 [american-bermudan-swaptions.md](../instruments/american-bermudan-swaptions.md)'s "Tested by" section for the full
 breakdown (closed-form primitives vs. live ORE LGM objects, single-exercise-date
-convergence to an independent Jamshidian-style closed form, monotonicity bounds, and the
-American-discretization/mid-coupon edge cases) — plus
-`tests/test_ore_bermudan_oracle.py` (50 tests), the external multi-exercise oracle
-described in 7a above.
+agreement with an independent direct integration, monotonicity bounds, and the
+exercise-membership rules) — plus `tests/test_ore_bermudan_oracle.py` (51 tests, the
+Hull-White oracle in 7a) and `tests/test_ore_lgm_parity.py` (23 tests, ORE's own LGM
+engine, 7b).
 
 ## 8. Value at Risk & Expected Shortfall
 
@@ -681,8 +725,10 @@ actually uses.
 | Jamshidian swaption decomposition | `_price_one_swaption`, `_solve_rstar` | `QuantLib::JamshidianSwaptionEngine::calculate`, `rStarFinder` |
 | Bond option (Black-on-bond) | `_bond_call`/`_bond_put` | `QuantLib::HullWhite::discountBondOption` |
 | American/Bermudan LGM bond price | `bermudan_swaption._lgm_bond` | `QuantExt::LinearGaussMarkovModel::discountBond` (`qle/models/lgm.hpp`) |
-| American/Bermudan backward induction | `bermudan_swaption._run_backward_induction` | `QuantExt::NumericLgmMultiLegOptionEngineBase::calculate`, `LgmConvolutionSolver2` (not constructible via SWIG) — cross-checked end-to-end against `ORE.TreeSwaptionEngine`/`ORE.FdHullWhiteSwaptionEngine` instead, see [7a](#7a-an-external-multi-exercise-oracle-does-exist-correction-2026-09-18) |
-| American exercise-window discretization | `american_swaption.AmericanSwaptionConfig.to_bermudan` | `NumericLgmMultiLegOptionEngineBase::calculate`'s American branch |
+| American/Bermudan backward induction, including ORE's cashflow bookkeeping | `bermudan_swaption._backward_induction_arrays`, `_GridSchedule` | `QuantExt::NumericLgmMultiLegOptionEngineBase::calculate`, `LgmConvolutionSolver2` — equal to ORE's own engine to 1e-10, reached in-process via `OREApp`, see [7b](#7b-ores-own-lgm-engine-reached-in-process-2026-09-23) |
+| Coupon membership and proration by exercise style | `bermudan_swaption.ExerciseStyle`, `prepare_bermudan` | `NumericLgmMultiLegOptionEngineBase::buildCashflowInfo` (`belongsToUnderlyingMaxTime_`, `couponRatio`) |
+| Ibor projection in the LGM | `bermudan_swaption._cashflow_values_at_nodes` | `QuantExt::LgmVectorised::fixing` (index fixing period) |
+| American exercise-window discretization | `american_swaption.AmericanSwaptionConfig.option_times` | `NumericLgmMultiLegOptionEngineBase::calculate`'s American branch (truncating step count) |
 | VaR | `value_at_risk` | `QuantLib::RiskStatistics::valueAtRisk` → `GeneralStatistics::percentile` |
 | Expected Shortfall | `expected_shortfall` | `QuantLib::RiskStatistics::expectedShortfall` |
 | Delta / Gamma (curve pillar bump-and-revalue, via autodiff) | `greeks.swap_delta_gamma`, `greeks.swaption_delta_gamma`, `greeks.bermudan_delta_gamma` | `SensitivityScenarioGenerator`/`ShiftScenarioGenerator::applyShift`, `SensitivityCube::delta`/`gamma` |

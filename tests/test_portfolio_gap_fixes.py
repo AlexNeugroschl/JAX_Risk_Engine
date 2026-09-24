@@ -38,6 +38,7 @@ import numpy as np
 import ORE
 import pytest
 
+from engine.models.ore_builders import time_from_reference
 from engine.simulation.market_model import (
     EquityConfig, RatesConfig, SimulationConfig, ZeroCurveConfig,
 )
@@ -347,15 +348,15 @@ class TestBermudanVegaReachesThePortfolioPath:
 
     @staticmethod
     def _calibrated_request():
-        exercise_times = [1.010958904109589, 2.0136986301369864]
+        exercise_dates = [ORE.Date(3, 8, 2027), ORE.Date(3, 8, 2028)]
         bermudan = BermudanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
             hw_a=HW_A, hw_sigma=None, initial_zero_curve=ZERO_CURVE,
-            exercise_times=exercise_times, swap_tenor="3Y",
+            exercise_dates=exercise_dates, swap_tenor="3Y",
             evaluation_date=TODAY, n_per_std=32, std_devs=5.0,
         )
         targets = build_coterminal_basket(
-            evaluation_date=TODAY, exercise_times=exercise_times,
+            evaluation_date=TODAY, exercise_times=[time_from_reference(TODAY, d) for d in exercise_dates],
             final_maturity_time=3.0, notional=1_000_000.0, payer=True,
             market_vols=[0.008, 0.0088],
             zero_curve=HwZeroCurve.from_config(ZERO_CURVE),
@@ -388,7 +389,7 @@ class TestBermudanVegaReachesThePortfolioPath:
         bermudan = BermudanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
             hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
-            exercise_times=[1.010958904109589, 2.0136986301369864],
+            exercise_dates=[ORE.Date(3, 8, 2027), ORE.Date(3, 8, 2028)],
             swap_tenor="3Y", evaluation_date=TODAY, n_per_std=32, std_devs=5.0,
         )
         trades = [bermudan]

@@ -31,34 +31,25 @@ code changes.
 
 ## Verification status
 
-Last full verification (2026-09-18, after the ORE-oracle work): **1,863 passed, 0 failed**
-(4h08m) — the complete suite (`.venv/Scripts/python.exe -m pytest tests/`), nothing
-excluded, summary line printed, exit code 0, zero `FAILED`/`ERROR` lines. That is 1,777 at
-the previous commit plus 86 new tests (50 in `tests/test_ore_bermudan_oracle.py`, 36 in
-`tests/test_ore_coverage_hardening.py`), so the delta reconciles exactly:
-1,777 + 50 + 36 = 1,863. Both counts taken from `pytest --collect-only -q tests/`.
+Last full verification (2026-09-23, after the I-06/I-31 fixes): **1,897 passed, 0 failed**
+(19m12s) — the complete suite (`.venv/Scripts/python.exe -m pytest tests/ --durations=25`),
+nothing excluded, summary line printed, exit code 0, zero `FAILED`/`ERROR` lines. The
+count reconciles against the previous confirmed collection of 1,879, per file against the
+previous commit (`--collect-only` in a separate worktree at `HEAD`):
 
-> **⚠ That total is now stale by +16, and a full suite has NOT been re-run since.**
-> Collection now reports **1,879** (`pytest --collect-only -q tests/`), reconciling as
-> 1,863 + 10 + 6:
->
-> | Δ | Source |
-> |---:|---|
-> | +10 | the [I-29](#i-29) fix — `tests/test_ore_bermudan_oracle.py` goes 50 → 60 |
-> | +6 | the [I-06](#i-06) direction tests — `tests/test_bermudan_swaption.py` goes 55 → 61 |
->
-> What *was* run against these changes: the twelve suites touching Bermudan/American
-> pricing, calibration and the portfolio path — **327 passed, 0 failed** (7m59s) — and,
-> after the I-06 work, the three Bermudan/American/oracle suites — **143 passed, 0 failed**
-> (2m15s), reconciling exactly as 61 + 22 + 60. Both runs printed a summary line and exited 0.
->
-> **This line stays wrong until someone re-runs the whole suite**, and is deliberately not
-> silently updated to 1,879: a total nobody measured is exactly what rules 2 and 4 above
-> exist to prevent. The collection delta is confirmed; the pass count is not.
+| Δ | Source |
+|---:|---|
+| +23 | `tests/test_ore_lgm_parity.py` (new) — parity with ORE's own LGM engine |
+| +2 | `tests/test_bermudan_swaption.py` 61 → 63 — date validation |
+| +2 | `tests/test_american_swaption.py` 22 → 24 — rewritten around ORE's American rules |
+| −9 | `tests/test_ore_bermudan_oracle.py` 60 → 51 — 12 snap tests removed with the snap, 3 added |
 
-Earlier figures, for history: 1,777/0 after W0.8 (16m55s), 1,718/0 at `1e078f3`, 1,618/0
-after W1.6, 1,452/1 after the v5 fixes, 1,384/2 after W1.4, 1,324/2 after W1.3, 1,217/2
-after W1.2.
+1,879 + 23 + 2 + 2 − 9 = 1,897. The 1,879 itself was never run in full (see history); this run
+covers it.
+
+Earlier figures, for history: 1,863/0 on 2026-09-18 (4h08m); 1,777/0 after W0.8 (16m55s),
+1,718/0 at `1e078f3`, 1,618/0 after W1.6, 1,452/1 after the v5 fixes, 1,384/2 after W1.4,
+1,324/2 after W1.3, 1,217/2 after W1.2.
 
 **Four standing rules for any figure recorded here**, each one written after it was violated:
 
@@ -76,17 +67,16 @@ after W1.2.
    record.** Both hazards above have fired and both were caught by arithmetic rather than by
    the runner.
 
-> **⚠ The 4h08m wall-clock is a 15x regression against the previous 16m55s, and it is
-> unexplained.** The count reconciles and nothing failed, so this is not a correctness
-> signal — but it is not nothing. Candidates: the two new files' ORE tree/FD engines
-> (800x800 PDE grids, 800-step trees — though they run in ~50s *combined* in isolation,
-> which does not account for the gap), XLA recompilation pressure from the mutation tests'
-> repeated `clear_cache()` calls, or machine load during an unattended run. **Do not record
-> a faster figure without re-measuring.** Timing per-file (`--durations=25`) is the obvious
-> next step and has not been done.
+**The 4h08m of 2026-09-18 did not recur**: this run took 19m12s, in line with the 16m55s
+before it, on a larger suite and with `--durations=25` recorded. The slowest test was 41s
+(`test_all_four_instrument_types_each_represented_multiple_times`), and the 25 slowest sum
+to ~7 minutes, so no single test explains four hours. **The user reports the machine
+crashed during that run**, which would account for the wall clock: it was not a property of
+the suite. (That run still printed a full summary and exit code, so whatever interrupted it
+the pytest process survived; the pass count stands.) Keep recording durations.
 
 **The long-running flake.** `test_cross_tier_jobs_correct_and_concurrent` has now passed
-four full runs and failed one, on identical code. It passes in isolation (12.28s) and failed
+five full runs and failed one, on identical code (passed again 2026-09-23). It passes in isolation (12.28s) and failed
 every full run from W1.2 through W1.5. The 2026-09-18 pass came during the *slowest* run on
 record (4h08m), which is mild evidence *against* the load-dependence hypothesis, since a
 wall-clock overlap assertion should be most likely to fail under exactly those conditions.
@@ -104,6 +94,7 @@ this register exists to embody. Of the defects found during this integration:
 | Building a new external oracle | [I-29](#i-29) (fixed 2026-09-18) |
 | Mutation-testing the suite's own tolerances | [I-30](#i-30) |
 | **Measuring a claim the docs made but no test asserted** | **[I-06](#i-06)'s error direction** |
+| **Pricing against the engine ORE actually uses** | **[I-06](#i-06) rescoped to American, [I-31](#i-31)** |
 | Running the test suite | **none** |
 
 **The newest route is the cheapest, and it found the worst result.** [I-06](#i-06) had been
@@ -114,6 +105,15 @@ Actually pricing a payer and a receiver either side of an accrual boundary took 
 and showed the approximation **overstates a payer up to 7.4x**. A documented property that
 no test asserts is a hypothesis wearing the costume of a fact; this register now carries
 its own instance of the thing it was created to catch.
+
+**And the 7.4x was then shown to be measured against the wrong baseline** (2026-09-23).
+It compared a mid-period Bermudan with the engine's *own* aligned price. ORE's source says
+a mid-period Bermudan exercises into the next whole period, so that difference is ORE's
+behaviour, not an error. Pricing against ORE's own LGM engine, now reachable in-process
+through `engine/validation/ore_lgm_oracle.py`, moved the real deviation to **American** exercise (up
+to 6.0x) and turned up [I-31](#i-31), which the engine's self-consistent tests could never
+see. A self-comparison can show a direction; only an external oracle shows the right
+reference.
 
 The last two routes are new as of 2026-09-18. The Bermudan engine was cross-checked end to
 end against real `ORE.TreeSwaptionEngine` / `ORE.FdHullWhiteSwaptionEngine` objects for the
@@ -134,7 +134,8 @@ are excluded. The tiers are the unit of decision here — within a tier, order i
 call and the rank column should not be read as precise.
 
 **The one-line read:** everything in Tier 1 is blocked on someone else, so start at Tier 2.
-([I-29](#i-29), previously rank 3 and called the best first move, was fixed on 2026-09-18.)
+([I-29](#i-29) was fixed on 2026-09-18; [I-06](#i-06) and [I-31](#i-31), which then led
+Tier 2, on 2026-09-23.)
 
 ### Tier 1 — Highest criticality, blocked on external input
 
@@ -158,17 +159,15 @@ each is small relative to what it buys.
 
 | # | Issue | Severity | Difficulty | Why it ranks here |
 |---:|---|---|---|---|
-| 3 | [I-06](#i-06) — mid-coupon exercise misprices, direction-dependent | **High** | Moderate | **Reclassified 2026-09-18.** Not the conservative understatement this register claimed for months: a payer is **overstated up to 7.4x** (~12x at low vol), a receiver understated to 0.16x, so a mixed book's errors cancel in the total while every position is wrong. Needs proration in `_hw_swap_value_at_nodes` plus the D16 settlement convention. |
-| 4 | [I-30](#i-30) — `A(t,T)` variance term nearly uncovered at `t=0` | Medium | **Low** | A test gap, not a defect — but one test carries the whole suite's coverage of a core formula term. The harness exists; it needs more `(t, r)` points. |
-| 5 | [I-11](#i-11) — risk measure unlabelled on `PortfolioResult` | Medium | **Low** | Vocabulary and diagnostics already exist (W0.6); closing it means putting `measure` on `PortfolioResult` itself. A risk-neutral number read as a loss forecast is a category error, not a rounding one. |
-| 6 | [I-10](#i-10) — no trade identity; results keyed by array position | Medium | **Low-moderate** | Ordering is correct and tested *today*; any future reorder or partial response silently misattributes. Mechanically small, touches three layers. |
+| 3 | [I-30](#i-30) — `A(t,T)` variance term nearly uncovered at `t=0` | Medium | **Low** | A test gap, not a defect — but one test carries the whole suite's coverage of a core formula term. The harness exists; it needs more `(t, r)` points. |
+| 4 | [I-11](#i-11) — risk measure unlabelled on `PortfolioResult` | Medium | **Low** | Vocabulary and diagnostics already exist (W0.6); closing it means putting `measure` on `PortfolioResult` itself. A risk-neutral number read as a loss forecast is a category error, not a rounding one. |
+| 5 | [I-10](#i-10) — no trade identity; results keyed by array position | Medium | **Low-moderate** | Ordering is correct and tested *today*; any future reorder or partial response silently misattributes. Mechanically small, touches three layers. |
+| 6 | [I-32](#i-32) — parity with ORE only for its Grid solver at `ShiftHorizon=0` | Medium | Moderate (shift) / hard (FD) | ORE's default `ShiftHorizon=0.5` moves Americans by up to 1.5e-4; its FD solver, used in ORE's shipped American config, by up to 1.6e-3. Needs a decision on which ORE configuration is the reference before any code. |
 | 7 | [I-28](#i-28) — `var_es` demo crashes on a date that moved | Low | **One line** | Root-caused, fix confirmed, not applied. A documented command that aborts. Cheapest item in the register. |
 
-[I-06](#i-06) leads this tier, and the whole actionable list, because it is the only
-unblocked issue that silently reports a **wrong price** for a plausible trade — and because
-it was mis-ranked as a Medium scope gap until its error direction was actually measured on
-2026-09-18. I-30 follows: it came out of the same oracle work with its fix site already
-located, as did [I-29](#i-29), which topped this tier until it was fixed the same day.
+[I-06](#i-06) and [I-31](#i-31), which led this tier, were fixed on 2026-09-23: Bermudan and
+American pricing now equal ORE's own engine to ~1e-11. [I-30](#i-30) now leads. It came out
+of the 2026-09-18 oracle work with its fix site already located, as did [I-29](#i-29).
 I-11 and I-10 are ranked above I-28 despite I-28 being cheaper because they are about
 numbers a consumer misreads, not a demo that fails loudly.
 
@@ -236,12 +235,12 @@ back into it.
 | [I-03](#i-03) | No per-instrument NPV; totals unattributable | Medium | ✅ FIXED | — |
 | [I-04](#i-04) | Aged swaps mispriced at every step past first accrual | **High** | ⚠️ FLAGGED | **1** |
 | [I-05](#i-05) | No faithful USD-SOFR/ACT360 swap construction | **High** | ❌ OPEN — refusal path landed (W0.4) | **2** |
-| [I-06](#i-06) | Mid-coupon exercise misprices — **overstates a payer up to 7.4x**, understates a receiver | **High** | ⚠️ FLAGGED | **3** |
+| [I-06](#i-06) | American exercise ignored ORE's broken-period proration — payer overstated up to 6.0x vs ORE (mid-period Bermudans were always right) | **High** | ✅ FIXED | — |
 | [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — both Treasury pricers landed (W1.2 bill, W1.3 note) | 11 |
 | [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8); the portfolio path's `_JOBS` dict is unchanged | 13 |
 | [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN | 14 |
-| [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary (W0.7) | 6 |
-| [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ❌ OPEN — measure + MC diagnostics landed (W0.6) | 5 |
+| [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary (W0.7) | 5 |
+| [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ❌ OPEN — measure + MC diagnostics landed (W0.6) | 4 |
 | [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN | 17 |
 | [I-13](#i-13) | Negative curve index silently prices against the wrong curve | **High** | ✅ FIXED | — |
 | [I-14](#i-14) | `generate_paths(precision=32)` leaks `jax_enable_x64=False`; float64 silently truncates | **High** | ✅ FIXED | — |
@@ -260,9 +259,11 @@ back into it.
 | [I-27](#i-27) | Long full-suite runs **hard-abort inside XLA compilation**, with no summary line | Medium | ❌ OPEN — located, not root-caused | 8 |
 | [I-28](#i-28) | `python -m engine.risk.var_es`'s **own demo crashes**: it omits `evaluation_date`, so its swap schedules off today | Low | ❌ OPEN | 7 |
 | [I-29](#i-29) | A rounded exercise time silently drops a whole coupon | Medium | ✅ FIXED | — |
-| [I-30](#i-30) | The `A(t,T)` variance term is nearly uncovered at `t=0` (test gap, not a defect) | Medium | ⚠️ FLAGGED | 4 |
+| [I-30](#i-30) | The `A(t,T)` variance term is nearly uncovered at `t=0` (test gap, not a defect) | Medium | ⚠️ FLAGGED | 3 |
+| [I-31](#i-31) | Bermudan/American floating coupons projected over the accrual period, not ORE's index fixing period | Medium | ✅ FIXED | — |
+| [I-32](#i-32) | Parity with ORE holds only for its Grid solver at `ShiftHorizon=0`; ORE's defaults differ by up to 1.6e-3 | Medium | ❌ OPEN | 6 |
 
-**Counts:** 30 issues — 12 FIXED, 13 OPEN, 3 FLAGGED, 1 PARTIAL, 1 ASSUMPTION. The 18
+**Counts:** 32 issues — 14 FIXED, 14 OPEN, 2 FLAGGED, 1 PARTIAL, 1 ASSUMPTION. The 18
 unfixed entries are ranked above.
 
 **The two that matter most for financial correctness are [I-04](#i-04) and [I-05](#i-05).**
@@ -339,6 +340,65 @@ same numbers**, computed once, so they cannot drift apart. Exposed through
 
 **Verified.** `tests/test_portfolio_gap_fixes.py::TestPerTradeBaseNpv` (5 tests), including
 sign/order attribution via a payer/receiver mirror pair.
+
+---
+
+### I-06 — American exercise ignored ORE's broken-period proration {#i-06}
+
+**Severity:** **High** · **Status:** ✅ FIXED (2026-09-23) · **Found:** first as a Bermudan
+"approximation" (2026-09-18, wrongly); correctly scoped 2026-09-23 against ORE's own engine
+
+**What was wrong.** The engine priced every Bermudan/American exercise with one rule: a
+coupon belongs to the exercised-into swap only if its accrual has not started. That is
+ORE's rule for a **Bermudan** ("bermudan exercise implies that we always exercise into whole
+periods", `NumericLgmMultiLegOptionEngineBase::buildCashflowInfo`). It is not ORE's rule for
+an **American**: there a coupon belongs until its accrual *end* and is credited
+`couponRatio(t) = clamp((accrualEnd − t − lag)/(accrualEnd − accrualStart), 0, 1)`. So every
+American option time inside a period, which is nearly all of them since the grid isn't
+aligned, dropped a coupon ORE credits pro rata. Measured against ORE's engine: payers
+overstated up to **6.0x** (high strike, low vol), receivers understated to **0.09x**.
+
+> **This entry was wrong twice before it was right, and both corrections are the record.**
+> Until 2026-09-18 it called the approximation "conservative (value-understating)" — false
+> for a payer. On 2026-09-18 it measured a mid-period *Bermudan* against the engine's own
+> aligned price, called the resulting 7.4x a mispricing, and prescribed prorating Bermudan
+> coupons. That was the wrong **reference**: against ORE, the mid-period Bermudan was
+> already right, and the prescribed fix would have moved it away from ORE. The first
+> correction was found by measuring a direction nobody had tested; the second only by an
+> external oracle. A self-comparison can reveal a direction, but not which baseline is correct.
+
+**Fix.** Coupon membership is now a property of the exercise style, taken from ORE rather
+than hard-coded. `ExerciseStyle` (BERMUDAN / AMERICAN) sets each coupon's belongs-until time
+in `prepare_bermudan`, and the backward induction replays ORE's own cashflow bookkeeping
+(`_GridSchedule`, `_backward_induction_arrays`): cashflows go into a rolled-back
+`underlyingNpv` at the latest time they can be estimated, broken coupons are cached and
+credited `couponRatio`, and the exercise value is `underlyingNpv + provisionalNpv +
+provisionalNpvNonCached`. `AmericanSwaptionConfig` is priced directly: `to_bermudan()` is
+gone, and so is the flag that exempted its grid from snapping. Its option times follow
+ORE's construction exactly, including a **truncating** step count (`static_cast<Size>`),
+which `to_bermudan` used to round.
+
+Replaying the loop, rather than evaluating the exercise value in closed form, is
+deliberate. Both converge to the same limit, but the closed form differs from ORE by up to
+1e-4 at a 48-point grid (shrinking ~4x per doubling, measured). The replay matches ORE's
+number at any grid.
+
+**D16** (settlement convention for a mid-period exercise) is answered by the same source:
+ORE's convention, as implemented.
+
+**Verified.** `tests/test_ore_lgm_parity.py` (23 tests) prices through ORE's own
+`NumericLgmMultiLegOptionEngine` in-process (`engine/validation/ore_lgm_oracle.py`: `OREApp` → trade XML →
+`LGMGridSwaptionEngineBuilder`) and asserts equality to **1e-10**. Measured worst case
+**8.7e-12**. Run against the pre-fix engine through an adapter to the old year-fraction API,
+**22 of the 23 fail** (every American case among them; the one pass is a zero-vol receiver
+whose best exercise involves none of the affected coupons). American-specific mechanics are
+pinned in `tests/test_american_swaption.py` (option times, truncation, `couponRatio`, and the
+one case where the styles must coincide exactly). The Bermudan direction tests stay, now
+documented as ORE's contract rather than an error:
+`tests/test_bermudan_swaption.py::TestMidPeriodBermudanExercise`.
+
+**Not closed, deliberately:** ORE's `midCouponExercise=true` Bermudans and notice periods
+are not exposed by these configs. The coupon model handles both by construction.
 
 ---
 
@@ -768,6 +828,15 @@ that close to maturity.
 
 ### I-29 — A rounded exercise time silently drops a whole coupon {#i-29}
 
+> **Superseded by design (2026-09-23).** Exercise is now specified by **date**, as ORE takes
+> it; an exercise date equal to an accrual date maps to the bit-identical time, and a year
+> fraction is refused with `TypeError`. The snap tolerance, the American exemption flag and
+> `exercisable_times` described below are removed, and their 12 tests replaced by 3
+> (`TestExerciseDatesAreExact`) plus `test_year_fraction_exercise_rejected`. The defect
+> stays FIXED, now by construction, not by repair. The residual this entry describes
+> ("every late-landing unaligned time drops a coupon") was ORE's own Bermudan rule all along
+> ([I-06](#i-06)).
+
 **Severity:** Medium · **Status:** ✅ FIXED (2026-09-18) · **Found:** 2026-09-18, while
 building the external Bermudan oracle (`tests/test_ore_bermudan_oracle.py`)
 
@@ -821,6 +890,16 @@ with wide margins on both sides: a 4-, 5- or 6-decimal year fraction is off by a
 1.4e-6 (~70x inside the band), while one calendar day is 2.74e-3 (~27x outside it) and the
 mid-period times used in the tests above sit ~1e-2 away. Fixed accrual starts are ≥0.99
 years apart, so a snap can never be ambiguous between two boundaries.
+
+> **⚠ Correction (2026-09-23).** Some of the reasoning below turned out to be wrong, and
+> [I-06](#i-06) now carries the evidence. For a **Bermudan**, a late-landing exercise time
+> dropping the coupon that has already started is **ORE's own rule**: a mid-period date
+> exercises into the next whole period. So "prorating the in-progress coupon" is *not* how
+> the residual closes. What is actually non-ORE is the input: ORE takes exercise **dates**
+> and derives times with the curve's day counter, so a year fraction 1.4e-6 past an accrual
+> start cannot arise there at all. The snap tolerance exists only because this engine takes
+> year fractions. Read "wrong" below as "differs from what the caller meant", not "differs
+> from ORE".
 
 **What is still wrong, stated at full scope.** The residual is **not** a precision
 question, and an earlier draft of this entry framed it too narrowly as "3-decimal
@@ -891,6 +970,43 @@ been re-run**; see the caveat in the header.
 
 ---
 
+### I-31 — Bermudan/American floating coupons were projected over the wrong period {#i-31}
+
+**Severity:** Medium · **Status:** ✅ FIXED (2026-09-23) · **Found:** 2026-09-23, by the
+first head-to-head against ORE's own LGM engine
+
+**What was wrong.** The engine projected each floating coupon's rate over the coupon's
+**accrual** period. ORE's LGM engine projects it over the **index's** fixing period
+`[valueDate(fixingDate), maturityDate(valueDate)]`, with the index day count, and then
+multiplies by the coupon's accrual (`LgmVectorised::fixing`). The periods usually coincide
+but not always: the schedule is generated backward from maturity, while an index period
+is rolled forward from its own start date (e.g. accrual 2027-12-20 → 2028-06-19, index
+2027-12-20 → 2028-06-20). Measured on a fully aligned 5Y Bermudan: a constant −5.853 at zero
+vol (grid-independent, so not numerical), 0.9–2.1e-4 relative across strikes, sign
+following the trade. Recomputing by hand with index-period forwards gave ORE's number to
+every printed digit.
+
+**Fix.** `prepare_bermudan` carries each floating coupon's index fixing period, day count
+fraction and fixing time, and `_cashflow_values_at_nodes` projects with ORE's clamps
+(`T1 = max(t, d1)`, `T2 = max(T1, d2)`). A fixing dated on the evaluation date is
+deterministic, as in ORE (`index->fixing(today)`). A fixing before it is refused: it needs
+a historical fixing this engine does not hold (I-04).
+
+**A consequence worth knowing: ORE's two engines disagree here.** QuantLib's
+`DiscountingSwapEngine` with default "at par" Ibor coupons projects over the accrual period;
+ORE's LGM engine over the index period. So a zero-vol Bermudan no longer equals the
+at-par discounting value of its forward swap (1211.47) but the **indexed**-coupon one
+(1214.23, what ORE's LGM engine returns). `test_ore_bermudan_oracle.py`'s zero-vol anchor
+now builds its swap with `IborCoupon.createIndexedCoupons()`. `engine/instruments/swap.py`
+still projects over the accrual period, which is correct for the ORE engine it reproduces
+(the discounting one). Each pricer matches the ORE engine it stands in for.
+
+**Verified.** Same parity suite as [I-06](#i-06); every aligned-Bermudan case there failed
+before this fix and was the whole of the gap. Two pinned values moved by exactly this:
+`tests/test_profiling_and_jit.py` (8521.0223 → 8522.4605, and 5x that).
+
+---
+
 ## FLAGGED — inaccuracy unchanged, silence removed
 
 > These are **not fixes.** The numbers are as wrong as they were before. What changed is that
@@ -946,102 +1062,6 @@ Item 2 is the binding constraint. Engine work alone cannot close this.
 `tests/test_api.py::TestGapFixesSurviveTheHttpBoundary`.
 
 ---
-
-### I-06 — Mid-coupon Bermudan/American exercise misprices in both directions {#i-06}
-
-**Severity:** **High** (raised from Medium, 2026-09-18) · **Status:** ⚠️ FLAGGED
-
-**What is wrong.** Bermudan/American pricing is exact **only** when exercise dates are
-reset-aligned with the underlying's accrual schedule. For an exercise date falling inside an
-accrual period, the in-progress coupon is **excluded entirely rather than prorated**. The
-error is an entire coupon's PV, not a few days' accrual.
-
-> **⚠ Correction (2026-09-18): this is NOT a conservative understatement, and this entry
-> said so for months.** The claim that the approximation is "conservative
-> (value-understating)" appears here, in `AmericanSwaptionConfig`'s docstring and in
-> [american-bermudan-swaptions.md](instruments/american-bermudan-swaptions.md) — and it is
-> **false for payer swaptions**. Measured on a 5Y annual-fixed underlying, exercise time
-> 1e-3 past an accrual start, at `sigma=0.005`:
->
-> | Type | Strike | Aligned | Mid-coupon | Ratio | |
-> |---|---:|---:|---:|---:|---|
-> | payer | 0.02 | 28,248 | 31,893 | 1.13x | **overstates** |
-> | payer | 0.03 | 7,617 | 15,540 | 2.04x | **overstates** |
-> | payer | 0.04 | 588 | 4,327 | **7.36x** | **overstates** |
-> | receiver | 0.02 | 409 | 65 | 0.16x | understates |
-> | receiver | 0.03 | 6,405 | 1,203 | 0.19x | understates |
-> | receiver | 0.04 | 26,004 | 7,483 | 0.29x | understates |
->
-> **The mechanism.** Dropping the in-progress *fixed* coupon removes a payment. For a payer
-> that is money owed, so the remaining swap looks **more** valuable; for a receiver it is
-> money due, so it looks less. The sign of the error is the sign of the trade.
->
-> At low volatility the payer overstatement reaches **~12x** (1,211 → 14,336 at
-> `sigma → 1e-6`), because the intrinsic value it should collapse to is small while the
-> spurious gain from the dropped coupon is not.
->
-> **Why no test caught it.** `TestMidCouponKnownLimitation` asserts only that the
-> mid-coupon price is finite, non-negative, and within one order of magnitude of the
-> aligned price (`abs(mid - reset) / reset < 1.0`). It never checks the **direction** of
-> the error, so the "conservative" claim was documented but never verified.
->
-> **Why this raises the severity.** A conservative understatement is something a consumer
-> can knowingly accept. A **direction-dependent** error is not: a book of payers and
-> receivers gets errors of opposite sign that partially cancel in the portfolio total while
-> every individual position is wrong — the same "quieter, not safer" shape as
-> [I-24](#i-24)'s broadcast VaR.
-
-**What changed.** `validate_portfolio_against_simulation` warns per misaligned trade, and
-`price_portfolio` collects these into `PortfolioResult.warnings`. (This predates the current
-review; recorded here for completeness.)
-
-**What closing it requires.** Proration logic in `_hw_swap_value_at_nodes`
-([`engine/instruments/bermudan_swaption.py`](../engine/instruments/bermudan_swaption.py)),
-crediting the in-progress coupon its `couponRatio` share (ORE's own construction) instead
-of dropping it, plus agreement on the settlement convention for a mid-period exercise —
-decision **D16** in the TraderX pack. Engine-side work; no external data dependency, which
-is why this now heads the actionable list.
-
-**Two things the fix must prove, given how this issue was mis-described.**
-
-1. **Direction, per trade type, not just magnitude.** The existing
-   `test_the_error_direction_follows_the_trade_direction` asserts a payer overstates and a
-   receiver understates. A correct proration makes both converge on the aligned price, so
-   that test must be *tightened into an equality* — deleting it would remove the only check
-   that ever caught the real behavior.
-2. **A payer at a high strike, at low volatility.** That is where the error is worst
-   (7.4x at `sigma=0.005`, ~12x as `sigma → 0`) because the aligned intrinsic is small
-   while the spurious gain from the dropped coupon is not. A fix validated only at
-   at-the-money and ordinary vol would look convincing and leave the damaging case intact.
-
-**Do not close it by snapping mid-period dates onto the schedule.** That is the plausible
-wrong fix, and [I-29](#i-29)'s scoping exists to prevent it: moving a caller's exercise
-date answers a different question than the one asked, and an earlier draft that refused
-such dates outright failed 66 tests.
-
-**Documented by.** `tests/test_bermudan_swaption.py::TestMidCouponKnownLimitation`, which
-now carries `test_the_error_direction_follows_the_trade_direction` — **6 parametrized
-cases** (payer/receiver × three strikes) asserting the *sign* of the error per trade type.
-That file goes 55 → 61 collected; the three Bermudan/American/oracle suites run
-**143 passed, 0 failed**.
-
-**Note what these tests are and are not.** They are **not** regression tests — nothing in
-the pricer changed, so they pass against unmodified code. They pin behavior that was always
-present and always mis-described, which is precisely why the mistake lasted: the
-pre-existing tests in this class bound only magnitude (`abs(mid - reset) / reset < 1.0`),
-and a magnitude bound cannot contradict a claim about direction. When proration lands, both
-halves converge on the aligned price and these become equalities rather than being deleted.
-
-**Related.** [I-29](#i-29) was the same alignment requirement seen from the opposite side:
-not a mid-period exercise date, but a reset-*aligned* one supplied with enough
-floating-point rounding to miss the alignment by ~1e-6. **Its fix does not touch this
-issue, deliberately.** Snapping is scoped to near-misses (within 1e-4) precisely so that a
-genuine mid-period date — which is what this entry is about — is passed through untouched
-rather than moved or refused. An earlier draft of that fix enforced alignment outright and
-failed 66 tests, most of which exist to exercise exactly the behavior recorded here.
-
----
-
 
 ### I-30 — The `A(t,T)` variance term is nearly uncovered at `t=0` {#i-30}
 
@@ -1856,6 +1876,51 @@ register agree about reality in the meantime.
 
 **Related:** the same alignment rule is discussed at
 [Instruments: swaps](instruments/swaps.md#a-known-limitation-maturity-pillar-alignment).
+
+---
+
+### I-32 — Parity with ORE holds only for its Grid solver at `ShiftHorizon=0` {#i-32}
+
+**Severity:** Medium · **Status:** ❌ OPEN · **Found:** 2026-09-23, by pricing against ORE's
+engine under the settings ORE's own example configs use
+
+**What is wrong.** [I-06](#i-06)'s parity (1e-11) is with ORE configured the way this engine
+prices: the `Grid` convolution solver, `ShiftHorizon=0`. ORE's own shipped American config
+(`Examples/Products/Input/pricingengine.xml`) uses neither: it uses the **FD** solver
+(`LgmFdSolver`, Douglas scheme, 64 points, 24 steps/year), and its LGM builder defaults
+`ShiftHorizon` to **0.5** of the trade's maturity. Measured with
+`engine/validation/ore_lgm_oracle.py` (`shift_horizon=`, `fd_solver=`), 5Y trades, engine at
+its default 48-point grid:
+
+| ORE setting | Bermudan | Mid-period Bermudan | American |
+|---|---:|---:|---:|
+| Grid, `ShiftHorizon=0` (what the engine reproduces) | ~1e-13 | ~1e-13 | ~1e-12 |
+| Grid, `ShiftHorizon=0.5` (ORE's builder default) | 1.6e-6 | 2.7e-5 | 2.7e-5 – 1.5e-4 |
+| FD, shipped settings (64 pts, 24/yr) | 3.8e-4 | 1.0e-3 | 5.7e-4 – 1.6e-3 |
+| FD, fine (400 pts, 200/yr) | 3.2e-6 | 4.2e-4 | 1.1e-4 – 1.0e-3 |
+
+**What each gap is.**
+
+- **The shift horizon** is an exact invariance of the LGM: shifting `H(t)` by a constant
+  leaves every price unchanged in exact arithmetic, but it moves the state grid, so the
+  discretization error changes. That gap is ORE's discretization, and it is small and
+  shrinks with the grid. To produce ORE's numbers under its default configuration the engine
+  would need the shift (`H → H + shift`, with the state grid built in the shifted variable).
+  Moderate work, all inside `engine.models.lgm` and `_state_grid`.
+- **The FD solver** is a different numerical scheme. At fine settings its gap to the Grid
+  solver is still up to 1e-3 on Americans and mid-period Bermudans while an aligned Bermudan
+  converges to 3e-6. So ORE's two solvers do not agree with each other on broken-period
+  exercise, and the engine agrees with the Grid one. Reproducing FD would mean porting
+  `LgmFdSolver`, which is substantial. It should only be done if ORE runs here use FD,
+  and even then the Grid-vs-FD disagreement inside ORE is worth understanding first.
+
+**Not affected:** the I-06 and I-31 fixes themselves. Those were errors of up to 6x and
+2e-4 that no solver setting explains; this entry is the remaining numerical-configuration
+distance to ORE.
+
+**What closing it requires.** Decide which ORE configuration is the reference. If ORE is run
+with its defaults, implement the shift horizon and add `shift_horizon=0.5` cases to
+`tests/test_ore_lgm_parity.py`. Port the FD solver only if the reference uses FD.
 
 ---
 

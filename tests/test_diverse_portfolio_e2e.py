@@ -58,23 +58,14 @@ from engine.instruments.european_swaption import (
     SwaptionConfig, prepare_swaption, _price_one_swaption, price_swaptions,
 )
 from engine.instruments.bermudan_swaption import (
-    BermudanSwaptionConfig, prepare_bermudan,
-    price_bermudan_swaption_base, price_bermudan_swaptions,
+    BermudanSwaptionConfig, price_bermudan_swaption_base, price_bermudan_swaptions,
 )
 from engine.instruments.american_swaption import AmericanSwaptionConfig, price_american_swaptions
 from engine.risk.var_es import compute_risk_metrics
 from engine.simulation.demo_scenarios import flat_yield_curves
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
-from engine.models.lgm import H as _H, bond_price as _lgm_bond_price, zeta as _zeta
-
-
-def _lgm_bond(zero_times, zero_rates, a, sigma, t, T, x):
-    """Test-local adapter matching the OLD NumPy-facing _lgm_bond(zero_times,
-    zero_rates, a, sigma, t, T, x) call shape this file's own hand-rolled
-    Jamshidian cross-check was written against, delegating to the actual
-    shared implementation (engine.models.lgm.bond_price)."""
-    curve = _HwZeroCurve(pillar_times=jnp.asarray(zero_times), pillar_rates=jnp.asarray(zero_rates))
-    return np.asarray(_lgm_bond_price(curve, a, sigma, jnp.asarray(t), jnp.asarray(T), jnp.asarray(x)))
+from bermudan_references import single_exercise_value_by_integration
+from date_helpers import in_years
 
 TODAY = ORE.Date(30, 7, 2026)
 DAY_COUNTER = ORE.Actual365Fixed()
@@ -192,47 +183,47 @@ def _build_european_swaptions():
 def _build_bermudan_swaptions():
     """4 Bermudan swaptions: varying exercise schedules (sparse vs dense,
     early-start vs late-start), tenor, payer/receiver, across 2 rate
-    factors. Exercise dates are reset-aligned (annual, matching the
-    underlying's own annual fixed-leg resets) -- within
-    BermudanSwaptionConfig's documented coterminal-date scope."""
+    factors. Exercise dates are whole years from the evaluation date, so
+    most fall a few days inside an accrual period and exercise into the
+    next whole period, as ORE's Bermudan does."""
     return [
         BermudanSwaptionConfig(notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
                                 hw_a=HW_A[0], hw_sigma=HW_SIGMA[0], initial_zero_curve=ZERO_CURVE_0,
-                                exercise_times=[1.0, 2.0, 3.0, 4.0], swap_tenor="5Y",
+                                exercise_dates=in_years(TODAY, [1.0, 2.0, 3.0, 4.0]), swap_tenor="5Y",
                                 evaluation_date=TODAY, n_per_std=64, std_devs=6.0),
         BermudanSwaptionConfig(notional=600_000.0, fixed_rate=0.033, payer=False, rate_factor_index=0,
                                 hw_a=HW_A[0], hw_sigma=HW_SIGMA[0], initial_zero_curve=ZERO_CURVE_0,
-                                exercise_times=[1.0, 3.0], swap_tenor="5Y",
+                                exercise_dates=in_years(TODAY, [1.0, 3.0]), swap_tenor="5Y",
                                 evaluation_date=TODAY, n_per_std=64, std_devs=6.0),
         BermudanSwaptionConfig(notional=1_400_000.0, fixed_rate=0.027, payer=True, rate_factor_index=1,
                                 hw_a=HW_A[1], hw_sigma=HW_SIGMA[1], initial_zero_curve=ZERO_CURVE_1,
-                                exercise_times=[2.0, 3.0, 4.0, 5.0, 6.0], swap_tenor="7Y",
+                                exercise_dates=in_years(TODAY, [2.0, 3.0, 4.0, 5.0, 6.0]), swap_tenor="7Y",
                                 evaluation_date=TODAY, n_per_std=64, std_devs=6.0),
         BermudanSwaptionConfig(notional=500_000.0, fixed_rate=0.031, payer=False, rate_factor_index=1,
                                 hw_a=HW_A[1], hw_sigma=HW_SIGMA[1], initial_zero_curve=ZERO_CURVE_1,
-                                exercise_times=[1.0], swap_tenor="3Y",
+                                exercise_dates=in_years(TODAY, [1.0]), swap_tenor="3Y",
                                 evaluation_date=TODAY, n_per_std=64, std_devs=6.0),
     ]
 
 
 def _build_american_swaptions():
     """3 American swaptions: varying exercise windows and discretization
-    (exercise_time_steps_per_year), across 2 rate factors. Windows are
-    chosen reset-aligned to the underlying's annual fixed schedule where the
-    discretization evenly divides it, avoiding the documented mid-coupon
-    known limitation."""
+    (exercise_time_steps_per_year), across 2 rate factors."""
     return [
         AmericanSwaptionConfig(notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
                                 hw_a=HW_A[0], hw_sigma=HW_SIGMA[0], initial_zero_curve=ZERO_CURVE_0,
-                                first_exercise=1.0, last_exercise=4.0, swap_tenor="5Y",
+                                first_exercise_date=in_years(TODAY, 1.0),
+                                last_exercise_date=in_years(TODAY, 4.0), swap_tenor="5Y",
                                 exercise_time_steps_per_year=1, evaluation_date=TODAY, n_per_std=64, std_devs=6.0),
         AmericanSwaptionConfig(notional=700_000.0, fixed_rate=0.026, payer=False, rate_factor_index=0,
                                 hw_a=HW_A[0], hw_sigma=HW_SIGMA[0], initial_zero_curve=ZERO_CURVE_0,
-                                first_exercise=2.0, last_exercise=6.0, swap_tenor="7Y",
+                                first_exercise_date=in_years(TODAY, 2.0),
+                                last_exercise_date=in_years(TODAY, 6.0), swap_tenor="7Y",
                                 exercise_time_steps_per_year=2, evaluation_date=TODAY, n_per_std=64, std_devs=6.0),
         AmericanSwaptionConfig(notional=1_100_000.0, fixed_rate=0.034, payer=True, rate_factor_index=2,
                                 hw_a=HW_A[2], hw_sigma=HW_SIGMA[2], initial_zero_curve=ZERO_CURVE_2,
-                                first_exercise=1.0, last_exercise=3.0, swap_tenor="3Y",
+                                first_exercise_date=in_years(TODAY, 1.0),
+                                last_exercise_date=in_years(TODAY, 3.0), swap_tenor="3Y",
                                 exercise_time_steps_per_year=1, evaluation_date=TODAY, n_per_std=64, std_devs=6.0),
     ]
 
@@ -321,7 +312,7 @@ def _price_full_portfolio_engine(scenarios: int, swaps, euro_swaptions, bermudan
         cubes["american"] = amer_cube
         total = total + jnp.sum(amer_cube, axis=-1)
         for cfg in americans:
-            base_npv += price_bermudan_swaption_base(cfg.to_bermudan())
+            base_npv += price_bermudan_swaption_base(cfg)
 
     npv_cube = total[:, :, None]  # [Scenarios, TimeSteps, Trades=1] combined portfolio
     metrics = compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))
@@ -544,60 +535,6 @@ def _price_european_swaptions_ore(euro_swaptions, rates_t: np.ndarray, t_eval_ye
     return npv_per_scenario, base_npv
 
 
-def _independent_lgm_jamshidian_npv(cfg: BermudanSwaptionConfig) -> float:
-    """Independent, from-scratch LGM-Jamshidian closed-form NPV for a
-    single-exercise-date Bermudan, built on _lgm_bond -- LITERALLY the same
-    helper tests/test_bermudan_swaption.py::TestSingleExerciseMatchesLgmJamshidian
-    uses (reproduced here rather than imported, since it is a test-local
-    helper in that module, not part of the engine's public API). Only valid
-    for a Bermudan with exactly one exercise date."""
-    swap = prepare_bermudan(cfg)
-    notice_t = cfg.exercise_times[0]
-    alive_fixed = swap.fixed_start_times >= notice_t - 1e-9
-    remaining_times = swap.fixed_times[alive_fixed]
-    remaining_amounts = swap.fixed_amounts[alive_fixed]
-    accrual_start = swap.float_start_times[swap.float_start_times >= notice_t - 1e-9][0]
-
-    a, sigma = cfg.hw_a, cfg.hw_sigma
-    T0, T_start, notional = notice_t, accrual_start, cfg.notional
-    all_times = np.concatenate([remaining_times, remaining_times[-1:], [T_start]])
-    all_amounts = np.concatenate([remaining_amounts, [notional, -notional]])
-    zt, zr = np.array(cfg.initial_zero_curve.times), np.array(cfg.initial_zero_curve.rates)
-
-    def coupon_bond_value(xstar):
-        prices = np.array([_lgm_bond(zt, zr, a, sigma, T0, float(Ti), np.array([xstar]))[0] for Ti in all_times])
-        return np.sum(prices * all_amounts)
-
-    lo, hi = -2.0, 2.0
-    for _ in range(100):
-        mid = 0.5 * (lo + hi)
-        if coupon_bond_value(mid) > 0:
-            lo = mid
-        else:
-            hi = mid
-    xstar = 0.5 * (lo + hi)
-    K = np.array([_lgm_bond(zt, zr, a, sigma, T0, float(Ti), np.array([xstar]))[0] for Ti in all_times])
-
-    def bond_vol(Topt, S):
-        return abs(_H(a, S) - _H(a, Topt)) * np.sqrt(_zeta(sigma, Topt))
-
-    P_0_T0 = _lgm_bond(zt, zr, a, sigma, 0.0, T0, np.array([0.0]))[0]
-    P_0_Ti = np.array([_lgm_bond(zt, zr, a, sigma, 0.0, float(Ti), np.array([0.0]))[0] for Ti in all_times])
-    sigma_p = np.array([bond_vol(T0, Ti) for Ti in all_times])
-
-    F = P_0_Ti / P_0_T0
-    sigp_safe = np.where(sigma_p > 0, sigma_p, 1.0)
-    d1 = (np.log(F / K) + 0.5 * sigp_safe ** 2) / sigp_safe
-    d2 = d1 - sigp_safe
-    from scipy.stats import norm as scipy_norm
-    call = P_0_T0 * (F * scipy_norm.cdf(d1) - K * scipy_norm.cdf(d2))
-    put = call - P_0_T0 * (F - K)
-    intrinsic_call = np.maximum(P_0_Ti - K * P_0_T0, 0.0)
-    intrinsic_put = intrinsic_call - (P_0_Ti - K * P_0_T0)
-    per_leg = np.where(sigma_p > 0, put, intrinsic_put) if cfg.payer else np.where(sigma_p > 0, call, intrinsic_call)
-    return float(np.sum(per_leg * all_amounts))
-
-
 # =============================================================================
 # 1. LARGE HETEROGENEOUS PORTFOLIO -- per-trade-type cross-checks
 # =============================================================================
@@ -734,18 +671,16 @@ class TestLargeHeterogeneousPortfolio:
             mine_base += float(_price_one_swaption(r0_full, t0_step, prep)[0, 0])
         np.testing.assert_allclose(mine_base, ore_base, rtol=1e-6)
 
-    def test_bermudan_single_exercise_subset_matches_independent_lgm_jamshidian(self, portfolio):
-        """The one Bermudan in this portfolio's own set with a single
-        exercise date (index 3, exercise_times=[1.0]) must reproduce the
-        independent closed-form LGM-Jamshidian decomposition -- the same
-        cross-check tests/test_bermudan_swaption.py's own test suite already
-        establishes as valid, applied here to a trade actually held inside
-        this larger heterogeneous portfolio (not a standalone toy)."""
+    def test_bermudan_single_exercise_subset_matches_direct_integration(self, portfolio):
+        """The one Bermudan in this portfolio with a single exercise date
+        (index 3) must reproduce the independent direct-integration value
+        (tests/bermudan_references.py) -- the same cross-check
+        tests/test_bermudan_swaption.py establishes, applied to a trade
+        actually held inside this larger heterogeneous portfolio."""
         cfg = portfolio["berms"][3]
-        assert len(cfg.exercise_times) == 1
+        assert len(cfg.exercise_dates) == 1
         numeric_npv = price_bermudan_swaption_base(cfg)
-        closed_form_npv = _independent_lgm_jamshidian_npv(cfg)
-        assert numeric_npv == pytest.approx(closed_form_npv, rel=2e-4)
+        assert numeric_npv == pytest.approx(single_exercise_value_by_integration(cfg), rel=1e-4)
 
     def test_bermudans_at_least_as_valuable_as_last_exercise_only(self, portfolio):
         """Model-independent no-arbitrage bound (more exercise opportunities
@@ -753,18 +688,18 @@ class TestLargeHeterogeneousPortfolio:
         this portfolio -- not just an isolated unit test fixture."""
         for cfg in portfolio["berms"]:
             full_npv = price_bermudan_swaption_base(cfg)
-            single_cfg = replace(cfg, exercise_times=[cfg.exercise_times[-1]])
+            single_cfg = replace(cfg, exercise_dates=[cfg.exercise_dates[-1]])
             single_npv = price_bermudan_swaption_base(single_cfg)
             assert full_npv >= single_npv - 1e-6
 
-    def test_americans_at_least_as_valuable_as_reset_aligned_bermudan(self, portfolio):
+    def test_americans_at_least_as_valuable_as_their_last_date_alone(self, portfolio):
         """Same monotonicity bound applied to every American in this
-        portfolio: discretizing into N exercise dates cannot be worth less
-        than exercising only at the window's own last date."""
+        portfolio: the whole window cannot be worth less than an American
+        exercisable only on the window's last day (a zero-width window,
+        whose one option time is also in the full window's grid)."""
         for cfg in portfolio["amers"]:
-            berm_equiv = cfg.to_bermudan()
-            full_npv = price_bermudan_swaption_base(berm_equiv)
-            single_cfg = replace(berm_equiv, exercise_times=[berm_equiv.exercise_times[-1]])
+            full_npv = price_bermudan_swaption_base(cfg)
+            single_cfg = replace(cfg, first_exercise_date=cfg.last_exercise_date)
             single_npv = price_bermudan_swaption_base(single_cfg)
             assert full_npv >= single_npv - 1e-6
 
@@ -1117,7 +1052,7 @@ class TestTimeEvolutionSanity:
         assert mean_npv_trade3_at_2y == pytest.approx(0.0, abs=1e-6)
 
     def test_american_mean_npv_is_zero_after_last_exercise(self, portfolio):
-        """American trade index 2 has last_exercise=3.0Y; by t=4.0 its
+        """American trade index 2's window closes 3Y out; by t=4.0 its
         contribution should be exactly 0."""
         step_times = portfolio["step_times"]
         idx_4y = int(np.where(np.isclose(step_times, 4.0))[0][0])
@@ -1207,32 +1142,33 @@ class TestCalibrationAndGreeksAcrossDiversePortfolio:
             "deep_itm_payer": _BermCfg(
                 notional=1_000_000.0, fixed_rate=0.01, payer=True, rate_factor_index=0,
                 hw_a=0.03, hw_sigma=sigma, initial_zero_curve=curve_config,
-                exercise_times=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], swap_tenor="7Y", evaluation_date=TODAY,
+                exercise_dates=in_years(TODAY, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), swap_tenor="7Y", evaluation_date=TODAY,
             ),
             "deep_otm_receiver": _BermCfg(
                 notional=1_500_000.0, fixed_rate=0.01, payer=False, rate_factor_index=0,
                 hw_a=0.03, hw_sigma=sigma, initial_zero_curve=curve_config,
-                exercise_times=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], swap_tenor="7Y", evaluation_date=TODAY,
+                exercise_dates=in_years(TODAY, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), swap_tenor="7Y", evaluation_date=TODAY,
             ),
             "atm_single_exercise": _BermCfg(
                 notional=500_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
                 hw_a=0.03, hw_sigma=sigma, initial_zero_curve=curve_config,
-                exercise_times=[3.0], swap_tenor="4Y", evaluation_date=TODAY,
+                exercise_dates=in_years(TODAY, [3.0]), swap_tenor="4Y", evaluation_date=TODAY,
             ),
             "sparse_schedule": _BermCfg(
                 notional=2_000_000.0, fixed_rate=0.028, payer=True, rate_factor_index=0,
                 hw_a=0.03, hw_sigma=sigma, initial_zero_curve=curve_config,
-                exercise_times=[2.0, 4.0, 6.0], swap_tenor="7Y", evaluation_date=TODAY,
+                exercise_dates=in_years(TODAY, [2.0, 4.0, 6.0]), swap_tenor="7Y", evaluation_date=TODAY,
             ),
         }
         from engine.instruments.american_swaption import AmericanSwaptionConfig as _AmerCfg
         american_cfg = _AmerCfg(
             notional=800_000.0, fixed_rate=0.032, payer=False, rate_factor_index=0,
             hw_a=0.03, hw_sigma=sigma, initial_zero_curve=curve_config,
-            first_exercise=1.0, last_exercise=5.0, exercise_time_steps_per_year=1,
+            first_exercise_date=in_years(TODAY, 1.0),
+            last_exercise_date=in_years(TODAY, 5.0), exercise_time_steps_per_year=1,
             swap_tenor="7Y", evaluation_date=TODAY,
         )
-        berm_trades["american_via_to_bermudan"] = american_cfg.to_bermudan()
+        berm_trades["american"] = american_cfg
         return berm_trades
 
     def test_every_trade_prices_finite_and_signed_sensibly(self, diverse_trades):
@@ -1259,7 +1195,7 @@ class TestCalibrationAndGreeksAcrossDiversePortfolio:
             notional=sparse_cfg.notional, fixed_rate=sparse_cfg.fixed_rate, payer=sparse_cfg.payer,
             rate_factor_index=sparse_cfg.rate_factor_index, hw_a=sparse_cfg.hw_a, hw_sigma=sparse_cfg.hw_sigma,
             initial_zero_curve=sparse_cfg.initial_zero_curve,
-            exercise_times=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], swap_tenor=sparse_cfg.swap_tenor,
+            exercise_dates=in_years(TODAY, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), swap_tenor=sparse_cfg.swap_tenor,
             evaluation_date=sparse_cfg.evaluation_date,
         )
         sparse_npv = price_bermudan_swaption_base(sparse_cfg)
@@ -1292,7 +1228,7 @@ class TestCalibrationAndGreeksAcrossDiversePortfolio:
         (bermudan_vega's own bucket-count assertion -- see
         tests/test_greeks_bermudan.py::TestBermudanVega::
         test_raises_on_bucket_count_mismatch) -- so this only applies to
-        trades whose exercise_times equal the calibration basket's own
+        trades whose exercise dates sit at the calibration basket's own
         6-date schedule exactly (deep_itm_payer, deep_otm_receiver, and
         the American trade's discretized schedule, which also happens to
         land on the same 6 annual dates given exercise_time_steps_per_year=1
@@ -1354,12 +1290,12 @@ class TestCalibrationAndGreeksAcrossDiversePortfolio:
             cfg_base = _BermCfg(
                 notional=1_000_000.0, fixed_rate=0.02, payer=payer, rate_factor_index=0,
                 hw_a=0.03, hw_sigma=base_sigma, initial_zero_curve=curve_config,
-                exercise_times=exercise_times, swap_tenor="7Y", evaluation_date=TODAY,
+                exercise_dates=in_years(TODAY, exercise_times), swap_tenor="7Y", evaluation_date=TODAY,
             )
             cfg_shifted = _BermCfg(
                 notional=1_000_000.0, fixed_rate=0.02, payer=payer, rate_factor_index=0,
                 hw_a=0.03, hw_sigma=shifted_sigma, initial_zero_curve=curve_config,
-                exercise_times=exercise_times, swap_tenor="7Y", evaluation_date=TODAY,
+                exercise_dates=in_years(TODAY, exercise_times), swap_tenor="7Y", evaluation_date=TODAY,
             )
             npv_base = price_bermudan_swaption_base(cfg_base)
             npv_shifted = price_bermudan_swaption_base(cfg_shifted)

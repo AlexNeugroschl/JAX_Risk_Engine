@@ -67,7 +67,7 @@ def _bermudan(i: int, **overrides) -> BermudanSwaptionConfig:
     defaults = dict(
         notional=800_000.0 * (1 + i % 3), fixed_rate=0.029, payer=(i % 2 == 0),
         rate_factor_index=0, hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
-        exercise_times=[1.010958904109589, 2.0136986301369864], swap_tenor="3Y",
+        exercise_dates=[ORE.Date(3, 8, 2027), ORE.Date(3, 8, 2028)], swap_tenor="3Y",
         evaluation_date=TODAY, n_per_std=32, std_devs=6.0,
     )
     defaults.update(overrides)
@@ -78,7 +78,7 @@ def _american(i: int, **overrides) -> AmericanSwaptionConfig:
     defaults = dict(
         notional=600_000.0 * (1 + i % 3), fixed_rate=0.0295, payer=(i % 2 == 1),
         rate_factor_index=0, hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
-        first_exercise=1.010958904109589, last_exercise=2.0136986301369864,
+        first_exercise_date=ORE.Date(3, 8, 2027), last_exercise_date=ORE.Date(3, 8, 2028),
         exercise_time_steps_per_year=1, evaluation_date=TODAY, n_per_std=32, std_devs=6.0,
     )
     defaults.update(overrides)

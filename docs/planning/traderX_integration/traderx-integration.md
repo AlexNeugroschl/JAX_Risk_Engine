@@ -39,8 +39,8 @@ boundary: a `PortfolioRequest`-style entry point that either produces a valid `S
 | Output discount-curve pillars | `RatesConfig.maturities` | `engine/simulation/market_model.py` |
 | Swap trades | `SwapConfig` (notional, fixed_rate, payer, discount/forward curve index, tenor, index tenor, spread) | `engine/instruments/swap.py` |
 | European swaption trades | `SwaptionConfig` (adds `hw_a`/`hw_sigma`/`initial_zero_curve`, duplicated per-trade from the matching rate factor) | `engine/instruments/european_swaption.py` |
-| Bermudan swaption trades | `BermudanSwaptionConfig` (adds `exercise_times`, `n_per_std`/`std_devs` grid resolution) | `engine/instruments/bermudan_swaption.py` |
-| American swaption trades | `AmericanSwaptionConfig` (adds `first_exercise`/`last_exercise`/`exercise_time_steps_per_year`) | `engine/instruments/american_swaption.py` |
+| Bermudan swaption trades | `BermudanSwaptionConfig` (adds `exercise_dates`, `n_per_std`/`std_devs` grid resolution) | `engine/instruments/bermudan_swaption.py` |
+| American swaption trades | `AmericanSwaptionConfig` (adds `first_exercise_date`/`last_exercise_date`/`exercise_time_steps_per_year`) | `engine/instruments/american_swaption.py` |
 | Portfolio base NPV / percentiles | `compute_risk_metrics(npv_cube, base_npv, percentiles)` | `engine/risk/var_es.py` |
 
 ## Gaps to close, in priority order
@@ -135,8 +135,8 @@ A production integration point receiving arbitrary TraderX trade payloads needs 
   `tests/test_swap.py::TestZeroNotional`), not silently allowed. Bermudan/American
   `hw_sigma` accepts `None` as a valid "uncalibrated" sentinel (see
   [The Portfolio Entry Point](../../reference/portfolio-entrypoint.md#automatic-calibration)).
-  `BermudanSwaptionConfig.exercise_times` must be non-empty and sorted ascending;
-  `AmericanSwaptionConfig` requires `first_exercise <= last_exercise`.
+  `BermudanSwaptionConfig.exercise_dates` must be non-empty, sorted ascending and
+  `ORE.Date`s; `AmericanSwaptionConfig` requires `first_exercise_date <= last_exercise_date`.
 - Deliberately scoped to reject malformed input, not impose business-rule limits (no "no
   rate above 20%" check) — matches this plan's original scope boundary.
 - Tests: `TestSwapConfigValidation`/`TestSwaptionConfigValidation`/
@@ -156,17 +156,16 @@ scope, not silently produce a slightly-wrong number:
   **Implemented:** documented (not fixed) in `engine/portfolio/request.py`'s own module docstring —
   any exposure profile (t>0 valuation) for a swap inherits this gap; closing it in `swap.py`
   itself remains a separate, not-yet-started future plan.
-- **Mid-coupon Bermudan/American exercise** (`bermudan_swaption.py`/`american_swaption.py`,
-  `TestMidCouponKnownLimitation`): exact only when exercise dates are reset-aligned;
-  otherwise a conservative (understating) approximation. **Implemented:**
-  `validate_portfolio_against_simulation` (item 2) emits a `UserWarning` (not a hard reject)
-  naming the trade when any American/Bermudan exercise date isn't reset-aligned with its own
-  underlying's accrual schedule, pointing at
-  [american-bermudan-swaptions.md](../../instruments/american-bermudan-swaptions.md)'s
-  mid-coupon-approximation section. `price_portfolio` collects these into
-  `PortfolioResult.warnings` rather than only printing to stderr. Tests:
-  `tests/test_portfolio.py::TestCrossFieldValidation::test_bermudan_mid_coupon_exercise_time_warns`/
-  `test_american_mid_coupon_exercise_window_warns`.
+- **Mid-coupon Bermudan/American exercise** — **closed 2026-09-23, no longer a limitation.**
+  This was flagged with a per-trade `UserWarning` as a "conservative approximation". Priced
+  against ORE's own engine, the Bermudan rule turned out to be ORE's (a mid-period date
+  exercises into the next whole period), while the American was wrong (ORE prorates a broken
+  period, and the engine did not). Both now match ORE to ~1e-11
+  (`tests/test_ore_lgm_parity.py`), so there is nothing left to warn about and the warning was
+  removed. See [I-06](../../known-issues.md#i-06) and
+  [american-bermudan-swaptions.md](../../instruments/american-bermudan-swaptions.md#which-coupons-an-exercise-enters).
+  Tests: `tests/test_portfolio.py::TestCrossFieldValidation::test_bermudan_exercise_never_warns`/
+  `test_american_exercise_window_never_warns`.
 
 ## Suggested build order
 

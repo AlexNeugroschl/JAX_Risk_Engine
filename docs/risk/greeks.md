@@ -250,10 +250,10 @@ see `tests/test_greeks_bermudan.py`'s own docstring and `TestBermudanDeltaGamma`
 full methodology and the convergence check that confirms this is a numerical artifact of
 the cross-check, not a bug in the autodiff Hessian itself.
 
-**American swaptions have no separate Greeks function** — `AmericanSwaptionConfig.
-to_bermudan()` expands into a `BermudanSwaptionConfig`, so `bermudan_delta_gamma(cfg.
-to_bermudan(), curve)` covers both, matching `american_swaption.py`'s own "American is
-just a finely-discretized Bermudan" design.
+**American swaptions have no separate Greeks function** — `bermudan_delta_gamma`,
+`bermudan_theta` and `bermudan_vega` take an `AmericanSwaptionConfig` directly, since both
+exercise types run through the same backward induction. `bermudan_theta` reprices the same
+trade one day on, with its exercise *dates* fixed and every time re-derived, as ORE does.
 
 ## Differentiating through bisection root-finds
 
@@ -379,9 +379,10 @@ this mattered.
   `calibrate_lgm_sigma`, reprice — exactly what ORE itself does), matching to within
   ~0.005% for every bucket in a 4-instrument basket; plus positivity checks (payer and
   receiver both long-vol) and a bucket-count-mismatch guard test.
-- `TestAmericanSwaptionSharesTheSameGreeksPath` — confirms `AmericanSwaptionConfig.
-  to_bermudan()` feeds `bermudan_delta_gamma` correctly (no separate American-specific
-  Greeks function exists).
+- `TestAmericanSwaptionSharesTheSameGreeksPath` — confirms an `AmericanSwaptionConfig`
+  goes straight through `bermudan_delta_gamma`/`bermudan_theta`, including the
+  broken-coupon caching an American exercise uses (no separate American-specific Greeks
+  function exists).
 - `tests/test_profiling_and_jit.py::TestHessianDiagonalEquivalence` — the HVP-based Gamma
   equals `jnp.diagonal(jax.hessian(...))` for swap, European swaption and Bermudan, and
   equals a known analytic second derivative on a closed-form case.

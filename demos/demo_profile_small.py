@@ -91,14 +91,15 @@ PORTFOLIO_TRADES = [
         "trade_type": "bermudan_swaption",
         "notional": 1_000_000.0, "fixed_rate": 0.030, "payer": True,
         "rate_factor_index": 0, "hw_a": HW_MEAN_REVERSION, "hw_sigma": None,
-        "exercise_times": [1.0, 2.0], "swap_tenor": "3Y",
+        "exercise_dates": ["2027-07-30", "2028-07-30"], "swap_tenor": "3Y",
         "n_per_std": 16, "std_devs": 6.0,
     },
     {
         "trade_type": "american_swaption",
         "notional": 800_000.0, "fixed_rate": 0.029, "payer": False,
         "rate_factor_index": 0, "hw_a": HW_MEAN_REVERSION, "hw_sigma": None,
-        "first_exercise": 1.0, "last_exercise": 2.0, "exercise_time_steps_per_year": 1,
+        "first_exercise_date": "2027-07-30", "last_exercise_date": "2028-07-30",
+        "exercise_time_steps_per_year": 1,
         "n_per_std": 16, "std_devs": 6.0,
     },
 ]
@@ -300,7 +301,9 @@ def print_result(result: dict) -> None:
 
     print(f"\nbaseline portfolio NPV: {result['base_npv']:,.2f}")
     if result["warnings"]:
-        print(f"warnings: {len(result['warnings'])} (mid-coupon exercise alignment -- expected here)")
+        print(f"warnings: {len(result['warnings'])}")
+        for message in result["warnings"]:
+            print(f"  - {message}")
 
     print("\nrisk:")
     risk = result["risk"]["values"]

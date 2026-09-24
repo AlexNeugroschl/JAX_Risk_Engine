@@ -12,6 +12,7 @@ import numpy as np
 import ORE
 import pytest
 
+from engine.models.ore_builders import time_from_reference
 from engine.simulation.market_model import (
     EquityConfig, RatesConfig, SimulationConfig, ZeroCurveConfig, generate_paths,
 )
@@ -50,13 +51,13 @@ def _build_trades():
     bermudan_cfg = BermudanSwaptionConfig(
         notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
         hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
-        exercise_times=[1.010958904109589, 2.0136986301369864], swap_tenor="3Y",
+        exercise_dates=[ORE.Date(3, 8, 2027), ORE.Date(3, 8, 2028)], swap_tenor="3Y",
         evaluation_date=TODAY, n_per_std=64, std_devs=6.0,
     )
     american_cfg = AmericanSwaptionConfig(
         notional=800_000.0, fixed_rate=0.029, payer=False, rate_factor_index=0,
         hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
-        first_exercise=1.010958904109589, last_exercise=2.0136986301369864,
+        first_exercise_date=ORE.Date(3, 8, 2027), last_exercise_date=ORE.Date(3, 8, 2028),
         exercise_time_steps_per_year=1, evaluation_date=TODAY, n_per_std=64, std_devs=6.0,
     )
     return swap_cfg, swaption_cfg, bermudan_cfg, american_cfg
@@ -124,7 +125,7 @@ class TestPricePortfolioMatchesHandOrchestration:
             float(price_swaps(base_curve, pillars, [swap_cfg])[0, 0, 0])
             + float(price_swaptions(r0_path, jnp.array([0.0]), [swaption_cfg])[0, 0, 0])
             + price_bermudan_swaption_base(bermudan_cfg)
-            + price_bermudan_swaption_base(american_cfg.to_bermudan())
+            + price_bermudan_swaption_base(american_cfg)
         )
         risk = compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))
         return {"npv_cube": npv_cube, "base_npv": base_npv, "risk": risk}
@@ -162,9 +163,9 @@ class TestPricePortfolioMatchesHandOrchestration:
                 np.asarray(via_entrypoint.risk[key]), np.asarray(manual["risk"][key]), rtol=1e-9, equal_nan=True,
             )
 
-    def test_no_warnings_for_a_clean_reset_aligned_portfolio(self, via_entrypoint):
-        """This portfolio's Bermudan/American exercise dates ARE reset-aligned,
-        so none of the mid-coupon-approximation warnings must fire.
+    def test_no_warnings_other_than_the_aged_swap_one(self, via_entrypoint):
+        """Nothing about this portfolio's Bermudan/American trades warrants a
+        warning: their exercise is priced exactly as ORE prices it.
 
         Originally `assert warnings == []`. It now excludes the aged-swap
         warning, which is a DIFFERENT, correct warning about a different
@@ -174,7 +175,7 @@ class TestPricePortfolioMatchesHandOrchestration:
         tests/test_portfolio_gap_fixes.py::TestAgedSwapWarningIsNotSilent).
         Suppressing that warning to keep this assertion literal would restore
         exactly the silence that warning exists to remove -- so this test
-        narrows to its actual subject (reset alignment) instead.
+        narrows to its actual subject (the option trades) instead.
         """
         unrelated = [w for w in via_entrypoint.warnings
                      if "already started accruing" not in w]
@@ -266,16 +267,17 @@ class TestPricePortfolioCalibration:
 
     def test_uncalibrated_hw_sigma_is_filled_in_and_prices_finite(self):
         curve_jax = HwZeroCurve.flat(FLAT_RATE, ZERO_CURVE.times)
-        exercise_times = [1.010958904109589, 2.0136986301369864]
+        exercise_dates = [ORE.Date(3, 8, 2027), ORE.Date(3, 8, 2028)]
         targets = build_coterminal_basket(
-            exercise_times=exercise_times, final_maturity_time=3.0136986301369864,
+            exercise_times=[time_from_reference(TODAY, d) for d in exercise_dates],
+            final_maturity_time=3.0136986301369864,
             notional=1_000_000.0, payer=True, market_vols=[0.008, 0.009],
             zero_curve=curve_jax, evaluation_date=TODAY,
         )
         berm_cfg = BermudanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
             hw_a=HW_A, hw_sigma=None, initial_zero_curve=ZERO_CURVE,
-            exercise_times=exercise_times, swap_tenor="3Y", evaluation_date=TODAY,
+            exercise_dates=exercise_dates, swap_tenor="3Y", evaluation_date=TODAY,
         )
         sim_config = SimulationConfig(
             time_grid=TIME_GRID, scenarios=64,
@@ -295,7 +297,7 @@ class TestPricePortfolioCalibration:
         berm_cfg = BermudanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
             hw_a=HW_A, hw_sigma=None, initial_zero_curve=ZERO_CURVE,
-            exercise_times=[1.0], swap_tenor="3Y", evaluation_date=TODAY,
+            exercise_dates=[TODAY + 365], swap_tenor="3Y", evaluation_date=TODAY,
         )
         sim_config = SimulationConfig(
             time_grid=TIME_GRID, scenarios=64,
@@ -545,7 +547,8 @@ class TestPricePortfolioPrecision:
 
         curve64 = HwZeroCurve.from_config(uncalibrated.initial_zero_curve)
         targets = build_coterminal_basket(
-            exercise_times=uncalibrated.exercise_times, final_maturity_time=3.0,
+            exercise_times=[time_from_reference(uncalibrated.evaluation_date, d) for d in uncalibrated.exercise_dates],
+            final_maturity_time=3.0,
             notional=uncalibrated.notional, payer=uncalibrated.payer,
             market_vols=[0.01, 0.01], zero_curve=curve64,
             evaluation_date=uncalibrated.evaluation_date, index_tenor_months=3,

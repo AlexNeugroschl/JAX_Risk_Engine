@@ -235,7 +235,7 @@ algorithm.
 | `hw_a` | `float` | *required* | That rate factor's mean-reversion speed — must match the simulation this swaption is priced against. |
 | `hw_sigma` | `float` | *required* | That rate factor's volatility — must match the simulation's `joint_covariance` for this factor. |
 | `initial_zero_curve` | `ZeroCurveConfig` | *required* | That rate factor's today's-market zero curve. |
-| `exercise_times` | `Sequence[float]` | *required* | Year-fractions from `evaluation_date`, each a date the holder may exercise into the (then-remaining) swap — must coincide with the underlying's own reset dates (see [american-bermudan-swaptions.md](../instruments/american-bermudan-swaptions.md#known-limitation-no-mid-coupon-proration)). |
+| `exercise_dates` | `Sequence[ORE.Date]` | *required* | Ascending dates on which the holder may exercise into the (then-remaining) swap. Dates on or before `evaluation_date` are not exercise opportunities. A date inside an accrual period exercises into the next whole period, as in ORE (see [american-bermudan-swaptions.md](../instruments/american-bermudan-swaptions.md#which-coupons-an-exercise-enters)); `exercisable_dates(cfg)` lists the underlying's accrual starts. |
 | `swap_tenor` | `str` | `"5Y"` | ORE `Period` string for the underlying swap's length. |
 | `index_tenor_months` | `int` | `6` | Floating leg reset frequency in months. |
 | `floating_spread` | `float` | `0.0` | Fixed spread added to every floating payment. |
@@ -247,7 +247,8 @@ algorithm.
 checks as `SwapConfig`; `hw_sigma` (a plain `float` or a piecewise `Sigma` — every bucket
 value is checked) must be finite, **or exactly `None`** (a valid sentinel meaning
 "uncalibrated" — see [The Portfolio Entry Point: Automatic calibration](portfolio-entrypoint.md#automatic-calibration));
-`exercise_times` must be non-empty and sorted ascending.
+`exercise_dates` must be non-empty, sorted ascending, and `ORE.Date` objects (a year
+fraction is refused with `TypeError`).
 
 ### `price_bermudan_swaption_base(cfg: BermudanSwaptionConfig) -> float`
 
@@ -270,42 +271,45 @@ trade's own last exercise date.
 
 | Function | Signature | Notes |
 |---|---|---|
-| `prepare_bermudan` | `(cfg: BermudanSwaptionConfig) -> _PreparedBermudan` | CPU-only, per-trade one-time setup. Extracts both legs' full cashflow schedules (unlike Jamshidian, early exercise needs the actual remaining swap value at every node). |
+| `prepare_bermudan` | `(cfg: BermudanSwaptionConfig \| AmericanSwaptionConfig) -> _PreparedBermudan` | CPU-only, per-trade one-time setup. Resolves ORE's option times and, per coupon, ORE's `CashflowInfo` (pay/accrual times, belongs-until time by exercise style, the floating coupon's index fixing period). |
+| `exercisable_dates` | `(cfg) -> List[ORE.Date]` | The underlying's own fixed accrual start dates -- the exercise dates of a standard coterminal Bermudan. |
 | `_lgm_bond` | `(zero_times, zero_rates, a, sigma, t, T, x) -> np.ndarray` | Plain NumPy (CPU-only). LGM's own closed-form `P(t,T,x)`, live-verified against `ORE.LinearGaussMarkovModel.discountBond` — deliberately NOT `compute_hw_A`/`_hw_B` (a different model realization for `t>0`, see [american-bermudan-swaptions.md](../instruments/american-bermudan-swaptions.md#3-the-model-lgm-not-plain-hull-white--and-why-that-distinction-matters-here)). |
 
 ---
 
 ## `engine.instruments.american_swaption`
 
-A thin wrapper around `engine.instruments.bermudan_swaption` — American exercise is
-priced by discretizing the exercise window into a dense grid of dates and running the
-same Bermudan engine, exactly matching ORE's own design. See
-[Instruments: American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md).
+American exercise, priced by the same backward induction as a Bermudan. It differs in
+exactly the two places ORE's engine does: ORE's uniform option-time grid over the window
+(truncating step count), and broken-period exercise, where each coupon belongs until its
+accrual end and is credited `couponRatio(t)`. See
+[Instruments: American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md#american-exercise-ores-grid-and-ores-broken-periods).
 
 ### `AmericanSwaptionConfig`
 
-Same fields as `BermudanSwaptionConfig` above, except `exercise_times` is replaced by:
+Same fields as `BermudanSwaptionConfig` above, except `exercise_dates` is replaced by:
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `first_exercise` | `float` | *required* | Start of the continuous exercise window, year-fractions from `evaluation_date`. |
-| `last_exercise` | `float` | *required* | End of the exercise window. |
+| `first_exercise_date` | `ORE.Date` | *required* | First day of the exercise window. A window already open starts at `t = 0`. |
+| `last_exercise_date` | `ORE.Date` | *required* | Last day of the exercise window. |
 | `exercise_time_steps_per_year` | `int` | `24` | ORE's own `ExerciseTimeStepsPerYear` model parameter — how finely the window is discretized. |
 
 **Validated at construction (`__post_init__`)**: same `notional`/`fixed_rate`/`swap_tenor`/
-`hw_sigma`(-or-`None`) checks as `BermudanSwaptionConfig`, plus `first_exercise <=
-last_exercise` (equal values — a zero-width window — are valid).
+`hw_sigma`(-or-`None`) checks as `BermudanSwaptionConfig`, plus `first_exercise_date <=
+last_exercise_date` (equal dates — a zero-width window — are valid) and
+`exercise_time_steps_per_year >= 1`.
 
-### `AmericanSwaptionConfig.to_bermudan() -> BermudanSwaptionConfig`
+### `AmericanSwaptionConfig.option_times() -> List[float]`
 
-Expands the continuous window into ORE's own discretized exercise-date grid
-(`steps = round((last_exercise - first_exercise) * exercise_time_steps_per_year)` equally
-spaced dates, including both endpoints).
+ORE's own American option times: `t1 = max(0, t(first))`, `t2 = max(t1, t(last))`,
+`steps = max(1, floor((t2 - t1) * exercise_time_steps_per_year))` (ORE truncates), and the
+times `t1 + i * (t2 - t1) / steps` for `i = 0..steps`.
 
 ### `price_american_swaptions(american_configs: List[AmericanSwaptionConfig], hw_paths: jax.Array, step_times: jax.Array) -> jax.Array`
 
-Same parameter/return shape as `price_bermudan_swaptions` above — expands each config via
-`.to_bermudan()` and delegates entirely to `bermudan_swaption.price_bermudan_swaptions`.
+Same parameter/return shape as `price_bermudan_swaptions` above, which it calls directly:
+that function prices either config type.
 
 ---
 
@@ -535,7 +539,7 @@ interim-cashflow term (a European swaption pays no cashflow before its own exerc
 Per-pillar Delta and Gamma of one Bermudan/American swaption's t=0 NPV with respect to its
 own LGM calibration curve — same signature/return shape and same `curve`-shares-
 `cfg.initial_zero_curve`'s-pillar-times convention as `swaption_delta_gamma` above. Works
-for `AmericanSwaptionConfig` too via `.to_bermudan()` (see
+for an `AmericanSwaptionConfig` passed directly (see
 [American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)) — there is
 no separate `american_delta_gamma` function.
 

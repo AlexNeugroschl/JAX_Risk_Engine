@@ -92,12 +92,13 @@ not a `jax.grad` computation.
 `bermudan_swaption.py`'s backward induction to `jax.lax.scan` (previously a
 plain-NumPy grid method with no JAX computational graph at all -- the
 reason this module originally scoped Bermudan/American Greeks out
-entirely, see `docs/planning/roadmap-and-history.md`). `AmericanSwaption
-Config.to_bermudan()` expands into a `BermudanSwaptionConfig`, so a single
-set of functions here covers both -- there is no separate `american_*`
-Greeks function, matching `american_swaption.py`'s own "American is just a
-finely-discretized Bermudan" design.
+entirely, see `docs/planning/roadmap-and-history.md`). An
+`AmericanSwaptionConfig` is priced by the same prepared backward induction
+as a `BermudanSwaptionConfig` (it differs only in its option times and
+exercise style), so one set of functions here takes either -- there is no
+separate `american_*` Greeks function.
 """
+import dataclasses
 from typing import Dict, Union
 
 import jax
@@ -699,9 +700,7 @@ def bermudan_theta(
     t=0-only/no-interim-cashflow reasoning as `swaption_theta` (a Bermudan/
     American's exercise value already prices in every remaining cashflow
     via the backward induction itself; there is no separately-paid coupon
-    between "today" and "today+1" to add back, matching this codebase's
-    coterminal-exercise-date scope -- see `bermudan_swaption.py`'s own
-    "Known limitation" docstring on mid-coupon exercise).
+    between "today" and "today+1" to add back).
     """
     # Jitted for the same reason as `swap_theta`/`swaption_theta` above.
     # `_run_backward_induction` is itself jitted one layer down now (see
@@ -711,15 +710,12 @@ def bermudan_theta(
     price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
     base_npv = float(jax.jit(price_fn)(curve.pillar_rates, sigma_values))
 
+    # The same trade one day on: its exercise DATES stay put and every time
+    # is re-derived from the new evaluation date, exactly as ORE re-derives
+    # optionTimes. (When exercise was given as year fractions this silently
+    # moved every exercise opportunity a day later as well.)
     theta_date = ORE.TARGET().advance(cfg.evaluation_date, theta_days, ORE.Days)
-    theta_cfg = BermudanSwaptionConfig(
-        notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
-        rate_factor_index=cfg.rate_factor_index, hw_a=cfg.hw_a, hw_sigma=cfg.hw_sigma,
-        initial_zero_curve=cfg.initial_zero_curve, exercise_times=cfg.exercise_times,
-        swap_tenor=cfg.swap_tenor, index_tenor_months=cfg.index_tenor_months,
-        floating_spread=cfg.floating_spread, n_per_std=cfg.n_per_std, std_devs=cfg.std_devs,
-        evaluation_date=theta_date,
-    )
+    theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date)
     theta_price_fn, theta_sigma_values = _bermudan_price_fn(theta_cfg, curve)
     theta_npv = float(jax.jit(theta_price_fn)(curve.pillar_rates, theta_sigma_values))
 

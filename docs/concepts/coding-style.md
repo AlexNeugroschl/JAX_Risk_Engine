@@ -13,7 +13,7 @@ this codebase's JAX code.
   `PrecisionConfig`'s `pricing`/`risk` knobs brought `engine/portfolio/request.py`
   (`step_times`, `_base_npv`, `_flat_curve_cube`), `engine/risk/greeks.py`'s
   Delta/Gamma/Vega closures, `bermudan_swaption.py`'s own `_zero_curve_of`/
-  `_state_grid`/`_run_backward_induction`/`_hw_swap_value_at_nodes`, and
+  `_state_grid`/`_run_backward_induction`/`_cashflow_values_at_nodes`, and
   `european_swaption.py`'s `_solve_rstar`/`_bisect_rstar` into compliance — each now
   derives its dtype from a `curve`/`x_nodes`/`disc_curve`/`params` value it already
   receives rather than hardcoding one or (in `_bisect_rstar`'s case) relying on

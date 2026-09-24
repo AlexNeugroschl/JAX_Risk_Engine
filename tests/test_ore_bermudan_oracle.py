@@ -65,40 +65,30 @@ wrong answer and both of which were hit while writing this file:
     ~40x too small. The ORE side here therefore builds its own index on a
     REAL forwarding curve; `test_oracle_underlying_swap_is_not_the_dummy_curve_swap`
     is a standing guard that this distinction is never "simplified" away.
-  * `exercise_times` are matched to the underlying's fixed-leg accrual
-    starts by reading them back off the schedule (`exercisable_times`),
-    never by writing a rounded literal. An exercise time of 2.0137 instead
-    of the true 2.0136986301369864 is 1.4e-6 late, which falls outside
-    `_hw_swap_value_at_nodes`' own `>= t - 1e-9` liveness tolerance and
-    silently dropped that date's entire fixed coupon from the exercise
-    value -- a 12x overstatement at low vol.
+  * Exercise dates are the underlying's own fixed-leg accrual starts, read
+    off its schedule (`exercisable_dates`) and handed to both sides as the
+    same `ORE.Date`s. This trap is now closed by construction: exercise used
+    to be given as a year fraction, and a rounded one (2.0137 for
+    2.0136986301369864) silently dropped a coupon -- a 12x overstatement at
+    low vol (I-29). Dates cannot be misspelt that way;
+    `TestExerciseDatesAreExact` pins why.
 
-    **That trap is now closed** (I-29): `prepare_bermudan` snaps a
-    near-miss onto the accrual start it names, so the rounded literal above
-    prices identically to the exact one. `TestExerciseTimeAlignment` is the
-    regression test, and it also pins the two things the fix deliberately
-    does NOT change -- a genuinely mid-period date and an American's
-    discretized grid are both left alone. Reading times off the schedule
-    remains the right habit here regardless: it keeps the engine and ORE
-    sides on the same calendar dates even if ORE's schedule generation ever
-    shifts one by a business day, which snapping would silently follow.
+This file's tolerance is a MODEL gap (Hull-White vs LGM). The like-for-like
+comparison against ORE's own LGM engine, at 1e-10, is
+tests/test_ore_lgm_parity.py.
 """
-import warnings
-
 import numpy as np
 import ORE
 import pytest
 
 from engine.simulation.market_model import ZeroCurveConfig
 from engine.instruments.bermudan_swaption import (
-    EXERCISE_SNAP_TOLERANCE,
     BermudanSwaptionConfig,
-    exercisable_times,
+    exercisable_dates,
     prepare_bermudan,
     price_bermudan_swaption_base,
 )
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
-from engine.portfolio.request import _warn_if_not_reset_aligned
 
 EVAL_DATE = ORE.Date(30, 7, 2026)
 DC = TIME_AXIS_DAY_COUNTER
@@ -150,8 +140,7 @@ def _ore_bermudan_npv(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
     """Prices a Bermudan swaption with one of ORE's own multi-exercise
     engines. `exercise_indices` index the underlying's own fixed-leg
     accrual-start dates -- ORE's standard coterminal Bermudan convention,
-    and the same set of dates the engine side is handed (as year fractions)
-    by `_engine_exercise_times`."""
+    and the same dates the engine side is handed by `_engine_exercise_dates`."""
     curve, swap = _ore_underlying(flat_rate, fixed_rate, payer, tenor, notional)
     hw = ORE.HullWhite(curve, hw_a, hw_sigma)
     starts = [ORE.as_fixed_rate_coupon(cf).accrualStartDate() for cf in swap.fixedLeg()]
@@ -166,45 +155,32 @@ def _ore_bermudan_npv(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
 
 
 def _engine_cfg(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
-                exercise_times, n_per_std=N_PER_STD, std_devs=STD_DEVS,
+                exercise_dates, n_per_std=N_PER_STD, std_devs=STD_DEVS,
                 notional=NOTIONAL):
     return BermudanSwaptionConfig(
         notional=notional, fixed_rate=fixed_rate, payer=payer, rate_factor_index=0,
         hw_a=hw_a, hw_sigma=hw_sigma, initial_zero_curve=_flat_curve(flat_rate),
-        exercise_times=exercise_times, swap_tenor=tenor, evaluation_date=EVAL_DATE,
+        exercise_dates=exercise_dates, swap_tenor=tenor, evaluation_date=EVAL_DATE,
         n_per_std=n_per_std, std_devs=std_devs,
     )
 
 
-def _engine_exercise_times(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
+def _engine_exercise_dates(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
                            exercise_indices, notional=NOTIONAL):
-    """The EXACT year fractions of the underlying's fixed-leg accrual
-    starts, read off the engine's own schedule rather than written as
-    rounded literals.
-
-    Still the right way to build these even though `prepare_bermudan` now
-    snaps a near-miss onto the schedule (`_snap_exercise_times`, I-29):
-    reading them back guarantees the engine and ORE sides are talking about
-    the same calendar dates even if ORE's schedule generation ever shifts
-    one by a business day, which snapping alone would not catch -- it would
-    follow the shift silently.
-
-    Uses the public `exercisable_times` rather than a throwaway
-    `prepare_bermudan` call: the old form passed a dummy
-    `exercise_times=[0.0]` purely to reach `fixed_start_times`, and that
-    dummy is now correctly refused as unaligned.
-    """
+    """The underlying's own fixed-leg accrual start dates at
+    `exercise_indices`, read off the engine's schedule -- the same dates
+    `_ore_bermudan_npv` reads off ORE's."""
     probe = _engine_cfg(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
-                        exercise_times=[0.0], notional=notional)
-    starts = exercisable_times(probe)
+                        exercise_dates=[EVAL_DATE + 1], notional=notional)
+    starts = exercisable_dates(probe)
     return [starts[i] for i in exercise_indices]
 
 
 def _both_sides(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor, exercise_indices):
     """(engine NPV, ORE tree NPV, ORE FD NPV) for one trade."""
-    times = _engine_exercise_times(flat_rate, hw_a, hw_sigma, fixed_rate, payer,
+    dates = _engine_exercise_dates(flat_rate, hw_a, hw_sigma, fixed_rate, payer,
                                    tenor, exercise_indices)
-    cfg = _engine_cfg(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor, times)
+    cfg = _engine_cfg(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor, dates)
     mine = price_bermudan_swaption_base(cfg)
     tree = _ore_bermudan_npv(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
                              exercise_indices, "tree")
@@ -353,7 +329,7 @@ class TestGapIsTheParametrizationNotTheInduction:
         state grid would shrink it. It does not move the price at all
         beyond the 5th significant figure, so it cannot be."""
         flat, a, sigma, rate, payer, tenor, ex = 0.03, 0.03, 0.01, 0.03, True, "5Y", [1, 2, 3]
-        times = _engine_exercise_times(flat, a, sigma, rate, payer, tenor, ex)
+        times = _engine_exercise_dates(flat, a, sigma, rate, payer, tenor, ex)
         coarse = price_bermudan_swaption_base(
             _engine_cfg(flat, a, sigma, rate, payer, tenor, times, n_per_std=48, std_devs=6.0))
         fine = price_bermudan_swaption_base(
@@ -368,15 +344,15 @@ class TestGapIsTheParametrizationNotTheInduction:
 
     def test_single_exercise_gap_matches_multi_exercise_gap(self):
         """The decisive control. With ONE exercise date, this engine is
-        already known to match its own LGM closed form to 2e-4
-        (tests/test_bermudan_swaption.py::TestSingleExerciseMatchesLgmJamshidian),
+        already known to match an independent direct integration to 2e-5
+        (tests/test_bermudan_swaption.py::TestSingleExerciseMatchesDirectIntegration),
         so any gap against ORE there is definitionally the parametrization
         and not the early-exercise logic. If the multi-exercise gap is no
         larger than the single-exercise gap, the induction is adding no
         error of its own."""
         flat, a, sigma, rate, payer, tenor = 0.03, 0.03, 0.01, 0.03, True, "5Y"
 
-        single_times = _engine_exercise_times(flat, a, sigma, rate, payer, tenor, [2])
+        single_times = _engine_exercise_dates(flat, a, sigma, rate, payer, tenor, [2])
         single_mine = price_bermudan_swaption_base(
             _engine_cfg(flat, a, sigma, rate, payer, tenor, single_times))
         single_fd = _ore_bermudan_npv(flat, a, sigma, rate, payer, tenor, [2], "fd")
@@ -396,9 +372,17 @@ class TestGapIsTheParametrizationNotTheInduction:
         exactly the forward-starting underlying swap, which ORE values
         with a plain discounting engine and no model at all. This is the
         one check in the file that is NOT subject to the HW/LGM difference
-        (both parametrizations agree at zero vol), so it holds to 1e-3."""
+        (both parametrizations agree at zero vol).
+
+        The swap's floating coupons are built as QuantLib INDEXED coupons,
+        projected over each index fixing period -- the projection ORE's LGM
+        engine uses (`LgmVectorised::fixing`) and so the one this engine
+        reproduces (I-31). QuantLib's default "at par" coupons project over
+        the accrual period instead and differ here by 2.3e-3 (1211.47 vs
+        1214.23): the two ORE engines disagree, and this anchor has to be
+        built on the one the Bermudan is priced by."""
         flat, a, rate, payer, tenor = 0.03, 0.03, 0.03, True, "5Y"
-        times = _engine_exercise_times(flat, a, 1e-6, rate, payer, tenor, [2])
+        times = _engine_exercise_dates(flat, a, 1e-6, rate, payer, tenor, [2])
         mine = price_bermudan_swaption_base(
             _engine_cfg(flat, a, 1e-6, rate, payer, tenor, times,
                         n_per_std=160, std_devs=9.0))
@@ -411,13 +395,19 @@ class TestGapIsTheParametrizationNotTheInduction:
             "SimIndex", ORE.Period(6, ORE.Months), 2,
             ORE.USDCurrency(), ORE.TARGET(), ORE.ModifiedFollowing, False, DC, curve,
         )
-        forward_swap = ORE.MakeVanillaSwap(
-            ORE.Period("3Y"), index, rate, nominal=NOTIONAL,
-            swapType=ORE.VanillaSwap.Payer, fixedLegDayCount=DC, floatingLegDayCount=DC,
-            forwardStart=ORE.Period(2, ORE.Years),
-        )
-        forward_swap.setPricingEngine(ORE.DiscountingSwapEngine(curve))
-        intrinsic = forward_swap.NPV()
+        was_at_par = ORE.IborCoupon.usingAtParCoupons()
+        ORE.IborCoupon.createIndexedCoupons()  # process-global QuantLib setting
+        try:
+            forward_swap = ORE.MakeVanillaSwap(
+                ORE.Period("3Y"), index, rate, nominal=NOTIONAL,
+                swapType=ORE.VanillaSwap.Payer, fixedLegDayCount=DC, floatingLegDayCount=DC,
+                forwardStart=ORE.Period(2, ORE.Years),
+            )
+            forward_swap.setPricingEngine(ORE.DiscountingSwapEngine(curve))
+            intrinsic = forward_swap.NPV()
+        finally:
+            if was_at_par:
+                ORE.IborCoupon.createAtParCoupons()
 
         assert mine == pytest.approx(intrinsic, rel=1e-3), (
             f"at sigma->0 the Bermudan must equal its intrinsic value: "
@@ -474,162 +464,38 @@ class TestHullWhiteVersusLgmBondPrices:
         )
 
 
-class TestExerciseTimeAlignment:
-    """The I-29 fix: an exercise time that is a near-miss SPELLING of an
-    accrual date is snapped onto it; everything else is left alone.
+class TestExerciseDatesAreExact:
+    """Why exercise no longer needs snapping (I-29).
 
-    This class previously PINNED the defect -- a rounded exercise time
-    silently dropped a coupon and overstated the zero-vol price ~12x -- with
-    a note saying that any change which snapped exercise times should delete
-    that test and tighten this one. That is what happened; the tests below
-    are the tightened form, and `test_rounded_exercise_time_matches_exact`
-    is the direct inversion of the deleted `..._drops_a_coupon`.
-
-    The scope is deliberately narrow, and half these tests defend that
-    narrowness rather than the repair: a genuinely mid-period exercise date
-    is a SUPPORTED trade (its understatement is the documented I-06), and an
-    American's discretized grid is unaligned by construction. Neither may be
-    touched.
+    Exercise used to be given as a year fraction, and a rounded one
+    (2.0137 for 2.0136986301369864) landed 1.4e-6 after the accrual start it
+    meant, dropped that coupon and overstated the zero-vol price ~12x; a
+    tolerance band then snapped near-misses back. Exercise is now given as a
+    DATE, as in ORE, and an exercise date equal to an accrual date maps to
+    the bit-identical time -- so there is nothing to snap, and no band to
+    get wrong. Year fractions are refused outright
+    (tests/test_bermudan_swaption.py::TestBermudanSwaptionConfigValidation).
     """
 
-    # The 5Y annual-fixed underlying used throughout: accrual starts at
-    # ~0.011, 1.011, 2.014, 3.014, 4.019. Index 2 is the one the original
-    # defect report used (true value 2.0136986301369864).
+    # The 5Y annual-fixed underlying used throughout; index 2 is the accrual
+    # start the original I-29 report used.
     ARGS = (0.03, 0.03, 1e-6, 0.03, True, "5Y")
 
-    def _price(self, times):
-        return price_bermudan_swaption_base(
-            _engine_cfg(*self.ARGS, times, n_per_std=160, std_devs=9.0))
+    def test_an_accrual_date_is_the_identical_exercise_time(self):
+        date = _engine_exercise_dates(*self.ARGS, [2])[0]
+        prepared = prepare_bermudan(_engine_cfg(*self.ARGS, [date]))
+        assert float(prepared.exercise_times[0]) == float(prepared.fixed_start_times[2])
 
-    def test_exact_accrual_start_matches_intrinsic_at_zero_vol(self):
-        """With the exact accrual-start time, the zero-vol price is the
-        intrinsic value (see TestGapIsTheParametrizationNotTheInduction::
-        test_zero_vol_collapses_to_intrinsic for the ORE-side value)."""
-        times = _engine_exercise_times(*self.ARGS, [2])
-        assert self._price(times) == pytest.approx(1211.47, rel=1e-3)
+    def test_every_exercisable_date_is_an_exercise_time_unchanged(self):
+        dates = exercisable_dates(_engine_cfg(*self.ARGS, [EVAL_DATE + 1]))
+        prepared = prepare_bermudan(_engine_cfg(*self.ARGS, dates[1:]))
+        assert prepared.exercise_times.tolist() == prepared.fixed_start_times[1:].tolist()
 
-    @pytest.mark.parametrize("decimals", [4, 5, 6])
-    def test_rounded_exercise_time_matches_exact(self, decimals):
-        """THE REGRESSION TEST FOR I-29. A rounded literal now prices
-        identically to the exact accrual start, because it is snapped onto
-        it before the liveness test ever sees it.
-
-        Against the pre-fix code the 4-decimal case priced 14336.12 against
-        an exact 1211.47 -- an ~12x overstatement -- so this fails loudly
-        without the fix rather than merely losing precision.
-        """
-        exact = _engine_exercise_times(*self.ARGS, [2])[0]
-        rounded = round(exact, decimals)
-        assert rounded != exact, "rounding must actually perturb the input"
-        # Bit-identical, not just close: snapping replaces the caller's
-        # value with the schedule's own float, so the two prices come from
-        # numerically identical inputs.
-        assert self._price([rounded]) == self._price([exact])
-
-    def test_snapping_restores_the_schedule_value_exactly(self):
-        """The snapped time is the schedule's own float, not the caller's
-        rounded one -- which is what makes the prices above bit-identical
-        rather than merely close."""
-        exact = _engine_exercise_times(*self.ARGS, [2])[0]
-        prepared = prepare_bermudan(_engine_cfg(*self.ARGS, [round(exact, 4)]))
-        assert float(prepared.exercise_times[0]) == exact
-
-    def test_a_genuinely_mid_period_date_is_passed_through_untouched(self):
-        """THE NEGATIVE CONTROL, and the one that matters most: snapping
-        must repair a damaged spelling of an accrual date and NOTHING else.
-
-        A true mid-period exercise is a supported trade whose
-        value-understating approximation is the documented I-06 -- not an
-        error. Moving it to a neighbouring accrual date would answer a
-        different question than the caller asked, and refusing it would
-        delete a working capability (tried: it broke 66 tests).
-        """
-        prepared = prepare_bermudan(_engine_cfg(*self.ARGS, [2.5]))
-        assert float(prepared.exercise_times[0]) == 2.5
-
-    def test_the_tolerance_band_is_where_it_is_documented_to_be(self):
-        """Just inside snaps; just outside is left exactly as written. Pins
-        the actual boundary so a future widening is a deliberate, visible
-        edit rather than a drift -- the tolerance is a contract, not a
-        tuning knob."""
-        exact = _engine_exercise_times(*self.ARGS, [2])[0]
-
-        inside = exact + 0.9 * EXERCISE_SNAP_TOLERANCE
-        prepared = prepare_bermudan(_engine_cfg(*self.ARGS, [inside]))
-        assert float(prepared.exercise_times[0]) == exact
-
-        outside = exact + 1.1 * EXERCISE_SNAP_TOLERANCE
-        prepared = prepare_bermudan(_engine_cfg(*self.ARGS, [outside]))
-        assert float(prepared.exercise_times[0]) == outside
-
-    def test_a_coarsely_rounded_time_is_still_not_repaired(self):
-        """THE HONEST LIMIT OF THIS FIX, pinned rather than left to be
-        rediscovered. A 3-decimal exercise time (2.014 for 2.01369...) is
-        3e-4 out -- a tenth of a day, outside the snap band -- so it is left
-        as written and still drops the coupon, pricing ~12x its intrinsic.
-
-        That is deliberate: at that coarseness the engine cannot tell a typo
-        from an intentional mid-period date, and guessing would be the silent
-        approximation the band exists to avoid. The defence is
-        `exercisable_times`, not a wider tolerance -- widening it to cover
-        this would start moving genuine mid-period dates (I-06).
-        """
-        exact = _engine_exercise_times(*self.ARGS, [2])[0]
-        coarse = round(exact, 3)
-        assert abs(coarse - exact) > EXERCISE_SNAP_TOLERANCE
-        assert prepare_bermudan(
-            _engine_cfg(*self.ARGS, [coarse])).exercise_times[0] == coarse
-        assert self._price([coarse]) > self._price([exact]) * 5
-
-    def test_an_american_grid_is_exempt_from_snapping(self):
-        """The discretization exemption, asserted on a grid point placed
-        deliberately inside the snap tolerance of an accrual start. Without
-        the exemption this would be moved, silently shifting one of the
-        exercise opportunities the discretization is made of."""
-        exact = _engine_exercise_times(*self.ARGS, [2])[0]
-        near = exact + 0.5 * EXERCISE_SNAP_TOLERANCE
-
-        cfg = _engine_cfg(*self.ARGS, [near])
-        cfg.exercise_times_are_discretized = True
-        assert float(prepare_bermudan(cfg).exercise_times[0]) == near
-
-    def test_tolerance_cannot_reach_a_neighbouring_accrual_date(self):
-        """The safety property behind the chosen tolerance: it is far
-        smaller than the gap between accrual starts, so snapping can never
-        be ambiguous between two boundaries. If a future schedule change
-        (or a wider tolerance) broke this, snapping could silently retarget
-        a trade to the wrong date."""
-        starts = np.asarray(exercisable_times(_engine_cfg(*self.ARGS, [0.0])))
-        min_gap = float(np.min(np.diff(starts)))
-        assert min_gap > 100 * EXERCISE_SNAP_TOLERANCE
-
-    def test_every_exercisable_time_is_accepted_unchanged(self):
-        """`exercisable_times` is the documented way to build a config, so
-        every value it returns must survive `prepare_bermudan` untouched."""
-        cfg = _engine_cfg(*self.ARGS, [0.0])
-        starts = exercisable_times(cfg)
-        prepared = prepare_bermudan(_engine_cfg(*self.ARGS, starts))
-        assert prepared.exercise_times.tolist() == starts
-
-    def test_the_portfolio_warning_agrees_with_what_is_priced(self):
-        """The mid-coupon warning must describe what the pricer DOES.
-
-        `price_portfolio` warns that a misaligned trade "will use the
-        documented mid-coupon approximation". Once a near-miss is snapped
-        that is no longer true of it, so the warning has to match on the
-        same tolerance rather than on exact equality -- otherwise a trade
-        that is now priced exactly still reports an approximation it does
-        not use, which is its own species of misleading output.
-
-        Both directions are asserted: silent for a snapped time, still
-        warning for a genuine mid-period one.
-        """
-        exact = _engine_exercise_times(*self.ARGS, [2])[0]
-
-        for time, expected in ((exact, 0), (round(exact, 4), 0), (2.5, 1)):
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                _warn_if_not_reset_aligned(
-                    "trade[0]", _engine_cfg(*self.ARGS, [time]), 0)
-            aligned = [w for w in caught if "not reset-aligned" in str(w.message)]
-            assert len(aligned) == expected, f"exercise_time={time!r}"
+    def test_exact_accrual_start_prices_its_intrinsic_at_zero_vol(self):
+        """The case I-29 got 12x wrong (14336.12): the zero-vol price is the
+        intrinsic value. ORE's own LGM engine prices this trade at
+        1214.2313035805 (engine/validation/ore_lgm_oracle.py); the 1211.47 recorded in
+        I-29 was the at-par-coupon value, before I-31."""
+        date = _engine_exercise_dates(*self.ARGS, [2])[0]
+        npv = price_bermudan_swaption_base(_engine_cfg(*self.ARGS, [date], n_per_std=160, std_devs=9.0))
+        assert npv == pytest.approx(1214.2313035805, rel=1e-9)

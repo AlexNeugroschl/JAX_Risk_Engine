@@ -175,8 +175,9 @@ simulate paths off one representative vol level) has these legitimately diverge.
 flat `float` `hw_sigma` is checked against the implied per-step vol.
 
 This function also emits (via Python's `warnings` module — not a hard error) a warning for
-any Bermudan/American trade whose `exercise_times` aren't reset-aligned with its own
-underlying's accrual dates — see "Known-limitation flagging" below.
+any swap that will be aged past its first accrual date at a simulated step — see
+"Known-limitation flagging" below. A Bermudan/American exercise date inside an accrual period
+is not warned about: it is priced exactly as ORE prices it, not approximated.
 
 ### `derive_maturity_pillars(trade_configs, evaluation_date) -> List[float]`
 
@@ -206,20 +207,15 @@ check for it.
 
 ### Known-limitation flagging
 
-Two documented, deliberate scope boundaries already exist elsewhere in this codebase; this
-module surfaces them rather than silently producing a slightly-wrong number:
+A documented, deliberate scope boundary exists elsewhere in this codebase; this module
+surfaces it rather than silently producing a slightly-wrong number:
 
-- **Mid-coupon Bermudan/American exercise** (see
-  [American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)): if any
-  exercise date isn't reset-aligned with the underlying's own accrual schedule,
-  `validate_portfolio_against_simulation` emits a `UserWarning` naming the trade and
-  pointing at that doc's mid-coupon-approximation section — collected into
-  `PortfolioResult.warnings` by `price_portfolio`, not just printed to stderr.
 - **Aged-swap discounting gap** (see [Interest Rate Swaps](../instruments/swaps.md)): this
   module's own docstring documents (but does not fix) that any *exposure profile* (t>0
   valuation, as opposed to a t=0 NPV/VaR run) of a swap inherits `engine.instruments.swap`'s
-  known aged-swap limitation. This is not separately flagged per-request — it's a blanket
-  documented scope boundary, since every `SwapConfig` trade is affected identically.
+  known aged-swap limitation. `_warn_if_aged_swap_exposure` flags every `SwapConfig` that
+  will be aged at one or more simulated steps with a `UserWarning` naming the trade,
+  collected into `PortfolioResult.warnings` by `price_portfolio`.
 
 ## Greeks
 

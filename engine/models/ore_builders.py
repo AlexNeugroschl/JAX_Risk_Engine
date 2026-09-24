@@ -94,6 +94,15 @@ TIME_AXIS_DAY_COUNTER = ORE.Actual365Fixed()
 #: keep working; it always meant the time axis, never instrument accrual.
 DAY_COUNTER = TIME_AXIS_DAY_COUNTER
 
+
+def time_from_reference(evaluation_date: ORE.Date, date: ORE.Date) -> float:
+    """A date's position on the simulation time axis -- ORE's own
+    `termStructure()->timeFromReference(d)` for a curve whose day counter is
+    `TIME_AXIS_DAY_COUNTER`. Two equal dates always map to the identical
+    float, which is what lets date-specified exercise match accrual dates
+    exactly rather than within a tolerance."""
+    return TIME_AXIS_DAY_COUNTER.yearFraction(evaluation_date, date)
+
 #: ---------------------------------------------------------------------
 #: The accrual day-count vocabulary lives in `engine.day_count` and is
 #: re-exported here so every existing caller and test keeps working

@@ -96,7 +96,7 @@ def bermudan_cfg(**overrides) -> BermudanSwaptionConfig:
         notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
         hw_a=0.03, hw_sigma=0.01,
         initial_zero_curve=ZeroCurveConfig(times=PILLAR_TIMES, rates=PILLAR_RATES),
-        exercise_times=[1.0, 2.0], swap_tenor="3Y",
+        exercise_dates=[EVAL_DATE + 365, EVAL_DATE + 730], swap_tenor="3Y",
         n_per_std=16, std_devs=6.0, evaluation_date=EVAL_DATE,
     )
     base.update(overrides)
@@ -194,7 +194,9 @@ class TestCompileCounts:
         # Measured: 4 (jit__backward_induction_arrays + 3 small helpers).
         with count_compiles() as counter:
             npv = price_bermudan_swaption_base(bermudan_cfg())
-        assert npv == pytest.approx(8521.0223, rel=1e-6)
+        # 8521.0223 before 2026-09-23; floating coupons are now projected over
+        # the index fixing period, as ORE's LGM engine projects them (I-31).
+        assert npv == pytest.approx(8522.460486631673, rel=1e-6)
         assert sum(counter.values()) < 20, dict(counter)
 
     def test_bermudan_delta_gamma_compiles_few_programs(self):
@@ -251,7 +253,7 @@ class TestCompileCounts:
         assert sum(counter.values()) == 0, dict(counter)
         # Same structure, 5x the size -- and a swap's value is linear in
         # notional, so the price must scale exactly.
-        assert npv == pytest.approx(5 * 8521.0223, rel=1e-6)
+        assert npv == pytest.approx(5 * 8522.460486631673, rel=1e-6)
 
     def test_calibration_compiles_few_programs(self):
         """`calibrate_lgm_sigma` measured 137 compilations before its

@@ -146,44 +146,36 @@ class TestCrossFieldValidation:
         with pytest.raises(ValueError, match=r"trade\[1\]"):
             validate_portfolio_against_simulation(sim, [good, bad])
 
-    def test_bermudan_reset_aligned_exercise_times_no_warning(self):
-        """1.010958904109589 is this 3Y swap's own real second-fixed-period
-        accrual-start date (spot-lag-adjusted, not a round 1.0) -- a
-        genuinely reset-aligned exercise time, confirmed directly against
-        the trade's own ORE-generated schedule."""
+    @pytest.mark.parametrize("exercise_date", [ORE.Date(3, 8, 2027), ORE.Date(30, 10, 2027)],
+                             ids=["on-an-accrual-start", "mid-period"])
+    def test_bermudan_exercise_never_warns(self, exercise_date):
+        """A Bermudan exercise date inside an accrual period is priced
+        exactly as ORE prices it (into the next whole period), not
+        approximated, so there is nothing to warn about -- unlike the
+        mid-coupon warning this used to raise before I-06 was closed."""
         sim = _sim_config()
         cfg = BermudanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
             hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
-            exercise_times=[1.010958904109589], swap_tenor="3Y", evaluation_date=TODAY,
+            exercise_dates=[exercise_date], swap_tenor="3Y", evaluation_date=TODAY,
         )
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             validate_portfolio_against_simulation(sim, [cfg])  # must not warn/raise
 
-    def test_bermudan_mid_coupon_exercise_time_warns(self):
-        """An exercise date that lands mid-accrual-period (not on any of
-        the underlying's own reset dates) must emit a warning pointing at
-        the documented mid-coupon approximation, not silently price it."""
-        sim = _sim_config()
-        cfg = BermudanSwaptionConfig(
-            notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
-            hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
-            exercise_times=[1.25], swap_tenor="3Y", evaluation_date=TODAY,
-        )
-        with pytest.warns(UserWarning, match="reset-aligned"):
-            validate_portfolio_against_simulation(sim, [cfg])
-
-    def test_american_mid_coupon_exercise_window_warns(self):
+    def test_american_exercise_window_never_warns(self):
+        """Nor does an American window, whose broken-period exercise is ORE's
+        own `couponRatio` proration."""
         sim = _sim_config()
         cfg = AmericanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
             hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
-            first_exercise=1.0, last_exercise=2.0, exercise_time_steps_per_year=3,
+            first_exercise_date=TODAY + 365, last_exercise_date=TODAY + 730, exercise_time_steps_per_year=3,
             swap_tenor="3Y", evaluation_date=TODAY,
         )
-        with pytest.warns(UserWarning, match="reset-aligned"):
-            validate_portfolio_against_simulation(sim, [cfg])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            validate_portfolio_against_simulation(sim, [cfg])  # must not warn/raise
 
 
 class TestPillarAssembly:

@@ -90,14 +90,15 @@ PORTFOLIO_TRADES = [
         "trade_type": "bermudan_swaption",
         "notional": 1_000_000.0, "fixed_rate": 0.030, "payer": True,
         "rate_factor_index": 0, "hw_a": HW_MEAN_REVERSION, "hw_sigma": None,
-        "exercise_times": [1.0, 2.0, 3.0, 4.0], "swap_tenor": "5Y",
+        "exercise_dates": ["2027-07-30", "2028-07-30", "2029-07-30", "2030-07-30"], "swap_tenor": "5Y",
         "n_per_std": 64, "std_devs": 6.0,
     },
     {
         "trade_type": "american_swaption",
         "notional": 800_000.0, "fixed_rate": 0.029, "payer": False,
         "rate_factor_index": 0, "hw_a": HW_MEAN_REVERSION, "hw_sigma": None,
-        "first_exercise": 1.0, "last_exercise": 4.0, "exercise_time_steps_per_year": 2,
+        "first_exercise_date": "2027-07-30", "last_exercise_date": "2030-07-30",
+        "exercise_time_steps_per_year": 2,
         "n_per_std": 64, "std_devs": 6.0,
     },
 ]

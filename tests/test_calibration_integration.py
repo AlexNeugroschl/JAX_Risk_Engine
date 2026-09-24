@@ -18,6 +18,7 @@ from engine.simulation.market_model import ZeroCurveConfig
 from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.lgm import calibrate_lgm_sigma
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, price_bermudan_swaption_base
+from date_helpers import in_years
 
 TODAY = ORE.Date(30, 7, 2026)
 
@@ -45,7 +46,7 @@ class TestCalibratedSigmaFeedsBermudanPricer:
             notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
             hw_a=0.03, hw_sigma=result.sigma,
             initial_zero_curve=FLAT_CURVE_CONFIG,
-            exercise_times=exercise_times, swap_tenor="5Y", evaluation_date=TODAY,
+            exercise_dates=in_years(TODAY, exercise_times), swap_tenor="5Y", evaluation_date=TODAY,
         )
         npv = float(price_bermudan_swaption_base(cfg))
         assert np.isfinite(npv)
@@ -70,22 +71,22 @@ class TestCalibratedSigmaFeedsBermudanPricer:
             notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
             hw_a=0.03, hw_sigma=result.sigma,
             initial_zero_curve=FLAT_CURVE_CONFIG,
-            exercise_times=exercise_times, swap_tenor="5Y", evaluation_date=TODAY,
+            exercise_dates=in_years(TODAY, exercise_times), swap_tenor="5Y", evaluation_date=TODAY,
         )
         cfg_flat = BermudanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
             hw_a=0.03, hw_sigma=avg_sigma,
             initial_zero_curve=FLAT_CURVE_CONFIG,
-            exercise_times=exercise_times, swap_tenor="5Y", evaluation_date=TODAY,
+            exercise_dates=in_years(TODAY, exercise_times), swap_tenor="5Y", evaluation_date=TODAY,
         )
         npv_calibrated = float(price_bermudan_swaption_base(cfg_calibrated))
         npv_flat = float(price_bermudan_swaption_base(cfg_flat))
         assert abs(npv_calibrated - npv_flat) / npv_flat > 0.01
 
     def test_american_swaption_also_accepts_calibrated_sigma(self):
-        """AmericanSwaptionConfig wraps BermudanSwaptionConfig (a finely
-        discretized exercise schedule) -- confirms the calibrated Sigma
-        flows through that wrapper too, not just the raw Bermudan path."""
+        """An AmericanSwaptionConfig is priced by the same backward
+        induction as a Bermudan -- confirms a calibrated Sigma is accepted
+        on that path too, not just the Bermudan one."""
         from engine.instruments.american_swaption import AmericanSwaptionConfig
         from engine.instruments.bermudan_swaption import price_bermudan_swaption_base
 
@@ -101,10 +102,11 @@ class TestCalibratedSigmaFeedsBermudanPricer:
             notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
             hw_a=0.03, hw_sigma=result.sigma,
             initial_zero_curve=FLAT_CURVE_CONFIG,
-            first_exercise=1.0, last_exercise=3.0, exercise_time_steps_per_year=2,
+            first_exercise_date=in_years(TODAY, 1.0), last_exercise_date=in_years(TODAY, 3.0),
+            exercise_time_steps_per_year=2,
             swap_tenor="4Y", evaluation_date=TODAY,
         )
-        npv = float(price_bermudan_swaption_base(cfg.to_bermudan()))
+        npv = float(price_bermudan_swaption_base(cfg))
         assert np.isfinite(npv)
         assert npv > 0.0
 
@@ -137,7 +139,7 @@ class TestCalibratedSigmaAcrossTradeVariations:
             notional=1_000_000.0, fixed_rate=0.03, payer=False, rate_factor_index=0,
             hw_a=0.03, hw_sigma=result.sigma,
             initial_zero_curve=FLAT_CURVE_CONFIG,
-            exercise_times=exercise_times, swap_tenor="5Y", evaluation_date=TODAY,
+            exercise_dates=in_years(TODAY, exercise_times), swap_tenor="5Y", evaluation_date=TODAY,
         )
         npv = float(price_bermudan_swaption_base(cfg))
         assert np.isfinite(npv)
@@ -160,7 +162,7 @@ class TestCalibratedSigmaAcrossTradeVariations:
             notional=1_000_000.0, fixed_rate=0.032, payer=True, rate_factor_index=0,
             hw_a=0.03, hw_sigma=result.sigma,
             initial_zero_curve=SLOPED_CURVE_CONFIG,
-            exercise_times=exercise_times, swap_tenor="5Y", evaluation_date=TODAY,
+            exercise_dates=in_years(TODAY, exercise_times), swap_tenor="5Y", evaluation_date=TODAY,
         )
         npv = float(price_bermudan_swaption_base(cfg))
         assert np.isfinite(npv)
@@ -190,20 +192,20 @@ class TestCalibratedSigmaAcrossTradeVariations:
             BermudanSwaptionConfig(
                 notional=1_000_000.0, fixed_rate=0.01, payer=True, rate_factor_index=0,
                 hw_a=0.03, hw_sigma=result.sigma, initial_zero_curve=FLAT_CURVE_CONFIG,
-                exercise_times=exercise_times, swap_tenor="7Y", evaluation_date=TODAY,
+                exercise_dates=in_years(TODAY, exercise_times), swap_tenor="7Y", evaluation_date=TODAY,
             ),
             # OTM receiver, sparse exercise schedule (a subset of the
             # calibration basket's own dates), shorter underlying.
             BermudanSwaptionConfig(
                 notional=2_000_000.0, fixed_rate=0.01, payer=False, rate_factor_index=0,
                 hw_a=0.03, hw_sigma=result.sigma, initial_zero_curve=FLAT_CURVE_CONFIG,
-                exercise_times=[2.0, 4.0], swap_tenor="5Y", evaluation_date=TODAY,
+                exercise_dates=in_years(TODAY, [2.0, 4.0]), swap_tenor="5Y", evaluation_date=TODAY,
             ),
             # ATM payer, single-exercise (European-equivalent) trade.
             BermudanSwaptionConfig(
                 notional=500_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
                 hw_a=0.03, hw_sigma=result.sigma, initial_zero_curve=FLAT_CURVE_CONFIG,
-                exercise_times=[3.0], swap_tenor="4Y", evaluation_date=TODAY,
+                exercise_dates=in_years(TODAY, [3.0]), swap_tenor="4Y", evaluation_date=TODAY,
             ),
         ]
         npvs = [float(price_bermudan_swaption_base(cfg)) for cfg in trades]

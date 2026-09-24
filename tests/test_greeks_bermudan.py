@@ -31,6 +31,7 @@ from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.lgm import calibrate_lgm_sigma
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, price_bermudan_swaption_base
 from engine.instruments.american_swaption import AmericanSwaptionConfig
+from date_helpers import in_years
 from engine.risk.greeks import (
     DEFAULT_RATE_BUMP,
     _bermudan_price_fn,
@@ -52,12 +53,12 @@ FLAT_CURVE = ZeroCurve.flat(0.03, PILLAR_TIMES)
 FLAT_CURVE_CONFIG = ZeroCurveConfig(times=PILLAR_TIMES, rates=[0.03] * len(PILLAR_TIMES))
 
 
-def _cfg(hw_sigma=0.01, exercise_times=(1.0, 2.0, 3.0, 4.0), swap_tenor="5Y", payer=True):
+def _cfg(hw_sigma=0.01, exercise_years=(1.0, 2.0, 3.0, 4.0), swap_tenor="5Y", payer=True):
     return BermudanSwaptionConfig(
         notional=1_000_000.0, fixed_rate=0.03, payer=payer, rate_factor_index=0,
         hw_a=0.03, hw_sigma=hw_sigma,
         initial_zero_curve=FLAT_CURVE_CONFIG,
-        exercise_times=list(exercise_times), swap_tenor=swap_tenor, evaluation_date=TODAY,
+        exercise_dates=in_years(TODAY, list(exercise_years)), swap_tenor=swap_tenor, evaluation_date=TODAY,
     )
 
 
@@ -88,7 +89,7 @@ class TestBermudanDeltaGamma:
                 notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
                 rate_factor_index=cfg.rate_factor_index, hw_a=cfg.hw_a, hw_sigma=cfg.hw_sigma,
                 initial_zero_curve=ZeroCurveConfig(times=PILLAR_TIMES, rates=rates),
-                exercise_times=cfg.exercise_times, swap_tenor=cfg.swap_tenor, evaluation_date=TODAY,
+                exercise_dates=cfg.exercise_dates, swap_tenor=cfg.swap_tenor, evaluation_date=TODAY,
             )
 
         npv_up = price_bermudan_swaption_base(cfg_with_rates(rates_up))
@@ -166,11 +167,11 @@ class TestBermudanVega:
                 zero_curve=FLAT_CURVE, evaluation_date=TODAY,
             )
             result = calibrate_lgm_sigma(targets, FLAT_CURVE, a=0.03)
-            cfg = _cfg(hw_sigma=result.sigma, exercise_times=exercise_times)
+            cfg = _cfg(hw_sigma=result.sigma, exercise_years=exercise_times)
             return price_bermudan_swaption_base(cfg), targets, result.sigma
 
         base_npv, targets, sigma = price_with_vols(base_vols)
-        cfg = _cfg(hw_sigma=sigma, exercise_times=exercise_times)
+        cfg = _cfg(hw_sigma=sigma, exercise_years=exercise_times)
         vega = bermudan_vega(cfg, FLAT_CURVE, targets)
 
         bump = 1e-5
@@ -195,7 +196,7 @@ class TestBermudanVega:
             zero_curve=FLAT_CURVE, evaluation_date=TODAY,
         )
         result = calibrate_lgm_sigma(targets, FLAT_CURVE, a=0.03)
-        cfg = _cfg(hw_sigma=result.sigma, exercise_times=exercise_times, swap_tenor="4Y")
+        cfg = _cfg(hw_sigma=result.sigma, exercise_years=exercise_times, swap_tenor="4Y")
         vega = bermudan_vega(cfg, FLAT_CURVE, targets)
         assert jnp.all(vega > 0.0)
 
@@ -207,7 +208,7 @@ class TestBermudanVega:
             zero_curve=FLAT_CURVE, evaluation_date=TODAY,
         )
         result = calibrate_lgm_sigma(targets, FLAT_CURVE, a=0.03)
-        cfg = _cfg(hw_sigma=result.sigma, exercise_times=exercise_times, swap_tenor="4Y", payer=False)
+        cfg = _cfg(hw_sigma=result.sigma, exercise_years=exercise_times, swap_tenor="4Y", payer=False)
         vega = bermudan_vega(cfg, FLAT_CURVE, targets)
         assert jnp.all(vega > 0.0)
 
@@ -218,26 +219,28 @@ class TestBermudanVega:
             notional=1_000_000.0, payer=True, market_vols=[0.008, 0.009, 0.0095, 0.0098],
             zero_curve=FLAT_CURVE, evaluation_date=TODAY,
         )
-        cfg = _cfg(hw_sigma=0.01, exercise_times=exercise_times)  # flat sigma, 1 bucket
+        cfg = _cfg(hw_sigma=0.01, exercise_years=exercise_times)  # flat sigma, 1 bucket
         with pytest.raises(AssertionError):
             bermudan_vega(cfg, FLAT_CURVE, targets)  # targets has 4 instruments
 
 
 class TestAmericanSwaptionSharesTheSameGreeksPath:
-    def test_delta_gamma_finite_via_to_bermudan(self):
-        """AmericanSwaptionConfig has no dedicated Greeks function --
-        to_bermudan() feeds the same bermudan_delta_gamma path (see
-        engine.risk.greeks's own module docstring)."""
+    def test_delta_gamma_theta_finite_for_an_american(self):
+        """AmericanSwaptionConfig has no dedicated Greeks function -- the
+        same bermudan_delta_gamma/bermudan_theta take it directly (see
+        engine.risk.greeks's own module docstring), including through the
+        broken-coupon caching an American exercise uses."""
         american_cfg = AmericanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
             hw_a=0.03, hw_sigma=0.01,
             initial_zero_curve=FLAT_CURVE_CONFIG,
-            first_exercise=1.0, last_exercise=3.0, exercise_time_steps_per_year=2,
-            swap_tenor="4Y", evaluation_date=TODAY,
+            first_exercise_date=in_years(TODAY, 1.0), last_exercise_date=in_years(TODAY, 3.0),
+            exercise_time_steps_per_year=12, swap_tenor="4Y", evaluation_date=TODAY,
         )
-        greeks = bermudan_delta_gamma(american_cfg.to_bermudan(), FLAT_CURVE)
+        greeks = bermudan_delta_gamma(american_cfg, FLAT_CURVE)
         assert jnp.all(jnp.isfinite(greeks["delta"]))
         assert jnp.all(jnp.isfinite(greeks["gamma"]))
+        assert np.isfinite(bermudan_theta(american_cfg, FLAT_CURVE))
 
 
 class TestBermudanGreeksEdgeCases:
@@ -253,7 +256,7 @@ class TestBermudanGreeksEdgeCases:
         cfg = BermudanSwaptionConfig(
             notional=0.0, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
             rate_factor_index=cfg.rate_factor_index, hw_a=cfg.hw_a, hw_sigma=cfg.hw_sigma,
-            initial_zero_curve=cfg.initial_zero_curve, exercise_times=cfg.exercise_times,
+            initial_zero_curve=cfg.initial_zero_curve, exercise_dates=cfg.exercise_dates,
             swap_tenor=cfg.swap_tenor, evaluation_date=TODAY,
         )
         greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
@@ -265,7 +268,7 @@ class TestBermudanGreeksEdgeCases:
         cfg = BermudanSwaptionConfig(
             notional=0.0, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
             rate_factor_index=cfg.rate_factor_index, hw_a=cfg.hw_a, hw_sigma=cfg.hw_sigma,
-            initial_zero_curve=cfg.initial_zero_curve, exercise_times=cfg.exercise_times,
+            initial_zero_curve=cfg.initial_zero_curve, exercise_dates=cfg.exercise_dates,
             swap_tenor=cfg.swap_tenor, evaluation_date=TODAY,
         )
         theta = bermudan_theta(cfg, FLAT_CURVE)
@@ -276,7 +279,7 @@ class TestBermudanGreeksEdgeCases:
         equivalent trade -- the backward induction's own edge case (no
         early-exercise comparison ever fires before the one and only
         exercise date), must still be fully differentiable."""
-        cfg = _cfg(exercise_times=(2.0,))
+        cfg = _cfg(exercise_years=(2.0,))
         greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
         assert jnp.all(jnp.isfinite(greeks["delta"]))
         assert jnp.all(jnp.isfinite(greeks["gamma"]))
@@ -289,7 +292,7 @@ class TestBermudanGreeksEdgeCases:
         induction's own autodiff graph (jax.lax.scan's length grows with
         the grid schedule, not with the raw Python exercise-date count,
         but this exercises that path at a larger scale regardless)."""
-        cfg = _cfg(exercise_times=(0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5))
+        cfg = _cfg(exercise_years=(0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5))
         greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
         assert jnp.all(jnp.isfinite(greeks["delta"]))
         assert jnp.all(jnp.isfinite(greeks["gamma"]))
@@ -331,7 +334,7 @@ class TestBermudanGreeksEdgeCases:
         cfg = BermudanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.01, payer=True, rate_factor_index=0,
             hw_a=0.03, hw_sigma=0.01, initial_zero_curve=neg_curve_config,
-            exercise_times=[1.0, 2.0], swap_tenor="5Y", evaluation_date=TODAY,
+            exercise_dates=in_years(TODAY, [1.0, 2.0]), swap_tenor="5Y", evaluation_date=TODAY,
         )
         greeks = bermudan_delta_gamma(cfg, neg_curve)
         assert jnp.all(jnp.isfinite(greeks["delta"]))
@@ -348,7 +351,7 @@ class TestBermudanGreeksEdgeCases:
         cfg = BermudanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
             hw_a=0.03, hw_sigma=0.01, initial_zero_curve=FLAT_CURVE_CONFIG,
-            exercise_times=[1.0, 2.0], swap_tenor="5Y", evaluation_date=TODAY, n_per_std=4,
+            exercise_dates=in_years(TODAY, [1.0, 2.0]), swap_tenor="5Y", evaluation_date=TODAY, n_per_std=4,
         )
         greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
         assert jnp.all(jnp.isfinite(greeks["delta"]))
@@ -374,7 +377,7 @@ class TestBermudanGreeksEdgeCases:
             zero_curve=FLAT_CURVE, evaluation_date=TODAY,
         )
         result = calibrate_lgm_sigma(targets, FLAT_CURVE, a=0.03)
-        cfg = _cfg(hw_sigma=result.sigma, exercise_times=(2.0,), swap_tenor="5Y")
+        cfg = _cfg(hw_sigma=result.sigma, exercise_years=(2.0,), swap_tenor="5Y")
         vega = bermudan_vega(cfg, FLAT_CURVE, targets)
         assert vega.shape == (1,)
         assert jnp.isfinite(vega[0])
@@ -396,7 +399,7 @@ class TestBermudanGreeksEdgeCases:
             cfg = BermudanSwaptionConfig(
                 notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
                 hw_a=a, hw_sigma=result.sigma, initial_zero_curve=FLAT_CURVE_CONFIG,
-                exercise_times=[1.0, 2.0], swap_tenor="4Y", evaluation_date=TODAY,
+                exercise_dates=in_years(TODAY, [1.0, 2.0]), swap_tenor="4Y", evaluation_date=TODAY,
             )
             vega = bermudan_vega(cfg, FLAT_CURVE, targets)
             assert jnp.all(jnp.isfinite(vega)), f"a={a}: non-finite vega"
@@ -427,12 +430,12 @@ class TestBermudanGreeksPrecisionDtype:
     def _flat_curve32(self):
         return ZeroCurve.flat(0.03, self.PILLAR_TIMES_32, dtype=jnp.float32)
 
-    def _cfg32(self, curve32, sigma32, exercise_times=(1.0, 2.0, 3.0), swap_tenor="4Y"):
+    def _cfg32(self, curve32, sigma32, exercise_years=(1.0, 2.0, 3.0), swap_tenor="4Y"):
         curve_cfg = ZeroCurveConfig(times=self.PILLAR_TIMES_32, rates=[0.03] * len(self.PILLAR_TIMES_32))
         return BermudanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
             hw_a=0.03, hw_sigma=sigma32, initial_zero_curve=curve_cfg,
-            exercise_times=list(exercise_times), swap_tenor=swap_tenor, evaluation_date=TODAY,
+            exercise_dates=in_years(TODAY, list(exercise_years)), swap_tenor=swap_tenor, evaluation_date=TODAY,
         )
 
     def test_bermudan_delta_gamma_float32_curve_stays_float32(self):
@@ -476,7 +479,7 @@ class TestBermudanGreeksPrecisionDtype:
             notional=1_000_000.0, payer=True, market_vols=[0.008, 0.009, 0.0095],
             zero_curve=curve32, evaluation_date=TODAY,
         )
-        cfg = self._cfg32(curve32, sigma32=sigma32, exercise_times=exercise_times)
+        cfg = self._cfg32(curve32, sigma32=sigma32, exercise_years=exercise_times)
         vega = bermudan_vega(cfg, curve32, targets)
         assert vega.dtype == jnp.float32
         assert jnp.all(jnp.isfinite(vega))

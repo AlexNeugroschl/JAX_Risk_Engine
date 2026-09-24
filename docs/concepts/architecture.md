@@ -190,12 +190,11 @@ Every `engine/` subpackage has an `__init__.py`, so the whole thing is importabl
 from the repository root — no path hacks required in application code or tests.
 
 `bermudan_swaption.py` and `american_swaption.py` are two separate files rather than one,
-even though `american_swaption.py`'s content is small: `AmericanSwaptionConfig` is a
-config wrapper that expands a continuous exercise window into a discrete list of dates
-(`AmericanSwaptionConfig.to_bermudan()`) and then delegates entirely to
-`bermudan_swaption.py`'s pricing engine — this mirrors ORE's own design, where American
-swaptions are priced by discretizing the exercise window and running the exact same
-numeric engine Bermudan swaptions use (`QuantExt::NumericLgmMultiLegOptionEngine`, see
+even though `american_swaption.py`'s content is small: `AmericanSwaptionConfig` supplies
+ORE's American option times and exercise style, and is priced by `bermudan_swaption.py`'s
+engine directly — this mirrors ORE's own design, where both exercise types run through
+the same numeric engine (`QuantExt::NumericLgmMultiLegOptionEngine`) and differ only in
+their option times and in which coupons an exercise enters (see
 [American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)). Keeping the actual backward-
 induction engine (state grid, Hagan's quadrature, numeraire-deflated rollback) in its own
 `bermudan_swaption.py` file, separate from the thin American-specific wrapper, makes clear
@@ -335,10 +334,9 @@ Five pricers currently live here:
   convolution), matching ORE's own `NumericLgmMultiLegOptionEngine` — early exercise
   has no closed form, so this is the pricing engine every other Bermudan/American
   capability builds on (see [Instruments: American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)).
-- `american_swaption.py` — a thin wrapper: discretizes a continuous exercise window
-  into a dense list of dates (`AmericanSwaptionConfig.to_bermudan()`) and prices
-  through `bermudan_swaption.py`'s engine, exactly the way ORE itself treats American
-  exercise as a finely-discretized Bermudan.
+- `american_swaption.py` — American exercise: ORE's uniform option-time grid over the
+  window and ORE's broken-period exercise (a coupon belongs until its accrual end,
+  credited `couponRatio`), priced through `bermudan_swaption.py`'s engine.
 - `treasury.py` (W1.5) — Treasury bills and notes (`BondConfig`), closed-form
   discounted cashflows against the bond's **own** zero curve. **The odd one out in two
   ways.** It is the only pricer here that is not JAX — plain `math.exp` over an ORE day
@@ -414,8 +412,8 @@ cross-checking every trade's own duplicated `hw_a`/`hw_sigma`/`initial_zero_curv
 the simulation's `RatesConfig` (`validate_portfolio_against_simulation`), automatically
 deriving `RatesConfig.maturities` from every swap's real ORE schedule
 (`derive_maturity_pillars`) instead of requiring a caller to hand-compute pillars the way
-early demos did, and surfacing (not silently absorbing) known scope boundaries like a
-Bermudan's mid-coupon exercise approximation as warnings. See
+early demos did, and surfacing (not silently absorbing) known scope boundaries like a swap
+aged past its first accrual as warnings. See
 [The Portfolio Entry Point](../reference/portfolio-entrypoint.md) for the full field-level
 reference and [`docs/planning/traderx-integration.md`](../planning/traderX_integration/traderx-integration.md)
 for the gap analysis this validation layer closes.
@@ -643,7 +641,7 @@ chain silently upcasts a `risk=32` computation back to float64 the moment it's c
 with the correctly-sized array — confirmed directly (`jnp.interp`/elementwise ops promote
 a float32/float64 mix to float64 whenever `jax_enable_x64` is on, regardless of which
 operand is which dtype). Getting this right for `bermudan_swaption.py`'s `_state_grid`/
-`_run_backward_induction`/`_hw_swap_value_at_nodes` in particular required tracing the
+`_run_backward_induction`/`_cashflow_values_at_nodes` in particular required tracing the
 *entire* chain of arrays feeding the backward induction, not just the one function whose
 docstring already mentioned a dtype, since that function is shared between plain
 (non-Greeks) Bermudan/American pricing — which must stay governed by `pricing`, not

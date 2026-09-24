@@ -403,7 +403,7 @@ Mirrors `engine.portfolio.PortfolioResult`:
 | `npv_cube` | `List[List[List[float]]]` | `[Scenarios, TimeSteps, Trades]`, JSON-nested. |
 | `risk` | `{"values": {"VaR_95": [...], "ES_95": [...], ...}}` | `NaN` values (an empty-tail Expected Shortfall — see [Risk Statistics](../risk/var_es.md)) serialize as JSON `null`, not the non-standard literal `NaN`. |
 | `greeks` | `{"<trade_index>": {"values": {"delta": [...], "gamma": [...]}, "theta": ...}} \| null` | `null` unless the request set `compute_greeks: true`. Keys are trade indices (as strings, JSON's own object-key requirement) matching the request's own `trades` order. **Swaps** report `discount_delta`/`discount_gamma`/`forward_delta`/`forward_gamma` (differentiated against the curves their own `discount_curve_index`/`forward_curve_index` name) plus `theta`; swaptions report `delta`/`gamma`/`theta`. A **calibrated** Bermudan/American trade additionally reports `vega`, one entry per `calibration_basket` instrument — omitted for a flat (hand-set) `hw_sigma`, which has no market quote to be sensitive to. |
-| `warnings` | `List[str]` | Known-limitation warnings (mid-coupon exercise misalignment, etc.) — see [The Portfolio Entry Point: Known-limitation flagging](portfolio-entrypoint.md#known-limitation-flagging). |
+| `warnings` | `List[str]` | Known-limitation warnings (e.g. a swap aged past its first accrual at a simulated step) — see [The Portfolio Entry Point: Known-limitation flagging](portfolio-entrypoint.md#known-limitation-flagging). |
 
 ## Example: a Python `requests` session
 

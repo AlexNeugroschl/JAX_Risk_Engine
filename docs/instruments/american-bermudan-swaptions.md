@@ -18,7 +18,9 @@ price it correctly is to work backward through time on a grid of possible intere
 outcomes, comparing "exercise now" against "wait" at every point, exactly the way ORE's own
 engine does it.
 
-This module builds that backward-working grid.
+This module builds that backward-working grid, and it builds it the way ORE does, step for
+step: at the same grid settings it returns the same numbers as ORE's own engine, to about
+1e-11 (see [How it is checked against ORE](#how-it-is-checked-against-ore)).
 
 ## Why not Jamshidian's decomposition
 
@@ -43,13 +45,11 @@ induction engine. Neither `QuantLib::TreeSwaptionEngine` nor
 confirmed by a repository-wide search — so ORE's own production code path for Bermudan and
 American swaptions genuinely is this numeric engine, not a tree or Jamshidian's trick.
 
-## American exercise is not priced continuously — in ORE either
+## American exercise: ORE's grid, and ORE's broken periods
 
 A continuous exercise window (any instant in `[t1, t2]`) can't be represented on a finite
-computer, so ORE — and this module, matching it exactly — discretizes it into a finite list
-of exercise *dates*, then prices it as an (unusually fine) Bermudan swaption.
-
-**ORE's own C++ source**, `QuantExt::NumericLgmMultiLegOptionEngineBase::calculate()`
+computer, so ORE discretizes it. **ORE's own C++ source**,
+`QuantExt::NumericLgmMultiLegOptionEngineBase::calculate()`
 (`QuantExt/qle/pricingengines/numericlgmmultilegoptionengine.cpp`, lines ~494-505):
 
 ```cpp
@@ -65,58 +65,85 @@ of exercise *dates*, then prices it as an (unusually fine) Bermudan swaption.
 }
 ```
 
-`americanExerciseTimeStepsPerYear_` is ORE's own `ExerciseTimeStepsPerYear` model
-parameter (its own shipped example config, `Examples/Products/Input/pricingengine.xml`,
-uses `24` — roughly monthly — for American swaptions). From this point on, the exercise
-window is just a set of dates indistinguishable from a Bermudan's own explicit list — there
-is no separate code path for American exercise beyond this discretization step.
+`americanExerciseTimeStepsPerYear_` is ORE's `ExerciseTimeStepsPerYear` model parameter
+(its shipped example config uses `24`, roughly monthly). Note the `static_cast<Size>`: the
+step count is **truncated**, not rounded. `AmericanSwaptionConfig.option_times()` reproduces
+this line for line, including the truncation and the order of the floating-point operations.
 
-`AmericanSwaptionConfig.to_bermudan()` (`engine/instruments/american_swaption.py`)
-reproduces this exact construction: `steps = round((t2-t1) * exercise_time_steps_per_year)`,
-then `steps+1` equally-spaced dates including both endpoints, expanded into a
-`BermudanSwaptionConfig`. `price_american_swaptions` is a one-line wrapper around
-`price_bermudan_swaptions` using that expansion — "American," in both ORE and here, really
-does mean "Bermudan with a lot of dates."
+**An American is not "a Bermudan with a lot of dates".** This page used to say it was, and
+the engine priced it that way. ORE does not. The second difference is in which coupons an
+exercise enters (`buildCashflowInfo`, lines 107-115):
+
+```cpp
+if (exerciseType == Exercise::American) {
+    // american exercise implies that we can exercise into broken periods
+    info.belongsToUnderlyingMaxTime_ = timeFromReference(cpn->accrualEndDate());
+} else {
+    // bermudan exercise implies that we always exercise into whole periods
+    info.belongsToUnderlyingMaxTime_ = timeFromReference(
+        midCouponExercise ? noticeCalendar.advance(cpn->accrualEndDate(), -noticePeriod, ...)
+                          : cpn->accrualStartDate());
+}
+```
+
+and each coupon is credited `couponRatio(t) = clamp((accrualEnd − t − lag) / (accrualEnd −
+accrualStart), 0, 1)` of its value (`lag` is the notice period, zero here). So an American
+exercised in the middle of a period enters that broken period and is credited the unexpired
+share of its coupons; a Bermudan exercised on the same day enters the next whole period.
+Treating the American as a Bermudan dropped the broken coupon, which overstated payers by up
+to 6x and understated receivers down to 0.09x against ORE ([I-06](../known-issues.md#i-06)).
+The engine now carries the rule as `ExerciseStyle` and applies ORE's `couponRatio`.
+
+Both `BermudanSwaptionConfig` and `AmericanSwaptionConfig` are priced by the same functions
+(`prepare_bermudan`, `price_bermudan_swaption_base`, `price_bermudan_swaptions`); there is no
+conversion from one to the other. Each config supplies its own option times and exercise
+style.
 
 ## The pipeline, step by step
 
 ### 1. Describing a trade: `BermudanSwaptionConfig` / `AmericanSwaptionConfig`
 
-`BermudanSwaptionConfig` takes an explicit `exercise_times` list (year-fractions from
-`evaluation_date`); `AmericanSwaptionConfig` takes a `first_exercise`/`last_exercise`
-window plus `exercise_time_steps_per_year`, and exposes `.to_bermudan()` to expand into the
-former.
+Exercise is specified in **dates**, as in ORE: `BermudanSwaptionConfig.exercise_dates` (a
+list of `ORE.Date`), `AmericanSwaptionConfig.first_exercise_date`/`last_exercise_date` plus
+`exercise_time_steps_per_year`. Over HTTP these are ISO date strings. Times are derived from
+the dates with the curve's own day counter (`time_from_reference`), exactly as ORE derives
+`optionTimes`, so an exercise date equal to an accrual date maps to the bit-identical time.
+Bermudan dates on or before the evaluation date are not exercise opportunities (ORE: `if (d >
+refDate)`); an American window that is already open starts at `t = 0`.
 
-Both configs require `exercise_times` to coincide with the underlying swap's own reset
-dates (see "Known limitation" below) — the standard "coterminal" structure ORE's own
-calibration machinery (`SwaptionEngineBuilder::model()`) is itself built around for
-Bermudan/American baskets.
+Any exercise date is legitimate. A Bermudan date inside an accrual period exercises into the
+next whole period, as in ORE (see [Which coupons an exercise enters](#which-coupons-an-exercise-enters)).
+`exercisable_dates(cfg)` lists the underlying's own accrual start dates, the exercise dates
+of a standard coterminal Bermudan.
 
-`hw_sigma` (`BermudanSwaptionConfig.hw_sigma`, and `AmericanSwaptionConfig.hw_sigma`,
-forwarded unchanged via `to_bermudan()`) is typed `Union[float, engine.models.lgm.Sigma]`
-— it accepts either a flat scalar volatility (the original, still-supported case) or a
-genuine calibrated piecewise `Sigma` term structure produced by
+`hw_sigma` is typed `Union[float, engine.models.lgm.Sigma]` on both configs: a flat scalar
+volatility, or a calibrated piecewise `Sigma` term structure produced by
 `engine.calibration.lgm.calibrate_lgm_sigma` (see [Calibration](../reference/calibration.md)).
-No other code in this module branches on which case it received: every downstream formula
-calls `engine.models.lgm.zeta(sigma, t)`, which handles both transparently via
-`as_sigma`'s automatic upgrade of a bare float to a one-bucket `Sigma` (see
+No code in this module branches on which case it received: every downstream formula calls
+`engine.models.lgm.zeta(sigma, t)`, which handles both via `as_sigma`'s upgrade of a bare
+float to a one-bucket `Sigma` (see
 [Models & Trades](../reference/models-and-trades.md#sigma-a-piecewise-constant-volatility-term-structure)).
-This is what let calibration integrate with zero changes to the pricing engine itself —
-`prepare_bermudan`, `_run_backward_induction`, and every Greek in
-[`engine.risk.greeks`](../risk/greeks.md) work identically whether `hw_sigma` came from a
-hand-picked flat number or a market-calibrated term structure.
+A piecewise `Sigma` corresponds exactly to ORE's `VolatilityTimes`/`Volatility` parameters.
 
 ### 2. Building the trade and extracting cashflows: `prepare_bermudan()`
 
 Unlike the European module, Jamshidian's telescoping-notional shortcut for the floating leg
 (see [European Swaptions](european-swaptions.md#5-why-t_start-matters-the-floating-legs-notional-timing))
-cannot be used here: early exercise means the continuation value at each node needs the
-*actual* remaining swap value, not just a closed-form identity valid only for the full,
-unexercised swap. `prepare_bermudan()` therefore extracts every fixed and floating coupon's
-full schedule (accrual start/end, payment date, amount/accrual fraction) from the real ORE
-trade — the same `MakeVanillaSwap`-built swap `swap.py` and
-`european_swaption.py` use, so date generation and day-count accrual again match ORE
-exactly, not a reimplementation.
+cannot be used here: early exercise means the value at each node needs the *actual*
+remaining swap, not an identity valid only for the full, unexercised swap.
+`prepare_bermudan()` therefore resolves, per coupon, everything ORE's `CashflowInfo` holds:
+pay time, accrual start and end, the time the coupon stops belonging to the exercised-into
+swap (set by the exercise style), and for a floating coupon the **index's own fixing
+period** `[valueDate(fixingDate), maturityDate(valueDate)]` and its day count fraction. All of
+it is read from the real ORE trade, the same `MakeVanillaSwap`-built swap `swap.py` and
+`european_swaption.py` use.
+
+The index period matters because ORE's LGM engine projects an Ibor rate over it
+(`LgmVectorised::fixing`), not over the coupon's accrual period. The two usually coincide,
+but not always: the schedule is generated backward from maturity, while an index period is
+rolled forward from its own start date, and they can end a business day apart. Projecting
+over the accrual period, as this engine once did, was worth about 2e-4 of the price on
+ordinary trades ([I-31](../known-issues.md#i-31)).
 
 ### 3. The model: LGM, not plain Hull-White — and why that distinction matters here
 
@@ -194,8 +221,10 @@ and the grid collapses to the single point `x=0`, matching ORE's own `t=0` speci
 weights on a standardized grid, derived from integrating a **piecewise-linear**
 interpolation of the value function against the exact Gaussian transition density in
 closed form (the "trapezoid-of-normal-density" weights in Hagan's paper) — reproducing
-`LgmConvolutionSolver2`'s constructor term-for-term, including its boundary special cases
-(the first/last node has only one neighbor, so the outer half-interval is treated as flat).
+`LgmConvolutionSolver2`'s constructor term-for-term, including its boundary special case
+(ORE gives the first and last node the same weight, computed from `y_0`), its clamping of
+a rounding-negative weight to zero, and its grid size `floor(sx·nx)` points either side of
+zero.
 This closed-form weight vector was independently verified (not just transcribed) by
 checking it against known Gaussian expectation identities — `E[X]=0`, `E[X^2]=1`, and
 `E[max(X-k,0)]` matching the standard normal's known closed form — before it was ever used
@@ -247,37 +276,51 @@ shrinking numerical error instead. `_run_backward_induction` therefore runs enti
 these "reduced" (numeraire-deflated) units — exactly matching
 `QuantExt::LinearGaussMarkovModel::reducedDiscountBond`'s own reason for existing.
 
-### 6. The underlying swap's own value: `_hw_swap_value_at_nodes`
+### 6. Each cashflow's value: `_cashflow_values_at_nodes`
 
-At each grid node, the underlying swap's remaining value (fixed leg minus floating leg,
-payer-signed, matching `swap.py`'s own sign convention) is computed directly
-from the extracted cashflow schedule via `_lgm_bond`. A coupon is included only if its own
-accrual has not yet started as of the evaluation time `t` (`start_time >= t`, using the same
-`1e-9` tolerance throughout the module, including inside `_discount_at_nodes`'s own P(t,T,x)
-computation — a consistent non-zero tolerance is required there so that a coupon whose
-start time lands *exactly* on the exercise time, the common case for a reset-aligned
-exercise date, is not silently excluded and its forward rate corrupted; see
-`tests/test_bermudan_swaption.py`'s exact-reset-date test cases). This is exact for any
-exercise/conditioning time that coincides with a reset date; see "Known limitation" below
-for what happens otherwise.
+ORE's `CashflowInfo::pv` calculators, at every grid node, signed by the holder's side of each
+leg:
 
-### 7. Backward induction and early exercise: `_run_backward_induction`
+- fixed coupon: `amount · P(t, pay; x)`;
+- Ibor coupon: `(fixing(t, x) + spread) · accrual · notional · P(t, pay; x)`, with
+  `fixing(t, x) = (P(t,T1)/P(t,T2) − 1) / dcf(d1, d2)`, `T1 = max(t, d1)`,
+  `T2 = max(T1, d2)` over the index period `[d1, d2]`. A fixing dated on the evaluation date
+  is deterministic in ORE (`index->fixing(today)`, forecast off today's curve), and is so here.
 
-Starting from the underlying's final maturity and walking backward to `t=0`, at each grid
-time in the union of `{0, final_maturity} ∪ exercise_times ∪ condition_times`:
+Once `t` is past `d1` the clamp projects only the remaining stub, which `couponRatio` then
+scales again. As read, that shortens a broken American floating coupon twice. It is ORE's
+behaviour and is kept deliberately.
 
-1. Roll the (deflated) value function back one step from the previous (later) grid time via
-   the quadrature convolution.
-2. If this time is an exercise date, compute the underlying swap's own (deflated) remaining
-   value at every node and take `max(continuation, intrinsic)` — exactly
-   `NumericLgmMultiLegOptionEngineBase::calculate()`'s rule:
-   ```cpp
-   optionNpv = max(optionNpv, underlyingNpv + provisionalNpv + ... + rebateNpv);
-   ```
-3. Re-inflate by the numeraire and, if this time was requested by the caller as a
-   `condition_time` (for scenario-conditional pricing — see below), snapshot the (raw,
-   re-inflated) value function, converted from `x` to `r` via `_r_from_x`, so it can later
-   be interpolated against a simulated short rate directly.
+### 7. Backward induction: ORE's own loop, `_backward_induction_arrays`
+
+The grid times are `{0} ∪ optionTimes ∪ condition_times`, deduplicated exactly (ORE's
+`std::set<Real> timeGrid`, never rounded, so an option time stays bit-identical to the
+accrual time it names). Walking them from the latest to `t = 0`, at each time, exactly as
+`NumericLgmMultiLegOptionEngineBase::calculate()` does (lines 543-619):
+
+1. Roll the carried option value, the carried `underlyingNpv` and each cached cashflow back
+   from the previous (later) grid time via the convolution. ORE's rollback is a no-op
+   between times that are `close_enough`, and so is this one.
+2. Apply ORE's cashflow bookkeeping. A cashflow that still belongs to the underlying is:
+   added to `underlyingNpv` at the latest grid time its amount can be estimated (**Done**);
+   or, if the exercise would enter it mid-period, cached and credited
+   `cache · couponRatio(t)` (**Cached**), moving into `underlyingNpv` once it is whole
+   again; or, for an Ibor coupon past its fixing, valued afresh at each time and credited
+   `pv · couponRatio(t)`.
+3. At an option time, `option = max(option, underlyingNpv + provisionalNpv +
+   provisionalNpvNonCached)` — ORE's exercise rule, in numeraire-deflated units.
+
+Every branch of step 2 depends only on the grid time and the cashflow's own times, never on
+the model state, so the whole Open → Cached → Done history is computed once in Python
+(`_GridSchedule`) and replayed inside one `jax.lax.scan` as 0/1 masks.
+
+**Why replay ORE's loop, rather than evaluate the exercise value in closed form?** Both have
+the same mathematical limit, because rolling a cashflow's value back is exactly its
+conditional expectation. But they differ numerically: at a 48-point grid the closed form
+differs from ORE by up to ~1e-4 on an American, and the gap shrinks about 4x per grid
+doubling. The replayed loop matches ORE at any grid, to ~1e-11. The whole point of this
+module is to produce ORE's numbers, so it reproduces ORE's algorithm, not only ORE's
+mathematics.
 
 At `t=0` the grid collapses to `x=0`, and reading off that single node gives the base-case
 NPV — `price_bermudan_swaption_base`.
@@ -316,123 +359,103 @@ vega` itself, and the `_bisect_xstar` gradient bug documented in
 [Calibration](../reference/calibration.md#the-_bisect_xstar-gradient-bug)) found and fixed
 while building it.
 
-American swaptions have no separate Greeks function: `AmericanSwaptionConfig.
-to_bermudan()` expands into a `BermudanSwaptionConfig`, so `bermudan_delta_gamma(cfg.
-to_bermudan(), curve)` covers both, matching this module's own "American is just a finely-
-discretized Bermudan" design throughout.
+American swaptions have no separate Greeks function: `bermudan_delta_gamma`,
+`bermudan_theta` and `bermudan_vega` take an `AmericanSwaptionConfig` directly, since both
+configs run through the same backward induction. Theta reprices the same trade one day on:
+its exercise *dates* stay put and every time is re-derived from the new evaluation date, as
+ORE does. (While exercise was given in year fractions, Theta silently moved every exercise
+opportunity a day later too.)
 
-## Known limitation: no mid-coupon proration
+## Which coupons an exercise enters
 
-ORE's own American engine supports exercise landing *inside* an accrual period, prorating
-that period's payment via a `couponRatio` computed from how far into the period the
-exercise date falls (`belongsToUnderlyingMaxTime_` using `accrualEndDate()` specifically
-for American exercise, `QuantExt/qle/pricingengines/numericlgmmultilegoptionengine.cpp`).
+| Exercise | A coupon belongs to the swap entered while | Credited |
+|---|---|---|
+| Bermudan (ORE's default) | `t ≤ accrualStart` | the whole coupon |
+| American | `t ≤ accrualEnd` | `couponRatio(t)` of it |
 
-This module's `_hw_swap_value_at_nodes` uses a coarser rule instead: any coupon whose
-accrual has already started by the exercise time is excluded **entirely**, not prorated.
-This is exact whenever every exercise date coincides with a reset date (the scope
-`BermudanSwaptionConfig`'s own docstring documents), but for a genuinely mid-coupon
-American exercise date it forfeits the holder's entire already-accrued claim on that
-period's payment rather than crediting a prorated share.
+For a Bermudan exercise date inside an accrual period this means the holder enters **each
+leg from its own next accrual start**: on an annual-fixed, semi-annual-floating swap, one
+annual fixed coupon drops out while the second semi-annual floating coupon of that year stays
+in. That is ORE's contract, not an approximation, and it moves the price in the direction of
+the trade: up for a payer (a payment dropped), down for a receiver (a receipt dropped).
 
-> **⚠ Corrected 2026-09-18: this is not a conservative understatement.** This page, and
-> `AmericanSwaptionConfig`'s docstring, previously called the approximation "conservative
-> (understating, not overstating)". Measured, that is **false for a payer**. Dropping the
-> in-progress *fixed* coupon removes a payment, so the sign of the error follows the sign
-> of the trade:
->
-> | Type | Aligned | Mid-coupon | Ratio | |
-> |---|---:|---:|---:|---|
-> | payer, strike 0.04 | 588 | 4,327 | **7.36x** | **overstates** |
-> | payer, strike 0.03 | 7,617 | 15,540 | 2.04x | **overstates** |
-> | receiver, strike 0.03 | 6,405 | 1,203 | 0.19x | understates |
-> | receiver, strike 0.04 | 26,004 | 7,483 | 0.29x | understates |
->
-> (5Y annual-fixed underlying, exercise 1e-3 past an accrual start, `sigma=0.005`. The
-> payer overstatement reaches ~12x as `sigma → 0`.) A book of payers and receivers gets
-> errors of opposite sign that partly cancel in the portfolio total while every individual
-> position is wrong. Pinned by
-> `TestMidCouponKnownLimitation::test_the_error_direction_follows_the_trade_direction`;
-> the older tests in that class asserted only magnitude bounds, which is why the wrong
-> claim stood. Tracked as [I-06](../known-issues.md#i-06).
+> **Corrected twice.** Until 2026-09-18 this page called that difference a "conservative"
+> understatement; measured, it is not, since for a payer it is an overstatement (up to
+> 7.4x against the aligned price). The 2026-09-18 correction then called it a mispricing to be
+> fixed by prorating Bermudan coupons. Against ORE's own engine (2026-09-23) it is neither:
+> it is what ORE prices, and prorating would have moved the engine away from ORE. The
+> mispricing that did exist was the **American**, which the engine used to price with the
+> Bermudan rule ([I-06](../known-issues.md#i-06)).
 
-It is a real, measurable gap (observed to shift the priced value by an amount comparable to
-a full coupon's PV, not merely a few days' accrual — this is NOT a small effect, and callers choosing
-`exercise_time_steps_per_year` values that don't evenly divide the underlying's own reset
-frequency should expect it). Choosing `exercise_time_steps_per_year` values that evenly
-divide the reset frequency (verified concretely, not just estimated: for a semiannual-reset
-swap, only step counts giving a `0.5`-year-multiple grid spacing land on true reset dates —
-step counts as coarse as 2 avoid the limitation entirely, but the arithmetic doesn't scale
-linearly with `exercise_time_steps_per_year`, so this must be checked per swap structure,
-not assumed) avoids it entirely.
+ORE also supports `midCouponExercise=true` Bermudans (coupons belong until `accrualEnd −
+noticePeriod`, credited `couponRatio`), and notice periods generally. Neither is exposed by
+these configs; the coupon model handles them by construction if they ever are.
 
-Full mid-coupon proration (matching ORE's own `couponRatio` construction) is intentionally
-out of scope for this module, following this project's established pattern of documenting
-known gaps as explicit, tested limitations rather than leaving them silent (see
-`swap.py`'s own aged-swap limitation, [Instruments: Interest Rate Swaps](swaps.md)).
+## Exercise is specified by date
 
-## Exercise times are snapped onto the accrual schedule
+Exercise used to be given as year fractions, and the coupon-membership test was a float
+comparison. A **rounded literal** was dangerous out of all proportion to the rounding:
+`2.0137` for a true accrual start of `2.0136986301369864` landed 1.4e-6 after it, the coupon
+starting that day read as already elapsed, and the zero-vol price came out 14,336.12 instead
+of about 1,211 — a ~12x overstatement, silent and finite
+([I-29](../known-issues.md#i-29)). The fix at the time snapped near-misses onto the schedule
+within a tolerance band, and exempted Americans from it with a flag.
 
-A Bermudan's exercise times are year-fractions supplied by the caller, and the rule above
-(*"any coupon whose accrual has already started by the exercise time is excluded"*) is
-decided with a tolerance of `1e-9`. That makes an exercise time written as a **rounded
-literal** dangerous out of all proportion to the rounding: `2.0137` for a true accrual start
-of `2.0136986301369864` lands 1.4e-6 *late*, ~1400x that tolerance, so the coupon starting
-on that very date reads as already-elapsed and is dropped entirely. Measured at
-`sigma → 1e-6`, where the price must collapse to its intrinsic **1211.47**, the rounded
-input instead priced **14336.12** — a ~12x overstatement, silent and finite.
+Both are gone. Exercise is now given in dates, as ORE takes it. An exercise date equal to an
+accrual date maps to the identical time, so there is nothing to snap and no band to get
+wrong. Coupon membership then uses QuantLib's own `close_enough`, as ORE does. A year
+fraction passed as an exercise date is refused with a `TypeError`.
 
-`prepare_bermudan` therefore **snaps** any exercise time within `EXERCISE_SNAP_TOLERANCE`
-(1e-4 years, ~53 minutes) of a fixed accrual start onto that accrual start exactly. A
-caller writing a 4-decimal year-fraction is naming an unambiguous date, so the repair is
-unambiguous too. This was [I-29](../known-issues.md#i-29).
+## How it is checked against ORE
 
-**What snapping deliberately does not do.** Anything further away than the tolerance is
-passed through **untouched** — *not* refused. A genuinely mid-period exercise date is a
-supported trade whose understatement is the limitation documented immediately above, so
-enforcing alignment outright would convert a documented approximation into a hard failure.
-(That was tried: it failed 66 tests.) Snapping repairs a damaged *spelling* of an accrual
-date and changes nothing else.
+ORE's `NumericLgmMultiLegOptionEngine` has no bound constructor in the Python bindings, so it
+can't be built directly. `engine/validation/ore_lgm_oracle.py` reaches it by the route ORE users take: an
+in-process `OREApp` run of the `NPV` analytic over a trade XML, through
+`LGMGridSwaptionEngineBuilder`. It uses the engine's own underlying (explicit schedule dates),
+a convention-defined copy of its `SimIndex`, its zero curve (date-quoted, linear in zero
+rate), and its LGM parameters with calibration off. Two inputs ORE requires but never reads
+for pricing are supplied only so the model builder does not fall back to dummies. One of
+them, the swap index, is **not** inert: the LGM's own term structure is taken from its
+discounting curve, so it is mapped to the engine's curve.
 
-The band is wide on both sides: a 4-to-6-decimal literal is off by ≤1.4e-6 (~70x inside),
-while one calendar day is 2.74e-3 (~27x outside) and accrual starts are ≥0.99 years apart,
-so a snap can never be ambiguous between two boundaries. The honest limit is that a
-**3-decimal** literal (3e-4 out, a tenth of a day) falls outside the band and still drops
-the coupon — at that coarseness a typo is indistinguishable from an intentional mid-period
-date. Use **`exercisable_times(cfg)`**, which returns the underlying's accrual starts
-exactly, rather than writing exercise times as literals.
+`tests/test_ore_lgm_parity.py` then requires equality to 1e-10 relative across aligned and
+mid-period Bermudans, Americans (including high strike at low vol, and a window whose step
+count truncates), piecewise volatility and the zero-vol limit. Measured worst case: 8.7e-12.
+Before the changes on this page, 22 of those 23 cases failed.
 
-**American configs are exempt.** `AmericanSwaptionConfig.to_bermudan` sets
-`exercise_times_are_discretized=True` on the config it builds. Its uniform grid over a
-continuous window is unaligned by construction, so a grid point landing near an accrual
-start is a coincidence of the spacing rather than a damaged date — snapping it would
-silently *move* one of the exercise opportunities the discretization is made of.
+**That parity is with ORE's Grid solver at `ShiftHorizon=0`**, the configuration this engine
+reproduces. Under ORE's own defaults the engine is close but not identical: `ShiftHorizon=0.5`
+(ORE's builder default) moves an American by up to 1.5e-4, and ORE's FD solver (used in its
+shipped American config) by up to 1.6e-3. See [I-32](../known-issues.md#i-32). The oracle
+takes both settings as parameters, so the gap can be re-measured at any time.
 
 ## Tested by
 
-`tests/test_bermudan_swaption.py` — the underlying engine (`bermudan_swaption.py`),
-which American exercise is priced through:
+`tests/test_ore_lgm_parity.py` (23 tests) — equality with ORE's own LGM engine, as above.
+The authoritative check.
+
+`tests/test_bermudan_swaption.py` (63 tests) — the shared engine:
 
 - `TestLgmClosedFormsAgainstORE` — every closed-form primitive (`H`, `zeta`, `_lgm_bond`,
   the Hagan quadrature weights) checked directly against live `ORE.IrLgm1fConstantParametrization`
   / `ORE.LinearGaussMarkovModel` objects, plus an explicit regression test documenting the
   `HullWhite` vs. `LinearGaussMarkovModel` divergence for `t>0` described above.
-- `TestSingleExerciseMatchesLgmJamshidian` — the core correctness check: a Bermudan with
-  exactly one exercise date must reproduce an independent from-scratch Jamshidian-style
-  decomposition built on `_lgm_bond` (not `european_swaption.py`'s own HullWhite-
-  parametrized Jamshidian pricer, confirmed to be a different model realization), across
-  payer/receiver and several exercise dates, plus a grid-convergence check.
-- `TestMonotonicity` — model-independent no-arbitrage bounds (more exercise dates, higher
-  volatility, deeper ITM all strictly increase or preserve value).
-- `TestPortfolioAndShape`, `TestEdgeCases`, `TestMidCouponKnownLimitation` — shape/portfolio
-  correctness, negative rates, zero notional, and the documented mid-coupon behavior.
+- `TestSingleExerciseMatchesDirectIntegration` — with one exercise date the value is a
+  single Gaussian expectation, computed independently of the grid and the bookkeeping by
+  `tests/bermudan_references.py`; agreement to 2e-5, plus a grid-convergence check. (This
+  replaced a Jamshidian decomposition, which needs the floating leg to telescope and so is
+  invalid once coupons are projected over their index periods.)
+- `TestMonotonicity` — model-independent no-arbitrage bounds.
+- `TestMidPeriodBermudanExercise` — the whole-period membership rule and its direction.
+- `TestPortfolioAndShape`, `TestEdgeCases`, `TestBermudanSwaptionConfigValidation` —
+  shape/portfolio correctness, negative rates, zero notional, and date validation.
 
-`tests/test_american_swaption.py` — the American-specific wrapper
-(`american_swaption.py`):
+`tests/test_american_swaption.py` (24 tests) — the American-specific parts: ORE's option
+times (including the truncating step count), the broken-period `couponRatio`, and the one
+case where the two styles must coincide exactly (a single exercise on an accrual start).
 
-- `TestAmericanAsFineBermudan` — the American-exercise discretization matches ORE's own
-  construction exactly, converges as it's refined, and a reset-aligned American exactly
-  reproduces the equivalent explicit Bermudan.
+`tests/test_ore_bermudan_oracle.py` (51 tests) — against QuantLib's Hull-White tree and FD
+engines, a model-level comparison of a few percent, plus `TestExerciseDatesAreExact`.
 
 `tests/test_greeks_bermudan.py` (26 tests) — Delta/Gamma/Theta/Vega for this module's own
 pricer, via `engine.risk.greeks`: see

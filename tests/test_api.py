@@ -62,7 +62,7 @@ def _bermudan_trade_schema(**overrides):
     trade = {
         "trade_type": "bermudan_swaption", "notional": 1_000_000.0, "fixed_rate": 0.030, "payer": True,
         "rate_factor_index": 0, "hw_a": HW_A, "hw_sigma": None,
-        "initial_zero_curve": ZERO_CURVE_SCHEMA, "exercise_times": [1.0, 2.0],
+        "initial_zero_curve": ZERO_CURVE_SCHEMA, "exercise_dates": ["2027-07-30", "2028-07-29"],
         "swap_tenor": "3Y", "n_per_std": 32, "std_devs": 6.0,
     }
     trade.update(overrides)
@@ -275,7 +275,8 @@ class TestPortfolioPriceAtScale:
                     "trade_type": "american_swaption", "notional": 600_000.0 * (i + 1),
                     "fixed_rate": 0.0295, "payer": bool(i % 2), "rate_factor_index": 0,
                     "hw_a": HW_A, "hw_sigma": HW_SIGMA, "initial_zero_curve": ZERO_CURVE_SCHEMA,
-                    "first_exercise": 1.0, "last_exercise": 2.0, "exercise_time_steps_per_year": 1,
+                    "first_exercise_date": "2027-07-30", "last_exercise_date": "2028-07-29",
+                    "exercise_time_steps_per_year": 1,
                     "n_per_std": 32, "std_devs": 6.0,
                 }
                 for i in range(3)

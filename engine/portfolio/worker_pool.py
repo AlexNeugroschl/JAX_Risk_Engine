@@ -60,18 +60,19 @@ pickle (or worse, silently pickle the wrong thing) when Windows spawns the
 worker.
 
 **Why request/result cross the process boundary via a thin JSON-ish
-translation, not the raw dataclasses.** `PortfolioRequest.trades` entries
-each carry a real `ORE.Date` (`evaluation_date`), and `SwaptionConfig`
-additionally carries an `ORE.Period` (`forward_start`) -- both SWIG-bound
-objects, confirmed NOT picklable (`TypeError: cannot pickle 'SwigPyObject'
-object`), which `ProcessPoolExecutor.submit` requires for anything crossing
-the process boundary. `engine/api/schemas.py` already solves exactly this
-problem at the HTTP boundary (ISO date strings, ORE period strings); the
-helpers below (`_freeze_trade`/`_thaw_trade`) reuse that identical
-round-trip (`ORE.Date.ISO()`/`ORE.DateParser.parseISO`,
-`str(ORE.Period)`/`ORE.Period(str)`) to make a `PortfolioRequest` picklable
-for submission, and thaw it back to real ORE objects inside the worker
-before calling `price_portfolio`. `PortfolioResult` (JAX/numpy arrays, plain
+translation, not the raw dataclasses.** Trade configs carry real ORE objects
+-- every one an `ORE.Date` (`evaluation_date`), Bermudan and American
+swaptions their exercise dates, `SwaptionConfig` an `ORE.Period`
+(`forward_start`) -- and SWIG-bound objects are NOT picklable (`TypeError:
+cannot pickle 'SwigPyObject' object`), which `ProcessPoolExecutor.submit`
+requires for anything crossing the process boundary. `_freeze_trade`
+therefore turns each trade into a `_FrozenTrade` record (its class plus its
+field values, ORE dates and periods written as ISO/period text exactly as
+`engine/api/schemas.py` writes them at the HTTP boundary), and
+`_thaw_trade` rebuilds the real config inside the worker before
+`price_portfolio` runs. The record is deliberately NOT a half-converted
+config: a config's own validation rejects a date field holding text, and it
+should. `PortfolioResult` (JAX/numpy arrays, plain
 floats/dicts, no ORE types) pickles as-is with no translation needed for the
 return trip -- confirmed directly.
 """
@@ -79,7 +80,7 @@ import os
 import time
 import warnings
 from concurrent.futures import Future, ProcessPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, fields, replace
 from typing import Optional
 
 from engine.portfolio.request import PortfolioRequest, PortfolioResult
@@ -134,28 +135,55 @@ def _worker_init(precision_bits: int) -> None:
     jax.config.update("jax_enable_x64", precision_bits == 64)
 
 
-def _freeze_trade(cfg):
-    """`ORE.Date`/`ORE.Period` -> plain `str`, so a trade config pickles
-    across the process boundary. Generic over all four trade-config types
-    via `dataclasses.replace` -- no per-type reconstruction needed, since
-    every trade config already exposes `evaluation_date` and only
-    `SwaptionConfig` additionally carries `forward_start`."""
-    updates = {"evaluation_date": cfg.evaluation_date.ISO()}
-    if hasattr(cfg, "forward_start"):
-        updates["forward_start"] = str(cfg.forward_start)
-    return replace(cfg, **updates)
+@dataclass(frozen=True)
+class _OreValue:
+    """An `ORE.Date` or `ORE.Period` written as text, so it pickles."""
+    kind: str  # "date" | "period"
+    text: str
 
 
-def _thaw_trade(cfg):
-    """Inverse of `_freeze_trade` -- runs inside the worker process, right
-    before `price_portfolio` is called, turning the ISO/period strings back
-    into real `ORE.Date`/`ORE.Period` objects."""
+@dataclass(frozen=True)
+class _FrozenTrade:
+    """A trade config in picklable form: its class and its field values."""
+    cls: type
+    values: dict
+
+
+def _freeze_value(value):
     import ORE
 
-    updates = {"evaluation_date": ORE.DateParser.parseISO(cfg.evaluation_date)}
-    if hasattr(cfg, "forward_start"):
-        updates["forward_start"] = ORE.Period(cfg.forward_start)
-    return replace(cfg, **updates)
+    if isinstance(value, ORE.Date):
+        return _OreValue("date", value.ISO())
+    if isinstance(value, ORE.Period):
+        return _OreValue("period", str(value))
+    if isinstance(value, (list, tuple)):
+        return type(value)(_freeze_value(v) for v in value)
+    return value
+
+
+def _thaw_value(value):
+    import ORE
+
+    if isinstance(value, _OreValue):
+        return ORE.DateParser.parseISO(value.text) if value.kind == "date" else ORE.Period(value.text)
+    if isinstance(value, (list, tuple)):
+        return type(value)(_thaw_value(v) for v in value)
+    return value
+
+
+def _freeze_trade(cfg) -> _FrozenTrade:
+    """A trade config -> a picklable `_FrozenTrade`: every `ORE.Date`/
+    `ORE.Period` field, including one inside a list (a Bermudan's exercise
+    dates), becomes text. Generic over every trade-config type -- nothing
+    here names a field."""
+    return _FrozenTrade(type(cfg), {f.name: _freeze_value(getattr(cfg, f.name)) for f in fields(cfg)})
+
+
+def _thaw_trade(frozen: _FrozenTrade):
+    """Inverse of `_freeze_trade` -- runs inside the worker process, right
+    before `price_portfolio` is called, rebuilding the config (and so
+    re-running its own validation) from real ORE objects."""
+    return frozen.cls(**{name: _thaw_value(value) for name, value in frozen.values.items()})
 
 
 def _profile_options(jax):
@@ -205,7 +233,7 @@ def _profile_options(jax):
     event in the trace carries a Python source file/line (confirmed
     directly -- 0 of 926,463 events have `source_file`/`source_line`/
     `long_name` args). Attributing a dispatch back to, say,
-    `_hw_swap_value_at_nodes` versus `_lgm_numeraire` is what
+    `_cashflow_values_at_nodes` versus `_lgm_numeraire` is what
     `JAX_RISK_PROFILE_PYTHON_TRACER=1` buys, and the only thing it buys.
 
     PHASE-level attribution -- which is what one actually wants most of the

@@ -170,7 +170,7 @@ class BermudanSwaptionConfigSchema(BaseModel):
     hw_a: float
     hw_sigma: Optional[float] = None  # None -> uncalibrated, filled in by price_portfolio
     initial_zero_curve: ZeroCurveConfigSchema
-    exercise_times: List[float]
+    exercise_dates: List[str]  # ISO dates, ascending -- ORE's exercise contract
     swap_tenor: str = "5Y"
     index_tenor_months: int = 6
     floating_spread: float = 0.0
@@ -183,7 +183,7 @@ class BermudanSwaptionConfigSchema(BaseModel):
             notional=self.notional, fixed_rate=self.fixed_rate, payer=self.payer,
             rate_factor_index=self.rate_factor_index, hw_a=self.hw_a, hw_sigma=self.hw_sigma,
             initial_zero_curve=self.initial_zero_curve.to_dataclass(),
-            exercise_times=self.exercise_times, swap_tenor=self.swap_tenor,
+            exercise_dates=[_parse_ore_date(d) for d in self.exercise_dates], swap_tenor=self.swap_tenor,
             index_tenor_months=self.index_tenor_months, floating_spread=self.floating_spread,
             n_per_std=self.n_per_std, std_devs=self.std_devs,
             evaluation_date=_parse_ore_date(self.evaluation_date) if self.evaluation_date else default_evaluation_date,
@@ -199,8 +199,8 @@ class AmericanSwaptionConfigSchema(BaseModel):
     hw_a: float
     hw_sigma: Optional[float] = None
     initial_zero_curve: ZeroCurveConfigSchema
-    first_exercise: float
-    last_exercise: float
+    first_exercise_date: str  # ISO date: first day of the exercise window
+    last_exercise_date: str   # ISO date: last day of the exercise window
     swap_tenor: str = "5Y"
     index_tenor_months: int = 6
     floating_spread: float = 0.0
@@ -214,7 +214,8 @@ class AmericanSwaptionConfigSchema(BaseModel):
             notional=self.notional, fixed_rate=self.fixed_rate, payer=self.payer,
             rate_factor_index=self.rate_factor_index, hw_a=self.hw_a, hw_sigma=self.hw_sigma,
             initial_zero_curve=self.initial_zero_curve.to_dataclass(),
-            first_exercise=self.first_exercise, last_exercise=self.last_exercise,
+            first_exercise_date=_parse_ore_date(self.first_exercise_date),
+            last_exercise_date=_parse_ore_date(self.last_exercise_date),
             swap_tenor=self.swap_tenor, index_tenor_months=self.index_tenor_months,
             floating_spread=self.floating_spread, exercise_time_steps_per_year=self.exercise_time_steps_per_year,
             n_per_std=self.n_per_std, std_devs=self.std_devs,

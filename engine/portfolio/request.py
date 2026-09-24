@@ -29,12 +29,6 @@ docs/planning/traderx-integration.md gap item 5):**
   correctly represent an already-fixed floating coupon. This is exact at
   t=0 and for forward-starting trades priced before their own accrual
   begins; `price_portfolio` does not attempt to correct it.
-- A Bermudan/American trade whose `exercise_times` aren't reset-aligned
-  with its own underlying's accrual dates hits the documented mid-coupon
-  approximation in `engine.instruments.bermudan_swaption`/
-  `american_swaption` (see `docs/instruments/american-bermudan-swaptions.md`)
-  -- `validate_portfolio_against_simulation` below warns (not raises) when
-  it detects this, rather than silently pricing a slightly-wrong number.
 
 **Concurrency: `_PRICING_LOCK` is a defense-in-depth invariant guard, not
 this system's primary concurrency-limiting mechanism.** `generate_paths`
@@ -90,7 +84,6 @@ from engine.simulation.market_model import SimulationConfig, generate_paths
 from engine.instruments.swap import SwapConfig, price_swaps
 from engine.instruments.european_swaption import SwaptionConfig, price_swaptions
 from engine.instruments.bermudan_swaption import (
-    EXERCISE_SNAP_TOLERANCE,
     BermudanSwaptionConfig, price_bermudan_swaptions, price_bermudan_swaption_base,
 )
 from engine.instruments.american_swaption import AmericanSwaptionConfig, price_american_swaptions
@@ -275,18 +268,16 @@ def validate_portfolio_against_simulation(
     index/notional/type) and the specific mismatched field on any divergence
     beyond a small float tolerance.
 
-    Also emits `warnings.warn` (not a hard error) for two known-limitation
-    cases, both collected into `PortfolioResult.warnings` by
-    `price_portfolio`:
+    Also emits `warnings.warn` (not a hard error), collected into
+    `PortfolioResult.warnings` by `price_portfolio`, for a `SwapConfig` that
+    will be AGED (its floating leg already accruing) at one or more
+    simulated steps beyond t=0 -- see `_warn_if_aged_swap_exposure`. This is
+    the one check here that applies to `SwapConfig`, which otherwise carries
+    no `rate_factor_index` to cross-check.
 
-    - a Bermudan/American trade whose `exercise_times` aren't reset-aligned
-      with its own underlying's accrual/payment dates -- see docs/planning/
-      traderx-integration.md gap item 5 and this module's own docstring;
-    - a `SwapConfig` that will be AGED (its floating leg already accruing)
-      at one or more simulated steps beyond t=0 -- see
-      `_warn_if_aged_swap_exposure`. This is the one check here that applies
-      to `SwapConfig`, which otherwise carries no `rate_factor_index` to
-      cross-check.
+    A Bermudan/American exercise date inside an accrual period is NOT
+    warned about: it is priced exactly as ORE prices it (see
+    `engine.instruments.bermudan_swaption.ExerciseStyle`), not approximated.
     """
     tol = 1e-9
     num_eq = len(sim_config.equities.initial_prices)
@@ -359,9 +350,6 @@ def validate_portfolio_against_simulation(
                 f"match sim_config.rates.initial_zero_curves[{rate_factor_index}].rates "
                 f"{list(expected_curve.rates)}"
             )
-
-        if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
-            _warn_if_not_reset_aligned(label, cfg, i)
 
     _validate_swap_curve_indices(sim_config, trade_configs)
     _warn_if_aged_swap_exposure(sim_config, trade_configs)
@@ -480,54 +468,6 @@ def _warn_if_aged_swap_exposure(sim_config: SimulationConfig, trade_configs) -> 
                 f"engine/instruments/swap.py's module docstring.",
                 stacklevel=2,
             )
-
-
-def _warn_if_not_reset_aligned(label: str, cfg, index: int) -> None:
-    """Emits a `UserWarning` (not a hard error) if any of `cfg`'s exercise
-    dates don't coincide with one of the underlying swap's own
-    accrual/payment dates -- see docs/planning/traderx-integration.md gap
-    item 5 and docs/instruments/american-bermudan-swaptions.md's mid-coupon
-    approximation.
-
-    "Coincide" means within `EXERCISE_SNAP_TOLERANCE`, matching what
-    `prepare_bermudan` actually prices (I-29), NOT exact equality -- a
-    near-miss is repaired before pricing, so warning about it would report
-    an approximation that does not occur."""
-    berm_cfg = cfg.to_bermudan() if isinstance(cfg, AmericanSwaptionConfig) else cfg
-    swap = build_vanilla_swap(
-        notional=berm_cfg.notional, fixed_rate=berm_cfg.fixed_rate, payer=berm_cfg.payer,
-        swap_tenor=berm_cfg.swap_tenor, index_tenor_months=berm_cfg.index_tenor_months,
-        floating_spread=berm_cfg.floating_spread, evaluation_date=berm_cfg.evaluation_date,
-    )
-    today = berm_cfg.evaluation_date
-    reset_dates = set()
-    for cf in swap.fixedLeg():
-        c = ORE.as_fixed_rate_coupon(cf)
-        reset_dates.add(round(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()), 9))
-    for cf in swap.floatingLeg():
-        c = ORE.as_floating_rate_coupon(cf)
-        reset_dates.add(round(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()), 9))
-
-    # Matched with the SAME tolerance `prepare_bermudan` snaps with, not by
-    # exact set membership. A time within `EXERCISE_SNAP_TOLERANCE` of an
-    # accrual start is repaired before pricing (I-29), so reporting it as
-    # "will use the mid-coupon approximation" would describe a mispricing
-    # that no longer happens -- the warning must agree with what the pricer
-    # actually does. Anything genuinely mid-period is still reported.
-    sorted_resets = sorted(reset_dates)
-    misaligned = [
-        t for t in berm_cfg.exercise_times
-        if min((abs(float(t) - r) for r in sorted_resets), default=float("inf"))
-        > EXERCISE_SNAP_TOLERANCE
-    ]
-    if misaligned:
-        warnings.warn(
-            f"{label}: exercise_times {misaligned} are not reset-aligned with the "
-            f"underlying's own accrual dates -- pricing will use the documented "
-            f"mid-coupon approximation (see "
-            f"docs/instruments/american-bermudan-swaptions.md)",
-            stacklevel=2,
-        )
 
 
 # =============================================================================
@@ -933,8 +873,8 @@ def _price_by_type(trades, market, maturities_np, step_times, pricing: Union[int
 
     if groups[BermudanSwaptionConfig]:
         dtype = _resolve_pricing_dtype(pricing, BermudanSwaptionConfig)
-        berm_cfgs = [trades[i] for i in groups[BermudanSwaptionConfig]]
-        cube = price_bermudan_swaptions(berm_cfgs, _cast(market["rates"], dtype), _cast(step_times, dtype))
+        cfgs = [trades[i] for i in groups[BermudanSwaptionConfig]]
+        cube = price_bermudan_swaptions(cfgs, _cast(market["rates"], dtype), _cast(step_times, dtype))
         for slot, i in enumerate(groups[BermudanSwaptionConfig]):
             per_trade_cubes[i] = cube[:, :, slot]
 
@@ -993,10 +933,8 @@ def _base_npv_per_trade(
             r0_path = jnp.zeros((1, 1, len(market_config.rates.initial_rates)), dtype=dtype)
             r0_path = r0_path.at[0, 0, :].set(jnp.asarray(market_config.rates.initial_rates, dtype=dtype))
             per_trade[i] = float(price_swaptions(r0_path, jnp.array([0.0], dtype=dtype), [cfg])[0, 0, 0])
-        elif isinstance(cfg, BermudanSwaptionConfig):
+        elif isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
             per_trade[i] = price_bermudan_swaption_base(cfg)
-        elif isinstance(cfg, AmericanSwaptionConfig):
-            per_trade[i] = price_bermudan_swaption_base(cfg.to_bermudan())
         elif isinstance(cfg, BondConfig):
             # The DIRTY (full) present value, matching
             # `engine.integration.note.NotePrice.npv` -- see that module on
@@ -1160,11 +1098,10 @@ def _greeks_for_one_trade(
         return trade_greeks
 
     if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
-        berm_cfg = cfg.to_bermudan() if isinstance(cfg, AmericanSwaptionConfig) else cfg
-        dg_curve = _HwZeroCurve.from_config(berm_cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "delta_gamma"))
-        theta_curve = _HwZeroCurve.from_config(berm_cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
-        trade_greeks = dict(_greeks.bermudan_delta_gamma(berm_cfg, dg_curve))
-        trade_greeks["theta"] = _greeks.bermudan_theta(berm_cfg, theta_curve)
+        dg_curve = _HwZeroCurve.from_config(cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "delta_gamma"))
+        theta_curve = _HwZeroCurve.from_config(cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
+        trade_greeks = dict(_greeks.bermudan_delta_gamma(cfg, dg_curve))
+        trade_greeks["theta"] = _greeks.bermudan_theta(cfg, theta_curve)
         # Vega is only well-defined when hw_sigma is a genuine CALIBRATED
         # Sigma term structure produced from `calibration_targets` (in
         # that same order) -- `bermudan_vega` differentiates through the
@@ -1172,13 +1109,13 @@ def _greeks_for_one_trade(
         # flat/hand-set hw_sigma has no market quote to be sensitive TO.
         # Skipped (not raised) in that case: a flat-sigma Bermudan is a
         # legitimate request, it simply has no Vega to report.
-        if calibration_targets and isinstance(berm_cfg.hw_sigma, Sigma):
+        if calibration_targets and isinstance(cfg.hw_sigma, Sigma):
             vega_curve = _HwZeroCurve.from_config(
-                berm_cfg.initial_zero_curve,
+                cfg.initial_zero_curve,
                 dtype=_resolve_risk_dtype(precision.risk, "vega"),
             )
             trade_greeks["vega"] = _greeks.bermudan_vega(
-                berm_cfg, vega_curve, calibration_targets,
+                cfg, vega_curve, calibration_targets,
             )
         return trade_greeks
 
