@@ -1,45 +1,65 @@
 # JAX Risk Engine
 
-A [JAX](https://github.com/google/jax)-based market simulation and trade-pricing engine
-built to run pricing/simulation across multiple TPUs — the intended deployment target is
-a Google Cloud TPU VM, which is how TPU access actually happens for this project — and to
-study precision (float32 vs. float64) tradeoffs on that hardware. It's designed to
-mathematically mirror [ORE (Open Source Risk Engine)](https://www.opensourcerisk.org/) —
-a mature, real-world risk engine used by actual financial institutions — for correctness,
-while exploiting JAX's vectorization and multi-device execution instead of ORE's
-single-threaded CPU-based C++. The architecture is backend-agnostic by construction (it
-runs correctly on CPU and GPU too, and the current dev/test suite runs entirely on CPU)
-but is optimized specifically for TPU.
+An end-of-day market risk engine written in [JAX](https://github.com/google/jax). It
+simulates market scenarios, prices a portfolio across them, and computes sensitivities,
+Value at Risk and Expected Shortfall. The models are ported from
+[ORE (Open Source Risk Engine)](https://www.opensourcerisk.org/) and validated against it.
 
-Every pricing and risk formula in this codebase has been checked, line-by-line where
-possible, against ORE's own installed software and C++ source, not against a textbook
-description. See [ORE Parity](docs/reference/ore-parity.md) for the full
-algorithm-by-algorithm mapping.
+The engine is designed to run across multiple TPUs, with a Google Cloud TPU VM as the
+target deployment, and also runs on CPU and GPU. A main research goal is to measure how
+much numeric precision Monte Carlo risk needs: whether many lower-precision simulations,
+run concurrently across TPU devices, can match the VaR and Expected Shortfall of fewer
+double-precision simulations in the same wall-clock time.
 
-## What's implemented
+## Features
 
-| Component | Status |
-|---|---|
-| Cross-asset market simulation (rates, equities, FX) | ✅ |
-| Interest rate swaps | ✅ |
-| European swaptions (Jamshidian's decomposition) | ✅ |
-| Bermudan & American swaptions (numeric LGM backward induction) | ✅ |
-| Treasury bills & notes (closed-form; t=0 only — no VaR/ES) | ✅ |
-| Value at Risk / Expected Shortfall | ✅ |
-| Delta / Gamma / Theta, and Vega for Bermudan/American | ✅ |
-| LGM volatility calibration to market swaption quotes | ✅ |
-| Portfolio entry point (`price_portfolio`) | ✅ |
-| HTTP API (FastAPI: `/portfolio/price`, `/calibration/lgm`) | ✅ |
-| TraderX EOD integration boundary (`/eod`, hash-verified bundles) | ⚠️ Partial — Treasuries price; everything else is explicitly refused |
-| XVA (CVA/DVA) | 🔜 Planned |
+- Cross-asset Monte Carlo simulation: Sobol sequences with a Brownian bridge, Hull-White
+  one-factor rates, lognormal equities and FX
+- Pricing for interest rate swaps, European swaptions (Jamshidian decomposition), Bermudan
+  and American swaptions (numeric LGM, as in ORE's production engine), and US Treasury
+  bills and notes
+- LGM volatility calibration to market swaption quotes, following ORE's `LgmBuilder`
+- Delta, Gamma and Theta via automatic differentiation, scaled to ORE's bump-and-revalue
+  convention, and Vega for Bermudan and American swaptions
+- VaR and Expected Shortfall matching `ORE.RiskStatistics`, with Monte Carlo error estimates
+- Independent FP64/FP32 precision settings for simulation, pricing, risk and calibration,
+  with each precision tier running in its own worker processes
+- HTTP API for portfolio pricing and calibration, plus a versioned end-of-day contract for
+  hash-verified portfolio bundles
 
-**"Explicitly refused" is the design, not a gap.** The EOD boundary returns a named refusal
-rather than a plausible number for anything it cannot price faithfully — a USD-SOFR swap, a
-cash equity, a corporate bond. See
-[EOD Integration](docs/reference/eod-integration.md) and
-[Known Issues](docs/known-issues.md).
+## ORE and hardware acceleration
 
-## Quick start
+ORE is written in C++ and runs on CPU, with multi-threaded valuation and adjoint
+algorithmic differentiation. It also has a compute-framework interface that offloads its
+scripted-trade and AMC workloads to GPUs through OpenCL or CUDA, in single precision by
+default. It has no TPU support.
+
+This project re-implements the relevant ORE models as vectorized JAX programs, so the full
+pipeline (simulation, pricing, calibration, sensitivities and risk) compiles through XLA
+and can run on TPUs.
+
+## Validation
+
+Pricing and risk formulas are mapped to their counterparts in ORE's C++ source and tested
+against ORE running in the same process:
+
+- A mixed portfolio priced end to end agrees with ORE, on the same simulated rates, to
+  within `1e-3` relative error per scenario. VaR and Expected Shortfall agree to the same
+  tolerance.
+- Bermudan and American swaption prices agree with ORE's LGM grid engine to about `1e-12`.
+
+See [ORE Parity](docs/reference/ore-parity.md) for the full mapping.
+
+The engine is also integrated with [TraderX](https://github.com/finos/traderX), the FINOS
+reference trading platform, which sends it end-of-day portfolio bundles. This checks the
+engine against another system's data and conventions, and the TraderX team verifies the
+results independently. Treasury bills and notes are currently priced on this path; other
+instruments are added as their market inputs and conventions are agreed. See
+[EOD Integration](docs/reference/eod-integration.md).
+
+## Getting started
+
+Requires Python 3.11 or later.
 
 ```bash
 python -m venv .venv
@@ -47,19 +67,17 @@ python -m venv .venv
 .venv/Scripts/python.exe -m pytest tests/ -q
 ```
 
-> Run tests through the virtualenv's interpreter, not a bare `python`. The system
-> interpreter is missing `pydantic` and `jsonschema`, which makes two test files
-> **silently uncollectable** rather than failing loudly — see
-> [Known Issues](docs/known-issues.md).
+Use the virtualenv's interpreter to run the tests; the API and schema tests need
+`pydantic` and `jsonschema`.
 
-See the [User Guide](docs/getting-started/user-guide.md) for a full setup walkthrough and
-runnable pricing examples.
+The [User Guide](docs/getting-started/user-guide.md) walks through setup and pricing a
+portfolio from Python or over HTTP.
 
 ## Documentation
 
-Start at **[docs/README.md](docs/README.md)** for the full documentation index —
-architecture, per-instrument deep dives, API reference, ORE parity mapping, glossary, and
-the development roadmap.
-
-If you're new to the project, [docs/getting-started/overview.md](docs/getting-started/overview.md)
-explains what this does and why, with no finance or math background assumed.
+- [Overview](docs/getting-started/overview.md)
+- [Architecture](docs/concepts/architecture.md)
+- [HTTP API](docs/reference/http-api.md)
+- [EOD Integration](docs/reference/eod-integration.md)
+- [Precision Research](docs/planning/precision%20research/README.md)
+- [Full documentation index](docs/README.md)
