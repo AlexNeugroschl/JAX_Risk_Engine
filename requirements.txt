@@ -5,4 +5,8 @@
 # pytest/httpx for the test suite, httpx being required by FastAPI's own
 # TestClient). See pyproject.toml for the actual dependency list/versions;
 # this file is not a second source of truth for them.
+#
+# The `-c` line pins every package to the versions in constraints.txt, the
+# environment the suite was last verified against. CI installs this way too.
+-c constraints.txt
 -e .[api,dev]

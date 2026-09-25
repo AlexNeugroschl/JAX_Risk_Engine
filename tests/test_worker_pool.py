@@ -108,6 +108,7 @@ def _cleanup_pools():
     shutdown_pools(wait=True)
 
 
+@pytest.mark.slow
 class TestSubmitPricingJobRouting:
     """`submit_pricing_job`'s own public contract: routes purely by
     `request.precision.simulation`, returns a real
@@ -156,6 +157,7 @@ class TestSubmitPricingJobRouting:
         np.testing.assert_allclose(np.asarray(result.npv_cube), np.asarray(ref.npv_cube), rtol=1e-6)
 
 
+@pytest.mark.slow
 class TestWorkerPoolConcurrency:
     """The load-bearing proof: submitting a float32-tier job and a
     float64-tier job concurrently gives (a) both jobs correct,
@@ -310,3 +312,25 @@ class TestTradeFreezingRoundTrip:
         )
         restored = _thaw_trade(pickle.loads(pickle.dumps(_freeze_trade(bond))))
         assert restored == bond
+
+
+class TestPoolsSpawnOnEveryPlatform:
+    """I-33: Linux defaults to fork, and a worker forked from a process that
+    has already run JAX hangs, so every job stays `pending`. Windows always
+    spawns, which is why the suite never saw it there. The stub records what
+    the pool was built with, so this checks it on any platform without
+    starting a process."""
+
+    def test_pool_is_built_with_a_spawn_context(self, monkeypatch):
+        from engine.portfolio import worker_pool
+
+        built = {}
+
+        class _RecordingExecutor:
+            def __init__(self, **kwargs):
+                built.update(kwargs)
+
+        monkeypatch.setattr(worker_pool, "ProcessPoolExecutor", _RecordingExecutor)
+        monkeypatch.setattr(worker_pool, "_POOLS", {})
+        worker_pool._pool_for(64)
+        assert built["mp_context"].get_start_method() == "spawn"

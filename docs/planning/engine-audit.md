@@ -47,7 +47,7 @@ do, this document links the entry and says what the register gets wrong or leave
 | [A-6](#a-6) | Demo and test infrastructure lives in the production package | Low | Moderate |
 | [A-7](#a-7) | The bond pricer is a separate, plain-Python implementation | Medium | Moderate |
 | [Q-1](#q-1) | Source code is mostly narrative prose and project history | Medium | Hard (volume) |
-| [Q-2](#q-2) | No lint, type checking, CI, or pinned dependencies | Medium | Moderate |
+| [Q-2](#q-2) | No lint, type checking, CI, or pinned dependencies | Medium — pins and CI resolved 2026-09-24; lint and types open | Moderate |
 | [Q-3](#q-3) | Test suite: slow, unmarked, and coupled to itself | Medium | Moderate |
 | [Q-4](#q-4) | Documentation sprawl and stale planning documents | Low | Moderate |
 
@@ -438,12 +438,31 @@ reproducible as the environment they run in. Add a lock file (or at least lower 
 bounds on `jax`, `jaxlib` and `open-source-risk-engine`), a linter, and a CI job running the
 fast tier of the suite.
 
+**Status: partly resolved 2026-09-24 (pins and CI).**
+
+- `constraints.txt` pins every package to the verified environment, and `requirements.txt`
+  applies it. `pyproject.toml` bounds `jax`/`jaxlib` to `>=0.10.2,<0.11` and ORE to
+  `>=1.8.16,<1.9`.
+- `tests/test_environment.py` fails when the installed numerical packages drift from the
+  lock, or when the two files disagree.
+- `.github/workflows/ci.yml` runs the fast tier (`-m "not slow"`) on Linux on every push
+  and pull request, and the full suite on demand. Every ORE-parity test is in the fast
+  tier.
+
+See [User Guide: Pinned versions](../getting-started/user-guide.md#pinned-versions) and
+[Running the tests](../getting-started/user-guide.md#running-the-tests).
+**Still open:** a linter, type checking and pre-commit hooks. The
+[cleanup plan](codebase-cleanup-plan.md) already lists the unused imports a linter would
+flag first.
+
 ### Q-3 — Test suite: slow, unmarked, and coupled to itself {#q-3}
 
 **Urgency: Medium · Ease: Moderate**
 
 - The full suite takes 20–25 minutes, and there is no fast tier. Nothing is marked `slow`,
   `ore` or `subprocess`, so there is no quick pre-commit run.
+  *Resolved with [Q-2](#q-2) (2026-09-24):* a `slow` marker splits off worker-pool tests
+  and tests of 5 s or more, and `-m "not slow"` is the fast tier CI runs.
 - Test modules import helpers from other test modules
   (`from tests.test_portfolio_entrypoint import _build_trades`) and from `conftest`
   directly (`from conftest import with_scenarios`). Shared helpers belong in a support

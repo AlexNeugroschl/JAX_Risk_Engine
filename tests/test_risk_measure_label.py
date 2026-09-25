@@ -21,6 +21,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from engine.api.schemas import PortfolioResultSchema
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig
@@ -108,6 +110,7 @@ class TestVarEsDemoRuns:
     this fails against it on every other day.
     """
 
+    @pytest.mark.slow
     def test_python_m_engine_risk_var_es_exits_cleanly(self):
         proc = subprocess.run(
             [sys.executable, "-m", "engine.risk.var_es"],

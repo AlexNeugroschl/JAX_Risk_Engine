@@ -133,6 +133,7 @@ class TestCalibrationResultGradientCorrectness:
     Vega (implicit differentiation through the calibration optimum)
     depends on."""
 
+    @pytest.mark.slow
     def test_calibrated_sigma_gradient_wrt_market_vol_is_finite_and_positive(self):
         def calibrate_last_bucket(vol_last):
             targets = _basket([1.0, 2.0, 3.0], 5.0, [0.008, 0.009, float(vol_last)])

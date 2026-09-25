@@ -232,6 +232,7 @@ def mixed_run():
 
 
 class TestRun:
+    @pytest.mark.slow
     def test_statistics_are_var_es_of_the_portfolio_pnl(self, mixed_run):
         _, result = mixed_run
         expected = compute_risk_metrics(np.asarray(result.pnl)[:, None, :], 0.0, percentiles=(0.99, 0.975))
@@ -268,6 +269,7 @@ class TestRun:
         result = run_market_risk(MarketRiskRequest([m.swap()], _scenarios(num=64), quantiles=(0.99,)))
         assert any("too few for a stable estimate" in w for w in result.warnings)
 
+    @pytest.mark.slow
     def test_float32_run_is_float32_and_close(self, mixed_run):
         trades, result64 = mixed_run
         result32 = run_market_risk(MarketRiskRequest(trades, _scenarios(num=512), precision=32))

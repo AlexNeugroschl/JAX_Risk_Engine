@@ -63,6 +63,7 @@ def _cfg(hw_sigma=0.01, exercise_years=(1.0, 2.0, 3.0, 4.0), swap_tenor="5Y", pa
 
 
 class TestBermudanDeltaGamma:
+    @pytest.mark.slow
     def test_returns_finite_delta_and_gamma_for_every_pillar(self):
         greeks = bermudan_delta_gamma(_cfg(), FLAT_CURVE)
         assert greeks["delta"].shape == (len(PILLAR_TIMES),)
@@ -70,6 +71,7 @@ class TestBermudanDeltaGamma:
         assert jnp.all(jnp.isfinite(greeks["delta"]))
         assert jnp.all(jnp.isfinite(greeks["gamma"]))
 
+    @pytest.mark.slow
     def test_delta_matches_finite_difference_of_price(self):
         """Delta itself (unlike Gamma) is well-conditioned for a direct
         price-level central finite difference -- no cancellation problem
@@ -103,6 +105,7 @@ class TestBermudanDeltaGamma:
         # and observing the FD/autodiff gap shrink accordingly.
         assert float(greeks["delta"][idx]) == pytest.approx(fd_delta, rel=5e-3)
 
+    @pytest.mark.slow
     def test_gamma_matches_finite_difference_of_gradient(self):
         """See module docstring: Gamma is cross-checked via finite
         difference OF THE GRADIENT (numerically sound), not of the price
@@ -125,6 +128,7 @@ class TestBermudanDeltaGamma:
 
         assert autodiff_val == pytest.approx(fd_hess, rel=1e-3)
 
+    @pytest.mark.slow
     def test_zero_at_pillars_outside_the_trades_own_cashflow_range(self):
         """A pillar far outside the trade's own cashflow dates (t=0 and
         t=30Y, for a trade maturing at 5Y) should show exactly zero
@@ -151,6 +155,7 @@ class TestBermudanTheta:
 
 
 class TestBermudanVega:
+    @pytest.mark.slow
     def test_matches_finite_difference_recalibration(self):
         """The core correctness check: bermudan_vega's implicit-function-
         theorem Vega against a literal finite-difference recalibration
@@ -185,6 +190,7 @@ class TestBermudanVega:
             fd_vega_i = (npv_up - npv_down) / (2 * bump) * 0.0001
             assert float(vega[i]) == pytest.approx(fd_vega_i, rel=5e-3)
 
+    @pytest.mark.slow
     def test_vega_is_positive_for_every_bucket(self):
         """A Bermudan swaption is long volatility -- every bucket's Vega
         should be positive (more market vol -> higher calibrated sigma ->
@@ -200,6 +206,7 @@ class TestBermudanVega:
         vega = bermudan_vega(cfg, FLAT_CURVE, targets)
         assert jnp.all(vega > 0.0)
 
+    @pytest.mark.slow
     def test_receiver_also_has_positive_vega(self):
         exercise_times = [1.0, 2.0, 3.0]
         targets = build_coterminal_basket(
@@ -225,6 +232,7 @@ class TestBermudanVega:
 
 
 class TestAmericanSwaptionSharesTheSameGreeksPath:
+    @pytest.mark.slow
     def test_delta_gamma_theta_finite_for_an_american(self):
         """AmericanSwaptionConfig has no dedicated Greeks function -- the
         same bermudan_delta_gamma/bermudan_theta take it directly (see
@@ -248,6 +256,7 @@ class TestBermudanGreeksEdgeCases:
     zero notional, single (European-equivalent) exercise date, extreme
     sigma, negative rates, and grid-resolution extremes."""
 
+    @pytest.mark.slow
     def test_zero_notional_gives_exactly_zero_delta_and_gamma(self):
         """A zero-notional trade has zero value at every curve shock --
         Delta/Gamma must be exactly 0, not merely small, since NPV is
@@ -274,6 +283,7 @@ class TestBermudanGreeksEdgeCases:
         theta = bermudan_theta(cfg, FLAT_CURVE)
         assert theta == pytest.approx(0.0, abs=1e-9)
 
+    @pytest.mark.slow
     def test_single_exercise_date_delta_gamma_finite(self):
         """A single-exercise-date Bermudan degenerates to a European-
         equivalent trade -- the backward induction's own edge case (no
@@ -286,6 +296,7 @@ class TestBermudanGreeksEdgeCases:
         theta = bermudan_theta(cfg, FLAT_CURVE)
         assert np.isfinite(theta)
 
+    @pytest.mark.slow
     def test_very_dense_exercise_schedule(self):
         """A semi-annual (9-date) exercise schedule -- denser than any
         other test in this file -- must not blow up the backward
@@ -297,6 +308,7 @@ class TestBermudanGreeksEdgeCases:
         assert jnp.all(jnp.isfinite(greeks["delta"]))
         assert jnp.all(jnp.isfinite(greeks["gamma"]))
 
+    @pytest.mark.slow
     def test_extremely_small_sigma_stays_finite(self):
         """sigma -> 0 is the deterministic limit (zeta -> 0 everywhere) --
         exactly the state_grid/std_step sqrt(0) gradient singularity this
@@ -310,6 +322,7 @@ class TestBermudanGreeksEdgeCases:
         theta = bermudan_theta(cfg, FLAT_CURVE)
         assert np.isfinite(theta)
 
+    @pytest.mark.slow
     def test_relatively_high_sigma_stays_finite(self):
         """A stressed, high (150bp) flat sigma -- still within a
         realistic range, but well above every other test's own ~100bp
@@ -319,6 +332,7 @@ class TestBermudanGreeksEdgeCases:
         assert jnp.all(jnp.isfinite(greeks["delta"]))
         assert jnp.all(jnp.isfinite(greeks["gamma"]))
 
+    @pytest.mark.slow
     def test_negative_rates_curve(self):
         """A curve with negative short-end rates (common in EUR/CHF/JPY
         markets historically) -- Delta/Gamma/Theta must remain finite;
@@ -342,6 +356,7 @@ class TestBermudanGreeksEdgeCases:
         theta = bermudan_theta(cfg, neg_curve)
         assert np.isfinite(theta)
 
+    @pytest.mark.slow
     def test_coarse_state_grid_still_differentiable(self):
         """A deliberately coarse state grid (n_per_std=4, far below the
         default 48) -- confirms Delta/Gamma remain finite even at a
@@ -357,6 +372,7 @@ class TestBermudanGreeksEdgeCases:
         assert jnp.all(jnp.isfinite(greeks["delta"]))
         assert jnp.all(jnp.isfinite(greeks["gamma"]))
 
+    @pytest.mark.slow
     def test_receiver_trade_delta_gamma_theta_finite(self):
         cfg = _cfg(payer=False)
         greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
@@ -383,6 +399,7 @@ class TestBermudanGreeksEdgeCases:
         assert jnp.isfinite(vega[0])
         assert float(vega[0]) > 0.0
 
+    @pytest.mark.slow
     def test_vega_with_extreme_mean_reversion(self):
         """Vega's implicit-function-theorem derivation (both in
         price_lgm_swaption's _bisect_xstar fix and bermudan_vega's own
@@ -438,6 +455,7 @@ class TestBermudanGreeksPrecisionDtype:
             exercise_dates=in_years(TODAY, list(exercise_years)), swap_tenor=swap_tenor, evaluation_date=TODAY,
         )
 
+    @pytest.mark.slow
     def test_bermudan_delta_gamma_float32_curve_stays_float32(self):
         curve32 = self._flat_curve32()
         cfg = self._cfg32(curve32, sigma32=jnp.asarray(0.01, dtype=jnp.float32))
@@ -446,6 +464,7 @@ class TestBermudanGreeksPrecisionDtype:
         assert greeks["gamma"].dtype == jnp.float32
         assert jnp.all(jnp.isfinite(greeks["delta"]))
 
+    @pytest.mark.slow
     def test_bermudan_delta_gamma_float32_vs_float64_numerically_close(self):
         curve32 = self._flat_curve32()
         curve64 = ZeroCurve.flat(0.03, self.PILLAR_TIMES_32, dtype=jnp.float64)
@@ -463,6 +482,7 @@ class TestBermudanGreeksPrecisionDtype:
         theta = bermudan_theta(cfg, curve32)
         assert np.isfinite(theta)
 
+    @pytest.mark.slow
     def test_bermudan_vega_float32_curve_and_sigma_stays_float32(self):
         """Exercises bermudan_vega's own Jacobian path (the trickiest
         Greeks computation in this codebase -- see bermudan_vega's own

@@ -126,6 +126,7 @@ class TestPortfolioSizeScaling:
         result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
         _assert_finite_result(result, 1)
 
+    @pytest.mark.slow
     def test_dozen_trade_mixed_portfolio(self):
         trades = [_swap(i) for i in range(4)] + [_swaption(i) for i in range(4)] + \
             [_bermudan(i) for i in range(2)] + [_american(i) for i in range(2)]
@@ -133,6 +134,7 @@ class TestPortfolioSizeScaling:
         result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
         _assert_finite_result(result, 12)
 
+    @pytest.mark.slow
     def test_fifty_trade_mixed_portfolio(self):
         """A genuinely large portfolio -- 50 trades spanning all four
         instrument types with varied notionals/tenors/payer-receiver mix
@@ -267,6 +269,7 @@ class TestCompositionEdgeCases:
         result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
         _assert_finite_result(result, 25)
 
+    @pytest.mark.slow
     def test_single_instrument_type_at_scale_swaptions_only(self):
         trades = [_swaption(i) for i in range(20)]
         sim = _sim_config(trades, scenarios=64)
@@ -340,6 +343,7 @@ class TestCompositionEdgeCases:
         assert np.max(np.abs(portfolio_npv_per_scenario)) < 1e-6
         assert abs(result.base_npv) < 1e-6
 
+    @pytest.mark.slow
     def test_all_four_instrument_types_each_represented_multiple_times(self):
         """A broader composition check than the dozen-trade test above:
         several of EACH type, with compute_greeks enabled, confirming

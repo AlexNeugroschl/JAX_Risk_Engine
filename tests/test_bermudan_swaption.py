@@ -172,6 +172,7 @@ class TestSingleExerciseMatchesDirectIntegration:
 
     _direct_integration = staticmethod(single_exercise_value_by_integration)
 
+    @pytest.mark.slow
     @pytest.mark.parametrize("payer", [True, False])
     @pytest.mark.parametrize("exercise_time", [1.0, 2.5, 4.0])
     def test_matches_direct_integration(self, payer, exercise_time):
@@ -387,6 +388,7 @@ class TestStateGridAndScheduleEdgeCases:
         npv_sparse = price_bermudan_swaption_base(sparse_cfg)
         assert npv_dense >= npv_sparse - 1e-6
 
+    @pytest.mark.slow
     def test_n_per_std_convergence_is_monotone_and_shrinking(self):
         # Successive refinements of n_per_std should move the price by a
         # shrinking amount, converging toward a stable limit -- checked
@@ -443,6 +445,7 @@ class TestConvergenceToAmericanAcrossConfigs:
     cannot be worth less) -- verified across several distinct underlying
     swap configurations (tenor, rate, payer/receiver), not just one case."""
 
+    @pytest.mark.slow
     @pytest.mark.parametrize("swap_tenor,fixed_rate,payer", [
         ("5Y", 0.03, True),
         ("5Y", 0.03, False),

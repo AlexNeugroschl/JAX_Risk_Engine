@@ -367,6 +367,7 @@ class TestBermudanVegaReachesThePortfolioPath:
             calibration_targets=targets,
         ), targets
 
+    @pytest.mark.slow
     def test_vega_present_for_a_calibrated_bermudan(self):
         request, targets = self._calibrated_request()
         result = price_portfolio(request)
@@ -382,6 +383,7 @@ class TestBermudanVegaReachesThePortfolioPath:
         assert np.all(np.isfinite(vega))
         assert np.any(np.abs(vega) > 0), "Vega is identically zero"
 
+    @pytest.mark.slow
     def test_no_vega_for_a_flat_uncalibrated_sigma(self):
         """A flat hand-set hw_sigma has no market quote to be sensitive to;
         Vega must be omitted rather than fabricated from a meaningless

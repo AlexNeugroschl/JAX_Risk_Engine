@@ -92,6 +92,7 @@ class TestHealthAndVersion:
         assert "jax_backend" in body
 
 
+@pytest.mark.slow
 class TestPortfolioPriceHappyPath:
     def _submit_and_poll(self, client, body, timeout_s=60):
         r = client.post("/portfolio/price", json=body)
@@ -163,6 +164,7 @@ class TestPortfolioPriceHappyPath:
         assert "0" in data["result"]["greeks"] or 0 in data["result"]["greeks"]
 
 
+@pytest.mark.slow
 class TestCalibratedBermudanOverHttp:
     """`hw_sigma: null` on a Bermudan/American trade needs a
     `calibration_basket` on the request to resolve -- without it,
@@ -242,6 +244,7 @@ class TestCalibratedBermudanOverHttp:
         np.testing.assert_allclose(http_npv, np.asarray(direct_result.npv_cube), rtol=1e-9)
 
 
+@pytest.mark.slow
 class TestPortfolioPriceAtScale:
     """Larger and edge-composition portfolios submitted as real JSON bodies
     -- exercises the schema round-trip (discriminated-union trade parsing,
@@ -470,6 +473,7 @@ class TestCalibrationEndpoint:
         assert r.status_code == 422
 
 
+@pytest.mark.slow
 class TestPortfolioPricePrecision:
     """PrecisionConfigSchema/PortfolioRequestSchema.precision -- the HTTP
     surface over engine.portfolio.PrecisionConfig (see
@@ -586,6 +590,7 @@ class TestPortfolioPricePrecision:
         assert "must be 32 or 64" in r.json()["detail"]
 
 
+@pytest.mark.slow
 class TestPortfolioPriceWorkerPoolDispatch:
     """Confirms `/portfolio/price` genuinely dispatches through
     `engine.portfolio.worker_pool` (see engine/api/routes.py's post-Phase-B
@@ -680,6 +685,7 @@ class TestPortfolioPriceWorkerPoolDispatch:
         assert data["status"] == "done", data.get("error")
 
 
+@pytest.mark.slow
 class TestGapFixesSurviveTheHttpBoundary:
     """The three closed gaps from tests/test_portfolio_gap_fixes.py must
     also survive serialization AND the worker-process boundary, not just a

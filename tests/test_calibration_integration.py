@@ -168,6 +168,7 @@ class TestCalibratedSigmaAcrossTradeVariations:
         assert np.isfinite(npv)
         assert npv > 0.0
 
+    @pytest.mark.slow
     def test_one_calibrated_sigma_prices_a_diverse_multi_trade_portfolio(self):
         """The realistic desk workflow: calibrate ONE Sigma from a market
         vol basket that spans the portfolio's own longest trade, then

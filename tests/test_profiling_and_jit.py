@@ -199,6 +199,7 @@ class TestCompileCounts:
         assert npv == pytest.approx(8522.460486631673, rel=1e-6)
         assert sum(counter.values()) < 20, dict(counter)
 
+    @pytest.mark.slow
     def test_bermudan_delta_gamma_compiles_few_programs(self):
         # Measured: 5. This is the number that was 470 before the pytree
         # split + HVP diagonal -- by far the largest single win.
@@ -278,6 +279,7 @@ class TestCompileCounts:
         # guards that the jitting did not cost accuracy.
         assert result.rmse < 1e-8
 
+    @pytest.mark.slow
     def test_repeated_greeks_call_costs_one_compile_not_zero(self):
         """Pins a KNOWN residue rather than an aspiration -- filed as
         **docs/known-issues.md I-21**: `price_fn` is a fresh closure per
@@ -299,6 +301,7 @@ class TestCompileCounts:
             jax.block_until_ready(bermudan_delta_gamma(cfg, curve)["delta"])
         assert sum(counter.values()) <= 2, dict(counter)
 
+    @pytest.mark.slow
     def test_greeks_scale_linearly_with_notional(self):
         """Independent correctness check on the pytree split: `notional` is
         a traced child, so a 7x trade must give exactly 7x the Delta (a
@@ -371,6 +374,7 @@ class TestHessianDiagonalEquivalence:
             rtol=1e-9, atol=1e-6 * float(np.max(np.abs(np.asarray(full)))),
         )
 
+    @pytest.mark.slow
     def test_matches_full_hessian_for_a_european_swaption(self):
         curve = jax_curve()
         cfg = SwaptionConfig(
@@ -394,6 +398,7 @@ class TestHessianDiagonalEquivalence:
             rtol=1e-9, atol=1e-6 * float(np.max(np.abs(np.asarray(full)))),
         )
 
+    @pytest.mark.slow
     def test_matches_full_hessian_for_a_bermudan(self):
         """The important one: this path goes through the newly-jitted
         `_backward_induction_arrays`, so it checks the pytree split and the
@@ -408,6 +413,7 @@ class TestHessianDiagonalEquivalence:
             rtol=1e-7, atol=1e-6 * float(np.max(np.abs(np.asarray(full)))),
         )
 
+    @pytest.mark.slow
     def test_reported_gamma_is_unchanged_by_the_hvp_route(self):
         """End-to-end at the public API: `bermudan_delta_gamma`'s own
         reported Gamma must equal what the old
@@ -487,6 +493,7 @@ class TestGradientsSurviveTheJitBoundary:
             f"all-zero d(NPV)/d(sigma) suggests hw_sigma was frozen as static: {d_npv_d_sigma}"
         )
 
+    @pytest.mark.slow
     def test_jitted_and_unjitted_induction_agree(self):
         """The jit wrapper must not change the answer. Compares the public
         priced value against the same computation forced through an eager

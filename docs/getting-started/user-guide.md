@@ -41,10 +41,45 @@ This installs the package itself (editable) plus the `api` and `dev` extras — 
 `pip install -e .[api,dev]`, which `requirements.txt` wraps (`profiling` is not included;
 install it separately if you need it). See
 [`pyproject.toml`](../../pyproject.toml) for the actual dependency declarations; that file,
-not `requirements.txt`, is the source of truth for versions). If you only need the core
+not `requirements.txt`, is the source of truth for which packages are needed). If you only need the core
 engine as a library (no HTTP API, no test suite), `pip install -e .` alone is enough — see
 [Architecture: ORE as a dependency](../concepts/architecture.md#ore-as-a-dependency) for
 what stays a hard runtime dependency either way.
+
+### Pinned versions
+
+`requirements.txt` also applies [`constraints.txt`](../../constraints.txt), which pins every
+package to the exact version the test suite was last verified against. The two files split
+the job:
+
+| File | Says | Example |
+|---|---|---|
+| `pyproject.toml` | which packages, and the range they must fall in | `jax>=0.10.2,<0.11` |
+| `constraints.txt` | the exact versions verified | `jax==0.10.2` |
+
+Pinning matters here more than in most projects. The ORE-parity tests assert agreement to
+1e-12, and that holds only for the jax, jaxlib and `open-source-risk-engine` builds it was
+measured on. `tests/test_environment.py` fails if the installed jax, jaxlib, ORE, numpy or
+scipy differ from `constraints.txt`, so a drifted environment shows up as one named
+package, not as a puzzling parity failure. It also fails if `pyproject.toml`'s ranges
+exclude a pinned version, or if a declared dependency is missing from the lock.
+
+`pip install -e .` without the constraints file installs the newest versions inside the
+ranges. That is fine for using the engine, but parity results are only verified for the
+pinned set.
+
+**Upgrading a pin** (for example to a new jax):
+
+1. In a fresh venv, `pip install -e ".[api,dev,profiling]" jax==<new> jaxlib==<new>`.
+   Widen the range in `pyproject.toml` first if the new version falls outside it.
+2. Run the **full** suite, not only the fast tier: several parity and Greeks tests are in
+   the slow tier.
+3. `pip freeze --exclude-editable > constraints.txt`, then restore the file's header comment.
+4. Commit both files together.
+
+The lock was frozen on Windows. On Linux, pip skips pins for packages it does not need
+(`colorama`), and the Linux-only `uvloop` (pulled in by `uvicorn[standard]`) installs
+unpinned. Neither affects numerical results.
 
 The examples on this page assume you're running from the repository root. `engine` itself
 is importable from anywhere once installed — `pip install -e .` puts it on the path, so
@@ -191,17 +226,41 @@ scheduled off *today* against pillars pinned to 2026-07-30 ([I-28](../known-issu
 ## Running the tests
 
 ```bash
-python -m pytest tests/ -v
+python -m pytest tests/ -m "not slow" -q    # fast tier: what CI runs on every push
+python -m pytest tests/ -q                   # full suite
 ```
 
-This runs the full suite — see each deep-dive doc's "Tested by" section for what's
-covered where, and [Architecture: Testing philosophy](../concepts/architecture.md#testing-philosophy)
+See each deep-dive doc's "Tested by" section for what's covered where, and
+[Architecture: Testing philosophy](../concepts/architecture.md#testing-philosophy)
 for the general approach (every formula is checked both for internal mathematical
 correctness and against ORE's own installed software directly).
 
-**The full suite takes roughly 17 minutes** (1,777 tests, last measured at 16m55s — see
-[Known Issues](../known-issues.md) for the current verified figure), because the Monte Carlo
-and ORE-parity tests genuinely simulate and reprice. For a fast inner loop while working on
+**Two tiers.** The full suite takes 22–27 minutes (see [Known Issues](../known-issues.md)
+for the current verified figure), because the Monte Carlo and ORE-parity tests genuinely
+simulate and reprice. Tests marked `@pytest.mark.slow` make up more than half of that time (101 of 2,087 tests);
+the rest is the **fast tier**, `-m "not slow"`. The fast tier takes about 9½ minutes on the reference Windows machine and
+9m32s on a 4-core Linux container (1,986 tests; the slow tier adds 12m58s there). A test is marked `slow` when either:
+
+- it starts `engine.portfolio.worker_pool` processes (the job-submitting classes in
+  `tests/test_api.py` and `tests/test_worker_pool.py`), or
+- it takes 5 seconds or more.
+
+**ORE-parity tests are never marked slow**, however long they take
+(`tests/test_ore_*.py`, `tests/test_market_risk_ore_parity.py`). They are what the
+pinned versions protect, so they run on every push. The slow tier is mostly portfolio
+end-to-end runs, Bermudan Greeks, and compile-count checks. Give a new test the marker
+if it meets either rule. `--strict-markers` is on, so a misspelt marker fails collection
+and can't silently put a test in the wrong tier.
+
+**CI.** [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) installs through
+`requirements.txt` (so with the pinned versions) on Linux, Python 3.11, and runs the fast
+tier on every push to `main` and every pull request. The full suite is the `full` job:
+start it by hand from the repository's Actions tab ("Run workflow"). Run it before
+merging anything that touches pricing, calibration or Greeks, and after upgrading a pin.
+CI does not check out the `reference/` submodules; the one test that reads
+`reference/traderX` skips without it.
+
+For a fast inner loop while working on
 the TraderX EOD boundary, the integration tests are a self-contained subset — 751 tests in
 a few seconds:
 

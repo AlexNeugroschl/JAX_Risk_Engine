@@ -312,6 +312,7 @@ class TestEndToEndScaling:
     is the point of this test -- see its printed output.
     """
 
+    @pytest.mark.slow
     @pytest.mark.parametrize("scenarios", [512, 32768])
     def test_timing_at_scale(self, scenarios):
         mine_npv, mine_base, mine_metrics, r_t, engine_time = _price_portfolio_engine(scenarios)

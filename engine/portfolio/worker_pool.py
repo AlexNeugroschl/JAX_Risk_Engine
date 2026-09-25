@@ -49,13 +49,13 @@ pool to (a share of) `len(jax.devices())` on the actual host.
 `ProcessPoolExecutor` on Windows always uses spawn, never fork -- every
 worker process re-imports `engine.portfolio`/`jax`/`ORE` fresh from a clean
 interpreter, which is exactly the "set `jax_enable_x64` once at worker boot,
-before any pricing work runs" model this design already requires. Real TPU
-deployment (Linux) could use fork in principle but *should* still use
-spawn/forkserver deliberately -- forking a process that has already
-initialized a JAX/XLA client is a known source of hangs per JAX's own
-documentation. `_worker_init` below is a plain top-level, module-level
-function (not a lambda/closure) specifically because spawn pickles the
-`initializer` callable by reference -- a closure or lambda would fail to
+before any pricing work runs" model this design already requires. Linux
+defaults to fork, so `_pool_for` passes a spawn context explicitly on every
+platform: forking a process that has already initialized a JAX/XLA client
+is a known source of hangs per JAX's own documentation, and on Linux it hung
+every job submitted after the parent had run JAX (I-33). `_worker_init`
+below is a plain top-level, module-level function (not a lambda/closure)
+specifically because spawn pickles the `initializer` callable by reference -- a closure or lambda would fail to
 pickle (or worse, silently pickle the wrong thing) when Windows spawns the
 worker.
 
@@ -76,6 +76,7 @@ should. `PortfolioResult` (JAX/numpy arrays, plain
 floats/dicts, no ORE types) pickles as-is with no translation needed for the
 return trip -- confirmed directly.
 """
+import multiprocessing
 import os
 import time
 import warnings
@@ -434,8 +435,11 @@ def _pool_for(precision_bits: int, pool_size: int = _DEFAULT_POOL_SIZE) -> Proce
         raise ValueError(f"precision_bits must be 32 or 64, got {precision_bits!r}")
     pool = _POOLS.get(precision_bits)
     if pool is None:
+        # Spawn explicitly: Linux defaults to fork, and a worker forked from a
+        # process that has already run JAX hangs (see module docstring, I-33).
         pool = ProcessPoolExecutor(
             max_workers=pool_size,
+            mp_context=multiprocessing.get_context("spawn"),
             initializer=_worker_init,
             initargs=(precision_bits,),
         )

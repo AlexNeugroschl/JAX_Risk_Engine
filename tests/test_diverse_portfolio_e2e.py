@@ -558,6 +558,7 @@ class TestLargeHeterogeneousPortfolio:
         result["swap_maturities"] = swap_maturities
         return result
 
+    @pytest.mark.slow
     def test_trade_count_and_shapes(self, portfolio):
         assert len(portfolio["swaps"]) == 9
         assert len(portfolio["euros"]) == 6
@@ -1024,6 +1025,7 @@ class TestTimeEvolutionSanity:
         result["euros"] = euros
         return result
 
+    @pytest.mark.slow
     def test_european_swaptions_mean_npv_is_zero_after_last_exercise(self, portfolio):
         """Every European swaption in this portfolio has forward_start <=
         3Y (see _build_european_swaptions); by step index for t=4.0 (well
@@ -1171,6 +1173,7 @@ class TestCalibrationAndGreeksAcrossDiversePortfolio:
         berm_trades["american"] = american_cfg
         return berm_trades
 
+    @pytest.mark.slow
     def test_every_trade_prices_finite_and_signed_sensibly(self, diverse_trades):
         for name, cfg in diverse_trades.items():
             npv = price_bermudan_swaption_base(cfg)
@@ -1202,6 +1205,7 @@ class TestCalibrationAndGreeksAcrossDiversePortfolio:
         dense_npv = price_bermudan_swaption_base(dense_cfg)
         assert dense_npv >= sparse_npv - 1e-6
 
+    @pytest.mark.slow
     def test_delta_gamma_finite_across_every_trade(self, calibrated, diverse_trades):
         curve = calibrated["curve"]
         for name, cfg in diverse_trades.items():
@@ -1209,6 +1213,7 @@ class TestCalibrationAndGreeksAcrossDiversePortfolio:
             assert jnp.all(jnp.isfinite(greeks["delta"])), f"{name}: non-finite delta"
             assert jnp.all(jnp.isfinite(greeks["gamma"])), f"{name}: non-finite gamma"
 
+    @pytest.mark.slow
     def test_theta_finite_and_bounded_across_every_trade(self, calibrated, diverse_trades):
         curve = calibrated["curve"]
         for name, cfg in diverse_trades.items():
@@ -1222,6 +1227,7 @@ class TestCalibrationAndGreeksAcrossDiversePortfolio:
             if abs(npv) > 1.0:
                 assert abs(theta) < 0.1 * abs(npv), f"{name}: theta implausibly large relative to NPV"
 
+    @pytest.mark.slow
     def test_vega_finite_and_positive_for_trades_within_the_calibration_horizon(self, calibrated, diverse_trades):
         """Vega is only well-defined for a trade whose OWN exercise
         schedule has exactly one calibrated bucket per basket instrument
@@ -1241,6 +1247,7 @@ class TestCalibrationAndGreeksAcrossDiversePortfolio:
             assert jnp.all(jnp.isfinite(vega)), f"{name}: non-finite vega"
             assert jnp.all(vega > 0.0), f"{name}: non-positive vega (should be long-vol)"
 
+    @pytest.mark.slow
     def test_payer_and_receiver_vega_are_both_positive_and_finite(self, calibrated, diverse_trades):
         """Both a payer and a receiver Bermudan are long volatility --
         their Vegas must be positive and finite for every basket bucket.
@@ -1264,6 +1271,7 @@ class TestCalibrationAndGreeksAcrossDiversePortfolio:
         assert jnp.all(jnp.isfinite(payer_vega)) and jnp.all(payer_vega > 0.0)
         assert jnp.all(jnp.isfinite(receiver_vega)) and jnp.all(receiver_vega > 0.0)
 
+    @pytest.mark.slow
     def test_recalibrating_with_shifted_market_vols_shifts_portfolio_value_consistently(self, calibrated):
         """A parallel upward shift in every market vol should increase
         EVERY trade's NPV in the portfolio (all are long volatility) --

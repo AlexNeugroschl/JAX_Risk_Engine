@@ -70,11 +70,16 @@ Requires Python 3.11 or later.
 ```bash
 python -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements.txt   # Linux/macOS: .venv/bin/python
-.venv/Scripts/python.exe -m pytest tests/ -q
+.venv/Scripts/python.exe -m pytest tests/ -m "not slow" -q   # fast tier, as CI runs it
+.venv/Scripts/python.exe -m pytest tests/ -q                  # full suite, 22–27 minutes
 ```
 
 Use the virtualenv's interpreter to run the tests; the API and schema tests need
-`pydantic` and `jsonschema`.
+`pydantic` and `jsonschema`. `requirements.txt` installs the exact versions in
+`constraints.txt`, which the ORE-parity tolerances were verified against. CI runs the fast
+tier on every push and pull request; see
+[Running the tests](docs/getting-started/user-guide.md#running-the-tests) for the tiers,
+the pins, and how to upgrade one.
 
 The [User Guide](docs/getting-started/user-guide.md) walks through setup and pricing a
 portfolio from Python or over HTTP.

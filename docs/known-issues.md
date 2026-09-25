@@ -31,7 +31,31 @@ code changes.
 
 ## Verification status
 
-Last full verification (2026-09-24, after the I-11/I-28 fixes): **1,966 passed, 0 failed**
+Last full verification (2026-09-24, after pinning dependencies and adding CI,
+[audit Q-2](planning/engine-audit.md#q-2), and the [I-33](#i-33) fix): **2,087 passed,
+0 failed** (21m50s) — the complete suite (`.venv/Scripts/python.exe -m pytest tests/
+--durations=25`), 2,087 collected, summary line printed, exit code 0, zero
+`FAILED`/`ERROR` lines. The count reconciles against the 1,966 below, per file, from
+`--collect-only` in worktrees at each commit:
+
+| Δ | Source |
+|---:|---|
+| +11 | `784b51a` (audit fixes), never recorded here: `test_market_model.py` +4, `test_calibration_lgm.py` +2, `test_greeks.py` +2, `test_portfolio_entrypoint.py` +2, `test_worker_pool.py` +1 |
+| +91 | `91e3832` (market risk): `test_market_risk.py` +53 (new), `test_exposure.py` +21 (new), `test_market_risk_ore_parity.py` +9 (new), `test_portfolio.py` +7, `test_portfolio_entrypoint.py` +1 |
+| +18 | `tests/test_environment.py` (new): installed numerics match `constraints.txt` |
+| +1 | `tests/test_worker_pool.py` — [I-33](#i-33) |
+
+1,966 + 11 + 91 + 18 + 1 = 2,087. The same code before these changes ran 2,068 passed,
+0 failed (27m21s). Slowest test 44.4s, no outlier.
+
+**Two tiers since this run.** `-m "not slow"` is the fast tier (1,986 tests, about 9.4
+minutes of the 21m50s here); 101 tests are marked `slow`. **A fast-tier count is not a
+full verification** and never goes in this section. The fast tier also passed on Linux
+(`python:3.11` container, 4 cores, pinned environment): 1,985 passed, 1 skipped
+(`reference/traderX` absent), 0 failed in 9m32s, and the slow tier 101 passed in 12m58s.
+That is the first recorded Linux run, and it found [I-33](#i-33).
+
+The run before it (2026-09-24, after the I-11/I-28 fixes): **1,966 passed, 0 failed**
 (25m12s) — the complete suite (`.venv/Scripts/python.exe -m pytest tests/ --durations=25`),
 nothing excluded, summary line printed, exit code 0, zero `FAILED`/`ERROR` lines. The
 count reconciles against the 1,960 below: +6 from the new
@@ -102,7 +126,7 @@ wall-clock overlap assertion should be most likely to fail under exactly those c
 **A single green run of this test means nothing in either direction.** Shares
 [I-15](#i-15)'s premise; still not enough to reclassify.
 
-**How the defects here were actually found — none by running this suite.** A green suite is
+**How the defects here were actually found — none by running this suite where it was written.** A green suite is
 evidence about the *tests*, not proof about the *code* (working rule 9), which is the premise
 this register exists to embody. Of the defects found during this integration:
 
@@ -114,7 +138,8 @@ this register exists to embody. Of the defects found during this integration:
 | Mutation-testing the suite's own tolerances | [I-30](#i-30) (fixed 2026-09-23) |
 | **Measuring a claim the docs made but no test asserted** | **[I-06](#i-06)'s error direction** |
 | **Pricing against the engine ORE actually uses** | **[I-06](#i-06) rescoped to American, [I-31](#i-31)** |
-| Running the test suite | **none** |
+| Running the test suite on the platform it was written on | **none** |
+| **Running it on a second platform** (the Linux CI container, Q-2) | **[I-33](#i-33)** |
 
 **The newest route is the cheapest, and it found the worst result.** [I-06](#i-06) had been
 described as a "conservative (value-understating)" approximation here, in a module
@@ -280,8 +305,9 @@ back into it.
 | [I-30](#i-30) | The `A(t,T)` variance term was nearly uncovered at `t=0` (test gap, not a defect) | Medium | ✅ FIXED | — |
 | [I-31](#i-31) | Bermudan/American floating coupons projected over the accrual period, not ORE's index fixing period | Medium | ✅ FIXED | — |
 | [I-32](#i-32) | Parity with ORE holds only for its Grid solver at `ShiftHorizon=0`; ORE's defaults differ by up to 1.6e-3 | Medium | ❌ OPEN | 4 |
+| [I-33](#i-33) | On Linux, worker-pool jobs **hung** once the parent had run JAX (fork, not spawn) | High | ✅ FIXED | — |
 
-**Counts:** 32 issues — 17 FIXED, 12 OPEN, 1 FLAGGED, 1 PARTIAL, 1 ASSUMPTION. The 15
+**Counts:** 33 issues — 18 FIXED, 12 OPEN, 1 FLAGGED, 1 PARTIAL, 1 ASSUMPTION. The 15
 unfixed entries are ranked above.
 
 **The two that matter most for financial correctness are [I-04](#i-04) and [I-05](#i-05).**
@@ -1158,6 +1184,46 @@ still projects over the accrual period, which is correct for the ORE engine it r
 **Verified.** Same parity suite as [I-06](#i-06); every aligned-Bermudan case there failed
 before this fix and was the whole of the gap. Two pinned values moved by exactly this:
 `tests/test_profiling_and_jit.py` (8521.0223 → 8522.4605, and 5x that).
+
+---
+
+### I-33 — On Linux, worker-pool jobs hung once the parent process had run JAX {#i-33}
+
+**Severity:** High · **Status:** ✅ FIXED (2026-09-24) · **Found:** 2026-09-24, running the
+new CI fast tier ([engine audit Q-2](planning/engine-audit.md#q-2)) in a Linux
+`python:3.11` container before enabling it
+
+**What was wrong.** `_pool_for` in
+[`engine/portfolio/worker_pool.py`](../engine/portfolio/worker_pool.py) built its
+`ProcessPoolExecutor` without an `mp_context`, so it used the platform default: spawn on
+Windows, **fork on Linux**. The module docstring already said Linux "*should* still use
+spawn/forkserver deliberately", because forking a process that has initialized a JAX/XLA
+client can hang, but the code never did. On Linux, a job submitted after the parent had run
+any JAX work never completed, and the HTTP poll saw `pending` until it gave up:
+
+```
+FAILED tests/test_api.py::TestPortfolioPriceHappyPath::test_valid_portfolio_returns_202_then_done
+    assert 'pending' == 'done'
+3 failed, 4 passed   (tests/test_american_swaption.py, then TestPortfolioPriceHappyPath)
+```
+
+The same HTTP test passed on its own, because then the parent had not yet run JAX when it
+forked. Linux is the deployment target (Cloud TPU VMs), so every portfolio job over HTTP
+after the server's first in-process JAX call would have hung.
+
+**Why the suite never saw it.** Every recorded run was on Windows, which cannot fork.
+
+**Fix.** `mp_context=multiprocessing.get_context("spawn")`, on every platform, matching the
+Windows behavior the design already assumed.
+
+**Verified.**
+`tests/test_worker_pool.py::TestPoolsSpawnOnEveryPlatform` stubs the executor, asserts the
+pool gets a spawn context, and fails against the pre-fix code on any platform. It starts no
+process, so it runs in the fast tier. On Linux, the reproduction above went from 3 failed to
+7 passed (240 s → 70 s).
+
+**Not shown to be related to [I-27](#i-27).** I-27's abort happens on Windows, where
+pools always spawned.
 
 ---
 

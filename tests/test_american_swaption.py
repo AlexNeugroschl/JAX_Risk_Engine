@@ -138,6 +138,7 @@ class TestMoreOpportunitiesNeverLoseValue:
     step count exactly, so each grid is a superset of the coarser one and the
     value cannot fall -- a model-independent bound."""
 
+    @pytest.mark.slow
     @pytest.mark.parametrize("swap_tenor,fixed_rate,payer,last_years", [
         ("5Y", 0.03, True, 4.0),
         ("5Y", 0.03, False, 4.0),
@@ -153,6 +154,7 @@ class TestMoreOpportunitiesNeverLoseValue:
         assert npvs[1] >= npvs[0] - 1e-6
         assert npvs[2] >= npvs[1] - 1e-6
 
+    @pytest.mark.slow
     def test_very_dense_grid_prices_finite_and_above_the_coarsest(self):
         window = dict(first_exercise_date=in_years(EVAL_DATE, 1.0), last_exercise_date=in_years(EVAL_DATE, 1.5))
         dense = _make_american(exercise_time_steps_per_year=1000, **window)

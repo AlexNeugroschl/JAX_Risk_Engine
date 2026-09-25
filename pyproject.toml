@@ -7,11 +7,15 @@ name = "jax-risk-engine"
 version = "0.1.0"
 description = "JAX-based market simulation and trade pricing engine built to run across multiple TPUs, mirroring ORE (Open Source Risk Engine)."
 requires-python = ">=3.11"
+# Ranges, not pins: the exact verified versions live in constraints.txt.
+# jax, jaxlib and ORE are bounded on both sides because the 1e-12 ORE-parity
+# tolerances depend on their numerics, and a minor release of any of them can
+# move results. Widen a bound only after a full suite run on the new version.
 dependencies = [
-    "open-source-risk-engine",
+    "open-source-risk-engine>=1.8.16,<1.9",
     "pandas",
-    "jax",
-    "jaxlib",
+    "jax>=0.10.2,<0.11",
+    "jaxlib>=0.10.2,<0.11",
     "numpy",
     "scipy",
 ]
@@ -47,3 +51,12 @@ include = ["engine*"]
 # `reference/` holds the ORE and TraderX submodules, with their own test
 # trees; a bare `pytest` from the repo root must not wander into them.
 testpaths = ["tests"]
+# `slow` marks the tests CI's fast tier skips (`pytest -m "not slow"`): the
+# worker-pool and HTTP-job tests that start process pools, and tests taking
+# 5 s or more. ORE-parity tests are never marked slow, so the fast tier runs
+# all of them. --strict-markers turns a misspelt marker into an error instead of
+# a test that silently lands in the wrong tier.
+addopts = "--strict-markers"
+markers = [
+    "slow: starts worker processes or takes 5 s or more; skipped by CI's fast tier",
+]

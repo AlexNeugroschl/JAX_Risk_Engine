@@ -577,6 +577,7 @@ class TestSwaptionDeltaGamma:
         assert greeks["delta"].shape == (len(PILLAR_TIMES),)
         assert greeks["gamma"].shape == (len(PILLAR_TIMES),)
 
+    @pytest.mark.slow
     def test_finite_for_various_hw_parameters(self):
         """Delta/Gamma should stay finite across a spread of hw_a/hw_sigma
         combinations -- guards against a hidden singularity (e.g. a

@@ -143,6 +143,7 @@ class TestPricePortfolioMatchesHandOrchestration:
         request = PortfolioRequest(market=sim_config, trades=list(trades), pfe_quantiles=(0.95, 0.99))
         return price_portfolio(request)
 
+    @pytest.mark.slow
     def test_returns_portfolio_result(self, via_entrypoint):
         assert isinstance(via_entrypoint, PortfolioResult)
 
@@ -286,6 +287,7 @@ class TestPricePortfolioCalibration:
     request.calibration_targets -- once per distinct rate_factor_index, not
     once per trade."""
 
+    @pytest.mark.slow
     def test_uncalibrated_hw_sigma_is_filled_in_and_prices_finite(self):
         curve_jax = HwZeroCurve.flat(FLAT_RATE, ZERO_CURVE.times)
         exercise_dates = [ORE.Date(3, 8, 2027), ORE.Date(3, 8, 2028)]
@@ -333,6 +335,7 @@ class TestPricePortfolioCalibration:
 
 
 class TestPricePortfolioGreeks:
+    @pytest.mark.slow
     def test_compute_greeks_true_returns_per_trade_dict(self):
         swap_cfg, swaption_cfg, bermudan_cfg, american_cfg = _build_trades()
         trades = [swaption_cfg, bermudan_cfg]  # swap Greeks need a caller-supplied ZeroCurve, skipped by design
@@ -345,6 +348,7 @@ class TestPricePortfolioGreeks:
         assert "gamma" in result.greeks[0]
         assert "theta" in result.greeks[0]
 
+    @pytest.mark.slow
     def test_greeks_keyed_by_original_trade_index_not_pricing_group_order(self):
         """trades = [bermudan, swaption] -- greeks[0] must be the
         Bermudan's own Delta/Gamma/Theta, greeks[1] the swaption's, matching
@@ -402,6 +406,7 @@ class TestPricePortfolioPrecision:
         assert result.npv_cube.dtype == jnp.float64
         assert bool(jnp.all(jnp.isfinite(result.npv_cube)))
 
+    @pytest.mark.slow
     def test_simulation_32_produces_float32_market_data_and_still_prices(self):
         from engine.portfolio import PrecisionConfig
         request = self._request(precision=PrecisionConfig(simulation=32))
@@ -439,6 +444,7 @@ class TestPricePortfolioPrecision:
         result32 = price_portfolio(request32)
         assert result32.base_npv == pytest.approx(result64.base_npv, rel=1e-3)
 
+    @pytest.mark.slow
     def test_risk_32_changes_greeks_dtype_for_swaption_and_bermudan(self):
         """risk=32 must flow into both a European swaption's and a
         calibrated Bermudan's Greeks (the Jacobian path bermudan_vega
@@ -458,6 +464,7 @@ class TestPricePortfolioPrecision:
                     continue  # a plain Python float (forward-difference NPV), not a JAX array
                 assert jnp.asarray(val).dtype == jnp.float32, f"trade {idx} greek {key!r} not float32"
 
+    @pytest.mark.slow
     def test_mixed_precision_each_stage_independent(self):
         """simulation=64, pricing=32, risk=32 -- confirms each of the three
         knobs takes effect independently in the same request, the
@@ -493,6 +500,7 @@ class TestPricePortfolioPrecision:
         assert bool(jnp.all(jnp.isfinite(result32.npv_cube)))
         assert result32.base_npv == pytest.approx(result64.base_npv, rel=1e-3)
 
+    @pytest.mark.slow
     def test_risk_per_greek_override(self):
         """RiskPrecisionOverride(default=64, theta=32) -- delta_gamma and
         theta must resolve to DIFFERENT dtypes via _resolve_risk_dtype, and
@@ -567,6 +575,7 @@ class TestPricePortfolioPrecision:
         assert sigma_32.values.dtype == jnp.float32
         assert np.asarray(sigma_32.values) == pytest.approx(np.asarray(sigma_64.values), rel=1e-3)
 
+    @pytest.mark.slow
     def test_precision_knobs_fully_independent_four_way(self):
         """All four axes set independently and simultaneously -- a mechanism
         proof via direct resolver checks, since four independently-varying

@@ -1,0 +1,107 @@
+# Exact versions of every package the test suite was last verified against.
+# A pip *constraints* file, not a requirements file: it pins versions without
+# asking for installs, so a package that one platform does not need (colorama
+# on Linux) is simply skipped. requirements.txt applies it; CI installs through
+# requirements.txt. pyproject.toml declares WHAT is needed with ranges; this
+# file records WHICH versions were verified.
+#
+# Why pin at all: the ORE-parity tests assert agreement to 1e-12, and that is
+# only as reproducible as the installed jax, jaxlib and open-source-risk-engine.
+# tests/test_environment.py fails if the running environment has drifted from
+# the numerical pins below, or if pyproject.toml's ranges exclude them.
+#
+# To upgrade: bump the package in a clean venv built with
+#   pip install -e ".[api,dev,profiling]"
+# run the FULL suite (not only the fast tier), then regenerate with
+#   pip freeze --exclude-editable > constraints.txt
+# and restore this header. See docs/getting-started/user-guide.md.
+absl-py==2.5.0
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+attrs==26.1.0
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.1
+cheroot==11.1.2
+click==8.5.0
+colorama==0.4.6
+cryptography==50.0.1
+decorator==5.3.1
+etils==1.14.0
+fastapi==0.141.1
+fire==0.7.1
+frozenlist==1.8.0
+fsspec==2026.7.0
+gcsfs==2026.8.1
+google-api-core==2.37.0
+google-auth==2.58.0
+google-auth-oauthlib==1.4.1
+google-cloud-core==2.7.0
+google-cloud-storage==3.14.1
+google-cloud-storage-control==1.15.0
+google-crc32c==1.8.0
+google-resumable-media==2.10.2
+googleapis-common-protos==1.75.3
+grpc-google-iam-v1==0.14.5
+grpcio==1.84.0
+grpcio-status==1.84.0
+gviz-api==1.10.0
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.19
+iniconfig==2.3.0
+jaraco.functools==4.6.0
+jax==0.10.2
+jaxlib==0.10.2
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+MarkupSafe==3.0.3
+ml_dtypes==0.6.0
+more-itertools==11.1.0
+multidict==6.8.0
+numpy==2.4.6
+oauthlib==3.3.1
+open-source-risk-engine==1.8.16.0
+opentelemetry-api==1.44.0
+opt_einsum==3.4.0
+packaging==26.3
+pandas==3.0.5
+pluggy==1.6.0
+propcache==0.5.4
+proto-plus==1.28.4
+protobuf==7.36.1
+pyasn1==0.6.4
+pyasn1_modules==0.4.2
+pycparser==3.0
+pydantic==2.13.5
+pydantic_core==2.46.5
+Pygments==2.21.0
+pytest==9.1.1
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.3
+PyYAML==6.0.3
+referencing==0.37.0
+requests==2.34.2
+requests-oauthlib==2.0.0
+rpds-py==2026.6.3
+scipy==1.17.1
+six==1.17.0
+starlette==1.6.0
+termcolor==3.3.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+tzdata==2026.3
+urllib3==2.8.0
+uvicorn==0.52.4
+watchfiles==1.2.0
+websockets==17.1
+Werkzeug==3.1.8
+xprof==2.23.2
+yarl==1.25.1
+zipp==4.1.0

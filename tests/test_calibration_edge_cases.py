@@ -62,6 +62,7 @@ class TestSubYearAndFractionalTenors:
         assert np.isfinite(float(result.sigma.values[0]))
         assert result.rmse < 1e-4
 
+    @pytest.mark.slow
     def test_quarterly_exercise_schedule_all_sub_year_gaps(self):
         """A quarterly Bermudan exercise schedule (0.25Y spacing) against a
         2Y final maturity -- every gap between consecutive buckets is a
@@ -119,6 +120,7 @@ class TestDegenerateBasketShapes:
         assert result.sigma.times.shape == (0,)
         assert result.sigma.values.shape == (1,)
 
+    @pytest.mark.slow
     def test_very_large_basket_ten_instruments(self):
         """Ten exercise dates (annual, out to a 10Y trade) -- a larger
         basket than any existing test, checking the bootstrap's own
