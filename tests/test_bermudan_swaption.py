@@ -1,28 +1,16 @@
 """
-Tests for engine.instruments.bermudan_swaption -- the numeric LGM
-Hagan-quadrature backward-induction engine that also powers American
-swaption pricing (engine.instruments.american_swaption is a thin wrapper
-around this module -- its own American-specific tests live in
-tests/test_american_swaption.py).
+`engine.instruments.bermudan_swaption`, the LGM backward induction (also used for
+Americans, whose own tests are in tests/test_american_swaption.py).
 
-Validation strategy. The authoritative check is
-`tests/test_ore_lgm_parity.py`, which prices against ORE's own
-`NumericLgmMultiLegOptionEngine` in-process and agrees to ~1e-11. The tests
-here are independent of ORE's engine and check the pieces and properties:
+The authoritative check is tests/test_ore_lgm_parity.py (ORE's own
+`NumericLgmMultiLegOptionEngine`, ~1e-11). These tests are independent of ORE's engine:
 
-  - Every closed-form building block (`_H`, `_zeta`, `_lgm_bond`) is
-    live-verified here against `ORE.IrLgm1fConstantParametrization` /
-    `ORE.LinearGaussMarkovModel` directly.
-  - The single-exercise-date limit is cross-checked against an independent
-    from-scratch Jamshidian-style decomposition built on the SAME `_lgm_bond`
-    formula (deliberately NOT engine.instruments.european_swaption's own
-    Jamshidian pricer, which is HullWhite-parametrized -- confirmed, while
-    building this module, to be a genuinely different model realization
-    for t>0 than QuantExt's LinearGaussMarkovModel; see
-    bermudan_swaption._lgm_bond's docstring for the live-verified evidence).
-  - Model-independent structural properties (monotonicity in exercise
-    opportunities, put/call sign convention, ITM > OTM, grid convergence)
-    are checked directly.
+  - the LGM closed forms (`H`, `zeta`, bond price) against `ORE.IrLgm1fConstantParametrization`
+    and `ORE.LinearGaussMarkovModel`;
+  - the single-exercise case against a direct integration of the Gaussian expectation
+    (tests/bermudan_references.py);
+  - model-independent properties: monotonicity in exercise dates, direction, moneyness,
+    grid convergence.
 """
 import jax.numpy as jnp
 import numpy as np
@@ -47,12 +35,8 @@ from engine.models.lgm import H as _H, bond_price as _lgm_bond_price, zeta as _z
 
 
 def _lgm_bond(zero_times, zero_rates, a, sigma, t, T, x):
-    """Test-local adapter matching the OLD NumPy-facing _lgm_bond(zero_times,
-    zero_rates, a, sigma, t, T, x) call shape this file's tests were written
-    against, delegating to the actual shared implementation
-    (engine.models.lgm.bond_price, which takes a ZeroCurve and is
-    JAX-native) -- keeps these tests' own hand-rolled Jamshidian cross-check
-    logic unchanged while testing the real, current implementation."""
+    """`engine.models.lgm.bond_price` in the older NumPy call shape
+    `(zero_times, zero_rates, a, sigma, t, T, x)`."""
     curve = HwZeroCurve(pillar_times=jnp.asarray(zero_times), pillar_rates=jnp.asarray(zero_rates))
     return np.asarray(_lgm_bond_price(curve, a, sigma, jnp.asarray(t), jnp.asarray(T), jnp.asarray(x)))
 
@@ -84,8 +68,7 @@ def _make_bermudan(**overrides) -> BermudanSwaptionConfig:
 
 
 class TestLgmClosedFormsAgainstORE:
-    """Every closed-form primitive this module's backward induction is
-    built from, checked directly against live ORE LGM objects."""
+    """The LGM closed forms against ORE's LGM objects."""
 
     def test_H_matches_ore_parametrization(self):
         today = EVAL_DATE
@@ -124,12 +107,8 @@ class TestLgmClosedFormsAgainstORE:
             assert mine == pytest.approx(ore_val, rel=1e-9)
 
     def test_lgm_bond_differs_from_hullwhite_for_t_greater_than_zero(self):
-        """Documents the finding that motivated this module's exclusive use
-        of _lgm_bond: ORE.HullWhite and ORE.LinearGaussMarkovModel are NOT
-        the same model realization for t>0, even at each model's own
-        natural 'no shock' reference state. This is not a bug in either
-        class -- it's why this module can't reuse
-        european_swaption.compute_hw_A/_hw_B."""
+        """`ORE.HullWhite` and `ORE.LinearGaussMarkovModel` with the same (a, sigma) give
+        different bond prices for t > 0, which is why Bermudans use the LGM formulas only."""
         today = EVAL_DATE
         ORE.Settings.instance().evaluationDate = today
         dc = ORE.Actual365Fixed()
@@ -141,8 +120,7 @@ class TestLgmClosedFormsAgainstORE:
         t, T = 3.0, 5.0
         hw_bond = hw.discountBond(t, T, 0.03)  # r = f(0,t) = 0.03 (flat curve)
         lgm_bond = lgm.discountBond(t, T, 0.0)  # x = 0
-        # Different models -- NOT expected to match; this test documents
-        # the gap is real and of a specific, non-trivial magnitude.
+        # Different models: not expected to match; the gap is pinned.
         assert abs(hw_bond - lgm_bond) / lgm_bond > 1e-4
 
     def test_state_grid_collapses_to_single_zero_at_t0(self):
@@ -166,9 +144,8 @@ class TestLgmClosedFormsAgainstORE:
 
 
 class TestSingleExerciseMatchesDirectIntegration:
-    """The core check of the backward induction's numerics: with one
-    exercise date the value is a single Gaussian expectation, computed
-    independently of the grid by tests/bermudan_references.py (see there)."""
+    """With one exercise date the value is a single Gaussian expectation, computed without
+    the grid by tests/bermudan_references.py."""
 
     _direct_integration = staticmethod(single_exercise_value_by_integration)
 
@@ -177,7 +154,7 @@ class TestSingleExerciseMatchesDirectIntegration:
     @pytest.mark.parametrize("exercise_time", [1.0, 2.5, 4.0])
     def test_matches_direct_integration(self, payer, exercise_time):
         cfg = _make_bermudan(payer=payer, exercise_dates=_in_years([exercise_time]), n_per_std=192, std_devs=9.0)
-        # Measured 0.7-5e-6: the rollback's own discretization at this grid.
+        # Measured 0.7-5e-6: the rollback's discretization at this grid.
         assert price_bermudan_swaption_base(cfg) == pytest.approx(self._direct_integration(cfg), rel=2e-5)
 
     def test_grid_convergence_toward_direct_integration(self):
@@ -190,8 +167,7 @@ class TestSingleExerciseMatchesDirectIntegration:
 
 
 class TestMonotonicity:
-    """Model-independent no-arbitrage bounds: more exercise opportunities
-    can never decrease a Bermudan swaption's value."""
+    """More exercise dates can never decrease a Bermudan's value."""
 
     def test_bermudan_at_least_as_valuable_as_either_single_exercise(self):
         euro_first = price_bermudan_swaption_base(_make_bermudan(exercise_dates=_in_years([1.0])))
@@ -293,12 +269,10 @@ class TestEdgeCases:
 
 
 class TestMidPeriodBermudanExercise:
-    """A Bermudan exercise date inside an accrual period is priced as ORE
-    prices it: each leg is entered from its OWN next accrual start
-    ("bermudan exercise implies that we always exercise into whole
-    periods", `buildCashflowInfo`). This is a contract, not an approximation;
-    `tests/test_ore_lgm_parity.py`'s mid-period cases pin the value against
-    ORE's own engine. The tests here pin the mechanism and its consequences."""
+    """A Bermudan exercise date inside an accrual period enters each leg from its own next
+    accrual start, as ORE does ("bermudan exercise implies that we always exercise into
+    whole periods", `buildCashflowInfo`). The value is pinned against ORE in
+    tests/test_ore_lgm_parity.py; these pin the mechanism."""
 
     def test_a_bermudan_coupon_belongs_only_until_its_accrual_start(self):
         swap = prepare_bermudan(_make_bermudan())
@@ -330,19 +304,10 @@ class TestMidPeriodBermudanExercise:
         (False, 0.02), (False, 0.03), (False, 0.04),
     ])
     def test_the_value_difference_follows_the_trade_direction(self, payer, fixed_rate):
-        """Exercising a day into the period rather than on its start date
-        enters the fixed leg a whole ANNUAL period later but the floating
-        leg only one SEMI-ANNUAL period later: one fixed coupon drops out
-        while the second floating coupon of that year stays in. For a payer
-        the dropped fixed coupon was a payment, so the value rises; for a
-        receiver it was a receipt, so it falls.
-
-        This was once read as a "7.4x overstatement" to be fixed by
-        prorating the coupon (I-06, 2026-09-18). Against ORE's own engine it
-        is ORE's behaviour, so the direction is pinned here as a property of
-        the contract, and the value itself is pinned in
-        test_ore_lgm_parity.py.
-        """
+        """Exercising a day into the period enters the annual fixed leg a whole period later
+        but the semi-annual floating leg only one half-year later, so one fixed coupon drops
+        out. For a payer that coupon was a payment, so the value rises; for a receiver it
+        falls. This is ORE's behaviour (once mistaken for an error to prorate away; I-06)."""
         reset = exercisable_dates(_make_bermudan(payer=payer, fixed_rate=fixed_rate))[2]
 
         def price(exercise_date):
@@ -357,9 +322,7 @@ class TestMidPeriodBermudanExercise:
 
 
 class TestStateGridAndScheduleEdgeCases:
-    """Exercise-schedule cardinality and state-grid resolution edge cases:
-    n=1/n=2 exercise dates, a dense (monthly-over-many-years) schedule, and
-    n_per_std/std_devs sensitivity."""
+    """One, two and many exercise dates, and grid resolution and width."""
 
     def test_single_exercise_date_prices_finite(self):
         cfg = _make_bermudan(exercise_dates=_in_years([2.5]))
@@ -374,15 +337,13 @@ class TestStateGridAndScheduleEdgeCases:
         assert v_both >= max(v1, v2) - 1e-6
 
     def test_dense_monthly_schedule_over_long_tenor_prices_finite_and_consistent(self):
-        # ~monthly exercise dates over a 9Y window on a 10Y underlying --
-        # stresses grid_times bookkeeping/dedup with a large number of
-        # exercise dates, not just a handful.
+        # ~Monthly exercise over 9Y on a 10Y swap: many grid times.
         dense_times = [round(i / 12.0, 6) for i in range(1, 12 * 9)]
         cfg = _make_bermudan(exercise_dates=_in_years(dense_times), swap_tenor="10Y", n_per_std=32, std_devs=6.0)
         npv_dense = price_bermudan_swaption_base(cfg)
         assert np.isfinite(npv_dense)
         assert npv_dense >= 0.0
-        # Monotonicity must still hold against a sparse subset of the same dates.
+        # Monotonicity against a sparse subset of the same dates.
         sparse_cfg = _make_bermudan(exercise_dates=_in_years([dense_times[0], dense_times[-1]]),
                                      swap_tenor="10Y", n_per_std=32, std_devs=6.0)
         npv_sparse = price_bermudan_swaption_base(sparse_cfg)
@@ -390,25 +351,19 @@ class TestStateGridAndScheduleEdgeCases:
 
     @pytest.mark.slow
     def test_n_per_std_convergence_is_monotone_and_shrinking(self):
-        # Successive refinements of n_per_std should move the price by a
-        # shrinking amount, converging toward a stable limit -- checked
-        # against the finest grid available as an (imperfect but
-        # reasonable) stand-in for the "true" price.
+        # Successive n_per_std refinements move the price by shrinking amounts toward the
+        # finest grid's value.
         ns = [8, 16, 32, 64, 128, 256]
         prices = [price_bermudan_swaption_base(_make_bermudan(n_per_std=n, std_devs=6.0)) for n in ns]
         finest = prices[-1]
         errors = [abs(p - finest) for p in prices[:-1]]
-        # Each successive refinement should not increase the error versus
-        # the finest grid (allow tiny numerical slack).
+        # Each refinement does not increase the error against the finest grid (small slack).
         for e_coarser, e_finer in zip(errors, errors[1:]):
             assert e_finer <= e_coarser + 1e-6
 
     def test_std_devs_too_small_understates_or_matches_wider_grid(self):
-        # A grid that doesn't span enough standard deviations clips the
-        # tails of the distribution -- widening std_devs at fixed
-        # resolution should not decrease the price appreciably (missing
-        # tail mass can only lose optionality, not manufacture it), and
-        # should converge as std_devs grows.
+        # A narrow grid clips the tails; widening std_devs at fixed resolution should not
+        # lower the price appreciably, and converges.
         narrow = price_bermudan_swaption_base(_make_bermudan(n_per_std=48, std_devs=2.0))
         medium = price_bermudan_swaption_base(_make_bermudan(n_per_std=48, std_devs=5.0))
         wide = price_bermudan_swaption_base(_make_bermudan(n_per_std=48, std_devs=9.0))
@@ -416,9 +371,7 @@ class TestStateGridAndScheduleEdgeCases:
         assert abs(wide - medium) <= abs(medium - narrow) + 1e-6
 
     def test_near_zero_mean_reversion_prices_finite_and_consistent(self):
-        # hw_a -> 0 is a singular limit for H(t) = (1-exp(-a*t))/a (a 0/0
-        # form) -- verify it stays finite and close to a tiny-but-nonzero
-        # mean reversion (no blow-up/discontinuity at the boundary).
+        # a -> 0 is a 0/0 in H(t); it stays finite and close to a small non-zero a.
         v_tiny = price_bermudan_swaption_base(_make_bermudan(hw_a=1e-6))
         v_small = price_bermudan_swaption_base(_make_bermudan(hw_a=1e-4))
         v_normal = price_bermudan_swaption_base(_make_bermudan(hw_a=0.03))
@@ -427,9 +380,7 @@ class TestStateGridAndScheduleEdgeCases:
         assert v_tiny > 0.0
 
     def test_high_volatility_prices_finite_and_increasing(self):
-        # Large hw_sigma stresses the state grid's span (needs std_devs
-        # wide enough in absolute x-units) -- verify no blow-up and that
-        # value keeps rising with vol even at extreme levels.
+        # A large sigma stresses the grid's absolute span: no blow-up, value still rising.
         vols = [0.02, 0.05, 0.10, 0.20]
         prices = [
             price_bermudan_swaption_base(_make_bermudan(hw_sigma=s, std_devs=9.0, n_per_std=96))
@@ -441,9 +392,8 @@ class TestStateGridAndScheduleEdgeCases:
 
 
 class TestConvergenceToAmericanAcrossConfigs:
-    """American >= Bermudan always (a superset of exercise opportunities
-    cannot be worth less) -- verified across several distinct underlying
-    swap configurations (tenor, rate, payer/receiver), not just one case."""
+    """A denser exercise schedule is worth at least a sparser one, across several
+    underlyings."""
 
     @pytest.mark.slow
     @pytest.mark.parametrize("swap_tenor,fixed_rate,payer", [
@@ -466,30 +416,13 @@ class TestConvergenceToAmericanAcrossConfigs:
 
 
 class TestDegenerateSingleExerciseCases:
-    """A Bermudan with a single exercise date is mathematically a European
-    swaption -- cross-checked here directly against
-    engine.instruments.european_swaption.price_swaptions (an INDEPENDENT
-    pricer module), plus deeply OTM/ITM single-exercise sanity checks."""
+    """Single-exercise Bermudans: against the European pricer, and deep OTM/ITM."""
 
     def test_single_exercise_vs_independent_european_pricer_same_order_of_magnitude(self):
-        # NOTE: engine.instruments.european_swaption prices under
-        # ORE.HullWhite's (compute_hw_A/_hw_B) closed form, while this
-        # module prices under ORE.LinearGaussMarkovModel's H/zeta closed
-        # form (_lgm_bond) -- live-verified in
-        # TestLgmClosedFormsAgainstORE::test_lgm_bond_differs_from_hullwhite_for_t_greater_than_zero
-        # to be genuinely DIFFERENT model realizations for t>0, despite
-        # sharing (a, sigma) and today's curve exactly. So a single-exercise
-        # Bermudan and a European swaption on the identical underlying are
-        # NOT expected to match tightly (that tight cross-check is what
-        # TestSingleExerciseMatchesLgmJamshidian already does, against an
-        # independent closed form built on the SAME _lgm_bond formula).
-        # This test instead verifies the two independent pricers agree to
-        # within a loose order-of-magnitude bound (both finite, positive,
-        # and within a 2x band of each other) -- a real, if coarse,
-        # cross-module correctness check, and documents that the gap is
-        # substantial and of the same character as the HW-vs-LGM finding
-        # above (i.e. it does NOT shrink as vol shrinks, confirming this is
-        # a genuine model difference, not discretization error).
+        # The European pricer is Hull-White and this is LGM, different models for t > 0
+        # with the same (a, sigma), so only a loose check: both finite, positive and within
+        # 2x of each other. (The tight single-exercise check is
+        # TestSingleExerciseMatchesDirectIntegration.)
         euro_cfg = SwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
             hw_a=0.03, hw_sigma=0.02, initial_zero_curve=FLAT_CURVE, swap_tenor="5Y",
@@ -521,11 +454,8 @@ class TestDegenerateSingleExerciseCases:
         assert npv == pytest.approx(0.0, abs=1.0)
 
     def test_deeply_itm_single_exercise_approximates_discounted_intrinsic(self):
-        # With exercise nearly certain, the option's t=0 value should be
-        # close to the underlying swap's own discounted remaining NPV at
-        # the exercise date (evaluated at x=0, i.e. today's forward curve
-        # with no shock) -- a loose approximate bound, not an exact
-        # identity (there is still nonzero time value even when deep ITM).
+        # Exercise nearly certain: close to the swap's discounted value at exercise on
+        # today's curve (a loose bound; some time value remains).
         cfg = _make_bermudan(fixed_rate=0.001, payer=True, exercise_dates=_in_years([3.0]))
         npv = price_bermudan_swaption_base(cfg)
         swap = prepare_bermudan(cfg)
@@ -540,10 +470,7 @@ class TestDegenerateSingleExerciseCases:
         assert npv == pytest.approx(discounted_intrinsic, rel=0.1)
 
     def test_deeply_otm_receiver_is_near_zero(self):
-        # A receiver benefits when the fixed rate it receives exceeds the
-        # market/floating rate -- so deeply OTM for a receiver means a very
-        # LOW (here, deeply negative) fixed rate relative to the 3% curve,
-        # the mirror image of the far-out-of-the-money payer case above.
+        # Deep OTM for a receiver: a very low (negative) fixed rate against the 3% curve.
         cfg = _make_bermudan(fixed_rate=-0.10, payer=False, exercise_dates=_in_years([3.0]))
         npv = price_bermudan_swaption_base(cfg)
         assert np.isfinite(npv)
@@ -551,16 +478,10 @@ class TestDegenerateSingleExerciseCases:
 
 
 class TestPayerReceiverAndPortfolio:
-    """Payer/receiver sanity and a diverse portfolio (mixed payer/receiver,
-    tenors, exercise schedules) checked for correct output shape and
-    per-trade independence."""
+    """Payer/receiver sanity and a mixed portfolio's shape and per-trade independence."""
 
     def test_payer_and_receiver_both_positive_and_comparable_near_atm(self):
-        # Not an exact symmetry claim (early-exercise convexity plus the
-        # notional/discounting asymmetry between payer and receiver legs
-        # means they need not match exactly even near ATM) -- just that
-        # both are positive and within a broad band of each other, a
-        # sanity bound on the payer/receiver sign convention.
+        # Not a symmetry claim: both positive and within a broad band of each other.
         payer = price_bermudan_swaption_base(_make_bermudan(payer=True, fixed_rate=0.03, exercise_dates=_in_years([3.0])))
         receiver = price_bermudan_swaption_base(_make_bermudan(payer=False, fixed_rate=0.03, exercise_dates=_in_years([3.0])))
         assert payer > 0.0 and receiver > 0.0
@@ -591,27 +512,21 @@ class TestPayerReceiverAndPortfolio:
         assert cube.shape == (config.scenarios, len(config.time_grid) - 1, 3)
         assert np.all(np.isfinite(np.asarray(cube)))
 
-        # Per-trade independence: pricing each config alone (in a 1-trade
-        # portfolio) must reproduce the same column as pricing all three
-        # together -- changing/including other trades must not perturb an
-        # unrelated trade's own priced values.
+        # Pricing each trade alone reproduces its column in the joint call.
         for i, cfg in enumerate(configs):
             solo_cube = price_bermudan_swaptions([cfg], cubes["rates"], step_times)
             assert np.allclose(np.asarray(cube[:, :, i]), np.asarray(solo_cube[:, :, 0]), rtol=1e-10, atol=1e-8)
 
-        # No two distinct trades' columns should coincide (they have
-        # different tenors/rates/schedules).
+        # Distinct trades give distinct columns.
         assert not np.allclose(np.asarray(cube[:, :, 0]), np.asarray(cube[:, :, 1]))
         assert not np.allclose(np.asarray(cube[:, :, 1]), np.asarray(cube[:, :, 2]))
         assert not np.allclose(np.asarray(cube[:, :, 0]), np.asarray(cube[:, :, 2]))
 
 
 class TestBermudanSwaptionConfigValidation:
-    """BermudanSwaptionConfig.__post_init__ (docs/planning/
-    traderx-integration.md gap item 4) -- rejects non-finite notional/
-    fixed_rate/hw_sigma, unparseable swap_tenor, empty, unsorted or
-    non-date exercise_dates at construction time. Zero notional remains
-    valid (see TestZeroNotional-equivalent zero-notional coverage above)."""
+    """`BermudanSwaptionConfig.__post_init__` rejects non-finite notional/fixed_rate/
+    hw_sigma, unparseable tenors, and empty, unsorted or non-date exercise_dates. Zero
+    notional is valid."""
 
     def test_nan_notional_rejected(self):
         with pytest.raises(ValueError, match="notional"):
@@ -644,8 +559,8 @@ class TestBermudanSwaptionConfigValidation:
             _make_bermudan(exercise_dates=_in_years([2.0, 1.0, 3.0]))
 
     def test_year_fraction_exercise_rejected(self):
-        """Exercise is specified by date, as in ORE; a year fraction is the
-        input that once dropped a whole coupon when written rounded (I-29)."""
+        """Exercise is given by date, as in ORE; a year fraction once dropped a coupon when
+        rounded (I-29)."""
         with pytest.raises(TypeError, match="exercise_dates"):
             _make_bermudan(exercise_dates=[1.0, 2.0])
 

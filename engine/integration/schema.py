@@ -1,90 +1,39 @@
 """
-W1.6.2 -- document schema versions, and the JSON Schema that defines them.
+JSON Schemas (draft 2020-12) of the two published EOD documents, with their versions.
 
-**Why a version on every published document.** TraderX's validator has to
-decide whether a result it receives is one it understands. Without a version
-field it can only guess from the shape, which means a change this engine
-makes is discoverable by them only as a parse failure -- or, worse, as a
-silently-ignored new field. A version lets them pin: accept exactly what
-they have validated against, and refuse the rest loudly.
+Every document carries a version so a consumer's validator can pin exactly what it has
+validated against and refuse the rest. The result and capability documents are versioned
+separately, since they change for different reasons.
 
-**The version is emitted before intake is extended, deliberately** (plan
-§W1.6.2: "emit the version *before* extending intake, so their validator can
-pin it"). A consumer cannot pin a version that was never published, so
-shipping the field first -- even while its value stays at `.v1` -- is what
-makes the *next* change safe rather than breaking.
+The schemas are derived from the code (`CALCULATIONS`, `STATUSES` in
+`engine.integration.result`), not hand-written, and the tests pin the derivation.
 
-**Two separately versioned documents.** The result document and the
-capability document change for different reasons and at different times: a
-new pricer changes what `capabilities()` advertises without changing the
-result's shape at all. Sharing one version would force a lockstep neither
-side wants, and would make "did the result schema change?" unanswerable.
-
-**The schemas are derived from the code they describe, not hand-written.**
-`result_schema()` reads `CALCULATIONS` and `STATUSES` out of
-`engine.integration.result`, exactly as `capabilities()` reads the
-allowlist. A hand-maintained schema drifts from the documents it validates,
-and a stale schema is worse than none: it certifies documents that no longer
-match it. The test suite pins the *derivation*, so adding a calculation
-updates the published schema automatically.
-
-**Draft 2020-12**, declared explicitly via `$schema`. Stating the dialect
-matters for `additionalProperties` and `$defs` semantics, which differ
-across drafts -- a validator guessing the dialect can silently apply
-different rules than the author intended.
-
-**`additionalProperties: false` is deliberate on the closed objects.** A
-result document carrying a field this schema does not know about is a
-version mismatch, and saying so is the entire purpose of publishing a
-schema. The exception is per-calculation payloads, which are genuinely
-open -- a sensitivity carries `method`/`bump`/`shockedFactor` while an NPV
-carries a cashflow breakdown, and enumerating every pricer's payload here
-would couple this module to all of them.
+Closed objects use `additionalProperties: false`, so an unknown field shows up as a version
+mismatch. Per-calculation payloads are the exception: they differ by pricer and are left
+open.
 """
 from typing import Dict
 
 from engine.integration.result import CALCULATIONS, STATUSES
-# Re-exported from the dependency-free leaf, so `result` can stamp its own
-# version without importing this module back. See `schema_version`'s
-# docstring for why the cycle is broken there rather than here.
+# Re-exported from the dependency-free leaf (see schema_version).
 from engine.integration.schema_version import (
     CAPABILITY_SCHEMA_VERSION,
     RESULT_SCHEMA_VERSION,
 )
 
-#: JSON Schema dialect these documents are written against. Stated rather
-#: than assumed -- see the module docstring.
+#: JSON Schema dialect, stated explicitly (draft semantics differ).
 JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
-#: Canonical `$id`s, so a consumer can cache each schema by a stable name
-#: rather than by the URL it happened to fetch it from.
-#:
-#: **`.invalid` is deliberate, not a placeholder.** It is the RFC 2606
-#: reserved TLD, guaranteed never to resolve. A `$id` is an *identifier*,
-#: and some validators will fetch one that looks fetchable -- pointing it at
-#: a reserved name makes an accidental network dereference impossible, and
-#: makes it obvious that the id is a name rather than a location. The
-#: schemas are served over HTTP at `/eod/schemas/*`; that is where a
-#: consumer fetches them.
+#: Canonical `$id`s. The reserved `.invalid` TLD (RFC 2606) never resolves, so a validator
+#: cannot dereference the id over the network; the schemas are served at `/eod/schemas/*`.
 RESULT_SCHEMA_ID = f"https://jax-risk-engine.invalid/schemas/{RESULT_SCHEMA_VERSION}.json"
 CAPABILITY_SCHEMA_ID = f"https://jax-risk-engine.invalid/schemas/{CAPABILITY_SCHEMA_VERSION}.json"
 
 
 def _calculation_outcome_schema() -> Dict:
-    """One calculation's outcome.
-
-    `status` is pinned to the five frozen statuses, read from
-    `engine.integration.result` rather than restated. `value` is
-    deliberately untyped beyond "present or null": it is a float for `npv`
-    and a structured object for nothing today, but constraining it here
-    would make adding a structured calculation a schema-breaking change
-    for no consumer benefit.
-
-    **Open to extra properties**, because per-calculation payloads are
-    merged in at the top level of this object by
-    `CalculationOutcome.to_dict` -- a sensitivity's `method`/`bump`, a
-    note's cashflow breakdown. See the module docstring.
-    """
+    """One calculation's outcome: `status` from the frozen statuses; `value` untyped
+    (present only when ok). Open to extra properties, because
+    `CalculationOutcome.to_dict` merges per-calculation payloads in at this level."""
     return {
         "type": "object",
         "required": ["status"],
@@ -108,18 +57,14 @@ def _calculation_outcome_schema() -> Dict:
             "reason": {"type": "string"},
             "detail": {"type": "string"},
         },
-        # Per-calculation payloads are merged in here. See the docstring.
+        # Per-calculation payloads are merged in here.
         "additionalProperties": True,
     }
 
 
 def _coverage_counts_schema() -> Dict:
-    """Per-calculation status counts.
-
-    Every one of the five keys is `required`: a consumer reading
-    `counts["failed"]` must never have to distinguish a missing key from a
-    zero. That asymmetry is how a wrong dashboard gets built.
-    """
+    """Per-calculation status counts; all five keys required, so a missing key is never
+    confused with zero."""
     keys = ["ok", "unsupported", "unavailable", "failed", "notApplicable"]
     return {
         "type": "object",
@@ -145,15 +90,8 @@ def _source_identity_schema() -> Dict:
 
 
 def _item_schema() -> Dict:
-    """One item: identity plus every calculation's outcome.
-
-    **All seven calculations are `required`.** An omitted calculation is
-    indistinguishable from a forgotten one, which is exactly what the
-    coverage model exists to prevent -- so the schema enforces what
-    `ItemResult.__post_init__` already enforces in code. Two independent
-    checks of the same invariant is the point: the code protects this
-    engine, the schema protects the consumer.
-    """
+    """One item: identity and every calculation's outcome. All calculations are required
+    (as `ItemResult.__post_init__` also enforces), so none can be silently omitted."""
     return {
         "type": "object",
         "required": ["itemId", "sourceIdentity", "calculations"],
@@ -177,12 +115,7 @@ def _item_schema() -> Dict:
 
 
 def result_schema() -> Dict:
-    """JSON Schema for the published EOD result document.
-
-    Derived from `CALCULATIONS` and `STATUSES`, never restated -- see the
-    module docstring. Returns a fresh dict on every call so a caller
-    mutating the result cannot corrupt the next one's.
-    """
+    """JSON Schema of the result document. A fresh dict on every call."""
     return {
         "$schema": JSON_SCHEMA_DIALECT,
         "$id": RESULT_SCHEMA_ID,
@@ -278,18 +211,9 @@ def result_schema() -> Dict:
 
 
 def capability_schema() -> Dict:
-    """JSON Schema for the capability document.
-
-    Looser than the result schema on purpose. The capability document is
-    advisory -- it tells a coordinator what to expect before submitting --
-    and its nested blocks grow as pricers land. Pinning every nested shape
-    would make each new pricer a schema-breaking change for a document whose
-    whole job is to describe change.
-
-    The *contract* parts are still pinned: the version, the engine and
-    mapping versions, the calculation vocabulary, and the flag saying no
-    fallback curve is ever substituted.
-    """
+    """JSON Schema of the capability document. Looser than the result schema, since the
+    document is advisory and grows with each pricer; the version fields, calculation
+    vocabulary and the no-fallback flag are pinned."""
     return {
         "$schema": JSON_SCHEMA_DIALECT,
         "$id": CAPABILITY_SCHEMA_ID,

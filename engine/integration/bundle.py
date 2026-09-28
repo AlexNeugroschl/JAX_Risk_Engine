@@ -1,59 +1,20 @@
 """
-W0.1 -- bundle ingestion and hash verification.
+EOD bundle ingestion and verification.
 
-Reads a `traderx.eod-bundle.v1`/`.v2` bundle, verifies **every artifact
-against its own `sha256`**, parses the CSV preambles, and rejects tampering.
-Nothing downstream of this module ever sees bytes that failed verification.
+Reads a `traderx.eod-bundle.v1`/`.v2` bundle, verifies every artifact against its own
+`sha256` (`manifest.artifacts.<name>.sha256`; `cut.cutSha256` identifies the consensus cut
+and is a different thing), checks row counts and preambles against the manifest, and parses
+the CSVs. Nothing downstream sees unverified bytes.
 
-**Each artifact is checked against its OWN hash.** `manifest.artifacts.
-<name>.sha256` is the SHA-256 of that artifact's exact bytes. `cut.cutSha256`
-is a different thing entirely -- it identifies the consensus cut the export
-was taken from, and is repeated inside each CSV's preamble. Comparing a CSV
-against `cutSha256` would be a category error that happens to typecheck;
-this module never does it. See `_verify_artifact`.
+A contracts file with `rows=0` is valid (no OTC coverage); a missing artifact is an
+integrity failure. v1 bundles have no terms artifact, so everything needing terms is refused
+downstream.
 
-**Empty is not missing.** A contracts file with `rows=0` and only a preamble
-is a *valid* bundle carrying zero OTC coverage (both the bill and note
-fixtures are exactly this). A contracts file that is absent from disk is an
-integrity failure. Conflating them would turn "this cut had no swaps" into
-"this bundle is broken", or worse, the reverse. `load_bundle` distinguishes
-them explicitly.
-
-**v1 has no terms artifact.** That is not a defect -- it is the older
-version. It has a consequence the caller must handle rather than paper over:
-every instrument needing reference terms is `unsupported` under v1 (see
-`engine.integration.terms`, W0.2 step 5).
-
----
-
-**CRLF -- the hazard this module is built around.**
-
-Hashes are over *committed bytes*. A Windows checkout with
-`core.autocrlf=true` (the default from Git for Windows' standard installer)
-silently rewrites LF -> CRLF on checkout for anything it considers text,
-which includes `.json` and `.csv` unless a `.gitattributes` says otherwise.
-Every artifact hash then fails, for a reason nothing in the error message
-points at. This is not hypothetical: it is live in this repository's own
-`reference/traderX` checkout right now, and it already broke TraderX's own
-verifier (plan §W0.1).
-
-Two decisions follow, and they pull in opposite directions on purpose:
-
-  1. **Bytes are read in binary and verified exactly as read.** This module
-     never normalizes line endings before hashing. A file whose committed
-     bytes were LF and whose on-disk bytes are CRLF is *not* the artifact
-     the manifest pins, and saying otherwise would defeat the entire point
-     of hashing. There is deliberately no `tolerate_crlf` escape hatch.
-
-  2. **The failure explains itself.** On mismatch, `_verify_artifact`
-     additionally tests whether the LF-normalized bytes *would* have
-     matched. If they would, the raised error names CRLF translation as the
-     cause and gives the `.gitattributes` fix. This is a pure diagnostic:
-     the verification still fails, the bytes are still rejected, and the
-     normalized digest is never substituted for the real one.
-
-The second decision is what makes the first one survivable. Strictness
-without a diagnostic is what produced the original confusion.
+Line endings: hashes are over committed bytes, and a Windows checkout with
+`core.autocrlf=true` rewrites LF to CRLF in `.json`/`.csv`, failing every hash. Bytes are
+read in binary and verified exactly as read, never normalized. On a mismatch,
+`_verify_artifact` checks whether the LF-normalized bytes would match and, if so, names CRLF
+translation and the `.gitattributes` fix in the error; the file is still rejected.
 """
 import csv
 import hashlib
@@ -69,13 +30,10 @@ SUPPORTED_BUNDLE_SCHEMAS = ("traderx.eod-bundle.v1", "traderx.eod-bundle.v2")
 #: Artifacts every bundle must carry, whatever its version.
 REQUIRED_ARTIFACTS = ("positions", "contracts")
 
-#: Artifact present only in v2. Its absence in v1 is normal; its absence in
-#: v2, or its presence in v1, is a manifest inconsistency.
+#: Present only in v2; its absence in v2 or presence in v1 is a manifest inconsistency.
 TERMS_ARTIFACT = "instrumentTerms"
 
-#: Preamble fields each CSV repeats and that must agree with the manifest's
-#: own `cut` block. A disagreement means the manifest and the artifact
-#: describe different cuts -- an integrity failure, not a warning.
+#: CSV preamble fields that must agree with the manifest's `cut` block.
 _CUT_PREAMBLE_FIELDS = {
     "consensusSequence": ("cut", "consensusSequence"),
     "sessionDate": ("cut", "sessionDate"),
@@ -83,43 +41,23 @@ _CUT_PREAMBLE_FIELDS = {
     "cutSha256": ("cut", "cutSha256"),
 }
 
-#: Columns every downstream stage indexes by name. Checked against the CSV
-#: HEADER at load time so schema drift fails here, naming the artifact and
-#: the missing column, rather than surfacing later as a bare `KeyError`
-#: from inside the join or the adapter.
-#:
-#: A file can hash correctly and still be unusable this way: the hash pins
-#: the bytes, not their shape. `csv.DictReader` fills a short row's missing
-#: column with `None` and buckets a long row's surplus under the `None`
-#: key, so neither condition raises on its own -- the first symptom would
-#: otherwise be an exception with no artifact, row, or column in it.
+#: Columns downstream code indexes by name, checked against the header at load time. A file
+#: can hash correctly and still have the wrong shape, and `csv.DictReader` does not raise on
+#: short or long rows.
 _REQUIRED_POSITION_COLUMNS = ("accountId", "security", "quantity")
 _REQUIRED_CONTRACT_COLUMNS = ("contractId", "accountId")
 
 
 class BundleIntegrityError(Exception):
-    """Raised for any failure that means the bundle on disk is not the
-    bundle the manifest describes: a bad hash, a missing required artifact,
-    a row-count disagreement, an unsupported schema, or a preamble that
-    contradicts the manifest.
-
-    Deliberately one exception type rather than a hierarchy. Every one of
-    these is equally fatal and equally non-recoverable -- there is no
-    caller that should catch "bad hash" and proceed while still refusing
-    "missing file". The message carries the detail; the type carries the
-    verdict.
-    """
+    """The bundle on disk is not the bundle the manifest describes (bad hash, missing
+    artifact, row-count or preamble disagreement, unsupported schema, bad columns). One type:
+    all of these are equally fatal."""
 
 
 @dataclass(frozen=True)
 class CsvArtifact:
-    """One verified CSV artifact: its preamble comments and its data rows.
-
-    `rows` are `dict`s keyed by the CSV header, in file order. Order is
-    preserved because the caller may need it for diagnostics -- but nothing
-    downstream keys on it (plan working rule 7: identity never rides on
-    array position).
-    """
+    """One verified CSV artifact: preamble, header and rows (dicts, in file order; nothing
+    downstream keys on the order)."""
     path: str
     sha256: str
     preamble: Dict[str, str]
@@ -133,17 +71,14 @@ class CsvArtifact:
 
 @dataclass(frozen=True)
 class Bundle:
-    """A fully verified EOD bundle. Reaching this object means every
-    artifact hash matched, every declared row count matched, and every
-    preamble agreed with the manifest."""
+    """A fully verified bundle: every hash, row count and preamble matched."""
     root: Path
     manifest: Dict
     manifest_sha256: str
     positions: CsvArtifact
     contracts: CsvArtifact
-    #: Parsed `instrument-terms.json`, or `None` for a v1 bundle. `None`
-    #: means "this bundle version carries no terms", never "terms failed to
-    #: load" -- a terms artifact that fails to load raises instead.
+    #: Parsed `instrument-terms.json`, or `None` for a v1 bundle (a terms artifact that
+    #: fails to load raises instead).
     terms: Optional[Dict] = None
     terms_sha256: Optional[str] = None
 
@@ -182,10 +117,8 @@ def _sha256(data: bytes) -> str:
 
 
 def _read_bytes(path: Path, label: str) -> bytes:
-    """Reads a file in **binary**. Never `open(path)` without `'rb'` here:
-    text mode applies universal-newline translation, which would silently
-    change the bytes being hashed on exactly the platform where the CRLF
-    hazard lives."""
+    """Read a file in binary (text mode would translate newlines before hashing). A missing
+    file is a `BundleIntegrityError`."""
     try:
         return path.read_bytes()
     except FileNotFoundError as exc:
@@ -198,12 +131,8 @@ def _read_bytes(path: Path, label: str) -> bytes:
 
 
 def _verify_artifact(raw: bytes, expected_sha256: str, label: str) -> None:
-    """Verifies `raw` against `expected_sha256` **exactly as read**.
-
-    On mismatch, checks whether LF-normalized bytes would have matched and,
-    if so, says so -- see this module's docstring. The normalized digest is
-    used only to explain the failure; it never satisfies it.
-    """
+    """Verify `raw` against `expected_sha256` exactly as read. On mismatch, diagnose CRLF
+    translation if the LF-normalized bytes would match; they never satisfy the check."""
     actual = _sha256(raw)
     if actual == expected_sha256:
         return
@@ -243,17 +172,8 @@ def _verify_artifact(raw: bytes, expected_sha256: str, label: str) -> None:
 
 
 def _parse_csv(raw: bytes, label: str) -> (Dict[str, str], List[str], List[Dict[str, str]]):
-    """Splits a TraderX extract CSV into its `# key=value` preamble and its
-    header + data rows.
-
-    The preamble carries both machine-checkable fields (`rows=`,
-    `cutSha256=`) and long prose legends explaining conventions. Both are
-    `# key=value`; only the former are read here, but all are kept so a
-    diagnostic can quote them.
-
-    Decoded as UTF-8 **after** hashing, never before -- the hash is over
-    bytes, and decoding is only for parsing.
-    """
+    """Split a TraderX CSV into its `# key=value` preamble, header and rows. Decoded as
+    UTF-8 after hashing."""
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -270,8 +190,7 @@ def _parse_csv(raw: bytes, label: str) -> (Dict[str, str], List[str], List[Dict[
             continue
         body_lines.append(line)
 
-    # Drop trailing blank lines so a file ending in a newline doesn't read
-    # as carrying an empty final row.
+    # Drop trailing blank lines so a final newline is not an empty row.
     while body_lines and not body_lines[-1].strip():
         body_lines.pop()
 
@@ -285,13 +204,8 @@ def _parse_csv(raw: bytes, label: str) -> (Dict[str, str], List[str], List[Dict[
 
 
 def _check_preamble_against_manifest(artifact: CsvArtifact, manifest: Dict, label: str) -> None:
-    """Every field the CSV preamble repeats from the manifest must agree.
-
-    A bundle whose manifest says one cut and whose artifact preamble says
-    another is not a bundle with a cosmetic inconsistency -- it is two
-    different exports in one directory, and pricing it would attribute one
-    cut's numbers to another's identity.
-    """
+    """Every field the CSV preamble repeats from the manifest must agree; otherwise the
+    directory mixes two exports."""
     for preamble_key, manifest_path in _CUT_PREAMBLE_FIELDS.items():
         if preamble_key not in artifact.preamble:
             continue  # not every artifact repeats every field
@@ -310,13 +224,8 @@ def _check_preamble_against_manifest(artifact: CsvArtifact, manifest: Dict, labe
 
 
 def _check_row_count(artifact: CsvArtifact, declared: int, label: str, preamble_key: str) -> None:
-    """The manifest's declared row count, the preamble's own count, and the
-    rows actually parsed must all agree.
-
-    Checking the manifest alone would miss a truncated file whose preamble
-    was truncated with it; checking the preamble alone would miss a
-    manifest that describes a different export.
-    """
+    """The manifest's row count, the preamble's count and the parsed rows must all agree
+    (catching both a truncated file and a manifest for another export)."""
     if artifact.row_count != declared:
         raise BundleIntegrityError(
             f"{label}: manifest declares rows={declared} but the artifact contains "
@@ -338,14 +247,8 @@ def _check_row_count(artifact: CsvArtifact, declared: int, label: str, preamble_
 
 
 def _check_required_columns(artifact: CsvArtifact, required: tuple, label: str) -> None:
-    """Every column downstream indexes by name must exist in the header, and
-    no row may carry surplus unnamed fields.
-
-    Both conditions are silent in `csv.DictReader` (see
-    `_REQUIRED_POSITION_COLUMNS`), so they are checked explicitly here --
-    at the point where the artifact's name and the offending column can
-    still be named in the message.
-    """
+    """Required columns must be in the header, and no row may be short or carry surplus
+    fields (both silent in `csv.DictReader`)."""
     missing = [column for column in required if column not in artifact.header]
     if missing:
         raise BundleIntegrityError(
@@ -404,17 +307,8 @@ def _load_csv_artifact(root: Path, manifest: Dict, name: str, preamble_count_key
 
 
 def _load_terms_artifact(root: Path, manifest: Dict) -> (Optional[Dict], Optional[str]):
-    """Loads and hash-verifies `instrument-terms.json` for a v2 bundle.
-
-    Returns `(None, None)` for v1. The manifest's declared `entries` count
-    is checked against the parsed entry list for the same reason row counts
-    are checked on the CSVs.
-
-    Verifying the hash **before parsing** is W0.2 step 1: parsing
-    unverified bytes would mean a tampered terms file gets a chance to
-    influence behavior (even just via an exception path) before it is
-    rejected.
-    """
+    """Load and verify `instrument-terms.json` for a v2 bundle (`(None, None)` for v1). The
+    hash is checked before parsing, and the declared entry count against the parsed list."""
     artifacts = manifest.get("artifacts", {})
     schema = manifest["schema"]
     has_entry = TERMS_ARTIFACT in artifacts
@@ -460,12 +354,8 @@ def _load_terms_artifact(root: Path, manifest: Dict) -> (Optional[Dict], Optiona
 
 
 def load_bundle(root) -> Bundle:
-    """Reads and fully verifies the EOD bundle rooted at `root`.
-
-    Raises `BundleIntegrityError` on any discrepancy between what the
-    manifest says and what is on disk. Returns only bundles that verified
-    completely -- there is no partially-verified `Bundle`.
-    """
+    """Read and fully verify the bundle at `root`; raise `BundleIntegrityError` on any
+    discrepancy. There is no partially verified `Bundle`."""
     root = Path(root)
     manifest_path = root / "manifest.json"
     raw_manifest = _read_bytes(manifest_path, "manifest (manifest.json)")
@@ -493,10 +383,8 @@ def load_bundle(root) -> Bundle:
     return Bundle(
         root=root,
         manifest=manifest,
-        # The manifest's own digest, over its exact bytes. Distinct from
-        # `bundleId`, which TraderX computes over the canonical manifest
-        # *without* bundleId -- this is the byte digest of the file as
-        # delivered, which is what a workload key should pin.
+        # Digest of the manifest file's exact bytes. Distinct from `bundleId`, which
+        # TraderX computes over the canonical manifest without bundleId.
         manifest_sha256=_sha256(raw_manifest),
         positions=positions,
         contracts=contracts,

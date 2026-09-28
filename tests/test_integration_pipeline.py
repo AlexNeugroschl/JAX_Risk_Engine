@@ -1,13 +1,10 @@
 """
-The W0 exit criterion, end to end, plus W0.9 capabilities
-(`docs/planning/traderx-integration-plan.md` §2 and §W0.9).
+`price_bundle` end to end without market inputs (the W0 exit criterion of
+docs/planning/traderX_integration/traderx-integration-plan.md), plus the capability
+document.
 
-**The exit criterion, quoted:** "the SOFR case returns
-`CONVENTION_NOT_SUPPORTED` naming all 13 missing terms, and bill/note return
-structurally valid results with `npv: unsupported`."
-
-`TestExitCriterion` asserts exactly that, and nothing else in this file is
-allowed to make it pass vacuously.
+Exit criterion: the SOFR case returns `CONVENTION_NOT_SUPPORTED` naming all 13 missing
+terms, and bill/note return structurally valid results with `npv: unsupported`.
 """
 import json
 from pathlib import Path
@@ -22,7 +19,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "traderx-eod"
 
 
 class TestExitCriterion:
-    """Plan §2: the W0 exit criterion, and §6's '★ first real result'."""
+    """The W0 exit criterion."""
 
     def test_sofr_returns_convention_not_supported(self):
         result = price_bundle(FIXTURES / "sofr" / "v2")
@@ -38,7 +35,7 @@ class TestExitCriterion:
         assert len(item.refusal["missingTerms"]) == 13
 
     def test_sofr_refusal_is_identified(self):
-        """A refusal nobody can attribute to a booking is useless."""
+        """The refusal is attributable to its booking."""
         result = price_bundle(FIXTURES / "sofr" / "v2")
         (item,) = result.items
 
@@ -56,8 +53,7 @@ class TestExitCriterion:
 
     @pytest.mark.parametrize("case", ("bill", "note"))
     def test_bill_and_note_results_are_structurally_valid(self, case):
-        """'Structurally valid' means every item carries every calculation,
-        identity, and a coverage block that sums."""
+        """Every item carries every calculation and its identity, and coverage sums."""
         result = price_bundle(FIXTURES / case / "v2")
         payload = result.to_dict()
 
@@ -69,15 +65,14 @@ class TestExitCriterion:
         assert payload["itemOrder"]["itemCount"] == len(payload["items"])
 
     def test_the_whole_result_is_json_serializable(self):
-        """It has to survive the wire, not just the type checker."""
+        """The result serializes to JSON."""
         for case in ("bill", "note", "sofr"):
             payload = price_bundle(FIXTURES / case / "v2").to_dict()
             assert json.loads(json.dumps(payload)) == payload
 
 
 class TestNothingIsPricedAtW0:
-    """W0 is 'contract and refusal machinery (no pricing)'. A result with
-    an `ok` NPV would mean a pricer crept in ahead of W1."""
+    """Without market inputs, no model-driven calculation is `ok`."""
 
     @pytest.mark.parametrize("case", ("bill", "note", "sofr"))
     @pytest.mark.parametrize("version", ("v1", "v2"))
@@ -97,8 +92,7 @@ class TestNothingIsPricedAtW0:
 
 
 class TestAccruedInterestIsAnsweredForReal:
-    """The one calculation W0 can answer honestly: a unit conversion of an
-    exported value, not a model output."""
+    """Accrued interest is answered without a model (a unit conversion of the export)."""
 
     def test_note_accrued_is_ok(self):
         result = price_bundle(FIXTURES / "note" / "v2")
@@ -114,9 +108,8 @@ class TestAccruedInterestIsAnsweredForReal:
             assert outcome.payload["provenance"] == "structural-zero"
 
     def test_v1_bill_accrued_is_unavailable_not_zero(self):
-        """Plan §W0.3 row 4, end to end: without terms the blank is
-        uninterpretable. `unavailable` tells the coordinator a resend with
-        terms fixes it; `unsupported` would wrongly imply engine work."""
+        """Without terms a blank accrued is `unavailable` (fixed by resending with terms),
+        not `unsupported`."""
         result = price_bundle(FIXTURES / "bill" / "v1")
         for item in result.items:
             outcome = item.calculations["accruedInterest"]
@@ -125,8 +118,7 @@ class TestAccruedInterestIsAnsweredForReal:
             assert outcome.value is None
 
     def test_accrued_survives_a_convention_refusal(self):
-        """A convention refusal has no bearing on a unit conversion, so the
-        more specific W0.3 verdict is not flattened by it."""
+        """A convention refusal does not flatten the accrued verdict."""
         result = price_bundle(FIXTURES / "bill" / "v1")
         item = result.items[0]
 
@@ -136,8 +128,7 @@ class TestAccruedInterestIsAnsweredForReal:
 
 class TestNotApplicableIsUsedPrecisely:
     def test_vega_on_a_treasury_is_not_applicable(self):
-        """Not a gap: a Treasury has no optionality, so there is no vega to
-        miss. Counting it would make a complete result look incomplete."""
+        """Vega on a Treasury is not-applicable (no optionality), not a gap."""
         result = price_bundle(FIXTURES / "note" / "v2")
         for item in result.items:
             assert item.calculations["vega"].status == "not-applicable"
@@ -147,18 +138,14 @@ class TestNotApplicableIsUsedPrecisely:
         assert result.items[0].calculations["vega"].status == "not-applicable"
 
     def test_var_es_is_not_applicable_per_item(self):
-        """A portfolio-level statistic, reported per item rather than
-        omitted, so coverage still sums to the item count."""
+        """VaR/ES is portfolio-level: not-applicable per item, so coverage still sums."""
         result = price_bundle(FIXTURES / "note" / "v2")
         for item in result.items:
             assert item.calculations["varEs"].status == "not-applicable"
 
     def test_a_swaption_vega_is_a_real_gap_not_not_applicable(self):
-        """The distinction `not-applicable` has to earn: a swaption DOES
-        have vega, so its absence is a genuine gap that must count against
-        coverage. Marking it `not-applicable` -- which a naive 'contracts
-        rows are swaps' fallback would do -- would hide a missing number.
-        """
+        """A swaption has vega, so its absence is a real gap, not not-applicable (as a naive
+        "contracts rows are swaps" fallback would say)."""
         from engine.integration.pipeline import _build_item
         from engine.integration.terms import JoinedRow
 
@@ -186,13 +173,8 @@ class TestV1Warns:
 
     @pytest.mark.parametrize("case", ("bill", "note", "sofr"))
     def test_v2_does_not(self, case):
-        """A v2 bundle carries no *terms* warning.
-
-        It does still warn about market inputs -- every delivered fixture
-        declares `marketInputs.status: NOT_SUPPLIED`, and W0.6 surfaces
-        that rather than passing over it. So this asserts the absence of
-        the specific warning, not the absence of all warnings.
-        """
+        """A v2 bundle has no terms warning (it still warns that market inputs are
+        NOT_SUPPLIED)."""
         warnings = price_bundle(FIXTURES / case / "v2").warnings
         assert not any("instrument-terms artifact" in w for w in warnings)
 
@@ -211,8 +193,7 @@ class TestPipelineAcceptsBundleOrPath:
         assert from_path == from_bundle
 
     def test_an_unverifiable_bundle_raises_rather_than_refusing(self, tmp_path):
-        """A bad *input* is not a refusable item -- it is a failure of the
-        submission. Returning a refusal would imply the bundle was read."""
+        """An unverifiable bundle raises: a bad input is not a refusable item."""
         import shutil
         root = tmp_path / "broken"
         shutil.copytree(FIXTURES / "note" / "v2", root)
@@ -224,41 +205,20 @@ class TestPipelineAcceptsBundleOrPath:
 
 class TestMarketProvenance:
     def test_w0_claims_no_market_provenance(self):
-        """W0 uses no curve at all. Asserting 'assumed' for a computation
-        that never happened would be its own small lie."""
+        """No curve was used, so no market provenance is claimed."""
         assert price_bundle(FIXTURES / "note" / "v2").market_provenance is None
 
 
 class TestPackageImportsNoSimulationPricer:
-    """The package's central architectural claim, narrowed by W1.2 rather
-    than abandoned.
-
-    **What changed.** At W0 this asserted that `engine/integration/`
-    imported no pricer, no ORE and no JAX at all -- true because W0 priced
-    nothing. W1.2 adds `bill.py`, which genuinely needs `ORE` for its date
-    and day-count arithmetic, so a blanket ban is no longer the right
-    statement.
-
-    **What has NOT changed, and is what this test actually protects.** The
-    bill pricer is a closed-form discounted cashflow: dates, a day count,
-    one `exp()`. It does not touch the Monte Carlo simulation, the JAX
-    pricing kernels, or `build_vanilla_swap` -- the last of which is the
-    specific thing W0.4's refusal path exists to keep away from a booking
-    whose conventions are unsupported (I-05). Importing *those* here would
-    mean an unsupported convention could reach a pricing object after all,
-    which is the ordering guarantee this test exists to enforce.
-
-    So the ban is now on the simulation/model layer, and `ORE` alone is
-    permitted.
-    """
+    """`engine/integration/` imports no simulation or model layer, so a booking with
+    unsupported conventions cannot reach `build_vanilla_swap` (I-05). ORE itself is allowed
+    (the bill and note need dates and day counts)."""
 
     def test_no_simulation_or_model_pricer_import(self):
         import ast
         from pathlib import Path
 
-        # `ORE` is deliberately absent: bill.py needs ORE.Date/day counts.
-        # `engine.models` stays banned -- it is where build_vanilla_swap
-        # lives, the exact object W0.4 refuses before constructing.
+        # ORE is allowed. engine.models is banned: build_vanilla_swap lives there.
         banned = (
             "jax",
             "engine.instruments", "engine.models", "engine.risk",
@@ -286,9 +246,7 @@ class TestPackageImportsNoSimulationPricer:
         )
 
     def test_bill_pricer_does_not_reach_the_swap_builder(self):
-        """The specific thing the ban above is about, stated directly: the
-        bill pricer must not construct a generic vanilla swap, whatever
-        else it imports."""
+        """The bill pricer does not construct a vanilla swap."""
         from pathlib import Path
 
         source = (Path(__file__).parents[1] / "engine" / "integration" / "bill.py").read_text(encoding="utf-8")
@@ -296,13 +254,8 @@ class TestPackageImportsNoSimulationPricer:
         assert "ore_builders" not in source
 
     def test_note_pricer_does_not_reach_the_swap_builder(self):
-        """The same, for W1.3's note pricer.
-
-        The note needs the ACT/ACT (ICMA) day count, which lived in
-        `engine.models.ore_builders` until W1.3 moved it to the leaf
-        module `engine.day_count`. That move happened *because* of this
-        ban rather than around it -- see `engine/day_count.py`.
-        """
+        """Nor does the note pricer (its ACT/ACT day count moved to the leaf module
+        `engine.day_count` for this reason)."""
         from pathlib import Path
 
         source = (Path(__file__).parents[1] / "engine" / "integration" / "note.py").read_text(encoding="utf-8")
@@ -310,20 +263,9 @@ class TestPackageImportsNoSimulationPricer:
         assert "ore_builders" not in source
 
     def test_importing_the_package_does_not_pull_in_the_model_layer(self):
-        """**Transitive closure, not just direct imports.**
-
-        The AST test above reads each file's own import statements, so it
-        catches `integration/x.py` importing `engine.models` directly --
-        but not `integration/x.py` importing a leaf that imports it. That
-        gap is real: W1.3's day-count extraction created exactly such a
-        leaf (`engine.day_count`), and if it ever grew an import back into
-        `engine.models`, the AST test would stay green while the pricing
-        layer became reachable from the refusal boundary again.
-
-        This asserts the property that actually matters -- after importing
-        the integration package in a clean interpreter, the model and
-        simulation modules are **not loaded**.
-        """
+        """The transitive closure: after importing the package in a clean interpreter, no
+        model or simulation module is loaded. (The AST test above sees only direct imports;
+        a leaf such as `engine.day_count` importing `engine.models` would pass it.)"""
         import subprocess
         import sys
 
@@ -348,25 +290,13 @@ class TestPackageImportsNoSimulationPricer:
 
 
 class TestCapabilities:
-    """W0.9 -- the supported matrix, so a coordinator can tell *before
-    submitting* whether a bundle is priceable."""
+    """The capability document: what is priceable, known before submitting."""
 
     def test_reports_the_delivery_stage_honestly(self):
-        """The document must say exactly what is priced -- neither still
-        claiming `refusal-only` (false since W1.2) nor implying the whole
-        product is priced (still false at W1.3).
-
-        **Updated from the W1.2 form of this test.** It asserted
-        `deliveryStage == "W1.2"` and `TREASURY == ["npv"]`, both of which
-        W1.3 deliberately changes by adding the note's `rateSensitivity`.
-        The narrowness it was protecting is preserved below, one level
-        finer: per *shape* rather than per type.
-        """
+        """The document says exactly what is priced: past refusal-only, per shape (a note
+        has `rateSensitivity`, a bill does not)."""
         doc = capabilities()
-        # The floor, not the exact string: a literal stage pin has broken
-        # on every W1 increment. What matters is that the document has
-        # advanced past refusal-only, which the contents below verify
-        # specifically.
+        # A floor, not an exact stage string (exact pins broke on every increment).
         assert doc["deliveryStage"].startswith("W1.")
         assert float(doc["deliveryStage"][1:]) >= 1.3
         assert doc["calculations"]["mode"] == "partial"
@@ -375,20 +305,12 @@ class TestCapabilities:
         assert treasury["priced"] is True
         assert set(treasury["calculations"]) == {"npv", "rateSensitivity"}
 
-        # The claim stays narrow where it must: a BILL still has no
-        # sensitivity. W1.3 earned the note's with a parity test and
-        # earned nothing for the bill.
+        # A bill still has no sensitivity.
         assert treasury["byShape"]["zero-coupon"] == ["npv"]
 
     def test_does_not_advertise_unearned_calculations(self):
-        """The specific overclaim to avoid: a priced NPV must not be read
-        as a priced risk number.
-
-        `rateSensitivity` left this list for the *note* in W1.3, backed by
-        an ORE parity test. `rateGamma`, `theta` and `vega` remain
-        unearned for everything, and the bill's sensitivity remains
-        unearned too -- asserted per shape.
-        """
+        """A priced NPV is not advertised as a priced risk number: `rateGamma`, `theta` and
+        `vega` are unearned everywhere, and the bill's sensitivity too."""
         doc = capabilities()
         for product, entry in doc["products"].items():
             for banned in ("rateGamma", "theta", "vega"):
@@ -403,9 +325,7 @@ class TestCapabilities:
                     )
 
     def test_derived_from_the_allowlist_not_hand_maintained(self):
-        """A stale capability document makes a promise the engine no longer
-        keeps. Pinning the derivation means adding a convention updates this
-        automatically."""
+        """Derived from the allowlist, so adding a convention updates it."""
         from engine.integration.conventions import (
             SUPPORTED_FLOAT_INDICES, SUPPORTED_SWAP_DAY_COUNTS,
         )
@@ -421,14 +341,11 @@ class TestCapabilities:
         assert capabilities()["bundleSchemas"] == list(SUPPORTED_BUNDLE_SCHEMAS)
 
     def test_advertises_no_market_input_fallback(self):
-        """Plan §W0.6: missing market data fails the job, never falls back.
-        Advertised so a coordinator knows before submitting."""
+        """No market-input fallback is advertised."""
         assert capabilities()["marketInputs"]["fallbackOnMissingInputs"] is False
 
     def test_known_limitations_are_advertised(self):
-        """The engine's real defects are part of its capability surface: a
-        consumer weighing an exposure profile needs I-04 before submitting,
-        not after reconciling."""
+        """Known limitations (e.g. I-04) are advertised."""
         ids = {limitation["id"] for limitation in capabilities()["knownLimitations"]}
         assert {"I-04", "I-05"} <= ids
 
@@ -442,9 +359,7 @@ class TestCapabilities:
         assert json.loads(json.dumps(doc)) == doc
 
     def test_capabilities_predicts_the_sofr_refusal(self):
-        """The whole point of W0.9: the matrix must agree with what the
-        engine actually does. USD-SOFR is absent from the advertised
-        indices, and submitting it is refused."""
+        """The matrix agrees with behaviour: USD-SOFR is not advertised and is refused."""
         advertised = capabilities()["conventions"]["swap"]["floatIndex"]
         assert not any("SOFR" in index for index in advertised)
 

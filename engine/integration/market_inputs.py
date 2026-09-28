@@ -1,59 +1,18 @@
 """
-W0.6 -- market input selection. Closes part of **I-11**.
-
-**Explicit market-input mode; no silent fallback.** A job must say where its
-market data comes from:
+Market-input selection (part of I-11). A job must say where its market data comes from:
 
 ```jsonc
 "marketInputs": {"mode": "assumed-profile", "assumedProfileId": "flat-3pct-v1"}
 ```
 
-Absent, or `mode: "package"` with no package, the **job fails** with
-`MARKET_INPUTS_NOT_SUPPLIED`. It does not fall back to a default curve, a
-flat curve, or the last curve it saw.
+Absent, or `mode: "package"` (not implemented), the whole job fails with
+`MARKET_INPUTS_NOT_SUPPLIED`; no curve is ever substituted. Unlike a per-item refusal, a
+missing curve leaves nothing to price anything against. TraderX bundles currently carry no
+market data, so a delivered bundle prices only when the caller requests an assumed profile.
 
----
-
-**Why a missing curve fails the job instead of refusing the item.**
-
-Every other gap in this boundary produces a per-item refusal: an unmapped
-convention makes *that instrument* `unsupported`, and the rest of the
-portfolio still prices. Market inputs are different in kind. They are not a
-property of any one instrument -- they are the shared basis every price in
-the run is measured against. A run with no curve has nothing to price
-*anything* against, so there is no partial result worth publishing, and
-publishing one would invite a consumer to reconcile a total that was never
-computed.
-
-So this module raises rather than returning a refusal, and
-`MarketInputsNotSupplied` is deliberately **not** a `ConventionRefusal`.
-
-**Why every fixture currently hits this path.** All three delivered YU18
-bundles carry `marketInputs: {"status": "NOT_SUPPLIED"}` -- TraderX exports
-positions and terms, not curves. That is expected and agreed (plan §1,
-"Market data: TraderX supplies dated observations; I own curve
-construction"). Until they ship a package, the only way to price a delivered
-bundle is for the *caller* to request an assumed profile explicitly, by id.
-
----
-
-**Assumed profiles are named, versioned, and registered -- not passed in.**
-
-`assumedProfileId` resolves against `ASSUMED_PROFILES` below. A caller
-cannot hand over arbitrary curve numbers through this path, and that is the
-point: an assumed curve has to be a *thing with a name* that appears
-verbatim in the result, so "what was this priced against?" has an answer
-that survives into the published artifact. Passing a bare rate would make
-every assumed run look identical in the output while being different in
-fact.
-
-The id is part of the workload key, so two runs against different profiles
-never share a cached result.
-
-**Every result computed against any assumed curve carries top-level
-`marketProvenance: "assumed"`** -- see `engine.integration.result.RiskResult`.
-Top-level, not buried per-curve, because a consumer reading only the summary
-must not be able to miss it.
+Assumed profiles are registered and requested by id, so the result records what it was
+priced against; the id is part of the workload key. Any result on an assumed curve carries
+top-level `marketProvenance: "assumed"`.
 """
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
@@ -66,57 +25,31 @@ MODE_ASSUMED_PROFILE = "assumed-profile"
 MODE_PACKAGE = "package"
 MODES = (MODE_ASSUMED_PROFILE, MODE_PACKAGE)
 
-#: `inputOrigin` values for curve provenance (plan §W0.6).
-#:
-#: `synthetic` is kept distinct from `assumed` deliberately -- it is open
-#: item §7.4 with TraderX. An *assumed* curve is a deliberate modelling
-#: choice standing in for an observation; a *synthetic* one is fabricated
-#: test data. Both are "not observed", and collapsing them would lose the
-#: difference between "we chose this stand-in" and "this number was made up
-#: for a fixture".
+#: `inputOrigin` values. `assumed` (a chosen stand-in for an observation) and `synthetic`
+#: (fabricated test data) are kept distinct; both count as not observed.
 ORIGIN_OBSERVED = "observed"
 ORIGIN_ASSUMED = "assumed"
 ORIGIN_MIXED = "mixed"
 ORIGIN_SYNTHETIC = "synthetic"
 INPUT_ORIGINS = (ORIGIN_OBSERVED, ORIGIN_ASSUMED, ORIGIN_MIXED, ORIGIN_SYNTHETIC)
 
-#: Origins that are not a real observation of the market. A result touched
-#: by any of these carries top-level `marketProvenance: "assumed"`.
+#: Origins that make a result's `marketProvenance` "assumed".
 _NOT_OBSERVED = (ORIGIN_ASSUMED, ORIGIN_MIXED, ORIGIN_SYNTHETIC)
 
-# ---------------------------------------------------------------------
-# Risk measure vocabulary (plan §W0.6; part of I-11).
-#
-# **Duplicated deliberately from `engine.risk.var_es`.** These three
-# strings are a CONTRACT vocabulary -- they appear on the wire in every
-# published result -- and this package must not import `engine.risk`,
-# which pulls in JAX and would break the "imports no pricer" invariant
-# that `engine/integration/` is built on (asserted by
-# `TestPackageImportsNoSimulationPricer`). Copying three constants is the cheaper
-# price than inverting that dependency.
-#
-# `tests/test_integration_market_inputs.py::TestMeasureVocabularyMatchesVarEs`
-# pins the two definitions together, so they cannot drift silently.
-# ---------------------------------------------------------------------
+# Risk-measure vocabulary, duplicated from `engine.risk.var_es` because this package must
+# not import `engine.risk` (it pulls in JAX). Pinned together by
+# `tests/test_integration_market_inputs.py::TestMeasureVocabularyMatchesVarEs`.
 MEASURE_RISK_NEUTRAL = "risk-neutral-pricing"
 MEASURE_HISTORICAL = "historical-forecast"
 MEASURE_STRESS = "deterministic-stress"
 MEASURES = (MEASURE_RISK_NEUTRAL, MEASURE_HISTORICAL, MEASURE_STRESS)
 
-#: What this engine actually produces: it simulates under the pricing
-#: measure. Not a caller-overridable default -- a statement of fact about
-#: the simulation. Reporting a risk-neutral exposure where a consumer
-#: expects a real-world loss forecast is a category error no amount of
-#: numerical accuracy fixes.
+#: The measure the engine's simulation runs under (a fact, not a default).
 ENGINE_RISK_MEASURE = MEASURE_RISK_NEUTRAL
 
 
 class MarketInputsNotSupplied(Exception):
-    """The job supplied no usable market inputs.
-
-    **Fails the job; not a per-item refusal.** See this module's docstring
-    for why market data is different in kind from a per-instrument gap.
-    """
+    """The job supplied no usable market inputs. Fails the job (see the module docstring)."""
 
     def __init__(self, detail: str):
         self.reason = MARKET_INPUTS_NOT_SUPPLIED
@@ -126,19 +59,12 @@ class MarketInputsNotSupplied(Exception):
 
 @dataclass(frozen=True)
 class CurveProvenance:
-    """Where one curve's numbers came from.
-
-    Attached to a `ZeroCurveConfig` so assumed and observed curves are
-    distinguishable **inside the engine**, not only at its edges. Before
-    this existed, `ZeroCurveConfig` carried times and rates and nothing
-    else -- a flat 3% assumption and a bootstrapped market curve were the
-    same object, and no downstream code could tell them apart.
-    """
+    """Where one curve's numbers came from, attached to a `ZeroCurveConfig` so assumed and
+    observed curves stay distinguishable inside the engine."""
     curve_id: str
     input_origin: str
     construction: str
-    #: Hashes of the inputs this curve was built from. Empty for an assumed
-    #: profile, which is built from a named constant rather than from data.
+    #: Hashes of the curve's input data; empty for an assumed profile (a named constant).
     input_hashes: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -163,17 +89,11 @@ class CurveProvenance:
 
 @dataclass(frozen=True)
 class AssumedProfile:
-    """A named, versioned assumed-curve profile.
-
-    Flat curves only, today, and the id says so (`flat-3pct-v1`). A profile
-    is a *constant*, not a fit -- it stands in for market data rather than
-    approximating it, so there is nothing to bootstrap and nothing to hash.
-    """
+    """A named, versioned assumed curve: flat, a constant rather than a fit."""
     profile_id: str
     description: str
     flat_rate: float
-    #: Pillar times the profile is materialized on. Chosen to span the
-    #: maturities the delivered fixtures actually need.
+    #: Pillar times the profile is materialized on.
     times: Tuple[float, ...] = (0.0, 1.0, 2.0, 5.0, 10.0, 30.0)
 
     def provenance(self) -> CurveProvenance:
@@ -181,8 +101,7 @@ class AssumedProfile:
             curve_id=self.profile_id,
             input_origin=ORIGIN_ASSUMED,
             construction="flat-constant",
-            # Nothing to hash: a named constant IS its own provenance, and
-            # the id is what a consumer reconciles against.
+            # A named constant: the id is its provenance.
             input_hashes=(),
         )
 
@@ -190,13 +109,8 @@ class AssumedProfile:
         return tuple(self.flat_rate for _ in self.times)
 
 
-#: The registered profiles. `flat-3pct-v1` is the one the plan names.
-#:
-#: Adding a profile here is a deliberate act: it becomes requestable by id
-#: and will appear verbatim in published results. Changing an existing
-#: profile's numbers is NOT allowed -- add a new id with a bumped version
-#: instead, or every result ever computed against the old one becomes
-#: unreproducible while still claiming the same provenance.
+#: Registered profiles. Never change an existing profile's numbers (results computed
+#: against it would become unreproducible under the same id); add a new versioned id.
 ASSUMED_PROFILES: Dict[str, AssumedProfile] = {
     profile.profile_id: profile
     for profile in (
@@ -211,8 +125,7 @@ ASSUMED_PROFILES: Dict[str, AssumedProfile] = {
 
 @dataclass(frozen=True)
 class MarketInputs:
-    """A resolved market-input selection. Reaching this object means the
-    job HAS usable market data; the failure path raises instead."""
+    """A resolved market-input selection (failure raises instead)."""
     mode: str
     profile: Optional[AssumedProfile] = None
 
@@ -224,7 +137,7 @@ class MarketInputs:
 
     @property
     def market_provenance(self) -> str:
-        """The top-level label for every result computed against this."""
+        """Top-level `marketProvenance` for results computed against this."""
         return market_provenance_of((self.provenance,))
 
     def to_dict(self) -> Dict:
@@ -236,12 +149,8 @@ class MarketInputs:
 
 
 def market_provenance_of(provenances) -> str:
-    """The top-level `marketProvenance` for a run using these curves.
-
-    `"observed"` only when **every** curve was observed. One assumed curve
-    in a portfolio makes the whole result assumed -- a consumer cannot act
-    on "mostly observed", and the conservative label is the honest one.
-    """
+    """Top-level `marketProvenance`: "observed" only if every curve was observed, else
+    "assumed"."""
     provenances = tuple(provenances)
     if not provenances:
         raise ValueError("market_provenance_of needs at least one curve provenance")
@@ -251,12 +160,8 @@ def market_provenance_of(provenances) -> str:
 
 
 def resolve_market_inputs(spec: Optional[Dict]) -> MarketInputs:
-    """Resolves a `marketInputs` request block, or **fails the job**.
-
-    This is the single place the no-silent-fallback rule is enforced. Every
-    branch that cannot produce real market data raises
-    `MarketInputsNotSupplied`; none of them substitutes a curve.
-    """
+    """Resolve a `marketInputs` block or raise `MarketInputsNotSupplied`; never
+    substitutes a curve."""
     if not spec:
         raise MarketInputsNotSupplied(
             "no marketInputs block was supplied. Market inputs must be requested "
@@ -277,10 +182,8 @@ def resolve_market_inputs(spec: Optional[Dict]) -> MarketInputs:
     if mode == MODE_PACKAGE:
         package = spec.get("package")
         if not package:
-            # The plan's named case: mode says observed data, none arrives.
-            # Quietly downgrading to an assumed profile here would be the
-            # single most dangerous fallback in the system -- the result
-            # would claim observed provenance it does not have.
+            # Falling back to an assumed curve here would publish an assumption with
+            # observed provenance.
             raise MarketInputsNotSupplied(
                 "marketInputs.mode='package' was requested but no market data "
                 "package was supplied. The job fails rather than falling back to "

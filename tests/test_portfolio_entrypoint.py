@@ -1,11 +1,7 @@
 """
-Tests for engine.portfolio.price_portfolio -- the single entry point that
-replaces demo.py's hand orchestration. Follows
-tests/test_diverse_portfolio_e2e.py's methodology (cross-check against
-independently-orchestrated pricing, same simulated values) but calling
-price_portfolio as the entry point rather than hand-wiring each pricer:
-proves price_portfolio's output equals manually-orchestrated demo.py-style
-output, trade-by-trade, for a portfolio mixing all four instrument types.
+`engine.portfolio.price_portfolio` equals the same pricing orchestrated by hand (the
+demo.py sequence), trade by trade, for a portfolio of all four instrument types, on the same
+simulated values.
 """
 import jax.numpy as jnp
 import numpy as np
@@ -79,9 +75,7 @@ def _sim_config(trades) -> SimulationConfig:
 
 
 class TestPortfolioRequestFixture:
-    """Exercises the shared conftest.py portfolio_request fixture directly
-    -- a minimal, valid PortfolioRequest other tests (and engine/api tests)
-    can build on without repeating this setup."""
+    """The shared conftest `portfolio_request` fixture prices."""
 
     def test_fixture_prices_successfully(self, portfolio_request):
         result = price_portfolio(portfolio_request)
@@ -90,9 +84,7 @@ class TestPortfolioRequestFixture:
 
 
 class TestPricePortfolioMatchesHandOrchestration:
-    """price_portfolio's output must equal calling each pricer by hand
-    (the exact demo.py-style sequence it replaces), trade-by-trade -- not
-    just an internally-consistent number."""
+    """`price_portfolio` equals each pricer called by hand, trade by trade."""
 
     @classmethod
     @pytest.fixture(scope="class")
@@ -107,8 +99,7 @@ class TestPricePortfolioMatchesHandOrchestration:
     @classmethod
     @pytest.fixture(scope="class")
     def manual(cls, trades, sim_config):
-        """Hand-orchestrated pricing -- the exact demo.py-style sequence,
-        computed independently of price_portfolio."""
+        """Hand-orchestrated pricing, independent of `price_portfolio`."""
         swap_cfg, swaption_cfg, bermudan_cfg, american_cfg = trades
         market = generate_paths(sim_config)
         step_times = jnp.array(sim_config.time_grid[1:], dtype=jnp.float64)
@@ -128,8 +119,7 @@ class TestPricePortfolioMatchesHandOrchestration:
             + price_bermudan_swaption_base(bermudan_cfg)
             + price_bermudan_swaption_base(american_cfg)
         )
-        # The netting-set exposure, from the simulation's own numeraire and
-        # rate factor 0's curve -- the wiring price_portfolio must reproduce.
+        # Netting-set exposure from the simulation's numeraire and rate factor 0's curve.
         discount = hw_discount(HwZeroCurve.from_config(sim_config.rates.initial_zero_curves[0]), step_times)
         exposure = netting_set_profile(
             npv_cube, [base_npv], market["numeraire"], discount,
@@ -152,11 +142,8 @@ class TestPricePortfolioMatchesHandOrchestration:
         assert via_entrypoint.npv_cube.shape[-1] == 4  # one per trade, caller order
 
     def test_npv_cube_matches_trade_by_trade(self, via_entrypoint, manual):
-        """Each trade's own NPV column must match the hand-orchestrated
-        equivalent exactly -- confirms price_portfolio's routing/
-        reassembly preserves the caller's original trade order (swap,
-        european swaption, bermudan, american) rather than silently
-        permuting by internal pricing-group order."""
+        """Each trade's column matches, in the caller's order (swap, European, Bermudan,
+        American), not the internal pricing-group order."""
         np.testing.assert_allclose(
             np.asarray(via_entrypoint.npv_cube), np.asarray(manual["npv_cube"]), rtol=1e-9,
         )
@@ -183,22 +170,11 @@ class TestPricePortfolioMatchesHandOrchestration:
             assert float(profile.ene[0]) == pytest.approx(max(-npv0, 0.0))
 
     def test_no_warnings_other_than_the_aged_swap_one(self, via_entrypoint):
-        """Nothing about this portfolio's Bermudan/American trades warrants a
-        warning: their exercise is priced exactly as ORE prices it.
-
-        Originally `assert warnings == []`. It now excludes the aged-swap
-        warning, which is a DIFFERENT, correct warning about a different
-        limitation: this portfolio's swap is spot-starting and priced over a
-        multi-step grid, so it genuinely is aged past its first accrual date
-        (see engine/instruments/swap.py's module docstring and
-        tests/test_portfolio_gap_fixes.py::TestAgedSwapWarningIsNotSilent).
-        Suppressing that warning to keep this assertion literal would restore
-        exactly the silence that warning exists to remove -- so this test
-        narrows to its actual subject (the option trades) instead.
-        """
-        # The expiry warning (audit M-3) is excluded for the same reason: it
-        # is about exposure after the last exercise date, not about how
-        # exercise itself is priced.
+        """The option trades raise no warning: their exercise is priced as ORE prices it.
+        The aged-swap warning (the swap is spot-starting on a multi-step grid; I-04) is
+        expected and excluded."""
+        # The expiry warning (audit M-3) is excluded too: it concerns exposure after the
+        # last exercise, not how exercise is priced.
         unrelated = [w for w in via_entrypoint.warnings
                      if "already started accruing" not in w and "last exercise" not in w]
         assert unrelated == []
@@ -208,11 +184,8 @@ class TestPricePortfolioMatchesHandOrchestration:
 
 
 class TestPricePortfolioReorderingIndependence:
-    """Trades are grouped by type internally for pricing (each pricer only
-    accepts a homogeneous list) but the result must always be reassembled
-    in the CALLER's original order -- verified by shuffling the trade list
-    and confirming each trade's own NPV column follows it, not the
-    type-grouping order."""
+    """Trades are grouped by type for pricing, but results come back in the caller's order
+    (checked by shuffling the input)."""
 
     def test_shuffled_trade_order_reorders_npv_cube_columns_identically(self):
         swap_cfg, swaption_cfg, bermudan_cfg, american_cfg = _build_trades()
@@ -223,8 +196,8 @@ class TestPricePortfolioReorderingIndependence:
         result_original = price_portfolio(PortfolioRequest(market=sim_config, trades=trades_original))
         result_shuffled = price_portfolio(PortfolioRequest(market=sim_config, trades=trades_shuffled))
 
-        # trades_shuffled = [bermudan, swap, american, swaption] -- index
-        # mapping back into trades_original's [swap, swaption, bermudan, american] order.
+        # trades_shuffled = [bermudan, swap, american, swaption], mapped back to the original
+        # [swap, swaption, bermudan, american] order.
         shuffled_to_original = [2, 0, 3, 1]
         for shuffled_idx, original_idx in enumerate(shuffled_to_original):
             np.testing.assert_allclose(
@@ -236,10 +209,7 @@ class TestPricePortfolioReorderingIndependence:
 
 class TestPricePortfolioAutoDerivesMaturityPillars:
     def test_unset_maturities_are_derived_automatically(self):
-        """If the caller leaves RatesConfig.maturities unset,
-        price_portfolio must derive it via derive_maturity_pillars and
-        still price successfully (the automatic-pillar-assembly case the
-        general PortfolioRequest surface is meant to cover)."""
+        """Unset `RatesConfig.maturities` are derived with `derive_maturity_pillars`."""
         swap_cfg = SwapConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True,
             discount_curve_index=0, forward_curve_index=0,
@@ -260,9 +230,7 @@ class TestPricePortfolioAutoDerivesMaturityPillars:
         assert np.isfinite(result.base_npv)
 
     def test_preset_maturities_are_left_untouched(self):
-        """A caller who already supplies rates.maturities keeps exactly
-        that pillar set -- price_portfolio must not silently override an
-        explicit choice."""
+        """Maturities the caller supplies are kept unchanged."""
         swap_cfg = SwapConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True,
             discount_curve_index=0, forward_curve_index=0,
@@ -283,9 +251,8 @@ class TestPricePortfolioAutoDerivesMaturityPillars:
 
 
 class TestPricePortfolioCalibration:
-    """hw_sigma=None on a Bermudan/American trade triggers calibration via
-    request.calibration_targets -- once per distinct rate_factor_index, not
-    once per trade."""
+    """hw_sigma=None on a Bermudan/American is calibrated from
+    `request.calibration_targets`, once per rate factor."""
 
     @pytest.mark.slow
     def test_uncalibrated_hw_sigma_is_filled_in_and_prices_finite(self):
@@ -350,9 +317,8 @@ class TestPricePortfolioGreeks:
 
     @pytest.mark.slow
     def test_greeks_keyed_by_original_trade_index_not_pricing_group_order(self):
-        """trades = [bermudan, swaption] -- greeks[0] must be the
-        Bermudan's own Delta/Gamma/Theta, greeks[1] the swaption's, matching
-        the CALLER's list order, not internal type-grouping order."""
+        """With trades [bermudan, swaption], greeks[0] is the Bermudan's and greeks[1] the
+        swaption's (caller order)."""
         swap_cfg, swaption_cfg, bermudan_cfg, american_cfg = _build_trades()
         trades = [bermudan_cfg, swaption_cfg]
         sim_config = _sim_config([swap_cfg, swaption_cfg, bermudan_cfg, american_cfg])
@@ -369,14 +335,10 @@ class TestPricePortfolioGreeks:
 
 
 class TestPricePortfolioPrecision:
-    """PrecisionConfig's four independent knobs (simulation/pricing/risk/
-    calibration), each 32 or 64 -- see engine.portfolio.request.
-    PrecisionConfig. `pricing`/`risk` may each additionally be a structured
-    override (PricingPrecisionOverride/RiskPrecisionOverride) for optional
-    per-instrument-type/per-Greek drill-down. Default (all-64) must
-    reproduce today's exact behavior; each knob set to 32 (flat or via an
-    override) must be independently observable in the right output dtype,
-    without affecting the others."""
+    """`PrecisionConfig`'s four knobs (simulation, pricing, risk, calibration), each 32 or 64,
+    with optional per-type/per-metric overrides for pricing and risk. The default reproduces
+    all-64 behaviour; each knob at 32 shows up in the right output's dtype without affecting
+    the others."""
 
     def _request(self, precision=None, compute_greeks=False):
         from engine.portfolio import PrecisionConfig
@@ -389,12 +351,8 @@ class TestPricePortfolioPrecision:
         return PortfolioRequest(**kwargs)
 
     def test_default_precision_matches_pre_feature_behavior(self):
-        """No `precision` supplied -> PrecisionConfig() (all-64) -> byte-
-        identical npv_cube dtype/values to a request built before this
-        feature existed. Also proves omitting overrides produces plain
-        ints for pricing/risk, not silently-promoted override objects --
-        the literal backward-compat regression proof for the hierarchy
-        redesign."""
+        """No `precision` gives all-64 and plain ints for pricing/risk (not override
+        objects)."""
         request = self._request()
         assert request.precision.simulation == 64
         assert request.precision.pricing == 64
@@ -411,21 +369,14 @@ class TestPricePortfolioPrecision:
         from engine.portfolio import PrecisionConfig
         request = self._request(precision=PrecisionConfig(simulation=32))
         result = price_portfolio(request)
-        # generate_paths under precision=32 produces float32 rates/yield
-        # curves; the final npv_cube dtype is governed by `pricing` (still
-        # 64 here), which price_swaps/etc. derive from their JAX-array
-        # inputs -- so npv_cube itself may still be float64 even though the
-        # underlying simulation ran in float32. What matters here is that
-        # simulation=32 alone doesn't break pricing.
+        # simulation=32 gives float32 market data; npv_cube's dtype follows `pricing` (64
+        # here). The point is that simulation=32 alone does not break pricing.
         assert bool(jnp.all(jnp.isfinite(result.npv_cube)))
         assert np.isfinite(result.base_npv)
 
     def test_pricing_32_produces_float32_npv_cube_and_base_npv(self):
-        """pricing=32 must make BOTH npv_cube AND base_npv's own internal
-        computation (_flat_curve_cube, the swaption zero-shock r0_path)
-        float32 -- exercising all four trade types at once, since each
-        pricer's own final-cast-to-input-dtype behavior needs a float32
-        input to prove out."""
+        """pricing=32 makes npv_cube and the base NPV computation float32, across all four
+        trade types."""
         from engine.portfolio import PrecisionConfig
         request = self._request(precision=PrecisionConfig(pricing=32))
         result = price_portfolio(request)
@@ -434,9 +385,7 @@ class TestPricePortfolioPrecision:
         assert np.isfinite(result.base_npv)
 
     def test_pricing_64_vs_32_base_npv_numerically_close(self):
-        """float32 pricing shouldn't produce a wildly different base_npv --
-        just a lower-precision one (pytest.approx with a loose relative
-        tolerance, not exact equality)."""
+        """float32 pricing gives a base NPV close to float64's."""
         from engine.portfolio import PrecisionConfig
         request64 = self._request(precision=PrecisionConfig(pricing=64))
         request32 = self._request(precision=PrecisionConfig(pricing=32))
@@ -446,17 +395,14 @@ class TestPricePortfolioPrecision:
 
     @pytest.mark.slow
     def test_risk_32_changes_greeks_dtype_for_swaption_and_bermudan(self):
-        """risk=32 must flow into both a European swaption's and a
-        calibrated Bermudan's Greeks (the Jacobian path bermudan_vega
-        exercises isn't triggered by compute_greeks -- that's covered
-        directly in test_greeks_bermudan.py -- but bermudan_delta_gamma's
-        own risk-dtype plumbing runs through price_portfolio here)."""
+        """risk=32 reaches the European's and the Bermudan's Greeks through
+        `price_portfolio`. (Vega needs a calibrated Sigma; it is tested in
+        test_greeks_bermudan.py.)"""
         from engine.portfolio import PrecisionConfig
         request = self._request(precision=PrecisionConfig(risk=32), compute_greeks=True)
         result = price_portfolio(request)
         assert result.greeks is not None
-        # trades = [swap, swaption, bermudan, american]; swap Greeks are
-        # skipped by design (see _compute_all_greeks's own docstring).
+        # trades = [swap, swaption, bermudan, american]; the options are checked here.
         for idx in (1, 2, 3):
             assert idx in result.greeks
             for key, val in result.greeks[idx].items():
@@ -466,9 +412,7 @@ class TestPricePortfolioPrecision:
 
     @pytest.mark.slow
     def test_mixed_precision_each_stage_independent(self):
-        """simulation=64, pricing=32, risk=32 -- confirms each of the three
-        knobs takes effect independently in the same request, the
-        end-to-end scenario the plan's own verification step calls out."""
+        """simulation=64, pricing=32, risk=32 in one request, each taking effect."""
         from engine.portfolio import PrecisionConfig
         request = self._request(
             precision=PrecisionConfig(simulation=64, pricing=32, risk=32), compute_greeks=True,
@@ -483,11 +427,8 @@ class TestPricePortfolioPrecision:
             assert jnp.asarray(val).dtype == jnp.float32
 
     def test_pricing_per_instrument_type_override(self):
-        """PricingPrecisionOverride(default=64, bermudan_swaption=32) --
-        each bucket casts to its OWN dtype internally; npv_cube's own dtype
-        reflects the WIDEST bucket present (jnp.stack promotion), not the
-        one that was drilled down -- this assertion documents that
-        consequence rather than hiding it."""
+        """With only bermudan_swaption=32, that bucket is float32 internally, but npv_cube
+        takes the widest dtype present (`jnp.stack` promotion)."""
         from engine.portfolio import PrecisionConfig, PricingPrecisionOverride
 
         override = PricingPrecisionOverride(default=64, bermudan_swaption=32)
@@ -502,12 +443,9 @@ class TestPricePortfolioPrecision:
 
     @pytest.mark.slow
     def test_risk_per_greek_override(self):
-        """RiskPrecisionOverride(default=64, theta=32) -- delta_gamma and
-        theta must resolve to DIFFERENT dtypes via _resolve_risk_dtype, and
-        that difference must be observable in the actual Greeks output
-        (delta/gamma stay float64 while theta's own float32 resolution is
-        checked directly, since theta returns a plain Python float with no
-        observable dtype)."""
+        """theta=32 with default 64: delta_gamma and theta resolve to different dtypes
+        (Delta/Gamma stay float64; theta is a Python float, so its resolution is checked
+        directly)."""
         from engine.portfolio import PrecisionConfig, RiskPrecisionOverride
         from engine.portfolio.request import _resolve_risk_dtype
 
@@ -525,9 +463,8 @@ class TestPricePortfolioPrecision:
                 assert jnp.asarray(val).dtype == jnp.float64, f"trade {idx} greek {key!r} not float64"
 
     def test_risk_exposure_override_recasts_npv_cube_for_exposure_only(self):
-        """RiskPrecisionOverride(default=64, exposure=32) -- the cast happens
-        ONLY on the copy fed to the exposure statistics; npv_cube itself
-        (what `pricing` produced) is untouched."""
+        """exposure=32 casts only the copy fed to the exposure statistics; npv_cube keeps
+        the pricing dtype."""
         from engine.portfolio import PrecisionConfig, RiskPrecisionOverride
 
         override = RiskPrecisionOverride(default=64, exposure=32)
@@ -542,10 +479,8 @@ class TestPricePortfolioPrecision:
                 assert jnp.asarray(arr).dtype == jnp.float32
 
     def test_calibration_precision_flows_through_lgm_bootstrap(self):
-        """calibration=32 vs 64 must produce a genuinely different-dtype
-        calibrated Sigma via _fill_calibrated_sigma, with numerically close
-        (not equal) pricing -- exercised through a Bermudan trade with
-        hw_sigma=None so calibration actually runs."""
+        """calibration=32 vs 64 gives a different-dtype calibrated Sigma and close
+        prices."""
         from dataclasses import replace as _replace
         from engine.portfolio import PrecisionConfig
         from engine.portfolio.request import _fill_calibrated_sigma
@@ -577,9 +512,7 @@ class TestPricePortfolioPrecision:
 
     @pytest.mark.slow
     def test_precision_knobs_fully_independent_four_way(self):
-        """All four axes set independently and simultaneously -- a mechanism
-        proof via direct resolver checks, since four independently-varying
-        axes make a single end-to-end numeric assertion weak."""
+        """All four knobs set independently at once, checked through the resolvers."""
         from engine.portfolio import PrecisionConfig, PricingPrecisionOverride, RiskPrecisionOverride
         from engine.portfolio.request import _resolve_pricing_dtype, _resolve_risk_dtype
 
@@ -601,8 +534,7 @@ class TestPricePortfolioPrecision:
 
 
 class TestPrecisionOverrideValidation:
-    """PricingPrecisionOverride/RiskPrecisionOverride validate every field
-    exactly like PrecisionConfig.__post_init__ already does."""
+    """The override classes validate every field as `PrecisionConfig` does."""
 
     def test_pricing_override_rejects_invalid_bits(self):
         from engine.portfolio import PricingPrecisionOverride
@@ -616,22 +548,10 @@ class TestPrecisionOverrideValidation:
 
 
 class TestPricePortfolioConcurrency:
-    """The load-bearing correctness proof for this whole feature:
-    price_portfolio's async-job usage (engine/api/routes.py's
-    BackgroundTasks thread pool) means two DIFFERENT PrecisionConfig
-    requests can genuinely run on separate threads at the same time.
-    generate_paths flips jax_enable_x64, a process-global JAX/XLA flag --
-    with no lock, thread B's flag flip can land while thread A is still
-    mid-flight, corrupting thread A's dtype or (worse) silently producing a
-    dtype-correct-but-numerically-wrong array. _PRICING_LOCK in
-    engine/portfolio/request.py serializes price_portfolio's entire
-    JAX-executing body against exactly this race.
-
-    Uses threading.Barrier (not bare Thread.start()) to force genuine
-    overlap -- both threads block until both have reached the barrier,
-    maximizing the odds of a real race if the lock were absent/broken.
-    Repeats the body multiple times within the test, since a race-condition
-    test that only sometimes catches the bug is a weak guarantee."""
+    """Two requests at different precisions on two threads each get their own dtype and
+    values. `generate_paths` toggles the process-global `jax_enable_x64`, so without
+    `_PRICING_LOCK` one thread could corrupt the other mid-flight. A `threading.Barrier`
+    forces overlap, and the body repeats to make a race likely."""
 
     NUM_REPETITIONS = 8
 
@@ -648,11 +568,8 @@ class TestPricePortfolioConcurrency:
         precision_a = PrecisionConfig(simulation=64, pricing=64, risk=64)
         precision_b = PrecisionConfig(simulation=32, pricing=32, risk=32)
 
-        # Sequential reference results, computed once, OUTSIDE any threading
-        # -- the numeric ground truth each concurrent run is cross-checked
-        # against (dtype alone wouldn't catch numeric corruption from a
-        # mid-flight flag flip producing a dtype-correct-but-wrong-valued
-        # array).
+        # Sequential reference results, outside any threading, to catch wrong values as well
+        # as wrong dtypes.
         ref_a = price_portfolio(self._make_request(precision_a))
         ref_b = price_portfolio(self._make_request(precision_b))
 

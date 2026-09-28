@@ -1,10 +1,6 @@
 """
-W1.5 -- the bond's HTTP surface (`engine.api.schemas`).
-
-Covers the discriminated-union routing, the request/response round trip,
-and one bug found while building it: a **scalar** Greek crashed
-`GreeksSchema.from_dataclass`, because every pre-W1.5 Greek was a per-pillar
-vector and the conversion iterated unconditionally.
+The bond's HTTP surface (`engine.api.schemas`, W1.5): discriminated-union routing, the
+request/response round trip, and serialization of scalar Greeks.
 """
 import ORE
 import numpy as np
@@ -64,7 +60,7 @@ def request_json(trades, **kwargs) -> dict:
 
 
 class TestBondSchemaRouting:
-    """The discriminated union must route `trade_type: "bond"`."""
+    """The union routes `trade_type: "bond"`."""
 
     def test_a_bond_parses_from_json(self):
         parsed = PortfolioRequestSchema.model_validate(request_json([BILL_JSON]))
@@ -76,7 +72,7 @@ class TestBondSchemaRouting:
         assert isinstance(dataclass_request.trades[0], BondConfig)
 
     def test_an_unknown_trade_type_is_still_rejected(self):
-        """The union must not have been loosened by adding a member."""
+        """Adding a member did not loosen the union."""
         bad = dict(BILL_JSON, trade_type="collateralized_debt_obligation")
         with pytest.raises(ValidationError):
             PortfolioRequestSchema.model_validate(request_json([bad]))
@@ -94,7 +90,7 @@ class TestBondSchemaRouting:
 
 
 class TestBondSchemaConversionIsFaithful:
-    """The JSON must produce the same price as the dataclass directly."""
+    """The JSON gives the same price as the dataclass directly."""
 
     def test_a_bill_prices_the_same_over_the_schema(self):
         parsed = PortfolioRequestSchema.model_validate(request_json([BILL_JSON]))
@@ -123,7 +119,7 @@ class TestBondSchemaConversionIsFaithful:
         assert bond.coupon_schedule[0].payment() == ORE.Date(15, 6, 2025)
 
     def test_a_malformed_bond_is_refused_at_conversion(self):
-        """A matured bond must not survive into a priced result."""
+        """A matured bond is refused."""
         from engine.instruments.treasury import BondPricingError
 
         matured = dict(BILL_JSON, maturity_date="2020-01-01")
@@ -133,31 +129,22 @@ class TestBondSchemaConversionIsFaithful:
 
 
 class TestBondGreeksSerializeOverHttp:
-    """**The scalar-Greek serializer bug, found before shipping.**
-
-    Every pre-W1.5 Greek is a per-pillar VECTOR, so
-    `GreeksSchema.from_dataclass` iterated `np.asarray(val).tolist()`
-    unconditionally. A bond's delta/gamma are SCALARS (one parallel bump
-    against a single curve), and a 0-d array's `.tolist()` returns a bare
-    Python float -- so the conversion raised
-    `TypeError: 'float' object is not iterable` and the whole response
-    failed to serialize.
-
-    Verified: these fail against the pre-fix `from_dataclass`.
-    """
+    """Scalar Greeks serialize. A bond's delta/gamma are scalars (one parallel bump), and a
+    0-d array's `.tolist()` is a bare float, so a `from_dataclass` that iterated it
+    unconditionally raised `TypeError: 'float' object is not iterable`."""
 
     def test_a_scalar_greek_serializes(self):
         schema = GreeksSchema.from_dataclass({"delta": np.asarray(-5.284)})
         assert schema.values["delta"] == pytest.approx([-5.284])
 
     def test_a_scalar_greek_becomes_a_one_element_list(self):
-        """Uniformity: `values` is a list-per-Greek, never sometimes a float."""
+        """`values` is always a list per Greek."""
         schema = GreeksSchema.from_dataclass({"delta": np.asarray(-5.284)})
         assert isinstance(schema.values["delta"], list)
         assert len(schema.values["delta"]) == 1
 
     def test_a_vector_greek_is_unchanged(self):
-        """The fix must not alter the existing per-pillar case."""
+        """The per-pillar vector case is unchanged."""
         schema = GreeksSchema.from_dataclass({"delta": np.asarray([1.0, 2.0, 3.0])})
         assert schema.values["delta"] == pytest.approx([1.0, 2.0, 3.0])
 
@@ -166,7 +153,7 @@ class TestBondGreeksSerializeOverHttp:
         assert schema.theta == pytest.approx(8.088)
 
     def test_a_full_bond_result_serializes_end_to_end(self):
-        """The real path: price a bond, then serialize the whole result."""
+        """Price a bond, then serialize the whole result."""
         parsed = PortfolioRequestSchema.model_validate(
             request_json([BILL_JSON], compute_greeks=True)
         )
@@ -174,7 +161,7 @@ class TestBondGreeksSerializeOverHttp:
         serialized = PortfolioResultSchema.from_dataclass(result)
         assert serialized.greeks is not None
         assert serialized.greeks[0].values["delta"][0] < 0
-        # And it must actually round-trip to JSON.
+        # And round-trip it through JSON.
         assert "delta" in serialized.model_dump_json()
 
 
@@ -198,11 +185,7 @@ class TestScenarioRiskOverHttp:
         assert serialized.trade_exposures == []
 
     def test_base_npv_is_still_reported_when_risk_is_absent(self):
-        """The point of the whole design: a real price, with risk absent.
-
-        If this returned 0.0 the `scenario_risk=False` path would be
-        useless -- the bond must still be PRICED.
-        """
+        """With `scenario_risk=False` the bond is still priced; only risk is absent."""
         parsed = PortfolioRequestSchema.model_validate(request_json([BILL_JSON]))
         result = price_portfolio(parsed.to_dataclass())
         serialized = PortfolioResultSchema.from_dataclass(result)
@@ -220,7 +203,7 @@ class TestScenarioRiskOverHttp:
 
 
 class TestOpenApiSchemaIncludesTheBond:
-    """The published contract must advertise the new type."""
+    """The capability contract advertises the bond type."""
 
     def test_the_bond_appears_in_the_request_schema(self):
         schema = PortfolioRequestSchema.model_json_schema()

@@ -1,31 +1,14 @@
 """
-W1.4 -- the equity position pricer (`docs/planning/traderX-integration-plan.md` §W1.4).
+Cash equity positions (`engine.integration.equity`), which are refused: there is no spot or
+FX source at this boundary (I-18). The engine must still read the position correctly:
 
-The plan's required tests, quoted: "long/short; multiplier applied
-**exactly once**; currency/FX handling."
+  - long/short: the sign reaches `multipliedQuantity`;
+  - the multiplier applied exactly once (tested with a multiplier other than 1);
+  - a non-USD position refuses differently (a spot alone would not price it).
 
-**Why this file tests a refusal rather than a price.** W1.4's formula is
-`signedQuantity x multiplier x spot x fx`, and this boundary has a source
-for neither `spot` nor `fx`: `marketInputs` registers flat interest-rate
-profiles only, and `SimulationConfig.equities` drives simulated paths
-rather than valuing a position (the plan says so outright, and so does
-I-07). So the deliverable is an honest, *diagnosable* refusal -- and the
-plan's three checks still apply to it, because the engine must read the
-position correctly in order to refuse it correctly:
-
-  - **long/short** -- the sign reaches `multipliedQuantity` intact, so the
-    day a spot arrives the sign is already right;
-  - **multiplier exactly once** -- asserted against a fixture whose
-    multiplier is deliberately *not* 1, which is the only way the test can
-    fail;
-  - **currency/FX** -- a non-USD position refuses *differently*, because
-    fixing only the spot would still not price it.
-
-**The tempting wrong implementation is `closingMark`.** The CSV carries
-one, and `quantity x closingMark x contractMultiplier` reproduces the
-exporter's own `marketValue` column exactly. `TestDoesNotEchoTheExportedMark`
-is the guard: that number must never appear as an `npv`, because it would
-hand TraderX their own figure back as though this engine had valued it.
+`closingMark` is never used: quantity x mark x multiplier reproduces the exporter's own
+`marketValue`, so it would hand TraderX its own number back as a valuation
+(`TestDoesNotEchoTheExportedMark`).
 """
 import json
 from pathlib import Path
@@ -52,16 +35,15 @@ FIXTURES = Path(__file__).parent / "fixtures" / "traderx-eod"
 
 MARKET = {"mode": "assumed-profile", "assumedProfileId": "flat-3pct-v1"}
 
-#: The synthetic v2 fixture's own numbers.
+#: The v2 fixture's numbers.
 QUANTITY = 1000.0
 CLOSING_MARK = 10.0
-#: `quantity x closingMark x contractMultiplier` -- the exporter's stated
-#: `marketValue`. This number must never come back as an `npv`.
+#: quantity x closingMark x contractMultiplier, the exporter's `marketValue`. Never an npv.
 EXPORTED_MARKET_VALUE = 10_000.0
 
 
 def _terms(**overrides) -> TermsEntry:
-    """An equity terms entry matching the delivered fixture."""
+    """An equity terms entry matching the fixture."""
     terms = {
         "contractMultiplier": "1",
         "currency": "USD",
@@ -92,7 +74,7 @@ def _row(**overrides) -> dict:
 
 
 class TestRefusesRatherThanPrices:
-    """The W1.4 decision: no spot source, so no number."""
+    """No spot source, so no number."""
 
     def test_price_equity_always_raises(self):
         with pytest.raises(EquityPricingError) as excinfo:
@@ -100,15 +82,13 @@ class TestRefusesRatherThanPrices:
         assert excinfo.value.reason == SPOT_SOURCE_NOT_SUPPLIED
 
     def test_the_refusal_names_the_missing_input(self):
-        """Actionable: the coordinator must be able to tell what to send."""
+        """The refusal names what to send."""
         with pytest.raises(EquityPricingError) as excinfo:
             price_equity(_terms(), _row())
         assert excinfo.value.payload["missingInputs"] == ["spot"]
 
     def test_the_refusal_explains_why_the_mark_is_not_used(self):
-        """The reasoning travels with the refusal, because 'you have a
-        closingMark right there' is the obvious objection and the answer
-        should not require reading the source."""
+        """The refusal says why the mark is not used."""
         with pytest.raises(EquityPricingError) as excinfo:
             price_equity(_terms(), _row())
         detail = excinfo.value.detail.lower()
@@ -116,9 +96,7 @@ class TestRefusesRatherThanPrices:
         assert "observation" in detail
 
     def test_no_market_input_makes_it_priceable(self):
-        """A rate curve is not an equity spot. Requesting one must not
-        change this row's outcome -- if it did, the refusal would be about
-        the request rather than about the missing spot."""
+        """Requesting a rate curve does not change the outcome (a curve is not a spot)."""
         with_curve = price_bundle(FIXTURES / "equity" / "v2", MARKET).to_dict()
         without = price_bundle(FIXTURES / "equity" / "v2").to_dict()
         for item in with_curve["items"] + without["items"]:
@@ -126,13 +104,8 @@ class TestRefusesRatherThanPrices:
 
 
 class TestDoesNotEchoTheExportedMark:
-    """**The dangerous wrong implementation.**
-
-    `quantity x closingMark x contractMultiplier` reproduces the
-    exporter's own `marketValue` exactly. Returning it would look like a
-    successful valuation and reconcile perfectly against TraderX -- while
-    proving nothing, because it is their number.
-    """
+    """The mark-derived value reproduces the exporter's `marketValue` exactly, so it would
+    reconcile perfectly while proving nothing."""
 
     def test_the_exported_market_value_never_appears_as_an_npv(self):
         result = price_bundle(FIXTURES / "equity" / "v2", MARKET).to_dict()
@@ -142,8 +115,7 @@ class TestDoesNotEchoTheExportedMark:
             assert npv.get("value") is None
 
     def test_no_payload_field_carries_the_mark_derived_value(self):
-        """Not merely absent from `value` -- absent from the payload
-        entirely, so nothing downstream can pick it up as a price."""
+        """Nor anywhere in the payload."""
         result = price_bundle(FIXTURES / "equity" / "v2", MARKET).to_dict()
         for item in result["items"]:
             payload = item["calculations"]["npv"]
@@ -152,16 +124,15 @@ class TestDoesNotEchoTheExportedMark:
             assert "closingMark" not in payload
 
     def test_the_fixture_would_actually_expose_the_bug(self):
-        """Guards the two tests above from being vacuous: the fixture must
-        genuinely contain a mark that *could* have been echoed."""
+        """The fixture really contains a mark that could be echoed (so the tests above are
+        not vacuous)."""
         rows = (FIXTURES / "equity" / "v2" / "positions.csv").read_text().splitlines()
         data = [r for r in rows if r and not r.startswith("#")][1:]
         assert any(f",{CLOSING_MARK:.6f}," in r for r in data)
 
 
 class TestLongShort:
-    """Plan §W1.4: 'long/short'. The sign must survive into the refusal,
-    so it is already correct the day a spot arrives."""
+    """The sign survives into the refusal."""
 
     def test_long_quantity_is_positive(self):
         assert read_position(_terms(), _row()).multiplied_quantity == QUANTITY
@@ -176,7 +147,7 @@ class TestLongShort:
         assert long_pos.multiplied_quantity + short.multiplied_quantity == 0.0
 
     def test_the_sign_reaches_the_published_refusal(self):
-        """Through the pipeline, not just the reader -- working rule 8."""
+        """Through the pipeline, not just the reader."""
         result = price_bundle(FIXTURES / "equity" / "v2", MARKET).to_dict()
         quantities = [
             item["calculations"]["npv"].get("multipliedQuantity")
@@ -187,12 +158,8 @@ class TestLongShort:
 
 
 class TestMultiplierAppliedExactlyOnce:
-    """Plan §W1.4: 'multiplier applied **exactly once**'.
-
-    Every assertion here uses a multiplier that is **not 1**, because a
-    multiplier of 1 makes applying it twice, once, or never
-    indistinguishable -- the test would pass against all three.
-    """
+    """Every test uses a multiplier other than 1 (with 1, applied twice, once or never look
+    the same)."""
 
     def test_multiplier_is_applied(self):
         position = read_position(_terms(contractMultiplier="100"), _row())
@@ -207,21 +174,19 @@ class TestMultiplierAppliedExactlyOnce:
         assert position.multiplied_quantity != QUANTITY
 
     def test_the_raw_quantity_stays_unmultiplied(self):
-        """Both are reported, and they must not be the same number --
-        a consumer reconciling needs the input and the product distinctly."""
+        """Raw and multiplied quantities are both reported and differ."""
         position = read_position(_terms(contractMultiplier="100"), _row())
         assert position.signed_quantity == QUANTITY
         assert position.contract_multiplier == 100.0
         assert position.multiplied_quantity == QUANTITY * 100
 
     def test_a_fractional_multiplier_is_honoured(self):
-        """Not all multipliers are >= 1; nothing may round it to an int."""
+        """A fractional multiplier is not rounded."""
         position = read_position(_terms(contractMultiplier="0.5"), _row())
         assert position.multiplied_quantity == QUANTITY * 0.5
 
     def test_absent_multiplier_defaults_to_one(self):
-        """The legitimate default for a cash equity, and the fixture
-        states it explicitly anyway."""
+        """An absent multiplier defaults to 1."""
         terms = TermsEntry(
             instrument_type="EQUITY", terms={"currency": "USD"},
             missing_terms=(), provenance={}, identity={},
@@ -231,15 +196,13 @@ class TestMultiplierAppliedExactlyOnce:
         assert read_position(terms, row).contract_multiplier == 1.0
 
     def test_an_unparseable_multiplier_is_refused_not_defaulted(self):
-        """A malformed value is a broken artifact, not an omission."""
+        """An unparseable multiplier is refused, not defaulted."""
         with pytest.raises(EquityPricingError) as excinfo:
             read_position(_terms(contractMultiplier="x100"), _row())
         assert excinfo.value.reason == TERMS_INCOMPLETE
 
     def test_terms_multiplier_wins_over_the_csv(self):
-        """The terms are the reference statement for a static property.
-        Pinned because silently preferring the other source would change
-        every equity's size."""
+        """The terms' multiplier wins over the CSV's."""
         position = read_position(
             _terms(contractMultiplier="100"), _row(contractMultiplier="1"),
         )
@@ -255,7 +218,7 @@ class TestMultiplierAppliedExactlyOnce:
 
 
 class TestCurrencyAndFx:
-    """Plan §W1.4: 'currency/FX handling'."""
+    """Currency and FX."""
 
     def test_a_usd_position_refuses_for_the_spot_only(self):
         with pytest.raises(EquityPricingError) as excinfo:
@@ -264,9 +227,7 @@ class TestCurrencyAndFx:
         assert excinfo.value.payload["missingInputs"] == ["spot"]
 
     def test_a_non_usd_position_refuses_differently(self):
-        """**The distinction that matters.** Supplying a spot alone would
-        still not price a EUR position -- so telling the coordinator
-        'send a spot' would be wrong for this row."""
+        """A EUR position refuses with FX_SOURCE_NOT_SUPPLIED ("send a spot" would be wrong)."""
         with pytest.raises(EquityPricingError) as excinfo:
             price_equity(_terms(currency="EUR"), _row(currency="EUR"))
         assert excinfo.value.reason == FX_SOURCE_NOT_SUPPLIED
@@ -276,15 +237,13 @@ class TestCurrencyAndFx:
         assert SPOT_SOURCE_NOT_SUPPLIED != FX_SOURCE_NOT_SUPPLIED
 
     def test_currency_is_case_insensitive(self):
-        """`usd` is USD. A lowercase currency must not be mistaken for a
-        foreign one and refused for FX."""
+        """`usd` is USD."""
         with pytest.raises(EquityPricingError) as excinfo:
             price_equity(_terms(currency="usd"), _row(currency="usd"))
         assert excinfo.value.reason == SPOT_SOURCE_NOT_SUPPLIED
 
     def test_an_absent_currency_is_treated_as_foreign_not_assumed_usd(self):
-        """Refusing to infer, applied to currency: a blank is not USD.
-        Assuming it would value a foreign position at parity."""
+        """A blank currency is treated as foreign, not assumed USD."""
         terms = TermsEntry(
             instrument_type="EQUITY", terms={"contractMultiplier": "1"},
             missing_terms=(), provenance={}, identity={},
@@ -299,8 +258,7 @@ class TestCurrencyAndFx:
         assert REPORTING_CURRENCY == "USD"
 
     def test_both_refusals_reach_the_published_result(self):
-        """End to end: the fixture carries a USD pair and a EUR row, and
-        each must come back under its own reason."""
+        """End to end: the fixture's USD pair and EUR row each get their own reason."""
         result = price_bundle(FIXTURES / "equity" / "v2", MARKET).to_dict()
         reasons = {
             item["sourceIdentity"]["security"]: item["calculations"]["npv"]["reason"]
@@ -311,7 +269,7 @@ class TestCurrencyAndFx:
 
 
 class TestIsEquity:
-    """Keyed on `instrumentType`, never on which columns are blank."""
+    """`is_equity` keys on `instrumentType`, never on blank columns."""
 
     def test_an_equity_entry_is_an_equity(self):
         assert is_equity(_terms())
@@ -334,9 +292,7 @@ class TestIsEquity:
         assert is_equity(entry)
 
     def test_blank_bond_columns_do_not_make_a_row_an_equity(self):
-        """A bill also has a blank coupon schedule. Inferring the
-        instrument from empty columns is the blank-reading mistake the
-        whole boundary refuses."""
+        """Blank bond columns (which a bill also has) do not make a row an equity."""
         bill = TermsEntry(
             instrument_type="TREASURY",
             terms={"couponFrequency": "NONE", "schedule": []},
@@ -355,8 +311,7 @@ class TestIsEquity:
 
 
 class TestMalformedRows:
-    """A broken row refuses distinctly from a missing market input --
-    different problems, different fixes."""
+    """A broken row refuses differently from a missing market input."""
 
     def test_an_unparseable_quantity_is_terms_incomplete(self):
         with pytest.raises(EquityPricingError) as excinfo:
@@ -371,25 +326,19 @@ class TestMalformedRows:
         assert excinfo.value.reason == TERMS_INCOMPLETE
 
     def test_a_malformed_row_is_not_reported_as_a_missing_spot(self):
-        """The codes must not be conflated: one is fixed by re-exporting,
-        the other by sending market data."""
+        """A malformed row is not reported as a missing spot (different fixes)."""
         with pytest.raises(EquityPricingError) as excinfo:
             read_position(_terms(), _row(quantity="ten"))
         assert excinfo.value.reason != SPOT_SOURCE_NOT_SUPPLIED
 
     def test_a_zero_quantity_is_read_not_refused(self):
-        """A closed-out position is a legitimate row, not an error."""
+        """A zero quantity (closed-out position) is read, not refused."""
         assert read_position(_terms(), _row(quantity="0")).multiplied_quantity == 0.0
 
 
 class TestRefusalsAreEquityPricingErrors:
-    """**I-17's regression class, applied to the third pricer.**
-
-    A refusal raised by one module and caught as another's escapes the
-    pipeline's handler and fails the whole bundle. `equity.py` therefore
-    raises its own exception type and shares no parser that raises a
-    different one.
-    """
+    """I-17 regression class: equity refusals are their own exception type, so the
+    pipeline's handler catches them and one bad row cannot fail the bundle."""
 
     def test_refusals_are_not_bill_or_note_errors(self):
         from engine.integration.bill import BillPricingError
@@ -408,7 +357,7 @@ class TestRefusalsAreEquityPricingErrors:
             assert "a matured note" not in detail
 
     def test_one_malformed_equity_does_not_fail_the_whole_bundle(self):
-        """The consequence that made I-17 a bug, asserted for equities."""
+        """One malformed equity does not fail the bundle."""
         from engine.integration.market_inputs import ASSUMED_PROFILES, MarketInputs
         from engine.integration.pipeline import _equity_outcomes
         from engine.integration.terms import JoinedRow
@@ -427,16 +376,14 @@ class TestPipelineEndToEnd:
         return price_bundle(FIXTURES / "equity" / "v2", MARKET).to_dict()
 
     def test_every_row_is_identified_despite_refusing(self):
-        """Plan §W0.7: identity travels on unsupported rows too. A refusal
-        nobody can attribute to a position is useless."""
+        """Refused rows still carry their identity."""
         for item in self._v2()["items"]:
             assert item["itemId"]
             assert item["sourceIdentity"]["accountId"]
             assert item["sourceIdentity"]["security"]
 
     def test_the_refusal_carries_the_validated_inputs(self):
-        """Diagnosable, not merely negative: the consumer can confirm the
-        engine read the row correctly."""
+        """The refusal carries the validated inputs."""
         item = self._v2()["items"][0]
         npv = item["calculations"]["npv"]
         assert npv["signedQuantity"] == QUANTITY
@@ -445,14 +392,12 @@ class TestPipelineEndToEnd:
         assert npv["intendedMethod"] == "spot-revaluation"
 
     def test_vega_is_not_applicable_for_an_equity(self):
-        """A cash equity has no optionality, so vega is not a gap that
-        should count against coverage."""
+        """Vega is not-applicable for an equity (not a coverage gap)."""
         for item in self._v2()["items"]:
             assert item["calculations"]["vega"]["status"] == "not-applicable"
 
     def test_accrued_interest_is_not_claimed_for_an_equity(self):
-        """An equity has no accrual. Reporting `ok` at zero would assert a
-        coupon structure it does not have."""
+        """No accrued interest is claimed for an equity."""
         for item in self._v2()["items"]:
             assert item["calculations"]["accruedInterest"]["status"] != "ok"
 
@@ -466,9 +411,8 @@ class TestPipelineEndToEnd:
         assert json.loads(json.dumps(payload)) == payload
 
     def test_the_v1_bundle_refuses_for_want_of_terms(self):
-        """A v1 bundle has no terms artifact, so the engine cannot even
-        establish the row IS an equity -- that refusal is more fundamental
-        than the missing spot and wins."""
+        """A v1 bundle has no terms, so the row cannot be established as an equity; that
+        refusal takes precedence."""
         result = price_bundle(FIXTURES / "equity" / "v1", MARKET).to_dict()
         for item in result["items"]:
             npv = item["calculations"]["npv"]
@@ -476,9 +420,8 @@ class TestPipelineEndToEnd:
             assert npv["reason"] == "TERMS_NOT_SUPPLIED"
 
     def test_the_v1_bundle_is_the_real_traderx_fixture(self):
-        """Vendored from TraderX's own `golden-v1/basic`, LF-exact, and it
-        verifies against their published hashes -- so the v1 path is
-        exercised against real bytes rather than something we authored."""
+        """The v1 bundle is TraderX's own `golden-v1/basic`, LF-exact, verifying against
+        their published hashes."""
         from engine.integration import load_bundle
 
         bundle = load_bundle(FIXTURES / "equity" / "v1")
@@ -489,8 +432,7 @@ class TestPipelineEndToEnd:
         assert not bundle.has_terms
 
     def test_the_v1_swap_row_still_refuses_for_its_conventions(self):
-        """The golden-v1 bundle also carries a USD-SOFR swap. Adding an
-        equity branch must not disturb it."""
+        """The golden-v1 bundle's USD-SOFR swap still refuses for its conventions."""
         result = price_bundle(FIXTURES / "equity" / "v1", MARKET).to_dict()
         swap = [i for i in result["items"] if i["sourceIdentity"].get("contractId")]
         assert swap
@@ -498,9 +440,7 @@ class TestPipelineEndToEnd:
 
 
 class TestTreasuriesAreUnchangedByW14:
-    """W1.4 must not alter W1.2/W1.3's delivered numbers. The equity
-    branch is dispatched first, so this is the guard that it does not
-    swallow a bond."""
+    """The equity branch (dispatched first) does not change Treasury results."""
 
     def test_the_bill_still_prices(self):
         result = price_bundle(FIXTURES / "bill" / "v2", MARKET).to_dict()
@@ -527,20 +467,10 @@ class TestTreasuriesAreUnchangedByW14:
 
 
 class TestCapabilitiesAdvertiseW14:
-    """A coordinator reads this *before* submitting. It must be able to
-    tell 'wait for a release' from 'send me a spot'."""
+    """The capability document distinguishes "wait for a release" from "send a spot"."""
 
     def test_stage_is_at_least_w14(self):
-        """**Updated by W1.6**, which bumped the stage to `W1.6`.
-
-        This previously pinned the literal `"W1.4"`, which made it fail on
-        every future stage bump regardless of whether anything about the
-        equity contract changed — a test that breaks for reasons unrelated
-        to what it is named for. What W1.4 actually needs to hold is that
-        the advertised stage has *reached* W1.4, so the equity capability
-        below is the one being described. The equity-specific assertions in
-        this class are what pin the contract itself.
-        """
+        """The stage has reached W1.4 (a floor, not an exact string)."""
         stage = capabilities()["deliveryStage"]
         assert stage.startswith("W1.")
         major, minor = stage.removeprefix("W").split(".")[:2]
@@ -558,19 +488,18 @@ class TestCapabilitiesAdvertiseW14:
         assert equity["calculations"] == []
 
     def test_equity_npv_is_advertised_as_blocked_on_a_market_input(self):
-        """**The distinction W1.4 exists to publish.** Not 'no pricer' --
-        'no spot', which the coordinator can fix."""
+        """Equity npv is advertised as blocked on a market input (the spot), not as lacking
+        a pricer."""
         blocked = capabilities()["products"][EQUITY]["blockedOnMarketInput"]
         assert blocked["npv"]["reason"] == SPOT_SOURCE_NOT_SUPPLIED
         assert "spot" in blocked["npv"]["requires"]
 
     def test_treasuries_are_not_blocked_on_a_market_input(self):
-        """The block list must be specific, not a blanket disclaimer."""
+        """Treasuries are not listed as blocked."""
         assert capabilities()["products"]["TREASURY"]["blockedOnMarketInput"] == {}
 
     def test_the_advertised_block_matches_the_module_constant(self):
-        """Derived, never hand-written, so the document cannot drift from
-        the code that produces the refusal."""
+        """The advertised block matches the module constant."""
         advertised = capabilities()["products"][EQUITY]["blockedOnMarketInput"]
         assert advertised == BLOCKED_ON_MARKET_INPUT[EQUITY]
 

@@ -1,52 +1,20 @@
 """
-Bootstrap calibration of a piecewise-constant LGM `Sigma` term structure to
-a co-terminal basket of market swaption volatilities -- the JAX-native
-analogue of `ore::data::LgmBuilder::calibrate()`'s bootstrap path
-(`lgmModel->calibrateVolatilitiesIterative(...)`, `OREData/ored/model/
-lgmbuilder.cpp` lines 209-212).
+Bootstrap calibration of a piecewise-constant LGM `Sigma` to a co-terminal swaption basket,
+the equivalent of ORE's `LgmBuilder::calibrate()` bootstrap path
+(`calibrateVolatilitiesIterative`, OREData/ored/model/lgmbuilder.cpp).
 
-**Bootstrap, not joint least-squares -- matching ORE's own default, not a
-simplification of it.** ORE's `LgmBuilder::initParametrization` sets the
-piecewise sigma's own bucket breakpoints (`aTimes`) to the calibration
-basket's OWN swaption expiry times, dropping the basket's last expiry
-(`aTimes = swaptionExpiries_[:-1]`, `N` expiries producing `N-1` interior
-breakpoints for `N` buckets -- exactly `engine.models.lgm.Sigma`'s own
-`len(values) == len(times)+1` invariant). This construction makes the
-calibration triangular by design: the `i`-th co-terminal swaption's price
-depends on `zeta(t)` only up to its own expiry `T0_i`, which in turn
-depends ONLY on sigma buckets `0..i` (buckets `i+1..N-1` cover times AFTER
-`T0_i`, contributing nothing to `zeta(T0_i)`). So each new swaption pins
-down EXACTLY one new free sigma value via a single 1D root-find, holding
-every earlier bucket fixed at its own already-calibrated value -- this is
-what `calibrateVolatilitiesIterative` actually does (see
-`QuantLib::CalibratedModel::calibrateIterative`, called per-instrument in
-basket order), not a rebranding of joint calibration.
+As in `LgmBuilder`, the sigma breakpoints are the basket's expiries minus the last, so there
+is one bucket per instrument. Instrument `i` depends only on buckets `0..i`, so the
+instruments are fitted one at a time in expiry order, each solving for one new bucket
+value with the earlier ones held fixed.
 
-**Why mean reversion (kappa/`a`) is not calibrated.** ORE's own default
-(`LgmData::calibrateH() == false` unless a trade config explicitly opts
-in) fixes mean reversion and calibrates ONLY the piecewise sigma term
-structure -- the one-parameter-per-instrument bootstrap this module
-implements requires exactly this (jointly calibrating both `a` and
-`sigma` from the SAME basket is a fundamentally different, non-bootstrap
-problem -- ORE's own `calibrate()` for that case requires `BestFit`, not
-`Bootstrap`, and a full multi-parameter optimizer, out of this module's
-scope). `a` is therefore always an input to `calibrate_lgm_sigma` below,
-never an output.
+Mean reversion `a` is an input, not calibrated (ORE's default, `calibrateH == false`).
 
-**Each bucket's root-find**, not a full Levenberg-Marquardt run per
-bucket: since `price_lgm_swaption` is monotonically increasing in the
-NEWEST sigma bucket's own value (confirmed directly:
-`TestPriceLgmSwaptionSanity::test_higher_sigma_gives_higher_price`,
-`tests/test_calibration_basket.py`) -- a swaption is long volatility, and
-raising the newest bucket's sigma strictly increases the model's total
-`zeta(T0_i)` for every `t` in that bucket -- a single well-posed scalar
-bisection recovers the unique sigma matching the market price exactly,
-with no need for the generality (or cost) of a full LM optimizer for a
-1-parameter-at-a-time problem. `engine/calibration/optimizer.py`'s
-JAX-native LM implementation is reserved for cases needing a genuinely
-joint multi-parameter fit (e.g. a future `BestFit`-style calibration
-mode) -- bootstrap does not need it, matching ORE's own architectural
-split between the two calibration types.
+Differs from ORE: ORE fits each instrument with its configured optimizer
+(Levenberg-Marquardt by default). Here each is a 60-step bisection on a fixed bracket of
+[1e-6, 0.20]. The price is increasing in the new bucket's sigma, so bisection converges to
+the same root when one exists in the bracket. Market prices are Bachelier (normal-vol)
+prices.
 """
 from dataclasses import dataclass
 from typing import List
@@ -61,19 +29,15 @@ from engine.calibration.basket import CalibrationTarget, bachelier_swaption_pric
 
 @dataclass
 class CalibrationResult:
-    """Output of `calibrate_lgm_sigma`: the fitted piecewise `Sigma`, plus
-    per-instrument diagnostics -- mirrors the fields ORE's own
-    `LgmCalibrationInfo`/`getCalibrationDetails` report (model vs. market
-    price per basket instrument, and the overall RMSE), so a caller can
-    verify calibration quality the same way `LgmBuilder::calibrate`'s own
-    DLOG output does."""
+    """Calibrated `Sigma` plus per-instrument diagnostics, like ORE's
+    `LgmCalibrationInfo`: model vs. market price per basket instrument, and their RMSE."""
     sigma: Sigma
     market_prices: jax.Array      # [N], Bachelier price implied by each target's market_vol
     model_prices: jax.Array       # [N], price_lgm_swaption at the final calibrated Sigma
-    rmse: float                   # sqrt(mean((model-market)^2)), ORE's own `error_` metric
+    rmse: float                   # sqrt(mean((model-market)^2))
 
 
-#: The search bracket for one bucket's sigma: [1bp, 2000bp] annual vol.
+#: Bisection bracket for one bucket's sigma: [0.01bp, 2000bp] of normal vol.
 _SIGMA_BRACKET = (1e-6, 0.20)
 
 
@@ -81,16 +45,11 @@ def _bisect_bucket_sigma(
     price_fn, market_price: float, lo: float = _SIGMA_BRACKET[0], hi: float = _SIGMA_BRACKET[1],
     iterations: int = 60,
 ) -> jax.Array:
-    """Scalar bisection for one bucket's sigma value: `price_fn(sigma) ==
-    market_price`. `price_fn` is strictly increasing in `sigma` (a
-    swaption is long volatility -- see module docstring), so the bracket
-    `[lo, hi]` = [1bp, 2000bp] safely contains any realistic calibrated
-    volatility; the bracket is NOT expanded dynamically (unlike
-    `european_swaption._bisect_rstar`) since a piecewise LGM sigma bucket
-    calibrating outside a 0.01%-20% annual vol range indicates a
-    misconfigured basket (e.g. a market vol far outside typical rates
-    levels), not a case this bootstrap should silently paper over --
-    `calibrate_lgm_sigma` raises when the result lands on the ceiling."""
+    """Bisection for the sigma with `price_fn(sigma) == market_price`, on a fixed bracket.
+
+    `price_fn` is increasing in sigma. The bracket is not expanded: a result on the
+    ceiling means the market vol is unattainable and `calibrate_lgm_sigma` raises; a
+    result on the floor is left to show up in `rmse`."""
     lo_arr, hi_arr = jnp.array(lo), jnp.array(hi)
 
     def body(carry, _):
@@ -109,37 +68,15 @@ def calibrate_lgm_sigma(
     targets: List[CalibrationTarget], curve: ZeroCurve, a: float,
 ) -> CalibrationResult:
     """
-    Bootstrap-calibrates a piecewise `Sigma` to `targets` (a co-terminal
-    basket from `engine.calibration.basket.build_coterminal_basket`, in
-    increasing expiry order), matching ORE's own
-    `calibrateVolatilitiesIterative` bootstrap (see module docstring):
+    Bootstrap `targets` (a co-terminal basket in increasing expiry order) into a piecewise
+    `Sigma` with one bucket per target.
 
-    For each target `i` (in order):
-      1. The bucket breakpoints so far are `targets[0].expiry_time,
-         ..., targets[i-1].expiry_time` (every EARLIER target's own
-         expiry becomes an interior breakpoint -- exactly
-         `LgmBuilder::initParametrization`'s `aTimes = swaptionExpiries_
-         [:-1]` convention, since target `i`'s own expiry is never itself
-         a breakpoint until a LATER target makes it one).
-      2. Solve for bucket `i`'s sigma value (the newest, currently-open
-         bucket covering `[targets[i-1].expiry_time, inf)`) such that
-         `price_lgm_swaption` at target `i` matches its own Bachelier
-         market price, via a 1D bisection (see `_bisect_bucket_sigma`) --
-         every earlier bucket's value stays fixed at whatever it was
-         already calibrated to.
+    For target `i`, the breakpoints are the expiries of targets `0..i-1`; bucket `i`'s value
+    is solved so the LGM price matches the target's Bachelier price, keeping earlier
+    buckets fixed. A successful bootstrap reprices every instrument up to bisection
+    tolerance; `rmse` is materially non-zero only when a bucket hit the bracket floor.
 
-    Returns a `CalibrationResult` with the final N-bucket `Sigma` (one
-    bucket per target) and per-instrument model/market price diagnostics
-    at that final Sigma (an exact bootstrap reprices every instrument
-    exactly, up to root-find tolerance -- unlike a joint BestFit, whose
-    RMSE is generally nonzero even at convergence).
-
-    `curve.pillar_rates.dtype` governs every array this function builds
-    internally (bucket times/values, the final `Sigma`) -- mirroring
-    `engine.risk.greeks`'s own derive-from-curve pattern instead of
-    hardcoding `jnp.float64`, so `engine.portfolio.request.PrecisionConfig
-    .calibration` can control this bootstrap's working precision by simply
-    handing it a differently-dtyped `curve`.
+    Works in `curve.pillar_rates.dtype`.
     """
     if len(targets) < 1:
         raise ValueError("calibrate_lgm_sigma requires at least one basket instrument")
@@ -151,22 +88,10 @@ def calibrate_lgm_sigma(
     bucket_times: List[float] = []       # interior breakpoints calibrated so far
     bucket_values: List[float] = []      # calibrated sigma per bucket so far
 
-    # `bachelier_swaption_price` is a closed-form expression over ~a dozen
-    # elementwise ops. Called eagerly (as this did) each one dispatches as
-    # its own XLA program; wrapped so the whole formula compiles as one, it
-    # is a single program. Measured on the 2-instrument demo basket, this
-    # plus the diagnostics below took `calibrate_lgm_sigma` from 137
-    # compilations to a handful. The bisection itself was never the problem
-    # -- `_bisect_bucket_sigma`'s `lax.scan` already traces `price_fn` ONCE
-    # and compiles all 60 iterations together. See
-    # docs/concepts/profiling.md.
-    #
-    # `CalibrationTarget` is deliberately NOT passed as a jit STATIC
-    # argument (which would need it hashable): `engine.risk.greeks.
-    # bermudan_vega` substitutes a live `jax.grad` tracer into its
-    # `market_vol` via `dataclasses.replace`, so the type must stay usable
-    # as traced data. `_jit_over_target` instead closes over the target and
-    # jits a nullary function of it, which needs no hashing at all.
+    # Jit the closed forms as one program each rather than dispatching every elementwise op
+    # (see docs/concepts/profiling.md). The target is closed over, not passed as a static
+    # argument, because `engine.risk.greeks.bermudan_vega` puts a tracer in its
+    # `market_vol`, so it cannot be hashed.
     def _jit_over_target(fn, target):
         return jax.jit(lambda: fn(target, curve))
 
@@ -180,14 +105,10 @@ def calibrate_lgm_sigma(
 
         market_price = float(_jit_over_target(bachelier_swaption_price, target)())
         new_value = float(_bisect_bucket_sigma(price_fn, market_price))
-        # Bisection cannot fail, only saturate. Saturating at the CEILING
-        # means the market vol is out of range, and returning 2000bp as the
-        # calibrated sigma would be silently wrong, so it is refused.
-        # Saturating at the FLOOR is different: it is the structural limit
-        # of a bootstrap on a spike-then-dip vol curve (earlier buckets have
-        # already locked in too much variance), handled gracefully and
-        # reported through `rmse` -- see test_calibration_edge_cases.py's
-        # test_large_dip_after_a_spike_cannot_reprice_exactly.
+        # Saturating at the ceiling means the market vol is out of range: refuse.
+        # Saturating at the floor happens on a spike-then-dip vol curve, where earlier
+        # buckets already carry too much variance; it is reported through `rmse`
+        # (test_calibration_edge_cases.py::test_large_dip_after_a_spike_cannot_reprice_exactly).
         if new_value >= _SIGMA_BRACKET[1] * (1.0 - 1e-9):
             raise ValueError(
                 f"calibration target {i} (expiry t={target.expiry_time}, market_vol="
@@ -205,9 +126,7 @@ def calibrate_lgm_sigma(
         values=jnp.asarray(bucket_values, dtype=dtype),
     )
 
-    # Diagnostics only -- but they reprice every basket instrument, so the
-    # same eager-dispatch cost applies, and the same closure trick avoids
-    # needing a hashable target.
+    # Diagnostics: reprice every instrument at the final Sigma.
     market_prices = jnp.asarray([
         float(_jit_over_target(bachelier_swaption_price, t)()) for t in targets
     ])

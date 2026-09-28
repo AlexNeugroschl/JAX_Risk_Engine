@@ -51,11 +51,8 @@ class TestBrownianBridge:
 
 class TestGenerateSobolNormals:
     def test_honors_requested_dtype_regardless_of_global_x64_state(self):
-        """Regression coverage: generate_sobol_normals used to silently
-        return float64 when called directly (outside generate_paths) while
-        the global x64 flag was on, even when float32 was explicitly
-        requested -- jax.scipy.stats.norm.ppf ignores the input dtype
-        internally. Fixed by an explicit cast at the end of the function."""
+        """Regression: the output was float64 whenever x64 was on, even when float32 was
+        requested (`norm.ppf` computes in float64)."""
         Z = generate_sobol_normals(64, 4, 2, jnp.float32)
         assert Z.dtype == jnp.float32
 
@@ -81,12 +78,8 @@ class TestHullWhiteAMatrix:
         np.testing.assert_allclose(discount_factors, expected, atol=1e-6)
 
     def test_reprices_distinct_curves_per_rate_factor(self):
-        """Regression coverage for the shared-curve bug: two rate factors
-        with DIFFERENT flat curves (3% and 2%) must each reprice their OWN
-        curve, not one shared curve -- matches ORE's Cross-Asset Model,
-        where every currency's Hull-White process is calibrated against its
-        own YieldTermStructureHandle (live-verified against the installed
-        ORE package; see compute_hw_A_matrix's docstring)."""
+        """Two rate factors on different curves (3%, 2%) each reprice their own curve, not a
+        shared one."""
         zero_curves = [
             ZeroCurveConfig(times=[0.0, 30.0], rates=[0.03, 0.03]),
             ZeroCurveConfig(times=[0.0, 30.0], rates=[0.02, 0.02]),
@@ -104,14 +97,11 @@ class TestHullWhiteAMatrix:
         factor1_df = A[0, :, 1] * np.exp(-B[0, :, 1] * 0.02)
         np.testing.assert_allclose(factor0_df, np.exp(-0.03 * maturities), atol=1e-6)
         np.testing.assert_allclose(factor1_df, np.exp(-0.02 * maturities), atol=1e-6)
-        # the two factors' discount curves must actually differ -- this is
-        # exactly what a shared-curve bug would silently fail to produce
+        # The two factors' discount curves must differ (a shared curve would not).
         assert not np.allclose(factor0_df, factor1_df)
 
     def test_rejects_mismatched_curve_count(self):
-        """generate_paths must reject a rates config whose
-        initial_zero_curves length doesn't match the number of rate
-        factors, rather than silently reusing/misaligning curves."""
+        """A curve count different from the number of rate factors is rejected."""
         from engine.simulation.market_model import EquityConfig, RatesConfig, SimulationConfig
 
         cfg = SimulationConfig(
@@ -144,16 +134,8 @@ class TestGeneratePaths:
         assert result["yield_curves"].shape == (2048, 4, 4, 2)
 
     def test_discount_factors_are_positive_and_plausible(self, result):
-        """Discount factors must always be strictly positive (P(t,T) =
-        A(t,T)*exp(-B(t,T)*r) is an exponential -- never zero or negative
-        for any finite r), but are NOT bounded above by 1: a simulated
-        short rate that has gone negative (a real, expected outcome under
-        correctly-scaled HW1F volatility -- see
-        TestHullWhiteMeanReversionTransition's docstring on the
-        double-volatility bug this fixed) makes P(t,T) > 1, exactly as
-        ORE's own negative-rate-capable HW1F model allows. A loose upper
-        bound still guards against a genuinely broken (unboundedly large)
-        discount factor from a NaN/inf-producing formula error."""
+        """Discount factors are strictly positive but may exceed 1 (negative simulated rates
+        are possible under Hull-White). A loose upper bound catches a blow-up."""
         yc = np.asarray(result["yield_curves"])
         assert np.all(yc > 0.0)
         assert np.all(np.isfinite(yc))
@@ -161,7 +143,7 @@ class TestGeneratePaths:
 
     def test_discount_factors_decreasing_with_maturity(self, result):
         yc = np.asarray(result["yield_curves"])
-        # scenario 0, first step, USD (index 0): should decrease Year1 -> Year10
+        # Scenario 0, first step, factor 0: decreasing from 1Y to 10Y.
         usd_curve = yc[0, 0, :, 0]
         assert np.all(np.diff(usd_curve) < 0)
 
@@ -174,10 +156,8 @@ class TestGeneratePaths:
 
 
 class TestGeneratePathsEdgeCases:
-    """Assumptions that TestGeneratePaths' happy-path fixture doesn't
-    exercise: degenerate scenario/step counts, float32 end-to-end, and that
-    the two supported precisions actually produce different-dtype output
-    rather than both silently running in float64."""
+    """Degenerate scenario/step counts, and that the two precisions really produce
+    different dtypes."""
 
     def test_single_scenario(self, cross_asset_config):
         cfg = with_scenarios(cross_asset_config, scenarios=1)
@@ -210,10 +190,7 @@ class TestGeneratePathsEdgeCases:
         assert result["rates"].dtype == jnp.float64
 
     def test_sequential_precision_switches_produce_correct_dtype_each_time(self, cross_asset_config):
-        """The global jax_enable_x64 flag is toggled per-call inside
-        generate_paths -- confirms alternating precision=64/32/64 calls in
-        the same process each produce correctly-typed output, not whatever
-        the previous call happened to leave the global flag set to."""
+        """Alternating precision=64/32/64 calls each produce the requested dtype."""
         cfg = with_scenarios(cross_asset_config, scenarios=128)
         r64a = generate_paths(cfg, precision=64)
         r32 = generate_paths(cfg, precision=32)
@@ -223,21 +200,11 @@ class TestGeneratePathsEdgeCases:
         assert r64b["equities"].dtype == jnp.float64
 
     def test_precision_32_restores_the_global_x64_flag(self, cross_asset_config):
-        """I-14: `generate_paths(precision=32)` must not leave float64
-        disabled process-wide for whatever runs next.
+        """I-14: `generate_paths(precision=32)` restores the global x64 flag.
 
-        The flag is a process-global JAX setting, and this function's
-        docstring promises it is toggled "for the duration of this call".
-        It previously set it and never restored it, so after ANY float32
-        simulation a float64 request silently produced float32 -- JAX
-        truncates rather than raising, emitting only a UserWarning.
-
-        `test_sequential_precision_switches_produce_correct_dtype_each_time`
-        above passes either way: every call re-sets the flag on entry, so
-        alternating calls are always self-correcting. Only code that asks
-        for float64 WITHOUT going through `generate_paths` first sees the
-        leak -- which is why this asserts on the ambient flag and on a
-        plain float64 array, not on the simulation's own output.
+        It once left float64 disabled, so later float64 work silently produced float32.
+        The alternating-precision test above passes either way (each call re-sets the flag),
+        so this asserts on the ambient flag and a plain float64 array.
         """
         cfg = with_scenarios(cross_asset_config, scenarios=128)
         before = jax.config.jax_enable_x64
@@ -270,9 +237,7 @@ class TestGeneratePathsEdgeCases:
         assert "equities" in result and "rates" in result and "numeraire" in result
 
     def test_near_zero_mean_reversion_does_not_produce_nan(self, cross_asset_config):
-        """hw_a appears in several denominators (B(t,T), the HW1F transition
-        variance, compute_hw_A_matrix's variance term) -- a very small but
-        nonzero mean_reversion must not blow up into NaN/inf."""
+        """A very small non-zero mean reversion (in several denominators) gives no NaN/inf."""
         import dataclasses
         tiny_a = [1e-6, 1e-6]
         cfg = dataclasses.replace(
@@ -287,19 +252,14 @@ class TestGeneratePathsEdgeCases:
 
 class TestBrownianBridgeEdgeCases:
     def test_two_point_grid(self):
-        """The smallest meaningful grid (one interior step) -- the
-        recursive bisection construction must not special-case away at
-        this size."""
+        """The smallest grid (one interior step)."""
         time_grid = np.array([0.0, 1.0])
         B = _build_bridge_matrix(time_grid)
         assert B.shape == (1, 1)
         np.testing.assert_allclose(B[0, 0], 1.0, atol=1e-10)
 
     def test_uneven_grid_spacing_still_reproduces_covariance(self):
-        """The covariance identity (B @ B.T == min(s,t)) must hold for
-        irregular step sizes, not just the evenly-spaced demo grid --
-        exercises the recursive bisection's midpoint selection more
-        thoroughly."""
+        """B @ B.T == min(s, t) on irregular step sizes too."""
         time_grid = np.array([0.0, 0.1, 0.15, 1.0, 1.2, 5.0])
         B = _build_bridge_matrix(time_grid)
         times = time_grid[1:]
@@ -310,11 +270,8 @@ class TestBrownianBridgeEdgeCases:
 
 class TestComputeHwAMatrixEdgeCases:
     def test_sloped_zero_curve_reprices_exactly(self):
-        """TestHullWhiteAMatrix only exercises FLAT zero curves. A(t,T) must
-        also exactly reprice a genuinely sloped (non-flat) curve at t->0,
-        since compute_hw_A_matrix's forward-rate finite-difference and
-        interpolation logic could silently be wrong specifically when
-        adjacent zero rates differ."""
+        """A(t,T) reprices a sloped curve at t -> 0 (the forward rate and interpolation
+        matter only when adjacent zero rates differ)."""
         zero_curves = [ZeroCurveConfig(
             times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0],
             rates=[0.020, 0.025, 0.028, 0.032, 0.035, 0.038],
@@ -329,14 +286,12 @@ class TestComputeHwAMatrixEdgeCases:
         A = compute_hw_A_matrix(zero_curves, hw_a, hw_sigma, step_times, maturities, B)
 
         discount_factors = A[0, :, 0] * np.exp(-B[0, :, 0] * zero_curves[0].rates[0])
-        # reprices each pillar's own zero rate under continuous compounding
+        # Each pillar's continuously compounded zero rate is recovered.
         expected = np.exp(-np.array(zero_curves[0].rates[1:]) * maturities)
         np.testing.assert_allclose(discount_factors, expected, atol=1e-4)
 
     def test_three_or_more_rate_factors(self):
-        """TestHullWhiteAMatrix only covers 1 and 2 factors -- confirm the
-        per-factor loop generalizes to a larger NumHW axis without
-        cross-contaminating adjacent factors."""
+        """Three or more factors, without cross-contamination between them."""
         zero_curves = [
             ZeroCurveConfig(times=[0.0, 30.0], rates=[0.03, 0.03]),
             ZeroCurveConfig(times=[0.0, 30.0], rates=[0.02, 0.02]),
@@ -357,31 +312,15 @@ class TestComputeHwAMatrixEdgeCases:
 
 
 class TestHullWhiteMeanReversionTransition:
-    """Regression coverage for a bug where the Hull-White short-rate step
-    (_simulate_cross_asset_paths_jit's step_fn) computed
-    `r_next = r_t*decay + theta_hw + shock_hw` instead of the correct
-    exact Ornstein-Uhlenbeck transition
-    `r_next = r_t*decay + theta_hw*(1-decay) + shock_hw`. The missing
-    `(1-decay)` factor made theta act as a flat per-step drift increment
-    rather than the long-run mean-reversion target, so the simulated short
-    rate drifted upward (or downward, depending on sign) WITHOUT BOUND
-    every step instead of reverting toward theta.
-
-    This was invisible in every pre-existing demo/test because they all
-    set theta == initial_rates -- a fixed point only under the CORRECT
-    formula (theta*(1-decay) + r0*decay == r0 exactly when theta==r0), so
-    the divergence never showed up in those single-value comparisons. It
-    was only caught by directly checking the simulated distribution's mean
-    against the closed-form OU transition mean over several steps, with a
-    scenario matching the codebase's own existing swap-demo cadence
-    (dt=0.5, a=0.03): under the buggy formula the mean rate drifted from
-    3% at t=0 to ~14.6% by t=2y in that exact scenario.
+    """Regression: the short-rate step once computed `r*decay + theta + shock` instead of
+    the exact Ornstein-Uhlenbeck `r*decay + theta*(1-decay) + shock`, so theta acted as a
+    per-step drift and the rate diverged (3% to ~14.6% by t=2y at dt=0.5, a=0.03). Every
+    config then had theta == initial_rates, the one case where the two coincide, so it went
+    unnoticed until the simulated mean was checked against the closed-form OU mean.
     """
 
     def test_mean_matches_analytic_ou_transition_multi_step(self):
-        """theta == initial_rates (the case every pre-existing config uses)
-        must stay at its fixed point across every step -- the buggy formula
-        failed this exact case."""
+        """theta == initial_rates stays at its fixed point at every step."""
         a = 0.03
         r0 = theta = 0.03
         config = SimulationConfig(
@@ -398,12 +337,8 @@ class TestHullWhiteMeanReversionTransition:
             np.testing.assert_allclose(r_t[:, step].mean(), theta, atol=0.001)
 
     def test_mean_matches_analytic_ou_transition_theta_above_r0(self):
-        """theta != initial_rates is the case that actually exposes the
-        bug numerically (the buggy formula's fixed point isn't r0==theta
-        here, so it visibly diverges) -- confirms the simulated mean
-        converges toward theta from below, following the exact closed-form
-        OU transition step by step, not just "ends up somewhere higher
-        than r0"."""
+        """theta above r0: the simulated mean follows the closed-form OU mean step by step
+        toward theta."""
         a = 0.1
         r0, theta = 0.02, 0.05
         dt = 0.5
@@ -424,10 +359,7 @@ class TestHullWhiteMeanReversionTransition:
             np.testing.assert_allclose(r_t[:, step].mean(), expected_mean, atol=0.002)
 
     def test_mean_matches_analytic_ou_transition_theta_below_r0(self):
-        """Mirror of the above with theta < r0, confirming the fix
-        reverts DOWNWARD correctly too, not just upward (the sign of
-        theta - r0 flips which direction the old bug's extra drift term
-        pushed the mean)."""
+        """theta below r0: the mean reverts downward."""
         a = 0.08
         r0, theta = 0.06, 0.02
         dt = 0.25
@@ -448,10 +380,8 @@ class TestHullWhiteMeanReversionTransition:
             np.testing.assert_allclose(r_t[:, step].mean(), expected_mean, atol=0.002)
 
     def test_variance_matches_analytic_ou_transition(self):
-        """The variance formula was NOT part of the bug (confirmed
-        separately against ORE.HullWhiteProcess.variance() directly), but
-        is pinned down here too so a future change to the same step
-        formula can't silently break it while fixing something else."""
+        """The transition variance (not part of that bug; checked against
+        `ORE.HullWhiteProcess.variance`) is pinned too."""
         a, sigma = 0.05, 0.015
         dt = 0.5
         config = SimulationConfig(
@@ -469,28 +399,13 @@ class TestHullWhiteMeanReversionTransition:
 
 
 class TestVolatilityIsNotDoubleApplied:
-    """Regression coverage for a second, independent bug found alongside
-    the mean-reversion one: L_t (the per-step Cholesky factor used to
-    correlate shocks) was built from the RAW covariance matrix, whose
-    diagonal already encodes each factor's own volatility magnitude. The
-    HW1F/GBM step formulas then multiplied the already-scaled shock by
-    that SAME factor's volatility a second time
-    (`sig_hw * sqrt(variance_hw) * Z_hw`, `sig_eq * sqrt(dt) * Z_eq`),
-    squaring the effective volatility actually applied to every path.
-    E.g. a configured 20% equity vol produced an actual simulated
-    log-return std of ~4% (0.2^2); a configured 1.5% rate vol produced an
-    actual short-rate std smaller by the same squared factor. This affected
-    every equity, FX, and rate factor in every simulation the codebase has
-    ever run. Fixed by building L_t from the CORRELATION matrix (unit
-    diagonal) instead of the raw covariance matrix, so joint_sigma_t's
-    explicit multiplication in step_fn is the only place volatility is
-    applied.
-    """
+    """Regression: the correlation Cholesky factor was built from the raw covariance, whose
+    diagonal already carries each volatility, and the step formulas then multiplied by the
+    volatility again, squaring it (a 20% equity vol gave a ~4% log-return std). The factor
+    is now built from the correlation matrix, so volatility is applied once."""
 
     def test_equity_log_return_variance_matches_configured_vol(self):
-        """The clearest possible signal: a configured 20% vol MUST produce
-        an actual ~20% log-return std, not ~4% (0.2^2, the bug's
-        signature)."""
+        """A 20% configured vol gives a ~20% log-return std, not ~4%."""
         sig_eq = 0.20
         config = SimulationConfig(
             time_grid=[0.0, 1.0],
@@ -518,17 +433,13 @@ class TestVolatilityIsNotDoubleApplied:
         result = generate_paths(config)
         r_t = np.asarray(result["rates"][:, 0, 0])
         expected_std = sigma * np.sqrt((1 - np.exp(-2 * a * dt)) / (2 * a))
-        # the bug's signature: actual std would be ~sigma times smaller
-        # than expected (e.g. ~0.0105 * 0.015 = 0.000157 instead of 0.0105)
+        # With the bug the std would be ~sigma times smaller than expected.
         assert r_t.std() > expected_std / 10.0
         np.testing.assert_allclose(r_t.std(), expected_std, rtol=0.03)
 
     def test_correlation_between_equity_and_rate_is_preserved(self):
-        """The correlation-only-Cholesky fix must still reproduce the
-        CONFIGURED correlation between factors, not just get each factor's
-        own marginal variance right in isolation -- a fix that broke
-        cross-correlation while fixing marginal variance would be an
-        equally real regression."""
+        """The configured correlation between factors is preserved, not only each marginal
+        variance."""
         rho = 0.5
         sig_eq, sig_r = 0.20, 0.01
         cov = [[sig_eq ** 2, rho * sig_eq * sig_r], [rho * sig_eq * sig_r, sig_r ** 2]]
@@ -549,16 +460,11 @@ class TestVolatilityIsNotDoubleApplied:
         np.testing.assert_allclose(log_returns.std(), sig_eq, rtol=0.02)
 
     def test_two_correlated_rate_factors_each_match_own_configured_vol(self):
-        """Two rate factors with DIFFERENT volatilities and nonzero
-        cross-correlation -- confirms the fix generalizes beyond the
-        single-equity/single-rate case to a multi-rate-factor covariance
-        block, matching engine.simulation.demo_scenarios.cross_asset_demo_config's
-        actual shape."""
+        """Two rate factors with different vols and non-zero correlation each match their
+        configured vol."""
         sig_a, sig_b, rho = 0.012, 0.008, -0.3
-        # generate_paths requires >=1 equity/FX factor (see
-        # engine.simulation.demo_scenarios.swaption_demo_config's own placeholder pattern)
-        # -- use one zero-drift placeholder equity to isolate the two rate
-        # factors' own covariance block.
+        # generate_paths needs at least one equity; a zero-drift placeholder isolates the
+        # two rate factors.
         config = SimulationConfig(
             time_grid=[0.0, 1.0],
             scenarios=32768,
@@ -586,23 +492,13 @@ class TestVolatilityIsNotDoubleApplied:
 
 
 class TestBrownianBridgeAgainstORE:
-    """Cross-checks _build_bridge_matrix / apply_brownian_bridge against
-    QuantLib/ORE's own C++ BrownianBridge directly (not just re-deriving
-    the same covariance formula the implementation uses). ORE's
-    BrownianBridge::transform(begin,end,output) -- see
-    reference/ORE/QuantLib/ql/methods/montecarlo/brownianbridge.hpp -- is
-    documented to return the SAME thing apply_brownian_bridge's
-    Z_sequential does: standardized (unit-variance), TIME-ordered
-    increments, not raw path values (a plain covariance-of-columns probe
-    of ORE.BrownianBridge.transform on unit vectors confirms this: it
-    comes back orthonormal, i.e. NOT equal to min(s,t), because transform
-    already normalizes by sqrt(dt) internally -- only the accumulated
-    W-then-diff-then-normalize output matches our Z_sequential)."""
+    """`_build_bridge_matrix` / `apply_brownian_bridge` against QuantLib's C++
+    `BrownianBridge` (ql/methods/montecarlo/brownianbridge.hpp). Its `transform` returns
+    standardized, time-ordered increments, the same quantity as `Z_sequential`."""
 
     def _ore_transform_all(self, times, Z):
-        """Z: [TimeSteps, N] array of independent normals (Sobol-dimension
-        order). Returns ORE's transform() output with the same shape,
-        applied independently per column via ORE.BrownianBridge."""
+        """ORE's `transform()` applied per column of `Z` [TimeSteps, N] (independent
+        normals in Sobol-dimension order)."""
         bb = ORE.BrownianBridge(ORE.DoubleVector([float(t) for t in times]))
         n = len(times)
         out = np.empty_like(Z)
@@ -622,9 +518,7 @@ class TestBrownianBridgeAgainstORE:
         np.testing.assert_allclose(Z_seq, Z_ore, atol=1e-9)
 
     def test_matches_ore_transform_on_irregular_grid(self):
-        """Non-uniform step sizes exercise the recursive bisection's
-        midpoint selection more thoroughly than the evenly-spaced demo
-        grid does."""
+        """Irregular step sizes."""
         times = [0.1, 0.15, 1.0, 1.2, 5.0]
         time_grid = jnp.array([0.0] + times, dtype=jnp.float64)
         rng = np.random.default_rng(1)
@@ -647,13 +541,8 @@ class TestBrownianBridgeAgainstORE:
 
 
 class TestBrownianBridgeMultipleGridShapes:
-    """TestBrownianBridge / TestBrownianBridgeEdgeCases only check the
-    covariance identity B@B.T == min(s,t) at the raw-matrix level for two
-    grid shapes. Here we check the full apply_brownian_bridge pipeline's
-    statistical output (reconstructed path values, not just increments)
-    at several more grid shapes, confirming the actual Brownian-motion
-    property: Var[W(t)] == t at every grid time, and each increment's
-    variance equals its own dt."""
+    """The full `apply_brownian_bridge` output at several grid shapes: Var[W(t)] == t at
+    every grid time, and each increment's variance equals its dt."""
 
     @staticmethod
     def _path_values_from_increments(Z_seq, time_grid):
@@ -667,11 +556,11 @@ class TestBrownianBridgeMultipleGridShapes:
         Z_seq = np.asarray(apply_brownian_bridge(Z, jnp.array(time_grid)))
         dt = np.diff(time_grid)
 
-        # increment variance must equal its own dt
+        # Each increment's variance equals its dt.
         increment_var = Z_seq.var(axis=(1, 2)) * dt  # Z_seq already standardized -> multiply back by dt
         np.testing.assert_allclose(increment_var, dt, rtol=0.05)
 
-        # path value variance at each grid time must equal that time (BM property)
+        # The path's variance at each grid time equals that time.
         W = self._path_values_from_increments(Z_seq, time_grid)
         path_var = W.var(axis=(1, 2))
         np.testing.assert_allclose(path_var, times_after_zero, rtol=0.05)
@@ -688,9 +577,7 @@ class TestBrownianBridgeMultipleGridShapes:
 
 class TestBrownianBridgeDegenerateInputs:
     def test_zero_length_first_step_does_not_produce_nan(self):
-        """A repeated time value (dt=0 for the first interior step) is an
-        edge case a caller could plausibly construct by accident; document
-        actual behavior rather than assume it's handled."""
+        """A repeated time (dt = 0 for the first step): documents the actual behaviour."""
         time_grid = np.array([0.0, 0.0, 1.0])
         try:
             B = _build_bridge_matrix(time_grid)
@@ -705,10 +592,8 @@ class TestBrownianBridgeDegenerateInputs:
 
 
 class TestHullWhiteAgainstORE:
-    """Cross-checks the HW1F closed-form pieces (OU transition variance,
-    and the A(t,T)/B(t,T) discount-bond formula) against ORE's own
-    HullWhiteProcess / HullWhite classes directly, independent of this
-    codebase's own re-derivation of the same formulas."""
+    """Hull-White closed forms (OU transition variance, A(t,T)/B(t,T) bond price) against
+    ORE's `HullWhiteProcess` and `HullWhite`."""
 
     def test_ou_transition_variance_matches_ore_hullwhiteprocess(self):
         a, sigma, r0, dt = 0.05, 0.015, 0.03, 0.5
@@ -722,11 +607,8 @@ class TestHullWhiteAgainstORE:
         np.testing.assert_allclose(our_variance, ore_variance, rtol=1e-10)
 
     def test_discount_bond_matches_ore_hullwhite_discountbond(self):
-        """ORE's HullWhite.discountBond(now, maturity, rate) implements the
-        exact same closed-form A(t,T)*exp(-B(t,T)*r) affine formula that
-        compute_hw_A_matrix/reconstruct_yield_curves implement -- a
-        genuinely independent implementation to check against, not merely
-        the same formula copy-pasted into the test."""
+        """`compute_hw_A_matrix` / `reconstruct_yield_curves` bond prices equal
+        `ORE.HullWhite.discountBond(t, T, r)`."""
         a, sigma, r0 = 0.1, 0.01, 0.03
         dc = ORE.Actual365Fixed()
         eval_date = ORE.Date(30, 7, 2026)
@@ -748,16 +630,14 @@ class TestHullWhiteAgainstORE:
         np.testing.assert_allclose(our_df, ore_df, atol=1e-6)
 
     def test_discount_bond_matches_ore_hullwhite_discountbond_sloped_curve(self):
-        """Same cross-check with a genuinely sloped curve, so the
-        forward-rate finite-difference / interpolation logic is exercised
-        against ORE's own curve interpolation too, not just a flat rate."""
+        """The same on a sloped curve."""
         a, sigma = 0.1, 0.01
         times = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
         rates = [0.020, 0.025, 0.028, 0.032, 0.035, 0.038]
         dc = ORE.Actual365Fixed()
         eval_date = ORE.Date(30, 7, 2026)
         dates = [eval_date + int(round(t * 365)) for t in times]
-        # ORE's ZeroCurve needs dates[0] == eval_date (t=0 pillar)
+        # ORE's ZeroCurve needs a pillar at the evaluation date.
         curve = ORE.YieldTermStructureHandle(
             ORE.ZeroCurve(ORE.DateVector(dates), ORE.DoubleVector(rates), dc)
         )
@@ -774,11 +654,9 @@ class TestHullWhiteAgainstORE:
         our_df = A[0, :, 0] * np.exp(-B[0, :, 0] * rates[0])
 
         ore_df = np.array([hw.discountBond(step_times[0], T, rates[0]) for T in maturities])
-        # slightly looser tolerance: ORE's ZeroCurve interpolation (log-linear
-        # discount / default interpolator) is not bit-identical to this
-        # codebase's linear-on-zero-rate interpolation used in
-        # _initial_log_discount -- both are valid choices, so a few bp of
-        # difference from interpolation-scheme choice alone is expected.
+        # Both curves are linear in zero rate. The ~1e-6 gap comes from ORE's instantaneous
+        # forward near t=0, which QuantLib takes as a finite difference over [0, 1e-4] on this
+        # sloped first segment.
         np.testing.assert_allclose(our_df, ore_df, rtol=1e-3)
 
 
@@ -821,47 +699,28 @@ class TestComputeHwAMatrixCurveShapesAndExtrapolation:
         np.testing.assert_allclose(df, np.exp(-0.03 * np.array([1.0, 2.0, 5.0, 10.0])), atol=1e-6)
 
     def test_maturity_beyond_last_pillar_flat_extrapolates(self):
-        """np.interp (used by _initial_log_discount) flat-extrapolates
-        beyond the pillar range by construction -- confirm this holds
-        through the full A(t,T) pipeline, not just at the np.interp call
-        site, and that it does NOT silently produce nonsense (e.g.
-        negative/NaN discount factors) for a maturity far past the last
-        pillar."""
+        """Beyond the last pillar the zero rate is held flat through the whole A(t,T)
+        pipeline, with no NaN or negative discount factors."""
         zc = [ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0], rates=[0.02, 0.025, 0.03, 0.035])]
         df = self._reprices(zc, maturities=np.array([5.0, 10.0, 20.0, 50.0]))
-        # beyond t=5.0 the effective zero rate is flat-clamped at 0.035
+        # Beyond t=5 the zero rate is flat at 0.035.
         expected = np.exp(-0.035 * np.array([10.0, 20.0, 50.0]))
         np.testing.assert_allclose(df[1:], expected, atol=1e-4)
         assert np.all(df > 0.0) and np.all(np.isfinite(df))
-        # discount factors must still be monotonically decreasing even
-        # under flat extrapolation
+        # Discount factors still decrease under flat extrapolation.
         assert np.all(np.diff(df) < 0)
 
 
 class TestZeroVolatilityAndSingularMeanReversion:
-    """hw_a (mean_reversion) appears in a literal denominator in three
-    places: the B(t,T) formula (both generate_paths' inline version and
-    every test's local reimplementation), the HW1F transition's
-    variance_hw = (1-exp(-2*a*dt))/(2*a), and compute_hw_A_matrix's
-    variance_term = sigma^2/(4a) * (...). a=0 is a removable 0/0
-    singularity in those formulas as literally written; its analytic
-    a->0 limit (arithmetic Brownian motion) is well-defined:
-    B(t,T)->T-t, variance_hw->dt, compute_hw_A_matrix's
-    variance_term->sigma^2*t/2. Similarly, a factor with exactly zero
-    variance makes the correlation-normalization step a 0/0 whose naive
-    NaN propagates through jnp.linalg.cholesky and poisons every other,
-    unrelated factor. This class is regression coverage for the fix:
-    both singularities are guarded (jnp.where against a safe placeholder
-    denominator) so they produce the correct finite limit instead of
-    NaN."""
+    """a = 0 is a removable 0/0 in B(t,T), the OU transition variance and A's variance term;
+    its limit is arithmetic Brownian motion (B -> T-t, variance -> dt, A's term ->
+    sigma^2*t/2). A zero-variance factor makes the correlation normalization 0/0, which
+    Cholesky would spread to every factor. Both are guarded with `jnp.where` and give the
+    finite limit."""
 
     def test_zero_mean_reversion_matches_arithmetic_brownian_motion_limit(self):
-        """mean_reversion=0.0 (arithmetic Brownian motion, the a->0 limit
-        of OU mean reversion) now produces finite output whose simulated
-        mean and variance match the closed-form ABM limit: E[r(t)] = r0
-        (since decay=exp(0)=1, theta's own contribution vanishes) and
-        Var[r(t)] = sigma^2 * t (the variance_hw->dt limit accumulated
-        over each step, scaled by sigma^2)."""
+        """a = 0 gives finite output with the ABM limit: E[r(t)] = r0 and
+        Var[r(t)] = sigma^2 * t."""
         r0 = 0.03
         sigma = 0.01
         cfg = SimulationConfig(
@@ -886,11 +745,7 @@ class TestZeroVolatilityAndSingularMeanReversion:
             assert var_r == pytest.approx(sigma ** 2 * t, rel=0.15)
 
     def test_all_zero_volatility_produces_deterministic_path(self):
-        """sigma=0 for every factor is not a singularity in the HW1F/GBM
-        step formulas themselves (shock_hw/shock_eq are simply multiplied
-        by sigma=0) -- with the correlation-normalization 0/0 guarded,
-        every scenario now collapses onto the same noiseless drift/OU-mean
-        path exactly, with zero cross-scenario variance."""
+        """sigma = 0 for every factor gives the same deterministic path on every scenario."""
         a = 0.1
         r0 = theta = 0.03
         dt = 0.5
@@ -904,20 +759,13 @@ class TestZeroVolatilityAndSingularMeanReversion:
         result = generate_paths(cfg)
         assert bool(jnp.all(jnp.isfinite(result["rates"])))
         assert bool(jnp.all(jnp.isfinite(result["equities"])))
-        # theta == r0, a fixed point of the OU mean -- every scenario/step
-        # should sit at exactly r0 with zero variance.
+        # theta == r0, the OU fixed point: every scenario and step is exactly r0.
         np.testing.assert_allclose(np.asarray(result["rates"]), r0, atol=1e-9)
         assert float(jnp.var(result["rates"])) == pytest.approx(0.0, abs=1e-12)
 
     def test_one_zero_volatility_factor_does_not_poison_others(self):
-        """Sharper variant: only ONE factor (the equity) has zero
-        variance; the rate factor has an entirely normal, nonzero 0.01 vol
-        and zero configured correlation to the equity. The two factors
-        being uncorrelated means one factor's degeneracy must not affect
-        the other -- the equity path is exactly deterministic (100.0
-        throughout, zero drift/vol configured) while the rate factor is
-        finite and matches its own well-defined HW1F distribution around
-        theta=0.03."""
+        """One zero-vol factor (the equity) does not affect an uncorrelated rate factor: the
+        equity stays at 100.0 and the rate factor keeps its own distribution."""
         cfg = SimulationConfig(
             time_grid=[0.0, 0.5],
             scenarios=2000,
@@ -935,10 +783,7 @@ class TestZeroVolatilityAndSingularMeanReversion:
         assert std_r == pytest.approx(0.01 * np.sqrt(0.5), rel=0.15)
 
     def test_negative_mean_reversion_runs_and_is_finite(self):
-        """Negative a (divergent/anti-mean-reverting OU) is not a formula
-        singularity (only a=0 is) -- confirm the implementation actually
-        runs and produces finite output, without asserting a particular
-        blow-up rate."""
+        """Negative a (anti-mean-reverting) runs and stays finite."""
         cfg = SimulationConfig(
             time_grid=[0.0, 0.5, 1.0],
             scenarios=128,
@@ -951,56 +796,32 @@ class TestZeroVolatilityAndSingularMeanReversion:
 
 
 class TestCholeskyOnDegenerateCorrelation:
-    """rho=+-1 and non-PSD covariance matrices used to reach
-    jnp.linalg.cholesky completely unvalidated, silently producing an
-    all-NaN correlation factor (and, downstream, an all-NaN simulated
-    path) instead of a raised error -- exactly the failure mode
-    docs/planning/traderx-integration.md's gap item 1 identified.
-    generate_paths now calls validate_joint_covariance (engine/simulation/
-    market_model.py) before any JAX computation, so this class's headline
-    case now raises instead of silently NaN-ing (see
-    test_non_positive_semidefinite_covariance_now_raises_instead_of_
-    silently_producing_nan below); test_boundary_rho_equals_one_... still
-    documents the underlying floating-point Cholesky behavior directly
-    (bypassing generate_paths entirely), which is unaffected by this
-    validation and remains a genuine floating-point fact, not a JAX
-    defect."""
+    """Degenerate correlations. `generate_paths` validates `joint_covariance` before any
+    JAX work, so an invalid matrix raises instead of producing all-NaN paths. The rho = 1
+    test documents Cholesky's floating-point behaviour at the boundary directly."""
 
     def test_non_positive_semidefinite_covariance_now_raises_instead_of_silently_producing_nan(self):
-        """rho implied by off-diagonal/sqrt(diag product) > 1 is not a
-        valid correlation at all (mathematically invalid input).
-        generate_paths now rejects this outright via
-        validate_joint_covariance, called before any jnp.linalg.cholesky
-        work -- see TestCovarianceValidation for the standalone validator
-        tests."""
+        """An implied rho > 1 is rejected by `validate_joint_covariance` (see
+        TestCovarianceValidation)."""
         cfg = SimulationConfig(
             time_grid=[0.0, 1.0],
             scenarios=32,
             equities=EquityConfig(initial_prices=[100.0], dividend_yields=[0.0], rate_mapping=[[1.0]]),
             rates=RatesConfig(initial_rates=[0.03], theta=[0.03], mean_reversion=[0.1]),
-            # off-diagonal 0.05 vs sqrt(0.04*0.0001) ~= 0.002 -- invalid, implies rho >> 1
+                # 0.05 against sqrt(0.04*0.0001) ~= 0.002: implies rho >> 1.
             joint_covariance=[[0.04, 0.05], [0.05, 0.0001]],
         )
         with pytest.raises(ValueError, match="not positive semi-definite"):
             generate_paths(cfg)
 
     def test_boundary_rho_equals_one_is_numerically_singular_not_a_jax_defect(self):
-        """rho=1.0 is theoretically PSD (rank-deficient, smallest eigenvalue
-        exactly 0), but the resulting 2x2 covariance is numerically
-        singular/ill-conditioned under floating point (its smallest
-        eigenvalue computes as ~1e-20, not exactly 0), so BOTH plain
-        numpy's and jax.numpy's Cholesky reject it identically -- numpy
-        raises LinAlgError, jax silently returns an all-NaN factor.
-        Confirms this is an inherent floating-point property of Cholesky
-        at the exact correlation boundary, not something specific to (or
-        avoidable by) this codebase's particular choice of
-        jnp.linalg.cholesky over an alternative library."""
+        """rho = 1 is PSD in exact arithmetic but numerically singular (smallest eigenvalue
+        ~1e-20): numpy's Cholesky raises and JAX's returns NaN. A property of Cholesky at the
+        boundary, not of JAX."""
         sig1, sig2 = 0.2, 0.01
         cov = np.array([[sig1 ** 2, 1.0 * sig1 * sig2], [1.0 * sig1 * sig2, sig2 ** 2]])
         eigvals = np.linalg.eigvalsh(cov)
-        # the boundary case's smallest eigenvalue is only correct to
-        # floating-point noise, not exactly the mathematical 0 -- confirms
-        # the input is genuinely at the numerical edge of PSD-ness.
+        # The smallest eigenvalue is floating-point noise, not exactly 0.
         np.testing.assert_allclose(eigvals.min(), 0.0, atol=1e-15)
 
         with pytest.raises(np.linalg.LinAlgError):
@@ -1020,22 +841,11 @@ class TestCholeskyOnDegenerateCorrelation:
 
 
 class TestGeneratePathsMismatchedArrayLengths:
-    """generate_paths validates every documented "one entry per factor"
-    cross-field length invariant up front (initial_zero_curves vs num rate
-    factors; RatesConfig.theta/mean_reversion vs initial_rates;
-    EquityConfig.rate_mapping row/column counts vs num equities/rate
-    factors; joint_covariance's overall shape) rather than relying on
-    jnp broadcasting/jnp.dot shape rules to catch a mismatch incidentally
-    (which used to sometimes raise a low-level JAX error and sometimes
-    silently broadcast to a wrong-but-shaped result -- see git history for
-    the pre-fix behavior). This class checks each contract is now enforced
-    with a clear ValueError instead."""
+    """Every "one entry per factor" length rule is checked up front with a clear
+    ValueError, rather than left to broadcasting."""
 
     def test_theta_shorter_than_initial_rates_raises(self):
-        """theta has 1 entry but there are 2 rate factors -- must raise
-        rather than jnp.tile/broadcasting silently reusing theta[0] for
-        BOTH rate factors, which used to silently violate the RatesConfig
-        docstring's documented 'one entry per rate factor' contract."""
+        """One theta for two rate factors raises (rather than reusing theta[0])."""
         cfg = SimulationConfig(
             time_grid=[0.0, 1.0],
             scenarios=32,
@@ -1047,9 +857,7 @@ class TestGeneratePathsMismatchedArrayLengths:
             generate_paths(cfg)
 
     def test_rate_mapping_row_count_mismatched_with_num_equities_raises(self):
-        """2 equities configured but rate_mapping has only 1 row -- must
-        raise rather than letting dynamic_mu = jnp.dot(r_t, rate_mapping.T)
-        silently broadcast a wrong-shaped drift."""
+        """Two equities but one rate_mapping row raises (rather than broadcasting)."""
         cfg = SimulationConfig(
             time_grid=[0.0, 1.0],
             scenarios=32,
@@ -1062,11 +870,7 @@ class TestGeneratePathsMismatchedArrayLengths:
             generate_paths(cfg)
 
     def test_oversized_joint_covariance_raises_a_shape_error(self):
-        """By contrast, a joint_covariance whose size doesn't match
-        num_eq+num_hw at all (not just an ambiguous-but-broadcastable
-        mismatch) DOES fail loudly, via jnp.dot's contracting-dimension
-        check inside the jitted step function -- confirming that some,
-        but not all, shape mismatches are caught."""
+        """A joint_covariance of the wrong overall size raises."""
         cfg = SimulationConfig(
             time_grid=[0.0, 1.0],
             scenarios=32,
@@ -1094,14 +898,11 @@ class TestGeneratePathsSingleFactorConfigurations:
         assert bool(jnp.all(jnp.isfinite(result["rates"])))
 
     def test_many_rate_and_equity_factors(self):
-        """A larger factor count (8 equities, 6 rate factors) than any
-        existing test exercises, with a random-but-valid PSD covariance
-        matrix, confirms the pipeline generalizes rather than only working
-        for the 1-4 factor configs every other test uses."""
+        """8 equities and 6 rate factors with a random valid covariance."""
         rng = np.random.default_rng(7)
         num_eq, num_hw = 8, 6
         n = num_eq + num_hw
-        # build a random valid PSD covariance matrix via A @ A.T + small ridge
+        # A random PSD covariance: A @ A.T plus a small ridge.
         M = rng.normal(size=(n, n)) * 0.05
         cov = M @ M.T + np.eye(n) * 1e-6
 
@@ -1128,10 +929,7 @@ class TestGeneratePathsSingleFactorConfigurations:
 
 
 class TestGeneratePathsNaNInfInputs:
-    """NaN/Inf in the config should not be silently swallowed into a
-    plausible-looking but wrong result -- confirm they propagate visibly
-    (as NaN/Inf in the output) rather than, say, being clipped or treated
-    as zero."""
+    """NaN/Inf inputs propagate visibly rather than being clipped or zeroed."""
 
     def test_nan_initial_rate_propagates_as_nan_not_silently_dropped(self):
         cfg = SimulationConfig(
@@ -1156,7 +954,7 @@ class TestGeneratePathsNaNInfInputs:
         result = generate_paths(cfg)
         eq = np.asarray(result["equities"])
         assert np.all(np.isinf(eq) | np.isnan(eq))
-        # rates are unaffected by an infinite equity price (no feedback path)
+        # Rates do not depend on the equity price.
         assert bool(jnp.all(jnp.isfinite(result["rates"])))
 
 
@@ -1173,14 +971,12 @@ class TestGeneratePathsScenariosEqualsOne:
 
 
 class TestInitialLogDiscountExtrapolation:
-    """Direct unit coverage of _initial_log_discount's documented
-    flat-extrapolation behavior at the pillar boundaries, isolated from
-    the full compute_hw_A_matrix pipeline."""
+    """`_initial_log_discount` extrapolates flat beyond the pillars."""
 
     def test_extrapolates_flat_below_first_pillar(self):
         zero_times = np.array([1.0, 2.0, 5.0])
         zero_rates = np.array([0.02, 0.03, 0.04])
-        # t=0.5 is before the first pillar (1.0) -- np.interp clamps to rate[0]
+        # t=0.5 is before the first pillar (1.0): the rate is clamped to rate[0].
         log_p = _initial_log_discount(zero_times, zero_rates, np.array([0.5]))
         np.testing.assert_allclose(log_p, -0.02 * 0.5, atol=1e-12)
 
@@ -1193,22 +989,17 @@ class TestInitialLogDiscountExtrapolation:
 
 
 class TestCovarianceValidation:
-    """validate_joint_covariance/nearest_psd (docs/planning/
-    traderx-integration.md gap item 1): an invalid joint_covariance must be
-    rejected loudly, not silently NaN every simulated path via
-    jnp.linalg.cholesky."""
+    """`validate_joint_covariance` / `nearest_psd`: an invalid covariance is rejected rather
+    than producing NaN paths."""
 
     def test_implied_correlation_above_one_is_rejected(self):
-        """cov[0][1] implies rho = 0.05/sqrt(0.02*0.02) = 2.5 > 1 -- not a
-        valid covariance matrix at all (Cauchy-Schwarz violation)."""
+        """Implied rho = 0.05/sqrt(0.02*0.02) = 2.5 > 1."""
         matrix = [[0.02, 0.05], [0.05, 0.02]]
         with pytest.raises(ValueError, match="not positive semi-definite"):
             validate_joint_covariance(matrix)
 
     def test_deliberately_negative_eigenvalue_is_rejected(self):
-        """A symmetric matrix built from an explicit eigendecomposition with
-        one negative eigenvalue -- constructed directly (not via a
-        correlation-implied route) so the failure mode is unambiguous."""
+        """A symmetric matrix with one explicitly negative eigenvalue."""
         eigenvectors, _ = np.linalg.qr(np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 0.0]]))
         eigenvalues = np.array([2.0, 1.0, -0.5])
         matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
@@ -1234,10 +1025,7 @@ class TestCovarianceValidation:
         validate_joint_covariance([[0.04, 0.001], [0.001, 0.0001]])
 
     def test_generate_paths_raises_on_invalid_covariance_instead_of_producing_nan(self):
-        """Direct regression coverage for the exact silent-NaN failure mode
-        docs/planning/traderx-integration.md's gap item 1 describes:
-        generate_paths must now raise before any JAX computation, rather
-        than letting jnp.linalg.cholesky silently NaN every path."""
+        """`generate_paths` raises before any JAX work."""
         cfg = SimulationConfig(
             time_grid=[0.0, 0.5, 1.0],
             scenarios=16,
@@ -1256,12 +1044,8 @@ class TestCovarianceValidation:
         validate_joint_covariance(repaired)  # must not raise
 
     def test_nearest_psd_repaired_matrix_produces_finite_generate_paths_output(self):
-        """nearest_psd clips to a small positive epsilon, not literally 0
-        (see its own docstring) -- specifically so a repaired matrix like
-        this one (built from a deliberately negative eigenvalue) is not
-        left numerically rank-deficient, which would otherwise reproduce
-        the same singular-Cholesky-boundary NaN documented in
-        TestCholeskyOnDegenerateCorrelation."""
+        """`nearest_psd` clips to a small positive epsilon, so the repaired matrix is not
+        rank-deficient and gives finite paths."""
         eigenvectors, _ = np.linalg.qr(np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 0.0]]))
         eigenvalues = np.array([0.04, 0.0001, -0.00002])
         bad_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
@@ -1279,9 +1063,7 @@ class TestCovarianceValidation:
         assert bool(jnp.all(jnp.isfinite(result["equities"])))
 
     def test_nearest_psd_never_called_automatically_by_generate_paths(self):
-        """generate_paths must still reject a bad matrix outright -- confirms
-        nearest_psd is opt-in only, never silently applied on the caller's
-        behalf."""
+        """`nearest_psd` is opt-in: `generate_paths` still rejects a bad matrix."""
         cfg = SimulationConfig(
             time_grid=[0.0, 0.5, 1.0],
             scenarios=16,
@@ -1294,8 +1076,7 @@ class TestCovarianceValidation:
 
 
 class TestSobolSeed:
-    """`SimulationConfig.seed` selects the Sobol scrambling. The default
-    reproduces the engine's historical fixed seed of 42."""
+    """`SimulationConfig.seed` selects the Sobol scrambling; the default is 42."""
 
     def test_default_seed_is_42(self, cross_asset_config):
         default = generate_paths(with_scenarios(cross_asset_config, 256))["rates"]
@@ -1309,16 +1090,14 @@ class TestSobolSeed:
 
 
 class TestForwardRatePrecision:
-    """`hull_white.forward_rate` used a 1e-6 forward finite difference on
-    ln P(0,t). In float32 that is pure cancellation noise -- forward rates
-    came out wrong by up to ~2 percentage points."""
+    """`hull_white.forward_rate` is exact. It was once a 1e-6 finite difference on ln P,
+    which in float32 put forward rates off by up to ~2 percentage points."""
 
     TIMES = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
     RATES = [0.03, 0.031, 0.032, 0.035, 0.037, 0.04]
 
     def _exact(self, t):
-        # f = z + t*z' for a linearly interpolated zero curve; the right-hand
-        # segment's slope at a pillar, 0 outside the pillars.
+        # f = z + t*z': the slope of the segment to the right, 0 outside the pillars.
         times, rates = np.asarray(self.TIMES), np.asarray(self.RATES)
         slopes = np.diff(rates) / np.diff(times)
         idx = np.clip(np.searchsorted(times, t, side="right") - 1, 0, len(slopes) - 1)

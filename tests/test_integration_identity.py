@@ -1,10 +1,7 @@
 """
-W0.7 -- identity plumbing (`docs/planning/traderx-integration-plan.md`
-§W0.7). Closes I-10 for the integration boundary.
-
-The plan's named tests: same security in two accounts -> distinct rows with
-correct signs; unsupported row has identity; item-order artifact hash
-matches result ordering.
+Identity (`engine.integration.identity`, W0.7; closes I-10 at the integration boundary):
+one security in two accounts gives distinct rows with correct signs; an unsupported row has
+identity; the item-order artifact hash matches the result ordering.
 """
 import json
 from pathlib import Path
@@ -26,8 +23,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "traderx-eod"
 
 
 class TestSameSecurityInTwoAccounts:
-    """Plan's first named test. This is the shape I-10 got wrong: keyed by
-    array position, the long and short rows are indistinguishable."""
+    """Keyed by array position (I-10), the long and short rows were indistinguishable."""
 
     def test_distinct_rows_with_distinct_ids(self):
         result = price_bundle(FIXTURES / "note" / "v2")
@@ -44,8 +40,7 @@ class TestSameSecurityInTwoAccounts:
         assert {i.security for i in identities.values()} == {"UST-NOTE-20261215"}
 
     def test_correct_signs_per_account(self):
-        """Identity and sign must travel together -- an id that does not
-        distinguish long from short is worse than no id."""
+        """Identity and sign travel together."""
         result = price_bundle(FIXTURES / "note" / "v2")
         accrued = {
             item.identity.account_id: item.calculations["accruedInterest"].value
@@ -62,8 +57,8 @@ class TestItemIdProperties:
         assert item_id(identity) == item_id(identity)
 
     def test_stable_across_processes(self):
-        """Derived from a SHA-256 of the canonical identity, not Python's
-        `hash()`, which is PYTHONHASHSEED-salted and differs per process."""
+        """A SHA-256 of the canonical identity, not Python's `hash()` (salted per process by
+        PYTHONHASHSEED)."""
         import subprocess, sys
         code = (
             "from engine.integration.identity import ItemIdentity, item_id;"
@@ -84,8 +79,8 @@ class TestItemIdProperties:
         assert item_id(a) != item_id(b)
 
     def test_differs_by_epoch(self):
-        """A `contractId` is unique only within its epoch, so the epoch is
-        inside the id preimage -- otherwise SW-3 in two epochs collides."""
+        """A `contractId` is unique only within its epoch, so the epoch is in the id
+        preimage (else SW-3 in two epochs collides)."""
         a = ItemIdentity(kind="contract", account_id="1", cluster_epoch="e1", contract_id="SW-3")
         b = ItemIdentity(kind="contract", account_id="1", cluster_epoch="e2", contract_id="SW-3")
         assert item_id(a) != item_id(b)
@@ -129,7 +124,7 @@ class TestSourceIdentityBlock:
 
 
 class TestUnsupportedRowsCarryIdentity:
-    """Plan §W0.7 step 3: 'an unidentified refusal is useless'."""
+    """Refusals carry identity."""
 
     def test_sofr_refusal_is_fully_identified(self):
         payload = price_bundle(FIXTURES / "sofr" / "v2").to_dict()
@@ -143,8 +138,7 @@ class TestUnsupportedRowsCarryIdentity:
 
     @pytest.mark.parametrize("case", ("bill", "note", "sofr"))
     def test_v1_refusals_are_identified(self, case):
-        """The case most at risk of dropping identity: no terms artifact,
-        so nothing joined, and yet every row must still be attributable."""
+        """With no terms artifact nothing joins, yet every row is attributable."""
         payload = price_bundle(FIXTURES / case / "v1").to_dict()
 
         for item in payload["items"]:
@@ -153,16 +147,14 @@ class TestUnsupportedRowsCarryIdentity:
             assert item["sourceIdentity"]["clusterEpoch"]
 
     def test_identity_is_structurally_mandatory(self):
-        """An `ItemResult` cannot be built without identity, so an
-        unidentified refusal is unrepresentable rather than discouraged."""
+        """An `ItemResult` cannot be built without identity."""
         from engine.integration.result import ItemResult
         with pytest.raises(TypeError):
             ItemResult(calculations={})
 
 
 class TestItemOrderArtifact:
-    """Plan §W0.7 step 4: ordering published as its own hashed artifact,
-    never inferred from array position (working rule 7)."""
+    """Ordering is published as its own hashed artifact, never inferred from array position."""
 
     def test_order_matches_the_items_array(self):
         payload = price_bundle(FIXTURES / "note" / "v2").to_dict()
@@ -181,8 +173,7 @@ class TestItemOrderArtifact:
         assert item_order_artifact(order["itemIds"])["sha256"] == order["sha256"]
 
     def test_reordering_changes_the_hash(self):
-        """What makes the artifact worth publishing: a consumer can verify
-        the order it read is the order that was published."""
+        """A consumer can verify the order it read is the one published."""
         ids = ["a" * 32, "b" * 32]
         assert item_order_artifact(ids)["sha256"] != item_order_artifact(list(reversed(ids)))["sha256"]
 
@@ -191,11 +182,7 @@ class TestItemOrderArtifact:
 
 
 class TestIdentityIsNotArrayPosition:
-    """I-10 regression: results keyed by array position.
-
-    A consumer must be able to reconcile by `itemId` alone, with the array
-    shuffled underneath it.
-    """
+    """I-10 regression: reconciliation works by `itemId` alone with the array shuffled."""
 
     def test_items_are_findable_by_id_not_index(self):
         result = price_bundle(FIXTURES / "note" / "v2")
@@ -206,15 +193,13 @@ class TestIdentityIsNotArrayPosition:
             assert found.identity.account_id == item.identity.account_id
 
     def test_ids_are_reproducible_across_runs(self):
-        """The property that makes reconciliation possible at all: the same
-        bundle yields the same ids every time."""
+        """The same bundle yields the same ids every time."""
         first = [i.item_id for i in price_bundle(FIXTURES / "note" / "v2").items]
         second = [i.item_id for i in price_bundle(FIXTURES / "note" / "v2").items]
         assert first == second
 
     def test_v1_and_v2_agree_on_identity(self):
-        """Same cut, same population, same identities -- the bundle version
-        changes what can be priced, never who the rows are."""
+        """The bundle version changes what can be priced, never the rows' identities."""
         v1 = {i.item_id for i in price_bundle(FIXTURES / "note" / "v1").items}
         v2 = {i.item_id for i in price_bundle(FIXTURES / "note" / "v2").items}
         assert v1 == v2

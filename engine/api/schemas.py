@@ -1,30 +1,14 @@
 """
-Pydantic v2 request/response schemas -- the HTTP boundary's own copy of
-`engine.portfolio`/`engine/instruments/*.py`'s dataclasses, field-for-field.
+Pydantic request/response schemas for the HTTP API, mirroring the engine's dataclasses
+field for field. Each schema converts with `.to_dataclass()` / `.from_dataclass()`; the
+dataclasses remain the source of truth, and nothing below `engine/api/` imports Pydantic.
 
-**Wrap, not replace** (see docs/concepts/architecture.md's "Typed
-configuration" section): the dataclasses stay the single source of truth
-for the engine's own internal shape. Every schema here has a
-`.to_dataclass()` method converting to the real engine dataclass, and every
-result schema has a `.from_dataclass()` classmethod for the reverse
-direction. Pydantic exists ONLY in this HTTP boundary layer -- nothing under
-`engine/portfolio/` or below imports Pydantic or FastAPI, preserving the
-existing principle that core simulation/risk functionality shouldn't require
-the heavy optional `api` dependency extra.
+ORE types travel as strings: dates as ISO `YYYY-MM-DD` (`ORE.DateParser.parseISO`), periods
+in ORE syntax (`"5Y"`, `"18M"`), fixings as `{"YYYY-MM-DD": rate}`.
 
-`ORE.Date`/`ORE.Period` fields (SWIG-bound types, not natively
-Pydantic-serializable) are represented here as plain strings: dates as ISO
-`YYYY-MM-DD` (parsed via `ORE.DateParser.parseISO`), tenors/periods as ORE's
-own period-string syntax (e.g. `"5Y"`, `"18M"`, `"0D"`), parsed via
-`ORE.Period(str)` -- the exact same parse `engine.portfolio.validation.
-_validate_tenor` already validates for the underlying dataclasses.
-Historical fixings are `{"YYYY-MM-DD": rate}`.
-
-A trade's schedule is given as `effective_date`/`maturity_date` (and a
-European swaption's `exercise_date`), or as `swap_tenor` (plus, for a
-European, `forward_start`/`exercise_lag_days`) resolved to dates on the
-trade's evaluation date -- exactly the dataclasses' own rule (audit M-4).
-There is no default tenor: a trade without either is refused.
+A trade's schedule is `effective_date`/`maturity_date` (plus a European's
+`exercise_date`), or `swap_tenor` (plus a European's `forward_start`/`exercise_lag_days`)
+resolved on the trade's evaluation date. There is no default tenor.
 """
 from typing import Annotated, Dict, List, Literal, Optional, Union
 
@@ -266,47 +250,29 @@ class AmericanSwaptionConfigSchema(BaseModel):
 
 
 class CouponPeriodSchema(BaseModel):
-    """One explicit coupon period of a `BondConfigSchema`.
-
-    Enumerated rather than generated from a frequency, matching
-    `engine.integration.note`'s rule: a schedule this engine derived by
-    stepping back from maturity that disagreed with the booked one would
-    silently reprice every coupon.
-    """
+    """One explicit coupon period of a `BondConfigSchema`; enumerated, not generated (see
+    `engine.instruments.treasury.CouponPeriod`)."""
     start_date: str
     end_date: str
-    #: Defaults to `end_date` when absent -- an unadjusted schedule has
-    #: them equal. A present-but-unparseable value still raises.
+    #: Defaults to `end_date`.
     payment_date: Optional[str] = None
 
 
 class BondConfigSchema(BaseModel):
-    """A Treasury bill or note (W1.5).
+    """A Treasury bill or note (`engine.instruments.treasury.BondConfig`).
 
-    **A bill is simply `coupon_schedule` omitted with `coupon_rate` left at
-    0.0** -- the degenerate case of the same type, not a separate one.
+    A bill omits `coupon_schedule` and leaves `coupon_rate` at 0. `face_amount` is signed
+    (negative for a short); there is no separate sign field. The bond carries its own
+    `initial_zero_curve`.
 
-    `face_amount` is **signed**: a short position is a negative face. There
-    is no separate sign field, and adding one would risk the double-sign
-    bug TraderX flagged in their v3 §2.
-
-    **A bond carries its own `initial_zero_curve`** rather than an index
-    into the simulation's curves, like the swaption family and unlike
-    `SwapConfig`. See `engine.instruments.treasury`: that is what makes
-    I-01's silent-skip class unreachable for this type.
-
-    ⚠ **A portfolio containing a bond must set `scenario_risk: false`.** A
-    bond has no scenario NPV, so it cannot appear in `npv_cube` and has no
-    exposure profile. Submitting one with `scenario_risk: true` (the default) is
-    **refused** with an explicit message rather than served a fabricated
-    zero -- see `PortfolioRequestSchema.scenario_risk` and I-24.
+    A portfolio containing a bond must set `scenario_risk: false`: a bond has no scenario
+    NPV, and the request is refused otherwise (I-24).
     """
     trade_type: Literal["bond"] = "bond"
     face_amount: float
     maturity_date: str
     initial_zero_curve: ZeroCurveConfigSchema
-    #: Annual coupon rate as a DECIMAL (0.04 == 4%), not a percent --
-    #: the same unit `engine.instruments.treasury.BondConfig` states.
+    #: Annual coupon rate as a decimal (0.04 == 4%).
     coupon_rate: float = 0.0
     coupon_schedule: List[CouponPeriodSchema] = Field(default_factory=list)
     redemption_fraction: float = 1.0
@@ -346,16 +312,9 @@ TradeSchema = Annotated[
 
 
 class CalibrationBasketRequestSchema(BaseModel):
-    """Mirrors `engine.calibration.basket.build_coterminal_basket`'s own
-    inputs (minus `zero_curve`/`evaluation_date`/`index_tenor_months`,
-    which `PortfolioRequestSchema.to_dataclass()` fills in from whichever
-    Bermudan/American trade's own `initial_zero_curve`/`evaluation_date`
-    actually needs the resulting basket -- see that method for why).
-    Supplying this on a `PortfolioRequestSchema` is what makes
-    `hw_sigma: null` on a Bermudan/American trade actually work end-to-end
-    over HTTP: without it, `price_portfolio` raises `"calibration_targets
-    was not supplied"` (mirroring `engine.portfolio.PortfolioRequest.
-    calibration_targets`'s own dataclass-level requirement)."""
+    """Inputs of `build_coterminal_basket`, except the curve, evaluation date and index
+    tenor, which `PortfolioRequestSchema.to_dataclass()` takes from the first uncalibrated
+    Bermudan/American trade. Required when any such trade has `hw_sigma: null`."""
     exercise_times: List[float]
     final_maturity_time: float
     notional: float
@@ -364,10 +323,7 @@ class CalibrationBasketRequestSchema(BaseModel):
 
 
 class PricingPrecisionOverrideSchema(BaseModel):
-    """Mirrors `engine.portfolio.PricingPrecisionOverride` field-for-field --
-    optional per-instrument-type drill-down for `PrecisionConfigSchema.
-    pricing`, validated by the dataclass's own `__post_init__` once
-    `.to_dataclass()` constructs it."""
+    """`engine.portfolio.PricingPrecisionOverride`; validated by the dataclass."""
     default: int = 64
     swap: Optional[int] = None
     european_swaption: Optional[int] = None
@@ -379,10 +335,7 @@ class PricingPrecisionOverrideSchema(BaseModel):
 
 
 class RiskPrecisionOverrideSchema(BaseModel):
-    """Mirrors `engine.portfolio.RiskPrecisionOverride` field-for-field --
-    optional per-Greek/per-metric drill-down for `PrecisionConfigSchema.
-    risk`, validated by the dataclass's own `__post_init__` once
-    `.to_dataclass()` constructs it."""
+    """`engine.portfolio.RiskPrecisionOverride`; validated by the dataclass."""
     default: int = 64
     delta_gamma: Optional[int] = None
     theta: Optional[int] = None
@@ -394,14 +347,8 @@ class RiskPrecisionOverrideSchema(BaseModel):
 
 
 class PrecisionConfigSchema(BaseModel):
-    """Mirrors `engine.portfolio.PrecisionConfig` field-for-field --
-    independent simulation/pricing/risk/calibration dtype control (32 or
-    64), each validated by `PrecisionConfig.__post_init__` itself once
-    `.to_dataclass()` constructs it (no duplicate Pydantic-level validator
-    needed here). `pricing`/`risk` each additionally accept a structured
-    override object instead of a flat int, for optional per-instrument-type/
-    per-Greek drill-down -- Pydantic v2 resolves `Union[int, ...Schema]`
-    natively from the request JSON shape, no explicit discriminator needed."""
+    """`engine.portfolio.PrecisionConfig`; validated by the dataclass. `pricing`/`risk`
+    take an int or an override object."""
     simulation: int = 64
     pricing: Union[int, PricingPrecisionOverrideSchema] = 64
     risk: Union[int, RiskPrecisionOverrideSchema] = 64
@@ -414,18 +361,9 @@ class PrecisionConfigSchema(BaseModel):
 
 
 class PortfolioRequestSchema(BaseModel):
-    """Mirrors `engine.portfolio.PortfolioRequest` field-for-field.
-    `evaluation_date` is a request-scoped default applied to any trade that
-    doesn't specify its own (matching every dataclass's own
-    `ORE.Settings.instance().evaluationDate`-defaulting `field`, made
-    explicit here since there's no ambient global evaluation date to fall
-    back on across HTTP requests).
-
-    `precision` is `Optional`, not a populated default -- makes "no
-    `precision` key sent" and "explicit all-64 sent" behave identically
-    (both resolve to `PrecisionConfig()`), and is more accurate in the
-    generated OpenAPI schema than a default that looks like it was always
-    required."""
+    """`engine.portfolio.PortfolioRequest`. `evaluation_date` is the default for trades
+    that do not give their own (there is no ambient ORE evaluation date across requests).
+    `precision` omitted means `PrecisionConfig()`."""
     evaluation_date: str = Field(..., description="ISO date (YYYY-MM-DD), e.g. '2026-07-30'")
     market: SimulationConfigSchema
     trades: List[TradeSchema]
@@ -433,12 +371,9 @@ class PortfolioRequestSchema(BaseModel):
     calibration_basket: Optional[CalibrationBasketRequestSchema] = None
     compute_greeks: bool = False
     precision: Optional[PrecisionConfigSchema] = None
-    #: Whether to build `npv_cube` and the exposure profiles derived from it.
-    #:
-    #: **Must be `false` for a portfolio containing a bond**, which has no
-    #: scenario representation. The response then carries an empty
-    #: `npv_cube` and no exposure, with `scenario_risk_available: false`
-    #: saying so -- absent rather than a fabricated zero (I-24).
+    #: Whether to build `npv_cube` and the exposure profiles. Must be false for a portfolio
+    #: containing a bond; the response then has an empty `npv_cube`, no exposure, and
+    #: `scenario_risk_available: false` (I-24).
     scenario_risk: bool = True
 
     def to_dataclass(self) -> PortfolioRequest:
@@ -447,14 +382,9 @@ class PortfolioRequestSchema(BaseModel):
 
         calibration_targets = None
         if self.calibration_basket is not None:
-            # build_coterminal_basket needs ONE curve/a to build the
-            # basket's own ATM strikes against -- engine.portfolio.request.
-            # _fill_calibrated_sigma already assumes a single shared basket
-            # applies uniformly per rate_factor_index that needs
-            # calibration (see its own docstring), so this mirrors that:
-            # the first uncalibrated Bermudan/American trade's own curve/a/
-            # evaluation_date is what the basket (and therefore every
-            # calibration derived from it) is built against.
+            # The basket is built on the first uncalibrated Bermudan/American's curve and
+            # evaluation date, and serves every rate factor that needs calibration (as
+            # engine.portfolio.request._fill_calibrated_sigma assumes).
             first_uncalibrated = next(
                 (t for t in trades if isinstance(t, (BermudanSwaptionConfig, AmericanSwaptionConfig)) and t.hw_sigma is None),
                 None,
@@ -499,8 +429,8 @@ class RiskMetricsSchema(BaseModel):
 
 
 class ExposureProfileSchema(BaseModel):
-    """`engine.risk.exposure.ExposureProfile` on the wire. Every list has
-    one entry per date in `times`, the first being t=0."""
+    """`engine.risk.exposure.ExposureProfile`; every list is indexed like `times`, starting
+    at t=0."""
     times: List[float]
     epe: List[float]
     ene: List[float]
@@ -530,16 +460,8 @@ class GreeksSchema(BaseModel):
             if key == "theta":
                 theta = float(val)
             else:
-                # A 0-d array's `.tolist()` returns a bare Python float, not
-                # a list, so iterating it raises `TypeError: 'float' object
-                # is not iterable`. Every rate-derivative Greek is a
-                # per-pillar VECTOR, so this never arose before W1.5 -- but
-                # a BondConfig's delta/gamma are scalars (one parallel bump
-                # against a single curve), and serializing one crashed here.
-                # `np.atleast_1d` normalizes the scalar case to a
-                # one-element list, keeping `values` uniformly a list-per-
-                # Greek rather than sometimes a float. Pinned by
-                # `TestBondGreeksSerializeOverHttp`.
+                # np.atleast_1d: bond Greeks are scalars, and a 0-d array's .tolist() is a
+                # float, not a list (I-25).
                 values[key] = [float(v) for v in np.atleast_1d(np.asarray(val)).tolist()]
         return cls(values=values, theta=theta)
 
@@ -547,23 +469,17 @@ class GreeksSchema(BaseModel):
 class PortfolioResultSchema(BaseModel):
     base_npv: float
     npv_cube: List[List[List[float]]]  # [Scenarios, TimeSteps, Trades]
-    #: The whole portfolio as one netting set; null when
-    #: `scenario_risk_available` is false.
+    #: The whole portfolio as one netting set; null without scenario risk.
     exposure: Optional[ExposureProfileSchema] = None
-    #: Standalone exposure per trade, in the request's `trades` order.
+    #: Standalone exposure per trade, in request order.
     trade_exposures: List[ExposureProfileSchema] = Field(default_factory=list)
     greeks: Optional[Dict[int, GreeksSchema]] = None
     warnings: List[str] = Field(default_factory=list)
-    # Per-trade t=0 NPV in the request's own `trades` order; `base_npv` is
-    # their sum. Lets a caller reconcile the portfolio total against
-    # identified positions/contracts instead of only seeing an aggregate.
+    # Per-trade t=0 NPV in request order; `base_npv` is their sum.
     base_npv_per_trade: List[float] = Field(default_factory=list)
-    # Whether `npv_cube`/`exposure` were actually computed. `false` means
-    # the run was `scenario_risk: false` -- the figures are absent, not
-    # zero (I-24).
+    # Whether `npv_cube`/`exposure` were computed; false means absent, not zero (I-24).
     scenario_risk_available: bool = True
-    # Which measure the exposure is under -- `risk-neutral-pricing` whenever
-    # it was computed, `null` otherwise. Not a loss forecast (I-11).
+    # Measure of the exposure (`risk-neutral-pricing`), or null (I-11).
     measure: Optional[str] = None
 
     @classmethod
@@ -604,9 +520,8 @@ class VersionSchema(BaseModel):
 
 
 class CalibrationRequestSchema(BaseModel):
-    """Inputs to `engine.calibration.basket.build_coterminal_basket` +
-    `engine.calibration.lgm.calibrate_lgm_sigma` -- a caller wanting a
-    fitted `Sigma` back without submitting a full portfolio request."""
+    """Inputs to `build_coterminal_basket` + `calibrate_lgm_sigma`, for a caller that wants
+    a fitted `Sigma` without a full portfolio request."""
     evaluation_date: str
     exercise_times: List[float]
     final_maturity_time: float

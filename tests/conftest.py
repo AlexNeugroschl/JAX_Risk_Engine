@@ -1,17 +1,6 @@
 """
-Shared pytest fixtures for the engine test suite.
-
-Every test file used to hand-roll its own copy of the demo scenario config
-(and, for the swap/VaR-ES tests, its own ORE flat-curve builder) --
-already duplicated across engine/instruments/swap.py,
-engine/risk/var_es.py, and the test files
-themselves, and drifting slightly out of sync between copies. This module
-re-exports the canonical scenario builders from engine.simulation.demo_scenarios
-as fixtures so every test file draws from one source.
-
-x64 is enabled here at collection time (before any test constructs a
-float64 array) so individual test files don't each need their own
-`jax.config.update("jax_enable_x64", True)` at import time.
+Shared fixtures: the demo scenarios from `engine.simulation.demo_scenarios`, a minimal
+`PortfolioRequest` and an API client. x64 is enabled here, before any test builds an array.
 """
 import jax
 jax.config.update("jax_enable_x64", True)
@@ -32,11 +21,8 @@ from engine.instruments.swap import SwapConfig
 from engine.portfolio import PortfolioRequest
 
 
-# session-scoped: every fixture below returns either an immutable value or a
-# freshly-built, side-effect-free dataclass/function -- safe to share across
-# every test in the session (tests that need a variant use with_scenarios()
-# or dataclasses.replace() to derive their own copy rather than mutating
-# the shared instance).
+# Session-scoped fixtures return immutable values or fresh, side-effect-free objects; tests
+# needing a variant derive one with with_scenarios() or dataclasses.replace().
 
 
 @pytest.fixture(scope="session")
@@ -57,32 +43,26 @@ def cross_asset_config():
 
 @pytest.fixture(scope="session")
 def swap_config():
-    """Single-currency, two-correlated-rate-factor scenario sized for the
-    swap/risk-statistics demos and their ORE cross-checks."""
+    """Single-currency, two-correlated-rate-factor scenario for the swap and risk-statistics
+    tests."""
     return single_currency_swap_demo_config()
 
 
 @pytest.fixture(scope="session")
 def make_flat_yield_curves():
-    """Factory fixture: make_flat_yield_curves(disc_rate, fwd_rate) -> cube,
-    so tests can request more than one (disc_rate, fwd_rate) pair."""
+    """Factory: make_flat_yield_curves(disc_rate, fwd_rate) -> cube."""
     return flat_yield_curves
 
 
 def with_scenarios(config, scenarios: int):
-    """Small helper (not a fixture) for tests that need the shared demo
-    scenario at a different Monte Carlo sample size than the default."""
+    """Helper (not a fixture): the shared demo scenario at another sample size."""
     return dataclasses.replace(config, scenarios=scenarios)
 
 
 @pytest.fixture
 def portfolio_request():
-    """A minimal, valid PortfolioRequest (one swap, small scenario count)
-    for tests of engine.portfolio.price_portfolio / engine/api that just
-    need SOME well-formed request, not a specific portfolio shape --
-    function-scoped (not session) since engine.portfolio.price_portfolio
-    mutates nothing on the request itself, but tests commonly want their
-    own independent copy to modify via dataclasses.replace."""
+    """A minimal valid `PortfolioRequest` (one swap, few scenarios). Function-scoped so each
+    test has its own copy to vary."""
     zero_curve = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.03] * 6)
     swap_cfg = SwapConfig(
         notional=1_000_000.0, fixed_rate=0.032, payer=True,
@@ -104,12 +84,8 @@ def portfolio_request():
 
 @pytest.fixture(scope="session")
 def test_client():
-    """FastAPI TestClient over engine.api.app -- in-process, no running
-    server needed (backed by httpx). Session-scoped: the app itself is
-    stateless aside from the in-process job store, which tests should treat
-    as append-only (unique job_ids per submission), so sharing one client
-    across tests is safe and avoids re-constructing the FastAPI app
-    per-test."""
+    """In-process `TestClient` over `engine.api.app`. Session-scoped; the only state is the
+    job store, and each submission gets a unique job_id."""
     from fastapi.testclient import TestClient
     from engine.api.app import app
     return TestClient(app)

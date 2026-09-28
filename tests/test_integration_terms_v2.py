@@ -1,20 +1,9 @@
 """
-W1.6.1 -- `traderx.instrument-terms.v2` and its `accrualBasis`
-(`docs/planning/traderx-integration-plan.md` §W1.6).
+`traderx.instrument-terms.v2` and its `accrualBasis` (`engine.integration.terms`).
 
-Two things are under test here, and they pull in opposite directions:
-
-  - v2 must be **accepted**, including its optional `accrualBasis`, and its
-    `fractionDecimals` must actually reach the reconciliation tolerance --
-    otherwise the field is decoration.
-  - An **unrecognized** value must be **refused**, not parsed on v1
-    assumptions. Response v4 §1.3 asked TraderX whether new enum values
-    would land in `accrual-basis.v1` or force a `.v2`, and never got an
-    answer; refusing is the reading that cannot silently reinterpret an
-    accrued number.
-
-The regression class that matters most is `TestV1BundlesAreUnchanged`: v2
-support is worthless if it moved a single delivered v1 number.
+v2 is accepted, including the optional `accrualBasis`, and its `fractionDecimals` really
+sets the reconciliation tolerance. Unrecognized values are refused rather than read with v1
+meaning (an assumption, I-23). Delivered v1 results are unchanged.
 """
 import copy
 import hashlib
@@ -51,9 +40,8 @@ VALID_BASIS = {
 
 @pytest.fixture
 def terms_bundle(tmp_path):
-    """Copies a fixture bundle, lets a test rewrite its terms artifact, and
-    re-pins the manifest hash so the *join* is under test rather than the
-    hash check (W0.1 already has its own tests)."""
+    """Copy a fixture bundle, let a test rewrite its terms, and re-pin the manifest hash so
+    the join (not the hash check) is under test."""
 
     def _make(case: str, mutate=None, version: str = "v2"):
         root = tmp_path / f"{case}-{version}-{abs(hash(str(mutate)))%10000}"
@@ -78,7 +66,7 @@ def terms_bundle(tmp_path):
 
 
 def _to_v2(terms, basis=None):
-    """Relabels a fixture's terms as v2, optionally attaching a basis."""
+    """Relabel a fixture's terms as v2, optionally with a basis."""
     terms["schema"] = TERMS_SCHEMA_V2
     if basis is not None:
         for entry in terms["entries"]:
@@ -86,7 +74,7 @@ def _to_v2(terms, basis=None):
 
 
 class TestV2IsAccepted:
-    """The v2 schema joins, with and without the optional basis."""
+    """The v2 schema joins, with and without a basis."""
 
     def test_v2_schema_label_alone_joins(self, terms_bundle):
         bundle = terms_bundle("note", lambda t: _to_v2(t))
@@ -103,20 +91,17 @@ class TestV2IsAccepted:
         assert entry.accrual_basis.rounding == "HALF_EVEN"
 
     def test_v2_without_basis_is_legal_and_carries_none(self, terms_bundle):
-        """The block is optional. Absence is 'the exporter did not state
-        one', which is a knowable state -- not an error, and not a
-        default."""
+        """No basis is legal ("not stated"), not an error and not defaulted."""
         bundle = terms_bundle("note", lambda t: _to_v2(t))
         assert join_terms(bundle).joined[0].entry.accrual_basis is None
 
     def test_terms_schema_is_recorded_on_the_entry(self, terms_bundle):
-        """A consumer must be able to tell 'v1, so no basis was possible'
-        from 'v2 that omitted one'. `accrual_basis is None` alone cannot."""
+        """The entry records its terms schema (to tell v1 from v2 without a basis)."""
         v1 = terms_bundle("note")
         v2 = terms_bundle("note", lambda t: _to_v2(t))
         assert join_terms(v1).joined[0].entry.terms_schema == TERMS_SCHEMA_V1
         assert join_terms(v2).joined[0].entry.terms_schema == TERMS_SCHEMA_V2
-        # Both have no basis -- the schema field is the only discriminator.
+        # Neither has a basis; only the schema field tells them apart.
         assert join_terms(v1).joined[0].entry.accrual_basis is None
         assert join_terms(v2).joined[0].entry.accrual_basis is None
 
@@ -126,11 +111,7 @@ class TestV2IsAccepted:
 
 
 class TestTermsVersionIsIndependentOfBundleVersion:
-    """Plan §W1.6.1: 'Terms version is independent of bundle version -- a v2
-    bundle may carry either terms version.'
-
-    Pinning one to the other would reject a valid combination.
-    """
+    """A v2 bundle may carry either terms version."""
 
     def test_v2_bundle_with_v1_terms_joins(self, terms_bundle):
         bundle = terms_bundle("note")  # v2 bundle, v1 terms as delivered
@@ -144,12 +125,8 @@ class TestTermsVersionIsIndependentOfBundleVersion:
 
 
 class TestUnrecognizedValuesAreRefused:
-    """The strict reading of the unanswered v4 §1.3 question.
-
-    Each of these would, under a lenient parser, be silently reinterpreted
-    with v1 meaning -- which for `dateBasis` means reconciling accrued
-    interest against the wrong date.
-    """
+    """Unrecognized values are refused (I-23); read with v1 meaning, `dateBasis` would
+    reconcile accrued against the wrong date."""
 
     @pytest.mark.parametrize("field,value", [
         ("dateBasis", "TRADE_DATE"),
@@ -167,8 +144,7 @@ class TestUnrecognizedValuesAreRefused:
         assert value in str(exc.value)
 
     def test_future_accrual_basis_schema_is_refused(self, terms_bundle):
-        """A `accrual-basis.v2` may change how the exported fraction was
-        produced. Parsing it on v1 assumptions is the failure mode."""
+        """An `accrual-basis.v2` is refused."""
         basis = dict(VALID_BASIS, schema="traderx.accrual-basis.v2")
         with pytest.raises(TermsJoinError, match="accrual-basis"):
             join_terms(terms_bundle("note", lambda t: _to_v2(t, basis)))
@@ -196,10 +172,7 @@ class TestUnrecognizedValuesAreRefused:
 
 
 class TestFractionDecimalsIsValidated:
-    """`fractionDecimals` scales the reconciliation tolerance, so a
-    nonsensical value silently widens or collapses the check that catches
-    accrual bugs. It is validated where it is parsed, not where it is used.
-    """
+    """`fractionDecimals` scales the tolerance, so it is validated where it is parsed."""
 
     @pytest.mark.parametrize("bad", [0, -1, 13, 100])
     def test_out_of_range_is_refused(self, terms_bundle, bad):
@@ -214,9 +187,7 @@ class TestFractionDecimalsIsValidated:
             join_terms(terms_bundle("note", lambda t: _to_v2(t, basis)))
 
     def test_bool_is_refused_despite_being_an_int_subclass(self, terms_bundle):
-        """`True` is `1` in Python. Without the explicit bool check it would
-        pass as 'one decimal place' and quietly widen the tolerance by five
-        orders of magnitude."""
+        """`True` (an int subclass) is refused; it would read as 1 decimal."""
         basis = dict(VALID_BASIS, fractionDecimals=True)
         with pytest.raises(TermsJoinError, match="fractionDecimals"):
             join_terms(terms_bundle("note", lambda t: _to_v2(t, basis)))
@@ -229,9 +200,7 @@ class TestFractionDecimalsIsValidated:
 
 
 class TestSelfContradictoryDocumentsAreRefused:
-    """A v1-labelled artifact carrying a v2-only field has disproved its own
-    version marker -- and that marker is what every other parsing decision
-    keys on."""
+    """A v1-labelled artifact carrying a v2-only field contradicts its own version."""
 
     def test_v1_schema_carrying_an_accrual_basis_is_refused(self, terms_bundle):
         def mutate(t):
@@ -242,8 +211,7 @@ class TestSelfContradictoryDocumentsAreRefused:
 
 
 class TestV1BundlesAreUnchanged:
-    """The regression class that matters most: v2 support must not have
-    moved a single delivered v1 number."""
+    """Delivered v1 results are unchanged."""
 
     def test_delivered_v1_terms_still_join(self, terms_bundle):
         join = join_terms(terms_bundle("note"))
@@ -253,8 +221,7 @@ class TestV1BundlesAreUnchanged:
 
     @pytest.mark.parametrize("case", ["note", "bill", "sofr", "equity"])
     def test_every_delivered_fixture_still_joins_unchanged(self, case):
-        """Straight off disk, no mutation -- proves the parser change did
-        not alter how the shipped artifacts are read."""
+        """Fixtures straight off disk still join unchanged."""
         join = join_terms(load_bundle(FIXTURES / case / "v2"))
         assert join.has_terms_artifact
         for row in join.joined:
@@ -262,8 +229,7 @@ class TestV1BundlesAreUnchanged:
             assert row.entry.accrual_basis is None
 
     def test_missing_terms_still_carried_verbatim(self):
-        """The SOFR fixture's 13 missing terms are an authoritative refusal
-        input; v2 support must not have reordered or tidied them."""
+        """The SOFR fixture's 13 missing terms are still carried verbatim."""
         join = join_terms(load_bundle(FIXTURES / "sofr" / "v2"))
         entries = [r.entry for r in join.joined if r.entry.missing_terms]
         assert entries, "the SOFR fixture should carry missing terms"
@@ -271,28 +237,16 @@ class TestV1BundlesAreUnchanged:
 
 
 class TestFractionDecimalsActuallyReachesTheTolerance:
-    """**The test that stops `accrualBasis` from being decoration.**
+    """`fractionDecimals` sets the tolerance through the pipeline (a parser that validated
+    the block and ignored it once passed every other test).
 
-    A parser that validates the block and then ignores it passes every
-    other test in this file -- the field is read, the wrong values are
-    refused, the right ones are accepted, and nothing downstream changes.
-    That implementation was patched in and passed 59/59 before this class
-    existed (working rule 3).
-
-    What makes the field load-bearing is that `fractionDecimals` *derives*
-    the reconciliation tolerance. The delivered note's two accrual paths
-    differ by $0.04 (the exporter's own HALF_EVEN rounding), and the
-    tolerance at 100,000 face moves sharply with the declared precision:
+    The note's two accrual paths differ by $0.04 (the exporter's rounding). The tolerance at
+    100,000 face:
 
         3 decimals -> 50.01     6 decimals -> 0.06
         4 decimals ->  5.01     8 decimals -> 0.0105
 
-    So at 8 decimals the observed $0.04 difference **exceeds** tolerance and
-    the note must be **refused** with `ACCRUAL_MISMATCH`. A pipeline that
-    ignores the declared precision keeps pricing it at the 6-decimal default
-    and returns a number -- which is the exact silent-approximation failure
-    this boundary exists to prevent, arrived at by omission rather than by a
-    wrong formula.
+    At 8 decimals $0.04 exceeds it, so the note is refused with `ACCRUAL_MISMATCH`.
     """
 
     MARKET = {"mode": "assumed-profile", "assumedProfileId": "flat-3pct-v1"}
@@ -322,19 +276,13 @@ class TestFractionDecimalsActuallyReachesTheTolerance:
         return price_bundle(root, self.MARKET).to_dict()
 
     def test_declared_precision_of_six_still_prices(self, tmp_path):
-        """The control: the exporter's actual precision, which is also the
-        default -- so this must behave exactly as the delivered fixture."""
+        """Control: 6 decimals (the default and the exporter's precision) prices."""
         result = self._price(tmp_path, 6)
         values = sorted(i["calculations"]["npv"]["value"] for i in result["items"])
         assert values[1] == pytest.approx(103308.33, abs=0.01)
 
     def test_tighter_declared_precision_refuses_the_reconciliation(self, tmp_path):
-        """**Fails against a pipeline that ignores `fractionDecimals`.**
-
-        At 8 declared decimals the tolerance is 0.0105, below the observed
-        $0.04 rounding difference, so the two accrual paths no longer
-        reconcile and the note must be refused rather than priced.
-        """
+        """At 8 decimals the note is refused (fails against a pipeline ignoring the field)."""
         result = self._price(tmp_path, 8)
         for item in result["items"]:
             npv = item["calculations"]["npv"]
@@ -346,14 +294,13 @@ class TestFractionDecimalsActuallyReachesTheTolerance:
             assert npv["reason"] == "ACCRUAL_MISMATCH"
 
     def test_looser_declared_precision_still_prices(self, tmp_path):
-        """The other direction, so the test above cannot pass by the
-        pipeline simply refusing everything with a basis attached."""
+        """Fewer decimals still price (so refusal is not triggered by any basis)."""
         result = self._price(tmp_path, 4)
         values = sorted(i["calculations"]["npv"]["value"] for i in result["items"])
         assert values[1] == pytest.approx(103308.33, abs=0.01)
 
     def test_the_tolerance_itself_moves_with_declared_precision(self):
-        """Pins the derivation directly, independent of the pipeline."""
+        """The tolerance moves with the declared precision."""
         from engine.integration.note import accrual_mismatch_tolerance
 
         assert accrual_mismatch_tolerance(100000.0, 6) == pytest.approx(0.06)

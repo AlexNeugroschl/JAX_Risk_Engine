@@ -1,23 +1,18 @@
 """
-Today's (t=0) price of each trade as a pure JAX function of its curves'
-pillar zero rates.
+t=0 price of each trade as a pure JAX function of its curves' pillar zero rates.
 
-These are what `engine.risk.greeks` differentiates (Delta, Gamma, Vega) and
-what `engine.market_risk` evaluates under shocked curves. Each builder does
-the CPU-side trade construction once (ORE schedules, cashflow times) and
-returns a closure whose only inputs are pillar-rate arrays, so it can be
-`jax.grad`-ed, `jax.vmap`-ed over scenarios and jitted.
+`engine.risk.greeks` differentiates these (Delta, Gamma, Vega) and `engine.market_risk`
+evaluates them under shocked curves. Each builder does the CPU trade setup once and returns
+a closure of pillar-rate arrays only, so it can be `jax.grad`-ed, `jax.vmap`-ed and jitted.
 
     swap_price_function(cfg, disc, fwd)  -> f(disc_rates, fwd_rates)
     swaption_price_function(cfg, curve)  -> f(rates)
     bermudan_price_function(cfg, curve)  -> (f(rates, sigma_values), sigma_values)
     bond_price_function(cfg)             -> f(rates)   (engine.instruments.treasury)
 
-The curve passed in fixes the pillar TIMES (and, through its dtype, the
-working precision); the rates it carries are only the base point.
-
-An option already expired on its evaluation date prices to a constant 0
-(ORE's `isExpired`), so all its sensitivities are 0.
+The curve fixes the pillar times and the working dtype; its rates are only the base point.
+An option expired on its evaluation date prices to a constant 0 (ORE's `isExpired`), so
+its sensitivities are 0.
 """
 import dataclasses
 
@@ -48,17 +43,8 @@ from engine.models.lgm import Sigma, as_sigma
 def _yield_curves_from_zero_curves(
     disc_curve: ZeroCurve, fwd_curve: ZeroCurve, maturities: jax.Array,
 ) -> jax.Array:
-    """Builds the `[1, 1, Maturities, 2]` yield_curves tensor
-    `_price_one_swap` expects, directly from two `ZeroCurve`s -- a
-    deterministic (no simulated noise), differentiable stand-in for
-    `generate_paths(...)["yield_curves"]`'s zero-shock t=0 slice. Curve
-    index 0 is always the discount curve, index 1 the forward curve, in
-    this tensor -- a fixed local convention for this Greeks module only
-    (independent of whatever discount_curve_index/forward_curve_index a
-    caller's SwapConfig was built with against some larger simulation
-    cube), which is why `swap_delta_gamma`/`swap_theta` below construct
-    their own single-swap `SwapConfig` copy with indices forced to
-    (0, 1)."""
+    """`[1, 1, Maturities, 2]` yield-curve tensor for `_price_one_swap`, built directly
+    from two curves: index 0 is discount, index 1 forward."""
     disc = _discount_at(disc_curve, maturities)
     fwd = _discount_at(fwd_curve, maturities)
     cube = jnp.stack([disc, fwd], axis=-1)  # [Maturities, 2]
@@ -66,43 +52,20 @@ def _yield_curves_from_zero_curves(
 
 
 def swap_price_function(cfg: SwapConfig, disc_curve: ZeroCurve, fwd_curve: ZeroCurve):
-    """Builds a `(disc_rates, fwd_rates) -> t=0 NPV` closure, differentiable
-    end-to-end via `jax.grad`/`jax.hessian`. `cfg`'s own trade structure
-    (schedule, day counts) is resolved via ORE ONCE, outside the returned
-    closure -- only the curve-to-NPV tensor math is retraced per gradient
-    evaluation, matching every other pricer's own CPU-setup/GPU-math split
-    (see swap.py's module docstring).
+    """`(disc_rates, fwd_rates) -> t=0 NPV`, differentiable.
 
-    Unlike the main pricer (which requires every cashflow date to land
-    EXACTLY on a pre-tabulated `maturities` pillar -- see
-    swap.py's maturity-pillar-alignment limitation), this function uses
-    the swap's own real cashflow dates AS the "maturities" array and
-    evaluates the curve continuously at exactly those dates via
-    `_discount_at`'s interpolation -- there is no pillar-mismatch
-    constraint to satisfy here, since the yield-curve tensor is built
-    fresh (via interpolation, not lookup) for exactly the dates this one
-    trade needs."""
-    # `dataclasses.replace`, not a hand-copied constructor call: a copy that
-    # lists fields explicitly silently drops any it forgets, which is how
-    # `accrual_day_count` used to fall back to ACT/365 on this path.
+    Uses the cube kernel `_price_one_swap`, but with the swap's own cashflow times as the
+    "pillars" and the curves interpolated at them, so there is no pillar-alignment
+    constraint. The ORE trade is built once, outside the closure."""
+    # `dataclasses.replace` keeps every field (a hand-written copy once dropped
+    # `accrual_day_count`). Curve indices are set to this function's local 0/1 layout.
     local_cfg = dataclasses.replace(cfg, discount_curve_index=0, forward_curve_index=1)
 
-    # The swap's own cashflow dates, deduplicated -- exactly the set of
-    # times the curve needs to be evaluated at (via interpolation, not a
-    # fixed pillar lookup), used both as the "maturities" pillar array
-    # AND as the query points for the differentiable curve.
+    # The swap's cashflow times serve as both the pillar array and the query points.
     maturities = swap_schedule(local_cfg).pillar_times()
     prepared_swap = prepare_swap(local_cfg, np.asarray(maturities))
-    # Derived from disc_curve's own dtype (not hardcoded) -- disc_curve/
-    # fwd_curve carry whatever dtype the caller built them at (governed by
-    # PrecisionConfig.risk when reached via engine.portfolio.request), and
-    # mixing a hardcoded-float64 array with a float32 curve inside price_fn
-    # below would silently upcast the curve back to float64 under
-    # jax_enable_x64=True (confirmed: jnp.interp promotes a float32/float64
-    # mix to float64 whenever x64 is enabled, regardless of which operand is
-    # which dtype) -- see this module's docstring and engine.portfolio.
-    # request's "Concurrency" section on why jax_enable_x64 being process-
-    # global makes this a genuine, not theoretical, correctness gap.
+    # Use the curve's dtype: under jax_enable_x64, mixing in a float64 array would
+    # upcast a float32 risk computation.
     maturities_jax = jnp.asarray(maturities, dtype=disc_curve.pillar_rates.dtype)
 
     def price_fn(disc_rates: jax.Array, fwd_rates: jax.Array) -> jax.Array:
@@ -116,18 +79,11 @@ def swap_price_function(cfg: SwapConfig, disc_curve: ZeroCurve, fwd_curve: ZeroC
 
 
 def swaption_price_function(cfg: SwaptionConfig, curve: ZeroCurve):
-    """Builds a `curve_rates -> t=0 NPV` closure for a single European
-    swaption, differentiable via `jax.grad`/`jax.hessian` with respect to
-    `curve.pillar_rates` -- reimplements `_price_one_swaption`'s t=0 path
-    using `engine.models.hull_white.A` (the SAME shared, JAX-native
-    formula `price_swaptions`' own NumPy-facing `compute_hw_A` wraps) in
-    place of a separately-maintained JAX twin, and
-    otherwise reusing the SAME JAX building blocks the main pricer already
-    uses (`_hw_B`, `_bond_option_sigma`, `_bond_call`/`_bond_put`,
-    `_solve_rstar`) -- only the today's-curve lookup changes, not the
-    option-pricing formulas themselves. Trade structure (cashflow times/
-    amounts, exercise time) is resolved via `prepare_swaption` ONCE,
-    outside the returned closure, exactly like `_swap_price_fn` above."""
+    """`curve_rates -> t=0 NPV` for one European swaption, differentiable.
+
+    The t=0 case of `_price_one_swaption`, with A(t,T) computed from the traced curve
+    (`hull_white.A`) and the same building blocks (`_solve_rstar`, bond options). The
+    trade is prepared once, outside the closure."""
     if cfg.is_expired():
         return lambda pillar_rates: jnp.zeros((), dtype=pillar_rates.dtype) * jnp.sum(pillar_rates)
     swaption = prepare_swaption(cfg)
@@ -137,10 +93,7 @@ def swaption_price_function(cfg: SwaptionConfig, curve: ZeroCurve):
     T_start = swaption.accrual_start_time
     cf_times = swaption.fixed_cashflow_times
     notional = swaption.notional
-    # Derived from curve's own dtype (not hardcoded) -- see
-    # _swap_price_fn's maturities_jax comment above for why a hardcoded
-    # dtype here would silently upcast curve.pillar_rates back to float64
-    # under jax_enable_x64=True whenever a caller requests risk=32.
+    # Use the curve's dtype (see swap_price_function).
     _dtype = curve.pillar_rates.dtype
     all_times = jnp.asarray(
         np.concatenate([cf_times, cf_times[-1:], [T_start]]), dtype=_dtype
@@ -152,10 +105,8 @@ def swaption_price_function(cfg: SwaptionConfig, curve: ZeroCurve):
     B_T0_Ti = _hw_B(T0, all_times, a)  # [N+1]
 
     def coupon_bond_value(rstar, params):
-        # rstar: scalar. params = A_T0_Ti -- the explicit pytree
-        # _solve_rstar's jax.custom_jvp differentiates with respect to
-        # (see european_swaption._solve_rstar's docstring on why this
-        # must be explicit, not a closure).
+        # rstar: scalar. A_T0_Ti is passed explicitly so _solve_rstar's custom_jvp can
+        # differentiate it (see european_swaption._solve_rstar).
         A_T0_Ti = params
         prices = A_T0_Ti * jnp.exp(-B_T0_Ti * rstar)
         return jnp.sum(prices * all_amounts)
@@ -167,18 +118,10 @@ def swaption_price_function(cfg: SwaptionConfig, curve: ZeroCurve):
         rstar = _solve_rstar(coupon_bond_value, A_T0_Ti, ())
         K = A_T0_Ti * jnp.exp(-B_T0_Ti * rstar)
 
-        # t=0 conditioning: P(t,S) = A(t,S)*exp(-B(t,S)*r(t)) for ANY t,
-        # including t=0 -- B(0,S) is NOT zero (only t==S makes B(t,S)==0),
-        # so r(0) genuinely matters here, exactly as it does at every other
-        # step in _price_one_swaption. r(0), the model's own "no shock"
-        # short rate, is the curve's own initial instantaneous forward
-        # rate f(0,0) -- the same quantity _price_one_swaption reads off
-        # hw_paths[:, 0, :] at the simulation's own first step (by
-        # construction, RatesConfig.initial_rates is chosen to equal the
-        # calibration curve's own short end in every scenario in this
-        # codebase). Computed here as the curve's own zero rate at the
-        # (numerically tiny but nonzero) limit t->0, matching
-        # compute_hw_A's own f(0,t) finite-difference convention.
+        # t=0 bond prices P(0,S) = A(0,S)*exp(-B(0,S)*r0). r0 is taken as the zero rate at
+        # t=1e-6, while hull_white.A uses the exact f(0,0) = z(0); on a curve sloped in
+        # its first segment P(0,S) therefore differs from the curve by a factor
+        # exp(B(0,S)*(z(0) - z(1e-6))), of order 1e-8 relative.
         r0 = _zero_rate_at(curve_local, jnp.asarray(1e-6, dtype=_dtype))
         B_0_Ti = _hw_B(0.0, all_times, a)
         B_0_T0 = _hw_B(0.0, T0, a)
@@ -197,36 +140,16 @@ def swaption_price_function(cfg: SwaptionConfig, curve: ZeroCurve):
 
 def bermudan_price_function(cfg: BermudanSwaptionConfig, curve: ZeroCurve):
     """
-    Builds a `(pillar_rates, sigma_values) -> t=0 NPV` closure for a single
-    Bermudan/American swaption, differentiable via `jax.grad`/`jax.hessian`
-    with respect to BOTH the curve's own pillar rates (Delta/Gamma) and the
-    calibrated Sigma's own bucket values (Vega) -- `_run_backward_
-    induction` is already fully JAX-native end-to-end as of Phase 2 (no
-    NumPy/Python control flow standing between these inputs and the
-    output), so this closure needs no separate JAX reimplementation of the
-    backward induction the way `_swaption_price_fn` needed for Jamshidian's
-    (originally NumPy) formula -- it reuses `prepare_bermudan`/
-    `_run_backward_induction` directly, only substituting differentiable
-    values for `_PreparedBermudan.zero_rates`/`hw_sigma` via
-    `dataclasses.replace`.
+    `(pillar_rates, sigma_values) -> t=0 NPV` for one Bermudan/American swaption,
+    differentiable in the pillar rates (Delta/Gamma) and the sigma bucket values (Vega).
 
-    `sigma_values` is always a flat JAX array -- `len(cfg.hw_sigma.values)`
-    if `cfg.hw_sigma` is already a `Sigma` (the calibrated-Vega case), or a
-    single-element array wrapping a flat scalar otherwise (Delta/Gamma-only
-    callers, or a flat-sigma trade with no calibration behind it). Bucket
-    BREAKPOINTS (`Sigma.times`) are never a differentiation target (mirrors
-    `ZeroCurve.pillar_times` never being one for Delta/Gamma -- ORE's own
-    sensitivity framework bumps a bucket's VALUE, never its own time grid).
+    Reuses `prepare_bermudan`/`_run_backward_induction` directly, substituting the traced
+    values into `_PreparedBermudan.zero_rates` and `hw_sigma`. `sigma_values` is
+    `cfg.hw_sigma.values` for a `Sigma`, or a one-element array for a flat sigma. Bucket
+    times are not differentiated, as ORE's sensitivities bump values, not times.
 
-    `cfg.hw_sigma` (NOT this closure's own `curve` argument) determines the
-    initial zero curve `_PreparedBermudan.zero_times` uses -- unlike
-    `_swaption_price_fn`, whose caller passes the curve as a wholly
-    separate argument, `cfg.initial_zero_curve` is what `prepare_bermudan`
-    reads to set `zero_times`; the `curve` parameter here supplies the
-    PILLAR TIMES (`curve.pillar_times` must equal `cfg.initial_zero_curve.
-    times` -- the same "same curve, JAX-native copy" convention
-    `swaption_delta_gamma`'s own docstring documents) while `pillar_rates`
-    becomes the differentiable rate values substituted in.
+    `curve` is not read: the pillar times are `cfg.initial_zero_curve.times`, and
+    `pillar_rates` must be given on them.
     """
     from dataclasses import replace
 

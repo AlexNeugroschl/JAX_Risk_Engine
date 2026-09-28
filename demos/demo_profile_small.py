@@ -1,39 +1,22 @@
 """
-A deliberately SMALL portfolio, sized so its profiler trace is something you
-can actually open -- while still exercising the full end-to-end path
-`demo_structured.py` does: calibration -> simulation -> all four instrument
-pricers -> exposure -> Greeks, over the real HTTP API, in a real pool worker,
-under `jax.profiler.trace`.
+A small portfolio sized for a profiler trace that is practical to open, on the same path as
+`demo_structured.py`: calibration -> simulation -> all four instrument pricers -> exposure
+-> Greeks, over the HTTP API, in a pool worker, under `jax.profiler.trace`.
 
-**Why this exists.** `demo_structured.py`'s portfolio (4096 scenarios, a
-9-point time grid, `n_per_std=64`, 4 exercise dates) produces a trace that is
-a perfectly good representation of a real pricing job -- it is just an awkward
-thing to load, scrub through, and re-run while you are actually learning the
-timeline. This script trades portfolio realism for trace ergonomics and
-nothing else: same code path, same profiler configuration, same instrument
-coverage, a fraction of the trace.
+Output (as measured): about 41 MB and 25 s, one `pid-<pid>/` directory under
+`.profile-out-small`, with the timeline labelled by phase (calibration / simulation /
+pricing / base_npv / exposure / greeks, plus one region per trade inside greeks); see
+`docs/concepts/profiling.md`.
 
-**What it produces:** ~41 MB, ~25 s, one `pid-<pid>/` directory under
-`.profile-out-small`. The timeline is labelled by phase (calibration /
-simulation / pricing / base_npv / exposure / greeks, plus one region per trade
-inside greeks) -- see `docs/concepts/profiling.md` for how those annotations
-work and how to read the result.
-
-**Sizing note, since it is counter-intuitive.** For TRACE SIZE, the obvious
-"make the numbers smaller" knobs barely matter: scenario count, time-grid
-length, tree resolution, exercise count and curve pillar count change how big
-each XLA program's ARRAYS are, not how MANY programs get compiled, and it is
-the program count the trace records. Greeks is the one knob that genuinely
-moves it (~5x here) -- which is exactly why this demo leaves Greeks ON: the
-Greeks path is the interesting part of the timeline, and a trace that omits
-it is not representative of what this engine actually spends its time on.
-`docs/concepts/profiling.md` has the full per-knob measurements.
+Trace size follows the number of compiled XLA programs, not array sizes, so scenario count,
+grid length, tree resolution, exercise count and pillar count barely change it. Greeks do
+(about 5x here), and are left on because they are a large part of the real timeline.
+`docs/concepts/profiling.md` has the per-knob measurements.
 
 Run with:  .venv/Scripts/python.exe demos/demo_profile_small.py
 View with: xprof --port 8791 .profile-out-small
 
-Delete `.profile-out-small` between runs when comparing: the profiler writes
-a new `pid-<pid>/` each time and never cleans up after itself.
+Delete `.profile-out-small` between runs when comparing: each run adds a `pid-<pid>/`.
 """
 import os
 import subprocess
@@ -49,32 +32,22 @@ import httpx
 EVALUATION_DATE = "2026-07-30"
 
 FLAT_RATE = 0.03
-# 3 pillars rather than demo_structured's 6. Pillar count turned out not to
-# matter for trace size (see module docstring's table -- 6 -> 2 changed
-# nothing), so this is kept at a readable 3 purely so the printed Greeks
-# vectors are short, not as a size optimization.
+# 3 pillars rather than demo_structured's 6, only to keep the printed Greeks vectors short
+# (pillar count does not affect trace size).
 ZERO_CURVE_TIMES = [0.0, 1.0, 3.0]
 ZERO_CURVE_RATES = [FLAT_RATE] * len(ZERO_CURVE_TIMES)
 
 HW_MEAN_REVERSION = 0.03
 HW_SHORT_RATE_VOL = 0.01
 
-# 256 scenarios / 4 time points, vs demo_structured's 4096 / 9. Barely moves
-# the trace (see docstring) but does cut wall time and keeps the printed NPV
-# table small enough to read at a glance. 256 is still a power of two, which
-# keeps the Sobol' engine's balance property (engine.simulation.market_model
-# warns when it isn't).
+# 256 scenarios / 4 time points (vs 4096 / 9): cuts wall time, not trace size. 256 is a
+# power of two, which Sobol' balance needs (engine.simulation.market_model warns otherwise).
 NUM_SCENARIOS = 256
 TIME_GRID_YEARS = [0.0, 1.0, 2.0, 3.0]
 
-# One of every instrument type this engine prices -- deliberately unchanged
-# in KIND from demo_structured.py, only in size. The two tree-priced trades
-# stay UNCALIBRATED (hw_sigma left out) so the calibration stage below is
-# genuinely exercised rather than skipped.
-#
-# Everything is 3Y-tenor with 2 exercise dates (vs 5Y / 4 dates), and
-# n_per_std=16 (vs 64 -- a 33-node state grid instead of 769). Again: this
-# is for wall time and memory, not trace size.
+# One of every instrument type, as in demo_structured.py but smaller. The two tree-priced
+# trades are uncalibrated (no hw_sigma) so the calibration stage runs. 3Y tenor, 2 exercise
+# dates and n_per_std=16 (a 33-node grid vs 769 at 64), for wall time and memory.
 PORTFOLIO_TRADES = [
     {
         "trade_type": "swap",
@@ -119,45 +92,23 @@ RISK_PERCENTILES = [0.95, 0.99]
 API_BASE = "http://127.0.0.1:8000"
 _MANAGE_SERVER = os.environ.get("JAX_RISK_ENGINE_DEMO_SKIP_SERVER") != "1"
 
-# A separate directory from demo_structured.py's own `.profile-out`, so the
-# two demos' traces never land in the same place and get confused for one
-# another (xprof lists every run dir it finds under the path you point it at).
-# Inherited by the spawned uvicorn (and its pool workers) via os.environ.copy()
-# in start_server below -- that variable is what arms the profiler hook in
+# A separate directory from demo_structured.py's `.profile-out`. Passed to uvicorn and its
+# pool workers via os.environ.copy() in start_server; it arms the profiler hook in
 # engine/portfolio/worker_pool.py::_run_pricing_job.
 PROFILE_DIR = ".profile-out-small"
 
-# WARM CACHE: run the job once and throw it away BEFORE opening the trace, so
-# the traced run hits already-populated XLA compilation caches. Comment this
-# line out to go back to a cold-start trace.
+# WARM CACHE: run the job once untraced so the traced run reuses the XLA compilation caches.
+# Comment this line out for a cold-start trace.
 #
-#   warm (this line active)    -- "what does a REPEAT of this job cost?"
-#       Measured on this portfolio: the discarded run absorbs 208 of the 239
-#       XLA compilations, and the traced run does 31. Wall time ~26s -> ~18s.
+#   warm: what a repeat costs. Measured here: the discarded run does 208 of 239
+#         compilations, the traced run 31; wall time ~26s -> ~18s.
+#   cold: what the job costs from scratch. All compilations land in the trace, ~98% of wall
+#         time for a portfolio this small.
 #
-#   cold (this line commented) -- "what does this job cost from scratch?"
-#       All 208 compilations land inside the trace. For a portfolio this small
-#       that is ~98% of the wall time -- a real result, not a defect, since
-#       compilation is per-program and amortized over every later call.
-#
-# **Warmup does NOT make this an execution-only trace, and the difference is
-# worth understanding.** Compilation still visibly dominates the warm timeline
-# (~27k MLIR pass events vs ~630 ThunkExecutor::Execute). Two reasons, both
-# real:
-#
-#   1. Those 31 residual compiles are genuine. `engine.risk.greeks` builds a
-#      FRESH price_fn closure per call, and jax.jit keys its cache on function
-#      identity -- so the Greeks programs recompile even for an identical
-#      trade. Documented in engine/risk/greeks.py::_grad_and_hessian_diagonal
-#      and docs/concepts/profiling.md; pinned by a test so it cannot silently
-#      regress.
-#   2. 31 compilations of LARGE fused programs still emit far more trace
-#      events than ~630 kernel executions on 256 scenarios. Event count is not
-#      proportional to time spent.
-#
-# So: use warm to see what a steady-state repeat costs, not to make
-# compilation disappear. If you want compilation to actually vanish from the
-# timeline, the residual-recompile issue above has to be fixed first.
+# Compilation still dominates the warm trace's event count: the Greeks recompile on every
+# call because `engine.risk.greeks` builds a fresh price_fn closure each time (I-21; see
+# _grad_and_hessian_diagonal), and a compilation emits many more events than a kernel
+# execution. Event count is not time.
 WARM_CACHE = True
 
 
@@ -176,10 +127,8 @@ def wait_until_healthy(timeout_s: float = 60.0) -> None:
 def start_server() -> subprocess.Popen:
     env = os.environ.copy()
     env["JAX_RISK_PROFILE_DIR"] = PROFILE_DIR
-    # globals().get(...) rather than a bare `WARM_CACHE` reference so that
-    # COMMENTING OUT the constant above is a valid way to turn warmup off,
-    # rather than a NameError. Absent -> off, which is also the profiler
-    # hook's own default (worker_pool._run_pricing_job).
+    # globals().get so that commenting out WARM_CACHE turns warmup off instead of raising
+    # NameError.
     if globals().get("WARM_CACHE", False):
         env["JAX_RISK_PROFILE_WARMUP"] = "1"
     process = subprocess.Popen(
@@ -252,9 +201,7 @@ def build_portfolio_request_schema() -> dict:
         "trades": build_trades_schema(zero_curve),
         "pfe_quantiles": RISK_PERCENTILES,
         "calibration_basket": build_calibration_basket_schema(),
-        # Always on -- see module docstring: the Greeks path is the
-        # interesting part of this timeline, and a trace without it is not
-        # representative of where this engine spends its time.
+        # Always on (see the module docstring).
         "compute_greeks": True,
     }
 
@@ -318,33 +265,21 @@ def print_result(result: dict) -> None:
     for idx, greeks in sorted(result["greeks"].items(), key=lambda kv: int(kv[0])):
         name = trade_names[int(idx)]
         values = greeks["values"]
-        # A swap reports discount_delta/forward_delta (one per curve -- it
-        # has two); every option type reports a single delta against its one
-        # calibration curve. Print whichever this trade has rather than
-        # assuming "delta": engine.portfolio.request's _compute_all_greeks
-        # covers swaps too, so both shapes occur in this very portfolio.
+        # A swap reports discount_delta/forward_delta (two curves); option types report a
+        # single delta. Print whichever this trade has.
         shown = [k for k in ("delta", "discount_delta", "forward_delta") if k in values]
         deltas = " ".join(f"{k}={[round(v, 2) for v in values[k]]}" for k in shown)
         print(f"  [{idx}] {name:>18}: {deltas} theta={greeks['theta']:,.2f}")
 
 
 def report_trace_size() -> None:
-    """Prints what the run actually wrote, and -- more importantly -- whether
-    the trace covers the whole job. The profiler's event buffer is a fixed
-    ~1M-event cap with no backpressure and no warning: once it fills, the
-    remaining events are silently dropped and a truncated trace looks exactly
-    like a complete one. Comparing the captured events' own timestamp span
-    against the job's wall time is the cheap way to catch that, so this demo
-    does it every run rather than leaving it to be noticed later."""
+    """Print the run's trace size, and whether the trace covers the whole job: the
+    profiler's event buffer (about 1M events) silently drops events once full, so the
+    captured timestamp span is compared with the job's wall time."""
     if not os.path.isdir(PROFILE_DIR):
         return
 
-    # Size is reported PER RUN (per pid- subdirectory), not for the whole
-    # directory. Each run writes a new `pid-<pid>/`, and the profiler never
-    # cleans up after itself, so summing the directory reports the total of
-    # every run ever done into it -- which reads as a trace that grows every
-    # time you run the demo, and hid a genuine size REDUCTION behind three
-    # older runs the first time this was measured.
+    # Size is per run (per pid- subdirectory); the directory accumulates every run.
     runs = [
         os.path.join(PROFILE_DIR, name) for name in os.listdir(PROFILE_DIR)
         if name.startswith("pid-") and os.path.isdir(os.path.join(PROFILE_DIR, name))

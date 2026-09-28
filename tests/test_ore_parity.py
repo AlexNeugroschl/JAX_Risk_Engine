@@ -1,23 +1,9 @@
 """
-Algorithm-level parity tests against ORE's own C++ source (reference/ORE, a
-full clone of OpenSourceRisk/Engine including its QuantLib and QuantExt
-submodules -- see docs/reference/ore-parity.md for the full file-by-file mapping
-and rationale).
-
-Every test here reimplements a small piece of a QuantLib/QuantExt C++
-algorithm INDEPENDENTLY in Python -- built fresh from the algorithm's
-mathematical description (read directly from the cited C++ source), not
-transcribed from it -- and cross-checks that reimplementation against this
-engine's own function. This is a different (and stronger) kind of check
-than the rest of the test suite's "does our number match ORE's number"
-tests: it confirms the *algorithm*, not just a set of output values, so a
-future change that silently drifts from the correct formula (while still
-happening to pass a narrow set of recorded ORE comparisons) is caught.
-
-reference/ORE is never imported, executed, or modified by this test file --
-it is C++ source, read by a human/LLM for reference during development, not
-a runtime dependency. Nothing here requires reference/ORE to be present at
-test-run time.
+Algorithm-level parity with QuantLib/QuantExt C++ (reference/ORE; mapping in
+docs/reference/ore-parity.md). Each test reimplements a small algorithm independently from
+its description in the C++ source and checks the engine's function against it (and, where
+possible, against the live ORE object), so a formula drift is caught even if a few recorded
+values still match. reference/ORE is read by people, not imported; it need not be present.
 """
 import jax
 jax.config.update("jax_enable_x64", True)
@@ -49,19 +35,10 @@ ZERO_CURVE = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[FLAT
 
 
 class TestBrownianBridgeParity:
-    """QuantLib::BrownianBridge::initialize() (ql/methods/montecarlo/
-    brownianbridge.cpp): builds the last time point from the first input
-    variate, then recursively bisects the widest unconstructed gap in the
-    remaining time grid, each time recording a left/right neighbor pair
-    and interpolation weights. The defining property this construction
-    guarantees -- independent of the exact recursion used to build it --
-    is that the resulting path values reproduce real Brownian motion's
-    covariance structure, Cov(W(s), W(t)) = min(s, t). That property, not
-    any particular intermediate weight value, is what's checked here: it's
-    the mathematical invariant the C++ algorithm is designed to satisfy,
-    so any implementation (this engine's matrix form or QuantLib's
-    per-path recursion) that gets the covariance right has necessarily
-    implemented the same bridge."""
+    """`QuantLib::BrownianBridge` (ql/methods/montecarlo/brownianbridge.cpp) builds the last
+    point first and bisects the widest remaining gap. Its defining property,
+    Cov(W(s), W(t)) = min(s, t), is what is checked: any construction with that covariance
+    is the same bridge."""
 
     @pytest.mark.parametrize("time_grid", [
         [0.0, 0.25, 0.5, 0.75, 1.0],
@@ -78,18 +55,10 @@ class TestBrownianBridgeParity:
 
 
 class TestLgmParametrizationParity:
-    """QuantExt::Lgm1fConstantParametrization (qle/models/
-    irlgm1fconstantparametrization.hpp), the class ORE.CrossAssetModel
-    actually instantiates for a constant-parameter rates factor (live-
-    verified via the SWIG bindings). With the default scaling=1, shift=0,
-    its H(t)/zeta(t)/alpha(t) are closed-form functions of exactly this
-    engine's own hw_a/hw_sigma parameters -- H(t) has the identical shape
-    to this engine's B(t,T) with t=0, zeta(t) is the accumulated variance
-    sigma^2*t, and alpha(t) is simply the constant sigma. These are
-    checked directly against the live ORE object (not re-derived from
-    this engine's own code), so this test would fail if either this
-    engine's B(t,T) formula or ORE's own LGM parametrization ever
-    disagreed on what a "Hull-White A/B parameter" means."""
+    """`QuantExt::Lgm1fConstantParametrization` (irlgm1fconstantparametrization.hpp), what
+    `ORE.CrossAssetModel` uses for a constant rates factor. With scaling 1 and shift 0,
+    H(t) = B(0, t) = (1 - exp(-a t))/a, zeta(t) = sigma^2 t and alpha(t) = sigma; checked
+    against the live ORE object."""
 
     @pytest.mark.parametrize("a,sigma", [(0.03, 0.01), (0.08, 0.015), (0.001, 0.02)])
     def test_H_matches_B_t0(self, a, sigma):
@@ -125,30 +94,15 @@ class TestLgmParametrizationParity:
 
 
 class TestJamshidianRStarParity:
-    """QuantLib::JamshidianSwaptionEngine::rStarFinder (ql/pricingengines/
-    swaption/jamshidianswaptionengine.cpp): finds the short rate x at
-    which strike - sum_i(amounts[i] * discountBond(T0,times[i],x) /
-    discountBond(T0,valueTime,x)) == 0, where valueTime is the underlying
-    swap's own first accrual start date (fixedResetDates[0]) -- NOT the
-    exercise date T0 itself. This is reimplemented here from that
-    description directly (an independent root-find over a hand-written
-    "strike equation", not a transcription of rStarFinder's C++), and
-    cross-checked against this engine's own _solve_rstar, which expresses
-    the identical condition differently (as a signed extra cashflow rather
-    than an explicit division) -- see docs/reference/ore-parity.md#6 for why
-    the two are algebraically the same condition. Agreement here is strong
-    evidence this engine's exercise-boundary equation is the mathematically
-    correct one QuantLib's own reference engine uses, not merely a formula
-    that happens to reproduce recorded NPV numbers."""
+    """`QuantLib::JamshidianSwaptionEngine::rStarFinder` finds x where
+    strike - sum_i amounts[i] * P(T0, t_i, x) / P(T0, valueTime, x) = 0, with valueTime the
+    first fixed accrual start (not T0). Reimplemented as an independent root-find and checked
+    against `_solve_rstar`, which states the same condition as a signed extra cashflow
+    (docs/reference/ore-parity.md#6)."""
 
     def _independent_rstar(self, prepared, a, sigma):
-        """Root-find QuantLib's rStarFinder condition directly, using this
-        engine's own (separately-verified-against-ORE) A(t,T) closed form
-        as the discount-bond primitive -- the point of this test is the
-        ROOT-FINDING CONDITION's correctness (does the exercise boundary
-        divide by the T_start bond the way ORE's C++ does), not the bond
-        pricing formula itself (already covered by TestLgmParametrizationParity
-        and the live ORE.HullWhite.discountBond checks elsewhere)."""
+        """rStarFinder's condition, root-found directly with the engine's A(t,T) as the bond
+        price (the condition is under test, not the bond formula)."""
         T0 = prepared.exercise_time
         T_start = prepared.accrual_start_time
         times = list(prepared.fixed_cashflow_times) + [prepared.fixed_cashflow_times[-1]]
@@ -175,8 +129,7 @@ class TestJamshidianRStarParity:
         return brentq(rstar_finder, -10.0, 10.0, xtol=1e-13)
 
     def _engine_rstar(self, prepared, a, sigma):
-        """Reproduces _price_one_swaption's own signed-leg setup exactly,
-        then calls this engine's actual _solve_rstar (not a copy of it)."""
+        """The engine's own leg setup and `_solve_rstar`."""
         T0 = prepared.exercise_time
         T_start = prepared.accrual_start_time
         cf_times = prepared.fixed_cashflow_times
@@ -215,17 +168,9 @@ class TestJamshidianRStarParity:
 
 
 class TestGeneralStatisticsPercentileParity:
-    """QuantLib::GeneralStatistics::percentile (ql/math/statistics/
-    generalstatistics.cpp): sorts the (weight, value) sample ascending,
-    then walks forward accumulating weight, advancing WHILE the running
-    total is still strictly less than percent*totalWeight, and returns the
-    value at the position where that loop stops. Reimplemented here
-    independently from that description (a plain weighted cumulative-sum
-    walk, not a transcription of the C++ loop) and cross-checked both
-    against this engine's own value_at_risk/expected_shortfall AND
-    directly against the live ORE.RiskStatistics object -- so this test
-    fails if either this engine's order-statistic indexing or the
-    installed ORE package's own behavior ever changes."""
+    """`QuantLib::GeneralStatistics::percentile` sorts (weight, value) pairs and walks
+    forward while the running weight is below percent * total. Reimplemented as a weighted
+    cumulative walk and checked against the engine's VaR/ES and `ORE.RiskStatistics`."""
 
     def _independent_percentile(self, values: np.ndarray, weights: np.ndarray, percent: float) -> float:
         order = np.argsort(values, kind="stable")
@@ -288,28 +233,16 @@ class TestGeneralStatisticsPercentileParity:
 
 
 class TestHullWhiteAFormulaParity:
-    """QuantLib::HullWhite::A(t,T) (ql/models/shortrate/onefactormodels/
-    hullwhite.cpp): computes A(t,T) = exp(B(t,T)*f(0,t) -
-    0.25*(sigma*B(t,T))^2*B(0,2t)) * P(0,T)/P(0,t), using the SAME B(t,T)
-    (inherited from Vasicek::B) this engine uses. Algebraically,
-    0.25*sigma^2*B(t,T)^2*B(0,2t) == (sigma^2/(4a))*(1-exp(-2at))*B(t,T)^2
-    (substituting B(0,2t)=(1-exp(-2at))/a) -- i.e. this engine's variance
-    term IS QuantLib's, just written with the (1-exp(-2at))/a factor
-    already substituted in rather than left as a nested B(0,2t) call. This
-    test checks that algebraic identity directly (both sides computed
-    independently from a and t, not from each other), and separately
-    confirms this engine's compute_hw_A_matrix reprices a real ORE
-    HullWhite object's own discountBond output -- the strongest possible
-    check, since it goes through neither side's intermediate formula, only
-    final discount factors."""
+    """`QuantLib::HullWhite::A` computes exp(B(t,T)*f(0,t) - 0.25*(sigma*B(t,T))^2*B(0,2t))
+    * P(0,T)/P(0,t). Since B(0,2t) = (1-exp(-2at))/a, its variance term equals the engine's
+    (sigma^2/4a)*(1-exp(-2at))*B(t,T)^2. Checks that identity, and that
+    `compute_hw_A_matrix` reproduces `ORE.HullWhite.discountBond`."""
 
     @pytest.mark.parametrize("a,sigma,t", [
         (0.03, 0.01, 1.0), (0.08, 0.015, 3.0), (0.001, 0.02, 5.0), (0.5, 0.03, 0.25),
     ])
     def test_variance_term_algebraic_identity(self, a, sigma, t):
-        # QuantLib's variance-decay term uses two DIFFERENT B(.,.)
-        # evaluations: B(t,T) for the bond leg being priced, and
-        # B(0.0, 2.0*t) for the decay factor -- not the same B squared.
+        # QuantLib's variance term uses B(t,T) for the bond and B(0, 2t) for the decay.
         B_0_2t = (1.0 - np.exp(-a * 2.0 * t)) / a
         T = t + 2.5  # arbitrary bond maturity to exercise B(t,T)
         B_t_T = (1.0 - np.exp(-a * (T - t))) / a
@@ -318,10 +251,7 @@ class TestHullWhiteAFormulaParity:
         np.testing.assert_allclose(quantlib_variance_term, engine_variance_term, rtol=1e-13)
 
     def test_reprices_live_ore_hullwhite_discount_bond(self):
-        """compute_hw_A_matrix's A(t,T)*exp(-B(t,T)*r) must reproduce a
-        real, live ORE.HullWhite object's own discountBond(t,T,r) -- going
-        through ORE's actual C++ implementation of HullWhite::A end to
-        end, not just the algebraic identity above."""
+        """`compute_hw_A_matrix` reproduces `ORE.HullWhite.discountBond(t, T, r)`."""
         ORE.Settings.instance().evaluationDate = TODAY
         dc = ORE.Actual365Fixed()
         curve = ORE.YieldTermStructureHandle(ORE.FlatForward(TODAY, FLAT_RATE, dc))

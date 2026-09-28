@@ -1,10 +1,6 @@
 """
-Integration test: engine.calibration end-to-end -- market swaption vols in,
-a genuine Bermudan swaption NPV out, via calibrate_lgm_sigma feeding
-BermudanSwaptionConfig.hw_sigma directly (no adapter/conversion code
-needed -- this IS the point of `engine.models.lgm.Sigma` being the shared
-representation both the calibration engine and the pricers speak, per
-Phase 3's design).
+Calibration end to end: market swaption vols in, a Bermudan NPV out, with the `Sigma` from
+`calibrate_lgm_sigma` passed straight to `BermudanSwaptionConfig.hw_sigma` (no conversion).
 """
 import jax
 jax.config.update("jax_enable_x64", True)
@@ -53,11 +49,9 @@ class TestCalibratedSigmaFeedsBermudanPricer:
         assert npv > 0.0
 
     def test_calibrated_sigma_differs_meaningfully_from_flat_average_sigma(self):
-        """The whole point of a piecewise-calibrated Sigma over a single
-        flat scalar: a Bermudan's value depends on the SHAPE of the vol
-        term structure, not just its average -- confirmed by checking the
-        two prices genuinely differ (not just float-noise-close), for a
-        market vol curve with real term structure (upward-sloping here)."""
+        """The Bermudan value depends on the shape of the vol term structure, not just its
+        level: an upward-sloping market vol curve gives a different price from a flat
+        sigma."""
         exercise_times = [1.0, 2.0, 3.0, 4.0]
         targets = build_coterminal_basket(
             exercise_times=exercise_times, final_maturity_time=5.0,
@@ -84,9 +78,7 @@ class TestCalibratedSigmaFeedsBermudanPricer:
         assert abs(npv_calibrated - npv_flat) / npv_flat > 0.01
 
     def test_american_swaption_also_accepts_calibrated_sigma(self):
-        """An AmericanSwaptionConfig is priced by the same backward
-        induction as a Bermudan -- confirms a calibrated Sigma is accepted
-        on that path too, not just the Bermudan one."""
+        """An American trade (same backward induction) accepts a calibrated `Sigma`."""
         from engine.instruments.american_swaption import AmericanSwaptionConfig
         from engine.instruments.bermudan_swaption import price_bermudan_swaption_base
 
@@ -121,11 +113,8 @@ SLOPED_CURVE_CONFIG = ZeroCurveConfig(
 
 
 class TestCalibratedSigmaAcrossTradeVariations:
-    """Broader coverage than TestCalibratedSigmaFeedsBermudanPricer's three
-    original cases: receiver trades, a sloped (non-flat) curve, and a
-    genuinely diverse multi-trade portfolio all priced from ONE calibrated
-    Sigma, since a real desk calibrates once per curve/currency and reuses
-    the same Sigma across every trade sharing that curve."""
+    """Receivers, a sloped curve, and several trades priced from one calibrated `Sigma` (as
+    a desk would reuse one calibration per curve)."""
 
     def test_receiver_bermudan_with_calibrated_sigma(self):
         exercise_times = [1.0, 2.0, 3.0, 4.0]
@@ -146,11 +135,7 @@ class TestCalibratedSigmaAcrossTradeVariations:
         assert npv > 0.0
 
     def test_calibrated_sigma_under_a_sloped_curve_prices_a_bermudan(self):
-        """A non-flat (upward-sloping) curve, matching the SAME curve used
-        both for calibration and for the Bermudan pricer's own
-        initial_zero_curve -- confirms the pipeline works end-to-end when
-        today's curve has real term structure, not just the flat curve
-        every other integration test in this file uses."""
+        """An upward-sloping curve used for both calibration and pricing."""
         exercise_times = [1.0, 2.0, 3.0]
         targets = build_coterminal_basket(
             exercise_times=exercise_times, final_maturity_time=5.0,
@@ -170,15 +155,9 @@ class TestCalibratedSigmaAcrossTradeVariations:
 
     @pytest.mark.slow
     def test_one_calibrated_sigma_prices_a_diverse_multi_trade_portfolio(self):
-        """The realistic desk workflow: calibrate ONE Sigma from a market
-        vol basket that spans the portfolio's own longest trade, then
-        price SEVERAL Bermudan/American trades of varying tenor/exercise-
-        schedule/moneyness/payer-receiver against that SAME calibrated
-        Sigma -- confirms the calibrated term structure behaves sanely
-        (finite, no NaN, no crash) when reused across trades whose own
-        exercise schedules don't exactly match the calibration basket's
-        own bucket breakpoints (a Bermudan need not exercise on every
-        basket date)."""
+        """One `Sigma` calibrated to a basket spanning the longest trade prices several
+        Bermudan/American trades whose exercise dates need not match the basket's
+        breakpoints; all values are finite."""
         exercise_times = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
         targets = build_coterminal_basket(
             exercise_times=exercise_times, final_maturity_time=7.0,
@@ -195,8 +174,7 @@ class TestCalibratedSigmaAcrossTradeVariations:
                 hw_a=0.03, hw_sigma=result.sigma, initial_zero_curve=FLAT_CURVE_CONFIG,
                 exercise_dates=in_years(TODAY, exercise_times), swap_tenor="7Y", evaluation_date=TODAY,
             ),
-            # OTM receiver, sparse exercise schedule (a subset of the
-            # calibration basket's own dates), shorter underlying.
+            # OTM receiver, sparse exercise (a subset of the basket dates), shorter underlying.
             BermudanSwaptionConfig(
                 notional=2_000_000.0, fixed_rate=0.01, payer=False, rate_factor_index=0,
                 hw_a=0.03, hw_sigma=result.sigma, initial_zero_curve=FLAT_CURVE_CONFIG,
@@ -211,6 +189,6 @@ class TestCalibratedSigmaAcrossTradeVariations:
         ]
         npvs = [float(price_bermudan_swaption_base(cfg)) for cfg in trades]
         assert all(np.isfinite(v) for v in npvs)
-        # Deep ITM payer should be worth substantially more than the
-        # small ATM single-exercise trade despite a smaller notional.
+        # The deep ITM payer is worth more than the small ATM single-exercise trade despite a
+        # smaller notional.
         assert npvs[0] > npvs[2]

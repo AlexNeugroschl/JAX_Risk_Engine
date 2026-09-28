@@ -1,53 +1,15 @@
 """
-W1.2 -- the bill pricer. The first thing in this package that returns a
-number instead of a refusal.
+Treasury bill pricer: a single cashflow, face redeemed at maturity.
 
-A Treasury bill is a single cashflow: face redeemed at maturity, nothing in
-between. Its present value is
+    NPV = signed_face x redemptionFraction x exp(-r x t),   t = ACT/365(valuation, maturity)
 
-    NPV = signed_face x redemptionFraction x P(valuationDate, maturityDate)
+`r` is the assumed profile's flat, continuously compounded rate. ACT/365 Fixed is this
+boundary's discounting convention (the simulation time axis), separate from any accrual
+convention; a bill has none.
 
-and that is the whole model. No coupon schedule, no Monte Carlo, no
-calibration, no optionality. This is deliberate ordering (plan §W1.2): the
-bill exists to prove the *transport* -- bundle -> terms -> normalize ->
-conventions -> price -> identified result -- carries a real number end to
-end, while the pricing math is simple enough that any discrepancy is
-unambiguously a plumbing bug rather than a modelling one.
-
----
-
-**What this module will and will not do.**
-
-It prices a zero-coupon, bullet-redemption instrument whose terms say so.
-It does **not**:
-
-- infer that something is a bill from a blank accrual column or a zero
-  coupon in the CSV (`couponFrequency: NONE` in the *terms* is the only
-  thing it keys on -- same rule as `engine.integration.normalize`);
-- price a matured instrument, or one maturing on the valuation date;
-- accept a curve it was not explicitly handed.
-
-Each of those returns a refusal naming the reason. None of them falls back
-to a default.
-
----
-
-**Day count is a policy of this boundary, stated here rather than assumed.**
-
-Discounting uses **ACT/365 Fixed**, matching the engine's simulation time
-axis (`TIME_AXIS_DAY_COUNTER`) and the convention the W0.4 allowlist already
-accepts. This is the *discounting* convention, and it is distinct from an
-instrument's *accrual* convention -- the distinction W1.1 introduced. A bill
-has no accrual to convert (`dayCount: NOT_APPLICABLE` in the fixture terms),
-so only the discounting choice applies here, and a note (W1.3) will need the
-accrual half that this instrument does not exercise.
-
-**The assumed profiles are continuously compounded** (`flat-3pct-v1` is
-"Flat 3% continuously-compounded zero curve"), so the discount factor is
-`exp(-r*t)`. Using a simple or annually-compounded convention against the
-same profile would silently shift every price -- at 3% over six months the
-gap is ~$3.6 per $100k face, small enough to look like rounding and large
-enough to be wrong.
+Refused, never defaulted: a row whose terms do not say zero-coupon (`couponFrequency: NONE`
+with no schedule; never inferred from the CSV), a matured bill (maturity on or before the
+valuation date), and incomplete terms.
 """
 import math
 from dataclasses import dataclass
@@ -58,25 +20,21 @@ import ORE
 from engine.integration.market_inputs import AssumedProfile, CurveProvenance
 from engine.integration.terms import TermsEntry
 
-#: Reason codes. Each names a condition this pricer refuses rather than
-#: approximates.
+#: Reason codes for refusals.
 NOT_A_BILL = "NOT_A_BILL"
 INSTRUMENT_MATURED = "INSTRUMENT_MATURED"
 TERMS_INCOMPLETE = "TERMS_INCOMPLETE"
 
-#: Discounting day count for this boundary -- see the module docstring.
-#: ACT/365 Fixed, consistent with the engine's simulation time axis.
+#: Discounting day count (see the module docstring).
 DISCOUNT_DAY_COUNT = ORE.Actual365Fixed()
 
-#: The pricing method, echoed in the result so a consumer never has to infer
-#: it from the shape of the payload.
+#: Pricing method, echoed in the result.
 METHOD = "discounted-cashflow"
 
 
 class BillPricingError(Exception):
-    """A bill could not be priced. Carries a reason code and a detail,
-    shaped for a `CalculationOutcome` refusal rather than a stack trace --
-    one unpriceable row must not fail the other 200."""
+    """A bill could not be priced: a reason code and detail, reported as that row's
+    refusal so one row cannot fail the bundle."""
 
     def __init__(self, reason: str, detail: str):
         self.reason = reason
@@ -86,14 +44,8 @@ class BillPricingError(Exception):
 
 @dataclass(frozen=True)
 class BillPrice:
-    """One bill's present value and everything needed to check it.
-
-    The intermediate values are carried deliberately: a consumer
-    reconciling against its own model needs the discount factor and year
-    fraction this engine actually used, not just the final number. A bare
-    NPV is unreconcilable -- if it disagrees, nothing says whether the
-    curve, the day count, or the face amount was the cause.
-    """
+    """One bill's present value, with the discount factor and year fraction used, so a
+    consumer can reconcile it."""
     npv: float
     signed_face_amount: float
     redemption_fraction: float
@@ -121,17 +73,8 @@ class BillPrice:
 
 
 def is_bill(entry: Optional[TermsEntry]) -> bool:
-    """Whether the *terms* describe a zero-coupon bullet instrument.
-
-    Keyed on `couponFrequency: NONE`, exactly as
-    `engine.integration.normalize._is_zero_coupon` is -- never on a zero
-    `coupon` column or a blank accrual field. Those are the CSV's own
-    shorthand and are ambiguous; the terms are the statement.
-
-    A non-empty `schedule` disqualifies the row even if the frequency says
-    NONE: the two would be contradicting each other, and this pricer is
-    not the place to decide which one wins.
-    """
+    """Whether the terms describe a zero-coupon bullet instrument: `couponFrequency: NONE`
+    and no `schedule` (a schedule would contradict the frequency)."""
     if entry is None:
         return False
     terms = entry.terms
@@ -141,7 +84,7 @@ def is_bill(entry: Optional[TermsEntry]) -> bool:
 
 
 def _parse_date(raw: Optional[str], field: str) -> ORE.Date:
-    """Parses an ISO `YYYY-MM-DD` terms date into an `ORE.Date`."""
+    """ISO `YYYY-MM-DD` terms date -> `ORE.Date`."""
     if not raw:
         raise BillPricingError(
             TERMS_INCOMPLETE,
@@ -152,28 +95,17 @@ def _parse_date(raw: Optional[str], field: str) -> ORE.Date:
         year, month, day = (int(part) for part in str(raw).split("-"))
         return ORE.Date(day, month, year)
     except (ValueError, TypeError, RuntimeError) as exc:
-        # `RuntimeError` is not defensive breadth -- it is the exception
-        # `ORE.Date` actually raises for a date that PARSES but cannot
-        # exist ("2025-02-30" -> "day outside month (2) day-range [1,28]",
-        # "2025-13-01" -> "month 13 outside ... range"). SWIG surfaces
-        # QuantLib's C++ `std::runtime_error` that way, so the Python date
-        # exceptions alone miss exactly the malformed-but-numeric case.
-        # Without it the error escapes `_bill_outcomes`' handler in the
-        # pipeline and fails the WHOLE bundle on one bad row -- see
-        # `tests/test_integration_bill.py::TestImpossibleCalendarDates`.
+        # ORE.Date raises RuntimeError for a well-formed but impossible date (2025-02-30);
+        # catching it keeps one bad row from failing the whole bundle
+        # (tests/test_integration_bill.py::TestImpossibleCalendarDates).
         raise BillPricingError(
             TERMS_INCOMPLETE, f"{field}={raw!r} is not a valid ISO YYYY-MM-DD date ({exc})",
         ) from exc
 
 
 def _redemption_fraction(entry: TermsEntry) -> float:
-    """`redemptionFraction` from the terms, defaulting to par.
-
-    Absent means par (1.0) -- the overwhelmingly common case, and the
-    fixture states it explicitly anyway. A *present but unparseable* value
-    raises instead, because that is a malformed artifact rather than an
-    omission.
-    """
+    """`redemptionFraction` from the terms: absent means par (1.0); present but
+    unparseable raises."""
     raw = entry.terms.get("redemptionFraction")
     if raw is None:
         return 1.0
@@ -191,16 +123,10 @@ def price_bill(
     valuation_date: ORE.Date,
     profile: AssumedProfile,
 ) -> BillPrice:
-    """Prices one bill position against `profile`'s curve.
+    """Price one bill position against `profile`'s flat curve.
 
-    `signed_face_amount` carries the position's sign, so a short position
-    returns a negative NPV in one step -- there is no separate `sign()`
-    factor to apply, and applying one would make a short position positive
-    (the double-sign bug TraderX flagged in their v3 §2).
-
-    Raises `BillPricingError` for anything it will not price: a
-    coupon-bearing instrument, a matured one, or incomplete terms. Never
-    substitutes a default maturity, curve, or redemption.
+    `signed_face_amount` carries the sign (a short gives a negative NPV); do not apply
+    another. Raises `BillPricingError` rather than defaulting anything.
     """
     if not is_bill(entry):
         raise BillPricingError(
@@ -223,8 +149,7 @@ def price_bill(
 
     redemption = _redemption_fraction(entry)
     year_fraction = DISCOUNT_DAY_COUNT.yearFraction(valuation_date, maturity)
-    # Continuously compounded, matching the assumed profile's own stated
-    # convention -- see the module docstring.
+    # Continuously compounded, as the assumed profile states.
     discount_factor = math.exp(-profile.flat_rate * year_fraction)
 
     return BillPrice(
@@ -240,6 +165,5 @@ def price_bill(
 
 
 def _iso(date: ORE.Date) -> str:
-    """`ORE.Date` -> ISO `YYYY-MM-DD`, for echoing dates back in the same
-    format the terms artifact used."""
+    """`ORE.Date` -> ISO `YYYY-MM-DD`."""
     return f"{date.year():04d}-{date.month():02d}-{date.dayOfMonth():02d}"

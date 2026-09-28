@@ -1,25 +1,11 @@
 """
-W1.6.3 -- `accrualSource` on the standalone `accruedInterest` outcome
-(`docs/planning/traderx-integration-plan.md` §W1.6).
+`accrualSource` on the standalone `accruedInterest` outcome (W1.6.3,
+`docs/planning/traderX_integration/traderx-integration-plan.md`).
 
-**The problem this closes.** Before W1.6.3 a consumer reading the standalone
-`accruedInterest` outcome saw `provenance: "converted"`, while the note's
-NPV payload described the same fact as `accrualSource: "exported-fraction"`.
-Two vocabularies for one thing, neither cross-referenced, so reconciling the
-standalone value against the priced one required knowing that "converted"
-and "exported-fraction" meant the same thing.
-
-**The constraint that makes this non-trivial.** The plan is explicit:
-"Keep `structural-zero` distinct from an exported-fraction conversion --
-that distinction is W0.3's whole point and must survive the alignment."
-
-A bill's zero is not an exported fraction that happened to be zero. It is
-zero because the instrument has no coupon schedule. Folding it into
-`exported-fraction` would erase exactly the distinction W0.3 exists to
-preserve -- the one between a bill and a coupon-bearing note whose accrual
-the exporter omitted. `TestStructuralZeroSurvivesTheAlignment` is therefore
-the class that matters most here, and the naive implementation ("label
-everything `exported-fraction`") fails it.
+The standalone outcome uses the same vocabulary as the note's NPV payload
+(`exported-fraction`), while a bill keeps `structural-zero`: its zero comes from having no
+coupon schedule, not from an exported fraction that happened to be zero (the W0.3
+distinction). `TestStructuralZeroSurvivesTheAlignment` guards that.
 """
 from pathlib import Path
 
@@ -41,14 +27,9 @@ def _accrued(case, version="v2", market=MARKET):
 
 @pytest.fixture
 def blank_accrued_bundle(tmp_path):
-    """A coupon-bearing note whose `accruedInterestFraction` is blank.
-
-    This is the W0.3 case that must never become `0.0`: the terms say the
-    instrument pays coupons, so a blank is missing data rather than a
-    structural zero. Built by blanking the column and re-pinning the
-    manifest hash, so the *normalization* is under test rather than the
-    hash check.
-    """
+    """A coupon-bearing note with a blank `accruedInterestFraction` (missing data, never
+    0.0). The column is blanked and the manifest hash re-pinned, so normalization rather
+    than the hash check is under test."""
     import hashlib
     import json
     import shutil
@@ -90,8 +71,7 @@ class TestLabelIsPresentAndAligned:
             assert outcome["accrualSource"] == ACCRUAL_EXPORTED
 
     def test_note_standalone_label_matches_the_npv_payload(self):
-        """The alignment, asserted directly: the same fact described the
-        same way in both places."""
+        """The standalone label equals the NPV payload's."""
         result = price_bundle(FIXTURES / "note" / "v2", MARKET).to_dict()
         for item in result["items"]:
             standalone = item["calculations"]["accruedInterest"]["accrualSource"]
@@ -107,12 +87,7 @@ class TestLabelIsPresentAndAligned:
 
 
 class TestStructuralZeroSurvivesTheAlignment:
-    """**The distinction W0.3 exists to preserve.**
-
-    A bill's accrued interest is zero *structurally*. Labelling it
-    `exported-fraction` would say the exporter supplied a fraction that
-    happened to be zero -- a different claim, and a false one.
-    """
+    """A bill's accrued is a structural zero, not an exported fraction of zero."""
 
     def test_bill_accrued_is_labelled_structural_zero(self):
         for outcome in _accrued("bill"):
@@ -120,20 +95,18 @@ class TestStructuralZeroSurvivesTheAlignment:
             assert outcome["accrualSource"] == STRUCTURAL_ZERO
 
     def test_bill_is_not_labelled_exported_fraction(self):
-        """Asserted negatively and explicitly: this is the exact collapse
-        the naive implementation makes."""
+        """The collapse a naive implementation makes."""
         for outcome in _accrued("bill"):
             assert outcome["accrualSource"] != ACCRUAL_EXPORTED
 
     def test_bill_and_note_labels_are_different(self):
-        """If these two ever agree, the distinction has been lost."""
+        """If these agree the distinction is lost."""
         bill = {o["accrualSource"] for o in _accrued("bill")}
         note = {o["accrualSource"] for o in _accrued("note")}
         assert bill.isdisjoint(note)
 
     def test_provenance_is_retained_alongside_the_new_label(self):
-        """W1.6.3 adds a field; it does not replace one. A consumer pinned
-        to `provenance` keeps working."""
+        """The label is added alongside `provenance`, which is kept."""
         for outcome in _accrued("bill"):
             assert outcome["provenance"] == STRUCTURAL_ZERO
         for outcome in _accrued("note"):
@@ -141,8 +114,7 @@ class TestStructuralZeroSurvivesTheAlignment:
 
 
 class TestMappingFunction:
-    """`_accrual_source` in isolation, including the cases the fixtures do
-    not reach."""
+    """`_accrual_source` directly, including cases the fixtures do not reach."""
 
     def test_converted_maps_to_exported_fraction(self):
         assert _accrual_source(CONVERTED) == ACCRUAL_EXPORTED
@@ -151,7 +123,7 @@ class TestMappingFunction:
         assert _accrual_source(STRUCTURAL_ZERO) == STRUCTURAL_ZERO
 
     def test_unknown_provenance_yields_no_label(self):
-        """An absent label is honest; an invented one is not."""
+        """No label rather than an invented one."""
         assert _accrual_source("something-else") is None
 
     def test_none_provenance_yields_no_label(self):
@@ -159,19 +131,12 @@ class TestMappingFunction:
 
 
 class TestUnavailableAccrualCarriesNoLabel:
-    """A calculation with no value must not carry a source label -- there is
-    no source, and a label would imply one.
-
-    Note the v1 *note* fixture is not this case: it supplies
-    `accruedInterestFraction` in the CSV, so it converts normally even
-    without a terms artifact. The `unavailable` state needs a genuinely
-    blank field, which is what `_blank_accrued` below produces.
-    """
+    """A value-less calculation carries no source label. (The v1 note fixture supplies the
+    fraction in its CSV and converts normally; the unavailable case needs a blank field.)"""
 
     def test_v1_bundle_with_a_supplied_fraction_still_converts(self):
-        """A v1 bundle has no terms artifact, but a *supplied* fraction is
-        still interpretable -- the blank is what is uninterpretable, not the
-        missing artifact on its own."""
+        """With no terms artifact, a supplied fraction still converts; only a blank is
+        uninterpretable."""
         for outcome in _accrued("note", version="v1"):
             assert outcome["status"] == "ok"
             assert outcome["accrualSource"] == ACCRUAL_EXPORTED
@@ -182,17 +147,16 @@ class TestUnavailableAccrualCarriesNoLabel:
             assert "accrualSource" not in outcome
 
     def test_blank_accrued_outcome_carries_no_value(self, blank_accrued_bundle):
-        """A non-ok outcome must not carry a number -- attaching one invites
-        consumers to read it."""
+        """A non-ok outcome carries no number."""
         for outcome in blank_accrued_bundle:
             assert "value" not in outcome
 
 
 class TestExistingBehaviourUnchanged:
-    """W1.6.3 is additive. The delivered numbers must not have moved."""
+    """The delivered numbers are unchanged."""
 
     def test_note_accrued_value_is_unchanged(self):
-        """TraderX independently verified +/-1,857.10."""
+        """Â±1,857.10: the exported fraction 0.018571 on 100,000 face."""
         values = sorted(o["value"] for o in _accrued("note"))
         assert values[0] == pytest.approx(-1857.10, abs=1e-6)
         assert values[1] == pytest.approx(1857.10, abs=1e-6)

@@ -1,74 +1,19 @@
 """
-The engine's top-level entry point: "a portfolio of trades + market data +
-risk parameters" in, "prices + risk" out.
+The engine's portfolio entry point: `PortfolioRequest` (trades, market, risk settings) in,
+`PortfolioResult` (base NPVs, scenario cube, exposure, Greeks) out, via `price_portfolio`.
 
-Implements `docs/planning/traderx-integration.md`'s data-transformation/
-validation layer (this module is that plan's own first-choice location) and
-then, on top of it, `price_portfolio` -- the single orchestration function
-that replaces `demo.py`'s hand-written simulate -> calibrate -> price ->
-aggregate-risk sequence with one call. Sits at the same level as
-`engine/simulation/`, `engine/instruments/`, `engine/risk/`: it imports
-across those instrument-type/stage boundaries so none of them have to import
-each other, preserving `docs/concepts/architecture.md`'s "modules agree on
-shapes, not code" principle.
+Pure dataclasses and JAX; the HTTP layer (`engine/api/`) wraps these types.
 
-**Zero Pydantic/FastAPI dependency, deliberately.** This module and
-everything it imports (`engine.simulation`, `engine.instruments`,
-`engine.risk`, `engine.calibration`, `engine.models`) stay
-plain-dataclass/JAX-native throughout. Pydantic and FastAPI live exclusively
-in `engine/api/` (the HTTP boundary), which wraps `PortfolioRequest`/
-`PortfolioResult` rather than replacing them -- see `engine/api/schemas.py`.
+The scenario cube is an exposure simulation and carries the simulation's known
+limitations, which are warned about per trade rather than corrected: aged swaps (I-04, audit
+M-2), options vanishing at expiry (audit M-3), and short rates inconsistent with a sloped
+curve (audit M-1). t=0 base NPVs are unaffected.
 
-**Known limitations this module does not fix, only surfaces (see
-docs/planning/traderx-integration.md gap item 5):**
-- Any *exposure profile* (t>0 valuation, as opposed to a t=0 NPV/VaR run) of
-  a swap inherits `engine.instruments.swap`'s documented aged-swap
-  discounting gap (see that module's docstring and
-  `tests/test_swap.py::TestAgedSwapKnownLimitation`): a swap's conditional
-  NPV at any simulated step after its own first accrual date does not
-  correctly represent an already-fixed floating coupon. This is exact at
-  t=0 and for forward-starting trades priced before their own accrual
-  begins; `price_portfolio` does not attempt to correct it.
-
-**Concurrency: `_PRICING_LOCK` is a defense-in-depth invariant guard, not
-this system's primary concurrency-limiting mechanism.** `generate_paths`
-toggles `jax_enable_x64`, a process-global JAX/XLA flag, not a thread-local
-or per-array setting -- confirmed live: two threads each calling
-`price_portfolio` with different precisions, inside the SAME process, can
-have thread B's flag flip land while thread A is still mid-flight through
-`generate_paths`/the pricers/Greeks that follow it, silently corrupting
-thread A's own in-progress computation (wrong dtype, or a
-dtype-correct-looking but numerically wrong array). `_PRICING_LOCK` below
-serializes the entire JAX-executing body of `price_portfolio`
-(`generate_paths` through Greeks) so two threads of one process queue
-instead of racing.
-
-Real concurrency for `engine/api/routes.py`'s HTTP job pattern now comes
-from a layer above this module, not from running multiple threads through
-this lock: `engine.portfolio.worker_pool` dispatches each job to one of a
-fixed pool of worker PROCESSES, sized per precision tier (float32/float64),
-each with its own independent JAX/XLA runtime that fixes `jax_enable_x64`
-once at process boot and never touches it again -- see that module's own
-docstring for the full mechanism. Because each worker processes jobs
-strictly sequentially, no second thread inside a worker process ever calls
-into JAX-executing code while a job is in flight, which is what makes
-`_PRICING_LOCK` unnecessary *at the worker-pool level*. This lock stays
-here anyway, unconditionally, as a narrower defense-in-depth guard: the
-underlying JAX fact it protects against doesn't disappear just because the
-worker pool makes it unreachable through the normal HTTP path. Anything
-that ever puts two threads of the SAME process inside `price_portfolio`
-concurrently -- a worker-pool sizing bug, or a future direct Python caller
-spinning up their own threads against `engine.portfolio` directly (this
-module has "Zero Pydantic/FastAPI dependency, deliberately," per this
-docstring's own section above -- it's designed to be called directly, not
-only through the HTTP/worker-pool layer) -- hits the exact same corruption
-bug. The lock is cheap (uncontended-lock overhead is negligible next to a
-JIT-compile-dominated multi-second job) and correctness-critical whenever
-"one job per process" doesn't hold, even though it is no longer the primary
-thing standing between concurrent requests and true parallelism (see
-docs/concepts/architecture.md's "Concurrency" section for the full
-worker-pool architecture and docs/concepts/architecture.md's "Adjustable
-precision" section for `PrecisionConfig` itself).
+Concurrency: `jax_enable_x64` is process-global, so two threads pricing at different
+precisions in one process can corrupt each other. `_PRICING_LOCK` serializes the JAX work of
+`price_portfolio`. The HTTP path runs each job in a single-threaded worker process
+(`engine.portfolio.worker_pool`), so the lock only matters for direct multi-threaded
+callers, and is kept for them.
 """
 import threading
 import warnings
@@ -98,10 +43,8 @@ from engine.models.hull_white import discount as _hw_discount
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from engine.models.lgm import Sigma
 
-# Re-exported so `engine.portfolio._validate_common_fields` resolves exactly
-# where the design calls for it, even though the actual leaf implementation
-# lives in engine/portfolio/validation.py to avoid a circular import (see
-# that module's own docstring for why).
+# Re-exported so `engine.portfolio._validate_common_fields` resolves (implemented in
+# validation.py to avoid an import cycle).
 from engine.portfolio.validation import _validate_common_fields, _validate_tenor  # noqa: F401
 from engine.portfolio.validation import validate_single_evaluation_date
 from engine.portfolio.profiling import phase as _phase
@@ -110,37 +53,19 @@ TradeConfig = Union[
     SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig, BondConfig,
 ]
 
-#: Trade types with no scenario (`npv_cube`) representation -- see
-#: `engine.instruments.treasury`'s module docstring. These reach `base_npv`,
-#: `base_npv_per_trade` and the Greeks path, all of which are real for them;
-#: they do NOT reach `npv_cube`/exposure, and `_price_by_type` raises rather
-#: than broadcasting a constant column (which would report a riskless
-#: exposure profile for a position whose risk was never modelled). Tracked
-#: as I-24. Short-horizon market risk DOES cover them: see
-#: `engine.market_risk`, which revalues at t=0 under shocked curves.
+#: Trade types with no scenario (`npv_cube`) representation (I-24). They get base NPV and
+#: Greeks; `_price_by_type` refuses them rather than broadcasting a constant column.
+#: `engine.market_risk` covers them by t=0 revaluation.
 DETERMINISTIC_ONLY_TYPES = (BondConfig,)
 
-# Defense-in-depth guard against jax_enable_x64's process-global-flag race
-# WITHIN a single process -- see this module's docstring's "Concurrency"
-# section. Real concurrency for engine/api/routes.py's HTTP job pattern now
-# comes from engine.portfolio.worker_pool's multi-process, per-precision-tier
-# pools, one layer up; this lock is kept unconditionally anyway since nothing
-# here statically prevents a caller from putting two threads of one process
-# through price_portfolio directly. Lives here (not in
-# engine.simulation.market_model) because generate_paths is also called
-# directly, sequentially, by other code/tests and shouldn't own this
-# invariant-guard policy, which only matters for price_portfolio's own
-# multi-thread-reachable callers.
+# Serializes price_portfolio's JAX work within a process (see the module docstring).
 _PRICING_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
 class PricingPrecisionOverride:
-    """Optional per-instrument-type drill-down for `PrecisionConfig.pricing`.
-    Any field left `None` falls back to `default`. Purely additive: a caller
-    who only sets `default` gets today's flat-`pricing=N` behavior exactly --
-    see `_resolve_pricing_dtype` below, the single place this is resolved.
-    """
+    """Per-instrument-type overrides for `PrecisionConfig.pricing`; `None` fields fall back
+    to `default`. Resolved only in `_resolve_pricing_dtype`."""
     default: int = 64
     swap: Optional[int] = None
     european_swaption: Optional[int] = None
@@ -156,15 +81,10 @@ class PricingPrecisionOverride:
 
 @dataclass(frozen=True)
 class RiskPrecisionOverride:
-    """Optional per-Greek/per-metric drill-down for `PrecisionConfig.risk`.
-    `delta_gamma` is ONE knob for both Delta and Gamma -- they're derived
-    from a single jax.grad+jax.hessian pair against one curve inside one
-    `engine.risk.greeks` call, so they can't be split further without
-    invasive surgery there (see docs/concepts/architecture.md's "Adjustable
-    precision" section). `exposure` is NOT curve-driven like the other three
-    -- `price_portfolio` re-casts `npv_cube` immediately before computing the
-    exposure profiles, since they have no curve of their own.
-    """
+    """Per-metric overrides for `PrecisionConfig.risk`; `None` fields fall back to
+    `default`. Delta and Gamma share `delta_gamma` (one gradient/Hessian computation).
+    `exposure` has no curve, so `price_portfolio` casts `npv_cube` to it before the
+    statistics."""
     default: int = 64
     delta_gamma: Optional[int] = None
     theta: Optional[int] = None
@@ -180,31 +100,15 @@ class RiskPrecisionOverride:
 
 @dataclass(frozen=True)
 class PrecisionConfig:
-    """Four independently-settable dtype knobs, each 32 (float32) or 64
-    (float64, default): `simulation` (Monte Carlo path generation, passed to
-    `generate_paths`), `pricing` (instrument NPV/npv_cube dtype), `risk`
-    (exposure + Greeks), and `calibration` (LGM sigma bootstrap dtype).
-    Defaults to all-64, byte-identical to this codebase's behavior before
-    this dataclass existed.
+    """
+    Dtype knobs, each 32 or 64 (default 64): `simulation` (`generate_paths`), `pricing`
+    (NPVs and `npv_cube`), `risk` (exposure and Greeks), `calibration` (the LGM sigma
+    bootstrap). `pricing` and `risk` also accept a per-type/per-metric override object; a
+    plain int means every sub-field.
 
-    `pricing` and `risk` each additionally accept a structured override
-    (`PricingPrecisionOverride`/`RiskPrecisionOverride`) instead of a flat
-    `int`, for optional per-instrument-type / per-Greek drill-down -- a flat
-    `int` is sugar for "every sub-field at this precision," resolved through
-    the exact same `_resolve_pricing_dtype`/`_resolve_risk_dtype` helpers a
-    structured override uses, never a separate code path. `simulation` and
-    `calibration` stay flat `int`-only: each has exactly one call site, so no
-    drill-down axis applies.
-
-    bfloat16/float16/FP8/FP4 are NOT supported for any of these four knobs --
-    confirmed broken on this stack today (`jnp.linalg.cholesky` and
-    `jax.scipy.stats.norm.ppf` both raise on every sub-float32 dtype tested,
-    not just bfloat16, on the installed jax/jaxlib CPU backend); see
-    docs/concepts/architecture.md's "Option B: why uniform sub-float32
-    precision is not achievable today" section. A separate, narrower FP8/FP4
-    mechanism scoped ONLY to the two matmul-shaped sub-steps inside
-    `generate_paths` (`MatmulPrecisionConfig`) has been designed but not yet
-    implemented in this codebase -- see the same architecture doc section.
+    Sub-float32 dtypes are not supported: `jnp.linalg.cholesky` and
+    `jax.scipy.stats.norm.ppf` raise on them on the installed CPU backend (see
+    docs/concepts/architecture.md, "Adjustable precision").
     """
     simulation: int = 64
     pricing: Union[int, PricingPrecisionOverride] = 64
@@ -235,9 +139,7 @@ _PRICING_TYPE_FIELD = {
 
 
 def _resolve_pricing_dtype(pricing: Union[int, PricingPrecisionOverride], trade_type: type):
-    """Single place PrecisionConfig.pricing's flat-int-or-override shape is
-    resolved to a concrete dtype for one trade type -- every pricing dispatch
-    point calls this instead of re-deriving the branch itself."""
+    """`PrecisionConfig.pricing` (int or override) -> dtype for one trade type."""
     if isinstance(pricing, int):
         return _dtype_of(pricing)
     bits = getattr(pricing, _PRICING_TYPE_FIELD[trade_type]) or pricing.default
@@ -245,43 +147,30 @@ def _resolve_pricing_dtype(pricing: Union[int, PricingPrecisionOverride], trade_
 
 
 def _resolve_risk_dtype(risk: Union[int, RiskPrecisionOverride], metric: str):
-    """Single place PrecisionConfig.risk's flat-int-or-override shape is
-    resolved to a concrete dtype for one metric ('delta_gamma'/'theta'/
-    'vega'/'exposure') -- every risk dispatch point calls this instead of
-    re-deriving the branch itself."""
+    """`PrecisionConfig.risk` (int or override) -> dtype for one metric ('delta_gamma',
+    'theta', 'vega', 'exposure')."""
     if isinstance(risk, int):
         return _dtype_of(risk)
     bits = getattr(risk, metric) or risk.default
     return _dtype_of(bits)
 
 
-# =============================================================================
-# 1c. CROSS-FIELD CONSISTENCY: RatesConfig <-> each trade's duplicated fields
-# =============================================================================
+# Cross-checks between the simulation config and each trade's duplicated fields
 def validate_portfolio_against_simulation(
     sim_config: SimulationConfig, trade_configs: Sequence[TradeConfig],
 ) -> None:
     """
-    For every trade carrying a `rate_factor_index` (every trade type except
-    `SwapConfig`, which has no single-model dependency), cross-checks that
-    trade's own duplicated `hw_a`/`hw_sigma`/`initial_zero_curve` against
-    `sim_config`'s corresponding entry for that factor -- see each
-    SwaptionConfig-family class's own docstring: these fields "MUST match
-    that factor's own calibration in the simulation's RatesConfig", but
-    nothing previously enforced it. Raises `ValueError` naming the trade (by
-    index/notional/type) and the specific mismatched field on any divergence
-    beyond a small float tolerance.
+    Check each trade against `sim_config` before pricing; raise `ValueError` naming the
+    trade and field on a mismatch.
 
-    Also emits `warnings.warn` (not a hard error), collected into
-    `PortfolioResult.warnings` by `price_portfolio`, for a `SwapConfig` that
-    will be AGED (its floating leg already accruing) at one or more
-    simulated steps beyond t=0 -- see `_warn_if_aged_swap_exposure`. This is
-    the one check here that applies to `SwapConfig`, which otherwise carries
-    no `rate_factor_index` to cross-check.
+    For trades with a `rate_factor_index` (all but swaps): `hw_a`, a flat `hw_sigma` and
+    `initial_zero_curve` must match that factor's mean reversion, volatility
+    (sqrt of the `joint_covariance` diagonal) and curve. Also: one evaluation date for all
+    trades, and swap curve indices in range.
 
-    A Bermudan/American exercise date inside an accrual period is NOT
-    warned about: it is priced exactly as ORE prices it (see
-    `engine.instruments.bermudan_swaption.ExerciseStyle`), not approximated.
+    Emits `warnings.warn` (collected into `PortfolioResult.warnings`) for the known cube
+    limitations: aged swaps, options expiring inside the horizon, and short rates
+    inconsistent with their curve.
     """
     tol = 1e-9
     num_eq = len(sim_config.equities.initial_prices)
@@ -311,25 +200,12 @@ def validate_portfolio_against_simulation(
         expected_sigma = float(np.sqrt(joint_cov[cov_row, cov_row]))
         actual_sigma = cfg.hw_sigma
         if actual_sigma is None:
-            # Uncalibrated (Bermudan/American only) -- price_portfolio fills
-            # this in later via calibrate_lgm_sigma, at which point it is
-            # consistent with sim_config by construction (calibrated
-            # against the SAME curve/mean-reversion this trade already
-            # carries); nothing to cross-check yet.
+            # Uncalibrated: price_portfolio calibrates it later; nothing to check yet.
             pass
         elif hasattr(actual_sigma, "values"):
-            # A genuinely piecewise (calibrated) Sigma -- deliberately NOT
-            # cross-checked against joint_covariance's single flat per-step
-            # vol. The simulation only ever propagates ONE constant vol per
-            # rate factor (Monte Carlo path generation doesn't need a term
-            # structure), while a calibrated Sigma is the model's own
-            # richer view of volatility used for PRICING -- a real desk
-            # workflow (calibrate once, reuse the fitted term structure
-            # across many trades, simulate paths off a single representative
-            # vol level) has these legitimately diverge; this is not the
-            # transcription-bug class gap item 2 targets (a flat hw_sigma
-            # silently copied from the wrong factor). Only a flat float
-            # hw_sigma is cross-checked below.
+            # A piecewise (calibrated) Sigma is not checked: the simulation uses one flat
+            # volatility per factor, and a calibrated pricing term structure may
+            # legitimately differ from it.
             pass
         else:
             if abs(float(actual_sigma) - expected_sigma) > tol:
@@ -365,36 +241,9 @@ def validate_portfolio_against_simulation(
 def _validate_swap_curve_indices(
     sim_config: SimulationConfig, trade_configs: Sequence[TradeConfig],
 ) -> None:
-    """Range-checks every `SwapConfig`'s `discount_curve_index`/
-    `forward_curve_index` against `sim_config.rates.initial_zero_curves`,
-    for ALL trades, BEFORE any pricing runs.
-
-    This is the `SwapConfig` analogue of the `rate_factor_index` check its
-    caller performs for every other trade type: a swap carries curve
-    INDEXES rather than a `rate_factor_index`, so the loop above skips it
-    entirely (`rate_factor_index is None` -> `continue`).
-
-    **The bug this closes (I-13).** `_swap_curve_configs` performs exactly
-    this check, but only on the Greeks path, which runs AFTER
-    `_base_npv_per_trade` and only when `compute_greeks=True`. Base pricing
-    indexed `initial_zero_curves` directly, so with the default
-    `compute_greeks=False` a NEGATIVE index was not an error at all: Python
-    wraps -1 to the LAST curve, and the trade priced cleanly, finitely, and
-    silently against a curve it was never booked against. Measured on a
-    two-curve portfolio: -5,857.01 returned instead of the booked
-    -5,913.93, a 56.92 USD divergence on 2mm notional that scales without
-    bound as the curves separate.
-
-    Validating here rather than hardening `_base_npv_per_trade` is
-    deliberate: `price_portfolio` already calls this function before any
-    JAX work, so one check covers every pricing path (base NPV, the cube,
-    Greeks) instead of each indexing site having to remember to guard
-    itself -- which is the exact omission that produced I-13.
-
-    Negative indices are rejected explicitly by `0 <= idx`, not left to
-    `idx < len`: that half of the comparison is what a negative index
-    silently passes.
-    """
+    """Range-check every swap's `discount_curve_index`/`forward_curve_index` before any
+    pricing. A negative index would otherwise wrap in Python (-1 -> last curve) and price
+    silently against the wrong curve (I-13)."""
     curves = sim_config.rates.initial_zero_curves
     for i, cfg in enumerate(trade_configs):
         if not isinstance(cfg, SwapConfig):
@@ -413,32 +262,10 @@ def _validate_swap_curve_indices(
 
 
 def _warn_if_aged_swap_exposure(sim_config: SimulationConfig, trade_configs) -> None:
-    """Emits a `UserWarning` for every `SwapConfig` whose floating leg will
-    have ALREADY STARTED accruing at one or more of the simulation's own
-    `time_grid` steps beyond t=0.
-
-    This surfaces the documented aged-swap limitation (see
-    `engine.instruments.swap`'s module docstring and
-    `tests/test_swap.py::TestAgedSwapKnownLimitation`): `price_swaps` has no
-    representation of an already-fixed floating coupon, so at any simulated
-    step past a swap's first accrual start the elapsed period is discounted
-    with a clamped, non-meaningful P(t,T) for T<t instead of being excluded
-    or fixed. t=0 valuation is unaffected and exact.
-
-    The same kernel also keeps cashflows already PAID at a step in the NPV
-    (audit finding M-2), so once the grid passes a payment date the error
-    is no longer small: a matured swap still reports a non-zero value.
-
-    **Why a warning and not a fix here:** the fix belongs in the pricing
-    kernel (see docs/planning/engine-audit.md, M-2). What this function
-    removes is the SILENCE: a caller requesting a multi-step `npv_cube`
-    (and every exposure figure derived from it) is told the numbers carry a
-    known inaccuracy. `price_portfolio` collects these into
-    `PortfolioResult.warnings`.
-
-    Only steps STRICTLY after t=0 are considered, and a forward-starting
-    swap is only flagged once the grid actually reaches its accrual start --
-    both remain exact otherwise, so neither should warn."""
+    """Warn for every swap whose floating leg has started accruing at a simulated step
+    after t=0: from then on the cube misprices it (I-04, audit M-2; see
+    `engine.instruments.swap`). t=0 and forward-starting swaps before their start are
+    exact and are not flagged."""
     steps_after_zero = [t for t in sim_config.time_grid if float(t) > 0.0]
     if not steps_after_zero:
         return
@@ -451,9 +278,7 @@ def _warn_if_aged_swap_exposure(sim_config: SimulationConfig, trade_configs) -> 
         if starts.size == 0:
             continue
         first_accrual_start = float(starts.min())
-        # Aged only if the grid actually advances past the first accrual
-        # start. A forward-starting swap whose accrual begins after the last
-        # simulated step is never aged within this simulation.
+        # Aged only if the grid passes the first accrual start.
         if last_step > first_accrual_start:
             aged_steps = [t for t in steps_after_zero if float(t) > first_accrual_start]
             warnings.warn(
@@ -472,14 +297,8 @@ def _warn_if_aged_swap_exposure(sim_config: SimulationConfig, trade_configs) -> 
 
 
 def _warn_if_option_expires_within_simulation(sim_config: SimulationConfig, trade_configs) -> None:
-    """Warns for every swaption whose last exercise date falls inside the
-    simulated horizon (audit finding M-3).
-
-    After its last exercise date an option's scenario NPV is set to 0 on
-    every path. A physically settled option exercised on a path is really
-    the underlying swap from then on; the engine does not track exercise,
-    so every step after expiry misstates the position and any exposure
-    derived from it."""
+    """Warn for every swaption whose last exercise falls inside the simulated horizon: its
+    cube value is 0 from then on, even on paths where it was exercised (audit M-3)."""
     steps_after_zero = [float(t) for t in sim_config.time_grid if float(t) > 0.0]
     if not steps_after_zero:
         return
@@ -507,16 +326,9 @@ def _warn_if_option_expires_within_simulation(sim_config: SimulationConfig, trad
 
 
 def _warn_if_rates_inconsistent_with_curve(sim_config: SimulationConfig) -> None:
-    """Warns when a rate factor's simulated short rate cannot reproduce its
-    own initial zero curve (audit finding M-1).
-
-    The simulation reverts the short rate to a constant `theta` from
-    `initial_rates`, while the discount factors built from it assume the
-    Hull-White drift fitted to the curve. The two agree -- up to a small
-    convexity term -- only when the curve is flat and `initial_rates` and
-    `theta` equal its level. Anything else produces simulated discount
-    factors that are not arbitrage-free against the curve: on an upward
-    3%->5% curve they miss E[P(t,T)/N(t)] = P(0,T) by 4-9% at t=2y."""
+    """Warn when a rate factor's simulated short rate is inconsistent with its curve
+    (audit M-1): unless the curve is flat and `initial_rates == theta ==` its level, the
+    simulated discount factors do not reprice the curve (4-9% off at t=2y on 3%->5%)."""
     rates = sim_config.rates
     tol = 1e-12
     for k, curve in enumerate(rates.initial_zero_curves or []):
@@ -540,27 +352,13 @@ def _warn_if_rates_inconsistent_with_curve(sim_config: SimulationConfig) -> None
             )
 
 
-# =============================================================================
-# 1d. AUTOMATIC MATURITY-PILLAR ASSEMBLY
-# =============================================================================
+# Maturity pillars for the swap cube
 def derive_maturity_pillars(trade_configs: Sequence[TradeConfig], evaluation_date: ORE.Date) -> List[float]:
     """
-    Builds every `SwapConfig`'s real ORE schedule (via
-    `engine.models.ore_builders.build_vanilla_swap`, the same shared
-    construction every pricer already uses -- schedule logic is never
-    reimplemented here) and returns the sorted union of the times the swap
-    pricer reads a discount factor at on `evaluation_date`
-    (`SwapSchedule.pillar_times`: remaining payments, and the accrual
-    start/end of every coupon still projected) -- the exact maturity-pillar
-    set `engine.instruments.swap`'s `_maturity_indices` requires. Automates what
-    `demo.py` used to do by hand for a single swap.
-
-    Only `SwapConfig` trades contribute pillars: every swaption-family
-    pricer (`price_swaptions`/`price_bermudan_swaptions`/
-    `price_american_swaptions`) prices directly off simulated `hw_paths`,
-    not the `yield_curves`/maturity-pillar cube (see each pricer's own
-    docstring), so their own cashflow dates impose no pillar-alignment
-    requirement.
+    Sorted union of the times each swap's pricer reads a discount factor at on
+    `evaluation_date` (`SwapSchedule.pillar_times`), plus 0: the pillars
+    `engine.instruments.swap._maturity_indices` requires. Swaptions read the short-rate
+    paths, not the cube, so they add none.
     """
     pillars = {0.0}
     for cfg in trade_configs:
@@ -570,48 +368,27 @@ def derive_maturity_pillars(trade_configs: Sequence[TradeConfig], evaluation_dat
     return sorted(pillars)
 
 
-# =============================================================================
-# GENERAL "EXPECTED INPUT TO THE WHOLE SYSTEM" SURFACE
-# =============================================================================
+# Request and result
 @dataclass
 class PortfolioRequest:
     """
-    What a caller of the whole system hands over: a portfolio of trades +
-    market data + risk parameters. `price_portfolio` (below) is the single
-    entry point that consumes this and returns a `PortfolioResult`.
+    Input to `price_portfolio`.
 
-    market: curves, vols (via `joint_covariance`), correlations -- the same
-        `SimulationConfig` `generate_paths` already consumes. If
-        `market.rates.maturities` is left unset, `price_portfolio` derives
-        it automatically via `derive_maturity_pillars`.
-    trades: heterogeneous, any order/mix of the four instrument types.
-        Results in `PortfolioResult` are reported back in this same order,
-        regardless of how `price_portfolio` internally groups trades by type
-        for pricing.
-    pfe_quantiles: quantiles of the PFE profiles in the result's exposure
-        (see `engine.risk.exposure`).
-    calibration_targets: used when any Bermudan/American trade's `hw_sigma`
-        is left as `None` (uncalibrated) -- `price_portfolio` calibrates it
-        once per distinct `rate_factor_index` via
-        `engine.calibration.lgm.calibrate_lgm_sigma`.
-    compute_greeks: if `True`, `price_portfolio` additionally computes
-        Delta/Gamma (every trade type) and Theta (every trade type) via
-        `engine.risk.greeks`, keyed by each trade's own index in `trades`.
-    precision: independent simulation/pricing/risk/calibration dtype
-        control, with optional per-instrument-type/per-Greek drill-down --
-        see `PrecisionConfig`. Defaults to all-64, byte-identical to this
-        module's behavior before `PrecisionConfig` existed.
+    market: the `SimulationConfig` for `generate_paths`. If `market.rates.maturities` is
+        unset, it is derived with `derive_maturity_pillars`.
+    trades: any mix of trade types; results come back in this order.
+    pfe_quantiles: PFE quantiles for the exposure profiles.
+    calibration_targets: used to calibrate any Bermudan/American with `hw_sigma=None`,
+        once per `rate_factor_index`. One basket serves every rate factor (ORE instead
+        calibrates each trade to a basket built from its own exercise dates; I-47).
+    compute_greeks: also compute Delta/Gamma/Theta (and Vega where defined) per trade.
+    precision: see `PrecisionConfig`.
 
-    `BondConfig` (W1.5) is in `trades`' `Union` alongside the four rate
-    derivatives, but it is priced differently: closed-form discounted
-    cashflows at t=0 only, with no scenario cube, so it contributes no
-    exposure profile (I-24) and its Greeks come from bumped revaluation in
-    `_bond_greeks` rather than from `jax.grad`/`jax.hessian`.
+    Bonds (`BondConfig`) are priced at t=0 only: no cube column, no exposure (I-24), and
+    Greeks by bumped revaluation (`_bond_greeks`).
 
-    **This is the exposure path.** The cube is a multi-step simulation under
-    the risk-neutral measure, so what it yields is an exposure profile
-    (EPE/ENE/PFE through time, `engine.risk.exposure`), not market-risk
-    VaR/ES. Short-horizon VaR/ES is `engine.market_risk.run_market_risk`.
+    The cube is a multi-step risk-neutral simulation, used for exposure profiles
+    (`engine.risk.exposure`). Short-horizon VaR/ES is `engine.market_risk.run_market_risk`.
     """
     market: SimulationConfig
     trades: List[TradeConfig]
@@ -619,90 +396,51 @@ class PortfolioRequest:
     calibration_targets: Optional[List[CalibrationTarget]] = None
     compute_greeks: bool = False
     precision: PrecisionConfig = field(default_factory=PrecisionConfig)
-    #: Whether to build `npv_cube` and derive the exposure profiles from it.
-    #:
-    #: Set `False` for a portfolio containing a **deterministic-only** trade
-    #: type (`DETERMINISTIC_ONLY_TYPES`, e.g. `BondConfig`), which has no
-    #: scenario representation at all. The run then returns real
-    #: `base_npv`/`base_npv_per_trade`/`greeks` with an EMPTY `npv_cube` and
-    #: no exposure -- absent rather than zero, so a consumer cannot read a
-    #: fabricated zero exposure as a measurement. `PortfolioResult.
-    #: scenario_risk_available` says which of the two happened, so the
-    #: distinction survives into the result rather than living only in the
-    #: request.
+    #: Whether to build `npv_cube` and the exposure profiles. Set False for a portfolio
+    #: with deterministic-only trades (bonds): the result then has an empty `npv_cube` and
+    #: no exposure (absent, not zero), and `scenario_risk_available` says so.
     scenario_risk: bool = True
 
 
-# =============================================================================
-# PHASE 2: PortfolioResult / price_portfolio
-# =============================================================================
+# price_portfolio
 @dataclass
 class PortfolioResult:
-    """Output of `price_portfolio`: prices, exposure and Greeks for a whole
-    `PortfolioRequest`, in one object."""
+    """Output of `price_portfolio`."""
     base_npv: float
     npv_cube: jax.Array                                   # [Scenarios, TimeSteps, Trades]
-    #: Exposure of the whole portfolio as one netting set (no collateral):
-    #: trade values net path by path before any statistic is taken. `None`
-    #: when `scenario_risk_available` is False.
+    #: The whole portfolio as one netting set, no collateral. `None` without scenario risk.
     exposure: Optional[ExposureProfile] = None
-    #: Standalone exposure of each trade, in request.trades order. Empty
-    #: when `scenario_risk_available` is False.
+    #: Standalone exposure per trade, in request order. Empty without scenario risk.
     trade_exposures: List[ExposureProfile] = field(default_factory=list)
     greeks: Optional[Dict[int, Dict[str, jax.Array]]] = None  # trade index (in request.trades order) -> greeks dict
     warnings: List[str] = field(default_factory=list)
-    # t=0 NPV of each trade individually, in request.trades order.
-    # `base_npv` is by construction `sum(base_npv_per_trade)` -- the total and
-    # the breakdown are computed once and cannot disagree. Required to
-    # reconcile a portfolio total against identified positions/contracts
-    # rather than reporting only an unattributable aggregate.
+    # t=0 NPV per trade, in request order; `base_npv` is their sum.
     base_npv_per_trade: List[float] = field(default_factory=list)
-    # Whether `npv_cube`/`exposure` were actually computed. `False` means the
-    # run was `scenario_risk=False`: `exposure` is None and `npv_cube` has
-    # zero time steps -- the figures are absent, not zero.
-    #
-    # Carried on the RESULT, not just the request, because a consumer
-    # reading a result object has no access to the request that produced it
-    # (W1.5 / I-24).
+    # Whether `npv_cube`/`exposure` were computed (`scenario_risk`). When False, `exposure`
+    # is None and `npv_cube` has no time steps. Carried on the result for consumers that
+    # never see the request.
     scenario_risk_available: bool = True
-    # Which measure the exposure figures are under (`engine.risk.var_es`'s
-    # RISK MEASURE VOCABULARY). Always `ENGINE_RISK_MEASURE`
-    # (`risk-neutral-pricing`) when exposure was computed: an exposure under
-    # the pricing measure, NOT a forecast of tomorrow's loss. `None` when
-    # `scenario_risk_available` is False -- there are no figures for a
-    # label to describe. Carried here, not only on the EOD path's
-    # `RiskResult`, so a direct `price_portfolio` caller gets it too (I-11).
+    # The measure of the exposure figures: `ENGINE_RISK_MEASURE` (risk-neutral-pricing), or
+    # None without scenario risk (I-11).
     measure: Optional[str] = None
 
 
 def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
     """
-    The single entry point: `PortfolioRequest` in, `PortfolioResult` out.
-    Orchestrates the exact sequence `demo.py` used to hand-write:
+    Price a `PortfolioRequest`:
 
-    1. Validate `request.market.joint_covariance` (explicit, request-scoped
-       error -- the same check also runs inside `generate_paths`, but
-       calling it here first gives an earlier, clearer failure before any
-       trade-level work happens).
-    2. Cross-check every trade's duplicated fields against `request.market`
-       (`validate_portfolio_against_simulation`).
-    3. Auto-derive `request.market.rates.maturities` via
-       `derive_maturity_pillars` if the caller left it unset.
-    4. Calibrate any Bermudan/American trade's `hw_sigma` left as `None`,
-       once per distinct `rate_factor_index` needing it.
-    5. Simulate the market (`generate_paths`).
-    6. Route every trade to its pricer by type, concatenate into one NPV
-       cube in the caller's original trade order.
-    7. Reprice every trade against zero-shock curves for the base (t=0) NPV.
-    8. Exposure profiles (`engine.risk.exposure`): netting set and per trade.
-    9. Optionally compute Greeks per trade.
+    1. Validate `joint_covariance` (also done in `generate_paths`; here it fails earlier).
+    2. Cross-check trades against the market (`validate_portfolio_against_simulation`),
+       collecting warnings.
+    3. Derive the cube's maturity pillars if unset.
+    4. Calibrate any `hw_sigma=None` Bermudan/American, once per rate factor.
+    5. Simulate (`generate_paths`).
+    6. Price every trade into one `[Scenarios, TimeSteps, Trades]` cube, in request order.
+    7. Price every trade at t=0 for the base NPVs.
+    8. Exposure profiles, netting set and per trade.
+    9. Optionally Greeks.
 
-    Steps 4-9 (calibration through Greeks) run under `_PRICING_LOCK` -- see
-    this module's docstring's "Concurrency" section: calibration is genuine
-    JAX work just as sensitive to the ambient `jax_enable_x64` state as
-    `generate_paths`/the pricers that follow it. Steps 1-3 above run
-    unlocked: none of them touch `jax_enable_x64` or run JIT code, so there
-    is no race to serialize against.
+    Steps 4-9 run under `_PRICING_LOCK`; 1-3 run no JAX code.
     """
     from engine.simulation.market_model import validate_joint_covariance
 
@@ -716,20 +454,9 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
         collected_warnings.extend(str(w.message) for w in caught)
 
     if market_config.rates.maturities is None:
-        # RatesConfig itself carries no evaluation_date field (see its own
-        # docstring) -- every trade config does, and within one
-        # PortfolioRequest they are expected to share the same evaluation
-        # date (mixing evaluation dates across trades in one request isn't
-        # a supported configuration; nothing else in this module tries to
-        # reconcile trade-level date differences either). Deliberately NOT
-        # ORE.Settings.instance().evaluationDate here -- that's ambient,
-        # THREAD-LOCAL global state (confirmed: each thread gets its own
-        # independent default, defaulting to the real wall-clock date, not
-        # whatever date this request's trades actually specify), so relying
-        # on it silently derives pillars against the wrong "today" whenever
-        # price_portfolio runs on a thread that never separately set it --
-        # exactly the failure mode a background-task-driven caller (e.g.
-        # engine/api/routes.py) hits every time.
+        # Use the trades' evaluation date (all trades share one). Not
+        # ORE.Settings.evaluationDate: that is thread-local and defaults to today on a
+        # thread that never set it, such as an API background task.
         eval_date = request.trades[0].evaluation_date if request.trades else ORE.Settings.instance().evaluationDate
         pillars = derive_maturity_pillars(request.trades, eval_date)
         market_config = replace(market_config, rates=replace(market_config.rates, maturities=pillars))
@@ -737,61 +464,33 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
     trades = list(request.trades)
 
     with _PRICING_LOCK:
-        # _fill_calibrated_sigma runs genuine JAX work (calibrate_lgm_sigma's
-        # bisection root-finds, hardcoded-float64 Sigma construction in
-        # engine/models/lgm.py) that is just as sensitive to the ambient
-        # jax_enable_x64 state as generate_paths/the pricers below -- it must
-        # be inside the lock too, not run unprotected before it, or a
-        # concurrent thread's generate_paths call could flip the flag
-        # mid-calibration the same way it could mid-pricing.
-        # `jax.named_scope` labels each phase as its own region in an xprof
-        # timeline, at negligible runtime cost. This is what makes a trace
-        # readable WITHOUT `python_tracer_level=1`: with the Python tracer
-        # off (the default -- see engine/portfolio/worker_pool.py's own
-        # docstring for the 97%-of-events/silent-truncation reasoning), no
-        # event in the trace carries a Python source file or line, so
-        # "which phase is this dispatch from?" would otherwise be
-        # unanswerable. See docs/concepts/profiling.md.
+        # Calibration runs JAX code too, so it is inside the lock. Each `_phase` labels a
+        # region in profiler traces (see engine.portfolio.profiling).
         with _phase("calibration"):
             trades = _fill_calibrated_sigma(trades, request.calibration_targets, market_config, request.precision)
         with _phase("simulation"):
             market = generate_paths(market_config, precision=request.precision.simulation)
-        # generate_paths restores jax_enable_x64 to its prior value on exit
-        # (I-14), but that prior value is whatever the calling process had --
-        # a 32-bit worker process boots with x64 off. Everything below
-        # (pricing/risk/Greeks) may independently want float64 via
-        # `pricing`/`risk`, and under x64=False a float64 construction
-        # silently truncates to float32 with only a UserWarning. Enabling x64
-        # here is always safe: float32 arrays are created identically either
-        # way, so `pricing`/`risk` requesting 32 are unaffected.
+        # generate_paths restores x64 to its prior value, which is off in a 32-bit worker.
+        # Later steps may still want float64, and float32 arrays are unaffected by the
+        # flag, so enable it.
         jax.config.update("jax_enable_x64", True)
         maturities_np = np.asarray(market_config.rates.maturities) if market_config.rates.maturities else np.asarray([])
 
-        # _price_by_type now resolves and casts to each instrument type's own
-        # dtype internally (via _resolve_pricing_dtype), since
-        # precision.pricing may be a per-instrument-type PricingPrecisionOverride
-        # rather than one flat int shared by every trade -- see that
-        # function's docstring for the jnp.stack widest-dtype-wins consequence
-        # this produces on npv_cube itself when buckets disagree.
+        # Each instrument type is priced in its own resolved dtype; jnp.stack then
+        # promotes npv_cube to the widest one present.
         step_times = jnp.array(market_config.time_grid[1:], dtype=jnp.float64)
         if request.scenario_risk:
             with _phase("pricing"):
                 npv_cube = _price_by_type(trades, market, maturities_np, step_times, request.precision.pricing)
         else:
-            # An EMPTY cube, not a zero-filled one. Zeros would be
-            # indistinguishable from genuinely-zero NPVs and would feed
-            # the exposure statistics a fabricated distribution; a zero-width
-            # trade axis makes the absence structural and unmistakable.
+            # Empty, not zero-filled: zeros would read as real NPVs.
             num_scenarios = market["rates"].shape[0]
             npv_cube = jnp.zeros((num_scenarios, 0, 0))
         with _phase("base_npv"):
             base_npv_per_trade = _base_npv_per_trade(trades, maturities_np, market_config, request.precision)
             base_npv = float(sum(base_npv_per_trade))
 
-        # risk.exposure is NOT curve-driven like delta_gamma/theta/vega -- it
-        # has no curve of its own, so honoring an override that differs from
-        # `pricing` means an explicit re-cast of npv_cube immediately before
-        # the statistics. It can only narrow precision `pricing` produced.
+        # Exposure has no curve, so its dtype is applied by casting the cube.
         exposure = None
         trade_exposures: List[ExposureProfile] = []
         if request.scenario_risk:
@@ -820,10 +519,8 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
 
 
 def _exposure_profiles(npv_cube, base_npv_per_trade, market, market_config, quantiles):
-    """Netting-set and per-trade exposure profiles from the simulated cube.
-
-    The numeraire is the simulation's money-market account, which accrues on
-    rate factor 0, so `P(0,t)` for EE_B comes from that factor's curve."""
+    """Netting-set and per-trade exposure profiles from the cube. The numeraire accrues on
+    rate factor 0, so P(0,t) for EE_B comes from that factor's curve."""
     step_times = np.asarray(market_config.time_grid[1:], dtype=np.float64)
     dtype = npv_cube.dtype
     numeraire = jnp.asarray(market["numeraire"], dtype=dtype)
@@ -843,14 +540,9 @@ def _fill_calibrated_sigma(
     trades: List[TradeConfig], calibration_targets: Optional[List[CalibrationTarget]], market_config: SimulationConfig,
     precision: PrecisionConfig = PrecisionConfig(),
 ) -> List[TradeConfig]:
-    """Fills in `hw_sigma=None` on any Bermudan/American trade by
-    calibrating once per distinct `rate_factor_index` that needs it (not
-    once per trade -- every trade sharing a rate factor shares the same
-    calibrated `Sigma`). `precision.calibration`'s dtype governs the curve
-    handed to `calibrate_lgm_sigma`, which now derives its own working dtype
-    from `curve.pillar_rates.dtype` (see that function's docstring) rather
-    than hardcoding float64, mirroring the same curve-driven pattern
-    `_compute_all_greeks` uses for `precision.risk`."""
+    """Replace `hw_sigma=None` on Bermudans/Americans with a `Sigma` calibrated to
+    `calibration_targets`, once per `rate_factor_index` (trades on the same factor share
+    it). The same targets are used for every factor. Works in `precision.calibration`."""
     needs_calibration = [
         cfg for cfg in trades
         if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)) and cfg.hw_sigma is None
@@ -880,31 +572,12 @@ def _fill_calibrated_sigma(
 
 
 def _price_by_type(trades, market, maturities_np, step_times, pricing: Union[int, PricingPrecisionOverride] = 64):
-    """Groups `trades` by type for pricing (each pricer only accepts a
-    homogeneous list), prices each group, then reassembles one
-    `[Scenarios, TimeSteps, Trades]` cube in the CALLER's original trade
-    order -- the routing this function's docstring in `PortfolioRequest`
-    promises.
+    """Price each trade type as a group and reassemble one `[Scenarios, TimeSteps, Trades]`
+    cube in request order.
 
-    `pricing` may be a flat int or a `PricingPrecisionOverride` -- each
-    instrument-type bucket resolves and casts to ITS OWN dtype via
-    `_resolve_pricing_dtype` before pricing, independent of the others.
-
-    Consequence to know, not a bug: when buckets resolve to different
-    dtypes, the final `jnp.stack` below promotes `npv_cube` to the WIDEST
-    dtype present (confirmed: `jnp.stack([float64, float32], axis=-1).dtype
-    == float64`) -- a mixed-precision request still controls the *cost* of
-    computing each bucket's own cube (an expensive Bermudan tree running
-    cheaper while a trivial swap stays exact), but `npv_cube.dtype` itself
-    reflects the widest bucket present, not necessarily the one a caller
-    drilled down on."""
-    # A deterministic-only trade has no [Scenarios, TimeSteps] column to
-    # contribute. Refuse by name BEFORE any pricing runs, rather than
-    # letting it fall through to a KeyError on `groups[type(cfg)]` or --
-    # far worse -- be filled with a broadcast constant. See
-    # `engine.instruments.treasury`'s module docstring: a zero-variance
-    # column reads as a position whose risk was measured and found to be
-    # nil, when it was never modelled.
+    Each group is priced in its own resolved dtype; `jnp.stack` promotes the cube to the
+    widest dtype present."""
+    # Refuse deterministic-only trades by name before pricing (I-24).
     deterministic = [
         (i, cfg) for i, cfg in enumerate(trades)
         if isinstance(cfg, DETERMINISTIC_ONLY_TYPES)
@@ -973,30 +646,13 @@ def _base_npv_per_trade(
     trades: List[TradeConfig], maturities_np: np.ndarray, market_config: SimulationConfig,
     precision: PrecisionConfig,
 ) -> List[float]:
-    """t=0 NPV of EACH trade, against zero-shock (today's actual) curves,
-    returned in the caller's own `trades` order -- generalizes `demo.py`'s
-    hand-written per-type sum into a loop over the routed trades, one
-    instrument type at a time.
+    """t=0 NPV of each trade on today's curves, in request order. `PortfolioResult.base_npv`
+    is their sum.
 
-    **Returns per-trade values, not just their sum.** `PortfolioResult.
-    base_npv` is then defined as `sum(...)` of this list, so the reported
-    total and the reported per-trade breakdown cannot disagree -- they are
-    the same numbers. Before this function returned a list, only the
-    aggregate float existed, and a portfolio total could not be reconciled
-    against identified rows at all (the integration requirement behind
-    `PortfolioResult.base_npv_per_trade`).
-
-    Every array this function constructs itself (as opposed to what the
-    pricers derive from their own JAX-array inputs) carries `precision.
-    pricing`'s resolved per-instrument-type dtype (via
-    `_resolve_pricing_dtype`, mirroring `_price_by_type`) -- see
-    `PrecisionConfig`'s docstring and this module's own docstring's
-    "Concurrency" section for why this matters: none of `price_swaps`/
-    `price_swaptions`/`price_bermudan_swaption_base` need a new parameter to
-    respect it, since each already derives its working dtype from the
-    JAX-array inputs this function hands them. `price_bermudan_swaption_base`
-    itself takes no dtype input at all -- a pre-existing scope boundary this
-    function doesn't attempt to fix."""
+    Swaps use a one-step cube of today's curves; Europeans condition on
+    `market.rates.initial_rates` as r(0) (equal to the curve-consistent price only when
+    initial_rates is the curve's short end, see audit M-1); Bermudans/Americans use the
+    backward induction (float64, no dtype input); bonds use `price_bond_base`."""
     per_trade: List[float] = [0.0] * len(trades)
     for i, cfg in enumerate(trades):
         if isinstance(cfg, SwapConfig):
@@ -1014,14 +670,7 @@ def _base_npv_per_trade(
         elif isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
             per_trade[i] = price_bermudan_swaption_base(cfg)
         elif isinstance(cfg, BondConfig):
-            # The DIRTY (full) present value, matching
-            # `engine.integration.note.NotePrice.npv` -- see that module on
-            # why a silently-clean bond NPV is the wrong default. No dtype
-            # resolution: this pricer is float arithmetic against the
-            # bond's own curve, not a JAX kernel, so `precision.pricing`
-            # has nothing to govern here. Stated rather than silently
-            # ignored -- see this function's own note on
-            # `price_bermudan_swaption_base` having the same property.
+            # Dirty NPV (as engine.integration.note). Plain float arithmetic, so no dtype.
             per_trade[i] = price_bond_base(cfg)
 
     return per_trade
@@ -1030,17 +679,9 @@ def _base_npv_per_trade(
 def _flat_curve_cube(
     disc_curve_cfg, fwd_curve_cfg, maturities_np: np.ndarray, eval_date: ORE.Date, dtype=jnp.float64,
 ) -> jax.Array:
-    """Builds a `[1, 1, len(maturities), 2]` deterministic (zero-shock)
-    yield curve cube directly from two `ZeroCurveConfig`s' own pillar
-    rates/times (linear-interpolated onto `maturities_np`), matching
-    `engine.simulation.demo_scenarios.flat_yield_curves`'s output shape but
-    generalized to an arbitrary (non-flat) curve rather than a single flat
-    rate -- required since a real portfolio's discount/forward curves need
-    not be flat. The interpolation itself always runs in float64 NumPy
-    (`disc_times`/`disc_rates`/etc. below) regardless of `dtype` -- only the
-    final cast (this function's actual output) carries the requested
-    precision; there is no meaningful "float32 interpolation" step worth
-    plumbing through np.interp here."""
+    """`[1, 1, len(maturities), 2]` cube of today's discount factors from two
+    `ZeroCurveConfig`s (linear zero-rate interpolation onto `maturities_np`). Interpolates
+    in float64 and casts to `dtype`."""
     disc_times = np.asarray(disc_curve_cfg.times, dtype=np.float64)
     disc_rates = np.asarray(disc_curve_cfg.rates, dtype=np.float64)
     fwd_times = np.asarray(fwd_curve_cfg.times, dtype=np.float64)
@@ -1055,17 +696,8 @@ def _flat_curve_cube(
 
 
 def _swap_curve_configs(cfg: SwapConfig, market_config: SimulationConfig, trade_index: int):
-    """Resolves one `SwapConfig`'s `discount_curve_index`/
-    `forward_curve_index` into the two `ZeroCurveConfig`s they name in
-    `market_config.rates.initial_zero_curves`.
-
-    Raises `ValueError` naming the trade and the offending index if either
-    is out of range. This is deliberately a hard failure rather than a
-    clamp or a fallback to curve 0: an out-of-range index means the request
-    is internally inconsistent, and silently substituting SOME curve would
-    produce a plausible-looking sensitivity computed against a curve the
-    trade was never booked against -- precisely the class of silent
-    mispricing this module's other validators exist to prevent."""
+    """The two `ZeroCurveConfig`s a swap's curve indices name; raises on an out-of-range
+    index rather than falling back to another curve."""
     curves = market_config.rates.initial_zero_curves
     for name, idx in (("discount_curve_index", cfg.discount_curve_index),
                       ("forward_curve_index", cfg.forward_curve_index)):
@@ -1084,51 +716,14 @@ def _compute_all_greeks(
     precision: PrecisionConfig = PrecisionConfig(),
     calibration_targets: Optional[List[CalibrationTarget]] = None,
 ) -> Dict[int, Dict[str, jax.Array]]:
-    """Delta/Gamma/Theta for every trade, keyed by its own index in the
-    caller's original `trades` order -- routed to the matching
-    `engine.risk.greeks` function per instrument type. Vega is only
-    well-defined for a Bermudan/American trade whose `hw_sigma` is a
-    genuine calibrated `Sigma` (see `engine.risk.greeks`'s own module
-    docstring); it's included here whenever that's the case.
+    """Greeks for every trade, keyed by request index.
 
-    `precision.risk`'s dtype governs the `ZeroCurve` each Greeks function is
-    handed -- every hardcoded-`jnp.float64` closure inside `engine.risk.
-    greeks` itself derives its own working dtype from that curve (see that
-    module's docstring), so passing a `risk`-dtype curve here is sufficient
-    to make the whole Greeks computation honor `precision.risk`, with no
-    further parameters needed on the public Greeks entry points.
-
-    `precision.risk` may be a flat int or a `RiskPrecisionOverride` -- when
-    it's an override, `delta_gamma` and `theta` are each resolved (via
-    `_resolve_risk_dtype`) and built against their OWN separately-constructed
-    `ZeroCurve`, so the two can differ. `delta_gamma` stays one shared knob
-    for both Delta and Gamma (see `RiskPrecisionOverride`'s docstring for
-    why). When both resolve to the same dtype (the common flat-`risk=N`
-    case), this pays one small, redundant extra curve-construction call --
-    a deliberate simplicity-over-micro-optimization choice, since building a
-    `ZeroCurve` is a cheap pillar-count array build, not a JIT-compiled
-    trace.
-
-    `market_config` supplies the simulation's own
-    `rates.initial_zero_curves`, which is what makes SWAP Greeks reachable
-    here: a `SwapConfig` carries curve INDEXES
-    (`discount_curve_index`/`forward_curve_index`) rather than its own
-    `ZeroCurveConfig`, so resolving them needs the very
-    `SimulationConfig` those indexes are defined against. Before this
-    parameter existed, this function had no access to it and skipped every
-    swap outright -- `compute_greeks=True` silently returned a result with
-    no entry for any swap, even though `engine.risk.greeks.swap_delta_gamma`
-    /`swap_theta` were fully implemented and tested. The curves are resolved
-    explicitly from the request's own market, never guessed or defaulted; an
-    out-of-range index raises (see `_swap_curve_configs`) rather than
-    silently pricing Greeks off the wrong pillar."""
+    Each Greek gets a `ZeroCurve` in its resolved `precision.risk` dtype, and the Greeks
+    functions work in their curve's dtype. Swaps take their curves from
+    `market_config.rates.initial_zero_curves` by index; an out-of-range index raises."""
     out: Dict[int, Dict[str, jax.Array]] = {}
     for i, cfg in enumerate(trades):
-        # One named scope per trade, labelled by index and instrument type,
-        # so an xprof timeline attributes Greeks cost to the specific TRADE
-        # that incurred it -- the per-trade attribution otherwise lost with
-        # the Python tracer off (see `price_portfolio`'s own named_scope
-        # comment and docs/concepts/profiling.md).
+        # Label each trade's Greeks in profiler traces.
         with _phase(f"greeks/trade{i}/{type(cfg).__name__}"):
             trade_greeks = _greeks_for_one_trade(
                 cfg, i, market_config, precision, calibration_targets,
@@ -1145,13 +740,7 @@ def _greeks_for_one_trade(
     precision: PrecisionConfig,
     calibration_targets: Optional[List[CalibrationTarget]],
 ) -> Optional[Dict[str, jax.Array]]:
-    """Delta/Gamma/Theta (+Vega where well-defined) for ONE trade, routed by
-    instrument type -- the per-trade body of `_compute_all_greeks`, split out
-    so that function's `jax.named_scope` wrapper stays a plain, conventionally
-    indented `with` block rather than re-indenting the whole routing chain.
-
-    Returns `None` for a trade type with no Greeks routing (the same
-    silently-skipped behavior `_compute_all_greeks` had inline before)."""
+    """Greeks for one trade by type; `None` for a type with no Greeks."""
     if isinstance(cfg, SwapConfig):
         disc_cfg, fwd_cfg = _swap_curve_configs(cfg, market_config, index)
         dg_dtype = _resolve_risk_dtype(precision.risk, "delta_gamma")
@@ -1180,13 +769,9 @@ def _greeks_for_one_trade(
         theta_curve = _HwZeroCurve.from_config(cfg.initial_zero_curve, dtype=_resolve_risk_dtype(precision.risk, "theta"))
         trade_greeks = dict(_greeks.bermudan_delta_gamma(cfg, dg_curve))
         trade_greeks["theta"] = _greeks.bermudan_theta(cfg, theta_curve)
-        # Vega is only well-defined when hw_sigma is a genuine CALIBRATED
-        # Sigma term structure produced from `calibration_targets` (in
-        # that same order) -- `bermudan_vega` differentiates through the
-        # bootstrap relating each target's market_vol to that Sigma, so a
-        # flat/hand-set hw_sigma has no market quote to be sensitive TO.
-        # Skipped (not raised) in that case: a flat-sigma Bermudan is a
-        # legitimate request, it simply has no Vega to report.
+        # Vega only for a Sigma calibrated from `calibration_targets` (it differentiates
+        # through that bootstrap). A flat hw_sigma has no market vol to be sensitive to, so
+        # Vega is omitted, not reported as 0.
         if calibration_targets and isinstance(cfg.hw_sigma, Sigma):
             vega_curve = _HwZeroCurve.from_config(
                 cfg.initial_zero_curve,
@@ -1198,22 +783,9 @@ def _greeks_for_one_trade(
         return trade_greeks
 
     if isinstance(cfg, BondConfig):
-        # **This branch is what I-01 is about.** A new type reaching this
-        # function with no branch returns None below and is SILENTLY
-        # SKIPPED -- no Greeks, no error. That is exactly how swaps lost
-        # theirs, and the test that pinned it even called the skip
-        # intentional. `TestBondGreeksReachThePortfolioPath` asserts these
-        # keys are present, and is verified to fail if this branch is
-        # deleted.
-        #
-        # Delta/Gamma are bumped revaluations rather than AD: a BondConfig
-        # prices through plain Python float arithmetic (`math.exp` over an
-        # ORE day count), not a JAX-traceable kernel, so `jax.grad` cannot
-        # differentiate it. Saying `ad-first-order` here would claim
-        # machinery that is not there -- the same call
-        # `engine.integration.note.SENSITIVITY_METHOD` already makes.
-        # `precision.risk` therefore governs nothing here and is not
-        # consulted, rather than being accepted and quietly ignored.
+        # Every trade type needs a branch here; a missing one returns None and silently
+        # drops that type's Greeks (I-01). Bonds are plain Python floats, not JAX, so
+        # their Greeks are bumped revaluations and `precision.risk` does not apply.
         return _bond_greeks(cfg)
 
     return None
@@ -1222,59 +794,30 @@ def _greeks_for_one_trade(
 def _bond_greeks(cfg: BondConfig) -> Dict[str, jax.Array]:
     """Delta/Gamma/Theta for one `BondConfig`, by bumped revaluation.
 
-    **Delta** is the change in dirty NPV per 1bp parallel curve shift, in
-    the same per-bp unit as `engine.integration.note`'s `rateSensitivity`.
+    Delta: central difference `(P(+1bp) - P(-1bp)) / 2` of the dirty NPV. The integration
+    boundary's `rateSensitivity` is the one-sided `P(+1bp) - P(0)` agreed with TraderX; the
+    two differ by the curvature term (~1.4e-4 on a 6M bill at 100k face).
+    Gamma: `P(+1bp) - 2P(0) + P(-1bp)`.
+    Theta: dirty NPV with the evaluation date one calendar day later, same curve, minus
+    today's.
+    Vega: omitted (no volatility input), not 0.
 
-    **The two are not bit-identical, deliberately.** This is a *central*
-    difference `(P(+1bp) - P(-1bp)) / 2`; the integration boundary reports a
-    *one-sided* `P(+1bp) - P(0)`, because that is the bumped revaluation
-    TraderX agreed to reconcile against. Central is the better derivative
-    estimate (second-order accurate, and symmetric so +1bp and -1bp give a
-    consistent answer); one-sided is the published contract. On a 6-month
-    bill at 100k face they differ by ~1.4e-4 -- the curvature term, not an
-    error in either. Do not "fix" the difference by making this one-sided:
-    that would trade a better number for a false appearance of agreement.
-
-    **Gamma** is the second difference under the same bump -- a genuine
-    central second difference, not a reused first-order number.
-
-    **Theta** is the one-day time decay: the bond repriced with its
-    evaluation date advanced by one calendar day, holding the curve fixed.
-    A bond one day nearer maturity discounts over a shorter year fraction,
-    so this is a real quantity rather than a placeholder zero.
-
-    **No Vega.** A fixed-coupon bond off a deterministic curve has no
-    volatility input to be sensitive to. It is OMITTED rather than reported
-    as 0.0: a zero Vega asserts "measured, and found to be nil", which
-    would be a claim about a quantity that is not defined here. This is the
-    same distinction `_greeks_for_one_trade` already draws for a flat-sigma
-    Bermudan.
+    Known issue: Theta has no add-back for a coupon paid in between, unlike ORE and
+    `swap_theta`, so the day before a coupon date it reports roughly minus the coupon; see
+    I-39 in docs/known-issues.md.
     """
     base = price_bond_base(cfg)
     up = price_bond_base(cfg, rate_shift=RATE_BUMP)
     down = price_bond_base(cfg, rate_shift=-RATE_BUMP)
 
-    # Central difference: more accurate than the one-sided bump and
-    # symmetric, so a caller comparing +1bp against -1bp gets a consistent
-    # number rather than one biased by the direction of the shift.
+    # Central difference.
     delta = (up - down) / 2.0
     gamma = up - 2.0 * base + down
 
     out = {"delta": jnp.asarray(delta), "gamma": jnp.asarray(gamma)}
 
-    # Theta advances the evaluation date by one day, which for a bond
-    # maturing TOMORROW lands exactly on maturity -- a state `BondConfig`
-    # refuses to construct, since a bond with no remaining cashflow is a
-    # settlement question rather than a pricing one.
-    #
-    # That refusal is correct for the *reprice* and wrong as a failure of
-    # the whole Greeks call: the bond itself is perfectly priceable today,
-    # and it used to crash here with a "matured bond" error naming a date
-    # the caller never supplied. Theta is genuinely undefined across that
-    # boundary -- there is no next day on which this instrument still
-    # exists -- so it is OMITTED, the same way Vega is omitted rather than
-    # reported as a zero that would assert a measured absence of decay.
-    # Delta and Gamma are unaffected and still reported.
+    # For a bond maturing tomorrow there is no next-day instrument to reprice, so Theta is
+    # omitted rather than failing the whole call.
     if cfg.maturity_date > cfg.evaluation_date + 1:
         one_day_on = replace(cfg, evaluation_date=cfg.evaluation_date + 1)
         out["theta"] = jnp.asarray(price_bond_base(one_day_on) - base)

@@ -1,21 +1,11 @@
 """
-Tests for engine.risk.greeks's Bermudan/American Greeks --
-bermudan_delta_gamma, bermudan_theta, bermudan_vega.
+Bermudan/American Greeks in `engine.risk.greeks`: `bermudan_delta_gamma`, `bermudan_theta`,
+`bermudan_vega`.
 
-**Gamma cross-check methodology note.** A naive central finite-difference
-of the NPV itself (`(NPV_up - 2*NPV_base + NPV_down) / bump**2`) is
-numerically unreliable here: the Bermudan NPV is O(1e4), and a realistic
-Gamma-sized bump (1e-4 to 1e-5) makes the true second-order signal smaller
-than the float64 cancellation error in that formula (confirmed directly
-during this module's own development -- see engine/risk/greeks.py's git
-history / this file's TestBermudanDeltaGamma class, where a naive
-price-level FD swung by orders of magnitude and even changed SIGN across
-bump sizes 1e-2 through 1e-5, while the autodiff Hessian stayed fixed).
-The numerically sound cross-check instead finite-differences the GRADIENT
-itself (`(grad(rate+eps) - grad(rate-eps)) / (2*eps)`), which has no such
-cancellation problem since the gradient itself is O(1e6) with a much
-larger true second-derivative signal relative to its own floating-point
-noise floor.
+Gamma is checked by finite-differencing the gradient, not the price: with an NPV of O(1e4),
+the second difference of the price at a 1e-4 to 1e-5 bump is below float64 cancellation
+error (it swung by orders of magnitude and changed sign across bump sizes), while the
+gradient is well conditioned.
 """
 import jax
 jax.config.update("jax_enable_x64", True)
@@ -73,9 +63,7 @@ class TestBermudanDeltaGamma:
 
     @pytest.mark.slow
     def test_delta_matches_finite_difference_of_price(self):
-        """Delta itself (unlike Gamma) is well-conditioned for a direct
-        price-level central finite difference -- no cancellation problem
-        at a 1bp bump, since the first-order signal dominates."""
+        """Delta is well conditioned for a central difference of the price at 1bp."""
         cfg = _cfg()
         greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
 
@@ -97,19 +85,13 @@ class TestBermudanDeltaGamma:
         npv_up = price_bermudan_swaption_base(cfg_with_rates(rates_up))
         npv_down = price_bermudan_swaption_base(cfg_with_rates(rates_down))
         fd_delta = (npv_up - npv_down) / 2.0  # already a 1bp bump, no extra scaling
-        # A slightly looser tolerance than a typical closed-form Greek
-        # check: the Bermudan engine's own state grid (n_per_std/std_devs)
-        # has a small residual discretization sensitivity to a 1bp curve
-        # bump that a perfectly closed-form pricer wouldn't have --
-        # confirmed not to be a bug by tightening the grid (n_per_std=96)
-        # and observing the FD/autodiff gap shrink accordingly.
+        # Slightly loose: the grid has a small discretization sensitivity to a 1bp bump (the
+        # gap shrinks at n_per_std=96).
         assert float(greeks["delta"][idx]) == pytest.approx(fd_delta, rel=5e-3)
 
     @pytest.mark.slow
     def test_gamma_matches_finite_difference_of_gradient(self):
-        """See module docstring: Gamma is cross-checked via finite
-        difference OF THE GRADIENT (numerically sound), not of the price
-        (numerically unreliable at this scale)."""
+        """Gamma against a finite difference of the gradient (see the module docstring)."""
         cfg = _cfg()
         curve = FLAT_CURVE
         price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
@@ -130,11 +112,8 @@ class TestBermudanDeltaGamma:
 
     @pytest.mark.slow
     def test_zero_at_pillars_outside_the_trades_own_cashflow_range(self):
-        """A pillar far outside the trade's own cashflow dates (t=0 and
-        t=30Y, for a trade maturing at 5Y) should show exactly zero
-        sensitivity -- interpolation between the trade's own bracketing
-        pillars means the curve's endpoints never enter the computation
-        at all."""
+        """Pillars outside the trade's interpolation range (t=0 and t=30Y for a 5Y trade)
+        have exactly zero sensitivity."""
         greeks = bermudan_delta_gamma(_cfg(), FLAT_CURVE)
         assert float(greeks["delta"][0]) == 0.0
         assert float(greeks["delta"][-1]) == 0.0
@@ -157,11 +136,8 @@ class TestBermudanTheta:
 class TestBermudanVega:
     @pytest.mark.slow
     def test_matches_finite_difference_recalibration(self):
-        """The core correctness check: bermudan_vega's implicit-function-
-        theorem Vega against a literal finite-difference recalibration
-        (bump one basket instrument's market vol, rerun calibrate_lgm_
-        sigma, reprice) -- exactly what ORE itself does, used here purely
-        as an independent ground truth."""
+        """Vega against a finite-difference recalibration (bump one market vol, recalibrate,
+        reprice), which is what ORE does."""
         exercise_times = [1.0, 2.0, 3.0, 4.0]
         base_vols = [0.008, 0.009, 0.0095, 0.0098]
 
@@ -192,9 +168,7 @@ class TestBermudanVega:
 
     @pytest.mark.slow
     def test_vega_is_positive_for_every_bucket(self):
-        """A Bermudan swaption is long volatility -- every bucket's Vega
-        should be positive (more market vol -> higher calibrated sigma ->
-        higher NPV)."""
+        """Every bucket's Vega is positive (long volatility)."""
         exercise_times = [1.0, 2.0, 3.0]
         targets = build_coterminal_basket(
             exercise_times=exercise_times, final_maturity_time=4.0,
@@ -234,10 +208,8 @@ class TestBermudanVega:
 class TestAmericanSwaptionSharesTheSameGreeksPath:
     @pytest.mark.slow
     def test_delta_gamma_theta_finite_for_an_american(self):
-        """AmericanSwaptionConfig has no dedicated Greeks function -- the
-        same bermudan_delta_gamma/bermudan_theta take it directly (see
-        engine.risk.greeks's own module docstring), including through the
-        broken-coupon caching an American exercise uses."""
+        """An `AmericanSwaptionConfig` goes through the same functions, including the
+        broken-coupon caching of American exercise."""
         american_cfg = AmericanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
             hw_a=0.03, hw_sigma=0.01,
@@ -252,15 +224,12 @@ class TestAmericanSwaptionSharesTheSameGreeksPath:
 
 
 class TestBermudanGreeksEdgeCases:
-    """Boundary conditions not covered by the "typical trade" tests above:
-    zero notional, single (European-equivalent) exercise date, extreme
-    sigma, negative rates, and grid-resolution extremes."""
+    """Zero notional, a single exercise date, extreme sigma, negative rates, grid
+    extremes."""
 
     @pytest.mark.slow
     def test_zero_notional_gives_exactly_zero_delta_and_gamma(self):
-        """A zero-notional trade has zero value at every curve shock --
-        Delta/Gamma must be exactly 0, not merely small, since NPV is
-        identically 0 regardless of the curve."""
+        """Zero notional gives exactly zero Delta/Gamma."""
         cfg = _cfg()
         cfg = BermudanSwaptionConfig(
             notional=0.0, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
@@ -285,10 +254,7 @@ class TestBermudanGreeksEdgeCases:
 
     @pytest.mark.slow
     def test_single_exercise_date_delta_gamma_finite(self):
-        """A single-exercise-date Bermudan degenerates to a European-
-        equivalent trade -- the backward induction's own edge case (no
-        early-exercise comparison ever fires before the one and only
-        exercise date), must still be fully differentiable."""
+        """A single exercise date (no early-exercise comparison) is still differentiable."""
         cfg = _cfg(exercise_years=(2.0,))
         greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
         assert jnp.all(jnp.isfinite(greeks["delta"]))
@@ -298,11 +264,7 @@ class TestBermudanGreeksEdgeCases:
 
     @pytest.mark.slow
     def test_very_dense_exercise_schedule(self):
-        """A semi-annual (9-date) exercise schedule -- denser than any
-        other test in this file -- must not blow up the backward
-        induction's own autodiff graph (jax.lax.scan's length grows with
-        the grid schedule, not with the raw Python exercise-date count,
-        but this exercises that path at a larger scale regardless)."""
+        """A 9-date semi-annual schedule does not break the autodiff graph."""
         cfg = _cfg(exercise_years=(0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5))
         greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
         assert jnp.all(jnp.isfinite(greeks["delta"]))
@@ -310,11 +272,7 @@ class TestBermudanGreeksEdgeCases:
 
     @pytest.mark.slow
     def test_extremely_small_sigma_stays_finite(self):
-        """sigma -> 0 is the deterministic limit (zeta -> 0 everywhere) --
-        exactly the state_grid/std_step sqrt(0) gradient singularity this
-        module's own bug fix (see engine/instruments/bermudan_swaption.py's
-        _state_grid docstring) guards against. A tiny but nonzero sigma is
-        the sharpest practical test of that guard."""
+        """A tiny sigma exercises the sqrt guard at zeta -> 0 (see `_state_grid`)."""
         cfg = _cfg(hw_sigma=1e-6)
         greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
         assert jnp.all(jnp.isfinite(greeks["delta"]))
@@ -324,9 +282,7 @@ class TestBermudanGreeksEdgeCases:
 
     @pytest.mark.slow
     def test_relatively_high_sigma_stays_finite(self):
-        """A stressed, high (150bp) flat sigma -- still within a
-        realistic range, but well above every other test's own ~100bp
-        ceiling."""
+        """A high (150bp) flat sigma stays finite."""
         cfg = _cfg(hw_sigma=0.015)
         greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
         assert jnp.all(jnp.isfinite(greeks["delta"]))
@@ -334,10 +290,7 @@ class TestBermudanGreeksEdgeCases:
 
     @pytest.mark.slow
     def test_negative_rates_curve(self):
-        """A curve with negative short-end rates (common in EUR/CHF/JPY
-        markets historically) -- Delta/Gamma/Theta must remain finite;
-        nothing in engine.models.lgm's formulas assumes r/rates are
-        positive."""
+        """Negative short-end rates keep Delta/Gamma/Theta finite."""
         neg_curve = ZeroCurve(
             pillar_times=jnp.asarray(PILLAR_TIMES),
             pillar_rates=jnp.array([-0.005, -0.003, 0.0, 0.005, 0.01, 0.015, 0.02]),
@@ -358,11 +311,7 @@ class TestBermudanGreeksEdgeCases:
 
     @pytest.mark.slow
     def test_coarse_state_grid_still_differentiable(self):
-        """A deliberately coarse state grid (n_per_std=4, far below the
-        default 48) -- confirms Delta/Gamma remain finite even at a
-        resolution too coarse for production accuracy (a robustness
-        check on the autodiff graph's own shape handling, not an
-        accuracy claim about the coarse grid's own numbers)."""
+        """A coarse grid (n_per_std=4) stays differentiable (robustness, not accuracy)."""
         cfg = BermudanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
             hw_a=0.03, hw_sigma=0.01, initial_zero_curve=FLAT_CURVE_CONFIG,
@@ -382,11 +331,7 @@ class TestBermudanGreeksEdgeCases:
         assert np.isfinite(theta)
 
     def test_vega_with_a_single_bucket_calibration(self):
-        """The degenerate N=1 calibration case fed into Vega -- a single
-        basket instrument, a single sigma bucket -- exercises the same
-        bucket-count assertion's PASSING path (exactly matched counts),
-        complementing test_raises_on_bucket_count_mismatch's failing
-        path."""
+        """A one-instrument, one-bucket calibration (the matching-count path)."""
         targets = build_coterminal_basket(
             exercise_times=[2.0], final_maturity_time=5.0,
             notional=1_000_000.0, payer=True, market_vols=[0.009],
@@ -401,11 +346,7 @@ class TestBermudanGreeksEdgeCases:
 
     @pytest.mark.slow
     def test_vega_with_extreme_mean_reversion(self):
-        """Vega's implicit-function-theorem derivation (both in
-        price_lgm_swaption's _bisect_xstar fix and bermudan_vega's own
-        cross-bucket Jacobian) makes no assumption about `a`'s own
-        magnitude -- confirmed finite at a near-zero and a relatively
-        high mean reversion."""
+        """Vega stays finite at near-zero and high mean reversion."""
         for a in [1e-4, 0.25]:
             targets = build_coterminal_basket(
                 exercise_times=[1.0, 2.0], final_maturity_time=4.0,
@@ -424,23 +365,9 @@ class TestBermudanGreeksEdgeCases:
 
 
 class TestBermudanGreeksPrecisionDtype:
-    """engine.portfolio.request._compute_all_greeks hands bermudan_
-    delta_gamma/bermudan_vega a `curve: ZeroCurve` built at
-    PrecisionConfig.risk's dtype; this module (bermudan_delta_gamma) and
-    bermudan_swaption.py's own _zero_curve_of/_state_grid must then derive
-    their working dtype from that curve rather than silently upcasting
-    back to float64 -- see bermudan_swaption.py's _state_grid docstring for
-    why this is the trickiest part of the whole PrecisionConfig feature
-    (quad_w/quad_y/grid_times/the fixed-leg/floating-leg schedule arrays
-    all needed the same treatment, not just _state_grid's own jnp.arange).
-
-    Note: engine.calibration.lgm.calibrate_lgm_sigma's own bootstrap
-    internals stay hardcoded float64 by design (calibration precision is
-    NOT one of PrecisionConfig's three knobs -- see PrecisionConfig's own
-    docstring) -- these tests build a `Sigma` directly at float32 rather
-    than through calibrate_lgm_sigma, to isolate bermudan_delta_gamma/
-    bermudan_vega's OWN dtype handling from that deliberately-untouched
-    calibration bootstrap."""
+    """With a float32 curve and Sigma, the Bermudan Greeks stay float32 (the induction takes
+    its dtype from the curve). Sigma is built directly at float32 to isolate the Greeks'
+    dtype handling from calibration."""
 
     PILLAR_TIMES_32 = [0.0, 1.0, 2.0, 3.0, 5.0, 10.0, 30.0]
 
@@ -484,10 +411,7 @@ class TestBermudanGreeksPrecisionDtype:
 
     @pytest.mark.slow
     def test_bermudan_vega_float32_curve_and_sigma_stays_float32(self):
-        """Exercises bermudan_vega's own Jacobian path (the trickiest
-        Greeks computation in this codebase -- see bermudan_vega's own
-        docstring) at float32, independent of calibrate_lgm_sigma's
-        deliberately-untouched float64 bootstrap."""
+        """`bermudan_vega`'s Jacobian path at float32."""
         curve32 = self._flat_curve32()
         exercise_times = [1.0, 2.0, 3.0]
         sigma32 = Sigma(

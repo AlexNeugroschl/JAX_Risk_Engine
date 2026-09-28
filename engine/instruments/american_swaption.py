@@ -1,35 +1,20 @@
 """
-American swaption pricing, on engine.instruments.bermudan_swaption's numeric
-LGM backward-induction engine.
+American swaption pricing on the Bermudan engine in `engine.instruments.bermudan_swaption`.
 
-**How ORE prices an American, and so how this module does.**
-`QuantExt::NumericLgmMultiLegOptionEngineBase::calculate()`
-(QuantExt/qle/pricingengines/numericlgmmultilegoptionengine.cpp) differs from
-its Bermudan path in exactly two places, and this module reproduces both:
+ORE's `NumericLgmMultiLegOptionEngineBase::calculate()`
+(QuantExt/qle/pricingengines/numericlgmmultilegoptionengine.cpp) treats an American
+differently from a Bermudan in two places, both reproduced here:
 
-  1. **The option times.** The window `[first, last]` becomes
-     `t1 = max(0, t(first))`, `t2 = max(t1, t(last))`,
-     `steps = max(1, static_cast<Size>((t2 - t1) * ExerciseTimeStepsPerYear))`
-     -- a TRUNCATION, not a rounding -- and option times `t1 + i*(t2-t1)/steps`
-     for `i = 0..steps` (lines 494-505), where ORE's trade builder has
-     already moved `first` to no earlier than the day after the evaluation
-     date. `AmericanSwaptionConfig.option_times`.
-  2. **Which coupons an exercise enters.** An American exercise can land
-     inside an accrual period, so a coupon keeps belonging to the
-     exercised-into swap until its accrual END and is credited
-     `couponRatio(t) = (accrualEnd - t) / (accrualEnd - accrualStart)` of its
-     value (`buildCashflowInfo`, lines 107-109: "american exercise implies
-     that we can exercise into broken periods"). Carried by
-     `ExerciseStyle.AMERICAN` and applied in
-     `bermudan_swaption._exercise_value_at_nodes`.
+  1. Option times: for the window `[first, last]`, `t1 = max(0, t(first))`,
+     `t2 = max(t1, t(last))`, `steps = max(1, Size((t2 - t1) * ExerciseTimeStepsPerYear))`
+     (truncated, not rounded), and times `t1 + i*(t2-t1)/steps` for `i = 0..steps`
+     (`AmericanSwaptionConfig.option_times`).
+  2. Coupon membership: a coupon belongs until its accrual end and is credited
+     `couponRatio(t) = (accrualEnd - t) / (accrualEnd - accrualStart)`
+     (`ExerciseStyle.AMERICAN`, applied in `bermudan_swaption._build_grid_schedule`).
 
-Everything else -- the LGM state grid, Hagan's convolution, the
-numeraire-deflated `max(exercise, continuation)` induction -- is shared with
-the Bermudan and lives in engine.instruments.bermudan_swaption. An
-`AmericanSwaptionConfig` is priced by the same functions a
-`BermudanSwaptionConfig` is (`prepare_bermudan`, `price_bermudan_swaption_base`,
-`price_bermudan_swaptions`); there is no conversion step between the two.
-Verified against ORE's own engine by tests/test_ore_lgm_parity.py.
+An `AmericanSwaptionConfig` is priced by the same functions as a `BermudanSwaptionConfig`.
+Checked against ORE's engine by tests/test_ore_lgm_parity.py.
 """
 from dataclasses import InitVar, dataclass, field
 from typing import Dict, List, Optional, Union
@@ -48,21 +33,14 @@ from engine.portfolio.validation import _validate_common_fields, _validate_hw_si
 @dataclass
 class AmericanSwaptionConfig:
     """
-    One American swaption: exercisable on any day in the window
-    `[first_exercise_date, last_exercise_date]`, represented exactly as ORE
-    represents it -- `exercise_time_steps_per_year` option times per year
-    across the window (see the module docstring), each exercising into the
-    remaining swap with the in-progress coupon credited pro rata.
+    One American swaption, exercisable on any day in
+    `[first_exercise_date, last_exercise_date]`, represented as ORE does: a uniform grid of
+    `exercise_time_steps_per_year` option times per year, each exercising into the
+    remaining swap with the current coupon credited pro rata.
 
-    exercise_time_steps_per_year: ORE's own `ExerciseTimeStepsPerYear`
-    model parameter; ORE's shipped example config
-    (Examples/Products/Input/pricingengine.xml) uses 24 (~monthly), which is
-    this field's default.
-
-    hw_sigma accepts either a plain float or an `engine.models.lgm.Sigma`
-    (a piecewise-constant term structure, e.g. from `engine.calibration`),
-    exactly as `BermudanSwaptionConfig` does, and effective_date/
-    maturity_date/swap_tenor/fixings have that config's meaning.
+    exercise_time_steps_per_year: ORE's `ExerciseTimeStepsPerYear`. The default, 24, is
+        what ORE's example config (Examples/Products/Input/pricingengine.xml) uses.
+    Other fields are as in `BermudanSwaptionConfig`.
     """
     notional: float
     fixed_rate: float
@@ -87,17 +65,12 @@ class AmericanSwaptionConfig:
     exercise_style = ExerciseStyle.AMERICAN
 
     def option_times(self) -> List[float]:
-        """ORE's American `optionTimes` (`calculate()`, lines 494-505),
-        including its truncating step count and its exact arithmetic
-        (`t1 + i * (t2 - t1) / steps`, evaluated left to right as in C++).
+        """ORE's American `optionTimes`, with its truncating step count and the same
+        arithmetic (`t1 + i * (t2 - t1) / steps`, left to right as in C++).
 
-        The window's first day is the later of `first_exercise_date` and
-        the day after the evaluation date: ORE's trade builder never lets an
-        American be exercised on the evaluation date itself
-        (`ExerciseBuilder`, OREData/ored/portfolio/optiondata.cpp: "keep two
-        alive notice dates always for american style exercise",
-        `max(today + 1, first)`). It matters once a trade has aged into its
-        window (audit M-4)."""
+        The window starts no earlier than the day after the evaluation date, as ORE's
+        trade builder sets it (`ExerciseBuilder`, OREData/ored/portfolio/optiondata.cpp:
+        `max(today + 1, first)`)."""
         first = max(self.evaluation_date + 1, self.first_exercise_date)
         t1 = max(0.0, time_from_reference(self.evaluation_date, first))
         t2 = max(t1, time_from_reference(self.evaluation_date, self.last_exercise_date))
@@ -105,16 +78,15 @@ class AmericanSwaptionConfig:
         return sorted({t1} | {t1 + float(i) * (t2 - t1) / float(steps) for i in range(steps + 1)})
 
     def is_expired(self) -> bool:
-        """ORE's `Instrument::isExpired`: the window's last day is on or
-        before the evaluation date. An expired option is worth 0."""
+        """The window's last day is on or before the evaluation date (ORE's
+        `isExpired`)."""
         return not is_live(self.last_exercise_date, self.evaluation_date)
 
     def __post_init__(self, swap_tenor: Optional[str]) -> None:
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
         book_swap_dates(self, swap_tenor)
         validate_fixings(self.fixings)
-        # None is a valid sentinel meaning "uncalibrated" -- see
-        # BermudanSwaptionConfig.__post_init__'s identical handling.
+        # hw_sigma=None means "uncalibrated" (see BermudanSwaptionConfig).
         _validate_hw_sigma(self.hw_sigma)
         for name in ("first_exercise_date", "last_exercise_date"):
             if not isinstance(getattr(self, name), ORE.Date):
@@ -135,15 +107,11 @@ def price_american_swaptions(
     hw_paths: jax.Array,
     step_times: jax.Array,
 ) -> jax.Array:
-    """The NPV cube for a list of American swaptions -- the shared
-    backward-induction pricer, which reads each config's own option times
-    and exercise style (see module docstring)."""
+    """NPV cube for American swaptions (the shared Bermudan pricer)."""
     return price_bermudan_swaptions(american_configs, hw_paths, step_times)
 
 
-# =============================================================================
-# EXECUTION DEMONSTRATION
-# =============================================================================
+# Demo
 if __name__ == "__main__":
     import jax.numpy as jnp
 

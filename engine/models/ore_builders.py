@@ -1,54 +1,14 @@
 """
-Shared ORE trade-building and cashflow-extraction helpers.
+Builds ORE trade objects from trade configs and extracts their cashflow schedules.
 
-**The single source of truth for turning a trade config into a real ORE
-object and its cashflow schedule.** Before this module existed, `_build_ore_
-swap` was defined three separate times -- `engine/instruments/swap.py`,
-`engine/instruments/european_swaption.py`, `engine/instruments/
-bermudan_swaption.py` -- with identical bodies except that
-`european_swaption.py`'s version additionally passed `forwardStart` to
-`ORE.MakeVanillaSwap` (`bermudan_swaption.py`'s own docstring said so
-explicitly: "identical pattern to swap._build_ore_swap /
-european_swaption._build_ore_swap"). The per-leg cashflow-extraction loop
-(iterate `swap.fixedLeg()`/`floatingLeg()`, pull `payment/accrualStart/
-accrualEnd` dates and `accrualPeriod()` off each ORE coupon) was likewise
-hand-copied four times across those same modules (fixed + floating legs in
-`swap.py` and `bermudan_swaption.py`, fixed leg only in
-`european_swaption.py`, which collapses the floating leg to a telescoping-
-notional identity instead -- see `engine.instruments.european_swaption`'s
-own module docstring for why that shortcut is valid there specifically).
-This module replaces all of it with one implementation, used by every
-instrument pricer.
+Schedules, calendars and accrual fractions come from ORE (`MakeVanillaSwap`, coupon
+`accrualPeriod()`), not reimplemented. Day counts are always set explicitly, never left to
+`MakeVanillaSwap`'s per-index defaults.
 
-Day counts are always set explicitly here, never left to
-`MakeVanillaSwap`'s implicit per-index defaults (which differ unpredictably
-by index/currency -- e.g. Euribor6M defaults to 30/360 fixed vs Act/360
-float). Which day count, though, depends on WHICH OF TWO ROLES is being
-filled -- see the TWO ROLES block below `import ORE`. The simulation time
-axis is `TIME_AXIS_DAY_COUNTER` and is permanently ACT/365; a trade's own
-coupon accrual is `build_vanilla_swap`'s `accrual_day_count` argument,
-which defaults to ACT/365 so this module's long-standing behavior is
-unchanged for every caller that does not ask for something else (W1.1).
-
-**Scope warning -- this builder is GENERIC TERM-IBOR ONLY.** It produces a
-`SimIndex<N>M` term index, ACT/365 on both legs and a TARGET calendar. (Its
-schedule comes from explicit effective/maturity dates since audit M-4; a
-tenor string is only a booking convenience, see `resolve_swap_dates`.) A
-real USD-SOFR contract is an OVERNIGHT index, ACT/360, daily
-compounded in arrears, on a US calendar, with explicit effective/maturity
-dates plus lookback/lockout/payment-lag terms this signature cannot even
-express. Routing such a booking through here produces a confident, WRONG
-number: ACT/360-vs-ACT/365 alone shifts every accrual factor by 1.389%
-(~$1,906 on a $1mm 5Y fixed leg, roughly 46x a 1bp DV01), and no test in
-this repository would catch it, because every test builds its inputs with
-this same builder.
-
-Registered as **I-05** in docs/known-issues.md. The ACT/365 choice above is
-deliberate and should stay; a faithful SOFR path belongs in a SEPARATE
-builder alongside this one (every swaption pricer depends on this one's
-consistency with the simulation time axis), gated on the convention set
-agreed in decisions D03/D04, with unsupported conventions REFUSED rather
-than approximated here.
+Scope: generic term-Ibor swaps only. `build_vanilla_swap` produces a `SimIndex<N>M` index
+on a TARGET calendar, with ACT/365 accrual by default. It cannot express an overnight
+index (SOFR: ACT/360, compounded in arrears, US calendar, lookback/lockout). Such trades
+must be refused, not priced here; see I-05 in docs/known-issues.md.
 """
 import math
 from dataclasses import dataclass
@@ -58,71 +18,32 @@ import ORE
 
 from engine.portfolio.validation import _validate_tenor
 
-# =============================================================================
-# THE TWO ROLES Actual/365Fixed PLAYS HERE, AND WHY THEY MUST BE NAMED APART
+# Actual/365Fixed plays two separate roles; they are named apart.
 #
-# `Actual365Fixed` was used for two unrelated jobs under one name, which is
-# what made "make the day count per-instrument" look like a one-line change
-# when it is not (plan §W1.1).
+#   1. Simulation time axis: converts an ORE.Date to the year fraction that indexes the
+#      simulated curve cube. Fixed at ACT/365; pricers look cashflow times up on the
+#      cube's pillars (`engine.instruments.swap._maturity_indices`), so changing it would
+#      silently misalign every pricer.
+#   2. Instrument accrual: the day count a contract's coupons accrue on. Per booking;
+#      the `accrual_day_count` argument of `build_vanilla_swap`.
 #
-#   1. SIMULATION TIME AXIS -- converting an ORE.Date into the year-fraction
-#      that indexes `time_grid`, `maturities` and `hw_paths`. **This must
-#      stay ACT/365 forever.** Every pricer's cashflow times are looked up
-#      against the simulated curve cube's own axis (see
-#      `engine.instruments.swap._maturity_indices`, which requires each
-#      cashflow time to land EXACTLY on a simulation maturity pillar).
-#      Changing this silently desynchronizes every pricer from the cube --
-#      no error, just wrong discount factors.
-#
-#   2. INSTRUMENT ACCRUAL -- the day count a contract's coupons actually
-#      accrue on. **This is a property of the booking, not of the engine**,
-#      and must be per-instrument: the TraderX note is ACT/ACT (ICMA), a
-#      USD-SOFR swap is ACT/360.
-#
-# `TIME_AXIS_DAY_COUNTER` is role 1 and is not configurable. Role 2 is the
-# `accrual_day_count` argument on `build_vanilla_swap` below, defaulting to
-# ACT/365 so every pre-existing caller is byte-identical.
-#
-# `DAY_COUNTER` remains as a deprecated alias for role 1 so no import
-# breaks; prefer the explicit name in new code.
-# =============================================================================
-#: **The single source of truth for role 1.** `engine.instruments.
-#: bermudan_swaption` and `engine.risk.greeks` import this object rather
-#: than constructing their own; they used to do the latter, which left
-#: three equal-but-distinct copies of a value whose entire point is that it
-#: is fixed engine-wide, with only this one pinned by a test. Identity is
-#: asserted by `tests/test_day_count_roles.py::TestTimeAxisIsOneObject`.
+#: Role 1. Other modules import this object rather than constructing their own
+#: (identity checked by `tests/test_day_count_roles.py::TestTimeAxisIsOneObject`).
 TIME_AXIS_DAY_COUNTER = ORE.Actual365Fixed()
 
-#: Deprecated alias for `TIME_AXIS_DAY_COUNTER`. Kept so existing imports
-#: keep working; it always meant the time axis, never instrument accrual.
+#: Deprecated alias for `TIME_AXIS_DAY_COUNTER` (the time axis, not accrual).
 DAY_COUNTER = TIME_AXIS_DAY_COUNTER
 
 
 def time_from_reference(evaluation_date: ORE.Date, date: ORE.Date) -> float:
-    """A date's position on the simulation time axis -- ORE's own
-    `termStructure()->timeFromReference(d)` for a curve whose day counter is
-    `TIME_AXIS_DAY_COUNTER`. Two equal dates always map to the identical
-    float, which is what lets date-specified exercise match accrual dates
-    exactly rather than within a tolerance."""
+    """A date's position on the simulation time axis, as ORE's
+    `timeFromReference(d)` on a curve with day counter `TIME_AXIS_DAY_COUNTER`. Equal
+    dates map to identical floats, so exercise dates match accrual dates exactly."""
     return TIME_AXIS_DAY_COUNTER.yearFraction(evaluation_date, date)
 
-#: ---------------------------------------------------------------------
-#: The accrual day-count vocabulary lives in `engine.day_count` and is
-#: re-exported here so every existing caller and test keeps working
-#: unchanged.
-#:
-#: **Why it moved (W1.3).** `engine/integration/note.py` needs the same
-#: allowlist, and `engine/integration/` is forbidden from importing
-#: `engine.models` -- this module is where `build_vanilla_swap` lives, the
-#: exact object W0.4's refusal keeps unreachable (I-05). Borrowing the
-#: table by importing this module would put that builder one attribute
-#: access from the refusal boundary, so the table moved to a leaf module
-#: that imports only ORE. See `engine.day_count` for the full rationale.
-#:
-#: The *time axis* role above deliberately did NOT move: it is a property
-#: of this engine's simulated curve cube, not of any contract.
-#: ---------------------------------------------------------------------
+#: The accrual day-count vocabulary lives in the leaf module `engine.day_count`, so that
+#: `engine.integration` can use it without importing this module (see that module).
+#: Re-exported here for existing callers.
 from engine.day_count import (  # noqa: E402  (re-export, see above)
     DEFAULT_ACCRUAL_DAY_COUNT,
     SUPPORTED_ACCRUAL_DAY_COUNTS,
@@ -131,26 +52,22 @@ from engine.day_count import (  # noqa: E402  (re-export, see above)
 )
 
 
-#: The generic index's fixing calendar and settlement lag -- also the
-#: calendar and spot lag `ORE.MakeVanillaSwap` uses to place a tenor-quoted
-#: swap's start date (`floatCalendar_`, the index's `fixingDays()`).
+#: Fixing calendar and settlement lag of the generic index. `MakeVanillaSwap` also uses
+#: them to place a tenor-quoted swap's start date.
 SWAP_CALENDAR = ORE.TARGET()
 SPOT_LAG_DAYS = 2
 
 
 def resolve_swap_dates(trade_date: ORE.Date, swap_tenor: str, forward_start: ORE.Period = None):
-    """`(effective_date, maturity_date)` of a swap quoted as a tenor on
-    `trade_date` -- `ORE.MakeVanillaSwap`'s own rule for a swap with no
-    explicit dates (QuantLib/ql/instruments/makevanillaswap.cpp), so a trade
-    booked by tenor has exactly the schedule ORE would give it:
+    """`(effective_date, maturity_date)` for a swap quoted as a tenor on `trade_date`,
+    following `MakeVanillaSwap` (QuantLib/ql/instruments/makevanillaswap.cpp):
 
       spot      = calendar.advance(calendar.adjust(trade_date), 2 business days)
       effective = spot + forward_start, adjusted Following (Preceding if negative)
       maturity  = effective + swap_tenor, unadjusted (the schedule adjusts it)
 
-    Called once, when a trade is booked (see `book_swap_dates`); the
-    resulting dates are the trade. Checked coupon for coupon against
-    `MakeVanillaSwap`'s own tenor path in tests/test_trade_dates.py."""
+    Called once at booking; the resulting dates are the trade. Checked against
+    `MakeVanillaSwap`'s tenor path in tests/test_trade_dates.py."""
     forward_start = forward_start if forward_start is not None else ORE.Period(0, ORE.Days)
     spot = SWAP_CALENDAR.advance(SWAP_CALENDAR.adjust(trade_date), SPOT_LAG_DAYS, ORE.Days)
     effective = spot + forward_start
@@ -162,15 +79,12 @@ def resolve_swap_dates(trade_date: ORE.Date, swap_tenor: str, forward_start: ORE
 
 
 def book_swap_dates(cfg, swap_tenor, forward_start=None) -> None:
-    """The `__post_init__` step shared by every config that holds a swap.
-    A trade booked by tenor has the tenor resolved to dates on its
-    `evaluation_date` (`resolve_swap_dates`); either way the dates are then
-    required and checked.
+    """`__post_init__` step shared by every config holding a swap.
 
-    A tenor together with explicit dates is refused rather than one silently
-    winning. `dataclasses.replace` passes no tenor (it is an `InitVar`
-    defaulting to `None`), so a copy of a booked trade keeps its dates --
-    which is what makes one config the same trade on every evaluation date."""
+    A tenor is resolved to dates on the config's `evaluation_date`; the dates are then
+    required and validated. Giving both a tenor and dates is an error. The tenor is an
+    `InitVar`, so `dataclasses.replace` copies the dates and not the tenor, and a booked
+    trade keeps its dates on any later evaluation date."""
     if swap_tenor is not None:
         _validate_tenor(swap_tenor, "swap_tenor")
         if cfg.effective_date is not None or cfg.maturity_date is not None:
@@ -204,12 +118,12 @@ class MissingFixingError(ValueError):
 
 
 def known_fixing(fixing_date: ORE.Date, today: ORE.Date, fixings) -> "float | None":
-    """The index fixing ORE treats as already known on `today`, or `None`
-    where ORE forecasts it -- `InterestRateIndex::fixing`
-    (QuantLib/ql/indexes/interestrateindex.cpp) under ORE's default settings:
+    """The fixing ORE treats as known on `today`, or `None` if ORE forecasts it, as
+    `InterestRateIndex::fixing` (QuantLib/ql/indexes/interestrateindex.cpp) under default
+    settings:
 
-      * after today: forecast (a supplied value is ignored, as in ORE);
-      * today: the supplied fixing if there is one, else forecast;
+      * after today: forecast (a supplied value is ignored);
+      * today: the supplied fixing if present, else forecast;
       * before today: the supplied fixing, else `MissingFixingError`."""
     if fixing_date > today:
         return None
@@ -233,24 +147,13 @@ def build_vanilla_swap(
     floating_spread: float,
     accrual_day_count=None,
 ) -> ORE.VanillaSwap:
-    """Builds a real `ORE.VanillaSwap` (schedules, day counts, conventions)
-    via `ORE.MakeVanillaSwap` from the booked `effective_date` and
-    `maturity_date` -- date generation and accrual math match ORE exactly
-    rather than being reimplemented, and the schedule does not depend on any
-    evaluation date (audit M-4). A tenor-quoted swap gets its dates from
-    `resolve_swap_dates` first.
+    """An `ORE.VanillaSwap` built with `MakeVanillaSwap` from explicit booked dates, so
+    the schedule does not depend on the evaluation date.
 
-    `accrual_day_count` is the **instrument accrual** role (see this
-    module's TWO ROLES block): the day count this swap's coupons accrue on,
-    by name from `SUPPORTED_ACCRUAL_DAY_COUNTS` or as an `ORE.DayCounter`.
-    Defaults to ACT/365.
-
-    Note what does NOT take it: the index's own day count, which stays
-    `TIME_AXIS_DAY_COUNTER`. The index has no forwarding curve because this
-    engine never reads ORE's forwards -- it reprices against the
-    JAX-simulated cube, whose axis is ACT/365. Only the LEG accrual
-    fractions, which `fixed_leg_cashflows` reads back out via
-    `accrualPeriod()`, are the contract's own accrual.
+    `accrual_day_count` sets both legs' accrual (a name from
+    `SUPPORTED_ACCRUAL_DAY_COUNTS` or an `ORE.DayCounter`; default ACT/365). The index
+    itself keeps `TIME_AXIS_DAY_COUNTER` and has no forwarding curve: the engine never
+    reads ORE's forecasts, only the schedule and accrual fractions.
     """
     accrual = resolve_accrual_day_count(accrual_day_count)
     index = ORE.IborIndex(
@@ -266,8 +169,7 @@ def build_vanilla_swap(
         nominal=notional,
         swapType=swap_type,
         floatingLegSpread=floating_spread,
-        # The two accrual-role lines -- everything else in this function is
-        # the time axis.
+        # Accrual role; everything else here is the time axis.
         fixedLegDayCount=accrual,
         floatingLegDayCount=accrual,
     )
@@ -275,10 +177,9 @@ def build_vanilla_swap(
 
 @dataclass
 class LegCashflows:
-    """One leg's REMAINING cashflows on `today`, times as year-fractions from
-    `today`. For a floating leg read with fixings, `is_fixed`/`fixed_rates`
-    mark the coupons whose index fixing is already known (`known_fixing`);
-    the pricer projects the rest off a curve."""
+    """One leg's remaining cashflows on `today`, times in years from `today`. With
+    fixings, `is_fixed`/`fixed_rates` mark coupons whose fixing is already known
+    (`known_fixing`); the rest are projected."""
     payment_times: np.ndarray        # [N]
     accrual_start_times: np.ndarray  # [N]
     accrual_end_times: np.ndarray    # [N]
@@ -289,9 +190,8 @@ class LegCashflows:
 
 
 def is_live(cashflow_date: ORE.Date, today: ORE.Date) -> bool:
-    """Whether a cashflow is still part of the trade on `today`: QuantLib's
-    `CashFlow::hasOccurred` under ORE's default settings, where a cashflow
-    paid ON the evaluation date has already occurred."""
+    """Whether a cashflow is still live on `today`: QuantLib's `CashFlow::hasOccurred`
+    under ORE defaults, where a cashflow paid on the evaluation date has occurred."""
     return cashflow_date > today
 
 
@@ -322,23 +222,16 @@ def _leg_cashflows(leg, as_coupon, today: ORE.Date, notional: float, fixings=Non
 
 
 def fixed_leg_cashflows(swap: ORE.VanillaSwap, today: ORE.Date) -> LegCashflows:
-    """Each remaining fixed coupon's payment/accrual dates (as year-fractions
-    from `today`) and ORE's own `accrualPeriod()` for each, from the real
-    ORE-generated schedule -- no date/day-count math reimplemented here.
-    Coupons already paid on `today` are left out (`is_live`)."""
+    """Remaining fixed coupons' payment/accrual times and ORE `accrualPeriod()`s."""
     notional = swap.fixedNominals()[0] if swap.fixedNominals() else swap.nominal()
     return _leg_cashflows(swap.fixedLeg(), ORE.as_fixed_rate_coupon, today, notional)
 
 
 def floating_leg_cashflows(swap: ORE.VanillaSwap, today: ORE.Date, fixings=None) -> LegCashflows:
-    """Same extraction as `fixed_leg_cashflows`, for the floating leg's
-    coupons. `accrual_start`/`accrual_end` times are what forward rates get
-    computed from downstream.
+    """As `fixed_leg_cashflows`, for the floating leg.
 
-    Given the trade's historical `fixings`, each coupon is also marked known
-    or projected exactly as ORE decides it (`known_fixing`), and a coupon
-    that fixed before `today` with no supplied fixing raises
-    `MissingFixingError`. Without `fixings` only the schedule is read, for
-    callers that need nothing else."""
+    With `fixings`, each coupon is marked known or projected as ORE decides
+    (`known_fixing`); a coupon fixed before `today` without a fixing raises
+    `MissingFixingError`. Without `fixings` only the schedule is read."""
     notional = swap.floatingNominals()[0] if swap.floatingNominals() else swap.nominal()
     return _leg_cashflows(swap.floatingLeg(), ORE.as_floating_rate_coupon, today, notional, fixings)

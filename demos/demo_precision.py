@@ -21,13 +21,7 @@ difference is pure arithmetic. Two yardsticks measure it:
   * the spread of the FP64 estimate across independent Sobol seeds -- the
     empirical version of the same thing.
 
-**What this replaces.** An earlier version of this demo rebuilt the
-risk-neutral exposure simulation from private functions, on a flat curve,
-and called its per-step loss quantiles VaR. It never exercised the engine's
-own FP32 path, which then carried a finite-difference bug that put ~2.6e-3
-relative error into every FP32 discount factor (docs/planning/
-engine-audit.md, P-3). It also ran FP16; no pricer here has a float16 path,
-so that comparison is not made.
+No pricer here has a float16 path, so FP16 is not compared.
 
 ORE parity of this path is established in
 tests/test_market_risk_ore_parity.py; this demo is only about precision.

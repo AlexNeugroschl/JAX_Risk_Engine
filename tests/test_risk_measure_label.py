@@ -1,20 +1,12 @@
 """
-I-11 and I-28 regression tests.
+I-11 and I-28 regressions.
 
-**I-11 -- the measure label reaches `price_portfolio`.** W0.6 put `measure`
-on the EOD path's `RiskResult`, but `PortfolioResult.risk` stayed a bare
-dict of `VaR_95`/`ES_95` keys, so a direct Python or HTTP caller could not
-tell a risk-neutral exposure from a loss forecast. `PortfolioResult.measure`
-(and `PortfolioResultSchema.measure`) now carry it, set exactly when there
-are risk figures for it to describe.
+I-11: `PortfolioResult.measure` (and `PortfolioResultSchema.measure`) labels the risk
+figures of a direct `price_portfolio` call, and is set exactly when there are risk figures.
 
-**I-28 -- `python -m engine.risk.var_es` runs.** Its demo built a
-`SwapConfig` without `evaluation_date`, so the swap scheduled off ORE's
-wall-clock "today" while `SWAP_DEMO_MATURITIES` stayed pinned to
-`EVAL_DATE`; the pillar-alignment check refused it on any day but
-2026-07-30.
-
-Both classes fail against the pre-fix code.
+I-28: `python -m engine.risk.var_es` runs. Its demo swap had no `evaluation_date`, so it was
+scheduled off ORE's wall-clock today while the pillars stayed at `EVAL_DATE`, and was refused
+on every day but 2026-07-30.
 """
 import json
 import subprocess
@@ -78,15 +70,13 @@ class TestPortfolioResultStatesItsMeasure:
         assert result.measure == RISK_MEASURE_RISK_NEUTRAL
 
     def test_the_label_is_the_engines_own_statement_not_a_literal(self):
-        """If the engine ever gains a second measure, this result must follow
-        `ENGINE_RISK_MEASURE`, and it must stay inside the vocabulary."""
+        """The result follows `ENGINE_RISK_MEASURE` and stays in the vocabulary."""
         result = price_portfolio(_request([_swap()]))
         assert result.measure == ENGINE_RISK_MEASURE
         assert result.measure in RISK_MEASURES
 
     def test_no_risk_figures_means_no_label(self):
-        """`scenario_risk=False` returns no exposure; a measure label would
-        then describe numbers that do not exist."""
+        """With `scenario_risk=False` there are no risk figures, so no label."""
         result = price_portfolio(_request([_bill()], scenario_risk=False))
         assert result.exposure is None
         assert result.measure is None
@@ -104,11 +94,7 @@ class TestPortfolioResultStatesItsMeasure:
 
 
 class TestVarEsDemoRuns:
-    """I-28: the documented command runs to completion.
-
-    The pre-fix demo passes only when the wall clock reads 2026-07-30, so
-    this fails against it on every other day.
-    """
+    """I-28: the documented command runs to completion (on any date)."""
 
     @pytest.mark.slow
     def test_python_m_engine_risk_var_es_exits_cleanly(self):

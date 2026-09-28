@@ -1,11 +1,9 @@
 """
-FastAPI app factory. Run directly with uvicorn:
+FastAPI app. Run with:
 
     .venv/Scripts/python.exe -m uvicorn engine.api.app:app --reload
 
-See docs/reference/http-api.md for the full endpoint reference and the
-sync-vs-async job pattern's reasoning (measured ~52s wall time for a
-4-trade, 4096-scenario portfolio -- see that doc for the actual numbers).
+See docs/reference/http-api.md.
 """
 from fastapi import FastAPI
 
@@ -25,11 +23,8 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
     app.include_router(router)
-    # W1.6.4: the TraderX EOD boundary, under its own `/eod` prefix. A
-    # separate router rather than more handlers on the portfolio one --
-    # the two speak different contracts (a JSON-Schema-published result
-    # document versus Pydantic-wrapped engine dataclasses) and share no
-    # state, so keeping them apart keeps either free to change.
+    # The TraderX EOD boundary, under `/eod`. A separate router: it has a different
+    # contract (a JSON-Schema-published result document) and shares no state.
     app.include_router(eod_router)
     return app
 

@@ -1,16 +1,9 @@
 """
-Coverage for engine/simulation/demo_scenarios.py's own internal-consistency
-invariants: the demo SimulationConfig builders (cross_asset_demo_config,
-single_currency_swap_demo_config, swaption_demo_config) and the
-flat_yield_curves ORE-curve helper.
-
-Existing test files (test_swap.py, test_statistics.py, test_end_to_end.py,
-etc.) exercise these scenarios heavily as *inputs* to downstream pricers,
-which implicitly validates them -- but nothing directly asserts the
-scenario builders' own documented invariants (e.g. that each rate
-factor's initial_zero_curves pillar rate actually matches that factor's
-initial_rates/theta, which generate_paths' t=0 repricing property depends
-on) or flat_yield_curves' own discount-factor correctness in isolation.
+The demo `SimulationConfig` builders in `engine.simulation.demo_scenarios`
+(`cross_asset_demo_config`, `single_currency_swap_demo_config`, `swaption_demo_config`) and
+`flat_yield_curves`, checked directly rather than only as inputs to downstream pricers:
+each factor's `initial_zero_curves` agrees with its `initial_rates`/theta, and the flat
+curves' discount factors are correct.
 """
 import numpy as np
 import pytest
@@ -30,9 +23,7 @@ from engine.simulation.market_model import generate_paths
 
 class TestFlatYieldCurves:
     def test_matches_direct_ore_flatforward_discount(self):
-        """flat_yield_curves' own discount factors must equal an
-        independently-constructed ORE.FlatForward's discount() directly
-        (not just be self-consistent internally)."""
+        """Discount factors equal an independent `ORE.FlatForward`'s."""
         disc_rate, fwd_rate = 0.03, 0.035
         cube = flat_yield_curves(disc_rate, fwd_rate)
         assert cube.shape == (1, 1, len(SWAP_DEMO_MATURITIES), 2)
@@ -49,9 +40,7 @@ class TestFlatYieldCurves:
         np.testing.assert_allclose(np.asarray(cube[0, 0, :, 1]), expected_fwd, atol=1e-12)
 
     def test_zero_rate_curve_is_all_ones(self):
-        """A 0% flat curve must discount to exactly 1.0 at every pillar --
-        the simplest possible sanity check on the discount-factor
-        convention (not accidentally inverted or off by a sign)."""
+        """A 0% curve discounts to exactly 1.0 at every pillar."""
         cube = flat_yield_curves(0.0, 0.0)
         np.testing.assert_allclose(np.asarray(cube), 1.0, atol=1e-12)
 
@@ -61,10 +50,7 @@ class TestFlatYieldCurves:
         assert np.all(np.asarray(cube_high) < np.asarray(cube_low))
 
     def test_custom_maturities_and_eval_date_are_honored(self):
-        """The maturities and eval_date parameters are optional overrides
-        of the swap-demo defaults -- confirm both are actually threaded
-        through rather than silently ignored in favor of the module
-        defaults."""
+        """The `maturities` and `eval_date` overrides are applied, not ignored."""
         custom_maturities = [0.5, 1.5, 3.0]
         custom_eval_date = ORE.Date(1, 1, 2027)
         cube = flat_yield_curves(0.02, 0.02, maturities=custom_maturities, eval_date=custom_eval_date)
@@ -78,13 +64,9 @@ class TestFlatYieldCurves:
 
 
 class TestDemoConfigInternalConsistency:
-    """Each demo config's RatesConfig.initial_zero_curves must actually be
-    consistent with that SAME config's initial_rates/theta -- otherwise
-    generate_paths' t=0 repricing property (yield_curves reprices the
-    input zero curve exactly) silently reprices a DIFFERENT curve than
-    the one the short rate is initialized/mean-reverting to, which would
-    not be caught by any shape check, only by a value comparison like
-    this one."""
+    """Each config's `initial_zero_curves` agrees with its own `initial_rates`/theta, so the
+    t=0 repricing in `generate_paths` reprices the curve the short rate starts from (a
+    shape check would not catch a mismatch)."""
 
     @pytest.mark.parametrize("config_fn", [cross_asset_demo_config, single_currency_swap_demo_config])
     def test_zero_curve_short_end_matches_initial_rates_and_theta(self, config_fn):
@@ -120,7 +102,7 @@ class TestDemoConfigInternalConsistency:
         cov = np.asarray(cfg.joint_covariance)
         assert cov.shape == (n, n)
         np.testing.assert_allclose(cov, cov.T, atol=1e-12, err_msg="joint_covariance must be symmetric")
-        # must be a valid (PSD) covariance matrix -- eigenvalues non-negative
+        # A valid (PSD) covariance: eigenvalues non-negative.
         eigvals = np.linalg.eigvalsh(cov)
         assert np.all(eigvals >= -1e-10), f"joint_covariance is not PSD: eigenvalues={eigvals}"
 
@@ -137,28 +119,19 @@ class TestDemoConfigInternalConsistency:
         assert cfg.rates.maturities == SWAP_DEMO_MATURITIES
 
     def test_swaption_demo_config_has_no_maturities_or_zero_curves(self):
-        """Documented in the builder's own docstring: swaption pricing
-        uses hw_paths directly, not the yield_curves cube, so maturities
-        must stay unset."""
+        """Swaption pricing uses `hw_paths`, not the yield-curve cube, so `maturities` stays
+        unset (per the builder's docstring)."""
         cfg = swaption_demo_config()
         assert cfg.rates.maturities is None
         assert cfg.rates.initial_zero_curves is None
 
 
 class TestDemoConfigsRunEndToEnd:
-    """Each demo config must actually be a valid, runnable generate_paths
-    input at a small scenario count -- catches any future drift where a
-    config's own fields become internally inconsistent (wrong lengths,
-    wrong covariance shape) before any downstream pricer test would."""
+    """Each config runs through `generate_paths` at a small scenario count."""
 
     def test_cross_asset_demo_config_runs_and_reprices_both_curves_at_t0(self):
-        """Build a variant of the actual demo config with an effectively
-        t=0 first step (matching TestHullWhiteAMatrix's 1e-8 convention)
-        so the simulated short rate at that step is (to floating-point
-        precision) still exactly initial_rates -- letting us assert the
-        EXACT reprice equality end-to-end through generate_paths, using
-        the real demo config's own curves/rates/mean_reversion rather than
-        a hand-built compute_hw_A_matrix call."""
+        """With a first step of 1e-8 (as in TestHullWhiteAMatrix) the simulated curves equal
+        the initial curves to within 1e-4, using the real demo config."""
         import dataclasses
         cfg = cross_asset_demo_config()
         cfg = dataclasses.replace(cfg, time_grid=[0.0, 1e-8], scenarios=8)
@@ -169,7 +142,7 @@ class TestDemoConfigsRunEndToEnd:
         maturities = np.array(cfg.rates.maturities)
         for k, zc in enumerate(cfg.rates.initial_zero_curves):
             expected = np.exp(-np.interp(maturities, zc.times, zc.rates) * maturities)
-            # every scenario should agree (shock over a 1e-8 step is negligible)
+            # Every scenario agrees (the shock over 1e-8 is negligible).
             for s in range(yc.shape[0]):
                 np.testing.assert_allclose(yc[s, 0, :, k], expected, atol=1e-4)
 

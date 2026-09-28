@@ -1,67 +1,36 @@
 """
-W0.5 -- the result schema and the per-calculation coverage model.
+The EOD result document and its per-calculation coverage model.
 
-**Coverage is per calculation per item, not per item.** An item whose NPV
-computed but whose vega did not is not "covered" and not "uncovered" -- it
-is covered for one calculation and not the other. Collapsing that to a
-single per-item flag is how a partial result comes to look complete.
-
-**The five statuses, used precisely:**
+Coverage is per calculation per item: an item can be covered for NPV and not for vega.
 
 | Status           | Meaning                                                           |
 |------------------|-------------------------------------------------------------------|
-| `ok`             | Computed. A number is present.                                    |
-| `unsupported`    | The engine cannot faithfully price this. Refused, not attempted.  |
+| `ok`             | Computed; a number is present.                                    |
+| `unsupported`    | The engine cannot price this faithfully; refused, not attempted.  |
 | `unavailable`    | An input the calculation needs was not supplied.                  |
 | `failed`         | Attempted and errored.                                            |
-| `not-applicable` | The calculation is meaningless for this instrument.               |
+| `not-applicable` | Meaningless for this instrument (vega on a swap); never a gap.    |
 
-`unsupported` vs `unavailable` is the distinction that carries the most
-weight downstream: the first is closed by engine work or a convention
-agreement, the second by a better export. Conflating them tells the
-coordinator to retry something that will never succeed, or to give up on
-something a resend would fix.
+`unsupported` is closed by engine work or a convention agreement, `unavailable` by a better
+export.
 
-**`not-applicable` never counts against coverage.** Vega on a vanilla swap
-is not a gap -- a swap has no optionality, so there is no vega to miss.
-Counting it as one would make a complete result look incomplete and train
-consumers to ignore the coverage block. This is why `all_applicable_computed`
-excludes it while `all_outcomes_accounted_for` includes it.
+Coverage flags: `allOutcomesAccountedFor` checks every item got some verdict (true even if
+all failed; false means an item was lost, a bug here). `allApplicableComputed` is true only
+when unsupported + unavailable + failed == 0.
 
-**The two flags answer different questions:**
-
-  - `allOutcomesAccountedFor` -- did every item get *some* verdict? Sums the
-    five statuses and compares to `itemCount`. **True even if everything
-    failed.** It is an internal-consistency check on the result document
-    itself: a false here means the engine lost track of an item, which is a
-    bug in this module, not a fact about the portfolio.
-  - `allApplicableComputed` -- did everything that *could* have a number get
-    one? True only when `unsupported + unavailable + failed == 0`.
-
-A result can have `allOutcomesAccountedFor: true` and
-`allApplicableComputed: false`, and for every W0 result it does: every item
-is accounted for, and nothing is computed.
-
-**Aggregates and currency.** An aggregate carries `coveredItemCount`,
-`totalItemCount`, `excludedItems[]`, and **`complete: false` whenever those
-two differ**. A total over a subset, presented as a total, is the most
-dangerous number in a risk report. Cross-currency portfolios get
-per-currency aggregates with `reportingCurrencyConversion: "NOT_APPLIED"` --
-never a blended scalar, because the engine is not given FX rates and
-inventing them would be exactly the silent approximation this design
-refuses.
+Aggregates are per currency, never blended (no FX rates are supplied), and carry
+`coveredItemCount`, `totalItemCount`, `excludedItems` and `complete: false` whenever an item
+was left out.
 """
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from engine.integration.identity import ItemIdentity, item_order_artifact
-# The bare version string, from the dependency-free leaf. `schema.py`
-# derives the JSON Schema *from this module*, so importing it here would be
-# a cycle -- see `engine.integration.schema_version`.
+# The version string comes from the leaf `schema_version` (schema imports this module).
 from engine.integration.schema_version import RESULT_SCHEMA_VERSION
 
-#: The frozen calculation names (plan §W0.5). Frozen means a consumer can
-#: switch on them exhaustively; adding one is a contract change.
+#: Frozen calculation names: consumers may switch on them exhaustively, so adding one is a
+#: contract change.
 CALCULATIONS = (
     "npv",
     "accruedInterest",
@@ -72,7 +41,7 @@ CALCULATIONS = (
     "varEs",
 )
 
-#: The five per-calculation statuses. See this module's docstring.
+#: The five per-calculation statuses (see the module docstring).
 STATUSES = ("ok", "unsupported", "unavailable", "failed", "not-applicable")
 
 OK = "ok"
@@ -81,8 +50,7 @@ UNAVAILABLE = "unavailable"
 FAILED = "failed"
 NOT_APPLICABLE = "not-applicable"
 
-#: Status -> the key it is counted under in the coverage block. camelCase on
-#: the wire; `not-applicable` becomes `notApplicable`.
+#: Status -> its camelCase key in the coverage block.
 _COVERAGE_KEYS = {
     OK: "ok",
     UNSUPPORTED: "unsupported",
@@ -91,24 +59,20 @@ _COVERAGE_KEYS = {
     NOT_APPLICABLE: "notApplicable",
 }
 
-#: Statuses that represent a gap a consumer might act on. `not-applicable`
-#: is deliberately absent -- see this module's docstring.
+#: Statuses that count as gaps (`not-applicable` does not).
 _GAP_STATUSES = (UNSUPPORTED, UNAVAILABLE, FAILED)
 
 
 @dataclass(frozen=True)
 class CalculationOutcome:
-    """One calculation's outcome for one item.
-
-    `value` is meaningful only when `status == "ok"`. Every other status
-    carries a `reason` code instead -- and `detail` for a human.
-    """
+    """One calculation's outcome for one item. `value` only when `status == "ok"`;
+    otherwise a `reason` code and a human `detail`."""
     status: str
     value: Optional[object] = None
     reason: Optional[str] = None
     detail: Optional[str] = None
-    #: Free-form per-calculation extras (e.g. a sensitivity's `method`,
-    #: `bump` and `shockedFactor`). See `SensitivityPayload`.
+    #: Per-calculation extras, merged into the output (e.g. a sensitivity's `method`,
+    #: `bump`, `shockedFactor`).
     payload: Optional[Dict] = None
 
     def __post_init__(self) -> None:
@@ -158,15 +122,9 @@ def sensitivity_payload(
     method: str, derivative: str, shocked_factor: str, bump: float,
     value, currency: str,
 ) -> Dict:
-    """A sensitivity's self-describing payload (plan §W0.5).
-
-    **Never a method implied by a field name.** A field called `dv01` tells
-    a consumer nothing about whether it came from algorithmic
-    differentiation or a bumped revaluation, what was bumped, or by how
-    much -- and those change the number. `method` is one of
-    `ad-first-order` | `bumped-revaluation`, and `bump` is an explicit
-    numeric, not a description.
-    """
+    """A sensitivity's self-describing payload: `method` (`ad-first-order` or
+    `bumped-revaluation`), what was shocked, and the numeric `bump`, never implied by a field
+    name."""
     if method not in ("ad-first-order", "bumped-revaluation"):
         raise ValueError(
             f"unknown sensitivity method {method!r}; expected 'ad-first-order' "
@@ -184,19 +142,13 @@ def sensitivity_payload(
 
 @dataclass(frozen=True)
 class ItemResult:
-    """One item's identity plus its per-calculation outcomes.
-
-    Identity is mandatory and comes first, structurally: an
-    `ItemResult` cannot be constructed without it, so an unidentified
-    refusal is unrepresentable rather than merely discouraged (plan §W0.7
-    step 3).
-    """
+    """One item's identity (required, so an unidentified refusal cannot be built) and an
+    explicit outcome for every calculation."""
     identity: ItemIdentity
     calculations: Dict[str, CalculationOutcome]
     currency: Optional[str] = None
     mapping_version: Optional[str] = None
-    #: Present when this item was refused, carrying the exporter's
-    #: `missingTerms` and/or this engine's offending fields verbatim.
+    #: For a refused item: the exporter's `missingTerms` and/or offending fields, verbatim.
     refusal: Optional[Dict] = None
 
     def __post_init__(self) -> None:
@@ -243,9 +195,8 @@ class Coverage:
 
     @property
     def all_outcomes_accounted_for(self) -> bool:
-        """Every calculation's statuses sum to `item_count`. True even if
-        everything failed -- this is a consistency check on the document,
-        not a quality judgement on the portfolio."""
+        """Each calculation's statuses sum to `item_count` (a consistency check, true even
+        if everything failed)."""
         return all(
             sum(counts.values()) == self.item_count
             for counts in self.by_calculation.values()
@@ -253,8 +204,7 @@ class Coverage:
 
     @property
     def all_applicable_computed(self) -> bool:
-        """No gaps anywhere. `not-applicable` is excluded by construction --
-        `_GAP_STATUSES` does not contain it."""
+        """No unsupported, unavailable or failed outcome anywhere."""
         return all(
             counts[_COVERAGE_KEYS[status]] == 0
             for counts in self.by_calculation.values()
@@ -271,13 +221,8 @@ class Coverage:
 
 
 def compute_coverage(items: Sequence[ItemResult]) -> Coverage:
-    """Tallies per-calculation statuses across every item.
-
-    Every calculation gets an entry with all five status keys present, even
-    at zero. A consumer reading `counts["failed"]` should never have to
-    handle a missing key differently from a zero -- that is the kind of
-    asymmetry that produces a wrong dashboard.
-    """
+    """Per-calculation status counts over all items, with all five keys present even at
+    zero."""
     by_calculation: Dict[str, Dict[str, int]] = {
         name: {key: 0 for key in _COVERAGE_KEYS.values()} for name in CALCULATIONS
     }
@@ -290,12 +235,8 @@ def compute_coverage(items: Sequence[ItemResult]) -> Coverage:
 
 @dataclass(frozen=True)
 class CurrencyAggregate:
-    """An aggregate over the items of ONE currency.
-
-    There is deliberately no cross-currency total. The engine is not
-    supplied FX rates, so a blended scalar would require inventing them --
-    see this module's docstring.
-    """
+    """An aggregate over the items of one currency. There is no cross-currency total (no FX
+    rates are supplied)."""
     currency: str
     calculation: str
     value: float
@@ -305,7 +246,7 @@ class CurrencyAggregate:
 
     @property
     def complete(self) -> bool:
-        """False whenever the aggregate covers fewer items than exist."""
+        """False whenever an item was excluded."""
         return self.covered_item_count == self.total_item_count
 
     def to_dict(self) -> Dict:
@@ -322,13 +263,8 @@ class CurrencyAggregate:
 
 
 def aggregate_by_currency(items: Sequence[ItemResult], calculation: str) -> List[CurrencyAggregate]:
-    """Sums one calculation per currency, excluding every non-`ok` item and
-    naming what was excluded.
-
-    An item whose value is missing is not treated as zero. Summing over
-    `ok` items only, and reporting the rest in `excluded_items`, is what
-    makes `complete: false` meaningful rather than decorative.
-    """
+    """Sum one calculation per currency over `ok` items, naming the excluded ones. A
+    missing value is excluded, not treated as zero."""
     if calculation not in CALCULATIONS:
         raise ValueError(f"unknown calculation {calculation!r}")
 
@@ -356,8 +292,7 @@ def aggregate_by_currency(items: Sequence[ItemResult], calculation: str) -> List
 
 @dataclass(frozen=True)
 class RiskResult:
-    """The whole published result: identified items, coverage, aggregates,
-    and the provenance needed to reproduce or distrust it."""
+    """The published result: identified items, coverage, aggregates and provenance."""
     bundle_id: str
     cluster_epoch: str
     session_date: str
@@ -365,18 +300,12 @@ class RiskResult:
     items: Tuple[ItemResult, ...]
     mapping_version: str
     engine_version: str
-    #: "assumed" whenever any curve used was not observed. Top-level, so it
-    #: cannot be missed by a consumer reading only the summary (plan §W0.6).
+    #: "assumed" whenever any curve used was not observed; top-level so it cannot be missed.
     market_provenance: Optional[str] = None
-    #: The resolved `marketInputs` block -- mode, assumed profile id, and
-    #: that profile's curve provenance. Echoed verbatim so "what was this
-    #: priced against?" is answerable from the published result alone,
-    #: without re-deriving it from the request.
+    #: The resolved `marketInputs` block (mode, profile id, curve provenance), echoed so the
+    #: pricing basis is visible in the result itself.
     market_inputs: Optional[Dict] = None
-    #: Which measure the risk figures are under (`risk-neutral-pricing` |
-    #: `historical-forecast` | `deterministic-stress`). A tail statistic
-    #: without its measure is unactionable -- see
-    #: `engine.risk.var_es`'s RISK MEASURE VOCABULARY block and I-11.
+    #: The measure of the risk figures (see `engine.risk.var_es`; I-11).
     measure: Optional[str] = None
     warnings: Tuple[str, ...] = ()
 
@@ -394,10 +323,7 @@ class RiskResult:
 
     def to_dict(self) -> Dict:
         return {
-            # W1.6.2: the schema version comes first, so a consumer can
-            # decide whether it understands this document before reading
-            # anything else in it. Emitted even while the value stays at
-            # `.v1` -- a version that was never published cannot be pinned.
+            # Schema version first, so a consumer can check it understands the document.
             "resultSchema": RESULT_SCHEMA_VERSION,
             "bundleId": self.bundle_id,
             "clusterEpoch": self.cluster_epoch,
@@ -409,8 +335,7 @@ class RiskResult:
             "marketInputs": self.market_inputs,
             "measure": self.measure,
             "items": [item.to_dict() for item in self.items],
-            # Ordering published as its own hashed artifact, never inferred
-            # from the `items` array's position (plan §W0.7 step 4).
+            # Ordering as its own hashed artifact, not inferred from array position.
             "itemOrder": item_order_artifact(item.item_id for item in self.items),
             "coverage": self.coverage.to_dict(),
             "warnings": list(self.warnings),

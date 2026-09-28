@@ -449,6 +449,16 @@ third interpolation implementation can drift from the other two. Rewrite it on t
 
 **Urgency: Medium · Ease: Hard (volume, not difficulty)**
 
+**Status: ✅ Resolved 2026-09-28.** Docstrings and comments across `engine/`, `tests/` and
+`demos/` were rewritten as contracts (comments and docstrings only; the AST of every file
+minus its docstrings is unchanged). Each module says where it differs from ORE. Stale or
+wrong statements were corrected against the code and the ORE source. The review found
+[I-36](../known-issues.md#i-36) to [I-41](../known-issues.md#i-41), now in the register,
+and M-1 and M-3 were registered there as [I-42](../known-issues.md#i-42) and
+[I-43](../known-issues.md#i-43). The significant modelling differences from ORE noted in the
+code are registered as [I-44](../known-issues.md#i-44) to [I-48](../known-issues.md#i-48)
+(I-44 is A-2).
+
 Across the engine (excluding the integration package) there are 3,952 docstring lines and
 922 comment lines against 4,000 lines of code: **1.2 lines of prose per line of code**.
 Much of the prose is history rather than behavior: "used to", "before this existed", "W1.3",

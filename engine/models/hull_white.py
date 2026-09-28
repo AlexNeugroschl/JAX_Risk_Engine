@@ -1,49 +1,17 @@
 """
-Hull-White 1-Factor (HW1F) closed-form model primitives: the zero curve
-representation, the affine bond-price formula `A(t,T)*exp(-B(t,T)*r)`, and
-the analytic bond-option (Black-on-bond) formula Jamshidian's decomposition
-is built from.
-
-**The single source of truth for this codebase's Hull-White math.**
-Before this module existed, the SAME closed forms were implemented four
-separate times: `engine/simulation/market_model.py::compute_hw_A_matrix` (NumPy,
-pillar-grid), `engine/instruments/european_swaption.py::compute_hw_A`/
-`_hw_B` (NumPy A, JAX B, arbitrary (t,T) pairs), and
-`engine/risk/greeks.py::_compute_hw_A_jax` (a JAX transliteration of the
-NumPy version, built only because `np.interp` isn't traceable and Delta/
-Gamma need `jax.grad` through the curve). All four were the same
-mathematics with different call shapes and different NumPy/JAX splits, and
-three of the four docstrings said so explicitly ("identical formula to
-simulation.compute_hw_A_matrix", "JAX-differentiable reimplementation of
-european_swaption.compute_hw_A -- the SAME closed form"). This module
-replaces all four: one JAX-native (via `jnp.interp`, which IS traceable)
-implementation, used everywhere -- by `engine.simulation` for the pillar-
-grid yield-curve cube, by `engine.instruments.swap`/`european_swaption`
-for arbitrary-(t,T) bond/bond-option pricing, and by `engine.risk.greeks`
-for autodiff Delta/Gamma/Vega -- with no NumPy/JAX fork and no duplicated
-formula anywhere.
-
-Formulas (Brigo-Mercurio, and live-verified against `ORE.HullWhite`/
-`QuantLib::HullWhite` throughout this codebase's test suite, not assumed
-from a textbook):
+Hull-White one-factor closed forms (`QuantLib::HullWhite`), plus the zero curve type every
+pricer uses.
 
     B(t,T)   = (1 - exp(-a*(T-t))) / a
     A(t,T)   = [P(0,T)/P(0,t)] * exp(B(t,T)*f(0,t) - (sigma^2/4a)*(1-exp(-2at))*B(t,T)^2)
     P(t,T,r) = A(t,T) * exp(-B(t,T)*r)
 
-where f(0,t) = -d/dt ln P(0,t) is today's instantaneous forward rate, and
-P(0,t) is read off the caller's zero curve.
+f(0,t) is today's instantaneous forward, and P(0,t) comes from the zero curve. Checked
+against `ORE.HullWhite` in the test suite.
 
-**Not the same model as `engine.models.lgm`.** `ORE.HullWhite` and
-`ORE.LinearGaussMarkovModel`, despite sharing (a, sigma) and today's curve,
-are live-verified (see `engine/models/lgm.py`'s own docstring) to NOT be
-the same numerical model realization for t>0 -- a genuine ORE
-parametrization difference, not a bug in either formula. This module
-implements the `HullWhite`-parametrized family exclusively (used by
-`swap.py`'s discounting, `european_swaption.py`'s Jamshidian decomposition,
-and `simulation.py`'s yield-curve cube); `engine.models.lgm` implements the
-`LinearGaussMarkovModel`-parametrized family exclusively (used by
-`bermudan_swaption.py`). Do not mix the two.
+Used by the swap pricer, the European (Jamshidian) swaption pricer and the simulation's
+yield-curve cube. Bermudans and Americans use `engine.models.lgm` instead, as ORE does. The
+two models differ for t>0 with the same `(a, sigma)` (see that module); do not mix them.
 """
 from dataclasses import dataclass
 from typing import List
@@ -56,27 +24,12 @@ from jax.scipy.stats import norm
 @jax.tree_util.register_pytree_node_class
 @dataclass
 class ZeroCurve:
-    """Today's market zero curve, as JAX arrays -- differentiable
-    end-to-end via `jnp.interp` (unlike `engine.simulation.ZeroCurveConfig`,
-    whose `times`/`rates` are plain Python lists, fine for one-time config
-    but not traceable by `jax.grad`). `pillar_times` is curve structure
-    (never itself a Greek's differentiation target -- ORE's own sensitivity
-    framework bumps a pillar's RATE, never its time); `pillar_rates` is
-    what Delta/Gamma/Vega differentiate with respect to.
+    """Today's zero curve as JAX arrays: continuously compounded zero rates at pillar
+    times (year fractions).
 
-    `from_config` builds one from a plain `engine.simulation.ZeroCurveConfig`
-    (or any object with `.times`/`.rates`) for the common case of starting
-    from a non-differentiable config and only later needing gradients.
-
-    **Registered as a JAX pytree** (`@register_pytree_node_class`), exactly
-    as `engine.models.lgm.Sigma` is and for the same reason: both fields are
-    JAX arrays, so a `ZeroCurve` can be passed straight through a
-    `jax.jit`/`jax.grad` boundary as an ordinary traced argument (JAX
-    flattens it to its two arrays and rebuilds it on the other side).
-    Without this, any jitted function taking a `ZeroCurve` fails with
-    "Error interpreting argument ... as an abstract array". This does not
-    change how the class is constructed or used anywhere -- it only teaches
-    JAX how to look inside it.
+    Greeks differentiate with respect to `pillar_rates`, never `pillar_times`, which
+    matches ORE's sensitivity framework bumping rates, not times. Registered as a pytree
+    so it can pass through `jax.jit`/`jax.grad` boundaries.
     """
     pillar_times: jax.Array
     pillar_rates: jax.Array
@@ -98,8 +51,7 @@ class ZeroCurve:
 
     @staticmethod
     def flat(rate: float, pillar_times: List[float], dtype=jnp.float64) -> "ZeroCurve":
-        """A flat curve (the same rate at every pillar) -- the common
-        case for a demo/test base curve."""
+        """A curve with the same rate at every pillar."""
         n = len(pillar_times)
         return ZeroCurve(
             pillar_times=jnp.asarray(pillar_times, dtype=dtype),
@@ -108,16 +60,15 @@ class ZeroCurve:
 
 
 def zero_rate(curve: ZeroCurve, t: jax.Array) -> jax.Array:
-    """Linear interpolation on zero rates, flat-extrapolated at the curve
-    ends -- `jnp.interp`'s own behavior, the standard "bootstrap zero
-    curve" interpolation convention used throughout this codebase (matches
-    `np.interp`'s identical behavior in every prior NumPy implementation
-    this module replaces). This piecewise-linear shape is also exactly
-    ORE's own `ShiftScenarioGenerator::applyShift` triangular sensitivity-
-    bump shape (see `engine/risk/greeks.py`'s module docstring) --
-    differentiating through this interpolation via `jax.grad` reproduces
-    ORE's own per-pillar bump sensitivity with no separate bump-shape code
-    needed anywhere."""
+    """Zero rate at `t`: linear between pillars, flat beyond both ends (`jnp.interp`).
+
+    Differs from ORE past the last pillar: QuantLib's `InterpolatedZeroCurve` extrapolates a
+    flat instantaneous forward there, not a flat zero rate. They agree wherever the pillars
+    extend past every cashflow (I-48).
+
+    Differentiating through linear interpolation with respect to a pillar gives the
+    triangular bump shape ORE's `ShiftScenarioGenerator` applies, so `jax.grad` yields
+    ORE-style per-pillar sensitivities directly."""
     return jnp.interp(t, curve.pillar_times, curve.pillar_rates)
 
 
@@ -132,20 +83,13 @@ def discount(curve: ZeroCurve, t: jax.Array) -> jax.Array:
 
 
 def forward_rate(curve: ZeroCurve, t: jax.Array) -> jax.Array:
-    """f(0,t) = -d/dt ln P(0,t) = z(t) + t*z'(t), today's instantaneous
-    forward rate at t, computed exactly from the linear zero-rate
-    interpolant rather than by finite difference.
+    """f(0,t) = -d/dt ln P(0,t) = z(t) + t*z'(t), computed exactly from the linear
+    interpolant.
 
-    `z'(t)` is the slope of the segment to the RIGHT of `t` (so a pillar
-    time takes the slope of the segment it starts), and 0 in the flat
-    extrapolation regions -- the same one-sided limit the forward finite
-    difference this replaced converged to.
-
-    The finite difference (`eps=1e-6` on `ln P`) differed from this by
-    `slope*eps`, about 1e-9, in float64, but in float32 it was cancellation
-    noise: `ln P` carries ~1e-8 absolute error, so dividing by 1e-6 gave
-    forward rates off by up to ~2 percentage points. Every float32
-    `A(t,T)`, LGM `r(t,x)` and swaption price inherited that error.
+    `z'(t)` is the slope of the segment to the right of `t` (a pillar takes the slope of
+    the segment it starts) and 0 in the flat extrapolation regions. An exact slope is used
+    rather than a finite difference because a finite difference on ln P is cancellation
+    noise in float32 (forward errors of up to ~2 percentage points).
     """
     times, rates = curve.pillar_times, curve.pillar_rates
     num_pillars = times.shape[0]
@@ -158,17 +102,10 @@ def forward_rate(curve: ZeroCurve, t: jax.Array) -> jax.Array:
 
 
 def B(t: jax.Array, T: jax.Array, a: float) -> jax.Array:
-    """B(t,T) = (1 - exp(-a*(T-t))) / a.
+    """B(t,T) = (1 - exp(-a*(T-t))) / a, with the a -> 0 limit B = T - t.
 
-    a==0.0 (arithmetic Brownian motion, the mathematically valid a->0 limit
-    of Ornstein-Uhlenbeck mean reversion) is a removable 0/0 singularity in
-    this formula as literally written; its analytic limit is B(t,T) = T-t
-    (L'Hopital / first-order Taylor expansion of the exponential). Guarded
-    via the standard JAX branch-free pattern: evaluate on a safe
-    placeholder `a` (never actually 0), then select the correct branch with
-    `jnp.where` -- both branches are always computed (required for
-    `jax.grad`/`jax.jit` tracing), the placeholder result is simply
-    discarded when `a != 0`."""
+    Both branches are evaluated (as `jnp.where` requires under jit/grad); the division
+    uses a placeholder `a` so the unused branch never produces NaN."""
     a_safe = jnp.where(a == 0.0, 1.0, a)
     return jnp.where(a == 0.0, T - t, (1.0 - jnp.exp(-a_safe * (T - t))) / a_safe)
 
@@ -177,36 +114,12 @@ def A(curve: ZeroCurve, t: jax.Array, T: jax.Array, a: float, sigma: float, B_ov
     """
     A(t,T) = [P(0,T)/P(0,t)] * exp(B(t,T)*f(0,t) - (sigma^2/4a)*(1-exp(-2at))*B(t,T)^2)
 
-    The term that calibrates the affine bond-price family to today's
-    actual market curve: plugging in t=0 reproduces the curve's own
-    P(0,T) exactly (B(0,T)*f(0,0) - variance_term(0) both vanish at t=0 as
-    written). Matches `QuantLib::HullWhite::A`/`Vasicek::B` exactly (see
-    docs/reference/ore-parity.md section 3b for the line-by-line C++
-    correspondence) -- live-verified to ~1e-12 relative precision against
-    `ORE.HullWhite.discountBond` across many (t,T,r) combinations and both
-    flat and sloped input curves throughout this codebase's test suite.
+    As `QuantLib::HullWhite::A`. At t=0 it reproduces the curve's P(0,T).
+    `t`, `T` are broadcastable arrays of year fractions.
 
-    t, T: broadcastable arrays of times (year-fractions from today).
-
-    B_override: use this value in place of `B(t,T,a)` in the exponent
-    term, while still using the raw (possibly T<t) `t`/`T` for the
-    `ratio`/`f(0,t)` terms above. Exists solely so `engine.simulation.
-    compute_hw_A_matrix` can reproduce its own long-standing yield-curve-
-    cube convention exactly: `generate_paths` computes ITS OWN `B_matrix`
-    once with `T_minus_t` clamped at 0 (a cashflow pillar earlier than the
-    current simulated step -- an "aged" pillar, see `engine.instruments.
-    swap`'s "Known limitation: no representation of an already-fixed/
-    elapsed coupon" docstring), and `reconstruct_yield_curves` downstream
-    combines THAT SAME clamped `B_matrix` with whatever `A` this function
-    returns as `A * exp(-B_matrix*r)` -- so `A`'s own internal exponent
-    term must use the identical clamped `B`, not silently recompute an
-    unclamped one, or the two would disagree on what `B` means for an
-    aged pillar and the combined discount factor would be inconsistent
-    with itself. This is a pre-existing, documented approximation this
-    function's job is to reproduce bit-for-bit, not a new correctness
-    requirement -- ordinary callers (European/Bermudan swaption pricing,
-    Greeks) never pass `B_override` and get the plain, self-consistent
-    `B(t,T,a)` computed from the same `t`,`T` throughout.
+    `B_override` replaces B(t,T) in the exponent only. `engine.simulation` uses it to pass
+    its own B matrix, which is clamped at 0 for pillars already in the past, so that A and
+    the `exp(-B*r)` factor applied later use the same B. Pricers never pass it.
     """
     log_P0_t = log_discount(curve, t)
     log_P0_T = log_discount(curve, T)
@@ -214,8 +127,7 @@ def A(curve: ZeroCurve, t: jax.Array, T: jax.Array, a: float, sigma: float, B_ov
     ratio = jnp.exp(log_P0_T - log_P0_t)
     B_t_T = B(t, T, a) if B_override is None else B_override
 
-    # Same a==0 removable-singularity guard as B() above: the analytic
-    # a->0 limit of (sigma^2/4a)*(1-exp(-2at)) is sigma^2*t/2.
+    # a -> 0 limit of (sigma^2/4a)*(1-exp(-2at)) is sigma^2*t/2.
     a_safe = jnp.where(a == 0.0, 1.0, a)
     variance_term = jnp.where(
         a == 0.0,
@@ -226,36 +138,26 @@ def A(curve: ZeroCurve, t: jax.Array, T: jax.Array, a: float, sigma: float, B_ov
 
 
 def bond_price(curve: ZeroCurve, t: jax.Array, T: jax.Array, r: jax.Array, a: float, sigma: float) -> jax.Array:
-    """P(t,T) = A(t,T) * exp(-B(t,T)*r) -- the full HW1F affine bond price,
-    conditional on a short rate `r` observed at time `t` (r(0) = today's
-    curve's own short end recovers the deterministic t=0 price)."""
+    """P(t,T) = A(t,T) * exp(-B(t,T)*r), given the short rate `r` at `t`."""
     return A(curve, t, T, a, sigma) * jnp.exp(-B(t, T, a) * r)
 
 
 def bond_option_sigma(T_opt: jax.Array, S: jax.Array, t: jax.Array, a: float, sigma: float) -> jax.Array:
-    """sigma_p: the volatility (as seen from t) of the zero-coupon bond
-    price P(T_opt,S) -- the standard HW1F bond-option volatility (Brigo-
-    Mercurio 3.41), live-verified bit-for-bit against
-    `ORE.HullWhite.discountBondOption`."""
+    """Volatility, seen from t, of the zero bond P(T_opt, S): the standard HW1F
+    bond-option volatility (Brigo-Mercurio 3.41), as `ORE.HullWhite.discountBondOption`.
+
+    Known issue (I-41): unlike `B` and `A` there is no a = 0 guard, so a = 0 gives NaN,
+    which `bond_call` then treats as zero volatility (intrinsic value). ORE raises."""
     B_Topt_S = B(T_opt, S, a)
     return sigma * B_Topt_S * jnp.sqrt(jnp.clip(1.0 - jnp.exp(-2.0 * a * (T_opt - t)), 0.0, None) / (2.0 * a))
 
 
 def bond_call(P_t_Topt: jax.Array, P_t_S: jax.Array, K: jax.Array, sigma_p: jax.Array) -> jax.Array:
-    """Black-formula call on a zero-coupon bond -- ORE's
-    `HullWhite::discountBondOption` closed form, live-verified bit-for-bit
-    against the installed ORE package.
+    """Black call on a zero bond, as `HullWhite::discountBondOption`.
 
-    sigma_p == 0 occurs whenever a bond's own maturity S coincides with the
-    option's expiry T_opt (always true of a swaption's notional-received-
-    at-accrual-start leg for a non-forward-starting trade), or when pricing
-    exactly at expiry (t == T_opt). Both collapse to the deterministic
-    intrinsic payoff max(P_S - K*P_T, 0) in the zero-vol limit -- guarded
-    here directly (not left to the caller) so every call site is correct
-    by construction, using jnp.where to stay branch-free/jit-friendly (the
-    Black-formula branch is still evaluated on a safe placeholder sigma_p
-    to avoid a 0/0 NaN contaminating the gradient-safe branch, then
-    discarded)."""
+    When `sigma_p == 0` (bond maturing at expiry, or pricing at expiry) this returns the
+    intrinsic value max(P_S - K*P_T, 0). The Black branch is evaluated on a placeholder
+    sigma so it cannot produce NaN in the gradient."""
     sigma_p_safe = jnp.where(sigma_p > 0.0, sigma_p, 1.0)
     h = (1.0 / sigma_p_safe) * jnp.log(P_t_S / (P_t_Topt * K)) + sigma_p_safe / 2.0
     black = P_t_S * norm.cdf(h) - K * P_t_Topt * norm.cdf(h - sigma_p_safe)

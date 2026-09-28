@@ -1,23 +1,10 @@
 """
-End-to-end walkthrough of the same portfolio `demo.py` prices, but over the
-real HTTP API instead of calling `engine.portfolio.price_portfolio` directly
-in-process -- exercises exactly what an external caller (e.g. TraderX) would
-actually do: build a JSON request matching `PortfolioRequestSchema`, submit
-it to a running server, poll the async job until it completes, and read the
-result back out of `PortfolioResultSchema`'s JSON shape.
+The portfolio of `demo.py` priced over the HTTP API: build a `PortfolioRequestSchema` JSON
+request, submit it, poll the async job, and read back a `PortfolioResultSchema`. Same
+instruments and market data as `demo.py`, so the printed numbers are comparable.
 
-Portfolio: one swap, one European swaption, one Bermudan swaption, one
-American swaption -- the same instruments and market data as `demo.py`,
-so the two demos' printed NPVs/risk/Greeks are directly comparable.
-
-This script starts its own `uvicorn` server as a subprocess so it can be run
-standalone; if a server is already running at `API_BASE`, set
-`JAX_RISK_ENGINE_DEMO_SKIP_SERVER=1` to reuse it instead of starting a new
-one (useful when iterating with `--reload` already running in another
-terminal).
-
-See docs/reference/http-api.md for the full endpoint reference and the
-async job pattern's reasoning (why this polls instead of blocking).
+Starts its own `uvicorn` server as a subprocess; set `JAX_RISK_ENGINE_DEMO_SKIP_SERVER=1` to
+use one already running at `API_BASE`. Endpoint reference: docs/reference/http-api.md.
 
 Run with: .venv/Scripts/python.exe demos/demo_api.py
 """
@@ -44,10 +31,8 @@ def _wait_for_server(timeout_s: float = 60.0) -> None:
             if r.status_code == 200:
                 return
         except httpx.TransportError:
-            # Covers both "nothing listening yet" (ConnectError) and "server
-            # accepted the TCP connection but hasn't finished importing JAX/
-            # ORE/routing yet" (ConnectTimeout/ReadTimeout) -- both are
-            # expected while uvicorn is still starting up.
+            # ConnectError (nothing listening) or a timeout (still importing JAX/ORE)
+            # are expected while uvicorn starts.
             pass
         time.sleep(0.5)
     raise RuntimeError(f"server at {API_BASE} did not become healthy within {timeout_s}s")
@@ -106,8 +91,7 @@ try:
             "rates": {
                 "initial_rates": [FLAT_RATE], "theta": [FLAT_RATE], "mean_reversion": [HW_A],
                 "initial_zero_curves": [zero_curve],
-                # maturities left unset -- the server derives the swap's real
-                # cashflow-pillar set automatically, same as demo.py.
+                # maturities left unset: the server derives the swap's cashflow pillars.
             },
             "joint_covariance": [[0.04, 0.0], [0.0, HW_SIGMA ** 2]],
         },
@@ -140,12 +124,10 @@ try:
             },
         ],
         "pfe_quantiles": [0.95, 0.99],
-        # Resolves both trades' hw_sigma=null above: the server builds a
-        # co-terminal calibration basket from these inputs (the same
-        # inputs build_coterminal_basket itself takes -- see
-        # CalibrationBasketRequestSchema) against the first uncalibrated
-        # trade's own curve/hw_a, fits a piecewise Sigma to market_vols,
-        # and reuses it for every trade sharing that rate factor.
+        # Resolves the trades with hw_sigma=null: the server builds a co-terminal basket
+        # from these inputs on the first uncalibrated Bermudan/American's curve,
+        # evaluation date and index tenor, fits a piecewise Sigma to market_vols, and uses
+        # it for every rate factor that needs calibration.
         "calibration_basket": {
             "exercise_times": [1.0, 2.0, 3.0, 4.0],
             "final_maturity_time": 5.0,
@@ -159,12 +141,8 @@ try:
           "(Bermudan/American hw_sigma=null -> server-side calibration via calibration_basket)")
 
     # =========================================================================
-    # Calibration preview via the standalone /calibration/lgm endpoint --
-    # same basket inputs as request_body["calibration_basket"] above, fetched
-    # standalone so the fitted Sigma is visible before submitting the full
-    # portfolio request. (Fitting happens again, redundantly, inside
-    # price_portfolio when the portfolio request below is submitted --
-    # this call is purely illustrative, not required.)
+    # Calibration preview via /calibration/lgm with the same basket inputs, to show the
+    # fitted Sigma. Illustrative only: price_portfolio fits it again.
     # =========================================================================
     section("Calibration (standalone /calibration/lgm preview)")
 

@@ -1,8 +1,6 @@
 """
-Tests for engine.calibration.lgm's bootstrap calibration --
-`calibrate_lgm_sigma`, the routine that fits a piecewise `Sigma` to a
-co-terminal basket of market swaption volatilities via ORE's own
-bootstrap convention (see that module's docstring).
+`engine.calibration.lgm.calibrate_lgm_sigma`: bootstrap of a piecewise `Sigma` to a
+co-terminal basket of market swaption vols.
 """
 import jax
 jax.config.update("jax_enable_x64", True)
@@ -36,10 +34,8 @@ def _basket(exercise_times, final_maturity, vols, payer=True, notional=1_000_000
 
 
 class TestCalibrateLgmSigmaExactBootstrapReprice:
-    """A bootstrap calibration must reprice EVERY basket instrument
-    exactly (each new bucket has exactly one degree of freedom pinned to
-    exactly one market price) -- unlike a joint BestFit, whose RMSE is
-    generically nonzero even at convergence."""
+    """A bootstrap reprices every instrument exactly (one new bucket per instrument), unlike
+    a joint fit whose RMSE is generally nonzero."""
 
     def test_single_instrument_basket(self):
         targets = _basket([3.0], 8.0, [0.01])
@@ -54,18 +50,9 @@ class TestCalibrateLgmSigmaExactBootstrapReprice:
         np.testing.assert_allclose(np.asarray(result.model_prices), np.asarray(result.market_prices), atol=1e-3)
 
     def test_flat_market_vol_gives_calibrated_sigma_in_a_sane_range(self):
-        """A perfectly flat market vol input must NOT bootstrap to a flat
-        calibrated sigma term structure exactly -- the co-terminal
-        basket's shrinking tenor/time-to-expiry per bucket means a flat
-        MARKET vol maps to a genuinely non-flat MODEL sigma (confirmed
-        directly: this test's own naive flat-sigma expectation failed
-        against the calibration, which is the model behaving correctly,
-        not a bug -- see this module's docstring on why bootstrap
-        buckets are triangular, not simply proportional to market vol).
-        The real invariant checked here is boundedness: no bucket's
-        calibrated value should be wildly out of proportion to the input
-        market vol (a sign or scale bug would blow this up, not just
-        shift it slightly)."""
+        """A flat market vol does not bootstrap to a flat model sigma (each bucket's
+        instrument has a shorter tenor and expiry), so only boundedness relative to the
+        market vol is checked (a sign or scale bug breaks it)."""
         targets = _basket([1.0, 2.0, 3.0, 4.0], 5.0, [0.01, 0.01, 0.01, 0.01])
         result = calibrate_lgm_sigma(targets, FLAT_CURVE, a=0.03)
         values = np.asarray(result.sigma.values)
@@ -73,10 +60,8 @@ class TestCalibrateLgmSigmaExactBootstrapReprice:
         assert np.all(values < 0.02)
 
     def test_sigma_bucket_structure_matches_ore_convention(self):
-        """len(values) == len(times)+1 == number of basket instruments;
-        times are exactly the basket's own expiries, EXCLUDING the last
-        (LgmBuilder::initParametrization's aTimes = swaptionExpiries[:-1]
-        convention -- see module docstring)."""
+        """len(values) == len(times) + 1 == basket size; times are the basket expiries
+        without the last, as in ORE's `LgmBuilder` (expiries[:-1])."""
         exercise_times = [1.0, 2.0, 3.0, 4.0]
         targets = _basket(exercise_times, 5.0, [0.008, 0.009, 0.0095, 0.0098])
         result = calibrate_lgm_sigma(targets, FLAT_CURVE, a=0.03)
@@ -95,13 +80,8 @@ class TestCalibrateLgmSigmaSanity:
         assert np.all(np.asarray(high_result.sigma.values) > np.asarray(low_result.sigma.values))
 
     def test_calibrated_sigma_prices_a_held_out_swaption_reasonably(self):
-        """A basic out-of-sample sanity check: pricing a swaption that
-        ISN'T in the calibration basket, using the calibrated Sigma,
-        should land within a plausible range of its own Bachelier market
-        price (not exact -- this is the whole point of using only a few
-        basket instruments), confirming the calibrated term structure
-        generalizes rather than only curve-fitting the exact basket
-        points."""
+        """Out of sample: a swaption not in the basket prices within a plausible range of its
+        Bachelier market price (not exactly)."""
         calib_targets = _basket([1.0, 3.0, 5.0], 6.0, [0.008, 0.0095, 0.0105])
         result = calibrate_lgm_sigma(calib_targets, FLAT_CURVE, a=0.03)
 
@@ -118,9 +98,7 @@ class TestCalibrateLgmSigmaSanity:
             calibrate_lgm_sigma(targets_shuffled, FLAT_CURVE, a=0.03)
 
     def test_single_bucket_matches_flat_sigma_calibration(self):
-        """A one-instrument basket calibrates to a plain flat Sigma
-        (zero interior breakpoints) -- confirms the bootstrap collapses
-        correctly to the degenerate N=1 case."""
+        """A one-instrument basket gives a flat `Sigma` (no breakpoints)."""
         targets = _basket([3.0], 8.0, [0.011])
         result = calibrate_lgm_sigma(targets, FLAT_CURVE, a=0.03)
         assert result.sigma.times.shape[0] == 0
@@ -128,10 +106,8 @@ class TestCalibrateLgmSigmaSanity:
 
 
 class TestCalibrationResultGradientCorrectness:
-    """The calibrated Sigma values must be differentiable end-to-end with
-    respect to the basket's own market vols -- the property Phase 4's
-    Vega (implicit differentiation through the calibration optimum)
-    depends on."""
+    """The calibrated `Sigma` is differentiable in the market vols (Vega uses this through
+    the implicit function theorem)."""
 
     @pytest.mark.slow
     def test_calibrated_sigma_gradient_wrt_market_vol_is_finite_and_positive(self):
@@ -140,11 +116,8 @@ class TestCalibrationResultGradientCorrectness:
             result = calibrate_lgm_sigma(targets, FLAT_CURVE, a=0.03)
             return result.sigma.values[-1]
 
-        # finite-difference check (calibrate_lgm_sigma rebuilds ORE
-        # objects on CPU per call, so this uses numerical differentiation
-        # rather than jax.grad through the whole basket-construction path
-        # -- Phase 4 differentiates only the JAX-native calibration solve
-        # itself, not basket construction, which stays a CPU/ORE step).
+        # Finite differences: calibrate_lgm_sigma builds the basket with ORE objects on the
+        # host, so it cannot be traced end to end with jax.grad.
         eps = 1e-5
         base = float(calibrate_last_bucket(0.0098))
         bumped = float(calibrate_last_bucket(0.0098 + eps))
@@ -154,9 +127,8 @@ class TestCalibrationResultGradientCorrectness:
 
 
 class TestUnattainableMarketVolIsRefused:
-    """The bisection bracket is [1bp, 2000bp]. A market price outside what
-    that bracket can reach used to converge silently onto the bracket end
-    and be returned as the calibrated sigma."""
+    """The bisection bracket is [1e-6, 0.20] (0.01bp to 2000bp). A market price outside
+    what it can reach raises instead of returning the bracket end."""
 
     def test_market_vol_above_bracket_raises(self):
         targets = _basket([1.0, 2.0], 5.0, [0.008, 5.0])

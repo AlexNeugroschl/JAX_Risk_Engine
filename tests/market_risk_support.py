@@ -6,9 +6,9 @@ under an arbitrary (shocked) set of pillar rates.
 The ORE side never reuses engine code for pricing. Curves are
 `ORE.ZeroCurve` (linear in the continuously compounded ACT/365 zero rate,
 the engine's convention) with pillars on whole days, so ORE's and the
-engine's year fractions are identical. ORE extrapolates a zero curve
-linearly past its last pillar where the engine holds it flat, so the last
-pillar (30y) lies beyond every cashflow.
+engine's year fractions are identical. Past its last pillar ORE extrapolates a
+flat forward where the engine holds the zero rate flat, so the last pillar
+(30y) lies beyond every cashflow.
 """
 import numpy as np
 import ORE

@@ -1,13 +1,6 @@
 """
-Tests for engine.models.lgm's piecewise-constant sigma(t) support --
-`Sigma`, `as_sigma`, and `zeta`'s generalization from a flat scalar to a
-genuine ORE-style volatility term structure.
-
-This is the model-math foundation Phase 3's calibration engine (see
-engine/calibration/) fits a real market-vol-driven sigma(t) to -- these
-tests establish that the underlying zeta(t)/bond_price/numeraire formulas
-correctly reproduce ORE's own piecewise parametrization BEFORE any
-calibration/optimization logic is layered on top.
+Piecewise-constant sigma(t) in `engine.models.lgm` (`Sigma`, `as_sigma`, `zeta`), checked
+against ORE's `IrLgm1fPiecewiseConstantParametrization` and `LinearGaussMarkovModel`.
 """
 import jax
 jax.config.update("jax_enable_x64", True)
@@ -42,9 +35,7 @@ class TestSigmaFlatIsBackwardCompatible:
             assert float(zeta(s, jnp.array(t))) == pytest.approx(expected, rel=1e-12)
 
     def test_plain_float_auto_upgrades_via_as_sigma(self):
-        """Every pre-existing call site passes a plain float for sigma --
-        zeta/bond_price/numeraire must accept that directly, not require
-        callers to construct a Sigma by hand."""
+        """A plain float sigma is accepted by zeta/bond_price/numeraire."""
         for t in [0.0, 1.0, 3.0]:
             direct = zeta(0.02, jnp.array(t))
             via_sigma = zeta(Sigma.flat(0.02), jnp.array(t))
@@ -56,8 +47,7 @@ class TestSigmaFlatIsBackwardCompatible:
 
 
 class TestZetaMatchesOREPiecewiseParametrization:
-    """Direct cross-check against ORE.IrLgm1fPiecewiseConstantParametrization.zeta,
-    the ORE class this module's Sigma/zeta are designed to reproduce."""
+    """zeta against `ORE.IrLgm1fPiecewiseConstantParametrization.zeta`."""
 
     @pytest.mark.parametrize("t", [0.0, 0.5, 1.0, 1.5, 2.999, 3.0, 3.5, 5.0, 10.0])
     def test_matches_ore_three_bucket_curve(self, t):
@@ -91,10 +81,8 @@ class TestZetaMatchesOREPiecewiseParametrization:
         assert mine == pytest.approx(ore_zeta, rel=1e-10, abs=1e-13)
 
     def test_vectorized_over_multiple_t_matches_ore_pointwise(self):
-        """zeta must work correctly when t is a whole array (as used inside
-        bermudan_swaption.py's vectorized backward induction), not just a
-        scalar -- confirmed by comparing every element against ORE's own
-        scalar-at-a-time zeta."""
+        """Array t (as in the Bermudan backward induction) matches ORE's scalar zeta
+        element by element."""
         alpha_times = [1.0, 3.0]
         alpha_values = [0.008, 0.015, 0.02]
         ore_param = _ore_piecewise_param(alpha_times, alpha_values)
@@ -107,20 +95,13 @@ class TestZetaMatchesOREPiecewiseParametrization:
 
 
 class TestHIndependentOfSigmaPiecewise:
-    """H(t) must be COMPLETELY unaffected by whether sigma is flat or
-    piecewise -- confirmed directly from ORE's own source (H delegates
-    only to the reversion-side helper, never touches alpha/sigma at all).
-    This is a model-correctness invariant Phase 3's calibration relies on
-    (only sigma is calibrated; H(t)'s formula must not silently change)."""
+    """H(t) does not depend on sigma (as in ORE, where H uses only the reversion)."""
 
     @pytest.mark.parametrize("t", [0.5, 1.0, 3.0, 7.5])
     def test_H_same_regardless_of_sigma_shape(self, t):
         a = 0.03
         h_flat = float(H(a, jnp.array(t)))
-        # H doesn't even take sigma as an argument -- this test just
-        # confirms that fact structurally (calling H with only 'a' and 't'
-        # always gives the same answer, no matter what Sigma a caller
-        # happens to be using elsewhere for zeta/bond_price/numeraire).
+        # H takes no sigma argument; this confirms it structurally.
         ore_param_flat = _ore_piecewise_param([], [0.02], a=a)
         ore_param_piecewise = _ore_piecewise_param([1.0, 3.0], [0.008, 0.015, 0.02], a=a)
         assert h_flat == pytest.approx(ore_param_flat.H(t), abs=1e-12)
@@ -128,11 +109,8 @@ class TestHIndependentOfSigmaPiecewise:
 
 
 class TestBondPriceAndNumeraireWithPiecewiseSigma:
-    """The full LGM bond price / numeraire formulas, fed a genuine
-    piecewise Sigma, cross-checked against a live ORE.LinearGaussMarkovModel
-    built from the identical piecewise parametrization -- not just zeta()
-    in isolation, but the complete formulas Phase 3's calibration and
-    bermudan_swaption.py's backward induction actually use."""
+    """Bond price and numeraire with a piecewise `Sigma` against a live
+    `ORE.LinearGaussMarkovModel` on the same parametrization."""
 
     def _ore_lgm(self, alpha_times, alpha_values, a=0.03):
         param = _ore_piecewise_param(alpha_times, alpha_values, a=a)
@@ -164,11 +142,7 @@ class TestBondPriceAndNumeraireWithPiecewiseSigma:
         assert mine == pytest.approx(ore_val, rel=1e-9)
 
     def test_bond_price_reduces_to_flat_sigma_case(self):
-        """A one-bucket Sigma (Sigma.flat) must reproduce the exact same
-        bond price as passing the equivalent plain float -- confirms the
-        piecewise generalization is a strict superset of the original
-        constant-sigma behavior, not a parallel, possibly-divergent code
-        path."""
+        """`Sigma.flat` gives the same bond price as the equivalent float."""
         t, T, x, a, sig = 2.0, 5.0, 0.03, 0.03, 0.015
         via_float = bond_price(FLAT_CURVE, a, sig, jnp.array(t), jnp.array(T), jnp.array(x))
         via_sigma = bond_price(FLAT_CURVE, a, Sigma.flat(sig), jnp.array(t), jnp.array(T), jnp.array(x))
@@ -176,10 +150,8 @@ class TestBondPriceAndNumeraireWithPiecewiseSigma:
 
 
 class TestSigmaGradientCorrectness:
-    """zeta/bond_price must remain differentiable with respect to a
-    Sigma's own `values` (the actual calibration target in Phase 3/Vega in
-    Phase 4) -- confirmed via finite-difference cross-check on the
-    gradient, not just that autodiff runs without error."""
+    """zeta/bond_price are differentiable in `Sigma.values` (what calibration fits and Vega
+    differentiates), checked against finite differences."""
 
     def test_zeta_gradient_wrt_sigma_values_matches_finite_difference(self):
         t = jnp.array(2.5)
@@ -198,10 +170,7 @@ class TestSigmaGradientCorrectness:
             assert float(grad[i]) == pytest.approx(fd, rel=1e-3, abs=1e-8)
 
     def test_bond_price_gradient_wrt_sigma_values_is_finite(self):
-        """A weaker but broader check across the full bond-price formula
-        (not just zeta) -- confirms no NaN/Inf sneaks into the gradient
-        through H(t)/discount/interpolation when Sigma.values is the
-        differentiation target."""
+        """The full bond price has a finite gradient in `Sigma.values`."""
         def f(values):
             sigma = Sigma(times=jnp.array([1.0, 3.0]), values=values)
             return bond_price(FLAT_CURVE, 0.03, sigma, jnp.array(2.0), jnp.array(5.0), jnp.array(0.01))

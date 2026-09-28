@@ -11,15 +11,8 @@ The engine produces two different risk measures, and this demo shows both:
   * short-horizon MARKET RISK (10-day VaR/ES) by revaluing the portfolio at
     t=0 under shocked curves, `run_market_risk`.
 
-This demo used to hand-orchestrate every stage (build a swap first to get
-real maturity pillars, call generate_paths, calibrate a Sigma, call each
-pricer separately, sum base NPVs by hand, then call compute_risk_metrics)
--- ~200 lines duplicating exactly what engine.portfolio.price_portfolio now
-does as a single call. That duplication would immediately drift out of sync
-with price_portfolio's own logic, exactly the failure mode
-engine/simulation/demo_scenarios.py was created to avoid for shared example
-configs -- see docs/reference/portfolio-entrypoint.md for what happens
-"under the hood" of the one call below.
+Pricing, exposure and Greeks run through one `engine.portfolio.price_portfolio` call; see
+docs/reference/portfolio-entrypoint.md for what it does internally.
 
 Run with: .venv/Scripts/python.exe demos/demo.py
 """
@@ -105,7 +98,7 @@ european_cfg = SwaptionConfig(
 bermudan_cfg = BermudanSwaptionConfig(
     notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
     hw_a=HW_A, hw_sigma=CALIBRATED_SIGMA, initial_zero_curve=zero_curve_config,
-    # Exercisable on the 1Y..4Y anniversaries -- the calibration basket's own expiries.
+    # Exercisable on the 1Y..4Y anniversaries (the calibration basket's expiries).
     exercise_dates=[TODAY + ORE.Period(years, ORE.Years) for years in (1, 2, 3, 4)], swap_tenor="5Y",
     evaluation_date=TODAY, n_per_std=64, std_devs=6.0,
 )
@@ -127,10 +120,8 @@ sim_config = SimulationConfig(
     rates=RatesConfig(
         initial_rates=[FLAT_RATE], theta=[FLAT_RATE], mean_reversion=[HW_A],
         initial_zero_curves=[zero_curve_config],
-        # maturities left unset -- price_portfolio derives the swap's real
-        # cashflow-pillar set automatically (engine.portfolio.
-        # derive_maturity_pillars), rather than this demo hand-computing
-        # them the way it used to.
+        # maturities left unset: price_portfolio derives the swaps' cashflow pillars
+        # (engine.portfolio.derive_maturity_pillars).
     ),
     joint_covariance=[[0.04, 0.0], [0.0, HW_SIGMA ** 2]],
 )
@@ -139,9 +130,8 @@ print(f"{NUM_SCENARIOS:,} scenarios requested, one swap / European / Bermudan / 
 
 
 # =============================================================================
-# Price the whole portfolio in one call: simulate -> validate -> price ->
-# aggregate risk -- everything engine.portfolio.price_portfolio does under
-# the hood is documented in docs/reference/portfolio-entrypoint.md.
+# Price the whole portfolio in one call: simulate -> validate -> price -> aggregate risk
+# (see docs/reference/portfolio-entrypoint.md).
 # =============================================================================
 section("Pricing the whole portfolio")
 

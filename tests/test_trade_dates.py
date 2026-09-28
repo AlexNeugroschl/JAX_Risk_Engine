@@ -460,6 +460,9 @@ def test_a_bermudan_needs_no_fixing_for_a_coupon_it_can_no_longer_enter():
 # =============================================================================
 # THETA AGES THE BOOKED TRADE (audit M-5)
 # =============================================================================
+# One TARGET business day, the engine's Theta step. ORE's SensitivityAnalysis adds a
+# calendar day instead; the two differ from a Friday or before a holiday (see
+# docs/known-issues.md). The dates used here are ordinary weekdays.
 def _next_day(date):
     return ORE.TARGET().advance(date, 1, ORE.Days)
 

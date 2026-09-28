@@ -1,81 +1,28 @@
 """
-External-oracle tests for the Bermudan/American backward-induction engine
-(`engine.instruments.bermudan_swaption`), against ORE's own multi-exercise
-swaption engines.
+Bermudan/American backward induction (`engine.instruments.bermudan_swaption`) against
+ORE's constructible multi-exercise engines, `ORE.TreeSwaptionEngine` (Hull-White trinomial
+tree) and `ORE.FdHullWhiteSwaptionEngine` (Hull-White finite differences).
 
-WHY THIS FILE EXISTS. `tests/test_bermudan_swaption.py`'s own docstring
-records that ORE's Python bindings expose no constructible
-`NumericLgmMultiLegOptionEngine`, and concludes that the full backward
-induction therefore "cannot be cross-checked against a live ORE engine
-object end-to-end". The first half of that is true and still true --
-verified again while writing this file: both `ORE.NumericLgmMultiLegOptionEngine`
-and `ORE.AnalyticLgmSwaptionEngine` have no usable `__init__`. The second
-half does not follow. `ORE.TreeSwaptionEngine` (Hull-White trinomial tree)
-and `ORE.FdHullWhiteSwaptionEngine` (Hull-White finite differences) are
-both fully constructible, both price a genuine `ORE.BermudanExercise`, and
-so between them supply the external multi-exercise oracle that file says
-does not exist.
+These are Hull-White engines, while the engine prices under LGM, a different model for the
+same (a, sigma) (see `engine.models.lgm`). So the agreement here is a model-level few
+percent, not numerical parity; `TestHullWhiteVersusLgmBondPrices` measures the model
+difference at the bond level. Three controls attribute the gap to the model, not the
+induction:
 
-WHAT THIS CAN AND CANNOT PROVE -- read before tightening any tolerance
-here. ORE's two engines are Hull-White-parametrized; this engine's
-Bermudan pricer is LGM-parametrized (`engine.models.lgm`), and those are
-NOT the same numerical model realization for t>0 -- a fact this project
-already documents (`docs/reference/ore-parity.md`, "A parametrization
-note: LGM vs. plain Hull-White") and which `TestHullWhiteVersusLgmBondPrices`
-below re-measures directly rather than taking on trust. So the agreement
-this file asserts is a MODEL-LEVEL agreement of a few percent, not the
-1e-4-style numerical parity the European-swaption tests get against
-`ORE.JamshidianSwaptionEngine` (where both sides are the same
-parametrization). Three separate facts establish that the residual gap is
-the parametrization and not an error in the backward induction:
+  1. ORE's tree and FD engines agree with each other to ~1e-3, so the target is sound.
+  2. The engine is grid-converged: n_per_std 48 -> 384 moves the price ~1e-5 relative.
+  3. The gap is no larger with four exercise dates than with one, where the engine matches
+     a direct integration (tests/test_bermudan_swaption.py).
 
-  1. ORE's two engines, built on completely different numerical schemes
-     (tree vs. PDE), agree with EACH OTHER to ~1e-3 or better
-     (`test_ore_tree_and_fd_engines_agree`) -- so the oracle itself is
-     sound and the target value is not in doubt.
-  2. This engine is fully grid-converged at the resolutions used here:
-     refining `n_per_std` from 48 to 384 moves the price by ~1e-5
-     relative (`test_engine_is_grid_converged`), so the residual gap is
-     not discretization error that a finer grid would remove.
-  3. The same-sized gap appears in the SINGLE-exercise case
-     (`test_single_exercise_gap_matches_multi_exercise_gap`), where
-     `tests/test_bermudan_swaption.py::TestSingleExerciseMatchesLgmJamshidian`
-     already proves this engine matches its own LGM closed form to 2e-4.
-     A discrepancy that is present with one exercise date and no larger
-     with four is not coming from the early-exercise logic.
+Parity with ORE's own LGM engine, at 1e-10, is tests/test_ore_lgm_parity.py.
 
-Together those pin the gap to the HW/LGM parametrization difference, which
-is exactly what `TestHullWhiteVersusLgmBondPrices` quantifies at the
-bond-price level. What this file DOES prove, and what nothing in the suite
-proved before it: the multi-exercise backward induction produces values a
-real, independent, multi-exercise ORE engine also produces, to within that
-known model difference -- and it would fail loudly on any change that
-moved a Bermudan price by more than a few percent.
-
-TWO CONSTRUCTION TRAPS, both of which silently produce a green-looking
-wrong answer and both of which were hit while writing this file:
-
-  * `engine.models.ore_builders.build_vanilla_swap` deliberately builds
-    its `ORE.IborIndex` on a **0% dummy forward curve** -- correct for this
-    engine, which never reads ORE's forwards and reprices the floating leg
-    off its own simulated/LGM curve, but fatal for an ORE PRICING engine,
-    which does read it. Reusing that helper to build the oracle's
-    underlying gives a swap whose floating leg is identically zero
-    (`fairRate()` == 0.0, first coupon amount 0.00) and Bermudan prices
-    ~40x too small. The ORE side here therefore builds its own index on a
-    REAL forwarding curve; `test_oracle_underlying_swap_is_not_the_dummy_curve_swap`
-    is a standing guard that this distinction is never "simplified" away.
-  * Exercise dates are the underlying's own fixed-leg accrual starts, read
-    off its schedule (`exercisable_dates`) and handed to both sides as the
-    same `ORE.Date`s. This trap is now closed by construction: exercise used
-    to be given as a year fraction, and a rounded one (2.0137 for
-    2.0136986301369864) silently dropped a coupon -- a 12x overstatement at
-    low vol (I-29). Dates cannot be misspelt that way;
-    `TestExerciseDatesAreExact` pins why.
-
-This file's tolerance is a MODEL gap (Hull-White vs LGM). The like-for-like
-comparison against ORE's own LGM engine, at 1e-10, is
-tests/test_ore_lgm_parity.py.
+Construction notes:
+  * The ORE-side underlying gets its own index on a real forwarding curve.
+    `build_vanilla_swap`'s index has no forwarding curve (the engine never reads ORE's
+    forecasts), so its swap cannot be priced by an ORE engine.
+  * Exercise dates are the underlying's fixed-leg accrual starts (`exercisable_dates`),
+    given to both sides as the same `ORE.Date`s. (Year-fraction exercise, now removed, once
+    silently dropped a coupon when rounded: I-29.)
 """
 import numpy as np
 import ORE
@@ -94,14 +41,11 @@ EVAL_DATE = ORE.Date(30, 7, 2026)
 DC = TIME_AXIS_DAY_COUNTER
 NOTIONAL = 1_000_000.0
 
-# Grid resolution used for every comparison below. Deliberately well past
-# the point of convergence (test_engine_is_grid_converged measures it) so
-# no assertion here is a statement about discretization.
+# Grid resolution for every comparison: past convergence (test_engine_is_grid_converged).
 N_PER_STD = 128
 STD_DEVS = 8.0
 
-# ORE engine resolutions. Also past convergence -- test_ore_tree_and_fd_engines_agree
-# is what establishes that, and it is the reason these are not tuning knobs.
+# ORE engine resolutions, also past convergence (test_ore_tree_and_fd_engines_agree).
 ORE_TREE_STEPS = 800
 ORE_FD_GRID = 800
 
@@ -111,16 +55,9 @@ def _flat_curve(rate: float) -> ZeroCurveConfig:
 
 
 def _ore_underlying(flat_rate, fixed_rate, payer, tenor, notional=NOTIONAL):
-    """The ORE side's underlying vanilla swap, built on a REAL forwarding
-    curve at `flat_rate`.
-
-    Deliberately NOT `engine.models.ore_builders.build_vanilla_swap`: see
-    this module's docstring: that helper's 0% dummy forward curve is
-    correct for this engine and silently wrong for an ORE pricing engine.
-    Everything else here (index tenor, spot lag, calendar, roll convention,
-    both legs' day count) is kept identical to that helper so the two sides
-    price the same instrument.
-    """
+    """The ORE-side underlying, with its own index on a real forwarding curve at
+    `flat_rate` (not `build_vanilla_swap`; see the module docstring). Index tenor, spot
+    lag, calendar, roll convention and day counts match that builder."""
     ORE.Settings.instance().evaluationDate = EVAL_DATE
     curve = ORE.YieldTermStructureHandle(ORE.FlatForward(EVAL_DATE, flat_rate, DC))
     index = ORE.IborIndex(
@@ -137,10 +74,8 @@ def _ore_underlying(flat_rate, fixed_rate, payer, tenor, notional=NOTIONAL):
 
 def _ore_bermudan_npv(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
                       exercise_indices, engine, notional=NOTIONAL):
-    """Prices a Bermudan swaption with one of ORE's own multi-exercise
-    engines. `exercise_indices` index the underlying's own fixed-leg
-    accrual-start dates -- ORE's standard coterminal Bermudan convention,
-    and the same dates the engine side is handed by `_engine_exercise_dates`."""
+    """Bermudan NPV by one of ORE's multi-exercise engines. `exercise_indices` pick the
+    underlying's fixed-leg accrual starts, the same dates the engine side gets."""
     curve, swap = _ore_underlying(flat_rate, fixed_rate, payer, tenor, notional)
     hw = ORE.HullWhite(curve, hw_a, hw_sigma)
     starts = [ORE.as_fixed_rate_coupon(cf).accrualStartDate() for cf in swap.fixedLeg()]
@@ -167,9 +102,8 @@ def _engine_cfg(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
 
 def _engine_exercise_dates(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
                            exercise_indices, notional=NOTIONAL):
-    """The underlying's own fixed-leg accrual start dates at
-    `exercise_indices`, read off the engine's schedule -- the same dates
-    `_ore_bermudan_npv` reads off ORE's."""
+    """The underlying's fixed-leg accrual starts at `exercise_indices`, from the engine's
+    schedule."""
     probe = _engine_cfg(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
                         exercise_dates=[EVAL_DATE + 1], notional=notional)
     starts = exercisable_dates(probe)
@@ -189,10 +123,8 @@ def _both_sides(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor, exercise_in
     return mine, tree, fd
 
 
-# The comparison grid. Sweeps moneyness (fixed_rate against a 3% curve),
-# volatility, payer/receiver, mean reversion, curve level, and the number
-# and spacing of exercise dates -- every axis the backward induction's own
-# behavior could plausibly depend on.
+# The grid: moneyness against a 3% curve, volatility, direction, mean reversion, curve
+# level, and the number and spacing of exercise dates.
 CASES = [
     # (id, flat, a, sigma, fixed_rate, payer, tenor, exercise_indices)
     ("atm-payer-lowvol",    0.03, 0.03, 0.005, 0.03, True,  "5Y", [1, 2, 3]),
@@ -210,32 +142,23 @@ CASES = [
 ]
 CASE_IDS = [c[0] for c in CASES]
 
-# Measured worst case across CASES is 1.51e-1 (deep-OTM receiver, where the
-# option is worth ~830 on a 1e6 notional and a small absolute model
-# difference is a large relative one); the ATM cases sit near 3e-2. This
-# bound is deliberately just above the measured worst case rather than
-# round: it is a REGRESSION bound on a known, explained model difference,
-# and anything that widens it is a real change that should be looked at.
+# Measured worst case over CASES: 1.51e-1 (deep-OTM receiver worth ~830 on 1e6, where a
+# small absolute difference is a large relative one); ATM cases ~3e-2. Set just above the
+# worst case as a regression bound on a known model difference.
 MAX_MODEL_RELATIVE_GAP = 0.16
 
-# ORE's two engines are independent numerical schemes for the SAME model,
-# so they agree far more tightly than either agrees with this engine.
-# Measured worst case across CASES is 1.34e-3.
+# ORE's two engines are independent schemes for the same model and agree much more tightly
+# (measured worst case 1.34e-3).
 MAX_ORE_INTERNAL_GAP = 2e-3
 
 
 class TestOracleIsSound:
-    """Establishes that ORE's own multi-exercise engines are a trustworthy
-    target BEFORE anything is compared against them. If these fail, no
-    other assertion in this file means anything."""
+    """ORE's multi-exercise engines are a sound target."""
 
     @pytest.mark.parametrize("case", CASES, ids=CASE_IDS)
     def test_ore_tree_and_fd_engines_agree(self, case):
-        """ORE's trinomial tree and its Hull-White PDE solver are entirely
-        different numerical schemes. Their agreeing on every case to ~1e-3
-        is what makes 'the ORE number' well-defined at all -- and it is the
-        control that separates 'this engine differs from ORE' from 'ORE's
-        own engines have not converged'."""
+        """ORE's tree and FD engines agree on every case to ~1e-3, so "the ORE value" is
+        well defined."""
         _id, flat, a, sigma, rate, payer, tenor, ex = case
         tree = _ore_bermudan_npv(flat, a, sigma, rate, payer, tenor, ex, "tree")
         fd = _ore_bermudan_npv(flat, a, sigma, rate, payer, tenor, ex, "fd")
@@ -247,17 +170,8 @@ class TestOracleIsSound:
         )
 
     def test_oracle_underlying_swap_is_not_the_dummy_curve_swap(self):
-        """Guards the first construction trap in this module's docstring.
-
-        `build_vanilla_swap`'s 0% dummy forwarding curve makes every
-        floating coupon zero, which an ORE pricing engine faithfully
-        prices -- yielding a wrong Bermudan value that looks entirely
-        plausible. This asserts the oracle's own underlying has a LIVE
-        floating leg (non-zero first coupon, fair rate near the curve),
-        so that a future refactor 'simplifying' `_ore_underlying` into a
-        call to the shared builder fails here rather than silently
-        weakening every comparison in the file.
-        """
+        """The oracle's underlying has a live floating leg (non-zero first coupon, fair
+        rate near the curve), so it is never replaced by the shared builder's swap."""
         curve, swap = _ore_underlying(0.03, 0.03, True, "5Y")
         first_float = ORE.as_floating_rate_coupon(swap.floatingLeg()[0])
         assert first_float.amount() > 0.0, (
@@ -269,9 +183,8 @@ class TestOracleIsSound:
 
 
 class TestEngineMatchesOreBermudanEngines:
-    """The claim this file exists to make: the multi-exercise backward
-    induction agrees with a real, independent, multi-exercise ORE engine
-    to within the documented HW/LGM parametrization difference."""
+    """The induction agrees with ORE's multi-exercise engines within the Hull-White/LGM
+    model difference."""
 
     @pytest.mark.parametrize("case", CASES, ids=CASE_IDS)
     def test_matches_ore_within_model_difference(self, case):
@@ -286,18 +199,9 @@ class TestEngineMatchesOreBermudanEngines:
 
     @pytest.mark.parametrize("case", CASES, ids=CASE_IDS)
     def test_engine_does_not_exceed_ore_hull_white_value(self, case):
-        """The gap is ONE-SIDED, and that directionality is itself a
-        checkable fact rather than an incidental observation: across every
-        case measured, the LGM-parametrized engine prices at or below the
-        HW-parametrized ORE engines. A future change that pushed this
-        engine ABOVE ORE would be a qualitatively different discrepancy
-        from the one analyzed in this module's docstring, and should not
-        pass quietly just because its magnitude happens to sit inside the
-        relative bound above.
-
-        The small positive slack absorbs the two cases where the gap is
-        near zero (deep-ITM, where both models price close to intrinsic).
-        """
+        """The gap is one-sided: across all cases the LGM engine prices at or below the
+        Hull-White engines. A change pushing it above ORE would be a different discrepancy.
+        The small slack covers deep-ITM cases where both are near intrinsic."""
         _id, flat, a, sigma, rate, payer, tenor, ex = case
         mine, _tree, fd = _both_sides(flat, a, sigma, rate, payer, tenor, ex)
         assert mine <= fd * 1.01 + 1.0, (
@@ -306,11 +210,8 @@ class TestEngineMatchesOreBermudanEngines:
         )
 
     def test_more_exercise_dates_never_decreases_value_in_both_engines(self):
-        """A no-arbitrage property both sides must independently satisfy --
-        a cross-check on the comparison itself rather than on either
-        engine, since a mis-wired exercise schedule on ONE side (the most
-        likely way this file could silently compare two different trades)
-        would break the monotonicity on that side alone."""
+        """More exercise dates never decrease value, on both sides (a mis-wired schedule on
+        one side would break this there)."""
         common = (0.03, 0.03, 0.01, 0.03, True, "5Y")
         two_mine, _, two_fd = _both_sides(*common, [1, 3])
         four_mine, _, four_fd = _both_sides(*common, [1, 2, 3, 4])
@@ -319,15 +220,11 @@ class TestEngineMatchesOreBermudanEngines:
 
 
 class TestGapIsTheParametrizationNotTheInduction:
-    """The three controls that attribute the residual gap to the HW/LGM
-    model difference rather than to the backward induction. Without these,
-    `MAX_MODEL_RELATIVE_GAP` would just be a tolerance wide enough to hide
-    a bug."""
+    """The controls attributing the gap to the model difference (module docstring)."""
 
     def test_engine_is_grid_converged(self):
-        """If the gap against ORE were discretization error, refining the
-        state grid would shrink it. It does not move the price at all
-        beyond the 5th significant figure, so it cannot be."""
+        """Refining the grid does not move the price beyond the 5th significant figure, so
+        the gap is not discretization error."""
         flat, a, sigma, rate, payer, tenor, ex = 0.03, 0.03, 0.01, 0.03, True, "5Y", [1, 2, 3]
         times = _engine_exercise_dates(flat, a, sigma, rate, payer, tenor, ex)
         coarse = price_bermudan_swaption_base(
@@ -337,19 +234,14 @@ class TestGapIsTheParametrizationNotTheInduction:
         assert abs(coarse - fine) / abs(fine) < 1e-4, (
             f"engine not grid-converged: coarse={coarse:.4f} fine={fine:.4f}"
         )
-        # And the converged value is still meaningfully away from ORE's --
-        # i.e. refining does not walk toward it.
+        # And refining does not move toward ORE's value.
         fd = _ore_bermudan_npv(flat, a, sigma, rate, payer, tenor, ex, "fd")
         assert abs(fine - fd) / abs(fd) > 1e-3
 
     def test_single_exercise_gap_matches_multi_exercise_gap(self):
-        """The decisive control. With ONE exercise date, this engine is
-        already known to match an independent direct integration to 2e-5
-        (tests/test_bermudan_swaption.py::TestSingleExerciseMatchesDirectIntegration),
-        so any gap against ORE there is definitionally the parametrization
-        and not the early-exercise logic. If the multi-exercise gap is no
-        larger than the single-exercise gap, the induction is adding no
-        error of its own."""
+        """With one exercise date the engine matches a direct integration to 2e-5
+        (tests/test_bermudan_swaption.py::TestSingleExerciseMatchesDirectIntegration), so the
+        gap there is the model. The multi-exercise gap is no larger."""
         flat, a, sigma, rate, payer, tenor = 0.03, 0.03, 0.01, 0.03, True, "5Y"
 
         single_times = _engine_exercise_dates(flat, a, sigma, rate, payer, tenor, [2])
@@ -368,27 +260,20 @@ class TestGapIsTheParametrizationNotTheInduction:
         )
 
     def test_zero_vol_collapses_to_intrinsic(self):
-        """A model-free anchor: as sigma -> 0 the option must be worth
-        exactly the forward-starting underlying swap, which ORE values
-        with a plain discounting engine and no model at all. This is the
-        one check in the file that is NOT subject to the HW/LGM difference
-        (both parametrizations agree at zero vol).
+        """Model-free anchor: at sigma -> 0 the option is worth the forward-starting swap,
+        valued by ORE with a discounting engine and no model.
 
-        The swap's floating coupons are built as QuantLib INDEXED coupons,
-        projected over each index fixing period -- the projection ORE's LGM
-        engine uses (`LgmVectorised::fixing`) and so the one this engine
-        reproduces (I-31). QuantLib's default "at par" coupons project over
-        the accrual period instead and differ here by 2.3e-3 (1211.47 vs
-        1214.23): the two ORE engines disagree, and this anchor has to be
-        built on the one the Bermudan is priced by."""
+        The swap uses QuantLib indexed coupons, projected over each index fixing period, as
+        ORE's LGM engine does (`LgmVectorised::fixing`, I-31). Default at-par coupons project
+        over the accrual period and differ here by 2.3e-3 (1211.47 vs 1214.23).
+        """
         flat, a, rate, payer, tenor = 0.03, 0.03, 0.03, True, "5Y"
         times = _engine_exercise_dates(flat, a, 1e-6, rate, payer, tenor, [2])
         mine = price_bermudan_swaption_base(
             _engine_cfg(flat, a, 1e-6, rate, payer, tenor, times,
                         n_per_std=160, std_devs=9.0))
 
-        # The swap you receive on exercising at that date: a forward-starting
-        # swap over the remaining term, priced off today's curve.
+        # The swap entered on exercise: forward-starting over the remaining term.
         ORE.Settings.instance().evaluationDate = EVAL_DATE
         curve = ORE.YieldTermStructureHandle(ORE.FlatForward(EVAL_DATE, flat, DC))
         index = ORE.IborIndex(
@@ -416,14 +301,9 @@ class TestGapIsTheParametrizationNotTheInduction:
 
 
 class TestHullWhiteVersusLgmBondPrices:
-    """Quantifies the HW/LGM parametrization difference at the level it
-    originates -- the discount bond -- rather than leaving it as a single
-    remembered '~0.6% at t=3y' figure in prose
-    (docs/reference/ore-parity.md). Both sides here are ORE's OWN objects,
-    so this measures the difference between two ORE models and involves
-    this engine not at all: it is the independent evidence that a
-    percent-level Bermudan gap is the expected consequence of the
-    parametrization choice."""
+    """The Hull-White/LGM difference at the discount-bond level, using only ORE's own
+    `HullWhite` and `LinearGaussMarkovModel` (no engine code): the evidence that a
+    percent-level Bermudan gap is expected."""
 
     HW_A = 0.03
     HW_SIGMA = 0.01
@@ -438,22 +318,16 @@ class TestHullWhiteVersusLgmBondPrices:
 
     @pytest.mark.parametrize("T", [1.0, 5.0, 10.0])
     def test_models_agree_exactly_at_t0(self, T):
-        """At t=0 both parametrizations reduce to today's curve, so they
-        must agree to machine precision. This is the control proving the
-        divergence measured below is genuinely about time evolution and
-        not a units/convention mismatch in how this test calls them."""
+        """At t=0 both reduce to today's curve and agree to machine precision (so the
+        divergence below is not a units mismatch)."""
         hw, lgm = self._models()
         np.testing.assert_allclose(hw.discountBond(0.0, T, 0.03), lgm.discountBond(0.0, T, 0.0),
                                    rtol=1e-10)
 
     @pytest.mark.parametrize("t,T", [(1.0, 5.0), (2.0, 5.0), (3.0, 5.0), (2.0, 3.0)])
     def test_models_diverge_for_t_greater_than_zero(self, t, T):
-        """The divergence is real and one-directional, and this pins its
-        measured size. Asserting a LOWER bound as well as an upper one is
-        deliberate: if a future ORE version made these two agree, every
-        percent-level tolerance in this file would be unjustified and
-        should be tightened -- so that change must fail here loudly rather
-        than silently leaving the tolerances too loose."""
+        """For t > 0 they diverge, by a pinned amount with a lower bound as well: if a
+        future ORE made them agree, the tolerances in this file should be tightened."""
         hw, lgm = self._models()
         hw_price = hw.discountBond(t, T, 0.03)
         lgm_price = lgm.discountBond(t, T, 0.0)
@@ -465,20 +339,16 @@ class TestHullWhiteVersusLgmBondPrices:
 
 
 class TestExerciseDatesAreExact:
-    """Why exercise no longer needs snapping (I-29).
+    """Exercise is given as dates (I-29).
 
-    Exercise used to be given as a year fraction, and a rounded one
-    (2.0137 for 2.0136986301369864) landed 1.4e-6 after the accrual start it
-    meant, dropped that coupon and overstated the zero-vol price ~12x; a
-    tolerance band then snapped near-misses back. Exercise is now given as a
-    DATE, as in ORE, and an exercise date equal to an accrual date maps to
-    the bit-identical time -- so there is nothing to snap, and no band to
-    get wrong. Year fractions are refused outright
-    (tests/test_bermudan_swaption.py::TestBermudanSwaptionConfigValidation).
+    A rounded year fraction (2.0137 for 2.0136986301369864) once landed after the accrual
+    start it meant, dropped a coupon and overstated the zero-vol price ~12x. A date equal
+    to an accrual date maps to the identical time, so nothing needs snapping. Year fractions
+    are refused (tests/test_bermudan_swaption.py::TestBermudanSwaptionConfigValidation).
     """
 
-    # The 5Y annual-fixed underlying used throughout; index 2 is the accrual
-    # start the original I-29 report used.
+    # The 5Y annual-fixed underlying used throughout; index 2 is the accrual start from the
+    # original I-29 report.
     ARGS = (0.03, 0.03, 1e-6, 0.03, True, "5Y")
 
     def test_an_accrual_date_is_the_identical_exercise_time(self):
@@ -492,10 +362,9 @@ class TestExerciseDatesAreExact:
         assert prepared.exercise_times.tolist() == prepared.fixed_start_times[1:].tolist()
 
     def test_exact_accrual_start_prices_its_intrinsic_at_zero_vol(self):
-        """The case I-29 got 12x wrong (14336.12): the zero-vol price is the
-        intrinsic value. ORE's own LGM engine prices this trade at
-        1214.2313035805 (engine/validation/ore_lgm_oracle.py); the 1211.47 recorded in
-        I-29 was the at-par-coupon value, before I-31."""
+        """The I-29 case (once 14336.12): the zero-vol price is the intrinsic value. ORE's LGM
+        engine gives 1214.2313035805 (engine/validation/ore_lgm_oracle.py); I-29's 1211.47
+        was the at-par-coupon value, before I-31."""
         date = _engine_exercise_dates(*self.ARGS, [2])[0]
         npv = price_bermudan_swaption_base(_engine_cfg(*self.ARGS, [date], n_per_std=160, std_devs=9.0))
         assert npv == pytest.approx(1214.2313035805, rel=1e-9)

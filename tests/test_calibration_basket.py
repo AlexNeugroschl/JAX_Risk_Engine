@@ -1,7 +1,6 @@
 """
-Tests for engine.calibration.basket -- co-terminal basket construction and
-the LGM closed-form swaption pricer (`price_lgm_swaption`) calibration is
-built on.
+`engine.calibration.basket`: co-terminal basket construction and the LGM closed-form
+swaption price (`price_lgm_swaption`) that calibration uses.
 """
 import jax
 jax.config.update("jax_enable_x64", True)
@@ -51,9 +50,8 @@ class TestBuildCoterminalBasket:
             assert t.fixed_cashflow_times[-1] == pytest.approx(5.0, abs=0.02)
 
     def test_coterminal_swaps_have_shrinking_cashflow_count(self):
-        """Each basket instrument's underlying swap runs to the SAME final
-        maturity -- a later exercise date means a shorter remaining swap,
-        i.e. fewer fixed cashflows (annual fixed leg here)."""
+        """Every instrument runs to the same final maturity, so a later exercise has fewer
+        fixed cashflows (annual fixed leg here)."""
         targets = build_coterminal_basket(
             exercise_times=[1.0, 2.0, 3.0, 4.0], final_maturity_time=5.0,
             notional=1_000_000.0, payer=True, market_vols=[0.008] * 4,
@@ -63,10 +61,7 @@ class TestBuildCoterminalBasket:
         assert counts == sorted(counts, reverse=True)
 
     def test_atm_strike_matches_par_rate_identity(self):
-        """forward_rate must satisfy the standard par-swap-rate identity
-        (P_start - P_end) / annuity, computed directly from the SAME
-        zero_curve -- confirms build_coterminal_basket's own par-rate
-        calculation, not just that SOME rate was picked."""
+        """`forward_rate` is the par rate (P_start - P_end) / annuity from the same curve."""
         targets = build_coterminal_basket(
             exercise_times=[2.0], final_maturity_time=7.0,
             notional=1_000_000.0, payer=True, market_vols=[0.009],
@@ -82,14 +77,10 @@ class TestBuildCoterminalBasket:
 
 
 class TestPriceLgmSwaptionMatchesNumeraireDeflatedMonteCarlo:
-    """The core correctness check: price_lgm_swaption's closed form against
-    an independent Monte Carlo simulation of x(T0) ~ N(0, zeta(T0)) --
-    LGM's own EXACT terminal distribution (QuantExt::IrLgm1fStateProcess::
-    variance) -- discounted through engine.models.lgm.numeraire (NOT naive
-    discounting by P(0,T0), which does NOT hold under LGM's own measure;
-    an earlier version of this cross-check used naive discounting and
-    showed an 11% spurious discrepancy purely from that MC bug, not from
-    price_lgm_swaption itself -- see this module's own docstring)."""
+    """The closed form against Monte Carlo on LGM's exact terminal distribution
+    x(T0) ~ N(0, zeta(T0)) (QuantExt `IrLgm1fStateProcess::variance`), 2e6 paths, within 6
+    standard errors. Payoffs are deflated by `engine.models.lgm.numeraire`; discounting by
+    P(0,T0) is wrong under LGM's measure."""
 
     @pytest.mark.parametrize("payer", [True, False])
     def test_matches_mc_within_stderr(self, payer):
@@ -127,9 +118,7 @@ class TestPriceLgmSwaptionMatchesNumeraireDeflatedMonteCarlo:
         assert closed_form == pytest.approx(mc_price, abs=6 * mc_stderr)
 
     def test_matches_mc_with_piecewise_sigma(self):
-        """Same cross-check, but with a genuine piecewise Sigma (not just
-        flat) -- confirms price_lgm_swaption's use of bond_option_sigma/
-        zeta correctly generalizes, not just the flat-sigma special case."""
+        """The same check with a piecewise `Sigma`."""
         a = 0.03
         sigma = Sigma(times=jnp.array([2.0, 6.0]), values=jnp.array([0.006, 0.012, 0.009]))
         targets = build_coterminal_basket(
@@ -167,8 +156,7 @@ class TestPriceLgmSwaptionMatchesNumeraireDeflatedMonteCarlo:
 
 class TestPriceLgmSwaptionSanity:
     def test_higher_sigma_gives_higher_price(self):
-        """A European swaption is long volatility -- monotone in sigma,
-        for both payer and receiver."""
+        """Monotone increasing in sigma, payer and receiver."""
         targets = build_coterminal_basket(
             exercise_times=[3.0], final_maturity_time=8.0,
             notional=1_000_000.0, payer=True, market_vols=[0.009],
@@ -180,10 +168,7 @@ class TestPriceLgmSwaptionSanity:
         assert high > low
 
     def test_atm_payer_and_receiver_have_equal_price(self):
-        """Put-call parity at an exactly ATM strike: payer and receiver
-        swaptions on the same underlying must have identical value (the
-        underlying swap's own forward value is exactly 0 at the ATM
-        strike, so parity's difference term vanishes)."""
+        """At an exactly ATM strike payer and receiver have equal value (parity)."""
         targets_payer = build_coterminal_basket(
             exercise_times=[3.0], final_maturity_time=8.0,
             notional=1_000_000.0, payer=True, market_vols=[0.009],
@@ -199,9 +184,7 @@ class TestPriceLgmSwaptionSanity:
         assert payer_price == pytest.approx(receiver_price, rel=1e-6)
 
     def test_gradient_wrt_sigma_is_finite_and_positive(self):
-        """Vega (d price / d sigma) must be positive (long-vol) and finite
-        -- the gradient property engine/calibration/lgm.py's calibration
-        root-find and Phase 4's Vega both depend on."""
+        """d price / d sigma is positive and finite (calibration and Vega rely on it)."""
         targets = build_coterminal_basket(
             exercise_times=[3.0], final_maturity_time=8.0,
             notional=1_000_000.0, payer=True, market_vols=[0.009],
@@ -217,17 +200,10 @@ class TestPriceLgmSwaptionSanity:
         assert float(grad) > 0.0
 
     def test_gradient_wrt_sigma_matches_finite_difference_value(self):
-        """A VALUE-level cross-check (not just sign/finiteness) --
-        price_lgm_swaption's autodiff gradient with respect to sigma must
-        pass THROUGH the exercise-boundary root-find (_bisect_xstar),
-        not just its direct dependence at a fixed x* -- an earlier version
-        of _bisect_xstar used a plain (non-custom_jvp) bisection, which
-        gave a finite, correctly-SIGNED, but VALUE-wrong gradient (~6%
-        off, confirmed by exactly this kind of check) since the
-        comparison inside a naive bisection loop has zero gradient
-        everywhere, silently dropping the indirect d(price)/d(x*) *
-        d(x*)/d(sigma) term -- the earlier finite/positive-only test
-        above did not catch this; only a direct value comparison does."""
+        """The autodiff sigma-gradient matches finite differences in value. It must include
+        the path through the exercise boundary x* (`_bisect_xstar`, a custom_jvp); a plain
+        bisection has zero gradient and drops the d(price)/d(x*) * d(x*)/d(sigma) term
+        while keeping the right sign."""
         targets = build_coterminal_basket(
             exercise_times=[3.0], final_maturity_time=8.0,
             notional=1_000_000.0, payer=True, market_vols=[0.009],
@@ -245,12 +221,8 @@ class TestPriceLgmSwaptionSanity:
         assert grad == pytest.approx(fd, rel=1e-4)
 
     def test_gradient_wrt_piecewise_sigma_bucket_matches_finite_difference(self):
-        """Same value-level check, but for a genuine multi-bucket Sigma --
-        confirms the custom_jvp correction and the Sigma pytree
-        registration (both required for this gradient to be correct at
-        all -- see engine.models.lgm.Sigma's own docstring) work together
-        correctly when sigma is a Sigma object nested inside a params
-        tuple, not a bare scalar."""
+        """The same value check with a multi-bucket `Sigma` nested in the params tuple (needs
+        both the custom_jvp and `Sigma`'s pytree registration)."""
         targets = build_coterminal_basket(
             exercise_times=[3.0], final_maturity_time=8.0,
             notional=1_000_000.0, payer=True, market_vols=[0.009],
@@ -295,8 +267,7 @@ class TestBachelierSwaptionPrice:
         assert high > low
 
     def test_matches_atm_straddle_half_closed_form(self):
-        """At an exactly ATM strike, the general Bachelier formula must
-        collapse to the well-known closed form
+        """ATM, the Bachelier formula reduces to
         `notional * annuity * vol * sqrt(T0 / (2*pi))`."""
         targets = build_coterminal_basket(
             exercise_times=[3.0], final_maturity_time=8.0,

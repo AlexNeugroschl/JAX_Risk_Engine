@@ -1,60 +1,22 @@
 """
-Co-terminal European swaption calibration basket, and the LGM closed-form
-swaption pricer each basket instrument is priced with during calibration.
+Co-terminal European swaption basket, and the LGM closed-form swaption pricer used to fit it.
 
-**Co-terminal basket construction**, mirroring
-`ore::data::IrModelBuilder::buildSwaptionBasket()`
-(`OREData/ored/model/irmodelbuilder.cpp`): one European swaption per
-Bermudan/American exercise date, each into a swap that matures on the
-SAME final date as the trade being calibrated for (the underlying's own
-final maturity) -- so an exercise schedule `[1Y, 2Y, 3Y, 4Y]` against a
-trade maturing in `5Y` produces basket instruments `1Yx4Y, 2Yx3Y, 3Yx2Y,
-4Yx1Y` (expiry x tenor-to-the-shared-final-maturity). This is ORE's own
-"diagonal"/co-terminal convention (as opposed to a "co-initial" basket,
-which ORE also supports but does not use by default) -- chosen because a
-Bermudan's exercise-into-the-remaining-swap structure is naturally
-co-terminal: exercising at `t_i` always means entering the SAME underlying
-swap that runs to the trade's final maturity, just with a shorter
-remaining tenor.
+Basket: one European per exercise time, each into a swap ending on the shared final
+maturity (e.g. exercises 1Y..4Y on a 5Y trade give 1Yx4Y, 2Yx3Y, 3Yx2Y, 4Yx1Y), as ORE's
+`IrModelBuilder::buildSwaptionBasket` builds by default, struck ATM.
 
-**Pricing each basket instrument** (`price_lgm_swaption` below): the LGM
-analogue of `QuantExt::AnalyticLgmSwaptionEngine` -- Jamshidian's bond-
-option decomposition expressed in LGM's own `H`/`zeta`/`x`-state variables
-(`engine.models.lgm`), rather than Hull-White's `A`/`B`/`r`-state variables
-(`engine.models.hull_white`, which `engine.instruments.european_swaption`
-uses). A SEPARATE closed-form pricer from `european_swaption.py`'s
-Jamshidian decomposition -- not a duplicate of it -- because the two
-modules price under genuinely different model realizations (see
-`engine.models.lgm`'s own module docstring: HW1F and LGM are NOT
-interchangeable parametrizations of the same model for t>0), and because
-this pricer's whole purpose is to be evaluated repeatedly with a TRIAL
-`Sigma` during calibration (see `engine/calibration/lgm.py`), which
-`european_swaption.py`'s HW1F-only formulas cannot express (LGM's
-`Sigma` is genuinely piecewise; HW1F stays constant-only in this codebase
--- see `engine.models.hull_white`'s module docstring on why).
+Differs from ORE: ORE derives the basket from the trade's own exercise dates. Here the
+caller supplies exercise and maturity times as year fractions; each is rounded to whole
+months and turned into a tenor-quoted swap on the evaluation date, and the expiry is set
+two TARGET business days before that swap's first accrual date (I-47).
 
-**Live-verified against ORE**, via two independent routes since
-`QuantExt::AnalyticLgmSwaptionEngine`'s constructor is not exposed through
-this codebase's installed ORE Python bindings (confirmed directly: SWIG
-only exposes `enableCache`/`clearCache`/`setZetaShift`/`resetZetaShift` on
-`ORE.AnalyticLgmSwaptionEngine`, not a usable constructor -- see
-`ORE-SWIG/QuantExt-SWIG/SWIG/qle_pricingengines.i`, which declares no
-`%extend` constructor for this class): (1) every individual formula
-(`bond_price`, `bond_option_sigma`, `numeraire`) is independently
-live-verified to machine precision against `ORE.LinearGaussMarkovModel`'s
-own exposed methods (see `engine/models/lgm.py` and
-`tests/test_models_piecewise_sigma.py`); (2) the FULL swaption price this
-module computes is cross-checked against a numeraire-deflated Monte Carlo
-simulation of `x(T0) ~ N(0, zeta(T0))` (the model's own exact terminal
-distribution, per `QuantExt::IrLgm1fStateProcess::variance`), discounted
-through `engine.models.lgm.numeraire` rather than naively through
-`P(0,T0)` -- LGM's own measure is NOT the T0-forward measure, so naive
-discounting was tried first and shown to disagree with the closed form by
-~11%, a real modeling bug in that MC methodology (not the closed form,
-which was independently confirmed correct once the MC was fixed to
-properly deflate by the model's own numeraire) -- see this module's test
-suite for the corrected version, matching to within Monte Carlo standard
-error (~0.05% relative, N=3,000,000 paths).
+Pricer: `price_lgm_swaption` is Jamshidian's decomposition in the LGM state variable, the
+equivalent of `QuantExt::AnalyticLgmSwaptionEngine` (whose constructor ORE's Python
+bindings do not expose). Its building blocks match `ORE.LinearGaussMarkovModel` to machine
+precision, and the full price is checked against a numeraire-deflated Monte Carlo of
+x(T0) ~ N(0, zeta(T0)) in tests/test_calibration_basket.py. It is separate from
+`engine.instruments.european_swaption`, which prices under Hull-White (see
+`engine.models.lgm` for why the two differ).
 """
 from dataclasses import dataclass
 from typing import List, Union
@@ -73,16 +35,10 @@ from engine.models.ore_builders import (
 
 @dataclass
 class CalibrationTarget:
-    """One co-terminal European swaption calibration target: its own
-    expiry/underlying cashflow structure (built via a real ORE swap, exact
-    date/accrual conventions) plus the market volatility it must be priced
-    to match.
+    """One co-terminal European swaption to fit: the underlying's fixed-leg cashflows
+    (from a real ORE swap) and its market volatility.
 
-    market_vol: a normal (basis-point) volatility -- this codebase prices
-    every swaption via the Bachelier/normal-vol convention throughout
-    (matching `engine.risk.greeks`'s own Vega convention), NOT
-    shifted-lognormal, so `black_price` below uses the Bachelier formula
-    directly rather than converting through a shift.
+    `market_vol` is a normal (Bachelier) volatility in absolute rate units (0.01 = 100bp).
     """
     expiry_time: float                 # T0, year-fraction from evaluation_date
     accrual_start_time: float          # T_start, the underlying's own first accrual date
@@ -106,24 +62,13 @@ def build_coterminal_basket(
     index_tenor_months: int = 6,
 ) -> List[CalibrationTarget]:
     """
-    Builds one co-terminal `CalibrationTarget` per exercise date: a
-    European swaption expiring at that date, into a swap running from the
-    exercise date to `final_maturity_time` -- ORE's own diagonal/
-    co-terminal basket convention (see module docstring).
+    One ATM co-terminal `CalibrationTarget` per exercise time, each into a swap running to
+    `final_maturity_time`. `market_vols[i]` is the normal vol for `exercise_times[i]`.
 
-    Each underlying swap is struck AT-THE-MONEY (its own par rate under
-    `zero_curve`, computed directly from the swap's own annuity/discount
-    factors -- the standard par-swap-rate identity, not re-derived from
-    ORE internals) -- calibration baskets are conventionally ATM (matching
-    `ore::data::IrModelBuilder::getStrike` returning `Null<Real>()`, ORE's
-    own sentinel for "use the ATM strike", whenever no explicit strike is
-    configured, which is the common case this module targets).
-
-    `market_vols[i]` is the market NORMAL volatility for the `i`-th
-    exercise date's swaption (same length/order as `exercise_times`) --
-    supplied by the caller (this module does not fetch a live market vol
-    surface; `engine/calibration/lgm.py`'s own callers are expected to
-    supply real market quotes).
+    The strike is the underlying's par rate on `zero_curve`, (P(T_start) - P(T_end)) /
+    annuity, which is what ORE's ATM default (`IrModelBuilder::getStrike` returning
+    `Null<Real>()`) gives on a single curve. Forward start and tenor are rounded to whole
+    months (see module docstring).
     """
     if len(exercise_times) != len(market_vols):
         raise ValueError(
@@ -136,18 +81,7 @@ def build_coterminal_basket(
         if tenor_years <= 0.0:
             raise ValueError("co-terminal basket requires every exercise time to precede the final maturity")
         forward_start_years = T0
-        # Whole MONTHS, never a fractional-year string: `ORE.Period(str)`
-        # only parses an integer count with a unit -- `ORE.Period("0.75Y")`
-        # silently parses to `0Y` (confirmed directly: no exception, no
-        # fractional-year support at all), which would silently build a
-        # zero-length (or wrong-length) underlying swap for any exercise
-        # date that doesn't split the trade's own maturity into whole
-        # years -- a real bug caught by this module's own edge-case tests
-        # (a sub-year gap to final maturity, e.g. a 3M-tenor final bucket).
-        # Rounding to the nearest whole month (not year) keeps the
-        # resulting swap's own tenor accurate to within half a month for
-        # any exercise schedule, matching the day-count precision every
-        # other period in this codebase is built to.
+        # Whole months: `ORE.Period("0.75Y")` silently parses as 0Y.
         tenor_months = int(round(tenor_years * 12))
         if tenor_months <= 0:
             raise ValueError(
@@ -156,13 +90,9 @@ def build_coterminal_basket(
             )
         swap_tenor = f"{tenor_months}M"
 
-        # Build once at a placeholder rate to get the schedule/discount
-        # factors, then re-strike at the par rate implied by zero_curve
-        # (NOT ORE's own discount curve, since calibration is meant to
-        # price consistently against the SAME curve engine.models.lgm
-        # itself discounts with -- see price_lgm_swaption below). A market
-        # quote's expiry and tenor are measured from today, so here the
-        # tenor is resolved on the evaluation date.
+        # Build at a placeholder rate for the schedule, then strike at par on `zero_curve`,
+        # the curve the LGM pricer discounts with. Market quotes are measured from today,
+        # so the tenor is resolved on the evaluation date.
         effective_date, maturity_date = resolve_swap_dates(
             evaluation_date, swap_tenor, ORE.Period(int(round(forward_start_years * 12)), ORE.Months))
         placeholder = build_vanilla_swap(
@@ -198,24 +128,11 @@ def build_coterminal_basket(
 
 
 def _bisect_xstar_raw(coupon_bond_value_fn, iterations: int = 100) -> jax.Array:
-    """The bisection itself (forward value only -- see `_bisect_xstar`,
-    which wraps this with a differentiable implicit-function-theorem
-    correction). NOT differentiable correctly on its own: `val > 0.0`'s
-    comparison has zero gradient everywhere, so a naive `jax.grad` through
-    this loop silently ignores how x* itself shifts with `coupon_bond_
-    value_fn`'s own parameters (sigma, a, the curve) -- captured only
-    `price_lgm_swaption`'s DIRECT dependence on sigma (through `K`/
-    `sigma_p`/`P0_Ti` evaluated AT a fixed x*), not the INDIRECT
-    dependence through x* moving -- silently wrong by construction, not
-    merely imprecise. Confirmed directly: an earlier version of this
-    function was used without the correction below, and
-    `engine.risk.greeks.bermudan_vega`'s own cross-check against a full
-    finite-difference recalibration caught a systematic ~6% error in
-    `price_lgm_swaption`'s own `jax.grad` w.r.t. sigma, traced to exactly
-    this missing term (see `tests/test_calibration_basket.py`'s gradient
-    correctness tests, and `tests/test_greeks_bermudan.py`'s Vega
-    finite-difference check, both of which fail without `_bisect_xstar`'s
-    `custom_jvp` wrapper)."""
+    """Bisection for x* on the fixed bracket [-2, 2] (forward value only).
+
+    Its gradient is wrong on its own: the comparison has zero derivative, so `jax.grad`
+    misses how x* moves with the parameters (a ~6% Vega error when this was used
+    uncorrected). Use `_bisect_xstar`."""
     lo, hi = jnp.array(-2.0), jnp.array(2.0)
 
     def body(carry, _):
@@ -232,22 +149,12 @@ def _bisect_xstar_raw(coupon_bond_value_fn, iterations: int = 100) -> jax.Array:
 
 def _bisect_xstar(coupon_bond_value_fn, params, iterations: int = 100) -> jax.Array:
     """
-    Differentiable wrapper around `_bisect_xstar_raw`, via the implicit
-    function theorem -- the SAME correction `european_swaption._solve_
-    rstar` applies (see that function's own extensive docstring for the
-    full derivation; this is its single-scalar specialization, not a
-    separate derivation): at a root of `f(x*, params) = 0`,
-    `dx*/dparams . v = -(df/dparams . v) / (df/dx)` for any tangent
-    direction `v`, computed via one `jax.grad` (for `df/dx`, at the
-    stop-gradient'd converged root) and one `jax.jvp` (for the directional
-    derivative `df/dparams . v`).
+    `_bisect_xstar_raw` with an implicit-function-theorem JVP: at the root of
+    f(x*, params) = 0, dx* = -(df/dparams . v) / (df/dx). The single-scalar case of
+    `european_swaption._solve_rstar`.
 
-    `coupon_bond_value_fn(x, params) -> value`: `params` is an explicit
-    pytree (here, `(a, sigma)`, whatever `price_lgm_swaption`'s caller
-    wants `jax.grad` with respect to) -- required by `jax.custom_jvp`,
-    which needs an explicit primal argument to attach a JVP rule to; a
-    plain closure's captured tracers cannot be used directly (same
-    constraint `_solve_rstar`'s own docstring explains).
+    `params` (here `(a, sigma)`) is an explicit argument because `jax.custom_jvp` can only
+    attach tangents to explicit primals, not to tracers captured in a closure.
     """
     @jax.custom_jvp
     def solve(p):
@@ -272,28 +179,13 @@ def price_lgm_swaption(
     curve: ZeroCurve, a: float, sigma: Union[float, Sigma], target: CalibrationTarget,
 ) -> jax.Array:
     """
-    t=0 NPV of one co-terminal European swaption under LGM, for a trial
-    `(a, sigma)` -- the model-price half of calibration's error function
-    `model_price - market_price` (see `engine/calibration/lgm.py`).
+    t=0 price of one co-terminal European swaption under LGM for trial `(a, sigma)`.
 
-    Jamshidian's decomposition in LGM's own state variable (see module
-    docstring): find x* such that the signed coupon bond (every fixed
-    cashflow, the final notional, minus the notional received back at the
-    swap's own accrual start) is worth exactly 0 at the exercise date, then
-    price each leg as a zero-coupon bond option struck at that leg's
-    x*-implied forward price. Payer = sum of bond puts, receiver = sum of
-    bond calls -- identical sign convention to
-    `engine.instruments.european_swaption._price_one_swaption`, live-
-    verified there against `ORE.JamshidianSwaptionEngine` (a DIFFERENT
-    model, HW1F, but the SAME put/call/payer/receiver sign convention,
-    since both are Jamshidian-style decompositions of the same trade
-    economics).
+    Jamshidian: find x* where the signed coupon bond (fixed coupons, final notional, minus
+    the notional at accrual start) is worth 0 at expiry, then price each cashflow as a zero
+    bond option struck at its price at x*. Payer = sum of puts, receiver = sum of calls.
 
-    Differentiable end-to-end in `sigma` (and `a`) via `_bisect_xstar`'s
-    implicit-function-theorem correction -- REQUIRED, not merely more
-    precise than a naive bisection gradient: see `_bisect_xstar_raw`'s own
-    docstring for the concrete ~6% error this correction fixes (caught via
-    `engine.risk.greeks.bermudan_vega`'s finite-difference cross-check).
+    Differentiable in `a` and `sigma` through `_bisect_xstar`.
     """
     T0 = target.expiry_time
     T_start = target.accrual_start_time
@@ -323,21 +215,12 @@ def price_lgm_swaption(
 
 def bachelier_swaption_price(target: CalibrationTarget, curve: ZeroCurve) -> jax.Array:
     """
-    Market price implied by `target.market_vol` via the Bachelier (normal)
-    formula on the underlying's own par annuity -- the calibration target
-    `price_lgm_swaption` above is fit against. Same normal-vol convention
-    `engine.risk.greeks` uses for Vega (see that module's docstring): price
-    = notional * annuity * [ (F-K)*N(d) + vol*sqrt(T0)*phi(d) ], with
-    `d = (F-K)/(vol*sqrt(T0))` and F == K exactly for an ATM basket (see
-    `build_coterminal_basket`, which always strikes at par) -- so this
-    collapses to `notional * annuity * vol * sqrt(T0/(2*pi))`, the standard
-    ATM Bachelier straddle-half formula, but the general (non-ATM-safe)
-    form is used here so this function stays correct if a future caller
-    supplies a non-ATM basket. `annuity` here is computed from the SAME
-    `zero_curve`/cashflow schedule `build_coterminal_basket` used to strike
-    the basket at par, so `forward == target.forward_rate` exactly (no
-    curve mismatch between the two price functions being compared during
-    calibration).
+    Market price of `target` from its normal vol (Bachelier on the underlying's annuity):
+
+        notional * annuity * [(F-K)*N(d) + vol*sqrt(T0)*phi(d)],  d = (F-K)/(vol*sqrt(T0))
+
+    The target carries no separate strike, so K = F and this is
+    notional * annuity * vol * sqrt(T0 / (2*pi)).
     """
     from jax.scipy.stats import norm
 

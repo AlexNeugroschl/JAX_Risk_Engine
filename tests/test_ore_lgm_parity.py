@@ -1,35 +1,26 @@
 """
-Bermudan and American swaption prices must equal ORE's own
-`NumericLgmMultiLegOptionEngine`, to floating-point precision.
+Bermudan and American swaption prices equal ORE's `NumericLgmMultiLegOptionEngine` to
+floating-point precision.
 
-The oracle (`engine/validation/ore_lgm_oracle.py`) runs ORE's real pricing path --
-trade XML -> `LGMGridSwaptionEngineBuilder` -> `NumericLgmMultiLegOptionEngine`
--- on this engine's own underlying swap, curve and LGM parameters. The
-engine runs ORE's own backward loop (same model, same convolution rollback,
-same cashflow bookkeeping, same grid), so at the same grid settings it
-reproduces ORE's NUMBERS, not only their converged limit. Measured worst
-case across every case here: 8.7e-12 relative. Hence a 1e-10 tolerance,
-not the few-percent model gap `test_ore_bermudan_oracle.py` has to allow
-against QuantLib's Hull-White engines: any change to the algorithm, however
-small, shows up.
+The oracle (`engine/validation/ore_lgm_oracle.py`) runs ORE's pricing path (trade XML ->
+`LGMGridSwaptionEngineBuilder` -> `NumericLgmMultiLegOptionEngine`) on this engine's swap,
+curve and LGM parameters. The engine runs the same backward loop on the same grid, so it
+reproduces ORE's numbers, not just their converged limit: measured worst case 8.7e-12
+relative, hence a 1e-10 tolerance (compare the few-percent model gap
+`test_ore_bermudan_oracle.py` allows against QuantLib's Hull-White engines).
 
-WHAT EACH CASE GROUP PINS, and the ORE source that defines it:
+Case groups and the ORE behaviour each pins:
 
-  * aligned Bermudan -- exercise on fixed accrual starts. Exercises every
-    floating coupon's projection, including coupons whose index fixing
-    period differs from their accrual period (I-31):
-    `LgmVectorised::fixing` projects over `[valueDate(fix), maturityDate]`.
-  * mid-period Bermudan -- exercise 100 days into a period. ORE exercises
-    into the next WHOLE period (`belongsToUnderlyingMaxTime_ =
-    accrualStart` for Bermudan), so the in-progress coupon is excluded.
-  * American -- ORE keeps a coupon until its accrual END and credits
-    `couponRatio(t)` of it (I-06). High strike at low vol is where the
-    engine used to be furthest off (6x).
-  * American with a fractional step count >= 0.5 -- ORE sizes the grid with
-    a truncating `static_cast<Size>`, not rounding.
-  * zero volatility -- the option collapses to its best intrinsic value,
-    a direct check of the underlying's cashflow valuation.
-  * piecewise Sigma -- ORE's `VolatilityTimes`/`Volatility`.
+  * aligned Bermudan: exercise on fixed accrual starts; includes coupons whose index fixing
+    period differs from their accrual period (I-31; `LgmVectorised::fixing` projects over
+    `[valueDate(fix), maturityDate]`).
+  * mid-period Bermudan: exercise 100 days into a period enters the next whole period
+    (`belongsToUnderlyingMaxTime_ = accrualStart`), excluding the coupon in progress.
+  * American: a coupon is kept until its accrual end and credited `couponRatio(t)` (I-06);
+    high strike at low vol is the most sensitive case.
+  * American with a fractional step count >= 0.5: ORE truncates (`static_cast<Size>`).
+  * zero volatility: the best intrinsic value, checking the underlying's cashflows.
+  * piecewise Sigma: ORE's `VolatilityTimes`/`Volatility`.
 """
 from dataclasses import dataclass
 from typing import Callable, Union

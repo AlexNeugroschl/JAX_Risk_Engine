@@ -1,35 +1,19 @@
 """
-W0.8 -- crash-safe publication and the durable result store
-(`docs/planning/traderx-integration-plan.md` §W0.8, closing the half that
-W1.6.4 left open; `docs/known-issues.md` I-08).
+Crash-safe publication and the durable result store (`engine.integration.publication`,
+I-08). These test what survives a crash; the state machine itself is covered by
+test_integration_eod_routes.py, which passes against a memory-only store.
 
-**What is under test here is what survives a crash, not what happens when
-nothing goes wrong.** The state machine and the workload key were already
-covered by `test_integration_eod_routes.py`; every one of those tests passes
-against a pure in-memory store. These tests are the ones that fail against
-it.
+Crash windows, each reproduced by leaving the store in the state that crash would:
 
-The plan names four crash windows and this file drives each of them
-directly, by doing to the store exactly what a crash at that instant would
-leave behind:
+  1. between artifact write and manifest publish: lookup finds nothing, in particular no
+     partial result;
+  2. after publish: lookup finds the complete result;
+  3. between publish and pointer advance: lookup still finds it, via the scan (the manifest,
+     not the pointer, is the commit point);
+  4. restart: completed attempts survive; running ones are reported as unknown.
 
-  1. kill between artifact write and manifest publish -> lookup finds
-     nothing, and in particular finds no *partial* result
-  2. kill after publish -> lookup finds the complete result
-  3. **kill between publish and pointer advance -> lookup still finds it**,
-     via the scan. This is the window TraderX found in v3 and the reason
-     the manifest, not the pointer, is the commit point.
-  4. restart -> completed attempts survive; running ones do not, and are
-     reported honestly as unknown rather than as something else
-
-**Why simulate crashes by manipulating the store rather than killing a
-process.** A real `SIGKILL` mid-publication is not reproducible on demand:
-you cannot land it in the one-instruction window between the rename and
-the pointer write. Removing the pointer *after* a successful publication
-produces the identical on-disk state, deterministically, and that state is
-the thing the recovery path actually has to cope with. The alternative --
-a test that kills a subprocess and hopes -- would be flaky in exactly the
-direction that trains people to ignore it (working rule 10).
+The state is constructed directly (e.g. deleting the pointer after a publication) because a
+real kill cannot be landed in the window between rename and pointer write on demand.
 """
 import json
 from pathlib import Path
@@ -70,13 +54,11 @@ def _publish(store, attempt_id, key=KEY, state=STATE_COMPLETED, **kwargs):
 
 
 class TestTheStoreLayoutIsWhatTheProtocolNeeds:
-    """The four-step protocol's guarantees rest on filesystem behaviour
-    that only holds under specific conditions. These pin the conditions."""
+    """Filesystem conditions the protocol's guarantees depend on."""
 
     def test_temp_directory_is_a_sibling_of_attempts(self, store):
-        """`os.replace` is atomic only *within* a filesystem. A temp dir on
-        another device turns step 3 from a rename into a copy -- or into a
-        `OSError`, on a machine that may not be the developer's."""
+        """`os.replace` is atomic only within one filesystem, so tmp/ sits beside
+        attempts/."""
         assert (store.root / "tmp").parent == (store.root / "attempts").parent
 
     def test_publication_leaves_no_temp_files_behind(self, store):
@@ -84,26 +66,23 @@ class TestTheStoreLayoutIsWhatTheProtocolNeeds:
         assert list((store.root / "tmp").iterdir()) == []
 
     def test_pointer_filename_contains_no_colon(self, store):
-        """A workload key is `sha256:<hex>`, and a colon opens an alternate
-        data stream on Windows. The key is digested, not escaped."""
+        """A workload key is `sha256:<hex>`; `:` is not legal in a Windows filename, so the
+        key is digested."""
         _publish(store, "att-1")
         names = [p.name for p in (store.root / "pointers").iterdir()]
         assert names and all(":" not in name for name in names)
 
     def test_manifest_records_its_own_schema(self, store):
-        """So a future reader can refuse an unfamiliar layout rather than
-        guess at it -- the same reason the bundle loader pins its schema."""
+        """A reader can refuse an unfamiliar layout rather than guess."""
         manifest = _publish(store, "att-1")
         assert manifest["publicationSchema"] == PUBLICATION_SCHEMA
 
 
 class TestCrashBeforeManifestPublish:
-    """Window 1: killed between writing artifacts and publishing the
-    manifest. **Nothing partial may be discoverable.**"""
+    """Window 1: nothing partial is discoverable."""
 
     def test_staged_bytes_are_not_discoverable(self, store):
-        """A manifest sitting in `tmp/` is not a published result, however
-        complete its contents happen to be."""
+        """A complete-looking manifest in tmp/ is not published."""
         staged = store.root / "tmp" / "att-1.deadbeef.json"
         staged.write_bytes(
             json.dumps(
@@ -120,10 +99,7 @@ class TestCrashBeforeManifestPublish:
         assert store.read_attempt("att-1") is None
 
     def test_a_truncated_manifest_is_not_served(self, store):
-        """The bytes under `attempts/` are the commit point, so a torn one
-        must read as absent rather than as a result with missing fields.
-        Returning a partially-parsed document would be the file-level
-        version of the silently-wrong-number failure."""
+        """A torn manifest under attempts/ reads as absent, not as a partial result."""
         _publish(store, "att-1")
         path = store.root / "attempts" / "att-1.json"
         raw = path.read_bytes()
@@ -140,8 +116,7 @@ class TestCrashBeforeManifestPublish:
         assert store.read_attempt("att-1") is None
 
     def test_one_unreadable_manifest_does_not_break_every_lookup(self, store):
-        """An unreadable file is skipped, not raised on. One bad artifact
-        from a future writer must not take out the whole store."""
+        """An unreadable file is skipped, so one bad file cannot break every lookup."""
         _publish(store, "att-good")
         (store.root / "attempts" / "att-bad.json").write_bytes(b"{not json")
         found = store.lookup(KEY)
@@ -164,14 +139,9 @@ class TestCrashAfterPublish:
 
 
 class TestCrashBetweenPublishAndPointerAdvance:
-    """Window 3 -- **the gap TraderX found in v3.**
-
-    A crash here leaves a complete, correct, published result whose pointer
-    never advanced. A lookup that trusted the pointer would answer
-    `UNKNOWN_WORKLOAD` for finished work, which is precisely what invites a
-    coordinator to resubmit an overnight batch it already has the answer
-    to. Every test in this class fails against a pointer-only lookup.
-    """
+    """Window 3: a crash leaves a published result with a stale pointer. Trusting the
+    pointer would answer `UNKNOWN_WORKLOAD` for finished work; every test here fails
+    against a pointer-only lookup."""
 
     def _drop_pointer(self, store):
         for pointer in (store.root / "pointers").iterdir():
@@ -185,8 +155,7 @@ class TestCrashBetweenPublishAndPointerAdvance:
         assert found["attemptId"] == "att-1"
 
     def test_the_scan_advances_the_pointer_as_a_side_effect(self, store):
-        """So the scan cost is paid once per crash, not on every lookup
-        forever after."""
+        """The scan cost is paid once per crash."""
         _publish(store, "att-1")
         self._drop_pointer(store)
         assert list((store.root / "pointers").iterdir()) == []
@@ -194,11 +163,8 @@ class TestCrashBetweenPublishAndPointerAdvance:
         assert len(list((store.root / "pointers").iterdir())) == 1
 
     def test_a_stale_pointer_does_not_hide_a_newer_result(self, store):
-        """The pointer is a cache, and this is the crash that makes it
-        stale: the *second* publication commits its manifest (step 3) and
-        dies before advancing the pointer (step 4). The pointer still names
-        a perfectly valid older attempt, so nothing about it looks wrong --
-        which is exactly why the scan has to be the authority."""
+        """A second publication commits but dies before advancing the pointer, which still
+        names a valid older attempt; the scan must find the newer one."""
         _publish(store, "att-old")
         pointer_after_first = store._pointer_path(KEY).read_bytes()
         _publish(store, "att-new")
@@ -206,10 +172,8 @@ class TestCrashBetweenPublishAndPointerAdvance:
         assert store.lookup(KEY)["attemptId"] == "att-new"
 
     def test_the_pointer_never_moves_backwards(self, store):
-        """A reconciling scan or a late publication must not point the
-        cache at an attempt an earlier write already superseded -- every
-        later lookup would then serve the older result without scanning to
-        notice."""
+        """A late publication or reconciling scan never points the cache at a superseded
+        attempt."""
         _publish(store, "att-old")
         _publish(store, "att-new")
         store._advance_pointer(KEY, "att-old", sequence=0)
@@ -222,9 +186,8 @@ class TestCrashBetweenPublishAndPointerAdvance:
         assert store.lookup(KEY)["attemptId"] == "att-1"
 
     def test_a_pointer_naming_another_workloads_attempt_is_refused(self, store):
-        """The one case where trusting the pointer would return a result
-        computed from **different inputs** -- the failure this whole
-        boundary exists to prevent, reached through a corrupted cache."""
+        """A pointer naming another workload's attempt is not trusted (it would serve a
+        result from different inputs)."""
         _publish(store, "att-other", key=OTHER_KEY)
         _publish(store, "att-mine", key=KEY)
         pointer = store._pointer_path(KEY)
@@ -241,8 +204,7 @@ class TestCrashBetweenPublishAndPointerAdvance:
 
 
 class TestOnlySuccessfulAttemptsAreServed:
-    """Plan §W0.8: lookup returns the most recent *successful* attempt --
-    never a failed, partial or in-flight one."""
+    """Lookup serves the most recent successful attempt, never a failed or in-flight one."""
 
     def test_a_failed_attempt_is_published_but_not_served_by_workload(self, store):
         _publish(store, "att-failed", state=STATE_FAILED, reason="boom")
@@ -259,8 +221,7 @@ class TestOnlySuccessfulAttemptsAreServed:
         assert list((store.root / "pointers").iterdir()) == []
 
     def test_publishing_a_running_attempt_is_refused(self, store):
-        """An in-flight computation has no result to commit, and publishing
-        one would make it discoverable as a finished answer."""
+        """A running attempt has no result to commit and is never published."""
         with pytest.raises(PublicationError, match="only terminal"):
             store.publish(
                 attempt_id="att-1", workload_key=KEY, state=STATE_RUNNING
@@ -273,13 +234,10 @@ class TestOnlySuccessfulAttemptsAreServed:
 
 
 class TestStep2VerifiesWhatWasActuallyWritten:
-    """Step 2 of the protocol. Hashing what was *meant* to be written
-    proves nothing; a short write nobody reads back is a durable artifact
-    that verifies against nothing."""
+    """Step 2 verifies the bytes actually written, not those meant to be written."""
 
     def test_a_corrupted_write_is_refused_and_publishes_nothing(self, store, monkeypatch):
-        """Simulates the filesystem returning different bytes than were
-        written -- the case step 2 exists for."""
+        """The filesystem returning different bytes than were written is refused."""
         real_read_bytes = Path.read_bytes
 
         def corrupt(self):
@@ -298,8 +256,7 @@ class TestStep2VerifiesWhatWasActuallyWritten:
         assert list((store.root / "tmp").iterdir()) == []
 
     def test_the_error_names_both_digests(self, store, monkeypatch):
-        """So a reader can tell a truncation from a substitution rather
-        than being told only that something was wrong."""
+        """The error names both digests (truncation vs substitution)."""
         real_read_bytes = Path.read_bytes
         monkeypatch.setattr(
             Path,
@@ -314,9 +271,7 @@ class TestStep2VerifiesWhatWasActuallyWritten:
 
 class TestCanonicalSerialization:
     def test_key_order_does_not_change_the_published_bytes(self, store):
-        """Two manifests differing only in dict order must hash the same,
-        or re-verifying a published artifact would depend on how the writer
-        happened to order a dict."""
+        """Manifests differing only in dict order produce the same bytes and hash."""
         _publish(store, "att-1", submission_id="s1")
         first = (store.root / "attempts" / "att-1.json").read_bytes()
         store.clear()
@@ -325,8 +280,7 @@ class TestCanonicalSerialization:
 
 
 class TestRestartSurvival:
-    """I-08's actual subject. A *new* `AttemptStore` over the *same* root is
-    exactly what a restart produces."""
+    """A new `AttemptStore` over the same root is what a restart produces."""
 
     def test_a_completed_attempt_survives_a_restart(self, store):
         live = AttemptStore(store=store)
@@ -348,10 +302,8 @@ class TestRestartSurvival:
         assert restarted.get(attempt.attempt_id).state == STATE_COMPLETED
 
     def test_idempotent_submission_survives_a_restart(self, store):
-        """**The point of `submissionId`, made durable.** Without this, a
-        coordinator retrying a lost response after a bounce starts a second
-        computation for work already finished -- the duplicate overnight
-        batch, reached through a restart instead of through a race."""
+        """Submission idempotency survives a restart, so a retried lost response does not
+        start a second computation."""
         live = AttemptStore(store=store)
         first = live.start(KEY, submission_id="sub-1")
         first.complete(RESULT)
@@ -372,11 +324,8 @@ class TestRestartSurvival:
         assert "MARKET_INPUTS_NOT_SUPPLIED" in recovered.reason
 
     def test_a_running_attempt_does_not_survive_and_says_so(self, store):
-        """**Deliberate.** A running attempt is never published, because
-        writing one would make an in-flight computation discoverable as a
-        finished answer. Reporting it as unknown after a restart is honest;
-        the coordinator resubmits and the workload key makes it the same
-        computation."""
+        """A running attempt is never published, so after a restart it reads as unknown; the
+        workload key makes the resubmission the same computation."""
         live = AttemptStore(store=store)
         live.start(KEY)
 
@@ -384,9 +333,7 @@ class TestRestartSurvival:
         assert restarted.lookup(KEY) is None
 
     def test_a_rehydrated_attempt_cannot_be_completed_again(self, store):
-        """Immutability has to survive the restart too, or a second run
-        could overwrite a first's recorded outcome through the recovery
-        path."""
+        """Immutability survives the restart."""
         live = AttemptStore(store=store)
         attempt = live.start(KEY)
         attempt.complete(RESULT)
@@ -397,22 +344,14 @@ class TestRestartSurvival:
             recovered.complete({"resultSchema": "different"})
 
     def test_a_result_published_after_a_restart_is_the_most_recent_one(self, store):
-        """**Publication order has to survive the process that assigned
-        it.** A sequence counter held in memory restarts at zero, so the
-        *second* run's attempt claims to predate the first run's -- and a
-        lookup then serves the older result while reporting it as the most
-        recent successful attempt. Nothing about that output looks wrong:
-        it is a real, complete, correctly-priced result for the right
-        workload key, just not the current one.
-
-        This is the test that distinguishes a disk-recovered sequence from
-        a process-local counter; every other test in this file passes
-        against both.
+        """Publication order survives the process that assigned it. A process-local counter
+        restarts at zero, so a later run's attempt would claim to predate the earlier one
+        and lookup would serve the older result as the most recent. This is the one test
+        that separates a disk-recovered sequence from a process-local counter.
         """
         _publish(store, "att-zzz-first")
 
-        # A restart: a brand-new store object over the same root, with no
-        # memory of what the previous process had issued.
+        # A restart: a new store object over the same root.
         restarted_store = ResultStore(store.root)
         restarted_store.publish(
             attempt_id="att-aaa-second",
@@ -421,23 +360,17 @@ class TestRestartSurvival:
             result={"resultSchema": "jax.eod-result.v1", "bundleId": "NEW", "items": []},
         )
 
-        # **The attempt ids are chosen so the tie-break points the wrong
-        # way.** With a process-local counter both attempts are sequence 0,
-        # and `_scan_for_workload`'s deterministic tie-break by attempt id
-        # then prefers `att-zzz-first`. Real attempt ids are uuid4, so this
-        # bug would surface as a result that is stale roughly half the time
-        # -- which is why the ids here are pinned rather than generated.
+        # Attempt ids chosen so the tie-break points the wrong way: with a process-local
+        # counter both are sequence 0 and the id tie-break prefers `att-zzz-first`. (With
+        # uuid4 ids the bug would show about half the time.)
         assert restarted_store.lookup(KEY)["attemptId"] == "att-aaa-second"
         assert restarted_store.lookup(KEY)["result"]["bundleId"] == "NEW"
 
-        # And a *third* reader, with no memory at all, must agree.
+        # A third reader, with no memory, agrees.
         assert ResultStore(store.root).lookup(KEY)["attemptId"] == "att-aaa-second"
 
     def test_the_sequence_high_water_mark_is_recovered_when_lost(self, store):
-        """The high-water file is a cache too. Deleting it must cost a
-        scan, not correctness -- otherwise a restored backup or a crash
-        between the manifest rename and the high-water write would silently
-        restart numbering and invert the order of everything after it."""
+        """Losing the high-water file costs a scan, not the ordering."""
         live = AttemptStore(store=store)
         live.start(KEY).complete(
             {"resultSchema": "jax.eod-result.v1", "bundleId": "OLD", "items": []}
@@ -463,9 +396,7 @@ class TestRestartSurvival:
 
 
 class TestMemoryAndStorePrecedence:
-    """Memory is authoritative for running state; the store is
-    authoritative across restarts. Getting the order wrong inverts the
-    documented precedence."""
+    """Memory is authoritative for running state, the store across restarts."""
 
     def test_a_running_retry_does_not_mask_a_published_success(self, store):
         live = AttemptStore(store=store)
@@ -475,8 +406,7 @@ class TestMemoryAndStorePrecedence:
         assert live.lookup(KEY).attempt_id == done.attempt_id
 
     def test_a_published_success_outranks_an_in_memory_failure(self, store):
-        """'A later failure never hides an earlier success' has to hold
-        when the success is on disk and the failure is in memory."""
+        """A success on disk outranks a later failure in memory."""
         first = AttemptStore(store=store)
         ok = first.start(KEY)
         ok.complete(RESULT)
@@ -487,19 +417,11 @@ class TestMemoryAndStorePrecedence:
         assert restarted.lookup(KEY).attempt_id == ok.attempt_id
 
     def test_memory_answers_before_the_store_is_consulted(self, store):
-        """Callers hold `Attempt` objects, so a memory hit must return the
-        *same object* rather than an equal copy read off disk.
+        """A memory hit returns the same object callers hold, not a copy from disk.
 
-        **Scope, stated honestly.** `_rehydrate`'s guard against replacing
-        a live attempt is defensive: with the current call paths it cannot
-        be reached, because every route into it (`get`, `lookup`,
-        `start`) checks memory first and returns before touching the store.
-        This test pins that precedence, which is the reachable part. It
-        does **not** prove the guard itself -- a rehydration that clobbers
-        passes this file, and the guard stays because it is cheap and
-        because a future caller that scans first would need it. Recording
-        the limit rather than implying coverage that is not there
-        (working rule 9).
+        This pins the precedence (every path checks memory first). It does not test
+        `_rehydrate`'s guard against replacing a live attempt, which current call paths
+        cannot reach; the guard is kept for a future caller that scans first.
         """
         live = AttemptStore(store=store)
         attempt = live.start(KEY, submission_id="sub-live")
@@ -510,9 +432,8 @@ class TestMemoryAndStorePrecedence:
         assert live.start(KEY, submission_id="sub-live") is attempt
 
     def test_a_rehydrated_attempt_does_not_republish(self, store):
-        """An attempt read back from disk must not be wired to the store.
-        If it were, a terminal transition on it would rewrite a manifest
-        that is supposed to be immutable."""
+        """An attempt read back from disk has no store, so it cannot rewrite its
+        immutable manifest."""
         live = AttemptStore(store=store)
         attempt = live.start(KEY)
         attempt.complete(RESULT)
@@ -523,9 +444,7 @@ class TestMemoryAndStorePrecedence:
 
 
 class TestMemoryOnlyRemainsTheDefault:
-    """The store is optional. An `AttemptStore()` with no argument must
-    behave exactly as it did before W0.8's second half, or every existing
-    caller changes behaviour silently."""
+    """With no store argument, `AttemptStore()` is memory-only, as before."""
 
     def test_no_store_means_no_publication(self, tmp_path):
         live = AttemptStore()
@@ -545,25 +464,17 @@ class TestDefaultStoreRoot:
         assert default_store_root() == tmp_path / "configured"
 
     def test_default_is_not_the_working_directory(self, monkeypatch):
-        """A store rooted at the cwd would scatter results wherever the
-        service happened to be started from, making 'did this restart see
-        the same store?' depend on how it was launched."""
+        """The default root is not the working directory."""
         monkeypatch.delenv("JAX_EOD_STORE_ROOT", raising=False)
         assert default_store_root() != Path.cwd()
 
 
 class TestConcurrentPublication:
-    """The store is shared across FastAPI's thread pool, so read-then-
-    increment of the sequence is a race unless it is locked."""
+    """The sequence read-then-increment is locked (the store serves a thread pool)."""
 
     def test_concurrent_publications_get_distinct_sequences(self, store):
-        """**Without a lock, concurrent publishes read the same high-water
-        mark and issue the same number.** Measured at 30 publications
-        producing *2* distinct sequences before this was guarded -- which
-        collapses "most recent successful attempt" into a tie-break on
-        attempt id, and makes which result a lookup serves effectively
-        arbitrary.
-        """
+        """Unlocked, 30 concurrent publications produced 2 distinct sequences, turning "most
+        recent" into an attempt-id tie-break."""
         import threading
 
         def publish(n):
@@ -585,9 +496,8 @@ class TestConcurrentPublication:
         assert len(set(sequences)) == 30, "concurrent publications collided"
 
     def test_a_publication_and_a_lookup_do_not_deadlock(self, store):
-        """`lookup` holds `_lock` and `publish` takes `_sequence_lock`.
-        Two locks is two chances to order them wrongly, so this pins that
-        they never wait on each other."""
+        """`lookup` holds `_lock` and `publish` takes `_sequence_lock`; they never wait on
+        each other."""
         import threading
 
         errors = []
@@ -615,11 +525,8 @@ class TestConcurrentPublication:
 
 
 class TestStep3FailureIsAPublicationError:
-    """A rename that fails means the result was not published. That has to
-    arrive as `PublicationError`, because the route's honest
-    `RESULT_NOT_PUBLISHED` response hangs off that type -- a bare `OSError`
-    escapes it and surfaces as an opaque 500 saying "something broke"
-    rather than "your result is not discoverable, submit again"."""
+    """A failed rename is a `PublicationError`, so the route answers
+    `RESULT_NOT_PUBLISHED` rather than an opaque 500."""
 
     def test_a_failed_rename_raises_publication_error(self, store, monkeypatch):
         def refuse(src, dst):
@@ -644,22 +551,11 @@ class TestStep3FailureIsAPublicationError:
 
 
 class TestAFailedPublicationLeavesNoTerminalAttemptInMemory:
-    """**The manifest is the commit point -- including for the in-memory
-    attempt.**
+    """The manifest is the commit point for the in-memory attempt too.
 
-    `complete()` used to set `state = completed` and *then* publish. When
-    publication raised, the attempt was left terminal in memory with nothing
-    on disk: an in-process lookup reported `completed` for a result no
-    restart could ever find, and the immutability guard then refused the
-    retry that would have fixed it (`already completed`). The HTTP route
-    returns `500 RESULT_NOT_PUBLISHED`, so the coordinator does learn to
-    retry -- but the retry then hit a process whose own memory contradicted
-    its disk.
-
-    Publishing *before* the state transition makes the two agree: either the
-    manifest landed and the attempt is terminal, or neither happened and the
-    attempt is still running and still retryable. This is the same ordering
-    rule the store itself follows -- commit first, update the cache second.
+    `complete()` once set the state and then published; when publication failed, the
+    attempt was completed in memory with nothing on disk, and the immutability guard then
+    refused the retry. Publishing first means either both happened or neither did.
     """
 
     class _Boom:
@@ -688,18 +584,9 @@ class TestAFailedPublicationLeavesNoTerminalAttemptInMemory:
         assert attempt.result is None
 
     def test_a_failed_publication_still_marks_the_attempt_failed(self):
-        """**The failure path deliberately goes the other way.**
-
-        On the success path an unpublished attempt must not be left
-        terminal -- there is a result worth retrying for, and claiming
-        durability that does not exist is the whole defect. Here there is
-        no result and nothing to retry: the attempt *did* fail. Leaving it
-        `running` because the *record* of the failure did not land would
-        report an in-flight job to a coordinator that would wait forever.
-
-        The error is still raised, so the caller can decide; the state is
-        set regardless.
-        """
+        """The failure path goes the other way: the attempt did fail, so it is marked failed
+        even if that record does not land (leaving it running would make a coordinator wait
+        forever). The error is still raised."""
         attempt = self._attempt()
         with pytest.raises(PublicationError):
             attempt.fail("PRICING_FAILED")
@@ -707,9 +594,8 @@ class TestAFailedPublicationLeavesNoTerminalAttemptInMemory:
         assert attempt.reason == "PRICING_FAILED"
 
     def test_a_swallowed_publication_failure_does_not_strand_the_attempt(self):
-        """What `eod_routes._record_failure` actually does: swallow and
-        return an error naming the real cause. The attempt must not be
-        left discoverable as `running` afterwards."""
+        """As `eod_routes._record_failure` does (swallowing the error), the attempt is not
+        left running."""
         attempts = AttemptStore(store=self._Boom())
         attempt = attempts.start(key=KEY, submission_id="sub-1")
         try:
@@ -720,17 +606,14 @@ class TestAFailedPublicationLeavesNoTerminalAttemptInMemory:
         assert attempts.lookup(KEY).state == STATE_FAILED
 
     def test_the_attempt_can_still_be_completed_once_the_store_recovers(self, tmp_path):
-        """The point of not marking it terminal: the retry must be allowed.
-
-        Under the old ordering the immutability guard fired on the second
-        call (`attempt ... is already completed`), so a transient store
-        failure permanently bricked the attempt."""
+        """Because it was not marked terminal, the retry is allowed once the store
+        recovers."""
         attempts = AttemptStore(store=self._Boom())
         attempt = attempts.start(key=KEY, submission_id="sub-1")
         with pytest.raises(PublicationError):
             attempt.complete(RESULT)
 
-        # Store recovers; the same attempt completes for real.
+        # The store recovers; the same attempt completes.
         working = ResultStore(tmp_path / "recovered")
         attempt._store = working
         attempt.complete(RESULT)

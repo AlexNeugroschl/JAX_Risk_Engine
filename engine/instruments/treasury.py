@@ -1,71 +1,24 @@
 """
-W1.5 -- Treasury bills and notes as a first-class instrument type for
-`engine.portfolio`.
+Treasury bills and notes as an instrument type for `engine.portfolio`.
 
-Both Treasury pricers were built at the integration boundary
-(`engine.integration.bill`/`note`, W1.2/W1.3) because that is where the
-TraderX bundle arrives. That left a real gap, recorded as the wire-through
-half of **I-07**: a direct Python caller of `price_portfolio` had no bond
-pricer at all, because `engine/instruments/` was still exactly four
-rate-derivative modules. This module closes that gap.
+A `BondConfig` carries its own `ZeroCurveConfig` (like `SwaptionConfig`, unlike
+`SwapConfig`'s curve indexes), so there is no curve index to resolve.
 
-`BondConfig` carries **its own `ZeroCurveConfig`**, in the same shape as
-`SwaptionConfig` and unlike `SwapConfig`'s curve *indexes*. That is the
-whole reason a bond cannot reproduce **I-01**: there is no index to resolve,
-so there is no resolution step to forget, and `_compute_all_greeks` cannot
-silently skip one for want of a `SimulationConfig` it was never passed.
+Pricing: every remaining cashflow discounted off that curve, linear zero-rate
+interpolation, flat extrapolation, continuous compounding over ACT/365 from the evaluation
+date. NPV is dirty. This restates the convention of `engine.integration.bill`/`note`
+rather than importing it (integration sits above instruments); the two are pinned
+together by `TestAgreesWithTheIntegrationPricers`.
 
----
+Differs from ORE: this is not ORE's bond engine (`DiscountingRiskyBondEngine`). There is no
+settlement lag, security spread or credit curve, and the coupon schedule is supplied, not
+generated.
 
-**The scenario dimension is refused, not broadcast. Read this before
-adding one.**
-
-`price_portfolio`'s `npv_cube` is `[Scenarios, TimeSteps, Trades]`: each
-column is a trade's *conditional* NPV at each simulated future step, and
-`engine.risk.var_es` turns those columns into VaR and ES. Every existing
-instrument type fills its column from simulated Hull-White paths.
-
-A bond priced here has **no such column to fill**. It is closed-form
-arithmetic against one curve -- there is no stochastic driver and no time
-evolution, so the only thing that *could* be written into a
-`[Scenarios, TimeSteps]` slab is one t=0 number broadcast across every
-entry. That is precisely the silent approximation this codebase refuses,
-and it fails in a way that looks measured:
-
-    a zero-variance column produces VaR = 0.00 and ES = NaN
-
--- confirmed directly, not reasoned about (see
-`tests/test_treasury_instrument.py::TestScenarioPricingIsRefused`). A
-consumer reading `VaR_95 = 0.00` for a $100k bill would conclude the
-position carries no risk, when in fact **its risk was never modelled**. The
-number is not conservative, not approximate, and not labelled -- it is
-absent, wearing the shape of a measurement.
-
-So `price_bond_scenarios` does not exist, and `_price_by_type` **raises**
-rather than inventing a column. `price_bond_base` (t=0, deterministic) is
-the real, honest thing this module offers, and it is what
-`_base_npv_per_trade` and the Greeks path consume. A bond reaches a
-portfolio's `base_npv` and `base_npv_per_trade`; it does not reach
-`npv_cube`, and `price_portfolio` says so by name instead of quietly
-returning a zero.
-
-**Closing this needs a bond scenario model** -- rate paths repriced through
-the bond's own schedule -- which is genuine modelling work, not plumbing.
-Registered as **I-24**.
-
----
-
-**Pricing math is not reimplemented here.** The discounting convention
-(ACT/365 Fixed, continuously compounded) and the accrual treatment are the
-same ones `engine.integration.bill`/`note` already state and test. This
-module deliberately imports **neither**: `engine.integration` sits *above*
-`engine.instruments` in the dependency order (integration imports
-instruments, never the reverse), and reversing that to share ~20 lines of
-`exp(-r*t)` would couple the instrument layer to the TraderX bundle format.
-The duplication is small, fully tested, and pinned against the integration
-pricers by `TestAgreesWithTheIntegrationPricers`, which prices the *same*
-instrument through both paths and asserts they agree to the cent -- so a
-drift between them fails a test rather than going unnoticed.
+No scenario NPV (I-24): a bond has no stochastic driver here, so its `npv_cube` column
+would be one t=0 number broadcast across scenarios, giving VaR = 0 and ES = NaN
+(`tests/test_treasury_instrument.py::TestScenarioPricingIsRefused`). `price_bond_scenarios`
+raises instead. Bonds reach `base_npv`, `base_npv_per_trade` and Greeks; they do not reach
+`npv_cube`.
 """
 import math
 from dataclasses import dataclass
@@ -77,10 +30,8 @@ import ORE
 from engine.day_count import UnsupportedDayCountError, resolve_accrual_day_count
 from engine.simulation.market_model import ZeroCurveConfig
 
-#: Discounting day count for this instrument -- ACT/365 Fixed, matching the
-#: engine's simulation time axis and `engine.integration.bill`'s stated
-#: boundary policy. This is the *discounting* convention and is distinct
-#: from the instrument's own *accrual* convention (the W1.1 split).
+#: Discounting day count (ACT/365, the simulation time axis). Distinct from the bond's
+#: accrual day count.
 DISCOUNT_DAY_COUNT = ORE.Actual365Fixed()
 
 #: Per-pillar bump for `rate_sensitivity`, in absolute rate terms (1bp).
@@ -88,30 +39,19 @@ RATE_BUMP = 1e-4
 
 
 class BondPricingError(Exception):
-    """A bond could not be priced. Distinct from `ValueError` so a caller
-    can tell a *pricing* refusal from a malformed-request error."""
+    """A bond could not be priced. Separate from `ValueError` so pricing refusals are
+    distinguishable from malformed requests."""
 
 
 class ScenarioPricingNotSupported(BondPricingError):
-    """Raised when a `BondConfig` reaches the scenario/`npv_cube` path.
-
-    Deliberately its own type, and deliberately raised rather than handled
-    by returning a broadcast constant -- see the module docstring. A caller
-    that wants a bond's t=0 value should use `compute_greeks`/`base_npv`,
-    both of which are real; a caller that wants its VaR needs a bond
-    scenario model, which does not exist yet (**I-24**).
-    """
+    """A `BondConfig` reached the scenario (`npv_cube`) path, which bonds do not support
+    (I-24; see the module docstring)."""
 
 
 @dataclass(frozen=True)
 class CouponPeriod:
-    """One explicit coupon period.
-
-    Supplied rather than generated, for the same reason
-    `engine.integration.note` refuses to regenerate a schedule: a schedule
-    derived by stepping back from maturity that disagreed with the booked
-    one would silently reprice every coupon.
-    """
+    """One coupon period, supplied rather than generated (a regenerated schedule that
+    disagreed with the booked one would reprice every coupon)."""
     start_date: ORE.Date
     end_date: ORE.Date
     payment_date: Optional[ORE.Date] = None
@@ -124,40 +64,27 @@ class CouponPeriod:
 class BondConfig:
     """A Treasury bill or note, priced off its own curve.
 
-    **A bill is `coupon_schedule=()` with `coupon_rate=0.0`** -- the same
-    single-cashflow instrument `engine.integration.bill` prices, expressed
-    as the degenerate case of this type rather than as a separate class.
-    One type keeps `_price_by_type`/`_base_npv_per_trade`/
-    `_compute_all_greeks` to one branch each; two would double every
-    routing site for an instrument that differs only by having no coupons.
+    A bill is `coupon_schedule=()` with `coupon_rate=0.0`.
 
-    `face_amount` is **signed**: a short position is a negative face and
-    returns a negative NPV in one step. There is no separate sign factor to
-    apply, and applying one on top would flip a short position positive --
-    the double-sign bug TraderX flagged in their v3 §2.
+    `face_amount` is signed: a short position has a negative face and a negative NPV. Do
+    not apply a separate sign on top.
 
-    `initial_zero_curve` is this bond's own curve, not an index into
-    `SimulationConfig.rates.initial_zero_curves`. See the module docstring:
-    that choice is what makes **I-01** structurally unreachable here.
+    `initial_zero_curve` is this bond's own curve, not an index into the simulation's
+    curves.
     """
     face_amount: float
     maturity_date: ORE.Date
     evaluation_date: ORE.Date
     initial_zero_curve: ZeroCurveConfig
-    #: Annual coupon rate as a DECIMAL (0.04 == 4%), not a percent. The
-    #: integration boundary converts `couponRatePercent` before
-    #: constructing this; stating the unit here keeps the two from drifting.
+    #: Annual coupon rate as a decimal (0.04 == 4%), not a percent.
     coupon_rate: float = 0.0
     coupon_schedule: Tuple[CouponPeriod, ...] = ()
     redemption_fraction: float = 1.0
-    #: The instrument's own ACCRUAL day count (W1.1), resolved and refused
-    #: if unsupported -- never defaulted. Ignored when there are no coupons.
+    #: Coupon accrual day count; refused if unsupported. Ignored without coupons.
     accrual_day_count: str = "ACT/ACT (ICMA)"
-    #: Index of the market curve this bond discounts on, in the curve list a
-    #: market-risk run shocks (`engine.market_risk.RateRiskFactors.curves`).
-    #: Needed only there, where every trade must say which shocked curve to
-    #: revalue against; `initial_zero_curve` must then equal that curve.
-    #: `None` everywhere else.
+    #: Index of this bond's curve in a market-risk run's curve list
+    #: (`engine.market_risk.RateRiskFactors.curves`); `initial_zero_curve` must then equal
+    #: that curve. `None` elsewhere.
     curve_index: Optional[int] = None
 
     def __post_init__(self):
@@ -187,8 +114,7 @@ class BondConfig:
                 f"silently reprice every coupon."
             )
         if self.coupon_schedule:
-            # Resolve eagerly so an unsupported convention fails at
-            # CONSTRUCTION, naming the trade, rather than mid-pricing.
+            # Resolve now so an unsupported convention fails at construction.
             try:
                 resolve_accrual_day_count(self.accrual_day_count)
             except UnsupportedDayCountError as exc:
@@ -202,23 +128,14 @@ class BondConfig:
 
     @property
     def notional(self) -> float:
-        """Alias for `face_amount`.
-
-        Exists so the shared validation/labelling helpers in
-        `engine.portfolio.request` -- which format every trade as
-        `trade[i] (Type, notional=...)` -- work for a bond without a
-        special case.
-        """
+        """Alias for `face_amount`, for the shared trade-labelling helpers in
+        `engine.portfolio.request`."""
         return self.face_amount
 
 
 def _validate_schedule(schedule: Sequence[CouponPeriod], maturity: ORE.Date) -> None:
-    """Structure and contiguity of an explicit coupon schedule.
-
-    Mirrors `engine.integration.note._parse_schedule`'s checks. A gap or
-    overlap means the periods do not describe one continuous instrument and
-    is refused rather than bridged.
-    """
+    """Structure and contiguity of an explicit coupon schedule, as
+    `engine.integration.note._parse_schedule` checks it. Gaps and overlaps are refused."""
     for i, period in enumerate(schedule):
         if period.end_date <= period.start_date:
             raise BondPricingError(
@@ -251,13 +168,7 @@ def _iso(date: ORE.Date) -> str:
 
 
 def _zero_rate_at(curve: ZeroCurveConfig, t: float) -> float:
-    """The curve's zero rate at time `t`, linearly interpolated between
-    pillars and held flat beyond the ends.
-
-    Flat extrapolation is stated rather than assumed: extrapolating a slope
-    past the last pillar produces a confident number from no data, and for
-    a long bond that error compounds through every discount factor.
-    """
+    """Zero rate at `t`: linear between pillars, flat beyond the ends."""
     times = list(curve.times)
     rates = list(curve.rates)
     if not times:
@@ -278,30 +189,20 @@ def _zero_rate_at(curve: ZeroCurveConfig, t: float) -> float:
 
 def _discount_factor(curve: ZeroCurveConfig, valuation: ORE.Date, date: ORE.Date,
                      rate_shift: float = 0.0) -> Tuple[float, float]:
-    """`(discount_factor, year_fraction)` for one date off `curve`.
-
-    Continuously compounded over an ACT/365 year fraction, matching
-    `engine.integration.bill`/`note` exactly -- see the module docstring on
-    why that convention is restated here rather than imported.
-    """
+    """`(discount_factor, year_fraction)` for one date: continuously compounded over an
+    ACT/365 year fraction."""
     year_fraction = DISCOUNT_DAY_COUNT.yearFraction(valuation, date)
     zero_rate = _zero_rate_at(curve, year_fraction) + rate_shift
     return math.exp(-zero_rate * year_fraction), year_fraction
 
 
 def accrued_interest(cfg: BondConfig) -> float:
-    """Accrued interest in currency, recomputed from the coupon schedule.
+    """Accrued interest in currency (position-signed) from the coupon schedule; 0 for a
+    bill or before the first period.
 
-    Position-signed, via `face_amount`. Returns 0.0 for a bill (no coupons
-    to accrue) and 0.0 before the first period starts -- both are structural
-    facts, not missing values.
-
-    **This is the `recomputed-schedule` path only.** The integration
-    boundary additionally reconciles against the exporter's published
-    `accruedInterestFraction` and reports *that* one
-    (`engine.integration.note`'s two-path rule). A direct Python caller has
-    no exporter and therefore no second path, so there is nothing to
-    reconcile against and no label to disambiguate.
+    This is the recomputed-schedule figure only. The integration boundary also reconciles
+    against the exporter's published accrued fraction (`engine.integration.note`); a
+    direct caller has no exporter to reconcile against.
     """
     if not cfg.coupon_schedule:
         return 0.0
@@ -317,16 +218,9 @@ def accrued_interest(cfg: BondConfig) -> float:
 
 
 def _remaining_cashflows(cfg: BondConfig) -> Tuple[Tuple[ORE.Date, float], ...]:
-    """Every cashflow still to be paid, as `(payment_date, amount per unit
-    face)`, coupons in schedule order and then the redemption.
-
-    The single definition of the bond's cashflows: `price_bond_base` and
-    `bond_price_function` both discount exactly this list, so the float and
-    the JAX pricer cannot disagree about what is being paid. A coupon paid
-    on or before the evaluation date is excluded -- it is not this
-    position's cashflow any more, and including it would double-count what
-    the accrued figure excludes.
-    """
+    """Remaining cashflows as `(payment_date, amount per unit face)`: coupons in schedule
+    order, then the redemption. A coupon paid on or before the evaluation date is
+    excluded. Shared by `price_bond_base` and `bond_price_function`."""
     flows = []
     if cfg.coupon_schedule:
         day_count = resolve_accrual_day_count(cfg.accrual_day_count)
@@ -344,19 +238,8 @@ def _remaining_cashflows(cfg: BondConfig) -> Tuple[Tuple[ORE.Date, float], ...]:
 
 
 def price_bond_base(cfg: BondConfig, rate_shift: float = 0.0) -> float:
-    """t=0 **dirty** NPV of one bond: every remaining cashflow, discounted.
-
-    Dirty (full) rather than clean, matching `engine.integration.note.
-    NotePrice.npv` and for the same reason stated there: a "bond NPV" that
-    silently meant the clean value would be off by the accrued interest --
-    about $1,857 on a $100k note -- which is large enough to matter and
-    small enough to look like a curve difference. `clean_npv_of` is
-    available for a caller reconciling against a quoted clean price.
-
-    `rate_shift` parallel-shifts the curve, which is what `rate_sensitivity`
-    uses. A coupon already paid on or before the evaluation date is
-    excluded, not discounted from the past (see `_remaining_cashflows`).
-    """
+    """t=0 dirty NPV: every remaining cashflow, discounted. `clean_npv_of` subtracts
+    accrued interest. `rate_shift` shifts the whole curve in parallel."""
     total_per_unit_face = 0.0
     for payment, amount in _remaining_cashflows(cfg):
         df, _ = _discount_factor(cfg.initial_zero_curve, cfg.evaluation_date, payment, rate_shift)
@@ -365,16 +248,11 @@ def price_bond_base(cfg: BondConfig, rate_shift: float = 0.0) -> float:
 
 
 def bond_price_function(cfg: BondConfig):
-    """`f(pillar_rates) -> t=0 dirty NPV` as a JAX function, for revaluing
-    the bond under shocked curves (`engine.market_risk`) or differentiating
-    it per pillar.
+    """`f(pillar_rates) -> t=0 dirty NPV` in JAX, for shocked-curve revaluation
+    (`engine.market_risk`) and per-pillar differentiation.
 
-    Discounts `_remaining_cashflows` exactly as `price_bond_base` does --
-    linear interpolation of zero rates on `cfg.initial_zero_curve`'s pillar
-    times, flat beyond the ends, continuous compounding over ACT/365 -- but
-    with the pillar RATES as a traced argument. `price_bond_base(cfg)`
-    equals `f(initial_zero_curve.rates)`, and a parallel `rate_shift` equals
-    `f(rates + shift)`. The working dtype is that of `pillar_rates`.
+    Same cashflows and convention as `price_bond_base`, with the pillar rates traced:
+    `f(initial_zero_curve.rates) == price_bond_base(cfg)`. Works in `pillar_rates`' dtype.
     """
     import jax.numpy as jnp
 
@@ -398,35 +276,19 @@ def bond_price_function(cfg: BondConfig):
 
 
 def clean_npv_of(cfg: BondConfig) -> float:
-    """`price_bond_base(cfg) - accrued_interest(cfg)`.
-
-    Carried because a quoted bond price is conventionally clean, so a
-    consumer reconciling against a market quote compares like with like.
-    """
+    """`price_bond_base(cfg) - accrued_interest(cfg)`, for comparison with a quoted
+    (clean) price."""
     return price_bond_base(cfg) - accrued_interest(cfg)
 
 
 def rate_sensitivity(cfg: BondConfig, bump: float = RATE_BUMP) -> float:
-    """Change in dirty NPV for a `bump` parallel shift of the zero curve.
-
-    A **bumped revaluation** through the same code path, not a
-    differentiated formula -- a sensitivity derived from an expression that
-    has drifted from the pricer measures the expression, not the price.
-    Parallel-only, matching `engine.integration.note.rate_sensitivity` and
-    subject to the same limitation recorded as **I-16**.
-    """
+    """Change in dirty NPV for a parallel `bump` of the zero curve, by bumped
+    revaluation. Parallel only (I-16)."""
     return price_bond_base(cfg, rate_shift=bump) - price_bond_base(cfg)
 
 
 def price_bond_scenarios(*_args, **_kwargs):
-    """**Always raises.** A bond has no scenario NPV at this boundary.
-
-    This function exists so the refusal has a *name and a docstring* at the
-    place a contributor would look for the missing capability, rather than
-    being an absence they fill in with a broadcast. See the module
-    docstring for the measured consequence of filling it in naively:
-    VaR = 0.00 and ES = NaN, a number that looks measured and is not.
-    """
+    """Always raises: a bond has no scenario NPV (I-24; see the module docstring)."""
     raise ScenarioPricingNotSupported(
         "a BondConfig has no scenario NPV: it is closed-form arithmetic against a "
         "single deterministic curve, with no stochastic driver and no time "

@@ -1,29 +1,27 @@
 """
 Exposure profiles over a simulated NPV cube: EPE, ENE, EE_B, EEE_B and PFE.
 
-This is what the multi-step risk-neutral cube from `price_portfolio` is for:
-counterparty exposure through time. It is **not** market-risk VaR -- for that
-see `engine.market_risk`, which revalues the portfolio at t=0 under
-short-horizon shocks.
+Counterparty exposure through time, from the multi-step risk-neutral cube of
+`price_portfolio`. Not market-risk VaR (see `engine.market_risk`).
 
 The statistics are ORE's `ExposureCalculator` definitions
-(`OREAnalytics/orea/aggregation/exposurecalculator.cpp`, lines 165-230),
-applied to one trade or one netting set, with no collateral:
+(OREAnalytics/orea/aggregation/exposurecalculator.cpp), for one trade or one netting set,
+without collateral:
 
-    V_k(t)    NPV on path k at t, deflated by the numeraire: NPV / N(t)
-              (ORE's cube stores NPV / numeraire; valuationcalculator.cpp:74)
+    V_k(t)    NPV on path k at t divided by the numeraire N(t) (ORE's cube stores NPV / N)
     EPE(t)    mean_k max(V_k(t), 0)          discounted expected positive exposure
     ENE(t)    mean_k max(-V_k(t), 0)         discounted expected negative exposure
     EE_B(t)   EPE(t) / P(0,t)                undiscounted expected exposure
     EEE_B(t)  max(EEE_B(t-), EE_B(t))        effective (non-decreasing) EE
     PFE_q(t)  max(sorted_k V_k(t)[i], 0),    i = floor(q * (S - 1) + 0.5)
 
-Every profile has one entry per date **including t=0**, where ORE sets
-EPE = EE_B = EEE_B = PFE = max(NPV0, 0) and ENE = max(-NPV0, 0).
+Each profile includes t=0, where ORE sets EPE = EE_B = EEE_B = PFE = max(NPV0, 0) and
+ENE = max(-NPV0, 0). A netting set sums paths across trades before the statistics.
 
-The exposure a netting set carries is not the sum of its trades' exposures:
-positive and negative trade values offset path by path. `netting_set_profile`
-sums the paths first, then applies the statistics.
+Differs from ORE: ORE's time-weighted EPE_B/EEPE_B are not computed. The numeraire is the
+simulation's discretely accrued money-market account on rate factor 0, not ORE's LGM
+numeraire (I-45), and the cube inherits the simulation's limitations (I-42, I-43, I-44;
+I-04).
 """
 from dataclasses import dataclass
 from typing import Dict, Sequence

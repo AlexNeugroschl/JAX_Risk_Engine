@@ -1,10 +1,7 @@
 """
-W0.5 -- result schema and coverage model
-(`docs/planning/traderx-integration-plan.md` §W0.5).
-
-The plan's named tests: statuses sum to item count; `complete: false` on a
-partial aggregate; mixed-currency returns per-currency, not a blended
-scalar.
+Result schema and coverage model (`engine.integration.result`, W0.5): statuses sum to the
+item count; a partial aggregate is `complete: false`; mixed currencies aggregate per
+currency, never into one scalar.
 """
 from pathlib import Path
 
@@ -34,8 +31,7 @@ def _identity(account: str = "1", security: str = "SEC") -> ItemIdentity:
 
 
 def _item(outcomes: dict, currency: str = "USD", account: str = "1", security: str = "SEC") -> ItemResult:
-    """An item with `outcomes` for the named calculations and
-    `unsupported` for the rest."""
+    """An item with `outcomes` for the named calculations and `unsupported` for the rest."""
     calculations = {
         name: outcomes.get(name, CalculationOutcome.unsupported("X"))
         for name in CALCULATIONS
@@ -70,8 +66,7 @@ class TestFrozenVocabulary:
             CalculationOutcome(status="maybe")
 
     def test_every_calculation_needs_an_explicit_outcome(self):
-        """An omitted calculation is indistinguishable from a forgotten
-        one -- exactly what the coverage model exists to prevent."""
+        """Every calculation must be present (an omitted one looks forgotten)."""
         with pytest.raises(ValueError, match="every calculation needs an explicit outcome"):
             ItemResult(identity=_identity(), calculations={"npv": CalculationOutcome.ok(1.0)})
 
@@ -79,7 +74,7 @@ class TestFrozenVocabulary:
 class TestNonOkOutcomesCarryNoValue:
     @pytest.mark.parametrize("status", ("unsupported", "unavailable", "failed", "not-applicable"))
     def test_value_on_a_non_ok_outcome_is_rejected(self, status):
-        """A number attached to a refusal is a number someone will read."""
+        """A refusal carries no number."""
         with pytest.raises(ValueError, match="must not carry a value"):
             CalculationOutcome(status=status, value=0.0)
 
@@ -93,7 +88,7 @@ class TestNonOkOutcomesCarryNoValue:
 
 
 class TestCoverageSumsToItemCount:
-    """Plan's named test: 'statuses sum to item count'."""
+    """Statuses sum to the item count."""
 
     def test_statuses_sum_to_item_count(self):
         items = [
@@ -110,16 +105,14 @@ class TestCoverageSumsToItemCount:
         assert coverage.all_outcomes_accounted_for
 
     def test_every_status_key_is_present_even_at_zero(self):
-        """A consumer reading `counts['failed']` must never have to handle
-        a missing key differently from a zero."""
+        """Every status key is present, zero or not."""
         coverage = compute_coverage([_item({"npv": CalculationOutcome.ok(1.0)})])
         assert set(coverage.by_calculation["npv"]) == {
             "ok", "unsupported", "unavailable", "failed", "notApplicable",
         }
 
     def test_accounted_for_is_true_even_when_everything_failed(self):
-        """It is a consistency check on the document, not a quality
-        judgement on the portfolio."""
+        """Consistency of the document, not a judgement on the portfolio."""
         items = [_item({n: CalculationOutcome.failed("boom") for n in CALCULATIONS})]
         coverage = compute_coverage(items)
 
@@ -133,7 +126,7 @@ class TestCoverageSumsToItemCount:
 
 
 class TestNotApplicableNeverCountsAgainstCoverage:
-    """Plan §W0.5: 'vega on a vanilla swap is not a gap'."""
+    """Not-applicable is distinct from unsupported (vega on a vanilla swap is not a gap)."""
 
     def test_all_applicable_computed_ignores_not_applicable(self):
         items = [_item({
@@ -157,8 +150,7 @@ class TestNotApplicableNeverCountsAgainstCoverage:
         assert compute_coverage(items).all_applicable_computed is False
 
     def test_the_two_flags_are_independent(self):
-        """A W0 result is exactly this shape: everything accounted for,
-        nothing computed."""
+        """Everything accounted for, nothing computed."""
         from engine.integration import price_bundle
         coverage = price_bundle(FIXTURES / "sofr" / "v2").coverage
 
@@ -167,7 +159,7 @@ class TestNotApplicableNeverCountsAgainstCoverage:
 
 
 class TestAggregatesAreCompleteOrSayOtherwise:
-    """Plan's named test: `complete: false` on a partial aggregate."""
+    """A partial aggregate is `complete: false`."""
 
     def test_full_coverage_is_complete(self):
         items = [_item({"npv": CalculationOutcome.ok(10.0)}) for _ in range(3)]
@@ -189,8 +181,7 @@ class TestAggregatesAreCompleteOrSayOtherwise:
         assert aggregate.total_item_count == 2
 
     def test_excluded_items_are_named(self):
-        """'A total over a subset, presented as a total' is only safe if
-        the subset is identified."""
+        """A total over a subset identifies the subset."""
         excluded_item = _item({"npv": CalculationOutcome.unsupported("X")}, security="B")
         items = [_item({"npv": CalculationOutcome.ok(10.0)}, security="A"), excluded_item]
         (aggregate,) = aggregate_by_currency(items, "npv")
@@ -198,8 +189,7 @@ class TestAggregatesAreCompleteOrSayOtherwise:
         assert aggregate.excluded_items == (excluded_item.item_id,)
 
     def test_missing_values_are_not_treated_as_zero(self):
-        """Summing a refusal as 0.0 would make a partial total look
-        plausible. It is excluded instead."""
+        """Refusals are excluded from the total, not summed as 0.0."""
         items = [
             _item({"npv": CalculationOutcome.ok(10.0)}, security="A"),
             _item({"npv": CalculationOutcome.unavailable("X")}, security="B"),
@@ -219,8 +209,7 @@ class TestAggregatesAreCompleteOrSayOtherwise:
 
 
 class TestCrossCurrency:
-    """Plan's named test: 'mixed-currency returns per-currency, not a
-    blended scalar'."""
+    """Mixed currencies aggregate per currency, never into one scalar."""
 
     def test_per_currency_aggregates(self):
         items = [
@@ -233,7 +222,7 @@ class TestCrossCurrency:
         assert {a.currency for a in aggregates} == {"USD", "EUR"}
 
     def test_values_are_not_blended(self):
-        """30.0 would be the wrong answer -- it adds dollars to euros."""
+        """30.0 would add dollars to euros."""
         items = [
             _item({"npv": CalculationOutcome.ok(10.0)}, currency="USD", security="A"),
             _item({"npv": CalculationOutcome.ok(20.0)}, currency="EUR", security="B"),
@@ -244,15 +233,14 @@ class TestCrossCurrency:
         assert 30.0 not in by_currency.values()
 
     def test_conversion_is_explicitly_not_applied(self):
-        """The engine is given no FX rates; inventing them would be the
-        silent approximation this design refuses."""
+        """No FX rates are given to the engine, so none are invented."""
         items = [_item({"npv": CalculationOutcome.ok(10.0)}, currency="USD")]
         assert aggregate_by_currency(items, "npv")[0].to_dict()[
             "reportingCurrencyConversion"] == "NOT_APPLIED"
 
 
 class TestSensitivityPayload:
-    """Plan §W0.5: 'never a method implied by a field name'."""
+    """Every figure names its method; none is implied by a field name."""
 
     def test_payload_carries_method_bump_and_factor(self):
         payload = sensitivity_payload(
@@ -292,9 +280,7 @@ class TestSerializedResult:
             assert set(item["calculations"]) == set(CALCULATIONS)
 
     def test_w0_never_reports_failed(self):
-        """`failed` means 'attempted and errored'. W0 attempts nothing, so
-        reporting it would misdescribe the stage and mislead a coordinator
-        into retrying."""
+        """Nothing is attempted, so nothing is `failed` (which would invite a retry)."""
         from engine.integration import price_bundle
         for case in ("bill", "note", "sofr"):
             for version in ("v1", "v2"):

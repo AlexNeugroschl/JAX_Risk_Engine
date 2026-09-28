@@ -1,74 +1,28 @@
 """
-The composition: bundle path in, `RiskResult` out.
+Bundle path in, `RiskResult` out. Wiring only; each step's rules live in its own module:
 
-Everything here is wiring; each step's judgement lives in its own module.
+    load_bundle            verify hashes, parse artifacts
+      -> join_terms        attach reference terms, or record their absence
+      -> identity_for      identify every row, joined or not
+      -> check_conventions refuse what cannot be priced faithfully
+      -> normalize_position convert units
+      -> price_bill        zero-coupon Treasury: npv
+      -> price_note        coupon Treasury: npv and rateSensitivity
+      -> price_equity      cash equity: a refusal naming the missing spot (I-18)
+      -> RiskResult        per-calculation coverage
 
-    load_bundle      W0.1  verify hashes, parse artifacts
-      -> join_terms  W0.2  attach reference terms, or record their absence
-      -> identity_for W0.7 identify every row, joined or not
-      -> check_conventions W0.4  refuse what cannot be faithfully priced
-      -> normalize_position W0.3 convert units for what survives
-      -> price_bill  W1.2  NPV for a zero-coupon Treasury
-      -> price_note  W1.3  NPV + rateSensitivity for a coupon-bearing one
-      -> price_equity W1.4 a REFUSAL naming the missing market input
-      -> RiskResult  W0.5  per-calculation coverage
+Dispatch is on the terms, never the CSV. Equities are dispatched first, since their
+`quantity` is a share count, not a face amount. Calculations no pricer produces
+(`rateGamma`, `theta`, a bill's `rateSensitivity`) are `unsupported`; vega is
+`not-applicable` for non-optional instruments; `varEs` is portfolio-level, so
+`not-applicable` per item.
 
-**What computes, and what still refuses.** W0 computed nothing: every
-outcome was `unsupported`, `unavailable` or `not-applicable`. W1.2 added
-one real number -- a zero-coupon Treasury's `npv`. W1.3 adds a
-coupon-bearing Treasury's `npv` **and** its `rateSensitivity`, both priced
-against an explicitly requested curve. Everything else is unchanged, and
-the statuses stay precise: `failed` still means something was attempted
-and errored, which is a different operational fact from "this engine does
-not do that yet".
+Pricing needs explicitly requested market inputs; without them nothing is priced and no
+curve is substituted. `accruedInterest` is answered regardless, as a unit conversion of the
+exported value (see `engine.integration.normalize`).
 
-**Answering one calculation does not make the rest answerable.** A priced
-bill returns `npv` alone; a priced note adds `rateSensitivity` and stops
-there. `rateGamma` and `theta` are `unsupported` for both. Reporting a
-zero, or omitting them, would be exactly the silent approximation this
-boundary exists to prevent.
-
-**Dispatch is on the terms, never on the CSV.** Three branches now exist,
-so "which model applies" is a real decision rather than a single `if`.
-`is_bill` and `is_note` both key on `couponFrequency` and the presence of
-an explicit schedule -- so a note can never be routed into the bill's
-single-cashflow model, which is the dangerous misprice W1.2's tests
-already pin and which a second pricer makes newly reachable. `is_equity`
-keys on `instrumentType`, and is dispatched **first**: an equity's
-`quantity` is a signed share count rather than a currency face, so it must
-not reach `_parse_signed_face`.
-
-**W1.4 adds a branch that deliberately produces no number.** A cash equity
-is `signedQuantity x multiplier x spot x fx`, and this boundary has a
-source for neither spot nor fx -- `marketInputs` registers flat
-interest-rate profiles only. The row's own `closingMark` is not a
-substitute: returning it would echo TraderX's own number back as an engine
-valuation under a provenance it does not have. So the equity branch returns
-an explicit `SPOT_SOURCE_NOT_SUPPLIED` (or `FX_SOURCE_NOT_SUPPLIED`)
-refusal carrying the inputs it *could* validate, rather than falling
-through to `NO_PRICER_AT_THIS_STAGE` -- the two point at different
-remedies, and only "send a spot" is actionable by the coordinator. See
-`engine.integration.equity` and **I-18**.
-
-**Pricing requires market inputs, with no fallback.** Omitting the
-`marketInputs` block was legal at W0 because nothing was priced; it is
-still legal, but now it means nothing *gets* priced. No curve is ever
-substituted -- see `engine.integration.market_inputs`.
-
-**`accruedInterest` is the exception, and deliberately so.** It is the one
-calculation W0 can answer honestly, because it is a *unit conversion of an
-exported value*, not a model output: the extract supplies
-`accruedInterestFraction` and the terms supply enough to interpret it. So a
-note's accrued interest comes back `ok`, a bill's comes back `ok` at a
-structural zero, and a coupon-bearing row with a blank field comes back
-`unavailable` -- the W0.3 table, reported rather than assumed. Everything
-requiring a curve or a model stays `unsupported`.
-
-**Ordering of the two refusals matters.** A row can be refused for its
-conventions (W0.4) *and* lack a pricer (W0 has none). The convention refusal
-wins and is reported, because it is the more specific and more actionable
-fact: a coordinator learning `CONVENTION_NOT_SUPPORTED` with 13 named terms
-can act on it, while `no pricer` tells it only to wait.
+A convention refusal takes precedence over "no pricer": it is the more specific, more
+actionable fact.
 """
 from typing import Dict, Optional, Sequence, Tuple
 
@@ -117,31 +71,21 @@ from engine.integration.result import (
 )
 from engine.integration.terms import JoinedRow, join_terms
 
-#: Reason code for a calculation that is refused because W0 ships no pricer.
-#: Distinct from a convention refusal: this one is closed by W1 build work,
-#: with no external decision needed.
+#: Reason for a calculation refused because no pricer for it exists yet (closed by build
+#: work, unlike a convention refusal).
 NO_PRICER_AT_THIS_STAGE = "NO_PRICER_AT_THIS_STAGE"
 
-#: Calculations that are meaningless for an instrument with no optionality.
-#: Reported `not-applicable`, which does NOT count against coverage -- vega
-#: on a vanilla swap or a Treasury is not a gap (plan §W0.5).
+#: Calculations meaningless without optionality: `not-applicable`, not a coverage gap.
 _NON_OPTIONAL_INSTRUMENTS = ("TREASURY", "SWAP", "EQUITY")
 _OPTIONALITY_CALCULATIONS = ("vega",)
 
-#: `varEs` is a portfolio-level statistic, not a per-item one. Reported
-#: `not-applicable` per item rather than silently omitted, so the coverage
-#: block still sums to the item count.
+#: `varEs` is portfolio-level: `not-applicable` per item, so coverage still sums.
 _PORTFOLIO_LEVEL_CALCULATIONS = ("varEs",)
 
 
 def _instrument_type(joined: JoinedRow) -> str:
-    """Best available instrument type for a row.
-
-    Prefers the terms entry (authoritative), falls back to the CSV column,
-    and finally to the row's source artifact. A contracts row with no terms
-    is still a swap booking -- the contracts extract carries only OTC
-    derivatives -- so the fallback is sound rather than a guess.
-    """
+    """Instrument type from the terms, else the CSV column, else the source artifact (the
+    contracts extract carries only OTC swaps)."""
     if joined.entry is not None:
         return joined.entry.instrument_type
     csv_type = joined.row.get("instrumentType") or joined.row.get("productType")
@@ -154,22 +98,9 @@ def _refused_calculations(
     refusal: ConventionRefusal, instrument_type: str,
     accrued: Optional[CalculationOutcome] = None,
 ) -> Dict[str, CalculationOutcome]:
-    """Every calculation for an item this engine refuses to price.
-
-    Even here, `not-applicable` is applied where it genuinely holds: a
-    refused Treasury still has no vega. Marking those `unsupported` would
-    inflate the gap counts with calculations that were never owed.
-
-    **`accruedInterest` keeps its own answer even under a refusal.** It is
-    a unit conversion of an exported value, not a model output, so a
-    convention refusal has no bearing on it -- and the W0.3 table gives a
-    precise verdict the refusal would otherwise flatten. A v1 bundle's
-    blank accrued field is `unavailable` ("uninterpretable without terms"),
-    which tells the coordinator a resend with terms would fix it;
-    reporting `unsupported` there would wrongly imply engine work was
-    needed. The two statuses point at different remedies, so the more
-    specific one wins.
-    """
+    """Outcomes for a refused item: `unsupported` with the refusal's reason, except where
+    `not-applicable` genuinely holds, and `accruedInterest`, which keeps its own verdict
+    (a unit conversion, unaffected by conventions)."""
     detail = refusal.detail
     outcomes = {}
     for name in CALCULATIONS:
@@ -186,9 +117,7 @@ def _refused_calculations(
         else:
             outcomes[name] = CalculationOutcome.unsupported(
                 reason=refusal.reason, detail=detail,
-                # The offending terms travel on the calculation that was
-                # refused, not only in a summary block, so a consumer
-                # reading one calculation sees why it has no number.
+                # The missing terms travel with each refused calculation.
                 payload={"missingTerms": list(refusal.missing_terms)} if refusal.missing_terms else None,
             )
     return outcomes
@@ -198,18 +127,9 @@ def _unpriced_calculations(
     instrument_type: str, accrued: Optional[CalculationOutcome],
     priced: Optional[Dict[str, CalculationOutcome]] = None,
 ) -> Dict[str, CalculationOutcome]:
-    """Calculations for an item whose conventions are fine.
-    `accruedInterest` is answered for real (see this module's docstring),
-    every calculation a pricer produced is taken from `priced`, and
-    everything still model-driven is `unsupported`.
-
-    **A calculation being answered does not make the others answerable.**
-    A priced bill returns `npv` alone; a priced note adds
-    `rateSensitivity` and nothing further. `rateGamma` and `theta` stay
-    `unsupported` for both, because no pricer here produces them and
-    reporting a zero or an absence would be the silent-approximation
-    failure this boundary exists to prevent.
-    """
+    """Outcomes for an item whose conventions are supported: `accruedInterest` as
+    normalized, whatever a pricer produced (`priced`), `not-applicable` where it holds, and
+    `unsupported` (`NO_PRICER_AT_THIS_STAGE`) for everything else."""
     priced = priced or {}
     outcomes = {}
     for name in CALCULATIONS:
@@ -238,15 +158,8 @@ def _unpriced_calculations(
 
 
 def _exported_accrued_fraction(joined: JoinedRow) -> Optional[float]:
-    """The row's `accruedInterestFraction`, or `None` when it is blank.
-
-    `None` is a legitimate state, not an error: the blank-accrual
-    compatibility fixture is exactly this, and `price_note` handles it by
-    reporting the recomputed value under an explicit
-    `recomputed-schedule` label. A malformed value is left to the
-    normalization path, which already reports it as `failed` naming the
-    field.
-    """
+    """The row's `accruedInterestFraction`, or `None` if blank or unparseable (normalization
+    reports a malformed value as `failed`)."""
     raw = joined.row.get("accruedInterestFraction")
     if raw is None or not str(raw).strip():
         return None
@@ -257,28 +170,11 @@ def _exported_accrued_fraction(joined: JoinedRow) -> Optional[float]:
 
 
 def _accrual_source(provenance: Optional[str]) -> Optional[str]:
-    """The `accrualSource` label for a normalized accrued value (W1.6.3).
-
-    Aligns the standalone `accruedInterest` outcome with the vocabulary the
-    note's NPV payload already uses, so a consumer reading either one sees
-    the same fact described the same way.
-
-    **`structural-zero` stays distinct, and that is the whole point.** A
-    bill's zero is not an exported fraction that happened to be zero -- it
-    is zero because the instrument has no coupon schedule at all. Mapping it
-    onto `exported-fraction` would erase exactly the distinction W0.3 exists
-    to preserve: the difference between "measured as zero" and "structurally
-    zero" is the difference between a bill and a coupon-bearing note whose
-    accrual the exporter omitted. So it is carried through under its own
-    name rather than folded into either accrual path.
-
-    Returns `None` for a provenance with no meaningful source label, rather
-    than inventing one -- an absent label is honest, a wrong one is not.
-    """
+    """`accrualSource` label for a normalized accrued value, matching the note NPV
+    payload's vocabulary: `exported-fraction` for a converted value, `structural-zero`
+    kept distinct for a bill, else `None`."""
     if provenance == NORMALIZE_CONVERTED:
-        # A converted value came from the extract's own
-        # `accruedInterestFraction`, which is precisely what the note
-        # pricer labels `exported-fraction`.
+        # Converted from the extract's own accruedInterestFraction.
         return ACCRUAL_EXPORTED
     if provenance == NORMALIZE_STRUCTURAL_ZERO:
         return NORMALIZE_STRUCTURAL_ZERO
@@ -286,18 +182,9 @@ def _accrual_source(provenance: Optional[str]) -> Optional[str]:
 
 
 def _fraction_decimals(entry) -> int:
-    """The exporter's declared accrual precision for this entry (W1.6.1).
-
-    A v2 terms entry's `accrualBasis.fractionDecimals` when present,
-    otherwise `DEFAULT_FRACTION_DECIMALS`. The fallback is not a guess: it
-    is the precision the positions preamble states ("HALF_EVEN at 6
-    decimals") and the value this code used before v2 existed, so a v1
-    bundle reconciles exactly as it did.
-
-    **The value is already validated** by `engine.integration.terms`, which
-    refuses an out-of-range or non-integer one at parse time rather than
-    letting it reach the tolerance arithmetic it scales.
-    """
+    """The exporter's declared accrual precision: a v2 entry's
+    `accrualBasis.fractionDecimals` (validated by `terms`), else
+    `DEFAULT_FRACTION_DECIMALS` (6, as the positions preamble states)."""
     basis = getattr(entry, "accrual_basis", None)
     if basis is None:
         return DEFAULT_FRACTION_DECIMALS
@@ -307,29 +194,13 @@ def _fraction_decimals(entry) -> int:
 def _priced_outcomes(
     joined: JoinedRow, market: Optional[MarketInputs], valuation_date: Optional[str],
 ) -> Dict[str, CalculationOutcome]:
-    """Every calculation a pricer can answer for this row.
-
-    Returns a (possibly empty) mapping from calculation name to outcome;
-    anything absent from it falls through to `NO_PRICER_AT_THIS_STAGE`.
-    An empty mapping is not a failure -- it is an instrument this delivery
-    stage does not price yet.
-
-    **Requires an explicitly resolved `market`** for the bond branches.
-    Without one they return nothing rather than pricing against a default:
-    W0's "no marketInputs requested" path is legal precisely because
-    nothing was priced, and the moment something *is* priced, a curve is
-    mandatory.
-
-    **Dispatch is on the terms, never on the CSV** -- see this module's
-    docstring.
-    """
+    """Every calculation a pricer answers for this row (empty if none). Bills and notes
+    need a resolved `market`; without one nothing is priced. Dispatch is on the terms."""
     if joined.entry is None or joined.source != "positions":
         return {}
 
-    # An equity is dispatched BEFORE the market-input check and before the
-    # face-amount parse: its refusal does not depend on a curve (a rate
-    # profile is not a spot), and its `quantity` is a signed share count
-    # rather than a currency face.
+    # Equities first: their refusal does not depend on a curve, and `quantity` is a share
+    # count, not a face amount.
     if is_equity(joined.entry):
         return _equity_outcomes(joined)
 
@@ -354,34 +225,18 @@ def _bill_outcomes(
     joined: JoinedRow, signed_face: float, market: MarketInputs,
     valuation_date: Optional[str],
 ) -> Dict[str, CalculationOutcome]:
-    """W1.2's outcomes: `npv` alone.
-
-    Unchanged by W1.3 deliberately. A bill's `rateSensitivity` is still
-    `unsupported` -- W1.3 delivers a note sensitivity, and extending the
-    claim to the bill without a test that earns it would be exactly the
-    overclaim working rule 4 names.
-    """
+    """A bill's outcome: `npv` only."""
     try:
         priced = price_bill(
             joined.entry, signed_face, _ore_date(valuation_date), market.profile,
         )
     except BillPricingError as exc:
-        # A refusal this pricer states explicitly (matured, incomplete
-        # terms). `unsupported`, not `failed`: nothing errored, the engine
-        # declined.
+        # An explicit refusal (matured, incomplete terms): unsupported, not failed.
         return {"npv": CalculationOutcome.unsupported(reason=exc.reason, detail=exc.detail)}
     except (ValueError, TypeError, ArithmeticError, RuntimeError) as exc:
-        # Something was genuinely attempted and broke. `failed` is the
-        # honest status, and one bad row must not cost the rest theirs.
-        #
-        # **`RuntimeError` is load-bearing here, not defensive breadth.**
-        # Every pricer below this line calls into ORE, and SWIG surfaces
-        # QuantLib's C++ `std::runtime_error` as a Python `RuntimeError` --
-        # an impossible calendar date ("2025-02-30") is one instance, but
-        # any ORE precondition failure arrives the same way. Omitting it
-        # lets a single malformed row escape this handler and abort the
-        # WHOLE bundle, which is precisely the contract this `except`
-        # exists to uphold. Narrowing it back would reintroduce that.
+        # Attempted and broke: `failed`, confined to this row. RuntimeError is needed: SWIG
+        # raises QuantLib errors (e.g. an impossible date) as RuntimeError, which would
+        # otherwise abort the whole bundle.
         return {"npv": CalculationOutcome.failed(
             reason="PRICING_FAILED", detail=f"{type(exc).__name__}: {exc}",
         )}
@@ -393,27 +248,8 @@ def _note_outcomes(
     joined: JoinedRow, signed_face: float, market: MarketInputs,
     valuation_date: Optional[str],
 ) -> Dict[str, CalculationOutcome]:
-    """W1.3's outcomes: `npv` **and** `rateSensitivity`.
-
-    The note is the first instrument here to answer more than one
-    calculation, and the pair is deliberate: a bond price without a rate
-    sensitivity tells a consumer what it is worth but nothing about what
-    moves it, and the sensitivity is cheap once the schedule is built.
-
-    **A refusal refuses both.** When `price_note` declines, the same
-    reason is reported for the sensitivity: a sensitivity of a price the
-    engine would not publish is meaningless, and returning one would imply
-    a valuation that was explicitly refused.
-
-    **W1.6.1: the reconciliation tolerance now comes from the terms when
-    they state one.** A v2 entry's `accrualBasis.fractionDecimals` is the
-    exporter's own declared precision, so using it makes the tolerance
-    derived rather than assumed. A v1 entry (or a v2 entry without the
-    optional block) falls back to `DEFAULT_FRACTION_DECIMALS`, which is
-    what this code already did -- so the delivered fixtures are unchanged
-    byte for byte, and the fallback is the *documented* exporter precision
-    rather than a guess.
-    """
+    """A note's outcomes: `npv` and `rateSensitivity`. A refusal refuses both. The
+    reconciliation tolerance uses the terms' declared `fractionDecimals` when present."""
     valuation = _ore_date(valuation_date)
     exported_accrued = _exported_accrued_fraction(joined)
     fraction_decimals = _fraction_decimals(joined.entry)
@@ -442,10 +278,7 @@ def _note_outcomes(
             payload=sensitivity_payload(
                 method=SENSITIVITY_METHOD,
                 derivative="dNPV/dZeroRate",
-                # A flat profile has one rate, so the only shift it can
-                # express is a parallel one. Naming the factor "parallel"
-                # rather than a pillar keeps the claim to what the curve
-                # can actually distinguish.
+                # A flat profile can only shift in parallel.
                 shocked_factor="zero-curve-parallel",
                 bump=RATE_BUMP,
                 value=sensitivity,
@@ -456,34 +289,15 @@ def _note_outcomes(
 
 
 def _equity_outcomes(joined: JoinedRow) -> Dict[str, CalculationOutcome]:
-    """W1.4's outcome: an `npv` refusal that names the missing input.
-
-    **This is the only pricer branch that returns no number, deliberately.**
-    A cash equity is `signedQuantity x multiplier x spot x fx`, and this
-    boundary has no source for the last two. The row's own `closingMark`
-    is not a substitute -- returning it would echo TraderX's own number
-    back as an engine valuation, under a provenance it does not have. See
-    `engine.integration.equity`.
-
-    It returns an explicit refusal rather than `{}` (which would fall
-    through to `NO_PRICER_AT_THIS_STAGE`) because the two say different
-    things. `NO_PRICER_AT_THIS_STAGE` means "engine work is scheduled";
-    `SPOT_SOURCE_NOT_SUPPLIED` means "send a spot and this prices". Only
-    the second is actionable by the coordinator, and it is the true one.
-
-    **It does not require `market`.** Unlike the bond branches, this
-    refusal is correct whether or not a curve was requested -- a rate
-    profile is not an equity spot, so having one changes nothing about
-    this row.
-    """
+    """An equity's outcome: an explicit `npv` refusal (`SPOT_SOURCE_NOT_SUPPLIED` or
+    `FX_SOURCE_NOT_SUPPLIED`) with the validated inputs, rather than falling through to
+    `NO_PRICER_AT_THIS_STAGE`, since sending a spot would fix it. Needs no `market`."""
     try:
         price_equity(joined.entry, joined.row)
     except EquityPricingError as exc:
         refusal = CalculationOutcome.unsupported(
             reason=exc.reason, detail=exc.detail,
-            # The validated inputs travel with the refusal, so a consumer
-            # can confirm the engine read the position correctly even
-            # though it would not value it.
+            # Validated inputs travel with the refusal.
             payload=exc.payload or None,
         )
         return {"npv": refusal}
@@ -492,9 +306,7 @@ def _equity_outcomes(joined: JoinedRow) -> Dict[str, CalculationOutcome]:
             reason="PRICING_FAILED", detail=f"{type(exc).__name__}: {exc}",
         )}
 
-    # Unreachable: `price_equity` always raises. Guarded rather than
-    # assumed, so the day it gains a real pricer this fails loudly here
-    # instead of silently returning no outcome.
+    # price_equity always raises; fail loudly if it ever returns.
     raise AssertionError(
         "price_equity returned instead of raising; W1.4 ships no equity "
         "pricer, so this path should be unreachable"
@@ -502,13 +314,7 @@ def _equity_outcomes(joined: JoinedRow) -> Dict[str, CalculationOutcome]:
 
 
 def _parse_signed_face(joined: JoinedRow) -> Optional[float]:
-    """The row's signed face amount, or `None` if it cannot be read.
-
-    Deliberately tolerant: a row whose quantity will not parse is left to
-    the normalization path, which already reports it as `failed` with a
-    field-level message. Duplicating that judgement here would produce two
-    different errors for one cause.
-    """
+    """The row's signed face amount, or `None` if unreadable (normalization reports that)."""
     try:
         return normalize_position(joined).signed_face_amount
     except NormalizationError:
@@ -516,8 +322,7 @@ def _parse_signed_face(joined: JoinedRow) -> Optional[float]:
 
 
 def _ore_date(iso: Optional[str]) -> ORE.Date:
-    """Bundle session date -> `ORE.Date`, the valuation date every price in
-    the run is measured at."""
+    """Bundle session date (ISO) -> `ORE.Date`, the valuation date of the run."""
     if not iso:
         raise ValueError("bundle carries no session date to value against")
     year, month, day = (int(part) for part in str(iso).split("-"))
@@ -525,13 +330,9 @@ def _ore_date(iso: Optional[str]) -> ORE.Date:
 
 
 def _accrued_outcome(joined: JoinedRow) -> Tuple[Optional[CalculationOutcome], Optional[str], Optional[str]]:
-    """Normalizes a position row and turns its accrued interest into an
-    outcome. Returns `(outcome, currency, mapping_version)`.
-
-    A malformed row produces `failed` rather than an exception: one broken
-    row must not cost the other 200 their results, and `failed` is the
-    honest status for something that was attempted and errored.
-    """
+    """Normalize a position row and turn its accrued interest into an outcome:
+    `(outcome, currency, mapping_version)`. A malformed row yields `failed`, not an
+    exception."""
     if joined.source != "positions":
         return None, joined.row.get("currency"), None
 
@@ -551,16 +352,11 @@ def _accrued_outcome(joined: JoinedRow) -> Tuple[Optional[CalculationOutcome], O
         payload = {
             "provenance": accrued.provenance,
             "currency": normalized.currency,
-            # Echoed in its source unit so a consumer can reconcile
-            # against the extract without re-deriving the conversion.
+            # Echoed in the source unit, for reconciliation against the extract.
             "observedCleanPrice": normalized.observed_clean_price,
             "signedFaceAmount": normalized.signed_face_amount,
         }
-        # W1.6.3: align the standalone outcome's label with the one the NPV
-        # payload already carries. Before this, a consumer reading
-        # `accruedInterest` alone saw `provenance: "converted"` while the
-        # note's NPV payload said `accrualSource: "exported-fraction"` --
-        # two vocabularies for the same fact, and neither cross-referenced.
+        # Same label as the note NPV payload's `accrualSource`.
         accrual_source = _accrual_source(accrued.provenance)
         if accrual_source is not None:
             payload["accrualSource"] = accrual_source
@@ -598,10 +394,7 @@ def _build_item(
     refusal = check_conventions(joined)
 
     if refusal is not None:
-        # Pricing is not attempted for a refused row, deliberately. The
-        # convention refusal already says the engine cannot represent this
-        # instrument faithfully; pricing it anyway would produce exactly the
-        # confident wrong number the refusal exists to prevent.
+        # A refused row is never priced.
         return ItemResult(
             identity=identity,
             calculations=_refused_calculations(refusal, instrument_type, accrued),
@@ -620,36 +413,16 @@ def _build_item(
 
 
 def price_bundle(bundle_or_path, market_inputs: Optional[Dict] = None) -> RiskResult:
-    """Runs the full path over a bundle and returns its `RiskResult`.
+    """Run the full path over a `Bundle` or bundle path and return its `RiskResult`.
 
-    Accepts a loaded `Bundle` or a path to one. Raises
-    `BundleIntegrityError` if the bundle does not verify, and
-    `TermsJoinError` if its terms artifact is structurally unusable --
-    both of which mean the *input* cannot be trusted, as distinct from an
-    item that cannot be priced, which comes back as a refusal.
+    Raises `BundleIntegrityError` or `TermsJoinError` when the input itself cannot be
+    trusted; an unpriceable item comes back as a refusal instead.
 
-    `market_inputs` is the W0.6 request block, e.g.
-    `{"mode": "assumed-profile", "assumedProfileId": "flat-3pct-v1"}`. When
-    supplied it is resolved through
-    `engine.integration.market_inputs.resolve_market_inputs`, which
-    **raises `MarketInputsNotSupplied` rather than substituting a curve**
-    for anything it cannot resolve -- an unregistered profile id, a
-    `package` mode with no package, a missing mode. That failure fails the
-    whole job, because market data is the shared basis every price is
-    measured against rather than a property of one instrument.
-
-    **Omitting `market_inputs` is legal at W0 and only at W0**, because W0
-    prices nothing and therefore uses no curve. The result then reports
-    `marketProvenance: null` and carries a warning saying so -- *not*
-    `"observed"`, which would claim a market basis that was never
-    consulted. W1's pricers require the block, and the day a calculation
-    needs a discount factor is the day this argument stops being optional.
-
-    **W1 prices through this same entry point.** A zero-coupon Treasury
-    returns an `npv` (W1.2), a coupon-bearing one an `npv` and a
-    `rateSensitivity` (W1.3), and a cash equity an explicit
-    `SPOT_SOURCE_NOT_SUPPLIED` refusal (W1.4). Callers written against the
-    W0 boundary did not change when pricing arrived.
+    `market_inputs` (e.g. `{"mode": "assumed-profile", "assumedProfileId":
+    "flat-3pct-v1"}`) is resolved by `resolve_market_inputs`, which raises
+    `MarketInputsNotSupplied` (failing the whole job) rather than substituting a curve.
+    Omitted, nothing is priced, `marketProvenance` is null (not "observed"), and a warning
+    says so.
     """
     bundle = bundle_or_path if isinstance(bundle_or_path, Bundle) else load_bundle(bundle_or_path)
     joined = join_terms(bundle)
@@ -661,10 +434,7 @@ def price_bundle(bundle_or_path, market_inputs: Optional[Dict] = None) -> RiskRe
             "instrument requiring reference terms is unsupported."
         )
 
-    # The bundle's own declaration, surfaced rather than silently accepted:
-    # all three delivered YU18 fixtures say NOT_SUPPLIED, which is expected
-    # (TraderX exports positions and terms, not curves -- plan §1) but is
-    # exactly the condition W1 will have to fail on.
+    # The bundle's own market-data declaration, surfaced as a warning.
     bundle_market_status = (bundle.manifest.get("marketInputs") or {}).get("status")
     if bundle_market_status == "NOT_SUPPLIED":
         warnings.append(
@@ -677,13 +447,10 @@ def price_bundle(bundle_or_path, market_inputs: Optional[Dict] = None) -> RiskRe
     market_provenance = None
     measure = None
     if market_inputs is not None:
-        # Raises MarketInputsNotSupplied for anything unresolvable. No
-        # fallback, no default curve, no nearest-match on the profile id.
+        # Raises for anything unresolvable; no fallback.
         resolved = resolve_market_inputs(market_inputs)
         market_provenance = resolved.market_provenance
-        # Stated only when a market basis exists -- an exposure measure for
-        # a run that consulted no curve would be a label with nothing under
-        # it.
+        # The measure is stated only when a market basis exists.
         measure = ENGINE_RISK_MEASURE
     else:
         warnings.append(
@@ -692,11 +459,8 @@ def price_bundle(bundle_or_path, market_inputs: Optional[Dict] = None) -> RiskRe
             "Legal only because this delivery stage (W0) prices nothing."
         )
 
-    # Items are built AFTER market inputs resolve, because pricing needs the
-    # curve. An unresolvable request raises above and fails the whole job --
-    # no item is built, and no partial result is published (see
-    # engine.integration.market_inputs on why market data fails the job
-    # rather than refusing an item).
+    # Items are built after market inputs resolve; an unresolvable request has already
+    # raised, so no partial result is published.
     items = tuple(
         _build_item(row, bundle.cluster_epoch, resolved, bundle.session_date)
         for row in joined.rows
@@ -710,9 +474,7 @@ def price_bundle(bundle_or_path, market_inputs: Optional[Dict] = None) -> RiskRe
         items=items,
         mapping_version=MAPPING_VERSION,
         engine_version=ENGINE_VERSION,
-        # None when no curve was consulted. Deliberately not "assumed" --
-        # asserting a provenance for a computation that never happened
-        # would be its own small lie.
+        # None when no curve was consulted.
         market_provenance=market_provenance,
         market_inputs=resolved.to_dict() if resolved is not None else None,
         measure=measure,

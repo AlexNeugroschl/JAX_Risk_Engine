@@ -1,55 +1,34 @@
 """
-TraderX EOD integration boundary -- bundle in, identified risk result out.
+TraderX EOD integration boundary: bundle in, identified risk result out
+(docs/planning/traderX_integration/traderx-integration-plan.md).
 
-Implements W0 ("contract and refusal machinery") of
-`docs/planning/traderx-integration-plan.md`: everything needed to return a
-correct, *identified*, **refusing** result for every delivered fixture
-without pricing anything.
+The rule: nothing is silently approximated. An explicit `unsupported` is recoverable; a
+plausible wrong number is not.
 
-**W0 deliberately contained no pricing math at all.** That ordering is the
-plan's own (§2, "Why this ordering"): it proved the whole transport ->
-identity -> coverage -> publication path while pricing was still out of
-scope, so contract bugs and pricing bugs never got debugged
-simultaneously.
+Pricers here are closed-form discounted cashflows (Treasury bills and notes), using ORE
+only for dates and day counts. The package imports no FastAPI, Pydantic, JAX or simulation
+pricer, so unsupported conventions are refused before any pricing object exists (I-05;
+`tests/test_integration_pipeline.py::TestPackageImportsNoSimulationPricer`). HTTP routes
+live in `engine/api/eod_routes.py`.
 
-**W1.2 added the first pricer (`bill.py`), and W1.3 the second
-(`note.py`), behind that same boundary and without changing it.** A
-zero-coupon Treasury in a v2 bundle returns a real NPV; a coupon-bearing
-one returns an NPV and a rate sensitivity; everything else still returns
-the refusal it returned before. Both pricers are closed-form discounted
-cashflows -- they use `ORE` for date and day-count arithmetic and touch
-neither the Monte Carlo simulation nor `build_vanilla_swap`, which is what
-keeps W0.4's "refuse before constructing a pricing object" guarantee
-intact (see I-05, and
-`tests/test_integration_pipeline.py::TestPackageImportsNoSimulationPricer`).
+Modules, in dependency order:
 
-Module map, in dependency order:
-
-  `bundle.py`       W0.1  read + hash-verify a v1/v2 bundle
-  `terms.py`        W0.2  join `instrument-terms.json` onto rows
-  `normalize.py`    W0.3  source units -> engine units
-  `conventions.py`  W0.4  convention allowlist and the refusal path
-  `result.py`       W0.5  `RiskResult` + per-calculation coverage
-  `market_inputs.py` W0.6 explicit market-input mode; no silent fallback
-  `identity.py`     W0.7  opaque `itemId` + source identity
-  `capabilities.py` W0.9  the supported (product x convention x calculation) matrix
-  `bill.py`         W1.2  the first pricer: zero-coupon Treasury NPV
-  `note.py`         W1.3  coupon-bearing Treasury NPV + rate sensitivity
-  `equity.py`       W1.4  cash equity -- a refusal naming the missing spot
-  `schema_version.py` W1.6.2  the two document versions (dependency-free leaf)
-  `schema.py`       W1.6.2  JSON Schema for the published documents
-  `workload.py`     W1.6.4  workload key + the durable attempt store
-  `pipeline.py`     the composition of the above into one call
-
-**W1.6 made this boundary reachable over HTTP** -- but the routes are NOT
-here. They live in `engine/api/eod_routes.py`, because this package
-deliberately imports no FastAPI, Pydantic, JAX or simulation pricer, and
-routes inside it would break that invariant. The dependency runs
-`engine.api` -> `engine.integration`, never the reverse.
-
-The single governing rule, from which most of this code follows: **nothing
-is ever silently approximated.** An explicit `unsupported` is recoverable;
-a plausible wrong number is not.
+  `bundle.py`          read and hash-verify a v1/v2 bundle
+  `terms.py`           join `instrument-terms.json` onto rows
+  `normalize.py`       source units -> engine units
+  `conventions.py`     convention allowlist and refusal
+  `result.py`          `RiskResult` and per-calculation coverage
+  `market_inputs.py`   explicit market-input mode; no silent fallback
+  `identity.py`        opaque `itemId` and source identity
+  `capabilities.py`    the supported product x convention x calculation matrix
+  `bill.py`            zero-coupon Treasury NPV
+  `note.py`            coupon Treasury NPV and rate sensitivity
+  `equity.py`          cash equity: a refusal naming the missing spot
+  `schema_version.py`  document versions (dependency-free leaf)
+  `schema.py`          JSON Schemas of the published documents
+  `workload.py`        workload key and attempt store
+  `publication.py`     durable result store
+  `pipeline.py`        the composition, `price_bundle`
 """
 from engine.integration.bill import (
     BillPrice,

@@ -1,13 +1,23 @@
+"""
+Monte Carlo market simulation: Sobol normals, Brownian bridge, a joint Hull-White /
+lognormal cross-asset path simulation, and a yield-curve cube rebuilt from the short rates.
+
+Differs from ORE's cross-asset model (CAM), which simulates LGM states fitted to each
+currency's curve:
+  * Each rate factor is a Hull-White short rate (not LGM; I-44) reverting to a constant,
+    user-supplied `theta` from `initial_rates`, while the cube's A(t,T) is fitted to the
+    input curve. The two are consistent only for a flat curve with theta and r(0) at its
+    level, so the simulated discount factors do not reprice the input curve on a sloped
+    one (I-42, audit M-1, 4-9% errors).
+  * The numeraire is a money-market account accrued discretely, exp(r(t_i) dt), off rate
+    factor 0 only (I-45).
+  * Equities/FX are lognormal with drift `rate_mapping . r(t) - dividend_yield`.
+  * Volatilities and correlations are constant, taken from `joint_covariance`.
+"""
 import jax
-# JAX requires jax_enable_x64 to be set once, globally, before any float64
-# array can be created at all -- it is not a per-array/per-call setting (a
-# JAX/XLA constraint, not a design choice in this codebase). Default to
-# 64-bit precision at import time; generate_paths() re-toggles this per call
-# based on its `precision` argument, which is the correct, idiomatic JAX
-# pattern for supporting both precisions in one process (verified: sequential
-# calls with different `precision` values produce correctly-typed output
-# each time). Every function in this module that accepts an explicit `dtype`
-# honors it regardless of the ambient global flag (see generate_sobol_normals).
+# jax_enable_x64 is process-global and must be on before any float64 array exists.
+# `generate_paths` sets it per call and restores it afterwards (I-14); functions taking a
+# `dtype` honour it regardless of the flag.
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
@@ -22,68 +32,46 @@ from engine.models.hull_white import (
     A as _hw_A, B as _hw_B, ZeroCurve as _HwZeroCurve, log_discount as _hw_log_discount,
 )
 
-# =============================================================================
-# PHASE 1: QUASI-MONTE CARLO (CPU -> GPU)
-# =============================================================================
+# Phase 1: quasi-Monte Carlo normals
 def generate_sobol_normals(num_scenarios: int, num_steps: int, num_assets: int, dtype, seed: int = 42) -> jax.Array:
     """
-    CPU: Generates Sobol sequences.
-    GPU: Converts to Normal shocks.
-    Returns: [TimeSteps, Scenarios, Assets]
+    Scrambled Sobol uniforms (CPU) mapped to standard normals `[TimeSteps, Scenarios,
+    Assets]`.
 
-    `seed` selects the Owen scrambling of the Sobol sequence. The same seed
-    always reproduces the same draw; different seeds give statistically
-    independent randomized-QMC replicates, which is what a Monte Carlo
-    error estimate across runs needs.
-
-    `dtype` is always honored on output, regardless of the ambient global
-    jax_enable_x64 state: jax.scipy.stats.norm.ppf computes internally in
-    float64 whenever x64 mode is on (even for a float32 input), so the
-    result is explicitly cast back to `dtype` before returning rather than
-    trusting norm.ppf's output dtype directly.
+    `seed` selects the Owen scrambling: the same seed reproduces the draw; different seeds
+    are independent randomized-QMC replicates. The output is cast to `dtype`, because
+    `norm.ppf` computes in float64 whenever x64 is on.
     """
     total_dimensions = num_steps * num_assets
 
-    # Scramble adds necessary randomness to the deterministic Sobol points
+    # Scrambling randomizes the otherwise deterministic Sobol points.
     sobol_engine = Sobol(d=total_dimensions, scramble=True, seed=seed)
     uniform_draws = sobol_engine.random(n=num_scenarios)
 
-    # Transfer to JAX and convert to standard normals. The JAX half is
-    # factored into a jitted helper below: without a jit boundary each of
-    # clip/ppf/reshape/transpose dispatches eagerly (separately traced,
-    # lowered, compiled, executed and discarded), which measurably dominated
-    # this function's cost -- it was the single largest source of XLA
-    # compilations in a whole pricing job.
+    # The JAX half is jitted: eagerly, each op compiled separately and dominated the
+    # function's cost.
     return _sobol_uniforms_to_normals(uniform_draws, num_scenarios, num_steps, num_assets, dtype)
 
 
 @partial(jax.jit, static_argnums=(1, 2, 3, 4))
 def _sobol_uniforms_to_normals(uniform_draws, num_scenarios: int, num_steps: int, num_assets: int, dtype) -> jax.Array:
-    """GPU half of `generate_sobol_normals`: clip the CPU-generated Sobol
-    uniforms off the open-interval endpoints, map them through the inverse
-    normal CDF, and reshape to [TimeSteps, Scenarios, Assets].
-
-    Everything except `uniform_draws` is static (plain ints and a dtype), so
-    one compiled kernel is reused for every call with the same simulation
-    shape. See `generate_sobol_normals`'s docstring on why the explicit
-    `.astype(dtype)` is required regardless of the ambient x64 state."""
+    """Clip the uniforms off {0, 1}, map through the inverse normal CDF, and reshape to
+    `[TimeSteps, Scenarios, Assets]`. Everything but `uniform_draws` is static."""
     uniform_jax = jnp.asarray(uniform_draws, dtype=dtype)
     epsilon = jnp.finfo(dtype).eps
     uniform_clipped = jnp.clip(uniform_jax, epsilon, 1.0 - epsilon)
 
     normal_shocks = norm.ppf(uniform_clipped).astype(dtype)
 
-    # Reshape to match JAX loop expectations
+    # [Scenarios, Steps, Assets] -> [Steps, Scenarios, Assets]
     Z = normal_shocks.reshape((num_scenarios, num_steps, num_assets))
     return jnp.transpose(Z, (1, 0, 2))
 
 def _build_bridge_matrix(time_grid: np.ndarray) -> np.ndarray:
     """
-    CPU: Constructs the Brownian Bridge path-construction matrix B such that
-    W(t_1..t_n) = B @ Z, where Z are independent N(0,1) draws ordered by
-    Sobol-dimension significance (dimension 0 = path endpoint, dimension 1 =
-    midpoint, etc.), following the standard recursive bisection algorithm
-    used by QuantLib/ORE's BrownianBridge.
+    Brownian-bridge construction matrix B with W(t_1..t_n) = B @ Z, where Z are independent
+    normals ordered by Sobol dimension (dimension 0 is the endpoint, 1 the midpoint, ...),
+    by the recursive bisection of QuantLib's `BrownianBridge`.
     """
     times = np.asarray(time_grid, dtype=np.float64)[1:]  # drop t=0
     n = times.shape[0]
@@ -96,8 +84,8 @@ def _build_bridge_matrix(time_grid: np.ndarray) -> np.ndarray:
     right_weight = np.zeros(n, dtype=np.float64)
     std_dev = np.zeros(n, dtype=np.float64)
 
-    # map_[k] != 0 marks slot k as already assigned a construction order;
-    # each iteration bisects the widest unfilled gap (QuantLib BrownianBridge).
+    # map_[k] != 0 marks slot k as already constructed; each iteration bisects the widest
+    # remaining gap (as QuantLib's BrownianBridge).
     map_ = np.zeros(n, dtype=np.int64)
     map_[n - 1] = 1
     bridge_index[0] = n - 1
@@ -110,7 +98,7 @@ def _build_bridge_matrix(time_grid: np.ndarray) -> np.ndarray:
         k = j
         while map_[k] == 0:
             k += 1
-        # Choose the midpoint index between the two known bounds j-1..k
+        # Midpoint between the known bounds j-1 and k.
         l = j + ((k - 1 - j) // 2)
         map_[l] = i
 
@@ -128,9 +116,7 @@ def _build_bridge_matrix(time_grid: np.ndarray) -> np.ndarray:
             (mid_t - left_t) * (right_t - mid_t) / (right_t - left_t)
         )
 
-    # Translate the (left/right/bridge) recursion into an explicit linear map
-    # from Z (Sobol-ordered independent normals) to W (path values at each
-    # grid time), so it can be applied as a single matrix multiply.
+    # Turn the recursion into an explicit linear map from Z to W.
     B[n - 1, 0] = std_dev[0]
     for i in range(1, n):
         row = bridge_index[i]
@@ -149,34 +135,31 @@ def _apply_bridge_matrix(B_matrix: jax.Array, Z: jax.Array) -> jax.Array:
 
 
 def apply_brownian_bridge(Z: jax.Array, time_grid: jax.Array) -> jax.Array:
-    """
-    Transforms independent Normal shocks into Bridged Chronological Shocks.
-    """
+    """Independent normals `[TimeSteps, Scenarios, Assets]` -> bridged increments,
+    standardized by sqrt(dt)."""
     num_steps, num_scenarios, num_assets = Z.shape
 
     B_matrix_np = _build_bridge_matrix(np.asarray(time_grid))
     B_matrix = jnp.asarray(B_matrix_np, dtype=Z.dtype)
 
-    # Apply Bridge Matrix to reorder variance
+    # Path values W(t_i), variance ordered by the bridge.
     W_paths = _apply_bridge_matrix(B_matrix, Z)
     
-    # Convert absolute paths back to sequential steps (dW)
+    # Path values -> increments dW.
     W_paths_with_zero = jnp.concatenate(
         [jnp.zeros((1, num_scenarios, num_assets), dtype=Z.dtype), W_paths], 
         axis=0
     )
     dW = jnp.diff(W_paths_with_zero, axis=0)
     
-    # Standardize increments for the JAX step function
+    # Standardize the increments to N(0, 1) per step.
     dt = jnp.diff(time_grid)
     Z_sequential = dW / jnp.sqrt(dt)[:, None, None]
     
     return Z_sequential
 
 
-# =============================================================================
-# PHASE 2: CROSS-ASSET MODEL ENGINE (GPU)
-# =============================================================================
+# Phase 2: cross-asset path simulation
 @jax.jit
 def _simulate_cross_asset_paths_jit(
     eq_S0: jax.Array, eq_div_t: jax.Array, rate_mapping: jax.Array, eq_sigma_t: jax.Array,
@@ -184,24 +167,18 @@ def _simulate_cross_asset_paths_jit(
     L_t: jax.Array, dt_t: jax.Array, Z_bridged: jax.Array
 ):
     """
-    GPU: joint Hull-White 1-Factor (rates) + correlated GBM (equities/FX)
-    Monte Carlo path simulation, stepped chronologically via jax.lax.scan.
+    Joint Hull-White (rates) and lognormal (equities/FX) paths, stepped with
+    `jax.lax.scan`.
 
-    Per step: correlates the bridged shocks via the (per-step) Cholesky
-    factor L_t, evolves each rate factor with the exact HW1F transition
-    (mean-reverting Ornstein-Uhlenbeck), evolves each equity/FX path via GBM
-    with a dynamic drift derived from the simulated short rates (Uncovered
-    Interest Rate Parity: rate_mapping maps each equity/FX to the rate
-    factor(s) it depends on), and accrues a money-market numeraire off rate
-    factor index 0 only (single base-currency discounting account -- see
-    "Using Index 0 as base discount curve" below).
+    Per step: correlate the bridged shocks with the Cholesky factor `L_t`; step each short
+    rate with the exact Ornstein-Uhlenbeck transition toward the constant `theta` (see the
+    module docstring); step each equity with drift `rate_mapping . r(t) - dividend`; accrue
+    the numeraire off rate factor 0.
 
-    Shapes: eq_S0/hw_r0 are [NumEq]/[NumHW]; eq_div_t/eq_sigma_t/hw_theta_t/
-    hw_sigma_t are [TimeSteps, NumEq or NumHW]; rate_mapping is
-    [NumEq, NumHW]; L_t is [TimeSteps, NumEq+NumHW, NumEq+NumHW]; dt_t is
-    [TimeSteps]; Z_bridged is [TimeSteps, Scenarios, NumEq+NumHW].
-    Returns (eq_paths, hw_paths, numeraire_paths), each
-    [Scenarios, TimeSteps, ...].
+    Shapes: eq_S0 [NumEq], hw_r0 [NumHW]; eq_div_t/eq_sigma_t/hw_theta_t/hw_sigma_t
+    [TimeSteps, NumEq or NumHW]; rate_mapping [NumEq, NumHW]; L_t [TimeSteps, NumEq+NumHW,
+    NumEq+NumHW]; dt_t [TimeSteps]; Z_bridged [TimeSteps, Scenarios, NumEq+NumHW].
+    Returns (eq_paths, hw_paths, numeraire_paths), each [Scenarios, TimeSteps, ...].
     """
     num_scenarios = Z_bridged.shape[1]
     num_eq = eq_S0.shape[0]
@@ -212,30 +189,14 @@ def _simulate_cross_asset_paths_jit(
         eq_t, r_t, N_t = state
         Z_i, L_i, dt_i, div_eq, sig_eq, theta_hw, sig_hw = step_inputs
         
-        # Correlate all assets
+        # Correlate the shocks.
         Z_corr = jnp.dot(Z_i, L_i.T)
         Z_eq = Z_corr[:, :num_eq]
         Z_hw = Z_corr[:, num_eq:]
         
-        # 1. HW1F (Interest Rates)
-        # Exact Ornstein-Uhlenbeck transition: E[r(t+dt)|r(t)] = r(t)*decay +
-        # theta*(1-decay), NOT r(t)*decay + theta -- the latter treats theta
-        # as a flat per-step drift increment rather than the long-run mean
-        # target, causing r(t) to diverge upward (or downward) without
-        # bound every step instead of reverting toward theta. This was
-        # invisible in every prior demo/test because they all set
-        # theta == initial_rates (a fixed point ONLY under the correct
-        # formula); confirmed against the closed-form OU transition mean
-        # directly (e.g. a=0.03, dt=0.5, theta != r0 diverges by several
-        # points after just a few steps under the old formula).
-        # hw_a==0.0 (arithmetic Brownian motion, the mathematically valid
-        # a->0 limit of OU mean reversion) is a removable 0/0 singularity
-        # in variance_hw as literally written -- guarded by evaluating the
-        # formula on a safe placeholder a (never actually 0) and selecting
-        # the analytic limit (variance_hw->dt) via jnp.where instead,
-        # rather than letting hw_a==0.0 divide by zero into NaN. Both
-        # branches are evaluated unconditionally (branch-free/jit-
-        # friendly), the placeholder is just discarded when hw_a != 0.
+        # 1. Short rates: exact OU transition, mean r*decay + theta*(1-decay), variance
+        #    sigma^2*(1-exp(-2a dt))/(2a). The a -> 0 limit (variance dt) is selected with
+        #    jnp.where on a placeholder `a`, so a == 0 never divides by zero.
         hw_a_safe = jnp.where(hw_a == 0.0, 1.0, hw_a)
         decay = jnp.exp(-hw_a * dt_i)
         variance_hw = jnp.where(
@@ -246,24 +207,24 @@ def _simulate_cross_asset_paths_jit(
         shock_hw = sig_hw * jnp.sqrt(variance_hw) * Z_hw
         r_next = r_t * decay + theta_hw * (1.0 - decay) + shock_hw
         
-        # 2. GBM (Equities / FX) with Dynamic Drift (Uncovered Interest Rate Parity)
+        # 2. Equities/FX: lognormal with drift rate_mapping . r(t) - dividend yield.
         dynamic_mu = jnp.dot(r_t, rate_mapping.T) - div_eq
         drift_eq = (dynamic_mu - 0.5 * sig_eq**2) * dt_i
         shock_eq = sig_eq * jnp.sqrt(dt_i) * Z_eq
         eq_next = eq_t * jnp.exp(drift_eq + shock_eq)
         
-        # 3. Update Numéraire (Using Index 0 as base discount curve)
+        # 3. Numeraire: money-market account on rate factor 0, left-point rule.
         N_next = N_t * jnp.exp(r_t[:, 0] * dt_i)
         
         new_state = (eq_next, r_next, N_next)
         return new_state, new_state
 
-    # Initialize Day-0 States
+    # Day-0 state.
     eq_initial = jnp.broadcast_to(eq_S0, (num_scenarios, num_eq))
     hw_initial = jnp.broadcast_to(hw_r0, (num_scenarios, num_hw))
     N_initial = jnp.ones((num_scenarios,), dtype=compute_dtype) 
 
-    # Execute Time Machine
+    # Step through time.
     _, (eq_paths, hw_paths, N_paths) = jax.lax.scan(
         step_fn, 
         (eq_initial, hw_initial, N_initial), 
@@ -277,16 +238,10 @@ def _simulate_cross_asset_paths_jit(
     )
 
 
-# =============================================================================
-# PHASE 3: YIELD CURVE RECONSTRUCTION
-# =============================================================================
+# Phase 3: yield-curve reconstruction
 def _initial_log_discount(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.ndarray) -> np.ndarray:
-    """Continuously-compounded log discount factor ln P(0,t) via linear
-    interpolation on zero rates, flat-extrapolated at the curve ends. Thin
-    NumPy-facing wrapper around `engine.models.hull_white.log_discount` --
-    kept for existing NumPy call sites/tests; the underlying formula lives
-    in exactly one place (`engine/models/hull_white.py`), not re-derived
-    here."""
+    """ln P(0,t): linear zero-rate interpolation, flat extrapolation
+    (`engine.models.hull_white.log_discount` on NumPy arrays)."""
     curve = _HwZeroCurve(pillar_times=jnp.asarray(zero_times), pillar_rates=jnp.asarray(zero_rates))
     return np.asarray(_hw_log_discount(curve, jnp.asarray(t)))
 
@@ -300,28 +255,13 @@ def compute_hw_A_matrix(
     B_matrix: np.ndarray,
 ) -> np.ndarray:
     """
-    Closed-form Hull-White 1-Factor A(t,T), calibrated independently per
-    rate factor against that factor's OWN initial zero curve -- a thin
-    per-rate-factor `jax.vmap` wrapper around
-    `engine.models.hull_white.A` (the single shared implementation of this
-    formula; see that module's docstring for the math and the ORE
-    correspondence). Matches ORE's Cross-Asset Model: every
-    IrLgm1fParametrization is constructed with its own (Currency,
-    YieldTermStructureHandle) pair -- live-verified against the installed
-    ORE package that no shared-curve constructor path exists (a
-    2-currency CrossAssetModel with distinct USD 3%/EUR 2% flat curves
-    retains each currency's own discount factors throughout, never
-    cross-contaminating). One shared curve across factors would be a bug,
-    not a legitimate simplification of ORE's design.
+    Hull-White A(t,T) per rate factor, each fitted to that factor's own zero curve (as
+    each currency in ORE's CAM has its own curve), via `engine.models.hull_white.A`.
 
-    zero_curves: one ZeroCurveConfig per rate factor (len == hw_a.shape[0]),
-    in the same order as hw_a/hw_sigma/maturities' NumRates axis.
-    Shapes: step_times [TimeSteps], maturities [Maturities], B_matrix
-    [TimeSteps, Maturities, NumRates] -> returns A [TimeSteps, Maturities, NumRates].
-
-    Returns a plain `np.ndarray` (this function's existing, NumPy-facing
-    contract used by `generate_paths` below and by this module's own
-    tests) even though the computation itself now runs through JAX.
+    zero_curves: one `ZeroCurveConfig` per rate factor, in NumRates order.
+    Shapes: step_times [TimeSteps], maturities [Maturities],
+    B_matrix [TimeSteps, Maturities, NumRates] -> A [TimeSteps, Maturities, NumRates].
+    Returns a NumPy array.
     """
     num_hw = hw_a.shape[0]
     step_times_j = jnp.asarray(step_times, dtype=jnp.float64)
@@ -336,9 +276,8 @@ def compute_hw_A_matrix(
             pillar_times=jnp.asarray(zero_curves[k].times, dtype=jnp.float64),
             pillar_rates=jnp.asarray(zero_curves[k].rates, dtype=jnp.float64),
         )
-        # B_override=the caller's own B_matrix slice (see A()'s docstring
-        # on B_override for why this must be threaded through rather than
-        # recomputed from t_grid/T_grid here).
+        # Pass the caller's B (clamped at 0 for past pillars) so A and exp(-B*r) agree
+        # (see hull_white.A).
         A_k = _hw_A(
             curve, t_grid, T_grid, float(hw_a[k]), float(hw_sigma[k]),
             B_override=B_matrix_j[:, :, k],
@@ -349,20 +288,9 @@ def compute_hw_A_matrix(
 
 def validate_joint_covariance(matrix) -> None:
     """
-    Guards `generate_paths` against a non-PSD `joint_covariance` -- without
-    this check, `jnp.linalg.cholesky` on an invalid correlation matrix
-    silently produces an all-NaN factor, which then silently NaNs every
-    simulated path with no error raised anywhere (see
-    docs/planning/traderx-integration.md's gap item 1). Cheap: this runs
-    once per `generate_paths` call, on the CPU, not once per scenario.
-
-    Checks (in order): square, symmetric (within float tolerance), and
-    positive semi-definite (every eigenvalue >= -tol, via
-    `np.linalg.eigvalsh` -- the standard, numerically stable eigenvalue
-    routine for symmetric matrices). Raises `ValueError` naming the
-    specific problem; for a non-PSD matrix, names every offending
-    (negative) eigenvalue and its index in the ascending-sorted spectrum
-    `eigvalsh` returns.
+    Reject a `joint_covariance` that is not square, symmetric (within 1e-8) or positive
+    semi-definite (eigenvalues >= -1e-8). Otherwise Cholesky returns NaN and every path
+    becomes NaN without an error. The message names the offending eigenvalues.
     """
     m = np.asarray(matrix, dtype=np.float64)
     if m.ndim != 2 or m.shape[0] != m.shape[1]:
@@ -393,30 +321,12 @@ def validate_joint_covariance(matrix) -> None:
 
 def nearest_psd(matrix, epsilon: float = 1e-10) -> np.ndarray:
     """
-    Opt-in "best effort" repair for a `joint_covariance` that fails
-    `validate_joint_covariance`: standard eigenvalue-clipping projection
-    onto the nearest positive semi-definite matrix (clip every eigenvalue
-    below `epsilon` up to `epsilon`, reconstruct from the clipped spectrum,
-    re-symmetrize to cancel floating-point asymmetry introduced by the
-    reconstruction).
+    Opt-in repair of a non-PSD `joint_covariance`: clip eigenvalues up to `epsilon`,
+    reconstruct and re-symmetrize.
 
-    Clips to `epsilon` (a small positive number), not literally 0 --
-    clipping all the way to exactly 0 produces a mathematically-PSD-but-
-    numerically-rank-deficient matrix, which is a real floating-point
-    Cholesky failure mode in its own right (the same singular-boundary
-    phenomenon as an exact rho=+-1 correlation: `jnp.linalg.cholesky`
-    silently returns NaN at exact rank deficiency, confirmed directly in
-    `tests/test_market_model.py::TestCholeskyOnDegenerateCorrelation`) --
-    so a repair that clips to exactly 0 would frequently hand
-    `generate_paths` a matrix that still NaNs downstream, defeating the
-    entire point of "opt-in best-effort repair." `epsilon` trades a
-    negligible amount of variance for a matrix that is genuinely usable.
-
-    Deliberately never called automatically by `generate_paths` or
-    anything in `engine/portfolio/request.py` -- a genuinely bad correlation input
-    must be rejected loudly, not silently altered and priced anyway. A
-    caller who explicitly wants "close enough" behavior calls this
-    directly and is then responsible for having done so knowingly.
+    Clips to a small positive `epsilon`, not 0: an exactly rank-deficient matrix still
+    gives NaN from `jnp.linalg.cholesky`. Never called automatically; a bad correlation
+    input is rejected unless the caller repairs it knowingly.
     """
     m = np.asarray(matrix, dtype=np.float64)
     symmetric = 0.5 * (m + m.T)
@@ -429,61 +339,40 @@ def nearest_psd(matrix, epsilon: float = 1e-10) -> np.ndarray:
 @jax.jit
 def reconstruct_yield_curves(hw_paths: jax.Array, A: jax.Array, B: jax.Array) -> jax.Array:
     """
-    Expands simulated 1D short rates into 2D discount curves for future pricing.
-    Outputs: [Scenarios, TimeSteps, Maturities, NumRates]
+    Short-rate paths -> discount curves P(t,T) = A(t,T) * exp(-B(t,T) * r(t)), shape
+    [Scenarios, TimeSteps, Maturities, NumRates].
     """
     r_t = hw_paths[:, :, None, :]  
     A_bcast = A[None, :, :, :]     
     B_bcast = B[None, :, :, :]     
     
-    # Vectorized Hull-White Affine Formula
+    # Hull-White affine bond price, vectorized.
     discount_curves = A_bcast * jnp.exp(-B_bcast * r_t)
     return discount_curves
 
 
-# =============================================================================
-# PHASE 4: PUBLIC API WRAPPER
-# =============================================================================
+# Phase 4: public API
 @dataclass
 class ZeroCurveConfig:
-    """Today's market zero curve pillars for one rate factor, used to
-    calibrate the Hull-White A(t,T) term (see compute_hw_A_matrix).
+    """Today's zero curve for one rate factor (pillar times in years, continuously
+    compounded zero rates).
 
-    `provenance` records where these numbers came from -- an observed
-    bootstrap, a named assumed profile, or synthetic fixture data. It is
-    **optional and defaults to None**, so every existing caller is
-    unaffected and unchanged: this field is metadata only, read by nothing
-    in the simulation math below, and `generate_paths` never branches on
-    it.
-
-    **Why it exists at all** (plan §W0.6, part of I-11): before it, this
-    dataclass carried times and rates and nothing else, so a flat 3%
-    assumption and a bootstrapped market curve were *the same object* and
-    no downstream code could tell them apart. A result computed against an
-    assumption looked exactly like one computed against the market. The
-    engine now carries the distinction internally rather than only at its
-    edges -- see `engine.integration.market_inputs.CurveProvenance`.
-
-    `None` means "unstated", which is honestly different from
-    `inputOrigin: "observed"`. Nothing infers observedness from a missing
-    provenance; `engine.integration` treats unstated as not-observed when
-    it computes a result's top-level `marketProvenance`.
+    `provenance` is optional metadata (observed, assumed or synthetic); the simulation
+    never reads it. `None` means unstated, which `engine.integration` treats as not
+    observed when it reports a result's market provenance (I-11). See
+    `engine.integration.market_inputs.CurveProvenance`.
     """
     times: List[float]
     rates: List[float]
-    # Typed as Optional[object] rather than Optional[CurveProvenance] to
-    # keep this module free of any engine.integration import: the
-    # dependency runs integration -> simulation, and reversing it here
-    # would make the simulation layer depend on the TraderX boundary.
+    # Optional[object] rather than CurveProvenance, so this module does not import
+    # engine.integration (the dependency runs the other way).
     provenance: Optional[object] = None
 
 
 @dataclass
 class EquityConfig:
-    """Equity/FX leg of the cross-asset model. rate_mapping[i] gives the
-    Uncovered-Interest-Rate-Parity drift coefficients for equity/FX i
-    against every Hull-White rate factor (row length == RatesConfig's
-    NumHW)."""
+    """Equity/FX leg. `rate_mapping[i]` holds equity i's drift coefficient on each rate
+    factor (row length NumHW)."""
     initial_prices: List[float]
     dividend_yields: List[float]
     rate_mapping: List[List[float]]
@@ -491,16 +380,9 @@ class EquityConfig:
 
 @dataclass
 class RatesConfig:
-    """Hull-White 1-Factor rates leg. initial_rates/theta/mean_reversion
-    are one entry per rate factor. maturities is optional -- its presence
-    triggers yield_curves output in generate_paths' return dict; when set,
-    initial_zero_curves is required: one ZeroCurveConfig PER rate factor, in
-    the same order as initial_rates/theta/mean_reversion (len must match).
-    This mirrors ORE's Cross-Asset Model exactly -- every
-    IrLgm1fParametrization is constructed with its own (Currency,
-    YieldTermStructureHandle) pair, never a curve shared across factors
-    (live-verified against the installed ORE package; see
-    compute_hw_A_matrix's docstring for the evidence)."""
+    """Hull-White rates leg, one entry per rate factor in `initial_rates`, `theta`,
+    `mean_reversion`. Setting `maturities` adds a `yield_curves` output and requires
+    `initial_zero_curves`, one curve per factor in the same order."""
     initial_rates: List[float]
     theta: List[float]
     mean_reversion: List[float]
@@ -511,18 +393,12 @@ class RatesConfig:
 @dataclass
 class SimulationConfig:
     """
-    Typed configuration for generate_paths, mirroring the engine's actual
-    parameter structure 1:1 (see each nested dataclass's docstring). This
-    is the canonical, IDE- and API-friendly entry point -- catches
-    misspelled/missing fields at construction time via Python's own
-    dataclass machinery, rather than a KeyError deep inside generate_paths.
-    Also the natural shape for the Pydantic schema in `engine/api/schemas.py`
-    to mirror -- see the roadmap's "TraderX API integration" phase
-    (docs/planning/roadmap-and-history.md) for status.
+    Configuration for `generate_paths` (see each nested dataclass).
 
     time_grid: absolute times, ascending, starting at 0.0.
-    joint_covariance: [NumEq+NumHW, NumEq+NumHW], equities first then rates,
-        in the same order as equities.initial_prices / rates.initial_rates.
+    joint_covariance: [NumEq+NumHW] square, equities first then rates, in the order of
+        `equities.initial_prices` and `rates.initial_rates`. The diagonal gives each
+        factor's (constant) volatility squared; off-diagonals give correlations.
     seed: Sobol scrambling seed (see `generate_sobol_normals`).
     """
     time_grid: List[float]
@@ -535,32 +411,14 @@ class SimulationConfig:
 
 def generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, jax.Array]:
     """
-    Runs the full Sobol -> Brownian bridge -> cross-asset Monte Carlo ->
-    yield curve reconstruction pipeline from a SimulationConfig.
+    Sobol -> Brownian bridge -> cross-asset paths -> (optional) yield-curve cube.
 
-    precision: 64 for float64 (default; required for the FP64 "ground truth"
-        runs), 32 for float32 (Phase 9 lower-precision comparison runs).
-        jax_enable_x64 must be a process-global JAX/XLA setting (not a
-        per-array choice -- see the module-level comment above its default),
-        so this toggles it for the duration of this call; sequential calls
-        with different `precision` values each produce correctly-typed
-        output. generate_sobol_normals honors `dtype` directly regardless of
-        this global state, so calling it standalone is also safe.
+    precision: 64 (float64) or 32 (float32). `jax_enable_x64` is process-global, so it is
+        set for this call and restored on exit (I-14).
 
-        **The flag is RESTORED on exit (I-14)**, which is what makes "for the
-        duration of this call" true rather than aspirational. It previously
-        leaked: `precision=32` left x64 disabled process-wide, so the NEXT
-        float64 work in that process silently produced float32 -- JAX
-        truncates a float64 request to float32 under x64=False with only a
-        `UserWarning`, so the result was finite, plausible, and wrong in its
-        last digits. `price_portfolio` never hit this (it re-enables x64
-        immediately after calling here, deliberately), but any direct caller
-        did, and this module is called directly by demos, tests, and every
-        `engine/instruments/*` __main__ block.
-
-    Returns a dict with "equities" [S,T,NumEq], "rates" [S,T,NumHW],
-    "numeraire" [S,T], and (if config.rates.maturities is set)
-    "yield_curves" [S,T,Maturities,NumHW].
+    Returns "equities" [S,T,NumEq], "rates" [S,T,NumHW], "numeraire" [S,T], and, if
+    `config.rates.maturities` is set, "yield_curves" [S,T,Maturities,NumHW]. The time axis
+    is `time_grid[1:]`.
     """
     validate_joint_covariance(config.joint_covariance)
 
@@ -570,14 +428,8 @@ def generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, j
 
 @contextmanager
 def _x64_enabled(enabled: bool):
-    """Sets the process-global `jax_enable_x64` flag for the body and
-    restores whatever it was before, so a `precision=32` run cannot leave
-    float64 silently disabled for unrelated work that follows it (I-14).
-
-    Restoring the PRIOR value rather than unconditionally re-enabling is
-    deliberate: a caller who legitimately runs under x64=False (an
-    all-float32 process) should be left in that state, not quietly promoted
-    to float64 by having called a simulation."""
+    """Set `jax_enable_x64` for the body and restore the previous value (not
+    unconditionally True), so an all-float32 process stays float32."""
     previous = jax.config.jax_enable_x64
     jax.config.update("jax_enable_x64", enabled)
     try:
@@ -587,12 +439,10 @@ def _x64_enabled(enabled: bool):
 
 
 def _generate_paths_inner(config: SimulationConfig, precision: int) -> Dict[str, jax.Array]:
-    """`generate_paths`'s body, split out only so the x64 flag can be
-    scoped by a context manager without re-indenting the whole pipeline.
-    Call `generate_paths`, not this."""
+    """Body of `generate_paths`; call that instead."""
     dtype = jnp.float64 if precision == 64 else jnp.float32
 
-    # 1. Base Setup
+    # 1. Setup
     time_grid = jnp.array(config.time_grid, dtype=dtype)
     dt_t = jnp.diff(time_grid)
     num_steps = dt_t.shape[0]
@@ -652,34 +502,15 @@ def _generate_paths_inner(config: SimulationConfig, precision: int) -> Dict[str,
             f"got a matrix with {len(config.joint_covariance)} rows."
         )
 
-    # 4. Joint Matrix
-    # L_t must carry CORRELATION only (unit diagonal), not the raw
-    # covariance magnitude -- step_fn separately multiplies each factor's
-    # correlated shock by its own sig_eq/hw_sigma_t (below), so a Cholesky
-    # factor built from the raw covariance matrix would double-apply every
-    # factor's volatility (once via L_t's own diagonal scale, once via the
-    # explicit sig_eq/sig_hw multiplication downstream). Confirmed as a
-    # real, previously-undetected bug: with the raw-covariance Cholesky, a
-    # configured 20% equity vol produced an actual simulated log-return std
-    # of ~4% (0.2^2), and a configured 1.5% rate vol produced an actual
-    # simulated short-rate std smaller by the same squared factor -- caught
-    # by checking simulated variance against the closed-form HW1F/GBM
-    # transition variance directly, not just cross-checking formulas at a
-    # single point.
+    # 4. Correlation and volatilities. L_t is the Cholesky factor of the correlation
+    #    (unit diagonal); each shock is scaled by its own sigma in the step function, so a
+    #    Cholesky of the raw covariance would apply every volatility twice.
     cov_raw = jnp.array(config.joint_covariance, dtype=dtype)
     cov_t = jnp.tile(cov_raw[None, :, :], (num_steps, 1, 1))
     joint_sigma_t = jnp.sqrt(jnp.diagonal(cov_t, axis1=1, axis2=2))
-    # A factor with exactly zero variance makes its row/column of
-    # sigma_i*sigma_j a literal 0/0 -- NaN, which jnp.linalg.cholesky then
-    # propagates through the ENTIRE factor matrix (not just that factor's
-    # own row/column), silently poisoning every other, perfectly
-    # well-defined factor too. That factor's shock is multiplied by its
-    # own sigma=0 downstream (shock_hw/shock_eq) regardless of what
-    # correlation value it carries here, so its off-diagonal correlation
-    # entries are numerically irrelevant -- guarded by substituting the
-    # identity row/column (0 off-diagonal, 1 on-diagonal) for any
-    # zero-variance factor before Cholesky, which keeps every other
-    # factor's real correlation structure and Cholesky factor intact.
+    # A factor with zero variance would make its correlation row 0/0 = NaN, which Cholesky
+    # spreads to every factor. Its shock is multiplied by sigma = 0 anyway, so its row and
+    # column are replaced by the identity.
     sigma_is_zero = joint_sigma_t == 0.0
     pair_is_zero = sigma_is_zero[:, :, None] | sigma_is_zero[:, None, :]
     joint_sigma_t_safe = jnp.where(sigma_is_zero, 1.0, joint_sigma_t)
@@ -690,7 +521,7 @@ def _generate_paths_inner(config: SimulationConfig, precision: int) -> Dict[str,
     eq_sigma_t = joint_sigma_t[:, :num_eq]
     hw_sigma_t = joint_sigma_t[:, num_eq:]
 
-    # 5. Core Simulation Pipeline
+    # 5. Simulation
     Z_sobol = generate_sobol_normals(num_scenarios, num_steps, num_eq + num_hw, dtype, seed=config.seed)
     Z_bridged = apply_brownian_bridge(Z_sobol, time_grid)
 
@@ -706,25 +537,18 @@ def _generate_paths_inner(config: SimulationConfig, precision: int) -> Dict[str,
         "numeraire": numeraire_paths
     }
 
-    # 6. Yield Curve Reconstruction (If requested in config)
+    # 6. Yield-curve cube (if maturities are configured)
     if hw_cfg.maturities is not None:
         maturities = jnp.array(hw_cfg.maturities, dtype=dtype)
 
-        step_times = time_grid[1:] # We evaluate AT the step ends
+        step_times = time_grid[1:]  # the cube is evaluated at the step ends
         T_minus_t = jnp.maximum(maturities[None, :] - step_times[:, None], 0.0)
 
-        # B(t,T) formula via the single shared implementation
-        # (engine.models.hull_white.B, vmapped across rate factors). Uses
-        # T_minus_t (clamped at 0 for a cashflow past its own maturity,
-        # e.g. a pillar earlier than the current step) rather than raw
-        # T-t directly -- B's own a==0 removable-singularity guard still
-        # applies unchanged since it operates on this already-clamped gap.
+        # B(t,T) with T - t clamped at 0, so a pillar already in the past gets B = 0 (see
+        # I-04: its value is then not a discount factor).
         B_matrix = jax.vmap(lambda a: _hw_B(0.0, T_minus_t, a), out_axes=-1)(hw_a)
 
-        # A(t,T): calibrated to today's market zero curve, independently per
-        # rate factor, so each factor's simulated discount factors reprice
-        # its OWN initial term structure (matches ORE's Cross-Asset Model --
-        # see compute_hw_A_matrix's docstring).
+        # A(t,T), fitted per rate factor to that factor's own curve.
         if len(hw_cfg.initial_zero_curves) != num_hw:
             raise ValueError(
                 f"rates.initial_zero_curves must have exactly one curve per "
@@ -747,9 +571,7 @@ def _generate_paths_inner(config: SimulationConfig, precision: int) -> Dict[str,
     return results
 
 
-# =============================================================================
-# EXECUTION DEMONSTRATION
-# =============================================================================
+# Demo
 if __name__ == "__main__":
     from engine.simulation.demo_scenarios import cross_asset_demo_config
 

@@ -1,16 +1,10 @@
 """
-W0.4 -- the convention allowlist and the refusal path
-(`docs/planning/traderx-integration-plan.md` §W0.4). Closes part of I-05.
+The convention allowlist and the refusal path (`engine.integration.conventions`, W0.4;
+part of I-05).
 
-The named tests from the plan:
-  - SOFR fixture -> `unsupported` naming all **13** `missingTerms`
-  - a booking with absent conventions -> `unsupported`, **not** generically priced
-  - an allowlisted generic swap still prices (here: is still *accepted*; W0
-    ships no pricer, so acceptance is what there is to assert)
-
-`TestRefusesToInfer` is the one guarding the money: a booking with no stated
-conventions is the case the generic builder would have swallowed, returning
-a confident wrong number.
+The SOFR fixture is refused naming all 13 `missingTerms`; a booking with absent conventions
+is refused rather than priced with `build_vanilla_swap`'s defaults; an allowlisted generic
+swap is accepted.
 """
 from pathlib import Path
 
@@ -31,8 +25,8 @@ from engine.integration.terms import JoinedRow, TermsEntry, join_terms
 
 FIXTURES = Path(__file__).parent / "fixtures" / "traderx-eod"
 
-#: A booking whose conventions ARE on the allowlist -- the generic
-#: term-IBOR/ACT-365 profile the engine actually implements.
+#: A booking whose conventions are all on the allowlist: the term-index, ACT/365 profile
+#: the engine implements.
 ALLOWLISTED_SWAP_TERMS = {
     "currency": "USD",
     "payReceive": "PAY_FIXED",
@@ -63,7 +57,7 @@ def _swap_row(terms: dict, missing=()) -> JoinedRow:
 
 
 class TestSofrFixtureIsRefused:
-    """Plan §W0.4's first named test, and the W0 exit criterion."""
+    """The SOFR fixture is refused."""
 
     def test_sofr_is_refused(self):
         join = join_terms(load_bundle(FIXTURES / "sofr" / "v2"))
@@ -92,15 +86,12 @@ class TestSofrFixtureIsRefused:
 
         assert item["refusal"]["reason"] == CONVENTION_NOT_SUPPORTED
         assert len(item["refusal"]["missingTerms"]) == 13
-        # ...and on the calculation itself, not only in a summary block.
+        # On the calculation itself, not only in a summary block.
         assert len(item["calculations"]["npv"]["missingTerms"]) == 13
 
     def test_sofr_is_refused_even_with_complete_terms(self):
-        """The deeper point: SOFR is refused for its CONVENTIONS, not only
-        for its incomplete export. Supplying the 13 missing terms does not
-        make USD-SOFR priceable -- the engine has no overnight-compounded
-        index. This test fails against an implementation that only checks
-        `missingTerms`."""
+        """SOFR is refused for its conventions, not only its incomplete export: with the 13
+        terms supplied it is still refused (the engine has no overnight-compounded index)."""
         terms = dict(ALLOWLISTED_SWAP_TERMS)
         terms.update({
             "floatIndex": "USD-SOFR",
@@ -116,14 +107,10 @@ class TestSofrFixtureIsRefused:
 
 
 class TestRefusesToInfer:
-    """Plan §W0.4 step 4 -- **the bug this prevents**.
-
-    `build_vanilla_swap` produces SimIndex6M, ACT/365 both legs, a TARGET
-    calendar and a tenor-derived schedule. A booking that states none of
-    those would be given all of them. ACT/360-vs-ACT/365 alone is ~$1,906
-    on a $1mm 5Y leg, about 46x a 1bp DV01 -- and no existing test catches
-    it, because every test builds its inputs with that same builder.
-    """
+    """A booking stating no conventions is refused. `build_vanilla_swap` would give it
+    SimIndex6M, ACT/365 on both legs, a TARGET calendar and a tenor-derived schedule, and
+    every other test builds its inputs with that same builder, so nothing else catches
+    it."""
 
     def test_booking_with_no_conventions_is_refused(self):
         bare = {"currency": "USD", "notional": "1000000", "fixedRate": "0.04"}
@@ -141,8 +128,7 @@ class TestRefusesToInfer:
 
     @pytest.mark.parametrize("dropped", REQUIRED_SWAP_CONVENTIONS)
     def test_any_single_absent_convention_is_refused(self, dropped):
-        """Each required convention individually, so none is accidentally
-        unchecked."""
+        """Each required convention on its own."""
         terms = dict(ALLOWLISTED_SWAP_TERMS)
         del terms[dropped]
 
@@ -152,8 +138,7 @@ class TestRefusesToInfer:
 
     @pytest.mark.parametrize("blanked", REQUIRED_SWAP_CONVENTIONS)
     def test_blank_convention_is_treated_as_absent(self, blanked):
-        """A present-but-empty field is not a stated convention. Treating
-        `""` as 'supplied' would let an empty export through."""
+        """An empty string is not a stated convention."""
         terms = dict(ALLOWLISTED_SWAP_TERMS)
         terms[blanked] = ""
 
@@ -162,16 +147,15 @@ class TestRefusesToInfer:
         assert blanked in refusal.offending_fields
 
     def test_absent_conventions_are_checked_before_supplied_ones(self):
-        """A booking stating nothing must be refused for stating nothing,
-        rather than passing vacuously because there was nothing to
-        disallow."""
+        """A booking stating nothing is refused for that, not passed because there was
+        nothing to disallow."""
         refusal = check_conventions(_swap_row({}))
         assert refusal is not None
         assert "<absent>" in dict(refusal.offending).values()
 
 
 class TestDayCountAllowlist:
-    """ACT/360 is not 'not yet added'; it is a different instrument."""
+    """ACT/360 is a different instrument, refused."""
 
     @pytest.mark.parametrize("field", ("fixedDayCount", "floatingDayCount"))
     def test_act360_leg_is_refused(self, field):
@@ -183,7 +167,7 @@ class TestDayCountAllowlist:
         assert field in refusal.offending_fields
 
     def test_the_offending_value_is_reported_not_just_the_field(self):
-        """A consumer needs to know *what* was rejected to act on it."""
+        """The rejected value is reported, not only the field."""
         terms = dict(ALLOWLISTED_SWAP_TERMS)
         terms["fixedDayCount"] = "30/360"
 
@@ -191,8 +175,7 @@ class TestDayCountAllowlist:
         assert ("fixedDayCount", "30/360") in refusal.offending
 
     def test_only_act365_is_allowlisted_today(self):
-        """Pins the allowlist's current contents. Widening it is a
-        financial assertion and should fail this test deliberately."""
+        """Pins the allowlist. Widening it is a financial assertion and should fail here."""
         assert SUPPORTED_SWAP_DAY_COUNTS == ("ACT/365",)
 
 
@@ -210,8 +193,7 @@ class TestFloatIndexAllowlist:
         assert "floatIndex" in refusal.offending_fields
 
     def test_sofr_is_absent_from_the_allowlist(self):
-        """W2 is blocked on D03/D04. Until then USD-SOFR must not appear
-        here -- this test is the tripwire on someone adding it early."""
+        """USD-SOFR must not be allowlisted until W2 (blocked on D03/D04)."""
         assert not any("SOFR" in i for i in SUPPORTED_FLOAT_INDICES)
 
     def test_overnight_compounding_is_not_implemented_at_all(self):
@@ -227,9 +209,8 @@ class TestFloatIndexAllowlist:
 
 
 class TestAllowlistedSwapIsAccepted:
-    """Plan §W0.4's third named test: 'an allowlisted generic swap still
-    prices'. W0 ships no pricer, so what is asserted is that it is not
-    REFUSED -- the refusal path must not become a blanket deny."""
+    """An allowlisted generic swap is not refused (there is no swap pricer in this path, so
+    acceptance is what can be asserted)."""
 
     def test_generic_swap_passes_the_convention_check(self):
         assert check_conventions(_swap_row(dict(ALLOWLISTED_SWAP_TERMS))) is None
@@ -240,9 +221,8 @@ class TestAllowlistedSwapIsAccepted:
             assert check_conventions(row) is None
 
     def test_accepted_is_not_the_same_as_priced(self):
-        """Plan working rule 4: 'ORE can represent it' is not 'my engine
-        prices it'. A row passing the convention check still reports no
-        NPV at W0, with a *different* reason."""
+        """Passing the convention check is not being priced: no NPV, with a different
+        reason."""
         from engine.integration import price_bundle
         result = price_bundle(FIXTURES / "note" / "v2")
         npv = result.items[0].calculations["npv"]
@@ -254,9 +234,7 @@ class TestAllowlistedSwapIsAccepted:
 
 class TestMissingTermsShortCircuits:
     def test_incomplete_export_is_refused_regardless_of_supplied_terms(self):
-        """An incompletely specified instrument is refused full stop --
-        the engine does not opine on whether the supplied subset would
-        have been acceptable."""
+        """An incomplete export is refused outright; the supplied subset is not judged."""
         refusal = check_conventions(
             _swap_row(dict(ALLOWLISTED_SWAP_TERMS), missing=("calendar",))
         )
@@ -290,8 +268,7 @@ class TestNoTermsAtAll:
 
 class TestRefusalIsSerializable:
     def test_refusal_dict_separates_missing_from_offending(self):
-        """The two lists answer different questions: `missingTerms` is
-        closed by a better export, `offendingFields` by a convention
+        """`missingTerms` is closed by a better export; `offendingFields` by a convention
         agreement and engine work."""
         terms = dict(ALLOWLISTED_SWAP_TERMS)
         terms["fixedDayCount"] = "ACT/360"

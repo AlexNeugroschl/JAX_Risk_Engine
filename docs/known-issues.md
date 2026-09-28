@@ -20,6 +20,7 @@ suite did not surface them — in one case a test actively asserted the buggy be
 | **FLAGGED** | Inaccuracy **unchanged**. The engine now warns instead of staying silent. Not a fix. |
 | **OPEN** | Not addressed. Numbers are wrong or absent today. |
 | **ASSUMPTION** | Nothing known to be broken. The engine acts on an **unconfirmed reading** of an external contract, and the reading may be wrong. Registered so a deliberate interpretation does not pass for a settled fact. |
+| *Difference from ORE* | A tag on an OPEN entry, not a status: the engine computes something ORE computes differently, by design rather than by slip, and the difference moves a number enough that it should be resolved. Minor, deliberate differences (derivatives instead of finite-difference Greeks, bisection instead of an optimizer) are noted in the code, not here. |
 | **PARTIAL** | Closed on one path and open on another. Used only where the split is real and nameable — not as a softer word for OPEN. [I-08](#i-08) is the current case: the EOD path is durable, the portfolio path is not. |
 
 **On ASSUMPTION, added 2026-09-16 with [I-23](#i-23).** The other three statuses all describe
@@ -213,21 +214,38 @@ each is small relative to what it buys.
 
 | # | Issue | Severity | Difficulty | Why it ranks here |
 |---:|---|---|---|---|
-| 3 | [I-10](#i-10) — no trade identity; results keyed by array position | Medium | **Low-moderate** | Ordering is correct and tested *today*; any future reorder or partial response silently misattributes. Mechanically small, touches three layers. |
-| 4 | [I-32](#i-32) — parity with ORE only for its Grid solver at `ShiftHorizon=0` | Medium | Moderate (shift) / hard (FD) | ORE's default `ShiftHorizon=0.5` moves Americans by up to 1.5e-4; its FD solver, used in ORE's shipped American config, by up to 1.6e-3. Needs a decision on which ORE configuration is the reference before any code. |
+| 3 | [I-42](#i-42) — simulated curves not arbitrage-free against the input curve (audit M-1) | High | **Hard** | Every exposure and VaR/ES figure past t=0 on a sloped curve (4–9% martingale error). Not cheap, but unblocked, so it leads. |
+| 4 | [I-43](#i-43) — options worth zero after expiry (audit M-3) | High | Moderate | Every exposure step after the first expiry. The backward induction already has the exercise decision. |
+| 5 | [I-44](#i-44) — Hull-White simulation, LGM pricer, same `(a, sigma)` (audit A-2) | Medium | **Hard** | Do with I-42: simulate the LGM state as ORE does. |
+| 6 | [I-45](#i-45) — discrete bank-account numeraire on factor 0 | Medium | Moderate | Every exposure profile is deflated by it. Falls out of I-44. |
+| 7 | [I-37](#i-37) — European swaption ignores `floating_spread` | High | **Low** | A silent wrong number reachable over HTTP. Refusing a non-zero spread, as QuantLib does, is one check. |
+| 8 | [I-36](#i-36) — non-ACT/365 floating leg projected with the wrong forward | Medium | Low | Python API only. Carry the index spanning time per coupon. |
+| 9 | [I-38](#i-38) — Theta rolls a business day, ORE a calendar day | Medium | **Low** | One line in three functions plus the tests' helper. |
+| 10 | [I-39](#i-39) — bond Theta has no paid-coupon add-back | Medium | Low | Copy `swap_theta`'s add-back. |
+| 11 | [I-46](#i-46) — Europeans priced off model vol, not market vol | Medium | Moderate | A Bachelier t=0 pricer on the market vol, as ORE's default engine. |
+| 12 | [I-47](#i-47) — calibration basket differs from ORE's per-trade basket | Medium | Moderate | Build each trade's basket from its own exercise dates; then an end-to-end calibrated parity test. |
+| 13 | [I-10](#i-10) — no trade identity; results keyed by array position | Medium | **Low-moderate** | Ordering is correct and tested *today*; any future reorder or partial response silently misattributes. Mechanically small, touches three layers. |
+| 14 | [I-32](#i-32) — parity with ORE only for its Grid solver at `ShiftHorizon=0` | Medium | Moderate (shift) / hard (FD) | ORE's default `ShiftHorizon=0.5` moves Americans by up to 1.5e-4; its FD solver, used in ORE's shipped American config, by up to 1.6e-3. Needs a decision on which ORE configuration is the reference before any code. |
+| 15 | [I-41](#i-41) — European at zero mean reversion prices at intrinsic | Low | **Low** | Use the a→0 limit in `bond_option_sigma`, or refuse `hw_a <= 0`. |
+| 16 | [I-40](#i-40) — note `rateSensitivity` ignores `fractionDecimals` | Low | **Low** | Fails safe (a refusal) and only below 6 declared decimals. |
+| 17 | [I-48](#i-48) — zero-curve extrapolation differs from QuantLib's | Low | **Low** | Only past a curve's last pillar; parity tests avoid it. |
 
 [I-06](#i-06) and [I-31](#i-31), which led this tier, were fixed on 2026-09-23: Bermudan and
 American pricing now equal ORE's own engine to ~1e-11. [I-30](#i-30), which then led, was
 closed the same day by a 60-point conditional-pricing grid against ORE. [I-11](#i-11)
 (the measure label now on `PortfolioResult`) and [I-28](#i-28) (the `var_es` demo) were
-closed on 2026-09-24. [I-10](#i-10) now leads.
+closed on 2026-09-24. [I-36](#i-36) to [I-41](#i-41) were found on 2026-09-28 during the
+comment review ([engine audit Q-1](planning/engine-audit.md#q-1)), and [I-42](#i-42) and
+[I-43](#i-43) register audit findings M-1 and M-3; the two audit findings are not cheap,
+but they are unblocked and reach every exposure figure, so they lead. [I-44](#i-44) to
+[I-48](#i-48) register significant modelling differences from ORE (see below).
 
 ### Tier 3 — Blocks confidence in the suite itself
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 5 | [I-27](#i-27) — full-suite runs hard-abort inside XLA | Medium | **Hard to diagnose** | Intermittent, not reproducible on demand, and fails in the most deceptive way available: a dead process with no summary. The cheap experiment (a `shutdown_pools()` autouse fixture in `tests/test_api.py`) is identified but needs *repeated* clean runs against a known-bad baseline — one green run would look like proof and would not be. |
-| 6 | [I-34](#i-34) — the ORE oracle's curve differs before the first pillar | Low | Moderate | Validation tooling only: oracle checks on a sloped first curve segment are off by ~1e-6. Parity tests avoid it with a flat first segment until the curve can be handed to ORE unchanged. |
+| 18 | [I-27](#i-27) — full-suite runs hard-abort inside XLA | Medium | **Hard to diagnose** | Intermittent, not reproducible on demand, and fails in the most deceptive way available: a dead process with no summary. The cheap experiment (a `shutdown_pools()` autouse fixture in `tests/test_api.py`) is identified but needs *repeated* clean runs against a known-bad baseline — one green run would look like proof and would not be. |
+| 19 | [I-34](#i-34) — the ORE oracle's curve differs before the first pillar | Low | Moderate | Validation tooling only: oracle checks on a sloped first curve segment are off by ~1e-6. Parity tests avoid it with a flat first segment until the curve can be handed to ORE unchanged. |
 
 Ranked below Tier 2 because it costs no user a wrong number, and above Tier 4 because every
 status in this register rests on being able to run the suite.
@@ -240,12 +258,12 @@ consumers ask.
 
 | # | Issue | Severity | Difficulty | Blocked on |
 |---:|---|---|---|---|
-| 7 | [I-18](#i-18) — no equity spot or FX source | Medium | **Blocked**, then trivial | Market data. The pricer is four multiplications. *Do not close it with `closingMark`* — that is an echo, not a valuation. |
-| 8 | [I-16](#i-16) — `rateSensitivity` parallel-only | Medium | **Blocked** | A curve with genuine pillar structure (W2, same D03/D04 dependency as I-05). *Do not close it by bumping the flat profile per-pillar.* |
-| 9 | [I-07](#i-07) — no corporate bond / equity / listed-option pricer | Medium | Moderate–hard | Corporate bonds need a credit model; a Treasury-discounted corporate is not credit pricing. |
-| 10 | [I-24](#i-24) — bonds have no scenario NPV, so no VaR/ES | Medium | Moderate | Genuine modelling work with its own validation burden. *Do not broadcast, zero-fill, or flip the `scenario_risk` default.* |
-| 11 | [I-08](#i-08) — portfolio path's `_JOBS` dict still in-process | Medium | Moderate | The EOD half is done (W0.8); porting `publication.py`'s design to the portfolio path is the remaining work. |
-| 12 | [I-09](#i-09) — whole scenario cube serialized into JSON | Medium | Moderate | ~20M floats in one HTTP body at realistic sizes. Needs a chunked artifact plus a reference. |
+| 20 | [I-18](#i-18) — no equity spot or FX source | Medium | **Blocked**, then trivial | Market data. The pricer is four multiplications. *Do not close it with `closingMark`* — that is an echo, not a valuation. |
+| 21 | [I-16](#i-16) — `rateSensitivity` parallel-only | Medium | **Blocked** | A curve with genuine pillar structure (W2, same D03/D04 dependency as I-05). *Do not close it by bumping the flat profile per-pillar.* |
+| 22 | [I-07](#i-07) — no corporate bond / equity / listed-option pricer | Medium | Moderate–hard | Corporate bonds need a credit model; a Treasury-discounted corporate is not credit pricing. |
+| 23 | [I-24](#i-24) — bonds have no scenario NPV, so no VaR/ES | Medium | Moderate | Genuine modelling work with its own validation burden. *Do not broadcast, zero-fill, or flip the `scenario_risk` default.* |
+| 24 | [I-08](#i-08) — portfolio path's `_JOBS` dict still in-process | Medium | Moderate | The EOD half is done (W0.8); porting `publication.py`'s design to the portfolio path is the remaining work. |
+| 25 | [I-09](#i-09) — whole scenario cube serialized into JSON | Medium | Moderate | ~20M floats in one HTTP body at realistic sizes. Needs a chunked artifact plus a reference. |
 
 ### Tier 5 — Performance and cosmetic
 
@@ -253,15 +271,15 @@ Every number is correct. Nothing here is a financial risk.
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 13 | [I-21](#i-21) — Greeks recompile 23 XLA programs per call | Medium | **Moderate, fully designed** | Prototyped, bit-identical output, steady-state recompiles reach zero. Ranked highest in this tier because the design and its safety argument are already written. **The risk is a memo returning a program compiled for a different trade** — key on `static_key(prepared)`, never the config, never `id()`. |
-| 14 | [I-22](#i-22) — calibration recompiles 8 programs per call | Low | Moderate | **A different mechanism from I-21** — baked-in Python float constants, not fresh closures. I-21's fix would actively hurt here. Caps out at 8 → ~2. Fix I-21 first; they are independent. |
-| 15 | [I-12](#i-12) — `/version` reports dispatcher, not worker device | Low | Low | Invisible on a single-CPU box; would mislead a precision/hardware study on a multi-device host. Composes with [I-14](#i-14)'s residual (realized dtype on the result). |
+| 26 | [I-21](#i-21) — Greeks recompile 23 XLA programs per call | Medium | **Moderate, fully designed** | Prototyped, bit-identical output, steady-state recompiles reach zero. Ranked highest in this tier because the design and its safety argument are already written. **The risk is a memo returning a program compiled for a different trade** — key on `static_key(prepared)`, never the config, never `id()`. |
+| 27 | [I-22](#i-22) — calibration recompiles 8 programs per call | Low | Moderate | **A different mechanism from I-21** — baked-in Python float constants, not fresh closures. I-21's fix would actively hurt here. Caps out at 8 → ~2. Fix I-21 first; they are independent. |
+| 28 | [I-12](#i-12) — `/version` reports dispatcher, not worker device | Low | Low | Invisible on a single-CPU box; would mislead a precision/hardware study on a multi-device host. Composes with [I-14](#i-14)'s residual (realized dtype on the result). |
 
 ### Tier 6 — Awaiting an answer, not an engineer
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 16 | [I-23](#i-23) — `accrualBasis` strictness is an assumption | Medium | **Not a code task** | Closes when TraderX answers, asked twice (v4 §1.3, v6 §2.3). If they add enum values *in place*, this engine refuses bundles they consider valid, on the day they first export a real calendar — a false rejection, so it fails safe, but it will arrive without warning and look like a defect to whoever is on call. |
+| 29 | [I-23](#i-23) — `accrualBasis` strictness is an assumption | Medium | **Not a code task** | Closes when TraderX answers, asked twice (v4 §1.3, v6 §2.3). If they add enum values *in place*, this engine refuses bundles they consider valid, on the day they first export a real calendar — a false rejection, so it fails safe, but it will arrive without warning and look like a defect to whoever is on call. |
 
 ### What the ordering deliberately does not do
 
@@ -289,43 +307,58 @@ back into it.
 | [I-04](#i-04) | Aged swaps mispriced at every step past first accrual | **High** | ⚠️ FLAGGED | **1** |
 | [I-05](#i-05) | No faithful USD-SOFR/ACT360 swap construction | **High** | ❌ OPEN — refusal path landed (W0.4) | **2** |
 | [I-06](#i-06) | American exercise ignored ORE's broken-period proration — payer overstated up to 6.0x vs ORE (mid-period Bermudans were always right) | **High** | ✅ FIXED | — |
-| [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — both Treasury pricers landed (W1.2 bill, W1.3 note) | 9 |
-| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8); the portfolio path's `_JOBS` dict is unchanged | 11 |
-| [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN | 12 |
-| [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary (W0.7) | 3 |
+| [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — both Treasury pricers landed (W1.2 bill, W1.3 note) | 22 |
+| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8); the portfolio path's `_JOBS` dict is unchanged | 24 |
+| [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN | 25 |
+| [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary (W0.7) | 13 |
 | [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ✅ FIXED | — |
-| [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN | 15 |
+| [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN | 28 |
 | [I-13](#i-13) | Negative curve index silently prices against the wrong curve | **High** | ✅ FIXED | — |
 | [I-14](#i-14) | `generate_paths(precision=32)` leaks `jax_enable_x64=False`; float64 silently truncates | **High** | ✅ FIXED | — |
 | [I-15](#i-15) | Worker-pool concurrency test could not observe concurrency | Low | ✅ FIXED | — |
-| [I-16](#i-16) | `rateSensitivity` is parallel-only; no per-pillar decomposition | Medium | ❌ OPEN — labelled honestly, blocked on a real curve | 8 |
+| [I-16](#i-16) | `rateSensitivity` is parallel-only; no per-pillar decomposition | Medium | ❌ OPEN — labelled honestly, blocked on a real curve | 21 |
 | [I-17](#i-17) | A malformed note date failed the entire bundle, not just its row | Medium | ✅ FIXED | — |
-| [I-18](#i-18) | No equity spot or FX source; equity positions are refused, not valued | Medium | ❌ OPEN — refusal path landed (W1.4) | 7 |
+| [I-18](#i-18) | No equity spot or FX source; equity positions are refused, not valued | Medium | ❌ OPEN — refusal path landed (W1.4) | 20 |
 | [I-19](#i-19) | Accrual tolerance rounded the bound it exists to enforce | Medium | ✅ FIXED | — |
 | [I-20](#i-20) | Impossible calendar dates aborted the whole bundle | **High** | ✅ FIXED | — |
-| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call (fresh closures) | Medium | ❌ OPEN | 13 |
-| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call (baked-in constants) | Low | ❌ OPEN | 14 |
-| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** on an unanswered question | Medium | ⚠️ ASSUMPTION — may refuse bundles TraderX considers valid | 16 |
-| [I-24](#i-24) | Bonds have no scenario NPV, so no VaR/ES — refused, not approximated | Medium | ❌ OPEN — refusal path landed (W1.5) | 10 |
+| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call (fresh closures) | Medium | ❌ OPEN | 26 |
+| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call (baked-in constants) | Low | ❌ OPEN | 27 |
+| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** on an unanswered question | Medium | ⚠️ ASSUMPTION — may refuse bundles TraderX considers valid | 29 |
+| [I-24](#i-24) | Bonds have no scenario NPV, so no VaR/ES — refused, not approximated | Medium | ❌ OPEN — refusal path landed (W1.5) | 23 |
 | [I-25](#i-25) | A **scalar** Greek crashed the HTTP result serializer | Medium | ✅ FIXED | — |
 | [I-26](#i-26) | Greeks for a bond maturing **tomorrow** crashed on the theta reprice | Low | ✅ FIXED | — |
-| [I-27](#i-27) | Long full-suite runs **hard-abort inside XLA compilation**, with no summary line | Medium | ❌ OPEN — located, not root-caused | 5 |
+| [I-27](#i-27) | Long full-suite runs **hard-abort inside XLA compilation**, with no summary line | Medium | ❌ OPEN — located, not root-caused | 18 |
 | [I-28](#i-28) | `python -m engine.risk.var_es`'s **own demo crashed**: it omitted `evaluation_date`, so its swap scheduled off today | Low | ✅ FIXED | — |
 | [I-29](#i-29) | A rounded exercise time silently drops a whole coupon | Medium | ✅ FIXED | — |
 | [I-30](#i-30) | The `A(t,T)` variance term was nearly uncovered at `t=0` (test gap, not a defect) | Medium | ✅ FIXED | — |
 | [I-31](#i-31) | Bermudan/American floating coupons projected over the accrual period, not ORE's index fixing period | Medium | ✅ FIXED | — |
-| [I-32](#i-32) | Parity with ORE holds only for its Grid solver at `ShiftHorizon=0`; ORE's defaults differ by up to 1.6e-3 | Medium | ❌ OPEN | 4 |
+| [I-32](#i-32) | Parity with ORE holds only for its Grid solver at `ShiftHorizon=0`; ORE's defaults differ by up to 1.6e-3 | Medium | ❌ OPEN | 14 |
 | [I-33](#i-33) | On Linux, worker-pool jobs **hung** once the parent had run JAX (fork, not spawn) | High | ✅ FIXED | — |
-| [I-34](#i-34) | The ORE oracle's curve differs from the engine's before the first pillar (tooling, ~1e-6) | Low | ❌ OPEN | 6 |
+| [I-34](#i-34) | The ORE oracle's curve differs from the engine's before the first pillar (tooling, ~1e-6) | Low | ❌ OPEN | 19 |
 | [I-35](#i-35) | An American already in its window could be exercised on the evaluation date (−6.7e-4 vs ORE) | Medium | ✅ FIXED | — |
+| [I-36](#i-36) | A non-ACT/365 floating leg is projected with the wrong forward (161 on a 1mm 5Y swap) | Medium | ❌ OPEN | 8 |
+| [I-37](#i-37) | A European swaption silently ignores `floating_spread` | **High** | ❌ OPEN | 7 |
+| [I-38](#i-38) | Theta rolls to the next business day; ORE rolls one calendar day (3x on a Friday) | Medium | ❌ OPEN | 9 |
+| [I-39](#i-39) | Bond Theta has no add-back for a coupon paid inside the period | Medium | ❌ OPEN | 10 |
+| [I-40](#i-40) | The note's `rateSensitivity` ignores the declared `fractionDecimals` (refuses, fails safe) | Low | ❌ OPEN | 16 |
+| [I-41](#i-41) | A European swaption at zero mean reversion prices at intrinsic value | Low | ❌ OPEN | 15 |
+| [I-42](#i-42) | Simulated curves are not arbitrage-free against the input curve (audit M-1) | **High** | ❌ OPEN | 3 |
+| [I-43](#i-43) | Options are worth zero after expiry instead of becoming the swap (audit M-3) | **High** | ❌ OPEN | 4 |
+| [I-44](#i-44) | Scenario pricing mixes Hull-White and LGM with the same `(a, sigma)` (ORE difference, audit A-2) | Medium | ❌ OPEN | 5 |
+| [I-45](#i-45) | Simulation numeraire is a discretely accrued bank account on factor 0, not ORE's LGM numeraire | Medium | ❌ OPEN | 6 |
+| [I-46](#i-46) | European swaptions priced off the model vol, not the market vol (ORE's default is Black/Bachelier) | Medium | ❌ OPEN | 11 |
+| [I-47](#i-47) | The calibration basket is not the one ORE builds for the trade | Medium | ❌ OPEN | 12 |
+| [I-48](#i-48) | Zero curves extrapolate a flat zero rate; ORE extrapolates a flat forward | Low | ❌ OPEN | 17 |
 
-**Counts:** 35 issues — 19 FIXED, 13 OPEN, 1 FLAGGED, 1 PARTIAL, 1 ASSUMPTION. The 16
+**Counts:** 48 issues — 19 FIXED, 26 OPEN, 1 FLAGGED, 1 PARTIAL, 1 ASSUMPTION. The 29
 unfixed entries are ranked above.
 
 **The two that matter most for financial correctness are [I-04](#i-04) and [I-05](#i-05).**
 Both are unfixed. Both need inputs or decisions that do not exist yet — not more engineering
 time on the current code, which is why neither heads the actionable work in
-[the priority order](#tier-2--real-correctness-exposure-unblocked-cheap).
+[the priority order](#tier-2--real-correctness-exposure-unblocked-cheap). [I-42](#i-42) and
+[I-43](#i-43) reach as far, into every exposure and VaR/ES figure past t=0, and are
+unblocked.
 
 ---
 
@@ -2099,6 +2132,295 @@ engine's own curve is its input and is not changed to imitate ORE's rebuild.
 for example a curve segment type that keeps the quotes as given, if ORE has one, or quoting
 the as-of zero so that ORE's rebuild lands on `z0` (a fixed point to solve, then a check
 that it holds). Until then, keep oracle checks off sloped first segments.
+
+---
+
+### I-36 — A non-ACT/365 floating leg is projected with the wrong forward {#i-36}
+
+**Severity:** Medium · **Status:** ❌ OPEN · **Found:** 2026-09-28, during the comment
+review ([engine audit Q-1](planning/engine-audit.md#q-1))
+
+**What is wrong.** Both swap pricers (`engine.instruments.swap._price_one_swap` and
+`engine.risk.price_functions.swap_price_function`) compute a floating coupon as
+`N * (F + s) * accrual` with `F = (P(start)/P(end) - 1) / accrual`, where `accrual` is the
+leg's accrual fraction. ORE's par coupon (`IborCouponPricer::initializeCachedData`,
+QuantLib `couponpricer.cpp`) annualizes the forward over the **index** day count's
+spanning time instead, and multiplies by the leg's accrual fraction. The two agree only
+when the leg and the index use the same day count. The generic index (`SimIndex<N>M`) is
+ACT/365, so any other `SwapConfig.accrual_day_count` misprices the floating leg: the engine
+collapses every projected coupon to `N * (P(start)/P(end) - 1)`.
+
+**Size.** 1mm 5Y payer on the `tests/test_trade_dates.py` curves: with
+`accrual_day_count="ACT/ACT (ICMA)"` the engine gives 34,471.06 and
+`ORE.DiscountingSwapEngine` 34,309.58 (161.48 apart). With ACT/365 they agree to 6.5e-11.
+
+**Reach.** The Python API only: `SwapConfigSchema` has no `accrual_day_count`, so HTTP
+requests always use ACT/365.
+
+**What closing it requires.** Carry the index spanning time per coupon in the prepared
+swap (ORE supplies it) and divide by that in the forward. Add a parity test with
+ACT/ACT (ICMA) against `DiscountingSwapEngine` on both pricers.
+
+---
+
+### I-37 — A European swaption silently ignores `floating_spread` {#i-37}
+
+**Severity:** **High** · **Status:** ❌ OPEN · **Found:** 2026-09-28, during the comment
+review
+
+**What is wrong.** The Jamshidian pricer (`engine.instruments.european_swaption`) values
+the floating leg as `N * (P(start) - P(end))`, i.e. at par with no spread. A
+`floating_spread` on the config is accepted and has no effect. QuantLib's
+`JamshidianSwaptionEngine` refuses a non-zero spread instead
+(`jamshidianswaptionengine.cpp`, line 67).
+
+**Size.** The `tests/test_trade_dates.py` European (1mm, 2Y into 5Y payer) prices at
+21,520.364 with a spread of 0 and with a spread of 100bp.
+
+**Reach.** Every European path: base NPV, scenario pricing and Greeks. The field is on the
+HTTP schema (`SwaptionConfigSchema.floating_spread`), so an HTTP caller gets a confident
+wrong number.
+
+**What closing it requires.** Either refuse a non-zero spread (as QuantLib does), or fold
+the spread's annuity into the fixed-leg strike (the standard adjustment), with a test
+against an ORE engine that supports it.
+
+---
+
+### I-38 — Theta rolls to the next business day; ORE rolls one calendar day {#i-38}
+
+**Severity:** Medium · **Status:** ❌ OPEN · **Found:** 2026-09-28, during the comment
+review
+
+**What is wrong.** `engine.risk.greeks` (swap, European and Bermudan/American Theta) moves
+the evaluation date with `ORE.TARGET().advance(t, theta_days, Days)`, which counts
+business days. ORE's sensitivity analysis uses `asof_ + thetaPeriod_`
+(`sensitivityanalysis.cpp`, line 258), a calendar period. On a Friday the engine measures
+Friday to Monday (three days of carry) where ORE measures Friday to Saturday.
+
+**Size.** A swap booked on the evaluation date, base Friday 2026-07-31: engine Theta
+−78.04 (ORE repriced on Monday 3 August); ORE's definition (Saturday 1 August) gives
+−25.94.
+
+**Why it went unseen.** The Theta tests evaluate on a Thursday, and their helper steps one
+TARGET business day, matching the engine rather than ORE.
+
+**What closing it requires.** Use `evaluation_date + theta_days` (calendar), update the
+tests' helper to calendar days, and add a Friday case.
+
+---
+
+### I-39 — Bond Theta has no add-back for a coupon paid inside the period {#i-39}
+
+**Severity:** Medium · **Status:** ❌ OPEN · **Found:** 2026-09-28, during the comment
+review
+
+**What is wrong.** `engine.portfolio.request._bond_greeks` computes Theta as
+`NPV(t + 1 day) - NPV(t)`. A coupon paid in `(t, t + 1]` drops out of the second NPV and is
+not added back, unlike ORE's Theta and this engine's `swap_theta`. The day before a coupon
+date the bond reports roughly minus the coupon. Bonds also step one calendar day while the
+swaption-family Theta steps a business day ([I-38](#i-38)).
+
+**Size.** 100,000 face, 4% semi-annual, coupon on 15 August 2026: Theta is +11.17 on
+13 August, −1,988.83 on 14 August and +10.96 on 16 August.
+
+**What closing it requires.** Add back cashflows paid in `(t, t + 1]`, as `swap_theta`
+does, with a test on the day before a coupon date.
+
+---
+
+### I-40 — The note's `rateSensitivity` ignores the declared `fractionDecimals` {#i-40}
+
+**Severity:** Low · **Status:** ❌ OPEN · **Found:** 2026-09-28, during the comment review
+
+**What is wrong.** `engine.integration.note.rate_sensitivity` re-prices through
+`price_note` without passing `fraction_decimals`, so it reconciles accrued at the default 6
+decimals rather than the precision the terms declare. `pipeline._note_outcomes` wraps NPV
+and sensitivity in one `try`, so when the sensitivity refuses, the NPV is refused with it.
+
+**Size.** On the note fixture with an exported fraction 1e-5 above the exact one ($1.00 on
+100,000 face) and `fractionDecimals: 4` (tolerance $5.01): `price_note` prices, and
+`rate_sensitivity` raises `ACCRUAL_MISMATCH`, so both outcomes are refused.
+
+**Reach.** Only v2 terms declaring `accrualBasis.fractionDecimals` below 6; delivered
+bundles use 6. It fails safe (a refusal, not a wrong number).
+
+**What closing it requires.** Pass the declared `fraction_decimals` through
+`rate_sensitivity`, and give the two outcomes separate `try` blocks.
+
+---
+
+### I-41 — A European swaption at zero mean reversion prices at intrinsic value {#i-41}
+
+**Severity:** Low · **Status:** ❌ OPEN · **Found:** 2026-09-28, during the comment review
+
+**What is wrong.** `engine.models.hull_white.bond_option_sigma` divides by `2a`, so at
+`a = 0` it returns NaN (`B` and `A` guard `a = 0`; this does not). `bond_call`'s
+`sigma_p > 0` test is false for NaN, so every bond option falls back to intrinsic value and
+the swaption is priced without volatility. Nothing raises. ORE (`HullWhite` with
+`JamshidianSwaptionEngine`) raises "0: invalid value" at `a = 0`.
+
+**Size.** The `tests/test_trade_dates.py` European (1mm, 2Y into 5Y payer): 0.0 at
+`hw_a = 0`, against 23,957.83 at `hw_a = 1e-8` (ORE 23,957.83).
+
+**What closing it requires.** Use the `a -> 0` limit `sigma * B * sqrt(T_opt - t)` in
+`bond_option_sigma`, or refuse `hw_a <= 0` in `SwaptionConfig`.
+
+---
+
+### I-42 — Simulated curves are not arbitrage-free against the input curve {#i-42}
+
+**Severity:** **High** · **Status:** ❌ OPEN · **Found:** 2026-09-24, [engine audit
+M-1](planning/engine-audit.md#m-1) (registered here 2026-09-28)
+
+**What is wrong.** The simulation evolves the short rate toward a constant `theta` from a
+configured `initial_rates`, while its discount factors use the Hull-White `A(t,T)` fitted
+to the input curve, which assumes the curve-fitted drift θ(t). ORE simulates the LGM state
+with the curve-fitted model. The two halves agree only on a flat curve with `theta` and
+`initial_rates` at its level.
+
+**Size.** From the audit: martingale error `E[P(t,T)/N(t)] / P(0,T) - 1` at t=2y is 0.06%
+(5y) and 0.14% (10y) on a flat 3% curve, and 4.2% and 8.8% on a curve rising 3% → 5%.
+
+**Reach.** Every `npv_cube` value past t=0 on a non-flat curve, every exposure and VaR/ES
+figure derived from it, and the Bermudan/American scenario pricers, which condition on the
+simulated short rate. t=0 prices are unaffected.
+
+**What closing it requires.** See the audit: simulate the zero-mean state and add the
+curve-fitted drift, or simulate the LGM state directly; add the martingale check on a
+sloped curve as a permanent test.
+
+---
+
+### I-43 — Options are worth zero after expiry instead of becoming the swap {#i-43}
+
+**Severity:** **High** · **Status:** ❌ OPEN · **Found:** 2026-09-24, [engine audit
+M-3](planning/engine-audit.md#m-3) (registered here 2026-09-28)
+
+**What is wrong.** A European's scenario NPV is 0 at every step after expiry, and a
+Bermudan's or American's after its last exercise date. A physically settled option that
+was exercised becomes the underlying swap; the engine does not track exercise, so every
+path reports 0.
+
+**Size.** From the audit: in `demos/demo.py`, VaR_99 at t=2..5 is 49,820 to 53,207, close to
+the portfolio's base NPV of 43,055, with an ES standard error near 0. The "risk" is the
+options disappearing on every path at once.
+
+**Current handling.** `engine.portfolio.request` warns when an option expires inside the
+simulated horizon.
+
+**What closing it requires.** Record the exercise decision per path at each exercise date
+(the backward induction already has both values) and carry the underlying swap's value
+afterwards.
+
+---
+
+### I-44 — Scenario pricing mixes Hull-White and LGM with the same `(a, sigma)` {#i-44}
+
+**Severity:** Medium · **Status:** ❌ OPEN · **Difference from ORE** · **Found:**
+2026-09-24, [engine audit A-2](planning/engine-audit.md#a-2) (registered here 2026-09-28)
+
+**What differs.** ORE simulates and prices rates with one model, LGM (the cross-asset
+model and `NumericLgmMultiLegOptionEngine`). This engine simulates a Hull-White short rate
+(`engine.models.hull_white`) and prices Bermudans/Americans with LGM
+(`engine.models.lgm`), then conditions the LGM rollback on the simulated rate through a
+state conversion (`r_from_x`). The two are fed the same numbers:
+`validate_portfolio_against_simulation` requires a Bermudan's flat `hw_sigma` to equal the
+factor's Hull-White volatility, but LGM reads it as the volatility of x, whose short-rate
+equivalent is `sigma * exp(-a t)`. With the same `(a, sigma)` the models agree at t=0 and
+diverge after; at a=3% the LGM short-rate vol is 14% below the Hull-White one at 5y.
+(`docs/reference/ore-parity.md` calls the two "provably equivalent"; they are only under a
+reparametrization the engine does not apply.)
+
+**Reach.** Bermudan/American scenario values at every step past t=0, and the exposure and
+VaR/ES built on them. t=0 prices equal ORE's (I-31/I-35 parity).
+
+**What closing it requires.** Simulate the LGM state, as ORE does, and price every rates
+instrument from it; the audit pairs this with [I-42](#i-42) (M-1).
+
+---
+
+### I-45 — The simulation numeraire is a discretely accrued bank account on factor 0 {#i-45}
+
+**Severity:** Medium · **Status:** ❌ OPEN · **Difference from ORE** · **Found:**
+2026-09-28, during the comment review
+
+**What differs.** `engine.simulation.market_model` accrues the numeraire as
+`N(t_{i+1}) = N(t_i) * exp(r(t_i) * dt)` (left-point rule on the simulation grid) off rate
+factor 0. ORE's numeraire is the LGM numeraire `N(t, x)`, exact at each date given the
+state, in the base currency's model. The left-point rule is biased by the rate's change
+over each step, so the error grows with the grid spacing (exposure grids are often yearly).
+
+**Reach.** Every exposure profile in `engine.risk.exposure` (EPE, ENE, EE_B, EEE_B, PFE are
+all computed on NPV / N), and anything built on them (CVA, EEPE). t=0 prices and the
+market-risk path (`engine.market_risk`) do not use it.
+
+**What closing it requires.** Use the model's exact numeraire at each date (the LGM
+numeraire, once [I-44](#i-44) moves the simulation to LGM), in the reporting currency.
+
+---
+
+### I-46 — European swaptions are priced off the model vol, not the market vol {#i-46}
+
+**Severity:** Medium · **Status:** ❌ OPEN · **Difference from ORE** · **Found:**
+2026-09-28, during the comment review
+
+**What differs.** ORE's default European swaption engine (`EuropeanSwaptionEngineBuilder`)
+is Black/Bachelier on the market swaption volatility surface, so a European's NPV is its
+market price. This engine prices Europeans with Hull-White Jamshidian on the trade's
+`hw_sigma`, which must equal the simulation's factor volatility and is not calibrated to
+the European's own vol. It matches `ORE.JamshidianSwaptionEngine`, not ORE's default.
+
+**Reach.** Every European NPV, and its Greeks: they are model values for the configured
+sigma, and differ from the market price unless that sigma happens to reprice the trade.
+There is no Vega for Europeans.
+
+**What closing it requires.** A market-vol (Bachelier) European pricer as the default for
+t=0 valuation, as ORE has, keeping Jamshidian for scenario pricing; or calibrating the
+model to each European's own expiry and tenor.
+
+---
+
+### I-47 — The calibration basket is not the one ORE builds for the trade {#i-47}
+
+**Severity:** Medium · **Status:** ❌ OPEN · **Difference from ORE** · **Found:**
+2026-09-28, during the comment review
+
+**What differs.** ORE's LGM builder calibrates each Bermudan/American to a co-terminal
+basket derived from that trade's own exercise dates and underlying. Here the caller
+supplies exercise and maturity times as year fractions (`engine.calibration.basket`); each
+is rounded to whole months, turned into a tenor-quoted swap starting on the evaluation
+date, with expiry two TARGET business days before its first accrual date. One basket, built
+on the first uncalibrated trade's curve, evaluation date and index tenor, then serves every
+trade and every rate factor (`engine.portfolio.request._fill_calibrated_sigma`).
+
+**Reach.** Every calibrated Bermudan/American: its `Sigma`, and therefore its NPV, Greeks
+and Vega, differ from ORE's calibrated price whenever the trade's exercise dates or tenor
+differ from the supplied basket, or several trades share it. Parity with ORE's engine
+(I-31) holds for a given `Sigma`, not end to end through calibration.
+
+**What closing it requires.** Build each trade's basket from its own exercise dates and
+underlying, as ORE does, and calibrate per trade; add an end-to-end parity test against
+ORE with `Calibration=Bootstrap`.
+
+---
+
+### I-48 — Zero curves extrapolate a flat zero rate; ORE extrapolates a flat forward {#i-48}
+
+**Severity:** Low · **Status:** ❌ OPEN · **Difference from ORE** · **Found:** 2026-09-28,
+during the comment review
+
+**What differs.** `engine.models.hull_white.zero_rate` holds the zero rate flat past the
+last pillar (`jnp.interp`). QuantLib's `InterpolatedZeroCurve` (`zerocurve.hpp`,
+`zeroYieldImpl`) extrapolates a flat instantaneous forward from the last pillar's forward
+instead. On a sloped curve the two diverge for any time past the last pillar; before the
+first pillar both are flat.
+
+**Reach.** Any cashflow or exercise beyond a trade's last curve pillar, silently. Parity
+tests keep pillars beyond every cashflow, so they do not see it.
+
+**What closing it requires.** Extrapolate with the last segment's instantaneous forward,
+as QuantLib does, or refuse a trade whose cashflows lie beyond its curve.
 
 ---
 

@@ -1,24 +1,15 @@
 """
-Tests for engine.risk.greeks -- Delta, Gamma, and Theta for interest rate
-swaps and European swaptions.
+`engine.risk.greeks` for swaps and European swaptions: Delta, Gamma, Theta.
 
-Methodology, matching the rest of this test suite:
-1. Direct correctness checks against literal finite-difference bump-and-
-   revalue (the SAME quantity ORE's own SensitivityAnalysis computes, just
-   without ORE's own finite-difference truncation error) -- since this
-   module's whole design is "autodiff gives ORE's numbers exactly," the
-   sharpest test is comparing autodiff output against the literal bump ORE
-   would perform, at a small-enough step size that residual disagreement
-   is attributable only to finite-difference truncation, not a bug.
-2. Direct ORE cross-checks where a real ORE object supports it (bumping a
-   FlatForward curve and re-pricing a real ORE.VanillaSwap/ORE.Swaption).
-3. Structural/edge-case tests (shape, zero-sensitivity-past-expiry,
-   single-pillar curves, degenerate configs).
+1. Autodiff Delta/Gamma against literal bump-and-revalue with ORE's `SensitivityCube`
+   formulas at 1bp. These are not identical: the forward-difference Delta also carries half
+   the Gamma and higher terms, which the tolerances absorb.
+2. ORE cross-checks by bumping a `FlatForward` curve and repricing a real
+   `ORE.VanillaSwap` / `ORE.Swaption`.
+3. Shapes, zero sensitivity past expiry, degenerate configurations.
 
-`_solve_rstar`'s gradient-correctness bug (see
-engine/instruments/european_swaption.py's docstring) is exercised directly
-here too, since Greeks were the first thing in this codebase to actually
-differentiate through it.
+Also the implicit-function-theorem gradient of `_solve_rstar` (bisection alone gives a
+zero gradient).
 """
 import dataclasses
 
@@ -51,10 +42,8 @@ PILLAR_TIMES = [1.0, 2.0, 5.0, 10.0, 30.0]
 
 
 def _finite_difference_delta_gamma(price_fn, pillar_rates, bump=DEFAULT_RATE_BUMP):
-    """Literal bump-and-revalue, matching ORE's own SensitivityCube
-    formula exactly (delta = NPV_up - NPV_base, gamma = NPV_up - 2*NPV_base
-    + NPV_down) -- the ground truth this module's autodiff-based
-    swap_delta_gamma/swaption_delta_gamma are checked against."""
+    """Bump-and-revalue with ORE's `SensitivityCube` formulas: delta = NPV_up - NPV_base,
+    gamma = NPV_up - 2*NPV_base + NPV_down."""
     base = float(price_fn(pillar_rates))
     n = len(pillar_rates)
     fd_delta = np.zeros(n)
@@ -70,10 +59,8 @@ def _finite_difference_delta_gamma(price_fn, pillar_rates, bump=DEFAULT_RATE_BUM
 
 
 def _swap_price_fn_single_curve(cfg, disc_curve, fwd_curve):
-    """Wraps _swap_price_fn's 2-argument closure into a 1-argument
-    function of ONLY disc_curve.pillar_rates (fwd_curve held fixed) --
-    what the finite-difference helper above needs when isolating one
-    curve's own sensitivity."""
+    """The two-curve price closure as a function of the discount rates only (forward curve
+    fixed)."""
     inner = _swap_price_fn(cfg, disc_curve, fwd_curve)
     return lambda disc_rates: inner(disc_rates, fwd_curve.pillar_rates)
 
@@ -94,10 +81,7 @@ class TestZeroCurve:
             assert float(_zero_rate_at(curve, jnp.asarray(t))) == pytest.approx(0.03, abs=1e-12)
 
     def test_flat_extrapolation_beyond_pillars(self):
-        """jnp.interp flat-extrapolates outside [min(pillar_times),
-        max(pillar_times)] -- matching np.interp's own default and this
-        codebase's other curve-interpolation helpers
-        (european_swaption._initial_log_discount)."""
+        """Flat extrapolation outside the pillar range (as `np.interp`)."""
         curve = ZeroCurve(
             pillar_times=jnp.array([1.0, 5.0, 10.0]),
             pillar_rates=jnp.array([0.02, 0.03, 0.04]),
@@ -112,7 +96,7 @@ class TestZeroCurve:
             pillar_rates=jnp.array([0.02, 0.04]),
         )
         from engine.risk.greeks import _zero_rate_at
-        # Midpoint (t=2) should be exactly the average -- linear interp.
+        # The midpoint (t=2) is the average: linear interpolation.
         assert float(_zero_rate_at(curve, jnp.asarray(2.0))) == pytest.approx(0.03)
 
     def test_discount_at_matches_continuous_compounding(self):
@@ -123,22 +107,15 @@ class TestZeroCurve:
 
 
 # =============================================================================
-# _solve_rstar gradient correctness (the bug this module surfaced and fixed)
+# _solve_rstar gradient (implicit function theorem)
 # =============================================================================
 class TestSolveRstarGradientCorrectness:
-    """Regression coverage for a real bug found while building this
-    module: _solve_rstar's bisection produced the correct forward value
-    but a silently WRONG gradient (naive autodiff through a comparison-
-    based bisection loop gives zero gradient everywhere). Fixed via
-    jax.custom_jvp implementing the implicit function theorem. These
-    tests exercise _solve_rstar directly, independent of the swaption
-    pricer, with a toy root-find whose analytic derivatives are known
-    exactly."""
+    """Regression: bisection gave the right r* but a zero gradient (the comparison has no
+    derivative). `jax.custom_jvp` applies the implicit function theorem. Tested on toy
+    root-finds with known derivatives."""
 
     def test_linear_root_gradient_matches_analytic(self):
-        """f(r, c) = c - r has root r* = c, so d(r*)/dc = 1.0 exactly --
-        the simplest possible case, and the one that exposed the bug in
-        the first place (naive autodiff gave 0.0 here)."""
+        """f(r, c) = c - r: r* = c and d(r*)/dc = 1 (naive autodiff gave 0)."""
         def f(r, c):
             return c - r
 
@@ -151,9 +128,8 @@ class TestSolveRstarGradientCorrectness:
         assert float(grad) == pytest.approx(1.0, abs=1e-9)
 
     def test_cubic_root_gradient_and_hessian_match_analytic(self):
-        """f(r, c) = c - r^3 has root r* = c^(1/3), with known closed-form
-        first AND second derivatives -- exercises jax.hessian (needed for
-        Gamma), not just jax.grad (Delta), through the custom_jvp rule."""
+        """f(r, c) = c - r^3: r* = c^(1/3), with known first and second derivatives
+        (`jax.hessian`, needed for Gamma)."""
         def f(r, c):
             return c - r ** 3
 
@@ -173,9 +149,8 @@ class TestSolveRstarGradientCorrectness:
         assert float(hess) == pytest.approx(float(analytic_hess), rel=1e-4)
 
     def test_pytree_params_gradient_matches_finite_difference(self):
-        """The real swaption use case passes a pytree (A_T0_Ti array) as
-        params, not a scalar -- confirms the custom_jvp rule handles
-        vector-valued params and returns a correctly-shaped Jacobian."""
+        """Vector params (as the swaption passes `A_T0_Ti`) give a correctly shaped
+        Jacobian."""
         B = jnp.array([0.5, 1.0, 1.5, 2.0, 0.1])
         amounts = jnp.array([0.02, 0.02, 0.02, 1.02, -1.0])
 
@@ -197,11 +172,7 @@ class TestSolveRstarGradientCorrectness:
             assert float(analytic_jac[i]) == pytest.approx(fd, rel=1e-3, abs=1e-6)
 
     def test_forward_value_unaffected_by_gradient_fix(self):
-        """The custom_jvp wrapper must be a pure numerical no-op on the
-        forward VALUE -- confirms the fix didn't silently change what
-        price_swaptions itself computes (see test_european_swaption.py
-        for the full pre-existing regression suite, unaffected by this
-        change; this is a narrower, direct spot-check)."""
+        """The custom JVP does not change the forward value."""
         def f(r, c):
             return c - r
         val = _solve_rstar(f, jnp.array(0.37), ())
@@ -263,30 +234,18 @@ class TestSwapDeltaGamma:
             assert greeks[key].shape == (len(PILLAR_TIMES),)
 
     def test_zero_beyond_swap_maturity(self):
-        """A pillar far beyond the swap's own 5Y maturity should have
-        essentially zero Delta -- no cashflow interpolates from that far
-        out (jnp.interp's flat-extrapolation at the near end means the
-        LAST pillar at 30Y, well past a 5Y swap, still has some support if
-        it's the flat-extrapolation anchor -- but a pillar strictly
-        between the swap's own maturity and the far end, isolated by a
-        neighboring pillar on both sides, should have ~zero sensitivity)."""
+        """Pillars 10Y and 30Y, beyond a 2Y swap's last cashflow with another pillar in
+        between, have zero Delta."""
         cfg = self._cfg(swap_tenor="2Y")
         disc_curve = ZeroCurve.flat(0.03, PILLAR_TIMES)  # last cashflow ~2Y, pillars go to 30Y
         fwd_curve = ZeroCurve.flat(0.035, PILLAR_TIMES)
         greeks = swap_delta_gamma(cfg, disc_curve, fwd_curve)
-        # pillar index 3 (10Y) and 4 (30Y) are both well past a 2Y swap's
-        # last cashflow and bounded by neighboring pillars on the near
-        # side -- interpolation support for any real cashflow time doesn't
-        # reach them.
+        # Pillars 3 (10Y) and 4 (30Y) are beyond the swap's interpolation support.
         assert float(greeks["discount_delta"][3]) == pytest.approx(0.0, abs=1e-6)
         assert float(greeks["discount_delta"][4]) == pytest.approx(0.0, abs=1e-6)
 
     def test_payer_receiver_deltas_are_negations(self):
-        """A receiver swap is the exact negation of the same payer swap
-        (see swap.py's own payer/receiver sign convention) -- so its
-        Greeks must be exact negations too, a model-independent identity
-        check that doesn't rely on the finite-difference tolerance at
-        all."""
+        """A receiver's Greeks are the exact negation of the payer's."""
         disc_curve = ZeroCurve.flat(0.030, PILLAR_TIMES)
         fwd_curve = ZeroCurve.flat(0.035, PILLAR_TIMES)
         payer_greeks = swap_delta_gamma(self._cfg(payer=True), disc_curve, fwd_curve)
@@ -297,12 +256,8 @@ class TestSwapDeltaGamma:
             )
 
     def test_single_curve_discounting_deltas_sum_to_total(self):
-        """When the same ZeroCurve object is used for both discount_curve
-        and forward_curve (single-curve discounting), the two independent
-        per-curve deltas this function returns should sum, pillar by
-        pillar, to the total sensitivity to that one shared curve --
-        confirmed against a direct finite-difference bump of the SHARED
-        curve (both discount and forward rates bumped together at once)."""
+        """With one curve for both roles, discount and forward deltas sum pillar by pillar
+        to the sensitivity to that shared curve (checked by bumping it in both roles)."""
         cfg = self._cfg()
         shared_curve = ZeroCurve.flat(0.032, PILLAR_TIMES)
         greeks = swap_delta_gamma(cfg, shared_curve, shared_curve)
@@ -317,10 +272,7 @@ class TestSwapDeltaGamma:
 
 
 class TestSwapDeltaGammaAgainstORE:
-    """Direct cross-check: bump a real ORE.FlatForward curve by the same
-    1bp, reprice a real ORE.VanillaSwap two ways, and confirm this
-    module's autodiff Delta matches ORE's own bump-and-revalue number
-    (not just this module's own finite-difference helper)."""
+    """Autodiff Delta against ORE's own bump-and-revalue of a real `ORE.VanillaSwap`."""
 
     def _reference_ore_swap_npv(self, disc_rate: float, fwd_rate: float, notional: float, fixed_rate: float) -> float:
         ORE.Settings.instance().evaluationDate = TODAY
@@ -344,13 +296,8 @@ class TestSwapDeltaGammaAgainstORE:
         return swap.NPV()
 
     def test_parallel_delta_matches_ore_bump_and_revalue(self):
-        """A PARALLEL 1bp bump (every pillar simultaneously) isolates the
-        aggregate curve-level sensitivity, avoiding any dependence on this
-        module's own triangular per-pillar interpolation shape agreeing
-        exactly with a real, non-flat ORE curve's own interpolation --
-        both sides use the identical FlatForward (flat = interpolation-
-        shape-independent), so this is a clean, assumption-free
-        cross-check."""
+        """A parallel 1bp bump on flat curves, so the comparison does not depend on how a
+        non-flat ORE curve interpolates."""
         notional, fixed_rate = 1_000_000.0, 0.032
         disc_rate, fwd_rate = 0.030, 0.035
         bump = DEFAULT_RATE_BUMP
@@ -386,12 +333,9 @@ class TestSwapTheta:
         return SwapConfig(**defaults)
 
     def test_matches_manual_reprice_difference(self):
-        """Theta = NPV(t+1d) - NPV(t) + cashflow(t, t+1d) -- confirms
-        swap_theta's output matches this definition computed by hand from
-        the same building blocks (_swap_price_fn at two evaluation
-        dates). The t+1d valuation is the SAME booked swap one day older
-        (audit M-4/M-5): its first coupon fixed on t, at the rate t's
-        valuation forecast for it."""
+        """Theta = NPV(t+1d) - NPV(t) + cashflow(t, t+1d], computed by hand from
+        `_swap_price_fn` at both dates. The later valuation is the same swap one day older,
+        with its first coupon fixed at t's forecast."""
         from engine.instruments.swap import _build_ore_swap
         from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
 
@@ -417,10 +361,7 @@ class TestSwapTheta:
         assert theta == pytest.approx(theta_npv - base, abs=1e-6)
 
     def test_finite_and_reasonable_magnitude(self):
-        """Theta for a 1-day roll on a $1MM notional 5Y swap should be a
-        small number relative to the swap's own NPV -- not a NaN, not a
-        wildly large blowup (a coarse sanity bound, not a tight
-        cross-check)."""
+        """One day of Theta on a $1MM 5Y swap is finite and small against its NPV."""
         cfg = self._cfg()
         disc_curve = ZeroCurve.flat(0.030, PILLAR_TIMES)
         fwd_curve = ZeroCurve.flat(0.035, PILLAR_TIMES)
@@ -429,9 +370,7 @@ class TestSwapTheta:
         assert abs(theta) < 10_000.0
 
     def test_zero_theta_days_is_a_noop(self):
-        """Rolling forward by 0 days should reproduce the base NPV exactly
-        (no cashflow window, no curve roll) -- Theta should come out
-        exactly 0."""
+        """theta_days=0 gives exactly 0."""
         cfg = self._cfg()
         disc_curve = ZeroCurve.flat(0.030, PILLAR_TIMES)
         fwd_curve = ZeroCurve.flat(0.035, PILLAR_TIMES)
@@ -440,18 +379,12 @@ class TestSwapTheta:
 
 
 # =============================================================================
-# EUROPEAN SWAPTION: JAX-native A(t,T) matches the NumPy compute_hw_A
+# European swaption: the JAX A(t,T) equals the NumPy compute_hw_A
 # =============================================================================
 class TestComputeHwAJaxMatchesNumpy:
     def test_matches_compute_hw_A_across_grid(self):
-        """`engine.risk.greeks` now imports its A(t,T) directly from
-        `engine.models.hull_white` -- the SAME shared implementation
-        `european_swaption.compute_hw_A` wraps for its own NumPy-facing
-        callers (no more separately-maintained JAX twin of the formula).
-        This test confirms both paths -- Greeks' JAX-native call and the
-        main pricer's NumPy-facing wrapper -- agree exactly across a
-        spread of (t, T, a, sigma) combinations, which they must, since
-        they are now literally the same function underneath."""
+        """Greeks' `hull_white.A` and the pricer's NumPy wrapper `compute_hw_A` agree
+        exactly (they are the same function)."""
         from engine.risk.greeks import ZeroCurve as GreeksZeroCurve, _hw_A
         from engine.instruments.european_swaption import compute_hw_A
 
@@ -476,15 +409,12 @@ class TestComputeHwAJaxMatchesNumpy:
 
 
 # =============================================================================
-# EUROPEAN SWAPTION: t=0 price matches the main pricer exactly
+# European swaption: the t=0 price function equals the main pricer
 # =============================================================================
 class TestSwaptionPriceFnMatchesMainPricer:
     def test_matches_price_swaptions_at_t0(self):
-        """_swaption_price_fn is a from-scratch reimplementation of
-        _price_one_swaption's t=0 path (needed to make it differentiable
-        w.r.t. today's curve) -- it must reproduce price_swaptions'
-        actual t=0 output exactly, conditioned on r(0) equal to the
-        curve's own short end (the standard 'no shock' reference state)."""
+        """`_swaption_price_fn` (the differentiable t=0 path) equals `price_swaptions` at
+        t=0 with r(0) at the curve's short end."""
         from engine.instruments.european_swaption import price_swaptions
 
         pillar_times = [1.0, 2.0, 5.0, 10.0, 30.0]
@@ -563,9 +493,7 @@ class TestSwaptionDeltaGamma:
         np.testing.assert_allclose(np.asarray(greeks["gamma"]), fd_gamma, atol=1e-3)
 
     def test_matches_finite_difference_deep_itm(self):
-        """A deep-ITM swaption has a near-deterministic payoff -- Delta
-        should be large and Gamma should be small (little optionality
-        left), and both should still match finite-difference closely."""
+        """Deep ITM: large Delta, small Gamma, both matching finite differences."""
         curve = ZeroCurve.flat(0.03, PILLAR_TIMES)
         cfg = self._cfg(curve, fixed_rate=0.01)  # deep ITM payer
         greeks = swaption_delta_gamma(cfg, curve)
@@ -592,11 +520,8 @@ class TestSwaptionDeltaGamma:
 
     @pytest.mark.slow
     def test_finite_for_various_hw_parameters(self):
-        """Delta/Gamma should stay finite across a spread of hw_a/hw_sigma
-        combinations -- guards against a hidden singularity (e.g. a
-        divide-by-zero at small hw_a, matching the kind of edge case
-        engine/simulation.py had to guard against for the same B(t,T)-
-        style formula)."""
+        """Delta/Gamma stay finite across hw_a/hw_sigma values (no hidden singularity at
+        small hw_a)."""
         curve = ZeroCurve.flat(0.03, PILLAR_TIMES)
         for hw_a in [0.01, 0.03, 0.1, 0.3]:
             for hw_sigma in [0.005, 0.01, 0.02]:
@@ -607,10 +532,8 @@ class TestSwaptionDeltaGamma:
 
 
 class TestSwaptionDeltaGammaAgainstORE:
-    """Direct cross-check against a real ORE.Swaption priced with
-    ORE.JamshidianSwaptionEngine under a bumped ORE.HullWhite model,
-    isolating the aggregate parallel-curve sensitivity the same way
-    TestSwapDeltaGammaAgainstORE does for swaps."""
+    """Autodiff Delta against `ORE.Swaption` with `ORE.JamshidianSwaptionEngine` on a bumped
+    `ORE.HullWhite` model (parallel bump, as for swaps)."""
 
     def _reference_ore_swaption_npv(self, flat_rate: float, notional: float, fixed_rate: float, payer: bool) -> float:
         ORE.Settings.instance().evaluationDate = TODAY
@@ -687,7 +610,7 @@ class TestSwaptionTheta:
         base_price_fn = _swaption_price_fn(cfg, curve)
         base = float(base_price_fn(curve.pillar_rates))
         theta_date = ORE.TARGET().advance(TODAY, DEFAULT_THETA_DAYS, ORE.Days)
-        # The same option one day older: its exercise date stays put (M-5).
+        # The same option one day older: its exercise date is unchanged.
         theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date)
         assert theta_cfg.exercise_date == cfg.exercise_date
         theta_price_fn = _swaption_price_fn(theta_cfg, curve)
@@ -710,18 +633,12 @@ class TestSwaptionTheta:
 
 
 # =============================================================================
-# PRECISION (PrecisionConfig.risk) -- direct dtype checks
+# Precision (PrecisionConfig.risk)
 # =============================================================================
 class TestGreeksPrecisionDtype:
-    """engine.portfolio.request._compute_all_greeks hands each Greeks
-    function a `curve: ZeroCurve` built at PrecisionConfig.risk's dtype;
-    this module's own closures must then derive their working dtype from
-    that curve (see this module's docstring on why no new parameter is
-    needed on the public entry points) rather than silently upcasting back
-    to float64 -- these tests call the Greeks functions directly, at a
-    curve built with dtype=jnp.float32, independent of the price_portfolio
-    integration path (that path is covered by
-    tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision)."""
+    """Greeks functions work in their curve's dtype: a float32 curve keeps them float32.
+    (The `price_portfolio` path is covered by
+    tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision.)"""
 
     def test_swap_delta_gamma_float32_curve_stays_float32(self):
         disc_curve = ZeroCurve.flat(0.03, PILLAR_TIMES, dtype=jnp.float32)
@@ -777,9 +694,8 @@ class TestGreeksPrecisionDtype:
 
 
 class TestSwapGreeksHonourTheTradesOwnConventions:
-    """`_swap_price_fn` and `swap_theta` used to rebuild the SwapConfig
-    field by field and dropped `accrual_day_count`, so an ACT/ACT swap's
-    Greeks were computed on ACT/365 coupons."""
+    """Regression: `_swap_price_fn` and `swap_theta` once copied SwapConfig field by field
+    and dropped `accrual_day_count`, computing an ACT/ACT swap's Greeks on ACT/365."""
 
     def _cfg(self, **overrides):
         fields = dict(
@@ -807,9 +723,9 @@ class TestSwapGreeksHonourTheTradesOwnConventions:
         assert float(jnp.sum(greeks["discount_delta"])) == pytest.approx(bumped, rel=1e-6)
 
     def test_theta_period_flow_includes_floating_coupons(self):
-        """A floating coupon paid inside the theta window is added back
-        just like a fixed one. With a 1Y fixed / 6M floating schedule, the
-        window up to the first floating payment holds that coupon only."""
+        """A floating coupon paid inside the Theta window is added back like a fixed one.
+        With 1Y fixed / 6M floating, the window to the first floating payment holds only
+        that coupon."""
         from engine.instruments.swap import _build_ore_swap
         from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
         from engine.risk.greeks import _swap_cashflows_in_period

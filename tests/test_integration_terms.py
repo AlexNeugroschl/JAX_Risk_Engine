@@ -1,6 +1,6 @@
 """
-W0.2 -- the `instrument-terms.json` join
-(`docs/planning/traderx-integration-plan.md` §W0.2).
+The `instrument-terms.json` join (`engine.integration.terms`, W0.2). Contract:
+`reference/traderX/specs/YU18-eod-risk-bundles/contracts/bundle-v2-and-terms.md`.
 """
 import copy
 import json
@@ -22,9 +22,8 @@ FIXTURES = Path(__file__).parent / "fixtures" / "traderx-eod"
 
 @pytest.fixture
 def terms_bundle(tmp_path):
-    """Factory: copies a fixture bundle and lets a test rewrite its terms
-    artifact, re-pinning the manifest hash so the *join* is under test
-    rather than the hash check."""
+    """Factory: copy a fixture bundle, let a test rewrite its terms, and re-pin the manifest
+    hash so the join (not the hash check) is under test."""
     import hashlib
 
     def _make(case: str, mutate=None, version: str = "v2"):
@@ -49,12 +48,8 @@ def terms_bundle(tmp_path):
 
 
 class TestSecurityJoinAcrossAccounts:
-    """Plan §W0.2 step 2 + its first named test: the same security across
-    two accounts joins to ONE terms entry, with correct per-account signs.
-
-    This is the shape that breaks a naive per-row terms lookup: the terms
-    describe the instrument, the amounts and signs stay in the rows.
-    """
+    """One security held in two accounts joins to one terms entry; signs and amounts stay
+    per row."""
 
     def test_one_entry_serves_both_accounts(self):
         join = join_terms(load_bundle(FIXTURES / "note" / "v2"))
@@ -70,12 +65,11 @@ class TestSecurityJoinAcrossAccounts:
 
         assert float(by_account["22214"].row["quantity"]) == 100_000.0
         assert float(by_account["42422"].row["quantity"]) == -100_000.0
-        # Same instrument, same terms, opposite direction.
+        # Same terms, opposite direction.
         assert by_account["22214"].entry is by_account["42422"].entry
 
     def test_every_joined_row_is_checked_not_only_the_first(self):
-        """bundle-v2-and-terms.md: 'The validator checks each joined row,
-        not only the first account.'"""
+        """Every joined row is checked, not only the first account (per the contract)."""
         join = join_terms(load_bundle(FIXTURES / "note" / "v2"))
         for row in join.rows:
             assert row.entry is not None
@@ -95,9 +89,7 @@ class TestContractJoin:
         assert row.entry.identity["clusterEpoch"] == bundle.cluster_epoch
 
     def test_wrong_epoch_is_rejected(self, terms_bundle):
-        """A contract id is unique only within its epoch. An entry claiming
-        a different one may describe a different contract entirely, so it
-        is refused rather than joined."""
+        """A contract id is unique only within its epoch, so a different epoch is refused."""
         def wrong_epoch(terms):
             terms["entries"][0]["identity"]["clusterEpoch"] = "some-other-epoch-v9"
 
@@ -107,8 +99,7 @@ class TestContractJoin:
 
 
 class TestMissingTermsIsAuthoritative:
-    """Plan §W0.2 step 3: `missingTerms` is an authoritative refusal input,
-    carried **verbatim**, not a hint to be summarized or reordered."""
+    """`missingTerms` is an authoritative refusal input, carried verbatim."""
 
     def test_sofr_entry_carries_all_thirteen(self):
         join = join_terms(load_bundle(FIXTURES / "sofr" / "v2"))
@@ -117,9 +108,7 @@ class TestMissingTermsIsAuthoritative:
         assert not entry.is_complete
 
     def test_carried_verbatim_and_in_supplied_order(self):
-        """Order is preserved rather than sorted by this code: the exporter
-        supplied a sorted list, and re-sorting would hide it if it ever
-        stopped being sorted."""
+        """Order is kept as supplied, not re-sorted (which would hide an unsorted export)."""
         raw = json.loads((FIXTURES / "sofr" / "v2" / "instrument-terms.json").read_bytes())
         supplied = raw["entries"][0]["missingTerms"]
 
@@ -134,23 +123,21 @@ class TestMissingTermsIsAuthoritative:
                 assert row.entry.is_complete
 
     def test_complete_does_not_mean_priceable(self):
-        """bundle-v2-and-terms.md: an entry with no missing fields 'does not
-        prove a model can represent it'. `is_complete` is a statement about
-        the export, not about this engine."""
+        """`is_complete` describes the export, not whether this engine can price it."""
         join = join_terms(load_bundle(FIXTURES / "note" / "v2"))
         entry = join.rows[0].entry
         assert entry.is_complete
-        # The priceability verdict belongs to W0.4, and is asked separately.
+        # Priceability is the convention check's question (W0.4), asked separately.
         from engine.integration.conventions import check_conventions
         assert check_conventions(join.rows[0]) is None  # conventions ok...
-        # ...yet the pipeline still reports no NPV, because no pricer exists.
+        # The pipeline still reports no NPV (no pricer for this row).
         from engine.integration import price_bundle
         result = price_bundle(FIXTURES / "note" / "v2")
         assert result.items[0].calculations["npv"].status == "unsupported"
 
 
 class TestDuplicateAndUnjoinable:
-    """Plan §W0.2 step 4."""
+    """Duplicate and unjoinable entries."""
 
     def test_duplicate_identity_is_rejected(self, terms_bundle):
         def duplicate(terms):
@@ -161,8 +148,7 @@ class TestDuplicateAndUnjoinable:
             join_terms(bundle)
 
     def test_entry_matching_no_row_is_rejected(self, terms_bundle):
-        """'Extra ... entries fail' -- an entry describing an instrument the
-        bundle does not contain cannot be attributed to anything."""
+        """An entry matching no row cannot be attributed to anything and fails."""
         def extra(terms):
             spare = copy.deepcopy(terms["entries"][0])
             spare["identity"]["security"] = "UST-NOTE-NOT-IN-BUNDLE"
@@ -173,9 +159,8 @@ class TestDuplicateAndUnjoinable:
             join_terms(bundle)
 
     def test_row_matching_no_entry_is_unjoined_not_raised(self, terms_bundle):
-        """The asymmetry with the previous test, and it is deliberate: an
-        unjoined ROW is still identifiable and gets an identified refusal,
-        so it is carried. An unattributable ENTRY is not."""
+        """Unlike an unmatched entry, an unmatched row is still identifiable, so it is
+        carried with an identified refusal."""
         def rename(terms):
             terms["entries"][0]["identity"]["security"] = "UST-NOTE-SOMETHING-ELSE"
 
@@ -185,14 +170,9 @@ class TestDuplicateAndUnjoinable:
             join_terms(bundle)
 
     def test_a_row_with_no_entry_is_refused_not_dropped(self, tmp_path):
-        """The genuinely-unjoined row: one position has a terms entry, the
-        other does not, and every entry still joins to something (so the
-        "extra entries" check does not fire first).
-
-        The row must survive as an *identified refusal* rather than vanish
-        from the result -- a silently shrinking portfolio is the failure
-        mode the coverage model exists to make impossible.
-        """
+        """A row with no terms entry (while every entry still joins, so the extra-entry
+        check does not fire) survives as an identified refusal rather than vanishing from
+        the result."""
         import hashlib
 
         root = tmp_path / "mixed"
@@ -244,18 +224,8 @@ class TestDuplicateAndUnjoinable:
             join_terms(bundle)
 
     def test_unsupported_terms_schema_is_rejected(self, terms_bundle):
-        """**Updated by W1.6.1**, which added `instrument-terms.v2` to the
-        accepted set.
-
-        This test previously used `.v2` as its example of an unsupported
-        schema, which was correct at W0.2 -- v2 did not exist yet. W1.6.1 is
-        chartered to accept it, so the assertion now uses a version that is
-        genuinely unknown. The *contract* under test is unchanged: a terms
-        artifact declaring a schema this consumer has not validated against
-        is refused rather than parsed on v1 assumptions.
-
-        v2's acceptance is covered by `tests/test_integration_terms_v2.py`.
-        """
+        """An unknown terms schema is refused rather than parsed with v1 assumptions. (v2 is
+        accepted; see `tests/test_integration_terms_v2.py`.)"""
         def bump(terms):
             terms["schema"] = "traderx.instrument-terms.v99"
 
@@ -265,8 +235,8 @@ class TestDuplicateAndUnjoinable:
 
 
 class TestV1HasNoTermsArtifact:
-    """Plan §W0.2 step 5 and its named test: a v1 bundle makes every
-    terms-dependent calculation `unsupported`."""
+    """A v1 bundle has no terms artifact, so every terms-dependent calculation is
+    `unsupported`."""
 
     @pytest.mark.parametrize("case", ("bill", "note", "sofr"))
     def test_every_row_is_unjoined_with_a_reason(self, case):
@@ -278,9 +248,7 @@ class TestV1HasNoTermsArtifact:
             assert row.unjoined_reason == NO_TERMS_ARTIFACT
 
     def test_v1_is_not_an_error(self):
-        """v1 is a valid bundle version. It yields refusals, not
-        exceptions -- conflating 'older version' with 'broken bundle' would
-        make the coordinator retry something that cannot improve."""
+        """v1 yields refusals, not exceptions (a retry cannot improve an older version)."""
         join = join_terms(load_bundle(FIXTURES / "note" / "v1"))
         assert len(join.rows) == 2  # the rows are all still there
 
@@ -294,8 +262,7 @@ class TestV1HasNoTermsArtifact:
             assert item.calculations["npv"].reason == "TERMS_NOT_SUPPLIED"
 
     def test_row_counts_match_v2(self):
-        """The same population, refused rather than absent. A v1 bundle
-        must not silently shrink the portfolio."""
+        """The same population as v2, refused rather than absent."""
         for case in ("bill", "note", "sofr"):
             v1 = join_terms(load_bundle(FIXTURES / case / "v1"))
             v2 = join_terms(load_bundle(FIXTURES / case / "v2"))

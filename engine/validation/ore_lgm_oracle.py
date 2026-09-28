@@ -1,75 +1,43 @@
 """
-ORE's own Bermudan/American swaption engine, driven in-process -- the
-reference `engine.instruments.bermudan_swaption` is validated against
-(tests/test_ore_lgm_parity.py), and a tool for reconciling any Bermudan or
-American price with ORE.
+ORE's own Bermudan/American swaption engine, run in-process: the reference
+`engine.instruments.bermudan_swaption` is validated against (tests/test_ore_lgm_parity.py).
 
-VALIDATION TOOLING, NOT A PRICER. Nothing in the pricing path imports this
-module. It runs a full `OREApp` per call (about a second) and changes
-process-wide ORE state (see GLOBAL STATE below), so it belongs in tests,
-reconciliation jobs and investigations, never inside a pricing request.
+Validation tooling, not a pricer: nothing in the pricing path imports it. Each call runs a
+full `OREApp` (about a second) and changes process-wide ORE state (see below).
 
-WHY THIS EXISTS. ORE prices Bermudan and American swaptions with
-`QuantExt::NumericLgmMultiLegOptionEngine` (built by
-`LGMGridSwaptionEngineBuilder`). Its SWIG class has no bound constructor, so
-`tests/test_ore_bermudan_oracle.py` falls back to QuantLib's Hull-White tree
-and FD engines -- a different model realization, good only to a few percent.
-This module reaches the real engine by the route ORE users take: an
-`OREApp` run of the `NPV` analytic over a trade XML, with every input held in
-memory. The engine it builds is the same LGM model, the same convolution
-solver and the same exercise logic this codebase reproduces, so agreement is
-expected at numerical, not model, level.
+`NumericLgmMultiLegOptionEngine` has no SWIG constructor, so it is reached the way ORE users
+reach it: an `OREApp` NPV run over trade XML, with every input in memory. (QuantLib's
+Hull-White tree/FD engines, used by tests/test_ore_bermudan_oracle.py, are a different
+model realization and agree only to a few percent.)
 
-WHAT IS BUILT, and why each piece is exactly the engine's:
+What is built:
+  * Underlying: the engine's own `ORE.VanillaSwap` schedule, passed as explicit `<Dates>`.
+    The index is a convention-defined `USD-SIMINDEX-<N>M` with `build_vanilla_swap`'s
+    `SimIndex` terms (2 settlement days, TARGET, MF, no EOM, ACT/365).
+  * Curve: date-quoted continuous ACT/365 zero rates, linear in the zero rate, as the
+    engine's `ZeroCurve`. Pillars must be whole ACT/365 days from the as-of date (checked)
+    and should start at t=0. Exact only where the curve is flat up to its first non-zero
+    pillar: ORE's zero-curve build re-reads the t=0 rate as `zeroRate(1e-4)`
+    (OREData/ored/marketdata/yieldcurve.cpp), tilting a sloped first segment by ~1e-6
+    relative (I-34).
+  * Model: `Calibration=None`, `ReversionType=HullWhite`, `VolatilityType=Hagan`, i.e.
+    constant reversion `hw_a` and `zeta(t) = integral sigma^2`, as `engine.models.lgm`. A
+    piecewise `Sigma` maps to `VolatilityTimes`/`Volatility` bucket for bucket. Defaults
+    are the Grid solver and `ShiftHorizon=0` (what the engine reproduces); ORE's other
+    settings are available (see `ore_lgm_swaption_npv`).
 
-  * **The underlying.** Schedule dates are read off the engine's own
-    `ORE.VanillaSwap` and passed to ORE as explicit `<Dates>`, so both sides
-    price the same accrual periods by construction. The floating index is a
-    convention-defined `USD-SIMINDEX-<N>M` carrying `build_vanilla_swap`'s
-    `SimIndex` terms (2 settlement days, TARGET, ModifiedFollowing, no EOM,
-    ACT/365).
-  * **The curve.** Date-quoted continuous ACT/365 zero rates, linearly
-    interpolated in the zero rate -- the engine's `ZeroCurve`. Pillars must
-    be whole numbers of ACT/365 days (checked), and the first pillar should
-    be at t=0: ORE otherwise inserts a flat point at the as-of date.
-    **Exact only where the curve is flat up to its first non-zero pillar.**
-    ORE's zero-curve build re-reads every pillar's zero rate off a temporary
-    curve, and QuantLib reads the one at t=0 as `zeroRate(1e-4)`
-    (OREData/ored/marketdata/yieldcurve.cpp, `buildZeroCurve`), so ORE's
-    as-of zero becomes `z0 + slope * 1e-4`. That tilts ORE's first segment
-    only: on a curve sloped there, a date inside it is discounted about
-    1e-6 relative differently from the engine (I-34 in
-    docs/known-issues.md). Parity checks that need 1e-10 use a flat first
-    segment.
-  * **The model.** `Calibration=None`, `ReversionType=HullWhite`,
-    `VolatilityType=Hagan`: ORE's LGM with constant reversion `hw_a` and
-    Hagan alpha `hw_sigma`, i.e. `zeta(t) = hw_sigma^2 * t`, the
-    parametrization `engine.models.lgm` implements. A piecewise
-    `engine.models.lgm.Sigma` maps onto ORE's `VolatilityTimes`/`Volatility`
-    pair bucket for bucket (same `[times[i-1], times[i])` convention).
-    By default `ShiftHorizon=0` and the Grid solver, which is what the engine
-    reproduces; both can be changed to ORE's other settings (see
-    `ore_lgm_swaption_npv`).
+Two inputs ORE requires that do not affect the price:
+  * A swap index pair (`USD-CMS-1Y`/`USD-CMS-30Y`). Required: `IrModelBuilder` takes the
+    LGM term structure from the swap index's discounting curve and would otherwise fall
+    back to a flat 1%. It is mapped to the engine's curve.
+  * An ATM swaption vol quote, read only when calibrating.
 
-TWO INPUTS ORE REQUIRES THAT DO NOT AFFECT THE PRICE, supplied only so the
-model builder does not fall back to dummies:
+Log file: `OREApp` needs a real log path and keeps the file open, so one scratch directory
+per process is reused (`_scratch_dir`).
 
-  * A swap index pair (`USD-CMS-1Y`/`USD-CMS-30Y`). **Not optional, and not
-    inert:** `IrModelBuilder` takes the LGM's own term structure from the
-    swap index's *discounting* curve, so a fallback would silently replace
-    the model curve with a flat 1%. It is mapped to the engine's curve.
-  * An ATM swaption vol quote. Read only when calibrating; unused here.
-
-ORE'S LOG FILE. `OREApp` refuses an empty log path, and its logger keeps the
-file open after the run, so a per-call temporary directory cannot be
-deleted. One scratch directory per process (`_scratch_dir`) is reused
-instead; it holds only ORE's log and an empty results folder.
-
-GLOBAL STATE. `OREApp` sets ORE's evaluation date and its process-wide
-`InstrumentConventions`. The evaluation date is restored on exit. The
-conventions registry has no SWIG accessor to restore it with; nothing in
-the pricing path parses ORE conventions, so that residue is inert for it --
-but it is a reason this must not run inside a pricing process.
+Global state: `OREApp` sets ORE's evaluation date (restored on exit) and its process-wide
+`InstrumentConventions` (no SWIG accessor to restore). Another reason not to run it inside
+a pricing process.
 """
 from __future__ import annotations
 
@@ -225,9 +193,8 @@ def _volatility_parameters(hw_sigma) -> str:
 
 @dataclass(frozen=True)
 class OreFdSolver:
-    """ORE's alternative "FD" solver (`LGMFDSwaptionEngineBuilder` ->
-    `LgmFdSolver`) in place of the "Grid" convolution solver this engine
-    reproduces. The defaults are ORE's shipped American swaption settings
+    """ORE's FD solver (`LGMFDSwaptionEngineBuilder` -> `LgmFdSolver`) instead of the Grid
+    solver the engine reproduces. Defaults are ORE's example American settings
     (Examples/Products/Input/pricingengine.xml)."""
     scheme: str = "Douglas"
     state_grid_points: int = 64
@@ -377,29 +344,19 @@ def ore_lgm_swaption_npv(
     fd_solver: Optional[OreFdSolver] = None,
     fixings: Optional[Mapping[ORE.Date, float]] = None,
 ) -> OreLgmResult:
-    """NPV of a long physically-settled swaption on `swap`, priced by ORE's
-    `NumericLgmMultiLegOptionEngine` (Grid solver).
+    """NPV of a long, physically settled swaption on `swap`, by ORE's
+    `NumericLgmMultiLegOptionEngine`.
 
-    `style` is `"Bermudan"` (one date per exercise opportunity) or
-    `"American"` (exactly two dates: the window's first and last day).
-    `swap` must be the engine's own underlying -- normally
-    `engine.models.ore_builders.build_vanilla_swap` with the same terms --
-    so its schedule is what ORE prices; its index's forward curve is never
-    read. Raises `RuntimeError` with ORE's own messages if ORE fails to
-    build the market or the trade, rather than returning a partial result.
+    `style`: "Bermudan" (one date per exercise) or "American" (two dates: the window's
+    first and last day). `swap` must be the engine's own underlying (normally
+    `build_vanilla_swap` with the same terms); only its schedule is used. Raises
+    `RuntimeError` with ORE's messages if the market or trade fails to build.
 
-    The defaults configure ORE exactly as this engine prices: the Grid solver
-    at the engine's own `n_per_std`/`std_devs`, and `shift_horizon=0`. Two
-    settings ORE's own example configs use instead are available for
-    measuring how far the engine sits from them: `shift_horizon` (ORE's
-    `ShiftHorizon`, a fraction of the trade's maturity; ORE's builder default
-    is 0.5) and `fd_solver` (ORE's FD solver; `n_per_std`/`std_devs` are then
-    unused by ORE).
+    Defaults match how the engine prices (Grid solver at `n_per_std`/`std_devs`,
+    `shift_horizon=0`). `shift_horizon` (ORE's builder default is 0.5) and `fd_solver`
+    measure the distance to ORE's other settings (I-32).
 
-    `fixings` are the floating index's historical fixings `{ORE.Date:
-    rate}`, handed to ORE as fixing data -- needed, exactly as by the
-    engine, for a seasoned trade whose coupon fixed before
-    `evaluation_date`.
+    `fixings`: historical index fixings `{ORE.Date: rate}`, for a seasoned trade.
     """
     index = _index_name(index_tenor_months)
     previous_evaluation_date = ORE.Settings.instance().evaluationDate
@@ -425,8 +382,8 @@ def ore_lgm_swaption_npv(
         inputs.insertAnalytic("NPV")
 
         stamp = _iso(evaluation_date).replace("-", "")
-        # float(r)!r: full precision, and a plain number even for a numpy scalar
-        # (whose repr, "np.float64(...)", ORE cannot parse).
+        # float(r)!r: full precision, and a plain number for a numpy scalar (ORE cannot
+        # parse "np.float64(...)").
         market = [f"{stamp} ZERO/RATE/{CCY}/{CURVE_ID}/A365/{_iso(d)} {float(r)!r}"
                   for d, r in zip(_curve_dates(evaluation_date, curve_times), curve_rates)]
         market.append(f"{stamp} SWAPTION/RATE_NVOL/{CCY}/1Y/1Y/ATM 0.01")

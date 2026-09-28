@@ -1,38 +1,15 @@
 """
-End-to-end validation: prices a MIXED portfolio (interest rate swaps +
-European swaptions) through this engine's full pipeline
-(generate_paths -> price_swaps/price_swaptions -> compute_risk_metrics),
-and independently through real ORE objects (ORE.DiscountingSwapEngine +
-ORE.JamshidianSwaptionEngine + ORE.RiskStatistics) conditioned on the
-EXACT SAME simulated short-rate values, then compares both NPVs and
-VaR/ES numerically, and reports wall-clock timing for both paths.
+End to end: a mixed portfolio (swaps and European swaptions) through `generate_paths`,
+`price_swaps`/`price_swaptions` and `compute_risk_metrics`, and independently through ORE
+(`DiscountingSwapEngine`, `JamshidianSwaptionEngine`, `RiskStatistics`) conditioned on the
+same simulated short rates; NPVs and VaR/ES compared, with timings.
 
-Why "same simulated short-rate values" rather than two independent Monte
-Carlo runs: the goal here is to validate PRICING/RISK FORMULA correctness
-and PERFORMANCE at scale, not random-number-generator equivalence (this
-engine uses Sobol quasi-random sequences + a Brownian bridge; ORE's own
-path generators use a different RNG entirely -- comparing two independently
--generated samples would only ever be "close", never a precise correctness
-check, and any observed difference would be ambiguous between "pricing bug"
-and "different random draws"). Instead, this engine's own real
-generate_paths() output supplies the short-rate path; ORE prices the exact
-same trades conditional on those exact same rate values (via a
-YieldTermStructureHandle built from ORE.HullWhite.discountBond(t, T, r) at
-each simulated r) -- the same live-testing methodology already used
-throughout engine/instruments/european_swaption.py's own test suite,
-extended here to a full multi-trade portfolio and a real VaR/ES
-aggregation.
+Sharing the simulated rates (rather than two independent Monte Carlo runs with different
+generators) makes a difference a pricing difference, not sampling noise. ORE prices each
+scenario on a curve implied from `ORE.HullWhite.discountBond(t, T, r)`.
 
-A note on ORE date arithmetic (a real pitfall this test's own development
-hit): `ORE.TARGET().advance(date, N, ORE.Days)` with a plain Days unit
-treats N as BUSINESS days (skipping weekends/holidays via the TARGET
-calendar), NOT calendar days -- `date + N` (plain integer addition on an
-ORE.Date) is calendar-day arithmetic. Conflating the two silently produces
-a "1 year forward" date that's actually ~1.4 calendar years out, which
-looks exactly like a pricing bug (a growing, non-random NPV divergence)
-until traced back to the date construction itself. This module always uses
-`date + N` for calendar-day offsets and `ORE.Period(N, ORE.Years/...)` for
-calendar-period offsets, never the ambiguous integer-Days advance form.
+Dates: `ORE.TARGET().advance(date, N, ORE.Days)` adds business days (365 of them is ~1.4
+years); `date + N` adds calendar days. This file uses `date + N` and `ORE.Period`.
 """
 import time
 
@@ -54,9 +31,8 @@ HW_A = 0.03
 HW_SIGMA = 0.01
 DAY_COUNTER = ORE.Actual365Fixed()
 
-# The 2Y swap's own real cashflow/accrual-boundary dates (absolute
-# year-fractions from TODAY) -- required maturity pillars for
-# flat_yield_curves' t=0 deterministic revaluation.
+# The 2Y swap's payment and accrual times (years from TODAY): the pillars for the t=0
+# revaluation.
 SWAP_MATURITIES = [
     0.010958904109589041, 0.5150684931506849, 1.010958904109589,
     1.515068493150685, 2.0136986301369864,
@@ -66,13 +42,8 @@ ZERO_CURVE = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[FLAT
 
 
 def _build_portfolio():
-    """One 2Y payer swap (priced at t=0 -- see swap's "Known
-    limitation" docstring on why an aged swap is out of scope here) plus
-    two forward-starting swaptions (a 5Y payer exercisable in 3Y, a 7Y
-    receiver exercisable in 2Y) -- both genuinely still alive at the
-    simulated t=1.0 evaluation point used throughout this file, so their
-    conditional pricing is on the same solid ground the swaption module's
-    own test suite already validates."""
+    """A 2Y payer swap (checked at t=0 only; aged swaps are I-04) and two forward-starting
+    swaptions (5Y payer exercisable in 3Y, 7Y receiver in 2Y), both alive at t=1."""
     swap = SwapConfig(
         notional=1_000_000.0, fixed_rate=0.03, payer=True,
         discount_curve_index=0, forward_curve_index=0,
@@ -104,10 +75,8 @@ def _sim_config(scenarios: int) -> SimulationConfig:
 
 
 def _price_portfolio_engine(scenarios: int):
-    """Runs the full engine pipeline for the mixed portfolio and returns
-    (portfolio_npv_at_t1 [Scenarios], base_npv, risk_metrics dict, r_t
-    [Scenarios] the simulated short rates -- handed to the ORE path so
-    both price conditional on the exact same numbers, timings dict)."""
+    """The engine pipeline: (portfolio NPV at t=1 [S], base NPV, risk metrics, simulated
+    short rates r_t [S] for the ORE side, timings)."""
     swap, swaption_a, swaption_b = _build_portfolio()
     config = _sim_config(scenarios)
 
@@ -121,10 +90,8 @@ def _price_portfolio_engine(scenarios: int):
     swaption_npv = price_swaptions(market["rates"], step_times, [swaption_a, swaption_b])
     portfolio_at_t1 = swap_npv_t0 + jnp.sum(swaption_npv[:, 0, :], axis=-1)  # [Scenarios]
 
-    # t=0 baseline: swap's own t=0 value + each swaption's own t=0 value
-    # (a real, deterministic zero-shock revaluation of the whole
-    # portfolio, not a proxy) -- see var_es' P&L baseline
-    # convention (docs/risk/var_es.md).
+    # t=0 baseline: a deterministic revaluation of the whole portfolio (the P&L baseline;
+    # docs/risk/var_es.md).
     prep_a = prepare_swaption(swaption_a)
     prep_b = prepare_swaption(swaption_b)
     t0_step = jnp.array([0.0])
@@ -142,11 +109,9 @@ def _price_portfolio_engine(scenarios: int):
 
 
 def _price_portfolio_ore(r_t: np.ndarray):
-    """Prices the SAME portfolio, conditional on the SAME r_t values, using
-    real ORE pricing engines throughout -- one implied curve rebuilt per
-    scenario via ORE.HullWhite.discountBond(t_eval, T, r), exactly as
-    engine/instruments/european_swaption.py's own conditional-pricing test
-    does. Returns (portfolio_npv [Scenarios], base_npv, elapsed_seconds)."""
+    """The same portfolio on the same r_t by ORE's engines, one implied curve per scenario
+    from `ORE.HullWhite.discountBond(t_eval, T, r)`. Returns (portfolio NPV [S], base NPV,
+    seconds)."""
     dc = DAY_COUNTER
     ORE.Settings.instance().evaluationDate = TODAY
     curve0 = ORE.YieldTermStructureHandle(ORE.FlatForward(TODAY, FLAT_RATE, dc))
@@ -164,11 +129,8 @@ def _price_portfolio_ore(r_t: np.ndarray):
     ore_swap.setPricingEngine(ORE.DiscountingSwapEngine(curve0))
     swap_npv_t0 = ore_swap.NPV()
 
-    # Exercise date = forward_start point + 2-business-day spot lag,
-    # matching european_swaption.SwaptionConfig's own convention exactly
-    # (see prepare_swaption's docstring) -- omitting the spot lag here
-    # was an earlier version of this test's own bug, caught by this exact
-    # base_npv cross-check diverging from the engine by ~0.1%.
+        # Exercise date = forward-start point + 2 business days, as SwaptionConfig books it
+        # (omitting the lag was once a ~0.1% bug in this test).
     fwd_a_t0 = ORE.TARGET().advance(TODAY, ORE.Period(3, ORE.Years))
     ex_a_t0 = ORE.EuropeanExercise(ORE.TARGET().advance(fwd_a_t0, ORE.Period(2, ORE.Days)))
     swap_a_t0 = ORE.MakeVanillaSwap(
@@ -208,9 +170,7 @@ def _price_portfolio_ore(r_t: np.ndarray):
             ORE.USDCurrency(), ORE.TARGET(), ORE.ModifiedFollowing, False, dc, implied_curve,
         )
 
-        # forward_start is always relative to TODAY, not eval_date -- 1y
-        # has already elapsed by eval_date, so only (3-1)=2y / (2-1)=1y
-        # remain from eval_date's own perspective.
+        # forward_start counts from TODAY; one year has passed at eval_date.
         swa = ORE.MakeVanillaSwap(
             ORE.Period("5Y"), idx, 0.03, nominal=1_500_000.0,
             swapType=ORE.VanillaSwap.Payer, fixedLegDayCount=dc, floatingLegDayCount=dc,
@@ -243,9 +203,7 @@ def _price_portfolio_ore(r_t: np.ndarray):
 
 
 class TestEndToEndEngineVsORE:
-    """The full pipeline, cross-checked against ORE end-to-end: same
-    simulated rate paths, same trades, priced independently by each side,
-    compared on NPV and on the VaR/ES computed from them."""
+    """Same rate paths, same trades, priced by each side; NPV and VaR/ES compared."""
 
     @classmethod
     @pytest.fixture(scope="class")
@@ -264,10 +222,7 @@ class TestEndToEndEngineVsORE:
         np.testing.assert_allclose(comparison["mine_base"], comparison["ore_base"], rtol=1e-6)
 
     def test_per_scenario_npv_matches_ore(self, comparison):
-        """Every single simulated scenario's portfolio NPV, not just the
-        mean -- this is the strongest possible correctness claim: pathwise
-        agreement across the entire distribution, not merely matching
-        summary statistics that could hide offsetting errors."""
+        """Every scenario's NPV matches (pathwise, not just summary statistics)."""
         diff = comparison["mine_npv"] - comparison["ore_npv"]
         rel = np.abs(diff) / np.maximum(np.abs(comparison["ore_npv"]), 1.0)
         assert np.max(rel) < 1e-3
@@ -286,13 +241,8 @@ class TestEndToEndEngineVsORE:
         np.testing.assert_allclose(float(mine["ES_99"][0]), ore_stats.expectedShortfall(0.99), rtol=1e-3)
 
     def test_reports_timing(self, comparison):
-        """Not a pass/fail assertion on speed (that would make the test
-        flaky across machines/load) -- just surfaces the measured timing so
-        a human reviewing test output can see the actual tradeoff: this
-        engine pays a fixed JIT-compilation/dispatch cost per call, so
-        ORE's plain Python loop can win at small scenario counts, while the
-        engine's vectorized pricing wins decisively as scenario count
-        grows (see TestEndToEndScaling below for the crossover)."""
+        """Prints the timings (no assertion): the engine has a fixed compile/dispatch cost, so
+        ORE's loop can be faster at small scenario counts (see TestEndToEndScaling)."""
         print(
             f"\n[timing] {comparison['scenarios']} scenarios: "
             f"engine={comparison['engine_time']:.3f}s, ORE={comparison['ore_time']:.3f}s, "
@@ -303,14 +253,8 @@ class TestEndToEndEngineVsORE:
 
 
 class TestEndToEndScaling:
-    """Demonstrates (does not merely assert) the actual performance
-    crossover: at small scenario counts, this engine's fixed per-call
-    overhead (JIT compilation, Python-level dispatch, JAX device transfer)
-    can make ORE's plain Python per-scenario loop faster in absolute terms;
-    at large scenario counts, this engine's vectorized tensor pricing wins.
-    Reporting both regimes honestly (not cherry-picking a favorable scale)
-    is the point of this test -- see its printed output.
-    """
+    """Timings at several scenario counts, printed: the engine's fixed overhead against its
+    vectorized scaling."""
 
     @pytest.mark.slow
     @pytest.mark.parametrize("scenarios", [512, 32768])

@@ -13,9 +13,9 @@ the machinery the backward induction adds. The cashflow values are the
 engine's own (`_cashflow_values_at_nodes`), pinned separately against ORE in
 tests/test_ore_lgm_parity.py.
 
-This replaced a Jamshidian decomposition, which needs the floating leg to
-telescope to `notional * (P(T_start) - P(T_end))`. It does not once each
-coupon is projected over its index fixing period, as ORE projects it (I-31).
+A Jamshidian decomposition is not used: it needs the floating leg to telescope to
+`notional * (P(T_start) - P(T_end))`, which fails once each coupon is projected over its
+index fixing period, as ORE projects it (I-31).
 """
 import jax.numpy as jnp
 import numpy as np

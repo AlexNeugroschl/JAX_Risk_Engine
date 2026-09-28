@@ -1,22 +1,8 @@
 """
-Scale and edge-case tests for engine.portfolio.price_portfolio and the
-engine/api HTTP layer built on it.
-
-tests/test_diverse_portfolio_e2e.py already thoroughly exercises the
-per-pricer functions (price_swaps/price_swaptions/price_bermudan_swaptions/
-price_american_swaptions) directly, including a 22-trade heterogeneous
-portfolio and 3-rate-factor breadth -- that coverage is not duplicated here.
-tests/test_portfolio_entrypoint.py already proves price_portfolio matches
-hand-orchestrated pricing trade-by-trade for one small 4-trade portfolio.
-
-This file's own focus, not covered elsewhere: price_portfolio (and, where
-noted, the HTTP API on top of it) at VARYING PORTFOLIO SIZES (1, ~10, ~50
-trades), across MULTIPLE RATE FACTORS (untested at the entry-point level
-before this file -- every existing price_portfolio test uses exactly one
-factor), and composition/input EDGE CASES an external caller could plausibly
-submit: empty portfolios, single-type-only portfolios at scale, duplicate/
-degenerate trades, extreme notionals, and offsetting positions that should
-net close to zero all the way through risk aggregation.
+`price_portfolio` (and, where noted, the HTTP API) at 1, ~12 and ~50 trades, with several
+rate factors, and with inputs an external caller could submit: empty portfolios,
+single-type portfolios at scale, duplicate and degenerate trades, extreme notionals, and
+offsetting positions. (Per-pricer breadth is tests/test_diverse_portfolio_e2e.py.)
 """
 import time
 
@@ -115,10 +101,7 @@ def _assert_finite_result(result, expected_trades):
 # 1. PORTFOLIO SIZE SCALING
 # =============================================================================
 class TestPortfolioSizeScaling:
-    """price_portfolio at increasing trade counts -- 1, ~12, ~50 -- all
-    mixed instrument types, confirming the routing/reassembly/risk pipeline
-    scales without shape errors, silent truncation, or NaN contamination as
-    trade count grows."""
+    """Increasing trade counts of mixed types: no shape errors, truncation or NaN."""
 
     def test_single_trade_portfolio(self):
         trades = [_swap(0)]
@@ -136,11 +119,8 @@ class TestPortfolioSizeScaling:
 
     @pytest.mark.slow
     def test_fifty_trade_mixed_portfolio(self):
-        """A genuinely large portfolio -- 50 trades spanning all four
-        instrument types with varied notionals/tenors/payer-receiver mix
-        (see _swap/_swaption/_bermudan/_american's own i-dependent
-        variation) -- must still price and aggregate risk end-to-end
-        without error, at a small-but-nontrivial scenario count."""
+        """50 trades of all four types with varied notional, tenor and direction price and
+        aggregate end to end."""
         trades = (
             [_swap(i) for i in range(20)]
             + [_swaption(i) for i in range(15)]
@@ -153,10 +133,7 @@ class TestPortfolioSizeScaling:
         _assert_finite_result(result, 50)
 
     def test_result_size_scales_linearly_in_trade_axis_only(self):
-        """Doubling the trade count must double the NPV cube's own trade
-        axis and leave the scenario/time-step axes untouched -- a basic
-        shape-correctness guard against any accidental broadcasting bug at
-        larger trade counts."""
+        """Doubling the trades doubles only the trade axis of the cube."""
         small = [_swap(i) for i in range(3)]
         large = [_swap(i) for i in range(6)]
         sim_small = _sim_config(small, scenarios=32)
@@ -172,14 +149,8 @@ class TestPortfolioSizeScaling:
 # 2. MULTI-RATE-FACTOR PORTFOLIOS THROUGH THE ENTRY POINT
 # =============================================================================
 class TestMultiRateFactorPortfolios:
-    """Every price_portfolio test elsewhere in this suite uses exactly one
-    rate factor. RatesConfig/generate_paths already support many (see
-    tests/test_diverse_portfolio_e2e.py::TestMultiCurveBreadth at the
-    pricer level) -- these tests confirm the SAME breadth survives
-    price_portfolio's own validation/routing/base-NPV layers, which have
-    their own per-rate-factor logic (validate_portfolio_against_simulation's
-    cross-checks, _base_npv's curve lookups) that could plausibly break at
-    factor counts > 1 even though the underlying pricers are fine."""
+    """Several rate factors through `price_portfolio`'s own validation, routing and base-NPV
+    layers, which index per factor."""
 
     CURVE_A = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.030] * 6)
     CURVE_B = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.025] * 6)
@@ -235,11 +206,8 @@ class TestMultiRateFactorPortfolios:
         _assert_finite_result(result, 3)
 
     def test_mismatched_curve_on_wrong_factor_is_rejected_even_with_multiple_factors(self):
-        """A swaption pointed at rate_factor_index=1 but carrying factor 0's
-        curve must still be caught by validate_portfolio_against_simulation
-        -- confirms the cross-field check indexes into the RIGHT factor's
-        own curve/mean_reversion, not just factor 0 by coincidence (which a
-        single-factor-only test suite could never distinguish)."""
+        """A swaption on rate factor 1 carrying factor 0's curve is rejected (the check
+        indexes the right factor)."""
         bad = SwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.025, payer=True, rate_factor_index=1,
             hw_a=0.025, hw_sigma=0.028, initial_zero_curve=self.CURVE_A,  # wrong curve for factor 1
@@ -255,9 +223,7 @@ class TestMultiRateFactorPortfolios:
 # =============================================================================
 class TestCompositionEdgeCases:
     def test_empty_portfolio_returns_empty_but_well_formed_result(self):
-        """No trades at all: price_portfolio must not crash on an empty
-        list -- it should return a well-shaped, zero-width NPV cube and a
-        base NPV of exactly 0.0, not raise or produce a malformed result."""
+        """An empty portfolio gives a zero-width cube and a base NPV of exactly 0.0."""
         sim = _sim_config([])
         result = price_portfolio(PortfolioRequest(market=sim, trades=[]))
         assert result.npv_cube.shape[-1] == 0
@@ -277,10 +243,7 @@ class TestCompositionEdgeCases:
         _assert_finite_result(result, 20)
 
     def test_identical_duplicate_trades_price_identically(self):
-        """N copies of the exact same trade must produce N identical NPV
-        columns -- a basic sanity check that per-trade routing doesn't
-        cross-contaminate state between otherwise-independent trades sharing
-        the same config values."""
+        """Identical trades give identical columns."""
         trades = [_swap(0) for _ in range(10)]
         sim = _sim_config(trades, scenarios=64)
         result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
@@ -289,11 +252,7 @@ class TestCompositionEdgeCases:
             np.testing.assert_allclose(cube[:, :, j], cube[:, :, 0], rtol=1e-12)
 
     def test_zero_notional_trade_prices_to_zero_and_does_not_poison_others(self):
-        """A zero-notional trade is explicitly supported (not rejected by
-        __post_init__ validation, see engine/portfolio/validation.py) and
-        must price to (near-)zero NPV everywhere, without producing NaN that
-        could contaminate the rest of the portfolio's own risk aggregation
-        via a shared covariance/discount computation."""
+        """A zero-notional trade prices to ~0 without NaN affecting the rest."""
         trades = [_swap(0, notional=0.0), _swap(1, notional=2_000_000.0)]
         sim = _sim_config(trades, scenarios=64)
         result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
@@ -303,9 +262,7 @@ class TestCompositionEdgeCases:
         assert np.all(np.isfinite(np.asarray(result.exposure.pfe["PFE_95"])))
 
     def test_negative_notional_swap_is_the_mirror_image_of_positive(self):
-        """Negative notional is explicitly supported (documented, not an
-        input error) and must be the exact sign-flipped mirror of the same
-        trade at positive notional."""
+        """A negative-notional swap is the exact mirror of the positive one."""
         positive = _swap(0, notional=1_000_000.0)
         negative = _swap(0, notional=-1_000_000.0)
         sim = _sim_config([positive, negative], scenarios=64)
@@ -314,10 +271,7 @@ class TestCompositionEdgeCases:
         np.testing.assert_allclose(cube[:, :, 1], -cube[:, :, 0], rtol=1e-9)
 
     def test_very_large_notional_does_not_overflow_or_lose_precision(self):
-        """A notional several orders of magnitude larger than the demo
-        scenarios' own (e.g. 5e10, a plausible large-institution aggregate
-        book size) must still price to a finite, correctly-scaled NPV --
-        not overflow float64 or silently saturate."""
+        """A 5e10 notional prices finitely and scales correctly."""
         small = _swap(0, notional=1_000_000.0)
         huge = _swap(0, notional=5.0e10)
         sim = _sim_config([small, huge], scenarios=64)
@@ -327,12 +281,7 @@ class TestCompositionEdgeCases:
         np.testing.assert_allclose(cube[:, :, 1], cube[:, :, 0] * 5.0e4, rtol=1e-6)
 
     def test_offsetting_large_portfolio_nets_close_to_zero_risk(self):
-        """20 payer/receiver pairs of the identical trade must net to
-        (near-)zero portfolio NPV and correspondingly small VaR/ES at every
-        time step -- the risk-aggregation-level analogue of
-        test_diverse_portfolio_e2e.py's smaller offsetting-pair tests,
-        exercised here at a larger, more realistic scale through the full
-        price_portfolio pipeline."""
+        """20 identical payer/receiver pairs net to ~0 NPV and small VaR/ES at every step."""
         payers = [_swap(i, payer=True, notional=1_000_000.0, fixed_rate=0.03, swap_tenor="3Y") for i in range(20)]
         receivers = [_swap(i, payer=False, notional=1_000_000.0, fixed_rate=0.03, swap_tenor="3Y") for i in range(20)]
         trades = payers + receivers
@@ -345,20 +294,9 @@ class TestCompositionEdgeCases:
 
     @pytest.mark.slow
     def test_all_four_instrument_types_each_represented_multiple_times(self):
-        """A broader composition check than the dozen-trade test above:
-        several of EACH type, with compute_greeks enabled, confirming
-        Greeks routing returns a correctly-keyed dict at a larger, mixed
-        trade count.
-
-        This test previously asserted `set(result.greeks) == set(range(3, 12))`
-        -- i.e. that SwapConfig trades were SKIPPED "by design". That was
-        pinning a bug, not a design: `engine.risk.greeks.swap_delta_gamma`/
-        `swap_theta` were implemented and tested, but `_compute_all_greeks`
-        had no access to the `SimulationConfig` a swap's curve INDEXES
-        resolve against, so it silently dropped every swap. Now that it
-        receives the market config, all 12 trades report Greeks. See
-        tests/test_portfolio_gap_fixes.py::TestSwapGreeksReachThePortfolioPath.
-        """
+        """Several trades of each type with compute_greeks: every trade, swaps included,
+        has Greeks. (This once asserted swaps were skipped "by design", pinning I-01; see
+        tests/test_portfolio_gap_fixes.py::TestSwapGreeksReachThePortfolioPath.)"""
         swaps = [_swap(i) for i in range(3)]
         swaptions = [_swaption(i) for i in range(3)]
         bermudans = [_bermudan(i) for i in range(3)]
@@ -368,26 +306,22 @@ class TestCompositionEdgeCases:
         result = price_portfolio(PortfolioRequest(market=sim, trades=trades, compute_greeks=True))
         _assert_finite_result(result, 12)
         assert result.greeks is not None
-        # EVERY trade -- swaps (0-2) included -- must now have Greeks.
+        # Every trade, swaps (0-2) included, has Greeks.
         assert set(result.greeks.keys()) == set(range(12))
         for idx in range(12):
             assert np.isfinite(result.greeks[idx]["theta"])
-        # Swaps report per-curve deltas; the swaption family reports one.
+        # Swaps report per-curve deltas; the swaption family one.
         for idx in range(3):
             assert "discount_delta" in result.greeks[idx]
             assert "forward_delta" in result.greeks[idx]
 
 
 # =============================================================================
-# 4. TIMING SANITY AT SCALE
+# 4. Timing sanity at scale
 # =============================================================================
 class TestPortfolioTimingSanity:
-    """Not a performance benchmark (no assertion on absolute wall time,
-    which would be flaky across machines/CI) -- just confirms a 50-trade
-    portfolio completes in a bounded, clearly-sane amount of time, catching
-    an accidental O(n^2)-or-worse regression in the routing/reassembly
-    logic that a pure correctness test wouldn't notice (a bug that makes
-    every trade individually still price correctly, just far too slowly)."""
+    """A 50-trade portfolio finishes within a generous bound (120s), to catch a
+    super-linear regression that correctness tests would not notice."""
 
     def test_fifty_trade_portfolio_completes_within_a_generous_bound(self):
         trades = (

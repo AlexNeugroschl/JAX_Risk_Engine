@@ -1,66 +1,29 @@
 """
-European swaption pricing via Jamshidian's decomposition.
+European swaption pricing by Jamshidian's decomposition under Hull-White, as
+`ORE.JamshidianSwaptionEngine`.
 
-Trade structure (the underlying swap's schedule, day-count accrual, coupon
-amounts) is built with ORE's own `MakeVanillaSwap` machinery, exactly as in
-`engine.instruments.swap` -- date generation and accrual math match ORE
-exactly rather than being reimplemented.
+The underlying swap is built with ORE (`MakeVanillaSwap`). The swaption is an option on a
+coupon bond: the fixed coupons plus the final notional, minus the notional at accrual start
+(the floating leg at par). Hull-White bond prices are monotone in the short rate, so a
+single critical rate r* splits it into zero-bond options with closed forms. One model and
+one curve price both the swap and the option (`rate_factor_index`); like ORE, there is no
+multi-curve version.
 
-Pricing model: Jamshidian's trick, the same closed-form decomposition
-`ORE.JamshidianSwaptionEngine` uses for a European swaption under a
-Hull-White 1-Factor short rate model. A European swaption on a fixed-vs-
-floating swap is mathematically equivalent to a European option on a
-coupon-bearing bond (the swap's fixed leg, plus a final notional exchange,
-against a floating leg that -- at par, under single-curve discounting --
-always redeems at exactly the notional). Jamshidian's trick expresses that
-coupon-bond option as a portfolio of zero-coupon bond options, each of which
-has a closed form under HW1F (the model is affine, so every zero-coupon
-bond price is a monotonic function of the short rate, letting the coupon
-bond's exercise boundary be expressed as a single critical short rate `r*`
-shared by every leg of the decomposition).
+Differs from ORE:
+  * ORE's default European swaption engine is Black/Bachelier on a volatility surface
+    (`EuropeanSwaptionEngineBuilder`); this engine uses Hull-White Jamshidian instead, and
+    matches `ORE.JamshidianSwaptionEngine` (tests/test_ore_parity.py,
+    tests/test_trade_dates.py). The price is a model value for `hw_sigma`, not the market
+    price ORE's default gives (I-46).
+  * The formula is evaluated at every simulated (scenario, step), conditional on the
+    simulated short rate r(t), to produce an NPV cube. It is zero from the exercise time
+    on, on every path, even where the option was exercised (audit M-3).
 
-**Live-verified against ORE**, not assumed from a textbook: an independent
-Python reimplementation of this exact formula (using the SAME zero-curve
-interpolation `compute_hw_A_matrix` uses, not any ORE-internal shortcut) was
-checked against `ORE.JamshidianSwaptionEngine.NPV()` across payer/receiver,
-ITM/ATM/OTM, and multiple tenors, matching to a relative precision of 1e-6
-or better -- see this module's test suite for the same methodology encoded
-as regression tests.
+A config holds its booked `exercise_date` and underlying dates; on or after the exercise
+date the option is expired and worth 0 (ORE's `Instrument::isExpired`).
 
-Single-model pricing (unlike the linear swap pricer): Jamshidian's trick
-prices the underlying swap and its option under ONE Hull-White model/curve,
-not a separate discount/forward curve pair -- there is no multi-curve
-Jamshidian formula in ORE either, since the bond-option decomposition is
-intrinsically tied to one model's affine bond-price dynamics
-(`ORE.JamshidianSwaptionEngine` itself takes a single `ShortRateModel`). A
-`rate_factor_index` selects which of the simulation's Hull-White factors
-underlies both legs of the swap and the option itself.
-
-Conditional (future-time) pricing: to produce a
-`[Scenarios, TimeSteps, Trades]` NPV cube -- the same contract every other
-pricer in this codebase returns, required for `engine.risk`
--- this module evaluates Jamshidian's formula not just at t=0 but at every
-simulated (scenario, time step) pair, conditional on that scenario's
-simulated short rate at that step. This is a direct consequence of HW1F's
-Markov property: the model's own closed-form conditional bond price,
-`P(t,T) = A(t,T) * exp(-B(t,T) * r(t))`, is exactly the formula
-`engine.simulation.compute_hw_A_matrix`/`reconstruct_yield_curves`
-already use to build the yield curve cube -- Jamshidian's decomposition
-still applies verbatim with `t` (the simulated time) in place of "today".
-This conditional generalization was itself live-verified against ORE (by
-rebuilding ORE's own evaluation date and implied curve at a later time and
-re-pricing with a fresh `JamshidianSwaptionEngine`), matching to the same
-~1e-6 relative precision as the t=0 case. Once `t` passes the option's own
-exercise time `T0`, NPV is reported as exactly 0 (a European option carries
-no value after its own expiry).
-
-Trade dates (audit M-4): a `SwaptionConfig` holds its booked
-`exercise_date` and the underlying's `effective_date`/`maturity_date`. On a
-later evaluation date the same config is the same option, closer to
-expiry; on or after its exercise date it has expired and is worth 0, ORE's
-`Instrument::isExpired` convention. Checked against
-`ORE.JamshidianSwaptionEngine` on a later evaluation date in
-tests/test_trade_dates.py.
+Known issue: `floating_spread` is accepted but ignored (the floating leg is taken at par).
+ORE's `JamshidianSwaptionEngine` refuses a non-zero spread; see I-37 in docs/known-issues.md.
 """
 from dataclasses import InitVar, dataclass, field
 from functools import partial
@@ -92,14 +55,8 @@ from engine.models.hull_white import (
 
 
 def compute_hw_A(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.ndarray, T: np.ndarray, a: float, sigma: float) -> np.ndarray:
-    """Thin NumPy-facing wrapper around `engine.models.hull_white.A` --
-    kept under this module's original name/signature (`zero_times`/
-    `zero_rates` arrays rather than a `ZeroCurve`) since it's part of this
-    module's own public surface (imported directly by
-    `tests/test_ore_parity.py` and others) and since `_PreparedSwaption`
-    stores the curve as plain NumPy arrays. The formula itself lives in
-    exactly one place -- `engine/models/hull_white.py` -- not re-derived
-    here."""
+    """`engine.models.hull_white.A` on NumPy arrays, for callers holding the curve as
+    `zero_times`/`zero_rates` (tests and `_PreparedSwaption`)."""
     curve = _HwZeroCurve(pillar_times=jnp.asarray(zero_times), pillar_rates=jnp.asarray(zero_rates))
     return np.asarray(_hw_A(curve, jnp.asarray(t), jnp.asarray(T), a, sigma))
 
@@ -107,37 +64,22 @@ def compute_hw_A(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.ndarray, 
 @dataclass
 class SwaptionConfig:
     """
-    One European swaption: the option to enter a vanilla fixed-vs-floating
-    swap at the exercise date.
+    One European swaption: the option to enter a vanilla swap on `exercise_date`.
 
-    rate_factor_index selects which simulation Hull-White factor prices
-    BOTH the underlying swap and the option (Jamshidian's trick is a
-    single-model formula -- see module docstring). hw_a/hw_sigma/
-    initial_zero_curve MUST match that factor's own calibration in the
-    simulation's RatesConfig (mean_reversion[rate_factor_index], the
-    per-step volatility implied by joint_covariance for that factor, and
-    initial_zero_curves[rate_factor_index]) -- they parametrize the
-    closed-form bond-price/bond-option formulas directly, and there is no
-    way to recover them from the simulated paths alone.
+    rate_factor_index: the simulated Hull-White factor that prices both the swap and the
+        option. `hw_a`, `hw_sigma` and `initial_zero_curve` must match that factor's
+        simulation parameters; they cannot be recovered from the paths.
+    exercise_date / effective_date / maturity_date: the booked expiry and the underlying's
+        schedule. They define the trade; `evaluation_date` only sets when it is priced.
+    index_tenor_months / floating_spread: as in `SwapConfig` (but see the module
+        docstring: the spread is currently ignored).
 
-    exercise_date / effective_date / maturity_date: the booked option expiry
-    and the underlying swap's schedule start and (unadjusted) end, as in an
-    ORE swaption's `OptionData`/`ScheduleData`. They define the trade;
-    `evaluation_date` only says when it is priced (audit M-4).
-    index_tenor_months/floating_spread: same meaning as
-    engine.instruments.swap.SwapConfig.
-
-    Booking by tenor instead of dates -- resolved ONCE, at construction, on
-    `evaluation_date`, and not stored (see `SwapConfig.swap_tenor`):
-
+    Booking by tenor instead (resolved once, on `evaluation_date`, not stored):
       * swap_tenor: the underlying's length, e.g. "5Y";
-      * forward_start: an ORE.Period the underlying's first accrual is
-        delayed by beyond the standard spot lag (e.g. ORE.Period(5,
-        ORE.Years) for a swaption exercisable in 5Y). Defaults to none;
-      * exercise_lag_days: business days from evaluation_date +
-        forward_start to the exercise date. Defaults to 2, the standard
-        spot lag, so with no forward_start the exercise date coincides with
-        the underlying's spot-lag accrual start.
+      * forward_start: ORE.Period by which the underlying starts after spot;
+      * exercise_lag_days: business days from `evaluation_date + forward_start` to the
+        exercise date (default 2, so without a forward start the exercise date is the
+        underlying's spot start).
     """
     notional: float
     fixed_rate: float
@@ -176,29 +118,21 @@ class SwaptionConfig:
         _validate_hw_sigma(self.hw_sigma)
 
     def is_expired(self) -> bool:
-        """ORE's `Instrument::isExpired` for a European swaption: the
-        exercise date is on or before the evaluation date."""
+        """Exercise date on or before the evaluation date (ORE's `isExpired`)."""
         return not is_live(self.exercise_date, self.evaluation_date)
 
 
 def resolve_exercise_date(trade_date: ORE.Date, forward_start, exercise_lag_days: int) -> ORE.Date:
-    """The exercise date of a swaption booked by tenor on `trade_date`:
-    `exercise_lag_days` business days after the forward-start point
-    (`trade_date` itself with no forward start), NOT after the underlying's
-    accrual start -- which is already the forward-start point pushed out by
-    the index's own spot lag, so subtracting the lag from it a second time
-    would double-count it (live-verified: with no forward_start,
-    ORE.JamshidianSwaptionEngine.NPV() at that double-lagged date collapses
-    to exactly 0, since it lands back on the trade date)."""
+    """Exercise date of a swaption booked by tenor: `exercise_lag_days` business days
+    after `trade_date + forward_start`. Not measured back from the accrual start, which
+    already includes the spot lag."""
     forward_start = forward_start if forward_start is not None else ORE.Period(0, ORE.Days)
     forward_start_date = SWAP_CALENDAR.advance(trade_date, forward_start)
     return SWAP_CALENDAR.advance(forward_start_date, exercise_lag_days, ORE.Days)
 
 
 def _build_ore_swap(cfg: SwaptionConfig) -> ORE.VanillaSwap:
-    """CPU: builds the real ORE underlying swap (schedules, day counts,
-    conventions) -- see `engine.models.ore_builders.build_vanilla_swap`,
-    the single shared implementation of this construction."""
+    """The ORE underlying swap (see `engine.models.ore_builders.build_vanilla_swap`)."""
     return build_vanilla_swap(
         notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
         effective_date=cfg.effective_date, maturity_date=cfg.maturity_date,
@@ -208,15 +142,8 @@ def _build_ore_swap(cfg: SwaptionConfig) -> ORE.VanillaSwap:
 
 @dataclass(frozen=True, eq=False)
 class _PreparedSwaption(StaticKeyMixin):
-    """Every field is compile-time-constant trade/model structure, resolved
-    once by `prepare_swaption` -- nothing here varies per scenario/step.
-
-    Hashable by value via `StaticKeyMixin`, so it can be passed as a
-    `jax.jit` STATIC argument to `_price_one_swaption` -- which is what lets
-    that whole kernel, including `_solve_rstar`'s 100 fixed bisection
-    iterations, compile once and then be reused. See
-    `engine.models.static_key` for the full rationale.
-    """
+    """Per-trade constant structure, resolved once by `prepare_swaption`; a `jax.jit`
+    static argument (see `engine.models.static_key`)."""
     payer: bool
     notional: float
     exercise_time: float               # T0, year-fraction from evaluation_date
@@ -232,35 +159,12 @@ class _PreparedSwaption(StaticKeyMixin):
 
 def prepare_swaption(cfg: SwaptionConfig) -> _PreparedSwaption:
     """
-    CPU: build the ORE underlying swap and extract the fixed leg's
-    cashflow times/amounts, the swap's own accrual start time, and the
-    option's exercise time, all as year-fractions from `cfg.evaluation_date`.
-    Static per swaption -- run once, not per scenario/step.
+    Build the ORE underlying and extract the fixed cashflow times and amounts, the accrual
+    start time and the exercise time, in years from `cfg.evaluation_date`.
 
-    The floating leg's own reset dates are NOT extracted: Jamshidian's
-    decomposition relies on the standard identity that an at-par floating
-    leg (under single-curve discounting, which this module assumes since it
-    prices off one HW factor) collapses to a single telescoping value,
-    `notional * (P(T0,T_start) - P(T0,T_last))` -- receiving the notional
-    at the swap's own first accrual start `T_start` and paying it back at
-    the final date `T_last`, with every intermediate reset cancelling. This
-    is the same identity `float_leg_pv` in
-    swap._price_one_swap computes explicitly per-period; here
-    it is used in its closed (telescoping) form, which is exact for a
-    genuinely at-par floater (spread=0, forwarding curve == discounting
-    curve -- both true here since Jamshidian's trick is single-curve).
-
-    T_start is NOT assumed to equal the exercise time T0: for a
-    forward-starting swap booked by tenor, the underlying's first accrual
-    begins `exercise_lag_days` AFTER the exercise date (the same spot-lag
-    convention MakeVanillaSwap itself applies), so `P(T0,T_start)` in the
-    identity above is a genuine (near-1, but not exactly 1) discount
-    factor, not an identity -- an earlier version of this module assumed
-    T_start == T0 unconditionally and diverged from
-    ORE.JamshidianSwaptionEngine.NPV() by ~1% until this term was added --
-    see this module's test suite for the regression test. T_start is the
-    fixed leg's first accrual start, ORE's `valueTime`
-    (`arguments_.fixedResetDates[0]`).
+    The floating leg is not read. On one curve with no spread it is worth
+    N * (P(T0, T_start) - P(T0, T_end)). T_start is the first fixed accrual start (ORE's
+    `valueTime`, `fixedResetDates[0]`), which can be after the exercise time.
     """
     swap = _build_ore_swap(cfg)
     today = cfg.evaluation_date
@@ -287,33 +191,13 @@ def prepare_swaption(cfg: SwaptionConfig) -> _PreparedSwaption:
     )
 
 
-# =============================================================================
-# HULL-WHITE 1-FACTOR CLOSED-FORM BUILDING BLOCKS
-#
-# `compute_hw_A` (this module's own NumPy-facing wrapper, defined above)
-# and `_hw_B`/`_bond_option_sigma`/`_bond_call`/`_bond_put` (imported
-# directly from `engine.models.hull_white`) are the single shared
-# implementation of every HW1F closed form this module needs -- see that
-# module's docstring for the math and the ORE correspondence. Nothing here
-# re-derives them.
-# =============================================================================
+# Hull-White closed forms come from `engine.models.hull_white`.
 def _bisect_rstar(coupon_bond_value_fn, t_shape, iterations: int, dtype=jnp.float64) -> jax.Array:
-    """The bisection itself (forward value only, no gradient guarantees --
-    see `_solve_rstar`, which wraps this with a differentiable correction).
-    Kept as a standalone function so `_solve_rstar`'s `jax.custom_jvp`
-    primal can call it directly under `jax.lax.stop_gradient`.
+    """Bisection for r* (forward value only; see `_solve_rstar` for the gradient).
 
-    `dtype`: an explicit parameter, not `jnp.ones(t_shape)`'s own implicit
-    default -- `jnp.ones`/`jnp.zeros` with no `dtype` argument silently pick
-    up JAX's ambient default float dtype (float64 whenever `jax_enable_x64`
-    is on, REGARDLESS of what dtype the surrounding pricing computation
-    actually wants), which used to upcast `rstar` back to float64 even when
-    every other array in `_price_one_swaption` (A_T0_Ti/B_T0_Ti/etc.) was
-    correctly float32 under `PrecisionConfig.pricing=32` -- confirmed
-    directly (see PrecisionConfig's docstring for why any one hardcoded/
-    implicitly-defaulted array anywhere in this chain silently promotes the
-    whole downstream computation back to float64 whenever `jax_enable_x64`
-    is process-globally on)."""
+    Starts on [-2, 2], shifts the window by its width up to 20 times until it brackets a
+    sign change, then bisects. `dtype` is explicit because `jnp.ones` without it follows
+    JAX's global default and would upcast a float32 computation."""
     lo = -jnp.ones(t_shape, dtype=dtype) * 2.0
     hi = jnp.ones(t_shape, dtype=dtype) * 2.0
 
@@ -321,12 +205,7 @@ def _bisect_rstar(coupon_bond_value_fn, t_shape, iterations: int, dtype=jnp.floa
         lo, hi = carry
         val_lo = coupon_bond_value_fn(lo)
         val_hi = coupon_bond_value_fn(hi)
-        # Monotone decreasing: a real bracket has val_lo > 0 > val_hi. If
-        # val_hi is still positive, the root is above hi -- shift the
-        # whole window up by its own width. If val_lo is already
-        # negative, the root is below lo -- shift down. Width stays fixed
-        # (a shift, not a widen), which keeps the bisection step size
-        # well-behaved regardless of how many expansions are needed.
+        # The value decreases in r: shift the window up if val_hi > 0, down if val_lo < 0.
         width = hi - lo
         shift_up = val_hi > 0.0
         shift_down = val_lo < 0.0
@@ -350,109 +229,24 @@ def _bisect_rstar(coupon_bond_value_fn, t_shape, iterations: int, dtype=jnp.floa
 
 def _solve_rstar(coupon_bond_value_fn, params, t_shape, iterations: int = 100) -> jax.Array:
     """
-    Vectorized bisection for Jamshidian's critical short rate r*(scenario,
-    step): the short rate at the exercise date at which the signed coupon
-    bond (every fixed cashflow, plus final notional, minus the notional
-    received back at the swap's own accrual start -- see
-    prepare_swaption's docstring) is worth exactly 0 -- the exercise
-    boundary shared by every zero-coupon leg of the decomposition (see
-    module docstring).
+    Critical short rate r*(scenario, step) at the exercise time: where the signed coupon
+    bond (fixed coupons, plus final notional, minus the notional at T_start) is worth 0.
 
-    `coupon_bond_value_fn(r, params) -> value`: unlike a plain closure
-    over whatever the caller needs, `params` is an EXPLICIT pytree
-    argument holding every value the caller wants `_solve_rstar`'s output
-    to be differentiable with respect to (e.g. `A_T0_Ti`, `B_T0_Ti`,
-    `all_amounts` in `_price_one_swaption` below) -- required by
-    `jax.custom_jvp` (see "Gradient correctness" below), which needs an
-    explicit primal argument to define a JVP rule against; a plain Python
-    closure's captured tracers cannot be attached to a `custom_jvp` rule
-    directly. Any value `coupon_bond_value_fn` needs that the caller does
-    NOT want a gradient with respect to (e.g. `T0`, day-count-derived
-    times) can still be closed over normally -- only pass through `params`
-    what should flow into Delta/Gamma.
+    `coupon_bond_value_fn(r, params)`: `params` holds everything the result must be
+    differentiable in (e.g. `A_T0_Ti`, `all_amounts`). It is an explicit argument because
+    `jax.custom_jvp` attaches tangents only to explicit primals. Values that need no
+    gradient can be closed over.
 
-    Monotonic and well-posed in practice: every POSITIVE-amount leg's bond
-    price P(T0,Ti;r) is strictly decreasing in r (B(T0,Ti) > 0 for every
-    Ti > T0), while the single NEGATIVE-amount leg (the T_start notional
-    receipt) is strictly increasing in r -- but B(T0,T_start) is tiny
-    (T_start is only `exercise_lag_days` after T0, a couple of days,
-    versus years for every other leg), so its contribution is dominated by
-    every other leg's for any realistic swaption and the sum remains
-    monotonically decreasing across the whole practical rate range
-    (verified numerically in this module's tests, not just assumed).
-    Bisection (rather than Newton's method) is used because it vectorizes
-    across every (scenario, time step) pair with a fixed iteration count
-    under jax.jit, with no data-dependent stopping condition needed.
+    Bisection with a fixed iteration count, so it vectorizes under jit.
 
-    Bracket width: a fixed [-2, 2] (a +-200% short rate) safely brackets
-    r* for any realistic trade, but a sufficiently deep-ITM payer (an
-    extreme negative fixed_rate) pushes the true root outside it -- the
-    coupon bond value is then the SAME sign at both lo and hi (monotone
-    decreasing, never crossing zero inside the bracket), so plain
-    bisection's `val_mid > 0.0` update collapses `hi` onto `lo` every
-    iteration and silently returns the bracket's own edge as a fake root,
-    rather than raising or converging to the true (out-of-bracket) value.
-    Guarded by doubling the bracket outward (still branch-free/jit-
-    friendly, a fixed iteration count) whenever the initial bracket
-    doesn't actually contain a sign change, before bisecting -- this keeps
-    the common in-bracket case at its original cost while making the rare
-    out-of-bracket case converge to the true root instead of a silently
-    wrong value.
-
-    **Gradient correctness (implicit function theorem), not just the
-    forward value.** Naively differentiating through 100 iterations of a
-    comparison-based bisection loop (`jnp.where(val_mid > 0.0, ...)`) does
-    NOT produce a correct gradient -- the comparison itself has zero
-    gradient everywhere, so a plain `jax.grad` through the unrolled loop
-    silently returns 0 regardless of how the true root actually moves with
-    the function's own parameters (verified directly: a toy
-    `f(r,c) = c - r` bisected this way gives `d(rstar)/dc = 0.0` under
-    naive autodiff, vs. the true value `1.0` -- this is what
-    `engine/risk/greeks.py`'s Delta/Gamma computation surfaced, since it's
-    the first caller in this codebase to differentiate through
-    `_solve_rstar`; `price_swaptions` itself never needed a gradient of
-    its own root-find).
-
-    Fixed via `jax.custom_jvp` implementing the implicit function theorem
-    directly: at a root of `f(r*, params) = 0`,
-    `dr*/dparams . v = -(df/dparams . v) / (df/dr)` for any tangent
-    direction `v` -- computed here via one `jax.grad` (for `df/dr`, at the
-    stop-gradient'd converged root) and one `jax.jvp` (for the directional
-    derivative `df/dparams . v`), both cheap relative to the 100-iteration
-    bisection itself. This is DELIBERATELY a `custom_jvp`, not the simpler
-    "differentiable Newton correction after stop_gradient" trick (tried
-    first, and it works correctly for `jax.grad` alone) -- that simpler
-    trick's own correction expression is not itself well-defined for a
-    SECOND differentiation pass (`jax.hessian`, i.e. Gamma), since the
-    `stop_gradient` sits directly in the expression `jax.hessian`
-    differentiates, rather than inside a `custom_jvp` rule (which JAX
-    knows how to re-differentiate through correctly, because a
-    `custom_jvp` rule is itself an ordinary, twice-differentiable Python
-    function of the SAME `params`, evaluated fresh on each differentiation
-    pass -- confirmed directly: a toy cubic root-find
-    (`f(r,c) = c - r**3`, closed-form `d^2(rstar)/dc^2` known exactly)
-    matches this implementation's `jax.hessian` output to machine
-    precision, whereas the simpler stop_gradient-only trick gives exactly
-    `0.0` for the second derivative).
-
-    `df/dr` is computed via `jax.grad` on the SUM of `coupon_bond_value_fn`
-    across the batch -- valid here (not just convenient) because this
-    function is applied strictly elementwise across `t_shape`: each batch
-    entry's output depends only on that same entry's own `params` (the
-    per-(scenario,step) A/B/cashflow terms in `_price_one_swaption`), so
-    summing before differentiating recovers each element's own partial
-    derivative exactly, with no cross-element contamination -- confirmed
-    directly against literal finite-difference bump-and-revalue in
-    `tests/test_greeks.py`.
+    Gradient: differentiating through bisection gives 0 (the comparison has no
+    derivative). A `custom_jvp` applies the implicit function theorem instead,
+    dr* = -(df/dparams . v) / (df/dr). Because the rule is itself differentiable, second
+    derivatives (Gamma via `jax.hessian`) are also correct, which a stop-gradient Newton
+    correction is not. `df/dr` is taken as the gradient of the batch sum, which is exact
+    because each batch element depends only on its own inputs.
     """
-    # Derived from params' own leaves (not hardcoded/left to jnp.ones'
-    # implicit default) -- see _bisect_rstar's docstring for why. Every
-    # caller of _solve_rstar passes at least one JAX array carrying the
-    # dtype rstar itself should have (A_T0_Ti in _price_one_swaption/
-    # engine.risk.greeks._swaption_price_fn); a plain Python float leaf
-    # (e.g. all_amounts before being made a JAX array) would fall back to
-    # float64 here via jnp.result_type's own weak-type promotion, matching
-    # this function's prior always-float64 behavior for such a case.
+    # Take rstar's dtype from params (see `_bisect_rstar`).
     dtype = jnp.result_type(*[leaf for leaf in jax.tree_util.tree_leaves(params)])
 
     @jax.custom_jvp
@@ -479,38 +273,16 @@ def _price_one_swaption(
     hw_paths: jax.Array, step_times: jax.Array, swaption: _PreparedSwaption,
 ) -> jax.Array:
     """
-    GPU: [Scenarios, TimeSteps] NPV for a single prepared swaption via
-    Jamshidian's decomposition, vectorized across every simulated scenario
-    and time step.
+    [Scenarios, TimeSteps] NPV of one prepared swaption, conditional on the simulated short
+    rate r(t) at each step t.
 
-    For each (scenario, step) with conditioning time t = step_times[step]
-    and simulated short rate r(t) = hw_paths[..., rate_factor_index]:
-      1. Solve r* at the exercise time T0 (see _solve_rstar) from the
-         identity that the fixed coupon bond (every fixed cashflow, plus
-         final notional, MINUS the notional received back at the swap's own
-         accrual start T_start -- see prepare_swaption's docstring on why
-         T_start is a genuine bond option leg, not an identity) is worth
-         exactly 0 at the exercise boundary. A(T0,Ti)/A(T0,T_start) are
-         computed once on CPU (depend only on T0/T_start and today's
-         curve).
-      2. Each fixed cashflow, the final notional, and the T_start notional
-         receipt each become a zero-coupon bond option struck at
-         K_i = P(T0, Ti; r*), priced as of t via the Black-on-bond formula,
-         conditioned on r(t).
-      3. Payer swaption = sum of bond PUTS (a payer benefits when rates
-         rise, i.e. bond prices fall below their strikes); receiver
-         swaption = sum of bond CALLS. Sign convention live-verified
-         against ORE.JamshidianSwaptionEngine across payer/receiver in this
-         module's tests. The T_start leg carries a NEGATIVE amount (it is
-         received, not paid, by the fixed-payer's coupon bond), which
-         flows through the same put/call sum via its signed cashflow.
+      1. Solve r* at the exercise time T0. A(T0, Ti) depends only on T0 and today's curve.
+      2. Each cashflow of the coupon bond (coupons, final notional, and the negative
+         notional at T_start) becomes a zero-bond option struck at K_i = P(T0, Ti; r*),
+         valued at t given r(t) by the Black-on-bond formula.
+      3. Payer = sum of puts, receiver = sum of calls, weighted by the signed amounts.
 
-    Once t >= T0 the option has already expired -- NPV is reported as
-    exactly 0 for those (scenario, step) entries (a European option carries
-    no value after its own exercise date; this mirrors ORE's own
-    Instrument.NPV() convention of 0 after expiry rather than raising).
-
-    Returns [Scenarios, TimeSteps].
+    Zero for t >= T0.
     """
     a = swaption.hw_a
     sigma = swaption.hw_sigma
@@ -519,22 +291,15 @@ def _price_one_swaption(
     cf_times = swaption.fixed_cashflow_times
     cf_amounts = jnp.asarray(swaption.fixed_cashflow_amounts, dtype=hw_paths.dtype)
     notional = swaption.notional
-    # coupons + final notional (paid) + notional received back at T_start
-    # (negative amount -- see docstring above).
+    # Coupons, final notional (paid), notional at T_start (received).
     all_times = np.concatenate([cf_times, cf_times[-1:], [T_start]])
     all_amounts = jnp.concatenate([
         cf_amounts,
         jnp.asarray([notional, -notional], dtype=hw_paths.dtype),
     ])
 
-    # A(T0, Ti) for every coupon/notional date -- depends only on T0 and
-    # today's curve (NOT per scenario/step). Calls the JAX-native
-    # `hull_white.A` directly rather than this module's `compute_hw_A`
-    # NumPy-facing wrapper: that wrapper's `np.asarray` return would
-    # concretize a traced value and break this function's `jax.jit`
-    # (TracerArrayConversionError). Same formula either way -- the wrapper
-    # is a thin NumPy adapter over exactly this call, kept for its external
-    # callers (tests/test_ore_parity.py, tests/test_greeks.py).
+    # A(T0, Ti) depends only on T0 and today's curve. Use `hull_white.A` directly;
+    # `compute_hw_A` returns NumPy and would break tracing.
     _curve = _HwZeroCurve(
         pillar_times=jnp.asarray(swaption.zero_times),
         pillar_rates=jnp.asarray(swaption.zero_rates),
@@ -546,13 +311,8 @@ def _price_one_swaption(
     B_T0_Ti = _hw_B(T0, jnp.asarray(all_times, dtype=hw_paths.dtype), a)  # [N+1]
 
     def coupon_bond_value(rstar, params):
-        # rstar: [S, T] -> prices: [S, T, N+1]. params carries every value
-        # _solve_rstar's caller might want Delta/Gamma with respect to
-        # (see that function's docstring on why this must be an explicit
-        # argument, not a closure) -- A_T0_Ti (curve-dependent) here;
-        # B_T0_Ti (mean-reversion-only) stays closed over since this
-        # module's Greeks are curve sensitivities, not model-parameter
-        # ones (see engine/risk/greeks.py's module docstring on Vega scope).
+        # rstar: [S, T] -> [S, T]. Only A_T0_Ti (curve-dependent) and the amounts are
+        # differentiated through; B depends only on mean reversion.
         A_T0_Ti_p, all_amounts_p = params
         prices = A_T0_Ti_p[None, None, :] * jnp.exp(-B_T0_Ti[None, None, :] * rstar[..., None])
         return jnp.sum(prices * all_amounts_p[None, None, :], axis=-1)
@@ -563,12 +323,7 @@ def _price_one_swaption(
     rstar = _solve_rstar(coupon_bond_value, (A_T0_Ti, all_amounts), (num_scenarios, num_steps))
     K = A_T0_Ti[None, None, :] * jnp.exp(-B_T0_Ti[None, None, :] * rstar[..., None])  # [S,T,N+1] strikes
 
-    # A(t, Ti) and A(t, T0) -- conditioning point t varies per step, so
-    # these ARE computed per (scenario-independent) step, once per swaption
-    # (not per scenario -- only depends on the step's t, not r(t)).
-    # Same JAX-native `hull_white.A` call as A_T0_Ti above (see the comment
-    # there on why not this module's NumPy-facing `compute_hw_A` wrapper) --
-    # `step_times` is a traced argument here, so it must stay a JAX array.
+    # A(t, Ti) and A(t, T0) per step (independent of the scenario).
     _step_times_j = jnp.asarray(step_times)
     _all_times_j = jnp.asarray(all_times)
     A_t_Ti = jnp.asarray(
@@ -588,8 +343,7 @@ def _price_one_swaption(
 
     sigma_p = _bond_option_sigma(
         T0, jnp.asarray(all_times, dtype=hw_paths.dtype)[None, :], step_times[:, None], a, sigma,
-    )  # [T, N+1] -- may be exactly 0 (t==T0, or a leg maturing at T0); _bond_call/_bond_put
-    # handle that zero-vol limit internally (see their docstrings).
+    )  # [T, N+1]; zero at t == T0 or for a leg maturing at T0 (handled by bond_call/put)
 
     bond_fn = _bond_put if swaption.payer else _bond_call
     per_leg = bond_fn(
@@ -603,19 +357,16 @@ def _price_one_swaption(
 
 def price_swaptions(hw_paths: jax.Array, step_times: jax.Array, swaption_configs: List[SwaptionConfig]) -> jax.Array:
     """
-    hw_paths: [Scenarios, TimeSteps, NumHW], typically
-        engine.simulation.generate_paths(...)["rates"].
-    step_times: [TimeSteps] absolute simulation times (year-fractions from
-        evaluation_date) -- the same `time_grid[1:]` values
-        generate_paths uses internally.
-    swaption_configs: a list of one or more SwaptionConfig objects.
-    Returns: [Scenarios, TimeSteps, Trades] NPV cube (0 after each
-        swaption's own exercise date -- see _price_one_swaption).
+    NPV cube `[Scenarios, TimeSteps, Trades]` for `swaption_configs`; zero from each
+    exercise date on.
+
+    hw_paths: `[Scenarios, TimeSteps, NumHW]` short rates, from
+        `engine.simulation.generate_paths(...)["rates"]`.
+    step_times: `[TimeSteps]` times of those steps (`time_grid[1:]`).
     """
     step_times_jax = jnp.asarray(step_times, dtype=hw_paths.dtype)
     per_trade = [
-        # An expired option is worth 0 everywhere (ORE's isExpired); its
-        # exercise time is not in the future, so the formula does not apply.
+        # An expired option is worth 0 at every step (ORE's isExpired).
         jnp.zeros(hw_paths.shape[:2], dtype=hw_paths.dtype) if cfg.is_expired()
         else _price_one_swaption(hw_paths, step_times_jax, prepare_swaption(cfg))
         for cfg in swaption_configs
@@ -623,9 +374,7 @@ def price_swaptions(hw_paths: jax.Array, step_times: jax.Array, swaption_configs
     return jnp.stack(per_trade, axis=-1)
 
 
-# =============================================================================
-# EXECUTION DEMONSTRATION
-# =============================================================================
+# Demo
 if __name__ == "__main__":
     from engine.simulation.market_model import generate_paths
     from engine.simulation.demo_scenarios import EVAL_DATE, swaption_demo_config
@@ -634,9 +383,7 @@ if __name__ == "__main__":
     market_cubes = generate_paths(config)
     step_times = jnp.array(config.time_grid[1:], dtype=jnp.float64)
 
-    # Exercisable in 3Y (well within this scenario's 5Y time grid), into a
-    # 2Y underlying swap -- illustrates both a still-alive option (steps at
-    # 0.5Y-2Y) and a post-exercise, zeroed NPV (steps at 4Y-5Y).
+    # Exercise in 3Y into a 2Y swap: live at the early steps, zero after exercise.
     swaption_cfg = SwaptionConfig(
         notional=1_000_000.0,
         fixed_rate=0.030,

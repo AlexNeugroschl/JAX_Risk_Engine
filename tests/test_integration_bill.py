@@ -1,18 +1,10 @@
 """
-W1.2 -- the bill pricer (`docs/planning/traderx-integration-plan.md` §W1.2).
+Treasury bill pricer (`engine.integration.bill`): ORE parity, long/short signs, the
+maturity-date boundary, and accrued as a structural zero.
 
-The plan's required tests, quoted: "ORE parity at matched terms; long/short
-signs; **maturity-date boundary**; accrued = structural zero."
-
-**Why ORE parity is asserted against a real ORE curve, not against
-`exp(-rt)`.** Re-deriving the formula in the test would restate the
-implementation and pass even if both were wrong together. `TestOreParity`
-builds an actual `ORE.FlatForward` term structure and discounts an actual
-`ORE.SimpleCashFlow` through `ORE.CashFlows.npv`, so the reference comes
-from a library that knows nothing about this engine's code. Plan working
-rule 4 is the reason to be strict here: "ORE can represent it" and "my
-engine prices it" are different claims, and this file is where the second
-one is earned.
+ORE parity uses an `ORE.FlatForward` curve and `ORE.CashFlows.npv` on an
+`ORE.SimpleCashFlow`, not a re-derived `exp(-rt)`, which would share any error with the
+implementation.
 """
 import math
 from pathlib import Path
@@ -34,8 +26,8 @@ from engine.integration.terms import TermsEntry
 
 FIXTURES = Path(__file__).parent / "fixtures" / "traderx-eod"
 
-#: The delivered bill fixture's own terms: 6M zero-coupon, session date
-#: 2025-06-02, maturing 2025-12-02, redeemed at par.
+#: The bill fixture's terms: 6M zero-coupon, session date 2025-06-02, maturing 2025-12-02,
+#: redeemed at par.
 VALUATION = ORE.Date(2, 6, 2025)
 MATURITY = ORE.Date(2, 12, 2025)
 PROFILE = ASSUMED_PROFILES["flat-3pct-v1"]
@@ -45,7 +37,7 @@ MARKET = {"mode": "assumed-profile", "assumedProfileId": "flat-3pct-v1"}
 
 
 def _terms(**overrides) -> TermsEntry:
-    """A bill terms entry matching the delivered fixture, with overrides."""
+    """A bill terms entry matching the fixture, with overrides."""
     terms = {
         "couponFrequency": "NONE",
         "schedule": [],
@@ -62,17 +54,12 @@ def _terms(**overrides) -> TermsEntry:
 
 
 class TestOreParity:
-    """The acceptance bar: this engine's number must equal an independent
-    ORE valuation at matched terms."""
+    """Engine NPV equals an independent ORE valuation on the same terms."""
 
     @staticmethod
     def _ore_npv(face: float, maturity: ORE.Date = MATURITY) -> float:
-        """An independent ORE valuation of the same single cashflow.
-
-        Built from ORE's own term structure and cashflow machinery rather
-        than from this engine's code, so agreement is evidence rather than
-        tautology.
-        """
+        """ORE's valuation of the same single cashflow, from its own curve and cashflow
+        classes."""
         ORE.Settings.instance().evaluationDate = VALUATION
         curve = ORE.FlatForward(
             VALUATION, ORE.QuoteHandle(ORE.SimpleQuote(PROFILE.flat_rate)),
@@ -90,9 +77,7 @@ class TestOreParity:
         assert priced.npv == pytest.approx(self._ore_npv(-FACE), rel=1e-12)
 
     def test_discount_factor_matches_ore(self):
-        """The intermediate, not just the total -- a matching NPV with a
-        wrong discount factor and a compensating face amount would still be
-        wrong, and would break on the next instrument."""
+        """The discount factor itself matches (not only the total)."""
         ORE.Settings.instance().evaluationDate = VALUATION
         curve = ORE.FlatForward(
             VALUATION, ORE.QuoteHandle(ORE.SimpleQuote(PROFILE.flat_rate)),
@@ -102,11 +87,8 @@ class TestOreParity:
         assert priced.discount_factor == pytest.approx(curve.discount(MATURITY), rel=1e-12)
 
     def test_compounding_convention_is_continuous_not_simple(self):
-        """The assumed profile is a *continuously compounded* zero curve.
-        Discounting it as a simple or annually-compounded rate shifts every
-        price by an amount small enough to read as rounding -- ~$3.6 per
-        $100k face here -- and large enough to be wrong.
-        """
+        """The profile is continuously compounded; simple compounding would be ~$11 higher
+        on $100k here."""
         priced = price_bill(_terms(), FACE, VALUATION, PROFILE)
         t = priced.year_fraction
 
@@ -121,8 +103,7 @@ class TestOreParity:
 
 
 class TestSigns:
-    """Signed face carries the position direction in one step -- the
-    double-sign bug TraderX flagged (their v3 §2) is structurally absent."""
+    """The signed face carries direction in one step (no double sign)."""
 
     def test_long_is_positive_short_is_negative(self):
         assert price_bill(_terms(), FACE, VALUATION, PROFILE).npv > 0
@@ -134,18 +115,14 @@ class TestSigns:
         assert long_npv + short_npv == pytest.approx(0.0, abs=1e-9)
 
     def test_a_short_is_never_positive(self):
-        """The specific failure mode: multiplying by a separate position
-        sign on top of an already-signed face amount flips a short back to
-        positive."""
+        """A short is never positive (a second sign factor would flip it back)."""
         assert price_bill(_terms(), -FACE, VALUATION, PROFILE).npv == pytest.approx(
             -price_bill(_terms(), FACE, VALUATION, PROFILE).npv
         )
 
 
 class TestMaturityBoundary:
-    """The plan names this explicitly. A bill maturing today has no
-    remaining cashflow; one that matured last week is not a pricing
-    question at all."""
+    """Maturity boundary: a bill maturing on or before the valuation date is refused."""
 
     def test_maturity_after_valuation_prices(self):
         priced = price_bill(_terms(maturityDate="2025-06-03"), FACE, VALUATION, PROFILE)
@@ -158,21 +135,19 @@ class TestMaturityBoundary:
         assert exc.value.reason == INSTRUMENT_MATURED
 
     def test_matured_instrument_is_refused_not_priced_at_face(self):
-        """A matured bill must NOT come back at face value: that would be a
-        settlement claim this engine has no basis for."""
+        """A matured bill is refused, not priced at face."""
         with pytest.raises(BillPricingError) as exc:
             price_bill(_terms(maturityDate="2025-05-02"), FACE, VALUATION, PROFILE)
         assert exc.value.reason == INSTRUMENT_MATURED
 
     def test_discount_factor_is_below_one_for_a_future_maturity(self):
-        """A positive rate over positive time must discount. A DF of exactly
-        1.0 would mean the day count or the maturity collapsed."""
+        """A future maturity discounts (DF < 1)."""
         priced = price_bill(_terms(), FACE, VALUATION, PROFILE)
         assert 0.0 < priced.discount_factor < 1.0
 
 
 class TestRefusesWhatItCannotPrice:
-    """Every refusal names a reason. None falls back to a default."""
+    """Every refusal names a reason; nothing falls back to a default."""
 
     def test_coupon_bearing_instrument_is_not_a_bill(self):
         note = _terms(couponFrequency="SEMIANNUAL", schedule=["2025-12-15"])
@@ -182,8 +157,7 @@ class TestRefusesWhatItCannotPrice:
         assert exc.value.reason == NOT_A_BILL
 
     def test_contradictory_terms_are_refused_not_resolved(self):
-        """`couponFrequency: NONE` with a non-empty schedule contradicts
-        itself. This pricer refuses rather than picking a winner."""
+        """`couponFrequency: NONE` with a schedule is contradictory and refused."""
         contradictory = _terms(couponFrequency="NONE", schedule=["2025-12-02"])
         assert not is_bill(contradictory)
 
@@ -198,8 +172,7 @@ class TestRefusesWhatItCannotPrice:
         assert exc.value.reason == TERMS_INCOMPLETE
 
     def test_absent_redemption_defaults_to_par(self):
-        """Absent is different from malformed: absent means par, which is
-        the near-universal case and what the fixture states anyway."""
+        """An absent redemption means par; an unparseable one is refused."""
         terms = _terms()
         del terms.terms["redemptionFraction"]
         assert price_bill(terms, FACE, VALUATION, PROFILE).redemption_fraction == 1.0
@@ -211,8 +184,7 @@ class TestRefusesWhatItCannotPrice:
 
 
 class TestThroughTheBundlePipeline:
-    """End to end against the delivered fixture -- the W1.2 deliverable as
-    a consumer actually sees it."""
+    """End to end on the delivered fixture."""
 
     def test_bill_v2_prices_both_positions(self):
         result = price_bundle(FIXTURES / "bill" / "v2", market_inputs=MARKET)
@@ -222,8 +194,7 @@ class TestThroughTheBundlePipeline:
         assert sum(outcome.value for outcome in npvs) == pytest.approx(0.0, abs=1e-9)
 
     def test_priced_npv_matches_the_direct_pricer(self):
-        """The pipeline must not alter the number -- the I-01 lesson, where
-        wiring silently changed what a caller got."""
+        """The pipeline returns the direct pricer's number."""
         result = price_bundle(FIXTURES / "bill" / "v2", market_inputs=MARKET)
         long_item = next(
             item for item in result.items
@@ -233,15 +204,13 @@ class TestThroughTheBundlePipeline:
         assert long_item.calculations["npv"].value == pytest.approx(expected.npv, rel=1e-12)
 
     def test_result_carries_assumed_provenance(self):
-        """A price computed against an assumed curve must say so at the top
-        level, where a consumer reading only the summary cannot miss it."""
+        """A result on an assumed curve says so at the top level."""
         result = price_bundle(FIXTURES / "bill" / "v2", market_inputs=MARKET)
         assert result.market_provenance == "assumed"
 
     def test_npv_payload_is_reconcilable(self):
-        """A bare NPV is unreconcilable: if TraderX's number disagrees,
-        nothing says whether the curve, the day count or the face was the
-        cause. Every input to the arithmetic travels with the answer."""
+        """Every input to the arithmetic travels with the NPV, so a disagreement can be
+        traced to curve, day count or face."""
         result = price_bundle(FIXTURES / "bill" / "v2", market_inputs=MARKET)
         payload = result.items[0].calculations["npv"].payload
 
@@ -252,15 +221,13 @@ class TestThroughTheBundlePipeline:
 
         assert payload["curveProvenance"]["curveId"] == "flat-3pct-v1"
         assert payload["curveProvenance"]["inputOrigin"] == "assumed"
-        # The payload must reproduce the answer it travels with.
+        # The payload reproduces the NPV.
         assert (payload["signedFaceAmount"] * payload["redemptionFraction"]
                 * payload["discountFactor"]) == pytest.approx(
             result.items[0].calculations["npv"].value, rel=1e-12)
 
     def test_accrued_is_a_structural_zero(self):
-        """Plan §W1.2: "accrued = structural zero". Not `unavailable`, and
-        not an unlabelled 0.0 -- the provenance is what distinguishes a
-        bill's real zero from a missing value."""
+        """Accrued is `ok` at a labelled structural zero, not `unavailable` or a bare 0.0."""
         result = price_bundle(FIXTURES / "bill" / "v2", market_inputs=MARKET)
         for item in result.items:
             accrued = item.calculations["accruedInterest"]
@@ -269,53 +236,33 @@ class TestThroughTheBundlePipeline:
             assert accrued.payload["provenance"] == "structural-zero"
 
     def test_sensitivities_remain_unsupported(self):
-        """W1.2 delivers a price, not a risk number. Returning 0.0 or
-        omitting these would be the silent approximation this boundary
-        exists to prevent."""
+        """Sensitivities stay unsupported for a bill (not 0.0 or omitted)."""
         result = price_bundle(FIXTURES / "bill" / "v2", market_inputs=MARKET)
         for item in result.items:
             for name in ("rateSensitivity", "rateGamma", "theta"):
                 assert item.calculations[name].status == "unsupported"
 
     def test_without_market_inputs_nothing_is_priced(self):
-        """The no-silent-fallback rule, at the moment it finally bites: W0
-        could omit market inputs because it priced nothing. A pricer must
-        never invent a curve."""
+        """Without market inputs nothing is priced and no curve is invented."""
         result = price_bundle(FIXTURES / "bill" / "v2")
         for item in result.items:
             assert item.calculations["npv"].status == "unsupported"
         assert result.market_provenance is None
 
     def test_v1_bundle_does_not_price(self):
-        """Without a terms artifact the engine cannot establish that a row
-        IS a bill, and will not infer it from a zero coupon column -- the
-        W0.3 rule, still holding now that a pricer exists."""
+        """Without terms the row cannot be established as a bill, so nothing prices."""
         result = price_bundle(FIXTURES / "bill" / "v1", market_inputs=MARKET)
         for item in result.items:
             assert item.calculations["npv"].status == "unsupported"
 
     def test_a_note_is_never_priced_by_the_bill_model(self):
-        """A coupon-bearing note must not be priced by the bill's
-        single-cashflow model just because it is also a Treasury.
-
-        **Rewritten at W1.3.** This test used to assert the note came back
-        `NO_PRICER_AT_THIS_STAGE`, which was true only while no note
-        pricer existed -- it was pinning the *absence* of W1.3 rather than
-        the property that matters. W1.3 makes that premise obsolete but
-        makes the underlying danger *greater*, not smaller: with two
-        Treasury pricers, routing a row to the wrong one is now a
-        reachable mistake rather than an impossible one.
-
-        So the assertion is now on the model actually used. The bill's
-        payload is a single discount factor with no schedule; the note's
-        carries coupons. A note priced by the bill model would show the
-        former -- a confident, plausible, wrong number.
-        """
+        """A note is never priced by the bill model: its payload carries coupons, which the
+        bill model's single discount factor cannot produce."""
         result = price_bundle(FIXTURES / "note" / "v2", market_inputs=MARKET)
         for item in result.items:
             npv = item.calculations["npv"]
             assert npv.status == "ok"
-            # The note model's fingerprint, which the bill model cannot produce.
+            # The note model's signature, which the bill model cannot produce.
             assert npv.payload["coupons"], (
                 "a note priced with no coupon schedule means it was routed "
                 "through the bill's single-cashflow model"
@@ -327,9 +274,7 @@ class TestThroughTheBundlePipeline:
             )
 
     def test_the_bill_model_refuses_a_note_directly(self):
-        """The same guarantee at the pricer rather than the pipeline: even
-        handed a note's terms, `price_bill` refuses instead of returning a
-        number for the wrong instrument."""
+        """`price_bill` refuses a note's terms directly."""
         note_terms = _terms(
             couponFrequency="6M",
             schedule=[{"startDate": "2024-12-15", "endDate": "2025-06-15",
@@ -340,8 +285,7 @@ class TestThroughTheBundlePipeline:
         assert excinfo.value.reason == NOT_A_BILL
 
     def test_sofr_refusal_is_unchanged(self):
-        """Adding a pricer must not weaken the W0 refusal path: a swap whose
-        conventions are unsupported is still refused, not priced."""
+        """The SOFR swap is still refused."""
         result = price_bundle(FIXTURES / "sofr" / "v2", market_inputs=MARKET)
         (item,) = result.items
         assert item.calculations["npv"].status == "unsupported"

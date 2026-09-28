@@ -1,10 +1,8 @@
 """
-Tests for engine.portfolio's Phase 1 validation/assembly layer:
-validate_portfolio_against_simulation (cross-field consistency between
-RatesConfig and each trade's duplicated hw_a/hw_sigma/initial_zero_curve)
-and derive_maturity_pillars (automatic maturity-pillar assembly for an
-arbitrary multi-trade portfolio) -- see
-docs/planning/traderx-integration.md gap items 2, 3, and 5.
+`engine.portfolio` validation and assembly: `validate_portfolio_against_simulation` (each
+trade's hw_a/hw_sigma/initial_zero_curve agrees with `RatesConfig`) and
+`derive_maturity_pillars` (the pillar set for a multi-trade portfolio). See the gap items in
+`docs/planning/traderX_integration/traderx-integration.md`.
 """
 import warnings
 
@@ -52,8 +50,7 @@ def _swaption_cfg(**overrides) -> SwaptionConfig:
 
 
 class TestCrossFieldValidation:
-    """validate_portfolio_against_simulation (docs/planning/
-    traderx-integration.md gap item 2)."""
+    """`validate_portfolio_against_simulation`."""
 
     def test_matching_config_passes(self):
         sim = _sim_config()
@@ -92,8 +89,7 @@ class TestCrossFieldValidation:
             validate_portfolio_against_simulation(sim, [cfg])
 
     def test_swap_config_has_no_cross_field_requirement(self):
-        """SwapConfig carries no rate_factor_index/hw_a/hw_sigma -- it must
-        pass through untouched (no AttributeError, no spurious raise)."""
+        """`SwapConfig` has no rate_factor_index/hw_a/hw_sigma and passes untouched."""
         sim = _sim_config()
         swap_cfg = SwapConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True,
@@ -115,12 +111,8 @@ class TestCrossFieldValidation:
         ), curve_a, curve_b
 
     def test_second_factor_curve_correctly_cross_checked_not_just_factor_zero(self):
-        """A trade on rate_factor_index=1 whose own curve is actually
-        factor 0's curve must still be rejected -- confirms the validator
-        indexes into the RIGHT factor's own curve/mean_reversion/vol at
-        factor counts > 1, not always factor 0 by coincidence (every other
-        test in this class uses exactly one factor, where this distinction
-        is unobservable)."""
+        """A factor-1 trade carrying factor 0's curve is rejected, so the validator reads
+        the right factor (other tests here have one factor)."""
         sim, curve_a, curve_b = self._two_factor_sim()
         wrong_curve_for_factor_1 = _swaption_cfg(
             rate_factor_index=1, hw_a=0.028, hw_sigma=0.027, initial_zero_curve=curve_a,
@@ -149,26 +141,23 @@ class TestCrossFieldValidation:
     @pytest.mark.parametrize("exercise_date", [ORE.Date(3, 8, 2027), ORE.Date(30, 10, 2027)],
                              ids=["on-an-accrual-start", "mid-period"])
     def test_bermudan_exercise_never_warns(self, exercise_date):
-        """A Bermudan exercise date inside an accrual period is priced
-        exactly as ORE prices it (into the next whole period), not
-        approximated, so there is nothing to warn about -- unlike the
-        mid-coupon warning this used to raise before I-06 was closed."""
+        """A Bermudan exercise inside an accrual period is priced as ORE prices it (into the
+        next whole period), so there is no warning."""
         sim = _sim_config()
         cfg = BermudanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
             hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
             exercise_dates=[exercise_date], swap_tenor="3Y", evaluation_date=TODAY,
         )
-        # The only warning allowed is the unrelated expiry one (audit M-3):
-        # the exercise lies inside the simulated horizon.
+        # The only warning allowed is the expiry one (audit M-3): the exercise lies inside the
+        # simulated horizon.
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             validate_portfolio_against_simulation(sim, [cfg])  # must not raise
         assert [str(w.message) for w in caught if "last exercise" not in str(w.message)] == []
 
     def test_american_exercise_window_never_warns(self):
-        """Nor does an American window, whose broken-period exercise is ORE's
-        own `couponRatio` proration."""
+        """Nor an American window (ORE's `couponRatio` proration)."""
         sim = _sim_config()
         cfg = AmericanSwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
@@ -176,8 +165,7 @@ class TestCrossFieldValidation:
             first_exercise_date=TODAY + 365, last_exercise_date=TODAY + 730, exercise_time_steps_per_year=3,
             swap_tenor="3Y", evaluation_date=TODAY,
         )
-        # The only warning allowed is the unrelated expiry one (audit M-3):
-        # the exercise lies inside the simulated horizon.
+        # The only warning allowed is the expiry one (audit M-3).
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             validate_portfolio_against_simulation(sim, [cfg])  # must not raise
@@ -185,8 +173,7 @@ class TestCrossFieldValidation:
 
 
 class TestPillarAssembly:
-    """derive_maturity_pillars (docs/planning/traderx-integration.md gap
-    item 3)."""
+    """`derive_maturity_pillars`."""
 
     def test_single_trade_pillars_are_subset_and_accepted_by_maturity_indices(self):
         cfg = SwapConfig(
@@ -200,18 +187,13 @@ class TestPillarAssembly:
 
         from engine.instruments.swap import prepare_swap
         prepared = prepare_swap(cfg, np.asarray(pillars))
-        # If prepare_swap succeeded without raising, every one of this
-        # trade's own cashflow times was accepted as a pillar match --
-        # _maturity_indices raises ValueError otherwise.
+        # prepare_swap succeeding means every cashflow time matched a pillar
+        # (`_maturity_indices` raises otherwise).
         assert prepared.fixed_pay_idx.shape[0] > 0
 
     def test_two_trade_portfolio_pillar_set_strictly_exceeds_either_alone(self):
-        """swap_tenor/index_tenor_months chosen so neither trade's own
-        pillar set is a superset of the other's (confirmed directly against
-        each trade's real ORE-generated schedule) -- a 2Y/6M-index swap and
-        an 18M/4M-index swap land on genuinely different reset dates, not
-        just a shorter tenor nested inside a longer one at the same
-        frequency."""
+        """A 2Y/6M-index swap and an 18M/4M-index swap have reset dates on different
+        schedules, so neither pillar set contains the other."""
         cfg_a = SwapConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True,
             discount_curve_index=0, forward_curve_index=0,
@@ -251,9 +233,8 @@ class TestPillarAssembly:
             prepare_swap(cfg, pillars_np)  # must not raise ValueError
 
     def test_swaption_only_portfolio_produces_only_t0_pillar(self):
-        """Swaption-family pricers price off simulated hw_paths directly,
-        not the yield_curves/maturity-pillar cube -- a portfolio with no
-        SwapConfig trades contributes no pillars beyond the anchor t=0."""
+        """Swaption pricers use `hw_paths`, not the pillar cube, so a portfolio without swaps
+        contributes only t=0."""
         cfg = _swaption_cfg()
         pillars = derive_maturity_pillars([cfg], TODAY)
         assert pillars == [0.0]
@@ -270,8 +251,8 @@ def _recorded_warnings(sim, trades):
 
 
 class TestExposureLimitationWarnings:
-    """The exposure cube's known limitations (docs/planning/engine-audit.md,
-    M-1..M-3) are announced per run, not left for a reader to discover."""
+    """The exposure cube's known limitations (`docs/planning/engine-audit.md` M-1..M-3) are
+    announced per run."""
 
     def test_flat_consistent_curve_does_not_warn_about_the_model(self):
         assert not [w for w in _recorded_warnings(_sim_config(), []) if "rate factor 0" in w]

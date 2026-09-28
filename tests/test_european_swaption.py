@@ -22,12 +22,9 @@ ZERO_CURVE = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[FLAT
 
 def _reference_ore_jamshidian_npv(fixed_rate: float, payer: bool, tenor: str, forward_start_years: int = 0) -> float:
     """
-    Builds the identical swaption in real ORE (same custom IborIndex, same
-    explicit Act/365Fixed on both legs as european_swaption._build_ore_swap)
-    and prices it with ORE's own ORE.JamshidianSwaptionEngine under a
-    ORE.HullWhite(FLAT_RATE, HW_A, HW_SIGMA) model -- the ground truth every
-    test in this file cross-checks against, not a re-derivation of the
-    formula under test.
+    The same swaption built in ORE (same index and ACT/365 legs as `_build_ore_swap`),
+    priced by `ORE.JamshidianSwaptionEngine` under `ORE.HullWhite(FLAT_RATE, HW_A,
+    HW_SIGMA)`: the reference for this file.
     """
     ORE.Settings.instance().evaluationDate = TODAY
     dc = ORE.Actual365Fixed()
@@ -75,8 +72,7 @@ def _make_cfg(fixed_rate: float, payer: bool, tenor: str = "5Y", forward_start_y
 
 
 def _price_at_t0(cfg: SwaptionConfig) -> float:
-    """Prices at t=0 (today), conditional on r(0) = FLAT_RATE -- the
-    apples-to-apples comparison against ORE's own t=0 NPV()."""
+    """t=0 price conditional on r(0) = FLAT_RATE, comparable with ORE's t=0 NPV."""
     prepared = prepare_swaption(cfg)
     step_times = jnp.array([0.0])
     hw_paths = jnp.array([[[FLAT_RATE]]])
@@ -85,17 +81,14 @@ def _price_at_t0(cfg: SwaptionConfig) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Conditional (t > 0) pricing against ORE -- docs/known-issues.md I-30
+# Conditional (t > 0) pricing against ORE (I-30)
 # ---------------------------------------------------------------------------
-# At t=0 the variance term of A(t,T) carries a factor (1 - exp(-2at)) that is
-# identically zero, so a t=0 comparison cannot see that term at all
-# (tests/test_ore_coverage_hardening.py measures this). Only conditional
-# pricing at t > 0 checks it, and until this grid existed a single test did.
+# At t=0 the variance term of A(t,T) has a factor (1 - exp(-2at)) = 0, so only t > 0
+# checks it (tests/test_ore_coverage_hardening.py measures this).
 #
-# The dates are deliberately OFF the curve pillars (0, 1, 2, 5, 10, 30Y):
-# under linear zero-rate interpolation f(0,t) has a kink at each pillar and
-# this engine and ORE resolve it differently (pinned in
-# test_ore_coverage_hardening.py::test_pillar_times_differ_by_the_interpolation_kink).
+# Dates are off the curve pillars: f(0,t) has a kink at each pillar under linear zero
+# interpolation, and the engine and ORE resolve it differently
+# (test_ore_coverage_hardening.py::test_pillar_times_differ_by_the_interpolation_kink).
 CONDITIONAL_PILLARS = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
 CONDITIONAL_CURVES = {
     "flat": [FLAT_RATE] * 6,
@@ -136,7 +129,7 @@ def _conditional_cfg(curve: str, trade_id: str) -> SwaptionConfig:
 
 
 def _price_conditional(curve: str, date_id: str, trade_id: str) -> float:
-    """This engine's NPV at the grid point's date, conditional on its short rate."""
+    """The engine's NPV at the grid point's date, conditional on its short rate."""
     t = ORE.Actual365Fixed().yearFraction(TODAY, CONDITIONAL_DATES[date_id])
     r = CONDITIONAL_TRADES[trade_id][0]
     prepared = prepare_swaption(_conditional_cfg(curve, trade_id))
@@ -144,26 +137,18 @@ def _price_conditional(curve: str, date_id: str, trade_id: str) -> float:
 
 
 def _reference_ore_conditional_npv(curve: str, date_id: str, trade_id: str) -> float:
-    """ORE's own price for the same swaption at a later date `t`, given the
-    short rate r(t).
+    """ORE's price for the same swaption at a later date `t`, given r(t).
 
-    Built so the only thing this engine and ORE share is the input:
-
-      * The swap is built ONCE at TODAY, exactly as `prepare_swaption` does,
-        so both sides price identical schedule dates. Rebuilding it at `t`
-        would move dates across weekends and compare different swaps.
-      * The market at `t` is ORE's own conditional curve,
-        `ORE.HullWhite(curve0).discountBond(t, T, r)` -- ORE's A(t,T),
-        variance term included, not this engine's.
-      * That curve is sampled at DAILY pillars. Monthly log-linear pillars
-        leave the rebuilt model a stepwise instantaneous forward, which
-        was measured to cost up to 7.6e-4 on a sloped curve -- reference
-        error bigger than the tolerance, not engine error. Daily pillars
-        bring the worst case over this grid to ~2e-6.
-      * ORE's JamshidianSwaptionEngine then prices at evaluation date `t`
-        under HullWhite(conditional curve, a, sigma). Conditioning on r(t)
-        and refitting to P(t, .) are the same model (the Markov property);
-        that equivalence is what this test checks the engine against.
+      * The swap is built once at TODAY, as `prepare_swaption` does, so both sides use
+        the same schedule (rebuilding at `t` would move dates).
+      * The market at `t` is ORE's conditional curve `ORE.HullWhite(curve0).discountBond(t,
+        T, r)`, with ORE's own A(t,T).
+      * That curve is sampled at daily pillars: monthly log-linear pillars gave the rebuilt
+        model a stepwise forward and up to 7.6e-4 reference error on a sloped curve; daily
+        pillars bring it to ~2e-6.
+      * `JamshidianSwaptionEngine` prices at `t` under HullWhite(conditional curve, a,
+        sigma). Conditioning on r(t) and refitting to P(t, .) are the same model (Markov
+        property); that equivalence is what is tested.
     """
     rates = CONDITIONAL_CURVES[curve]
     t_date = CONDITIONAL_DATES[date_id]
@@ -207,10 +192,7 @@ def _reference_ore_conditional_npv(curve: str, date_id: str, trade_id: str) -> f
 
 
 class TestAgainstOREJamshidianEngine:
-    """Direct numeric cross-check against ORE.JamshidianSwaptionEngine --
-    the same live-testing methodology used throughout this codebase (see
-    engine/instruments/european_swaption.py's module docstring) rather than
-    a from-scratch textbook derivation."""
+    """Against `ORE.JamshidianSwaptionEngine`."""
 
     @pytest.mark.parametrize("fixed_rate,payer,tenor", [
         (0.03, True, "5Y"),   # ATM payer
@@ -231,25 +213,15 @@ class TestAgainstOREJamshidianEngine:
         (0.025, True, "5Y", 5),
     ])
     def test_matches_ore_forward_starting(self, fixed_rate, payer, tenor, forward_years):
-        """Regression coverage for the forward-start bug this module's
-        development caught: an earlier version assumed the swap's floating
-        leg always redeems its notional exactly at the option's own
-        exercise date T0 (true only when the spot lag and the "exercise
-        lag" coincide, i.e. a non-forward-starting swaption), which is
-        false whenever forward_start != 0 -- the underlying's real first
-        accrual date T_start is `exercise_lag_days` AFTER T0, not equal to
-        it, and the floating leg's par-redemption identity needs a genuine
-        P(T0,T_start) discount factor, not an assumed 1. This was caught by
-        this exact cross-check diverging from ORE by ~1%."""
+        """Regression: an earlier version assumed the floating leg redeems its notional at
+        the exercise time T0. For a forward start the first accrual T_start is after T0, and
+        the par identity needs P(T0, T_start); omitting it was ~1% off ORE."""
         mine = _price_at_t0(_make_cfg(fixed_rate, payer, tenor, forward_years))
         ore = _reference_ore_jamshidian_npv(fixed_rate, payer, tenor, forward_years)
         np.testing.assert_allclose(mine, ore, rtol=1e-4, atol=1e-2)
 
     def test_matches_ore_deep_otm_is_near_zero(self):
-        """Deep OTM payer (fixed rate far above any plausible forward rate)
-        should price near zero on both sides -- and, since ORE's own value
-        underflows toward 0 here too, this mainly guards against a NaN/inf
-        from this module's own bisection or Black formula in the tail."""
+        """A deep-OTM payer prices near zero on both sides without NaN/inf in the tail."""
         mine = _price_at_t0(_make_cfg(0.20, True, "5Y"))
         ore = _reference_ore_jamshidian_npv(0.20, True, "5Y")
         np.testing.assert_allclose(mine, ore, atol=1e-3)
@@ -257,15 +229,9 @@ class TestAgainstOREJamshidianEngine:
 
 
 class TestZeroVolatilityLimit:
-    """sigma_p == 0 is a real, reachable edge case in this module (not just
-    a theoretical corner): it occurs at-or-after the option's own expiry,
-    AND whenever a bond leg's own maturity coincides with the option's
-    expiry -- which is exactly the T_start leg for a non-forward-starting
-    swaption (exercise_lag_days brings T0 back to precisely T_start). An
-    earlier version of _bond_call/_bond_put left this to a caller-side
-    jnp.where that didn't correctly handle the second case, producing wildly
-    wrong (large negative) NPVs -- caught by the spot-starting cross-check
-    above going from matching ORE to being off by orders of magnitude."""
+    """sigma_p == 0 occurs at expiry and for a leg maturing at the exercise time (the
+    T_start leg of a spot-starting swaption). An earlier caller-side guard mishandled the
+    second case and gave large negative NPVs."""
 
     def test_bond_call_at_zero_vol_matches_intrinsic(self):
         P_t_Topt = jnp.array([0.95, 0.95, 0.95])
@@ -286,10 +252,8 @@ class TestZeroVolatilityLimit:
         np.testing.assert_allclose(np.asarray(result), np.asarray(expected), atol=1e-12)
 
     def test_no_nan_or_inf_across_zero_and_positive_vol(self):
-        """A mix of zero and positive sigma_p in the same call (exactly the
-        shape _price_one_swaption produces, where only SOME legs have
-        sigma_p==0) must not let the zero-vol branch's 0/0 contaminate the
-        positive-vol entries or vice versa."""
+        """Zero and positive sigma_p in one call (as `_price_one_swaption` produces) do not
+        contaminate each other."""
         P_t_Topt = jnp.array([0.95, 0.95])
         P_t_S = jnp.array([0.90, 0.85])
         K = jnp.array([0.90, 0.90])
@@ -300,10 +264,7 @@ class TestZeroVolatilityLimit:
 
 class TestPayerReceiverParity:
     def test_put_call_parity_payer_minus_receiver_equals_forward_swap_value(self):
-        """Standard option identity: payer_swaption - receiver_swaption ==
-        the forward value of the underlying swap itself (a model- and
-        volatility-independent identity, so this doesn't depend on the
-        Jamshidian formula being correct -- an independent sanity check)."""
+        """Payer minus receiver equals the forward swap value, independent of the model."""
         cfg_payer = _make_cfg(0.03, True, "5Y")
         cfg_receiver = _make_cfg(0.03, False, "5Y")
         payer_npv = _price_at_t0(cfg_payer)
@@ -330,10 +291,7 @@ class TestPayerReceiverParity:
 
 class TestZeroVolatilityCollapsesToIntrinsic:
     def test_payer_matches_max_swap_npv_zero(self):
-        """As sigma -> 0, a European swaption collapses to the deterministic
-        max(swap NPV, 0) -- no uncertainty left to price optionality on.
-        Live-verified against ORE directly (see this module's development
-        notes); this test locks that limit in for both an ITM and an OTM
+        """As sigma -> 0 a European tends to max(swap NPV, 0), for an ITM and an OTM
         strike."""
         for fixed_rate, payer in [(0.02, True), (0.05, True)]:
             cfg = SwaptionConfig(
@@ -364,11 +322,7 @@ class TestZeroVolatilityCollapsesToIntrinsic:
 
 
 class TestConditionalPricingAndExpiry:
-    """The [Scenarios, TimeSteps, Trades] NPV cube contract needs Jamshidian's
-    formula evaluated at every simulated (scenario, step), not just t=0 --
-    these tests cover that generalization directly (see
-    european_swaption.py's module docstring on the Markov-conditioning
-    argument)."""
+    """Pricing at simulated (scenario, step) points after t=0, and expiry."""
 
     def test_post_expiry_npv_is_zero(self):
         cfg = _make_cfg(0.03, True, "5Y")
@@ -387,13 +341,8 @@ class TestConditionalPricingAndExpiry:
         assert float(npv[0, 0]) > 0.0
 
     def test_conditional_pricing_matches_ore_rebuilt_at_later_date(self):
-        """Prices a still-alive, forward-starting swaption conditional on a
-        simulated short rate at t=1Y (before its own ~3Y exercise date),
-        and cross-checks against ORE's own JamshidianSwaptionEngine with
-        its evaluation date and yield curve rebuilt to represent that same
-        future point -- the same live-testing methodology used to validate
-        the t=0 case, generalized to confirm HW1F's Markov conditional
-        pricing property holds for this module's implementation too."""
+        """Conditional on a short rate at t=1Y (before the ~3Y exercise), against ORE's
+        Jamshidian engine with its evaluation date and curve rebuilt at that date."""
         a, sigma = HW_A, HW_SIGMA
         t_eval_date = ORE.Date(30, 7, 2027)
         r_eval = 0.035
@@ -439,17 +388,12 @@ class TestConditionalPricingAndExpiry:
 
     @pytest.mark.parametrize("curve,date_id,trade_id", CONDITIONAL_GRID)
     def test_conditional_pricing_matches_ore_across_t_and_r(self, curve, date_id, trade_id):
-        """The same Markov cross-check as the test above, over a grid of
-        dates (0.5Y to 2.25Y), short rates (1% to 6%), payer and receiver,
-        two strikes/tenors and three curve shapes. It closes
-        docs/known-issues.md I-30: at t > 0 the variance term of A(t,T) is
-        no longer checked by one test alone.
+        """The same check over a grid: dates 0.5Y-2.25Y, short rates 1%-6%, payer and
+        receiver, two strikes/tenors, three curve shapes (closes I-30).
 
-        Measured worst case over the grid is ~2e-6 relative, so rtol=1e-4
-        has ~50x headroom. Every variance-term mutation in
-        tests/test_ore_coverage_hardening.py moves every point here by at
-        least 3e-3, and that file asserts it does, so a corrupted term
-        cannot pass this grid.
+        Worst case ~2e-6 relative, against rtol=1e-4. Every variance-term mutation in
+        tests/test_ore_coverage_hardening.py moves every point by at least 3e-3, and that
+        file asserts it.
         """
         mine = _price_conditional(curve, date_id, trade_id)
         ore = _reference_ore_conditional_npv(curve, date_id, trade_id)
@@ -465,8 +409,7 @@ class TestPriceSwaptionsShape:
         assert npv_cube.shape == (8, 3, 2)
 
     def test_multiple_rate_factors_selects_correct_one(self):
-        """rate_factor_index must actually select the right column of
-        hw_paths, not silently default to 0."""
+        """`rate_factor_index` selects the right column of `hw_paths`."""
         cfg0 = SwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True,
             rate_factor_index=0, hw_a=HW_A, hw_sigma=HW_SIGMA,
@@ -477,7 +420,7 @@ class TestPriceSwaptionsShape:
             rate_factor_index=1, hw_a=HW_A, hw_sigma=HW_SIGMA,
             initial_zero_curve=ZERO_CURVE, swap_tenor="5Y", evaluation_date=TODAY,
         )
-        # factor 0 at 3% (near ATM), factor 1 at 8% (deep ITM for a payer)
+        # Factor 0 at 3% (near ATM), factor 1 at 8% (deep ITM for a payer).
         hw_paths = jnp.array([[[0.03, 0.08]]])
         step_times = jnp.array([0.0])
         npv0 = price_swaptions(hw_paths, step_times, [cfg0])
@@ -486,21 +429,15 @@ class TestPriceSwaptionsShape:
 
 
 class TestMonotonicRStarSolve:
-    """The bisection in _solve_rstar relies on the (signed) coupon bond
-    value being monotonically decreasing in r across the practical search
-    range -- verified numerically here across a spread of tenors/rates
-    rather than just assumed from the theoretical argument in the
-    docstring, since the T_start leg's negative amount makes the sum only
-    APPROXIMATELY (not exactly) monotonic in general."""
+    """The r* bisection needs the signed coupon bond value to decrease in r. The negative
+    T_start leg makes that approximate, not exact, so it is checked numerically."""
 
     @pytest.mark.parametrize("tenor,forward_years", [("2Y", 0), ("10Y", 0), ("5Y", 5), ("30Y", 10)])
     def test_rstar_solve_converges_to_true_root(self, tenor, forward_years):
         cfg = _make_cfg(0.03, True, tenor, forward_years)
         prepared = prepare_swaption(cfg)
         mine = _price_at_t0(cfg)
-        # if bisection failed to converge, the resulting NPV would be wildly
-        # wrong (as seen during development) rather than merely imprecise --
-        # a loose finiteness + sign sanity check catches that failure mode.
+        # A non-converged bisection gives a wildly wrong NPV, which these loose checks catch.
         assert np.isfinite(mine)
         assert mine >= -1e-6
 
@@ -513,10 +450,8 @@ def _price_at_t0_with_rate(cfg: SwaptionConfig, r0: float) -> float:
 
 
 class TestNegativeRates:
-    """HW1F is a NORMAL (not lognormal) short-rate model, so it natively
-    supports negative rates -- live-verified against ORE directly, since a
-    naive lognormal-style implementation would break (log of a negative
-    number) or silently floor rates at zero."""
+    """Hull-White is a normal short-rate model, so negative rates price (checked against
+    ORE)."""
 
     def test_matches_ore_negative_flat_curve(self):
         negative_rate = -0.005
@@ -549,11 +484,8 @@ class TestNegativeRates:
         np.testing.assert_allclose(mine, swaption.NPV(), rtol=1e-4, atol=1e-2)
 
     def test_positive_underlying_rate_but_simulated_negative_short_rate(self):
-        """A scenario where today's curve is positive but the CONDITIONAL
-        simulated short rate at some future step has gone negative -- this
-        is the realistic Monte-Carlo case (HW1F's Gaussian shocks can push
-        r(t) below zero even from a positive start), not just a negative
-        flat-curve setup."""
+        """A positive curve with a negative simulated short rate at a later step (the Monte
+        Carlo case)."""
         cfg = _make_cfg(0.03, True, "5Y")
         mine = _price_at_t0_with_rate(cfg, -0.01)
         assert np.isfinite(mine)
@@ -561,11 +493,8 @@ class TestNegativeRates:
 
 
 class TestNearZeroVolatility:
-    """Distinct from the exact-zero sigma_p edge case already covered in
-    TestZeroVolatilityLimit: a genuinely small but nonzero hw_sigma
-    (as opposed to sigma_p==0 from t==T_opt or a same-maturity leg) must
-    still price close to the deterministic intrinsic value without any
-    numerical blow-up from the Black formula's 1/sigma_p term."""
+    """A small but non-zero hw_sigma prices near intrinsic with no blow-up from the Black
+    formula's 1/sigma_p."""
 
     def test_very_small_but_nonzero_sigma_stays_near_intrinsic(self):
         cfg = SwaptionConfig(
@@ -586,10 +515,7 @@ class TestNearZeroVolatility:
 
 
 class TestExtremeMeanReversion:
-    """hw_a appears in several denominators (B(t,T), the bond-option
-    volatility formula) -- both a very small and a very large mean
-    reversion speed must still price finitely and match ORE, not just the
-    HW_A=0.03 value every other test in this file uses."""
+    """Very small and very large mean reversion price finitely and match ORE."""
 
     @pytest.mark.parametrize("a", [1e-4, 0.5, 2.0])
     def test_matches_ore_across_mean_reversion_range(self, a):
@@ -623,9 +549,8 @@ class TestExtremeMeanReversion:
 
 class TestExerciseLagVariations:
     def test_custom_exercise_lag_still_prices_sanely(self):
-        """exercise_lag_days defaults to 2 (standard spot lag) everywhere
-        else in this file -- confirm a non-default lag still produces a
-        finite, non-negative NPV and a later exercise time than lag=0."""
+        """A non-default exercise lag gives a finite, non-negative NPV and a later exercise
+        time than lag 0."""
         cfg_default = _make_cfg(0.03, True, "5Y")
         cfg_custom = SwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True,
@@ -642,9 +567,7 @@ class TestExerciseLagVariations:
         assert mine >= 0.0
 
     def test_zero_exercise_lag_matches_ore(self):
-        """exercise_lag_days=0 (option decided exactly today, entering an
-        underlying that itself still spot-starts) is a real, priceable
-        edge case, not just an internal implementation detail."""
+        """exercise_lag_days=0 matches ORE."""
         cfg = SwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True,
             rate_factor_index=0, hw_a=HW_A, hw_sigma=HW_SIGMA,
@@ -674,10 +597,7 @@ class TestExerciseLagVariations:
 
 
 class TestPortfolioOfSwaptions:
-    """price_swaptions must correctly price a MIXED portfolio -- different
-    payer/receiver sides, different rate factors, different tenors -- in
-    one call, with each trade's NPV independent of the others (no
-    cross-contamination in the stacked bisection/pricing)."""
+    """A mixed portfolio in one call equals pricing each trade alone."""
 
     def test_mixed_portfolio_matches_individual_pricing(self):
         cfg_a = _make_cfg(0.03, True, "5Y")
@@ -697,13 +617,8 @@ class TestPortfolioOfSwaptions:
         np.testing.assert_allclose(float(combined[0, 0, 2]), float(individual_c[0, 0, 0]), rtol=1e-9)
 
     def test_empty_portfolio_raises_rather_than_silently_misbehaving(self):
-        """An empty swaption_configs list is a degenerate caller error, not
-        a "zero trades" NPV cube -- jnp.stack([]) has no way to infer the
-        Scenarios/TimeSteps shape from zero inputs, so it raises. This is
-        the same pre-existing behavior swap.price_swaps has
-        for an empty swap_configs list (not a swaption-specific gap) --
-        documented here as a known, tested boundary rather than an
-        assumption that was never checked."""
+        """An empty list raises (`jnp.stack([])` cannot infer the shape), as for
+        `price_swaps`."""
         step_times = jnp.array([0.0, 1.0])
         hw_paths = jnp.full((4, 2, 1), FLAT_RATE)
         with pytest.raises(ValueError):
@@ -721,21 +636,13 @@ class TestZeroNotional:
         np.testing.assert_allclose(mine, 0.0, atol=1e-6)
 
 
-# =============================================================================
-# NEW TESTS: bisection robustness, wide ORE grid cross-check, conditional
-# monotonicity, numerical edge cases, and shape/API robustness.
-# =============================================================================
+# Bisection robustness, a wide ORE grid, conditional monotonicity, numerical edge cases and
+# shapes.
 
 
 class TestBisectionRootFindRobustness:
-    """_solve_rstar brackets r* in a FIXED [-2, 2] window (see its docstring
-    and source: `lo = -jnp.ones(t_shape) * 2.0`, `hi = jnp.ones(t_shape) *
-    2.0`) regardless of the rate environment -- these tests probe whether
-    that fixed bracket, and the bisection generally, still produces a
-    correct, finite r* (and NPV) at the edges of plausible use: extreme
-    moneyness, very short/long time-to-expiry, near-zero/negative rates,
-    and a degenerate single-cashflow underlying (n=1 zero-coupon bond
-    option, the smallest possible Jamshidian decomposition)."""
+    """`_bisect_rstar` starts from [-2, 2]; these probe extreme moneyness, very short and
+    long expiries, near-zero and negative rates, and a single-coupon underlying."""
 
     @pytest.mark.parametrize("fixed_rate,payer", [
         (1.5, True),    # deep OTM payer: r* should sit near the bracket's
@@ -751,49 +658,25 @@ class TestBisectionRootFindRobustness:
         np.testing.assert_allclose(mine, ore, rtol=1e-4, atol=1e-2)
 
     def test_deep_itm_payer_beyond_bracket_range_matches_ore(self):
-        """Regression test for a fixed bug: a deep-ITM payer with a very
-        negative fixed_rate (e.g. -85%, paying an almost-free fixed leg)
-        has a true r* whose coupon-bond-value root lies OUTSIDE
-        _solve_rstar's base `[-2, 2]` bracket. Direct inspection of
-        coupon_bond_value(r) across r in [-2, 2] for this config shows it
-        is STRICTLY NEGATIVE across the entire bracket for fixed_rate=-0.99
-        (never crosses zero there -- confirmed by evaluating the same
-        closed-form used inside _price_one_swaption at 21 points from -2
-        to 2, all negative, ranging from -2.1e9 at r=-2 to -1.16e6 at
-        r=+2). Plain bisection would then never see `val_mid > 0.0`, so
-        `hi` collapses onto `lo` every iteration and r* would converge to
-        exactly the bracket's own edge (-2.0) rather than any real root --
-        this used to produce an NPV wildly wrong in both magnitude and
-        sign vs. ORE.
-
-        _solve_rstar now expands the bracket outward first whenever it
-        doesn't already contain a sign change, so r* converges to the true
-        (out-of-bracket) root and matches ORE to the module's usual
-        tolerance. This is a real, reachable case (not contrived): nothing
-        in SwaptionConfig validates fixed_rate's range, and the base
-        bracket's width is fixed regardless of trade scale, so any
-        sufficiently deep-ITM payer can push r* outside [-2, 2]."""
+        """Regression: for a deep-ITM payer (fixed rate -99%) the coupon bond value is
+        negative over all of [-2, 2], so plain bisection returned the bracket edge and an
+        NPV wrong in sign and size. The window is now shifted (up to 20 times its width)
+        until it brackets the root. Reachable: nothing bounds `fixed_rate`."""
         fixed_rate, payer, tenor = -0.99, True, "5Y"
         mine = _price_at_t0(_make_cfg(fixed_rate, payer, tenor))
         ore = _reference_ore_jamshidian_npv(fixed_rate, payer, tenor)
         assert ore > 0.0
-        # A looser tolerance than this module's usual 1e-6 in-bracket
-        # precision: the expanded bracket is wider (several outward
-        # doublings before bisection starts), so the same fixed 100-
-        # iteration bisection budget yields coarser per-iteration
-        # precision on r* here than in the common in-bracket case.
+        # Looser than the usual 1e-6: the shifted window is far from the root's scale, so
+        # the same 100 iterations leave r* less precise.
         assert abs(mine - ore) / abs(ore) < 5e-3, (
             f"deep-ITM payer with fixed_rate={fixed_rate} beyond the base "
             f"bracket: got NPV={mine!r} vs ORE={ore!r}"
         )
 
     def test_very_short_time_to_expiry_matches_ore(self):
-        """1M forward-start into a 1Y underlying: exercise is only ~1 month
-        (plus 2-day spot lag) away -- b(T0,Ti) terms and sigma_p are all
-        tiny, stressing the bisection's convergence far from its [-2,2]
-        bracket's natural scale."""
+        """A 1M forward start into a 1Y swap: exercise about a month away."""
         mine = _price_at_t0(_make_cfg(0.03, True, "1Y", forward_start_years=0))
-        # forward_start_years is int-only in _make_cfg; build 1M directly.
+        # _make_cfg takes whole years only; build the 1M case directly.
         cfg = SwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True,
             rate_factor_index=0, hw_a=HW_A, hw_sigma=HW_SIGMA,
@@ -826,9 +709,7 @@ class TestBisectionRootFindRobustness:
         np.testing.assert_allclose(mine_1m_fwd, swaption.NPV(), rtol=1e-4, atol=1e-2)
 
     def test_very_long_time_to_expiry_matches_ore(self):
-        """20Y forward-start into a 5Y underlying -- exercise time is far
-        beyond every other test in this file, stressing the variance terms
-        (1 - exp(-2at)) which saturate near 1 at this horizon."""
+        """A 20Y forward start into a 5Y swap (variance terms near saturation)."""
         mine = _price_at_t0(_make_cfg(0.03, True, "5Y", forward_start_years=20))
         ore = _reference_ore_jamshidian_npv(0.03, True, "5Y", forward_start_years=20)
         assert np.isfinite(mine)
@@ -865,10 +746,7 @@ class TestBisectionRootFindRobustness:
         np.testing.assert_allclose(mine, swaption.NPV(), rtol=1e-4, atol=1e-2)
 
     def test_deeply_negative_rate_environment_finite(self):
-        """A rate environment far more negative than TestNegativeRates'
-        -0.5% (still within the bracket's [-2,2] but stressing B(t,T) and
-        the variance term with a large-magnitude r) must not blow up the
-        bisection or produce NaN/inf."""
+        """A deeply negative rate environment stays finite."""
         very_negative = -0.10
         curve = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[very_negative] * 6)
         cfg = SwaptionConfig(
@@ -881,13 +759,8 @@ class TestBisectionRootFindRobustness:
         assert mine >= -1e-6
 
     def test_degenerate_single_cashflow_underlying_matches_ore(self):
-        """swap_tenor='1Y' with a 6M-index/annual-fixed-frequency underlying
-        produces EXACTLY ONE fixed cashflow (verified directly against ORE's
-        own swap.fixedLeg()) -- Jamshidian's decomposition here has only a
-        single "coupon" leg plus the final/T_start notional legs (n=1 zero-
-        coupon bond option per notional leg), the smallest possible instance
-        of the general N-leg formula. This exercises _solve_rstar and the
-        summation logic at their minimal, least-averaged-out scale."""
+        """A 1Y swap has exactly one fixed coupon (checked in ORE's leg): the smallest
+        Jamshidian decomposition."""
         prepared = prepare_swaption(_make_cfg(0.03, True, "1Y"))
         assert len(prepared.fixed_cashflow_times) == 1
 
@@ -902,12 +775,8 @@ class TestBisectionRootFindRobustness:
 
 
 class TestWideGridAgainstORE:
-    """Systematic breadth cross-check against real
-    ORE.JamshidianSwaptionEngine: sweeps strike x payer/receiver x tenor x
-    forward-start-offset x hw_a x hw_sigma, at the documented ~1e-6-class
-    relative tolerance (tightened here to 1e-5 relative + a small absolute
-    floor for near-zero NPVs, matching the module docstring's claim) rather
-    than the handful of hardcoded points in TestAgainstOREJamshidianEngine."""
+    """Against `ORE.JamshidianSwaptionEngine` over strike x direction x tenor x forward
+    start x hw_a x hw_sigma, at 1e-5 relative plus a small absolute floor."""
 
     @pytest.mark.parametrize("fixed_rate", [0.01, 0.02, 0.03, 0.04, 0.06])
     @pytest.mark.parametrize("payer", [True, False])
@@ -953,15 +822,8 @@ class TestWideGridAgainstORE:
 
 
 class TestConditionalMonotonicityInShortRate:
-    """A payer swaption's conditional value at a future node must be
-    monotonically non-decreasing in the simulated short rate r(t) (higher
-    rates -> a higher forward rate on the underlying swap -> more valuable
-    right to PAY fixed), and a receiver swaption's value must be
-    monotonically non-increasing in r(t) -- the mirror-image property. This
-    is a model-independent economic property of the payoff, checked here
-    numerically across a grid of short-rate values at a fixed future time
-    (not just at t=0), matching this module's own conditional-pricing
-    claim (see module docstring's Markov-conditioning argument)."""
+    """Conditional value at a future node: a payer is non-decreasing and a receiver
+    non-increasing in the simulated short rate."""
 
     @pytest.mark.parametrize("t_frac", [0.0, 0.25, 0.5, 0.9])
     def test_payer_value_nondecreasing_in_short_rate(self, t_frac):
@@ -996,12 +858,7 @@ class TestConditionalMonotonicityInShortRate:
         assert np.all(diffs <= 1e-6), f"receiver NPV not monotonic non-increasing in r at t_frac={t_frac}: {npvs}"
 
     def test_payer_and_receiver_cross_at_consistent_point(self):
-        """At any fixed future node, the payer and receiver value curves (as
-        functions of r) are mirror images crossing near the forward-neutral
-        rate -- a looser, complementary check to the monotonicity tests
-        above: for a low r the receiver should be worth more than the
-        payer, and for a high r the payer should be worth more than the
-        receiver."""
+        """At a fixed node, the receiver is worth more at low r and the payer at high r."""
         cfg_payer = _make_cfg(0.03, True, "5Y", forward_start_years=3)
         cfg_receiver = _make_cfg(0.03, False, "5Y", forward_start_years=3)
         prepared_payer = prepare_swaption(cfg_payer)
@@ -1022,20 +879,12 @@ class TestConditionalMonotonicityInShortRate:
 
 
 class TestNumericalEdgeCasesSigmaAndMeanReversion:
-    """hw_sigma -> 0 (near-deterministic) and hw_a -> 0 (near-degenerate
-    mean reversion, a potential 0/0 in B(t,T) = (1-exp(-a*tau))/a as a->0)
-    -- distinct from TestExtremeMeanReversion's a=1e-4 point and
-    TestNearZeroVolatility's sigma=1e-5 point, this class pushes both
-    further and checks the actual convergence/finiteness properties rather
-    than just cross-checking a single value against ORE."""
+    """hw_sigma and hw_a pushed toward 0 (further than the classes above): convergence and
+    finiteness."""
 
     @pytest.mark.parametrize("sigma", [1e-3, 1e-6, 1e-10])
     def test_decreasing_sigma_converges_monotonically_toward_intrinsic(self, sigma):
-        """As hw_sigma shrinks toward 0, the swaption's t=0 NPV should get
-        (weakly) closer to the deterministic intrinsic max(swap NPV, 0) --
-        checked directly at three shrinking scales rather than a single
-        near-zero value, to confirm genuine convergence rather than a
-        coincidental match at one sigma."""
+        """As hw_sigma shrinks, the NPV approaches max(swap NPV, 0)."""
         fixed_rate, payer = 0.02, True
         cfg = SwaptionConfig(
             notional=1_000_000.0, fixed_rate=fixed_rate, payer=payer,
@@ -1061,8 +910,7 @@ class TestNumericalEdgeCasesSigmaAndMeanReversion:
         intrinsic = max(swap.NPV(), 0.0)
 
         assert np.isfinite(mine)
-        # at sigma=1e-3 there's still real optionality value above intrinsic;
-        # by 1e-10 it should have collapsed to within a cent.
+        # At sigma=1e-3 there is optionality value; by 1e-10 it is within a cent of intrinsic.
         if sigma <= 1e-6:
             np.testing.assert_allclose(mine, intrinsic, atol=1e-2)
         else:
@@ -1070,12 +918,7 @@ class TestNumericalEdgeCasesSigmaAndMeanReversion:
 
     @pytest.mark.parametrize("a", [1e-8, 1e-6, 1e-4])
     def test_near_zero_mean_reversion_no_nan(self, a):
-        """a -> 0 makes B(t,T) = (1-exp(-a*tau))/a a classic 0/0 form whose
-        analytic (L'Hopital) limit is simply tau -- this test doesn't
-        assert the specific limiting value, only that the module's actual
-        floating-point evaluation of that ratio stays finite (rather than
-        NaN'ing out) at three shrinking scales of a, and still produces a
-        sane (finite, non-negative) NPV end-to-end."""
+        """a -> 0 stays finite and gives a sane NPV (the 0/0 in B is guarded)."""
         cfg = SwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True,
             rate_factor_index=0, hw_a=a, hw_sigma=HW_SIGMA,
@@ -1086,11 +929,7 @@ class TestNumericalEdgeCasesSigmaAndMeanReversion:
         assert mine >= -1e-6
 
     def test_near_zero_mean_reversion_B_matches_taylor_limit(self):
-        """Directly probes _hw_B's 0/0 behavior at a tiny a: for a small
-        tau, B(t,T) should be very close to tau itself (the a->0 limit),
-        confirming the ratio doesn't silently produce garbage (e.g. 0, or
-        blow up) even though it's not called through the L'Hopital-limit
-        code path explicitly."""
+        """At a tiny a, B(t,T) is close to its limit T - t."""
         from engine.instruments.european_swaption import _hw_B
         a = 1e-8
         t = jnp.array(0.0)
@@ -1101,9 +940,7 @@ class TestNumericalEdgeCasesSigmaAndMeanReversion:
 
 
 class TestShapeAndAPIRobustness:
-    """Mismatched batch shapes, empty configs, and single-trade portfolios
-    -- boundary behavior of price_swaptions/prepare_swaption beyond the
-    already-covered empty-list case in TestPortfolioOfSwaptions."""
+    """Shape and API boundaries of `price_swaptions` / `prepare_swaption`."""
 
     def test_single_trade_portfolio_matches_direct_pricing(self):
         cfg = _make_cfg(0.03, True, "5Y")
@@ -1115,11 +952,8 @@ class TestShapeAndAPIRobustness:
         np.testing.assert_allclose(float(via_portfolio[0, 0, 0]), direct, rtol=1e-9)
 
     def test_mismatched_rate_factor_index_out_of_bounds_raises_or_propagates(self):
-        """rate_factor_index selecting a column beyond hw_paths' own NumHW
-        axis is a caller-config error -- confirm it surfaces as an
-        exception (JAX's default indexing semantics for out-of-bounds is to
-        clip, not raise, so this documents/locks in that actual behavior
-        rather than assuming a raise)."""
+        """An out-of-range rate_factor_index is not rejected: JAX clips the index. The test
+        documents that a finite number comes back."""
         cfg = SwaptionConfig(
             notional=1_000_000.0, fixed_rate=0.03, payer=True,
             rate_factor_index=5, hw_a=HW_A, hw_sigma=HW_SIGMA,
@@ -1128,20 +962,12 @@ class TestShapeAndAPIRobustness:
         prepared = prepare_swaption(cfg)
         step_times = jnp.array([0.0])
         hw_paths = jnp.array([[[FLAT_RATE, FLAT_RATE]]])  # only 2 HW factors, index 5 is OOB
-        # JAX clips out-of-bounds indices by default rather than raising --
-        # this must not silently crash; it should return SOME finite number
-        # (documenting the clip-not-raise behavior rather than asserting a
-        # specific numeric value, since that's an implementation detail of
-        # JAX's indexing, not this module's).
+        # JAX clips out-of-bounds indices rather than raising.
         npv = _price_one_swaption(hw_paths, step_times, prepared)
         assert np.isfinite(float(npv[0, 0]))
 
     def test_more_scenarios_than_steps_and_vice_versa_shape(self):
-        """Non-square [Scenarios, TimeSteps] shapes (far more scenarios than
-        steps, and far more steps than scenarios) must both produce the
-        correctly-shaped NPV cube -- guards against an accidental
-        transpose/broadcast bug in _solve_rstar's t_shape or the
-        per-(scenario,step) computation."""
+        """Non-square [Scenarios, TimeSteps] shapes give the right cube shape."""
         cfg = _make_cfg(0.03, True, "5Y")
         step_times_many_steps = jnp.linspace(0.0, 1.0, 20)
         hw_paths_many_steps = jnp.full((2, 20, 1), FLAT_RATE)
@@ -1168,10 +994,8 @@ class TestShapeAndAPIRobustness:
 
 
 class TestSwaptionConfigValidation:
-    """SwaptionConfig.__post_init__ (docs/planning/traderx-integration.md
-    gap item 4) -- rejects non-finite notional/fixed_rate/hw_sigma and
-    unparseable swap_tenor strings at construction time. Zero notional
-    remains valid (see TestZeroNotional above)."""
+    """`SwaptionConfig.__post_init__` rejects non-finite notional/fixed_rate/hw_sigma and
+    unparseable tenors. Zero notional is valid."""
 
     def test_nan_notional_rejected(self):
         with pytest.raises(ValueError, match="notional"):

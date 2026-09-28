@@ -1,51 +1,29 @@
 """
-Value at Risk (VaR) and Expected Shortfall (ES) over a Monte Carlo NPV cube.
+Value at Risk and Expected Shortfall over a Monte Carlo NPV cube `[Scenarios, TimeSteps,
+Trades]`. Instrument-agnostic: nothing here imports `engine.instruments`.
 
-Instrument-agnostic: this module only ever consumes a
-[Scenarios, TimeSteps, Trades] NPV cube (the shape every pricer under
-engine/instruments/ returns) and a scalar base NPV. It never imports
-engine.instruments.* -- any pricer producing that shape works here.
-
-Mathematically matched to ORE's RiskStatistics (venv/Lib/site-packages/
-ORE.py, QuantLib::GeneralStatistics-derived), live-verified against the
-installed ORE package rather than assumed from documentation:
+Statistics match `ORE.RiskStatistics` (QuantLib `GenericRiskStatistics`), checked against the
+installed ORE package:
 
     sorted_pnl = ascending sort of the per-step P&L sample
     idx        = floor(N * (1 - percentile))
     VaR(p)     = max(-sorted_pnl[idx], 0.0)     # positive loss, clamped at 0
-    tail       = pnl[pnl < -VaR(p)]             # STRICT value-based filter
-    ES(p)      = -mean(tail)                    # NaN if tail is empty
+    tail       = pnl[pnl < -VaR(p)]             # strict, value-based
+    ES(p)      = -mean(tail)                    # NaN if the tail is empty
 
-Two details that are easy to get wrong and were confirmed by direct,
-adversarial live testing against ORE.RiskStatistics (not read from any
-formula reference):
+The quantile is a nearest-rank-below order statistic, not interpolated (as
+`numpy.percentile`'s default is). The ES tail is value-based, which differs from slicing
+`sorted[0:idx]` when there are ties at the VaR boundary. Where the tail is empty ORE raises
+"no data below the target"; this returns NaN, since traced JAX code cannot raise.
 
-1. The quantile is a lower/nearest-rank-below order statistic
-   (`floor(N*(1-p))` indexing into the ascending-sorted sample), NOT
-   linearly interpolated between order statistics the way
-   `numpy.percentile`'s default method is. Verified with non-round
-   `N*(1-p)` values where the two conventions diverge.
-2. Expected Shortfall averages the STRICT value-based tail (`pnl < -VaR`),
-   not a positional slice of the sorted array (`sorted[0:idx]`). The two
-   formulas agree only when there are no ties at the VaR boundary; with
-   ties, ORE's result matches only the value-based filter -- verified with
-   a sample containing repeated values exactly at the VaR cutoff. When
-   that filter is empty (the worst observations are all tied exactly at
-   VaR), ORE's own `expectedShortfall` raises `RuntimeError: no data below
-   the target`; this module returns NaN for that (percentile, time step)
-   instead, since JAX cannot raise from traced code -- callers must check
-   for NaN explicitly (see expected_shortfall's docstring).
+P&L(scenario, t) = portfolio NPV(scenario, t) - base_npv, where `base_npv` is the t=0 NPV
+supplied by the caller.
 
-P&L definition: P&L(scenario, t) = portfolio_NPV(scenario, t) - base_npv,
-where base_npv is the portfolio's NPV at t=0 (before any simulated shocks),
-supplied by the caller -- not inferred from the cube, and not a per-step
-mean. This matches ORE's historical-VaR P&L definition literally
-(NPV(scenario) - NPV(base case)), applied at every simulated time step, so
-the resulting VaR/ES profile reflects both market risk and the portfolio's
-expected drift/rolldown over time -- a deliberate choice, not the
-alternative of measuring deviation from each step's own cross-scenario mean
-(which would isolate pure risk from drift; that was considered and rejected
-in favor of ORE's literal semantics).
+Differs from ORE: ORE's VaR is over a single horizon. Here the same P&L definition is
+applied at every step of a risk-neutral exposure simulation, so each step's figure mixes
+market risk with the portfolio's expected drift and roll-down. The cube's known limitations
+(I-04, audit M-1, M-3) carry into these numbers. Market-risk VaR from t=0 revaluation is in
+`engine.market_risk`.
 """
 import math
 from functools import partial
@@ -54,29 +32,15 @@ from typing import Dict, Sequence
 import jax
 import jax.numpy as jnp
 
-# =============================================================================
-# RISK MEASURE VOCABULARY (plan §W0.6; part of I-11)
+# Risk-measure labels. A VaR/ES figure is only meaningful with the measure that generated it:
 #
-# **A risk number without its measure is unactionable.** `VaR_95 = 2.1mm`
-# means materially different things depending on what generated it, and
-# nothing in a bare float distinguishes them:
+#   - risk-neutral-pricing   exposure simulation under the pricing measure (exposure, CVA,
+#                            limits); not a forecast of real-world P&L.
+#   - historical-forecast    a calibrated real-world loss forecast (capital, backtesting).
+#   - deterministic-stress   revaluation under a prescribed scenario; no probability.
 #
-#   - risk-neutral-pricing   an exposure simulation under the pricing
-#                            measure. Correct for CVA/exposure/limits. NOT
-#                            a forecast of tomorrow's P&L -- the drift is
-#                            the risk-neutral one, not the real-world one.
-#   - historical-forecast    a calibrated real-world forecast of realised
-#                            loss. What a capital or backtesting process
-#                            wants, and what this engine does NOT produce.
-#   - deterministic-stress   a prescribed scenario's revaluation. No
-#                            probability attaches to it at all.
-#
-# Everything this engine computes today is `risk-neutral-pricing`: it
-# simulates under the pricing measure. Reporting a risk-neutral exposure
-# where a consumer expects a historical forecast is a category error that
-# no amount of numerical accuracy fixes, which is why the label travels
-# with the number rather than living in documentation.
-# =============================================================================
+# `generate_paths` simulates under the pricing measure, so this module's output is
+# risk-neutral-pricing. The label travels with the number (I-11).
 RISK_MEASURE_RISK_NEUTRAL = "risk-neutral-pricing"
 RISK_MEASURE_HISTORICAL = "historical-forecast"
 RISK_MEASURE_STRESS = "deterministic-stress"
@@ -86,45 +50,32 @@ RISK_MEASURES = (
     RISK_MEASURE_STRESS,
 )
 
-#: What `generate_paths` + this module actually produce. Not a default a
-#: caller may override -- it is a statement of fact about the simulation.
+#: The measure `generate_paths` + this module produce. A fact, not a default.
 ENGINE_RISK_MEASURE = RISK_MEASURE_RISK_NEUTRAL
 
 
 def quantile_label(q: float) -> str:
-    """A quantile as a result-key suffix: 0.95 -> "95", 0.975 -> "97.5".
-
-    Whole percentages keep the short form (`VaR_95`); anything finer keeps
-    its decimals, so the Basel 97.5% ES is `ES_97.5` rather than being
-    rounded to `ES_98`, and two quantiles can never share a key."""
+    """Quantile as a result-key suffix: 0.95 -> "95", 0.975 -> "97.5" (never rounded, so
+    two quantiles cannot share a key)."""
     percent = round(q * 100, 6)
     return f"{int(percent)}" if percent == int(percent) else f"{percent:g}"
 
 
 def portfolio_pnl(npv_cube: jax.Array, base_npv: float) -> jax.Array:
-    """
-    [Scenarios, TimeSteps, Trades] -> [Scenarios, TimeSteps] portfolio P&L,
-    summing across trades and subtracting the fixed t=0 baseline. Pure
-    tensor op -- no instrument-specific knowledge.
-    """
+    """[Scenarios, TimeSteps, Trades] -> [Scenarios, TimeSteps]: portfolio NPV minus
+    `base_npv`."""
     portfolio_npv = jnp.sum(npv_cube, axis=-1)
     return portfolio_npv - base_npv
 
 
 def value_at_risk(pnl: jax.Array, percentile: float) -> jax.Array:
     """
-    [Scenarios, TimeSteps] P&L -> [TimeSteps] VaR at `percentile`
-    (e.g. 0.99 for 99% VaR), matching ORE.RiskStatistics.valueAtRisk exactly:
-    the lower/nearest-rank-below order statistic of the ascending-sorted
-    per-step P&L sample, sign-flipped to a positive loss and clamped at 0.
+    [Scenarios, TimeSteps] P&L -> [TimeSteps] VaR at `percentile` (0.99 for 99%), as
+    `ORE.RiskStatistics.valueAtRisk`: the nearest-rank-below order statistic, negated, clamped
+    at 0.
 
-    `percentile` is coerced to a plain Python float before reaching the
-    jitted implementation below. It is a jit STATIC argument there (the rank
-    index it produces is a compile-time constant, not a traced value), and
-    static arguments must be hashable -- a 0-d `np.ndarray` or JAX scalar
-    is not, and would otherwise raise "Non-hashable static arguments are not
-    supported". Coercing here keeps every scalar-like `percentile` this
-    function has always accepted working unchanged.
+    `percentile` is converted to a Python float because it is a static jit argument and
+    must be hashable.
     """
     return _value_at_risk_jit(pnl, float(percentile))
 
@@ -132,11 +83,8 @@ def value_at_risk(pnl: jax.Array, percentile: float) -> jax.Array:
 @partial(jax.jit, static_argnums=1)
 def _value_at_risk_jit(pnl: jax.Array, percentile: float) -> jax.Array:
     num_scenarios = pnl.shape[0]
-    # Plain Python math, deliberately not jnp: `percentile` is a static
-    # argument and `num_scenarios` comes from the shape, so this rank index
-    # is a compile-time constant. Computing it via `jnp.floor` would build a
-    # traced array and then need `int()` to index with it, which raises
-    # ConcretizationTypeError under jit.
+    # The rank index is a compile-time constant (static percentile, static shape), so it
+    # is computed in Python; a traced index could not be converted with int().
     idx = int(math.floor(num_scenarios * (1.0 - percentile)))
     idx = min(max(idx, 0), num_scenarios - 1)
     sorted_pnl = jnp.sort(pnl, axis=0)
@@ -145,21 +93,11 @@ def _value_at_risk_jit(pnl: jax.Array, percentile: float) -> jax.Array:
 
 def expected_shortfall(pnl: jax.Array, percentile: float) -> jax.Array:
     """
-    [Scenarios, TimeSteps] P&L -> [TimeSteps] Expected Shortfall at
-    `percentile`, matching ORE.RiskStatistics.expectedShortfall exactly:
-    the negated mean of every P&L observation STRICTLY worse than
-    -VaR(percentile) (a value-based filter, not a positional slice of the
-    sorted array -- the two differ whenever the tail has ties at the VaR
-    boundary, verified directly against ORE).
+    [Scenarios, TimeSteps] P&L -> [TimeSteps] Expected Shortfall at `percentile`, as
+    `ORE.RiskStatistics.expectedShortfall`: minus the mean of observations strictly below
+    -VaR.
 
-    Returns NaN for any time step whose strict tail is empty (every
-    observation tied exactly at the VaR cutoff) -- the case where ORE's own
-    expectedShortfall raises RuntimeError("no data below the target").
-    Callers must check `jnp.isnan(...)` explicitly; this is a real,
-    data-dependent edge case, not an oversight.
-
-    `percentile` is coerced to a plain Python float for the same
-    static-argument-hashability reason as `value_at_risk` above.
+    NaN where that tail is empty (ORE raises there); callers must check for NaN.
     """
     return _expected_shortfall_jit(pnl, float(percentile))
 
@@ -174,22 +112,9 @@ def _expected_shortfall_jit(pnl: jax.Array, percentile: float) -> jax.Array:
 
 def tail_sample_size(pnl: jax.Array, percentile: float) -> jax.Array:
     """
-    [Scenarios, TimeSteps] P&L -> [TimeSteps] count of observations that
-    actually entered the Expected Shortfall mean at `percentile`.
-
-    **This is the effective sample size for a tail statistic** (plan §W0.6),
-    and it is usually far smaller than the scenario count: at 99% over
-    10,000 scenarios roughly 100 observations carry the estimate, and every
-    one of them is in the part of the distribution the Monte Carlo sampled
-    least. The tail count is what makes a sparse estimate distinguishable
-    from a well-converged one -- without it, `ES_99` computed from 3
-    observations and from 300 are the same number on the wire.
-
-    Counts the STRICT value-based tail (`pnl < -VaR`), i.e. exactly the
-    observations `expected_shortfall` averages -- not a positional
-    `floor(N*(1-p))` slice, which would disagree whenever there are ties at
-    the VaR boundary (see this module's docstring, point 2). A count of 0
-    is the case where `expected_shortfall` returns NaN.
+    [Scenarios, TimeSteps] P&L -> [TimeSteps] number of observations in the ES mean (the
+    strict tail `pnl < -VaR`). The effective sample size of the tail estimate: at 99% over
+    10,000 scenarios, about 100. 0 where `expected_shortfall` is NaN.
     """
     return _tail_sample_size_jit(pnl, float(percentile))
 
@@ -202,30 +127,11 @@ def _tail_sample_size_jit(pnl: jax.Array, percentile: float) -> jax.Array:
 
 def expected_shortfall_standard_error(pnl: jax.Array, percentile: float) -> jax.Array:
     """
-    [Scenarios, TimeSteps] P&L -> [TimeSteps] Monte Carlo standard error of
-    the Expected Shortfall estimate at `percentile`.
+    [Scenarios, TimeSteps] P&L -> [TimeSteps] Monte Carlo standard error of the ES estimate:
+    `s / sqrt(n)`, with `s` the sample standard deviation (ddof=1) of the tail and `n` the
+    tail count. Makes a sparse tail visible (I-11).
 
-    The plain standard error of the tail mean: `s / sqrt(n)`, where `s` is
-    the sample standard deviation of the tail observations and `n` is
-    `tail_sample_size`. ES is an average over the tail, so the standard
-    error of that average is what quantifies its Monte Carlo noise.
-
-    **Why report it.** `ES_99 = 1,240,000` reads as a precise figure. With
-    a standard error of 380,000 it is not one, and nothing else in the
-    result would say so -- a sparse tail and a converged one are otherwise
-    indistinguishable (I-11). This does not make the estimate better; it
-    makes its uncertainty visible, which is the difference between a number
-    a reader can weigh and one they must simply trust.
-
-    Uses the sample standard deviation (`ddof=1`, dividing by `n-1`): the
-    tail IS a sample, and the population form would understate the spread.
-
-    Returns NaN where `n < 2` -- with one observation there is no spread to
-    estimate, and with none there is no estimate at all. That is the honest
-    answer, and it is deliberately NOT 0.0, which would read as "perfectly
-    converged" for the single worst case where the estimate is least
-    trustworthy. Callers must check `jnp.isnan(...)`, exactly as they
-    already must for `expected_shortfall` itself.
+    NaN where `n < 2` (no spread can be estimated), never 0.
     """
     return _es_standard_error_jit(pnl, float(percentile))
 
@@ -237,24 +143,18 @@ def _es_standard_error_jit(pnl: jax.Array, percentile: float) -> jax.Array:
     masked = jnp.where(tail_mask, pnl, jnp.nan)
 
     count = jnp.sum(tail_mask, axis=0)
-    # ddof=1 on the masked tail. `jnp.nanstd` has no ddof, so the Bessel
-    # correction is applied by rescaling: s_sample = s_pop * sqrt(n/(n-1)).
+    # ddof=1: `jnp.nanstd` has no ddof, so rescale s_pop by sqrt(n/(n-1)).
     population_std = jnp.nanstd(masked, axis=0)
 
-    # **Every intermediate stays in the P&L's own dtype.** `count` is
-    # integer, and integer arithmetic (or an untyped literal) inside the
-    # expression below promotes the whole result to float64 under
-    # jax_enable_x64 -- which silently defeats a float32 `var_es` precision
-    # override, since this function's output dtype IS how that override is
-    # observed. Every other statistic here inherits the input dtype by
-    # construction; this one has to be told.
+    # Keep every intermediate in the P&L's dtype: integer `count` would promote the result
+    # to float64 under jax_enable_x64 and defeat a float32 precision override.
     dtype = population_std.dtype
     safe_count = jnp.maximum(count, 2).astype(dtype)  # guards n<2; masked out below
     one = jnp.asarray(1, dtype=dtype)
     sample_std = population_std * jnp.sqrt(safe_count / (safe_count - one))
 
     standard_error = sample_std / jnp.sqrt(safe_count)
-    # n < 2: no spread is estimable. NaN, not 0.0 -- see the docstring.
+    # n < 2: no spread is estimable; NaN, not 0.
     return jnp.where(count >= 2, standard_error, jnp.asarray(jnp.nan, dtype=dtype))
 
 
@@ -265,36 +165,14 @@ def compute_risk_metrics(
     include_diagnostics: bool = True,
 ) -> Dict[str, jax.Array]:
     """
-    Public entry point: [Scenarios, TimeSteps, Trades] NPV cube + t=0
-    portfolio NPV -> dict of [TimeSteps] VaR/ES arrays, one pair per
-    requested percentile, keyed "VaR_95"/"ES_95"/"VaR_99"/"ES_99"/... --
-    matching ORE's convention of always reporting VaR and ES together at
-    each configured quantile (see module docstring / plan for the recovered
-    ore_histsimvar.xml evidence).
+    [Scenarios, TimeSteps, Trades] NPV cube and t=0 portfolio NPV -> `{"VaR_95": [T],
+    "ES_95": [T], ...}`, VaR and ES together at each percentile, as ORE reports them.
 
-    **Convergence diagnostics** (plan §W0.6, part of I-11) are added
-    alongside, two per percentile:
+    With `include_diagnostics` (the default), also `ES_<q>_tailCount` and
+    `ES_<q>_standardError` per percentile.
 
-        "ES_99_tailCount"      effective sample size -- how many
-                               observations the ES mean actually averaged
-        "ES_99_standardError"  Monte Carlo standard error of that mean
-
-    `include_diagnostics=False` returns exactly the pre-W0.6 key set, for a
-    caller that wants the bare statistics.
-
-    **The existing VaR_*/ES_* keys and values are unchanged**, deliberately.
-    This is purely additive: the diagnostics sit beside the statistics
-    rather than wrapping them, so every existing consumer keeps working
-    untouched and no number moves. What was missing was never the tail
-    statistics themselves -- it was any way to tell a sparse estimate from
-    a converged one.
-
-    **What this does NOT do.** It does not label the measure. A risk-neutral
-    exposure simulation is not a calibrated forecast of tomorrow's loss, and
-    that distinction belongs to the run, not to a single cube -- this
-    function cannot know which it was handed. `RISK_MEASURE_*` below and
-    `engine.integration.result` carry it at the level that does know. See
-    I-11 in docs/known-issues.md.
+    The risk measure is not labelled here, because a cube does not say which measure
+    produced it; `RISK_MEASURE_*` and `engine.integration.result` carry it (I-11).
     """
     pnl = portfolio_pnl(npv_cube, base_npv)
     metrics: Dict[str, jax.Array] = {}
@@ -308,9 +186,7 @@ def compute_risk_metrics(
     return metrics
 
 
-# =============================================================================
-# EXECUTION DEMONSTRATION
-# =============================================================================
+# Demo
 if __name__ == "__main__":
     from engine.simulation.market_model import generate_paths
     from engine.instruments.swap import SwapConfig, price_swaps
@@ -318,9 +194,8 @@ if __name__ == "__main__":
 
     market_cubes = generate_paths(single_currency_swap_demo_config())
 
-    # fixed_rate close to the forwarding curve's own rate (3.5%) so the demo
-    # swap starts close to fair value -- shows genuine two-sided VaR/ES
-    # instead of a always-in-the-money trade that never registers a loss.
+    # fixed_rate near the 3.5% forward rate, so the swap starts near fair value and the
+    # demo shows two-sided P&L.
     swap_cfg = SwapConfig(
         notional=1_000_000.0,
         fixed_rate=0.035,
@@ -328,15 +203,12 @@ if __name__ == "__main__":
         discount_curve_index=0,
         forward_curve_index=1,
         swap_tenor="2Y",
-        # Explicit, not ORE's wall-clock default: SWAP_DEMO_MATURITIES is
-        # pinned to EVAL_DATE, and a schedule built off "today" stops lining
-        # up with its pillars once today moves (I-28).
+        # Explicit: SWAP_DEMO_MATURITIES is pinned to EVAL_DATE (I-28).
         evaluation_date=EVAL_DATE,
     )
     npv_cube = price_swaps(market_cubes["yield_curves"], SWAP_DEMO_MATURITIES, [swap_cfg])
 
-    # t=0 baseline: the same swap priced against today's actual (zero-shock)
-    # curves -- a real deterministic revaluation, not a cross-scenario proxy.
+    # t=0 baseline: the swap on today's (unshocked) curves.
     base_cube = flat_yield_curves(disc_rate=0.030, fwd_rate=0.035)
     base_npv = float(price_swaps(base_cube, SWAP_DEMO_MATURITIES, [swap_cfg])[0, 0, 0])
 

@@ -1,15 +1,8 @@
 """
-Tests for engine.api -- the FastAPI HTTP boundary over
-engine.portfolio.price_portfolio. Uses FastAPI's TestClient (backed by
-httpx), which runs the app in-process -- no running server needed.
-
-Covers: /health and /version respond; /portfolio/price with a valid body
-returns 202 + a job id, polling reaches "done" with a result matching a
-direct price_portfolio call on the equivalent dataclass request;
-/portfolio/price with an invalid body (non-PSD covariance, mismatched
-rate_factor_index) returns a 4xx with the same validator error message
-surfaced in the response body, not a 500; a malformed-schema body (wrong
-types) returns FastAPI's automatic 422; /calibration/lgm.
+`engine.api` through FastAPI's in-process TestClient: /health and /version; /portfolio/price
+returns 202 and a job id, and polling reaches a result equal to a direct `price_portfolio`
+call; invalid bodies give a 4xx with the validator's message (malformed schemas a 422);
+/calibration/lgm.
 """
 import time
 
@@ -124,8 +117,7 @@ class TestPortfolioPriceHappyPath:
         assert isinstance(data["result"]["base_npv"], float)
 
     def test_result_matches_direct_price_portfolio_call(self, test_client):
-        """The HTTP response, after schema round-trip, must match calling
-        price_portfolio directly on the equivalent dataclass request."""
+        """The polled result equals `price_portfolio` on the equivalent dataclass request."""
         body = {
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
@@ -166,12 +158,9 @@ class TestPortfolioPriceHappyPath:
 
 @pytest.mark.slow
 class TestCalibratedBermudanOverHttp:
-    """`hw_sigma: null` on a Bermudan/American trade needs a
-    `calibration_basket` on the request to resolve -- without it,
-    price_portfolio's own ValueError ("calibration_targets was not
-    supplied") must surface as a 4xx, not a 500 inside the background job.
-    With it, the job must complete and match calibrating+pricing directly
-    via price_portfolio on the equivalent dataclass request."""
+    """`hw_sigma: null` needs a `calibration_basket`. Without one the job fails with
+    "calibration_targets was not supplied"; with one, the result equals calibrating and
+    pricing directly."""
 
     def _submit_and_poll(self, client, body, timeout_s=60):
         r = client.post("/portfolio/price", json=body)
@@ -246,13 +235,9 @@ class TestCalibratedBermudanOverHttp:
 
 @pytest.mark.slow
 class TestPortfolioPriceAtScale:
-    """Larger and edge-composition portfolios submitted as real JSON bodies
-    -- exercises the schema round-trip (discriminated-union trade parsing,
-    JSON nesting of a wider npv_cube) at a scale beyond the 1-2 trade
-    bodies used elsewhere in this file. Complements
-    tests/test_portfolio_scale_and_edge_cases.py, which covers the same
-    scale/edge-case space at the dataclass level (price_portfolio called
-    directly) -- this class's own focus is the HTTP/JSON boundary itself."""
+    """Larger portfolios as real JSON bodies (discriminated-union parsing, a wider npv_cube).
+    tests/test_portfolio_scale_and_edge_cases.py covers the same ground at the dataclass
+    level."""
 
     def _submit_and_poll(self, client, body, timeout_s=90):
         r = client.post("/portfolio/price", json=body)
@@ -303,10 +288,8 @@ class TestPortfolioPriceAtScale:
         assert all(np.isfinite(v) for v in flat)
 
     def test_result_matches_direct_call_for_a_larger_portfolio(self, test_client):
-        """The bit-for-bit HTTP-vs-direct-call cross-check other tests do
-        for 1-2 trades, repeated at 10 trades -- confirms the schema
-        round-trip stays exact (no drift/rounding introduced by JSON
-        serialization) as the response payload grows substantially larger."""
+        """At 10 trades the HTTP result still equals the direct call exactly (no JSON
+        rounding)."""
         trades = (
             [_swap_trade_schema(notional=1_000_000.0 * (i + 1)) for i in range(5)]
             + [_swaption_trade_schema(notional=500_000.0 * (i + 1)) for i in range(5)]
@@ -328,13 +311,8 @@ class TestPortfolioPriceAtScale:
         np.testing.assert_allclose(data["result"]["base_npv"], direct_result.base_npv, rtol=1e-9)
 
     def test_empty_trades_list_is_accepted_and_prices_to_a_zero_width_result(self, test_client):
-        """An empty trades list is valid at the dataclass level
-        (price_portfolio returns a zero-width result, see
-        test_portfolio_scale_and_edge_cases.py) but Pydantic's List field
-        has no explicit min_length here -- confirming the actual current
-        behavior (accepted, not rejected) rather than assuming either way,
-        since this is exactly the kind of boundary a schema change could
-        silently flip."""
+        """An empty trades list is accepted (the schema sets no minimum) and gives a
+        zero-width result. Pins current behaviour."""
         body = {
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
@@ -343,8 +321,7 @@ class TestPortfolioPriceAtScale:
         }
         data = self._submit_and_poll(test_client, body)
         assert data["status"] == "done", data.get("error")
-        # [Scenarios, TimeSteps, 0] JSON-serializes as a nested list of
-        # empty inner lists, e.g. [[[], []], [[], []], ...] -- not "[]".
+        # A [Scenarios, TimeSteps, 0] cube serializes as nested empty lists, not "[]".
         npv_cube = data["result"]["npv_cube"]
         assert all(len(time_step) == 0 for scenario in npv_cube for time_step in scenario)
         assert data["result"]["base_npv"] == 0.0
@@ -364,16 +341,8 @@ class TestPortfolioPriceAtScale:
             np.testing.assert_allclose(npv_cube[:, :, j], npv_cube[:, :, 0], rtol=1e-9)
 
     def test_multiple_concurrent_jobs_do_not_cross_contaminate_results(self, test_client):
-        """Submits two DIFFERENT portfolios back-to-back (both jobs pending/
-        running -- genuinely concurrently, in separate worker-pool
-        processes, since engine/api/routes.py dispatches through
-        engine.portfolio.worker_pool -- at once) and confirms each job_id's
-        own result matches ONLY its own request -- a direct test of
-        engine/api/routes.py's _JOBS job_id -> Future keying, guarding
-        against a bug where one job's result could leak into another's
-        slot. See TestPortfolioPriceWorkerPoolDispatch below for a test
-        that additionally proves the two jobs run in genuinely separate
-        processes, not just that results don't cross-contaminate."""
+        """Two different portfolios submitted back to back each get only their own result
+        (`_JOBS` keying). Separate processes are shown in TestPortfolioPriceWorkerPoolDispatch."""
         body_a = {
             "evaluation_date": TODAY_ISO, "market": _market_schema(),
             "trades": [_swap_trade_schema(notional=1_000_000.0)], "pfe_quantiles": [0.95],
@@ -475,12 +444,9 @@ class TestCalibrationEndpoint:
 
 @pytest.mark.slow
 class TestPortfolioPricePrecision:
-    """PrecisionConfigSchema/PortfolioRequestSchema.precision -- the HTTP
-    surface over engine.portfolio.PrecisionConfig (see
-    tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision for the
-    dataclass-level equivalent). No `precision` key sent must behave
-    identically to an explicit all-64 block (Optional, not a populated
-    default -- see PortfolioRequestSchema's own docstring)."""
+    """The HTTP precision block (the dataclass level is
+    tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision). Omitting `precision`
+    equals sending all-64."""
 
     def _submit_and_poll(self, client, body, timeout_s=60):
         r = client.post("/portfolio/price", json=body)
@@ -500,10 +466,8 @@ class TestPortfolioPricePrecision:
         return data
 
     def test_explicit_precision_block_matches_direct_call(self, test_client):
-        """Submitting an explicit `"precision"` block over HTTP must match
-        calling price_portfolio directly with the equivalent PrecisionConfig
-        -- validates the schema wiring end-to-end (PrecisionConfigSchema ->
-        .to_dataclass() -> PrecisionConfig)."""
+        """An explicit precision block equals the direct call with the same
+        `PrecisionConfig`."""
         body = {
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
@@ -523,8 +487,7 @@ class TestPortfolioPricePrecision:
         np.testing.assert_allclose(http_npv, np.asarray(direct_result.npv_cube), rtol=1e-9)
 
     def test_omitted_precision_matches_explicit_all_64(self, test_client):
-        """No `precision` key sent must resolve to exactly PrecisionConfig()
-        (all-64) -- the same result as sending an explicit all-64 block."""
+        """No `precision` key equals an explicit all-64 block."""
         base_body = {
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
@@ -548,10 +511,8 @@ class TestPortfolioPricePrecision:
         )
 
     def test_float32_precision_response_close_but_not_identical_to_float64(self, test_client):
-        """The honest signal available at the JSON boundary: JSON floats
-        carry no dtype metadata, so a float32-precision response's values
-        are checked with pytest.approx (a tolerance), not exact equality,
-        against the equivalent float64 request."""
+        """JSON carries no dtype, so a float32 response is compared to float64 with a
+        tolerance."""
         base_body = {
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
@@ -572,12 +533,8 @@ class TestPortfolioPricePrecision:
         assert npv_32 != npv_64  # a genuinely lower-precision computation, not a no-op
 
     def test_invalid_precision_value_returns_400_not_a_failed_job(self, test_client):
-        """A malformed precision value ({"simulation": 16}) fails
-        PrecisionConfig.__post_init__'s validation, which
-        submit_portfolio_price already runs synchronously (via
-        request.to_dataclass()) before a job_id is ever created -- so this
-        must be an immediate 400 with the validator's own message, not a
-        202 followed by a failed job."""
+        """An invalid precision ({"simulation": 16}) fails validation synchronously: a 400
+        with the validator's message, before any job exists."""
         body = {
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
@@ -592,15 +549,9 @@ class TestPortfolioPricePrecision:
 
 @pytest.mark.slow
 class TestPortfolioPriceWorkerPoolDispatch:
-    """Confirms `/portfolio/price` genuinely dispatches through
-    `engine.portfolio.worker_pool` (see engine/api/routes.py's post-Phase-B
-    docstring), not just that polling still returns 202/200 the same way it
-    always did (TestPortfolioPriceHappyPath already covers that). Submits
-    two DIFFERENT-precision requests back-to-back and confirms both jobs are
-    simultaneously non-terminal shortly after submission -- i.e. the second
-    job actually started running in its own worker process rather than
-    sitting fully blocked behind the first job the way a single
-    `_PRICING_LOCK`-serialized in-process architecture would leave it."""
+    """`/portfolio/price` dispatches through `engine.portfolio.worker_pool`: two
+    different-precision jobs submitted back to back are both non-terminal shortly after
+    submission (the second is not blocked behind the first)."""
 
     def test_two_precisions_submitted_back_to_back_both_complete_correctly(self, test_client):
         body_64 = {
@@ -643,20 +594,13 @@ class TestPortfolioPriceWorkerPoolDispatch:
         np.testing.assert_allclose(
             data_32["result"]["base_npv"], direct_32.base_npv, rtol=1e-3,
         )
-        # A genuinely different-precision computation, not the same number
-        # twice -- confirms the two jobs didn't silently collapse onto the
-        # same worker/tier.
+        # Different precisions give different numbers (the jobs did not collapse onto one
+        # tier).
         assert data_64["result"]["base_npv"] != data_32["result"]["base_npv"]
 
     def test_job_id_maps_to_a_future_not_an_eagerly_computed_result(self, test_client):
-        """Immediately after submission (before any polling/sleep), the job
-        must not yet be in a terminal state for a portfolio large enough to
-        take measurable time -- i.e. `submit_portfolio_price` really does
-        return as soon as `worker_pool.submit_pricing_job` hands back a
-        `Future`, rather than blocking on `price_portfolio` itself before
-        responding. A regression here (e.g. accidentally calling
-        `future.result()` before returning the job_id) would make this
-        first read already "done"."""
+        """`submit_portfolio_price` returns as soon as it has a `Future`, without waiting
+        for the result."""
         body = {
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(scenarios=2048),
@@ -669,13 +613,8 @@ class TestPortfolioPriceWorkerPoolDispatch:
 
         immediate = test_client.get(f"/portfolio/price/{job_id}").json()
         assert immediate["status"] in ("pending", "done"), immediate
-        # Not asserting status == "pending" outright -- a sufficiently fast
-        # machine/warm pool could in principle finish before this second
-        # request lands, which would be a false failure, not evidence of a
-        # bug. The real regression this guards is submit_portfolio_price
-        # BLOCKING on the result before returning 202 at all, which the
-        # `assert r.status_code == 202` above (returned before any polling)
-        # already rules out.
+        # Not asserting "pending": a fast machine could finish first. The regression guarded
+        # (blocking before returning 202) is ruled out by the 202 above.
 
         deadline = time.time() + 90
         data = immediate
@@ -687,16 +626,9 @@ class TestPortfolioPriceWorkerPoolDispatch:
 
 @pytest.mark.slow
 class TestGapFixesSurviveTheHttpBoundary:
-    """The three closed gaps from tests/test_portfolio_gap_fixes.py must
-    also survive serialization AND the worker-process boundary, not just a
-    direct in-process `price_portfolio` call.
-
-    This matters because `POST /portfolio/price` runs the real work in a
-    separate OS process (`engine.portfolio.worker_pool`): a `warnings.warn`
-    raised in the worker, and any newly added result field, has to make it
-    back through `PortfolioResultSchema` to the polling caller. An
-    in-process test cannot prove that.
-    """
+    """The fixes of tests/test_portfolio_gap_fixes.py survive serialization and the
+    worker-process boundary (warnings and result fields raised in the worker must reach
+    the polling caller)."""
 
     @staticmethod
     def _submit_and_poll(client, body, timeout_s=120):
@@ -716,8 +648,7 @@ class TestGapFixesSurviveTheHttpBoundary:
         return data["result"]
 
     def test_swap_greeks_present_over_http(self, test_client):
-        """Pre-fix, `greeks` came back as an empty object for a swap-only
-        portfolio -- 202, then a successful job with nothing in it."""
+        """A swap-only portfolio returns swap Greeks (before the fix, an empty object)."""
         result = self._submit_and_poll(test_client, {
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),
@@ -725,7 +656,7 @@ class TestGapFixesSurviveTheHttpBoundary:
             "compute_greeks": True,
         })
         assert result["greeks"], "no Greeks returned for a swap-only portfolio"
-        # JSON object keys are strings, per PortfolioResultSchema's own contract.
+        # JSON object keys are strings.
         entry = result["greeks"]["0"]
         assert "discount_delta" in entry["values"]
         assert "forward_delta" in entry["values"]
@@ -742,8 +673,7 @@ class TestGapFixesSurviveTheHttpBoundary:
         assert result["base_npv"] == pytest.approx(sum(per_trade), rel=0.0, abs=1e-9)
 
     def test_aged_swap_warning_crosses_the_worker_boundary(self, test_client):
-        """A `warnings.warn` raised inside the worker PROCESS must arrive in
-        the polled JSON result -- the case an in-process test can't cover."""
+        """A warning raised in the worker process reaches the polled result."""
         result = self._submit_and_poll(test_client, {
             "evaluation_date": TODAY_ISO,
             "market": _market_schema(),

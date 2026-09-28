@@ -1,12 +1,10 @@
 """
-W0.1 -- bundle ingestion and hash verification
-(`docs/planning/traderx-integration-plan.md` §W0.1).
+Bundle ingestion and hash verification (`engine.integration.bundle`).
 
-Fixtures are the real delivered TraderX YU18 bundles, vendored under
-`tests/fixtures/traderx-eod/` with their committed LF bytes intact (the
-copies under `reference/traderX/` are CRLF-translated by this checkout's
-`core.autocrlf=true` and their hashes do not verify -- which is precisely
-what `TestCrlfTranslation` below exists to prove is caught).
+Fixtures are the delivered TraderX YU18 bundles, vendored under `tests/fixtures/traderx-eod/`
+with their committed LF bytes. (A Windows checkout with `core.autocrlf=true` can
+CRLF-translate the copies under `reference/traderX/`, which then fail verification;
+`TestCrlfTranslation` checks that this is caught.)
 """
 import hashlib
 import json
@@ -27,8 +25,7 @@ ALL_CASES = ("bill", "note", "sofr")
 
 @pytest.fixture
 def bundle_copy(tmp_path):
-    """Factory: copies a fixture bundle into tmp_path so a test can corrupt
-    it without touching the committed fixture."""
+    """Factory: copy a fixture bundle into tmp_path so a test can corrupt it."""
     def _copy(case: str, version: str = "v2") -> Path:
         dest = tmp_path / f"{case}-{version}"
         shutil.copytree(FIXTURES / case / version, dest)
@@ -37,11 +34,8 @@ def bundle_copy(tmp_path):
 
 
 def _rewrite_manifest(root: Path, mutate) -> None:
-    """Applies `mutate` to the parsed manifest and writes it back.
-
-    Written with an LF-only separator and binary mode, so the rewrite
-    itself never introduces the CRLF problem under test.
-    """
+    """Apply `mutate` to the parsed manifest and write it back with LF endings (so the
+    rewrite does not introduce CRLF)."""
     manifest = json.loads((root / "manifest.json").read_bytes())
     mutate(manifest)
     raw = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
@@ -63,15 +57,14 @@ class TestHappyPath:
 
     @pytest.mark.parametrize("case", ALL_CASES)
     def test_v2_carries_terms_v1_does_not(self, case):
-        """The version difference that actually matters downstream: v1 has
-        no terms artifact at all (plan §W0.2 step 5)."""
+        """v2 carries a terms artifact; v1 has none."""
         assert load_bundle(FIXTURES / case / "v2").has_terms is True
         assert load_bundle(FIXTURES / case / "v1").has_terms is False
         assert load_bundle(FIXTURES / case / "v1").terms is None
 
     def test_row_counts_match_the_delivered_population(self):
-        """bill/note carry two position rows (long + short, one account
-        each) and no contracts; sofr is the mirror image."""
+        """bill/note carry two position rows (long and short) and no contracts; sofr the
+        reverse."""
         note = load_bundle(FIXTURES / "note" / "v2")
         assert note.positions.row_count == 2
         assert note.contracts.row_count == 0
@@ -92,14 +85,12 @@ class TestHappyPath:
         note = load_bundle(FIXTURES / "note" / "v2")
         assert note.positions.preamble["rows"] == "2"
         assert note.positions.preamble["sessionDate"] == "2025-06-02"
-        # The long prose legends are retained too, so diagnostics can quote them.
+        # The prose legends are kept too, for diagnostics.
         assert "treasuryZeroCoupon" in note.positions.preamble
 
     def test_manifest_sha256_is_the_byte_digest_not_the_bundle_id(self):
-        """`manifest_sha256` is the digest of the manifest file as
-        delivered. `bundleId` is TraderX's digest over the canonical
-        manifest *without* bundleId. They are different values and
-        conflating them would break any workload key built on them."""
+        """`manifest_sha256` is the digest of the manifest file; `bundleId` is TraderX's
+        digest of the canonical manifest without bundleId. They differ."""
         bundle = load_bundle(FIXTURES / "note" / "v2")
         expected = hashlib.sha256((FIXTURES / "note" / "v2" / "manifest.json").read_bytes()).hexdigest()
         assert bundle.manifest_sha256 == expected
@@ -107,23 +98,21 @@ class TestHappyPath:
 
 
 class TestEachArtifactAgainstItsOwnHash:
-    """Plan §W0.1 step 2: verify each artifact against its OWN sha256, and
-    never against `cutSha256`."""
+    """Each artifact is verified against its own sha256, never against `cutSha256`."""
 
     @pytest.mark.parametrize("artifact", ("positions.csv", "contracts.csv", "instrument-terms.json"))
     def test_tampered_byte_is_rejected(self, bundle_copy, artifact):
         root = bundle_copy("note", "v2")
         path = root / artifact
         raw = path.read_bytes()
-        # Flip one byte in the final line, leaving length and structure intact.
+        # Flip one byte in the last line, keeping length and structure.
         path.write_bytes(raw[:-2] + bytes([raw[-2] ^ 0x01]) + raw[-1:])
 
         with pytest.raises(BundleIntegrityError, match="hash mismatch"):
             load_bundle(root)
 
     def test_appending_whitespace_is_rejected(self, bundle_copy):
-        """The terms file is 'hashed as supplied, so even whitespace changes
-        its artifact hash' (bundle-v2-and-terms.md)."""
+        """Even appended whitespace changes the terms artifact's hash."""
         root = bundle_copy("note", "v2")
         path = root / "instrument-terms.json"
         path.write_bytes(path.read_bytes() + b"\n")
@@ -132,9 +121,7 @@ class TestEachArtifactAgainstItsOwnHash:
             load_bundle(root)
 
     def test_artifact_is_not_checked_against_cut_sha256(self, bundle_copy):
-        """A loader that compared a CSV against `cutSha256` would pass this
-        (both files were left untouched) while rejecting the real bundle.
-        Substituting cutSha256 for the artifact's own hash must fail."""
+        """Putting `cutSha256` in place of an artifact's own hash fails."""
         root = bundle_copy("note", "v2")
         cut_sha = json.loads((root / "manifest.json").read_bytes())["cut"]["cutSha256"]
 
@@ -147,14 +134,8 @@ class TestEachArtifactAgainstItsOwnHash:
 
 
 class TestCrlfTranslation:
-    """Plan §W0.1's non-negotiable: a CRLF-translated fixture **fails
-    loudly**, never silently passes.
-
-    The bytes are rejected either way. What this class additionally pins is
-    that the failure *explains itself*, because a bare hash mismatch on
-    every file in a fresh Windows checkout is the exact confusion that
-    already broke TraderX's own verifier.
-    """
+    """A CRLF-translated artifact fails, and the error names CRLF translation as the cause
+    (a bare mismatch on every file is what confused TraderX's own verifier)."""
 
     @pytest.mark.parametrize("artifact", ("positions.csv", "instrument-terms.json"))
     def test_crlf_translated_artifact_fails(self, bundle_copy, artifact):
@@ -180,9 +161,7 @@ class TestCrlfTranslation:
         assert "will not normalize" in message
 
     def test_loader_does_not_normalize_to_make_it_pass(self, bundle_copy):
-        """The guard against the tempting 'fix': a loader that normalized
-        line endings before hashing would make the CRLF case pass. It must
-        not. This test fails against that implementation."""
+        """The loader does not normalize line endings to make a CRLF file pass."""
         root = bundle_copy("note", "v2")
         for name in ("positions.csv", "contracts.csv", "instrument-terms.json"):
             p = root / name
@@ -192,14 +171,8 @@ class TestCrlfTranslation:
             load_bundle(root)
 
     def test_the_vendored_reference_checkout_is_actually_crlf_corrupted(self):
-        """Documents *why* `tests/fixtures/traderx-eod/` exists as a
-        separate vendored copy rather than reading `reference/traderX/`
-        directly.
-
-        Skips rather than fails where the reference checkout is absent or
-        has been fixed -- the point is to record the hazard, not to require
-        that it stay broken.
-        """
+        """Why the fixtures are vendored: the reference checkout's copies are CRLF-translated
+        here. Skips where that checkout is absent or has been fixed."""
         ref = (
             Path(__file__).parents[1] / "reference" / "traderX" / "specs"
             / "YU18-eod-risk-bundles" / "generation" / "runtime-overrides"
@@ -215,9 +188,7 @@ class TestCrlfTranslation:
         assert "CRLF" in str(exc.value)
 
     def test_our_own_fixtures_are_committed_with_lf(self):
-        """The `.gitattributes` guard, asserted rather than assumed: if
-        these ever get CRLF-translated, every test in this file breaks at
-        once and this one says why."""
+        """The vendored fixtures are LF (the `.gitattributes` guard)."""
         for case in ALL_CASES:
             for version in ("v1", "v2"):
                 for path in (FIXTURES / case / version).iterdir():
@@ -228,7 +199,7 @@ class TestCrlfTranslation:
 
 
 class TestRowCountValidation:
-    """Plan §W0.1 step 3."""
+    """Row counts."""
 
     def test_manifest_row_count_disagreeing_with_artifact_fails(self, bundle_copy):
         root = bundle_copy("note", "v2")
@@ -241,15 +212,13 @@ class TestRowCountValidation:
             load_bundle(root)
 
     def test_preamble_row_count_disagreeing_with_manifest_fails(self, bundle_copy):
-        """Catches a truncation that took the preamble with it -- checking
-        the manifest alone would miss this."""
+        """A preamble count disagreeing with the manifest (a truncation that took the
+        preamble with it) fails."""
         root = bundle_copy("note", "v2")
         path = root / "positions.csv"
         path.write_bytes(path.read_bytes().replace(b"# rows=2", b"# rows=9"))
 
-        # Hash fails first (the bytes changed), which is itself correct; the
-        # point is the bundle is refused. Re-pin the hash to isolate the
-        # row-count check.
+        # Changing bytes fails the hash first; re-pin it to isolate the row-count check.
         def repin(manifest):
             manifest["artifacts"]["positions"]["sha256"] = hashlib.sha256(
                 path.read_bytes()
@@ -271,24 +240,19 @@ class TestRowCountValidation:
 
 
 class TestEmptyVersusMissing:
-    """Plan §W0.1 step 4 -- the distinction that must not collapse.
-
-    An empty contracts file means the cut had no OTC rows (valid, zero
-    coverage). A missing one means the bundle is incomplete (integrity
-    failure). Conflating them turns "no swaps today" into "broken bundle",
-    or silently prices an incomplete portfolio.
-    """
+    """An empty contracts file (no OTC rows) is valid; a missing one is an integrity
+    failure."""
 
     def test_empty_contracts_file_is_valid(self):
-        """The bill and note bundles ship exactly this: a contracts.csv
-        with a full preamble, a header, and zero data rows."""
+        """The bill and note bundles ship a contracts.csv with a preamble, a header and no
+        rows."""
         bundle = load_bundle(FIXTURES / "note" / "v2")
         assert bundle.contracts.row_count == 0
         assert bundle.contracts.header  # header present
         assert bundle.contracts.preamble["contracts"] == "0"
 
     def test_empty_positions_file_is_valid(self):
-        """The mirror image, delivered by the sofr bundle."""
+        """The sofr bundle ships an empty positions file."""
         bundle = load_bundle(FIXTURES / "sofr" / "v2")
         assert bundle.positions.row_count == 0
         assert bundle.positions.header
@@ -308,8 +272,7 @@ class TestEmptyVersusMissing:
             load_bundle(root)
 
     def test_the_two_conditions_raise_distinguishable_messages(self, bundle_copy):
-        """Explicitly pins that 'empty' and 'missing' do not produce the
-        same outcome: one loads, one raises."""
+        """Empty loads; missing raises."""
         empty = load_bundle(FIXTURES / "note" / "v2")
         assert empty.contracts.row_count == 0
 
@@ -350,8 +313,7 @@ class TestManifestValidation:
             load_bundle(root)
 
     def test_v1_manifest_carrying_a_terms_artifact_is_rejected(self, bundle_copy):
-        """A v1 bundle has no terms artifact by definition. One that claims
-        to is internally inconsistent."""
+        """A v1 manifest claiming a terms artifact is inconsistent and rejected."""
         root = bundle_copy("note", "v1")
 
         def add_terms(manifest):
@@ -375,15 +337,9 @@ class TestManifestValidation:
 
 
 class TestRequiredColumns:
-    """Schema drift: an artifact whose bytes are intact but whose shape is
-    not what the loader can consume.
-
-    These conditions are silent in `csv.DictReader` -- a short row's missing
-    column becomes `None`, a long row's surplus is bucketed under the `None`
-    key -- so without an explicit check the first symptom is a bare
-    `KeyError` from deep inside the join or the adapter, naming neither the
-    artifact nor the column, and taking the whole bundle down with it.
-    """
+    """Intact bytes with the wrong shape. `csv.DictReader` is silent about short and long
+    rows, so without these checks the first symptom would be a bare KeyError far
+    downstream."""
 
     def _repin(self, root: Path, name: str) -> None:
         path = root / f"{name}.csv"
@@ -431,9 +387,7 @@ class TestRequiredColumns:
             load_bundle(root)
 
     def test_the_failure_is_not_a_bare_key_error(self, bundle_copy):
-        """The point of checking at load time: the error names the artifact
-        and the column, and is the loader's own type rather than a KeyError
-        escaping from the adapter."""
+        """The error is the loader's own type and names the artifact and column."""
         from engine.integration import price_bundle
         root = bundle_copy("note", "v2")
         path = root / "positions.csv"
@@ -446,15 +400,14 @@ class TestRequiredColumns:
         assert "security" in str(exc.value)
 
     def test_valid_fixtures_still_pass(self):
-        """The guard must not reject the real artifacts."""
+        """The real artifacts still pass."""
         for case in ALL_CASES:
             for version in ("v1", "v2"):
                 assert load_bundle(FIXTURES / case / version)
 
 
 class TestPreambleAgreesWithManifest:
-    """A manifest and an artifact describing different cuts is two exports
-    in one directory, not a cosmetic inconsistency."""
+    """A manifest and an artifact describing different cuts are rejected."""
 
     def test_contradicting_cut_sha_is_rejected(self, bundle_copy):
         root = bundle_copy("note", "v2")
