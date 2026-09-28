@@ -314,11 +314,20 @@ omitted rather than reported as `0.0`.
 Every trade schema mirrors its dataclass field-for-field, with two representational
 differences (SWIG-bound `ORE` types aren't natively Pydantic-serializable):
 
-- `evaluation_date` fields are ISO date strings (`"2026-07-30"`), parsed via
-  `ORE.DateParser.parseISO`.
+- Date fields (`evaluation_date`, `effective_date`, `maturity_date`, `exercise_date`,
+  exercise dates) are ISO date strings (`"2026-07-30"`), parsed via
+  `ORE.DateParser.parseISO`. Historical `fixings` are `{"YYYY-MM-DD": rate}`.
 - `forward_start` (on `european_swaption` trades) is an ORE period string (`"5Y"`, `"18M"`,
   `"0D"`), parsed via `ORE.Period(str)` — the same parse
   `engine.portfolio.validation._validate_tenor` already validates for `swap_tenor`.
+
+A trade's schedule is given **either** as `effective_date`/`maturity_date` (plus
+`exercise_date` for a `european_swaption`) **or** as `swap_tenor` (plus, for a
+`european_swaption`, `forward_start`/`exercise_lag_days`), which is resolved to dates on
+the trade's evaluation date. Giving both is refused, and so is giving neither: there is no
+default tenor. A trade booked in the past is priced as the same, seasoned trade (audit
+[M-4](../planning/engine-audit.md#m-4)), and any coupon that fixed before the evaluation
+date needs its fixing in `fixings`.
 
 ### Automatic calibration: `hw_sigma: null` + `calibration_basket`
 

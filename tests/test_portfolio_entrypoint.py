@@ -59,7 +59,7 @@ def _build_trades():
         notional=800_000.0, fixed_rate=0.029, payer=False, rate_factor_index=0,
         hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
         first_exercise_date=ORE.Date(3, 8, 2027), last_exercise_date=ORE.Date(3, 8, 2028),
-        exercise_time_steps_per_year=1, evaluation_date=TODAY, n_per_std=64, std_devs=6.0,
+        swap_tenor="5Y", exercise_time_steps_per_year=1, evaluation_date=TODAY, n_per_std=64, std_devs=6.0,
     )
     return swap_cfg, swaption_cfg, bermudan_cfg, american_cfg
 

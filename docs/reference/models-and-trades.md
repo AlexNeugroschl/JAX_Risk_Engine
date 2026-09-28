@@ -243,9 +243,13 @@ all of it with one implementation, used by every instrument pricer and by
 | `DAY_COUNTER` | Deprecated alias for `TIME_AXIS_DAY_COUNTER`. Kept so existing imports work; it always meant the time axis. |
 | `SUPPORTED_ACCRUAL_DAY_COUNTS` | The **instrument accrual** allowlist: `ACT/365` (default) and `ACT/ACT (ICMA)`. **Defined in [`engine/day_count.py`](../../engine/day_count.py) and re-exported here** — see below. |
 | `resolve_accrual_day_count(name)` | Name → `ORE.DayCounter`, raising `UnsupportedDayCountError` for anything outside the allowlist. Also re-exported from `engine/day_count.py`. |
-| `build_vanilla_swap(...)` | Builds a real `ORE.VanillaSwap` via `ORE.MakeVanillaSwap` — schedules, day counts, and conventions all come from ORE's own machinery, not a reimplementation. `forward_start` (an `ORE.Period` delaying the first accrual beyond the standard spot lag) defaults to `None`; `european_swaption.py` and `engine.calibration.basket.build_coterminal_basket` are the callers that pass a non-default value. `accrual_day_count` defaults to ACT/365. |
-| `LegCashflows` | One leg's schedule as year-fractions from `today`: `payment_times`, `accrual_start_times`, `accrual_end_times`, `accrual_fractions`, `notional`. |
-| `fixed_leg_cashflows`, `floating_leg_cashflows` | Extract a `LegCashflows` from a real `ORE.VanillaSwap`'s fixed/floating leg. |
+| `build_vanilla_swap(...)` | Builds a real `ORE.VanillaSwap` via `ORE.MakeVanillaSwap` from the booked `effective_date`/`maturity_date` — schedules, day counts, and conventions all come from ORE's own machinery, not a reimplementation, and nothing depends on the evaluation date (audit M-4). `accrual_day_count` defaults to ACT/365. |
+| `resolve_swap_dates(trade_date, swap_tenor, forward_start=None)` | A tenor-quoted swap's `(effective_date, maturity_date)` by `MakeVanillaSwap`'s own rule — what a config's `swap_tenor` is resolved with, once, at booking. `engine.calibration.basket` uses it too: a market quote's expiry and tenor are measured from today. |
+| `book_swap_dates(cfg, swap_tenor, forward_start=None)` | The shared `__post_init__` step: resolve a tenor or require the dates, never both. |
+| `known_fixing(fixing_date, today, fixings)` | ORE's `InterestRateIndex::fixing`: forecast after today, today's supplied-or-forecast, an earlier one must be supplied (`MissingFixingError`). |
+| `is_live(cashflow_date, today)` | ORE's `hasOccurred` with default settings: a cashflow paid on `today` has occurred. |
+| `LegCashflows` | One leg's REMAINING cashflows on `today`, as year-fractions from `today`: `payment_times`, `accrual_start_times`, `accrual_end_times`, `accrual_fractions`, `notional`; for a floating leg read with fixings, `is_fixed`/`fixed_rates`. |
+| `fixed_leg_cashflows`, `floating_leg_cashflows` | Extract a `LegCashflows` from a real `ORE.VanillaSwap`'s fixed/floating leg, leaving out cashflows already paid. |
 
 ### Where the accrual vocabulary lives (moved in W1.3)
 

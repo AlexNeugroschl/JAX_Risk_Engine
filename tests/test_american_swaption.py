@@ -84,11 +84,14 @@ class TestOptionTimes:
                                  exercise_time_steps_per_year=steps_per_year)
             assert cfg.option_times() == [pytest.approx(2.0)]
 
-    def test_a_window_opening_in_the_past_starts_at_time_zero(self):
-        """`t1 = max(0, t(first))`: unlike a Bermudan date, an American
-        window already open is exercisable today."""
+    def test_a_window_opening_in_the_past_starts_tomorrow(self):
+        """An American window already open is exercisable from the day after
+        the evaluation date, never on it: ORE's `ExerciseBuilder` moves the
+        first date to `max(today + 1, first)` before the engine sees it
+        (I-35). Checked against ORE's own engine in
+        tests/test_trade_dates.py."""
         cfg = _make_american(first_exercise_date=EVAL_DATE - 30, last_exercise_date=in_years(EVAL_DATE, 1.0))
-        assert cfg.option_times()[0] == 0.0
+        assert cfg.option_times()[0] == 1.0 / 365.0
 
 
 class TestBrokenPeriodExercise:

@@ -42,7 +42,7 @@ import pytest
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, price_bermudan_swaption_base
 from engine.models.lgm import Sigma
-from engine.models.ore_builders import build_vanilla_swap
+from engine.models.ore_builders import build_vanilla_swap, resolve_swap_dates
 from engine.simulation.market_model import ZeroCurveConfig
 from engine.validation.ore_lgm_oracle import ore_lgm_swaption_npv
 
@@ -71,7 +71,8 @@ ATOL = 1e-7  # currency units on a 1e6 notional, for small out-of-the-money valu
 
 
 def _swap(fixed_rate: float, payer: bool) -> ORE.VanillaSwap:
-    return build_vanilla_swap(NOTIONAL, fixed_rate, payer, SWAP_TENOR, INDEX_TENOR_MONTHS, 0.0, EVAL_DATE)
+    effective_date, maturity_date = resolve_swap_dates(EVAL_DATE, SWAP_TENOR)
+    return build_vanilla_swap(NOTIONAL, fixed_rate, payer, effective_date, maturity_date, INDEX_TENOR_MONTHS, 0.0)
 
 
 def _fixed_starts(swap) -> list:

@@ -15,6 +15,9 @@ returns a closure whose only inputs are pillar-rate arrays, so it can be
 
 The curve passed in fixes the pillar TIMES (and, through its dtype, the
 working precision); the rates it carries are only the base point.
+
+An option already expired on its evaluation date prices to a constant 0
+(ORE's `isExpired`), so all its sensitivities are 0.
 """
 import dataclasses
 
@@ -22,7 +25,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from engine.instruments.swap import SwapConfig, _build_ore_swap, _price_one_swap, prepare_swap
+from engine.instruments.swap import SwapConfig, _price_one_swap, prepare_swap, swap_schedule
 from engine.instruments.european_swaption import (
     SwaptionConfig,
     _bond_call,
@@ -38,7 +41,6 @@ from engine.instruments.bermudan_swaption import (
     prepare_bermudan,
 )
 from engine.instruments.treasury import bond_price_function  # noqa: F401  (re-export)
-from engine.models.ore_builders import fixed_leg_cashflows, floating_leg_cashflows
 from engine.models.hull_white import A as _hw_A, ZeroCurve, discount as _discount_at, zero_rate as _zero_rate_at
 from engine.models.lgm import Sigma, as_sigma
 
@@ -84,19 +86,12 @@ def swap_price_function(cfg: SwapConfig, disc_curve: ZeroCurve, fwd_curve: ZeroC
     # lists fields explicitly silently drops any it forgets, which is how
     # `accrual_day_count` used to fall back to ACT/365 on this path.
     local_cfg = dataclasses.replace(cfg, discount_curve_index=0, forward_curve_index=1)
-    swap = _build_ore_swap(local_cfg)
-    today = local_cfg.evaluation_date
-    fixed = fixed_leg_cashflows(swap, today)
-    floating = floating_leg_cashflows(swap, today)
 
     # The swap's own cashflow dates, deduplicated -- exactly the set of
     # times the curve needs to be evaluated at (via interpolation, not a
     # fixed pillar lookup), used both as the "maturities" pillar array
     # AND as the query points for the differentiable curve.
-    maturities = sorted(set(
-        fixed.payment_times.tolist() + floating.payment_times.tolist()
-        + floating.accrual_start_times.tolist() + floating.accrual_end_times.tolist()
-    ))
+    maturities = swap_schedule(local_cfg).pillar_times()
     prepared_swap = prepare_swap(local_cfg, np.asarray(maturities))
     # Derived from disc_curve's own dtype (not hardcoded) -- disc_curve/
     # fwd_curve carry whatever dtype the caller built them at (governed by
@@ -133,6 +128,8 @@ def swaption_price_function(cfg: SwaptionConfig, curve: ZeroCurve):
     option-pricing formulas themselves. Trade structure (cashflow times/
     amounts, exercise time) is resolved via `prepare_swaption` ONCE,
     outside the returned closure, exactly like `_swap_price_fn` above."""
+    if cfg.is_expired():
+        return lambda pillar_rates: jnp.zeros((), dtype=pillar_rates.dtype) * jnp.sum(pillar_rates)
     swaption = prepare_swaption(cfg)
     a = swaption.hw_a
     sigma = swaption.hw_sigma
@@ -233,9 +230,13 @@ def bermudan_price_function(cfg: BermudanSwaptionConfig, curve: ZeroCurve):
     """
     from dataclasses import replace
 
-    swap = prepare_bermudan(cfg)
     base_sigma = as_sigma(cfg.hw_sigma)
     sigma_times = base_sigma.times
+    if cfg.is_expired():
+        def expired_fn(pillar_rates, sigma_values):
+            return jnp.zeros((), dtype=pillar_rates.dtype) * (jnp.sum(pillar_rates) + jnp.sum(sigma_values))
+        return expired_fn, base_sigma.values
+    swap = prepare_bermudan(cfg)
 
     def price_fn(pillar_rates: jax.Array, sigma_values: jax.Array) -> jax.Array:
         local_swap = replace(

@@ -53,10 +53,18 @@ re-pricing with a fresh `JamshidianSwaptionEngine`), matching to the same
 ~1e-6 relative precision as the t=0 case. Once `t` passes the option's own
 exercise time `T0`, NPV is reported as exactly 0 (a European option carries
 no value after its own expiry).
+
+Trade dates (audit M-4): a `SwaptionConfig` holds its booked
+`exercise_date` and the underlying's `effective_date`/`maturity_date`. On a
+later evaluation date the same config is the same option, closer to
+expiry; on or after its exercise date it has expired and is worth 0, ORE's
+`Instrument::isExpired` convention. Checked against
+`ORE.JamshidianSwaptionEngine` on a later evaluation date in
+tests/test_trade_dates.py.
 """
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from functools import partial
-from typing import List
+from typing import List, Optional
 
 import jax
 import jax.numpy as jnp
@@ -65,8 +73,14 @@ import ORE
 
 from engine.simulation.market_model import ZeroCurveConfig
 from engine.models.static_key import StaticKeyMixin
-from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER, build_vanilla_swap
-from engine.portfolio.validation import _validate_common_fields, _validate_hw_sigma, _validate_tenor
+from engine.models.ore_builders import (
+    SWAP_CALENDAR,
+    TIME_AXIS_DAY_COUNTER,
+    book_swap_dates,
+    build_vanilla_swap,
+    is_live,
+)
+from engine.portfolio.validation import _validate_common_fields, _validate_hw_sigma
 from engine.models.hull_white import (
     A as _hw_A,
     B as _hw_B,
@@ -106,23 +120,24 @@ class SwaptionConfig:
     closed-form bond-price/bond-option formulas directly, and there is no
     way to recover them from the simulated paths alone.
 
-    swap_tenor/index_tenor_months/floating_spread: same meaning as
-    engine.instruments.swap.SwapConfig, describing the underlying swap ORE
-    builds via MakeVanillaSwap.
+    exercise_date / effective_date / maturity_date: the booked option expiry
+    and the underlying swap's schedule start and (unadjusted) end, as in an
+    ORE swaption's `OptionData`/`ScheduleData`. They define the trade;
+    `evaluation_date` only says when it is priced (audit M-4).
+    index_tenor_months/floating_spread: same meaning as
+    engine.instruments.swap.SwapConfig.
 
-    forward_start: an ORE.Period the underlying swap's first accrual is
-    delayed by beyond the standard spot lag (e.g. ORE.Period(5, ORE.Years)
-    for a swaption exercisable in 5Y -- the common case, since a spot-lag-
-    only exercise date is only ~2 days away and expires almost immediately
-    in any simulation with a coarser time grid). Defaults to no delay (just
-    the standard 2-day spot lag, like swap.SwapConfig).
+    Booking by tenor instead of dates -- resolved ONCE, at construction, on
+    `evaluation_date`, and not stored (see `SwapConfig.swap_tenor`):
 
-    exercise_lag_days: business days from evaluation_date + forward_start to
-    the option's exercise date (2 = standard spot lag, matching
-    MakeVanillaSwap's own default settlement-day convention -- so with no
-    forward_start, the exercise date coincides with the swap's own spot-lag
-    accrual start, and with a forward_start it precedes that start by the
-    same 2-day convention).
+      * swap_tenor: the underlying's length, e.g. "5Y";
+      * forward_start: an ORE.Period the underlying's first accrual is
+        delayed by beyond the standard spot lag (e.g. ORE.Period(5,
+        ORE.Years) for a swaption exercisable in 5Y). Defaults to none;
+      * exercise_lag_days: business days from evaluation_date +
+        forward_start to the exercise date. Defaults to 2, the standard
+        spot lag, so with no forward_start the exercise date coincides with
+        the underlying's spot-lag accrual start.
     """
     notional: float
     fixed_rate: float
@@ -131,19 +146,53 @@ class SwaptionConfig:
     hw_a: float
     hw_sigma: float
     initial_zero_curve: ZeroCurveConfig
-    swap_tenor: str = "5Y"
+    exercise_date: Optional[ORE.Date] = None
+    effective_date: Optional[ORE.Date] = None
+    maturity_date: Optional[ORE.Date] = None
+    swap_tenor: InitVar[Optional[str]] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
-    forward_start: ORE.Period = field(default_factory=lambda: ORE.Period(0, ORE.Days))
-    exercise_lag_days: int = 2
+    forward_start: InitVar[Optional[ORE.Period]] = None
+    exercise_lag_days: InitVar[Optional[int]] = None
     evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, swap_tenor, forward_start, exercise_lag_days) -> None:
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
-        _validate_tenor(self.swap_tenor, "swap_tenor")
+        if swap_tenor is not None:
+            if self.exercise_date is not None:
+                raise ValueError("give either swap_tenor or exercise_date/effective_date/maturity_date, not both")
+            self.exercise_date = resolve_exercise_date(
+                self.evaluation_date, forward_start, 2 if exercise_lag_days is None else exercise_lag_days)
+        elif exercise_lag_days is not None:
+            raise ValueError("exercise_lag_days is only meaningful with swap_tenor")
+        book_swap_dates(self, swap_tenor, forward_start)
+        if not isinstance(self.exercise_date, ORE.Date):
+            raise TypeError(f"exercise_date must be an ORE.Date; got {self.exercise_date!r}")
+        if not self.exercise_date < self.maturity_date:
+            raise ValueError(
+                f"exercise_date ({self.exercise_date}) must be before maturity_date ({self.maturity_date})")
         if self.hw_sigma is None:
             raise ValueError("hw_sigma is required for a European swaption")
         _validate_hw_sigma(self.hw_sigma)
+
+    def is_expired(self) -> bool:
+        """ORE's `Instrument::isExpired` for a European swaption: the
+        exercise date is on or before the evaluation date."""
+        return not is_live(self.exercise_date, self.evaluation_date)
+
+
+def resolve_exercise_date(trade_date: ORE.Date, forward_start, exercise_lag_days: int) -> ORE.Date:
+    """The exercise date of a swaption booked by tenor on `trade_date`:
+    `exercise_lag_days` business days after the forward-start point
+    (`trade_date` itself with no forward start), NOT after the underlying's
+    accrual start -- which is already the forward-start point pushed out by
+    the index's own spot lag, so subtracting the lag from it a second time
+    would double-count it (live-verified: with no forward_start,
+    ORE.JamshidianSwaptionEngine.NPV() at that double-lagged date collapses
+    to exactly 0, since it lands back on the trade date)."""
+    forward_start = forward_start if forward_start is not None else ORE.Period(0, ORE.Days)
+    forward_start_date = SWAP_CALENDAR.advance(trade_date, forward_start)
+    return SWAP_CALENDAR.advance(forward_start_date, exercise_lag_days, ORE.Days)
 
 
 def _build_ore_swap(cfg: SwaptionConfig) -> ORE.VanillaSwap:
@@ -152,9 +201,8 @@ def _build_ore_swap(cfg: SwaptionConfig) -> ORE.VanillaSwap:
     the single shared implementation of this construction."""
     return build_vanilla_swap(
         notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
-        swap_tenor=cfg.swap_tenor, index_tenor_months=cfg.index_tenor_months,
-        floating_spread=cfg.floating_spread, evaluation_date=cfg.evaluation_date,
-        forward_start=cfg.forward_start,
+        effective_date=cfg.effective_date, maturity_date=cfg.maturity_date,
+        index_tenor_months=cfg.index_tenor_months, floating_spread=cfg.floating_spread,
     )
 
 
@@ -203,32 +251,20 @@ def prepare_swaption(cfg: SwaptionConfig) -> _PreparedSwaption:
     curve -- both true here since Jamshidian's trick is single-curve).
 
     T_start is NOT assumed to equal the exercise time T0: for a
-    forward-starting swap (SwaptionConfig.forward_start != 0), the
-    underlying's first accrual begins `exercise_lag_days` AFTER the
-    exercise date (the same spot-lag convention MakeVanillaSwap itself
-    applies), so `P(T0,T_start)` in the identity above is a genuine
-    (near-1, but not exactly 1) discount factor, not an identity -- an
-    earlier version of this module assumed T_start == T0 unconditionally,
-    which is only exactly true for a NON-forward-starting swaption (spot
-    lag and exercise lag coincide there) and was caught by cross-checking a
-    forward-starting swaption directly against
-    ORE.JamshidianSwaptionEngine.NPV(), which diverged by ~1% until this
-    term was added -- see this module's test suite for the regression test.
+    forward-starting swap booked by tenor, the underlying's first accrual
+    begins `exercise_lag_days` AFTER the exercise date (the same spot-lag
+    convention MakeVanillaSwap itself applies), so `P(T0,T_start)` in the
+    identity above is a genuine (near-1, but not exactly 1) discount
+    factor, not an identity -- an earlier version of this module assumed
+    T_start == T0 unconditionally and diverged from
+    ORE.JamshidianSwaptionEngine.NPV() by ~1% until this term was added --
+    see this module's test suite for the regression test. T_start is the
+    fixed leg's first accrual start, ORE's `valueTime`
+    (`arguments_.fixedResetDates[0]`).
     """
     swap = _build_ore_swap(cfg)
     today = cfg.evaluation_date
     accrual_start_date = ORE.as_fixed_rate_coupon(swap.fixedLeg()[0]).accrualStartDate()
-    # Exercise date: exercise_lag_days before the FORWARD-START point (today,
-    # for a non-forward-starting swaption), NOT before accrual_start_date --
-    # accrual_start_date is already the forward-start point pushed out by the
-    # index's own spot lag, so subtracting exercise_lag_days from it a
-    # SECOND time would double-count that lag (live-verified: with no
-    # forward_start, ORE.JamshidianSwaptionEngine.NPV() at that
-    # double-lagged date collapses to exactly 0, since it lands back on
-    # `today` itself -- a zero-maturity option is worthless by
-    # construction, not a pricing bug).
-    forward_start_date = ORE.TARGET().advance(today, cfg.forward_start)
-    exercise_date = ORE.TARGET().advance(forward_start_date, cfg.exercise_lag_days, ORE.Days)
 
     fixed_times, fixed_amounts = [], []
     for cf in swap.fixedLeg():
@@ -239,7 +275,7 @@ def prepare_swaption(cfg: SwaptionConfig) -> _PreparedSwaption:
     return _PreparedSwaption(
         payer=cfg.payer,
         notional=swap.fixedNominals()[0] if swap.fixedNominals() else swap.nominal(),
-        exercise_time=TIME_AXIS_DAY_COUNTER.yearFraction(today, exercise_date),
+        exercise_time=TIME_AXIS_DAY_COUNTER.yearFraction(today, cfg.exercise_date),
         accrual_start_time=TIME_AXIS_DAY_COUNTER.yearFraction(today, accrual_start_date),
         fixed_cashflow_times=np.array(fixed_times),
         fixed_cashflow_amounts=np.array(fixed_amounts),
@@ -577,8 +613,13 @@ def price_swaptions(hw_paths: jax.Array, step_times: jax.Array, swaption_configs
         swaption's own exercise date -- see _price_one_swaption).
     """
     step_times_jax = jnp.asarray(step_times, dtype=hw_paths.dtype)
-    prepared = [prepare_swaption(cfg) for cfg in swaption_configs]
-    per_trade = [_price_one_swaption(hw_paths, step_times_jax, swaption) for swaption in prepared]
+    per_trade = [
+        # An expired option is worth 0 everywhere (ORE's isExpired); its
+        # exercise time is not in the future, so the formula does not apply.
+        jnp.zeros(hw_paths.shape[:2], dtype=hw_paths.dtype) if cfg.is_expired()
+        else _price_one_swaption(hw_paths, step_times_jax, prepare_swaption(cfg))
+        for cfg in swaption_configs
+    ]
     return jnp.stack(per_trade, axis=-1)
 
 

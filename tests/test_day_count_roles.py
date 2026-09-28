@@ -34,6 +34,7 @@ from engine.models.ore_builders import (
     fixed_leg_cashflows,
     floating_leg_cashflows,
     resolve_accrual_day_count,
+    resolve_swap_dates,
 )
 from engine.instruments.swap import SwapConfig
 
@@ -42,9 +43,10 @@ EVAL_DATE = ORE.DateParser.parseISO("2025-06-02")
 
 def _swap(accrual=None, tenor="5Y"):
     kwargs = {} if accrual is None else {"accrual_day_count": accrual}
+    effective_date, maturity_date = resolve_swap_dates(EVAL_DATE, tenor)
     return build_vanilla_swap(
-        notional=1_000_000.0, fixed_rate=0.04, payer=True, swap_tenor=tenor,
-        index_tenor_months=6, floating_spread=0.0, evaluation_date=EVAL_DATE,
+        notional=1_000_000.0, fixed_rate=0.04, payer=True, effective_date=effective_date,
+        maturity_date=maturity_date, index_tenor_months=6, floating_spread=0.0,
         **kwargs,
     )
 
@@ -74,7 +76,7 @@ class TestDefaultsAreByteIdentical:
         assert SwapConfig(
             notional=1e6, fixed_rate=0.04, payer=True,
             discount_curve_index=0, forward_curve_index=0,
-            evaluation_date=EVAL_DATE,
+            swap_tenor="5Y", evaluation_date=EVAL_DATE,
         ).accrual_day_count == "ACT/365"
 
 
@@ -189,7 +191,7 @@ class TestUnsupportedDayCountIsRefused:
             SwapConfig(
                 notional=1e6, fixed_rate=0.04, payer=True,
                 discount_curve_index=0, forward_curve_index=0,
-                evaluation_date=EVAL_DATE, accrual_day_count="ACT/360",
+                swap_tenor="5Y", evaluation_date=EVAL_DATE, accrual_day_count="ACT/360",
             )
 
     def test_an_ore_daycounter_passes_through(self):

@@ -557,6 +557,14 @@ npv_cube = price_swaps(market["yield_curves"], config.rates.maturities, [swap])
 print(npv_cube.shape)              # (1024, 2, 1)  ->  [Scenarios, TimeSteps, Trades]
 ```
 
+`swap_tenor="1Y"` books a one-year swap starting at spot on `evaluation_date`. It is
+resolved once, to the swap's `effective_date`/`maturity_date`, and those dates are the trade:
+`dataclasses.replace(swap, evaluation_date=later)` prices the same swap on a later day, with
+any coupon it has already paid gone. A trade booked in the past can be given its dates
+directly (`effective_date=..., maturity_date=...` instead of `swap_tenor`). A coupon that
+fixed before the evaluation date also needs its rate in `fixings={fixing_date: rate}`, which
+ORE requires too.
+
 `price_swaps` accepts a *list* of `SwapConfig` objects — pass several to price a whole
 portfolio at once; the output's last axis (`Trades`) will have one entry per swap, in
 the order given.

@@ -180,6 +180,14 @@ def _build_european_swaptions():
     ]
 
 
+def _expires_near(cfg, years: int) -> bool:
+    """Whether a European swaption's exercise date falls within a week after
+    the whole-year point `years` from TODAY -- a trade forward-started by
+    exactly that many years, whose NPV there is near zero."""
+    point = ORE.TARGET().advance(TODAY, ORE.Period(years, ORE.Years))
+    return point <= cfg.exercise_date <= point + 7
+
+
 def _build_bermudan_swaptions():
     """4 Bermudan swaptions: varying exercise schedules (sparse vs dense,
     early-start vs late-start), tenor, payer/receiver, across 2 rate
@@ -388,8 +396,9 @@ def _price_swaps_ore(swaps, rates_t: np.ndarray, t_eval: float):
         idx_map = idx_t0_3m if cfg.index_tenor_months == 3 else idx_t0
         swap_type = ORE.VanillaSwap.Payer if cfg.payer else ORE.VanillaSwap.Receiver
         s = ORE.MakeVanillaSwap(
-            ORE.Period(cfg.swap_tenor), idx_map[cfg.forward_curve_index], cfg.fixed_rate,
+            ORE.Period(0, ORE.Days), idx_map[cfg.forward_curve_index], cfg.fixed_rate,
             nominal=cfg.notional, swapType=swap_type, fixedLegDayCount=dc, floatingLegDayCount=dc,
+            effectiveDate=cfg.effective_date, terminationDate=cfg.maturity_date,
         )
         s.setPricingEngine(ORE.DiscountingSwapEngine(curves_t0[cfg.discount_curve_index]))
         return s
@@ -418,8 +427,9 @@ def _price_swaps_ore(swaps, rates_t: np.ndarray, t_eval: float):
             idx_map = idx3 if cfg.index_tenor_months == 3 else idx6
             swap_type = ORE.VanillaSwap.Payer if cfg.payer else ORE.VanillaSwap.Receiver
             s = ORE.MakeVanillaSwap(
-                ORE.Period(cfg.swap_tenor), idx_map[cfg.forward_curve_index], cfg.fixed_rate,
+                ORE.Period(0, ORE.Days), idx_map[cfg.forward_curve_index], cfg.fixed_rate,
                 nominal=cfg.notional, swapType=swap_type, fixedLegDayCount=dc, floatingLegDayCount=dc,
+                effectiveDate=cfg.effective_date, terminationDate=cfg.maturity_date,
             )
             s.setPricingEngine(ORE.DiscountingSwapEngine(implied_curves[cfg.discount_curve_index]))
             total += s.NPV()
@@ -474,13 +484,11 @@ def _price_european_swaptions_ore(euro_swaptions, rates_t: np.ndarray, t_eval_ye
         k = cfg.rate_factor_index
         swap_type = ORE.VanillaSwap.Payer if cfg.payer else ORE.VanillaSwap.Receiver
         underlying = ORE.MakeVanillaSwap(
-            ORE.Period(cfg.swap_tenor), idx_t0[k], cfg.fixed_rate,
+            ORE.Period(0, ORE.Days), idx_t0[k], cfg.fixed_rate,
             nominal=cfg.notional, swapType=swap_type, fixedLegDayCount=dc, floatingLegDayCount=dc,
-            forwardStart=cfg.forward_start,
+            effectiveDate=cfg.effective_date, terminationDate=cfg.maturity_date,
         )
-        fwd_pt = ORE.TARGET().advance(TODAY, cfg.forward_start)
-        ex_date = ORE.TARGET().advance(fwd_pt, cfg.exercise_lag_days, ORE.Days)
-        swaption = ORE.Swaption(underlying, ORE.EuropeanExercise(ex_date))
+        swaption = ORE.Swaption(underlying, ORE.EuropeanExercise(cfg.exercise_date))
         swaption.setPricingEngine(ORE.JamshidianSwaptionEngine(hw_t0[k], curves_t0[k]))
         return swaption
 
@@ -509,24 +517,16 @@ def _price_european_swaptions_ore(euro_swaptions, rates_t: np.ndarray, t_eval_ye
         total = 0.0
         for cfg in euro_swaptions:
             k = cfg.rate_factor_index
-            forward_years = cfg.forward_start.length() if cfg.forward_start.units() == ORE.Years else 0
-            remaining_years = forward_years - t_eval_years
-            if remaining_years <= 0:
-                # Already past forward-start point at eval time -- only
-                # trades with forward_start >= t_eval_years are meaningful
-                # here; the test suite only ever calls this at step times
-                # before every included trade's own forward_start.
-                continue
-            fwd_period = ORE.Period(remaining_years, ORE.Years)
+            if cfg.exercise_date <= eval_date:
+                continue  # expired by then: worth 0, as the engine reports
+            # The SAME booked trade, one step older (audit M-4).
             swap_type = ORE.VanillaSwap.Payer if cfg.payer else ORE.VanillaSwap.Receiver
             underlying = ORE.MakeVanillaSwap(
-                ORE.Period(cfg.swap_tenor), idx_eval[k], cfg.fixed_rate,
+                ORE.Period(0, ORE.Days), idx_eval[k], cfg.fixed_rate,
                 nominal=cfg.notional, swapType=swap_type, fixedLegDayCount=dc, floatingLegDayCount=dc,
-                forwardStart=fwd_period,
+                effectiveDate=cfg.effective_date, terminationDate=cfg.maturity_date,
             )
-            fwd_pt = ORE.TARGET().advance(eval_date, fwd_period)
-            ex_date = ORE.TARGET().advance(fwd_pt, cfg.exercise_lag_days, ORE.Days)
-            swaption = ORE.Swaption(underlying, ORE.EuropeanExercise(ex_date))
+            swaption = ORE.Swaption(underlying, ORE.EuropeanExercise(cfg.exercise_date))
             swaption.setPricingEngine(ORE.JamshidianSwaptionEngine(hw_eval[k], implied_curves[k]))
             total += swaption.NPV()
         return total
@@ -650,8 +650,7 @@ class TestLargeHeterogeneousPortfolio:
         well-conditioned relative-error check."""
         rates_t = portfolio["rates"][:, step_idx, :]
         assert portfolio["step_times"][step_idx] == pytest.approx(float(t_eval_years))
-        well_conditioned = [c for c in portfolio["euros"] if c.forward_start.length() != t_eval_years
-                             or c.forward_start.units() != ORE.Years]
+        well_conditioned = [c for c in portfolio["euros"] if not _expires_near(c, t_eval_years)]
         assert len(well_conditioned) == 4
         indices = [i for i, c in enumerate(portfolio["euros"]) if c in well_conditioned]
 
@@ -765,7 +764,7 @@ class TestPortfolioLevelRiskAggregation:
         after-the-fact filtering, so `mine`'s own risk metrics are computed
         on the IDENTICAL trade set the ORE side prices, not a superset)."""
         all_euros = _build_european_swaptions()
-        euros = [c for c in all_euros if c.forward_start.length() != 2 or c.forward_start.units() != ORE.Years]
+        euros = [c for c in all_euros if not _expires_near(c, 2)]
         assert len(euros) == 4
         scenarios = 4096
         result = _price_full_portfolio_engine(scenarios, [], euros, [], [], [])
@@ -1198,7 +1197,8 @@ class TestCalibrationAndGreeksAcrossDiversePortfolio:
             notional=sparse_cfg.notional, fixed_rate=sparse_cfg.fixed_rate, payer=sparse_cfg.payer,
             rate_factor_index=sparse_cfg.rate_factor_index, hw_a=sparse_cfg.hw_a, hw_sigma=sparse_cfg.hw_sigma,
             initial_zero_curve=sparse_cfg.initial_zero_curve,
-            exercise_dates=in_years(TODAY, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), swap_tenor=sparse_cfg.swap_tenor,
+            exercise_dates=in_years(TODAY, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            effective_date=sparse_cfg.effective_date, maturity_date=sparse_cfg.maturity_date,
             evaluation_date=sparse_cfg.evaluation_date,
         )
         sparse_npv = price_bermudan_swaption_base(sparse_cfg)

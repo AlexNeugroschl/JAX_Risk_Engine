@@ -15,9 +15,20 @@ leg's forward rates are read off `forward_curve_index`. This mirrors ORE's
 `DiscountingSwapEngine` (single discount curve) + `IborIndex` (its own,
 possibly different, `forwardingTermStructure`) split.
 
-**Known limitation: no representation of an already-fixed/elapsed coupon.**
-`_price_one_swap` computes every cashflow's forward rate and discount factor
-using `yield_curves[scenario, step, ...]`, which represents the model's
+**Trade dates (audit M-4).** A `SwapConfig` holds its booked
+`effective_date`/`maturity_date`; the schedule never depends on the
+evaluation date, so the same config is the same trade on every date. On an
+evaluation date after the effective date the swap is SEASONED and is priced
+as ORE prices it: cashflows paid on or before that date are gone
+(`ore_builders.is_live`), and a floating coupon whose fixing date has
+passed pays its historical fixing from `SwapConfig.fixings` -- a missing one
+raises, as it does in ORE (`ore_builders.known_fixing`). Checked against
+`ORE.DiscountingSwapEngine` in tests/test_trade_dates.py.
+
+**Known limitation: no representation of a coupon that fixes DURING the
+simulation.** Historical fixings cover coupons fixed before the evaluation
+date. At a simulated step past a later fixing, `_price_one_swap` computes
+every cashflow's forward rate and discount factor using `yield_curves[scenario, step, ...]`, which represents the model's
 conditional discount factor P(step_time, maturity) -- a well-defined
 quantity only for maturity >= step_time (see
 simulation.reconstruct_yield_curves' B(t,T) clamp at T<t). For a
@@ -34,7 +45,8 @@ date (an implied curve rebuilt from the same conditional Hull-White
 discount factors) in tests/test_swap.py's
 TestAgedSwapKnownLimitation, which pins down the current (imperfect)
 behavior as a documented gap rather than a silent one. This does NOT affect
-t=0 pricing (every cashflow is in the future there) or forward-starting
+t=0 pricing (every remaining cashflow is in the future there, and every
+coupon fixed before it is priced off its historical fixing) or forward-starting
 trades priced before their own accrual begins -- both remain exact, as
 every other test in this suite demonstrates. Fixing this properly (tracking
 already-fixed rates per scenario/step, or excluding elapsed cashflows from
@@ -48,9 +60,9 @@ cannot close it. `engine.portfolio.request._warn_if_aged_swap_exposure` now
 warns per affected swap into `PortfolioResult.warnings`, so the gap is
 advertised rather than silent; the pricing itself is unchanged.
 """
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from functools import partial
-from typing import Any, Dict, List
+from typing import Dict, List, Optional
 
 import jax
 import jax.numpy as jnp
@@ -60,14 +72,14 @@ import ORE
 from engine.models.static_key import StaticKeyMixin
 from engine.models.ore_builders import (
     DEFAULT_ACCRUAL_DAY_COUNT,
-    TIME_AXIS_DAY_COUNTER,
-    resolve_accrual_day_count,
-    LegCashflows as _LegCashflows,
+    book_swap_dates,
     build_vanilla_swap,
     fixed_leg_cashflows as _fixed_leg_cashflows,
     floating_leg_cashflows as _floating_leg_cashflows,
+    resolve_accrual_day_count,
+    validate_fixings,
 )
-from engine.portfolio.validation import _validate_common_fields, _validate_tenor
+from engine.portfolio.validation import _validate_common_fields
 
 
 @dataclass
@@ -85,15 +97,27 @@ class SwapConfig:
     ORE's multi-curve DiscountingSwapEngine (discount curve) + IborIndex
     (its own, separate forwardingTermStructure) split.
 
-    swap_tenor: ORE Period string, e.g. "5Y", "18M".
+    effective_date / maturity_date: the booked schedule's start and
+    (unadjusted) end, as in an ORE trade's `ScheduleData`. They define the
+    trade; `evaluation_date` only says when it is priced (audit M-4).
+    swap_tenor: booking convenience, an ORE Period string ("5Y", "18M")
+    resolved ONCE, at construction, to the dates a spot-starting swap traded
+    on `evaluation_date` has (`ore_builders.resolve_swap_dates`). Give either
+    it or both dates. It is not stored: `dataclasses.replace(cfg,
+    evaluation_date=...)` keeps the dates, and so the trade.
     index_tenor_months: floating leg reset frequency in months (6 = semi-annual).
+    fixings: historical fixings of the floating index, `{ORE.Date: rate}`.
+    Needed only for a coupon that fixed before `evaluation_date` and has not
+    yet paid; ORE would equally refuse to price it without one.
     """
     notional: float
     fixed_rate: float
     payer: bool
     discount_curve_index: int
     forward_curve_index: int
-    swap_tenor: str = "5Y"
+    effective_date: Optional[ORE.Date] = None
+    maturity_date: Optional[ORE.Date] = None
+    swap_tenor: InitVar[Optional[str]] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
     evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
@@ -106,10 +130,12 @@ class SwapConfig:
     #: Distinct from the simulation time axis, which is permanently ACT/365 --
     #: see `engine.models.ore_builders`' TWO ROLES block.
     accrual_day_count: str = DEFAULT_ACCRUAL_DAY_COUNT
+    fixings: Dict[ORE.Date, float] = field(default_factory=dict)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, swap_tenor: Optional[str]) -> None:
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
-        _validate_tenor(self.swap_tenor, "swap_tenor")
+        book_swap_dates(self, swap_tenor)
+        validate_fixings(self.fixings)
         # Fail at construction, where the offending trade is identifiable,
         # rather than deep inside ORE at pricing time.
         resolve_accrual_day_count(self.accrual_day_count)
@@ -122,9 +148,39 @@ def _build_ore_swap(cfg: SwapConfig) -> ORE.VanillaSwap:
     `european_swaption.py`/`bermudan_swaption.py`)."""
     return build_vanilla_swap(
         notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
-        swap_tenor=cfg.swap_tenor, index_tenor_months=cfg.index_tenor_months,
-        floating_spread=cfg.floating_spread, evaluation_date=cfg.evaluation_date,
+        effective_date=cfg.effective_date, maturity_date=cfg.maturity_date,
+        index_tenor_months=cfg.index_tenor_months, floating_spread=cfg.floating_spread,
         accrual_day_count=cfg.accrual_day_count,
+    )
+
+
+@dataclass
+class SwapSchedule:
+    """A swap's remaining cashflows on its evaluation date: the fixed leg,
+    and the floating leg with each coupon marked fixed (a known fixing) or
+    still to be projected off the forwarding curve."""
+    fixed: object     # ore_builders.LegCashflows
+    floating: object  # ore_builders.LegCashflows, read with the trade's fixings
+
+    def pillar_times(self) -> List[float]:
+        """Every time the pricer reads a discount factor at: the payment
+        times, and the accrual start/end of each coupon still projected (a
+        fixed coupon needs no forward, and a seasoned one's start is in the
+        past)."""
+        projected = ~self.floating.is_fixed
+        return sorted(set(
+            self.fixed.payment_times.tolist() + self.floating.payment_times.tolist()
+            + self.floating.accrual_start_times[projected].tolist()
+            + self.floating.accrual_end_times[projected].tolist()
+        ))
+
+
+def swap_schedule(cfg: SwapConfig) -> SwapSchedule:
+    """CPU: the ORE trade's remaining cashflows on `cfg.evaluation_date`."""
+    swap = _build_ore_swap(cfg)
+    return SwapSchedule(
+        fixed=_fixed_leg_cashflows(swap, cfg.evaluation_date),
+        floating=_floating_leg_cashflows(swap, cfg.evaluation_date, cfg.fixings),
     )
 
 
@@ -181,6 +237,10 @@ class _PreparedSwap(StaticKeyMixin):
     see `engine.models.static_key` for why the generated dataclass
     `__hash__`/`__eq__` cannot do this and why by-value (not by-identity)
     matters here.
+
+    The floating leg is split: `float_*` are the coupons still projected off
+    the forwarding curve, `known_float_*` those whose fixing is already
+    known (a seasoned trade's current coupon), which pay a fixed amount.
     """
     payer: bool
     fixed_notional: float
@@ -193,19 +253,22 @@ class _PreparedSwap(StaticKeyMixin):
     float_pay_idx: np.ndarray
     float_start_idx: np.ndarray
     float_end_idx: np.ndarray
+    known_float_amounts: np.ndarray
+    known_float_pay_idx: np.ndarray
     discount_curve_index: int
     forward_curve_index: int
 
 
 def prepare_swap(cfg: SwapConfig, maturities: np.ndarray) -> _PreparedSwap:
-    """CPU: build the ORE trade and resolve every cashflow onto the
+    """CPU: build the ORE trade and resolve every remaining cashflow onto the
     simulation's maturity pillars. Static per swap -- run once, not per
     scenario/step."""
-    swap = _build_ore_swap(cfg)
-    today = cfg.evaluation_date
-
-    fixed = _fixed_leg_cashflows(swap, today)
-    floating = _floating_leg_cashflows(swap, today)
+    schedule = swap_schedule(cfg)
+    fixed, floating = schedule.fixed, schedule.floating
+    projected, known = ~floating.is_fixed, floating.is_fixed
+    # ORE's IborCoupon amount: nominal * (fixing + spread) * accrualPeriod.
+    known_amounts = (floating.notional * (floating.fixed_rates[known] + cfg.floating_spread)
+                     * floating.accrual_fractions[known])
 
     return _PreparedSwap(
         payer=cfg.payer,
@@ -215,10 +278,12 @@ def prepare_swap(cfg: SwapConfig, maturities: np.ndarray) -> _PreparedSwap:
         fixed_pay_idx=_maturity_indices(fixed.payment_times, maturities),
         float_notional=floating.notional,
         float_spread=cfg.floating_spread,
-        float_accrual=floating.accrual_fractions,
-        float_pay_idx=_maturity_indices(floating.payment_times, maturities),
-        float_start_idx=_maturity_indices(floating.accrual_start_times, maturities),
-        float_end_idx=_maturity_indices(floating.accrual_end_times, maturities),
+        float_accrual=floating.accrual_fractions[projected],
+        float_pay_idx=_maturity_indices(floating.payment_times[projected], maturities),
+        float_start_idx=_maturity_indices(floating.accrual_start_times[projected], maturities),
+        float_end_idx=_maturity_indices(floating.accrual_end_times[projected], maturities),
+        known_float_amounts=known_amounts,
+        known_float_pay_idx=_maturity_indices(floating.payment_times[known], maturities),
         discount_curve_index=cfg.discount_curve_index,
         forward_curve_index=cfg.forward_curve_index,
     )
@@ -233,11 +298,14 @@ def _price_one_swap(yield_curves: jax.Array, swap: _PreparedSwap) -> jax.Array:
 
     Fixed leg PV(t)  = notional * fixed_rate * sum_i[ accrual_i * P_disc(t, T_i) ]
     Float leg PV(t)  = notional * sum_i[ (F_i(t) + spread) * accrual_i * P_disc(t, T_i) ]
+                       + sum_k[ known_amount_k * P_disc(t, T_k) ]
         where F_i(t) = (P_fwd(t, T_{i-1}) / P_fwd(t, T_i) - 1) / accrual_i
         is the simulated forward rate implied by the forwarding curve
         (single-period, at-par coupon convention -- matches ORE's
         IborCoupon.usingAtParCoupons() default, live-verified against
-        ORE.VanillaSwap.floatingLegNPV() in tests/test_swap.py).
+        ORE.VanillaSwap.floatingLegNPV() in tests/test_swap.py), and
+        known_amount_k is a coupon whose fixing is already known (see
+        `prepare_swap`).
     NPV(t) = floatLegPV(t) - fixedLegPV(t), negated for payer=False --
         matches ORE.VanillaSwap.Payer/.Receiver sign convention.
 
@@ -261,7 +329,10 @@ def _price_one_swap(yield_curves: jax.Array, swap: _PreparedSwap) -> jax.Array:
 
     float_disc = disc[:, :, swap.float_pay_idx]
     float_cashflow = swap.float_notional * (forward_rate + swap.float_spread) * float_accrual[None, None, :]
-    float_leg_pv = jnp.sum(float_cashflow * float_disc, axis=2)
+    known_amounts = jnp.asarray(swap.known_float_amounts, dtype=yield_curves.dtype)
+    float_leg_pv = jnp.sum(float_cashflow * float_disc, axis=2) + jnp.tensordot(
+        disc[:, :, swap.known_float_pay_idx], known_amounts, axes=([2], [0])
+    )
 
     npv = float_leg_pv - fixed_leg_pv
     return npv if swap.payer else -npv

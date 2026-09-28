@@ -48,6 +48,14 @@ exactly, not just to the same limit:
 precomputed, fixed-length schedule, so `jax.grad`/`jax.hessian` differentiate
 through it (engine.risk.greeks) and it runs on any JAX backend.
 
+**Trade dates (audit M-4).** The underlying is booked with explicit
+`effective_date`/`maturity_date`, and exercise is in dates, so one config
+is one trade on every evaluation date. On a later date the trade is priced
+as ORE prices it: exercise dates on or before it are gone, a coupon that can
+no longer enter any exercise is never valued (`prepare_bermudan`), a coupon
+that fixed before it uses its historical fixing from `fixings`, and once
+the last exercise date has passed the option is worth 0 (`is_expired`).
+
 **Conditioning** (per-scenario, per-step NPV): extra grid rows at the
 simulation's step times; the rolled-back option value at such a row is
 interpolated onto each scenario's simulated short rate. The model's Markov
@@ -63,10 +71,10 @@ See docs/instruments/american-bermudan-swaptions.md for the derivation and
 the ORE source for each step.
 """
 import math
-from dataclasses import dataclass, field, fields
+from dataclasses import InitVar, dataclass, field, fields
 from enum import Enum
 from functools import partial
-from typing import List, Optional, Sequence, Union
+from typing import Dict, List, Optional, Sequence, Union
 
 import jax
 import jax.numpy as jnp
@@ -79,10 +87,14 @@ from engine.models.static_key import StaticKeyMixin
 from engine.models.ore_builders import (  # noqa: F401  (DAY_COUNTER is a re-export)
     DAY_COUNTER,
     TIME_AXIS_DAY_COUNTER,
+    book_swap_dates,
     build_vanilla_swap,
+    is_live,
+    known_fixing,
     time_from_reference,
+    validate_fixings,
 )
-from engine.portfolio.validation import _validate_common_fields, _validate_hw_sigma, _validate_tenor
+from engine.portfolio.validation import _validate_common_fields, _validate_hw_sigma
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from engine.models.lgm import (
     H as _H,
@@ -136,6 +148,13 @@ class BermudanSwaptionConfig:
     `ExerciseStyle.BERMUDAN`). `exercisable_dates(cfg)` lists the
     underlying's own accrual starts.
 
+    effective_date/maturity_date: the underlying swap's booked schedule, or
+    swap_tenor to book it by tenor on `evaluation_date` -- see
+    `engine.instruments.swap.SwapConfig`, which has the same fields.
+    fixings: the floating index's historical fixings `{ORE.Date: rate}`,
+    needed only for a coupon that fixed before `evaluation_date` and can
+    still enter an exercise (ORE refuses such a trade without one too).
+
     rate_factor_index/hw_a/hw_sigma/initial_zero_curve: same meaning and
     same single-model-pricing rationale as
     engine.instruments.european_swaption.SwaptionConfig -- see that
@@ -164,12 +183,15 @@ class BermudanSwaptionConfig:
     hw_sigma: Optional[Union[float, Sigma]]
     initial_zero_curve: ZeroCurveConfig
     exercise_dates: Sequence[ORE.Date]
-    swap_tenor: str = "5Y"
+    effective_date: Optional[ORE.Date] = None
+    maturity_date: Optional[ORE.Date] = None
+    swap_tenor: InitVar[Optional[str]] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
     n_per_std: int = 48
     std_devs: float = 6.0
     evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
+    fixings: Dict[ORE.Date, float] = field(default_factory=dict)
 
     exercise_style = ExerciseStyle.BERMUDAN
 
@@ -179,9 +201,15 @@ class BermudanSwaptionConfig:
         return [time_from_reference(self.evaluation_date, d)
                 for d in self.exercise_dates if d > self.evaluation_date]
 
-    def __post_init__(self) -> None:
+    def is_expired(self) -> bool:
+        """ORE's `Instrument::isExpired`: the last exercise date is on or
+        before the evaluation date. An expired option is worth 0."""
+        return not is_live(self.exercise_dates[-1], self.evaluation_date)
+
+    def __post_init__(self, swap_tenor: Optional[str]) -> None:
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
-        _validate_tenor(self.swap_tenor, "swap_tenor")
+        book_swap_dates(self, swap_tenor)
+        validate_fixings(self.fixings)
         # None is a valid sentinel meaning "uncalibrated" -- engine.portfolio.
         # price_portfolio fills it in via engine.calibration.lgm.
         # calibrate_lgm_sigma before this config ever reaches a pricer; a
@@ -203,8 +231,8 @@ def _build_ore_swap(cfg) -> ORE.VanillaSwap:
     implementation of this construction."""
     return build_vanilla_swap(
         notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
-        swap_tenor=cfg.swap_tenor, index_tenor_months=cfg.index_tenor_months,
-        floating_spread=cfg.floating_spread, evaluation_date=cfg.evaluation_date,
+        effective_date=cfg.effective_date, maturity_date=cfg.maturity_date,
+        index_tenor_months=cfg.index_tenor_months, floating_spread=cfg.floating_spread,
     )
 
 
@@ -269,7 +297,9 @@ class _PreparedBermudan(StaticKeyMixin):
     float_index_end_times: np.ndarray    # [Ncf] maturityDate(valueDate)
     float_index_dcf: np.ndarray          # [Ncf] index day count over that period
     float_fixing_times: np.ndarray       # [Ncf] max(0, fixing time): ORE's maxEstimationTime_
-    float_fixed_today: np.ndarray        # [Ncf] bool: fixing date == evaluation date
+    float_fixed_today: np.ndarray        # [Ncf] bool: fixes today, forecast off today's curve
+    float_is_known: np.ndarray           # [Ncf] bool: the fixing is known (historical)
+    float_known_rates: np.ndarray        # [Ncf] that fixing where float_is_known, else 0
     float_spread: float
     rate_factor_index: int
     hw_a: float
@@ -377,6 +407,13 @@ def prepare_bermudan(cfg: "BermudanSwaptionConfig | AmericanSwaptionConfig") -> 
         fixing period and day count fraction, which is what ORE projects
         the rate over.
 
+    A coupon whose belongs-until time is before the evaluation date is
+    left out: ORE's `isPartOfUnderlying(t)` is false for it at every grid
+    time `t >= 0`, so ORE never values it (a seasoned trade's elapsed
+    periods). A floating coupon kept whose fixing date has passed takes its
+    fixing from `cfg.fixings`, as ORE's `LgmVectorised::fixing` does for a
+    fixing date on or before today; a missing one raises.
+
     fixed_amounts are ORE's own `FixedRateCoupon.amount()`, the same source
     `engine.instruments.european_swaption.prepare_swaption` uses.
 
@@ -390,36 +427,41 @@ def prepare_bermudan(cfg: "BermudanSwaptionConfig | AmericanSwaptionConfig") -> 
     for cf in swap.fixedLeg():
         c = ORE.as_fixed_rate_coupon(cf)
         start, end = t_of(c.accrualStartDate()), t_of(c.accrualEndDate())
+        belongs = _belongs_until(style, start, end)
+        if belongs < 0.0:
+            continue
         fixed["pay"].append(t_of(c.date()))
         fixed["start"].append(start)
         fixed["end"].append(end)
-        fixed["belongs"].append(_belongs_until(style, start, end))
+        fixed["belongs"].append(belongs)
         fixed["amount"].append(c.amount())
 
     floating = {key: [] for key in (
-        "pay", "start", "end", "belongs", "accrual", "idx_start", "idx_end", "idx_dcf", "fixing", "fixed_today")}
+        "pay", "start", "end", "belongs", "accrual", "idx_start", "idx_end", "idx_dcf", "fixing",
+        "fixed_today", "known", "known_rate")}
     for cf in swap.floatingLeg():
         c = ORE.as_floating_rate_coupon(cf)
+        start, end = t_of(c.accrualStartDate()), t_of(c.accrualEndDate())
+        belongs = _belongs_until(style, start, end)
+        if belongs < 0.0:
+            continue
         index = c.index()
         fixing_date = c.fixingDate()
-        if fixing_date < today:
-            raise ValueError(
-                f"floating coupon fixing on {fixing_date} is before the evaluation date {today}; "
-                f"pricing it needs a historical fixing, which this engine does not hold (I-04)"
-            )
+        known = known_fixing(fixing_date, today, cfg.fixings)
         index_start = index.valueDate(fixing_date)
         index_end = index.maturityDate(index_start)
-        start, end = t_of(c.accrualStartDate()), t_of(c.accrualEndDate())
         floating["pay"].append(t_of(c.date()))
         floating["start"].append(start)
         floating["end"].append(end)
-        floating["belongs"].append(_belongs_until(style, start, end))
+        floating["belongs"].append(belongs)
         floating["accrual"].append(c.accrualPeriod())
         floating["idx_start"].append(t_of(index_start))
         floating["idx_end"].append(t_of(index_end))
         floating["idx_dcf"].append(index.dayCounter().yearFraction(index_start, index_end))
         floating["fixing"].append(max(0.0, t_of(fixing_date)))
-        floating["fixed_today"].append(fixing_date == today)
+        floating["fixed_today"].append(fixing_date == today and known is None)
+        floating["known"].append(known is not None)
+        floating["known_rate"].append(0.0 if known is None else known)
 
     exercise_times = np.asarray(cfg.option_times(), dtype=np.float64)
     if exercise_times.size == 0:
@@ -451,6 +493,8 @@ def prepare_bermudan(cfg: "BermudanSwaptionConfig | AmericanSwaptionConfig") -> 
         float_index_dcf=as_array(floating["idx_dcf"]),
         float_fixing_times=as_array(floating["fixing"]),
         float_fixed_today=as_array(floating["fixed_today"], dtype=bool),
+        float_is_known=as_array(floating["known"], dtype=bool),
+        float_known_rates=as_array(floating["known_rate"]),
         float_spread=cfg.floating_spread,
         rate_factor_index=cfg.rate_factor_index, hw_a=cfg.hw_a, hw_sigma=cfg.hw_sigma,
         zero_times=np.asarray(cfg.initial_zero_curve.times, dtype=np.float64),
@@ -790,9 +834,10 @@ def _cashflow_values_at_nodes(swap: _PreparedBermudan, curve: _HwZeroCurve, x_no
         `(P(t,T1)/P(t,T2) - 1) / dcf(d1, d2)`, `T1 = max(t, d1)`,
         `T2 = max(T1, d2)`. Once `t` passes `d1` the clamp projects only
         the remaining stub, which `couponRatio` then scales again -- ORE's
-        own behaviour, kept. A fixing dated on the evaluation date is
-        deterministic in ORE (`index->fixing(today)`, forecast off today's
-        curve) and is so here.
+        own behaviour, kept. A fixing dated on or before the evaluation
+        date is deterministic in ORE (`index->fixing(fixingDate)`): its
+        historical value when known, else -- for today's -- the forecast
+        off today's curve. Both are so here.
     """
     a, sigma = swap.hw_a, swap.hw_sigma
     # Derived from x_nodes' own dtype (not hardcoded): float64 for ordinary
@@ -815,6 +860,7 @@ def _cashflow_values_at_nodes(swap: _PreparedBermudan, curve: _HwZeroCurve, x_no
     fixed_today = (_lgm_bond_price(curve, a, sigma, zero, index_start, zero)
                    / _lgm_bond_price(curve, a, sigma, zero, index_end, zero) - 1.0) / index_dcf
     fixing = jnp.where(jnp.asarray(swap.float_fixed_today)[None, :], fixed_today[None, :], projected)
+    fixing = jnp.where(jnp.asarray(swap.float_is_known)[None, :], as_dtype(swap.float_known_rates)[None, :], fixing)
     floating = (as_dtype(swap.notional) * (fixing + swap.float_spread) * as_dtype(swap.float_accrual)[None, :]
                 * _bond_prices_at_nodes(curve, a, sigma, t, as_dtype(swap.float_pay_times), x_nodes))
 
@@ -1015,7 +1061,9 @@ def price_bermudan_swaption_base(cfg: "BermudanSwaptionConfig | AmericanSwaption
     `_RolledBackValue.value_at_t0` (kept as a JAX scalar internally, so
     `engine.risk.greeks` can differentiate through `_run_backward_induction`
     directly) to a plain Python float here, at this plain-pricing entry
-    point only."""
+    point only. An expired option is worth 0 (`is_expired`)."""
+    if cfg.is_expired():
+        return 0.0
     swap = prepare_bermudan(cfg)
     result = _run_backward_induction(swap, condition_times=[])
     return float(result.value_at_t0)
@@ -1042,7 +1090,8 @@ def price_bermudan_swaptions(
         a single t=0 rollback the way Jamshidian's closed form can -- its
         value depends on the entire remaining exercise schedule).
 
-    Steps at or after a trade's LAST exercise time are priced as exactly 0
+    Steps at or after a trade's LAST exercise time, and every step of a
+    trade already expired on its evaluation date, are priced as exactly 0
     (matching this codebase's European swaption convention of reporting 0
     NPV after an option's own final exercise opportunity -- ORE's own
     Instrument.NPV() convention).
@@ -1050,6 +1099,9 @@ def price_bermudan_swaptions(
     step_times_np = np.asarray(step_times, dtype=np.float64)
     per_trade = []
     for cfg in bermudan_configs:
+        if cfg.is_expired():
+            per_trade.append(jnp.zeros(hw_paths.shape[:2], dtype=hw_paths.dtype))
+            continue
         swap = prepare_bermudan(cfg)
         r_t = np.asarray(hw_paths[:, :, cfg.rate_factor_index])  # [S, T]
 

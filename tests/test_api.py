@@ -282,7 +282,7 @@ class TestPortfolioPriceAtScale:
                     "fixed_rate": 0.0295, "payer": bool(i % 2), "rate_factor_index": 0,
                     "hw_a": HW_A, "hw_sigma": HW_SIGMA, "initial_zero_curve": ZERO_CURVE_SCHEMA,
                     "first_exercise_date": "2027-07-30", "last_exercise_date": "2028-07-29",
-                    "exercise_time_steps_per_year": 1,
+                    "swap_tenor": "5Y", "exercise_time_steps_per_year": 1,
                     "n_per_std": 32, "std_devs": 6.0,
                 }
                 for i in range(3)

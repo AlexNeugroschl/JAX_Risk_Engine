@@ -32,6 +32,15 @@ WHAT IS BUILT, and why each piece is exactly the engine's:
     interpolated in the zero rate -- the engine's `ZeroCurve`. Pillars must
     be whole numbers of ACT/365 days (checked), and the first pillar should
     be at t=0: ORE otherwise inserts a flat point at the as-of date.
+    **Exact only where the curve is flat up to its first non-zero pillar.**
+    ORE's zero-curve build re-reads every pillar's zero rate off a temporary
+    curve, and QuantLib reads the one at t=0 as `zeroRate(1e-4)`
+    (OREData/ored/marketdata/yieldcurve.cpp, `buildZeroCurve`), so ORE's
+    as-of zero becomes `z0 + slope * 1e-4`. That tilts ORE's first segment
+    only: on a curve sloped there, a date inside it is discounted about
+    1e-6 relative differently from the engine (I-34 in
+    docs/known-issues.md). Parity checks that need 1e-10 use a flat first
+    segment.
   * **The model.** `Calibration=None`, `ReversionType=HullWhite`,
     `VolatilityType=Hagan`: ORE's LGM with constant reversion `hw_a` and
     Hagan alpha `hw_sigma`, i.e. `zeta(t) = hw_sigma^2 * t`, the
@@ -67,7 +76,7 @@ from __future__ import annotations
 import functools
 import tempfile
 from dataclasses import dataclass
-from typing import Optional, Sequence, Union
+from typing import Mapping, Optional, Sequence, Union
 
 import numpy as np
 import ORE
@@ -366,6 +375,7 @@ def ore_lgm_swaption_npv(
     mid_coupon_exercise: bool = False,
     shift_horizon: float = 0.0,
     fd_solver: Optional[OreFdSolver] = None,
+    fixings: Optional[Mapping[ORE.Date, float]] = None,
 ) -> OreLgmResult:
     """NPV of a long physically-settled swaption on `swap`, priced by ORE's
     `NumericLgmMultiLegOptionEngine` (Grid solver).
@@ -385,6 +395,11 @@ def ore_lgm_swaption_npv(
     `ShiftHorizon`, a fraction of the trade's maturity; ORE's builder default
     is 0.5) and `fd_solver` (ORE's FD solver; `n_per_std`/`std_devs` are then
     unused by ORE).
+
+    `fixings` are the floating index's historical fixings `{ORE.Date:
+    rate}`, handed to ORE as fixing data -- needed, exactly as by the
+    engine, for a seasoned trade whose coupon fixed before
+    `evaluation_date`.
     """
     index = _index_name(index_tenor_months)
     previous_evaluation_date = ORE.Settings.instance().evaluationDate
@@ -416,8 +431,10 @@ def ore_lgm_swaption_npv(
                   for d, r in zip(_curve_dates(evaluation_date, curve_times), curve_rates)]
         market.append(f"{stamp} SWAPTION/RATE_NVOL/{CCY}/1Y/1Y/ATM 0.01")
 
+        fixing_lines = [f"{_iso(d).replace('-', '')} {index} {float(r)!r}" for d, r in (fixings or {}).items()]
+
         app = ORE.OREApp(inputs, log_file, 31, False)
-        app.run(ORE.StrVector(market), ORE.StrVector([]))
+        app.run(ORE.StrVector(market), ORE.StrVector(fixing_lines))
         if "npv" not in app.getReportNames():
             with open(log_file, encoding="utf-8", errors="replace") as log:
                 alerts = [line.strip() for line in log if "ALERT" in line or "ERROR" in line]

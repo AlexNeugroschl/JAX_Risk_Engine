@@ -62,13 +62,19 @@ and several tenors and forward-start dates, matching to a relative precision of
 ### 1. Describing a swaption: `SwaptionConfig`
 
 A `SwaptionConfig` describes one swaption: the underlying swap's terms (`notional`,
-`fixed_rate`, `payer`, `swap_tenor` — the same meaning as
-[`SwapConfig`](swaps.md#1-describing-a-swap-swapconfig)), which simulated
-Hull-White rate factor prices it (`rate_factor_index`), that factor's own model
-parameters (`hw_a`, `hw_sigma`, `initial_zero_curve` — see
-[below](#why-a-swaption-needs-its-own-copy-of-the-models-parameters)), and, optionally,
-`forward_start` — how far in the future the option can first be exercised. See
+`fixed_rate`, `payer`, `effective_date`, `maturity_date` — the same meaning as
+[`SwapConfig`](swaps.md#1-describing-a-swap-swapconfig)), the option's `exercise_date`,
+which simulated Hull-White rate factor prices it (`rate_factor_index`), and that factor's own
+model parameters (`hw_a`, `hw_sigma`, `initial_zero_curve` — see
+[below](#why-a-swaption-needs-its-own-copy-of-the-models-parameters)). See
 [API Reference](../reference/api-reference.md#swaptionconfig) for every field.
+
+All three dates are booked, absolute dates (audit [M-4](../planning/engine-audit.md#m-4)).
+It can instead be booked by tenor — `swap_tenor`, and optionally `forward_start`, how far in
+the future the option can first be exercised — which is resolved once, on
+`evaluation_date`, to the three dates (see below). On a later evaluation date the same config
+is the same option, nearer expiry. On or after its exercise date it has expired and is worth
+exactly 0, as ORE's `Instrument::isExpired` has it.
 
 <a id="why-a-swaption-needs-its-own-copy-of-the-models-parameters"></a>
 
@@ -98,13 +104,14 @@ ORE's own `MakeVanillaSwap` machinery rather than reimplemented — see
 [Instruments: using ORE for the fiddly parts](swaps.md#why-its-built-this-way-using-ore-for-the-fiddly-parts)
 for why. `prepare_swaption()` additionally extracts two dates unique to a swaption:
 
-- **The exercise date `T0`** — when the option holder must decide whether to exercise.
-  Conventionally 2 business days before the underlying swap's own accrual begins (the
-  same spot-lag convention `MakeVanillaSwap` itself applies), computed from
-  `evaluation_date + forward_start`, not by working backwards from the underlying swap's
-  own (business-day-adjusted) start date — see the next point for why that distinction
+- **The exercise date `T0`** — when the option holder must decide whether to exercise:
+  the booked `exercise_date`. Booked by tenor, it is conventionally 2 business days after
+  `evaluation_date + forward_start` (the same spot-lag convention `MakeVanillaSwap`
+  itself applies), not worked backwards from the underlying swap's own
+  (business-day-adjusted) start date — see the next point for why that distinction
   matters.
-- **The underlying swap's own accrual start date `T_start`.**
+- **The underlying swap's own accrual start date `T_start`** — ORE's `valueTime`, the fixed
+  leg's first accrual start.
 
 **Why this distinction matters.** `T_start` equals `T0` only for a swaption with no
 `forward_start` (where the 2-day spot lag and the "exercise lag" happen to coincide); for

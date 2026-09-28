@@ -136,7 +136,7 @@ try:
                 "rate_factor_index": 0, "hw_a": HW_A, "hw_sigma": None,
                 "initial_zero_curve": zero_curve,
                 "first_exercise_date": "2027-07-30", "last_exercise_date": "2030-07-30",
-                "exercise_time_steps_per_year": 2, "n_per_std": 64, "std_devs": 6.0,
+                "swap_tenor": "5Y", "exercise_time_steps_per_year": 2, "n_per_std": 64, "std_devs": 6.0,
             },
         ],
         "pfe_quantiles": [0.95, 0.99],

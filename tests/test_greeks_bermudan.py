@@ -91,7 +91,7 @@ class TestBermudanDeltaGamma:
                 notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
                 rate_factor_index=cfg.rate_factor_index, hw_a=cfg.hw_a, hw_sigma=cfg.hw_sigma,
                 initial_zero_curve=ZeroCurveConfig(times=PILLAR_TIMES, rates=rates),
-                exercise_dates=cfg.exercise_dates, swap_tenor=cfg.swap_tenor, evaluation_date=TODAY,
+                exercise_dates=cfg.exercise_dates, effective_date=cfg.effective_date, maturity_date=cfg.maturity_date, evaluation_date=TODAY,
             )
 
         npv_up = price_bermudan_swaption_base(cfg_with_rates(rates_up))
@@ -266,7 +266,7 @@ class TestBermudanGreeksEdgeCases:
             notional=0.0, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
             rate_factor_index=cfg.rate_factor_index, hw_a=cfg.hw_a, hw_sigma=cfg.hw_sigma,
             initial_zero_curve=cfg.initial_zero_curve, exercise_dates=cfg.exercise_dates,
-            swap_tenor=cfg.swap_tenor, evaluation_date=TODAY,
+            effective_date=cfg.effective_date, maturity_date=cfg.maturity_date, evaluation_date=TODAY,
         )
         greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
         assert jnp.all(greeks["delta"] == 0.0)
@@ -278,7 +278,7 @@ class TestBermudanGreeksEdgeCases:
             notional=0.0, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
             rate_factor_index=cfg.rate_factor_index, hw_a=cfg.hw_a, hw_sigma=cfg.hw_sigma,
             initial_zero_curve=cfg.initial_zero_curve, exercise_dates=cfg.exercise_dates,
-            swap_tenor=cfg.swap_tenor, evaluation_date=TODAY,
+            effective_date=cfg.effective_date, maturity_date=cfg.maturity_date, evaluation_date=TODAY,
         )
         theta = bermudan_theta(cfg, FLAT_CURVE)
         assert theta == pytest.approx(0.0, abs=1e-9)

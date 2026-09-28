@@ -50,12 +50,30 @@ custom, accelerator-run (GPU/TPU) JAX code.
 
 A `SwapConfig` describes one trade: how much money (`notional`), what fixed rate is
 being paid, whether *this side* of the deal is paying fixed or receiving it (`payer`),
-how long the swap runs (`swap_tenor`), and — importantly — *which* of the simulated
+when it runs (`effective_date`, `maturity_date`), and — importantly — *which* of the simulated
 interest rate curves from the market simulation module (see
 [Market Simulation](../concepts/market-simulation.md)) should be used to discount
 this swap's cashflows versus to figure out its floating payments (`discount_curve_index`,
 `forward_curve_index`). See [API Reference](../reference/api-reference.md#swapconfig) for every
 field.
+
+**The dates are the trade.** A swap is booked with absolute dates, as in an ORE trade's
+`ScheduleData`, and `evaluation_date` only says when it is priced. For convenience it can be
+booked by tenor instead — `swap_tenor="5Y"` — which is resolved once, when the config is
+built, to the dates a spot-starting swap traded on `evaluation_date` has. The rule is
+`MakeVanillaSwap`'s own: two TARGET business days to spot, then the tenor. The tenor is not
+kept. So `dataclasses.replace(cfg, evaluation_date=later)` is the same swap, one day or one
+year older — not a new 5Y swap starting later, which is what the engine priced before audit
+[M-4](../planning/engine-audit.md#m-4).
+
+**A seasoned swap** (priced after it started) is valued as ORE values it. A cashflow paid on
+or before the evaluation date has occurred and drops out. A floating coupon whose fixing date
+has passed pays its historical fixing, taken from `SwapConfig.fixings` (`{ORE.Date: rate}`).
+If that fixing is missing, pricing stops with `MissingFixingError`, just as ORE stops with
+"Missing … fixing". A coupon fixing *on* the evaluation date uses a supplied fixing if
+there is one, else today's forecast (`InterestRateIndex::fixing`). Checked against
+`ORE.DiscountingSwapEngine`, with ORE's own fixing history, in
+`tests/test_trade_dates.py`.
 
 **Why two separate curve indices?** In modern practice, the interest rate used to
 *discount* a cashflow back to today (usually an overnight/OIS rate) is not necessarily

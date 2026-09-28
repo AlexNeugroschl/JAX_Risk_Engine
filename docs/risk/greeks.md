@@ -206,13 +206,26 @@ trick — see [European Swaptions](../instruments/european-swaptions.md)), not p
 independently before then, so `swaption_theta` is a pure repricing difference with no
 `+ cashflow` term, unlike `swap_theta`.
 
-**A swap's Theta only accounts for the fixed leg's cashflows in the window, not the
-floating leg's.** The floating leg's rate for a period landing inside the (very short,
-1-day-by-default) Theta window would depend on a fixing that hasn't happened yet as of
-today — this module doesn't simulate that fixing. This is a documented simplification, not
-a silent one: a swap's floating leg pays only on its own reset dates (typically monthly or
-longer), so a floating payment landing within a single day of today is the rare exception,
-not the common case this simplification needs to handle exactly.
+**Theta ages the booked trade.** Trades carry absolute dates (audit
+[M-4](../planning/engine-audit.md#m-4)), so "today + 1 day" is the *same* trade one day
+older: a swap's remaining schedule is unchanged, a swaption's expiry is one day nearer (the
+day before expiry, Theta is minus the whole option value), and a Bermudan keeps its exercise
+dates. Until M-4 the trade was rebuilt from its tenor on the new date, so the swap's maturity
+moved a day later and a swaption never approached expiry ([M-5](../planning/engine-audit.md#m-5)).
+
+**Fixings printed inside the window.** A floating coupon that fixes on today (or on any date
+before the Theta date) is history by the Theta date. Theta holds the curve fixed, so it prints
+at the rate today's valuation forecast for it: at par over the accrual period for a swap, and
+over the index period for a Bermudan/American, as each pricer forecasts a fixing dated today.
+Without it the aged trade could not be priced at all. A supplied fixing always wins.
+
+**The cashflow add-back covers both legs.** Every fixed and floating coupon paid in
+`(today, today + 1 day]` is added back. A floating one is taken at the amount the base
+valuation contained: its known fixing, or its projection off the forward curve.
+
+Checked against ORE (the same trade repriced by `ORE.DiscountingSwapEngine`,
+`ORE.JamshidianSwaptionEngine` and ORE's LGM engine on both dates) in
+`tests/test_trade_dates.py`, including a swap whose floating coupon pays inside the window.
 
 ## A JAX-differentiable curve: `ZeroCurve`
 
@@ -253,7 +266,8 @@ the cross-check, not a bug in the autodiff Hessian itself.
 **American swaptions have no separate Greeks function** — `bermudan_delta_gamma`,
 `bermudan_theta` and `bermudan_vega` take an `AmericanSwaptionConfig` directly, since both
 exercise types run through the same backward induction. `bermudan_theta` reprices the same
-trade one day on, with its exercise *dates* fixed and every time re-derived, as ORE does.
+trade one day on, with its exercise and schedule *dates* fixed and every time re-derived, as
+ORE does.
 
 ## Differentiating through bisection root-finds
 

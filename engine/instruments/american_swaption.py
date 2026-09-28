@@ -11,7 +11,9 @@ its Bermudan path in exactly two places, and this module reproduces both:
      `t1 = max(0, t(first))`, `t2 = max(t1, t(last))`,
      `steps = max(1, static_cast<Size>((t2 - t1) * ExerciseTimeStepsPerYear))`
      -- a TRUNCATION, not a rounding -- and option times `t1 + i*(t2-t1)/steps`
-     for `i = 0..steps` (lines 494-505). `AmericanSwaptionConfig.option_times`.
+     for `i = 0..steps` (lines 494-505), where ORE's trade builder has
+     already moved `first` to no earlier than the day after the evaluation
+     date. `AmericanSwaptionConfig.option_times`.
   2. **Which coupons an exercise enters.** An American exercise can land
      inside an accrual period, so a coupon keeps belonging to the
      exercised-into swap until its accrual END and is credited
@@ -29,8 +31,8 @@ the Bermudan and lives in engine.instruments.bermudan_swaption. An
 `price_bermudan_swaptions`); there is no conversion step between the two.
 Verified against ORE's own engine by tests/test_ore_lgm_parity.py.
 """
-from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from dataclasses import InitVar, dataclass, field
+from typing import Dict, List, Optional, Union
 
 import jax
 import numpy as np
@@ -38,9 +40,9 @@ import ORE
 
 from engine.instruments.bermudan_swaption import ExerciseStyle, price_bermudan_swaptions
 from engine.models.lgm import Sigma
-from engine.models.ore_builders import time_from_reference
+from engine.models.ore_builders import book_swap_dates, is_live, time_from_reference, validate_fixings
 from engine.simulation.market_model import ZeroCurveConfig
-from engine.portfolio.validation import _validate_common_fields, _validate_hw_sigma, _validate_tenor
+from engine.portfolio.validation import _validate_common_fields, _validate_hw_sigma
 
 
 @dataclass
@@ -59,7 +61,8 @@ class AmericanSwaptionConfig:
 
     hw_sigma accepts either a plain float or an `engine.models.lgm.Sigma`
     (a piecewise-constant term structure, e.g. from `engine.calibration`),
-    exactly as `BermudanSwaptionConfig` does.
+    exactly as `BermudanSwaptionConfig` does, and effective_date/
+    maturity_date/swap_tenor/fixings have that config's meaning.
     """
     notional: float
     fixed_rate: float
@@ -70,28 +73,46 @@ class AmericanSwaptionConfig:
     initial_zero_curve: ZeroCurveConfig
     first_exercise_date: ORE.Date
     last_exercise_date: ORE.Date
-    swap_tenor: str = "5Y"
+    effective_date: Optional[ORE.Date] = None
+    maturity_date: Optional[ORE.Date] = None
+    swap_tenor: InitVar[Optional[str]] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
     exercise_time_steps_per_year: int = 24
     n_per_std: int = 48
     std_devs: float = 6.0
     evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
+    fixings: Dict[ORE.Date, float] = field(default_factory=dict)
 
     exercise_style = ExerciseStyle.AMERICAN
 
     def option_times(self) -> List[float]:
         """ORE's American `optionTimes` (`calculate()`, lines 494-505),
         including its truncating step count and its exact arithmetic
-        (`t1 + i * (t2 - t1) / steps`, evaluated left to right as in C++)."""
-        t1 = max(0.0, time_from_reference(self.evaluation_date, self.first_exercise_date))
+        (`t1 + i * (t2 - t1) / steps`, evaluated left to right as in C++).
+
+        The window's first day is the later of `first_exercise_date` and
+        the day after the evaluation date: ORE's trade builder never lets an
+        American be exercised on the evaluation date itself
+        (`ExerciseBuilder`, OREData/ored/portfolio/optiondata.cpp: "keep two
+        alive notice dates always for american style exercise",
+        `max(today + 1, first)`). It matters once a trade has aged into its
+        window (audit M-4)."""
+        first = max(self.evaluation_date + 1, self.first_exercise_date)
+        t1 = max(0.0, time_from_reference(self.evaluation_date, first))
         t2 = max(t1, time_from_reference(self.evaluation_date, self.last_exercise_date))
         steps = max(1, int((t2 - t1) * float(self.exercise_time_steps_per_year)))
         return sorted({t1} | {t1 + float(i) * (t2 - t1) / float(steps) for i in range(steps + 1)})
 
-    def __post_init__(self) -> None:
+    def is_expired(self) -> bool:
+        """ORE's `Instrument::isExpired`: the window's last day is on or
+        before the evaluation date. An expired option is worth 0."""
+        return not is_live(self.last_exercise_date, self.evaluation_date)
+
+    def __post_init__(self, swap_tenor: Optional[str]) -> None:
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
-        _validate_tenor(self.swap_tenor, "swap_tenor")
+        book_swap_dates(self, swap_tenor)
+        validate_fixings(self.fixings)
         # None is a valid sentinel meaning "uncalibrated" -- see
         # BermudanSwaptionConfig.__post_init__'s identical handling.
         _validate_hw_sigma(self.hw_sigma)

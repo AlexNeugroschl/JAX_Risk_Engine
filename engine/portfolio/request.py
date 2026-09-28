@@ -81,7 +81,7 @@ import numpy as np
 import ORE
 
 from engine.simulation.market_model import SimulationConfig, generate_paths
-from engine.instruments.swap import SwapConfig, _build_ore_swap, price_swaps
+from engine.instruments.swap import SwapConfig, price_swaps, swap_schedule
 from engine.instruments.european_swaption import SwaptionConfig, prepare_swaption, price_swaptions
 from engine.instruments.bermudan_swaption import (
     BermudanSwaptionConfig, price_bermudan_swaptions, price_bermudan_swaption_base,
@@ -90,7 +90,6 @@ from engine.instruments.american_swaption import AmericanSwaptionConfig, price_a
 from engine.instruments.treasury import (
     RATE_BUMP, BondConfig, ScenarioPricingNotSupported, price_bond_base,
 )
-from engine.models.ore_builders import fixed_leg_cashflows, floating_leg_cashflows
 from engine.calibration.lgm import calibrate_lgm_sigma, CalibrationTarget
 from engine.risk.var_es import ENGINE_RISK_MEASURE
 from engine.risk import greeks as _greeks
@@ -448,7 +447,7 @@ def _warn_if_aged_swap_exposure(sim_config: SimulationConfig, trade_configs) -> 
     for i, cfg in enumerate(trade_configs):
         if not isinstance(cfg, SwapConfig):
             continue
-        starts = floating_leg_cashflows(_build_ore_swap(cfg), cfg.evaluation_date).accrual_start_times
+        starts = swap_schedule(cfg).floating.accrual_start_times
         if starts.size == 0:
             continue
         first_accrual_start = float(starts.min())
@@ -549,9 +548,11 @@ def derive_maturity_pillars(trade_configs: Sequence[TradeConfig], evaluation_dat
     Builds every `SwapConfig`'s real ORE schedule (via
     `engine.models.ore_builders.build_vanilla_swap`, the same shared
     construction every pricer already uses -- schedule logic is never
-    reimplemented here) and returns the sorted union of every leg's
-    accrual/payment year-fractions -- the exact maturity-pillar set
-    `engine.instruments.swap`'s `_maturity_indices` requires. Automates what
+    reimplemented here) and returns the sorted union of the times the swap
+    pricer reads a discount factor at on `evaluation_date`
+    (`SwapSchedule.pillar_times`: remaining payments, and the accrual
+    start/end of every coupon still projected) -- the exact maturity-pillar
+    set `engine.instruments.swap`'s `_maturity_indices` requires. Automates what
     `demo.py` used to do by hand for a single swap.
 
     Only `SwapConfig` trades contribute pillars: every swaption-family
@@ -565,14 +566,7 @@ def derive_maturity_pillars(trade_configs: Sequence[TradeConfig], evaluation_dat
     for cfg in trade_configs:
         if not isinstance(cfg, SwapConfig):
             continue
-        swap = _build_ore_swap(replace(cfg, evaluation_date=evaluation_date))
-        fixed = fixed_leg_cashflows(swap, evaluation_date)
-        floating = floating_leg_cashflows(swap, evaluation_date)
-        pillars.update(fixed.payment_times.tolist())
-        pillars.update(fixed.accrual_start_times.tolist())
-        pillars.update(floating.payment_times.tolist())
-        pillars.update(floating.accrual_start_times.tolist())
-        pillars.update(floating.accrual_end_times.tolist())
+        pillars.update(swap_schedule(replace(cfg, evaluation_date=evaluation_date)).pillar_times())
     return sorted(pillars)
 
 

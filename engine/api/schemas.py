@@ -18,6 +18,13 @@ Pydantic-serializable) are represented here as plain strings: dates as ISO
 own period-string syntax (e.g. `"5Y"`, `"18M"`, `"0D"`), parsed via
 `ORE.Period(str)` -- the exact same parse `engine.portfolio.validation.
 _validate_tenor` already validates for the underlying dataclasses.
+Historical fixings are `{"YYYY-MM-DD": rate}`.
+
+A trade's schedule is given as `effective_date`/`maturity_date` (and a
+European swaption's `exercise_date`), or as `swap_tenor` (plus, for a
+European, `forward_start`/`exercise_lag_days`) resolved to dates on the
+trade's evaluation date -- exactly the dataclasses' own rule (audit M-4).
+There is no default tenor: a trade without either is refused.
 """
 from typing import Annotated, Dict, List, Literal, Optional, Union
 
@@ -53,6 +60,14 @@ def _parse_ore_period(value: str) -> ORE.Period:
         return ORE.Period(value)
     except Exception as exc:
         raise ValueError(f"not a valid ORE period string (e.g. '5Y', '18M'): {value!r} ({exc})") from exc
+
+
+def _parse_optional_date(value: Optional[str]) -> Optional[ORE.Date]:
+    return _parse_ore_date(value) if value is not None else None
+
+
+def _parse_fixings(fixings: Dict[str, float]) -> Dict[ORE.Date, float]:
+    return {_parse_ore_date(date): rate for date, rate in fixings.items()}
 
 
 class ZeroCurveConfigSchema(BaseModel):
@@ -120,18 +135,24 @@ class SwapConfigSchema(BaseModel):
     payer: bool
     discount_curve_index: int
     forward_curve_index: int
-    swap_tenor: str = "5Y"
+    effective_date: Optional[str] = None
+    maturity_date: Optional[str] = None
+    swap_tenor: Optional[str] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
     evaluation_date: Optional[str] = None
+    fixings: Dict[str, float] = Field(default_factory=dict)
 
     def to_dataclass(self, default_evaluation_date: ORE.Date) -> SwapConfig:
         return SwapConfig(
             notional=self.notional, fixed_rate=self.fixed_rate, payer=self.payer,
             discount_curve_index=self.discount_curve_index, forward_curve_index=self.forward_curve_index,
+            effective_date=_parse_optional_date(self.effective_date),
+            maturity_date=_parse_optional_date(self.maturity_date),
             swap_tenor=self.swap_tenor, index_tenor_months=self.index_tenor_months,
             floating_spread=self.floating_spread,
             evaluation_date=_parse_ore_date(self.evaluation_date) if self.evaluation_date else default_evaluation_date,
+            fixings=_parse_fixings(self.fixings),
         )
 
 
@@ -144,11 +165,14 @@ class SwaptionConfigSchema(BaseModel):
     hw_a: float
     hw_sigma: float
     initial_zero_curve: ZeroCurveConfigSchema
-    swap_tenor: str = "5Y"
+    exercise_date: Optional[str] = None
+    effective_date: Optional[str] = None
+    maturity_date: Optional[str] = None
+    swap_tenor: Optional[str] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
-    forward_start: str = "0D"
-    exercise_lag_days: int = 2
+    forward_start: Optional[str] = None
+    exercise_lag_days: Optional[int] = None
     evaluation_date: Optional[str] = None
 
     def to_dataclass(self, default_evaluation_date: ORE.Date) -> SwaptionConfig:
@@ -156,8 +180,12 @@ class SwaptionConfigSchema(BaseModel):
             notional=self.notional, fixed_rate=self.fixed_rate, payer=self.payer,
             rate_factor_index=self.rate_factor_index, hw_a=self.hw_a, hw_sigma=self.hw_sigma,
             initial_zero_curve=self.initial_zero_curve.to_dataclass(),
+            exercise_date=_parse_optional_date(self.exercise_date),
+            effective_date=_parse_optional_date(self.effective_date),
+            maturity_date=_parse_optional_date(self.maturity_date),
             swap_tenor=self.swap_tenor, index_tenor_months=self.index_tenor_months,
-            floating_spread=self.floating_spread, forward_start=_parse_ore_period(self.forward_start),
+            floating_spread=self.floating_spread,
+            forward_start=_parse_ore_period(self.forward_start) if self.forward_start is not None else None,
             exercise_lag_days=self.exercise_lag_days,
             evaluation_date=_parse_ore_date(self.evaluation_date) if self.evaluation_date else default_evaluation_date,
         )
@@ -173,22 +201,28 @@ class BermudanSwaptionConfigSchema(BaseModel):
     hw_sigma: Optional[float] = None  # None -> uncalibrated, filled in by price_portfolio
     initial_zero_curve: ZeroCurveConfigSchema
     exercise_dates: List[str]  # ISO dates, ascending -- ORE's exercise contract
-    swap_tenor: str = "5Y"
+    effective_date: Optional[str] = None
+    maturity_date: Optional[str] = None
+    swap_tenor: Optional[str] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
     n_per_std: int = 48
     std_devs: float = 6.0
     evaluation_date: Optional[str] = None
+    fixings: Dict[str, float] = Field(default_factory=dict)
 
     def to_dataclass(self, default_evaluation_date: ORE.Date) -> BermudanSwaptionConfig:
         return BermudanSwaptionConfig(
             notional=self.notional, fixed_rate=self.fixed_rate, payer=self.payer,
             rate_factor_index=self.rate_factor_index, hw_a=self.hw_a, hw_sigma=self.hw_sigma,
             initial_zero_curve=self.initial_zero_curve.to_dataclass(),
-            exercise_dates=[_parse_ore_date(d) for d in self.exercise_dates], swap_tenor=self.swap_tenor,
+            exercise_dates=[_parse_ore_date(d) for d in self.exercise_dates],
+            effective_date=_parse_optional_date(self.effective_date),
+            maturity_date=_parse_optional_date(self.maturity_date), swap_tenor=self.swap_tenor,
             index_tenor_months=self.index_tenor_months, floating_spread=self.floating_spread,
             n_per_std=self.n_per_std, std_devs=self.std_devs,
             evaluation_date=_parse_ore_date(self.evaluation_date) if self.evaluation_date else default_evaluation_date,
+            fixings=_parse_fixings(self.fixings),
         )
 
 
@@ -203,13 +237,16 @@ class AmericanSwaptionConfigSchema(BaseModel):
     initial_zero_curve: ZeroCurveConfigSchema
     first_exercise_date: str  # ISO date: first day of the exercise window
     last_exercise_date: str   # ISO date: last day of the exercise window
-    swap_tenor: str = "5Y"
+    effective_date: Optional[str] = None
+    maturity_date: Optional[str] = None
+    swap_tenor: Optional[str] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
     exercise_time_steps_per_year: int = 24
     n_per_std: int = 48
     std_devs: float = 6.0
     evaluation_date: Optional[str] = None
+    fixings: Dict[str, float] = Field(default_factory=dict)
 
     def to_dataclass(self, default_evaluation_date: ORE.Date) -> AmericanSwaptionConfig:
         return AmericanSwaptionConfig(
@@ -218,10 +255,13 @@ class AmericanSwaptionConfigSchema(BaseModel):
             initial_zero_curve=self.initial_zero_curve.to_dataclass(),
             first_exercise_date=_parse_ore_date(self.first_exercise_date),
             last_exercise_date=_parse_ore_date(self.last_exercise_date),
+            effective_date=_parse_optional_date(self.effective_date),
+            maturity_date=_parse_optional_date(self.maturity_date),
             swap_tenor=self.swap_tenor, index_tenor_months=self.index_tenor_months,
             floating_spread=self.floating_spread, exercise_time_steps_per_year=self.exercise_time_steps_per_year,
             n_per_std=self.n_per_std, std_devs=self.std_devs,
             evaluation_date=_parse_ore_date(self.evaluation_date) if self.evaluation_date else default_evaluation_date,
+            fixings=_parse_fixings(self.fixings),
         )
 
 

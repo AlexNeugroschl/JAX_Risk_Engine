@@ -20,6 +20,8 @@ engine/instruments/european_swaption.py's docstring) is exercised directly
 here too, since Greeks were the first thing in this codebase to actually
 differentiate through it.
 """
+import dataclasses
+
 import jax
 jax.config.update("jax_enable_x64", True)
 
@@ -387,7 +389,12 @@ class TestSwapTheta:
         """Theta = NPV(t+1d) - NPV(t) + cashflow(t, t+1d) -- confirms
         swap_theta's output matches this definition computed by hand from
         the same building blocks (_swap_price_fn at two evaluation
-        dates)."""
+        dates). The t+1d valuation is the SAME booked swap one day older
+        (audit M-4/M-5): its first coupon fixed on t, at the rate t's
+        valuation forecast for it."""
+        from engine.instruments.swap import _build_ore_swap
+        from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
+
         cfg = self._cfg()
         disc_curve = ZeroCurve.flat(0.030, PILLAR_TIMES)
         fwd_curve = ZeroCurve.flat(0.035, PILLAR_TIMES)
@@ -397,7 +404,13 @@ class TestSwapTheta:
         base_price_fn = _swap_price_fn(cfg, disc_curve, fwd_curve)
         base = float(base_price_fn(disc_curve.pillar_rates, fwd_curve.pillar_rates))
         theta_date = ORE.TARGET().advance(TODAY, DEFAULT_THETA_DAYS, ORE.Days)
-        theta_cfg = self._cfg(evaluation_date=theta_date)
+        coupon = ORE.as_floating_rate_coupon(_build_ore_swap(cfg).floatingLeg()[0])
+        assert coupon.fixingDate() == TODAY
+        t_start, t_end = (TIME_AXIS_DAY_COUNTER.yearFraction(TODAY, d)
+                          for d in (coupon.accrualStartDate(), coupon.accrualEndDate()))
+        forecast = (np.exp(0.035 * (t_end - t_start)) - 1.0) / coupon.accrualPeriod()
+        theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date, fixings={TODAY: forecast})
+        assert theta_cfg.maturity_date == cfg.maturity_date
         theta_price_fn = _swap_price_fn(theta_cfg, disc_curve, fwd_curve)
         theta_npv = float(theta_price_fn(disc_curve.pillar_rates, fwd_curve.pillar_rates))
 
@@ -674,7 +687,9 @@ class TestSwaptionTheta:
         base_price_fn = _swaption_price_fn(cfg, curve)
         base = float(base_price_fn(curve.pillar_rates))
         theta_date = ORE.TARGET().advance(TODAY, DEFAULT_THETA_DAYS, ORE.Days)
-        theta_cfg = self._cfg(curve, evaluation_date=theta_date)
+        # The same option one day older: its exercise date stays put (M-5).
+        theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date)
+        assert theta_cfg.exercise_date == cfg.exercise_date
         theta_price_fn = _swaption_price_fn(theta_cfg, curve)
         theta_npv = float(theta_price_fn(curve.pillar_rates))
 

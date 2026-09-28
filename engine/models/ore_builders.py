@@ -31,9 +31,10 @@ which defaults to ACT/365 so this module's long-standing behavior is
 unchanged for every caller that does not ask for something else (W1.1).
 
 **Scope warning -- this builder is GENERIC TERM-IBOR ONLY.** It produces a
-`SimIndex<N>M` term index, ACT/365 on both legs, a TARGET calendar, and a
-schedule derived from a TENOR STRING ("5Y") rather than explicit booked
-dates. A real USD-SOFR contract is an OVERNIGHT index, ACT/360, daily
+`SimIndex<N>M` term index, ACT/365 on both legs and a TARGET calendar. (Its
+schedule comes from explicit effective/maturity dates since audit M-4; a
+tenor string is only a booking convenience, see `resolve_swap_dates`.) A
+real USD-SOFR contract is an OVERNIGHT index, ACT/360, daily
 compounded in arrears, on a US calendar, with explicit effective/maturity
 dates plus lookback/lockout/payment-lag terms this signature cannot even
 express. Routing such a booking through here produces a confident, WRONG
@@ -49,10 +50,13 @@ consistency with the simulation time axis), gated on the convention set
 agreed in decisions D03/D04, with unsupported conventions REFUSED rather
 than approximated here.
 """
+import math
 from dataclasses import dataclass
 
 import numpy as np
 import ORE
+
+from engine.portfolio.validation import _validate_tenor
 
 # =============================================================================
 # THE TWO ROLES Actual/365Fixed PLAYS HERE, AND WHY THEY MUST BE NAMED APART
@@ -127,52 +131,138 @@ from engine.day_count import (  # noqa: E402  (re-export, see above)
 )
 
 
+#: The generic index's fixing calendar and settlement lag -- also the
+#: calendar and spot lag `ORE.MakeVanillaSwap` uses to place a tenor-quoted
+#: swap's start date (`floatCalendar_`, the index's `fixingDays()`).
+SWAP_CALENDAR = ORE.TARGET()
+SPOT_LAG_DAYS = 2
+
+
+def resolve_swap_dates(trade_date: ORE.Date, swap_tenor: str, forward_start: ORE.Period = None):
+    """`(effective_date, maturity_date)` of a swap quoted as a tenor on
+    `trade_date` -- `ORE.MakeVanillaSwap`'s own rule for a swap with no
+    explicit dates (QuantLib/ql/instruments/makevanillaswap.cpp), so a trade
+    booked by tenor has exactly the schedule ORE would give it:
+
+      spot      = calendar.advance(calendar.adjust(trade_date), 2 business days)
+      effective = spot + forward_start, adjusted Following (Preceding if negative)
+      maturity  = effective + swap_tenor, unadjusted (the schedule adjusts it)
+
+    Called once, when a trade is booked (see `book_swap_dates`); the
+    resulting dates are the trade. Checked coupon for coupon against
+    `MakeVanillaSwap`'s own tenor path in tests/test_trade_dates.py."""
+    forward_start = forward_start if forward_start is not None else ORE.Period(0, ORE.Days)
+    spot = SWAP_CALENDAR.advance(SWAP_CALENDAR.adjust(trade_date), SPOT_LAG_DAYS, ORE.Days)
+    effective = spot + forward_start
+    if forward_start.length() > 0:
+        effective = SWAP_CALENDAR.adjust(effective, ORE.Following)
+    elif forward_start.length() < 0:
+        effective = SWAP_CALENDAR.adjust(effective, ORE.Preceding)
+    return effective, effective + ORE.Period(swap_tenor)
+
+
+def book_swap_dates(cfg, swap_tenor, forward_start=None) -> None:
+    """The `__post_init__` step shared by every config that holds a swap.
+    A trade booked by tenor has the tenor resolved to dates on its
+    `evaluation_date` (`resolve_swap_dates`); either way the dates are then
+    required and checked.
+
+    A tenor together with explicit dates is refused rather than one silently
+    winning. `dataclasses.replace` passes no tenor (it is an `InitVar`
+    defaulting to `None`), so a copy of a booked trade keeps its dates --
+    which is what makes one config the same trade on every evaluation date."""
+    if swap_tenor is not None:
+        _validate_tenor(swap_tenor, "swap_tenor")
+        if cfg.effective_date is not None or cfg.maturity_date is not None:
+            raise ValueError("give either swap_tenor or effective_date/maturity_date, not both")
+        cfg.effective_date, cfg.maturity_date = resolve_swap_dates(
+            cfg.evaluation_date, swap_tenor, forward_start)
+    elif forward_start is not None:
+        raise ValueError("forward_start is only meaningful with swap_tenor")
+    elif cfg.effective_date is None and cfg.maturity_date is None:
+        raise ValueError("a swap needs its dates: give effective_date and maturity_date, or swap_tenor")
+    for name in ("effective_date", "maturity_date"):
+        if not isinstance(getattr(cfg, name), ORE.Date):
+            raise TypeError(f"{name} must be an ORE.Date; got {getattr(cfg, name)!r}")
+    if not cfg.effective_date < cfg.maturity_date:
+        raise ValueError(
+            f"effective_date ({cfg.effective_date}) must be before maturity_date ({cfg.maturity_date})")
+
+
+def validate_fixings(fixings) -> None:
+    """Historical index fixings are `{ORE.Date: finite rate}`."""
+    for date, value in fixings.items():
+        if not isinstance(date, ORE.Date):
+            raise TypeError(f"fixings must be keyed by ORE.Date; got {date!r}")
+        if not math.isfinite(value):
+            raise ValueError(f"fixing on {date} must be finite; got {value}")
+
+
+class MissingFixingError(ValueError):
+    """A coupon fixed before the evaluation date and no fixing was supplied
+    for it -- ORE's own "Missing ... fixing" failure."""
+
+
+def known_fixing(fixing_date: ORE.Date, today: ORE.Date, fixings) -> "float | None":
+    """The index fixing ORE treats as already known on `today`, or `None`
+    where ORE forecasts it -- `InterestRateIndex::fixing`
+    (QuantLib/ql/indexes/interestrateindex.cpp) under ORE's default settings:
+
+      * after today: forecast (a supplied value is ignored, as in ORE);
+      * today: the supplied fixing if there is one, else forecast;
+      * before today: the supplied fixing, else `MissingFixingError`."""
+    if fixing_date > today:
+        return None
+    if fixing_date in fixings:
+        return float(fixings[fixing_date])
+    if fixing_date == today:
+        return None
+    raise MissingFixingError(
+        f"missing fixing for {fixing_date}: the coupon fixed before the evaluation date {today}; "
+        f"supply it in the trade's fixings"
+    )
+
+
 def build_vanilla_swap(
     notional: float,
     fixed_rate: float,
     payer: bool,
-    swap_tenor: str,
+    effective_date: ORE.Date,
+    maturity_date: ORE.Date,
     index_tenor_months: int,
     floating_spread: float,
-    evaluation_date: ORE.Date,
-    forward_start: ORE.Period = None,
     accrual_day_count=None,
 ) -> ORE.VanillaSwap:
     """Builds a real `ORE.VanillaSwap` (schedules, day counts, conventions)
-    via `ORE.MakeVanillaSwap` -- date generation and accrual math match ORE
-    exactly rather than being reimplemented. `forward_start` (an
-    `ORE.Period` the swap's first accrual is delayed by beyond the
-    standard spot lag) defaults to no delay; only
-    `engine.instruments.european_swaption` currently passes a non-default
-    value (a swaption's own `forward_start`), but any instrument needing a
-    forward-starting underlying can use it the same way.
+    via `ORE.MakeVanillaSwap` from the booked `effective_date` and
+    `maturity_date` -- date generation and accrual math match ORE exactly
+    rather than being reimplemented, and the schedule does not depend on any
+    evaluation date (audit M-4). A tenor-quoted swap gets its dates from
+    `resolve_swap_dates` first.
 
     `accrual_day_count` is the **instrument accrual** role (see this
     module's TWO ROLES block): the day count this swap's coupons accrue on,
     by name from `SUPPORTED_ACCRUAL_DAY_COUNTS` or as an `ORE.DayCounter`.
-    Defaults to ACT/365, which is what every caller got before this
-    parameter existed, so existing behavior is byte-identical.
+    Defaults to ACT/365.
 
-    Note what does NOT take it: the index's own day count and the dummy
-    forward curve's, both of which stay `TIME_AXIS_DAY_COUNTER`. The index
-    day count feeds ORE's forward-rate calculation, but this engine never
-    reads ORE's forwards -- it reprices against the JAX-simulated cube
-    whose axis is ACT/365 (see `floating_leg_cashflows`' docstring). Only
-    the LEG accrual fractions, which `fixed_leg_cashflows` reads back out
-    via `accrualPeriod()`, are the contract's own accrual.
+    Note what does NOT take it: the index's own day count, which stays
+    `TIME_AXIS_DAY_COUNTER`. The index has no forwarding curve because this
+    engine never reads ORE's forwards -- it reprices against the
+    JAX-simulated cube, whose axis is ACT/365. Only the LEG accrual
+    fractions, which `fixed_leg_cashflows` reads back out via
+    `accrualPeriod()`, are the contract's own accrual.
     """
-    ORE.Settings.instance().evaluationDate = evaluation_date
     accrual = resolve_accrual_day_count(accrual_day_count)
-    dummy_forward_curve = ORE.YieldTermStructureHandle(
-        ORE.FlatForward(evaluation_date, 0.0, TIME_AXIS_DAY_COUNTER)
-    )
     index = ORE.IborIndex(
-        "SimIndex", ORE.Period(index_tenor_months, ORE.Months), 2,
-        ORE.USDCurrency(), ORE.TARGET(), ORE.ModifiedFollowing, False,
-        TIME_AXIS_DAY_COUNTER, dummy_forward_curve,
+        "SimIndex", ORE.Period(index_tenor_months, ORE.Months), SPOT_LAG_DAYS,
+        ORE.USDCurrency(), SWAP_CALENDAR, ORE.ModifiedFollowing, False,
+        TIME_AXIS_DAY_COUNTER, ORE.YieldTermStructureHandle(),
     )
     swap_type = ORE.VanillaSwap.Payer if payer else ORE.VanillaSwap.Receiver
-    kwargs = dict(
+    return ORE.MakeVanillaSwap(
+        ORE.Period(0, ORE.Days), index, fixed_rate,
+        effectiveDate=effective_date,
+        terminationDate=maturity_date,
         nominal=notional,
         swapType=swap_type,
         floatingLegSpread=floating_spread,
@@ -181,59 +271,74 @@ def build_vanilla_swap(
         fixedLegDayCount=accrual,
         floatingLegDayCount=accrual,
     )
-    if forward_start is not None:
-        kwargs["forwardStart"] = forward_start
-    return ORE.MakeVanillaSwap(ORE.Period(swap_tenor), index, fixed_rate, **kwargs)
 
 
 @dataclass
 class LegCashflows:
-    """One leg's cashflow schedule, as year-fractions from `today`."""
+    """One leg's REMAINING cashflows on `today`, times as year-fractions from
+    `today`. For a floating leg read with fixings, `is_fixed`/`fixed_rates`
+    mark the coupons whose index fixing is already known (`known_fixing`);
+    the pricer projects the rest off a curve."""
     payment_times: np.ndarray        # [N]
     accrual_start_times: np.ndarray  # [N]
     accrual_end_times: np.ndarray    # [N]
     accrual_fractions: np.ndarray    # [N]
     notional: float
+    is_fixed: np.ndarray = None      # [N] bool
+    fixed_rates: np.ndarray = None   # [N] the fixing where is_fixed, else 0
+
+
+def is_live(cashflow_date: ORE.Date, today: ORE.Date) -> bool:
+    """Whether a cashflow is still part of the trade on `today`: QuantLib's
+    `CashFlow::hasOccurred` under ORE's default settings, where a cashflow
+    paid ON the evaluation date has already occurred."""
+    return cashflow_date > today
+
+
+def _leg_cashflows(leg, as_coupon, today: ORE.Date, notional: float, fixings=None) -> LegCashflows:
+    payment_times, accrual_starts, accrual_ends, fractions = [], [], [], []
+    is_fixed, fixed_rates = [], []
+    for cf in leg:
+        c = as_coupon(cf)
+        if not is_live(c.date(), today):
+            continue
+        payment_times.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.date()))
+        accrual_starts.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
+        accrual_ends.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
+        fractions.append(c.accrualPeriod())
+        if fixings is not None:
+            rate = known_fixing(c.fixingDate(), today, fixings)
+            is_fixed.append(rate is not None)
+            fixed_rates.append(0.0 if rate is None else rate)
+    return LegCashflows(
+        payment_times=np.array(payment_times),
+        accrual_start_times=np.array(accrual_starts),
+        accrual_end_times=np.array(accrual_ends),
+        accrual_fractions=np.array(fractions),
+        notional=notional,
+        is_fixed=None if fixings is None else np.array(is_fixed, dtype=bool),
+        fixed_rates=None if fixings is None else np.array(fixed_rates, dtype=np.float64),
+    )
 
 
 def fixed_leg_cashflows(swap: ORE.VanillaSwap, today: ORE.Date) -> LegCashflows:
-    """Extracts each fixed coupon's payment/accrual dates (as
-    year-fractions from `today`) and ORE's own `accrualPeriod()` for each,
-    from the real ORE-generated schedule -- no date/day-count math
-    reimplemented here."""
-    payment_times, accrual_starts, accrual_ends, fractions = [], [], [], []
-    for cf in swap.fixedLeg():
-        c = ORE.as_fixed_rate_coupon(cf)
-        payment_times.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.date()))
-        accrual_starts.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
-        accrual_ends.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
-        fractions.append(c.accrualPeriod())
-    return LegCashflows(
-        payment_times=np.array(payment_times),
-        accrual_start_times=np.array(accrual_starts),
-        accrual_end_times=np.array(accrual_ends),
-        accrual_fractions=np.array(fractions),
-        notional=swap.fixedNominals()[0] if swap.fixedNominals() else swap.nominal(),
-    )
+    """Each remaining fixed coupon's payment/accrual dates (as year-fractions
+    from `today`) and ORE's own `accrualPeriod()` for each, from the real
+    ORE-generated schedule -- no date/day-count math reimplemented here.
+    Coupons already paid on `today` are left out (`is_live`)."""
+    notional = swap.fixedNominals()[0] if swap.fixedNominals() else swap.nominal()
+    return _leg_cashflows(swap.fixedLeg(), ORE.as_fixed_rate_coupon, today, notional)
 
 
-def floating_leg_cashflows(swap: ORE.VanillaSwap, today: ORE.Date) -> LegCashflows:
+def floating_leg_cashflows(swap: ORE.VanillaSwap, today: ORE.Date, fixings=None) -> LegCashflows:
     """Same extraction as `fixed_leg_cashflows`, for the floating leg's
     coupons. `accrual_start`/`accrual_end` times are what forward rates get
-    computed from downstream -- ORE's own fixing is never read, since the
-    whole point is repricing under JAX-simulated scenarios, not ORE's own
-    (single, deterministic) fixing history."""
-    payment_times, accrual_starts, accrual_ends, fractions = [], [], [], []
-    for cf in swap.floatingLeg():
-        c = ORE.as_floating_rate_coupon(cf)
-        payment_times.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.date()))
-        accrual_starts.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
-        accrual_ends.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
-        fractions.append(c.accrualPeriod())
-    return LegCashflows(
-        payment_times=np.array(payment_times),
-        accrual_start_times=np.array(accrual_starts),
-        accrual_end_times=np.array(accrual_ends),
-        accrual_fractions=np.array(fractions),
-        notional=swap.floatingNominals()[0] if swap.floatingNominals() else swap.nominal(),
-    )
+    computed from downstream.
+
+    Given the trade's historical `fixings`, each coupon is also marked known
+    or projected exactly as ORE decides it (`known_fixing`), and a coupon
+    that fixed before `today` with no supplied fixing raises
+    `MissingFixingError`. Without `fixings` only the schedule is read, for
+    callers that need nothing else."""
+    notional = swap.floatingNominals()[0] if swap.floatingNominals() else swap.nominal()
+    return _leg_cashflows(swap.floatingLeg(), ORE.as_floating_rate_coupon, today, notional, fixings)

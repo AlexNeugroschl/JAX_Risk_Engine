@@ -109,7 +109,26 @@ list of `ORE.Date`), `AmericanSwaptionConfig.first_exercise_date`/`last_exercise
 the dates with the curve's own day counter (`time_from_reference`), exactly as ORE derives
 `optionTimes`, so an exercise date equal to an accrual date maps to the bit-identical time.
 Bermudan dates on or before the evaluation date are not exercise opportunities (ORE: `if (d >
-refDate)`); an American window that is already open starts at `t = 0`.
+refDate)`). An American window never includes the evaluation date itself: ORE's trade builder
+moves its first day to `max(first, evaluation date + 1)` (`ExerciseBuilder`), so a window
+that is already open starts tomorrow. Starting it at `t = 0` instead was 7e-4 off ORE for a
+window opening on the evaluation date.
+
+The underlying swap is booked with absolute dates, exactly as a
+[`SwapConfig`](swaps.md#1-describing-a-swap-swapconfig) is (`effective_date`/`maturity_date`,
+or `swap_tenor` resolved once at booking), so one config is one trade on every evaluation
+date (audit [M-4](../planning/engine-audit.md#m-4)). On a later date:
+
+- exercise dates on or before it are gone, and after the last one the option has expired and
+  is worth exactly 0 (`is_expired()`). ORE builds such a trade as a zero cashflow;
+- a coupon whose belongs-until time is before it — a Bermudan's elapsed or current period, an
+  American's elapsed one — is left out: ORE's `isPartOfUnderlying` is false for it at every
+  grid time, so ORE never values it either;
+- a coupon still in play whose fixing date has passed uses its historical fixing from
+  `fixings`, as `LgmVectorised::fixing` does for a fixing date on or before today. A missing
+  one raises `MissingFixingError`.
+
+`tests/test_trade_dates.py` checks each case against ORE's own engine, to 1e-10.
 
 Any exercise date is legitimate. A Bermudan date inside an accrual period exercises into the
 next whole period, as in ORE (see [Which coupons an exercise enters](#which-coupons-an-exercise-enters)).
@@ -284,8 +303,10 @@ leg:
 - fixed coupon: `amount · P(t, pay; x)`;
 - Ibor coupon: `(fixing(t, x) + spread) · accrual · notional · P(t, pay; x)`, with
   `fixing(t, x) = (P(t,T1)/P(t,T2) − 1) / dcf(d1, d2)`, `T1 = max(t, d1)`,
-  `T2 = max(T1, d2)` over the index period `[d1, d2]`. A fixing dated on the evaluation date
-  is deterministic in ORE (`index->fixing(today)`, forecast off today's curve), and is so here.
+  `T2 = max(T1, d2)` over the index period `[d1, d2]`. A fixing dated on or before the
+  evaluation date is deterministic in ORE (`index->fixing(fixingDate)`): the historical value
+  from `fixings`, or for today's with none supplied, the forecast off today's curve. So it is
+  here.
 
 Once `t` is past `d1` the clamp projects only the remaining stub, which `couponRatio` then
 scales again. As read, that shortens a broken American floating coupon twice. It is ORE's
@@ -362,9 +383,12 @@ while building it.
 American swaptions have no separate Greeks function: `bermudan_delta_gamma`,
 `bermudan_theta` and `bermudan_vega` take an `AmericanSwaptionConfig` directly, since both
 configs run through the same backward induction. Theta reprices the same trade one day on:
-its exercise *dates* stay put and every time is re-derived from the new evaluation date, as
-ORE does. (While exercise was given in year fractions, Theta silently moved every exercise
-opportunity a day later too.)
+its exercise and schedule *dates* stay put and every time is re-derived from the new
+evaluation date, as ORE does. A coupon fixing on the base date is history by then, and it is
+printed at the base date's own forecast of it, since Theta holds the curve fixed. (While
+exercise was given in year fractions, Theta silently moved every exercise opportunity a day
+later too. While the underlying was a tenor, it moved the swap a day later as well; see
+[M-5](../planning/engine-audit.md#m-5).)
 
 ## Which coupons an exercise enters
 

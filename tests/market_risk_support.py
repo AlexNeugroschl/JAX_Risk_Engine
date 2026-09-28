@@ -90,7 +90,8 @@ def ore_swap_npv(cfg: SwapConfig, disc_rates, fwd_rates) -> float:
     disc, fwd = ore_curve(disc_rates), ore_curve(fwd_rates)
     swap_type = ORE.VanillaSwap.Payer if cfg.payer else ORE.VanillaSwap.Receiver
     instrument = ORE.MakeVanillaSwap(
-        ORE.Period(cfg.swap_tenor), _index(fwd), cfg.fixed_rate, nominal=cfg.notional, swapType=swap_type,
+        ORE.Period(0, ORE.Days), _index(fwd), cfg.fixed_rate, nominal=cfg.notional, swapType=swap_type,
+        effectiveDate=cfg.effective_date, terminationDate=cfg.maturity_date,
         fixedLegDayCount=DAY_COUNTER, floatingLegDayCount=DAY_COUNTER,
     )
     instrument.setPricingEngine(ORE.DiscountingSwapEngine(disc))
@@ -102,11 +103,11 @@ def ore_european_npv(cfg: SwaptionConfig, rates) -> float:
     curve = ore_curve(rates)
     swap_type = ORE.VanillaSwap.Payer if cfg.payer else ORE.VanillaSwap.Receiver
     underlying = ORE.MakeVanillaSwap(
-        ORE.Period(cfg.swap_tenor), _index(curve), cfg.fixed_rate, nominal=cfg.notional, swapType=swap_type,
-        fixedLegDayCount=DAY_COUNTER, floatingLegDayCount=DAY_COUNTER, forwardStart=cfg.forward_start,
+        ORE.Period(0, ORE.Days), _index(curve), cfg.fixed_rate, nominal=cfg.notional, swapType=swap_type,
+        effectiveDate=cfg.effective_date, terminationDate=cfg.maturity_date,
+        fixedLegDayCount=DAY_COUNTER, floatingLegDayCount=DAY_COUNTER,
     )
-    start = ORE.TARGET().advance(TODAY, cfg.forward_start)
-    exercise = ORE.EuropeanExercise(ORE.TARGET().advance(start, ORE.Period(cfg.exercise_lag_days, ORE.Days)))
+    exercise = ORE.EuropeanExercise(cfg.exercise_date)
     swaption = ORE.Swaption(underlying, exercise)
     swaption.setPricingEngine(ORE.JamshidianSwaptionEngine(ORE.HullWhite(curve, cfg.hw_a, cfg.hw_sigma), curve))
     return swaption.NPV()

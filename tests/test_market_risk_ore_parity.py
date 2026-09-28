@@ -48,9 +48,9 @@ BASE = FACTORS.base_rates()
 
 def _ore_bermudan_npv(cfg, rates) -> float:
     swap = build_vanilla_swap(
-        notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer, swap_tenor=cfg.swap_tenor,
-        index_tenor_months=cfg.index_tenor_months, floating_spread=cfg.floating_spread,
-        evaluation_date=cfg.evaluation_date,
+        notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer, effective_date=cfg.effective_date,
+        maturity_date=cfg.maturity_date, index_tenor_months=cfg.index_tenor_months,
+        floating_spread=cfg.floating_spread,
     )
     return ore_lgm_swaption_npv(
         evaluation_date=m.TODAY, curve_times=m.PILLAR_TIMES, curve_rates=list(rates), swap=swap,

@@ -113,7 +113,7 @@ american_cfg = AmericanSwaptionConfig(
     notional=800_000.0, fixed_rate=0.029, payer=False, rate_factor_index=0,
     hw_a=HW_A, hw_sigma=CALIBRATED_SIGMA, initial_zero_curve=zero_curve_config,
     first_exercise_date=TODAY + ORE.Period(1, ORE.Years), last_exercise_date=TODAY + ORE.Period(4, ORE.Years),
-    exercise_time_steps_per_year=2,
+    swap_tenor="5Y", exercise_time_steps_per_year=2,
     evaluation_date=TODAY, n_per_std=64, std_devs=6.0,
 )
 

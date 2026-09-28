@@ -79,7 +79,7 @@ def _american(i: int, **overrides) -> AmericanSwaptionConfig:
         notional=600_000.0 * (1 + i % 3), fixed_rate=0.0295, payer=(i % 2 == 1),
         rate_factor_index=0, hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
         first_exercise_date=ORE.Date(3, 8, 2027), last_exercise_date=ORE.Date(3, 8, 2028),
-        exercise_time_steps_per_year=1, evaluation_date=TODAY, n_per_std=32, std_devs=6.0,
+        swap_tenor="5Y", exercise_time_steps_per_year=1, evaluation_date=TODAY, n_per_std=32, std_devs=6.0,
     )
     defaults.update(overrides)
     return AmericanSwaptionConfig(**defaults)

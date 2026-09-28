@@ -98,7 +98,7 @@ PORTFOLIO_TRADES = [
         "notional": 800_000.0, "fixed_rate": 0.029, "payer": False,
         "rate_factor_index": 0, "hw_a": HW_MEAN_REVERSION, "hw_sigma": None,
         "first_exercise_date": "2027-07-30", "last_exercise_date": "2030-07-30",
-        "exercise_time_steps_per_year": 2,
+        "swap_tenor": "5Y", "exercise_time_steps_per_year": 2,
         "n_per_std": 64, "std_devs": 6.0,
     },
 ]

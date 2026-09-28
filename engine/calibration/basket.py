@@ -66,7 +66,9 @@ import ORE
 
 from engine.models.hull_white import ZeroCurve, bond_call, bond_put, discount
 from engine.models.lgm import Sigma, bond_option_sigma, bond_price
-from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER, build_vanilla_swap, fixed_leg_cashflows
+from engine.models.ore_builders import (
+    TIME_AXIS_DAY_COUNTER, build_vanilla_swap, fixed_leg_cashflows, resolve_swap_dates,
+)
 
 
 @dataclass
@@ -158,12 +160,15 @@ def build_coterminal_basket(
         # factors, then re-strike at the par rate implied by zero_curve
         # (NOT ORE's own discount curve, since calibration is meant to
         # price consistently against the SAME curve engine.models.lgm
-        # itself discounts with -- see price_lgm_swaption below).
+        # itself discounts with -- see price_lgm_swaption below). A market
+        # quote's expiry and tenor are measured from today, so here the
+        # tenor is resolved on the evaluation date.
+        effective_date, maturity_date = resolve_swap_dates(
+            evaluation_date, swap_tenor, ORE.Period(int(round(forward_start_years * 12)), ORE.Months))
         placeholder = build_vanilla_swap(
             notional=notional, fixed_rate=0.03, payer=payer,
-            swap_tenor=swap_tenor, index_tenor_months=index_tenor_months,
-            floating_spread=0.0, evaluation_date=evaluation_date,
-            forward_start=ORE.Period(int(round(forward_start_years * 12)), ORE.Months),
+            effective_date=effective_date, maturity_date=maturity_date,
+            index_tenor_months=index_tenor_months, floating_spread=0.0,
         )
         today = evaluation_date
         accrual_start_date = ORE.as_fixed_rate_coupon(placeholder.fixedLeg()[0]).accrualStartDate()

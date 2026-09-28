@@ -33,8 +33,8 @@ do, this document links the entry and says what the register gets wrong or leave
 | [M-1](#m-1) | Simulated curves are not arbitrage-free against the input curve | Critical | Hard |
 | [M-2](#m-2) | Paid cashflows stay in a swap's NPV forever | High | Moderate |
 | [M-3](#m-3) | Options vanish at expiry instead of turning into the swap | High | Moderate |
-| [M-4](#m-4) | Trades are defined relative to the evaluation date | High | Hard |
-| [M-5](#m-5) | Theta re-rolls the trade instead of ageing it | High | Hard (after M-4) |
+| [M-4](#m-4) | Trades are defined relative to the evaluation date | ✅ Resolved 2026-09-25 | — |
+| [M-5](#m-5) | Theta re-rolls the trade instead of ageing it | ✅ Resolved 2026-09-25 (with M-4) | — |
 | [R-1](#r-1) | The reported VaR/ES is not an end-of-day market-risk VaR | ✅ Resolved 2026-09-24 | — |
 | [P-1](#p-1) | Nothing runs on more than one device | High | Hard |
 | [P-2](#p-2) | Bermudan/American scenario pricing runs on the host in a Python loop | Medium | Moderate |
@@ -60,9 +60,9 @@ simulated cube, so **M-1 to M-3 now affect only the exposure product**, and they
 scheduled with the counterparty-risk work (Basel plan phase P5), not first. P-3 was
 closed by rebuilding the precision study on the market-risk path.
 
-Recommended order from here: **M-4/M-5** (trade dates; theta), then **P-1** (multi-device,
-the research goal), then **M-1 to M-3** when exposure or CVA is scheduled. The rest can
-follow the work that touches them.
+Recommended order from here: **P-1** (multi-device, the research goal), then **M-1 to M-3**
+when exposure or CVA is scheduled. The rest can follow the work that touches them. (M-4 and
+M-5, trade dates and theta, were resolved together on 2026-09-25.)
 
 ---
 
@@ -162,6 +162,30 @@ every VaR/ES step after the first expiry.
 
 ### M-4 — Trades are defined relative to the evaluation date {#m-4}
 
+**Status: ✅ Resolved 2026-09-25.** Every trade config holds absolute dates:
+`effective_date`/`maturity_date` for the underlying swap, plus `exercise_date` for a European
+swaption (Bermudan/American exercise was already in dates). `swap_tenor` (and a European's
+`forward_start`/`exercise_lag_days`) are now construction-only `InitVar`s, resolved once, on
+`evaluation_date`, by `MakeVanillaSwap`'s own rule (`ore_builders.resolve_swap_dates`). That
+rule matches ORE's tenor path coupon for coupon over a year of trade dates.
+`build_vanilla_swap` takes the dates and no longer depends on the evaluation date. It also
+no longer sets ORE's global one.
+
+A trade priced after it started is valued as ORE values it. Paid cashflows drop out
+(`hasOccurred`). A coupon fixed before the evaluation date uses its historical fixing from
+the new `fixings` field, and a missing one raises `MissingFixingError`, as ORE refuses it.
+Options expire to 0 (`isExpired`). A Bermudan/American never values a coupon it can no
+longer exercise into. All of it is checked against ORE's own engines — DiscountingSwap,
+Jamshidian, and the LGM engine through the oracle — in `tests/test_trade_dates.py`. The API
+schemas take dates and fixings, and there is no default tenor any more; the worker pool
+freezes `fixings`. Theta changed with it: see [M-5](#m-5).
+
+Found along the way: an American already inside its window was exercisable on the evaluation
+date, where ORE's `ExerciseBuilder` starts it the next day ([I-35](../known-issues.md#i-35),
+fixed). And the ORE oracle cannot reproduce a curve sloped before its first pillar
+([I-34](../known-issues.md#i-34), open, tooling only). What follows is the finding as
+originally written.
+
 **Urgency: High · Ease: Hard**
 
 **Problem.** `SwapConfig`, `SwaptionConfig` and the Bermudan/American configs describe the
@@ -186,6 +210,17 @@ most tests change.
 ---
 
 ### M-5 — Theta re-rolls the trade instead of ageing it {#m-5}
+
+**Status: ✅ Resolved 2026-09-25, with [M-4](#m-4).** Once a config's dates are the trade,
+`dataclasses.replace(cfg, evaluation_date=theta_date)` is the same trade one day older, and
+that is what all three Theta functions now reprice. A swaption's expiry approaches (the day
+before expiry, Theta is minus the option's value), and a swap keeps its maturity. A fixing
+printed in `[today, theta_date)` is history on the Theta date. It is taken at the rate
+today's valuation forecast for it, since Theta holds the curve fixed (`greeks._theta_fixings`).
+The cashflow add-back now sees real payments: checked against ORE on a day before a floating
+payment. Each Theta equals ORE's own reprice difference in `tests/test_trade_dates.py`. The
+two tests that pinned the re-rolled values (`tests/test_greeks.py`) now reprice the aged
+trade. What follows is the finding as originally written.
 
 **Urgency: High · Ease: Hard (depends on M-4)**
 
@@ -368,8 +403,9 @@ market. A calibrated `Sigma` belongs to the market, keyed by factor, not to each
 **Problem.** Every trade config defaults `evaluation_date` to
 `ORE.Settings.instance().evaluationDate`, which is thread-local and defaults to the
 wall-clock date. [I-28](../known-issues.md#i-28) was one symptom. `build_vanilla_swap` also
-**sets** that global on every call. Results can depend on which thread ran and what ran
-before it. This pass added a check that all trades in a portfolio share one evaluation
+**set** that global on every call; since [M-4](#m-4) it builds from booked dates and no
+longer touches it, which leaves the implicit default. Results can depend on which thread ran
+and what ran before it. This pass added a check that all trades in a portfolio share one evaluation
 date, which catches the cross-trade case but not the implicit default.
 
 **Fix.** Make `evaluation_date` a required field. Scope any ORE global that must be set

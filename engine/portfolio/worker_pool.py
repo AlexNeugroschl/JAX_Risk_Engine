@@ -61,9 +61,9 @@ worker.
 
 **Why request/result cross the process boundary via a thin JSON-ish
 translation, not the raw dataclasses.** Trade configs carry real ORE objects
--- every one an `ORE.Date` (`evaluation_date`), Bermudan and American
-swaptions their exercise dates, `SwaptionConfig` an `ORE.Period`
-(`forward_start`) -- and SWIG-bound objects are NOT picklable (`TypeError:
+-- every one `ORE.Date`s (`evaluation_date`, the booked schedule dates, the
+keys of its historical `fixings`), Bermudan and American swaptions their
+exercise dates too -- and SWIG-bound objects are NOT picklable (`TypeError:
 cannot pickle 'SwigPyObject' object`), which `ProcessPoolExecutor.submit`
 requires for anything crossing the process boundary. `_freeze_trade`
 therefore turns each trade into a `_FrozenTrade` record (its class plus its
@@ -160,6 +160,9 @@ def _freeze_value(value):
         return _OreValue("period", str(value))
     if isinstance(value, (list, tuple)):
         return type(value)(_freeze_value(v) for v in value)
+    if isinstance(value, dict):
+        # A trade's historical fixings are keyed by ORE.Date.
+        return {_freeze_value(k): _freeze_value(v) for k, v in value.items()}
     if is_dataclass(value) and not isinstance(value, type):
         # A nested dataclass can hold ORE values too -- a bond's
         # `CouponPeriod`s carry `ORE.Date`s, which are unpicklable SWIG
@@ -177,13 +180,16 @@ def _thaw_value(value):
         return _thaw_trade(value)
     if isinstance(value, (list, tuple)):
         return type(value)(_thaw_value(v) for v in value)
+    if isinstance(value, dict):
+        return {_thaw_value(k): _thaw_value(v) for k, v in value.items()}
     return value
 
 
 def _freeze_trade(cfg) -> _FrozenTrade:
     """A trade config -> a picklable `_FrozenTrade`: every `ORE.Date`/
     `ORE.Period` field, including one inside a list (a Bermudan's exercise
-    dates) or a nested dataclass (a bond's coupon periods), becomes text. Generic over every trade-config type -- nothing
+    dates), a dict (a trade's fixings) or a nested dataclass (a bond's
+    coupon periods), becomes text. Generic over every trade-config type -- nothing
     here names a field."""
     return _FrozenTrade(type(cfg), {f.name: _freeze_value(getattr(cfg, f.name)) for f in fields(cfg)})
 

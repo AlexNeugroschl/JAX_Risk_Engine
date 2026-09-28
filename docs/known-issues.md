@@ -31,7 +31,16 @@ code changes.
 
 ## Verification status
 
-Last full verification (2026-09-24, after pinning dependencies and adding CI,
+Last full verification (2026-09-25, after [engine audit M-4/M-5](planning/engine-audit.md#m-4),
+trade dates and theta, and the [I-35](#i-35) fix): **2,159 passed, 0 failed** (23m23s) — the
+complete suite (`.venv/Scripts/python.exe -m pytest tests/`), 2,159 collected, summary line
+printed, exit code 0, zero `FAILED`/`ERROR` lines. The count reconciles against the 2,087
+below: +72 from the new `tests/test_trade_dates.py`, and no other file's count changed. The run
+before it, same code except one test, was 2,158 passed, 1 failed: the failure was
+`test_american_swaption.py::TestOptionTimes`, which pinned the pre-I-35 behaviour and was
+rewritten to ORE's rule. Slowest test 42.5s, no outlier. Windows only; not yet run on Linux.
+
+The run before it (2026-09-24, after pinning dependencies and adding CI,
 [audit Q-2](planning/engine-audit.md#q-2), and the [I-33](#i-33) fix): **2,087 passed,
 0 failed** (21m50s) — the complete suite (`.venv/Scripts/python.exe -m pytest tests/
 --durations=25`), 2,087 collected, summary line printed, exit code 0, zero
@@ -189,12 +198,12 @@ today. **Chase the dependency, not the code.**
 
 | # | Issue | Severity | Difficulty | What actually unblocks it |
 |---:|---|---|---|---|
-| 1 | [I-04](#i-04) — aged swaps mispriced past first accrual | High | **Blocked** + hard | Historical `pastFixings` from TraderX, which they do not export. Then real kernel work in `swap.py`. |
+| 1 | [I-04](#i-04) — aged swaps mispriced past first accrual | High | **Blocked** + hard | Historical `pastFixings` from TraderX, which they do not export (the engine now accepts them, M-4). Then real kernel work in `swap.py` (audit M-2). |
 | 2 | [I-05](#i-05) — no faithful USD-SOFR/ACT-360 construction | High | **Blocked** + moderate | The D03/D04 convention agreement. *Guessing the conventions reproduces exactly this issue's failure mode.* |
 
 I-04 is ranked first because its blast radius is wider: every `npv_cube` value past first
-accrual, and therefore **every VaR/ES number**, on the default path — `SwapConfig` has no
-`forward_start`, so every swap in the engine is spot-starting. I-05 is confined to bookings
+accrual, and therefore **every VaR/ES number**, on the default path — nearly every swap is
+booked by tenor, so starts at spot. I-05 is confined to bookings
 whose conventions actually differ, and the EOD boundary already refuses those (W0.4).
 
 ### Tier 2 — Real correctness exposure, unblocked, cheap
@@ -218,6 +227,7 @@ closed on 2026-09-24. [I-10](#i-10) now leads.
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
 | 5 | [I-27](#i-27) — full-suite runs hard-abort inside XLA | Medium | **Hard to diagnose** | Intermittent, not reproducible on demand, and fails in the most deceptive way available: a dead process with no summary. The cheap experiment (a `shutdown_pools()` autouse fixture in `tests/test_api.py`) is identified but needs *repeated* clean runs against a known-bad baseline — one green run would look like proof and would not be. |
+| 6 | [I-34](#i-34) — the ORE oracle's curve differs before the first pillar | Low | Moderate | Validation tooling only: oracle checks on a sloped first curve segment are off by ~1e-6. Parity tests avoid it with a flat first segment until the curve can be handed to ORE unchanged. |
 
 Ranked below Tier 2 because it costs no user a wrong number, and above Tier 4 because every
 status in this register rests on being able to run the suite.
@@ -230,12 +240,12 @@ consumers ask.
 
 | # | Issue | Severity | Difficulty | Blocked on |
 |---:|---|---|---|---|
-| 6 | [I-18](#i-18) — no equity spot or FX source | Medium | **Blocked**, then trivial | Market data. The pricer is four multiplications. *Do not close it with `closingMark`* — that is an echo, not a valuation. |
-| 7 | [I-16](#i-16) — `rateSensitivity` parallel-only | Medium | **Blocked** | A curve with genuine pillar structure (W2, same D03/D04 dependency as I-05). *Do not close it by bumping the flat profile per-pillar.* |
-| 8 | [I-07](#i-07) — no corporate bond / equity / listed-option pricer | Medium | Moderate–hard | Corporate bonds need a credit model; a Treasury-discounted corporate is not credit pricing. |
-| 9 | [I-24](#i-24) — bonds have no scenario NPV, so no VaR/ES | Medium | Moderate | Genuine modelling work with its own validation burden. *Do not broadcast, zero-fill, or flip the `scenario_risk` default.* |
-| 10 | [I-08](#i-08) — portfolio path's `_JOBS` dict still in-process | Medium | Moderate | The EOD half is done (W0.8); porting `publication.py`'s design to the portfolio path is the remaining work. |
-| 11 | [I-09](#i-09) — whole scenario cube serialized into JSON | Medium | Moderate | ~20M floats in one HTTP body at realistic sizes. Needs a chunked artifact plus a reference. |
+| 7 | [I-18](#i-18) — no equity spot or FX source | Medium | **Blocked**, then trivial | Market data. The pricer is four multiplications. *Do not close it with `closingMark`* — that is an echo, not a valuation. |
+| 8 | [I-16](#i-16) — `rateSensitivity` parallel-only | Medium | **Blocked** | A curve with genuine pillar structure (W2, same D03/D04 dependency as I-05). *Do not close it by bumping the flat profile per-pillar.* |
+| 9 | [I-07](#i-07) — no corporate bond / equity / listed-option pricer | Medium | Moderate–hard | Corporate bonds need a credit model; a Treasury-discounted corporate is not credit pricing. |
+| 10 | [I-24](#i-24) — bonds have no scenario NPV, so no VaR/ES | Medium | Moderate | Genuine modelling work with its own validation burden. *Do not broadcast, zero-fill, or flip the `scenario_risk` default.* |
+| 11 | [I-08](#i-08) — portfolio path's `_JOBS` dict still in-process | Medium | Moderate | The EOD half is done (W0.8); porting `publication.py`'s design to the portfolio path is the remaining work. |
+| 12 | [I-09](#i-09) — whole scenario cube serialized into JSON | Medium | Moderate | ~20M floats in one HTTP body at realistic sizes. Needs a chunked artifact plus a reference. |
 
 ### Tier 5 — Performance and cosmetic
 
@@ -243,15 +253,15 @@ Every number is correct. Nothing here is a financial risk.
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 12 | [I-21](#i-21) — Greeks recompile 23 XLA programs per call | Medium | **Moderate, fully designed** | Prototyped, bit-identical output, steady-state recompiles reach zero. Ranked highest in this tier because the design and its safety argument are already written. **The risk is a memo returning a program compiled for a different trade** — key on `static_key(prepared)`, never the config, never `id()`. |
-| 13 | [I-22](#i-22) — calibration recompiles 8 programs per call | Low | Moderate | **A different mechanism from I-21** — baked-in Python float constants, not fresh closures. I-21's fix would actively hurt here. Caps out at 8 → ~2. Fix I-21 first; they are independent. |
-| 14 | [I-12](#i-12) — `/version` reports dispatcher, not worker device | Low | Low | Invisible on a single-CPU box; would mislead a precision/hardware study on a multi-device host. Composes with [I-14](#i-14)'s residual (realized dtype on the result). |
+| 13 | [I-21](#i-21) — Greeks recompile 23 XLA programs per call | Medium | **Moderate, fully designed** | Prototyped, bit-identical output, steady-state recompiles reach zero. Ranked highest in this tier because the design and its safety argument are already written. **The risk is a memo returning a program compiled for a different trade** — key on `static_key(prepared)`, never the config, never `id()`. |
+| 14 | [I-22](#i-22) — calibration recompiles 8 programs per call | Low | Moderate | **A different mechanism from I-21** — baked-in Python float constants, not fresh closures. I-21's fix would actively hurt here. Caps out at 8 → ~2. Fix I-21 first; they are independent. |
+| 15 | [I-12](#i-12) — `/version` reports dispatcher, not worker device | Low | Low | Invisible on a single-CPU box; would mislead a precision/hardware study on a multi-device host. Composes with [I-14](#i-14)'s residual (realized dtype on the result). |
 
 ### Tier 6 — Awaiting an answer, not an engineer
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 15 | [I-23](#i-23) — `accrualBasis` strictness is an assumption | Medium | **Not a code task** | Closes when TraderX answers, asked twice (v4 §1.3, v6 §2.3). If they add enum values *in place*, this engine refuses bundles they consider valid, on the day they first export a real calendar — a false rejection, so it fails safe, but it will arrive without warning and look like a defect to whoever is on call. |
+| 16 | [I-23](#i-23) — `accrualBasis` strictness is an assumption | Medium | **Not a code task** | Closes when TraderX answers, asked twice (v4 §1.3, v6 §2.3). If they add enum values *in place*, this engine refuses bundles they consider valid, on the day they first export a real calendar — a false rejection, so it fails safe, but it will arrive without warning and look like a defect to whoever is on call. |
 
 ### What the ordering deliberately does not do
 
@@ -279,24 +289,24 @@ back into it.
 | [I-04](#i-04) | Aged swaps mispriced at every step past first accrual | **High** | ⚠️ FLAGGED | **1** |
 | [I-05](#i-05) | No faithful USD-SOFR/ACT360 swap construction | **High** | ❌ OPEN — refusal path landed (W0.4) | **2** |
 | [I-06](#i-06) | American exercise ignored ORE's broken-period proration — payer overstated up to 6.0x vs ORE (mid-period Bermudans were always right) | **High** | ✅ FIXED | — |
-| [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — both Treasury pricers landed (W1.2 bill, W1.3 note) | 8 |
-| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8); the portfolio path's `_JOBS` dict is unchanged | 10 |
-| [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN | 11 |
+| [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — both Treasury pricers landed (W1.2 bill, W1.3 note) | 9 |
+| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8); the portfolio path's `_JOBS` dict is unchanged | 11 |
+| [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN | 12 |
 | [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary (W0.7) | 3 |
 | [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ✅ FIXED | — |
-| [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN | 14 |
+| [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN | 15 |
 | [I-13](#i-13) | Negative curve index silently prices against the wrong curve | **High** | ✅ FIXED | — |
 | [I-14](#i-14) | `generate_paths(precision=32)` leaks `jax_enable_x64=False`; float64 silently truncates | **High** | ✅ FIXED | — |
 | [I-15](#i-15) | Worker-pool concurrency test could not observe concurrency | Low | ✅ FIXED | — |
-| [I-16](#i-16) | `rateSensitivity` is parallel-only; no per-pillar decomposition | Medium | ❌ OPEN — labelled honestly, blocked on a real curve | 7 |
+| [I-16](#i-16) | `rateSensitivity` is parallel-only; no per-pillar decomposition | Medium | ❌ OPEN — labelled honestly, blocked on a real curve | 8 |
 | [I-17](#i-17) | A malformed note date failed the entire bundle, not just its row | Medium | ✅ FIXED | — |
-| [I-18](#i-18) | No equity spot or FX source; equity positions are refused, not valued | Medium | ❌ OPEN — refusal path landed (W1.4) | 6 |
+| [I-18](#i-18) | No equity spot or FX source; equity positions are refused, not valued | Medium | ❌ OPEN — refusal path landed (W1.4) | 7 |
 | [I-19](#i-19) | Accrual tolerance rounded the bound it exists to enforce | Medium | ✅ FIXED | — |
 | [I-20](#i-20) | Impossible calendar dates aborted the whole bundle | **High** | ✅ FIXED | — |
-| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call (fresh closures) | Medium | ❌ OPEN | 12 |
-| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call (baked-in constants) | Low | ❌ OPEN | 13 |
-| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** on an unanswered question | Medium | ⚠️ ASSUMPTION — may refuse bundles TraderX considers valid | 15 |
-| [I-24](#i-24) | Bonds have no scenario NPV, so no VaR/ES — refused, not approximated | Medium | ❌ OPEN — refusal path landed (W1.5) | 9 |
+| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call (fresh closures) | Medium | ❌ OPEN | 13 |
+| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call (baked-in constants) | Low | ❌ OPEN | 14 |
+| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** on an unanswered question | Medium | ⚠️ ASSUMPTION — may refuse bundles TraderX considers valid | 16 |
+| [I-24](#i-24) | Bonds have no scenario NPV, so no VaR/ES — refused, not approximated | Medium | ❌ OPEN — refusal path landed (W1.5) | 10 |
 | [I-25](#i-25) | A **scalar** Greek crashed the HTTP result serializer | Medium | ✅ FIXED | — |
 | [I-26](#i-26) | Greeks for a bond maturing **tomorrow** crashed on the theta reprice | Low | ✅ FIXED | — |
 | [I-27](#i-27) | Long full-suite runs **hard-abort inside XLA compilation**, with no summary line | Medium | ❌ OPEN — located, not root-caused | 5 |
@@ -306,8 +316,10 @@ back into it.
 | [I-31](#i-31) | Bermudan/American floating coupons projected over the accrual period, not ORE's index fixing period | Medium | ✅ FIXED | — |
 | [I-32](#i-32) | Parity with ORE holds only for its Grid solver at `ShiftHorizon=0`; ORE's defaults differ by up to 1.6e-3 | Medium | ❌ OPEN | 4 |
 | [I-33](#i-33) | On Linux, worker-pool jobs **hung** once the parent had run JAX (fork, not spawn) | High | ✅ FIXED | — |
+| [I-34](#i-34) | The ORE oracle's curve differs from the engine's before the first pillar (tooling, ~1e-6) | Low | ❌ OPEN | 6 |
+| [I-35](#i-35) | An American already in its window could be exercised on the evaluation date (−6.7e-4 vs ORE) | Medium | ✅ FIXED | — |
 
-**Counts:** 33 issues — 18 FIXED, 12 OPEN, 1 FLAGGED, 1 PARTIAL, 1 ASSUMPTION. The 15
+**Counts:** 35 issues — 19 FIXED, 13 OPEN, 1 FLAGGED, 1 PARTIAL, 1 ASSUMPTION. The 16
 unfixed entries are ranked above.
 
 **The two that matter most for financial correctness are [I-04](#i-04) and [I-05](#i-05).**
@@ -1227,6 +1239,39 @@ pools always spawned.
 
 ---
 
+### I-35 — An American already in its window could be exercised on the evaluation date {#i-35}
+
+**Severity:** Medium · **Status:** ✅ FIXED (2026-09-25) · **Found:** 2026-09-25, pricing
+seasoned Americans against ORE's own engine while implementing
+[engine audit M-4](planning/engine-audit.md#m-4) (trade dates)
+
+**What was wrong.** `AmericanSwaptionConfig.option_times` started the window at
+`t1 = max(0, t(first_exercise_date))`, reproducing ORE's engine
+(`NumericLgmMultiLegOptionEngineBase::calculate()`) but not ORE's trade builder in front of
+it. `ExerciseBuilder` (OREData/ored/portfolio/optiondata.cpp) first moves an American's
+first date to `max(today + 1, first)` — "keep two alive notice dates always for american
+style exercise" — so ORE never exercises an American on the evaluation date. The engine
+did, whenever the window was already open: `t1 = 0` became an option time. Measured
+against ORE's engine through `engine/validation/ore_lgm_oracle.py`, for a 1e6 payer whose
+window opens on the evaluation date: engine 38,703.37, ORE 38,729.27 (−6.7e-4 relative).
+
+**Why the suite never saw it.** It did, and asserted it:
+`tests/test_american_swaption.py::TestOptionTimes` pinned "a window opening in the past
+starts at time zero" as ORE's rule, reading only the engine and not the trade builder in
+front of it. No ORE comparison covered an open window: before M-4 a trade could not age into
+one, and every parity case booked the window to open about a year out. That test now asserts
+ORE's rule (`..._starts_tomorrow`).
+
+**Fix.** `option_times` uses `max(evaluation_date + 1, first_exercise_date)`, ORE's rule.
+
+**Verified.** `tests/test_trade_dates.py::test_seasoned_bermudan_and_american_equal_ore`,
+cases `american-window-opens-on-the-evaluation-date` and `american-inside-window`, now
+agree with ORE to ~2e-12. The first fails against the pre-fix rule (−6.7e-4, far outside
+its 1e-10 tolerance). Nothing that already agreed with ORE moved:
+`tests/test_ore_lgm_parity.py` is unchanged, since its windows open in the future.
+
+---
+
 ## FLAGGED — inaccuracy unchanged, silence removed
 
 > These are **not fixes.** The numbers are as wrong as they were before. What changed is that
@@ -1255,9 +1300,11 @@ Measured divergence against an ORE reference at a future evaluation date is ~1e-
 relative, **growing** with distance past the aged dates
 (`tests/test_swap.py::TestAgedSwapKnownLimitation`).
 
-**Scope note.** `SwapConfig` has no `forward_start` field, so **every swap in this engine is
-spot-starting**. Therefore *every* multi-step swap portfolio is affected. This is not an edge
-case; it is the default path.
+**Scope note.** Swaps booked by tenor (`swap_tenor`) start at spot, and nearly every swap in
+the demos and tests is booked that way. So nearly *every* multi-step swap portfolio is
+affected. This is not an edge case; it is the default path. (Since
+[audit M-4](planning/engine-audit.md#m-4), a swap can also be booked forward-starting or in
+the past, with explicit dates.)
 
 **What changed.** `price_portfolio` now emits a warning per affected swap into
 `PortfolioResult.warnings`, naming the trade, its first accrual start, how many steps are
@@ -1275,7 +1322,14 @@ boundary into the HTTP result. **The pricing is unchanged.**
    [the proposal §2.2](planning/traderX_integration/eod-contract-proposal.md). Without them there is nothing to
    populate a fixed coupon *with*.
 
-Item 2 is the binding constraint. Engine work alone cannot close this.
+**Update 2026-09-25 ([audit M-4](planning/engine-audit.md#m-4)).** Item 2 now has a place to
+go. Every trade config takes `fixings` (`{ORE.Date: rate}`), and a coupon fixed before the
+evaluation date is priced off it at t=0, matching ORE (`tests/test_trade_dates.py`). Without
+the fixing, pricing stops with `MissingFixingError` rather than guessing, as ORE stops. That
+closes the *pre-t=0* half at t=0. What remains is the simulated steps: a coupon that fixes
+**during** the simulation needs the path's own fixing, not data. That is engine work, scoped
+as [audit M-2](planning/engine-audit.md#m-2). The TraderX feed still has no `pastFixings`,
+so a seasoned TraderX swap would be refused rather than priced.
 
 **Verified (the warning, not the fix):**
 `tests/test_portfolio_gap_fixes.py::TestAgedSwapWarningIsNotSilent` (5 tests) and
@@ -1303,7 +1357,7 @@ Item 2 is the binding constraint. Engine work alone cannot close this.
 | Float leg day count | `Actual/365 (Fixed)` | `ACT/360` |
 | Calendar | `TARGET` (European) | `US-SIFMA` / FedFunds |
 | Compounding | none (term rate) | daily compounded in arrears |
-| Schedule source | tenor string (`"5Y"`) | explicit effective/maturity dates |
+| Schedule source | explicit effective/maturity dates (since [M-4](planning/engine-audit.md#m-4); a tenor is resolved to them at booking) | explicit effective/maturity dates |
 | Lookback / lockout / payment lag | not represented | contractual, per booking |
 
 **Why the ACT/365 choice is not itself a bug.** It is deliberate and documented — it keeps
@@ -2010,6 +2064,41 @@ distance to ORE.
 **What closing it requires.** Decide which ORE configuration is the reference. If ORE is run
 with its defaults, implement the shift horizon and add `shift_horizon=0.5` cases to
 `tests/test_ore_lgm_parity.py`. Port the FD solver only if the reference uses FD.
+
+---
+
+### I-34 — The ORE oracle's curve differs from the engine's before the first pillar {#i-34}
+
+**Severity:** Low · **Status:** ❌ OPEN · **Found:** 2026-09-25, pricing seasoned trades
+against ORE's engine while implementing [engine audit M-4](planning/engine-audit.md#m-4)
+
+**What is wrong.** This concerns the validation tooling, not the pricer.
+`engine/validation/ore_lgm_oracle.py` hands ORE the engine's zero curve as date-quoted
+zero rates, linearly interpolated. ORE does not keep them as given: its zero-curve build
+(`YieldCurve::buildZeroCurve`, OREData/ored/marketdata/yieldcurve.cpp) re-reads every
+pillar's rate off a temporary curve, and QuantLib reads the one at t=0 as
+`zeroRate(1e-4)`. So ORE's as-of zero becomes `z0 + slope · 1e-4`, where `slope` is the
+curve's slope in its first segment. Only that segment tilts: `ORE.ZeroCurve` built from
+`[0.03, 0.032]` at `[asof, asof + 1Y]` reports 0.0300002 at the as-of date.
+
+**Size.** On a curve rising 3% → 3.2% over its first year, a Bermudan whose exercise and
+cashflows fall inside that year differs from ORE by up to 2.4e-6 relative (at zero
+volatility too, so it is the curve and not the model). Exercise after the first pillar
+agrees to ~1e-12. A curve that is flat up to its first non-zero pillar shows no difference
+at all.
+
+**Why it went unseen.** `tests/test_ore_lgm_parity.py` uses a sloped first segment, but
+every exercise it prices is after the first pillar. Dates inside the first segment only
+appeared once trades could age (M-4).
+
+**Current handling.** Parity tests that need 1e-10 use a curve flat to its first non-zero
+pillar (`tests/test_trade_dates.py`), and the oracle's docstring states the limit. The
+engine's own curve is its input and is not changed to imitate ORE's rebuild.
+
+**What closing it requires.** A way to give ORE the engine's curve without the rebuild —
+for example a curve segment type that keeps the quotes as given, if ORE has one, or quoting
+the as-of zero so that ORE's rebuild lands on `z0` (a fixed point to solve, then a check
+that it holds). Until then, keep oracle checks off sloped first segments.
 
 ---
 

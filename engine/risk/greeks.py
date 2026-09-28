@@ -87,6 +87,12 @@ reproduces that definition exactly (see `swap_theta`/`swaption_theta`/
 (there is no meaningful "derivative" of an evaluation date to autodiff),
 not a `jax.grad` computation.
 
+The trade at `t+dt` is the SAME booked trade, one day older (audit M-4/M-5):
+its dates are absolute, so its remaining schedule shrinks and an option's
+expiry gets closer. An index fixing that prints in `[t, t+dt)` is known on
+`t+dt`; with the curve unchanged -- Theta's premise -- it prints at the rate
+the base valuation forecast for it (`_theta_fixings`).
+
 **Bermudan/American Delta/Gamma/Vega/Theta (`bermudan_delta_gamma`,
 `bermudan_vega`, `bermudan_theta` below).** Feasible since Phase 2 ported
 `bermudan_swaption.py`'s backward induction to `jax.lax.scan` (previously a
@@ -106,14 +112,14 @@ import jax.numpy as jnp
 import numpy as np
 import ORE
 
-from engine.instruments.swap import SwapConfig, _build_ore_swap
+from engine.instruments.swap import SwapConfig, _build_ore_swap, swap_schedule
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.instruments.bermudan_swaption import _build_ore_swap as _build_ore_underlying
 from engine.models.ore_builders import (  # noqa: F401  (DAY_COUNTER is a re-export)
     DAY_COUNTER,
     TIME_AXIS_DAY_COUNTER,
-    fixed_leg_cashflows,
-    floating_leg_cashflows,
+    time_from_reference,
 )
 # `_hw_A` and `_zero_rate_at` are imported by tests through this module.
 from engine.models.hull_white import (  # noqa: F401
@@ -309,13 +315,39 @@ def swap_theta(
     base_npv = float(jax.jit(base_price_fn)(disc_curve.pillar_rates, fwd_curve.pillar_rates))
 
     theta_date = ORE.TARGET().advance(cfg.evaluation_date, theta_days, ORE.Days)
-    theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date)
+
+    def at_par_forecast(coupon):
+        # The rate the base valuation projects for this coupon: at par, over
+        # its accrual period (see `_price_one_swap`).
+        start, end = (time_from_reference(cfg.evaluation_date, d)
+                      for d in (coupon.accrualStartDate(), coupon.accrualEndDate()))
+        p_start, p_end = (float(_discount_at(fwd_curve, jnp.asarray(t))) for t in (start, end))
+        return (p_start / p_end - 1.0) / coupon.accrualPeriod()
+
+    fixings = _theta_fixings(cfg, _build_ore_swap(cfg), theta_date, at_par_forecast)
+    theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date, fixings=fixings)
     theta_price_fn = _swap_price_fn(theta_cfg, disc_curve, fwd_curve)
     theta_npv = float(jax.jit(theta_price_fn)(disc_curve.pillar_rates, fwd_curve.pillar_rates))
 
     period_flow = _swap_cashflows_in_period(cfg, cfg.evaluation_date, theta_date, fwd_curve)
 
     return theta_npv - base_npv + period_flow
+
+
+def _theta_fixings(cfg, swap: ORE.VanillaSwap, theta_date: ORE.Date, forecast) -> Dict[ORE.Date, float]:
+    """`cfg.fixings` plus the fixing of every floating coupon that fixes in
+    `[cfg.evaluation_date, theta_date)` with none supplied, at
+    `forecast(coupon)` -- the rate the base valuation forecasts for it. On
+    the Theta date those fixings are history, and Theta holds the curve
+    fixed, so that is the rate they print at. Without them the aged trade
+    could not be priced at all (`ore_builders.MissingFixingError`)."""
+    fixings = dict(cfg.fixings)
+    for cf in swap.floatingLeg():
+        coupon = ORE.as_floating_rate_coupon(cf)
+        fixing_date = coupon.fixingDate()
+        if cfg.evaluation_date <= fixing_date < theta_date and fixing_date not in fixings:
+            fixings[fixing_date] = forecast(coupon)
+    return fixings
 
 
 def _swap_cashflows_in_period(cfg: SwapConfig, start: ORE.Date, end: ORE.Date, fwd_curve: ZeroCurve) -> float:
@@ -327,15 +359,14 @@ def _swap_cashflows_in_period(cfg: SwapConfig, start: ORE.Date, end: ORE.Date, f
     coupon paid during the Theta horizon from being misattributed as a
     pure valuation loss.
 
-    A floating coupon's amount is projected off `fwd_curve` exactly as
-    `_price_one_swap` projects it for the base NPV, so the flow added back
-    is the same amount the base valuation contained. Both legs must be
-    included: on a date where both pay, adding back only the fixed coupon
-    turns the floating coupon's disappearance from the NPV into a spurious
-    theta of roughly its full size."""
-    swap = _build_ore_swap(cfg)
-    fixed = fixed_leg_cashflows(swap, cfg.evaluation_date)
-    floating = floating_leg_cashflows(swap, cfg.evaluation_date)
+    A floating coupon's amount is the one the base valuation contained: its
+    known fixing if it has one, otherwise projected off `fwd_curve` exactly
+    as `_price_one_swap` projects it. Both legs must be included: on a date
+    where both pay, adding back only the fixed coupon turns the floating
+    coupon's disappearance from the NPV into a spurious theta of roughly its
+    full size."""
+    schedule = swap_schedule(cfg)
+    fixed, floating = schedule.fixed, schedule.floating
 
     start_frac = TIME_AXIS_DAY_COUNTER.yearFraction(cfg.evaluation_date, start)
     end_frac = TIME_AXIS_DAY_COUNTER.yearFraction(cfg.evaluation_date, end)
@@ -353,10 +384,9 @@ def _swap_cashflows_in_period(cfg: SwapConfig, start: ORE.Date, end: ORE.Date, f
         p_start = np.asarray(_discount_at(fwd_curve, jnp.asarray(floating.accrual_start_times[float_mask])), dtype=np.float64)
         p_end = np.asarray(_discount_at(fwd_curve, jnp.asarray(floating.accrual_end_times[float_mask])), dtype=np.float64)
         accrual = floating.accrual_fractions[float_mask]
-        # notional * (F + spread) * accrual, with F = (P_start/P_end - 1) / accrual.
-        float_flow = float(np.sum(
-            floating.notional * ((p_start / p_end - 1.0) + cfg.floating_spread * accrual)
-        ))
+        projected = (p_start / p_end - 1.0) / accrual
+        rate = np.where(floating.is_fixed[float_mask], floating.fixed_rates[float_mask], projected)
+        float_flow = float(np.sum(floating.notional * (rate + cfg.floating_spread) * accrual))
 
     # Same sign convention as _price_one_swap: npv = float_leg - fixed_leg,
     # negated for a receiver.
@@ -432,15 +462,9 @@ def swaption_theta(
     base_price_fn = _swaption_price_fn(cfg, curve)
     base_npv = float(jax.jit(base_price_fn)(curve.pillar_rates))
 
+    # The same option one day older: its exercise date stays put.
     theta_date = ORE.TARGET().advance(cfg.evaluation_date, theta_days, ORE.Days)
-    theta_cfg = SwaptionConfig(
-        notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
-        rate_factor_index=cfg.rate_factor_index, hw_a=cfg.hw_a, hw_sigma=cfg.hw_sigma,
-        initial_zero_curve=cfg.initial_zero_curve, swap_tenor=cfg.swap_tenor,
-        index_tenor_months=cfg.index_tenor_months, floating_spread=cfg.floating_spread,
-        forward_start=cfg.forward_start, exercise_lag_days=cfg.exercise_lag_days,
-        evaluation_date=theta_date,
-    )
+    theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date)
     theta_price_fn = _swaption_price_fn(theta_cfg, curve)
     theta_npv = float(jax.jit(theta_price_fn)(curve.pillar_rates))
 
@@ -499,12 +523,23 @@ def bermudan_theta(
     price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
     base_npv = float(jax.jit(price_fn)(curve.pillar_rates, sigma_values))
 
-    # The same trade one day on: its exercise DATES stay put and every time
-    # is re-derived from the new evaluation date, exactly as ORE re-derives
-    # optionTimes. (When exercise was given as year fractions this silently
-    # moved every exercise opportunity a day later as well.)
+    # The same trade one day on: its exercise and schedule DATES stay put
+    # and every time is re-derived from the new evaluation date, exactly as
+    # ORE re-derives optionTimes.
     theta_date = ORE.TARGET().advance(cfg.evaluation_date, theta_days, ORE.Days)
-    theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date)
+
+    def index_forecast(coupon):
+        # Today's forecast of the fixing over the INDEX period, as the LGM
+        # engine forecasts a fixing dated today (`LgmVectorised::fixing`).
+        index = coupon.index()
+        value_date = index.valueDate(coupon.fixingDate())
+        maturity = index.maturityDate(value_date)
+        p1, p2 = (float(_discount_at(curve, jnp.asarray(time_from_reference(cfg.evaluation_date, d))))
+                  for d in (value_date, maturity))
+        return (p1 / p2 - 1.0) / index.dayCounter().yearFraction(value_date, maturity)
+
+    fixings = _theta_fixings(cfg, _build_ore_underlying(cfg), theta_date, index_forecast)
+    theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date, fixings=fixings)
     theta_price_fn, theta_sigma_values = _bermudan_price_fn(theta_cfg, curve)
     theta_npv = float(jax.jit(theta_price_fn)(curve.pillar_rates, theta_sigma_values))
 

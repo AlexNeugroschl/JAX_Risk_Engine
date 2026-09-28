@@ -127,14 +127,27 @@ Describes one vanilla fixed-vs-floating interest rate swap.
 | `payer` | `bool` | *required* | `True` = this side pays fixed, receives floating. `False` = the reverse. |
 | `discount_curve_index` | `int` | *required* | Which rate factor (index into the simulation's `NumRates` axis) discounts this swap's cashflows. |
 | `forward_curve_index` | `int` | *required* | Which rate factor sets the floating leg's forward rates. Equal to `discount_curve_index` for single-curve discounting. |
-| `swap_tenor` | `str` | `"5Y"` | ORE `Period` string, e.g. `"5Y"`, `"18M"`. |
+| `effective_date` | `ORE.Date` | — | Start of the booked schedule (ORE `ScheduleData` `StartDate`). |
+| `maturity_date` | `ORE.Date` | — | Unadjusted end of the booked schedule (`EndDate`); the schedule adjusts it. |
+| `swap_tenor` | `str` | — | **Booking convenience, not stored.** An ORE `Period` string (`"5Y"`, `"18M"`) resolved once, at construction, to the dates of a spot-starting swap traded on `evaluation_date` — `MakeVanillaSwap`'s own rule (`ore_builders.resolve_swap_dates`). Give it **or** both dates. |
 | `index_tenor_months` | `int` | `6` | Floating leg reset frequency in months (`6` = semi-annual). |
 | `floating_spread` | `float` | `0.0` | Fixed spread added to every floating payment. |
-| `evaluation_date` | `ORE.Date` | today's global ORE evaluation date | The swap's "as-of" date. |
+| `evaluation_date` | `ORE.Date` | today's global ORE evaluation date | The date the swap is priced on. It does not move the schedule. |
+| `accrual_day_count` | `str` | `"ACT/365"` | The day count the coupons accrue on (an allowlisted name). |
+| `fixings` | `Dict[ORE.Date, float]` | `{}` | Historical fixings of the floating index. Needed only for a coupon that fixed before `evaluation_date` and has not yet paid. |
+
+**The dates are the trade (audit M-4).** `dataclasses.replace(cfg, evaluation_date=d)` is
+the same swap on another date: the schedule is unchanged, cashflows paid on or before `d`
+drop out (ORE's `hasOccurred`), and a coupon that fixed before `d` pays its historical
+fixing. A coupon fixing *on* `d` uses a supplied fixing if there is one, else the forecast
+— ORE's `InterestRateIndex::fixing`. One that fixed earlier with no fixing supplied raises
+`MissingFixingError` when priced, as ORE refuses it.
 
 **Validated at construction (`__post_init__`)**: `notional`/`fixed_rate` must be finite
-(zero and negative values are explicitly supported — only `NaN`/`Inf` are rejected);
-`swap_tenor` must parse as a valid `ORE.Period`. Raises `ValueError` naming the bad field.
+(zero and negative values are explicitly supported — only `NaN`/`Inf` are rejected); the
+schedule must be given exactly once — `swap_tenor` (a valid `ORE.Period`) or both dates
+(`ORE.Date`s, effective before maturity), never both and never neither; `fixings` must be
+keyed by `ORE.Date` with finite values. Raises `ValueError`/`TypeError` naming the bad field.
 This is deliberately scoped to reject malformed input, not impose business-rule limits
 (e.g. no "no rate above 20%" check) — see
 [docs/planning/traderx-integration.md](../planning/traderX_integration/traderx-integration.md#4-trade-level-input-validation-notional-rate-ranges-tenor-sanity).
@@ -181,15 +194,23 @@ Jamshidian's-trick pricing model.
 | `hw_a` | `float` | *required* | That rate factor's own Hull-White mean-reversion speed — must match `RatesConfig.mean_reversion[rate_factor_index]` in the simulation this swaption is priced against. |
 | `hw_sigma` | `float` | *required* | That rate factor's own Hull-White volatility — must match the per-step volatility implied by the simulation's `joint_covariance` for this factor. |
 | `initial_zero_curve` | `ZeroCurveConfig` | *required* | That rate factor's own today's-market zero curve — must match `RatesConfig.initial_zero_curves[rate_factor_index]`. |
-| `swap_tenor` | `str` | `"5Y"` | ORE `Period` string for the underlying swap's length, e.g. `"5Y"`, `"18M"`. |
+| `exercise_date` | `ORE.Date` | — | The booked expiry. |
+| `effective_date` / `maturity_date` | `ORE.Date` | — | The underlying swap's booked schedule, as on `SwapConfig`. |
+| `swap_tenor` | `str` | — | Booking convenience, not stored: the underlying's length. Resolves all three dates on `evaluation_date`, with `forward_start`/`exercise_lag_days`. Give it **or** the three dates. |
+| `forward_start` | `ORE.Period` | none | With `swap_tenor` only: how far the underlying's accrual is delayed beyond the standard 2-day spot lag — e.g. `ORE.Period(5, ORE.Years)` for a swaption exercisable in ~5Y. |
+| `exercise_lag_days` | `int` | `2` | With `swap_tenor` only: business days from `evaluation_date + forward_start` to the exercise date. |
 | `index_tenor_months` | `int` | `6` | Floating leg reset frequency in months (`6` = semi-annual). |
 | `floating_spread` | `float` | `0.0` | Fixed spread added to every floating payment. |
-| `forward_start` | `ORE.Period` | `ORE.Period(0, ORE.Days)` | How far in the future the underlying swap's accrual is delayed beyond the standard 2-day spot lag — e.g. `ORE.Period(5, ORE.Years)` for a swaption exercisable in ~5Y. |
-| `exercise_lag_days` | `int` | `2` | Business days from `evaluation_date + forward_start` to the exercise date (standard spot-lag convention). |
-| `evaluation_date` | `ORE.Date` | today's global ORE evaluation date | The swaption's "as-of" date. |
+| `evaluation_date` | `ORE.Date` | today's global ORE evaluation date | The date the swaption is priced on. |
 
-**Validated at construction (`__post_init__`)**: same `notional`/`fixed_rate`/`swap_tenor`
-checks as `SwapConfig`, plus `hw_sigma` must be finite.
+On a later evaluation date the same config is the same option, nearer expiry. On or after
+`exercise_date` it has expired (`is_expired()`, ORE's `Instrument::isExpired`) and is worth
+exactly 0, with zero sensitivities.
+
+**Validated at construction (`__post_init__`)**: same `notional`/`fixed_rate`/schedule
+checks as `SwapConfig`; `exercise_date` must be an `ORE.Date` before `maturity_date`;
+`forward_start`/`exercise_lag_days` are refused without `swap_tenor`; `hw_sigma` must be
+finite.
 
 ### `price_swaptions(hw_paths: jax.Array, step_times: jax.Array, swaption_configs: List[SwaptionConfig]) -> jax.Array`
 
@@ -236,15 +257,20 @@ algorithm.
 | `hw_sigma` | `float` | *required* | That rate factor's volatility — must match the simulation's `joint_covariance` for this factor. |
 | `initial_zero_curve` | `ZeroCurveConfig` | *required* | That rate factor's today's-market zero curve. |
 | `exercise_dates` | `Sequence[ORE.Date]` | *required* | Ascending dates on which the holder may exercise into the (then-remaining) swap. Dates on or before `evaluation_date` are not exercise opportunities. A date inside an accrual period exercises into the next whole period, as in ORE (see [american-bermudan-swaptions.md](../instruments/american-bermudan-swaptions.md#which-coupons-an-exercise-enters)); `exercisable_dates(cfg)` lists the underlying's accrual starts. |
-| `swap_tenor` | `str` | `"5Y"` | ORE `Period` string for the underlying swap's length. |
+| `effective_date` / `maturity_date` / `swap_tenor` | | — | The underlying swap's booked schedule, exactly as on `SwapConfig`. |
 | `index_tenor_months` | `int` | `6` | Floating leg reset frequency in months. |
 | `floating_spread` | `float` | `0.0` | Fixed spread added to every floating payment. |
 | `n_per_std` | `int` | `48` | State-grid resolution: points per standard deviation of the model's conditional distribution. |
 | `std_devs` | `float` | `6.0` | How many standard deviations the state grid spans. |
-| `evaluation_date` | `ORE.Date` | today's global ORE evaluation date | The swaption's "as-of" date. |
+| `evaluation_date` | `ORE.Date` | today's global ORE evaluation date | The date the swaption is priced on. |
+| `fixings` | `Dict[ORE.Date, float]` | `{}` | Historical index fixings, as on `SwapConfig`. Needed only for a coupon that fixed before `evaluation_date` and can still be exercised into. |
 
-**Validated at construction (`__post_init__`)**: same `notional`/`fixed_rate`/`swap_tenor`
-checks as `SwapConfig`; `hw_sigma` (a plain `float` or a piecewise `Sigma` — every bucket
+On a later evaluation date the trade is priced as ORE prices it: exercise dates on or
+before it are gone, a coupon that can no longer enter any exercise is never valued, and
+once the last exercise date has passed the option is worth exactly 0 (`is_expired()`).
+
+**Validated at construction (`__post_init__`)**: same `notional`/`fixed_rate`/schedule/
+`fixings` checks as `SwapConfig`; `hw_sigma` (a plain `float` or a piecewise `Sigma` — every bucket
 value is checked) must be finite, **or exactly `None`** (a valid sentinel meaning
 "uncalibrated" — see [The Portfolio Entry Point: Automatic calibration](portfolio-entrypoint.md#automatic-calibration));
 `exercise_dates` must be non-empty, sorted ascending, and `ORE.Date` objects (a year
@@ -291,18 +317,18 @@ Same fields as `BermudanSwaptionConfig` above, except `exercise_dates` is replac
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `first_exercise_date` | `ORE.Date` | *required* | First day of the exercise window. A window already open starts at `t = 0`. |
+| `first_exercise_date` | `ORE.Date` | *required* | First day of the exercise window. As in ORE's `ExerciseBuilder`, the window never includes the evaluation date: one already open starts the next day. |
 | `last_exercise_date` | `ORE.Date` | *required* | Last day of the exercise window. |
 | `exercise_time_steps_per_year` | `int` | `24` | ORE's own `ExerciseTimeStepsPerYear` model parameter — how finely the window is discretized. |
 
-**Validated at construction (`__post_init__`)**: same `notional`/`fixed_rate`/`swap_tenor`/
-`hw_sigma`(-or-`None`) checks as `BermudanSwaptionConfig`, plus `first_exercise_date <=
+**Validated at construction (`__post_init__`)**: same `notional`/`fixed_rate`/schedule/
+`fixings`/`hw_sigma`(-or-`None`) checks as `BermudanSwaptionConfig`, plus `first_exercise_date <=
 last_exercise_date` (equal dates — a zero-width window — are valid) and
 `exercise_time_steps_per_year >= 1`.
 
 ### `AmericanSwaptionConfig.option_times() -> List[float]`
 
-ORE's own American option times: `t1 = max(0, t(first))`, `t2 = max(t1, t(last))`,
+ORE's own American option times: `t1 = max(0, t(max(first, evaluation_date + 1)))`, `t2 = max(t1, t(last))`,
 `steps = max(1, floor((t2 - t1) * exercise_time_steps_per_year))` (ORE truncates), and the
 times `t1 + i * (t2 - t1) / steps` for `i = 0..steps`.
 
@@ -692,9 +718,12 @@ pricer in `engine/instruments/`. See
 | Name | Signature | Notes |
 |---|---|---|
 | `DAY_COUNTER` | `ORE.Actual365Fixed()` | The single day-count convention used throughout this codebase, on both legs of every trade. |
-| `build_vanilla_swap` | `(notional, fixed_rate, payer, swap_tenor, index_tenor_months, floating_spread, evaluation_date, forward_start=None) -> ORE.VanillaSwap` | Builds a real ORE swap via `ORE.MakeVanillaSwap`. |
-| `LegCashflows` | dataclass: `payment_times`, `accrual_start_times`, `accrual_end_times`, `accrual_fractions` (each `np.ndarray`), `notional: float` | One leg's cashflow schedule, as year-fractions from `today`. |
-| `fixed_leg_cashflows` / `floating_leg_cashflows` | `(swap, today) -> LegCashflows` | Extracts each coupon's dates/accrual fraction from a real ORE-generated schedule. |
+| `build_vanilla_swap` | `(notional, fixed_rate, payer, effective_date, maturity_date, index_tenor_months, floating_spread, accrual_day_count=None) -> ORE.VanillaSwap` | Builds a real ORE swap via `ORE.MakeVanillaSwap` from its booked dates. Independent of any evaluation date. |
+| `resolve_swap_dates` | `(trade_date, swap_tenor, forward_start=None) -> (effective_date, maturity_date)` | `MakeVanillaSwap`'s own tenor rule: spot = 2 TARGET business days after the (adjusted) trade date, plus `forward_start` (adjusted Following), plus the tenor. |
+| `known_fixing` | `(fixing_date, today, fixings) -> float \| None` | ORE's `InterestRateIndex::fixing`: a fixing after today is forecast (`None`), today's is the supplied value or forecast, an earlier one must be supplied (`MissingFixingError`). |
+| `is_live` | `(cashflow_date, today) -> bool` | ORE's `hasOccurred` with default settings: a cashflow paid on `today` has occurred. |
+| `LegCashflows` | dataclass: `payment_times`, `accrual_start_times`, `accrual_end_times`, `accrual_fractions` (each `np.ndarray`), `notional: float`, and for a floating leg read with fixings `is_fixed`/`fixed_rates` | One leg's remaining cashflows on `today`, as year-fractions from `today`. |
+| `fixed_leg_cashflows` / `floating_leg_cashflows` | `(swap, today)` / `(swap, today, fixings=None) -> LegCashflows` | Extracts each remaining coupon's dates/accrual fraction from a real ORE-generated schedule; with `fixings`, marks each floating coupon known or projected. |
 
 ---
 
