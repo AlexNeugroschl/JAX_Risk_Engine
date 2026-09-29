@@ -71,7 +71,7 @@ from engine.models.ore_builders import (  # noqa: F401  (DAY_COUNTER is a re-exp
     time_from_reference,
     validate_fixings,
 )
-from engine.portfolio.validation import _validate_common_fields, _validate_hw_sigma
+from engine.instruments._validation import _validate_common_fields, _validate_hw_sigma, _validate_settlement
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from engine.models.lgm import (
     H as _H,
@@ -110,6 +110,7 @@ class BermudanSwaptionConfig:
     """
     One Bermudan swaption: the option to enter a vanilla swap on any of a list of dates.
 
+    currency / settlement: as in `SwaptionConfig`.
     exercise_dates: ascending `ORE.Date`s. Converted to times with the curve's day counter,
         as ORE derives `optionTimes`, so an exercise date and the accrual date it names map
         to the same float. Dates on or before `evaluation_date` are not exercise
@@ -117,7 +118,11 @@ class BermudanSwaptionConfig:
         ORE. `exercisable_dates(cfg)` lists the underlying's accrual starts.
     effective_date / maturity_date / swap_tenor / fixings: as in `SwapConfig`. A fixing is
         needed only for a coupon fixed before `evaluation_date` that can still be entered.
-    rate_factor_index / hw_a / initial_zero_curve: as in `SwaptionConfig`.
+    rate_factor_index / hw_a / initial_zero_curve: as in `SwaptionConfig`; the curve is the
+        LGM's term structure and discounts every cashflow.
+    index_zero_curve: the Ibor index's forwarding curve, if it differs from
+        `initial_zero_curve`. Coupons are projected off it, moved by the same LGM state
+        (ORE's `LgmVectorised::fixing` with the index's forwarding curve).
     hw_sigma: a float (flat) or an `engine.models.lgm.Sigma` (piecewise, e.g. from
         `engine.calibration`). `None` means "to be calibrated" by `price_portfolio`.
     n_per_std / std_devs: grid points per standard deviation and grid width in standard
@@ -126,11 +131,11 @@ class BermudanSwaptionConfig:
     notional: float
     fixed_rate: float
     payer: bool
-    rate_factor_index: int
-    hw_a: float
-    hw_sigma: Optional[Union[float, Sigma]]
-    initial_zero_curve: ZeroCurveConfig
-    exercise_dates: Sequence[ORE.Date]
+    rate_factor_index: Optional[int] = None
+    hw_a: Optional[float] = None
+    hw_sigma: Optional[Union[float, Sigma]] = None
+    initial_zero_curve: Optional[ZeroCurveConfig] = None
+    exercise_dates: Sequence[ORE.Date] = ()
     effective_date: Optional[ORE.Date] = None
     maturity_date: Optional[ORE.Date] = None
     swap_tenor: InitVar[Optional[str]] = None
@@ -140,6 +145,9 @@ class BermudanSwaptionConfig:
     std_devs: float = 6.0
     evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
     fixings: Dict[ORE.Date, float] = field(default_factory=dict)
+    index_zero_curve: Optional[ZeroCurveConfig] = None
+    currency: str = "USD"
+    settlement: str = "Physical"
 
     exercise_style = ExerciseStyle.BERMUDAN
 
@@ -161,6 +169,7 @@ class BermudanSwaptionConfig:
         # hw_sigma=None means "uncalibrated": price_portfolio fills it via
         # engine.calibration.lgm.calibrate_lgm_sigma before pricing.
         _validate_hw_sigma(self.hw_sigma)
+        _validate_settlement(self.settlement)
         if len(self.exercise_dates) == 0:
             raise ValueError("exercise_dates must be non-empty")
         if any(not isinstance(d, ORE.Date) for d in self.exercise_dates):
@@ -184,7 +193,9 @@ class _PreparedBermudan(StaticKeyMixin):
     """A Bermudan/American swaption's prepared structure.
 
     A pytree split between traced children (`_TRACED`) and static aux data:
-      - `zero_rates`, `hw_sigma`: differentiation targets (Delta/Gamma, Vega);
+      - `curve`, `index_curve`, `hw_sigma`: the model's curves (a `ZeroCurve` today, a
+        path's `DiscountCurve` in the simulation; `index_curve=None` means the discount
+        curve) and volatility, the differentiation targets (Delta/Gamma, Vega);
         `engine.risk.greeks` substitutes tracers into them.
       - `notional`, `fixed_amounts`: scale only, traced so trades differing only in size
         share one compiled kernel.
@@ -220,19 +231,21 @@ class _PreparedBermudan(StaticKeyMixin):
     float_fixing_times: np.ndarray       # [Ncf] max(0, fixing time): ORE's maxEstimationTime_
     float_fixed_today: np.ndarray        # [Ncf] bool: fixes today, forecast off today's curve
     float_is_known: np.ndarray           # [Ncf] bool: the fixing is known (historical)
-    float_known_rates: np.ndarray        # [Ncf] that fixing where float_is_known, else 0
+    float_known_rates: np.ndarray        # [Ncf] that fixing where float_is_known, else 0 (traced:
+                                         # a simulation supplies one per path)
+    float_fixing_serials: np.ndarray     # [Ncf] the fixing dates (serial numbers)
     float_spread: float
     rate_factor_index: int
     hw_a: float
     hw_sigma: Union[float, Sigma]
-    zero_times: np.ndarray
-    zero_rates: np.ndarray
+    curve: object                 # ZeroCurve or DiscountCurve
+    index_curve: object           # None, ZeroCurve or DiscountCurve
     n_per_std: int
     std_devs: float
     final_maturity: float
 
     # Pytree children, in tree_flatten order (see the class docstring).
-    _TRACED = ("zero_rates", "hw_sigma", "notional", "fixed_amounts")
+    _TRACED = ("curve", "index_curve", "hw_sigma", "notional", "fixed_amounts", "float_known_rates")
 
     def tree_flatten(self):
         """Children: the `_TRACED` fields (`hw_sigma` may itself be a `Sigma` pytree).
@@ -299,6 +312,11 @@ def prepare_bermudan(cfg: "BermudanSwaptionConfig | AmericanSwaptionConfig") -> 
     `isPartOfUnderlying(t)` is false for every `t >= 0`). A kept floating coupon whose
     fixing date has passed takes its fixing from `cfg.fixings`; a missing one raises.
     Fixed amounts are ORE's `FixedRateCoupon.amount()`."""
+    missing = [name for name in ("hw_a", "hw_sigma", "initial_zero_curve") if getattr(cfg, name) is None]
+    if missing:
+        raise ValueError(
+            f"the LGM grid pricer needs {', '.join(missing)} (a calibrated trade: hw_sigma=None is "
+            f"filled by price_portfolio's calibration)")
     swap = _build_ore_swap(cfg)
     today = cfg.evaluation_date
     style = cfg.exercise_style
@@ -319,7 +337,7 @@ def prepare_bermudan(cfg: "BermudanSwaptionConfig | AmericanSwaptionConfig") -> 
 
     floating = {key: [] for key in (
         "pay", "start", "end", "belongs", "accrual", "idx_start", "idx_end", "idx_dcf", "fixing",
-        "fixed_today", "known", "known_rate")}
+        "fixed_today", "known", "known_rate", "fixing_serial")}
     for cf in swap.floatingLeg():
         c = ORE.as_floating_rate_coupon(cf)
         start, end = t_of(c.accrualStartDate()), t_of(c.accrualEndDate())
@@ -343,6 +361,7 @@ def prepare_bermudan(cfg: "BermudanSwaptionConfig | AmericanSwaptionConfig") -> 
         floating["fixed_today"].append(fixing_date == today and known is None)
         floating["known"].append(known is not None)
         floating["known_rate"].append(0.0 if known is None else known)
+        floating["fixing_serial"].append(fixing_date.serialNumber())
 
     exercise_times = np.asarray(cfg.option_times(), dtype=np.float64)
     if exercise_times.size == 0:
@@ -376,23 +395,31 @@ def prepare_bermudan(cfg: "BermudanSwaptionConfig | AmericanSwaptionConfig") -> 
         float_fixed_today=as_array(floating["fixed_today"], dtype=bool),
         float_is_known=as_array(floating["known"], dtype=bool),
         float_known_rates=as_array(floating["known_rate"]),
+        float_fixing_serials=as_array(floating["fixing_serial"], dtype=np.int64),
         float_spread=cfg.floating_spread,
         rate_factor_index=cfg.rate_factor_index, hw_a=cfg.hw_a, hw_sigma=cfg.hw_sigma,
-        zero_times=np.asarray(cfg.initial_zero_curve.times, dtype=np.float64),
-        zero_rates=np.asarray(cfg.initial_zero_curve.rates, dtype=np.float64),
+        curve=_HwZeroCurve.from_config(cfg.initial_zero_curve),
+        index_curve=None if cfg.index_zero_curve is None else _HwZeroCurve.from_config(cfg.index_zero_curve),
         n_per_std=cfg.n_per_std, std_devs=cfg.std_devs,
         final_maturity=final_maturity,
     )
 
 
-def _zero_curve_of(swap: _PreparedBermudan) -> _HwZeroCurve:
-    """The `ZeroCurve` the induction prices against. No dtype is forced: `zero_rates` is
-    float64 NumPy for pricing, and a risk-precision JAX array when `engine.risk.greeks`
-    substitutes one."""
-    return _HwZeroCurve(
-        pillar_times=jnp.asarray(swap.zero_times),
-        pillar_rates=jnp.asarray(swap.zero_rates),
-    )
+def _zero_curve_of(swap: _PreparedBermudan):
+    """The curve the induction discounts on (and the LGM's term structure). No dtype is
+    forced: it is float64 for pricing, and a risk-precision JAX array when
+    `engine.risk.greeks` substitutes one."""
+    return swap.curve
+
+
+def _index_curve_of(swap: _PreparedBermudan):
+    """The Ibor index's forwarding curve; the discount curve unless one was given."""
+    return swap.curve if swap.index_curve is None else swap.index_curve
+
+
+def _curve_dtype(curve):
+    """The working dtype of either curve type."""
+    return (curve.log_discounts if hasattr(curve, "log_discounts") else curve.pillar_rates).dtype
 
 
 # State grid and Hagan quadrature convolution, as QuantExt::LgmConvolutionSolver2
@@ -619,8 +646,9 @@ def _cashflow_values_at_nodes(swap: _PreparedBermudan, curve: _HwZeroCurve, x_no
 
       * fixed coupon: `amount * P(t, pay; x)`;
       * Ibor coupon: `(fixing(t, x) + spread) * accrual * notional * P(t, pay; x)`, with
-        `LgmVectorised::fixing` projecting over the index period [d1, d2]:
-        `(P(t,T1)/P(t,T2) - 1) / dcf(d1, d2)`, `T1 = max(t, d1)`, `T2 = max(T1, d2)`.
+        `LgmVectorised::fixing` projecting over the index period [d1, d2] on the index's
+        forwarding curve: `(P_idx(t,T1)/P_idx(t,T2) - 1) / dcf(d1, d2)`,
+        `T1 = max(t, d1)`, `T2 = max(T1, d2)`.
         Past d1 this projects only the remaining stub, which `couponRatio` scales again;
         that is ORE's behaviour. A fixing dated on or before the evaluation date is its
         historical value if known, else (today's) the forecast off today's curve.
@@ -633,16 +661,17 @@ def _cashflow_values_at_nodes(swap: _PreparedBermudan, curve: _HwZeroCurve, x_no
     fixed = (_bond_prices_at_nodes(curve, a, sigma, t, as_dtype(swap.fixed_times), x_nodes)
              * as_dtype(swap.fixed_amounts)[None, :])
 
+    index_curve = _index_curve_of(swap)
     index_start = as_dtype(swap.float_index_start_times)
     index_end = as_dtype(swap.float_index_end_times)
     index_dcf = as_dtype(swap.float_index_dcf)
     T1 = jnp.maximum(t, index_start)
     T2 = jnp.maximum(T1, index_end)
-    projected = (_bond_prices_at_nodes(curve, a, sigma, t, T1, x_nodes)
-                 / _bond_prices_at_nodes(curve, a, sigma, t, T2, x_nodes) - 1.0) / index_dcf
+    projected = (_bond_prices_at_nodes(index_curve, a, sigma, t, T1, x_nodes)
+                 / _bond_prices_at_nodes(index_curve, a, sigma, t, T2, x_nodes) - 1.0) / index_dcf
     zero = jnp.zeros((), dtype=dtype)
-    fixed_today = (_lgm_bond_price(curve, a, sigma, zero, index_start, zero)
-                   / _lgm_bond_price(curve, a, sigma, zero, index_end, zero) - 1.0) / index_dcf
+    fixed_today = (_lgm_bond_price(index_curve, a, sigma, zero, index_start, zero)
+                   / _lgm_bond_price(index_curve, a, sigma, zero, index_end, zero) - 1.0) / index_dcf
     fixing = jnp.where(jnp.asarray(swap.float_fixed_today)[None, :], fixed_today[None, :], projected)
     fixing = jnp.where(jnp.asarray(swap.float_is_known)[None, :], as_dtype(swap.float_known_rates)[None, :], fixing)
     floating = (as_dtype(swap.notional) * (fixing + swap.float_spread) * as_dtype(swap.float_accrual)[None, :]
@@ -683,7 +712,7 @@ def _run_backward_induction(swap: _PreparedBermudan, condition_times: Sequence[f
     # uses NumPy and stays outside jit.
     x_all, values_all = _backward_induction_arrays(swap, schedule)
     curve = _zero_curve_of(swap)
-    grid_times = jnp.asarray(schedule.times, dtype=curve.pillar_rates.dtype)
+    grid_times = jnp.asarray(schedule.times, dtype=_curve_dtype(curve))
     a, sigma = swap.hw_a, swap.hw_sigma
 
     condition_state_grids: List[np.ndarray] = []
@@ -727,7 +756,7 @@ def _backward_induction_arrays(swap: _PreparedBermudan, schedule: "_GridSchedule
     curve = _zero_curve_of(swap)
     # Work in the curve's dtype (pricing or risk precision); hardcoded float64 constants
     # would upcast a float32 Greeks trace.
-    dtype = curve.pillar_rates.dtype
+    dtype = _curve_dtype(curve)
     quad_w = jnp.asarray(_hagan_quadrature_weights(n_per_std, std_devs), dtype=dtype)
     quad_y = jnp.asarray(_quadrature_nodes(n_per_std, std_devs), dtype=dtype)
     as_mask = lambda mask: jnp.asarray(mask, dtype=dtype)  # noqa: E731

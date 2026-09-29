@@ -1031,3 +1031,79 @@ class TestSwaptionConfigValidation:
 
     def test_valid_config_constructs_without_error(self):
         _make_cfg(0.03, True, "5Y")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# What the Jamshidian engine refuses, as QuantLib refuses it (I-37, I-41)
+# ---------------------------------------------------------------------------
+class TestJamshidianRefusals:
+    """The Hull-White Jamshidian pricer values the floating leg at par and needs `a > 0`.
+    Before these refusals, a 100bp spread priced exactly like no spread (I-37) and `a = 0`
+    priced at intrinsic value through a NaN volatility (I-41), both silently."""
+
+    def test_nonzero_floating_spread_is_refused_not_ignored(self):
+        cfg = SwaptionConfig(
+            notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
+            hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
+            swap_tenor="5Y", forward_start=ORE.Period(2, ORE.Years), floating_spread=0.01,
+            evaluation_date=TODAY,
+        )
+        with pytest.raises(ValueError, match="floating_spread"):
+            prepare_swaption(cfg)
+        with pytest.raises(ValueError, match="floating_spread"):
+            price_swaptions(jnp.array([[[FLAT_RATE]]]), jnp.array([0.0]), [cfg])
+
+    def test_quantlib_refuses_a_nonzero_spread_too(self):
+        """The reference behaviour: `JamshidianSwaptionEngine` raises on a spread."""
+        ORE.Settings.instance().evaluationDate = TODAY
+        dc = ORE.Actual365Fixed()
+        curve = ORE.YieldTermStructureHandle(ORE.FlatForward(TODAY, FLAT_RATE, dc))
+        index = ORE.IborIndex("SimIndex", ORE.Period(6, ORE.Months), 2, ORE.USDCurrency(), ORE.TARGET(),
+                              ORE.ModifiedFollowing, False, dc, curve)
+        swap = ORE.MakeVanillaSwap(ORE.Period("5Y"), index, 0.03, forwardStart=ORE.Period(2, ORE.Years),
+                                   floatingLegSpread=0.01)
+        swaption = ORE.Swaption(swap, ORE.EuropeanExercise(TODAY + ORE.Period(2, ORE.Years)))
+        swaption.setPricingEngine(ORE.JamshidianSwaptionEngine(ORE.HullWhite(curve, HW_A, HW_SIGMA), curve))
+        with pytest.raises(RuntimeError, match="non zero spread"):
+            swaption.NPV()
+
+    def test_cash_settlement_is_refused_not_priced_as_physical(self):
+        """ORE's default for a cash-settled European is `ParYieldCurve`, which QuantLib's
+        Jamshidian engine refuses; before this refusal the pricer ignored `settlement` and
+        returned the physical price (I-52). The market path prices it (engine.valuation)."""
+        cfg = SwaptionConfig(
+            notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
+            hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
+            swap_tenor="5Y", forward_start=ORE.Period(2, ORE.Years), settlement="Cash", evaluation_date=TODAY,
+        )
+        with pytest.raises(ValueError, match="settlement"):
+            prepare_swaption(cfg)
+
+    def test_quantlib_refuses_par_yield_cash_settlement_too(self):
+        ORE.Settings.instance().evaluationDate = TODAY
+        dc = ORE.Actual365Fixed()
+        curve = ORE.YieldTermStructureHandle(ORE.FlatForward(TODAY, FLAT_RATE, dc))
+        index = ORE.IborIndex("SimIndex", ORE.Period(6, ORE.Months), 2, ORE.USDCurrency(), ORE.TARGET(),
+                              ORE.ModifiedFollowing, False, dc, curve)
+        swap = ORE.MakeVanillaSwap(ORE.Period("5Y"), index, 0.03, forwardStart=ORE.Period(2, ORE.Years))
+        swaption = ORE.Swaption(swap, ORE.EuropeanExercise(TODAY + ORE.Period(2, ORE.Years)),
+                                ORE.Settlement.Cash, ORE.Settlement.ParYieldCurve)
+        swaption.setPricingEngine(ORE.JamshidianSwaptionEngine(ORE.HullWhite(curve, HW_A, HW_SIGMA), curve))
+        with pytest.raises(RuntimeError, match="ParYieldCurve"):
+            swaption.NPV()
+
+    @pytest.mark.parametrize("hw_a", [0.0, -0.01, float("nan")])
+    def test_non_positive_mean_reversion_is_refused(self, hw_a):
+        cfg = SwaptionConfig(
+            notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
+            hw_a=hw_a, hw_sigma=HW_SIGMA, initial_zero_curve=ZERO_CURVE,
+            swap_tenor="5Y", forward_start=ORE.Period(2, ORE.Years), evaluation_date=TODAY,
+        )
+        with pytest.raises(ValueError, match="hw_a"):
+            prepare_swaption(cfg)
+
+    def test_quantlib_hull_white_refuses_zero_mean_reversion(self):
+        """The reference behaviour: `HullWhite` holds `a` under a positive constraint."""
+        curve = ORE.YieldTermStructureHandle(ORE.FlatForward(TODAY, FLAT_RATE, ORE.Actual365Fixed()))
+        with pytest.raises(RuntimeError, match="invalid value"):
+            ORE.HullWhite(curve, 0.0, HW_SIGMA)

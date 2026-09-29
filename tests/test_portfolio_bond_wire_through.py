@@ -190,9 +190,22 @@ class TestBondGreeksReachThePortfolioPath:
         result = price_portfolio(bond_request([make_bill()], compute_greeks=True))
         assert float(result.greeks[0]["theta"]) > 0
 
+    def test_theta_adds_back_a_coupon_paid_the_next_day(self):
+        """I-39: ORE's Theta adds back the flows paid in (t, t + 1 day]. Valued the day before
+        the 2025-12-15 coupon, the one-day reprice drops the $2,000 coupon; Theta must not
+        (it was -1,988.83 at this setting in the register's measurement; red first: fails
+        against the pre-fix code)."""
+        from dataclasses import replace
+
+        note = replace(make_note(), evaluation_date=_date("2025-12-14"))
+        theta = float(price_portfolio(bond_request([note], compute_greeks=True)).greeks[0]["theta"])
+        reprice = price_bond_base(replace(note, evaluation_date=note.evaluation_date + 1)) - price_bond_base(note)
+        coupon = note.face_amount * note.coupon_rate * 0.5
+        assert theta == pytest.approx(reprice + coupon, abs=1e-9)
+        assert 0.0 < theta < 50.0
+
     def test_theta_matches_a_one_day_reprice(self):
-        """Theta equals an independent one-day reprice. (On a date just before a coupon
-        this reprice drops the coupon; see the bond Theta entry in docs/known-issues.md.)"""
+        """Theta equals an independent one-day reprice when nothing pays in between."""
         from dataclasses import replace
 
         bill = make_bill()

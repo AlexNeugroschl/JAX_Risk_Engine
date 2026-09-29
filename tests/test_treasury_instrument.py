@@ -354,13 +354,17 @@ class TestCurveInterpolation:
         high = ZeroCurveConfig(times=(0.0, 30.0), rates=(0.06, 0.06))
         assert price_bond_base(make_bill(curve=high)) < price_bond_base(make_bill(curve=low))
 
-    def test_beyond_the_last_pillar_holds_flat(self):
-        """Beyond the last pillar the rate is held flat."""
+    def test_beyond_the_last_pillar_extrapolates_as_ore(self):
+        """Beyond the last pillar the instantaneous forward is held flat, as ORE's
+        `ZeroCurve` (QuantLib's ContinuousForward extrapolation, I-48); holding the zero
+        rate flat instead is ~1.7% off here."""
         curve = ZeroCurveConfig(times=(0.0, 1.0), rates=(0.03, 0.04))
         far = make_bill(maturity="2035-12-15", curve=curve)
-        t = ORE.Actual365Fixed().yearFraction(VALUATION, _date("2035-12-15"))
-        # Held at the last pillar's 4%.
-        assert price_bond_base(far) == pytest.approx(100_000.0 * math.exp(-0.04 * t))
+        ORE.Settings.instance().evaluationDate = VALUATION
+        ore_curve = ORE.ZeroCurve([VALUATION, VALUATION + 365], [0.03, 0.04], ORE.Actual365Fixed())
+        ore_curve.enableExtrapolation()
+        expected = 100_000.0 * ore_curve.discount(_date("2035-12-15"))
+        assert price_bond_base(far) == pytest.approx(expected, rel=1e-12)
 
     def test_a_negative_rate_curve_prices_above_par(self):
         """At a negative zero rate the discount factor exceeds 1 and a bill is worth more

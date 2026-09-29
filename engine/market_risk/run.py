@@ -14,7 +14,7 @@ This is the engine's market-risk measure. The multi-step simulation in
 `engine.portfolio` is an exposure profile, not a VaR (audit finding R-1).
 """
 from dataclasses import dataclass, field
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -22,7 +22,8 @@ import numpy as np
 
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.american_swaption import AmericanSwaptionConfig
-from engine.market_risk.revaluation import OPTION_TYPES, curve_indices, revalue
+from engine.market import SwaptionVolSurface
+from engine.market_risk.revaluation import OPTION_TYPES, curve_indices, revalue, uses_bachelier
 from engine.market_risk.scenarios import ShockScenarios
 from engine.portfolio.validation import validate_single_evaluation_date
 from engine.risk.var_es import compute_risk_metrics
@@ -39,19 +40,24 @@ class MarketRiskRequest:
         all on one evaluation date. Curve references index into
         `scenarios.factors.curves`; a trade that carries its own
         `initial_zero_curve` must carry exactly that curve. Bermudan and
-        American trades need a calibrated (non-`None`) `hw_sigma`.
+        American trades need a calibrated (non-`None`) `hw_sigma`. A European
+        without Hull-White parameters is priced with ORE's Bachelier engine on
+        `swaption_vols` (`engine.market_risk.revaluation`).
     scenarios: `ShockScenarios` built for the same curves.
     quantiles: VaR/ES confidence levels, e.g. 0.99 for VaR and 0.975 for
         Basel's ES.
     precision: 64 or 32 -- the dtype of the revaluation and the statistics.
     batch_size: scenarios vmapped at once inside the revaluation loop; lower
         it if a large Bermudan runs out of memory.
+    swaption_vols: today's ATM normal swaption volatilities, held fixed under
+        every scenario; required by a Bachelier European.
     """
     trades: List
     scenarios: ShockScenarios
     quantiles: Sequence[float] = (0.99, 0.975)
     precision: int = 64
     batch_size: int = 256
+    swaption_vols: Optional[SwaptionVolSurface] = None
 
 
 @dataclass
@@ -88,7 +94,8 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     # Revaluation at float32 still needs x64 enabled to build the float64
     # arrays a 64-bit request uses; it never changes a float32 array.
     jax.config.update("jax_enable_x64", True)
-    base, shocked = revalue(request.trades, scenarios.factors, scenarios.shifts, dtype, request.batch_size)
+    base, shocked = revalue(request.trades, scenarios.factors, scenarios.shifts, dtype, request.batch_size,
+                            request.swaption_vols)
     pnl = shocked - jnp.asarray(base, dtype=dtype)[None, :]
     portfolio_pnl = jnp.sum(pnl, axis=-1)
 
@@ -145,6 +152,9 @@ def _validate(request: MarketRiskRequest) -> None:
             )
         if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)) and cfg.hw_sigma is None:
             raise ValueError(f"{label}: hw_sigma is None; calibrate it before a market-risk run")
+        if uses_bachelier(cfg) and request.swaption_vols is None:
+            raise ValueError(f"{label}: a European without hw_a/hw_sigma is priced with the Bachelier engine "
+                             f"and needs request.swaption_vols")
 
 
 def _same_curve(a, b) -> bool:
@@ -158,8 +168,9 @@ def _warnings(request: MarketRiskRequest) -> List[str]:
     options = [i for i, cfg in enumerate(request.trades) if isinstance(cfg, OPTION_TYPES)]
     if options:
         out.append(
-            f"trades {options} are options priced with fixed model volatility (hw_sigma): only "
-            f"curve pillar rates are shocked, so volatility risk is not in this VaR/ES."
+            f"trades {options} are options priced with fixed volatility (hw_sigma or the swaption "
+            f"volatility surface): only curve pillar rates are shocked, so volatility risk is not in "
+            f"this VaR/ES."
         )
     for q in request.quantiles:
         tail = int(np.floor(request.scenarios.num_scenarios * (1.0 - q)))

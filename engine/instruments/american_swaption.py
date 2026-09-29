@@ -27,7 +27,7 @@ from engine.instruments.bermudan_swaption import ExerciseStyle, price_bermudan_s
 from engine.models.lgm import Sigma
 from engine.models.ore_builders import book_swap_dates, is_live, time_from_reference, validate_fixings
 from engine.simulation.market_model import ZeroCurveConfig
-from engine.portfolio.validation import _validate_common_fields, _validate_hw_sigma
+from engine.instruments._validation import _validate_common_fields, _validate_hw_sigma, _validate_settlement
 
 
 @dataclass
@@ -45,12 +45,12 @@ class AmericanSwaptionConfig:
     notional: float
     fixed_rate: float
     payer: bool
-    rate_factor_index: int
-    hw_a: float
-    hw_sigma: Optional[Union[float, Sigma]]
-    initial_zero_curve: ZeroCurveConfig
-    first_exercise_date: ORE.Date
-    last_exercise_date: ORE.Date
+    rate_factor_index: Optional[int] = None
+    hw_a: Optional[float] = None
+    hw_sigma: Optional[Union[float, Sigma]] = None
+    initial_zero_curve: Optional[ZeroCurveConfig] = None
+    first_exercise_date: Optional[ORE.Date] = None
+    last_exercise_date: Optional[ORE.Date] = None
     effective_date: Optional[ORE.Date] = None
     maturity_date: Optional[ORE.Date] = None
     swap_tenor: InitVar[Optional[str]] = None
@@ -61,6 +61,9 @@ class AmericanSwaptionConfig:
     std_devs: float = 6.0
     evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
     fixings: Dict[ORE.Date, float] = field(default_factory=dict)
+    index_zero_curve: Optional[ZeroCurveConfig] = None
+    currency: str = "USD"
+    settlement: str = "Physical"
 
     exercise_style = ExerciseStyle.AMERICAN
 
@@ -88,6 +91,7 @@ class AmericanSwaptionConfig:
         validate_fixings(self.fixings)
         # hw_sigma=None means "uncalibrated" (see BermudanSwaptionConfig).
         _validate_hw_sigma(self.hw_sigma)
+        _validate_settlement(self.settlement)
         for name in ("first_exercise_date", "last_exercise_date"):
             if not isinstance(getattr(self, name), ORE.Date):
                 raise TypeError(f"{name} must be an ORE.Date; got {getattr(self, name)!r}")

@@ -7,6 +7,10 @@ logic.
 4096-scenario portfolio takes about a minute, too long to hold a request open.
 `GET /portfolio/price/{job_id}` polls the job's `Future`.
 
+`POST /v2/portfolio/price` is the same for schema version 2, the ORE-aligned market path
+(`engine.api.market_schemas`, `engine.portfolio.market_path`); its jobs are polled at the
+same `GET` route. Version 1 stays for the Hull-White path.
+
 Job store: an in-process `job_id -> Future` dict, lost on restart and not shared between
 uvicorn workers (I-08; see docs/reference/http-api.md).
 """
@@ -22,13 +26,15 @@ import jax.numpy as jnp
 import numpy as np
 from fastapi import APIRouter, HTTPException, status
 
-from engine.portfolio import price_portfolio, validate_portfolio_against_simulation
+from engine.portfolio import validate_portfolio_against_simulation
+from engine.portfolio.market_path import validate_market_request
 from engine.portfolio.worker_pool import submit_pricing_job
 from engine.simulation.market_model import validate_joint_covariance
 from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.lgm import calibrate_lgm_sigma
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 
+from engine.api.market_schemas import MarketPortfolioRequestSchema
 from engine.api.schemas import (
     CalibrationRequestSchema, CalibrationResultSchema, HealthSchema, JobStatusSchema,
     PortfolioRequestSchema, PortfolioResultSchema, VersionSchema, _parse_ore_date,
@@ -85,9 +91,25 @@ def submit_portfolio_price(request: PortfolioRequestSchema) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    return {"job_id": _submit(dataclass_request)}
+
+
+@router.post("/v2/portfolio/price", status_code=status.HTTP_202_ACCEPTED)
+def submit_market_portfolio_price(request: MarketPortfolioRequestSchema) -> dict:
+    """Schema version 2 (the market path): validate synchronously (a failure is a 400),
+    then submit as `POST /portfolio/price` does."""
+    try:
+        dataclass_request = request.to_dataclass()
+        validate_market_request(dataclass_request)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return {"job_id": _submit(dataclass_request)}
+
+
+def _submit(dataclass_request) -> str:
     job_id = str(uuid.uuid4())
     _JOBS[job_id] = submit_pricing_job(dataclass_request)
-    return {"job_id": job_id}
+    return job_id
 
 
 @router.get("/portfolio/price/{job_id}", response_model=JobStatusSchema)

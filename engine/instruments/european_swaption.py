@@ -22,8 +22,11 @@ Differs from ORE:
 A config holds its booked `exercise_date` and underlying dates; on or after the exercise
 date the option is expired and worth 0 (ORE's `Instrument::isExpired`).
 
-Known issue: `floating_spread` is accepted but ignored (the floating leg is taken at par).
-ORE's `JamshidianSwaptionEngine` refuses a non-zero spread; see I-37 in docs/known-issues.md.
+Refusals, as QuantLib's `JamshidianSwaptionEngine` and `HullWhite` refuse them
+(`prepare_swaption`): a non-zero `floating_spread` (jamshidianswaptionengine.cpp: "non
+zero spread not allowed"; the floating leg is valued at par, I-37), `hw_a <= 0`
+(`HullWhite` holds `a` under a positive constraint, I-41), and cash settlement (ORE's cash
+method is `ParYieldCurve`, which the engine refuses; I-52).
 """
 from dataclasses import InitVar, dataclass, field
 from functools import partial
@@ -43,7 +46,9 @@ from engine.models.ore_builders import (
     build_vanilla_swap,
     is_live,
 )
-from engine.portfolio.validation import _validate_common_fields, _validate_hw_sigma
+from engine.instruments._validation import (
+    _validate_common_fields, _validate_hw_a, _validate_hw_sigma, _validate_settlement,
+)
 from engine.models.hull_white import (
     A as _hw_A,
     B as _hw_B,
@@ -66,13 +71,15 @@ class SwaptionConfig:
     """
     One European swaption: the option to enter a vanilla swap on `exercise_date`.
 
-    rate_factor_index: the simulated Hull-White factor that prices both the swap and the
-        option. `hw_a`, `hw_sigma` and `initial_zero_curve` must match that factor's
-        simulation parameters; they cannot be recovered from the paths.
+    currency: the trade's currency (the market path's curves and swaption volatilities).
+    rate_factor_index / hw_a / hw_sigma / initial_zero_curve: the Hull-White Jamshidian
+        pricer's model (legacy path): the simulated factor that prices both the swap and the
+        option, and its parameters. The market path prices with ORE's default Bachelier
+        engine on the market's volatilities and refuses them.
     exercise_date / effective_date / maturity_date: the booked expiry and the underlying's
         schedule. They define the trade; `evaluation_date` only sets when it is priced.
-    index_tenor_months / floating_spread: as in `SwapConfig` (but see the module
-        docstring: the spread is currently ignored).
+    index_tenor_months / floating_spread: as in `SwapConfig`. The Jamshidian pricer
+        refuses a non-zero spread (see the module docstring).
 
     Booking by tenor instead (resolved once, on `evaluation_date`, not stored):
       * swap_tenor: the underlying's length, e.g. "5Y";
@@ -84,10 +91,10 @@ class SwaptionConfig:
     notional: float
     fixed_rate: float
     payer: bool
-    rate_factor_index: int
-    hw_a: float
-    hw_sigma: float
-    initial_zero_curve: ZeroCurveConfig
+    rate_factor_index: Optional[int] = None
+    hw_a: Optional[float] = None
+    hw_sigma: Optional[float] = None
+    initial_zero_curve: Optional[ZeroCurveConfig] = None
     exercise_date: Optional[ORE.Date] = None
     effective_date: Optional[ORE.Date] = None
     maturity_date: Optional[ORE.Date] = None
@@ -97,6 +104,11 @@ class SwaptionConfig:
     forward_start: InitVar[Optional[ORE.Period]] = None
     exercise_lag_days: InitVar[Optional[int]] = None
     evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
+    currency: str = "USD"
+    #: Physical (ORE's default) or cash settlement: what the option becomes on exercise in a
+    #: simulation (`engine.valuation`, ORE's `OptionWrapper`), and for cash ORE's
+    #: `ParYieldCurve` annuity. Only the market path prices cash (I-52).
+    settlement: str = "Physical"
 
     def __post_init__(self, swap_tenor, forward_start, exercise_lag_days) -> None:
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
@@ -113,9 +125,8 @@ class SwaptionConfig:
         if not self.exercise_date < self.maturity_date:
             raise ValueError(
                 f"exercise_date ({self.exercise_date}) must be before maturity_date ({self.maturity_date})")
-        if self.hw_sigma is None:
-            raise ValueError("hw_sigma is required for a European swaption")
         _validate_hw_sigma(self.hw_sigma)
+        _validate_settlement(self.settlement)
 
     def is_expired(self) -> bool:
         """Exercise date on or before the evaluation date (ORE's `isExpired`)."""
@@ -165,7 +176,24 @@ def prepare_swaption(cfg: SwaptionConfig) -> _PreparedSwaption:
     The floating leg is not read. On one curve with no spread it is worth
     N * (P(T0, T_start) - P(T0, T_end)). T_start is the first fixed accrual start (ORE's
     `valueTime`, `fixedResetDates[0]`), which can be after the exercise time.
+
+    Refuses what the Jamshidian engine cannot price (see the module docstring).
     """
+    missing = [name for name in ("rate_factor_index", "hw_a", "hw_sigma", "initial_zero_curve")
+               if getattr(cfg, name) is None]
+    if missing:
+        raise ValueError(f"the Hull-White Jamshidian pricer needs {', '.join(missing)}")
+    if cfg.floating_spread != 0.0:
+        raise ValueError(
+            f"floating_spread={cfg.floating_spread}: the Hull-White Jamshidian pricer values the "
+            f"floating leg at par and cannot price a spread (QuantLib's JamshidianSwaptionEngine "
+            f"refuses it too, I-37)")
+    if cfg.settlement != "Physical":
+        raise ValueError(
+            f"settlement={cfg.settlement!r}: the Hull-White Jamshidian pricer prices physical settlement "
+            f"only (QuantLib's JamshidianSwaptionEngine refuses ORE's cash method, ParYieldCurve; I-52); "
+            f"price it on a Market")
+    _validate_hw_a(cfg.hw_a)
     swap = _build_ore_swap(cfg)
     today = cfg.evaluation_date
     accrual_start_date = ORE.as_fixed_rate_coupon(swap.fixedLeg()[0]).accrualStartDate()

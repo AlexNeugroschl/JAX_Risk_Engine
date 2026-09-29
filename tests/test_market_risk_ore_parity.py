@@ -11,16 +11,18 @@ ORE instruments and engines:
 
     swap        MakeVanillaSwap + DiscountingSwapEngine, separate forwarding
                 and discounting curves
-    European    Swaption + JamshidianSwaptionEngine on ORE.HullWhite
+    European    Swaption + BachelierSwaptionEngine on ORE's SwaptionVolatilityMatrix
+                (ORE's default European engine, plan 6.4); the legacy Hull-White
+                European against JamshidianSwaptionEngine on ORE.HullWhite
     bond        FixedRateBond (ACT/ACT ISMA, no settlement lag) + DiscountingBondEngine
     Bermudan    NumericLgmMultiLegOptionEngine through an in-process OREApp
                 (engine.validation.ore_lgm_oracle)
 
 Measured agreement per scenario, which the tolerances below are set from:
 swap ~1e-14 and bond ~1e-16 relative (the same arithmetic); Bermudan ~2e-13
-(the same LGM grid); European ~3e-7, inside the ~2e-6 envelope the existing
-Jamshidian parity tests document for sloped curves
-(tests/test_european_swaption.py).
+(the same LGM grid); Bachelier European ~2e-14 (measured 1.6e-14, 2026-09-29); legacy Hull-White European ~3e-7,
+inside the ~2e-6 envelope the existing Jamshidian parity tests document for
+sloped curves (tests/test_european_swaption.py).
 
 ORE's `ParametricVarCalculator` and `ExposureCalculator` have no constructor
 in the Python bindings, so VaR/ES parity is established this way -- full
@@ -91,13 +93,14 @@ def _ore_statistics(pnl: np.ndarray) -> "ORE.RiskStatistics":
 @pytest.mark.parametrize("make, scenarios, rtol", [
     (m.swap, 32, 1e-12),
     (m.bond, 32, 1e-12),
+    (m.european_bachelier, 32, 1e-10),
     (m.european, 32, 1e-6),
     (m.bermudan, 6, 1e-10),
-], ids=["swap", "bond", "european", "bermudan"])
+], ids=["swap", "bond", "european", "european-hull-white", "bermudan"])
 def test_every_scenario_revalues_as_ore_does(make, scenarios, rtol):
     cfg = make()
     shocks = monte_carlo_scenarios(FACTORS, m.covariance(), horizon_days=10, num_scenarios=scenarios, seed=11)
-    result = run_market_risk(MarketRiskRequest([cfg], shocks))
+    result = run_market_risk(MarketRiskRequest([cfg], shocks, swaption_vols=m.VOLS))
 
     engine_values = result.base_npv_per_trade[0] + np.asarray(result.pnl[:, 0])
     ore_values = np.asarray([_ore_npv(cfg, BASE + row) for row in shocks.shifts])
@@ -105,11 +108,11 @@ def test_every_scenario_revalues_as_ore_does(make, scenarios, rtol):
 
 
 def test_base_value_is_ores():
-    trades = [m.swap(), m.european(), m.bond()]
+    trades = [m.swap(), m.european_bachelier(), m.bond()]
     shocks = monte_carlo_scenarios(FACTORS, m.covariance(), horizon_days=10, num_scenarios=4, seed=1)
-    result = run_market_risk(MarketRiskRequest(trades, shocks))
+    result = run_market_risk(MarketRiskRequest(trades, shocks, swaption_vols=m.VOLS))
     np.testing.assert_allclose(
-        result.base_npv_per_trade, [_ore_npv(cfg, BASE) for cfg in trades], rtol=1e-6,
+        result.base_npv_per_trade, [_ore_npv(cfg, BASE) for cfg in trades], rtol=1e-10,
     )
 
 
@@ -129,9 +132,10 @@ def _assert_statistics_match(result, ore_pnl, quantiles, rtol):
 
 @pytest.fixture(scope="module")
 def monte_carlo_run():
-    trades = [m.swap(), m.european(), m.bond()]
+    trades = [m.swap(), m.european_bachelier(), m.bond()]
     shocks = monte_carlo_scenarios(FACTORS, m.covariance(), horizon_days=10, num_scenarios=512, seed=7)
-    return trades, shocks, run_market_risk(MarketRiskRequest(trades, shocks, quantiles=QUANTILES))
+    return trades, shocks, run_market_risk(MarketRiskRequest(trades, shocks, quantiles=QUANTILES,
+                                                             swaption_vols=m.VOLS))
 
 
 @pytest.fixture(scope="module")

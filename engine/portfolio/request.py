@@ -4,10 +4,15 @@ The engine's portfolio entry point: `PortfolioRequest` (trades, market, risk set
 
 Pure dataclasses and JAX; the HTTP layer (`engine/api/`) wraps these types.
 
-The scenario cube is an exposure simulation and carries the simulation's known
-limitations, which are warned about per trade rather than corrected: aged swaps (I-04, audit
-M-2), options vanishing at expiry (audit M-3), and short rates inconsistent with a sloped
-curve (audit M-1). t=0 base NPVs are unaffected.
+Two paths, chosen by the request's `market`:
+
+  * an `engine.market.Market` (the default, `engine.portfolio.market_path`): ORE's
+    semantics end to end -- the cross-asset LGM simulation, each trade priced on every path
+    with its t=0 engine, exercise and fixings as ORE handles them, ORE's sensitivities;
+  * a legacy `SimulationConfig` (this module): the Hull-White simulation with trade-level
+    model parameters. Its cube carries known limitations, warned about per trade rather than
+    corrected: aged swaps (I-04, audit M-2), options vanishing at expiry (audit M-3), and short
+    rates inconsistent with a sloped curve (audit M-1). t=0 base NPVs are unaffected.
 
 Concurrency: `jax_enable_x64` is process-global, so two threads pricing at different
 precisions in one process can corrupt each other. `_PRICING_LOCK` serializes the JAX work of
@@ -25,7 +30,10 @@ import jax.numpy as jnp
 import numpy as np
 import ORE
 
+from engine.market import Market
+from engine.simulation.config import CamConfig
 from engine.simulation.market_model import SimulationConfig, generate_paths
+from engine.valuation.config import PricingConfig
 from engine.instruments.swap import SwapConfig, price_swaps, swap_schedule
 from engine.instruments.european_swaption import SwaptionConfig, prepare_swaption, price_swaptions
 from engine.instruments.bermudan_swaption import (
@@ -33,7 +41,7 @@ from engine.instruments.bermudan_swaption import (
 )
 from engine.instruments.american_swaption import AmericanSwaptionConfig, price_american_swaptions
 from engine.instruments.treasury import (
-    RATE_BUMP, BondConfig, ScenarioPricingNotSupported, price_bond_base,
+    RATE_BUMP, BondConfig, ScenarioPricingNotSupported, _remaining_cashflows, price_bond_base,
 )
 from engine.calibration.lgm import calibrate_lgm_sigma, CalibrationTarget
 from engine.risk.var_es import ENGINE_RISK_MEASURE
@@ -176,11 +184,18 @@ def validate_portfolio_against_simulation(
     num_eq = len(sim_config.equities.initial_prices)
 
     for i, cfg in enumerate(trade_configs):
-        rate_factor_index = getattr(cfg, "rate_factor_index", None)
-        if rate_factor_index is None:
+        if not isinstance(cfg, (SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig)):
             continue
+        rate_factor_index = cfg.rate_factor_index
+        if rate_factor_index is None:
+            raise ValueError(f"trade[{i}] ({type(cfg).__name__}, notional={cfg.notional}): the Hull-White "
+                             f"path needs rate_factor_index; price it on a Market instead")
 
         label = f"trade[{i}] ({type(cfg).__name__}, notional={cfg.notional})"
+        missing = [name for name in ("hw_a", "initial_zero_curve") if getattr(cfg, name) is None]
+        if missing:
+            raise ValueError(f"{label}: the Hull-White path needs {', '.join(missing)} on the trade; "
+                             f"price it on a Market instead for ORE's engines")
         num_hw = len(sim_config.rates.mean_reversion)
         if not (0 <= rate_factor_index < num_hw):
             raise ValueError(
@@ -251,6 +266,8 @@ def _validate_swap_curve_indices(
         label = f"trade[{i}] ({type(cfg).__name__}, notional={cfg.notional})"
         for name, idx in (("discount_curve_index", cfg.discount_curve_index),
                           ("forward_curve_index", cfg.forward_curve_index)):
+            if idx is None:
+                raise ValueError(f"{label}: the Hull-White path needs {name}; price it on a Market instead")
             if not 0 <= idx < len(curves):
                 raise ValueError(
                     f"{label}: {name}={idx} is out of range for "
@@ -374,8 +391,9 @@ class PortfolioRequest:
     """
     Input to `price_portfolio`.
 
-    market: the `SimulationConfig` for `generate_paths`. If `market.rates.maturities` is
-        unset, it is derived with `derive_maturity_pillars`.
+    market: today's `Market` (the market path; then `simulation`, `pricing` and
+        `base_currency` apply), or a legacy `SimulationConfig` for `generate_paths` (if
+        `market.rates.maturities` is unset, it is derived with `derive_maturity_pillars`).
     trades: any mix of trade types; results come back in this order.
     pfe_quantiles: PFE quantiles for the exposure profiles.
     calibration_targets: used to calibrate any Bermudan/American with `hw_sigma=None`,
@@ -383,6 +401,8 @@ class PortfolioRequest:
         calibrates each trade to a basket built from its own exercise dates; I-47).
     compute_greeks: also compute Delta/Gamma/Theta (and Vega where defined) per trade.
     precision: see `PrecisionConfig`.
+    trade_ids: optional, one unique id per trade, echoed on the result so a caller need not
+        rely on positions (I-10).
 
     Bonds (`BondConfig`) are priced at t=0 only: no cube column, no exposure (I-24), and
     Greeks by bumped revaluation (`_bond_greeks`).
@@ -390,16 +410,31 @@ class PortfolioRequest:
     The cube is a multi-step risk-neutral simulation, used for exposure profiles
     (`engine.risk.exposure`). Short-horizon VaR/ES is `engine.market_risk.run_market_risk`.
     """
-    market: SimulationConfig
+    market: Union[SimulationConfig, Market]
     trades: List[TradeConfig]
     pfe_quantiles: Sequence[float] = (0.95, 0.99)
     calibration_targets: Optional[List[CalibrationTarget]] = None
     compute_greeks: bool = False
     precision: PrecisionConfig = field(default_factory=PrecisionConfig)
-    #: Whether to build `npv_cube` and the exposure profiles. Set False for a portfolio
-    #: with deterministic-only trades (bonds): the result then has an empty `npv_cube` and
-    #: no exposure (absent, not zero), and `scenario_risk_available` says so.
+    #: Whether to build `npv_cube` and the exposure profiles. On the legacy path, set False
+    #: for a portfolio with deterministic-only trades (bonds): the result then has an empty
+    #: `npv_cube` and no exposure (absent, not zero), and `scenario_risk_available` says so.
     scenario_risk: bool = True
+    #: Market path only: ORE's simulation configuration (required with `scenario_risk`),
+    #: pricing engines, and the base currency when there is no simulation.
+    simulation: Optional[CamConfig] = None
+    pricing: PricingConfig = field(default_factory=PricingConfig)
+    base_currency: str = "USD"
+    trade_ids: Optional[Sequence[str]] = None
+
+    def __post_init__(self):
+        if self.trade_ids is None:
+            return
+        ids = list(self.trade_ids)
+        if len(ids) != len(self.trades):
+            raise ValueError(f"trade_ids has {len(ids)} entries for {len(self.trades)} trades")
+        if any(not isinstance(i, str) or not i for i in ids) or len(set(ids)) != len(ids):
+            raise ValueError(f"trade_ids must be unique non-empty strings; got {ids}")
 
 
 # price_portfolio
@@ -423,6 +458,8 @@ class PortfolioResult:
     # The measure of the exposure figures: `ENGINE_RISK_MEASURE` (risk-neutral-pricing), or
     # None without scenario risk (I-11).
     measure: Optional[str] = None
+    # The request's `trade_ids`, in request order, or None if it had none (I-10).
+    trade_ids: Optional[List[str]] = None
 
 
 def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
@@ -441,7 +478,23 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
     9. Optionally Greeks.
 
     Steps 4-9 run under `_PRICING_LOCK`; 1-3 run no JAX code.
+
+    A request whose `market` is a `Market` goes to the market path instead
+    (`engine.portfolio.market_path.price_on_market`). Either way the result carries the
+    request's `trade_ids`.
     """
+    if isinstance(request.market, Market):
+        from engine.portfolio.market_path import price_on_market
+        with _PRICING_LOCK:
+            result = price_on_market(request)
+    else:
+        result = _price_on_simulation(request)
+    result.trade_ids = None if request.trade_ids is None else list(request.trade_ids)
+    return result
+
+
+def _price_on_simulation(request: PortfolioRequest) -> PortfolioResult:
+    """`price_portfolio` on the legacy Hull-White path (steps 1-9 above)."""
     from engine.simulation.market_model import validate_joint_covariance
 
     validate_joint_covariance(request.market.joint_covariance)
@@ -680,18 +733,13 @@ def _flat_curve_cube(
     disc_curve_cfg, fwd_curve_cfg, maturities_np: np.ndarray, eval_date: ORE.Date, dtype=jnp.float64,
 ) -> jax.Array:
     """`[1, 1, len(maturities), 2]` cube of today's discount factors from two
-    `ZeroCurveConfig`s (linear zero-rate interpolation onto `maturities_np`). Interpolates
-    in float64 and casts to `dtype`."""
-    disc_times = np.asarray(disc_curve_cfg.times, dtype=np.float64)
-    disc_rates = np.asarray(disc_curve_cfg.rates, dtype=np.float64)
-    fwd_times = np.asarray(fwd_curve_cfg.times, dtype=np.float64)
-    fwd_rates = np.asarray(fwd_curve_cfg.rates, dtype=np.float64)
-
-    disc_z = np.interp(maturities_np, disc_times, disc_rates)
-    fwd_z = np.interp(maturities_np, fwd_times, fwd_rates)
-    disc_df = np.exp(-disc_z * maturities_np)
-    fwd_df = np.exp(-fwd_z * maturities_np)
-    cube = np.stack([disc_df, fwd_df], axis=-1)
+    `ZeroCurveConfig`s (`engine.models.curves.discount`). Interpolates in float64 and casts
+    to `dtype`."""
+    maturities = jnp.asarray(maturities_np, dtype=jnp.float64)
+    cube = jnp.stack([
+        _hw_discount(_HwZeroCurve.from_config(disc_curve_cfg), maturities),
+        _hw_discount(_HwZeroCurve.from_config(fwd_curve_cfg), maturities),
+    ], axis=-1)
     return jnp.asarray(cube[None, None, :, :], dtype=dtype)
 
 
@@ -799,12 +847,9 @@ def _bond_greeks(cfg: BondConfig) -> Dict[str, jax.Array]:
     two differ by the curvature term (~1.4e-4 on a 6M bill at 100k face).
     Gamma: `P(+1bp) - 2P(0) + P(-1bp)`.
     Theta: dirty NPV with the evaluation date one calendar day later, same curve, minus
-    today's.
+    today's, plus the flows paid in (t, t + 1] (ORE's Theta adds the period's cash flows
+    back, as `swap_theta` does; I-39).
     Vega: omitted (no volatility input), not 0.
-
-    Known issue: Theta has no add-back for a coupon paid in between, unlike ORE and
-    `swap_theta`, so the day before a coupon date it reports roughly minus the coupon; see
-    I-39 in docs/known-issues.md.
     """
     base = price_bond_base(cfg)
     up = price_bond_base(cfg, rate_shift=RATE_BUMP)
@@ -820,6 +865,7 @@ def _bond_greeks(cfg: BondConfig) -> Dict[str, jax.Array]:
     # omitted rather than failing the whole call.
     if cfg.maturity_date > cfg.evaluation_date + 1:
         one_day_on = replace(cfg, evaluation_date=cfg.evaluation_date + 1)
-        out["theta"] = jnp.asarray(price_bond_base(one_day_on) - base)
+        paid = sum(amount for date, amount in _remaining_cashflows(cfg) if date <= one_day_on.evaluation_date)
+        out["theta"] = jnp.asarray(price_bond_base(one_day_on) - base + paid * cfg.face_amount)
 
     return out

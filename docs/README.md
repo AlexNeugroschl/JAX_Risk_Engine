@@ -118,8 +118,15 @@ counterparts live at the integration boundary
   highest-severity entries (aged-swap pricing and USD-SOFR conventions) are **not fixed**,
   and the register is explicit about the difference between *fixed* and *warned about*.
 
+- **[Decisions](../compliance/decisions.md)** — the dated modelling decisions behind the
+  numbers: the ORE alignment's targets, the differences from ORE that remain, and the
+  choices made while implementing it, each awaiting owner sign-off.
+
 ## Planning
 
+- **[ORE Alignment Plan](planning/ore-alignment-plan.md)** — one rates model and ORE's
+  valuation semantics end to end: the market path, its verification gates and test layers,
+  and what of the plan is done.
 - **[Engine Audit](planning/engine-audit.md)** — open problems from the 2026-09-24 audit of
   the internal engine, tests and demos, ranked by urgency and ease of fixing. Read with the
   Known Issues register: several findings correct or extend its entries.

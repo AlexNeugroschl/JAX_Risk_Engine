@@ -235,11 +235,13 @@ See each deep-dive doc's "Tested by" section for what's covered where, and
 for the general approach (every formula is checked both for internal mathematical
 correctness and against ORE's own installed software directly).
 
-**Two tiers.** The full suite takes 22–27 minutes (see [Known Issues](../known-issues.md)
-for the current verified figure), because the Monte Carlo and ORE-parity tests genuinely
-simulate and reprice. Tests marked `@pytest.mark.slow` make up more than half of that time (101 of 2,087 tests);
-the rest is the **fast tier**, `-m "not slow"`. The fast tier takes about 9½ minutes on the reference Windows machine and
-9m32s on a 4-core Linux container (1,986 tests; the slow tier adds 12m58s there). A test is marked `slow` when either:
+**Two tiers.** The full suite took 46:00 on the reference Windows machine and 50:09 in a
+4-core Linux container on 2026-09-29 (22–27 minutes before the market path; see
+[I-53](../known-issues.md#i-53)), because the Monte Carlo and ORE-parity tests
+genuinely simulate and reprice. Tests marked `@pytest.mark.slow` are excluded by the
+**fast tier**, `-m "not slow"`. The tier timings last measured (2026-09-24, before the market
+path): fast tier about 9½ minutes on Windows and 9m32s on Linux (1,986 tests), slow tier
+12m58s on Linux. They have not been re-measured since. A test is marked `slow` when either:
 
 - it starts `engine.portfolio.worker_pool` processes (the job-submitting classes in
   `tests/test_api.py` and `tests/test_worker_pool.py`), or

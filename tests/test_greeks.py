@@ -80,15 +80,16 @@ class TestZeroCurve:
         for t in [0.0, 0.5, 1.0, 3.7, 10.0, 15.0, 30.0, 50.0]:
             assert float(_zero_rate_at(curve, jnp.asarray(t))) == pytest.approx(0.03, abs=1e-12)
 
-    def test_flat_extrapolation_beyond_pillars(self):
-        """Flat extrapolation outside the pillar range (as `np.interp`)."""
+    def test_extrapolation_below_and_beyond_the_pillars(self):
+        """Flat zero rate before the first pillar; past the last one a flat instantaneous
+        forward, f = 0.04 + 10 * 0.002 = 0.06, as QuantLib's ContinuousForward (I-48)."""
         curve = ZeroCurve(
             pillar_times=jnp.array([1.0, 5.0, 10.0]),
             pillar_rates=jnp.array([0.02, 0.03, 0.04]),
         )
         from engine.risk.greeks import _zero_rate_at
         assert float(_zero_rate_at(curve, jnp.asarray(0.1))) == pytest.approx(0.02)
-        assert float(_zero_rate_at(curve, jnp.asarray(50.0))) == pytest.approx(0.04)
+        assert float(_zero_rate_at(curve, jnp.asarray(50.0))) == pytest.approx((0.04 * 10 + 0.06 * 40) / 50)
 
     def test_linear_interpolation_between_pillars(self):
         curve = ZeroCurve(

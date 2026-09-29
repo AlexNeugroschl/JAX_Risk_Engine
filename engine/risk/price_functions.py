@@ -38,6 +38,9 @@ from engine.instruments.bermudan_swaption import (
 from engine.instruments.treasury import bond_price_function  # noqa: F401  (re-export)
 from engine.models.hull_white import A as _hw_A, ZeroCurve, discount as _discount_at, zero_rate as _zero_rate_at
 from engine.models.lgm import Sigma, as_sigma
+from engine.market import VOL_DAY_COUNTER, SwaptionVolSurface
+from engine.valuation.european import black_multileg_npv, european_terms
+from engine.valuation.legs import today_schedule
 
 
 def _yield_curves_from_zero_curves(
@@ -76,6 +79,29 @@ def swap_price_function(cfg: SwapConfig, disc_curve: ZeroCurve, fwd_curve: ZeroC
         return npv[0, 0]
 
     return price_fn
+
+
+def bachelier_swaption_price_function(cfg: SwaptionConfig, curve: ZeroCurve, surface: SwaptionVolSurface):
+    """`curve_rates -> t=0 NPV` for one European swaption with ORE's default engine
+    (`BlackMultiLegOptionEngine`, `engine.valuation.european`) on one curve for discounting
+    and forwarding, the normal volatility read once from `surface` and held fixed. The trade must carry no Hull-White parameters. Computed in the curve's
+    dtype."""
+    dtype = curve.pillar_rates.dtype
+    asof = cfg.evaluation_date
+    if not cfg.exercise_date > asof:
+        return lambda pillar_rates: jnp.zeros((), dtype=pillar_rates.dtype) * jnp.sum(pillar_rates)
+    terms = european_terms(cfg, asof)
+    t = VOL_DAY_COUNTER.yearFraction(asof, cfg.exercise_date)
+    variance = float(surface.volatility(asof, t, terms.swap_length)) ** 2 * t
+    known = today_schedule(terms.legs, asof)
+    terms = terms.astype(dtype)
+    known_rates = np.asarray(known.known_rates, dtype=dtype)
+
+    def price(pillar_rates):
+        on = ZeroCurve(pillar_times=curve.pillar_times, pillar_rates=pillar_rates)
+        return black_multileg_npv(terms, on, on, 0.0, variance, known.projected, known_rates)
+
+    return price
 
 
 def swaption_price_function(cfg: SwaptionConfig, curve: ZeroCurve):
@@ -144,7 +170,7 @@ def bermudan_price_function(cfg: BermudanSwaptionConfig, curve: ZeroCurve):
     differentiable in the pillar rates (Delta/Gamma) and the sigma bucket values (Vega).
 
     Reuses `prepare_bermudan`/`_run_backward_induction` directly, substituting the traced
-    values into `_PreparedBermudan.zero_rates` and `hw_sigma`. `sigma_values` is
+    values into `_PreparedBermudan.curve` and `hw_sigma`. `sigma_values` is
     `cfg.hw_sigma.values` for a `Sigma`, or a one-element array for a flat sigma. Bucket
     times are not differentiated, as ORE's sensitivities bump values, not times.
 
@@ -164,7 +190,7 @@ def bermudan_price_function(cfg: BermudanSwaptionConfig, curve: ZeroCurve):
     def price_fn(pillar_rates: jax.Array, sigma_values: jax.Array) -> jax.Array:
         local_swap = replace(
             swap,
-            zero_rates=pillar_rates,
+            curve=ZeroCurve(pillar_times=swap.curve.pillar_times, pillar_rates=pillar_rates),
             hw_sigma=Sigma(times=sigma_times, values=sigma_values),
         )
         result = _run_backward_induction(local_swap, condition_times=[])

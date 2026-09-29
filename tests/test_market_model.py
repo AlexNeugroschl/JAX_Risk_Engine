@@ -23,6 +23,15 @@ from engine.simulation.market_model import (
 
 from conftest import with_scenarios
 
+
+def _ore_discounts(curve_config, times):
+    """`ORE.ZeroCurve` discount factors for pillars on whole ACT/365 days, extrapolation on."""
+    asof = ORE.Date(30, 7, 2026)
+    curve = ORE.ZeroCurve([asof + round(t * 365) for t in curve_config.times], list(curve_config.rates),
+                          ORE.Actual365Fixed())
+    curve.enableExtrapolation()
+    return np.array([curve.discount(float(t)) for t in times])
+
 TIME_GRID = [0.0, 0.25, 0.50, 0.75, 1.0]
 
 
@@ -698,16 +707,15 @@ class TestComputeHwAMatrixCurveShapesAndExtrapolation:
         df = self._reprices(zc)
         np.testing.assert_allclose(df, np.exp(-0.03 * np.array([1.0, 2.0, 5.0, 10.0])), atol=1e-6)
 
-    def test_maturity_beyond_last_pillar_flat_extrapolates(self):
-        """Beyond the last pillar the zero rate is held flat through the whole A(t,T)
-        pipeline, with no NaN or negative discount factors."""
+    def test_maturity_beyond_last_pillar_extrapolates_as_ore(self):
+        """Beyond the last pillar the instantaneous forward is held flat, as ORE's
+        `ZeroCurve` (I-48), through the whole A(t,T) pipeline, with no NaN or negative
+        discount factors."""
         zc = [ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0], rates=[0.02, 0.025, 0.03, 0.035])]
-        df = self._reprices(zc, maturities=np.array([5.0, 10.0, 20.0, 50.0]))
-        # Beyond t=5 the zero rate is flat at 0.035.
-        expected = np.exp(-0.035 * np.array([10.0, 20.0, 50.0]))
-        np.testing.assert_allclose(df[1:], expected, atol=1e-4)
+        maturities = np.array([5.0, 10.0, 20.0, 50.0])
+        df = self._reprices(zc, maturities=maturities)
+        np.testing.assert_allclose(df, _ore_discounts(zc[0], maturities), atol=1e-4)
         assert np.all(df > 0.0) and np.all(np.isfinite(df))
-        # Discount factors still decrease under flat extrapolation.
         assert np.all(np.diff(df) < 0)
 
 
@@ -980,11 +988,13 @@ class TestInitialLogDiscountExtrapolation:
         log_p = _initial_log_discount(zero_times, zero_rates, np.array([0.5]))
         np.testing.assert_allclose(log_p, -0.02 * 0.5, atol=1e-12)
 
-    def test_extrapolates_flat_above_last_pillar(self):
+    def test_extrapolates_a_flat_forward_above_last_pillar(self):
+        """As ORE's `ZeroCurve` (QuantLib's ContinuousForward extrapolation, I-48)."""
         zero_times = np.array([0.0, 1.0, 2.0, 5.0])
         zero_rates = np.array([0.02, 0.025, 0.03, 0.035])
-        log_p = _initial_log_discount(zero_times, zero_rates, np.array([10.0, 100.0]))
-        expected = -0.035 * np.array([10.0, 100.0])
+        t = np.array([10.0, 100.0])
+        log_p = _initial_log_discount(zero_times, zero_rates, t)
+        expected = np.log(_ore_discounts(ZeroCurveConfig(times=zero_times, rates=zero_rates), t))
         np.testing.assert_allclose(log_p, expected, atol=1e-12)
 
 
@@ -1097,12 +1107,13 @@ class TestForwardRatePrecision:
     RATES = [0.03, 0.031, 0.032, 0.035, 0.037, 0.04]
 
     def _exact(self, t):
-        # f = z + t*z': the slope of the segment to the right, 0 outside the pillars.
+        # f = z + t*z' (the slope of the segment to the right) inside the pillars; from the
+        # last pillar on, the last segment's forward, held flat (I-48).
         times, rates = np.asarray(self.TIMES), np.asarray(self.RATES)
         slopes = np.diff(rates) / np.diff(times)
         idx = np.clip(np.searchsorted(times, t, side="right") - 1, 0, len(slopes) - 1)
-        slope = np.where((t >= times[0]) & (t < times[-1]), slopes[idx], 0.0)
-        return np.interp(t, times, rates) + t * slope
+        inside = np.interp(t, times, rates) + t * np.where(t >= times[0], slopes[idx], 0.0)
+        return np.where(t >= times[-1], rates[-1] + times[-1] * slopes[-1], inside)
 
     @pytest.mark.parametrize("dtype, atol", [(jnp.float64, 1e-12), (jnp.float32, 1e-6)])
     def test_matches_exact_derivative(self, dtype, atol):

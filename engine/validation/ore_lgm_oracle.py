@@ -49,15 +49,43 @@ from typing import Mapping, Optional, Sequence, Union
 import numpy as np
 import ORE
 
+from engine.market import SwaptionVolSurface
 from engine.models.lgm import Sigma
 
 CCY = "USD"
 CURVE_ID = "SIMCURVE"
+INDEX_CURVE_ID = "SIMINDEXCURVE"
+#: An index whose forwarding curve is the discount curve: ORE's swap index curves name an
+#: index for discounting, and the LGM builder takes the model's term structure from it.
+DISCOUNT_INDEX = f"{CCY}-SIMDISC-6M"
+#: The vol quote used when a caller gives no surface (read only when calibrating).
+PLACEHOLDER_VOLS = SwaptionVolSurface(option_tenors=("1Y",), swap_tenors=("1Y",), vols=((0.01,),))
 
 
 @dataclass(frozen=True)
 class OreLgmResult:
     npv: float
+
+
+@dataclass(frozen=True)
+class OreDiscountCurves:
+    """Discount and index curves as discount factors on dates after the as-of date,
+    log-linear between them: how a simulated path's scenario curves reach ORE."""
+    discount_dates: Sequence[ORE.Date]
+    discount_factors: Sequence[float]
+    index_dates: Sequence[ORE.Date]
+    index_factors: Sequence[float]
+
+
+@dataclass(frozen=True)
+class OreCalibration:
+    """ORE's LGM calibration settings (`LGMGridSwaptionEngineBuilder` model parameters).
+    `method="None"` prices with the given volatility; `"Bootstrap"` calibrates a piecewise
+    volatility to the trade's co-terminal basket (`strategy` `CoterminalATM` or
+    `CoterminalDealStrike`), starting from it."""
+    method: str = "None"
+    strategy: str = "None"
+    tolerance: float = 1e-4
 
 
 @functools.lru_cache(maxsize=1)
@@ -99,6 +127,14 @@ def _conventions_xml(index: str) -> str:
     <BusinessDayConvention>MF</BusinessDayConvention>
     <EndOfMonth>false</EndOfMonth>
   </IborIndex>
+  <IborIndex>
+    <Id>{DISCOUNT_INDEX}</Id>
+    <FixingCalendar>TARGET</FixingCalendar>
+    <DayCounter>A365</DayCounter>
+    <SettlementDays>2</SettlementDays>
+    <BusinessDayConvention>MF</BusinessDayConvention>
+    <EndOfMonth>false</EndOfMonth>
+  </IborIndex>
   <Swap>
     <Id>SIM-SWAP-CONVENTIONS</Id>
     <FixedCalendar>TARGET</FixedCalendar>
@@ -112,14 +148,12 @@ def _conventions_xml(index: str) -> str:
 </Conventions>"""
 
 
-def _curveconfig_xml(asof: ORE.Date, times: Sequence[float]) -> str:
+def _yield_curve_xml(curve_id: str, asof: ORE.Date, times: Sequence[float]) -> str:
     quotes = "\n".join(
-        f"          <Quote>ZERO/RATE/{CCY}/{CURVE_ID}/A365/{_iso(d)}</Quote>" for d in _curve_dates(asof, times)
+        f"          <Quote>ZERO/RATE/{CCY}/{curve_id}/A365/{_iso(d)}</Quote>" for d in _curve_dates(asof, times)
     )
-    return f"""<CurveConfiguration>
-  <YieldCurves>
-    <YieldCurve>
-      <CurveId>{CURVE_ID}</CurveId>
+    return f"""    <YieldCurve>
+      <CurveId>{curve_id}</CurveId>
       <CurveDescription>engine zero curve</CurveDescription>
       <Currency>{CCY}</Currency>
       <DiscountCurve/>
@@ -136,20 +170,59 @@ def _curveconfig_xml(asof: ORE.Date, times: Sequence[float]) -> str:
       <InterpolationMethod>Linear</InterpolationMethod>
       <YieldCurveDayCounter>A365</YieldCurveDayCounter>
       <Extrapolation>true</Extrapolation>
-    </YieldCurve>
+    </YieldCurve>"""
+
+
+def _discount_curve_xml(curve_id: str, dates: Sequence[ORE.Date]) -> str:
+    """A curve given by discount factors, log-linear between them (ORE keeps them as given
+    when the interpolation variable is Discount): a simulated path's scenario curve."""
+    quotes = "\n".join(f"          <Quote>DISCOUNT/RATE/{CCY}/{curve_id}/{_iso(d)}</Quote>" for d in dates)
+    return f"""    <YieldCurve>
+      <CurveId>{curve_id}</CurveId>
+      <CurveDescription>scenario curve</CurveDescription>
+      <Currency>{CCY}</Currency>
+      <DiscountCurve/>
+      <Segments>
+        <Direct>
+          <Type>Discount</Type>
+          <Quotes>
+{quotes}
+          </Quotes>
+          <Conventions>SIM-ZERO</Conventions>
+        </Direct>
+      </Segments>
+      <InterpolationVariable>Discount</InterpolationVariable>
+      <InterpolationMethod>LogLinear</InterpolationMethod>
+      <YieldCurveDayCounter>A365</YieldCurveDayCounter>
+      <Extrapolation>true</Extrapolation>
+    </YieldCurve>"""
+
+
+def _curveconfig_xml(asof: ORE.Date, times: Sequence[float], separate_index_curve: bool,
+                     vols: SwaptionVolSurface, discount_curves: Optional["OreDiscountCurves"] = None) -> str:
+    if discount_curves is None:
+        curves = _yield_curve_xml(CURVE_ID, asof, times)
+        if separate_index_curve:
+            curves += "\n" + _yield_curve_xml(INDEX_CURVE_ID, asof, times)
+    else:
+        curves = (_discount_curve_xml(CURVE_ID, discount_curves.discount_dates) + "\n"
+                  + _discount_curve_xml(INDEX_CURVE_ID, discount_curves.index_dates))
+    return f"""<CurveConfiguration>
+  <YieldCurves>
+{curves}
   </YieldCurves>
   <SwaptionVolatilities>
     <SwaptionVolatility>
       <CurveId>SIMVOL</CurveId>
-      <CurveDescription>required by the LGM builder; never read with Calibration=None</CurveDescription>
+      <CurveDescription>ATM normal swaption volatilities</CurveDescription>
       <Dimension>ATM</Dimension>
       <VolatilityType>Normal</VolatilityType>
       <Extrapolation>Flat</Extrapolation>
       <DayCounter>A365</DayCounter>
       <Calendar>TARGET</Calendar>
       <BusinessDayConvention>Following</BusinessDayConvention>
-      <OptionTenors>1Y</OptionTenors>
-      <SwapTenors>1Y</SwapTenors>
+      <OptionTenors>{",".join(vols.option_tenors)}</OptionTenors>
+      <SwapTenors>{",".join(vols.swap_tenors)}</SwapTenors>
       <ShortSwapIndexBase>{CCY}-CMS-1Y</ShortSwapIndexBase>
       <SwapIndexBase>{CCY}-CMS-30Y</SwapIndexBase>
     </SwaptionVolatility>
@@ -157,7 +230,8 @@ def _curveconfig_xml(asof: ORE.Date, times: Sequence[float]) -> str:
 </CurveConfiguration>"""
 
 
-def _todaysmarket_xml(index: str) -> str:
+def _todaysmarket_xml(index: str, separate_index_curve: bool) -> str:
+    index_curve = INDEX_CURVE_ID if separate_index_curve else CURVE_ID
     return f"""<TodaysMarket>
   <Configuration id="default">
     <DiscountingCurvesId>default</DiscountingCurvesId>
@@ -169,11 +243,12 @@ def _todaysmarket_xml(index: str) -> str:
     <DiscountingCurve currency="{CCY}">Yield/{CCY}/{CURVE_ID}</DiscountingCurve>
   </DiscountingCurves>
   <IndexForwardingCurves id="default">
-    <Index name="{index}">Yield/{CCY}/{CURVE_ID}</Index>
+    <Index name="{index}">Yield/{CCY}/{index_curve}</Index>
+    <Index name="{DISCOUNT_INDEX}">Yield/{CCY}/{CURVE_ID}</Index>
   </IndexForwardingCurves>
   <SwapIndexCurves id="default">
-    <SwapIndex name="{CCY}-CMS-1Y"><Discounting>{index}</Discounting></SwapIndex>
-    <SwapIndex name="{CCY}-CMS-30Y"><Discounting>{index}</Discounting></SwapIndex>
+    <SwapIndex name="{CCY}-CMS-1Y"><Discounting>{DISCOUNT_INDEX}</Discounting></SwapIndex>
+    <SwapIndex name="{CCY}-CMS-30Y"><Discounting>{DISCOUNT_INDEX}</Discounting></SwapIndex>
   </SwapIndexCurves>
   <SwaptionVolatilities id="default">
     <SwaptionVolatility currency="{CCY}">SwaptionVolatility/{CCY}/SIMVOL</SwaptionVolatility>
@@ -221,18 +296,18 @@ def _engine_xml(n_per_std, std_devs, fd_solver: Optional[OreFdSolver]) -> str:
 
 
 def _pricingengine_xml(hw_a, hw_sigma, n_per_std, std_devs, exercise_time_steps_per_year,
-                       shift_horizon, fd_solver) -> str:
+                       shift_horizon, fd_solver, calibration: "OreCalibration") -> str:
     lgm = f"""
     <Model>LGM</Model>
     <ModelParameters>
-      <Parameter name="Calibration">None</Parameter>
-      <Parameter name="CalibrationStrategy">None</Parameter>
+      <Parameter name="Calibration">{calibration.method}</Parameter>
+      <Parameter name="CalibrationStrategy">{calibration.strategy}</Parameter>
       <Parameter name="Reversion">{hw_a!r}</Parameter>
       <Parameter name="ReversionType">HullWhite</Parameter>
       {_volatility_parameters(hw_sigma)}
       <Parameter name="VolatilityType">Hagan</Parameter>
       <Parameter name="ShiftHorizon">{shift_horizon!r}</Parameter>
-      <Parameter name="Tolerance">0.0001</Parameter>
+      <Parameter name="Tolerance">{calibration.tolerance!r}</Parameter>
       <Parameter name="ExerciseTimeStepsPerYear">{exercise_time_steps_per_year}</Parameter>
       <Parameter name="ReferenceCalibrationGrid">400,3M</Parameter>
     </ModelParameters>
@@ -242,6 +317,12 @@ def _pricingengine_xml(hw_a, hw_sigma, n_per_std, std_devs, exercise_time_steps_
     <Model>DiscountedCashflows</Model>
     <ModelParameters/>
     <Engine>DiscountingSwapEngine</Engine>
+    <EngineParameters/>
+  </Product>
+  <Product type="EuropeanSwaption">
+    <Model>BlackBachelier</Model>
+    <ModelParameters/>
+    <Engine>BlackBachelierSwaptionEngine</Engine>
     <EngineParameters/>
   </Product>
   <Product type="BermudanSwaption">{lgm}
@@ -343,6 +424,10 @@ def ore_lgm_swaption_npv(
     shift_horizon: float = 0.0,
     fd_solver: Optional[OreFdSolver] = None,
     fixings: Optional[Mapping[ORE.Date, float]] = None,
+    index_curve_rates: Optional[Sequence[float]] = None,
+    swaption_vols: Optional[SwaptionVolSurface] = None,
+    calibration: OreCalibration = OreCalibration(),
+    discount_curves: Optional[OreDiscountCurves] = None,
 ) -> OreLgmResult:
     """NPV of a long, physically settled swaption on `swap`, by ORE's
     `NumericLgmMultiLegOptionEngine`.
@@ -357,7 +442,17 @@ def ore_lgm_swaption_npv(
     measure the distance to ORE's other settings (I-32).
 
     `fixings`: historical index fixings `{ORE.Date: rate}`, for a seasoned trade.
+
+    `index_curve_rates`: a forwarding curve for the Ibor index on the same pillars (default:
+    the discount curve). `swaption_vols`: ATM normal swaption volatilities (default: one
+    placeholder quote). `calibration`: ORE's LGM calibration settings. `discount_curves`:
+    both curves as log-linear discount factors instead (`curve_times`/`curve_rates` are then
+    unused). `style="European"`
+    prices with ORE's default European engine (`BlackMultiLegOptionEngine` on the vols);
+    the LGM arguments are then unused.
     """
+    vols = swaption_vols or PLACEHOLDER_VOLS
+    separate_index_curve = index_curve_rates is not None or discount_curves is not None
     index = _index_name(index_tenor_months)
     previous_evaluation_date = ORE.Settings.instance().evaluationDate
     out_dir = _scratch_dir()
@@ -372,10 +467,12 @@ def ore_lgm_swaption_npv(
         inputs.setAllFixings(True)
         inputs.setBuildFailedTrades(False)
         inputs.setConventions(_conventions_xml(index))
-        inputs.setCurveConfigs(_curveconfig_xml(evaluation_date, curve_times))
-        inputs.setTodaysMarketParams(_todaysmarket_xml(index))
+        inputs.setCurveConfigs(_curveconfig_xml(evaluation_date, curve_times, separate_index_curve, vols,
+                                                discount_curves))
+        inputs.setTodaysMarketParams(_todaysmarket_xml(index, separate_index_curve))
         inputs.setPricingEngine(_pricingengine_xml(
-            hw_a, hw_sigma, n_per_std, std_devs, exercise_time_steps_per_year, shift_horizon, fd_solver))
+            hw_a, hw_sigma, n_per_std, std_devs, exercise_time_steps_per_year, shift_horizon, fd_solver,
+            calibration))
         inputs.setPortfolio(_portfolio_xml(
             swap, notional, fixed_rate, payer, floating_spread, index,
             style, exercise_dates, mid_coupon_exercise))
@@ -384,9 +481,21 @@ def ore_lgm_swaption_npv(
         stamp = _iso(evaluation_date).replace("-", "")
         # float(r)!r: full precision, and a plain number for a numpy scalar (ORE cannot
         # parse "np.float64(...)").
-        market = [f"{stamp} ZERO/RATE/{CCY}/{CURVE_ID}/A365/{_iso(d)} {float(r)!r}"
-                  for d, r in zip(_curve_dates(evaluation_date, curve_times), curve_rates)]
-        market.append(f"{stamp} SWAPTION/RATE_NVOL/{CCY}/1Y/1Y/ATM 0.01")
+        if discount_curves is None:
+            dates = _curve_dates(evaluation_date, curve_times)
+            market = [f"{stamp} ZERO/RATE/{CCY}/{CURVE_ID}/A365/{_iso(d)} {float(r)!r}"
+                      for d, r in zip(dates, curve_rates)]
+            if separate_index_curve:
+                market += [f"{stamp} ZERO/RATE/{CCY}/{INDEX_CURVE_ID}/A365/{_iso(d)} {float(r)!r}"
+                           for d, r in zip(dates, index_curve_rates)]
+        else:
+            market = [f"{stamp} DISCOUNT/RATE/{CCY}/{curve_id}/{_iso(d)} {float(v)!r}"
+                      for curve_id, dates, values in (
+                          (CURVE_ID, discount_curves.discount_dates, discount_curves.discount_factors),
+                          (INDEX_CURVE_ID, discount_curves.index_dates, discount_curves.index_factors))
+                      for d, v in zip(dates, values)]
+        market += [f"{stamp} SWAPTION/RATE_NVOL/{CCY}/{e}/{t}/ATM {float(v)!r}"
+                   for e, row in zip(vols.option_tenors, vols.vols) for t, v in zip(vols.swap_tenors, row)]
 
         fixing_lines = [f"{_iso(d).replace('-', '')} {index} {float(r)!r}" for d, r in (fixings or {}).items()]
 

@@ -72,6 +72,7 @@ the routers separate keeps either free to change.
 | `GET /health` | portfolio | below |
 | `GET /version` | portfolio | below |
 | `POST /portfolio/price` | portfolio | below |
+| `POST /v2/portfolio/price` | portfolio (schema version 2, the market path) | below |
 | `GET /portfolio/price/{job_id}` | portfolio | below |
 | `POST /calibration/lgm` | portfolio | below |
 | `GET /eod/capabilities` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
@@ -138,6 +139,28 @@ the exact same validator error message `engine.portfolio`'s own `ValueError` car
 
 **Malformed schema (wrong types, missing required fields):** `422 Unprocessable Entity`
 (FastAPI's automatic Pydantic validation response).
+
+### `POST /v2/portfolio/price`
+
+Schema version 2: the **market path**, ORE's pipeline end to end
+([ORE Parity: the market path](ore-parity.md#the-market-path)). Body: a
+`MarketPortfolioRequestSchema` (`engine/api/market_schemas.py`, see
+"Request schema, version 2" below). Same behaviour as `POST /portfolio/price`: validated
+synchronously (`engine.portfolio.market_path.validate_market_request`, no JAX work), then
+queued; `202` with a `job_id`, polled at the same `GET /portfolio/price/{job_id}`, with the
+same `PortfolioResultSchema`.
+
+**Validation failure:** `400`, the validator's message. Examples: scenario risk without a
+`simulation`; a trade whose currency or index curve is not in the market; `trade_id` on some
+trades but not others, or repeated.
+
+**Malformed schema, or an unknown field:** `422`. Version 2 refuses unknown fields, so a
+version-1 trade carrying `hw_sigma` or a curve is not silently stripped of its model. On the
+market path curves come from the market and models from the pricing configuration
+(audit A-3).
+
+Version 1 stays for the Hull-White path and its callers
+([decisions A-2](../../compliance/decisions.md)).
 
 ### `GET /portfolio/price/{job_id}`
 
@@ -411,6 +434,29 @@ kind from any fixed-size worker pool. Either way, correctness is unaffected: eac
 result is always independent of what else is running concurrently, whether it runs
 immediately or waits for a worker to free up.
 
+## Request schema, version 2: `MarketPortfolioRequestSchema`
+
+| Field | Meaning |
+|---|---|
+| `schema_version` | `"2"` |
+| `market` | `asof` (ISO date; every trade is valued on it); `currencies`: per currency a `discount_curve`, `index_curves` keyed by index name (`"USD-SIMINDEX-6M"`), and `swaption_vols` (ATM normal matrix: `option_tenors`, `swap_tenors`, `vols`); `fx_spots` keyed `"EURUSD"`; `equities` |
+| `trades` | Discriminated by `trade_type`: `swap`, `european_swaption`, `bermudan_swaption`, `american_swaption`, `bond`. Each names its `currency` and `index_tenor_months` and carries no model or curve. Swaptions take `settlement` (`Physical` or `Cash`; a cash European uses ORE's `ParYieldCurve` annuity). Optional `trade_id`, on every trade or on none |
+| `simulation` | ORE's `simulation.xml` as `CamConfigSchema`: `dates`, `base_currency`, `ir` per currency (`reversion`, `volatility`, optional calibration basket `calibration_expiries` × `calibration_terms`), `fx_volatilities`, `equity_volatilities`, `correlations` between factors `IR:USD`, `FX:EURUSD`, `EQ:SP5`, `curve_tenors`, `samples`, `seed`, `swaption_vol_decay`. Required with `scenario_risk` |
+| `pricing` | The Bermudan and American engines (`LgmEngineSchema`: ORE's example configuration by default) and `recalibrate` (default `true`, as ORE's `ValuationEngine`) |
+| `base_currency`, `pfe_quantiles`, `compute_greeks`, `scenario_risk`, `precision` | As version 1. Greeks are ORE's bump-and-revalue sensitivities |
+
+A minimal body (one swap, today's NPV and Greeks only):
+
+```json
+{"schema_version": "2",
+ "market": {"asof": "2026-07-30", "currencies": {"USD": {
+     "discount_curve": {"times": [0, 1, 5, 30], "rates": [0.03, 0.03, 0.04, 0.05]},
+     "index_curves": {"USD-SIMINDEX-6M": {"times": [0, 1, 5, 30], "rates": [0.034, 0.034, 0.044, 0.052]}}}}},
+ "trades": [{"trade_type": "swap", "trade_id": "swap-1", "notional": 1e7, "fixed_rate": 0.042,
+             "payer": true, "swap_tenor": "5Y"}],
+ "scenario_risk": false, "compute_greeks": true}
+```
+
 ## Response schema: `PortfolioResultSchema`
 
 Mirrors `engine.portfolio.PortfolioResult`:
@@ -422,7 +468,11 @@ Mirrors `engine.portfolio.PortfolioResult`:
 | `npv_cube` | `List[List[List[float]]]` | `[Scenarios, TimeSteps, Trades]`, JSON-nested. |
 | `exposure` | `{"times": [...], "epe": [...], "ene": [...], "ee_b": [...], "eee_b": [...], "pfe": {"PFE_95": [...], ...}} \| null` | The whole portfolio as one netting set; every list has one entry per date in `times`, starting at t=0. See [Exposure](../risk/exposure.md). |
 | `trade_exposures` | `List[...]` | The same object per trade, in the request's `trades` order. |
-| `greeks` | `{"<trade_index>": {"values": {"delta": [...], "gamma": [...]}, "theta": ...}} \| null` | `null` unless the request set `compute_greeks: true`. Keys are trade indices (as strings, JSON's own object-key requirement) matching the request's own `trades` order. **Swaps** report `discount_delta`/`discount_gamma`/`forward_delta`/`forward_gamma` (differentiated against the curves their own `discount_curve_index`/`forward_curve_index` name) plus `theta`; swaptions report `delta`/`gamma`/`theta`. A **calibrated** Bermudan/American trade additionally reports `vega`, one entry per `calibration_basket` instrument — omitted for a flat (hand-set) `hw_sigma`, which has no market quote to be sensitive to. |
+| `exposure.epe_b`, `exposure.eepe_b` | `List[float]` | ORE's time-weighted EPE_B / EEPE_B profiles. |
+| `exposure.basel_epe`, `exposure.basel_eepe` | `float \| null` | ORE's Basel EPE_B / EEPE_B at the one-year horizon; `null` on the Hull-White path. |
+| `greeks` | `{"<trade_index>": {"values": {"delta": [...], "gamma": [...]}, "theta": ...}} \| null` | `null` unless the request set `compute_greeks: true`. Keys are trade indices (as strings, JSON's own object-key requirement) matching the request's own `trades` order. Every Greek is flattened row-major into `values`; one of more than one dimension (the market path's `vega:<ccy>`, option tenors × swap tenors) also has its shape in `shapes`. On the market path the keys are `delta:discount:<ccy>`, `gamma:discount:<ccy>`, `delta:index:<name>`, `gamma:index:<name>` (one entry per curve tenor), `vega:<ccy>` for swaptions, and `theta`. **Swaps** report `discount_delta`/`discount_gamma`/`forward_delta`/`forward_gamma` (differentiated against the curves their own `discount_curve_index`/`forward_curve_index` name) plus `theta`; swaptions report `delta`/`gamma`/`theta`. A **calibrated** Bermudan/American trade additionally reports `vega`, one entry per `calibration_basket` instrument — omitted for a flat (hand-set) `hw_sigma`, which has no market quote to be sensitive to. |
+| `trade_ids` | `List[str] \| null` | The request's trade ids in request order, or `null` if it gave none (I-10). |
+| `measure` | `str \| null` | `risk-neutral-pricing`, or `null` without scenario risk (I-11). |
 | `warnings` | `List[str]` | Known-limitation warnings (e.g. a swap aged past its first accrual at a simulated step) — see [The Portfolio Entry Point: Known-limitation flagging](portfolio-entrypoint.md#known-limitation-flagging). |
 
 ## Example: a Python `requests` session
@@ -474,6 +524,13 @@ print("PFE 95% at each date:", data["result"]["exposure"]["pfe"]["PFE_95"])
 See a curl-only version in [User Guide: Running the API](../getting-started/user-guide.md#running-the-api).
 
 ## Tested by
+
+`tests/test_api_market_path.py` covers version 2. On the shared test portfolio
+(`tests/support/portfolio.py`), the polled result equals a direct `price_portfolio` call:
+NPVs, cube, the exposure profiles including EPE_B/EEPE_B and Basel, trade ids, and the 2-D
+Vega. It also checks the `400`s and the `422` for a trade carrying `hw_sigma`.
+`tests/test_shared_portfolio.py` checks that the version-2 body of that portfolio is the
+dataclass portfolio.
 
 `tests/test_api.py`, using FastAPI's `TestClient` (backed by `httpx`) — no running server
 process needed:

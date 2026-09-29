@@ -1,5 +1,22 @@
 # Instruments: European Swaptions
 
+**Two pricers, one per path.**
+
+- **The market path (default):** [`engine/valuation/european.py`](../../engine/valuation/european.py),
+  ORE's default engine `BlackMultiLegOptionEngine`. It prices Bachelier on the swap rate
+  off the market's ATM normal swaption volatilities, at t=0 and on every simulated path
+  (where the surface is seen from the path date, `DynamicSwaptionVolatilityMatrix`). It
+  supports a floating spread (folded into the strike) and cash settlement (ORE's
+  `ParYieldCurve` annuity). `engine.market_risk` uses it for a European without Hull-White
+  parameters. Checked against ORE through the OREApp oracle (1e-10) and against QuantLib's
+  `BachelierSwaptionEngine` on every path (1e-10) and for cash settlement (2e-14):
+  tests/test_valuation.py.
+- **The Hull-White path:** the Jamshidian pricer this page describes, matching QuantLib's
+  `JamshidianSwaptionEngine`. It refuses what that engine refuses: a floating spread
+  (I-37), `hw_a <= 0` (I-41), cash settlement (I-52).
+
+The rest of this page documents the Hull-White pricer.
+
 **Module:** [`engine/instruments/european_swaption.py`](../../engine/instruments/european_swaption.py)
 **Public entry point:** `price_swaptions(hw_paths, step_times, swaption_configs)`
 

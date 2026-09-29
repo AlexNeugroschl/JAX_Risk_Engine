@@ -1,5 +1,23 @@
 # Risk: Delta, Gamma, Vega, and Theta
 
+**On the market path** (the default) the reported Greeks are ORE's own sensitivity analysis,
+[`engine/risk/sensitivities.py`](../../engine/risk/sensitivities.py) (`portfolio_sensitivities`).
+Each trade is priced with its t=0 engine on ORE's sensitivity simulation market: every curve
+sampled at the curve tenors, log-linear between them, and Bermudans recalibrated under every
+bump. The results, per trade in the base currency:
+
+| Key | Definition (ORE's defaults) |
+|---|---|
+| `delta:discount:<ccy>`, `delta:index:<name>` `[K]` | `NPV(up) − NPV(base)`, an absolute 1bp zero-rate shift of one curve tenor (`ShiftScheme::Forward`) |
+| `gamma:discount:<ccy>`, `gamma:index:<name>` `[K]` | `NPV(up) − 2·NPV(base) + NPV(down)` |
+| `vega:<ccy>` `[option tenors, swap tenors]` | `NPV(up) − NPV(base)` per swaption quote, absolute 1bp normal-vol shift (swaptions only) |
+| `theta` | `NPV(thetaDate) − NPV(base) + flows paid in (asof, thetaDate]`, `thetaDate = asof + 1` calendar day. The market is rebuilt at `thetaDate` from today's curves, fixed in dates, with fixings backfilled |
+
+These follow ORE's source (gates V-2, V-3 in [ORE Parity](../reference/ore-parity.md#verification-gates))
+and are checked against AD to the bump's order, but not yet against an OREApp sensitivity run
+([I-51](../known-issues.md#i-51)). The rest of this page documents the **Hull-White path's** AD
+Greeks, which stay beside them (plan X-3).
+
 **Module:** [`engine/risk/greeks.py`](../../engine/risk/greeks.py)
 **Public entry points:** `swap_delta_gamma`, `swap_theta`, `swaption_delta_gamma`,
 `swaption_theta`, `bermudan_delta_gamma`, `bermudan_theta`, `bermudan_vega`

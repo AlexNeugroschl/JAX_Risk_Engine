@@ -25,9 +25,8 @@ one the exporter accrued against, and the note is refused.
 Valuation and accrual are as of the session date: only `settlementDays: 0` is supported, and
 any other lag is refused.
 
-Known issue: `rate_sensitivity` re-prices with the default 6 decimals rather than the
-entry's declared `fractionDecimals`, so a note that passes with fewer declared decimals can
-be refused by the sensitivity (I-40 in docs/known-issues.md).
+`rate_sensitivity` re-prices with the same declared `fractionDecimals` as `price_note`, so
+the two outcomes reconcile accrued interest under one tolerance (I-40).
 """
 import math
 from dataclasses import dataclass
@@ -525,13 +524,13 @@ def rate_sensitivity(
     profile: AssumedProfile,
     exported_accrued_fraction: Optional[float] = None,
     bump: float = RATE_BUMP,
+    fraction_decimals: int = DEFAULT_FRACTION_DECIMALS,
 ) -> float:
     """Dirty NPV change for a parallel `bump` of the flat profile: `NPV(r + bump) - NPV(r)`,
-    by repricing through `price_note`. Note: the repricing uses the default
-    `fraction_decimals` (see the module docstring)."""
+    by repricing through `price_note` with the same `fraction_decimals`."""
     base = price_note(
         entry, signed_face_amount, valuation_date, profile,
-        exported_accrued_fraction,
+        exported_accrued_fraction, fraction_decimals,
     ).dirty_npv
     bumped_profile = AssumedProfile(
         profile_id=profile.profile_id, description=profile.description,
@@ -539,6 +538,6 @@ def rate_sensitivity(
     )
     bumped = price_note(
         entry, signed_face_amount, valuation_date, bumped_profile,
-        exported_accrued_fraction,
+        exported_accrued_fraction, fraction_decimals,
     ).dirty_npv
     return bumped - base

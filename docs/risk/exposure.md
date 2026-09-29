@@ -1,4 +1,4 @@
-# Exposure Profiles: EPE, ENE, EE_B, EEE_B and PFE
+# Exposure Profiles: EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B and PFE
 
 **Module:** [`engine/risk/exposure.py`](../../engine/risk/exposure.py)
 **Produced by:** `price_portfolio` → `PortfolioResult.exposure` (the portfolio as one
@@ -30,12 +30,18 @@ numeraire on that path, which is how ORE's cube stores it (`valuationcalculator.
 | `ee_b` | `epe(t) / P(0,t)` | Expected exposure, undiscounted (Basel) |
 | `eee_b` | running maximum of `ee_b` | Effective expected exposure, non-decreasing |
 | `pfe["PFE_q"]` | `max(sorted_k V_k(t)[⌊q(S−1)+0.5⌋], 0)` | Potential future exposure at quantile `q`, discounted |
+| `epe_b` | `sum_{j<=i} ee_b(t_j) dt_j / T_i` | ORE's time-weighted EPE_B (`epe_bTimeWeighted_`), weights ActualActual(ISDA) from the as-of date, only dates up to the trade's maturity |
+| `eepe_b` | the same over `eee_b` | ORE's time-weighted EEPE_B |
+| `basel_epe`, `basel_eepe` | `epe_b`, `eepe_b` at the last date on or before `WeekendsOnly().adjust(asof + 1Y + 4D)` | ORE's Basel EPE_B / EEPE_B; `None` on the Hull-White path (no dates) |
 
 Every profile starts at t=0, where ORE sets EPE = EE_B = EEE_B = PFE = max(NPV₀, 0) and
 ENE = max(−NPV₀, 0). `times[0]` is 0; the rest are the simulation's `time_grid[1:]`.
 
-The numeraire is the simulation's money-market account on rate factor 0, so `P(0,t)`
-comes from that factor's initial curve.
+On the market path the numeraire is the base currency's LGM numeraire `N(t, x)`, exact at
+each date (ORE's), and `P(0,t)` comes from the base currency's discount curve; the times are
+the simulation dates'. On the Hull-White path the numeraire is the simulation's money-market
+account on rate factor 0 ([I-45](../known-issues.md#i-45)), `P(0,t)` comes from that factor's
+initial curve, and the time weights use `time_grid` (there are no dates).
 
 **Netting.** A netting set's exposure is computed on the *sum* of its trades' paths, so
 offsetting trades net before any statistic is taken. It is never the sum of the trades'
@@ -58,9 +64,14 @@ Over HTTP, `pfe_quantiles` is a request field and the response carries `exposure
 
 ## Known limitations of the simulated cube
 
-The statistics above are exact on the cube they are given. The cube itself has three
-known weaknesses ([engine audit](../planning/engine-audit.md)). `price_portfolio` warns
-about each one whenever it applies to a run:
+The statistics above are exact on the cube they are given. On the **Hull-White path** the
+cube itself has three known weaknesses ([engine audit](../planning/engine-audit.md)), and
+`price_portfolio` warns about each one whenever it applies to a run. The market path has none
+of them: its simulation is ORE's cross-asset model, paid flows drop out, and options are
+wrapped as ORE wraps them ([I-42](../known-issues.md#i-42), [I-43](../known-issues.md#i-43)).
+What it lacks is a comparison of the assembled profiles with an ORE run
+([I-50](../known-issues.md#i-50)).
+
 
 | Finding | Effect on exposure | Warning fires when |
 |---|---|---|

@@ -248,32 +248,26 @@ def _note_outcomes(
     joined: JoinedRow, signed_face: float, market: MarketInputs,
     valuation_date: Optional[str],
 ) -> Dict[str, CalculationOutcome]:
-    """A note's outcomes: `npv` and `rateSensitivity`. A refusal refuses both. The
-    reconciliation tolerance uses the terms' declared `fractionDecimals` when present."""
+    """A note's outcomes: `npv` and `rateSensitivity`, each attempted on its own, so one
+    refusing does not refuse the other (I-40). Both reconcile accrued interest against the
+    terms' declared `fractionDecimals` when present."""
     valuation = _ore_date(valuation_date)
     exported_accrued = _exported_accrued_fraction(joined)
     fraction_decimals = _fraction_decimals(joined.entry)
 
-    try:
+    def npv_outcome():
         priced = price_note(
             joined.entry, signed_face, valuation, market.profile, exported_accrued,
             fraction_decimals=fraction_decimals,
         )
+        return CalculationOutcome.ok(priced.npv, payload=priced.to_payload())
+
+    def sensitivity_outcome():
         sensitivity = rate_sensitivity(
             joined.entry, signed_face, valuation, market.profile, exported_accrued,
+            fraction_decimals=fraction_decimals,
         )
-    except NotePricingError as exc:
-        refusal = CalculationOutcome.unsupported(reason=exc.reason, detail=exc.detail)
-        return {"npv": refusal, "rateSensitivity": refusal}
-    except (ValueError, TypeError, ArithmeticError, RuntimeError) as exc:
-        failure = CalculationOutcome.failed(
-            reason="PRICING_FAILED", detail=f"{type(exc).__name__}: {exc}",
-        )
-        return {"npv": failure, "rateSensitivity": failure}
-
-    return {
-        "npv": CalculationOutcome.ok(priced.npv, payload=priced.to_payload()),
-        "rateSensitivity": CalculationOutcome.ok(
+        return CalculationOutcome.ok(
             sensitivity,
             payload=sensitivity_payload(
                 method=SENSITIVITY_METHOD,
@@ -284,8 +278,21 @@ def _note_outcomes(
                 value=sensitivity,
                 currency=joined.row.get("currency") or "",
             ),
-        ),
-    }
+        )
+
+    return {"npv": _note_attempt(npv_outcome), "rateSensitivity": _note_attempt(sensitivity_outcome)}
+
+
+def _note_attempt(compute) -> CalculationOutcome:
+    """Run one note calculation: an explicit `NotePricingError` refusal is `unsupported`;
+    anything else that breaks is `failed`, confined to this outcome (see `_bill_outcomes`
+    on `RuntimeError`)."""
+    try:
+        return compute()
+    except NotePricingError as exc:
+        return CalculationOutcome.unsupported(reason=exc.reason, detail=exc.detail)
+    except (ValueError, TypeError, ArithmeticError, RuntimeError) as exc:
+        return CalculationOutcome.failed(reason="PRICING_FAILED", detail=f"{type(exc).__name__}: {exc}")
 
 
 def _equity_outcomes(joined: JoinedRow) -> Dict[str, CalculationOutcome]:

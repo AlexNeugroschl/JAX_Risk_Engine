@@ -16,7 +16,6 @@ from dataclasses import dataclass
 import numpy as np
 import ORE
 
-from engine.portfolio.validation import _validate_tenor
 
 # Actual/365Fixed plays two separate roles; they are named apart.
 #
@@ -58,6 +57,15 @@ SWAP_CALENDAR = ORE.TARGET()
 SPOT_LAG_DAYS = 2
 
 
+def validate_tenor(period_str: str, field_name: str) -> None:
+    """`period_str` must parse as an `ORE.Period` ("5Y", "18M"); raises a `ValueError`
+    naming the field, rather than failing later inside `MakeVanillaSwap`."""
+    try:
+        ORE.Period(period_str)
+    except Exception as exc:
+        raise ValueError(f"{field_name} is not a valid ORE.Period string: {period_str!r} ({exc})") from exc
+
+
 def resolve_swap_dates(trade_date: ORE.Date, swap_tenor: str, forward_start: ORE.Period = None):
     """`(effective_date, maturity_date)` for a swap quoted as a tenor on `trade_date`,
     following `MakeVanillaSwap` (QuantLib/ql/instruments/makevanillaswap.cpp):
@@ -86,7 +94,7 @@ def book_swap_dates(cfg, swap_tenor, forward_start=None) -> None:
     `InitVar`, so `dataclasses.replace` copies the dates and not the tenor, and a booked
     trade keeps its dates on any later evaluation date."""
     if swap_tenor is not None:
-        _validate_tenor(swap_tenor, "swap_tenor")
+        validate_tenor(swap_tenor, "swap_tenor")
         if cfg.effective_date is not None or cfg.maturity_date is not None:
             raise ValueError("give either swap_tenor or effective_date/maturity_date, not both")
         cfg.effective_date, cfg.maturity_date = resolve_swap_dates(
@@ -137,6 +145,18 @@ def known_fixing(fixing_date: ORE.Date, today: ORE.Date, fixings) -> "float | No
     )
 
 
+def ibor_index(tenor_months: int, forwarding_curve: "ORE.YieldTermStructureHandle" = None) -> ORE.IborIndex:
+    """The generic Ibor index every swap here references (`SimIndex<N>M`): `tenor_months`
+    fixing period, 2 settlement days, TARGET, Modified Following, no end-of-month,
+    ACT/365, forecasting off `forwarding_curve` (none by default: the engine reads only the
+    schedule)."""
+    return ORE.IborIndex(
+        "SimIndex", ORE.Period(tenor_months, ORE.Months), SPOT_LAG_DAYS,
+        ORE.USDCurrency(), SWAP_CALENDAR, ORE.ModifiedFollowing, False,
+        TIME_AXIS_DAY_COUNTER, forwarding_curve or ORE.YieldTermStructureHandle(),
+    )
+
+
 def build_vanilla_swap(
     notional: float,
     fixed_rate: float,
@@ -156,11 +176,7 @@ def build_vanilla_swap(
     reads ORE's forecasts, only the schedule and accrual fractions.
     """
     accrual = resolve_accrual_day_count(accrual_day_count)
-    index = ORE.IborIndex(
-        "SimIndex", ORE.Period(index_tenor_months, ORE.Months), SPOT_LAG_DAYS,
-        ORE.USDCurrency(), SWAP_CALENDAR, ORE.ModifiedFollowing, False,
-        TIME_AXIS_DAY_COUNTER, ORE.YieldTermStructureHandle(),
-    )
+    index = ibor_index(index_tenor_months)
     swap_type = ORE.VanillaSwap.Payer if payer else ORE.VanillaSwap.Receiver
     return ORE.MakeVanillaSwap(
         ORE.Period(0, ORE.Days), index, fixed_rate,
@@ -175,11 +191,36 @@ def build_vanilla_swap(
     )
 
 
+def par_coupon_forecast_period(coupon) -> "tuple[ORE.Date, ORE.Date, float]":
+    """`(start, end, spanning_time)` over which an at-par Ibor coupon forecasts its rate,
+    as QuantLib's `IborCouponPricer::initializeCachedData` (ql/cashflows/couponpricer.cpp)
+    for a coupon fixed in advance with at-par coupons (ORE's default):
+
+        start = fixingCalendar.advance(fixingDate, fixingDays)          (fixingValueDate)
+        end   = fixingCalendar.advance(fixingCalendar.advance(accrualEnd, -fixingDays),
+                                       fixingDays), at least start + 1  (fixingEndDate)
+        spanning_time = index day counter's yearFraction(start, end)
+
+    The forecast is `(P(start)/P(end) - 1) / spanning_time` on the forwarding curve
+    (`IborIndex::forecastFixing`), and the coupon pays it times the leg's own accrual
+    fraction. Dividing by the accrual fraction instead is wrong whenever the leg and the
+    index count days differently (I-36)."""
+    index = coupon.index()
+    calendar = index.fixingCalendar()
+    fixing_days = coupon.fixingDays()
+    start = calendar.advance(coupon.fixingDate(), index.fixingDays(), ORE.Days)
+    next_fixing = calendar.advance(coupon.accrualEndDate(), -fixing_days, ORE.Days)
+    end = max(calendar.advance(next_fixing, index.fixingDays(), ORE.Days), start + 1)
+    return start, end, index.dayCounter().yearFraction(start, end)
+
+
 @dataclass
 class LegCashflows:
     """One leg's remaining cashflows on `today`, times in years from `today`. With
     fixings, `is_fixed`/`fixed_rates` mark coupons whose fixing is already known
-    (`known_fixing`); the rest are projected."""
+    (`known_fixing`); the rest are projected over `forecast_start_times` to
+    `forecast_end_times`, divided by `spanning_times` (`par_coupon_forecast_period`;
+    floating legs only)."""
     payment_times: np.ndarray        # [N]
     accrual_start_times: np.ndarray  # [N]
     accrual_end_times: np.ndarray    # [N]
@@ -187,6 +228,9 @@ class LegCashflows:
     notional: float
     is_fixed: np.ndarray = None      # [N] bool
     fixed_rates: np.ndarray = None   # [N] the fixing where is_fixed, else 0
+    forecast_start_times: np.ndarray = None  # [N] floating legs only
+    forecast_end_times: np.ndarray = None    # [N]
+    spanning_times: np.ndarray = None        # [N] index day count over the forecast period
 
 
 def is_live(cashflow_date: ORE.Date, today: ORE.Date) -> bool:
@@ -195,21 +239,30 @@ def is_live(cashflow_date: ORE.Date, today: ORE.Date) -> bool:
     return cashflow_date > today
 
 
-def _leg_cashflows(leg, as_coupon, today: ORE.Date, notional: float, fixings=None) -> LegCashflows:
+def _leg_cashflows(leg, as_coupon, today: ORE.Date, notional: float, fixings=None,
+                   floating: bool = False) -> LegCashflows:
+    t_of = lambda d: TIME_AXIS_DAY_COUNTER.yearFraction(today, d)  # noqa: E731
     payment_times, accrual_starts, accrual_ends, fractions = [], [], [], []
     is_fixed, fixed_rates = [], []
+    forecast_starts, forecast_ends, spanning = [], [], []
     for cf in leg:
         c = as_coupon(cf)
         if not is_live(c.date(), today):
             continue
-        payment_times.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.date()))
-        accrual_starts.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualStartDate()))
-        accrual_ends.append(TIME_AXIS_DAY_COUNTER.yearFraction(today, c.accrualEndDate()))
+        payment_times.append(t_of(c.date()))
+        accrual_starts.append(t_of(c.accrualStartDate()))
+        accrual_ends.append(t_of(c.accrualEndDate()))
         fractions.append(c.accrualPeriod())
+        if floating:
+            start, end, span = par_coupon_forecast_period(c)
+            forecast_starts.append(t_of(start))
+            forecast_ends.append(t_of(end))
+            spanning.append(span)
         if fixings is not None:
             rate = known_fixing(c.fixingDate(), today, fixings)
             is_fixed.append(rate is not None)
             fixed_rates.append(0.0 if rate is None else rate)
+    as_array = lambda values: np.array(values, dtype=np.float64) if floating else None  # noqa: E731
     return LegCashflows(
         payment_times=np.array(payment_times),
         accrual_start_times=np.array(accrual_starts),
@@ -218,6 +271,9 @@ def _leg_cashflows(leg, as_coupon, today: ORE.Date, notional: float, fixings=Non
         notional=notional,
         is_fixed=None if fixings is None else np.array(is_fixed, dtype=bool),
         fixed_rates=None if fixings is None else np.array(fixed_rates, dtype=np.float64),
+        forecast_start_times=as_array(forecast_starts),
+        forecast_end_times=as_array(forecast_ends),
+        spanning_times=as_array(spanning),
     )
 
 
@@ -234,4 +290,5 @@ def floating_leg_cashflows(swap: ORE.VanillaSwap, today: ORE.Date, fixings=None)
     (`known_fixing`); a coupon fixed before `today` without a fixing raises
     `MissingFixingError`. Without `fixings` only the schedule is read."""
     notional = swap.floatingNominals()[0] if swap.floatingNominals() else swap.nominal()
-    return _leg_cashflows(swap.floatingLeg(), ORE.as_floating_rate_coupon, today, notional, fixings)
+    return _leg_cashflows(swap.floatingLeg(), ORE.as_floating_rate_coupon, today, notional, fixings,
+                          floating=True)

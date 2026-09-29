@@ -48,9 +48,11 @@ from engine.instruments.european_swaption import SwaptionConfig, prepare_swaptio
 from engine.instruments.swap import SwapConfig, _build_ore_swap, price_swaps, swap_schedule
 from engine.models.hull_white import ZeroCurve, discount
 from engine.models.ore_builders import (
+    SUPPORTED_ACCRUAL_DAY_COUNTS,
     TIME_AXIS_DAY_COUNTER,
     MissingFixingError,
     build_vanilla_swap,
+    resolve_accrual_day_count,
     resolve_swap_dates,
 )
 from engine.portfolio.worker_pool import _freeze_trade, _thaw_trade
@@ -241,7 +243,8 @@ def _ore_swap_npv(cfg: SwapConfig) -> float:
             ORE.Period(0, ORE.Days), index, cfg.fixed_rate, nominal=cfg.notional,
             swapType=ORE.VanillaSwap.Payer if cfg.payer else ORE.VanillaSwap.Receiver,
             effectiveDate=cfg.effective_date, terminationDate=cfg.maturity_date,
-            fixedLegDayCount=DC, floatingLegDayCount=DC)
+            fixedLegDayCount=resolve_accrual_day_count(cfg.accrual_day_count),
+            floatingLegDayCount=resolve_accrual_day_count(cfg.accrual_day_count))
         swap.setPricingEngine(ORE.DiscountingSwapEngine(disc))
         return swap.NPV()
     finally:
@@ -276,6 +279,20 @@ SEASONED_SWAP_DATES = {
 @pytest.mark.parametrize("date_id", SEASONED_SWAP_DATES)
 def test_seasoned_swap_equals_ore(date_id, payer):
     booked = _swap_cfg(payer=payer)
+    later = SEASONED_SWAP_DATES[date_id]
+    cfg = dataclasses.replace(booked, evaluation_date=later, fixings=_history(_build_ore_swap(booked), later))
+    ore = _ore_swap_npv(cfg)
+    for engine in _engine_swap_npvs(cfg):
+        assert engine == pytest.approx(ore, rel=1e-10, abs=1e-6)
+
+
+@pytest.mark.parametrize("day_count", sorted(SUPPORTED_ACCRUAL_DAY_COUNTS))
+@pytest.mark.parametrize("date_id", ["fixed-not-started", "mid-coupon", "last-coupon"])
+def test_any_leg_day_count_equals_ore(date_id, day_count):
+    """The at-par forecast is annualized by the INDEX day count's spanning time and paid
+    over the LEG's accrual (I-36). Before the fix the engine divided by the leg's accrual,
+    which is right only for an ACT/365 leg: a 1mm 5Y ACT/ACT (ICMA) payer was 161 off."""
+    booked = _swap_cfg(accrual_day_count=day_count)
     later = SEASONED_SWAP_DATES[date_id]
     cfg = dataclasses.replace(booked, evaluation_date=later, fixings=_history(_build_ore_swap(booked), later))
     ore = _ore_swap_npv(cfg)
@@ -460,11 +477,13 @@ def test_a_bermudan_needs_no_fixing_for_a_coupon_it_can_no_longer_enter():
 # =============================================================================
 # THETA AGES THE BOOKED TRADE (audit M-5)
 # =============================================================================
-# One TARGET business day, the engine's Theta step. ORE's SensitivityAnalysis adds a
-# calendar day instead; the two differ from a Friday or before a holiday (see
-# docs/known-issues.md). The dates used here are ordinary weekdays.
+# One calendar day, ORE's Theta step (`asof + thetaPeriod`, sensitivityanalysis.cpp).
+# From a Friday that is the Saturday (I-38).
+FRIDAY = ORE.Date(31, 7, 2026)
+
+
 def _next_day(date):
-    return ORE.TARGET().advance(date, 1, ORE.Days)
+    return date + 1
 
 
 def _ore_index_forecast(asof, rates, fixing_date) -> float:
@@ -475,7 +494,8 @@ def _ore_index_forecast(asof, rates, fixing_date) -> float:
     return index.fixing(fixing_date)
 
 
-@pytest.mark.parametrize("base", [TODAY, ORE.Date(2, 2, 2027)], ids=["booking-date", "day-before-a-payment"])
+@pytest.mark.parametrize("base", [TODAY, ORE.Date(2, 2, 2027), FRIDAY],
+                         ids=["booking-date", "day-before-a-payment", "friday"])
 def test_swap_theta_equals_ore(base):
     """`NPV(base+1d) - NPV(base) + flows paid in (base, base+1d]`, all by
     ORE, with the fixing printed on `base` at ORE's own forecast of it. On
@@ -504,26 +524,33 @@ def test_swaption_theta_equals_ore_and_decays_to_expiry():
     aged = dataclasses.replace(booked, evaluation_date=_next_day(TODAY))
     assert theta == pytest.approx(_ore_european_npv(aged) - _ore_european_npv(booked), rel=1e-5)
 
-    # The day before expiry, one day of Theta takes the whole value away.
-    last_day = ORE.TARGET().advance(booked.exercise_date, -1, ORE.Days)
+    # The calendar day before expiry, one day of Theta takes the whole value away.
+    last_day = booked.exercise_date - 1
     cfg = dataclasses.replace(booked, evaluation_date=last_day)
     value = float(swaption_price_function(cfg, curve)(curve.pillar_rates))
     assert value > 100.0
     assert greeks.swaption_theta(cfg, curve) == pytest.approx(-value, rel=1e-12)
 
 
-def test_bermudan_theta_equals_ore():
-    """Base = the booking date: coupon 1 fixes that day, so on the Theta
-    date it is history, printed at the base date's forecast (which is ORE's
-    own `index.fixing(today)`)."""
-    cfg = _bermudan_cfg()
+@pytest.mark.parametrize("base", [TODAY, FRIDAY], ids=["booking-date", "friday"])
+def test_bermudan_theta_equals_ore(base):
+    """On the booking date coupon 1 fixes that day, so on the Theta date it is
+    history, printed at the base date's forecast (which is ORE's own
+    `index.fixing(today)`). From a Friday the Theta date is the Saturday."""
+    cfg = _seasoned(_bermudan_cfg(), base)
     curve = _zero_curve(LGM_RATES)
-    theta_date = _next_day(TODAY)
-    fixing_date = TODAY
-    printed = _ore_index_forecast(TODAY, LGM_RATES, fixing_date)
-    aged = dataclasses.replace(cfg, evaluation_date=theta_date, fixings={fixing_date: printed})
+    theta_date = _next_day(base)
+    printed = {d: _ore_index_forecast(base, LGM_RATES, d)
+               for d in _floating_fixing_dates(_bermudan_underlying(cfg)) if base <= d < theta_date}
+    aged = dataclasses.replace(cfg, evaluation_date=theta_date, fixings={**cfg.fixings, **printed})
     expected = _ore_lgm_npv(aged) - _ore_lgm_npv(cfg)
     assert greeks.bermudan_theta(cfg, curve) == pytest.approx(expected, rel=1e-8, abs=1e-6)
+
+
+def test_theta_rolls_one_calendar_day_as_ore():
+    """ORE's `thetaDate = asof + thetaPeriod` (I-38): Friday -> Saturday, not Monday."""
+    assert greeks.theta_date_of(FRIDAY) == ORE.Date(1, 8, 2026)
+    assert greeks.theta_date_of(TODAY, 3) == TODAY + 3
 
 
 # =============================================================================

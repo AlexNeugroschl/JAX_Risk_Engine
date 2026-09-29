@@ -13,13 +13,18 @@ cashflow column, about 80 MB per scenario at `n_per_std=64`, so a fixed
 batch of a few hundred would need tens of gigabytes, while a Python loop
 would leave the accelerator idle.
 
-**Which risk factors move.** Only curve pillar rates. Model parameters are
-held at their base values: a swaption's `hw_a`/`hw_sigma` do not move, so
-volatility risk is not captured. `run_market_risk` says so in its warnings
-for every option trade.
+**European swaptions.** One carrying no Hull-White parameters is revalued with ORE's
+default engine, `BlackMultiLegOptionEngine` (Bachelier on the request's normal swaption
+volatilities, `engine.valuation.european`; plan 6.4). One carrying `hw_a`/`hw_sigma` keeps the
+legacy Hull-White Jamshidian price.
+
+**Which risk factors move.** Only curve pillar rates. Volatilities are held at their base
+values: a swaption's `hw_a`/`hw_sigma`, or the swaption volatility surface, do not move, so
+volatility risk is not captured. `run_market_risk` says so in its warnings for every option
+trade.
 """
 from dataclasses import dataclass
-from typing import Callable, List, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -30,9 +35,11 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, _grid_h
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig
+from engine.market import SwaptionVolSurface
 from engine.market_risk.factors import RateRiskFactors
 from engine.models.hull_white import ZeroCurve
 from engine.risk.price_functions import (
+    bachelier_swaption_price_function,
     bermudan_price_function,
     bond_price_function,
     swap_price_function,
@@ -85,14 +92,24 @@ def scenario_batch_size(cfg, requested: int, itemsize: int) -> int:
     return max(1, min(requested, BATCH_MEMORY_BUDGET // per_scenario))
 
 
-def build_revaluer(cfg, factors: RateRiskFactors, dtype) -> TradeRevaluer:
+def uses_bachelier(cfg) -> bool:
+    """A European swaption without Hull-White parameters: ORE's Bachelier engine (see the
+    module docstring)."""
+    return isinstance(cfg, SwaptionConfig) and cfg.hw_a is None and cfg.hw_sigma is None
+
+
+def build_revaluer(cfg, factors: RateRiskFactors, dtype,
+                   swaption_vols: Optional[SwaptionVolSurface] = None) -> TradeRevaluer:
     """The pure price function for one trade, at `dtype`. Curve pillar
     times come from `factors`; the trade must already be validated to
-    reference curves that exist (see `engine.market_risk.run`)."""
+    reference curves that exist, and a Bachelier European to come with
+    `swaption_vols` (see `engine.market_risk.run`)."""
     indices = curve_indices(cfg)
     curves = [ZeroCurve.from_config(factors.curves[i], dtype=dtype) for i in indices]
     if isinstance(cfg, SwapConfig):
         price = swap_price_function(cfg, curves[0], curves[1])
+    elif uses_bachelier(cfg):
+        price = bachelier_swaption_price_function(cfg, curves[0], swaption_vols)
     elif isinstance(cfg, SwaptionConfig):
         price = swaption_price_function(cfg, curves[0])
     elif isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
@@ -111,12 +128,14 @@ def revalue(
     shifts: np.ndarray,
     dtype=jnp.float64,
     batch_size: int = 256,
+    swaption_vols: Optional[SwaptionVolSurface] = None,
 ) -> Tuple[np.ndarray, jnp.ndarray]:
     """Base values `[N]` and shocked values `[S, N]` of every trade.
 
     shifts: `[S, F]` absolute factor moves (`ShockScenarios.shifts`).
     batch_size: the most scenarios to vmap at once; a grid pricer may use
         fewer to stay within `BATCH_MEMORY_BUDGET`.
+    swaption_vols: normal swaption volatilities for Bachelier Europeans.
     """
     base = jnp.asarray(factors.base_rates(), dtype=dtype)
     moves = jnp.asarray(shifts, dtype=dtype)
@@ -125,7 +144,7 @@ def revalue(
     base_values: List[float] = []
     shocked_columns: List[jnp.ndarray] = []
     for cfg in trades:
-        revaluer = build_revaluer(cfg, factors, dtype)
+        revaluer = build_revaluer(cfg, factors, dtype, swaption_vols)
         own = [slices[i] for i in revaluer.curve_indices]
 
         def on_factors(vector, _price=revaluer.price, _own=own):

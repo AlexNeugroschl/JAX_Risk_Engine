@@ -12,6 +12,36 @@ other's internal details — they agree only on the *shape* of the data passed b
 them. That decoupling is deliberate: it means another module (say, a new instrument
 pricer) could be added later without touching the others at all.
 
+## Two pricing paths
+
+Since the [ORE alignment](../planning/ore-alignment-plan.md) `price_portfolio` has two paths,
+chosen by the type of `PortfolioRequest.market`:
+
+- **A `Market`: the market path**, the default (`engine.portfolio.market_path`, HTTP
+  `POST /v2/portfolio/price`). It reproduces ORE's classic pipeline: trades name their
+  currency and index, the market supplies curves and volatilities, the pricing configuration
+  supplies the models.
+
+```
+   Market + CamConfig ──calibrate (engine.calibration.cam)──► CrossAssetModel
+        ──simulate (engine.simulation.config)──► ScenarioMarket
+             [paths, dates] discount and index curves, LGM numeraire, FX/EQ spots
+        ──value (engine.valuation.portfolio)──► t=0 NPVs [T], NPV cube [S, D, T]
+             every trade with its t=0 engine on each path; FixingManager; OptionWrapper
+        ──exposure (engine.risk.exposure)──► EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B, PFE, Basel
+   Market ──sensitivities (engine.risk.sensitivities)──► Delta, Gamma, Vega, Theta per trade
+```
+
+- **A `SimulationConfig`: the Hull-White path**, the original engine, kept for its callers
+  (HTTP `POST /portfolio/price`). Trades carry their curve indices and Hull-White parameters.
+  Its data flow is described [below](#the-hull-white-paths-data-flow); its known differences
+  from ORE are [I-42](../known-issues.md#i-42) to [I-47](../known-issues.md#i-47).
+
+Both paths share the curve primitives (`engine.models.curves`), ORE trade building
+(`engine.models.ore_builders`), the Bermudan grid engine (`engine.instruments.bermudan_swaption`),
+and the risk statistics. The decisions behind the split are in
+[compliance/decisions.md](../../compliance/decisions.md).
+
 ## The repository layout
 
 ```
@@ -43,7 +73,12 @@ JAX_Risk_Engine/
 │   │                                     trusting any number
 │   └── planning/                         Roadmap/history, TraderX integration plan and
 │                                         the EOD contract exchange
+├── compliance/decisions.md             Dated modelling decisions and the differences
+│                                         from ORE that remain (awaiting sign-off)
 ├── engine/
+│   ├── market.py                         Today's market for the market path: curves per
+│   │                                     currency and index, the ATM normal swaption
+│   │                                     matrix, FX and equity spots
 │   ├── day_count.py                      Accrual day-count vocabulary, and nothing else.
 │   │                                     A leaf because both models/ore_builders.py and
 │   │                                     integration/note.py need the table, and
@@ -56,10 +91,11 @@ JAX_Risk_Engine/
 │   │   │                                 PortfolioResult/price_portfolio, plus the
 │   │   │                                 validation/assembly layer (cross-field checks,
 │   │   │                                 automatic maturity-pillar assembly)
-│   │   ├── validation.py                 Leaf-level field validators shared by every
-│   │   │                                 trade config's __post_init__ (kept separate from
-│   │   │                                 request.py to avoid a circular import -- see
-│   │   │                                 its own module docstring)
+│   │   ├── validation.py                 Re-exports the trade validators (now in
+│   │   │                                 instruments/_validation.py) plus the
+│   │   │                                 one-evaluation-date check
+│   │   ├── market_path.py                price_portfolio on a Market: calibrate the CAM,
+│   │   │                                 simulate, value, exposure, ORE sensitivities
 │   │   ├── worker_pool.py                One process pool per precision tier, plus the
 │   │   │                                 opt-in XProf profiler hook and its
 │   │   │                                 silent-truncation guard (see profiling.md)
@@ -67,8 +103,11 @@ JAX_Risk_Engine/
 │   │                                     that labels each pricing stage on a trace
 │   ├── api/                              FastAPI HTTP boundary -- TWO separate contracts
 │   │   ├── app.py                        FastAPI app factory, mounting both routers
-│   │   ├── routes.py                     /health, /version, /portfolio/price (async job
-│   │   │                                 pattern), /calibration/lgm
+│   │   ├── routes.py                     /health, /version, /portfolio/price and
+│   │   │                                 /v2/portfolio/price (async job pattern),
+│   │   │                                 /calibration/lgm
+│   │   ├── market_schemas.py             Schema version 2 (the market path); refuses
+│   │   │                                 unknown fields
 │   │   ├── eod_routes.py                 W1.6.4 /eod/* -- the TraderX EOD contract. Plain
 │   │   │                                 dicts under a published JSON Schema, NOT Pydantic:
 │   │   │                                 one contract definition, not two that can drift
@@ -108,12 +147,23 @@ JAX_Risk_Engine/
 │   │   │                                 stale pointer never loses a result (I-08)
 │   │   └── pipeline.py                   Composition of the above: price_bundle()
 │   ├── simulation/
-│   │   ├── market_model.py               Simulates the market (Sobol/Brownian bridge,
+│   │   ├── cam.py                        ORE's CrossAssetModel: LGM per currency, FX/EQ
+│   │   │                                 Black-Scholes, exact step moments, Cholesky,
+│   │   │                                 the jitted state evolution
+│   │   ├── scenario_market.py            Model-implied scenario curves per path and date,
+│   │   │                                 the LGM numeraire, FX/EQ spots
+│   │   ├── config.py                     CamConfig/LgmConfig (ORE's simulation.xml) and
+│   │   │                                 simulate(market, config)
+│   │   ├── random.py                     Sobol normals and the Brownian bridge, shared
+│   │   ├── market_model.py               The Hull-White path's simulation (legacy):
 │   │   │                                 cross-asset Hull-White paths, yield-curve
-│   │   │                                 reconstruction); also validate_joint_covariance/
+│   │   │                                 reconstruction; also validate_joint_covariance/
 │   │   │                                 nearest_psd
 │   │   └── demo_scenarios.py             Shared demo/reference SimulationConfig builders
 │   ├── models/
+│   │   ├── curves.py                     ZeroCurve (linear zero, QuantLib's flat-forward
+│   │   │                                 extrapolation) and DiscountCurve (log-linear,
+│   │   │                                 batched): the curve primitives of both paths
 │   │   ├── hull_white.py                 HW1F closed-form math (constant sigma only) --
 │   │   │                                 single source of truth, used by swap.py,
 │   │   │                                 european_swaption.py, simulation.py, greeks.py
@@ -126,11 +176,15 @@ JAX_Risk_Engine/
 │   │                                     structures, so they can be jax.jit STATIC
 │   │                                     arguments instead of recompiling every call
 │   ├── calibration/
+│   │   ├── ore_lgm.py                    ORE's LgmBuilder: SwaptionHelper baskets and the
+│   │   │                                 bootstrap, batched over path curves
+│   │   ├── cam.py                        The CAM's IR calibration to CalibrationSwaptions
 │   │   ├── basket.py                     Co-terminal swaption basket construction and
 │   │   │                                 LGM's own closed-form swaption pricer
 │   │   └── lgm.py                        Bootstrap calibration of a piecewise LGM Sigma
 │   │                                     to market swaption volatilities
 │   ├── instruments/
+│   │   ├── _validation.py                Field validators every trade config shares
 │   │   ├── swap.py                       Prices interest rate swaps
 │   │   ├── european_swaption.py          Prices European swaptions
 │   │   ├── bermudan_swaption.py          Prices Bermudan swaptions
@@ -144,6 +198,18 @@ JAX_Risk_Engine/
 │   │                                     t=0 only, so no scenario cube and no VaR/ES
 │   │                                     (I-24). The only non-JAX pricer here; imports
 │   │                                     no other pricer
+│   ├── valuation/                        The market path's ValuationEngine: every trade
+│   │   │                                 with its t=0 engine, today and on every path
+│   │   ├── legs.py                       Swap legs: DiscountingSwapEngine, FixingManager,
+│   │   │                                 paid flows, on any date and every path
+│   │   ├── european.py                   BlackMultiLegOptionEngine (Bachelier), cash by
+│   │   │                                 ParYieldCurve, the vol surface seen from a date
+│   │   ├── bermudan.py                   Each Bermudan/American on its own calibrated LGM,
+│   │   │                                 recalibrated per path
+│   │   ├── options.py                    OptionWrapper's exercise, physical and cash
+│   │   ├── portfolio.py                  value_portfolio / value_today / value_on
+│   │   ├── context.py                    PricingContext: one date's curves, vols, fixings
+│   │   └── config.py                     PricingConfig and the LGM engine settings
 │   ├── market_risk/                      Short-horizon VaR/ES by full revaluation at t=0:
 │   │   ├── factors.py                    RateRiskFactors -- curve pillars as risk factors
 │   │   ├── scenarios.py                  Monte Carlo and historical shock scenarios
@@ -156,7 +222,8 @@ JAX_Risk_Engine/
 │       │                                 (ORE's ExposureCalculator definitions)
 │       ├── price_functions.py            Each trade's t=0 price as a JAX function of its
 │       │                                 curves -- shared by Greeks and market risk
-│       └── greeks.py                     Computes Delta / Gamma / Theta / Vega
+│       ├── sensitivities.py              ORE's bump-and-revalue sensitivities (market path)
+│       └── greeks.py                     AD Delta / Gamma / Theta / Vega (Hull-White path)
 └── tests/
     ├── conftest.py                       Shared pytest fixtures
     ├── test_market_model.py
@@ -189,6 +256,15 @@ JAX_Risk_Engine/
     ├── test_profiling_and_jit.py         phase() annotations + XLA compile counts
     ├── test_api.py                       FastAPI TestClient tests for engine/api/
     ├── test_api_bond_schemas.py          Pydantic round-trip for BondConfig
+    ├── test_cam.py, test_curves.py,       The market path, each piece against ORE
+    │   test_valuation.py,
+    │   test_ore_lgm_calibration.py,
+    │   test_sensitivities.py,
+    │   test_portfolio_market_path.py,
+    │   test_api_market_path.py
+    ├── test_shared_portfolio.py          The shared portfolio at t=0 vs ORE, trade by trade
+    ├── test_import_layering.py           No package imports a layer above it
+    ├── support/portfolio.py              The portfolio shared across test layers
     ├── test_integration_*.py             engine/integration/, one file per task, run
     │                                     against the delivered TraderX fixtures
     │                                     (incl. test_integration_publication.py, W0.8)
@@ -252,7 +328,7 @@ Vega](../risk/greeks.md#vega-bermudanamerican-only) has no meaning without it �
 does this Bermudan's value change if a market quote moves" is only a well-posed question
 once there is an actual market-quote-to-model relationship to differentiate through.
 
-## The simulation-to-risk data flow
+## The Hull-White path's data flow
 
 `engine/portfolio/request.py::price_portfolio` sits above every stage below and drives all of them
 in sequence — see [The Public API](#the-public-api) and

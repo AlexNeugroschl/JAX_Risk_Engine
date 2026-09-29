@@ -103,7 +103,8 @@ class TestPreparedBermudanPytree:
         assert len(children) == len(_PreparedBermudan._TRACED)
         # The differentiation targets must be children, or a tracer would be frozen into
         # the cache key instead of carrying a gradient.
-        assert "zero_rates" in _PreparedBermudan._TRACED
+        # The curve (a `ZeroCurve` pytree carrying the pillar rates) is what Delta differentiates.
+        assert "curve" in _PreparedBermudan._TRACED
         assert "hw_sigma" in _PreparedBermudan._TRACED
 
         aux_names = {name for name, _ in aux}
@@ -118,10 +119,12 @@ class TestPreparedBermudanPytree:
         rebuilt = _PreparedBermudan.tree_unflatten(aux, children)
 
         assert rebuilt == prepared
-        for name in ("exercise_times", "fixed_times", "fixed_amounts", "zero_rates"):
+        for name in ("exercise_times", "fixed_times", "fixed_amounts"):
             np.testing.assert_array_equal(
                 np.asarray(getattr(rebuilt, name)), np.asarray(getattr(prepared, name))
             )
+        np.testing.assert_array_equal(np.asarray(rebuilt.curve.pillar_rates),
+                                      np.asarray(prepared.curve.pillar_rates))
 
     def test_round_tripped_arrays_stay_writable(self):
         """Unflattened schedule arrays are writable copies (`np.frombuffer` is read-only)."""

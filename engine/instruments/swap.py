@@ -6,8 +6,9 @@ contraction over the cube `[scenario, step, maturity, curve]`.
 
 Multi-curve: both legs discount off `discount_curve_index`; floating forwards come from
 `forward_curve_index`, as ORE's `DiscountingSwapEngine` plus an `IborIndex` with its own
-forwarding curve. Floating coupons are projected over their accrual period (ORE's default
-at-par coupons).
+forwarding curve. Floating coupons are ORE's default at-par coupons: the rate is forecast
+over the coupon's par forecast period and divided by the index day count's spanning time
+(`ore_builders.par_coupon_forecast_period`), then paid over the leg's accrual fraction.
 
 Seasoned trades are priced as ORE prices them at t=0: cashflows paid on or before the
 evaluation date are dropped (`ore_builders.is_live`), and a coupon fixed before it pays its
@@ -18,9 +19,6 @@ tests/test_trade_dates.py.
 Differs from ORE:
   * Discount factors are read directly at cube pillars, with no interpolation; every
     cashflow time must be a pillar of the simulation (`_maturity_indices`).
-  * Known issue (I-36): the floating forward is annualized by the leg's accrual fraction,
-    where ORE uses the index day count's spanning time. They agree only when the leg
-    accrues on the index's ACT/365; any other `accrual_day_count` misprices the leg.
   * Known limitation (I-04, FLAGGED): at a simulated step past a coupon's accrual start or
     payment date, the coupon is still priced off the cube, whose P(t,T) for T < t is a
     clamped value rather than a discount factor. There is no per-path fixing of coupons
@@ -46,7 +44,7 @@ from engine.models.ore_builders import (
     resolve_accrual_day_count,
     validate_fixings,
 )
-from engine.portfolio.validation import _validate_common_fields
+from engine.instruments._validation import _validate_common_fields
 
 
 @dataclass
@@ -54,8 +52,11 @@ class SwapConfig:
     """
     One vanilla fixed-vs-floating swap.
 
-    discount_curve_index / forward_curve_index: curves on the cube's rate axis. Equal
-        indices give single-curve pricing.
+    currency: the trade's currency. On the market path (`engine.valuation`) it selects the
+        discount curve, and `index_tenor_months` the forwarding curve (`market.index_name`).
+    discount_curve_index / forward_curve_index: legacy Hull-White cube only: curves on the
+        cube's rate axis (equal indices give single-curve pricing). The market path refuses
+        them.
     effective_date / maturity_date: the booked schedule's start and unadjusted end. They
         define the trade; `evaluation_date` only sets when it is priced.
     swap_tenor: booking shortcut ("5Y", "18M"), resolved once at construction to the
@@ -69,8 +70,8 @@ class SwapConfig:
     notional: float
     fixed_rate: float
     payer: bool
-    discount_curve_index: int
-    forward_curve_index: int
+    discount_curve_index: Optional[int] = None
+    forward_curve_index: Optional[int] = None
     effective_date: Optional[ORE.Date] = None
     maturity_date: Optional[ORE.Date] = None
     swap_tenor: InitVar[Optional[str]] = None
@@ -82,6 +83,7 @@ class SwapConfig:
     #: ACT/365; see `engine.models.ore_builders`).
     accrual_day_count: str = DEFAULT_ACCRUAL_DAY_COUNT
     fixings: Dict[ORE.Date, float] = field(default_factory=dict)
+    currency: str = "USD"
 
     def __post_init__(self, swap_tenor: Optional[str]) -> None:
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
@@ -109,13 +111,13 @@ class SwapSchedule:
     floating: object  # ore_builders.LegCashflows, read with the trade's fixings
 
     def pillar_times(self) -> List[float]:
-        """Every time a discount factor is read at: payment times, plus accrual start and
-        end of each projected coupon."""
+        """Every time a discount factor is read at: payment times, plus the forecast
+        period's start and end of each projected coupon."""
         projected = ~self.floating.is_fixed
         return sorted(set(
             self.fixed.payment_times.tolist() + self.floating.payment_times.tolist()
-            + self.floating.accrual_start_times[projected].tolist()
-            + self.floating.accrual_end_times[projected].tolist()
+            + self.floating.forecast_start_times[projected].tolist()
+            + self.floating.forecast_end_times[projected].tolist()
         ))
 
 
@@ -167,6 +169,7 @@ class _PreparedSwap(StaticKeyMixin):
     float_notional: float
     float_spread: float
     float_accrual: np.ndarray
+    float_spanning: np.ndarray
     float_pay_idx: np.ndarray
     float_start_idx: np.ndarray
     float_end_idx: np.ndarray
@@ -178,6 +181,10 @@ class _PreparedSwap(StaticKeyMixin):
 
 def prepare_swap(cfg: SwapConfig, maturities: np.ndarray) -> _PreparedSwap:
     """Build the ORE trade and map its remaining cashflows onto the cube's pillars."""
+    if cfg.discount_curve_index is None or cfg.forward_curve_index is None:
+        raise ValueError(
+            "the cube pricer needs discount_curve_index and forward_curve_index; on the market "
+            "path (engine.valuation) the currency's curves are used instead")
     schedule = swap_schedule(cfg)
     fixed, floating = schedule.fixed, schedule.floating
     projected, known = ~floating.is_fixed, floating.is_fixed
@@ -194,9 +201,10 @@ def prepare_swap(cfg: SwapConfig, maturities: np.ndarray) -> _PreparedSwap:
         float_notional=floating.notional,
         float_spread=cfg.floating_spread,
         float_accrual=floating.accrual_fractions[projected],
+        float_spanning=floating.spanning_times[projected],
         float_pay_idx=_maturity_indices(floating.payment_times[projected], maturities),
-        float_start_idx=_maturity_indices(floating.accrual_start_times[projected], maturities),
-        float_end_idx=_maturity_indices(floating.accrual_end_times[projected], maturities),
+        float_start_idx=_maturity_indices(floating.forecast_start_times[projected], maturities),
+        float_end_idx=_maturity_indices(floating.forecast_end_times[projected], maturities),
         known_float_amounts=known_amounts,
         known_float_pay_idx=_maturity_indices(floating.payment_times[known], maturities),
         discount_curve_index=cfg.discount_curve_index,
@@ -212,12 +220,13 @@ def _price_one_swap(yield_curves: jax.Array, swap: _PreparedSwap) -> jax.Array:
         Fixed PV(t) = N * K * sum_i accrual_i * P_disc(t, T_i)
         Float PV(t) = N * sum_i (F_i(t) + spread) * accrual_i * P_disc(t, T_i)
                       + sum_k known_amount_k * P_disc(t, T_k)
-        F_i(t)      = (P_fwd(t, start_i) / P_fwd(t, end_i) - 1) / accrual_i
+        F_i(t)      = (P_fwd(t, start_i) / P_fwd(t, end_i) - 1) / spanning_i
         NPV(t)      = Float PV - Fixed PV for a payer; negated for a receiver.
 
-    Floating accrual and forward period coincide (ORE's at-par coupon default); matches
-    `ORE.VanillaSwap.floatingLegNPV()` in tests/test_swap.py for an ACT/365 leg (see I-36 in
-    the module docstring for other day counts).
+    `[start_i, end_i]` and `spanning_i` are the at-par coupon's forecast period and index
+    day-count fraction (`ore_builders.par_coupon_forecast_period`); `accrual_i` is the leg's
+    own. Matches `ORE.DiscountingSwapEngine` for any supported leg day count
+    (tests/test_swap.py, tests/test_trade_dates.py).
     """
     disc = yield_curves[:, :, :, swap.discount_curve_index]  # [S, T, Maturities]
     fwd = yield_curves[:, :, :, swap.forward_curve_index]
@@ -229,9 +238,10 @@ def _price_one_swap(yield_curves: jax.Array, swap: _PreparedSwap) -> jax.Array:
     )
 
     float_accrual = jnp.asarray(swap.float_accrual, dtype=yield_curves.dtype)
+    float_spanning = jnp.asarray(swap.float_spanning, dtype=yield_curves.dtype)
     p_start = fwd[:, :, swap.float_start_idx]
     p_end = fwd[:, :, swap.float_end_idx]
-    forward_rate = (p_start / p_end - 1.0) / float_accrual[None, None, :]
+    forward_rate = (p_start / p_end - 1.0) / float_spanning[None, None, :]
 
     float_disc = disc[:, :, swap.float_pay_idx]
     float_cashflow = swap.float_notional * (forward_rate + swap.float_spread) * float_accrual[None, None, :]

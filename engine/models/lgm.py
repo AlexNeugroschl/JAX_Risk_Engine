@@ -32,7 +32,7 @@ from typing import Union
 import jax
 import jax.numpy as jnp
 
-from engine.models.hull_white import ZeroCurve, discount, forward_rate
+from engine.models.curves import ZeroCurve, discount, forward_rate
 
 
 @jax.tree_util.register_pytree_node_class

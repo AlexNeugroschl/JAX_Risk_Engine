@@ -135,8 +135,9 @@ which caught two constants that were silently promoting the European swaption to
 
 `run_market_risk` states these in `result.warnings` where they apply:
 
-- **Volatility risk.** Model parameters (`hw_a`, `hw_sigma`) are held at their base
-  values; only curve pillars move. An option's vega is therefore not in the VaR/ES.
+- **Volatility risk.** Volatilities are held at their base values: a swaption's `hw_a`
+  and `hw_sigma`, or the request's `swaption_vols`. Only curve pillars move, so an option's
+  vega is not in the VaR/ES.
 - **Thin tails.** Fewer than 10 observations beyond a quantile is flagged.
 
 Not yet covered: equity, FX, credit and volatility risk factors; stressed calibration and
@@ -152,10 +153,12 @@ over ORE's P&L vector:
 |---|---|---|
 | Swap | `MakeVanillaSwap` + `DiscountingSwapEngine`, separate forwarding curve | ~1e-14 relative |
 | Bond | `FixedRateBond` (ACT/ACT ISMA) + `DiscountingBondEngine` | ~1e-16 |
-| European swaption | `Swaption` + `JamshidianSwaptionEngine` on `HullWhite` | ~3e-7, inside the Jamshidian parity envelope of [European Swaptions](../instruments/european-swaptions.md) |
+| European swaption (no Hull-White parameters) | `Swaption` + `BachelierSwaptionEngine` on ORE's `SwaptionVolatilityMatrix` (the formula of ORE's default `BlackMultiLegOptionEngine`) | ~2e-14 (measured 1.6e-14) |
+| European swaption (Hull-White parameters, legacy) | `Swaption` + `JamshidianSwaptionEngine` on `HullWhite` | ~3e-7, inside the Jamshidian parity envelope of [European Swaptions](../instruments/european-swaptions.md) |
 | Bermudan swaption | `NumericLgmMultiLegOptionEngine` via in-process `OREApp` | ~2e-13 |
 
-VaR and ES agree with ORE's to 1e-6 relative on 512 Monte Carlo scenarios. On a
+VaR and ES agree with ORE's to 1e-6 relative on 512 Monte Carlo scenarios (a swap, a
+Bachelier European and a bond). On a
 synthetic 300-day history, run through `historical_scenarios`, they agree to 1e-10.
 
 ORE's own `ParametricVarCalculator` (which has a Monte Carlo mode) and `ExposureCalculator`

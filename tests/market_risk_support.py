@@ -6,9 +6,12 @@ under an arbitrary (shocked) set of pillar rates.
 The ORE side never reuses engine code for pricing. Curves are
 `ORE.ZeroCurve` (linear in the continuously compounded ACT/365 zero rate,
 the engine's convention) with pillars on whole days, so ORE's and the
-engine's year fractions are identical. Past its last pillar ORE extrapolates a
-flat forward where the engine holds the zero rate flat, so the last pillar
-(30y) lies beyond every cashflow.
+engine's year fractions are identical. The last pillar (30y) lies beyond every
+cashflow, so extrapolation is not exercised.
+
+The European comes in two forms: `european()` carries Hull-White parameters
+(the legacy Jamshidian price) and `european_bachelier()` does not (ORE's
+default engine on `VOLS`, plan 6.4).
 """
 import numpy as np
 import ORE
@@ -17,6 +20,7 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
+from engine.market import SwaptionVolSurface
 from engine.market_risk import RateRiskFactors
 from engine.simulation.market_model import ZeroCurveConfig
 
@@ -27,6 +31,10 @@ PILLAR_TIMES = [d / 365 for d in PILLAR_DAYS]
 OIS = ZeroCurveConfig(PILLAR_TIMES, [0.030, 0.031, 0.032, 0.033, 0.035, 0.037, 0.039, 0.041, 0.042, 0.043])
 IBOR = ZeroCurveConfig(PILLAR_TIMES, [r + 0.004 for r in OIS.rates])
 HW_A, HW_SIGMA = 0.03, 0.01
+#: ATM normal swaption volatilities for `european_bachelier`.
+VOLS = SwaptionVolSurface(("1Y", "2Y", "5Y", "10Y"), ("1Y", "5Y", "10Y"),
+                          ((0.0080, 0.0088, 0.0090), (0.0085, 0.0091, 0.0093), (0.0090, 0.0093, 0.0094),
+                           (0.0092, 0.0094, 0.0096)))
 
 
 def factors() -> RateRiskFactors:
@@ -54,6 +62,12 @@ def swap() -> SwapConfig:
 def european() -> SwaptionConfig:
     return SwaptionConfig(notional=5e6, fixed_rate=0.037, payer=False, rate_factor_index=0, hw_a=HW_A,
                           hw_sigma=HW_SIGMA, initial_zero_curve=OIS, swap_tenor="5Y",
+                          forward_start=ORE.Period(2, ORE.Years), evaluation_date=TODAY)
+
+
+def european_bachelier() -> SwaptionConfig:
+    """`european()` without Hull-White parameters: ORE's Bachelier engine on `VOLS`."""
+    return SwaptionConfig(notional=5e6, fixed_rate=0.037, payer=False, rate_factor_index=0, swap_tenor="5Y",
                           forward_start=ORE.Period(2, ORE.Years), evaluation_date=TODAY)
 
 
@@ -98,19 +112,41 @@ def ore_swap_npv(cfg: SwapConfig, disc_rates, fwd_rates) -> float:
     return instrument.NPV()
 
 
-def ore_european_npv(cfg: SwaptionConfig, rates) -> float:
+def _ore_swaption(cfg: SwaptionConfig, curve) -> "ORE.Swaption":
     ORE.Settings.instance().evaluationDate = TODAY
-    curve = ore_curve(rates)
     swap_type = ORE.VanillaSwap.Payer if cfg.payer else ORE.VanillaSwap.Receiver
     underlying = ORE.MakeVanillaSwap(
         ORE.Period(0, ORE.Days), _index(curve), cfg.fixed_rate, nominal=cfg.notional, swapType=swap_type,
         effectiveDate=cfg.effective_date, terminationDate=cfg.maturity_date,
         fixedLegDayCount=DAY_COUNTER, floatingLegDayCount=DAY_COUNTER,
     )
-    exercise = ORE.EuropeanExercise(cfg.exercise_date)
-    swaption = ORE.Swaption(underlying, exercise)
-    swaption.setPricingEngine(ORE.JamshidianSwaptionEngine(ORE.HullWhite(curve, cfg.hw_a, cfg.hw_sigma), curve))
+    return ORE.Swaption(underlying, ORE.EuropeanExercise(cfg.exercise_date))
+
+
+def ore_european_npv(cfg: SwaptionConfig, rates) -> float:
+    """Hull-White Jamshidian when the trade carries HW parameters, else QuantLib's
+    `BachelierSwaptionEngine` on ORE's own `SwaptionVolatilityMatrix` of `VOLS` (the formula
+    of ORE's `BlackMultiLegOptionEngine` for a swap starting after expiry)."""
+    curve = ore_curve(rates)
+    swaption = _ore_swaption(cfg, curve)
+    if cfg.hw_a is None:
+        engine = ORE.BachelierSwaptionEngine(curve, ORE.SwaptionVolatilityStructureHandle(_ore_vols()))
+    else:
+        engine = ORE.JamshidianSwaptionEngine(ORE.HullWhite(curve, cfg.hw_a, cfg.hw_sigma), curve)
+    swaption.setPricingEngine(engine)
     return swaption.NPV()
+
+
+def _ore_vols() -> "ORE.SwaptionVolatilityMatrix":
+    matrix = ORE.Matrix(len(VOLS.option_tenors), len(VOLS.swap_tenors))
+    for i, row in enumerate(VOLS.vols):
+        for j, v in enumerate(row):
+            matrix[i][j] = v
+    vols = ORE.SwaptionVolatilityMatrix(
+        ORE.TARGET(), ORE.Following, [ORE.Period(t) for t in VOLS.option_tenors],
+        [ORE.Period(t) for t in VOLS.swap_tenors], matrix, DAY_COUNTER, True, ORE.Normal)
+    vols.enableExtrapolation()
+    return vols
 
 
 def ore_bond_npv(cfg: BondConfig, rates) -> float:

@@ -27,9 +27,9 @@ market, and add back cashflows paid in between:
 day older; a fixing that prints in [t, t+dt) is taken at the base valuation's forecast
 (`_theta_fixings`).
 
-Known issue: the later date is `TARGET().advance(t, theta_days, Days)`, i.e. business
-days, whereas ORE uses `asof + thetaPeriod` (calendar days). From a Friday the engine
-measures three days of Theta where ORE measures one; see I-38 in docs/known-issues.md.
+The later date is `evaluation_date + theta_days` in calendar days, as ORE's
+`thetaDate = asof_ + thetaPeriod_` (sensitivityanalysis.cpp); from a Friday that is the
+Saturday, not the Monday (I-38).
 
 An `AmericanSwaptionConfig` goes through the same functions as a Bermudan.
 """
@@ -48,6 +48,7 @@ from engine.instruments.bermudan_swaption import _build_ore_swap as _build_ore_u
 from engine.models.ore_builders import (  # noqa: F401  (DAY_COUNTER is a re-export)
     DAY_COUNTER,
     TIME_AXIS_DAY_COUNTER,
+    par_coupon_forecast_period,
     time_from_reference,
 )
 # `_hw_A` and `_zero_rate_at` are imported by tests from this module.
@@ -67,9 +68,17 @@ from engine.risk.price_functions import (
 # (Examples/MarketRisk/Input/sensitivity.xml).
 DEFAULT_RATE_BUMP = 0.0001
 
-# Theta horizon in days; ORE's default `thetaPeriod` is 1 day. See the module docstring on
-# business vs calendar days.
+# Theta horizon in calendar days; ORE's default `thetaPeriod` is 1 day.
 DEFAULT_THETA_DAYS = 1
+
+#: One compiled program for a curve lookup outside a pricer (eagerly, each op would compile
+#: its own; tests/test_profiling_and_jit.py counts them).
+_jitted_discount = jax.jit(_discount_at)
+
+
+def theta_date_of(evaluation_date: ORE.Date, theta_days: int = DEFAULT_THETA_DAYS) -> ORE.Date:
+    """ORE's `thetaDate = asof_ + thetaPeriod_`: calendar days, no business-day roll."""
+    return evaluation_date + theta_days
 
 # `TIME_AXIS_DAY_COUNTER` (ACT/365) converts dates to years on the simulation axis.
 
@@ -155,15 +164,15 @@ def swap_theta(
     base_price_fn = _swap_price_fn(cfg, disc_curve, fwd_curve)
     base_npv = float(jax.jit(base_price_fn)(disc_curve.pillar_rates, fwd_curve.pillar_rates))
 
-    theta_date = ORE.TARGET().advance(cfg.evaluation_date, theta_days, ORE.Days)
+    theta_date = theta_date_of(cfg.evaluation_date, theta_days)
 
     def at_par_forecast(coupon):
-        # The rate the base valuation projects for this coupon: at par, over its accrual
-        # period (as `_price_one_swap`).
-        start, end = (time_from_reference(cfg.evaluation_date, d)
-                      for d in (coupon.accrualStartDate(), coupon.accrualEndDate()))
-        p_start, p_end = (float(_discount_at(fwd_curve, jnp.asarray(t))) for t in (start, end))
-        return (p_start / p_end - 1.0) / coupon.accrualPeriod()
+        # The rate the base valuation projects for this coupon: at par, over its par
+        # forecast period (as `_price_one_swap`).
+        start_date, end_date, spanning = par_coupon_forecast_period(coupon)
+        times = jnp.asarray([time_from_reference(cfg.evaluation_date, d) for d in (start_date, end_date)])
+        p_start, p_end = (float(p) for p in _jitted_discount(fwd_curve, times))
+        return (p_start / p_end - 1.0) / spanning
 
     fixings = _theta_fixings(cfg, _build_ore_swap(cfg), theta_date, at_par_forecast)
     theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date, fixings=fixings)
@@ -209,10 +218,10 @@ def _swap_cashflows_in_period(cfg: SwapConfig, start: ORE.Date, end: ORE.Date, f
     float_mask = in_window(floating.payment_times)
     float_flow = 0.0
     if np.any(float_mask):
-        p_start = np.asarray(_discount_at(fwd_curve, jnp.asarray(floating.accrual_start_times[float_mask])), dtype=np.float64)
-        p_end = np.asarray(_discount_at(fwd_curve, jnp.asarray(floating.accrual_end_times[float_mask])), dtype=np.float64)
+        p_start = np.asarray(_jitted_discount(fwd_curve, jnp.asarray(floating.forecast_start_times[float_mask])), dtype=np.float64)
+        p_end = np.asarray(_jitted_discount(fwd_curve, jnp.asarray(floating.forecast_end_times[float_mask])), dtype=np.float64)
         accrual = floating.accrual_fractions[float_mask]
-        projected = (p_start / p_end - 1.0) / accrual
+        projected = (p_start / p_end - 1.0) / floating.spanning_times[float_mask]
         rate = np.where(floating.is_fixed[float_mask], floating.fixed_rates[float_mask], projected)
         float_flow = float(np.sum(floating.notional * (rate + cfg.floating_spread) * accrual))
 
@@ -257,7 +266,7 @@ def swaption_theta(
     base_npv = float(jax.jit(base_price_fn)(curve.pillar_rates))
 
     # The same option one day older: its exercise date is unchanged.
-    theta_date = ORE.TARGET().advance(cfg.evaluation_date, theta_days, ORE.Days)
+    theta_date = theta_date_of(cfg.evaluation_date, theta_days)
     theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date)
     theta_price_fn = _swaption_price_fn(theta_cfg, curve)
     theta_npv = float(jax.jit(theta_price_fn)(curve.pillar_rates))
@@ -300,7 +309,7 @@ def bermudan_theta(
 
     # Same trade one day on: dates fixed, times re-derived from the new evaluation date,
     # as ORE re-derives optionTimes.
-    theta_date = ORE.TARGET().advance(cfg.evaluation_date, theta_days, ORE.Days)
+    theta_date = theta_date_of(cfg.evaluation_date, theta_days)
 
     def index_forecast(coupon):
         # Today's forecast over the index period, as the LGM engine forecasts a fixing
@@ -308,8 +317,8 @@ def bermudan_theta(
         index = coupon.index()
         value_date = index.valueDate(coupon.fixingDate())
         maturity = index.maturityDate(value_date)
-        p1, p2 = (float(_discount_at(curve, jnp.asarray(time_from_reference(cfg.evaluation_date, d))))
-                  for d in (value_date, maturity))
+        times = jnp.asarray([time_from_reference(cfg.evaluation_date, d) for d in (value_date, maturity)])
+        p1, p2 = (float(p) for p in _jitted_discount(curve, times))
         return (p1 / p2 - 1.0) / index.dayCounter().yearFraction(value_date, maturity)
 
     fixings = _theta_fixings(cfg, _build_ore_underlying(cfg), theta_date, index_forecast)

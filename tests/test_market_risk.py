@@ -6,7 +6,6 @@ import dataclasses
 
 import jax.numpy as jnp
 import numpy as np
-import ORE
 import pytest
 
 from engine.instruments.treasury import price_bond_base
@@ -23,7 +22,7 @@ from engine.market_risk import (
 from engine.market_risk.revaluation import revalue
 from engine.models.hull_white import ZeroCurve
 from engine.risk.greeks import swap_delta_gamma
-from engine.risk.price_functions import bond_price_function, swaption_price_function
+from engine.risk.price_functions import bachelier_swaption_price_function, bond_price_function, swaption_price_function
 from engine.risk.var_es import RISK_MEASURE_HISTORICAL, compute_risk_metrics
 from engine.simulation.market_model import ZeroCurveConfig
 from tests import market_risk_support as m
@@ -221,6 +220,21 @@ class TestRevaluation:
         f = swaption_price_function(m.european(), ZeroCurve.from_config(m.OIS, dtype=jnp.float32))
         assert f(jnp.asarray(m.OIS.rates, dtype=jnp.float32)).dtype == jnp.float32
 
+    def test_bachelier_price_function_keeps_float32(self):
+        """The Bachelier European's legs are cast to the curve's dtype (`Legs.astype`); left
+        in float64 they would promote a float32 curve."""
+        f = bachelier_swaption_price_function(m.european_bachelier(),
+                                              ZeroCurve.from_config(m.OIS, dtype=jnp.float32), m.VOLS)
+        value32 = f(jnp.asarray(m.OIS.rates, dtype=jnp.float32))
+        assert value32.dtype == jnp.float32
+        value64 = bachelier_swaption_price_function(m.european_bachelier(), ZeroCurve.from_config(m.OIS), m.VOLS)(
+            jnp.asarray(m.OIS.rates))
+        assert float(value32) == pytest.approx(float(value64), rel=1e-5)
+
+    def test_a_european_without_hull_white_parameters_uses_bachelier(self):
+        from engine.market_risk.revaluation import uses_bachelier
+        assert uses_bachelier(m.european_bachelier()) and not uses_bachelier(m.european())
+
 
 # ---------------------------------------------------------------------------
 # The run
@@ -306,6 +320,10 @@ class TestRunValidation:
     def test_bond_must_name_its_curve(self):
         with pytest.raises(ValueError, match="curve_index"):
             run_market_risk(self._request([dataclasses.replace(m.bond(), curve_index=None)]))
+
+    def test_a_bachelier_european_needs_swaption_vols(self):
+        with pytest.raises(ValueError, match="swaption_vols"):
+            run_market_risk(self._request([m.european_bachelier()]))
 
     def test_bermudan_must_be_calibrated(self):
         with pytest.raises(ValueError, match="calibrate"):

@@ -1036,3 +1036,24 @@ class TestCapabilitiesAdvertiseW13:
         for product in capabilities()["products"].values():
             assert "rateGamma" not in product["calculations"]
             assert "theta" not in product["calculations"]
+
+
+class TestSensitivityUsesTheDeclaredFractionDecimals:
+    """I-40: an exported fraction 1e-5 above the exact one is $1.00 on 100,000 face. With
+    `fractionDecimals: 4` the tolerance is $5.01, so the NPV prices; the sensitivity used to
+    reprice at the default 6 decimals ($0.06), refuse with ACCRUAL_MISMATCH, and take the
+    NPV down with it in the pipeline."""
+
+    OFF_BY_ONE_DOLLAR = EXACT_ACCRUED + 1e-5
+
+    def test_sensitivity_reconciles_at_the_same_precision_as_the_npv(self):
+        price_note(_terms(), FACE, VALUATION, PROFILE, self.OFF_BY_ONE_DOLLAR, fraction_decimals=4)
+        declared = rate_sensitivity(_terms(), FACE, VALUATION, PROFILE, self.OFF_BY_ONE_DOLLAR,
+                                    fraction_decimals=4)
+        exact = rate_sensitivity(_terms(), FACE, VALUATION, PROFILE, EXACT_ACCRUED)
+        assert declared == pytest.approx(exact, rel=1e-12)
+
+    def test_the_default_precision_still_refuses_it(self):
+        with pytest.raises(NotePricingError) as excinfo:
+            rate_sensitivity(_terms(), FACE, VALUATION, PROFILE, self.OFF_BY_ONE_DOLLAR)
+        assert excinfo.value.reason == ACCRUAL_MISMATCH

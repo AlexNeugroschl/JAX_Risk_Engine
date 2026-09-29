@@ -437,33 +437,48 @@ class ExposureProfileSchema(BaseModel):
     ee_b: List[float]
     eee_b: List[float]
     pfe: Dict[str, List[float]]
+    #: ORE's time-weighted EPE_B / EEPE_B profiles.
+    epe_b: Optional[List[float]] = None
+    eepe_b: Optional[List[float]] = None
+    #: ORE's Basel EPE_B / EEPE_B at the one-year horizon; null on the Hull-White path.
+    basel_epe: Optional[float] = None
+    basel_eepe: Optional[float] = None
 
     @classmethod
     def from_dataclass(cls, profile: ExposureProfile) -> "ExposureProfileSchema":
         as_list = lambda values: [float(v) for v in np.asarray(values).tolist()]  # noqa: E731
+        optional = lambda values: None if values is None else as_list(values)  # noqa: E731
         return cls(
             times=as_list(profile.times), epe=as_list(profile.epe), ene=as_list(profile.ene),
             ee_b=as_list(profile.ee_b), eee_b=as_list(profile.eee_b),
             pfe={key: as_list(values) for key, values in profile.pfe.items()},
+            epe_b=optional(profile.epe_b), eepe_b=optional(profile.eepe_b),
+            basel_epe=profile.basel_epe, basel_eepe=profile.basel_eepe,
         )
 
 
 class GreeksSchema(BaseModel):
+    """Each Greek flattened row-major into `values`; a Greek of more than one dimension (the
+    market path's `vega:<ccy>`, option tenors x swap tenors) also has its shape in `shapes`."""
     values: Dict[str, List[float]] = Field(default_factory=dict)
+    shapes: Dict[str, List[int]] = Field(default_factory=dict)
     theta: Optional[float] = None
 
     @classmethod
     def from_dataclass(cls, greeks: Dict[str, "np.ndarray"]) -> "GreeksSchema":
-        values = {}
+        values, shapes = {}, {}
         theta = None
         for key, val in greeks.items():
             if key == "theta":
                 theta = float(val)
-            else:
-                # np.atleast_1d: bond Greeks are scalars, and a 0-d array's .tolist() is a
-                # float, not a list (I-25).
-                values[key] = [float(v) for v in np.atleast_1d(np.asarray(val)).tolist()]
-        return cls(values=values, theta=theta)
+                continue
+            array = np.asarray(val)
+            # ravel: bond Greeks are scalars, and a 0-d array's .tolist() is a float, not a
+            # list (I-25).
+            values[key] = [float(v) for v in array.ravel().tolist()]
+            if array.ndim > 1:
+                shapes[key] = list(array.shape)
+        return cls(values=values, shapes=shapes, theta=theta)
 
 
 class PortfolioResultSchema(BaseModel):
@@ -481,6 +496,8 @@ class PortfolioResultSchema(BaseModel):
     scenario_risk_available: bool = True
     # Measure of the exposure (`risk-neutral-pricing`), or null (I-11).
     measure: Optional[str] = None
+    # The request's trade ids in request order, or null if it gave none (I-10).
+    trade_ids: Optional[List[str]] = None
 
     @classmethod
     def from_dataclass(cls, result: PortfolioResult) -> "PortfolioResultSchema":
@@ -500,6 +517,7 @@ class PortfolioResultSchema(BaseModel):
             warnings=list(result.warnings),
             scenario_risk_available=result.scenario_risk_available,
             measure=result.measure,
+            trade_ids=result.trade_ids,
         )
 
 

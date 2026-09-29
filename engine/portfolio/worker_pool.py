@@ -11,10 +11,11 @@ Workers are always spawned, never forked: forking a process that has initialized
 (I-33, on Linux). Spawn pickles the initializer by reference, so `_worker_init` is a
 top-level function.
 
-Trade configs hold `ORE.Date`/`ORE.Period` SWIG objects, which do not pickle.
-`_freeze_trade` writes them as text in a `_FrozenTrade` record and `_thaw_trade` rebuilds
-the config (re-running its validation) in the worker. `PortfolioResult` holds no ORE types
-and pickles as is.
+Trade configs, and on the market path the `Market` and `CamConfig`, hold
+`ORE.Date`/`ORE.Period` SWIG objects, which do not pickle. `_freeze_trade` writes them as
+text in a `_FrozenTrade` record and `_thaw_trade` rebuilds the dataclass (re-running its
+validation) in the worker; `_FROZEN_FIELDS` names the request fields that travel so.
+`PortfolioResult` holds no ORE types and pickles as is.
 
 On a machine with one CPU device every worker shares it; there is no device pinning.
 `_DEFAULT_POOL_SIZE` is a small development default.
@@ -25,7 +26,6 @@ import time
 import warnings
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass, fields, is_dataclass, replace
-from typing import Optional
 
 from engine.portfolio.request import PortfolioRequest, PortfolioResult
 
@@ -67,6 +67,10 @@ class _FrozenTrade:
     values: dict
 
 
+#: `PortfolioRequest` fields frozen for the trip to the worker (see the module docstring).
+_FROZEN_FIELDS = ("trades", "market", "simulation")
+
+
 def _freeze_value(value):
     import ORE
 
@@ -75,7 +79,7 @@ def _freeze_value(value):
     if isinstance(value, ORE.Period):
         return _OreValue("period", str(value))
     if isinstance(value, (list, tuple)):
-        return type(value)(_freeze_value(v) for v in value)
+        return _rebuilt(value, [_freeze_value(v) for v in value])
     if isinstance(value, dict):
         # Historical fixings are keyed by ORE.Date.
         return {_freeze_value(k): _freeze_value(v) for k, v in value.items()}
@@ -93,10 +97,15 @@ def _thaw_value(value):
     if isinstance(value, _FrozenTrade):
         return _thaw_trade(value)
     if isinstance(value, (list, tuple)):
-        return type(value)(_thaw_value(v) for v in value)
+        return _rebuilt(value, [_thaw_value(v) for v in value])
     if isinstance(value, dict):
         return {_thaw_value(k): _thaw_value(v) for k, v in value.items()}
     return value
+
+
+def _rebuilt(sequence, items):
+    """`items` in `sequence`'s type; a named tuple takes them positionally."""
+    return type(sequence)(*items) if hasattr(sequence, "_fields") else type(sequence)(items)
 
 
 def _freeze_trade(cfg) -> _FrozenTrade:
@@ -130,7 +139,8 @@ def _profile_options(jax):
 
 
 def _run_pricing_job(frozen_request: PortfolioRequest) -> PortfolioResult:
-    """Run one job in the worker: thaw the trades and call `price_portfolio`.
+    """Run one job in the worker: thaw the request (`_FROZEN_FIELDS`) and call
+    `price_portfolio`.
 
     Profiling (opt-in): with `JAX_RISK_PROFILE_DIR` set, the call runs under
     `jax.profiler.trace`, written to `$JAX_RISK_PROFILE_DIR/pid-<pid>/`, including
@@ -147,8 +157,8 @@ def _run_pricing_job(frozen_request: PortfolioRequest) -> PortfolioResult:
     from engine.portfolio.request import price_portfolio
 
     def _run() -> PortfolioResult:
-        trades = [_thaw_trade(cfg) for cfg in frozen_request.trades]
-        request = replace(frozen_request, trades=trades)
+        request = replace(frozen_request, **{name: _thaw_value(getattr(frozen_request, name))
+                                             for name in _FROZEN_FIELDS})
         return price_portfolio(request)
 
     profile_dir = os.environ.get("JAX_RISK_PROFILE_DIR")
@@ -245,8 +255,7 @@ def submit_pricing_job(request: PortfolioRequest, pool_size: int = _DEFAULT_POOL
     `Future[PortfolioResult]`. `pool_size` applies only when that tier's pool is first
     created."""
     pool = _pool_for(request.precision.simulation, pool_size=pool_size)
-    frozen_trades = [_freeze_trade(cfg) for cfg in request.trades]
-    frozen_request = replace(request, trades=frozen_trades)
+    frozen_request = replace(request, **{name: _freeze_value(getattr(request, name)) for name in _FROZEN_FIELDS})
     return pool.submit(_run_pricing_job, frozen_request)
 
 
