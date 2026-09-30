@@ -1,6 +1,7 @@
 """
 Shared demo and test scenarios, and an ORE flat-curve helper. Depends only on
-`engine.simulation.market_model` and ORE, so anything can import it.
+`engine.simulation.market_model` and ORE. The demos import it as `demo_scenarios` (run as
+scripts from demos/), the tests as `demos.demo_scenarios`; the engine never imports it.
 """
 import jax.numpy as jnp
 import numpy as np
@@ -22,7 +23,7 @@ SWAP_DEMO_MATURITIES = [
 def cross_asset_demo_config() -> SimulationConfig:
     """
     Two equities/FX (AAPL, EUR/USD) and two rate factors (USD, EUR), with four output
-    maturities. Used by market_model's demo.
+    maturities. Used by the market_model section of demo_components.py.
     """
     return SimulationConfig(
         time_grid=[0.0, 0.25, 0.50, 0.75, 1.0],

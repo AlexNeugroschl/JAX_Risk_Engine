@@ -2,7 +2,7 @@
 Bermudan and American swaption prices equal ORE's `NumericLgmMultiLegOptionEngine` to
 floating-point precision.
 
-The oracle (`engine/validation/ore_lgm_oracle.py`) runs ORE's pricing path (trade XML ->
+The oracle (`tests/support/ore_lgm_oracle.py`) runs ORE's pricing path (trade XML ->
 `LGMGridSwaptionEngineBuilder` -> `NumericLgmMultiLegOptionEngine`) on this engine's swap,
 curve and LGM parameters. The engine runs the same backward loop on the same grid, so it
 reproduces ORE's numbers, not just their converged limit: measured worst case 8.7e-12
@@ -35,7 +35,7 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, price_b
 from engine.models.lgm import Sigma
 from engine.models.ore_builders import build_vanilla_swap, resolve_swap_dates
 from engine.simulation.market_model import ZeroCurveConfig
-from engine.validation.ore_lgm_oracle import ore_lgm_swaption_npv
+from tests.support.ore_lgm_oracle import ore_lgm_swaption_npv
 
 jax.config.update("jax_enable_x64", True)
 

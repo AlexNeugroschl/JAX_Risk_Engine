@@ -43,7 +43,6 @@ Design: [details/configurable-engine.md](details/configurable-engine.md).
 
 | Step | Work | Closes | Size |
 |---|---|---|---|
-| 1.1 | Move the ORE oracle to `tests/support/` and demo data to `demos/`, before the oracle grows in 2.2 | [I-65](known-issues.md#i-65) | S |
 | 1.2 | One run configuration: model per currency, simulation, engine per product, Greeks method, precision per stage; defaults reproduce the market path bit for bit | [I-68](known-issues.md#i-68) | L |
 | 1.3 | The Hull-White model as an option of that configuration, on the shared valuation pipeline (scenario market, legs, `OptionWrapper`, bond legs, per-trade basket), with a curve-fitted drift and its exact numeraire. In the same pass, since every trade config changes: no model fields on trades, `evaluation_date` required, an instrument id on every config | [I-42](known-issues.md#i-42) – [I-47](known-issues.md#i-47), [I-04](known-issues.md#i-04) (Hull-White half), [I-24](known-issues.md#i-24), [I-62](known-issues.md#i-62), [I-63](known-issues.md#i-63), [I-64](known-issues.md#i-64), [I-10](known-issues.md#i-10) (configs) | L |
 | 1.4 | Replace the precision mechanism: x64 once per process, explicit dtypes everywhere; then remove the flag toggling, `_PRICING_LOCK` and the per-precision pool tiers | [I-55](known-issues.md#i-55) (mechanism) | M |

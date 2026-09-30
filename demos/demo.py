@@ -22,7 +22,7 @@ import numpy as np
 import ORE
 
 from engine.simulation.market_model import EquityConfig, RatesConfig, SimulationConfig, ZeroCurveConfig
-from engine.simulation.demo_scenarios import EVAL_DATE
+from demo_scenarios import EVAL_DATE
 
 from engine.instruments.swap import SwapConfig
 from engine.instruments.european_swaption import SwaptionConfig

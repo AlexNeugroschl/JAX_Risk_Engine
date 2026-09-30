@@ -34,7 +34,7 @@ from engine.instruments.bermudan_swaption import (
 )
 from engine.instruments.american_swaption import AmericanSwaptionConfig, price_american_swaptions
 from engine.risk.var_es import compute_risk_metrics
-from engine.simulation.demo_scenarios import flat_yield_curves
+from demos.demo_scenarios import flat_yield_curves
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from bermudan_references import single_exercise_value_by_integration
 from date_helpers import in_years

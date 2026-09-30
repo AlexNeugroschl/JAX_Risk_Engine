@@ -4,7 +4,7 @@ import ORE
 import pytest
 
 from engine.instruments.swap import SwapConfig, price_swaps, _maturity_indices
-from engine.simulation.demo_scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES
+from demos.demo_scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES
 
 TODAY = EVAL_DATE
 MATURITIES = np.array(SWAP_DEMO_MATURITIES)

@@ -20,11 +20,11 @@ from engine.simulation.market_model import (
 )
 from engine.instruments.european_swaption import (
     SwaptionConfig,
-    compute_hw_A,
     prepare_swaption,
     _hw_B,
     _solve_rstar,
 )
+from engine.models.hull_white import A as hw_A, ZeroCurve
 from engine.risk.var_es import value_at_risk, expected_shortfall
 
 TODAY = ORE.Date(30, 7, 2026)
@@ -32,6 +32,11 @@ FLAT_RATE = 0.03
 HW_A = 0.03
 HW_SIGMA = 0.01
 ZERO_CURVE = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[FLAT_RATE] * 6)
+
+
+def _curve(prepared):
+    """A prepared swaption's today's curve, as `hull_white.A` takes it."""
+    return ZeroCurve(pillar_times=jnp.asarray(prepared.zero_times), pillar_rates=jnp.asarray(prepared.zero_rates))
 
 
 class TestBrownianBridgeParity:
@@ -112,10 +117,7 @@ class TestJamshidianRStarParity:
         def discount_bond(t, T, x):
             if abs(T - t) < 1e-12:
                 return 1.0
-            A = compute_hw_A(
-                np.asarray(prepared.zero_times), np.asarray(prepared.zero_rates),
-                np.array([t]), np.array([T]), a, sigma,
-            )[0]
+            A = float(hw_A(_curve(prepared), jnp.asarray(t), jnp.asarray(T), a, sigma))
             B = (1.0 - np.exp(-a * (T - t))) / a
             return A * np.exp(-B * x)
 
@@ -137,10 +139,7 @@ class TestJamshidianRStarParity:
         all_amounts = jnp.asarray(
             list(prepared.fixed_cashflow_amounts) + [prepared.notional, -prepared.notional]
         )
-        A_T0 = jnp.asarray(compute_hw_A(
-            np.asarray(prepared.zero_times), np.asarray(prepared.zero_rates),
-            np.full_like(all_times, T0), all_times, a, sigma,
-        ))
+        A_T0 = hw_A(_curve(prepared), jnp.full_like(jnp.asarray(all_times), T0), jnp.asarray(all_times), a, sigma)
         B_T0 = _hw_B(T0, jnp.asarray(all_times), a)
 
         def coupon_bond_value(r, params):

@@ -83,8 +83,7 @@ unpinned. Neither affects numerical results.
 
 The examples on this page assume you're running from the repository root. `engine` itself
 is importable from anywhere once installed — `pip install -e .` puts it on the path, so
-`python -m engine.simulation.market_model` and
-`from engine.simulation.market_model import ...` work without any extra path setup and
+`from engine.simulation.market_model import ...` works without any extra path setup and
 without `cd`-ing anywhere in particular. What the repository root buys you is that the
 **relative paths in these examples resolve**: `tests/fixtures/traderx-eod/...`,
 `demos/demo.py`, `tests/`.
@@ -95,7 +94,7 @@ below with `.venv\Scripts\python.exe` (or activate the venv first with
 
 ## Running the demos
 
-All five demos live in [`demos/`](../../demos/). Run them from the repository root, as
+All six demos live in [`demos/`](../../demos/). Run them from the repository root, as
 written below — they import `engine`, which an editable install makes importable from any
 directory, but the paths in these commands are relative to the root.
 
@@ -164,64 +163,30 @@ portfolio at FP64 and FP32 over five Sobol seeds, and compares the FP32 error in
 and ES 97.5% with the Monte Carlo noise those numbers already carry (the ES standard error
 and the spread across seeds).
 
-Each pipeline module also has its own runnable demo in its own
-`if __name__ == "__main__":` block, showing that module's public API used end-to-end
-against a shared example scenario (see
-[`engine/simulation/demo_scenarios.py`](../../engine/simulation/demo_scenarios.py)) — useful
-when you want to see one stage in isolation.
-
-**Market simulation:**
+**One engine module at a time:**
 ```bash
-python -m engine.simulation.market_model
+python demos/demo_components.py                 # every section
+python demos/demo_components.py swap var_es     # only these
 ```
-Prints the shapes of the simulated equity/rate paths and a sample of reconstructed
-discount factors.
+Each section runs one module's public API end to end on the Hull-White simulation, against
+the shared example scenarios of [`demos/demo_scenarios.py`](../../demos/demo_scenarios.py),
+and prints what it returns — useful when you want to see one stage in isolation:
 
-**Swap pricing** (runs the simulation internally first, to get a yield curve cube to
-price against):
-```bash
-python -m engine.instruments.swap
-```
-Prints the resulting NPV cube's shape and its mean value at the first simulated time
-step.
+| Section | Runs | Prints |
+|---|---|---|
+| `market_model` | `generate_paths` on a two-equity, two-rate scenario | the cube shapes and a sample of reconstructed discount factors |
+| `swap` | `price_swaps` on the simulated yield-curve cube | the NPV cube's shape and its mean at the first simulated step |
+| `european` | `price_swaptions`, 3Y into 2Y, on a grid with steps before and after expiry | the mean NPV at each step: rising towards expiry, exactly `0.00` after it |
+| `bermudan` | `price_bermudan_swaption_base` and `price_bermudan_swaptions` | the t=0 NPV, then the mean NPV at each step |
+| `american` | the same for an American swaption, discretized into exercise dates | the number of exercise dates, the t=0 NPV, the mean NPV at each step |
+| `greeks` | swap and European swaption Delta/Gamma/Theta (`engine.risk.greeks`) | the per-pillar Greeks |
+| `var_es` | `compute_risk_metrics` on a swap's simulated NPV cube | the t=0 value and loss quantiles per step. These are statistics of the cube; the engine's market-risk VaR is `demos/demo.py`'s last section |
 
-**European swaption pricing** (runs the simulation internally first, against a scenario
-sized so several simulated steps land before the demo swaption's own exercise date):
-```bash
-python -m engine.instruments.european_swaption
-```
-Prints the resulting NPV cube's shape and its mean value at every simulated time step —
-increasing as the exercise date approaches, then exactly `0.00` after it.
-
-**Bermudan swaption pricing** (runs the simulation internally first; prices a Bermudan
-swaption with several exercise dates against the simulated paths):
-```bash
-python -m engine.instruments.bermudan_swaption
-```
-Prints the swaption's baseline (t=0) NPV, then the resulting NPV cube's shape and its
-mean value at every simulated time step.
-
-**American swaption pricing** (runs the simulation internally first; prices an American
-swaption, discretized into a grid of exercise dates over its exercise window, against the
-simulated paths):
-```bash
-python -m engine.instruments.american_swaption
-```
-Prints how many discretized exercise dates the exercise window was converted into, the
-resulting baseline (t=0) NPV, then the NPV cube's shape and its mean value at every
-simulated time step.
-
-**Risk statistics on a simulated cube** (runs simulation and pricing internally first):
-```bash
-python -m engine.risk.var_es
-```
-Prints the portfolio's baseline (t=0) value and loss quantiles of the simulated cube at
-each requested confidence level, for every simulated time step. This exercises the
-statistics functions; the engine's market-risk VaR is `demos/demo.py`'s last section.
-
-This demo crashed until 2026-09-24, because its `SwapConfig` omitted `evaluation_date` and
-scheduled off *today* against pillars pinned to 2026-07-30 ([I-28](../planning/known-issues.md#i-28)).
-`tests/test_risk_measure_label.py` now runs it.
+These sections were once `__main__` blocks inside the engine modules; they moved to
+`demos/` so the shipped package holds no demo code
+([I-65](../planning/known-issues.md#i-65)). `tests/test_demos.py` runs every section, which
+also guards [I-28](../planning/known-issues.md#i-28): the `var_es` demo once crashed on any
+day but 2026-07-30, because its swap omitted `evaluation_date`.
 
 ## Running the tests
 
@@ -278,7 +243,7 @@ builds a pricing object. (Running them via `tests/` rather than by path still pa
 suite.)
 
 `tests/conftest.py` provides shared `pytest` fixtures (the example scenario
-configurations from `engine/simulation/demo_scenarios.py`, wrapped as fixtures, plus a
+configurations from `demos/demo_scenarios.py`, wrapped as fixtures, plus a
 `portfolio_request` fixture and a `test_client` fixture for `engine.portfolio`/`engine.api`
 tests) so individual test files don't each need to build their own copy of the same setup.
 
@@ -672,7 +637,7 @@ starting at t=0 ([Exposure](../risk/exposure.md)).
 from engine.risk.var_es import compute_risk_metrics
 
 # base_npv: the portfolio's actual value today, from a separate zero-shock
-# revaluation -- see engine/simulation/demo_scenarios.py's flat_yield_curves()
+# revaluation -- see demos/demo_scenarios.py's flat_yield_curves()
 # for a worked example of building one directly from ORE's own curve objects.
 metrics = compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))
 

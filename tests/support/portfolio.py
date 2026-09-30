@@ -37,7 +37,7 @@ from engine.instruments.treasury import BondConfig, CouponPeriod
 from engine.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER as DC, ibor_index
 from engine.valuation.config import LgmSwaptionEngineConfig
-from engine.validation.ore_lgm_oracle import OreCalibration, ore_lgm_swaption_npv
+from tests.support.ore_lgm_oracle import OreCalibration, ore_lgm_swaption_npv
 
 ASOF = ORE.Date(30, 7, 2026)
 ASOF_ISO = "2026-07-30"

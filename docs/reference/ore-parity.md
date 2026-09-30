@@ -228,8 +228,8 @@ B(t,T) = (1 - exp(-a*(T-t))) / a
 
 A(t,T) = [P(0,T)/P(0,t)] * exp( B(t,T)*f(0,t) - (sigma^2/(4a))*(1-exp(-2at))*B(t,T)^2 )
 ```
-where `f(0,t)` is today's instantaneous forward rate at `t` (computed here by finite
-difference on the interpolated zero curve; see `_initial_log_discount`).
+where `f(0,t)` is today's instantaneous forward rate at `t` (the exact derivative of the
+interpolated zero curve; see `engine.models.curves.forward_rate`).
 
 **ORE's formula**, `HullWhite::A(Time t, Time T)`
 (`QuantLib/ql/models/shortrate/onefactormodels/hullwhite.cpp`, lines 75-83):
@@ -422,7 +422,7 @@ single-section summary can cover — includes the exercise-window discretization
 (American-as-fine-Bermudan), the state-grid/quadrature construction, and the
 numeraire-deflation requirement for the backward induction to be mathematically valid at
 all. One deviation from this codebase's usual pattern is important enough to call out
-here directly: **this module does not reuse `compute_hw_A`/`_hw_B`** (section 3 above) —
+here directly: **this module does not reuse `hull_white.A`/`_hw_B`** (section 3 above) —
 building it surfaced a live, verified finding that `ORE.HullWhite` and
 `ORE.LinearGaussMarkovModel`, despite sharing `(a, sigma)` and today's curve, are not the
 same numerical model realization for `t>0` (a genuine ~0.6% bond-price difference at their
@@ -500,7 +500,7 @@ date maps to the identical time. `TestExerciseDatesAreExact` pins that.
 
 The missing SWIG constructor blocks building `NumericLgmMultiLegOptionEngine` directly. It
 does not block reaching it: ORE users never build it directly either. They run an analytic
-over a trade, and ORE's engine factory builds it. `engine/validation/ore_lgm_oracle.py` does exactly
+over a trade, and ORE's engine factory builds it. `tests/support/ore_lgm_oracle.py` does exactly
 that, in-process and entirely in memory: an `OREApp` run of the `NPV` analytic over a
 `Swaption` trade XML, priced by `LGMGridSwaptionEngineBuilder` →
 `NumericLgmMultiLegOptionEngine` with `Calibration=None`, on
@@ -626,7 +626,7 @@ portfolio under each scenario, and `SensitivityCube` differences the resulting N
 computes the exact analytic derivative of the SAME NPV with respect to the SAME curve
 pillars (`jax.grad`/`jax.hessian`, via a JAX-differentiable curve interpolation,
 `greeks.ZeroCurve`/`_zero_rate_at`, using the identical piecewise-linear-on-zero-rates
-shape `compute_hw_A`/`_initial_log_discount` already use elsewhere in this codebase), then
+shape of `engine.models.curves.ZeroCurve`, which every Hull-White pricer uses), then
 scales by the same 1bp `bump_size` — giving ORE's own "dollar Delta/Gamma for a 1bp move,"
 without finite-difference truncation error. This mirrors ORE's own use of closed-form
 `DiscountingSwapEngineDeltaGamma`/`BlackSwaptionEngineDeltaGamma` engines

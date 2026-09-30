@@ -16,7 +16,7 @@ What is checked, and against what:
     swaps against `ORE.DiscountingSwapEngine` with ORE's own fixing history,
     European swaptions against `ORE.JamshidianSwaptionEngine`, Bermudans and
     Americans against ORE's own `NumericLgmMultiLegOptionEngine`
-    (engine/validation/ore_lgm_oracle.py). Paid cashflows drop out, a coupon
+    (tests/support/ore_lgm_oracle.py). Paid cashflows drop out, a coupon
     fixed before the evaluation date pays its historical fixing, a missing
     fixing is refused (as ORE refuses it), and an expired option is worth 0.
   * **Theta ages the booked trade** (audit M-5): the next day's valuation is
@@ -59,7 +59,7 @@ from engine.portfolio.worker_pool import _freeze_trade, _thaw_trade
 from engine.risk import greeks
 from engine.risk.price_functions import bermudan_price_function, swap_price_function, swaption_price_function
 from engine.simulation.market_model import ZeroCurveConfig
-from engine.validation.ore_lgm_oracle import ore_lgm_swaption_npv
+from tests.support.ore_lgm_oracle import ore_lgm_swaption_npv
 
 TODAY = ORE.Date(30, 7, 2026)  # a Thursday
 DC = TIME_AXIS_DAY_COUNTER

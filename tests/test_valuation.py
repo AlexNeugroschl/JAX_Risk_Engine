@@ -170,7 +170,7 @@ from engine.valuation.context import from_market  # noqa: E402
 from engine.valuation.european import (  # noqa: E402
     european_cube, european_terms, european_value, variance_on_path, volatility_on_path,
 )
-from engine.validation.ore_lgm_oracle import ore_lgm_swaption_npv  # noqa: E402
+from tests.support.ore_lgm_oracle import ore_lgm_swaption_npv  # noqa: E402
 
 VOLS = SwaptionVolSurface(
     ("6M", "1Y", "2Y", "5Y", "10Y"), ("1Y", "2Y", "5Y", "10Y"),
@@ -347,7 +347,7 @@ from engine.instruments.bermudan_swaption import (  # noqa: E402
 )
 from engine.valuation.bermudan import bermudan_cube, bermudan_value  # noqa: E402
 from engine.valuation.config import LgmSwaptionEngineConfig  # noqa: E402
-from engine.validation.ore_lgm_oracle import OreCalibration, OreDiscountCurves  # noqa: E402
+from tests.support.ore_lgm_oracle import OreCalibration, OreDiscountCurves  # noqa: E402
 
 ENGINE = LgmSwaptionEngineConfig()   # ORE's example settings (reversion 0, 30 points, 5 std devs)
 FLAT_VOLS = SwaptionVolSurface(("1Y",), ("1Y",), ((0.0095,),))

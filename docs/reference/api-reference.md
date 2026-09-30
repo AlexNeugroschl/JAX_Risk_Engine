@@ -234,7 +234,6 @@ per swaption in `swaption_configs` (in the order given). NPV is exactly `0` for 
 | Function | Signature | Notes |
 |---|---|---|
 | `prepare_swaption` | `(cfg: SwaptionConfig) -> _PreparedSwaption` | CPU-only, per-trade one-time setup. Builds the real ORE underlying swap and extracts its cashflow times/amounts, exercise time, and accrual start time. |
-| `compute_hw_A` | `(zero_times, zero_rates, t, T, a, sigma) -> np.ndarray` | Plain NumPy (CPU-only). Closed-form Hull-White `A(t,T)` at an arbitrary `(t,T)` pair (not a fixed pillar grid) — see [Instruments: European Swaptions](../instruments/european-swaptions.md#3-the-closed-form-building-blocks-compute_hw_a-_hw_b-_bond_option_sigma-_bond_call_bond_put). |
 
 ---
 
@@ -299,7 +298,7 @@ trade's own last exercise date.
 |---|---|---|
 | `prepare_bermudan` | `(cfg: BermudanSwaptionConfig \| AmericanSwaptionConfig) -> _PreparedBermudan` | CPU-only, per-trade one-time setup. Resolves ORE's option times and, per coupon, ORE's `CashflowInfo` (pay/accrual times, belongs-until time by exercise style, the floating coupon's index fixing period). |
 | `exercisable_dates` | `(cfg) -> List[ORE.Date]` | The underlying's own fixed accrual start dates -- the exercise dates of a standard coterminal Bermudan. |
-| `_lgm_bond` | `(zero_times, zero_rates, a, sigma, t, T, x) -> np.ndarray` | Plain NumPy (CPU-only). LGM's own closed-form `P(t,T,x)`, live-verified against `ORE.LinearGaussMarkovModel.discountBond` — deliberately NOT `compute_hw_A`/`_hw_B` (a different model realization for `t>0`, see [american-bermudan-swaptions.md](../instruments/american-bermudan-swaptions.md#3-the-model-lgm-not-plain-hull-white--and-why-that-distinction-matters-here)). |
+| `_lgm_bond` | `(zero_times, zero_rates, a, sigma, t, T, x) -> np.ndarray` | Plain NumPy (CPU-only). LGM's own closed-form `P(t,T,x)`, live-verified against `ORE.LinearGaussMarkovModel.discountBond` — deliberately NOT `hull_white.A`/`_hw_B` (a different model realization for `t>0`, see [american-bermudan-swaptions.md](../instruments/american-bermudan-swaptions.md#3-the-model-lgm-not-plain-hull-white--and-why-that-distinction-matters-here)). |
 
 ---
 
@@ -804,11 +803,11 @@ Automatic maturity-pillar assembly from every `SwapConfig`'s real ORE schedule. 
 
 ---
 
-## `engine.simulation.demo_scenarios`
+## `demos.demo_scenarios`
 
-Reference/demo configurations and shared test helpers — not part of the pricing
-pipeline itself, but used throughout the codebase's demos and tests. See
-[Architecture: engine/simulation/demo_scenarios.py](../concepts/architecture.md#enginesimulationdemo_scenariospy-shared-example-configurations).
+Reference/demo configurations and shared test helpers in `demos/`, outside the `engine`
+package: the demos and tests use them; the engine never imports them. See
+[Architecture: demos/demo_scenarios.py](../concepts/architecture.md#demosdemo_scenariospy-shared-example-configurations).
 
 | Name | Type | Meaning |
 |---|---|---|
@@ -816,7 +815,7 @@ pipeline itself, but used throughout the codebase's demos and tests. See
 | `SWAP_DEMO_MATURITIES` | `List[float]` | The maturity pillars required by `single_currency_swap_demo_config()`'s swap. |
 | `cross_asset_demo_config()` | `() -> SimulationConfig` | Two-equity, two-currency (USD/EUR) example scenario. |
 | `single_currency_swap_demo_config()` | `() -> SimulationConfig` | One-currency, two-rate-factor (discounting + forwarding) example scenario, sized for a 2Y demo swap. |
-| `swaption_demo_config()` | `() -> SimulationConfig` | One rate factor (USD, 3%), simulated out to 5Y in six-month steps -- used by `engine.instruments.european_swaption`'s demo (`rates.maturities` left unset, since the swaption pricer works directly off simulated rate paths rather than a yield-curve cube). |
+| `swaption_demo_config()` | `() -> SimulationConfig` | One rate factor (USD, 3%), simulated out to 5Y in six-month steps -- used by the swaption sections of `demos/demo_components.py` (`rates.maturities` left unset, since the swaption pricer works directly off simulated rate paths rather than a yield-curve cube). |
 | `flat_yield_curves(disc_rate, fwd_rate, maturities=SWAP_DEMO_MATURITIES, eval_date=EVAL_DATE)` | `(...) -> jax.Array` | Builds a deterministic `[1, 1, len(maturities), 2]` yield curve cube directly from ORE's own flat curve objects — no simulation randomness. Used for VaR's `base_npv` baseline and for ORE cross-check tests. |
 
 ---

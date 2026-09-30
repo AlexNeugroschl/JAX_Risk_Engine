@@ -187,9 +187,9 @@ A(t, T) = [P(0,T) / P(0,t)] · exp( B(t,T)·f(0,t) − (σ²/4a)·(1 − e^(−2
 This is the term that **calibrates** the model to today's actual market curve — it
 guarantees that if you plug in `t = 0` (today, no simulated randomness yet), the formula
 reproduces today's actual observed curve exactly. `P(0, t)` is derived from the caller's
-`initial_zero_curve` input via linear interpolation on zero rates (`_initial_log_discount`
-handles this), and `f(0, t)` (the initial *instantaneous forward rate*) is estimated via
-a small finite-difference step.
+`initial_zero_curve` input via linear interpolation on zero rates, and `f(0, t)` (the
+initial *instantaneous forward rate*) is that curve's exact derivative
+(`engine.models.curves.log_discount` and `forward_rate`).
 
 **Important: one curve per rate factor, not one shared curve.** `compute_hw_A_matrix`
 calibrates *each* rate factor independently, against *that factor's own* entry in

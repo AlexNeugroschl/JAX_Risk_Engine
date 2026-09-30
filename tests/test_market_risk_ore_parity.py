@@ -16,7 +16,7 @@ ORE instruments and engines:
                 European against JamshidianSwaptionEngine on ORE.HullWhite
     bond        FixedRateBond (ACT/ACT ISMA, no settlement lag) + DiscountingBondEngine
     Bermudan    NumericLgmMultiLegOptionEngine through an in-process OREApp
-                (engine.validation.ore_lgm_oracle)
+                (tests.support.ore_lgm_oracle)
 
 Measured agreement per scenario, which the tolerances below are set from:
 swap ~1e-14 and bond ~1e-16 relative (the same arithmetic); Bermudan ~2e-13
@@ -40,7 +40,7 @@ from engine.market_risk import (
     run_market_risk,
 )
 from engine.models.ore_builders import build_vanilla_swap
-from engine.validation.ore_lgm_oracle import ore_lgm_swaption_npv
+from tests.support.ore_lgm_oracle import ore_lgm_swaption_npv
 from tests import market_risk_support as m
 
 FACTORS = m.factors()

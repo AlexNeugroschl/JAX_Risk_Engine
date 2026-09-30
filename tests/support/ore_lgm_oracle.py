@@ -2,8 +2,8 @@
 ORE's own Bermudan/American swaption engine, run in-process: the reference
 `engine.instruments.bermudan_swaption` is validated against (tests/test_ore_lgm_parity.py).
 
-Validation tooling, not a pricer: nothing in the pricing path imports it. Each call runs a
-full `OREApp` (about a second) and changes process-wide ORE state (see below).
+Test tooling, not a pricer: the engine never imports it. Each call runs a full `OREApp`
+(about a second) and changes process-wide ORE state (see below).
 
 `NumericLgmMultiLegOptionEngine` has no SWIG constructor, so it is reached the way ORE users
 reach it: an `OREApp` NPV run over trade XML, with every input in memory. (QuantLib's

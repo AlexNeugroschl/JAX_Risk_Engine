@@ -200,8 +200,8 @@ engine/regulatory/
     imm.py                   # EE, EEE, EPE, EEPE from the existing exposure cube
   cva/
     ba_cva.py
-engine/validation/
-  (the OREApp oracle lives in tests/support/ after roadmap 1.1 and is generalised in 2.2)
+tests/support/
+  ore_lgm_oracle.py          # the OREApp oracle, generalised in roadmap 2.2
 compliance/
   requirements.yaml          # the requirement catalogue (Appendix A seeds it)
   decisions.md               # D-1..D-n, dated

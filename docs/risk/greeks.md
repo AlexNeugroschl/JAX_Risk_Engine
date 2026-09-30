@@ -112,7 +112,7 @@ a triangular ("tent") weight: the bump's effect ramps from 0 at the neighboring 
 to full strength at the bumped pillar itself, and is flat-extrapolated beyond the first
 and last pillar. This module's own zero curve interpolation
 (linear on zero rates, flat at the ends — the same convention
-`european_swaption.compute_hw_A` already uses) has exactly that same piecewise-linear
+`hull_white.A` already uses) has exactly that same piecewise-linear
 support, so differentiating NPV with respect to a single pillar's rate automatically
 produces the identical triangular sensitivity ORE's explicit bump shape encodes — no
 separate bump-shape logic is needed here.
@@ -398,9 +398,6 @@ this mattered.
 - `TestSwapTheta`/`TestSwaptionTheta` — Theta matches a from-scratch manual reprice-
   difference computed from the same building blocks, plus finiteness/magnitude sanity
   checks and a zero-horizon no-op check.
-- `TestComputeHwAJaxMatchesNumpy` — the JAX-native curve-interpolation twin of
-  `compute_hw_A` matches the original NumPy formula exactly (not approximately) across a
-  grid of `(t, T, a, sigma)` combinations.
 - `TestSwaptionPriceFnMatchesMainPricer` — this module's own from-scratch t=0 swaption
   pricing path reproduces `price_swaptions`' actual output exactly.
 - `tests/test_greeks_bermudan.py::TestBermudanDeltaGamma` — Delta cross-checked against a

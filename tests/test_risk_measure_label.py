@@ -1,31 +1,21 @@
 """
-I-11 and I-28 regressions.
-
-I-11: `PortfolioResult.measure` (and `PortfolioResultSchema.measure`) labels the risk
-figures of a direct `price_portfolio` call, and is set exactly when there are risk figures.
-
-I-28: `python -m engine.risk.var_es` runs. Its demo swap had no `evaluation_date`, so it was
-scheduled off ORE's wall-clock today while the pillars stayed at `EVAL_DATE`, and was refused
-on every day but 2026-07-30.
+I-11 regressions: `PortfolioResult.measure` (and `PortfolioResultSchema.measure`) labels the
+risk figures of a direct `price_portfolio` call, and is set exactly when there are risk
+figures. (I-28's demo test is in tests/test_demos.py.)
 """
 import json
-import subprocess
-import sys
-from pathlib import Path
 
-import pytest
 
 from engine.api.schemas import PortfolioResultSchema
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig
 from engine.portfolio import PortfolioRequest, derive_maturity_pillars, price_portfolio
 from engine.risk.var_es import ENGINE_RISK_MEASURE, RISK_MEASURE_RISK_NEUTRAL, RISK_MEASURES
-from engine.simulation.demo_scenarios import EVAL_DATE
+from demos.demo_scenarios import EVAL_DATE
 from engine.simulation.market_model import EquityConfig, RatesConfig, SimulationConfig, ZeroCurveConfig
 
 import ORE
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 FLAT_3PCT = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.03] * 6)
 
 
@@ -91,17 +81,3 @@ class TestPortfolioResultStatesItsMeasure:
         body = json.loads(PortfolioResultSchema.from_dataclass(result).model_dump_json())
         assert "measure" in body
         assert body["measure"] is None
-
-
-class TestVarEsDemoRuns:
-    """I-28: the documented command runs to completion (on any date)."""
-
-    @pytest.mark.slow
-    def test_python_m_engine_risk_var_es_exits_cleanly(self):
-        proc = subprocess.run(
-            [sys.executable, "-m", "engine.risk.var_es"],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=300,
-        )
-        assert proc.returncode == 0, proc.stderr[-2000:]
-        assert "Base (t=0) NPV:" in proc.stdout
-        assert "VaR_95:" in proc.stdout

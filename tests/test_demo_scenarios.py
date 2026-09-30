@@ -1,5 +1,5 @@
 """
-The demo `SimulationConfig` builders in `engine.simulation.demo_scenarios`
+The demo `SimulationConfig` builders in `demos.demo_scenarios`
 (`cross_asset_demo_config`, `single_currency_swap_demo_config`, `swaption_demo_config`) and
 `flat_yield_curves`, checked directly rather than only as inputs to downstream pricers:
 each factor's `initial_zero_curves` agrees with its `initial_rates`/theta, and the flat
@@ -10,7 +10,7 @@ import pytest
 
 import ORE
 
-from engine.simulation.demo_scenarios import (
+from demos.demo_scenarios import (
     EVAL_DATE,
     SWAP_DEMO_MATURITIES,
     cross_asset_demo_config,

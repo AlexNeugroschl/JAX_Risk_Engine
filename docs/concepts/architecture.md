@@ -66,8 +66,10 @@ JAX_Risk_Engine/
 │   │                                       submit-and-print stages
 │   ├── demo_profile_small.py             Same end-to-end path, sized so its profiler
 │   │                                     trace is small enough to actually open
-│   └── demo_precision.py                 FP64 vs FP32 market-risk VaR/ES against
-│                                         Monte Carlo noise
+│   ├── demo_precision.py                 FP64 vs FP32 market-risk VaR/ES against
+│   │                                     Monte Carlo noise
+│   ├── demo_components.py                One engine module at a time, one section each
+│   └── demo_scenarios.py                 Shared demo/test SimulationConfig builders
 ├── docs/                                 Organized by topic (you are here)
 │   ├── getting-started/                  Overview, user guide
 │   ├── concepts/                         Architecture, market simulation, glossary,
@@ -162,11 +164,10 @@ JAX_Risk_Engine/
 │   │   ├── config.py                     CamConfig/LgmConfig (ORE's simulation.xml) and
 │   │   │                                 simulate(market, config)
 │   │   ├── random.py                     Sobol normals and the Brownian bridge, shared
-│   │   ├── market_model.py               The Hull-White model's simulation:
-│   │   │                                 cross-asset Hull-White paths, yield-curve
-│   │   │                                 reconstruction; also validate_joint_covariance/
-│   │   │                                 nearest_psd
-│   │   └── demo_scenarios.py             Shared demo/reference SimulationConfig builders
+│   │   └── market_model.py               The Hull-White model's simulation:
+│   │                                     cross-asset Hull-White paths, yield-curve
+│   │                                     reconstruction; also validate_joint_covariance/
+│   │                                     nearest_psd
 │   ├── models/
 │   │   ├── curves.py                     ZeroCurve (linear zero, QuantLib's flat-forward
 │   │   │                                 extrapolation) and DiscountCurve (log-linear,
@@ -270,8 +271,12 @@ JAX_Risk_Engine/
     │   test_portfolio_market_path.py,
     │   test_api_market_path.py
     ├── test_shared_portfolio.py          The shared portfolio at t=0 vs ORE, trade by trade
-    ├── test_import_layering.py           No package imports a layer above it
+    ├── test_import_layering.py           No package imports a layer above it; no demo
+    │                                     or test code in engine/ (I-65)
+    ├── test_demos.py                     demos/demo_components.py runs every section
     ├── support/portfolio.py              The portfolio shared across test layers
+    ├── support/ore_lgm_oracle.py         ORE's own LGM Bermudan engine via an in-process
+    │                                     OREApp run: the parity tests' reference
     ├── test_integration_*.py             engine/integration/, one file per task, run
     │                                     against the delivered TraderX fixtures
     │                                     (incl. test_integration_publication.py, W0.8)
@@ -552,9 +557,8 @@ JIT compilation and Monte Carlo simulation).
 ## Design principle: modules agree on shapes, not code
 
 At the Python-module level, the instrument pricers and the risk aggregation module do
-**not** import the simulation module (or each other) at the top of the file — `from engine.simulation.market_model import generate_paths`
-only appears inside each module's `if __name__ == "__main__":` demo block, not in the
-library code itself. `price_swaps()` only needs *some* array shaped
+**not** import the simulation module (or each other) — `generate_paths` is called by the
+demos and `engine.portfolio`, never by a pricer. `price_swaps()` only needs *some* array shaped
 `[Scenarios, TimeSteps, Maturities, NumRates]`; every swaption pricer only needs *some*
 array shaped `[Scenarios, TimeSteps, NumHW]`; none of them care whether that array came
 from `generate_paths()`, a hand-built NumPy array, or a completely different simulation
@@ -572,12 +576,10 @@ it's what let `european_swaption.py`, `bermudan_swaption.py`, and `american_swap
 — three more, genuinely different instrument types after the original swap pricer —
 each plug into `risk/var_es.py` with zero changes to that module.
 
-## `engine/simulation/demo_scenarios.py`: shared example configurations
+## `demos/demo_scenarios.py`: shared example configurations
 
-Every module's `__main__` demo block, and every test file, needs *some* realistic
-`SimulationConfig` to run against. Originally each file built its own copy of this
-by hand; `engine/simulation/demo_scenarios.py` now centralizes two canonical example
-scenarios:
+Every demo and many test files need *some* realistic `SimulationConfig` to run against.
+`demos/demo_scenarios.py` centralizes the canonical example scenarios:
 
 - `cross_asset_demo_config()` — two equities/FX pairs and two interest rate
   currencies (USD, EUR), used to show off the full breadth of what the simulation module
@@ -586,6 +588,8 @@ scenarios:
   rate factors (a discounting curve and a separate forwarding curve), sized to exactly
   match a demo 2-year interest rate swap. Used by the instrument-pricing and
   risk-aggregation demos and by the ORE cross-check tests.
+- `swaption_demo_config()` — a 5-year grid with steps before and after the demo
+  swaptions' exercise dates.
 
 It also provides `flat_yield_curves()`, a helper that builds a deterministic (no random
 simulation noise) yield curve cube directly from ORE's own curve objects — used
@@ -593,10 +597,13 @@ whenever code needs a "today's actual market, no what-if" baseline, most importa
 the risk aggregation module's `base_npv` input and for the tests that compare this
 engine's output directly against ORE's.
 
-`engine/simulation/demo_scenarios.py` depends on `engine/simulation/market_model.py`
-(it constructs `SimulationConfig` objects) but nothing depends on
-`engine/simulation/demo_scenarios.py` except demo code and tests — it is never required
-for the pipeline itself to function.
+It depends on `engine/simulation/market_model.py` (it constructs `SimulationConfig`
+objects); the engine never imports it. The demos, run as scripts from `demos/`, import it
+as `demo_scenarios`; the tests as `demos.demo_scenarios`. The engine modules once carried
+their own `__main__` demos that imported it, which kept demo data in the shipped package;
+those demos are now the sections of `demos/demo_components.py`, and
+`tests/test_import_layering.py` keeps `__main__` blocks and imports of `demos`/`tests` out
+of `engine/` ([I-65](../planning/known-issues.md#i-65)).
 
 ## ORE as a dependency
 

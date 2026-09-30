@@ -12,7 +12,6 @@ from engine.simulation.market_model import (
     SimulationConfig,
     ZeroCurveConfig,
     _build_bridge_matrix,
-    _initial_log_discount,
     apply_brownian_bridge,
     compute_hw_A_matrix,
     generate_paths,
@@ -976,26 +975,6 @@ class TestGeneratePathsScenariosEqualsOne:
         assert result["yield_curves"].shape[0] == 1
         assert bool(jnp.all(jnp.isfinite(result["equities"])))
         assert bool(jnp.all(jnp.isfinite(result["yield_curves"])))
-
-
-class TestInitialLogDiscountExtrapolation:
-    """`_initial_log_discount` extrapolates flat beyond the pillars."""
-
-    def test_extrapolates_flat_below_first_pillar(self):
-        zero_times = np.array([1.0, 2.0, 5.0])
-        zero_rates = np.array([0.02, 0.03, 0.04])
-        # t=0.5 is before the first pillar (1.0): the rate is clamped to rate[0].
-        log_p = _initial_log_discount(zero_times, zero_rates, np.array([0.5]))
-        np.testing.assert_allclose(log_p, -0.02 * 0.5, atol=1e-12)
-
-    def test_extrapolates_a_flat_forward_above_last_pillar(self):
-        """As ORE's `ZeroCurve` (QuantLib's ContinuousForward extrapolation, I-48)."""
-        zero_times = np.array([0.0, 1.0, 2.0, 5.0])
-        zero_rates = np.array([0.02, 0.025, 0.03, 0.035])
-        t = np.array([10.0, 100.0])
-        log_p = _initial_log_discount(zero_times, zero_rates, t)
-        expected = np.log(_ore_discounts(ZeroCurveConfig(times=zero_times, rates=zero_rates), t))
-        np.testing.assert_allclose(log_p, expected, atol=1e-12)
 
 
 class TestCovarianceValidation:

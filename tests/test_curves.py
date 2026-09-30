@@ -60,6 +60,11 @@ def test_the_forward_is_the_exact_derivative_and_flat_beyond_the_last_pillar(nam
     assert np.ptp(beyond) == 0.0
 
 
+def test_the_zero_rate_is_flat_before_the_first_pillar():
+    curve = ZeroCurve(pillar_times=jnp.asarray([1.0, 2.0, 5.0]), pillar_rates=jnp.asarray([0.02, 0.03, 0.04]))
+    assert float(log_discount(curve, jnp.asarray(0.5))) == pytest.approx(-0.02 * 0.5, abs=1e-15)
+
+
 def test_a_single_pillar_curve_is_flat_everywhere():
     curve = ZeroCurve(pillar_times=jnp.asarray([1.0]), pillar_rates=jnp.asarray([0.03]))
     np.testing.assert_allclose(np.asarray(zero_rate(curve, jnp.asarray([0.5, 1.0, 7.0]))), 0.03, rtol=1e-15)

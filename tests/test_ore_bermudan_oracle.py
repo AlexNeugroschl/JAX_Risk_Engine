@@ -363,7 +363,7 @@ class TestExerciseDatesAreExact:
 
     def test_exact_accrual_start_prices_its_intrinsic_at_zero_vol(self):
         """The I-29 case (once 14336.12): the zero-vol price is the intrinsic value. ORE's LGM
-        engine gives 1214.2313035805 (engine/validation/ore_lgm_oracle.py); I-29's 1211.47
+        engine gives 1214.2313035805 (tests/support/ore_lgm_oracle.py); I-29's 1211.47
         was the at-par-coupon value, before I-31."""
         date = _engine_exercise_dates(*self.ARGS, [2])[0]
         npv = price_bermudan_swaption_base(_engine_cfg(*self.ARGS, [date], n_per_std=160, std_devs=9.0))

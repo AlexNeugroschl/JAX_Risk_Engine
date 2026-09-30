@@ -168,7 +168,7 @@ ordinary trades ([I-31](../planning/known-issues.md#i-31)).
 
 Every other pricer in this codebase (`simulation.py`, `swap.py`,
 `european_swaption.py`) is built on this codebase's own direct short-rate closed form,
-`compute_hw_A`/`_hw_B`, live-verified against `QuantLib::HullWhite` (see
+`hull_white.A`/`_hw_B`, live-verified against `QuantLib::HullWhite` (see
 [ORE Parity](../reference/ore-parity.md)). This module deliberately does **not** reuse that
 formula, using instead a *separate* closed form, `_lgm_bond`, parametrized directly in
 `QuantExt`'s own LGM state variable `x`:
@@ -211,7 +211,7 @@ Since ORE's actual Bermudan/American engine is built on `LinearGaussMarkovModel`
 `LGMGridSwaptionEngineBuilder`/`LGMFDSwaptionEngineBuilder` both build an
 `IrLgm1fConstantParametrization`/`LinearGaussMarkovModel`), **this module matches that
 model exclusively** — `_lgm_bond` is used for every discount factor computed here;
-`compute_hw_A`/`_hw_B` are never imported. `_lgm_bond` itself is live-verified to machine
+`hull_white.A`/`_hw_B` are never imported. `_lgm_bond` itself is live-verified to machine
 precision (~1e-16 relative) against `ORE.LinearGaussMarkovModel.discountBond` directly
 (`tests/test_bermudan_swaption.py::TestLgmClosedFormsAgainstORE`).
 
@@ -433,7 +433,7 @@ fraction passed as an exercise date is refused with a `TypeError`.
 ## How it is checked against ORE
 
 ORE's `NumericLgmMultiLegOptionEngine` has no bound constructor in the Python bindings, so it
-can't be built directly. `engine/validation/ore_lgm_oracle.py` reaches it by the route ORE users take: an
+can't be built directly. `tests/support/ore_lgm_oracle.py` reaches it by the route ORE users take: an
 in-process `OREApp` run of the `NPV` analytic over a trade XML, through
 `LGMGridSwaptionEngineBuilder`. It uses the engine's own underlying (explicit schedule dates),
 a convention-defined copy of its `SimIndex`, its zero curve (date-quoted, linear in zero

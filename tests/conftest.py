@@ -1,5 +1,5 @@
 """
-Shared fixtures: the demo scenarios from `engine.simulation.demo_scenarios`, a minimal
+Shared fixtures: the demo scenarios from `demos.demo_scenarios`, a minimal
 `PortfolioRequest` and an API client. x64 is enabled here, before any test builds an array.
 """
 import jax
@@ -9,7 +9,7 @@ import dataclasses
 
 import pytest
 
-from engine.simulation.demo_scenarios import (
+from demos.demo_scenarios import (
     EVAL_DATE,
     SWAP_DEMO_MATURITIES,
     cross_asset_demo_config,
@@ -37,7 +37,7 @@ def swap_demo_maturities():
 
 @pytest.fixture(scope="session")
 def cross_asset_config():
-    """Two-equity, two-rate-factor scenario (see engine.simulation.demo_scenarios docstring)."""
+    """Two-equity, two-rate-factor scenario (see demos.demo_scenarios docstring)."""
     return cross_asset_demo_config()
 
 

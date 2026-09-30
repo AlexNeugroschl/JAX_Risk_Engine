@@ -266,27 +266,3 @@ def price_swaps(yield_curves: jax.Array, maturities: np.ndarray, swap_configs: L
     prepared = [prepare_swap(cfg, maturities_np) for cfg in swap_configs]
     per_trade = [_price_one_swap(yield_curves, swap) for swap in prepared]
     return jnp.stack(per_trade, axis=-1)
-
-
-# Demo
-if __name__ == "__main__":
-    from engine.simulation.market_model import generate_paths
-    from engine.simulation.demo_scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES, single_currency_swap_demo_config
-
-    market_cubes = generate_paths(single_currency_swap_demo_config())
-
-    swap_cfg = SwapConfig(
-        notional=1_000_000.0,
-        fixed_rate=0.03,
-        payer=True,
-        discount_curve_index=0,
-        forward_curve_index=1,
-        swap_tenor="2Y",
-        evaluation_date=EVAL_DATE,
-    )
-
-    npv_cube = price_swaps(market_cubes["yield_curves"], SWAP_DEMO_MATURITIES, [swap_cfg])
-    print("NPV cube shape:", npv_cube.shape)
-    # The cube's time axis is time_grid[1:]: index 0 is the first simulated step, not t=0.
-    first_step = single_currency_swap_demo_config().time_grid[1]
-    print(f"Mean NPV across scenarios at t={first_step}:", float(jnp.mean(npv_cube[:, 0, 0])))

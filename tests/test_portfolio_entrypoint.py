@@ -23,7 +23,7 @@ from engine.calibration.lgm import calibrate_lgm_sigma
 from engine.models.hull_white import ZeroCurve as HwZeroCurve
 from engine.models.hull_white import discount as hw_discount
 from engine.risk.exposure import netting_set_profile
-from engine.simulation.demo_scenarios import flat_yield_curves
+from demos.demo_scenarios import flat_yield_curves
 from engine.portfolio import PortfolioRequest, PortfolioResult, derive_maturity_pillars, price_portfolio
 
 TODAY = ORE.Date(30, 7, 2026)

@@ -141,7 +141,7 @@ for a forward-starting swaption. See
 and `tests/test_european_swaption.py::TestAgainstOREJamshidianEngine::test_matches_ore_forward_starting`
 for the regression coverage.
 
-### 3. The closed-form building blocks: `compute_hw_A()`, `_hw_B()`, `_bond_option_sigma()`, `_bond_call()`/`_bond_put()`
+### 3. The closed-form building blocks: `hull_white.A()`, `_hw_B()`, `_bond_option_sigma()`, `_bond_call()`/`_bond_put()`
 
 These implement the Hull-White 1-Factor closed forms Jamshidian's trick is built from —
 the same `A(t,T)`/`B(t,T)` affine bond-price formula

@@ -4,7 +4,7 @@ Bermudan and American swaption pricing: ORE's `QuantExt::NumericLgmMultiLegOptio
 
 At the same grid settings this returns ORE's numbers, not just their converged limit:
 tests/test_ore_lgm_parity.py prices through ORE's own engine
-(engine/validation/ore_lgm_oracle.py) and agrees to 1e-11 relative. Parity is with the
+(tests/support/ore_lgm_oracle.py) and agrees to 1e-11 relative. Parity is with the
 Grid solver at `ShiftHorizon=0`; ORE's FD solver and default `ShiftHorizon=0.5` are not
 reproduced (I-32). It rests on matching each of:
 
@@ -874,34 +874,3 @@ def price_bermudan_swaptions(
 
         per_trade.append(jnp.asarray(npv, dtype=hw_paths.dtype))
     return jnp.stack(per_trade, axis=-1)
-
-
-# Demo
-if __name__ == "__main__":
-    from engine.simulation.market_model import generate_paths
-    from engine.simulation.demo_scenarios import EVAL_DATE, swaption_demo_config
-
-    config = swaption_demo_config()
-    market_cubes = generate_paths(config)
-    step_times = jnp.array(config.time_grid[1:], dtype=jnp.float64)
-
-    zero_curve = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.03] * 6)
-
-    bermudan_cfg = BermudanSwaptionConfig(
-        notional=1_000_000.0,
-        fixed_rate=0.030,
-        payer=True,
-        rate_factor_index=0,
-        hw_a=config.rates.mean_reversion[0],
-        hw_sigma=float(np.sqrt(config.joint_covariance[1][1])),
-        initial_zero_curve=zero_curve,
-        exercise_dates=[EVAL_DATE + ORE.Period(years, ORE.Years) for years in (1, 2, 3, 4)],
-        swap_tenor="5Y",
-        evaluation_date=EVAL_DATE,
-    )
-    print("Bermudan t=0 NPV:", price_bermudan_swaption_base(bermudan_cfg))
-
-    npv_cube = price_bermudan_swaptions([bermudan_cfg], market_cubes["rates"], step_times)
-    print("Bermudan NPV cube shape:", npv_cube.shape)
-    for i, t in enumerate(config.time_grid[1:]):
-        print(f"  t={t:.2f}: mean NPV across scenarios = {float(jnp.mean(npv_cube[:, i, 0])):.2f}")

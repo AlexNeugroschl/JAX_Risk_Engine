@@ -174,7 +174,7 @@ class TestAmericanPortfolio:
     def test_mixed_portfolio_shape_and_per_trade_independence(self):
         import jax.numpy as jnp
         from engine.simulation.market_model import generate_paths
-        from engine.simulation.demo_scenarios import swaption_demo_config
+        from demos.demo_scenarios import swaption_demo_config
 
         config = swaption_demo_config()
         cubes = generate_paths(config)

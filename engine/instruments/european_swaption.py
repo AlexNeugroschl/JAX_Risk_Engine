@@ -59,13 +59,6 @@ from engine.models.hull_white import (
 )
 
 
-def compute_hw_A(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.ndarray, T: np.ndarray, a: float, sigma: float) -> np.ndarray:
-    """`engine.models.hull_white.A` on NumPy arrays, for callers holding the curve as
-    `zero_times`/`zero_rates` (tests and `_PreparedSwaption`)."""
-    curve = _HwZeroCurve(pillar_times=jnp.asarray(zero_times), pillar_rates=jnp.asarray(zero_rates))
-    return np.asarray(_hw_A(curve, jnp.asarray(t), jnp.asarray(T), a, sigma))
-
-
 @dataclass
 class SwaptionConfig:
     """
@@ -326,8 +319,7 @@ def _price_one_swaption(
         jnp.asarray([notional, -notional], dtype=hw_paths.dtype),
     ])
 
-    # A(T0, Ti) depends only on T0 and today's curve. Use `hull_white.A` directly;
-    # `compute_hw_A` returns NumPy and would break tracing.
+    # A(T0, Ti) depends only on T0 and today's curve.
     _curve = _HwZeroCurve(
         pillar_times=jnp.asarray(swaption.zero_times),
         pillar_rates=jnp.asarray(swaption.zero_rates),
@@ -400,32 +392,3 @@ def price_swaptions(hw_paths: jax.Array, step_times: jax.Array, swaption_configs
         for cfg in swaption_configs
     ]
     return jnp.stack(per_trade, axis=-1)
-
-
-# Demo
-if __name__ == "__main__":
-    from engine.simulation.market_model import generate_paths
-    from engine.simulation.demo_scenarios import EVAL_DATE, swaption_demo_config
-
-    config = swaption_demo_config()
-    market_cubes = generate_paths(config)
-    step_times = jnp.array(config.time_grid[1:], dtype=jnp.float64)
-
-    # Exercise in 3Y into a 2Y swap: live at the early steps, zero after exercise.
-    swaption_cfg = SwaptionConfig(
-        notional=1_000_000.0,
-        fixed_rate=0.030,
-        payer=True,
-        rate_factor_index=0,
-        hw_a=config.rates.mean_reversion[0],
-        hw_sigma=float(np.sqrt(config.joint_covariance[1][1])),
-        initial_zero_curve=ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.03] * 6),
-        swap_tenor="2Y",
-        forward_start=ORE.Period(3, ORE.Years),
-        evaluation_date=EVAL_DATE,
-    )
-
-    npv_cube = price_swaptions(market_cubes["rates"], step_times, [swaption_cfg])
-    print("Swaption NPV cube shape:", npv_cube.shape)
-    for i, t in enumerate(config.time_grid[1:]):
-        print(f"  t={t:.2f}: mean NPV across scenarios = {float(jnp.mean(npv_cube[:, i, 0])):.2f}")

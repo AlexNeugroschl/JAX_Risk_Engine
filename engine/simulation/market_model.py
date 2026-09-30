@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from engine.models.hull_white import (
-    A as _hw_A, B as _hw_B, ZeroCurve as _HwZeroCurve, log_discount as _hw_log_discount,
+    A as _hw_A, B as _hw_B, ZeroCurve as _HwZeroCurve,
 )
 
 # Phase 1: quasi-Monte Carlo normals (shared; re-exported for existing callers)
@@ -125,13 +125,6 @@ def _simulate_cross_asset_paths_jit(
 
 
 # Phase 3: yield-curve reconstruction
-def _initial_log_discount(zero_times: np.ndarray, zero_rates: np.ndarray, t: np.ndarray) -> np.ndarray:
-    """ln P(0,t): linear zero-rate interpolation, flat extrapolation
-    (`engine.models.hull_white.log_discount` on NumPy arrays)."""
-    curve = _HwZeroCurve(pillar_times=jnp.asarray(zero_times), pillar_rates=jnp.asarray(zero_rates))
-    return np.asarray(_hw_log_discount(curve, jnp.asarray(t)))
-
-
 def compute_hw_A_matrix(
     zero_curves: List["ZeroCurveConfig"],
     hw_a: np.ndarray,
@@ -455,25 +448,3 @@ def _generate_paths_inner(config: SimulationConfig, precision: int) -> Dict[str,
         results["yield_curves"] = yield_cube
 
     return results
-
-
-# Demo
-if __name__ == "__main__":
-    from engine.simulation.demo_scenarios import cross_asset_demo_config
-
-    print("Initializing QMC Pipeline & JIT Compilation...")
-    market_cubes = generate_paths(cross_asset_demo_config())
-
-    print("\n--- Base Tensors ---")
-    print(f"Equities/FX:  {market_cubes['equities'].shape}")
-    print(f"Rates:        {market_cubes['rates'].shape}")
-    print(f"Numéraire:    {market_cubes['numeraire'].shape}")
-    
-    print("\n--- 4D Yield Curve Matrix ---")
-    print(f"Yield Curves: {market_cubes['yield_curves'].shape}")
-    
-    print("\n[Sample] Scenario 0, Step 1 (t=0.25), USD Discount Factors:")
-    print(f"To Year 1:  {market_cubes['yield_curves'][0, 0, 0, 0]:.4f}")
-    print(f"To Year 2:  {market_cubes['yield_curves'][0, 0, 1, 0]:.4f}")
-    print(f"To Year 5:  {market_cubes['yield_curves'][0, 0, 2, 0]:.4f}")
-    print(f"To Year 10: {market_cubes['yield_curves'][0, 0, 3, 0]:.4f}")

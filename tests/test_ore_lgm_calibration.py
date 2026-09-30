@@ -33,7 +33,7 @@ from engine.models.curves import DiscountCurve, ZeroCurve, log_discount
 from engine.models.lgm import Sigma
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER as DC, ibor_index
 from engine.simulation.market_model import ZeroCurveConfig
-from engine.validation.ore_lgm_oracle import OreCalibration, ore_lgm_swaption_npv
+from tests.support.ore_lgm_oracle import OreCalibration, ore_lgm_swaption_npv
 
 ASOF = ORE.Date(30, 7, 2026)
 PILLARS = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]

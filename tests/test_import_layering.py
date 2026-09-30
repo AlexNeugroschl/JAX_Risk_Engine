@@ -47,3 +47,19 @@ def test_engine_portfolio_imports_eagerly():
 
     assert "__getattr__" not in vars(portfolio)
     assert callable(portfolio.price_portfolio)
+
+
+def test_engine_ships_no_demo_or_test_code():
+    """I-65: demos live in `demos/` and test tooling in `tests/support/`. No `engine` module
+    has a `__main__` demo block or imports either tree."""
+    offenders = []
+    for path in sorted(ENGINE.rglob("*.py")):
+        name = path.relative_to(ENGINE).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and "__main__" in ast.unparse(node.test):
+                offenders.append(f"{name} has a __main__ block")
+        for module in _imported_modules(path):
+            if module.split(".")[0] in ("demos", "tests"):
+                offenders.append(f"{name} imports {module}")
+    assert not offenders, "; ".join(offenders)

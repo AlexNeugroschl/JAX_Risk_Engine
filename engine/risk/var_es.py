@@ -184,35 +184,3 @@ def compute_risk_metrics(
             metrics[f"ES_{label}_tailCount"] = tail_sample_size(pnl, p)
             metrics[f"ES_{label}_standardError"] = expected_shortfall_standard_error(pnl, p)
     return metrics
-
-
-# Demo
-if __name__ == "__main__":
-    from engine.simulation.market_model import generate_paths
-    from engine.instruments.swap import SwapConfig, price_swaps
-    from engine.simulation.demo_scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES, flat_yield_curves, single_currency_swap_demo_config
-
-    market_cubes = generate_paths(single_currency_swap_demo_config())
-
-    # fixed_rate near the 3.5% forward rate, so the swap starts near fair value and the
-    # demo shows two-sided P&L.
-    swap_cfg = SwapConfig(
-        notional=1_000_000.0,
-        fixed_rate=0.035,
-        payer=True,
-        discount_curve_index=0,
-        forward_curve_index=1,
-        swap_tenor="2Y",
-        # Explicit: SWAP_DEMO_MATURITIES is pinned to EVAL_DATE (I-28).
-        evaluation_date=EVAL_DATE,
-    )
-    npv_cube = price_swaps(market_cubes["yield_curves"], SWAP_DEMO_MATURITIES, [swap_cfg])
-
-    # t=0 baseline: the swap on today's (unshocked) curves.
-    base_cube = flat_yield_curves(disc_rate=0.030, fwd_rate=0.035)
-    base_npv = float(price_swaps(base_cube, SWAP_DEMO_MATURITIES, [swap_cfg])[0, 0, 0])
-
-    metrics = compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))
-    print("Base (t=0) NPV:", base_npv)
-    for key, values in metrics.items():
-        print(f"{key}: {[round(float(v), 2) for v in values]}")

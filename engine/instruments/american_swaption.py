@@ -20,7 +20,6 @@ from dataclasses import InitVar, dataclass, field
 from typing import Dict, List, Optional, Union
 
 import jax
-import numpy as np
 import ORE
 
 from engine.instruments.bermudan_swaption import ExerciseStyle, price_bermudan_swaptions
@@ -113,39 +112,3 @@ def price_american_swaptions(
 ) -> jax.Array:
     """NPV cube for American swaptions (the shared Bermudan pricer)."""
     return price_bermudan_swaptions(american_configs, hw_paths, step_times)
-
-
-# Demo
-if __name__ == "__main__":
-    import jax.numpy as jnp
-
-    from engine.instruments.bermudan_swaption import price_bermudan_swaption_base
-    from engine.simulation.market_model import generate_paths
-    from engine.simulation.demo_scenarios import EVAL_DATE, swaption_demo_config
-
-    config = swaption_demo_config()
-    market_cubes = generate_paths(config)
-    step_times = jnp.array(config.time_grid[1:], dtype=jnp.float64)
-
-    zero_curve = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.03] * 6)
-
-    american_cfg = AmericanSwaptionConfig(
-        notional=1_000_000.0,
-        fixed_rate=0.030,
-        payer=True,
-        rate_factor_index=0,
-        hw_a=config.rates.mean_reversion[0],
-        hw_sigma=float(np.sqrt(config.joint_covariance[1][1])),
-        initial_zero_curve=zero_curve,
-        first_exercise_date=EVAL_DATE + ORE.Period(1, ORE.Years),
-        last_exercise_date=EVAL_DATE + ORE.Period(4, ORE.Years),
-        swap_tenor="5Y",
-        evaluation_date=EVAL_DATE,
-    )
-    print("American exercise opportunities:", len(american_cfg.option_times()))
-    print("American t=0 NPV:", price_bermudan_swaption_base(american_cfg))
-
-    npv_cube = price_american_swaptions([american_cfg], market_cubes["rates"], step_times)
-    print("American NPV cube shape:", npv_cube.shape)
-    for i, t in enumerate(config.time_grid[1:]):
-        print(f"  t={t:.2f}: mean NPV across scenarios = {float(jnp.mean(npv_cube[:, i, 0])):.2f}")

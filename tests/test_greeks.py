@@ -35,7 +35,7 @@ from engine.risk.greeks import (
     swaption_delta_gamma,
     swaption_theta,
 )
-from engine.simulation.demo_scenarios import EVAL_DATE
+from demos.demo_scenarios import EVAL_DATE
 
 TODAY = EVAL_DATE
 PILLAR_TIMES = [1.0, 2.0, 5.0, 10.0, 30.0]
@@ -377,36 +377,6 @@ class TestSwapTheta:
         fwd_curve = ZeroCurve.flat(0.035, PILLAR_TIMES)
         theta = swap_theta(cfg, disc_curve, fwd_curve, theta_days=0)
         assert theta == pytest.approx(0.0, abs=1e-6)
-
-
-# =============================================================================
-# European swaption: the JAX A(t,T) equals the NumPy compute_hw_A
-# =============================================================================
-class TestComputeHwAJaxMatchesNumpy:
-    def test_matches_compute_hw_A_across_grid(self):
-        """Greeks' `hull_white.A` and the pricer's NumPy wrapper `compute_hw_A` agree
-        exactly (they are the same function)."""
-        from engine.risk.greeks import ZeroCurve as GreeksZeroCurve, _hw_A
-        from engine.instruments.european_swaption import compute_hw_A
-
-        pillar_times = [0.5, 1.0, 2.0, 5.0, 10.0, 30.0]
-        rates = [0.01, 0.02, 0.025, 0.03, 0.032, 0.035]
-        curve = GreeksZeroCurve(
-            pillar_times=jnp.asarray(pillar_times, dtype=jnp.float64),
-            pillar_rates=jnp.asarray(rates, dtype=jnp.float64),
-        )
-
-        t_vals = jnp.array([0.0, 0.5, 1.5, 3.0, 7.0])
-        T_vals = jnp.array([2.0, 3.0, 6.0, 8.0, 15.0])
-
-        for a in [0.01, 0.03, 0.1]:
-            for sigma in [0.005, 0.01, 0.02]:
-                jax_A = _hw_A(curve, t_vals, T_vals, a, sigma)
-                np_A = compute_hw_A(
-                    np.array(pillar_times), np.array(rates),
-                    np.array(t_vals), np.array(T_vals), a, sigma,
-                )
-                np.testing.assert_allclose(np.asarray(jax_A), np_A, rtol=1e-10)
 
 
 # =============================================================================

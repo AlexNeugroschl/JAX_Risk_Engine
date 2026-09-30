@@ -38,7 +38,7 @@ from engine.risk.greeks import (
     swap_delta_gamma,
     swaption_delta_gamma,
 )
-from engine.simulation.demo_scenarios import EVAL_DATE
+from demos.demo_scenarios import EVAL_DATE
 
 
 PILLAR_TIMES = [0.0, 1.0, 3.0]

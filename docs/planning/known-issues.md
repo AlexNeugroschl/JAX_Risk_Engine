@@ -12,10 +12,13 @@ the Hull-White model still has the defects the default market path fixed
 
 ## Verification status
 
-Last full run, 2026-09-29, on the code after the ORE alignment: **2,320 passed, 0 failed**
-on Windows (46m00s) and **2,319 passed, 1 skipped, 0 failed** in a Linux `python:3.11`
-container on 4 cores (50m09s; the skip is `reference/traderX`, absent in the container).
-Both ran the complete suite (`.venv/Scripts/python.exe -m pytest tests/`), 2,320 collected,
+Last full run, 2026-09-30, on the code after roadmap 1.1 (I-65): **2,319 passed, 0 failed**
+on Windows (40m43s) and **2,318 passed, 1 skipped, 0 failed** in a Linux `python:3.11`
+container on 4 cores (43m57s; the skip is `reference/traderX`, absent in the container).
+Both ran the complete suite (`.venv/Scripts/python.exe -m pytest tests/`), 2,319 collected
+(2,320 before: the I-65 layering test, `tests/test_demos.py` and a curve test added; the
+old `var_es` demo test, a test comparing `hull_white.A` with a wrapper of itself and two
+tests of the removed `_initial_log_discount` wrapper removed),
 summary line printed. The fast tier (`-m "not slow"`) is not a full verification and is
 never recorded here. Rules: [README.md](README.md#verification-rules).
 
@@ -60,7 +63,6 @@ never recorded here. Rules: [README.md](README.md#verification-rules).
 | [I-62](#i-62) | Hull-White Bermudan/American scenario pricing runs on the host | Low | OPEN | Performance | 1.3 |
 | [I-63](#i-63) | Hull-White trade configs carry copies of model parameters | Medium | OPEN | Architecture | 1.3 |
 | [I-64](#i-64) | A trade's evaluation date defaults to ORE's thread-local global | Medium | OPEN | Correctness | 1.3 |
-| [I-65](#i-65) | Demo data and the ORE test oracle ship inside `engine/` | Low | OPEN | Architecture | 1.1 |
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | 5.2 |
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | 5.3 |
 | [I-68](#i-68) | Models and engines are separate code paths, not options of one configuration | Medium | OPEN | Architecture | 1.2 |
@@ -155,7 +157,7 @@ discretization error.
 
 **To close.** Decided (A-3, D-10): implement the shift (`H → H + shift`, state grid in the
 shifted variable, in `engine.models.lgm` and `_state_grid`), prove parity at 0.5 against
-`engine/validation/ore_lgm_oracle.py` (which already takes `shift_horizon=`), then make 0.5
+`tests/support/ore_lgm_oracle.py` (which already takes `shift_horizon=`), then make 0.5
 the default. The FD solver is an option, [F-01](features.md#f-01).
 
 <a id="i-42"></a><a id="m-1"></a>
@@ -321,7 +323,7 @@ global that must be set with a context manager that restores it.
 
 **Severity:** Low · **Status:** OPEN · **Found:** 2026-09-25
 
-**What is wrong.** Validation tooling only. `engine/validation/ore_lgm_oracle.py` hands ORE
+**What is wrong.** Validation tooling only. `tests/support/ore_lgm_oracle.py` hands ORE
 the engine's zero curve as date-quoted zero rates; ORE's zero-curve build re-reads the t=0
 rate as `zeroRate(1e-4)`, tilting the first segment by `slope·1e-4`. A Bermudan whose flows
 fall inside a first segment rising 3% → 3.2% differs from ORE by up to 2.4e-6 relative.
@@ -629,20 +631,6 @@ Closed on the market path (trades carry no model; refused if set).
 **To close.** Roadmap 1.3: trades name their curves and index; model parameters and
 calibrated σ come from the market and the configuration.
 
-<a id="i-65"></a><a id="a-6"></a>
-### I-65 — Demo data and the ORE test oracle ship inside `engine/`
-
-**Severity:** Low · **Status:** OPEN · **Found:** 2026-09-24, audit A-6
-
-**What is wrong.** `engine/simulation/demo_scenarios.py` (demo data), `engine/validation/`
-(a test oracle that writes ORE XML), and wrappers only tests call
-(`european_swaption.compute_hw_A`, `market_model._initial_log_discount`) are in the shipped
-package. `engine/*` `__main__` blocks import the demo data, so it cannot move to `tests/`.
-
-**To close.** Roadmap 1.1, before the oracle grows (2.2): move the oracle to `tests/support/`
-and the demo data plus the `__main__` demos to `demos/`, leaving no `engine` import of
-either; update the imports in tests.
-
 <a id="i-68"></a>
 ### I-68 — Models and engines are separate code paths, not options of one configuration
 
@@ -811,7 +799,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-20"></a>I-20 | Impossible calendar dates aborted the whole bundle | `tests/test_integration_note.py::TestImpossibleCalendarDates` |
 | <a id="i-25"></a>I-25 | A scalar Greek crashed the HTTP result serializer | `tests/test_api_bond_schemas.py::TestBondGreeksSerializeOverHttp` |
 | <a id="i-26"></a>I-26 | Greeks for a bond maturing tomorrow crashed on the Theta reprice | `tests/test_portfolio_bond_wire_through.py::TestBondGreeksReachThePortfolioPath` |
-| <a id="i-28"></a>I-28 | The `var_es` module demo crashed on a moved date | `tests/test_risk_measure_label.py::TestVarEsDemoRuns` |
+| <a id="i-28"></a>I-28 | The `var_es` module demo crashed on a moved date | `tests/test_demos.py::TestComponentDemosRun` |
 | <a id="i-29"></a>I-29 | A rounded exercise time silently dropped a coupon (exercise now given as dates) | `tests/test_ore_bermudan_oracle.py::TestExerciseDatesAreExact` |
 | <a id="i-30"></a>I-30 | The `A(t,T)` variance term was nearly uncovered at t=0 | `tests/test_ore_coverage_hardening.py::TestVarianceTermIsActuallyChecked` |
 | <a id="i-31"></a>I-31 | Bermudan/American floating coupons projected over the wrong period | `tests/test_ore_lgm_parity.py` |
@@ -825,6 +813,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-41"></a>I-41 | A European at zero mean reversion priced at intrinsic value (now refused) | `tests/test_european_swaption.py::TestJamshidianRefusals` |
 | <a id="i-48"></a>I-48 | Zero curves extrapolated a flat zero rate; ORE a flat forward | `tests/test_treasury_instrument.py::TestCurveInterpolation`, `tests/test_curves.py` |
 | <a id="i-52"></a>I-52 | Cash settlement was priced as physical | `tests/test_valuation.py::test_a_cash_settled_european_uses_the_par_yield_annuity` |
+| <a id="i-65"></a><a id="a-6"></a>I-65 | Demo data, the modules' `__main__` demos and the ORE test oracle shipped inside `engine/` (now `demos/`, `tests/support/`) | `tests/test_import_layering.py::test_engine_ships_no_demo_or_test_code` |
 | <a id="m-4"></a>Audit M-4 | Trades were defined relative to the evaluation date (now absolute dates) | `tests/test_trade_dates.py` |
 | <a id="m-5"></a>Audit M-5 | Theta re-rolled the trade instead of ageing it | `tests/test_trade_dates.py` |
 | <a id="r-1"></a>Audit R-1 | Cube quantiles were reported as VaR/ES (now exposure profiles; market-risk VaR/ES by t=0 revaluation) | `tests/test_exposure.py`, `tests/test_market_risk.py`, `tests/test_market_risk_ore_parity.py` |

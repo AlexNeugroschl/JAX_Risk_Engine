@@ -61,7 +61,7 @@ be followed from L6 down to L2. An equity position joins it with [F-04](../featu
 ## Remaining work
 
 **Step 2.2 — an OREApp XVA oracle ([I-50](../known-issues.md#i-50)).** Generalize the in-process
-oracle (moved to `tests/support/` by roadmap 1.1) from pricing analytics to an XVA run:
+oracle (`tests/support/ore_lgm_oracle.py`) from pricing analytics to an XVA run:
 write `simulation.xml` from a `CamConfig`, the portfolio from the shared portfolio's trades,
 and read ORE's cube and exposure reports. Check it first by reproducing an ORE
 `Examples/Exposure` expected output. Then:
