@@ -28,10 +28,9 @@ import jax.numpy as jnp
 import numpy as np
 from fastapi import APIRouter, HTTPException, status
 
-from engine.portfolio import validate_portfolio_against_simulation
+from engine.portfolio.request import validate_hull_white_request
 from engine.portfolio.market_path import validate_market_request
 from engine.portfolio.worker_pool import submit_pricing_job
-from engine.simulation.market_model import validate_joint_covariance
 from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.lgm import calibrate_lgm_sigma
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
@@ -88,8 +87,7 @@ def submit_portfolio_price(request: PortfolioRequestSchema) -> dict:
     then submit it to the worker pool for its precision tier and return its `job_id`."""
     try:
         dataclass_request = request.to_dataclass()
-        validate_joint_covariance(dataclass_request.market.joint_covariance)
-        validate_portfolio_against_simulation(dataclass_request.market, dataclass_request.trades)
+        validate_hull_white_request(dataclass_request)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

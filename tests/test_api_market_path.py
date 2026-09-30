@@ -85,6 +85,10 @@ def test_greeks_cross_the_boundary_with_the_vega_matrix(test_client):
     ({"simulation": None}, "CamConfig"),
     ({"trades": [_swap(index_tenor_months=3)]}, "USD-SIMINDEX-3M"),
     ({"trades": [_swap(currency="EUR")]}, "EUR"),
+    # The run configuration (I-68): a reporting currency contradicting the simulation's, and a
+    # precision the market path does not honour, were silently ignored before roadmap 1.2.
+    ({"base_currency": "EUR"}, "contradicts"),
+    ({"precision": {"pricing": 32}}, "config.precision.pricing"),
 ])
 def test_an_unpriceable_request_is_a_400_and_no_job(test_client, overrides, message):
     r = test_client.post("/v2/portfolio/price", json={**_body([_swap()]), **overrides})

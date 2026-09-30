@@ -1,7 +1,14 @@
 """
-Pricing-engine configuration for the market path: ORE's `pricingengine.xml` as dataclasses.
+Pricing-engine configuration: ORE's `pricingengine.xml` as dataclasses, the engine per product
+of the run configuration (`engine.portfolio.config.RunConfig.pricing`).
 
-Defaults are ORE's example configuration (Examples/Products/Input/pricingengine.xml,
+Swaps have one engine (ORE's `DiscountingSwapEngine`). Europeans: `Bachelier`, ORE's default
+(`EuropeanSwaptionEngineBuilder` -> `BlackMultiLegOptionEngine` on the market's normal
+volatility, `engine.valuation.european`), or `Jamshidian` on the model's volatility (the
+Hull-White model's only engine, I-46). Bermudans/Americans: ORE's LGM grid engine,
+`LgmSwaptionEngineConfig`.
+
+Bermudan/American defaults are ORE's example configuration (Examples/Products/Input/pricingengine.xml,
 `BermudanSwaption`), with one recorded exception: `shift_horizon` is 0 (Basel decision D-10,
 the configuration ORE parity is proven for), where ORE's example uses 0.5; see I-32. Other
 shift horizons are refused rather than silently priced at 0.
@@ -12,6 +19,8 @@ import ORE
 
 from engine.calibration.ore_lgm import SwapIndexConventions
 
+#: European swaption engines; the first is ORE's default.
+EUROPEAN_ENGINES = ("Bachelier", "Jamshidian")
 CALIBRATION_METHODS = ("Bootstrap", "None")
 CALIBRATION_STRATEGIES = ("CoterminalDealStrike", "CoterminalATM")
 
@@ -54,11 +63,18 @@ class LgmSwaptionEngineConfig:
 
 @dataclass(frozen=True)
 class PricingConfig:
-    """The engines of the market path. `recalibrate` is ORE's `ValuationEngine` flag
-    (default true): model-based trades are recalibrated on every path and date."""
+    """The engine per product (see the module docstring). `recalibrate` is ORE's
+    `ValuationEngine` flag (default true): model-based trades are recalibrated on every path
+    and date. Which engines a model implements is checked by the run
+    (`engine.portfolio.config`)."""
+    european: str = "Bachelier"
     bermudan: LgmSwaptionEngineConfig = field(default_factory=LgmSwaptionEngineConfig)
     american: LgmSwaptionEngineConfig = field(default_factory=LgmSwaptionEngineConfig)
     recalibrate: bool = True
+
+    def __post_init__(self):
+        if self.european not in EUROPEAN_ENGINES:
+            raise ValueError(f"european must be one of {EUROPEAN_ENGINES}; got {self.european!r}")
 
 
 def reference_grid_dates(reference: ORE.Date, grid: str):

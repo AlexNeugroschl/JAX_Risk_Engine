@@ -19,34 +19,51 @@ A-1 to A-9 ([compliance/decisions.md](../../../compliance/decisions.md) §1–2)
 
 ## Today
 
+Every choice is one `RunConfig` (`engine/portfolio/config.py`, step 1.2), on
+`PortfolioRequest.config`. The model is still chosen by the type of `market`:
+
 | | Market path (default) | Hull-White model |
 |---|---|---|
-| Entry | `price_portfolio(PortfolioRequest(market=Market(...), ...))`, `engine.portfolio.market_path` | `price_portfolio(PortfolioRequest(market=SimulationConfig(...), ...))`, `engine.portfolio.request` |
-| HTTP | `POST /v2/portfolio/price`, `schema_version: "2"` | `POST /portfolio/price` |
-| Simulation | `engine.simulation.cam` (LGM per currency, exact) | `engine.simulation.market_model` (Hull-White, constant θ) |
+| Entry | `price_portfolio(PortfolioRequest(market=Market(...), config=RunConfig(...)))`, `engine.portfolio.market_path` | `price_portfolio(PortfolioRequest(market=SimulationConfig(...), config=HULL_WHITE_CONFIG))`, `engine.portfolio.request` |
+| HTTP | `POST /v2/portfolio/price`, `schema_version: "2"` | `POST /portfolio/price` (translated with `HULL_WHITE_CONFIG`) |
+| Simulation | `config.simulation`, `engine.simulation.cam` (LGM per currency, exact) | the `market` itself, `engine.simulation.market_model` (Hull-White, constant θ) |
 | Valuation | `engine.valuation` (every trade by its t=0 engine per path) | `engine.instruments.*` scenario pricers |
-| Greeks | `engine.risk.sensitivities` (bump, ORE's definitions) | `engine.risk.greeks` (AD) |
-| Precision | Explicit dtypes | Process-global x64 toggle |
+| European engine | `Bachelier` | `Jamshidian` |
+| Greeks | `Bump`, `engine.risk.sensitivities`, settings `config.greeks.sensitivity` | `AD`, `engine.risk.greeks` |
+| Precision | `simulation` only; other stages refused below 64 (I-55, step 1.4) | every stage, process-global x64 toggle |
 
-The model is chosen by the type of `market`. `engine.market_risk` picks the European engine
-from the trade's fields.
+`engine.market_risk` still picks the European engine from the trade's fields (A-8, F-01).
 
-## Step 1.2 — the run configuration (I-68)
+## Step 1.2 — the run configuration (I-68) — done
 
-One configuration naming, per component:
+| Component | Field | Options | Default |
+|---|---|---|---|
+| Model per currency | `simulation.ir[ccy]` (`CamConfig`, ORE's `CrossAssetModelData`) | `LgmConfig`; Hull-White in step 1.3 | LGM |
+| Simulation | `simulation` | Classic revaluation; AMC is [F-03](../features.md#f-03) | Classic |
+| Engine per product | `pricing` (`PricingConfig`) | Swap: discounting. European: `Bachelier`, `Jamshidian`. Bermudan/American: `LgmSwaptionEngineConfig` (FD solver in F-01) | ORE's builder defaults |
+| Greeks method | `greeks.method` | `Bump`; `AD` | `Bump` |
+| Sensitivity settings | `greeks.sensitivity` (`SensitivityConfig`) | Tenors, shifts, Theta horizon, vol decay | ORE's |
+| Precision per stage | `precision` (`PrecisionConfig`) | 32 or 64 per stage, overrides per type and metric | FP64 |
+| Swaption vol decay | `simulation.swaption_vol_decay` | `ForwardVariance`; `ConstantVariance` (A-4) | `ForwardVariance` |
+| Reporting currency | `base_currency` | Any market currency; `None` is the simulation's, else USD | `None` |
 
-| Component | Options | Default |
-|---|---|---|
-| Model per currency | LGM; Hull-White | LGM (ORE's `CrossAssetModel`) |
-| Simulation | Classic revaluation; later AMC ([F-03](../features.md#f-03)) | Classic |
-| Engine per product | Swap: discounting. European: Bachelier (market vol); Jamshidian. Bermudan/American: LGM grid (`ShiftHorizon`, later FD solver) | ORE's builder defaults |
-| Greeks method | Bump-and-revalue; AD ([F-01](../features.md#f-01)) | Bump (ORE's) |
-| Sensitivity settings | `SensitivityConfig` (tenors, shifts, Theta horizon, vol decay) | ORE's |
-| Precision per stage | Simulation, pricing, risk, calibration | FP64 |
-| Swaption vol decay | `ForwardVariance`; `ConstantVariance` (A-4) | `ForwardVariance` |
+Rules the implementation follows, which steps 1.3, 1.4 and 4.1 keep:
 
-Exit: defaults reproduce today's market path bit for bit (the shared portfolio
-`tests/support/portfolio.py` and the parity suites).
+- **An option a model does not implement is refused, never substituted.** `check_market_path`
+  and `check_hull_white` run before any work and name the field. An engine or method is
+  checked where the run uses it (a European engine only with a European, a Greeks method
+  only with `compute_greeks`); a setting a model does not read at all is refused when
+  changed from its default.
+- **One fact, one field.** The reporting currency is the simulation's; a `base_currency`
+  contradicting it is refused (before 1.2 it was silently ignored).
+- **The request travels whole.** The worker pool freezes the entire request, so every
+  configuration component reaches the worker and is validated again there.
+
+Evidence that the defaults reproduce the market path bit for bit: the shared portfolio
+(8 trades, scenario risk, exposure, bump Greeks), an FP32-simulation run and the Hull-White
+model, compared array for array against the code before the change (114 arrays, all
+identical: [verification status](../known-issues.md#verification-status)), and the parity
+suites in the full run.
 
 ## Step 1.3 — the Hull-White model on the shared pipeline
 

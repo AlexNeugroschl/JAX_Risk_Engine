@@ -11,6 +11,7 @@ from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import (
     BondConfig, CouponPeriod, ScenarioPricingNotSupported, price_bond_base,
 )
+from engine.portfolio import HULL_WHITE_CONFIG
 from engine.portfolio.request import (
     DETERMINISTIC_ONLY_TYPES,
     PortfolioRequest,
@@ -76,7 +77,7 @@ def bond_request(trades, compute_greeks: bool = False) -> PortfolioRequest:
     trades = list(trades)
     return PortfolioRequest(
         market=make_market(trades=trades), trades=trades,
-        compute_greeks=compute_greeks, scenario_risk=False,
+        compute_greeks=compute_greeks, scenario_risk=False, config=HULL_WHITE_CONFIG,
     )
 
 
@@ -90,7 +91,7 @@ def make_swap(notional: float = 1_000_000.0) -> SwapConfig:
 
 def swap_request(trades, **kwargs) -> PortfolioRequest:
     trades = list(trades)
-    return PortfolioRequest(market=make_market(trades=trades), trades=trades, **kwargs)
+    return PortfolioRequest(market=make_market(trades=trades), trades=trades, **kwargs, config=HULL_WHITE_CONFIG)
 
 
 class TestBondsReachBaseNpv:
@@ -316,7 +317,7 @@ class TestScenarioRiskIsRefusedForBonds:
 
     def test_a_bond_with_scenario_risk_on_is_refused(self):
         request = PortfolioRequest(
-            market=make_market(), trades=[make_bill()], scenario_risk=True,
+            market=make_market(), trades=[make_bill()], scenario_risk=True, config=HULL_WHITE_CONFIG,
         )
         with pytest.raises(ScenarioPricingNotSupported):
             price_portfolio(request)
@@ -326,7 +327,7 @@ class TestScenarioRiskIsRefusedForBonds:
         request = PortfolioRequest(
             market=make_market(),
             trades=[make_bill(), make_note(face=-7_777.0)],
-            scenario_risk=True,
+            scenario_risk=True, config=HULL_WHITE_CONFIG,
         )
         with pytest.raises(ScenarioPricingNotSupported) as exc:
             price_portfolio(request)
@@ -339,7 +340,7 @@ class TestScenarioRiskIsRefusedForBonds:
         column)."""
         swap = make_swap()
         request = PortfolioRequest(
-            market=make_market(), trades=[swap, swap, make_bill()], scenario_risk=True,
+            market=make_market(), trades=[swap, swap, make_bill()], scenario_risk=True, config=HULL_WHITE_CONFIG,
         )
         with pytest.raises(ScenarioPricingNotSupported):
             price_portfolio(request)
@@ -347,7 +348,7 @@ class TestScenarioRiskIsRefusedForBonds:
     def test_the_refusal_is_not_a_bare_key_error(self):
         """The failure is the named refusal, not the old bare `KeyError: <class BondConfig>`."""
         request = PortfolioRequest(
-            market=make_market(), trades=[make_bill()], scenario_risk=True,
+            market=make_market(), trades=[make_bill()], scenario_risk=True, config=HULL_WHITE_CONFIG,
         )
         with pytest.raises(ScenarioPricingNotSupported):
             price_portfolio(request)
@@ -400,7 +401,7 @@ class TestExistingBehaviourUnchanged:
 
     def test_scenario_risk_defaults_to_true(self):
         """`scenario_risk` defaults to True."""
-        assert PortfolioRequest(market=make_market(), trades=[]).scenario_risk is True
+        assert PortfolioRequest(market=make_market(), trades=[], config=HULL_WHITE_CONFIG).scenario_risk is True
 
     def test_swap_greeks_are_unaffected(self):
         """Swap Greeks are unchanged. A swap reports per-pillar vectors per curve

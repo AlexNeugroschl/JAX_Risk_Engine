@@ -18,7 +18,7 @@ from engine.instruments.treasury import BondConfig, CouponPeriod
 from engine.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
 from engine.models.curves import ZeroCurve, discount
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER as DC
-from engine.portfolio import PortfolioRequest, price_portfolio
+from engine.portfolio import PortfolioRequest, RunConfig, price_portfolio
 from engine.simulation.config import CamConfig, LgmConfig, simulate
 from engine.valuation.config import LgmSwaptionEngineConfig, PricingConfig
 from engine.valuation.portfolio import value_portfolio, value_today
@@ -31,6 +31,7 @@ VOLS = SwaptionVolSurface(("1Y", "5Y", "10Y"), ("1Y", "5Y", "10Y"),
                           ((0.0080, 0.0088, 0.0090), (0.0090, 0.0093, 0.0094), (0.0092, 0.0094, 0.0096)))
 FAST = LgmSwaptionEngineConfig(n_per_std=12, std_devs=4.0)
 PRICING = PricingConfig(bermudan=FAST, american=FAST)
+CONFIG = RunConfig(pricing=PRICING)
 DATES = tuple(ASOF + ORE.Period(m, ORE.Months) for m in (3, 6, 12, 24, 36))
 
 
@@ -73,7 +74,8 @@ def _trades():
 
 @pytest.fixture(scope="module")
 def result():
-    request = PortfolioRequest(market=_market(), trades=_trades(), simulation=_simulation(), pricing=PRICING)
+    request = PortfolioRequest(market=_market(), trades=_trades(), 
+                               config=dataclasses.replace(CONFIG, simulation=_simulation()))
     return price_portfolio(request)
 
 
@@ -115,7 +117,7 @@ def test_ores_time_weighted_and_basel_profiles_are_reported(result):
 
 
 def test_without_scenario_risk_only_todays_npvs(result):
-    request = PortfolioRequest(market=_market(), trades=_trades(), scenario_risk=False, pricing=PRICING)
+    request = PortfolioRequest(market=_market(), trades=_trades(), scenario_risk=False, config=CONFIG)
     today_only = price_portfolio(request)
     assert today_only.npv_cube.size == 0 and today_only.exposure is None
     assert today_only.base_npv_per_trade == pytest.approx(value_today(_trades(), _market(), "USD", PRICING),
@@ -129,7 +131,7 @@ def test_scenario_risk_needs_a_simulation():
 
 def test_greeks_are_oresstyle_sensitivities(result):
     request = PortfolioRequest(market=_market(), trades=_trades()[:2], scenario_risk=False, compute_greeks=True,
-                               pricing=PRICING)
+                               config=CONFIG)
     greeks = price_portfolio(request).greeks
     assert set(greeks[0]) == {"delta:discount:USD", "gamma:discount:USD", "delta:index:USD-SIMINDEX-6M",
                               "gamma:index:USD-SIMINDEX-6M", "theta"}
@@ -140,7 +142,7 @@ def test_trade_ids_are_echoed_on_both_paths():
     """I-10: the request's trade ids come back on the result, market and Hull-White path alike."""
     from tests.test_portfolio_bond_wire_through import bond_request, make_bill
     ids = ["swap-1", "european-1"]
-    market_path = PortfolioRequest(market=_market(), trades=_trades()[:2], scenario_risk=False, pricing=PRICING,
+    market_path = PortfolioRequest(market=_market(), trades=_trades()[:2], scenario_risk=False, config=CONFIG,
                                    trade_ids=ids)
     assert price_portfolio(market_path).trade_ids == ids
     legacy = dataclasses.replace(bond_request([make_bill()]), trade_ids=("bill-1",))

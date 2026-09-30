@@ -12,15 +12,16 @@ the Hull-White model still has the defects the default market path fixed
 
 ## Verification status
 
-Last full run, 2026-09-30, on the code after roadmap 1.1 (I-65): **2,319 passed, 0 failed**
-on Windows (40m43s) and **2,318 passed, 1 skipped, 0 failed** in a Linux `python:3.11`
-container on 4 cores (43m57s; the skip is `reference/traderX`, absent in the container).
-Both ran the complete suite (`.venv/Scripts/python.exe -m pytest tests/`), 2,319 collected
-(2,320 before: the I-65 layering test, `tests/test_demos.py` and a curve test added; the
-old `var_es` demo test, a test comparing `hull_white.A` with a wrapper of itself and two
-tests of the removed `_initial_log_discount` wrapper removed),
-summary line printed. The fast tier (`-m "not slow"`) is not a full verification and is
-never recorded here. Rules: [README.md](README.md#verification-rules).
+Last full run, 2026-09-30, on the code after roadmap 1.2 (I-68, the run configuration):
+**2,353 passed, 0 failed** on Windows (42m25s) and **2,353 passed, 0 failed** in a Linux
+`python:3.11` container on 4 cores (49m59s). Both ran the complete suite
+(`.venv/Scripts/python.exe -m pytest tests/`), 2,353 collected (2,319 before: 32 in
+`tests/test_run_config.py` and 2 HTTP refusal cases in `tests/test_api_market_path.py`),
+summary line printed. Bit for bit: before the change, 114 arrays were saved from the shared
+portfolio's scenario run (cube, exposure, per-trade EPE), an FP32-simulation run, its
+market-path bump Greeks and the Hull-White model (cube, exposure, AD Greeks, FP32); after it,
+all 114 are identical in value, dtype and shape. The fast tier (`-m "not slow"`) is not a
+full verification and is never recorded here. Rules: [README.md](README.md#verification-rules).
 
 ## Summary
 
@@ -65,7 +66,7 @@ never recorded here. Rules: [README.md](README.md#verification-rules).
 | [I-64](#i-64) | A trade's evaluation date defaults to ORE's thread-local global | Medium | OPEN | Correctness | 1.3 |
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | 5.2 |
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | 5.3 |
-| [I-68](#i-68) | Models and engines are separate code paths, not options of one configuration | Medium | OPEN | Architecture | 1.2 |
+| [I-68](#i-68) | The Hull-White model is chosen by the market's type, not by the configuration | Medium | PARTIAL | Architecture | 1.3 |
 
 **Paths.** The *market path* is `price_portfolio` on a `Market` (`engine.portfolio.market_path`,
 HTTP `POST /v2/portfolio/price`): ORE's LGM cross-asset model and valuation, the default.
@@ -519,8 +520,10 @@ pins today's rule.
 1. The market path is served at `POST /v2/portfolio/price` with `schema_version: "2"`; the
    Hull-White model at `POST /portfolio/price`. These are two models, not versions.
 2. The model is chosen by the request's shape, so no request can mix options across them.
-3. Unreachable: the sensitivity settings (`SensitivityConfig`: tenors, shifts, Theta horizon,
-   vol decay; unreachable from `price_portfolio` too), market-risk VaR/ES
+3. Unreachable over HTTP: the Greeks settings (`RunConfig.greeks`: the method and
+   `SensitivityConfig`'s tenors, shifts, Theta horizon and vol decay; reachable from
+   `price_portfolio` since roadmap 1.2), the European engine (`PricingConfig.european`; the
+   Hull-White route always sends Jamshidian), market-risk VaR/ES
    (`engine.market_risk.run_market_risk`, no route), the market path's calibrations as
    standalone runs (`POST /calibration/lgm` serves only the Hull-White basket), and trade ids
    on the Hull-White shape.
@@ -528,7 +531,7 @@ pins today's rule.
 Nothing is priced wrongly; unreachable settings run at documented defaults.
 
 **To close.** Decided (A-2): one route and one request whose configuration
-([I-68](#i-68)) reaches every setting, validated before any job starts (unknown fields
+(`RunConfig`, [I-68](#i-68)) reaches every setting, validated before any job starts (unknown fields
 refused, each refusal naming its field), no version-like names except for real contract
 revisions. Today's routes keep answering, translated. A completeness test fails when a
 configuration setting has no API field
@@ -610,10 +613,15 @@ with a test.
 2. *No warning.* Any per-stage combination may be run (decision D-9), but nothing records
    which combinations are shown adequate for which figure, so an FP32 exposure profile looks
    exactly like a validated one.
+3. *Market path stages.* The market path honours `config.precision.simulation` only. Pricing,
+   risk and calibration run in float64 there, and a value below 64 for them is refused by
+   name (`check_market_path`); until roadmap 1.2 it was accepted and silently ignored.
 
 **To close.** Decided (A-9): (1) roadmap 1.4: x64 on once per process, every stage and array
-with an explicit dtype from the configuration, then remove the toggling, the lock and the
-tiers, never leaving precision unadjustable in between. (2) roadmap 2.7: an evidence table per
+with an explicit dtype from the configuration (on the market path the scenario market, the
+legs and the per-path Bermudan engine, so pricing, risk and calibration become adjustable
+there and the refusal goes), then remove the toggling, the lock and the tiers, never leaving
+precision unadjustable in between. (2) roadmap 2.7: an evidence table per
 figure and precision (what was validated, how, at how many paths) and a warning on any
 result whose combination is unproven.
 
@@ -632,20 +640,27 @@ Closed on the market path (trades carry no model; refused if set).
 calibrated σ come from the market and the configuration.
 
 <a id="i-68"></a>
-### I-68 — Models and engines are separate code paths, not options of one configuration
+### I-68 — The Hull-White model is chosen by the market's type, not by the configuration
 
-**Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-30, decisions A-1, A-5, A-8
+**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-30, decisions A-1, A-5, A-8
 
-**What is wrong.** The model is chosen by the type of `PortfolioRequest.market`
-(`SimulationConfig` for Hull-White, `Market` for LGM), and each path hard-wires its engines
-and Greeks method (bump on the market path, AD on Hull-White). `engine.market_risk` picks a
-European's engine from the trade's fields. Decision A-1 makes models, engines, Greeks method
-and precision options of one run configuration, with ORE's defaults.
+**What is wrong.** Every choice of a portfolio run is one `RunConfig`
+(`engine/portfolio/config.py`, roadmap 1.2): simulation and model per currency
+(`simulation.ir`), engine per product (`pricing`), Greeks method and ORE's sensitivity
+settings (`greeks`), precision per stage (`precision`), reporting currency. Each model refuses
+an option it does not implement, naming the field. What is left: the Hull-White model is still
+selected by passing a `SimulationConfig` as `PortfolioRequest.market`, not by a Hull-White
+model in `config.simulation.ir`, because its simulation still carries its own curves and its
+trades their own model parameters ([I-63](#i-63)).
 
-**To close.** Roadmap 1.2: one run configuration naming, per component, the model per
-currency, the simulation, the engine per product, the Greeks method and the precision per
-stage; its defaults reproduce today's market path bit for bit
-([details/configurable-engine.md](details/configurable-engine.md)).
+**Reach.** Only how the Hull-White model is selected; its engines, Greeks method and precision
+come from the same `RunConfig` as the market path's (`HULL_WHITE_CONFIG`).
+
+**Current handling.** `check_hull_white` refuses the market path's settings on a Hull-White
+run (a `config.simulation`, LGM engine settings, sensitivity settings, a base currency).
+
+**To close.** Roadmap 1.3: a Hull-White model per currency in `CamConfig.ir` on a `Market`,
+and the `SimulationConfig` market removed.
 
 ---
 
@@ -814,6 +829,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-48"></a>I-48 | Zero curves extrapolated a flat zero rate; ORE a flat forward | `tests/test_treasury_instrument.py::TestCurveInterpolation`, `tests/test_curves.py` |
 | <a id="i-52"></a>I-52 | Cash settlement was priced as physical | `tests/test_valuation.py::test_a_cash_settled_european_uses_the_par_yield_annuity` |
 | <a id="i-65"></a><a id="a-6"></a>I-65 | Demo data, the modules' `__main__` demos and the ORE test oracle shipped inside `engine/` (now `demos/`, `tests/support/`) | `tests/test_import_layering.py::test_engine_ships_no_demo_or_test_code` |
+| <a id="i-69"></a>I-69 | The market path silently ignored `precision.pricing`/`risk`/`calibration`, `calibration_targets`, and a `base_currency` contradicting the simulation (now refused by name) | `tests/test_run_config.py::TestTheMarketPathRefusesWhatItDoesNotImplement`, `::TestConfigurationValues`, `tests/test_api_market_path.py::test_an_unpriceable_request_is_a_400_and_no_job` |
 | <a id="m-4"></a>Audit M-4 | Trades were defined relative to the evaluation date (now absolute dates) | `tests/test_trade_dates.py` |
 | <a id="m-5"></a>Audit M-5 | Theta re-rolled the trade instead of ageing it | `tests/test_trade_dates.py` |
 | <a id="r-1"></a>Audit R-1 | Cube quantiles were reported as VaR/ES (now exposure profiles; market-risk VaR/ES by t=0 revaluation) | `tests/test_exposure.py`, `tests/test_market_risk.py`, `tests/test_market_risk_ore_parity.py` |

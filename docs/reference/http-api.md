@@ -290,7 +290,9 @@ know rather than an inconsistency to gloss over — see
 
 ## Request schema: `PortfolioRequestSchema`
 
-Mirrors `engine.portfolio.PortfolioRequest`:
+Mirrors `engine.portfolio.PortfolioRequest` on the Hull-White model. Its run configuration is
+`HULL_WHITE_CONFIG` (Jamshidian Europeans, AD Greeks: the engines this model implements) with
+the request's `precision`:
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -463,9 +465,14 @@ alignment plan 9.2; [I-56](../planning/known-issues.md#i-56)):
 | `schema_version` | `"2"`: a historical name for this shape, not a version (see [Target: one configurable API](#target-one-configurable-api)) |
 | `market` | `asof` (ISO date; every trade is valued on it); `currencies`: per currency a `discount_curve`, `index_curves` keyed by index name (`"USD-SIMINDEX-6M"`), and `swaption_vols` (ATM normal matrix: `option_tenors`, `swap_tenors`, `vols`); `fx_spots` keyed `"EURUSD"`; `equities` |
 | `trades` | Discriminated by `trade_type`: `swap`, `european_swaption`, `bermudan_swaption`, `american_swaption`, `bond`. Each names its `currency` and `index_tenor_months` and carries no model or curve. Swaptions take `settlement` (`Physical` or `Cash`; a cash European uses ORE's `ParYieldCurve` annuity). Optional `trade_id`, on every trade or on none |
-| `simulation` | ORE's `simulation.xml` as `CamConfigSchema`: `dates`, `base_currency`, `ir` per currency (`reversion`, `volatility`, optional calibration basket `calibration_expiries` × `calibration_terms`), `fx_volatilities`, `equity_volatilities`, `correlations` between factors `IR:USD`, `FX:EURUSD`, `EQ:SP5`, `curve_tenors`, `samples`, `seed`, `swaption_vol_decay`. Required with `scenario_risk` |
+| `simulation` | `RunConfig.simulation`: ORE's `simulation.xml` as `CamConfigSchema`: `dates`, `base_currency`, `ir` per currency (`reversion`, `volatility`, optional calibration basket `calibration_expiries` × `calibration_terms`), `fx_volatilities`, `equity_volatilities`, `correlations` between factors `IR:USD`, `FX:EURUSD`, `EQ:SP5`, `curve_tenors`, `samples`, `seed`, `swaption_vol_decay`. Required with `scenario_risk` |
 | `pricing` | The Bermudan and American engines (`LgmEngineSchema`: ORE's example configuration by default) and `recalibrate` (default `true`, as ORE's `ValuationEngine`) |
-| `base_currency`, `pfe_quantiles`, `compute_greeks`, `scenario_risk`, `precision` | As in the Hull-White shape. Greeks are ORE's bump-and-revalue sensitivities |
+| `base_currency` | The reporting currency. Omitted: the simulation's base currency, or USD without a simulation. One contradicting the simulation's is a 400 (before roadmap 1.2 it was silently ignored) |
+| `pfe_quantiles`, `compute_greeks`, `scenario_risk`, `precision` | As in the Hull-White shape. Greeks are ORE's bump-and-revalue sensitivities at ORE's default settings. Of `precision`, only `simulation` is honoured on this path; a `pricing`, `risk` or `calibration` below 64 is a 400 naming the field ([I-55](../planning/known-issues.md#i-55)) |
+
+`simulation`, `pricing`, `base_currency` and `precision` are translated into the run
+configuration (`engine.portfolio.RunConfig`); its Greeks settings and European engine have no
+field here yet ([I-56](../planning/known-issues.md#i-56)).
 
 A minimal body (one swap, today's NPV and Greeks only):
 

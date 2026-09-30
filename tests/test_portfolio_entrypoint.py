@@ -3,6 +3,8 @@
 demo.py sequence), trade by trade, for a portfolio of all four instrument types, on the same
 simulated values.
 """
+import dataclasses
+
 import jax.numpy as jnp
 import numpy as np
 import ORE
@@ -24,7 +26,9 @@ from engine.models.hull_white import ZeroCurve as HwZeroCurve
 from engine.models.hull_white import discount as hw_discount
 from engine.risk.exposure import netting_set_profile
 from demos.demo_scenarios import flat_yield_curves
-from engine.portfolio import PortfolioRequest, PortfolioResult, derive_maturity_pillars, price_portfolio
+from engine.portfolio import (
+    HULL_WHITE_CONFIG, PortfolioRequest, PortfolioResult, derive_maturity_pillars, price_portfolio,
+)
 
 TODAY = ORE.Date(30, 7, 2026)
 FLAT_RATE = 0.03
@@ -130,7 +134,8 @@ class TestPricePortfolioMatchesHandOrchestration:
     @classmethod
     @pytest.fixture(scope="class")
     def via_entrypoint(cls, trades, sim_config):
-        request = PortfolioRequest(market=sim_config, trades=list(trades), pfe_quantiles=(0.95, 0.99))
+        request = PortfolioRequest(market=sim_config, trades=list(trades), pfe_quantiles=(0.95, 0.99),
+                                   config=HULL_WHITE_CONFIG)
         return price_portfolio(request)
 
     @pytest.mark.slow
@@ -193,8 +198,10 @@ class TestPricePortfolioReorderingIndependence:
         trades_shuffled = [bermudan_cfg, swap_cfg, american_cfg, swaption_cfg]
 
         sim_config = _sim_config(trades_original)
-        result_original = price_portfolio(PortfolioRequest(market=sim_config, trades=trades_original))
-        result_shuffled = price_portfolio(PortfolioRequest(market=sim_config, trades=trades_shuffled))
+        result_original = price_portfolio(PortfolioRequest(market=sim_config, trades=trades_original,
+                                                           config=HULL_WHITE_CONFIG))
+        result_shuffled = price_portfolio(PortfolioRequest(market=sim_config, trades=trades_shuffled,
+                                                           config=HULL_WHITE_CONFIG))
 
         # trades_shuffled = [bermudan, swap, american, swaption], mapped back to the original
         # [swap, swaption, bermudan, american] order.
@@ -224,7 +231,7 @@ class TestPricePortfolioAutoDerivesMaturityPillars:
             ),
             joint_covariance=[[0.04, 0.0], [0.0, HW_SIGMA ** 2]],
         )
-        result = price_portfolio(PortfolioRequest(market=sim_config, trades=[swap_cfg]))
+        result = price_portfolio(PortfolioRequest(market=sim_config, trades=[swap_cfg], config=HULL_WHITE_CONFIG))
         assert result.npv_cube.shape == (64, len(TIME_GRID) - 1, 1)
         assert bool(jnp.all(jnp.isfinite(result.npv_cube)))
         assert np.isfinite(result.base_npv)
@@ -246,7 +253,7 @@ class TestPricePortfolioAutoDerivesMaturityPillars:
             ),
             joint_covariance=[[0.04, 0.0], [0.0, HW_SIGMA ** 2]],
         )
-        result = price_portfolio(PortfolioRequest(market=sim_config, trades=[swap_cfg]))
+        result = price_portfolio(PortfolioRequest(market=sim_config, trades=[swap_cfg], config=HULL_WHITE_CONFIG))
         assert bool(jnp.all(jnp.isfinite(result.npv_cube)))
 
 
@@ -277,7 +284,7 @@ class TestPricePortfolioCalibration:
             joint_covariance=[[0.04, 0.0], [0.0, HW_SIGMA ** 2]],
         )
         request = PortfolioRequest(
-            market=sim_config, trades=[berm_cfg], calibration_targets=targets,
+            market=sim_config, trades=[berm_cfg], calibration_targets=targets, config=HULL_WHITE_CONFIG,
         )
         result = price_portfolio(request)
         assert bool(jnp.all(jnp.isfinite(result.npv_cube)))
@@ -296,7 +303,7 @@ class TestPricePortfolioCalibration:
                                initial_zero_curves=[ZERO_CURVE]),
             joint_covariance=[[0.04, 0.0], [0.0, HW_SIGMA ** 2]],
         )
-        request = PortfolioRequest(market=sim_config, trades=[berm_cfg])
+        request = PortfolioRequest(market=sim_config, trades=[berm_cfg], config=HULL_WHITE_CONFIG)
         with pytest.raises(ValueError, match="calibration_targets"):
             price_portfolio(request)
 
@@ -307,7 +314,7 @@ class TestPricePortfolioGreeks:
         swap_cfg, swaption_cfg, bermudan_cfg, american_cfg = _build_trades()
         trades = [swaption_cfg, bermudan_cfg]  # swap Greeks need a caller-supplied ZeroCurve, skipped by design
         sim_config = _sim_config([swap_cfg, swaption_cfg, bermudan_cfg, american_cfg])
-        request = PortfolioRequest(market=sim_config, trades=trades, compute_greeks=True)
+        request = PortfolioRequest(market=sim_config, trades=trades, compute_greeks=True, config=HULL_WHITE_CONFIG)
         result = price_portfolio(request)
         assert result.greeks is not None
         assert set(result.greeks.keys()) == {0, 1}
@@ -322,7 +329,7 @@ class TestPricePortfolioGreeks:
         swap_cfg, swaption_cfg, bermudan_cfg, american_cfg = _build_trades()
         trades = [bermudan_cfg, swaption_cfg]
         sim_config = _sim_config([swap_cfg, swaption_cfg, bermudan_cfg, american_cfg])
-        request = PortfolioRequest(market=sim_config, trades=trades, compute_greeks=True)
+        request = PortfolioRequest(market=sim_config, trades=trades, compute_greeks=True, config=HULL_WHITE_CONFIG)
         result = price_portfolio(request)
 
         curve = HwZeroCurve.flat(FLAT_RATE, ZERO_CURVE.times)
@@ -341,25 +348,23 @@ class TestPricePortfolioPrecision:
     the others."""
 
     def _request(self, precision=None, compute_greeks=False):
-        from engine.portfolio import PrecisionConfig
         swap_cfg, swaption_cfg, bermudan_cfg, american_cfg = _build_trades()
         trades = [swap_cfg, swaption_cfg, bermudan_cfg, american_cfg]
         sim_config = _sim_config(trades)
-        kwargs = dict(market=sim_config, trades=trades, compute_greeks=compute_greeks)
-        if precision is not None:
-            kwargs["precision"] = precision
-        return PortfolioRequest(**kwargs)
+        config = HULL_WHITE_CONFIG if precision is None else dataclasses.replace(HULL_WHITE_CONFIG, precision=precision)
+        return PortfolioRequest(market=sim_config, trades=trades, compute_greeks=compute_greeks, config=config)
 
     def test_default_precision_matches_pre_feature_behavior(self):
         """No `precision` gives all-64 and plain ints for pricing/risk (not override
         objects)."""
         request = self._request()
-        assert request.precision.simulation == 64
-        assert request.precision.pricing == 64
-        assert request.precision.risk == 64
-        assert request.precision.calibration == 64
-        assert isinstance(request.precision.pricing, int)
-        assert isinstance(request.precision.risk, int)
+        precision = request.config.precision
+        assert precision.simulation == 64
+        assert precision.pricing == 64
+        assert precision.risk == 64
+        assert precision.calibration == 64
+        assert isinstance(precision.pricing, int)
+        assert isinstance(precision.risk, int)
         result = price_portfolio(request)
         assert result.npv_cube.dtype == jnp.float64
         assert bool(jnp.all(jnp.isfinite(result.npv_cube)))
@@ -559,7 +564,8 @@ class TestPricePortfolioConcurrency:
         swap_cfg, swaption_cfg, bermudan_cfg, american_cfg = _build_trades()
         trades = [swap_cfg, swaption_cfg]
         sim_config = _sim_config([swap_cfg, swaption_cfg, bermudan_cfg, american_cfg])
-        return PortfolioRequest(market=sim_config, trades=trades, precision=precision)
+        return PortfolioRequest(market=sim_config, trades=trades,
+                                config=dataclasses.replace(HULL_WHITE_CONFIG, precision=precision))
 
     def test_two_different_precisions_concurrently_each_get_their_own_dtype(self):
         from engine.portfolio import PrecisionConfig

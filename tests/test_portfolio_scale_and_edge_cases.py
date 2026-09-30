@@ -18,7 +18,7 @@ from engine.instruments.swap import SwapConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.american_swaption import AmericanSwaptionConfig
-from engine.portfolio import PortfolioRequest, derive_maturity_pillars, price_portfolio
+from engine.portfolio import HULL_WHITE_CONFIG, PortfolioRequest, derive_maturity_pillars, price_portfolio
 
 TODAY = ORE.Date(30, 7, 2026)
 FLAT_RATE = 0.03
@@ -106,7 +106,7 @@ class TestPortfolioSizeScaling:
     def test_single_trade_portfolio(self):
         trades = [_swap(0)]
         sim = _sim_config(trades)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, config=HULL_WHITE_CONFIG))
         _assert_finite_result(result, 1)
 
     @pytest.mark.slow
@@ -114,7 +114,7 @@ class TestPortfolioSizeScaling:
         trades = [_swap(i) for i in range(4)] + [_swaption(i) for i in range(4)] + \
             [_bermudan(i) for i in range(2)] + [_american(i) for i in range(2)]
         sim = _sim_config(trades)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, config=HULL_WHITE_CONFIG))
         _assert_finite_result(result, 12)
 
     @pytest.mark.slow
@@ -129,7 +129,8 @@ class TestPortfolioSizeScaling:
         )
         assert len(trades) == 50
         sim = _sim_config(trades, scenarios=128)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, pfe_quantiles=(0.95, 0.99)))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, pfe_quantiles=(0.95, 0.99),
+                                                  config=HULL_WHITE_CONFIG))
         _assert_finite_result(result, 50)
 
     def test_result_size_scales_linearly_in_trade_axis_only(self):
@@ -138,8 +139,8 @@ class TestPortfolioSizeScaling:
         large = [_swap(i) for i in range(6)]
         sim_small = _sim_config(small, scenarios=32)
         sim_large = _sim_config(large, scenarios=32)
-        result_small = price_portfolio(PortfolioRequest(market=sim_small, trades=small))
-        result_large = price_portfolio(PortfolioRequest(market=sim_large, trades=large))
+        result_small = price_portfolio(PortfolioRequest(market=sim_small, trades=small, config=HULL_WHITE_CONFIG))
+        result_large = price_portfolio(PortfolioRequest(market=sim_large, trades=large, config=HULL_WHITE_CONFIG))
         assert result_small.npv_cube.shape[0] == result_large.npv_cube.shape[0]
         assert result_small.npv_cube.shape[1] == result_large.npv_cube.shape[1]
         assert result_large.npv_cube.shape[2] == 2 * result_small.npv_cube.shape[2]
@@ -186,7 +187,7 @@ class TestMultiRateFactorPortfolios:
                        discount_curve_index=0, forward_curve_index=2, swap_tenor="2Y", evaluation_date=TODAY),
         ]
         sim = self._three_factor_sim(swaps)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=swaps))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=swaps, config=HULL_WHITE_CONFIG))
         _assert_finite_result(result, 4)
 
     def test_swaptions_on_each_distinct_rate_factor_price_finite(self):
@@ -202,7 +203,7 @@ class TestMultiRateFactorPortfolios:
                             swap_tenor="2Y", forward_start=ORE.Period(1, ORE.Years), evaluation_date=TODAY),
         ]
         sim = self._three_factor_sim(swaptions)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=swaptions))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=swaptions, config=HULL_WHITE_CONFIG))
         _assert_finite_result(result, 3)
 
     def test_mismatched_curve_on_wrong_factor_is_rejected_even_with_multiple_factors(self):
@@ -215,7 +216,7 @@ class TestMultiRateFactorPortfolios:
         )
         sim = self._three_factor_sim([bad])
         with pytest.raises(ValueError, match="initial_zero_curve"):
-            price_portfolio(PortfolioRequest(market=sim, trades=[bad]))
+            price_portfolio(PortfolioRequest(market=sim, trades=[bad], config=HULL_WHITE_CONFIG))
 
 
 # =============================================================================
@@ -225,28 +226,28 @@ class TestCompositionEdgeCases:
     def test_empty_portfolio_returns_empty_but_well_formed_result(self):
         """An empty portfolio gives a zero-width cube and a base NPV of exactly 0.0."""
         sim = _sim_config([])
-        result = price_portfolio(PortfolioRequest(market=sim, trades=[]))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=[], config=HULL_WHITE_CONFIG))
         assert result.npv_cube.shape[-1] == 0
         assert result.base_npv == 0.0
 
     def test_single_instrument_type_at_scale_swaps_only(self):
         trades = [_swap(i) for i in range(25)]
         sim = _sim_config(trades, scenarios=64)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, config=HULL_WHITE_CONFIG))
         _assert_finite_result(result, 25)
 
     @pytest.mark.slow
     def test_single_instrument_type_at_scale_swaptions_only(self):
         trades = [_swaption(i) for i in range(20)]
         sim = _sim_config(trades, scenarios=64)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, config=HULL_WHITE_CONFIG))
         _assert_finite_result(result, 20)
 
     def test_identical_duplicate_trades_price_identically(self):
         """Identical trades give identical columns."""
         trades = [_swap(0) for _ in range(10)]
         sim = _sim_config(trades, scenarios=64)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, config=HULL_WHITE_CONFIG))
         cube = np.asarray(result.npv_cube)
         for j in range(1, 10):
             np.testing.assert_allclose(cube[:, :, j], cube[:, :, 0], rtol=1e-12)
@@ -255,7 +256,7 @@ class TestCompositionEdgeCases:
         """A zero-notional trade prices to ~0 without NaN affecting the rest."""
         trades = [_swap(0, notional=0.0), _swap(1, notional=2_000_000.0)]
         sim = _sim_config(trades, scenarios=64)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, config=HULL_WHITE_CONFIG))
         cube = np.asarray(result.npv_cube)
         np.testing.assert_allclose(cube[:, :, 0], 0.0, atol=1e-6)
         assert np.all(np.isfinite(cube[:, :, 1]))
@@ -266,7 +267,7 @@ class TestCompositionEdgeCases:
         positive = _swap(0, notional=1_000_000.0)
         negative = _swap(0, notional=-1_000_000.0)
         sim = _sim_config([positive, negative], scenarios=64)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=[positive, negative]))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=[positive, negative], config=HULL_WHITE_CONFIG))
         cube = np.asarray(result.npv_cube)
         np.testing.assert_allclose(cube[:, :, 1], -cube[:, :, 0], rtol=1e-9)
 
@@ -275,7 +276,7 @@ class TestCompositionEdgeCases:
         small = _swap(0, notional=1_000_000.0)
         huge = _swap(0, notional=5.0e10)
         sim = _sim_config([small, huge], scenarios=64)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=[small, huge]))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=[small, huge], config=HULL_WHITE_CONFIG))
         cube = np.asarray(result.npv_cube)
         assert np.all(np.isfinite(cube))
         np.testing.assert_allclose(cube[:, :, 1], cube[:, :, 0] * 5.0e4, rtol=1e-6)
@@ -286,7 +287,8 @@ class TestCompositionEdgeCases:
         receivers = [_swap(i, payer=False, notional=1_000_000.0, fixed_rate=0.03, swap_tenor="3Y") for i in range(20)]
         trades = payers + receivers
         sim = _sim_config(trades, scenarios=256)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, pfe_quantiles=(0.95,)))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, pfe_quantiles=(0.95,),
+                                                  config=HULL_WHITE_CONFIG))
         cube = np.asarray(result.npv_cube)
         portfolio_npv_per_scenario = cube.sum(axis=-1)
         assert np.max(np.abs(portfolio_npv_per_scenario)) < 1e-6
@@ -303,7 +305,8 @@ class TestCompositionEdgeCases:
         americans = [_american(i) for i in range(3)]
         trades = swaps + swaptions + bermudans + americans
         sim = _sim_config(trades, scenarios=64)
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, compute_greeks=True))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, compute_greeks=True,
+                                                  config=HULL_WHITE_CONFIG))
         _assert_finite_result(result, 12)
         assert result.greeks is not None
         # Every trade, swaps (0-2) included, has Greeks.
@@ -332,6 +335,6 @@ class TestPortfolioTimingSanity:
         )
         sim = _sim_config(trades, scenarios=64)
         start = time.time()
-        price_portfolio(PortfolioRequest(market=sim, trades=trades))
+        price_portfolio(PortfolioRequest(market=sim, trades=trades, config=HULL_WHITE_CONFIG))
         elapsed = time.time() - start
         assert elapsed < 120.0, f"50-trade portfolio took {elapsed:.1f}s -- investigate for a scaling regression"

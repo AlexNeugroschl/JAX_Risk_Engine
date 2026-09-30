@@ -31,7 +31,7 @@ from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
 from engine.market import CurrencyMarket, EquityMarket, Market, SwaptionVolSurface
-from engine.portfolio import PortfolioRequest, PrecisionConfig
+from engine.portfolio import PortfolioRequest, PrecisionConfig, RunConfig
 from engine.simulation.config import CamConfig, LgmConfig
 from engine.valuation.config import LgmSwaptionEngineConfig, PricingConfig
 
@@ -165,7 +165,8 @@ class PricingConfigSchema(_Strict):
     recalibrate: bool = True
 
     def to_dataclass(self) -> PricingConfig:
-        return PricingConfig(self.bermudan.to_dataclass(), self.american.to_dataclass(), self.recalibrate)
+        return PricingConfig(bermudan=self.bermudan.to_dataclass(), american=self.american.to_dataclass(),
+                             recalibrate=self.recalibrate)
 
 
 class _Trade(_Strict):
@@ -272,14 +273,16 @@ MarketTradeSchema = Annotated[
 class MarketPortfolioRequestSchema(_Strict):
     """The market path's request (see the module docstring). Every trade is valued on
     `market.asof`.
-    `simulation` is required with `scenario_risk`; without it `base_currency` sets the
-    reporting currency."""
+    `simulation` is required with `scenario_risk`. `base_currency` is the reporting currency:
+    omitted, the simulation's base currency (USD without a simulation); one contradicting the
+    simulation's is refused. `simulation`, `pricing`, `base_currency` and `precision` are the
+    run configuration (`engine.portfolio.RunConfig`)."""
     schema_version: Literal["2"] = "2"
     market: MarketSchema
     trades: List[MarketTradeSchema]
     simulation: Optional[CamConfigSchema] = None
     pricing: PricingConfigSchema = Field(default_factory=PricingConfigSchema)
-    base_currency: str = "USD"
+    base_currency: Optional[str] = None
     pfe_quantiles: List[float] = Field(default_factory=lambda: [0.95, 0.99])
     compute_greeks: bool = False
     scenario_risk: bool = True
@@ -293,11 +296,11 @@ class MarketPortfolioRequestSchema(_Strict):
         return PortfolioRequest(
             trade_ids=ids if ids and ids[0] is not None else None,
             market=market, trades=[t.to_dataclass(market.asof) for t in self.trades],
-            simulation=self.simulation.to_dataclass() if self.simulation else None,
-            pricing=self.pricing.to_dataclass(), base_currency=self.base_currency,
+            config=RunConfig(simulation=self.simulation.to_dataclass() if self.simulation else None,
+                             pricing=self.pricing.to_dataclass(), base_currency=self.base_currency,
+                             precision=self.precision.to_dataclass() if self.precision else PrecisionConfig()),
             pfe_quantiles=tuple(self.pfe_quantiles), compute_greeks=self.compute_greeks,
-            scenario_risk=self.scenario_risk,
-            precision=self.precision.to_dataclass() if self.precision else PrecisionConfig())
+            scenario_risk=self.scenario_risk)
 
 
 __all__: Tuple[str, ...] = ("MarketPortfolioRequestSchema",)

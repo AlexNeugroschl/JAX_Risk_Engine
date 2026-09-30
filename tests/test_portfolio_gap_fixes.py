@@ -27,7 +27,7 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.calibration.basket import build_coterminal_basket
 from engine.models.hull_white import ZeroCurve as HwZeroCurve
 from engine.risk import greeks as _greeks
-from engine.portfolio import PortfolioRequest, derive_maturity_pillars, price_portfolio
+from engine.portfolio import HULL_WHITE_CONFIG, PortfolioRequest, derive_maturity_pillars, price_portfolio
 from engine.portfolio.request import _swap_curve_configs
 
 TODAY = ORE.Date(30, 7, 2026)
@@ -93,7 +93,7 @@ class TestSwapGreeksReachThePortfolioPath:
         """A swap-only portfolio with compute_greeks=True returned `{}` before the fix."""
         trades = [_swap()]
         request = PortfolioRequest(
-            market=_sim_config(trades), trades=trades, compute_greeks=True,
+            market=_sim_config(trades), trades=trades, compute_greeks=True, config=HULL_WHITE_CONFIG,
         )
         result = price_portfolio(request)
 
@@ -110,7 +110,7 @@ class TestSwapGreeksReachThePortfolioPath:
         """A 2Y payer swap's Greeks are finite and non-zero (not skipped-then-zeroed)."""
         trades = [_swap()]
         result = price_portfolio(PortfolioRequest(
-            market=_sim_config(trades), trades=trades, compute_greeks=True,
+            market=_sim_config(trades), trades=trades, compute_greeks=True, config=HULL_WHITE_CONFIG,
         ))
         g = result.greeks[0]
         for key in ("discount_delta", "forward_delta"):
@@ -125,7 +125,7 @@ class TestSwapGreeksReachThePortfolioPath:
         trades = [_swap()]
         sim = _sim_config(trades)
         result = price_portfolio(PortfolioRequest(
-            market=sim, trades=trades, compute_greeks=True,
+            market=sim, trades=trades, compute_greeks=True, config=HULL_WHITE_CONFIG,
         ))
 
         disc = HwZeroCurve.from_config(sim.rates.initial_zero_curves[0])
@@ -150,7 +150,7 @@ class TestSwapGreeksReachThePortfolioPath:
         trades = [_swap(disc_idx=1, fwd_idx=1)]
         sim = _sim_config(trades, curves=[ZERO_CURVE, STEEP_CURVE], n_factors=2)
         result = price_portfolio(PortfolioRequest(
-            market=sim, trades=trades, compute_greeks=True,
+            market=sim, trades=trades, compute_greeks=True, config=HULL_WHITE_CONFIG,
         ))
 
         steep = HwZeroCurve.from_config(STEEP_CURVE)
@@ -180,7 +180,7 @@ class TestSwapGreeksReachThePortfolioPath:
         # The swap is second, so appending rather than keying by index would misalign.
         trades = [swaption_cfg, swap_cfg]
         result = price_portfolio(PortfolioRequest(
-            market=_sim_config(trades), trades=trades, compute_greeks=True,
+            market=_sim_config(trades), trades=trades, compute_greeks=True, config=HULL_WHITE_CONFIG,
         ))
 
         assert set(result.greeks) == {0, 1}
@@ -203,7 +203,7 @@ class TestSwapGreeksReachThePortfolioPath:
         """compute_greeks=False still returns None."""
         trades = [_swap()]
         result = price_portfolio(PortfolioRequest(
-            market=_sim_config(trades), trades=trades, compute_greeks=False,
+            market=_sim_config(trades), trades=trades, compute_greeks=False, config=HULL_WHITE_CONFIG,
         ))
         assert result.greeks is None
 
@@ -227,7 +227,7 @@ class TestCurveIndexValidatedBeforeAllPricing:
         trades = [_swap(disc_idx=disc_idx, fwd_idx=fwd_idx)]
         return price_portfolio(PortfolioRequest(
             market=_sim_config(trades, curves=curves, n_factors=n_curves),
-            trades=trades, compute_greeks=compute_greeks,
+            trades=trades, compute_greeks=compute_greeks, config=HULL_WHITE_CONFIG,
         ))
 
     @pytest.mark.parametrize("compute_greeks", [False, True])
@@ -301,7 +301,7 @@ class TestBermudanVegaReachesThePortfolioPath:
         trades = [bermudan]
         return PortfolioRequest(
             market=_sim_config(trades), trades=trades, compute_greeks=True,
-            calibration_targets=targets,
+            calibration_targets=targets, config=HULL_WHITE_CONFIG,
         ), targets
 
     @pytest.mark.slow
@@ -332,7 +332,7 @@ class TestBermudanVegaReachesThePortfolioPath:
         )
         trades = [bermudan]
         result = price_portfolio(PortfolioRequest(
-            market=_sim_config(trades), trades=trades, compute_greeks=True,
+            market=_sim_config(trades), trades=trades, compute_greeks=True, config=HULL_WHITE_CONFIG,
         ))
         assert "vega" not in result.greeks[0]
         # Delta/Gamma/Theta are still present.
@@ -349,7 +349,7 @@ class TestPerTradeBaseNpv:
     def test_per_trade_values_are_returned_one_per_trade(self):
         trades = [_swap(notional=2_000_000.0), _swap(notional=500_000.0, tenor="3Y")]
         result = price_portfolio(PortfolioRequest(
-            market=_sim_config(trades), trades=trades,
+            market=_sim_config(trades), trades=trades, config=HULL_WHITE_CONFIG,
         ))
         assert len(result.base_npv_per_trade) == len(trades)
         assert all(np.isfinite(v) for v in result.base_npv_per_trade)
@@ -358,7 +358,7 @@ class TestPerTradeBaseNpv:
         """The total is the sum of the per-trade values (not a separate computation)."""
         trades = [_swap(notional=2_000_000.0), _swap(notional=500_000.0, tenor="3Y")]
         result = price_portfolio(PortfolioRequest(
-            market=_sim_config(trades), trades=trades,
+            market=_sim_config(trades), trades=trades, config=HULL_WHITE_CONFIG,
         ))
         assert result.base_npv == pytest.approx(
             float(sum(result.base_npv_per_trade)), rel=0.0, abs=1e-9,
@@ -371,7 +371,7 @@ class TestPerTradeBaseNpv:
         receiver = _swap(notional=2_000_000.0, fixed_rate=0.05, payer=False)
         trades = [payer, receiver]
         result = price_portfolio(PortfolioRequest(
-            market=_sim_config(trades), trades=trades,
+            market=_sim_config(trades), trades=trades, config=HULL_WHITE_CONFIG,
         ))
         first, second = result.base_npv_per_trade
         assert first == pytest.approx(-second, rel=1e-9), (
@@ -385,14 +385,14 @@ class TestPerTradeBaseNpv:
     def test_single_trade_total_matches_its_only_row(self):
         trades = [_swap()]
         result = price_portfolio(PortfolioRequest(
-            market=_sim_config(trades), trades=trades,
+            market=_sim_config(trades), trades=trades, config=HULL_WHITE_CONFIG,
         ))
         assert len(result.base_npv_per_trade) == 1
         assert result.base_npv == pytest.approx(result.base_npv_per_trade[0], rel=0.0, abs=1e-12)
 
     def test_empty_portfolio_has_empty_breakdown(self):
         result = price_portfolio(PortfolioRequest(
-            market=_sim_config([]), trades=[],
+            market=_sim_config([]), trades=[], config=HULL_WHITE_CONFIG,
         ))
         assert result.base_npv_per_trade == []
         assert result.base_npv == 0.0
@@ -410,7 +410,7 @@ class TestAgedSwapWarningIsNotSilent:
         """A spot-starting swap over a long grid warns."""
         trades = [_swap(tenor="2Y")]
         sim = _sim_config(trades, time_grid=[0.0, 0.5, 1.0, 1.5])
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, config=HULL_WHITE_CONFIG))
 
         aged = [w for w in result.warnings if "already started accruing" in w]
         assert aged, (
@@ -427,7 +427,7 @@ class TestAgedSwapWarningIsNotSilent:
         out for a spot start) is exact and does not warn."""
         trades = [_swap(tenor="2Y")]
         sim = _sim_config(trades, time_grid=[0.0, 0.002])
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, config=HULL_WHITE_CONFIG))
         assert not [w for w in result.warnings if "already started accruing" in w], (
             f"warned about a swap that is never aged in this grid: {result.warnings!r}"
         )
@@ -435,7 +435,7 @@ class TestAgedSwapWarningIsNotSilent:
     def test_warning_names_every_aged_swap_separately(self):
         trades = [_swap(notional=1_000_000.0), _swap(notional=7_500_000.0, tenor="3Y")]
         sim = _sim_config(trades, time_grid=[0.0, 0.5, 1.0, 1.5])
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, config=HULL_WHITE_CONFIG))
 
         aged = [w for w in result.warnings if "already started accruing" in w]
         assert len(aged) == 2
@@ -452,13 +452,13 @@ class TestAgedSwapWarningIsNotSilent:
         )
         trades = [swaption]
         sim = _sim_config(trades, time_grid=[0.0, 0.5, 1.0, 1.5])
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, config=HULL_WHITE_CONFIG))
         assert not [w for w in result.warnings if "already started accruing" in w]
 
     def test_warning_does_not_block_pricing(self):
         """The warning does not block pricing: the result is complete and finite."""
         trades = [_swap(tenor="2Y")]
         sim = _sim_config(trades, time_grid=[0.0, 0.5, 1.0, 1.5])
-        result = price_portfolio(PortfolioRequest(market=sim, trades=trades))
+        result = price_portfolio(PortfolioRequest(market=sim, trades=trades, config=HULL_WHITE_CONFIG))
         assert np.isfinite(result.base_npv)
         assert bool(jnp.all(jnp.isfinite(result.npv_cube)))

@@ -30,13 +30,17 @@ double-precision simulations in the same wall-clock time.
 - Short-horizon VaR and Expected Shortfall by full revaluation of the portfolio under
   Monte Carlo or historical shocks of every curve pillar, with ORE's `RiskStatistics`
   conventions and Monte Carlo error estimates
+- One run configuration (`RunConfig`), as ORE configures a run with its files and with
+  ORE's defaults: the simulation and its model per currency, the engine per product, the
+  Greeks method and ORE's sensitivity settings, and the precision per stage. A model asked
+  for an option it does not implement refuses it by name rather than substituting another
+  ([decisions](compliance/decisions.md))
 - A second, non-default model: the original **Hull-White** simulation with Jamshidian
-  Europeans and AD Greeks. Models, engines and methods are becoming options of one run
-  configuration, as in ORE, with ORE's defaults
-  ([decisions](compliance/decisions.md)). The Hull-White model's known differences from ORE
-  are in the [register](docs/planning/known-issues.md)
+  Europeans and AD Greeks (`HULL_WHITE_CONFIG`). Its known differences from ORE are in the
+  [register](docs/planning/known-issues.md)
 - Adjustable precision: independent FP64/FP32 settings for simulation, pricing, risk and
   calibration, since which precision each calculation needs is what the project studies
+  (on the market path the simulation's today; the other stages follow in roadmap 1.4)
 - HTTP API for portfolio pricing and calibration: today one request shape per model (the
   `/v2` route is the market path's, not a version), to become one configurable request that
   reaches every setting ([I-56](docs/planning/known-issues.md#i-56)); plus a versioned end-of-day

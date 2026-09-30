@@ -10,6 +10,7 @@ A trade's schedule is `effective_date`/`maturity_date` (plus a European's
 `exercise_date`), or `swap_tenor` (plus a European's `forward_start`/`exercise_lag_days`)
 resolved on the trade's evaluation date. There is no default tenor.
 """
+import dataclasses
 from typing import Annotated, Dict, List, Literal, Optional, Union
 
 import numpy as np
@@ -28,7 +29,8 @@ from engine.calibration.basket import build_coterminal_basket
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from engine.risk.exposure import ExposureProfile
 from engine.portfolio import (
-    PortfolioRequest, PortfolioResult, PrecisionConfig, PricingPrecisionOverride, RiskPrecisionOverride,
+    HULL_WHITE_CONFIG, PortfolioRequest, PortfolioResult, PrecisionConfig, PricingPrecisionOverride,
+    RiskPrecisionOverride,
 )
 
 
@@ -361,9 +363,10 @@ class PrecisionConfigSchema(BaseModel):
 
 
 class PortfolioRequestSchema(BaseModel):
-    """`engine.portfolio.PortfolioRequest`. `evaluation_date` is the default for trades
-    that do not give their own (there is no ambient ORE evaluation date across requests).
-    `precision` omitted means `PrecisionConfig()`."""
+    """`engine.portfolio.PortfolioRequest` on the Hull-White model. `evaluation_date` is the
+    default for trades that do not give their own (there is no ambient ORE evaluation date
+    across requests). The run configuration is `HULL_WHITE_CONFIG` (the engines this model
+    implements) with `precision`; `precision` omitted means `PrecisionConfig()`."""
     evaluation_date: str = Field(..., description="ISO date (YYYY-MM-DD), e.g. '2026-07-30'")
     market: SimulationConfigSchema
     trades: List[TradeSchema]
@@ -410,7 +413,9 @@ class PortfolioRequestSchema(BaseModel):
             market=self.market.to_dataclass(), trades=trades,
             pfe_quantiles=tuple(self.pfe_quantiles), calibration_targets=calibration_targets,
             compute_greeks=self.compute_greeks,
-            precision=self.precision.to_dataclass() if self.precision is not None else PrecisionConfig(),
+            config=dataclasses.replace(
+                HULL_WHITE_CONFIG,
+                precision=self.precision.to_dataclass() if self.precision is not None else PrecisionConfig()),
             scenario_risk=self.scenario_risk,
         )
 

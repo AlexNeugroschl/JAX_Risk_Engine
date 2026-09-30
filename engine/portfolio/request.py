@@ -1,18 +1,26 @@
 """
-The engine's portfolio entry point: `PortfolioRequest` (trades, market, risk settings) in,
-`PortfolioResult` (base NPVs, scenario cube, exposure, Greeks) out, via `price_portfolio`.
+The engine's portfolio entry point: `PortfolioRequest` (trades, market, run configuration,
+analytics) in, `PortfolioResult` (base NPVs, scenario cube, exposure, Greeks) out, via
+`price_portfolio`.
 
 Pure dataclasses and JAX; the HTTP layer (`engine/api/`) wraps these types.
 
-Two paths, chosen by the request's `market`:
+Every model, engine, Greeks method and precision choice is in `request.config`, a `RunConfig`
+(`engine.portfolio.config`) whose defaults are ORE's. The model:
 
-  * an `engine.market.Market` (the default, `engine.portfolio.market_path`): ORE's
-    semantics end to end -- the cross-asset LGM simulation, each trade priced on every path
-    with its t=0 engine, exercise and fixings as ORE handles them, ORE's sensitivities;
-  * a `SimulationConfig` (this module): the Hull-White model, a supported non-default
-    option, with trade-level model parameters. Its cube carries known limitations, warned about per trade rather than
-    corrected: aged swaps (I-04, audit M-2), options vanishing at expiry (audit M-3), and short
-    rates inconsistent with a sloped curve (audit M-1). t=0 base NPVs are unaffected.
+  * an `engine.market.Market` as the market (the default, `engine.portfolio.market_path`):
+    ORE's semantics end to end -- the cross-asset model with `config.simulation`'s model per
+    currency (LGM), each trade priced on every path with its t=0 engine, exercise and
+    fixings as ORE handles them, ORE's sensitivities;
+  * a `SimulationConfig` as the market (this module): the Hull-White model, a supported
+    non-default option, with trade-level model parameters, until roadmap 1.3 makes it a
+    model of `config.simulation`. It implements the engines of `HULL_WHITE_CONFIG`. Its
+    cube carries known limitations, warned about per trade rather than corrected: aged swaps
+    (I-04, audit M-2), options vanishing at expiry (audit M-3), and short rates inconsistent
+    with a sloped curve (audit M-1). t=0 base NPVs are unaffected.
+
+Either model refuses, before any work, a configured option it does not implement
+(`check_market_path`, `check_hull_white`).
 
 Concurrency: `jax_enable_x64` is process-global, so two threads pricing at different
 precisions in one process can corrupt each other. `_PRICING_LOCK` serializes the JAX work of
@@ -31,9 +39,7 @@ import numpy as np
 import ORE
 
 from engine.market import Market
-from engine.simulation.config import CamConfig
-from engine.simulation.market_model import SimulationConfig, generate_paths
-from engine.valuation.config import PricingConfig
+from engine.simulation.market_model import SimulationConfig, generate_paths, validate_joint_covariance
 from engine.instruments.swap import SwapConfig, price_swaps, swap_schedule
 from engine.instruments.european_swaption import SwaptionConfig, prepare_swaption, price_swaptions
 from engine.instruments.bermudan_swaption import (
@@ -56,6 +62,10 @@ from engine.models.lgm import Sigma
 from engine.portfolio.validation import _validate_common_fields, _validate_tenor  # noqa: F401
 from engine.portfolio.validation import validate_single_evaluation_date
 from engine.portfolio.profiling import phase as _phase
+from engine.portfolio.config import (
+    PrecisionConfig, PricingPrecisionOverride, RunConfig, _dtype_of, _resolve_pricing_dtype, _resolve_risk_dtype,
+    check_hull_white,
+)
 
 TradeConfig = Union[
     SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig, BondConfig,
@@ -68,99 +78,6 @@ DETERMINISTIC_ONLY_TYPES = (BondConfig,)
 
 # Serializes price_portfolio's JAX work within a process (see the module docstring).
 _PRICING_LOCK = threading.Lock()
-
-
-@dataclass(frozen=True)
-class PricingPrecisionOverride:
-    """Per-instrument-type overrides for `PrecisionConfig.pricing`; `None` fields fall back
-    to `default`. Resolved only in `_resolve_pricing_dtype`."""
-    default: int = 64
-    swap: Optional[int] = None
-    european_swaption: Optional[int] = None
-    bermudan_swaption: Optional[int] = None
-    american_swaption: Optional[int] = None
-
-    def __post_init__(self):
-        for name in ("default", "swap", "european_swaption", "bermudan_swaption", "american_swaption"):
-            value = getattr(self, name)
-            if value is not None and value not in (32, 64):
-                raise ValueError(f"PricingPrecisionOverride.{name} must be 32 or 64, got {value!r}")
-
-
-@dataclass(frozen=True)
-class RiskPrecisionOverride:
-    """Per-metric overrides for `PrecisionConfig.risk`; `None` fields fall back to
-    `default`. Delta and Gamma share `delta_gamma` (one gradient/Hessian computation).
-    `exposure` has no curve, so `price_portfolio` casts `npv_cube` to it before the
-    statistics."""
-    default: int = 64
-    delta_gamma: Optional[int] = None
-    theta: Optional[int] = None
-    vega: Optional[int] = None
-    exposure: Optional[int] = None
-
-    def __post_init__(self):
-        for name in ("default", "delta_gamma", "theta", "vega", "exposure"):
-            value = getattr(self, name)
-            if value is not None and value not in (32, 64):
-                raise ValueError(f"RiskPrecisionOverride.{name} must be 32 or 64, got {value!r}")
-
-
-@dataclass(frozen=True)
-class PrecisionConfig:
-    """
-    Dtype knobs, each 32 or 64 (default 64): `simulation` (`generate_paths`), `pricing`
-    (NPVs and `npv_cube`), `risk` (exposure and Greeks), `calibration` (the LGM sigma
-    bootstrap). `pricing` and `risk` also accept a per-type/per-metric override object; a
-    plain int means every sub-field.
-
-    Sub-float32 dtypes are not supported: `jnp.linalg.cholesky` and
-    `jax.scipy.stats.norm.ppf` raise on them on the installed CPU backend (see
-    docs/concepts/architecture.md, "Adjustable precision").
-    """
-    simulation: int = 64
-    pricing: Union[int, PricingPrecisionOverride] = 64
-    risk: Union[int, RiskPrecisionOverride] = 64
-    calibration: int = 64
-
-    def __post_init__(self):
-        for name in ("simulation", "calibration"):
-            value = getattr(self, name)
-            if value not in (32, 64):
-                raise ValueError(f"PrecisionConfig.{name} must be 32 or 64, got {value!r}")
-        if isinstance(self.pricing, int) and self.pricing not in (32, 64):
-            raise ValueError(f"PrecisionConfig.pricing must be 32, 64, or a PricingPrecisionOverride, got {self.pricing!r}")
-        if isinstance(self.risk, int) and self.risk not in (32, 64):
-            raise ValueError(f"PrecisionConfig.risk must be 32, 64, or a RiskPrecisionOverride, got {self.risk!r}")
-
-
-def _dtype_of(precision_bits: int):
-    return jnp.float64 if precision_bits == 64 else jnp.float32
-
-
-_PRICING_TYPE_FIELD = {
-    SwapConfig: "swap",
-    SwaptionConfig: "european_swaption",
-    BermudanSwaptionConfig: "bermudan_swaption",
-    AmericanSwaptionConfig: "american_swaption",
-}
-
-
-def _resolve_pricing_dtype(pricing: Union[int, PricingPrecisionOverride], trade_type: type):
-    """`PrecisionConfig.pricing` (int or override) -> dtype for one trade type."""
-    if isinstance(pricing, int):
-        return _dtype_of(pricing)
-    bits = getattr(pricing, _PRICING_TYPE_FIELD[trade_type]) or pricing.default
-    return _dtype_of(bits)
-
-
-def _resolve_risk_dtype(risk: Union[int, RiskPrecisionOverride], metric: str):
-    """`PrecisionConfig.risk` (int or override) -> dtype for one metric ('delta_gamma',
-    'theta', 'vega', 'exposure')."""
-    if isinstance(risk, int):
-        return _dtype_of(risk)
-    bits = getattr(risk, metric) or risk.default
-    return _dtype_of(bits)
 
 
 # Cross-checks between the simulation config and each trade's duplicated fields
@@ -391,43 +308,44 @@ class PortfolioRequest:
     """
     Input to `price_portfolio`.
 
-    market: today's `Market` (the market path; then `simulation`, `pricing` and
-        `base_currency` apply), or a Hull-White `SimulationConfig` for `generate_paths` (if
-        `market.rates.maturities` is unset, it is derived with `derive_maturity_pillars`).
+    market: today's `Market` (the market path, the default), or a Hull-White
+        `SimulationConfig` for `generate_paths` (if `market.rates.maturities` is unset, it is
+        derived with `derive_maturity_pillars`).
     trades: any mix of trade types; results come back in this order.
+    config: the run configuration (`RunConfig`): simulation and model per currency, engine
+        per product, Greeks method and settings, precision per stage, reporting currency.
+        The default is ORE's; the Hull-White model implements `HULL_WHITE_CONFIG`'s engines.
     pfe_quantiles: PFE quantiles for the exposure profiles.
-    calibration_targets: used to calibrate any Bermudan/American with `hw_sigma=None`,
-        once per `rate_factor_index`. One basket serves every rate factor (ORE instead
-        calibrates each trade to a basket built from its own exercise dates; I-47).
-    compute_greeks: also compute Delta/Gamma/Theta (and Vega where defined) per trade.
-    precision: see `PrecisionConfig`.
+    calibration_targets: Hull-White model only: used to calibrate any Bermudan/American
+        with `hw_sigma=None`, once per `rate_factor_index`. One basket serves every rate
+        factor (ORE instead calibrates each trade to a basket built from its own exercise
+        dates, as the market path does; I-47).
+    compute_greeks: also compute the Greeks per trade, by `config.greeks.method`.
+    scenario_risk: whether to build `npv_cube` and the exposure profiles. Without it the
+        result has an empty `npv_cube` and no exposure (absent, not zero), and
+        `scenario_risk_available` says so; on the Hull-White model a portfolio with bonds
+        needs it off (I-24).
     trade_ids: optional, one unique id per trade, echoed on the result so a caller need not
         rely on positions (I-10).
-
-    Bonds (`BondConfig`) are priced at t=0 only: no cube column, no exposure (I-24), and
-    Greeks by bumped revaluation (`_bond_greeks`).
 
     The cube is a multi-step risk-neutral simulation, used for exposure profiles
     (`engine.risk.exposure`). Short-horizon VaR/ES is `engine.market_risk.run_market_risk`.
     """
     market: Union[SimulationConfig, Market]
     trades: List[TradeConfig]
+    config: RunConfig = field(default_factory=RunConfig)
     pfe_quantiles: Sequence[float] = (0.95, 0.99)
     calibration_targets: Optional[List[CalibrationTarget]] = None
     compute_greeks: bool = False
-    precision: PrecisionConfig = field(default_factory=PrecisionConfig)
-    #: Whether to build `npv_cube` and the exposure profiles. On the Hull-White path, set False
-    #: for a portfolio with deterministic-only trades (bonds): the result then has an empty
-    #: `npv_cube` and no exposure (absent, not zero), and `scenario_risk_available` says so.
     scenario_risk: bool = True
-    #: Market path only: ORE's simulation configuration (required with `scenario_risk`),
-    #: pricing engines, and the base currency when there is no simulation.
-    simulation: Optional[CamConfig] = None
-    pricing: PricingConfig = field(default_factory=PricingConfig)
-    base_currency: str = "USD"
     trade_ids: Optional[Sequence[str]] = None
 
     def __post_init__(self):
+        if not isinstance(self.market, (Market, SimulationConfig)):
+            raise TypeError(f"market must be a Market (the market path) or a Hull-White SimulationConfig; "
+                            f"got {type(self.market).__name__}")
+        if not isinstance(self.config, RunConfig):
+            raise TypeError(f"config must be a RunConfig; got {type(self.config).__name__}")
         if self.trade_ids is None:
             return
         ids = list(self.trade_ids)
@@ -466,9 +384,9 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
     """
     Price a `PortfolioRequest`:
 
-    1. Validate `joint_covariance` (also done in `generate_paths`; here it fails earlier).
-    2. Cross-check trades against the market (`validate_portfolio_against_simulation`),
-       collecting warnings.
+    1. Validate the request (`validate_hull_white_request`): `joint_covariance` (also done
+       in `generate_paths`; here it fails earlier), the configured options, and the trades
+       against the market (`validate_portfolio_against_simulation`), collecting warnings.
     3. Derive the cube's maturity pillars if unset.
     4. Calibrate any `hw_sigma=None` Bermudan/American, once per rate factor.
     5. Simulate (`generate_paths`).
@@ -493,17 +411,25 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
     return result
 
 
+def validate_hull_white_request(request: PortfolioRequest) -> None:
+    """Refuse, before any JAX work, a request the Hull-White model cannot price: a bad
+    `joint_covariance`, a configured option it does not implement (`check_hull_white`), or
+    a trade inconsistent with the simulation (`validate_portfolio_against_simulation`, which
+    also warns about the cube's known limitations). The HTTP route runs it synchronously so
+    such a request is a 400, not a failed job."""
+    validate_joint_covariance(request.market.joint_covariance)
+    check_hull_white(request.config, request.trades, request.compute_greeks)
+    validate_portfolio_against_simulation(request.market, request.trades)
+
+
 def _price_on_simulation(request: PortfolioRequest) -> PortfolioResult:
     """`price_portfolio` on the Hull-White path (steps 1-9 above)."""
-    from engine.simulation.market_model import validate_joint_covariance
-
-    validate_joint_covariance(request.market.joint_covariance)
-
     market_config = request.market
+    precision = request.config.precision
     collected_warnings: List[str] = []
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        validate_portfolio_against_simulation(market_config, request.trades)
+        validate_hull_white_request(request)
         collected_warnings.extend(str(w.message) for w in caught)
 
     if market_config.rates.maturities is None:
@@ -520,9 +446,9 @@ def _price_on_simulation(request: PortfolioRequest) -> PortfolioResult:
         # Calibration runs JAX code too, so it is inside the lock. Each `_phase` labels a
         # region in profiler traces (see engine.portfolio.profiling).
         with _phase("calibration"):
-            trades = _fill_calibrated_sigma(trades, request.calibration_targets, market_config, request.precision)
+            trades = _fill_calibrated_sigma(trades, request.calibration_targets, market_config, precision)
         with _phase("simulation"):
-            market = generate_paths(market_config, precision=request.precision.simulation)
+            market = generate_paths(market_config, precision=precision.simulation)
         # generate_paths restores x64 to its prior value, which is off in a 32-bit worker.
         # Later steps may still want float64, and float32 arrays are unaffected by the
         # flag, so enable it.
@@ -534,20 +460,20 @@ def _price_on_simulation(request: PortfolioRequest) -> PortfolioResult:
         step_times = jnp.array(market_config.time_grid[1:], dtype=jnp.float64)
         if request.scenario_risk:
             with _phase("pricing"):
-                npv_cube = _price_by_type(trades, market, maturities_np, step_times, request.precision.pricing)
+                npv_cube = _price_by_type(trades, market, maturities_np, step_times, precision.pricing)
         else:
             # Empty, not zero-filled: zeros would read as real NPVs.
             num_scenarios = market["rates"].shape[0]
             npv_cube = jnp.zeros((num_scenarios, 0, 0))
         with _phase("base_npv"):
-            base_npv_per_trade = _base_npv_per_trade(trades, maturities_np, market_config, request.precision)
+            base_npv_per_trade = _base_npv_per_trade(trades, maturities_np, market_config, precision)
             base_npv = float(sum(base_npv_per_trade))
 
         # Exposure has no curve, so its dtype is applied by casting the cube.
         exposure = None
         trade_exposures: List[ExposureProfile] = []
         if request.scenario_risk:
-            exposure_dtype = _resolve_risk_dtype(request.precision.risk, "exposure")
+            exposure_dtype = _resolve_risk_dtype(precision.risk, "exposure")
             with _phase("exposure"):
                 exposure, trade_exposures = _exposure_profiles(
                     npv_cube.astype(exposure_dtype), base_npv_per_trade, market, market_config,
@@ -558,7 +484,7 @@ def _price_on_simulation(request: PortfolioRequest) -> PortfolioResult:
         if request.compute_greeks:
             with _phase("greeks"):
                 greeks_out = _compute_all_greeks(
-                    trades, market_config, request.precision,
+                    trades, market_config, precision,
                     calibration_targets=request.calibration_targets,
                 )
 

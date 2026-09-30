@@ -9,6 +9,7 @@ across precision tiers, with correct results.
 Each worker is a spawned process that imports JAX and ORE from scratch, so spawn, import and
 first compile dominate this file's run time, not the small portfolios.
 """
+import dataclasses
 import os
 import time
 from concurrent.futures import Future, wait as futures_wait
@@ -17,7 +18,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from engine.portfolio import PortfolioRequest, PrecisionConfig, price_portfolio
+from engine.portfolio import HULL_WHITE_CONFIG, PortfolioRequest, PrecisionConfig, price_portfolio
 from engine.portfolio.worker_pool import (
     _freeze_trade, _pool_for, _run_pricing_job, shutdown_pools, submit_pricing_job,
 )
@@ -30,7 +31,8 @@ def _make_request(precision: PrecisionConfig) -> PortfolioRequest:
     swap_cfg, swaption_cfg, bermudan_cfg, american_cfg = _build_trades()
     trades = [swap_cfg, swaption_cfg]
     sim_config = _sim_config([swap_cfg, swaption_cfg, bermudan_cfg, american_cfg])
-    return PortfolioRequest(market=sim_config, trades=trades, precision=precision)
+    return PortfolioRequest(market=sim_config, trades=trades,
+                            config=dataclasses.replace(HULL_WHITE_CONFIG, precision=precision))
 
 
 def _timed_job(frozen_request: PortfolioRequest):
@@ -56,11 +58,8 @@ def _sleep_job(seconds: float):
 def _submit_timed(request: PortfolioRequest, pool_size: int = 2) -> "Future":
     """Submit `_timed_job` routed and frozen as `submit_pricing_job` does, to observe
     worker-side timing."""
-    from dataclasses import replace
-    pool = _pool_for(request.precision.simulation, pool_size=pool_size)
-    frozen_trades = [_freeze_trade(cfg) for cfg in request.trades]
-    frozen_request = replace(request, trades=frozen_trades)
-    return pool.submit(_timed_job, frozen_request)
+    pool = _pool_for(request.config.precision.simulation, pool_size=pool_size)
+    return pool.submit(_timed_job, _freeze_trade(request))
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -72,7 +71,7 @@ def _cleanup_pools():
 
 @pytest.mark.slow
 class TestSubmitPricingJobRouting:
-    """`submit_pricing_job` routes by `request.precision.simulation`, returns a
+    """`submit_pricing_job` routes by `request.config.precision.simulation`, returns a
     `Future[PortfolioResult]`, and matches `price_portfolio` called directly (so the
     ORE-date freeze/thaw round trip is lossless)."""
 

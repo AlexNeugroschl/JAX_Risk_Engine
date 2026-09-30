@@ -27,7 +27,8 @@ component by component: t=0 prices to 1e-14 (swaps, Europeans, bonds) and 4e-11
 (calibrated Bermudans/Americans), model analytics to 1e-12, pricers on path curves to
 1e-8 – 1e-12, market-risk VaR/ES per scenario to 2e-13. What is not yet shown is that the
 assembled simulation, exposure and sensitivities equal an ORE run. The **Hull-White model**
-is a supported non-default option that still has the defects the market path fixed. Nothing
+is a supported non-default option that still has the defects the market path fixed. Every
+model, engine, Greeks and precision choice is one run configuration with ORE's defaults. Nothing
 runs on more than one device. The TraderX EOD boundary prices Treasuries end to end and
 refuses everything else by name.
 
@@ -38,14 +39,15 @@ refuses everything else by name.
 
 The configurable engine (decision A-1) rewrites trade configs, the Hull-White model's
 simulation and pricers, and the precision plumbing. Fixing any Hull-White defect, the
-precision mechanism, the Greeks recompiles or the API before this would be redone.
+precision mechanism, the Greeks recompiles or the API before this would be redone. The run
+configuration itself (`RunConfig`, `engine/portfolio/config.py`) is done; 1.3 and 1.4 move
+the Hull-White model and the precision mechanism onto it.
 Design: [details/configurable-engine.md](details/configurable-engine.md).
 
 | Step | Work | Closes | Size |
 |---|---|---|---|
-| 1.2 | One run configuration: model per currency, simulation, engine per product, Greeks method, precision per stage; defaults reproduce the market path bit for bit | [I-68](known-issues.md#i-68) | L |
-| 1.3 | The Hull-White model as an option of that configuration, on the shared valuation pipeline (scenario market, legs, `OptionWrapper`, bond legs, per-trade basket), with a curve-fitted drift and its exact numeraire. In the same pass, since every trade config changes: no model fields on trades, `evaluation_date` required, an instrument id on every config | [I-42](known-issues.md#i-42) – [I-47](known-issues.md#i-47), [I-04](known-issues.md#i-04) (Hull-White half), [I-24](known-issues.md#i-24), [I-62](known-issues.md#i-62), [I-63](known-issues.md#i-63), [I-64](known-issues.md#i-64), [I-10](known-issues.md#i-10) (configs) | L |
-| 1.4 | Replace the precision mechanism: x64 once per process, explicit dtypes everywhere; then remove the flag toggling, `_PRICING_LOCK` and the per-precision pool tiers | [I-55](known-issues.md#i-55) (mechanism) | M |
+| 1.3 | The Hull-White model as an option of the run configuration (a model per currency in `CamConfig.ir`, on a `Market`), on the shared valuation pipeline (scenario market, legs, `OptionWrapper`, bond legs, per-trade basket), with a curve-fitted drift and its exact numeraire. In the same pass, since every trade config changes: no model fields on trades, `evaluation_date` required, an instrument id on every config | [I-68](known-issues.md#i-68), [I-42](known-issues.md#i-42) – [I-47](known-issues.md#i-47), [I-04](known-issues.md#i-04) (Hull-White half), [I-24](known-issues.md#i-24), [I-62](known-issues.md#i-62), [I-63](known-issues.md#i-63), [I-64](known-issues.md#i-64), [I-10](known-issues.md#i-10) (configs) | L |
+| 1.4 | Replace the precision mechanism: x64 once per process, explicit dtypes everywhere (on the market path too, so its pricing, risk and calibration stages become adjustable); then remove the flag toggling, `_PRICING_LOCK` and the per-precision pool tiers | [I-55](known-issues.md#i-55) (mechanism) | M |
 
 Exit: every step's defaults reproduce today's market-path numbers bit for bit (the shared
 portfolio and the parity suites), and each Hull-White fix is shown red first on a sloped
@@ -85,7 +87,7 @@ Rule: every change leaves the FP64 parity tests bit-identical.
 
 | Step | Work | Closes | Size |
 |---|---|---|---|
-| 4.1 | One route and one request reaching every setting of 1.2's configuration, validated before any job starts; old routes translated; completeness test. Results echo instrument ids and return the cube as a chunked artifact reference | [I-56](known-issues.md#i-56), [I-10](known-issues.md#i-10) (results), [I-09](known-issues.md#i-09) | L |
+| 4.1 | One route and one request reaching every setting of the run configuration (`RunConfig`), validated before any job starts; old routes translated; completeness test. Results echo instrument ids and return the cube as a chunked artifact reference | [I-56](known-issues.md#i-56), [I-10](known-issues.md#i-10) (results), [I-09](known-issues.md#i-09) | L |
 | 4.2 | Durable portfolio jobs with failure classes; EOD accepted-attempt record, boot sweep, `interrupted` state | [I-08](known-issues.md#i-08) | M |
 | 4.3 | Chase TraderX's answers; apply them (a widened allowlist, a schema statement) | [I-23](known-issues.md#i-23), [I-60](known-issues.md#i-60) | S |
 
@@ -107,12 +109,12 @@ only the conclusion waits for repeated runs.
 | Step | Work | Feature | Can start after |
 |---|---|---|---|
 | 6.1 | *Parallel, start now.* Basel P0 (decisions, pinned text, profile, traceability) and P2 data acquisition, which is calendar time | [F-05](features.md#f-05) | — |
-| 6.2 | Engine options: AD Greeks method, settlement methods, FD solver, market-risk engine by configuration | [F-01](features.md#f-01) | 1.2 |
+| 6.2 | Engine options: AD Greeks method, settlement methods, FD solver, market-risk engine by configuration | [F-01](features.md#f-01) | — |
 | 6.3 | Sub-FP32 tiers: inverse-CDF kernel at FP64/FP32 first, then FP16 storage | [F-07](features.md#f-07) | 1.4, 2.7 |
-| 6.4 | FX and equity trades on the market path; FX/EQ calibration | [F-04](features.md#f-04) | 1.2 |
+| 6.4 | FX and equity trades on the market path; FX/EQ calibration | [F-04](features.md#f-04) | — |
 | 6.5 | SABR volatility | [F-02](features.md#f-02) | 2.6 |
 | 6.6 | Basel P1 (FRTB-SA) onward; CVA/DVA | [F-05](features.md#f-05), [F-06](features.md#f-06) | 2.3; 2.2 |
-| 6.7 | AMC engine | [F-03](features.md#f-03) | 1.2, 2.2 |
+| 6.7 | AMC engine | [F-03](features.md#f-03) | 2.2 |
 
 <a id="waiting-on-others"></a>
 ## Waiting on others

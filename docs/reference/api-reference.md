@@ -736,11 +736,29 @@ the field-level quick reference; that doc explains the *why*).
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `market` | `SimulationConfig` | *required* | Curves, vols, correlations. |
+| `market` | `Market \| SimulationConfig` | *required* | A `Market`: the market path (default). A `SimulationConfig`: the Hull-White model. |
 | `trades` | `List[SwapConfig \| SwaptionConfig \| BermudanSwaptionConfig \| AmericanSwaptionConfig \| BondConfig]` | *required* | Heterogeneous, any order/mix. |
+| `config` | `RunConfig` | `RunConfig()` | The run configuration (below). |
 | `pfe_quantiles` | `Sequence[float]` | `(0.95, 0.99)` | Quantiles of the PFE profiles. |
-| `calibration_targets` | `Optional[List[CalibrationTarget]]` | `None` | Used when any Bermudan/American trade's `hw_sigma is None`. |
-| `compute_greeks` | `bool` | `False` | |
+| `calibration_targets` | `Optional[List[CalibrationTarget]]` | `None` | Hull-White model only: used when any Bermudan/American trade's `hw_sigma is None`. |
+| `compute_greeks` | `bool` | `False` | By `config.greeks.method`. |
+| `scenario_risk` | `bool` | `True` | Build `npv_cube` and the exposure profiles. |
+| `trade_ids` | `Optional[Sequence[str]]` | `None` | Echoed on the result. |
+
+### `RunConfig` (`engine/portfolio/config.py`)
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `simulation` | `Optional[CamConfig]` | `None` | ORE's `simulation.xml`; the model per currency is `ir[ccy]`. Required for scenario risk on the market path. |
+| `pricing` | `PricingConfig` | `PricingConfig()` | Engine per product: `european` (`"Bachelier"` \| `"Jamshidian"`), `bermudan`, `american`, `recalibrate`. |
+| `greeks` | `GreeksConfig` | `GreeksConfig()` | `method` (`"Bump"` \| `"AD"`), `sensitivity` (`SensitivityConfig`). |
+| `precision` | `PrecisionConfig` | all 64 | dtype per stage: `simulation`, `pricing`, `risk`, `calibration`. |
+| `base_currency` | `Optional[str]` | `None` | Reporting currency; `None` is the simulation's, else USD. |
+
+`reporting_currency` (property) resolves `base_currency`. `HULL_WHITE_CONFIG` is the
+Hull-White model's engines (Jamshidian, AD). `check_market_path` / `check_hull_white` refuse,
+naming the field, what each model does not implement
+([The Portfolio Entry Point](portfolio-entrypoint.md#runconfig)).
 
 ### `PortfolioResult`
 

@@ -9,10 +9,10 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 
 | ID | Feature | Size | Depends on | Stage |
 |---|---|---|---|---|
-| [F-01](#f-01) | Engine options beyond ORE's defaults | M | Roadmap 1.2 | 6.2 |
+| [F-01](#f-01) | Engine options beyond ORE's defaults | M | — | 6.2 |
 | [F-02](#f-02) | SABR swaption volatility | M | I-54 | 6.5 |
-| [F-03](#f-03) | ORE's AMC engine as a valuation option | L | Roadmap 1.2 | 6.7 |
-| [F-04](#f-04) | FX and equity trades on the market path; FX/EQ vol calibration | L | Roadmap 1.2 | 6.4 |
+| [F-03](#f-03) | ORE's AMC engine as a valuation option | L | I-50 | 6.7 |
+| [F-04](#f-04) | FX and equity trades on the market path; FX/EQ vol calibration | L | — | 6.4 |
 | [F-05](#f-05) | Basel III regulatory figures | L | See entry | 6.1, 6.6 |
 | [F-06](#f-06) | CVA/DVA from the exposure profiles | M | I-50 | 6.6 |
 | [F-07](#f-07) | Sub-FP32 precision tiers (FP16, bfloat16) | L | I-55, I-61 | 6.3 |
@@ -23,11 +23,15 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 ### F-01 — Engine options beyond ORE's defaults
 
 **Value.** Decision A-1 makes the engine configurable, with ORE's defaults; these are the
-non-default options the owner asked for, each a choice in the run configuration of
-[I-68](known-issues.md#i-68).
+non-default options the owner asked for, each a choice in the run configuration
+(`RunConfig`, `engine/portfolio/config.py`). Where the configuration already names the option,
+the market path refuses it today by name (`check_market_path`).
 
-- **Greeks method** (A-5): AD as an option beside ORE's bump-and-revalue, on either model. A
-  test checks they agree to O(bump²) by halving the bump.
+- **Greeks method** (A-5): `GreeksConfig.method="AD"` on the market path, beside ORE's
+  bump-and-revalue (the Hull-White model has AD only). A test checks they agree to O(bump²)
+  by halving the bump.
+- **Jamshidian Europeans on the LGM** (`PricingConfig.european="Jamshidian"`, ORE's
+  `AnalyticLgmSwaptionEngine`), beside ORE's default Bachelier.
 - **Settlement method** (A-6): a trade field with ORE's values and defaults (`PhysicalOTC`,
   `CollateralizedCashPrice`, `ParYieldCurve`, ...). Low priority.
 - **Bermudan/American solver** (A-3): ORE's `LgmFdSolver` beside the Grid solver. ORE's two
@@ -35,7 +39,7 @@ non-default options the owner asked for, each a choice in the run configuration 
 - **Market-risk engine per product** (A-8): `engine.market_risk` chooses a European's engine
   from the configuration, not from whether the trade carries Hull-White fields.
 
-**Depends on.** Roadmap 1.2. **Size.** M. **Details.**
+**Depends on.** Nothing open. **Size.** M. **Details.**
 [details/configurable-engine.md](details/configurable-engine.md).
 
 <a id="f-02"></a>
@@ -54,7 +58,8 @@ revaluation, and much cheaper for Bermudans than per-path recalibration
 ([I-53](known-issues.md#i-53)). Out of scope so far (X-6); a candidate simulation option under
 decision A-1. Parity against ORE's AMC analytic.
 
-**Depends on.** Roadmap 1.2; I-50's oracle for parity. **Size.** L.
+**Depends on.** I-50's oracle for parity. It adds a simulation option to `RunConfig`
+(classic revaluation is the only one today). **Size.** L.
 
 <a id="f-04"></a><a id="x-10"></a><a id="x-11"></a>
 ### F-04 — FX and equity trades on the market path; FX/EQ vol calibration
@@ -65,7 +70,7 @@ constant inputs rather than calibrated to options as `CrossAssetModelBuilder` do
 Both decided: close eventually, not urgent. Brings the two-currency end-to-end test (layer
 L6) within reach.
 
-**Depends on.** Roadmap 1.2. Equity positions from TraderX additionally need
+**Depends on.** Nothing open. Equity positions from TraderX additionally need
 [I-18](known-issues.md#i-18)'s market data. **Size.** L.
 
 <a id="f-05"></a>

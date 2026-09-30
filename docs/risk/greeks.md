@@ -16,9 +16,21 @@ bump. The results, per trade in the base currency:
 These follow ORE's source (gates V-2, V-3 in [ORE Parity](../reference/ore-parity.md#verification-gates))
 and are checked against AD to the bump's order, but not yet against an OREApp sensitivity run
 ([I-51](../planning/known-issues.md#i-51)). The rest of this page documents the **Hull-White path's** AD
-Greeks. By decision A-5 ([compliance/decisions.md](../../compliance/decisions.md)) the Greeks
-method is to become a per-run choice on either model, bump-and-revalue (the default, ORE's) or
-AD ([F-01](../planning/features.md#f-01)).
+Greeks.
+
+The method and the bump settings are the run configuration's `greeks` (decision A-5,
+[compliance/decisions.md](../../compliance/decisions.md)): `GreeksConfig(method="Bump",
+sensitivity=SensitivityConfig(...))`, ORE's `sensitivity.xml` (curve tenors, `curve_shift`,
+`vol_shift`, `theta_days`, the vol decay on the Theta date), on `PortfolioRequest.config`.
+The market path implements `Bump`, the Hull-White model `AD`; each refuses the other by name
+until AD reaches the market path ([F-01](../planning/features.md#f-01)).
+
+```python
+config = RunConfig(greeks=GreeksConfig(sensitivity=SensitivityConfig(curve_tenors=("1Y", "5Y", "10Y"),
+                                                                     theta_days=3)))
+greeks = price_portfolio(PortfolioRequest(market, trades, config=config, scenario_risk=False,
+                                          compute_greeks=True)).greeks
+```
 
 **Module:** [`engine/risk/greeks.py`](../../engine/risk/greeks.py)
 **Public entry points:** `swap_delta_gamma`, `swap_theta`, `swaption_delta_gamma`,

@@ -9,10 +9,14 @@ target design). The default path.
 Greeks are ORE's bump-and-revalue sensitivities on today's market
 (`engine.risk.sensitivities`).
 
+Every choice comes from the request's run configuration (`engine.portfolio.config`):
+`simulation` (the CAM, its model per currency, the grid), `pricing` (the engine per product),
+`greeks` (the method and ORE's sensitivity settings), `precision` and the reporting currency.
+Options this path does not implement are refused by `check_market_path`.
+
 The Hull-White path (`engine.portfolio.request`, a `SimulationConfig` as the market) is the
 other model: supported, not the default, with the known limitations registered as I-42 to
-I-47, to be fixed within it. Both are to become options of one run configuration
-(compliance/decisions.md A-1).
+I-47, to be fixed within it when roadmap 1.3 makes it a model of the same configuration.
 """
 from typing import TYPE_CHECKING, List, Sequence
 
@@ -21,6 +25,7 @@ import numpy as np
 
 from engine.market import Market
 from engine.models.curves import ZeroCurve, discount
+from engine.portfolio.config import _dtype_of, check_market_path
 from engine.portfolio.profiling import phase
 from engine.risk.exposure import ExposureProfile, exposure_profile, netting_set_profile
 from engine.risk.var_es import ENGINE_RISK_MEASURE
@@ -33,33 +38,34 @@ if TYPE_CHECKING:
 
 def price_on_market(request) -> "PortfolioResult":
     """`price_portfolio` for a `PortfolioRequest` whose `market` is a `Market`."""
-    from engine.portfolio.request import PortfolioResult, _dtype_of
+    from engine.portfolio.request import PortfolioResult
 
     validate_market_request(request)
     market: Market = request.market
+    run = request.config
     trades = list(request.trades)
-    base = _base_currency(request)
+    base = run.reporting_currency
     greeks = None
     exposure, trade_exposures = None, []
     if request.scenario_risk:
-        config = request.simulation
+        simulation = run.simulation
         with phase("calibration"):
-            model = build_cross_asset_model(market, config)
+            model = build_cross_asset_model(market, simulation)
         with phase("simulation"):
-            scenarios = simulate(market, config, model, dtype=_dtype_of(request.precision.simulation))
+            scenarios = simulate(market, simulation, model, dtype=_dtype_of(run.precision.simulation))
         with phase("pricing"):
-            valuation = value_portfolio(trades, market, scenarios, base, request.pricing, config.swaption_vol_decay)
+            valuation = value_portfolio(trades, market, scenarios, base, run.pricing, simulation.swaption_vol_decay)
         today, cube = valuation.today, valuation.cube
         with phase("exposure"):
             exposure, trade_exposures = _exposures(trades, today, cube, scenarios, market, base, request.pfe_quantiles)
     else:
         with phase("base_npv"):
-            today = value_today(trades, market, base, request.pricing)
+            today = value_today(trades, market, base, run.pricing)
         cube = jnp.zeros((0, 0, 0))
     if request.compute_greeks:
         from engine.risk.sensitivities import portfolio_sensitivities
         with phase("greeks"):
-            greeks = portfolio_sensitivities(trades, market, base, request.pricing)
+            greeks = portfolio_sensitivities(trades, market, base, run.pricing, run.greeks.sensitivity)
     return PortfolioResult(
         base_npv=float(np.sum(today)), npv_cube=cube, exposure=exposure, trade_exposures=trade_exposures,
         greeks=greeks, warnings=[], base_npv_per_trade=list(today), scenario_risk_available=request.scenario_risk,
@@ -68,20 +74,17 @@ def price_on_market(request) -> "PortfolioResult":
 
 
 def validate_market_request(request) -> None:
-    """Refuse, before any JAX work, a request the market path cannot price: scenario risk
-    without a `CamConfig`, or a trade the market cannot value (`validate_trades`). The HTTP
+    """Refuse, before any JAX work, a request the market path cannot price: an option of
+    the run configuration it does not implement (`check_market_path`), scenario risk
+    without a simulation, or a trade the market cannot value (`validate_trades`). The HTTP
     route runs it synchronously so such a request is a 400, not a failed job."""
-    if request.scenario_risk and request.simulation is None:
-        raise ValueError("scenario_risk needs request.simulation (a CamConfig); set scenario_risk=False for "
+    run = request.config
+    check_market_path(run, request.trades, request.compute_greeks, request.calibration_targets)
+    if request.scenario_risk and run.simulation is None:
+        raise ValueError("scenario_risk needs config.simulation (a CamConfig); set scenario_risk=False for "
                          "today's NPVs and Greeks only")
     validate_trades(request.trades, request.market)
-    request.market.currency(_base_currency(request))
-
-
-def _base_currency(request) -> str:
-    if request.simulation is not None:
-        return request.simulation.base_currency
-    return request.base_currency
+    request.market.currency(run.reporting_currency)
 
 
 def _exposures(trades: Sequence, today: List[float], cube, scenarios, market: Market, base: str,

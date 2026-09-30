@@ -9,7 +9,7 @@ import json
 from engine.api.schemas import PortfolioResultSchema
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig
-from engine.portfolio import PortfolioRequest, derive_maturity_pillars, price_portfolio
+from engine.portfolio import HULL_WHITE_CONFIG, PortfolioRequest, derive_maturity_pillars, price_portfolio
 from engine.risk.var_es import ENGINE_RISK_MEASURE, RISK_MEASURE_RISK_NEUTRAL, RISK_MEASURES
 from demos.demo_scenarios import EVAL_DATE
 from engine.simulation.market_model import EquityConfig, RatesConfig, SimulationConfig, ZeroCurveConfig
@@ -48,7 +48,7 @@ def _request(trades, **kwargs) -> PortfolioRequest:
         ),
         joint_covariance=[[0.04, 0.0], [0.0, 0.01 ** 2]],
     )
-    return PortfolioRequest(market=market, trades=trades, **kwargs)
+    return PortfolioRequest(market=market, trades=trades, **kwargs, config=HULL_WHITE_CONFIG)
 
 
 class TestPortfolioResultStatesItsMeasure:

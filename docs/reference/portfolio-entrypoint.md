@@ -1,6 +1,7 @@
 # The Portfolio Entry Point
 
-**Module:** [`engine/portfolio/request.py`](../../engine/portfolio/request.py)
+**Modules:** [`engine/portfolio/request.py`](../../engine/portfolio/request.py), and the run
+configuration in [`engine/portfolio/config.py`](../../engine/portfolio/config.py)
 **Public entry point:** `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 
 ## Plain-language summary
@@ -17,7 +18,8 @@ drifted out of sync with the simulation's own calibration.
 over, and what do they get back?" with two dataclasses — `PortfolioRequest` in,
 `PortfolioResult` out — and one function, `price_portfolio`, that does everything in
 between: validate, simulate, calibrate (if needed), price every trade, and summarise
-exposure.
+exposure. The model, engines, Greeks method and precision it uses are the request's
+`RunConfig`.
 
 **This is the exposure path.** Its simulation runs months to years forward under the
 risk-neutral measure, so its risk output is an exposure profile (EPE, ENE, PFE through
@@ -34,18 +36,59 @@ this doc covers what actually landed.
 
 ## `PortfolioRequest`
 
-What a caller of the whole system hands over: a portfolio of trades + market data + risk
-parameters.
+What a caller of the whole system hands over: trades, a market, the run configuration, and
+which analytics to run.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `market` | `SimulationConfig` | *required* | Curves, vols (via `joint_covariance`), correlations — the same config `generate_paths` consumes (see [API Reference](api-reference.md#enginesimulationmarket_model)). If `market.rates.maturities` is left unset, `price_portfolio` derives it automatically (see `derive_maturity_pillars` below). |
-| `trades` | `List[SwapConfig \| SwaptionConfig \| BermudanSwaptionConfig \| AmericanSwaptionConfig \| BondConfig]` | *required* | Heterogeneous, any order or mix. `PortfolioResult`'s NPV cube and `greeks` dict are always reported back in this same order, regardless of how `price_portfolio` internally groups trades by type for pricing. |
+| `market` | `Market` \| `SimulationConfig` | *required* | A `Market` (curves per currency and index, swaption vols, FX and equity spots) runs the **market path**, ORE's LGM pipeline and the default. A Hull-White `SimulationConfig` runs the **Hull-White model** (curves, vols via `joint_covariance`, correlations: the config `generate_paths` consumes; if `market.rates.maturities` is unset it is derived by `derive_maturity_pillars`). Anything else is a `TypeError`. |
+| `trades` | `List[SwapConfig \| SwaptionConfig \| BermudanSwaptionConfig \| AmericanSwaptionConfig \| BondConfig]` | *required* | Any order or mix. The NPV cube and `greeks` come back in this order. |
+| `config` | `RunConfig` | `RunConfig()` (ORE's defaults) | Every model, engine, Greeks and precision choice; see "`RunConfig`" below. |
 | `pfe_quantiles` | `Sequence[float]` | `(0.95, 0.99)` | Quantiles of the PFE profiles in the result's exposure. |
-| `calibration_targets` | `Optional[List[CalibrationTarget]]` | `None` | Used when any Bermudan/American trade's `hw_sigma` is left as `None` (uncalibrated) — see "Automatic calibration" below. |
-| `compute_greeks` | `bool` | `False` | If `True`, also computes Delta/Gamma/Theta (and, implicitly, Vega where the trade's own calibration makes it well-defined) per trade — see "Greeks" below. |
-| `precision` | `PrecisionConfig` | `PrecisionConfig()` (all-64) | Independent simulation/pricing/risk dtype control — see "`PrecisionConfig`" below. |
-| `scenario_risk` | `bool` | `True` | Whether to build `npv_cube` and derive the exposure profiles from it. **Must be `False` for any portfolio containing a `BondConfig`** — see "Bonds" below. |
+| `calibration_targets` | `Optional[List[CalibrationTarget]]` | `None` | Hull-White model only: the shared basket for any Bermudan/American with `hw_sigma=None` (see "Automatic calibration" below). Refused on the market path, which builds each trade's basket as ORE does. |
+| `compute_greeks` | `bool` | `False` | Also compute Greeks per trade, by `config.greeks.method`; see "Greeks" below. |
+| `scenario_risk` | `bool` | `True` | Whether to build `npv_cube` and the exposure profiles. On the Hull-White model it **must be `False` for any portfolio containing a `BondConfig`**; see "Bonds" below. |
+| `trade_ids` | `Optional[Sequence[str]]` | `None` | One unique id per trade, echoed on the result. |
+
+## `RunConfig`
+
+`engine/portfolio/config.py`. One value for every choice a run makes, as ORE's run is
+configured by its files; `RunConfig()` is ORE's defaults.
+
+| Field | Type | Default | ORE | Meaning |
+|---|---|---|---|---|
+| `simulation` | `Optional[CamConfig]` | `None` | `simulation.xml` | The date grid, the model per currency (`ir[ccy]`, an `LgmConfig`), correlations, simulation-market tenors, samples, seed, swaption vol decay. Required for scenario risk on the market path. |
+| `pricing` | `PricingConfig` | ORE's builders | `pricingengine.xml` | The engine per product: `european` (`"Bachelier"`, ORE's default, or `"Jamshidian"`), `bermudan` and `american` (`LgmSwaptionEngineConfig`), `recalibrate`. |
+| `greeks` | `GreeksConfig` | `Bump`, ORE's settings | `sensitivity.xml` | `method` (`"Bump"`, ORE's, or `"AD"`) and `sensitivity` (`SensitivityConfig`: curve tenors, shift sizes, Theta horizon, vol decay on the Theta date). |
+| `precision` | `PrecisionConfig` | all 64 | none | The dtype per stage; see "`PrecisionConfig`" below. |
+| `base_currency` | `Optional[str]` | `None` | `baseCurrency` | The reporting currency. `None` means the simulation's base currency, or USD without a simulation; a value contradicting the simulation's is refused. |
+
+Each model implements some of the options, and refuses the rest **before any work**, with a
+`ValueError` naming the field (`check_market_path`, `check_hull_white`). Nothing is priced
+with another engine than the one configured.
+
+| Option | Market path | Hull-White model |
+|---|---|---|
+| `pricing.european` (with a European in the portfolio) | `Bachelier` | `Jamshidian` (I-46) |
+| `greeks.method` (with `compute_greeks`) | `Bump` | `AD` (bonds by bumped revaluation) |
+| `precision` | `simulation` only; `pricing`, `risk`, `calibration` must be 64 until roadmap 1.4 (I-55) | every stage |
+| `simulation`, `base_currency`, `pricing.bermudan`/`american`/`recalibrate`, `greeks.sensitivity` | read | must stay at their defaults: the model's simulation is its `market` and its Bermudan engine is set on the trades (I-63, I-68) |
+
+`HULL_WHITE_CONFIG` is the configuration of the Hull-White model's engines (Jamshidian, AD);
+use it, or `dataclasses.replace(HULL_WHITE_CONFIG, precision=...)`, for a Hull-White run with
+Europeans or Greeks.
+
+```python
+from engine.portfolio import (
+    CamConfig, GreeksConfig, LgmConfig, PortfolioRequest, RunConfig, SensitivityConfig, price_portfolio,
+)
+
+config = RunConfig(
+    simulation=CamConfig(dates=dates, base_currency="USD", ir={"USD": LgmConfig(reversion=0.03)}),
+    greeks=GreeksConfig(sensitivity=SensitivityConfig(curve_tenors=("1Y", "2Y", "5Y", "10Y"))),
+)
+result = price_portfolio(PortfolioRequest(market=market, trades=trades, config=config, compute_greeks=True))
+```
 
 ### Bonds
 
@@ -80,27 +123,28 @@ term, not an error in either.
 
 ## `PrecisionConfig`
 
-Three independent dtype knobs, each `32` (float32) or `64` (float64, default) — see
-[Architecture](../concepts/architecture.md#adjustable-precision) for the full mechanism
-and why `pricing`/`risk` need no new parameters on any pricer or Greeks function.
+`RunConfig.precision`. Four independent dtype knobs, each `32` (float32) or `64` (float64,
+default); see [Architecture](../concepts/architecture.md#adjustable-precision) for the full
+mechanism. On the market path only `simulation` is adjustable today; the others are refused
+below 64 until roadmap 1.4 ([I-55](../planning/known-issues.md#i-55)).
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `simulation` | `int` (`32`\|`64`) | `64` | Passed straight through to `generate_paths(config, precision=...)`. |
-| `pricing` | `int` (`32`\|`64`) | `64` | Governs every array `price_portfolio` constructs itself (`step_times`, the swaption zero-shock `r0_path`, `_flat_curve_cube`'s output) before handing it to a pricer — `npv_cube`/`base_npv`'s dtype follows from this. |
-| `risk` | `int` (`32`\|`64`) | `64` | Governs the `ZeroCurve` built for VaR/ES and Greeks (`_compute_all_greeks`) — every Greeks closure derives its own working dtype from that curve. |
+| `simulation` | `int` (`32`\|`64`) | `64` | The scenario paths (`generate_paths`, or the market path's `simulate`). |
+| `pricing` | `int` \| `PricingPrecisionOverride` | `64` | Hull-White model: every array `price_portfolio` constructs before a pricer (`step_times`, the swaption zero-shock `r0_path`, `_flat_curve_cube`'s output); `npv_cube`/`base_npv`'s dtype follows. Per trade type with an override. |
+| `risk` | `int` \| `RiskPrecisionOverride` | `64` | Hull-White model: the `ZeroCurve` built for each Greek, and the cube's dtype for the exposure statistics. Per metric with an override. |
+| `calibration` | `int` | `64` | Hull-White model: the LGM sigma bootstrap. |
 
-`__post_init__` raises `ValueError` if any field is outside `{32, 64}` — bfloat16/float16
-are not supported (see Architecture's "Out of scope for v1"). Constructing
-`PortfolioRequest()` without a `precision` argument defaults to `PrecisionConfig()`
-(all-64), byte-identical to this project's behavior before `PrecisionConfig` existed.
+`__post_init__` raises `ValueError` if any field is outside `{32, 64}`; bfloat16/float16
+are not supported (see Architecture's "Out of scope for v1").
 
 ```python
-from engine.portfolio import PortfolioRequest, PrecisionConfig
+import dataclasses
+from engine.portfolio import HULL_WHITE_CONFIG, PortfolioRequest, PrecisionConfig
 
 request = PortfolioRequest(
     market=market_config, trades=trades,
-    precision=PrecisionConfig(simulation=64, pricing=32, risk=32),
+    config=dataclasses.replace(HULL_WHITE_CONFIG, precision=PrecisionConfig(simulation=64, pricing=32, risk=32)),
 )
 ```
 
@@ -131,12 +175,15 @@ removed.
 
 ## `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 
-Orchestrates, in order:
+On a `Market`, the market path (`engine.portfolio.market_path.price_on_market`): validate
+(`validate_market_request`: the configured options, then the trades against the market),
+calibrate and simulate the cross-asset model, value every trade on every path, exposure, and
+ORE's sensitivities. On a Hull-White `SimulationConfig`, in order:
 
-1. **Validate `market.joint_covariance`** via `validate_joint_covariance` (see
-   [Market Simulation](../concepts/market-simulation.md)) — an explicit, request-scoped
-   check before any trade-level work happens (the same check also runs inside
-   `generate_paths`, but failing here first gives a clearer, earlier error).
+1. **Validate the request** via `validate_hull_white_request`: `market.joint_covariance`
+   (see [Market Simulation](../concepts/market-simulation.md); the same check also runs
+   inside `generate_paths`, but failing here first gives a clearer, earlier error) and the
+   configured options (`check_hull_white`).
 2. **Cross-check every trade against `market`** via `validate_portfolio_against_simulation`
    (below).
 3. **Auto-derive maturity pillars** via `derive_maturity_pillars` if `market.rates.maturities`
@@ -236,8 +283,10 @@ See [Exposure](../risk/exposure.md#known-limitations-of-the-simulated-cube).
 
 ## Greeks
 
-When `request.compute_greeks=True`, `price_portfolio` computes Delta/Gamma/Theta for **every**
-trade type, keyed by **the trade's own index in `request.trades`** — not by internal
+On the market path, `compute_greeks=True` gives ORE's bump-and-revalue sensitivities
+(`engine.risk.sensitivities`, settings `config.greeks.sensitivity`; see
+[Greeks](../risk/greeks.md)). On the Hull-White model (`config.greeks.method="AD"`),
+`price_portfolio` computes Delta/Gamma/Theta for **every** trade type, keyed by **the trade's own index in `request.trades`** — not by internal
 pricing-group order, so `result.greeks[3]` always means "Greeks for `request.trades[3]`"
 regardless of how many other trades of other types sit between them in the request.
 
@@ -257,6 +306,9 @@ regardless of how many other trades of other types sit between them in the reque
 
 ## Tested by
 
+- `tests/test_run_config.py`: `RunConfig`'s defaults, the refusals of each model naming the
+  field, the sensitivity settings reaching the market path's Greeks, and the configuration's
+  trip to a worker.
 - `tests/test_portfolio.py::TestCrossFieldValidation` — `validate_portfolio_against_simulation`,
   including the reset-alignment warning.
 - `tests/test_portfolio.py::TestPillarAssembly` — `derive_maturity_pillars`.

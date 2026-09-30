@@ -4,17 +4,17 @@ Worker-process pools for `price_portfolio`, one per precision tier.
 `jax_enable_x64` is process-global and cannot be scoped per thread, so jobs at different
 precisions cannot share a process safely. Each tier (float32, float64) gets its own
 `ProcessPoolExecutor`; each worker sets the flag once at start-up and runs one job at a
-time. Jobs beyond a pool's size queue. `request.precision.simulation` selects the tier;
-`pricing` and `risk` are applied inside the job by `price_portfolio`'s own casts.
+time. Jobs beyond a pool's size queue. `request.config.precision.simulation` selects the
+tier; the other stages are applied inside the job by `price_portfolio`.
 
 Workers are always spawned, never forked: forking a process that has initialized JAX hangs
 (I-33, on Linux). Spawn pickles the initializer by reference, so `_worker_init` is a
 top-level function.
 
-Trade configs, and on the market path the `Market` and `CamConfig`, hold
-`ORE.Date`/`ORE.Period` SWIG objects, which do not pickle. `_freeze_trade` writes them as
-text in a `_FrozenTrade` record and `_thaw_trade` rebuilds the dataclass (re-running its
-validation) in the worker; `_FROZEN_FIELDS` names the request fields that travel so.
+Trade configs, and on the market path the `Market` and the run configuration's `CamConfig`,
+hold `ORE.Date`/`ORE.Period` SWIG objects, which do not pickle. The whole request travels
+frozen: `_freeze_trade` writes every dataclass in it as a `_FrozenTrade` record with its ORE
+values as text, and `_thaw_trade` rebuilds it (re-running every validation) in the worker.
 `PortfolioResult` holds no ORE types and pickles as is.
 
 On a machine with one CPU device every worker shares it; there is no device pinning.
@@ -25,7 +25,7 @@ import os
 import time
 import warnings
 from concurrent.futures import Future, ProcessPoolExecutor
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass
 
 from engine.portfolio.request import PortfolioRequest, PortfolioResult
 
@@ -61,14 +61,10 @@ class _OreValue:
 
 @dataclass(frozen=True)
 class _FrozenTrade:
-    """A dataclass (a trade config, or one nested in it) in picklable form: its class and
-    its field values."""
+    """A dataclass (the request, a trade config, or one nested in them) in picklable form:
+    its class and its field values."""
     cls: type
     values: dict
-
-
-#: `PortfolioRequest` fields frozen for the trip to the worker (see the module docstring).
-_FROZEN_FIELDS = ("trades", "market", "simulation")
 
 
 def _freeze_value(value):
@@ -138,8 +134,8 @@ def _profile_options(jax):
     return options
 
 
-def _run_pricing_job(frozen_request: PortfolioRequest) -> PortfolioResult:
-    """Run one job in the worker: thaw the request (`_FROZEN_FIELDS`) and call
+def _run_pricing_job(frozen_request: _FrozenTrade) -> PortfolioResult:
+    """Run one job in the worker: thaw the request (see the module docstring) and call
     `price_portfolio`.
 
     Profiling (opt-in): with `JAX_RISK_PROFILE_DIR` set, the call runs under
@@ -157,9 +153,7 @@ def _run_pricing_job(frozen_request: PortfolioRequest) -> PortfolioResult:
     from engine.portfolio.request import price_portfolio
 
     def _run() -> PortfolioResult:
-        request = replace(frozen_request, **{name: _thaw_value(getattr(frozen_request, name))
-                                             for name in _FROZEN_FIELDS})
-        return price_portfolio(request)
+        return price_portfolio(_thaw_trade(frozen_request))
 
     profile_dir = os.environ.get("JAX_RISK_PROFILE_DIR")
     if not profile_dir:
@@ -251,12 +245,11 @@ def _pool_for(precision_bits: int, pool_size: int = _DEFAULT_POOL_SIZE) -> Proce
 
 
 def submit_pricing_job(request: PortfolioRequest, pool_size: int = _DEFAULT_POOL_SIZE) -> "Future[PortfolioResult]":
-    """Submit `request` to the pool for `request.precision.simulation` and return a
+    """Submit `request` to the pool for `request.config.precision.simulation` and return a
     `Future[PortfolioResult]`. `pool_size` applies only when that tier's pool is first
     created."""
-    pool = _pool_for(request.precision.simulation, pool_size=pool_size)
-    frozen_request = replace(request, **{name: _freeze_value(getattr(request, name)) for name in _FROZEN_FIELDS})
-    return pool.submit(_run_pricing_job, frozen_request)
+    pool = _pool_for(request.config.precision.simulation, pool_size=pool_size)
+    return pool.submit(_run_pricing_job, _freeze_trade(request))
 
 
 def shutdown_pools(wait: bool = True) -> None:

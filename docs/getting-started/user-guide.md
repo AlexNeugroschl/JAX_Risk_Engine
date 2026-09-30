@@ -714,11 +714,9 @@ call `_run_pricing_job` on a frozen request:
 import os
 os.environ["JAX_RISK_PROFILE_DIR"] = ".profile-out"   # set before the call
 
-from dataclasses import replace
 from engine.portfolio.worker_pool import _run_pricing_job, _freeze_trade
 # build `request` as a PortfolioRequest (see "Running the demos" / demos/demo.py)
-frozen = replace(request, trades=[_freeze_trade(t) for t in request.trades])
-_run_pricing_job(frozen)
+_run_pricing_job(_freeze_trade(request))   # the whole request travels frozen
 ```
 
 **3. Open the timeline:**

@@ -50,7 +50,8 @@ standalone exposures, and it is never larger.
 ## Requesting it
 
 ```python
-result = price_portfolio(PortfolioRequest(market, trades, pfe_quantiles=(0.95, 0.99)))
+result = price_portfolio(PortfolioRequest(market, trades, config=RunConfig(simulation=cam_config),
+                                          pfe_quantiles=(0.95, 0.99)))
 result.exposure.epe, result.exposure.pfe["PFE_99"]      # [T+1] each
 result.trade_exposures[0].ene
 ```

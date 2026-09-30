@@ -34,7 +34,7 @@ from engine.calibration.lgm import calibrate_lgm_sigma
 from engine.models.hull_white import ZeroCurve
 
 from engine.market_risk import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
-from engine.portfolio import PortfolioRequest, price_portfolio
+from engine.portfolio import HULL_WHITE_CONFIG, PortfolioRequest, price_portfolio
 
 
 def section(title: str) -> None:
@@ -138,6 +138,7 @@ section("Pricing the whole portfolio")
 request = PortfolioRequest(
     market=sim_config,
     trades=[swap_cfg, european_cfg, bermudan_cfg, american_cfg],
+    config=HULL_WHITE_CONFIG,   # the engines this model implements: Jamshidian Europeans, AD Greeks
     pfe_quantiles=(0.95, 0.99),
     compute_greeks=True,
 )

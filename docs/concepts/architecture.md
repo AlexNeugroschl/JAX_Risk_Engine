@@ -15,12 +15,17 @@ pricer) could be added later without touching the others at all.
 ## Two pricing paths
 
 Since the [ORE alignment](../planning/roadmap.md) `price_portfolio` has two paths,
-chosen by the type of `PortfolioRequest.market`:
+chosen by the type of `PortfolioRequest.market`. Every other choice (the simulation and its
+model per currency, the engine per product, the Greeks method and settings, the precision per
+stage, the reporting currency) is the request's run configuration, `RunConfig`
+(`engine/portfolio/config.py`), with ORE's defaults; each path refuses, naming the field, an
+option it does not implement
+([The Portfolio Entry Point](../reference/portfolio-entrypoint.md#runconfig)).
 
 - **A `Market`: the market path**, the default (`engine.portfolio.market_path`, HTTP
   `POST /v2/portfolio/price`). It reproduces ORE's classic pipeline: trades name their
-  currency and index, the market supplies curves and volatilities, the pricing configuration
-  supplies the models.
+  currency and index, the market supplies curves and volatilities, the run configuration
+  supplies the models and engines.
 
 ```
    Market + CamConfig ──calibrate (engine.calibration.cam)──► CrossAssetModel
@@ -44,10 +49,11 @@ and the risk statistics.
 
 **Where this is going** (owner decisions, 2026-09-30,
 [compliance/decisions.md](../../compliance/decisions.md)). The two paths are an intermediate
-state. The engine is to be configured as ORE is: the model per currency, the pricing engine
-per product, the Greeks method, the settlement method and the precision per stage become
-choices in one run configuration, with ORE's defaults, taken by one request shape and one
-route that reach every setting, with no version-like names (the current `/v2` route is the
+state. The engine is configured as ORE is: the model per currency, the pricing engine per
+product, the Greeks method and the precision per stage are choices in one run configuration
+(`RunConfig`, done), with ORE's defaults. Still to come: the Hull-White model as a model per
+currency of that configuration (roadmap 1.3), the settlement method, and one request shape
+and one route that reach every setting, with no version-like names (the current `/v2` route is the
 market path's, not a version) ([configurable engine](../planning/details/configurable-engine.md)).
 New models, instruments and methods are added as options, and none that works is removed.
 
@@ -93,9 +99,11 @@ JAX_Risk_Engine/
 │   │                                     integration/note.py need the table, and
 │   │                                     integration/ may not import models/ (see I-05)
 │   ├── portfolio/
-│   │   ├── __init__.py                   Re-exports request.py's/validation.py's public
-│   │   │                                 surface, so engine.portfolio's callers see the
-│   │   │                                 same names whether it's a module or a package
+│   │   ├── __init__.py                   Re-exports request.py's/config.py's/validation.py's
+│   │   │                                 public surface
+│   │   ├── config.py                     RunConfig: simulation, engines, Greeks, precision;
+│   │   │                                 what each model implements (check_market_path,
+│   │   │                                 check_hull_white)
 │   │   ├── request.py                    Top-level entry point: PortfolioRequest/
 │   │   │                                 PortfolioResult/price_portfolio, plus the
 │   │   │                                 validation/assembly layer (cross-field checks,
@@ -217,7 +225,8 @@ JAX_Risk_Engine/
 │   │   ├── options.py                    OptionWrapper's exercise, physical and cash
 │   │   ├── portfolio.py                  value_portfolio / value_today / value_on
 │   │   ├── context.py                    PricingContext: one date's curves, vols, fixings
-│   │   └── config.py                     PricingConfig and the LGM engine settings
+│   │   └── config.py                     PricingConfig (engine per product) and the LGM
+│   │                                         engine settings
 │   ├── market_risk/                      Short-horizon VaR/ES by full revaluation at t=0:
 │   │   ├── factors.py                    RateRiskFactors -- curve pillars as risk factors
 │   │   ├── scenarios.py                  Monte Carlo and historical shock scenarios
@@ -663,8 +672,10 @@ class PrecisionConfig:
     calibration: int = 64                                     # LGM sigma bootstrap dtype
 ```
 
-Passed as `PortfolioRequest(..., precision=PrecisionConfig(simulation=64, pricing=32, risk=32))`
-(or, over HTTP, a `"precision": {"simulation": 64, "pricing": 32, "risk": 32}` block on
+Passed as `PortfolioRequest(..., config=RunConfig(precision=PrecisionConfig(simulation=64,
+pricing=32, risk=32)))` (on the Hull-White model, `dataclasses.replace(HULL_WHITE_CONFIG,
+precision=...)`; the market path honours `simulation` only and refuses the others below 64
+until roadmap 1.4) (or, over HTTP, a `"precision": {"simulation": 64, "pricing": 32, "risk": 32}` block on
 `POST /portfolio/price` — see [HTTP API](../reference/http-api.md)). All four default to
 64, byte-identical to this project's behavior before `PrecisionConfig` existed.
 
@@ -867,7 +878,7 @@ tier's pool means `N` jobs of that tier can run genuinely concurrently; a float3
 and a float64-tier job run in separate pools/processes and are therefore always genuinely
 concurrent with each other, not time-sliced behind one flag.
 
-`submit_pricing_job(request)` routes purely by `request.precision.simulation` — the one
+`submit_pricing_job(request)` routes purely by `request.config.precision.simulation` — the one
 knob that actually drives `generate_paths`'s own `jax.config.update` call.
 `pricing`/`risk` stay independently-settable dtypes *within* a job, honored by
 `price_portfolio`'s own explicit casts once inside whichever tier's worker the job landed
