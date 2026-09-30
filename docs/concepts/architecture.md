@@ -47,7 +47,8 @@ and the risk statistics.
 state. The engine is to be configured as ORE is: the model per currency, the pricing engine
 per product, the Greeks method, the settlement method and the precision per stage become
 choices in one run configuration, with ORE's defaults, taken by one request shape and one
-route ([ORE alignment plan, Phase 9](../planning/ore-alignment-plan.md#phase-9--configurable-engine-l)).
+route that reach every setting, with no version-like names (the current `/v2` route is the
+market path's, not a version) ([ORE alignment plan, Phase 9](../planning/ore-alignment-plan.md#phase-9--configurable-engine-l)).
 New models, instruments and methods are added as options, and none that works is removed.
 
 ## The repository layout

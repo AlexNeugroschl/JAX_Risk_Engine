@@ -7,9 +7,11 @@ logic.
 4096-scenario portfolio takes about a minute, too long to hold a request open.
 `GET /portfolio/price/{job_id}` polls the job's `Future`.
 
-`POST /v2/portfolio/price` is the same for schema version 2, the ORE-aligned market path
-(`engine.api.market_schemas`, `engine.portfolio.market_path`); its jobs are polled at the
-same `GET` route. Version 1 stays for the Hull-White path.
+`POST /v2/portfolio/price` is the same for the market path, ORE's pipeline and the default
+model (`engine.api.market_schemas`, `engine.portfolio.market_path`); its jobs are polled at
+the same `GET` route. `POST /portfolio/price` takes the Hull-White model's request. The two
+routes are models, not versions: the `/v2` is a historical name. They are to become one
+route taking one configurable request (compliance/decisions.md A-2).
 
 Job store: an in-process `job_id -> Future` dict, lost on restart and not shared between
 uvicorn workers (I-08; see docs/reference/http-api.md).
@@ -96,8 +98,8 @@ def submit_portfolio_price(request: PortfolioRequestSchema) -> dict:
 
 @router.post("/v2/portfolio/price", status_code=status.HTTP_202_ACCEPTED)
 def submit_market_portfolio_price(request: MarketPortfolioRequestSchema) -> dict:
-    """Schema version 2 (the market path): validate synchronously (a failure is a 400),
-    then submit as `POST /portfolio/price` does."""
+    """The market path's request: validate synchronously (a failure is a 400), then
+    submit as `POST /portfolio/price` does."""
     try:
         dataclass_request = request.to_dataclass()
         validate_market_request(dataclass_request)

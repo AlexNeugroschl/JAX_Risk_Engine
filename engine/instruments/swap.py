@@ -54,7 +54,7 @@ class SwapConfig:
 
     currency: the trade's currency. On the market path (`engine.valuation`) it selects the
         discount curve, and `index_tenor_months` the forwarding curve (`market.index_name`).
-    discount_curve_index / forward_curve_index: legacy Hull-White cube only: curves on the
+    discount_curve_index / forward_curve_index: the Hull-White cube only: curves on the
         cube's rate axis (equal indices give single-curve pricing). The market path refuses
         them.
     effective_date / maturity_date: the booked schedule's start and unadjusted end. They

@@ -9,8 +9,10 @@ target design). The default path.
 Greeks are ORE's bump-and-revalue sensitivities on today's market
 (`engine.risk.sensitivities`).
 
-The legacy Hull-White path (`engine.portfolio.request`, a `SimulationConfig` as the market)
-is kept for existing callers; it carries the audit's known limitations (I-42 to I-45).
+The Hull-White path (`engine.portfolio.request`, a `SimulationConfig` as the market) is the
+other model: supported, not the default, with the known limitations registered as I-42 to
+I-47, to be fixed within it. Both are to become options of one run configuration
+(compliance/decisions.md A-1).
 """
 from typing import TYPE_CHECKING, List, Sequence
 

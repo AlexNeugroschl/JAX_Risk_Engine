@@ -8,10 +8,10 @@ That is ORE's `DiscountingRiskyBondEngine` with no credit curve and no security 
 is how a Treasury without credit is set up (plan V-9). The coupon schedule is supplied, not
 generated. `price_bond_base` and `bond_price_function` are one implementation (audit A-7).
 
-Curves: on the legacy portfolio path a `BondConfig` carries its own `initial_zero_curve`; on
+Curves: on the Hull-White path a `BondConfig` carries its own `initial_zero_curve`; on
 the market path (`engine.valuation`) its `currency` selects the market's discount curve, and
 the market path prices it on every simulated path too (a received fixed leg,
-`engine.valuation.portfolio.bond_legs`), closing I-24 there. The legacy Hull-White cube still
+`engine.valuation.portfolio.bond_legs`), closing I-24 there. The Hull-White cube still
 refuses bonds (`price_bond_scenarios`): it has no curve to discount them on.
 """
 from dataclasses import dataclass
@@ -70,7 +70,7 @@ class BondConfig:
     face_amount: float
     maturity_date: ORE.Date
     evaluation_date: ORE.Date
-    #: The bond's own discount curve (legacy path); `None` on the market path, which uses
+    #: The bond's own discount curve (Hull-White path); `None` on the market path, which uses
     #: its `currency`'s discount curve.
     initial_zero_curve: Optional[ZeroCurveConfig] = None
     #: Annual coupon rate as a decimal (0.04 == 4%), not a percent.

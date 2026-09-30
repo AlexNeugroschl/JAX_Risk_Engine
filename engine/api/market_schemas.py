@@ -1,17 +1,20 @@
 """
-Schema version 2 of the portfolio request: the market path (`engine.portfolio.market_path`).
+The portfolio request for the market path (`engine.portfolio.market_path`), the default
+model.
 
 Today's market (curves per currency and index, swaption volatilities, FX and equity spots),
 ORE's simulation configuration and pricing engines, and trades that name their currency and
 index but carry no model or curve of their own (audit A-3). `POST /v2/portfolio/price`
-takes it; the result is `PortfolioResultSchema`, as for version 1.
+takes it; the result is `PortfolioResultSchema`, shared with the Hull-White request.
 
-Version 1 (`engine.api.schemas.PortfolioRequestSchema`, `POST /portfolio/price`) stays for
-existing callers: the Hull-White path with trade-level model parameters.
+The Hull-White model's request (`engine.api.schemas.PortfolioRequestSchema`,
+`POST /portfolio/price`) is the other request shape: trade-level model parameters. The two
+shapes are models, not versions. The `/v2` in its route and its `schema_version: "2"` are historical names, not versions (docs/reference/http-api.md); they are to become one configurable
+request (compliance/decisions.md A-2).
 
-Conventions as version 1: ISO dates, ORE periods ("5Y"), fixings `{"YYYY-MM-DD": rate}`.
-Unknown fields are refused (422), so a version-1 trade carrying `hw_sigma` or a curve is not
-silently stripped of its model (audit A-3).
+Conventions shared with the Hull-White request: ISO dates, ORE periods ("5Y"), fixings
+`{"YYYY-MM-DD": rate}`. Unknown fields are refused (422), so a Hull-White-shaped trade carrying
+`hw_sigma` or a curve is not silently stripped of its model (audit A-3).
 """
 from typing import Annotated, Dict, List, Literal, Optional, Tuple, Union
 
@@ -267,7 +270,8 @@ MarketTradeSchema = Annotated[
 
 
 class MarketPortfolioRequestSchema(_Strict):
-    """Schema version 2 (see the module docstring). Every trade is valued on `market.asof`.
+    """The market path's request (see the module docstring). Every trade is valued on
+    `market.asof`.
     `simulation` is required with `scenario_risk`; without it `base_currency` sets the
     reporting currency."""
     schema_version: Literal["2"] = "2"

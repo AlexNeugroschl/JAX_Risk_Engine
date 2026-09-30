@@ -1,5 +1,5 @@
 """
-`POST /v2/portfolio/price` (schema version 2, `engine.api.market_schemas`): the market path
+`POST /v2/portfolio/price` (`engine.api.market_schemas`; the `/v2` is a name, not a version): the market path
 over HTTP (plan §6.2 L6). On the shared test portfolio (tests/support/portfolio.py) the polled
 result equals a direct `price_portfolio` call, including ORE's time-weighted and Basel
 exposure figures and the 2-D Vega matrix; a request the market path cannot price is a 400

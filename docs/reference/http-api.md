@@ -159,12 +159,11 @@ Hull-White-shaped trade carrying `hw_sigma` or a curve is not silently stripped 
 market path curves come from the market and models from the pricing configuration
 (audit A-3).
 
-**Two request shapes today, one planned.** `POST /portfolio/price` takes the Hull-White
-model's shape and `POST /v2/portfolio/price` the market path's. The `/v2` in the path and the
-body's `schema_version: "2"` are names from the code, not versions: neither shape is
-deprecated. By decision A-2 ([compliance/decisions.md](../../compliance/decisions.md)) they
-are to become one request whose configuration selects the model, engines and methods; both
-current shapes will keep working, translated into that configuration (ORE alignment plan 9.2).
+**Two request shapes today; the names are misleading.** `POST /portfolio/price` takes the
+Hull-White model's request and `POST /v2/portfolio/price` the market path's. **They are not
+versions.** Each is a model, and the `/v2` in the route and the body's `schema_version: "2"`
+are historical names. Neither shape is deprecated or superseded, and neither is newer in the
+sense a version number suggests. See [Target: one configurable API](#target-one-configurable-api).
 
 ### `GET /portfolio/price/{job_id}`
 
@@ -438,11 +437,31 @@ kind from any fixed-size worker pool. Either way, correctness is unaffected: eac
 result is always independent of what else is running concurrently, whether it runs
 immediately or waits for a worker to free up.
 
+## Target: one configurable API
+
+Decided 2026-09-30 ([compliance/decisions.md](../../compliance/decisions.md) A-2; ORE
+alignment plan 9.2; [I-56](../known-issues.md#i-56)):
+
+- **One route, one request.** The request's configuration selects the model (LGM, the default,
+  or Hull-White), the simulation, the pricing engine per product, the Greeks method, the
+  settlement method and the precision per stage, as ORE's configuration files do. Defaults are
+  ORE's.
+- **Every setting reachable.** Anything the engine can be configured to do, the API can ask
+  for. Today it cannot reach the sensitivity settings, market-risk VaR/ES, the market path's
+  calibrations as standalone runs, or trade ids on the Hull-White request
+  ([I-56](../known-issues.md#i-56)). A completeness test will compare the configuration types
+  with the request schema, so a new setting cannot ship without its API field.
+- **Robust.** Validated before any job starts: types, unknown fields refused, cross-field
+  checks, each refusal a `400` or `422` naming its field.
+- **Names say what they are.** No route or field is named like a version unless it marks a
+  revision of the contract itself. `/v2` and `schema_version: "2"` go.
+- **Nothing breaks.** Today's two routes keep answering, translated into the one request.
+
 ## Request schema for the market path: `MarketPortfolioRequestSchema`
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | `"2"`, identifying this shape (see above; not a version) |
+| `schema_version` | `"2"`: a historical name for this shape, not a version (see [Target: one configurable API](#target-one-configurable-api)) |
 | `market` | `asof` (ISO date; every trade is valued on it); `currencies`: per currency a `discount_curve`, `index_curves` keyed by index name (`"USD-SIMINDEX-6M"`), and `swaption_vols` (ATM normal matrix: `option_tenors`, `swap_tenors`, `vols`); `fx_spots` keyed `"EURUSD"`; `equities` |
 | `trades` | Discriminated by `trade_type`: `swap`, `european_swaption`, `bermudan_swaption`, `american_swaption`, `bond`. Each names its `currency` and `index_tenor_months` and carries no model or curve. Swaptions take `settlement` (`Physical` or `Cash`; a cash European uses ORE's `ParYieldCurve` annuity). Optional `trade_id`, on every trade or on none |
 | `simulation` | ORE's `simulation.xml` as `CamConfigSchema`: `dates`, `base_currency`, `ir` per currency (`reversion`, `volatility`, optional calibration basket `calibration_expiries` × `calibration_terms`), `fx_volatilities`, `equity_volatilities`, `correlations` between factors `IR:USD`, `FX:EURUSD`, `EQ:SP5`, `curve_tenors`, `samples`, `seed`, `swaption_vol_decay`. Required with `scenario_risk` |

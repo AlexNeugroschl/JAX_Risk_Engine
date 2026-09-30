@@ -26,7 +26,7 @@ ENE = max(-NPV0, 0). A netting set sums paths across trades before the statistic
 
 The numeraire is whatever the simulation supplies: on the market path ORE's LGM numeraire of
 the base currency (`engine.simulation.scenario_market`), so E[1/N(t)] = P(0,t) and EE_B is
-exact; on the legacy Hull-White path a discretely accrued bank account (I-45).
+exact; on the Hull-White path a discretely accrued bank account (I-45).
 """
 from dataclasses import dataclass
 from typing import Dict, Optional, Sequence

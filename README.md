@@ -37,9 +37,10 @@ double-precision simulations in the same wall-clock time.
   are in the [register](docs/known-issues.md)
 - Adjustable precision: independent FP64/FP32 settings for simulation, pricing, risk and
   calibration, since which precision each calculation needs is what the project studies
-- HTTP API for portfolio pricing and calibration (today one request shape per model, to
-  become one configurable request), plus a versioned end-of-day contract for hash-verified
-  portfolio bundles
+- HTTP API for portfolio pricing and calibration: today one request shape per model (the
+  `/v2` route is the market path's, not a version), to become one configurable request that
+  reaches every setting ([I-56](docs/known-issues.md#i-56)); plus a versioned end-of-day
+  contract for hash-verified portfolio bundles
 
 ## ORE and hardware acceleration
 

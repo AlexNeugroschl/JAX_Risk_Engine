@@ -1,10 +1,11 @@
 """
-Legacy Hull-White Monte Carlo simulation: a joint Hull-White / lognormal cross-asset path
+Hull-White Monte Carlo simulation: a joint Hull-White / lognormal cross-asset path
 simulation, and a yield-curve cube rebuilt from the short rates.
 
-Not the default. The portfolio path simulates ORE's cross-asset model instead
-(`engine.simulation.cam`); this module is kept for the legacy `PortfolioRequest` shape and
-for callers that want the Hull-White dynamics. The Sobol/Brownian-bridge generators now live
+A supported model, not the default: the default simulates ORE's cross-asset model
+(`engine.simulation.cam`). This module serves the Hull-White `PortfolioRequest` (a
+`SimulationConfig` as the market) and callers that want the Hull-White dynamics; models are
+to become options of one run configuration (compliance/decisions.md A-1). The Sobol/Brownian-bridge generators now live
 in `engine.simulation.random` and are re-exported here.
 
 Differs from ORE's cross-asset model (CAM), which simulates LGM states fitted to each

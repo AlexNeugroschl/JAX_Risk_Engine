@@ -267,6 +267,7 @@ None of these produces a wrong number. **Priority here is driven by demand, not 
 | 16 | [I-24](#i-24) — bonds refused in the Hull-White model's cube | Medium | Moderate | Priced on every path on the market path. On the Hull-White model, part of plan 9.3. |
 | 17 | [I-08](#i-08) — portfolio path's `_JOBS` dict still in-process | Medium | Moderate | Port `publication.py`'s design to the portfolio path. |
 | 18 | [I-09](#i-09) — whole scenario cube serialized into JSON | Medium | Moderate | A chunked artifact plus a reference. |
+| 19 | [I-56](#i-56) — the API cannot reach every setting; two routes named like versions | Medium | Moderate | Decided: one route and one request reaching every setting (decision A-2, plan 9.2). Unreachable settings are absent, not wrong. |
 
 ### Tier 5 — Performance and cosmetic
 
@@ -275,16 +276,16 @@ change leaves the parity tests bit-identical, and I-49 to I-51 may still move nu
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 19 | [I-53](#i-53) — the market path is slow (full suite 23 → 46 min) | Medium | Moderate | Profile first; recalibration per path and date and the bump loops are the suspects. |
-| 20 | [I-21](#i-21) — Greeks recompile 23 XLA programs per call | Medium | **Moderate, fully designed** | Key the memo on `static_key(prepared)`, never the config, never `id()`. The market path's bump Greeks revalue in Python loops and are slower still. |
-| 21 | [I-22](#i-22) — calibration recompiles 8 programs per call | Low | Moderate | A different mechanism from I-21. |
-| 22 | [I-12](#i-12) — `/version` reports dispatcher, not worker device | Low | Low | Invisible on a single-CPU box. |
+| 20 | [I-53](#i-53) — the market path is slow (full suite 23 → 46 min) | Medium | Moderate | Profile first; recalibration per path and date and the bump loops are the suspects. |
+| 21 | [I-21](#i-21) — Greeks recompile 23 XLA programs per call | Medium | **Moderate, fully designed** | Key the memo on `static_key(prepared)`, never the config, never `id()`. The market path's bump Greeks revalue in Python loops and are slower still. |
+| 22 | [I-22](#i-22) — calibration recompiles 8 programs per call | Low | Moderate | A different mechanism from I-21. |
+| 23 | [I-12](#i-12) — `/version` reports dispatcher, not worker device | Low | Low | Invisible on a single-CPU box. |
 
 ### Tier 6 — Awaiting an answer, not an engineer
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 23 | [I-23](#i-23) — `accrualBasis` strictness is an assumption | Medium | **Not a code task** | Closes when TraderX answers. |
+| 24 | [I-23](#i-23) — `accrualBasis` strictness is an assumption | Medium | **Not a code task** | Closes when TraderX answers. |
 
 ### What the ordering deliberately does not do
 
@@ -315,7 +316,7 @@ back into it.
 | [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN | 18 |
 | [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary; optional `trade_ids` echoed | 7 |
 | [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ✅ FIXED | — |
-| [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN | 22 |
+| [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN | 23 |
 | [I-13](#i-13) | Negative curve index silently prices against the wrong curve | **High** | ✅ FIXED | — |
 | [I-14](#i-14) | `generate_paths(precision=32)` leaks `jax_enable_x64=False` | **High** | ✅ FIXED | — |
 | [I-15](#i-15) | Worker-pool concurrency test could not observe concurrency | Low | ✅ FIXED | — |
@@ -324,9 +325,9 @@ back into it.
 | [I-18](#i-18) | No equity spot or FX source; equity positions are refused | Medium | ❌ OPEN — refusal path landed (W1.4) | 13 |
 | [I-19](#i-19) | Accrual tolerance rounded the bound it exists to enforce | Medium | ✅ FIXED | — |
 | [I-20](#i-20) | Impossible calendar dates aborted the whole bundle | **High** | ✅ FIXED | — |
-| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call | Medium | ❌ OPEN | 20 |
-| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call | Low | ❌ OPEN | 21 |
-| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** | Medium | ⚠️ ASSUMPTION | 23 |
+| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call | Medium | ❌ OPEN | 21 |
+| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call | Low | ❌ OPEN | 22 |
+| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** | Medium | ⚠️ ASSUMPTION | 24 |
 | [I-24](#i-24) | Bonds have no scenario NPV on the Hull-White path | Medium | ⚠️ PARTIAL — priced on every path on the market path | 16 |
 | [I-25](#i-25) | A **scalar** Greek crashed the HTTP result serializer | Medium | ✅ FIXED | — |
 | [I-26](#i-26) | Greeks for a bond maturing **tomorrow** crashed on the theta reprice | Low | ✅ FIXED | — |
@@ -356,11 +357,12 @@ back into it.
 | [I-50](#i-50) | No path-level or distribution-level parity test against an ORE simulation | Medium | ❌ OPEN (validation gap) | 8 |
 | [I-51](#i-51) | Reported sensitivities not checked against ORE's sensitivity analytic | Medium | ❌ OPEN (validation gap) | 9 |
 | [I-52](#i-52) | Cash settlement was priced as physical | Medium | ✅ FIXED | — |
-| [I-53](#i-53) | The market path is slow: full suite about 46 minutes, from about 23 | Medium | ❌ OPEN (performance) | 19 |
+| [I-53](#i-53) | The market path is slow: full suite about 46 minutes, from about 23 | Medium | ❌ OPEN (performance) | 20 |
 | [I-54](#i-54) | No swaption smile: an option away from the money reads the ATM volatility | Medium | ❌ OPEN · *Difference from ORE* | 5 |
 | [I-55](#i-55) | Unproven precision combinations are not flagged; precision is switched per process | Medium | ❌ OPEN | 10 |
+| [I-56](#i-56) | The API cannot reach every setting, and two routes are named like versions | Medium | ❌ OPEN | 19 |
 
-**Counts:** 55 issues — 27 FIXED, 18 OPEN, 8 PARTIAL, 1 FLAGGED, 1 ASSUMPTION. The 28
+**Counts:** 56 issues — 27 FIXED, 19 OPEN, 8 PARTIAL, 1 FLAGGED, 1 ASSUMPTION. The 29
 unfixed entries are ranked above.
 
 **For financial correctness:** [I-04](#i-04) and [I-05](#i-05) remain blocked on external input.
@@ -2680,6 +2682,46 @@ A-9, D-9): keep adjustable precision and replace the mechanism before removing i
 enabled once per process and each stage takes an explicit dtype (plan 9.4). A table of
 evidence per figure and precision drives a warning on any result whose combination is
 unproven, stating what is validated and at how many paths (plan 9.5).
+
+---
+
+### I-56 — The API cannot reach every setting, and two routes are named like versions {#i-56}
+
+**Severity:** Medium · **Status:** ❌ OPEN · **Found:** 2026-09-30, the owner's review of the API
+(decision A-2)
+
+**What is wrong.** Three things:
+
+1. **Names that look like versions.** The market path is served at `POST /v2/portfolio/price`,
+   its body carries `schema_version: "2"`, and earlier documents called the two request shapes
+   "version 1" and "version 2". They are not versions. They are two models: the Hull-White
+   model at `POST /portfolio/price`, the market path (the default model) at `/v2`. A caller can
+   reasonably read `/v2` as the successor of `/portfolio/price`, or `schema_version` as a
+   revision of the contract.
+2. **The model is chosen by the request's shape**, not by a setting, so no request can mix
+   options across the two (for example the Hull-White simulation with ORE's sensitivities).
+3. **Settings the API cannot reach** (compared field by field, 2026-09-30):
+   - the sensitivity settings (curve tenors, shift sizes, Theta horizon, the vol decay on the
+     Theta date: `engine.risk.sensitivities.SensitivityConfig`). `price_portfolio` always uses
+     their defaults, so they are unreachable from Python's portfolio entry point too;
+   - market-risk VaR/ES (`engine.market_risk.run_market_risk`): no route at all;
+   - the market path's calibrations (`engine.calibration.cam`, `engine.calibration.ore_lgm`)
+     as standalone runs. `POST /calibration/lgm` serves only the Hull-White path's shared basket;
+   - trade ids on the Hull-White request shape (the market path's has `trade_id`, [I-10](#i-10)).
+
+   Every other setting of the two request shapes is reachable. The Bermudan/American grid
+   settings that the market path's trade schemas lack belong to its engine configuration,
+   which the request carries.
+
+**Reach.** Nothing is priced wrongly: an unreachable setting runs at its default, and the
+default is documented. But the API does not yet do what the engine can, and its names
+mislead.
+
+**What closing it requires.** Decided (2026-09-30, [compliance/decisions.md](../compliance/decisions.md)
+A-2): one route and one request whose configuration reaches every setting, validated before
+any job starts, with names that say what they are and no version-like names except for real
+contract revisions. Today's routes keep answering, translated into that request. A
+completeness test fails when a configuration setting has no API field (plan 9.2).
 
 ---
 

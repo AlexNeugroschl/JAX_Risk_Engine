@@ -16,7 +16,8 @@ would leave the accelerator idle.
 **European swaptions.** One carrying no Hull-White parameters is revalued with ORE's
 default engine, `BlackMultiLegOptionEngine` (Bachelier on the request's normal swaption
 volatilities, `engine.valuation.european`; plan 6.4). One carrying `hw_a`/`hw_sigma` keeps the
-legacy Hull-White Jamshidian price.
+Hull-White Jamshidian price. The engine is to be chosen by configuration rather than by the
+trade's fields (compliance/decisions.md A-8).
 
 **Which risk factors move.** Only curve pillar rates. Volatilities are held at their base
 values: a swaption's `hw_a`/`hw_sigma`, or the swaption volatility surface, do not move, so

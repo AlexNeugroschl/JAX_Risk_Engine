@@ -12,7 +12,7 @@ ORE instruments and engines:
     swap        MakeVanillaSwap + DiscountingSwapEngine, separate forwarding
                 and discounting curves
     European    Swaption + BachelierSwaptionEngine on ORE's SwaptionVolatilityMatrix
-                (ORE's default European engine, plan 6.4); the legacy Hull-White
+                (ORE's default European engine, plan 6.4); the Hull-White
                 European against JamshidianSwaptionEngine on ORE.HullWhite
     bond        FixedRateBond (ACT/ACT ISMA, no settlement lag) + DiscountingBondEngine
     Bermudan    NumericLgmMultiLegOptionEngine through an in-process OREApp
@@ -20,7 +20,7 @@ ORE instruments and engines:
 
 Measured agreement per scenario, which the tolerances below are set from:
 swap ~1e-14 and bond ~1e-16 relative (the same arithmetic); Bermudan ~2e-13
-(the same LGM grid); Bachelier European ~2e-14 (measured 1.6e-14, 2026-09-29); legacy Hull-White European ~3e-7,
+(the same LGM grid); Bachelier European ~2e-14 (measured 1.6e-14, 2026-09-29); Hull-White European ~3e-7,
 inside the ~2e-6 envelope the existing Jamshidian parity tests document for
 sloped curves (tests/test_european_swaption.py).
 

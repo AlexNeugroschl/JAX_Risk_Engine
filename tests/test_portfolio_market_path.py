@@ -137,7 +137,7 @@ def test_greeks_are_oresstyle_sensitivities(result):
 
 
 def test_trade_ids_are_echoed_on_both_paths():
-    """I-10: the request's trade ids come back on the result, market and legacy path alike."""
+    """I-10: the request's trade ids come back on the result, market and Hull-White path alike."""
     from tests.test_portfolio_bond_wire_through import bond_request, make_bill
     ids = ["swap-1", "european-1"]
     market_path = PortfolioRequest(market=_market(), trades=_trades()[:2], scenario_risk=False, pricing=PRICING,

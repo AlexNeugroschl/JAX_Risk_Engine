@@ -26,7 +26,7 @@ rounded to whole months and floored at one month. On a path the volatility is th
 seen from the simulation date (`DynamicSwaptionVolatilityMatrix`, `volatility_on_path`).
 
 Replaces the Hull-White Jamshidian price as the European's value (I-46); the Jamshidian pricer
-stays in `engine.instruments.european_swaption` for the legacy path.
+stays in `engine.instruments.european_swaption` for the Hull-White path.
 """
 import dataclasses
 from dataclasses import dataclass

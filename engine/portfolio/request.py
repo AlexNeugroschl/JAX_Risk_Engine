@@ -9,8 +9,8 @@ Two paths, chosen by the request's `market`:
   * an `engine.market.Market` (the default, `engine.portfolio.market_path`): ORE's
     semantics end to end -- the cross-asset LGM simulation, each trade priced on every path
     with its t=0 engine, exercise and fixings as ORE handles them, ORE's sensitivities;
-  * a legacy `SimulationConfig` (this module): the Hull-White simulation with trade-level
-    model parameters. Its cube carries known limitations, warned about per trade rather than
+  * a `SimulationConfig` (this module): the Hull-White model, a supported non-default
+    option, with trade-level model parameters. Its cube carries known limitations, warned about per trade rather than
     corrected: aged swaps (I-04, audit M-2), options vanishing at expiry (audit M-3), and short
     rates inconsistent with a sloped curve (audit M-1). t=0 base NPVs are unaffected.
 
@@ -392,7 +392,7 @@ class PortfolioRequest:
     Input to `price_portfolio`.
 
     market: today's `Market` (the market path; then `simulation`, `pricing` and
-        `base_currency` apply), or a legacy `SimulationConfig` for `generate_paths` (if
+        `base_currency` apply), or a Hull-White `SimulationConfig` for `generate_paths` (if
         `market.rates.maturities` is unset, it is derived with `derive_maturity_pillars`).
     trades: any mix of trade types; results come back in this order.
     pfe_quantiles: PFE quantiles for the exposure profiles.
@@ -416,7 +416,7 @@ class PortfolioRequest:
     calibration_targets: Optional[List[CalibrationTarget]] = None
     compute_greeks: bool = False
     precision: PrecisionConfig = field(default_factory=PrecisionConfig)
-    #: Whether to build `npv_cube` and the exposure profiles. On the legacy path, set False
+    #: Whether to build `npv_cube` and the exposure profiles. On the Hull-White path, set False
     #: for a portfolio with deterministic-only trades (bonds): the result then has an empty
     #: `npv_cube` and no exposure (absent, not zero), and `scenario_risk_available` says so.
     scenario_risk: bool = True
@@ -494,7 +494,7 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
 
 
 def _price_on_simulation(request: PortfolioRequest) -> PortfolioResult:
-    """`price_portfolio` on the legacy Hull-White path (steps 1-9 above)."""
+    """`price_portfolio` on the Hull-White path (steps 1-9 above)."""
     from engine.simulation.market_model import validate_joint_covariance
 
     validate_joint_covariance(request.market.joint_covariance)

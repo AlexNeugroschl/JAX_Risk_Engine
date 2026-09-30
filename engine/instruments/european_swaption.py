@@ -73,7 +73,7 @@ class SwaptionConfig:
 
     currency: the trade's currency (the market path's curves and swaption volatilities).
     rate_factor_index / hw_a / hw_sigma / initial_zero_curve: the Hull-White Jamshidian
-        pricer's model (legacy path): the simulated factor that prices both the swap and the
+        pricer's model (the Hull-White path): the simulated factor that prices both the swap and the
         option, and its parameters. The market path prices with ORE's default Bachelier
         engine on the market's volatilities and refuses them.
     exercise_date / effective_date / maturity_date: the booked expiry and the underlying's

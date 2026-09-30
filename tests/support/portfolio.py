@@ -16,8 +16,8 @@ be followed from the HTTP result (L6) down to one trade against ORE (L2).
 Not included: an equity position (the engine has no equity trade yet; the CAM's equity
 component is tested in tests/test_cam.py).
 
-`trades()` are the configs and `trades_json()` the same trades as the HTTP schema version 2
-body takes them; `ore_npv(cfg)` is ORE's t=0 value of one trade, from ORE's engines:
+`trades()` are the configs and `trades_json()` the same trades as the market path's HTTP
+request takes them; `ore_npv(cfg)` is ORE's t=0 value of one trade, from ORE's engines:
 `DiscountingSwapEngine`, QuantLib's `BachelierSwaptionEngine` (ORE's European formula for a
 swap starting after expiry, cash settled by `ParYieldCurve`), the OREApp oracle's calibrated
 `NumericLgmMultiLegOptionEngine` (a cash-settled Bermudan/American is priced there as the
@@ -74,7 +74,7 @@ def _bermudan_exercises():
 
 
 def trades_json() -> dict:
-    """Name -> the trade as HTTP schema version 2 takes it."""
+    """Name -> the trade as the market path's HTTP request takes it."""
     underlying = {"notional": 1e6, "effective_date": "2027-02-03", "maturity_date": "2033-02-03"}
     return {
         "swap-payer": {"trade_type": "swap", "notional": 1e7, "fixed_rate": 0.042, "payer": True,

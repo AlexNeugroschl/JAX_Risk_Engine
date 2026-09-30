@@ -274,7 +274,7 @@ without removing what works.
 | Task | Decision | Detail | Closes |
 |---|---|---|---|
 | 9.1 | A-1 | One run configuration naming, per component: the model per currency (LGM default, Hull-White option), the simulation, the pricing engine per product type, the Greeks method, the precision per stage. Defaults reproduce today's market path exactly | — |
-| 9.2 | A-2 | One request and one route for every configuration. Today's two request shapes both keep working, translated into configuration; neither is deprecated or refused. Result shapes stay as they are | — |
+| 9.2 | A-2 | One request and one route for every configuration, reaching **every** setting of 9.1 and the settings it cannot reach today ([I-56](../known-issues.md#i-56)): the sensitivity settings and method, market-risk runs, the ORE-style calibrations. Robust: validated before any job starts (types, unknown fields refused, cross-field checks, each refusal naming its field), defaults ORE's. Names say what they are: no route or field named like a version unless it marks a revision of the contract itself, so `/v2` and `schema_version: "2"` go. Today's two routes keep answering, translated into the configuration, so no caller breaks. A completeness test compares the Python configuration types with the request schema and fails on any setting without an API field | I-56 |
 | 9.3 | A-1 | The Hull-White model as an option of that configuration, with its own defects closed within it: curve-fitted (arbitrage-free) drift, the exact numeraire, `OptionWrapper` exercise, paid flows and fixings on paths, bonds on every path, market-vol Europeans unless configured otherwise, the per-trade basket. Each is tested as on the market path (sloped curves, red first) | I-42 to I-47 and I-24 on the Hull-White model, audit P-2 |
 | 9.4 | A-9 | Replace the precision mechanism: x64 enabled once per process, every stage takes an explicit dtype from the precision configuration, every array created with one. Then remove the flag toggling, `_PRICING_LOCK` and the per-precision pool tiers. Adjustable precision is never unavailable during the change | audit A-1, I-55 (mechanism) |
 | 9.5 | D-9 | Precision evidence: a table per figure (NPV, exposure profile, VaR/ES, each Greek, calibration) and precision, recording what was validated, how, and at how many paths. A run whose combination is not validated for a figure it reports carries a warning naming the evidence and what is missing. Any combination may be run | I-55 (warnings) |
@@ -378,5 +378,6 @@ recorded.
 | I-53 | 7 |
 | I-54 | 10.2 |
 | I-55, A-1 | 9.4, 9.5 |
+| I-56 | 9.2 |
 | I-04 (pre-t=0 fixings), I-05, I-16, I-18, I-23 | Blocked externally; unchanged |
 | I-07, I-08, I-09, I-12 | Independent; any time |

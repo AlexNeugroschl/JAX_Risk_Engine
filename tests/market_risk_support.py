@@ -10,7 +10,7 @@ engine's year fractions are identical. The last pillar (30y) lies beyond every
 cashflow, so extrapolation is not exercised.
 
 The European comes in two forms: `european()` carries Hull-White parameters
-(the legacy Jamshidian price) and `european_bachelier()` does not (ORE's
+(the Hull-White Jamshidian price) and `european_bachelier()` does not (ORE's
 default engine on `VOLS`, plan 6.4).
 """
 import numpy as np
