@@ -22,7 +22,7 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 | Profile a pricing job's JAX vs. Python time | [User Guide](getting-started/user-guide.md#profiling-a-pricing-job) |
 | Understand the tracer, and why Greeks used to dominate a trace | [Profiling & the Tracer](concepts/profiling.md) |
 | Understand a term you don't recognize | [Glossary](concepts/glossary.md) |
-| **Know what's broken, approximated, or missing before trusting a number** | **[Known Issues](known-issues.md)** |
+| **Know what's broken, approximated, or missing before trusting a number** | **[Known Issues](planning/known-issues.md)** |
 
 ## Concepts
 
@@ -37,7 +37,7 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 - **[Profiling & the Tracer](concepts/profiling.md)** — how the XProf hook works, what a
   trace contains, why a cold pricing job compiled ~600 XLA programs (208 on the current
   4-trade demo portfolio, of which **31 still recompile on every warm repeat** — 23 of
-  them in `engine/risk/greeks.py`, tracked as [I-21](known-issues.md#i-21)), and how to
+  them in `engine/risk/greeks.py`, tracked as [I-21](planning/known-issues.md#i-21)), and how to
   read a trace's phase annotations.
 - **[Glossary](concepts/glossary.md)** — plain-language definitions for every finance and
   engineering term used in these docs.
@@ -59,7 +59,7 @@ common `[Scenarios, TimeSteps, Trades]` NPV cube:
 the shared-cube framing above: they are closed-form discounted cashflows against a single
 deterministic curve, so they produce a **t=0 value and Greeks but no NPV cube** — and
 therefore no VaR/ES. That is refused explicitly rather than approximated with a constant
-column; see [I-24](known-issues.md#i-24) and
+column; see [I-24](planning/known-issues.md#i-24) and
 [The Portfolio Entry Point](reference/portfolio-entrypoint.md). Their TraderX-bundle
 counterparts live at the integration boundary
 ([EOD Integration](reference/eod-integration.md)).
@@ -110,61 +110,28 @@ counterparts live at the integration boundary
 - **[ORE Parity](reference/ore-parity.md)** — maps every algorithm in this codebase to its
   exact counterpart in ORE's own C++ source (`reference/ORE`), file and function name.
 
-## Known issues
+## Known issues and planning
 
-- **[Known Issues and Limitations Register](known-issues.md)** — every known defect and
-  scope gap, what each does to a number a user would see, and what closing it actually
-  requires. Read this before trusting an exposure, VaR/ES, or multi-day number: the two
-  highest-severity entries (aged-swap pricing and USD-SOFR conventions) are **not fixed**,
-  and the register is explicit about the difference between *fixed* and *warned about*.
-
+- **[Planning](planning/README.md)** — how the plan is organized and the rules for adding
+  to it. Three documents carry it:
+  - **[Known Issues](planning/known-issues.md)** — every open defect and important
+    shortcoming, what it does to a number a user would see, and what closing it takes. Read
+    it before trusting an exposure profile, a number off the Hull-White model, or an EOD
+    result. Fixed issues keep one line in its closed ledger.
+  - **[Features](planning/features.md)** — additive work beyond today's scope (Basel III
+    figures, sub-FP32 precision, FX/equity trades, CVA, engine options).
+  - **[Roadmap](planning/roadmap.md)** — the order of work: structure, then correctness,
+    performance, API, tests, features.
+  - **[details/](planning/details/)** — design for the large items: the
+    [configurable engine](planning/details/configurable-engine.md),
+    [ORE parity validation](planning/details/ore-parity-validation.md),
+    [Basel III](planning/details/basel-iii.md),
+    [sub-FP32 precision](planning/details/sub-fp32-precision.md) and the
+    [TraderX integration](planning/details/traderx-integration.md) (the agreed EOD contract
+    and what is open with TraderX).
 - **[Decisions](../compliance/decisions.md)** — the dated modelling decisions behind the
-  numbers: the ORE alignment's targets, the differences from ORE that remain, and the
-  choices made while implementing it, each awaiting owner sign-off.
-
-## Planning
-
-- **[ORE Alignment Plan](planning/ore-alignment-plan.md)** — ORE's models and
-  valuation semantics end to end: the market path, its verification gates and test layers,
-  what of the plan is done, and the work that makes the engine configurable (Phase 9).
-- **[Engine Audit](planning/engine-audit.md)** — open problems from the 2026-09-24 audit of
-  the internal engine, tests and demos, ranked by urgency and ease of fixing. Read with the
-  Known Issues register: several findings correct or extend its entries.
-- **[Roadmap](planning/roadmap-and-history.md)** — the phased build-out plan and what's
-  done vs. planned.
-- **[Basel III Compliance Plan](planning/basel-iii-compliance-plan.md)** — what conformance
-  can mean for this engine, the phased work (FRTB-SA, IMA, backtesting, CCR), and how each
-  regulatory figure is tested and proven.
-- **[TraderX Integration Plan](planning/traderX_integration/traderx-integration.md)** — the original gap
-  analysis for safely accepting arbitrary portfolios from an external trading system, and
-  what actually landed (now implemented — see
-  [The Portfolio Entry Point](reference/portfolio-entrypoint.md)).
-- **[EOD Contract Proposal](planning/traderX_integration/eod-contract-proposal.md)** — the proposed request/
-  result contracts for the TraderX end-of-day batch integration, and the capability matrix
-  of what this engine can and cannot price today.
-- **[EOD Contract Response v2](planning/traderX_integration/eod-contract-response-v2.md)** — the reply to
-  TraderX's response: corrections accepted (sensitivity method, gamma convention, units),
-  where this side pushes back (W1 instrument scope, in-memory job state), and the open
-  decisions blocking W0/W2.
-- **[EOD Contract Response v3](planning/traderX_integration/eod-contract-response-v3.md)** — reply to TraderX's
-  v2 package: accepted answers, the zero-coupon accrued-interest normalization rule, durable
-  attempt/lookup semantics, and what is blocked on delivery vs. on build work.
-- **[EOD Contract Response v4](planning/traderX_integration/eod-contract-response-v4.md)** — reply to TraderX's
-  source review: W0 shipped, the SOFR refusal running against the real fixture, and **I-13**
-  reproduced and fixed.
-- **[EOD Contract Response v5](planning/traderX_integration/eod-contract-response-v5.md)** — reply to TraderX's
-  **independent verification of the priced results** (they reproduced every bill/note figure
-  from our shared fixtures). Two defects they found — **I-19** (the accrual tolerance rounded
-  its own bound) and **I-20** (impossible calendar dates aborted the whole bundle) — fixed
-  with regression evidence, and the plan resequenced to put the contract interface first.
-- **[EOD Contract Response v6](planning/traderX_integration/eod-contract-response-v6.md)** — **W1.6 delivered**:
-  all four of their open compatibility items (terms v2 with a validated `accrualBasis`,
-  versioned documents with JSON Schema, `accrualSource` alignment, the EOD HTTP routes). Also
-  reports a bug my own suite missed — an implementation that parsed `accrualBasis` and then
-  ignored it passed 59 of 59 tests — and asks the one question that is now load-bearing.
-- **[TraderX Integration Plan](planning/traderX_integration/traderx-integration-plan.md)** — **the actionable
-  plan.** Consolidates the whole contract exchange into ordered W0/W1/W2 tasks with steps,
-  tests, and the traps each one avoids. Start here to do the work.
+  numbers: the ORE alignment's targets, the differences from ORE that remain, and the owner's
+  decisions on how the engine is configured.
 
 ## Document conventions
 

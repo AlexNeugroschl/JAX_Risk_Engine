@@ -127,7 +127,7 @@ genuinely execution-dominated timeline needs the closure-identity recompile fixe
 §2.2 is the full warm lane/category breakdown, which quantifies exactly that: 79%
 compilation against 1.6% arithmetic even after the cache is warm.
 All 31 are enumerated with exact callsites, root cause and a vetted fix plan in
-[Known Issues I-21 and I-22](../known-issues.md#i-21) — two different mechanisms needing
+[Known Issues I-21 and I-22](../planning/known-issues.md#i-21) — two different mechanisms needing
 two different fixes, which is why they are filed separately.
 
 ### 1.5 `block_until_ready` before the context exits
@@ -229,7 +229,7 @@ The reason is entirely §3.5's residual recompile. All 31 warm compilations sit 
 `PjitFunction(combined)` and `PjitFunction(price_fn)` in the Greeks phase — `price_fn` is a
 fresh closure per call and `jax.jit` keys on function identity, so the grad+Hessian-diagonal
 program recompiles on every Greeks call even for an identical trade. That is the whole warm
-cost. Fixing it (Known Issues [I-21](../known-issues.md#i-21)/[I-22](../known-issues.md#i-22))
+cost. Fixing it (Known Issues [I-21](../planning/known-issues.md#i-21)/[I-22](../planning/known-issues.md#i-22))
 is what would turn this into an execution-dominated timeline; nothing else on the list would
 move the number meaningfully, because there is only 0.25 s of arithmetic to expose.
 

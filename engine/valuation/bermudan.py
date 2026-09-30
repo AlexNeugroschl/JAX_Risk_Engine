@@ -17,7 +17,7 @@ date (`DynamicSwaptionVolatilityMatrix`), and the LGM bootstrapped to the path's
 every path at once; the grid engine then prices on the path curves with the fixings
 FixingManager stored. With `recalibrate = false` the t=0 volatility is kept.
 
-Not yet confirmed against an ORE simulation (gate V-1, docs/known-issues.md I-49): ORE keeps
+Not yet confirmed against an ORE simulation (gate V-1, docs/planning/known-issues.md I-49): ORE keeps
 the parametrization's time grid from its first build and still passes helpers whose expiry has
 passed on a later date; here each date's basket holds only the exercise dates after it, with
 bucket times measured from it.

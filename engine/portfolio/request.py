@@ -308,7 +308,7 @@ def _warn_if_aged_swap_exposure(sim_config: SimulationConfig, trade_configs) -> 
                 f"step are still counted in its NPV, so npv_cube values at those "
                 f"steps, and any exposure derived from them, carry a known "
                 f"inaccuracy. t=0 base NPV is unaffected. See "
-                f"docs/planning/engine-audit.md (M-2).",
+                f"docs/planning/known-issues.md I-04 (audit M-2).",
                 stacklevel=2,
             )
 
@@ -337,7 +337,7 @@ def _warn_if_option_expires_within_simulation(sim_config: SimulationConfig, trad
                 f"at t={last_exercise:.6f} falls inside the simulated horizon (up to "
                 f"t={last_step:.6f}). Its npv_cube value is 0 at the {after} step(s) from "
                 f"then on; exercise into the underlying swap is not tracked, so exposure "
-                f"after expiry is misstated. See docs/planning/engine-audit.md (M-3).",
+                f"after expiry is misstated. See docs/planning/known-issues.md I-43 (audit M-3).",
                 stacklevel=2,
             )
 
@@ -364,7 +364,7 @@ def _warn_if_rates_inconsistent_with_curve(sim_config: SimulationConfig) -> None
                 f"factors are not arbitrage-free against that curve and every npv_cube value "
                 f"past t=0, and the exposure derived from it, is biased. Only a flat curve "
                 f"with initial_rates == theta == its level is consistent. See "
-                f"docs/planning/engine-audit.md (M-1).",
+                f"docs/planning/known-issues.md I-42 (audit M-1).",
                 stacklevel=2,
             )
 

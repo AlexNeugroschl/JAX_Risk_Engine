@@ -77,7 +77,7 @@ BLOCKED_ON_MARKET_INPUT = {
     },
 }
 
-#: Limitations that change what a consumer should do, by id in docs/known-issues.md (a
+#: Limitations that change what a consumer should do, by id in docs/planning/known-issues.md (a
 #: subset of the register).
 KNOWN_LIMITATIONS = (
     {

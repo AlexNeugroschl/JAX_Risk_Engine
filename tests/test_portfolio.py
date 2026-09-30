@@ -2,7 +2,7 @@
 `engine.portfolio` validation and assembly: `validate_portfolio_against_simulation` (each
 trade's hw_a/hw_sigma/initial_zero_curve agrees with `RatesConfig`) and
 `derive_maturity_pillars` (the pillar set for a multi-trade portfolio). See the gap items in
-`docs/planning/traderX_integration/traderx-integration.md`.
+`docs/planning/details/traderx-integration.md`.
 """
 import warnings
 
@@ -251,8 +251,8 @@ def _recorded_warnings(sim, trades):
 
 
 class TestExposureLimitationWarnings:
-    """The exposure cube's known limitations (`docs/planning/engine-audit.md` M-1..M-3) are
-    announced per run."""
+    """The exposure cube's known limitations (`docs/planning/known-issues.md` I-42, I-04,
+    I-43; audit M-1..M-3) are announced per run."""
 
     def test_flat_consistent_curve_does_not_warn_about_the_model(self):
         assert not [w for w in _recorded_warnings(_sim_config(), []) if "rate factor 0" in w]

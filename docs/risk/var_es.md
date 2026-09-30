@@ -178,7 +178,7 @@ the case where the estimate is least trustworthy.
 
 This does not make any estimate better. It makes the uncertainty visible — the difference
 between a number a reader can weigh and one they must simply trust. Part of
-[I-11](../known-issues.md#i-11); added by
+[I-11](../planning/known-issues.md#i-11); added by
 [W0.6](../reference/eod-integration.md#w06--market-input-selection--closes-part-of-i-11),
 purely additively, so every pre-existing key and value is unchanged.
 

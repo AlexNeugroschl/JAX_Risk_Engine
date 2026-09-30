@@ -26,7 +26,7 @@ This page is about *running* the code. For how it works internally, see
 > `.venv/Scripts/python.exe` on Windows (`.venv/bin/python` on Linux/macOS). A bare `python`
 > may resolve to a system interpreter where `pydantic` and `jsonschema` are absent, which
 > makes whole test files **silently uncollectable** rather than failing — see
-> [I-25](../known-issues.md#i-25). The commands below write `python` for brevity; substitute
+> [I-25](../planning/known-issues.md#i-25). The commands below write `python` for brevity; substitute
 > the venv interpreter.
 
 ## Setting up
@@ -220,7 +220,7 @@ each requested confidence level, for every simulated time step. This exercises t
 statistics functions; the engine's market-risk VaR is `demos/demo.py`'s last section.
 
 This demo crashed until 2026-09-24, because its `SwapConfig` omitted `evaluation_date` and
-scheduled off *today* against pillars pinned to 2026-07-30 ([I-28](../known-issues.md#i-28)).
+scheduled off *today* against pillars pinned to 2026-07-30 ([I-28](../planning/known-issues.md#i-28)).
 `tests/test_risk_measure_label.py` now runs it.
 
 ## Running the tests
@@ -237,7 +237,7 @@ correctness and against ORE's own installed software directly).
 
 **Two tiers.** The full suite took 46:00 on the reference Windows machine and 50:09 in a
 4-core Linux container on 2026-09-29 (22–27 minutes before the market path; see
-[I-53](../known-issues.md#i-53)), because the Monte Carlo and ORE-parity tests
+[I-53](../planning/known-issues.md#i-53)), because the Monte Carlo and ORE-parity tests
 genuinely simulate and reprice. Tests marked `@pytest.mark.slow` are excluded by the
 **fast tier**, `-m "not slow"`. The tier timings last measured (2026-09-24, before the market
 path): fast tier about 9½ minutes on Windows and 9m32s on Linux (1,986 tests), slow tier
@@ -337,7 +337,7 @@ behave differently on purpose:
 |---|---|---|
 | Shape | **Asynchronous** — `202` + `job_id`, then poll | **Synchronous** — one call returns the result |
 | Body | `PortfolioRequestSchema` (Pydantic) | `EodSubmissionSchema`, pointing at a bundle on disk |
-| Durability | In-memory `_JOBS`, lost on restart ([I-08](../known-issues.md#i-08)) | Published to a crash-safe store; survives restart |
+| Durability | In-memory `_JOBS`, lost on restart ([I-08](../planning/known-issues.md#i-08)) | Published to a crash-safe store; survives restart |
 | Refusals | An unsupported trade is an error | An unsupported instrument is a **`200`** whose coverage names the refusal |
 
 That last row is the design: returning an HTTP error for a refusal would make "we correctly

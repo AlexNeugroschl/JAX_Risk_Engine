@@ -91,7 +91,7 @@ accrualStart), 0, 1)` of its value (`lag` is the notice period, zero here). So a
 exercised in the middle of a period enters that broken period and is credited the unexpired
 share of its coupons; a Bermudan exercised on the same day enters the next whole period.
 Treating the American as a Bermudan dropped the broken coupon, which overstated payers by up
-to 6x and understated receivers down to 0.09x against ORE ([I-06](../known-issues.md#i-06)).
+to 6x and understated receivers down to 0.09x against ORE ([I-06](../planning/known-issues.md#i-06)).
 The engine now carries the rule as `ExerciseStyle` and applies ORE's `couponRatio`.
 
 Both `BermudanSwaptionConfig` and `AmericanSwaptionConfig` are priced by the same functions
@@ -117,7 +117,7 @@ window opening on the evaluation date.
 The underlying swap is booked with absolute dates, exactly as a
 [`SwapConfig`](swaps.md#1-describing-a-swap-swapconfig) is (`effective_date`/`maturity_date`,
 or `swap_tenor` resolved once at booking), so one config is one trade on every evaluation
-date (audit [M-4](../planning/engine-audit.md#m-4)). On a later date:
+date (audit [M-4](../planning/known-issues.md#m-4)). On a later date:
 
 - exercise dates on or before it are gone, and after the last one the option has expired and
   is worth exactly 0 (`is_expired()`). ORE builds such a trade as a zero cashflow;
@@ -162,7 +162,7 @@ The index period matters because ORE's LGM engine projects an Ibor rate over it
 but not always: the schedule is generated backward from maturity, while an index period is
 rolled forward from its own start date, and they can end a business day apart. Projecting
 over the accrual period, as this engine once did, was worth about 2e-4 of the price on
-ordinary trades ([I-31](../known-issues.md#i-31)).
+ordinary trades ([I-31](../planning/known-issues.md#i-31)).
 
 ### 3. The model: LGM, not plain Hull-White — and why that distinction matters here
 
@@ -388,7 +388,7 @@ evaluation date, as ORE does. A coupon fixing on the base date is history by the
 printed at the base date's own forecast of it, since Theta holds the curve fixed. (While
 exercise was given in year fractions, Theta silently moved every exercise opportunity a day
 later too. While the underlying was a tenor, it moved the swap a day later as well; see
-[M-5](../planning/engine-audit.md#m-5).)
+[M-5](../planning/known-issues.md#m-5).)
 
 ## Which coupons an exercise enters
 
@@ -409,7 +409,7 @@ the trade: up for a payer (a payment dropped), down for a receiver (a receipt dr
 > fixed by prorating Bermudan coupons. Against ORE's own engine (2026-09-23) it is neither:
 > it is what ORE prices, and prorating would have moved the engine away from ORE. The
 > mispricing that did exist was the **American**, which the engine used to price with the
-> Bermudan rule ([I-06](../known-issues.md#i-06)).
+> Bermudan rule ([I-06](../planning/known-issues.md#i-06)).
 
 ORE also supports `midCouponExercise=true` Bermudans (coupons belong until `accrualEnd −
 noticePeriod`, credited `couponRatio`), and notice periods generally. Neither is exposed by
@@ -422,7 +422,7 @@ comparison. A **rounded literal** was dangerous out of all proportion to the rou
 `2.0137` for a true accrual start of `2.0136986301369864` landed 1.4e-6 after it, the coupon
 starting that day read as already elapsed, and the zero-vol price came out 14,336.12 instead
 of about 1,211 — a ~12x overstatement, silent and finite
-([I-29](../known-issues.md#i-29)). The fix at the time snapped near-misses onto the schedule
+([I-29](../planning/known-issues.md#i-29)). The fix at the time snapped near-misses onto the schedule
 within a tolerance band, and exempted Americans from it with a flag.
 
 Both are gone. Exercise is now given in dates, as ORE takes it. An exercise date equal to an
@@ -450,7 +450,7 @@ Before the changes on this page, 22 of those 23 cases failed.
 **That parity is with ORE's Grid solver at `ShiftHorizon=0`**, the configuration this engine
 reproduces. Under ORE's own defaults the engine is close but not identical: `ShiftHorizon=0.5`
 (ORE's builder default) moves an American by up to 1.5e-4, and ORE's FD solver (used in its
-shipped American config) by up to 1.6e-3. See [I-32](../known-issues.md#i-32). The oracle
+shipped American config) by up to 1.6e-3. See [I-32](../planning/known-issues.md#i-32). The oracle
 takes both settings as parameters, so the gap can be re-measured at any time.
 
 ## Tested by

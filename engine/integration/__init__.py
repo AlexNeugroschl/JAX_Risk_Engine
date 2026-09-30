@@ -1,6 +1,6 @@
 """
 TraderX EOD integration boundary: bundle in, identified risk result out
-(docs/planning/traderX_integration/traderx-integration-plan.md).
+(docs/planning/details/traderx-integration.md).
 
 The rule: nothing is silently approximated. An explicit `unsupported` is recoverable; a
 plausible wrong number is not.

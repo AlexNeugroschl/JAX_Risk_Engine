@@ -9,7 +9,7 @@
 Everything described in [The Portfolio Entry Point](portfolio-entrypoint.md) is reachable
 from plain Python already — `price_portfolio(request)`. This module wraps that same
 function behind an HTTP API, for a caller (like TraderX — see
-[TraderX Integration Plan](../planning/traderX_integration/traderx-integration.md)) that isn't a Python process
+[TraderX integration](../planning/details/traderx-integration.md)) that isn't a Python process
 sharing this codebase's own memory space.
 
 **Wrap, not replace.** `engine.portfolio.PortfolioRequest`/`PortfolioResult` and every
@@ -24,8 +24,7 @@ simulation/pricing/risk engine.
 
 ## Stack: FastAPI + Pydantic v2 + uvicorn
 
-Chosen over the roadmap's original "FastAPI/gRPC" placeholder (see
-[Roadmap](../planning/roadmap-and-history.md)) — gRPC was evaluated and explicitly not
+Chosen over the original roadmap's "FastAPI/gRPC" placeholder — gRPC was evaluated and explicitly not
 used:
 
 - Zero existing web framework lock-in to displace.
@@ -286,7 +285,7 @@ addressable by `attemptId`. That work is deliberately **EOD-only**: `_JOBS` abov
 untouched, and a `job_id` from `/portfolio/price` is still lost on restart. The two paths
 have different durability guarantees today, which is a real difference a caller needs to
 know rather than an inconsistency to gloss over — see
-[I-08](../known-issues.md#i-08) and
+[I-08](../planning/known-issues.md#i-08) and
 [EOD Integration](eod-integration.md#w164--the-eod-http-routes).
 
 ## Request schema: `PortfolioRequestSchema`
@@ -324,12 +323,12 @@ profile. (A bond's short-horizon market risk is available in Python through
 
 The response carries **`scenario_risk_available`** saying which happened. When it is `false`,
 the exposure is **absent, not zero** — a missing profile asserts nothing, whereas a zero
-would assert a *measured* absence of exposure. See [I-24](../known-issues.md#i-24) for why a
+would assert a *measured* absence of exposure. See [I-24](../planning/known-issues.md#i-24) for why a
 constant column is refused rather than broadcast.
 
 It also carries **`measure`**: `"risk-neutral-pricing"` whenever exposure was computed, `null`
 otherwise. The profiles are an exposure under the pricing measure, not a forecast of
-tomorrow's loss ([I-11](../known-issues.md#i-11)).
+tomorrow's loss ([I-11](../planning/known-issues.md#i-11)).
 
 A bond's `delta`/`gamma` are **scalars** (one parallel 1bp bump against its single curve),
 unlike a swap's per-pillar `discount_delta`/`forward_delta` vectors. They are still delivered
@@ -352,7 +351,7 @@ A trade's schedule is given **either** as `effective_date`/`maturity_date` (plus
 `european_swaption`, `forward_start`/`exercise_lag_days`), which is resolved to dates on
 the trade's evaluation date. Giving both is refused, and so is giving neither: there is no
 default tenor. A trade booked in the past is priced as the same, seasoned trade (audit
-[M-4](../planning/engine-audit.md#m-4)), and any coupon that fixed before the evaluation
+[M-4](../planning/known-issues.md#m-4)), and any coupon that fixed before the evaluation
 date needs its fixing in `fixings`.
 
 ### Automatic calibration: `hw_sigma: null` + `calibration_basket`
@@ -440,7 +439,7 @@ immediately or waits for a worker to free up.
 ## Target: one configurable API
 
 Decided 2026-09-30 ([compliance/decisions.md](../../compliance/decisions.md) A-2; ORE
-alignment plan 9.2; [I-56](../known-issues.md#i-56)):
+alignment plan 9.2; [I-56](../planning/known-issues.md#i-56)):
 
 - **One route, one request.** The request's configuration selects the model (LGM, the default,
   or Hull-White), the simulation, the pricing engine per product, the Greeks method, the
@@ -449,7 +448,7 @@ alignment plan 9.2; [I-56](../known-issues.md#i-56)):
 - **Every setting reachable.** Anything the engine can be configured to do, the API can ask
   for. Today it cannot reach the sensitivity settings, market-risk VaR/ES, the market path's
   calibrations as standalone runs, or trade ids on the Hull-White request
-  ([I-56](../known-issues.md#i-56)). A completeness test will compare the configuration types
+  ([I-56](../planning/known-issues.md#i-56)). A completeness test will compare the configuration types
   with the request schema, so a new setting cannot ship without its API field.
 - **Robust.** Validated before any job starts: types, unknown fields refused, cross-field
   checks, each refusal a `400` or `422` naming its field.

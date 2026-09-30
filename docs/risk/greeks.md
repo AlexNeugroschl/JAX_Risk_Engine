@@ -15,10 +15,10 @@ bump. The results, per trade in the base currency:
 
 These follow ORE's source (gates V-2, V-3 in [ORE Parity](../reference/ore-parity.md#verification-gates))
 and are checked against AD to the bump's order, but not yet against an OREApp sensitivity run
-([I-51](../known-issues.md#i-51)). The rest of this page documents the **Hull-White path's** AD
+([I-51](../planning/known-issues.md#i-51)). The rest of this page documents the **Hull-White path's** AD
 Greeks. By decision A-5 ([compliance/decisions.md](../../compliance/decisions.md)) the Greeks
 method is to become a per-run choice on either model, bump-and-revalue (the default, ORE's) or
-AD (ORE alignment plan 9.7).
+AD ([F-01](../planning/features.md#f-01)).
 
 **Module:** [`engine/risk/greeks.py`](../../engine/risk/greeks.py)
 **Public entry points:** `swap_delta_gamma`, `swap_theta`, `swaption_delta_gamma`,
@@ -227,11 +227,11 @@ independently before then, so `swaption_theta` is a pure repricing difference wi
 `+ cashflow` term, unlike `swap_theta`.
 
 **Theta ages the booked trade.** Trades carry absolute dates (audit
-[M-4](../planning/engine-audit.md#m-4)), so "today + 1 day" is the *same* trade one day
+[M-4](../planning/known-issues.md#m-4)), so "today + 1 day" is the *same* trade one day
 older: a swap's remaining schedule is unchanged, a swaption's expiry is one day nearer (the
 day before expiry, Theta is minus the whole option value), and a Bermudan keeps its exercise
 dates. Until M-4 the trade was rebuilt from its tenor on the new date, so the swap's maturity
-moved a day later and a swaption never approached expiry ([M-5](../planning/engine-audit.md#m-5)).
+moved a day later and a swaption never approached expiry ([M-5](../planning/known-issues.md#m-5)).
 
 **Fixings printed inside the window.** A floating coupon that fixes on today (or on any date
 before the Theta date) is history by the Theta date. Theta holds the curve fixed, so it prints

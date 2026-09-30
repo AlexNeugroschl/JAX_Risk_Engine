@@ -14,7 +14,7 @@ through time.
 It is **not** market-risk VaR. A loss quantile of a risk-neutral, multi-year simulation
 is not a forecast of tomorrow's loss. Short-horizon VaR/ES is
 [Market Risk](market-risk.md). The cube's statistics were reported as `VaR_95`/`ES_95`
-until the 2026-09-24 audit ([R-1](../planning/engine-audit.md#r-1)).
+until the 2026-09-24 audit ([R-1](../planning/known-issues.md#r-1)).
 
 ## Definitions
 
@@ -40,7 +40,7 @@ ENE = max(−NPV₀, 0). `times[0]` is 0; the rest are the simulation's `time_gr
 On the market path the numeraire is the base currency's LGM numeraire `N(t, x)`, exact at
 each date (ORE's), and `P(0,t)` comes from the base currency's discount curve; the times are
 the simulation dates'. On the Hull-White path the numeraire is the simulation's money-market
-account on rate factor 0 ([I-45](../known-issues.md#i-45)), `P(0,t)` comes from that factor's
+account on rate factor 0 ([I-45](../planning/known-issues.md#i-45)), `P(0,t)` comes from that factor's
 initial curve, and the time weights use `time_grid` (there are no dates).
 
 **Netting.** A netting set's exposure is computed on the *sum* of its trades' paths, so
@@ -65,19 +65,19 @@ Over HTTP, `pfe_quantiles` is a request field and the response carries `exposure
 ## Known limitations of the simulated cube
 
 The statistics above are exact on the cube they are given. On the **Hull-White path** the
-cube itself has three known weaknesses ([engine audit](../planning/engine-audit.md)), and
+cube itself has three known weaknesses ([I-42](../planning/known-issues.md#i-42), [I-04](../planning/known-issues.md#i-04), [I-43](../planning/known-issues.md#i-43)), and
 `price_portfolio` warns about each one whenever it applies to a run. The market path has none
 of them: its simulation is ORE's cross-asset model, paid flows drop out, and options are
-wrapped as ORE wraps them ([I-42](../known-issues.md#i-42), [I-43](../known-issues.md#i-43)).
+wrapped as ORE wraps them ([I-42](../planning/known-issues.md#i-42), [I-43](../planning/known-issues.md#i-43)).
 What it lacks is a comparison of the assembled profiles with an ORE run
-([I-50](../known-issues.md#i-50)).
+([I-50](../planning/known-issues.md#i-50)).
 
 
 | Finding | Effect on exposure | Warning fires when |
 |---|---|---|
-| [M-1](../planning/engine-audit.md#m-1) | Simulated discount factors are not arbitrage-free against a non-flat curve: 4–9% off at 2y on a 3%→5% curve | a rate factor's curve is not flat, or `initial_rates`/`theta` differ from its level |
-| [M-2](../planning/engine-audit.md#m-2) | Swap cashflows already paid stay in the NPV; a matured swap keeps a value | a swap's floating leg is aged at any simulated step |
-| [M-3](../planning/engine-audit.md#m-3) | Options are worth 0 after their last exercise date on every path; exercise into the swap is not tracked | a swaption's last exercise falls inside the simulated horizon |
+| [M-1](../planning/known-issues.md#m-1) | Simulated discount factors are not arbitrage-free against a non-flat curve: 4–9% off at 2y on a 3%→5% curve | a rate factor's curve is not flat, or `initial_rates`/`theta` differ from its level |
+| [M-2](../planning/known-issues.md#m-2) | Swap cashflows already paid stay in the NPV; a matured swap keeps a value | a swap's floating leg is aged at any simulated step |
+| [M-3](../planning/known-issues.md#m-3) | Options are worth 0 after their last exercise date on every path; exercise into the swap is not tracked | a swaption's last exercise falls inside the simulated horizon |
 
 ## Tested by
 

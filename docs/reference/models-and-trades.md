@@ -262,7 +262,7 @@ and re-exported from this module, so every existing import and all 27 of
 ([`engine/integration/note.py`](../../engine/integration/note.py)) needs ACT/ACT (ICMA), but
 `engine/integration/` is **forbidden** to import `engine.models` — this module is where
 `build_vanilla_swap` lives, the exact object the EOD boundary's convention refusal exists to
-keep unreachable ([I-05](../known-issues.md#i-05)). Importing it just to borrow a dictionary
+keep unreachable ([I-05](../planning/known-issues.md#i-05)). Importing it just to borrow a dictionary
 would put that builder one attribute access from the refusal boundary. The dictionary moved to
 a leaf module that imports only `ORE` and can therefore pull nothing in behind it.
 
@@ -295,7 +295,7 @@ caller got before it existed. This is load-bearing: **38 tests across 10 files p
 test for the rename.
 
 **An unsupported day count is refused, never defaulted** — the same refuse-don't-infer rule
-as [I-05](../known-issues.md#i-05), one layer down. `ACT/360` raises
+as [I-05](../planning/known-issues.md#i-05), one layer down. `ACT/360` raises
 `UnsupportedDayCountError` at `SwapConfig` construction, where the offending trade is
 identifiable, rather than deep inside ORE at pricing time. A day count silently replaced by
 ACT/365 shifts every accrual by 1.389%.

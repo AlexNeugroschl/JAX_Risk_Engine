@@ -14,7 +14,7 @@ pricer) could be added later without touching the others at all.
 
 ## Two pricing paths
 
-Since the [ORE alignment](../planning/ore-alignment-plan.md) `price_portfolio` has two paths,
+Since the [ORE alignment](../planning/roadmap.md) `price_portfolio` has two paths,
 chosen by the type of `PortfolioRequest.market`:
 
 - **A `Market`: the market path**, the default (`engine.portfolio.market_path`, HTTP
@@ -36,7 +36,7 @@ chosen by the type of `PortfolioRequest.market`:
   non-default model (HTTP `POST /portfolio/price`). Trades carry their curve indices and
   Hull-White parameters.
   Its data flow is described [below](#the-hull-white-paths-data-flow); its known differences
-  from ORE are [I-42](../known-issues.md#i-42) to [I-47](../known-issues.md#i-47).
+  from ORE are [I-42](../planning/known-issues.md#i-42) to [I-47](../planning/known-issues.md#i-47).
 
 Both paths share the curve primitives (`engine.models.curves`), ORE trade building
 (`engine.models.ore_builders`), the Bermudan grid engine (`engine.instruments.bermudan_swaption`),
@@ -48,7 +48,7 @@ state. The engine is to be configured as ORE is: the model per currency, the pri
 per product, the Greeks method, the settlement method and the precision per stage become
 choices in one run configuration, with ORE's defaults, taken by one request shape and one
 route that reach every setting, with no version-like names (the current `/v2` route is the
-market path's, not a version) ([ORE alignment plan, Phase 9](../planning/ore-alignment-plan.md#phase-9--configurable-engine-l)).
+market path's, not a version) ([configurable engine](../planning/details/configurable-engine.md)).
 New models, instruments and methods are added as options, and none that works is removed.
 
 ## The repository layout
@@ -78,10 +78,8 @@ JAX_Risk_Engine/
 │   ├── reference/                        API reference, ORE parity mapping, models &
 │   │                                     trades, calibration, portfolio entry point,
 │   │                                     HTTP API, EOD integration boundary
-│   ├── known-issues.md                   The defect/scope-gap register -- read before
-│   │                                     trusting any number
-│   └── planning/                         Roadmap/history, TraderX integration plan and
-│                                         the EOD contract exchange
+│   └── planning/                         Known issues (read before trusting any number),
+│                                         features, roadmap, and design details
 ├── compliance/decisions.md             The owner's dated decisions on how the engine is
 │                                         configured, and the differences from ORE
 ├── engine/
@@ -453,7 +451,7 @@ Five pricers currently live here:
   is the only one that produces **no NPV cube**: a bond has no stochastic driver, so it
   has no scenario dimension and therefore no VaR/ES. That is refused explicitly rather
   than filled with a broadcast constant, which would report VaR 0.00 / ES NaN for a
-  position whose risk was never modelled — see [I-24](../known-issues.md#i-24).
+  position whose risk was never modelled — see [I-24](../planning/known-issues.md#i-24).
 
 `swap.py` and `european_swaption.py` are peer modules (neither depends on the other);
 `american_swaption.py` depends on `bermudan_swaption.py` (its engine), which does not
@@ -537,7 +535,7 @@ deriving `RatesConfig.maturities` from every swap's real ORE schedule
 early demos did, and surfacing (not silently absorbing) known scope boundaries like a swap
 aged past its first accrual as warnings. See
 [The Portfolio Entry Point](../reference/portfolio-entrypoint.md) for the full field-level
-reference and [`docs/planning/traderx-integration.md`](../planning/traderX_integration/traderx-integration.md)
+reference and [`docs/planning/traderx-integration.md`](../planning/details/traderx-integration.md)
 for the gap analysis this validation layer closes.
 
 `engine/api/` (`app.py`/`routes.py`/`schemas.py`) wraps `price_portfolio` behind a FastAPI
@@ -638,7 +636,7 @@ calculation. The mechanism described below (a process-global `jax_enable_x64` sw
 job, `_PRICING_LOCK`, one worker pool per precision tier) is to be replaced by explicit
 per-stage dtypes with x64 enabled once per process, and removed only once that works. A run
 whose combination has not been shown adequate for a figure is to carry a warning with the
-evidence ([I-55](../known-issues.md#i-55); ORE alignment plan 9.4, 9.5). The market path's code
+evidence ([I-55](../planning/known-issues.md#i-55); ORE alignment plan 9.4, 9.5). The market path's code
 already takes explicit dtypes.
 
 One of the project's core long-term research goals (see [Overview](../getting-started/overview.md)) is
@@ -893,7 +891,7 @@ compilation cost independently, since compiled XLA programs aren't shared across
 OS processes. Real device-count-aware pool sizing (matching `len(jax.devices())` on an
 actual Cloud TPU VM host) and TPU-specific environment-variable device pinning
 (`JAX_PLATFORMS=tpu`/`TPU_VISIBLE_CHIPS`) are deferred to actual TPU deployment, not
-designed here — see [Roadmap & History](../planning/roadmap-and-history.md). See
+designed here — see [I-61](../planning/known-issues.md#i-61). See
 [HTTP API](../reference/http-api.md) for the dispatcher-level job-store details and
 [`engine/portfolio/worker_pool.py`](../../engine/portfolio/worker_pool.py) for the full
 implementation and its own extensive docstring.

@@ -86,7 +86,7 @@ model parameters (`hw_a`, `hw_sigma`, `initial_zero_curve` — see
 [below](#why-a-swaption-needs-its-own-copy-of-the-models-parameters)). See
 [API Reference](../reference/api-reference.md#swaptionconfig) for every field.
 
-All three dates are booked, absolute dates (audit [M-4](../planning/engine-audit.md#m-4)).
+All three dates are booked, absolute dates (audit [M-4](../planning/known-issues.md#m-4)).
 It can instead be booked by tenor — `swap_tenor`, and optionally `forward_start`, how far in
 the future the option can first be exercised — which is resolved once, on
 `evaluation_date`, to the three dates (see below). On a later evaluation date the same config
@@ -242,7 +242,7 @@ over dates from 0.5Y to 2.25Y, short rates from 1% to 6%, payer and receiver, tw
 strikes/tenors, and flat, upward and inverted curves, with a worst case of 2.1e-6. That
 grid is the suite's coverage of the variance term of `A(t,T)`, which vanishes at `t=0`
 and so cannot be checked by any `t=0` comparison (see
-[known-issues I-30](../known-issues.md#i-30)).
+[known-issues I-30](../planning/known-issues.md#i-30)).
 
 **Once `t` reaches the option's own exercise time `T0`, NPV is reported as exactly 0** for
 that `(scenario, step)` — a European option carries no remaining value after its own

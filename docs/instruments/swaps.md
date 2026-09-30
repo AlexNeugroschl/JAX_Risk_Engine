@@ -64,7 +64,7 @@ built, to the dates a spot-starting swap traded on `evaluation_date` has. The ru
 `MakeVanillaSwap`'s own: two TARGET business days to spot, then the tenor. The tenor is not
 kept. So `dataclasses.replace(cfg, evaluation_date=later)` is the same swap, one day or one
 year older — not a new 5Y swap starting later, which is what the engine priced before audit
-[M-4](../planning/engine-audit.md#m-4).
+[M-4](../planning/known-issues.md#m-4).
 
 **A seasoned swap** (priced after it started) is valued as ORE values it. A cashflow paid on
 or before the evaluation date has occurred and drops out. A floating coupon whose fixing date

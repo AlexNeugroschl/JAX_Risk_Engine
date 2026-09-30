@@ -8,7 +8,7 @@ Schedules, calendars and accrual fractions come from ORE (`MakeVanillaSwap`, cou
 Scope: generic term-Ibor swaps only. `build_vanilla_swap` produces a `SimIndex<N>M` index
 on a TARGET calendar, with ACT/365 accrual by default. It cannot express an overnight
 index (SOFR: ACT/360, compounded in arrears, US calendar, lookback/lockout). Such trades
-must be refused, not priced here; see I-05 in docs/known-issues.md.
+must be refused, not priced here; see I-05 in docs/planning/known-issues.md.
 """
 import math
 from dataclasses import dataclass

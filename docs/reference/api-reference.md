@@ -99,7 +99,7 @@ is square, symmetric (within float tolerance), and positive semi-definite (via
 `np.linalg.eigvalsh`). **Raises** `ValueError` naming the offending eigenvalue(s)/index, or
 the symmetry mismatch, rather than letting an invalid matrix silently NaN every simulated
 path through `jnp.linalg.cholesky` — see
-[docs/planning/traderx-integration.md](../planning/traderX_integration/traderx-integration.md#1-joint_covariance-psd-validationrepair-highest-priority).
+[docs/planning/traderx-integration.md](../planning/details/traderx-integration.md).
 
 ### `nearest_psd(matrix, epsilon: float = 1e-10) -> np.ndarray`
 
@@ -150,7 +150,7 @@ schedule must be given exactly once — `swap_tenor` (a valid `ORE.Period`) or b
 keyed by `ORE.Date` with finite values. Raises `ValueError`/`TypeError` naming the bad field.
 This is deliberately scoped to reject malformed input, not impose business-rule limits
 (e.g. no "no rate above 20%" check) — see
-[docs/planning/traderx-integration.md](../planning/traderX_integration/traderx-integration.md#4-trade-level-input-validation-notional-rate-ranges-tenor-sanity).
+[docs/planning/traderx-integration.md](../planning/details/traderx-integration.md).
 
 ### `price_swaps(yield_curves: jax.Array, maturities: np.ndarray, swap_configs: List[SwapConfig]) -> jax.Array`
 
@@ -346,7 +346,7 @@ deterministic curve**. The odd one out in this package in two ways: it is the on
 is **not JAX** (plain `math.exp` over ORE day-count arithmetic), and the only one that produces
 **no NPV cube** — so no VaR/ES. See
 [The Portfolio Entry Point: Bonds](portfolio-entrypoint.md#bonds) and
-[I-24](../known-issues.md#i-24).
+[I-24](../planning/known-issues.md#i-24).
 
 ### `CouponPeriod`
 
@@ -366,7 +366,7 @@ back from maturity that disagreed with the booked one would silently reprice eve
 | `face_amount` | `float` | *required* | **Signed** — a short position is a negative face and yields a negative NPV directly. There is no separate sign factor, and applying one on top would flip a short position positive. |
 | `maturity_date` | `ORE.Date` | *required* | Must be strictly after `evaluation_date`, else `BondPricingError` — a matured bond is a settlement question, not a pricing one. |
 | `evaluation_date` | `ORE.Date` | *required* | Valuation date. |
-| `initial_zero_curve` | `ZeroCurveConfig` | *required* | **This bond's own curve**, not an index into `SimulationConfig.rates.initial_zero_curves` — the same shape the swaption family uses, and the reason a bond cannot reproduce [I-01](../known-issues.md#i-01). |
+| `initial_zero_curve` | `ZeroCurveConfig` | *required* | **This bond's own curve**, not an index into `SimulationConfig.rates.initial_zero_curves` — the same shape the swaption family uses, and the reason a bond cannot reproduce [I-01](../planning/known-issues.md#i-01). |
 | `coupon_rate` | `float` | `0.0` | Annual coupon as a **decimal** (`0.04` == 4%), not a percent. |
 | `coupon_schedule` | `Tuple[CouponPeriod, ...]` | `()` | Empty ⇒ this is a **bill** (the degenerate zero-coupon case, not a separate type). |
 | `redemption_fraction` | `float` | `1.0` | Redemption as a fraction of face. Must be non-negative. |
@@ -417,7 +417,7 @@ like.
 Change in dirty NPV for a `bump` (default `RATE_BUMP = 1e-4`, i.e. 1bp) parallel curve shift.
 A **bumped revaluation through the same code path**, not a differentiated formula — a
 sensitivity derived from an expression that has drifted from the pricer measures the
-expression, not the price. Parallel-only ([I-16](../known-issues.md#i-16)).
+expression, not the price. Parallel-only ([I-16](../planning/known-issues.md#i-16)).
 
 ### `price_bond_scenarios(*args, **kwargs)`
 
@@ -425,7 +425,7 @@ expression, not the price. Parallel-only ([I-16](../known-issues.md#i-16)).
 docstring where a contributor would look for the missing capability, rather than being an
 absence someone fills in with a broadcast. Filling it in naively produces a zero-variance
 column measuring out to **VaR `0.00` and ES `NaN`** — a position reported as risk-measured
-when its risk was never modelled ([I-24](../known-issues.md#i-24)).
+when its risk was never modelled ([I-24](../planning/known-issues.md#i-24)).
 
 ### Exceptions
 
@@ -487,7 +487,7 @@ The main entry point — combines the three functions above.
 | `ES_99_tailCount` | **Effective sample size** — how many observations the ES mean actually averaged. At 99% over 10,000 scenarios this is ~100, so the estimate rests on 1% of the sample. |
 | `ES_99_standardError` | Monte Carlo standard error of the ES mean (`s/√n`, `ddof=1`). **NaN, never `0.0`, when `n < 2`** — `0.0` would read as "perfectly converged" for the least trustworthy case. |
 
-The two diagnostic keys are additive (W0.6, part of [I-11](../known-issues.md#i-11)); the
+The two diagnostic keys are additive (W0.6, part of [I-11](../planning/known-issues.md#i-11)); the
 `VaR_*`/`ES_*` keys and values are unchanged. See
 [EOD Integration: tail diagnostics](eod-integration.md#tail-statistics-carry-their-own-convergence-diagnostics).
 
@@ -855,15 +855,15 @@ pricer** — only `ORE`, for date and day-count arithmetic. The dependency runs
 | `bundle` | W0.1 | `load_bundle(root) -> Bundle`, `Bundle`, `BundleIntegrityError`. Reads and hash-verifies every artifact **in binary, exactly as read** — see the CRLF trap. |
 | `terms` | W0.2 / W1.6.1 | `join_terms`, `TermsEntry`, `AccrualBasis`, `TermsJoinError`, `SUPPORTED_TERMS_SCHEMAS`. |
 | `normalize` | W0.3 | `normalize_position`, `NormalizedPosition`, `Quantity`, `MAPPING_VERSION`. |
-| `conventions` | W0.4 | `check_conventions`, `ConventionRefusal` — a positive **allowlist**, applied before any pricing object is constructed ([I-05](../known-issues.md#i-05)). |
+| `conventions` | W0.4 | `check_conventions`, `ConventionRefusal` — a positive **allowlist**, applied before any pricing object is constructed ([I-05](../planning/known-issues.md#i-05)). |
 | `result` | W0.5 | `RiskResult`, `ItemResult`, `Coverage`, `CALCULATIONS`, `STATUSES`. |
-| `market_inputs` | W0.6 | `resolve_market_inputs`, `MarketInputs`, `MarketInputsNotSupplied`, `ASSUMED_PROFILES`, `CurveProvenance`, `ENGINE_RISK_MEASURE`. No silent fallback ([I-11](../known-issues.md#i-11)). |
-| `identity` | W0.7 | `item_id`, `ItemIdentity` — an opaque, stable id plus the source identity block, on **every** row including refusals ([I-10](../known-issues.md#i-10)). |
-| `publication` | W0.8 | `ResultStore`, `PublicationError`, `default_store_root` — the crash-safe durable result store ([I-08](../known-issues.md#i-08)). |
+| `market_inputs` | W0.6 | `resolve_market_inputs`, `MarketInputs`, `MarketInputsNotSupplied`, `ASSUMED_PROFILES`, `CurveProvenance`, `ENGINE_RISK_MEASURE`. No silent fallback ([I-11](../planning/known-issues.md#i-11)). |
+| `identity` | W0.7 | `item_id`, `ItemIdentity` — an opaque, stable id plus the source identity block, on **every** row including refusals ([I-10](../planning/known-issues.md#i-10)). |
+| `publication` | W0.8 | `ResultStore`, `PublicationError`, `default_store_root` — the crash-safe durable result store ([I-08](../planning/known-issues.md#i-08)). |
 | `capabilities` | W0.9 | `capabilities()` — the supported (product × convention × calculation) matrix. |
 | `bill` | W1.2 | `price_bill`, `BillPrice`, `is_bill`, `BillPricingError`. |
 | `note` | W1.3 | `price_note`, `NotePrice`, `rate_sensitivity`, `AccruedReconciliation`, `accrual_mismatch_tolerance`, `is_note`. |
-| `equity` | W1.4 | `price_equity`, `EquityPosition`, `read_position`, `is_equity` — a **refusal** naming the missing spot/FX source ([I-18](../known-issues.md#i-18)). |
+| `equity` | W1.4 | `price_equity`, `EquityPosition`, `read_position`, `is_equity` — a **refusal** naming the missing spot/FX source ([I-18](../planning/known-issues.md#i-18)). |
 | `schema_version` | W1.6.2 | `RESULT_SCHEMA_VERSION`, `CAPABILITY_SCHEMA_VERSION` — a dependency-free leaf that breaks the `result` ↔ `schema` cycle. |
 | `schema` | W1.6.2 | `result_schema()`, `capability_schema()` — JSON Schema **derived** from the frozen vocabulary, never hand-written. |
 | `workload` | W1.6.4 / W0.8 | `workload_key`, `AttemptStore`, `Attempt`, `UNKNOWN_WORKLOAD` — the attempt state machine and the four lookup states. |

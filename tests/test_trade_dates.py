@@ -1,6 +1,6 @@
 """
 Trades are defined by absolute dates, not relative to the evaluation date
-(audit M-4, docs/planning/engine-audit.md).
+(audit M-4, closed; docs/planning/known-issues.md).
 
 A trade config holds its booked schedule -- `effective_date`/`maturity_date`,
 and a European swaption's `exercise_date` -- so the same config is the same
@@ -27,7 +27,7 @@ Curves are sloped, and each pillar is a whole number of ACT/365 days so ORE
 and the engine read identical dates. The Bermudan/American curve is flat up
 to its first non-zero pillar: ORE's zero-curve build moves the as-of zero to
 `z(1e-4)`, which only a flat first segment leaves unchanged (see the oracle's
-module docstring and I-34 in docs/known-issues.md).
+module docstring and I-34 in docs/planning/known-issues.md).
 """
 import dataclasses
 

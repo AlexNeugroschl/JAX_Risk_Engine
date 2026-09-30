@@ -1,6 +1,6 @@
 """
 Regression tests for gaps where `price_portfolio` returned a quietly incomplete result
-(found while writing docs/planning/traderX_integration/eod-contract-proposal.md). Each
+(found while writing the EOD contract proposal; see docs/planning/details/traderx-integration.md). Each
 class fails against the pre-fix code.
 
 1. Swap Greeks were skipped (I-01): `_compute_all_greeks` could not resolve a swap's curve

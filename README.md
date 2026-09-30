@@ -7,7 +7,7 @@ Value at Risk and Expected Shortfall. The models are ported from
 
 The engine is designed to run across multiple TPUs, with a Google Cloud TPU VM as the
 target deployment, and also runs on CPU and GPU. Today each job runs on one device;
-sharding the scenario axis across devices is planned (engine audit P-1). A main research goal is to measure how
+sharding the scenario axis across devices is planned ([I-61](docs/planning/known-issues.md#i-61)). A main research goal is to measure how
 much numeric precision Monte Carlo risk needs: whether many lower-precision simulations,
 run concurrently across TPU devices, can match the VaR and Expected Shortfall of fewer
 double-precision simulations in the same wall-clock time.
@@ -34,12 +34,12 @@ double-precision simulations in the same wall-clock time.
   Europeans and AD Greeks. Models, engines and methods are becoming options of one run
   configuration, as in ORE, with ORE's defaults
   ([decisions](compliance/decisions.md)). The Hull-White model's known differences from ORE
-  are in the [register](docs/known-issues.md)
+  are in the [register](docs/planning/known-issues.md)
 - Adjustable precision: independent FP64/FP32 settings for simulation, pricing, risk and
   calibration, since which precision each calculation needs is what the project studies
 - HTTP API for portfolio pricing and calibration: today one request shape per model (the
   `/v2` route is the market path's, not a version), to become one configurable request that
-  reaches every setting ([I-56](docs/known-issues.md#i-56)); plus a versioned end-of-day
+  reaches every setting ([I-56](docs/planning/known-issues.md#i-56)); plus a versioned end-of-day
   contract for hash-verified portfolio bundles
 
 ## ORE and hardware acceleration
@@ -68,7 +68,7 @@ against ORE running in the same process:
   own `RiskStatistics`: swaps, bonds and European swaptions per scenario to about `1e-14`,
   Bermudans to `2e-13`.
 - Not yet shown: that the assembled simulation, exposure and sensitivities equal an ORE run
-  end to end ([I-50](docs/known-issues.md#i-50), [I-51](docs/known-issues.md#i-51)).
+  end to end ([I-50](docs/planning/known-issues.md#i-50), [I-51](docs/planning/known-issues.md#i-51)).
 
 See [ORE Parity](docs/reference/ore-parity.md) for the full mapping.
 
@@ -106,6 +106,6 @@ portfolio from Python or over HTTP.
 - [Architecture](docs/concepts/architecture.md)
 - [HTTP API](docs/reference/http-api.md)
 - [EOD Integration](docs/reference/eod-integration.md)
-- [Precision Research](docs/planning/precision%20research/README.md)
-- [Known issues](docs/known-issues.md) and [decisions](compliance/decisions.md)
+- [Planning](docs/planning/README.md): [known issues](docs/planning/known-issues.md), [features](docs/planning/features.md), [roadmap](docs/planning/roadmap.md), and [decisions](compliance/decisions.md)
+- [Sub-FP32 precision research](docs/planning/details/sub-fp32-precision.md)
 - [Full documentation index](docs/README.md)

@@ -1,7 +1,8 @@
 # Basel III Compliance Plan
 
-**Status:** proposed · **Written:** 2026-09-24 · **Scope:** market risk (FRTB), with
-counterparty credit and CVA as later phases
+**Status:** proposed; feature [F-05](../features.md#f-05), roadmap steps
+[6.1 and 6.6](../roadmap.md#stage-6--features) · **Written:** 2026-09-24, §2 updated
+2026-09-30 · **Scope:** market risk (FRTB), with counterparty credit and CVA as later phases
 
 This plan covers three things: what "Basel III compliant" can honestly mean for this
 engine, the work needed to get there, and how to test and prove each regulatory number it
@@ -59,39 +60,37 @@ jurisdiction profile is added only when someone needs it.
 
 ## 2. Where the engine stands today
 
-The engine is accurate for what it computes: prices match ORE to ~1e-11 for Bermudans and
-1e-3 per scenario end to end. **But what it computes is not what Basel asks for.** The
-central gap is one of measure, not precision:
-
-- `generate_paths` simulates under the **risk-neutral pricing measure**
-  ([`engine/risk/var_es.py`](../../engine/risk/var_es.py), `ENGINE_RISK_MEASURE =
-  "risk-neutral-pricing"`). Basel market risk capital needs **historical, real-world
-  10-day P&L**. No amount of accuracy turns one into the other. The I-11 label already
-  says so; the plan makes it enforceable (P0.5).
-- The risk-neutral exposure cube `[Scenarios, TimeSteps, Trades]` is the right object for
-  **counterparty exposure** (EPE/EEPE, CRE53). That makes P5 cheaper than it looks.
+Updated 2026-09-30. The measure gap the first version of this plan led with is closed:
+short-horizon market risk is its own path. `engine.market_risk.run_market_risk` revalues the
+portfolio at t=0 under Monte Carlo or **historical** shocks of every curve pillar over a
+chosen horizon (`historical_scenarios(factors, history, horizon_days=10)`), with ORE's
+`RiskStatistics` conventions, and agrees with ORE scenario by scenario (swaps, bonds and
+Europeans to about 1e-14, Bermudans to 2e-13). The multi-step risk-neutral simulation
+reports exposure profiles (EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B, PFE, ORE's
+`ExposureCalculator` definitions), which is the right object for counterparty exposure
+(CRE53). What remains is Basel's own definitions, data and aggregation on top of these.
 
 ### Gap analysis
 
 | Basel requirement | Today | Gap |
 |---|---|---|
-| SBM delta at prescribed GIRR tenors (0.25y … 30y) | AD delta per *engine* pillar, scaled to 1bp | Wrong vertices. AD derivative, not Basel's one-sided difference (§6, P1.2) |
-| SBM vega to implied vol × vol | Bermudan vega per basket swaption, 1bp normal vol; no European swaption vega | Vertices, the × σ scaling, European coverage |
-| SBM curvature (full reval at ±RW shift) | None | New |
+| SBM delta at prescribed GIRR tenors (0.25y … 30y) | ORE's bump-and-revalue delta (forward difference, absolute zero shift) at the configured curve tenors (`engine.risk.sensitivities`); not yet checked against ORE's analytic ([I-51](../known-issues.md#i-51)) | Basel vertices (re-pillaring, P1.1); the one-sided definition already matches |
+| SBM vega to implied vol × vol | Vega per swaption vol quote for Europeans and Bermudans/Americans (market path) | Vertices, the × σ scaling |
+| SBM curvature (full reval at ±RW shift) | Full t=0 revaluation exists (`engine.market_risk.revaluation`) | Curvature formula and shifts |
 | SBM aggregation, 3 correlation scenarios | None | New |
 | DRC (SA) for Treasuries | None | New |
 | RRAO | None | New |
-| ES 97.5%, 10-day, liquidity-horizon cascade | VaR/ES at any percentile of a risk-neutral cube | Measure, horizon, LH cascade |
-| Stressed calibration (reduced set, since 2007) | No market history at all | Data plus new code |
+| ES 97.5%, 10-day, liquidity-horizon cascade | ES at any level over historical 10-day shocks, t=0 revaluation | LH cascade; a stored history |
+| Stressed calibration (reduced set, since 2007) | History is a caller input; nothing stored | Data plus new code |
 | RFET, NMRF, SES | None | Data plus new code |
 | Backtesting 97.5%/99%, 250 days, traffic light, multiplier | None; no P&L time series | New |
 | P&L attribution (Spearman, KS) | None; no HPL/RTPL | Needs an independent front-office P&L (D-7) |
 | IMA capital (60-day averages, m_c) | None | New |
 | SA-CCR | None | New; ORE oracle available |
 | BA-CVA | None | New; ORE oracle available |
-| Audit trail, reproducibility | EOD bundles hash-verified; portfolio path job store in-process | I-08, I-10 |
+| Audit trail, reproducibility | EOD bundles hash-verified; portfolio job store in memory | [I-08](../known-issues.md#i-08), [I-10](../known-issues.md#i-10) |
 
-### Existing register items that block a compliance claim
+### Register items that block a compliance claim
 
 Everything in [known-issues.md](../known-issues.md) that affects a regulatory number is a
 precondition, not a side issue:
@@ -99,13 +98,14 @@ precondition, not a side issue:
 | Issue | Why it blocks | Blocks |
 |---|---|---|
 | [I-05](../known-issues.md#i-05) no faithful USD-SOFR swap construction | Every USD swap sensitivity rests on it | P1 for USD swaps (other books can proceed) |
-| [I-04](../known-issues.md#i-04) aged swaps mispriced past first accrual | Wrong exposure at every step past first accrual | P5 (IMM, exposure). **Not** P1–P4, which revalue at t=0 |
+| [I-51](../known-issues.md#i-51) sensitivities not checked against ORE | SA figures rest on them | P1 |
+| [I-50](../known-issues.md#i-50) exposure not checked against an ORE simulation | IMM exposure rests on it | P5.3, P5.4 |
 | [I-10](../known-issues.md#i-10) no trade identity on the portfolio path | Desk attribution, backtesting per desk, audit | P0 |
-| [I-24](../known-issues.md#i-24) bonds have no scenario NPV | Treasuries excluded from ES and curvature | P1 curvature, P3 |
 | [I-18](../known-issues.md#i-18) no equity spot/FX | EQ risk class impossible | EQ only; refused until fixed |
-| [I-27](../known-issues.md#i-27) full-suite runs abort inside XLA | An evidence pack needs a complete, reproducible suite run | P7 |
-| [I-08](../known-issues.md#i-08) portfolio job store in-process | Regulatory runs must survive restart and stay retrievable | P0 |
-| [I-32](../known-issues.md#i-32) ORE parity only at one solver config | The reference configuration must be fixed before it is cited as an oracle | P1 vega/curvature for Americans |
+| [I-27](../known-issues.md#i-27) full-suite runs can abort inside XLA | An evidence pack needs a complete, reproducible suite run | P7 |
+| [I-08](../known-issues.md#i-08) portfolio job store in memory | Regulatory runs must survive restart and stay retrievable | P0 |
+| [I-32](../known-issues.md#i-32) Bermudan engine only at `ShiftHorizon = 0` | The reference configuration must be fixed before it is cited as an oracle | P1 vega/curvature for Americans |
+| [I-42](../known-issues.md#i-42) – [I-47](../known-issues.md#i-47), [I-04](../known-issues.md#i-04), [I-24](../known-issues.md#i-24) (Hull-White model) | Regulatory runs use the market path until roadmap 1.3 fixes the Hull-White model | Any figure run on the Hull-White model |
 
 ---
 
@@ -201,7 +201,7 @@ engine/regulatory/
   cva/
     ba_cva.py
 engine/validation/
-  ore_app_oracle.py          # generalises ore_lgm_oracle.py to any OREApp analytic
+  (the OREApp oracle lives in tests/support/ after roadmap 1.1 and is generalised in 2.2)
 compliance/
   requirements.yaml          # the requirement catalogue (Appendix A seeds it)
   decisions.md               # D-1..D-n, dated
@@ -217,7 +217,7 @@ tests/regulatory/            # all tests for the above, marked @pytest.mark.base
        ┌────────────────┼──────────────────────────────┐
        ▼                ▼                              ▼
   SA: bump at      IMA: historical            CCR: risk-neutral paths
-  Basel vertices   scenario set (t=0)         (generate_paths, existing)
+  Basel vertices   scenario set (t=0)         (market path, existing)  
        │                │                              │
   sensitivities    vmap full reval               exposure cube [S,T,N]
   + curvature      P&L vectors per LH/class            │
@@ -230,8 +230,8 @@ tests/regulatory/            # all tests for the above, marked @pytest.mark.base
 ```
 
 Every pricer already exposes a pure function `V(pillar_rates, …)` at t=0 for the greeks
-(`_swap_price_fn`, `_swaption_price_fn`, `_bermudan_price_fn` in
-[`greeks.py`](../../engine/risk/greeks.py)). That function is exactly what SA bumps,
+(`engine.risk.price_functions`, used by `engine.market_risk.revaluation`). That function is
+exactly what SA bumps,
 curvature shifts, and historical full revaluation need: `jax.vmap` it over a batch of
 curves. No pricer needs rewriting. This is also where the project's TPU research goal
 pays off: stress-period search is thousands of full revaluations.
@@ -261,7 +261,7 @@ Extend the vocabulary in `var_es.py` rather than overloading it:
 
 | Label | Produced by |
 |---|---|
-| `risk-neutral-pricing` (existing) | `generate_paths` exposure runs; CCR |
+| `risk-neutral-pricing` (existing) | Market-path exposure runs; CCR |
 | `historical-forecast` (existing, first producer) | `ima/` full revaluation over historical scenarios |
 | `deterministic-stress` (existing) | curvature shifts, stress tests |
 | `regulatory-standardised` (new) | SA capital: a formula over sensitivities, not a distribution |
@@ -282,10 +282,10 @@ is met, not when its tasks are merged.
 | P0.2 | Download the Basel chapters in §1 into `reference/basel/` with retrieval date and SHA-256 | `reference/basel/README.md` | Hash check test | Text pinned; every citation resolves to a pinned file |
 | P0.3 | Transcribe the BCBS profile twice independently; diff; resolve against the text | `engine/regulatory/profiles/bcbs.yaml`, `profile.py` | `test_profile.py`: schema, every key cited, the two transcriptions agree | Zero diff between transcriptions; every value has a paragraph |
 | P0.4 | Requirement catalogue plus traceability check | `compliance/requirements.yaml`, `tests/regulatory/test_traceability.py`, `basel` marker in `conftest.py` | The check fails if a requirement has no test, a test cites an unknown requirement, or a requirement's status is `implemented` with no passing oracle test. Include a negative test that feeds it a broken catalogue | Catalogue seeded from Appendix A; check green; negative test red on a broken catalogue |
-| P0.5 | Measure guards: IMA functions accept only `HistoricalScenarioSet`; passing a risk-neutral cube raises | `measures.py` | Test that `ima.es` given a `generate_paths` cube raises with a message naming the measure | Guard in place, red-first shown |
+| P0.5 | Measure guards: IMA functions accept only `HistoricalScenarioSet`; passing a risk-neutral cube raises | `measures.py` | Test that `ima.es` given a simulated exposure cube raises with a message naming the measure | Guard in place, red-first shown |
 | P0.6 | Close I-10 on the portfolio path: trade ID, desk, book, currency on every trade and result | `portfolio/request.py`, `api/schemas.py` | The I-10 closing tests the register already specifies | I-10 FIXED in the register |
 | P0.7 | Run manifest on every regulatory result | `manifest.py` | Test: manifest has git SHA, dirty flag, package versions, JAX backend and dtype, profile hash, input hashes; two identical runs give identical output hashes | Deterministic reruns proven byte-identical on CPU FP64 |
-| P0.8 | Generalise the ORE oracle to any OREApp analytic (sensitivity, stress, SA-CCR, BA-CVA, HistSimVaR, backtest) | `validation/ore_app_oracle.py` | Smoke test per analytic against an ORE Example's `ExpectedOutput` | Each analytic reproduces its ORE example output |
+| P0.8 | Extend the OREApp oracle of roadmap 2.2 (XVA, sensitivity) to the remaining analytics (stress, SA-CCR, BA-CVA, HistSimVaR, backtest) | `tests/support/` oracle | Smoke test per analytic against an ORE Example's `ExpectedOutput` | Each analytic reproduces its ORE example output |
 | P0.9 | Port the durable job store to the portfolio path (I-08) | `portfolio/`, `api/routes.py` | Existing I-08 closing criteria | I-08 FIXED |
 
 ### Phase 1 — FRTB standardised approach (≈6 weeks)
@@ -296,8 +296,8 @@ currency position exists, CSR for Treasuries per D-4. EQ is refused until I-18 c
 | ID | Task | Detail | Oracle | Exit |
 |---|---|---|---|---|
 | P1.1 | Risk-factor mapping | Re-pillar each pricing curve onto the union of its market pillars and the Basel vertices, so a vertex bump is an exact risk-factor move rather than an interpolated one. Map each curve to a GIRR bucket (currency) and curve type | Independent check that the re-pillared curve reprices the portfolio to 1e-12 | Base NPV unchanged by re-pillaring (1e-12 relative) |
-| P1.2 | GIRR delta **per Basel's definition** | Basel defines `s = (V(r + 1bp) − V(r)) / 0.0001`, a one-sided difference. The engine's AD delta equals `∂V/∂r`, which differs from that by `½·Γ·1bp`. Compute the literal definition by vmapping `price_fn` over the bumped curves. Keep AD as a cross-check whose gap must equal `½·Γ·1bp` | ORE `SensitivityAnalysis` via `ore_app_oracle` with shift tenors at the Basel vertices, absolute zero shift of 1bp, forward scheme | Matches ORE to 1e-8 relative per vertex; AD gap equals `½Γh` to 1e-6 |
-| P1.3 | GIRR vega | `s = (∂V/∂σ)·σ` at option-maturity × underlying-maturity vertices. Bermudan/American: from `bermudan_vega` (already by implicit function through calibration) mapped to vertices. European swaptions: add a vega from a market implied vol input (the Jamshidian pricer takes HW sigma today, so route through calibration as the Bermudan does) | ORE `SensitivityAnalysis` swaption vol shifts | 1e-6 relative to ORE per vertex |
+| P1.2 | GIRR delta **per Basel's definition** | Basel defines `s = (V(r + 1bp) − V(r)) / 0.0001`, a one-sided difference: ORE's forward scheme, which `engine.risk.sensitivities` already implements. Apply it at the Basel vertices of P1.1. Where AD is configured ([F-01](../features.md#f-01)), its gap to the definition must equal `½·Γ·1bp` | ORE `SensitivityAnalysis` via `ore_app_oracle` with shift tenors at the Basel vertices, absolute zero shift of 1bp, forward scheme | Matches ORE to 1e-8 relative per vertex (after [I-51](../known-issues.md#i-51)) |
+| P1.3 | GIRR vega | `s = (∂V/∂σ)·σ` at option-maturity × underlying-maturity vertices. The market path already reports Vega per swaption vol quote for Europeans (Bachelier on market vols) and Bermudans/Americans (recalibrated); map the quotes to the vertices and scale by σ | ORE `SensitivityAnalysis` swaption vol shifts | 1e-6 relative to ORE per vertex |
 | P1.4 | GIRR curvature | `CVR± = V(r ± RW_curv) − V(r) ∓ Σ RW·s` with a parallel shift of all vertices; `CVR = −min(CVR+, CVR−)` per bucket. Needs full reval: bonds included (closed-form, so I-24 does not block t=0 shifts) | ORE `StressTest` with parallel shifts; independent reference implementation | 1e-10 relative |
 | P1.5 | SBM aggregation | Weighted sensitivities, within-bucket `K_b`, across-bucket with the alternative `S_b` when the square root argument is negative, curvature ρ² and the ψ indicator, **three correlation scenarios** (high/medium/low), total = max over scenarios of the sum across risk classes | Independent numpy implementation (§7.3); hand-computed golden cases | Agrees with the reference to 1e-12; all golden cases pass |
 | P1.6 | FX delta (conditional) | Only if a position is not in the reporting currency. `s = (V(FX·1.01) − V(FX)) / 0.01` | ORE sensitivity, FX spot shift | 1e-8 relative |
@@ -352,13 +352,13 @@ computes the same quantity and to the independent implementation everywhere else
 test compares the engine with itself. Report it as `pla_status: "not-independent"`, never
 as green.
 
-### Phase 5 — Counterparty credit and CVA (≈4 weeks; IMM needs I-04)
+### Phase 5 — Counterparty credit and CVA (≈4 weeks; IMM needs I-50)
 
 | ID | Task | Detail | Oracle | Exit |
 |---|---|---|---|---|
 | P5.1 | SA-CCR | Replacement cost, PFE multiplier (5% floor), IR hedging sets by currency, maturity buckets with the profile's correlations, supervisory duration, supervisory delta for swaptions, α = 1.4. Needs netting set and collateral inputs | ORE `SaccrCalculator` (`Examples/CreditRisk/run_saccr.py`) | 1e-10 relative per netting set |
 | P5.2 | BA-CVA (reduced) | Counterparty-level SCVA from SA-CCR EAD, supervisory discount factor, discount scalar, ρ | ORE `BaCvaCalculator` | 1e-10 |
-| P5.3 | IMM exposure (optional) | EE, Effective EE (non-decreasing), EPE, EEPE over the first year from the existing `npv_cube`. Stressed calibration, α. **Blocked on I-04**: every exposure past first accrual is wrong today | ORE exposure simulation (`Examples/Exposure`) on the same model | EEPE within MC error of ORE; I-04 FIXED first |
+| P5.3 | IMM exposure (optional) | EE, Effective EE (non-decreasing), EPE, EEPE over the first year from the existing `npv_cube`. Stressed calibration, α. Market path only. **Blocked on [I-50](../known-issues.md#i-50)**: the exposure is not yet checked against an ORE simulation | ORE exposure simulation (`Examples/Exposure`) on the same model | EEPE within MC error of ORE; I-50 closed first |
 | P5.4 | IMM backtesting (optional) | Exposure-model backtesting against realised MtM paths, as CRE53 requires | Statistical tests (§7.5) | Documented test passes over the history available |
 
 ### Phase 6 — Precision gate for regulatory figures (≈1–2 weeks)
@@ -371,7 +371,7 @@ unproven one is flagged, not refused).
 |---|---|---|
 | P6.1 | Run every regulatory figure at FP64 and FP32 on the Phase 1 portfolio and on a large synthetic one | Table of relative differences |
 | P6.2 | Acceptance rule per figure: FP32 is allowed only when its difference is below 1% of the figure's own statistical error (for ES) or below 1e-6 relative (for SA, which is deterministic) | Rule in the profile; `RegulatoryResult` carries a warning (with the evidence: which precisions were validated, at how many paths) for any figure run at a precision that has not passed its gate (D-9; ORE alignment plan 9.5) |
-| P6.3 | Record the realised dtype on every regulatory result (composes with I-12, I-14) | Present in the manifest |
+| P6.3 | Record the realised dtype on every regulatory result (composes with [I-12](../known-issues.md#i-12)) | Present in the manifest |
 
 ### Phase 7 — Proof: evidence pack and independent validation (≈2–3 weeks, then continuous)
 
@@ -524,7 +524,7 @@ P0 ──► P1 ─────────────────────�
                  D-7 (TraderX HPL/APL)
 
 P5.1, P5.2 (SA-CCR, BA-CVA): after P0, independent of P1–P4
-P5.3, P5.4 (IMM):            after I-04
+P5.3, P5.4 (IMM):            after I-50
 USD swaps in any phase:      after I-05
 ```
 
@@ -534,7 +534,7 @@ pipeline end to end on the smallest real piece. P2 data acquisition should begin
 parallel on day one: it is calendar time, not engineering time.
 
 Rough total: ≈26 engineer-weeks for P0–P7 on one engineer, excluding blocked waits
-(I-04, I-05, D-7, vol history).
+(I-05, D-7, vol history).
 
 ---
 

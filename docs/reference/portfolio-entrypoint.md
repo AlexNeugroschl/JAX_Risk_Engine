@@ -55,14 +55,14 @@ is the degenerate case: `coupon_schedule=()` with `coupon_rate=0.0`. `face_amoun
 
 Unlike `SwapConfig`, a bond carries **its own `initial_zero_curve`** rather than an index
 into `market.rates.initial_zero_curves` — the same shape the swaption family uses, and the
-reason a bond cannot reproduce [I-01](../known-issues.md#i-01)'s silent-skip failure.
+reason a bond cannot reproduce [I-01](../planning/known-issues.md#i-01)'s silent-skip failure.
 
 **A bond has no scenario NPV**, so it never enters `npv_cube` and has no VaR/ES. Submitting
 one with the default `scenario_risk=True` raises `ScenarioPricingNotSupported`, naming the
 trade. With `scenario_risk=False` you get real `base_npv`, `base_npv_per_trade` and `greeks`,
 with `risk` **empty** and `npv_cube` zero-width. The refusal is deliberate: a broadcast
 constant column measures out to VaR `0.00` and ES `NaN` — see
-[I-24](../known-issues.md#i-24).
+[I-24](../planning/known-issues.md#i-24).
 
 Its Greeks are bumped revaluations (`delta` central-difference at 1bp, `gamma` a second
 difference, `theta` a one-day reprice), all **scalars** rather than per-pillar vectors, and
@@ -70,7 +70,7 @@ difference, `theta` a one-day reprice), all **scalars** rather than per-pillar v
 is omitted rather than reported as `0.0`. `theta` is likewise **omitted for a bond maturing
 tomorrow**: the one-day reprice would land exactly on maturity, a state `BondConfig` refuses
 to construct, and the decay is genuinely undefined across that boundary rather than zero
-([I-26](../known-issues.md#i-26)). `delta`/`gamma` are unaffected and still reported.
+([I-26](../planning/known-issues.md#i-26)). `delta`/`gamma` are unaffected and still reported.
 
 Note that this `delta` is **not bit-identical** to the EOD boundary's `rateSensitivity` for
 the same bond, deliberately: this is a central difference, while the published contract at
@@ -127,7 +127,7 @@ removed.
 | `warnings` | `List[str]` | Known-limitation warnings surfaced during validation (see "Known-limitation flagging" below) — e.g. a Bermudan exercise date that isn't reset-aligned with its own underlying. |
 | `base_npv_per_trade` | `List[float]` | Each trade's own t=0 NPV, in `request.trades` order. `base_npv` is by construction their sum, so the total and the breakdown cannot disagree. |
 | `scenario_risk_available` | `bool` | `False` when the run was `scenario_risk=False`, meaning `exposure` is **absent** and `npv_cube` zero-width. Carried on the *result* because a consumer holding one has no access to the request. |
-| `measure` | `Optional[str]` | Which measure the exposure is under: `"risk-neutral-pricing"` (`engine.risk.var_es.ENGINE_RISK_MEASURE`) whenever it was computed, `None` when `scenario_risk_available` is `False`. An exposure under the pricing measure, **not** a forecast of tomorrow's loss ([I-11](../known-issues.md#i-11)). |
+| `measure` | `Optional[str]` | Which measure the exposure is under: `"risk-neutral-pricing"` (`engine.risk.var_es.ENGINE_RISK_MEASURE`) whenever it was computed, `None` when `scenario_risk_available` is `False`. An exposure under the pricing measure, **not** a forecast of tomorrow's loss ([I-11](../planning/known-issues.md#i-11)). |
 
 ## `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 
@@ -162,7 +162,7 @@ Orchestrates, in order:
 ## Validation and assembly helpers
 
 These implement
-[`docs/planning/traderx-integration.md`](../planning/traderX_integration/traderx-integration.md)'s
+[`docs/planning/traderx-integration.md`](../planning/details/traderx-integration.md)'s
 validation/assembly layer — see that plan for the full gap analysis; the sections below
 cover what actually shipped.
 
@@ -218,7 +218,7 @@ check for it.
 ### Known-limitation flagging
 
 The simulated cube has three known weaknesses
-([engine audit](../planning/engine-audit.md), M-1 to M-3). They do not affect t=0
+([I-42](../planning/known-issues.md#i-42), [I-04](../planning/known-issues.md#i-04), [I-43](../planning/known-issues.md#i-43); audit M-1 to M-3). They do not affect t=0
 values or Greeks, only `npv_cube` past t=0 and the exposure derived from it. Each is
 announced per run with a `UserWarning`, collected into `PortfolioResult.warnings`:
 
@@ -249,7 +249,7 @@ regardless of how many other trades of other types sit between them in the reque
 | `BondConfig` | `_bond_greeks` (bumped revaluation) | **scalars**; no `vega` |
 
 > **Historical note — this section previously said `SwapConfig` trades are "skipped".** That
-> was [I-01](../known-issues.md#i-01): swaps silently returned no Greeks because
+> was [I-01](../planning/known-issues.md#i-01): swaps silently returned no Greeks because
 > `_compute_all_greeks` had no access to the `SimulationConfig` their curve *indexes* resolve
 > against. It was fixed by passing `market_config` through, and the documentation above is
 > corrected to match. Swap Greeks have been computed by `price_portfolio` since that fix; the
@@ -283,8 +283,8 @@ regardless of how many other trades of other types sit between them in the reque
   cross-check against `engine.integration.bill`/`note`.
 - `tests/test_portfolio_bond_wire_through.py` (36) — the wire-through through
   `price_portfolio` itself. `TestBondGreeksReachThePortfolioPath` is the
-  [I-01](../known-issues.md#i-01) regression class (**19 of 19 verified to fail** with the
+  [I-01](../planning/known-issues.md#i-01) regression class (**19 of 19 verified to fail** with the
   Greeks branch deleted); `TestScenarioRiskIsRefusedForBonds` pins
-  [I-24](../known-issues.md#i-24).
+  [I-24](../planning/known-issues.md#i-24).
 - `tests/test_api_bond_schemas.py` (21) — the HTTP surface, including
-  [I-25](../known-issues.md#i-25)'s scalar-Greek serialization.
+  [I-25](../planning/known-issues.md#i-25)'s scalar-Greek serialization.

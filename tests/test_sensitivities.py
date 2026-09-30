@@ -10,7 +10,7 @@ ORE's sensitivity analysis on the market path (`engine.risk.sensitivities`, plan
   * Vega: the matrix of quote bumps adds up to a parallel volatility bump.
 
 Parity with ORE's own sensitivity analytic (an OREApp sensitivity run) is not yet in the
-suite; see docs/known-issues.md I-51.
+suite; see docs/planning/known-issues.md I-51.
 """
 import dataclasses
 

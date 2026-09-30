@@ -15,7 +15,7 @@ backtest or Basel's internal-models approach means by VaR/ES. It is **not** what
 `price_portfolio` produces. That path simulates the portfolio forward for months or years
 under the risk-neutral measure, which gives an exposure profile
 ([Exposure](exposure.md)), not a VaR. The two were once reported under the same name;
-see [audit finding R-1](../planning/engine-audit.md#r-1).
+see [audit finding R-1](../planning/known-issues.md#r-1).
 
 ```
 scenarios (Monte Carlo or historical)      engine/market_risk/scenarios.py
@@ -106,7 +106,7 @@ VaR needs rather than the finest grid a single price would use; `demos/demo.py` 
 base-value difference this makes. (One measurement is unexplained: the first grid
 revaluation in a process sometimes runs up to 50× faster than later ones, with identical
 results. It is logged as an open performance item in the
-[engine audit](../planning/engine-audit.md#p-2).)
+[engine audit](../planning/known-issues.md#p-2).)
 
 ## Statistics
 
