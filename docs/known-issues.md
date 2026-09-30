@@ -21,7 +21,7 @@ suite did not surface them — in one case a test actively asserted the buggy be
 | **OPEN** | Not addressed. Numbers are wrong or absent today. |
 | **ASSUMPTION** | Nothing known to be broken. The engine acts on an **unconfirmed reading** of an external contract, and the reading may be wrong. Registered so a deliberate interpretation does not pass for a settled fact. |
 | *Difference from ORE* | A tag on an OPEN entry, not a status: the engine computes something ORE computes differently, by design rather than by slip, and the difference moves a number enough that it should be resolved. Minor, deliberate differences (derivatives instead of finite-difference Greeks, bisection instead of an optimizer) are noted in the code, not here. |
-| **PARTIAL** | Closed on one path and open on another. Used only where the split is real and nameable — not as a softer word for OPEN. [I-08](#i-08): the EOD path is durable, the portfolio path is not. [I-24](#i-24) and [I-42](#i-42) to [I-47](#i-47): closed on the market path (the default), open on the Hull-White path, which is kept for its callers. |
+| **PARTIAL** | Closed on one path and open on another. Used only where the split is real and nameable — not as a softer word for OPEN. [I-08](#i-08): the EOD path is durable, the portfolio path is not. [I-24](#i-24) and [I-42](#i-42) to [I-47](#i-47): closed on the market path (the default model), open on the Hull-White model, which stays a supported, non-default option (decision A-1). |
 
 **On ASSUMPTION, added 2026-09-16 with [I-23](#i-23).** The other three statuses all describe
 something the code gets wrong. This one describes a decision made in the absence of an answer
@@ -214,12 +214,17 @@ are excluded. The tiers are the unit of decision here — within a tier, order i
 call and the rank column should not be read as precise.
 
 **The one-line read:** Tier 1 is blocked on someone else. Of the work that can start, the
-validation gaps in Tier 3 ([I-50](#i-50), [I-51](#i-51)) now come first. The market path's
+validation gaps in Tier 3 ([I-50](#i-50), [I-51](#i-51)) come first. The market path's
 components each equal ORE, but nothing yet compares its assembled cube, exposure and Greeks
 with an ORE run. ([I-36](#i-36) to [I-41](#i-41), [I-48](#i-48) and [I-52](#i-52) were fixed on
 2026-09-29 by the [ORE alignment](planning/ore-alignment-plan.md); [I-24](#i-24) and
 [I-42](#i-42) to [I-47](#i-47) are closed on its market path, the default, and remain on the
-Hull-White path.)
+Hull-White model.)
+
+**Owner decisions of 2026-09-30** ([compliance/decisions.md](../compliance/decisions.md)) shape this order. The engine is to be configurable,
+with ORE's defaults, and the Hull-White model stays as an option, so its defects are to be
+fixed rather than retired. [I-49](#i-49) and [I-54](#i-54) are to be closed. Precision stays
+freely adjustable, with warnings where a combination is unproven ([I-55](#i-55)).
 
 ### Tier 1 — Highest criticality, blocked on external input
 
@@ -227,26 +232,28 @@ Neither can be closed by engineering effort alone. **Chase the dependency, not t
 
 | # | Issue | Severity | Difficulty | What actually unblocks it |
 |---:|---|---|---|---|
-| 1 | [I-04](#i-04) — aged swaps need past fixings | High | **Blocked** | Historical `pastFixings` from TraderX, which they do not export. The market path prices a seasoned swap correctly when given them and refuses one without them; the Hull-White path is still flagged. |
+| 1 | [I-04](#i-04) — aged swaps need past fixings | High | **Blocked** | Historical `pastFixings` from TraderX, which they do not export. The market path prices a seasoned swap correctly when given them and refuses one without them; the Hull-White model is still flagged. |
 | 2 | [I-05](#i-05) — no faithful USD-SOFR/ACT-360 construction | High | **Blocked** + moderate | The D03/D04 convention agreement. *Guessing the conventions reproduces exactly this issue's failure mode.* |
 
 ### Tier 2 — Real correctness exposure, unblocked
 
 | # | Issue | Severity | Difficulty | Why it ranks here |
 |---:|---|---|---|---|
-| 3 | [I-42](#i-42)–[I-47](#i-47) — the Hull-White path's model defects | High | Moderate | Closed on the market path; still returned to HTTP v1 and to direct `SimulationConfig` callers. Move those callers to the market path; retire the Hull-White simulation once none remain, not before ([decisions A-1](../compliance/decisions.md)). |
-| 4 | [I-49](#i-49) — per-path recalibration differs from ORE in two known details | Medium | Moderate, needs [I-50](#i-50)'s oracle | Every Bermudan/American value past t=0 on the market path; unmeasured. |
-| 5 | [I-32](#i-32) — parity only at ORE's Grid solver, `ShiftHorizon=0` | Medium | Decision | The default is recorded (D-10, decisions A-3); needs the owner's sign-off or a switch to ORE's defaults. |
-| 6 | [I-10](#i-10) — no trade identity on the configs | Medium | Low-moderate | Optional `trade_ids` are now echoed; the configs themselves carry no identity. |
+| 3 | [I-42](#i-42)–[I-47](#i-47) — the Hull-White model's defects | High | Moderate–hard | Closed on the market path (the default). The Hull-White model stays a supported option (decision A-1), so they are to be fixed within it: plan 9.3. Until then anyone choosing that model gets these numbers. |
+| 4 | [I-49](#i-49) — per-path recalibration differs from ORE in two known details | Medium | Moderate, needs [I-50](#i-50)'s oracle | Every Bermudan/American value past t=0 on the market path; unmeasured. Decided: close it (plan 10.1). |
+| 5 | [I-54](#i-54) — no swaption smile | Medium | Moderate–hard | An option away from the money reads the ATM volatility. Decided: close it (plan 10.2). |
+| 6 | [I-32](#i-32) — Bermudan engine only at `ShiftHorizon = 0`, Grid solver | Medium | Moderate | Decided: configurable, with ORE's default 0.5 once parity there is proven (plan 9.6). Not urgent. |
+| 7 | [I-10](#i-10) — no trade identity on the configs | Medium | Low-moderate | Optional `trade_ids` are now echoed; the configs themselves carry no identity. |
 
 ### Tier 3 — Blocks confidence in the numbers or the suite
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 7 | [I-50](#i-50) — no L3/L4 parity against an ORE simulation | Medium | **Hard** | Every exposure figure on the market path rests on component parity only. Needs the oracle generalized to an OREApp XVA run. |
-| 8 | [I-51](#i-51) — Greeks not checked against ORE's sensitivity analytic | Medium | Moderate | Same oracle work, sensitivity analytic instead of XVA. |
-| 9 | [I-27](#i-27) — full-suite runs hard-abort inside XLA | Medium | **Hard to diagnose** | Intermittent; no abort in the runs recorded under Verification status. |
-| 10 | [I-34](#i-34) — the ORE oracle's curve differs before the first pillar | Low | Moderate | Validation tooling only; parity tests use a flat first segment. |
+| 8 | [I-50](#i-50) — no L3/L4 parity against an ORE simulation | Medium | **Hard** | Every exposure figure on the market path rests on component parity only. Needs the oracle generalized to an OREApp XVA run. |
+| 9 | [I-51](#i-51) — Greeks not checked against ORE's sensitivity analytic | Medium | Moderate | Same oracle work, sensitivity analytic instead of XVA. |
+| 10 | [I-55](#i-55) — unproven precision combinations are not flagged; precision is switched per process | Medium | Moderate–hard | Any combination may be run (decision D-9), so a result must say when its precision is unproven for that figure. The switching mechanism is to be replaced, not removed (decision A-9; plan 9.4, 9.5). |
+| 11 | [I-27](#i-27) — full-suite runs hard-abort inside XLA | Medium | **Hard to diagnose** | Intermittent; no abort in the runs recorded under Verification status. |
+| 12 | [I-34](#i-34) — the ORE oracle's curve differs before the first pillar | Low | Moderate | Validation tooling only; parity tests use a flat first segment. |
 
 ### Tier 4 — Scope gaps, correctly refused rather than approximated
 
@@ -254,12 +261,12 @@ None of these produces a wrong number. **Priority here is driven by demand, not 
 
 | # | Issue | Severity | Difficulty | Blocked on |
 |---:|---|---|---|---|
-| 11 | [I-18](#i-18) — no equity spot or FX source for EOD equity positions | Medium | **Blocked**, then trivial | Market data. *Do not close it with `closingMark`.* |
-| 12 | [I-16](#i-16) — `rateSensitivity` parallel-only | Medium | **Blocked** | A curve with genuine pillar structure (W2). |
-| 13 | [I-07](#i-07) — no corporate bond / equity / listed-option pricer | Medium | Moderate–hard | Corporate bonds need a credit model. |
-| 14 | [I-24](#i-24) — bonds refused in the Hull-White cube | Medium | — | Priced on every path on the market path; use it. |
-| 15 | [I-08](#i-08) — portfolio path's `_JOBS` dict still in-process | Medium | Moderate | Port `publication.py`'s design to the portfolio path. |
-| 16 | [I-09](#i-09) — whole scenario cube serialized into JSON | Medium | Moderate | A chunked artifact plus a reference. |
+| 13 | [I-18](#i-18) — no equity spot or FX source for EOD equity positions | Medium | **Blocked**, then trivial | Market data. *Do not close it with `closingMark`.* |
+| 14 | [I-16](#i-16) — `rateSensitivity` parallel-only | Medium | **Blocked** | A curve with genuine pillar structure (W2). |
+| 15 | [I-07](#i-07) — no corporate bond / equity / listed-option pricer | Medium | Moderate–hard | Corporate bonds need a credit model. FX and equity trades on the market path are decided, not urgent (plan 10.4). |
+| 16 | [I-24](#i-24) — bonds refused in the Hull-White model's cube | Medium | Moderate | Priced on every path on the market path. On the Hull-White model, part of plan 9.3. |
+| 17 | [I-08](#i-08) — portfolio path's `_JOBS` dict still in-process | Medium | Moderate | Port `publication.py`'s design to the portfolio path. |
+| 18 | [I-09](#i-09) — whole scenario cube serialized into JSON | Medium | Moderate | A chunked artifact plus a reference. |
 
 ### Tier 5 — Performance and cosmetic
 
@@ -268,16 +275,16 @@ change leaves the parity tests bit-identical, and I-49 to I-51 may still move nu
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 17 | [I-53](#i-53) — the market path is slow (full suite 23 → 46 min) | Medium | Moderate | Profile first; recalibration per path and date and the bump loops are the suspects. |
-| 18 | [I-21](#i-21) — Greeks recompile 23 XLA programs per call | Medium | **Moderate, fully designed** | Key the memo on `static_key(prepared)`, never the config, never `id()`. The market path's bump Greeks revalue in Python loops and are slower still. |
-| 19 | [I-22](#i-22) — calibration recompiles 8 programs per call | Low | Moderate | A different mechanism from I-21. |
-| 20 | [I-12](#i-12) — `/version` reports dispatcher, not worker device | Low | Low | Invisible on a single-CPU box. |
+| 19 | [I-53](#i-53) — the market path is slow (full suite 23 → 46 min) | Medium | Moderate | Profile first; recalibration per path and date and the bump loops are the suspects. |
+| 20 | [I-21](#i-21) — Greeks recompile 23 XLA programs per call | Medium | **Moderate, fully designed** | Key the memo on `static_key(prepared)`, never the config, never `id()`. The market path's bump Greeks revalue in Python loops and are slower still. |
+| 21 | [I-22](#i-22) — calibration recompiles 8 programs per call | Low | Moderate | A different mechanism from I-21. |
+| 22 | [I-12](#i-12) — `/version` reports dispatcher, not worker device | Low | Low | Invisible on a single-CPU box. |
 
 ### Tier 6 — Awaiting an answer, not an engineer
 
 | # | Issue | Severity | Difficulty | Note |
 |---:|---|---|---|---|
-| 21 | [I-23](#i-23) — `accrualBasis` strictness is an assumption | Medium | **Not a code task** | Closes when TraderX answers. |
+| 23 | [I-23](#i-23) — `accrualBasis` strictness is an assumption | Medium | **Not a code task** | Closes when TraderX answers. |
 
 ### What the ordering deliberately does not do
 
@@ -303,34 +310,34 @@ back into it.
 | [I-04](#i-04) | Aged swaps mispriced at every step past first accrual | **High** | ⚠️ FLAGGED — correct given fixings on the market path; the fixings are not exported | **1** |
 | [I-05](#i-05) | No faithful USD-SOFR/ACT360 swap construction | **High** | ❌ OPEN — refusal path landed (W0.4) | **2** |
 | [I-06](#i-06) | American exercise ignored ORE's broken-period proration | **High** | ✅ FIXED | — |
-| [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — Treasury pricers landed | 13 |
-| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8) | 15 |
-| [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN | 16 |
-| [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary; optional `trade_ids` echoed | 6 |
+| [I-07](#i-07) | No bond, equity, or listed-option pricer | Medium | ❌ OPEN — Treasury pricers landed | 15 |
+| [I-08](#i-08) | Job store is in-process; lost on restart | Medium | ⚠️ PARTIAL — EOD path durable (W0.8) | 17 |
+| [I-09](#i-09) | Whole scenario cube serialized into JSON responses | Medium | ❌ OPEN | 18 |
+| [I-10](#i-10) | No trade identity; results keyed by array position | Medium | ❌ OPEN — closed at the EOD boundary; optional `trade_ids` echoed | 7 |
 | [I-11](#i-11) | Risk measure unlabelled; no Monte Carlo error reported | Medium | ✅ FIXED | — |
-| [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN | 20 |
+| [I-12](#i-12) | `/version` reports dispatcher backend, not worker device | Low | ❌ OPEN | 22 |
 | [I-13](#i-13) | Negative curve index silently prices against the wrong curve | **High** | ✅ FIXED | — |
 | [I-14](#i-14) | `generate_paths(precision=32)` leaks `jax_enable_x64=False` | **High** | ✅ FIXED | — |
 | [I-15](#i-15) | Worker-pool concurrency test could not observe concurrency | Low | ✅ FIXED | — |
-| [I-16](#i-16) | `rateSensitivity` is parallel-only | Medium | ❌ OPEN — blocked on a real curve | 12 |
+| [I-16](#i-16) | `rateSensitivity` is parallel-only | Medium | ❌ OPEN — blocked on a real curve | 14 |
 | [I-17](#i-17) | A malformed note date failed the entire bundle | Medium | ✅ FIXED | — |
-| [I-18](#i-18) | No equity spot or FX source; equity positions are refused | Medium | ❌ OPEN — refusal path landed (W1.4) | 11 |
+| [I-18](#i-18) | No equity spot or FX source; equity positions are refused | Medium | ❌ OPEN — refusal path landed (W1.4) | 13 |
 | [I-19](#i-19) | Accrual tolerance rounded the bound it exists to enforce | Medium | ✅ FIXED | — |
 | [I-20](#i-20) | Impossible calendar dates aborted the whole bundle | **High** | ✅ FIXED | — |
-| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call | Medium | ❌ OPEN | 18 |
-| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call | Low | ❌ OPEN | 19 |
-| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** | Medium | ⚠️ ASSUMPTION | 21 |
-| [I-24](#i-24) | Bonds have no scenario NPV on the Hull-White path | Medium | ⚠️ PARTIAL — priced on every path on the market path | 14 |
+| [I-21](#i-21) | Greeks recompile 23 XLA programs on every call | Medium | ❌ OPEN | 20 |
+| [I-22](#i-22) | Calibration recompiles 8 XLA programs per call | Low | ❌ OPEN | 21 |
+| [I-23](#i-23) | `accrualBasis` strictness is an **assumption** | Medium | ⚠️ ASSUMPTION | 23 |
+| [I-24](#i-24) | Bonds have no scenario NPV on the Hull-White path | Medium | ⚠️ PARTIAL — priced on every path on the market path | 16 |
 | [I-25](#i-25) | A **scalar** Greek crashed the HTTP result serializer | Medium | ✅ FIXED | — |
 | [I-26](#i-26) | Greeks for a bond maturing **tomorrow** crashed on the theta reprice | Low | ✅ FIXED | — |
-| [I-27](#i-27) | Long full-suite runs **hard-abort inside XLA compilation** | Medium | ❌ OPEN — located, not root-caused | 9 |
+| [I-27](#i-27) | Long full-suite runs **hard-abort inside XLA compilation** | Medium | ❌ OPEN — located, not root-caused | 11 |
 | [I-28](#i-28) | `python -m engine.risk.var_es`'s own demo crashed | Low | ✅ FIXED | — |
 | [I-29](#i-29) | A rounded exercise time silently drops a whole coupon | Medium | ✅ FIXED | — |
 | [I-30](#i-30) | The `A(t,T)` variance term was nearly uncovered at `t=0` | Medium | ✅ FIXED | — |
 | [I-31](#i-31) | Bermudan/American floating coupons projected over the wrong period | Medium | ✅ FIXED | — |
-| [I-32](#i-32) | Parity with ORE holds only for its Grid solver at `ShiftHorizon=0` | Medium | ❌ OPEN — default recorded, awaiting sign-off | 5 |
+| [I-32](#i-32) | Parity with ORE holds only for its Grid solver at `ShiftHorizon=0` | Medium | ❌ OPEN — decided: configurable, ORE's default 0.5 | 6 |
 | [I-33](#i-33) | On Linux, worker-pool jobs **hung** once the parent had run JAX | High | ✅ FIXED | — |
-| [I-34](#i-34) | The ORE oracle's curve differs from the engine's before the first pillar | Low | ❌ OPEN | 10 |
+| [I-34](#i-34) | The ORE oracle's curve differs from the engine's before the first pillar | Low | ❌ OPEN | 12 |
 | [I-35](#i-35) | An American already in its window could be exercised on the evaluation date | Medium | ✅ FIXED | — |
 | [I-36](#i-36) | A non-ACT/365 floating leg was projected with the wrong forward | Medium | ✅ FIXED | — |
 | [I-37](#i-37) | A European swaption silently ignored `floating_spread` | **High** | ✅ FIXED — refused (Hull-White), priced (market path) | — |
@@ -346,17 +353,19 @@ back into it.
 | [I-47](#i-47) | The calibration basket is not the one ORE builds for the trade | Medium | ⚠️ PARTIAL — closed on the market path | 3 |
 | [I-48](#i-48) | Zero curves extrapolated a flat zero rate; ORE a flat forward | Low | ✅ FIXED | — |
 | [I-49](#i-49) | Per-path recalibration differs from ORE's in two known details | Medium | ❌ OPEN · *Difference from ORE* | 4 |
-| [I-50](#i-50) | No path-level or distribution-level parity test against an ORE simulation | Medium | ❌ OPEN (validation gap) | 7 |
-| [I-51](#i-51) | Reported sensitivities not checked against ORE's sensitivity analytic | Medium | ❌ OPEN (validation gap) | 8 |
+| [I-50](#i-50) | No path-level or distribution-level parity test against an ORE simulation | Medium | ❌ OPEN (validation gap) | 8 |
+| [I-51](#i-51) | Reported sensitivities not checked against ORE's sensitivity analytic | Medium | ❌ OPEN (validation gap) | 9 |
 | [I-52](#i-52) | Cash settlement was priced as physical | Medium | ✅ FIXED | — |
-| [I-53](#i-53) | The market path is slow: full suite about 46 minutes, from about 23 | Medium | ❌ OPEN (performance) | 17 |
+| [I-53](#i-53) | The market path is slow: full suite about 46 minutes, from about 23 | Medium | ❌ OPEN (performance) | 19 |
+| [I-54](#i-54) | No swaption smile: an option away from the money reads the ATM volatility | Medium | ❌ OPEN · *Difference from ORE* | 5 |
+| [I-55](#i-55) | Unproven precision combinations are not flagged; precision is switched per process | Medium | ❌ OPEN | 10 |
 
-**Counts:** 53 issues — 27 FIXED, 16 OPEN, 8 PARTIAL, 1 FLAGGED, 1 ASSUMPTION. The 26
+**Counts:** 55 issues — 27 FIXED, 18 OPEN, 8 PARTIAL, 1 FLAGGED, 1 ASSUMPTION. The 28
 unfixed entries are ranked above.
 
 **For financial correctness:** [I-04](#i-04) and [I-05](#i-05) remain blocked on external input.
 On the market path the model defects the audit found ([I-42](#i-42) to [I-47](#i-47)) are closed
-by ORE's own design. What is not yet shown is that the assembled simulation, exposure and
+by ORE's own design; on the Hull-White model, which stays an option, they are still to be fixed. What is not yet shown is that the assembled simulation, exposure and
 Greeks equal an ORE run ([I-50](#i-50), [I-51](#i-51)).
 
 ---
@@ -2285,11 +2294,11 @@ distance to ORE.
 with its defaults, implement the shift horizon and add `shift_horizon=0.5` cases to
 `tests/test_ore_lgm_parity.py`. Port the FD solver only if the reference uses FD.
 
-**Decision recorded (2026-09-29), awaiting sign-off.** The market path's Bermudan/American
-engine uses the Grid solver at `ShiftHorizon = 0` (Basel D-10;
-[compliance/decisions.md](../compliance/decisions.md) A-3), and `LgmSwaptionEngineConfig`
-refuses another shift horizon. The difference to ORE's defaults stands as measured above
-until the owner signs off or chooses ORE's defaults.
+**Decided (2026-09-30).** Both are to be configurable, with ORE's defaults: `ShiftHorizon`
+defaults to 0.5 (ORE's builder default, `OREData/ored/portfolio/builders/swaption.cpp`), and ORE's
+FD solver is added as an option beside Grid ([compliance/decisions.md](../compliance/decisions.md) A-3, D-10; plan 9.6). Until the shift is
+implemented and parity at 0.5 proven, the engine accepts `ShiftHorizon = 0` only, and the
+difference to ORE's default stands as measured above. Not urgent.
 
 ---
 
@@ -2361,9 +2370,8 @@ currency, exact discretization, scenario curves implied by the model and the inp
 (`engine.simulation.cam`, `scenario_market`). `tests/test_cam.py` checks the martingale
 `E[P(t,T)/N(t)] = P(0,T)` exactly (analytically, by integrating over the state's normal
 distribution) and by Monte Carlo in FP64 and FP32 on sloped curves, and checks the model
-against ORE's `LinearGaussMarkovModel`, `IrLgm1fStateProcess` and Cholesky. **Still open on the
-Hull-White path** (a `SimulationConfig` market, HTTP v1), kept for its callers
-([decisions A-1](../compliance/decisions.md)).
+against ORE's `LinearGaussMarkovModel`, `IrLgm1fStateProcess` and Cholesky. **Still open on the Hull-White model**, which stays a supported, non-default option (decision A-1); closing it there is plan 9.3. There, a
+curve-fitted drift makes the simulation arbitrage-free against the input curve.
 
 ---
 
@@ -2393,7 +2401,7 @@ afterwards.
 when the underlying is worth more than the option. After that a physical option carries the
 swap it entered (from `buildUnderlyingSwaps`' first coupon) and a cash-settled one leaves.
 `tests/test_valuation.py::test_an_exercised_physical_option_becomes_its_swap_and_a_cash_one_leaves`.
-**Still open on the Hull-White path.**
+**Still open on the Hull-White model**, which stays a supported, non-default option (decision A-1); closing it there is plan 9.3.
 
 ---
 
@@ -2424,7 +2432,7 @@ instrument from it; the audit pairs this with [I-42](#i-42) (M-1).
 repriced on every path with its own LGM recalibrated to the path's curves, as ORE's
 `ValuationEngine` does with `recalibrate = true`. `tests/test_valuation.py::test_bermudan_on_every_path_equals_ore_recalibrated_on_the_path_curves`
 agrees with ORE's engine to 1e-8. The recalibration's mechanics are not yet confirmed by an ORE
-simulation ([I-49](#i-49)). **Still open on the Hull-White path.**
+simulation ([I-49](#i-49)). **Still open on the Hull-White model**, which stays a supported, non-default option (decision A-1); closing it there is plan 9.3.
 
 ---
 
@@ -2450,7 +2458,7 @@ numeraire, once [I-44](#i-44) moves the simulation to LGM), in the reporting cur
 `N(t, x)`, exact at each date (`scenario_market.lgm_numeraire`). The cube stores NPVs and
 exposure deflates them by `N`. `tests/test_portfolio_market_path.py::test_a_bills_expected_exposure_is_its_forward_value`
 checks an identity that holds only if numeraire and deflation are right (Monte Carlo error
-1.4e-5 at 512 paths, tolerance 1e-4). **Still open on the Hull-White path.**
+1.4e-5 at 512 paths, tolerance 1e-4). **Still open on the Hull-White model**, which stays a supported, non-default option (decision A-1); closing it there is plan 9.3.
 
 ---
 
@@ -2478,8 +2486,8 @@ model to each European's own expiry and tenor.
 surface is seen from each path date as `DynamicSwaptionVolatilityMatrix` sees it
 (`engine.valuation.european`), and Vega is reported. `engine.market_risk` does the same for a
 European without Hull-White parameters (plan 6.4), and its ORE-parity test uses QuantLib's
-Bachelier engine as reference (measured 1.6e-14). **Still open on the Hull-White path**,
-which keeps Jamshidian.
+Bachelier engine as reference (measured 1.6e-14). **Still open on the Hull-White model**, which stays a supported, non-default option (decision A-1); closing it there is plan 9.3. Jamshidian stays available there
+as a configurable European engine; market-vol Bachelier becomes that model's default too.
 
 ---
 
@@ -2510,7 +2518,7 @@ underlying (`engine.valuation.bermudan.calibration_basket`, `LgmBuilder` and
 `IrModelBuilder::buildSwaptionBasket`), built through `ORE.SwaptionHelper` and bootstrapped
 per trade (`engine.calibration.ore_lgm`). `tests/test_ore_lgm_calibration.py` prices calibrated
 Bermudans equal to ORE's `Calibration=Bootstrap` end to end, measured 2e-11
-(tolerance 1e-9). **Still open on the Hull-White path**, which keeps the shared basket.
+(tolerance 1e-9). **Still open on the Hull-White model**, which stays a supported, non-default option (decision A-1); closing it there is plan 9.3.
 
 ---
 
@@ -2542,9 +2550,10 @@ equals ORE (`tests/test_valuation.py`, 1e-8 recalibrated, 1e-10 with a given sig
 them.
 
 **What closing it requires.** An OREApp XVA run with a Bermudan and NPV cube output through
-the in-process oracle, compared path by path (with ORE's scenarios, V-4) or in distribution.
-Then either reproduce the two details or record them as differences in
-[compliance/decisions.md](../compliance/decisions.md).
+the in-process oracle, compared path by path (with ORE's scenarios, V-4) or in distribution;
+then reproduce the two details.
+
+**Decided (2026-09-30): close it** ([compliance/decisions.md](../compliance/decisions.md) X-9; plan 10.1, after [I-50](#i-50)).
 
 ---
 
@@ -2617,6 +2626,60 @@ bump at a time. Neither is jitted end to end, and each fresh process recompiles.
 [profiling](concepts/profiling.md)), then the plan's Phase 7 once I-49 to I-51 have frozen
 the numbers. `PricingConfig(recalibrate=False)` is available where ORE's own semantics are
 not needed.
+
+---
+
+### I-54 — No swaption smile: an option away from the money reads the ATM volatility {#i-54}
+
+**Severity:** Medium · **Status:** ❌ OPEN · **Difference from ORE** · **Found:** 2026-09-29,
+plan X-5; decided 2026-09-30
+
+**What differs.** The market's swaption volatilities are an ATM normal matrix
+(`engine.market.SwaptionVolSurface`, expiry × swap tenor, no strike axis). ORE reads a
+volatility cube or a SABR smile at each option's strike. Here every option reads the ATM
+volatility for its expiry and tenor: Europeans, and the calibration helpers of
+Bermudans/Americans, which `CoterminalDealStrike` strikes at the deal rate.
+
+**Size.** None when the market itself is ATM-only, as every market given to the engine so far
+is. With a smile, the error grows with the distance from the money and the steepness of the
+smile. Not measured.
+
+**Reach.** European NPVs and Vega away from the money; calibrated Bermudan/American volatility,
+hence their NPVs, Greeks and exposure.
+
+**What closing it requires.** A strike axis in the market's volatilities, read at each option's
+and helper's strike as ORE reads its cube; SABR later as an option. **Decided (2026-09-30): close
+it** ([compliance/decisions.md](../compliance/decisions.md) X-5; plan 10.2).
+
+---
+
+### I-55 — Unproven precision combinations are not flagged; precision is switched per process {#i-55}
+
+**Severity:** Medium · **Status:** ❌ OPEN · **Found:** 2026-09-24 as [engine audit
+A-1](planning/engine-audit.md#a-1) (the mechanism); registered 2026-09-30 with the owner's
+decisions D-9 and A-9
+
+**What is missing.** Two parts:
+
+1. **No warning for an unproven combination.** Precision can be set per stage
+   (`PrecisionConfig`: simulation, pricing, risk, calibration). Decision D-9 allows any
+   combination for any calculation, regulatory figures included. But nothing records which
+   combinations have been shown adequate for which figure, or at how many paths, so a
+   float32 VaR or exposure profile comes back looking exactly like a validated one.
+2. **The mechanism.** `jax_enable_x64` is process-global. The engine toggles it
+   (`generate_paths`, `price_portfolio`), serializes threads with `_PRICING_LOCK`, and keeps
+   one worker-process pool per precision tier. As the audit found, `price_portfolio` turns x64
+   back on in every job, so the tiers do not isolate what they were built to isolate. The
+   market-path code already takes explicit dtypes.
+
+**Reach.** Every run below FP64: the numbers may be adequate, but the result does not say
+whether they are.
+
+**What closing it requires.** Decided (2026-09-30; [compliance/decisions.md](../compliance/decisions.md)
+A-9, D-9): keep adjustable precision and replace the mechanism before removing it. x64 is
+enabled once per process and each stage takes an explicit dtype (plan 9.4). A table of
+evidence per figure and precision drives a warning on any result whose combination is
+unproven, stating what is validated and at how many paths (plan 9.5).
 
 ---
 

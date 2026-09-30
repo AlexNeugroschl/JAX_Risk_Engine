@@ -30,13 +30,15 @@ double-precision simulations in the same wall-clock time.
 - Short-horizon VaR and Expected Shortfall by full revaluation of the portfolio under
   Monte Carlo or historical shocks of every curve pillar, with ORE's `RiskStatistics`
   conventions and Monte Carlo error estimates
-- The original **Hull-White path** (one-factor Hull-White simulation, Jamshidian Europeans,
-  AD Greeks) is kept beside it for existing callers; its known differences from ORE are in
-  the [register](docs/known-issues.md)
-- Independent FP64/FP32 precision settings for simulation, pricing, risk and calibration,
-  with each precision tier running in its own worker processes
-- HTTP API for portfolio pricing (schema version 2 for the market path, version 1 for the
-  Hull-White path) and calibration, plus a versioned end-of-day contract for hash-verified
+- A second, non-default model: the original **Hull-White** simulation with Jamshidian
+  Europeans and AD Greeks. Models, engines and methods are becoming options of one run
+  configuration, as in ORE, with ORE's defaults
+  ([decisions](compliance/decisions.md)). The Hull-White model's known differences from ORE
+  are in the [register](docs/known-issues.md)
+- Adjustable precision: independent FP64/FP32 settings for simulation, pricing, risk and
+  calibration, since which precision each calculation needs is what the project studies
+- HTTP API for portfolio pricing and calibration (today one request shape per model, to
+  become one configurable request), plus a versioned end-of-day contract for hash-verified
   portfolio bundles
 
 ## ORE and hardware acceleration

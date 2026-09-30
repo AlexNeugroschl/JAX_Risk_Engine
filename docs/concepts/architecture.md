@@ -32,15 +32,23 @@ chosen by the type of `PortfolioRequest.market`:
    Market ──sensitivities (engine.risk.sensitivities)──► Delta, Gamma, Vega, Theta per trade
 ```
 
-- **A `SimulationConfig`: the Hull-White path**, the original engine, kept for its callers
-  (HTTP `POST /portfolio/price`). Trades carry their curve indices and Hull-White parameters.
+- **A `SimulationConfig`: the Hull-White path**, the original engine. It is a supported,
+  non-default model (HTTP `POST /portfolio/price`). Trades carry their curve indices and
+  Hull-White parameters.
   Its data flow is described [below](#the-hull-white-paths-data-flow); its known differences
   from ORE are [I-42](../known-issues.md#i-42) to [I-47](../known-issues.md#i-47).
 
 Both paths share the curve primitives (`engine.models.curves`), ORE trade building
 (`engine.models.ore_builders`), the Bermudan grid engine (`engine.instruments.bermudan_swaption`),
-and the risk statistics. The decisions behind the split are in
-[compliance/decisions.md](../../compliance/decisions.md).
+and the risk statistics.
+
+**Where this is going** (owner decisions, 2026-09-30,
+[compliance/decisions.md](../../compliance/decisions.md)). The two paths are an intermediate
+state. The engine is to be configured as ORE is: the model per currency, the pricing engine
+per product, the Greeks method, the settlement method and the precision per stage become
+choices in one run configuration, with ORE's defaults, taken by one request shape and one
+route ([ORE alignment plan, Phase 9](../planning/ore-alignment-plan.md#phase-9--configurable-engine-l)).
+New models, instruments and methods are added as options, and none that works is removed.
 
 ## The repository layout
 
@@ -73,8 +81,8 @@ JAX_Risk_Engine/
 │   │                                     trusting any number
 │   └── planning/                         Roadmap/history, TraderX integration plan and
 │                                         the EOD contract exchange
-├── compliance/decisions.md             Dated modelling decisions and the differences
-│                                         from ORE that remain (awaiting sign-off)
+├── compliance/decisions.md             The owner's dated decisions on how the engine is
+│                                         configured, and the differences from ORE
 ├── engine/
 │   ├── market.py                         Today's market for the market path: curves per
 │   │                                     currency and index, the ATM normal swaption
@@ -106,7 +114,7 @@ JAX_Risk_Engine/
 │   │   ├── routes.py                     /health, /version, /portfolio/price and
 │   │   │                                 /v2/portfolio/price (async job pattern),
 │   │   │                                 /calibration/lgm
-│   │   ├── market_schemas.py             Schema version 2 (the market path); refuses
+│   │   ├── market_schemas.py             The market path's request shape; refuses
 │   │   │                                 unknown fields
 │   │   ├── eod_routes.py                 W1.6.4 /eod/* -- the TraderX EOD contract. Plain
 │   │   │                                 dicts under a published JSON Schema, NOT Pydantic:
@@ -155,7 +163,7 @@ JAX_Risk_Engine/
 │   │   ├── config.py                     CamConfig/LgmConfig (ORE's simulation.xml) and
 │   │   │                                 simulate(market, config)
 │   │   ├── random.py                     Sobol normals and the Brownian bridge, shared
-│   │   ├── market_model.py               The Hull-White path's simulation (legacy):
+│   │   ├── market_model.py               The Hull-White model's simulation:
 │   │   │                                 cross-asset Hull-White paths, yield-curve
 │   │   │                                 reconstruction; also validate_joint_covariance/
 │   │   │                                 nearest_psd
@@ -622,6 +630,15 @@ dependency). If the eventual TraderX API (see the roadmap in the root
 pricing endpoint needs ORE installed.
 
 ## Adjustable precision
+
+**Decisions (2026-09-30,** [compliance/decisions.md](../../compliance/decisions.md) **A-9, D-9).**
+Adjustable precision is a requirement: any combination of precisions may be run for any
+calculation. The mechanism described below (a process-global `jax_enable_x64` switched per
+job, `_PRICING_LOCK`, one worker pool per precision tier) is to be replaced by explicit
+per-stage dtypes with x64 enabled once per process, and removed only once that works. A run
+whose combination has not been shown adequate for a figure is to carry a warning with the
+evidence ([I-55](../known-issues.md#i-55); ORE alignment plan 9.4, 9.5). The market path's code
+already takes explicit dtypes.
 
 One of the project's core long-term research goals (see [Overview](../getting-started/overview.md)) is
 comparing risk results computed with different numeric precision — 64-bit ("double",

@@ -28,7 +28,7 @@ paths, and they correspond to ORE differently:
   `CrossAssetModel` simulation, `ScenarioSimMarket`, `ValuationEngine` with each trade's own
   t=0 engine, `ExposureCalculator` and `SensitivityAnalysis`. The next section maps it.
 - **The Hull-White path** (a `SimulationConfig` as the market, HTTP `POST /portfolio/price`)
-  is the original engine, kept for its callers. Sections 1 to 10 below map it and the
+  is the original engine, a supported non-default model. Sections 1 to 10 below map it and the
   components both paths share. Its known differences from ORE are registered as
   [I-42](../known-issues.md#i-42) to [I-47](../known-issues.md#i-47).
 
@@ -600,7 +600,8 @@ comparison, including the tie-at-VaR-boundary and empty-tail edge cases).
 **Hull-White path.** The market path reports ORE's own bump-and-revalue Greeks on the
 sensitivity simulation market (`engine.risk.sensitivities`; gates V-2 and V-3 in
 [the market path](#verification-gates)), with Vega for every swaption quote; the AD Greeks
-below stay on the Hull-White path (plan X-3). Theta rolls the date by calendar days on both
+below are the Hull-White path's; the method is to become a per-run choice on either model
+(decision A-5). Theta rolls the date by calendar days on both
 paths (`asof + thetaPeriod`, [I-38](../known-issues.md#i-38)).
 
 **This engine:** `engine/risk/greeks.py::swap_delta_gamma`, `swap_theta`,

@@ -72,7 +72,7 @@ the routers separate keeps either free to change.
 | `GET /health` | portfolio | below |
 | `GET /version` | portfolio | below |
 | `POST /portfolio/price` | portfolio | below |
-| `POST /v2/portfolio/price` | portfolio (schema version 2, the market path) | below |
+| `POST /v2/portfolio/price` | portfolio (the market path's request shape) | below |
 | `GET /portfolio/price/{job_id}` | portfolio | below |
 | `POST /calibration/lgm` | portfolio | below |
 | `GET /eod/capabilities` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
@@ -142,10 +142,10 @@ the exact same validator error message `engine.portfolio`'s own `ValueError` car
 
 ### `POST /v2/portfolio/price`
 
-Schema version 2: the **market path**, ORE's pipeline end to end
+The request shape for the **market path**, ORE's pipeline end to end and the default model
 ([ORE Parity: the market path](ore-parity.md#the-market-path)). Body: a
 `MarketPortfolioRequestSchema` (`engine/api/market_schemas.py`, see
-"Request schema, version 2" below). Same behaviour as `POST /portfolio/price`: validated
+"Request schema for the market path" below). Same behaviour as `POST /portfolio/price`: validated
 synchronously (`engine.portfolio.market_path.validate_market_request`, no JAX work), then
 queued; `202` with a `job_id`, polled at the same `GET /portfolio/price/{job_id}`, with the
 same `PortfolioResultSchema`.
@@ -154,13 +154,17 @@ same `PortfolioResultSchema`.
 `simulation`; a trade whose currency or index curve is not in the market; `trade_id` on some
 trades but not others, or repeated.
 
-**Malformed schema, or an unknown field:** `422`. Version 2 refuses unknown fields, so a
-version-1 trade carrying `hw_sigma` or a curve is not silently stripped of its model. On the
+**Malformed schema, or an unknown field:** `422`. This shape refuses unknown fields, so a
+Hull-White-shaped trade carrying `hw_sigma` or a curve is not silently stripped of its model. On the
 market path curves come from the market and models from the pricing configuration
 (audit A-3).
 
-Version 1 stays for the Hull-White path and its callers
-([decisions A-2](../../compliance/decisions.md)).
+**Two request shapes today, one planned.** `POST /portfolio/price` takes the Hull-White
+model's shape and `POST /v2/portfolio/price` the market path's. The `/v2` in the path and the
+body's `schema_version: "2"` are names from the code, not versions: neither shape is
+deprecated. By decision A-2 ([compliance/decisions.md](../../compliance/decisions.md)) they
+are to become one request whose configuration selects the model, engines and methods; both
+current shapes will keep working, translated into that configuration (ORE alignment plan 9.2).
 
 ### `GET /portfolio/price/{job_id}`
 
@@ -434,16 +438,16 @@ kind from any fixed-size worker pool. Either way, correctness is unaffected: eac
 result is always independent of what else is running concurrently, whether it runs
 immediately or waits for a worker to free up.
 
-## Request schema, version 2: `MarketPortfolioRequestSchema`
+## Request schema for the market path: `MarketPortfolioRequestSchema`
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | `"2"` |
+| `schema_version` | `"2"`, identifying this shape (see above; not a version) |
 | `market` | `asof` (ISO date; every trade is valued on it); `currencies`: per currency a `discount_curve`, `index_curves` keyed by index name (`"USD-SIMINDEX-6M"`), and `swaption_vols` (ATM normal matrix: `option_tenors`, `swap_tenors`, `vols`); `fx_spots` keyed `"EURUSD"`; `equities` |
 | `trades` | Discriminated by `trade_type`: `swap`, `european_swaption`, `bermudan_swaption`, `american_swaption`, `bond`. Each names its `currency` and `index_tenor_months` and carries no model or curve. Swaptions take `settlement` (`Physical` or `Cash`; a cash European uses ORE's `ParYieldCurve` annuity). Optional `trade_id`, on every trade or on none |
 | `simulation` | ORE's `simulation.xml` as `CamConfigSchema`: `dates`, `base_currency`, `ir` per currency (`reversion`, `volatility`, optional calibration basket `calibration_expiries` × `calibration_terms`), `fx_volatilities`, `equity_volatilities`, `correlations` between factors `IR:USD`, `FX:EURUSD`, `EQ:SP5`, `curve_tenors`, `samples`, `seed`, `swaption_vol_decay`. Required with `scenario_risk` |
 | `pricing` | The Bermudan and American engines (`LgmEngineSchema`: ORE's example configuration by default) and `recalibrate` (default `true`, as ORE's `ValuationEngine`) |
-| `base_currency`, `pfe_quantiles`, `compute_greeks`, `scenario_risk`, `precision` | As version 1. Greeks are ORE's bump-and-revalue sensitivities |
+| `base_currency`, `pfe_quantiles`, `compute_greeks`, `scenario_risk`, `precision` | As in the Hull-White shape. Greeks are ORE's bump-and-revalue sensitivities |
 
 A minimal body (one swap, today's NPV and Greeks only):
 
@@ -525,11 +529,11 @@ See a curl-only version in [User Guide: Running the API](../getting-started/user
 
 ## Tested by
 
-`tests/test_api_market_path.py` covers version 2. On the shared test portfolio
+`tests/test_api_market_path.py` covers the market path's shape. On the shared test portfolio
 (`tests/support/portfolio.py`), the polled result equals a direct `price_portfolio` call:
 NPVs, cube, the exposure profiles including EPE_B/EEPE_B and Basel, trade ids, and the 2-D
 Vega. It also checks the `400`s and the `422` for a trade carrying `hw_sigma`.
-`tests/test_shared_portfolio.py` checks that the version-2 body of that portfolio is the
+`tests/test_shared_portfolio.py` checks that the HTTP body of that portfolio is the
 dataclass portfolio.
 
 `tests/test_api.py`, using FastAPI's `TestClient` (backed by `httpx`) — no running server

@@ -124,9 +124,9 @@ counterparts live at the integration boundary
 
 ## Planning
 
-- **[ORE Alignment Plan](planning/ore-alignment-plan.md)** — one rates model and ORE's
+- **[ORE Alignment Plan](planning/ore-alignment-plan.md)** — ORE's models and
   valuation semantics end to end: the market path, its verification gates and test layers,
-  and what of the plan is done.
+  what of the plan is done, and the work that makes the engine configurable (Phase 9).
 - **[Engine Audit](planning/engine-audit.md)** — open problems from the 2026-09-24 audit of
   the internal engine, tests and demos, ranked by urgency and ease of fixing. Read with the
   Known Issues register: several findings correct or extend its entries.

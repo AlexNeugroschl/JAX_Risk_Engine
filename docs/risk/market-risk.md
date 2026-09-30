@@ -154,7 +154,7 @@ over ORE's P&L vector:
 | Swap | `MakeVanillaSwap` + `DiscountingSwapEngine`, separate forwarding curve | ~1e-14 relative |
 | Bond | `FixedRateBond` (ACT/ACT ISMA) + `DiscountingBondEngine` | ~1e-16 |
 | European swaption (no Hull-White parameters) | `Swaption` + `BachelierSwaptionEngine` on ORE's `SwaptionVolatilityMatrix` (the formula of ORE's default `BlackMultiLegOptionEngine`) | ~2e-14 (measured 1.6e-14) |
-| European swaption (Hull-White parameters, legacy) | `Swaption` + `JamshidianSwaptionEngine` on `HullWhite` | ~3e-7, inside the Jamshidian parity envelope of [European Swaptions](../instruments/european-swaptions.md) |
+| European swaption (Hull-White parameters) | `Swaption` + `JamshidianSwaptionEngine` on `HullWhite` | ~3e-7, inside the Jamshidian parity envelope of [European Swaptions](../instruments/european-swaptions.md) |
 | Bermudan swaption | `NumericLgmMultiLegOptionEngine` via in-process `OREApp` | ~2e-13 |
 
 VaR and ES agree with ORE's to 1e-6 relative on 512 Monte Carlo scenarios (a swap, a

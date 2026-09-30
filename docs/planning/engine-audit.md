@@ -30,26 +30,34 @@ do, this document links the entry and says what the register gets wrong or leave
 
 | ID | Finding | Urgency | Ease |
 |---|---|---|---|
-| [M-1](#m-1) | Simulated curves are not arbitrage-free against the input curve | Critical | Hard |
-| [M-2](#m-2) | Paid cashflows stay in a swap's NPV forever | High | Moderate |
-| [M-3](#m-3) | Options vanish at expiry instead of turning into the swap | High | Moderate |
+| [M-1](#m-1) | Simulated curves are not arbitrage-free against the input curve | Critical — resolved on the market path 2026-09-29; open on the Hull-White model (plan 9.3) | Hard |
+| [M-2](#m-2) | Paid cashflows stay in a swap's NPV forever | High — resolved on the market path 2026-09-29; open on the Hull-White model (plan 9.3) | Moderate |
+| [M-3](#m-3) | Options vanish at expiry instead of turning into the swap | High — resolved on the market path 2026-09-29; open on the Hull-White model (plan 9.3) | Moderate |
 | [M-4](#m-4) | Trades are defined relative to the evaluation date | ✅ Resolved 2026-09-25 | — |
 | [M-5](#m-5) | Theta re-rolls the trade instead of ageing it | ✅ Resolved 2026-09-25 (with M-4) | — |
 | [R-1](#r-1) | The reported VaR/ES is not an end-of-day market-risk VaR | ✅ Resolved 2026-09-24 | — |
 | [P-1](#p-1) | Nothing runs on more than one device | High | Hard |
-| [P-2](#p-2) | Bermudan/American scenario pricing runs on the host in a Python loop | Medium | Moderate |
+| [P-2](#p-2) | Bermudan/American scenario pricing runs on the host in a Python loop | Medium — moot on the market path (vectorized over paths); open on the Hull-White model (plan 9.3) | Moderate |
 | [P-3](#p-3) | The precision study does not exercise the engine's own low-precision path | ✅ Resolved 2026-09-24 | — |
-| [A-1](#a-1) | Precision is controlled by toggling a process-global JAX flag | Medium | Hard |
-| [A-2](#a-2) | Two short-rate model families, bridged by a state conversion | Medium | Hard (with M-1) |
-| [A-3](#a-3) | Trade configs duplicate model parameters, then validate the copies | Medium | Moderate |
-| [A-4](#a-4) | ORE global state: implicit evaluation dates and a mutated singleton | Medium | Moderate |
-| [A-5](#a-5) | Layering inversion between instruments and portfolio | Low | Moderate |
-| [A-6](#a-6) | Demo and test infrastructure lives in the production package | Low | Moderate |
-| [A-7](#a-7) | The bond pricer is a separate, plain-Python implementation | Medium | Moderate |
+| [A-1](#a-1) | Precision is controlled by toggling a process-global JAX flag | Medium — decided 2026-09-30: replace, keep adjustable precision (plan 9.4, [I-55](../known-issues.md#i-55)) | Hard |
+| [A-2](#a-2) | Two short-rate model families, bridged by a state conversion | Medium — resolved on the market path (LGM only); the Hull-White model stays an option, to be made self-consistent (plan 9.3) | Hard (with M-1) |
+| [A-3](#a-3) | Trade configs duplicate model parameters, then validate the copies | Medium — resolved on the market path (trades carry no model; refused if set); open on the Hull-White model (plan 9.1) | Moderate |
+| [A-4](#a-4) | ORE global state: implicit evaluation dates and a mutated singleton | Medium — partly: the engine no longer sets the global, and the market path refuses a trade not valued on the market's as-of date; the implicit default remains | Moderate |
+| [A-5](#a-5) | Layering inversion between instruments and portfolio | ✅ Resolved 2026-09-29 (`tests/test_import_layering.py`) | — |
+| [A-6](#a-6) | Demo and test infrastructure lives in the production package | Low — open (ORE alignment plan 3.5) | Moderate |
+| [A-7](#a-7) | The bond pricer is a separate, plain-Python implementation | ✅ Resolved 2026-09-29 (one implementation, on the shared curves) | — |
 | [Q-1](#q-1) | Source code is mostly narrative prose and project history | Medium | Hard (volume) |
 | [Q-2](#q-2) | No lint, type checking, CI, or pinned dependencies | Medium — pins and CI resolved 2026-09-24; lint and types open | Moderate |
 | [Q-3](#q-3) | Test suite: slow, unmarked, and coupled to itself | Medium | Moderate |
 | [Q-4](#q-4) | Documentation sprawl and stale planning documents | Low | Moderate |
+
+**Superseded order (2026-09-28/29).** The [ORE alignment plan](ore-alignment-plan.md) replaced this
+document's recommended order for M-1 to M-3, A-1 to A-4 and P-2, and its market path resolved
+most of them; the statuses above say which. **Owner decisions (2026-09-30,
+[compliance/decisions.md](../../compliance/decisions.md))** override two recommended fixes
+below. A-1: keep adjustable precision and replace its mechanism before removing it. A-2: do
+not standardize on one model; the Hull-White model stays a configurable option, made
+self-consistent within itself.
 
 **Decision (2026-09-24, R-1).** The engine reports two different things under two names.
 Market-risk VaR/ES is a t=0 full revaluation under Monte Carlo or historical shocks
@@ -368,6 +376,11 @@ Most functions already derive their dtype from their inputs. Then remove the tog
 lock and the per-precision pool tiers. The remaining work is to find every array created
 without an explicit dtype. `compute_hw_A_matrix`, which hard-codes float64, is one.
 
+**Decision (2026-09-30).** Adjustable precision is required. This fix is the intended
+replacement, done in that order: explicit dtypes first, the old mechanism removed only once
+they work (ORE alignment plan 9.4). Unproven combinations are to carry a warning
+([I-55](../known-issues.md#i-55), plan 9.5).
+
 ### A-2 — Two short-rate model families, bridged by a state conversion {#a-2}
 
 **Urgency: Medium · Ease: Hard (do it with M-1)**
@@ -382,6 +395,11 @@ equivalent"; `engine/models/lgm.py` says they are not. One of them is wrong.
 **Fix.** Standardize on LGM (the model ORE's cross-asset model and Bermudan engine use),
 as part of [M-1](#m-1). European swaptions can use the LGM analytic formula that
 `engine.calibration.basket.price_lgm_swaption` already implements.
+
+**Decision (2026-09-30).** Done on the market path, which uses LGM only and is the default. The
+Hull-White model is **not** removed: it stays a configurable option, and the fix there is to
+make it consistent within itself: a curve-fitted Hull-White simulation priced by Hull-White
+pricers, with no state conversion between models (ORE alignment plan 9.3).
 
 ### A-3 — Trade configs duplicate model parameters, then validate the copies {#a-3}
 

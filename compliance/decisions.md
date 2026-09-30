@@ -2,18 +2,69 @@
 
 Dated record of the modelling and scope decisions the engine's numbers rest on: the ORE
 alignment's targets and remaining differences
-([ORE alignment plan](../docs/planning/ore-alignment-plan.md) Phase 0.1), and the decisions taken
-while implementing it. The Basel decisions D-1 to D-10
-([Basel III plan](../docs/planning/basel-iii-compliance-plan.md) §3) will be recorded here too
-(Basel P0.1); only D-9 and D-10 are recorded so far, because the alignment depends on them.
+([ORE alignment plan](../docs/planning/ore-alignment-plan.md) Phase 0.1), and the owner's
+decisions on how the engine is configured. The Basel decisions D-1 to D-10
+([Basel III plan](../docs/planning/basel-iii-compliance-plan.md) §3) belong here too (Basel
+P0.1); only D-9 and D-10 are recorded so far, because the alignment depends on them.
 
-**Sign-off.** Every entry below is the engineering default, taken so work could proceed.
-**None has owner sign-off yet**; each row's *Sign-off* column says so. Changing an entry later is
-a tracked change with a re-run of the evidence it cites.
+**Status of an entry.** *Decided* entries were decided by the owner on 2026-09-30. *Engineering
+default* entries are unreviewed choices taken so work could proceed. Changing a decided entry
+is a tracked change, with a re-run of the evidence it cites. *Implemented* says whether the
+code does it today. The work that implements the rest is in the plan's
+[Phases 9 and 10](../docs/planning/ore-alignment-plan.md#phase-9--configurable-engine-l).
 
 ---
 
-## 1. ORE alignment targets (T-1 to T-20)
+## 1. Direction: a configurable engine (decided 2026-09-30)
+
+The engine is **modular and configurable**, as ORE is. Models, simulations, pricing engines,
+sensitivity methods, settlement methods and precision are choices in the run's configuration,
+not code paths hard-wired to one another. The engine grows by adding options (models,
+instruments, methods) without replacing the ones it has.
+
+- **Defaults are ORE's defaults.** Where ORE has a code default, the engine uses it. Where ORE
+  has none and its configuration must name a value, the default is the value ORE's example
+  configurations use, and the entry says so.
+- **Nothing that works is removed without a replacement.** An option leaves the default when
+  something better arrives, but it stays available.
+- **One request, many configurations.** The same request shape runs any configuration. There
+  are no API versions for different models (A-2).
+
+## 2. Owner decisions (2026-09-30)
+
+| # | Decision | Default | Options | Implemented | Work |
+|---|---|---|---|---|---|
+| A-1 | Models are options. The Hull-White model stays as a supported option, **not the default and not retired**. The LGM cross-asset model (the market path) is the default | LGM (ORE's `CrossAssetModel`) | LGM; Hull-White | Both exist, as two separate code paths chosen by the type of `PortfolioRequest.market` | Make them options of one configuration (plan 9.1, 9.3). The Hull-White option's own defects ([I-42](../docs/known-issues.md#i-42) to [I-47](../docs/known-issues.md#i-47)) are closed within that option, not by removing it |
+| A-2 | **One API.** No request versions: a single request whose configuration selects model, engines and methods. Neither current request shape is deprecated | — | — | No. Today there are two schemas and two routes: `POST /portfolio/price` (Hull-White) and `POST /v2/portfolio/price` (market path) | Merge them into one configurable request; both current shapes keep working, translated into configuration (plan 9.2) |
+| A-9 | **Adjustable precision is required.** The current mechanism (the process-global x64 flag, `_PRICING_LOCK`, one worker pool per precision tier; audit [A-1](../docs/planning/engine-audit.md#a-1)) is to be replaced by a better one, and removed only once the replacement works | FP64 everywhere | Any precision per stage (D-9) | Precision is adjustable per stage today, through the current mechanism | Explicit per-stage dtypes with x64 enabled once per process; then remove the flag toggling, the lock and the tiers (plan 9.4; [I-55](../docs/known-issues.md#i-55)) |
+| A-3 | Bermudan/American engine settings are **configurable, with ORE's defaults**: `ShiftHorizon` (ORE's builder default 0.5, `OREData/ored/portfolio/builders/swaption.cpp`) and the solver (Grid, or ORE's FD solver) | `ShiftHorizon = 0.5`, Grid | `ShiftHorizon` any value; Grid; FD | No. The engine accepts `ShiftHorizon = 0` and the Grid solver only, the configuration where parity with ORE is proven | Implement the shift, prove parity at 0.5 against the oracle, then make 0.5 the default; add the FD solver as an option (plan 9.6; [I-32](../docs/known-issues.md#i-32)). Not urgent |
+| A-4 | Swaption volatility time decay on a path: **both** `ForwardVariance` and `ConstantVariance` supported | `ForwardVariance` | `ForwardVariance`; `ConstantVariance` | Yes (`CamConfig.swaption_vol_decay`) | None. ORE has no code default: its simulation configuration must name `ReactionToTimeDecay`, and an empty value fails ("Decay mode not recognized", scenariosimmarket.cpp). 329 of the 365 values in ORE's `Examples/` are `ForwardVariance`, so that is the default |
+| A-5 | The Greeks method is **configurable**: ORE's bump-and-revalue, or automatic differentiation | Bump-and-revalue (ORE's) | Bump; AD (to explore later) | Bump on the market path; AD on the Hull-White path only | A per-run choice of method, for any model (plan 9.7) |
+| A-6 | Cash settlement follows ORE: a European by `ParYieldCurve`, a Bermudan/American valued as physical at t=0 (ORE's own approximation). The settlement **method** becomes a configurable trade field later | ORE's `defaultSettlementMethod` | Later: ORE's methods (`PhysicalOTC`, `CollateralizedCashPrice`, `ParYieldCurve`, ...) | Defaults only | Plan 9.8, low priority |
+| A-7 | An American's calibration basket on a path keeps the as-of reference grid: ORE builds the model once and recalibrates the same basket | — | — | Yes | Confirm against ORE's simulation once [I-50](../docs/known-issues.md#i-50) exists |
+| A-8 | In `engine.market_risk` the European engine is chosen today by the trade's fields (no Hull-White parameters: Bachelier; with them: Jamshidian). Fine for now; the target is the engine chosen **by configuration**, per product | Bachelier (ORE's default) | Bachelier; Jamshidian | By trade fields | Engine per product from the pricing configuration (plan 9.9) |
+| D-9 | **Precision is a free choice.** Any combination of precisions is allowed for any calculation, regulatory figures included. A run using a combination not yet shown adequate for a figure carries a **warning**: what has been validated for that figure, at how many paths, and what is missing | FP64 | Any | Choice yes; warnings no | Record the evidence per figure and precision, and emit the warnings (plan 9.5; [I-55](../docs/known-issues.md#i-55)). Replaces "FP64 only until the FP32 gate passes" |
+| D-10 | ORE reference configuration for Bermudans/Americans: as A-3 (configurable; default ORE's `ShiftHorizon = 0.5`) | As A-3 | As A-3 | As A-3 | As A-3 |
+
+## 3. Differences from ORE (X-n)
+
+X-1 to X-8 are the plan's; X-9 onward were found while implementing it.
+
+| # | Difference | Status | How it is handled |
+|---|---|---|---|
+| X-1 | Random numbers not bit-identical to ORE's | Engineering default | Reproducing ORE's Sobol direction numbers and bridge ordering is not worth it. Distribution-level checks now; path-level parity from ORE's scenario dump once V-4 closes |
+| X-2 | FP32 and multi-device execution | Decided (D-9, A-9) | Not in ORE; the engine's research goal. Any precision is allowed, with warnings where unproven |
+| X-3 | AD Greeks | Decided (A-5) | A configurable method beside ORE's bump Greeks, which are the default |
+| X-4 | VaR/ES per exposure step | Engineering default | Not in ORE; labelled risk-neutral (I-11) |
+| X-5 | ATM normal swaption matrix only, no smile | **Decided: close it** | [I-54](../docs/known-issues.md#i-54); plan 10.2 |
+| X-6 | ORE's AMC engine | Engineering default | Out of scope for now: classic revaluation only. A candidate simulation option under the direction in §1 |
+| X-7 | Calibration root-finder (bisection vs ORE's optimizer per helper) | Engineering default | Same root when it exists; calibrated Bermudans equal ORE to ≤ 4e-11 |
+| X-8 | Pre-t=0 fixings (I-04), SOFR (I-05) | Engineering default | Blocked externally; refused, not guessed |
+| X-9 | Per-path recalibration differs from ORE's in two details, unconfirmed by an ORE simulation | **Decided: close it** | [I-49](../docs/known-issues.md#i-49); plan 10.1, after the ORE simulation oracle ([I-50](../docs/known-issues.md#i-50)) |
+| X-10 | FX and equity volatilities are constant inputs, not calibrated to FX/equity options | **Decided: close eventually, not urgent** | Plan 10.3 |
+| X-11 | No equity or FX trade on the market path | **Decided: close eventually, not urgent** | Plan 10.4; related to [I-07](../docs/known-issues.md#i-07) and [I-18](../docs/known-issues.md#i-18) |
+
+## 4. ORE alignment targets (T-1 to T-20)
 
 Recorded 2026-09-29. *Where* names the implementing module; *Evidence* the test that checks it
 against ORE.
@@ -27,7 +78,7 @@ against ORE.
 | T-5 | Model-implied curves at the sim tenors, floored at 1e-5, basis deterministic | Done | `scenario_market.implied_log_discounts` | tests/test_cam.py (martingales, floor, basis) |
 | T-6 | LogLinear interpolation, FlatFwd extrapolation | Done | `models.curves.DiscountCurve` | tests/test_valuation.py (path curves handed to ORE as `DiscountCurve`) |
 | T-7 | Simulation grid as dates | Done | `simulation.config.CamConfig.dates` | — |
-| T-8 | Every trade repriced with its t=0 engine on each path; recalibration on | Done (V-1 open, see X-9) | `engine.valuation` | tests/test_valuation.py |
+| T-8 | Every trade repriced with its t=0 engine on each path; recalibration on | Done (X-9 open) | `engine.valuation` | tests/test_valuation.py |
 | T-9 | `FixingManager` rule on paths | Done | `valuation.legs.path_fixings` | tests/test_valuation.py (1e-12) |
 | T-10 | Paid flows drop out (`hasOccurred`) | Done | `valuation.legs` | tests/test_valuation.py |
 | T-11 | `OptionWrapper` exercise, physical and cash | Done | `valuation.options` | tests/test_valuation.py |
@@ -40,42 +91,3 @@ against ORE.
 | T-18 | ORE's bump-and-revalue sensitivities | Done; not yet against an OREApp sensitivity run (I-51) | `risk.sensitivities` | tests/test_sensitivities.py |
 | T-19 | Theta: calendar roll, backfilled fixings, period flows | Done | `risk.sensitivities` | tests/test_sensitivities.py |
 | T-20 | ContinuousForward zero-curve extrapolation | Done | `models.curves.zero_rate` (I-48) | tests/test_curves.py |
-
-## 2. Differences from ORE that remain (X-n)
-
-X-1 to X-8 are the plan's; X-9 onward were found while implementing it.
-
-| # | Difference | Why | How it is handled | Sign-off |
-|---|---|---|---|---|
-| X-1 | Random numbers not bit-identical to ORE's | Reproducing ORE's Sobol direction numbers and bridge ordering is not worth it | Distribution-level checks; path-level parity needs ORE's scenario dump (V-4, not done) | Pending |
-| X-2 | FP32 and multi-device execution | The engine's research goal | Opt-in; FP64 is the default and the only precision for parity (D-9) | Pending |
-| X-3 | AD Greeks | Not in ORE | Kept beside ORE's bump Greeks (`engine.risk.greeks`, legacy path); `test_sensitivities` checks bump = AD to the bump's order | Pending |
-| X-4 | VaR/ES per exposure step | Not in ORE | Labelled risk-neutral (I-11) | Pending |
-| X-5 | ATM normal swaption matrix only (no smile) | First version | `SwaptionVolSurface` has no strike axis, so a smile cannot be given | Pending |
-| X-6 | ORE's AMC engine | Out of scope | Classic revaluation only | Pending |
-| X-7 | Calibration root-finder (bisection vs ORE's optimizer per helper) | Same root when it exists | Calibrated Bermudans equal ORE to ≤ 4e-11 | Pending |
-| X-8 | Pre-t=0 fixings (I-04), SOFR (I-05) | Blocked externally | Refused, not guessed | Pending |
-| X-9 | Per-path recalibration of Bermudans/Americans: the mechanics (the parametrization's time grid, helpers already expired on the path date) and the `DynamicSwaptionVolatilityMatrix` transcription are read from source, not confirmed by an ORE simulation | ORE's dynamic vol matrix and CAM state process have no Python constructor; confirming needs an OREApp XVA run (V-1) | Implemented as read (`valuation.bermudan`); registered as I-49 | Pending |
-| X-10 | FX and equity volatilities are constant inputs, not calibrated to FX/equity options | No FX or equity option market in `Market` yet | `CamConfig.fx_volatilities` / `equity_volatilities` | Pending |
-| X-11 | No equity or FX trade on the market path | No such instrument yet (I-07, I-18) | The CAM simulates FX and equity; trades convert with the path FX | Pending |
-
-## 3. Decisions taken while implementing
-
-| # | Decision | Rationale | Date | Sign-off |
-|---|---|---|---|---|
-| A-1 | The Hull-White path stays, beside the market path, not deleted | It works, has its own tests and callers (HTTP v1, TraderX EOD, `engine.market_risk`); the market path is the default for new work | 2026-09-29 | Pending |
-| A-2 | HTTP: version 1 (`POST /portfolio/price`) kept for the Hull-White path; version 2 at `POST /v2/portfolio/price`. **Deviates from plan 3.4**, which refuses the old version | Refusing v1 would delete a working path (A-1) | 2026-09-29 | Pending |
-| A-3 | The Bermudan/American engine uses `ShiftHorizon = 0` (Basel D-10), not ORE's builder default 0.5 | Parity is proven at 0 (I-32); `LgmSwaptionEngineConfig` refuses another value | 2026-09-29 | Pending |
-| A-4 | Swaption volatilities on a path decay by `ForwardVariance` by default (`ConstantVariance` available) | The value ORE's example configurations use for non-simulated swaption volatilities; ORE has no code default | 2026-09-29 | Pending |
-| A-5 | Reported Greeks are ORE's bump-and-revalue on the sensitivity simulation market, not AD | ORE's definitions (T-18); AD stays on the legacy path | 2026-09-29 | Pending |
-| A-6 | A cash-settled European uses `ParYieldCurve`, ORE's default method for it; a cash-settled Bermudan/American is priced as the physical one at t=0 | ORE's `defaultSettlementMethod`; ORE's LGM engine approximates `ParYieldCurve` by `CollateralizedCashPrice` for Bermudans (swaption.cpp) | 2026-09-29 | Pending |
-| A-7 | An American's calibration basket on a path keeps the as-of reference grid | ORE builds the model once at the as-of date and recalibrates the same basket | 2026-09-29 | Pending |
-| A-8 | In `engine.market_risk`, a European without Hull-White parameters is priced with the Bachelier engine; one with them keeps Jamshidian (plan 6.4) | Moves the market-risk path to ORE's engine without breaking existing requests | 2026-09-29 | Pending |
-| A-9 | The process-global x64 flag, the pricing lock and the per-precision pools stay (plan 4.7 / A-1 not done) | The legacy path needs them; the market-path code takes `dtype` explicitly | 2026-09-29 | Pending |
-
-## 4. Basel decisions needed by the alignment
-
-| # | Decision | Default | Date | Sign-off |
-|---|---|---|---|---|
-| D-9 | Precision of regulatory runs | FP64 only until the FP32 gate passes per figure | 2026-09-29 | Pending |
-| D-10 | ORE reference configuration for Bermudans/Americans (I-32) | Grid solver, `ShiftHorizon = 0` (A-3) | 2026-09-29 | Pending |

@@ -125,8 +125,8 @@ changing one later is a tracked change with a re-run of the affected evidence.
 | D-6 | Historical shock type | Absolute for rates and vols; log-returns for FX and equity | Rates can be negative; relative shocks are undefined near zero |
 | D-7 | Source of hypothetical/actual P&L for backtesting and PLA | TraderX front-office valuations (HPL, APL); engine produces RTPL | **If the engine produces both HPL and RTPL, PLA passes trivially and proves nothing.** An independent valuation is required for PLA to mean anything |
 | D-8 | Market-data history | Public US Treasury constant-maturity yields (daily, back to before 2007) for the reduced risk-factor set and stress-period search; SOFR history (2018+) for the current period; swaption vols from a named vendor or declared NMRF | Only freely available history reaching 2007–2009. Vol history is the hardest item; without it, vol factors are NMRFs |
-| D-9 | Precision of regulatory runs | FP64 only, until the FP32 gate (P6) passes for a given figure | Capital numbers need a precision guarantee. The precision research gives a path to lift this per figure |
-| D-10 | ORE reference config for Americans (I-32) | Grid solver, `ShiftHorizon=0` (current), cited explicitly | It is the configuration parity is proven for. Revisit if a validator requires ORE's defaults |
+| D-9 | Precision of regulatory runs | **Decided 2026-09-30:** any precision combination may be run for any figure; a figure whose combination has not passed its gate (P6) carries a warning stating the evidence and what is missing | Testing which precision each calculation needs is the project's purpose, so nothing is refused. The warning keeps an unproven figure from passing as a proven one |
+| D-10 | ORE reference config for Americans (I-32) | **Decided 2026-09-30:** configurable; default ORE's `ShiftHorizon = 0.5` with the Grid solver, FD as an option. Until parity at 0.5 is proven the engine runs at 0, cited explicitly | Defaults are ORE's defaults (ORE alignment plan 9.6) |
 
 ---
 
@@ -363,13 +363,14 @@ as green.
 
 ### Phase 6 — Precision gate for regulatory figures (≈1–2 weeks)
 
-The project researches whether FP32 can match FP64. For capital, that must be settled
-per figure before FP32 is allowed.
+The project researches whether FP32 can match FP64. For capital, it must be settled per
+figure, and a figure must say whether it has been (D-9: any precision may be run, and an
+unproven one is flagged, not refused).
 
 | ID | Task | Exit |
 |---|---|---|
 | P6.1 | Run every regulatory figure at FP64 and FP32 on the Phase 1 portfolio and on a large synthetic one | Table of relative differences |
-| P6.2 | Acceptance rule per figure: FP32 is allowed only when its difference is below 1% of the figure's own statistical error (for ES) or below 1e-6 relative (for SA, which is deterministic) | Rule in the profile; `RegulatoryResult` refuses an FP32 run for any figure that fails its gate |
+| P6.2 | Acceptance rule per figure: FP32 is allowed only when its difference is below 1% of the figure's own statistical error (for ES) or below 1e-6 relative (for SA, which is deterministic) | Rule in the profile; `RegulatoryResult` carries a warning (with the evidence: which precisions were validated, at how many paths) for any figure run at a precision that has not passed its gate (D-9; ORE alignment plan 9.5) |
 | P6.3 | Record the realised dtype on every regulatory result (composes with I-12, I-14) | Present in the manifest |
 
 ### Phase 7 — Proof: evidence pack and independent validation (≈2–3 weeks, then continuous)
@@ -567,7 +568,8 @@ The engine may claim Basel conformance for a figure when all of these hold:
 2. Each of those tests has a red-first record.
 3. The profile values it uses passed double-entry transcription against pinned text.
 4. Mutation score ≥ 90% on its module.
-5. The FP32 gate is recorded (or the figure is FP64-only).
+5. The precision gate is recorded for the precision the figure was run at, or the figure
+   carries the unproven-precision warning (D-9).
 6. The latest evidence pack reproduces it byte for byte.
 7. The independent validation report covers it with no open finding.
 8. No open register item touches it, or the item is listed in `limitations.md` with its
