@@ -1,89 +1,50 @@
 """
-Delta, Gamma, Vega and Theta for swaps, European swaptions and Bermudan/American swaptions.
+Greeks by automatic differentiation (`GreeksConfig.method = "AD"`, decision A-5): the other
+method beside ORE's bump-and-revalue sensitivities (`engine.risk.sensitivities`, the default),
+with the same keys, for any trade, engine and simulation model.
 
-Delta/Gamma: per pillar of each curve, in ORE's units (NPV change for a 1bp absolute
-zero-rate bump). ORE bumps one pillar at a time with a triangular shape
-(`ShiftScenarioGenerator::applyShift`) and differences NPVs (`SensitivityCube`:
-`delta = NPV_up - NPV_base`, `gamma = NPV_up - 2*NPV_base + NPV_down`). Linear zero-rate
-interpolation has the same triangular dependence on each pillar, so here Delta is
-`dNPV/dz_i * bump` and Gamma is `d^2NPV/dz_i^2 * bump^2`, by autodiff. Only the diagonal
-Gamma is computed; ORE's optional cross-gammas are not.
+Per trade, in the base currency (`portfolio_greeks`):
 
-Differs from ORE: these are derivatives, the bump -> 0 limit of ORE's finite differences.
-ORE's forward-difference Delta also contains half the Gamma (`0.5 * gamma`) and higher
-terms, so the two differ by O(bump^2); they agree only in that limit. Rate Delta is ORE's
-equivalent of Rho; there is no separate Rho.
+  * `delta:<kind>:<name>` / `gamma:<kind>:<name>`: per pillar of each market curve the trade
+    reads (`engine.risk.price_functions.curve_keys`), dNPV/dz_i * shift and
+    d^2NPV/dz_i^2 * shift^2 for an absolute zero-rate shift `SensitivityConfig.curve_shift`: the
+    shift -> 0 limit of ORE's forward-difference Delta and its Gamma, on the market curve's
+    pillars (ORE's sensitivity market samples the curves at `SensitivityConfig.curve_tenors`
+    instead). Only the diagonal Gamma is computed, as ORE computes no cross-gammas by default.
+  * `vega:<ccy>` `[option tenors, swap tenors]`: per swaption volatility quote,
+    dNPV/dquote * `vol_shift`, for a trade whose engine reads the quotes. The volatility read
+    is linear in the quotes (`SwaptionVolSurface.weights`); a European's price is
+    differentiated in its volatility, a Bermudan's/American's through its calibration by the
+    implicit function theorem (`_bootstrap_jacobian`: a quote moves the helpers' volatilities,
+    which move every later bucket of the bootstrap).
+  * `theta`: ORE's Theta, the same function as the bump method's (a roll in time, not a
+    derivative).
 
-Vega (Bermudan/American only): ORE bumps the market swaption vols used to calibrate the
-model and recalibrates. Here the calibration (`engine.calibration.lgm`) is differentiated
-through by the implicit function theorem instead of rerun, giving
-dNPV/d(market vol) per basket instrument (see `bermudan_vega`). Swaps and Europeans have no
-Vega here.
-
-Theta: ORE's definition (`SensitivityAnalysis`, OREAnalytics/orea/engine/
-sensitivityanalysis.cpp): value the same trade on a later evaluation date against the same
-market, and add back cashflows paid in between:
-`Theta = NPV(t+dt) - NPV(t) + CF(t, t+dt]`. The trade keeps its booked dates, so it is one
-day older; a fixing that prints in [t, t+dt) is taken at the base valuation's forecast
-(`_theta_fixings`).
-
-The later date is `evaluation_date + theta_days` in calendar days, as ORE's
-`thetaDate = asof_ + thetaPeriod_` (sensitivityanalysis.cpp); from a Friday that is the
-Saturday, not the Monday (I-38).
-
-An `AmericanSwaptionConfig` goes through the same functions as a Bermudan.
+Differs from the bump method beyond the shift size: a Bermudan's/American's Delta and Gamma
+hold its calibrated LGM fixed while the curve moves, where ORE recalibrates under each bump.
+A test of the two agreeing as the shift halves is feature F-01.
 """
-import dataclasses
-from typing import Dict
+from typing import Dict, Sequence
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-import ORE
 
-from engine.instruments.swap import SwapConfig, _build_ore_swap, swap_schedule
+from engine.calibration.ore_lgm import price_pair
+from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
-from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
-from engine.instruments.bermudan_swaption import _build_ore_swap as _build_ore_underlying
-from engine.models.ore_builders import (  # noqa: F401  (DAY_COUNTER is a re-export)
-    DAY_COUNTER,
-    TIME_AXIS_DAY_COUNTER,
-    par_coupon_forecast_period,
-    time_from_reference,
-)
-# `_hw_A` and `_zero_rate_at` are imported by tests from this module.
-from engine.models.hull_white import (  # noqa: F401
-    A as _hw_A, ZeroCurve, discount as _discount_at, zero_rate as _zero_rate_at,
-)
-from engine.models.lgm import Sigma, as_sigma
-# The t=0 price functions live in engine.risk.price_functions (shared with
-# engine.market_risk); these private names are kept for existing callers.
+from engine.market import Market
+from engine.models.curves import ZeroCurve
 from engine.risk.price_functions import (
-    bermudan_price_function as _bermudan_price_fn,
-    swap_price_function as _swap_price_fn,
-    swaption_price_function as _swaption_price_fn,
+    bermudan_price_function, curve_keys, curves_of, european_price_function, market_curve, trade_price_function,
+    vol_point,
 )
-
-# 1bp absolute zero-rate bump, as ORE's example sensitivity config
-# (Examples/MarketRisk/Input/sensitivity.xml).
-DEFAULT_RATE_BUMP = 0.0001
-
-# Theta horizon in calendar days; ORE's default `thetaPeriod` is 1 day.
-DEFAULT_THETA_DAYS = 1
-
-#: One compiled program for a curve lookup outside a pricer (eagerly, each op would compile
-#: its own; tests/test_profiling_and_jit.py counts them).
-_jitted_discount = jax.jit(_discount_at)
+from engine.risk.sensitivities import SensitivityConfig, sensitivity_context, theta_context, trade_theta
+from engine.valuation.bermudan import calibration_basket
+from engine.valuation.config import PricingConfig
+from engine.valuation.portfolio import Trade, reads_swaption_vols, validate_trades, value_on
 
 
-def theta_date_of(evaluation_date: ORE.Date, theta_days: int = DEFAULT_THETA_DAYS) -> ORE.Date:
-    """ORE's `thetaDate = asof_ + thetaPeriod_`: calendar days, no business-day roll."""
-    return evaluation_date + theta_days
-
-# `TIME_AXIS_DAY_COUNTER` (ACT/365) converts dates to years on the simulation axis.
-
-
-# Gradient and Hessian diagonal (shared by every Delta/Gamma function)
 def _grad_and_hessian_diagonal(price_fn, x, *rest):
     """`(df/dx_i, d^2f/dx_i^2)` for every `i`, without building the Hessian.
 
@@ -101,8 +62,6 @@ def _grad_and_hessian_diagonal(price_fn, x, *rest):
             return price_fn(inner, *fixed)
 
         grad = jax.grad(f)(xi)
-
-        # vmap over the basis vectors: all n HVPs as one batched program.
         basis = jnp.eye(xi.shape[0], dtype=xi.dtype)
 
         def hvp(v):
@@ -114,292 +73,100 @@ def _grad_and_hessian_diagonal(price_fn, x, *rest):
     return jax.jit(combined)(x, *rest)
 
 
-# Swap: Delta / Gamma
-def swap_delta_gamma(
-    cfg: SwapConfig,
-    disc_curve: ZeroCurve,
-    fwd_curve: ZeroCurve,
-    bump_size: float = DEFAULT_RATE_BUMP,
-) -> Dict[str, jax.Array]:
-    """
-    Per-pillar Delta and Gamma of one swap's t=0 NPV with respect to its discount and
-    forward curves, per `bump_size` (see module docstring).
-
-    Returns `discount_delta`/`discount_gamma` and `forward_delta`/`forward_gamma`, each
-    `[len(pillar_rates)]`. The two curves are independent variables even if they are the
-    same curve; then the total sensitivity is `discount_delta + forward_delta`.
-    """
-    price_fn = _swap_price_fn(cfg, disc_curve, fwd_curve)
-
-    # `_grad_and_hessian_diagonal` differentiates its first argument, so the forward-curve
-    # call swaps the argument order.
-    disc_delta, disc_gamma = _grad_and_hessian_diagonal(
-        price_fn, disc_curve.pillar_rates, fwd_curve.pillar_rates
-    )
-    fwd_delta, fwd_gamma = _grad_and_hessian_diagonal(
-        lambda fwd_rates, disc_rates: price_fn(disc_rates, fwd_rates),
-        fwd_curve.pillar_rates, disc_curve.pillar_rates,
-    )
-
-    return {
-        "discount_delta": disc_delta * bump_size,
-        "discount_gamma": disc_gamma * bump_size ** 2,
-        "forward_delta": fwd_delta * bump_size,
-        "forward_gamma": fwd_gamma * bump_size ** 2,
-    }
+def portfolio_greeks(trades: Sequence[Trade], market: Market, base_currency: str,
+                     pricing: PricingConfig = PricingConfig(),
+                     config: SensitivityConfig = SensitivityConfig()) -> Dict[int, Dict[str, np.ndarray]]:
+    """Per trade (by request index), the AD Greeks in the base currency (see the module
+    docstring)."""
+    validate_trades(trades, market, pricing)
+    base_context, theta_ctx = sensitivity_context(market, config), theta_context(market, config)
+    result: Dict[int, Dict[str, np.ndarray]] = {}
+    for i, cfg in enumerate(trades):
+        fx = market.fx_spot(cfg.currency, base_currency)
+        greeks = curve_greeks(cfg, market, pricing, config.curve_shift)
+        greeks = {key: value * fx for key, value in greeks.items()}
+        vega = vega_greek(cfg, market, pricing, config.vol_shift)
+        if vega is not None:
+            greeks[f"vega:{cfg.currency}"] = vega * fx
+        value = lambda context, _cfg=cfg: value_on(_cfg, context, pricing) * fx  # noqa: E731
+        greeks["theta"] = trade_theta(value, value(base_context), cfg, theta_ctx, fx)
+        result[i] = greeks
+    return result
 
 
-# Swap: Theta
-def swap_theta(
-    cfg: SwapConfig,
-    disc_curve: ZeroCurve,
-    fwd_curve: ZeroCurve,
-    theta_days: int = DEFAULT_THETA_DAYS,
-) -> float:
-    """
-    Theta = NPV(t + theta_days, same curves) - NPV(t) + cashflows paid in (t, t + theta_days]
-    (see module docstring). A finite difference in time, not autodiff.
-    """
-    # Each valuation is jitted into one program (docs/concepts/profiling.md).
-    base_price_fn = _swap_price_fn(cfg, disc_curve, fwd_curve)
-    base_npv = float(jax.jit(base_price_fn)(disc_curve.pillar_rates, fwd_curve.pillar_rates))
+def curve_greeks(cfg, market: Market, pricing: PricingConfig, shift: float) -> Dict[str, np.ndarray]:
+    """Delta and Gamma per pillar of each curve the trade reads, in its currency."""
+    fn = trade_price_function(cfg, market, pricing)
+    rates = curves_of(fn, market, jnp.float64)
+    out: Dict[str, np.ndarray] = {}
+    for k, (kind, name) in enumerate(fn.curves):
+        def along(x, *others, _k=k):
+            args = list(others)
+            args.insert(_k, x)
+            return fn.price(*args)
 
-    theta_date = theta_date_of(cfg.evaluation_date, theta_days)
-
-    def at_par_forecast(coupon):
-        # The rate the base valuation projects for this coupon: at par, over its par
-        # forecast period (as `_price_one_swap`).
-        start_date, end_date, spanning = par_coupon_forecast_period(coupon)
-        times = jnp.asarray([time_from_reference(cfg.evaluation_date, d) for d in (start_date, end_date)])
-        p_start, p_end = (float(p) for p in _jitted_discount(fwd_curve, times))
-        return (p_start / p_end - 1.0) / spanning
-
-    fixings = _theta_fixings(cfg, _build_ore_swap(cfg), theta_date, at_par_forecast)
-    theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date, fixings=fixings)
-    theta_price_fn = _swap_price_fn(theta_cfg, disc_curve, fwd_curve)
-    theta_npv = float(jax.jit(theta_price_fn)(disc_curve.pillar_rates, fwd_curve.pillar_rates))
-
-    period_flow = _swap_cashflows_in_period(cfg, cfg.evaluation_date, theta_date, fwd_curve)
-
-    return theta_npv - base_npv + period_flow
+        delta, gamma = _grad_and_hessian_diagonal(along, rates[k], *(rates[:k] + rates[k + 1:]))
+        out[f"delta:{kind}:{name}"] = np.asarray(delta) * shift
+        out[f"gamma:{kind}:{name}"] = np.asarray(gamma) * shift ** 2
+    return out
 
 
-def _theta_fixings(cfg, swap: ORE.VanillaSwap, theta_date: ORE.Date, forecast) -> Dict[ORE.Date, float]:
-    """`cfg.fixings` plus, for each floating coupon fixing in
-    `[cfg.evaluation_date, theta_date)` without a supplied fixing, `forecast(coupon)`. On
-    the Theta date those fixings are history; Theta holds the curve fixed, so they print
-    at the base forecast."""
-    fixings = dict(cfg.fixings)
-    for cf in swap.floatingLeg():
-        coupon = ORE.as_floating_rate_coupon(cf)
-        fixing_date = coupon.fixingDate()
-        if cfg.evaluation_date <= fixing_date < theta_date and fixing_date not in fixings:
-            fixings[fixing_date] = forecast(coupon)
-    return fixings
+def vega_greek(cfg, market: Market, pricing: PricingConfig, shift: float):
+    """`[option tenors, swap tenors]` Vega per quote in the trade's currency, or None when its
+    engine reads no volatility."""
+    if not reads_swaption_vols(cfg, pricing):
+        return None
+    surface = market.swaption_vols(cfg.currency)
+    asof = market.asof
+    disc, index = (ZeroCurve.from_config(market_curve(market, key)) for key in curve_keys(cfg))
+    if isinstance(cfg, SwaptionConfig):
+        if not cfg.exercise_date > asof:
+            return np.zeros((len(surface.option_tenors), len(surface.swap_tenors)))
+        price = european_price_function(cfg, market, jnp.float64)
+        t, swap_len = vol_point(cfg, market)
+        volatility = jnp.asarray(float(surface.volatility(asof, t, swap_len)))
+        d_npv = float(jax.grad(lambda v: price(disc, index, v))(volatility))
+        return d_npv * surface.weights(asof, t, swap_len) * shift
+    option = bermudan_price_function(cfg, market, pricing, jnp.float64)
+    if option.calibration is None:
+        return np.zeros((len(surface.option_tenors), len(surface.swap_tenors)))
+    d_npv_d_sigma = np.asarray(jax.grad(lambda values: option.price(disc, index, values))(option.sigma.values))
+    engine = pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
+    basket = calibration_basket(cfg, engine, asof, asof)
+    jacobian = _bootstrap_jacobian(basket, disc, index, surface, asof, engine.reversion, option.sigma)
+    weights = np.stack([surface.weights(asof, b.vol_option_time, b.vol_swap_length) for b in basket])
+    return np.tensordot(d_npv_d_sigma @ jacobian, weights, axes=1) * shift
 
 
-def _swap_cashflows_in_period(cfg: SwapConfig, start: ORE.Date, end: ORE.Date, fwd_curve: ZeroCurve) -> float:
-    """Net cashflow (signed as in `_price_one_swap`) paid in `(start, end]`, ORE's
-    `aggregateTradeFlow` step. Both legs are included; floating coupons use their known
-    fixing or are projected off `fwd_curve` as the pricer projects them."""
-    schedule = swap_schedule(cfg)
-    fixed, floating = schedule.fixed, schedule.floating
+def _bootstrap_jacobian(basket, disc, index, surface, asof, reversion: float, sigma) -> np.ndarray:
+    """`J[j, h] = d sigma_j / d v_h`: how each bucket of the bootstrap (`engine.calibration.
+    ore_lgm.bootstrap_sigma`) moves with each helper's volatility v_h. Bucket j solves
+    g_j = model_j(zeta_j) - market_j(v_j) = 0 with zeta_j = sum_{k<=j} sigma_k^2 dt_k, so by
+    the implicit function theorem, row by row (forward substitution over a lower-triangular
+    system),
 
-    start_frac = TIME_AXIS_DAY_COUNTER.yearFraction(cfg.evaluation_date, start)
-    end_frac = TIME_AXIS_DAY_COUNTER.yearFraction(cfg.evaluation_date, end)
+        J[j] = -(sum_{k<j} dg_j/dsigma_k J[k] + e_j dg_j/dv_j) / (dg_j/dsigma_j),
+        dg_j/dsigma_k = dmodel_j/dzeta * 2 sigma_k dt_k.
 
-    def in_window(times):
-        return (times > start_frac) & (times <= end_frac)
+    dg_j/dv_j includes the model's side: a deal strike beyond 3 ATM standard deviations is
+    clipped there, so the helper's strike moves with its volatility."""
+    values = np.asarray(sigma.values, dtype=np.float64)
+    expiries = np.array([b.expiry_time for b in basket])
+    dt = np.diff(np.concatenate([[0.0], expiries]))
+    vols = [float(surface.volatility(asof, b.vol_option_time, b.vol_swap_length)) for b in basket]
+    n = len(basket)
+    J = np.zeros((n, n))
+    for j, helper in enumerate(basket):
+        zeta = float(np.sum(values[: j + 1] ** 2 * dt[: j + 1]))
 
-    fixed_flow = float(np.sum(
-        in_window(fixed.payment_times) * fixed.notional * cfg.fixed_rate * fixed.accrual_fractions
-    ))
+        def residual(v, z, _helper=helper):
+            market, model = price_pair(_helper, disc, index, v, reversion, z)
+            return model - market
 
-    float_mask = in_window(floating.payment_times)
-    float_flow = 0.0
-    if np.any(float_mask):
-        p_start = np.asarray(_jitted_discount(fwd_curve, jnp.asarray(floating.forecast_start_times[float_mask])), dtype=np.float64)
-        p_end = np.asarray(_jitted_discount(fwd_curve, jnp.asarray(floating.forecast_end_times[float_mask])), dtype=np.float64)
-        accrual = floating.accrual_fractions[float_mask]
-        projected = (p_start / p_end - 1.0) / floating.spanning_times[float_mask]
-        rate = np.where(floating.is_fixed[float_mask], floating.fixed_rates[float_mask], projected)
-        float_flow = float(np.sum(floating.notional * (rate + cfg.floating_spread) * accrual))
-
-    # npv = float leg - fixed leg, negated for a receiver (as `_price_one_swap`).
-    net = float_flow - fixed_flow
-    return net if cfg.payer else -net
-
-
-# European swaption: Delta / Gamma
-def swaption_delta_gamma(
-    cfg: SwaptionConfig,
-    curve: ZeroCurve,
-    bump_size: float = DEFAULT_RATE_BUMP,
-) -> Dict[str, jax.Array]:
-    """
-    Per-pillar Delta and Gamma of one European swaption's t=0 NPV with respect to its
-    Hull-White curve, per `bump_size`. `curve` must be `cfg.initial_zero_curve` as a
-    `ZeroCurve` (this function does not read the config's curve).
-
-    Returns `{"delta", "gamma"}`, each `[len(curve.pillar_rates)]`; Gamma is diagonal.
-    """
-    price_fn = _swaption_price_fn(cfg, curve)
-    delta, gamma = _grad_and_hessian_diagonal(price_fn, curve.pillar_rates)
-    return {
-        "delta": delta * bump_size,
-        "gamma": gamma * bump_size ** 2,
-    }
-
-
-# European swaption: Theta
-def swaption_theta(
-    cfg: SwaptionConfig,
-    curve: ZeroCurve,
-    theta_days: int = DEFAULT_THETA_DAYS,
-) -> float:
-    """
-    Theta = NPV(t + theta_days, same curve) - NPV(t), with the exercise date fixed. No
-    cashflow is paid before exercise, so there is no flow term.
-    """
-    # Jitted: the Jamshidian r* solve otherwise dispatches op by op.
-    base_price_fn = _swaption_price_fn(cfg, curve)
-    base_npv = float(jax.jit(base_price_fn)(curve.pillar_rates))
-
-    # The same option one day older: its exercise date is unchanged.
-    theta_date = theta_date_of(cfg.evaluation_date, theta_days)
-    theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date)
-    theta_price_fn = _swaption_price_fn(theta_cfg, curve)
-    theta_npv = float(jax.jit(theta_price_fn)(curve.pillar_rates))
-
-    return theta_npv - base_npv
-
-
-# Bermudan / American swaption: Delta / Gamma / Vega / Theta
-def bermudan_delta_gamma(
-    cfg: BermudanSwaptionConfig,
-    curve: ZeroCurve,
-    bump_size: float = DEFAULT_RATE_BUMP,
-) -> Dict[str, jax.Array]:
-    """
-    Per-pillar Delta and Gamma of one Bermudan/American swaption's t=0 NPV with respect to
-    its curve, per `bump_size`. `curve` must have `cfg.initial_zero_curve`'s pillar times.
-
-    Returns `{"delta", "gamma"}`, each `[len(curve.pillar_rates)]`; Gamma is diagonal.
-    """
-    price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
-    delta, gamma = _grad_and_hessian_diagonal(price_fn, curve.pillar_rates, sigma_values)
-    return {
-        "delta": delta * bump_size,
-        "gamma": gamma * bump_size ** 2,
-    }
-
-
-def bermudan_theta(
-    cfg: BermudanSwaptionConfig,
-    curve: ZeroCurve,
-    theta_days: int = DEFAULT_THETA_DAYS,
-) -> float:
-    """
-    Theta = NPV(t + theta_days, same curve) - NPV(t). An option pays nothing before
-    exercise, so there is no flow term.
-    """
-    # Jitted for consistency with the other Theta functions.
-    price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
-    base_npv = float(jax.jit(price_fn)(curve.pillar_rates, sigma_values))
-
-    # Same trade one day on: dates fixed, times re-derived from the new evaluation date,
-    # as ORE re-derives optionTimes.
-    theta_date = theta_date_of(cfg.evaluation_date, theta_days)
-
-    def index_forecast(coupon):
-        # Today's forecast over the index period, as the LGM engine forecasts a fixing
-        # dated today (`LgmVectorised::fixing`).
-        index = coupon.index()
-        value_date = index.valueDate(coupon.fixingDate())
-        maturity = index.maturityDate(value_date)
-        times = jnp.asarray([time_from_reference(cfg.evaluation_date, d) for d in (value_date, maturity)])
-        p1, p2 = (float(p) for p in _jitted_discount(curve, times))
-        return (p1 / p2 - 1.0) / index.dayCounter().yearFraction(value_date, maturity)
-
-    fixings = _theta_fixings(cfg, _build_ore_underlying(cfg), theta_date, index_forecast)
-    theta_cfg = dataclasses.replace(cfg, evaluation_date=theta_date, fixings=fixings)
-    theta_price_fn, theta_sigma_values = _bermudan_price_fn(theta_cfg, curve)
-    theta_npv = float(jax.jit(theta_price_fn)(curve.pillar_rates, theta_sigma_values))
-
-    return theta_npv - base_npv
-
-
-def bermudan_vega(
-    cfg: BermudanSwaptionConfig,
-    curve: ZeroCurve,
-    calibration_targets,
-    market_vol_bump: float = 0.0001,
-) -> jax.Array:
-    """
-    Vega per basket instrument: NPV change for a `market_vol_bump` (1bp normal) move in one
-    market swaption vol, others fixed. ORE bumps and recalibrates
-    (`generateSwaptionVolScenarios`); here the bootstrap is differentiated instead.
-
-    `cfg.hw_sigma` must be the `Sigma` that `calibrate_lgm_sigma` produced from
-    `calibration_targets`, in the same order. Calibration is not rerun.
-
-    Bucket `j`'s value s_j is the root of
-    `g_j(s_0..s_j; v_j) = price_lgm_swaption(Sigma([s_0..s_j]), target_j) - bachelier(v_j)`.
-    It depends on every earlier bucket, so a bump to v_i moves s_i and, through it, every
-    later s_j. Differentiating g_j = 0 with respect to v_i:
-
-        ds_j/dv_i = -( sum_{k<j} dg_j/ds_k * ds_k/dv_i + dg_j/dv_j * [i==j] ) / (dg_j/ds_j)
-
-    solved by forward substitution over j (a lower-triangular Jacobian, O(n^2) gradients).
-    Then `dNPV/dv_i = sum_j dNPV/ds_j * ds_j/dv_i`.
-
-    Returns `[len(calibration_targets)]` Vegas, per `market_vol_bump`.
-    """
-    from dataclasses import replace as _replace
-    from engine.calibration.basket import bachelier_swaption_price, price_lgm_swaption
-
-    sigma = as_sigma(cfg.hw_sigma)
-    n = sigma.values.shape[0]
-    if n != len(calibration_targets):
-        raise ValueError(
-            "cfg.hw_sigma must be the Sigma calibrate_lgm_sigma produced from "
-            f"calibration_targets, with one bucket per target; got {n} buckets "
-            f"for {len(calibration_targets)} targets"
-        )
-
-    price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
-    d_npv_d_s = jax.jit(jax.grad(price_fn, argnums=1))(curve.pillar_rates, sigma_values)  # [n]
-
-    # Work in the curve's dtype so a float32 risk run is not upcast.
-    _dtype = curve.pillar_rates.dtype
-    # Lower-triangular Jacobian J[j, i] = d(s_j)/d(v_i), by forward substitution over j.
-    # The loop is sequential (row j reads rows < j); each row's gradients are jitted, and
-    # rows are stacked once at the end rather than written one by one.
-    rows = []
-
-    for j, target_j in enumerate(calibration_targets):
-        bucket_times_j = sigma.times[:j]
-
-        def model_price_wrt_prefix(values_prefix, _j=j, _bucket_times=bucket_times_j, _target=target_j):
-            return price_lgm_swaption(curve, cfg.hw_a, Sigma(times=_bucket_times, values=values_prefix), _target)
-
-        # dg_j/ds_k for every k <= j in one gradient over the prefix [s_0..s_j].
-        dg_j_ds = jax.jit(jax.grad(model_price_wrt_prefix))(sigma.values[: j + 1])  # [j+1]
-
-        def market_price_wrt_v_j(v_j, _target=target_j):
-            bumped = _replace(_target, market_vol=v_j)
-            return bachelier_swaption_price(bumped, curve)
-
-        # g_j := model_price - market_price, so dg_j/dv_j = -d(market_price)/dv_j.
-        dg_j_dv_j = -jax.jit(jax.grad(market_price_wrt_v_j))(jnp.asarray(target_j.market_vol))
-
-        if j > 0:
-            prev = jnp.stack(rows)                       # [j, n], rows already computed
-            cross_term = jnp.sum(dg_j_ds[:j, None] * prev, axis=0)
-        else:
-            cross_term = jnp.zeros((n,), dtype=_dtype)
-        rows.append(-(cross_term.at[j].add(dg_j_dv_j)) / dg_j_ds[j])
-
-    J = jnp.stack(rows)  # [n, n], lower-triangular by construction
-    vega_per_unit_vol = d_npv_d_s @ J  # [n]
-    return vega_per_unit_vol * market_vol_bump
+        dg_dv, dg_dzeta = (float(d) for d in jax.grad(residual, argnums=(0, 1))(
+            jnp.asarray(vols[j]), jnp.asarray(zeta)))
+        dg_dsigma = dg_dzeta * 2.0 * values[: j + 1] * dt[: j + 1]
+        row = -(dg_dsigma[:j] @ J[:j]) if j > 0 else np.zeros(n)
+        row[j] -= dg_dv
+        J[j] = row / dg_dsigma[j]
+    return J

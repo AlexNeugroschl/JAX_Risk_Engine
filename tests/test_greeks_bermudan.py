@@ -1,430 +1,162 @@
 """
-Bermudan/American Greeks in `engine.risk.greeks`: `bermudan_delta_gamma`, `bermudan_theta`,
-`bermudan_vega`.
+Bermudan/American AD Greeks (`engine.risk.greeks`): the option priced by the LGM grid engine
+with the model calibrated to today's market (`engine.risk.price_functions.
+bermudan_price_function`).
 
-Gamma is checked by finite-differencing the gradient, not the price: with an NPV of O(1e4),
-the second difference of the price at a 1e-4 to 1e-5 bump is below float64 cancellation
-error (it swung by orders of magnitude and changed sign across bump sizes), while the
-gradient is well conditioned.
+  * Delta/Gamma differentiate the price in each market-curve pillar with the calibrated
+    volatility held fixed (the bump method recalibrates under each bump instead; decision
+    A-5, documented in the module): checked against central differences of the same function.
+  * Vega differentiates through the calibration by the implicit function theorem: a quote
+    moves the helpers' volatilities, which move every later bucket of the bootstrap. Checked
+    against central differences of the full pricing, recalibration included.
+
+Gamma is checked by differencing the AD Delta, not the price: with an NPV of O(1e4) the
+price's second difference at small bumps is below float64 cancellation error.
 """
-import jax
-jax.config.update("jax_enable_x64", True)
+import dataclasses
+
 import jax.numpy as jnp
 import numpy as np
 import ORE
 import pytest
 
-from engine.models.hull_white import ZeroCurve
-from engine.models.lgm import Sigma
-from engine.simulation.market_model import ZeroCurveConfig
-from engine.calibration.basket import build_coterminal_basket
-from engine.calibration.lgm import calibrate_lgm_sigma
-from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, price_bermudan_swaption_base
 from engine.instruments.american_swaption import AmericanSwaptionConfig
-from date_helpers import in_years
-from engine.risk.greeks import (
-    DEFAULT_RATE_BUMP,
-    _bermudan_price_fn,
-    bermudan_delta_gamma,
-    bermudan_theta,
-    bermudan_vega,
-)
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.models.curves import ZeroCurve
+from engine.risk.greeks import curve_greeks, portfolio_greeks, vega_greek
+from engine.risk.price_functions import bermudan_price_function
+from engine.valuation.config import LgmSwaptionEngineConfig, PricingConfig
+from engine.valuation.portfolio import value_today
+from tests.support import portfolio as shared
+from tests.support.greeks import assert_close, bumped_market
 
-TODAY = ORE.Date(30, 7, 2026)
-
-
-@pytest.fixture(autouse=True)
-def _set_eval_date():
-    ORE.Settings.instance().evaluationDate = TODAY
+ASOF = shared.ASOF
+ENGINE = LgmSwaptionEngineConfig(n_per_std=16, std_devs=6.0)
+PRICING = PricingConfig(bermudan=ENGINE, american=ENGINE)
+SHIFT = 1e-4
 
 
-PILLAR_TIMES = [0.0, 1.0, 2.0, 3.0, 5.0, 10.0, 30.0]
-FLAT_CURVE = ZeroCurve.flat(0.03, PILLAR_TIMES)
-FLAT_CURVE_CONFIG = ZeroCurveConfig(times=PILLAR_TIMES, rates=[0.03] * len(PILLAR_TIMES))
+def bermudan(**fields) -> BermudanSwaptionConfig:
+    base = dict(notional=1e6, fixed_rate=0.042, payer=True, swap_tenor="5Y", evaluation_date=ASOF,
+                exercise_dates=[ASOF + ORE.Period(m, ORE.Months) for m in (12, 24, 36)], trade_id="bermudan")
+    base.update(fields)
+    return BermudanSwaptionConfig(**base)
 
 
-def _cfg(hw_sigma=0.01, exercise_years=(1.0, 2.0, 3.0, 4.0), swap_tenor="5Y", payer=True):
-    return BermudanSwaptionConfig(
-        notional=1_000_000.0, fixed_rate=0.03, payer=payer, rate_factor_index=0,
-        hw_a=0.03, hw_sigma=hw_sigma,
-        initial_zero_curve=FLAT_CURVE_CONFIG,
-        exercise_dates=in_years(TODAY, list(exercise_years)), swap_tenor=swap_tenor, evaluation_date=TODAY,
-    )
+def american(**fields) -> AmericanSwaptionConfig:
+    base = dict(notional=1e6, fixed_rate=0.042, payer=True, swap_tenor="5Y", evaluation_date=ASOF,
+                first_exercise_date=ASOF + ORE.Period(1, ORE.Years), last_exercise_date=ASOF + ORE.Period(3, ORE.Years),
+                trade_id="american")
+    base.update(fields)
+    return AmericanSwaptionConfig(**base)
+
+
+def held_sigma_price(cfg, market):
+    """The option's price on `market`'s curves with the volatility calibrated on the shared
+    market held fixed: what the AD Delta differentiates."""
+    option = bermudan_price_function(cfg, shared.market(), PRICING, jnp.float64)
+    usd = market.currency("USD")
+    curve = lambda c: ZeroCurve(jnp.asarray(c.times), jnp.asarray(c.rates))  # noqa: E731
+    return float(option.price(curve(usd.discount_curve), curve(usd.index_curves[shared.INDEX])))
+
+
+@pytest.fixture(scope="module")
+def greeks():
+    return curve_greeks(bermudan(), shared.market(), PRICING, SHIFT)
 
 
 class TestBermudanDeltaGamma:
-    @pytest.mark.slow
-    def test_returns_finite_delta_and_gamma_for_every_pillar(self):
-        greeks = bermudan_delta_gamma(_cfg(), FLAT_CURVE)
-        assert greeks["delta"].shape == (len(PILLAR_TIMES),)
-        assert greeks["gamma"].shape == (len(PILLAR_TIMES),)
-        assert jnp.all(jnp.isfinite(greeks["delta"]))
-        assert jnp.all(jnp.isfinite(greeks["gamma"]))
+    def test_finite_delta_and_gamma_for_every_pillar(self, greeks):
+        for key in ("delta:discount:USD", "gamma:discount:USD", f"delta:index:{shared.INDEX}"):
+            assert greeks[key].shape == (len(shared.PILLARS),) and np.all(np.isfinite(greeks[key]))
 
     @pytest.mark.slow
-    def test_delta_matches_finite_difference_of_price(self):
-        """Delta is well conditioned for a central difference of the price at 1bp."""
-        cfg = _cfg()
-        greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
+    @pytest.mark.parametrize("kind", ["discount", "index"])
+    def test_delta_is_the_derivative_with_the_volatility_held(self, greeks, kind):
+        h = 1e-6
+        expected = np.array([(held_sigma_price(bermudan(), bumped_market(kind, k, h))
+                              - held_sigma_price(bermudan(), bumped_market(kind, k, -h))) / (2 * h) * SHIFT
+                             for k in range(len(shared.PILLARS))])
+        key = f"delta:{kind}:{'USD' if kind == 'discount' else shared.INDEX}"
+        assert_close(greeks[key], expected, rtol=1e-5)
 
-        idx = 4  # 5Y pillar
-        bump = DEFAULT_RATE_BUMP
-        rates_up = list(FLAT_CURVE_CONFIG.rates)
-        rates_up[idx] += bump
-        rates_down = list(FLAT_CURVE_CONFIG.rates)
-        rates_down[idx] -= bump
+    def test_gamma_is_the_derivative_of_delta(self, greeks):
+        """Central differences of the gradient of the held-volatility price (the same model
+        as the AD Gamma: a bumped market would recalibrate, which moves Delta at first
+        order)."""
+        import jax
+        option = bermudan_price_function(bermudan(), shared.market(), PRICING, jnp.float64)
+        times = jnp.asarray(shared.PILLARS)
+        index = ZeroCurve(times, jnp.asarray(shared.FORWARDING))
+        gradient = jax.grad(lambda rates: option.price(ZeroCurve(times, rates), index))
+        base, h = np.asarray(shared.DISCOUNT, dtype=np.float64), 1e-5
+        expected = np.zeros(len(base))
+        for k in range(len(base)):
+            up, down = base.copy(), base.copy()
+            up[k] += h
+            down[k] -= h
+            expected[k] = (float(gradient(jnp.asarray(up))[k]) - float(gradient(jnp.asarray(down))[k])) / (2 * h)
+        assert_close(greeks["gamma:discount:USD"], expected * SHIFT ** 2, rtol=1e-5)
 
-        def cfg_with_rates(rates):
-            return BermudanSwaptionConfig(
-                notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
-                rate_factor_index=cfg.rate_factor_index, hw_a=cfg.hw_a, hw_sigma=cfg.hw_sigma,
-                initial_zero_curve=ZeroCurveConfig(times=PILLAR_TIMES, rates=rates),
-                exercise_dates=cfg.exercise_dates, effective_date=cfg.effective_date, maturity_date=cfg.maturity_date, evaluation_date=TODAY,
-            )
+    def test_zero_notional_has_zero_delta_and_gamma(self):
+        zero = curve_greeks(bermudan(notional=0.0), shared.market(), PRICING, SHIFT)
+        for value in zero.values():
+            np.testing.assert_array_equal(value, 0.0)
 
-        npv_up = price_bermudan_swaption_base(cfg_with_rates(rates_up))
-        npv_down = price_bermudan_swaption_base(cfg_with_rates(rates_down))
-        fd_delta = (npv_up - npv_down) / 2.0  # already a 1bp bump, no extra scaling
-        # Slightly loose: the grid has a small discretization sensitivity to a 1bp bump (the
-        # gap shrinks at n_per_std=96).
-        assert float(greeks["delta"][idx]) == pytest.approx(fd_delta, rel=5e-3)
-
-    @pytest.mark.slow
-    def test_gamma_matches_finite_difference_of_gradient(self):
-        """Gamma against a finite difference of the gradient (see the module docstring)."""
-        cfg = _cfg()
-        curve = FLAT_CURVE
-        price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
-
-        def grad_fn(pillar_rates):
-            return jax.grad(price_fn, argnums=0)(pillar_rates, sigma_values)
-
-        idx = 4
-        autodiff_hessian_diag = jax.hessian(price_fn, argnums=0)(curve.pillar_rates, sigma_values)
-        autodiff_val = float(jnp.diagonal(autodiff_hessian_diag)[idx])
-
-        eps = 1e-6
-        up = curve.pillar_rates.at[idx].add(eps)
-        down = curve.pillar_rates.at[idx].add(-eps)
-        fd_hess = float((grad_fn(up)[idx] - grad_fn(down)[idx]) / (2 * eps))
-
-        assert autodiff_val == pytest.approx(fd_hess, rel=1e-3)
-
-    @pytest.mark.slow
-    def test_zero_at_pillars_outside_the_trades_own_cashflow_range(self):
-        """Pillars outside the trade's interpolation range (t=0 and t=30Y for a 5Y trade)
-        have exactly zero sensitivity."""
-        greeks = bermudan_delta_gamma(_cfg(), FLAT_CURVE)
-        assert float(greeks["delta"][0]) == 0.0
-        assert float(greeks["delta"][-1]) == 0.0
-
-
-class TestBermudanTheta:
-    def test_finite_and_typically_small_relative_to_npv(self):
-        cfg = _cfg()
-        base_npv = price_bermudan_swaption_base(cfg)
-        theta = bermudan_theta(cfg, FLAT_CURVE)
-        assert np.isfinite(theta)
-        assert abs(theta) < 0.05 * abs(base_npv)
-
-    def test_theta_days_zero_gives_zero(self):
-        cfg = _cfg()
-        theta = bermudan_theta(cfg, FLAT_CURVE, theta_days=0)
-        assert theta == pytest.approx(0.0, abs=1e-6)
+    def test_payer_and_receiver_deltas_differ_in_sign_on_the_index_curve(self, greeks):
+        receiver = curve_greeks(bermudan(payer=False, fixed_rate=0.035), shared.market(), PRICING, SHIFT)
+        assert greeks[f"delta:index:{shared.INDEX}"].sum() > 0 > receiver[f"delta:index:{shared.INDEX}"].sum()
 
 
 class TestBermudanVega:
     @pytest.mark.slow
-    def test_matches_finite_difference_recalibration(self):
-        """Vega against a finite-difference recalibration (bump one market vol, recalibrate,
-        reprice), which is what ORE does."""
-        exercise_times = [1.0, 2.0, 3.0, 4.0]
-        base_vols = [0.008, 0.009, 0.0095, 0.0098]
+    def test_vega_is_the_derivative_through_the_recalibration(self):
+        """Central differences of the full pricing, the bootstrap rerun on each moved quote,
+        against the implicit-function-theorem Vega."""
+        cfg, market = bermudan(), shared.market()
+        vega = vega_greek(cfg, market, PRICING, SHIFT)
+        surface = market.swaption_vols("USD")
+        h = 1e-6
+        expected = np.zeros_like(vega)
+        for i in range(vega.shape[0]):
+            for j in range(vega.shape[1]):
+                values = []
+                for s in (h, -h):
+                    vols = np.array(surface.vols)
+                    vols[i, j] += s
+                    usd = dataclasses.replace(market.currency("USD"), swaption_vols=dataclasses.replace(
+                        surface, vols=tuple(map(tuple, vols))))
+                    values.append(value_today([cfg], dataclasses.replace(market, currencies={"USD": usd}), "USD",
+                                              PRICING)[0])
+                expected[i, j] = (values[0] - values[1]) / (2 * h) * SHIFT
+        assert_close(vega, expected, rtol=1e-4)
 
-        def price_with_vols(vols):
-            targets = build_coterminal_basket(
-                exercise_times=exercise_times, final_maturity_time=5.0,
-                notional=1_000_000.0, payer=True, market_vols=vols,
-                zero_curve=FLAT_CURVE, evaluation_date=TODAY,
-            )
-            result = calibrate_lgm_sigma(targets, FLAT_CURVE, a=0.03)
-            cfg = _cfg(hw_sigma=result.sigma, exercise_years=exercise_times)
-            return price_bermudan_swaption_base(cfg), targets, result.sigma
+    @pytest.mark.parametrize("payer", [True, False])
+    def test_a_long_option_has_positive_vega_where_its_basket_reads(self, payer):
+        vega = vega_greek(bermudan(payer=payer), shared.market(), PRICING, SHIFT)
+        assert vega.sum() > 0
+        assert np.all(vega >= -1e-9 * np.max(vega))
 
-        base_npv, targets, sigma = price_with_vols(base_vols)
-        cfg = _cfg(hw_sigma=sigma, exercise_years=exercise_times)
-        vega = bermudan_vega(cfg, FLAT_CURVE, targets)
+    def test_an_uncalibrated_option_has_no_vega(self):
+        """With `calibration="None"` the fixed model volatility has no quote to be sensitive
+        to: Vega is omitted, not zero-filled."""
+        pricing = PricingConfig(bermudan=dataclasses.replace(ENGINE, calibration="None"))
+        assert vega_greek(bermudan(), shared.market(), pricing, SHIFT) is None
+        greeks = portfolio_greeks([bermudan()], shared.market(), "USD", pricing)[0]
+        assert not any(key.startswith("vega") for key in greeks)
+        assert "delta:discount:USD" in greeks and "theta" in greeks
 
-        bump = 1e-5
-        for i in range(4):
-            vols_up = list(base_vols)
-            vols_up[i] += bump
-            vols_down = list(base_vols)
-            vols_down[i] -= bump
-            npv_up, _, _ = price_with_vols(vols_up)
-            npv_down, _, _ = price_with_vols(vols_down)
-            fd_vega_i = (npv_up - npv_down) / (2 * bump) * 0.0001
-            assert float(vega[i]) == pytest.approx(fd_vega_i, rel=5e-3)
+
+class TestAmericanSharesTheBermudanPath:
+    @pytest.mark.slow
+    def test_delta_vega_theta_finite_and_vega_positive(self):
+        greeks = portfolio_greeks([american()], shared.market(), "USD", PRICING)[0]
+        assert all(np.all(np.isfinite(v)) for v in greeks.values())
+        assert greeks["vega:USD"].sum() > 0
 
     @pytest.mark.slow
-    def test_vega_is_positive_for_every_bucket(self):
-        """Every bucket's Vega is positive (long volatility)."""
-        exercise_times = [1.0, 2.0, 3.0]
-        targets = build_coterminal_basket(
-            exercise_times=exercise_times, final_maturity_time=4.0,
-            notional=1_000_000.0, payer=True, market_vols=[0.008, 0.009, 0.0095],
-            zero_curve=FLAT_CURVE, evaluation_date=TODAY,
-        )
-        result = calibrate_lgm_sigma(targets, FLAT_CURVE, a=0.03)
-        cfg = _cfg(hw_sigma=result.sigma, exercise_years=exercise_times, swap_tenor="4Y")
-        vega = bermudan_vega(cfg, FLAT_CURVE, targets)
-        assert jnp.all(vega > 0.0)
-
-    @pytest.mark.slow
-    def test_receiver_also_has_positive_vega(self):
-        exercise_times = [1.0, 2.0, 3.0]
-        targets = build_coterminal_basket(
-            exercise_times=exercise_times, final_maturity_time=4.0,
-            notional=1_000_000.0, payer=False, market_vols=[0.008, 0.009, 0.0095],
-            zero_curve=FLAT_CURVE, evaluation_date=TODAY,
-        )
-        result = calibrate_lgm_sigma(targets, FLAT_CURVE, a=0.03)
-        cfg = _cfg(hw_sigma=result.sigma, exercise_years=exercise_times, swap_tenor="4Y", payer=False)
-        vega = bermudan_vega(cfg, FLAT_CURVE, targets)
-        assert jnp.all(vega > 0.0)
-
-    def test_raises_on_bucket_count_mismatch(self):
-        exercise_times = [1.0, 2.0, 3.0, 4.0]
-        targets = build_coterminal_basket(
-            exercise_times=exercise_times, final_maturity_time=5.0,
-            notional=1_000_000.0, payer=True, market_vols=[0.008, 0.009, 0.0095, 0.0098],
-            zero_curve=FLAT_CURVE, evaluation_date=TODAY,
-        )
-        cfg = _cfg(hw_sigma=0.01, exercise_years=exercise_times)  # flat sigma, 1 bucket
-        with pytest.raises(ValueError):
-            bermudan_vega(cfg, FLAT_CURVE, targets)  # targets has 4 instruments
-
-
-class TestAmericanSwaptionSharesTheSameGreeksPath:
-    @pytest.mark.slow
-    def test_delta_gamma_theta_finite_for_an_american(self):
-        """An `AmericanSwaptionConfig` goes through the same functions, including the
-        broken-coupon caching of American exercise."""
-        american_cfg = AmericanSwaptionConfig(
-            notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
-            hw_a=0.03, hw_sigma=0.01,
-            initial_zero_curve=FLAT_CURVE_CONFIG,
-            first_exercise_date=in_years(TODAY, 1.0), last_exercise_date=in_years(TODAY, 3.0),
-            exercise_time_steps_per_year=12, swap_tenor="4Y", evaluation_date=TODAY,
-        )
-        greeks = bermudan_delta_gamma(american_cfg, FLAT_CURVE)
-        assert jnp.all(jnp.isfinite(greeks["delta"]))
-        assert jnp.all(jnp.isfinite(greeks["gamma"]))
-        assert np.isfinite(bermudan_theta(american_cfg, FLAT_CURVE))
-
-
-class TestBermudanGreeksEdgeCases:
-    """Zero notional, a single exercise date, extreme sigma, negative rates, grid
-    extremes."""
-
-    @pytest.mark.slow
-    def test_zero_notional_gives_exactly_zero_delta_and_gamma(self):
-        """Zero notional gives exactly zero Delta/Gamma."""
-        cfg = _cfg()
-        cfg = BermudanSwaptionConfig(
-            notional=0.0, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
-            rate_factor_index=cfg.rate_factor_index, hw_a=cfg.hw_a, hw_sigma=cfg.hw_sigma,
-            initial_zero_curve=cfg.initial_zero_curve, exercise_dates=cfg.exercise_dates,
-            effective_date=cfg.effective_date, maturity_date=cfg.maturity_date, evaluation_date=TODAY,
-        )
-        greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
-        assert jnp.all(greeks["delta"] == 0.0)
-        assert jnp.all(greeks["gamma"] == 0.0)
-
-    def test_zero_notional_gives_exactly_zero_theta(self):
-        cfg = _cfg()
-        cfg = BermudanSwaptionConfig(
-            notional=0.0, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
-            rate_factor_index=cfg.rate_factor_index, hw_a=cfg.hw_a, hw_sigma=cfg.hw_sigma,
-            initial_zero_curve=cfg.initial_zero_curve, exercise_dates=cfg.exercise_dates,
-            effective_date=cfg.effective_date, maturity_date=cfg.maturity_date, evaluation_date=TODAY,
-        )
-        theta = bermudan_theta(cfg, FLAT_CURVE)
-        assert theta == pytest.approx(0.0, abs=1e-9)
-
-    @pytest.mark.slow
-    def test_single_exercise_date_delta_gamma_finite(self):
-        """A single exercise date (no early-exercise comparison) is still differentiable."""
-        cfg = _cfg(exercise_years=(2.0,))
-        greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
-        assert jnp.all(jnp.isfinite(greeks["delta"]))
-        assert jnp.all(jnp.isfinite(greeks["gamma"]))
-        theta = bermudan_theta(cfg, FLAT_CURVE)
-        assert np.isfinite(theta)
-
-    @pytest.mark.slow
-    def test_very_dense_exercise_schedule(self):
-        """A 9-date semi-annual schedule does not break the autodiff graph."""
-        cfg = _cfg(exercise_years=(0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5))
-        greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
-        assert jnp.all(jnp.isfinite(greeks["delta"]))
-        assert jnp.all(jnp.isfinite(greeks["gamma"]))
-
-    @pytest.mark.slow
-    def test_extremely_small_sigma_stays_finite(self):
-        """A tiny sigma exercises the sqrt guard at zeta -> 0 (see `_state_grid`)."""
-        cfg = _cfg(hw_sigma=1e-6)
-        greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
-        assert jnp.all(jnp.isfinite(greeks["delta"]))
-        assert jnp.all(jnp.isfinite(greeks["gamma"]))
-        theta = bermudan_theta(cfg, FLAT_CURVE)
-        assert np.isfinite(theta)
-
-    @pytest.mark.slow
-    def test_relatively_high_sigma_stays_finite(self):
-        """A high (150bp) flat sigma stays finite."""
-        cfg = _cfg(hw_sigma=0.015)
-        greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
-        assert jnp.all(jnp.isfinite(greeks["delta"]))
-        assert jnp.all(jnp.isfinite(greeks["gamma"]))
-
-    @pytest.mark.slow
-    def test_negative_rates_curve(self):
-        """Negative short-end rates keep Delta/Gamma/Theta finite."""
-        neg_curve = ZeroCurve(
-            pillar_times=jnp.asarray(PILLAR_TIMES),
-            pillar_rates=jnp.array([-0.005, -0.003, 0.0, 0.005, 0.01, 0.015, 0.02]),
-        )
-        neg_curve_config = ZeroCurveConfig(
-            times=PILLAR_TIMES, rates=[-0.005, -0.003, 0.0, 0.005, 0.01, 0.015, 0.02],
-        )
-        cfg = BermudanSwaptionConfig(
-            notional=1_000_000.0, fixed_rate=0.01, payer=True, rate_factor_index=0,
-            hw_a=0.03, hw_sigma=0.01, initial_zero_curve=neg_curve_config,
-            exercise_dates=in_years(TODAY, [1.0, 2.0]), swap_tenor="5Y", evaluation_date=TODAY,
-        )
-        greeks = bermudan_delta_gamma(cfg, neg_curve)
-        assert jnp.all(jnp.isfinite(greeks["delta"]))
-        assert jnp.all(jnp.isfinite(greeks["gamma"]))
-        theta = bermudan_theta(cfg, neg_curve)
-        assert np.isfinite(theta)
-
-    @pytest.mark.slow
-    def test_coarse_state_grid_still_differentiable(self):
-        """A coarse grid (n_per_std=4) stays differentiable (robustness, not accuracy)."""
-        cfg = BermudanSwaptionConfig(
-            notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
-            hw_a=0.03, hw_sigma=0.01, initial_zero_curve=FLAT_CURVE_CONFIG,
-            exercise_dates=in_years(TODAY, [1.0, 2.0]), swap_tenor="5Y", evaluation_date=TODAY, n_per_std=4,
-        )
-        greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
-        assert jnp.all(jnp.isfinite(greeks["delta"]))
-        assert jnp.all(jnp.isfinite(greeks["gamma"]))
-
-    @pytest.mark.slow
-    def test_receiver_trade_delta_gamma_theta_finite(self):
-        cfg = _cfg(payer=False)
-        greeks = bermudan_delta_gamma(cfg, FLAT_CURVE)
-        assert jnp.all(jnp.isfinite(greeks["delta"]))
-        assert jnp.all(jnp.isfinite(greeks["gamma"]))
-        theta = bermudan_theta(cfg, FLAT_CURVE)
-        assert np.isfinite(theta)
-
-    def test_vega_with_a_single_bucket_calibration(self):
-        """A one-instrument, one-bucket calibration (the matching-count path)."""
-        targets = build_coterminal_basket(
-            exercise_times=[2.0], final_maturity_time=5.0,
-            notional=1_000_000.0, payer=True, market_vols=[0.009],
-            zero_curve=FLAT_CURVE, evaluation_date=TODAY,
-        )
-        result = calibrate_lgm_sigma(targets, FLAT_CURVE, a=0.03)
-        cfg = _cfg(hw_sigma=result.sigma, exercise_years=(2.0,), swap_tenor="5Y")
-        vega = bermudan_vega(cfg, FLAT_CURVE, targets)
-        assert vega.shape == (1,)
-        assert jnp.isfinite(vega[0])
-        assert float(vega[0]) > 0.0
-
-    @pytest.mark.slow
-    def test_vega_with_extreme_mean_reversion(self):
-        """Vega stays finite at near-zero and high mean reversion."""
-        for a in [1e-4, 0.25]:
-            targets = build_coterminal_basket(
-                exercise_times=[1.0, 2.0], final_maturity_time=4.0,
-                notional=1_000_000.0, payer=True, market_vols=[0.008, 0.009],
-                zero_curve=FLAT_CURVE, evaluation_date=TODAY,
-            )
-            result = calibrate_lgm_sigma(targets, FLAT_CURVE, a=a)
-            cfg = BermudanSwaptionConfig(
-                notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
-                hw_a=a, hw_sigma=result.sigma, initial_zero_curve=FLAT_CURVE_CONFIG,
-                exercise_dates=in_years(TODAY, [1.0, 2.0]), swap_tenor="4Y", evaluation_date=TODAY,
-            )
-            vega = bermudan_vega(cfg, FLAT_CURVE, targets)
-            assert jnp.all(jnp.isfinite(vega)), f"a={a}: non-finite vega"
-            assert jnp.all(vega > 0.0), f"a={a}: non-positive vega"
-
-
-class TestBermudanGreeksPrecisionDtype:
-    """With a float32 curve and Sigma, the Bermudan Greeks stay float32 (the induction takes
-    its dtype from the curve). Sigma is built directly at float32 to isolate the Greeks'
-    dtype handling from calibration."""
-
-    PILLAR_TIMES_32 = [0.0, 1.0, 2.0, 3.0, 5.0, 10.0, 30.0]
-
-    def _flat_curve32(self):
-        return ZeroCurve.flat(0.03, self.PILLAR_TIMES_32, dtype=jnp.float32)
-
-    def _cfg32(self, curve32, sigma32, exercise_years=(1.0, 2.0, 3.0), swap_tenor="4Y"):
-        curve_cfg = ZeroCurveConfig(times=self.PILLAR_TIMES_32, rates=[0.03] * len(self.PILLAR_TIMES_32))
-        return BermudanSwaptionConfig(
-            notional=1_000_000.0, fixed_rate=0.03, payer=True, rate_factor_index=0,
-            hw_a=0.03, hw_sigma=sigma32, initial_zero_curve=curve_cfg,
-            exercise_dates=in_years(TODAY, list(exercise_years)), swap_tenor=swap_tenor, evaluation_date=TODAY,
-        )
-
-    @pytest.mark.slow
-    def test_bermudan_delta_gamma_float32_curve_stays_float32(self):
-        curve32 = self._flat_curve32()
-        cfg = self._cfg32(curve32, sigma32=jnp.asarray(0.01, dtype=jnp.float32))
-        greeks = bermudan_delta_gamma(cfg, curve32)
-        assert greeks["delta"].dtype == jnp.float32
-        assert greeks["gamma"].dtype == jnp.float32
-        assert jnp.all(jnp.isfinite(greeks["delta"]))
-
-    @pytest.mark.slow
-    def test_bermudan_delta_gamma_float32_vs_float64_numerically_close(self):
-        curve32 = self._flat_curve32()
-        curve64 = ZeroCurve.flat(0.03, self.PILLAR_TIMES_32, dtype=jnp.float64)
-        cfg32 = self._cfg32(curve32, sigma32=jnp.asarray(0.01, dtype=jnp.float32))
-        cfg64 = self._cfg32(curve64, sigma32=0.01)
-        greeks32 = bermudan_delta_gamma(cfg32, curve32)
-        greeks64 = bermudan_delta_gamma(cfg64, curve64)
-        np.testing.assert_allclose(
-            np.asarray(greeks32["delta"]), np.asarray(greeks64["delta"]), rtol=1e-3, atol=1.0,
-        )
-
-    def test_bermudan_theta_float32_curve_produces_finite_float(self):
-        curve32 = self._flat_curve32()
-        cfg = self._cfg32(curve32, sigma32=jnp.asarray(0.01, dtype=jnp.float32))
-        theta = bermudan_theta(cfg, curve32)
-        assert np.isfinite(theta)
-
-    @pytest.mark.slow
-    def test_bermudan_vega_float32_curve_and_sigma_stays_float32(self):
-        """`bermudan_vega`'s Jacobian path at float32."""
-        curve32 = self._flat_curve32()
-        exercise_times = [1.0, 2.0, 3.0]
-        sigma32 = Sigma(
-            times=jnp.asarray(exercise_times[:-1], dtype=jnp.float32),
-            values=jnp.asarray([0.01, 0.011, 0.012], dtype=jnp.float32),
-        )
-        targets = build_coterminal_basket(
-            exercise_times=exercise_times, final_maturity_time=4.0,
-            notional=1_000_000.0, payer=True, market_vols=[0.008, 0.009, 0.0095],
-            zero_curve=curve32, evaluation_date=TODAY,
-        )
-        cfg = self._cfg32(curve32, sigma32=sigma32, exercise_years=exercise_times)
-        vega = bermudan_vega(cfg, curve32, targets)
-        assert vega.dtype == jnp.float32
-        assert jnp.all(jnp.isfinite(vega))
-        assert jnp.all(vega > 0.0)
+    def test_an_american_is_worth_at_least_its_bermudan_and_so_is_its_vega(self):
+        """Exercisable on more dates than the Bermudan on the same dates: at least the value."""
+        b = value_today([bermudan()], shared.market(), "USD", PRICING)[0]
+        a = value_today([american()], shared.market(), "USD", PRICING)[0]
+        assert a >= b - 1e-6

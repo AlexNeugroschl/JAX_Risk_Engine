@@ -9,10 +9,7 @@ from engine.risk.var_es import (
     portfolio_pnl,
     value_at_risk,
 )
-from engine.instruments.swap import SwapConfig, price_swaps
-from demos.demo_scenarios import EVAL_DATE, SWAP_DEMO_MATURITIES
-
-MATURITIES = np.array(SWAP_DEMO_MATURITIES)
+from engine.portfolio import price_portfolio
 
 
 def _ore_risk_stats(pnl: np.ndarray) -> "ORE.RiskStatistics":
@@ -154,27 +151,11 @@ class TestRobustAcrossInstrumentSources:
         )
         assert set(metrics.keys()) == {"VaR_95", "ES_95", "VaR_99", "ES_99"}
 
-    def test_real_swap_pricer_cube(self, make_flat_yield_curves):
-        # base: [1, 1, Maturities, 2] deterministic curve cube.
-        base = make_flat_yield_curves(disc_rate=0.030, fwd_rate=0.035)
-
-        # A small "Monte Carlo" cube from jittering the deterministic curve, to run the real
-        # swap pricer without a full simulation.
-        rng = np.random.default_rng(3)
-        n_scenarios, n_steps = 200, 2
-        jitter = 1.0 + rng.normal(0.0, 0.01, size=(n_scenarios, n_steps, len(MATURITIES), 2))
-        yield_curves = jnp.asarray(np.asarray(base) * jitter, dtype=jnp.float64)
-
-        cfg = SwapConfig(
-            notional=1_000_000.0, fixed_rate=0.03, payer=True,
-            discount_curve_index=0, forward_curve_index=1,
-            swap_tenor="2Y", evaluation_date=EVAL_DATE,
-        )
-        npv_cube = price_swaps(yield_curves, MATURITIES, [cfg])
-        base_npv = float(price_swaps(base, MATURITIES, [cfg])[0, 0, 0])
-
-        metrics = compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))
-        assert metrics["VaR_95"].shape == (n_steps,)
+    def test_a_portfolio_runs_cube(self, portfolio_request):
+        """The cube `price_portfolio` produces (a swap simulated by the Hull-White model)."""
+        result = price_portfolio(portfolio_request)
+        metrics = compute_risk_metrics(result.npv_cube, result.base_npv, percentiles=(0.95, 0.99))
+        assert metrics["VaR_95"].shape == (result.npv_cube.shape[1],)
         assert jnp.all(metrics["VaR_99"] >= metrics["VaR_95"] - 1e-6)
 
 

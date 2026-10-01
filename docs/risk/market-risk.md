@@ -1,7 +1,7 @@
 # Market Risk: Short-Horizon VaR and Expected Shortfall
 
 **Package:** [`engine/market_risk/`](../../engine/market_risk/)
-**Entry point:** `run_market_risk(MarketRiskRequest(trades, scenarios))`
+**Entry point:** `run_market_risk(MarketRiskRequest(trades, market, scenarios, pricing))`
 
 ## What it measures
 
@@ -33,7 +33,7 @@ from engine.market_risk import (
     historical_scenarios, monte_carlo_scenarios, run_market_risk,
 )
 
-factors = RateRiskFactors.from_curves([ois_curve, ibor_curve], names=["OIS", "IBOR"])
+factors = RateRiskFactors.from_market(market)     # discount:USD, index:USD-SIMINDEX-6M, ...
 
 # Monte Carlo: many draws from a Gaussian with a given 10-day covariance...
 scenarios = monte_carlo_scenarios(factors, covariance, horizon_days=10,
@@ -41,7 +41,7 @@ scenarios = monte_carlo_scenarios(factors, covariance, horizon_days=10,
 # ...or historical: every overlapping 10-day move in a history of pillar levels.
 scenarios = historical_scenarios(factors, history, horizon_days=10, dates=dates)
 
-result = run_market_risk(MarketRiskRequest(trades, scenarios, quantiles=(0.99, 0.975)))
+result = run_market_risk(MarketRiskRequest(trades, market, scenarios, quantiles=(0.99, 0.975)))
 result.risk["VaR_99"], result.risk["ES_97.5"]          # positive losses
 result.risk["ES_97.5_standardError"]                    # Monte Carlo noise of the ES
 result.pnl                                               # [S, N] per-trade P&L
@@ -52,25 +52,19 @@ FP32.
 
 ## Risk factors
 
-The pillar zero rates of a list of named curves (`RateRiskFactors`). A factor vector is
-every curve's pillars end to end, curve 0 first, and every input — covariance, history,
-shock — is expressed on that vector. `factors.labels()` names each position
-(`"OIS/5y"`).
+The pillar zero rates of named market curves (`RateRiskFactors`). `from_market(market)`
+takes every curve of the `Market`: per currency its discount curve (`discount:<ccy>`) and its
+index curves (`index:<index name>`), the names the trades read. A factor vector is every
+curve's pillars end to end, and every input — covariance, history, shock — is expressed on
+that vector. `factors.labels()` names each position (`"discount:USD/5y"`).
 
 Shocks are **absolute** zero-rate moves, because a relative move is undefined for a zero
 or negative rate (Basel plan decision D-6).
 
-Trades refer to curves by index into that list:
-
-| Trade | Curves |
-|---|---|
-| `SwapConfig` | `discount_curve_index`, `forward_curve_index` |
-| `SwaptionConfig`, `BermudanSwaptionConfig`, `AmericanSwaptionConfig` | `rate_factor_index` |
-| `BondConfig` | `curve_index` (must be set for a market-risk run) |
-
-A trade that carries its own `initial_zero_curve` must carry exactly the risk-factor curve
-it points at; otherwise it would be shocked from a base it is not priced on, and the run
-refuses it.
+A trade reads its currency's discount curve and, unless it is a bond, its index's
+forwarding curve, by name; every curve it reads must be a factor, and every factor must be
+the market's curve of its name (otherwise a trade would be shocked from a base it is not
+priced on). The run refuses either, naming the trade or the factor.
 
 ## Scenarios
 
@@ -87,8 +81,10 @@ Both sources are real-world forecasts of the horizon move and carry the measure 
 
 Every trade is a pure JAX function of its curves' pillar rates
 ([`engine/risk/price_functions.py`](../../engine/risk/price_functions.py), the same
-functions the Greeks differentiate). The same function prices the base market and every
-scenario, so a trade's P&L is exactly `f(base + shift) − f(base)`.
+functions the AD Greeks differentiate), with the engine its `PricingConfig` names (decision
+A-8): a European on Bachelier or Jamshidian, a Bermudan/American on the LGM grid engine
+calibrated on today's market and held fixed under every scenario. The same function prices
+the base market and every scenario, so a trade's P&L is exactly `f(base + shift) − f(base)`.
 
 Scenarios run through `jax.lax.map` in vmapped batches, which keeps the work on the
 accelerator. The batch is `batch_size` (default 256) for closed-form trades, and smaller
@@ -105,8 +101,8 @@ a hundredth of that. For market risk, size the exercise grid for the P&L precisi
 VaR needs rather than the finest grid a single price would use; `demos/demo.py` shows the
 base-value difference this makes. (One measurement is unexplained: the first grid
 revaluation in a process sometimes runs up to 50× faster than later ones, with identical
-results. It is logged as an open performance item in the
-[engine audit](../planning/known-issues.md#p-2).)
+results. It is part of the open performance item
+[I-53](../planning/known-issues.md#i-53).)
 
 ## Statistics
 
@@ -128,16 +124,17 @@ Fractional percentages keep their decimals: Basel's 97.5% is `ES_97.5`.
 `MarketRiskRequest.precision` (64 or 32) sets the dtype of the revaluation and the
 statistics. Every price function derives its working dtype from the curve it is given, so
 a float32 run is float32 end to end — a property pinned by
-`tests/test_market_risk.py::TestRevaluation::test_swaption_price_function_keeps_float32`,
-which caught two constants that were silently promoting the European swaption to float64.
+`tests/test_market_risk.py::TestRevaluation::test_the_european_price_function_keeps_float32`
+(for both European engines), which once caught two constants silently promoting a European to
+float64.
 
 ## What is not in the number
 
 `run_market_risk` states these in `result.warnings` where they apply:
 
-- **Volatility risk.** Volatilities are held at their base values: a swaption's `hw_a`
-  and `hw_sigma`, or the request's `swaption_vols`. Only curve pillars move, so an option's
-  vega is not in the VaR/ES.
+- **Volatility risk.** Volatilities are held at their base values: the market's swaption
+  volatilities, a Bermudan's calibrated LGM, the Jamshidian engine's model. Only curve pillars
+  move, so an option's vega is not in the VaR/ES.
 - **Thin tails.** Fewer than 10 observations beyond a quantile is flagged.
 
 Not yet covered: equity, FX, credit and volatility risk factors; stressed calibration and
@@ -153,9 +150,9 @@ over ORE's P&L vector:
 |---|---|---|
 | Swap | `MakeVanillaSwap` + `DiscountingSwapEngine`, separate forwarding curve | ~1e-14 relative |
 | Bond | `FixedRateBond` (ACT/ACT ISMA) + `DiscountingBondEngine` | ~1e-16 |
-| European swaption (no Hull-White parameters) | `Swaption` + `BachelierSwaptionEngine` on ORE's `SwaptionVolatilityMatrix` (the formula of ORE's default `BlackMultiLegOptionEngine`) | ~2e-14 (measured 1.6e-14) |
-| European swaption (Hull-White parameters) | `Swaption` + `JamshidianSwaptionEngine` on `HullWhite` | ~3e-7, inside the Jamshidian parity envelope of [European Swaptions](../instruments/european-swaptions.md) |
-| Bermudan swaption | `NumericLgmMultiLegOptionEngine` via in-process `OREApp` | ~2e-13 |
+| European swaption (Bachelier, the default) | `Swaption` + `BachelierSwaptionEngine` on ORE's `SwaptionVolatilityMatrix` (the formula of ORE's default `BlackMultiLegOptionEngine`) | ~2e-14 (measured 1.6e-14) |
+| European swaption (`european="Jamshidian"`) | `Swaption` + `JamshidianSwaptionEngine` on `HullWhite` (single-curve, as QuantLib's) | within QuantLib's Brent tolerance on its root, [European Swaptions](../instruments/european-swaptions.md) |
+| Bermudan swaption (fixed LGM, `calibration="None"`) | `NumericLgmMultiLegOptionEngine` via in-process `OREApp`, the index on its own curve | ~2e-13 |
 
 VaR and ES agree with ORE's to 1e-6 relative on 512 Monte Carlo scenarios (a swap, a
 Bachelier European and a bond). On a
@@ -169,7 +166,8 @@ Parity is instead established by full revaluation in ORE plus ORE's statistics.
 
 - [`tests/test_market_risk.py`](../../tests/test_market_risk.py) — factors, scenario
   generators (covariance recovered, seeds, singular covariance, historical windows),
-  revaluation (zero shift, batching invariance, first-order agreement with AD Delta, bond
-  float/JAX identity), the run's statistics, labels, warnings, precision and validation.
+  revaluation (zero shift, the base equals the portfolio's value, batching invariance,
+  first-order agreement with AD Delta, the configured European engine), the run's statistics,
+  labels, warnings, precision and validation.
 - [`tests/test_market_risk_ore_parity.py`](../../tests/test_market_risk_ore_parity.py) —
   the ORE parity above.

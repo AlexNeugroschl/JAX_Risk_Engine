@@ -4,16 +4,18 @@ A portfolio on today's market and on the simulated scenario market: ORE's
 engines (plan T-8 to T-16).
 
 Every trade is priced with its t=0 method on each path and date: swaps with
-`DiscountingSwapEngine`, Europeans with `BlackMultiLegOptionEngine`, Bermudans and Americans
-with their own calibrated LGM on the grid, bonds by discounting. Swaptions are wrapped as
+`DiscountingSwapEngine`, Europeans with the configured engine (`BlackMultiLegOptionEngine`, the
+default, or Jamshidian on its Hull-White model), Bermudans and Americans with their own
+calibrated LGM on the grid, bonds by discounting. The valuation reads only the scenario
+market, so it is the same whichever model (`CamConfig.ir`) simulated it. Swaptions are wrapped as
 ORE wraps them (`engine.valuation.options`), so an exercised physical option becomes its swap
 and a cash-settled one leaves the portfolio. Paid cashflows drop out and fixings follow
 `FixingManager` (`engine.valuation.legs`). NPVs are in the base currency, converted with the
 path's FX rate, and not deflated (ORE's cube stores NPVs; the numeraire travels beside them).
 
 Trades name their currency and index; the market supplies the curves and volatilities and the
-pricing configuration the models (audit A-3). A trade carrying model parameters of its own, or
-valued on another date than the market's, is refused.
+pricing configuration the models (audit A-3, I-63). A trade valued on another date than the
+market's is refused.
 """
 import dataclasses
 from dataclasses import dataclass, field
@@ -36,15 +38,11 @@ from engine.valuation.bermudan import bermudan_cube, bermudan_value, contract_ex
 from engine.valuation.config import PricingConfig
 from engine.valuation.context import PricingContext, from_market
 from engine.valuation.european import european_cube, european_terms, european_value, variance_on_path
+from engine.valuation.jamshidian import jamshidian_cube, jamshidian_value, validate_jamshidian
 from engine.valuation.legs import Legs, legs_cube, legs_of, path_fixings, path_schedule, today_npv
 from engine.valuation.options import effective_steps, underlying_start, wrap
 
 Trade = Union[SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig, BondConfig]
-
-#: Fields that carry a model or a curve on a trade; the market path takes them from the market
-#: and the pricing configuration, so a trade may not set them (audit A-3).
-MODEL_FIELDS = ("discount_curve_index", "forward_curve_index", "rate_factor_index", "hw_a", "hw_sigma",
-                "initial_zero_curve", "index_zero_curve", "curve_index")
 
 
 @dataclass
@@ -55,33 +53,46 @@ class PortfolioValuation:
     warnings: List[str] = field(default_factory=list)
 
 
-def validate_trades(trades: Sequence[Trade], market: Market) -> None:
-    """Refuse what the market path cannot price as specified (see the module docstring)."""
-    for i, cfg in enumerate(trades):
-        label = f"trade[{i}] ({type(cfg).__name__})"
+def validate_trades(trades: Sequence[Trade], market: Market, pricing: PricingConfig = PricingConfig()) -> None:
+    """Refuse what the market path cannot price as specified: a trade valued on another date
+    than the market's, a trade whose curves or volatilities the market lacks, or one its
+    configured engine refuses."""
+    for cfg in trades:
+        label = f"trade {cfg.trade_id!r} ({type(cfg).__name__})"
         if cfg.evaluation_date != market.asof:
             raise ValueError(f"{label}: evaluation_date {cfg.evaluation_date} is not the market's as-of date "
                              f"{market.asof}; book trades on the valuation date (audit A-4)")
-        set_fields = [name for name in MODEL_FIELDS if getattr(cfg, name, None) is not None]
-        if set_fields:
-            raise ValueError(f"{label}: {', '.join(set_fields)} set on the trade; on the market path curves come "
-                             f"from the market and models from the pricing configuration (audit A-3)")
-        currency = _currency(cfg)
-        market.currency(currency)
-        if not isinstance(cfg, BondConfig):
-            market.index_curve(currency, index_name(currency, cfg.index_tenor_months))
-        if isinstance(cfg, (SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig)):
-            market.swaption_vols(currency)
+        currency = cfg.currency
+        try:
+            market.currency(currency)
+            if not isinstance(cfg, BondConfig):
+                market.index_curve(currency, index_name(currency, cfg.index_tenor_months))
+            if reads_swaption_vols(cfg, pricing):
+                market.swaption_vols(currency)
+        except KeyError as exc:
+            raise KeyError(f"{label}: {exc.args[0]}") from None
+        if isinstance(cfg, SwaptionConfig) and pricing.european == "Jamshidian":
+            validate_jamshidian(cfg)
+
+
+def reads_swaption_vols(cfg: Trade, pricing: PricingConfig) -> bool:
+    """Whether the trade's engine reads the market's swaption volatilities: a European on the
+    Bachelier engine, a Bermudan/American calibrated to them."""
+    if isinstance(cfg, SwaptionConfig):
+        return pricing.european == "Bachelier"
+    if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
+        return _engine(cfg, pricing).calibration != "None"
+    return False
 
 
 def value_portfolio(trades: Sequence[Trade], market: Market, scenarios: ScenarioMarket, base_currency: str,
                     pricing: PricingConfig = PricingConfig(), decay: str = "ForwardVariance") -> PortfolioValuation:
     """Every trade today and on every path and date (see the module docstring)."""
-    validate_trades(trades, market)
+    validate_trades(trades, market, pricing)
     fixings = _index_fixings(trades, market, scenarios)
     today, columns = [], []
     for cfg in trades:
-        currency = _currency(cfg)
+        currency = cfg.currency
         spot = market.fx_spot(currency, base_currency)
         fx_path = 1.0 if currency == base_currency else scenarios.fx[currency]
         value, cube = _value_trade(cfg, market, scenarios, fixings, pricing, decay)
@@ -94,27 +105,27 @@ def value_portfolio(trades: Sequence[Trade], market: Market, scenarios: Scenario
 def value_today(trades: Sequence[Trade], market: Market, base_currency: str,
                 pricing: PricingConfig = PricingConfig()) -> List[float]:
     """t=0 NPVs only (no simulation), in the base currency."""
-    validate_trades(trades, market)
+    validate_trades(trades, market, pricing)
     context = from_market(market)
-    return [value_on(cfg, context, pricing) * market.fx_spot(_currency(cfg), base_currency) for cfg in trades]
-
-
-def _currency(cfg: Trade) -> str:
-    return getattr(cfg, "currency", "USD")
+    return [value_on(cfg, context, pricing) * market.fx_spot(cfg.currency, base_currency) for cfg in trades]
 
 
 def _index_fixings(trades, market: Market, scenarios: ScenarioMarket) -> Dict[str, jax.Array]:
     """FixingManager's path fixings for every index a trade references."""
-    tenors = {index_name(_currency(c), c.index_tenor_months): c.index_tenor_months
+    tenors = {index_name(c.currency, c.index_tenor_months): c.index_tenor_months
               for c in trades if not isinstance(c, BondConfig)}
     return {name: path_fixings(tenor, market.asof, scenarios.dates, scenarios.times, scenarios.index[name])
             for name, tenor in tenors.items()}
 
 
 def value_on(cfg: Trade, context: PricingContext, pricing: PricingConfig) -> float:
-    """One trade's NPV in its currency on the context's date, with ORE's default engine."""
-    currency = _currency(cfg)
+    """One trade's NPV in its currency on the context's date, with its configured engine."""
+    currency = cfg.currency
     if isinstance(cfg, BondConfig):
+        if context.date >= cfg.maturity_date:
+            # Rolled to or past maturity (the Theta date): nothing left to value; a flow paid on
+            # that date is ORE's excluded settlement-date flow, counted by Theta's paid flows.
+            return 0.0
         disc = context.discount[currency]
         return float(today_npv(bond_legs(dataclasses.replace(cfg, evaluation_date=context.date)), context.date,
                                disc, disc))
@@ -125,6 +136,8 @@ def value_on(cfg: Trade, context: PricingContext, pricing: PricingConfig) -> flo
         return float(today_npv(legs_of(_swap_underlying(cfg), cfg.payer, context.date, fixings), context.date,
                                disc, index))
     if isinstance(cfg, SwaptionConfig):
+        if pricing.european == "Jamshidian":
+            return float(jamshidian_value(cfg, context, pricing.jamshidian))
         return float(european_value(cfg, context))
     if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
         return bermudan_value(cfg, _engine(cfg, pricing), context)
@@ -137,7 +150,7 @@ def _engine(cfg, pricing: PricingConfig):
 
 def _value_trade(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricing: PricingConfig, decay: str):
     """(t=0 NPV, `[S, D]` cube) of one trade in its own currency."""
-    currency = _currency(cfg)
+    currency = cfg.currency
     disc = sm.discount[currency]
     today = value_on(cfg, from_market(market), pricing)
     if isinstance(cfg, BondConfig):
@@ -154,10 +167,14 @@ def _value_trade(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricin
         return today, swap_cube(legs_of(_swap_underlying(cfg), cfg.payer, market.asof, cfg.fixings))
     if isinstance(cfg, SwaptionConfig):
         terms = european_terms(cfg, market.asof)
-        surface = market.swaption_vols(currency)
-        variances = [variance_on_path(terms, surface, market.asof, d, decay) for d in sm.dates]
-        option = european_cube(terms, path_schedule(terms.legs, market.asof, sm.dates), sm.times, disc, index,
-                               index_fixings, variances)
+        schedule = path_schedule(terms.legs, market.asof, sm.dates)
+        if pricing.european == "Jamshidian":
+            alive = np.asarray([terms.expiry > d for d in sm.dates])
+            option = jamshidian_cube(terms, pricing.jamshidian, schedule, sm.times, disc, index, index_fixings, alive)
+        else:
+            surface = market.swaption_vols(currency)
+            variances = [variance_on_path(terms, surface, market.asof, d, decay) for d in sm.dates]
+            option = european_cube(terms, schedule, sm.times, disc, index, index_fixings, variances)
         swap = _european_underlying(cfg)
         exercises, fixings_history = (cfg.exercise_date,), {}
     else:

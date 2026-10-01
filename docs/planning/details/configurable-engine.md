@@ -19,26 +19,25 @@ A-1 to A-9 ([compliance/decisions.md](../../../compliance/decisions.md) §1–2)
 
 ## Today
 
-Every choice is one `RunConfig` (`engine/portfolio/config.py`, step 1.2), on
-`PortfolioRequest.config`. The model is still chosen by the type of `market`:
+Every choice is one `RunConfig` (`engine/portfolio/config.py`) on
+`PortfolioRequest.config`, and every run is one pipeline (`engine.portfolio.market_path`):
 
-| | Market path (default) | Hull-White model |
-|---|---|---|
-| Entry | `price_portfolio(PortfolioRequest(market=Market(...), config=RunConfig(...)))`, `engine.portfolio.market_path` | `price_portfolio(PortfolioRequest(market=SimulationConfig(...), config=HULL_WHITE_CONFIG))`, `engine.portfolio.request` |
-| HTTP | `POST /v2/portfolio/price`, `schema_version: "2"` | `POST /portfolio/price` (translated with `HULL_WHITE_CONFIG`) |
-| Simulation | `config.simulation`, `engine.simulation.cam` (LGM per currency, exact) | the `market` itself, `engine.simulation.market_model` (Hull-White, constant θ) |
-| Valuation | `engine.valuation` (every trade by its t=0 engine per path) | `engine.instruments.*` scenario pricers |
-| European engine | `Bachelier` | `Jamshidian` |
-| Greeks | `Bump`, `engine.risk.sensitivities`, settings `config.greeks.sensitivity` | `AD`, `engine.risk.greeks` |
-| Precision | `simulation` only; other stages refused below 64 (I-55, step 1.4) | every stage, process-global x64 toggle |
-
-`engine.market_risk` still picks the European engine from the trade's fields (A-8, F-01).
+| | |
+|---|---|
+| Entry | `price_portfolio(PortfolioRequest(market=Market(...), trades=[...], config=RunConfig(...)))` |
+| HTTP | `POST /portfolio/price` (also served as `/v2/portfolio/price`), one request shape |
+| Simulation | `config.simulation` (`CamConfig`), `engine.simulation.cam`: per currency `LgmConfig` or `HullWhiteConfig`, exact step moments, LGM numeraire |
+| Valuation | `engine.valuation`: every trade by its t=0 engine on every path (scenario market, legs, `OptionWrapper`, bond legs, per-trade basket) |
+| European engine | `Bachelier` (ORE's default) or `Jamshidian` with `PricingConfig.jamshidian` |
+| Greeks | `Bump` (`engine.risk.sensitivities`, settings `config.greeks.sensitivity`) or `AD` (`engine.risk.greeks`) |
+| Market risk | `engine.market_risk.run_market_risk` on a `Market` with the same `PricingConfig` (A-8) |
+| Precision | `simulation` 32 or 64; the other stages float64, refused below (`check_run`, I-55, step 1.4) |
 
 ## Step 1.2 — the run configuration (I-68) — done
 
 | Component | Field | Options | Default |
 |---|---|---|---|
-| Model per currency | `simulation.ir[ccy]` (`CamConfig`, ORE's `CrossAssetModelData`) | `LgmConfig`; Hull-White in step 1.3 | LGM |
+| Model per currency | `simulation.ir[ccy]` (`CamConfig`, ORE's `CrossAssetModelData`) | `LgmConfig`; `HullWhiteConfig` (step 1.3) | none: named per currency |
 | Simulation | `simulation` | Classic revaluation; AMC is [F-03](../features.md#f-03) | Classic |
 | Engine per product | `pricing` (`PricingConfig`) | Swap: discounting. European: `Bachelier`, `Jamshidian`. Bermudan/American: `LgmSwaptionEngineConfig` (FD solver in F-01) | ORE's builder defaults |
 | Greeks method | `greeks.method` | `Bump`; `AD` | `Bump` |
@@ -49,11 +48,10 @@ Every choice is one `RunConfig` (`engine/portfolio/config.py`, step 1.2), on
 
 Rules the implementation follows, which steps 1.3, 1.4 and 4.1 keep:
 
-- **An option a model does not implement is refused, never substituted.** `check_market_path`
-  and `check_hull_white` run before any work and name the field. An engine or method is
-  checked where the run uses it (a European engine only with a European, a Greeks method
-  only with `compute_greeks`); a setting a model does not read at all is refused when
-  changed from its default.
+- **An option the pipeline does not implement is refused, never substituted.** `check_run`
+  and `validate_trades` run before any work and name the field (since step 1.3 one check for
+  both models). An engine is checked where the run uses it (the Jamshidian engine's
+  refusals only for a European on it).
 - **One fact, one field.** The reporting currency is the simulation's; a `base_currency`
   contradicting it is refused (before 1.2 it was silently ignored).
 - **The request travels whole.** The worker pool freezes the entire request, so every
@@ -65,36 +63,68 @@ model, compared array for array against the code before the change (114 arrays, 
 identical: [verification status](../known-issues.md#verification-status)), and the parity
 suites in the full run.
 
-## Step 1.3 — the Hull-White model on the shared pipeline
+## Step 1.3 — the Hull-White model on the shared pipeline — done
 
-Rebuild the Hull-White model as an option of the configuration, reusing the market path's
-valuation layer instead of `engine.instruments`' scenario pricers. Each item closes an issue
-and is tested as on the market path (sloped curves, red first):
+The Hull-White model is a model per currency (`HullWhiteConfig` in `CamConfig.ir`, `"model":
+"HullWhite"` over HTTP) on the same pipeline as the LGM; the separate Hull-White pipeline
+(`SimulationConfig` market, `engine.simulation.market_model`, the `engine.instruments`
+scenario pricers, `HULL_WHITE_CONFIG`) is removed. Trades carry no model, name themselves and
+their date. What closed which issue:
 
-| Change | Closes |
+| Change | Closed |
 |---|---|
-| Simulate the zero-mean OU state and add the curve-fitted drift, `r(t) = x(t) + α(t)`, `α(t) = f(0,t) + σ²/(2a²)(1 − e^{−at})²` (Brigo–Mercurio 3.36); `theta` and `initial_rates` become derived, not inputs. Permanent martingale test `E[P(t,T)/N(t)] = P(0,T)` on a sloped curve | [I-42](../known-issues.md#i-42) |
-| Scenario curves from the model's own bond prices; no `x_from_r` conversion to LGM | [I-44](../known-issues.md#i-44), [I-62](../known-issues.md#i-62) |
-| The model's exact numeraire in the reporting currency | [I-45](../known-issues.md#i-45) |
-| `engine.valuation.legs` for paid flows and path fixings | [I-04](../known-issues.md#i-04) (model half) |
-| `engine.valuation.options` (`OptionWrapper`) for exercise | [I-43](../known-issues.md#i-43) |
-| Market-vol Bachelier as the default European engine; Jamshidian as an option | [I-46](../known-issues.md#i-46) |
-| Per-trade basket and bootstrap (`engine.valuation.bermudan.calibration_basket`, `engine.calibration.ore_lgm`); the shared-basket policy leaves `engine/api/schemas.py` and `_fill_calibrated_sigma` | [I-47](../known-issues.md#i-47) |
-| Bond legs on the model's scenario curves | [I-24](../known-issues.md#i-24) |
-| Trades name curves and index only; model parameters and calibrated σ from the market and configuration | [I-63](../known-issues.md#i-63) |
-| `evaluation_date` required on every trade config; any ORE global set inside a restoring context manager | [I-64](../known-issues.md#i-64) |
-| An instrument id on every trade config | [I-10](../known-issues.md#i-10) (configs) |
+| The model is ORE's `<LGM>` with `ReversionType`/`VolatilityType` `HullWhite` (`IrLgm1fPiecewiseConstantHullWhiteAdaptor`): α(t) = σ(t)e^{at}, ζ(t) = ∫σ²e^{2as}ds, H(t) = (1 − e^{−at})/a, simulated exactly under the LGM measure by the CAM; its curves are its own bond prices, fitted to today's curve by construction | [I-42](../known-issues.md#i-42), [I-44](../known-issues.md#i-44) |
+| The model's exact LGM numeraire | [I-45](../known-issues.md#i-45) |
+| Every trade valued by `engine.valuation` on the paths: legs (paid flows drop out, path fixings), `OptionWrapper`, bond legs, per-trade basket recalibrated per path, vectorized on device | [I-04](../known-issues.md#i-04) (model half), [I-43](../known-issues.md#i-43), [I-24](../known-issues.md#i-24), [I-47](../known-issues.md#i-47), [I-62](../known-issues.md#i-62) |
+| Bachelier on the market volatility is the default European engine for every model; Jamshidian is an option with its own Hull-White model | [I-46](../known-issues.md#i-46) |
+| Trades name currency and index only; a model or curve field on a trade is refused | [I-63](../known-issues.md#i-63) |
+| `evaluation_date` and `trade_id` required keyword fields on every trade config | [I-64](../known-issues.md#i-64), [I-10](../known-issues.md#i-10) (configs) |
+| The model is a field of the configuration, not the market's type | [I-68](../known-issues.md#i-68) |
 
-The Hull-White warnings in `engine.portfolio.request` (aged swaps, expiry, curve
-consistency) are removed with the defects they describe.
+Design decisions taken in the step, with their reasons:
+
+- **LGM-measure form, not the bank-account drift.** The plan named Brigo–Mercurio's
+  r(t) = x(t) + α(t) with the curve-fitted drift. ORE does not simulate that: its Hull-White
+  model is the LGM adaptor above, under the LGM measure with the LGM numeraire. The two are the
+  same model (the short rate is r = f(0,t) + H′(t)z + ζ(t)H(t)H′(t); the path curve is
+  QuantLib's `HullWhite::discountBond(t, T, r)` to 1e-12, `tests/test_cam.py`), so the CAM's
+  exact step moments, numeraire and scenario market serve both models unchanged, and ORE
+  parity holds by construction.
+- **Calibration converts the Hagan bootstrap bucket by bucket.** A helper's price depends on
+  the model only through ζ at its expiry and H, so the Hull-White σ is the one with the
+  LGM's ζ at every bucket end (`engine.models.lgm.hull_white_matching_zeta`); exact, and the
+  same calibration ORE's bootstrap of the adaptor reaches (`tests/test_hull_white_model.py::
+  TestCalibration`).
+- **Jamshidian's model in `PricingConfig.jamshidian`.** ORE has no Jamshidian builder, so the
+  engine's Hull-White (a, σ) is configured with it (`JamshidianEngineConfig`, both positive,
+  as QuantLib's `HullWhite` requires); required with `european="Jamshidian"`, refused
+  without. The engine is QuantLib's decomposition in discount factors only, so it prices on
+  any curve: today's, a bump, a path's.
+- **`trade_id`, not "instrument id".** Named as ORE's `<Trade id>`; unique in a portfolio,
+  echoed as `PortfolioResult.trade_ids`. Over HTTP, give it on every trade or on none (none
+  numbers them `trade-0`, ...).
+- **ORE globals.** The engine sets no ORE global (every date is passed explicitly; the
+  calibration helpers take their dates from their own curve's reference date), so there is
+  nothing to scope.
+- **Precision narrows until 1.4.** The Hull-White pipeline took `pricing`/`risk` below 64;
+  the shared pipeline computes those stages in float64 and refuses less (I-55). Kept rather
+  than ported: 1.4 makes them adjustable for both models at once.
+
+Evidence: the shared portfolio's market-path numbers (t=0, an FP64 and an FP32-simulation
+scenario run, bump Greeks) bit for bit before and after, 103 of 103 arrays; each closed
+Hull-White defect measured on the code before the step and asserted after, on a 3% → 5%
+curve; every per-path ORE comparison of `tests/test_valuation.py` run under both models;
+`tests/test_end_to_end.py` prices the Hull-White simulation's paths in QuantLib
+([verification status](../known-issues.md#verification-status)).
 
 ## Step 1.4 — the precision mechanism (I-55)
 
-x64 is enabled once per process; every stage takes its dtype from the configuration and
-every array is created with one (find each array created without a dtype;
-`compute_hw_A_matrix` hard-codes float64). Then remove the `jax_enable_x64` toggling in
-`generate_paths` and `price_portfolio`, `_PRICING_LOCK`, and the per-precision worker pools.
-Adjustable precision stays available throughout the change.
+x64 is already enabled once per process (when `engine` is imported, and kept on in every
+worker since 1.3). Every stage takes its dtype from the configuration and every array is
+created with one: the scenario market and legs, the per-path Bermudan engine and its
+calibration, the Greeks (find each array created without a dtype). Then `check_run`'s refusal
+goes, and `_PRICING_LOCK`, `run_market_risk`'s flag set and the per-precision worker pools are
+removed. Adjustable precision stays available throughout the change.
 
 ## Step 2.5 — `ShiftHorizon` (I-32)
 
@@ -112,16 +142,19 @@ and F-07's validation bar.
 
 ## Step 4.1 — one request (I-56)
 
-- One route and one request whose configuration reaches every setting of step 1.2,
-  including the sensitivity settings, market-risk runs (`engine.market_risk.run_market_risk`)
-  and the market path's calibrations as standalone runs.
+- One route. Since 1.3 one request shape (`MarketPortfolioRequestSchema`) reaches the model
+  per currency, the engines, the Greeks method and sensitivity settings, precision and the
+  reporting currency; still missing: market-risk runs (`engine.market_risk.run_market_risk`),
+  the CAM calibration as a standalone run, and `shift_horizon` (I-32).
 - Validated before any job starts: types, unknown fields refused, cross-field checks, each
   refusal naming its field.
 - Names say what they are: `/v2` and `schema_version: "2"` go; a version marks a revision of
   the contract, never a model.
-- `POST /portfolio/price` and `POST /v2/portfolio/price` keep answering, translated into the
-  new request, so no caller breaks.
+- `POST /portfolio/price` and `POST /v2/portfolio/price` keep answering. (The Hull-White
+  request shape retired by 1.3 is refused with a 422 naming its replacement, not translated:
+  its trades carried model copies the new request has no place for.)
 - A completeness test compares the Python configuration types with the request schema and
   fails on any setting without an API field.
-- Results echo instrument ids and return the cube as a chunked artifact reference (shape,
-  dtype, axis order, hash, item order) instead of nested JSON (I-09).
+- Every per-trade result row carries its `trade_id` (today a list beside position-keyed rows,
+  I-10), and the cube returns as a chunked artifact reference (shape, dtype, axis order, hash,
+  item order) instead of nested JSON (I-09).

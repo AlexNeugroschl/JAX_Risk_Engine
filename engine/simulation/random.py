@@ -2,9 +2,8 @@
 Quasi-Monte Carlo normals: scrambled Sobol points mapped to standard normals, and a Brownian
 bridge over the simulation grid (QuantLib's `BrownianBridge` construction order).
 
-Model-independent; shared by the cross-asset simulation (`engine.simulation.cam`), the
-Hull-White simulation (`engine.simulation.market_model`) and the market-risk scenario
-generator (`engine.market_risk.scenarios`).
+Model-independent; shared by the cross-asset simulation (`engine.simulation.config.simulate`)
+and the market-risk scenario generator (`engine.market_risk.scenarios`).
 """
 from functools import partial
 

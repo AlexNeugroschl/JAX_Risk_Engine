@@ -69,8 +69,8 @@ Blocked on D03/D04 and a market-data package. Closes [I-05](../known-issues.md#i
 - **Required first:** both legs' schedules and dates, fixed/float day counts, calendars,
   business-day adjustment, payment lags, overnight compounding, lookback, lockout,
   observation shift, fixing calendar and fixing history.
-- **A separate builder.** Do not change `build_vanilla_swap`: the Hull-White swaption pricers
-  depend on its ACT/365 consistency with the simulation time axis.
+- **A separate builder.** Do not change `build_vanilla_swap`: the calibration baskets and
+  every swap-bearing trade's ORE parity depend on its conventions.
 - **`marketInputs.mode: "package"`**: observed data with bootstrapped pillars, which is what
   lets `rateSensitivity` shift one pillar at a time and name it.
 - **Acceptance** against a same-terms ORE reference, not this engine's own tests.

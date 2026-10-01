@@ -107,11 +107,8 @@ P&L(scenario, t)  =  portfolio_NPV(scenario, t)  −  base_npv
 ```
 
 where `base_npv` is a single number: **the portfolio's actual value today, before any
-simulated shocks** — supplied explicitly by the caller (typically by pricing the same
-trade(s) against today's real, un-simulated market curve; see
-[`demos/demo_scenarios.py`](../../demos/demo_scenarios.py)'s
-`flat_yield_curves()` helper for how the
-demos build this). This is applied identically at *every* simulated future time step,
+simulated shocks** — supplied explicitly by the caller (typically the same trades priced on
+today's market, `PortfolioResult.base_npv` or `value_today`). This is applied identically at *every* simulated future time step,
 matching ORE's own historical-VaR P&L definition literally.
 
 This was a deliberate choice between two reasonable options: measuring against a fixed
@@ -226,7 +223,7 @@ vocabulary:
 - `TestExpectedShortfallStandardError` — cross-checked against numpy's `ddof=1` computation
   on the same tail; `test_single_observation_is_nan_not_zero` pins the `n < 2` behavior.
 - **`TestAdditiveOnly`** — every pre-existing key and value is unchanged, which is what lets
-  `engine/api/schemas.py`, `engine/portfolio/request.py` and the other consumers keep working
+  `engine/api/schemas.py`, `engine/portfolio/` and the other consumers keep working
   untouched.
 - `TestDiagnosticsReachTheHttpBoundary` — the new keys serialize through `RiskMetricsSchema`,
   with a NaN standard error arriving as `null` rather than a readable float.

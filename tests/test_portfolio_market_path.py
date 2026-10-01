@@ -49,22 +49,22 @@ def _simulation(samples=512):
 def _bond():
     periods = tuple(CouponPeriod(ORE.Date(15, 2 if h == 0 else 8, y), ORE.Date(15, 8 if h == 0 else 2, y + h))
                     for y in (2026, 2027, 2028) for h in (0, 1))
-    return BondConfig(face_amount=1e6, maturity_date=ORE.Date(15, 2, 2029), evaluation_date=ASOF,
+    return BondConfig(trade_id="bond-L52", face_amount=1e6, maturity_date=ORE.Date(15, 2, 2029), evaluation_date=ASOF,
                       coupon_rate=0.03, coupon_schedule=periods)
 
 
 def _bill():
-    return BondConfig(face_amount=1e6, maturity_date=DATES[2] + ORE.Period(1, ORE.Years), evaluation_date=ASOF)
+    return BondConfig(trade_id="bond-L57", face_amount=1e6, maturity_date=DATES[2] + ORE.Period(1, ORE.Years), evaluation_date=ASOF)
 
 
 def _trades():
     from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, exercisable_dates
     from engine.instruments.european_swaption import SwaptionConfig
-    booked = BermudanSwaptionConfig(notional=1e6, fixed_rate=0.03, payer=False, exercise_dates=[ASOF + 400],
+    booked = BermudanSwaptionConfig(trade_id="bermudan-L63", notional=1e6, fixed_rate=0.03, payer=False, exercise_dates=[ASOF + 400],
                                     swap_tenor="5Y", evaluation_date=ASOF)
     return [
-        SwapConfig(notional=1e6, fixed_rate=0.031, payer=True, swap_tenor="5Y", evaluation_date=ASOF),
-        SwaptionConfig(notional=1e6, fixed_rate=0.032, payer=True, swap_tenor="4Y",
+        SwapConfig(trade_id="swap-L66", notional=1e6, fixed_rate=0.031, payer=True, swap_tenor="5Y", evaluation_date=ASOF),
+        SwaptionConfig(trade_id="european-L67", notional=1e6, fixed_rate=0.032, payer=True, swap_tenor="4Y",
                        forward_start=ORE.Period(1, ORE.Years), evaluation_date=ASOF),
         dataclasses.replace(booked, exercise_dates=exercisable_dates(booked)[1:-1]),
         _bond(),
@@ -138,19 +138,14 @@ def test_greeks_are_oresstyle_sensitivities(result):
     assert "vega:USD" in greeks[1] and greeks[1]["vega:USD"].shape == (3, 3)
 
 
-def test_trade_ids_are_echoed_on_both_paths():
-    """I-10: the request's trade ids come back on the result, market and Hull-White path alike."""
-    from tests.test_portfolio_bond_wire_through import bond_request, make_bill
-    ids = ["swap-1", "european-1"]
-    market_path = PortfolioRequest(market=_market(), trades=_trades()[:2], scenario_risk=False, config=CONFIG,
-                                   trade_ids=ids)
-    assert price_portfolio(market_path).trade_ids == ids
-    legacy = dataclasses.replace(bond_request([make_bill()]), trade_ids=("bill-1",))
-    assert price_portfolio(legacy).trade_ids == ["bill-1"]
-    assert price_portfolio(bond_request([make_bill()])).trade_ids is None
+def test_every_result_carries_the_trade_ids():
+    """I-10: each trade's id comes back on the result, in request order, whatever the model."""
+    trades = [dataclasses.replace(t, trade_id=f"t{k}") for k, t in enumerate(_trades())]
+    result = price_portfolio(PortfolioRequest(market=_market(), trades=trades, scenario_risk=False, config=CONFIG))
+    assert result.trade_ids == [f"t{k}" for k in range(len(trades))]
 
 
-@pytest.mark.parametrize("ids, match", [(["a"], "2 trades"), (["a", "a"], "unique"), (["a", ""], "unique")])
-def test_bad_trade_ids_are_refused(ids, match):
-    with pytest.raises(ValueError, match=match):
-        PortfolioRequest(market=_market(), trades=_trades()[:2], trade_ids=ids)
+def test_a_repeated_trade_id_is_refused():
+    trades = [dataclasses.replace(t, trade_id="same") for t in _trades()[:2]]
+    with pytest.raises(ValueError, match="unique"):
+        PortfolioRequest(market=_market(), trades=trades)

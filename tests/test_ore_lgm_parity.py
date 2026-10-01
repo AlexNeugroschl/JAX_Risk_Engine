@@ -31,10 +31,11 @@ import ORE
 import pytest
 
 from engine.instruments.american_swaption import AmericanSwaptionConfig
-from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, price_bermudan_swaption_base
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.market import ZeroCurveConfig
 from engine.models.lgm import Sigma
 from engine.models.ore_builders import build_vanilla_swap, resolve_swap_dates
-from engine.simulation.market_model import ZeroCurveConfig
+from tests.support.lgm_engine import grid_npv
 from tests.support.ore_lgm_oracle import ore_lgm_swaption_npv
 
 jax.config.update("jax_enable_x64", True)
@@ -110,20 +111,16 @@ CASES = [
 
 
 def _engine_npv(case: Case, exercise_dates: list) -> float:
-    """The one place this file touches the engine's config API."""
-    common = dict(
-        notional=NOTIONAL, fixed_rate=case.fixed_rate, payer=case.payer, rate_factor_index=0,
-        hw_a=HW_A, hw_sigma=case.sigma,
-        initial_zero_curve=ZeroCurveConfig(times=CURVE_TIMES, rates=CURVE_RATES),
-        swap_tenor=SWAP_TENOR, index_tenor_months=INDEX_TENOR_MONTHS,
-        n_per_std=N_PER_STD, std_devs=STD_DEVS, evaluation_date=EVAL_DATE,
-    )
+    """The one place this file touches the engine's API: the trade, and the model as ORE's
+    engine takes it with `Calibration=None`."""
+    common = dict(notional=NOTIONAL, fixed_rate=case.fixed_rate, payer=case.payer, swap_tenor=SWAP_TENOR,
+                  index_tenor_months=INDEX_TENOR_MONTHS, evaluation_date=EVAL_DATE, trade_id=case.id)
+    model = dict(a=HW_A, sigma=case.sigma, curve=ZeroCurveConfig(times=CURVE_TIMES, rates=CURVE_RATES),
+                 n_per_std=N_PER_STD, std_devs=STD_DEVS, steps_per_year=STEPS_PER_YEAR)
     if case.style == "Bermudan":
-        return price_bermudan_swaption_base(BermudanSwaptionConfig(exercise_dates=exercise_dates, **common))
+        return grid_npv(BermudanSwaptionConfig(exercise_dates=exercise_dates, **common), **model)
     first, last = exercise_dates
-    return price_bermudan_swaption_base(AmericanSwaptionConfig(
-        first_exercise_date=first, last_exercise_date=last,
-        exercise_time_steps_per_year=STEPS_PER_YEAR, **common))
+    return grid_npv(AmericanSwaptionConfig(first_exercise_date=first, last_exercise_date=last, **common), **model)
 
 
 def _ore_npv(case: Case, exercise_dates: list) -> float:

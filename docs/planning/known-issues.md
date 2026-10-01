@@ -5,106 +5,73 @@ closing it takes. The order of work is in [roadmap.md](roadmap.md); the rules fo
 (statuses, severities, how to add and close an entry) are in [README.md](README.md). Fixed
 issues keep one line in the [closed ledger](#closed).
 
-Read this before trusting an exposure profile, a number off the Hull-White model, or a
-result served by the EOD routes: [I-57](#i-57) can return another submission's result, and
-the Hull-White model still has the defects the default market path fixed
-([I-42](#i-42) to [I-47](#i-47)).
+Read this before trusting an exposure profile or a result served by the EOD routes:
+[I-57](#i-57) can return another submission's result, and the assembled simulation and
+exposure are not yet compared with an ORE run ([I-50](#i-50)).
 
 ## Verification status
 
-Last full run, 2026-09-30, on the code after roadmap 1.2 (I-68, the run configuration):
-**2,353 passed, 0 failed** on Windows (42m25s) and **2,353 passed, 0 failed** in a Linux
-`python:3.11` container on 4 cores (49m59s). Both ran the complete suite
-(`.venv/Scripts/python.exe -m pytest tests/`), 2,353 collected (2,319 before: 32 in
-`tests/test_run_config.py` and 2 HTTP refusal cases in `tests/test_api_market_path.py`),
-summary line printed. Bit for bit: before the change, 114 arrays were saved from the shared
-portfolio's scenario run (cube, exposure, per-trade EPE), an FP32-simulation run, its
-market-path bump Greeks and the Hull-White model (cube, exposure, AD Greeks, FP32); after it,
-all 114 are identical in value, dtype and shape. The fast tier (`-m "not slow"`) is not a
+Last full run, 2026-10-01, on the code after roadmap 1.3 (the Hull-White model on the shared
+pipeline): **2,243 passed, 0 failed** on Windows (61m01s) and **2,243 passed, 0 failed** in a
+Linux `python:3.11` container on 4 cores (65m22s), run one after the other (run together they
+exhaust memory). Both ran the complete suite (`.venv/Scripts/python.exe -m pytest tests/`),
+2,243 collected (2,353 before: the Hull-White pipeline's own tests went with it, its cases
+moved onto the shared pipeline's tests), summary line printed. The suite is about 45% slower
+than after 1.2: the Hull-White options now recalibrate per path date ([I-53](#i-53)). Bit for
+bit: before the change, 103 arrays were saved from the default (LGM) runs (shared
+portfolio's cube, exposure and per-trade EPE, FP32 simulation, bump Greeks); after it, all 103
+are identical in value, dtype and shape. Red first, on the pre-1.3 code with a 3% → 5% curve
+(a = 0.03, σ = 0.01, 8,192 paths): deflated 10y zero bonds off by +3.2/+6.8/+10.1% at 1/2/3y
+([I-42](#i-42)), E[1/N] off by +1.8% at 3y ([I-45](#i-45)), a matured swap worth −922 at 3y
+([I-04](#i-04)), an exercised physical European worth 0 ([I-43](#i-43)), a bond refused scenario
+risk ([I-24](#i-24)); each is a passing test now. The fast tier (`-m "not slow"`) is not a
 full verification and is never recorded here. Rules: [README.md](README.md#verification-rules).
 
 ## Summary
 
 | ID | Issue | Sev. | Status | Category | Stage |
 |---|---|---|---|---|---|
-| [I-04](#i-04) | Aged swaps: the Hull-White model keeps paid flows; TraderX exports no past fixings | High | PARTIAL | Correctness | 1.3; external |
+| [I-04](#i-04) | Seasoned TraderX swaps: the export has no past fixings | High | OPEN | Scope | External |
 | [I-05](#i-05) | No faithful USD-SOFR / ACT-360 swap construction | High | OPEN | Scope | External |
 | [I-07](#i-07) | No corporate bond, equity or listed-option pricer | Medium | OPEN | Scope | By demand |
 | [I-08](#i-08) | Portfolio job store in memory; a running EOD attempt is lost on restart | Medium | PARTIAL | API | 4.2 |
 | [I-09](#i-09) | Whole scenario cube serialized into the JSON response | Medium | OPEN | API | 4.1 |
-| [I-10](#i-10) | No trade identity on the configs; results keyed by position | Medium | OPEN | API | 1.3, 4.1 |
+| [I-10](#i-10) | Per-trade results keyed by position beside the echoed ids | Low | PARTIAL | API | 4.1 |
 | [I-12](#i-12) | `/version` reports the dispatcher's backend, not the worker's device | Low | OPEN | Correctness | 2.8 |
 | [I-16](#i-16) | `rateSensitivity` is parallel-only | Medium | OPEN | Scope | External |
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
-| [I-21](#i-21) | Hull-White Greeks recompile 23 XLA programs per call | Medium | OPEN | Performance | 3.3 |
-| [I-22](#i-22) | Hull-White calibration recompiles 8 XLA programs per call | Low | OPEN | Performance | 3.3 |
+| [I-21](#i-21) | AD Greeks recompile about 30 XLA programs per repeated call | Medium | OPEN | Performance | 3.3 |
+| [I-22](#i-22) | Each LGM calibration recompiles its bisection (6 programs per call) | Low | OPEN | Performance | 3.3 |
 | [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | 4.3 |
-| [I-24](#i-24) | Bonds have no scenario NPV on the Hull-White model | Medium | PARTIAL | Correctness | 1.3 |
 | [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA | Medium | OPEN | Tooling | 5.1 |
 | [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | 2.5 |
 | [I-34](#i-34) | The ORE oracle's curve differs before the first pillar | Low | OPEN | Validation | 2.2 |
-| [I-42](#i-42) | Hull-White: simulated curves not arbitrage-free against the input curve | High | PARTIAL | Correctness | 1.3 |
-| [I-43](#i-43) | Hull-White: options worth zero after expiry instead of becoming the swap | High | PARTIAL | Correctness | 1.3 |
-| [I-44](#i-44) | Hull-White: scenario pricing mixes Hull-White and LGM | Medium | PARTIAL | Correctness | 1.3 |
-| [I-45](#i-45) | Hull-White: numeraire is a discretely accrued bank account | Medium | PARTIAL | Correctness | 1.3 |
-| [I-46](#i-46) | Hull-White: Europeans priced off the model vol, not the market vol | Medium | PARTIAL | Correctness | 1.3 |
-| [I-47](#i-47) | Hull-White: calibration basket is not the one ORE builds for the trade | Medium | PARTIAL | Correctness | 1.3 |
 | [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | 2.4 |
 | [I-50](#i-50) | No path- or distribution-level parity test against an ORE simulation | Medium | OPEN | Validation | 2.2 |
 | [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | 2.3 |
-| [I-53](#i-53) | The market path is slow (full suite 23 → 46 min) | Medium | OPEN | Performance | 3.1 |
+| [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | OPEN | Performance | 3.1 |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | 2.6 |
-| [I-55](#i-55) | Precision switched by a process-global flag; unproven combinations not flagged | Medium | OPEN | Architecture | 1.4, 2.7 |
-| [I-56](#i-56) | The API cannot reach every setting; two routes named like versions | Medium | OPEN | API | 4.1 |
+| [I-55](#i-55) | Only the simulation's precision is adjustable; unproven combinations not flagged | Medium | OPEN | Architecture | 1.4, 2.7 |
+| [I-56](#i-56) | Market risk and the CAM calibration have no route; two routes named like versions | Medium | PARTIAL | API | 4.1 |
 | [I-57](#i-57) | EOD: a cached result is served before the submission id is checked | High | OPEN | API | 2.1 |
 | [I-58](#i-58) | EOD: two concurrent submissions of one workload both execute | Medium | OPEN | API | 2.1 |
 | [I-59](#i-59) | EOD: `calculations` and `reportingCurrency` accepted, keyed, then ignored | Medium | OPEN | API | 2.1 |
 | [I-60](#i-60) | EOD result schema has no stated policy on added fields | Low | ASSUMPTION | API | 4.3 |
 | [I-61](#i-61) | Nothing runs on more than one device | Medium | OPEN | Performance | 3.2 |
-| [I-62](#i-62) | Hull-White Bermudan/American scenario pricing runs on the host | Low | OPEN | Performance | 1.3 |
-| [I-63](#i-63) | Hull-White trade configs carry copies of model parameters | Medium | OPEN | Architecture | 1.3 |
-| [I-64](#i-64) | A trade's evaluation date defaults to ORE's thread-local global | Medium | OPEN | Correctness | 1.3 |
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | 5.2 |
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | 5.3 |
-| [I-68](#i-68) | The Hull-White model is chosen by the market's type, not by the configuration | Medium | PARTIAL | Architecture | 1.3 |
 
-**Paths.** The *market path* is `price_portfolio` on a `Market` (`engine.portfolio.market_path`,
-HTTP `POST /v2/portfolio/price`): ORE's LGM cross-asset model and valuation, the default.
-The *Hull-White model* is `price_portfolio` on a `SimulationConfig`
-(`engine.portfolio.request`, HTTP `POST /portfolio/price`): the original simulation, kept as a
-supported non-default option (decision A-1 in
-[compliance/decisions.md](../../compliance/decisions.md)). PARTIAL entries are closed on the
-first and open on the second.
+**One pipeline.** Since roadmap 1.3 every run is `price_portfolio` on a `Market`
+(`engine.portfolio.market_path`; HTTP `POST /portfolio/price`, also served as
+`/v2/portfolio/price`): ORE's cross-asset model with a model per currency
+(`CamConfig.ir`: the LGM by default, or Hull-White, decision A-1 in
+[compliance/decisions.md](../../compliance/decisions.md)), and ORE's valuation of every trade on
+every path. "Market path" in older entries and commits means this pipeline; "the Hull-White
+model" before 1.3 meant the separate pipeline 1.3 removed.
 
 ---
 
 ## Correctness
-
-<a id="i-04"></a><a id="m-2"></a>
-### I-04 — Aged swaps: the Hull-White model keeps paid flows; TraderX exports no past fixings
-
-**Severity:** High · **Status:** PARTIAL · **Found:** TraderX EOD review; widened by the
-2026-09-24 audit (M-2)
-
-**What is wrong.** Two halves.
-
-1. *Hull-White model.* `price_swaps` sums every cashflow of a swap at every simulated step.
-   A paid flow (`T < t`) gets a clamped `B(t,T)` and `A(t,T) = P(0,T)/P(0,t) > 1`, so it is
-   kept and grown: the demo's 3Y payer swap has a mean NPV of −9,852 at t=4, after maturity.
-   A coupon fixing during the simulation has no path fixing.
-2. *Data.* A coupon fixed before the as-of date needs its historical fixing. Every trade
-   config takes `fixings` and refuses a missing one (`MissingFixingError`), as ORE does, but
-   TraderX exports no `pastFixings`, so a seasoned TraderX swap cannot be priced.
-
-**Reach.** Hull-White: every cube value past a swap's first accrual start, and the exposure
-built on it; t=0 is exact. Market path: correct (paid flows drop out, path fixings by
-`FixingManager`'s rule, `tests/test_valuation.py`).
-
-**Current handling.** `price_portfolio` warns per affected swap on the Hull-White model; the
-EOD capability document lists I-04 as a known limitation.
-
-**To close.** Half 1 with roadmap 1.3 (the Hull-White model on the shared valuation
-pipeline). Half 2 needs `pastFixings` from TraderX ([details](details/traderx-integration.md)).
 
 <a id="i-12"></a>
 ### I-12 — `/version` reports the dispatcher's backend, not the worker's device
@@ -117,25 +84,6 @@ or hardware study reading this field would attribute results to the wrong device
 
 **To close.** Report the device and the realised per-stage dtypes from the worker, on each
 result.
-
-<a id="i-24"></a>
-### I-24 — Bonds have no scenario NPV on the Hull-White model
-
-**Severity:** Medium · **Status:** PARTIAL
-
-**What is wrong.** On the Hull-White model a `BondConfig` with `scenario_risk=True` is
-refused (`ScenarioPricingNotSupported`); with `scenario_risk=False` the result has the bond's
-t=0 NPV and Greeks, an empty `risk`, and `scenario_risk_available=False`. The market path
-prices a bond on every path (ORE's `DiscountingRiskyBondEngine` without credit,
-`engine.valuation.portfolio.bond_legs`).
-
-**Do not close it** by broadcasting the t=0 NPV across the cube (measured: VaR 0.00 and ES
-NaN for a $100k bill, a false "no risk"), by zero-filling, or by defaulting `scenario_risk`
-to false. `tests/test_treasury_instrument.py::TestScenarioPricingIsRefused` pins the
-refusal and fails against the broadcast.
-
-**To close.** Roadmap 1.3: the Hull-White model reuses the market path's bond legs on its
-own scenario curves.
 
 <a id="i-32"></a>
 ### I-32 — Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5
@@ -161,113 +109,12 @@ shifted variable, in `engine.models.lgm` and `_state_grid`), prove parity at 0.5
 `tests/support/ore_lgm_oracle.py` (which already takes `shift_horizon=`), then make 0.5
 the default. The FD solver is an option, [F-01](features.md#f-01).
 
-<a id="i-42"></a><a id="m-1"></a>
-### I-42 — Hull-White: simulated curves not arbitrage-free against the input curve
-
-**Severity:** High · **Status:** PARTIAL · **Found:** 2026-09-24, audit M-1
-
-**What is wrong.** `engine.simulation.market_model` evolves the short rate toward a constant
-`theta` from `initial_rates`, while its discount factors use the Hull-White `A(t,T)` fitted to
-the input curve, which assumes the curve-fitted drift θ(t). Martingale error
-`E[P(t,T)/N(t)]/P(0,T) − 1` at t=2y: 0.06% (5y) and 0.14% (10y) on a flat 3% curve; 4.2% and
-8.8% on a curve rising 3% → 5%.
-
-**Reach.** Every Hull-White cube value past t=0 on a non-flat curve, the exposure built on
-it, and the Bermudan/American scenario pricers conditioned on the simulated rate. Closed on
-the market path (`tests/test_cam.py` checks the martingale exactly and by Monte Carlo on
-sloped curves).
-
-**Current handling.** `price_portfolio` warns on the Hull-White model.
-
-**To close.** Roadmap 1.3: simulate the zero-mean state and add the curve-fitted drift
-(`r = x + α(t)`, Brigo–Mercurio 3.36), with the martingale test on a sloped curve.
-
-<a id="i-43"></a><a id="m-3"></a>
-### I-43 — Hull-White: options worth zero after expiry instead of becoming the swap
-
-**Severity:** High · **Status:** PARTIAL · **Found:** 2026-09-24, audit M-3
-
-**What is wrong.** A European's scenario NPV is 0 after expiry, a Bermudan's or American's
-after its last exercise date, on every path. An exercised physical option is the swap. In
-`demos/demo.py` the exposure "risk" at t=2..5 is the options vanishing everywhere at once.
-
-**Reach.** Hull-White exposure after the first expiry. Closed on the market path
-(`engine.valuation.options`, ORE's `OptionWrapper`).
-
-**Current handling.** `price_portfolio` warns when an option expires inside the horizon.
-
-**To close.** Roadmap 1.3: reuse `engine.valuation.options` on the Hull-White model's paths.
-
-<a id="i-44"></a><a id="a-2"></a>
-### I-44 — Hull-White: scenario pricing mixes Hull-White and LGM
-
-**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-24, audit A-2
-
-**What is wrong.** The Hull-White model simulates a Hull-White short rate and prices
-Bermudans/Americans with LGM, conditioning the rollback on the rate through `x_from_r`. Both
-read the same `(a, σ)`, but LGM treats σ as the volatility of x, whose short-rate equivalent
-is `σ·e^{−at}`: at a = 3% the two differ by 14% at 5y.
-
-**Reach.** Hull-White Bermudan/American values past t=0. Closed on the market path (one
-model, LGM, recalibrated per path).
-
-**To close.** Roadmap 1.3: make the Hull-White model consistent within itself (Hull-White
-simulation, Hull-White or Hull-White-equivalent pricers, no state conversion). Decision A-2
-keeps the model rather than removing it.
-
-<a id="i-45"></a>
-### I-45 — Hull-White: numeraire is a discretely accrued bank account
-
-**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-28
-
-**What is wrong.** `N(t_{i+1}) = N(t_i)·exp(r(t_i)·dt)` on factor 0 (left-point rule), biased
-by the rate's change over each step; ORE uses the model's exact numeraire. The error grows
-with the grid spacing.
-
-**Reach.** Every Hull-White exposure profile (all are NPV/N). Closed on the market path
-(`scenario_market.lgm_numeraire`).
-
-**To close.** Roadmap 1.3: the model's exact numeraire in the reporting currency.
-
-<a id="i-46"></a>
-### I-46 — Hull-White: Europeans priced off the model vol, not the market vol
-
-**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-28
-
-**What is wrong.** ORE's default European engine is Black/Bachelier on the market swaption
-volatility. The Hull-White model prices Europeans with Jamshidian on the trade's `hw_sigma`
-(`ORE.JamshidianSwaptionEngine`, not ORE's default), so NPV differs from the market price and
-there is no Vega.
-
-**Reach.** Hull-White European NPVs and Greeks. Closed on the market path and in
-`engine.market_risk` (Bachelier, `engine.valuation.european`).
-
-**To close.** Roadmap 1.3: market-vol Bachelier as the default European engine on the
-Hull-White model; Jamshidian stays as a configurable engine.
-
-<a id="i-47"></a>
-### I-47 — Hull-White: calibration basket is not the one ORE builds for the trade
-
-**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-28
-
-**What is wrong.** The Hull-White model calibrates every Bermudan/American, on every rate
-factor, to one caller-supplied basket (`engine.calibration.basket`, rounded to whole months,
-built on the first uncalibrated trade: `engine.portfolio.request._fill_calibrated_sigma`,
-mirrored in `engine/api/schemas.py`). ORE builds a co-terminal basket per trade from its own
-exercise dates and underlying.
-
-**Reach.** Calibrated Hull-White Bermudan/American σ, hence NPV, Greeks and Vega. Closed on
-the market path (`engine.valuation.bermudan.calibration_basket`, `engine.calibration.ore_lgm`;
-2e-11 against ORE's `Calibration=Bootstrap`).
-
-**To close.** Roadmap 1.3: per-trade basket and calibration, shared with the market path.
-
 <a id="i-49"></a>
 ### I-49 — Per-path recalibration differs from ORE's in two details
 
 **Severity:** Medium · **Status:** OPEN · *Difference from ORE* · **Found:** 2026-09-29
 
-**What is wrong.** On the market path every Bermudan/American is recalibrated on each path
+**What is wrong.** Every Bermudan/American is recalibrated on each path
 and date, as ORE's `ValuationEngine` does with `recalibrate = true`
 (`engine.valuation.bermudan`). Two details differ from ORE's source:
 
@@ -299,21 +146,6 @@ With a smile: European NPV and Vega away from the money, and calibrated Bermudan
 
 **To close.** Decided (X-5): a strike axis in the market's volatilities, read at each
 option's and helper's strike as ORE reads its cube. SABR is [F-02](features.md#f-02).
-
-<a id="i-64"></a><a id="a-4"></a>
-### I-64 — A trade's evaluation date defaults to ORE's thread-local global
-
-**Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-24, audit A-4
-
-**What is wrong.** Every Hull-White trade config defaults `evaluation_date` to
-`ORE.Settings.instance().evaluationDate`, which is thread-local and defaults to the
-wall-clock date ([I-28](#i-28) was one symptom). A result can depend on which thread ran
-and what ran before. `price_portfolio` checks that all trades share one date, and the market
-path refuses a trade not valued on the market's as-of date, but a single trade built without
-a date silently takes "today".
-
-**To close.** Roadmap 1.3: `evaluation_date` required on every trade config; scope any ORE
-global that must be set with a context manager that restores it.
 
 ---
 
@@ -369,54 +201,71 @@ shift convention in ORE's simulation market would pass every current test.
 ## Performance
 
 <a id="i-21"></a>
-### I-21 — Hull-White Greeks recompile 23 XLA programs per call
+### I-21 — AD Greeks recompile about 30 XLA programs per repeated call
 
-**Severity:** Medium · **Status:** OPEN · every number is correct
+**Severity:** Medium · **Status:** OPEN · every number is correct · re-measured 2026-10-01
+after roadmap 1.3
 
-**What is wrong.** A repeated identical `price_portfolio` call on the Hull-White model
-recompiles 31 programs (208 cold), 23 of them in `engine/risk/greeks.py`: each Greek jits a
-closure built fresh per call (`_swap_price_fn`, `_swaption_price_fn`, `_bermudan_price_fn`,
-`bermudan_vega`'s per-bucket closures), and `jax.jit` caches on function identity.
+**What is wrong.** A repeated identical AD Greeks call (`engine.risk.greeks.portfolio_greeks`)
+on one two-exercise Bermudan compiles 30 programs (150 cold): 2 `jit_combined` (each Greek's
+`_grad_and_hessian_diagonal` jits a closure built fresh per call, and `jax.jit` caches on
+function identity) and 28 `jit_scan`, the calibrations it runs for the base, Theta and Vega
+markets ([I-22](#i-22)). The Hull-White pipeline's 23 closures this entry was first measured on
+were removed by 1.3.
 
-**To close.** Re-measure after roadmap 1.3, which may replace this code. If it survives:
-memoize the jitted wrapper in a bounded LRU keyed on `static_key(prepared)` plus the curve's
-shape and dtype. Never key on the config (misses what date generation derives) or on `id()`.
-Prototyped on Europeans: steady-state compiles 1 → 0, bit-identical. The test must also show
-that trades differing only in `notional`, `fixed_rate` or tenor still get their own answer;
-`tests/test_profiling_and_jit.py::TestCompileCounts::test_repeated_greeks_call_costs_one_compile_not_zero`
-pins today's count and changes with the fix.
+**To close.** Fix [I-22](#i-22) first (most of the count). Then memoize the jitted wrapper in a
+bounded LRU keyed on the trade's prepared structure (`static_key`) plus the curves' shapes and
+dtypes; never on the config or `id()`. The test must also show that trades differing only in
+`notional`, `fixed_rate` or tenor still get their own answer.
+`tests/test_profiling_and_jit.py::TestCompileCounts::test_repeated_greeks_call_compiles_a_bounded_number_of_programs`
+pins today's bound and changes with the fix.
 
 <a id="i-22"></a>
-### I-22 — Hull-White calibration recompiles 8 XLA programs per call
+### I-22 — Each LGM calibration recompiles its bisection (6 programs per call)
 
-**Severity:** Low · **Status:** OPEN · every number is correct
+**Severity:** Low · **Status:** OPEN · every number is correct · re-measured 2026-10-01
 
-**What is wrong.** `engine/calibration/lgm.py` bakes Python floats into traced programs
-(`_bisect_bucket_sigma` closes over `market_price`; `calibrate_lgm_sigma`'s closures over
-`target`), so each bucket and call compiles again. A different mechanism from I-21: a
-content-keyed memo would miss every time.
+**What is wrong.** `engine/calibration/ore_lgm.py`'s bootstrap bakes each helper's market
+price into its traced bisection, so every calibration compiles again: 6 `jit_scan` per call
+for a two-helper basket (`calibrate_on`). A Bermudan's value today, its Greeks and every
+path date it is recalibrated on pay it again. A content-keyed memo would miss every time.
 
-**To close.** Pass `market_price` as a traced argument to a stable, module-level jitted
-function. `price_fn` differs per bucket (it depends on the calibrated prefix) and stays
-static, so expect about 8 → 2. Do not trade the 60 bisection iterations for compile count
-(`rmse < 1e-8` is asserted).
+**To close.** Pass the market price (and the bucket's fixed prefix) as traced arguments to a
+stable, module-level jitted function; expect 6 → 1 per basket size. Do not trade the bisection
+iterations for compile count. `tests/test_profiling_and_jit.py::TestCompileCounts::
+test_calibration_recompiles_a_few_programs_per_call` pins today's bound.
 
 <a id="i-53"></a>
-### I-53 — The market path is slow (full suite 23 → 46 min)
+### I-53 — The pipeline is slow: per-path recalibration and bump Greeks of options
 
-**Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-29
+**Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-29 · re-measured 2026-10-01
 
-**What is wrong.** The full suite went from 22:54 before the ORE alignment to 46:00. The
-slowest test, `tests/test_api_market_path.py::test_result_matches_direct_price_portfolio_call`,
-takes about 275 s for 8 trades on 128 paths and 4 dates. Unprofiled suspects: each
-Bermudan/American rebuilds its basket through `ORE.SwaptionHelper` and bootstraps on every
-path date (ORE's `recalibrate = true`), sensitivities revalue one bump at a time in Python
-loops, nothing is jitted end to end, and each worker process recompiles.
+**What is wrong.** The full suite went from 22:54 before the ORE alignment to 46:00, and the
+Hull-White model's move onto the shared pipeline (roadmap 1.3) gave its options the same
+cost. Measured (CPU, shared test market, Bermudan/American grid at `n_per_std=16`):
 
-**To close.** Profile a market-path job (`JAX_RISK_PROFILE_DIR`,
-[profiling](../concepts/profiling.md)), then optimize, keeping every parity test
-bit-identical in FP64. `PricingConfig(recalibrate=False)` exists where ORE's semantics are
-not needed.
+| Work | Time |
+|---|---|
+| One Bermudan (4 exercises) on 64 paths × 3 dates, recalibrated per path date | 43 s |
+| One American (3-year window) on 64 paths × 3 dates | 44 s |
+| The same with `PricingConfig(recalibrate=False)` (warm) | 6 s / 21 s |
+| Bump Greeks of the Bermudan / the American (each bump recalibrates) | 128 s / 587 s |
+| AD Greeks of the same | 31 s / 48 s |
+
+Profiling it is blocked by the same cost: `demos/demo_profile_small.py` (5 trades, 256 paths,
+3 dates) fills the profiler's ~1M-event cap within the first 7-10 s of a 112 s job (398 s
+with Bump Greeks) and its trace is truncated; without its Bermudan and American the whole
+job is 205k events, 12.8 MB. The events are the options' recalibration and pricing per path
+date, not the Greeks (AD and Bump both overflow).
+
+Suspects: each Bermudan/American rebuilds its basket through `ORE.SwaptionHelper`
+and bootstraps on every path date (ORE's `recalibrate = true`), with its bisection recompiled
+each time ([I-22](#i-22)); sensitivities revalue one bump at a time in Python loops; nothing
+is jitted end to end; each worker process recompiles.
+
+**To close.** Profile a job (`JAX_RISK_PROFILE_DIR`, [profiling](../concepts/profiling.md)),
+then optimize, keeping every parity test bit-identical in FP64. `PricingConfig(recalibrate=
+False)` and the AD Greeks method exist where ORE's semantics are not needed.
 
 <a id="i-61"></a><a id="p-1"></a>
 ### I-61 — Nothing runs on more than one device
@@ -431,17 +280,6 @@ low-precision paths against fewer FP64 paths in equal wall time. No code uses `s
 seed exists), path evolution, pricing and exposure are scenario-parallel; VaR/ES order
 statistics need one cross-device step. Then device-count-aware pool sizing and
 `JAX_PLATFORMS`/`TPU_VISIBLE_CHIPS` pinning on a real Cloud TPU VM.
-
-<a id="i-62"></a><a id="p-2"></a>
-### I-62 — Hull-White Bermudan/American scenario pricing runs on the host
-
-**Severity:** Low · **Status:** OPEN · **Found:** 2026-09-24, audit P-2
-
-**What is wrong.** `price_bermudan_swaptions` copies the paths to host memory and loops over
-steps with `np.interp` (`engine/instruments/bermudan_swaption.py`), so the scenario half
-never runs on the accelerator. The market path is vectorized over paths.
-
-**To close.** Moot once roadmap 1.3 moves the Hull-White model onto the shared pipeline.
 
 ---
 
@@ -477,18 +315,17 @@ order, hash, item-order file) and return a reference plus summaries, as the EOD 
 already specifies.
 
 <a id="i-10"></a>
-### I-10 — No trade identity on the configs; results keyed by position
+### I-10 — Per-trade results keyed by position beside the echoed ids
 
-**Severity:** Medium · **Status:** OPEN
+**Severity:** Low · **Status:** PARTIAL · configs closed by roadmap 1.3
 
-**What is wrong.** `PortfolioResult.greeks` and `base_npv_per_trade` are keyed by array
-position. Optional `PortfolioRequest.trade_ids` (echoed as `PortfolioResult.trade_ids`, and a
-`trade_id` per trade over HTTP on the market path) are caller labels; the configs carry no
-identity, and the Hull-White request shape has none. Reordering or filtering would silently
-misattribute. The EOD boundary is closed (`engine/integration/identity.py`).
+**What is wrong.** Every trade config carries a required `trade_id` (ORE's `<Trade id>`,
+unique in a portfolio) and `PortfolioResult.trade_ids` echoes them in request order, but
+`greeks`, `base_npv_per_trade`, `trade_exposures` and the cube's trade axis are still keyed by
+position, so a consumer must zip them with `trade_ids`. The EOD boundary is closed
+(`engine/integration/identity.py`).
 
-**To close.** An instrument id on every trade config (roadmap 1.3, while every config
-changes), echoed on every result row (4.1).
+**To close.** Roadmap 4.1: every per-trade result row carries its id.
 
 <a id="i-23"></a>
 ### I-23 — `accrualBasis` strictness rests on an unconfirmed reading
@@ -511,30 +348,28 @@ with a test per value. `tests/test_integration_terms_v2.py::TestUnrecognizedValu
 pins today's rule.
 
 <a id="i-56"></a>
-### I-56 — The API cannot reach every setting; two routes named like versions
+### I-56 — Market risk and the CAM calibration have no route; two routes named like versions
 
-**Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-30, decision A-2
+**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-30, decision A-2 · narrowed by
+roadmap 1.3
 
-**What is wrong.**
+**What is wrong.** Since 1.3 one request shape (`MarketPortfolioRequestSchema`) serves
+`POST /portfolio/price` and `POST /v2/portfolio/price` and reaches the run configuration: the
+model per currency (`simulation.ir`, `"model": "HullWhite"`), the engine per product (with the
+Jamshidian engine's model), the Greeks method and ORE's sensitivity settings, precision and
+the reporting currency; trades carry ids. Left:
 
-1. The market path is served at `POST /v2/portfolio/price` with `schema_version: "2"`; the
-   Hull-White model at `POST /portfolio/price`. These are two models, not versions.
-2. The model is chosen by the request's shape, so no request can mix options across them.
-3. Unreachable over HTTP: the Greeks settings (`RunConfig.greeks`: the method and
-   `SensitivityConfig`'s tenors, shifts, Theta horizon and vol decay; reachable from
-   `price_portfolio` since roadmap 1.2), the European engine (`PricingConfig.european`; the
-   Hull-White route always sends Jamshidian), market-risk VaR/ES
-   (`engine.market_risk.run_market_risk`, no route), the market path's calibrations as
-   standalone runs (`POST /calibration/lgm` serves only the Hull-White basket), and trade ids
-   on the Hull-White shape.
+1. Two routes for one request, one named like a version (`/v2`, `schema_version: "2"`).
+2. Unreachable over HTTP: market-risk VaR/ES (`engine.market_risk.run_market_risk`, no
+   route); the CAM's calibration as a standalone run (`POST /calibration/lgm` is the older
+   Hagan bootstrap on a caller-given basket, not the per-currency CAM calibration or a trade's
+   basket); `LgmSwaptionEngineConfig.shift_horizon` (only 0 is implemented, [I-32](#i-32)).
+3. No completeness test fails when a configuration setting has no API field.
 
 Nothing is priced wrongly; unreachable settings run at documented defaults.
 
-**To close.** Decided (A-2): one route and one request whose configuration
-(`RunConfig`, [I-68](#i-68)) reaches every setting, validated before any job starts (unknown fields
-refused, each refusal naming its field), no version-like names except for real contract
-revisions. Today's routes keep answering, translated. A completeness test fails when a
-configuration setting has no API field
+**To close.** Decided (A-2): one route, the old names kept as aliases; a market-risk route; the
+CAM calibration route; the completeness test
 ([details/configurable-engine.md](details/configurable-engine.md)).
 
 <a id="i-57"></a>
@@ -599,68 +434,31 @@ with a test.
 ## Architecture
 
 <a id="i-55"></a><a id="a-1"></a>
-### I-55 — Precision switched by a process-global flag; unproven combinations not flagged
+### I-55 — Only the simulation's precision is adjustable; unproven combinations not flagged
 
 **Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-24, audit A-1; decisions A-9, D-9
 
 **What is wrong.**
 
-1. *Mechanism.* `jax_enable_x64` is process-global. `market_model` enables it at import,
-   `generate_paths` toggles it, `price_portfolio` forces it on under `_PRICING_LOCK`, and the
-   worker pool keeps one process pool per precision. Because `price_portfolio` turns x64
-   back on in every job, a 32-bit worker runs with x64 on after its first job, so the tiers do
-   not isolate what they were built to. The market-path code already takes explicit dtypes.
-2. *No warning.* Any per-stage combination may be run (decision D-9), but nothing records
+1. *Stages.* `config.precision.simulation` (32 or 64) sets the simulation's dtype; the
+   pricing, risk and calibration stages run in float64 and a value below 64 for them is
+   refused by name (`engine.portfolio.config.check_run`), for either model. Before roadmap
+   1.3 the Hull-White pipeline also took `pricing` and `risk` below 64; that option went with
+   the pipeline and returns with 1.4, which gives every stage an explicit dtype.
+2. *Mechanism.* `jax_enable_x64` is process-global. Since 1.3 it is set once, when `engine`
+   is imported, and every worker keeps it on ([I-71](#i-71)); `run_market_risk` still sets it
+   again, and `_PRICING_LOCK` and the per-precision pool tiers remain, now only routing.
+3. *No warning.* Any per-stage combination may be run (decision D-9), but nothing records
    which combinations are shown adequate for which figure, so an FP32 exposure profile looks
    exactly like a validated one.
-3. *Market path stages.* The market path honours `config.precision.simulation` only. Pricing,
-   risk and calibration run in float64 there, and a value below 64 for them is refused by
-   name (`check_market_path`); until roadmap 1.2 it was accepted and silently ignored.
 
-**To close.** Decided (A-9): (1) roadmap 1.4: x64 on once per process, every stage and array
-with an explicit dtype from the configuration (on the market path the scenario market, the
-legs and the per-path Bermudan engine, so pricing, risk and calibration become adjustable
-there and the refusal goes), then remove the toggling, the lock and the tiers, never leaving
-precision unadjustable in between. (2) roadmap 2.7: an evidence table per
-figure and precision (what was validated, how, at how many paths) and a warning on any
-result whose combination is unproven.
-
-<a id="i-63"></a><a id="a-3"></a>
-### I-63 — Hull-White trade configs carry copies of model parameters
-
-**Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-24, audit A-3
-
-**What is wrong.** Hull-White swaption configs carry `hw_a`, `hw_sigma` and
-`initial_zero_curve`, which must equal the simulation's entries for their
-`rate_factor_index`; `validate_portfolio_against_simulation` exists to catch the copies
-drifting, and swaps use curve indices instead. Two conventions for one fact caused I-13.
-Closed on the market path (trades carry no model; refused if set).
-
-**To close.** Roadmap 1.3: trades name their curves and index; model parameters and
-calibrated σ come from the market and the configuration.
-
-<a id="i-68"></a>
-### I-68 — The Hull-White model is chosen by the market's type, not by the configuration
-
-**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-30, decisions A-1, A-5, A-8
-
-**What is wrong.** Every choice of a portfolio run is one `RunConfig`
-(`engine/portfolio/config.py`, roadmap 1.2): simulation and model per currency
-(`simulation.ir`), engine per product (`pricing`), Greeks method and ORE's sensitivity
-settings (`greeks`), precision per stage (`precision`), reporting currency. Each model refuses
-an option it does not implement, naming the field. What is left: the Hull-White model is still
-selected by passing a `SimulationConfig` as `PortfolioRequest.market`, not by a Hull-White
-model in `config.simulation.ir`, because its simulation still carries its own curves and its
-trades their own model parameters ([I-63](#i-63)).
-
-**Reach.** Only how the Hull-White model is selected; its engines, Greeks method and precision
-come from the same `RunConfig` as the market path's (`HULL_WHITE_CONFIG`).
-
-**Current handling.** `check_hull_white` refuses the market path's settings on a Hull-White
-run (a `config.simulation`, LGM engine settings, sensitivity settings, a base currency).
-
-**To close.** Roadmap 1.3: a Hull-White model per currency in `CamConfig.ir` on a `Market`,
-and the `SimulationConfig` market removed.
+**To close.** Decided (A-9): (1) roadmap 1.4: every stage and array with an explicit dtype
+from the configuration (the scenario market, the legs, the per-path Bermudan engine, the
+Greeks and the calibration), so pricing, risk and calibration become adjustable and the
+refusal goes; then remove `_PRICING_LOCK`, the remaining flag set and the tiers, never
+leaving precision unadjustable in between. (2) roadmap 2.7: an evidence table per figure and
+precision (what was validated, how, at how many paths) and a warning on any result whose
+combination is unproven.
 
 ---
 
@@ -668,6 +466,24 @@ and the `SimulationConfig` market removed.
 
 Refused with an identified reason, never approximated. Each is listed because a current
 consumer (TraderX) sends the input.
+
+<a id="i-04"></a><a id="m-2"></a>
+### I-04 — Seasoned TraderX swaps: the export has no past fixings
+
+**Severity:** High · **Status:** OPEN · blocked on TraderX · **Found:** TraderX EOD review;
+widened by the 2026-09-24 audit (M-2)
+
+**What is wrong.** A coupon fixed before the as-of date needs its historical fixing. Every
+trade config takes `fixings` and refuses a missing one (`MissingFixingError`), as ORE does,
+but TraderX exports no `pastFixings`, so a seasoned TraderX swap cannot be priced.
+
+**Reach.** Seasoned swaps from the EOD boundary only; the engine itself prices seasoned
+swaps given their fixings, and on every path paid flows drop out and coupons fix by
+`FixingManager`'s rule, under either model (the first half of this entry, the Hull-White
+model keeping paid flows, closed with roadmap 1.3: `tests/test_hull_white_model.py::
+TestPaidFlowsAndMaturity`, `tests/test_valuation.py`).
+
+**To close.** `pastFixings` from TraderX ([details](details/traderx-integration.md)).
 
 <a id="i-05"></a>
 ### I-05 — No faithful USD-SOFR / ACT-360 swap construction
@@ -694,11 +510,11 @@ conventions.
 
 **Severity:** Medium · **Status:** OPEN
 
-**What is wrong.** Treasuries price on both paths; TraderX's position export also carries
+**What is wrong.** Treasuries price today and on every path; TraderX's position export also carries
 corporate bonds (refused: a Treasury-discounted corporate is not credit pricing, it needs a
 credit model), cash equities ([I-18](#i-18): a market-data gap, not a pricer gap), listed
-options, TIPS and FRNs. `SimulationConfig.equities` drives risk-factor paths; it is not a
-position pricer. FX and equity trades on the market path are [F-04](features.md#f-04).
+options, TIPS and FRNs. The simulation's equities (`CamConfig.equity_volatilities`) drive risk-factor paths; they
+are not a position pricer. FX and equity trades are [F-04](features.md#f-04).
 
 **To close.** Per instrument, on demand: a config, a pricer, ORE parity tests.
 
@@ -757,9 +573,13 @@ creates pools and never calls `shutdown_pools`, so later in-process compiles run
 children attached. Pairing modules does not reproduce it. Also check whether XLA's on-disk
 compilation cache is shared unsafely with spawned workers.
 
-**To close.** Add a `shutdown_pools()` autouse fixture to `tests/test_api.py`, then repeated
-clean full runs against a known-bad baseline; one green run proves nothing. Replace the
-wall-clock overlap assertion with a deterministic one.
+**Current handling.** `tests/test_api.py` shuts its pools down after the module (roadmap 1.3),
+and the same-tier concurrency test builds a fresh pool (it failed deterministically when run
+after the pricing tests, on the code before 1.3 as well, because the executor reused one
+started worker instead of spawning a second).
+
+**To close.** Repeated clean full runs against a known-bad baseline; one green run proves
+nothing. Replace the cross-tier wall-clock overlap assertion with a deterministic one.
 
 <a id="i-66"></a><a id="q-2"></a>
 ### I-66 — No linter or type checker
@@ -767,11 +587,11 @@ wall-clock overlap assertion with a deterministic one.
 **Severity:** Low · **Status:** OPEN · **Found:** 2026-09-24, audit Q-2 (pins and CI done)
 
 **What is wrong.** No ruff/flake8, mypy/pyright or pre-commit. `pyflakes engine` today
-reports unused imports in `integration/{bundle,market_inputs,pipeline,result,terms}.py`,
-`models/hull_white.py`, `risk/greeks.py` and `risk/price_functions.py`, an f-string without
-placeholders in `integration/equity.py`, and re-exports that need `# noqa` or `__all__`
-(`portfolio/validation.py`, `portfolio/request.py`, `models/ore_builders.py`,
-`simulation/market_model.py`). `requirements.txt` does not mention the `profiling` extra.
+reports unused imports in `integration/{bundle,market_inputs,pipeline,result,terms}.py`, an
+f-string without placeholders in `integration/equity.py`, a string forward reference in
+`instruments/bermudan_swaption.py`, and re-exports that need `__all__` (pyflakes ignores
+`# noqa`: `portfolio/{__init__,validation,request}.py`, `models/{ore_builders,hull_white}.py`,
+`instruments/bermudan_swaption.py`). `requirements.txt` does not mention the `profiling` extra.
 
 **To close.** Add ruff to `pyproject.toml` and CI, fix or mark each finding (check that a
 "re-export" is actually imported elsewhere first), then a type checker on `engine/`.
@@ -781,8 +601,9 @@ placeholders in `integration/equity.py`, and re-exports that need `# noqa` or `_
 
 **Severity:** Low · **Status:** OPEN · **Found:** 2026-09-24, audit Q-3
 
-**What is wrong.** `tests/test_worker_pool.py` and `tests/test_portfolio_market_path.py`
-import helpers from other test modules; `tests/test_market_model.py` imports from `conftest`.
+**What is wrong.** Most cross-module imports moved to `tests/support/` with roadmap 1.3
+(`portfolio`, `lgm_engine`, `greeks`); test modules still import `bermudan_references` and
+`date_helpers` from the tests directory itself.
 `FIXTURES = ...traderx-eod` is defined in 15 files and `MARKET = {...flat-3pct-v1}` in 7.
 Many tests reach into private functions, which freezes internal structure and makes
 refactors (roadmap stage 1) break tests without behaviour changing.
@@ -806,30 +627,44 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-03"></a>I-03 | No per-instrument NPV | `tests/test_portfolio_gap_fixes.py::TestPerTradeBaseNpv` |
 | <a id="i-06"></a>I-06 | American exercise ignored ORE's broken-period `couponRatio` (up to 6× off) | `tests/test_ore_lgm_parity.py`, `tests/test_bermudan_swaption.py::TestMidPeriodBermudanExercise` |
 | <a id="i-11"></a>I-11 | Risk measure unlabelled; no Monte Carlo error reported | `tests/test_risk_measure_label.py::TestPortfolioResultStatesItsMeasure` |
-| <a id="i-13"></a>I-13 | A negative curve index priced against the wrong curve | `tests/test_portfolio_gap_fixes.py::TestCurveIndexValidatedBeforeAllPricing` |
-| <a id="i-14"></a>I-14 | `generate_paths(precision=32)` leaked `jax_enable_x64=False` | `tests/test_market_model.py::TestGeneratePathsEdgeCases` |
-| <a id="i-15"></a>I-15 | The worker-pool concurrency test could not observe concurrency | `tests/test_worker_pool.py::TestWorkerPoolConcurrency` |
+| <a id="i-10-configs"></a>I-10 (configs) | Trade configs had no identity (now a required `trade_id`, echoed as `PortfolioResult.trade_ids`) | `tests/test_trade_configs.py::TestEveryTradeNamesItselfAndItsDate`, `tests/test_portfolio_market_path.py::test_a_repeated_trade_id_is_refused` |
+| <a id="i-13"></a>I-13 | A negative curve index priced against the wrong curve (trades now name a currency and index; a missing curve is refused before pricing, naming the trade) | `tests/test_portfolio_gap_fixes.py::TestCurveIndexValidatedBeforeAllPricing` |
+| <a id="i-14"></a>I-14 | `generate_paths(precision=32)` leaked `jax_enable_x64=False` (`generate_paths` removed by roadmap 1.3; nothing toggles the flag) | `tests/test_portfolio_entrypoint.py::TestPricePortfolioConcurrency` |
+| <a id="i-15"></a>I-15 | The worker-pool concurrency test could not observe concurrency (and, until 1.3, failed after the pricing tests by reusing one worker) | `tests/test_worker_pool.py::TestWorkerPoolConcurrency` |
 | <a id="i-17"></a>I-17 | A malformed note date failed the whole bundle | `tests/test_integration_note.py::TestRefusalsAreNotePricingErrors` |
 | <a id="i-19"></a>I-19 | The accrual tolerance rounded its own bound | `tests/test_integration_note.py::TestToleranceIsDerivedNotConstant` |
 | <a id="i-20"></a>I-20 | Impossible calendar dates aborted the whole bundle | `tests/test_integration_note.py::TestImpossibleCalendarDates` |
 | <a id="i-25"></a>I-25 | A scalar Greek crashed the HTTP result serializer | `tests/test_api_bond_schemas.py::TestBondGreeksSerializeOverHttp` |
+| <a id="i-24"></a>I-24 | Bonds had no scenario NPV on the Hull-White model (refused; a broadcast t=0 value gave VaR 0, ES NaN) | `tests/test_hull_white_model.py::TestBondsOnEveryPath`, `tests/test_portfolio_bond_wire_through.py::TestBondsArePricedOnEveryPath` |
 | <a id="i-26"></a>I-26 | Greeks for a bond maturing tomorrow crashed on the Theta reprice | `tests/test_portfolio_bond_wire_through.py::TestBondGreeksReachThePortfolioPath` |
 | <a id="i-28"></a>I-28 | The `var_es` module demo crashed on a moved date | `tests/test_demos.py::TestComponentDemosRun` |
 | <a id="i-29"></a>I-29 | A rounded exercise time silently dropped a coupon (exercise now given as dates) | `tests/test_ore_bermudan_oracle.py::TestExerciseDatesAreExact` |
-| <a id="i-30"></a>I-30 | The `A(t,T)` variance term was nearly uncovered at t=0 | `tests/test_ore_coverage_hardening.py::TestVarianceTermIsActuallyChecked` |
+| <a id="i-30"></a>I-30 | The `A(t,T)` variance term was nearly uncovered at t=0 (that formula went with the Hull-White pipeline; the model's bonds are QuantLib's on every state) | `tests/test_cam.py::test_hull_white_path_curves_equal_quantlibs_hull_white` |
 | <a id="i-31"></a>I-31 | Bermudan/American floating coupons projected over the wrong period | `tests/test_ore_lgm_parity.py` |
 | <a id="i-33"></a>I-33 | On Linux, worker-pool jobs hung once the parent had run JAX (fork) | `tests/test_worker_pool.py::TestPoolsSpawnOnEveryPlatform` |
 | <a id="i-35"></a>I-35 | An American already in its window was exercisable on the evaluation date | `tests/test_trade_dates.py::test_seasoned_bermudan_and_american_equal_ore` |
 | <a id="i-36"></a>I-36 | A non-ACT/365 floating leg projected the wrong forward | `tests/test_trade_dates.py::test_any_leg_day_count_equals_ore` |
-| <a id="i-37"></a>I-37 | A European silently ignored `floating_spread` (refused on Hull-White, priced on the market path) | `tests/test_european_swaption.py::TestJamshidianRefusals`, `tests/test_valuation.py::test_european_today_equals_ores_default_engine` |
+| <a id="i-37"></a>I-37 | A European silently ignored `floating_spread` (refused by the Jamshidian engine, priced by Bachelier) | `tests/test_jamshidian.py::TestConfiguration::test_a_spread_is_refused_naming_the_trade`, `tests/test_valuation.py::test_european_today_equals_ores_default_engine` |
 | <a id="i-38"></a>I-38 | Theta rolled a business day; ORE rolls a calendar day | `tests/test_trade_dates.py::test_swap_theta_equals_ore`, `tests/test_sensitivities.py::test_theta_rolls_one_calendar_day_from_a_friday` |
 | <a id="i-39"></a>I-39 | Bond Theta had no add-back for a coupon paid in the period | `tests/test_sensitivities.py::test_theta_adds_back_a_bond_coupon_paid_on_the_theta_date` |
 | <a id="i-40"></a>I-40 | The note's `rateSensitivity` ignored `fractionDecimals` | `tests/test_integration_note.py::TestSensitivityUsesTheDeclaredFractionDecimals` |
-| <a id="i-41"></a>I-41 | A European at zero mean reversion priced at intrinsic value (now refused) | `tests/test_european_swaption.py::TestJamshidianRefusals` |
+| <a id="i-41"></a>I-41 | A European at zero mean reversion priced at intrinsic value (now refused) | `tests/test_jamshidian.py::TestConfiguration::test_non_positive_reversion_is_refused` |
+| <a id="i-42"></a><a id="m-1"></a>I-42 | Hull-White simulated curves were not arbitrage-free against the input curve (deflated 10y bond +6.8% at 2y on a 3→5% curve) | `tests/test_hull_white_model.py::TestCurveFittedDrift`, `tests/test_cam.py` |
+| <a id="i-43"></a><a id="m-3"></a>I-43 | Hull-White options were worth 0 after expiry instead of carrying the swap | `tests/test_valuation.py::test_an_exercised_physical_option_becomes_its_swap_and_a_cash_one_leaves` (both models) |
+| <a id="i-44"></a><a id="a-2"></a>I-44 | Hull-White scenario pricing mixed Hull-White and LGM | `tests/test_valuation.py::test_bermudan_on_every_path_equals_ore_recalibrated_on_the_path_curves` (both models), `tests/test_hull_white_model.py::TestOneModelOnePipeline` |
+| <a id="i-45"></a>I-45 | The Hull-White numeraire was a left-point bank account (E[1/N] +1.8% at 3y) | `tests/test_hull_white_model.py::TestExactNumeraire` |
+| <a id="i-46"></a>I-46 | Hull-White Europeans were priced off the model volatility, without Vega | `tests/test_hull_white_model.py::TestEuropeansOnTheMarketVolatility` |
+| <a id="i-47"></a>I-47 | Hull-White options calibrated to one caller basket, not their own | `tests/test_valuation.py::test_option_today_equals_ores_calibrated_grid_engine`, `tests/test_hull_white_model.py::TestOneModelOnePipeline` |
 | <a id="i-48"></a>I-48 | Zero curves extrapolated a flat zero rate; ORE a flat forward | `tests/test_treasury_instrument.py::TestCurveInterpolation`, `tests/test_curves.py` |
 | <a id="i-52"></a>I-52 | Cash settlement was priced as physical | `tests/test_valuation.py::test_a_cash_settled_european_uses_the_par_yield_annuity` |
+| <a id="i-62"></a><a id="p-2"></a>I-62 | Hull-White Bermudan/American scenario pricing ran on the host (that pricer is removed; options are priced by the vectorized per-path engine) | `tests/test_valuation.py::test_bermudan_on_every_path_equals_ore_recalibrated_on_the_path_curves` |
+| <a id="i-63"></a><a id="a-3"></a>I-63 | Hull-White trade configs carried copies of model parameters | `tests/test_trade_configs.py::TestEveryTradeNamesItselfAndItsDate::test_a_model_or_curve_on_the_trade_is_refused` |
+| <a id="i-64"></a><a id="a-4"></a>I-64 | A trade's evaluation date defaulted to ORE's thread-local global | `tests/test_trade_configs.py::TestEveryTradeNamesItselfAndItsDate::test_without_an_evaluation_date_it_is_refused` |
 | <a id="i-65"></a><a id="a-6"></a>I-65 | Demo data, the modules' `__main__` demos and the ORE test oracle shipped inside `engine/` (now `demos/`, `tests/support/`) | `tests/test_import_layering.py::test_engine_ships_no_demo_or_test_code` |
-| <a id="i-69"></a>I-69 | The market path silently ignored `precision.pricing`/`risk`/`calibration`, `calibration_targets`, and a `base_currency` contradicting the simulation (now refused by name) | `tests/test_run_config.py::TestTheMarketPathRefusesWhatItDoesNotImplement`, `::TestConfigurationValues`, `tests/test_api_market_path.py::test_an_unpriceable_request_is_a_400_and_no_job` |
+| <a id="i-68"></a>I-68 | The Hull-White model was chosen by the market's type, not by the configuration (now `HullWhiteConfig` in `CamConfig.ir`) | `tests/test_run_config.py::TestEveryModelRunsWithEveryEngineAndMethod` |
+| <a id="i-69"></a>I-69 | The market path silently ignored `precision.pricing`/`risk`/`calibration`, `calibration_targets`, and a `base_currency` contradicting the simulation (now refused by name) | `tests/test_run_config.py::TestWhatThePipelineDoesNotImplementIsRefused`, `::TestConfigurationValues`, `tests/test_api_market_path.py::test_an_unpriceable_request_is_a_400_and_no_job` |
+| <a id="i-70"></a>I-70 | Bump Theta of a bond maturing the next day raised `BondPricingError` (now redemption − NPV, as ORE) | `tests/test_portfolio_bond_wire_through.py::TestBondGreeksReachThePortfolioPath::test_a_bond_maturing_tomorrow_does_not_crash_the_greeks` |
+| <a id="i-71"></a>I-71 | A float32-tier worker turned x64 off, so its pricing and exposure ran in float32 where an in-process run used float64 | `tests/test_worker_pool.py::TestSubmitPricingJobRouting::test_float32_job_returns_correct_result` |
 | <a id="m-4"></a>Audit M-4 | Trades were defined relative to the evaluation date (now absolute dates) | `tests/test_trade_dates.py` |
 | <a id="m-5"></a>Audit M-5 | Theta re-rolled the trade instead of ageing it | `tests/test_trade_dates.py` |
 | <a id="r-1"></a>Audit R-1 | Cube quantiles were reported as VaR/ES (now exposure profiles; market-risk VaR/ES by t=0 revaluation) | `tests/test_exposure.py`, `tests/test_market_risk.py`, `tests/test_market_risk_ore_parity.py` |

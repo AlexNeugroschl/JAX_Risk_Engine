@@ -1,684 +1,281 @@
 """
 `engine.api` through FastAPI's in-process TestClient: /health and /version; /portfolio/price
 returns 202 and a job id, and polling reaches a result equal to a direct `price_portfolio`
-call; invalid bodies give a 4xx with the validator's message (malformed schemas a 422);
-/calibration/lgm.
+call, here with the Hull-White model named in the request's `simulation.ir` (the market path
+over HTTP on the shared portfolio is tests/test_api_market_path.py); the Hull-White request
+shape retired by roadmap 1.3 is a 422 naming its replacement; invalid bodies give a 4xx with
+the validator's message (malformed schemas a 422); /calibration/lgm.
 """
+import copy
 import time
 
 import numpy as np
+import ORE
 import pytest
 
-from engine.api.schemas import PortfolioRequestSchema
+from demos.demo_scenarios import demo_market_json, demo_simulation_json
+from engine.api.market_schemas import MarketPortfolioRequestSchema
 from engine.portfolio import price_portfolio
+from engine.portfolio.worker_pool import shutdown_pools
+from tests.support import portfolio as shared
 
-TODAY_ISO = "2026-07-30"
-FLAT_RATE = 0.03
-HW_A = 0.03
-HW_SIGMA = 0.01
-ZERO_CURVE_SCHEMA = {"times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0], "rates": [FLAT_RATE] * 6}
+ZERO_CURVE_SCHEMA = {"times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0], "rates": [0.03, 0.03, 0.032, 0.035, 0.038, 0.04]}
 
 
-def _market_schema(scenarios=64):
-    return {
-        "time_grid": [0.0, 0.5, 1.0, 1.5, 2.0],
-        "equities": {"initial_prices": [100.0], "dividend_yields": [0.0], "rate_mapping": [[0.0]]},
-        "rates": {
-            "initial_rates": [FLAT_RATE], "theta": [FLAT_RATE], "mean_reversion": [HW_A],
-            "initial_zero_curves": [ZERO_CURVE_SCHEMA],
-        },
-        "joint_covariance": [[0.04, 0.0], [0.0, HW_SIGMA ** 2]],
-        "scenarios": scenarios,
-    }
+@pytest.fixture(scope="module", autouse=True)
+def _cleanup_pools():
+    """Shut this module's worker pools down so later in-process compiles do not run with idle
+    workers attached (I-27's first step)."""
+    yield
+    shutdown_pools(wait=True)
 
 
-def _swap_trade_schema(**overrides):
-    trade = {
-        "trade_type": "swap", "notional": 1_000_000.0, "fixed_rate": 0.032, "payer": True,
-        "discount_curve_index": 0, "forward_curve_index": 0, "swap_tenor": "2Y",
-    }
-    trade.update(overrides)
-    return trade
+def _simulation(samples=64, model="HullWhite"):
+    dates = [(shared.ASOF + ORE.Period(m, ORE.Months)).ISO() for m in (6, 12, 24)]
+    return {"dates": dates, "base_currency": "USD", "samples": samples, "seed": 3,
+            "ir": {"USD": {"model": model, "reversion": 0.03, "volatility": 0.01}}}
 
 
-def _swaption_trade_schema(**overrides):
-    trade = {
-        "trade_type": "european_swaption", "notional": 500_000.0, "fixed_rate": 0.031, "payer": True,
-        "rate_factor_index": 0, "hw_a": HW_A, "hw_sigma": HW_SIGMA,
-        "initial_zero_curve": ZERO_CURVE_SCHEMA, "swap_tenor": "2Y", "forward_start": "1Y",
-    }
-    trade.update(overrides)
-    return trade
+def _swap(**overrides):
+    return {"trade_type": "swap", "notional": 1_000_000.0, "fixed_rate": 0.032, "payer": True, "swap_tenor": "2Y",
+            **overrides}
 
 
-def _bermudan_trade_schema(**overrides):
-    trade = {
-        "trade_type": "bermudan_swaption", "notional": 1_000_000.0, "fixed_rate": 0.030, "payer": True,
-        "rate_factor_index": 0, "hw_a": HW_A, "hw_sigma": None,
-        "initial_zero_curve": ZERO_CURVE_SCHEMA, "exercise_dates": ["2027-07-30", "2028-07-29"],
-        "swap_tenor": "3Y", "n_per_std": 32, "std_devs": 6.0,
-    }
-    trade.update(overrides)
-    return trade
+def _european(**overrides):
+    return {"trade_type": "european_swaption", "notional": 500_000.0, "fixed_rate": 0.031, "payer": True,
+            "swap_tenor": "2Y", "forward_start": "1Y", **overrides}
 
 
-CALIBRATION_BASKET_SCHEMA = {
-    "exercise_times": [1.0, 2.0],
-    "final_maturity_time": 3.0,
-    "notional": 1_000_000.0,
-    "payer": True,
-    "market_vols": [0.0080, 0.0088],
-}
+def _body(trades, **overrides):
+    body = {"market": shared.market_json(), "trades": trades, "simulation": _simulation(), "pfe_quantiles": [0.95]}
+    body.update(overrides)
+    return body
+
+
+def _submit_and_poll(client, body, timeout_s=300):
+    r = client.post("/portfolio/price", json=body)
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    deadline = time.time() + timeout_s
+    data = None
+    while time.time() < deadline:
+        r = client.get(f"/portfolio/price/{job_id}")
+        assert r.status_code == 200
+        data = r.json()
+        if data["status"] in ("done", "failed"):
+            break
+        time.sleep(0.2)
+    assert data is not None and data["status"] == "done", data.get("error") if data else "never terminal"
+    return data["result"]
+
+
+def _direct(body):
+    return price_portfolio(MarketPortfolioRequestSchema.model_validate(body).to_dataclass())
 
 
 class TestHealthAndVersion:
     def test_health_returns_ok(self, test_client):
         r = test_client.get("/health")
-        assert r.status_code == 200
-        assert r.json() == {"status": "ok"}
+        assert r.status_code == 200 and r.json() == {"status": "ok"}
 
     def test_version_returns_engine_info(self, test_client):
-        r = test_client.get("/version")
-        assert r.status_code == 200
-        body = r.json()
-        assert "engine_version" in body
-        assert "jax_backend" in body
+        body = test_client.get("/version").json()
+        assert "engine_version" in body and "jax_backend" in body
 
 
 @pytest.mark.slow
 class TestPortfolioPriceHappyPath:
-    def _submit_and_poll(self, client, body, timeout_s=60):
-        r = client.post("/portfolio/price", json=body)
-        assert r.status_code == 202, r.text
-        job_id = r.json()["job_id"]
-
-        deadline = time.time() + timeout_s
-        data = None
-        while time.time() < deadline:
-            r = client.get(f"/portfolio/price/{job_id}")
-            assert r.status_code == 200
-            data = r.json()
-            if data["status"] in ("done", "failed"):
-                break
-            time.sleep(0.2)
-        assert data is not None, "job never reached a terminal state"
-        return data
-
-    def test_valid_portfolio_returns_202_then_done(self, test_client):
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_swap_trade_schema()],
-            "pfe_quantiles": [0.95],
-        }
-        data = self._submit_and_poll(test_client, body)
-        assert data["status"] == "done", data.get("error")
-        assert data["result"] is not None
-        assert isinstance(data["result"]["base_npv"], float)
-
     def test_result_matches_direct_price_portfolio_call(self, test_client):
         """The polled result equals `price_portfolio` on the equivalent dataclass request."""
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_swap_trade_schema(), _swaption_trade_schema()],
-            "pfe_quantiles": [0.95, 0.99],
-        }
-        data = self._submit_and_poll(test_client, body)
-        assert data["status"] == "done", data.get("error")
-
-        direct_request = PortfolioRequestSchema(**body).to_dataclass()
-        direct_result = price_portfolio(direct_request)
-
-        np.testing.assert_allclose(data["result"]["base_npv"], direct_result.base_npv, rtol=1e-9)
-        http_npv = np.asarray(data["result"]["npv_cube"])
-        np.testing.assert_allclose(http_npv, np.asarray(direct_result.npv_cube), rtol=1e-9)
-        http_exposure = data["result"]["exposure"]
+        body = _body([_swap(), _european()], pfe_quantiles=[0.95, 0.99])
+        result = _submit_and_poll(test_client, body)
+        direct = _direct(body)
+        assert result["base_npv"] == direct.base_npv
+        np.testing.assert_array_equal(np.asarray(result["npv_cube"]), np.asarray(direct.npv_cube))
         for name in ("times", "epe", "ene", "ee_b", "eee_b"):
-            np.testing.assert_allclose(
-                np.asarray(http_exposure[name]), np.asarray(getattr(direct_result.exposure, name)), rtol=1e-9,
-            )
-        for key, values in direct_result.exposure.pfe.items():
-            np.testing.assert_allclose(np.asarray(http_exposure["pfe"][key]), np.asarray(values), rtol=1e-9)
-        assert len(data["result"]["trade_exposures"]) == len(direct_result.trade_exposures)
+            np.testing.assert_array_equal(np.asarray(result["exposure"][name]),
+                                          np.asarray(getattr(direct.exposure, name)))
+        for key, values in direct.exposure.pfe.items():
+            np.testing.assert_array_equal(np.asarray(result["exposure"]["pfe"][key]), np.asarray(values))
+        assert len(result["trade_exposures"]) == 2
+        assert result["trade_ids"] == ["trade-0", "trade-1"]
+
+    def test_the_model_and_engine_are_the_requests(self, test_client):
+        """The Hull-White model and the Jamshidian engine reach the worker: the result differs
+        from the LGM/Bachelier run's, and equals the direct call's."""
+        jamshidian = {"european": "Jamshidian", "jamshidian": {"reversion": 0.03, "volatility": 0.01}}
+        body = _body([_european(trade_id="e")], pricing=jamshidian)
+        other = _body([_european(trade_id="e")], simulation=_simulation(model="LGM"))
+        result, baseline = _submit_and_poll(test_client, body), _submit_and_poll(test_client, other)
+        assert result["base_npv"] == _direct(body).base_npv
+        assert result["base_npv"] != baseline["base_npv"]
 
     def test_greeks_included_when_requested(self, test_client):
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_swaption_trade_schema()],
-            "pfe_quantiles": [0.95],
-            "compute_greeks": True,
-        }
-        data = self._submit_and_poll(test_client, body)
-        assert data["status"] == "done", data.get("error")
-        assert data["result"]["greeks"] is not None
-        assert "0" in data["result"]["greeks"] or 0 in data["result"]["greeks"]
-
-
-@pytest.mark.slow
-class TestCalibratedBermudanOverHttp:
-    """`hw_sigma: null` needs a `calibration_basket`. Without one the job fails with
-    "calibration_targets was not supplied"; with one, the result equals calibrating and
-    pricing directly."""
-
-    def _submit_and_poll(self, client, body, timeout_s=60):
-        r = client.post("/portfolio/price", json=body)
-        assert r.status_code == 202, r.text
-        job_id = r.json()["job_id"]
-
-        deadline = time.time() + timeout_s
-        data = None
-        while time.time() < deadline:
-            r = client.get(f"/portfolio/price/{job_id}")
-            assert r.status_code == 200
-            data = r.json()
-            if data["status"] in ("done", "failed"):
-                break
-            time.sleep(0.2)
-        assert data is not None, "job never reached a terminal state"
-        return data
-
-    def test_uncalibrated_bermudan_without_basket_fails_the_job(self, test_client):
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_bermudan_trade_schema()],
-            "pfe_quantiles": [0.95],
-        }
-        data = self._submit_and_poll(test_client, body)
-        assert data["status"] == "failed"
-        assert "calibration_targets was not supplied" in data["error"]
-
-    def test_calibration_basket_with_no_uncalibrated_trade_returns_400(self, test_client):
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_swap_trade_schema()],
-            "pfe_quantiles": [0.95],
-            "calibration_basket": CALIBRATION_BASKET_SCHEMA,
-        }
-        r = test_client.post("/portfolio/price", json=body)
-        assert r.status_code == 400
-        assert "no trade has hw_sigma=null" in r.json()["detail"]
-
-    def test_calibration_basket_resolves_uncalibrated_bermudan(self, test_client):
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_bermudan_trade_schema()],
-            "pfe_quantiles": [0.95],
-            "calibration_basket": CALIBRATION_BASKET_SCHEMA,
-        }
-        data = self._submit_and_poll(test_client, body)
-        assert data["status"] == "done", data.get("error")
-        assert isinstance(data["result"]["base_npv"], float)
-
-    def test_result_matches_direct_price_portfolio_call(self, test_client):
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_bermudan_trade_schema()],
-            "pfe_quantiles": [0.95],
-            "calibration_basket": CALIBRATION_BASKET_SCHEMA,
-        }
-        data = self._submit_and_poll(test_client, body)
-        assert data["status"] == "done", data.get("error")
-
-        direct_request = PortfolioRequestSchema(**body).to_dataclass()
-        direct_result = price_portfolio(direct_request)
-
-        np.testing.assert_allclose(data["result"]["base_npv"], direct_result.base_npv, rtol=1e-9)
-        http_npv = np.asarray(data["result"]["npv_cube"])
-        np.testing.assert_allclose(http_npv, np.asarray(direct_result.npv_cube), rtol=1e-9)
+        result = _submit_and_poll(test_client, _body([_european()], compute_greeks=True))
+        entry = result["greeks"]["0"]
+        assert "vega:USD" in entry["values"] and entry["theta"] is not None
 
 
 @pytest.mark.slow
 class TestPortfolioPriceAtScale:
-    """Larger portfolios as real JSON bodies (discriminated-union parsing, a wider npv_cube).
-    tests/test_portfolio_scale_and_edge_cases.py covers the same ground at the dataclass
-    level."""
+    def test_empty_trades_list_prices_to_a_zero_width_result(self, test_client):
+        result = _submit_and_poll(test_client, _body([]))
+        assert result["base_npv"] == 0.0 and np.asarray(result["npv_cube"]).shape[-1] == 0
 
-    def _submit_and_poll(self, client, body, timeout_s=90):
-        r = client.post("/portfolio/price", json=body)
-        assert r.status_code == 202, r.text
-        job_id = r.json()["job_id"]
-
-        deadline = time.time() + timeout_s
-        data = None
-        while time.time() < deadline:
-            r = client.get(f"/portfolio/price/{job_id}")
-            assert r.status_code == 200
-            data = r.json()
-            if data["status"] in ("done", "failed"):
-                break
-            time.sleep(0.2)
-        assert data is not None, "job never reached a terminal state"
-        return data
-
-    def test_twenty_trade_mixed_portfolio_over_http(self, test_client):
-        trades = (
-            [_swap_trade_schema(notional=1_000_000.0 * (i + 1), swap_tenor=f"{2 + i % 3}Y") for i in range(8)]
-            + [_swaption_trade_schema(notional=500_000.0 * (i + 1), forward_start=f"{1 + i % 2}Y") for i in range(6)]
-            + [_bermudan_trade_schema(notional=800_000.0 * (i + 1), hw_sigma=HW_SIGMA) for i in range(3)]
-            + [
-                {
-                    "trade_type": "american_swaption", "notional": 600_000.0 * (i + 1),
-                    "fixed_rate": 0.0295, "payer": bool(i % 2), "rate_factor_index": 0,
-                    "hw_a": HW_A, "hw_sigma": HW_SIGMA, "initial_zero_curve": ZERO_CURVE_SCHEMA,
-                    "first_exercise_date": "2027-07-30", "last_exercise_date": "2028-07-29",
-                    "swap_tenor": "5Y", "exercise_time_steps_per_year": 1,
-                    "n_per_std": 32, "std_devs": 6.0,
-                }
-                for i in range(3)
-            ]
-        )
-        assert len(trades) == 20
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(scenarios=64),
-            "trades": trades,
-            "pfe_quantiles": [0.95, 0.99],
-        }
-        data = self._submit_and_poll(test_client, body)
-        assert data["status"] == "done", data.get("error")
-        npv_cube = data["result"]["npv_cube"]
-        assert len(npv_cube[0][0]) == 20  # trade axis
-        flat = [v for scenario in npv_cube for step in scenario for v in step]
-        assert all(np.isfinite(v) for v in flat)
-
-    def test_result_matches_direct_call_for_a_larger_portfolio(self, test_client):
-        """At 10 trades the HTTP result still equals the direct call exactly (no JSON
-        rounding)."""
-        trades = (
-            [_swap_trade_schema(notional=1_000_000.0 * (i + 1)) for i in range(5)]
-            + [_swaption_trade_schema(notional=500_000.0 * (i + 1)) for i in range(5)]
-        )
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(scenarios=64),
-            "trades": trades,
-            "pfe_quantiles": [0.95, 0.99],
-        }
-        data = self._submit_and_poll(test_client, body)
-        assert data["status"] == "done", data.get("error")
-
-        direct_request = PortfolioRequestSchema(**body).to_dataclass()
-        direct_result = price_portfolio(direct_request)
-
-        http_npv = np.asarray(data["result"]["npv_cube"])
-        np.testing.assert_allclose(http_npv, np.asarray(direct_result.npv_cube), rtol=1e-9)
-        np.testing.assert_allclose(data["result"]["base_npv"], direct_result.base_npv, rtol=1e-9)
-
-    def test_empty_trades_list_is_accepted_and_prices_to_a_zero_width_result(self, test_client):
-        """An empty trades list is accepted (the schema sets no minimum) and gives a
-        zero-width result. Pins current behaviour."""
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [],
-            "pfe_quantiles": [0.95],
-        }
-        data = self._submit_and_poll(test_client, body)
-        assert data["status"] == "done", data.get("error")
-        # A [Scenarios, TimeSteps, 0] cube serializes as nested empty lists, not "[]".
-        npv_cube = data["result"]["npv_cube"]
-        assert all(len(time_step) == 0 for scenario in npv_cube for time_step in scenario)
-        assert data["result"]["base_npv"] == 0.0
-
-    def test_many_identical_trades_over_http_price_identically(self, test_client):
-        trades = [_swap_trade_schema() for _ in range(8)]
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": trades,
-            "pfe_quantiles": [0.95],
-        }
-        data = self._submit_and_poll(test_client, body)
-        assert data["status"] == "done", data.get("error")
-        npv_cube = np.asarray(data["result"]["npv_cube"])
+    def test_many_identical_trades_price_identically(self, test_client):
+        result = _submit_and_poll(test_client, _body([_swap(trade_id=f"s{i}") for i in range(8)]))
+        cube = np.asarray(result["npv_cube"])
         for j in range(1, 8):
-            np.testing.assert_allclose(npv_cube[:, :, j], npv_cube[:, :, 0], rtol=1e-9)
+            np.testing.assert_array_equal(cube[:, :, j], cube[:, :, 0])
 
     def test_multiple_concurrent_jobs_do_not_cross_contaminate_results(self, test_client):
-        """Two different portfolios submitted back to back each get only their own result
-        (`_JOBS` keying). Separate processes are shown in TestPortfolioPriceWorkerPoolDispatch."""
-        body_a = {
-            "evaluation_date": TODAY_ISO, "market": _market_schema(),
-            "trades": [_swap_trade_schema(notional=1_000_000.0)], "pfe_quantiles": [0.95],
-        }
-        body_b = {
-            "evaluation_date": TODAY_ISO, "market": _market_schema(),
-            "trades": [_swap_trade_schema(notional=9_000_000.0)], "pfe_quantiles": [0.95],
-        }
-        job_a = test_client.post("/portfolio/price", json=body_a).json()["job_id"]
-        job_b = test_client.post("/portfolio/price", json=body_b).json()["job_id"]
+        """Two portfolios submitted back to back each get only their own result."""
+        job_a = test_client.post("/portfolio/price", json=_body([_swap(notional=1e6)])).json()["job_id"]
+        job_b = test_client.post("/portfolio/price", json=_body([_swap(notional=9e6)])).json()["job_id"]
         assert job_a != job_b
-
-        deadline = time.time() + 90
-        data_a = data_b = None
-        while time.time() < deadline and (data_a is None or data_a["status"] not in ("done", "failed")
-                                           or data_b is None or data_b["status"] not in ("done", "failed")):
-            data_a = test_client.get(f"/portfolio/price/{job_a}").json()
-            data_b = test_client.get(f"/portfolio/price/{job_b}").json()
+        deadline = time.time() + 120
+        data = {}
+        while time.time() < deadline and not all(data.get(j, {}).get("status") in ("done", "failed")
+                                                  for j in (job_a, job_b)):
+            data = {j: test_client.get(f"/portfolio/price/{j}").json() for j in (job_a, job_b)}
             time.sleep(0.2)
-
-        assert data_a["status"] == "done", data_a.get("error")
-        assert data_b["status"] == "done", data_b.get("error")
-        npv_a = np.asarray(data_a["result"]["npv_cube"])[:, :, 0]
-        npv_b = np.asarray(data_b["result"]["npv_cube"])[:, :, 0]
-        np.testing.assert_allclose(npv_b, npv_a * 9.0, rtol=1e-9)
+        npv = [np.asarray(data[j]["result"]["npv_cube"])[:, :, 0] for j in (job_a, job_b)]
+        np.testing.assert_allclose(npv[1], 9.0 * npv[0], rtol=1e-12)
 
 
 class TestPortfolioPriceInvalidPayload:
-    def test_non_psd_covariance_returns_4xx_with_actionable_message(self, test_client):
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": {**_market_schema(), "joint_covariance": [[0.02, 0.05], [0.05, 0.02]]},
-            "trades": [_swap_trade_schema()],
-            "pfe_quantiles": [0.95],
-        }
+    def test_the_retired_hull_white_shape_is_a_422_naming_its_replacement(self, test_client):
+        body = {"evaluation_date": "2026-07-30", "market": {"time_grid": [0.0, 1.0], "rates": {}},
+                "trades": [_swap()]}
         r = test_client.post("/portfolio/price", json=body)
-        assert 400 <= r.status_code < 500
-        assert "positive semi-definite" in r.json()["detail"]
+        assert r.status_code == 422
+        assert "retired by roadmap 1.3" in r.text and "simulation.ir" in r.text
 
-    def test_mismatched_rate_factor_index_returns_4xx_with_actionable_message(self, test_client):
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_swaption_trade_schema(hw_a=0.099)],  # mismatched vs. market.rates.mean_reversion[0]=0.03
-            "pfe_quantiles": [0.95],
-        }
+    def test_a_market_with_equities_is_not_mistaken_for_the_retired_shape(self):
+        """The retired market had `equities` too; the current one must not be refused for it
+        (the demo's two-currency request, with an equity, was)."""
+        body = {"market": demo_market_json(("USD", "EUR")), "trades": [_swap()],
+                "simulation": demo_simulation_json(samples=8, currencies=("USD", "EUR"))}
+        assert body["market"]["equities"]
+        request = MarketPortfolioRequestSchema.model_validate(body).to_dataclass()
+        assert set(request.market.equities) == set(body["market"]["equities"])
+        body["market"]["equities"] = {}
+        MarketPortfolioRequestSchema.model_validate(body)
+
+    def test_a_trade_carrying_model_parameters_is_a_422(self, test_client):
+        r = test_client.post("/portfolio/price", json=_body([_european(hw_a=0.03, hw_sigma=0.01)]))
+        assert r.status_code == 422 and "hw_a" in r.text
+
+    def test_an_unknown_model_is_a_422(self, test_client):
+        body = _body([_swap()])
+        body["simulation"]["ir"]["USD"]["model"] = "CIR"
+        assert test_client.post("/portfolio/price", json=body).status_code == 422
+
+    def test_an_invalid_correlation_is_a_400_with_the_validators_message(self, test_client):
+        body = _body([_swap()])
+        body["simulation"] = copy.deepcopy(body["simulation"])
+        body["simulation"]["ir"]["EUR"] = {"model": "HullWhite", "reversion": 0.02, "volatility": 0.008}
         r = test_client.post("/portfolio/price", json=body)
         assert 400 <= r.status_code < 500
-        assert "hw_a" in r.json()["detail"]
+
+    def test_a_currency_the_market_lacks_is_a_400_naming_the_trade(self, test_client):
+        r = test_client.post("/portfolio/price", json=_body([_swap(currency="GBP", trade_id="gbp-swap")]))
+        assert r.status_code == 400 and "gbp-swap" in r.json()["detail"]
 
     def test_malformed_schema_returns_422(self, test_client):
-        r = test_client.post("/portfolio/price", json={"evaluation_date": 12345})
-        assert r.status_code == 422
+        assert test_client.post("/portfolio/price", json={"market": 12345}).status_code == 422
 
     def test_missing_required_field_returns_422(self, test_client):
-        body = {"evaluation_date": TODAY_ISO, "market": _market_schema()}  # trades missing
-        r = test_client.post("/portfolio/price", json=body)
-        assert r.status_code == 422
+        assert test_client.post("/portfolio/price", json={"market": shared.market_json()}).status_code == 422
 
     def test_invalid_trade_type_discriminator_returns_422(self, test_client):
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [{"trade_type": "not_a_real_type"}],
-            "pfe_quantiles": [0.95],
-        }
-        r = test_client.post("/portfolio/price", json=body)
-        assert r.status_code == 422
+        body = _body([{"trade_type": "not_a_real_type"}])
+        assert test_client.post("/portfolio/price", json=body).status_code == 422
 
 
 class TestPortfolioPriceUnknownJob:
     def test_unknown_job_id_returns_404(self, test_client):
-        r = test_client.get("/portfolio/price/not-a-real-job-id")
-        assert r.status_code == 404
+        assert test_client.get("/portfolio/price/not-a-real-job-id").status_code == 404
 
 
 class TestCalibrationEndpoint:
+    """The standalone calibration route (its own Hagan bootstrap on the basket it is given;
+    the portfolio's calibration is the CAM's, per currency; roadmap 4.1)."""
+
     def test_valid_calibration_request_returns_fitted_sigma(self, test_client):
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "exercise_times": [1.0, 2.0, 3.0, 4.0],
-            "final_maturity_time": 5.0,
-            "notional": 1_000_000.0,
-            "payer": True,
-            "market_vols": [0.0080, 0.0088, 0.0095, 0.0100],
-            "zero_curve": ZERO_CURVE_SCHEMA,
-            "hw_a": HW_A,
-        }
+        body = {"evaluation_date": shared.ASOF_ISO, "exercise_times": [1.0, 2.0, 3.0, 4.0], "final_maturity_time": 5.0,
+                "notional": 1_000_000.0, "payer": True, "market_vols": [0.0080, 0.0088, 0.0095, 0.0100],
+                "zero_curve": ZERO_CURVE_SCHEMA, "hw_a": 0.03}
         r = test_client.post("/calibration/lgm", json=body)
         assert r.status_code == 200, r.text
-        data = r.json()
-        assert len(data["sigma_values"]) == 4
-        assert data["rmse"] < 1e-6
+        assert len(r.json()["sigma_values"]) == 4 and r.json()["rmse"] < 1e-6
 
     def test_calibration_malformed_schema_returns_422(self, test_client):
-        r = test_client.post("/calibration/lgm", json={"evaluation_date": TODAY_ISO})
-        assert r.status_code == 422
+        assert test_client.post("/calibration/lgm", json={"evaluation_date": shared.ASOF_ISO}).status_code == 422
 
 
-@pytest.mark.slow
 class TestPortfolioPricePrecision:
     """The HTTP precision block (the dataclass level is
-    tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision). Omitting `precision`
-    equals sending all-64."""
+    tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision)."""
 
-    def _submit_and_poll(self, client, body, timeout_s=60):
-        r = client.post("/portfolio/price", json=body)
-        assert r.status_code == 202, r.text
-        job_id = r.json()["job_id"]
+    def test_an_invalid_precision_value_is_a_400_not_a_failed_job(self, test_client):
+        r = test_client.post("/portfolio/price", json=_body([_swap()], precision={"simulation": 16}))
+        assert r.status_code == 400 and "must be 32 or 64" in r.json()["detail"]
 
-        deadline = time.time() + timeout_s
-        data = None
-        while time.time() < deadline:
-            r = client.get(f"/portfolio/price/{job_id}")
-            assert r.status_code == 200
-            data = r.json()
-            if data["status"] in ("done", "failed"):
-                break
-            time.sleep(0.2)
-        assert data is not None, "job never reached a terminal state"
-        return data
+    @pytest.mark.parametrize("stage", ["pricing", "risk", "calibration"])
+    def test_a_stage_computed_in_float64_only_is_a_400_naming_it(self, test_client, stage):
+        """Until roadmap 1.4 only the simulation's precision is adjustable (I-55)."""
+        r = test_client.post("/portfolio/price", json=_body([_swap()], precision={stage: 32}))
+        assert r.status_code == 400 and f"config.precision.{stage}" in r.json()["detail"]
 
-    def test_explicit_precision_block_matches_direct_call(self, test_client):
-        """An explicit precision block equals the direct call with the same
-        `PrecisionConfig`."""
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_swap_trade_schema(), _swaption_trade_schema()],
-            "pfe_quantiles": [0.95],
-            "precision": {"simulation": 64, "pricing": 32, "risk": 32},
-        }
-        data = self._submit_and_poll(test_client, body)
-        assert data["status"] == "done", data.get("error")
-
-        direct_request = PortfolioRequestSchema(**body).to_dataclass()
-        direct_result = price_portfolio(direct_request)
-
-        assert direct_result.npv_cube.dtype.itemsize == 4  # float32
-        np.testing.assert_allclose(data["result"]["base_npv"], direct_result.base_npv, rtol=1e-9)
-        http_npv = np.asarray(data["result"]["npv_cube"])
-        np.testing.assert_allclose(http_npv, np.asarray(direct_result.npv_cube), rtol=1e-9)
-
-    def test_omitted_precision_matches_explicit_all_64(self, test_client):
-        """No `precision` key equals an explicit all-64 block."""
-        base_body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_swap_trade_schema()],
-            "pfe_quantiles": [0.95],
-        }
-        explicit_body = dict(base_body, precision={"simulation": 64, "pricing": 64, "risk": 64})
-
-        data_omitted = self._submit_and_poll(test_client, base_body)
-        data_explicit = self._submit_and_poll(test_client, explicit_body)
-        assert data_omitted["status"] == "done", data_omitted.get("error")
-        assert data_explicit["status"] == "done", data_explicit.get("error")
-
-        np.testing.assert_allclose(
-            np.asarray(data_omitted["result"]["npv_cube"]),
-            np.asarray(data_explicit["result"]["npv_cube"]),
-            rtol=1e-12,
-        )
-        np.testing.assert_allclose(
-            data_omitted["result"]["base_npv"], data_explicit["result"]["base_npv"], rtol=1e-12,
-        )
-
-    def test_float32_precision_response_close_but_not_identical_to_float64(self, test_client):
-        """JSON carries no dtype, so a float32 response is compared to float64 with a
-        tolerance."""
-        base_body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_swap_trade_schema()],
-            "pfe_quantiles": [0.95],
-        }
-        body_64 = dict(base_body, precision={"simulation": 64, "pricing": 64, "risk": 64})
-        body_32 = dict(base_body, precision={"simulation": 64, "pricing": 32, "risk": 64})
-
-        data_64 = self._submit_and_poll(test_client, body_64)
-        data_32 = self._submit_and_poll(test_client, body_32)
-        assert data_64["status"] == "done", data_64.get("error")
-        assert data_32["status"] == "done", data_32.get("error")
-
-        npv_64 = data_64["result"]["base_npv"]
-        npv_32 = data_32["result"]["base_npv"]
-        assert npv_32 == pytest.approx(npv_64, rel=1e-3)
-        assert npv_32 != npv_64  # a genuinely lower-precision computation, not a no-op
-
-    def test_invalid_precision_value_returns_400_not_a_failed_job(self, test_client):
-        """An invalid precision ({"simulation": 16}) fails validation synchronously: a 400
-        with the validator's message, before any job exists."""
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_swap_trade_schema()],
-            "pfe_quantiles": [0.95],
-            "precision": {"simulation": 16},
-        }
-        r = test_client.post("/portfolio/price", json=body)
-        assert r.status_code == 400
-        assert "must be 32 or 64" in r.json()["detail"]
+    @pytest.mark.slow
+    def test_omitted_precision_equals_explicit_all_64(self, test_client):
+        explicit = {"simulation": 64, "pricing": 64, "risk": 64, "calibration": 64}
+        a = _submit_and_poll(test_client, _body([_swap()]))
+        b = _submit_and_poll(test_client, _body([_swap()], precision=explicit))
+        np.testing.assert_array_equal(np.asarray(a["npv_cube"]), np.asarray(b["npv_cube"]))
 
 
 @pytest.mark.slow
 class TestPortfolioPriceWorkerPoolDispatch:
-    """`/portfolio/price` dispatches through `engine.portfolio.worker_pool`: two
-    different-precision jobs submitted back to back are both non-terminal shortly after
-    submission (the second is not blocked behind the first)."""
+    """`/portfolio/price` dispatches through `engine.portfolio.worker_pool`, one pool per
+    simulation precision."""
 
     def test_two_precisions_submitted_back_to_back_both_complete_correctly(self, test_client):
-        body_64 = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_swap_trade_schema(), _swaption_trade_schema()],
-            "pfe_quantiles": [0.95],
-            "precision": {"simulation": 64, "pricing": 64, "risk": 64},
-        }
-        body_32 = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_swap_trade_schema(), _swaption_trade_schema()],
-            "pfe_quantiles": [0.95],
-            "precision": {"simulation": 32, "pricing": 32, "risk": 32},
-        }
-
+        body_64 = _body([_swap(), _european()], precision={"simulation": 64})
+        body_32 = _body([_swap(), _european()], precision={"simulation": 32})
         job_64 = test_client.post("/portfolio/price", json=body_64).json()["job_id"]
         job_32 = test_client.post("/portfolio/price", json=body_32).json()["job_id"]
-        assert job_64 != job_32
-
-        deadline = time.time() + 90
-        data_64 = data_32 = None
-        while time.time() < deadline and (
-            data_64 is None or data_64["status"] not in ("done", "failed")
-            or data_32 is None or data_32["status"] not in ("done", "failed")
-        ):
-            data_64 = test_client.get(f"/portfolio/price/{job_64}").json()
-            data_32 = test_client.get(f"/portfolio/price/{job_32}").json()
+        deadline = time.time() + 180
+        data = {}
+        while time.time() < deadline and not all(data.get(j, {}).get("status") in ("done", "failed")
+                                                  for j in (job_64, job_32)):
+            data = {j: test_client.get(f"/portfolio/price/{j}").json() for j in (job_64, job_32)}
             time.sleep(0.1)
-
-        assert data_64["status"] == "done", data_64.get("error")
-        assert data_32["status"] == "done", data_32.get("error")
-
-        direct_64 = price_portfolio(PortfolioRequestSchema(**body_64).to_dataclass())
-        direct_32 = price_portfolio(PortfolioRequestSchema(**body_32).to_dataclass())
-        np.testing.assert_allclose(
-            data_64["result"]["base_npv"], direct_64.base_npv, rtol=1e-9,
-        )
-        np.testing.assert_allclose(
-            data_32["result"]["base_npv"], direct_32.base_npv, rtol=1e-3,
-        )
-        # Different precisions give different numbers (the jobs did not collapse onto one
-        # tier).
-        assert data_64["result"]["base_npv"] != data_32["result"]["base_npv"]
+        r64, r32 = data[job_64]["result"], data[job_32]["result"]
+        np.testing.assert_array_equal(np.asarray(r64["npv_cube"]), np.asarray(_direct(body_64).npv_cube))
+        np.testing.assert_array_equal(np.asarray(r32["npv_cube"]), np.asarray(_direct(body_32).npv_cube))
+        assert r64["npv_cube"] != r32["npv_cube"], "the jobs did not collapse onto one tier"
 
     def test_job_id_maps_to_a_future_not_an_eagerly_computed_result(self, test_client):
-        """`submit_portfolio_price` returns as soon as it has a `Future`, without waiting
-        for the result."""
-        body = {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(scenarios=2048),
-            "trades": [_swap_trade_schema(), _swaption_trade_schema(), _bermudan_trade_schema(hw_sigma=0.01)],
-            "pfe_quantiles": [0.95],
-        }
-        r = test_client.post("/portfolio/price", json=body)
+        """The route returns as soon as it has a `Future`; the 202 rules out blocking."""
+        r = test_client.post("/portfolio/price", json=_body([_swap(), _european()], simulation=_simulation(2048)))
         assert r.status_code == 202, r.text
-        job_id = r.json()["job_id"]
-
-        immediate = test_client.get(f"/portfolio/price/{job_id}").json()
-        assert immediate["status"] in ("pending", "done"), immediate
-        # Not asserting "pending": a fast machine could finish first. The regression guarded
-        # (blocking before returning 202) is ruled out by the 202 above.
-
-        deadline = time.time() + 90
-        data = immediate
-        while time.time() < deadline and data["status"] not in ("done", "failed"):
-            data = test_client.get(f"/portfolio/price/{job_id}").json()
-            time.sleep(0.1)
-        assert data["status"] == "done", data.get("error")
+        assert test_client.get(f"/portfolio/price/{r.json()['job_id']}").json()["status"] in ("pending", "done")
 
 
 @pytest.mark.slow
 class TestGapFixesSurviveTheHttpBoundary:
     """The fixes of tests/test_portfolio_gap_fixes.py survive serialization and the
-    worker-process boundary (warnings and result fields raised in the worker must reach
-    the polling caller)."""
-
-    @staticmethod
-    def _submit_and_poll(client, body, timeout_s=120):
-        r = client.post("/portfolio/price", json=body)
-        assert r.status_code == 202, r.text
-        job_id = r.json()["job_id"]
-        deadline = time.time() + timeout_s
-        data = None
-        while time.time() < deadline:
-            data = client.get(f"/portfolio/price/{job_id}").json()
-            if data["status"] in ("done", "failed"):
-                break
-            time.sleep(0.2)
-        assert data is not None and data["status"] == "done", (
-            data.get("error") if data else "job never reached a terminal state"
-        )
-        return data["result"]
+    worker-process boundary."""
 
     def test_swap_greeks_present_over_http(self, test_client):
-        """A swap-only portfolio returns swap Greeks (before the fix, an empty object)."""
-        result = self._submit_and_poll(test_client, {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_swap_trade_schema()],
-            "compute_greeks": True,
-        })
-        assert result["greeks"], "no Greeks returned for a swap-only portfolio"
-        # JSON object keys are strings.
-        entry = result["greeks"]["0"]
-        assert "discount_delta" in entry["values"]
-        assert "forward_delta" in entry["values"]
+        result = _submit_and_poll(test_client, _body([_swap()], compute_greeks=True))
+        entry = result["greeks"]["0"]  # JSON object keys are strings
+        assert "delta:discount:USD" in entry["values"] and f"delta:index:{shared.INDEX}" in entry["values"]
         assert entry["theta"] is not None
 
     def test_per_trade_base_npv_present_and_reconciles_over_http(self, test_client):
-        result = self._submit_and_poll(test_client, {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_swap_trade_schema(), _swap_trade_schema(notional=250_000.0)],
-        })
-        per_trade = result["base_npv_per_trade"]
-        assert len(per_trade) == 2
-        assert result["base_npv"] == pytest.approx(sum(per_trade), rel=0.0, abs=1e-9)
-
-    def test_aged_swap_warning_crosses_the_worker_boundary(self, test_client):
-        """A warning raised in the worker process reaches the polled result."""
-        result = self._submit_and_poll(test_client, {
-            "evaluation_date": TODAY_ISO,
-            "market": _market_schema(),
-            "trades": [_swap_trade_schema()],
-        })
-        assert any("already started accruing" in w for w in result["warnings"]), (
-            f"aged-swap warning lost crossing the worker boundary: {result['warnings']!r}"
-        )
+        result = _submit_and_poll(test_client, _body([_swap(), _swap(notional=250_000.0)]))
+        assert len(result["base_npv_per_trade"]) == 2
+        assert result["base_npv"] == pytest.approx(sum(result["base_npv_per_trade"]), rel=0.0, abs=1e-9)

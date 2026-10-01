@@ -2,16 +2,18 @@
 HTTP routes over `engine.portfolio` and `engine.calibration`; translation only, no pricing
 logic.
 
-`POST /portfolio/price` validates synchronously (no JAX work), then submits the job to
-`engine.portfolio.worker_pool` and returns `202` with a `job_id`; pricing a 4-trade,
-4096-scenario portfolio takes about a minute, too long to hold a request open.
-`GET /portfolio/price/{job_id}` polls the job's `Future`.
+`POST /portfolio/price` takes the portfolio request (`engine.api.market_schemas`: today's
+market, the trades, the run configuration with the model per currency, engines, Greeks and
+precision), validates it synchronously (no JAX work), then submits the job to
+`engine.portfolio.worker_pool` and returns `202` with a `job_id`; pricing a portfolio with a
+simulation can take minutes, too long to hold a request open. `GET /portfolio/price/{job_id}`
+polls the job's `Future`.
 
-`POST /v2/portfolio/price` is the same for the market path, ORE's pipeline and the default
-model (`engine.api.market_schemas`, `engine.portfolio.market_path`); its jobs are polled at
-the same `GET` route. `POST /portfolio/price` takes the Hull-White model's request. The two
-routes are models, not versions: the `/v2` is a historical name. They are to become one
-route taking one configurable request (compliance/decisions.md A-2).
+`POST /v2/portfolio/price` takes the same request: the `/v2` is a historical name, not a
+version (roadmap 4.1 retires it; compliance/decisions.md A-2). Until roadmap 1.3
+`POST /portfolio/price` took the Hull-White model's own request shape; the Hull-White model is
+now `"model": "HullWhite"` in the request's simulation, and the old shape is refused with a
+422 naming its replacement.
 
 Job store: an in-process `job_id -> Future` dict, lost on restart and not shared between
 uvicorn workers (I-08; see docs/reference/http-api.md).
@@ -28,8 +30,7 @@ import jax.numpy as jnp
 import numpy as np
 from fastapi import APIRouter, HTTPException, status
 
-from engine.portfolio.request import validate_hull_white_request
-from engine.portfolio.market_path import validate_market_request
+from engine.portfolio.market_path import validate_request
 from engine.portfolio.worker_pool import submit_pricing_job
 from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.lgm import calibrate_lgm_sigma
@@ -38,7 +39,7 @@ from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 from engine.api.market_schemas import MarketPortfolioRequestSchema
 from engine.api.schemas import (
     CalibrationRequestSchema, CalibrationResultSchema, HealthSchema, JobStatusSchema,
-    PortfolioRequestSchema, PortfolioResultSchema, VersionSchema, _parse_ore_date,
+    PortfolioResultSchema, VersionSchema, _parse_ore_date,
 )
 
 router = APIRouter()
@@ -82,31 +83,24 @@ def version() -> VersionSchema:
 
 
 @router.post("/portfolio/price", status_code=status.HTTP_202_ACCEPTED)
-def submit_portfolio_price(request: PortfolioRequestSchema) -> dict:
+def submit_portfolio_price(request: MarketPortfolioRequestSchema) -> dict:
     """Validate the request synchronously (a failure is a 400, and no job is created),
     then submit it to the worker pool for its precision tier and return its `job_id`."""
-    try:
-        dataclass_request = request.to_dataclass()
-        validate_hull_white_request(dataclass_request)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-    return {"job_id": _submit(dataclass_request)}
+    return {"job_id": _validate_and_submit(request)}
 
 
 @router.post("/v2/portfolio/price", status_code=status.HTTP_202_ACCEPTED)
 def submit_market_portfolio_price(request: MarketPortfolioRequestSchema) -> dict:
-    """The market path's request: validate synchronously (a failure is a 400), then
-    submit as `POST /portfolio/price` does."""
+    """The same request at its historical name (see the module docstring)."""
+    return {"job_id": _validate_and_submit(request)}
+
+
+def _validate_and_submit(request: MarketPortfolioRequestSchema) -> str:
     try:
         dataclass_request = request.to_dataclass()
-        validate_market_request(dataclass_request)
-    except (ValueError, KeyError) as exc:
+        validate_request(dataclass_request)
+    except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return {"job_id": _submit(dataclass_request)}
-
-
-def _submit(dataclass_request) -> str:
     job_id = str(uuid.uuid4())
     _JOBS[job_id] = submit_pricing_job(dataclass_request)
     return job_id

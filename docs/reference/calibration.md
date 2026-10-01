@@ -6,8 +6,8 @@
 
 ## Plain-language summary
 
-Every pricer in this codebase up to this point took its interest-rate-model volatility
-(`hw_sigma`) directly as a config input — a number the caller just... supplies. A real
+A model volatility could be taken directly as a configuration input — a number the caller
+just... supplies (`calibration="None"` still does). A real
 trading desk doesn't do that: it starts from prices quoted in the market for simpler,
 liquid options (European swaptions), and works backward to find the single-factor model
 parameter that reproduces those prices — a process called **calibration**. Only then is
@@ -311,7 +311,7 @@ finite-difference recalibration — see
   `aTimes = swaptionExpiries[:-1]` bucket construction, ordering assertions, and
   `CalibrationResult`'s diagnostic fields.
 - `tests/test_calibration_integration.py` (6 tests) — end-to-end: build a basket, calibrate
-  a `Sigma`, feed it into `BermudanSwaptionConfig.hw_sigma`, price the Bermudan, confirming
+  a `Sigma`, price a Bermudan on it with the grid engine, confirming
   the calibrated `Sigma` behaves correctly as a drop-in replacement for a flat scalar
   throughout the full pricing pipeline.
 - `tests/test_greeks_bermudan.py::TestBermudanVega` — the `_bisect_xstar` fix's

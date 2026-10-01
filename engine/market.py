@@ -14,13 +14,29 @@ Curves are `ZeroCurveConfig`s: continuously compounded ACT/365 zero rates at pil
 interpolated and extrapolated as `engine.models.curves.ZeroCurve` (ORE's `ZeroCurve`).
 """
 from dataclasses import dataclass, field
-from typing import Mapping, Optional, Sequence, Tuple
+from typing import List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import ORE
 
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
-from engine.simulation.market_model import ZeroCurveConfig
+
+@dataclass
+class ZeroCurveConfig:
+    """A zero curve as market data: pillar times in years (ACT/365 from the as-of date) and
+    continuously compounded zero rates, interpolated as `engine.models.curves.ZeroCurve`.
+
+    `provenance` is optional metadata (observed, assumed or synthetic); pricing never reads
+    it. `None` means unstated, which `engine.integration` treats as not observed when it
+    reports a result's market provenance (I-11). See
+    `engine.integration.market_inputs.CurveProvenance`.
+    """
+    times: List[float]
+    rates: List[float]
+    # Optional[object] rather than CurveProvenance, so this module does not import
+    # engine.integration (the dependency runs the other way).
+    provenance: Optional[object] = None
+
 
 #: Conventions of every swaption volatility matrix: ORE's `SwaptionVolatilityCurveConfig`
 #: defaults for a TARGET market (calendar, option date roll, day counter).
@@ -104,6 +120,22 @@ class SwaptionVolSurface:
         (j, u), (i, s) = y, x
         return ((1 - s) * (1 - u) * z[j, i] + s * (1 - u) * z[j, i + 1]
                 + (1 - s) * u * z[j + 1, i] + s * u * z[j + 1, i + 1])
+
+    def weights(self, reference_date: ORE.Date, option_time: float, swap_len: float) -> np.ndarray:
+        """`[option tenors, swap tenors]` weights with `volatility(...) = sum(weights * vols)`:
+        the interpolation is linear in the quotes, so these are the volatility's derivatives
+        with respect to each quote (the chain rule of AD Vega)."""
+        (j, u), (i, s) = (_bind_and_locate(self.option_times(reference_date), option_time),
+                          _bind_and_locate(np.asarray([swap_length(t) for t in self.swap_tenors]), swap_len))
+        rows, cols = len(self.option_tenors), len(self.swap_tenors)
+        w = np.zeros((rows + 1, cols + 1))
+        w[j, i], w[j, i + 1], w[j + 1, i], w[j + 1, i + 1] = (1 - s) * (1 - u), s * (1 - u), (1 - s) * u, s * u
+        # A one-point axis is padded with a copy of its point (see `volatility`).
+        if rows == 1:
+            w[0] += w[1]
+        if cols == 1:
+            w[:, 0] += w[:, 1]
+        return w[:rows, :cols]
 
     def black_variance(self, reference_date: ORE.Date, option_time, swap_len) -> np.ndarray:
         """vol^2 * option_time (a normal variance; QuantLib's `blackVariance`)."""

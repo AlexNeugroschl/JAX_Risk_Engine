@@ -1,54 +1,35 @@
 # The Portfolio Entry Point
 
-**Modules:** [`engine/portfolio/request.py`](../../engine/portfolio/request.py), and the run
+**Modules:** [`engine/portfolio/request.py`](../../engine/portfolio/request.py), the pipeline in
+[`engine/portfolio/market_path.py`](../../engine/portfolio/market_path.py), and the run
 configuration in [`engine/portfolio/config.py`](../../engine/portfolio/config.py)
 **Public entry point:** `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 
 ## Plain-language summary
 
-Every module described elsewhere in these docs — market simulation, the four instrument
-pricers, VaR/ES, Greeks, calibration — is real, tested, and correct, but until this module
-existed there was no single place that tied them together for a *caller*. Pricing even one
-mixed portfolio required knowing exactly which pricer wants `yield_curves` versus
-`hw_paths`, hand-building maturity pillars from a swap's own real cashflow dates, summing
-each type's own base NPV by hand, and never being warned if a swaption's `hw_a` silently
-drifted out of sync with the simulation's own calibration.
-
 `engine.portfolio` answers the question "what should a caller of the whole system hand
 over, and what do they get back?" with two dataclasses — `PortfolioRequest` in,
 `PortfolioResult` out — and one function, `price_portfolio`, that does everything in
-between: validate, simulate, calibrate (if needed), price every trade, and summarise
-exposure. The model, engines, Greeks method and precision it uses are the request's
-`RunConfig`.
+between: validate, calibrate and simulate the cross-asset model, price every trade today and
+on every path, and summarise exposure and Greeks. The model, engines, Greeks method and
+precision it uses are the request's `RunConfig`; the curves and volatilities are the
+request's `Market`; the trades name their currency and index and carry no model.
 
 **This is the exposure path.** Its simulation runs months to years forward under the
 risk-neutral measure, so its risk output is an exposure profile (EPE, ENE, PFE through
 time — [Exposure](../risk/exposure.md)), not a VaR. Short-horizon market-risk VaR/ES is
 `engine.market_risk.run_market_risk` ([Market Risk](../risk/market-risk.md)).
-`demo.py` is now a thin example calling this one function instead of hand-orchestrating
-~200 lines of pipeline plumbing.
-
-This module is also where `docs/planning/traderx-integration.md`'s validation/assembly
-layer lives — the layer that stands between "hand-built, internally consistent demo
-configs" and "an arbitrary portfolio a real caller assembled, with irregular dates and
-possibly-inconsistent market data." See that plan's own gap items for the full rationale;
-this doc covers what actually landed.
 
 ## `PortfolioRequest`
 
-What a caller of the whole system hands over: trades, a market, the run configuration, and
-which analytics to run.
-
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `market` | `Market` \| `SimulationConfig` | *required* | A `Market` (curves per currency and index, swaption vols, FX and equity spots) runs the **market path**, ORE's LGM pipeline and the default. A Hull-White `SimulationConfig` runs the **Hull-White model** (curves, vols via `joint_covariance`, correlations: the config `generate_paths` consumes; if `market.rates.maturities` is unset it is derived by `derive_maturity_pillars`). Anything else is a `TypeError`. |
-| `trades` | `List[SwapConfig \| SwaptionConfig \| BermudanSwaptionConfig \| AmericanSwaptionConfig \| BondConfig]` | *required* | Any order or mix. The NPV cube and `greeks` come back in this order. |
-| `config` | `RunConfig` | `RunConfig()` (ORE's defaults) | Every model, engine, Greeks and precision choice; see "`RunConfig`" below. |
-| `pfe_quantiles` | `Sequence[float]` | `(0.95, 0.99)` | Quantiles of the PFE profiles in the result's exposure. |
-| `calibration_targets` | `Optional[List[CalibrationTarget]]` | `None` | Hull-White model only: the shared basket for any Bermudan/American with `hw_sigma=None` (see "Automatic calibration" below). Refused on the market path, which builds each trade's basket as ORE does. |
-| `compute_greeks` | `bool` | `False` | Also compute Greeks per trade, by `config.greeks.method`; see "Greeks" below. |
-| `scenario_risk` | `bool` | `True` | Whether to build `npv_cube` and the exposure profiles. On the Hull-White model it **must be `False` for any portfolio containing a `BondConfig`**; see "Bonds" below. |
-| `trade_ids` | `Optional[Sequence[str]]` | `None` | One unique id per trade, echoed on the result. |
+| `market` | `Market` | *required* | Today's market: curves per currency and index, swaption volatilities, FX and equity spots (`engine/market.py`). Anything else is a `TypeError` (the Hull-White model is a `HullWhiteConfig` in `config.simulation.ir`, not a market type). |
+| `trades` | `List[TradeConfig]` | *required* | Any mix of `SwapConfig`, `SwaptionConfig`, `BermudanSwaptionConfig`, `AmericanSwaptionConfig`, `BondConfig`. Each has a `trade_id`, unique in the portfolio (a repeat is refused), and is valued on `market.asof` (its `evaluation_date`). |
+| `config` | `RunConfig` | ORE's defaults | See below. |
+| `pfe_quantiles` | `Sequence[float]` | `(0.95, 0.99)` | The exposure profiles' PFE quantiles. |
+| `compute_greeks` | `bool` | `False` | Also compute every trade's Greeks, by `config.greeks.method`. |
+| `scenario_risk` | `bool` | `True` | Simulate and build `npv_cube` and the exposure profiles (needs `config.simulation`). `False` prices today's values (and Greeks) only. |
 
 ## `RunConfig`
 
@@ -57,286 +38,133 @@ configured by its files; `RunConfig()` is ORE's defaults.
 
 | Field | Type | Default | ORE | Meaning |
 |---|---|---|---|---|
-| `simulation` | `Optional[CamConfig]` | `None` | `simulation.xml` | The date grid, the model per currency (`ir[ccy]`, an `LgmConfig`), correlations, simulation-market tenors, samples, seed, swaption vol decay. Required for scenario risk on the market path. |
-| `pricing` | `PricingConfig` | ORE's builders | `pricingengine.xml` | The engine per product: `european` (`"Bachelier"`, ORE's default, or `"Jamshidian"`), `bermudan` and `american` (`LgmSwaptionEngineConfig`), `recalibrate`. |
+| `simulation` | `Optional[CamConfig]` | `None` | `simulation.xml` | The date grid, the model per currency (`ir[ccy]`: `LgmConfig`, or `HullWhiteConfig`), FX/equity volatilities, correlations, simulation-market tenors, samples, seed, swaption vol decay. Required for scenario risk. |
+| `pricing` | `PricingConfig` | ORE's builders | `pricingengine.xml` | The engine per product: `european` (`"Bachelier"`, ORE's default, or `"Jamshidian"` with its Hull-White model in `jamshidian`), `bermudan` and `american` (`LgmSwaptionEngineConfig`), `recalibrate` (per path, as ORE). |
 | `greeks` | `GreeksConfig` | `Bump`, ORE's settings | `sensitivity.xml` | `method` (`"Bump"`, ORE's, or `"AD"`) and `sensitivity` (`SensitivityConfig`: curve tenors, shift sizes, Theta horizon, vol decay on the Theta date). |
 | `precision` | `PrecisionConfig` | all 64 | none | The dtype per stage; see "`PrecisionConfig`" below. |
 | `base_currency` | `Optional[str]` | `None` | `baseCurrency` | The reporting currency. `None` means the simulation's base currency, or USD without a simulation; a value contradicting the simulation's is refused. |
 
-Each model implements some of the options, and refuses the rest **before any work**, with a
-`ValueError` naming the field (`check_market_path`, `check_hull_white`). Nothing is priced
-with another engine than the one configured.
-
-| Option | Market path | Hull-White model |
-|---|---|---|
-| `pricing.european` (with a European in the portfolio) | `Bachelier` | `Jamshidian` (I-46) |
-| `greeks.method` (with `compute_greeks`) | `Bump` | `AD` (bonds by bumped revaluation) |
-| `precision` | `simulation` only; `pricing`, `risk`, `calibration` must be 64 until roadmap 1.4 (I-55) | every stage |
-| `simulation`, `base_currency`, `pricing.bermudan`/`american`/`recalibrate`, `greeks.sensitivity` | read | must stay at their defaults: the model's simulation is its `market` and its Bermudan engine is set on the trades (I-63, I-68) |
-
-`HULL_WHITE_CONFIG` is the configuration of the Hull-White model's engines (Jamshidian, AD);
-use it, or `dataclasses.replace(HULL_WHITE_CONFIG, precision=...)`, for a Hull-White run with
-Europeans or Greeks.
+Every option runs with every other: the models differ only in the simulation, and the
+engines and Greeks methods price whatever it produced. What the pipeline does not implement
+yet is refused **before any work**, with a `ValueError` naming the field (`check_run`): today
+a `pricing`, `risk` or `calibration` precision below 64 (I-55). An engine refuses a trade it
+cannot price, naming the trade (`validate_trades`; e.g. the Jamshidian engine refuses a
+floating spread and cash settlement, as QuantLib's does). Nothing is priced with another
+engine than the one configured.
 
 ```python
 from engine.portfolio import (
-    CamConfig, GreeksConfig, LgmConfig, PortfolioRequest, RunConfig, SensitivityConfig, price_portfolio,
+    CamConfig, GreeksConfig, HullWhiteConfig, JamshidianEngineConfig, PortfolioRequest, PricingConfig, RunConfig,
+    SensitivityConfig, price_portfolio,
 )
 
 config = RunConfig(
-    simulation=CamConfig(dates=dates, base_currency="USD", ir={"USD": LgmConfig(reversion=0.03)}),
-    greeks=GreeksConfig(sensitivity=SensitivityConfig(curve_tenors=("1Y", "2Y", "5Y", "10Y"))),
+    simulation=CamConfig(dates=dates, base_currency="USD", ir={"USD": HullWhiteConfig(reversion=0.03, volatility=0.01)}),
+    pricing=PricingConfig(european="Jamshidian", jamshidian=JamshidianEngineConfig(0.03, 0.01)),
+    greeks=GreeksConfig(method="AD", sensitivity=SensitivityConfig(curve_tenors=("1Y", "2Y", "5Y", "10Y"))),
 )
 result = price_portfolio(PortfolioRequest(market=market, trades=trades, config=config, compute_greeks=True))
 ```
 
 ### Bonds
 
-`BondConfig` (W1.5, `engine.instruments.treasury`) covers Treasury bills and notes. A **bill**
-is the degenerate case: `coupon_schedule=()` with `coupon_rate=0.0`. `face_amount` is
-**signed**, so a short position is a negative face and yields a negative NPV directly.
-
-Unlike `SwapConfig`, a bond carries **its own `initial_zero_curve`** rather than an index
-into `market.rates.initial_zero_curves` — the same shape the swaption family uses, and the
-reason a bond cannot reproduce [I-01](../planning/known-issues.md#i-01)'s silent-skip failure.
-
-**A bond has no scenario NPV**, so it never enters `npv_cube` and has no VaR/ES. Submitting
-one with the default `scenario_risk=True` raises `ScenarioPricingNotSupported`, naming the
-trade. With `scenario_risk=False` you get real `base_npv`, `base_npv_per_trade` and `greeks`,
-with `risk` **empty** and `npv_cube` zero-width. The refusal is deliberate: a broadcast
-constant column measures out to VaR `0.00` and ES `NaN` — see
-[I-24](../planning/known-issues.md#i-24).
-
-Its Greeks are bumped revaluations (`delta` central-difference at 1bp, `gamma` a second
-difference, `theta` a one-day reprice), all **scalars** rather than per-pillar vectors, and
-**no `vega`** — a fixed-coupon bond off a deterministic curve has no volatility input, so it
-is omitted rather than reported as `0.0`. `theta` is likewise **omitted for a bond maturing
-tomorrow**: the one-day reprice would land exactly on maturity, a state `BondConfig` refuses
-to construct, and the decay is genuinely undefined across that boundary rather than zero
-([I-26](../planning/known-issues.md#i-26)). `delta`/`gamma` are unaffected and still reported.
-
-Note that this `delta` is **not bit-identical** to the EOD boundary's `rateSensitivity` for
-the same bond, deliberately: this is a central difference, while the published contract at
-[EOD Integration](eod-integration.md) is the one-sided `P(+1bp) − P(0)` TraderX agreed to
-reconcile against. On a 6-month bill at 100k face they differ by ~1.4e-4 — the curvature
-term, not an error in either.
+`BondConfig` (Treasury bills and notes) prices like every other trade: today and on every
+path, by discounting its remaining flows on its currency's curve (ORE's
+`DiscountingRiskyBondEngine` without credit), with exposure, Greeks (discount curve only, no
+Vega) and scenario risk. (Until roadmap 1.3 the Hull-White model refused a bond with
+scenario risk, [I-24](../planning/known-issues.md#i-24).)
 
 ## `PrecisionConfig`
 
-`RunConfig.precision`. Four independent dtype knobs, each `32` (float32) or `64` (float64,
-default); see [Architecture](../concepts/architecture.md#adjustable-precision) for the full
-mechanism. On the market path only `simulation` is adjustable today; the others are refused
-below 64 until roadmap 1.4 ([I-55](../planning/known-issues.md#i-55)).
+On `RunConfig.precision`. Four knobs, each 32 or 64; only `simulation` is adjustable until
+roadmap 1.4 ([I-55](../planning/known-issues.md#i-55)), and the others are refused below 64.
 
-| Field | Type | Default | Meaning |
+| Field | Type | Default | Governs |
 |---|---|---|---|
-| `simulation` | `int` (`32`\|`64`) | `64` | The scenario paths (`generate_paths`, or the market path's `simulate`). |
-| `pricing` | `int` \| `PricingPrecisionOverride` | `64` | Hull-White model: every array `price_portfolio` constructs before a pricer (`step_times`, the swaption zero-shock `r0_path`, `_flat_curve_cube`'s output); `npv_cube`/`base_npv`'s dtype follows. Per trade type with an override. |
-| `risk` | `int` \| `RiskPrecisionOverride` | `64` | Hull-White model: the `ZeroCurve` built for each Greek, and the cube's dtype for the exposure statistics. Per metric with an override. |
-| `calibration` | `int` | `64` | Hull-White model: the LGM sigma bootstrap. |
+| `simulation` | `int` (`32`\|`64`) | `64` | The scenario market (`simulate`): states, curves, numeraire. |
+| `pricing` | `int` \| `PricingPrecisionOverride` | `64` | Valuation, per trade type with an override. float64 only until 1.4. |
+| `risk` | `int` \| `RiskPrecisionOverride` | `64` | Greeks and exposure, per metric with an override. float64 only until 1.4. |
+| `calibration` | `int` | `64` | The bootstraps. float64 only until 1.4. |
 
-`__post_init__` raises `ValueError` if any field is outside `{32, 64}`; bfloat16/float16
-are not supported (see Architecture's "Out of scope for v1").
-
-```python
-import dataclasses
-from engine.portfolio import HULL_WHITE_CONFIG, PortfolioRequest, PrecisionConfig
-
-request = PortfolioRequest(
-    market=market_config, trades=trades,
-    config=dataclasses.replace(HULL_WHITE_CONFIG, precision=PrecisionConfig(simulation=64, pricing=32, risk=32)),
-)
-```
-
-**Concurrency note:** calling `price_portfolio` directly, yourself, from more than one
-thread in your own process is still unsafe without external serialization — `_PRICING_LOCK`
-inside this module protects against exactly that (`jax_enable_x64`, which `generate_paths`
-toggles per `precision.simulation`, is process-global state, not thread-local). Via
-`engine/api/routes.py`'s HTTP layer, this is no longer the primary concurrency mechanism:
-concurrent jobs are now dispatched to `engine.portfolio.worker_pool`'s per-precision-tier
-`ProcessPoolExecutor` pools, which achieve genuine cross-process concurrency instead of
-queuing behind one lock — see [Architecture: Concurrency](../concepts/architecture.md) for
-the full mechanism and why the lock is kept as narrower defense-in-depth rather than
-removed.
+The cube of a 32-bit simulation is float64, since pricing on it is. The worker pool routes a
+job by `simulation` ([HTTP API](http-api.md)).
 
 ## `PortfolioResult`
 
 | Field | Type | Meaning |
 |---|---|---|
-| `base_npv` | `float` | The whole portfolio's t=0 NPV, against today's actual (zero-shock) curves — not read off the NPV cube. |
-| `npv_cube` | `jax.Array` | `[Scenarios, TimeSteps, Trades]`, one column per trade in `request.trades`' own order. |
-| `exposure` | `Optional[ExposureProfile]` | The whole portfolio as one netting set: `times`, `epe`, `ene`, `ee_b`, `eee_b` and `pfe` (`"PFE_95"` → profile), each with one entry per date including t=0. `None` when `scenario_risk_available` is `False`. See [Exposure](../risk/exposure.md). |
-| `trade_exposures` | `List[ExposureProfile]` | Each trade's standalone exposure, in `request.trades` order. Empty when `scenario_risk_available` is `False`. |
-| `greeks` | `Optional[Dict[int, Dict[str, jax.Array]]]` | `None` unless `request.compute_greeks=True`. Keyed by each trade's own index in `request.trades` (not by pricing-group order — see "Greeks" below). |
-| `warnings` | `List[str]` | Known-limitation warnings surfaced during validation (see "Known-limitation flagging" below) — e.g. a Bermudan exercise date that isn't reset-aligned with its own underlying. |
-| `base_npv_per_trade` | `List[float]` | Each trade's own t=0 NPV, in `request.trades` order. `base_npv` is by construction their sum, so the total and the breakdown cannot disagree. |
-| `scenario_risk_available` | `bool` | `False` when the run was `scenario_risk=False`, meaning `exposure` is **absent** and `npv_cube` zero-width. Carried on the *result* because a consumer holding one has no access to the request. |
-| `measure` | `Optional[str]` | Which measure the exposure is under: `"risk-neutral-pricing"` (`engine.risk.var_es.ENGINE_RISK_MEASURE`) whenever it was computed, `None` when `scenario_risk_available` is `False`. An exposure under the pricing measure, **not** a forecast of tomorrow's loss ([I-11](../planning/known-issues.md#i-11)). |
+| `base_npv` | `float` | The whole portfolio's value today, in the reporting currency (the sum of `base_npv_per_trade`). |
+| `npv_cube` | `jax.Array` | `[Scenarios, Dates, Trades]`, one column per trade in `request.trades`' order, in the reporting currency. Zero-width without scenario risk. |
+| `exposure` | `Optional[ExposureProfile]` | The whole portfolio as one netting set: `times`, `epe`, `ene`, `ee_b`, `eee_b`, `epe_b`, `eepe_b`, `basel_epe`, `basel_eepe` and `pfe` (`"PFE_95"` → profile), with one entry per date including t=0. `None` without scenario risk. See [Exposure](../risk/exposure.md). |
+| `trade_exposures` | `List[ExposureProfile]` | Each trade's standalone exposure, in `request.trades` order. Empty without scenario risk. |
+| `greeks` | `Optional[Dict[int, Dict[str, jax.Array]]]` | `None` unless `request.compute_greeks=True`. Keyed by each trade's index in `request.trades`; see [Greeks](../risk/greeks.md) for the keys. |
+| `warnings` | `List[str]` | Run warnings (none are emitted today). |
+| `base_npv_per_trade` | `List[float]` | Each trade's value today, in `request.trades` order. |
+| `trade_ids` | `List[str]` | Each trade's `trade_id`, in `request.trades` order: the names of every per-trade row ([I-10](../planning/known-issues.md#i-10)). |
+| `scenario_risk_available` | `bool` | `False` when the run was `scenario_risk=False`, meaning `exposure` is **absent** and `npv_cube` zero-width. |
+| `measure` | `Optional[str]` | The exposure's measure: `"risk-neutral-pricing"` (`engine.risk.var_es.ENGINE_RISK_MEASURE`) whenever it was computed, `None` without scenario risk. An exposure under the pricing measure, **not** a forecast of tomorrow's loss ([I-11](../planning/known-issues.md#i-11)). |
 
 ## `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 
-On a `Market`, the market path (`engine.portfolio.market_path.price_on_market`): validate
-(`validate_market_request`: the configured options, then the trades against the market),
-calibrate and simulate the cross-asset model, value every trade on every path, exposure, and
-ORE's sensitivities. On a Hull-White `SimulationConfig`, in order:
+Under `_PRICING_LOCK` (`engine/portfolio/request.py`), `engine.portfolio.market_path.price_on_market`:
 
-1. **Validate the request** via `validate_hull_white_request`: `market.joint_covariance`
-   (see [Market Simulation](../concepts/market-simulation.md); the same check also runs
-   inside `generate_paths`, but failing here first gives a clearer, earlier error) and the
-   configured options (`check_hull_white`).
-2. **Cross-check every trade against `market`** via `validate_portfolio_against_simulation`
-   (below).
-3. **Auto-derive maturity pillars** via `derive_maturity_pillars` if `market.rates.maturities`
-   is unset (below).
-4. **Simulate the market** (`generate_paths`).
-5. **Calibrate any uncalibrated Bermudan/American trade's `hw_sigma`** (below).
-6. **Route every trade to its pricer by type** (`price_swaps`/`price_swaptions`/
-   `price_bermudan_swaptions`/`price_american_swaptions`), concatenating into one NPV cube
-   reassembled in the caller's original `trades` order — this is exactly what unifies the
-   four pricers' different input shapes (`yield_curves`+pillars for swaps, `hw_paths`+
-   `step_times` for every swaption type) behind one call. **Skipped entirely when
-   `scenario_risk=False`**, which instead yields a deliberately *zero-width* cube rather
-   than a zero-filled one — see "Bonds" above.
-7. **Compute the base (t=0) NPV** by repricing every trade against zero-shock curves —
-   generalizes what `demo.py` used to do by hand, per instrument type. This step runs
-   either way, which is what lets a bond portfolio still return real numbers.
-8. **Exposure profiles** (`engine.risk.exposure`): the netting set and each trade, from
-   the cube deflated by the simulation's numeraire. Also skipped when
-   `scenario_risk=False`, leaving `exposure` **absent** — a missing profile asserts
-   nothing, where a zero would assert a measured absence of exposure.
-9. **Optionally compute Greeks** per trade (below). Runs either way.
+1. **Validate before any JAX work** (`validate_request`): the configuration
+   (`check_run`), scenario risk needs a simulation, every trade valued on the market's date
+   with every curve and volatility it reads present and its engine's refusals
+   (`validate_trades`, naming the trade), the reporting currency in the market. The HTTP
+   route runs the same check synchronously, so such a request is a 400, not a failed job.
+2. **Calibrate and simulate** (with scenario risk): `build_cross_asset_model` calibrates
+   each currency with a basket to the market's swaption volatilities, and `simulate` builds
+   the scenario market in `precision.simulation`.
+3. **Value** every trade today and on every path with its configured engine
+   (`engine.valuation.portfolio.value_portfolio`), converting foreign trades at the spot
+   today and at the path FX on paths; without scenario risk, today only (`value_today`).
+4. **Exposure**: the netting set and each trade, deflated by the LGM numeraire.
+5. **Greeks** (with `compute_greeks`): `portfolio_sensitivities` (Bump) or
+   `portfolio_greeks` (AD).
 
-## Validation and assembly helpers
-
-These implement
-[`docs/planning/traderx-integration.md`](../planning/details/traderx-integration.md)'s
-validation/assembly layer — see that plan for the full gap analysis; the sections below
-cover what actually shipped.
-
-### `validate_portfolio_against_simulation(sim_config, trade_configs) -> None`
-
-For every trade carrying a `rate_factor_index` (every type except `SwapConfig`), cross-checks
-that trade's own duplicated `hw_a` / `hw_sigma` / `initial_zero_curve` against
-`sim_config`'s corresponding entry for that rate factor — the fields every
-`SwaptionConfig`-family class's own docstring says "MUST match that factor's own
-calibration in the simulation's `RatesConfig`," now actually enforced. Raises `ValueError`
-naming the trade (by index/type/notional) and the specific mismatched field.
-
-A trade whose `hw_sigma` is a genuinely piecewise (calibrated) `Sigma` is **not**
-cross-checked against `joint_covariance`'s single flat per-step vol — the simulation only
-ever propagates one constant volatility per rate factor for path generation, while a
-calibrated `Sigma` is the model's own richer view of volatility used for *pricing*; a real
-desk workflow (calibrate once, reuse the fitted term structure across many trades,
-simulate paths off one representative vol level) has these legitimately diverge. Only a
-flat `float` `hw_sigma` is checked against the implied per-step vol.
-
-This function also emits (via Python's `warnings` module — not a hard error) the
-exposure-limitation warnings described in "Known-limitation flagging" below. It raises if
-the trades do not all share one `evaluation_date`: the simulation has a single t=0, and a
-trade dated differently would be priced on a shifted time axis. A Bermudan/American exercise date inside an accrual period
-is not warned about: it is priced exactly as ORE prices it, not approximated.
-
-### `derive_maturity_pillars(trade_configs, evaluation_date) -> List[float]`
-
-Builds every `SwapConfig`'s real ORE schedule (via
-`engine.models.ore_builders.build_vanilla_swap`, the same shared construction every pricer
-already uses) and returns the sorted union of every leg's accrual/payment year-fractions —
-the exact maturity-pillar set `engine.instruments.swap`'s `_maturity_indices` requires.
-Automates what `demo.py` used to compute by hand for a single swap.
-
-Only `SwapConfig` trades contribute pillars — every swaption-family pricer prices directly
-off simulated `hw_paths`, not the `yield_curves` cube, so their cashflow dates impose no
-pillar-alignment requirement. A portfolio with no `SwapConfig` trades derives just the
-anchor pillar `[0.0]`.
+The result carries the trades' ids. Each stage is labelled for the profiler (`calibration`,
+`simulation`, `pricing`, `exposure`, or `base_npv` without scenario risk, then `greeks`;
+[Profiling](../concepts/profiling.md)).
 
 ### Automatic calibration
 
-If any Bermudan/American trade's `hw_sigma is None`, `price_portfolio` calibrates it via
-`engine.calibration.lgm.calibrate_lgm_sigma`, using `request.calibration_targets` — **once
-per distinct `rate_factor_index`** needing it, not once per trade (every trade sharing a
-rate factor shares the calibrated `Sigma`). Raises `ValueError` if `calibration_targets`
-wasn't supplied but a trade needs it.
-
-`hw_sigma=None` is a valid sentinel value on `BermudanSwaptionConfig`/
-`AmericanSwaptionConfig` specifically to support this — it means "uncalibrated," not
-"malformed"; `__post_init__` on both configs treats it as valid and skips the finite-value
-check for it.
+There is no request-level calibration: each currency's model is calibrated to its own basket
+when `CamConfig.ir[ccy]` names one (`calibration_expiries` × `calibration_terms`), and each
+Bermudan/American's engine to the trade's own co-terminal basket (ORE's `LgmBuilder`, per
+trade, recalibrated on every path). Until roadmap 1.3 the Hull-White model took one shared
+basket for every uncalibrated trade (`calibration_targets`,
+[I-47](../planning/known-issues.md#i-47)).
 
 ### Known-limitation flagging
 
-The simulated cube has three known weaknesses
-([I-42](../planning/known-issues.md#i-42), [I-04](../planning/known-issues.md#i-04), [I-43](../planning/known-issues.md#i-43); audit M-1 to M-3). They do not affect t=0
-values or Greeks, only `npv_cube` past t=0 and the exposure derived from it. Each is
-announced per run with a `UserWarning`, collected into `PortfolioResult.warnings`:
-
-- **`_warn_if_rates_inconsistent_with_curve` (M-1)** — a rate factor whose curve is not
-  flat, or whose `initial_rates`/`theta` differ from the curve's level: the simulated
-  discount factors are then not arbitrage-free against the curve.
-- **`_warn_if_aged_swap_exposure` (M-2, I-04)** — a swap aged past its first accrual date
-  at some simulated step: the accruing coupon is not fixed, and paid cashflows stay in the
-  NPV.
-- **`_warn_if_option_expires_within_simulation` (M-3)** — a swaption whose last exercise
-  falls inside the horizon: it is worth 0 on every path from then on, and exercise into
-  the underlying swap is not tracked.
-
-See [Exposure](../risk/exposure.md#known-limitations-of-the-simulated-cube).
+(Section title kept for links.) The Hull-White model's cube warnings (aged swaps, options
+expiring in the horizon, a curve inconsistent with its short rate) went with that pipeline in
+roadmap 1.3: what they warned about is priced correctly now. A run's known limitations are in
+[known issues](../planning/known-issues.md).
 
 ## Greeks
 
-On the market path, `compute_greeks=True` gives ORE's bump-and-revalue sensitivities
-(`engine.risk.sensitivities`, settings `config.greeks.sensitivity`; see
-[Greeks](../risk/greeks.md)). On the Hull-White model (`config.greeks.method="AD"`),
-`price_portfolio` computes Delta/Gamma/Theta for **every** trade type, keyed by **the trade's own index in `request.trades`** — not by internal
-pricing-group order, so `result.greeks[3]` always means "Greeks for `request.trades[3]`"
-regardless of how many other trades of other types sit between them in the request.
-
-| Trade type | Routed to | Shape |
-|---|---|---|
-| `SwapConfig` | `swap_delta_gamma` / `swap_theta` | per-pillar vectors, named `discount_delta`/`forward_delta` per curve |
-| `SwaptionConfig` | `swaption_delta_gamma` / `swaption_theta` | per-pillar vectors |
-| `BermudanSwaptionConfig`/`AmericanSwaptionConfig` | `bermudan_delta_gamma` / `bermudan_theta` (+ `bermudan_vega` where calibrated) | per-pillar vectors |
-| `BondConfig` | `_bond_greeks` (bumped revaluation) | **scalars**; no `vega` |
-
-> **Historical note — this section previously said `SwapConfig` trades are "skipped".** That
-> was [I-01](../planning/known-issues.md#i-01): swaps silently returned no Greeks because
-> `_compute_all_greeks` had no access to the `SimulationConfig` their curve *indexes* resolve
-> against. It was fixed by passing `market_config` through, and the documentation above is
-> corrected to match. Swap Greeks have been computed by `price_portfolio` since that fix; the
-> old text survived it.
+`compute_greeks=True` gives every trade's Greeks by `config.greeks.method`: ORE's
+bump-and-revalue sensitivities (`Bump`, the default) or automatic differentiation (`AD`),
+with the same keys — Delta and Gamma per curve tenor (Bump) or pillar (AD) of each curve the
+trade reads, Vega per swaption quote for a trade whose engine reads them, and ORE's Theta.
+See [Greeks](../risk/greeks.md).
 
 ## Tested by
 
-- `tests/test_run_config.py`: `RunConfig`'s defaults, the refusals of each model naming the
-  field, the sensitivity settings reaching the market path's Greeks, and the configuration's
-  trip to a worker.
-- `tests/test_portfolio.py::TestCrossFieldValidation` — `validate_portfolio_against_simulation`,
-  including the reset-alignment warning.
-- `tests/test_portfolio.py::TestPillarAssembly` — `derive_maturity_pillars`.
-- `tests/test_portfolio_entrypoint.py::TestPricePortfolioMatchesHandOrchestration` — proves
-  `price_portfolio`'s output is bit-for-bit identical to the equivalent hand-orchestrated
-  `demo.py`-style sequence, trade-by-trade, for a portfolio mixing all four instrument
-  types.
-- `TestPricePortfolioReorderingIndependence` — confirms the NPV cube always reassembles in
-  the caller's original trade order, regardless of internal type-grouping.
-- `TestPricePortfolioAutoDerivesMaturityPillars` — the automatic-pillar-assembly path.
-- `TestPricePortfolioCalibration` — the `hw_sigma=None` auto-calibration path, and the
-  clear error when `calibration_targets` is missing.
-- `TestPricePortfolioGreeks` — per-trade Greeks keyed by original request order.
-- `tests/test_portfolio_scale_and_edge_cases.py` — `price_portfolio` at varying portfolio
-  sizes (1, 12, and 50 trades), across multiple rate factors (untested at the entry-point
-  level elsewhere), and composition edge cases: empty portfolios, single-instrument-type
-  portfolios at scale, duplicate trades, zero/negative/very-large notionals, and large
-  offsetting positions netting to near-zero risk end to end.
-- `tests/test_portfolio.py::TestCrossFieldValidation`'s two-rate-factor cases — confirm
-  `validate_portfolio_against_simulation` indexes into the *correct* factor's own curve/
-  mean-reversion/vol at factor counts above one, not factor 0 by coincidence.
-- `tests/test_treasury_instrument.py` (40) — `BondConfig` in isolation: bill and note
-  pricing, ACT/ACT (ICMA) accrual, refusals, curve interpolation, and the bit-exact
-  cross-check against `engine.integration.bill`/`note`.
-- `tests/test_portfolio_bond_wire_through.py` (36) — the wire-through through
-  `price_portfolio` itself. `TestBondGreeksReachThePortfolioPath` is the
-  [I-01](../planning/known-issues.md#i-01) regression class (**19 of 19 verified to fail** with the
-  Greeks branch deleted); `TestScenarioRiskIsRefusedForBonds` pins
-  [I-24](../planning/known-issues.md#i-24).
-- `tests/test_api_bond_schemas.py` (21) — the HTTP surface, including
-  [I-25](../planning/known-issues.md#i-25)'s scalar-Greek serialization.
+- `tests/test_portfolio_market_path.py` — the result is the valuation layer's, exposure
+  identities (a bill's EE is its forward value), ORE's time-weighted and Basel profiles,
+  trade ids.
+- `tests/test_portfolio_entrypoint.py` — `price_portfolio` equals the pipeline orchestrated
+  by hand for every trade type under the Hull-White model; reordering, calibration,
+  precision, concurrency, one evaluation date.
+- `tests/test_run_config.py` — the defaults, every model with every engine and Greeks method,
+  refusals naming the field, the sensitivity settings reaching the Greeks, the configuration
+  surviving the worker pool.
+- `tests/test_portfolio_gap_fixes.py` — regressions for I-01/I-02/I-03/I-13.
+- `tests/test_portfolio_bond_wire_through.py` — bonds through `price_portfolio`: today,
+  Greeks (I-26, I-70), every path (I-24).
+- `tests/test_portfolio_scale_and_edge_cases.py`, `tests/test_diverse_portfolio_e2e.py` —
+  scale, currencies, degenerate inputs, breadth against ORE.
+- `tests/test_hull_white_model.py` — the Hull-White model's regressions.

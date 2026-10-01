@@ -1,46 +1,27 @@
 """
-Treasury bills and notes.
+Treasury bills and notes: the trade and its remaining cashflows.
 
-Pricing: every remaining cashflow discounted off a zero curve with the shared curve
-primitives (`engine.models.curves`: linear zero rates, QuantLib's flat-forward
-extrapolation), continuous compounding over ACT/365 from the evaluation date. NPV is dirty.
-That is ORE's `DiscountingRiskyBondEngine` with no credit curve and no security spread, which
-is how a Treasury without credit is set up (plan V-9). The coupon schedule is supplied, not
-generated. `price_bond_base` and `bond_price_function` are one implementation (audit A-7).
+A bond names its currency; it carries no curve. It is priced by discounting every remaining
+cashflow on its currency's discount curve, today and on every simulated path
+(`engine.valuation.portfolio.bond_legs`): ORE's `DiscountingRiskyBondEngine` with no credit
+curve and no security spread, which is how a Treasury without credit is set up (plan V-9).
+NPV is dirty. The coupon schedule is supplied, not generated.
 
-Curves: on the Hull-White path a `BondConfig` carries its own `initial_zero_curve`; on
-the market path (`engine.valuation`) its `currency` selects the market's discount curve, and
-the market path prices it on every simulated path too (a received fixed leg,
-`engine.valuation.portfolio.bond_legs`), closing I-24 there. The Hull-White cube still
-refuses bonds (`price_bond_scenarios`): it has no curve to discount them on.
+The EOD integration boundary prices TraderX's bills and notes with its own pricers
+(`engine.integration.bill`, `engine.integration.note`).
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Sequence, Tuple
 
-import jax.numpy as jnp
-import numpy as np
 import ORE
 
 from engine.day_count import UnsupportedDayCountError, resolve_accrual_day_count
-from engine.models.curves import ZeroCurve, zero_rate as _curve_zero_rate
-from engine.simulation.market_model import ZeroCurveConfig
-
-#: Discounting day count (ACT/365, the simulation time axis). Distinct from the bond's
-#: accrual day count.
-DISCOUNT_DAY_COUNT = ORE.Actual365Fixed()
-
-#: Per-pillar bump for `rate_sensitivity`, in absolute rate terms (1bp).
-RATE_BUMP = 1e-4
+from engine.instruments._validation import _validate_identity
 
 
 class BondPricingError(Exception):
     """A bond could not be priced. Separate from `ValueError` so pricing refusals are
     distinguishable from malformed requests."""
-
-
-class ScenarioPricingNotSupported(BondPricingError):
-    """A `BondConfig` reached the scenario (`npv_cube`) path, which bonds do not support
-    (I-24; see the module docstring)."""
 
 
 @dataclass(frozen=True)
@@ -57,35 +38,29 @@ class CouponPeriod:
 
 @dataclass(frozen=True)
 class BondConfig:
-    """A Treasury bill or note, priced off its own curve.
+    """A Treasury bill or note, discounted on its currency's curve.
 
     A bill is `coupon_schedule=()` with `coupon_rate=0.0`.
 
     `face_amount` is signed: a short position has a negative face and a negative NPV. Do
     not apply a separate sign on top.
 
-    `initial_zero_curve` is this bond's own curve, not an index into the simulation's
-    curves.
+    `trade_id` and `evaluation_date` are required keywords, as on every trade config.
     """
     face_amount: float
     maturity_date: ORE.Date
-    evaluation_date: ORE.Date
-    #: The bond's own discount curve (Hull-White path); `None` on the market path, which uses
-    #: its `currency`'s discount curve.
-    initial_zero_curve: Optional[ZeroCurveConfig] = None
     #: Annual coupon rate as a decimal (0.04 == 4%), not a percent.
     coupon_rate: float = 0.0
     coupon_schedule: Tuple[CouponPeriod, ...] = ()
     redemption_fraction: float = 1.0
     #: Coupon accrual day count; refused if unsupported. Ignored without coupons.
     accrual_day_count: str = "ACT/ACT (ICMA)"
-    #: Index of this bond's curve in a market-risk run's curve list
-    #: (`engine.market_risk.RateRiskFactors.curves`); `initial_zero_curve` must then equal
-    #: that curve. `None` elsewhere.
-    curve_index: Optional[int] = None
     currency: str = "USD"
+    trade_id: str = field(kw_only=True)
+    evaluation_date: ORE.Date = field(kw_only=True)
 
     def __post_init__(self):
+        _validate_identity(self.trade_id, self.evaluation_date)
         if self.maturity_date <= self.evaluation_date:
             raise BondPricingError(
                 f"maturity_date {_iso(self.maturity_date)} is not after "
@@ -123,12 +98,6 @@ class BondConfig:
     def is_bill(self) -> bool:
         """Whether this is the zero-coupon single-cashflow case."""
         return not self.coupon_schedule
-
-    @property
-    def notional(self) -> float:
-        """Alias for `face_amount`, for the shared trade-labelling helpers in
-        `engine.portfolio.request`."""
-        return self.face_amount
 
 
 def _validate_schedule(schedule: Sequence[CouponPeriod], maturity: ORE.Date) -> None:
@@ -189,7 +158,7 @@ def accrued_interest(cfg: BondConfig) -> float:
 def _remaining_cashflows(cfg: BondConfig) -> Tuple[Tuple[ORE.Date, float], ...]:
     """Remaining cashflows as `(payment_date, amount per unit face)`: coupons in schedule
     order, then the redemption. A coupon paid on or before the evaluation date is
-    excluded. Shared by `price_bond_base` and `bond_price_function`."""
+    excluded. `engine.valuation.portfolio.bond_legs` discounts them."""
     flows = []
     if cfg.coupon_schedule:
         day_count = resolve_accrual_day_count(cfg.accrual_day_count)
@@ -204,61 +173,3 @@ def _remaining_cashflows(cfg: BondConfig) -> Tuple[Tuple[ORE.Date, float], ...]:
             flows.append((payment, cfg.coupon_rate * accrual_fraction))
     flows.append((cfg.maturity_date, cfg.redemption_fraction))
     return tuple(flows)
-
-
-def price_bond_base(cfg: BondConfig, rate_shift: float = 0.0) -> float:
-    """t=0 dirty NPV off `initial_zero_curve`: every remaining cashflow, discounted.
-    `clean_npv_of` subtracts accrued interest. `rate_shift` shifts the whole curve in
-    parallel."""
-    if cfg.initial_zero_curve is None:
-        raise BondPricingError("initial_zero_curve is required here; on the market path use engine.valuation")
-    rates = jnp.asarray(cfg.initial_zero_curve.rates, dtype=jnp.float64) + rate_shift
-    return float(bond_price_function(cfg)(rates))
-
-
-def bond_price_function(cfg: BondConfig):
-    """`f(pillar_rates) -> t=0 dirty NPV` in JAX, for shocked-curve revaluation
-    (`engine.market_risk`) and per-pillar differentiation. Works in `pillar_rates`' dtype."""
-    flows = _remaining_cashflows(cfg)
-    times = np.asarray(
-        [DISCOUNT_DAY_COUNT.yearFraction(cfg.evaluation_date, payment) for payment, _ in flows],
-        dtype=np.float64,
-    )
-    amounts = np.asarray([amount for _, amount in flows], dtype=np.float64) * cfg.face_amount
-    if cfg.initial_zero_curve is None or not list(cfg.initial_zero_curve.times):
-        raise BondPricingError("initial_zero_curve has no pillars")
-    pillar_times = np.asarray(cfg.initial_zero_curve.times, dtype=np.float64)
-
-    def price(pillar_rates):
-        dtype = jnp.asarray(pillar_rates).dtype
-        t = jnp.asarray(times, dtype=dtype)
-        zero = _curve_zero_rate(ZeroCurve(jnp.asarray(pillar_times, dtype=dtype), pillar_rates), t)
-        return jnp.sum(jnp.asarray(amounts, dtype=dtype) * jnp.exp(-zero * t))
-
-    return price
-
-
-def clean_npv_of(cfg: BondConfig) -> float:
-    """`price_bond_base(cfg) - accrued_interest(cfg)`, for comparison with a quoted
-    (clean) price."""
-    return price_bond_base(cfg) - accrued_interest(cfg)
-
-
-def rate_sensitivity(cfg: BondConfig, bump: float = RATE_BUMP) -> float:
-    """Change in dirty NPV for a parallel `bump` of the zero curve, by bumped
-    revaluation. Parallel only (I-16)."""
-    return price_bond_base(cfg, rate_shift=bump) - price_bond_base(cfg)
-
-
-def price_bond_scenarios(*_args, **_kwargs):
-    """Always raises: a bond has no scenario NPV (I-24; see the module docstring)."""
-    raise ScenarioPricingNotSupported(
-        "a BondConfig has no scenario NPV: it is closed-form arithmetic against a "
-        "single deterministic curve, with no stochastic driver and no time "
-        "evolution. Filling an [Scenarios, TimeSteps] column would mean "
-        "broadcasting one t=0 number across every entry, producing a zero-variance "
-        "column whose VaR is 0.00 and whose ES is NaN -- a position reported as "
-        "risk-measured when its risk was never modelled. Bonds reach base_npv and "
-        "the Greeks path, which are real; npv_cube/VaR needs a bond scenario model "
-        "(I-24)."
-    )

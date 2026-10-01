@@ -38,8 +38,9 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
+from engine.market import CurrencyMarket, Market, ZeroCurveConfig, index_name
 from engine.market_risk import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
-from engine.simulation.market_model import ZeroCurveConfig
+from engine.valuation.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
 
 warnings.simplefilter("ignore")  # Sobol balance notices; the demo prints its own caveats
 
@@ -54,12 +55,18 @@ def section(title: str) -> None:
 
 
 # =============================================================================
-# Market: a sloped OIS curve and an IBOR curve 40bp above it.
+# Market: a sloped OIS discount curve and the 6M index's curve 40bp above it.
 # =============================================================================
 PILLAR_TIMES = [d / 365 for d in (0, 365, 730, 1095, 1825, 2555, 3650, 5475, 7300, 10950)]
 OIS = ZeroCurveConfig(PILLAR_TIMES, [0.030, 0.031, 0.032, 0.033, 0.035, 0.037, 0.039, 0.041, 0.042, 0.043])
 IBOR = ZeroCurveConfig(PILLAR_TIMES, [r + 0.004 for r in OIS.rates])
-FACTORS = RateRiskFactors.from_curves([OIS, IBOR], names=["OIS", "IBOR"])
+MARKET = Market(TODAY, {"USD": CurrencyMarket(OIS, {index_name("USD", 6): IBOR})})
+FACTORS = RateRiskFactors.from_market(MARKET)
+# The engines: the European on Jamshidian (Hull-White a = 3%, sigma = 1%: the market has no
+# swaption volatilities here), the Bermudan on ORE's LGM grid at a fixed model.
+PRICING = PricingConfig(european="Jamshidian", jamshidian=JamshidianEngineConfig(0.03, 0.01),
+                        bermudan=LgmSwaptionEngineConfig(reversion=0.03, volatility=0.01, calibration="None",
+                                                         n_per_std=16, std_devs=5.0))
 
 # 10-day covariance of absolute pillar moves: 8bp daily vol, correlation
 # decaying with pillar distance, 0.95 between the two curves' pillars.
@@ -76,29 +83,26 @@ COVARIANCE = correlation * 0.0008 ** 2 * 10
 # tail is a difference of large numbers, which is where precision bites.
 # =============================================================================
 TRADES = [
-    SwapConfig(notional=50e6, fixed_rate=0.036, payer=True, discount_curve_index=0,
-               forward_curve_index=1, swap_tenor="10Y", evaluation_date=TODAY),
-    SwapConfig(notional=45e6, fixed_rate=0.035, payer=False, discount_curve_index=0,
-               forward_curve_index=1, swap_tenor="9Y", evaluation_date=TODAY),
-    SwaptionConfig(notional=20e6, fixed_rate=0.037, payer=False, rate_factor_index=0, hw_a=0.03,
-                   hw_sigma=0.01, initial_zero_curve=OIS, swap_tenor="5Y",
-                   forward_start=ORE.Period(2, ORE.Years), evaluation_date=TODAY),
-    BermudanSwaptionConfig(notional=15e6, fixed_rate=0.035, payer=True, rate_factor_index=0, hw_a=0.03,
-                           hw_sigma=0.01, initial_zero_curve=OIS,
+    SwapConfig(notional=50e6, fixed_rate=0.036, payer=True, swap_tenor="10Y", evaluation_date=TODAY,
+               trade_id="payer-10y"),
+    SwapConfig(notional=45e6, fixed_rate=0.035, payer=False, swap_tenor="9Y", evaluation_date=TODAY,
+               trade_id="receiver-9y"),
+    SwaptionConfig(notional=20e6, fixed_rate=0.037, payer=False, swap_tenor="5Y",
+                   forward_start=ORE.Period(2, ORE.Years), evaluation_date=TODAY, trade_id="european"),
+    BermudanSwaptionConfig(notional=15e6, fixed_rate=0.035, payer=True,
                            exercise_dates=[TODAY + ORE.Period(y, ORE.Years) for y in (1, 2, 3, 4)],
-                           swap_tenor="5Y", evaluation_date=TODAY, n_per_std=16, std_devs=5.0),
-    BondConfig(face_amount=10e6, maturity_date=ORE.Date(30, 7, 2029), evaluation_date=TODAY,
-               initial_zero_curve=OIS, coupon_rate=0.04,
+                           swap_tenor="5Y", evaluation_date=TODAY, trade_id="bermudan"),
+    BondConfig(face_amount=10e6, maturity_date=ORE.Date(30, 7, 2029), evaluation_date=TODAY, coupon_rate=0.04,
                coupon_schedule=tuple(CouponPeriod(ORE.Date(30, 7, 2026 + k), ORE.Date(30, 7, 2027 + k))
-                                     for k in range(3)),
-               curve_index=0),
+                                     for k in range(3)), trade_id="note"),
 ]
 
 
 def run(precision: int, seed: int):
     scenarios = monte_carlo_scenarios(FACTORS, COVARIANCE, horizon_days=10, num_scenarios=SCENARIOS, seed=seed)
     started = time.time()
-    result = run_market_risk(MarketRiskRequest(TRADES, scenarios, quantiles=QUANTILES, precision=precision))
+    result = run_market_risk(MarketRiskRequest(TRADES, MARKET, scenarios, PRICING, quantiles=QUANTILES,
+                                               precision=precision))
     return result, time.time() - started
 
 

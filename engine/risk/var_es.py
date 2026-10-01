@@ -39,8 +39,8 @@ import jax.numpy as jnp
 #   - historical-forecast    a calibrated real-world loss forecast (capital, backtesting).
 #   - deterministic-stress   revaluation under a prescribed scenario; no probability.
 #
-# `generate_paths` simulates under the pricing measure, so this module's output is
-# risk-neutral-pricing. The label travels with the number (I-11).
+# The cross-asset simulation (`engine.simulation`) runs under the pricing measure, so this
+# module's output is risk-neutral-pricing. The label travels with the number (I-11).
 RISK_MEASURE_RISK_NEUTRAL = "risk-neutral-pricing"
 RISK_MEASURE_HISTORICAL = "historical-forecast"
 RISK_MEASURE_STRESS = "deterministic-stress"
@@ -50,7 +50,7 @@ RISK_MEASURES = (
     RISK_MEASURE_STRESS,
 )
 
-#: The measure `generate_paths` + this module produce. A fact, not a default.
+#: The measure the simulation + this module produce. A fact, not a default.
 ENGINE_RISK_MEASURE = RISK_MEASURE_RISK_NEUTRAL
 
 

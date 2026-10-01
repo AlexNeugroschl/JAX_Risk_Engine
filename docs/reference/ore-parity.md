@@ -18,25 +18,25 @@ against the actual C++ that produces it, closing the gap between "the numbers ma
 `ClassName::methodName`, with the file path relative to `reference/ORE/`. `reference/ORE`
 itself is never modified by this project — it exists purely as a read-only reference.
 
-## Two pricing paths
+## One pipeline
 
-Since the [ORE alignment](../planning/roadmap.md) (2026-09-29) the engine has two
-paths, and they correspond to ORE differently:
-
-- **The market path** (the default: `price_portfolio` on an `engine.market.Market`, HTTP
-  `POST /v2/portfolio/price`) reproduces ORE's classic exposure and sensitivity pipeline:
-  `CrossAssetModel` simulation, `ScenarioSimMarket`, `ValuationEngine` with each trade's own
-  t=0 engine, `ExposureCalculator` and `SensitivityAnalysis`. The next section maps it.
-- **The Hull-White path** (a `SimulationConfig` as the market, HTTP `POST /portfolio/price`)
-  is the original engine, a supported non-default model. Sections 1 to 10 below map it and the
-  components both paths share. Its known differences from ORE are registered as
-  [I-42](../planning/known-issues.md#i-42) to [I-47](../planning/known-issues.md#i-47).
+`price_portfolio` on an `engine.market.Market` (HTTP `POST /portfolio/price`) reproduces ORE's
+classic exposure and sensitivity pipeline: `CrossAssetModel` simulation, `ScenarioSimMarket`,
+`ValuationEngine` with each trade's own t=0 engine, `ExposureCalculator` and
+`SensitivityAnalysis`. The next section maps it; sections 1 to 10 map the individual
+algorithms. The interest-rate model of a currency is ORE's LGM in either of its
+parametrizations (Hagan's, the default, or Hull-White's); until roadmap 1.3 the Hull-White
+model was a separate pipeline with known differences from ORE, closed with it
+([I-42](../planning/known-issues.md#i-42) to [I-47](../planning/known-issues.md#i-47)).
 
 ## The market path
+
+(The pipeline; the section keeps its earlier name for links.)
 
 | ORE (file under `reference/ORE/`) | Engine | Checked against ORE by | Measured |
 |---|---|---|---|
 | `CrossAssetModel` (QuantExt/qle/models/crossassetmodel.cpp): LGM per currency, FX/EQ Black-Scholes, LGM measure | `engine.simulation.cam` | tests/test_cam.py: ζ, H, bond price and numeraire vs `LinearGaussMarkovModel`; one step vs `IrLgm1fStateProcess` | 1e-12 |
+| `IrLgm1fPiecewiseConstantHullWhiteAdaptor` (`<LGM>` with `VolatilityType HullWhite`), not bound in Python | `engine.simulation.cam` (`volatility_type="HullWhite"`), `engine.models.lgm.hull_white_zeta` | tests/test_cam.py: path curves vs QuantLib `HullWhite::discountBond` at the state's short rate; martingales; ζ against its integral. tests/test_end_to_end.py: the simulation's paths priced by QuantLib | 1e-12 |
 | Exact discretization, `CrossAssetAnalytics` (qle/models/crossassetanalytics.hpp) | `cam.step_moments` (Gauss-Legendre per volatility piece), `flexible_cholesky` | tests/test_cam.py: every covariance block = the integral of the Brownian loadings; Cholesky vs `CholeskyDecomposition`; martingales exact and by Monte Carlo (FP64, FP32) | 1e-12 (analytic) |
 | `CrossAssetModelScenarioGenerator::nextPath` (OREAnalytics/orea/scenario/crossassetmodelscenariogenerator.cpp): model-implied curves, `ModelImpliedYtsFwdFwdCorrected` index curves, floor 1e-5, LGM numeraire | `engine.simulation.scenario_market` | tests/test_cam.py (curves reprice the input at t=0, basis deterministic, floor) | exact |
 | `ScenarioSimMarket` curves: LogLinear, FlatFwd | `engine.models.curves.DiscountCurve` | tests/test_valuation.py hands each path curve to ORE as `ORE.DiscountCurve` | 1e-12 |
@@ -45,11 +45,12 @@ paths, and they correspond to ORE differently:
 | `FixingManager::applyFixings` (orea/simulation/fixingmanager.cpp) | `engine.valuation.legs.path_fixings` | tests/test_valuation.py | 1e-12 |
 | `DiscountingSwapEngine` with at-par coupons (`IborCouponPricer::initializeCachedData`), `hasOccurred` | `engine.valuation.legs` | tests/test_valuation.py (t=0 and every path/date), tests/test_shared_portfolio.py | 1e-10 |
 | `BlackMultiLegOptionEngine` (qle/pricingengines/blackmultilegoptionengine.cpp), incl. `ParYieldCurve` cash settlement; `DynamicSwaptionVolatilityMatrix` on paths | `engine.valuation.european` | OREApp oracle at t=0; QuantLib `BachelierSwaptionEngine` on every path | 1e-10 (t=0), 2e-14 (cash) |
+| QuantLib `JamshidianSwaptionEngine` (configured, not ORE's default) | `engine.valuation.jamshidian` | tests/test_jamshidian.py (QuantLib's engine, and its formula at the exact root); tests/test_end_to_end.py on Hull-White paths | Brent's 1e-8 on r* (≤ 5e-6); 1e-10 at the exact root |
 | `LgmBuilder` + `IrModelBuilder::buildSwaptionBasket` (OREData/ored/model/), `AnalyticLgmSwaptionEngine`, `NumericLgmMultiLegOptionEngine` | `engine.valuation.bermudan`, `engine.calibration.ore_lgm` | tests/test_ore_lgm_calibration.py (OREApp, `Calibration=Bootstrap`), tests/test_valuation.py (paths, recalibrated on ORE's path curves) | 2e-11 (t=0), 1e-8 (paths) |
 | `OptionWrapper` / `BermudanOptionWrapper` (OREData/ored/portfolio/optionwrapper.cpp) | `engine.valuation.options` | tests/test_valuation.py (exercise, physical vs cash) | rule-level |
 | `DiscountingRiskyBondEngine` without credit | `engine.valuation.portfolio.bond_legs` | tests/test_shared_portfolio.py vs `DiscountingBondEngine` | 2e-16 |
 | `ExposureCalculator` (orea/aggregation/exposurecalculator.cpp): EPE, ENE, EE_B, EEE_B, PFE, time-weighted EPE_B/EEPE_B, Basel horizon | `engine.risk.exposure` | tests/test_portfolio_market_path.py (a bill's EE_B identity) | MC error 1.4e-5 at 512 paths |
-| `SensitivityAnalysis`, `SensitivityCube` (orea/engine/sensitivityanalysis.cpp, orea/cube/sensitivitycube.cpp) | `engine.risk.sensitivities` | tests/test_sensitivities.py (bump vs AD, Vega sum, Theta rules) — **not against an OREApp sensitivity run** ([I-51](../planning/known-issues.md#i-51)) | — |
+| `SensitivityAnalysis`, `SensitivityCube` (orea/engine/sensitivityanalysis.cpp, orea/cube/sensitivitycube.cpp) | `engine.risk.sensitivities` (Bump), `engine.risk.greeks` (AD) | tests/test_sensitivities.py, tests/test_greeks.py (the two methods agree; AD against finite differences) — **not against an OREApp sensitivity run** ([I-51](../planning/known-issues.md#i-51)) | — |
 
 The whole portfolio at t=0 against ORE, trade by trade, on one sloped market:
 tests/test_shared_portfolio.py ([the shared portfolio](../planning/details/ore-parity-validation.md#the-shared-portfolio)), worst case 3.8e-11 (a calibrated Bermudan).
@@ -106,7 +107,7 @@ given algorithm:
 
 ## 1. Sobol sequence generation
 
-**This engine:** `engine/simulation/market_model.py::generate_sobol_normals`, via
+**This engine:** `engine/simulation/random.py::generate_sobol_normals`, via
 `scipy.stats.qmc.Sobol`.
 
 **ORE:** `QuantLib::SobolRsg` —
@@ -129,7 +130,7 @@ literal random numbers.
 
 ## 2. Brownian bridge construction
 
-**This engine:** `engine/simulation/market_model.py::_build_bridge_matrix`,
+**This engine:** `engine/simulation/random.py::_build_bridge_matrix`,
 `apply_brownian_bridge`.
 
 **ORE:** `QuantLib::BrownianBridge` —
@@ -164,133 +165,77 @@ in both — converting the bridged absolute path values back into standardized s
 increments (`output[i] -= output[i-1]; output[i] /= sqrtdt_[i]` in QuantLib, `dW =
 diff(W); dW / sqrt(dt)` in `apply_brownian_bridge`) — is identical.
 
-**Verified:** `tests/test_market_model.py::TestBrownianBridge` (the resulting
+**Verified:** `tests/test_random.py::TestBrownianBridge` (the resulting
 matrix reproduces the exact covariance structure `min(s,t)` real Brownian motion has —
 the property this construction exists to guarantee) and
 `tests/test_ore_parity.py::TestBrownianBridgeParity` (below).
 
-## 3. Interest rate model: Hull-White 1-Factor
+## 3. Interest rate model: the LGM, in two parametrizations
 
-**This engine:** `engine/simulation/market_model.py::_simulate_cross_asset_paths_jit`
-(short-rate step), `compute_hw_A_matrix` (today's-curve calibration).
+**This engine:** `engine/simulation/cam.py` (the components and the exact step moments),
+`engine/simulation/scenario_market.py` (the model-implied curves and numeraire),
+`engine/models/lgm.py` (the closed forms).
 
-**ORE, two equivalent formulations:**
-- The plain, single-currency `QuantLib::HullWhite` model —
-  [`QuantLib/ql/models/shortrate/onefactormodels/hullwhite.hpp`](../../reference/ORE/QuantLib/ql/models/shortrate/onefactormodels/hullwhite.hpp),
-  [`hullwhite.cpp`](../../reference/ORE/QuantLib/ql/models/shortrate/onefactormodels/hullwhite.cpp)
-  (specifically `HullWhite::A`, inherited `Vasicek::B`, `HullWhite::discountBondOption`) —
-  this is the class every direct ORE cross-check test in this project's test suite
-  actually uses.
-- The multi-currency `QuantExt::CrossAssetModel`'s rates leg,
-  `QuantExt::Lgm1fConstantParametrization` —
-  [`QuantExt/qle/models/irlgm1fparametrization.hpp`](../../reference/ORE/QuantExt/qle/models/irlgm1fparametrization.hpp),
-  [`irlgm1fconstantparametrization.hpp`](../../reference/ORE/QuantExt/qle/models/irlgm1fconstantparametrization.hpp),
-  and the bond-pricing formulas in `QuantExt::LinearGaussMarkovModel` —
-  [`QuantExt/qle/models/lgm.hpp`](../../reference/ORE/QuantExt/qle/models/lgm.hpp) — this is
-  the class `ORE.CrossAssetModel` actually instantiates (live-verified via the SWIG
-  bindings: `ORE.IrLgm1fConstantParametrization`, not
-  `ORE.HullWhite`, is what a `CrossAssetModel` is built from). See
-  [below](#a-parametrization-note-lgm-vs-plain-hull-white) for why both formulations are
-  the same model.
+**ORE:** `QuantExt::CrossAssetModel`'s rates leg, an `IrLgm1fParametrization` per currency —
+[`QuantExt/qle/models/irlgm1fparametrization.hpp`](../../reference/ORE/QuantExt/qle/models/irlgm1fparametrization.hpp) —
+with the bond prices and numeraire of `QuantExt::LinearGaussMarkovModel`
+([`QuantExt/qle/models/lgm.hpp`](../../reference/ORE/QuantExt/qle/models/lgm.hpp)). ORE's
+`LgmData::VolatilityType` chooses the parametrization: `Hagan`
+(`IrLgm1fPiecewiseConstantParametrization`, α piecewise constant) or `HullWhite`
+(`IrLgm1fPiecewiseConstantHullWhiteAdaptor`, the short rate's σ piecewise constant).
 
 ### 3a. Short-rate transition (Monte Carlo step)
 
-**This engine's formula** (`_simulate_cross_asset_paths_jit`'s `step_fn`):
-```
-decay      = exp(-a * dt)
-variance   = (1 - exp(-2*a*dt)) / (2*a)
-r(t+dt)    = r(t)*decay + theta*(1 - decay) + sigma*sqrt(variance)*Z
-```
-This is the exact closed-form transition of the Ornstein-Uhlenbeck / Hull-White SDE
-`dr = a(theta - r)dt + sigma*dW` — a standard, textbook result, not itself something
-QuantLib's `HullWhite` class computes directly (that class is calibrated to reproduce
-today's curve exactly and doesn't expose a "simulate the short rate forward" method on
-its own; simulation is normally done via a `StochasticProcess`, e.g.
-`QuantLib::HullWhiteProcess`, or, in ORE's multi-currency case, `IrLgm1fStateProcess`).
-The `variance` term matches `QuantExt::IrLgm1fStateProcess::variance()`
-(`QuantExt/qle/processes/irlgm1fstateprocess.hpp`) under the LGM-to-short-rate identity
-below.
-
-**Why `theta*(1-decay)`, not a bare `theta`.** This C++ source confirms
-`theta*(1-decay)` is the mathematically correct term: it is exactly
-the standard OU/Vasicek/Hull-White transition mean any textbook derivation (or a
-from-scratch derivation of the SDE's solution) produces, and is consistent with
-`IrLgm1fStateProcess::expectation()` returning the *unchanged* state value (LGM's own
-state variable is driftless — see below), which is only consistent with a Hull-White
-short rate `r(t)` derived from that state reverting correctly to `theta`, not drifting.
+The LGM state is driftless under the LGM measure, with variance ζ: the step from t to
+t + dt is Gaussian with variance ζ(t+dt) − ζ(t), coupled to the FX and equity states by
+ORE's exact discretization (`CrossAssetStateProcess::ExactDiscretization`,
+`CrossAssetAnalytics`). This engine computes the step moments once on the host and evolves
+every path on the device; one step equals ORE's `IrLgm1fStateProcess` (tests/test_cam.py).
+There is no short-rate recursion: the short rate is a function of the state,
+r(t) = f(0,t) + H′(t)x + ζ(t)H(t)H′(t). (Until roadmap 1.3 the Hull-White model simulated an
+Ornstein-Uhlenbeck short rate toward a constant θ, which was not fitted to a sloped curve,
+[I-42](../planning/known-issues.md#i-42).)
 
 ### 3b. Today's-curve calibration: A(t,T) and B(t,T)
 
-**This engine's formula** (`compute_hw_A_matrix`, and the `B_matrix` computation inline
-in `generate_paths`):
-```
-B(t,T) = (1 - exp(-a*(T-t))) / a
-
-A(t,T) = [P(0,T)/P(0,t)] * exp( B(t,T)*f(0,t) - (sigma^2/(4a))*(1-exp(-2at))*B(t,T)^2 )
-```
-where `f(0,t)` is today's instantaneous forward rate at `t` (the exact derivative of the
-interpolated zero curve; see `engine.models.curves.forward_rate`).
-
-**ORE's formula**, `HullWhite::A(Time t, Time T)`
-(`QuantLib/ql/models/shortrate/onefactormodels/hullwhite.cpp`, lines 75-83):
-computes `B(t,T)` via the inherited `Vasicek::B` (the same `(1-exp(-a*(T-t)))/a`), reads
-`forward = termStructure()->forwardRate(t,t,...)` (today's instantaneous forward, the
-same `f(0,t)` this engine computes independently), and combines them as
-`exp(B(t,T)*forward - 0.25*(sigma*B(t,T))^2 * B(0,2t)) * P(0,T)/P(0,t)` — algebraically
-identical to this engine's formula, since `0.25*sigma^2*B(t,T)^2*B(0,2t) =
-(sigma^2/(4a))*(1-exp(-2at))*B(t,T)^2` (substituting `B(0,2t) = (1-exp(-2at))/a`).
-
-**Verified exactly** (not just algebraically): this project's earlier live-testing
-sessions confirmed this engine's `A(t,T)*exp(-B(t,T)*r)` reproduces
-`ORE.HullWhite.discountBond(t,T,r)` to machine precision (`~1e-12` relative) across many
-`(t,T,r)` combinations, both flat and sloped input curves. Reading `HullWhite::A`'s
-actual C++ here confirms *why*: it's the identical closed-form expression, not a
-coincidental numerical match.
+The model is fitted to today's curve by construction:
+P(t,T|x) = P(0,T)/P(0,t) · exp(−(H(T)−H(t))x − ½(H(T)² − H(t)²)ζ(t)). In the Hull-White
+parametrization (H(t) = (1 − e^{−at})/a, ζ(t) = ∫σ²e^{2as}ds) this is QuantLib's
+`HullWhite::discountBond(t, T, r) = A(t,T)e^{−B(t,T)r}` at the state's short rate:
+`B(t,T) = (H(T) − H(t))/H′(t)` and `HullWhite::A` (`ql/models/shortrate/onefactormodels/hullwhite.cpp`)
+are the same expression. Verified to 1e-12 on sloped curves
+(`tests/test_cam.py::test_hull_white_path_curves_equal_quantlibs_hull_white`).
 
 ### A parametrization note: LGM vs. plain Hull-White
 
-`QuantExt::CrossAssetModel`'s interest rate factors are **Linear Gaussian Markov (LGM)**
-models (`IrLgm1fParametrization`), with a driftless state `x(t)` and bond prices and the
-numeraire in closed form in `x`, `H(t)` and `zeta(t)` (`QuantExt::LinearGaussMarkovModel`,
-`QuantExt/qle/models/lgm.hpp`). With constant reversion `kappa` and constant volatility
-`alpha` (`scaling=1, shift=0`):
+The two parametrizations are one model family. α(t) = σ(t)e^{at} turns a Hull-White
+volatility into the LGM's; with the same *number* they are different models (LGM with
+constant α is Hull-White with the decaying short-rate volatility αe^{−at}: 14% lower at 5y at
+a = 3%). An earlier version of this page called them "provably equivalent" under the same
+(a, σ), and the Bermudan engine's development measured a 0.6% bond-price difference
+between `ORE.HullWhite` and the constant-α LGM at 3y; both are this parametrization
+difference (that comparison also put r = f(0,t) against x = 0, which are different states).
+The engine therefore implements both parametrizations of the one model, as ORE does, and its
+Bermudan engine is always ORE's LGM.
 
-```
-H(t)    = (1 - exp(-kappa*t)) / kappa
-zeta(t) = alpha^2 * t
-```
-
-**Correction (2026-09-29).** This page used to call LGM and this engine's Hull-White model
-"provably equivalent" under the same `(a, sigma)`. They are not. LGM with constant `alpha` is
-Hull-White with the time-dependent short-rate volatility `alpha * exp(-kappa*t)`; Hull-White
-with constant `sigma` is LGM with `alpha(t) = sigma * exp(kappa*t)`. The two agree at t=0 and
-diverge after (at `kappa = 3%` the LGM short-rate volatility is 14% below the Hull-White one
-at 5y). This matters wherever the Hull-White path simulates with one model and prices
-Bermudans with the other ([I-44](../planning/known-issues.md#i-44)). The market path simulates and
-prices with LGM only, as ORE does.
-
-**Live-verified parameter identities** (`tests/test_ore_parity.py`): `H(t)` computed by
-`ORE.IrLgm1fConstantParametrization` matches this engine's `B(t,T)` (with `t=0`) exactly;
-`zeta(t)` matches `hw_sigma^2 * t` exactly; `alpha(t)` equals `hw_sigma` exactly.
+**Live-verified parameter identities** (`tests/test_ore_parity.py::TestLgmParametrizationParity`):
+`H(t)` matches `ORE.IrLgm1fConstantParametrization` exactly, ζ(t) = α²t, α(t) = α.
 
 ## 4. Multi-asset correlation and the Cholesky factor
 
-**This engine:** `generate_paths`'s "4. Joint Matrix" section — builds a **correlation**
-(not covariance) Cholesky factor `L_t`, then multiplies each factor's own volatility in
-explicitly inside `step_fn`.
+**This engine:** `engine/simulation/cam.py::flexible_cholesky` of each step's covariance
+(`step_moments`).
 
-**ORE:** `QuantExt::CrossAssetModel`'s own correlation handling
-(`QuantExt/qle/models/crossassetmodel.cpp`) keeps a `correlation()` matrix (unit
-diagonal, off-diagonal entries in `[-1,1]`) as a first-class, separate object from each
-factor's own `alpha`/`sigma` volatility parameter — i.e. ORE's own class design already
-enforces the same separation this engine's `L_t`-from-correlation-not-covariance fix
-established. This is a useful independent design confirmation for this engine's own
-`L_t`-from-correlation-not-covariance approach: ORE's own model never conflates
-"correlation structure" and "marginal volatility" into one matrix.
+**ORE:** `QuantExt::CrossAssetModel` keeps a `correlation()` matrix (unit diagonal) separate
+from each factor's volatility parameter (`qle/models/crossassetmodel.cpp`), and its state
+process takes the square root of each step's covariance with `pseudoSqrt`, which with the
+CAM's default `SalvagingAlgorithm::None` is `CholeskyDecomposition(cov, flexible = true)`.
+`flexible_cholesky` reproduces it, including a zero-volatility factor's zero column
+(tests/test_cam.py).
 
 ## 5. Vanilla interest rate swap pricing
 
-**This engine:** `engine/instruments/swap.py::_price_one_swap`.
+**This engine:** `engine/valuation/legs.py` (`legs_npv`, `today_npv`, `legs_cube`).
 
 **ORE:** `QuantLib::DiscountingSwapEngine::calculate()` —
 [`QuantLib/ql/pricingengines/swap/discountingswapengine.cpp`](../../reference/ORE/QuantLib/ql/pricingengines/swap/discountingswapengine.cpp)
@@ -301,10 +246,9 @@ lines 119-137.
 **Correspondence:** `DiscountingSwapEngine::calculate()` is thin orchestration: for each
 leg, it calls `CashFlows::npvbps` (sum each cashflow's discounted amount off one shared
 discount curve) and multiplies by a `+1`/`-1` payer/receiver sign, then sums the legs.
-`_price_one_swap` implements the identical structure directly: `fixed_leg_pv` and
-`float_leg_pv` are each `notional * rate_or_forward * accrual` summed and discounted
-against `swap.discount_curve_index`'s curve, combined as `float_leg_pv - fixed_leg_pv`
-and sign-flipped for `payer=False` — matching `DiscountingSwapEngine`'s own
+`legs_npv` implements the identical structure directly: the fixed and floating legs are each
+`notional * rate_or_forward * accrual` summed and discounted on the currency's discount
+curve, combined as floating minus fixed and sign-flipped for `payer=False` — matching `DiscountingSwapEngine`'s own
 `legNPV[i] *= arguments_.payer[i]` sign convention exactly (payer receives the floating
 leg and pays the fixed leg, matching this engine's `npv = float - fixed`).
 
@@ -315,24 +259,25 @@ index maturity (or the accrual period, adjusted, for an at-par coupon) and `span
 **index** day counter's year fraction over it, which is then multiplied by the leg's accrual.
 `engine.models.ore_builders.par_coupon_forecast_period` returns the three from QuantLib's own
 coupon. Until 2026-09-29 the engine divided by the leg's accrual instead, which differs for
-any leg day count other than the index's ([I-36](../planning/known-issues.md#i-36)). The market path's
-swap valuation (`engine.valuation.legs`) uses the same forecast periods.
+any leg day count other than the index's ([I-36](../planning/known-issues.md#i-36)).
 
-**Verified:** `tests/test_swap.py::TestPriceSwapsAgainstORE` (direct NPV
-comparison against a real `ORE.VanillaSwap` + `ORE.DiscountingSwapEngine`, `<1e-6`
-relative tolerance, across payer/receiver/par/spread/single-curve cases).
+**Verified:** `tests/test_swap.py::TestAgainstORE` (direct NPV comparison against a real
+`ORE.VanillaSwap` + `ORE.DiscountingSwapEngine`, 1e-12, across payer/receiver/par/spread
+cases) and `tests/test_valuation.py` (today and on every path and date).
 
 ## 6. European swaption pricing: Jamshidian's decomposition
 
-**Hull-White path only.** ORE's default European engine is `BlackMultiLegOptionEngine`
-(Bachelier on the market volatility), which the market path uses (`engine.valuation.european`,
-[above](#the-market-path)). This section documents the Hull-White path's pricer, which matches
-QuantLib's `JamshidianSwaptionEngine` and refuses what it refuses: a floating spread, `a <= 0`,
-cash settlement ([I-37](../planning/known-issues.md#i-37), [I-41](../planning/known-issues.md#i-41),
-[I-52](../planning/known-issues.md#i-52)).
+**The configured alternative.** ORE's default European engine is `BlackMultiLegOptionEngine`
+(Bachelier on the market volatility, `engine.valuation.european`, [above](#the-market-path)).
+This section documents the Jamshidian engine (`PricingConfig.european="Jamshidian"` with its
+Hull-White model), which matches QuantLib's `JamshidianSwaptionEngine` and refuses what it
+refuses: a floating spread, `a <= 0`, cash settlement ([I-37](../planning/known-issues.md#i-37),
+[I-41](../planning/known-issues.md#i-41), [I-52](../planning/known-issues.md#i-52)).
 
-**This engine:** `engine/instruments/european_swaption.py::_price_one_swaption`,
-`_solve_rstar`, `_bond_call`/`_bond_put`.
+**This engine:** `engine/valuation/jamshidian.py` (`jamshidian_npv`, `_solve_decreasing_root`),
+`engine/models/hull_white.py::bond_call`/`bond_put`. It is written in discount factors only
+(the LGM form of the Hull-White model), so it prices on any curve; the description below of
+QuantLib's algorithm applies term by term.
 
 **ORE:** `QuantLib::JamshidianSwaptionEngine::calculate()` (and its private
 `rStarFinder` functor) —
@@ -361,7 +306,7 @@ zero-coupon bond option closed form.
    whose *underlying* bond itself spans `[valueTime, fixedPayTime]`, not `[maturity,
    fixedPayTime]`.
 5. `w = Payer ? Put : Call` — confirmed exactly this engine's own
-   `bond_fn = _bond_put if swaption.payer else _bond_call` sign convention.
+   `option = bond_put if legs.payer else bond_call` sign convention.
 
 **This confirms, from the actual C++ source, that this engine handles forward-starting
 swaptions correctly.** The exercise date `T0` and the underlying swap's accrual start
@@ -380,32 +325,32 @@ alongside the others and priced with the *same* bond-option formula as every oth
 rather than as a division applied after the fact. Both are the same algebra (dividing by
 `B` and multiplying every strike by `1/B` is equivalent to adding a `-notional` leg
 whose own bond option cancels the `T_start` numéraire term in the sum) — confirmed
-numerically to agree to `~1e-6` relative precision or better in every existing
-`tests/test_european_swaption.py` cross-check, both spot- and forward-starting.
+numerically to agree within QuantLib's root tolerance in every `tests/test_jamshidian.py`
+cross-check, both spot- and forward-starting.
 
-**The bond-option closed form** (`_bond_call`/`_bond_put` vs. `HullWhite::
+**The bond-option closed form** (`bond_call`/`bond_put` vs. `HullWhite::
 discountBondOption`): both compute the standard Black-formula-on-a-bond-price value,
 with volatility `sigma_p = sigma*B(T_opt,S)*sqrt((1-exp(-2*a*(T_opt-t)))/(2a))` (this
-engine's `_bond_option_sigma`) matching QuantLib's `v = sigma()*B(maturity,
+engine's `lgm.bond_option_sigma`) matching QuantLib's `v = sigma()*B(maturity,
 bondMaturity)*sqrt(0.5*(1-exp(-2a*maturity))/a)` term-for-term (QuantLib's `maturity`
 here is this engine's `T_opt - t`, i.e. QuantLib always conditions from `t=0`, while
 this engine's conditional-pricing generalization allows an arbitrary `t` — see
 [Instruments: European Swaptions](../instruments/european-swaptions.md#6-conditional-future-time-pricing)).
 
-**Verified:** `tests/test_european_swaption.py::TestAgainstOREJamshidianEngine` (direct
-NPV comparison against real `ORE.Swaption` + `ORE.JamshidianSwaptionEngine`, spot- and
-forward-starting, payer/receiver, `<1e-4` relative tolerance) and
-`tests/test_ore_parity.py::TestJamshidianRStarParity` (below — an independent
-reimplementation of `rStarFinder`'s exact root-finding condition, cross-checked against
-this engine's own `_solve_rstar` output).
+**Verified:** `tests/test_jamshidian.py::TestAgainstQuantLibJamshidianEngine` (direct NPV
+comparison against real `ORE.Swaption` + `ORE.JamshidianSwaptionEngine`, spot- and
+forward-starting, payer/receiver, within QuantLib's Brent tolerance on r*, 5e-6) and
+`::TestAgainstQuantLibWithAnExactRoot` (QuantLib's formula evaluated at the exact root,
+1e-10). The engine solves x* by bisection to machine precision where QuantLib's Brent stops
+at 1e-8.
 
 ## 7. American & Bermudan swaptions: numeric LGM backward induction
 
 **This engine:** `engine/instruments/bermudan_swaption.py` — `_lgm_bond`,
 `_hagan_quadrature_weights`, `_rollback_one_step`, `_run_backward_induction` — plus
-`engine/instruments/american_swaption.py`, a thin wrapper that discretizes a continuous
-exercise window into a `bermudan_swaption.BermudanSwaptionConfig` and delegates entirely
-to this same engine.
+`engine/instruments/american_swaption.py`, which supplies ORE's American option times and
+exercise style to this same engine; `engine/valuation/bermudan.py` calibrates each trade's
+basket and runs the engine today and on every path.
 
 **ORE:** `QuantExt::NumericLgmMultiLegOptionEngineBase::calculate()` —
 [`QuantExt/qle/pricingengines/numericlgmmultilegoptionengine.cpp`](../../reference/ORE/QuantExt/qle/pricingengines/numericlgmmultilegoptionengine.cpp)
@@ -422,19 +367,13 @@ single-section summary can cover — includes the exercise-window discretization
 (American-as-fine-Bermudan), the state-grid/quadrature construction, and the
 numeraire-deflation requirement for the backward induction to be mathematically valid at
 all. One deviation from this codebase's usual pattern is important enough to call out
-here directly: **this module does not reuse `hull_white.A`/`_hw_B`** (section 3 above) —
-building it surfaced a live, verified finding that `ORE.HullWhite` and
-`ORE.LinearGaussMarkovModel`, despite sharing `(a, sigma)` and today's curve, are not the
-same numerical model realization for `t>0` (a genuine ~0.6% bond-price difference at their
-own respective "no shock" reference states, `t=3y`). Since ORE's actual Bermudan/American
-engine is built on `LinearGaussMarkovModel`, this module uses a separate, independently
-live-verified closed form (`_lgm_bond`, matching `ORE.LinearGaussMarkovModel.discountBond`
-to ~1e-16 relative) exclusively, rather than the `HullWhite`-parametrized formula used
-everywhere else in this codebase. This nuances, but does not contradict, section 3's
-"parametrization note" above (verified equivalent at `t=0`; the two diverge only for
-`t>0`, which the swap/Jamshidian pricers never need to evaluate since they always condition
-either at `t=0` or via the model's own Markov-conditional formula rather than a second,
-independently-parametrized model object).
+here directly: building it surfaced that `ORE.HullWhite` and `ORE.LinearGaussMarkovModel`,
+given the same `(a, sigma)` and today's curve, are not the same model for `t>0` (a ~0.6%
+bond-price difference at `t=3y`). Since ORE's actual Bermudan/American
+engine is built on `LinearGaussMarkovModel`, this module uses its closed form (`_lgm_bond`,
+matching `ORE.LinearGaussMarkovModel.discountBond` to ~1e-16 relative) exclusively. The
+"difference" is the parametrization (section 3's note): with the same number the two are
+different models, and the Hull-White parametrization of the LGM is the Hull-White model.
 
 ### 7a. An external multi-exercise oracle does exist (correction, 2026-09-18)
 
@@ -597,124 +536,55 @@ comparison, including the tie-at-VaR-boundary and empty-tail edge cases).
 
 ## 9. Delta, Gamma, Vega, and Theta
 
-**Hull-White path.** The market path reports ORE's own bump-and-revalue Greeks on the
-sensitivity simulation market (`engine.risk.sensitivities`; gates V-2 and V-3 in
-[the market path](#verification-gates)), with Vega for every swaption quote; the AD Greeks
-below are the Hull-White path's; the method is to become a per-run choice on either model
-(decision A-5). Theta rolls the date by calendar days on both
-paths (`asof + thetaPeriod`, [I-38](../planning/known-issues.md#i-38)).
-
-**This engine:** `engine/risk/greeks.py::swap_delta_gamma`, `swap_theta`,
-`swaption_delta_gamma`, `swaption_theta`, `bermudan_delta_gamma`, `bermudan_theta`,
-`bermudan_vega`.
+**This engine:** `engine/risk/sensitivities.py` (`Bump`, the default: ORE's sensitivity
+analysis, and Theta for both methods), `engine/risk/greeks.py` (`AD`). See
+[Greeks](../risk/greeks.md).
 
 **ORE:** `OREAnalytics::SensitivityAnalysis::generateSensitivities` —
 [`OREAnalytics/orea/engine/sensitivityanalysis.cpp`](../../reference/ORE/OREAnalytics/orea/engine/sensitivityanalysis.cpp)
-— backed by `OREAnalytics::SensitivityScenarioGenerator`/`ShiftScenarioGenerator` —
-[`OREAnalytics/orea/scenario/sensitivityscenariogenerator.cpp`](../../reference/ORE/OREAnalytics/orea/scenario/sensitivityscenariogenerator.cpp),
-[`shiftscenariogenerator.cpp`](../../reference/ORE/OREAnalytics/orea/scenario/shiftscenariogenerator.cpp)
-— and `OREAnalytics::SensitivityCube` —
-[`OREAnalytics/orea/cube/sensitivitycube.cpp`](../../reference/ORE/OREAnalytics/orea/cube/sensitivitycube.cpp).
+— backed by `SensitivityScenarioGenerator`/`ShiftScenarioGenerator`
+([`OREAnalytics/orea/scenario/sensitivityscenariogenerator.cpp`](../../reference/ORE/OREAnalytics/orea/scenario/sensitivityscenariogenerator.cpp),
+[`shiftscenariogenerator.cpp`](../../reference/ORE/OREAnalytics/orea/scenario/shiftscenariogenerator.cpp))
+and `SensitivityCube`
+([`OREAnalytics/orea/cube/sensitivitycube.cpp`](../../reference/ORE/OREAnalytics/orea/cube/sensitivitycube.cpp)).
 
-**Correspondence: the same numerical quantity ORE reports, computed via automatic
-differentiation instead of literal bump-and-revalue.** ORE's production path is finite
-differences: `SensitivityScenarioGenerator` builds one perturbed market scenario per
-curve pillar (a triangular-weighted bump, `ShiftScenarioGenerator::applyShift`, ORE's own
-example config using `ShiftType=Absolute`, `ShiftSize=0.0001` — 1bp), reprices the whole
-portfolio under each scenario, and `SensitivityCube` differences the resulting NPVs
-(`delta = NPV_up - NPV_base`, `gamma = NPV_up - 2*NPV_base + NPV_down`). This engine
-computes the exact analytic derivative of the SAME NPV with respect to the SAME curve
-pillars (`jax.grad`/`jax.hessian`, via a JAX-differentiable curve interpolation,
-`greeks.ZeroCurve`/`_zero_rate_at`, using the identical piecewise-linear-on-zero-rates
-shape of `engine.models.curves.ZeroCurve`, which every Hull-White pricer uses), then
-scales by the same 1bp `bump_size` — giving ORE's own "dollar Delta/Gamma for a 1bp move,"
-without finite-difference truncation error. This mirrors ORE's own use of closed-form
-`DiscountingSwapEngineDeltaGamma`/`BlackSwaptionEngineDeltaGamma` engines
+**Bump: the same computation.** ORE's sensitivity simulation market samples every curve at
+the configured tenors; one tenor's zero rate (or one swaption quote) is shifted at a time
+(`ShiftType=Absolute`, 1bp), the portfolio repriced, and `SensitivityCube` differences the
+NPVs (`delta = NPV_up − NPV_base`, `gamma = NPV_up − 2·NPV_base + NPV_down`). Bermudans are
+recalibrated under every shift. `portfolio_sensitivities` reproduces it (gates V-2, V-3),
+not yet against an OREApp sensitivity run ([I-51](../planning/known-issues.md#i-51)).
+
+**AD: the same quantity's limit.** The exact derivative of each trade's price in each
+market-curve pillar (`jax.grad` and a Hessian-diagonal), scaled by the shift — ORE's Delta
+without the forward difference's truncation, as ORE's own closed-form
+`DiscountingSwapEngineDeltaGamma`/`BlackSwaptionEngineDeltaGamma` engines compute it
 ([`QuantExt/qle/pricingengines/discountingswapenginedeltagamma.hpp`](../../reference/ORE/QuantExt/qle/pricingengines/discountingswapenginedeltagamma.hpp),
-[`blackswaptionenginedeltagamma.hpp`](../../reference/ORE/QuantExt/qle/pricingengines/blackswaptionenginedeltagamma.hpp))
-as an independent, closed-form cross-check on its own bump-and-revalue numbers
-(exercised by
-[`OREAnalytics/test/sensitivityvsanalytic.cpp`](../../reference/ORE/OREAnalytics/test/sensitivityvsanalytic.cpp))
-— this engine uses that closed-form route as its primary implementation, not just a
-validation side-channel.
+cross-checked by ORE in
+[`OREAnalytics/test/sensitivityvsanalytic.cpp`](../../reference/ORE/OREAnalytics/test/sensitivityvsanalytic.cpp)).
+Vega per swaption quote: through the bilinear surface's weights, and for a
+Bermudan/American through its calibration by the implicit function theorem, since
+`RiskFactorKey::KeyType` has no entry for a raw model parameter — ORE's Vega is always on the
+quotes the model is calibrated to.
 
 **Rho:** confirmed absent from ORE entirely — `QuantExt::RiskFactorKey::KeyType`
 ([`QuantExt/qle/termstructures/scenario.hpp`](../../reference/ORE/QuantExt/qle/termstructures/scenario.hpp))
-has no rho-specific entry, and `ReportWriter::writeSensitivityReport`
-([`OREAnalytics/orea/app/reportwriter.cpp`](../../reference/ORE/OREAnalytics/orea/app/reportwriter.cpp))
-emits only "Delta"/"Gamma" columns for whatever risk factor was bumped, curves included —
-so this engine's own interest-rate-curve Delta is ORE's exact equivalent of a textbook
-Rho, and no separate function exists for it.
+has no rho-specific entry, so the interest-rate-curve Delta is ORE's equivalent of a
+textbook Rho.
 
-**Vega: implemented for Bermudan/American, via `engine/calibration/`.**
-`SensitivityScenarioGenerator::generateSwaptionVolScenarios` bumps the market-quoted
-implied-volatility surface used to CALIBRATE ORE's model — there is no
-`RiskFactorKey::KeyType` anywhere for a raw model parameter, so `d(NPV)/d(hw_sigma)` was
-never a well-defined ORE-equivalent Vega on its own. This was a genuine blocker, not
-merely a missing function: until [`engine/calibration/`](calibration.md) existed to
-calibrate a piecewise LGM `Sigma` to a basket of market swaption vols
-(`ore::data::LgmBuilder::calibrate()`'s own `Bootstrap` path), there was no
-market-vol-to-model relationship for this engine to differentiate through either.
-`greeks.bermudan_vega` now computes `d(NPV)/d(market_vol_i)` for each basket instrument by
-differentiating through `calibrate_lgm_sigma`'s bootstrap via the implicit function
-theorem — see [Delta, Gamma, and Theta: Vega](../risk/greeks.md#vega-bermudanamerican-only)
-for the full derivation, including two real bugs found while building it. Vega for
-`swap.py`/`european_swaption.py` remains out of scope: a swap has no volatility exposure
-at all, and `SwaptionConfig` (the European swaption pricer's config) was never migrated to
-accept a calibrated `Sigma` the way `BermudanSwaptionConfig` was, so there is still no
-market-vol-to-model relationship to differentiate through for a European swaption.
+**Theta:** `generateSensitivities`'s theta branch advances the evaluation date by a
+configured period (calendar days, [I-38](../planning/known-issues.md#i-38)), builds the market
+there from today's curves fixed in dates, reprices, and adds back the interim cashflows:
+`Theta = NPV(t+dt) − NPV(t) + CF(t, t+dt]`. Both methods report it (`trade_theta`).
 
-**Theta:** `SensitivityAnalysis::generateSensitivities`'s theta branch (lines ~253-307 of
-the same file cited above) advances the evaluation date by a configured period (default
-1 day), holds every market quote fixed, rebuilds term structures at the new reference
-date, reprices, and adds back any interim cashflow —
-`Theta = NPV(t+dt, same curve) - NPV(t) + CF(t, t+dt)`. This engine's `swap_theta`/
-`swaption_theta`/`bermudan_theta` reproduce this literally; unlike Delta/Gamma, this is a
-genuine forward difference along the time axis in both engines, not an autodiff
-computation in either.
+**Root-finds.** Naively differentiating through a bisection gives a silently wrong
+gradient (its comparison has none). The Jamshidian root and each calibration bucket get the
+implicit function theorem's derivative instead (`_solve_decreasing_root`'s `custom_jvp`,
+`_bootstrap_jacobian`); see [Greeks](../risk/greeks.md#differentiating-through-bisection-root-finds).
 
-**Scope: every instrument in this codebase, not a formula gap.** This engine's Greeks used
-to cover `swap.py` and `european_swaption.py` only, since `bermudan_swaption.py`/
-`american_swaption.py`'s backward induction ran entirely in plain NumPy (a CPU grid
-method), with no JAX computational graph for `jax.grad` to differentiate at all. Porting
-that backward induction to `jax.lax.scan` (see
-[American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)) removed
-that blocker; `bermudan_delta_gamma`/`bermudan_theta` now cover Bermudan/American exactly
-as `swap_delta_gamma`/`swap_theta` cover swaps. See
-[Delta, Gamma, and Theta: Scope](../risk/greeks.md#scope-every-rate-derivative-instrument-in-this-codebase).
-
-**Two bugs found while building this correspondence, unrelated to the correspondence
-itself, both the same root cause.** Naively differentiating through a bisection-based
-root-find gives a silently *wrong*, not merely imprecise, gradient — a bisection's own
-comparison (`jnp.where(val > 0.0, ...)`) has zero gradient everywhere, so `jax.grad`
-straight through the unrolled loop ignores how the converged root actually moves with the
-function's own inputs:
-
-1. **`european_swaption.py::_solve_rstar`** (Jamshidian's bisection for the exercise
-   boundary `r*`) — its naive gradient was silently `0.0` everywhere, regardless of the
-   true root's actual sensitivity. Fixed via `jax.custom_jvp` implementing the implicit
-   function theorem directly.
-2. **`engine.calibration.basket._bisect_xstar`** — the LGM analogue of `_solve_rstar`,
-   found while building `bermudan_vega`: understated `price_lgm_swaption`'s own gradient
-   with respect to sigma by ~6%, rather than dropping it to exactly zero (a different
-   magnitude of the same class of error, since this bisection's root feeds into a further
-   set of formulas rather than being returned directly). Fixed with the identical
-   `custom_jvp`/implicit-function-theorem pattern, plus registering
-   `engine.models.lgm.Sigma` as a proper JAX pytree so a tangent can propagate into its
-   `values` field when nested inside a larger argument tuple. See
-   [Calibration](calibration.md#the-_bisect_xstar-gradient-bug) for the full incident.
-
-See [Delta, Gamma, and Theta: Two real bugs this module found and
-fixed](../risk/greeks.md#differentiating-through-bisection-root-finds) for the full account of
-both, and each function's own docstring in `european_swaption.py`/`engine/calibration/basket.py`.
-
-**Verified:** `tests/test_greeks.py` — finite-difference bump-and-revalue cross-checks
-(the literal ORE-style computation) for both swap and swaption Delta/Gamma, plus a direct
-cross-check against a real `ORE.VanillaSwap`/`ORE.Swaption` repriced under a bumped
-`ORE.FlatForward` curve. `tests/test_greeks_bermudan.py` — the same style of check for
-Bermudan/American Delta/Gamma/Theta, plus Vega against a literal finite-difference
-recalibration (bump one basket instrument's market vol, rerun
-`calibrate_lgm_sigma`, reprice).
+**Verified:** `tests/test_sensitivities.py`, `tests/test_trade_dates.py` (Theta against ORE),
+`tests/test_greeks.py` and `tests/test_greeks_bermudan.py` (AD against finite differences,
+Vega through the recalibration, agreement with the bump method).
 
 ## 10. LGM calibration: bootstrap fit of a piecewise sigma to market swaption vols
 
@@ -757,102 +627,70 @@ Bermudan/American values have no external oracle — `ORE.TreeSwaptionEngine` an
 `ORE.FdHullWhiteSwaptionEngine` are constructible and supply one; see
 [7a](#7a-an-external-multi-exercise-oracle-does-exist-correction-2026-09-18).
 
-**The `HullWhite` vs. `LinearGaussMarkovModel` non-equivalence, confirmed relevant here
-too.** Section 3's ["parametrization note"](#a-parametrization-note-lgm-vs-plain-hull-white)
-already documents that `ORE.HullWhite` and `ORE.LinearGaussMarkovModel` are not the same
-numerical model realization for `t>0`, despite sharing `(a, sigma)` and today's curve (a
-~0.6% bond-price divergence at `t=3y`, found while building `bermudan_swaption.py`;
-`tests/test_ore_coverage_hardening.py::TestHullWhiteVersusLgmBondPrices` now measures this
-directly across a grid of `(t,T)` rather than leaving it as a single remembered figure,
-and bounds it from *below* as well as above so that a future ORE version making the two
-agree fails loudly rather than silently leaving percent-level tolerances unjustified).
-`engine/calibration/` inherits this directly: `price_lgm_swaption` is built exclusively on
-`engine.models.lgm`, never `engine.models.hull_white`, for the same reason
-`bermudan_swaption.py` is — the model being calibrated is the one ORE's own Bermudan engine
-actually uses.
+**The parametrizations.** Section 3's ["parametrization note"](#a-parametrization-note-lgm-vs-plain-hull-white)
+applies here: the calibration is of the LGM ORE's Bermudan engine uses. A Hull-White currency
+of the cross-asset model is bootstrapped to the same helpers and converted bucket by bucket
+(`hull_white_matching_zeta`): helper prices depend on the model only through ζ at their
+expiry and H, so matching ζ at every bucket end is exact (`tests/test_hull_white_model.py::TestCalibration`).
+The cross-asset model's and each trade's calibration is `engine/calibration/ore_lgm.py`
+(QuantLib's `SwaptionHelper`s, ORE's bootstrap, 2e-11 against `LgmBuilder`,
+`tests/test_ore_lgm_calibration.py`); `basket.py`/`lgm.py` serve the standalone route.
 
 **Verified:** `tests/test_calibration_basket.py` (15 tests), `tests/test_calibration_lgm.py`
 (9 tests), `tests/test_calibration_integration.py` (6 tests) — see
 [Calibration: Tested by](calibration.md#tested-by) for the full breakdown.
 
-## Summary table (Hull-White path and shared components)
+## Summary table (the algorithms)
 
 | Algorithm | This engine | ORE C++ source |
 |---|---|---|
-| Sobol sequence | `generate_sobol_normals` | `QuantLib::SobolRsg` (`ql/math/randomnumbers/sobolrsg.cpp`) — same sequence *class*, independent implementation |
-| Brownian bridge | `_build_bridge_matrix`, `apply_brownian_bridge` | `QuantLib::BrownianBridge::initialize`/`transform` (`ql/methods/montecarlo/brownianbridge.cpp`) |
-| HW1F short-rate transition | `_simulate_cross_asset_paths_jit` | Standard OU/Vasicek transition; consistent with `QuantExt::IrLgm1fStateProcess::variance` (`qle/processes/irlgm1fstateprocess.hpp`) |
-| HW1F A(t,T)/B(t,T) | `compute_hw_A_matrix` | `QuantLib::HullWhite::A`, `Vasicek::B` (`ql/models/shortrate/onefactormodels/hullwhite.cpp`) |
-| Correlation vs. volatility separation | `joint_covariance` → correlation-only `L_t` | `QuantExt::CrossAssetModel` correlation matrix (`qle/models/crossassetmodel.cpp`) |
-| Swap pricing | `_price_one_swap` | `QuantLib::DiscountingSwapEngine::calculate`, `IborCoupon::indexFixing` |
-| Jamshidian swaption decomposition | `_price_one_swaption`, `_solve_rstar` | `QuantLib::JamshidianSwaptionEngine::calculate`, `rStarFinder` |
-| Bond option (Black-on-bond) | `_bond_call`/`_bond_put` | `QuantLib::HullWhite::discountBondOption` |
+| Sobol sequence | `random.generate_sobol_normals` | `QuantLib::SobolRsg` (`ql/math/randomnumbers/sobolrsg.cpp`) — same sequence *class*, independent implementation |
+| Brownian bridge | `random._build_bridge_matrix`, `apply_brownian_bridge` | `QuantLib::BrownianBridge::initialize`/`transform` (`ql/methods/montecarlo/brownianbridge.cpp`) |
+| LGM state step (exact) | `cam.step_moments`, `evolve_states` | `CrossAssetStateProcess::ExactDiscretization`, `CrossAssetAnalytics`, `IrLgm1fStateProcess` |
+| Hull-White parametrization | `cam.IrComponent(volatility_type="HullWhite")`, `lgm.hull_white_zeta` | `IrLgm1fPiecewiseConstantHullWhiteAdaptor`; bonds equal `QuantLib::HullWhite::discountBond` |
+| Model-implied curves, numeraire | `scenario_market.implied_log_discounts`, `lgm_numeraire` | `CrossAssetModelScenarioGenerator::nextPath`, `LinearGaussMarkovModel::discountBond`/`numeraire` |
+| Correlation and square root | `cam.flexible_cholesky` | `CrossAssetModel` correlation; `CholeskyDecomposition(cov, flexible = true)` |
+| Swap pricing | `valuation.legs.legs_npv` | `QuantLib::DiscountingSwapEngine::calculate`, `IborCouponPricer` at par |
+| European (default) | `valuation.european` | `BlackMultiLegOptionEngine` (Bachelier), `ParYieldCurve` cash settlement |
+| Jamshidian swaption decomposition | `valuation.jamshidian.jamshidian_npv`, `_solve_decreasing_root` | `QuantLib::JamshidianSwaptionEngine::calculate`, `rStarFinder` |
+| Bond option (Black-on-bond) | `hull_white.bond_call`/`bond_put` | `QuantLib::HullWhite::discountBondOption` |
 | American/Bermudan LGM bond price | `bermudan_swaption._lgm_bond` | `QuantExt::LinearGaussMarkovModel::discountBond` (`qle/models/lgm.hpp`) |
 | American/Bermudan backward induction, including ORE's cashflow bookkeeping | `bermudan_swaption._backward_induction_arrays`, `_GridSchedule` | `QuantExt::NumericLgmMultiLegOptionEngineBase::calculate`, `LgmConvolutionSolver2` — equal to ORE's own engine to 1e-10, reached in-process via `OREApp`, see [7b](#7b-ores-own-lgm-engine-reached-in-process-2026-09-23) |
 | Coupon membership and proration by exercise style | `bermudan_swaption.ExerciseStyle`, `prepare_bermudan` | `NumericLgmMultiLegOptionEngineBase::buildCashflowInfo` (`belongsToUnderlyingMaxTime_`, `couponRatio`) |
 | Ibor projection in the LGM | `bermudan_swaption._cashflow_values_at_nodes` | `QuantExt::LgmVectorised::fixing` (index fixing period) |
-| American exercise-window discretization | `american_swaption.AmericanSwaptionConfig.option_times` | `NumericLgmMultiLegOptionEngineBase::calculate`'s American branch (truncating step count) |
-| VaR | `value_at_risk` | `QuantLib::RiskStatistics::valueAtRisk` → `GeneralStatistics::percentile` |
-| Expected Shortfall | `expected_shortfall` | `QuantLib::RiskStatistics::expectedShortfall` |
-| Delta / Gamma (curve pillar bump-and-revalue, via autodiff) | `greeks.swap_delta_gamma`, `greeks.swaption_delta_gamma`, `greeks.bermudan_delta_gamma` | `SensitivityScenarioGenerator`/`ShiftScenarioGenerator::applyShift`, `SensitivityCube::delta`/`gamma` |
-| Theta (evaluation-date roll) | `greeks.swap_theta`, `greeks.swaption_theta`, `greeks.bermudan_theta` | `SensitivityAnalysis::generateSensitivities`'s theta branch |
-| Vega (Bermudan/American, via calibration) | `greeks.bermudan_vega` | `SensitivityScenarioGenerator::generateSwaptionVolScenarios`, bumping the vol surface calibration itself consumes |
-| Co-terminal swaption calibration basket | `calibration.basket.build_coterminal_basket` | `ore::data::IrModelBuilder::buildSwaptionBasket` (`OREData/ored/model/irmodelbuilder.cpp`) |
-| LGM closed-form swaption pricer | `calibration.basket.price_lgm_swaption` | LGM analogue of `QuantExt::AnalyticLgmSwaptionEngine` (constructor not exposed via SWIG bindings — see section 10) |
-| LGM sigma bootstrap calibration | `calibration.lgm.calibrate_lgm_sigma` | `ore::data::LgmBuilder::calibrate` → `calibrateVolatilitiesIterative` (`OREData/ored/model/lgmbuilder.cpp`), `QuantLib::CalibratedModel::calibrateIterative` |
+| American exercise-window discretization | `AmericanSwaptionConfig.option_times` | `NumericLgmMultiLegOptionEngineBase::calculate`'s American branch (truncating step count) |
+| Per-trade basket and bootstrap | `valuation.bermudan.calibration_basket`, `calibration.ore_lgm` | `IrModelBuilder::buildSwaptionBasket`, `LgmBuilder::calibrate` |
+| Exercise wrapper | `valuation.options.wrap` | `OptionWrapper`, `BermudanOptionWrapper` |
+| VaR | `var_es.value_at_risk` | `QuantLib::RiskStatistics::valueAtRisk` → `GeneralStatistics::percentile` |
+| Expected Shortfall | `var_es.expected_shortfall` | `QuantLib::RiskStatistics::expectedShortfall` |
+| Delta / Gamma / Vega (bump) | `sensitivities.portfolio_sensitivities` | `SensitivityScenarioGenerator`, `ShiftScenarioGenerator::applyShift`, `SensitivityCube` |
+| Delta / Gamma / Vega (AD) | `greeks.portfolio_greeks` | the limit of the above; `DiscountingSwapEngineDeltaGamma`-style closed forms |
+| Theta (evaluation-date roll) | `sensitivities.trade_theta` | `SensitivityAnalysis::generateSensitivities`'s theta branch |
+| Co-terminal swaption basket (standalone route) | `calibration.basket.build_coterminal_basket` | `IrModelBuilder::buildSwaptionBasket` |
+| LGM sigma bootstrap (standalone route) | `calibration.lgm.calibrate_lgm_sigma` | `LgmBuilder::calibrate` → `calibrateVolatilitiesIterative`, `CalibratedModel::calibrateIterative` |
 
 ## Tested by
 
-- The market path: `tests/test_cam.py`, `tests/test_valuation.py`,
-  `tests/test_ore_lgm_calibration.py`, `tests/test_shared_portfolio.py`,
-  `tests/test_portfolio_market_path.py`, `tests/test_sensitivities.py`,
-  `tests/test_curves.py`, and `tests/test_market_risk_ore_parity.py` (Bachelier Europeans).
+- The pipeline: `tests/test_cam.py`, `tests/test_valuation.py` (every path test under both
+  models), `tests/test_ore_lgm_calibration.py`, `tests/test_shared_portfolio.py`,
+  `tests/test_portfolio_market_path.py`, `tests/test_sensitivities.py`, `tests/test_curves.py`,
+  `tests/test_end_to_end.py` (the Hull-White simulation's paths priced in QuantLib) and
+  `tests/test_market_risk_ore_parity.py`.
 - `tests/test_ore_parity.py` — the tests specific to this page: independent
-  reimplementations of small pieces of the cited C++ algorithms (the LGM parameter
-  identities, the Jamshidian `rStarFinder` condition, the `GeneralStatistics::percentile`
-  walk), each cross-checked against this engine's own output, so a future change to this
-  engine's formulas that silently drifts from the *algorithm* (not just from a
-  previously-recorded ORE output number) fails loudly.
-- `tests/test_ore_bermudan_oracle.py` (50 tests) — the external multi-exercise Bermudan
-  oracle described in [7a](#7a-an-external-multi-exercise-oracle-does-exist-correction-2026-09-18):
-  this engine's backward induction against real `ORE.TreeSwaptionEngine` /
-  `ORE.FdHullWhiteSwaptionEngine` objects, plus the controls that attribute the residual
-  ~3% to the HW/LGM parametrization rather than to the induction, plus a
-  parametrization-free `sigma -> 0` collapse to intrinsic that holds to 1e-3.
-- `tests/test_ore_coverage_hardening.py` (39 tests) — tests *about* the discriminating
-  power of the ORE comparisons themselves, plus the curve shapes the rest of the suite
-  never exercises. Two findings of record, both pinned as assertions:
-  - **A t=0 blind spot for the variance term of `A(t,T)`.** That term carries a factor
-    `(1 - exp(-2at))` which is identically zero at `t=0`, so at `t=0` deleting it entirely
-    moves an ATM swaption price by ~7e-6 relative — an order of magnitude *inside* the
-    `rtol=1e-4` those comparisons assert. Most of this suite's ORE swaption comparisons
-    price at `t=0`. When found, deleting the whole term failed exactly **one** test in
-    `tests/test_european_swaption.py` (131 tests),
-    `TestConditionalPricingAndExpiry::test_conditional_pricing_matches_ore_rebuilt_at_later_date`.
-    This was a gap in the *tests*, not a defect in the formula (which is independently
-    verified against QuantLib's C++ in section 3b and against live
-    `ORE.HullWhite.discountBond`). **Closed 2026-09-23**
-    ([I-30](../planning/known-issues.md#i-30)): a 60-point conditional grid against ORE's
-    `JamshidianSwaptionEngine` over dates, short rates, strikes and flat/upward/inverted
-    curves (`test_conditional_pricing_matches_ore_across_t_and_r`, worst case 2.1e-6) now
-    fails 61 of 191 tests when the term is deleted, and
-    `test_every_conditional_grid_point_catches_the_mutation` asserts that every grid point
-    catches every mutation by at least 10x its tolerance.
-  - **Non-flat curves agree off-pillar to ~1e-8** (upward, inverted, humped, and
-    negative-rate), but **at a pillar** the two disagree by up to ~1.5e-2. Neither library
-    is wrong: under linear zero-rate interpolation `f(0,t)` has a genuine kink at each
-    pillar (left and right derivatives differ), so the instantaneous forward is undefined
-    exactly there. Pinned rather than fixed, with both an upper and a lower bound, so that
-    a future move to a smooth interpolation fails the test and prompts folding pillar
-    times into the off-pillar check.
+  reimplementations of small pieces of the cited C++ algorithms (the Brownian bridge, the LGM
+  parameter identities, the `GeneralStatistics::percentile` walk), each cross-checked against
+  this engine's own output, so a change that drifts from the *algorithm* fails loudly.
+- `tests/test_jamshidian.py` — the Jamshidian engine against QuantLib's.
+- `tests/test_ore_bermudan_oracle.py` (51 tests) — the external multi-exercise Bermudan
+  oracle described in [7a](#7a-an-external-multi-exercise-oracle-does-exist-correction-2026-09-18).
 - Every other test file listed in each section above, which cross-check against the
   *installed* `ORE` package's actual runtime behavior — this page's own contribution is
   connecting those already-passing behavioral tests to the specific C++ source lines that
   produce that behavior.
 - `tests/test_models_piecewise_sigma.py`, `tests/test_calibration_basket.py`,
   `tests/test_calibration_lgm.py`, `tests/test_calibration_integration.py`,
-  `tests/test_greeks_bermudan.py` — the tests specific to sections 9-10's newer additions
-  (Bermudan/American Greeks and Vega, LGM calibration); see
+  `tests/test_greeks.py`, `tests/test_greeks_bermudan.py` — the tests specific to sections
+  9-10 (Greeks, calibration); see
   [Delta, Gamma, and Theta](../risk/greeks.md#tested-by),
   [Models & Trades](models-and-trades.md#tested-by), and
   [Calibration](calibration.md#tested-by) for the full per-file breakdown.

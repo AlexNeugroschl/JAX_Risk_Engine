@@ -77,3 +77,27 @@ def test_extrapolation_is_differentiable_in_the_pillar_rates():
     grad = jax.grad(lambda r: discount(ZeroCurve(jnp.asarray(PILLARS), r), jnp.asarray(15.0)))(rates)
     assert np.all(np.isfinite(np.asarray(grad)))
     assert np.count_nonzero(np.asarray(grad)) == 2
+
+
+class TestForwardRatePrecision:
+    """`engine.models.curves.forward_rate` is exact. It was once a 1e-6 finite difference on ln P,
+    which in float32 put forward rates off by up to ~2 percentage points."""
+
+    TIMES = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
+    RATES = [0.03, 0.031, 0.032, 0.035, 0.037, 0.04]
+
+    def _exact(self, t):
+        # f = z + t*z' (the slope of the segment to the right) inside the pillars; from the
+        # last pillar on, the last segment's forward, held flat (I-48).
+        times, rates = np.asarray(self.TIMES), np.asarray(self.RATES)
+        slopes = np.diff(rates) / np.diff(times)
+        idx = np.clip(np.searchsorted(times, t, side="right") - 1, 0, len(slopes) - 1)
+        inside = np.interp(t, times, rates) + t * np.where(t >= times[0], slopes[idx], 0.0)
+        return np.where(t >= times[-1], rates[-1] + times[-1] * slopes[-1], inside)
+
+    @pytest.mark.parametrize("dtype, atol", [(jnp.float64, 1e-12), (jnp.float32, 1e-6)])
+    def test_matches_exact_derivative(self, dtype, atol):
+        t = np.array([0.0, 0.5, 1.0, 1.5, 3.0, 4.5, 7.0, 9.5, 30.0, 40.0])
+        curve = ZeroCurve(jnp.asarray(self.TIMES, dtype=dtype), jnp.asarray(self.RATES, dtype=dtype))
+        got = np.asarray(forward_rate(curve, jnp.asarray(t, dtype=dtype)), dtype=np.float64)
+        np.testing.assert_allclose(got, self._exact(t), atol=atol, rtol=0)

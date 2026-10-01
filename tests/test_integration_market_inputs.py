@@ -151,22 +151,22 @@ class TestCurveProvenance:
 
     def test_zero_curve_config_accepts_provenance(self):
         """`ZeroCurveConfig` accepts provenance."""
-        from engine.simulation.market_model import ZeroCurveConfig
+        from engine.market import ZeroCurveConfig
         provenance = resolve_market_inputs(ASSUMED).provenance
         curve = ZeroCurveConfig(times=[0.0, 1.0], rates=[0.03, 0.03], provenance=provenance)
         assert curve.provenance.input_origin == "assumed"
 
     def test_zero_curve_config_provenance_is_optional_and_additive(self):
         """Provenance is optional and defaults to None ("unstated", not "observed")."""
-        from engine.simulation.market_model import ZeroCurveConfig
+        from engine.market import ZeroCurveConfig
         assert ZeroCurveConfig([0.0, 1.0], [0.03, 0.03]).provenance is None
         assert ZeroCurveConfig(times=[0.0], rates=[0.03]).provenance is None
 
     def test_provenance_does_not_reach_the_simulation_math(self):
         """Provenance is metadata; `ZeroCurve.from_config` reads only times and rates."""
         import jax.numpy as jnp
-        from engine.models.hull_white import ZeroCurve
-        from engine.simulation.market_model import ZeroCurveConfig
+        from engine.models.curves import ZeroCurve
+        from engine.market import ZeroCurveConfig
 
         provenance = resolve_market_inputs(ASSUMED).provenance
         plain = ZeroCurve.from_config(ZeroCurveConfig(times=[0.0, 1.0], rates=[0.03, 0.04]))

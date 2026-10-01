@@ -13,6 +13,8 @@ On date t with the currency's LGM state z (`nextPath`):
     (`ModelImpliedYtsFwdFwdCorrected`), so the index-discount basis is deterministic;
   * every discount factor floored at 1e-5;
   * numeraire: the domestic LGM numeraire N(t, z_0) = exp(H z_0 + 1/2 H^2 zeta) / P(0, t);
+  * zeta is the component's own (`IrComponent.zeta`): the Hagan LGM's or the Hull-White
+    adaptor's, so a Hull-White currency's curves are its own bond prices;
   * FX and equity spots: exp of their states.
 
 Tenor times are measured from the scenario date, `dc.yearFraction(date, date + tenor)` on the
@@ -29,9 +31,9 @@ import numpy as np
 import ORE
 
 from engine.models.curves import DiscountCurve, ZeroCurve, log_discount
-from engine.models.lgm import H as lgm_H, zeta as lgm_zeta
+from engine.models.lgm import H as lgm_H
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
-from engine.simulation.cam import CrossAssetModel
+from engine.simulation.cam import CrossAssetModel, IrComponent
 
 #: ORE's floor on every simulated discount factor (`nextPath`: `std::max(..., 0.00001)`).
 DISCOUNT_FLOOR = 1e-5
@@ -94,9 +96,9 @@ def tenor_times(dates: Sequence[ORE.Date], tenors: Sequence[str]) -> np.ndarray:
     return times
 
 
-def implied_log_discounts(target: ZeroCurve, reversion: float, sigma, t: np.ndarray,
+def implied_log_discounts(target: ZeroCurve, model: IrComponent, t: np.ndarray,
                           tenors: np.ndarray, z: jax.Array) -> jax.Array:
-    """ln P(t, t + tau | z) of an LGM with `target` as its t=0 curve (ORE's
+    """ln P(t, t + tau | z) of the LGM `model` with `target` as its t=0 curve (ORE's
     `LinearGaussMarkovModel::discountBond(t, T, x, targetCurve)`), floored at
     `DISCOUNT_FLOOR`. Shapes: t [D], tenors [D, K+1], z [S, D] -> [S, D, K+1], in z's dtype.
 
@@ -104,8 +106,8 @@ def implied_log_discounts(target: ZeroCurve, reversion: float, sigma, t: np.ndar
     only the state in float32."""
     t64 = jnp.asarray(t, dtype=jnp.float64)
     T = t64[:, None] + jnp.asarray(tenors, dtype=jnp.float64)
-    Ht, HT = lgm_H(reversion, t64)[:, None], lgm_H(reversion, T)
-    zeta_t = lgm_zeta(sigma, t64)[:, None]
+    Ht, HT = lgm_H(model.reversion, t64)[:, None], lgm_H(model.reversion, T)
+    zeta_t = model.zeta(t64)[:, None]
     deterministic = (log_discount(target, T) - log_discount(target, t64)[:, None]
                      - 0.5 * (HT ** 2 - Ht ** 2) * zeta_t).astype(z.dtype)
     dH = (HT - Ht).astype(z.dtype)
@@ -113,12 +115,13 @@ def implied_log_discounts(target: ZeroCurve, reversion: float, sigma, t: np.ndar
     return jnp.maximum(values, jnp.asarray(np.log(DISCOUNT_FLOOR), dtype=z.dtype))
 
 
-def lgm_numeraire(curve: ZeroCurve, reversion: float, sigma, t: np.ndarray, z: jax.Array) -> jax.Array:
+def lgm_numeraire(model: IrComponent, t: np.ndarray, z: jax.Array) -> jax.Array:
     """N(t, z) = exp(H(t) z + 1/2 H(t)^2 zeta(t)) / P(0, t) (`LinearGaussMarkovModel::
-    numeraire`), for t [D] and z [S, D], with the path-independent parts in float64."""
+    numeraire`) of the LGM `model` on its own curve, for t [D] and z [S, D], with the
+    path-independent parts in float64."""
     t64 = jnp.asarray(t, dtype=jnp.float64)
-    Ht = lgm_H(reversion, t64)
-    log_deterministic = (0.5 * Ht ** 2 * lgm_zeta(sigma, t64) - log_discount(curve, t64)).astype(z.dtype)
+    Ht = lgm_H(model.reversion, t64)
+    log_deterministic = (0.5 * Ht ** 2 * model.zeta(t64) - log_discount(model.curve, t64)).astype(z.dtype)
     return jnp.exp(Ht.astype(z.dtype)[None, :] * z + log_deterministic[None, :])
 
 
@@ -138,12 +141,10 @@ def build_scenario_market(
 
     def curves_for(currency: str, target: ZeroCurve) -> ScenarioCurves:
         i = model.ir_index(currency)
-        component = model.ir[i]
-        log_dfs = implied_log_discounts(target, component.reversion, component.sigma, times, taus, states[:, :, i])
+        log_dfs = implied_log_discounts(target, model.ir[i], times, taus, states[:, :, i])
         return ScenarioCurves(tenor_times=jnp.asarray(taus, dtype=states.dtype), log_discounts=log_dfs)
 
-    domestic = model.ir[0]
-    numeraire = lgm_numeraire(domestic.curve, domestic.reversion, domestic.sigma, times, states[:, :, 0])
+    numeraire = lgm_numeraire(model.ir[0], times, states[:, :, 0])
     return ScenarioMarket(
         asof=asof,
         dates=tuple(dates),

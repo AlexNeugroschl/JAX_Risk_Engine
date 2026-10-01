@@ -51,7 +51,7 @@ and the feature entry links to it.
 | Status | Meaning |
 |---|---|
 | OPEN | Not addressed. |
-| PARTIAL | Closed on one named path, open on another (for example: fixed on the market path, open on the Hull-White model). |
+| PARTIAL | Closed in one named part, open in another (for example: fixed on the trade configs, open on the results). |
 | FLAGGED | The number is unchanged; the engine now warns. Never a softer FIXED. |
 | ASSUMPTION | Nothing known to be broken, but the code acts on an unconfirmed reading of an external contract. Closes when the other party answers. |
 
@@ -131,16 +131,16 @@ Where the IDs of retired planning documents went. Their full text is in git hist
 
 | Retired ID | Now |
 |---|---|
-| Audit M-1 | [I-42](known-issues.md#i-42) |
-| Audit M-2 | [I-04](known-issues.md#i-04) (paid flows and path fixings on the Hull-White model) |
-| Audit M-3 | [I-43](known-issues.md#i-43) |
+| Audit M-1 | [I-42](known-issues.md#i-42) (fixed) |
+| Audit M-2 | [I-04](known-issues.md#i-04) (the Hull-White half fixed by roadmap 1.3; the TraderX half open) |
+| Audit M-3 | [I-43](known-issues.md#i-43) (fixed) |
 | Audit M-4, M-5, R-1, P-3, A-5, A-7, Q-1 | Fixed; [closed ledger](known-issues.md#closed) |
 | Audit P-1 | [I-61](known-issues.md#i-61) |
-| Audit P-2 | [I-62](known-issues.md#i-62) |
+| Audit P-2 | [I-62](known-issues.md#i-62) (fixed) |
 | Audit A-1 | [I-55](known-issues.md#i-55) |
-| Audit A-2 | [I-44](known-issues.md#i-44) |
-| Audit A-3 | [I-63](known-issues.md#i-63) |
-| Audit A-4 | [I-64](known-issues.md#i-64) |
+| Audit A-2 | [I-44](known-issues.md#i-44) (fixed) |
+| Audit A-3 | [I-63](known-issues.md#i-63) (fixed) |
+| Audit A-4 | [I-64](known-issues.md#i-64) (fixed) |
 | Audit A-6 | [I-65](known-issues.md#i-65) |
 | Audit Q-2 (lint, types) | [I-66](known-issues.md#i-66) |
 | Audit Q-3, cleanup plan Phase 3 | [I-67](known-issues.md#i-67) |

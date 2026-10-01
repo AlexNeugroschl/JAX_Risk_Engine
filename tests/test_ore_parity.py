@@ -11,32 +11,13 @@ import jax.numpy as jnp
 import numpy as np
 import ORE
 import pytest
-from scipy.optimize import brentq
 
-from engine.simulation.market_model import (
-    ZeroCurveConfig,
-    _build_bridge_matrix,
-    compute_hw_A_matrix,
-)
-from engine.instruments.european_swaption import (
-    SwaptionConfig,
-    prepare_swaption,
-    _hw_B,
-    _solve_rstar,
-)
-from engine.models.hull_white import A as hw_A, ZeroCurve
+from engine.models.lgm import H as lgm_H
 from engine.risk.var_es import value_at_risk, expected_shortfall
+from engine.simulation.random import _build_bridge_matrix
 
 TODAY = ORE.Date(30, 7, 2026)
 FLAT_RATE = 0.03
-HW_A = 0.03
-HW_SIGMA = 0.01
-ZERO_CURVE = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[FLAT_RATE] * 6)
-
-
-def _curve(prepared):
-    """A prepared swaption's today's curve, as `hull_white.A` takes it."""
-    return ZeroCurve(pillar_times=jnp.asarray(prepared.zero_times), pillar_rates=jnp.asarray(prepared.zero_rates))
 
 
 class TestBrownianBridgeParity:
@@ -74,7 +55,7 @@ class TestLgmParametrizationParity:
 
         for t in [0.5, 1.0, 3.0, 7.5, 15.0]:
             ore_H = param.H(t)
-            mine_B = float(_hw_B(0.0, t, a))
+            mine_B = float(lgm_H(a, jnp.asarray(t)))
             np.testing.assert_allclose(ore_H, mine_B, atol=1e-10)
 
     @pytest.mark.parametrize("a,sigma", [(0.03, 0.01), (0.08, 0.015)])
@@ -96,74 +77,6 @@ class TestLgmParametrizationParity:
 
         for t in [0.0, 1.0, 10.0]:
             np.testing.assert_allclose(param.alpha(t), sigma, atol=1e-12)
-
-
-class TestJamshidianRStarParity:
-    """`QuantLib::JamshidianSwaptionEngine::rStarFinder` finds x where
-    strike - sum_i amounts[i] * P(T0, t_i, x) / P(T0, valueTime, x) = 0, with valueTime the
-    first fixed accrual start (not T0). Reimplemented as an independent root-find and checked
-    against `_solve_rstar`, which states the same condition as a signed extra cashflow
-    (docs/reference/ore-parity.md#6)."""
-
-    def _independent_rstar(self, prepared, a, sigma):
-        """rStarFinder's condition, root-found directly with the engine's A(t,T) as the bond
-        price (the condition is under test, not the bond formula)."""
-        T0 = prepared.exercise_time
-        T_start = prepared.accrual_start_time
-        times = list(prepared.fixed_cashflow_times) + [prepared.fixed_cashflow_times[-1]]
-        amounts = list(prepared.fixed_cashflow_amounts) + [prepared.notional]
-        strike = prepared.notional
-
-        def discount_bond(t, T, x):
-            if abs(T - t) < 1e-12:
-                return 1.0
-            A = float(hw_A(_curve(prepared), jnp.asarray(t), jnp.asarray(T), a, sigma))
-            B = (1.0 - np.exp(-a * (T - t))) / a
-            return A * np.exp(-B * x)
-
-        def rstar_finder(x):
-            B = discount_bond(T0, T_start, x)
-            value = strike
-            for Ti, ci in zip(times, amounts):
-                value -= ci * discount_bond(T0, Ti, x) / B
-            return value
-
-        return brentq(rstar_finder, -10.0, 10.0, xtol=1e-13)
-
-    def _engine_rstar(self, prepared, a, sigma):
-        """The engine's own leg setup and `_solve_rstar`."""
-        T0 = prepared.exercise_time
-        T_start = prepared.accrual_start_time
-        cf_times = prepared.fixed_cashflow_times
-        all_times = np.concatenate([cf_times, cf_times[-1:], [T_start]])
-        all_amounts = jnp.asarray(
-            list(prepared.fixed_cashflow_amounts) + [prepared.notional, -prepared.notional]
-        )
-        A_T0 = hw_A(_curve(prepared), jnp.full_like(jnp.asarray(all_times), T0), jnp.asarray(all_times), a, sigma)
-        B_T0 = _hw_B(T0, jnp.asarray(all_times), a)
-
-        def coupon_bond_value(r, params):
-            A_T0_p, all_amounts_p = params
-            prices = A_T0_p[None, None, :] * jnp.exp(-B_T0[None, None, :] * r[..., None])
-            return jnp.sum(prices * all_amounts_p[None, None, :], axis=-1)
-
-        rstar = _solve_rstar(coupon_bond_value, (A_T0, all_amounts), (1, 1))
-        return float(rstar[0, 0])
-
-    @pytest.mark.parametrize("tenor,forward_years", [("5Y", 0), ("2Y", 3), ("10Y", 5)])
-    def test_engine_rstar_matches_independent_rstarfinder(self, tenor, forward_years):
-        cfg = SwaptionConfig(
-            notional=1_000_000.0, fixed_rate=0.03, payer=True,
-            rate_factor_index=0, hw_a=HW_A, hw_sigma=HW_SIGMA,
-            initial_zero_curve=ZERO_CURVE, swap_tenor=tenor,
-            forward_start=ORE.Period(forward_years, ORE.Years) if forward_years else ORE.Period(0, ORE.Days),
-            evaluation_date=TODAY,
-        )
-        prepared = prepare_swaption(cfg)
-
-        independent = self._independent_rstar(prepared, HW_A, HW_SIGMA)
-        engine = self._engine_rstar(prepared, HW_A, HW_SIGMA)
-        np.testing.assert_allclose(engine, independent, atol=1e-8)
 
 
 class TestGeneralStatisticsPercentileParity:
@@ -229,43 +142,3 @@ class TestGeneralStatisticsPercentileParity:
 
         np.testing.assert_allclose(independent, ore_es, atol=1e-9)
         np.testing.assert_allclose(engine_es, ore_es, atol=1e-9)
-
-
-class TestHullWhiteAFormulaParity:
-    """`QuantLib::HullWhite::A` computes exp(B(t,T)*f(0,t) - 0.25*(sigma*B(t,T))^2*B(0,2t))
-    * P(0,T)/P(0,t). Since B(0,2t) = (1-exp(-2at))/a, its variance term equals the engine's
-    (sigma^2/4a)*(1-exp(-2at))*B(t,T)^2. Checks that identity, and that
-    `compute_hw_A_matrix` reproduces `ORE.HullWhite.discountBond`."""
-
-    @pytest.mark.parametrize("a,sigma,t", [
-        (0.03, 0.01, 1.0), (0.08, 0.015, 3.0), (0.001, 0.02, 5.0), (0.5, 0.03, 0.25),
-    ])
-    def test_variance_term_algebraic_identity(self, a, sigma, t):
-        # QuantLib's variance term uses B(t,T) for the bond and B(0, 2t) for the decay.
-        B_0_2t = (1.0 - np.exp(-a * 2.0 * t)) / a
-        T = t + 2.5  # arbitrary bond maturity to exercise B(t,T)
-        B_t_T = (1.0 - np.exp(-a * (T - t))) / a
-        quantlib_variance_term = 0.25 * (sigma * B_t_T) ** 2 * B_0_2t
-        engine_variance_term = (sigma ** 2 / (4.0 * a)) * (1.0 - np.exp(-2.0 * a * t)) * B_t_T ** 2
-        np.testing.assert_allclose(quantlib_variance_term, engine_variance_term, rtol=1e-13)
-
-    def test_reprices_live_ore_hullwhite_discount_bond(self):
-        """`compute_hw_A_matrix` reproduces `ORE.HullWhite.discountBond(t, T, r)`."""
-        ORE.Settings.instance().evaluationDate = TODAY
-        dc = ORE.Actual365Fixed()
-        curve = ORE.YieldTermStructureHandle(ORE.FlatForward(TODAY, FLAT_RATE, dc))
-        a, sigma = HW_A, HW_SIGMA
-        hw = ORE.HullWhite(curve, a, sigma)
-
-        zero_curves = [ZERO_CURVE]
-        hw_a_arr = np.array([a])
-        hw_sigma_arr = np.array([sigma])
-        for t, T, r in [(1.0, 5.0, 0.03), (0.5, 10.0, 0.045), (3.0, 3.5, 0.02)]:
-            step_times = np.array([t])
-            maturities = np.array([T])
-            B = (1.0 - np.exp(-hw_a_arr[None, None, :] *
-                 np.maximum(maturities[None, :, None] - step_times[:, None, None], 0.0))) / hw_a_arr[None, None, :]
-            A = compute_hw_A_matrix(zero_curves, hw_a_arr, hw_sigma_arr, step_times, maturities, B)
-            mine = A[0, 0, 0] * np.exp(-B[0, 0, 0] * r)
-            ore = hw.discountBond(t, T, r)
-            np.testing.assert_allclose(mine, ore, rtol=1e-9)

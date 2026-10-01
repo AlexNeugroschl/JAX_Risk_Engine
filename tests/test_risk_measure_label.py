@@ -5,50 +5,31 @@ figures. (I-28's demo test is in tests/test_demos.py.)
 """
 import json
 
+import ORE
 
+from demos.demo_scenarios import EVAL_DATE, demo_market, demo_simulation
 from engine.api.schemas import PortfolioResultSchema
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig
-from engine.portfolio import HULL_WHITE_CONFIG, PortfolioRequest, derive_maturity_pillars, price_portfolio
+from engine.portfolio import PortfolioRequest, RunConfig, price_portfolio
 from engine.risk.var_es import ENGINE_RISK_MEASURE, RISK_MEASURE_RISK_NEUTRAL, RISK_MEASURES
-from demos.demo_scenarios import EVAL_DATE
-from engine.simulation.market_model import EquityConfig, RatesConfig, SimulationConfig, ZeroCurveConfig
-
-import ORE
-
-FLAT_3PCT = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.03] * 6)
 
 
 def _swap() -> SwapConfig:
-    return SwapConfig(
-        notional=1_000_000.0, fixed_rate=0.03, payer=True,
-        discount_curve_index=0, forward_curve_index=0,
-        swap_tenor="2Y", evaluation_date=EVAL_DATE,
-    )
+    return SwapConfig(notional=1_000_000.0, fixed_rate=0.03, payer=True, swap_tenor="2Y",
+                      evaluation_date=EVAL_DATE, trade_id="swap")
 
 
 def _bill() -> BondConfig:
-    return BondConfig(
-        face_amount=100_000.0, maturity_date=EVAL_DATE + ORE.Period(6, ORE.Months),
-        initial_zero_curve=FLAT_3PCT, evaluation_date=EVAL_DATE,
-    )
+    return BondConfig(face_amount=100_000.0, maturity_date=EVAL_DATE + ORE.Period(6, ORE.Months),
+                      evaluation_date=EVAL_DATE, trade_id="bill")
 
 
-def _request(trades, **kwargs) -> PortfolioRequest:
-    trades = list(trades)
-    market = SimulationConfig(
-        time_grid=[0.0, 0.5, 1.0],
-        scenarios=32,
-        equities=EquityConfig(initial_prices=[100.0], dividend_yields=[0.0],
-                              rate_mapping=[[0.0]]),
-        rates=RatesConfig(
-            initial_rates=[0.03], theta=[0.03], mean_reversion=[0.03],
-            maturities=derive_maturity_pillars(trades, EVAL_DATE),
-            initial_zero_curves=[FLAT_3PCT],
-        ),
-        joint_covariance=[[0.04, 0.0], [0.0, 0.01 ** 2]],
-    )
-    return PortfolioRequest(market=market, trades=trades, **kwargs, config=HULL_WHITE_CONFIG)
+def _request(trades, scenario_risk: bool = True) -> PortfolioRequest:
+    dates = tuple(EVAL_DATE + ORE.Period(m, ORE.Months) for m in (6, 12))
+    simulation = demo_simulation("HullWhite", samples=32, dates=dates, currencies=("USD",))
+    return PortfolioRequest(market=demo_market(("USD",)), trades=list(trades), scenario_risk=scenario_risk,
+                            config=RunConfig(simulation=simulation if scenario_risk else None))
 
 
 class TestPortfolioResultStatesItsMeasure:

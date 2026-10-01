@@ -94,10 +94,9 @@ Treating the American as a Bermudan dropped the broken coupon, which overstated 
 to 6x and understated receivers down to 0.09x against ORE ([I-06](../planning/known-issues.md#i-06)).
 The engine now carries the rule as `ExerciseStyle` and applies ORE's `couponRatio`.
 
-Both `BermudanSwaptionConfig` and `AmericanSwaptionConfig` are priced by the same functions
-(`prepare_bermudan`, `price_bermudan_swaption_base`, `price_bermudan_swaptions`); there is no
-conversion from one to the other. Each config supplies its own option times and exercise
-style.
+Both `BermudanSwaptionConfig` and `AmericanSwaptionConfig` are priced by the same engine
+(`prepare_bermudan`, `grid_value`); there is no conversion from one to the other. Each config
+supplies its own option times and exercise style.
 
 ## The pipeline, step by step
 
@@ -135,12 +134,12 @@ next whole period, as in ORE (see [Which coupons an exercise enters](#which-coup
 `exercisable_dates(cfg)` lists the underlying's own accrual start dates, the exercise dates
 of a standard coterminal Bermudan.
 
-`hw_sigma` is typed `Union[float, engine.models.lgm.Sigma]` on both configs: a flat scalar
-volatility, or a calibrated piecewise `Sigma` term structure produced by
-`engine.calibration.lgm.calibrate_lgm_sigma` (see [Calibration](../reference/calibration.md)).
-No code in this module branches on which case it received: every downstream formula calls
-`engine.models.lgm.zeta(sigma, t)`, which handles both via `as_sigma`'s upgrade of a bare
-float to a one-bucket `Sigma` (see
+The configs carry no model. The engine's model comes from the run configuration
+(`PricingConfig.bermudan`/`american`, `LgmSwaptionEngineConfig`: reversion, the bootstrap,
+the grid): `engine.valuation.bermudan` calibrates the trade's own co-terminal basket on the
+market and hands the calibrated LGM to `prepare_bermudan(cfg, reversion=..., sigma=..., ...)`.
+`sigma` is a flat float or a piecewise `engine.models.lgm.Sigma`; every downstream formula
+calls `engine.models.lgm.zeta(sigma, t)`, which handles both (see
 [Models & Trades](../reference/models-and-trades.md#sigma-a-piecewise-constant-volatility-term-structure)).
 A piecewise `Sigma` corresponds exactly to ORE's `VolatilityTimes`/`Volatility` parameters.
 
@@ -164,61 +163,31 @@ rolled forward from its own start date, and they can end a business day apart. P
 over the accrual period, as this engine once did, was worth about 2e-4 of the price on
 ordinary trades ([I-31](../planning/known-issues.md#i-31)).
 
-### 3. The model: LGM, not plain Hull-White — and why that distinction matters here
+### 3. The model: ORE's LGM
 
-Every other pricer in this codebase (`simulation.py`, `swap.py`,
-`european_swaption.py`) is built on this codebase's own direct short-rate closed form,
-`hull_white.A`/`_hw_B`, live-verified against `QuantLib::HullWhite` (see
-[ORE Parity](../reference/ore-parity.md)). This module deliberately does **not** reuse that
-formula, using instead a *separate* closed form, `_lgm_bond`, parametrized directly in
-`QuantExt`'s own LGM state variable `x`:
+ORE's Bermudan engine (`NumericLgmMultiLegOptionEngine`, built by
+`LGMGridSwaptionEngineBuilder`) runs on the LGM in Hagan's parametrization, and so does this
+one. Every discount factor is `_lgm_bond`, parametrized in the LGM state `x`:
 
 ```
 P(t,T,x) = [P(0,T)/P(0,t)] * exp(-0.5*(H(T)^2 - H(t)^2)*zeta(t)) * exp(-(H(T)-H(t))*x)
 ```
 
-with `H(t) = (1-exp(-a*t))/a` and `zeta(t) = sigma^2*t` — `QuantExt::LinearGaussMarkovModel::
-discountBond` (`QuantExt/qle/models/lgm.hpp`, lines 252-280).
-
-**This split exists because of a finding made while building this module, not stylistic
-preference.** `ORE.HullWhite` (`QuantLib::HullWhite`) and `ORE.LinearGaussMarkovModel`
-(`QuantExt::CrossAssetModel`'s own rates leg) were assumed, going into this task, to be two
-equivalent parametrizations of the *same* model — [ORE Parity](../reference/ore-parity.md#a-parametrization-note-lgm-vs-plain-hull-white)
-documents exactly that equivalence claim, verified at `t=0`. Building this module's
-backward induction required evaluating both classes at `t>0`, and a live, direct comparison
-showed they are **not** numerically the same model realization there:
-
-```python
->>> hw.discountBond(t=3, T=5, r=0.03)       # r = f(0,t), HullWhite's own "no shock" point
-0.9393234598794674
->>> lgm.discountBond(t=3, T=5, x=0.0)       # x = 0, LGM's own "no shock" point
-0.9337296209777532
-```
-
-a genuine ~0.6% difference at `t=3y` (a=0.03, sigma=0.02) — not a rounding artifact. Both
-classes were checked and are individually self-consistent affine short-rate models (each
-satisfies its own `-d/dT log P(t,T)|_{T=t} == r` identity exactly, live-verified via finite
-difference), and every individual building block along the way — `H(t)`, `zeta(t)`,
-`H'(t)`, `f(0,t)`, the short-rate identity `r(t,x) = f(0,t) + x*H'(t) + zeta(t)*H'(t)*H(t)`
-(itself confirmed via finite difference directly on `_lgm_bond`), and `A(t,T)`/`B(t,T)`
-(confirmed exactly against `ORE.HullWhite.discountBond` for arbitrary `r`) — checked out
-individually correct. The two models are simply calibrated/parametrized differently for
-`t>0`, in a way this investigation did not fully resolve to a root cause but did concretely
-measure and confirm is real, not a bug in either formula.
-
-Since ORE's actual Bermudan/American engine is built on `LinearGaussMarkovModel`
-(`NumericLgmMultiLegOptionEngine`'s constructor takes an `IrModel`, and
-`LGMGridSwaptionEngineBuilder`/`LGMFDSwaptionEngineBuilder` both build an
-`IrLgm1fConstantParametrization`/`LinearGaussMarkovModel`), **this module matches that
-model exclusively** — `_lgm_bond` is used for every discount factor computed here;
-`hull_white.A`/`_hw_B` are never imported. `_lgm_bond` itself is live-verified to machine
-precision (~1e-16 relative) against `ORE.LinearGaussMarkovModel.discountBond` directly
+with `H(t) = (1-exp(-a*t))/a` and `zeta(t) = ∫ alpha²` — `QuantExt::LinearGaussMarkovModel::
+discountBond` (`QuantExt/qle/models/lgm.hpp`). `_lgm_bond` is checked to machine precision
+against `ORE.LinearGaussMarkovModel.discountBond`
 (`tests/test_bermudan_swaption.py::TestLgmClosedFormsAgainstORE`).
 
-`r(t,x)` (`_r_from_x`) and its exact inverse `_x_from_r` are still used, but only to convert
-between LGM's state `x` and the literal short rate `r` this codebase's Monte Carlo
-simulation (`simulation.py`) produces directly — needed to condition the
-backward-induction result on a simulated path, not to compute bond prices.
+**The LGM and the Hull-White model.** Building this engine, `ORE.HullWhite(a, σ)` and ORE's
+LGM with α = σ were measured to give different bond prices for t > 0 (about 0.6% at 3y), and
+the gap was recorded as unexplained. It is the parametrization: the same number is the short
+rate's volatility in one and the LGM state's in the other (ζ = σ²(e^{2at} − 1)/(2a) against
+α²t), and the comparison also put r = f(0,t) against x = 0, which are different states
+(x = 0 is r = f(0,t) + ζ(t)H(t)H′(t)). The LGM in the Hull-White parametrization is the
+Hull-White model exactly, which is how the simulation offers it
+(`tests/test_cam.py::test_hull_white_path_curves_equal_quantlibs_hull_white`). The engine's
+own model is always the LGM, calibrated to the trade's basket, whichever model simulates the
+paths: ORE's engine is the LGM, and on a path it reads only the path's curves.
 
 ### 4. The state grid and Hagan's quadrature convolution
 
@@ -314,7 +283,7 @@ behaviour and is kept deliberately.
 
 ### 7. Backward induction: ORE's own loop, `_backward_induction_arrays`
 
-The grid times are `{0} ∪ optionTimes ∪ condition_times`, deduplicated exactly (ORE's
+The grid times are `{0} ∪ optionTimes`, deduplicated exactly (ORE's
 `std::set<Real> timeGrid`, never rounded, so an option time stays bit-identical to the
 accrual time it names). Walking them from the latest to `t = 0`, at each time, exactly as
 `NumericLgmMultiLegOptionEngineBase::calculate()` does (lines 543-619):
@@ -343,52 +312,38 @@ doubling. The replayed loop matches ORE at any grid, to ~1e-11. The whole point 
 module is to produce ORE's numbers, so it reproduces ORE's algorithm, not only ORE's
 mathematics.
 
-At `t=0` the grid collapses to `x=0`, and reading off that single node gives the base-case
-NPV — `price_bermudan_swaption_base`.
+At `t=0` the grid collapses to `x=0`, and reading off that single node gives the NPV —
+`grid_value`.
 
-### 8. Conditional (scenario-cube) pricing: `price_bermudan_swaptions`
+### 8. On every path: `engine.valuation.bermudan.bermudan_cube`
 
-Unlike the European module, an American/Bermudan swaption's value at some future step
-depends on its *entire remaining* exercise schedule — it cannot be evaluated at an
-arbitrary future time from a single t=0 backward induction the way Jamshidian's closed form
-can. `price_bermudan_swaptions` therefore re-runs the backward induction once per trade,
-snapshotting the value function at every requested `step_time` before its own last exercise
-date as the walk passes through, then interpolates each scenario's simulated short rate
-(`hw_paths`) against the appropriate snapshot's `r`-grid — the same Markov-conditioning
-principle [European Swaptions](european-swaptions.md#6-conditional-future-time-pricing) uses, applied
-to a numerically-rolled-back value function instead of a closed form. Steps at or after a
-trade's last exercise date are priced as exactly `0`, matching this codebase's (and ORE's
-`Instrument.NPV()`'s) convention for an already-lapsed option.
+On a path date the option is priced as ORE's `ValuationEngine` prices it with
+`recalibrate = true`: the trade's basket is rebuilt on that date, its LGM bootstrapped on the
+path's own curves (with the volatility surface seen from the date), and the grid engine run
+from the date on those curves, with the coupons that fixed during the simulation at their
+path fixings. The bootstrap and the rollback are batched over paths, on the device. After the
+last exercise the option is worth 0; once exercised, ORE's `OptionWrapper` carries the swap
+entered (physical) or nothing (cash). Under either simulation model the engine is the same:
+it reads only the path's curves. Two details of ORE's recalibration differ
+([I-49](../planning/known-issues.md#i-49)), and it is the slow part of a run
+([I-53](../planning/known-issues.md#i-53); `PricingConfig(recalibrate=False)` keeps today's
+calibration on every path).
 
 ## Delta, Gamma, Theta, and Vega
 
-Bermudan/American swaptions have full Greeks support — `engine.risk.greeks.
-bermudan_delta_gamma`, `bermudan_theta`, and `bermudan_vega`. `_run_backward_induction` is
-implemented via `jax.lax.scan`, so it is differentiable end-to-end, exactly like the swap
-and European swaption pricers, and `bermudan_delta_gamma`/`bermudan_theta` follow the
-identical pattern/units as their swap/European counterparts (per-pillar $-per-1bp
-Delta/Gamma, a 1-day-repricing-difference Theta).
+Two methods, the run configuration's `GreeksConfig.method` ([Greeks](../risk/greeks.md)):
 
-Vega required a second prerequisite beyond JAX-nativeness: a real market-vol-to-model
-relationship, supplied by [`engine/calibration/`](../reference/calibration.md).
-`bermudan_vega` differentiates `d(NPV)/d(market_vol_i)` for each basket instrument through
-`calibrate_lgm_sigma`'s own bootstrap via the implicit function theorem, rather than
-literally re-running calibration once per bumped market vol. See
-[Delta, Gamma, and Theta: Vega](../risk/greeks.md#vega-bermudanamerican-only) for the full
-derivation, including two real bugs (a missing cross-bucket Jacobian term in `bermudan_
-vega` itself, and the `_bisect_xstar` gradient bug documented in
-[Calibration](../reference/calibration.md#the-_bisect_xstar-gradient-bug)) found and fixed
-while building it.
+- **Bump** (ORE's sensitivity analysis, the default): the option is repriced on the
+  sensitivity market with one curve tenor or one volatility quote shifted, its LGM
+  recalibrated under every shift, as ORE does.
+- **AD**: the grid engine is a `jax.lax.scan`, differentiable end to end. Delta and Gamma
+  differentiate the price in each market-curve pillar with the calibrated volatility held;
+  Vega differentiates through the calibration by the implicit function theorem (a quote moves
+  the helpers' volatilities, which move every later bucket of the bootstrap).
 
-American swaptions have no separate Greeks function: `bermudan_delta_gamma`,
-`bermudan_theta` and `bermudan_vega` take an `AmericanSwaptionConfig` directly, since both
-configs run through the same backward induction. Theta reprices the same trade one day on:
-its exercise and schedule *dates* stay put and every time is re-derived from the new
-evaluation date, as ORE does. A coupon fixing on the base date is history by then, and it is
-printed at the base date's own forecast of it, since Theta holds the curve fixed. (While
-exercise was given in year fractions, Theta silently moved every exercise opportunity a day
-later too. While the underlying was a tenor, it moved the swap a day later as well; see
-[M-5](../planning/known-issues.md#m-5).)
+Theta is the same function for both: the trade repriced on the market rolled one day, its
+exercise and schedule *dates* fixed and every time re-derived from the new date, as ORE does
+(audit [M-5](../planning/known-issues.md#m-5)).
 
 ## Which coupons an exercise enters
 
@@ -458,38 +413,34 @@ takes both settings as parameters, so the gap can be re-measured at any time.
 `tests/test_ore_lgm_parity.py` (23 tests) — equality with ORE's own LGM engine, as above.
 The authoritative check.
 
-`tests/test_bermudan_swaption.py` (63 tests) — the shared engine:
+`tests/test_bermudan_swaption.py` (58 tests) — the shared engine:
 
 - `TestLgmClosedFormsAgainstORE` — every closed-form primitive (`H`, `zeta`, `_lgm_bond`,
   the Hagan quadrature weights) checked directly against live `ORE.IrLgm1fConstantParametrization`
-  / `ORE.LinearGaussMarkovModel` objects, plus an explicit regression test documenting the
-  `HullWhite` vs. `LinearGaussMarkovModel` divergence for `t>0` described above.
+  / `ORE.LinearGaussMarkovModel` objects, and the parametrization difference from
+  `ORE.HullWhite` described above.
 - `TestSingleExerciseMatchesDirectIntegration` — with one exercise date the value is a
   single Gaussian expectation, computed independently of the grid and the bookkeeping by
-  `tests/bermudan_references.py`; agreement to 2e-5, plus a grid-convergence check. (This
-  replaced a Jamshidian decomposition, which needs the floating leg to telescope and so is
-  invalid once coupons are projected over their index periods.)
+  `tests/bermudan_references.py`.
 - `TestMonotonicity` — model-independent no-arbitrage bounds.
 - `TestMidPeriodBermudanExercise` — the whole-period membership rule and its direction.
-- `TestPortfolioAndShape`, `TestEdgeCases`, `TestBermudanSwaptionConfigValidation` —
-  shape/portfolio correctness, negative rates, zero notional, and date validation.
+- Shape, edge cases, grids, payer/receiver and date validation.
 
-`tests/test_american_swaption.py` (24 tests) — the American-specific parts: ORE's option
+`tests/test_american_swaption.py` (23 tests) — the American-specific parts: ORE's option
 times (including the truncating step count), the broken-period `couponRatio`, and the one
 case where the two styles must coincide exactly (a single exercise on an accrual start).
 
 `tests/test_ore_bermudan_oracle.py` (51 tests) — against QuantLib's Hull-White tree and FD
 engines, a model-level comparison of a few percent, plus `TestExerciseDatesAreExact`.
 
-`tests/test_greeks_bermudan.py` (26 tests) — Delta/Gamma/Theta/Vega for this module's own
-pricer, via `engine.risk.greeks`: see
-[Delta, Gamma, and Theta: Tested by](../risk/greeks.md#tested-by) for the full breakdown,
-including the Gamma finite-difference methodology (finite-differencing the *gradient*
-rather than the price, since a naive price-level central difference is numerically
-unreliable for this pricer at a realistic bump size) and the Vega cross-check against a
-literal finite-difference recalibration.
+`tests/test_valuation.py` — today's value against ORE's calibrated engine on the trade's own
+basket (`test_option_today_equals_ores_calibrated_grid_engine`), and every path and date
+against ORE recalibrated on the path's curves, under both simulation models.
+
+`tests/test_greeks_bermudan.py` (12 tests) — AD Delta/Gamma against finite differences with
+the volatility held, Vega against finite differences of the full recalibrating pricing, an
+American's Greeks.
 
 `tests/test_calibration_integration.py` (6 tests) — a calibrated `Sigma` from
-`engine.calibration.lgm.calibrate_lgm_sigma` fed into `BermudanSwaptionConfig.hw_sigma`
-and priced end-to-end through this module, confirming the `Union[float, Sigma]` interface
-works identically to a flat scalar throughout the full pipeline.
+`engine.calibration.lgm.calibrate_lgm_sigma` fed into the grid engine and priced end to end,
+confirming a piecewise `Sigma` works as a flat scalar does throughout.

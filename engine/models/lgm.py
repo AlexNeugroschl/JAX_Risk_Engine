@@ -25,14 +25,31 @@ the one-bucket case. Only zeta depends on sigma; H depends only on the reversion
 `bond_option_sigma` is the LGM zero-bond option volatility. It is fed to the model-free
 Black-on-bond formula in `hull_white.bond_call`/`bond_put`, which `engine.calibration`
 uses to price co-terminal Europeans as `AnalyticLgmSwaptionEngine` does.
+
+The Hull-White model is the same LGM with another volatility parametrization, ORE's
+`Lgm1fPiecewiseConstantHullWhiteAdaptor` (QuantExt/qle/models/
+irlgm1fpiecewiseconstanthullwhiteadaptor.hpp, `ReversionType = VolatilityType = HullWhite`):
+sigma is the short rate's piecewise-constant volatility, H is unchanged and
+
+    alpha(t) = sigma(t) exp(a t),   zeta(t) = integral_0^t sigma(s)^2 exp(2 a s) ds
+                                               (`hull_white_zeta`).
+
+Every LGM formula above holds for it with that zeta: bond prices, the numeraire and the
+driftless state. `hull_white_matching_zeta` converts a Hagan volatility into the Hull-White
+one with the same zeta at chosen times, which is how a Hull-White component is calibrated.
 """
 from dataclasses import dataclass
 from typing import Union
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from engine.models.curves import ZeroCurve, discount, forward_rate
+
+#: ORE's `LgmData::VolatilityType`: the LGM's own volatility (alpha, `Hagan`) or the short
+#: rate's (`HullWhite`, the Hull-White adaptor).
+VOLATILITY_TYPES = ("Hagan", "HullWhite")
 
 
 @jax.tree_util.register_pytree_node_class
@@ -98,6 +115,51 @@ def zeta(sigma: Union[float, jax.Array, "Sigma"], t: jax.Array) -> jax.Array:
     bucket_start = jnp.where(i == 0, 0.0, boundaries[jnp.clip(i, 1, boundaries.shape[0] - 1)])
     partial = s.values[i] ** 2 * jnp.maximum(t - bucket_start, 0.0)
     return cum_before[i] + partial
+
+
+def _exp_integral(rate, lo, hi):
+    """integral_lo^hi exp(rate s) ds = exp(rate lo) (hi - lo) expm1(x)/x, x = rate (hi - lo);
+    (hi - lo) when rate is 0. Branch-safe under jit/grad."""
+    width = hi - lo
+    x = rate * width
+    x_safe = jnp.where(x == 0.0, 1.0, x)
+    ratio = jnp.where(x == 0.0, 1.0, jnp.expm1(x_safe) / x_safe)
+    return jnp.exp(rate * lo) * width * ratio
+
+
+def hull_white_zeta(a: float, sigma: Union[float, jax.Array, "Sigma"], t: jax.Array) -> jax.Array:
+    """zeta(t) = integral_0^t sigma(s)^2 exp(2 a s) ds of the Hull-White adaptor (see the
+    module docstring), as `PiecewiseConstantHelper3::int_y1_sqr_exp_2_int_y2` with a constant
+    reversion; `sigma^2 t` at a = 0, where the adaptor is the Hagan LGM."""
+    s = as_sigma(sigma)
+    t = jnp.maximum(jnp.asarray(t), 0.0)
+    edges = jnp.concatenate([jnp.zeros((1,), dtype=s.times.dtype), s.times])        # [B] left edges
+    ends = jnp.concatenate([s.times, jnp.full((1,), jnp.inf, dtype=s.times.dtype)])  # [B] right edges
+    hi = jnp.clip(t[..., None], edges, ends)
+    return jnp.sum(s.values ** 2 * _exp_integral(2.0 * a, edges, hi), axis=-1)
+
+
+def hull_white_matching_zeta(a: float, hagan: "Sigma", last: float) -> "Sigma":
+    """The Hull-White volatility on the buckets of a bootstrapped Hagan volatility whose zeta
+    equals the Hagan LGM's at every bucket end: the bucket times, and `last` (after them) for
+    the open last bucket. `calibrateVolatilitiesIterative` lays the buckets out so: bucket i
+    ends at helper i's expiry, and `last` is the last helper's. Bucket by bucket, with
+    m_{-1} = 0 and m_i the ends,
+
+        sigma_HW,i^2 = sigma_i^2 (m_i - m_{i-1}) / integral_{m_{i-1}}^{m_i} exp(2 a s) ds.
+
+    A helper's model price depends on the volatility only through zeta at its expiry and on
+    H, which the two parametrizations share, so the converted volatility reprices every
+    helper exactly as the Hagan one: it is the Hull-White bootstrap. Values keep `hagan`'s
+    batch axes (one calibration per path)."""
+    times = np.asarray(hagan.times, dtype=np.float64)
+    ends = np.concatenate([times, [float(last)]])
+    starts = np.concatenate([[0.0], times])
+    if np.any(ends <= starts):
+        raise ValueError(f"bucket ends must increase from 0 and `last` follow the bucket times; got {ends.tolist()}")
+    weight = _exp_integral(2.0 * a, jnp.asarray(starts), jnp.asarray(ends))
+    scale = jnp.sqrt(jnp.asarray(ends - starts) / weight)
+    return Sigma(times=jnp.asarray(times), values=jnp.asarray(hagan.values) * scale)
 
 
 def H(a: float, t: jax.Array) -> jax.Array:

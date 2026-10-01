@@ -6,8 +6,15 @@ dataclass, and the function that turns it plus today's `Market` into a scenario 
                        the simulation-market tenors, samples and seed.
     LgmConfig          one currency's `<LGM>`: constant reversion and a volatility, either
                        fixed or bootstrapped to a tenor-based ATM swaption basket
-                       (`CalibrationSwaptions`, plan V-6).
+                       (`CalibrationSwaptions`, plan V-6). The default model.
+    HullWhiteConfig    the same with the Hull-White model: the short rate's volatility
+                       (ORE's `<LGM>` with `VolatilityType HullWhite`).
     simulate           Market + CamConfig -> ScenarioMarket.
+
+The model of a currency is the type of its entry in `CamConfig.ir` (decision A-1: models are
+options of the run configuration). Both are one-factor Gaussian models fitted to the
+currency's discount curve and simulated exactly under the domestic LGM measure; they differ
+in how the volatility is parametrized, so the same volatility number means a different model.
 
 Defaults are ORE's: LGM measure, exact discretization, `ShiftHorizon = 0` (the CAM's default,
 unlike the per-trade builder), log-linear scenario curves with flat-forward extrapolation,
@@ -15,7 +22,7 @@ ForwardVariance time decay of non-simulated swaption volatilities (the value ORE
 configurations use; ORE has no code default).
 """
 from dataclasses import dataclass, field
-from typing import Mapping, Optional, Tuple, Union
+from typing import ClassVar, Mapping, Optional, Tuple, Union
 
 import jax.numpy as jnp
 import numpy as np
@@ -61,6 +68,9 @@ class LgmConfig:
     calibration_terms: Tuple[str, ...] = ()
     swap_index: SwapIndexConventions = SwapIndexConventions()
 
+    #: ORE's `LgmData::VolatilityType` of this model's volatility (`engine.models.lgm`).
+    volatility_type: ClassVar[str] = "Hagan"
+
     def __post_init__(self):
         if not np.isfinite(self.reversion):
             raise ValueError(f"reversion must be finite; got {self.reversion}")
@@ -75,12 +85,35 @@ class LgmConfig:
 
 
 @dataclass(frozen=True)
+class HullWhiteConfig(LgmConfig):
+    """One currency's Hull-White model: `dr = (theta(t) - a r) dt + sigma(t) dW`, with theta(t)
+    fitted to the currency's discount curve (Brigo-Mercurio 3.36), simulated exactly with its
+    own numeraire. ORE's `<LGM>` with `ReversionType HullWhite` and `VolatilityType HullWhite`
+    (`LgmBuilder` -> `IrLgm1fPiecewiseConstantHullWhiteAdaptor`), which is how ORE's cross-asset
+    model carries a Hull-White currency with the exact discretization.
+
+    `volatility` is the short rate's volatility sigma (constant, or a piecewise `Sigma`), not
+    the LGM's alpha: the model is the LGM with alpha(t) = sigma(t) exp(a t). The calibration
+    basket and its conventions are `LgmConfig`'s; the bootstrap solves the same helpers, and
+    each bucket's Hull-White volatility is the one with the Hagan bootstrap's zeta at the
+    helper's expiry (`engine.models.lgm.hull_white_matching_zeta`), which prices every helper
+    identically."""
+
+    volatility_type: ClassVar[str] = "HullWhite"
+
+
+#: The model configurations a currency of `CamConfig.ir` can take.
+IrModelConfig = Union[LgmConfig, HullWhiteConfig]
+
+
+@dataclass(frozen=True)
 class CamConfig:
     """ORE's simulation configuration.
 
     dates: the simulation grid (plan T-7), ascending, all after the market's as-of date.
-    ir: currency -> `LgmConfig`. `base_currency` is the domestic currency (ORE's
-        `DomesticCcy`); the other currencies follow in the order given.
+    ir: currency -> its model, `LgmConfig` (the default) or `HullWhiteConfig`.
+        `base_currency` is the domestic currency (ORE's `DomesticCcy`); the other currencies
+        follow in the order given.
     fx_volatilities: foreign currency -> Black-Scholes volatility of its FX rate against
         the base currency, for every non-base currency in `ir`.
     equity_volatilities: equity name -> Black-Scholes volatility (equities simulated).
@@ -93,7 +126,7 @@ class CamConfig:
     """
     dates: Tuple[ORE.Date, ...]
     base_currency: str
-    ir: Mapping[str, LgmConfig]
+    ir: Mapping[str, IrModelConfig]
     fx_volatilities: Mapping[str, Volatility] = field(default_factory=dict)
     equity_volatilities: Mapping[str, Volatility] = field(default_factory=dict)
     correlations: Mapping[Tuple[str, str], float] = field(default_factory=dict)
@@ -108,8 +141,12 @@ class CamConfig:
             raise TypeError("dates must be a non-empty sequence of ORE.Date")
         if any(b <= a for a, b in zip(dates, dates[1:])):
             raise ValueError("dates must increase strictly")
+        for currency, model in self.ir.items():
+            if not isinstance(model, LgmConfig):
+                raise TypeError(f"ir[{currency!r}] must be an LgmConfig or a HullWhiteConfig; "
+                                f"got {type(model).__name__}")
         if self.base_currency not in self.ir:
-            raise ValueError(f"base_currency {self.base_currency!r} needs an LgmConfig in ir")
+            raise ValueError(f"base_currency {self.base_currency!r} needs a model (LgmConfig, HullWhiteConfig) in ir")
         foreign = [c for c in self.ir if c != self.base_currency]
         if sorted(self.fx_volatilities) != sorted(foreign):
             raise ValueError(
@@ -132,7 +169,8 @@ def build_cross_asset_model(market: Market, config: CamConfig,
                             sigmas: Optional[Mapping[str, Sigma]] = None) -> CrossAssetModel:
     """The CAM for `config` on `market`, as ORE's `CrossAssetModelBuilder` builds it: every
     currency with a calibration basket is bootstrapped to it first
-    (`engine.calibration.cam`). `sigmas` overrides a currency's volatility instead."""
+    (`engine.calibration.cam`). `sigmas` overrides a currency's volatility instead, in that
+    currency's parametrization (the short rate's for a `HullWhiteConfig`)."""
     from engine.calibration.cam import calibrate_cam
 
     sigmas = dict(sigmas or {})
@@ -142,7 +180,8 @@ def build_cross_asset_model(market: Market, config: CamConfig,
     ir = tuple(
         IrComponent(currency=c, curve=ZeroCurve.from_config(market.currency(c).discount_curve),
                     reversion=float(config.ir[c].reversion),
-                    sigma=as_sigma(sigmas.get(c, config.ir[c].volatility)))
+                    sigma=as_sigma(sigmas.get(c, config.ir[c].volatility)),
+                    volatility_type=config.ir[c].volatility_type)
         for c in config.currencies)
     fx = tuple(
         FxComponent(currency=c, spot=market.fx_spot(c, base), sigma=as_sigma(config.fx_volatilities[c]))

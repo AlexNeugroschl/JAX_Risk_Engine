@@ -139,6 +139,9 @@ queued, the timeline is truncated. `npv_cube` is the dominant device-side tail.
 
 ## 2. What the trace contains
 
+> Measured before roadmap 1.3 (the 4-trade Hull-White pipeline). Since 1.3 the demo's trace
+> overflows the profiler's event cap: [I-53](../planning/known-issues.md#i-53).
+
 ### 2.1 Cold (warmup off — the default)
 
 With the Python tracer off, the host tracer still records everything JAX and XLA do.
@@ -254,6 +257,12 @@ background compilation threads. A tall Python stack (`price_portfolio` → `scan
 
 ## 3. Why Greeks dominated the trace
 
+> **History.** This investigation and its numbers predate roadmap 1.3: they were measured on
+> the Hull-White pipeline, where each trade carried its model (`hw_sigma`) and the Greeks
+> were the bump-and-AD hybrid of that path. The lessons (§3.2–3.4, §3.6) carry over
+> unchanged; the current pipeline's costs are in [I-53](../planning/known-issues.md#i-53)
+> and [I-21](../planning/known-issues.md#i-21).
+
 ### 3.1 The measurements
 
 Per-knob, on the small demo portfolio (fresh process each, raw trace bytes):
@@ -287,7 +296,7 @@ each compiled and dispatched on its own.
 `bermudan_swaption._run_backward_induction`, which **could not be `jax.jit`-wrapped**:
 
 > `engine.risk.greeks` differentiates straight through this function, calling it with a
-> `_PreparedBermudan` whose `zero_rates` (and, for Vega, `hw_sigma`) are live `jax.grad`
+> `_PreparedBermudan` whose `zero_rates` (and, for Vega, its volatility) are live `jax.grad`
 > **tracers** rather than concrete arrays. A jit static argument must be **hashable and
 > concrete**, so a tracer-carrying `_PreparedBermudan` can never be one.
 
@@ -304,7 +313,7 @@ The constraint was real; the conclusion "therefore no jit" was stronger than nec
 
 | Kind | Fields | Belongs as |
 |---|---|---|
-| Differentiation targets | `zero_rates`, `hw_sigma` | pytree **child** (traced) |
+| Differentiation targets | the curves, the volatility | pytree **child** (traced) |
 | Pure numeric scale | `notional`, `fixed_amounts` | pytree **child** (traced) |
 | Trade structure | schedule, `exercise_times`, `n_per_std`, … | **aux data** (static) |
 
@@ -377,7 +386,7 @@ program; the eager `bachelier_swaption_price`/`price_lgm_swaption` calls around 
 Full 4-trade portfolio through the real HTTP/worker-pool path. Two configurations, because
 they answer different questions — the first is `demos/demo_profile_small.py` exactly as
 shipped (uncalibrated tree trades, so calibration and Vega are both exercised), the second
-a hand-built request with flat `hw_sigma` (no calibration, no Vega):
+a hand-built request with a flat trade volatility (no calibration, no Vega):
 
 | | Before | After |
 |---|---:|---:|
@@ -457,10 +466,10 @@ dispatch from?" is unanswerable from the raw trace. That is bought back by
 [`engine/portfolio/profiling.py`](../../engine/portfolio/profiling.py):
 
 ```python
-with _phase("calibration"):
-    trades = _fill_calibrated_sigma(...)
-with _phase("simulation"):
-    market = generate_paths(...)
+with phase("calibration"):
+    model = build_cross_asset_model(market, simulation)
+with phase("simulation"):
+    scenarios = simulate(market, simulation, model, dtype=...)
 ```
 
 `phase()` enters **two** mechanisms, deliberately — neither alone is sufficient:
@@ -525,7 +534,7 @@ was previously only in `demos/demo_profile_small.py`; it now guards the producti
 ```bash
 pip install -e ".[api,profiling]"     # brings in xprof; quote it in PowerShell
 rm -rf .profile-out-small             # the profiler never cleans up after itself
-python demos/demo_profile_small.py    # small, openable trace (~41 MB, ~25 s)
+python demos/demo_profile_small.py    # truncated since roadmap 1.3: see I-53
 xprof --port 8791 .profile-out-small
 ```
 

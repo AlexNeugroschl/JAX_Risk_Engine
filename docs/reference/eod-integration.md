@@ -21,7 +21,7 @@ Implements W0, W1.2, W1.3, W1.4 and W1.6 of the
 > **One thing to know before reading further.** `capabilities()` currently reports
 > `deliveryStage: "W1.6"` and lists `knownLimitations` `I-04`/`I-05`/`I-07`/`I-18`. Neither
 > has been updated for W0.8, so the published capability document understates what landed
-> and omits [I-08](../planning/known-issues.md#i-08) and [I-24](../planning/known-issues.md#i-24). That is a
+> and omits [I-08](../planning/known-issues.md#i-08). That is a
 > gap in `engine/integration/capabilities.py`, not in this page.
 
 ---
@@ -558,7 +558,7 @@ exclusions" enforceable rather than aspirational.
 
 **Derived from the allowlist, never hand-maintained** — a stale capability document makes a
 promise the engine no longer keeps. Known limitations (I-04, I-05, I-07) are advertised as
-part of the capability surface: a consumer weighing an exposure profile needs I-04 *before*
+part of the capability surface: a consumer with seasoned swaps needs I-04 *before*
 submitting, not after reconciling.
 
 ---
@@ -851,8 +851,8 @@ Two of those four factors have no source at this boundary:
 | **`spot`** | a market-data input | ❌ **none exists** |
 | **`fx`** | a market-data input | ❌ **none exists** |
 
-`marketInputs` registers flat *interest-rate* profiles and nothing else. `SimulationConfig.equities`
-is not a substitute — it drives correlated risk-factor *paths* for a Monte Carlo, takes no
+`marketInputs` registers flat *interest-rate* profiles and nothing else. The simulation's
+equities (`CamConfig.equity_volatilities`) are not a substitute — it drives correlated risk-factor *paths* for a Monte Carlo, takes no
 share count, returns no position value, and lives in `engine.simulation`, which this package
 may not import.
 
@@ -1367,7 +1367,7 @@ And it is **EOD-only**. The portfolio path's `_JOBS` dict is untouched, which is
 | Task | Status | Why |
 |---|---|---|
 | **W0.8** crash-safe publication | Done (2026-09-17) | The four lookup states, the workload key and attempt immutability landed in W1.6.4; the durable store, the four-step publication protocol and manifest-scan recovery landed in W0.8's second half. Still EOD-only, and *running* state is deliberately not published ([I-08](../planning/known-issues.md#i-08)). |
-| **W1.5** wire-through to the portfolio path | Done (2026-09-17) | `engine/instruments/treasury.py`'s `BondConfig` reaches `price_portfolio`'s base NPV and Greeks, pinned bit-exact against the two pricers here. **No VaR/ES** — a deterministic bond has no scenario column, refused rather than broadcast ([I-24](../planning/known-issues.md#i-24)). No effect on this boundary. |
+| **W1.5** wire-through to the portfolio path | Done (2026-09-17) | `engine/instruments/treasury.py`'s `BondConfig` reaches `price_portfolio`'s base NPV and Greeks, pinned bit-exact against the two pricers here. **No VaR/ES** at the time — a deterministic bond had no scenario column, refused rather than broadcast ([I-24](../planning/known-issues.md#i-24), closed by roadmap 1.3: bonds are priced on every path). No effect on this boundary. |
 | Equity **valuation** | Blocked | The refusal path landed (W1.4); pricing needs a spot/FX source ([I-18](../planning/known-issues.md#i-18)). |
 | Per-pillar `rateSensitivity` | Blocked | Needs a curve with pillar structure - `mode: "package"`, i.e. W2 ([I-16](../planning/known-issues.md#i-16)). |
 

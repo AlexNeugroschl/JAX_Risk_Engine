@@ -90,7 +90,7 @@ periodically based on actual market conditions. See [Instruments](../instruments
 **Forward-starting (swap or swaption)** — A trade whose accrual/exercise begins at some
 point in the future rather than immediately (beyond the standard few-day settlement lag).
 E.g. a swaption exercisable in 5Y, on a swap that itself doesn't start accruing interest
-until that 5Y point. See [Instruments: European Swaptions](../instruments/european-swaptions.md#2-building-the-real-trade-_build_ore_swap-prepare_swaption).
+until that 5Y point. See [Instruments: European Swaptions](../instruments/european-swaptions.md#2-building-the-real-trade-_build_ore_swap-european_terms).
 
 **FX (foreign exchange)** — The market for exchanging one currency for another; an "FX
 rate" is the price of one currency in terms of another (e.g. how many US dollars one
@@ -99,7 +99,7 @@ euro buys).
 **GBM (Geometric Brownian Motion)** — The standard mathematical model for how stock
 prices (and similar assets) are assumed to move randomly over time, where it's the
 *percentage* change that's random and roughly bell-curve-shaped, not the absolute dollar
-change. See [Market Simulation](market-simulation.md#phase-2--the-cross-asset-model-engine).
+change. See [Market Simulation](market-simulation.md#phase-2--the-cross-asset-models-states).
 
 **Greeks (Delta, Gamma, Vega, Theta)** — Sensitivities: how much a trade's value moves
 when something else moves. **Delta** — per unit change in interest rates. **Gamma** — how
@@ -107,11 +107,18 @@ Delta itself changes (curvature). **Vega** — per unit change in volatility. **
 day of time passing, holding the market fixed. Named for Greek letters by convention. See
 [Delta, Gamma, Vega, and Theta](../risk/greeks.md).
 
-**Hull-White model (HW1F)** — The standard mathematical model this project uses for how
-interest rates move randomly over time. "1F" means "one factor" — one source of
-randomness per curve, as opposed to more complex multi-factor rate models. Named after
-its inventors, John Hull and Alan White. See
-[Market Simulation](market-simulation.md#phase-2--the-cross-asset-model-engine).
+**Hull-White model (HW1F)** — A standard model of how interest rates move randomly over
+time: the short rate reverts to a curve-fitted mean with a given volatility. "1F" means "one
+factor" — one source of randomness per curve. Named after its inventors, John Hull and Alan
+White. In this project it is one of the two interest-rate models a currency can be simulated
+with (`HullWhiteConfig`), in ORE's form: the LGM with the Hull-White volatility
+parametrization. See [Market Simulation](market-simulation.md#the-configuration).
+
+**LGM (Linear Gauss-Markov model)** — The one-factor Gaussian interest-rate model ORE's
+cross-asset model uses for each currency, and this project's default (`LgmConfig`). It is
+the Hull-White model in another parametrization: a state per currency, fitted exactly to
+today's curve, with closed-form bond prices and numeraire. Its Bermudan engine prices
+Bermudan and American swaptions. See [Market Simulation](market-simulation.md#the-configuration).
 
 **In-the-money / at-the-money / out-of-the-money** — How favorable an option currently
 is to exercise. In-the-money means exercising now would be profitable; out-of-the-money
@@ -133,8 +140,9 @@ ordinary, slow Python loop. Used throughout the simulation engine.
 
 **Jamshidian's trick** — A closed-form technique for pricing a European swaption under a
 Hull-White model, by breaking the option on a multi-coupon bond into a portfolio of
-simpler options, each on a single zero-coupon bond. Avoids needing a slow, nested
-simulation. Named after its inventor, Farshid Jamshidian. See
+simpler options, each on a single zero-coupon bond. In this project a configurable European
+engine (`PricingConfig.european = "Jamshidian"`) beside ORE's default, Bachelier on the
+market volatility. Named after its inventor, Farshid Jamshidian. See
 [Instruments: European Swaptions](../instruments/european-swaptions.md#why-its-built-this-way-jamshidians-trick).
 
 **Mean reversion** — A property of some random processes (interest rates, in this
@@ -151,7 +159,7 @@ referencing the role of randomness. See [Market Simulation](market-simulation.md
 interest rate curves for a single trade: one to figure out what a floating payment will
 actually be (the "forwarding curve," tied to a specific lending benchmark), and a
 separate one to discount all cashflows back to today (the "discounting curve," usually
-tied to an overnight/OIS rate). See [Instruments](../instruments/swaps.md#2-building-the-real-trade-_build_ore_swap-prepare_swap).
+tied to an overnight/OIS rate). See [Instruments](../instruments/swaps.md#2-building-the-real-trade-_build_ore_swap-legs_of).
 
 **Notional** — The reference amount of money a trade's payments are calculated from,
 without that amount itself ever actually changing hands (in an interest rate swap,
@@ -160,9 +168,10 @@ neither side hands over the notional — only the resulting interest payments).
 **NPV (Net Present Value)** — What a trade or portfolio is worth today, expressed as a
 single number, accounting for all its future cashflows discounted back to the present.
 
-**Numéraire** — A reference asset (in this project, a money-market account that accrues
-at a simulated interest rate) used as a bookkeeping device in certain pricing approaches.
-See [Market Simulation: the numéraire](market-simulation.md#phase-2--the-cross-asset-model-engine).
+**Numéraire** — A reference asset that every simulated value is measured in, so that
+values deflated by it average out to today's prices. In this project (as in ORE) it is the
+LGM numeraire, a closed-form function of each path's state; exposures are computed from
+NPV / numeraire. See [Market Simulation: the scenario market](market-simulation.md#phase-3--the-scenario-market).
 
 **ORE (Open Source Risk Engine)** — A real, widely-used, open-source risk engine
 software package that this project both learns its math from and validates its own
@@ -238,7 +247,7 @@ return the stored result instead of recomputing it. Deliberately excludes the
 
 **Yield curve** — A full set of interest rates (or, equivalently, discount factors)
 across every future maturity date, as observed (or, in this project, simulated) at one
-point in time. See [Market Simulation: Phase 3](market-simulation.md#phase-3--yield-curve-reconstruction).
+point in time. See [Market Simulation: Phase 3](market-simulation.md#phase-3--the-scenario-market).
 
 **Zero-coupon bond** — The simplest possible bond: a single promise to pay a fixed amount
 (conventionally $1) at one future maturity date, with no interim interest payments. Its

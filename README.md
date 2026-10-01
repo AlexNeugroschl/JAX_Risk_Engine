@@ -14,11 +14,12 @@ double-precision simulations in the same wall-clock time.
 
 ## Features
 
-- ORE's exposure pipeline, reproduced component by component (the **market path**, the
-  default): the cross-asset model (LGM per currency, Black-Scholes FX and equity, exact
-  discretization, calibrated to swaption baskets), a scenario market of model-implied
-  curves, and every trade repriced on every path with its own t=0 engine, including ORE's
-  fixing, cash-flow and exercise rules. Sobol sequences with a Brownian bridge.
+- ORE's exposure pipeline, reproduced component by component: the cross-asset model (per
+  currency ORE's LGM, or the Hull-White model in ORE's LGM form; Black-Scholes FX and
+  equity; exact discretization; calibrated to swaption baskets), a scenario market of
+  model-implied curves, and every trade repriced on every path with its own t=0 engine,
+  including ORE's fixing, cash-flow and exercise rules. Sobol sequences with a Brownian
+  bridge.
 - Pricing, as ORE's default engines price: interest rate swaps (`DiscountingSwapEngine`),
   European swaptions (Bachelier on market swaption volatilities, physical or cash settled),
   Bermudan and American swaptions (each on its own LGM, calibrated to ORE's basket for the
@@ -26,25 +27,26 @@ double-precision simulations in the same wall-clock time.
 - Exposure profiles with ORE's `ExposureCalculator` definitions: EPE, ENE, EE_B, EEE_B, PFE,
   time-weighted EPE_B/EEPE_B and the Basel one-year figures
 - Sensitivities as ORE's sensitivity analysis defines them: bump-and-revalue Delta and Gamma
-  per curve tenor, Vega per swaption quote, and Theta on the rolled market
+  per curve tenor, Vega per swaption quote, and Theta on the rolled market; or the same
+  Greeks by automatic differentiation, a Bermudan's Vega through its calibration
 - Short-horizon VaR and Expected Shortfall by full revaluation of the portfolio under
   Monte Carlo or historical shocks of every curve pillar, with ORE's `RiskStatistics`
   conventions and Monte Carlo error estimates
 - One run configuration (`RunConfig`), as ORE configures a run with its files and with
-  ORE's defaults: the simulation and its model per currency, the engine per product, the
-  Greeks method and ORE's sensitivity settings, and the precision per stage. A model asked
-  for an option it does not implement refuses it by name rather than substituting another
-  ([decisions](compliance/decisions.md))
-- A second, non-default model: the original **Hull-White** simulation with Jamshidian
-  Europeans and AD Greeks (`HULL_WHITE_CONFIG`). Its known differences from ORE are in the
-  [register](docs/planning/known-issues.md)
-- Adjustable precision: independent FP64/FP32 settings for simulation, pricing, risk and
-  calibration, since which precision each calculation needs is what the project studies
-  (on the market path the simulation's today; the other stages follow in roadmap 1.4)
-- HTTP API for portfolio pricing and calibration: today one request shape per model (the
-  `/v2` route is the market path's, not a version), to become one configurable request that
-  reaches every setting ([I-56](docs/planning/known-issues.md#i-56)); plus a versioned end-of-day
-  contract for hash-verified portfolio bundles
+  ORE's defaults: the simulation and its model per currency (LGM or Hull-White), the engine
+  per product (Bachelier or Jamshidian Europeans, ORE's LGM grid for Bermudans/Americans),
+  the Greeks method (bump or AD) and ORE's sensitivity settings, and the precision per stage.
+  Every option runs with every other; an option not implemented yet is refused by name
+  rather than substituted ([decisions](compliance/decisions.md))
+- Trades as ORE books them: each names its id, its valuation date, its currency and index,
+  and carries no model or curve of its own
+- Adjustable precision, since which precision each calculation needs is what the project
+  studies: FP64 or FP32 for the simulation today; pricing, risk and calibration follow in
+  roadmap 1.4 ([I-55](docs/planning/known-issues.md#i-55))
+- HTTP API: one portfolio request reaching the run configuration (market risk and the
+  cross-asset calibration routes are still to come,
+  [I-56](docs/planning/known-issues.md#i-56)); plus a versioned end-of-day contract for
+  hash-verified portfolio bundles
 
 ## ORE and hardware acceleration
 
@@ -66,8 +68,9 @@ against ORE running in the same process:
   `1e-14`, calibrated Bermudans and Americans to `4e-11` (a shared test portfolio on a
   sloped two-curve market).
 - On simulated paths each component agrees with ORE: the cross-asset model's analytics to
-  `1e-12`, and every pricer on a path's curves against the matching ORE engine to between
-  `1e-12` and `1e-8` (a Bermudan recalibrated on the path).
+  `1e-12` (the Hull-White model's bonds against QuantLib's `HullWhite` too), and every
+  pricer on a path's curves against the matching ORE engine to between `1e-12` and `1e-8`
+  (a Bermudan recalibrated on the path), under either interest-rate model.
 - Market-risk VaR and ES agree with ORE repricing every shocked scenario and running its
   own `RiskStatistics`: swaps, bonds and European swaptions per scenario to about `1e-14`,
   Bermudans to `2e-13`.

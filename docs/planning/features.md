@@ -24,20 +24,24 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 
 **Value.** Decision A-1 makes the engine configurable, with ORE's defaults; these are the
 non-default options the owner asked for, each a choice in the run configuration
-(`RunConfig`, `engine/portfolio/config.py`). Where the configuration already names the option,
-the market path refuses it today by name (`check_market_path`).
+(`RunConfig`, `engine/portfolio/config.py`). Done so far: the **Greeks method** (A-5,
+`GreeksConfig.method="AD"` for any model and engine, beside ORE's bump-and-revalue), the
+**Jamshidian European engine** on a configured Hull-White model (`PricingConfig.european=
+"Jamshidian"` with `PricingConfig.jamshidian`, whichever model simulates), the **Hull-White
+model** per currency (`HullWhiteConfig`, roadmap 1.3), and the **market-risk engine per
+product** (A-8: `engine.market_risk` takes the `PricingConfig`). Left:
 
-- **Greeks method** (A-5): `GreeksConfig.method="AD"` on the market path, beside ORE's
-  bump-and-revalue (the Hull-White model has AD only). A test checks they agree to O(bump²)
-  by halving the bump.
-- **Jamshidian Europeans on the LGM** (`PricingConfig.european="Jamshidian"`, ORE's
-  `AnalyticLgmSwaptionEngine`), beside ORE's default Bachelier.
+- **ORE's `AnalyticLgmSwaptionEngine`** for Europeans on the simulated LGM, beside Bachelier
+  and Jamshidian.
+- **Agreement of the two Greeks methods** as the bump halves: shown so far on flat curves,
+  where the bump method's sensitivity market and the market's curves coincide
+  (`tests/test_greeks.py::TestAgainstTheBumpMethod`: parallel Deltas to 1e-4 once the forward
+  difference's curvature is removed). A Bermudan's AD Delta holds its calibration fixed, its
+  bump Delta recalibrates.
 - **Settlement method** (A-6): a trade field with ORE's values and defaults (`PhysicalOTC`,
   `CollateralizedCashPrice`, `ParYieldCurve`, ...). Low priority.
 - **Bermudan/American solver** (A-3): ORE's `LgmFdSolver` beside the Grid solver. ORE's two
   solvers disagree by up to 1e-3 on broken-period exercise, so understand that gap first.
-- **Market-risk engine per product** (A-8): `engine.market_risk` chooses a European's engine
-  from the configuration, not from whether the trade carries Hull-White fields.
 
 **Depends on.** Nothing open. **Size.** M. **Details.**
 [details/configurable-engine.md](details/configurable-engine.md).

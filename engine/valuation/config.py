@@ -4,16 +4,23 @@ of the run configuration (`engine.portfolio.config.RunConfig.pricing`).
 
 Swaps have one engine (ORE's `DiscountingSwapEngine`). Europeans: `Bachelier`, ORE's default
 (`EuropeanSwaptionEngineBuilder` -> `BlackMultiLegOptionEngine` on the market's normal
-volatility, `engine.valuation.european`), or `Jamshidian` on the model's volatility (the
-Hull-White model's only engine, I-46). Bermudans/Americans: ORE's LGM grid engine,
-`LgmSwaptionEngineConfig`.
+volatility, `engine.valuation.european`), or `Jamshidian`, QuantLib's
+`JamshidianSwaptionEngine` on a Hull-White model whose reversion and volatility are
+`JamshidianEngineConfig` (`engine.valuation.jamshidian`). ORE has no builder for it, so its
+model has no default: choosing it requires `PricingConfig.jamshidian`. Bermudans/Americans:
+ORE's LGM grid engine, `LgmSwaptionEngineConfig`.
+
+Every engine is the same for either simulation model (`CamConfig.ir`): an engine has its own
+model, as in ORE's `pricingengine.xml`, and on a path it prices on the path's curves.
 
 Bermudan/American defaults are ORE's example configuration (Examples/Products/Input/pricingengine.xml,
 `BermudanSwaption`), with one recorded exception: `shift_horizon` is 0 (Basel decision D-10,
 the configuration ORE parity is proven for), where ORE's example uses 0.5; see I-32. Other
 shift horizons are refused rather than silently priced at 0.
 """
+import math
 from dataclasses import dataclass, field
+from typing import Optional
 
 import ORE
 
@@ -51,6 +58,14 @@ class LgmSwaptionEngineConfig:
     swap_index: SwapIndexConventions = SwapIndexConventions()
 
     def __post_init__(self):
+        if not math.isfinite(self.reversion):
+            raise ValueError(f"reversion must be finite; got {self.reversion!r}")
+        if not math.isfinite(self.volatility) or self.volatility < 0.0:
+            raise ValueError(f"volatility must be finite and non-negative; got {self.volatility!r}")
+        if self.n_per_std < 1 or not math.isfinite(self.std_devs) or self.std_devs <= 0.0:
+            raise ValueError(f"the grid needs n_per_std >= 1 and std_devs > 0; got {self.n_per_std}, {self.std_devs}")
+        if self.exercise_time_steps_per_year < 1:
+            raise ValueError(f"exercise_time_steps_per_year must be >= 1; got {self.exercise_time_steps_per_year}")
         if self.calibration not in CALIBRATION_METHODS:
             raise ValueError(f"calibration must be one of {CALIBRATION_METHODS}; got {self.calibration!r}")
         if self.strategy not in CALIBRATION_STRATEGIES:
@@ -62,19 +77,45 @@ class LgmSwaptionEngineConfig:
 
 
 @dataclass(frozen=True)
+class JamshidianEngineConfig:
+    """The Hull-White model of the `Jamshidian` European engine: `dr = (theta(t) - a r) dt +
+    sigma dW` fitted to the curve it prices on, with constant `reversion` a and `volatility`
+    sigma (QuantLib's `HullWhite(termStructure, a, sigma)`, whose parameters are held under a
+    positive constraint, so both must be positive: at a = 0 QuantLib raises, I-41)."""
+    reversion: float
+    volatility: float
+
+    def __post_init__(self):
+        for name in ("reversion", "volatility"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"JamshidianEngineConfig.{name} must be finite and > 0 (QuantLib's HullWhite "
+                                 f"holds it positive); got {value!r}")
+
+
+@dataclass(frozen=True)
 class PricingConfig:
-    """The engine per product (see the module docstring). `recalibrate` is ORE's
-    `ValuationEngine` flag (default true): model-based trades are recalibrated on every path
-    and date. Which engines a model implements is checked by the run
-    (`engine.portfolio.config`)."""
+    """The engine per product (see the module docstring). `jamshidian` is the model of the
+    `Jamshidian` European engine, required with it and refused without it. `recalibrate` is
+    ORE's `ValuationEngine` flag (default true): model-based trades are recalibrated on every
+    path and date."""
     european: str = "Bachelier"
     bermudan: LgmSwaptionEngineConfig = field(default_factory=LgmSwaptionEngineConfig)
     american: LgmSwaptionEngineConfig = field(default_factory=LgmSwaptionEngineConfig)
     recalibrate: bool = True
+    jamshidian: Optional[JamshidianEngineConfig] = None
 
     def __post_init__(self):
         if self.european not in EUROPEAN_ENGINES:
             raise ValueError(f"european must be one of {EUROPEAN_ENGINES}; got {self.european!r}")
+        if self.jamshidian is not None and not isinstance(self.jamshidian, JamshidianEngineConfig):
+            raise TypeError(f"jamshidian must be a JamshidianEngineConfig; got {type(self.jamshidian).__name__}")
+        if self.european == "Jamshidian" and self.jamshidian is None:
+            raise ValueError("european='Jamshidian' needs its Hull-White model: set PricingConfig.jamshidian "
+                             "(JamshidianEngineConfig(reversion, volatility)); ORE has no default for it")
+        if self.european != "Jamshidian" and self.jamshidian is not None:
+            raise ValueError(f"PricingConfig.jamshidian is the Jamshidian engine's model, which european="
+                             f"{self.european!r} does not read; leave it unset")
 
 
 def reference_grid_dates(reference: ORE.Date, grid: str):

@@ -5,7 +5,7 @@ Cash equity positions: validated and refused (I-18).
 
 Quantity and multiplier come from the positions CSV / terms; spot and fx have no source at
 this boundary (`marketInputs` holds flat rate profiles only, and
-`SimulationConfig.equities` simulates paths, not position values). So the position is
+the simulation's equity components simulate paths, not position values). So the position is
 refused, naming what is missing.
 
 `closingMark` is not used as the spot: quantity x mark x multiplier reproduces the
@@ -165,8 +165,8 @@ def price_equity(entry: TermsEntry, row: Dict) -> EquityPosition:
         SPOT_SOURCE_NOT_SUPPLIED,
         f"a cash equity is worth signedQuantity x contractMultiplier x spot, and "
         f"this engine has no source for spot. marketInputs registers flat "
-        f"interest-rate profiles only; SimulationConfig.equities drives simulated "
-        f"risk-factor paths, not position valuation. The position's own "
+        f"interest-rate profiles only; the simulation's equity components drive "
+        f"simulated risk-factor paths, not position valuation. The position's own "
         f"closingMark is an exported observation at the session cut, not a price "
         f"this run computed -- returning it as an npv would echo TraderX's own "
         f"number back as though the engine had valued it, under a provenance it "

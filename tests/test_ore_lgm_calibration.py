@@ -26,13 +26,13 @@ from engine.calibration.ore_lgm import (
     SwapIndexConventions, basket_vols, bootstrap_sigma, build_basket, market_price,
 )
 from engine.instruments.bermudan_swaption import (
-    BermudanSwaptionConfig, _build_ore_swap, exercisable_dates, price_bermudan_swaption_base,
+    BermudanSwaptionConfig, _build_ore_swap, exercisable_dates,
 )
-from engine.market import SwaptionVolSurface
+from engine.market import SwaptionVolSurface, ZeroCurveConfig
 from engine.models.curves import DiscountCurve, ZeroCurve, log_discount
 from engine.models.lgm import Sigma
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER as DC, ibor_index
-from engine.simulation.market_model import ZeroCurveConfig
+from tests.support.lgm_engine import grid_npv
 from tests.support.ore_lgm_oracle import OreCalibration, ore_lgm_swaption_npv
 
 ASOF = ORE.Date(30, 7, 2026)
@@ -104,9 +104,8 @@ def test_the_bootstrap_reprices_every_helper():
 
 def _bermudan(fixed_rate):
     booked = BermudanSwaptionConfig(
-        notional=1e6, fixed_rate=fixed_rate, payer=True, rate_factor_index=0, hw_a=REVERSION, hw_sigma=0.01,
-        initial_zero_curve=ZeroCurveConfig(PILLARS, DISC_RATES), exercise_dates=[ASOF + 400], swap_tenor="6Y",
-        evaluation_date=ASOF)
+        notional=1e6, fixed_rate=fixed_rate, payer=True, exercise_dates=[ASOF + 400], swap_tenor="6Y",
+        evaluation_date=ASOF, trade_id="bermudan")
     return dataclasses.replace(booked, exercise_dates=exercisable_dates(booked)[1:])
 
 
@@ -122,8 +121,6 @@ def test_calibrated_bermudan_equals_ores_bootstrap(strategy, fixed_rate):
     basket = build_basket(ASOF, list(cfg.exercise_dates), [cfg.maturity_date] * n, deal_strikes=strikes)
     result = bootstrap_sigma(basket, _curve(DISC_RATES), _curve(INDEX_RATES), basket_vols(basket, VOLS, ASOF),
                              REVERSION)
-    calibrated = dataclasses.replace(cfg, hw_sigma=Sigma(jnp.asarray(result.times), result.values),
-                                     index_zero_curve=ZeroCurveConfig(PILLARS, INDEX_RATES))
     ore = ore_lgm_swaption_npv(
         evaluation_date=ASOF, curve_times=PILLARS, curve_rates=DISC_RATES, swap=_build_ore_swap(cfg),
         notional=cfg.notional, fixed_rate=fixed_rate, payer=True, floating_spread=0.0, index_tenor_months=6,
@@ -132,7 +129,10 @@ def test_calibrated_bermudan_equals_ores_bootstrap(strategy, fixed_rate):
         calibration=OreCalibration("Bootstrap", strategy, 1e-8)).npv
     # Measured worst case 2.1e-11 (ORE's LM optimiser and the engine's bisection find the same
     # root to ~1e-14 in price).
-    assert price_bermudan_swaption_base(calibrated) == pytest.approx(ore, rel=1e-9)
+    engine = grid_npv(cfg, a=REVERSION, sigma=Sigma(jnp.asarray(result.times), result.values),
+                      curve=ZeroCurveConfig(PILLARS, DISC_RATES), index_curve=ZeroCurveConfig(PILLARS, INDEX_RATES),
+                      n_per_std=48, std_devs=6.0)
+    assert engine == pytest.approx(ore, rel=1e-9)
 
 
 def test_batched_curves_calibrate_as_one_at_a_time():

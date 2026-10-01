@@ -3,15 +3,15 @@ A small portfolio sized for a profiler trace that is practical to open, on the s
 `demo_structured.py`: calibration -> simulation -> all four instrument pricers -> exposure
 -> Greeks, over the HTTP API, in a pool worker, under `jax.profiler.trace`.
 
-Output (as measured): about 41 MB and 25 s, one `pid-<pid>/` directory under
-`.profile-out-small`, with the timeline labelled by phase (calibration / simulation /
-pricing / base_npv / exposure / greeks, plus one region per trade inside greeks); see
-`docs/concepts/profiling.md`.
+Output: one `pid-<pid>/` directory under `.profile-out-small`, with the timeline labelled by
+phase (calibration / simulation / pricing / base_npv / exposure / greeks, plus one region per
+trade inside greeks); see `docs/concepts/profiling.md`. Measured 2026-10-01: the job takes
+about 112 s and the trace is TRUNCATED at the profiler's ~1M-event cap (160 MB): the
+Bermudan's and American's recalibration on every path date dispatches that many events in
+its first 10 s (I-53). Without those two trades the whole job is 205k events, 12.8 MB.
 
-Trace size follows the number of compiled XLA programs, not array sizes, so scenario count,
-grid length, tree resolution, exercise count and pillar count barely change it. Greeks do
-(about 5x here), and are left on because they are a large part of the real timeline.
-`docs/concepts/profiling.md` has the per-knob measurements.
+Trace size follows the number of dispatched XLA programs, not array sizes. Greeks are left on
+(AD) because they are a large part of the real timeline.
 
 Run with:  .venv/Scripts/python.exe demos/demo_profile_small.py
 View with: xprof --port 8791 .profile-out-small
@@ -31,56 +31,42 @@ import httpx
 
 EVALUATION_DATE = "2026-07-30"
 
-FLAT_RATE = 0.03
-# 3 pillars rather than demo_structured's 6, only to keep the printed Greeks vectors short
-# (pillar count does not affect trace size).
-ZERO_CURVE_TIMES = [0.0, 1.0, 3.0]
-ZERO_CURVE_RATES = [FLAT_RATE] * len(ZERO_CURVE_TIMES)
+# The USD market of demo_structured.py on 3 pillars rather than 6, only to keep the printed
+# Greeks vectors short (pillar count does not affect trace size).
+CURVE_TIMES = [0.0, 1.0, 3.0]
+DISCOUNT_RATES = [0.030, 0.030, 0.034]
+INDEX_RATES = [0.034, 0.034, 0.038]
+INDEX_NAME = "USD-SIMINDEX-6M"
+VOLS = {"option_tenors": ["1Y", "2Y"], "swap_tenors": ["1Y", "5Y"], "vols": [[0.0080, 0.0088], [0.0085, 0.0091]]}
 
-HW_MEAN_REVERSION = 0.03
-HW_SHORT_RATE_VOL = 0.01
+# The Hull-White model for USD, calibrated to a 1Y/2Y co-terminal basket.
+MODEL = "HullWhite"
+MEAN_REVERSION = 0.03
+CALIBRATION_EXPIRIES, CALIBRATION_TERMS = ["1Y", "2Y"], ["2Y", "1Y"]
 
-# 256 scenarios / 4 time points (vs 4096 / 9): cuts wall time, not trace size. 256 is a
-# power of two, which Sobol' balance needs (engine.simulation.market_model warns otherwise).
-NUM_SCENARIOS = 256
-TIME_GRID_YEARS = [0.0, 1.0, 2.0, 3.0]
+# 256 paths on 3 dates (vs 512 on 8): cuts wall time, not trace size. A power of two, which
+# Sobol' balance needs (engine.simulation.random warns otherwise).
+NUM_PATHS = 256
 
-# One of every instrument type, as in demo_structured.py but smaller. The two tree-priced
-# trades are uncalibrated (no hw_sigma) so the calibration stage runs. 3Y tenor, 2 exercise
-# dates and n_per_std=16 (a 33-node grid vs 769 at 64), for wall time and memory.
+# AD: each trade's Greeks are a few fused programs. Bump reprices every trade under ~40 shifts,
+# recalibrating each option under each, and overflows the profiler's ~1M-event cap (I-53).
+GREEKS_METHOD = "AD"
+SIMULATION_DATES = ["2027-07-30", "2028-07-30", "2029-07-30"]
+
+# One of every trade type, as in demo_structured.py but smaller: 3Y tenors, 2 exercise dates,
+# and a 33-node Bermudan/American grid (n_per_std=16), for wall time and memory.
 PORTFOLIO_TRADES = [
-    {
-        "trade_type": "swap",
-        "notional": 2_000_000.0, "fixed_rate": 0.032, "payer": True,
-        "discount_curve_index": 0, "forward_curve_index": 0, "swap_tenor": "3Y",
-    },
-    {
-        "trade_type": "european_swaption",
-        "notional": 1_500_000.0, "fixed_rate": 0.031, "payer": True,
-        "rate_factor_index": 0, "hw_a": HW_MEAN_REVERSION, "hw_sigma": HW_SHORT_RATE_VOL,
-        "swap_tenor": "2Y", "forward_start": "1Y",
-    },
-    {
-        "trade_type": "bermudan_swaption",
-        "notional": 1_000_000.0, "fixed_rate": 0.030, "payer": True,
-        "rate_factor_index": 0, "hw_a": HW_MEAN_REVERSION, "hw_sigma": None,
-        "exercise_dates": ["2027-07-30", "2028-07-30"], "swap_tenor": "3Y",
-        "n_per_std": 16, "std_devs": 6.0,
-    },
-    {
-        "trade_type": "american_swaption",
-        "notional": 800_000.0, "fixed_rate": 0.029, "payer": False,
-        "rate_factor_index": 0, "hw_a": HW_MEAN_REVERSION, "hw_sigma": None,
-        "first_exercise_date": "2027-07-30", "last_exercise_date": "2028-07-30",
-        "swap_tenor": "5Y", "exercise_time_steps_per_year": 1,
-        "n_per_std": 16, "std_devs": 6.0,
-    },
+    {"trade_type": "swap", "trade_id": "swap", "notional": 2_000_000.0, "fixed_rate": 0.032, "payer": True,
+     "swap_tenor": "3Y"},
+    {"trade_type": "european_swaption", "trade_id": "european", "notional": 1_500_000.0, "fixed_rate": 0.036,
+     "payer": True, "swap_tenor": "2Y", "forward_start": "1Y"},
+    {"trade_type": "bermudan_swaption", "trade_id": "bermudan", "notional": 1_000_000.0, "fixed_rate": 0.036,
+     "payer": True, "exercise_dates": ["2027-07-30", "2028-07-30"], "swap_tenor": "3Y"},
+    {"trade_type": "american_swaption", "trade_id": "american", "notional": 800_000.0, "fixed_rate": 0.035,
+     "payer": False, "first_exercise_date": "2027-07-30", "last_exercise_date": "2028-07-30", "swap_tenor": "3Y"},
+    {"trade_type": "bond", "trade_id": "bill", "face_amount": 1_000_000.0, "maturity_date": "2028-01-31"},
 ]
-
-# Calibration basket: 2 co-terminal quotes for the 2 exercise dates above.
-CALIBRATION_EXERCISE_TIMES = [1.0, 2.0]
-CALIBRATION_FINAL_MATURITY = 3.0
-CALIBRATION_MARKET_VOLS = [0.0080, 0.0090]
+ENGINE = {"n_per_std": 16, "std_devs": 6.0, "exercise_time_steps_per_year": 1}
 
 RISK_PERCENTILES = [0.95, 0.99]
 
@@ -156,53 +142,22 @@ def stop_server(process: subprocess.Popen) -> None:
 # STAGE 3 -- SERVER INPUTS
 # =============================================================================
 
-def build_zero_curve_schema() -> dict:
-    return {"times": ZERO_CURVE_TIMES, "rates": ZERO_CURVE_RATES}
-
-
-def build_market_schema(zero_curve: dict) -> dict:
+def build_portfolio_request() -> dict:
+    curve = lambda rates: {"times": CURVE_TIMES, "rates": rates}  # noqa: E731
     return {
-        "time_grid": TIME_GRID_YEARS,
-        "scenarios": NUM_SCENARIOS,
-        "equities": {"initial_prices": [100.0], "dividend_yields": [0.0], "rate_mapping": [[0.0]]},
-        "rates": {
-            "initial_rates": [FLAT_RATE], "theta": [FLAT_RATE], "mean_reversion": [HW_MEAN_REVERSION],
-            "initial_zero_curves": [zero_curve],
-        },
-        "joint_covariance": [[0.04, 0.0], [0.0, HW_SHORT_RATE_VOL ** 2]],
-    }
-
-
-def build_trades_schema(zero_curve: dict) -> list:
-    trades = []
-    for trade in PORTFOLIO_TRADES:
-        trade = dict(trade)
-        if trade["trade_type"] != "swap":
-            trade["initial_zero_curve"] = zero_curve
-        trades.append(trade)
-    return trades
-
-
-def build_calibration_basket_schema() -> dict:
-    return {
-        "exercise_times": CALIBRATION_EXERCISE_TIMES,
-        "final_maturity_time": CALIBRATION_FINAL_MATURITY,
-        "notional": 1_000_000.0,
-        "payer": True,
-        "market_vols": CALIBRATION_MARKET_VOLS,
-    }
-
-
-def build_portfolio_request_schema() -> dict:
-    zero_curve = build_zero_curve_schema()
-    return {
-        "evaluation_date": EVALUATION_DATE,
-        "market": build_market_schema(zero_curve),
-        "trades": build_trades_schema(zero_curve),
+        "market": {"asof": EVALUATION_DATE, "currencies": {"USD": {
+            "discount_curve": curve(DISCOUNT_RATES), "index_curves": {INDEX_NAME: curve(INDEX_RATES)},
+            "swaption_vols": VOLS}}},
+        "trades": PORTFOLIO_TRADES,
+        "simulation": {"dates": SIMULATION_DATES, "base_currency": "USD", "samples": NUM_PATHS,
+                       "ir": {"USD": {"model": MODEL, "reversion": MEAN_REVERSION,
+                                      "calibration_expiries": CALIBRATION_EXPIRIES,
+                                      "calibration_terms": CALIBRATION_TERMS}}},
+        "pricing": {"bermudan": ENGINE, "american": ENGINE},
         "pfe_quantiles": RISK_PERCENTILES,
-        "calibration_basket": build_calibration_basket_schema(),
         # Always on (see the module docstring).
         "compute_greeks": True,
+        "greeks": {"method": GREEKS_METHOD},
     }
 
 
@@ -233,24 +188,16 @@ def submit_and_wait(request_body: dict) -> dict:
 
 
 def print_result(result: dict) -> None:
-    trade_names = [t["trade_type"] for t in PORTFOLIO_TRADES]
+    trade_ids = result["trade_ids"]
     npv_cube = result["npv_cube"]
-    num_scenarios = len(npv_cube)
+    num_paths = len(npv_cube)
 
-    print("\nmean NPV across scenarios, at each simulated time step:")
-    print("  time   " + "".join(f"{n:>18}" for n in trade_names))
-    for i, t in enumerate(TIME_GRID_YEARS[1:]):
-        means = [
-            sum(npv_cube[s][i][j] for s in range(num_scenarios)) / num_scenarios
-            for j in range(len(trade_names))
-        ]
-        print(f"  {t:>4.2f}  " + "".join(f"{m:>18,.0f}" for m in means))
-
-    print(f"\nbaseline portfolio NPV: {result['base_npv']:,.2f}")
-    if result["warnings"]:
-        print(f"warnings: {len(result['warnings'])}")
-        for message in result["warnings"]:
-            print(f"  - {message}")
+    print("\nmean NPV across paths, at each simulation date:")
+    print("  time  " + "".join(f"{n:>12}" for n in trade_ids))
+    for i, t in enumerate(result["exposure"]["times"][1:]):  # the cube's dates (times[0] is t=0)
+        means = [sum(npv_cube[s][i][j] for s in range(num_paths)) / num_paths for j in range(len(trade_ids))]
+        print(f"  {t:>4.2f}  " + "".join(f"{m:>12,.0f}" for m in means))
+    print(f"\nportfolio NPV today: {result['base_npv']:,.2f}")
 
     print("\nexposure profile:")
     exposure = result["exposure"]
@@ -259,17 +206,11 @@ def print_result(result: dict) -> None:
     for i, t in enumerate(exposure["times"]):
         values = [exposure[c][i] if c in exposure else exposure["pfe"][c][i] for c in columns]
         print(f"  {t:>4.2f}" + "".join(f"{v:>12,.0f}" for v in values))
-    print("(netting set; EPE/ENE/PFE discounted to today, EE_B undiscounted -- ORE's definitions)")
 
-    print("\nGreeks (per trade index):")
+    print("\nGreeks (discount-curve Delta per tenor, Theta):")
     for idx, greeks in sorted(result["greeks"].items(), key=lambda kv: int(kv[0])):
-        name = trade_names[int(idx)]
-        values = greeks["values"]
-        # A swap reports discount_delta/forward_delta (two curves); option types report a
-        # single delta. Print whichever this trade has.
-        shown = [k for k in ("delta", "discount_delta", "forward_delta") if k in values]
-        deltas = " ".join(f"{k}={[round(v, 2) for v in values[k]]}" for k in shown)
-        print(f"  [{idx}] {name:>18}: {deltas} theta={greeks['theta']:,.2f}")
+        delta = [round(v, 2) for v in greeks["values"]["delta:discount:USD"]]
+        print(f"  {trade_ids[int(idx)]:>10}: {delta} theta={greeks['theta']:,.2f}")
 
 
 def report_trace_size() -> None:
@@ -323,9 +264,8 @@ def report_trace_size() -> None:
 
 def main() -> None:
     print("=== stage 1: given inputs (small portfolio) ===")
-    print(f"{NUM_SCENARIOS:,} scenarios, {len(PORTFOLIO_TRADES)} trades "
-          f"(one of each type), {len(TIME_GRID_YEARS) - 1} simulated steps, "
-          f"greeks=ON")
+    print(f"{NUM_PATHS:,} paths, {len(PORTFOLIO_TRADES)} trades (one of each type), "
+          f"{len(SIMULATION_DATES)} simulation dates, the {MODEL} model, greeks=ON")
 
     print("\n=== stage 2: server setup ===")
     server_process = start_server() if _MANAGE_SERVER else None
@@ -346,9 +286,8 @@ def main() -> None:
 
     try:
         print("\n=== stage 3: server inputs ===")
-        request_body = build_portfolio_request_schema()
-        print(f"built a PortfolioRequestSchema body: {len(request_body['trades'])} trades, "
-              f"calibration_basket for {len(CALIBRATION_EXERCISE_TIMES)} market vol quotes")
+        request_body = build_portfolio_request()
+        print(f"built the portfolio request: {len(request_body['trades'])} trades")
 
         print("\n=== stage 4: submit and print ===")
         result = submit_and_wait(request_body)

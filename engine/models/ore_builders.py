@@ -216,21 +216,13 @@ def par_coupon_forecast_period(coupon) -> "tuple[ORE.Date, ORE.Date, float]":
 
 @dataclass
 class LegCashflows:
-    """One leg's remaining cashflows on `today`, times in years from `today`. With
-    fixings, `is_fixed`/`fixed_rates` mark coupons whose fixing is already known
-    (`known_fixing`); the rest are projected over `forecast_start_times` to
-    `forecast_end_times`, divided by `spanning_times` (`par_coupon_forecast_period`;
-    floating legs only)."""
+    """One fixed leg's remaining coupons on `today`, times in years from `today`, for the
+    standalone calibration basket (`engine.calibration.basket`)."""
     payment_times: np.ndarray        # [N]
     accrual_start_times: np.ndarray  # [N]
     accrual_end_times: np.ndarray    # [N]
     accrual_fractions: np.ndarray    # [N]
     notional: float
-    is_fixed: np.ndarray = None      # [N] bool
-    fixed_rates: np.ndarray = None   # [N] the fixing where is_fixed, else 0
-    forecast_start_times: np.ndarray = None  # [N] floating legs only
-    forecast_end_times: np.ndarray = None    # [N]
-    spanning_times: np.ndarray = None        # [N] index day count over the forecast period
 
 
 def is_live(cashflow_date: ORE.Date, today: ORE.Date) -> bool:
@@ -239,56 +231,14 @@ def is_live(cashflow_date: ORE.Date, today: ORE.Date) -> bool:
     return cashflow_date > today
 
 
-def _leg_cashflows(leg, as_coupon, today: ORE.Date, notional: float, fixings=None,
-                   floating: bool = False) -> LegCashflows:
-    t_of = lambda d: TIME_AXIS_DAY_COUNTER.yearFraction(today, d)  # noqa: E731
-    payment_times, accrual_starts, accrual_ends, fractions = [], [], [], []
-    is_fixed, fixed_rates = [], []
-    forecast_starts, forecast_ends, spanning = [], [], []
-    for cf in leg:
-        c = as_coupon(cf)
-        if not is_live(c.date(), today):
-            continue
-        payment_times.append(t_of(c.date()))
-        accrual_starts.append(t_of(c.accrualStartDate()))
-        accrual_ends.append(t_of(c.accrualEndDate()))
-        fractions.append(c.accrualPeriod())
-        if floating:
-            start, end, span = par_coupon_forecast_period(c)
-            forecast_starts.append(t_of(start))
-            forecast_ends.append(t_of(end))
-            spanning.append(span)
-        if fixings is not None:
-            rate = known_fixing(c.fixingDate(), today, fixings)
-            is_fixed.append(rate is not None)
-            fixed_rates.append(0.0 if rate is None else rate)
-    as_array = lambda values: np.array(values, dtype=np.float64) if floating else None  # noqa: E731
-    return LegCashflows(
-        payment_times=np.array(payment_times),
-        accrual_start_times=np.array(accrual_starts),
-        accrual_end_times=np.array(accrual_ends),
-        accrual_fractions=np.array(fractions),
-        notional=notional,
-        is_fixed=None if fixings is None else np.array(is_fixed, dtype=bool),
-        fixed_rates=None if fixings is None else np.array(fixed_rates, dtype=np.float64),
-        forecast_start_times=as_array(forecast_starts),
-        forecast_end_times=as_array(forecast_ends),
-        spanning_times=as_array(spanning),
-    )
-
-
 def fixed_leg_cashflows(swap: ORE.VanillaSwap, today: ORE.Date) -> LegCashflows:
     """Remaining fixed coupons' payment/accrual times and ORE `accrualPeriod()`s."""
-    notional = swap.fixedNominals()[0] if swap.fixedNominals() else swap.nominal()
-    return _leg_cashflows(swap.fixedLeg(), ORE.as_fixed_rate_coupon, today, notional)
-
-
-def floating_leg_cashflows(swap: ORE.VanillaSwap, today: ORE.Date, fixings=None) -> LegCashflows:
-    """As `fixed_leg_cashflows`, for the floating leg.
-
-    With `fixings`, each coupon is marked known or projected as ORE decides
-    (`known_fixing`); a coupon fixed before `today` without a fixing raises
-    `MissingFixingError`. Without `fixings` only the schedule is read."""
-    notional = swap.floatingNominals()[0] if swap.floatingNominals() else swap.nominal()
-    return _leg_cashflows(swap.floatingLeg(), ORE.as_floating_rate_coupon, today, notional, fixings,
-                          floating=True)
+    t_of = lambda d: TIME_AXIS_DAY_COUNTER.yearFraction(today, d)  # noqa: E731
+    coupons = [c for c in map(ORE.as_fixed_rate_coupon, swap.fixedLeg()) if is_live(c.date(), today)]
+    return LegCashflows(
+        payment_times=np.array([t_of(c.date()) for c in coupons]),
+        accrual_start_times=np.array([t_of(c.accrualStartDate()) for c in coupons]),
+        accrual_end_times=np.array([t_of(c.accrualEndDate()) for c in coupons]),
+        accrual_fractions=np.array([c.accrualPeriod() for c in coupons]),
+        notional=swap.fixedNominals()[0] if swap.fixedNominals() else swap.nominal(),
+    )

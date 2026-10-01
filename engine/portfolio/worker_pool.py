@@ -1,11 +1,14 @@
 """
 Worker-process pools for `price_portfolio`, one per precision tier.
 
-`jax_enable_x64` is process-global and cannot be scoped per thread, so jobs at different
-precisions cannot share a process safely. Each tier (float32, float64) gets its own
-`ProcessPoolExecutor`; each worker sets the flag once at start-up and runs one job at a
-time. Jobs beyond a pool's size queue. `request.config.precision.simulation` selects the
-tier; the other stages are applied inside the job by `price_portfolio`.
+One `ProcessPoolExecutor` per tier (float32, float64), selected by
+`request.config.precision.simulation`; each worker runs one job at a time and jobs beyond a
+pool's size queue. Every worker runs with `jax_enable_x64` on, as the parent does (`engine`
+enables it at import): the pipeline gives every array an explicit dtype from the run
+configuration, so a float32 simulation is float32 under the flag and the stages computed in
+float64 stay float64, exactly as in a direct `price_portfolio` call. (Until roadmap 1.3 a
+float32 worker turned the flag off, which made those stages float32 too; I-55.) The tiers go
+with roadmap 1.4.
 
 Workers are always spawned, never forked: forking a process that has initialized JAX hangs
 (I-33, on Linux). Spawn pickles the initializer by reference, so `_worker_init` is a
@@ -36,9 +39,9 @@ _POOLS: dict = {}  # precision_bits (32 or 64) -> ProcessPoolExecutor
 
 
 def _worker_init(precision_bits: int) -> None:
-    """Pool initializer: runs once per worker, before its first job, and sets
-    `jax_enable_x64` for this worker's tier. A worker runs one job at a time, so the flag
-    never changes under a job.
+    """Pool initializer: runs once per worker, before its first job, and turns
+    `jax_enable_x64` on whatever the tier (see the module docstring). A worker runs one job at
+    a time, so the flag never changes under a job.
 
     JAX is already imported when this runs (unpickling this function imports this
     module, which imports `engine.portfolio.request`), so device selection by environment
@@ -49,7 +52,8 @@ def _worker_init(precision_bits: int) -> None:
 
     import jax
 
-    jax.config.update("jax_enable_x64", precision_bits == 64)
+    del precision_bits  # the tier only routes the job; every dtype is explicit
+    jax.config.update("jax_enable_x64", True)
 
 
 @dataclass(frozen=True)

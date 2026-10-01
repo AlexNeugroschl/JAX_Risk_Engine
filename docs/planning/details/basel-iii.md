@@ -100,12 +100,11 @@ precondition, not a side issue:
 | [I-05](../known-issues.md#i-05) no faithful USD-SOFR swap construction | Every USD swap sensitivity rests on it | P1 for USD swaps (other books can proceed) |
 | [I-51](../known-issues.md#i-51) sensitivities not checked against ORE | SA figures rest on them | P1 |
 | [I-50](../known-issues.md#i-50) exposure not checked against an ORE simulation | IMM exposure rests on it | P5.3, P5.4 |
-| [I-10](../known-issues.md#i-10) no trade identity on the portfolio path | Desk attribution, backtesting per desk, audit | P0 |
+| [I-10](../known-issues.md#i-10) per-trade results keyed by position (every trade carries a `trade_id` since roadmap 1.3) | Desk attribution, backtesting per desk, audit | P0 |
 | [I-18](../known-issues.md#i-18) no equity spot/FX | EQ risk class impossible | EQ only; refused until fixed |
 | [I-27](../known-issues.md#i-27) full-suite runs can abort inside XLA | An evidence pack needs a complete, reproducible suite run | P7 |
 | [I-08](../known-issues.md#i-08) portfolio job store in memory | Regulatory runs must survive restart and stay retrievable | P0 |
 | [I-32](../known-issues.md#i-32) Bermudan engine only at `ShiftHorizon = 0` | The reference configuration must be fixed before it is cited as an oracle | P1 vega/curvature for Americans |
-| [I-42](../known-issues.md#i-42) – [I-47](../known-issues.md#i-47), [I-04](../known-issues.md#i-04), [I-24](../known-issues.md#i-24) (Hull-White model) | Regulatory runs use the market path until roadmap 1.3 fixes the Hull-White model | Any figure run on the Hull-White model |
 
 ---
 

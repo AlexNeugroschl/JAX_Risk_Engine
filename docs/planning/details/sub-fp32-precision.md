@@ -74,15 +74,13 @@ have native `cholesky`/`norm.ppf` there).
 
 ## Where the kernels sit today
 
-- **Inverse CDF**, both models: `engine/simulation/random.py`, `norm.ppf(...).astype(dtype)`.
-  Blocking below float32.
-- **Cholesky, market path:** `engine.simulation.cam.flexible_cholesky` factors each step's
-  covariance in NumPy on the host (FP64) once per configuration, then casts to the normals'
-  dtype. Only a matmul runs in the storage dtype, so no replacement kernel is needed.
-- **Cholesky, Hull-White model:** `jnp.linalg.cholesky` per step in
-  `engine/simulation/market_model.py`, plus a validation path that relies on `cholesky`
-  failing on a non-SPD matrix. Whether this survives depends on roadmap 1.3; if it does, keep
-  the validation at float32 or above.
+- **Inverse CDF**: `engine/simulation/random.py`, `norm.ppf(...).astype(dtype)`. Blocking
+  below float32.
+- **Cholesky:** `engine.simulation.cam.flexible_cholesky` factors each step's covariance in
+  NumPy on the host (FP64) once per configuration, then casts to the normals' dtype. Only a
+  matmul runs in the storage dtype, so no replacement kernel is needed. Since roadmap 1.3 this
+  is the only simulation, for either interest-rate model (the Hull-White model's separate
+  `jnp.linalg.cholesky` per step went with its pipeline).
 
 ## Design
 

@@ -21,7 +21,8 @@ there with its t=0 engine (`engine.valuation`), so Bermudans recalibrate under e
     date to `thetaDate` with the index's forecast on that market, trades are rebuilt there, and
         theta = NPV(thetaDate) - NPV(base) + cash flows paid in (asof, thetaDate].
 
-AD Greeks (`engine.risk.greeks`) remain available beside these (plan X-3).
+AD Greeks (`engine.risk.greeks`, `GreeksConfig.method = "AD"`) are the other method (decision
+A-5): the same keys, Delta/Gamma/Vega by differentiation, and this module's Theta.
 """
 import dataclasses
 from dataclasses import dataclass
@@ -41,7 +42,7 @@ from engine.valuation.config import PricingConfig
 from engine.valuation.context import PricingContext
 from engine.valuation.european import volatility_on_path
 from engine.valuation.legs import Legs, legs_of
-from engine.valuation.portfolio import Trade, bond_legs, validate_trades, value_on
+from engine.valuation.portfolio import Trade, bond_legs, reads_swaption_vols, validate_trades, value_on
 
 
 @dataclass(frozen=True)
@@ -127,8 +128,9 @@ def portfolio_sensitivities(trades: Sequence[Trade], market: Market, base_curren
     """Per trade (by request index), in the base currency:
     `delta:discount:<ccy>` / `gamma:discount:<ccy>` and `delta:index:<name>` /
     `gamma:index:<name>` `[K]` per curve tenor (the trade's own curves), `vega:<ccy>`
-    `[option tenors, swap tenors]` for options, and `theta`."""
-    validate_trades(trades, market)
+    `[option tenors, swap tenors]` for a trade whose engine reads the swaption volatilities
+    (`reads_swaption_vols`), and `theta`."""
+    validate_trades(trades, market, pricing)
     base_context = sensitivity_context(market, config)
     theta_ctx = theta_context(market, config)
     result: Dict[int, Dict[str, np.ndarray]] = {}
@@ -150,11 +152,18 @@ def portfolio_sensitivities(trades: Sequence[Trade], market: Market, base_curren
                 gammas.append(up - 2.0 * base + down)
             greeks[f"delta:{kind}:{key}"] = np.asarray(deltas)
             greeks[f"gamma:{kind}:{key}"] = np.asarray(gammas)
-        if not isinstance(cfg, (SwapConfig, BondConfig)):
+        if reads_swaption_vols(cfg, pricing):
             greeks[f"vega:{currency}"] = _vega(value, base, market, currency, base_context, config.vol_shift)
-        greeks["theta"] = np.asarray(value(theta_ctx) - base + _period_flows(cfg, theta_ctx) * fx)
+        greeks["theta"] = trade_theta(value, base, cfg, theta_ctx, fx)
         result[i] = greeks
     return result
+
+
+def trade_theta(value, base: float, cfg: Trade, theta: PricingContext, fx: float) -> np.ndarray:
+    """ORE's Theta (see the module docstring) in the base currency, from the trade's
+    valuation on a context `value(context)` and its value `base` on the sensitivity market;
+    shared by both Greeks methods (`engine.risk.greeks` for AD)."""
+    return np.asarray(value(theta) - base + _period_flows(cfg, theta) * fx)
 
 
 def _with(context: PricingContext, kind: str, key: str, curve: DiscountCurve) -> PricingContext:

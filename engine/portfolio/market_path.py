@@ -1,22 +1,23 @@
 """
-`price_portfolio` on today's `Market`: ORE's semantics end to end (the ORE alignment plan's
-target design). The default path.
+`price_portfolio`'s pipeline: ORE's semantics end to end, for every configuration.
 
     Market + CamConfig --calibrate CAM--> CrossAssetModel --simulate--> ScenarioMarket
         --ValuationEngine (engine.valuation)--> t=0 NPVs and the NPV cube (base currency)
         --ExposureCalculator (engine.risk.exposure)--> EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B, PFE
 
-Greeks are ORE's bump-and-revalue sensitivities on today's market
-(`engine.risk.sensitivities`).
+The model of each currency is `config.simulation.ir[ccy]`: ORE's LGM (the default) or the
+Hull-White model (`HullWhiteConfig`), both in the cross-asset model with the exact
+discretization and the LGM numeraire. The valuation reads only the scenario market, so every
+engine prices under either model.
+
+Greeks by `config.greeks.method`: ORE's bump-and-revalue sensitivities on today's market
+(`engine.risk.sensitivities`, the default) or automatic differentiation
+(`engine.risk.greeks`).
 
 Every choice comes from the request's run configuration (`engine.portfolio.config`):
 `simulation` (the CAM, its model per currency, the grid), `pricing` (the engine per product),
 `greeks` (the method and ORE's sensitivity settings), `precision` and the reporting currency.
-Options this path does not implement are refused by `check_market_path`.
-
-The Hull-White path (`engine.portfolio.request`, a `SimulationConfig` as the market) is the
-other model: supported, not the default, with the known limitations registered as I-42 to
-I-47, to be fixed within it when roadmap 1.3 makes it a model of the same configuration.
+What the pipeline does not implement is refused before any work (`validate_request`).
 """
 from typing import TYPE_CHECKING, List, Sequence
 
@@ -25,7 +26,7 @@ import numpy as np
 
 from engine.market import Market
 from engine.models.curves import ZeroCurve, discount
-from engine.portfolio.config import _dtype_of, check_market_path
+from engine.portfolio.config import _dtype_of, check_run
 from engine.portfolio.profiling import phase
 from engine.risk.exposure import ExposureProfile, exposure_profile, netting_set_profile
 from engine.risk.var_es import ENGINE_RISK_MEASURE
@@ -37,10 +38,10 @@ if TYPE_CHECKING:
 
 
 def price_on_market(request) -> "PortfolioResult":
-    """`price_portfolio` for a `PortfolioRequest` whose `market` is a `Market`."""
+    """`price_portfolio`'s work (see the module docstring)."""
     from engine.portfolio.request import PortfolioResult
 
-    validate_market_request(request)
+    validate_request(request)
     market: Market = request.market
     run = request.config
     trades = list(request.trades)
@@ -63,9 +64,8 @@ def price_on_market(request) -> "PortfolioResult":
             today = value_today(trades, market, base, run.pricing)
         cube = jnp.zeros((0, 0, 0))
     if request.compute_greeks:
-        from engine.risk.sensitivities import portfolio_sensitivities
         with phase("greeks"):
-            greeks = portfolio_sensitivities(trades, market, base, run.pricing, run.greeks.sensitivity)
+            greeks = _greeks(run.greeks.method)(trades, market, base, run.pricing, run.greeks.sensitivity)
     return PortfolioResult(
         base_npv=float(np.sum(today)), npv_cube=cube, exposure=exposure, trade_exposures=trade_exposures,
         greeks=greeks, warnings=[], base_npv_per_trade=list(today), scenario_risk_available=request.scenario_risk,
@@ -73,17 +73,26 @@ def price_on_market(request) -> "PortfolioResult":
     )
 
 
-def validate_market_request(request) -> None:
-    """Refuse, before any JAX work, a request the market path cannot price: an option of
-    the run configuration it does not implement (`check_market_path`), scenario risk
-    without a simulation, or a trade the market cannot value (`validate_trades`). The HTTP
-    route runs it synchronously so such a request is a 400, not a failed job."""
+def _greeks(method: str):
+    """The Greeks function of a method: ORE's bump-and-revalue or AD, same signature."""
+    if method == "AD":
+        from engine.risk.greeks import portfolio_greeks
+        return portfolio_greeks
+    from engine.risk.sensitivities import portfolio_sensitivities
+    return portfolio_sensitivities
+
+
+def validate_request(request) -> None:
+    """Refuse, before any JAX work, a request the pipeline cannot price: a setting it does
+    not implement yet (`check_run`), scenario risk without a simulation, a trade the market
+    cannot value or its engine refuses (`validate_trades`), or a reporting currency the market
+    lacks. The HTTP route runs it synchronously so such a request is a 400, not a failed job."""
     run = request.config
-    check_market_path(run, request.trades, request.compute_greeks, request.calibration_targets)
+    check_run(run)
     if request.scenario_risk and run.simulation is None:
         raise ValueError("scenario_risk needs config.simulation (a CamConfig); set scenario_risk=False for "
                          "today's NPVs and Greeks only")
-    validate_trades(request.trades, request.market)
+    validate_trades(request.trades, request.market, run.pricing)
     request.market.currency(run.reporting_currency)
 
 

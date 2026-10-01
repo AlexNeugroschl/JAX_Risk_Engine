@@ -2,7 +2,8 @@
 
 **Modules:** [`engine/api/app.py`](../../engine/api/app.py),
 [`engine/api/routes.py`](../../engine/api/routes.py),
-[`engine/api/schemas.py`](../../engine/api/schemas.py)
+[`engine/api/market_schemas.py`](../../engine/api/market_schemas.py) (the portfolio request),
+[`engine/api/schemas.py`](../../engine/api/schemas.py) (shared schemas and the result)
 
 ## Plain-language summary
 
@@ -15,7 +16,7 @@ sharing this codebase's own memory space.
 **Wrap, not replace.** `engine.portfolio.PortfolioRequest`/`PortfolioResult` and every
 instrument config dataclass stay the single source of truth for the engine's own internal
 shape (see [Architecture: Typed configuration](../concepts/architecture.md#typed-configuration)).
-Pydantic models in `engine/api/schemas.py` mirror them field-for-field, each with a
+Pydantic models in `engine/api/market_schemas.py` and `engine/api/schemas.py` mirror them field-for-field, each with a
 `.to_dataclass()` method converting into the real dataclass and — for results — a
 `.from_dataclass()` classmethod for the reverse direction. `engine/portfolio/` and
 everything below it has **zero** Pydantic/FastAPI dependency; the heavy `api` extra
@@ -28,8 +29,6 @@ Chosen over the original roadmap's "FastAPI/gRPC" placeholder — gRPC was evalu
 used:
 
 - Zero existing web framework lock-in to displace.
-- `SimulationConfig`'s own docstring already forward-references a future Pydantic schema;
-  adopting Pydantic validates rather than contradicts existing intent.
 - [Coding Style: API-first design](../concepts/coding-style.md) already lists this as a
   core constraint — FastAPI/Pydantic's request-validation-first model matches directly.
 - This workload (numerically heavy, low request volume, seconds-to-a-minute per request —
@@ -71,7 +70,7 @@ the routers separate keeps either free to change.
 | `GET /health` | portfolio | below |
 | `GET /version` | portfolio | below |
 | `POST /portfolio/price` | portfolio | below |
-| `POST /v2/portfolio/price` | portfolio (the market path's request shape) | below |
+| `POST /v2/portfolio/price` | portfolio (the same request; an older name) | below |
 | `GET /portfolio/price/{job_id}` | portfolio | below |
 | `POST /calibration/lgm` | portfolio | below |
 | `GET /eod/capabilities` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
@@ -121,48 +120,41 @@ distinction is invisible; on a real multi-TPU-chip host it would not be.
 
 ### `POST /portfolio/price`
 
-The main endpoint. Body: a `PortfolioRequestSchema` (mirrors `PortfolioRequest` — see
-"Request schema" below). Validates synchronously (cheap — Phase 1's validators do no JAX
-work), then schedules the actual pricing as a background task and returns immediately.
+The main endpoint. Body: the portfolio request, `MarketPortfolioRequestSchema` (mirrors
+`PortfolioRequest` and its `RunConfig` — see "Request schema" below). Validates
+synchronously (`engine.portfolio.market_path.validate_request`, no JAX work), then submits
+the pricing to the worker pool and returns immediately.
 
 **Success:** `202 Accepted`
 ```json
 {"job_id": "b3f1c2a0-..."}
 ```
 
-**Validation failure (bad covariance, mismatched `hw_a`, etc.):** `400 Bad Request`, with
-the exact same validator error message `engine.portfolio`'s own `ValueError` carries:
+**Validation failure:** `400 Bad Request`, with the validator's own message. Examples:
+scenario risk without a `simulation`; a trade whose currency or index curve is not in the
+market (naming the trade); a trade not valued on the market's date; `trade_id` on some trades
+but not others, or repeated; an engine's refusal (the Jamshidian engine and a floating
+spread); a precision the pipeline does not implement yet.
 ```json
-{"detail": "trade[1] (SwaptionConfig, notional=500000.0): hw_a=0.099 does not match sim_config.rates.mean_reversion[0]=0.03"}
+{"detail": "trade 'gbp-swap' (SwapConfig): no market for currency 'GBP'; have ['USD']"}
 ```
 
-**Malformed schema (wrong types, missing required fields):** `422 Unprocessable Entity`
-(FastAPI's automatic Pydantic validation response).
+**Malformed schema, or an unknown field:** `422 Unprocessable Entity`. The request refuses
+unknown fields, so a trade carrying `hw_sigma` or a curve is not silently stripped of its
+model: curves come from the market and models from the run configuration (audit A-3).
+
+**The Hull-White request shape retired by roadmap 1.3** (a `SimulationConfig` market with
+`time_grid`/`rates`/`joint_covariance`, model parameters on the trades, a
+`calibration_basket`, a top-level `evaluation_date`) is a `422` whose message names its
+replacement: the Hull-White model is `"model": "HullWhite"` per currency in `simulation.ir`.
 
 ### `POST /v2/portfolio/price`
 
-The request shape for the **market path**, ORE's pipeline end to end and the default model
-([ORE Parity: the market path](ore-parity.md#the-market-path)). Body: a
-`MarketPortfolioRequestSchema` (`engine/api/market_schemas.py`, see
-"Request schema for the market path" below). Same behaviour as `POST /portfolio/price`: validated
-synchronously (`engine.portfolio.market_path.validate_market_request`, no JAX work), then
-queued; `202` with a `job_id`, polled at the same `GET /portfolio/price/{job_id}`, with the
-same `PortfolioResultSchema`.
-
-**Validation failure:** `400`, the validator's message. Examples: scenario risk without a
-`simulation`; a trade whose currency or index curve is not in the market; `trade_id` on some
-trades but not others, or repeated.
-
-**Malformed schema, or an unknown field:** `422`. This shape refuses unknown fields, so a
-Hull-White-shaped trade carrying `hw_sigma` or a curve is not silently stripped of its model. On the
-market path curves come from the market and models from the pricing configuration
-(audit A-3).
-
-**Two request shapes today; the names are misleading.** `POST /portfolio/price` takes the
-Hull-White model's request and `POST /v2/portfolio/price` the market path's. **They are not
-versions.** Each is a model, and the `/v2` in the route and the body's `schema_version: "2"`
-are historical names. Neither shape is deprecated or superseded, and neither is newer in the
-sense a version number suggests. See [Target: one configurable API](#target-one-configurable-api).
+The same request and behaviour as `POST /portfolio/price`, polled at the same
+`GET /portfolio/price/{job_id}`. Until roadmap 1.3 `/portfolio/price` took the Hull-White
+model's request and `/v2` the market path's; the `/v2` and the body's optional
+`schema_version: "2"` are historical names, not versions. Roadmap 4.1 keeps one route (see
+[Target: one configurable API](#target-one-configurable-api)).
 
 ### `GET /portfolio/price/{job_id}`
 
@@ -189,9 +181,11 @@ traceback.
 ### `POST /calibration/lgm`
 
 Standalone calibration — wraps `engine.calibration.basket.build_coterminal_basket` +
-`engine.calibration.lgm.calibrate_lgm_sigma`, for a caller who wants a fitted `Sigma`
-term structure back before submitting a full portfolio request. Synchronous (a bootstrap
-bisection, not a Monte Carlo simulation — no async job pattern needed).
+`engine.calibration.lgm.calibrate_lgm_sigma`: a Hagan bootstrap of an LGM `Sigma` to a
+caller-given co-terminal basket. Synchronous (a bootstrap bisection, not a Monte Carlo
+simulation). It is not the portfolio's calibration, which is the cross-asset model's per
+currency and each option's own basket ([Calibration](calibration.md)); a route for those is
+roadmap 4.1 ([I-56](../planning/known-issues.md#i-56)).
 
 **Request:**
 ```json
@@ -249,8 +243,8 @@ the dispatcher (`engine/api/routes.py`'s `_JOBS`) — that part hasn't changed. 
 is what it maps to and where the actual pricing work runs: `_JOBS[job_id]` now holds a
 `concurrent.futures.Future`, returned by `engine.portfolio.worker_pool.submit_pricing_job`,
 whose underlying `price_portfolio` call executes in a separate OS process — one of a fixed
-pool of worker processes, sized per precision tier (float32/float64), each with its own
-independent JAX/XLA runtime pinned to its own `jax_enable_x64` setting at boot. Polling
+pool of worker processes per simulation-precision tier (float32/float64), each with its own
+independent JAX/XLA runtime. Polling
 `GET /portfolio/price/{job_id}` now checks `future.done()`/`future.result()` instead of
 reading fields a background thread mutated directly, but the response shape/status values
 are unchanged. See [Architecture: Concurrency](../concepts/architecture.md) and
@@ -288,155 +282,66 @@ know rather than an inconsistency to gloss over — see
 [I-08](../planning/known-issues.md#i-08) and
 [EOD Integration](eod-integration.md#w164--the-eod-http-routes).
 
-## Request schema: `PortfolioRequestSchema`
+## Request schema: `MarketPortfolioRequestSchema`
 
-Mirrors `engine.portfolio.PortfolioRequest` on the Hull-White model. Its run configuration is
-`HULL_WHITE_CONFIG` (Jamshidian Europeans, AD Greeks: the engines this model implements) with
-the request's `precision`:
+Mirrors `engine.portfolio.PortfolioRequest` and its run configuration
+(`engine/api/market_schemas.py`):
 
-| Field | Type | Meaning |
-|---|---|---|
-| `evaluation_date` | `str` (ISO `YYYY-MM-DD`) | Default evaluation date applied to any trade that doesn't specify its own. |
-| `market` | `SimulationConfigSchema` | Mirrors `SimulationConfig` field-for-field. |
-| `trades` | `List[TradeSchema]` | A discriminated union on each trade object's own `trade_type` field: `"swap"`, `"european_swaption"`, `"bermudan_swaption"`, `"american_swaption"`, or `"bond"`. |
-| `pfe_quantiles` | `List[float]` | Quantiles of the PFE profiles in the response's exposure. Default `[0.95, 0.99]`. |
-| `calibration_basket` | `CalibrationBasketRequestSchema \| null` | Optional. Required if any Bermudan/American trade has `hw_sigma: null` — see "Automatic calibration" below. |
-| `compute_greeks` | `bool` | Default `false`. |
-| `precision` | `PrecisionConfigSchema \| null` | Optional (default `null`). `null`/omitted behaves identically to an explicit all-64 block — see "Precision control" below. |
-| `scenario_risk` | `bool` | Default `true`. **Must be `false` for any portfolio containing a `"bond"`** — see "Bonds and scenario risk" below. |
+| Field | Meaning |
+|---|---|
+| `market` | `asof` (ISO date; every trade is valued on it); `currencies`: per currency a `discount_curve`, `index_curves` keyed by index name (`"USD-SIMINDEX-6M"`), and `swaption_vols` (ATM normal matrix: `option_tenors`, `swap_tenors`, `vols`); `fx_spots` keyed `"EURUSD"`; `equities` |
+| `trades` | Discriminated by `trade_type`: `swap`, `european_swaption`, `bermudan_swaption`, `american_swaption`, `bond`. Each names its `currency` and `index_tenor_months` and carries no model or curve. Swaptions take `settlement` (`Physical` or `Cash`). `trade_id` on every trade or on none (none numbers them `trade-0`, `trade-1`, ...) |
+| `simulation` | `RunConfig.simulation`: ORE's `simulation.xml` as `CamConfigSchema`: `dates`, `base_currency`, `ir` per currency (`model`: `"LGM"`, the default, or `"HullWhite"`; `reversion`, `volatility`, optional calibration basket `calibration_expiries` × `calibration_terms`, `swap_index`), `fx_volatilities`, `equity_volatilities`, `correlations` between factors `IR:USD`, `FX:EURUSD`, `EQ:SP5`, `curve_tenors`, `samples`, `seed`, `swaption_vol_decay`. Required with `scenario_risk` |
+| `pricing` | `RunConfig.pricing`: `european` (`"Bachelier"`, the default, or `"Jamshidian"` with `jamshidian: {"reversion", "volatility"}`), the `bermudan` and `american` engines (`LgmEngineSchema`), and `recalibrate` (default `true`, as ORE's `ValuationEngine`) |
+| `greeks` | `RunConfig.greeks`: `method` (`"Bump"`, the default, or `"AD"`) and `sensitivity` (ORE's `sensitivity.xml`: `curve_tenors`, `curve_shift`, `vol_shift`, `theta_days`, `swaption_vol_decay`) |
+| `base_currency` | The reporting currency. Omitted: the simulation's base currency, or USD without a simulation. One contradicting the simulation's is a 400 |
+| `precision` | `RunConfig.precision`, see below |
+| `pfe_quantiles` | Quantiles of the PFE profiles. Default `[0.95, 0.99]` |
+| `compute_greeks` | Default `false` |
+| `scenario_risk` | Default `true`; `false` prices today's values (and Greeks) only |
+| `schema_version` | Optional, `"2"` only: a historical name, not a version |
 
-### Bonds and scenario risk
+Representational differences from the dataclasses (SWIG-bound `ORE` types are not natively
+Pydantic-serializable): dates are ISO strings (`"2026-07-30"`), periods are ORE strings
+(`"5Y"`, `"18M"`), historical `fixings` are `{"YYYY-MM-DD": rate}`. A trade's schedule is
+given **either** as `effective_date`/`maturity_date` (plus `exercise_date` for a
+`european_swaption`) **or** as `swap_tenor` (plus `forward_start`/`exercise_lag_days`),
+resolved on the market's date. A `"bond"` is a Treasury bill (no `coupon_schedule`) or note;
+its `face_amount` is signed.
 
-`trade_type: "bond"` (W1.5) is a Treasury bill or note. A **bill** is simply a bond with
-`coupon_schedule` omitted and `coupon_rate` left at `0.0`; a **note** supplies an explicit
-schedule. `face_amount` is **signed** — a short position is a negative face, and there is no
-separate sign field.
+A minimal body (one swap under the Hull-White model, with exposure):
 
-A bond is priced by closed-form discounting against its **own** `initial_zero_curve`, so it
-has **no scenario NPV**: no stochastic driver, no time evolution, and therefore no exposure
-profile. (A bond's short-horizon market risk is available in Python through
-`engine.market_risk`; see [Market Risk](../risk/market-risk.md).)
-
-| `scenario_risk` | Portfolio contains a bond | Outcome |
-|---|---|---|
-| `true` (default) | no | Normal: full `npv_cube` and exposure. |
-| `true` | **yes** | **Refused**, naming the offending trade. |
-| `false` | either | `base_npv`, `base_npv_per_trade` and `greeks` are real; `npv_cube` is empty, `exposure` is `null` and `trade_exposures` is `[]`. |
-
-The response carries **`scenario_risk_available`** saying which happened. When it is `false`,
-the exposure is **absent, not zero** — a missing profile asserts nothing, whereas a zero
-would assert a *measured* absence of exposure. See [I-24](../planning/known-issues.md#i-24) for why a
-constant column is refused rather than broadcast.
-
-It also carries **`measure`**: `"risk-neutral-pricing"` whenever exposure was computed, `null`
-otherwise. The profiles are an exposure under the pricing measure, not a forecast of
-tomorrow's loss ([I-11](../planning/known-issues.md#i-11)).
-
-A bond's `delta`/`gamma` are **scalars** (one parallel 1bp bump against its single curve),
-unlike a swap's per-pillar `discount_delta`/`forward_delta` vectors. They are still delivered
-as one-element lists so `greeks.values` stays uniformly a list per Greek. No `vega` is
-reported: a fixed-coupon bond off a deterministic curve has no volatility input, and it is
-omitted rather than reported as `0.0`.
-
-Every trade schema mirrors its dataclass field-for-field, with two representational
-differences (SWIG-bound `ORE` types aren't natively Pydantic-serializable):
-
-- Date fields (`evaluation_date`, `effective_date`, `maturity_date`, `exercise_date`,
-  exercise dates) are ISO date strings (`"2026-07-30"`), parsed via
-  `ORE.DateParser.parseISO`. Historical `fixings` are `{"YYYY-MM-DD": rate}`.
-- `forward_start` (on `european_swaption` trades) is an ORE period string (`"5Y"`, `"18M"`,
-  `"0D"`), parsed via `ORE.Period(str)` — the same parse
-  `engine.portfolio.validation._validate_tenor` already validates for `swap_tenor`.
-
-A trade's schedule is given **either** as `effective_date`/`maturity_date` (plus
-`exercise_date` for a `european_swaption`) **or** as `swap_tenor` (plus, for a
-`european_swaption`, `forward_start`/`exercise_lag_days`), which is resolved to dates on
-the trade's evaluation date. Giving both is refused, and so is giving neither: there is no
-default tenor. A trade booked in the past is priced as the same, seasoned trade (audit
-[M-4](../planning/known-issues.md#m-4)), and any coupon that fixed before the evaluation
-date needs its fixing in `fixings`.
-
-### Automatic calibration: `hw_sigma: null` + `calibration_basket`
-
-`BermudanSwaptionConfigSchema`/`AmericanSwaptionConfigSchema`'s `hw_sigma` accepts `null`
-(Python `None`) to request automatic calibration — mirroring
-`engine.portfolio.PortfolioRequest.calibration_targets` (see [The Portfolio Entry Point:
-Automatic calibration](portfolio-entrypoint.md#automatic-calibration)) — but the dataclass
-field takes an already-built `List[CalibrationTarget]`, which isn't directly expressible in
-a JSON request body (each target carries full ORE-derived cashflow arrays, not raw market
-data). `PortfolioRequestSchema.calibration_basket` bridges this: it mirrors
-`engine.calibration.basket.build_coterminal_basket`'s own raw inputs instead —
-
-| Field | Type | Meaning |
-|---|---|---|
-| `exercise_times` | `List[float]` | One per basket instrument, ascending. |
-| `final_maturity_time` | `float` | Every basket instrument's underlying swap matures here (the co-terminal/diagonal convention). |
-| `notional` | `float` | Shared by every basket instrument. |
-| `payer` | `bool` | Shared by every basket instrument. |
-| `market_vols` | `List[float]` | Market normal (Bachelier) volatility per `exercise_times` entry, same length/order. |
-
-and the server builds the actual `CalibrationTarget` list from it: the curve, mean
-reversion (`hw_a`), and `evaluation_date`/`index_tenor_months` used to build the basket come
-from the *first* trade in `trades` with `hw_sigma: null` (matching
-`_fill_calibrated_sigma`'s own "one shared basket, applied per `rate_factor_index`
-that needs it" design — there is currently no way to submit more than one basket per
-request). Submitting `calibration_basket` when no trade actually needs it returns `400`;
-leaving it unset while a trade has `hw_sigma: null` fails once pricing actually runs (the
-job reaches `status: "failed"` with the same `"calibration_targets was not supplied"`
-message `price_portfolio` itself raises).
-
-Piecewise (post-calibration) `Sigma` term structures still aren't expressible directly —
-a request always starts from either a flat `hw_sigma`, `null` (paired with
-`calibration_basket`), or is a validation error.
+```json
+{"market": {"asof": "2026-07-30", "currencies": {"USD": {
+     "discount_curve": {"times": [0, 1, 5, 30], "rates": [0.03, 0.03, 0.04, 0.05]},
+     "index_curves": {"USD-SIMINDEX-6M": {"times": [0, 1, 5, 30], "rates": [0.034, 0.034, 0.044, 0.052]}}}}},
+ "trades": [{"trade_type": "swap", "trade_id": "swap-1", "notional": 1e7, "fixed_rate": 0.042,
+             "payer": true, "swap_tenor": "5Y"}],
+ "simulation": {"dates": ["2027-07-30", "2028-07-30"], "base_currency": "USD", "samples": 1024,
+                "ir": {"USD": {"model": "HullWhite", "reversion": 0.03, "volatility": 0.01}}},
+ "compute_greeks": true}
+```
 
 ### Precision control: `PrecisionConfigSchema`
 
-Mirrors `engine.portfolio.PrecisionConfig` field-for-field (see [The Portfolio Entry
-Point: PrecisionConfig](portfolio-entrypoint.md#precisionconfig) and
-[Architecture](../concepts/architecture.md#adjustable-precision) for the full mechanism):
-
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `simulation` | `int` (`32`\|`64`) | `64` | Monte Carlo path generation dtype. |
-| `pricing` | `int` (`32`\|`64`) | `64` | Instrument NPV / `npv_cube` dtype. |
-| `risk` | `int` (`32`\|`64`) | `64` | VaR/ES + Greeks dtype (one shared setting). |
-
-`precision` on `PortfolioRequestSchema` is `Optional`, not a populated default, so "no
-`precision` key sent" and "explicit all-64 sent" resolve identically (both become
-`PrecisionConfig()`). Any value outside `{32, 64}` fails `PrecisionConfig.__post_init__`'s
-own validation, which `POST /portfolio/price` already runs synchronously (as part of the
-same up-front `request.to_dataclass()` call that validates the rest of the body) — so an
-invalid precision returns an immediate `400` with that validator's own message, not a
-`202` followed by a failed job:
-
-```json
-{
-  "evaluation_date": "2026-07-30",
-  "market": { "...": "..." },
-  "trades": [ "..." ],
-  "precision": { "simulation": 64, "pricing": 32, "risk": 32 }
-}
-```
-
-`risk` may also be an object that sets `delta_gamma`, `theta`, `vega` and `exposure`
-separately (a `RiskPrecisionOverrideSchema`); `exposure` sets the precision of the
-exposure statistics.
+Mirrors `engine.portfolio.PrecisionConfig` (see [The Portfolio Entry Point:
+PrecisionConfig](portfolio-entrypoint.md#precisionconfig) and
+[Architecture](../concepts/architecture.md#adjustable-precision)): `simulation`, `pricing`,
+`risk` (an int, or an object setting `delta_gamma`, `theta`, `vega` and `exposure`) and
+`calibration`, each 32 or 64. Only `simulation` is adjustable until roadmap 1.4; a
+`pricing`, `risk` or `calibration` below 64 is a `400` naming the field
+([I-55](../planning/known-issues.md#i-55)). Omitted, it is all 64. A value outside `{32, 64}`
+is an immediate `400`:
 
 ```
 POST /portfolio/price
-{"precision": {"simulation": 16}}
+{"precision": {"simulation": 16}, ...}
 -> 400 {"detail": "PrecisionConfig.simulation must be 32 or 64, got 16"}
 ```
 
-**Concurrency note:** concurrent `/portfolio/price` jobs now genuinely parallelize across
-precision tiers — a `simulation: 32` job and a `simulation: 64` job submitted back-to-back
-run in separate worker processes at the same time, not serialized behind one process-wide
-lock (see [Architecture: Concurrency](../concepts/architecture.md) for the full mechanism,
-`engine.portfolio.worker_pool`). Same-tier jobs beyond that tier's own worker-pool size
-still queue for a free worker — expected pool exhaustion, not a bug, and no different in
-kind from any fixed-size worker pool. Either way, correctness is unaffected: each job's own
-result is always independent of what else is running concurrently, whether it runs
-immediately or waits for a worker to free up.
+**Concurrency note:** jobs of different simulation precisions run in separate worker
+processes at the same time; same-tier jobs beyond the tier's pool size queue for a free
+worker. Each job's result is independent of what else is running.
 
 ## Target: one configurable API
 
@@ -448,43 +353,17 @@ alignment plan 9.2; [I-56](../planning/known-issues.md#i-56)):
   settlement method and the precision per stage, as ORE's configuration files do. Defaults are
   ORE's.
 - **Every setting reachable.** Anything the engine can be configured to do, the API can ask
-  for. Today it cannot reach the sensitivity settings, market-risk VaR/ES, the market path's
-  calibrations as standalone runs, or trade ids on the Hull-White request
+  for. Since roadmap 1.3 one request reaches the model per currency, the engines, the Greeks
+  method and settings and precision; it cannot yet reach market-risk VaR/ES, the
+  cross-asset calibration as a standalone run, or `shift_horizon`
   ([I-56](../planning/known-issues.md#i-56)). A completeness test will compare the configuration types
   with the request schema, so a new setting cannot ship without its API field.
 - **Robust.** Validated before any job starts: types, unknown fields refused, cross-field
   checks, each refusal a `400` or `422` naming its field.
 - **Names say what they are.** No route or field is named like a version unless it marks a
   revision of the contract itself. `/v2` and `schema_version: "2"` go.
-- **Nothing breaks.** Today's two routes keep answering, translated into the one request.
-
-## Request schema for the market path: `MarketPortfolioRequestSchema`
-
-| Field | Meaning |
-|---|---|
-| `schema_version` | `"2"`: a historical name for this shape, not a version (see [Target: one configurable API](#target-one-configurable-api)) |
-| `market` | `asof` (ISO date; every trade is valued on it); `currencies`: per currency a `discount_curve`, `index_curves` keyed by index name (`"USD-SIMINDEX-6M"`), and `swaption_vols` (ATM normal matrix: `option_tenors`, `swap_tenors`, `vols`); `fx_spots` keyed `"EURUSD"`; `equities` |
-| `trades` | Discriminated by `trade_type`: `swap`, `european_swaption`, `bermudan_swaption`, `american_swaption`, `bond`. Each names its `currency` and `index_tenor_months` and carries no model or curve. Swaptions take `settlement` (`Physical` or `Cash`; a cash European uses ORE's `ParYieldCurve` annuity). Optional `trade_id`, on every trade or on none |
-| `simulation` | `RunConfig.simulation`: ORE's `simulation.xml` as `CamConfigSchema`: `dates`, `base_currency`, `ir` per currency (`reversion`, `volatility`, optional calibration basket `calibration_expiries` × `calibration_terms`), `fx_volatilities`, `equity_volatilities`, `correlations` between factors `IR:USD`, `FX:EURUSD`, `EQ:SP5`, `curve_tenors`, `samples`, `seed`, `swaption_vol_decay`. Required with `scenario_risk` |
-| `pricing` | The Bermudan and American engines (`LgmEngineSchema`: ORE's example configuration by default) and `recalibrate` (default `true`, as ORE's `ValuationEngine`) |
-| `base_currency` | The reporting currency. Omitted: the simulation's base currency, or USD without a simulation. One contradicting the simulation's is a 400 (before roadmap 1.2 it was silently ignored) |
-| `pfe_quantiles`, `compute_greeks`, `scenario_risk`, `precision` | As in the Hull-White shape. Greeks are ORE's bump-and-revalue sensitivities at ORE's default settings. Of `precision`, only `simulation` is honoured on this path; a `pricing`, `risk` or `calibration` below 64 is a 400 naming the field ([I-55](../planning/known-issues.md#i-55)) |
-
-`simulation`, `pricing`, `base_currency` and `precision` are translated into the run
-configuration (`engine.portfolio.RunConfig`); its Greeks settings and European engine have no
-field here yet ([I-56](../planning/known-issues.md#i-56)).
-
-A minimal body (one swap, today's NPV and Greeks only):
-
-```json
-{"schema_version": "2",
- "market": {"asof": "2026-07-30", "currencies": {"USD": {
-     "discount_curve": {"times": [0, 1, 5, 30], "rates": [0.03, 0.03, 0.04, 0.05]},
-     "index_curves": {"USD-SIMINDEX-6M": {"times": [0, 1, 5, 30], "rates": [0.034, 0.034, 0.044, 0.052]}}}}},
- "trades": [{"trade_type": "swap", "trade_id": "swap-1", "notional": 1e7, "fixed_rate": 0.042,
-             "payer": true, "swap_tenor": "5Y"}],
- "scenario_risk": false, "compute_greeks": true}
-```
+- **Nothing silently breaks.** Both route names keep answering the one request; the
+  retired Hull-White shape is a `422` naming its replacement.
 
 ## Response schema: `PortfolioResultSchema`
 
@@ -498,11 +377,11 @@ Mirrors `engine.portfolio.PortfolioResult`:
 | `exposure` | `{"times": [...], "epe": [...], "ene": [...], "ee_b": [...], "eee_b": [...], "pfe": {"PFE_95": [...], ...}} \| null` | The whole portfolio as one netting set; every list has one entry per date in `times`, starting at t=0. See [Exposure](../risk/exposure.md). |
 | `trade_exposures` | `List[...]` | The same object per trade, in the request's `trades` order. |
 | `exposure.epe_b`, `exposure.eepe_b` | `List[float]` | ORE's time-weighted EPE_B / EEPE_B profiles. |
-| `exposure.basel_epe`, `exposure.basel_eepe` | `float \| null` | ORE's Basel EPE_B / EEPE_B at the one-year horizon; `null` on the Hull-White path. |
-| `greeks` | `{"<trade_index>": {"values": {"delta": [...], "gamma": [...]}, "theta": ...}} \| null` | `null` unless the request set `compute_greeks: true`. Keys are trade indices (as strings, JSON's own object-key requirement) matching the request's own `trades` order. Every Greek is flattened row-major into `values`; one of more than one dimension (the market path's `vega:<ccy>`, option tenors × swap tenors) also has its shape in `shapes`. On the market path the keys are `delta:discount:<ccy>`, `gamma:discount:<ccy>`, `delta:index:<name>`, `gamma:index:<name>` (one entry per curve tenor), `vega:<ccy>` for swaptions, and `theta`. **Swaps** report `discount_delta`/`discount_gamma`/`forward_delta`/`forward_gamma` (differentiated against the curves their own `discount_curve_index`/`forward_curve_index` name) plus `theta`; swaptions report `delta`/`gamma`/`theta`. A **calibrated** Bermudan/American trade additionally reports `vega`, one entry per `calibration_basket` instrument — omitted for a flat (hand-set) `hw_sigma`, which has no market quote to be sensitive to. |
-| `trade_ids` | `List[str] \| null` | The request's trade ids in request order, or `null` if it gave none (I-10). |
+| `exposure.basel_epe`, `exposure.basel_eepe` | `float \| null` | ORE's Basel EPE_B / EEPE_B at the one-year horizon. |
+| `greeks` | `{"<trade_index>": {"values": {"<key>": [...]}, "shapes": {...}, "theta": ...}} \| null` | `null` unless the request set `compute_greeks: true`. Keys are trade indices (as strings, JSON's own object-key requirement) matching the request's `trades` order. Every Greek is flattened row-major into `values`; one of more than one dimension (`vega:<ccy>`, option tenors × swap tenors) also has its shape in `shapes`. The keys are `delta:discount:<ccy>`, `gamma:discount:<ccy>`, `delta:index:<name>`, `gamma:index:<name>` (per curve tenor for `Bump`, per market pillar for `AD`), `vega:<ccy>` for a trade whose engine reads the swaption volatilities, and `theta`. See [Greeks](../risk/greeks.md). |
+| `trade_ids` | `List[str]` | The trades' ids in request order (`trade-0`, ... when the request gave none) ([I-10](../planning/known-issues.md#i-10)). |
 | `measure` | `str \| null` | `risk-neutral-pricing`, or `null` without scenario risk (I-11). |
-| `warnings` | `List[str]` | Known-limitation warnings (e.g. a swap aged past its first accrual at a simulated step) — see [The Portfolio Entry Point: Known-limitation flagging](portfolio-entrypoint.md#known-limitation-flagging). |
+| `warnings` | `List[str]` | Run warnings (none are emitted today; see [The Portfolio Entry Point: Known-limitation flagging](portfolio-entrypoint.md#known-limitation-flagging)). |
 
 ## Example: a Python `requests` session
 
@@ -513,21 +392,16 @@ import requests
 BASE = "http://127.0.0.1:8000"
 
 body = {
-    "evaluation_date": "2026-07-30",
-    "market": {
-        "time_grid": [0.0, 0.5, 1.0, 1.5, 2.0],
-        "equities": {"initial_prices": [100.0], "dividend_yields": [0.0], "rate_mapping": [[0.0]]},
-        "rates": {
-            "initial_rates": [0.03], "theta": [0.03], "mean_reversion": [0.03],
-            "initial_zero_curves": [{"times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0], "rates": [0.03] * 6}],
-        },
-        "joint_covariance": [[0.04, 0.0], [0.0, 0.0001]],
-        "scenarios": 4096,
-    },
+    "market": {"asof": "2026-07-30", "currencies": {"USD": {
+        "discount_curve": {"times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0], "rates": [0.030, 0.030, 0.034, 0.040, 0.046, 0.050]},
+        "index_curves": {"USD-SIMINDEX-6M": {"times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0],
+                                             "rates": [0.034, 0.034, 0.038, 0.044, 0.049, 0.052]}}}}},
     "trades": [
-        {"trade_type": "swap", "notional": 1_000_000.0, "fixed_rate": 0.032, "payer": True,
-         "discount_curve_index": 0, "forward_curve_index": 0, "swap_tenor": "2Y"},
+        {"trade_type": "swap", "trade_id": "swap-1", "notional": 1_000_000.0, "fixed_rate": 0.036,
+         "payer": True, "swap_tenor": "2Y"},
     ],
+    "simulation": {"dates": ["2027-01-30", "2027-07-30", "2028-07-30"], "base_currency": "USD", "samples": 4096,
+                   "ir": {"USD": {"model": "HullWhite", "reversion": 0.03, "volatility": 0.01}}},
     "pfe_quantiles": [0.95, 0.99],
 }
 
@@ -554,31 +428,29 @@ See a curl-only version in [User Guide: Running the API](../getting-started/user
 
 ## Tested by
 
-`tests/test_api_market_path.py` covers the market path's shape. On the shared test portfolio
-(`tests/support/portfolio.py`), the polled result equals a direct `price_portfolio` call:
-NPVs, cube, the exposure profiles including EPE_B/EEPE_B and Basel, trade ids, and the 2-D
-Vega. It also checks the `400`s and the `422` for a trade carrying `hw_sigma`.
-`tests/test_shared_portfolio.py` checks that the HTTP body of that portfolio is the
-dataclass portfolio.
+`tests/test_api_market_path.py`: on the shared test portfolio (`tests/support/portfolio.py`),
+the polled result equals a direct `price_portfolio` call: NPVs, cube, the exposure profiles
+including EPE_B/EEPE_B and Basel, trade ids, and the 2-D Vega. It also checks the `400`s and
+the `422` for a trade carrying `hw_sigma`. `tests/test_shared_portfolio.py` checks that the
+HTTP body of that portfolio is the dataclass portfolio.
 
 `tests/test_api.py`, using FastAPI's `TestClient` (backed by `httpx`) — no running server
 process needed:
 
 - `TestHealthAndVersion` — `/health`/`/version` respond.
-- `TestPortfolioPriceHappyPath` — a valid body returns `202` + a job id; polling reaches
-  `"done"` with a result that matches a direct `price_portfolio` call on the equivalent
-  dataclass request, bit-for-bit after the schema round-trip; Greeks are included when
-  requested.
-- `TestCalibratedBermudanOverHttp` — `calibration_basket` resolving an uncalibrated
-  Bermudan/American trade end to end; the `400`/failed-job error paths when it's missing
-  or unnecessary.
-- `TestPortfolioPriceAtScale` — a 20-trade mixed-instrument portfolio and a 10-trade
-  bit-for-bit HTTP-vs-direct-call cross-check submitted as real JSON bodies (the schema
-  round-trip at a payload size well beyond the 1-2 trade bodies used elsewhere); an empty
-  `trades` list; many identical trades pricing identically; two concurrent jobs in the
-  shared in-process job store not cross-contaminating each other's results.
-- `TestPortfolioPriceInvalidPayload` — non-PSD covariance and a mismatched
-  `rate_factor_index` both return a `4xx` with the underlying validator's own message, not
-  a `500`; malformed/missing/invalid-discriminator bodies return `422`.
+- `TestPortfolioPriceHappyPath` — the Hull-White model named in the request: the polled
+  result equals a direct `price_portfolio` call bit for bit; the model and the Jamshidian
+  engine reach the worker; Greeks included when requested.
+- `TestPortfolioPriceAtScale` — an empty `trades` list; many identical trades pricing
+  identically; two concurrent jobs not cross-contaminating each other's results.
+- `TestPortfolioPriceInvalidPayload` — the retired Hull-White shape is a `422` naming its
+  replacement; a trade carrying model parameters and an unknown model are `422`s; a currency
+  the market lacks is a `400` naming the trade; malformed/missing/invalid-discriminator
+  bodies are `422`s.
+- `TestPortfolioPricePrecision` — an invalid precision and a stage computed in float64 only
+  are `400`s, not failed jobs; omitted equals explicit all-64.
+- `TestPortfolioPriceWorkerPoolDispatch` — jobs of both tiers complete and equal direct calls.
+- `TestGapFixesSurviveTheHttpBoundary` — swap Greeks and per-trade NPVs cross the worker
+  boundary.
 - `TestPortfolioPriceUnknownJob` — an unknown `job_id` returns `404`.
 - `TestCalibrationEndpoint` — `/calibration/lgm` happy path and malformed-schema `422`.

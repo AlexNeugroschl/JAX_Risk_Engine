@@ -1,142 +1,82 @@
 """
 Full revaluation of a portfolio at t=0 under shocked curves.
 
-Every trade becomes a pure JAX function of the pillar rates of the curves it
-depends on (`engine.risk.price_functions`). The same function prices the base
-market and every scenario, so a trade's P&L is exactly `f(base + shift) -
-f(base)`: there is no second pricer whose base could disagree.
+Every trade becomes a pure JAX function of the pillar rates of the market curves it reads, with
+its configured engine (`engine.risk.price_functions.trade_price_function`, the functions AD
+Greeks differentiate). The same function prices the base market and every scenario, so a
+trade's P&L is exactly `f(base + shift) - f(base)`: there is no second pricer whose base could
+disagree.
 
-Scenarios are evaluated with `jax.lax.map` in batches of vmapped rows. The
-batch is bounded by memory per trade (`scenario_batch_size`): a Bermudan's
-rollback interpolates every grid node at every quadrature node for every
-cashflow column, about 80 MB per scenario at `n_per_std=64`, so a fixed
-batch of a few hundred would need tens of gigabytes, while a Python loop
-would leave the accelerator idle.
+Scenarios are evaluated with `jax.lax.map` in batches of vmapped rows. The batch is bounded by
+memory per trade (`scenario_batch_size`): a Bermudan's rollback interpolates every grid node at
+every quadrature node for every cashflow column, about 80 MB per scenario at `n_per_std=64`, so
+a fixed batch of a few hundred would need tens of gigabytes, while a Python loop would leave the
+accelerator idle.
 
-**European swaptions.** One carrying no Hull-White parameters is revalued with ORE's
-default engine, `BlackMultiLegOptionEngine` (Bachelier on the request's normal swaption
-volatilities, `engine.valuation.european`; plan 6.4). One carrying `hw_a`/`hw_sigma` keeps the
-Hull-White Jamshidian price. The engine is to be chosen by configuration rather than by the
-trade's fields (compliance/decisions.md A-8).
+**Engines.** Each product's engine is the pricing configuration's (`PricingConfig`): a European
+on ORE's Bachelier engine (the normal volatility read from the market, held fixed) or on
+Jamshidian; a Bermudan/American on its LGM grid engine, calibrated on today's market and held
+fixed (decision A-8: the engine is chosen by configuration, not by the trade).
 
 **Which risk factors move.** Only curve pillar rates. Volatilities are held at their base
-values: a swaption's `hw_a`/`hw_sigma`, or the swaption volatility surface, do not move, so
-volatility risk is not captured. `run_market_risk` says so in its warnings for every option
-trade.
+values (the surface, a calibrated LGM, the Jamshidian model), so volatility risk is not
+captured. `run_market_risk` says so in its warnings for every option trade.
 """
-from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from engine.instruments.american_swaption import AmericanSwaptionConfig
-from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, _grid_half_width, prepare_bermudan
-from engine.instruments.european_swaption import SwaptionConfig
-from engine.instruments.swap import SwapConfig
-from engine.instruments.treasury import BondConfig
-from engine.market import SwaptionVolSurface
-from engine.market_risk.factors import RateRiskFactors
-from engine.models.hull_white import ZeroCurve
-from engine.risk.price_functions import (
-    bachelier_swaption_price_function,
-    bermudan_price_function,
-    bond_price_function,
-    swap_price_function,
-    swaption_price_function,
-)
-
-OPTION_TYPES = (SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig)
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, _grid_half_width
+from engine.market import Market
+from engine.market_risk.factors import RateRiskFactors, curve_name
+from engine.risk.price_functions import curve_keys, trade_price_function
+from engine.valuation.bermudan import prepared_option
+from engine.valuation.config import PricingConfig
 
 #: Upper bound on the working memory of one vmapped batch of scenarios.
 BATCH_MEMORY_BUDGET = 512 * 2 ** 20
 
 
-@dataclass(frozen=True)
-class TradeRevaluer:
-    """One trade's t=0 price as a function of its curves' pillar rates:
-    `price(*[rates of curve i for i in curve_indices])`."""
-    curve_indices: Tuple[int, ...]
-    price: Callable
+def factor_indices(cfg, factors: RateRiskFactors) -> Tuple[int, ...]:
+    """The factor curves a trade reads, by position in `factors`; a curve that is not a factor
+    is refused (`RateRiskFactors.index_of`)."""
+    return tuple(factors.index_of(curve_name(*key)) for key in curve_keys(cfg))
 
 
-def curve_indices(cfg) -> Tuple[int, ...]:
-    """The risk-factor curves a trade depends on, by index."""
-    if isinstance(cfg, SwapConfig):
-        return (cfg.discount_curve_index, cfg.forward_curve_index)
-    if isinstance(cfg, OPTION_TYPES):
-        return (cfg.rate_factor_index,)
-    if isinstance(cfg, BondConfig):
-        if cfg.curve_index is None:
-            raise ValueError(
-                "a BondConfig in a market-risk run must set curve_index: the market curve it "
-                "discounts on"
-            )
-        return (cfg.curve_index,)
-    raise TypeError(f"no revaluation for trade type {type(cfg).__name__}")
-
-
-def scenario_batch_size(cfg, requested: int, itemsize: int) -> int:
+def scenario_batch_size(cfg, pricing: PricingConfig, requested: int, itemsize: int) -> int:
     """Scenarios to vmap at once for `cfg`: `requested`, reduced so one batch
     stays within `BATCH_MEMORY_BUDGET`.
 
     Only the grid pricers need it. Their rollback materializes a
     `[nodes, quadrature nodes]` interpolation for the option, the underlying
     and each cached cashflow column, per scenario."""
-    if not isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
+    if not isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)) or cfg.is_expired():
         return requested
-    nodes = 2 * _grid_half_width(cfg.std_devs, cfg.n_per_std) + 1
-    prepared = prepare_bermudan(cfg)
+    engine = pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
+    nodes = 2 * _grid_half_width(engine.std_devs, engine.n_per_std) + 1
+    prepared = prepared_option(cfg, engine, engine.volatility)
     columns = len(prepared.fixed_times) + len(prepared.float_pay_times) + 2
     per_scenario = nodes * nodes * columns * itemsize
     return max(1, min(requested, BATCH_MEMORY_BUDGET // per_scenario))
 
 
-def uses_bachelier(cfg) -> bool:
-    """A European swaption without Hull-White parameters: ORE's Bachelier engine (see the
-    module docstring)."""
-    return isinstance(cfg, SwaptionConfig) and cfg.hw_a is None and cfg.hw_sigma is None
-
-
-def build_revaluer(cfg, factors: RateRiskFactors, dtype,
-                   swaption_vols: Optional[SwaptionVolSurface] = None) -> TradeRevaluer:
-    """The pure price function for one trade, at `dtype`. Curve pillar
-    times come from `factors`; the trade must already be validated to
-    reference curves that exist, and a Bachelier European to come with
-    `swaption_vols` (see `engine.market_risk.run`)."""
-    indices = curve_indices(cfg)
-    curves = [ZeroCurve.from_config(factors.curves[i], dtype=dtype) for i in indices]
-    if isinstance(cfg, SwapConfig):
-        price = swap_price_function(cfg, curves[0], curves[1])
-    elif uses_bachelier(cfg):
-        price = bachelier_swaption_price_function(cfg, curves[0], swaption_vols)
-    elif isinstance(cfg, SwaptionConfig):
-        price = swaption_price_function(cfg, curves[0])
-    elif isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
-        with_sigma, sigma_values = bermudan_price_function(cfg, curves[0])
-
-        def price(rates, _f=with_sigma, _s=sigma_values):
-            return _f(rates, jnp.asarray(_s, dtype=dtype))
-    else:
-        price = bond_price_function(cfg)
-    return TradeRevaluer(curve_indices=indices, price=price)
-
-
 def revalue(
     trades: Sequence,
+    market: Market,
     factors: RateRiskFactors,
     shifts: np.ndarray,
+    pricing: PricingConfig = PricingConfig(),
     dtype=jnp.float64,
     batch_size: int = 256,
-    swaption_vols: Optional[SwaptionVolSurface] = None,
 ) -> Tuple[np.ndarray, jnp.ndarray]:
     """Base values `[N]` and shocked values `[S, N]` of every trade.
 
     shifts: `[S, F]` absolute factor moves (`ShockScenarios.shifts`).
     batch_size: the most scenarios to vmap at once; a grid pricer may use
         fewer to stay within `BATCH_MEMORY_BUDGET`.
-    swaption_vols: normal swaption volatilities for Bachelier Europeans.
     """
     base = jnp.asarray(factors.base_rates(), dtype=dtype)
     moves = jnp.asarray(shifts, dtype=dtype)
@@ -145,14 +85,14 @@ def revalue(
     base_values: List[float] = []
     shocked_columns: List[jnp.ndarray] = []
     for cfg in trades:
-        revaluer = build_revaluer(cfg, factors, dtype, swaption_vols)
-        own = [slices[i] for i in revaluer.curve_indices]
+        fn = trade_price_function(cfg, market, pricing, dtype)
+        own = [slices[i] for i in factor_indices(cfg, factors)]
 
-        def on_factors(vector, _price=revaluer.price, _own=own):
+        def on_factors(vector, _price=fn.price, _own=own):
             return _price(*[vector[s] for s in _own])
 
         base_values.append(float(jax.jit(on_factors)(base)))
-        batch = scenario_batch_size(cfg, batch_size, jnp.dtype(dtype).itemsize)
+        batch = scenario_batch_size(cfg, pricing, batch_size, jnp.dtype(dtype).itemsize)
         shocked_columns.append(_map_scenarios(on_factors, base, moves, batch))
     return np.asarray(base_values), jnp.stack(shocked_columns, axis=-1)
 

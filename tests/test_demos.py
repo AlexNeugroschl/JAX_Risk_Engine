@@ -22,7 +22,7 @@ class TestComponentDemosRun:
             capture_output=True, text=True, timeout=600,
         )
         assert proc.returncode == 0, proc.stderr[-2000:]
-        for section in ("market_model", "swap", "european", "bermudan", "american", "greeks", "var_es"):
+        for section in ("simulation", "swap", "european", "bermudan", "american", "greeks", "var_es"):
             assert f"===== {section} =====" in proc.stdout
         assert "Base (t=0) NPV:" in proc.stdout
         assert "VaR_95:" in proc.stdout

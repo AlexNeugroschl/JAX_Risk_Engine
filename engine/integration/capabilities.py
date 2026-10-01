@@ -82,11 +82,11 @@ BLOCKED_ON_MARKET_INPUT = {
 KNOWN_LIMITATIONS = (
     {
         "id": "I-04",
-        "status": "FLAGGED",
+        "status": "OPEN",
         "summary": (
-            "Aged swaps are mispriced at every simulated step past first accrual. "
-            "t=0 NPV is exact; exposure profiles and any VaR/ES derived from them "
-            "carry a known inaccuracy."
+            "A seasoned swap needs the fixings of its coupons fixed before the as-of date, "
+            "which the position export does not carry; such a swap is refused "
+            "(MissingFixingError) rather than priced on an assumed fixing."
         ),
         "blockedOn": "historical published fixings, which no current input source supplies",
     },

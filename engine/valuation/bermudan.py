@@ -34,10 +34,9 @@ import ORE
 from engine.calibration.ore_lgm import BasketInstrument, bootstrap_sigma, build_basket
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import (
-    BermudanSwaptionConfig, _backward_induction_arrays, _build_grid_schedule, _run_backward_induction,
-    prepare_bermudan,
+    BermudanSwaptionConfig, _backward_induction_arrays, _build_grid_schedule, grid_value, prepare_bermudan,
 )
-from engine.market import Market, SwaptionVolSurface, ZeroCurveConfig, index_name
+from engine.market import Market, SwaptionVolSurface, index_name
 from engine.models.curves import DiscountCurve
 from engine.models.lgm import Sigma
 from engine.simulation.scenario_market import ScenarioMarket
@@ -88,18 +87,12 @@ def calibration_basket(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, refer
                               [strike] * len(expiries)))
 
 
-#: A curve for `prepare_bermudan`, which needs one; every pricer here replaces it with the
-#: context's or the path's curves before pricing.
-_PLACEHOLDER_CURVE = ZeroCurveConfig([0.0, 1.0], [0.0, 0.0])
-
-
-def _model_bound(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, sigma) -> OptionConfig:
-    """The trade with the engine's model and grid settings (curves are placeholders)."""
-    fields = dict(hw_a=engine.reversion, hw_sigma=sigma, initial_zero_curve=_PLACEHOLDER_CURVE,
-                  index_zero_curve=_PLACEHOLDER_CURVE, n_per_std=engine.n_per_std, std_devs=engine.std_devs)
-    if isinstance(cfg, AmericanSwaptionConfig):
-        fields["exercise_time_steps_per_year"] = engine.exercise_time_steps_per_year
-    return dataclasses.replace(cfg, **fields)
+def prepared_option(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, sigma, curve=None, index_curve=None):
+    """The grid engine's prepared trade with the engine's model (its reversion and `sigma`)
+    and grid settings, on `curve`/`index_curve` (set later per path when omitted)."""
+    return prepare_bermudan(cfg, reversion=engine.reversion, sigma=sigma, n_per_std=engine.n_per_std,
+                            std_devs=engine.std_devs, exercise_time_steps_per_year=engine.exercise_time_steps_per_year,
+                            curve=curve, index_curve=index_curve)
 
 
 def _on_date(cfg: OptionConfig, context: PricingContext) -> OptionConfig:
@@ -144,9 +137,7 @@ def bermudan_value(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, context: 
     calibration = calibrate_on(dated, engine, context)
     sigma = Sigma.flat(engine.volatility) if calibration is None else calibration.sigma
     disc, index = context.curves(cfg.currency, index_name(cfg.currency, cfg.index_tenor_months))
-    prepared = prepare_bermudan(_model_bound(dated, engine, sigma))
-    swap = dataclasses.replace(prepared, curve=disc, index_curve=index, hw_sigma=sigma)
-    return float(_run_backward_induction(swap, condition_times=[]).value_at_t0)
+    return float(grid_value(prepared_option(dated, engine, sigma, disc, index)))
 
 
 def bermudan_cube(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Market, scenarios: ScenarioMarket,
@@ -170,11 +161,10 @@ def bermudan_cube(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Ma
         disc = disc_curves.on_date(j)
         index = index_curves.on_date(j)
         fixed_on_path = {ORE.Date(int(s)): 0.0 for s in _fixing_serials(cfg) if asof.serialNumber() <= s < date.serialNumber()}
-        placeholder = _model_bound(cfg, engine, engine.volatility)
-        dated = dataclasses.replace(placeholder, evaluation_date=date, fixings={**history, **fixed_on_path})
+        dated = dataclasses.replace(cfg, evaluation_date=date, fixings={**history, **fixed_on_path})
         sigma = _path_sigma(cfg, engine, surface, asof, date, disc, index, decay, today)
-        prepared = prepare_bermudan(dated)
-        schedule = _build_grid_schedule(prepared, [])
+        prepared = prepared_option(dated, engine, engine.volatility)
+        schedule = _build_grid_schedule(prepared)
         known = _known_rates(prepared, history, asof, grid_serials, fixings)
         columns.append(_rollback_every_path(prepared, schedule, disc, index, sigma, known))
     return jnp.stack(columns, axis=1)
@@ -222,7 +212,7 @@ def _rollback_every_path(prepared, schedule, disc: DiscountCurve, index: Discoun
         swap = dataclasses.replace(
             prepared,
             curve=DiscountCurve(disc.times, disc_logs), index_curve=DiscountCurve(index.times, index_logs),
-            hw_sigma=Sigma(times=sigma.times, values=sigma_values), float_known_rates=known_rates,
+            sigma=Sigma(times=sigma.times, values=sigma_values), float_known_rates=known_rates,
             notional=jnp.asarray(prepared.notional, dtype=disc_logs.dtype),
             fixed_amounts=jnp.asarray(prepared.fixed_amounts, dtype=disc_logs.dtype))
         _, values = _backward_induction_arrays(swap, schedule)

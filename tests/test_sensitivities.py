@@ -53,7 +53,7 @@ def _history(cfg, asof):
 
 def _swap(asof, **overrides):
     fields = dict(notional=1e6, fixed_rate=0.031, payer=True, effective_date=ORE.Date(3, 2, 2026),
-                  maturity_date=ORE.Date(3, 2, 2031), evaluation_date=asof)
+                  maturity_date=ORE.Date(3, 2, 2031), evaluation_date=asof, trade_id="swap")
     fields.update(overrides)
     cfg = SwapConfig(**fields)
     return dataclasses.replace(cfg, fixings=_history(cfg, asof))
@@ -117,7 +117,7 @@ def test_a_fixing_on_the_as_of_date_is_backfilled_on_the_theta_date():
 
 
 def test_the_vega_matrix_adds_up_to_a_parallel_bump():
-    cfg = SwaptionConfig(notional=1e6, fixed_rate=0.034, payer=True, swap_tenor="4Y",
+    cfg = SwaptionConfig(trade_id="european-L120", notional=1e6, fixed_rate=0.034, payer=True, swap_tenor="4Y",
                          forward_start=ORE.Period(2, ORE.Years), evaluation_date=ASOF)
     market = _market(ASOF)
     vega = portfolio_sensitivities([cfg], market, "USD", config=CONFIG)[0]["vega:USD"]
@@ -135,7 +135,7 @@ def test_theta_adds_back_a_bond_coupon_paid_on_the_theta_date():
     asof = ORE.Date(14, 8, 2026)
     periods = (CouponPeriod(ORE.Date(15, 2, 2026), ORE.Date(15, 8, 2026)),
                CouponPeriod(ORE.Date(15, 8, 2026), ORE.Date(15, 2, 2027)))
-    bond = BondConfig(face_amount=1e5, maturity_date=ORE.Date(15, 2, 2027), evaluation_date=asof, coupon_rate=0.04,
+    bond = BondConfig(trade_id="bond-L138", face_amount=1e5, maturity_date=ORE.Date(15, 2, 2027), evaluation_date=asof, coupon_rate=0.04,
                       coupon_schedule=periods)
     market = _market(asof)
     theta = float(portfolio_sensitivities([bond], market, "USD", config=CONFIG)[0]["theta"])

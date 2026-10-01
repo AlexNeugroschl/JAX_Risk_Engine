@@ -21,12 +21,19 @@ recursion `x_{i+1} = M_i x_i + b_i + L_i Z_i` runs on device. `L_i` is the Chole
 the step covariance: ORE's `pseudoSqrt` with the CAM's default `SalvagingAlgorithm::None`
 is `CholeskyDecomposition(cov, flexible = true)`, reproduced by `flexible_cholesky`.
 
+An IR component is an LGM with constant reversion and one of ORE's two volatility
+parametrizations (`LgmData::VolatilityType`): `Hagan` (the LGM's own volatility alpha,
+`IrLgm1fPiecewiseConstantParametrization`) or `HullWhite` (the short rate's volatility,
+`IrLgm1fPiecewiseConstantHullWhiteAdaptor`: the Hull-White model with its curve-fitted drift,
+alpha(t) = sigma(t) exp(a t); see `engine.models.lgm`). Only alpha and zeta differ; every
+formula below reads them through `_Analytics.az`/`zetaz`.
+
 Scope, refused rather than approximated: the LGM measure only (ORE's default; `BA` is not
-implemented), LGM components with Hagan volatility and constant reversion, and
-Black-Scholes FX/EQ with piecewise-constant volatility. Integrals are exact up to rounding
-(Gauss-Legendre on each interval between parameter breakpoints, where every integrand is a
-product of constants and exponentials); ORE integrates the same functions with a
-`SimpsonIntegral(1e-8, 100)`, so the two agree to ORE's integration tolerance.
+implemented), LGM components with constant reversion, and Black-Scholes FX/EQ with
+piecewise-constant volatility. Integrals are exact up to rounding (Gauss-Legendre on each
+interval between parameter breakpoints, where every integrand is a product of constants and
+exponentials); ORE integrates the same functions with a `SimpsonIntegral(1e-8, 100)`, so the
+two agree to ORE's integration tolerance.
 """
 from dataclasses import dataclass
 from typing import Callable, Sequence, Tuple
@@ -36,7 +43,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from engine.models.curves import ZeroCurve, log_discount
-from engine.models.lgm import Sigma, as_sigma
+from engine.models.lgm import VOLATILITY_TYPES, Sigma, as_sigma, hull_white_zeta, zeta as hagan_zeta
 
 #: Gauss-Legendre nodes per interval between breakpoints. The integrands are smooth there
 #: (products of constants and exponentials), and 20 nodes are exact to double precision for
@@ -50,13 +57,25 @@ _GL_X, _GL_W = np.polynomial.legendre.leggauss(_GAUSS_LEGENDRE_NODES)
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class IrComponent:
-    """One currency's LGM: `IrLgm1fPiecewiseConstantParametrization` with Hagan volatility
-    `sigma` (ORE's alpha) and constant reversion. `curve` is the model's term structure
-    P(0, t), the currency's discount curve."""
+    """One currency's LGM with constant reversion: `sigma` is the LGM's alpha with
+    `volatility_type="Hagan"` (`IrLgm1fPiecewiseConstantParametrization`), the short rate's
+    volatility with `"HullWhite"` (the Hull-White adaptor; see the module docstring). `curve`
+    is the model's term structure P(0, t), the currency's discount curve."""
     currency: str
     curve: ZeroCurve
     reversion: float
     sigma: Sigma
+    volatility_type: str = "Hagan"
+
+    def __post_init__(self):
+        if self.volatility_type not in VOLATILITY_TYPES:
+            raise ValueError(f"volatility_type must be one of {VOLATILITY_TYPES}; got {self.volatility_type!r}")
+
+    def zeta(self, t) -> jax.Array:
+        """zeta(t) on the device (in `t`'s dtype), for the scenario market."""
+        if self.volatility_type == "HullWhite":
+            return hull_white_zeta(self.reversion, self.sigma, t)
+        return hagan_zeta(self.sigma, t)
 
 
 @dataclass(frozen=True)
@@ -160,15 +179,36 @@ def _piecewise(sigma, t: np.ndarray) -> np.ndarray:
     return values[np.minimum(np.searchsorted(times, t, side="right"), values.size - 1)]
 
 
-def _integral_of_square(sigma, t: np.ndarray) -> np.ndarray:
-    """int_0^t sigma(s)^2 ds (LGM zeta, or an FX/EQ variance)."""
+def _integral_of_square(sigma, t: np.ndarray, reversion: float = 0.0) -> np.ndarray:
+    """int_0^t sigma(s)^2 exp(2 reversion s) ds: with reversion 0 the Hagan LGM's zeta or an
+    FX/EQ variance; otherwise the Hull-White adaptor's zeta (`engine.models.lgm.
+    hull_white_zeta`, on the host)."""
     s = as_sigma(sigma)
     times, values = np.asarray(s.times, dtype=np.float64), np.asarray(s.values, dtype=np.float64)
     t = np.maximum(np.asarray(t, dtype=np.float64), 0.0)
     edges = np.concatenate([[0.0], times, [np.inf]])
     lo, hi = edges[:-1], edges[1:]
     covered = np.clip(t[..., None] - lo, 0.0, hi - lo)
-    return covered @ (values ** 2)
+    if reversion == 0.0:
+        return covered @ (values ** 2)
+    # integral_lo^(lo + covered) exp(2 a s) ds, with expm1 for accuracy at small 2 a covered.
+    rate = 2.0 * reversion
+    return (np.exp(rate * lo) * np.expm1(rate * covered) / rate) @ (values ** 2)
+
+
+def _ir_alpha(component: "IrComponent", t: np.ndarray) -> np.ndarray:
+    """The LGM's alpha(t): sigma(t) (Hagan), or sigma(t) exp(a t) (Hull-White: ORE's
+    `hullWhiteSigma(t) / Hprime(t)`)."""
+    alpha = _piecewise(component.sigma, t)
+    if component.volatility_type == "HullWhite":
+        alpha = alpha * np.exp(component.reversion * np.asarray(t, dtype=np.float64))
+    return alpha
+
+
+def _ir_zeta(component: "IrComponent", t: np.ndarray) -> np.ndarray:
+    """The LGM's zeta(t) = int_0^t alpha(s)^2 ds on the host."""
+    reversion = component.reversion if component.volatility_type == "HullWhite" else 0.0
+    return _integral_of_square(component.sigma, t, reversion)
 
 
 def _H(reversion: float, t: np.ndarray) -> np.ndarray:
@@ -207,13 +247,13 @@ class _Analytics:
         return total
 
     def az(self, i, t):
-        return _piecewise(self.model.ir[i].sigma, t)
+        return _ir_alpha(self.model.ir[i], t)
 
     def Hz(self, i, t):
         return _H(self.model.ir[i].reversion, t)
 
     def zetaz(self, i, t):
-        return _integral_of_square(self.model.ir[i].sigma, t)
+        return _ir_zeta(self.model.ir[i], t)
 
     def sx(self, j, t):
         return _piecewise(self.model.fx[j].sigma, t)

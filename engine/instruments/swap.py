@@ -1,50 +1,28 @@
 """
-Vanilla fixed-vs-floating swap pricing on the simulated yield-curve cube.
+A vanilla fixed-vs-floating swap: the trade and its ORE schedule (`MakeVanillaSwap`).
 
-Schedules and accrual fractions come from ORE (`MakeVanillaSwap`); the pricing is a tensor
-contraction over the cube `[scenario, step, maturity, curve]`.
+The trade names its currency and Ibor index; it carries no curve or model. It is priced by the
+valuation pipeline (`engine.valuation.legs`: ORE's `DiscountingSwapEngine` with at-par Ibor
+coupons, paid cashflows dropped and path fixings as `FixingManager` stores them) on today's
+market, a bumped one, and every simulated path, whichever model simulates it.
 
-Multi-curve: both legs discount off `discount_curve_index`; floating forwards come from
-`forward_curve_index`, as ORE's `DiscountingSwapEngine` plus an `IborIndex` with its own
-forwarding curve. Floating coupons are ORE's default at-par coupons: the rate is forecast
-over the coupon's par forecast period and divided by the index day count's spanning time
-(`ore_builders.par_coupon_forecast_period`), then paid over the leg's accrual fraction.
-
-Seasoned trades are priced as ORE prices them at t=0: cashflows paid on or before the
-evaluation date are dropped (`ore_builders.is_live`), and a coupon fixed before it pays its
-historical fixing from `SwapConfig.fixings`, or raises if missing
-(`ore_builders.known_fixing`). Checked against `ORE.DiscountingSwapEngine` in
-tests/test_trade_dates.py.
-
-Differs from ORE:
-  * Discount factors are read directly at cube pillars, with no interpolation; every
-    cashflow time must be a pillar of the simulation (`_maturity_indices`).
-  * Known limitation (I-04, FLAGGED): at a simulated step past a coupon's accrual start or
-    payment date, the coupon is still priced off the cube, whose P(t,T) for T < t is a
-    clamped value rather than a discount factor. There is no per-path fixing of coupons
-    that fix during the simulation, and no removal of cashflows paid during it. t=0 prices
-    are exact. `engine.portfolio.request` warns per affected swap.
+Seasoned trades are priced as ORE prices them: cashflows paid on or before the evaluation date
+are dropped, and a coupon fixed before it pays its historical fixing from `fixings`, or is
+refused if missing (`ore_builders.known_fixing`).
 """
 from dataclasses import InitVar, dataclass, field
-from functools import partial
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
-import jax
-import jax.numpy as jnp
-import numpy as np
 import ORE
 
-from engine.models.static_key import StaticKeyMixin
+from engine.instruments._validation import _validate_common_fields, _validate_identity
 from engine.models.ore_builders import (
     DEFAULT_ACCRUAL_DAY_COUNT,
     book_swap_dates,
     build_vanilla_swap,
-    fixed_leg_cashflows as _fixed_leg_cashflows,
-    floating_leg_cashflows as _floating_leg_cashflows,
     resolve_accrual_day_count,
     validate_fixings,
 )
-from engine.instruments._validation import _validate_common_fields
 
 
 @dataclass
@@ -52,11 +30,12 @@ class SwapConfig:
     """
     One vanilla fixed-vs-floating swap.
 
-    currency: the trade's currency. On the market path (`engine.valuation`) it selects the
-        discount curve, and `index_tenor_months` the forwarding curve (`market.index_name`).
-    discount_curve_index / forward_curve_index: the Hull-White cube only: curves on the
-        cube's rate axis (equal indices give single-curve pricing). The market path refuses
-        them.
+    trade_id: the trade's id (ORE's `<Trade id>`), unique in a portfolio and echoed on every
+        result. Required, keyword only.
+    evaluation_date: the date the trade is valued on. Required, keyword only; a portfolio's
+        trades share it, and on a `Market` it must be the market's as-of date.
+    currency: the trade's currency: its discount curve, and with `index_tenor_months` its
+        forwarding curve (`market.index_name`).
     effective_date / maturity_date: the booked schedule's start and unadjusted end. They
         define the trade; `evaluation_date` only sets when it is priced.
     swap_tenor: booking shortcut ("5Y", "18M"), resolved once at construction to the
@@ -70,22 +49,22 @@ class SwapConfig:
     notional: float
     fixed_rate: float
     payer: bool
-    discount_curve_index: Optional[int] = None
-    forward_curve_index: Optional[int] = None
     effective_date: Optional[ORE.Date] = None
     maturity_date: Optional[ORE.Date] = None
     swap_tenor: InitVar[Optional[str]] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
-    evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
     #: Coupon accrual day count, a property of the booking. Names outside
     #: `SUPPORTED_ACCRUAL_DAY_COUNTS` are refused. Not the simulation time axis (always
     #: ACT/365; see `engine.models.ore_builders`).
     accrual_day_count: str = DEFAULT_ACCRUAL_DAY_COUNT
     fixings: Dict[ORE.Date, float] = field(default_factory=dict)
     currency: str = "USD"
+    trade_id: str = field(kw_only=True)
+    evaluation_date: ORE.Date = field(kw_only=True)
 
     def __post_init__(self, swap_tenor: Optional[str]) -> None:
+        _validate_identity(self.trade_id, self.evaluation_date)
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
         book_swap_dates(self, swap_tenor)
         validate_fixings(self.fixings)
@@ -101,168 +80,3 @@ def _build_ore_swap(cfg: SwapConfig) -> ORE.VanillaSwap:
         index_tenor_months=cfg.index_tenor_months, floating_spread=cfg.floating_spread,
         accrual_day_count=cfg.accrual_day_count,
     )
-
-
-@dataclass
-class SwapSchedule:
-    """A swap's remaining cashflows on its evaluation date. Floating coupons are marked
-    fixed (known fixing) or projected."""
-    fixed: object     # ore_builders.LegCashflows
-    floating: object  # ore_builders.LegCashflows, read with the trade's fixings
-
-    def pillar_times(self) -> List[float]:
-        """Every time a discount factor is read at: payment times, plus the forecast
-        period's start and end of each projected coupon."""
-        projected = ~self.floating.is_fixed
-        return sorted(set(
-            self.fixed.payment_times.tolist() + self.floating.payment_times.tolist()
-            + self.floating.forecast_start_times[projected].tolist()
-            + self.floating.forecast_end_times[projected].tolist()
-        ))
-
-
-def swap_schedule(cfg: SwapConfig) -> SwapSchedule:
-    """The ORE trade's remaining cashflows on `cfg.evaluation_date`."""
-    swap = _build_ore_swap(cfg)
-    return SwapSchedule(
-        fixed=_fixed_leg_cashflows(swap, cfg.evaluation_date),
-        floating=_floating_leg_cashflows(swap, cfg.evaluation_date, cfg.fixings),
-    )
-
-
-def _maturity_indices(times: np.ndarray, maturities: np.ndarray) -> np.ndarray:
-    """Index of the cube pillar equal to each cashflow time (within 1e-6), or raise.
-
-    Takes the nearer of the two neighbouring pillars so that round-off on either side
-    matches. Out-of-range times must raise here: JAX clips out-of-bounds indices, which
-    would silently price off the last pillar.
-    """
-    atol = 1e-6
-    raw = np.searchsorted(maturities, times)
-    left = np.clip(raw - 1, 0, len(maturities) - 1)
-    right = np.clip(raw, 0, len(maturities) - 1)
-    use_left = np.abs(maturities[left] - times) <= np.abs(maturities[right] - times)
-    indices = np.where(use_left, left, right)
-    matches = np.isclose(maturities[indices], times, atol=atol)
-    if not np.all(matches):
-        raise ValueError(
-            "Swap cashflow times must be a subset of the simulation's "
-            "rates.maturities pillars; got cashflow times "
-            f"{times.tolist()} against maturities {maturities.tolist()}"
-        )
-    return indices
-
-
-@dataclass(frozen=True, eq=False)
-class _PreparedSwap(StaticKeyMixin):
-    """Per-trade constant structure, resolved once by `prepare_swap`; a `jax.jit` static
-    argument (see `engine.models.static_key`).
-
-    Floating coupons are split into `float_*` (projected off the forwarding curve) and
-    `known_float_*` (fixing already known, a fixed amount).
-    """
-    payer: bool
-    fixed_notional: float
-    fixed_rate: float
-    fixed_accrual: np.ndarray
-    fixed_pay_idx: np.ndarray
-    float_notional: float
-    float_spread: float
-    float_accrual: np.ndarray
-    float_spanning: np.ndarray
-    float_pay_idx: np.ndarray
-    float_start_idx: np.ndarray
-    float_end_idx: np.ndarray
-    known_float_amounts: np.ndarray
-    known_float_pay_idx: np.ndarray
-    discount_curve_index: int
-    forward_curve_index: int
-
-
-def prepare_swap(cfg: SwapConfig, maturities: np.ndarray) -> _PreparedSwap:
-    """Build the ORE trade and map its remaining cashflows onto the cube's pillars."""
-    if cfg.discount_curve_index is None or cfg.forward_curve_index is None:
-        raise ValueError(
-            "the cube pricer needs discount_curve_index and forward_curve_index; on the market "
-            "path (engine.valuation) the currency's curves are used instead")
-    schedule = swap_schedule(cfg)
-    fixed, floating = schedule.fixed, schedule.floating
-    projected, known = ~floating.is_fixed, floating.is_fixed
-    # ORE's IborCoupon amount: nominal * (fixing + spread) * accrualPeriod.
-    known_amounts = (floating.notional * (floating.fixed_rates[known] + cfg.floating_spread)
-                     * floating.accrual_fractions[known])
-
-    return _PreparedSwap(
-        payer=cfg.payer,
-        fixed_notional=fixed.notional,
-        fixed_rate=cfg.fixed_rate,
-        fixed_accrual=fixed.accrual_fractions,
-        fixed_pay_idx=_maturity_indices(fixed.payment_times, maturities),
-        float_notional=floating.notional,
-        float_spread=cfg.floating_spread,
-        float_accrual=floating.accrual_fractions[projected],
-        float_spanning=floating.spanning_times[projected],
-        float_pay_idx=_maturity_indices(floating.payment_times[projected], maturities),
-        float_start_idx=_maturity_indices(floating.forecast_start_times[projected], maturities),
-        float_end_idx=_maturity_indices(floating.forecast_end_times[projected], maturities),
-        known_float_amounts=known_amounts,
-        known_float_pay_idx=_maturity_indices(floating.payment_times[known], maturities),
-        discount_curve_index=cfg.discount_curve_index,
-        forward_curve_index=cfg.forward_curve_index,
-    )
-
-
-@partial(jax.jit, static_argnums=1)
-def _price_one_swap(yield_curves: jax.Array, swap: _PreparedSwap) -> jax.Array:
-    """
-    [Scenarios, TimeSteps] NPV of one prepared swap.
-
-        Fixed PV(t) = N * K * sum_i accrual_i * P_disc(t, T_i)
-        Float PV(t) = N * sum_i (F_i(t) + spread) * accrual_i * P_disc(t, T_i)
-                      + sum_k known_amount_k * P_disc(t, T_k)
-        F_i(t)      = (P_fwd(t, start_i) / P_fwd(t, end_i) - 1) / spanning_i
-        NPV(t)      = Float PV - Fixed PV for a payer; negated for a receiver.
-
-    `[start_i, end_i]` and `spanning_i` are the at-par coupon's forecast period and index
-    day-count fraction (`ore_builders.par_coupon_forecast_period`); `accrual_i` is the leg's
-    own. Matches `ORE.DiscountingSwapEngine` for any supported leg day count
-    (tests/test_swap.py, tests/test_trade_dates.py).
-    """
-    disc = yield_curves[:, :, :, swap.discount_curve_index]  # [S, T, Maturities]
-    fwd = yield_curves[:, :, :, swap.forward_curve_index]
-
-    fixed_accrual = jnp.asarray(swap.fixed_accrual, dtype=yield_curves.dtype)
-    fixed_disc = disc[:, :, swap.fixed_pay_idx]  # [S, T, NumFixedCF]
-    fixed_leg_pv = swap.fixed_notional * swap.fixed_rate * jnp.tensordot(
-        fixed_disc, fixed_accrual, axes=([2], [0])
-    )
-
-    float_accrual = jnp.asarray(swap.float_accrual, dtype=yield_curves.dtype)
-    float_spanning = jnp.asarray(swap.float_spanning, dtype=yield_curves.dtype)
-    p_start = fwd[:, :, swap.float_start_idx]
-    p_end = fwd[:, :, swap.float_end_idx]
-    forward_rate = (p_start / p_end - 1.0) / float_spanning[None, None, :]
-
-    float_disc = disc[:, :, swap.float_pay_idx]
-    float_cashflow = swap.float_notional * (forward_rate + swap.float_spread) * float_accrual[None, None, :]
-    known_amounts = jnp.asarray(swap.known_float_amounts, dtype=yield_curves.dtype)
-    float_leg_pv = jnp.sum(float_cashflow * float_disc, axis=2) + jnp.tensordot(
-        disc[:, :, swap.known_float_pay_idx], known_amounts, axes=([2], [0])
-    )
-
-    npv = float_leg_pv - fixed_leg_pv
-    return npv if swap.payer else -npv
-
-
-def price_swaps(yield_curves: jax.Array, maturities: np.ndarray, swap_configs: List[SwapConfig]) -> jax.Array:
-    """
-    NPV cube `[Scenarios, TimeSteps, Trades]` for `swap_configs`.
-
-    yield_curves: `[Scenarios, TimeSteps, Maturities, NumRates]` from
-        `engine.simulation.generate_paths(...)["yield_curves"]`.
-    maturities: the pillar times given to `generate_paths` as `rates.maturities`.
-    """
-    maturities_np = np.asarray(maturities)
-    prepared = [prepare_swap(cfg, maturities_np) for cfg in swap_configs]
-    per_trade = [_price_one_swap(yield_curves, swap) for swap in prepared]
-    return jnp.stack(per_trade, axis=-1)

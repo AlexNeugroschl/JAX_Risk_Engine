@@ -27,7 +27,7 @@ import numpy as np
 
 from engine.market_risk.factors import RateRiskFactors
 from engine.risk.var_es import RISK_MEASURE_HISTORICAL
-from engine.simulation.market_model import generate_sobol_normals
+from engine.simulation.random import generate_sobol_normals
 
 SOURCE_MONTE_CARLO = "monte-carlo"
 SOURCE_HISTORICAL = "historical"

@@ -12,50 +12,37 @@ other's internal details — they agree only on the *shape* of the data passed b
 them. That decoupling is deliberate: it means another module (say, a new instrument
 pricer) could be added later without touching the others at all.
 
-## Two pricing paths
+## One pricing pipeline
 
-Since the [ORE alignment](../planning/roadmap.md) `price_portfolio` has two paths,
-chosen by the type of `PortfolioRequest.market`. Every other choice (the simulation and its
-model per currency, the engine per product, the Greeks method and settings, the precision per
-stage, the reporting currency) is the request's run configuration, `RunConfig`
-(`engine/portfolio/config.py`), with ORE's defaults; each path refuses, naming the field, an
-option it does not implement
-([The Portfolio Entry Point](../reference/portfolio-entrypoint.md#runconfig)).
-
-- **A `Market`: the market path**, the default (`engine.portfolio.market_path`, HTTP
-  `POST /v2/portfolio/price`). It reproduces ORE's classic pipeline: trades name their
-  currency and index, the market supplies curves and volatilities, the run configuration
-  supplies the models and engines.
+`price_portfolio` takes today's `Market`, the trades, and the run configuration, `RunConfig`
+(`engine/portfolio/config.py`): the simulation and its model per currency, the engine per
+product, the Greeks method and settings, the precision per stage, the reporting currency,
+with ORE's defaults ([The Portfolio Entry Point](../reference/portfolio-entrypoint.md#runconfig)).
+It reproduces ORE's classic pipeline: trades name their currency and index, the market
+supplies curves and volatilities, the configuration supplies the models and engines.
 
 ```
    Market + CamConfig ──calibrate (engine.calibration.cam)──► CrossAssetModel
+        (per currency: LgmConfig, or HullWhiteConfig, ORE's <LGM> in either parametrization)
         ──simulate (engine.simulation.config)──► ScenarioMarket
              [paths, dates] discount and index curves, LGM numeraire, FX/EQ spots
         ──value (engine.valuation.portfolio)──► t=0 NPVs [T], NPV cube [S, D, T]
              every trade with its t=0 engine on each path; FixingManager; OptionWrapper
         ──exposure (engine.risk.exposure)──► EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B, PFE, Basel
-   Market ──sensitivities (engine.risk.sensitivities)──► Delta, Gamma, Vega, Theta per trade
+   Market ──Greeks (engine.risk.sensitivities: bump; engine.risk.greeks: AD)──► per trade
 ```
 
-- **A `SimulationConfig`: the Hull-White path**, the original engine. It is a supported,
-  non-default model (HTTP `POST /portfolio/price`). Trades carry their curve indices and
-  Hull-White parameters.
-  Its data flow is described [below](#the-hull-white-paths-data-flow); its known differences
-  from ORE are [I-42](../planning/known-issues.md#i-42) to [I-47](../planning/known-issues.md#i-47).
+Every option runs with every other: the models differ only in the simulation, and the
+engines and Greeks methods price whatever the simulation produced. What is not implemented
+yet is refused before any work, naming the field (`check_run`, `validate_trades`).
 
-Both paths share the curve primitives (`engine.models.curves`), ORE trade building
-(`engine.models.ore_builders`), the Bermudan grid engine (`engine.instruments.bermudan_swaption`),
-and the risk statistics.
-
-**Where this is going** (owner decisions, 2026-09-30,
-[compliance/decisions.md](../../compliance/decisions.md)). The two paths are an intermediate
-state. The engine is configured as ORE is: the model per currency, the pricing engine per
-product, the Greeks method and the precision per stage are choices in one run configuration
-(`RunConfig`, done), with ORE's defaults. Still to come: the Hull-White model as a model per
-currency of that configuration (roadmap 1.3), the settlement method, and one request shape
-and one route that reach every setting, with no version-like names (the current `/v2` route is the
-market path's, not a version) ([configurable engine](../planning/details/configurable-engine.md)).
-New models, instruments and methods are added as options, and none that works is removed.
+**History.** Until roadmap 1.3 the Hull-White model was a second pipeline, chosen by passing
+a `SimulationConfig` instead of a `Market`, with its own simulation, pricers and Greeks and
+the defects listed in the closed ledger ([I-42](../planning/known-issues.md#i-42) to
+[I-47](../planning/known-issues.md#i-47)); it is now one model option of the configuration
+([configurable engine](../planning/details/configurable-engine.md)). Owner decisions
+(2026-09-30, [compliance/decisions.md](../../compliance/decisions.md)): new models,
+instruments and methods are added as options, and none that works is removed.
 
 ## The repository layout
 
@@ -75,119 +62,69 @@ JAX_Risk_Engine/
 │   ├── demo_precision.py                 FP64 vs FP32 market-risk VaR/ES against
 │   │                                     Monte Carlo noise
 │   ├── demo_components.py                One engine module at a time, one section each
-│   └── demo_scenarios.py                 Shared demo/test SimulationConfig builders
+│   └── demo_scenarios.py                 The shared demo/test market and simulation
+│                                         (dataclasses and their HTTP JSON)
 ├── docs/                                 Organized by topic (you are here)
-│   ├── getting-started/                  Overview, user guide
-│   ├── concepts/                         Architecture, market simulation, glossary,
-│   │                                     coding style, profiling & the tracer
-│   ├── instruments/                      Swaps, European/Bermudan/American swaptions
-│   ├── risk/                             Market risk (VaR/ES), exposure, the VaR/ES
-│   │                                     statistics, Delta/Gamma/Vega/Theta
-│   ├── reference/                        API reference, ORE parity mapping, models &
-│   │                                     trades, calibration, portfolio entry point,
-│   │                                     HTTP API, EOD integration boundary
-│   └── planning/                         Known issues (read before trusting any number),
-│                                         features, roadmap, and design details
 ├── compliance/decisions.md             The owner's dated decisions on how the engine is
 │                                         configured, and the differences from ORE
 ├── engine/
-│   ├── market.py                         Today's market for the market path: curves per
-│   │                                     currency and index, the ATM normal swaption
-│   │                                     matrix, FX and equity spots
+│   ├── __init__.py                       Enables jax_enable_x64 once, at import
+│   ├── market.py                         Today's market: curves per currency and index,
+│   │                                     the ATM normal swaption matrix, FX and equity spots
 │   ├── day_count.py                      Accrual day-count vocabulary, and nothing else.
 │   │                                     A leaf because both models/ore_builders.py and
 │   │                                     integration/note.py need the table, and
 │   │                                     integration/ may not import models/ (see I-05)
 │   ├── portfolio/
-│   │   ├── __init__.py                   Re-exports request.py's/config.py's/validation.py's
-│   │   │                                 public surface
+│   │   ├── __init__.py                   The public surface: PortfolioRequest/Result,
+│   │   │                                 price_portfolio, RunConfig and its parts
 │   │   ├── config.py                     RunConfig: simulation, engines, Greeks, precision;
-│   │   │                                 what each model implements (check_market_path,
-│   │   │                                 check_hull_white)
-│   │   ├── request.py                    Top-level entry point: PortfolioRequest/
-│   │   │                                 PortfolioResult/price_portfolio, plus the
-│   │   │                                 validation/assembly layer (cross-field checks,
-│   │   │                                 automatic maturity-pillar assembly)
-│   │   ├── validation.py                 Re-exports the trade validators (now in
-│   │   │                                 instruments/_validation.py) plus the
-│   │   │                                 one-evaluation-date check
-│   │   ├── market_path.py                price_portfolio on a Market: calibrate the CAM,
-│   │   │                                 simulate, value, exposure, ORE sensitivities
-│   │   ├── worker_pool.py                One process pool per precision tier, plus the
-│   │   │                                 opt-in XProf profiler hook and its
+│   │   │                                 check_run
+│   │   ├── request.py                    PortfolioRequest/PortfolioResult/price_portfolio
+│   │   │                                 (unique trade ids, _PRICING_LOCK)
+│   │   ├── market_path.py                The pipeline: calibrate the CAM, simulate, value,
+│   │   │                                 exposure, Greeks; validate_request
+│   │   ├── validation.py                 Re-exports the trade validators
+│   │   ├── worker_pool.py                One process pool per simulation precision, plus
+│   │   │                                 the opt-in XProf profiler hook and its
 │   │   │                                 silent-truncation guard (see profiling.md)
 │   │   └── profiling.py                  phase() -- the TraceAnnotation/named_scope pair
 │   │                                     that labels each pricing stage on a trace
 │   ├── api/                              FastAPI HTTP boundary -- TWO separate contracts
 │   │   ├── app.py                        FastAPI app factory, mounting both routers
-│   │   ├── routes.py                     /health, /version, /portfolio/price and
-│   │   │                                 /v2/portfolio/price (async job pattern),
+│   │   ├── routes.py                     /health, /version, /portfolio/price (also served
+│   │   │                                 as /v2/portfolio/price; async job pattern),
 │   │   │                                 /calibration/lgm
-│   │   ├── market_schemas.py             The market path's request shape; refuses
-│   │   │                                 unknown fields
-│   │   ├── eod_routes.py                 W1.6.4 /eod/* -- the TraderX EOD contract. Plain
-│   │   │                                 dicts under a published JSON Schema, NOT Pydantic:
-│   │   │                                 one contract definition, not two that can drift
-│   │   └── schemas.py                    Pydantic v2 request/response schemas, each with
-│   │                                     .to_dataclass()/.from_dataclass()
+│   │   ├── market_schemas.py             The portfolio request; refuses unknown fields
+│   │   │                                 and the retired Hull-White shape
+│   │   ├── schemas.py                    Shared Pydantic schemas (curves, precision,
+│   │   │                                 results, jobs, the calibration route)
+│   │   └── eod_routes.py                 W1.6.4 /eod/* -- the TraderX EOD contract. Plain
+│   │                                     dicts under a published JSON Schema, NOT Pydantic
 │   ├── integration/                      TraderX EOD boundary -- hash-verified bundle in,
-│   │   │                                 identified result out: both Treasury shapes price,
-│   │   │                                 everything else is REFUSED. Imports no simulation
-│   │   │                                 pricer, no FastAPI, no Pydantic, no JAX
-│   │   │                                 (see eod-integration.md)
-│   │   ├── bundle.py                     W0.1 read + hash-verify a v1/v2 bundle, in binary
-│   │   ├── terms.py                      W0.2 join instrument-terms.json onto rows; W1.6.1
-│   │   │                                 terms v2 + validated accrualBasis
-│   │   ├── normalize.py                  W0.3 source units -> engine units, incl. the
-│   │   │                                 zero-coupon accrued rule (key on terms, not blanks)
-│   │   ├── conventions.py                W0.4 positive allowlist + refusal, BEFORE any
-│   │   │                                 pricing object is constructed (part of I-05)
-│   │   ├── result.py                     W0.5 RiskResult + per-calculation coverage model
-│   │   ├── market_inputs.py              W0.6 explicit market-input mode (no silent
-│   │   │                                 fallback), curve provenance, measure label
-│   │   ├── identity.py                   W0.7 opaque itemId + source identity (I-10)
-│   │   ├── capabilities.py               W0.9 supported product x convention x calculation
-│   │   ├── bill.py                       W1.2 zero-coupon Treasury NPV -- the first pricer
-│   │   ├── note.py                       W1.3 coupon-bearing Treasury NPV + rateSensitivity
-│   │   ├── equity.py                     W1.4 cash equity -- a REFUSAL naming the missing
-│   │   │                                 spot/FX source (I-18)
-│   │   ├── schema_version.py             W1.6.2 the two document versions -- a leaf that
-│   │   │                                 imports nothing, breaking result <-> schema
-│   │   ├── schema.py                     W1.6.2 JSON Schema, DERIVED from the frozen
-│   │   │                                 calculation/status vocabulary, never hand-written
-│   │   ├── workload.py                   W1.6.4 canonical workload key + immutable attempt
-│   │   │                                 store, four lookup states (part of I-08)
-│   │   ├── publication.py                W0.8 crash-safe publication + the durable result
-│   │   │                                 store: stage -> verify what was written ->
-│   │   │                                 atomically publish -> advance pointer, with
-│   │   │                                 lookup falling back to a manifest scan so a
-│   │   │                                 stale pointer never loses a result (I-08)
-│   │   └── pipeline.py                   Composition of the above: price_bundle()
+│   │                                     identified result out: both Treasury shapes price,
+│   │                                     everything else is REFUSED. Imports no simulation
+│   │                                     pricer, no FastAPI, no Pydantic, no JAX
+│   │                                     (one module per W-task; see eod-integration.md)
 │   ├── simulation/
-│   │   ├── cam.py                        ORE's CrossAssetModel: LGM per currency, FX/EQ
-│   │   │                                 Black-Scholes, exact step moments, Cholesky,
-│   │   │                                 the jitted state evolution
+│   │   ├── cam.py                        ORE's CrossAssetModel: per currency the LGM in
+│   │   │                                 Hagan's or the Hull-White parametrization,
+│   │   │                                 FX/EQ Black-Scholes, exact step moments,
+│   │   │                                 Cholesky, the jitted state evolution
 │   │   ├── scenario_market.py            Model-implied scenario curves per path and date,
 │   │   │                                 the LGM numeraire, FX/EQ spots
-│   │   ├── config.py                     CamConfig/LgmConfig (ORE's simulation.xml) and
-│   │   │                                 simulate(market, config)
-│   │   ├── random.py                     Sobol normals and the Brownian bridge, shared
-│   │   └── market_model.py               The Hull-White model's simulation:
-│   │                                     cross-asset Hull-White paths, yield-curve
-│   │                                     reconstruction; also validate_joint_covariance/
-│   │                                     nearest_psd
+│   │   ├── config.py                     CamConfig/LgmConfig/HullWhiteConfig (ORE's
+│   │   │                                 simulation.xml) and simulate(market, config)
+│   │   └── random.py                     Sobol normals and the Brownian bridge
 │   ├── models/
 │   │   ├── curves.py                     ZeroCurve (linear zero, QuantLib's flat-forward
 │   │   │                                 extrapolation) and DiscountCurve (log-linear,
-│   │   │                                 batched): the curve primitives of both paths
-│   │   ├── hull_white.py                 HW1F closed-form math (constant sigma only) --
-│   │   │                                 single source of truth, used by swap.py,
-│   │   │                                 european_swaption.py, simulation.py, greeks.py
-│   │   ├── lgm.py                        Linear Gauss-Markov closed-form math
-│   │   │                                 (piecewise-constant Sigma) -- used by
-│   │   │                                 bermudan_swaption.py and engine/calibration/
-│   │   ├── ore_builders.py               Shared ORE VanillaSwap construction and
-│   │   │                                 cashflow extraction -- used by every pricer
+│   │   │                                 batched): the curve primitives
+│   │   ├── lgm.py                        LGM closed forms (piecewise-constant Sigma) in
+│   │   │                                 both parametrizations: H, zeta, Hull-White zeta
+│   │   ├── hull_white.py                 Bond options on the Hull-White model (the
+│   │   │                                 Jamshidian engine's building block)
+│   │   ├── ore_builders.py               ORE VanillaSwap construction and the time axis
 │   │   └── static_key.py                 By-value hashing for the _Prepared* trade
 │   │                                     structures, so they can be jax.jit STATIC
 │   │                                     arguments instead of recompiling every call
@@ -195,40 +132,34 @@ JAX_Risk_Engine/
 │   │   ├── ore_lgm.py                    ORE's LgmBuilder: SwaptionHelper baskets and the
 │   │   │                                 bootstrap, batched over path curves
 │   │   ├── cam.py                        The CAM's IR calibration to CalibrationSwaptions
-│   │   ├── basket.py                     Co-terminal swaption basket construction and
-│   │   │                                 LGM's own closed-form swaption pricer
-│   │   └── lgm.py                        Bootstrap calibration of a piecewise LGM Sigma
-│   │                                     to market swaption volatilities
-│   ├── instruments/
-│   │   ├── _validation.py                Field validators every trade config shares
-│   │   ├── swap.py                       Prices interest rate swaps
-│   │   ├── european_swaption.py          Prices European swaptions
-│   │   ├── bermudan_swaption.py          Prices Bermudan swaptions
-│   │   │                                 (the numeric LGM backward-induction engine)
-│   │   ├── american_swaption.py          Prices American swaptions (a thin config
-│   │   │                                 wrapper that discretizes the exercise window
-│   │   │                                 and delegates to bermudan_swaption.py)
-│   │   └── treasury.py                   W1.5 prices Treasury bills and notes
-│   │                                     (BondConfig) by closed-form discounted
-│   │                                     cashflows against one deterministic curve --
-│   │                                     t=0 only, so no scenario cube and no VaR/ES
-│   │                                     (I-24). The only non-JAX pricer here; imports
-│   │                                     no other pricer
-│   ├── valuation/                        The market path's ValuationEngine: every trade
-│   │   │                                 with its t=0 engine, today and on every path
+│   │   │                                 (either parametrization)
+│   │   ├── basket.py, lgm.py             The standalone /calibration/lgm route's basket
+│   │   │                                 and Hagan bootstrap
+│   ├── instruments/                      The trade configs (what ORE's trade XML holds):
+│   │   ├── _validation.py                id, date and field validators every config shares
+│   │   ├── swap.py, european_swaption.py,
+│   │   │   american_swaption.py, treasury.py
+│   │   └── bermudan_swaption.py          The config, and the numeric LGM backward-
+│   │                                     induction engine (ORE's grid engine) every
+│   │                                     Bermudan/American is priced by
+│   ├── valuation/                        ORE's ValuationEngine: every trade with its t=0
+│   │   │                                 engine, today and on every path
 │   │   ├── legs.py                       Swap legs: DiscountingSwapEngine, FixingManager,
 │   │   │                                 paid flows, on any date and every path
 │   │   ├── european.py                   BlackMultiLegOptionEngine (Bachelier), cash by
 │   │   │                                 ParYieldCurve, the vol surface seen from a date
+│   │   ├── jamshidian.py                 QuantLib's JamshidianSwaptionEngine on a
+│   │   │                                 configured Hull-White model
 │   │   ├── bermudan.py                   Each Bermudan/American on its own calibrated LGM,
 │   │   │                                 recalibrated per path
 │   │   ├── options.py                    OptionWrapper's exercise, physical and cash
-│   │   ├── portfolio.py                  value_portfolio / value_today / value_on
+│   │   ├── portfolio.py                  value_portfolio / value_today / value_on,
+│   │   │                                 validate_trades, bond legs
 │   │   ├── context.py                    PricingContext: one date's curves, vols, fixings
-│   │   └── config.py                     PricingConfig (engine per product) and the LGM
-│   │                                         engine settings
+│   │   └── config.py                     PricingConfig (engine per product), the LGM
+│   │                                     engine settings, the Jamshidian model
 │   ├── market_risk/                      Short-horizon VaR/ES by full revaluation at t=0:
-│   │   ├── factors.py                    RateRiskFactors -- curve pillars as risk factors
+│   │   ├── factors.py                    RateRiskFactors -- the market's curve pillars
 │   │   ├── scenarios.py                  Monte Carlo and historical shock scenarios
 │   │   ├── revaluation.py                Every trade repriced under every scenario
 │   │   └── run.py                        MarketRiskRequest/Result, run_market_risk
@@ -238,57 +169,40 @@ JAX_Risk_Engine/
 │       ├── exposure.py                   EPE/ENE/EE_B/EEE_B/PFE over the simulated cube
 │       │                                 (ORE's ExposureCalculator definitions)
 │       ├── price_functions.py            Each trade's t=0 price as a JAX function of its
-│       │                                 curves -- shared by Greeks and market risk
-│       ├── sensitivities.py              ORE's bump-and-revalue sensitivities (market path)
-│       └── greeks.py                     AD Delta / Gamma / Theta / Vega (Hull-White path)
+│       │                                 market curves -- shared by AD Greeks and market risk
+│       ├── sensitivities.py              ORE's bump-and-revalue sensitivities, and Theta
+│       └── greeks.py                     AD Delta / Gamma / Vega (Theta shared)
 └── tests/
     ├── conftest.py                       Shared pytest fixtures
-    ├── test_market_model.py
-    ├── test_demo_scenarios.py
-    ├── test_swap.py
-    ├── test_european_swaption.py
-    ├── test_bermudan_swaption.py
-    ├── test_american_swaption.py
-    ├── test_models_piecewise_sigma.py
-    ├── test_calibration_basket.py
-    ├── test_calibration_lgm.py
-    ├── test_calibration_integration.py
-    ├── test_calibration_edge_cases.py
-    ├── test_var_es.py
-    ├── test_var_es_diagnostics.py        Monte Carlo standard error / tail-count
-    ├── test_greeks.py
-    ├── test_greeks_bermudan.py
-    ├── test_treasury_instrument.py       W1.5 BondConfig, incl. the refused scenario path
-    ├── test_day_count_roles.py           engine/day_count.py's convention table
-    ├── test_end_to_end.py
-    ├── test_diverse_portfolio_e2e.py
-    ├── test_ore_parity.py
-    ├── test_portfolio.py                 Cross-field validation, maturity-pillar assembly
-    ├── test_portfolio_entrypoint.py       price_portfolio vs. hand-orchestrated pricing
-    ├── test_portfolio_gap_fixes.py       Regressions for I-01/I-03 and friends
-    ├── test_portfolio_scale_and_edge_cases.py
-    ├── test_portfolio_bond_wire_through.py  Bonds reaching price_portfolio, pinned
-    │                                     bit-exact against the integration pricers
-    ├── test_worker_pool.py               Per-precision process pools
-    ├── test_profiling_and_jit.py         phase() annotations + XLA compile counts
-    ├── test_api.py                       FastAPI TestClient tests for engine/api/
-    ├── test_api_bond_schemas.py          Pydantic round-trip for BondConfig
-    ├── test_cam.py, test_curves.py,       The market path, each piece against ORE
-    │   test_valuation.py,
+    ├── support/                          Shared helpers: the shared portfolio and its ORE
+    │                                     references (portfolio.py), ORE's LGM engine via
+    │                                     OREApp (ore_lgm_oracle.py), the grid engine with
+    │                                     an explicit model (lgm_engine.py), Greeks helpers
+    ├── test_cam.py, test_curves.py,       Each piece of the pipeline against ORE/QuantLib,
+    │   test_random.py, test_valuation.py, the path tests under both models
     │   test_ore_lgm_calibration.py,
-    │   test_sensitivities.py,
-    │   test_portfolio_market_path.py,
-    │   test_api_market_path.py
-    ├── test_shared_portfolio.py          The shared portfolio at t=0 vs ORE, trade by trade
+    │   test_sensitivities.py, test_jamshidian.py
+    ├── test_hull_white_model.py          The Hull-White model: calibration, and the
+    │                                     regressions of the closed Hull-White defects
+    ├── test_end_to_end.py                The Hull-White simulation's paths priced by
+    │                                     QuantLib/ORE, NPV and VaR/ES compared
+    ├── test_swap.py, test_*_swaption.py,  The trade configs and the grid engine
+    │   test_treasury_instrument.py,
+    │   test_trade_configs.py, test_trade_dates.py
+    ├── test_ore_*.py                     The grid engine and calibration against ORE
+    ├── test_portfolio_*.py,              price_portfolio end to end: wiring, gap-fix
+    │   test_run_config.py,               regressions, the run configuration, scale,
+    │   test_diverse_portfolio_e2e.py,    breadth, the shared portfolio vs ORE
+    │   test_shared_portfolio.py
+    ├── test_greeks*.py                   AD Greeks against finite differences and the
+    │                                     bump method
+    ├── test_market_risk*.py, test_var_es*.py, test_exposure.py
+    ├── test_api*.py, test_worker_pool.py, test_profiling_and_jit.py
     ├── test_import_layering.py           No package imports a layer above it; no demo
     │                                     or test code in engine/ (I-65)
-    ├── test_demos.py                     demos/demo_components.py runs every section
-    ├── support/portfolio.py              The portfolio shared across test layers
-    ├── support/ore_lgm_oracle.py         ORE's own LGM Bermudan engine via an in-process
-    │                                     OREApp run: the parity tests' reference
+    ├── test_demos.py, test_demo_scenarios.py
     ├── test_integration_*.py             engine/integration/, one file per task, run
     │                                     against the delivered TraderX fixtures
-    │                                     (incl. test_integration_publication.py, W0.8)
     └── fixtures/traderx-eod/             Real TraderX YU18 bundles (bill/note/sofr/equity,
                                           each v1+v2), hash-pinned. LF bytes committed and
                                           held that way by .gitattributes -- CRLF translation
@@ -296,623 +210,236 @@ JAX_Risk_Engine/
 ```
 
 Every `engine/` subpackage has an `__init__.py`, so the whole thing is importable as
-`engine.simulation.market_model`, `engine.instruments.swap`, and `engine.risk.var_es`
-from the repository root — no path hacks required in application code or tests.
+`engine.portfolio`, `engine.valuation.portfolio`, `engine.risk.var_es` and so on from the
+repository root — no path hacks required in application code or tests.
 
-`bermudan_swaption.py` and `american_swaption.py` are two separate files rather than one,
-even though `american_swaption.py`'s content is small: `AmericanSwaptionConfig` supplies
-ORE's American option times and exercise style, and is priced by `bermudan_swaption.py`'s
-engine directly — this mirrors ORE's own design, where both exercise types run through
-the same numeric engine (`QuantExt::NumericLgmMultiLegOptionEngine`) and differ only in
-their option times and in which coupons an exercise enters (see
-[American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)). Keeping the actual backward-
-induction engine (state grid, Hagan's quadrature, numeraire-deflated rollback) in its own
-`bermudan_swaption.py` file, separate from the thin American-specific wrapper, makes clear
-that Bermudan swaptions are a fully independent, directly-usable capability — not a
-byproduct of American support.
+`bermudan_swaption.py` holds the backward-induction engine (state grid, Hagan's quadrature,
+numeraire-deflated rollback) every Bermudan and American is priced by;
+`AmericanSwaptionConfig` supplies ORE's American option times and exercise style. This
+mirrors ORE's own design, where both exercise types run through the same numeric engine
+(`QuantExt::NumericLgmMultiLegOptionEngine`) and differ only in their option times and in
+which coupons an exercise enters (see
+[American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)).
 
 ## The shared foundation layer: `engine/models/`
 
-Every instrument pricer needs two kinds of thing that have nothing to do with what makes
-that instrument distinctive: closed-form interest-rate model math (bond prices, bond
-options, discount factors) and a real ORE trade object with a real payment schedule to
-price against.
+`engine/models/lgm.py` is the single source of truth for the interest-rate model's
+closed forms, in both of ORE's parametrizations: Hagan's (the LGM's own volatility α) and the
+Hull-White adaptor's (α(t) = σ(t)e^{at}, with ζ and H to match), so the simulation, the
+scenario curves, the numeraire and the calibration serve both models with one formula each.
+`engine/models/curves.py` holds the curve primitives every stage reads, and
+`engine/models/ore_builders.py` ORE trade building and the time axis. See
+[Models & Trades](../reference/models-and-trades.md).
 
-`engine/models/hull_white.py` and `engine/models/lgm.py` are the single source of
-truth for that math — one JAX-native implementation of each formula, used by every pricer
-that needs it.
-`engine/models/ore_builders.py` is the equivalent consolidation for ORE trade-building and
-cashflow extraction. See [Models & Trades](../reference/models-and-trades.md) for the full
-breakdown of this shared layer, including a genuine finding this consolidation surfaced:
-Hull-White and LGM (`hull_white.py` and `lgm.py` respectively) are **not** the same model
-for `t>0`, despite sharing `(a, sigma)` and today's curve — a real ORE parametrization
-difference between `QuantLib::HullWhite` and `QuantExt::LinearGaussMarkovModel`, not a bug
-in this codebase.
+## `engine/calibration/`: fitting the volatility to market swaption quotes
 
-## `engine/calibration/`: fitting LGM's volatility to market swaption quotes
+A real trading desk calibrates a model's volatility to reproduce the market-quoted prices of
+simpler, liquid options before pricing a more complex trade off it. `engine/calibration/`
+does that step as ORE's `LgmBuilder` does: per currency for the cross-asset model
+(`cam.py`, the CAM's `CalibrationSwaptions`, for the LGM or the Hull-White model) and per
+Bermudan/American for its own engine (`ore_lgm.py`, a co-terminal basket built from the
+trade, recalibrated on every path). See [Calibration](../reference/calibration.md).
 
-A real
-trading desk doesn't treat `hw_sigma` as an arbitrary config input — it calibrates a model's volatility parameter to reproduce
-the market-quoted prices of simpler, liquid options first, and only then prices a more
-complex, illiquid trade off that fitted parameter. `engine/calibration/basket.py` and
-`engine/calibration/lgm.py` implement exactly that step for Bermudan/American swaptions: a
-co-terminal basket of market European swaption volatilities goes in, a piecewise-constant
-`engine.models.lgm.Sigma` term structure that exactly reprices every one of them comes out,
-via the same bootstrap algorithm ORE itself uses by default
-(`ore::data::LgmBuilder::calibrate()`'s `Bootstrap` path). See
-[Calibration](../reference/calibration.md) for the full algorithm, including the two
-independent verification routes used since ORE's own `AnalyticLgmSwaptionEngine` isn't
-constructible through this codebase's installed Python bindings.
+Bermudan/American Vega exists because of it: "how much does this Bermudan's value change if
+a market quote moves" is only a well-posed question once there is a market-quote-to-model
+relationship to differentiate through (the AD method differentiates through the bootstrap;
+the bump method recalibrates).
 
-This module exists specifically because [Bermudan/American
-Vega](../risk/greeks.md#vega-bermudanamerican-only) has no meaning without it — "how much
-does this Bermudan's value change if a market quote moves" is only a well-posed question
-once there is an actual market-quote-to-model relationship to differentiate through.
+## The stages
 
-## The Hull-White path's data flow
+Full field-level detail on every input/output is in the
+[API Reference](../reference/api-reference.md); this section is about *why* the pieces are
+shaped the way they are.
 
-`engine/portfolio/request.py::price_portfolio` sits above every stage below and drives all of them
-in sequence — see [The Public API](#the-public-api) and
-[The Portfolio Entry Point](../reference/portfolio-entrypoint.md) for the full picture.
-The diagram below is the same stage-by-stage flow `price_portfolio` orchestrates
-internally; a caller using the pricers directly (as `demo.py` used to, before Phase 2)
-still wires these together by hand.
+### Simulation (`engine/simulation/`)
 
-```
-                    ┌─────────────────────────┐
-   PortfolioRequest │   engine/                │  PortfolioResult
-   ───────────────► │   portfolio.py           │  {base_npv, npv_cube, risk,
-                     │   price_portfolio()      │   greeks, warnings}
-                    └─────────────────────────┘
-                                  │  validates, derives maturity pillars,
-                                  │  calibrates, then drives every stage below
-                                  ▼
-                    ┌─────────────────────────┐
-   SimulationConfig │   engine/                │  {"equities": [...],
-   ───────────────► │   simulation.py          │  "rates": [...],
-                     │   generate_paths()       │  "yield_curves": [...]}
-                    └─────────────────────────┘
-                                  │
-                                  │ yield_curves cube
-                                  │ [Scenarios, TimeSteps, Maturities, NumRates]
-                                  ▼
-                    ┌─────────────────────────┐
-   SwapConfig(s)     │   engine/instruments/    │  NPV cube
-   ───────────────► │   swap.py                │  [Scenarios, TimeSteps, Trades]
-                     │   price_swaps()          │
-                    └─────────────────────────┘
-                                  │
-   rates path        ┌─────────────────────────┐
-   (hw_paths)         │   engine/instruments/    │  NPV cube
-   ───────────────► │   european_swaption.py   │  [Scenarios, TimeSteps, Trades]
-   SwaptionConfig(s)  │   price_swaptions()      │  (same shape, stacks alongside
-                     └─────────────────────────┘   every other pricer's cube)
-                                  │
-   rates path        ┌─────────────────────────┐
-   (hw_paths)         │   engine/instruments/    │  NPV cube
-   ───────────────► │   bermudan_swaption.py   │  [Scenarios, TimeSteps, Trades]
-   BermudanSwaption   │   price_bermudan_        │
-   Config(s)          │   swaptions()            │
-                     └─────────────────────────┘
-                                  │
-   rates path        ┌─────────────────────────┐
-   (hw_paths)         │   engine/instruments/    │  NPV cube
-   ───────────────► │   american_swaption.py   │  (delegates to
-   AmericanSwaption   │   price_american_        │   bermudan_swaption.py)
-   Config(s)          │   swaptions()            │
-                     └─────────────────────────┘
-                                  │
-                                  │ NPV cube(s)
-                                  ▼
-                    ┌─────────────────────────┐
-   base_npv,         │   engine/risk/            │  ExposureProfile: EPE, ENE, EE_B,
-   numeraire ─────► │   exposure.py            │   EEE_B, PFE_95, PFE_99 per date
-                     │   netting_set_profile()  │
-                    └─────────────────────────┘
-```
+**Input:** the `Market` and a `CamConfig` (dates, the model per currency, FX/equity
+volatilities, correlations, samples, the simulation-market tenors). **Output:** a
+`ScenarioMarket`: per path and date, each currency's discount curve and each index's
+forwarding curve at the simulation tenors (ORE's `ScenarioSimMarket`), the LGM numeraire,
+FX and equity spots. Exact discretization of ORE's cross-asset model, Sobol normals with a
+Brownian bridge. See [Market Simulation](market-simulation.md).
 
-Market risk is a separate, shorter pipeline that does not simulate paths at all:
+### Valuation (`engine/valuation/`)
+
+**Input:** the trades, the market and a `ScenarioMarket`, and the `PricingConfig`.
+**Output:** every trade's value today and its `[Scenarios, Dates]` column of the cube, in the
+reporting currency. Each trade is priced on each path by its t=0 engine, as ORE's
+`ValuationEngine` does: swaps by discounting their legs with path fixings and paid flows
+dropped (`legs.py`); Europeans by Bachelier on the market volatility seen from the date
+(`european.py`) or Jamshidian on a configured Hull-White model (`jamshidian.py`);
+Bermudans/Americans by the grid engine on their own basket, recalibrated per path
+(`bermudan.py`); bonds by discounting their remaining flows. After an exercise, ORE's
+`OptionWrapper` carries the swap entered (physical) or nothing (cash) (`options.py`).
+ORE's own trade schedules come from `engine/models/ore_builders.py`, so "when does this swap
+pay cash, and how much" is computed as a trading desk's software computes it.
+
+### Exposure (`engine/risk/exposure.py`)
+
+**Input:** the cube, the numeraire paths and today's discount factors.
+**Output:** ORE's exposure profile per date — EPE, ENE, EE_B, EEE_B, PFE — for the
+netting set and for each trade. See [Exposure](../risk/exposure.md).
+
+### Greeks (`engine/risk/sensitivities.py`, `engine/risk/greeks.py`)
+
+**Bump** (the default, ORE's sensitivity analysis): every trade repriced on today's
+sensitivity market with one curve tenor or volatility quote shifted, and Theta on the
+market rolled one day. **AD** (`GreeksConfig.method="AD"`): the same keys by automatic
+differentiation of each trade's price as a function of the market curves' pillar rates
+(`engine/risk/price_functions.py`), a Bermudan's Vega through its calibration by the
+implicit function theorem; Theta shared with the bump method. See
+[Greeks](../risk/greeks.md).
+
+### Market Risk (`engine/market_risk/`)
+
+**Input:** trades, the `Market`, `ShockScenarios` (absolute moves of every curve pillar over
+a short horizon), the `PricingConfig`. **Output:** the P&L of every trade under every
+scenario, and its VaR/ES. It does not use the simulated cube. See
+[Market Risk](../risk/market-risk.md).
 
 ```
    ShockScenarios     ┌─────────────────────────┐   [S, N] P&L   ┌──────────────────┐
    (Monte Carlo or ─► │ engine/market_risk/      │ ─────────────► │ engine/risk/      │ VaR_99,
    historical)        │ revaluation.py: every    │                │ var_es.py         │ ES_97.5, ...
-   trades ──────────► │ trade repriced at t=0    │                │ compute_risk_     │
+   trades, Market ──► │ trade repriced at t=0    │                │ compute_risk_     │
                       │ under every shock        │                │ metrics()         │
                      └─────────────────────────┘                └──────────────────┘
 ```
 
-Full field-level detail on every input/output is in the [API Reference](../reference/api-reference.md);
-this page is about *why* the pieces are shaped the way they are.
-
-### Market Simulation (`engine/simulation/market_model.py`)
-
-**Input:** a `SimulationConfig` (time grid, starting prices/rates, correlations).
-**Output:** simulated paths for equities/FX, interest rates, and (optionally) a full
-4D "yield curve cube" of discount factors.
-
-This is the only module with no dependency on ORE at runtime — it's pure JAX/NumPy/SciPy,
-so it can, in principle, run on a GPU with no external process involved. See
-[Market Simulation](market-simulation.md) for the math.
-
-### Instrument Pricing (`engine/instruments/`)
-
-**Input:** market data from the simulation module (the yield curve cube for the swap
-pricer; the raw simulated rate paths for every swaption pricer), plus one or more trade
-configs.
-**Output:** an NPV ("Net Present Value" — what a trade is worth today) cube.
-
-Five pricers currently live here:
-
-- `swap.py` — linear (no optionality) swap pricing. See
-  [Instruments: Interest Rate Swaps](../instruments/swaps.md).
-- `european_swaption.py` — non-linear (single exercise date) swaption pricing via
-  Jamshidian's trick, priced directly off the simulation module's simulated Hull-White
-  rate paths rather than the yield-curve cube (it needs the model's own parameters, not
-  just discount factors — see [Instruments: European Swaptions](../instruments/european-swaptions.md)).
-- `bermudan_swaption.py` — non-linear (multiple discrete exercise dates) swaption
-  pricing via a numeric LGM backward-induction engine (Hagan's Gaussian-quadrature
-  convolution), matching ORE's own `NumericLgmMultiLegOptionEngine` — early exercise
-  has no closed form, so this is the pricing engine every other Bermudan/American
-  capability builds on (see [Instruments: American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)).
-- `american_swaption.py` — American exercise: ORE's uniform option-time grid over the
-  window and ORE's broken-period exercise (a coupon belongs until its accrual end,
-  credited `couponRatio`), priced through `bermudan_swaption.py`'s engine.
-- `treasury.py` (W1.5) — Treasury bills and notes (`BondConfig`), closed-form
-  discounted cashflows against the bond's **own** zero curve. **The odd one out in two
-  ways.** It is the only pricer here that is not JAX — plain `math.exp` over an ORE day
-  count, since there is no cube to vectorize over and nothing to differentiate. And it
-  is the only one that produces **no NPV cube**: a bond has no stochastic driver, so it
-  has no scenario dimension and therefore no VaR/ES. That is refused explicitly rather
-  than filled with a broadcast constant, which would report VaR 0.00 / ES NaN for a
-  position whose risk was never modelled — see [I-24](../planning/known-issues.md#i-24).
-
-`swap.py` and `european_swaption.py` are peer modules (neither depends on the other);
-`american_swaption.py` depends on `bermudan_swaption.py` (its engine), which does not
-depend on either of the other two pricers.
-
-Every pricer **depends** on ORE at runtime (see [ORE as a dependency](#ore-as-a-dependency)
-below) — they use ORE's own trade-schedule and day-count-convention machinery, via
-`engine/models/ore_builders.py`, so that "when does this swap pay cash, and how much" is
-computed exactly the way a real trading desk's software would compute it, rather than
-being reimplemented from scratch. Their own model math (bond prices, bond options) comes
-from `engine/models/hull_white.py` (`swap.py`, `european_swaption.py`) or
-`engine/models/lgm.py` (`bermudan_swaption.py`/`american_swaption.py`) — see
-[Models & Trades](../reference/models-and-trades.md).
-
-### Exposure (`engine/risk/exposure.py`)
-
-**Input:** the simulated NPV cube, the numeraire paths and today's discount factors.
-**Output:** ORE's exposure profile per date — EPE, ENE, EE_B, EEE_B, PFE — for the
-netting set and for each trade. See [Exposure](../risk/exposure.md).
-
-### Market Risk (`engine/market_risk/`)
-
-**Input:** trades and `ShockScenarios` (absolute moves of every curve pillar over a short
-horizon). **Output:** the P&L of every trade under every scenario, and its VaR/ES. It
-does not use the simulated cube. See [Market Risk](../risk/market-risk.md).
-
 ### Risk Statistics (`engine/risk/var_es.py`)
 
-**Input:** any cube shaped `[Scenarios, TimeSteps, Trades]` (not necessarily from the
-instrument pricers — see below) plus a baseline value. The market-risk path passes its
-P&L sample as a one-date cube.
-**Output:** Value at Risk and Expected Shortfall numbers, one per requested confidence
-level, one per time step.
-
-See [Risk Statistics](../risk/var_es.md) for the math.
-
-### Sensitivities (`engine/risk/greeks.py`)
-
-**Input:** one `SwapConfig`/`SwaptionConfig`/`BermudanSwaptionConfig` plus its own
-`ZeroCurve` (a JAX-array counterpart of `ZeroCurveConfig` — see below), and, for Vega, a
-list of `CalibrationTarget`s.
-**Output:** per-curve-pillar Delta/Gamma, a single Theta number, and (Bermudan/American
-only) per-basket-instrument Vega, for that one trade.
-
-Unlike `var_es.py`, this module is **not** instrument-agnostic — it imports directly from
-`engine.instruments.swap`/`engine.instruments.european_swaption`/
-`engine.instruments.bermudan_swaption` and reuses their own JAX-native pricing building
-blocks (via automatic differentiation, `jax.grad`/`jax.hessian`), rather than only
-consuming a generic NPV cube. It covers every *rate-derivative* instrument in this
-codebase — Bermudan/American Greeks became possible once `bermudan_swaption.py`'s backward
-induction was ported to `jax.lax.scan`, and Vega became well-defined once
-`engine/calibration/` existed to supply a genuine market-vol-to-model relationship. See
-[Delta, Gamma, and Theta](../risk/greeks.md) for the full story, including two real
-autodiff-through-bisection gradient bugs found and fixed while building this.
-
-**Bonds are the exception, and their Greeks do not live here.** `BondConfig` is priced by
-`engine/instruments/treasury.py`, which is plain `math.exp` arithmetic rather than JAX, so
-there is nothing for `jax.grad` to differentiate. Its Delta/Gamma/Theta are computed by
-`engine/portfolio/request.py::_bond_greeks` as **bumped revaluations** instead — a central
-difference at ±1bp for Delta and Gamma, and a one-calendar-day reprice for Theta. Vega is
-*omitted* rather than reported as zero (a fixed-coupon bond off a deterministic curve has
-no volatility input), and Theta is likewise omitted for a bond maturing tomorrow, where
-there is no next day on which the instrument still exists. See
-[The Portfolio Entry Point](../reference/portfolio-entrypoint.md#greeks).
+**Input:** any cube shaped `[Scenarios, TimeSteps, Trades]` plus a baseline value. The
+market-risk path passes its P&L sample as a one-date cube. **Output:** Value at Risk and
+Expected Shortfall, one per requested confidence level, one per time step. It does not care
+where the cube came from (`tests/test_var_es.py::TestRobustAcrossInstrumentSources` feeds it
+a synthetic cube and a portfolio run's). See [Risk Statistics](../risk/var_es.md).
 
 ## The Public API
 
-**Input:** a `PortfolioRequest` (`engine/portfolio/request.py`) — market data, a heterogeneous
-list of trades, and risk parameters, everything the pipeline above needs, in one object.
-**Output:** a `PortfolioResult` — prices, risk, and (optionally) Greeks, for the whole
-portfolio, in one object.
+**Input:** a `PortfolioRequest` (`engine/portfolio/request.py`): today's `Market`, a
+heterogeneous list of trades (each with a unique `trade_id`), the `RunConfig`, the PFE
+quantiles, and whether to compute Greeks and scenario risk.
+**Output:** a `PortfolioResult`: today's values per trade and in total, the cube, the exposure
+profiles, the Greeks, the trade ids, and the risk measure label.
 
-`engine/portfolio/request.py::price_portfolio` is the single entry point that ties every stage
-above together — the "one function to call" answer to "what should a caller of the whole
-system hand over, and what do they get back." It also carries the validation/assembly
-layer that makes an arbitrary (not hand-built) portfolio safe to run through this pipeline:
-cross-checking every trade's own duplicated `hw_a`/`hw_sigma`/`initial_zero_curve` against
-the simulation's `RatesConfig` (`validate_portfolio_against_simulation`), automatically
-deriving `RatesConfig.maturities` from every swap's real ORE schedule
-(`derive_maturity_pillars`) instead of requiring a caller to hand-compute pillars the way
-early demos did, and surfacing (not silently absorbing) known scope boundaries like a swap
-aged past its first accrual as warnings. See
-[The Portfolio Entry Point](../reference/portfolio-entrypoint.md) for the full field-level
-reference and [`docs/planning/traderx-integration.md`](../planning/details/traderx-integration.md)
-for the gap analysis this validation layer closes.
+`engine/portfolio/request.py::price_portfolio` is the single entry point that ties every
+stage together. Before any JAX work it refuses what it cannot price as specified (a trade
+valued on another date than the market's, a curve the market lacks, an engine's refusal, a
+precision the pipeline does not implement yet), naming the trade and the field. See
+[The Portfolio Entry Point](../reference/portfolio-entrypoint.md).
 
-`engine/api/` (`app.py`/`routes.py`/`schemas.py`) wraps `price_portfolio` behind a FastAPI
-HTTP API — a thin transport layer, not a second place orchestration logic lives. Pydantic
-models in `engine/api/schemas.py` mirror `PortfolioRequest`/`PortfolioResult`/every
-instrument config field-for-field, converting to/from the real dataclasses at the HTTP
-boundary; `engine.portfolio` and everything below it has zero Pydantic/FastAPI dependency,
-so the core simulation/pricing/risk engine still doesn't require the heavier `api` extra to
-use as a plain Python library. See [HTTP API](../reference/http-api.md) for the endpoint
-reference, including why `POST /portfolio/price` returns a job id and polls rather than
-blocking (a measured ~52-second wall-clock time for a modest portfolio, dominated by JAX
-JIT compilation and Monte Carlo simulation).
+`engine/api/` wraps `price_portfolio` behind a FastAPI HTTP API — a thin transport layer,
+not a second place orchestration logic lives. The request schema
+(`engine/api/market_schemas.py`) mirrors the market, trades and run configuration
+field for field, converting to the dataclasses at the HTTP boundary; `engine.portfolio` and
+everything below it has no Pydantic/FastAPI dependency, so the engine does not require the
+`api` extra as a plain Python library. See [HTTP API](../reference/http-api.md), including
+why `POST /portfolio/price` returns a job id and polls rather than blocking.
 
 ## Design principle: modules agree on shapes, not code
 
-At the Python-module level, the instrument pricers and the risk aggregation module do
-**not** import the simulation module (or each other) — `generate_paths` is called by the
-demos and `engine.portfolio`, never by a pricer. `price_swaps()` only needs *some* array shaped
-`[Scenarios, TimeSteps, Maturities, NumRates]`; every swaption pricer only needs *some*
-array shaped `[Scenarios, TimeSteps, NumHW]`; none of them care whether that array came
-from `generate_paths()`, a hand-built NumPy array, or a completely different simulation
-engine. The same is true of `compute_risk_metrics()`: it only needs *some* array shaped
-`[Scenarios, TimeSteps, Trades]` — which is exactly what every pricer produces, despite
-consuming different-shaped inputs and using entirely different pricing math (linear
-cashflow summation, Jamshidian's closed-form option decomposition, or numeric LGM
-backward induction).
-
-This is what makes the pipeline modular in practice, not just in diagrams — it's directly
-exercised by the test suite (`tests/test_var_es.py`'s
-`TestRobustAcrossInstrumentSources` tests feed `risk/var_es.py` both a fabricated,
-non-swap-derived cube and a real swap-pricer cube, and assert both work identically) and
-it's what let `european_swaption.py`, `bermudan_swaption.py`, and `american_swaption.py`
-— three more, genuinely different instrument types after the original swap pricer —
-each plug into `risk/var_es.py` with zero changes to that module.
+The stages agree on data, not on each other's internals: the scenario market is curves per
+path and date, and every pricer reads only those curves (`DiscountCurve`, log discount
+factors at tenor times), never the model that produced them. That is why the Hull-White
+model needed no pricer of its own: the same pricers, unchanged, price its paths, and the
+per-path ORE comparisons of `tests/test_valuation.py` run under both models.
+`compute_risk_metrics()` likewise needs only *some* array shaped `[Scenarios, TimeSteps,
+Trades]`.
 
 ## `demos/demo_scenarios.py`: shared example configurations
 
-Every demo and many test files need *some* realistic `SimulationConfig` to run against.
-`demos/demo_scenarios.py` centralizes the canonical example scenarios:
+Every demo and many test files need *some* realistic market and simulation to run against.
+`demos/demo_scenarios.py` centralizes them: `demo_market(currencies)` (USD and EUR on curves
+rising from 3% to 5% and from 2% to 3.2%, with 6M forwarding curves and swaption
+volatilities, the EURUSD spot and an equity) and `demo_simulation(model, ...)` (the
+cross-asset simulation on it, with `model` `"HullWhite"` or `"LGM"` for every currency,
+optionally calibrated), plus their HTTP JSON (`demo_market_json`, `demo_simulation_json`).
+The market is sloped on purpose: a flat curve hides drift and convexity errors, which is how
+the Hull-White model's old simulation hid a 4-9% bias (I-42).
 
-- `cross_asset_demo_config()` — two equities/FX pairs and two interest rate
-  currencies (USD, EUR), used to show off the full breadth of what the simulation module
-  can simulate.
-- `single_currency_swap_demo_config()` — one currency with two correlated interest
-  rate factors (a discounting curve and a separate forwarding curve), sized to exactly
-  match a demo 2-year interest rate swap. Used by the instrument-pricing and
-  risk-aggregation demos and by the ORE cross-check tests.
-- `swaption_demo_config()` — a 5-year grid with steps before and after the demo
-  swaptions' exercise dates.
-
-It also provides `flat_yield_curves()`, a helper that builds a deterministic (no random
-simulation noise) yield curve cube directly from ORE's own curve objects — used
-whenever code needs a "today's actual market, no what-if" baseline, most importantly for
-the risk aggregation module's `base_npv` input and for the tests that compare this
-engine's output directly against ORE's.
-
-It depends on `engine/simulation/market_model.py` (it constructs `SimulationConfig`
-objects); the engine never imports it. The demos, run as scripts from `demos/`, import it
-as `demo_scenarios`; the tests as `demos.demo_scenarios`. The engine modules once carried
-their own `__main__` demos that imported it, which kept demo data in the shipped package;
-those demos are now the sections of `demos/demo_components.py`, and
-`tests/test_import_layering.py` keeps `__main__` blocks and imports of `demos`/`tests` out
-of `engine/` ([I-65](../planning/known-issues.md#i-65)).
+The engine never imports it. The demos, run as scripts from `demos/`, import it as
+`demo_scenarios`; the tests as `demos.demo_scenarios`. `tests/test_import_layering.py` keeps
+`__main__` blocks and imports of `demos`/`tests` out of `engine/`
+([I-65](../planning/known-issues.md#i-65)).
 
 ## ORE as a dependency
 
 [ORE (Open Source Risk Engine)](https://www.opensourcerisk.org/) shows up in this codebase
 in two different roles, and it's important to keep them distinct:
 
-1. **As a design reference.** Every formula in this engine (the Brownian bridge
-   construction, the Hull-White affine bond-price formula, the swap pricing formulas,
-   Jamshidian's swaption formula, the LGM backward-induction engine, the VaR/ES formulas)
-   was checked against ORE's actual behavior — either by reading ORE's own C++ source
-   (`reference/ORE`) or Python bindings directly, or by running small scripts against the
-   installed `ORE` package and comparing numbers. This is *validation*, not a runtime
-   dependency.
-2. **As a runtime dependency, in `engine/instruments/` only.** Every pricer in
-   `engine/instruments/` (`swap.py`, `european_swaption.py`, `bermudan_swaption.py`,
-   `american_swaption.py`) imports the `ORE` Python package
-   (`open-source-risk-engine` on PyPI) and calls it directly — `ORE.MakeVanillaSwap`,
-   `ORE.Actual365Fixed`, and related classes build the underlying swap's payment schedule
-   and compute each payment's day-count fraction. This is a deliberate choice:
-   schedule/day-count logic is fiddly, well-tested in ORE already, and not
-   performance-critical (it runs once per trade, not once per simulated scenario), so
-   there is no benefit to reimplementing it in JAX. `engine/simulation/market_model.py`
-   and `engine/risk/var_es.py` have **no** runtime ORE dependency — only pure JAX/NumPy.
+1. **As a design reference.** Every formula in this engine was checked against ORE's actual
+   behavior — either by reading ORE's own C++ source (`reference/ORE`) or Python bindings
+   directly, or by running the installed `ORE` package in the test suite and comparing
+   numbers. This is *validation*, not a runtime dependency.
+2. **As a runtime dependency, for schedules and day counts.** Trade configs, the valuation
+   layer and the calibration build ORE's own objects (`ORE.VanillaSwap` schedules, day
+   counters, calendars, `SwaptionHelper` baskets) through `engine/models/ore_builders.py` and
+   `engine/calibration/ore_lgm.py`. This runs once per trade or basket, not once per path:
+   schedule logic is fiddly, well tested in ORE, and not performance-critical. The
+   simulation (`engine/simulation/`) and the risk statistics (`engine/risk/var_es.py`) are
+   pure JAX/NumPy.
 
-This means `pip install`-ing this project's core simulation and risk-statistics
-functionality does not strictly require ORE, but pricing any real trade currently does
-(every pricer lives under `engine/instruments/`, the only directory with a runtime ORE
-dependency). If the eventual TraderX API (see the roadmap in the root
-[README.md](../../README.md)) is deployed as a microservice, whatever machine runs the
-pricing endpoint needs ORE installed.
+Pricing any real trade therefore needs ORE installed, as does whatever machine serves the
+pricing endpoint.
 
 ## Adjustable precision
 
 **Decisions (2026-09-30,** [compliance/decisions.md](../../compliance/decisions.md) **A-9, D-9).**
 Adjustable precision is a requirement: any combination of precisions may be run for any
-calculation. The mechanism described below (a process-global `jax_enable_x64` switched per
-job, `_PRICING_LOCK`, one worker pool per precision tier) is to be replaced by explicit
-per-stage dtypes with x64 enabled once per process, and removed only once that works. A run
-whose combination has not been shown adequate for a figure is to carry a warning with the
-evidence ([I-55](../planning/known-issues.md#i-55); ORE alignment plan 9.4, 9.5). The market path's code
-already takes explicit dtypes.
+calculation, and a run whose combination has not been shown adequate for a figure is to
+carry a warning with the evidence ([I-55](../planning/known-issues.md#i-55)).
 
 One of the project's core long-term research goals (see [Overview](../getting-started/overview.md)) is
 comparing risk results computed with different numeric precision — 64-bit ("double",
 very precise, slower) versus 32-bit ("single", less precise, faster), and eventually
-pushing well below that to 8-bit and 4-bit formats.
+pushing well below that.
 
-As of `PrecisionConfig` (`engine/portfolio/request.py`), this is exposed as **four
-independent knobs**, two of which optionally drill down further:
+`PrecisionConfig` (`engine/portfolio/config.py`, on `RunConfig.precision`) has four knobs:
 
 ```python
 @dataclass(frozen=True)
 class PrecisionConfig:
-    simulation: int = 64                                     # Monte Carlo path generation (generate_paths)
-    pricing: Union[int, PricingPrecisionOverride] = 64        # instrument NPV / npv_cube dtype
-    risk: Union[int, RiskPrecisionOverride] = 64              # VaR/ES + Greeks
-    calibration: int = 64                                     # LGM sigma bootstrap dtype
+    simulation: int = 64                                  # the scenario market's dtype
+    pricing: Union[int, PricingPrecisionOverride] = 64     # per product type
+    risk: Union[int, RiskPrecisionOverride] = 64           # per Greek, and the exposure
+    calibration: int = 64                                  # the bootstrap
 ```
 
-Passed as `PortfolioRequest(..., config=RunConfig(precision=PrecisionConfig(simulation=64,
-pricing=32, risk=32)))` (on the Hull-White model, `dataclasses.replace(HULL_WHITE_CONFIG,
-precision=...)`; the market path honours `simulation` only and refuses the others below 64
-until roadmap 1.4) (or, over HTTP, a `"precision": {"simulation": 64, "pricing": 32, "risk": 32}` block on
-`POST /portfolio/price` — see [HTTP API](../reference/http-api.md)). All four default to
-64, byte-identical to this project's behavior before `PrecisionConfig` existed.
+**What is honored today.** `simulation`: the scenario market (states, curves, numeraire) is
+built in that dtype. The other three stages run in float64, and a value below 64 for any of
+them is refused by name (`check_run`) until roadmap 1.4 gives every stage an explicit dtype
+from the configuration. (Before roadmap 1.3 the separate Hull-White pipeline also took
+`pricing` and `risk` below 64; that option went with the pipeline and returns for both models
+with 1.4.) The market-risk path, `engine.market_risk`, has a single `precision` of its own:
+the revaluation and its VaR/ES statistics run at one dtype, 32 or 64.
 
-**`pricing` and `risk` each optionally accept a structured override** instead of a flat
-`int`, for finer-than-module-level control:
-
-```python
-@dataclass(frozen=True)
-class PricingPrecisionOverride:
-    default: int = 64
-    swap: Optional[int] = None
-    european_swaption: Optional[int] = None
-    bermudan_swaption: Optional[int] = None
-    american_swaption: Optional[int] = None
-
-@dataclass(frozen=True)
-class RiskPrecisionOverride:
-    default: int = 64
-    delta_gamma: Optional[int] = None   # ONE knob for both -- see below
-    theta: Optional[int] = None
-    vega: Optional[int] = None
-    exposure: Optional[int] = None
-```
-
-A flat `int` is sugar for "every sub-field at this precision" — it resolves through the
-exact same `_resolve_pricing_dtype`/`_resolve_risk_dtype` helpers a structured override
-uses, never a separate code path, so `PrecisionConfig(pricing=32)` (today's exact call
-shape) keeps working byte-identically. Any override field left `None` falls back to that
-override's own `default`. `simulation` and `calibration` stay flat-`int`-only: each has
-exactly one call site in the pipeline (`generate_paths`, the LGM bootstrap), so no
-drill-down axis applies to either.
-
-`delta_gamma` is one shared field, not split further into Delta/Gamma: `swaption_delta_gamma`/
-`bermudan_delta_gamma` each derive both from a single `_grad_and_hessian_diagonal` call
-against one curve (one gradient plus one batched Hessian-vector-product pass — see
-[Profiling & the Tracer §3.4](profiling.md)) — splitting them would mean either duplicating
-the curve-build and the autodiff trace, or restructuring `engine/risk/greeks.py`'s public
-functions themselves, out of scope for a wrap-don't-invade config redesign.
-
-`exposure` is structurally different from the other three `risk` sub-fields: the exposure
-statistics derive their dtype from `npv_cube` (i.e. from `pricing`'s own output), not from
-any curve. `price_portfolio` honors an `exposure` override that differs from `pricing` via
-an explicit re-cast of `npv_cube` immediately before computing the profiles — not a curve
-substitution like `delta_gamma`/`theta`/`vega`. This means `risk.exposure` can only ever
-*narrow* precision relative to whatever `pricing` already produced; it can't recover
-precision `pricing` already lost.
-
-(The market-risk path, `engine.market_risk`, has a single `precision` of its own: the
-revaluation and its VaR/ES statistics run at one dtype.)
-
-A real, honest consequence of per-instrument-type `pricing`: when different buckets resolve
-to different dtypes, `_price_by_type`'s final `jnp.stack` promotes the assembled `npv_cube`
-to the WIDEST dtype present (confirmed directly: `jnp.stack([float64_arr, float32_arr],
-axis=-1).dtype == float64`). A mixed-precision pricing request still controls the *cost* of
-computing each bucket's own cube — an expensive Bermudan tree running cheaper while a
-trivial swap stays exact — but `npv_cube.dtype` itself reflects the widest bucket present,
-not necessarily the one a caller drilled down on.
-
-**`simulation`** works exactly as before: it's passed straight through to
-`generate_paths(config, precision=...)`.
-
-**`pricing`** is *not* a parameter any pricer function accepts. `price_swaps`/
-`price_swaptions`/`price_bermudan_swaptions`/`price_american_swaptions` already derive
-their own working dtype from whatever JAX array they're handed (`yield_curves.dtype`,
-`hw_paths.dtype`, etc.) — the actual gap was `engine/portfolio/request.py` constructing
-some of *its own* arrays (`step_times`, `_base_npv`'s swaption zero-shock path,
-`_flat_curve_cube`'s output) as hardcoded `float64` before ever reaching a pricer.
-`pricing` fixes that at the source: `price_portfolio` builds every one of these arrays at
-`precision.pricing`'s dtype, and the pricers propagate it onward exactly as they already
-did. There is deliberately no signature change to any of the four pricer modules.
-
-Two subtler gaps surfaced during implementation, beyond what the initial code-reading
-pass found, and both needed a real fix rather than just dtype plumbing in `request.py`:
-
-- `price_portfolio`'s main (non-base) pricing path was originally handing `price_swaps`/
-  `price_swaptions`/etc. `generate_paths`' own output (`market["rates"]`/
-  `market["yield_curves"]`) directly — which is governed by `precision.simulation`, not
-  `precision.pricing`. Since the pricers derive dtype from *whichever* JAX array they're
-  handed, `pricing=32` with `simulation=64` (the plan's own explicit end-to-end
-  verification scenario) had no effect on `npv_cube` at all until `price_portfolio` was
-  changed to re-cast `market["rates"]`/`market["yield_curves"]` to `precision.pricing`'s
-  dtype before routing to the pricers (a no-op cast, and free, whenever the two knobs
-  already agree — the common case).
-- `european_swaption.py`'s Jamshidian root-find (`_solve_rstar`/`_bisect_rstar`)
-  initialized its bisection bracket via bare `jnp.ones(t_shape) * 2.0` — `jnp.ones` with
-  no explicit `dtype` silently picks up JAX's *ambient* default float dtype (float64
-  whenever `jax_enable_x64` is on, regardless of what dtype the rest of the pricing
-  computation actually wants), which upcast the solved root `r*` back to float64 and, in
-  turn, every downstream Black-formula quantity built from it — even though `A_T0_Ti`/
-  `B_T0_Ti`/every other array in `_price_one_swaption` was already correctly float32.
-  This was invisible in the pre-`PrecisionConfig` codebase because every caller used the
-  same precision throughout; it surfaced immediately once `pricing=32` was exercised with
-  `jax_enable_x64` left on by a `simulation=64` sibling knob. Fixed by deriving `dtype`
-  from `params`' own leaves (`jax.tree_util.tree_leaves` + `jnp.result_type`) in
-  `_solve_rstar` and threading it through to `_bisect_rstar`'s bracket construction.
-
-Both fixes were found by literally exercising `pricing=32` end-to-end (per-pricer-type,
-not just a per-array code read) rather than trusting the initial "these four pricers need
-no changes" research alone — the plan that scoped this feature flagged exactly this kind
-of gap as something to re-verify during implementation, not assume away.
-
-**`risk`** governs the exposure statistics (`engine.risk.exposure`, fully dtype-agnostic — they
-reflect whatever dtype the precision-controlled `npv_cube` already has) and Greeks
-(`engine/risk/greeks.py`). The mechanism here is curve-driven, not a new Greeks
-parameter: `_compute_all_greeks` builds each trade's `ZeroCurve` at `precision.risk`'s
-dtype (via `ZeroCurve.from_config(config, dtype=...)`), and every Greeks closure that
-used to hardcode `jnp.float64` for its own intermediate arrays (cashflow times/amounts,
-the Bermudan/American state grid's quadrature weights and trade-schedule arrays, the
-Vega Jacobian's accumulator) now derives that dtype from the `curve`/`x_nodes` parameter
-it's already handed. This mattered more than it looks: because `jax_enable_x64` is a
-single process-global flag (see below), any *one* hardcoded-`float64` array left in this
-chain silently upcasts a `risk=32` computation back to float64 the moment it's combined
-with the correctly-sized array — confirmed directly (`jnp.interp`/elementwise ops promote
-a float32/float64 mix to float64 whenever `jax_enable_x64` is on, regardless of which
-operand is which dtype). Getting this right for `bermudan_swaption.py`'s `_state_grid`/
-`_run_backward_induction`/`_cashflow_values_at_nodes` in particular required tracing the
-*entire* chain of arrays feeding the backward induction, not just the one function whose
-docstring already mentioned a dtype, since that function is shared between plain
-(non-Greeks) Bermudan/American pricing — which must stay governed by `pricing`, not
-`risk` — and Greeks. The scoping trick: `_zero_curve_of` (both the one in `request.py`
-and `bermudan_swaption.py`'s own copy) preserves whatever dtype it's handed rather than
-hardcoding one, so plain pricing's curve stays float64 (built from a plain `np.ndarray`)
-while Greeks' curve carries whatever `risk`-precision JAX array
-`engine.risk.greeks._bermudan_price_fn` substituted in — one signal, two correct
-behaviors, no separate parameter needed.
-
-When `risk` is a `RiskPrecisionOverride` with `delta_gamma` and `theta` resolving to
-different dtypes, `_compute_all_greeks` builds two separate `ZeroCurve`s per trade (one per
-metric) rather than one shared curve — the same curve-driven mechanism, just invoked twice.
-When both resolve to the same dtype (the common flat-`risk=N` case), this pays one small,
-redundant extra curve-construction call: a deliberate simplicity-over-micro-optimization
-choice, since building a `ZeroCurve` is a cheap pillar-count array build, not a
-JIT-compiled trace.
-
-**`calibration`** governs the LGM sigma bootstrap (`engine/calibration/lgm.py::calibrate_lgm_sigma`,
-invoked by `_fill_calibrated_sigma` once per distinct `rate_factor_index` needing
-calibration). Unlike `risk`, this was *not* free: `calibrate_lgm_sigma` hardcoded
-`jnp.float64` at four internal sites (the bisection's per-bucket `times`/`values` arrays and
-the final `Sigma`'s own arrays) regardless of what curve it was handed. Fixed by deriving
-`dtype = curve.pillar_rates.dtype` once at the top of the function and using it at all four
-sites — the same derive-from-curve pattern `engine/risk/greeks.py` already established, so
-`_fill_calibrated_sigma` controls it purely by handing `calibrate_lgm_sigma` a curve built
-at `precision.calibration`'s dtype, with no new parameter on the calibration function
-itself. One caveat worth stating plainly rather than assuming away: the bisection's
-`market_price`/`new_value` round-trip through plain Python `float` (always float64-precision
-in CPython) between bucket iterations, even at `calibration=32` — verified end-to-end (see
-`tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision::
-test_calibration_precision_flows_through_lgm_bootstrap`) to be immaterial: `jnp.asarray`
-downcasts the Python float back to float32 correctly on the very next line, and the
-resulting `Sigma`'s own dtype is confirmed float32 throughout.
-
-**The `jax_enable_x64` process-global-flag mechanism itself is unchanged**: JAX (the
-numerical library this project is built on) can only create 64-bit numbers at all if a
-single global setting, `jax_enable_x64`, is turned on — and that setting applies to the
-*entire process*, not to individual function calls or threads. This isn't a limitation of
-this codebase; it's how JAX itself works, because 64-bit support changes how JAX talks to
-the accelerator (CPU, GPU, or TPU). `generate_paths()` toggles this global setting itself,
-right before doing any math, based on the `precision` argument it was given.
-
-The one function that does **not** automatically manage this is
-`generate_sobol_normals()`, if called directly instead of through `generate_paths()` —
-its `dtype` argument is honored (covered by a regression test), but the global
-`jax_enable_x64` setting still needs to already be in the state the caller wants before
-other, unrelated JAX code runs elsewhere in the same process.
+**The x64 flag.** JAX can create 64-bit arrays only while one process-global setting,
+`jax_enable_x64`, is on; it cannot be scoped per thread or per call. `engine` turns it on once,
+when imported, and nothing turns it off: a float32 computation is float32 because its arrays
+are created in float32, not because the flag is off. Every pipeline array takes its dtype
+explicitly, so the flag only makes float64 possible.
 
 ### Concurrency: a multi-process worker pool, with `_PRICING_LOCK` as defense-in-depth
 
-**This section describes a genuine architecture change**, not a terminology fix over the
-previous "single-consumer, low-volume, queue behind a lock" design. That previous design
-directly contradicted this project's actual purpose (see [Overview](../getting-started/overview.md)):
-running pricing/simulation across *multiple* TPU devices concurrently is the point, and a
-single process-wide lock caps the whole process at one device's worth of work in flight at
-a time, no matter how many devices are available.
+`engine/portfolio/worker_pool.py` keeps one `ProcessPoolExecutor` per precision tier
+(float32 and float64, the values `PrecisionConfig.simulation` allows); `submit_pricing_job`
+routes a job by its simulation precision. Each worker runs one job at a time and keeps x64 on,
+as the parent does, so a job prices bit for bit as a direct `price_portfolio` call would. (Until
+roadmap 1.3 a float32-tier worker turned the flag off, which silently made its float64 stages
+float32, [I-71](../planning/known-issues.md#i-71).) With every dtype explicit the tiers only
+route; roadmap 1.4 removes them with `_PRICING_LOCK`
+([I-55](../planning/known-issues.md#i-55)).
 
-**The underlying JAX fact hasn't changed and can't be worked around**: `jax_enable_x64` is
-process-global state, not thread-local, and JAX provides no per-thread, per-device, or
-per-mesh scoped alternative (confirmed at the JAX source level: `jax/_src/config.py`'s own
-maintainers explicitly excluded this one flag from the context-manager-scoping mechanism
-every other JAX config flag gets). Two *threads* in one process wanting different
-precisions at the same time cannot both be correct without serializing. Two *processes*,
-each fixing `jax_enable_x64` once at boot and never touching it again, have entirely
-independent JAX/XLA runtimes and never race each other — that's the mechanism this
-architecture uses to get real concurrency instead of accepting the lock's serialization as
-a permanent ceiling.
+Separate processes give real concurrency: `N` workers in a tier's pool run `N` jobs at once,
+and the two tiers run side by side. The cost: compiled XLA programs are not shared across
+processes, so each worker pays its own compilation. Workers are always spawned, never forked
+(forking a process that has initialized JAX hangs, I-33). Device-count-aware pool sizing and
+TPU device pinning are deferred to a real TPU deployment
+([I-61](../planning/known-issues.md#i-61)).
 
-**The architecture**: `engine/portfolio/worker_pool.py` maintains one
-`ProcessPoolExecutor`-backed pool per precision tier (float32 and float64 — the two values
-`PrecisionConfig.simulation` allows), not one pool per raw device. Each worker process, via
-the executor's `initializer=` parameter (`_worker_init`, a plain top-level function — see
-that module's own docstring for why it can't be a lambda/closure), does exactly two things
-once at worker boot and never again for its lifetime: sets `jax.config.update("jax_enable_x64", ...)`
-matching its own fixed tier, and pins itself to one device via process-launch-time
-environment configuration (a deliberate no-op on this CPU-only dev machine, which has
-exactly one `CpuDevice` — see that module's docstring for the real-TPU-deployment shape
-this leaves ready without implementing against hardware this repo cannot test). Each
-worker then processes jobs strictly sequentially, one at a time, by construction — which is
-what makes `_PRICING_LOCK` unnecessary *at the worker level*: no second thread in that
-process ever calls into JAX-executing code while a job is in flight. `N` workers in a
-tier's pool means `N` jobs of that tier can run genuinely concurrently; a float32-tier job
-and a float64-tier job run in separate pools/processes and are therefore always genuinely
-concurrent with each other, not time-sliced behind one flag.
-
-`submit_pricing_job(request)` routes purely by `request.config.precision.simulation` — the one
-knob that actually drives `generate_paths`'s own `jax.config.update` call.
-`pricing`/`risk` stay independently-settable dtypes *within* a job, honored by
-`price_portfolio`'s own explicit casts once inside whichever tier's worker the job landed
-on (including the existing re-enable-`jax_enable_x64`-after-`generate_paths` logic
-described above, unchanged). `PrecisionConfig`'s/`PortfolioRequest`'s public shape did not
-change at all for this — `simulation` already was the natural routing selector.
-
-**`_PRICING_LOCK` is kept, not removed — its role narrowed to defense-in-depth.** No code
-change to the lock itself. The underlying JAX fact it protects against doesn't go away
-just because the worker pool makes it unreachable through the normal HTTP path: anything
-that ever puts two threads of the *same* process inside `price_portfolio` concurrently — a
-worker-pool sizing bug, or a future direct Python caller spinning up their own threads
-against `engine.portfolio` directly (that module is deliberately zero-Pydantic/FastAPI-
-dependency, designed to be called directly, not only through the HTTP/worker-pool layer) —
-would hit the exact same corruption bug the lock was built to prevent. The lock is cheap
-(uncontended-lock overhead is negligible next to a JIT-compile-dominated multi-second job)
-and remains correctness-critical whenever "one job per worker process" doesn't hold; it is
-no longer, however, the *primary* mechanism limiting concurrency — that role now belongs to
-the worker pool's process boundaries.
-
-**What this buys, and what it doesn't (yet).** Concurrent `/portfolio/price` jobs across
-*different* precision tiers now genuinely run in parallel, on separate OS processes, rather
-than queuing behind one lock. Same-tier jobs beyond that tier's own pool size still queue —
-expected pool exhaustion, not a bug, and no different in kind from any fixed-size worker
-pool. A real cost worth stating honestly: JIT compilation cache was shared process-wide
-across threads under the old design; under N worker processes, each process pays its own
-compilation cost independently, since compiled XLA programs aren't shared across separate
-OS processes. Real device-count-aware pool sizing (matching `len(jax.devices())` on an
-actual Cloud TPU VM host) and TPU-specific environment-variable device pinning
-(`JAX_PLATFORMS=tpu`/`TPU_VISIBLE_CHIPS`) are deferred to actual TPU deployment, not
-designed here — see [I-61](../planning/known-issues.md#i-61). See
-[HTTP API](../reference/http-api.md) for the dispatcher-level job-store details and
-[`engine/portfolio/worker_pool.py`](../../engine/portfolio/worker_pool.py) for the full
-implementation and its own extensive docstring.
+`_PRICING_LOCK` serializes `price_portfolio`'s JAX work for direct multi-threaded callers.
+It is no longer what limits concurrency (the process boundaries are), and is cheap next to a
+compile-dominated job.
 
 ### Option B: why uniform sub-float32 precision is not achievable today
 
@@ -921,7 +448,7 @@ formats *throughout* the pipeline, not just at isolated points. Two materially d
 paths exist, and it matters which one this codebase has:
 
 - **Option A (designed, not yet implemented in this codebase — `MatmulPrecisionConfig`).**
-  FP8/FP4 applied only at two matmul-shaped sub-steps inside `generate_paths`, paired with
+  FP8/FP4 applied only at two matmul-shaped sub-steps inside the simulation, paired with
   float32 accumulation — deliberately narrow, targeting exactly the operations where a
   low-precision matmul kernel exists and is numerically sound. Everything else stays at
   `PrecisionConfig`'s float32-or-float64 knobs described above. This is a separate,
@@ -995,14 +522,17 @@ TPU deployment work, listed here once, not duplicated speculatively elsewhere.
 
 ## Typed configuration
 
-Every module takes a Python `@dataclass` as its primary input — `SimulationConfig` (and
-its nested `EquityConfig`, `RatesConfig`, `ZeroCurveConfig`) for the simulation module,
-`SwapConfig` and `SwaptionConfig` for the instrument pricers, `PortfolioRequest` for the
-top-level entry point (see [The Public API](#the-public-api)). This was a deliberate choice over passing plain dictionaries: a typo in a
+Every module takes a Python `@dataclass` as its primary input — `Market` (and its
+`CurrencyMarket`, `ZeroCurveConfig`, `SwaptionVolSurface`) for today's market, `CamConfig`
+(with `LgmConfig`/`HullWhiteConfig`) for the simulation, `SwapConfig`, `SwaptionConfig`,
+`BermudanSwaptionConfig`, `AmericanSwaptionConfig` and `BondConfig` for the trades,
+`RunConfig` for the run, `PortfolioRequest` for the top-level entry point (see
+[The Public API](#the-public-api)). This was a deliberate choice over passing plain
+dictionaries: a typo in a
 dictionary key silently produces a confusing error deep inside the pipeline, while a
 typo in a dataclass field name fails immediately, at the point the config object is
 constructed, with a clear Python error. It's also the shape the HTTP API's own Pydantic
-schemas (`engine/api/schemas.py`) mirror field-for-field and convert to/from at the HTTP
+schemas (`engine/api/market_schemas.py`) mirror field-for-field and convert to/from at the HTTP
 boundary — see [HTTP API](../reference/http-api.md).
 
 ## Testing philosophy

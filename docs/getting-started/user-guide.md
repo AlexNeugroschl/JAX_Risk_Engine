@@ -83,7 +83,7 @@ unpinned. Neither affects numerical results.
 
 The examples on this page assume you're running from the repository root. `engine` itself
 is importable from anywhere once installed — `pip install -e .` puts it on the path, so
-`from engine.simulation.market_model import ...` works without any extra path setup and
+`from engine.portfolio import ...` works without any extra path setup and
 without `cd`-ing anywhere in particular. What the repository root buys you is that the
 **relative paths in these examples resolve**: `tests/fixtures/traderx-eod/...`,
 `demos/demo.py`, `tests/`.
@@ -102,14 +102,13 @@ directory, but the paths in these commands are relative to the root.
 ```bash
 python demos/demo.py
 ```
-Simulates a market, calibrates a volatility term structure, prices one of each instrument
-type (swap, European/Bermudan/American swaption) via
-[`engine.portfolio.price_portfolio`](../reference/portfolio-entrypoint.md), and prints
-NPVs, the exposure profile and Bermudan Greeks, then ends with a 10-day market-risk
-VaR/ES of the same portfolio — the same walkthrough the individual module demos below
-show piece-by-piece, but as a single, realistic entry-point call rather than hand-wired
-pipeline plumbing. Start here if you want to see the whole system working end to end before
-digging into any one stage.
+Builds today's USD market (a curve rising from 3% to 5%), a run configuration with the
+Hull-White model calibrated to the market's swaption volatilities, and one of each trade
+type (swap, European/Bermudan/American swaption, Treasury note); prices them in one
+[`engine.portfolio.price_portfolio`](../reference/portfolio-entrypoint.md) call; prints the
+NPVs on every date, the exposure profile and the Bermudan's Greeks; shows the same run under
+the LGM (the model is one field of the configuration); and ends with a 10-day market-risk
+VaR/ES of the same portfolio. Start here to see the whole system working end to end.
 
 **The same portfolio, over the real HTTP API:**
 ```bash
@@ -117,41 +116,34 @@ python demos/demo_api.py
 ```
 Requires the `api` extra (see [Running the API](#running-the-api) below). Launches its own
 `uvicorn` server (or reuses one already running at `http://127.0.0.1:8000` if
-`JAX_RISK_ENGINE_DEMO_SKIP_SERVER=1` is set), builds the same market/portfolio as `demo.py`
-as a `PortfolioRequestSchema` JSON body, submits it to `POST /portfolio/price`, polls
-`GET /portfolio/price/{job_id}` until it completes, and prints the same NPV/risk/Greeks
-summary read back out of the JSON response — see [HTTP API](../reference/http-api.md) for
-what's actually happening on the wire. Both Bermudan/American trades are left uncalibrated
-(`hw_sigma: null`) and resolved server-side via a `calibration_basket` on the request — see
-[HTTP API: Automatic calibration](../reference/http-api.md#automatic-calibration-hw_sigma-null--calibration_basket).
+`JAX_RISK_ENGINE_DEMO_SKIP_SERVER=1` is set), builds the same market, portfolio and
+configuration as `demo.py` as the portfolio request's JSON, submits it to
+`POST /portfolio/price`, polls `GET /portfolio/price/{job_id}` until it completes, and prints
+the same summary read back out of the JSON response — see [HTTP API](../reference/http-api.md)
+for what's on the wire.
 
 **The same portfolio again, restructured to show the shape of a real integration:**
 ```bash
 python demos/demo_structured.py
 ```
-Functionally identical to `demo_api.py` (same market, same portfolio, same HTTP calls), but
-organized into four explicit, clearly labeled stages: **given inputs** (plain market/
-portfolio facts — curve, model parameters, trades, market vol quotes — with zero server/
-schema concepts in sight), **server setup** (pure infrastructure: get a running server,
-independent of what portfolio you're about to price), **server inputs** (the mechanical
-translation from stage 1's facts into `PortfolioRequestSchema`'s exact JSON shape), and
-**submit and print** (send, poll, display). Useful as a template to copy from when wiring up
-a real integration, since it makes explicit which parts of the script would change for a
-different portfolio (stage 1) versus which parts wouldn't (stage 2) versus which parts are
-pure boilerplate reshaping (stage 3).
+Functionally identical to `demo_api.py`, but organized into four labeled stages: **given
+inputs** (plain market/portfolio facts — curves, volatility quotes, the model, trades — with
+no server or schema concepts), **server setup** (infrastructure, independent of the
+portfolio), **server inputs** (the mechanical translation of stage 1 into the request's
+JSON), and **submit and print**. A template for a real integration: it makes explicit which
+parts change for a different portfolio (stage 1), which don't (stage 2), and which are
+boilerplate reshaping (stage 3).
 
-**The same end-to-end path, sized so its profiler trace is readable:**
+**The same end-to-end path, sized for a profiler trace** (truncated since roadmap 1.3 by the
+options' per-path recalibration, [I-53](../planning/known-issues.md#i-53)):
 ```bash
 python demos/demo_profile_small.py
 ```
-Exercises exactly what `demo_structured.py` does — calibration, simulation, all four
-instrument pricers, risk and Greeks, over the real HTTP API, in a real pool worker, under
-`jax.profiler.trace` — on a deliberately small portfolio, producing roughly a 41 MB trace in
-about 25 seconds under `.profile-out-small/`. It trades portfolio realism for trace
-ergonomics and nothing else. Note that it leaves Greeks **on**: Greeks is the one knob that
-genuinely moves trace size (~5x), which is precisely why a trace without it would not
-represent where this engine spends its time. See
-[Profiling a pricing job](#profiling-a-pricing-job) below and
+Exercises what `demo_structured.py` does — calibration, simulation, every trade type,
+exposure and Greeks, over the real HTTP API, in a real pool worker, under
+`jax.profiler.trace` — on a deliberately small portfolio, writing its trace under
+`.profile-out-small/`. It leaves Greeks **on**: they are a large part of where the engine
+spends its time. See [Profiling a pricing job](#profiling-a-pricing-job) below and
 [Profiling & the Tracer](../concepts/profiling.md).
 
 **How much precision market risk needs:**
@@ -168,25 +160,24 @@ and the spread across seeds).
 python demos/demo_components.py                 # every section
 python demos/demo_components.py swap var_es     # only these
 ```
-Each section runs one module's public API end to end on the Hull-White simulation, against
-the shared example scenarios of [`demos/demo_scenarios.py`](../../demos/demo_scenarios.py),
-and prints what it returns — useful when you want to see one stage in isolation:
+Each section runs one module's public API end to end on the shared example scenarios of
+[`demos/demo_scenarios.py`](../../demos/demo_scenarios.py) (the Hull-White model), and
+prints what it returns:
 
 | Section | Runs | Prints |
 |---|---|---|
-| `market_model` | `generate_paths` on a two-equity, two-rate scenario | the cube shapes and a sample of reconstructed discount factors |
-| `swap` | `price_swaps` on the simulated yield-curve cube | the NPV cube's shape and its mean at the first simulated step |
-| `european` | `price_swaptions`, 3Y into 2Y, on a grid with steps before and after expiry | the mean NPV at each step: rising towards expiry, exactly `0.00` after it |
-| `bermudan` | `price_bermudan_swaption_base` and `price_bermudan_swaptions` | the t=0 NPV, then the mean NPV at each step |
-| `american` | the same for an American swaption, discretized into exercise dates | the number of exercise dates, the t=0 NPV, the mean NPV at each step |
-| `greeks` | swap and European swaption Delta/Gamma/Theta (`engine.risk.greeks`) | the per-pillar Greeks |
-| `var_es` | `compute_risk_metrics` on a swap's simulated NPV cube | the t=0 value and loss quantiles per step. These are statistics of the cube; the engine's market-risk VaR is `demos/demo.py`'s last section |
+| `simulation` | `simulate` on the two-currency demo market | the scenario market's shapes, curves, FX and equities, a path's discount factors, and E[1/N(t)] (today's discount factors) |
+| `swap` | `value_portfolio` for a 2Y swap | today's value and the mean NPV per date: coupons drop out as they pay, exactly 0 after maturity |
+| `european` | a 3Y-into-2Y European, Bachelier then Jamshidian | the mean NPV per date; after expiry an exercised path carries its swap |
+| `bermudan` | a Bermudan, recalibrated on every path and date | today's value and the mean NPV per date |
+| `american` | the same for an American | the number of exercise opportunities, then the same |
+| `greeks` | a swap's and a European's Greeks, bump and AD | every Greek, per tenor (bump) and per pillar (AD) |
+| `var_es` | `compute_risk_metrics` on a swap's NPV cube | the t=0 value and loss quantiles per date. These are statistics of the cube; the engine's market-risk VaR is `demos/demo.py`'s last section |
 
 These sections were once `__main__` blocks inside the engine modules; they moved to
 `demos/` so the shipped package holds no demo code
 ([I-65](../planning/known-issues.md#i-65)). `tests/test_demos.py` runs every section, which
-also guards [I-28](../planning/known-issues.md#i-28): the `var_es` demo once crashed on any
-day but 2026-07-30, because its swap omitted `evaluation_date`.
+also guards [I-28](../planning/known-issues.md#i-28).
 
 ## Running the tests
 
@@ -242,10 +233,10 @@ builds a pricing object. (Running them via `tests/` rather than by path still pa
 `tests/conftest.py`, which imports JAX at collection time to enable x64 for the rest of the
 suite.)
 
-`tests/conftest.py` provides shared `pytest` fixtures (the example scenario
-configurations from `demos/demo_scenarios.py`, wrapped as fixtures, plus a
-`portfolio_request` fixture and a `test_client` fixture for `engine.portfolio`/`engine.api`
-tests) so individual test files don't each need to build their own copy of the same setup.
+`tests/conftest.py` provides shared `pytest` fixtures (the demo scenarios' evaluation date,
+a `portfolio_request` fixture — a USD swap on the demo market, simulated by the Hull-White
+model — and a `test_client` fixture for `engine.api` tests); `tests/support/` holds the shared
+test portfolio and its ORE references, and other helpers shared across test modules.
 
 ## Running the API
 
@@ -263,17 +254,13 @@ request directly:
 curl -X POST http://127.0.0.1:8000/portfolio/price \
   -H "Content-Type: application/json" \
   -d '{
-    "evaluation_date": "2026-07-30",
-    "market": {
-      "time_grid": [0.0, 0.5, 1.0, 1.5, 2.0],
-      "equities": {"initial_prices": [100.0], "dividend_yields": [0.0], "rate_mapping": [[0.0]]},
-      "rates": {"initial_rates": [0.03], "theta": [0.03], "mean_reversion": [0.03],
-                "initial_zero_curves": [{"times": [0.0,1.0,2.0,5.0,10.0,30.0], "rates": [0.03,0.03,0.03,0.03,0.03,0.03]}]},
-      "joint_covariance": [[0.04, 0.0], [0.0, 0.0001]],
-      "scenarios": 4096
-    },
-    "trades": [{"trade_type": "swap", "notional": 1000000.0, "fixed_rate": 0.032, "payer": true,
-                "discount_curve_index": 0, "forward_curve_index": 0, "swap_tenor": "2Y"}],
+    "market": {"asof": "2026-07-30", "currencies": {"USD": {
+      "discount_curve": {"times": [0.0,1.0,2.0,5.0,10.0,30.0], "rates": [0.030,0.030,0.034,0.040,0.046,0.050]},
+      "index_curves": {"USD-SIMINDEX-6M": {"times": [0.0,1.0,2.0,5.0,10.0,30.0], "rates": [0.034,0.034,0.038,0.044,0.049,0.052]}}}}},
+    "trades": [{"trade_type": "swap", "trade_id": "swap-1", "notional": 1000000.0, "fixed_rate": 0.036,
+                "payer": true, "swap_tenor": "2Y"}],
+    "simulation": {"dates": ["2027-01-30", "2027-07-30", "2028-07-30"], "base_currency": "USD", "samples": 4096,
+                   "ir": {"USD": {"model": "HullWhite", "reversion": 0.03, "volatility": 0.01}}},
     "pfe_quantiles": [0.95, 0.99]
   }'
 ```
@@ -301,7 +288,7 @@ behave differently on purpose:
 | | `/portfolio/price` | `/eod/price` |
 |---|---|---|
 | Shape | **Asynchronous** — `202` + `job_id`, then poll | **Synchronous** — one call returns the result |
-| Body | `PortfolioRequestSchema` (Pydantic) | `EodSubmissionSchema`, pointing at a bundle on disk |
+| Body | the portfolio request (`MarketPortfolioRequestSchema`, Pydantic) | `EodSubmissionSchema`, pointing at a bundle on disk |
 | Durability | In-memory `_JOBS`, lost on restart ([I-08](../planning/known-issues.md#i-08)) | Published to a crash-safe store; survives restart |
 | Refusals | An unsupported trade is an error | An unsupported instrument is a **`200`** whose coverage names the refusal |
 
@@ -412,200 +399,99 @@ curl http://127.0.0.1:8000/eod/schemas/result
 curl http://127.0.0.1:8000/eod/schemas/capabilities
 ```
 
-## Writing your own market simulation config
+## Pricing a portfolio from Python
 
-`generate_paths()` takes a `SimulationConfig` — see
-[API Reference: SimulationConfig](../reference/api-reference.md#simulationconfig) for every field.
-Here's a minimal, verified-working example with one equity and one interest rate curve:
-
-```python
-from engine.simulation.market_model import (
-    SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths,
-)
-
-config = SimulationConfig(
-    time_grid=[0.0, 0.5, 1.0],       # simulate out to 1 year, in two steps
-    scenarios=1024,                   # number of simulated alternate futures
-    equities=EquityConfig(
-        initial_prices=[100.0],       # one stock, starting at $100
-        dividend_yields=[0.0],
-        rate_mapping=[[1.0]],         # this stock's drift depends on the one rate factor below
-    ),
-    rates=RatesConfig(
-        initial_rates=[0.03],         # 3% starting interest rate
-        theta=[0.03],                 # long-run mean-reversion target
-        mean_reversion=[0.1],
-        maturities=[1.0, 5.0],        # request discount factors for 1Y and 5Y
-        initial_zero_curves=[
-            ZeroCurveConfig(times=[0.0, 1.0, 5.0, 10.0], rates=[0.03, 0.03, 0.03, 0.03]),
-        ],
-    ),
-    joint_covariance=[                # [equity, rate] x [equity, rate] covariance matrix
-        [0.04, 0.0],
-        [0.0, 0.0001],
-    ],
-)
-
-result = generate_paths(config)
-print(result["equities"].shape)      # (1024, 2, 1)  ->  [Scenarios, TimeSteps, NumEquities]
-print(result["yield_curves"].shape)  # (1024, 2, 2, 1)  ->  [Scenarios, TimeSteps, Maturities, NumRates]
-```
-
-A few things worth knowing before writing your own config:
-
-- **`joint_covariance`'s row/column order is equities first, then rates**, in the same
-  order they appear in `equities.initial_prices` and `rates.initial_rates`.
-- **`rates.initial_zero_curves` must have exactly one entry per rate factor** — see
-  [Market Simulation: one curve per rate factor](../concepts/market-simulation.md#phase-3--yield-curve-reconstruction).
-  A mismatched count raises a clear `ValueError`.
-- **`rates.maturities` is optional** — omit it (and `initial_zero_curves`) if you only
-  need the raw simulated rate/equity paths and not a full discount-factor cube. It's
-  required if you intend to price any trade against this simulation (see next section).
-
-## Pricing a swap
-
-Pricing a swap requires **two** things to line up with each other: the simulation needs
-at least two rate factors (one to discount cashflows, one to set floating payments — see
-[Instruments: multi-curve discounting](../instruments/swaps.md#1-describing-a-swap-swapconfig)),
-and `rates.maturities` must be set to the *exact* payment/accrual dates the swap will
-generate (see
-[Instruments: maturity-pillar alignment](../instruments/swaps.md#a-known-limitation-maturity-pillar-alignment))
-— it is **not** simply "any list of future dates you want discount factors for," as the
-minimal example above used. This is a self-contained, verified-working example for a 1
-year swap:
+A run takes today's market, the trades, and the run configuration. Each trade names its id,
+its valuation date (the market's), its currency and index; the curves, volatilities and model
+come from the market and the configuration, never from the trade. This is a verified-working
+example:
 
 ```python
 import ORE
-from engine.simulation.market_model import (
-    SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths,
+from engine.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
+from engine.instruments.swap import SwapConfig
+from engine.instruments.european_swaption import SwaptionConfig
+from engine.portfolio import CamConfig, HullWhiteConfig, PortfolioRequest, RunConfig, price_portfolio
+
+today = ORE.Date(30, 7, 2026)
+pillars = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
+market = Market(today, {"USD": CurrencyMarket(
+    discount_curve=ZeroCurveConfig(pillars, [0.030, 0.030, 0.034, 0.040, 0.046, 0.050]),
+    index_curves={index_name("USD", 6): ZeroCurveConfig(pillars, [0.034, 0.034, 0.038, 0.044, 0.049, 0.052])},
+    swaption_vols=SwaptionVolSurface(("1Y", "5Y"), ("1Y", "5Y"), ((0.0080, 0.0088), (0.0090, 0.0093))),
+)})
+
+trades = [
+    SwapConfig(trade_id="swap-1", notional=1_000_000.0, fixed_rate=0.036, payer=True, swap_tenor="2Y",
+               evaluation_date=today),
+    SwaptionConfig(trade_id="european-1", notional=1_000_000.0, fixed_rate=0.042, payer=True, swap_tenor="2Y",
+                   forward_start=ORE.Period(3, ORE.Years), evaluation_date=today),
+]
+
+simulation = CamConfig(
+    dates=tuple(today + ORE.Period(m, ORE.Months) for m in (6, 12, 24, 36, 48)),
+    base_currency="USD",
+    ir={"USD": HullWhiteConfig(reversion=0.03, volatility=0.01)},   # or LgmConfig(...)
+    samples=1024,
 )
-from engine.instruments.swap import SwapConfig, price_swaps
-
-# These specific times are the swap's own accrual/payment dates -- for a 1Y swap
-# with a 6-month floating index, starting at the standard 2-day spot lag. Computing
-# these by hand is exactly the fiddly work ORE's schedule-building code does for
-# you (see docs/instruments/swaps.md) -- in practice, build the swap first, inspect
-# its schedule, and pass those dates into the simulation config's maturities.
-maturities = [0.010958904109589041, 0.5150684931506849, 1.010958904109589]
-
-config = SimulationConfig(
-    time_grid=[0.0, 0.5, 1.0],
-    scenarios=1024,
-    equities=EquityConfig(initial_prices=[100.0], dividend_yields=[0.0], rate_mapping=[[1.0, 0.0]]),
-    rates=RatesConfig(
-        initial_rates=[0.030, 0.032],   # two factors: discounting, forwarding
-        theta=[0.030, 0.032],
-        mean_reversion=[0.1, 0.03],
-        maturities=maturities,
-        initial_zero_curves=[
-            ZeroCurveConfig(times=[0.0, 1.0, 5.0], rates=[0.030, 0.030, 0.030]),
-            ZeroCurveConfig(times=[0.0, 1.0, 5.0], rates=[0.032, 0.032, 0.032]),
-        ],
-    ),
-    joint_covariance=[
-        [0.0400, 0.0000, 0.0000],
-        [0.0000, 0.0001, 0.00003],
-        [0.0000, 0.00003, 0.0001],
-    ],
-)
-market = generate_paths(config)
-
-swap = SwapConfig(
-    notional=1_000_000.0,
-    fixed_rate=0.031,
-    payer=True,                    # this side pays fixed, receives floating
-    discount_curve_index=0,        # which rate factor discounts cashflows
-    forward_curve_index=1,         # which rate factor sets floating payments
-    swap_tenor="1Y",
-    evaluation_date=ORE.Date(30, 7, 2026),
-)
-
-npv_cube = price_swaps(market["yield_curves"], config.rates.maturities, [swap])
-print(npv_cube.shape)              # (1024, 2, 1)  ->  [Scenarios, TimeSteps, Trades]
+result = price_portfolio(PortfolioRequest(market=market, trades=trades, config=RunConfig(simulation=simulation),
+                                          compute_greeks=True))
+print(result.trade_ids)              # ['swap-1', 'european-1']
+print(result.base_npv_per_trade)     # today's values, in USD
+print(result.npv_cube.shape)         # (1024, 5, 2)  ->  [Scenarios, Dates, Trades]
+print(result.exposure.epe)           # the netting set's EPE, today and on each date
+print(sorted(result.greeks[1]))      # ['delta:discount:USD', 'delta:index:USD-SIMINDEX-6M', ...]
 ```
 
-`swap_tenor="1Y"` books a one-year swap starting at spot on `evaluation_date`. It is
-resolved once, to the swap's `effective_date`/`maturity_date`, and those dates are the trade:
-`dataclasses.replace(swap, evaluation_date=later)` prices the same swap on a later day, with
-any coupon it has already paid gone. A trade booked in the past can be given its dates
-directly (`effective_date=..., maturity_date=...` instead of `swap_tenor`). A coupon that
-fixed before the evaluation date also needs its rate in `fixings={fixing_date: rate}`, which
-ORE requires too.
+A few things worth knowing:
 
-`price_swaps` accepts a *list* of `SwapConfig` objects — pass several to price a whole
-portfolio at once; the output's last axis (`Trades`) will have one entry per swap, in
-the order given.
+- **The model is a field.** `CamConfig.ir` names a model per currency: `LgmConfig` (ORE's
+  default) or `HullWhiteConfig`, each with a reversion and a volatility, or calibrated to a
+  co-terminal basket of the market's swaption volatilities (`calibration_expiries`,
+  `calibration_terms`). Several currencies add the FX rates (`fx_volatilities`) and
+  correlations; see [Market Simulation](../concepts/market-simulation.md).
+- **Dates are the trade.** `swap_tenor="2Y"` books a two-year swap starting at spot on
+  `evaluation_date`, resolved once to its `effective_date`/`maturity_date`. A trade booked in
+  the past can be given its dates directly, and a coupon that fixed before the evaluation
+  date needs its rate in `fixings={fixing_date: rate}`, which ORE requires too.
+- **Without a simulation**, `scenario_risk=False` prices today's values and Greeks only.
+- **Every `trade_id` must be unique**; the results' per-trade rows follow the request order,
+  and `result.trade_ids` names them.
 
-## Pricing a swaption
+## Choosing engines and the Greeks method
 
-Unlike `price_swaps`, `price_swaptions` works directly off the simulated Hull-White rate
-paths (`generate_paths(...)["rates"]`), not the yield-curve cube — so `rates.maturities`
-doesn't need to be set at all, and there's no maturity-pillar-alignment requirement to
-satisfy. It does need the simulation's own `hw_a`/`hw_sigma`/zero-curve for the rate
-factor being priced off (see
-[Instruments: European Swaptions](../instruments/european-swaptions.md#1-describing-a-swaption-swaptionconfig)
-for why). This is a self-contained, verified-working example for a swaption exercisable
-in 3 years, on a 2-year underlying swap:
+The configuration's other fields choose the engine per product and how Greeks are computed,
+for any model:
 
 ```python
-import jax.numpy as jnp
-import ORE
-from engine.simulation.market_model import (
-    SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths,
-)
-from engine.instruments.european_swaption import SwaptionConfig, price_swaptions
+from engine.portfolio import GreeksConfig, JamshidianEngineConfig, PricingConfig
 
-config = SimulationConfig(
-    time_grid=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0],  # simulate out to 5 years
-    scenarios=1024,
-    equities=EquityConfig(initial_prices=[100.0], dividend_yields=[0.0], rate_mapping=[[0.0]]),
-    rates=RatesConfig(
-        initial_rates=[0.03],
-        theta=[0.03],
-        mean_reversion=[0.03],
-        # no `maturities` needed -- the swaption pricer works off the raw
-        # rate paths, not a yield_curves cube.
-    ),
-    joint_covariance=[
-        [0.0400, 0.0000],
-        [0.0000, 0.0001],
-    ],
+config = RunConfig(
+    simulation=simulation,
+    pricing=PricingConfig(european="Jamshidian", jamshidian=JamshidianEngineConfig(0.03, 0.01)),
+    greeks=GreeksConfig(method="AD"),
 )
-market = generate_paths(config)
-
-swaption = SwaptionConfig(
-    notional=1_000_000.0,
-    fixed_rate=0.03,
-    payer=True,
-    rate_factor_index=0,
-    hw_a=0.03,              # must match config.rates.mean_reversion[0]
-    hw_sigma=0.01,          # must match the volatility implied by joint_covariance for this factor
-    initial_zero_curve=ZeroCurveConfig(
-        times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.03] * 6,
-    ),
-    swap_tenor="2Y",
-    forward_start=ORE.Period(3, ORE.Years),  # exercisable in 3 years
-    evaluation_date=ORE.Date(30, 7, 2026),
-)
-
-step_times = jnp.array(config.time_grid[1:])
-npv_cube = price_swaptions(market["rates"], step_times, [swaption])
-print(npv_cube.shape)                         # (1024, 5, 1)  ->  [Scenarios, TimeSteps, Trades]
-print(float(npv_cube[:, 2, 0].mean()))         # mean NPV at t=3.0 (just before exercise): > 0
-print(float(npv_cube[:, 4, 0].mean()))         # mean NPV at t=5.0 (after exercise): exactly 0.0
 ```
 
-`price_swaptions` accepts a *list* of `SwaptionConfig` objects, exactly like `price_swaps`
-— several swaptions price into one `[Scenarios, TimeSteps, Trades]` cube, one entry per
-trade in `Trades`, in the order given.
+Europeans default to Bachelier on the market's volatility (ORE's default); Jamshidian prices
+them on its own Hull-White model, given with it. Bermudans and Americans use ORE's LGM grid
+engine (`PricingConfig.bermudan`/`american`, `LgmSwaptionEngineConfig`), calibrated to the
+trade's own basket. Greeks default to ORE's bump and revalue; `"AD"` gives the same keys by
+automatic differentiation ([Greeks](../risk/greeks.md)).
 
-For swaptions with multiple exercise dates (Bermudan) or a continuous exercise window
-(American), see
-[American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md) and
-[API Reference](../reference/api-reference.md#engineinstrumentsbermudan_swaption) —
-`BermudanSwaptionConfig`/`price_bermudan_swaptions` and
-`AmericanSwaptionConfig`/`price_american_swaptions` follow the same
-list-of-configs-in, NPV-cube-out pattern as `price_swaptions` above.
+## Pricing without the whole pipeline
+
+The pieces `price_portfolio` assembles can be called directly:
+
+```python
+from engine.simulation.config import simulate
+from engine.valuation.portfolio import value_portfolio, value_today
+
+value_today(trades, market, "USD")                     # today's values, no simulation
+scenarios = simulate(market, simulation)               # the scenario market
+valuation = value_portfolio(trades, market, scenarios, "USD")
+valuation.cube.shape                                   # (1024, 5, 2)
+```
 
 ## Computing market risk (VaR / ES)
 
@@ -613,14 +499,18 @@ Short-horizon VaR and ES come from revaluing the portfolio at t=0 under shocked 
 ([Market Risk](../risk/market-risk.md)):
 
 ```python
+import numpy as np
 from engine.market_risk import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
 
-factors = RateRiskFactors.from_curves([zero_curve_config], names=["USD"])
-scenarios = monte_carlo_scenarios(factors, covariance, horizon_days=10, num_scenarios=4096, seed=1)
-result = run_market_risk(MarketRiskRequest(trades, scenarios, quantiles=(0.99, 0.975)))
-print(result.risk["VaR_99"], result.risk["ES_97.5"])
+factors = RateRiskFactors.from_market(market)          # discount:USD, index:USD-SIMINDEX-6M
+covariance = np.eye(factors.size) * 0.0008 ** 2 * 10    # 8bp daily, independent pillars
+shocks = monte_carlo_scenarios(factors, covariance, horizon_days=10, num_scenarios=4096, seed=1)
+risk = run_market_risk(MarketRiskRequest(trades, market, shocks, quantiles=(0.99, 0.975)))
+print(risk.risk["VaR_99"], risk.risk["ES_97.5"])
 ```
 
+The factors are the pillar zero rates of the market's curves, named as the trades read them;
+a `pricing=` `PricingConfig` chooses the engines as in a portfolio run.
 `covariance` is the `[F, F]` covariance of 10-day absolute moves of the curve pillars, in
 `factors.labels()` order; `historical_scenarios(factors, history, horizon_days=10)` uses
 observed moves instead. The end of `demos/demo.py` is a complete example.
@@ -636,10 +526,8 @@ starting at t=0 ([Exposure](../risk/exposure.md)).
 ```python
 from engine.risk.var_es import compute_risk_metrics
 
-# base_npv: the portfolio's actual value today, from a separate zero-shock
-# revaluation -- see demos/demo_scenarios.py's flat_yield_curves()
-# for a worked example of building one directly from ORE's own curve objects.
-metrics = compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))
+# base_npv: the portfolio's value today (result.base_npv from price_portfolio)
+metrics = compute_risk_metrics(result.npv_cube, result.base_npv, percentiles=(0.95, 0.99))
 
 print(metrics["VaR_95"])   # [TimeSteps] array
 print(metrics["ES_99"])    # [TimeSteps] array
@@ -654,11 +542,11 @@ for this explicitly rather than assuming a numeric result (see
 
 ## Precision (float32 vs float64)
 
-`generate_paths(config, precision=64)` (the default) runs in 64-bit precision. Pass
-`precision=32` to run in 32-bit instead — see
-[Architecture: Adjustable precision](../concepts/architecture.md#adjustable-precision) for what
-this changes and why it's a single, per-call argument rather than something set once
-globally by the caller.
+`RunConfig(precision=PrecisionConfig(simulation=32))` simulates in 32-bit instead of the
+default 64. The pricing, risk and calibration stages run in 64-bit today and refuse a lower
+setting by name until roadmap 1.4 ([I-55](../planning/known-issues.md#i-55)), so the cube
+of a 32-bit simulation is still float64. See
+[Architecture: Adjustable precision](../concepts/architecture.md#adjustable-precision).
 
 ## Profiling a pricing job
 
@@ -740,13 +628,13 @@ tool from the **Tools** dropdown:
   `compile_or_get_cached`) is XLA *lowering/compilation*, not the math.
 
 **Finding your way around the timeline.** The pricing path is annotated with named regions
-— `calibration`, `simulation`, `pricing`, `base_npv`, `risk`, `greeks`, and one
-`greeks/trade<i>/<Type>` per trade — so you can attribute time per phase and per trade
-without turning the (very expensive) Python tracer on. See
+— `calibration`, `simulation`, `pricing`, `exposure` (or `base_npv` without scenario risk)
+and `greeks` — so you can attribute time per phase without turning the (very expensive)
+Python tracer on. See
 [Profiling & the Tracer §4](../concepts/profiling.md).
 
 If a small-portfolio trace looks entirely compile-bound, that is the real result — see
-step 2. Profile a bigger portfolio (more trades, `scenarios` 16k+) to see execution take
+step 2. Profile a bigger portfolio (more trades, `samples` 16k+) to see execution take
 over; drop `compute_greeks` if you only care about the forward pricing path, which is
 roughly a 5x difference in trace size.
 

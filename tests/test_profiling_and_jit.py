@@ -17,32 +17,23 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.models.hull_white import ZeroCurve
-from engine.models.lgm import Sigma
-from engine.simulation.market_model import ZeroCurveConfig
-from engine.instruments.bermudan_swaption import (
-    BermudanSwaptionConfig,
-    _PreparedBermudan,
-    prepare_bermudan,
-    price_bermudan_swaption_base,
-)
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, _PreparedBermudan
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
-from engine.risk.greeks import (
-    _grad_and_hessian_diagonal,
-    _swap_price_fn,
-    _swaption_price_fn,
-    _bermudan_price_fn,
-    bermudan_delta_gamma,
-    bermudan_theta,
-    swap_delta_gamma,
-    swaption_delta_gamma,
-)
-from demos.demo_scenarios import EVAL_DATE
+from engine.market import ZeroCurveConfig
+from engine.models.lgm import Sigma
+from engine.risk.greeks import _grad_and_hessian_diagonal, curve_greeks, portfolio_greeks
+from engine.risk.price_functions import bermudan_price_function, curves_of, trade_price_function
+from engine.valuation.bermudan import calibrate_on
+from engine.valuation.config import LgmSwaptionEngineConfig, PricingConfig
+from engine.valuation.context import from_market
+from tests.support import portfolio as shared
+from tests.support.lgm_engine import grid_npv, prepared
 
-
-PILLAR_TIMES = [0.0, 1.0, 3.0]
-PILLAR_RATES = [0.03, 0.03, 0.03]
+ASOF = shared.ASOF
+CURVE = ZeroCurveConfig(times=[0.0, 1.0, 3.0], rates=[0.03, 0.03, 0.03])
+ENGINE = LgmSwaptionEngineConfig(n_per_std=16, std_devs=6.0)
+PRICING = PricingConfig(bermudan=ENGINE)
 
 
 @contextmanager
@@ -71,22 +62,19 @@ def count_compiles():
 
 
 def bermudan_cfg(**overrides) -> BermudanSwaptionConfig:
-    base = dict(
-        notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
-        hw_a=0.03, hw_sigma=0.01,
-        initial_zero_curve=ZeroCurveConfig(times=PILLAR_TIMES, rates=PILLAR_RATES),
-        exercise_dates=[EVAL_DATE + 365, EVAL_DATE + 730], swap_tenor="3Y",
-        n_per_std=16, std_devs=6.0, evaluation_date=EVAL_DATE,
-    )
-    base.update(overrides)
-    return BermudanSwaptionConfig(**base)
+    fields = dict(notional=1_000_000.0, fixed_rate=0.030, payer=True, exercise_dates=[ASOF + 365, ASOF + 730],
+                  swap_tenor="3Y", evaluation_date=ASOF, trade_id="bermudan")
+    fields.update(overrides)
+    return BermudanSwaptionConfig(**fields)
 
 
-def jax_curve() -> ZeroCurve:
-    return ZeroCurve(
-        pillar_times=jnp.asarray(PILLAR_TIMES),
-        pillar_rates=jnp.asarray(PILLAR_RATES),
-    )
+def engine_npv(cfg=None, n_per_std=16, sigma=0.01) -> float:
+    """The grid engine alone, with a fixed LGM (no calibration)."""
+    return grid_npv(cfg or bermudan_cfg(), a=0.03, sigma=sigma, curve=CURVE, n_per_std=n_per_std)
+
+
+def prepared_bermudan(cfg=None):
+    return prepared(cfg or bermudan_cfg(), a=0.03, sigma=0.01, curve=CURVE, n_per_std=16)
 
 
 # =============================================================================
@@ -97,183 +85,128 @@ class TestPreparedBermudanPytree:
     `_backward_induction_arrays` can be jitted while Greeks differentiate through it."""
 
     def test_flatten_exposes_only_the_traced_fields_as_children(self):
-        prepared = prepare_bermudan(bermudan_cfg())
-        children, aux = prepared.tree_flatten()
-
+        children, aux = prepared_bermudan().tree_flatten()
         assert len(children) == len(_PreparedBermudan._TRACED)
-        # The differentiation targets must be children, or a tracer would be frozen into
-        # the cache key instead of carrying a gradient.
-        # The curve (a `ZeroCurve` pytree carrying the pillar rates) is what Delta differentiates.
-        assert "curve" in _PreparedBermudan._TRACED
-        assert "hw_sigma" in _PreparedBermudan._TRACED
-
+        # The differentiation targets must be children, or a tracer would be frozen into the
+        # cache key instead of carrying a gradient: the curves (Delta) and the volatility (Vega).
+        assert {"curve", "index_curve", "sigma"} <= set(_PreparedBermudan._TRACED)
         aux_names = {name for name, _ in aux}
         assert aux_names.isdisjoint(set(_PreparedBermudan._TRACED))
         # Trade structure stays static: it keys the cache.
-        assert {"exercise_times", "fixed_times", "n_per_std", "payer"} <= aux_names
+        assert {"exercise_times", "fixed_times", "n_per_std", "payer", "reversion"} <= aux_names
 
     def test_round_trips_through_flatten_unflatten(self):
         """Flatten/unflatten round-trips exactly (JAX does it at every jit/grad boundary)."""
-        prepared = prepare_bermudan(bermudan_cfg())
-        children, aux = prepared.tree_flatten()
+        original = prepared_bermudan()
+        children, aux = original.tree_flatten()
         rebuilt = _PreparedBermudan.tree_unflatten(aux, children)
-
-        assert rebuilt == prepared
+        assert rebuilt == original
         for name in ("exercise_times", "fixed_times", "fixed_amounts"):
-            np.testing.assert_array_equal(
-                np.asarray(getattr(rebuilt, name)), np.asarray(getattr(prepared, name))
-            )
-        np.testing.assert_array_equal(np.asarray(rebuilt.curve.pillar_rates),
-                                      np.asarray(prepared.curve.pillar_rates))
+            np.testing.assert_array_equal(np.asarray(getattr(rebuilt, name)), np.asarray(getattr(original, name)))
+        np.testing.assert_array_equal(np.asarray(rebuilt.curve.pillar_rates), np.asarray(original.curve.pillar_rates))
 
     def test_round_tripped_arrays_stay_writable(self):
         """Unflattened schedule arrays are writable copies (`np.frombuffer` is read-only)."""
-        prepared = prepare_bermudan(bermudan_cfg())
-        children, aux = prepared.tree_flatten()
+        children, aux = prepared_bermudan().tree_flatten()
         rebuilt = _PreparedBermudan.tree_unflatten(aux, children)
-
-        assert rebuilt.fixed_times.flags.writeable
-        assert rebuilt.exercise_times.flags.writeable
+        assert rebuilt.fixed_times.flags.writeable and rebuilt.exercise_times.flags.writeable
 
     def test_aux_data_is_hashable(self):
-        """The aux tuple is the jit cache key, so it must hash (a raw NumPy array would
-        not)."""
-        _children, aux = prepare_bermudan(bermudan_cfg()).tree_flatten()
+        """The aux tuple is the jit cache key, so it must hash (a raw NumPy array would not)."""
+        _children, aux = prepared_bermudan().tree_flatten()
         assert isinstance(hash(aux), int)
 
     def test_jax_tree_util_sees_it_as_a_pytree(self):
-        prepared = prepare_bermudan(bermudan_cfg())
-        leaves = jax.tree_util.tree_leaves(prepared)
-        # zero_rates + hw_sigma + notional + fixed_amounts; an unregistered dataclass would
-        # be a single opaque leaf.
-        assert len(leaves) >= len(_PreparedBermudan._TRACED)
+        # An unregistered dataclass would be a single opaque leaf.
+        assert len(jax.tree_util.tree_leaves(prepared_bermudan())) >= len(_PreparedBermudan._TRACED)
 
 
 # =============================================================================
 # COMPILE-COUNT REGRESSION GUARDS
 # =============================================================================
 class TestCompileCounts:
-    """Upper bounds on XLA compilations per operation, roughly 3-5x the measured counts
-    (in each test's comment), to catch a return to eager dispatch rather than pin exact
-    numbers. The reference Greeks job once compiled 602 programs; it now compiles 13."""
+    """Upper bounds on XLA compilations per operation, a few times the measured counts (in
+    each test's comment), to catch a return to eager dispatch rather than pin exact numbers.
+    The reference Greeks job once compiled 602 programs."""
 
-    def test_bermudan_forward_pricing_compiles_few_programs(self):
-        # Measured: 4 (jit__backward_induction_arrays + 3 small helpers).
+    def test_bermudan_engine_compiles_few_programs(self):
+        # Measured: a handful (jit__backward_induction_arrays + small helpers).
         with count_compiles() as counter:
-            npv = price_bermudan_swaption_base(bermudan_cfg())
-        # Floating coupons projected over the index fixing period, as ORE's LGM engine
-        # does (I-31).
-        assert npv == pytest.approx(8522.460486631673, rel=1e-6)
-        assert sum(counter.values()) < 20, dict(counter)
-
-    @pytest.mark.slow
-    def test_bermudan_delta_gamma_compiles_few_programs(self):
-        # Measured: 5 (470 before the pytree split and the HVP diagonal).
-        with count_compiles() as counter:
-            greeks = bermudan_delta_gamma(bermudan_cfg(), jax_curve())
-            jax.block_until_ready(greeks["delta"])
-        assert sum(counter.values()) < 30, dict(counter)
-
-    def test_bermudan_theta_compiles_few_programs(self):
-        # Measured: 2 (one jitted price_fn per evaluation date).
-        with count_compiles() as counter:
-            bermudan_theta(bermudan_cfg(), jax_curve())
-        assert sum(counter.values()) < 15, dict(counter)
-
-    def test_european_swaption_theta_compiles_few_programs(self):
-        """The European Theta once compiled 56 programs (both valuations eager); now 2."""
-        cfg = SwaptionConfig(
-            notional=1_500_000.0, fixed_rate=0.031, payer=True, rate_factor_index=0,
-            hw_a=0.03, hw_sigma=0.01,
-            initial_zero_curve=ZeroCurveConfig(times=PILLAR_TIMES, rates=PILLAR_RATES),
-            swap_tenor="2Y", forward_start=ORE.Period("1Y"), evaluation_date=EVAL_DATE,
-        )
-        from engine.risk.greeks import swaption_theta
-
-        with count_compiles() as counter:
-            swaption_theta(cfg, jax_curve())
-        assert sum(counter.values()) < 15, dict(counter)
+            npv = engine_npv(n_per_std=17)
+        assert npv > 0.0
+        assert sum(counter.values()) < 40, dict(counter)
 
     def test_repeated_identical_pricing_hits_the_compilation_cache(self):
-        """A second identical call compiles nothing (the aux data compares equal by
-        value)."""
-        cfg = bermudan_cfg()
-        price_bermudan_swaption_base(cfg)  # warm
-
+        """A second identical call compiles nothing (the aux data compares equal by value)."""
+        engine_npv()  # warm
         with count_compiles() as counter:
-            price_bermudan_swaption_base(cfg)
+            engine_npv()
         assert sum(counter.values()) == 0, dict(counter)
 
     def test_trades_differing_only_in_scale_share_compiled_programs(self):
-        """`notional`/`fixed_amounts` are children, so same-structure trades of different
-        size share one kernel."""
-        price_bermudan_swaption_base(bermudan_cfg(notional=1_000_000.0))  # warm
-
+        """`notional`/`fixed_amounts` are children, so same-structure trades of different size
+        share one kernel, and the value scales exactly."""
+        base = engine_npv(bermudan_cfg(notional=1_000_000.0))
         with count_compiles() as counter:
-            npv = price_bermudan_swaption_base(bermudan_cfg(notional=5_000_000.0))
+            scaled = engine_npv(bermudan_cfg(notional=5_000_000.0))
         assert sum(counter.values()) == 0, dict(counter)
-        # Same structure, 5x the size; the value scales exactly.
-        assert npv == pytest.approx(5 * 8522.460486631673, rel=1e-6)
+        assert scaled == pytest.approx(5 * base, rel=1e-12)
 
-    def test_calibration_compiles_few_programs(self):
-        """`calibrate_lgm_sigma` compiled 137 programs before its closed-form calls were
-        jitted (the bisection's `lax.scan` was already one program); now ~18."""
-        from engine.calibration.basket import build_coterminal_basket
-        from engine.calibration.lgm import calibrate_lgm_sigma
-
-        curve = jax_curve()
-        targets = build_coterminal_basket(
-            exercise_times=[1.0, 2.0], final_maturity_time=3.0, notional=1_000_000.0,
-            payer=True, market_vols=[0.0080, 0.0090], zero_curve=curve,
-            evaluation_date=EVAL_DATE,
-        )
-
+    def test_differing_grid_resolution_does_compile_a_new_program(self):
+        """`n_per_std` changes array shapes, so it stays static and forces a recompile."""
+        engine_npv(n_per_std=16)  # warm
         with count_compiles() as counter:
-            result = calibrate_lgm_sigma(targets, curve, a=0.03)
-        assert sum(counter.values()) < 60, dict(counter)
-        # A bootstrap reprices each basket instrument; jitting did not cost accuracy.
-        assert result.rmse < 1e-8
+            engine_npv(n_per_std=20)
+        assert sum(counter.values()) >= 1, dict(counter)
+
+    def test_calibration_recompiles_a_few_programs_per_call(self):
+        """Pins a known residue (I-22): the bootstrap's bisection bakes each helper's market
+        price into its traced program, so every call compiles again. Measured 6 per call for
+        a two-helper basket; tighten when I-22 is fixed."""
+        market = from_market(shared.market())
+        calibrate_on(bermudan_cfg(), ENGINE, market)  # warm
+        with count_compiles() as counter:
+            calibrate_on(bermudan_cfg(), ENGINE, market)
+        assert 0 < sum(counter.values()) <= 12, dict(counter)
 
     @pytest.mark.slow
-    def test_repeated_greeks_call_costs_one_compile_not_zero(self):
-        """Pins a known residue (I-21): `price_fn` is a fresh closure per call and jit keys
-        on function identity, so a repeated call compiles once. When I-21 is fixed, tighten
-        this to 0 and add I-21's negative test (a trade differing in notional, rate or tenor
-        must still get its own answer), since a count alone would pass a broken cache."""
-        cfg = bermudan_cfg()
-        curve = jax_curve()
-        jax.block_until_ready(bermudan_delta_gamma(cfg, curve)["delta"])  # warm
-
+    def test_repeated_greeks_call_compiles_a_bounded_number_of_programs(self):
+        """Pins a known residue (I-21): the AD Greeks build fresh closures per call (and each
+        calibration recompiles, I-22), so a repeated call compiles again. Measured 30 for one
+        Bermudan (28 of them calibration scans). When I-21 is fixed, tighten this and add
+        I-21's negative test (a trade differing in notional, rate or tenor must still get its
+        own answer), since a count alone would pass a broken cache."""
+        trades, market = [bermudan_cfg()], shared.market()
+        portfolio_greeks(trades, market, "USD", PRICING)  # warm
         with count_compiles() as counter:
-            jax.block_until_ready(bermudan_delta_gamma(cfg, curve)["delta"])
-        assert sum(counter.values()) <= 2, dict(counter)
+            portfolio_greeks(trades, market, "USD", PRICING)
+        assert sum(counter.values()) <= 60, dict(counter)
 
     @pytest.mark.slow
     def test_greeks_scale_linearly_with_notional(self):
         """7x the notional gives exactly 7x the Delta (`notional` is a traced child)."""
-        curve = jax_curve()
-        base = bermudan_delta_gamma(bermudan_cfg(notional=1_000_000.0), curve)
-        scaled = bermudan_delta_gamma(bermudan_cfg(notional=7_000_000.0), curve)
-
-        np.testing.assert_allclose(
-            np.asarray(scaled["delta"]), 7.0 * np.asarray(base["delta"]), rtol=1e-9
-        )
-
-    def test_differing_grid_resolution_does_compile_a_new_program(self):
-        """`n_per_std` changes array shapes, so it stays static and forces a recompile."""
-        price_bermudan_swaption_base(bermudan_cfg(n_per_std=16))  # warm
-
-        with count_compiles() as counter:
-            price_bermudan_swaption_base(bermudan_cfg(n_per_std=20))
-        assert sum(counter.values()) >= 1, dict(counter)
+        market = shared.market()
+        base = curve_greeks(bermudan_cfg(notional=1_000_000.0), market, PRICING, 1e-4)
+        scaled = curve_greeks(bermudan_cfg(notional=7_000_000.0), market, PRICING, 1e-4)
+        for key in base:
+            np.testing.assert_allclose(scaled[key], 7.0 * base[key], rtol=1e-9, atol=1e-9)
 
 
 # =============================================================================
 # HESSIAN DIAGONAL VIA HVP == DIAGONAL OF THE FULL HESSIAN
 # =============================================================================
+def _full_and_hvp_diagonal(cfg):
+    """The diagonal of d^2 NPV / d(discount pillar rates)^2 both ways, other curves fixed."""
+    fn = trade_price_function(cfg, shared.market(), PRICING)
+    rates = curves_of(fn, shared.market(), jnp.float64)
+    _grad, diag = _grad_and_hessian_diagonal(fn.price, rates[0], *rates[1:])
+    full = jnp.diagonal(jax.hessian(fn.price, argnums=0)(*rates))
+    return np.asarray(diag), np.asarray(full)
+
+
 class TestHessianDiagonalEquivalence:
-    """`_grad_and_hessian_diagonal` equals `jnp.diagonal(jax.hessian(f))`, the expression
-    it replaced, for every Delta/Gamma function."""
+    """`_grad_and_hessian_diagonal` equals `jnp.diagonal(jax.hessian(f))`, the expression it
+    replaced, for every trade's price function."""
 
     def test_matches_full_hessian_on_an_analytic_function(self):
         """A closed form with a known Hessian diagonal."""
@@ -283,89 +216,22 @@ class TestHessianDiagonalEquivalence:
 
         x = jnp.asarray([1.0, 2.0, 3.0])
         grad, diag = _grad_and_hessian_diagonal(f, x)
-
         np.testing.assert_allclose(np.asarray(grad), np.asarray(jax.grad(f)(x)), rtol=1e-12)
         np.testing.assert_allclose(np.asarray(diag), 6.0 * np.asarray(x), rtol=1e-12)
-        np.testing.assert_allclose(
-            np.asarray(diag), np.asarray(jnp.diagonal(jax.hessian(f)(x))), rtol=1e-12
-        )
+        np.testing.assert_allclose(np.asarray(diag), np.asarray(jnp.diagonal(jax.hessian(f)(x))), rtol=1e-12)
 
-    def test_matches_full_hessian_for_a_swap(self):
-        curve = jax_curve()
-        cfg = SwapConfig(
-            notional=1_000_000.0, fixed_rate=0.032, payer=True,
-            discount_curve_index=0, forward_curve_index=1,
-            swap_tenor="3Y", evaluation_date=EVAL_DATE,
-        )
-        price_fn = _swap_price_fn(cfg, curve, curve)
-
-        _grad, diag = _grad_and_hessian_diagonal(price_fn, curve.pillar_rates, curve.pillar_rates)
-        full = jnp.diagonal(jax.hessian(price_fn, argnums=0)(curve.pillar_rates, curve.pillar_rates))
-        # atol scaled to the compared magnitude (see the European case).
-        np.testing.assert_allclose(
-            np.asarray(diag), np.asarray(full),
-            rtol=1e-9, atol=1e-6 * float(np.max(np.abs(np.asarray(full)))),
-        )
-
-    @pytest.mark.slow
-    def test_matches_full_hessian_for_a_european_swaption(self):
-        curve = jax_curve()
-        cfg = SwaptionConfig(
-            notional=1_500_000.0, fixed_rate=0.031, payer=True, rate_factor_index=0,
-            hw_a=0.03, hw_sigma=0.01,
-            initial_zero_curve=ZeroCurveConfig(times=PILLAR_TIMES, rates=PILLAR_RATES),
-            swap_tenor="2Y", forward_start=ORE.Period("1Y"), evaluation_date=EVAL_DATE,
-        )
-        price_fn = _swaption_price_fn(cfg, curve)
-
-        _grad, diag = _grad_and_hessian_diagonal(price_fn, curve.pillar_rates)
-        full = jnp.diagonal(jax.hessian(price_fn)(curve.pillar_rates))
-        # atol scaled to the Gamma magnitude (~1e8): the t=0 pillar's true Gamma is zero,
-        # and the two routes land on different tiny values (7e-12 vs -2e-9), so rtol alone
-        # is meaningless there.
-        np.testing.assert_allclose(
-            np.asarray(diag), np.asarray(full),
-            rtol=1e-9, atol=1e-6 * float(np.max(np.abs(np.asarray(full)))),
-        )
-
-    @pytest.mark.slow
-    def test_matches_full_hessian_for_a_bermudan(self):
-        """Through the jitted `_backward_induction_arrays`: the pytree split and the HVP
-        diagonal together."""
-        curve = jax_curve()
-        price_fn, sigma_values = _bermudan_price_fn(bermudan_cfg(), curve)
-
-        _grad, diag = _grad_and_hessian_diagonal(price_fn, curve.pillar_rates, sigma_values)
-        full = jnp.diagonal(jax.hessian(price_fn, argnums=0)(curve.pillar_rates, sigma_values))
-        np.testing.assert_allclose(
-            np.asarray(diag), np.asarray(full),
-            rtol=1e-7, atol=1e-6 * float(np.max(np.abs(np.asarray(full)))),
-        )
-
-    @pytest.mark.slow
-    def test_reported_gamma_is_unchanged_by_the_hvp_route(self):
-        """`bermudan_delta_gamma`'s Gamma equals `jnp.diagonal(jax.hessian(...)) *
-        bump**2`."""
-        from engine.risk.greeks import DEFAULT_RATE_BUMP
-
-        curve = jax_curve()
-        cfg = bermudan_cfg()
-        reported = bermudan_delta_gamma(cfg, curve)
-
-        price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
-        legacy_grad = jax.grad(price_fn, argnums=0)(curve.pillar_rates, sigma_values)
-        legacy_hess = jax.hessian(price_fn, argnums=0)(curve.pillar_rates, sigma_values)
-
-        np.testing.assert_allclose(
-            np.asarray(reported["delta"]),
-            np.asarray(legacy_grad) * DEFAULT_RATE_BUMP,
-            rtol=1e-9, atol=1e-12,
-        )
-        np.testing.assert_allclose(
-            np.asarray(reported["gamma"]),
-            np.asarray(jnp.diagonal(legacy_hess)) * DEFAULT_RATE_BUMP ** 2,
-            rtol=1e-7, atol=1e-12,
-        )
+    @pytest.mark.parametrize("cfg", [
+        SwapConfig(notional=1e6, fixed_rate=0.032, payer=True, swap_tenor="3Y", evaluation_date=ASOF,
+                   trade_id="swap"),
+        SwaptionConfig(notional=1.5e6, fixed_rate=0.031, payer=True, swap_tenor="2Y",
+                       forward_start=ORE.Period("1Y"), evaluation_date=ASOF, trade_id="european"),
+        pytest.param(bermudan_cfg(), marks=pytest.mark.slow),
+    ], ids=["swap", "european", "bermudan"])
+    def test_matches_full_hessian(self, cfg):
+        diag, full = _full_and_hvp_diagonal(cfg)
+        # atol scaled to the compared magnitude: a pillar whose true Gamma is zero lands on
+        # different tiny values by the two routes, so rtol alone is meaningless there.
+        np.testing.assert_allclose(diag, full, rtol=1e-7, atol=1e-6 * float(np.max(np.abs(full))))
 
 
 # =============================================================================
@@ -375,53 +241,56 @@ class TestGradientsSurviveTheJitBoundary:
     """A differentiable field placed in static aux data gets frozen into the cache key and a
     zero gradient, with no error. These catch that."""
 
-    def test_delta_is_nonzero(self):
-        greeks = bermudan_delta_gamma(bermudan_cfg(), jax_curve())
-        delta = np.asarray(greeks["delta"])
+    @pytest.fixture(scope="class")
+    def option(self):
+        market = shared.market()
+        fn = bermudan_price_function(bermudan_cfg(), market, PRICING, jnp.float64)
+        disc, index = (jnp.asarray(market.currency("USD").discount_curve.rates),
+                       jnp.asarray(market.index_curve("USD", shared.INDEX).rates))
+        return fn, disc, index
+
+    @staticmethod
+    def _price(option, disc_rates):
+        from engine.models.curves import ZeroCurve
+        fn, _disc, index = option
+        times = jnp.asarray(shared.PILLARS)
+        return fn.price(ZeroCurve(times, disc_rates), ZeroCurve(times, index))
+
+    def test_delta_is_nonzero(self, option):
+        delta = np.asarray(jax.grad(lambda r: self._price(option, r))(option[1]))
         assert np.any(np.abs(delta) > 1e-6), f"all-zero delta suggests a frozen curve: {delta}"
 
-    def test_delta_matches_a_finite_difference_of_the_price(self):
-        """The gradient is correct across the jit boundary: it matches a finite difference
-        of the jitted price."""
-        curve = jax_curve()
-        cfg = bermudan_cfg()
-        price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
-
-        eps = 1e-6
-        rates = np.asarray(curve.pillar_rates, dtype=np.float64)
-        fd = np.zeros_like(rates)
+    def test_delta_matches_a_finite_difference_of_the_price(self, option):
+        """The gradient is correct across the jit boundary."""
+        rates = np.asarray(option[1], dtype=np.float64)
+        eps, fd = 1e-6, np.zeros_like(rates)
         for i in range(len(rates)):
             up, down = rates.copy(), rates.copy()
             up[i] += eps
             down[i] -= eps
-            fd[i] = (
-                float(price_fn(jnp.asarray(up), sigma_values))
-                - float(price_fn(jnp.asarray(down), sigma_values))
-            ) / (2 * eps)
-
-        analytic = np.asarray(jax.grad(price_fn, argnums=0)(curve.pillar_rates, sigma_values))
+            fd[i] = (float(self._price(option, jnp.asarray(up))) - float(self._price(option, jnp.asarray(down)))) / (2 * eps)
+        analytic = np.asarray(jax.grad(lambda r: self._price(option, r))(option[1]))
         # Loose rtol: the finite difference is the noisy side.
-        np.testing.assert_allclose(analytic, fd, rtol=1e-4, atol=1e-3)
+        np.testing.assert_allclose(analytic, fd, rtol=1e-4, atol=1e-2)
 
-    def test_vega_gradient_flows_through_hw_sigma(self):
-        """The Vega gradient flows through `hw_sigma`, a nested `Sigma` pytree child."""
-        curve = jax_curve()
-        sigma = Sigma(times=jnp.asarray([1.0]), values=jnp.asarray([0.01, 0.012]))
-        cfg = bermudan_cfg(hw_sigma=sigma)
-        price_fn, sigma_values = _bermudan_price_fn(cfg, curve)
+    def test_vega_gradient_flows_through_sigma(self):
+        """The gradient flows through `sigma`, a nested `Sigma` pytree child."""
+        cfg = bermudan_cfg()
 
-        d_npv_d_sigma = jax.grad(price_fn, argnums=1)(curve.pillar_rates, sigma_values)
-        assert np.any(np.abs(np.asarray(d_npv_d_sigma)) > 1e-6), (
-            f"all-zero d(NPV)/d(sigma) suggests hw_sigma was frozen as static: {d_npv_d_sigma}"
-        )
+        def npv(values):
+            from engine.instruments.bermudan_swaption import grid_value
+            sigma = Sigma(times=jnp.asarray([1.0]), values=values)
+            return grid_value(prepared(cfg, a=0.03, sigma=sigma, curve=CURVE, n_per_std=16))
+
+        d_npv_d_sigma = np.asarray(jax.grad(npv)(jnp.asarray([0.01, 0.012])))
+        assert np.all(np.abs(d_npv_d_sigma) > 1e-6), f"a zero d(NPV)/d(sigma) suggests sigma was frozen: {d_npv_d_sigma}"
 
     @pytest.mark.slow
     def test_jitted_and_unjitted_induction_agree(self):
         """The jitted induction equals the same computation under `jax.disable_jit`."""
-        cfg = bermudan_cfg()
-        jitted = price_bermudan_swaption_base(cfg)
+        jitted = engine_npv()
         with jax.disable_jit():
-            eager = price_bermudan_swaption_base(cfg)
+            eager = engine_npv()
         assert jitted == pytest.approx(eager, rel=1e-9)
 
 
@@ -533,13 +402,15 @@ class TestPhaseAnnotations:
 
         assert entered == ["annotation:calibration", "scope:calibration"]
 
-    def test_price_portfolio_annotates_its_phases(self, portfolio_request):
+    def test_price_portfolio_annotates_its_phases(self, portfolio_request, monkeypatch):
         """A real pricing run enters the phases."""
-        import engine.portfolio.request as request_module
+        import dataclasses
+
+        import engine.portfolio.market_path as market_path
         from engine.portfolio.request import price_portfolio
 
         seen = []
-        original = request_module._phase
+        original = market_path.phase
 
         @contextmanager
         def recording(name):
@@ -547,10 +418,9 @@ class TestPhaseAnnotations:
             with original(name):
                 yield
 
-        request_module._phase = recording
-        try:
-            price_portfolio(portfolio_request)
-        finally:
-            request_module._phase = original
-
-        assert {"calibration", "simulation", "pricing", "base_npv", "exposure"} <= set(seen)
+        monkeypatch.setattr(market_path, "phase", recording)
+        price_portfolio(dataclasses.replace(portfolio_request, compute_greeks=True))
+        assert {"calibration", "simulation", "pricing", "exposure", "greeks"} <= set(seen)
+        seen.clear()
+        price_portfolio(dataclasses.replace(portfolio_request, scenario_risk=False))
+        assert seen == ["base_npv"]

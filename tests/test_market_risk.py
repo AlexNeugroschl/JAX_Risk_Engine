@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from engine.instruments.treasury import price_bond_base
+from engine.market import ZeroCurveConfig
 from engine.market_risk import (
     MarketRiskRequest,
     RateRiskFactors,
@@ -20,11 +20,11 @@ from engine.market_risk import (
     run_market_risk,
 )
 from engine.market_risk.revaluation import revalue
-from engine.models.hull_white import ZeroCurve
-from engine.risk.greeks import swap_delta_gamma
-from engine.risk.price_functions import bachelier_swaption_price_function, bond_price_function, swaption_price_function
+from engine.risk.greeks import curve_greeks
+from engine.risk.price_functions import curves_of, trade_price_function
 from engine.risk.var_es import RISK_MEASURE_HISTORICAL, compute_risk_metrics
-from engine.simulation.market_model import ZeroCurveConfig
+from engine.valuation.config import PricingConfig
+from engine.valuation.portfolio import value_today
 from tests import market_risk_support as m
 
 FACTORS = m.factors()
@@ -47,8 +47,16 @@ class TestRateRiskFactors:
 
     def test_labels_name_curve_and_pillar(self):
         labels = FACTORS.labels()
-        assert labels[0] == "OIS/0y" and labels[1] == "OIS/1y"
-        assert labels[len(m.PILLAR_TIMES)] == "IBOR/0y"
+        assert labels[0] == "discount:USD/0y" and labels[1] == "discount:USD/1y"
+        assert labels[len(m.PILLAR_TIMES)] == f"index:{m.INDEX}/0y"
+
+    def test_from_market_takes_every_curve_by_its_name(self):
+        """Each currency's discount curve, then its index curves: the names trades read."""
+        assert FACTORS.names == ("discount:USD", f"index:{m.INDEX}")
+        assert FACTORS.curves == (m.OIS, m.IBOR)
+        assert FACTORS.index_of(f"index:{m.INDEX}") == 1
+        with pytest.raises(KeyError, match="not a risk factor"):
+            FACTORS.index_of("discount:EUR")
 
     def test_default_names(self):
         assert RateRiskFactors.from_curves([m.OIS]).names == ("curve0",)
@@ -171,69 +179,77 @@ class TestShockScenariosValidation:
 class TestRevaluation:
     def test_zero_shift_is_zero_pnl(self):
         trades = [m.swap(), m.european(), m.bermudan(), m.bond()]
-        base, shocked = revalue(trades, FACTORS, np.zeros((3, FACTORS.size)))
+        base, shocked = revalue(trades, m.market(), FACTORS, np.zeros((3, FACTORS.size)), m.PRICING)
         np.testing.assert_allclose(np.asarray(shocked), np.tile(base, (3, 1)), rtol=1e-13)
+
+    def test_the_base_is_the_portfolio_runs_value(self):
+        """One pricer: the base equals `value_today` with the same engines."""
+        trades = [m.swap(), m.european(), m.bermudan(), m.bond()]
+        base, _ = revalue(trades, m.market(), FACTORS, np.zeros((2, FACTORS.size)), m.PRICING)
+        np.testing.assert_allclose(base, value_today(trades, m.market(), "USD", m.PRICING), rtol=1e-13)
 
     def test_batching_does_not_change_the_answer(self):
         trades = [m.swap(), m.bermudan()]
         shifts = _scenarios(num=20).shifts
-        _, one_by_one = revalue(trades, FACTORS, shifts, batch_size=1)
-        _, batched = revalue(trades, FACTORS, shifts, batch_size=7)
+        _, one_by_one = revalue(trades, m.market(), FACTORS, shifts, m.PRICING, batch_size=1)
+        _, batched = revalue(trades, m.market(), FACTORS, shifts, m.PRICING, batch_size=7)
         np.testing.assert_allclose(np.asarray(one_by_one), np.asarray(batched), rtol=1e-13)
 
-    def test_bond_equals_the_float_pricer_including_a_parallel_shift(self):
+    def test_a_parallel_shift_is_the_value_on_the_shifted_market(self):
         bond = m.bond()
-        f = bond_price_function(bond)
-        rates = jnp.asarray(bond.initial_zero_curve.rates)
-        assert float(f(rates)) == pytest.approx(price_bond_base(bond), rel=1e-14)
-        assert float(f(rates + 0.0025)) == pytest.approx(price_bond_base(bond, rate_shift=0.0025), rel=1e-14)
+        shift = np.zeros((2, FACTORS.size))
+        shift[:, FACTORS.slice_of(0)] = 0.0025
+        _, shocked = revalue([bond], m.market(), FACTORS, shift, m.PRICING)
+        moved = ZeroCurveConfig(m.PILLAR_TIMES, [r + 0.0025 for r in m.OIS.rates])
+        market = m.market()
+        usd = dataclasses.replace(market.currency("USD"), discount_curve=moved)
+        expected = value_today([bond], dataclasses.replace(market, currencies={"USD": usd}), "USD")[0]
+        assert float(shocked[0, 0]) == pytest.approx(expected, rel=1e-14)
 
     def test_swap_pnl_is_first_order_its_delta(self):
-        """A 0.1bp parallel move of the discount curve: P&L equals the summed
-        AD discount Delta (per 1bp) scaled by 0.1, to second order."""
+        """A 0.1bp parallel move of the discount curve: P&L equals the summed AD discount
+        Delta (per 1bp) scaled by 0.1, to second order."""
         swap = m.swap()
         shift = np.zeros((2, FACTORS.size))
         shift[:, FACTORS.slice_of(0)] = 1e-5
-        base, shocked = revalue([swap], FACTORS, shift)
+        base, shocked = revalue([swap], m.market(), FACTORS, shift, m.PRICING)
         pnl = float(shocked[0, 0]) - base[0]
-        delta = swap_delta_gamma(swap, ZeroCurve.from_config(m.OIS), ZeroCurve.from_config(m.IBOR))
-        assert pnl == pytest.approx(0.1 * float(jnp.sum(delta["discount_delta"])), rel=1e-4)
+        delta = curve_greeks(swap, m.market(), m.PRICING, 1e-4)["delta:discount:USD"]
+        assert pnl == pytest.approx(0.1 * float(np.sum(delta)), rel=1e-4)
+
+    def test_the_european_engine_is_the_configured_one(self):
+        """Bachelier by default, Jamshidian when configured: not chosen by the trade (A-8)."""
+        trades = [m.european()]
+        zero = np.zeros((2, FACTORS.size))
+        bachelier, _ = revalue(trades, m.market(), FACTORS, zero, m.PRICING)
+        jamshidian, _ = revalue(trades, m.market(), FACTORS, zero, m.JAMSHIDIAN)
+        assert bachelier[0] == pytest.approx(value_today(trades, m.market(), "USD")[0], rel=1e-13)
+        assert jamshidian[0] == pytest.approx(value_today(trades, m.market(), "USD", m.JAMSHIDIAN)[0], rel=1e-13)
+        assert bachelier[0] != pytest.approx(jamshidian[0], rel=1e-3)
 
     def test_grid_pricers_get_a_memory_bounded_batch(self):
-        """A fine-grid Bermudan must not be vmapped hundreds of scenarios at a
-        time: at n_per_std=64 one scenario's rollback holds ~80 MB, and a
-        batch of 256 thrashed a 32 GB machine."""
+        """A fine-grid Bermudan must not be vmapped hundreds of scenarios at a time: at
+        n_per_std=64 one scenario's rollback holds ~80 MB, and a batch of 256 thrashed a
+        32 GB machine."""
         from engine.market_risk.revaluation import BATCH_MEMORY_BUDGET, scenario_batch_size
 
-        fine = m.bermudan(n_per_std=64, std_devs=6.0)
-        batch = scenario_batch_size(fine, 256, itemsize=8)
+        fine = PricingConfig(bermudan=dataclasses.replace(m.ENGINE, n_per_std=64, std_devs=6.0))
+        batch = scenario_batch_size(m.bermudan(), fine, 256, itemsize=8)
         assert 1 <= batch < 16
         nodes = 2 * int(64 * 6.0 + 0.5) + 1
         assert batch * nodes * nodes * 8 <= BATCH_MEMORY_BUDGET
-        assert scenario_batch_size(m.swap(), 256, itemsize=8) == 256
-        assert scenario_batch_size(m.bermudan(n_per_std=16, std_devs=5.0), 64, itemsize=8) == 64
+        assert scenario_batch_size(m.swap(), fine, 256, itemsize=8) == 256
+        assert scenario_batch_size(m.bermudan(), m.PRICING, 64, itemsize=8) == 64
 
-    def test_swaption_price_function_keeps_float32(self):
-        """Regression: two dtype-less constants inside the European price
-        function promoted a float32 curve to float64, so `risk=32` swaption
-        Greeks and float32 market risk silently ran partly in float64."""
-        f = swaption_price_function(m.european(), ZeroCurve.from_config(m.OIS, dtype=jnp.float32))
-        assert f(jnp.asarray(m.OIS.rates, dtype=jnp.float32)).dtype == jnp.float32
-
-    def test_bachelier_price_function_keeps_float32(self):
-        """The Bachelier European's legs are cast to the curve's dtype (`Legs.astype`); left
-        in float64 they would promote a float32 curve."""
-        f = bachelier_swaption_price_function(m.european_bachelier(),
-                                              ZeroCurve.from_config(m.OIS, dtype=jnp.float32), m.VOLS)
-        value32 = f(jnp.asarray(m.OIS.rates, dtype=jnp.float32))
+    @pytest.mark.parametrize("pricing", [m.PRICING, m.JAMSHIDIAN], ids=["bachelier", "jamshidian"])
+    def test_the_european_price_function_keeps_float32(self, pricing):
+        """Regression: dtype-less constants inside a European price function promoted a
+        float32 curve to float64, so float32 market risk silently ran partly in float64."""
+        fn32 = trade_price_function(m.european(), m.market(), pricing, jnp.float32)
+        value32 = fn32.price(*curves_of(fn32, m.market(), jnp.float32))
         assert value32.dtype == jnp.float32
-        value64 = bachelier_swaption_price_function(m.european_bachelier(), ZeroCurve.from_config(m.OIS), m.VOLS)(
-            jnp.asarray(m.OIS.rates))
-        assert float(value32) == pytest.approx(float(value64), rel=1e-5)
-
-    def test_a_european_without_hull_white_parameters_uses_bachelier(self):
-        from engine.market_risk.revaluation import uses_bachelier
-        assert uses_bachelier(m.european_bachelier()) and not uses_bachelier(m.european())
+        fn64 = trade_price_function(m.european(), m.market(), pricing, jnp.float64)
+        assert float(value32) == pytest.approx(float(fn64.price(*curves_of(fn64, m.market(), jnp.float64))), rel=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +258,7 @@ class TestRevaluation:
 @pytest.fixture(scope="module")
 def mixed_run():
     trades = [m.swap(), m.european(), m.bermudan(), m.bond()]
-    return trades, run_market_risk(MarketRiskRequest(trades, _scenarios(num=512)))
+    return trades, run_market_risk(MarketRiskRequest(trades, m.market(), _scenarios(num=512), m.PRICING))
 
 
 class TestRun:
@@ -277,23 +293,35 @@ class TestRun:
 
     def test_warns_that_option_vol_is_not_shocked(self, mixed_run):
         _, result = mixed_run
-        assert any("volatility risk is not in this VaR/ES" in w and "[1, 2]" in w for w in result.warnings)
+        assert any("volatility risk is not in this VaR/ES" in w and "['european', 'bermudan']" in w
+                   for w in result.warnings)
 
     def test_warns_about_a_thin_tail(self):
-        result = run_market_risk(MarketRiskRequest([m.swap()], _scenarios(num=64), quantiles=(0.99,)))
+        result = run_market_risk(MarketRiskRequest([m.swap()], m.market(), _scenarios(num=64), quantiles=(0.99,)))
         assert any("too few for a stable estimate" in w for w in result.warnings)
 
     @pytest.mark.slow
     def test_float32_run_is_float32_and_close(self, mixed_run):
         trades, result64 = mixed_run
-        result32 = run_market_risk(MarketRiskRequest(trades, _scenarios(num=512), precision=32))
+        result32 = run_market_risk(MarketRiskRequest(trades, m.market(), _scenarios(num=512), m.PRICING, precision=32))
         assert result32.pnl.dtype == jnp.float32
         assert result32.risk["VaR_99"] == pytest.approx(result64.risk["VaR_99"], rel=1e-4)
+
+    @pytest.mark.slow
+    def test_a_calibrated_bermudan_is_held_at_todays_calibration(self):
+        """With the default engine the Bermudan is calibrated on today's market and that
+        model held under every scenario: the base is its portfolio value, and a zero shock
+        is zero P&L."""
+        cfg = m.bermudan()
+        shocks = _scenarios(num=16)
+        result = run_market_risk(MarketRiskRequest([cfg], m.market(), shocks))
+        assert result.base_npv_per_trade[0] == pytest.approx(value_today([cfg], m.market(), "USD")[0], rel=1e-12)
+        assert np.all(np.isfinite(np.asarray(result.pnl)))
 
 
 class TestRunValidation:
     def _request(self, trades, **kwargs):
-        return MarketRiskRequest(trades, _scenarios(num=16), **kwargs)
+        return MarketRiskRequest(trades, m.market(), _scenarios(num=16), **kwargs)
 
     def test_no_trades(self):
         with pytest.raises(ValueError, match="at least one trade"):
@@ -308,28 +336,40 @@ class TestRunValidation:
         with pytest.raises(ValueError, match=match):
             run_market_risk(self._request([m.swap()], **kwargs))
 
-    def test_curve_index_out_of_range(self):
-        with pytest.raises(ValueError, match="out of range"):
-            run_market_risk(self._request([dataclasses.replace(m.swap(), forward_curve_index=2)]))
+    def test_a_curve_the_market_lacks_is_refused_naming_the_trade(self):
+        eur = dataclasses.replace(m.swap(), currency="EUR")
+        with pytest.raises(KeyError, match="'swap'.*EUR"):
+            run_market_risk(self._request([eur]))
 
-    def test_trade_curve_must_be_the_factor_curve(self):
+    def test_a_factor_must_be_the_market_curve_of_its_name(self):
         other = ZeroCurveConfig(m.PILLAR_TIMES, [r + 0.001 for r in m.OIS.rates])
-        with pytest.raises(ValueError, match="does not match risk-factor curve 'OIS'"):
-            run_market_risk(self._request([dataclasses.replace(m.european(), initial_zero_curve=other)]))
+        factors = RateRiskFactors.from_curves([other, m.IBOR], FACTORS.names)
+        shocks = monte_carlo_scenarios(factors, m.covariance(), 10, 16)
+        with pytest.raises(ValueError, match="differs from the market's curve"):
+            run_market_risk(MarketRiskRequest([m.swap()], m.market(), shocks))
 
-    def test_bond_must_name_its_curve(self):
-        with pytest.raises(ValueError, match="curve_index"):
-            run_market_risk(self._request([dataclasses.replace(m.bond(), curve_index=None)]))
+    def test_a_factor_must_be_a_market_curve(self):
+        factors = RateRiskFactors.from_curves([m.OIS, m.IBOR], ["discount:USD", "IBOR"])
+        shocks = monte_carlo_scenarios(factors, m.covariance(), 10, 16)
+        with pytest.raises(ValueError, match="'IBOR' is not a curve of the market"):
+            run_market_risk(MarketRiskRequest([m.bond()], m.market(), shocks))
+
+    def test_every_curve_a_trade_reads_must_be_a_factor(self):
+        factors = RateRiskFactors.from_curves([m.OIS], ["discount:USD"])
+        shocks = monte_carlo_scenarios(factors, m.covariance()[:10, :10], 10, 16)
+        run_market_risk(MarketRiskRequest([m.bond()], m.market(), shocks))  # a bond reads the discount curve only
+        with pytest.raises(ValueError, match="'swap'.*not a risk factor"):
+            run_market_risk(MarketRiskRequest([m.swap()], m.market(), shocks))
 
     def test_a_bachelier_european_needs_swaption_vols(self):
-        with pytest.raises(ValueError, match="swaption_vols"):
-            run_market_risk(self._request([m.european_bachelier()]))
-
-    def test_bermudan_must_be_calibrated(self):
-        with pytest.raises(ValueError, match="calibrate"):
-            run_market_risk(self._request([dataclasses.replace(m.bermudan(), hw_sigma=None)]))
+        market = m.market()
+        usd = dataclasses.replace(market.currency("USD"), swaption_vols=None)
+        shocks = _scenarios(num=16)
+        with pytest.raises(KeyError, match="swaption volatilities"):
+            run_market_risk(MarketRiskRequest([m.european()], dataclasses.replace(market, currencies={"USD": usd}),
+                                              shocks))
 
     def test_one_evaluation_date(self):
-        shifted = dataclasses.replace(m.swap(), evaluation_date=m.TODAY + 1)
-        with pytest.raises(ValueError, match="one evaluation_date"):
+        shifted = dataclasses.replace(m.swap(), evaluation_date=m.TODAY + 1, trade_id="later")
+        with pytest.raises(ValueError, match="'later'.*not the market's as-of date"):
             run_market_risk(self._request([m.swap(), shifted]))

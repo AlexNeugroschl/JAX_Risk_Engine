@@ -5,11 +5,22 @@ They live in the instruments layer so that instrument modules import nothing fro
 `engine.portfolio`, the layer above them (audit A-5; enforced by
 tests/test_import_layering.py). Only malformed input (e.g. non-finite values) is rejected;
 zero and negative notionals and rates are allowed.
+
+Every trade config names itself and its valuation date (roadmap 1.3): `trade_id`, ORE's
+`<Trade id>`, and `evaluation_date`, both required keyword fields. A trade never reads ORE's
+thread-local evaluation date (I-64), and results are never keyed by position alone (I-10).
 """
 import math
 
-import numpy as np
 import ORE
+
+
+def _validate_identity(trade_id: str, evaluation_date: ORE.Date) -> None:
+    """`trade_id` must be a non-empty string and `evaluation_date` an `ORE.Date`."""
+    if not isinstance(trade_id, str) or not trade_id:
+        raise ValueError(f"trade_id must be a non-empty string; got {trade_id!r}")
+    if not isinstance(evaluation_date, ORE.Date):
+        raise TypeError(f"trade {trade_id!r}: evaluation_date must be an ORE.Date; got {evaluation_date!r}")
 
 
 def _validate_common_fields(notional: float, fixed_rate: float, evaluation_date: ORE.Date) -> None:
@@ -21,27 +32,6 @@ def _validate_common_fields(notional: float, fixed_rate: float, evaluation_date:
         raise ValueError(f"fixed_rate must be finite; got {fixed_rate}")
     if not isinstance(evaluation_date, ORE.Date):
         raise TypeError(f"evaluation_date must be an ORE.Date; got {evaluation_date!r}")
-
-
-def _validate_hw_sigma(hw_sigma) -> None:
-    """Every value of a flat `hw_sigma` or a piecewise `Sigma` must be finite. `None` is
-    accepted: it is the "calibrate me" sentinel on the Bermudan/American configs."""
-    if hw_sigma is None:
-        return
-    values = hw_sigma.values if hasattr(hw_sigma, "values") else [hw_sigma]
-    if not np.all(np.isfinite(np.asarray(values, dtype=np.float64))):
-        raise ValueError(f"hw_sigma must be finite; got {hw_sigma}")
-
-
-def _validate_hw_a(hw_a: float) -> None:
-    """Hull-White mean reversion must be finite and strictly positive. QuantLib's
-    `HullWhite` model (and so `ORE.JamshidianSwaptionEngine`) raises at `a = 0`; without this
-    check the bond-option volatility divides by zero and every option silently prices at
-    intrinsic value (I-41)."""
-    if not math.isfinite(hw_a) or hw_a <= 0.0:
-        raise ValueError(
-            f"hw_a must be finite and > 0 for the Hull-White pricers (QuantLib's HullWhite "
-            f"raises at a = 0); got {hw_a}")
 
 
 #: ORE's option settlement types (`Settlement::Type`).

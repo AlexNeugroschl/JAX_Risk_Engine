@@ -21,24 +21,21 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.stats import norm as scipy_norm
 
-from engine.instruments.bermudan_swaption import (
-    BermudanSwaptionConfig,
-    _cashflow_values_at_nodes,
-    _zero_curve_of,
-    prepare_bermudan,
-)
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, _cashflow_values_at_nodes, _zero_curve_of
 from engine.models.lgm import numeraire as _numeraire, zeta as _zeta
+from tests.support.lgm_engine import prepared
 
 
-def single_exercise_value_by_integration(cfg: BermudanSwaptionConfig) -> float:
-    swap = prepare_bermudan(cfg)
+def single_exercise_value_by_integration(cfg: BermudanSwaptionConfig, **model) -> float:
+    """`model` as `tests.support.lgm_engine.prepared`."""
+    swap = prepared(cfg, **model)
     assert swap.exercise_times.shape == (1,), "only defined for a single exercise date"
     t = float(swap.exercise_times[0])
     curve = _zero_curve_of(swap)
     belongs = np.concatenate([swap.fixed_belongs_until, swap.float_belongs_until]) >= t
 
     z = np.linspace(-12.0, 12.0, 240_001)
-    x = jnp.asarray(z * np.sqrt(float(_zeta(cfg.hw_sigma, t))))
+    x = jnp.asarray(z * np.sqrt(float(_zeta(swap.sigma, t))))
     exercised = np.asarray(_cashflow_values_at_nodes(swap, curve, x, jnp.asarray(t)))[:, belongs].sum(axis=1)
-    deflated = np.maximum(exercised, 0.0) / np.asarray(_numeraire(curve, cfg.hw_a, cfg.hw_sigma, jnp.asarray(t), x))
+    deflated = np.maximum(exercised, 0.0) / np.asarray(_numeraire(curve, swap.reversion, swap.sigma, jnp.asarray(t), x))
     return float(np.trapezoid(deflated * scipy_norm.pdf(z), z))

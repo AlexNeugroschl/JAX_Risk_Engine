@@ -28,14 +28,10 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.simulation.market_model import ZeroCurveConfig
-from engine.instruments.bermudan_swaption import (
-    BermudanSwaptionConfig,
-    exercisable_dates,
-    prepare_bermudan,
-    price_bermudan_swaption_base,
-)
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, exercisable_dates
+from engine.market import ZeroCurveConfig
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
+from tests.support.lgm_engine import grid_npv, prepared
 
 EVAL_DATE = ORE.Date(30, 7, 2026)
 DC = TIME_AXIS_DAY_COUNTER
@@ -92,12 +88,22 @@ def _ore_bermudan_npv(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
 def _engine_cfg(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
                 exercise_dates, n_per_std=N_PER_STD, std_devs=STD_DEVS,
                 notional=NOTIONAL):
-    return BermudanSwaptionConfig(
-        notional=notional, fixed_rate=fixed_rate, payer=payer, rate_factor_index=0,
-        hw_a=hw_a, hw_sigma=hw_sigma, initial_zero_curve=_flat_curve(flat_rate),
-        exercise_dates=exercise_dates, swap_tenor=tenor, evaluation_date=EVAL_DATE,
-        n_per_std=n_per_std, std_devs=std_devs,
+    """(trade, model): the engine's trade and the LGM it is priced with."""
+    trade = BermudanSwaptionConfig(
+        notional=notional, fixed_rate=fixed_rate, payer=payer, exercise_dates=exercise_dates, swap_tenor=tenor,
+        evaluation_date=EVAL_DATE, trade_id="bermudan",
     )
+    return trade, dict(a=hw_a, sigma=hw_sigma, curve=_flat_curve(flat_rate), n_per_std=n_per_std, std_devs=std_devs)
+
+
+def _npv(case) -> float:
+    trade, model = case
+    return grid_npv(trade, **model)
+
+
+def _prepared(case):
+    trade, model = case
+    return prepared(trade, **model)
 
 
 def _engine_exercise_dates(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
@@ -106,7 +112,7 @@ def _engine_exercise_dates(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
     schedule."""
     probe = _engine_cfg(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
                         exercise_dates=[EVAL_DATE + 1], notional=notional)
-    starts = exercisable_dates(probe)
+    starts = exercisable_dates(probe[0])
     return [starts[i] for i in exercise_indices]
 
 
@@ -115,7 +121,7 @@ def _both_sides(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor, exercise_in
     dates = _engine_exercise_dates(flat_rate, hw_a, hw_sigma, fixed_rate, payer,
                                    tenor, exercise_indices)
     cfg = _engine_cfg(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor, dates)
-    mine = price_bermudan_swaption_base(cfg)
+    mine = _npv(cfg)
     tree = _ore_bermudan_npv(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
                              exercise_indices, "tree")
     fd = _ore_bermudan_npv(flat_rate, hw_a, hw_sigma, fixed_rate, payer, tenor,
@@ -227,9 +233,9 @@ class TestGapIsTheParametrizationNotTheInduction:
         the gap is not discretization error."""
         flat, a, sigma, rate, payer, tenor, ex = 0.03, 0.03, 0.01, 0.03, True, "5Y", [1, 2, 3]
         times = _engine_exercise_dates(flat, a, sigma, rate, payer, tenor, ex)
-        coarse = price_bermudan_swaption_base(
+        coarse = _npv(
             _engine_cfg(flat, a, sigma, rate, payer, tenor, times, n_per_std=48, std_devs=6.0))
-        fine = price_bermudan_swaption_base(
+        fine = _npv(
             _engine_cfg(flat, a, sigma, rate, payer, tenor, times, n_per_std=384, std_devs=10.0))
         assert abs(coarse - fine) / abs(fine) < 1e-4, (
             f"engine not grid-converged: coarse={coarse:.4f} fine={fine:.4f}"
@@ -245,7 +251,7 @@ class TestGapIsTheParametrizationNotTheInduction:
         flat, a, sigma, rate, payer, tenor = 0.03, 0.03, 0.01, 0.03, True, "5Y"
 
         single_times = _engine_exercise_dates(flat, a, sigma, rate, payer, tenor, [2])
-        single_mine = price_bermudan_swaption_base(
+        single_mine = _npv(
             _engine_cfg(flat, a, sigma, rate, payer, tenor, single_times))
         single_fd = _ore_bermudan_npv(flat, a, sigma, rate, payer, tenor, [2], "fd")
         single_gap = abs(single_mine - single_fd) / abs(single_fd)
@@ -269,7 +275,7 @@ class TestGapIsTheParametrizationNotTheInduction:
         """
         flat, a, rate, payer, tenor = 0.03, 0.03, 0.03, True, "5Y"
         times = _engine_exercise_dates(flat, a, 1e-6, rate, payer, tenor, [2])
-        mine = price_bermudan_swaption_base(
+        mine = _npv(
             _engine_cfg(flat, a, 1e-6, rate, payer, tenor, times,
                         n_per_std=160, std_devs=9.0))
 
@@ -353,12 +359,12 @@ class TestExerciseDatesAreExact:
 
     def test_an_accrual_date_is_the_identical_exercise_time(self):
         date = _engine_exercise_dates(*self.ARGS, [2])[0]
-        prepared = prepare_bermudan(_engine_cfg(*self.ARGS, [date]))
+        prepared = _prepared(_engine_cfg(*self.ARGS, [date]))
         assert float(prepared.exercise_times[0]) == float(prepared.fixed_start_times[2])
 
     def test_every_exercisable_date_is_an_exercise_time_unchanged(self):
-        dates = exercisable_dates(_engine_cfg(*self.ARGS, [EVAL_DATE + 1]))
-        prepared = prepare_bermudan(_engine_cfg(*self.ARGS, dates[1:]))
+        dates = exercisable_dates(_engine_cfg(*self.ARGS, [EVAL_DATE + 1])[0])
+        prepared = _prepared(_engine_cfg(*self.ARGS, dates[1:]))
         assert prepared.exercise_times.tolist() == prepared.fixed_start_times[1:].tolist()
 
     def test_exact_accrual_start_prices_its_intrinsic_at_zero_vol(self):
@@ -366,5 +372,5 @@ class TestExerciseDatesAreExact:
         engine gives 1214.2313035805 (tests/support/ore_lgm_oracle.py); I-29's 1211.47
         was the at-par-coupon value, before I-31."""
         date = _engine_exercise_dates(*self.ARGS, [2])[0]
-        npv = price_bermudan_swaption_base(_engine_cfg(*self.ARGS, [date], n_per_std=160, std_devs=9.0))
+        npv = _npv(_engine_cfg(*self.ARGS, [date], n_per_std=160, std_devs=9.0))
         assert npv == pytest.approx(1214.2313035805, rel=1e-9)

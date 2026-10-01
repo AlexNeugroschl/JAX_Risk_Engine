@@ -29,39 +29,37 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 - **[Architecture](concepts/architecture.md)** — how the codebase is organized: the
   repository layout, how the pieces connect, typed configuration, and testing philosophy.
 - **[Market Simulation](concepts/market-simulation.md)** — the math behind simulating
-  interest rates, equities, and FX rates (Sobol QMC, Brownian bridge, Hull-White 1-Factor,
-  Geometric Brownian Motion, yield curve reconstruction).
+  interest rates, equities, and FX rates: ORE's cross-asset model (Sobol QMC, Brownian
+  bridge, the LGM or the Hull-White model per currency, Black-Scholes FX and equity) and the
+  scenario market of model-implied curves.
 - **[Coding Style & Technical Constraints](concepts/coding-style.md)** — the rules that
   apply throughout the codebase (JAX purity/vectorization constraints, how ORE's C++ gets
   translated into JAX).
 - **[Profiling & the Tracer](concepts/profiling.md)** — how the XProf hook works, what a
-  trace contains, why a cold pricing job compiled ~600 XLA programs (208 on the current
-  4-trade demo portfolio, of which **31 still recompile on every warm repeat** — 23 of
-  them in `engine/risk/greeks.py`, tracked as [I-21](planning/known-issues.md#i-21)), and how to
-  read a trace's phase annotations.
+  trace contains, which programs still recompile on every warm repeat (the calibrations and
+  the AD Greeks' closures, [I-21](planning/known-issues.md#i-21),
+  [I-22](planning/known-issues.md#i-22)), and how to read a trace's phase annotations.
 - **[Glossary](concepts/glossary.md)** — plain-language definitions for every finance and
   engineering term used in these docs.
 
 ## Instruments
 
-Each of these prices a specific trade type against the simulated market data, producing a
-common `[Scenarios, TimeSteps, Trades]` NPV cube:
+Every trade is valued today and on every simulated path by the engine ORE uses for it
+(`engine/valuation/`), producing a common `[Scenarios, Dates, Trades]` NPV cube:
 
-- **[Interest Rate Swaps](instruments/swaps.md)** — linear (no optionality) pricing via
-  discounted cashflows.
-- **[European Swaptions](instruments/european-swaptions.md)** — single-exercise-date
-  options via Jamshidian's closed-form decomposition.
+- **[Interest Rate Swaps](instruments/swaps.md)** — discounted cashflows, as ORE's
+  `DiscountingSwapEngine`, with path fixings.
+- **[European Swaptions](instruments/european-swaptions.md)** — Bachelier on the market's
+  swaption volatility (ORE's default), or Jamshidian's decomposition on a configured
+  Hull-White model.
 - **[American & Bermudan Swaptions](instruments/american-bermudan-swaptions.md)** —
   multi/continuous-exercise-date options via a numeric LGM backward-induction engine
-  (Hagan's quadrature convolution), matching ORE's actual production engine.
+  (Hagan's quadrature convolution), calibrated to the trade's own basket, matching ORE's
+  production engine.
 
-**Treasury bills and notes** (`engine/instruments/treasury.py`, W1.5) are the exception to
-the shared-cube framing above: they are closed-form discounted cashflows against a single
-deterministic curve, so they produce a **t=0 value and Greeks but no NPV cube** — and
-therefore no VaR/ES. That is refused explicitly rather than approximated with a constant
-column; see [I-24](planning/known-issues.md#i-24) and
-[The Portfolio Entry Point](reference/portfolio-entrypoint.md). Their TraderX-bundle
-counterparts live at the integration boundary
+**Treasury bills and notes** (`engine/instruments/treasury.py`) are discounted cashflows on
+their currency's curve, today and on every path, as ORE's `DiscountingRiskyBondEngine`
+without credit. Their TraderX-bundle counterparts live at the integration boundary
 ([EOD Integration](reference/eod-integration.md)).
 
 ## Risk
@@ -73,22 +71,18 @@ counterparts live at the integration boundary
   multi-step risk-neutral simulation, using ORE's `ExposureCalculator` definitions.
 - **[VaR & Expected Shortfall statistics](risk/var_es.md)** — the order-statistic and
   tail-mean conventions behind every VaR/ES number, matching `ORE.RiskStatistics` exactly.
-- **[Delta, Gamma, Vega, and Theta](risk/greeks.md)** — per-curve-pillar sensitivities for
-  every *rate-derivative* instrument (including Bermudan/American Vega, via
-  `engine/calibration/`), via JAX automatic differentiation scaled to ORE's own
-  bump-and-revalue convention. **Bonds are the exception**: they are not JAX, so their
-  Delta/Gamma/Theta are bumped revaluations computed in `engine/portfolio/request.py`, as
-  scalars rather than per-pillar vectors, with no Vega — see
-  [The Portfolio Entry Point](reference/portfolio-entrypoint.md#greeks).
+- **[Delta, Gamma, Vega, and Theta](risk/greeks.md)** — ORE's sensitivity analysis
+  (bump and revalue per curve tenor and swaption quote, Theta on the rolled market), the
+  default, or the same Greeks by JAX automatic differentiation (`GreeksConfig.method="AD"`),
+  for every trade type and either model.
 
 ## Reference
 
 - **[API Reference](reference/api-reference.md)** — exact inputs/outputs for every public
   function and config dataclass.
 - **[The Portfolio Entry Point](reference/portfolio-entrypoint.md)** — `engine/portfolio/`'s
-  `PortfolioRequest`/`PortfolioResult`/`price_portfolio`, the single call that ties every
-  module together, plus the validation/assembly layer it's built on
-  (`docs/planning/traderx-integration.md`).
+  `PortfolioRequest`/`PortfolioResult`/`price_portfolio` and the run configuration
+  (`RunConfig`), the single call that ties every module together.
 - **[HTTP API](reference/http-api.md)** — the FastAPI wrapper (`engine/api/`) over
   `price_portfolio`: endpoint-by-endpoint reference, the async job pattern and why, request/
   response schemas. The same app also serves the EOD contract under `/eod` — a second,
@@ -102,11 +96,11 @@ counterparts live at the integration boundary
   builder, why an equity is refused rather than valued at its own exported mark, and why
   a published manifest — not a pointer file — is the commit point for a result.
 - **[Models & Trades](reference/models-and-trades.md)** — the shared foundation layer
-  (`engine/models/`) every instrument pricer is built on: Hull-White and
-  LGM closed-form math, and shared ORE trade-building/cashflow extraction.
+  (`engine/models/`): the LGM's analytics in both parametrizations (Hagan's, and the
+  Hull-White model's), curves, and ORE trade building.
 - **[Calibration](reference/calibration.md)** — `engine/calibration/`'s bootstrap fit of a
-  piecewise LGM volatility term structure to market swaption quotes, matching
-  `ore::data::LgmBuilder::calibrate()`'s own bootstrap convention.
+  piecewise LGM (or Hull-White) volatility term structure to market swaption quotes,
+  matching `ore::data::LgmBuilder::calibrate()`'s own bootstrap convention.
 - **[ORE Parity](reference/ore-parity.md)** — maps every algorithm in this codebase to its
   exact counterpart in ORE's own C++ source (`reference/ORE`), file and function name.
 
@@ -116,8 +110,8 @@ counterparts live at the integration boundary
   to it. Three documents carry it:
   - **[Known Issues](planning/known-issues.md)** — every open defect and important
     shortcoming, what it does to a number a user would see, and what closing it takes. Read
-    it before trusting an exposure profile, a number off the Hull-White model, or an EOD
-    result. Fixed issues keep one line in its closed ledger.
+    it before trusting an exposure profile or an EOD result. Fixed issues keep one line in
+    its closed ledger.
   - **[Features](planning/features.md)** — additive work beyond today's scope (Basel III
     figures, sub-FP32 precision, FX/equity trades, CVA, engine options).
   - **[Roadmap](planning/roadmap.md)** — the order of work: structure, then correctness,
@@ -140,7 +134,7 @@ counterparts live at the integration boundary
 - Every deep-dive doc ends with a **"Tested by"** section pointing to the exact test file
   and test classes that verify what's described.
 - Code is referenced by path and, where helpful, by function/class name — e.g.
-  `engine/simulation/market_model.py::generate_paths`.
+  `engine/simulation/config.py::simulate`.
 - Where a claim about ORE's own behavior is made (a formula, a convention, a design
   decision), it's backed by either a citation of what was read in ORE's own source, or a
   description of how it was live-tested against the installed ORE package — not assumed

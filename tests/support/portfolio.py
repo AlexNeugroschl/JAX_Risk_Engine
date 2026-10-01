@@ -16,8 +16,9 @@ be followed from the HTTP result (L6) down to one trade against ORE (L2).
 Not included: an equity position (the engine has no equity trade yet; the CAM's equity
 component is tested in tests/test_cam.py).
 
-`trades()` are the configs and `trades_json()` the same trades as the market path's HTTP
-request takes them; `ore_npv(cfg)` is ORE's t=0 value of one trade, from ORE's engines:
+`trades()` are the configs (each named by its `trade_id`) and `trades_json()` the same trades
+as the HTTP request takes them; `ore_npv(cfg)` is ORE's t=0 value of one trade, from ORE's
+engines:
 `DiscountingSwapEngine`, QuantLib's `BachelierSwaptionEngine` (ORE's European formula for a
 swap starting after expiry, cash settled by `ParYieldCurve`), the OREApp oracle's calibrated
 `NumericLgmMultiLegOptionEngine` (a cash-settled Bermudan/American is priced there as the
@@ -74,7 +75,11 @@ def _bermudan_exercises():
 
 
 def trades_json() -> dict:
-    """Name -> the trade as the market path's HTTP request takes it."""
+    """Name -> the trade as the HTTP request takes it, `trade_id` its name."""
+    return {name: {"trade_id": name, **trade} for name, trade in _trades_json().items()}
+
+
+def _trades_json() -> dict:
     underlying = {"notional": 1e6, "effective_date": "2027-02-03", "maturity_date": "2033-02-03"}
     return {
         "swap-payer": {"trade_type": "swap", "notional": 1e7, "fixed_rate": 0.042, "payer": True,
@@ -108,29 +113,33 @@ def _date(iso: str) -> ORE.Date:
 
 
 def trades() -> dict:
-    """Name -> the trade config (the same trades as `trades_json`)."""
+    """Name -> the trade config, `trade_id` its name (the same trades as `trades_json`)."""
     underlying = dict(notional=1e6, effective_date=ORE.Date(3, 2, 2027), maturity_date=ORE.Date(3, 2, 2033),
                       evaluation_date=ASOF)
     exercises = [_date(d) for d in _bermudan_exercises()]
     return {
-        "swap-payer": SwapConfig(notional=1e7, fixed_rate=0.042, payer=True, swap_tenor="5Y", evaluation_date=ASOF),
+        "swap-payer": SwapConfig(notional=1e7, fixed_rate=0.042, payer=True, swap_tenor="5Y", evaluation_date=ASOF,
+                                 trade_id="swap-payer"),
         "swap-receiver-seasoned-icma": SwapConfig(
             notional=5e6, fixed_rate=0.039, payer=False, effective_date=ORE.Date(1, 5, 2026),
             maturity_date=ORE.Date(1, 5, 2031), accrual_day_count="ACT/ACT (ICMA)", evaluation_date=ASOF,
-            fixings={_date(d): r for d, r in SEASONED_FIXINGS.items()}),
+            fixings={_date(d): r for d, r in SEASONED_FIXINGS.items()}, trade_id="swap-receiver-seasoned-icma"),
         "european-payer": SwaptionConfig(notional=2e6, fixed_rate=0.044, payer=True, swap_tenor="5Y",
-                                         forward_start=ORE.Period(1, ORE.Years), evaluation_date=ASOF),
+                                         forward_start=ORE.Period(1, ORE.Years), evaluation_date=ASOF,
+                                         trade_id="european-payer"),
         "european-receiver-otm-cash": SwaptionConfig(
             notional=2e6, fixed_rate=0.035, payer=False, swap_tenor="4Y", forward_start=ORE.Period(2, ORE.Years),
-            floating_spread=0.0025, settlement="Cash", evaluation_date=ASOF),
+            floating_spread=0.0025, settlement="Cash", evaluation_date=ASOF, trade_id="european-receiver-otm-cash"),
         "bermudan-payer-physical": BermudanSwaptionConfig(fixed_rate=0.045, payer=True, exercise_dates=exercises,
-                                                          **underlying),
+                                                          trade_id="bermudan-payer-physical", **underlying),
         "bermudan-receiver-cash": BermudanSwaptionConfig(fixed_rate=0.040, payer=False, exercise_dates=exercises,
-                                                         settlement="Cash", **underlying),
+                                                         settlement="Cash", trade_id="bermudan-receiver-cash",
+                                                         **underlying),
         "american-payer": AmericanSwaptionConfig(fixed_rate=0.045, payer=True, first_exercise_date=ORE.Date(3, 2, 2027),
-                                                 last_exercise_date=ORE.Date(3, 2, 2031), **underlying),
+                                                 last_exercise_date=ORE.Date(3, 2, 2031), trade_id="american-payer",
+                                                 **underlying),
         "bond": BondConfig(face_amount=1e6, maturity_date=ORE.Date(15, 8, 2029), evaluation_date=ASOF,
-                           coupon_rate=0.0375,
+                           coupon_rate=0.0375, trade_id="bond",
                            coupon_schedule=tuple(CouponPeriod(_date(s), _date(e)) for s, e in _BOND_PERIODS)),
     }
 
@@ -211,6 +220,8 @@ def _ore_lgm_option(cfg) -> float:
 
 
 def _ore_bond(cfg: BondConfig) -> float:
+    if not cfg.coupon_schedule:  # a bill: its redemption, discounted
+        return cfg.face_amount * cfg.redemption_fraction * ore_curve(DISCOUNT).discount(cfg.maturity_date)
     dates = [p.start_date for p in cfg.coupon_schedule] + [cfg.coupon_schedule[-1].end_date]
     schedule = ORE.Schedule(dates, ORE.NullCalendar(), ORE.Unadjusted)
     bond = ORE.FixedRateBond(0, cfg.face_amount, schedule, [cfg.coupon_rate], ORE.ActualActual(ORE.ActualActual.ISMA))

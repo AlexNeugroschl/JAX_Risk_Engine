@@ -1,6 +1,11 @@
 """
 The risk factors a market-risk run shocks: the pillar zero rates of a set of
-named curves.
+named market curves.
+
+A curve's name is the key the market and the trades use for it: `discount:<ccy>` for a
+currency's discount curve, `index:<index name>` for a forwarding curve
+(`engine.risk.price_functions.curve_keys`). `RateRiskFactors.from_market` takes every curve of
+a `Market`; a run checks that each factor is the market curve of its name.
 
 A factor vector is every curve's pillar rates laid end to end, curve 0 first,
 each curve's pillars in time order. Shocks, covariances and histories are all
@@ -15,17 +20,13 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from engine.simulation.market_model import ZeroCurveConfig
+from engine.market import Market, ZeroCurveConfig
 
 
 @dataclass(frozen=True, eq=False)
 class RateRiskFactors:
-    """Named curves whose pillar zero rates are the risk factors.
-
-    Trades refer to curves by index into `curves`: a swap by its
-    `discount_curve_index`/`forward_curve_index`, a swaption by its
-    `rate_factor_index`, a bond by its `curve_index`.
-    """
+    """Named curves whose pillar zero rates are the risk factors. A trade reads its curves
+    by name (see the module docstring), so the names must be the market's."""
     curves: Tuple[ZeroCurveConfig, ...]
     names: Tuple[str, ...]
 
@@ -51,6 +52,25 @@ class RateRiskFactors:
         names = tuple(names) if names is not None else tuple(f"curve{i}" for i in range(len(curves)))
         return cls(curves=tuple(curves), names=names)
 
+    @classmethod
+    def from_market(cls, market: Market) -> "RateRiskFactors":
+        """Every curve of `market`: per currency, its discount curve and then its index curves
+        by name."""
+        curves, names = [], []
+        for currency, data in market.currencies.items():
+            curves.append(data.discount_curve)
+            names.append(curve_name("discount", currency))
+            for index in sorted(data.index_curves):
+                curves.append(data.index_curves[index])
+                names.append(curve_name("index", index))
+        return cls(curves=tuple(curves), names=tuple(names))
+
+    def index_of(self, name: str) -> int:
+        """The position of the curve `name`; a curve that is not a factor is refused."""
+        if name not in self.names:
+            raise KeyError(f"curve {name!r} is not a risk factor; factors are {list(self.names)}")
+        return self.names.index(name)
+
     @property
     def sizes(self) -> Tuple[int, ...]:
         """Pillar count of each curve."""
@@ -73,3 +93,8 @@ class RateRiskFactors:
     def labels(self) -> List[str]:
         """One label per factor, `"<curve>/<pillar time>y"`, in vector order."""
         return [f"{name}/{t:g}y" for name, curve in zip(self.names, self.curves) for t in curve.times]
+
+
+def curve_name(kind: str, name: str) -> str:
+    """A market curve's factor name: `discount:<ccy>` or `index:<index name>`."""
+    return f"{kind}:{name}"

@@ -1,7 +1,9 @@
 # Market Simulation
 
-**Module:** [`engine/simulation/market_model.py`](../../engine/simulation/market_model.py)
-**Public entry point:** `generate_paths(config: SimulationConfig, precision: int = 64)`
+**Modules:** [`engine/simulation/`](../../engine/simulation/) — `config.py` (the configuration and
+`simulate`), `cam.py` (ORE's cross-asset model), `scenario_market.py` (the simulated market),
+`random.py` (Sobol normals and the Brownian bridge).
+**Public entry point:** `simulate(market: Market, config: CamConfig, model=None, dtype=jnp.float64) -> ScenarioMarket`
 
 ## Plain-language summary
 
@@ -9,46 +11,78 @@ This module answers the question: *"Generate thousands of plausible alternate fu
 interest rates, stock prices, and currency exchange rates, at several points in time."*
 
 Think of it like a weather simulator, but for markets. You tell it: here's where interest
-rates and prices stand today, here's roughly how volatile each of them tends to be, and
-here's how they tend to move together (e.g. stock prices and interest rates aren't
-independent — they're correlated). The simulator then generates thousands of independent
-"alternate timelines," each one a full path from today out to some future date, step by
-step.
+rates and prices stand today (the `Market`), here's roughly how volatile each of them tends
+to be, and here's how they tend to move together (the `CamConfig`). The simulator then
+generates thousands of independent "alternate timelines," each one a full path from today out
+to some future date, step by step.
 
-It does this for two kinds of things:
-- **Interest rates**, for one or more currencies/curves (e.g. "USD rates" and "EUR
-  rates," or "a discounting curve" and a separate "lending-rate curve" for the same
-  currency).
-- **Equities and FX rates** (stock prices and currency exchange rates), whose simulated
-  drift is tied to the simulated interest rates — this is what makes it a *cross-asset*
-  simulation rather than several unrelated simulations bolted together.
+It does this for:
+- **Interest rates**, one model per currency, fitted exactly to that currency's curve today:
+  ORE's Linear Gauss-Markov (LGM) model by default, or the Hull-White model.
+- **FX rates and equities**, whose drift is tied to the simulated interest rates — this is
+  what makes it a *cross-asset* simulation rather than several unrelated simulations bolted
+  together.
 
-The output isn't just "the interest rate at each future date" — it's expanded into a
-full **yield curve** at every simulated date, in every simulated scenario. A yield curve
-answers "what is $1 promised at some future date T worth today, if I'm standing at future
-date t?" for every combination of t and T the caller asked for. That expanded object is
-what lets instrument pricing (see [Interest Rate Swaps](../instruments/swaps.md)) actually
-price a real trade's cashflows, which land on many different future dates.
+The output isn't just "the interest rate at each future date" — on every simulated date of
+every path it is a full set of **curves** (each currency's discounting curve and each index's
+forwarding curve), what ORE calls the scenario market. A curve answers "what is $1 promised at
+some future date T worth, if I'm standing at future date t?" That is what lets every trade be
+priced on every path (see [Interest Rate Swaps](../instruments/swaps.md)).
 
 ## Why it's built this way: matching ORE's Cross-Asset Model
 
-ORE's own simulation engine is called the **Cross-Asset Model (CAM)**. This module is a
-line-by-line reimplementation of CAM's math in JAX, verified against the actual, installed
-ORE software rather than against a textbook description — every formula below has either
-been checked by reading ORE's own source, or by writing a small script that builds the
-equivalent object in ORE and compares numbers directly. Where this was done, it's called
-out explicitly.
+ORE's own simulation engine is called the **Cross-Asset Model (CAM)**. This module
+reimplements CAM's math in JAX (`QuantExt::CrossAssetModel`, its exact discretization
+`CrossAssetStateProcess::ExactDiscretization`, and `CrossAssetModelScenarioGenerator`),
+verified against the installed ORE software: the model's analytics, a step of the state
+process, the scenario curves and the numeraire are compared with ORE's objects in the test
+suite (`tests/test_cam.py`).
+
+## The configuration
+
+`CamConfig` (`engine/simulation/config.py`, ORE's `simulation.xml`) holds the date grid, the
+model of each currency (`ir`), the FX and equity volatilities, the correlations, the
+simulation-market tenors, the number of paths (`samples`) and the seed:
+
+```python
+from engine.simulation.config import CamConfig, HullWhiteConfig, LgmConfig
+
+CamConfig(
+    dates=(...),                          # simulation dates, after the market's as-of date
+    base_currency="USD",
+    ir={"USD": HullWhiteConfig(0.03, 0.01),                       # fixed volatility
+        "EUR": LgmConfig(0.02, 0.008, ("1Y", "2Y", "5Y"), ("9Y", "8Y", "5Y"))},  # calibrated
+    fx_volatilities={"EUR": 0.10},
+    correlations={("IR:USD", "IR:EUR"): 0.6, ("IR:USD", "FX:EURUSD"): 0.2},
+    samples=4096, seed=42,
+)
+```
+
+**The model per currency.** Both models are ORE's `<LGM>`: a one-factor Gaussian model with
+constant mean reversion `a`, fitted exactly to the currency's discount curve, simulated under
+the domestic LGM measure. They differ in how the volatility is parametrized
+(`LgmData::VolatilityType`), so the same volatility number means a different model:
+
+- `LgmConfig` (`Hagan`, the default): `volatility` is the LGM's own α; ζ(t) = ∫α².
+- `HullWhiteConfig` (`HullWhite`, ORE's `IrLgm1fPiecewiseConstantHullWhiteAdaptor`):
+  `volatility` is the short rate's σ, and α(t) = σ(t)e^{at}, ζ(t) = ∫σ²e^{2as}ds. This *is* the
+  Hull-White model with its curve-fitted drift, written in the LGM's state: the short rate is
+  r(t) = f(0,t) + H′(t)z + ζ(t)H(t)H′(t) with H(t) = (1 − e^{−at})/a, and every scenario curve
+  equals QuantLib's `HullWhite::discountBond(t, T, r)` (`tests/test_cam.py::
+  test_hull_white_path_curves_equal_quantlibs_hull_white`).
+
+Either is given a fixed volatility, or bootstrapped to a co-terminal basket of the market's
+swaption volatilities (`calibration_expiries` × `calibration_terms`, ORE's
+`CalibrationSwaptions`; see [Calibration](../reference/calibration.md)).
 
 ## The pipeline, step by step
 
-`generate_paths()` runs four phases in order. Each is implemented as (mostly) one function,
-and the file is organized into matching `PHASE 1`–`PHASE 4` sections.
+`simulate()` runs four phases.
 
 ### Phase 1 — Quasi-Monte Carlo shock generation
 
-**Functions:** `generate_sobol_normals()`, `_build_bridge_matrix()` /
-`_apply_bridge_matrix()` / `apply_brownian_bridge()`
-
+**Module:** `engine/simulation/random.py` — `generate_sobol_normals()`,
+`_build_bridge_matrix()` / `_apply_bridge_matrix()` / `apply_brownian_bridge()`
 Simulating "thousands of alternate futures" requires thousands of sets of random numbers
 — one set per scenario, one number per (time step × thing-being-simulated). This module
 does **not** use ordinary random numbers. It uses a **Sobol sequence**: a specially
@@ -71,7 +105,7 @@ specific call. This function now explicitly converts its result back to the requ
 `dtype` before returning, so calling it directly with `dtype=float32` reliably returns
 32-bit numbers. (See [Adjustable Precision](architecture.md#adjustable-precision) for
 why this global-setting behavior exists in the first place, and
-`tests/test_market_model.py::TestGenerateSobolNormals` for the regression test.)
+`tests/test_random.py::TestGenerateSobolNormals` for the regression test.)
 
 **The Brownian Bridge.** Sobol sequences are most accurate in their *first* few
 dimensions and progressively noisier in later ones. A naive mapping (dimension 1 → time
@@ -93,7 +127,7 @@ matrix for every scenario, so it's cheap to compute once.
 *Verified:* `B @ B.T` (the matrix multiplied by its own transpose) is checked to exactly
 equal the true covariance structure of Brownian motion, `Cov(W(s), W(t)) = min(s, t)`
 — this is a strong, closed-form correctness check on the whole construction, and it's
-enforced by `tests/test_market_model.py::TestBrownianBridge::test_matrix_reproduces_bm_covariance`.
+enforced by `tests/test_random.py::TestBrownianBridge::test_matrix_reproduces_bm_covariance`.
 
 ```python
 def apply_brownian_bridge(Z: jax.Array, time_grid: jax.Array) -> jax.Array:
@@ -102,142 +136,73 @@ Applies that matrix to the raw Sobol-derived shocks (via a small `@jax.jit`-comp
 helper, `_apply_bridge_matrix`, since this multiplication *is* data-dependent and worth
 running on the accelerator), then converts the result from "the bridged path's absolute value at
 each time" back into "the standardized shock *between* each consecutive pair of time
-steps" — which is the form the actual simulation step function (Phase 2) needs.
+steps" — which is the form the state recursion (Phase 2) needs.
 
-### Phase 2 — The Cross-Asset Model engine
+### Phase 2 — The cross-asset model's states
 
-**Function:** `_simulate_cross_asset_paths_jit()`
+**Module:** `engine/simulation/cam.py` — `step_moments()`, `evolve_states()`
 
-This is where the shocks generated in Phase 1 actually turn into simulated interest
-rates, stock prices, and FX rates, marching forward one time step at a time.
+The model's state, in ORE's order: one LGM state z per currency (the domestic first), the log
+FX rate of each foreign currency, then the log equity spots. Over each step the state is
+Gaussian given its start, with a mean and covariance that depend only on the time grid and
+the parameters (ORE's exact discretization: `ir/fx/eq_expectation_1/2` and `covarianceImpl`).
+So they are computed once on the host in float64, and the path recursion
+`x_{i+1} = M_i x_i + b_i + L_i Z_i` runs on the device, vectorized over paths. `L_i` is the
+Cholesky factor of the step covariance, as ORE's `pseudoSqrt` computes it
+(`CholeskyDecomposition(cov, flexible = true)`, reproduced by `flexible_cholesky`). Every
+formula reads the IR components through their α and ζ, so the two parametrizations share it.
 
-It models two different processes, jointly correlated:
+### Phase 3 — The scenario market
 
-**Interest rates — the Hull-White 1-Factor (HW1F) model.** Each interest rate curve
-(e.g. "USD," "EUR," or "USD discounting" vs. "USD lending") is modeled as a value that
-randomly wanders but is pulled back toward a long-run average — a "mean-reverting" random
-walk, the standard assumption for interest rates (they don't drift off to infinity or
-negative infinity the way a stock price model might allow). The per-step update is:
+**Module:** `engine/simulation/scenario_market.py` — `build_scenario_market()`
 
-```
-r(t+dt) = r(t) · e^(−a·dt) + θ + σ·√variance · Z
-```
+On each date of each path, ORE's `CrossAssetModelScenarioGenerator`:
 
-where `a` (mean reversion speed), `θ` (long-run drift level), and `σ` (volatility) are
-per-curve parameters supplied in the config, and `variance = (1 − e^(−2·a·dt)) / (2·a)`
-is the closed-form Ornstein-Uhlenbeck transition variance for this exact time step (not
-an approximation — this is the exact formula for how much a mean-reverting process
-should have moved after time `dt`).
+- each currency's discount curve, model-implied
+  (`P(t, t+τ | z) = P(0, t+τ)/P(0, t) · exp(−(H(t+τ) − H(t)) z − ½ (H(t+τ)² − H(t)²) ζ(t))`),
+  sampled at the simulation-market tenors (`CamConfig.curve_tenors`), every discount factor
+  floored at 1e-5;
+- each index's forwarding curve, the same with the index's own t=0 curve, so the basis
+  between the index and the discount curve is deterministic;
+- the domestic LGM numeraire, `N(t, z) = exp(H z + ½ H² ζ) / P(0, t)`, exact (exposures are
+  NPV/N);
+- FX and equity spots.
 
-**Equities and FX — Geometric Brownian Motion (GBM) with a rate-linked drift.** Stock
-prices and FX rates are modeled with the standard assumption that their *percentage*
-returns (not absolute dollar changes) follow a random walk. What makes this a genuinely
-*cross-asset* model rather than a bolted-on equity simulator is that each asset's drift
-is tied to the simulated interest rates via **Uncovered Interest Rate Parity (UIP)** — a
-standard finance principle stating that, in a risk-neutral world, an asset's expected
-growth rate should equal the (risk-free) interest rate applicable to it, minus any
-dividend yield it pays out. The `rate_mapping` config field encodes exactly which
-interest rate curve(s) each equity/FX pair's drift depends on (and with what sign — e.g.
-an FX rate depends on the *difference* between two currencies' rates).
-
-**The numéraire.** Alongside the simulated paths, the model also tracks a money-market
-account value ("numéraire") that accrues at the simulated short rate of *one* designated
-base curve (curve index 0). This is a standard risk-neutral-pricing bookkeeping device;
-this project's current instrument pricer ([Interest Rate Swaps](../instruments/swaps.md))
-doesn't actually use it (it discounts using the yield curve cube directly instead — see
-that doc for why), but it's part of a faithful CAM reimplementation and is exposed in the
-output for future use.
-
-All of this is wrapped in a single `@jax.jit`-compiled function using `jax.lax.scan` to
-step through time — the JAX idiom for "run this per-step update function T times in a
-row, efficiently, without a Python-level loop." This is a hard requirement from the
-project's own [coding constraints](coding-style.md): no ordinary Python `for` loops
-inside JIT-compiled code.
-
-### Phase 3 — Yield curve reconstruction
-
-**Functions:** `compute_hw_A_matrix()`, `reconstruct_yield_curves()`
-
-Phase 2 produces a single number per curve per time step per scenario — "the short-term
-interest rate right now." That alone isn't enough to price a real trade, because a
-trade's cashflows land on many different future dates, each of which needs its own
-discount factor. Phase 3 expands each simulated short rate into a **full curve** of
-discount factors, using the Hull-White model's closed-form **affine bond-price formula**:
-
-```
-P(t, T) = A(t, T) · e^(−B(t, T) · r(t))
-```
-
-This says: "the price today (from the model's perspective, standing at future time `t`)
-of $1 payable at future time `T`" is a simple function of the currently-simulated short
-rate `r(t)`, plus two deterministic (non-random) terms `A` and `B` that only depend on
-the model's parameters and on today's actual market curve — not on any specific
-simulated scenario. Because `A` and `B` don't depend on the scenario, they're computed
-**once**, on the CPU, in plain NumPy — not once per scenario, not inside the
-accelerator-run (GPU/TPU) simulation loop.
-
-```
-B(t, T) = (1 − e^(−a·(T−t))) / a
-```
-A closed-form function of the time gap `T − t` and the mean-reversion speed `a`.
-
-```
-A(t, T) = [P(0,T) / P(0,t)] · exp( B(t,T)·f(0,t) − (σ²/4a)·(1 − e^(−2at))·B(t,T)² )
-```
-This is the term that **calibrates** the model to today's actual market curve — it
-guarantees that if you plug in `t = 0` (today, no simulated randomness yet), the formula
-reproduces today's actual observed curve exactly. `P(0, t)` is derived from the caller's
-`initial_zero_curve` input via linear interpolation on zero rates, and `f(0, t)` (the
-initial *instantaneous forward rate*) is that curve's exact derivative
-(`engine.models.curves.log_discount` and `forward_rate`).
-
-**Important: one curve per rate factor, not one shared curve.** `compute_hw_A_matrix`
-calibrates *each* rate factor independently, against *that factor's own* entry in
-`config.rates.initial_zero_curves` (a list, one `ZeroCurveConfig` per factor — see
-[API Reference](../reference/api-reference.md#ratesconfig)). This matches ORE's actual Cross-Asset
-Model design: every one of ORE's `IrLgm1fParametrization` objects (its equivalent of one
-Hull-White factor) is constructed with its own specific `(Currency, YieldTermStructureHandle)`
-pair, and `ORE.CrossAssetModel` only ever combines a list of these already-curve-bound
-objects — there is no code path anywhere in ORE that shares a single curve across
-multiple currencies or factors. This was confirmed by directly constructing a live,
-2-currency `ORE.CrossAssetModel` (USD at 3%, EUR at 2%, distinct flat curves) and
-verifying each currency's discount factors stayed independent throughout, covered by
-`tests/test_market_model.py::TestHullWhiteAMatrix::test_reprices_distinct_curves_per_rate_factor`.
-
-*Verified:* given a flat (constant-rate) input curve, the reconstructed discount factors
-exactly match the simple closed-form `e^(−rate × time)` formula, to `1e-6`
-(`test_reprices_flat_curve_at_t_zero`).
-
-```python
-def reconstruct_yield_curves(hw_paths: jax.Array, A: jax.Array, B: jax.Array) -> jax.Array:
-```
-The `@jax.jit`-compiled function that combines the (per-scenario, per-step, simulated)
-short rate paths with the (deterministic) `A`/`B` matrices into the full 4D discount
-factor cube — this part **does** scale with the number of scenarios, so it runs on the
-accelerator (CPU, GPU, or TPU).
+A scenario curve is held at its tenors only and read log-linearly in between (ORE's
+`ScenarioSimMarket`): a trade's flow between two tenors is discounted on the interpolated
+curve, not on the model's exact bond price. Configure denser tenors where that matters.
 
 ### Phase 4 — Public API
 
-**Function:** `generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, jax.Array]`
+**Function:** `simulate(market, config, model=None, dtype=jnp.float64) -> ScenarioMarket`
 
-Wires all three phases together: reads the typed `SimulationConfig`, builds the Sobol
-shocks, bridges them, runs the cross-asset simulation, and (if the config's
-`rates.maturities` field is set) reconstructs the full yield curve cube. See the
-[API Reference](../reference/api-reference.md#generate_pathsconfig-simulationconfig-precision-int--64---dictstr-jaxarray) for the exact input/output schema,
-and the [User Guide](../getting-started/user-guide.md) for a runnable example.
+Builds (and calibrates) the cross-asset model from the market and the configuration
+(`build_cross_asset_model`), draws the Sobol normals with the Brownian bridge, evolves the
+states, and builds the scenario market, every array in `dtype` (the run configuration's
+`precision.simulation`). Pass a calibrated `CrossAssetModel` as `model` to reuse it.
 
 ## Output shapes at a glance
 
-| Key | Shape | Always present? |
+| Field | Shape | |
 |---|---|---|
-| `"equities"` | `[Scenarios, TimeSteps, NumEquities]` | Yes |
-| `"rates"` | `[Scenarios, TimeSteps, NumRateFactors]` | Yes |
-| `"numeraire"` | `[Scenarios, TimeSteps]` | Yes |
-| `"yield_curves"` | `[Scenarios, TimeSteps, Maturities, NumRateFactors]` | Only if `config.rates.maturities` is set |
+| `numeraire` | `[Scenarios, Dates]` | the domestic LGM numeraire |
+| `discount[ccy].log_discounts` | `[Scenarios, Dates, Tenors + 1]` | at `tenor_times [Dates, Tenors + 1]` from each date |
+| `index[name].log_discounts` | `[Scenarios, Dates, Tenors + 1]` | the forwarding curves |
+| `fx[ccy]`, `equity[name]` | `[Scenarios, Dates]` | spots |
+| `states` | `[Scenarios, Dates, Factors]` | the CAM states, for pricers that condition on them |
 
 ## Tested by
 
-- `tests/test_market_model.py` — every class in this file maps to one phase above:
-  `TestBrownianBridge` (Phase 1), `TestGenerateSobolNormals` (Phase 1 dtype regression),
-  `TestHullWhiteAMatrix` (Phase 3, including the per-factor-curve regression test),
-  `TestGeneratePaths` (end-to-end Phase 4 shape/sanity/determinism checks).
+- `tests/test_cam.py` — the step moments make every deflated asset a martingale exactly
+  (both parametrizations), and on simulated paths on sloped curves in float64 and float32;
+  the path curves and numeraire against `ORE.LinearGaussMarkovModel`; a Hull-White currency's
+  curves against QuantLib's `HullWhite.discountBond`; one step against
+  `ORE.IrLgm1fStateProcess`; the square root against QuantLib's `CholeskyDecomposition`;
+  configuration refusals.
+- `tests/test_random.py` — the Sobol normals and the Brownian bridge (its matrix reproduces
+  Brownian motion's covariance; agreement with QuantLib's `BrownianBridge`; grids and edge
+  cases).
+- `tests/test_hull_white_model.py` — the Hull-White model's calibration, and deflated zero
+  bonds and swaps as martingales on a curve rising from 3% to 5% (the defect of the model's
+  pre-1.3 simulation, I-42), with the exact numeraire.
+- `tests/test_valuation.py` — every pricer on path curves against ORE, under both models.

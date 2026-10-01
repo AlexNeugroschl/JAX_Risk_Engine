@@ -1,16 +1,19 @@
 """
-The run configuration (`engine.portfolio.config.RunConfig`, roadmap 1.2, I-68): one value
-naming the model per currency and simulation, the engine per product, the Greeks method and
-settings, and the precision per stage, with ORE's defaults.
+The run configuration (`engine.portfolio.config.RunConfig`, roadmap 1.2 and 1.3, I-68): one
+value naming the model per currency and simulation, the engine per product, the Greeks method
+and settings, and the precision per stage, with ORE's defaults.
 
   * The defaults are ORE's, and a request that spells them out prices bit for bit as one that
-    omits the configuration. (The one-off check that the shared portfolio prices bit for bit
-    as before 1.2 is recorded in docs/planning/known-issues.md, "Verification status".)
-  * Each model refuses, before any work and naming the field, a configured option it does not
-    implement or read. Before 1.2 the market path silently ignored `precision.pricing`/`risk`/
-    `calibration`, `calibration_targets`, and a `base_currency` contradicting the simulation.
+    omits the configuration.
+  * Every model runs with every engine and Greeks method (1.3): the Hull-White model is
+    `HullWhiteConfig` in `CamConfig.ir`, on the same pipeline as the LGM. Before 1.3 it was a
+    second pipeline selected by the market's type, with its own engines and Greeks, and each
+    pipeline refused the other's options.
+  * What the pipeline does not implement yet is refused before any work, naming the field:
+    today a stage other than the simulation below float64 (I-55, roadmap 1.4), and what the
+    Jamshidian engine cannot price.
   * The bump-and-revalue settings (`GreeksConfig.sensitivity`, ORE's sensitivity.xml) reach
-    the market path's Greeks; before 1.2 they were not settable from a request.
+    the Greeks.
   * The configuration survives the trip to a pricing worker.
 """
 import dataclasses
@@ -20,23 +23,25 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.instruments.european_swaption import SwaptionConfig
+from engine.market import Market
 from engine.portfolio import (
-    HULL_WHITE_CONFIG, CamConfig, GreeksConfig, LgmConfig, LgmSwaptionEngineConfig, PortfolioRequest,
-    PrecisionConfig, PricingConfig, RiskPrecisionOverride, RunConfig, SensitivityConfig, price_portfolio,
+    CamConfig, GreeksConfig, HullWhiteConfig, JamshidianEngineConfig, LgmConfig, LgmSwaptionEngineConfig,
+    PortfolioRequest, PrecisionConfig, PricingConfig, RiskPrecisionOverride, RunConfig, SensitivityConfig,
+    price_portfolio,
 )
-from engine.portfolio.market_path import validate_market_request
-from engine.portfolio.request import validate_hull_white_request
+from engine.portfolio.market_path import validate_request
 from engine.portfolio.worker_pool import _freeze_trade, _thaw_trade
 from engine.risk.sensitivities import portfolio_sensitivities
 from tests.support import portfolio as shared
 
 FAST = LgmSwaptionEngineConfig(n_per_std=12, std_devs=4.0)
+JAMSHIDIAN = PricingConfig(european="Jamshidian", jamshidian=JamshidianEngineConfig(0.03, 0.01))
+MODELS = {"LGM": LgmConfig, "HullWhite": HullWhiteConfig}
 
 
-def _cam(base="USD"):
+def _cam(base="USD", model="LGM"):
     return CamConfig(dates=(shared.ASOF + ORE.Period(1, ORE.Years),), base_currency=base,
-                     ir={base: LgmConfig(0.03, 0.01)}, samples=8)
+                     ir={base: MODELS[model](0.03, 0.01)}, samples=8)
 
 
 def _market_request(names=("swap-payer", "european-payer"), **kwargs):
@@ -44,22 +49,12 @@ def _market_request(names=("swap-payer", "european-payer"), **kwargs):
     return PortfolioRequest(market=shared.market(), trades=trades, scenario_risk=False, **kwargs)
 
 
-def _hull_white_request(portfolio_request, **kwargs):
-    """The conftest Hull-White request plus a European on its one rate factor."""
-    rates = portfolio_request.market.rates
-    european = SwaptionConfig(notional=1e6, fixed_rate=0.03, payer=True, rate_factor_index=0,
-                              hw_a=rates.mean_reversion[0], hw_sigma=0.01,
-                              initial_zero_curve=rates.initial_zero_curves[0], swap_tenor="1Y",
-                              forward_start=ORE.Period(1, ORE.Years),
-                              evaluation_date=portfolio_request.trades[0].evaluation_date)
-    return dataclasses.replace(portfolio_request, trades=[*portfolio_request.trades, european], **kwargs)
-
-
 class TestDefaults:
     def test_the_defaults_are_ores(self):
         config = RunConfig()
         assert config.simulation is None
         assert config.pricing == PricingConfig() and config.pricing.european == "Bachelier"
+        assert config.pricing.jamshidian is None
         assert config.greeks.method == "Bump" and config.greeks.sensitivity == SensitivityConfig()
         assert config.precision == PrecisionConfig(simulation=64, pricing=64, risk=64, calibration=64)
         assert PortfolioRequest(market=shared.market(), trades=[]).config == config
@@ -97,43 +92,90 @@ class TestConfigurationValues:
         with pytest.raises(error, match=match):
             build()
 
-    def test_a_hull_white_simulation_is_the_market_not_the_simulation(self, portfolio_request):
-        with pytest.raises(TypeError, match="request's market"):
-            RunConfig(simulation=portfolio_request.market)
-
-    def test_the_request_checks_its_market_and_config_types(self):
-        with pytest.raises(TypeError, match="market must be a Market"):
+    def test_the_market_is_the_market_and_the_model_is_in_the_simulation(self):
+        """The Hull-White model is `HullWhiteConfig` in `CamConfig.ir`; neither a `Market` as the
+        simulation nor a `CamConfig` as the market is accepted."""
+        with pytest.raises(TypeError, match="HullWhiteConfig in CamConfig.ir"):
+            RunConfig(simulation=shared.market())
+        with pytest.raises(TypeError, match="market must be today's Market"):
             PortfolioRequest(market=_cam(), trades=[])
         with pytest.raises(TypeError, match="config must be a RunConfig"):
             PortfolioRequest(market=shared.market(), trades=[], config=PricingConfig())
 
+    def test_the_jamshidian_engine_needs_its_model_and_only_it_takes_one(self):
+        with pytest.raises(ValueError, match="PricingConfig.jamshidian"):
+            PricingConfig(european="Jamshidian")
+        with pytest.raises(ValueError, match="PricingConfig.jamshidian"):
+            PricingConfig(jamshidian=JamshidianEngineConfig(0.03, 0.01))
 
-class TestTheMarketPathRefusesWhatItDoesNotImplement:
-    @pytest.mark.parametrize("kwargs, field", [
-        (dict(config=RunConfig(pricing=PricingConfig(european="Jamshidian"))), "config.pricing.european"),
-        (dict(config=RunConfig(greeks=GreeksConfig(method="AD")), compute_greeks=True), "config.greeks.method"),
-        (dict(config=RunConfig(precision=PrecisionConfig(pricing=32))), "config.precision.pricing"),
-        (dict(config=RunConfig(precision=PrecisionConfig(risk=RiskPrecisionOverride(vega=32)))),
-         "config.precision.risk"),
-        (dict(config=RunConfig(precision=PrecisionConfig(calibration=32))), "config.precision.calibration"),
-        (dict(calibration_targets=[]), "calibration_targets"),
+    @pytest.mark.parametrize("build", [
+        lambda: JamshidianEngineConfig(0.0, 0.01), lambda: JamshidianEngineConfig(0.03, -0.01),
+        lambda: JamshidianEngineConfig(float("nan"), 0.01),
     ])
-    def test_refused_before_any_work_naming_the_field(self, kwargs, field):
-        with pytest.raises(ValueError, match=field.replace(".", r"\.")):
-            validate_market_request(_market_request(**kwargs))
+    def test_a_jamshidian_model_is_positive_and_finite(self, build):
+        with pytest.raises(ValueError):
+            build()
 
-    def test_an_engine_or_method_is_checked_only_where_the_run_uses_it(self):
-        swap_only = _market_request(("swap-payer",), config=RunConfig(pricing=PricingConfig(european="Jamshidian"),
-                                                                      greeks=GreeksConfig(method="AD")))
-        validate_market_request(swap_only)
+
+class TestWhatThePipelineDoesNotImplementIsRefused:
+    @pytest.mark.parametrize("config, field", [
+        (RunConfig(precision=PrecisionConfig(pricing=32)), "config.precision.pricing"),
+        (RunConfig(precision=PrecisionConfig(risk=RiskPrecisionOverride(vega=32))), "config.precision.risk"),
+        (RunConfig(precision=PrecisionConfig(calibration=32)), "config.precision.calibration"),
+    ])
+    @pytest.mark.parametrize("model", MODELS)
+    def test_refused_before_any_work_naming_the_field(self, config, field, model):
+        request = _market_request(config=dataclasses.replace(config, simulation=_cam(model=model)))
+        with pytest.raises(ValueError, match=field.replace(".", r"\.")):
+            validate_request(request)
+
+    def test_the_jamshidian_engine_refuses_what_quantlibs_refuses_naming_the_trade(self):
+        request = _market_request(("european-receiver-otm-cash",), config=RunConfig(pricing=JAMSHIDIAN))
+        with pytest.raises(ValueError, match="european-receiver-otm-cash.*floating_spread"):
+            validate_request(request)
+
+    def test_an_engine_is_checked_only_where_the_run_uses_it(self):
+        validate_request(_market_request(("swap-payer", "european-receiver-otm-cash"),
+                                         config=RunConfig(greeks=GreeksConfig(method="AD"))))
+        validate_request(_market_request(("swap-payer",), config=RunConfig(pricing=JAMSHIDIAN)))
 
     def test_the_simulation_precision_is_accepted(self):
         request = _market_request(("swap-payer",), config=RunConfig(simulation=_cam(),
                                                                     precision=PrecisionConfig(simulation=32)))
-        validate_market_request(dataclasses.replace(request, scenario_risk=True))
+        validate_request(dataclasses.replace(request, scenario_risk=True))
+
+    def test_calibration_targets_are_not_a_request_field(self):
+        """The basket is the model's (the `LgmConfig`/`HullWhiteConfig` tenors), per currency;
+        before 1.3 the Hull-White request took its own `calibration_targets`."""
+        with pytest.raises(TypeError, match="calibration_targets"):
+            PortfolioRequest(market=shared.market(), trades=[], calibration_targets=[])
 
 
-class TestTheSensitivitySettingsReachTheMarketPath:
+class TestEveryModelRunsWithEveryEngineAndMethod:
+    """I-68: the model is an option of the run, not a pipeline. Every combination prices
+    today, on the paths and its Greeks; before 1.3 the Hull-White request refused the Bachelier
+    engine and AD Greeks' market path, and the market path refused Jamshidian and AD."""
+
+    @pytest.mark.parametrize("model", MODELS)
+    @pytest.mark.parametrize("pricing", [PricingConfig(), JAMSHIDIAN], ids=["Bachelier", "Jamshidian"])
+    @pytest.mark.parametrize("method", ["Bump", "AD"])
+    def test_prices_with_greeks_and_scenario_risk(self, model, pricing, method):
+        config = RunConfig(simulation=_cam(model=model), pricing=pricing, greeks=GreeksConfig(method=method))
+        request = dataclasses.replace(_market_request(config=config, compute_greeks=True), scenario_risk=True)
+        result = price_portfolio(request)
+        assert np.all(np.isfinite(np.asarray(result.npv_cube)))
+        assert result.exposure is not None and set(result.greeks) == {0, 1}
+        assert result.trade_ids == ["swap-payer", "european-payer"]
+        assert all(np.all(np.isfinite(v)) for g in result.greeks.values() for v in g.values())
+
+    def test_the_today_value_does_not_depend_on_the_model(self):
+        """The model simulates; today's values are the engines' on today's market."""
+        values = [price_portfolio(dataclasses.replace(_market_request(config=RunConfig(simulation=_cam(model=m))),
+                                                      scenario_risk=True)).base_npv_per_trade for m in MODELS]
+        assert values[0] == values[1]
+
+
+class TestTheSensitivitySettingsReachTheGreeks:
     def test_greeks_use_the_configured_tenors_and_theta_horizon(self):
         settings = SensitivityConfig(curve_tenors=("1Y", "5Y", "10Y"), theta_days=3)
         request = _market_request(compute_greeks=True, config=RunConfig(greeks=GreeksConfig(sensitivity=settings)))
@@ -147,45 +189,18 @@ class TestTheSensitivitySettingsReachTheMarketPath:
         assert float(greeks[0]["theta"]) != pytest.approx(float(default[0]["theta"]), rel=1e-3)
 
 
-class TestTheHullWhiteModelRefusesWhatItDoesNotImplement:
-    def test_its_own_engines_are_accepted(self, portfolio_request):
-        validate_hull_white_request(_hull_white_request(portfolio_request, config=HULL_WHITE_CONFIG,
-                                                        compute_greeks=True))
-
-    def test_a_request_without_europeans_or_greeks_needs_no_configuration(self, portfolio_request):
-        validate_hull_white_request(portfolio_request)
-
-    @pytest.mark.parametrize("config, compute_greeks, field", [
-        (RunConfig(greeks=GreeksConfig(method="AD")), False, "config.pricing.european"),
-        (RunConfig(pricing=PricingConfig(european="Jamshidian")), True, "config.greeks.method"),
-        (dataclasses.replace(HULL_WHITE_CONFIG, simulation=_cam()), False, "config.simulation"),
-        (dataclasses.replace(HULL_WHITE_CONFIG, base_currency="USD"), False, "config.base_currency"),
-        (dataclasses.replace(HULL_WHITE_CONFIG, pricing=PricingConfig(european="Jamshidian", bermudan=FAST)),
-         False, "config.pricing.bermudan"),
-        (dataclasses.replace(HULL_WHITE_CONFIG, pricing=PricingConfig(european="Jamshidian", american=FAST)),
-         False, "config.pricing.american"),
-        (dataclasses.replace(HULL_WHITE_CONFIG, pricing=PricingConfig(european="Jamshidian", recalibrate=False)),
-         False, "config.pricing.recalibrate"),
-        (dataclasses.replace(HULL_WHITE_CONFIG, greeks=GreeksConfig("AD", SensitivityConfig(theta_days=2))),
-         True, "config.greeks.sensitivity"),
-    ])
-    def test_refused_before_any_work_naming_the_field(self, portfolio_request, config, compute_greeks, field):
-        request = _hull_white_request(portfolio_request, config=config, compute_greeks=compute_greeks)
-        with pytest.raises(ValueError, match=field.replace(".", r"\.")):
-            validate_hull_white_request(request)
-        with pytest.raises(ValueError, match=field.replace(".", r"\.")):
-            price_portfolio(request)
-
-
 def test_the_configuration_survives_the_trip_to_a_worker():
     """The whole request is frozen (ORE dates in the CamConfig and the market as text) and
     rebuilt in the worker, re-running every validation."""
-    config = RunConfig(simulation=_cam(), pricing=PricingConfig(bermudan=FAST, recalibrate=False),
-                       greeks=GreeksConfig(sensitivity=SensitivityConfig(curve_tenors=("1Y", "2Y"))),
-                       precision=PrecisionConfig(simulation=32, risk=RiskPrecisionOverride(theta=32)))
-    request = _market_request(config=config, trade_ids=["a", "b"])
+    pricing = dataclasses.replace(JAMSHIDIAN, bermudan=FAST, recalibrate=False)
+    config = RunConfig(simulation=_cam(model="HullWhite"), pricing=pricing,
+                       greeks=GreeksConfig("AD", SensitivityConfig(curve_tenors=("1Y", "2Y"))),
+                       precision=PrecisionConfig(simulation=32))
+    request = _market_request(config=config)
     thawed = _thaw_trade(pickle.loads(pickle.dumps(_freeze_trade(request))))
-    assert isinstance(thawed, PortfolioRequest)
+    assert isinstance(thawed, PortfolioRequest) and isinstance(thawed.market, Market)
     assert thawed.config == config
-    assert thawed.trade_ids == ["a", "b"] and thawed.market.asof == shared.ASOF
+    assert isinstance(thawed.config.simulation.ir["USD"], HullWhiteConfig)
+    assert [t.trade_id for t in thawed.trades] == ["swap-payer", "european-payer"]
+    assert thawed.market.asof == shared.ASOF
     assert [type(t) for t in thawed.trades] == [type(t) for t in request.trades]

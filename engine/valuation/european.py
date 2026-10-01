@@ -25,12 +25,12 @@ The swap length is the vol surface's `swapLength(earliest accrual start, latest 
 rounded to whole months and floored at one month. On a path the volatility is the t=0 surface
 seen from the simulation date (`DynamicSwaptionVolatilityMatrix`, `volatility_on_path`).
 
-Replaces the Hull-White Jamshidian price as the European's value (I-46); the Jamshidian pricer
-stays in `engine.instruments.european_swaption` for the Hull-White path.
+This is the European's default engine for either simulation model (I-46); the configurable
+alternative is QuantLib's Jamshidian engine on a Hull-White model (`engine.valuation.jamshidian`).
 """
 import dataclasses
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -53,21 +53,22 @@ FORWARD_VARIANCE_FLOOR = 1e-6
 
 @dataclass(frozen=True)
 class EuropeanTerms:
-    """What `BlackMultiLegOptionEngine` reads from the trade: the exercise-into coupons (as
-    `Legs`, times from the as-of date), the expiry, and where the volatility is read."""
+    """What a European engine reads from the trade: the exercise-into coupons (as `Legs`,
+    times from the as-of date), the expiry, the exercise-into swap's start and nominal, and
+    where the volatility is read."""
     legs: Legs
     expiry: ORE.Date
     expiry_time: float        # model time from the as-of date
     swap_length: float        # the vol surface's rounded swap length
-    #: Cash settlement (`ParYieldCurve`): the earliest accrual start (model time from the
-    #: as-of date) and each fixed coupon's year fraction from it on the fixed leg's day
-    #: counter. None when physically settled.
-    par_yield: Optional[Tuple[float, np.ndarray]] = None
+    start_time: float         # the earliest accrual start (model time from the as-of date)
+    nominal: float
+    #: Cash settlement (`ParYieldCurve`): each fixed coupon's year fraction from the start on
+    #: the fixed leg's day counter. None when physically settled.
+    par_yield: Optional[np.ndarray] = None
 
     def astype(self, dtype) -> "EuropeanTerms":
         """The same terms with every real-valued array in `dtype` (see `Legs.astype`)."""
-        par_yield = None if self.par_yield is None else (
-            self.par_yield[0], np.asarray(self.par_yield[1], dtype=dtype))
+        par_yield = None if self.par_yield is None else np.asarray(self.par_yield, dtype=dtype)
         return dataclasses.replace(self, legs=self.legs.astype(dtype), par_yield=par_yield)
 
 
@@ -82,16 +83,17 @@ def european_terms(cfg: SwaptionConfig, asof: ORE.Date, fixings=None) -> Europea
     first_float = next(i for i, c in enumerate(floating) if in_exercise(c))
     starts = [c.accrualStartDate() for c in fixed[first_fixed:] + floating[first_float:]]
     ends = [c.accrualEndDate() for c in fixed[first_fixed:] + floating[first_float:]]
+    start = min(starts)
     par_yield = None
     if cfg.settlement == "Cash":
-        start = min(starts)
-        par_yield = (TIME_AXIS_DAY_COUNTER.yearFraction(asof, start),
-                     np.array([c.dayCounter().yearFraction(start, c.date()) for c in fixed[first_fixed:]]))
+        par_yield = np.array([c.dayCounter().yearFraction(start, c.date()) for c in fixed[first_fixed:]])
     return EuropeanTerms(
         legs=legs_of(swap, cfg.payer, asof, fixings or {}, first_fixed, first_float),
         expiry=cfg.exercise_date,
         expiry_time=TIME_AXIS_DAY_COUNTER.yearFraction(asof, cfg.exercise_date),
-        swap_length=max(swap_length_between(min(starts), max(ends)), 1.0 / 12.0),
+        swap_length=max(swap_length_between(start, max(ends)), 1.0 / 12.0),
+        start_time=TIME_AXIS_DAY_COUNTER.yearFraction(asof, start),
+        nominal=fixed[first_fixed].nominal(),
         par_yield=par_yield,
     )
 
@@ -108,9 +110,8 @@ def black_multileg_npv(terms: EuropeanTerms, disc, index, t, variance, projected
     forward = jnp.sum(legs.float_nominal * rate * legs.float_accrual * float_df, axis=-1) / annuity
     strike = legs.fixed_rate - legs.float_spread * float_bps / annuity
     if terms.par_yield is not None:
-        start, fractions = terms.par_yield
-        compounded = (1.0 + jnp.expand_dims(forward, -1)) ** (-fractions)
-        annuity = discount_from(disc, t, start) * jnp.sum(legs.fixed_bps * compounded, axis=-1)
+        compounded = (1.0 + jnp.expand_dims(forward, -1)) ** (-terms.par_yield)
+        annuity = discount_from(disc, t, terms.start_time) * jnp.sum(legs.fixed_bps * compounded, axis=-1)
     return annuity * bachelier(forward, strike, jnp.sqrt(variance), call=legs.payer)
 
 

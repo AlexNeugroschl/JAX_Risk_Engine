@@ -1,18 +1,25 @@
 """
-End-to-end walkthrough: calibrate -> simulate exposure -> Greeks -> market risk.
+End-to-end walkthrough: today's market -> calibrate and simulate -> exposure -> Greeks ->
+market risk.
 
-Portfolio: one swap, one European swaption, one Bermudan swaption, one
-American swaption -- one of each rate-derivative type this engine prices.
+Portfolio: one swap, one European swaption, one Bermudan swaption, one American swaption and
+one Treasury note -- one of each trade type the engine prices -- on the demo USD market (a
+curve rising from 3% to 5%, demos/demo_scenarios.py).
+
+The run configuration names every choice (engine.portfolio.RunConfig): here the Hull-White
+model for USD, calibrated to the market's swaption volatilities, ORE's default engines, and
+Greeks by automatic differentiation (ORE's bump-and-revalue is the default; for the options
+it recalibrates under every bump, which takes minutes here, I-53). Switching the model is one
+field; the last exposure table shows the LGM beside it.
 
 The engine produces two different risk measures, and this demo shows both:
 
-  * an EXPOSURE PROFILE (EPE/ENE/PFE through time) from the multi-step
-    risk-neutral simulation, `price_portfolio`;
-  * short-horizon MARKET RISK (10-day VaR/ES) by revaluing the portfolio at
-    t=0 under shocked curves, `run_market_risk`.
+  * an EXPOSURE PROFILE (EPE/ENE/PFE through time) from the multi-step risk-neutral
+    simulation, `price_portfolio`;
+  * short-horizon MARKET RISK (10-day VaR/ES) by revaluing the portfolio at t=0 under shocked
+    curves, `run_market_risk`.
 
-Pricing, exposure and Greeks run through one `engine.portfolio.price_portfolio` call; see
-docs/reference/portfolio-entrypoint.md for what it does internally.
+docs/reference/portfolio-entrypoint.md describes what `price_portfolio` does internally.
 
 Run with: .venv/Scripts/python.exe demos/demo.py
 """
@@ -21,20 +28,17 @@ import dataclasses
 import numpy as np
 import ORE
 
-from engine.simulation.market_model import EquityConfig, RatesConfig, SimulationConfig, ZeroCurveConfig
-from demo_scenarios import EVAL_DATE
-
-from engine.instruments.swap import SwapConfig
-from engine.instruments.european_swaption import SwaptionConfig
-from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from demo_scenarios import EVAL_DATE, demo_market, demo_simulation
 from engine.instruments.american_swaption import AmericanSwaptionConfig
-
-from engine.calibration.basket import build_coterminal_basket
-from engine.calibration.lgm import calibrate_lgm_sigma
-from engine.models.hull_white import ZeroCurve
-
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.instruments.european_swaption import SwaptionConfig
+from engine.instruments.swap import SwapConfig
+from engine.instruments.treasury import BondConfig, CouponPeriod
 from engine.market_risk import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
-from engine.portfolio import HULL_WHITE_CONFIG, PortfolioRequest, price_portfolio
+from engine.portfolio import (
+    GreeksConfig, LgmSwaptionEngineConfig, PortfolioRequest, PricingConfig, RunConfig, price_portfolio,
+)
+from engine.simulation.config import build_cross_asset_model
 
 
 def section(title: str) -> None:
@@ -42,143 +46,115 @@ def section(title: str) -> None:
 
 
 # =============================================================================
-# Today's market: a flat 3% curve, one rate factor.
+# Today's market and the run configuration.
 # =============================================================================
-section("Market data")
+section("Market and configuration")
 
 TODAY = EVAL_DATE
-ORE.Settings.instance().evaluationDate = TODAY
-FLAT_RATE = 0.03
-HW_A = 0.03      # mean-reversion speed
-HW_SIGMA = 0.01  # flat short-rate vol, used until calibration produces a real one
+market = demo_market(("USD",))
+usd = market.currency("USD")
+print(f"as of {TODAY.ISO()}: USD discount curve {usd.discount_curve.rates} at {usd.discount_curve.times}")
 
-zero_curve_config = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[FLAT_RATE] * 6)
-zero_curve_jax = ZeroCurve.flat(FLAT_RATE, zero_curve_config.times)
-
-print(f"flat rate {FLAT_RATE:.2%}")
+# The Hull-White model for USD, calibrated to a 1Y/2Y/5Y co-terminal basket of the market's
+# swaption volatilities. 128 paths: every Bermudan/American is recalibrated on each path and
+# date as ORE does, which is the slow part of a run (I-53).
+simulation = demo_simulation("HullWhite", samples=128, currencies=("USD",), calibrated=True)
+# A coarser Bermudan/American grid than the default (n_per_std=30), for a quick demo.
+engine = LgmSwaptionEngineConfig(n_per_std=16)
+config = RunConfig(simulation=simulation, pricing=PricingConfig(bermudan=engine, american=engine),
+                   greeks=GreeksConfig(method="AD"))
 
 
 # =============================================================================
-# Calibrate a volatility term structure to market swaption quotes.
+# Calibration: what the model is fitted to.
 # =============================================================================
 section("Calibration")
 
-CALIBRATION_EXERCISE_TIMES = [1.0, 2.0, 3.0, 4.0]
-CALIBRATION_FINAL_MATURITY = 5.0
-MARKET_NORMAL_VOLS = [0.0080, 0.0088, 0.0095, 0.0100]
-
-basket = build_coterminal_basket(
-    exercise_times=CALIBRATION_EXERCISE_TIMES,
-    final_maturity_time=CALIBRATION_FINAL_MATURITY,
-    notional=1_000_000.0, payer=True, market_vols=MARKET_NORMAL_VOLS,
-    zero_curve=zero_curve_jax, evaluation_date=TODAY,
-)
-calibration = calibrate_lgm_sigma(basket, zero_curve_jax, a=HW_A)
-CALIBRATED_SIGMA = calibration.sigma
-
-print(f"calibrated sigma per bucket: {np.round(np.asarray(calibration.sigma.values), 5)}")
-print(f"reprice RMSE (should be ~0): {calibration.rmse:.2e}")
+model = build_cross_asset_model(market, simulation).ir[0]
+print(f"Hull-White a = {model.reversion}, short-rate volatility per bucket "
+      f"{np.round(np.asarray(model.sigma.values), 5)} (times {np.asarray(model.sigma.times).round(3)})")
 
 
 # =============================================================================
-# Describe the portfolio: one of each instrument type.
+# The portfolio: one of each trade type, each named by its id.
 # =============================================================================
 section("Portfolio")
 
-swap_cfg = SwapConfig(
-    notional=2_000_000.0, fixed_rate=0.032, payer=True,
-    discount_curve_index=0, forward_curve_index=0,
-    swap_tenor="3Y", evaluation_date=TODAY,
-)
-european_cfg = SwaptionConfig(
-    notional=1_500_000.0, fixed_rate=0.031, payer=True, rate_factor_index=0,
-    hw_a=HW_A, hw_sigma=HW_SIGMA, initial_zero_curve=zero_curve_config,
-    swap_tenor="3Y", forward_start=ORE.Period(2, ORE.Years), evaluation_date=TODAY,
-)
-bermudan_cfg = BermudanSwaptionConfig(
-    notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
-    hw_a=HW_A, hw_sigma=CALIBRATED_SIGMA, initial_zero_curve=zero_curve_config,
-    # Exercisable on the 1Y..4Y anniversaries (the calibration basket's expiries).
-    exercise_dates=[TODAY + ORE.Period(years, ORE.Years) for years in (1, 2, 3, 4)], swap_tenor="5Y",
-    evaluation_date=TODAY, n_per_std=64, std_devs=6.0,
-)
-american_cfg = AmericanSwaptionConfig(
-    notional=800_000.0, fixed_rate=0.029, payer=False, rate_factor_index=0,
-    hw_a=HW_A, hw_sigma=CALIBRATED_SIGMA, initial_zero_curve=zero_curve_config,
-    first_exercise_date=TODAY + ORE.Period(1, ORE.Years), last_exercise_date=TODAY + ORE.Period(4, ORE.Years),
-    swap_tenor="5Y", exercise_time_steps_per_year=2,
-    evaluation_date=TODAY, n_per_std=64, std_devs=6.0,
-)
-
-NUM_SCENARIOS = 4096
-TIME_GRID = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0]
-
-sim_config = SimulationConfig(
-    time_grid=TIME_GRID,
-    scenarios=NUM_SCENARIOS,
-    equities=EquityConfig(initial_prices=[100.0], dividend_yields=[0.0], rate_mapping=[[0.0]]),
-    rates=RatesConfig(
-        initial_rates=[FLAT_RATE], theta=[FLAT_RATE], mean_reversion=[HW_A],
-        initial_zero_curves=[zero_curve_config],
-        # maturities left unset: price_portfolio derives the swaps' cashflow pillars
-        # (engine.portfolio.derive_maturity_pillars).
-    ),
-    joint_covariance=[[0.04, 0.0], [0.0, HW_SIGMA ** 2]],
-)
-
-print(f"{NUM_SCENARIOS:,} scenarios requested, one swap / European / Bermudan / American swaption")
+note_periods = tuple(CouponPeriod(ORE.Date(15, m, y), ORE.Date(15, 8 if m == 2 else 2, y if m == 2 else y + 1))
+                     for y in (2026, 2027, 2028) for m in (2, 8))
+trades = [
+    SwapConfig(notional=2_000_000.0, fixed_rate=0.036, payer=True, swap_tenor="3Y", evaluation_date=TODAY,
+               trade_id="swap"),
+    SwaptionConfig(notional=1_500_000.0, fixed_rate=0.042, payer=True, swap_tenor="3Y",
+                   forward_start=ORE.Period(2, ORE.Years), evaluation_date=TODAY, trade_id="european"),
+    BermudanSwaptionConfig(notional=1_000_000.0, fixed_rate=0.042, payer=True, swap_tenor="5Y",
+                           exercise_dates=[TODAY + ORE.Period(y, ORE.Years) for y in (1, 2, 3, 4)],
+                           evaluation_date=TODAY, trade_id="bermudan"),
+    AmericanSwaptionConfig(notional=800_000.0, fixed_rate=0.040, payer=False, swap_tenor="5Y",
+                           first_exercise_date=TODAY + ORE.Period(1, ORE.Years),
+                           last_exercise_date=TODAY + ORE.Period(4, ORE.Years), evaluation_date=TODAY,
+                           trade_id="american"),
+    BondConfig(face_amount=1_000_000.0, maturity_date=ORE.Date(15, 2, 2029), coupon_rate=0.0375,
+               coupon_schedule=note_periods, evaluation_date=TODAY, trade_id="note"),
+]
+print(", ".join(t.trade_id for t in trades))
 
 
 # =============================================================================
-# Price the whole portfolio in one call: simulate -> validate -> price -> aggregate risk
-# (see docs/reference/portfolio-entrypoint.md).
+# Price the whole portfolio in one call.
 # =============================================================================
 section("Pricing the whole portfolio")
 
-request = PortfolioRequest(
-    market=sim_config,
-    trades=[swap_cfg, european_cfg, bermudan_cfg, american_cfg],
-    config=HULL_WHITE_CONFIG,   # the engines this model implements: Jamshidian Europeans, AD Greeks
-    pfe_quantiles=(0.95, 0.99),
-    compute_greeks=True,
-)
-result = price_portfolio(request)
-
-TRADE_NAMES = ["swap", "european", "bermudan", "american"]
-print("mean NPV across scenarios, at each simulated time step:")
-print("  time   " + "".join(f"{n:>12}" for n in TRADE_NAMES))
-for i, t in enumerate(TIME_GRID[1:]):
-    row = "".join(f"{float(result.npv_cube[:, i, j].mean()):>12,.0f}" for j in range(len(TRADE_NAMES)))
-    print(f"  {t:>4.2f}  " + row)
-
-print(f"\nbaseline portfolio NPV: {result.base_npv:,.2f}")
-if result.warnings:
-    print(f"warnings: {result.warnings}")
+result = price_portfolio(PortfolioRequest(market=market, trades=trades, config=config, pfe_quantiles=(0.95, 0.99),
+                                          compute_greeks=True))
+times = np.asarray(result.exposure.times)     # t=0, then the simulation dates (the cube's axis)
+print("mean NPV across paths, at each simulation date:")
+print("  time  " + "".join(f"{n:>12}" for n in result.trade_ids))
+print("  0.00  " + "".join(f"{v:>12,.0f}" for v in result.base_npv_per_trade))
+for i, t in enumerate(times[1:]):
+    print(f"  {t:>4.2f}  " + "".join(f"{float(result.npv_cube[:, i, j].mean()):>12,.0f}"
+                                    for j in range(len(trades))))
+print(f"\nportfolio NPV today: {result.base_npv:,.2f}")
+print("(a matured swap is worth 0; an exercised physical option carries the swap it entered)")
 
 
 # =============================================================================
-# Exposure: what the simulated cube measures (computed inside price_portfolio).
+# Exposure: what the simulated cube measures.
 # =============================================================================
 section("Exposure profile (the whole portfolio as one netting set)")
 
 exposure = result.exposure
 columns = {"EPE": exposure.epe, "ENE": exposure.ene, "EE_B": exposure.ee_b, **exposure.pfe}
 print("  time  " + "".join(f"{name:>12}" for name in columns))
-for i, t in enumerate(exposure.times):
+for i, t in enumerate(times):
     print(f"  {t:>4.2f}" + "".join(f"{float(values[i]):>12,.0f}" for values in columns.values()))
-print("(EPE/ENE/PFE discounted to today, EE_B undiscounted -- ORE's ExposureCalculator definitions)")
+print(f"Basel EPE {exposure.basel_epe:,.0f}, EEPE {exposure.basel_eepe:,.0f} "
+      f"(ORE's ExposureCalculator definitions; measure: {result.measure})")
 
 
 # =============================================================================
-# Greeks on the Bermudan trade -- sensitivity to a 1bp market move.
+# Greeks on the Bermudan, by AD: per market-curve pillar, Vega per swaption quote through the
+# calibration.
 # =============================================================================
-section("Greeks")
+section("Greeks (Bermudan, automatic differentiation)")
 
-bermudan_index = TRADE_NAMES.index("bermudan")
-bermudan_greeks = result.greeks[bermudan_index]
-print(f"delta per pillar: {np.round(np.asarray(bermudan_greeks['delta']), 2)}")
-print(f"gamma per pillar: {np.round(np.asarray(bermudan_greeks['gamma']), 4)}")
-print(f"theta (1-day decay): {bermudan_greeks['theta']:,.2f}")
+greeks = result.greeks[result.trade_ids.index("bermudan")]
+for key, value in greeks.items():
+    value = np.asarray(value)
+    print(f"  {key}: {round(float(value), 2) if value.ndim == 0 else np.round(value, 2).tolist()}")
+
+
+# =============================================================================
+# The model is one field: the same run under the LGM.
+# =============================================================================
+section("Exposure under each model (EPE)")
+
+lgm = dataclasses.replace(config, simulation=demo_simulation("LGM", samples=128, currencies=("USD",), calibrated=True))
+lgm_result = price_portfolio(PortfolioRequest(market=market, trades=trades, config=lgm))
+print("  time   Hull-White         LGM")
+for i, t in enumerate(times):
+    print(f"  {t:>4.2f}  {float(exposure.epe[i]):>10,.0f}  {float(lgm_result.exposure.epe[i]):>10,.0f}")
+print("(the same t=0 values; the calibrated models differ in their dynamics beyond the basket)")
 
 
 # =============================================================================
@@ -186,27 +162,17 @@ print(f"theta (1-day decay): {bermudan_greeks['theta']:,.2f}")
 # =============================================================================
 section("Market risk (10-day, Monte Carlo)")
 
-# The risk factors are the curve's pillar zero rates. Their 10-day moves are
-# drawn from a Gaussian: 8bp daily vol per pillar, correlation decaying with
-# pillar distance. A real run would estimate this from history
-# (engine.market_risk.covariance_from_history) or use historical_scenarios.
-factors = RateRiskFactors.from_curves([zero_curve_config], names=["USD"])
-pillar_index = np.arange(factors.size)
+# The risk factors are the pillar zero rates of the market's curves (USD discount and its 6M
+# index), named as the trades read them. Their 10-day moves are drawn from a Gaussian: 8bp
+# daily vol per pillar, correlation decaying with pillar distance. A real run would estimate
+# this from history (engine.market_risk.covariance_from_history) or use historical_scenarios.
+factors = RateRiskFactors.from_market(market)
+pillar_index = np.arange(factors.size) % len(usd.discount_curve.times)
 correlation = np.exp(-np.abs(pillar_index[:, None] - pillar_index[None, :]) / 3.0)
 covariance = correlation * 0.0008 ** 2 * 10
 scenarios = monte_carlo_scenarios(factors, covariance, horizon_days=10, num_scenarios=4096, seed=1)
-
-# Every scenario is a full revaluation. The Bermudan and American were priced
-# above on a fine exercise grid (n_per_std=64); for 4,096 revaluations they
-# use a risk-sized grid instead, and the base values show what that costs.
-risk_grid = dict(n_per_std=16, std_devs=5.0)
-risk_trades = [swap_cfg, european_cfg,
-               dataclasses.replace(bermudan_cfg, **risk_grid), dataclasses.replace(american_cfg, **risk_grid)]
-market_risk = run_market_risk(MarketRiskRequest(
-    trades=risk_trades, scenarios=scenarios, quantiles=(0.99, 0.975),
-))
-for name, fine, coarse in zip(TRADE_NAMES[2:], result.base_npv_per_trade[2:], market_risk.base_npv_per_trade[2:]):
-    print(f"  {name} base value: fine grid {fine:,.2f}, risk grid {coarse:,.2f} ({coarse / fine - 1:+.2e})")
+market_risk = run_market_risk(MarketRiskRequest(trades=trades, market=market, scenarios=scenarios,
+                                                pricing=config.pricing, quantiles=(0.99, 0.975)))
 print(f"{market_risk.num_scenarios:,} scenarios over {market_risk.horizon_days} days "
       f"({market_risk.source}, measure: {market_risk.measure})")
 for q in ("99", "97.5"):

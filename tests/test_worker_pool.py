@@ -9,7 +9,6 @@ across precision tiers, with correct results.
 Each worker is a spawned process that imports JAX and ORE from scratch, so spawn, import and
 first compile dominate this file's run time, not the small portfolios.
 """
-import dataclasses
 import os
 import time
 from concurrent.futures import Future, wait as futures_wait
@@ -18,21 +17,25 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from engine.portfolio import HULL_WHITE_CONFIG, PortfolioRequest, PrecisionConfig, price_portfolio
+import ORE
+
+from engine.portfolio import (
+    CamConfig, HullWhiteConfig, PortfolioRequest, PrecisionConfig, RunConfig, price_portfolio,
+)
 from engine.portfolio.worker_pool import (
     _freeze_trade, _pool_for, _run_pricing_job, shutdown_pools, submit_pricing_job,
 )
-from tests.test_portfolio_entrypoint import _build_trades, _sim_config
+from tests.support import portfolio as shared
 
 
 def _make_request(precision: PrecisionConfig) -> PortfolioRequest:
-    """A small, quick-to-compile two-trade portfolio from test_portfolio_entrypoint's
-    helpers."""
-    swap_cfg, swaption_cfg, bermudan_cfg, american_cfg = _build_trades()
-    trades = [swap_cfg, swaption_cfg]
-    sim_config = _sim_config([swap_cfg, swaption_cfg, bermudan_cfg, american_cfg])
-    return PortfolioRequest(market=sim_config, trades=trades,
-                            config=dataclasses.replace(HULL_WHITE_CONFIG, precision=precision))
+    """A small, quick-to-compile two-trade portfolio (a swap and a European) on the shared
+    market, simulated by the Hull-White model."""
+    trades = [shared.trades()[n] for n in ("swap-payer", "european-payer")]
+    simulation = CamConfig(dates=tuple(shared.ASOF + ORE.Period(m, ORE.Months) for m in (6, 12)),
+                           base_currency="USD", ir={"USD": HullWhiteConfig(0.03, 0.01)}, samples=64, seed=5)
+    return PortfolioRequest(market=shared.market(), trades=trades,
+                            config=RunConfig(simulation=simulation, precision=precision))
 
 
 def _timed_job(frozen_request: PortfolioRequest):
@@ -76,7 +79,7 @@ class TestSubmitPricingJobRouting:
     ORE-date freeze/thaw round trip is lossless)."""
 
     def test_float64_job_returns_correct_result(self):
-        precision = PrecisionConfig(simulation=64, pricing=64, risk=64)
+        precision = PrecisionConfig(simulation=64)
         request = _make_request(precision)
         future = submit_pricing_job(request)
         assert isinstance(future, Future)
@@ -88,26 +91,26 @@ class TestSubmitPricingJobRouting:
         np.testing.assert_allclose(result.base_npv, ref.base_npv, rtol=1e-9)
 
     def test_float32_job_returns_correct_result(self):
-        precision = PrecisionConfig(simulation=32, pricing=32, risk=32)
+        precision = PrecisionConfig(simulation=32)
         request = _make_request(precision)
         future = submit_pricing_job(request)
         result = future.result(timeout=120)
 
         ref = price_portfolio(_make_request(precision))
-        assert result.npv_cube.dtype == jnp.float32
-        np.testing.assert_allclose(np.asarray(result.npv_cube), np.asarray(ref.npv_cube), rtol=1e-3)
-        np.testing.assert_allclose(result.base_npv, ref.base_npv, rtol=1e-3)
+        # Only the simulation is float32; pricing on the paths is float64 (I-55), in the
+        # worker exactly as in this process. Before the fix the worker turned x64 off and
+        # priced in float32: paths deep in the tail came back 0.0 where this process had
+        # values below float32's range.
+        assert result.npv_cube.dtype == ref.npv_cube.dtype == jnp.float64
+        np.testing.assert_array_equal(np.asarray(result.npv_cube), np.asarray(ref.npv_cube))
+        assert result.base_npv == ref.base_npv
 
-    def test_mixed_simulation_pricing_precision_routes_by_simulation_only(self):
-        """simulation=32 selects the float32 pool even when pricing/risk ask for 64;
-        `price_portfolio` re-enables x64 inside the worker, so pricing=64 still works."""
-        precision = PrecisionConfig(simulation=32, pricing=64, risk=64)
-        request = _make_request(precision)
-        result = submit_pricing_job(request).result(timeout=120)
-
-        ref = price_portfolio(_make_request(precision))
-        assert result.npv_cube.dtype == jnp.float64  # pricing=64 honored
-        np.testing.assert_allclose(np.asarray(result.npv_cube), np.asarray(ref.npv_cube), rtol=1e-6)
+    def test_a_refused_precision_fails_the_job_naming_the_field(self):
+        """The worker re-runs the validation: a stage the pipeline computes in float64 only
+        (I-55, roadmap 1.4) is refused there too, not silently computed in float64."""
+        future = submit_pricing_job(_make_request(PrecisionConfig(simulation=32, pricing=32)))
+        with pytest.raises(ValueError, match=r"config\.precision\.pricing"):
+            future.result(timeout=120)
 
 
 @pytest.mark.slow
@@ -117,14 +120,14 @@ class TestWorkerPoolConcurrency:
     workers. Repeated over several pairs, since a single timing observation is weak."""
 
     def _make_requests(self):
-        precision_a = PrecisionConfig(simulation=64, pricing=64, risk=64)
-        precision_b = PrecisionConfig(simulation=32, pricing=32, risk=32)
+        precision_a = PrecisionConfig(simulation=64)
+        precision_b = PrecisionConfig(simulation=32)
         return _make_request(precision_a), _make_request(precision_b)
 
     def test_cross_tier_jobs_correct_and_concurrent(self):
         # Sequential references outside the pool (values, not just dtypes).
-        precision_a = PrecisionConfig(simulation=64, pricing=64, risk=64)
-        precision_b = PrecisionConfig(simulation=32, pricing=32, risk=32)
+        precision_a = PrecisionConfig(simulation=64)
+        precision_b = PrecisionConfig(simulation=32)
         ref_a = price_portfolio(_make_request(precision_a))
         ref_b = price_portfolio(_make_request(precision_b))
 
@@ -143,7 +146,7 @@ class TestWorkerPoolConcurrency:
             start_b, end_b, result_b, _ = fut_b.result(timeout=120)
 
             assert result_a.npv_cube.dtype == jnp.float64
-            assert result_b.npv_cube.dtype == jnp.float32
+            assert result_b.npv_cube.dtype == jnp.float64
             np.testing.assert_allclose(np.asarray(result_a.npv_cube), np.asarray(ref_a.npv_cube), rtol=1e-9)
             np.testing.assert_allclose(np.asarray(result_b.npv_cube), np.asarray(ref_b.npv_cube), rtol=1e-3)
             np.testing.assert_allclose(result_a.base_npv, ref_a.base_npv, rtol=1e-9)
@@ -174,6 +177,10 @@ class TestWorkerPoolConcurrency:
         enough to need a second worker, making distinct PIDs and overlap deterministic. Real
         pricing concurrency is covered by `test_cross_tier_jobs_correct_and_concurrent`.
         """
+        # A fresh pool: one left by the pricing tests above may hold a single started worker,
+        # which Python's executor reuses rather than spawning the second (the test then failed
+        # deterministically after them, passing alone).
+        shutdown_pools(wait=True)
         pool = _pool_for(64, pool_size=2)
         # Prime both workers so spawn time is outside the measured interval.
         futures_wait([pool.submit(_sleep_job, 0.05) for _ in range(2)])
@@ -208,13 +215,12 @@ class TestTradeFreezingRoundTrip:
 
         from engine.instruments.treasury import BondConfig, CouponPeriod
         from engine.portfolio.worker_pool import _freeze_trade, _thaw_trade
-        from engine.simulation.market_model import ZeroCurveConfig
 
         bond = BondConfig(
+            trade_id="bond",
             face_amount=100_000.0,
             maturity_date=ORE.Date(1, 1, 2028),
             evaluation_date=ORE.Date(1, 1, 2026),
-            initial_zero_curve=ZeroCurveConfig(times=[0.0, 1.0, 5.0], rates=[0.03, 0.03, 0.03]),
             coupon_rate=0.04,
             coupon_schedule=(
                 CouponPeriod(ORE.Date(1, 1, 2026), ORE.Date(1, 1, 2027)),

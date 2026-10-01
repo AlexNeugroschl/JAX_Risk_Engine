@@ -23,7 +23,6 @@ from engine.models.ore_builders import (
     UnsupportedDayCountError,
     build_vanilla_swap,
     fixed_leg_cashflows,
-    floating_leg_cashflows,
     resolve_accrual_day_count,
     resolve_swap_dates,
 )
@@ -58,14 +57,12 @@ class TestDefaultsAreByteIdentical:
         assert DEFAULT_ACCRUAL_DAY_COUNT == "ACT/365"
 
     def test_floating_leg_default_is_unchanged_too(self):
-        implicit = floating_leg_cashflows(_swap(), EVAL_DATE)
-        explicit = floating_leg_cashflows(_swap("ACT/365"), EVAL_DATE)
-        assert np.array_equal(implicit.accrual_fractions, explicit.accrual_fractions)
+        accruals = lambda swap: [ORE.as_floating_rate_coupon(c).accrualPeriod() for c in swap.floatingLeg()]  # noqa: E731
+        assert accruals(_swap()) == accruals(_swap("ACT/365"))
 
     def test_swap_config_defaults_to_act365(self):
-        assert SwapConfig(
+        assert SwapConfig(trade_id="swap-L66", 
             notional=1e6, fixed_rate=0.04, payer=True,
-            discount_curve_index=0, forward_curve_index=0,
             swap_tenor="5Y", evaluation_date=EVAL_DATE,
         ).accrual_day_count == "ACT/365"
 
@@ -156,10 +153,9 @@ class TestUnsupportedDayCountIsRefused:
     def test_swap_config_refuses_at_construction(self):
         """Refused at construction, where the trade is identifiable."""
         with pytest.raises(UnsupportedDayCountError):
-            SwapConfig(
+            SwapConfig(trade_id="swap-L159", 
                 notional=1e6, fixed_rate=0.04, payer=True,
-                discount_curve_index=0, forward_curve_index=0,
-                swap_tenor="5Y", evaluation_date=EVAL_DATE, accrual_day_count="ACT/360",
+                    swap_tenor="5Y", evaluation_date=EVAL_DATE, accrual_day_count="ACT/360",
             )
 
     def test_an_ore_daycounter_passes_through(self):
@@ -176,9 +172,8 @@ class TestSwapConfigThreadsItThrough:
     def test_config_reaches_the_builder(self):
         from engine.instruments.swap import _build_ore_swap
 
-        cfg = SwapConfig(
+        cfg = SwapConfig(trade_id="swap-L179", 
             notional=1e6, fixed_rate=0.04, payer=True,
-            discount_curve_index=0, forward_curve_index=0,
             swap_tenor="5Y", evaluation_date=EVAL_DATE,
             accrual_day_count="ACT/ACT (ICMA)",
         )
@@ -191,9 +186,8 @@ class TestSwapConfigThreadsItThrough:
         """An unmodified `SwapConfig` builds exactly as before."""
         from engine.instruments.swap import _build_ore_swap
 
-        cfg = SwapConfig(
+        cfg = SwapConfig(trade_id="swap-L194", 
             notional=1e6, fixed_rate=0.04, payer=True,
-            discount_curve_index=0, forward_curve_index=0,
             swap_tenor="5Y", evaluation_date=EVAL_DATE,
         )
         built = fixed_leg_cashflows(_build_ore_swap(cfg), EVAL_DATE)
@@ -203,27 +197,25 @@ class TestSwapConfigThreadsItThrough:
 
 
 class TestTimeAxisConstantsAgree:
-    """The time-axis references in `bermudan_swaption`, `greeks` and `ore_builders` all
+    """The time-axis references in `bermudan_swaption`, `valuation.legs` and `ore_builders` all
     resolve to ACT/365. (Equality alone cannot catch divergence between modules;
     `TestTimeAxisIsOneObject` asserts identity.)"""
 
     def test_all_three_are_act365(self):
         from engine.instruments import bermudan_swaption
-        from engine.risk import greeks
+        from engine.valuation import legs
         from engine.models import ore_builders
 
         expected = ORE.Actual365Fixed().name()
         assert ore_builders.TIME_AXIS_DAY_COUNTER.name() == expected
         assert bermudan_swaption.TIME_AXIS_DAY_COUNTER.name() == expected
-        assert greeks.TIME_AXIS_DAY_COUNTER.name() == expected
+        assert legs.TIME_AXIS_DAY_COUNTER.name() == expected
 
     def test_deprecated_aliases_all_still_resolve(self):
         from engine.instruments import bermudan_swaption
-        from engine.risk import greeks
         from engine.models import ore_builders
 
         assert bermudan_swaption.DAY_COUNTER is bermudan_swaption.TIME_AXIS_DAY_COUNTER
-        assert greeks.DAY_COUNTER is greeks.TIME_AXIS_DAY_COUNTER
         assert ore_builders.DAY_COUNTER is ore_builders.TIME_AXIS_DAY_COUNTER
 
 
@@ -234,14 +226,13 @@ class TestTimeAxisIsOneObject:
 
     def test_every_module_exposes_the_canonical_object(self):
         from engine.instruments import bermudan_swaption
-        from engine.risk import greeks
+        from engine.valuation import legs
         from engine.models import ore_builders
 
         canonical = ore_builders.TIME_AXIS_DAY_COUNTER
         assert bermudan_swaption.TIME_AXIS_DAY_COUNTER is canonical
-        assert greeks.TIME_AXIS_DAY_COUNTER is canonical
+        assert legs.TIME_AXIS_DAY_COUNTER is canonical
         assert bermudan_swaption.DAY_COUNTER is canonical
-        assert greeks.DAY_COUNTER is canonical
 
     def test_no_module_constructs_its_own_time_axis_day_counter(self):
         """No module other than `ore_builders` constructs its own time-axis day counter

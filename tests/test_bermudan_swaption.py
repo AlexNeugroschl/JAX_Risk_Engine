@@ -1,6 +1,7 @@
 """
 `engine.instruments.bermudan_swaption`, the LGM backward induction (also used for
-Americans, whose own tests are in tests/test_american_swaption.py).
+Americans, whose own tests are in tests/test_american_swaption.py), with an explicit model
+(`tests.support.lgm_engine`: the trade carries none).
 
 The authoritative check is tests/test_ore_lgm_parity.py (ORE's own
 `NumericLgmMultiLegOptionEngine`, ~1e-11). These tests are independent of ORE's engine:
@@ -17,7 +18,6 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.simulation.market_model import ZeroCurveConfig
 from bermudan_references import single_exercise_value_by_integration
 from date_helpers import in_years
 from engine.instruments.bermudan_swaption import (
@@ -25,13 +25,15 @@ from engine.instruments.bermudan_swaption import (
     _hagan_quadrature_weights,
     exercisable_dates,
     _state_grid,
-    prepare_bermudan,
-    price_bermudan_swaption_base,
-    price_bermudan_swaptions,
 )
-from engine.instruments.european_swaption import SwaptionConfig, prepare_swaption
+from engine.instruments.european_swaption import SwaptionConfig
+from engine.market import ZeroCurveConfig
 from engine.models.hull_white import ZeroCurve as HwZeroCurve
 from engine.models.lgm import H as _H, bond_price as _lgm_bond_price, zeta as _zeta
+from engine.valuation.config import JamshidianEngineConfig
+from engine.valuation.european import european_terms
+from engine.valuation.jamshidian import jamshidian_npv
+from tests.support.lgm_engine import grid_npv, prepared
 
 
 def _lgm_bond(zero_times, zero_rates, a, sigma, t, T, x):
@@ -48,23 +50,28 @@ def _in_years(years):
     return in_years(EVAL_DATE, years)
 
 
-def _make_bermudan(**overrides) -> BermudanSwaptionConfig:
-    defaults = dict(
-        notional=1_000_000.0,
-        fixed_rate=0.030,
-        payer=True,
-        rate_factor_index=0,
-        hw_a=0.03,
-        hw_sigma=0.02,
-        initial_zero_curve=FLAT_CURVE,
-        exercise_dates=_in_years([1.0, 2.0, 3.0, 4.0]),
-        swap_tenor="5Y",
-        evaluation_date=EVAL_DATE,
-        n_per_std=96,
-        std_devs=7.0,
-    )
-    defaults.update(overrides)
-    return BermudanSwaptionConfig(**defaults)
+#: The engine's model and grid; a case overrides any of them by keyword.
+MODEL = dict(a=0.03, sigma=0.02, curve=FLAT_CURVE, n_per_std=96, std_devs=7.0)
+
+
+def _make_bermudan(**overrides):
+    """(trade, model): the trade's fields and the model's (`MODEL`'s keys) in one call."""
+    trade = dict(notional=1_000_000.0, fixed_rate=0.030, payer=True, exercise_dates=_in_years([1.0, 2.0, 3.0, 4.0]),
+                 swap_tenor="5Y", evaluation_date=EVAL_DATE, trade_id="bermudan")
+    model = dict(MODEL)
+    for key, value in overrides.items():
+        (model if key in MODEL else trade)[key] = value
+    return BermudanSwaptionConfig(**trade), model
+
+
+def _npv(case) -> float:
+    cfg, model = case
+    return grid_npv(cfg, **model)
+
+
+def _prepared(case):
+    cfg, model = case
+    return prepared(cfg, **model)
 
 
 class TestLgmClosedFormsAgainstORE:
@@ -107,8 +114,13 @@ class TestLgmClosedFormsAgainstORE:
             assert mine == pytest.approx(ore_val, rel=1e-9)
 
     def test_lgm_bond_differs_from_hullwhite_for_t_greater_than_zero(self):
-        """`ORE.HullWhite` and `ORE.LinearGaussMarkovModel` with the same (a, sigma) give
-        different bond prices for t > 0, which is why Bermudans use the LGM formulas only."""
+        """`ORE.HullWhite(a, sigma)` and ORE's constant-parametrization LGM with alpha = sigma
+        are different models for t > 0: the same number is the short rate's volatility in one
+        and the LGM state's in the other (zeta = sigma^2 (e^{2at} - 1)/(2a) against
+        alpha^2 t), and the state x = 0 is r = f(0,t) + zeta H H', not r = f(0,t). ORE's
+        Bermudan engine is the LGM, so these are its formulas. The LGM in the Hull-White
+        parametrization is the Hull-White model exactly
+        (tests/test_cam.py::test_hull_white_path_curves_equal_quantlibs_hull_white)."""
         today = EVAL_DATE
         ORE.Settings.instance().evaluationDate = today
         dc = ORE.Actual365Fixed()
@@ -147,7 +159,10 @@ class TestSingleExerciseMatchesDirectIntegration:
     """With one exercise date the value is a single Gaussian expectation, computed without
     the grid by tests/bermudan_references.py."""
 
-    _direct_integration = staticmethod(single_exercise_value_by_integration)
+    @staticmethod
+    def _direct_integration(case):
+        cfg, model = case
+        return single_exercise_value_by_integration(cfg, **model)
 
     @pytest.mark.slow
     @pytest.mark.parametrize("payer", [True, False])
@@ -155,14 +170,14 @@ class TestSingleExerciseMatchesDirectIntegration:
     def test_matches_direct_integration(self, payer, exercise_time):
         cfg = _make_bermudan(payer=payer, exercise_dates=_in_years([exercise_time]), n_per_std=192, std_devs=9.0)
         # Measured 0.7-5e-6: the rollback's discretization at this grid.
-        assert price_bermudan_swaption_base(cfg) == pytest.approx(self._direct_integration(cfg), rel=2e-5)
+        assert _npv(cfg) == pytest.approx(self._direct_integration(cfg), rel=2e-5)
 
     def test_grid_convergence_toward_direct_integration(self):
         cfg_coarse = _make_bermudan(exercise_dates=_in_years([3.0]), n_per_std=48, std_devs=6.0)
         cfg_fine = _make_bermudan(exercise_dates=_in_years([3.0]), n_per_std=256, std_devs=9.0)
         reference = self._direct_integration(cfg_fine)
-        err_coarse = abs(price_bermudan_swaption_base(cfg_coarse) - reference)
-        err_fine = abs(price_bermudan_swaption_base(cfg_fine) - reference)
+        err_coarse = abs(_npv(cfg_coarse) - reference)
+        err_fine = abs(_npv(cfg_fine) - reference)
         assert err_fine < err_coarse
 
 
@@ -170,101 +185,64 @@ class TestMonotonicity:
     """More exercise dates can never decrease a Bermudan's value."""
 
     def test_bermudan_at_least_as_valuable_as_either_single_exercise(self):
-        euro_first = price_bermudan_swaption_base(_make_bermudan(exercise_dates=_in_years([1.0])))
-        euro_last = price_bermudan_swaption_base(_make_bermudan(exercise_dates=_in_years([4.0])))
-        bermudan_2 = price_bermudan_swaption_base(_make_bermudan(exercise_dates=_in_years([1.0, 4.0])))
+        euro_first = _npv(_make_bermudan(exercise_dates=_in_years([1.0])))
+        euro_last = _npv(_make_bermudan(exercise_dates=_in_years([4.0])))
+        bermudan_2 = _npv(_make_bermudan(exercise_dates=_in_years([1.0, 4.0])))
         assert bermudan_2 >= max(euro_first, euro_last) - 1e-6
 
     def test_more_exercise_dates_never_decreases_value(self):
-        bermudan_2 = price_bermudan_swaption_base(_make_bermudan(exercise_dates=_in_years([1.0, 4.0])))
-        bermudan_4 = price_bermudan_swaption_base(_make_bermudan(exercise_dates=_in_years([1.0, 2.0, 3.0, 4.0])))
+        bermudan_2 = _npv(_make_bermudan(exercise_dates=_in_years([1.0, 4.0])))
+        bermudan_4 = _npv(_make_bermudan(exercise_dates=_in_years([1.0, 2.0, 3.0, 4.0])))
         assert bermudan_4 >= bermudan_2 - 1e-6
 
     def test_itm_payer_worth_more_than_otm_payer(self):
-        itm = price_bermudan_swaption_base(_make_bermudan(fixed_rate=0.01, payer=True))
-        otm = price_bermudan_swaption_base(_make_bermudan(fixed_rate=0.08, payer=True))
+        itm = _npv(_make_bermudan(fixed_rate=0.01, payer=True))
+        otm = _npv(_make_bermudan(fixed_rate=0.08, payer=True))
         assert itm > otm
 
     def test_itm_receiver_worth_more_than_otm_receiver(self):
-        itm = price_bermudan_swaption_base(_make_bermudan(fixed_rate=0.08, payer=False))
-        otm = price_bermudan_swaption_base(_make_bermudan(fixed_rate=0.01, payer=False))
+        itm = _npv(_make_bermudan(fixed_rate=0.08, payer=False))
+        otm = _npv(_make_bermudan(fixed_rate=0.01, payer=False))
         assert itm > otm
 
     def test_higher_volatility_increases_value(self):
-        low_vol = price_bermudan_swaption_base(_make_bermudan(hw_sigma=0.005))
-        high_vol = price_bermudan_swaption_base(_make_bermudan(hw_sigma=0.04))
+        low_vol = _npv(_make_bermudan(sigma=0.005))
+        high_vol = _npv(_make_bermudan(sigma=0.04))
         assert high_vol > low_vol
 
 
-class TestPortfolioAndShape:
-    def test_multiple_trades_stack_correctly(self):
-        import jax.numpy as jnp
-        from engine.simulation.market_model import generate_paths
-        from demos.demo_scenarios import swaption_demo_config
-
-        config = swaption_demo_config()
-        cubes = generate_paths(config)
-        step_times = jnp.array(config.time_grid[1:], dtype=jnp.float64)
-        common = dict(
-            hw_a=config.rates.mean_reversion[0],
-            hw_sigma=float(np.sqrt(config.joint_covariance[1][1])),
-            n_per_std=48, std_devs=6.0,
-        )
-        cfg1 = _make_bermudan(fixed_rate=0.02, exercise_dates=_in_years([1.0, 4.0]), **common)
-        cfg2 = _make_bermudan(fixed_rate=0.04, exercise_dates=_in_years([2.0, 4.0]), **common)
-        cube = price_bermudan_swaptions([cfg1, cfg2], cubes["rates"], step_times)
-        assert cube.shape == (config.scenarios, len(config.time_grid) - 1, 2)
-        assert not np.allclose(np.asarray(cube[:, :, 0]), np.asarray(cube[:, :, 1]))
-
-    def test_npv_is_zero_after_last_exercise_date(self):
-        import jax.numpy as jnp
-        from engine.simulation.market_model import generate_paths
-        from demos.demo_scenarios import swaption_demo_config
-
-        config = swaption_demo_config()  # time_grid up to 5.0
-        cubes = generate_paths(config)
-        step_times = jnp.array(config.time_grid[1:], dtype=jnp.float64)
-        cfg = _make_bermudan(
-            hw_a=config.rates.mean_reversion[0],
-            hw_sigma=float(np.sqrt(config.joint_covariance[1][1])),
-            exercise_dates=_in_years([1.0, 2.0]), n_per_std=48, std_devs=6.0,
-        )
-        cube = price_bermudan_swaptions([cfg], cubes["rates"], step_times)
-        for i, t in enumerate(config.time_grid[1:]):
-            if t >= 2.0:
-                assert np.all(np.asarray(cube[:, i, 0]) == 0.0)
-
+class TestShape:
     def test_zero_notional_prices_to_zero(self):
         cfg = _make_bermudan(notional=0.0)
-        assert price_bermudan_swaption_base(cfg) == pytest.approx(0.0, abs=1e-8)
+        assert _npv(cfg) == pytest.approx(0.0, abs=1e-8)
 
 
 class TestEdgeCases:
     def test_rejects_exercise_time_at_or_after_final_maturity(self):
         with pytest.raises(ValueError):
-            prepare_bermudan(_make_bermudan(exercise_dates=_in_years([10.0])))
+            _prepared(_make_bermudan(exercise_dates=_in_years([10.0])))
 
     def test_exercise_date_exactly_at_final_reset_prices_finite(self):
         cfg = _make_bermudan(exercise_dates=_in_years([4.0]))
-        npv = price_bermudan_swaption_base(cfg)
+        npv = _npv(cfg)
         assert np.isfinite(npv)
         assert npv >= 0.0
 
     def test_negative_rate_curve_prices_finite(self):
         neg_curve = ZeroCurveConfig(times=FLAT_CURVE.times, rates=[-0.005] * 6)
-        cfg = _make_bermudan(initial_zero_curve=neg_curve, fixed_rate=-0.005)
-        npv = price_bermudan_swaption_base(cfg)
+        cfg = _make_bermudan(curve=neg_curve, fixed_rate=-0.005)
+        npv = _npv(cfg)
         assert np.isfinite(npv)
         assert npv >= 0.0
 
     def test_near_zero_volatility_collapses_toward_intrinsic(self):
-        cfg_low_vol = _make_bermudan(hw_sigma=1e-6, exercise_dates=_in_years([4.0]))
-        npv = price_bermudan_swaption_base(cfg_low_vol)
+        cfg_low_vol = _make_bermudan(sigma=1e-6, exercise_dates=_in_years([4.0]))
+        npv = _npv(cfg_low_vol)
         assert np.isfinite(npv)
         assert npv >= -1e-3
 
     def test_single_reset_bermudan_matches_prepare_bermudan_final_maturity(self):
-        swap = prepare_bermudan(_make_bermudan())
+        swap = _prepared(_make_bermudan())
         assert swap.final_maturity == pytest.approx(swap.fixed_times[-1])
 
 
@@ -275,16 +253,16 @@ class TestMidPeriodBermudanExercise:
     tests/test_ore_lgm_parity.py; these pin the mechanism."""
 
     def test_a_bermudan_coupon_belongs_only_until_its_accrual_start(self):
-        swap = prepare_bermudan(_make_bermudan())
+        swap = _prepared(_make_bermudan())
         assert np.array_equal(swap.fixed_belongs_until, swap.fixed_start_times)
         assert np.array_equal(swap.float_belongs_until, swap.float_start_times)
 
     def test_mid_period_exercise_does_not_enter_the_coupon_in_progress(self):
         from engine.instruments.bermudan_swaption import _build_grid_schedule
-        starts = exercisable_dates(_make_bermudan())
-        swap = prepare_bermudan(_make_bermudan(exercise_dates=[starts[1] + 90]))
+        starts = exercisable_dates(_make_bermudan()[0])
+        swap = _prepared(_make_bermudan(exercise_dates=[starts[1] + 90]))
         t = float(swap.exercise_times[0])
-        schedule = _build_grid_schedule(swap, [])
+        schedule = _build_grid_schedule(swap)
         row = int(np.nonzero(schedule.times == t)[0][0])
         num_fixed = len(swap.fixed_times)
         in_progress = int(np.nonzero((swap.fixed_start_times < t) & (swap.fixed_end_times > t))[0][0])
@@ -295,7 +273,7 @@ class TestMidPeriodBermudanExercise:
 
     def test_mid_coupon_exercise_still_prices_finite_and_nonnegative(self):
         cfg = _make_bermudan(exercise_dates=_in_years([1.25]))
-        npv = price_bermudan_swaption_base(cfg)
+        npv = _npv(cfg)
         assert np.isfinite(npv)
         assert npv >= 0.0
 
@@ -308,11 +286,11 @@ class TestMidPeriodBermudanExercise:
         but the semi-annual floating leg only one half-year later, so one fixed coupon drops
         out. For a payer that coupon was a payment, so the value rises; for a receiver it
         falls. This is ORE's behaviour (once mistaken for an error to prorate away; I-06)."""
-        reset = exercisable_dates(_make_bermudan(payer=payer, fixed_rate=fixed_rate))[2]
+        reset = exercisable_dates(_make_bermudan(payer=payer, fixed_rate=fixed_rate)[0])[2]
 
         def price(exercise_date):
-            return price_bermudan_swaption_base(_make_bermudan(
-                payer=payer, fixed_rate=fixed_rate, hw_sigma=0.005, exercise_dates=[exercise_date]))
+            return _npv(_make_bermudan(
+                payer=payer, fixed_rate=fixed_rate, sigma=0.005, exercise_dates=[exercise_date]))
 
         aligned, next_day = price(reset), price(reset + 1)
         if payer:
@@ -326,27 +304,27 @@ class TestStateGridAndScheduleEdgeCases:
 
     def test_single_exercise_date_prices_finite(self):
         cfg = _make_bermudan(exercise_dates=_in_years([2.5]))
-        npv = price_bermudan_swaption_base(cfg)
+        npv = _npv(cfg)
         assert np.isfinite(npv)
         assert npv >= 0.0
 
     def test_two_exercise_dates_at_least_as_valuable_as_either_alone(self):
-        v1 = price_bermudan_swaption_base(_make_bermudan(exercise_dates=_in_years([1.5])))
-        v2 = price_bermudan_swaption_base(_make_bermudan(exercise_dates=_in_years([3.5])))
-        v_both = price_bermudan_swaption_base(_make_bermudan(exercise_dates=_in_years([1.5, 3.5])))
+        v1 = _npv(_make_bermudan(exercise_dates=_in_years([1.5])))
+        v2 = _npv(_make_bermudan(exercise_dates=_in_years([3.5])))
+        v_both = _npv(_make_bermudan(exercise_dates=_in_years([1.5, 3.5])))
         assert v_both >= max(v1, v2) - 1e-6
 
     def test_dense_monthly_schedule_over_long_tenor_prices_finite_and_consistent(self):
         # ~Monthly exercise over 9Y on a 10Y swap: many grid times.
         dense_times = [round(i / 12.0, 6) for i in range(1, 12 * 9)]
         cfg = _make_bermudan(exercise_dates=_in_years(dense_times), swap_tenor="10Y", n_per_std=32, std_devs=6.0)
-        npv_dense = price_bermudan_swaption_base(cfg)
+        npv_dense = _npv(cfg)
         assert np.isfinite(npv_dense)
         assert npv_dense >= 0.0
         # Monotonicity against a sparse subset of the same dates.
         sparse_cfg = _make_bermudan(exercise_dates=_in_years([dense_times[0], dense_times[-1]]),
                                      swap_tenor="10Y", n_per_std=32, std_devs=6.0)
-        npv_sparse = price_bermudan_swaption_base(sparse_cfg)
+        npv_sparse = _npv(sparse_cfg)
         assert npv_dense >= npv_sparse - 1e-6
 
     @pytest.mark.slow
@@ -354,7 +332,7 @@ class TestStateGridAndScheduleEdgeCases:
         # Successive n_per_std refinements move the price by shrinking amounts toward the
         # finest grid's value.
         ns = [8, 16, 32, 64, 128, 256]
-        prices = [price_bermudan_swaption_base(_make_bermudan(n_per_std=n, std_devs=6.0)) for n in ns]
+        prices = [_npv(_make_bermudan(n_per_std=n, std_devs=6.0)) for n in ns]
         finest = prices[-1]
         errors = [abs(p - finest) for p in prices[:-1]]
         # Each refinement does not increase the error against the finest grid (small slack).
@@ -364,17 +342,17 @@ class TestStateGridAndScheduleEdgeCases:
     def test_std_devs_too_small_understates_or_matches_wider_grid(self):
         # A narrow grid clips the tails; widening std_devs at fixed resolution should not
         # lower the price appreciably, and converges.
-        narrow = price_bermudan_swaption_base(_make_bermudan(n_per_std=48, std_devs=2.0))
-        medium = price_bermudan_swaption_base(_make_bermudan(n_per_std=48, std_devs=5.0))
-        wide = price_bermudan_swaption_base(_make_bermudan(n_per_std=48, std_devs=9.0))
+        narrow = _npv(_make_bermudan(n_per_std=48, std_devs=2.0))
+        medium = _npv(_make_bermudan(n_per_std=48, std_devs=5.0))
+        wide = _npv(_make_bermudan(n_per_std=48, std_devs=9.0))
         assert np.isfinite(narrow) and np.isfinite(medium) and np.isfinite(wide)
         assert abs(wide - medium) <= abs(medium - narrow) + 1e-6
 
     def test_near_zero_mean_reversion_prices_finite_and_consistent(self):
         # a -> 0 is a 0/0 in H(t); it stays finite and close to a small non-zero a.
-        v_tiny = price_bermudan_swaption_base(_make_bermudan(hw_a=1e-6))
-        v_small = price_bermudan_swaption_base(_make_bermudan(hw_a=1e-4))
-        v_normal = price_bermudan_swaption_base(_make_bermudan(hw_a=0.03))
+        v_tiny = _npv(_make_bermudan(a=1e-6))
+        v_small = _npv(_make_bermudan(a=1e-4))
+        v_normal = _npv(_make_bermudan(a=0.03))
         assert np.isfinite(v_tiny) and np.isfinite(v_small) and np.isfinite(v_normal)
         assert v_tiny == pytest.approx(v_small, rel=1e-2)
         assert v_tiny > 0.0
@@ -383,7 +361,7 @@ class TestStateGridAndScheduleEdgeCases:
         # A large sigma stresses the grid's absolute span: no blow-up, value still rising.
         vols = [0.02, 0.05, 0.10, 0.20]
         prices = [
-            price_bermudan_swaption_base(_make_bermudan(hw_sigma=s, std_devs=9.0, n_per_std=96))
+            _npv(_make_bermudan(sigma=s, std_devs=9.0, n_per_std=96))
             for s in vols
         ]
         assert all(np.isfinite(p) for p in prices)
@@ -406,10 +384,10 @@ class TestConvergenceToAmericanAcrossConfigs:
         tenor_years = float(swap_tenor[:-1])
         sparse = [1.0] if tenor_years <= 2.0 else [1.0, round(tenor_years - 1.0, 2)]
         dense = [round(i * 0.25, 4) for i in range(1, int(4 * (tenor_years - 0.25)))]
-        v_sparse = price_bermudan_swaption_base(
+        v_sparse = _npv(
             _make_bermudan(swap_tenor=swap_tenor, fixed_rate=fixed_rate, payer=payer, exercise_dates=_in_years(sparse))
         )
-        v_dense = price_bermudan_swaption_base(
+        v_dense = _npv(
             _make_bermudan(swap_tenor=swap_tenor, fixed_rate=fixed_rate, payer=payer, exercise_dates=_in_years(dense))
         )
         assert v_dense >= v_sparse - 1e-6
@@ -419,28 +397,22 @@ class TestDegenerateSingleExerciseCases:
     """Single-exercise Bermudans: against the European pricer, and deep OTM/ITM."""
 
     def test_single_exercise_vs_independent_european_pricer_same_order_of_magnitude(self):
-        # The European pricer is Hull-White and this is LGM, different models for t > 0
-        # with the same (a, sigma), so only a loose check: both finite, positive and within
-        # 2x of each other. (The tight single-exercise check is
-        # TestSingleExerciseMatchesDirectIntegration.)
+        # The European engine is Jamshidian on a Hull-White model and this is the LGM with a
+        # Hagan volatility, different models for t > 0 with the same (a, sigma), so only a
+        # loose check: both finite, positive and within 2x of each other. (The tight
+        # single-exercise check is TestSingleExerciseMatchesDirectIntegration.)
         euro_cfg = SwaptionConfig(
-            notional=1_000_000.0, fixed_rate=0.030, payer=True, rate_factor_index=0,
-            hw_a=0.03, hw_sigma=0.02, initial_zero_curve=FLAT_CURVE, swap_tenor="5Y",
-            forward_start=ORE.Period(3, ORE.Years), evaluation_date=EVAL_DATE,
+            notional=1_000_000.0, fixed_rate=0.030, payer=True, swap_tenor="5Y",
+            forward_start=ORE.Period(3, ORE.Years), evaluation_date=EVAL_DATE, trade_id="european",
         )
-        prepared_euro = prepare_swaption(euro_cfg)
+        curve = HwZeroCurve(pillar_times=jnp.asarray(FLAT_CURVE.times), pillar_rates=jnp.asarray(FLAT_CURVE.rates))
+        euro_npv = float(jamshidian_npv(european_terms(euro_cfg, EVAL_DATE), JamshidianEngineConfig(0.03, 0.02),
+                                        curve, 0.0))
 
-        import jax.numpy as jnp
-        from engine.instruments.european_swaption import price_swaptions
-        hw_paths = jnp.zeros((1, 1, 1), dtype=jnp.float64)
-        step_times = jnp.array([0.0], dtype=jnp.float64)
-        euro_npv = float(price_swaptions(hw_paths, step_times, [euro_cfg])[0, 0, 0])
-
-        berm_cfg = _make_bermudan(
-            exercise_dates=_in_years([prepared_euro.exercise_time]), swap_tenor="5Y",
-            n_per_std=192, std_devs=9.0,
-        )
-        berm_npv = price_bermudan_swaption_base(berm_cfg)
+        # The same underlying: the European's forward-starting 5Y swap, exercised on its date.
+        berm_npv = _npv(_make_bermudan(exercise_dates=[euro_cfg.exercise_date], swap_tenor=None,
+                                       effective_date=euro_cfg.effective_date, maturity_date=euro_cfg.maturity_date,
+                                       n_per_std=192, std_devs=9.0))
 
         assert np.isfinite(euro_npv) and euro_npv > 0.0
         assert np.isfinite(berm_npv) and berm_npv > 0.0
@@ -449,7 +421,7 @@ class TestDegenerateSingleExerciseCases:
 
     def test_deeply_otm_single_exercise_is_near_zero(self):
         cfg = _make_bermudan(fixed_rate=0.30, payer=True, exercise_dates=_in_years([3.0]))
-        npv = price_bermudan_swaption_base(cfg)
+        npv = _npv(cfg)
         assert np.isfinite(npv)
         assert npv == pytest.approx(0.0, abs=1.0)
 
@@ -457,8 +429,8 @@ class TestDegenerateSingleExerciseCases:
         # Exercise nearly certain: close to the swap's discounted value at exercise on
         # today's curve (a loose bound; some time value remains).
         cfg = _make_bermudan(fixed_rate=0.001, payer=True, exercise_dates=_in_years([3.0]))
-        npv = price_bermudan_swaption_base(cfg)
-        swap = prepare_bermudan(cfg)
+        npv = _npv(cfg)
+        swap = _prepared(cfg)
         from engine.instruments.bermudan_swaption import _cashflow_values_at_nodes, _zero_curve_of
         curve = _zero_curve_of(swap)
         t = float(swap.exercise_times[0])
@@ -472,61 +444,26 @@ class TestDegenerateSingleExerciseCases:
     def test_deeply_otm_receiver_is_near_zero(self):
         # Deep OTM for a receiver: a very low (negative) fixed rate against the 3% curve.
         cfg = _make_bermudan(fixed_rate=-0.10, payer=False, exercise_dates=_in_years([3.0]))
-        npv = price_bermudan_swaption_base(cfg)
+        npv = _npv(cfg)
         assert np.isfinite(npv)
         assert npv == pytest.approx(0.0, abs=1.0)
 
 
-class TestPayerReceiverAndPortfolio:
-    """Payer/receiver sanity and a mixed portfolio's shape and per-trade independence."""
+class TestPayerReceiver:
+    """Payer/receiver sanity."""
 
     def test_payer_and_receiver_both_positive_and_comparable_near_atm(self):
         # Not a symmetry claim: both positive and within a broad band of each other.
-        payer = price_bermudan_swaption_base(_make_bermudan(payer=True, fixed_rate=0.03, exercise_dates=_in_years([3.0])))
-        receiver = price_bermudan_swaption_base(_make_bermudan(payer=False, fixed_rate=0.03, exercise_dates=_in_years([3.0])))
+        payer = _npv(_make_bermudan(payer=True, fixed_rate=0.03, exercise_dates=_in_years([3.0])))
+        receiver = _npv(_make_bermudan(payer=False, fixed_rate=0.03, exercise_dates=_in_years([3.0])))
         assert payer > 0.0 and receiver > 0.0
         assert 0.5 < payer / receiver < 2.0
 
-    def test_diverse_portfolio_shape_and_per_trade_independence(self):
-        import jax.numpy as jnp
-        from engine.simulation.market_model import generate_paths
-        from demos.demo_scenarios import swaption_demo_config
-
-        config = swaption_demo_config()
-        cubes = generate_paths(config)
-        step_times = jnp.array(config.time_grid[1:], dtype=jnp.float64)
-        common = dict(
-            hw_a=config.rates.mean_reversion[0],
-            hw_sigma=float(np.sqrt(config.joint_covariance[1][1])),
-            n_per_std=48, std_devs=6.0,
-        )
-        cfg_payer_5y = _make_bermudan(payer=True, fixed_rate=0.02, swap_tenor="5Y",
-                                       exercise_dates=_in_years([1.0, 2.0, 3.0, 4.0]), **common)
-        cfg_receiver_5y = _make_bermudan(payer=False, fixed_rate=0.04, swap_tenor="5Y",
-                                          exercise_dates=_in_years([1.0, 4.0]), **common)
-        cfg_payer_2y = _make_bermudan(payer=True, fixed_rate=0.03, swap_tenor="2Y",
-                                       exercise_dates=_in_years([1.0]), **common)
-
-        configs = [cfg_payer_5y, cfg_receiver_5y, cfg_payer_2y]
-        cube = price_bermudan_swaptions(configs, cubes["rates"], step_times)
-        assert cube.shape == (config.scenarios, len(config.time_grid) - 1, 3)
-        assert np.all(np.isfinite(np.asarray(cube)))
-
-        # Pricing each trade alone reproduces its column in the joint call.
-        for i, cfg in enumerate(configs):
-            solo_cube = price_bermudan_swaptions([cfg], cubes["rates"], step_times)
-            assert np.allclose(np.asarray(cube[:, :, i]), np.asarray(solo_cube[:, :, 0]), rtol=1e-10, atol=1e-8)
-
-        # Distinct trades give distinct columns.
-        assert not np.allclose(np.asarray(cube[:, :, 0]), np.asarray(cube[:, :, 1]))
-        assert not np.allclose(np.asarray(cube[:, :, 1]), np.asarray(cube[:, :, 2]))
-        assert not np.allclose(np.asarray(cube[:, :, 0]), np.asarray(cube[:, :, 2]))
-
-
 class TestBermudanSwaptionConfigValidation:
-    """`BermudanSwaptionConfig.__post_init__` rejects non-finite notional/fixed_rate/
-    hw_sigma, unparseable tenors, and empty, unsorted or non-date exercise_dates. Zero
-    notional is valid."""
+    """`BermudanSwaptionConfig.__post_init__` rejects non-finite notional/fixed_rate,
+    unparseable tenors, and empty, unsorted or non-date exercise_dates. Zero notional is
+    valid. The model's volatility is the engine configuration's, validated there
+    (tests/test_run_config.py)."""
 
     def test_nan_notional_rejected(self):
         with pytest.raises(ValueError, match="notional"):
@@ -535,16 +472,6 @@ class TestBermudanSwaptionConfigValidation:
     def test_inf_fixed_rate_rejected(self):
         with pytest.raises(ValueError, match="fixed_rate"):
             _make_bermudan(fixed_rate=float("inf"))
-
-    def test_nan_flat_hw_sigma_rejected(self):
-        with pytest.raises(ValueError, match="hw_sigma"):
-            _make_bermudan(hw_sigma=float("nan"))
-
-    def test_nan_piecewise_sigma_bucket_rejected(self):
-        from engine.models.lgm import Sigma
-        bad_sigma = Sigma(times=jnp.asarray([1.0, 2.0]), values=jnp.asarray([0.01, float("nan"), 0.02]))
-        with pytest.raises(ValueError, match="hw_sigma"):
-            _make_bermudan(hw_sigma=bad_sigma)
 
     def test_unparseable_swap_tenor_rejected(self):
         with pytest.raises(ValueError, match="swap_tenor"):
@@ -567,7 +494,7 @@ class TestBermudanSwaptionConfigValidation:
     def test_exercise_dates_on_or_before_the_evaluation_date_are_not_opportunities(self):
         """ORE: `if (d > refDate) optionTimes.insert(...)`."""
         cfg = _make_bermudan(exercise_dates=[EVAL_DATE] + _in_years([1.0, 2.0]))
-        assert prepare_bermudan(cfg).exercise_times.tolist() == pytest.approx([1.0, 2.0])
+        assert _prepared(cfg).exercise_times.tolist() == pytest.approx([1.0, 2.0])
 
     def test_valid_config_constructs_without_error(self):
         _make_bermudan()  # must not raise

@@ -1,273 +1,188 @@
 """
-End to end: a mixed portfolio (swaps and European swaptions) through `generate_paths`,
-`price_swaps`/`price_swaptions` and `compute_risk_metrics`, and independently through ORE
-(`DiscountingSwapEngine`, `JamshidianSwaptionEngine`, `RiskStatistics`) conditioned on the
-same simulated short rates; NPVs and VaR/ES compared, with timings.
+End to end against ORE on the same simulated paths: a portfolio (a forward-starting swap and
+two forward-starting European swaptions on the Jamshidian engine) through `price_portfolio`
+with the Hull-White model, and independently through QuantLib/ORE (`DiscountingSwapEngine`,
+`JamshidianSwaptionEngine`, `RiskStatistics`) on each path's curve; NPVs and VaR/ES compared,
+with timings.
 
-Sharing the simulated rates (rather than two independent Monte Carlo runs with different
-generators) makes a difference a pricing difference, not sampling noise. ORE prices each
-scenario on a curve implied from `ORE.HullWhite.discountBond(t, T, r)`.
+Sharing the simulated states (rather than two Monte Carlo runs with different generators)
+makes a difference a pricing difference, not sampling noise. Each path's state z at t = 1 is
+mapped to its short rate, r = f(0, t) + H'(t) z + zeta(t) H(t) H'(t) (tests/test_cam.py
+shows the simulated curve is then QuantLib's `HullWhite.discountBond(t, T, r)` to 1e-12), and
+ORE prices on that path's curve as ORE's `ScenarioSimMarket` holds it: QuantLib's Hull-White
+discount factors at the simulation-market tenors (`CamConfig.curve_tenors`), log-linear in
+between (`ORE.DiscountCurve`). On a sloped curve (a flat one hides drift errors, I-42).
 
-Dates: `ORE.TARGET().advance(date, N, ORE.Days)` adds business days (365 of them is ~1.4
-years); `date + N` adds calendar days. This file uses `date + N` and `ORE.Period`.
+Dates: `date + N` adds calendar days; the simulation date is `TODAY + 365`, t = 1 exactly on
+the ACT/365 time axis.
 """
 import time
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import ORE
 import pytest
 
-from engine.simulation.market_model import SimulationConfig, EquityConfig, RatesConfig, ZeroCurveConfig, generate_paths
-from engine.instruments.swap import SwapConfig, price_swaps
-from engine.instruments.european_swaption import SwaptionConfig, prepare_swaption, _price_one_swaption, price_swaptions
+from engine.instruments.european_swaption import SwaptionConfig, _build_ore_swap as european_underlying
+from engine.instruments.swap import SwapConfig, _build_ore_swap as swap_underlying
+from engine.market import CurrencyMarket, Market, ZeroCurveConfig, index_name
+from engine.models.ore_builders import ibor_index
+from engine.portfolio import (
+    CamConfig, HullWhiteConfig, JamshidianEngineConfig, PortfolioRequest, PricingConfig, RunConfig, price_portfolio,
+)
 from engine.risk.var_es import compute_risk_metrics
-from demos.demo_scenarios import flat_yield_curves
+from engine.simulation.config import DEFAULT_CURVE_TENORS, simulate
 
 TODAY = ORE.Date(30, 7, 2026)
-FLAT_RATE = 0.03
-HW_A = 0.03
-HW_SIGMA = 0.01
-DAY_COUNTER = ORE.Actual365Fixed()
-
-# The 2Y swap's payment and accrual times (years from TODAY): the pillars for the t=0
-# revaluation.
-SWAP_MATURITIES = [
-    0.010958904109589041, 0.5150684931506849, 1.010958904109589,
-    1.515068493150685, 2.0136986301369864,
-]
-
-ZERO_CURVE = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[FLAT_RATE] * 6)
+HW_A, HW_SIGMA = 0.03, 0.01
+DC = ORE.Actual365Fixed()
+PILLARS = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
+RATES = [0.030, 0.030, 0.034, 0.040, 0.046, 0.050]
+CURVE = ZeroCurveConfig(PILLARS, RATES)
+T_EVAL = 1.0
+EVAL_DATE = TODAY + 365
+PRICING = PricingConfig(european="Jamshidian", jamshidian=JamshidianEngineConfig(HW_A, HW_SIGMA))
 
 
-def _build_portfolio():
-    """A 2Y payer swap (checked at t=0 only; aged swaps are I-04) and two forward-starting
-    swaptions (5Y payer exercisable in 3Y, 7Y receiver in 2Y), both alive at t=1."""
-    swap = SwapConfig(
-        notional=1_000_000.0, fixed_rate=0.03, payer=True,
-        discount_curve_index=0, forward_curve_index=0,
-        swap_tenor="2Y", evaluation_date=TODAY,
-    )
-    swaption_a = SwaptionConfig(
-        notional=1_500_000.0, fixed_rate=0.03, payer=True,
-        rate_factor_index=0, hw_a=HW_A, hw_sigma=HW_SIGMA,
-        initial_zero_curve=ZERO_CURVE, swap_tenor="5Y",
-        forward_start=ORE.Period(3, ORE.Years), evaluation_date=TODAY,
-    )
-    swaption_b = SwaptionConfig(
-        notional=800_000.0, fixed_rate=0.028, payer=False,
-        rate_factor_index=0, hw_a=HW_A, hw_sigma=HW_SIGMA,
-        initial_zero_curve=ZERO_CURVE, swap_tenor="7Y",
-        forward_start=ORE.Period(2, ORE.Years), evaluation_date=TODAY,
-    )
-    return swap, swaption_a, swaption_b
+def _trades():
+    """A swap starting after the simulation date and two swaptions alive at it (5Y payer
+    exercisable in 3Y, 7Y receiver in 2Y)."""
+    swap = SwapConfig(notional=1_000_000.0, fixed_rate=0.036, payer=True, effective_date=ORE.Date(2, 8, 2028),
+                      maturity_date=ORE.Date(2, 8, 2030), evaluation_date=TODAY, trade_id="swap")
+    payer = SwaptionConfig(notional=1_500_000.0, fixed_rate=0.042, payer=True, swap_tenor="5Y",
+                           forward_start=ORE.Period(3, ORE.Years), evaluation_date=TODAY, trade_id="payer")
+    receiver = SwaptionConfig(notional=800_000.0, fixed_rate=0.036, payer=False, swap_tenor="7Y",
+                              forward_start=ORE.Period(2, ORE.Years), evaluation_date=TODAY, trade_id="receiver")
+    return [swap, payer, receiver]
 
 
-def _sim_config(scenarios: int) -> SimulationConfig:
-    return SimulationConfig(
-        time_grid=[0.0, 1.0],
-        scenarios=scenarios,
-        equities=EquityConfig(initial_prices=[100.0], dividend_yields=[0.0], rate_mapping=[[0.0]]),
-        rates=RatesConfig(initial_rates=[FLAT_RATE], theta=[FLAT_RATE], mean_reversion=[HW_A]),
-        joint_covariance=[[0.0400, 0.0000], [0.0000, HW_SIGMA ** 2]],
-    )
+def _request(samples: int) -> PortfolioRequest:
+    # One curve for discounting and forwarding: QuantLib's Jamshidian engine is single-curve.
+    market = Market(TODAY, {"USD": CurrencyMarket(CURVE, {index_name("USD", 6): CURVE})})
+    simulation = CamConfig(dates=(EVAL_DATE,), base_currency="USD", ir={"USD": HullWhiteConfig(HW_A, HW_SIGMA)},
+                           samples=samples, seed=17)
+    return PortfolioRequest(market=market, trades=_trades(), config=RunConfig(simulation=simulation, pricing=PRICING),
+                            pfe_quantiles=(0.95,))
 
 
-def _price_portfolio_engine(scenarios: int):
-    """The engine pipeline: (portfolio NPV at t=1 [S], base NPV, risk metrics, simulated
-    short rates r_t [S] for the ORE side, timings)."""
-    swap, swaption_a, swaption_b = _build_portfolio()
-    config = _sim_config(scenarios)
-
-    t_start = time.perf_counter()
-    market = generate_paths(config)
-    step_times = jnp.array(config.time_grid[1:])
-
-    base_cube = flat_yield_curves(disc_rate=FLAT_RATE, fwd_rate=FLAT_RATE, maturities=SWAP_MATURITIES, eval_date=TODAY)
-    swap_npv_t0 = float(price_swaps(base_cube, np.array(SWAP_MATURITIES), [swap])[0, 0, 0])
-
-    swaption_npv = price_swaptions(market["rates"], step_times, [swaption_a, swaption_b])
-    portfolio_at_t1 = swap_npv_t0 + jnp.sum(swaption_npv[:, 0, :], axis=-1)  # [Scenarios]
-
-    # t=0 baseline: a deterministic revaluation of the whole portfolio (the P&L baseline;
-    # docs/risk/var_es.md).
-    prep_a = prepare_swaption(swaption_a)
-    prep_b = prepare_swaption(swaption_b)
-    t0_step = jnp.array([0.0])
-    r0_path = jnp.array([[[FLAT_RATE]]])
-    swaption_a_t0 = float(_price_one_swaption(r0_path, t0_step, prep_a)[0, 0])
-    swaption_b_t0 = float(_price_one_swaption(r0_path, t0_step, prep_b)[0, 0])
-    base_npv = swap_npv_t0 + swaption_a_t0 + swaption_b_t0
-
-    npv_cube = portfolio_at_t1[:, None, None]  # [Scenarios, TimeSteps=1, Trades=1]
-    metrics = compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))
-    elapsed = time.perf_counter() - t_start
-
-    r_t = np.asarray(market["rates"][:, 0, 0])
-    return np.asarray(portfolio_at_t1), base_npv, metrics, r_t, elapsed
+def _price_engine(samples: int):
+    """The engine: (per-trade NPVs at t = 1 [S, N], t=0 NPVs [N], metrics, states z [S], seconds)."""
+    request = _request(samples)
+    start = time.perf_counter()
+    result = price_portfolio(request)
+    values = np.asarray(result.npv_cube[:, 0, :])
+    metrics = compute_risk_metrics(jnp.asarray(values.sum(axis=1))[:, None, None], result.base_npv,
+                                   percentiles=(0.95, 0.99))
+    elapsed = time.perf_counter() - start
+    scenarios = simulate(request.market, request.config.simulation)
+    return values, np.asarray(result.base_npv_per_trade), metrics, np.asarray(scenarios.states[:, 0, 0]), elapsed
 
 
-def _price_portfolio_ore(r_t: np.ndarray):
-    """The same portfolio on the same r_t by ORE's engines, one implied curve per scenario
-    from `ORE.HullWhite.discountBond(t_eval, T, r)`. Returns (portfolio NPV [S], base NPV,
-    seconds)."""
-    dc = DAY_COUNTER
+def _ore_curve(dates, discounts) -> "ORE.YieldTermStructureHandle":
+    return ORE.YieldTermStructureHandle(ORE.DiscountCurve(dates, discounts, DC))
+
+
+def _ore_instruments(curve: "ORE.YieldTermStructureHandle", model: "ORE.HullWhite"):
+    """ORE's swap and swaptions on `curve` (forwarding and discounting), the schedules as
+    ORE builds the trades' underlyings: `(instrument, its swap, exercise date or None)`."""
+    index = ibor_index(6, curve)
+    out = []
+    for cfg in _trades():
+        booked = (swap_underlying if isinstance(cfg, SwapConfig) else european_underlying)(cfg)
+        side = ORE.VanillaSwap.Payer if cfg.payer else ORE.VanillaSwap.Receiver
+        swap = ORE.VanillaSwap(side, cfg.notional, booked.fixedSchedule(), cfg.fixed_rate, DC,
+                               booked.floatingSchedule(), index, 0.0, DC)
+        if isinstance(cfg, SwapConfig):
+            swap.setPricingEngine(ORE.DiscountingSwapEngine(curve))
+            out.append((swap, swap, None))
+        else:
+            swaption = ORE.Swaption(swap, ORE.EuropeanExercise(cfg.exercise_date))
+            swaption.setPricingEngine(ORE.JamshidianSwaptionEngine(model, curve))
+            out.append((swaption, swap, cfg.exercise_date))
+    return out
+
+
+def _price_ore(states: np.ndarray):
+    """The same trades priced by ORE on each path's Hull-White curve at t = 1. Returns
+    (per-trade NPVs [S, N], t=0 NPVs [N], seconds)."""
     ORE.Settings.instance().evaluationDate = TODAY
-    curve0 = ORE.YieldTermStructureHandle(ORE.FlatForward(TODAY, FLAT_RATE, dc))
+    curve0 = ORE.YieldTermStructureHandle(ORE.ZeroCurve([TODAY + round(t * 365) for t in PILLARS], RATES, DC))
+    curve0.enableExtrapolation()
     hw0 = ORE.HullWhite(curve0, HW_A, HW_SIGMA)
+    base = np.array([i.NPV() for i, _, _ in _ore_instruments(curve0, hw0)])
 
-    idx0 = ORE.IborIndex(
-        "SimIndex", ORE.Period(6, ORE.Months), 2,
-        ORE.USDCurrency(), ORE.TARGET(), ORE.ModifiedFollowing, False, dc, curve0,
-    )
-    ore_swap = ORE.MakeVanillaSwap(
-        ORE.Period("2Y"), idx0, 0.03, nominal=1_000_000.0,
-        swapType=ORE.VanillaSwap.Payer, discountingTermStructure=curve0,
-        fixedLegDayCount=dc, floatingLegDayCount=dc,
-    )
-    ore_swap.setPricingEngine(ORE.DiscountingSwapEngine(curve0))
-    swap_npv_t0 = ore_swap.NPV()
+    a = HW_A
+    H, Hp = (1 - np.exp(-a * T_EVAL)) / a, np.exp(-a * T_EVAL)
+    zeta = HW_SIGMA ** 2 * np.expm1(2 * a * T_EVAL) / (2 * a)
+    f0 = curve0.forwardRate(T_EVAL, T_EVAL, ORE.Continuous, ORE.NoFrequency, True).rate()
 
-        # Exercise date = forward-start point + 2 business days, as SwaptionConfig books it
-        # (omitting the lag was once a ~0.1% bug in this test).
-    fwd_a_t0 = ORE.TARGET().advance(TODAY, ORE.Period(3, ORE.Years))
-    ex_a_t0 = ORE.EuropeanExercise(ORE.TARGET().advance(fwd_a_t0, ORE.Period(2, ORE.Days)))
-    swap_a_t0 = ORE.MakeVanillaSwap(
-        ORE.Period("5Y"), idx0, 0.03, nominal=1_500_000.0,
-        swapType=ORE.VanillaSwap.Payer, fixedLegDayCount=dc, floatingLegDayCount=dc,
-        forwardStart=ORE.Period(3, ORE.Years),
-    )
-    swaption_a_t0 = ORE.Swaption(swap_a_t0, ex_a_t0)
-    swaption_a_t0.setPricingEngine(ORE.JamshidianSwaptionEngine(hw0, curve0))
-    va_t0 = swaption_a_t0.NPV()
+    nodes = [EVAL_DATE + ORE.Period(tenor) for tenor in DEFAULT_CURVE_TENORS]
+    times = [T_EVAL + DC.yearFraction(EVAL_DATE, d) for d in nodes]
+    start = time.perf_counter()
+    values = []
+    for z in states:
+        r = f0 + Hp * float(z) + zeta * H * Hp
+        ORE.Settings.instance().evaluationDate = TODAY
+        discounts = [1.0] + [hw0.discountBond(T_EVAL, t, r) for t in times]
+        ORE.Settings.instance().evaluationDate = EVAL_DATE
+        curve = _ore_curve([EVAL_DATE] + nodes, discounts)
+        curve.enableExtrapolation()
+        values.append([i.NPV() for i, _, _ in _ore_instruments(curve, ORE.HullWhite(curve, HW_A, HW_SIGMA))])
+    elapsed = time.perf_counter() - start
+    ORE.Settings.instance().evaluationDate = TODAY
+    return np.asarray(values), base, elapsed
 
-    fwd_b_t0 = ORE.TARGET().advance(TODAY, ORE.Period(2, ORE.Years))
-    ex_b_t0 = ORE.EuropeanExercise(ORE.TARGET().advance(fwd_b_t0, ORE.Period(2, ORE.Days)))
-    swap_b_t0 = ORE.MakeVanillaSwap(
-        ORE.Period("7Y"), idx0, 0.028, nominal=800_000.0,
-        swapType=ORE.VanillaSwap.Receiver, fixedLegDayCount=dc, floatingLegDayCount=dc,
-        forwardStart=ORE.Period(2, ORE.Years),
-    )
-    swaption_b_t0 = ORE.Swaption(swap_b_t0, ex_b_t0)
-    swaption_b_t0.setPricingEngine(ORE.JamshidianSwaptionEngine(hw0, curve0))
-    vb_t0 = swaption_b_t0.NPV()
 
-    base_npv = swap_npv_t0 + va_t0 + vb_t0
-
-    t_eval = 1.0
-    eval_date = TODAY + int(round(t_eval * 365))  # calendar days -- see module docstring
-    curve_years = [0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-
-    def price_one_scenario(r: float) -> float:
-        dates = [eval_date] + [TODAY + int(round((t_eval + y) * 365)) for y in curve_years]
-        discounts = [1.0] + [hw0.discountBond(t_eval, t_eval + y, r) for y in curve_years]
-        ORE.Settings.instance().evaluationDate = eval_date
-        implied_curve = ORE.YieldTermStructureHandle(ORE.DiscountCurve(dates, discounts, dc))
-        hw_eval = ORE.HullWhite(implied_curve, HW_A, HW_SIGMA)
-        idx = ORE.IborIndex(
-            "SimIndex", ORE.Period(6, ORE.Months), 2,
-            ORE.USDCurrency(), ORE.TARGET(), ORE.ModifiedFollowing, False, dc, implied_curve,
-        )
-
-        # forward_start counts from TODAY; one year has passed at eval_date.
-        swa = ORE.MakeVanillaSwap(
-            ORE.Period("5Y"), idx, 0.03, nominal=1_500_000.0,
-            swapType=ORE.VanillaSwap.Payer, fixedLegDayCount=dc, floatingLegDayCount=dc,
-            forwardStart=ORE.Period(2, ORE.Years),
-        )
-        fwd_a = ORE.TARGET().advance(eval_date, ORE.Period(2, ORE.Years))
-        exa = ORE.EuropeanExercise(ORE.TARGET().advance(fwd_a, ORE.Period(2, ORE.Days)))
-        swpta = ORE.Swaption(swa, exa)
-        swpta.setPricingEngine(ORE.JamshidianSwaptionEngine(hw_eval, implied_curve))
-        va = swpta.NPV()
-
-        swb = ORE.MakeVanillaSwap(
-            ORE.Period("7Y"), idx, 0.028, nominal=800_000.0,
-            swapType=ORE.VanillaSwap.Receiver, fixedLegDayCount=dc, floatingLegDayCount=dc,
-            forwardStart=ORE.Period(1, ORE.Years),
-        )
-        fwd_b = ORE.TARGET().advance(eval_date, ORE.Period(1, ORE.Years))
-        exb = ORE.EuropeanExercise(ORE.TARGET().advance(fwd_b, ORE.Period(2, ORE.Days)))
-        swptb = ORE.Swaption(swb, exb)
-        swptb.setPricingEngine(ORE.JamshidianSwaptionEngine(hw_eval, implied_curve))
-        vb = swptb.NPV()
-
-        return swap_npv_t0 + va + vb
-
-    t_start = time.perf_counter()
-    portfolio_npv = np.array([price_one_scenario(float(r)) for r in r_t])
-    elapsed = time.perf_counter() - t_start
-
-    return portfolio_npv, base_npv, elapsed
+@pytest.fixture(scope="module")
+def comparison():
+    samples = 2048
+    values, base, metrics, states, engine_time = _price_engine(samples)
+    ore_values, ore_base, ore_time = _price_ore(states)
+    return dict(samples=samples, values=values, base=base, metrics=metrics, ore_values=ore_values,
+                ore_base=ore_base, engine_time=engine_time, ore_time=ore_time)
 
 
 class TestEndToEndEngineVsORE:
-    """Same rate paths, same trades, priced by each side; NPV and VaR/ES compared."""
+    """Same paths, same trades, priced by each side; NPV and VaR/ES compared."""
 
-    @classmethod
-    @pytest.fixture(scope="class")
-    def comparison(cls):
-        scenarios = 8192
-        mine_npv, mine_base, mine_metrics, r_t, engine_time = _price_portfolio_engine(scenarios)
-        ore_npv, ore_base, ore_time = _price_portfolio_ore(r_t)
-        return {
-            "scenarios": scenarios,
-            "mine_npv": mine_npv, "mine_base": mine_base, "mine_metrics": mine_metrics,
-            "ore_npv": ore_npv, "ore_base": ore_base,
-            "engine_time": engine_time, "ore_time": ore_time,
-        }
+    def test_t0_values_match_ore(self, comparison):
+        """The swap to machine precision; the swaptions within QuantLib's Brent tolerance on
+        its root (tests/test_jamshidian.py)."""
+        assert comparison["base"][0] == pytest.approx(comparison["ore_base"][0], rel=1e-12)
+        np.testing.assert_allclose(comparison["base"][1:], comparison["ore_base"][1:], rtol=5e-6)
 
-    def test_t0_base_npv_matches_ore(self, comparison):
-        np.testing.assert_allclose(comparison["mine_base"], comparison["ore_base"], rtol=1e-6)
-
-    def test_per_scenario_npv_matches_ore(self, comparison):
-        """Every scenario's NPV matches (pathwise, not just summary statistics)."""
-        diff = comparison["mine_npv"] - comparison["ore_npv"]
-        rel = np.abs(diff) / np.maximum(np.abs(comparison["ore_npv"]), 1.0)
-        assert np.max(rel) < 1e-3
-        assert np.mean(rel) < 1e-4
+    def test_every_paths_value_matches_ore(self, comparison):
+        """Pathwise, per trade, not only in summary statistics."""
+        scale = np.maximum(np.abs(comparison["ore_values"]), 1.0)
+        rel = np.abs(comparison["values"] - comparison["ore_values"]) / scale
+        assert np.max(rel[:, 0]) < 1e-10, "the swap on a path's curve"
+        assert np.max(rel[:, 1:]) < 5e-6, "the swaptions on a path's curve"
 
     def test_var_es_match_ore(self, comparison):
-        ore_pnl = comparison["ore_npv"] - comparison["ore_base"]
-        ore_stats = ORE.RiskStatistics()
-        for v in ore_pnl:
-            ore_stats.add(float(v), 1.0)
-
-        mine = comparison["mine_metrics"]
-        np.testing.assert_allclose(float(mine["VaR_95"][0]), ore_stats.valueAtRisk(0.95), rtol=1e-3)
-        np.testing.assert_allclose(float(mine["VaR_99"][0]), ore_stats.valueAtRisk(0.99), rtol=1e-3)
-        np.testing.assert_allclose(float(mine["ES_95"][0]), ore_stats.expectedShortfall(0.95), rtol=1e-3)
-        np.testing.assert_allclose(float(mine["ES_99"][0]), ore_stats.expectedShortfall(0.99), rtol=1e-3)
+        ore_pnl = comparison["ore_values"].sum(axis=1) - comparison["ore_base"].sum()
+        stats = ORE.RiskStatistics()
+        stats.add(ORE.DoubleVector([float(v) for v in ore_pnl]))
+        mine = comparison["metrics"]
+        for q in (95, 99):
+            assert float(mine[f"VaR_{q}"][0]) == pytest.approx(stats.valueAtRisk(q / 100), rel=1e-5)
+            assert float(mine[f"ES_{q}"][0]) == pytest.approx(stats.expectedShortfall(q / 100), rel=1e-5)
 
     def test_reports_timing(self, comparison):
-        """Prints the timings (no assertion): the engine has a fixed compile/dispatch cost, so
-        ORE's loop can be faster at small scenario counts (see TestEndToEndScaling)."""
-        print(
-            f"\n[timing] {comparison['scenarios']} scenarios: "
-            f"engine={comparison['engine_time']:.3f}s, ORE={comparison['ore_time']:.3f}s, "
-            f"ratio={comparison['ore_time'] / comparison['engine_time']:.2f}x"
-        )
-        assert comparison["engine_time"] > 0.0
-        assert comparison["ore_time"] > 0.0
+        """Prints the timings (no assertion on the ratio): the engine's time includes its
+        compiles and the whole portfolio run, ORE's only the per-path loop."""
+        print(f"\n[timing] {comparison['samples']} paths: engine={comparison['engine_time']:.3f}s, "
+              f"ORE={comparison['ore_time']:.3f}s")
+        assert comparison["engine_time"] > 0.0 and comparison["ore_time"] > 0.0
 
 
+@pytest.mark.slow
 class TestEndToEndScaling:
-    """Timings at several scenario counts, printed: the engine's fixed overhead against its
-    vectorized scaling."""
+    """Accuracy holds at a larger path count; timings printed."""
 
-    @pytest.mark.slow
-    @pytest.mark.parametrize("scenarios", [512, 32768])
-    def test_timing_at_scale(self, scenarios):
-        mine_npv, mine_base, mine_metrics, r_t, engine_time = _price_portfolio_engine(scenarios)
-        ore_npv, ore_base, ore_time = _price_portfolio_ore(r_t)
-
-        rel = np.abs(mine_npv - ore_npv) / np.maximum(np.abs(ore_npv), 1.0)
-        assert np.max(rel) < 1e-3, "Accuracy must hold at every scale tested, not just the default."
-
-        speedup = ore_time / engine_time
-        print(
-            f"\n[timing] {scenarios} scenarios: engine={engine_time:.3f}s, "
-            f"ORE={ore_time:.3f}s, speedup={speedup:.2f}x "
-            f"({'engine faster' if speedup > 1 else 'ORE faster (fixed-overhead regime)'})"
-        )
+    def test_timing_at_scale(self):
+        values, _base, _metrics, states, engine_time = _price_engine(16384)
+        ore_values, _ore_base, ore_time = _price_ore(states)
+        rel = np.abs(values - ore_values) / np.maximum(np.abs(ore_values), 1.0)
+        assert np.max(rel) < 5e-6
+        print(f"\n[timing] 16384 paths: engine={engine_time:.3f}s, ORE={ore_time:.3f}s, "
+              f"speedup={ore_time / engine_time:.2f}x")

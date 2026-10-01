@@ -3,435 +3,194 @@
 Exact inputs and outputs for every public function and configuration dataclass. For the
 *why* behind these shapes, see the per-stage deep dives
 ([Market Simulation](../concepts/market-simulation.md), [Instruments](../instruments/swaps.md),
-[Risk Statistics](../risk/var_es.md)). For runnable examples, see the
-[User Guide](../getting-started/user-guide.md).
+[Greeks](../risk/greeks.md), [Risk Statistics](../risk/var_es.md)). For runnable examples,
+see the [User Guide](../getting-started/user-guide.md).
 
-**Notation:** `[Scenarios, TimeSteps, ...]` describes an array's shape. `Scenarios` is
-however many simulated alternate futures were requested; `TimeSteps` is
-`len(time_grid) - 1` (the simulation's output steps are the points *after* time zero, not
-including time zero itself).
+**Notation:** `[Scenarios, Dates, ...]` describes an array's shape. `Scenarios` is the
+number of simulated paths (`CamConfig.samples`); `Dates` is the number of simulation dates
+(after the as-of date; t=0 is not on the cube's date axis, while an exposure profile starts
+at t=0).
 
 ---
 
-## `engine.simulation.market_model`
+## `engine.market`
 
-### `SimulationConfig`
+Today's market (ORE's `TodaysMarket`), what every trade is valued against.
 
-The top-level input to `generate_paths()`.
-
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `time_grid` | `List[float]` | *required* | Absolute simulation times, ascending, starting at `0.0`. E.g. `[0.0, 0.5, 1.0]` simulates two steps, at 6 months and 1 year. |
-| `equities` | `EquityConfig` | *required* | The equity/FX leg of the model. |
-| `rates` | `RatesConfig` | *required* | The interest rate leg of the model. |
-| `joint_covariance` | `List[List[float]]` | *required* | `[NumEq+NumHW, NumEq+NumHW]` covariance matrix. Row/column order: equities first (in `equities.initial_prices`' order), then rates (in `rates.initial_rates`' order). |
-| `scenarios` | `int` | `10000` | Number of simulated alternate futures. |
-
-### `EquityConfig`
-
-| Field | Type | Meaning |
-|---|---|---|
-| `initial_prices` | `List[float]` | Starting price of each equity/FX pair. Length = `NumEq`. |
-| `dividend_yields` | `List[float]` | Dividend yield (or, for FX, the foreign risk-free rate) per equity/FX pair, same length/order as `initial_prices`. |
-| `rate_mapping` | `List[List[float]]` | `[NumEq, NumHW]`. Row `i` gives the Uncovered-Interest-Rate-Parity drift coefficients for equity/FX `i` against every interest rate factor — see [Market Simulation](../concepts/market-simulation.md#phase-2--the-cross-asset-model-engine). |
-
-### `RatesConfig`
+### `Market`
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `initial_rates` | `List[float]` | *required* | Starting short rate per rate factor. Length = `NumHW` (number of Hull-White factors). |
-| `theta` | `List[float]` | *required* | Long-run mean-reversion target per factor, same length/order as `initial_rates`. |
-| `mean_reversion` | `List[float]` | *required* | Mean-reversion speed (`a`) per factor. |
-| `maturities` | `Optional[List[float]]` | `None` | Absolute future times to reconstruct discount factors for. **If set, triggers `"yield_curves"` in `generate_paths`'s output; if omitted, no yield curve cube is built.** |
-| `initial_zero_curves` | `Optional[List[ZeroCurveConfig]]` | `None` | **Required if `maturities` is set.** One `ZeroCurveConfig` per rate factor, same order as `initial_rates`. Length must exactly match `len(initial_rates)`, or `generate_paths` raises `ValueError`. |
+| `asof` | `ORE.Date` | *required* | The valuation date; every trade's `evaluation_date` must equal it. |
+| `currencies` | `Dict[str, CurrencyMarket]` | *required* | Per currency code. |
+| `fx_spots` | `Dict[str, float]` | `{}` | Keyed `<foreign><domestic>`, e.g. `"EURUSD"`; both currencies must be in the market. |
+| `equities` | `Dict[str, EquityMarket]` | `{}` | Equity spots (the cross-asset model simulates them; no equity trade yet). |
+
+Methods: `currency(code)`, `index_curve(currency, index)`, `swaption_vols(currency)` (each
+raising `KeyError` naming what is missing), `fx_spot(foreign, domestic)`.
+
+### `CurrencyMarket`
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `discount_curve` | `ZeroCurveConfig` | *required* | The currency's discount curve. |
+| `index_curves` | `Dict[str, ZeroCurveConfig]` | `{}` | Forwarding curves keyed by index name (`index_name("USD", 6)` = `"USD-SIMINDEX-6M"`). |
+| `swaption_vols` | `Optional[SwaptionVolSurface]` | `None` | The ATM normal swaption matrix (needed by a Bachelier European and a calibrated Bermudan/American). |
 
 ### `ZeroCurveConfig`
 
-Today's market zero curve for **one** rate factor, used to calibrate that factor's
-Hull-White `A(t,T)` term (see
-[Market Simulation: Phase 3](../concepts/market-simulation.md#phase-3--yield-curve-reconstruction)).
+`times` (ACT/365 year fractions from the as-of date, starting at 0) and `rates` (continuously
+compounded zero rates): linear in the zero rate between pillars, QuantLib's flat forward beyond
+the last. `provenance` is optional metadata.
 
-| Field | Type | Meaning |
-|---|---|---|
-| `times` | `List[float]` | Zero-curve pillar times, e.g. `[0.0, 1.0, 2.0, 5.0, 10.0, 30.0]`. |
-| `rates` | `List[float]` | Zero rate at each pillar, same length/order as `times`. |
-| `provenance` | `Optional[CurveProvenance]` = `None` | **Metadata only — never read by the simulation math.** Where these numbers came from (`curveId`, `inputOrigin` ∈ `observed\|assumed\|mixed\|synthetic`, `construction`, `inputHashes`). Added by W0.6 so assumed and observed curves are distinguishable *inside* the engine, not only at its edges; see [EOD Integration: W0.6](eod-integration.md#w06--market-input-selection--closes-part-of-i-11). `None` means **unstated**, which is deliberately not the same as `observed`. |
+### `SwaptionVolSurface`
 
-### `generate_paths(config: SimulationConfig, precision: int = 64) -> Dict[str, jax.Array]`
+`option_tenors`, `swap_tenors` (ORE period strings) and `vols[i][j]` (normal volatilities),
+bilinear between nodes as QuantLib's `SwaptionVolatilityMatrix`. `volatility(reference,
+option_time, swap_length)` reads it; `weights(reference, option_time, swap_length)` is the
+`[option tenors, swap tenors]` weight of each quote in that read (the AD Vega's chain rule).
 
-Runs the full Sobol → Brownian bridge → cross-asset Monte Carlo → yield curve
-reconstruction pipeline (see [Market Simulation](../concepts/market-simulation.md) for what each
-stage does).
+### `EquityMarket`
 
-**Parameters**
-- `config` — a `SimulationConfig`.
-- `precision` — `64` (default, float64) or `32` (float32). See
-  [Architecture: Adjustable precision](../concepts/architecture.md#adjustable-precision).
-
-**Returns** a `dict`:
-
-| Key | Shape | Always present? |
-|---|---|---|
-| `"equities"` | `[Scenarios, TimeSteps, NumEq]` | Yes |
-| `"rates"` | `[Scenarios, TimeSteps, NumHW]` | Yes |
-| `"numeraire"` | `[Scenarios, TimeSteps]` | Yes |
-| `"yield_curves"` | `[Scenarios, TimeSteps, Maturities, NumHW]` | Only if `config.rates.maturities` is set |
-
-**Raises** `ValueError` if `len(config.rates.initial_zero_curves) != len(config.rates.initial_rates)` (when `maturities` is set).
-
-### Lower-level functions
-
-These are used internally by `generate_paths` but are independently documented and
-tested — see [Market Simulation](../concepts/market-simulation.md) for what each one does
-mathematically.
-
-| Function | Signature | Notes |
-|---|---|---|
-| `generate_sobol_normals` | `(num_scenarios: int, num_steps: int, num_assets: int, dtype) -> jax.Array` | Returns `[TimeSteps, Scenarios, Assets]`. Honors `dtype` unconditionally on output. |
-| `apply_brownian_bridge` | `(Z: jax.Array, time_grid: jax.Array) -> jax.Array` | Returns standardized sequential shocks, same shape as `Z`. |
-| `compute_hw_A_matrix` | `(zero_curves: List[ZeroCurveConfig], hw_a, hw_sigma, step_times, maturities, B_matrix) -> np.ndarray` | Plain NumPy (CPU-only). Returns `[TimeSteps, Maturities, NumRates]`. |
-| `reconstruct_yield_curves` | `(hw_paths: jax.Array, A: jax.Array, B: jax.Array) -> jax.Array` | `@jax.jit`-compiled. Returns `[Scenarios, TimeSteps, Maturities, NumRates]`. |
-
-### `validate_joint_covariance(matrix: List[List[float]] | np.ndarray) -> None`
-
-Called at the very top of `generate_paths`, before any JAX computation. Confirms `matrix`
-is square, symmetric (within float tolerance), and positive semi-definite (via
-`np.linalg.eigvalsh`). **Raises** `ValueError` naming the offending eigenvalue(s)/index, or
-the symmetry mismatch, rather than letting an invalid matrix silently NaN every simulated
-path through `jnp.linalg.cholesky` — see
-[docs/planning/traderx-integration.md](../planning/details/traderx-integration.md).
-
-### `nearest_psd(matrix, epsilon: float = 1e-10) -> np.ndarray`
-
-Opt-in "best effort" repair for a `joint_covariance` that fails `validate_joint_covariance`
-— standard eigenvalue-clipping projection onto the nearest PSD matrix, clipping every
-eigenvalue below `epsilon` up to `epsilon` (not literally `0.0` — see the function's own
-docstring for why an exact-zero clip produces a numerically rank-deficient matrix that
-would still NaN downstream). **Never called automatically** by `generate_paths` or
-`engine.portfolio` — a genuinely invalid correlation input is always rejected, never
-silently altered and priced anyway; a caller who wants "close enough" behavior calls this
-explicitly.
+`currency`, `spot`, optional `dividend_curve`.
 
 ---
 
-## `engine.instruments.swap`
+## `engine.simulation.config`
 
-### `SwapConfig`
+The simulation: ORE's `simulation.xml`. See [Market Simulation](../concepts/market-simulation.md).
 
-Describes one vanilla fixed-vs-floating interest rate swap.
+### `CamConfig`
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `notional` | `float` | *required* | Notional amount the interest payments are calculated on. |
-| `fixed_rate` | `float` | *required* | The agreed fixed interest rate. |
-| `payer` | `bool` | *required* | `True` = this side pays fixed, receives floating. `False` = the reverse. |
-| `discount_curve_index` | `int` | *required* | Which rate factor (index into the simulation's `NumRates` axis) discounts this swap's cashflows. |
-| `forward_curve_index` | `int` | *required* | Which rate factor sets the floating leg's forward rates. Equal to `discount_curve_index` for single-curve discounting. |
-| `effective_date` | `ORE.Date` | — | Start of the booked schedule (ORE `ScheduleData` `StartDate`). |
-| `maturity_date` | `ORE.Date` | — | Unadjusted end of the booked schedule (`EndDate`); the schedule adjusts it. |
-| `swap_tenor` | `str` | — | **Booking convenience, not stored.** An ORE `Period` string (`"5Y"`, `"18M"`) resolved once, at construction, to the dates of a spot-starting swap traded on `evaluation_date` — `MakeVanillaSwap`'s own rule (`ore_builders.resolve_swap_dates`). Give it **or** both dates. |
-| `index_tenor_months` | `int` | `6` | Floating leg reset frequency in months (`6` = semi-annual). |
-| `floating_spread` | `float` | `0.0` | Fixed spread added to every floating payment. |
-| `evaluation_date` | `ORE.Date` | today's global ORE evaluation date | The date the swap is priced on. It does not move the schedule. |
-| `accrual_day_count` | `str` | `"ACT/365"` | The day count the coupons accrue on (an allowlisted name). |
-| `fixings` | `Dict[ORE.Date, float]` | `{}` | Historical fixings of the floating index. Needed only for a coupon that fixed before `evaluation_date` and has not yet paid. |
+| `dates` | `Tuple[ORE.Date, ...]` | *required* | Simulation dates, after the market's as-of date, increasing. |
+| `base_currency` | `str` | *required* | The domestic currency of the model and the reporting currency. |
+| `ir` | `Dict[str, LgmConfig \| HullWhiteConfig]` | *required* | The model of each simulated currency. |
+| `fx_volatilities` | `Dict[str, float]` | `{}` | Black-Scholes FX volatility per foreign currency. |
+| `equity_volatilities` | `Dict[str, float]` | `{}` | Per equity. |
+| `correlations` | `Dict[Tuple[str, str], float]` | `{}` | Between factors named `IR:USD`, `FX:EURUSD`, `EQ:SP5`. |
+| `curve_tenors` | `Tuple[str, ...]` | ORE's 13, `3M` … `30Y` | The scenario market's curve tenors. |
+| `samples` | `int` | `1000` | Paths (a power of two keeps Sobol balanced). |
+| `seed` | `int` | `42` | Sobol scrambling seed. |
+| `swaption_vol_decay` | `str` | `"ForwardVariance"` | How the swaption volatilities are seen from a path date (`"ConstantVariance"` too). |
 
-**The dates are the trade (audit M-4).** `dataclasses.replace(cfg, evaluation_date=d)` is
-the same swap on another date: the schedule is unchanged, cashflows paid on or before `d`
-drop out (ORE's `hasOccurred`), and a coupon that fixed before `d` pays its historical
-fixing. A coupon fixing *on* `d` uses a supplied fixing if there is one, else the forecast
-— ORE's `InterestRateIndex::fixing`. One that fixed earlier with no fixing supplied raises
-`MissingFixingError` when priced, as ORE refuses it.
+### `LgmConfig` / `HullWhiteConfig`
 
-**Validated at construction (`__post_init__`)**: `notional`/`fixed_rate` must be finite
-(zero and negative values are explicitly supported — only `NaN`/`Inf` are rejected); the
-schedule must be given exactly once — `swap_tenor` (a valid `ORE.Period`) or both dates
-(`ORE.Date`s, effective before maturity), never both and never neither; `fixings` must be
-keyed by `ORE.Date` with finite values. Raises `ValueError`/`TypeError` naming the bad field.
-This is deliberately scoped to reject malformed input, not impose business-rule limits
-(e.g. no "no rate above 20%" check) — see
-[docs/planning/traderx-integration.md](../planning/details/traderx-integration.md).
+One currency's `<LGM>`: `reversion` (*required*), `volatility` (`0.01`), `calibration_expiries`
+and `calibration_terms` (tenor tuples of equal length; non-empty means bootstrap the
+volatility to that co-terminal basket of the market's swaption volatilities), `swap_index`
+(`SwapIndexConventions`: the helpers' fixed tenor, fixed day counter and index tenor).
+`HullWhiteConfig` is the same with ORE's Hull-White volatility parametrization: `volatility`
+is the short rate's.
 
-### `price_swaps(yield_curves: jax.Array, maturities: np.ndarray, swap_configs: List[SwapConfig]) -> jax.Array`
+### `simulate(market, config, model=None, dtype=jnp.float64) -> ScenarioMarket`
 
-**Parameters**
-- `yield_curves` — `[Scenarios, TimeSteps, Maturities, NumRates]`, typically
-  `generate_paths(...)["yield_curves"]`.
-- `maturities` — the same absolute-time pillar array passed as
-  `config.rates.maturities` to `generate_paths`. **Every swap's payment/accrual dates
-  must land exactly on one of these pillars** — see
-  [Instruments: maturity-pillar alignment](../instruments/swaps.md#a-known-limitation-maturity-pillar-alignment).
-- `swap_configs` — a list of one or more `SwapConfig` objects.
+The scenario market: `numeraire [S, D]`, `discount[ccy]`/`index[name]` (`ScenarioCurves`:
+`log_discounts [S, D, K+1]` at `tenor_times [D, K+1]`), `fx[ccy]`, `equity[name]`,
+`states [S, D, factors]`, `dates`, `times`. `model` defaults to
+`build_cross_asset_model(market, config)` (which calibrates).
 
-**Returns** `[Scenarios, TimeSteps, Trades]` — one NPV value per scenario, per time step,
-per swap in `swap_configs` (in the order given).
+### `build_cross_asset_model(market, config, sigmas=None) -> CrossAssetModel`
 
-**Raises** `ValueError` if any swap's payment/accrual dates don't land exactly on a
-`maturities` pillar.
-
-### Lower-level functions
-
-| Function | Signature | Notes |
-|---|---|---|
-| `prepare_swap` | `(cfg: SwapConfig, maturities: np.ndarray) -> _PreparedSwap` | CPU-only, per-trade one-time setup. Builds the real ORE trade and resolves cashflow dates onto maturity-pillar indices. |
+The cross-asset model, each currency with a basket bootstrapped first
+(`engine.calibration.cam.calibrate_cam`).
 
 ---
 
-## `engine.instruments.european_swaption`
+## Trade configs (`engine.instruments`)
 
-### `SwaptionConfig`
+What ORE's trade XML holds. Every config has two **required keyword fields**: `trade_id`
+(ORE's `<Trade id>`, a non-empty string, unique in a portfolio and echoed on every result)
+and `evaluation_date` (an `ORE.Date`; on a `Market` it must be the market's as-of date).
+None carries a curve or a model: `currency` (default `"USD"`) and `index_tenor_months`
+(default `6`) name the curves in the `Market`, and the engines' models come from the run
+configuration. A model or curve field is a `TypeError`.
 
-Describes one European swaption (the option to enter a vanilla fixed-vs-floating swap at
-a future exercise date). See [Instruments: European Swaptions](../instruments/european-swaptions.md) for the
-Jamshidian's-trick pricing model.
+**The dates are the trade (audit M-4).** A schedule is given **either** as
+`effective_date`/`maturity_date` **or** as `swap_tenor` (an ORE period string, booking
+convenience, resolved once to spot-starting dates on `evaluation_date`), never both and
+never neither. `dataclasses.replace(cfg, evaluation_date=d)` is the same trade on another
+date: paid flows drop out, a coupon fixed before `d` pays its historical fixing from
+`fixings` (`{ORE.Date: rate}`; missing is `MissingFixingError`, as ORE refuses it).
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `notional` | `float` | *required* | Notional amount of the underlying swap. |
-| `fixed_rate` | `float` | *required* | The underlying swap's agreed fixed rate. |
-| `payer` | `bool` | *required* | `True` = the option to enter a swap paying fixed, receiving floating. `False` = the reverse. |
-| `rate_factor_index` | `int` | *required* | Which simulation Hull-White factor prices BOTH the underlying swap and the option (Jamshidian's trick is single-model — see [Instruments: European Swaptions](../instruments/european-swaptions.md#1-describing-a-swaption-swaptionconfig)). |
-| `hw_a` | `float` | *required* | That rate factor's own Hull-White mean-reversion speed — must match `RatesConfig.mean_reversion[rate_factor_index]` in the simulation this swaption is priced against. |
-| `hw_sigma` | `float` | *required* | That rate factor's own Hull-White volatility — must match the per-step volatility implied by the simulation's `joint_covariance` for this factor. |
-| `initial_zero_curve` | `ZeroCurveConfig` | *required* | That rate factor's own today's-market zero curve — must match `RatesConfig.initial_zero_curves[rate_factor_index]`. |
-| `exercise_date` | `ORE.Date` | — | The booked expiry. |
-| `effective_date` / `maturity_date` | `ORE.Date` | — | The underlying swap's booked schedule, as on `SwapConfig`. |
-| `swap_tenor` | `str` | — | Booking convenience, not stored: the underlying's length. Resolves all three dates on `evaluation_date`, with `forward_start`/`exercise_lag_days`. Give it **or** the three dates. |
-| `forward_start` | `ORE.Period` | none | With `swap_tenor` only: how far the underlying's accrual is delayed beyond the standard 2-day spot lag — e.g. `ORE.Period(5, ORE.Years)` for a swaption exercisable in ~5Y. |
-| `exercise_lag_days` | `int` | `2` | With `swap_tenor` only: business days from `evaluation_date + forward_start` to the exercise date. |
-| `index_tenor_months` | `int` | `6` | Floating leg reset frequency in months (`6` = semi-annual). |
-| `floating_spread` | `float` | `0.0` | Fixed spread added to every floating payment. |
-| `evaluation_date` | `ORE.Date` | today's global ORE evaluation date | The date the swaption is priced on. |
+### `SwapConfig` (`engine.instruments.swap`)
 
-On a later evaluation date the same config is the same option, nearer expiry. On or after
-`exercise_date` it has expired (`is_expired()`, ORE's `Instrument::isExpired`) and is worth
-exactly 0, with zero sensitivities.
+`notional`, `fixed_rate`, `payer` (pays fixed), the schedule, `index_tenor_months`,
+`floating_spread` (`0.0`), `accrual_day_count` (`"ACT/365"`, an allowlisted name), `fixings`,
+`currency`, `trade_id`, `evaluation_date`.
 
-**Validated at construction (`__post_init__`)**: same `notional`/`fixed_rate`/schedule
-checks as `SwapConfig`; `exercise_date` must be an `ORE.Date` before `maturity_date`;
-`forward_start`/`exercise_lag_days` are refused without `swap_tenor`; `hw_sigma` must be
-finite.
+### `SwaptionConfig` (`engine.instruments.european_swaption`)
 
-### `price_swaptions(hw_paths: jax.Array, step_times: jax.Array, swaption_configs: List[SwaptionConfig]) -> jax.Array`
+The underlying swap's terms as `SwapConfig` (no `accrual_day_count`), plus the exercise:
+`exercise_date`, or with `swap_tenor` the booking conveniences `forward_start` (an
+`ORE.Period` beyond the spot lag) and `exercise_lag_days` (`2`); and `settlement`
+(`"Physical"` \| `"Cash"`). On or after `exercise_date` it has expired (`is_expired()`) and
+is worth 0.
 
-**Parameters**
-- `hw_paths` — `[Scenarios, TimeSteps, NumHW]`, typically
-  `generate_paths(...)["rates"]`. Unlike `price_swaps`, this pricer needs the raw
-  simulated short-rate paths directly (not the yield-curve cube), since Jamshidian's
-  trick needs the model's own conditional bond-price formula, not just pre-tabulated
-  discount factors.
-- `step_times` — `[TimeSteps]` absolute simulation times (year-fractions from
-  `evaluation_date`) — the same values as `config.time_grid[1:]`.
-- `swaption_configs` — a list of one or more `SwaptionConfig` objects.
+### `BermudanSwaptionConfig` (`engine.instruments.bermudan_swaption`)
 
-**Returns** `[Scenarios, TimeSteps, Trades]` — one NPV value per scenario, per time step,
-per swaption in `swaption_configs` (in the order given). NPV is exactly `0` for any
-`(scenario, step)` at or after that swaption's own exercise date (see
-[Instruments: European Swaptions](../instruments/european-swaptions.md#6-conditional-future-time-pricing)).
+The underlying swap's terms, `exercise_dates` (ascending `ORE.Date`s; a year fraction is a
+`TypeError`; dates on or before `evaluation_date` are not exercise opportunities), `fixings`,
+`settlement`. `exercisable_dates(cfg)` lists the underlying's accrual starts.
 
-### Lower-level functions
+### `AmericanSwaptionConfig` (`engine.instruments.american_swaption`)
 
-| Function | Signature | Notes |
-|---|---|---|
-| `prepare_swaption` | `(cfg: SwaptionConfig) -> _PreparedSwaption` | CPU-only, per-trade one-time setup. Builds the real ORE underlying swap and extracts its cashflow times/amounts, exercise time, and accrual start time. |
+As the Bermudan, with `first_exercise_date`/`last_exercise_date` instead of `exercise_dates`.
+`option_times(exercise_time_steps_per_year)` is ORE's uniform option-time grid over the
+window (the step count from the engine's `LgmSwaptionEngineConfig`, `>= 1`).
 
----
+### The grid engine (`engine.instruments.bermudan_swaption`)
 
-## `engine.instruments.bermudan_swaption`
-
-Prices a swaption with a discrete list of exercise dates via a numeric LGM
-backward-induction engine (Hagan's Gaussian-quadrature convolution) — see
-[Instruments: American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md) for the full
-algorithm.
-
-### `BermudanSwaptionConfig`
-
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `notional` | `float` | *required* | Notional amount of the underlying swap. |
-| `fixed_rate` | `float` | *required* | The underlying swap's agreed fixed rate. |
-| `payer` | `bool` | *required* | `True` = the option to enter a swap paying fixed, receiving floating. `False` = the reverse. |
-| `rate_factor_index` | `int` | *required* | Which simulation Hull-White factor prices the underlying swap and the option. |
-| `hw_a` | `float` | *required* | That rate factor's mean-reversion speed — must match the simulation this swaption is priced against. |
-| `hw_sigma` | `float` | *required* | That rate factor's volatility — must match the simulation's `joint_covariance` for this factor. |
-| `initial_zero_curve` | `ZeroCurveConfig` | *required* | That rate factor's today's-market zero curve. |
-| `exercise_dates` | `Sequence[ORE.Date]` | *required* | Ascending dates on which the holder may exercise into the (then-remaining) swap. Dates on or before `evaluation_date` are not exercise opportunities. A date inside an accrual period exercises into the next whole period, as in ORE (see [american-bermudan-swaptions.md](../instruments/american-bermudan-swaptions.md#which-coupons-an-exercise-enters)); `exercisable_dates(cfg)` lists the underlying's accrual starts. |
-| `effective_date` / `maturity_date` / `swap_tenor` | | — | The underlying swap's booked schedule, exactly as on `SwapConfig`. |
-| `index_tenor_months` | `int` | `6` | Floating leg reset frequency in months. |
-| `floating_spread` | `float` | `0.0` | Fixed spread added to every floating payment. |
-| `n_per_std` | `int` | `48` | State-grid resolution: points per standard deviation of the model's conditional distribution. |
-| `std_devs` | `float` | `6.0` | How many standard deviations the state grid spans. |
-| `evaluation_date` | `ORE.Date` | today's global ORE evaluation date | The date the swaption is priced on. |
-| `fixings` | `Dict[ORE.Date, float]` | `{}` | Historical index fixings, as on `SwapConfig`. Needed only for a coupon that fixed before `evaluation_date` and can still be exercised into. |
-
-On a later evaluation date the trade is priced as ORE prices it: exercise dates on or
-before it are gone, a coupon that can no longer enter any exercise is never valued, and
-once the last exercise date has passed the option is worth exactly 0 (`is_expired()`).
-
-**Validated at construction (`__post_init__`)**: same `notional`/`fixed_rate`/schedule/
-`fixings` checks as `SwapConfig`; `hw_sigma` (a plain `float` or a piecewise `Sigma` — every bucket
-value is checked) must be finite, **or exactly `None`** (a valid sentinel meaning
-"uncalibrated" — see [The Portfolio Entry Point: Automatic calibration](portfolio-entrypoint.md#automatic-calibration));
-`exercise_dates` must be non-empty, sorted ascending, and `ORE.Date` objects (a year
-fraction is refused with `TypeError`).
-
-### `price_bermudan_swaption_base(cfg: BermudanSwaptionConfig) -> float`
-
-The t=0 NPV of a single Bermudan swaption (no simulated conditioning) — read off the
-backward induction's own `x=0` node.
-
-### `price_bermudan_swaptions(bermudan_configs: List[BermudanSwaptionConfig], hw_paths: jax.Array, step_times: jax.Array) -> jax.Array`
-
-**Parameters**
-- `bermudan_configs` — a list of one or more `BermudanSwaptionConfig` objects.
-- `hw_paths` — `[Scenarios, TimeSteps, NumHW]`, typically `generate_paths(...)["rates"]`.
-- `step_times` — `[TimeSteps]` absolute simulation times, same values as
-  `config.time_grid[1:]`.
-
-**Returns** `[Scenarios, TimeSteps, Trades]` — one NPV value per scenario, per time step,
-per trade in `bermudan_configs` (in the order given). NPV is exactly `0` at or after each
-trade's own last exercise date.
-
-### Lower-level functions
-
-| Function | Signature | Notes |
-|---|---|---|
-| `prepare_bermudan` | `(cfg: BermudanSwaptionConfig \| AmericanSwaptionConfig) -> _PreparedBermudan` | CPU-only, per-trade one-time setup. Resolves ORE's option times and, per coupon, ORE's `CashflowInfo` (pay/accrual times, belongs-until time by exercise style, the floating coupon's index fixing period). |
-| `exercisable_dates` | `(cfg) -> List[ORE.Date]` | The underlying's own fixed accrual start dates -- the exercise dates of a standard coterminal Bermudan. |
-| `_lgm_bond` | `(zero_times, zero_rates, a, sigma, t, T, x) -> np.ndarray` | Plain NumPy (CPU-only). LGM's own closed-form `P(t,T,x)`, live-verified against `ORE.LinearGaussMarkovModel.discountBond` — deliberately NOT `hull_white.A`/`_hw_B` (a different model realization for `t>0`, see [american-bermudan-swaptions.md](../instruments/american-bermudan-swaptions.md#3-the-model-lgm-not-plain-hull-white--and-why-that-distinction-matters-here)). |
-
----
-
-## `engine.instruments.american_swaption`
-
-American exercise, priced by the same backward induction as a Bermudan. It differs in
-exactly the two places ORE's engine does: ORE's uniform option-time grid over the window
-(truncating step count), and broken-period exercise, where each coupon belongs until its
-accrual end and is credited `couponRatio(t)`. See
-[Instruments: American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md#american-exercise-ores-grid-and-ores-broken-periods).
-
-### `AmericanSwaptionConfig`
-
-Same fields as `BermudanSwaptionConfig` above, except `exercise_dates` is replaced by:
-
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `first_exercise_date` | `ORE.Date` | *required* | First day of the exercise window. As in ORE's `ExerciseBuilder`, the window never includes the evaluation date: one already open starts the next day. |
-| `last_exercise_date` | `ORE.Date` | *required* | Last day of the exercise window. |
-| `exercise_time_steps_per_year` | `int` | `24` | ORE's own `ExerciseTimeStepsPerYear` model parameter — how finely the window is discretized. |
-
-**Validated at construction (`__post_init__`)**: same `notional`/`fixed_rate`/schedule/
-`fixings`/`hw_sigma`(-or-`None`) checks as `BermudanSwaptionConfig`, plus `first_exercise_date <=
-last_exercise_date` (equal dates — a zero-width window — are valid) and
-`exercise_time_steps_per_year >= 1`.
-
-### `AmericanSwaptionConfig.option_times() -> List[float]`
-
-ORE's own American option times: `t1 = max(0, t(max(first, evaluation_date + 1)))`, `t2 = max(t1, t(last))`,
-`steps = max(1, floor((t2 - t1) * exercise_time_steps_per_year))` (ORE truncates), and the
-times `t1 + i * (t2 - t1) / steps` for `i = 0..steps`.
-
-### `price_american_swaptions(american_configs: List[AmericanSwaptionConfig], hw_paths: jax.Array, step_times: jax.Array) -> jax.Array`
-
-Same parameter/return shape as `price_bermudan_swaptions` above, which it calls directly:
-that function prices either config type.
-
----
-
-## `engine.instruments.treasury`
-
-W1.5. Treasury bills and notes, priced by **closed-form discounted cashflows against a single
-deterministic curve**. The odd one out in this package in two ways: it is the only pricer that
-is **not JAX** (plain `math.exp` over ORE day-count arithmetic), and the only one that produces
-**no NPV cube** — so no VaR/ES. See
-[The Portfolio Entry Point: Bonds](portfolio-entrypoint.md#bonds) and
-[I-24](../planning/known-issues.md#i-24).
-
-### `CouponPeriod`
-
-One explicit coupon period. **Supplied, never generated** — a schedule derived by stepping
-back from maturity that disagreed with the booked one would silently reprice every coupon.
-
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `start_date` | `ORE.Date` | *required* | Accrual period start. |
-| `end_date` | `ORE.Date` | *required* | Accrual period end. |
-| `payment_date` | `Optional[ORE.Date]` | `None` | Payment date; falls back to `end_date`. Read via the `.payment()` method. |
-
-### `BondConfig`
-
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `face_amount` | `float` | *required* | **Signed** — a short position is a negative face and yields a negative NPV directly. There is no separate sign factor, and applying one on top would flip a short position positive. |
-| `maturity_date` | `ORE.Date` | *required* | Must be strictly after `evaluation_date`, else `BondPricingError` — a matured bond is a settlement question, not a pricing one. |
-| `evaluation_date` | `ORE.Date` | *required* | Valuation date. |
-| `initial_zero_curve` | `ZeroCurveConfig` | *required* | **This bond's own curve**, not an index into `SimulationConfig.rates.initial_zero_curves` — the same shape the swaption family uses, and the reason a bond cannot reproduce [I-01](../planning/known-issues.md#i-01). |
-| `coupon_rate` | `float` | `0.0` | Annual coupon as a **decimal** (`0.04` == 4%), not a percent. |
-| `coupon_schedule` | `Tuple[CouponPeriod, ...]` | `()` | Empty ⇒ this is a **bill** (the degenerate zero-coupon case, not a separate type). |
-| `redemption_fraction` | `float` | `1.0` | Redemption as a fraction of face. Must be non-negative. |
-| `accrual_day_count` | `str` | `"ACT/ACT (ICMA)"` | The instrument's own **accrual** day count (W1.1), resolved at construction and **refused if unsupported** — never defaulted. Ignored when there are no coupons. |
-
-**Properties:** `is_bill` (no coupon schedule), `notional` (alias for `face_amount`, so the
-shared `trade[i] (Type, notional=…)` labelling helpers work without a special case).
-
-**Construction refuses four contradictions**, each naming the reason: a maturity at or before
-the evaluation date; a negative `redemption_fraction`; a non-empty schedule with
-`coupon_rate=0.0`; and a non-zero `coupon_rate` with no schedule. The day count is resolved
-**eagerly**, so an unsupported convention fails at construction naming the trade rather than
-mid-pricing.
-
-### Discounting convention
-
-**Continuously compounded over an ACT/365 Fixed year fraction**, matching
-`engine.integration.bill`/`note` exactly. The curve's zero rate is **linearly interpolated
-between pillars and held flat beyond both ends** — flat extrapolation is stated rather than
-assumed, because extrapolating a slope past the last pillar produces a confident number from
-no data, and for a long bond that error compounds through every discount factor.
-
-### `price_bond_base(cfg: BondConfig, rate_shift: float = 0.0) -> float`
-
-t=0 **dirty** (full) NPV — every remaining cashflow discounted. Dirty rather than clean
-deliberately, matching `engine.integration.note.NotePrice.npv`: a "bond NPV" that silently
-meant the clean value would be off by the accrued interest (~$1,857 on a $100k note), which
-is large enough to matter and small enough to look like a curve difference. A coupon already
-paid on or before the evaluation date is excluded, not discounted from the past.
-`rate_shift` parallel-shifts the curve.
-
-### `accrued_interest(cfg: BondConfig) -> float`
-
-Accrued interest in currency, recomputed from the coupon schedule and position-signed via
-`face_amount`. Returns `0.0` for a bill and `0.0` before the first period starts — both
-structural facts, not missing values. This is the **`recomputed-schedule` path only**; the
-integration boundary additionally reconciles against the exporter's published fraction and
-reports that one (see [EOD Integration](eod-integration.md)).
-
-### `clean_npv_of(cfg: BondConfig) -> float`
-
-`price_bond_base(cfg) - accrued_interest(cfg)`. Carried because a quoted bond price is
-conventionally clean, so a consumer reconciling against a market quote compares like with
-like.
-
-### `rate_sensitivity(cfg: BondConfig, bump: float = RATE_BUMP) -> float`
-
-Change in dirty NPV for a `bump` (default `RATE_BUMP = 1e-4`, i.e. 1bp) parallel curve shift.
-A **bumped revaluation through the same code path**, not a differentiated formula — a
-sensitivity derived from an expression that has drifted from the pricer measures the
-expression, not the price. Parallel-only ([I-16](../planning/known-issues.md#i-16)).
-
-### `price_bond_scenarios(*args, **kwargs)`
-
-**Always raises `ScenarioPricingNotSupported`.** It exists so the refusal has a name and a
-docstring where a contributor would look for the missing capability, rather than being an
-absence someone fills in with a broadcast. Filling it in naively produces a zero-variance
-column measuring out to **VaR `0.00` and ES `NaN`** — a position reported as risk-measured
-when its risk was never modelled ([I-24](../planning/known-issues.md#i-24)).
-
-### Exceptions
-
-| Exception | Raised when |
+| Function | Notes |
 |---|---|
-| `BondPricingError` | A bond could not be priced, or a `BondConfig` is self-contradictory. Distinct from `ValueError` so a caller can tell a *pricing* refusal from a malformed request. |
-| `ScenarioPricingNotSupported` | A `BondConfig` reached the scenario/`npv_cube` path. Subclass of `BondPricingError`. |
+| `prepare_bermudan(cfg, *, reversion, sigma, n_per_std, std_devs, exercise_time_steps_per_year, curve=None, index_curve=None)` | The trade's prepared structure for the engine, with an explicit LGM (`sigma`: float or `Sigma`). |
+| `grid_value(prepared) -> jax.Array` | ORE's `NumericLgmMultiLegOptionEngine` value on the prepared curves. |
+
+### `BondConfig`, `CouponPeriod` (`engine.instruments.treasury`)
+
+A Treasury bill or note, discounted on its currency's curve (ORE's `DiscountingRiskyBondEngine`
+without credit; `engine.valuation.portfolio.bond_legs`), today and on every path.
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `face_amount` | `float` | *required* | **Signed** — a short position is a negative face. |
+| `maturity_date` | `ORE.Date` | *required* | Strictly after `evaluation_date`, else `BondPricingError`. |
+| `coupon_rate` | `float` | `0.0` | Annual coupon as a decimal. |
+| `coupon_schedule` | `Tuple[CouponPeriod, ...]` | `()` | Empty ⇒ a **bill**. `CouponPeriod(start_date, end_date, payment_date=None)`, supplied, never generated. |
+| `redemption_fraction` | `float` | `1.0` | Non-negative. |
+| `accrual_day_count` | `str` | `"ACT/ACT (ICMA)"` | Resolved at construction and refused if unsupported. |
+| `currency`, `trade_id`, `evaluation_date` | | | As above. |
+
+`is_bill`; `accrued_interest(cfg)` (recomputed from the schedule, position-signed).
+Construction refuses a maturity at or before the evaluation date, a negative redemption, a
+schedule with a zero coupon and a coupon without a schedule (`BondPricingError`).
+
+---
+
+## `engine.valuation`
+
+ORE's `ValuationEngine`: every trade with its configured engine, today and on every path.
+See [Instruments](../instruments/swaps.md).
+
+### `PricingConfig` (`engine.valuation.config`)
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `european` | `str` | `"Bachelier"` | `"Bachelier"` (ORE's default, on the market volatility) or `"Jamshidian"`. |
+| `jamshidian` | `Optional[JamshidianEngineConfig]` | `None` | The Jamshidian engine's Hull-White model, `(reversion, volatility)`, both finite and > 0. Required with `european="Jamshidian"`, refused without. |
+| `bermudan`, `american` | `LgmSwaptionEngineConfig` | ORE's builder defaults | `reversion` (`0.0`), `volatility` (`0.01`, the start or the fixed model), `calibration` (`"Bootstrap"` \| `"None"`), `strategy` (`"CoterminalDealStrike"`), `reference_calibration_grid` (`"400,3M"`), `shift_horizon` (`0.0`, the only value implemented, I-32), `n_per_std` (`30`), `std_devs` (`5.0`), `exercise_time_steps_per_year` (`24`), `swap_index`. |
+| `recalibrate` | `bool` | `True` | Recalibrate each Bermudan/American on every path date, as ORE's `ValuationEngine`. |
+
+### `engine.valuation.portfolio`
+
+| Function | Returns |
+|---|---|
+| `value_today(trades, market, base_currency, pricing=PricingConfig()) -> List[float]` | Today's values in the base currency. |
+| `value_portfolio(trades, market, scenarios, base_currency, pricing=PricingConfig(), decay="ForwardVariance") -> PortfolioValuation` | `today [T]` and `cube [S, D, T]` in the base currency. |
+| `value_on(cfg, context, pricing) -> float` | One trade on a `PricingContext` (a date's curves, volatilities, fixings). |
+| `validate_trades(trades, market, pricing=PricingConfig())` | Refuses, naming the trade, a trade off the market's date, a curve or volatility the market lacks, or an engine's refusal. |
+| `reads_swaption_vols(cfg, pricing) -> bool` | Whether the trade's engine reads the market's swaption volatilities. |
 
 ---
 
@@ -499,282 +258,20 @@ the other is expected is a category error no numerical accuracy fixes.
 
 ---
 
-## `engine.risk.greeks`
-
-Delta, Gamma, and Theta for `engine.instruments.swap` and
-`engine.instruments.european_swaption` only — see [Delta, Gamma, and Theta](../risk/greeks.md)
-for the full explanation, including why Bermudan/American swaptions and Vega are out of
-scope.
-
-### `ZeroCurve`
-
-A zero curve as JAX arrays (unlike `engine.simulation.market_model.ZeroCurveConfig`, whose `rates` is
-a plain Python list) — the differentiable input every Greek in this module is computed
-with respect to.
-
-| Field | Type | Meaning |
-|---|---|---|
-| `pillar_times` | `jax.Array` | Zero-curve pillar times. Not differentiated (ORE never bumps a pillar's own time, only its rate). |
-| `pillar_rates` | `jax.Array` | Zero rate at each pillar — what Delta/Gamma differentiate with respect to. |
-
-`ZeroCurve.flat(rate: float, pillar_times: List[float]) -> ZeroCurve` — a convenience
-constructor for a flat curve (the same rate at every pillar).
-
-### `swap_delta_gamma(cfg: SwapConfig, disc_curve: ZeroCurve, fwd_curve: ZeroCurve, bump_size: float = DEFAULT_RATE_BUMP) -> Dict[str, jax.Array]`
-
-**Parameters**
-- `cfg` — a `SwapConfig` (see `engine.instruments.swap` above). Its own
-  `discount_curve_index`/`forward_curve_index` are ignored — internally, `disc_curve` and
-  `fwd_curve` always play those two roles respectively.
-- `disc_curve`/`fwd_curve` — the swap's discount and forward `ZeroCurve`s. Pass the same
-  object for both to compute single-curve-discounting Greeks (see Returns below).
-- `bump_size` — the zero-rate move each unit of Delta/Gamma represents, matching ORE's
-  own 1bp (`0.0001`) default.
-
-**Returns** a `dict`: `"discount_delta"`, `"discount_gamma"` (w.r.t. `disc_curve.pillar_rates`)
-and `"forward_delta"`, `"forward_gamma"` (w.r.t. `fwd_curve.pillar_rates`), each shaped
-`[len(pillar_rates)]`. If `disc_curve is fwd_curve`, summing `discount_delta +
-forward_delta` pillar-by-pillar recovers the total sensitivity to that one shared curve.
-
-### `swap_theta(cfg: SwapConfig, disc_curve: ZeroCurve, fwd_curve: ZeroCurve, theta_days: int = DEFAULT_THETA_DAYS) -> float`
-
-**Returns** a single number: `NPV(today + theta_days, same curves) − NPV(today) +`
-cashflow paid in between (ORE's own Theta definition — see
-[Delta, Gamma, and Theta: Theta](../risk/greeks.md#theta-advance-the-evaluation-date-hold-the-market-fixed)).
-
-### `swaption_delta_gamma(cfg: SwaptionConfig, curve: ZeroCurve, bump_size: float = DEFAULT_RATE_BUMP) -> Dict[str, jax.Array]`
-
-**Parameters**
-- `cfg` — a `SwaptionConfig` (see `engine.instruments.european_swaption` above).
-- `curve` — the swaption's Hull-White calibration curve, as a `ZeroCurve`. Should carry
-  the same pillar times/rates as `cfg.initial_zero_curve` (this function does not read
-  `cfg.initial_zero_curve` itself, since it's a plain-Python `ZeroCurveConfig`, not JAX
-  array).
-- `bump_size` — same meaning as `swap_delta_gamma` above.
-
-**Returns** a `dict`: `"delta"`, `"gamma"`, each shaped `[len(curve.pillar_rates)]`.
-
-### `swaption_theta(cfg: SwaptionConfig, curve: ZeroCurve, theta_days: int = DEFAULT_THETA_DAYS) -> float`
-
-**Returns** a single number: `NPV(today + theta_days, same curve) − NPV(today)` — no
-interim-cashflow term (a European swaption pays no cashflow before its own exercise date).
-
-### `bermudan_delta_gamma(cfg: BermudanSwaptionConfig, curve: ZeroCurve, bump_size: float = DEFAULT_RATE_BUMP) -> Dict[str, jax.Array]`
-
-Per-pillar Delta and Gamma of one Bermudan/American swaption's t=0 NPV with respect to its
-own LGM calibration curve — same signature/return shape and same `curve`-shares-
-`cfg.initial_zero_curve`'s-pillar-times convention as `swaption_delta_gamma` above. Works
-for an `AmericanSwaptionConfig` passed directly (see
-[American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md)) — there is
-no separate `american_delta_gamma` function.
-
-**Returns** a `dict`: `"delta"`, `"gamma"`, each shaped `[len(curve.pillar_rates)]`.
-
-### `bermudan_theta(cfg: BermudanSwaptionConfig, curve: ZeroCurve, theta_days: int = DEFAULT_THETA_DAYS) -> float`
-
-**Returns** a single number: `NPV(today + theta_days, same curve) − NPV(today)` — no
-interim-cashflow term, same reasoning as `swaption_theta` (see
-[Delta, Gamma, and Theta: Theta](../risk/greeks.md#theta-advance-the-evaluation-date-hold-the-market-fixed)).
-
-### `bermudan_vega(cfg: BermudanSwaptionConfig, curve: ZeroCurve, calibration_targets: List[CalibrationTarget], market_vol_bump: float = 0.0001) -> jax.Array`
-
-Per-basket-instrument Vega: dollar NPV change for a `market_vol_bump` (1bp of normal vol by
-default) move in **one** market swaption's own quoted volatility, holding every other
-market quote fixed — computed via the implicit function theorem through
-`engine.calibration.lgm.calibrate_lgm_sigma`'s own bootstrap root-find, not by literally
-re-running calibration once per bumped market vol (see
-[Delta, Gamma, and Theta: Vega](../risk/greeks.md#vega-bermudanamerican-only) for the full
-derivation, including the cross-bucket Jacobian term a naive first attempt missed).
-
-**Parameters**
-- `cfg.hw_sigma` **must** be the exact `Sigma` `calibrate_lgm_sigma` produced from
-  `calibration_targets` (same order) — this function differentiates through that
-  relationship, it does not re-run calibration itself.
-
-**Returns** `[len(calibration_targets)]` — Vega to each basket instrument's own market vol,
-in dollars per `market_vol_bump`.
-
-### Constants
-
-| Name | Value | Meaning |
-|---|---|---|
-| `DEFAULT_RATE_BUMP` | `0.0001` | ORE's own example-config default: 1 basis point, absolute. |
-| `DEFAULT_THETA_DAYS` | `1` | ORE's own default Theta horizon: 1 calendar day. |
-
----
-
-## `engine.calibration.basket`
-
-Co-terminal calibration basket construction and LGM's own closed-form swaption pricer used
-during calibration — see [Calibration](calibration.md) for the full algorithm and its
-two-route verification against ORE.
-
-### `CalibrationTarget`
-
-One co-terminal European swaption calibration target.
-
-| Field | Type | Meaning |
-|---|---|---|
-| `expiry_time` | `float` | T0, year-fraction from `evaluation_date`. |
-| `accrual_start_time` | `float` | The underlying's own first accrual date. |
-| `fixed_cashflow_times` | `np.ndarray` | `[N]` year-fractions from `evaluation_date`. |
-| `fixed_cashflow_amounts` | `np.ndarray` | `[N]`, at the ATM fixed rate. |
-| `fixed_accrual_fractions` | `np.ndarray` | `[N]`, ORE's own `accrualPeriod()` per coupon. |
-| `notional` | `float` | |
-| `payer` | `bool` | |
-| `forward_rate` | `float` | The underlying's own par/ATM rate (== strike, by construction). |
-| `market_vol` | `float` | Normal (basis-point) volatility. |
-
-### `build_coterminal_basket(exercise_times, final_maturity_time, notional, payer, market_vols, zero_curve, evaluation_date, index_tenor_months=6) -> List[CalibrationTarget]`
-
-Builds one co-terminal `CalibrationTarget` per exercise date — see
-[Calibration: The co-terminal calibration basket](calibration.md#the-co-terminal-calibration-basket).
-
-### `price_lgm_swaption(curve: ZeroCurve, a: float, sigma: Union[float, Sigma], target: CalibrationTarget) -> jax.Array`
-
-t=0 NPV of one co-terminal European swaption under LGM, for a trial `(a, sigma)` — the
-model-price half of calibration's error function. Differentiable end-to-end in `sigma`
-(and `a`) via an implicit-function-theorem-corrected bisection — see
-[Calibration: the `_bisect_xstar` gradient bug](calibration.md#the-_bisect_xstar-gradient-bug).
-
-### `bachelier_swaption_price(target: CalibrationTarget, curve: ZeroCurve) -> jax.Array`
-
-Market price implied by `target.market_vol` via the Bachelier (normal) formula — the
-target `price_lgm_swaption` is calibrated to match.
-
----
-
-## `engine.calibration.lgm`
-
-### `CalibrationResult`
-
-Output of `calibrate_lgm_sigma`.
-
-| Field | Type | Meaning |
-|---|---|---|
-| `sigma` | `Sigma` | The fitted piecewise volatility term structure. |
-| `market_prices` | `jax.Array` | `[N]`, Bachelier price implied by each target's `market_vol`. |
-| `model_prices` | `jax.Array` | `[N]`, `price_lgm_swaption` at the final calibrated `Sigma`. |
-| `rmse` | `float` | `sqrt(mean((model-market)^2))` — ORE's own `error_` metric. |
-
-### `calibrate_lgm_sigma(targets: List[CalibrationTarget], curve: ZeroCurve, a: float) -> CalibrationResult`
-
-Bootstrap-calibrates a piecewise `Sigma` to `targets` (in increasing expiry order,
-asserted explicitly) — see [Calibration: Why bootstrap, not joint least-squares](calibration.md#why-bootstrap-not-joint-least-squares)
-for the full algorithm. `a` (mean reversion) is always an input, never calibrated (see
-[Calibration: Why mean reversion is never calibrated](calibration.md#why-mean-reversion-is-never-calibrated)).
-
-**Raises** an `AssertionError` if `targets` is empty or not in increasing expiry order.
-
----
-
-## `engine.models.hull_white`
-
-The single source of truth for this codebase's Hull-White 1-Factor closed-form math — see
-[Models & Trades](models-and-trades.md#enginemodelshull_whitepy).
-
-| Name | Signature | Notes |
-|---|---|---|
-| `ZeroCurve` | dataclass: `pillar_times: jax.Array`, `pillar_rates: jax.Array` | JAX-array counterpart of `engine.simulation.market_model.ZeroCurveConfig`, differentiable via `jnp.interp`. `ZeroCurve.flat(rate, pillar_times)` is a convenience constructor. |
-| `B` | `(t, T, a) -> jax.Array` | `B(t,T) = (1-exp(-a*(T-t)))/a`, with the `a==0` limit handled explicitly. |
-| `A` | `(curve, t, T, a, sigma, B_override=None) -> jax.Array` | `A(t,T)` calibrated to `curve`'s own market. |
-| `discount` | `(curve, t) -> jax.Array` | `P(0,t) = exp(-zero_rate(t)*t)`. |
-| `zero_rate` | `(curve, t) -> jax.Array` | Linear interpolation on `curve`'s own zero rates, flat-extrapolated at the ends. |
-| `log_discount` | `(curve, t) -> jax.Array` | `ln P(0,t)`. |
-| `bond_option_sigma` | `(T0, T, t, a, sigma) -> jax.Array` | The bond-option volatility term Jamshidian's formula needs. |
-| `bond_call` / `bond_put` | `(P_t_T0, P_t_Ti, K, sigma_p) -> jax.Array` | Black-on-bond formulas. |
-
----
-
-## `engine.models.lgm`
-
-Linear Gauss-Markov closed-form math (piecewise-constant `Sigma`) — the model
-`bermudan_swaption.py`/`american_swaption.py` and `engine/calibration/` are built on. See
-[Models & Trades](models-and-trades.md#enginemodelslgmpy) for why this is **not**
-interchangeable with `engine.models.hull_white` for `t>0`, despite sharing `(a, sigma)` and
-today's curve.
-
-| Name | Signature | Notes |
-|---|---|---|
-| `Sigma` | dataclass (JAX pytree): `times: jax.Array`, `values: jax.Array` | Piecewise-constant vol; `len(values) == len(times) + 1`. `Sigma.flat(sigma)` builds a one-bucket flat `Sigma`. |
-| `as_sigma` | `(sigma: float \| jax.Array \| Sigma) -> Sigma` | Upgrades a plain scalar to a one-bucket `Sigma`; the normalization point every function below calls first. |
-| `H` / `H_prime` | `(a, t) -> jax.Array` | LGM's own state-space mapping function and its derivative. |
-| `zeta` | `(sigma, t) -> jax.Array` | Cumulative variance; accepts `sigma` as `Sigma` or scalar. |
-| `bond_price` | `(curve, a, sigma, t, T, x) -> jax.Array` | `P(t,T,x)`, live-verified against `ORE.LinearGaussMarkovModel.discountBond`. |
-| `numeraire` | `(curve, a, sigma, t, x) -> jax.Array` | LGM's own numeraire — required for correct martingale-measure discounting (see [Calibration](calibration.md#two-route-verification)). |
-| `bond_option_sigma` | `(a, sigma, T0, T, t) -> jax.Array` | LGM analogue of the Hull-White version above. |
-| `r_from_x` / `x_from_r` | `(curve, a, sigma, t, x_or_r) -> jax.Array` | Converts between LGM's own state variable `x` and the direct short rate `r` (affine, exact). |
-
----
-
-## `engine.models.ore_builders`
-
-Shared ORE trade-building and cashflow-extraction helpers — the single source of truth for
-turning a trade config into a real ORE object and its cashflow schedule, used by every
-pricer in `engine/instruments/`. See
-[Models & Trades](models-and-trades.md#enginemodelsore_builderspy).
-
-| Name | Signature | Notes |
-|---|---|---|
-| `DAY_COUNTER` | `ORE.Actual365Fixed()` | The single day-count convention used throughout this codebase, on both legs of every trade. |
-| `build_vanilla_swap` | `(notional, fixed_rate, payer, effective_date, maturity_date, index_tenor_months, floating_spread, accrual_day_count=None) -> ORE.VanillaSwap` | Builds a real ORE swap via `ORE.MakeVanillaSwap` from its booked dates. Independent of any evaluation date. |
-| `resolve_swap_dates` | `(trade_date, swap_tenor, forward_start=None) -> (effective_date, maturity_date)` | `MakeVanillaSwap`'s own tenor rule: spot = 2 TARGET business days after the (adjusted) trade date, plus `forward_start` (adjusted Following), plus the tenor. |
-| `known_fixing` | `(fixing_date, today, fixings) -> float \| None` | ORE's `InterestRateIndex::fixing`: a fixing after today is forecast (`None`), today's is the supplied value or forecast, an earlier one must be supplied (`MissingFixingError`). |
-| `is_live` | `(cashflow_date, today) -> bool` | ORE's `hasOccurred` with default settings: a cashflow paid on `today` has occurred. |
-| `LegCashflows` | dataclass: `payment_times`, `accrual_start_times`, `accrual_end_times`, `accrual_fractions` (each `np.ndarray`), `notional: float`, and for a floating leg read with fixings `is_fixed`/`fixed_rates` | One leg's remaining cashflows on `today`, as year-fractions from `today`. |
-| `fixed_leg_cashflows` / `floating_leg_cashflows` | `(swap, today)` / `(swap, today, fixings=None) -> LegCashflows` | Extracts each remaining coupon's dates/accrual fraction from a real ORE-generated schedule; with `fixings`, marks each floating coupon known or projected. |
-
----
-
-## `engine.portfolio`
-
-The top-level entry point tying every module above together — see
-[The Portfolio Entry Point](portfolio-entrypoint.md) for the full write-up (this table is
-the field-level quick reference; that doc explains the *why*).
-
-### `PortfolioRequest`
-
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `market` | `Market \| SimulationConfig` | *required* | A `Market`: the market path (default). A `SimulationConfig`: the Hull-White model. |
-| `trades` | `List[SwapConfig \| SwaptionConfig \| BermudanSwaptionConfig \| AmericanSwaptionConfig \| BondConfig]` | *required* | Heterogeneous, any order/mix. |
-| `config` | `RunConfig` | `RunConfig()` | The run configuration (below). |
-| `pfe_quantiles` | `Sequence[float]` | `(0.95, 0.99)` | Quantiles of the PFE profiles. |
-| `calibration_targets` | `Optional[List[CalibrationTarget]]` | `None` | Hull-White model only: used when any Bermudan/American trade's `hw_sigma is None`. |
-| `compute_greeks` | `bool` | `False` | By `config.greeks.method`. |
-| `scenario_risk` | `bool` | `True` | Build `npv_cube` and the exposure profiles. |
-| `trade_ids` | `Optional[Sequence[str]]` | `None` | Echoed on the result. |
-
-### `RunConfig` (`engine/portfolio/config.py`)
-
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `simulation` | `Optional[CamConfig]` | `None` | ORE's `simulation.xml`; the model per currency is `ir[ccy]`. Required for scenario risk on the market path. |
-| `pricing` | `PricingConfig` | `PricingConfig()` | Engine per product: `european` (`"Bachelier"` \| `"Jamshidian"`), `bermudan`, `american`, `recalibrate`. |
-| `greeks` | `GreeksConfig` | `GreeksConfig()` | `method` (`"Bump"` \| `"AD"`), `sensitivity` (`SensitivityConfig`). |
-| `precision` | `PrecisionConfig` | all 64 | dtype per stage: `simulation`, `pricing`, `risk`, `calibration`. |
-| `base_currency` | `Optional[str]` | `None` | Reporting currency; `None` is the simulation's, else USD. |
-
-`reporting_currency` (property) resolves `base_currency`. `HULL_WHITE_CONFIG` is the
-Hull-White model's engines (Jamshidian, AD). `check_market_path` / `check_hull_white` refuse,
-naming the field, what each model does not implement
-([The Portfolio Entry Point](portfolio-entrypoint.md#runconfig)).
-
-### `PortfolioResult`
-
-| Field | Type | Meaning |
-|---|---|---|
-| `base_npv` | `float` | |
-| `npv_cube` | `jax.Array` | `[Scenarios, TimeSteps, Trades]`, caller's own `trades` order. |
-| `exposure` | `Optional[ExposureProfile]` | Netting-set exposure profile (`engine.risk.exposure`); `None` when `scenario_risk=False`. |
-| `trade_exposures` | `List[ExposureProfile]` | Standalone exposure per trade. |
-| `greeks` | `Optional[Dict[int, Dict[str, jax.Array]]]` | Keyed by trade index in `request.trades`. |
-| `warnings` | `List[str]` | Known-limitation warnings surfaced during validation. |
-
-### `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
-
-The main entry point — see [The Portfolio Entry Point](portfolio-entrypoint.md#price_portfoliorequest-portfoliorequest---portfolioresult)
-for the full 9-step orchestration.
+## `engine.risk.sensitivities`, `engine.risk.greeks`, `engine.risk.price_functions`
+
+The Greeks — see [Greeks](../risk/greeks.md) for the keys and the two methods.
+
+| Name | Returns |
+|---|---|
+| `SensitivityConfig` | ORE's `sensitivity.xml`: `curve_tenors` (ORE's 13), `curve_shift` (`1e-4`), `vol_shift` (`1e-4`), `theta_days` (`1`), `swaption_vol_decay` (`"ForwardVariance"`). |
+| `portfolio_sensitivities(trades, market, base_currency, pricing=PricingConfig(), config=SensitivityConfig())` | Bump Greeks: `{trade index: {key: array}}`. |
+| `portfolio_greeks(trades, market, base_currency, pricing=PricingConfig(), config=SensitivityConfig())` | AD Greeks, the same keys. |
+| `curve_greeks(cfg, market, pricing, shift)` | AD Delta/Gamma per pillar of each curve the trade reads, in its currency. |
+| `vega_greek(cfg, market, pricing, shift)` | AD Vega `[option tenors, swap tenors]`, or `None`. |
+| `trade_theta(value, base, cfg, theta_context, fx)` | ORE's Theta, shared by both methods. |
+| `trade_price_function(cfg, market, pricing=PricingConfig(), dtype=jnp.float64)` | `TradePriceFunction(curves, price)`: the trade's t=0 price as a JAX function of its curves' pillar rates; `curves` are `(kind, name)` keys (`("discount", "USD")`, `("index", "USD-SIMINDEX-6M")`). Shared by the AD Greeks and market-risk revaluation. |
+| `bermudan_price_function(cfg, market, pricing, dtype)` | `BermudanPriceFunction(price, sigma, calibration)`: the grid engine on today's calibration, `price(disc, index, sigma_values=None)`. |
 
 ## `engine.risk.exposure`
 
@@ -782,8 +279,8 @@ ORE's `ExposureCalculator` statistics over a simulated cube — see [Exposure](.
 
 | Function | Returns |
 |---|---|
-| `exposure_profile(npv [S,T], npv0, numeraire [S,T], discount [T], times [T], quantiles)` | `ExposureProfile` for one trade: `times` (t=0 first), `epe`, `ene`, `ee_b`, `eee_b`, `pfe` (`"PFE_95"` → `[T+1]`) |
-| `netting_set_profile(npv_cube [S,T,N], npv0_per_trade, numeraire, discount, times, quantiles)` | The same for the netted sum of `N` trades |
+| `exposure_profile(npv [S,D], npv0, numeraire, discount, times, quantiles, maturity=None, dates=None, asof=None)` | `ExposureProfile` for one trade: `times` (t=0 first), `epe`, `ene`, `ee_b`, `eee_b`, `epe_b`, `eepe_b`, `basel_epe`, `basel_eepe`, `pfe` (`"PFE_95"` → `[D+1]`) |
+| `netting_set_profile(npv_cube [S,D,N], npv0_per_trade, numeraire, discount, times, quantiles, dates=None, asof=None)` | The same for the netted sum of `N` trades |
 
 ## `engine.market_risk`
 
@@ -791,67 +288,147 @@ Short-horizon VaR/ES by full revaluation at t=0 — see [Market Risk](../risk/ma
 
 | Name | Kind | Summary |
 |---|---|---|
-| `RateRiskFactors.from_curves(curves, names=None)` | class | The pillar zero rates of named curves; `size`, `slice_of(i)`, `base_rates()`, `labels()` |
+| `RateRiskFactors.from_market(market)` | class | Every curve of the market, named `discount:<ccy>` / `index:<name>`; also `from_curves(curves, names)`, `index_of(name)`, `size`, `slice_of(i)`, `base_rates()`, `labels()` |
 | `monte_carlo_scenarios(factors, covariance, horizon_days, num_scenarios, seed=42)` | function | Gaussian horizon moves via scrambled Sobol → `ShockScenarios` |
 | `historical_scenarios(factors, history, horizon_days, dates=None)` | function | Overlapping horizon moves of a `[dates, factors]` history → `ShockScenarios` |
 | `covariance_from_history(history, horizon_days)` | function | Sample covariance of those moves, `[F, F]` |
 | `horizon_moves(history, horizon_days)` | function | The overlapping moves themselves, `[D-h, F]` |
 | `ShockScenarios` | dataclass | `factors`, `shifts [S, F]`, `horizon_days`, `source`, `measure`, `windows` |
-| `MarketRiskRequest(trades, scenarios, quantiles=(0.99, 0.975), precision=64, batch_size=256)` | dataclass | |
+| `MarketRiskRequest(trades, market, scenarios, pricing=PricingConfig(), quantiles=(0.99, 0.975), precision=64, batch_size=256)` | dataclass | Every factor must be the market's curve of its name; every curve a trade reads must be a factor |
 | `run_market_risk(request) -> MarketRiskResult` | function | `base_npv`, `base_npv_per_trade`, `pnl [S, N]`, `portfolio_pnl [S]`, `risk` (`VaR_99`, `ES_97.5`, tail counts, standard errors), `measure`, `source`, `horizon_days`, `num_scenarios`, `risk_factors`, `warnings` |
 
-## `engine.risk.price_functions`
+---
 
-Each trade's t=0 price as a pure JAX function of its curves' pillar rates, shared by the
-Greeks and market-risk revaluation: `swap_price_function(cfg, disc, fwd)`,
-`swaption_price_function(cfg, curve)`, `bermudan_price_function(cfg, curve)` (returns
-`(f(rates, sigma_values), sigma_values)`) and `bond_price_function(cfg)` (from
-`engine.instruments.treasury`).
+## `engine.calibration`
 
-### `validate_portfolio_against_simulation(sim_config: SimulationConfig, trade_configs: Sequence[...]) -> None`
+| Module | Contents |
+|---|---|
+| `engine.calibration.cam` | `calibrate_cam(market, ir_configs) -> Dict[str, Calibration]`: each currency with a basket bootstrapped to the market's swaption volatilities, in its own parametrization (a Hull-White currency's σ by `hull_white_matching_zeta`). |
+| `engine.calibration.ore_lgm` | ORE's `LgmBuilder`: `build_basket(reference, expiries, terms, conventions, deal_strikes)` (QuantLib `SwaptionHelper`s), `basket_vols`, `price_pair(helper, disc, index, vol, reversion, zeta)` (market and model value), the bootstrap, batched over path curves. Used by the CAM's and every option's calibration. |
+| `engine.calibration.basket`, `engine.calibration.lgm` | The standalone `POST /calibration/lgm` route's co-terminal basket (`build_coterminal_basket`, `CalibrationTarget`) and Hagan bootstrap (`calibrate_lgm_sigma -> CalibrationResult`: `sigma`, `market_prices`, `model_prices`, `rmse`). See [Calibration](calibration.md). |
 
-Cross-checks every trade's duplicated `hw_a`/`hw_sigma`/`initial_zero_curve` against
-`sim_config`. **Raises** `ValueError` naming the trade and the mismatched field. See
-[The Portfolio Entry Point](portfolio-entrypoint.md#validate_portfolio_against_simulationsim_config-trade_configs---none).
+---
 
-### `derive_maturity_pillars(trade_configs: Sequence[...], evaluation_date: ORE.Date) -> List[float]`
+## `engine.models`
 
-Automatic maturity-pillar assembly from every `SwapConfig`'s real ORE schedule. See
-[The Portfolio Entry Point](portfolio-entrypoint.md#derive_maturity_pillarstrade_configs-evaluation_date---listfloat).
+The shared foundation — see [Models & Trades](models-and-trades.md).
+
+### `engine.models.curves`
+
+| Name | Notes |
+|---|---|
+| `ZeroCurve` | JAX pytree: `pillar_times`, `pillar_rates`; `ZeroCurve.from_config(config, dtype)`. Linear zero rate, QuantLib's flat forward beyond the last pillar. |
+| `zero_rate`, `log_discount`, `discount`, `forward_rate` | On a `ZeroCurve`. |
+| `DiscountCurve`, `loglinear_log_discount` | A batched curve of log discount factors at tenor times, log-linear between them (a scenario market's curve). |
+
+### `engine.models.lgm`
+
+| Name | Notes |
+|---|---|
+| `Sigma` | JAX pytree: `times`, `values` (`len(values) == len(times) + 1`); `Sigma.flat(sigma)`. |
+| `as_sigma` | Upgrades a scalar to a one-bucket `Sigma`. |
+| `H` / `H_prime` | `(a, t)`: the LGM's state-space function and its derivative. |
+| `zeta` | `(sigma, t)`: Hagan's ζ(t) = ∫α². |
+| `hull_white_zeta` | `(a, sigma, t)`: the Hull-White parametrization's ζ(t) = ∫σ²e^{2as}ds, piecewise exact. |
+| `hull_white_matching_zeta` | `(a, hagan: Sigma, last) -> Sigma`: the Hull-White σ with Hagan's ζ at every bucket end (exact calibration conversion). |
+| `bond_price`, `numeraire`, `bond_option_sigma`, `r_from_x`, `x_from_r` | The LGM's closed forms (Hagan parametrization). |
+
+### `engine.models.hull_white`
+
+`bond_call` / `bond_put`: Black on a bond, the Jamshidian engine's building block.
+
+### `engine.models.ore_builders`
+
+ORE trade building and the time axis: `build_vanilla_swap` (from booked dates, via
+`MakeVanillaSwap`), `resolve_swap_dates` / `book_swap_dates` (`MakeVanillaSwap`'s tenor rule),
+`ibor_index`, `par_coupon_forecast_period` (the Ibor index's own fixing period, I-31),
+`known_fixing` / `MissingFixingError` (ORE's `InterestRateIndex::fixing`), `is_live` (ORE's
+`hasOccurred`), `time_from_reference` and `TIME_AXIS_DAY_COUNTER` (ACT/365), `validate_tenor`,
+`validate_fixings`, `fixed_leg_cashflows` / `LegCashflows` (the standalone basket's fixed leg).
+
+---
+
+## `engine.portfolio`
+
+The top-level entry point — see [The Portfolio Entry Point](portfolio-entrypoint.md) for the
+full write-up (this is the quick reference).
+
+### `PortfolioRequest`
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `market` | `Market` | *required* | Today's market. |
+| `trades` | `List[SwapConfig \| SwaptionConfig \| BermudanSwaptionConfig \| AmericanSwaptionConfig \| BondConfig]` | *required* | Any mix and order; `trade_id`s unique. |
+| `config` | `RunConfig` | `RunConfig()` | The run configuration (below). |
+| `pfe_quantiles` | `Sequence[float]` | `(0.95, 0.99)` | Quantiles of the PFE profiles. |
+| `compute_greeks` | `bool` | `False` | By `config.greeks.method`. |
+| `scenario_risk` | `bool` | `True` | Build `npv_cube` and the exposure profiles (needs `config.simulation`). |
+
+### `RunConfig` (`engine/portfolio/config.py`)
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `simulation` | `Optional[CamConfig]` | `None` | ORE's `simulation.xml`; the model per currency is `ir[ccy]`. Required for scenario risk. |
+| `pricing` | `PricingConfig` | `PricingConfig()` | Engine per product. |
+| `greeks` | `GreeksConfig` | `GreeksConfig()` | `method` (`"Bump"` \| `"AD"`), `sensitivity` (`SensitivityConfig`). |
+| `precision` | `PrecisionConfig` | all 64 | dtype per stage: `simulation`, `pricing`, `risk`, `calibration` (only `simulation` below 64 until roadmap 1.4). |
+| `base_currency` | `Optional[str]` | `None` | Reporting currency; `None` is the simulation's, else USD. |
+
+`reporting_currency` (property) resolves `base_currency`. `check_run(config)` refuses, naming
+the field, what the pipeline does not implement yet.
+
+### `PortfolioResult`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `base_npv` | `float` | Today's portfolio value in the reporting currency. |
+| `npv_cube` | `jax.Array` | `[Scenarios, Dates, Trades]`, the request's `trades` order. |
+| `exposure` | `Optional[ExposureProfile]` | Netting-set exposure; `None` without scenario risk. |
+| `trade_exposures` | `List[ExposureProfile]` | Standalone exposure per trade. |
+| `greeks` | `Optional[Dict[int, Dict[str, jax.Array]]]` | Keyed by trade index in `request.trades`. |
+| `warnings` | `List[str]` | Run warnings. |
+| `base_npv_per_trade` | `List[float]` | Today's value per trade. |
+| `trade_ids` | `List[str]` | Each trade's id, in request order. |
+| `scenario_risk_available` | `bool` | Whether `exposure`/`npv_cube` were computed. |
+| `measure` | `Optional[str]` | `"risk-neutral-pricing"`, or `None` without scenario risk. |
+
+### `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
+
+The main entry point — see [The Portfolio Entry Point](portfolio-entrypoint.md#price_portfoliorequest-portfoliorequest---portfolioresult).
+`engine.portfolio.worker_pool.submit_pricing_job(request) -> Future[PortfolioResult]` runs it
+in a worker process (the HTTP route's path).
 
 ---
 
 ## `demos.demo_scenarios`
 
-Reference/demo configurations and shared test helpers in `demos/`, outside the `engine`
-package: the demos and tests use them; the engine never imports them. See
+Demo and test scenarios in `demos/`, outside the `engine` package: the demos and tests use
+them; the engine never imports them. See
 [Architecture: demos/demo_scenarios.py](../concepts/architecture.md#demosdemo_scenariospy-shared-example-configurations).
 
-| Name | Type | Meaning |
-|---|---|---|
-| `EVAL_DATE` | `ORE.Date` | Shared evaluation date for every demo/test scenario in this module. |
-| `SWAP_DEMO_MATURITIES` | `List[float]` | The maturity pillars required by `single_currency_swap_demo_config()`'s swap. |
-| `cross_asset_demo_config()` | `() -> SimulationConfig` | Two-equity, two-currency (USD/EUR) example scenario. |
-| `single_currency_swap_demo_config()` | `() -> SimulationConfig` | One-currency, two-rate-factor (discounting + forwarding) example scenario, sized for a 2Y demo swap. |
-| `swaption_demo_config()` | `() -> SimulationConfig` | One rate factor (USD, 3%), simulated out to 5Y in six-month steps -- used by the swaption sections of `demos/demo_components.py` (`rates.maturities` left unset, since the swaption pricer works directly off simulated rate paths rather than a yield-curve cube). |
-| `flat_yield_curves(disc_rate, fwd_rate, maturities=SWAP_DEMO_MATURITIES, eval_date=EVAL_DATE)` | `(...) -> jax.Array` | Builds a deterministic `[1, 1, len(maturities), 2]` yield curve cube directly from ORE's own flat curve objects — no simulation randomness. Used for VaR's `base_npv` baseline and for ORE cross-check tests. |
+| Name | Meaning |
+|---|---|
+| `EVAL_DATE` | The scenarios' as-of date (2026-07-30). |
+| `PILLARS`, `USD_DISCOUNT`, `USD_INDEX`, `EUR_DISCOUNT`, `EUR_INDEX`, `VOLS`, `DATES` | The data. |
+| `demo_market(currencies=("USD", "EUR")) -> Market` | USD (3% → 5%) and EUR curves, 6M index curves, swaption volatilities; with EUR, the EURUSD spot and an equity. |
+| `demo_simulation(model="HullWhite", samples=4096, dates=DATES, currencies=("USD", "EUR"), calibrated=False) -> CamConfig` | The simulation, `model` (`"HullWhite"` \| `"LGM"`) for every currency; two currencies add FX, equity and correlations. |
+| `demo_market_json(...)`, `demo_simulation_json(...)` | The same as the HTTP request's JSON. |
 
 ---
 
 ## `engine.api`
 
-The HTTP boundary over `engine.portfolio.price_portfolio` — see [HTTP API](http-api.md)
-for the full endpoint reference, the sync-vs-async job pattern's reasoning, and request/
-response schema tables. Requires the `api` optional-dependency extra
-(`pip install -e .[api]`) — `engine.portfolio` and everything below it has zero dependency
-on this package or its own dependencies (FastAPI, Pydantic, uvicorn).
+The HTTP boundary over `engine.portfolio.price_portfolio` — see [HTTP API](http-api.md).
+Requires the `api` extra (`pip install -e .[api]`); `engine.portfolio` and everything below it
+has no dependency on this package.
 
 | Module | Contents |
 |---|---|
-| `engine.api.app` | `create_app() -> FastAPI` / `app` — the FastAPI application factory. Run with `uvicorn engine.api.app:app`. |
-| `engine.api.routes` | `router: APIRouter` — `GET /health`, `GET /version`, `POST /portfolio/price`, `GET /portfolio/price/{job_id}`, `POST /calibration/lgm`. |
-| `engine.api.eod_routes` | `router: APIRouter` (prefix `/eod`) — the TraderX EOD contract: `GET /eod/capabilities`, `GET /eod/schemas/result`, `GET /eod/schemas/capabilities`, `POST /eod/price`, `GET /eod/results/by-workload/{key}`, `GET /eod/attempts/{attemptId}`. Returns **plain dicts**, not Pydantic models — the contract is the published JSON Schema, and a second definition could drift from it. See [EOD Integration](eod-integration.md#w164--the-eod-http-routes). |
-| `engine.api.schemas` | Pydantic v2 models mirroring `engine.portfolio`/`engine/instruments/*.py`'s dataclasses field-for-field, each with `.to_dataclass()`/`.from_dataclass()` — see [HTTP API: Request/response schemas](http-api.md#request-schema-portfoliorequestschema). |
+| `engine.api.app` | `create_app() -> FastAPI` / `app`. Run with `uvicorn engine.api.app:app`. |
+| `engine.api.routes` | `GET /health`, `GET /version`, `POST /portfolio/price` (also `/v2/portfolio/price`), `GET /portfolio/price/{job_id}`, `POST /calibration/lgm`. |
+| `engine.api.market_schemas` | `MarketPortfolioRequestSchema` and its parts (market, trades, `CamConfigSchema` with `LgmConfigSchema`/`HullWhiteConfigSchema`, `PricingConfigSchema`, `GreeksConfigSchema`), each with `.to_dataclass()`. Refuses unknown fields and the retired Hull-White shape. |
+| `engine.api.schemas` | Shared schemas (curves, coupon periods, precision) and the results: `PortfolioResultSchema`, `GreeksSchema`, `ExposureProfileSchema`, `JobStatusSchema`, the calibration route's schemas. |
+| `engine.api.eod_routes` | `router` (prefix `/eod`) — the TraderX EOD contract, plain dicts under a published JSON Schema. See [EOD Integration](eod-integration.md#w164--the-eod-http-routes). |
 
 ---
 

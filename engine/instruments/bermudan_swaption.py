@@ -1,6 +1,12 @@
 """
-Bermudan and American swaption pricing: ORE's `QuantExt::NumericLgmMultiLegOptionEngine`
+Bermudan and American swaptions: the trades, and ORE's `QuantExt::NumericLgmMultiLegOptionEngine`
 (Grid solver) reproduced in JAX.
+
+The trade names its currency, index, exercise and settlement; it carries no curve or model. The
+engine's model is an LGM whose reversion, volatility and grid settings come from the pricing
+configuration (`engine.valuation.config.LgmSwaptionEngineConfig`, ORE's
+`LGMGridSwaptionEngineBuilder`), calibrated per trade (`engine.valuation.bermudan`); here they
+are explicit arguments of `prepare_bermudan`.
 
 At the same grid settings this returns ORE's numbers, not just their converged limit:
 tests/test_ore_lgm_parity.py prices through ORE's own engine
@@ -8,7 +14,7 @@ tests/test_ore_lgm_parity.py prices through ORE's own engine
 Grid solver at `ShiftHorizon=0`; ORE's FD solver and default `ShiftHorizon=0.5` are not
 reproduced (I-32). It rests on matching each of:
 
-1. The model: LGM bond price and numeraire (`engine.models.lgm`), not Hull-White.
+1. The model: LGM bond price and numeraire (`engine.models.lgm`).
 2. The solver: `LgmConvolutionSolver2`'s state grid `x_k = k*sqrt(zeta(t))/nx` with
    `floor(sx*nx)` points either side of zero, Hagan's quadrature weights (including the
    boundary formula and clamping of rounding-negative weights), and linear interpolation
@@ -26,22 +32,12 @@ reproduced (I-32). It rests on matching each of:
    it is precomputed as masks. A closed-form exercise value converges to the same limit but
    differs by up to ~1e-4 at a 48-point grid.
 
-The induction is one `jax.lax.scan`, so `jax.grad`/`jax.hessian` differentiate through it.
+The induction is one `jax.lax.scan`, so `jax.grad`/`jax.hessian` differentiate through it,
+and `jax.vmap` runs it on every simulated path at once (`engine.valuation.bermudan`).
 
 Seasoned trades are priced as ORE prices them: exercise dates on or before the evaluation
 date are dropped, coupons that can no longer enter any exercise are not valued, coupons
 fixed before it use `fixings`, and after the last exercise date the option is worth 0.
-
-Differs from ORE (scenario pricing only; t=0 prices are unaffected):
-  * Conditioning: extra grid rows at the simulation's step times, whose rolled-back values
-    are interpolated at each scenario's simulated short rate (mapped to LGM state space
-    with `r_from_x`). ORE has no such step. The simulated rate comes from the Hull-White
-    simulation, a different model from the LGM used here (I-44, audit A-2) whose paths are
-    not fitted to the curve (I-42, audit M-1), so the scenario values inherit that
-    distribution.
-  * The interpolation runs on the host, per scenario (audit P-2).
-  * After the last exercise date the value is 0 on every path, even where the option was
-    exercised into the swap (audit M-3).
 
 ORE prices Bermudans and Americans with this engine (`LGMGridSwaptionEngineBuilder`,
 OREData/ored/portfolio/builders/swaption.hpp). See
@@ -59,7 +55,6 @@ import numpy as np
 import ORE
 from jax.tree_util import register_pytree_node_class
 
-from engine.simulation.market_model import ZeroCurveConfig
 from engine.models.static_key import StaticKeyMixin
 from engine.models.ore_builders import (  # noqa: F401  (DAY_COUNTER is a re-export)
     DAY_COUNTER,
@@ -71,16 +66,11 @@ from engine.models.ore_builders import (  # noqa: F401  (DAY_COUNTER is a re-exp
     time_from_reference,
     validate_fixings,
 )
-from engine.instruments._validation import _validate_common_fields, _validate_hw_sigma, _validate_settlement
-from engine.models.hull_white import ZeroCurve as _HwZeroCurve
+from engine.instruments._validation import _validate_common_fields, _validate_identity, _validate_settlement
 from engine.models.lgm import (
-    H as _H,
-    H_prime as _H_prime,
     Sigma,
     bond_price as _lgm_bond_price,
     numeraire as _lgm_numeraire,
-    r_from_x as _lgm_r_from_x,
-    x_from_r as _lgm_x_from_r,
     zeta as _lgm_zeta,
 )
 
@@ -110,6 +100,7 @@ class BermudanSwaptionConfig:
     """
     One Bermudan swaption: the option to enter a vanilla swap on any of a list of dates.
 
+    trade_id / evaluation_date: as in `SwapConfig` (required, keyword only).
     currency / settlement: as in `SwaptionConfig`.
     exercise_dates: ascending `ORE.Date`s. Converted to times with the curve's day counter,
         as ORE derives `optionTimes`, so an exercise date and the accrual date it names map
@@ -118,42 +109,28 @@ class BermudanSwaptionConfig:
         ORE. `exercisable_dates(cfg)` lists the underlying's accrual starts.
     effective_date / maturity_date / swap_tenor / fixings: as in `SwapConfig`. A fixing is
         needed only for a coupon fixed before `evaluation_date` that can still be entered.
-    rate_factor_index / hw_a / initial_zero_curve: as in `SwaptionConfig`; the curve is the
-        LGM's term structure and discounts every cashflow.
-    index_zero_curve: the Ibor index's forwarding curve, if it differs from
-        `initial_zero_curve`. Coupons are projected off it, moved by the same LGM state
-        (ORE's `LgmVectorised::fixing` with the index's forwarding curve).
-    hw_sigma: a float (flat) or an `engine.models.lgm.Sigma` (piecewise, e.g. from
-        `engine.calibration`). `None` means "to be calibrated" by `price_portfolio`.
-    n_per_std / std_devs: grid points per standard deviation and grid width in standard
-        deviations, ORE's `nx`/`sx` (`LGMGridSwaptionEngineBuilder`).
     """
     notional: float
     fixed_rate: float
     payer: bool
-    rate_factor_index: Optional[int] = None
-    hw_a: Optional[float] = None
-    hw_sigma: Optional[Union[float, Sigma]] = None
-    initial_zero_curve: Optional[ZeroCurveConfig] = None
     exercise_dates: Sequence[ORE.Date] = ()
     effective_date: Optional[ORE.Date] = None
     maturity_date: Optional[ORE.Date] = None
     swap_tenor: InitVar[Optional[str]] = None
     index_tenor_months: int = 6
     floating_spread: float = 0.0
-    n_per_std: int = 48
-    std_devs: float = 6.0
-    evaluation_date: ORE.Date = field(default_factory=lambda: ORE.Settings.instance().evaluationDate)
     fixings: Dict[ORE.Date, float] = field(default_factory=dict)
-    index_zero_curve: Optional[ZeroCurveConfig] = None
     currency: str = "USD"
     settlement: str = "Physical"
+    trade_id: str = field(kw_only=True)
+    evaluation_date: ORE.Date = field(kw_only=True)
 
     exercise_style = ExerciseStyle.BERMUDAN
 
-    def option_times(self) -> List[float]:
-        """ORE's Bermudan `optionTimes`: the time of every exercise date
-        strictly after the evaluation date (`calculate()`, lines 487-493)."""
+    def option_times(self, exercise_time_steps_per_year: Optional[int] = None) -> List[float]:
+        """ORE's Bermudan `optionTimes`: the time of every exercise date strictly after the
+        evaluation date (`calculate()`, lines 487-493). The argument is an American's; a
+        Bermudan ignores it."""
         return [time_from_reference(self.evaluation_date, d)
                 for d in self.exercise_dates if d > self.evaluation_date]
 
@@ -163,12 +140,10 @@ class BermudanSwaptionConfig:
         return not is_live(self.exercise_dates[-1], self.evaluation_date)
 
     def __post_init__(self, swap_tenor: Optional[str]) -> None:
+        _validate_identity(self.trade_id, self.evaluation_date)
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
         book_swap_dates(self, swap_tenor)
         validate_fixings(self.fixings)
-        # hw_sigma=None means "uncalibrated": price_portfolio fills it via
-        # engine.calibration.lgm.calibrate_lgm_sigma before pricing.
-        _validate_hw_sigma(self.hw_sigma)
         _validate_settlement(self.settlement)
         if len(self.exercise_dates) == 0:
             raise ValueError("exercise_dates must be non-empty")
@@ -193,10 +168,10 @@ class _PreparedBermudan(StaticKeyMixin):
     """A Bermudan/American swaption's prepared structure.
 
     A pytree split between traced children (`_TRACED`) and static aux data:
-      - `curve`, `index_curve`, `hw_sigma`: the model's curves (a `ZeroCurve` today, a
+      - `curve`, `index_curve`, `sigma`: the model's curves (a `ZeroCurve` today, a
         path's `DiscountCurve` in the simulation; `index_curve=None` means the discount
         curve) and volatility, the differentiation targets (Delta/Gamma, Vega);
-        `engine.risk.greeks` substitutes tracers into them.
+        `engine.risk.price_functions` substitutes tracers into them.
       - `notional`, `fixed_amounts`: scale only, traced so trades differing only in size
         share one compiled kernel.
       - everything else (schedule, exercise times, grid settings): static structure that
@@ -235,20 +210,19 @@ class _PreparedBermudan(StaticKeyMixin):
                                          # a simulation supplies one per path)
     float_fixing_serials: np.ndarray     # [Ncf] the fixing dates (serial numbers)
     float_spread: float
-    rate_factor_index: int
-    hw_a: float
-    hw_sigma: Union[float, Sigma]
-    curve: object                 # ZeroCurve or DiscountCurve
+    reversion: float
+    sigma: Union[float, Sigma]    # the LGM's (Hagan) volatility
+    curve: object                 # ZeroCurve or DiscountCurve (None until a caller sets it)
     index_curve: object           # None, ZeroCurve or DiscountCurve
     n_per_std: int
     std_devs: float
     final_maturity: float
 
     # Pytree children, in tree_flatten order (see the class docstring).
-    _TRACED = ("curve", "index_curve", "hw_sigma", "notional", "fixed_amounts", "float_known_rates")
+    _TRACED = ("curve", "index_curve", "sigma", "notional", "fixed_amounts", "float_known_rates")
 
     def tree_flatten(self):
-        """Children: the `_TRACED` fields (`hw_sigma` may itself be a `Sigma` pytree).
+        """Children: the `_TRACED` fields (`sigma` may itself be a `Sigma` pytree).
         Aux data: every other field as a hashable by-value tuple."""
         children = tuple(getattr(self, name) for name in self._TRACED)
         static_fields = tuple(
@@ -299,24 +273,26 @@ def _belongs_until(style: ExerciseStyle, accrual_start: float, accrual_end: floa
     return accrual_end if style is ExerciseStyle.AMERICAN else accrual_start
 
 
-def prepare_bermudan(cfg: "BermudanSwaptionConfig | AmericanSwaptionConfig") -> _PreparedBermudan:
+def prepare_bermudan(cfg: "BermudanSwaptionConfig | AmericanSwaptionConfig", *, reversion: float,
+                     sigma: Union[float, Sigma], n_per_std: int, std_devs: float,
+                     exercise_time_steps_per_year: int, curve=None, index_curve=None) -> _PreparedBermudan:
     """Build the ORE underlying and resolve what `NumericLgmMultiLegOptionEngineBase`
     resolves before its backward run, for a Bermudan or American config:
 
-      * the option times (`cfg.option_times()`);
+      * the option times (`cfg.option_times`, an American's on `exercise_time_steps_per_year`);
       * per coupon, ORE's `CashflowInfo`: pay time, accrual start/end, the time it stops
         belonging to the exercised-into swap (by `cfg.exercise_style`), and for a floating
         coupon the index fixing period and its day count fraction.
+
+    The model is the engine's LGM: constant `reversion` and Hagan volatility `sigma`, on the
+    grid `n_per_std`/`std_devs` (ORE's `nx`/`sx`). `curve` discounts and is the LGM's term
+    structure; `index_curve` (default: `curve`) projects the coupons. Either may be left
+    unset and replaced later (`dataclasses.replace`), as a simulation does per path.
 
     A coupon whose belongs-until time is before the evaluation date is dropped (ORE's
     `isPartOfUnderlying(t)` is false for every `t >= 0`). A kept floating coupon whose
     fixing date has passed takes its fixing from `cfg.fixings`; a missing one raises.
     Fixed amounts are ORE's `FixedRateCoupon.amount()`."""
-    missing = [name for name in ("hw_a", "hw_sigma", "initial_zero_curve") if getattr(cfg, name) is None]
-    if missing:
-        raise ValueError(
-            f"the LGM grid pricer needs {', '.join(missing)} (a calibrated trade: hw_sigma=None is "
-            f"filled by price_portfolio's calibration)")
     swap = _build_ore_swap(cfg)
     today = cfg.evaluation_date
     style = cfg.exercise_style
@@ -363,7 +339,7 @@ def prepare_bermudan(cfg: "BermudanSwaptionConfig | AmericanSwaptionConfig") -> 
         floating["known_rate"].append(0.0 if known is None else known)
         floating["fixing_serial"].append(fixing_date.serialNumber())
 
-    exercise_times = np.asarray(cfg.option_times(), dtype=np.float64)
+    exercise_times = np.asarray(cfg.option_times(exercise_time_steps_per_year), dtype=np.float64)
     if exercise_times.size == 0:
         raise ValueError(f"no exercise opportunity falls after the evaluation date {today}")
     final_maturity = max(fixed["pay"][-1], floating["pay"][-1])
@@ -397,10 +373,8 @@ def prepare_bermudan(cfg: "BermudanSwaptionConfig | AmericanSwaptionConfig") -> 
         float_known_rates=as_array(floating["known_rate"]),
         float_fixing_serials=as_array(floating["fixing_serial"], dtype=np.int64),
         float_spread=cfg.floating_spread,
-        rate_factor_index=cfg.rate_factor_index, hw_a=cfg.hw_a, hw_sigma=cfg.hw_sigma,
-        curve=_HwZeroCurve.from_config(cfg.initial_zero_curve),
-        index_curve=None if cfg.index_zero_curve is None else _HwZeroCurve.from_config(cfg.index_zero_curve),
-        n_per_std=cfg.n_per_std, std_devs=cfg.std_devs,
+        reversion=reversion, sigma=sigma, curve=curve, index_curve=index_curve,
+        n_per_std=n_per_std, std_devs=std_devs,
         final_maturity=final_maturity,
     )
 
@@ -530,9 +504,8 @@ class _GridSchedule(StaticKeyMixin):
     """The descending grid times of the backward induction and, per grid time and
     cashflow, what ORE's backward loop does with that cashflow there.
 
-    Times are `{0} âˆª optionTimes âˆª condition_times`, deduplicated exactly (ORE's
-    `std::set<Real> timeGrid`, plus the conditioning times ORE does not have). Never
-    rounded, so an option time stays identical to the coupon date it names.
+    Times are `{0} u optionTimes`, deduplicated exactly (ORE's `std::set<Real> timeGrid`).
+    Never rounded, so an option time stays identical to the coupon date it names.
 
     Actions replay `NumericLgmMultiLegOptionEngineBase::calculate()`. For cashflow `i` at
     row `g`, in numeraire-deflated units as in ORE:
@@ -549,8 +522,6 @@ class _GridSchedule(StaticKeyMixin):
     """
     times: np.ndarray            # [G] descending
     is_exercise: np.ndarray      # [G] bool
-    is_condition: np.ndarray     # [G] bool
-    condition_index: np.ndarray  # [G] int, index into the original condition_times list (-1 if not a condition time)
     rollback_is_identity: np.ndarray  # [G] bool: close_enough(t_prev, t), ORE's no-op rollback
     add_pv: np.ndarray           # [G, C]
     cache_to_under: np.ndarray   # [G, C]
@@ -573,15 +544,9 @@ def _cashflow_timing(swap: _PreparedBermudan):
     return belongs, start, end, max_estimation
 
 
-def _build_grid_schedule(swap: _PreparedBermudan, condition_times: Sequence[float]) -> _GridSchedule:
+def _build_grid_schedule(swap: _PreparedBermudan) -> _GridSchedule:
     exercise_set = set(float(t) for t in swap.exercise_times)
-    condition_list = [float(t) for t in condition_times]
-    condition_set = set(condition_list)
-    times = sorted({0.0} | exercise_set | condition_set, reverse=True)
-
-    condition_first_index = {}
-    for i, t in enumerate(condition_list):
-        condition_first_index.setdefault(t, i)
+    times = sorted({0.0} | exercise_set, reverse=True)
 
     belongs, start, end, max_estimation = _cashflow_timing(swap)
     num_rows, num_cashflows = len(times), len(belongs)
@@ -624,22 +589,20 @@ def _build_grid_schedule(swap: _PreparedBermudan, condition_times: Sequence[floa
     return _GridSchedule(
         times=np.asarray(times, dtype=np.float64),
         is_exercise=np.asarray([t in exercise_set for t in times], dtype=bool),
-        is_condition=np.asarray([t in condition_set for t in times], dtype=bool),
-        condition_index=np.asarray([condition_first_index.get(t, -1) for t in times], dtype=np.int64),
         rollback_is_identity=rollback_is_identity,
         coupon_ratio=coupon_ratio,
         **masks,
     )
 
 
-def _bond_prices_at_nodes(curve: _HwZeroCurve, a: float, sigma, t: jax.Array,
+def _bond_prices_at_nodes(curve, a: float, sigma, t: jax.Array,
                           maturities: jax.Array, x_nodes: jax.Array) -> jax.Array:
     """P(t, T; x) for every state node and maturity (`engine.models.lgm.bond_price`).
     Shape [Nnodes, Nmaturities]."""
     return jax.vmap(lambda T: _lgm_bond_price(curve, a, sigma, t, T, x_nodes))(maturities).T
 
 
-def _cashflow_values_at_nodes(swap: _PreparedBermudan, curve: _HwZeroCurve, x_nodes: jax.Array, t: jax.Array) -> jax.Array:
+def _cashflow_values_at_nodes(swap: _PreparedBermudan, curve, x_nodes: jax.Array, t: jax.Array) -> jax.Array:
     """
     Every cashflow's value at time `t` on every state node, signed for the option holder:
     ORE's `CashflowInfo::pv`. Shape [Nnodes, C], fixed leg first, then floating.
@@ -653,7 +616,7 @@ def _cashflow_values_at_nodes(swap: _PreparedBermudan, curve: _HwZeroCurve, x_no
         that is ORE's behaviour. A fixing dated on or before the evaluation date is its
         historical value if known, else (today's) the forecast off today's curve.
     """
-    a, sigma = swap.hw_a, swap.hw_sigma
+    a, sigma = swap.reversion, swap.sigma
     # Work in x_nodes' dtype; the float64 schedule arrays would otherwise upcast float32.
     dtype = x_nodes.dtype
     as_dtype = lambda values: jnp.asarray(values, dtype=dtype)  # noqa: E731
@@ -686,56 +649,16 @@ def _cashflow_values_at_nodes(swap: _PreparedBermudan, curve: _HwZeroCurve, x_no
 # =============================================================================
 # BACKWARD INDUCTION (jax.lax.scan)
 # =============================================================================
-@dataclass
-class _RolledBackValue:
-    """Result of the backward induction: the t=0 value (x=0), plus the rolled-back value
-    function at each conditioning time, on a short-rate grid."""
-    value_at_t0: jax.Array  # kept as a JAX scalar so engine.risk.greeks can differentiate it
-    condition_times: np.ndarray
-    condition_state_grids: List[np.ndarray]
-    condition_values: List[np.ndarray]
-
-
-def _run_backward_induction(swap: _PreparedBermudan, condition_times: Sequence[float]) -> _RolledBackValue:
-    """
-    ORE's backward run (`NumericLgmMultiLegOptionEngineBase::calculate()`) plus snapshots
-    for conditioning.
+def grid_value(swap: _PreparedBermudan) -> jax.Array:
+    """ORE's NPV on the prepared trade's curves (`NumericLgmMultiLegOptionEngineBase::
+    calculate()`): the induction's value at t=0 on the state x=0, as
+    `LgmConvolutionSolver2::stateGrid(0)`. A JAX scalar, so `jax.grad` differentiates it.
 
     Values are numeraire-deflated, as in ORE (`LgmVectorised::reducedDiscountBond`); x is
     driftless, so the rollback of a deflated value is its conditional expectation. The
-    exercise max is taken in the same units.
-    """
-    schedule = _build_grid_schedule(swap, condition_times)
-    num_grid = len(schedule.times)
-    # `_backward_induction_arrays` is jitted with `swap` as a pytree (tracers allowed in
-    # its differentiable fields) and `schedule` static. The snapshot bookkeeping below
-    # uses NumPy and stays outside jit.
-    x_all, values_all = _backward_induction_arrays(swap, schedule)
-    curve = _zero_curve_of(swap)
-    grid_times = jnp.asarray(schedule.times, dtype=_curve_dtype(curve))
-    a, sigma = swap.hw_a, swap.hw_sigma
-
-    condition_state_grids: List[np.ndarray] = []
-    condition_values: List[np.ndarray] = []
-    if len(condition_times) > 0:
-        order = np.argsort([schedule.condition_index[i] for i in range(num_grid) if schedule.is_condition[i]])
-        cond_rows = np.nonzero(schedule.is_condition)[0][order]
-        for row in cond_rows:
-            # Store the grid in short-rate space: r(t,x) is affine in x, so the
-            # conversion is exact and scenarios can interpolate their simulated r directly.
-            r_grid = _lgm_r_from_x(curve, a, sigma, grid_times[row], x_all[row])
-            condition_state_grids.append(np.asarray(r_grid))
-            condition_values.append(np.asarray(values_all[row]))
-
-    t0_row = num_grid - 1  # the grid is descending and always ends at 0
-    value_at_t0 = values_all[t0_row, x_all.shape[1] // 2]
-
-    return _RolledBackValue(
-        value_at_t0=value_at_t0,
-        condition_times=np.asarray(condition_times, dtype=np.float64),
-        condition_state_grids=condition_state_grids,
-        condition_values=condition_values,
-    )
+    exercise max is taken in the same units."""
+    _, values = _backward_induction_arrays(swap, _build_grid_schedule(swap))
+    return values[-1, values.shape[1] // 2]
 
 
 @partial(jax.jit, static_argnums=1)
@@ -752,7 +675,7 @@ def _backward_induction_arrays(swap: _PreparedBermudan, schedule: "_GridSchedule
 
     Jitted with `swap` as a pytree and `schedule` static: one program per trade shape.
     """
-    a, sigma, n_per_std, std_devs = swap.hw_a, swap.hw_sigma, swap.n_per_std, swap.std_devs
+    a, sigma, n_per_std, std_devs = swap.reversion, swap.sigma, swap.n_per_std, swap.std_devs
     curve = _zero_curve_of(swap)
     # Work in the curve's dtype (pricing or risk precision); hardcoded float64 constants
     # would upcast a float32 Greeks trace.
@@ -822,55 +745,3 @@ def _backward_induction_arrays(swap: _PreparedBermudan, schedule: "_GridSchedule
     )
     _, (x_all, values_all) = jax.lax.scan(step, init, rows)
     return x_all, values_all
-
-
-def price_bermudan_swaption_base(cfg: "BermudanSwaptionConfig | AmericanSwaptionConfig") -> float:
-    """t=0 NPV of one Bermudan/American swaption: the induction's x=0 node, as
-    `LgmConvolutionSolver2::stateGrid(0)`. 0 if expired."""
-    if cfg.is_expired():
-        return 0.0
-    swap = prepare_bermudan(cfg)
-    result = _run_backward_induction(swap, condition_times=[])
-    return float(result.value_at_t0)
-
-
-def price_bermudan_swaptions(
-    bermudan_configs: List["BermudanSwaptionConfig | AmericanSwaptionConfig"],
-    hw_paths: jax.Array,
-    step_times: jax.Array,
-) -> jax.Array:
-    """
-    NPV cube `[Scenarios, TimeSteps, Trades]`, each step conditioned on the simulated
-    short rate.
-
-    hw_paths: `[Scenarios, TimeSteps, NumHW]` from `generate_paths(...)["rates"]`.
-    step_times: `[TimeSteps]` times of those steps.
-
-    One backward induction per trade carries snapshot rows at every step before the last
-    exercise; each scenario's short rate is interpolated into the snapshot (see the module
-    docstring for how this differs from ORE). Steps at or after the last exercise time, and
-    expired trades, are 0.
-    """
-    step_times_np = np.asarray(step_times, dtype=np.float64)
-    per_trade = []
-    for cfg in bermudan_configs:
-        if cfg.is_expired():
-            per_trade.append(jnp.zeros(hw_paths.shape[:2], dtype=hw_paths.dtype))
-            continue
-        swap = prepare_bermudan(cfg)
-        r_t = np.asarray(hw_paths[:, :, cfg.rate_factor_index])  # [S, T]
-
-        last_exercise = float(swap.exercise_times[-1])
-        condition_steps = [t for t in step_times_np if t < last_exercise]
-        result = _run_backward_induction(swap, condition_times=condition_steps)
-
-        npv = np.zeros_like(r_t)
-        for i, t in enumerate(step_times_np):
-            if t >= last_exercise:
-                continue
-            j = condition_steps.index(t)
-            x_grid, v_grid = result.condition_state_grids[j], result.condition_values[j]
-            npv[:, i] = np.interp(r_t[:, i], x_grid, v_grid, left=v_grid[0], right=v_grid[-1])
-
-        per_trade.append(jnp.asarray(npv, dtype=hw_paths.dtype))
-    return jnp.stack(per_trade, axis=-1)

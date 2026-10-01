@@ -14,50 +14,54 @@ This is the engine's market-risk measure. The multi-step simulation in
 `engine.portfolio` is an exposure profile, not a VaR (audit finding R-1).
 """
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Sequence
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.american_swaption import AmericanSwaptionConfig
-from engine.market import SwaptionVolSurface
-from engine.market_risk.revaluation import OPTION_TYPES, curve_indices, revalue, uses_bachelier
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.instruments.european_swaption import SwaptionConfig
+from engine.market import Market
+from engine.market_risk.factors import RateRiskFactors
+from engine.market_risk.revaluation import factor_indices, revalue
 from engine.market_risk.scenarios import ShockScenarios
-from engine.portfolio.validation import validate_single_evaluation_date
 from engine.risk.var_es import compute_risk_metrics
+from engine.valuation.config import PricingConfig
+from engine.valuation.portfolio import validate_trades
+
+OPTION_TYPES = (SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig)
 
 _CURVE_TOLERANCE = 1e-12
 
 
 @dataclass
 class MarketRiskRequest:
-    """A portfolio and the shock scenarios to revalue it under.
+    """A portfolio, today's market, and the shock scenarios to revalue it under.
 
-    trades: any mix of `SwapConfig`, `SwaptionConfig`,
-        `BermudanSwaptionConfig`, `AmericanSwaptionConfig` and `BondConfig`,
-        all on one evaluation date. Curve references index into
-        `scenarios.factors.curves`; a trade that carries its own
-        `initial_zero_curve` must carry exactly that curve. Bermudan and
-        American trades need a calibrated (non-`None`) `hw_sigma`. A European
-        without Hull-White parameters is priced with ORE's Bachelier engine on
-        `swaption_vols` (`engine.market_risk.revaluation`).
-    scenarios: `ShockScenarios` built for the same curves.
+    trades: any mix of `SwapConfig`, `SwaptionConfig`, `BermudanSwaptionConfig`,
+        `AmericanSwaptionConfig` and `BondConfig`, each valued on `market.asof`.
+    market: today's market: the curves the factors shock, and the volatilities held fixed.
+    scenarios: `ShockScenarios` on factors named after the market's curves
+        (`RateRiskFactors.from_market`), each equal to the market's curve of its name. Every
+        curve a trade reads must be a factor.
+    pricing: the engine per product (`PricingConfig`), as in a portfolio run: a European's
+        engine, and a Bermudan's/American's LGM engine, calibrated on today's market and held
+        fixed under every scenario.
     quantiles: VaR/ES confidence levels, e.g. 0.99 for VaR and 0.975 for
         Basel's ES.
     precision: 64 or 32 -- the dtype of the revaluation and the statistics.
     batch_size: scenarios vmapped at once inside the revaluation loop; lower
         it if a large Bermudan runs out of memory.
-    swaption_vols: today's ATM normal swaption volatilities, held fixed under
-        every scenario; required by a Bachelier European.
     """
     trades: List
+    market: Market
     scenarios: ShockScenarios
+    pricing: PricingConfig = field(default_factory=PricingConfig)
     quantiles: Sequence[float] = (0.99, 0.975)
     precision: int = 64
     batch_size: int = 256
-    swaption_vols: Optional[SwaptionVolSurface] = None
 
 
 @dataclass
@@ -94,8 +98,8 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     # Revaluation at float32 still needs x64 enabled to build the float64
     # arrays a 64-bit request uses; it never changes a float32 array.
     jax.config.update("jax_enable_x64", True)
-    base, shocked = revalue(request.trades, scenarios.factors, scenarios.shifts, dtype, request.batch_size,
-                            request.swaption_vols)
+    base, shocked = revalue(request.trades, request.market, scenarios.factors, scenarios.shifts, request.pricing,
+                            dtype, request.batch_size)
     pnl = shocked - jnp.asarray(base, dtype=dtype)[None, :]
     portfolio_pnl = jnp.sum(pnl, axis=-1)
 
@@ -131,30 +135,29 @@ def _validate(request: MarketRiskRequest) -> None:
     for q in request.quantiles:
         if not 0.0 < q < 1.0:
             raise ValueError(f"quantile must lie in (0, 1); got {q}")
-    validate_single_evaluation_date(request.trades)
+    if not isinstance(request.pricing, PricingConfig):
+        raise TypeError(f"pricing must be a PricingConfig; got {type(request.pricing).__name__}")
+    validate_trades(request.trades, request.market, request.pricing)
 
     factors = request.scenarios.factors
-    for i, cfg in enumerate(request.trades):
-        label = f"trade[{i}] ({type(cfg).__name__}, notional={cfg.notional})"
-        indices = curve_indices(cfg)
-        for index in indices:
-            if not 0 <= index < len(factors.curves):
-                raise ValueError(
-                    f"{label}: curve index {index} is out of range for {len(factors.curves)} "
-                    f"risk-factor curves"
-                )
-        own_curve = getattr(cfg, "initial_zero_curve", None)
-        if own_curve is not None and not _same_curve(own_curve, factors.curves[indices[0]]):
-            raise ValueError(
-                f"{label}: initial_zero_curve does not match risk-factor curve "
-                f"{factors.names[indices[0]]!r} (index {indices[0]}); the trade would be shocked "
-                f"from a base it is not priced on"
-            )
-        if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)) and cfg.hw_sigma is None:
-            raise ValueError(f"{label}: hw_sigma is None; calibrate it before a market-risk run")
-        if uses_bachelier(cfg) and request.swaption_vols is None:
-            raise ValueError(f"{label}: a European without hw_a/hw_sigma is priced with the Bachelier engine "
-                             f"and needs request.swaption_vols")
+    market_curves = _market_curves(request.market)
+    for name, curve in zip(factors.names, factors.curves):
+        if name not in market_curves:
+            raise ValueError(f"risk factor {name!r} is not a curve of the market (have {sorted(market_curves)}); "
+                             f"build the factors with RateRiskFactors.from_market")
+        if not _same_curve(curve, market_curves[name]):
+            raise ValueError(f"risk factor {name!r} differs from the market's curve of that name; its trades would "
+                             f"be shocked from a base they are not priced on")
+    for cfg in request.trades:
+        try:
+            factor_indices(cfg, factors)
+        except KeyError as exc:
+            raise ValueError(f"trade {cfg.trade_id!r}: {exc.args[0]}") from None
+
+
+def _market_curves(market: Market):
+    every = RateRiskFactors.from_market(market)
+    return dict(zip(every.names, every.curves))
 
 
 def _same_curve(a, b) -> bool:
@@ -165,12 +168,12 @@ def _same_curve(a, b) -> bool:
 
 def _warnings(request: MarketRiskRequest) -> List[str]:
     out = []
-    options = [i for i, cfg in enumerate(request.trades) if isinstance(cfg, OPTION_TYPES)]
+    options = [cfg.trade_id for cfg in request.trades if isinstance(cfg, OPTION_TYPES)]
     if options:
         out.append(
-            f"trades {options} are options priced with fixed volatility (hw_sigma or the swaption "
-            f"volatility surface): only curve pillar rates are shocked, so volatility risk is not in "
-            f"this VaR/ES."
+            f"trades {options} are options priced with fixed volatility (the swaption volatility surface, "
+            f"a calibrated LGM or the Jamshidian model): only curve pillar rates are shocked, so volatility "
+            f"risk is not in this VaR/ES."
         )
     for q in request.quantiles:
         tail = int(np.floor(request.scenarios.num_scenarios * (1.0 - q)))

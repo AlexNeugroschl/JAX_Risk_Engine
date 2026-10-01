@@ -7,6 +7,10 @@ tenor dates (log-linear in the discount factor with a flat-forward extrapolation
 scenario market's curve exactly), with the evaluation date moved to the simulation date and
 the fixings `FixingManager` would have stored put in ORE's fixing history. ORE then prices the
 trade with its default engine, and that is the reference for the cube.
+
+Every path test runs under both interest-rate models (`MODELS`): the pricers read only the
+path curves, so the Hull-White model's cube is ORE's on its own paths exactly as the LGM's is
+(roadmap 1.3: I-43 exercised options, I-44 one model, I-24 bonds, I-04 paid flows).
 """
 import dataclasses
 
@@ -18,7 +22,7 @@ from engine.instruments.swap import SwapConfig, _build_ore_swap
 from engine.market import CurrencyMarket, Market, ZeroCurveConfig, index_name
 from engine.models.curves import ZeroCurve
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER as DC, ibor_index, resolve_accrual_day_count
-from engine.simulation.config import CamConfig, LgmConfig, simulate
+from engine.simulation.config import CamConfig, HullWhiteConfig, LgmConfig, simulate
 from engine.valuation.legs import legs_cube, legs_of, path_fixings, path_schedule, today_npv
 
 ASOF = ORE.Date(30, 7, 2026)
@@ -27,6 +31,8 @@ DISC_RATES = [0.020, 0.021, 0.024, 0.028, 0.034, 0.038, 0.040]
 INDEX_RATES = [0.025, 0.027, 0.031, 0.034, 0.039, 0.042, 0.043]
 INDEX = index_name("USD", 6)
 TENORS = ("3M", "6M", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "15Y", "20Y", "30Y")
+#: The interest-rate models every path test runs under.
+MODELS = {"LGM": LgmConfig, "HullWhite": HullWhiteConfig}
 
 
 def _market():
@@ -81,7 +87,7 @@ def _history(cfg):
 
 def _swap(**overrides):
     fields = dict(notional=1e6, fixed_rate=0.032, payer=True, effective_date=ORE.Date(3, 2, 2025),
-                  maturity_date=ORE.Date(3, 2, 2032), evaluation_date=ASOF, floating_spread=0.0015)
+                  maturity_date=ORE.Date(3, 2, 2032), evaluation_date=ASOF, floating_spread=0.0015, trade_id="swap")
     fields.update(overrides)
     cfg = SwapConfig(**fields)
     return dataclasses.replace(cfg, fixings=_history(cfg))
@@ -106,13 +112,13 @@ def test_today_equals_ores_discounting_swap_engine(name):
     assert ours == pytest.approx(ore, rel=1e-10, abs=1e-6)
 
 
-@pytest.fixture(scope="module")
-def scenarios():
+@pytest.fixture(scope="module", params=MODELS)
+def scenarios(request):
     """A few paths over dates that fall between fixing and payment dates, on a holiday
     (Good Friday 2027: FixingManager fixes on the next business day), and after maturity."""
     dates = (ORE.Date(15, 10, 2026), ORE.Date(2, 2, 2027), ORE.Date(26, 3, 2027), ORE.Date(5, 8, 2027),
              ORE.Date(1, 2, 2029), ORE.Date(3, 8, 2031), ORE.Date(10, 2, 2032))
-    config = CamConfig(dates=dates, base_currency="USD", ir={"USD": LgmConfig(0.03, 0.012)},
+    config = CamConfig(dates=dates, base_currency="USD", ir={"USD": MODELS[request.param](0.03, 0.012)},
                        curve_tenors=TENORS, samples=4, seed=7)
     return simulate(_market(), config)
 
@@ -205,7 +211,7 @@ def test_the_vol_surface_equals_quantlibs_swaption_volatility_matrix():
 
 def _european(**overrides):
     fields = dict(notional=1e6, fixed_rate=0.033, payer=True, swap_tenor="5Y",
-                  forward_start=ORE.Period(2, ORE.Years), evaluation_date=ASOF)
+                  forward_start=ORE.Period(2, ORE.Years), evaluation_date=ASOF, trade_id="european")
     fields.update(overrides)
     return SwaptionConfig(**fields)
 
@@ -361,7 +367,8 @@ def _oracle_market(vols, pillars=ORACLE_PILLARS, disc=ORACLE_DISC, index=ORACLE_
 
 def _bermudan_trade(**overrides):
     fields = dict(notional=1e6, fixed_rate=0.031, payer=True, exercise_dates=[ASOF + 400],
-                  effective_date=ORE.Date(3, 2, 2027), maturity_date=ORE.Date(3, 2, 2033), evaluation_date=ASOF)
+                  effective_date=ORE.Date(3, 2, 2027), maturity_date=ORE.Date(3, 2, 2033), evaluation_date=ASOF,
+                  trade_id="bermudan")
     fields.update(overrides)
     booked = BermudanSwaptionConfig(**fields)
     if "exercise_dates" in overrides:
@@ -372,7 +379,7 @@ def _bermudan_trade(**overrides):
 def _american_trade(**overrides):
     fields = dict(notional=1e6, fixed_rate=0.031, payer=True, first_exercise_date=ORE.Date(3, 2, 2027),
                   last_exercise_date=ORE.Date(3, 2, 2031), effective_date=ORE.Date(3, 2, 2027),
-                  maturity_date=ORE.Date(3, 2, 2033), evaluation_date=ASOF)
+                  maturity_date=ORE.Date(3, 2, 2033), evaluation_date=ASOF, trade_id="american")
     fields.update(overrides)
     return AmericanSwaptionConfig(**fields)
 
@@ -407,10 +414,10 @@ def test_option_today_equals_ores_calibrated_grid_engine(name):
     assert ours == pytest.approx(_ore_option(cfg, ASOF, VOLS), rel=1e-9)
 
 
-@pytest.fixture(scope="module")
-def option_scenarios():
+@pytest.fixture(scope="module", params=MODELS)
+def option_scenarios(request):
     dates = (ORE.Date(15, 12, 2026), ORE.Date(10, 2, 2027), ORE.Date(3, 8, 2028))
-    config = CamConfig(dates=dates, base_currency="USD", ir={"USD": LgmConfig(0.03, 0.012)},
+    config = CamConfig(dates=dates, base_currency="USD", ir={"USD": MODELS[request.param](0.03, 0.012)},
                        curve_tenors=TENORS, samples=3, seed=11)
     return simulate(_oracle_market(FLAT_VOLS), config)
 
@@ -488,7 +495,7 @@ def test_an_americans_basket_keeps_the_as_of_grid_on_later_dates():
 # The portfolio on the scenario market: ORE's ValuationEngine::buildCube (T-8, T-11)
 # =============================================================================
 from engine.calibration.cam import calibrate_cam  # noqa: E402
-from engine.instruments.treasury import BondConfig, CouponPeriod, price_bond_base  # noqa: E402
+from engine.instruments.treasury import BondConfig, CouponPeriod, _remaining_cashflows  # noqa: E402
 from engine.market import EquityMarket  # noqa: E402
 from engine.valuation.config import PricingConfig  # noqa: E402
 from engine.valuation.portfolio import value_portfolio, value_today  # noqa: E402
@@ -510,7 +517,7 @@ def _two_currency_market():
 def _bond():
     periods = tuple(CouponPeriod(ORE.Date(15, m, y), ORE.Date(15, m + 6 if m == 2 else 2, y if m == 2 else y + 1))
                     for y in (2026, 2027) for m in (2, 8))
-    return BondConfig(face_amount=100_000.0, maturity_date=ORE.Date(15, 2, 2028), evaluation_date=ASOF,
+    return BondConfig(trade_id="bond-L513", face_amount=100_000.0, maturity_date=ORE.Date(15, 2, 2028), evaluation_date=ASOF,
                       coupon_rate=0.04, coupon_schedule=periods)
 
 
@@ -527,13 +534,14 @@ def _portfolio():
     ]
 
 
-@pytest.fixture(scope="module")
-def portfolio_run():
+@pytest.fixture(scope="module", params=MODELS)
+def portfolio_run(request):
     market = _two_currency_market()
     dates = (ORE.Date(15, 9, 2026), ORE.Date(15, 12, 2026), ORE.Date(3, 8, 2028), ORE.Date(1, 3, 2033))
+    model = MODELS[request.param]
     config = CamConfig(dates=dates, base_currency="USD",
-                       ir={"USD": LgmConfig(0.03, 0.01, ("1Y", "2Y", "5Y"), ("9Y", "8Y", "5Y")),
-                           "EUR": LgmConfig(0.02, 0.009)},
+                       ir={"USD": model(0.03, 0.01, ("1Y", "2Y", "5Y"), ("9Y", "8Y", "5Y")),
+                           "EUR": model(0.02, 0.009)},
                        fx_volatilities={"EUR": 0.1}, correlations={("IR:USD", "FX:EURUSD"): 0.2},
                        curve_tenors=TENORS, samples=8, seed=5)
     scenarios = simulate(market, config)
@@ -544,8 +552,10 @@ def test_todays_npvs_are_each_pricers_own(portfolio_run):
     market, _, _, result = portfolio_run
     trades = _portfolio()
     assert result.today == pytest.approx(value_today(trades, market, "USD", FAST_PRICING), rel=1e-12)
-    bond = dataclasses.replace(trades[5], initial_zero_curve=ZeroCurveConfig(ORACLE_PILLARS, ORACLE_DISC))
-    assert result.today[5] == pytest.approx(price_bond_base(bond), rel=1e-12)
+    bond = trades[5]
+    discount = _ore_zero_curve(ORACLE_DISC, ORACLE_PILLARS)
+    expected = sum(bond.face_amount * a * discount.discount(d) for d, a in _remaining_cashflows(bond))
+    assert result.today[5] == pytest.approx(expected, rel=1e-12)
     eur_in_eur = value_today([trades[6]], market, "EUR", FAST_PRICING)[0]
     assert result.today[6] == pytest.approx(1.1 * eur_in_eur, rel=1e-12)
 
@@ -557,7 +567,7 @@ def test_an_exercised_physical_option_becomes_its_swap_and_a_cash_one_leaves(por
     cube = np.asarray(result.cube)
     trade = _portfolio()[1]
     assert sm.dates[0] < trade.exercise_date <= sm.dates[1]
-    underlying = SwapConfig(notional=trade.notional, fixed_rate=trade.fixed_rate, payer=True,
+    underlying = SwapConfig(trade_id="swap-L562", notional=trade.notional, fixed_rate=trade.fixed_rate, payer=True,
                             effective_date=trade.effective_date, maturity_date=trade.maturity_date,
                             evaluation_date=ASOF)
     swap_cube = np.asarray(value_portfolio([underlying], market, sm, "USD", FAST_PRICING).cube[:, :, 0])
@@ -599,9 +609,11 @@ def test_the_cam_is_calibrated_to_its_basket(portfolio_run):
 
 
 class TestMarketPathRefusals:
-    def test_model_fields_on_a_trade_are_refused(self):
-        with pytest.raises(ValueError, match="hw_a"):
-            value_today([_european(hw_a=0.03)], _two_currency_market(), "USD")
+    def test_a_trade_carries_no_model(self):
+        """The model is the pricing configuration's (I-63): a trade given one is a TypeError
+        at construction (tests/test_trade_configs.py for every type and field)."""
+        with pytest.raises(TypeError, match="hw_a"):
+            _european(hw_a=0.03)
 
     def test_a_trade_valued_on_another_date_is_refused(self):
         with pytest.raises(ValueError, match="as-of"):

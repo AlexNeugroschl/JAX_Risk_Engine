@@ -39,8 +39,7 @@ well), but it's built and tuned for TPU specifically.
    see [Instruments: Interest Rate Swaps](../instruments/swaps.md),
    [European Swaptions](../instruments/european-swaptions.md), and
    [American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md). US
-   Treasury bills and notes are also priced, but only for *today* — they have no scenario
-   dimension, which is why they get no VaR (see step 3).
+   Treasury bills and notes are priced too, today and in every scenario.
 
 3. **Measure the risk.** Look at the full spread of "what-if" trade values across every
    scenario and compute standard risk numbers: **Value at Risk (VaR)** ("in the worst 5%
@@ -94,11 +93,11 @@ ambitions (see the root [README.md](../../README.md) for the full roadmap):
 
 | Piece | What it does | Status |
 |---|---|---|
-| Market simulation | Simulates future interest rates, stock prices, and FX rates | ✅ Working |
+| Market simulation | Simulates future interest rates (the LGM or the Hull-White model, per currency), stock prices, and FX rates | ✅ Working |
 | Interest rate swap pricing | Prices interest rate swaps across every simulated scenario | ✅ Working |
-| European swaption pricing | Prices single-exercise-date swaptions (Jamshidian's closed-form decomposition) | ✅ Working |
+| European swaption pricing | Prices single-exercise-date swaptions (Bachelier on market volatilities, ORE's default; Jamshidian as an option) | ✅ Working |
 | Bermudan & American swaption pricing | Prices multi/continuous-exercise-date swaptions (numeric LGM backward induction) | ✅ Working |
-| Treasury bills & notes | Prices US Treasuries by discounted cashflows — **today's value only**, no scenarios and therefore no VaR/ES | ✅ Working |
+| Treasury bills & notes | Prices US Treasuries by discounted cashflows, today and in every scenario | ✅ Working |
 | Value at Risk / Expected Shortfall | Turns trade values into risk numbers | ✅ Working |
 | Sensitivities ("Greeks") | How much a trade's value moves when rates or volatility move | ✅ Working |
 | Calibration | Fits the model's volatility to real market swaption quotes | ✅ Working |
