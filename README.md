@@ -41,8 +41,9 @@ double-precision simulations in the same wall-clock time.
 - Trades as ORE books them: each names its id, its valuation date, its currency and index,
   and carries no model or curve of its own
 - Adjustable precision, since which precision each calculation needs is what the project
-  studies: FP64 or FP32 for the simulation today; pricing, risk and calibration follow in
-  roadmap 1.4 ([I-55](docs/planning/known-issues.md#i-55))
+  studies: FP64 or FP32 for the simulation today; the scenario market and path pricing,
+  per product and per trade, and storage down to FP8 follow in roadmap 1.4 to 1.7
+  ([I-55](docs/planning/known-issues.md#i-55), [design](docs/planning/details/precision.md))
 - HTTP API: one portfolio request reaching the run configuration (market risk and the
   cross-asset calibration routes are still to come,
   [I-56](docs/planning/known-issues.md#i-56)); plus a versioned end-of-day contract for
@@ -114,5 +115,5 @@ portfolio from Python or over HTTP.
 - [HTTP API](docs/reference/http-api.md)
 - [EOD Integration](docs/reference/eod-integration.md)
 - [Planning](docs/planning/README.md): [known issues](docs/planning/known-issues.md), [features](docs/planning/features.md), [roadmap](docs/planning/roadmap.md), and [decisions](compliance/decisions.md)
-- [Sub-FP32 precision research](docs/planning/details/sub-fp32-precision.md)
+- [Precision design](docs/planning/details/precision.md)
 - [Full documentation index](docs/README.md)

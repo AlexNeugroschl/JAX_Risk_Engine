@@ -40,18 +40,27 @@ The TraderX EOD boundary prices Treasuries end to end and refuses everything els
 
 The configurable engine (decision A-1). The run configuration (`RunConfig`, step 1.2) and the
 Hull-White model as one of its options on the shared pipeline, with trades that carry no model
-and name themselves (step 1.3, 2026-10-01), are done; 1.4 moves the precision mechanism onto
-it. Fixing the precision mechanism, the Greeks recompiles or the API before 1.4 would be
-redone. Design: [details/configurable-engine.md](details/configurable-engine.md).
+and name themselves (step 1.3, 2026-10-01), are done. Steps 1.4 to 1.7 build adjustable
+precision on it, down to FP8 storage, and 1.8 replaces the worker pools with one engine
+worker process. Fixing the precision mechanism, the Greeks recompiles or the API before 1.4
+would be redone. Designs: [details/configurable-engine.md](details/configurable-engine.md),
+[details/precision.md](details/precision.md) (decisions A-10 to A-16, D-9 revised
+2026-10-01).
 
 | Step | Work | Closes | Size |
 |---|---|---|---|
-| 1.4 | Explicit dtypes from the configuration in every stage (scenario market, legs, per-path Bermudan engine, Greeks, calibration), so pricing, risk and calibration become adjustable for either model and `check_run`'s refusal goes; then remove `_PRICING_LOCK`, `run_market_risk`'s flag set and the per-precision pool tiers (x64 is already on once per process since 1.3) | [I-55](known-issues.md#i-55) (stages, mechanism) | M |
+| 1.4 | `engine/precision/` (one format table, `Precision` with storage, compute and accumulate per stage, `store`/`load`) at float64/float32; it replaces `PrecisionConfig` and `MarketRiskRequest.precision`, the old shape refused (A-12). Five cast points, inputs follow dtype, float64 reductions, dtype-dependent constants fixed, market risk on the same module, strict dtype promotion in CI. Then remove `check_run`'s refusal, `run_market_risk`'s flag set, `_PRICING_LOCK` and the per-precision tiers | [I-55](known-issues.md#i-55) (stages, mechanism) | M |
+| 1.5 | Precision per product and per trade (A-15): one resolver, per-trade stored cube columns, market risk per trade | [F-07](features.md#f-07) (per instrument) | S |
+| 1.6 | Sub-32-bit storage: block scales along the scenario axis, nearest and stochastic rounding; float16, bfloat16 and both FP8 formats | [F-07](features.md#f-07) (storage) | M |
+| 1.7 | Paired float64 sample, two-level estimator for means (A-13), a precision report on every result: policy as run, realized dtypes, device, paired errors | [I-12](known-issues.md#i-12) | M |
+| 1.8 | One engine worker process per host behind a durable SQLite job queue (A-14); delete the pools and the freeze/thaw of ORE objects. Not a main priority: nothing in 1.4 to 1.7 or stage 2 waits for it; 3.2 does | [I-72](known-issues.md#i-72), [I-08](known-issues.md#i-08) (portfolio jobs) | M |
 
 Exit: every step's defaults reproduce the previous step's numbers bit for bit (the shared
-portfolio and the parity suites). 1.3 met it: 103 of 103 saved arrays identical, and each
-Hull-White fix measured red on the code before it, on a sloped curve
-([known-issues.md](known-issues.md#verification-status)).
+portfolio and the parity suites; [details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
+1.3 met it: 103 of 103 saved arrays identical, and each Hull-White fix measured red on the
+code before it, on a sloped curve ([known-issues.md](known-issues.md#verification-status)).
+1.4 also shows a float32 run's cube bit-identical to today's `simulation=32` cube; 1.8 runs the
+full suite on Linux.
 
 <a id="stage-2--correctness-and-precision"></a>
 ## Stage 2 — Correctness and precision
@@ -64,12 +73,15 @@ Hull-White fix measured red on the code before it, on a sloped curve
 | 2.4 | Reproduce ORE's two per-path recalibration details, measured against 2.2's cube | [I-49](known-issues.md#i-49) | M |
 | 2.5 | `ShiftHorizon` as a setting; parity at 0.5; then 0.5 as the default | [I-32](known-issues.md#i-32) | M |
 | 2.6 | Swaption vol strike axis, read at each option's and helper's strike | [I-54](known-issues.md#i-54) | M |
-| 2.7 | Precision evidence table per figure and precision; warning on unproven combinations | [I-55](known-issues.md#i-55) (warnings) | M |
-| 2.8 | Report the worker's device and realised dtypes on each result | [I-12](known-issues.md#i-12) | S |
+| 2.7 | *Parallel, from 1.7.* Measurement of the storage formats per class, product and path count; the evidence table against the acceptance standard (A-11: Basel III's P&L attribution test and the Basel plan's P6.2 rule; P6.2 labelled as engineering for figures Basel does not cover); a warning on any result whose combination has no passing row | [I-55](known-issues.md#i-55) (warnings) | M |
+| 2.8 | Kernels in difference form with explicit accumulators, one family at a time (simulation scan, scenario curves, legs, Europeans, Bermudan rollback and recalibration, exposure), one implementation for every precision (A-16); compute below float32 enabled. ORE parity at existing tolerances first, then the float64 snapshot re-baselined once | [F-07](features.md#f-07) (compute) | L |
 
 Order within the stage: 2.2 before 2.4 (2.4 needs 2.2's cube); 2.5 and 2.6 change default or
-calibrated numbers, so they finish before stage 3. 2.7 needs 1.4. Parity methodology:
-[details/ore-parity-validation.md](details/ore-parity-validation.md).
+calibrated numbers, so they finish before stage 3. 2.7 runs beside the rest of the stage: it
+changes no float64 number. 2.8 comes after 2.4, 2.5 and 2.6, which change the same kernels, so
+none is rewritten twice, and before stage 3, because it moves float64 numbers at rounding
+level. Parity methodology: [details/ore-parity-validation.md](details/ore-parity-validation.md);
+precision: [details/precision.md](details/precision.md).
 
 <a id="stage-3--performance"></a>
 ## Stage 3 — Performance
@@ -79,8 +91,9 @@ Rule: every change leaves the FP64 parity tests bit-identical.
 | Step | Work | Closes | Size |
 |---|---|---|---|
 | 3.1 | Profile a portfolio job, then remove the dominant costs (per-path recalibration, Python bump loops, recompiles per process) | [I-53](known-issues.md#i-53) | M |
-| 3.2 | Shard the scenario axis across devices; device-aware pool sizing on a Cloud TPU VM | [I-61](known-issues.md#i-61) | L |
+| 3.2 | Shard the scenario axis across the devices the engine worker (1.8) owns; one worker per host on a Cloud TPU pod slice | [I-61](known-issues.md#i-61) | L |
 | 3.3 | Pass the calibration's market prices as traced arguments (6 → 1 compile per basket), then memoize the AD Greeks' jitted closures (re-measured after 1.3: 30 programs per repeated call, 28 of them calibrations) | [I-22](known-issues.md#i-22), [I-21](known-issues.md#i-21) | S |
+| 3.4 | Low-precision timing on Ironwood and H100: the storage formats, then matrix-product forms of the heavy kernels (leg pricing, Bermudan rollback) on native FP8; wall time per figure at equal accuracy, read from the evidence table's path ceilings | [F-07](features.md#f-07) (speed) | M |
 
 <a id="stage-4--api-robustness"></a>
 ## Stage 4 — API robustness
@@ -110,7 +123,7 @@ for repeated runs.
 |---|---|---|---|
 | 6.1 | *Parallel, start now.* Basel P0 (decisions, pinned text, profile, traceability) and P2 data acquisition, which is calendar time | [F-05](features.md#f-05) | — |
 | 6.2 | Engine options: ORE's `AnalyticLgm` European engine, settlement methods, FD solver (the AD Greeks method and the market-risk engine by configuration are done) | [F-01](features.md#f-01) | — |
-| 6.3 | Sub-FP32 tiers: inverse-CDF kernel at FP64/FP32 first, then FP16 storage | [F-07](features.md#f-07) | 1.4, 2.7 |
+| 6.3 | FP4: storage with a variance correction through the block scales, compute on TPU 8t/8i; multilevel estimation of quantiles (PFE, VaR, ES) | [F-07](features.md#f-07) (FP4) | 2.8, 3.4 |
 | 6.4 | FX and equity trades on the market path; FX/EQ calibration | [F-04](features.md#f-04) | — |
 | 6.5 | SABR volatility | [F-02](features.md#f-02) | 2.6 |
 | 6.6 | Basel P1 (FRTB-SA) onward; CVA/DVA | [F-05](features.md#f-05), [F-06](features.md#f-06) | 2.3; 2.2 |

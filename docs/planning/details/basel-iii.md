@@ -124,7 +124,7 @@ changing one later is a tracked change with a re-run of the affected evidence.
 | D-6 | Historical shock type | Absolute for rates and vols; log-returns for FX and equity | Rates can be negative; relative shocks are undefined near zero |
 | D-7 | Source of hypothetical/actual P&L for backtesting and PLA | TraderX front-office valuations (HPL, APL); engine produces RTPL | **If the engine produces both HPL and RTPL, PLA passes trivially and proves nothing.** An independent valuation is required for PLA to mean anything |
 | D-8 | Market-data history | Public US Treasury constant-maturity yields (daily, back to before 2007) for the reduced risk-factor set and stress-period search; SOFR history (2018+) for the current period; swaption vols from a named vendor or declared NMRF | Only freely available history reaching 2007–2009. Vol history is the hardest item; without it, vol factors are NMRFs |
-| D-9 | Precision of regulatory runs | **Decided 2026-09-30:** any precision combination may be run for any figure; a figure whose combination has not passed its gate (P6) carries a warning stating the evidence and what is missing | Testing which precision each calculation needs is the project's purpose, so nothing is refused. The warning keeps an unproven figure from passing as a proven one |
+| D-9 | Precision of regulatory runs | **Decided 2026-09-30, revised 2026-10-01:** any precision may be chosen for the adjustable stages (simulation, scenario market, path pricing; A-10), per product and trade; calibration, t=0 and Greeks stay float64. A figure whose combination has not passed the acceptance standard (A-11, P6) carries a warning stating the evidence and what is missing | Testing which precision each calculation needs is the project's purpose, so nothing is refused. The warning keeps an unproven figure from passing as a proven one. Design: [precision.md](precision.md) |
 | D-10 | ORE reference config for Americans (I-32) | **Decided 2026-09-30:** configurable; default ORE's `ShiftHorizon = 0.5` with the Grid solver, FD as an option. Until parity at 0.5 is proven the engine runs at 0, cited explicitly | Defaults are ORE's defaults (ORE alignment plan 9.6) |
 
 ---
@@ -362,15 +362,17 @@ as green.
 
 ### Phase 6 — Precision gate for regulatory figures (≈1–2 weeks)
 
-The project researches whether FP32 can match FP64. For capital, it must be settled per
-figure, and a figure must say whether it has been (D-9: any precision may be run, and an
-unproven one is flagged, not refused).
+The project researches how much precision each figure needs, down to FP8. For capital, it
+must be settled per figure, and a figure must say whether it has been (D-9: any precision may
+be run, and an unproven one is flagged, not refused). The mechanism, the measurement
+campaign and the shared evidence table are in [precision.md](precision.md) (§9, §10;
+roadmap 1.7, 2.7); this phase applies them to the regulatory figures.
 
 | ID | Task | Exit |
 |---|---|---|
-| P6.1 | Run every regulatory figure at FP64 and FP32 on the Phase 1 portfolio and on a large synthetic one | Table of relative differences |
-| P6.2 | Acceptance rule per figure: FP32 is allowed only when its difference is below 1% of the figure's own statistical error (for ES) or below 1e-6 relative (for SA, which is deterministic) | Rule in the profile; `RegulatoryResult` carries a warning (with the evidence: which precisions were validated, at how many paths) for any figure run at a precision that has not passed its gate (D-9; ORE alignment plan 9.5) |
-| P6.3 | Record the realised dtype on every regulatory result (composes with [I-12](../known-issues.md#i-12)) | Present in the manifest |
+| P6.1 | Run every regulatory figure at float64 and at each reduced combination of the precision evidence table, on the Phase 1 portfolio and on a large synthetic one | Rows in the shared evidence table |
+| P6.2 | Acceptance rule per figure (decision A-11): the P&L attribution test (MAR32: Spearman and Kolmogorov–Smirnov, green zone) between the reduced-precision and float64 P&L where Basel has the test, and the precision error below 1% of the figure's own statistical error (VaR, ES) or below 1e-6 relative (SA, which is deterministic) | Rule in the profile; `RegulatoryResult` carries a warning (with the evidence: which precisions were validated, at how many paths) for any figure run at a precision that has not passed its gate (D-9; ORE alignment plan 9.5) |
+| P6.3 | Record the realised dtypes and device on every regulatory result: the precision report (roadmap 1.7, [I-12](../known-issues.md#i-12)) | Present in the manifest |
 
 ### Phase 7 — Proof: evidence pack and independent validation (≈2–3 weeks, then continuous)
 

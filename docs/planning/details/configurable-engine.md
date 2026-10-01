@@ -31,7 +31,7 @@ Every choice is one `RunConfig` (`engine/portfolio/config.py`) on
 | European engine | `Bachelier` (ORE's default) or `Jamshidian` with `PricingConfig.jamshidian` |
 | Greeks | `Bump` (`engine.risk.sensitivities`, settings `config.greeks.sensitivity`) or `AD` (`engine.risk.greeks`) |
 | Market risk | `engine.market_risk.run_market_risk` on a `Market` with the same `PricingConfig` (A-8) |
-| Precision | `simulation` 32 or 64; the other stages float64, refused below (`check_run`, I-55, step 1.4) |
+| Precision | `simulation` 32 or 64; the other stages float64, refused below (`check_run`, I-55); steps 1.4 to 1.7 replace it ([precision.md](precision.md)) |
 
 ## Step 1.2 — the run configuration (I-68) — done
 
@@ -117,14 +117,14 @@ curve; every per-path ORE comparison of `tests/test_valuation.py` run under both
 `tests/test_end_to_end.py` prices the Hull-White simulation's paths in QuantLib
 ([verification status](../known-issues.md#verification-status)).
 
-## Step 1.4 — the precision mechanism (I-55)
+## Steps 1.4 to 1.8 — precision and the engine worker (I-55, I-12, I-72)
 
-x64 is already enabled once per process (when `engine` is imported, and kept on in every
-worker since 1.3). Every stage takes its dtype from the configuration and every array is
-created with one: the scenario market and legs, the per-path Bermudan engine and its
-calibration, the Greeks (find each array created without a dtype). Then `check_run`'s refusal
-goes, and `_PRICING_LOCK`, `run_market_risk`'s flag set and the per-precision worker pools are
-removed. Adjustable precision stays available throughout the change.
+Designed in [precision.md](precision.md): a `Precision` with storage, compute and accumulate
+per adjustable stage, overridable per product and trade (A-10, A-15); the old configuration
+refused (A-12); five cast points with inputs following dtype; storage down to FP8; the paired
+float64 sample, the two-level estimator and the precision report (A-13); then one engine
+worker process per host behind a durable job queue (A-14). Every step keeps the default bit
+for bit. Adjustable precision stays available throughout.
 
 ## Step 2.5 — `ShiftHorizon` (I-32)
 
@@ -132,13 +132,11 @@ removed. Adjustable precision stays available throughout the change.
 `_state_grid`). Add `shift_horizon=0.5` cases to `tests/test_ore_lgm_parity.py`, then make 0.5
 the default (ORE's builder default, `OREData/ored/portfolio/builders/swaption.cpp`).
 
-## Step 2.7 — precision evidence (I-55)
+## Steps 2.7 and 2.8 — precision evidence and low-precision kernels (I-55, F-07)
 
-A table per figure (NPV, exposure profile, VaR/ES, each Greek, calibration) and precision
-combination: what was validated, how, at how many paths. A result whose combination is not
-validated for a figure it reports carries a warning naming the evidence and what is
-missing. Any combination may still be run (D-9). The same table is Basel P6's precision gate
-and F-07's validation bar.
+In [precision.md](precision.md) §8 and §10: the evidence table per figure and precision
+against the acceptance standard (A-11), shared with Basel P6; then the kernels in difference
+form, one implementation for every precision (A-16).
 
 ## Step 4.1 — one request (I-56)
 

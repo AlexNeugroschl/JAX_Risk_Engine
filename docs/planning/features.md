@@ -15,7 +15,7 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 | [F-04](#f-04) | FX and equity trades on the market path; FX/EQ vol calibration | L | — | 6.4 |
 | [F-05](#f-05) | Basel III regulatory figures | L | See entry | 6.1, 6.6 |
 | [F-06](#f-06) | CVA/DVA from the exposure profiles | M | I-50 | 6.6 |
-| [F-07](#f-07) | Sub-FP32 precision tiers (FP16, bfloat16) | L | I-55, I-61 | 6.3 |
+| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-55 | 1.5, 1.6, 2.8, 3.4, 6.3 |
 
 ---
 
@@ -106,15 +106,19 @@ Parity against ORE's XVA analytic through the same oracle as I-50. The regulator
 **Depends on.** I-50 (exposure proven first). **Size.** M.
 
 <a id="f-07"></a>
-### F-07 — Sub-FP32 precision tiers (FP16, bfloat16)
+### F-07 — Precision below float32, down to FP8 (FP4 later), per stage, product and trade
 
 **Value.** The research goal: whether many low-precision paths match fewer FP64 paths in
-equal wall time. Measured so far: `norm.ppf` and `cholesky` have no kernel below float32,
-`matmul` works down to FP4, and computing in float32 while storing low works at every tier.
-Each storage format caps the useful path count (float16 about 23M, bfloat16 about 359k,
-FP8 about 1,400), so FP16 storage is the tier worth building; FP8/FP4 are rejected for path
-storage with the measured reason.
+equal wall time. Storage, compute and accumulate precision per adjustable stage (simulation,
+scenario market, path pricing), overridable per product and per trade (A-15); sub-32-bit
+storage with block scales and nearest or stochastic rounding (1.5, 1.6); compute below
+float32 through kernels in difference form, one implementation for every precision (A-16,
+2.8); timing on Ironwood and H100 (3.4); FP4 on TPU 8t/8i (6.3). Measured so far: FP8
+storage of the shocks biases a call payoff by about one Monte Carlo standard error at 4M
+paths (stochastic rounding: 0.15), so the earlier rejection of FP8, which compared error per
+value with Monte Carlo error, is withdrawn; FP4 stored naively is biased with either
+rounding.
 
-**Depends on.** [I-55](known-issues.md#i-55) (explicit dtypes and the evidence table);
-the throughput case needs TPUs ([I-61](known-issues.md#i-61)). **Size.** L.
-**Details.** [details/sub-fp32-precision.md](details/sub-fp32-precision.md).
+**Depends on.** [I-55](known-issues.md#i-55) (roadmap 1.4: the mechanism and cast points);
+the speed case needs the target hardware, which the owner has. **Size.** L.
+**Details.** [details/precision.md](details/precision.md).

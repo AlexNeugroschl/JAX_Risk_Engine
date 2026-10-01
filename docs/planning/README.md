@@ -157,4 +157,4 @@ Where the IDs of retired planning documents went. Their full text is in git hist
 | Roadmap phase 10 (XVA) | [F-06](features.md#f-06) |
 | Roadmap phase 12 (lower-precision formats) | [F-07](features.md#f-07) |
 | Basel plan P0–P7 | [F-05](features.md#f-05); [details/basel-iii.md](details/basel-iii.md) |
-| Precision research | [F-07](features.md#f-07); [details/sub-fp32-precision.md](details/sub-fp32-precision.md) |
+| Precision research, `details/sub-fp32-precision.md` | [F-07](features.md#f-07); [details/precision.md](details/precision.md) (its findings, corrected, in §15) |

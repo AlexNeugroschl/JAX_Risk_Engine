@@ -34,10 +34,10 @@ full verification and is never recorded here. Rules: [README.md](README.md#verif
 | [I-04](#i-04) | Seasoned TraderX swaps: the export has no past fixings | High | OPEN | Scope | External |
 | [I-05](#i-05) | No faithful USD-SOFR / ACT-360 swap construction | High | OPEN | Scope | External |
 | [I-07](#i-07) | No corporate bond, equity or listed-option pricer | Medium | OPEN | Scope | By demand |
-| [I-08](#i-08) | Portfolio job store in memory; a running EOD attempt is lost on restart | Medium | PARTIAL | API | 4.2 |
+| [I-08](#i-08) | Portfolio job store in memory; a running EOD attempt is lost on restart | Medium | PARTIAL | API | 1.8, 4.2 |
 | [I-09](#i-09) | Whole scenario cube serialized into the JSON response | Medium | OPEN | API | 4.1 |
 | [I-10](#i-10) | Per-trade results keyed by position beside the echoed ids | Low | PARTIAL | API | 4.1 |
-| [I-12](#i-12) | `/version` reports the dispatcher's backend, not the worker's device | Low | OPEN | Correctness | 2.8 |
+| [I-12](#i-12) | `/version` reports the dispatcher's backend, not the worker's device | Low | OPEN | Correctness | 1.7 |
 | [I-16](#i-16) | `rateSensitivity` is parallel-only | Medium | OPEN | Scope | External |
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
 | [I-21](#i-21) | AD Greeks recompile about 30 XLA programs per repeated call | Medium | OPEN | Performance | 3.3 |
@@ -52,6 +52,7 @@ full verification and is never recorded here. Rules: [README.md](README.md#verif
 | [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | OPEN | Performance | 3.1 |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | 2.6 |
 | [I-55](#i-55) | Only the simulation's precision is adjustable; unproven combinations not flagged | Medium | OPEN | Architecture | 1.4, 2.7 |
+| [I-72](#i-72) | Worker pools pickle ORE objects, compile per worker and would contend for TPU chips | Medium | OPEN | Architecture | 1.8 |
 | [I-56](#i-56) | Market risk and the CAM calibration have no route; two routes named like versions | Medium | PARTIAL | API | 4.1 |
 | [I-57](#i-57) | EOD: a cached result is served before the submission id is checked | High | OPEN | API | 2.1 |
 | [I-58](#i-58) | EOD: two concurrent submissions of one workload both execute | Medium | OPEN | API | 2.1 |
@@ -83,7 +84,7 @@ runs no JAX work; pricing runs in `worker_pool` processes. On a multi-device hos
 or hardware study reading this field would attribute results to the wrong device.
 
 **To close.** Report the device and the realised per-stage dtypes from the worker, on each
-result.
+result: the precision report of roadmap 1.7 ([details](details/precision.md#95-the-report)).
 
 <a id="i-32"></a>
 ### I-32 — Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5
@@ -278,8 +279,9 @@ low-precision paths against fewer FP64 paths in equal wall time. No code uses `s
 
 **To close.** Shard the scenario axis: Sobol draws (per-device skip-ahead or scrambles; the
 seed exists), path evolution, pricing and exposure are scenario-parallel; VaR/ES order
-statistics need one cross-device step. Then device-count-aware pool sizing and
-`JAX_PLATFORMS`/`TPU_VISIBLE_CHIPS` pinning on a real Cloud TPU VM.
+statistics need one cross-device step. The engine worker of roadmap 1.8 owns every device on its
+host, so there is no pool sizing or chip pinning; on a pod slice, one worker per host
+(`jax.distributed.initialize`).
 
 ---
 
@@ -297,9 +299,10 @@ is durable for finished work (`engine/integration/publication.py`: manifest as c
 scan recovery, idempotent `submissionId` across restarts), but a *running* attempt is memory
 only and reads as unknown after a restart. The store is single-machine.
 
-**To close.** Port the publication design to the portfolio path, with failure classes
+**To close.** Portfolio jobs: the durable SQLite job queue of roadmap 1.8 (decision A-14,
+[details](details/precision.md#114-the-queue-a-14-not-a-main-priority)), with failure classes
 (`bad-terms`, `missing-market-data`, `unsupported-product`, `numerical-failure`,
-`infrastructure`). On the EOD path, add the durable accepted-attempt record, a boot sweep and
+`infrastructure`) and an `interrupted` state. On the EOD path, add the durable accepted-attempt record, a boot sweep and
 an `interrupted` lookup state (TraderX acceptance case A-09).
 
 <a id="i-09"></a>
@@ -452,13 +455,43 @@ with a test.
    which combinations are shown adequate for which figure, so an FP32 exposure profile looks
    exactly like a validated one.
 
-**To close.** Decided (A-9): (1) roadmap 1.4: every stage and array with an explicit dtype
-from the configuration (the scenario market, the legs, the per-path Bermudan engine, the
-Greeks and the calibration), so pricing, risk and calibration become adjustable and the
-refusal goes; then remove `_PRICING_LOCK`, the remaining flag set and the tiers, never
-leaving precision unadjustable in between. (2) roadmap 2.7: an evidence table per figure and
-precision (what was validated, how, at how many paths) and a warning on any result whose
-combination is unproven.
+**To close.** Decided (A-9, A-10, A-11, A-12, D-9 revised 2026-10-01;
+[details/precision.md](details/precision.md)): (1) roadmap 1.4: `engine/precision/`, a
+`Precision` with storage, compute and accumulate per adjustable stage (simulation, scenario
+market, path pricing) replacing `PrecisionConfig` (the old shape refused), five cast points,
+inputs following dtype, float64 reductions; calibration, t=0 and Greeks stay float64 by
+decision. Then remove `check_run`'s refusal, `_PRICING_LOCK`, the remaining flag set and the
+tiers, never leaving precision unadjustable in between. (2) roadmap 2.7: the evidence table
+per figure and precision against the acceptance standard (Basel III's P&L attribution test
+and the Basel plan's P6.2 rule) and a warning on any result whose combination is unproven.
+
+<a id="i-72"></a>
+### I-72 — Worker pools pickle ORE objects, compile per worker and would contend for TPU chips
+
+**Severity:** Medium · **Status:** OPEN · **Category:** Architecture · **Found:** 2026-10-01,
+precision design review; decision A-14
+
+**What is wrong.** `engine/portfolio/worker_pool.py` runs HTTP jobs in one
+`ProcessPoolExecutor` per precision tier. The tiers have only routed since roadmap 1.3 (every
+worker runs the same configuration). Each job's request is frozen and thawed because ORE's
+SWIG objects do not pickle; each worker compiles every job shape again; a crashed worker
+likely breaks its pool for every later job (nothing handles `BrokenProcessPool`); and on a
+TPU host, where one process owns a chip, several workers would need chip pinning and would
+stand in the way of sharding one job across all devices ([I-61](#i-61)).
+
+**Reach.** HTTP portfolio jobs only. `price_portfolio` called from Python runs in the
+caller's process and is unaffected; the EOD path has its own execution and store.
+
+**Current handling.** Works on one CPU device; the cost is complexity and a compile per
+worker.
+
+**To close.** Roadmap 1.8: the API writes the request JSON to a durable SQLite job queue; one
+single-threaded engine worker process per host takes jobs from it, parses the JSON itself
+(no freeze/thaw), owns every device on the host and writes results back; a supervisor
+restarts a crashed worker, whose running job is marked `interrupted`
+([details](details/precision.md#11-execution-architecture)). Tests: jobs queued together give
+the same bits as run one after another; a failing job fails only its own row; a killed worker
+leaves `interrupted`; a second identical job compiles nothing; the full suite on Linux.
 
 ---
 
