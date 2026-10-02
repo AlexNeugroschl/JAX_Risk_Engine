@@ -24,7 +24,7 @@ discount-curve time `t` and index-curve time `t_dc` coincide (plan V-10).
 """
 import dataclasses
 from dataclasses import dataclass
-from typing import Callable, Dict, Mapping, Sequence, Tuple
+from typing import Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -70,6 +70,11 @@ class ScenarioMarket:
     fx: foreign currency -> [S, D], domestic units per unit of it.
     equity: name -> [S, D] spot.
     states: [S, D, d], the CAM states (for pricers that condition on them).
+
+    As `simulate` returns it, each path array is stored at the market stage's storage format:
+    a plain array, or an `engine.precision.Stored` (values and block scales) in a scaled
+    format; the pricers read the market loaded at their compute dtype (`map_arrays` with
+    `engine.precision.load`).
     """
     asof: ORE.Date
     dates: Tuple[ORE.Date, ...]
@@ -85,11 +90,13 @@ class ScenarioMarket:
     def num_paths(self) -> int:
         return int(self.numeraire.shape[0])
 
-    def map_arrays(self, fn: Callable[[jax.Array], jax.Array]) -> "ScenarioMarket":
-        """The same market with `fn` applied to every path array (numeraire, curves, FX,
-        equity, states); the dates and model times stay as they are. `store`/`load` of the
-        whole market go through it."""
-        curves = lambda c: ScenarioCurves(tenor_times=fn(c.tenor_times), log_discounts=fn(c.log_discounts))  # noqa: E731
+    def map_arrays(self, fn: Callable, grid: Optional[Callable] = None) -> "ScenarioMarket":
+        """The same market with `fn` applied to every path array (numeraire, log discounts,
+        FX, equity, states, in that order) and `grid` (`fn` if omitted) to the curves' tenor
+        times, which have no scenario axis; the dates and model times stay as they are.
+        `store`/`load` of the whole market go through it."""
+        grid = grid or fn
+        curves = lambda c: ScenarioCurves(tenor_times=grid(c.tenor_times), log_discounts=fn(c.log_discounts))  # noqa: E731
         return dataclasses.replace(
             self, numeraire=fn(self.numeraire),
             discount={k: curves(c) for k, c in self.discount.items()},

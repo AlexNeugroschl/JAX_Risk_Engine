@@ -605,8 +605,14 @@ precision, and a key that names no product or no trade of the request is refused
 Calibration, today's values, Greeks and the exposure statistics are always float64; the
 result's `npv_cube` is the stored cube read back at float64. Over HTTP the same is
 `"precision": {"pricing": {"storage": "float32", "compute": "float32", "accumulate": "float32"}}`.
-Storage in float16, bfloat16 and FP8 is enabled by roadmap 1.6, and naming one earlier is
-refused. The 32/64 shape of before roadmap 1.4 (`PrecisionConfig(simulation=32)`) is refused
+Storage can go below 32 bits (roadmap 1.6): `float16`, `bfloat16`, `float8_e4m3fn` and
+`float8_e5m2`, kept with a power-of-two scale per block of 32 paths, and rounded to nearest or,
+with `Precision(..., rounding="stochastic")`, stochastically (reproducibly, from
+`rounding_seed`). For example `pricing=StagePrecision("float8_e4m3fn")` prices in float64 and
+keeps the cube in FP8. Compute below float32 is enabled by roadmap 2.8, and naming it earlier
+is refused. How much a low-precision market or cube costs in accuracy is measured, not
+assumed: curves stored below 32 bits lose forward rates to cancellation
+([I-75](../planning/known-issues.md#i-75)). The 32/64 shape of before roadmap 1.4 (`PrecisionConfig(simulation=32)`) is refused
 with a message naming its replacement. See
 [Architecture: Adjustable precision](../concepts/architecture.md#adjustable-precision).
 

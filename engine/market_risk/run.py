@@ -18,9 +18,11 @@ rounded to `simulation.compute` and stored at `simulation.storage`; each trade i
 its P&L computed, at the compute format of its own pricing stage
 (`Precision.precision_for(trade)`: an override for its id, else for its product, else
 `pricing`; decision A-15) and its P&L stored at that stage's storage format; VaR/ES load every
-P&L at float64 (decision A-10). A trade's base value is its revaluation of the unshocked
-curves at its compute format, the anchor its P&L is measured from, so a zero shift is exactly
-zero P&L at every precision.
+P&L at float64 (decision A-10). A scaled storage format keeps block scales along the
+scenarios; the shifts are named `"shocks"` and each P&L `"values/<trade id>"` for a
+stochastic rounding (`Precision.store`). A trade's base value is its revaluation of the
+unshocked curves at its compute format, the anchor its P&L is measured from, so a zero shift
+is exactly zero P&L at every precision, in every storage format.
 """
 from dataclasses import dataclass, field
 from typing import Dict, List, Sequence
@@ -35,7 +37,7 @@ from engine.market import Market
 from engine.market_risk.factors import RateRiskFactors
 from engine.market_risk.revaluation import factor_indices, revalue_trade
 from engine.market_risk.scenarios import ShockScenarios
-from engine.precision import Precision, load, require_precision, store
+from engine.precision import Precision, load, require_precision
 from engine.risk.var_es import compute_risk_metrics
 from engine.valuation.config import PricingConfig
 from engine.valuation.portfolio import require_unique_ids, validate_trades
@@ -106,8 +108,8 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     _validate(request)
     scenarios = request.scenarios
     precision = request.precision
-    shifts = store(jnp.asarray(scenarios.shifts, dtype=precision.simulation.compute_dtype),
-                   precision.simulation.storage)
+    shifts = precision.store(jnp.asarray(scenarios.shifts, dtype=precision.simulation.compute_dtype),
+                             precision.simulation.storage, "shocks")
     base, columns = [], []
     for cfg in request.trades:
         stage = precision.precision_for(cfg)
@@ -115,7 +117,9 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
         value, shocked = revalue_trade(cfg, request.market, scenarios.factors, moves, request.pricing,
                                        request.batch_size)
         base.append(value)
-        columns.append(load(store(shocked - jnp.asarray(value, dtype=moves.dtype), stage.storage), jnp.float64))
+        stored = precision.store(shocked - jnp.asarray(value, dtype=moves.dtype), stage.storage,
+                                 f"values/{cfg.trade_id}")
+        columns.append(load(stored, jnp.float64))
     pnl = jnp.stack(columns, axis=-1)
     portfolio_pnl = jnp.sum(pnl, axis=-1)
 

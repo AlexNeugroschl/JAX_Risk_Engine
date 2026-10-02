@@ -87,9 +87,10 @@ def test_greeks_cross_the_boundary_with_the_vega_matrix(test_client):
     ({"trades": [_swap(currency="EUR")]}, "EUR"),
     # The run configuration (I-68): a reporting currency contradicting the simulation's was
     # silently ignored before roadmap 1.2; a precision format is refused until the roadmap step
-    # that enables it.
+    # that enables it (compute below float32: 2.8).
     ({"base_currency": "EUR"}, "contradicts"),
-    ({"precision": {"pricing": {"storage": "float16"}}}, "precision.pricing"),
+    ({"precision": {"pricing": {"storage": "float16", "compute": "float16", "accumulate": "float16"}}},
+     "precision.pricing"),
 ])
 def test_an_unpriceable_request_is_a_400_and_no_job(test_client, overrides, message):
     r = test_client.post("/v2/portfolio/price", json={**_body([_swap()]), **overrides})

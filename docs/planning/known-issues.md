@@ -11,29 +11,28 @@ exposure are not yet compared with an ORE run ([I-50](#i-50)).
 
 ## Verification status
 
-Last full run, 2026-10-02, on the code after the jit change (the pricers jitted with the
-trade as a traced argument, closing [I-21](#i-21) and [I-22](#i-22), and [I-74](#i-74)),
-2,340 collected (2,337 after 1.5; +4: the `pytest-xdist` pin check, the I-74 test and I-21's
-two negative tests; -1: a test of the removed by-value pytree split), summary line printed:
+Last full run, 2026-10-02, on the code of roadmap 1.6 (storage below 32 bits), 2,454
+collected (2,340 before it; +110 in `tests/test_precision.py`, the scaled formats' storage,
+policy and pipeline tests; +4 in `tests/test_api.py`, the rounding fields on the wire),
+summary line printed:
 
-- **Windows**, `-n 8`: **2,340 passed, 0 failed**, 7m45s. The fast tier: 2,254 passed in
-  11m42s in one process from an empty compilation cache, 2m17s with `-n 8` and a warm one;
-  the code before the change took 28m33s in one process (2,252 passed, 1 skipped in its
-  worktree, which lacks `reference/traderX`).
-- **Linux** (Docker `python:3.11`, 4 CPUs, `-n auto`, as CI): **2,339 passed, 1 skipped**
-  (`reference/traderX` not in the container), 18m06s; the fast tier before it, from an empty
-  cache, 2,253 passed and 1 skipped in 5m55s.
+- **Windows**, `-n 8`: **2,453 passed, 1 skipped, 0 failed**, 7m44s (the skip is the
+  parametrized case of a storage wider than its compute, refused by design).
 - **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the CI
-  job, `-n 8`): 2,254 passed, 0 failed.
+  job, `-n 8`): 2,353 passed, 1 skipped, 2m13s.
+- **Linux** was not rerun: 1.6 changes no process, path or platform default. The last Linux
+  run (the jit change, same day): 2,339 passed, 1 skipped (`reference/traderX` not in the
+  container), 18m06s.
 - `-n auto` on the 24-thread, 32 GB Windows machine started 24 processes and failed 20 tests
   with `MemoryError` and its after-effects: memory, not the code; see the user guide.
 
-Not bit for bit, by decision (2026-10-02): of the 232 snapshot arrays, 40 are identical and
-the rest moved at rounding level, at most 1e-14 relative in float64 cubes and P&L and 5.1e-14
-of a trade's NPV in any Greek ([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
-Red first: on the code before the change (`a6c63bf`) the I-22 test compiles 6 programs, the
-I-21 test 30, and the I-74 test raises the missing fixing. The fast tier (`-m "not slow"`)
-alone is not a full verification and is never recorded here. Rules:
+Bit for bit (the exit criterion of 1.6): the 232 snapshot arrays from a worktree of `f51227c`
+(the jit change) against the 1.6 tree, all identical in value, dtype and shape, float32 runs
+included ([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
+float64 market risk on four trades, old and new trees interleaved, 18 warm runs each: median
+1.85 s before and 1.92 s after, fastest 1.43 and 1.41 s, within the spread. Red first: on the
+code before 1.6 every new storage test fails at `store`, which refused the scaled formats.
+The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
 
 ## Summary
@@ -55,6 +54,7 @@ alone is not a full verification and is never recorded here. Rules:
 | [I-34](#i-34) | The ORE oracle's curve differs before the first pillar | Low | OPEN | Validation | 2.2 |
 | [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | 2.4 |
 | [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | 2.4 |
+| [I-75](#i-75) | Storage below 32 bits keeps few bits of a concentrated array's spread | Low | OPEN | Correctness | 2.7 |
 | [I-50](#i-50) | No path- or distribution-level parity test against an ORE simulation | Medium | OPEN | Validation | 2.2 |
 | [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | 2.3 |
 | [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | PARTIAL | Performance | 3.1 |
@@ -165,6 +165,43 @@ through them. Not seen on the test markets. Since 1.4 the flag is also correct i
 **To close.** With roadmap 2.4 (the per-path recalibration against ORE's): count the paths and
 dates whose recalibration hit the bracket and carry a warning naming the trade and the counts
 on the result, as ORE's structured warning; a test with an unattainable path volatility.
+
+<a id="i-75"></a>
+### I-75 — Storage below 32 bits keeps few bits of a concentrated array's spread
+
+**Severity:** Low · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-02,
+roadmap 1.6's measurements ([details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline))
+
+**What is wrong.** A scaled storage format (roadmap 1.6) keeps each value to the format's
+precision relative to its block's largest value: FP8 keeps 3 (e4m3) or 2 (e5m2) mantissa bits.
+Where the 32 paths of a block sit close together against their level, as a bond's cube column
+(near 1e6, spread near 1e4) or a long log discount factor of the scenario curves do, those
+bits go to the level and the spread between paths, the part that carries risk, is kept to
+about one bit. Rounded to nearest, every path of such a block moves the same way: a bias that
+more paths do not remove. Measured on the shared portfolio at 256 paths: an FP8 e5m2 cube is
+biased by 3.7% of a trade's notional and an FP8 e4m3 market moves the EPE by 2.6%; float16 is
+within 1e-5 of notional in every stage.
+
+**Reach.** Runs that choose a storage below 32 bits, and only the stages they choose (no
+default and no float32 run). Stochastic rounding (`Precision(rounding="stochastic")`) already
+turns the bias into noise that shrinks with the path count (the FP8 cube's bias falls 3 to 4
+times at 256 paths), but its variance stays that of a format with one bit of the spread, and
+added variance biases a quantile: in market risk, where offsetting trades' stored P&Ls
+cancel in the portfolio's, FP8 storage moves VaR and ES by 1.8 to 4.5 times the spread of
+float64 across seeds, stochastic rounding more than nearest (float16: at most 0.044;
+[details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline)).
+
+**Current handling.** None: the runs are allowed (D-9) and carry no warning until
+[I-55](#i-55)'s evidence table and warnings (roadmap 2.7). Documented in the user guide and the
+portfolio entry point.
+
+**To close.** Roadmap 2.7: store such classes relative to a level, so the format's bits go to
+the spread: the cube relative to each trade's t=0 value and the curves relative to their
+path-independent part (the difference form of [§8.2](details/precision.md#82-the-difference-form),
+already computed in float64 by `build_scenario_market`), or a per-block offset beside the scale
+in `Stored` (a decision on A-10's single rule). Measure each class with and without it, keep
+what the evidence table needs, and test that an FP8 bond column's bias falls below its Monte
+Carlo standard error.
 
 <a id="i-54"></a>
 ### I-54 — No swaption smile: options away from the money read the ATM vol
@@ -462,14 +499,20 @@ pricing stage per product and per trade (`Precision.by_product`, `by_trade`, one
 `precision_for`, decision A-15) in both pipelines: each cube column and each market-risk P&L
 column is priced and stored at its trade's precision, exactly as the trade alone at that
 precision (`tests/test_precision.py::TestPerTradePortfolio`, `TestPerTradeMarketRisk`).
+Roadmap 1.6 (2026-10-02) enabled storage in float16, bfloat16 and both FP8 formats, with a
+power-of-two block scale per 32 paths and nearest or stochastic rounding (`Stored`,
+`Precision.rounding`, `rounding_seed`; `tests/test_precision.py::TestScaledStorage`,
+`TestScaledStoragePipeline`); its first measurements are
+[details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline) and
+[I-75](#i-75).
 
 **Reach.** Every reduced-precision result: its figures carry no statement of whether the
 combination has been validated for them. Default (float64) runs are unaffected.
 
 **To close.** Roadmap 2.7 (A-11): the evidence table per figure and precision combination
 against the acceptance standard (Basel III's P&L attribution test and the Basel plan's P6.2
-rule), and a warning on any result whose combination has no passing row. Storage below
-float32 and compute below float32 are [F-07](features.md#f-07) (roadmap 1.6, 2.8).
+rule), and a warning on any result whose combination has no passing row. Compute below
+float32 is [F-07](features.md#f-07) (roadmap 2.8).
 
 <a id="i-72"></a>
 ### I-72 — Worker pools pickle ORE objects, compile per worker and would contend for TPU chips

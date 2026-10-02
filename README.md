@@ -41,11 +41,12 @@ double-precision simulations in the same wall-clock time.
 - Trades as ORE books them: each names its id, its valuation date, its currency and index,
   and carries no model or curve of its own
 - Adjustable precision, since which precision each calculation needs is what the project
-  studies: storage and compute in FP64 or FP32 per stage (the simulation, the scenario
-  market, path pricing) of a portfolio or market-risk run, with calibration, today's values,
-  Greeks and every reduction over paths kept in FP64; path pricing overridable per product
-  and per trade (say, Bermudans in FP64 inside an FP32 run); storage down to FP8 and a
-  precision report on every result follow in roadmap 1.6 and 1.7
+  studies: compute in FP64 or FP32 and storage in FP64, FP32, FP16, BF16 or FP8 per stage (the
+  simulation, the scenario market, path pricing) of a portfolio or market-risk run, storage
+  below 32 bits with a power-of-two scale per block of 32 paths and nearest or stochastic
+  rounding; calibration, today's values, Greeks and every reduction over paths kept in FP64;
+  path pricing overridable per product and per trade (say, Bermudans in FP64 inside an FP32
+  run); a precision report on every result follows in roadmap 1.7
   ([I-55](docs/planning/known-issues.md#i-55), [design](docs/planning/details/precision.md))
 - HTTP API: one portfolio request reaching the run configuration (market risk and the
   cross-asset calibration routes are still to come,

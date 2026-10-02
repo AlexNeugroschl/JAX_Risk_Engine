@@ -21,7 +21,7 @@ in compliance/decisions.md). ORE configures a run with files; each component is 
 | Simulation | classic revaluation (ORE's AMC is F-03) | classic |
 | Engine per product | swap: discounting; European: `Bachelier`, `Jamshidian`; Bermudan/American: LGM grid | ORE's builders |
 | Greeks method | `Bump`, `AD` | `Bump` |
-| Precision per stage | simulation, market, pricing: float64 or float32 storage and compute (FP8 storage from roadmap 1.6); pricing overridable per product and per trade | float64 |
+| Precision per stage | simulation, market, pricing: float64 or float32 compute; storage also float16, bfloat16 or FP8 (block scales, nearest or stochastic rounding, roadmap 1.6); pricing overridable per product and per trade | float64 |
 
 Every option runs with every other: the models differ only in the simulation, and the engines
 and Greeks methods price whatever the simulation produced. What the pipeline does not

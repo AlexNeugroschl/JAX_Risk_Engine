@@ -33,7 +33,9 @@ shown is that the assembled simulation, exposure and sensitivities equal an ORE 
 model, engine, Greeks and precision choice is one run configuration with ORE's defaults; since
 1.4 the simulation, the scenario market and path pricing each take a storage and a compute
 precision (float64 or float32), in portfolio and market-risk runs alike, with the float64
-default bit for bit as before; since 1.5 path pricing is set per product and per trade too.
+default bit for bit as before; since 1.5 path pricing is set per product and per trade too;
+since 1.6 storage goes down to float16, bfloat16 and FP8, with block scales and nearest or
+stochastic rounding.
 Nothing runs on more than one device.
 The TraderX EOD boundary prices Treasuries end to end and refuses everything else by name.
 
@@ -46,18 +48,18 @@ The configurable engine (decision A-1). The run configuration (`RunConfig`, step
 Hull-White model as one of its options on the shared pipeline, with trades that carry no model
 and name themselves (step 1.3), and the precision mechanism, `engine/precision/` with a
 storage, compute and accumulate format per adjustable stage at float64/float32 (step 1.4,
-2026-10-01), and the pricing stage per product and per trade (step 1.5, 2026-10-02), are done.
-Steps 1.6 and 1.7 extend precision down to FP8 storage, with a report on every result, and 1.8
-replaces the worker pool with one engine worker process.
+2026-10-01), the pricing stage per product and per trade (step 1.5, 2026-10-02), and storage
+below 32 bits, float16, bfloat16 and FP8 with block scales along the scenario axis and nearest
+or stochastic rounding (step 1.6, 2026-10-02), are done. Step 1.7 adds a precision report on
+every result, and 1.8 replaces the worker pool with one engine worker process.
 Designs: [details/configurable-engine.md](details/configurable-engine.md),
 [details/precision.md](details/precision.md) (decisions A-10 to A-16, D-9 revised
 2026-10-01).
 
 | Step | Work | Closes | Size |
 |---|---|---|---|
-| 1.6 | Sub-32-bit storage: block scales along the scenario axis, nearest and stochastic rounding; float16, bfloat16 and both FP8 formats | [F-07](features.md#f-07) (storage) | M |
 | 1.7 | Paired float64 sample, two-level estimator for means (A-13), a precision report on every result: policy as run, realized dtypes, device, paired errors | [I-12](known-issues.md#i-12) | M |
-| 1.8 | One engine worker process per host behind a durable SQLite job queue (A-14); delete the pools and the freeze/thaw of ORE objects. Not a main priority: nothing in 1.6, 1.7 or stage 2 waits for it; 3.2 does | [I-72](known-issues.md#i-72), [I-08](known-issues.md#i-08) (portfolio jobs) | M |
+| 1.8 | One engine worker process per host behind a durable SQLite job queue (A-14); delete the pools and the freeze/thaw of ORE objects. Not a main priority: nothing in 1.7 or stage 2 waits for it; 3.2 does | [I-72](known-issues.md#i-72), [I-08](known-issues.md#i-08) (portfolio jobs) | M |
 
 Exit: every step's defaults reproduce the previous step's numbers bit for bit (the shared
 portfolio and the parity suites; [details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
@@ -69,7 +71,9 @@ market-risk revaluation identical to before. A float32 portfolio cube is not, by
 old `simulation=32` cube was priced in mixed precision, mostly float64
 ([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)). 1.5 met
 it: 232 of 232 arrays identical, the float32 runs included, and a mixed run equals each trade
-priced alone at its precision, column for column. 1.8 runs the full suite on Linux.
+priced alone at its precision, column for column. 1.6 met it: 232 of 232 arrays identical
+against the snapshot of the jit change, and the mixed run's equality holds with storage below
+32 bits and stochastic rounding too. 1.8 runs the full suite on Linux.
 
 <a id="stage-2--correctness-and-precision"></a>
 ## Stage 2 — Correctness and precision
@@ -82,7 +86,7 @@ priced alone at its precision, column for column. 1.8 runs the full suite on Lin
 | 2.4 | Reproduce ORE's two per-path recalibration details, measured against 2.2's cube; warn, as ORE's `LgmBuilder` does, when a path's recalibration misses its basket | [I-49](known-issues.md#i-49), [I-73](known-issues.md#i-73) | M |
 | 2.5 | `ShiftHorizon` as a setting; parity at 0.5; then 0.5 as the default | [I-32](known-issues.md#i-32) | M |
 | 2.6 | Swaption vol strike axis, read at each option's and helper's strike | [I-54](known-issues.md#i-54) | M |
-| 2.7 | *Parallel, from 1.7.* Measurement of the storage formats per class, product and path count; the evidence table against the acceptance standard (A-11: Basel III's P&L attribution test and the Basel plan's P6.2 rule; P6.2 labelled as engineering for figures Basel does not cover); a warning on any result whose combination has no passing row | [I-55](known-issues.md#i-55) (warnings) | M |
+| 2.7 | *Parallel, from 1.7.* Measurement of the storage formats per class, product and path count; storage relative to a level where a class's level swamps its spread (the cube to its t=0 value, the curves to their path-independent part, or a block offset); the evidence table against the acceptance standard (A-11: Basel III's P&L attribution test and the Basel plan's P6.2 rule; P6.2 labelled as engineering for figures Basel does not cover); a warning on any result whose combination has no passing row | [I-55](known-issues.md#i-55) (warnings), [I-75](known-issues.md#i-75) | M |
 | 2.8 | Kernels in difference form with explicit accumulators, one family at a time (simulation scan, scenario curves, legs, Europeans, Bermudan rollback and recalibration, exposure), one implementation for every precision (A-16); compute below float32 enabled. ORE parity at existing tolerances first, then the float64 snapshot re-baselined once | [F-07](features.md#f-07) (compute) | L |
 
 Order within the stage: 2.2 before 2.4 (2.4 needs 2.2's cube); 2.5 and 2.6 change default or

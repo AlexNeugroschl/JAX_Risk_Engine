@@ -10,6 +10,9 @@ The precision of a run (docs/planning/details/precision.md §3, §4; decisions A
       by_product   {product: StagePrecision}    overrides `pricing` for every trade of a product
       by_trade     {trade_id: StagePrecision}   overrides `by_product` and `pricing` for one trade
 
+      rounding       "nearest" | "stochastic"   how values are rounded into a scaled storage format
+      rounding_seed  int                        the seed of the stochastic rounding
+
 Each adjustable stage has three precisions: `storage`, the format its output is kept in until
 the next stage reads it; `compute`, the format its arithmetic is done in; `accumulate`, the
 format its sums accumulate in. `Precision()` is float64 everywhere, the engine's default and
@@ -21,19 +24,28 @@ simulation and the scenario market are shared by every trade, so they have no ov
 `check_overrides` refuses a key that names no trade of the run or no product, so a misspelt
 override is never silently ignored.
 
+Storage below 32 bits (float16, bfloat16, FP8, roadmap 1.6) is kept with block scales along
+the scenario axis and rounded by `rounding` (`engine.precision.storage`); float64 and float32
+storage rounds to nearest whatever `rounding` says. `Precision.store` is the one way the
+pipeline stores: it names each array (`"shocks"`, `"values/<trade id>"`), and a stochastic
+rounding draws from `rounding_seed` and that name, so arrays round independently, a trade's
+column rounds the same in a mixed run as alone, and a run reproduces.
+
 Calibration, t=0 values, Greeks and every reduction over paths or scenarios (exposure, VaR/ES)
 are not stages here: they are float64 by decision (A-10).
 
 Validation refuses, naming the field, before any work: a name outside the format table, a
 format used before the roadmap step that enables it, `storage` wider than `compute` (storing
-wider gains nothing), `accumulate` narrower than `compute`. Every other combination may be run
-(D-9). The 32/64 shape before roadmap 1.4 (`PrecisionConfig`) is refused, not translated
-(A-12): `RETIRED_SHAPE` says what replaces it.
+wider gains nothing), `accumulate` narrower than `compute`, a rounding outside
+`ROUNDINGS`, and `stochastic` rounding when no stage stores in a scaled format (it would round
+nothing). Every other combination may be run (D-9). The 32/64 shape before roadmap 1.4
+(`PrecisionConfig`) is refused, not translated (A-12): `RETIRED_SHAPE` says what replaces it.
 """
 from dataclasses import dataclass, field, fields
 from typing import Iterable, Iterator, Mapping, Sequence
 
 from engine.precision.formats import format_of
+from engine.precision.storage import ROUNDINGS, rounding_key, store
 
 #: The adjustable stages, in pipeline order.
 STAGES = ("simulation", "market", "pricing")
@@ -56,7 +68,7 @@ RETIRED_SHAPE = (
 class StagePrecision:
     """The storage, compute and accumulate formats of one stage, by name (see the module
     docstring). Until roadmap 2.8, `compute` is float64 or float32 and `accumulate` equals
-    it; until 1.6, `storage` is float64 or float32."""
+    it; `storage` is any format no wider than `compute`."""
     storage: str = "float64"
     compute: str = "float64"
     accumulate: str = "float64"
@@ -74,8 +86,8 @@ class StagePrecision:
                 raise ValueError(f"StagePrecision.{f.name}: {exc}") from None
         storage, compute, accumulate = rows["storage"], rows["compute"], rows["accumulate"]
         if storage.storage_step:
-            _refuse("storage", storage.name, f"storage in {storage.name} (with block scales) is enabled by roadmap "
-                                             f"step {storage.storage_step}; until then float64 or float32")
+            _refuse("storage", storage.name, f"storage in {storage.name} is enabled by roadmap step "
+                                             f"{storage.storage_step}")
         if compute.compute_step:
             _refuse("compute", compute.name, f"compute in {compute.name} is enabled by roadmap step "
                                              f"{compute.compute_step} (difference-form kernels); until then float64 "
@@ -97,6 +109,11 @@ class StagePrecision:
     @property
     def compute_dtype(self):
         return format_of(self.compute).dtype
+
+    @property
+    def scaled_storage(self) -> bool:
+        """Whether `storage` is a scaled format (stored with block scales and `rounding`)."""
+        return format_of(self.storage).scaled
 
 
 def _refuse(name: str, value: str, reason: str) -> None:
@@ -136,6 +153,8 @@ class Precision:
     pricing: StagePrecision = StagePrecision()
     by_product: Mapping[str, StagePrecision] = field(default_factory=Overrides)
     by_trade: Mapping[str, StagePrecision] = field(default_factory=Overrides)
+    rounding: str = "nearest"
+    rounding_seed: int = 0
 
     def __post_init__(self):
         for stage in STAGES:
@@ -154,6 +173,19 @@ class Precision:
                 if not isinstance(stage, StagePrecision):
                     raise TypeError(f"Precision.{name}[{key!r}] must be a StagePrecision, got {stage!r}")
             object.__setattr__(self, name, Overrides(value))
+        if self.rounding not in ROUNDINGS:
+            raise ValueError(f"Precision.rounding={self.rounding!r}: the roundings are {list(ROUNDINGS)}")
+        if self.rounding == "stochastic" and not any(s.scaled_storage for s in self._stages()):
+            raise ValueError("Precision.rounding='stochastic' rounds values into a scaled storage format (float16, "
+                             "bfloat16, FP8), and no stage or override stores in one")
+        if not isinstance(self.rounding_seed, int) or isinstance(self.rounding_seed, bool) or self.rounding_seed < 0:
+            raise TypeError(f"Precision.rounding_seed must be a non-negative integer, got {self.rounding_seed!r}")
+
+    def _stages(self) -> Iterator[StagePrecision]:
+        """Every `StagePrecision` of the policy, overrides included."""
+        yield from (getattr(self, s) for s in STAGES)
+        for name in OVERRIDES:
+            yield from getattr(self, name).values()
 
     @classmethod
     def throughout(cls, name: str) -> "Precision":
@@ -167,6 +199,14 @@ class Precision:
         if trade.trade_id in self.by_trade:
             return self.by_trade[trade.trade_id]
         return self.by_product.get(trade.product, self.pricing)
+
+    def store(self, x, storage: str, stream: str, axis: int = 0):
+        """`x` stored at format `storage` with this policy's rounding (`engine.precision.store`),
+        its block scales along `axis`, the scenario axis. `stream` names the array in the run
+        (see the module docstring): it seeds a stochastic rounding."""
+        if self.rounding == "stochastic" and format_of(storage).scaled:
+            return store(x, storage, "stochastic", rounding_key(self.rounding_seed, stream), axis)
+        return store(x, storage, axis=axis)
 
     def check_overrides(self, trades: Iterable, products: Sequence[str]) -> None:
         """Refuse an override that selects nothing, before any work: a `by_product` key outside

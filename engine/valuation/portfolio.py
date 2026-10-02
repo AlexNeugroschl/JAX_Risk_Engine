@@ -39,7 +39,7 @@ from engine.instruments.swap import SwapConfig, _build_ore_swap as _swap_underly
 from engine.instruments.treasury import BondConfig, _remaining_cashflows
 from engine.market import Market, index_name
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
-from engine.precision import Precision, load, require_precision, store
+from engine.precision import Precision, Stored, load, require_precision
 from engine.simulation.scenario_market import ScenarioMarket
 from engine.valuation.bermudan import bermudan_cube, bermudan_value, contract_exercise_dates
 from engine.valuation.config import PricingConfig
@@ -61,22 +61,25 @@ class PortfolioValuation:
     """t=0 NPVs `[T]` (float64) and the cube, both in the base currency, in trade order.
 
     columns: each trade's `[S, D]` cube column, stored at its own pricing storage format
-        (`Precision.precision_for`).
+        (`Precision.precision_for`): a plain array, or a `Stored` (block scales along the
+        paths) in a scaled format.
     """
     today: List[float]
-    columns: List[jax.Array]
+    columns: List[Union[jax.Array, Stored]]
     num_paths: int
     num_dates: int
     warnings: List[str] = field(default_factory=list)
 
     @property
     def cube(self) -> jax.Array:
-        """`[S, D, T]`: the columns side by side, in their shared format, or loaded at float64
-        when their formats differ (exact: float64 holds every format's values)."""
+        """`[S, D, T]`: the columns side by side, in their shared format if it is float64 or
+        float32, else loaded at float64 (exact: float64 holds every format's values, block
+        scales applied)."""
         if not self.columns:
             return jnp.zeros((self.num_paths, self.num_dates, 0))
         dtypes = {c.dtype for c in self.columns}
-        dtype = dtypes.pop() if len(dtypes) == 1 else jnp.float64
+        shared = len(dtypes) == 1 and not any(isinstance(c, Stored) for c in self.columns)
+        dtype = dtypes.pop() if shared else jnp.float64
         return jnp.stack([load(c, dtype) for c in self.columns], axis=-1)
 
 
@@ -131,8 +134,8 @@ def value_portfolio(trades: Sequence[Trade], market: Market, scenarios: Scenario
 
     Cast point 4 of docs/planning/details/precision.md §6.3, per trade: the scenario market is
     loaded at the compute dtype of `precision.precision_for(trade)` (once per dtype), the
-    trade priced in it, and its cube column stored at that storage format. t=0 values are
-    float64 (decision A-10)."""
+    trade priced in it, and its cube column stored at that storage format, named by the
+    trade's id (`Precision.store`). t=0 values are float64 (decision A-10)."""
     require_precision("value_portfolio's precision", precision)
     validate_trades(trades, market, pricing, precision)
     loaded = {}  # compute dtype -> (the scenario market at it, its path fixings)
@@ -148,7 +151,7 @@ def value_portfolio(trades: Sequence[Trade], market: Market, scenarios: Scenario
         fx_path = 1.0 if currency == base_currency else sm.fx[currency]
         value, cube = _value_trade(cfg, market, sm, fixings, pricing, decay)
         today.append(float(value) * spot)
-        columns.append(store(cube * fx_path, stage.storage))
+        columns.append(precision.store(cube * fx_path, stage.storage, f"values/{cfg.trade_id}"))
     return PortfolioValuation(today=today, columns=columns, num_paths=scenarios.num_paths,
                               num_dates=len(scenarios.dates))
 

@@ -17,7 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from engine.market import ZeroCurveConfig
 from engine.risk.exposure import ExposureProfile
 from engine.portfolio import PortfolioResult
-from engine.precision import FORMAT_NAMES, OVERRIDES, RETIRED_SHAPE, STAGES, Precision, StagePrecision
+from engine.precision import (
+    FORMAT_NAMES, OVERRIDES, RETIRED_SHAPE, ROUNDINGS, STAGES, Precision, StagePrecision,
+)
 from engine.valuation.portfolio import PRODUCTS
 
 
@@ -67,6 +69,9 @@ class CouponPeriodSchema(BaseModel):
 #: A number format of `engine.precision.FORMATS`, by name.
 FormatName = Literal[FORMAT_NAMES]
 
+#: A rounding into a scaled storage format (`engine.precision.ROUNDINGS`).
+RoundingName = Literal[ROUNDINGS]
+
 #: A product the pipeline prices (`engine.valuation.portfolio.PRODUCTS`, the trades' `trade_type`).
 ProductName = Literal[PRODUCTS]
 
@@ -82,20 +87,24 @@ class StagePrecisionSchema(BaseModel):
 class PrecisionSchema(BaseModel):
     """`engine.precision.Precision`: storage, compute and accumulate per adjustable stage, each
     float64 by default, and the pricing stage overridden per product (`by_product`, keyed by
-    `trade_type`) and per trade (`by_trade`, keyed by `trade_id`). The 32/64 shape before
-    roadmap 1.4 is refused, naming the replacement (decision A-12)."""
+    `trade_type`) and per trade (`by_trade`, keyed by `trade_id`); the rounding into a scaled
+    storage format and its seed. The 32/64 shape before roadmap 1.4 is refused, naming the
+    replacement (decision A-12)."""
     model_config = ConfigDict(extra="forbid")
     simulation: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
     market: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
     pricing: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
     by_product: Dict[ProductName, StagePrecisionSchema] = Field(default_factory=dict)
     by_trade: Dict[str, StagePrecisionSchema] = Field(default_factory=dict)
+    rounding: RoundingName = "nearest"
+    rounding_seed: int = Field(default=0, ge=0)
 
     @model_validator(mode="before")
     @classmethod
     def _refuse_the_retired_shape(cls, data):
+        """The 32/64 shape: a `risk` or `calibration` field, or a stage given as a bit count."""
         if isinstance(data, dict) and (any(k in data for k in ("risk", "calibration"))
-                                       or any(isinstance(v, int) for v in data.values())):
+                                       or any(isinstance(data.get(s), int) for s in STAGES)):
             raise ValueError(RETIRED_SHAPE)
         return data
 
@@ -103,7 +112,7 @@ class PrecisionSchema(BaseModel):
         stages = {stage: _stage(f"precision.{stage}", getattr(self, stage)) for stage in STAGES}
         overrides = {name: {key: _stage(f"precision.{name}[{key!r}]", value)
                             for key, value in getattr(self, name).items()} for name in OVERRIDES}
-        return Precision(**stages, **overrides)
+        return Precision(**stages, **overrides, rounding=self.rounding, rounding_seed=self.rounding_seed)
 
 
 def _stage(where: str, schema: StagePrecisionSchema) -> StagePrecision:

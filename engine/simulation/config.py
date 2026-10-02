@@ -21,6 +21,7 @@ unlike the per-trade builder), log-linear scenario curves with flat-forward extr
 ForwardVariance time decay of non-simulated swaption volatilities (the value ORE's example
 configurations use; ORE has no code default).
 """
+import itertools
 from dataclasses import dataclass, field
 from typing import ClassVar, Mapping, Optional, Tuple, Union
 
@@ -33,7 +34,7 @@ from engine.market import Market
 from engine.models.curves import ZeroCurve
 from engine.models.lgm import Sigma, as_sigma
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
-from engine.precision import Precision, load, require_precision, store
+from engine.precision import Precision, load, require_precision
 from engine.simulation.cam import (
     CrossAssetModel, EqComponent, FxComponent, IrComponent, evolve_states, step_moments,
 )
@@ -228,8 +229,11 @@ def simulate(market: Market, config: CamConfig, model: Optional[CrossAssetModel]
     3 of docs/planning/details/precision.md §6.3): the shocks are generated and bridged at
     `simulation.compute` and stored; the states are evolved at `simulation.compute` from the
     loaded shocks and stored; the market is built at `market.compute` from the loaded states
-    and returned stored at `market.storage`. The step moments and the path-independent parts
-    of the curves are computed in float64 and cast."""
+    and returned stored at `market.storage`, its tenor grid kept at `market.compute` (it has
+    no scenario axis: it is the curves' coordinates, not scenario data). The step moments and
+    the path-independent parts of the curves are computed in float64 and cast. A scaled
+    storage format keeps block scales along each array's scenario axis (axis 1 of the shocks
+    `[T, S, d]`, axis 0 of everything else)."""
     require_precision("simulate's precision", precision)
     sim, mkt = precision.simulation, precision.market
     model = model or build_cross_asset_model(market, config)
@@ -237,11 +241,12 @@ def simulate(market: Market, config: CamConfig, model: Optional[CrossAssetModel]
     moments = step_moments(model, times)
     compute = sim.compute_dtype
     normals = generate_sobol_normals(config.samples, len(config.dates), model.dimension, compute, seed=config.seed)
-    shocks = store(apply_brownian_bridge(normals, jnp.asarray(times, dtype=compute)), sim.storage)
+    shocks = precision.store(apply_brownian_bridge(normals, jnp.asarray(times, dtype=compute)), sim.storage,
+                             "shocks", axis=1)
     cast = lambda a: jnp.asarray(a, dtype=compute)  # noqa: E731
-    states = store(evolve_states(cast(model.initial_state()),
-                                 (cast(moments.transition), cast(moments.drift), cast(moments.cholesky)),
-                                 load(shocks, compute)), sim.storage)
+    states = precision.store(evolve_states(cast(model.initial_state()),
+                                           (cast(moments.transition), cast(moments.drift), cast(moments.cholesky)),
+                                           load(shocks, compute)), sim.storage, "states")
     index_curves = {
         name: (ccy, ZeroCurve.from_config(curve))
         for ccy in config.currencies
@@ -249,4 +254,6 @@ def simulate(market: Market, config: CamConfig, model: Optional[CrossAssetModel]
     }
     scenarios = build_scenario_market(model, market.asof, config.dates, load(states, mkt.compute_dtype),
                                       config.curve_tenors, index_curves)
-    return scenarios.map_arrays(lambda a: store(a, mkt.storage))
+    arrays = itertools.count()  # names each market array, in map_arrays' fixed order
+    return scenarios.map_arrays(lambda a: precision.store(a, mkt.storage, f"market/{next(arrays)}"),
+                                grid=lambda grid: grid)

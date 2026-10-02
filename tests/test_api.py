@@ -17,7 +17,7 @@ from demos.demo_scenarios import demo_market_json, demo_simulation_json
 from engine.api.market_schemas import MarketPortfolioRequestSchema
 from engine.portfolio import price_portfolio
 from engine.portfolio.worker_pool import shutdown_pool
-from engine.precision import StagePrecision
+from engine.precision import Precision, StagePrecision
 from tests.support import portfolio as shared
 
 ZERO_CURVE_SCHEMA = {"times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0], "rates": [0.03, 0.03, 0.032, 0.035, 0.038, 0.04]}
@@ -230,7 +230,7 @@ class TestPortfolioPricePrecision:
         assert r.status_code == 422 and "float8_e4m3fn" in r.text
 
     @pytest.mark.parametrize("stage, block, message", [
-        ("pricing", {"storage": "float8_e4m3fn"}, "roadmap step 1.6"),
+        ("pricing", {"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"}, "roadmap step 2.8"),
         ("market", {"compute": "bfloat16"}, "roadmap step 2.8"),
         ("simulation", {"storage": "float64", "compute": "float32", "accumulate": "float32"}, "wider than compute"),
     ])
@@ -262,8 +262,26 @@ class TestPortfolioPricePrecision:
     def test_an_override_not_enabled_is_a_400_naming_its_key(self, test_client, name):
         key = "swap" if name == "by_product" else "s"
         r = test_client.post("/portfolio/price", json=_body([_swap(trade_id="s")],
-                                                            precision={name: {key: {"storage": "float16"}}}))
+                                                            precision={name: {key: {"compute": "float16"}}}))
         assert r.status_code == 400 and f"precision.{name}['{key}']" in r.json()["detail"]
+
+    def test_scaled_storage_and_its_rounding_reach_the_run_configuration(self):
+        """Roadmap 1.6: float16, bfloat16 and FP8 storage, `rounding` and `rounding_seed`."""
+        fp8 = {"storage": "float8_e4m3fn", "compute": "float32", "accumulate": "float32"}
+        body = _body([_swap()], precision={"simulation": fp8, "pricing": {"storage": "bfloat16"},
+                                           "rounding": "stochastic", "rounding_seed": 7})
+        precision = MarketPortfolioRequestSchema.model_validate(body).to_dataclass().config.precision
+        assert precision == Precision(simulation=StagePrecision("float8_e4m3fn", "float32", "float32"),
+                                      pricing=StagePrecision("bfloat16"), rounding="stochastic", rounding_seed=7)
+
+    @pytest.mark.parametrize("precision, status, message", [
+        ({"rounding": "up"}, 422, "stochastic"),
+        ({"rounding_seed": -1}, 422, "rounding_seed"),
+        ({"rounding": "stochastic"}, 400, "no stage or override stores in one"),
+    ])
+    def test_a_rounding_that_cannot_apply_is_refused(self, test_client, precision, status, message):
+        r = test_client.post("/portfolio/price", json=_body([_swap()], precision=precision))
+        assert r.status_code == status and message in r.text
 
     @pytest.mark.slow
     def test_omitted_precision_equals_explicit_float64(self, test_client):

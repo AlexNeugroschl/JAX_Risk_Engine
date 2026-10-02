@@ -1,21 +1,28 @@
 """
-How much precision does Monte Carlo market risk need? FP64 vs FP32 VaR/ES,
-through the engine's own market-risk path.
+How much precision does Monte Carlo market risk need? FP64 vs FP32, and storage in
+FP16, BF16 and FP8, of VaR/ES, through the engine's own market-risk path.
 
 **The question.** Lower precision is cheaper on accelerators. The decision is
 not "is FP32 exact?" (it is not) but "is FP32's error small next to the Monte
 Carlo sampling error the VaR/ES number already carries?" This demo measures
 both on one portfolio.
 
-**What runs.** `engine.market_risk.run_market_risk`, unmodified, at four
+**What runs.** `engine.market_risk.run_market_risk`, unmodified, at eight
 `engine.precision.Precision` settings:
 
-    FP64          Precision(): float64 everywhere, the default
-    FP32          Precision.throughout("float32"): shifts, revaluation and P&L in float32
-    FP32 stored   Precision(pricing=StagePrecision("float32")): revalued in float64,
-                  the P&L stored in float32
-    FP32, Berm 64 FP32, but the Bermudan revalued and stored in float64
-                  (`by_product`; a single trade would be `by_trade`, roadmap 1.5)
+    FP64           Precision(): float64 everywhere, the default
+    FP32           Precision.throughout("float32"): shifts, revaluation and P&L in float32
+    FP32 stored    Precision(pricing=StagePrecision("float32")): revalued in float64,
+                   the P&L stored in float32
+    FP32, Berm 64  FP32, but the Bermudan revalued and stored in float64
+                   (`by_product`; a single trade would be `by_trade`, roadmap 1.5)
+    FP16 stored    the shifts and the P&L stored in float16, revalued in float64
+    BF16 stored    the same in bfloat16
+    FP8 stored     the same in FP8 (e4m3), rounded to nearest
+    FP8 stochastic the same, rounded stochastically (roadmap 1.6)
+
+Storage below 32 bits keeps a power-of-two scale per block of 32 scenarios, so each
+block uses the format's whole range; see docs/planning/details/precision.md §6.2.
 
     10-day Monte Carlo shocks of every pillar of two sloped curves
         -> full revaluation of every trade at t=0, at its pricing stage's compute precision
@@ -29,8 +36,7 @@ from FP64 are pure arithmetic. Two yardsticks measure them:
   * the spread of the FP64 estimate across independent Sobol seeds -- the
     empirical version of the same thing.
 
-Storage in float16, bfloat16 and FP8 arrives with roadmap step 1.6 (block
-scales), compute below float32 with step 2.8.
+Compute below float32 arrives with roadmap step 2.8.
 
 ORE parity of this path is established in
 tests/test_market_risk_ore_parity.py; this demo is only about precision.
@@ -65,6 +71,10 @@ PRECISIONS = {
     "FP32, Berm 64": Precision(simulation=StagePrecision("float32", "float32", "float32"),
                                pricing=StagePrecision("float32", "float32", "float32"),
                                by_product={"bermudan_swaption": StagePrecision()}),
+    **{label: Precision(simulation=StagePrecision(name), pricing=StagePrecision(name), rounding=rounding)
+       for label, name, rounding in (("FP16 stored", "float16", "nearest"), ("BF16 stored", "bfloat16", "nearest"),
+                                     ("FP8 stored", "float8_e4m3fn", "nearest"),
+                                     ("FP8 stochastic", "float8_e4m3fn", "stochastic"))},
 }
 
 
@@ -132,7 +142,7 @@ for seed in SEEDS:
     for name, precision in PRECISIONS.items():
         result, seconds = run(precision, seed)
         results[name, seed] = result
-        print(f"  seed {seed}  {name:<13} VaR 99% {result.risk['VaR_99']:>14,.2f}   "
+        print(f"  seed {seed}  {name:<15} VaR 99% {result.risk['VaR_99']:>14,.2f}   "
               f"ES 97.5% {result.risk['ES_97.5']:>14,.2f}   ({seconds:.1f}s)")
 
 base = results["FP64", SEEDS[0]].base_npv
@@ -151,9 +161,9 @@ for name in PRECISIONS:
         rows.append((name, metric, np.max(np.abs(other - fp64)), np.std(fp64, ddof=1)))
 standard_error = np.mean([results["FP64", s].risk["ES_97.5_standardError"] for s in SEEDS])
 
-print(f"  {'precision':<14}{'metric':<9}{'max |x - FP64|':>17}{'FP64 seed std':>16}{'ratio':>10}")
+print(f"  {'precision':<16}{'metric':<9}{'max |x - FP64|':>17}{'FP64 seed std':>16}{'ratio':>10}")
 for name, metric, error, spread in rows:
-    print(f"  {name:<14}{metric:<9}{error:>17,.4f}{spread:>16,.2f}{error / spread:>10.1e}")
+    print(f"  {name:<16}{metric:<9}{error:>17,.4f}{spread:>16,.2f}{error / spread:>10.1e}")
 print(f"\n  ES 97.5% Monte Carlo standard error (mean over seeds): {standard_error:,.2f}")
 
 pnl64 = np.asarray(results["FP64", SEEDS[0]].portfolio_pnl)

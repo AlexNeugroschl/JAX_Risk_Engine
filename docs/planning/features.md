@@ -15,7 +15,7 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 | [F-04](#f-04) | FX and equity trades on the market path; FX/EQ vol calibration | L | — | 6.4 |
 | [F-05](#f-05) | Basel III regulatory figures | L | See entry | 6.1, 6.6 |
 | [F-06](#f-06) | CVA/DVA from the exposure profiles | M | I-50 | 6.6 |
-| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-55 | 1.6, 2.8, 3.4, 6.3 |
+| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-55 | 2.8, 3.4, 6.3 |
 
 ---
 
@@ -112,13 +112,16 @@ Parity against ORE's XVA analytic through the same oracle as I-50. The regulator
 equal wall time. Storage, compute and accumulate precision per adjustable stage (simulation,
 scenario market, path pricing), overridable per product and per trade (A-15; done in roadmap
 1.5, 2026-10-02: `Precision.by_product`, `by_trade`, `precision_for`); sub-32-bit storage with
-block scales and nearest or stochastic rounding (1.6); compute below
+block scales and nearest or stochastic rounding (done in roadmap 1.6, 2026-10-02: float16,
+bfloat16, `float8_e4m3fn`, `float8_e5m2`; `Stored`, `Precision.rounding`); compute below
 float32 through kernels in difference form, one implementation for every precision (A-16,
 2.8); timing on Ironwood and H100 (3.4); FP4 on TPU 8t/8i (6.3). Measured so far: FP8
 storage of the shocks biases a call payoff by about one Monte Carlo standard error at 4M
 paths (stochastic rounding: 0.15), so the earlier rejection of FP8, which compared error per
 value with Monte Carlo error, is withdrawn; FP4 stored naively is biased with either
-rounding.
+rounding. Through the pipeline (1.6, [details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline)):
+float16 storage is within 1e-5 of notional in every stage; FP8 is limited where an array's
+level swamps its spread ([I-75](known-issues.md#i-75)).
 
 **Depends on.** The mechanism and cast points (roadmap 1.4, done 2026-10-01; [I-55](known-issues.md#i-55));
 the speed case needs the target hardware, which the owner has. **Size.** L.

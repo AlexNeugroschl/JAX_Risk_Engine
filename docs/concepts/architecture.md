@@ -402,6 +402,8 @@ Precision(
     pricing=StagePrecision(...),                              # path pricing and the cube it stores
     by_product={"bermudan_swaption": StagePrecision(...)},    # overrides pricing for a product
     by_trade={"swap-7": StagePrecision(...)},                 # overrides both for one trade
+    rounding="nearest",                                       # or "stochastic", into a scaled format
+    rounding_seed=0,                                          # the stochastic rounding's seed
 )
 Precision()                       # float64 everywhere (the default)
 Precision.throughout("float32")   # every stage stored, computed and accumulated in float32
@@ -417,11 +419,11 @@ scenario market are shared by every trade, so they have no overrides.
 `storage` is the format a stage's output is kept in until the next stage reads it; `compute`
 the format its arithmetic runs in; `accumulate` the format its sums accumulate in. The format
 names come from one table (`engine/precision/formats.py`), which validation, the HTTP schema
-and storage all read. Today `storage` and `compute` are `float64` or `float32` and
-`accumulate` equals `compute`; FP16/BF16/FP8 storage is enabled by roadmap 1.6 and compute
-below float32 by 2.8, and using one earlier is refused naming the step. Calibration, t=0
-values, Greeks and every reduction over paths (exposure, VaR/ES) are float64 by decision
-(A-10).
+and storage all read. `storage` is any format of the table no wider than `compute` (`float64`,
+`float32`, and since roadmap 1.6 `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2`);
+`compute` is `float64` or `float32` and `accumulate` equals it until roadmap 2.8, and using
+one earlier is refused naming the step. Calibration, t=0 values, Greeks and every reduction
+over paths (exposure, VaR/ES) are float64 by decision (A-10).
 
 **The cast points.** Only these read the policy; everything between them follows the dtype
 of its inputs (kernels cast their own constant inputs, coupon tables, volatilities and
@@ -430,15 +432,29 @@ calibration baskets, to the dtype of the curves they are given):
 | Stage boundary | Where | What happens |
 |---|---|---|
 | shocks, states | `engine.simulation.config.simulate` | normals generated and bridged at `simulation.compute`, stored; states evolved at `simulation.compute` from the loaded shocks, stored |
-| market | `simulate` | the scenario market built at `market.compute` from the loaded states, returned stored at `market.storage` |
+| market | `simulate` | the scenario market built at `market.compute` from the loaded states, returned stored at `market.storage`; its tenor grid (no scenario axis) stays at `market.compute` |
 | values | `engine.valuation.portfolio.value_portfolio` | per trade, at `precision_for(trade)`: the market loaded at its `compute` (once per dtype), the trade priced, its cube column stored at its `storage` |
 | reductions | `engine.portfolio.market_path` | the cube and the numeraire loaded at float64, then exposure; `PortfolioResult.npv_cube` is the float64-loaded cube, so columns stored in different formats never meet in arithmetic |
 | market risk | `engine.market_risk.run_market_risk` | shifts rounded to `simulation.compute` and stored; per trade, revaluation and P&L at its `precision_for(trade).compute`, the P&L stored at its `storage`; VaR/ES in float64 |
 
-`store`/`load` (`engine/precision/storage.py`) are the only casts between stages. For
-float64 and float32 storing is a plain cast and storing at an array's own dtype returns it
-unchanged, so the float64 default runs exactly the arithmetic it ran before the policy
-existed. Continuous integration runs the fast tier with JAX's strict dtype promotion, under
+`store`/`load` (`engine/precision/storage.py`) are the only casts between stages, and the
+pipeline stores through `Precision.store`, which adds the policy's rounding. For float64 and
+float32 storing is a plain cast and storing at an array's own dtype returns it unchanged, so
+the float64 default runs exactly the arithmetic it ran before the policy
+existed.
+
+**Storage below 32 bits** (roadmap 1.6). float16, bfloat16 and the two FP8 formats are stored
+as a `Stored`: the values in the format and, per block of 32 consecutive scenarios (paths),
+a float32 power-of-two scale that brings the block's largest magnitude to the format's
+maximum, so FP8's 448 or float16's 65,504 never limits the range. A power of two scales
+exactly; loading multiplies it back. Blocks run along the scenario axis, the axis multi-device
+runs will shard. Values are rounded to the format's grid either to nearest or stochastically
+(up or down in proportion to the distance, so the rounding has mean zero), with draws from
+`Precision.rounding_seed` and the array's name in the run (`"shocks"`, `"values/<trade id>"`),
+so a run reproduces and a trade's column rounds the same in a mixed run as alone. FP8 holds a
+column in an eighth of float64's memory plus an eighth for the scales. Compute stays float32
+or float64: `load` reads the stored values back at the next stage's compute dtype.
+Continuous integration runs the fast tier with JAX's strict dtype promotion, under
 which any accidental float32/float64 mix is an error.
 
 **The x64 flag.** JAX can create 64-bit arrays only while one process-global setting,

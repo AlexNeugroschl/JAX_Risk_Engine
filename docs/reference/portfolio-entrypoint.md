@@ -87,13 +87,24 @@ accumulate)` of format names per adjustable stage, each `"float64"` by default:
 | `pricing` | Every trade on every path (Bermudan/American per-path recalibration included) and the cube it stores. |
 | `by_product` | `{product: StagePrecision}`: replaces `pricing` for every trade of a product. The products are `"swap"`, `"european_swaption"`, `"bermudan_swaption"`, `"american_swaption"` and `"bond"` (each trade config's `product`). |
 | `by_trade` | `{trade_id: StagePrecision}`: replaces `by_product` and `pricing` for one trade. |
+| `rounding` | `"nearest"` (default) or `"stochastic"`: how values are rounded into a storage format below 32 bits. Stochastic rounding without such a format is refused. |
+| `rounding_seed` | Non-negative integer, 0 by default: the seed of the stochastic rounding. |
 
 `compute` is the format a stage computes in, `storage` the format its output is kept in until
 the next stage reads it (no wider than `compute`), `accumulate` the format its sums
-accumulate in (equal to `compute` until roadmap 2.8). Today `storage` and `compute` are
-`"float64"` or `"float32"`; `"float16"`, `"bfloat16"`, `"float8_e4m3fn"` and `"float8_e5m2"` are
-in the format table and refused, naming the roadmap step that enables them (1.6 for storage,
-2.8 for compute). `Precision.throughout("float32")` sets every stage to float32.
+accumulate in (equal to `compute` until roadmap 2.8). `compute` is `"float64"` or
+`"float32"`; `storage` may also be `"float16"`, `"bfloat16"`, `"float8_e4m3fn"` or
+`"float8_e5m2"` (roadmap 1.6), while compute in them is refused, naming roadmap 2.8.
+`Precision.throughout("float32")` sets every stage to float32.
+
+Storage below 32 bits keeps a float32 power-of-two scale per block of 32 paths that brings the
+block's largest value to the format's maximum, so the format's range never limits the values;
+its precision does (FP8 e4m3 keeps 4 significant bits). Each value is rounded to the format's
+nearest value, or with `rounding="stochastic"` up or down in proportion to the distance, so
+rounding errors average out over the paths instead of biasing a mean; the draws come from
+`rounding_seed` and the array's name (the trade id for a cube column), so runs reproduce. The
+scenario market's tenor grid is not stored narrower than `market.compute`. Curves stored below
+32 bits lose forward rates to cancellation ([I-75](../planning/known-issues.md#i-75)).
 
 A trade is priced at `Precision.precision_for(trade)`: its `by_trade` entry, else its
 product's `by_product` entry, else `pricing` (decision A-15). Each trade's cube column is
@@ -111,8 +122,9 @@ Precision(simulation=f32, market=f32, pricing=f32,
 Calibration, today's values, Greeks and every reduction over paths (the exposure profiles)
 are float64 whatever the policy says (decision A-10): `base_npv_per_trade` is float64, and
 `npv_cube` is the stored cube read back at float64, so its values are float32 numbers when
-its `storage` is `"float32"`. The 32/64 shape before roadmap 1.4 (`PrecisionConfig` and
-its override classes) is refused, naming the replacement (decision A-12).
+its `storage` is `"float32"`, and FP8 numbers times their block scales when it is FP8. The
+32/64 shape before roadmap 1.4 (`PrecisionConfig` and its override classes) is refused,
+naming the replacement (decision A-12).
 
 ## `PortfolioResult`
 

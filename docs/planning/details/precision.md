@@ -170,8 +170,11 @@ class Precision:
     by_trade: Mapping[str, StagePrecision] = field(default_factory=dict)
                                                     # trade_id: overrides by_product and pricing
     rounding: str = "nearest"                       # nearest | stochastic (sub-32-bit storage)
+    rounding_seed: int = 0                          # the stochastic rounding's seed (1.6)
     paired_fraction: float = 0.0                    # share of paths re-run at float64 (§9)
 ```
+
+`rounding` and `rounding_seed` were added in step 1.6 (§6.2); `paired_fraction` comes with 1.7.
 
 `Precision()` is float64 everywhere. It replaces `PrecisionConfig`,
 `PricingPrecisionOverride`, `RiskPrecisionOverride` and `MarketRiskRequest.precision`. The old
@@ -217,7 +220,10 @@ Checked before any work, by `engine/precision/policy.py`, each refusal naming it
 - `storage` is no wider than `compute` (storing wider gains nothing);
 - `compute` below float32, and `accumulate` different from `compute`, are refused until step
   2.8 enables them, by name, citing the step;
-- every `by_trade` key is a trade in the request, every `by_product` key a product.
+- every `by_trade` key is a trade in the request, every `by_product` key a product;
+- `rounding` is `nearest` or `stochastic`, and `stochastic` only when some stage or override
+  stores in a scaled format (otherwise it would be accepted and ignored); `rounding_seed` is a
+  non-negative integer (1.6).
 
 Everything else may be run (D-9). An unvalidated combination gets a warning
 ([§10](#10-acceptance-standard-and-evidence)), never a refusal.
@@ -244,14 +250,15 @@ Precision(simulation=StagePrecision(storage="float8_e4m3fn", compute="float32", 
 engine/precision/
   formats.py   # the format table: name -> dtype, bits, mantissa bits, max, scaled?   (1.4)
   policy.py    # StagePrecision, Precision, validation (1.4); by_product, by_trade, precision_for (1.5)
-  storage.py   # store(), load() (1.4); Stored (pytree: values, scales, format) (1.6)
+  storage.py   # store(), load() (1.4); Stored (pytree: values, scales, format, axis), rounding (1.6)
   report.py    # PrecisionReport: the policy as run, realized dtypes, device, paired errors (1.7)
   estimate.py  # two-level estimator for means; paired differences for quantiles (1.7)
 ```
 
-Step 1.4 built the first three at float64/float32. `Stored` is deferred to 1.6, the first
-step with scaled formats: at float64 and float32 a stored value is the array itself (§6.2), so
-a wrapper would carry no scales and only change every consumer's types. `report.py` comes with
+Step 1.4 built the first three at float64/float32; step 1.6 added `Stored` and the scaled
+formats. At float64 and float32 a stored value is still the array itself (§6.2): a wrapper
+would carry no scales and only change every consumer's types, and it keeps the default bit
+for bit. `report.py` comes with
 1.7, whose report it is; until then tests read the realized dtypes from the arrays.
 
 The pipeline imports these; they import nothing from it. Each module has its own unit tests
@@ -290,6 +297,44 @@ FP4 (`float4_e2m1fn`) is added at step 6.3. A name outside the table is refused.
 - A scenario count that is not a multiple of 32 gets a short last block; zeros and NaN pass
   through unchanged.
 
+As built (step 1.6, `engine/precision/storage.py`):
+
+- `store(x, format, rounding, key, axis)` returns the array itself at float64 and float32
+  (rounded to nearest whatever `rounding` says, so 1.4's behaviour is unchanged) and a `Stored`
+  at a scaled format: `values` in the format with the array's shape, `scales` float32 with the
+  scenario axis cut to ceil(S / 32) blocks, the format name and the axis. `load` accepts both.
+  `Stored` is a pytree, so it passes through `jit` and sits inside a `ScenarioMarket`.
+- **The scale** of a block is 2^-k for the largest k with `amax · 2^k ≤ max` (from the
+  mantissas and exponents of `amax` and the format's max, exactly), so the block's largest
+  finite magnitude lands in (max/2, max]. k is clamped to [-126, 126], so every scale and its
+  inverse is a normal float32; only bfloat16 blocks below 2 in magnitude reach the clamp, and
+  they stay normal bfloat16 numbers. Non-finite entries do not count towards `amax`.
+- **Rounding is done on the format's grid, not by the dtype conversion.** The spacing at a
+  scaled value v is `2^(max(binade(v), min_exponent) - mantissa_bits)`; `v / spacing` is
+  rounded to an integer, half to even (`nearest`), or down or up with probability equal to the
+  fractional part (`stochastic`, uniform draws in the compute dtype); the result is cast to the
+  format exactly, since it lies on its grid. Every step is a power-of-two multiply. The
+  conversion is not trusted because XLA converts float64 to FP8 and float16 through float32,
+  rounding twice (measured: 2 of 2M values differ from a correct rounding for e4m3, 118 for
+  float16). A test holds the nearest rounding equal to ml_dtypes' conversion of the scaled
+  values. The spacing is kept a normal number of the compute dtype, since XLA's CPU flushes
+  subnormals; that coarsens only bfloat16's subnormals under float32 compute, values at least
+  2^119 below their block's largest (a scaled block's largest is at least 1).
+- NaN, zeros (signed) and infinities pass through; `float8_e4m3fn` has no infinity, so one
+  becomes NaN there. Magnitudes beyond float32's range cannot be scaled and overflow, as they
+  would in float32 storage.
+- **The stochastic draws** come from `Precision.rounding_seed` and the array's name in the run,
+  not the simulation's seed: a market-risk run has none (historical scenarios), and naming
+  each array makes arrays round independently and a trade's column round the same in a mixed
+  run as alone (the exit criterion of 1.5, kept under stochastic rounding). `Precision.store(x,
+  storage, stream, axis)` is the one place the pipeline stores; the names are `"shocks"`,
+  `"states"`, `"market/<i>"` (the market's path arrays in `ScenarioMarket.map_arrays` order)
+  and `"values/<trade id>"` (cube columns and market-risk P&L).
+- **No recompiles.** The quantizer and the loader are module-level `jit` programs with the
+  format, axis and dtype static: one compile per array shape, format and rounding, reused by
+  every trade, date and run (a test counts the compiled programs).
+- Overhead: FP8 holds an array in an eighth of float64 plus 4 bytes per 32 values.
+
 ### 6.3 Cast points
 
 The only places that read the configuration:
@@ -298,9 +343,18 @@ The only places that read the configuration:
 |---|---|---|
 | 1 | `engine.simulation.config.simulate` | Normals generated (`engine/simulation/random.py`, the clip epsilon from the compute dtype) and bridged at `simulation.compute`, then `store(shocks)` |
 | 2 | `simulate` | `load(shocks)`; `evolve_states` runs at `simulation.compute` (it follows the shocks' dtype; the moments are cast to it); `store(states)` |
-| 3 | `simulate` | `load(states)` at `market.compute`; `build_scenario_market` follows the states' dtype (the z-independent terms keep coming from float64); the whole market stored at `market.storage` (`ScenarioMarket.map_arrays`) |
+| 3 | `simulate` | `load(states)` at `market.compute`; `build_scenario_market` follows the states' dtype (the z-independent terms keep coming from float64); every path array of the market stored at `market.storage` (`ScenarioMarket.map_arrays`); the tenor grid, which has no scenario axis, kept at `market.compute` (since 1.6) |
 | 4 | `engine.valuation.portfolio.value_portfolio`; `engine.market_risk.run_market_risk` | Per trade, at `stage = precision_for(trade)` (1.5): `load(market)` at `stage.compute` (once per dtype, with its path fixings), price the trade, `store` its cube column at `stage.storage`. Market risk: shifts rounded to `simulation.compute` and stored once; per trade loaded at `stage.compute`, revalued (`revalue_trade` follows the shifts' dtype), the P&L stored at `stage.storage` |
 | 5 | `engine.portfolio.market_path` (exposure); `run_market_risk` (VaR/ES) | `load(values, float64)` and the numeraire at float64, then reduce |
+
+Every store goes through `Precision.store`, which adds the policy's rounding (§6.2). The
+shocks `[T, S, d]` have their scenario axis at 1, every other class at 0.
+
+The tenor grid (`ScenarioCurves.tenor_times`, `[D, K+1]`) is the curves' coordinates, not
+scenario data: block scales need a scenario axis, and an FP8 grid would move every pillar.
+Until 1.6 it was stored at `market.storage` like the curves, so a float32 market storage under
+float64 compute rounded it to float32; since 1.6 it stays at `market.compute`, which changes
+that one combination's numbers at float32 rounding level (no default and no snapshot run).
 
 The first three live in `simulate`, the orchestrator of the simulation and market stages;
 the kernels it calls (`generate_sobol_normals`, `apply_brownian_bridge`, `evolve_states`,
@@ -309,8 +363,9 @@ the kernels it calls (`generate_sobol_normals`, `apply_brownian_bridge`, `evolve
 
 The cube is a sequence of per-trade columns, each in its own storage format
 (`PortfolioValuation.columns`, step 1.5; `Stored` columns from 1.6).
-`PortfolioValuation.cube` sets them side by side in their shared format, as before, or loaded
-at float64 when the formats differ (exact: float64 holds every format's values).
+`PortfolioValuation.cube` sets them side by side in their shared format when it is float64 or
+float32, as before, or loaded at float64 when the formats differ or are scaled (exact: float64
+holds every format's values times their power-of-two scales).
 `PortfolioResult.npv_cube` stays an array, loaded at float64, so consumers see no change. A
 trade priced at its precision inside a mixed run gives exactly the column it gives priced
 alone with that `pricing` stage: trades share only the loaded scenario market and fixings,
@@ -389,8 +444,8 @@ its sequential run.
 
 Storage below 32 bits needs no kernel changes: values are loaded to the compute precision,
 which stays at float32 or above until step 2.8. It is the first low-precision capability
-(step 1.6), and the first measurement campaign (step 2.7) runs on it while stage 2 continues,
-because it never changes float64 numbers.
+(step 1.6, done 2026-10-02), and the first measurement campaign (step 2.7) runs on it while
+stage 2 continues, because it never changes float64 numbers.
 
 What is known (measured 2026-10-01, [§15](#15-measurements)):
 
@@ -402,8 +457,15 @@ What is known (measured 2026-10-01, [§15](#15-measurements)):
   Stochastic rounding keeps each value's mean but inflates the variance by 4.7%, which
   inflates volatility. A variance correction through the block scales is the candidate fix
   (step 6.3).
-- **States, curves and values are unmeasured.** States are sums of many shocks and are
-  reused at every step, so FP8 is expected to fail for them; the measurement will show it.
+- **Through the pipeline** (1.6, [§15.3](#153-storage-through-the-pipeline)): one stage at a
+  time on the shared portfolio, float16 is within 1e-5 of notional in bias and 7e-6 in EPE;
+  FP8 moves EPE by 0.04% (shocks), 2.6% (curves, e4m3) and 0.6% (cube). Two mechanisms limit
+  it, both recorded as [I-75](../known-issues.md#i-75): a column whose paths sit close
+  together against their level (a bond's cube, a long log discount factor) keeps only the
+  format's few bits of its spread, and rounded to nearest every path of a block moves the same
+  way, a bias; stochastic rounding turns that into noise (the cube's FP8 bias 3 to 4 times
+  smaller at 256 paths). Storing the deviation from a level (the difference form of §8.2, or a
+  block offset) is the remedy; step 2.7 measures, per class, which formats need it.
 
 ## 8. Compute below float32
 
@@ -569,7 +631,7 @@ nothing in the precision work depends on it; step 3.2 does.
 |---|---|---|---|
 | **1.4** (done 2026-10-01) | `engine/precision/` (formats, policy, storage at float64/float32; the report skeleton moved to 1.7, `Stored` to 1.6, §5); `Precision` replaces the old types in `RunConfig`, `MarketRiskRequest` and the HTTP schema, the old shape refused (A-12); the cast points; inputs follow dtype; float64 reductions; the constants of §6.5; market risk on the same module; remove `check_run`'s refusal, the flag set, the lock and the tiers; strict promotion in CI | Default: golden snapshot bit for bit, every ORE parity suite unchanged. float32: the scenario market and the market-risk revaluation bit for bit as before; the portfolio cube is not, and cannot be (§13.1); exposure and VaR/ES differ by the float64 reductions. Fast tier green under strict promotion. Met: §13.1 | M |
 | **1.5** (done 2026-10-02) | Per-product and per-trade precision (A-15): `by_product`, `by_trade`, `precision_for`; per-trade stored columns; market risk per trade | Bit for bit at the default; a mixed run (Bermudan float32, swaps float64) equals each trade run alone at its precision, column for column. Met: §13.1 | S |
-| **1.6** | Sub-32-bit storage: block scales, both roundings; `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2` enabled for storage | The storage properties of §13.4; bit for bit at the default | M |
+| **1.6** (done 2026-10-02) | Sub-32-bit storage: block scales, both roundings; `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2` enabled for storage | The storage properties of §13.4; bit for bit at the default. Met: §13.1, §13.4 | M |
 | **1.7** | Paired sample, two-level estimator for means, `PrecisionReport` with realized dtypes and device (closes I-12) | §13.6; bit for bit at the default | M |
 | **1.8** | Engine worker process and the SQLite queue (A-14); delete `worker_pool.py`'s pool and freeze/thaw | §13.8, including the Linux run; float64 job time and compile count no worse | M |
 | **2.7** | *Parallel with stage 2.* Measurement campaign for storage formats per class and product, at several path counts, fixed seeds; the evidence table and the warnings (§10) | Table complete for every figure × class × format; thresholds fixed before measuring; a verdict and path ceiling per row | M |
@@ -634,6 +696,11 @@ process changes.
   made this change, not of `a6c63bf`. The
   whole snapshot took 14 minutes instead of 69 (bump Greeks 21 s instead of 29 minutes),
   both measured with other jobs running.
+- **Step 1.6's result (2026-10-02).** The same snapshot script, 232 arrays, from a worktree of
+  `f51227c` (the commit of the jit change) against the 1.6 tree: all 232 identical in value,
+  dtype and shape, the float32 runs included. float64 and float32 storage are the same plain
+  cast as before, and the one float32 behaviour 1.6 changes, the tenor grid under a float32
+  market storage with float64 compute (§6.3), is in no snapshot run.
 - Step 2.8: parity suites pass at their tolerances first; then the snapshot is re-baselined,
   with the largest change per array recorded in the commit and in known-issues' verification
   status.
@@ -669,6 +736,24 @@ Fast, no market or ORE needed:
   input) and repeats exactly for the same seed;
 - no block overflows; zeros and NaN pass through; a scenario count not divisible by 32;
 - `store`/`load` at float64 and float32 is the identity.
+
+Done in step 1.6 (`tests/test_precision.py::TestScaledStorage`), for every scaled format, from
+float64 and float32: values of the format round-trip exactly under both roundings; nearest
+equals ml_dtypes' correctly rounded conversion and is within half a step times the scale;
+each scale is a float32 power of two that brings its block's largest magnitude into
+(max/2, max]; stochastic rounding moves a value to one of its two neighbours, its mean within
+three standard errors where nearest is biased, repeats for its key and differs for another;
+zeros (signed), NaN and infinities pass through (NaN in `float8_e4m3fn`); short last blocks on
+any axis; blocks independent of each other; FP8's size; a pytree loading inside `jit`; misuse
+refused; each kernel compiled once per shape. Through the pipeline
+(`TestScaledStoragePipeline`): every stage stored in every scaled format (realized formats read
+from the arrays), end to end under strict promotion with stochastic rounding, a stored cube
+column within a step of its float64 values, a stochastic run reproducing bit for bit with no
+new compile and moving with its seed, market risk's P&L within a step and exactly zero for a
+zero shift; per trade, a mixed run with scaled formats and stochastic rounding equals each
+trade alone, column for column, in the cube and the P&L. Slow tier: every stage × format on
+the shared portfolio within measured bounds (§15.3), and stochastic rounding's smaller bias of
+an FP8 cube.
 
 ### 13.5 Low-precision sanity on sloped curves
 
@@ -709,8 +794,8 @@ before measuring: bias against the rule of §10 at the stated path counts.
 ### 13.10 Demos
 
 `demos/demo_precision.py` moves to `Precision` (done in 1.4, with a storage-only float32 run
-beside float32 throughout), adds FP16 and FP8 storage runs (1.6), and prints each run's report
-(1.7).
+beside float32 throughout), adds FP16, BF16 and FP8 storage runs, FP8 with both roundings
+(done in 1.6), and prints each run's report (1.7).
 
 ## 14. Scope
 
@@ -770,6 +855,70 @@ errors average out with the paths. Measured instead, the bias of a call payoff
 
 This is one payoff on raw shocks, not pricing through the pipeline; step 2.7 measures the
 pipeline's figures.
+
+### 15.3 Storage through the pipeline
+
+Measured 2026-10-02 on the step 1.6 code: the shared portfolio (8 trades, 3% -> 5% curves),
+256 paths, 3 dates, one stage stored in the format and the others float64 (compute float32 in
+the stored stage, float64 for pricing, so only storage differs). Per unit notional: the
+largest error of a cube entry, the largest bias (the mean over the paths of a trade on a date),
+and the largest change of the netting set's EPE relative to its peak. One seed: a screening,
+not the evidence of step 2.7.
+
+| Format | Stage | Nearest: max error / bias / EPE | Stochastic: max error / bias / EPE |
+|---|---|---|---|
+| float16 | shocks and states | 7.6e-5 / 6.2e-7 / 1.4e-6 | 8.3e-5 / 2.3e-6 / 1.1e-5 |
+| float16 | market | 9.8e-5 / 3.0e-6 / 1.0e-5 | 1.8e-4 / 3.1e-6 / 3.6e-5 |
+| float16 | cube | 4.5e-4 / 9.5e-6 / 6.7e-6 | 5.0e-4 / 3.3e-5 / 3.0e-5 |
+| bfloat16 | shocks and states | 5.5e-4 / 2.6e-6 / 9.8e-6 | 1.8e-2 / 7.1e-5 / 5.6e-5 |
+| bfloat16 | market | 1.8e-2 / 6.6e-5 / 1.1e-4 | 1.5e-3 / 2.7e-5 / 4.2e-4 |
+| bfloat16 | cube | 3.5e-3 / 1.1e-4 / 1.0e-4 | 5.5e-3 / 1.5e-4 / 1.1e-4 |
+| FP8 e4m3 | shocks and states | 1.7e-2 / 8.0e-5 / 3.6e-4 | 1.7e-2 / 1.9e-4 / 8.8e-4 |
+| FP8 e4m3 | market | 1.7e-2 / 4.1e-4 / 2.6e-2 | 2.7e-2 / 1.2e-3 / 4.4e-3 |
+| FP8 e4m3 | cube | 3.3e-2 / 6.8e-3 / 5.9e-3 | 6.4e-2 / 2.7e-3 / 2.0e-3 |
+| FP8 e5m2 | shocks and states | 1.5e-2 / 3.1e-4 / 1.3e-3 | 3.0e-2 / 4.3e-4 / 2.4e-3 |
+| FP8 e5m2 | market | 2.5e-2 / 1.2e-3 / 5.1e-2 | 5.1e-2 / 2.3e-3 / 1.1e-2 |
+| FP8 e5m2 | cube | 6.5e-2 / 3.7e-2 / 3.2e-2 | 1.2e-1 / 8.5e-3 / 5.7e-3 |
+
+Reading it:
+
+- **The largest errors are exercise decisions** that flip on one path: the cash-settled
+  Bermudan, worth 0 at float64 and 1.7% of its notional with a bfloat16 market or FP8 shocks
+  (it exercises in one run and not the other). The median entry error is 10 to 100 times
+  smaller. Bias, not the largest error, is the criterion (§15.2).
+- **Nearest rounding of a concentrated column is a bias.** The bond's cube sits near 1e6 with a
+  path spread near 1e4; FP8 keeps 3 or 2 mantissa bits of the level, so the 32 paths of a block
+  round alike. Stochastic rounding removes the bias, leaving noise that shrinks with the paths:
+  the FP8 cube's bias falls from 6.8e-3 to 2.7e-3 (e4m3) and 3.7e-2 to 8.5e-3 (e5m2). The
+  market's curves are concentrated the same way (a long log discount factor varies by a few
+  percent of itself across paths), and an FP8 market moves EPE by 2.6% (e4m3, nearest).
+  [I-75](../known-issues.md#i-75).
+- **float16 is accurate in every stage** at this path count: bias at most 1e-5 of notional.
+  bfloat16 keeps 7 mantissa bits to float16's 10 and is about ten times worse; its range is
+  not needed with block scales.
+- Each run took 12 to 24 s against 98 s for the float64 reference, which includes its first
+  compiles; CPU time is not evidence of speed (§2.3).
+
+**Market risk** (`demos/demo_precision.py`, 2026-10-02: five trades with offsetting swaps,
+8,192 scenarios, five seeds; the shifts and each trade's P&L stored in the format, revaluation
+in float64). The largest change of a figure from float64, against the spread of float64
+across seeds:
+
+| Storage | VaR 99% | ES 97.5% |
+|---|---|---|
+| float16 | 0.044 | 0.005 |
+| bfloat16 | 0.25 | 0.13 |
+| FP8 e4m3, nearest | 1.8 | 1.8 |
+| FP8 e4m3, stochastic | 2.2 | 4.5 |
+
+- **Netting amplifies storage error.** Each trade's P&L is stored at its own scale, and the
+  payer and receiver swaps' P&Ls nearly cancel in the portfolio's, so the portfolio P&L's error
+  is large against the portfolio P&L itself (FP8: 25% of its largest value).
+- **Stochastic rounding biases quantiles.** It keeps each value's mean but adds variance, and
+  a wider P&L distribution has a larger VaR and ES: unbiased noise becomes a bias of a tail
+  figure, here larger than nearest's. Means are corrected by the two-level estimator (A-13);
+  quantiles are not (§9.4), so for VaR/ES the storage itself must be precise enough. Step 2.7
+  measures it per figure; [I-75](../known-issues.md#i-75).
 
 ## 16. Decisions this document implements
 

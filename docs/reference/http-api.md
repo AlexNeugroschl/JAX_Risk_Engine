@@ -324,8 +324,10 @@ Precision](portfolio-entrypoint.md#precision) and
 `pricing`, each an object of format names `storage`, `compute` and `accumulate`, every field
 `"float64"` when omitted; and the pricing stage's overrides, `by_product` (keyed by a
 `trade_type`) and `by_trade` (keyed by a `trade_id`), each mapping to such an object. A trade
-is priced at its `by_trade` entry, else its product's, else `pricing` (roadmap 1.5). Unknown
-fields are refused.
+is priced at its `by_trade` entry, else its product's, else `pricing` (roadmap 1.5).
+`rounding` (`"nearest"`, the default, or `"stochastic"`) is how values are rounded into a
+storage format below 32 bits, and `rounding_seed` (a non-negative integer, 0 by default) seeds
+the stochastic rounding (roadmap 1.6). Unknown fields are refused.
 
 ```json
 "precision": {"simulation": {"storage": "float32", "compute": "float32", "accumulate": "float32"},
@@ -334,19 +336,27 @@ fields are refused.
               "by_trade": {"swap-7": {"storage": "float32", "compute": "float32", "accumulate": "float32"}}}
 ```
 
+Storage below 32 bits, the cube in FP8 with stochastic rounding:
+
+```json
+"precision": {"pricing": {"storage": "float8_e4m3fn"}, "rounding": "stochastic", "rounding_seed": 7}
+```
+
 A `by_product` key that is not a `trade_type` is a `422`; a `by_trade` key that names no
 trade of the request is a `400` (checked with the request, so no job is created).
 
 The format names are the format table's (`float64`, `float32`, `float16`, `bfloat16`,
-`float8_e4m3fn`, `float8_e5m2`); another name is a `422`. A name in the table that is not yet
-enabled, or an inconsistent stage, is a `400` naming the stage (or override, e.g.
-`precision.by_trade['swap-7']`), the field and the roadmap step that enables it:
+`float8_e4m3fn`, `float8_e5m2`); another name, or another rounding, is a `422`. Every format
+stores; a format not yet enabled for compute (below float32, roadmap 2.8), or an inconsistent
+stage, is a `400` naming the stage (or override, e.g. `precision.by_trade['swap-7']`), the
+field and the roadmap step that enables it. So is `"rounding": "stochastic"` when no stage
+stores below 32 bits:
 
 ```
 POST /portfolio/price
-{"precision": {"pricing": {"storage": "float8_e4m3fn"}}, ...}
--> 400 {"detail": "precision.pricing: StagePrecision.storage='float8_e4m3fn': storage in float8_e4m3fn
-        (with block scales) is enabled by roadmap step 1.6; until then float64 or float32"}
+{"precision": {"pricing": {"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"}}, ...}
+-> 400 {"detail": "precision.pricing: StagePrecision.compute='float16': compute in float16 is enabled by
+        roadmap step 2.8 (difference-form kernels); until then float64 or float32"}
 ```
 
 The 32/64 shape before roadmap 1.4 (`{"simulation": 32, "pricing": 64, "risk": ..., "calibration": ...}`)

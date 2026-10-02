@@ -31,7 +31,7 @@ Every choice is one `RunConfig` (`engine/portfolio/config.py`) on
 | European engine | `Bachelier` (ORE's default) or `Jamshidian` with `PricingConfig.jamshidian` |
 | Greeks | `Bump` (`engine.risk.sensitivities`, settings `config.greeks.sensitivity`) or `AD` (`engine.risk.greeks`) |
 | Market risk | `engine.market_risk.run_market_risk` on a `Market` with the same `PricingConfig` (A-8) |
-| Precision | `config.precision` (`engine.precision.Precision`, step 1.4): storage, compute and accumulate per adjustable stage (simulation, market, pricing), float64 or float32; per product and per trade since step 1.5; steps 1.6 and 1.7 add FP8 storage and the report ([precision.md](precision.md)) |
+| Precision | `config.precision` (`engine.precision.Precision`, step 1.4): storage, compute and accumulate per adjustable stage (simulation, market, pricing), float64 or float32 compute, storage down to FP8 with block scales and nearest or stochastic rounding since step 1.6; per product and per trade since step 1.5; step 1.7 adds the report ([precision.md](precision.md)) |
 
 ## Step 1.2 — the run configuration (I-68) — done
 
@@ -118,7 +118,7 @@ curve; every per-path ORE comparison of `tests/test_valuation.py` run under both
 `tests/test_end_to_end.py` prices the Hull-White simulation's paths in QuantLib
 ([verification status](../known-issues.md#verification-status)).
 
-## Steps 1.4 to 1.8 — precision and the engine worker (I-55, I-12, I-72); 1.4 done 2026-10-01
+## Steps 1.4 to 1.8 — precision and the engine worker (I-55, I-12, I-72); 1.4 to 1.6 done 2026-10-01/02
 
 Designed in [precision.md](precision.md): a `Precision` with storage, compute and accumulate
 per adjustable stage, overridable per product and trade (A-10, A-15); the old configuration
