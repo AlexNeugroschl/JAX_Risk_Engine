@@ -11,6 +11,7 @@ import pytest
 from engine.market import ZeroCurveConfig
 from engine.market_risk import (
     MarketRiskRequest,
+    SOURCE_HISTORICAL,
     RateRiskFactors,
     ShockScenarios,
     covariance_from_history,
@@ -20,6 +21,7 @@ from engine.market_risk import (
     run_market_risk,
 )
 from engine.market_risk.revaluation import revalue
+from engine.precision import Precision, StagePrecision
 from engine.risk.greeks import curve_greeks
 from engine.risk.price_functions import curves_of, trade_price_function
 from engine.risk.var_es import RISK_MEASURE_HISTORICAL, compute_risk_metrics
@@ -302,10 +304,35 @@ class TestRun:
 
     @pytest.mark.slow
     def test_float32_run_is_float32_and_close(self, mixed_run):
+        """Float32 throughout: the revaluation and P&L are computed and stored in float32 (the
+        float32 revaluation's P&L, bit for bit) and VaR/ES reduce them in float64."""
         trades, result64 = mixed_run
-        result32 = run_market_risk(MarketRiskRequest(trades, m.market(), _scenarios(num=512), m.PRICING, precision=32))
-        assert result32.pnl.dtype == jnp.float32
+        scenarios = _scenarios(num=512)
+        result32 = run_market_risk(MarketRiskRequest(trades, m.market(), scenarios, m.PRICING,
+                                                     precision=Precision.throughout("float32")))
+        base, shocked = revalue(trades, m.market(), FACTORS, jnp.asarray(scenarios.shifts, jnp.float32), m.PRICING)
+        assert shocked.dtype == jnp.float32 and result32.pnl.dtype == jnp.float64
+        np.testing.assert_array_equal(np.asarray(result32.pnl),
+                                      np.asarray(shocked - jnp.asarray(base, jnp.float32)[None, :], np.float64))
         assert result32.risk["VaR_99"] == pytest.approx(result64.risk["VaR_99"], rel=1e-4)
+
+    @pytest.mark.parametrize("precision", [Precision(), Precision.throughout("float32"),
+                                           Precision(pricing=StagePrecision("float32", "float64", "float64"))])
+    def test_a_zero_shift_is_zero_pnl_at_every_precision(self, precision):
+        """The base is the revaluation at the pricing compute, so P&L has no precision bias at
+        zero."""
+        zero = ShockScenarios(FACTORS, np.zeros((4, FACTORS.size)), 10, SOURCE_HISTORICAL)
+        result = run_market_risk(MarketRiskRequest([m.swap(), m.bond()], m.market(), zero, m.PRICING,
+                                                   precision=precision))
+        assert np.all(np.asarray(result.pnl) == 0.0)
+
+    def test_storage_narrower_than_compute_rounds_only_the_stored_pnl(self):
+        """`pricing` stored float32 and computed float64: the float64 P&L rounded once."""
+        scenarios = _scenarios(num=64)
+        exact = run_market_risk(MarketRiskRequest([m.swap()], m.market(), scenarios))
+        stored = run_market_risk(MarketRiskRequest([m.swap()], m.market(), scenarios, precision=Precision(
+            pricing=StagePrecision("float32", "float64", "float64"))))
+        np.testing.assert_array_equal(np.asarray(stored.pnl), np.asarray(exact.pnl).astype(np.float32))
 
     @pytest.mark.slow
     def test_a_calibrated_bermudan_is_held_at_todays_calibration(self):
@@ -327,8 +354,13 @@ class TestRunValidation:
         with pytest.raises(ValueError, match="at least one trade"):
             run_market_risk(self._request([]))
 
+    @pytest.mark.parametrize("old", [32, 64])
+    def test_the_retired_integer_precision_is_refused_naming_the_replacement(self, old):
+        """Refused, not translated (decision A-12)."""
+        with pytest.raises(TypeError, match=r"MarketRiskRequest\.precision.*retired by roadmap 1\.4"):
+            run_market_risk(self._request([m.swap()], precision=old))
+
     @pytest.mark.parametrize("kwargs, match", [
-        ({"precision": 16}, "precision"),
         ({"batch_size": 0}, "batch_size"),
         ({"quantiles": (1.0,)}, "quantile"),
     ])

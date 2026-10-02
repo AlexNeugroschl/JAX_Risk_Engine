@@ -47,8 +47,8 @@ result.risk["ES_97.5_standardError"]                    # Monte Carlo noise of t
 result.pnl                                               # [S, N] per-trade P&L
 ```
 
-`demos/demo.py` ends with a worked run; `demos/demo_precision.py` runs it at FP64 and
-FP32.
+`demos/demo.py` ends with a worked run; `demos/demo_precision.py` runs it at FP64, FP32,
+and with the P&L only stored in FP32.
 
 ## Risk factors
 
@@ -121,9 +121,18 @@ Fractional percentages keep their decimals: Basel's 97.5% is `ES_97.5`.
 
 ## Precision
 
-`MarketRiskRequest.precision` (64 or 32) sets the dtype of the revaluation and the
-statistics. Every price function derives its working dtype from the curve it is given, so
-a float32 run is float32 end to end — a property pinned by
+`MarketRiskRequest.precision` is the portfolio run's `engine.precision.Precision`
+([Architecture: Adjustable precision](../concepts/architecture.md#adjustable-precision)), its
+stages read for this pipeline: the shifts are rounded to `simulation.compute` and stored at
+`simulation.storage`; the revaluation and each trade's P&L are computed at `pricing.compute`
+and the P&L stored at `pricing.storage`; `result.pnl` is that P&L read back at float64, and
+VaR/ES are float64 reductions of it (decision A-10). The base values (`base_npv_per_trade`) are
+the revaluation of the unshocked curves at `pricing.compute`: they are the anchor every P&L is
+measured from, so a zero shift is exactly zero P&L at every precision. The integer
+`precision=64|32` of before roadmap 1.4 is refused, naming the replacement.
+
+Every price function derives its working dtype from the curve it is given, so a float32
+revaluation is float32 end to end (strict dtype promotion in CI) — a property pinned by
 `tests/test_market_risk.py::TestRevaluation::test_the_european_price_function_keeps_float32`
 (for both European engines), which once caught two constants silently promoting a European to
 float64.

@@ -85,7 +85,7 @@ def version() -> VersionSchema:
 @router.post("/portfolio/price", status_code=status.HTTP_202_ACCEPTED)
 def submit_portfolio_price(request: MarketPortfolioRequestSchema) -> dict:
     """Validate the request synchronously (a failure is a 400, and no job is created),
-    then submit it to the worker pool for its precision tier and return its `job_id`."""
+    then submit it to the worker pool and return its `job_id`."""
     return {"job_id": _validate_and_submit(request)}
 
 

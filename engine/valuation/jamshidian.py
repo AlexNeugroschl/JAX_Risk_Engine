@@ -105,8 +105,10 @@ def jamshidian_value(cfg: SwaptionConfig, context: PricingContext, model: Jamshi
 
 def jamshidian_cube(terms: EuropeanTerms, model: JamshidianEngineConfig, schedule: PathSchedule, times: np.ndarray,
                     disc, index, fixings: jax.Array, alive: np.ndarray) -> jax.Array:
-    """`[S, D]` NPVs on every path and date (0 from expiry on); `alive` `[D]` says the option
-    has not expired on each date."""
+    """`[S, D]` NPVs on every path and date (0 from expiry on), in the curves' dtype; `alive`
+    `[D]` says the option has not expired on each date."""
+    terms = terms.astype(disc.log_discounts.dtype)
+
     def value(disc_j, _index, t_j, _fixed, _float, _projected, _known, alive_j):
         return jnp.where(alive_j, jamshidian_npv(terms, model, disc_j, t_j), 0.0)
 

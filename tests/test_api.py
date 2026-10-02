@@ -16,7 +16,7 @@ import pytest
 from demos.demo_scenarios import demo_market_json, demo_simulation_json
 from engine.api.market_schemas import MarketPortfolioRequestSchema
 from engine.portfolio import price_portfolio
-from engine.portfolio.worker_pool import shutdown_pools
+from engine.portfolio.worker_pool import shutdown_pool
 from tests.support import portfolio as shared
 
 ZERO_CURVE_SCHEMA = {"times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0], "rates": [0.03, 0.03, 0.032, 0.035, 0.038, 0.04]}
@@ -24,10 +24,10 @@ ZERO_CURVE_SCHEMA = {"times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0], "rates": [0.03, 
 
 @pytest.fixture(scope="module", autouse=True)
 def _cleanup_pools():
-    """Shut this module's worker pools down so later in-process compiles do not run with idle
+    """Shut this module's worker pool down so later in-process compiles do not run with idle
     workers attached (I-27's first step)."""
     yield
-    shutdown_pools(wait=True)
+    shutdown_pool(wait=True)
 
 
 def _simulation(samples=64, model="HullWhite"):
@@ -215,35 +215,46 @@ class TestCalibrationEndpoint:
 
 
 class TestPortfolioPricePrecision:
-    """The HTTP precision block (the dataclass level is
-    tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision)."""
+    """The HTTP precision block, `engine.precision.Precision` on the wire (the dataclass level
+    is tests/test_precision.py)."""
 
-    def test_an_invalid_precision_value_is_a_400_not_a_failed_job(self, test_client):
-        r = test_client.post("/portfolio/price", json=_body([_swap()], precision={"simulation": 16}))
-        assert r.status_code == 400 and "must be 32 or 64" in r.json()["detail"]
+    @pytest.mark.parametrize("old", [{"simulation": 32}, {"pricing": 64}, {"risk": 32}, {"calibration": 64}])
+    def test_the_retired_32_64_shape_is_a_422_naming_the_replacement(self, test_client, old):
+        """Refused, not translated (decision A-12)."""
+        r = test_client.post("/portfolio/price", json=_body([_swap()], precision=old))
+        assert r.status_code == 422 and "retired by roadmap 1.4" in r.text and "StagePrecision" in r.text
 
-    @pytest.mark.parametrize("stage", ["pricing", "risk", "calibration"])
-    def test_a_stage_computed_in_float64_only_is_a_400_naming_it(self, test_client, stage):
-        """Until roadmap 1.4 only the simulation's precision is adjustable (I-55)."""
-        r = test_client.post("/portfolio/price", json=_body([_swap()], precision={stage: 32}))
-        assert r.status_code == 400 and f"config.precision.{stage}" in r.json()["detail"]
+    def test_a_format_outside_the_table_is_a_422(self, test_client):
+        r = test_client.post("/portfolio/price", json=_body([_swap()], precision={"pricing": {"compute": "fp32"}}))
+        assert r.status_code == 422 and "float8_e4m3fn" in r.text
+
+    @pytest.mark.parametrize("stage, block, message", [
+        ("pricing", {"storage": "float8_e4m3fn"}, "roadmap step 1.6"),
+        ("market", {"compute": "bfloat16"}, "roadmap step 2.8"),
+        ("simulation", {"storage": "float64", "compute": "float32", "accumulate": "float32"}, "wider than compute"),
+    ])
+    def test_a_format_not_enabled_is_a_400_naming_the_stage_and_field(self, test_client, stage, block, message):
+        r = test_client.post("/portfolio/price", json=_body([_swap()], precision={stage: block}))
+        assert r.status_code == 400 and f"precision.{stage}" in r.json()["detail"] and message in r.json()["detail"]
 
     @pytest.mark.slow
-    def test_omitted_precision_equals_explicit_all_64(self, test_client):
-        explicit = {"simulation": 64, "pricing": 64, "risk": 64, "calibration": 64}
+    def test_omitted_precision_equals_explicit_float64(self, test_client):
+        f64 = {"storage": "float64", "compute": "float64", "accumulate": "float64"}
         a = _submit_and_poll(test_client, _body([_swap()]))
-        b = _submit_and_poll(test_client, _body([_swap()], precision=explicit))
+        b = _submit_and_poll(test_client, _body([_swap()], precision={s: f64 for s in ("simulation", "market",
+                                                                                         "pricing")}))
         np.testing.assert_array_equal(np.asarray(a["npv_cube"]), np.asarray(b["npv_cube"]))
 
 
 @pytest.mark.slow
 class TestPortfolioPriceWorkerPoolDispatch:
-    """`/portfolio/price` dispatches through `engine.portfolio.worker_pool`, one pool per
-    simulation precision."""
+    """`/portfolio/price` dispatches through `engine.portfolio.worker_pool`, one pool for every
+    precision."""
 
     def test_two_precisions_submitted_back_to_back_both_complete_correctly(self, test_client):
-        body_64 = _body([_swap(), _european()], precision={"simulation": 64})
-        body_32 = _body([_swap(), _european()], precision={"simulation": 32})
+        f32 = {"storage": "float32", "compute": "float32", "accumulate": "float32"}
+        body_64 = _body([_swap(), _european()])
+        body_32 = _body([_swap(), _european()], precision={"simulation": f32, "market": f32, "pricing": f32})
         job_64 = test_client.post("/portfolio/price", json=body_64).json()["job_id"]
         job_32 = test_client.post("/portfolio/price", json=body_32).json()["job_id"]
         deadline = time.time() + 180
@@ -255,7 +266,7 @@ class TestPortfolioPriceWorkerPoolDispatch:
         r64, r32 = data[job_64]["result"], data[job_32]["result"]
         np.testing.assert_array_equal(np.asarray(r64["npv_cube"]), np.asarray(_direct(body_64).npv_cube))
         np.testing.assert_array_equal(np.asarray(r32["npv_cube"]), np.asarray(_direct(body_32).npv_cube))
-        assert r64["npv_cube"] != r32["npv_cube"], "the jobs did not collapse onto one tier"
+        assert r64["npv_cube"] != r32["npv_cube"], "the float32 job was not priced in float32"
 
     def test_job_id_maps_to_a_future_not_an_eagerly_computed_result(self, test_client):
         """The route returns as soon as it has a `Future`; the 202 rules out blocking."""

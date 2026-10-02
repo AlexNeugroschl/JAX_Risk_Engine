@@ -10,8 +10,8 @@ and settings, and the precision per stage, with ORE's defaults.
     second pipeline selected by the market's type, with its own engines and Greeks, and each
     pipeline refused the other's options.
   * What the pipeline does not implement yet is refused before any work, naming the field:
-    today a stage other than the simulation below float64 (I-55, roadmap 1.4), and what the
-    Jamshidian engine cannot price.
+    today a precision format before the roadmap step that enables it (tests/test_precision.py),
+    and what the Jamshidian engine cannot price.
   * The bump-and-revalue settings (`GreeksConfig.sensitivity`, ORE's sensitivity.xml) reach
     the Greeks.
   * The configuration survives the trip to a pricing worker.
@@ -26,8 +26,7 @@ import pytest
 from engine.market import Market
 from engine.portfolio import (
     CamConfig, GreeksConfig, HullWhiteConfig, JamshidianEngineConfig, LgmConfig, LgmSwaptionEngineConfig,
-    PortfolioRequest, PrecisionConfig, PricingConfig, RiskPrecisionOverride, RunConfig, SensitivityConfig,
-    price_portfolio,
+    PortfolioRequest, Precision, PricingConfig, RunConfig, SensitivityConfig, StagePrecision, price_portfolio,
 )
 from engine.portfolio.market_path import validate_request
 from engine.portfolio.worker_pool import _freeze_trade, _thaw_trade
@@ -56,7 +55,7 @@ class TestDefaults:
         assert config.pricing == PricingConfig() and config.pricing.european == "Bachelier"
         assert config.pricing.jamshidian is None
         assert config.greeks.method == "Bump" and config.greeks.sensitivity == SensitivityConfig()
-        assert config.precision == PrecisionConfig(simulation=64, pricing=64, risk=64, calibration=64)
+        assert config.precision == Precision.throughout("float64") == Precision()
         assert PortfolioRequest(market=shared.market(), trades=[]).config == config
 
     def test_the_reporting_currency_is_the_simulations_else_usd(self):
@@ -67,7 +66,7 @@ class TestDefaults:
 
     def test_explicit_defaults_price_bit_for_bit_as_omitted_ones(self):
         explicit = RunConfig(simulation=None, pricing=PricingConfig(bermudan=LgmSwaptionEngineConfig()),
-                             greeks=GreeksConfig("Bump", SensitivityConfig()), precision=PrecisionConfig(),
+                             greeks=GreeksConfig("Bump", SensitivityConfig()), precision=Precision(),
                              base_currency="USD")
         a = price_portfolio(_market_request(compute_greeks=True))
         b = price_portfolio(_market_request(compute_greeks=True, config=explicit))
@@ -80,7 +79,7 @@ class TestDefaults:
 
 class TestConfigurationValues:
     @pytest.mark.parametrize("build, error, match", [
-        (lambda: RunConfig(precision=64), TypeError, "RunConfig.precision must be a PrecisionConfig"),
+        (lambda: RunConfig(precision=64), TypeError, "RunConfig.precision must be an engine.precision.Precision"),
         (lambda: RunConfig(pricing={"european": "Bachelier"}), TypeError, "RunConfig.pricing"),
         (lambda: RunConfig(greeks="Bump"), TypeError, "RunConfig.greeks"),
         (lambda: GreeksConfig(method="Adjoint"), ValueError, "GreeksConfig.method"),
@@ -118,17 +117,6 @@ class TestConfigurationValues:
 
 
 class TestWhatThePipelineDoesNotImplementIsRefused:
-    @pytest.mark.parametrize("config, field", [
-        (RunConfig(precision=PrecisionConfig(pricing=32)), "config.precision.pricing"),
-        (RunConfig(precision=PrecisionConfig(risk=RiskPrecisionOverride(vega=32))), "config.precision.risk"),
-        (RunConfig(precision=PrecisionConfig(calibration=32)), "config.precision.calibration"),
-    ])
-    @pytest.mark.parametrize("model", MODELS)
-    def test_refused_before_any_work_naming_the_field(self, config, field, model):
-        request = _market_request(config=dataclasses.replace(config, simulation=_cam(model=model)))
-        with pytest.raises(ValueError, match=field.replace(".", r"\.")):
-            validate_request(request)
-
     def test_the_jamshidian_engine_refuses_what_quantlibs_refuses_naming_the_trade(self):
         request = _market_request(("european-receiver-otm-cash",), config=RunConfig(pricing=JAMSHIDIAN))
         with pytest.raises(ValueError, match="european-receiver-otm-cash.*floating_spread"):
@@ -139,10 +127,14 @@ class TestWhatThePipelineDoesNotImplementIsRefused:
                                          config=RunConfig(greeks=GreeksConfig(method="AD"))))
         validate_request(_market_request(("swap-payer",), config=RunConfig(pricing=JAMSHIDIAN)))
 
-    def test_the_simulation_precision_is_accepted(self):
-        request = _market_request(("swap-payer",), config=RunConfig(simulation=_cam(),
-                                                                    precision=PrecisionConfig(simulation=32)))
-        validate_request(dataclasses.replace(request, scenario_risk=True))
+    @pytest.mark.parametrize("model", MODELS)
+    def test_every_enabled_precision_is_accepted_under_every_model(self, model):
+        """Since roadmap 1.4 every stage is adjustable under either model; before it, a stage
+        other than the simulation below float64 was refused here."""
+        for precision in (Precision.throughout("float32"), Precision(pricing=StagePrecision("float32"))):
+            request = _market_request(("swap-payer",), config=RunConfig(simulation=_cam(model=model),
+                                                                        precision=precision))
+            validate_request(dataclasses.replace(request, scenario_risk=True))
 
     def test_calibration_targets_are_not_a_request_field(self):
         """The basket is the model's (the `LgmConfig`/`HullWhiteConfig` tenors), per currency;
@@ -195,7 +187,8 @@ def test_the_configuration_survives_the_trip_to_a_worker():
     pricing = dataclasses.replace(JAMSHIDIAN, bermudan=FAST, recalibrate=False)
     config = RunConfig(simulation=_cam(model="HullWhite"), pricing=pricing,
                        greeks=GreeksConfig("AD", SensitivityConfig(curve_tenors=("1Y", "2Y"))),
-                       precision=PrecisionConfig(simulation=32))
+                       precision=Precision(simulation=StagePrecision("float32", "float32", "float32"),
+                                           pricing=StagePrecision("float32")))
     request = _market_request(config=config)
     thawed = _thaw_trade(pickle.loads(pickle.dumps(_freeze_trade(request))))
     assert isinstance(thawed, PortfolioRequest) and isinstance(thawed.market, Market)

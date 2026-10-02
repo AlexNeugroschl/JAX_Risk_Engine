@@ -31,6 +31,7 @@ import pytest
 from engine.market import CurrencyMarket, EquityMarket, Market, ZeroCurveConfig
 from engine.models.curves import ZeroCurve, discount, log_discount
 from engine.models.lgm import Sigma, hull_white_zeta, zeta as hagan_zeta
+from engine.precision import Precision
 from engine.simulation.cam import (
     CrossAssetModel, EqComponent, FxComponent, IrComponent, _H, _integral_of_square, _ir_alpha, _ir_zeta,
     _piecewise, flexible_cholesky, step_moments,
@@ -387,14 +388,16 @@ def _config(**overrides):
 
 
 @pytest.mark.parametrize("model", [LgmConfig, HullWhiteConfig])
-@pytest.mark.parametrize("dtype, se_bound", [(jnp.float64, 4.0), (jnp.float32, 4.0)])
-def test_simulated_assets_are_martingales_on_sloped_curves(dtype, se_bound, model):
+@pytest.mark.parametrize("fmt, se_bound", [("float64", 4.0), ("float32", 4.0)])
+def test_simulated_assets_are_martingales_on_sloped_curves(fmt, se_bound, model):
     """The permanent check audit M-1 asked for (I-42): E[P(t,T)/N(t)] = P(0,T) on a 3% -> 5%
     curve (the Hull-White simulation before roadmap 1.3, a constant-theta short rate, missed by
     4.2% and 8.8% at t=2y for 5y and 10y bonds), plus the foreign bond and the equity, within
     `se_bound` standard errors, for either IR model."""
     market = _market()
-    sm = simulate(market, _config(ir={"USD": model(0.03, 0.01), "EUR": model(0.02, 0.008)}), dtype=dtype)
+    sm = simulate(market, _config(ir={"USD": model(0.03, 0.01), "EUR": model(0.02, 0.008)}),
+                  precision=Precision.throughout(fmt))
+    dtype = jnp.dtype(fmt)
     assert sm.numeraire.dtype == dtype and sm.discount["USD"].log_discounts.dtype == dtype
     N = np.asarray(sm.numeraire, dtype=np.float64)
 

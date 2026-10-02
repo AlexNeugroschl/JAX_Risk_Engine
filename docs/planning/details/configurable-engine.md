@@ -31,7 +31,7 @@ Every choice is one `RunConfig` (`engine/portfolio/config.py`) on
 | European engine | `Bachelier` (ORE's default) or `Jamshidian` with `PricingConfig.jamshidian` |
 | Greeks | `Bump` (`engine.risk.sensitivities`, settings `config.greeks.sensitivity`) or `AD` (`engine.risk.greeks`) |
 | Market risk | `engine.market_risk.run_market_risk` on a `Market` with the same `PricingConfig` (A-8) |
-| Precision | `simulation` 32 or 64; the other stages float64, refused below (`check_run`, I-55); steps 1.4 to 1.7 replace it ([precision.md](precision.md)) |
+| Precision | `config.precision` (`engine.precision.Precision`, step 1.4): storage, compute and accumulate per adjustable stage (simulation, market, pricing), float64 or float32; steps 1.5 to 1.7 add per-trade precision, FP8 storage and the report ([precision.md](precision.md)) |
 
 ## Step 1.2 — the run configuration (I-68) — done
 
@@ -42,13 +42,14 @@ Every choice is one `RunConfig` (`engine/portfolio/config.py`) on
 | Engine per product | `pricing` (`PricingConfig`) | Swap: discounting. European: `Bachelier`, `Jamshidian`. Bermudan/American: `LgmSwaptionEngineConfig` (FD solver in F-01) | ORE's builder defaults |
 | Greeks method | `greeks.method` | `Bump`; `AD` | `Bump` |
 | Sensitivity settings | `greeks.sensitivity` (`SensitivityConfig`) | Tenors, shifts, Theta horizon, vol decay | ORE's |
-| Precision per stage | `precision` (`PrecisionConfig`) | 32 or 64 per stage, overrides per type and metric | FP64 |
+| Precision per stage | `precision` (`Precision`, step 1.4) | Storage, compute and accumulate format per adjustable stage | FP64 |
 | Swaption vol decay | `simulation.swaption_vol_decay` | `ForwardVariance`; `ConstantVariance` (A-4) | `ForwardVariance` |
 | Reporting currency | `base_currency` | Any market currency; `None` is the simulation's, else USD | `None` |
 
 Rules the implementation follows, which steps 1.3, 1.4 and 4.1 keep:
 
-- **An option the pipeline does not implement is refused, never substituted.** `check_run`
+- **An option the pipeline does not implement is refused, never substituted.** The
+  configuration's own validation (a precision format before its step, `engine.precision`)
   and `validate_trades` run before any work and name the field (since step 1.3 one check for
   both models). An engine is checked where the run uses it (the Jamshidian engine's
   refusals only for a European on it).
@@ -106,9 +107,9 @@ Design decisions taken in the step, with their reasons:
 - **ORE globals.** The engine sets no ORE global (every date is passed explicitly; the
   calibration helpers take their dates from their own curve's reference date), so there is
   nothing to scope.
-- **Precision narrows until 1.4.** The Hull-White pipeline took `pricing`/`risk` below 64;
-  the shared pipeline computes those stages in float64 and refuses less (I-55). Kept rather
-  than ported: 1.4 makes them adjustable for both models at once.
+- **Precision narrowed until 1.4.** The Hull-White pipeline took `pricing`/`risk` below 64;
+  the shared pipeline computed those stages in float64 and refused less (I-55). Kept rather
+  than ported: 1.4 made them adjustable for both models at once.
 
 Evidence: the shared portfolio's market-path numbers (t=0, an FP64 and an FP32-simulation
 scenario run, bump Greeks) bit for bit before and after, 103 of 103 arrays; each closed
@@ -117,7 +118,7 @@ curve; every per-path ORE comparison of `tests/test_valuation.py` run under both
 `tests/test_end_to_end.py` prices the Hull-White simulation's paths in QuantLib
 ([verification status](../known-issues.md#verification-status)).
 
-## Steps 1.4 to 1.8 — precision and the engine worker (I-55, I-12, I-72)
+## Steps 1.4 to 1.8 — precision and the engine worker (I-55, I-12, I-72); 1.4 done 2026-10-01
 
 Designed in [precision.md](precision.md): a `Precision` with storage, compute and accumulate
 per adjustable stage, overridable per product and trade (A-10, A-15); the old configuration

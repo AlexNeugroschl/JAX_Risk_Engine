@@ -25,7 +25,8 @@ Every pricing function takes discount and index curves of either type (`ZeroCurv
 `DiscountCurve` on a path) and broadcasts over their leading batch axes, so one call
 calibrates every path at once.
 """
-from dataclasses import dataclass
+import dataclasses
+from dataclasses import dataclass, fields
 from typing import List, Optional, Sequence, Union
 
 import jax
@@ -37,7 +38,7 @@ from jax.scipy.stats import norm
 from engine.market import (
     VOL_BUSINESS_DAY_CONVENTION, VOL_CALENDAR, SwaptionVolSurface, swap_length, swap_length_between,
 )
-from engine.models.curves import discount
+from engine.models.curves import curve_dtype, discount
 from engine.models.lgm import H as lgm_H
 from engine.models.ore_builders import (
     TIME_AXIS_DAY_COUNTER, ibor_index, par_coupon_forecast_period, resolve_accrual_day_count,
@@ -86,6 +87,13 @@ class BasketInstrument(StaticKeyMixin):
     owner: np.ndarray
     lambda2: np.ndarray
     deal_strike: Optional[float] = None
+
+    def astype(self, dtype) -> "BasketInstrument":
+        """The same helper with every real-valued array in `dtype`, so it prices in the
+        dtype of the curves it is given (a float32 path's recalibration stays float32)."""
+        cast = {f.name: np.asarray(getattr(self, f.name), dtype=dtype) for f in fields(self)
+                if isinstance(getattr(self, f.name), np.ndarray) and getattr(self, f.name).dtype.kind == "f"}
+        return dataclasses.replace(self, **cast)
 
 
 def _helper(reference: ORE.Date, expiry, term, conventions: SwapIndexConventions):
@@ -237,7 +245,7 @@ def _corrections(instrument: BasketInstrument, legs: _Legs):
     lambda2 = np.where(owned, instrument.lambda2, 0.0)
     lambda1 = np.where(owned, 1.0 - instrument.lambda2, 0.0)
     n_fixed = instrument.fixed_pay.size
-    to_fixed = np.eye(n_fixed)[owner] * owned[:, None]          # [Nc, Nf]
+    to_fixed = np.eye(n_fixed, dtype=lambda2.dtype)[owner] * owned[:, None]  # [Nc, Nf]
     sum1 = (correction * lambda1) @ to_fixed                    # [..., Nf]
     sum2 = (correction * lambda2) @ to_fixed
     # S_j = sum2_j / D_j + sum1_{j+1} / D_j; S_m1 = sum1_0 / D0.
@@ -263,7 +271,7 @@ def _analytic_lgm(instrument, legs: _Legs, reversion, zeta_expiry, strike, recei
         return (jnp.sum(amounts * D * bonds, axis=-1) - S_m1 * legs.d0
                 + D[..., -1] * bonds[..., -1] - legs.d0)
 
-    y_star = _solve_monotone_root(boundary, legs.d0.shape)
+    y_star = _solve_monotone_root(boundary, legs.d0.shape, legs.d0.dtype)
     sqrt_zeta = jnp.sqrt(zeta[..., 0])
     w = jnp.where(receiver, 1.0, -1.0)   # ORE: Call (payer) -> -1, Put (receiver) -> +1
     Phi = lambda arg: norm.cdf(w * arg / sqrt_zeta)  # noqa: E731
@@ -274,12 +282,12 @@ def _analytic_lgm(instrument, legs: _Legs, reversion, zeta_expiry, strike, recei
     return w * total
 
 
-def _solve_monotone_root(f, shape, iterations: int = 100) -> jax.Array:
+def _solve_monotone_root(f, shape, dtype, iterations: int = 100) -> jax.Array:
     """Root of a function decreasing in y, elementwise over `shape`: the bracket starts at
     [-1, 1] and doubles until it holds the root, then bisects. No derivative is propagated
     (the price is stationary in y* at the root, so its derivatives with y* held fixed are
     exact)."""
-    lo, hi = -jnp.ones(shape), jnp.ones(shape)
+    lo, hi = -jnp.ones(shape, dtype=dtype), jnp.ones(shape, dtype=dtype)
 
     def widen(_, bounds):
         lo, hi = bounds
@@ -312,24 +320,35 @@ class BootstrapResult:
     hit_ceiling: jax.Array
 
 
+def ceiling_tolerance(dtype) -> float:
+    """How close to the bracket's top a bisected volatility counts as the top: 1e-9
+    relative, or four units in the last place where the dtype cannot resolve 1e-9 (in
+    float32 `hi * (1 - 1e-9)` rounds to `hi`, so a bucket stuck below it went unflagged)."""
+    return max(1e-9, 4.0 * float(jnp.finfo(dtype).eps))
+
+
 def bootstrap_sigma(basket: Sequence[BasketInstrument], disc, index, vols, reversion: float,
                     iterations: int = 60) -> BootstrapResult:
     """`calibrateVolatilitiesIterative` over `basket` (ascending expiries): bucket i covers
     [expiry_{i-1}, expiry_i) (the last is open), and zeta(expiry_i) = zeta(expiry_{i-1}) +
     sigma_i^2 (expiry_i - expiry_{i-1}). `vols` is `[..., n]` (or `[n]`), matched to the
-    curves' batch axes."""
+    curves' batch axes. Computed in the curves' dtype (float64 for a calibration today; the
+    pricing stage's compute dtype on a path)."""
     expiries = np.array([b.expiry_time for b in basket])
     if np.any(np.diff(expiries) <= 0.0):
         raise ValueError("basket expiries must increase strictly")
     # One calibration per path: the batch shape is the curves' batch axes broadcast with the
     # vols' (either may be unbatched).
+    dtype = curve_dtype(disc)
+    basket = [b.astype(dtype) for b in basket]
     batch = jnp.broadcast_shapes(jnp.shape(vols)[:-1], _legs(basket[0], disc, index).annuity.shape)
-    vols = jnp.broadcast_to(jnp.asarray(vols), batch + (len(basket),))
+    vols = jnp.broadcast_to(jnp.asarray(vols, dtype=dtype), batch + (len(basket),))
     lo, hi = SIGMA_BRACKET
+    at_ceiling = hi * (1.0 - ceiling_tolerance(dtype))
     values, markets, models, ceiling = [], [], [], []
     zeta_before = None
     for i, instrument in enumerate(basket):
-        dt = expiries[i] - (expiries[i - 1] if i > 0 else 0.0)
+        dt = float(expiries[i] - (expiries[i - 1] if i > 0 else 0.0))  # weakly typed: follows the curves
         vol_i = vols[..., i]
         base = jnp.zeros_like(vol_i) if zeta_before is None else zeta_before
 
@@ -343,7 +362,7 @@ def bootstrap_sigma(basket: Sequence[BasketInstrument], disc, index, vols, rever
             below = residual(mid) < 0.0
             return (jnp.where(below, mid, a), jnp.where(below, b, mid)), None
 
-        start = (jnp.full(vol_i.shape, lo), jnp.full(vol_i.shape, hi))
+        start = (jnp.full(vol_i.shape, lo, dtype=dtype), jnp.full(vol_i.shape, hi, dtype=dtype))
         (a, b), _ = jax.lax.scan(halve, start, None, length=iterations)
         sigma = 0.5 * (a + b)
         zeta_before = base + sigma ** 2 * dt
@@ -351,7 +370,7 @@ def bootstrap_sigma(basket: Sequence[BasketInstrument], disc, index, vols, rever
         values.append(sigma)
         markets.append(market)
         models.append(model)
-        ceiling.append(sigma >= hi * (1.0 - 1e-9))
+        ceiling.append(sigma >= at_ceiling)
     stack = lambda xs: jnp.stack(xs, axis=-1)  # noqa: E731
     return BootstrapResult(times=expiries[:-1], values=stack(values), market=stack(markets),
                            model=stack(models), hit_ceiling=stack(ceiling))

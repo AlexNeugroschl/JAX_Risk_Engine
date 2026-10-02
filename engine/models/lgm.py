@@ -77,6 +77,10 @@ class Sigma:
             values=jnp.reshape(jnp.asarray(sigma, dtype=dtype), (1,)),
         )
 
+    def astype(self, dtype) -> "Sigma":
+        """The same volatility with times and values in `dtype`."""
+        return Sigma(times=jnp.asarray(self.times, dtype=dtype), values=jnp.asarray(self.values, dtype=dtype))
+
     def tree_flatten(self):
         return (self.times, self.values), None
 

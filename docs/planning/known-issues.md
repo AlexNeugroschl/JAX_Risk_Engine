@@ -11,21 +11,35 @@ exposure are not yet compared with an ORE run ([I-50](#i-50)).
 
 ## Verification status
 
-Last full run, 2026-10-01, on the code after roadmap 1.3 (the Hull-White model on the shared
-pipeline): **2,243 passed, 0 failed** on Windows (61m01s) and **2,243 passed, 0 failed** in a
-Linux `python:3.11` container on 4 cores (65m22s), run one after the other (run together they
-exhaust memory). Both ran the complete suite (`.venv/Scripts/python.exe -m pytest tests/`),
-2,243 collected (2,353 before: the Hull-White pipeline's own tests went with it, its cases
-moved onto the shared pipeline's tests), summary line printed. The suite is about 45% slower
-than after 1.2: the Hull-White options now recalibrate per path date ([I-53](#i-53)). Bit for
-bit: before the change, 103 arrays were saved from the default (LGM) runs (shared
-portfolio's cube, exposure and per-trade EPE, FP32 simulation, bump Greeks); after it, all 103
-are identical in value, dtype and shape. Red first, on the pre-1.3 code with a 3% → 5% curve
-(a = 0.03, σ = 0.01, 8,192 paths): deflated 10y zero bonds off by +3.2/+6.8/+10.1% at 1/2/3y
-([I-42](#i-42)), E[1/N] off by +1.8% at 3y ([I-45](#i-45)), a matured swap worth −922 at 3y
-([I-04](#i-04)), an exercised physical European worth 0 ([I-43](#i-43)), a bond refused scenario
-risk ([I-24](#i-24)); each is a passing test now. The fast tier (`-m "not slow"`) is not a
-full verification and is never recorded here. Rules: [README.md](README.md#verification-rules).
+Last full runs, 2026-10-01, on the code after roadmap 1.4 (`engine/precision/`), 2,309 collected
+(2,243 after 1.3; +66: `tests/test_precision.py` 60, the precision tests rewritten in
+`test_api` +4, `test_market_risk` +5, `test_portfolio_entrypoint` +2, `test_run_config` −5,
+`test_worker_pool` ±0), summary line printed in each:
+
+- **Linux** `python:3.11` container on 4 cores: **2,308 passed, 1 skipped, 0 failed** (1h24m).
+  The skip is the test that reads `reference/traderX`, which was not copied into the container.
+- **Windows**: **2,308 passed, 1 failed** (1h14m). The failure is
+  `tests/test_ore_bermudan_oracle.py::TestGapIsTheParametrizationNotTheInduction::test_engine_is_grid_converged`,
+  `Out of memory allocating 10150229872 bytes` on its 384-node-per-std grid: eight stray
+  system-Python processes from earlier sessions held about 51 GB of committed memory on the
+  32 GB machine. It passes alone (19 s) and with its module (51 passed); it does not touch the
+  code 1.4 changed beyond a renamed dtype helper. Not counted as green, and not an engine defect.
+- **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the new CI
+  job): 2,225 passed, 0 failed.
+
+Bit for bit: a snapshot of 203 arrays was saved from the code before 1.4 (a worktree of
+`625399f`) and compared after it with `np.array_equal` (value, dtype, shape): all 164 at the
+default precision are identical (today's values under two engines; the shared portfolio's
+cube, exposure and per-trade EPE under the LGM and the Hull-White model; bump and AD Greeks;
+market risk at float64), as are the float32 scenario market and the raw float32 market-risk
+revaluation. At float32 the market-risk P&L is identical in value and VaR/ES moved by at most
+1e-7 relative (float64 reductions); the portfolio cube moved by at most 1.5e-6 relative,
+because the old "float32" cube was float64, priced in mixed precision
+([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)). Red
+first: the float32 recalibration ceiling test fails with the old fixed 1e-9 tolerance; the
+strict-promotion tests fail at the first leg kernel on the old float32 path. The fast tier
+(`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
+[README.md](README.md#verification-rules).
 
 ## Summary
 
@@ -47,11 +61,12 @@ full verification and is never recorded here. Rules: [README.md](README.md#verif
 | [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | 2.5 |
 | [I-34](#i-34) | The ORE oracle's curve differs before the first pillar | Low | OPEN | Validation | 2.2 |
 | [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | 2.4 |
+| [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | 2.4 |
 | [I-50](#i-50) | No path- or distribution-level parity test against an ORE simulation | Medium | OPEN | Validation | 2.2 |
 | [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | 2.3 |
 | [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | OPEN | Performance | 3.1 |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | 2.6 |
-| [I-55](#i-55) | Only the simulation's precision is adjustable; unproven combinations not flagged | Medium | OPEN | Architecture | 1.4, 2.7 |
+| [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | 2.7 |
 | [I-72](#i-72) | Worker pools pickle ORE objects, compile per worker and would contend for TPU chips | Medium | OPEN | Architecture | 1.8 |
 | [I-56](#i-56) | Market risk and the CAM calibration have no route; two routes named like versions | Medium | PARTIAL | API | 4.1 |
 | [I-57](#i-57) | EOD: a cached result is served before the submission id is checked | High | OPEN | API | 2.1 |
@@ -131,6 +146,32 @@ checked against the formula but not against ORE running it (no Python constructo
 
 **To close.** Decided (X-9): after [I-50](#i-50)'s oracle, compare a Bermudan's cube with
 ORE's, then reproduce both details.
+
+<a id="i-73"></a>
+### I-73 — A per-path recalibration that misses its basket is not flagged
+
+**Severity:** Low · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-01, roadmap
+1.4's dtype review
+
+**What is wrong.** On every path and date a Bermudan/American is recalibrated by bisection on
+σ ∈ [1e-6, 0.2] (`engine.calibration.ore_lgm.bootstrap_sigma`). A helper whose volatility is
+not attainable in the bracket ends at its edge, and `bootstrap_sigma` flags it
+(`hit_ceiling`), but `engine.valuation.bermudan._path_sigma` drops the flag, so that path is
+priced on a model that does not reprice its basket and nothing says so. Today's calibration
+refuses the same case (`calibrate_on`). ORE's `LgmBuilder` logs a structured warning when the
+calibration error exceeds its tolerance and fails unless `continueOnCalibrationError`
+(`OREData/ored/model/lgmbuilder.cpp`).
+
+**Reach.** Bermudan/American cube values on paths where rates move far enough that a
+helper's market volatility is out of reach (extreme paths, long horizons); exposure figures
+through them. Not seen on the test markets. Since 1.4 the flag is also correct in float32 (its
+`1 - 1e-9` tolerance rounded away there; `tests/test_precision.py::TestRecalibrationInFloat32`).
+
+**Current handling.** None.
+
+**To close.** With roadmap 2.4 (the per-path recalibration against ORE's): count the paths and
+dates whose recalibration hit the bracket and carry a warning naming the trade and the counts
+on the result, as ORE's structured warning; a test with an unattainable path volatility.
 
 <a id="i-54"></a>
 ### I-54 — No swaption smile: options away from the money read the ATM vol
@@ -437,33 +478,35 @@ with a test.
 ## Architecture
 
 <a id="i-55"></a><a id="a-1"></a>
-### I-55 — Only the simulation's precision is adjustable; unproven combinations not flagged
+### I-55 — Unproven precision combinations are not flagged
 
-**Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-24, audit A-1; decisions A-9, D-9
+**Severity:** Medium · **Status:** PARTIAL · **Category:** Architecture · **Found:** 2026-09-24,
+audit A-1; decisions A-9, D-9
 
-**What is wrong.**
+**What is wrong.** Any per-stage combination may be run (decision D-9), but nothing records
+which combinations are shown adequate for which figure, so a float32 exposure profile looks
+exactly like a validated one.
 
-1. *Stages.* `config.precision.simulation` (32 or 64) sets the simulation's dtype; the
-   pricing, risk and calibration stages run in float64 and a value below 64 for them is
-   refused by name (`engine.portfolio.config.check_run`), for either model. Before roadmap
-   1.3 the Hull-White pipeline also took `pricing` and `risk` below 64; that option went with
-   the pipeline and returns with 1.4, which gives every stage an explicit dtype.
-2. *Mechanism.* `jax_enable_x64` is process-global. Since 1.3 it is set once, when `engine`
-   is imported, and every worker keeps it on ([I-71](#i-71)); `run_market_risk` still sets it
-   again, and `_PRICING_LOCK` and the per-precision pool tiers remain, now only routing.
-3. *No warning.* Any per-stage combination may be run (decision D-9), but nothing records
-   which combinations are shown adequate for which figure, so an FP32 exposure profile looks
-   exactly like a validated one.
+**Closed part (roadmap 1.4, 2026-10-01).** The stages and the mechanism: `engine/precision/`
+gives the simulation, the scenario market and path pricing (market-risk revaluation included)
+a storage, compute and accumulate format each (`Precision`, float64 by default, float64 or
+float32 today), at explicit cast points; kernels follow their inputs' dtype under strict
+promotion (CI); reductions over paths are float64. The 32/64 `PrecisionConfig` is refused,
+naming the replacement. `check_run`'s refusal, `run_market_risk`'s flag set, `_PRICING_LOCK`
+and the per-precision pool tiers are gone. Tests: `tests/test_precision.py`,
+`tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision`,
+`tests/test_market_risk.py::TestRun`. Before 1.4 a "float32" (`simulation=32`) run priced its
+paths partly in float64: NumPy float64 coupons and volatilities promoted the float32 curves
+(the cube was float64), while path fixings ran in float32.
 
-**To close.** Decided (A-9, A-10, A-11, A-12, D-9 revised 2026-10-01;
-[details/precision.md](details/precision.md)): (1) roadmap 1.4: `engine/precision/`, a
-`Precision` with storage, compute and accumulate per adjustable stage (simulation, scenario
-market, path pricing) replacing `PrecisionConfig` (the old shape refused), five cast points,
-inputs following dtype, float64 reductions; calibration, t=0 and Greeks stay float64 by
-decision. Then remove `check_run`'s refusal, `_PRICING_LOCK`, the remaining flag set and the
-tiers, never leaving precision unadjustable in between. (2) roadmap 2.7: the evidence table
-per figure and precision against the acceptance standard (Basel III's P&L attribution test
-and the Basel plan's P6.2 rule) and a warning on any result whose combination is unproven.
+**Reach.** Every reduced-precision result: its figures carry no statement of whether the
+combination has been validated for them. Default (float64) runs are unaffected.
+
+**To close.** Roadmap 2.7 (A-11): the evidence table per figure and precision combination
+against the acceptance standard (Basel III's P&L attribution test and the Basel plan's P6.2
+rule), and a warning on any result whose combination has no passing row. Per-product and
+per-trade precision, storage below float32 and compute below float32 are
+[F-07](features.md#f-07) (roadmap 1.5, 1.6, 2.8).
 
 <a id="i-72"></a>
 ### I-72 — Worker pools pickle ORE objects, compile per worker and would contend for TPU chips
@@ -471,9 +514,9 @@ and the Basel plan's P6.2 rule) and a warning on any result whose combination is
 **Severity:** Medium · **Status:** OPEN · **Category:** Architecture · **Found:** 2026-10-01,
 precision design review; decision A-14
 
-**What is wrong.** `engine/portfolio/worker_pool.py` runs HTTP jobs in one
-`ProcessPoolExecutor` per precision tier. The tiers have only routed since roadmap 1.3 (every
-worker runs the same configuration). Each job's request is frozen and thawed because ORE's
+**What is wrong.** `engine/portfolio/worker_pool.py` runs HTTP jobs in a
+`ProcessPoolExecutor` (one pool for every precision since roadmap 1.4; one per precision tier
+before). Each job's request is frozen and thawed because ORE's
 SWIG objects do not pickle; each worker compiles every job shape again; a crashed worker
 likely breaks its pool for every later job (nothing handles `BrokenProcessPool`); and on a
 TPU host, where one process owns a chip, several workers would need chip pinning and would
@@ -598,21 +641,22 @@ bundle. The pricer is four multiplications.
 no summary line, the crashing thread inside `jax/_src/compiler.py`
 (`backend_compile_and_load`) while `ProcessPoolExecutor` threads were alive. Intermittent: the
 same command later passed in full, and no abort occurred in the recorded runs since
-2026-09-24. `test_cross_tier_jobs_correct_and_concurrent` (a wall-clock overlap assertion)
-has failed intermittently on the same premise.
+2026-09-24.
 
-**Hypothesis, unproven.** `worker_pool._POOLS` lives for the interpreter; `tests/test_api.py`
-creates pools and never calls `shutdown_pools`, so later in-process compiles run with worker
-children attached. Pairing modules does not reproduce it. Also check whether XLA's on-disk
-compilation cache is shared unsafely with spawned workers.
+**Hypothesis, unproven.** The worker pool lives for the interpreter; before roadmap 1.3
+`tests/test_api.py` created pools and never shut them down, so later in-process compiles ran
+with worker children attached. Pairing modules does not reproduce it. Also check whether
+XLA's on-disk compilation cache is shared unsafely with spawned workers.
 
-**Current handling.** `tests/test_api.py` shuts its pools down after the module (roadmap 1.3),
-and the same-tier concurrency test builds a fresh pool (it failed deterministically when run
-after the pricing tests, on the code before 1.3 as well, because the executor reused one
-started worker instead of spawning a second).
+**Current handling.** `tests/test_api.py` and `tests/test_worker_pool.py` shut the pool down
+after the module, and the concurrency test builds a fresh pool (it failed deterministically
+when run after the pricing tests, because the executor reused one started worker instead of
+spawning a second). The intermittent wall-clock overlap assertion between pricing jobs of two
+precision tiers went with the tiers (roadmap 1.4); concurrency is shown by two sleeping jobs
+on two worker PIDs, which is deterministic.
 
 **To close.** Repeated clean full runs against a known-bad baseline; one green run proves
-nothing. Replace the cross-tier wall-clock overlap assertion with a deterministic one.
+nothing.
 
 <a id="i-66"></a><a id="q-2"></a>
 ### I-66 — No linter or type checker

@@ -84,12 +84,14 @@ volatility to that co-terminal basket of the market's swaption volatilities), `s
 `HullWhiteConfig` is the same with ORE's Hull-White volatility parametrization: `volatility`
 is the short rate's.
 
-### `simulate(market, config, model=None, dtype=jnp.float64) -> ScenarioMarket`
+### `simulate(market, config, model=None, precision=Precision()) -> ScenarioMarket`
 
 The scenario market: `numeraire [S, D]`, `discount[ccy]`/`index[name]` (`ScenarioCurves`:
 `log_discounts [S, D, K+1]` at `tenor_times [D, K+1]`), `fx[ccy]`, `equity[name]`,
 `states [S, D, factors]`, `dates`, `times`. `model` defaults to
-`build_cross_asset_model(market, config)` (which calibrates).
+`build_cross_asset_model(market, config)` (which calibrates). `precision.simulation` sets the
+shocks and states, `precision.market` the market; every path array is returned in
+`precision.market.storage`. `ScenarioMarket.map_arrays(fn)` applies `fn` to every path array.
 
 ### `build_cross_asset_model(market, config, sigmas=None) -> CrossAssetModel`
 
@@ -187,7 +189,7 @@ See [Instruments](../instruments/swaps.md).
 | Function | Returns |
 |---|---|
 | `value_today(trades, market, base_currency, pricing=PricingConfig()) -> List[float]` | Today's values in the base currency. |
-| `value_portfolio(trades, market, scenarios, base_currency, pricing=PricingConfig(), decay="ForwardVariance") -> PortfolioValuation` | `today [T]` and `cube [S, D, T]` in the base currency. |
+| `value_portfolio(trades, market, scenarios, base_currency, pricing=PricingConfig(), decay="ForwardVariance", precision=Precision()) -> PortfolioValuation` | `today [T]` (float64) and `cube [S, D, T]` in the base currency; the scenarios are loaded at `precision.pricing.compute`, the cube stored at its `storage`. |
 | `value_on(cfg, context, pricing) -> float` | One trade on a `PricingContext` (a date's curves, volatilities, fixings). |
 | `validate_trades(trades, market, pricing=PricingConfig())` | Refuses, naming the trade, a trade off the market's date, a curve or volatility the market lacks, or an engine's refusal. |
 | `reads_swaption_vols(cfg, pricing) -> bool` | Whether the trade's engine reads the market's swaption volatilities. |
@@ -294,8 +296,8 @@ Short-horizon VaR/ES by full revaluation at t=0 — see [Market Risk](../risk/ma
 | `covariance_from_history(history, horizon_days)` | function | Sample covariance of those moves, `[F, F]` |
 | `horizon_moves(history, horizon_days)` | function | The overlapping moves themselves, `[D-h, F]` |
 | `ShockScenarios` | dataclass | `factors`, `shifts [S, F]`, `horizon_days`, `source`, `measure`, `windows` |
-| `MarketRiskRequest(trades, market, scenarios, pricing=PricingConfig(), quantiles=(0.99, 0.975), precision=64, batch_size=256)` | dataclass | Every factor must be the market's curve of its name; every curve a trade reads must be a factor |
-| `run_market_risk(request) -> MarketRiskResult` | function | `base_npv`, `base_npv_per_trade`, `pnl [S, N]`, `portfolio_pnl [S]`, `risk` (`VaR_99`, `ES_97.5`, tail counts, standard errors), `measure`, `source`, `horizon_days`, `num_scenarios`, `risk_factors`, `warnings` |
+| `MarketRiskRequest(trades, market, scenarios, pricing=PricingConfig(), quantiles=(0.99, 0.975), precision=Precision(), batch_size=256)` | dataclass | Every factor must be the market's curve of its name; every curve a trade reads must be a factor. `precision.simulation` rounds and stores the shifts, `precision.pricing` sets the revaluation and the stored P&L; VaR/ES are float64 |
+| `run_market_risk(request) -> MarketRiskResult` | function | `base_npv`, `base_npv_per_trade` (the revaluation at the pricing compute precision), `pnl [S, N]` (float64-loaded), `portfolio_pnl [S]`, `risk` (`VaR_99`, `ES_97.5`, tail counts, standard errors), `measure`, `source`, `horizon_days`, `num_scenarios`, `risk_factors`, `warnings` |
 
 ---
 
@@ -371,18 +373,17 @@ full write-up (this is the quick reference).
 | `simulation` | `Optional[CamConfig]` | `None` | ORE's `simulation.xml`; the model per currency is `ir[ccy]`. Required for scenario risk. |
 | `pricing` | `PricingConfig` | `PricingConfig()` | Engine per product. |
 | `greeks` | `GreeksConfig` | `GreeksConfig()` | `method` (`"Bump"` \| `"AD"`), `sensitivity` (`SensitivityConfig`). |
-| `precision` | `PrecisionConfig` | all 64 | dtype per stage: `simulation`, `pricing`, `risk`, `calibration` (only `simulation` below 64 until roadmap 1.4). |
+| `precision` | `Precision` | float64 everywhere | Storage, compute and accumulate format per adjustable stage (`simulation`, `market`, `pricing`); see `engine.precision` below. |
 | `base_currency` | `Optional[str]` | `None` | Reporting currency; `None` is the simulation's, else USD. |
 
-`reporting_currency` (property) resolves `base_currency`. `check_run(config)` refuses, naming
-the field, what the pipeline does not implement yet.
+`reporting_currency` (property) resolves `base_currency`.
 
 ### `PortfolioResult`
 
 | Field | Type | Meaning |
 |---|---|---|
 | `base_npv` | `float` | Today's portfolio value in the reporting currency. |
-| `npv_cube` | `jax.Array` | `[Scenarios, Dates, Trades]`, the request's `trades` order. |
+| `npv_cube` | `jax.Array` | `[Scenarios, Dates, Trades]`, the request's `trades` order; float64, loaded from the cube stored at `precision.pricing.storage`. |
 | `exposure` | `Optional[ExposureProfile]` | Netting-set exposure; `None` without scenario risk. |
 | `trade_exposures` | `List[ExposureProfile]` | Standalone exposure per trade. |
 | `greeks` | `Optional[Dict[int, Dict[str, jax.Array]]]` | Keyed by trade index in `request.trades`. |
@@ -397,6 +398,23 @@ the field, what the pipeline does not implement yet.
 The main entry point — see [The Portfolio Entry Point](portfolio-entrypoint.md#price_portfoliorequest-portfoliorequest---portfolioresult).
 `engine.portfolio.worker_pool.submit_pricing_job(request) -> Future[PortfolioResult]` runs it
 in a worker process (the HTTP route's path).
+
+---
+
+## `engine.precision`
+
+The precision of a run ([details/precision.md](../planning/details/precision.md)); imports
+nothing from the pipeline. `Precision` and `StagePrecision` are also exported by
+`engine.portfolio`.
+
+| Name | Kind | Summary |
+|---|---|---|
+| `StagePrecision(storage="float64", compute="float64", accumulate="float64")` | frozen dataclass | One stage's formats, by name. Refused, naming the field: a name outside the table; a format before the roadmap step that enables it (storage below float32: 1.6; compute below float32 or `accumulate != compute`: 2.8); `storage` wider than `compute`; `accumulate` narrower than `compute`. `storage_dtype`, `compute_dtype` |
+| `Precision(simulation, market, pricing)` | frozen dataclass | A `StagePrecision` per adjustable stage, each float64 by default; `Precision.throughout(name)` sets all three to `name` |
+| `FORMATS`, `FORMAT_NAMES`, `Format` | table | name -> dtype, bits, mantissa bits, max, scaled, enabling steps: `float64`, `float32`, `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2` |
+| `format_of(name)`, `dtype_of(name)`, `name_of(dtype)` | functions | Table lookups; an unknown name is refused |
+| `store(x, name)`, `load(x, dtype)` | functions | The only casts between stages; at the array's own dtype both return it unchanged |
+| `require_precision(owner, value)` | function | Refuses anything but a `Precision`, naming the replacement of the retired 32/64 shape (`RETIRED_SHAPE`, decision A-12) |
 
 ---
 

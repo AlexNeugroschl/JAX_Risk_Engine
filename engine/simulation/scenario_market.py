@@ -22,8 +22,9 @@ model's ACT/365, and the scenario curve between tenors is `engine.models.curves.
 (log-linear, flat forward). Model time on the grid is ACT/365 from the as-of date, so ORE's
 discount-curve time `t` and index-curve time `t_dc` coincide (plan V-10).
 """
+import dataclasses
 from dataclasses import dataclass
-from typing import Dict, Mapping, Sequence, Tuple
+from typing import Callable, Dict, Mapping, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -83,6 +84,18 @@ class ScenarioMarket:
     @property
     def num_paths(self) -> int:
         return int(self.numeraire.shape[0])
+
+    def map_arrays(self, fn: Callable[[jax.Array], jax.Array]) -> "ScenarioMarket":
+        """The same market with `fn` applied to every path array (numeraire, curves, FX,
+        equity, states); the dates and model times stay as they are. `store`/`load` of the
+        whole market go through it."""
+        curves = lambda c: ScenarioCurves(tenor_times=fn(c.tenor_times), log_discounts=fn(c.log_discounts))  # noqa: E731
+        return dataclasses.replace(
+            self, numeraire=fn(self.numeraire),
+            discount={k: curves(c) for k, c in self.discount.items()},
+            index={k: curves(c) for k, c in self.index.items()},
+            fx={k: fn(v) for k, v in self.fx.items()}, equity={k: fn(v) for k, v in self.equity.items()},
+            states=fn(self.states))
 
 
 def tenor_times(dates: Sequence[ORE.Date], tenors: Sequence[str]) -> np.ndarray:

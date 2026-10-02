@@ -10,7 +10,8 @@ in compliance/decisions.md). ORE configures a run with files; each component is 
                                       simulation-market tenors, samples and seed
       pricing        PricingConfig    pricingengine.xml: the engine per product
       greeks         GreeksConfig     the Greeks method; sensitivity.xml's settings
-      precision      PrecisionConfig  the dtype of each stage (not in ORE: the research axis)
+      precision      Precision        storage, compute and accumulate formats per adjustable stage
+                                      (`engine.precision`; not in ORE: the research axis)
       base_currency                   ore.xml's `baseCurrency`, when there is no simulation
 
 | Component | Options | Default |
@@ -19,18 +20,19 @@ in compliance/decisions.md). ORE configures a run with files; each component is 
 | Simulation | classic revaluation (ORE's AMC is F-03) | classic |
 | Engine per product | swap: discounting; European: `Bachelier`, `Jamshidian`; Bermudan/American: LGM grid | ORE's builders |
 | Greeks method | `Bump`, `AD` | `Bump` |
-| Precision per stage | 32 or 64 for simulation, pricing, risk, calibration | 64 |
+| Precision per stage | simulation, market, pricing: float64 or float32 storage and compute (FP8 storage from roadmap 1.6) | float64 |
 
 Every option runs with every other: the models differ only in the simulation, and the engines
 and Greeks methods price whatever the simulation produced. What the pipeline does not
-implement yet is refused before any work, naming the field (`check_run`), never done some
-other way: today, a stage other than the simulation below float64 (I-55, roadmap 1.4).
+implement yet is refused before any work, naming the field, never done some other way: a
+precision format before the roadmap step that enables it (`engine.precision.policy`), an
+engine option where a trade meets it (`engine.valuation.portfolio.validate_trades`).
+Calibration, t=0 values, Greeks and reductions over paths are float64 by decision (A-10).
 """
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Optional
 
-import jax.numpy as jnp
-
+from engine.precision import Precision, require_precision
 from engine.risk.sensitivities import SensitivityConfig
 from engine.simulation.config import CamConfig
 from engine.valuation.config import PricingConfig
@@ -39,82 +41,9 @@ from engine.valuation.config import PricingConfig
 GREEKS_METHODS = ("Bump", "AD")
 
 
-def _refuse(name: str, value, reason: str) -> None:
-    raise ValueError(f"{name}={value!r}: {reason}")
-
-
 def _require_type(name: str, value, expected: type, hint: str = "") -> None:
     if not isinstance(value, expected):
         raise TypeError(f"{name} must be a {expected.__name__}, got {type(value).__name__} {hint}".rstrip())
-
-
-@dataclass(frozen=True)
-class PricingPrecisionOverride:
-    """Per-instrument-type overrides for `PrecisionConfig.pricing`; `None` fields fall back
-    to `default`. Refused by `check_run` until roadmap 1.4 makes the pricing stage
-    adjustable."""
-    default: int = 64
-    swap: Optional[int] = None
-    european_swaption: Optional[int] = None
-    bermudan_swaption: Optional[int] = None
-    american_swaption: Optional[int] = None
-
-    def __post_init__(self):
-        for name in ("default", "swap", "european_swaption", "bermudan_swaption", "american_swaption"):
-            value = getattr(self, name)
-            if value is not None and value not in (32, 64):
-                raise ValueError(f"PricingPrecisionOverride.{name} must be 32 or 64, got {value!r}")
-
-
-@dataclass(frozen=True)
-class RiskPrecisionOverride:
-    """Per-metric overrides for `PrecisionConfig.risk`; `None` fields fall back to
-    `default`. Delta and Gamma share `delta_gamma` (one gradient/Hessian computation).
-    Refused by `check_run` until roadmap 1.4 makes the risk stage adjustable."""
-    default: int = 64
-    delta_gamma: Optional[int] = None
-    theta: Optional[int] = None
-    vega: Optional[int] = None
-    exposure: Optional[int] = None
-
-    def __post_init__(self):
-        for name in ("default", "delta_gamma", "theta", "vega", "exposure"):
-            value = getattr(self, name)
-            if value is not None and value not in (32, 64):
-                raise ValueError(f"RiskPrecisionOverride.{name} must be 32 or 64, got {value!r}")
-
-
-@dataclass(frozen=True)
-class PrecisionConfig:
-    """
-    Dtype knobs, each 32 or 64 (default 64): `simulation` (the scenario paths), `pricing`
-    (NPVs and `npv_cube`), `risk` (exposure and Greeks), `calibration` (the sigma
-    bootstrap). `pricing` and `risk` also accept a per-type/per-metric override object; a
-    plain int means every sub-field. A run honours `simulation` only and refuses the others
-    below 64 until roadmap 1.4 (I-55).
-
-    Sub-float32 dtypes are not supported: `jnp.linalg.cholesky` and
-    `jax.scipy.stats.norm.ppf` raise on them on the installed CPU backend (see
-    docs/concepts/architecture.md, "Adjustable precision").
-    """
-    simulation: int = 64
-    pricing: Union[int, PricingPrecisionOverride] = 64
-    risk: Union[int, RiskPrecisionOverride] = 64
-    calibration: int = 64
-
-    def __post_init__(self):
-        for name in ("simulation", "calibration"):
-            value = getattr(self, name)
-            if value not in (32, 64):
-                raise ValueError(f"PrecisionConfig.{name} must be 32 or 64, got {value!r}")
-        if isinstance(self.pricing, int) and self.pricing not in (32, 64):
-            raise ValueError(f"PrecisionConfig.pricing must be 32, 64, or a PricingPrecisionOverride, got {self.pricing!r}")
-        if isinstance(self.risk, int) and self.risk not in (32, 64):
-            raise ValueError(f"PrecisionConfig.risk must be 32, 64, or a RiskPrecisionOverride, got {self.risk!r}")
-
-
-def _dtype_of(precision_bits: int):
-    return jnp.float64 if precision_bits == 64 else jnp.float32
 
 
 @dataclass(frozen=True)
@@ -147,7 +76,7 @@ class RunConfig:
     simulation: Optional[CamConfig] = None
     pricing: PricingConfig = field(default_factory=PricingConfig)
     greeks: GreeksConfig = field(default_factory=GreeksConfig)
-    precision: PrecisionConfig = field(default_factory=PrecisionConfig)
+    precision: Precision = field(default_factory=Precision)
     base_currency: Optional[str] = None
 
     def __post_init__(self):
@@ -156,7 +85,7 @@ class RunConfig:
                           "(the Hull-White model is a HullWhiteConfig in CamConfig.ir)")
         _require_type("RunConfig.pricing", self.pricing, PricingConfig)
         _require_type("RunConfig.greeks", self.greeks, GreeksConfig)
-        _require_type("RunConfig.precision", self.precision, PrecisionConfig)
+        require_precision("RunConfig.precision", self.precision)
         if (self.simulation is not None and self.base_currency is not None
                 and self.base_currency != self.simulation.base_currency):
             raise ValueError(f"RunConfig.base_currency={self.base_currency!r} contradicts the simulation's "
@@ -168,14 +97,3 @@ class RunConfig:
             return self.simulation.base_currency
         return self.base_currency or "USD"
 
-
-def check_run(config: RunConfig) -> None:
-    """Refuse, naming the field, what the pipeline does not implement yet: any stage but the
-    simulation below float64 (roadmap 1.4, I-55). Engines and Greeks methods are refused where
-    a trade meets them (`engine.valuation.portfolio.validate_trades`)."""
-    for stage in ("pricing", "risk", "calibration"):
-        value = getattr(config.precision, stage)
-        if value != 64:
-            _refuse(f"config.precision.{stage}", value,
-                    "this stage is computed in float64; only precision.simulation is adjustable until roadmap 1.4 "
-                    "(I-55)")

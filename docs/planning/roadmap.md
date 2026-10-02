@@ -29,8 +29,10 @@ Europeans, bonds) and 4e-11 (calibrated Bermudans/Americans), model analytics to
 (the Hull-White model's bonds against QuantLib's `HullWhite` too), pricers on path curves to
 1e-8 – 1e-12 under either model, market-risk VaR/ES per scenario to 2e-13. What is not yet
 shown is that the assembled simulation, exposure and sensitivities equal an ORE run. Every
-model, engine, Greeks and precision choice is one run configuration with ORE's defaults; only
-the simulation's precision is adjustable until 1.4. Nothing runs on more than one device.
+model, engine, Greeks and precision choice is one run configuration with ORE's defaults; since
+1.4 the simulation, the scenario market and path pricing each take a storage and a compute
+precision (float64 or float32), in portfolio and market-risk runs alike, with the float64
+default bit for bit as before. Nothing runs on more than one device.
 The TraderX EOD boundary prices Treasuries end to end and refuses everything else by name.
 
 ---
@@ -38,18 +40,18 @@ The TraderX EOD boundary prices Treasuries end to end and refuses everything els
 <a id="stage-1--structure"></a>
 ## Stage 1 — Structure
 
-The configurable engine (decision A-1). The run configuration (`RunConfig`, step 1.2) and the
+The configurable engine (decision A-1). The run configuration (`RunConfig`, step 1.2), the
 Hull-White model as one of its options on the shared pipeline, with trades that carry no model
-and name themselves (step 1.3, 2026-10-01), are done. Steps 1.4 to 1.7 build adjustable
-precision on it, down to FP8 storage, and 1.8 replaces the worker pools with one engine
-worker process. Fixing the precision mechanism, the Greeks recompiles or the API before 1.4
-would be redone. Designs: [details/configurable-engine.md](details/configurable-engine.md),
+and name themselves (step 1.3), and the precision mechanism, `engine/precision/` with a
+storage, compute and accumulate format per adjustable stage at float64/float32 (step 1.4,
+2026-10-01), are done. Steps 1.5 to 1.7 extend precision per trade, down to FP8 storage, with
+a report on every result, and 1.8 replaces the worker pool with one engine worker process.
+Designs: [details/configurable-engine.md](details/configurable-engine.md),
 [details/precision.md](details/precision.md) (decisions A-10 to A-16, D-9 revised
 2026-10-01).
 
 | Step | Work | Closes | Size |
 |---|---|---|---|
-| 1.4 | `engine/precision/` (one format table, `Precision` with storage, compute and accumulate per stage, `store`/`load`) at float64/float32; it replaces `PrecisionConfig` and `MarketRiskRequest.precision`, the old shape refused (A-12). Five cast points, inputs follow dtype, float64 reductions, dtype-dependent constants fixed, market risk on the same module, strict dtype promotion in CI. Then remove `check_run`'s refusal, `run_market_risk`'s flag set, `_PRICING_LOCK` and the per-precision tiers | [I-55](known-issues.md#i-55) (stages, mechanism) | M |
 | 1.5 | Precision per product and per trade (A-15): one resolver, per-trade stored cube columns, market risk per trade | [F-07](features.md#f-07) (per instrument) | S |
 | 1.6 | Sub-32-bit storage: block scales along the scenario axis, nearest and stochastic rounding; float16, bfloat16 and both FP8 formats | [F-07](features.md#f-07) (storage) | M |
 | 1.7 | Paired float64 sample, two-level estimator for means (A-13), a precision report on every result: policy as run, realized dtypes, device, paired errors | [I-12](known-issues.md#i-12) | M |
@@ -59,8 +61,12 @@ Exit: every step's defaults reproduce the previous step's numbers bit for bit (t
 portfolio and the parity suites; [details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
 1.3 met it: 103 of 103 saved arrays identical, and each Hull-White fix measured red on the
 code before it, on a sloped curve ([known-issues.md](known-issues.md#verification-status)).
-1.4 also shows a float32 run's cube bit-identical to today's `simulation=32` cube; 1.8 runs the
-full suite on Linux.
+1.4 met it: 164 of 164 default-precision arrays identical (the LGM and Hull-White runs,
+exposure, bump and AD Greeks, market risk), and the float32 scenario market and float32
+market-risk revaluation identical to before. A float32 portfolio cube is not, by design: the
+old `simulation=32` cube was priced in mixed precision, mostly float64
+([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)). 1.8 runs
+the full suite on Linux.
 
 <a id="stage-2--correctness-and-precision"></a>
 ## Stage 2 — Correctness and precision
@@ -70,7 +76,7 @@ full suite on Linux.
 | 2.1 | *Parallel, do first.* EOD boundary: check submission binding before any cache return; one execution owner per workload; reject unknown calculations and non-USD reporting currency | [I-57](known-issues.md#i-57), [I-58](known-issues.md#i-58), [I-59](known-issues.md#i-59) | S |
 | 2.2 | Generalize the oracle to an OREApp XVA run; L4 distribution parity of exposure profiles; L3 path parity once gate V-4 closes. Fix the oracle's first-segment curve while in that file | [I-50](known-issues.md#i-50), [I-34](known-issues.md#i-34) | L |
 | 2.3 | Sensitivities against ORE's sensitivity analytic on the shared portfolio | [I-51](known-issues.md#i-51) | M |
-| 2.4 | Reproduce ORE's two per-path recalibration details, measured against 2.2's cube | [I-49](known-issues.md#i-49) | M |
+| 2.4 | Reproduce ORE's two per-path recalibration details, measured against 2.2's cube; warn, as ORE's `LgmBuilder` does, when a path's recalibration misses its basket | [I-49](known-issues.md#i-49), [I-73](known-issues.md#i-73) | M |
 | 2.5 | `ShiftHorizon` as a setting; parity at 0.5; then 0.5 as the default | [I-32](known-issues.md#i-32) | M |
 | 2.6 | Swaption vol strike axis, read at each option's and helper's strike | [I-54](known-issues.md#i-54) | M |
 | 2.7 | *Parallel, from 1.7.* Measurement of the storage formats per class, product and path count; the evidence table against the acceptance standard (A-11: Basel III's P&L attribution test and the Basel plan's P6.2 rule; P6.2 labelled as engineering for figures Basel does not cover); a warning on any result whose combination has no passing row | [I-55](known-issues.md#i-55) (warnings) | M |
@@ -109,7 +115,7 @@ Rule: every change leaves the FP64 parity tests bit-identical.
 
 | Step | Work | Closes | Size |
 |---|---|---|---|
-| 5.1 | Characterize the full-suite XLA abort (repeated full runs against a known-bad baseline; `tests/test_api.py`'s pool shutdown is in since 1.3); make the cross-tier concurrency test deterministic | [I-27](known-issues.md#i-27) | M |
+| 5.1 | Characterize the full-suite XLA abort (repeated full runs against a known-bad baseline; `tests/test_api.py`'s pool shutdown is in since 1.3; the flaky cross-tier overlap test went with the tiers in 1.4) | [I-27](known-issues.md#i-27) | M |
 | 5.2 | Ruff in `pyproject.toml` and CI, then a type checker on `engine/` | [I-66](known-issues.md#i-66) | S |
 | 5.3 | Shared test helpers in `tests/support/`; public-entry tests where stage 1 made private-symbol tests obsolete | [I-67](known-issues.md#i-67) | S |
 

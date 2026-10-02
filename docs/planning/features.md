@@ -119,6 +119,6 @@ paths (stochastic rounding: 0.15), so the earlier rejection of FP8, which compar
 value with Monte Carlo error, is withdrawn; FP4 stored naively is biased with either
 rounding.
 
-**Depends on.** [I-55](known-issues.md#i-55) (roadmap 1.4: the mechanism and cast points);
+**Depends on.** The mechanism and cast points (roadmap 1.4, done 2026-10-01; [I-55](known-issues.md#i-55));
 the speed case needs the target hardware, which the owner has. **Size.** L.
 **Details.** [details/precision.md](details/precision.md).

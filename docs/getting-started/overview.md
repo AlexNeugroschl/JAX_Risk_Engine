@@ -71,11 +71,10 @@ ambitions (see the root [README.md](../../README.md) for the full roadmap):
   high-precision ones on fewer devices — pushing well past FP32, down to 8-bit and even
   4-bit formats (e.g. FP8/INT8 and INT4/NF4) — which only becomes a meaningful throughput
   question once multiple devices are actually in flight at once, not a single device
-  running one precision at a time. That's why every piece of this engine is built to
-  support switching precision on and off (see
-  [Adjustable Precision](../concepts/architecture.md#adjustable-precision)) *and* to
-  dispatch different-precision jobs to genuinely concurrent, process-isolated workers (see
-  [Architecture: Concurrency](../concepts/architecture.md)).
+  running one precision at a time. That's why the engine sets the precision of each stage
+  of a run separately, as data on the run (see
+  [Adjustable Precision](../concepts/architecture.md#adjustable-precision)), and runs jobs of
+  any precision side by side (see [Architecture: Concurrency](../concepts/architecture.md#concurrency)).
 - **Correctness against a known-good reference.** Rather than inventing new math, this
   project continuously checks its own output against ORE's — a mature, real-world risk
   engine used by actual financial institutions. Every pricing formula and risk formula

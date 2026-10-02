@@ -12,11 +12,17 @@ The statistics are `engine.risk.var_es` -- ORE's `RiskStatistics`
 conventions, already pinned against ORE -- applied to a one-date P&L sample.
 This is the engine's market-risk measure. The multi-step simulation in
 `engine.portfolio` is an exposure profile, not a VaR (audit finding R-1).
+
+Precision (`engine.precision`), the portfolio run's stages on this pipeline: the shifts are
+rounded to `simulation.compute` and stored at `simulation.storage`; the revaluation and each
+trade's P&L are computed at `pricing.compute` and the P&L stored at `pricing.storage`; VaR/ES
+load it at float64 (decision A-10). The base values are the revaluation of the unshocked
+curves at `pricing.compute`, the anchor every P&L is measured from, so a zero shift is exactly
+zero P&L at every precision.
 """
 from dataclasses import dataclass, field
 from typing import Dict, List, Sequence
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -27,6 +33,7 @@ from engine.market import Market
 from engine.market_risk.factors import RateRiskFactors
 from engine.market_risk.revaluation import factor_indices, revalue
 from engine.market_risk.scenarios import ShockScenarios
+from engine.precision import Precision, load, require_precision, store
 from engine.risk.var_es import compute_risk_metrics
 from engine.valuation.config import PricingConfig
 from engine.valuation.portfolio import validate_trades
@@ -51,7 +58,7 @@ class MarketRiskRequest:
         fixed under every scenario.
     quantiles: VaR/ES confidence levels, e.g. 0.99 for VaR and 0.975 for
         Basel's ES.
-    precision: 64 or 32 -- the dtype of the revaluation and the statistics.
+    precision: the `Precision` of the run (see the module docstring); float64 by default.
     batch_size: scenarios vmapped at once inside the revaluation loop; lower
         it if a large Bermudan runs out of memory.
     """
@@ -60,7 +67,7 @@ class MarketRiskRequest:
     scenarios: ShockScenarios
     pricing: PricingConfig = field(default_factory=PricingConfig)
     quantiles: Sequence[float] = (0.99, 0.975)
-    precision: int = 64
+    precision: Precision = field(default_factory=Precision)
     batch_size: int = 256
 
 
@@ -72,8 +79,9 @@ class MarketRiskResult:
         `ES_<q>_tailCount` (observations the ES averaged) and
         `ES_<q>_standardError` (its Monte Carlo standard error); NaN where a
         tail is empty.
-    pnl: `[S, N]` P&L of each trade under each scenario, in request order.
-    portfolio_pnl: `[S]` the sum across trades, which the statistics use.
+    pnl: `[S, N]` P&L of each trade under each scenario, in request order, loaded at float64
+        from its storage format.
+    portfolio_pnl: `[S]` the sum across trades, which the statistics use (float64).
     """
     base_npv: float
     base_npv_per_trade: List[float]
@@ -93,14 +101,12 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     portfolio P&L. See the module docstring for the pipeline."""
     _validate(request)
     scenarios = request.scenarios
-    dtype = jnp.float64 if request.precision == 64 else jnp.float32
-
-    # Revaluation at float32 still needs x64 enabled to build the float64
-    # arrays a 64-bit request uses; it never changes a float32 array.
-    jax.config.update("jax_enable_x64", True)
-    base, shocked = revalue(request.trades, request.market, scenarios.factors, scenarios.shifts, request.pricing,
-                            dtype, request.batch_size)
-    pnl = shocked - jnp.asarray(base, dtype=dtype)[None, :]
+    simulation, pricing = request.precision.simulation, request.precision.pricing
+    shifts = store(jnp.asarray(scenarios.shifts, dtype=simulation.compute_dtype), simulation.storage)
+    moves = load(shifts, pricing.compute_dtype)
+    base, shocked = revalue(request.trades, request.market, scenarios.factors, moves, request.pricing,
+                            request.batch_size)
+    pnl = load(store(shocked - jnp.asarray(base, dtype=moves.dtype)[None, :], pricing.storage), jnp.float64)
     portfolio_pnl = jnp.sum(pnl, axis=-1)
 
     metrics = compute_risk_metrics(pnl[:, None, :], 0.0, percentiles=request.quantiles)
@@ -128,8 +134,7 @@ def _scalar(value) -> float:
 def _validate(request: MarketRiskRequest) -> None:
     if not request.trades:
         raise ValueError("a market-risk run needs at least one trade")
-    if request.precision not in (32, 64):
-        raise ValueError(f"precision must be 32 or 64; got {request.precision!r}")
+    require_precision("MarketRiskRequest.precision", request.precision)
     if request.batch_size < 1:
         raise ValueError(f"batch_size must be at least 1; got {request.batch_size}")
     for q in request.quantiles:

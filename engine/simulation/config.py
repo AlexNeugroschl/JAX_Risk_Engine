@@ -33,6 +33,7 @@ from engine.market import Market
 from engine.models.curves import ZeroCurve
 from engine.models.lgm import Sigma, as_sigma
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
+from engine.precision import Precision, load, require_precision, store
 from engine.simulation.cam import (
     CrossAssetModel, EqComponent, FxComponent, IrComponent, evolve_states, step_moments,
 )
@@ -216,24 +217,36 @@ def grid_times(market: Market, config: CamConfig) -> np.ndarray:
 
 
 def simulate(market: Market, config: CamConfig, model: Optional[CrossAssetModel] = None,
-             dtype=jnp.float64) -> ScenarioMarket:
+             precision: Precision = Precision()) -> ScenarioMarket:
     """Scenario market for `config`: Sobol normals with a Brownian bridge over the grid,
     the CAM's exact step moments, and the model-implied curves on every path and date.
 
     `model` defaults to `build_cross_asset_model(market, config)` (uncalibrated volatilities);
-    pass a calibrated one to use it. Every array is in `dtype`; the step moments are computed
-    in float64 and cast."""
+    pass a calibrated one to use it.
+
+    `precision` sets the simulation and market stages (`engine.precision`; cast points 1 to
+    3 of docs/planning/details/precision.md §6.3): the shocks are generated and bridged at
+    `simulation.compute` and stored; the states are evolved at `simulation.compute` from the
+    loaded shocks and stored; the market is built at `market.compute` from the loaded states
+    and returned stored at `market.storage`. The step moments and the path-independent parts
+    of the curves are computed in float64 and cast."""
+    require_precision("simulate's precision", precision)
+    sim, mkt = precision.simulation, precision.market
     model = model or build_cross_asset_model(market, config)
     times = grid_times(market, config)
     moments = step_moments(model, times)
-    normals = generate_sobol_normals(config.samples, len(config.dates), model.dimension, dtype, seed=config.seed)
-    normals = apply_brownian_bridge(normals, jnp.asarray(times, dtype=dtype))
-    cast = lambda a: jnp.asarray(a, dtype=dtype)  # noqa: E731
-    states = evolve_states(cast(model.initial_state()),
-                           (cast(moments.transition), cast(moments.drift), cast(moments.cholesky)), normals)
+    compute = sim.compute_dtype
+    normals = generate_sobol_normals(config.samples, len(config.dates), model.dimension, compute, seed=config.seed)
+    shocks = store(apply_brownian_bridge(normals, jnp.asarray(times, dtype=compute)), sim.storage)
+    cast = lambda a: jnp.asarray(a, dtype=compute)  # noqa: E731
+    states = store(evolve_states(cast(model.initial_state()),
+                                 (cast(moments.transition), cast(moments.drift), cast(moments.cholesky)),
+                                 load(shocks, compute)), sim.storage)
     index_curves = {
         name: (ccy, ZeroCurve.from_config(curve))
         for ccy in config.currencies
         for name, curve in market.currency(ccy).index_curves.items()
     }
-    return build_scenario_market(model, market.asof, config.dates, states, config.curve_tenors, index_curves)
+    scenarios = build_scenario_market(model, market.asof, config.dates, load(states, mkt.compute_dtype),
+                                      config.curve_tenors, index_curves)
+    return scenarios.map_arrays(lambda a: store(a, mkt.storage))

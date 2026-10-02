@@ -33,6 +33,7 @@ from engine.instruments.swap import SwapConfig, _build_ore_swap as _swap_underly
 from engine.instruments.treasury import BondConfig, _remaining_cashflows
 from engine.market import Market, index_name
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
+from engine.precision import Precision, load, require_precision, store
 from engine.simulation.scenario_market import ScenarioMarket
 from engine.valuation.bermudan import bermudan_cube, bermudan_value, contract_exercise_dates
 from engine.valuation.config import PricingConfig
@@ -47,7 +48,8 @@ Trade = Union[SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwapti
 
 @dataclass
 class PortfolioValuation:
-    """t=0 NPVs `[T]` and the cube `[S, D, T]`, both in the base currency, in trade order."""
+    """t=0 NPVs `[T]` (float64) and the cube `[S, D, T]` (stored at the pricing stage's
+    storage format), both in the base currency, in trade order."""
     today: List[float]
     cube: jax.Array
     warnings: List[str] = field(default_factory=list)
@@ -86,9 +88,18 @@ def reads_swaption_vols(cfg: Trade, pricing: PricingConfig) -> bool:
 
 
 def value_portfolio(trades: Sequence[Trade], market: Market, scenarios: ScenarioMarket, base_currency: str,
-                    pricing: PricingConfig = PricingConfig(), decay: str = "ForwardVariance") -> PortfolioValuation:
-    """Every trade today and on every path and date (see the module docstring)."""
+                    pricing: PricingConfig = PricingConfig(), decay: str = "ForwardVariance",
+                    precision: Precision = Precision()) -> PortfolioValuation:
+    """Every trade today and on every path and date (see the module docstring).
+
+    `precision.pricing` sets the path pricing (cast point 4 of
+    docs/planning/details/precision.md §6.3): the scenario market is loaded at its compute
+    dtype, every trade priced in it, and each cube column stored at its storage format. t=0
+    values are float64 (decision A-10)."""
+    require_precision("value_portfolio's precision", precision)
+    stage = precision.pricing
     validate_trades(trades, market, pricing)
+    scenarios = scenarios.map_arrays(lambda a: load(a, stage.compute_dtype))
     fixings = _index_fixings(trades, market, scenarios)
     today, columns = [], []
     for cfg in trades:
@@ -97,8 +108,9 @@ def value_portfolio(trades: Sequence[Trade], market: Market, scenarios: Scenario
         fx_path = 1.0 if currency == base_currency else scenarios.fx[currency]
         value, cube = _value_trade(cfg, market, scenarios, fixings, pricing, decay)
         today.append(float(value) * spot)
-        columns.append(cube * fx_path)
-    cube = jnp.stack(columns, axis=-1) if columns else jnp.zeros((scenarios.num_paths, len(scenarios.dates), 0))
+        columns.append(store(cube * fx_path, stage.storage))
+    cube = (jnp.stack(columns, axis=-1) if columns
+            else jnp.zeros((scenarios.num_paths, len(scenarios.dates), 0), dtype=stage.storage_dtype))
     return PortfolioValuation(today=today, cube=cube)
 
 

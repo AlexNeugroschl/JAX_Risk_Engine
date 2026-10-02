@@ -37,7 +37,7 @@ from engine.instruments.bermudan_swaption import (
     BermudanSwaptionConfig, _backward_induction_arrays, _build_grid_schedule, grid_value, prepare_bermudan,
 )
 from engine.market import Market, SwaptionVolSurface, index_name
-from engine.models.curves import DiscountCurve
+from engine.models.curves import DiscountCurve, curve_dtype
 from engine.models.lgm import Sigma
 from engine.simulation.scenario_market import ScenarioMarket
 from engine.valuation.config import LgmSwaptionEngineConfig, reference_grid_dates
@@ -177,17 +177,19 @@ def _fixing_serials(cfg: OptionConfig):
 
 def _path_sigma(cfg, engine, surface: SwaptionVolSurface, asof, date, disc: DiscountCurve, index: DiscountCurve,
                 decay: str, today: Optional[Calibration]) -> Sigma:
-    """The LGM volatility on `date`: recalibrated to the basket on every path, or today's
-    (`recalibrate=false`, or `calibration="None"`: the engine's fixed volatility)."""
+    """The LGM volatility on `date`, in the path curves' dtype: recalibrated to the basket on
+    every path, or today's (`recalibrate=false`, or `calibration="None"`: the engine's fixed
+    volatility)."""
+    dtype = curve_dtype(disc)
     if engine.calibration == "None":
-        return Sigma.flat(engine.volatility)
+        return Sigma.flat(engine.volatility, dtype=dtype)
     if today is not None:
-        return today.sigma
+        return today.sigma.astype(dtype)
     basket = calibration_basket(cfg, engine, date, asof)
     vols = np.array([volatility_on_path(surface, asof, date, b.vol_option_time, b.vol_swap_length, decay)
                      for b in basket])
     result = bootstrap_sigma(basket, disc, index, vols, engine.reversion)
-    return Sigma(times=jnp.asarray(result.times), values=result.values)   # values [S, n]
+    return Sigma(times=jnp.asarray(result.times, dtype=dtype), values=result.values)   # values [S, n]
 
 
 def _known_rates(prepared, history: Mapping[ORE.Date, float], asof: ORE.Date, grid_serials: np.ndarray,

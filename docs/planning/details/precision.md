@@ -126,6 +126,13 @@ what lets the study say which one limits accuracy.
 Fixed stages are built on the same mechanism, so a later study can open one by adding a
 field, not by changing the pipeline (A-10).
 
+Market risk has no float64 t=0 stage of its own: its base values are the revaluation of the
+unshocked curves at `pricing.compute`, the anchor every P&L is measured from, so a zero shift
+is exactly zero P&L at every precision (a float64 base under a float32 revaluation would bias
+every P&L by the base's rounding). Each trade's P&L is computed at `pricing.compute`, stored
+at `pricing.storage` (storing the difference, not the two NPVs, keeps the cancellation in the
+compute precision) and loaded at float64 for VaR/ES. Settled in step 1.4.
+
 ### 3.3 Array classes
 
 The cast points name the arrays they convert. One name per kind of array, shared by both
@@ -211,12 +218,17 @@ Precision(simulation=StagePrecision(storage="float8_e4m3fn", compute="float32", 
 
 ```
 engine/precision/
-  formats.py   # the format table: name -> dtype, bits, mantissa bits, max, scaled?
-  policy.py    # StagePrecision, Precision, validation, precision_for
-  storage.py   # Stored (pytree: values, scales | None, format); store(), load()
-  report.py    # PrecisionReport: the policy as run, realized dtypes, device, paired errors
-  estimate.py  # two-level estimator for means; paired differences for quantiles
+  formats.py   # the format table: name -> dtype, bits, mantissa bits, max, scaled?   (1.4)
+  policy.py    # StagePrecision, Precision, validation (1.4); precision_for (1.5)
+  storage.py   # store(), load() (1.4); Stored (pytree: values, scales, format) (1.6)
+  report.py    # PrecisionReport: the policy as run, realized dtypes, device, paired errors (1.7)
+  estimate.py  # two-level estimator for means; paired differences for quantiles (1.7)
 ```
+
+Step 1.4 built the first three at float64/float32. `Stored` is deferred to 1.6, the first
+step with scaled formats: at float64 and float32 a stored value is the array itself (§6.2), so
+a wrapper would carry no scales and only change every consumer's types. `report.py` comes with
+1.7, whose report it is; until then tests read the realized dtypes from the arrays.
 
 The pipeline imports these; they import nothing from it. Each module has its own unit tests
 that need no market, trade or ORE ([§13.4](#134-storage-properties)).
@@ -240,7 +252,8 @@ FP4 (`float4_e2m1fn`) is added at step 6.3. A name outside the table is refused.
 
 `store(x, format, rounding, key) -> Stored` and `load(stored, dtype) -> array`.
 
-- **float64 and float32:** a plain `astype`. `Stored` holds no scales.
+- **float64 and float32:** a plain `astype`, returning the array (step 1.4). Storing or
+  loading at an array's own dtype returns it unchanged, so the float64 default moves no bit.
 - **Every sub-32-bit format is stored with block scales** (A-10's single rule, rather than
   deciding per class which formats need range help). Blocks are 32 consecutive entries along
   the **scenario axis**, each with a power-of-two scale, kept as float32, that brings the
@@ -259,11 +272,16 @@ The only places that read the configuration:
 
 | # | Where | What it does |
 |---|---|---|
-| 1 | `engine/simulation/random.py` | Normals generated at `simulation.compute` (the clip epsilon from the compute dtype, not the storage dtype), then `store(shocks)` |
-| 2 | `engine.simulation.cam.evolve_states` | `load(shocks)`; the scan's carried state stays at `simulation.compute`; only the emitted states are stored, `store(states)` |
-| 3 | Scenario market build (`engine/simulation/scenario_market.py`) | `load(states)`; curves computed at `market.compute` (the z-independent terms keep coming from float64); `store(market)` |
-| 4 | Valuation (`engine/valuation/portfolio.py`) and market-risk revaluation | Per trade, `precision_for(trade)`: `load(market)` at its compute, price, `store` its column as values |
-| 5 | Exposure (`engine/risk/exposure.py`) and VaR/ES (`engine/risk/var_es.py`) | `load(values, float64)`, then reduce |
+| 1 | `engine.simulation.config.simulate` | Normals generated (`engine/simulation/random.py`, the clip epsilon from the compute dtype) and bridged at `simulation.compute`, then `store(shocks)` |
+| 2 | `simulate` | `load(shocks)`; `evolve_states` runs at `simulation.compute` (it follows the shocks' dtype; the moments are cast to it); `store(states)` |
+| 3 | `simulate` | `load(states)` at `market.compute`; `build_scenario_market` follows the states' dtype (the z-independent terms keep coming from float64); the whole market stored at `market.storage` (`ScenarioMarket.map_arrays`) |
+| 4 | `engine.valuation.portfolio.value_portfolio`; `engine.market_risk.run_market_risk` | `load(market)` at `pricing.compute`, price every trade, `store` each cube column at `pricing.storage` (1.5: per trade, `precision_for(trade)`). Market risk: shifts rounded to `simulation.compute`, stored, loaded at `pricing.compute`; the revaluation follows the shifts' dtype; the P&L stored |
+| 5 | `engine.portfolio.market_path` (exposure); `run_market_risk` (VaR/ES) | `load(values, float64)` and the numeraire at float64, then reduce |
+
+The first three live in `simulate`, the orchestrator of the simulation and market stages;
+the kernels it calls (`generate_sobol_normals`, `apply_brownian_bridge`, `evolve_states`,
+`build_scenario_market`) follow the dtype they are given. `generate_sobol_normals` keeps its
+`dtype` argument: it is where the shocks are created, so it has no input to follow.
 
 The cube becomes a sequence of per-trade `Stored` columns (one array when every trade
 shares a format). `PortfolioResult.npv_cube` stays an array, loaded at float64, so
@@ -279,6 +297,17 @@ and `engine/risk` name no dtype today and so become float64 under the x64 flag; 
 Strict promotion (`jax_numpy_dtype_promotion="strict"`) in CI turns any accidental
 float32/float64 mix into a failing test ([§13.3](#133-dtype-discipline)).
 
+Step 1.4 did it by running float32 portfolios under strict promotion and fixing each mix where
+it arose, at the kernel's entry: `legs_cube`, `european_cube` and `jamshidian_cube` cast their
+coupon tables and variances to the curves' dtype (`Legs.astype`, `EuropeanTerms.astype`); the
+per-path recalibration casts its basket (`BasketInstrument.astype`), volatilities and bracket
+to the curves' dtype, keeps its bucket widths as Python floats (a NumPy float64 scalar is not
+weakly typed) and its root bracket in that dtype; the path volatility (`Sigma.astype`) follows
+the path curves. `engine.models.curves.curve_dtype` is the one helper that reads a curve's
+dtype. Each cast is a no-op at float64. Before 1.4 the "float32" path was in fact mixed: the
+float64 constants promoted the float32 curves, so pricing on paths ran mostly in float64 and
+the cube came out float64, while path fixings ran in float32.
+
 ### 6.5 Constants that depend on dtype
 
 Found while designing; fixed or derived from the dtype in step 1.4:
@@ -293,7 +322,25 @@ Found while designing; fixed or derived from the dtype in step 1.4:
 Step 1.4 also searches every path kernel for literal tolerances (`1e-`) and either derives
 each from the dtype or shows it holds at float32.
 
-### 6.6 What goes
+Outcome (step 1.4):
+
+- The ceiling: `hi * (1 - ceiling_tolerance(dtype))`, with `ceiling_tolerance = max(1e-9,
+  4 eps)` (`engine.calibration.ore_lgm`), unchanged at float64. Red first: with the fixed 1e-9 a
+  float32 bisection stuck below the top was not flagged
+  (`tests/test_precision.py::TestRecalibrationInFloat32`). On a path the flag is still
+  dropped: [I-73](../known-issues.md#i-73).
+- The Sobol clip: the normals are generated at `simulation.compute`, so `jnp.finfo(dtype).eps`
+  is the compute dtype's.
+- `scenario_batch_size`: `revalue` passes the itemsize of the shifts' dtype, which is the
+  pricing compute dtype.
+- Literal tolerances in the path kernels hold at float32: `jnp.maximum(t, 1e-12)` in the LGM
+  bonds (1e-12 is a normal float32), the discount floor `log(1e-5)`, the variance floor 1e-6
+  (computed on the host in float64), and the Jamshidian and per-path bisections, which run a
+  fixed number of halvings and so converge to the dtype's resolution. The other `1e-`
+  literals are host-side float64 validation (correlation checks, the scenario covariance,
+  the curve tolerance of market risk).
+
+### 6.6 What goes (gone since step 1.4)
 
 - `check_run`'s refusal of `pricing`, `risk` and `calibration` below 64.
 - `run_market_risk`'s `jax.config.update("jax_enable_x64", True)`. x64 stays on, set once
@@ -302,6 +349,12 @@ each from the dtype or shows it holds at float32.
   (no module-level caches and no ORE globals were found; a concurrency test confirms it).
 - The per-precision pool tiers (`engine/portfolio/worker_pool.py`): one pool from step 1.4;
   the pool itself goes with step 1.8.
+
+Removing the lock rests on the audit: the pipeline keeps no module-level caches or mutable
+state, and never reads ORE's global evaluation date (trades carry theirs, I-64; only the test
+oracle sets it). `tests/test_portfolio_entrypoint.py::TestPricePortfolioConcurrency` runs a
+float64 and a float32 request on two threads at once, repeatedly, each bit for bit equal to
+its sequential run.
 
 ## 7. Low-precision storage
 
@@ -485,7 +538,7 @@ nothing in the precision work depends on it; step 3.2 does.
 
 | Step | Work | Exit criterion | Size |
 |---|---|---|---|
-| **1.4** | `engine/precision/` (formats, policy, storage at float64/float32, report skeleton); `Precision` replaces the old types in `RunConfig`, `MarketRiskRequest` and the HTTP schema, the old shape refused (A-12); the five cast points; inputs follow dtype; float64 reductions; the constants of §6.5; market risk on the same module; remove `check_run`'s refusal, the flag set, the lock and the tiers; strict promotion in CI | Default: golden snapshot bit for bit, every ORE parity suite unchanged. float32 throughout: cube bit-identical to today's `simulation=32` cube; exposure differs only by the float64 reductions. Fast tier green under strict promotion | M |
+| **1.4** (done 2026-10-01) | `engine/precision/` (formats, policy, storage at float64/float32; the report skeleton moved to 1.7, `Stored` to 1.6, §5); `Precision` replaces the old types in `RunConfig`, `MarketRiskRequest` and the HTTP schema, the old shape refused (A-12); the cast points; inputs follow dtype; float64 reductions; the constants of §6.5; market risk on the same module; remove `check_run`'s refusal, the flag set, the lock and the tiers; strict promotion in CI | Default: golden snapshot bit for bit, every ORE parity suite unchanged. float32: the scenario market and the market-risk revaluation bit for bit as before; the portfolio cube is not, and cannot be (§13.1); exposure and VaR/ES differ by the float64 reductions. Fast tier green under strict promotion. Met: §13.1 | M |
 | **1.5** | Per-product and per-trade precision (A-15): `by_product`, `by_trade`, `precision_for`; per-trade stored columns; market risk per trade | Bit for bit at the default; a mixed run (Bermudan float32, swaps float64) equals each trade run alone at its precision, column for column | S |
 | **1.6** | Sub-32-bit storage: block scales, both roundings; `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2` enabled for storage | The storage properties of §13.4; bit for bit at the default | M |
 | **1.7** | Paired sample, two-level estimator for means, `PrecisionReport` with realized dtypes and device (closes I-12) | §13.6; bit for bit at the default | M |
@@ -516,6 +569,17 @@ process changes.
   `np.array_equal` (value, dtype, shape) after every step from 1.4 to 1.8. The Greeks run
   takes about 16 minutes and 10 GB.
 - Every ORE parity suite runs unchanged at the default after every step.
+- **Step 1.4's result (2026-10-01).** 164 arrays at the default precision (today's values under
+  two engines; the shared portfolio's cube, exposure and per-trade EPE under the LGM and the
+  Hull-White model; bump and AD Greeks; market risk at float64), plus the float32 scenario
+  market and the raw float32 market-risk revaluation: all 164 identical in value, dtype and
+  shape. Market risk at float32: the P&L identical in value (now float64-loaded), VaR/ES within
+  1e-7 relative (float64 reductions). The portfolio cube at float32 is not bit for bit with
+  the old `simulation=32` cube, and the criterion as first written could not hold: that cube
+  was float64, priced in mixed precision (float64 coupon tables promoted the float32 curves,
+  path fixings ran in float32; §6.4). Float32 throughout differs from it by at most 1.5e-6
+  relative (both are about 2e-6 from float64); a float32 simulation and market priced in
+  float64 is 5.6e-7 from float64.
 - Step 2.8: parity suites pass at their tolerances first; then the snapshot is re-baselined,
   with the largest change per array recorded in the commit and in known-issues' verification
   status.
@@ -586,8 +650,9 @@ before measuring: bias against the rule of §10 at the stated path counts.
 
 ### 13.10 Demos
 
-`demos/demo_precision.py` moves to `Precision`, adds FP16 and FP8 storage runs, and prints
-each run's report.
+`demos/demo_precision.py` moves to `Precision` (done in 1.4, with a storage-only float32 run
+beside float32 throughout), adds FP16 and FP8 storage runs (1.6), and prints each run's report
+(1.7).
 
 ## 14. Scope
 

@@ -3,7 +3,7 @@
 and simulate the cross-asset model, value every trade today and on every path, deflate into
 exposure profiles), trade by trade, for every instrument type under the Hull-White model; its
 results follow the request's trade order; the model is calibrated per currency; the precision
-of the simulation is honoured; concurrent callers are serialized.
+of every stage is honoured; concurrent callers each get their own values.
 """
 import dataclasses
 import threading
@@ -15,9 +15,10 @@ import pytest
 
 from engine.models.curves import ZeroCurve, discount
 from engine.portfolio import (
-    CamConfig, HullWhiteConfig, LgmSwaptionEngineConfig, PortfolioRequest, PortfolioResult, PrecisionConfig,
-    PricingConfig, RunConfig, price_portfolio,
+    CamConfig, HullWhiteConfig, LgmSwaptionEngineConfig, PortfolioRequest, PortfolioResult, Precision,
+    PricingConfig, RunConfig, StagePrecision, price_portfolio,
 )
+from engine.precision import STAGES
 from engine.risk.exposure import netting_set_profile
 from engine.simulation.config import build_cross_asset_model, simulate
 from engine.valuation.portfolio import value_portfolio
@@ -35,7 +36,7 @@ def _simulation(samples=64, calibrated=False) -> CamConfig:
                      samples=samples, seed=11)
 
 
-def _request(names=NAMES, precision=PrecisionConfig(), **kwargs) -> PortfolioRequest:
+def _request(names=NAMES, precision=Precision(), **kwargs) -> PortfolioRequest:
     trades = [shared.trades()[n] for n in names]
     config = RunConfig(simulation=_simulation(), pricing=PRICING, precision=precision)
     return PortfolioRequest(market=shared.market(), trades=trades, config=config, **kwargs)
@@ -146,52 +147,69 @@ class TestPricePortfolioGreeks:
 
 
 class TestPricePortfolioPrecision:
-    """Until roadmap 1.4 only the simulation's precision is adjustable (I-55)."""
+    """The run's `Precision` reaches every adjustable stage (roadmap 1.4, I-55); t=0 values and
+    the reductions over paths are float64 whatever it says (decision A-10)."""
 
     def test_default_precision_is_float64(self):
         assert price_portfolio(_request(("swap-payer",))).npv_cube.dtype == jnp.float64
 
+    @pytest.mark.parametrize("stage", STAGES)
+    @pytest.mark.parametrize("stage_precision", [StagePrecision("float32"), StagePrecision("float32", "float32",
+                                                                                           "float32")],
+                             ids=["stored-float32", "float32"])
+    def test_each_stage_is_honoured(self, stage, stage_precision):
+        """No stage's setting is accepted and ignored: float32 at one stage alone, stored only
+        or computed too, moves the cube off the float64 one by rounding, and nothing else."""
+        exact = price_portfolio(_request(("swap-payer",)))
+        rounded = price_portfolio(_request(("swap-payer",), precision=Precision(**{stage: stage_precision})))
+        assert rounded.base_npv_per_trade == exact.base_npv_per_trade, "t=0 values are float64"
+        assert not np.array_equal(np.asarray(rounded.npv_cube), np.asarray(exact.npv_cube))
+        np.testing.assert_allclose(np.asarray(rounded.npv_cube), np.asarray(exact.npv_cube), rtol=1e-4, atol=2.0)
+
     @pytest.mark.slow
-    def test_simulation_32_simulates_in_float32_and_still_prices(self):
-        request = _request(("swap-payer", "european-payer"), precision=PrecisionConfig(simulation=32))
-        scenarios = simulate(request.market, request.config.simulation, dtype=jnp.float32)
+    def test_float32_throughout_stores_float32_values_and_reduces_in_float64(self):
+        names = ("swap-payer", "european-payer", "bermudan-payer-physical", "bond")
+        request = _request(names, precision=Precision.throughout("float32"))
+        market, simulation = request.market, request.config.simulation
+        scenarios = simulate(market, simulation, build_cross_asset_model(market, simulation), request.config.precision)
         assert scenarios.numeraire.dtype == jnp.float32
-        a = price_portfolio(request)
-        b = price_portfolio(_request(("swap-payer", "european-payer")))
-        assert a.base_npv_per_trade == b.base_npv_per_trade, "today's values are float64 either way"
-        np.testing.assert_allclose(np.asarray(a.npv_cube), np.asarray(b.npv_cube), rtol=1e-3, atol=5.0)
+        valuation = value_portfolio(request.trades, market, scenarios, "USD", PRICING, simulation.swaption_vol_decay,
+                                    request.config.precision)
+        assert valuation.cube.dtype == jnp.float32
 
-    @pytest.mark.parametrize("stage", ["pricing", "risk", "calibration"])
-    def test_other_stages_below_64_are_refused(self, stage):
-        with pytest.raises(ValueError, match=rf"config\.precision\.{stage}"):
-            price_portfolio(_request(("swap-payer",), precision=PrecisionConfig(**{stage: 32})))
+        result = price_portfolio(request)
+        cube = np.asarray(valuation.cube, dtype=np.float64)
+        np.testing.assert_array_equal(np.asarray(result.npv_cube), cube)
+        assert result.npv_cube.dtype == jnp.float64
+        p0 = discount(ZeroCurve.from_config(market.currency("USD").discount_curve), jnp.asarray(scenarios.times))
+        expected = netting_set_profile(jnp.asarray(cube), valuation.today,
+                                       numeraire=jnp.asarray(scenarios.numeraire, jnp.float64), discount=p0,
+                                       times=scenarios.times, quantiles=request.pfe_quantiles, dates=scenarios.dates,
+                                       asof=market.asof)
+        np.testing.assert_array_equal(np.asarray(result.exposure.epe), np.asarray(expected.epe))
+        assert result.exposure.epe.dtype == jnp.float64
 
+        exact = price_portfolio(_request(names))
+        assert result.base_npv_per_trade == exact.base_npv_per_trade, "today's values are float64 either way"
+        np.testing.assert_allclose(np.asarray(result.npv_cube), np.asarray(exact.npv_cube), rtol=1e-3, atol=5.0)
 
-class TestPrecisionOverrideValidation:
-    """The override classes validate every field as `PrecisionConfig` does."""
-
-    def test_pricing_override_rejects_invalid_bits(self):
-        from engine.portfolio import PricingPrecisionOverride
-        with pytest.raises(ValueError):
-            PricingPrecisionOverride(swap=48)
-
-    def test_risk_override_rejects_invalid_bits(self):
-        from engine.portfolio import RiskPrecisionOverride
-        with pytest.raises(ValueError):
-            RiskPrecisionOverride(vega=48)
+    def test_the_retired_32_64_shape_is_refused_naming_the_replacement(self):
+        with pytest.raises(TypeError, match=r"RunConfig\.precision.*retired by roadmap 1\.4"):
+            _request(("swap-payer",), precision=32)
 
 
 @pytest.mark.slow
 class TestPricePortfolioConcurrency:
-    """Two requests at different simulation precisions on two threads each get their own
-    values. `_PRICING_LOCK` serializes them (the x64 flag is process-global until roadmap
-    1.4); a `threading.Barrier` forces overlap, and the body repeats to make a race likely."""
+    """Two requests at different precisions on two threads at once each get their own values,
+    bit for bit. Nothing serializes them since roadmap 1.4 removed the lock: every precision is
+    a dtype of the run's own arrays, and the pipeline keeps no global state. A
+    `threading.Barrier` forces overlap, and the body repeats to make a race likely."""
 
     NUM_REPETITIONS = 4
 
     def test_two_precisions_concurrently_each_get_their_own_values(self):
         names = ("swap-payer", "european-payer")
-        precisions = {"a": PrecisionConfig(simulation=64), "b": PrecisionConfig(simulation=32)}
+        precisions = {"a": Precision(), "b": Precision.throughout("float32")}
         refs = {k: price_portfolio(_request(names, precision=p)) for k, p in precisions.items()}
         assert not np.array_equal(np.asarray(refs["a"].npv_cube), np.asarray(refs["b"].npv_cube))
 

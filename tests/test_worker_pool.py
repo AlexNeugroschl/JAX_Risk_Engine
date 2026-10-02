@@ -1,10 +1,12 @@
 """
-`engine.portfolio.worker_pool`: per-precision process pools.
+`engine.portfolio.worker_pool`: the process pool behind the HTTP jobs, one for every precision
+since roadmap 1.4 (before it, one pool per simulation precision).
 
+A job gives exactly what `price_portfolio` gives in this process, at float64 and at float32
+(the freeze/thaw round trip is lossless and every worker runs with x64 on); the worker re-runs
+the request's validation; two jobs run on two workers at once.
 tests/test_portfolio_entrypoint.py::TestPricePortfolioConcurrency shows `price_portfolio`
-stays correct when two threads race in one process (serialized by `_PRICING_LOCK`, so never
-overlapping). `TestWorkerPoolConcurrency` shows the pools give real concurrent execution
-across precision tiers, with correct results.
+stays correct when two threads run it at once in one process.
 
 Each worker is a spawned process that imports JAX and ORE from scratch, so spawn, import and
 first compile dominate this file's run time, not the small portfolios.
@@ -20,15 +22,13 @@ import pytest
 import ORE
 
 from engine.portfolio import (
-    CamConfig, HullWhiteConfig, PortfolioRequest, PrecisionConfig, RunConfig, price_portfolio,
+    CamConfig, HullWhiteConfig, PortfolioRequest, Precision, RunConfig, price_portfolio,
 )
-from engine.portfolio.worker_pool import (
-    _freeze_trade, _pool_for, _run_pricing_job, shutdown_pools, submit_pricing_job,
-)
+from engine.portfolio.worker_pool import _pool, shutdown_pool, submit_pricing_job
 from tests.support import portfolio as shared
 
 
-def _make_request(precision: PrecisionConfig) -> PortfolioRequest:
+def _make_request(precision: Precision = Precision()) -> PortfolioRequest:
     """A small, quick-to-compile two-trade portfolio (a swap and a European) on the shared
     market, simulated by the Hull-White model."""
     trades = [shared.trades()[n] for n in ("swap-payer", "european-payer")]
@@ -36,17 +36,6 @@ def _make_request(precision: PrecisionConfig) -> PortfolioRequest:
                            base_currency="USD", ir={"USD": HullWhiteConfig(0.03, 0.01)}, samples=64, seed=5)
     return PortfolioRequest(market=shared.market(), trades=trades,
                             config=RunConfig(simulation=simulation, precision=precision))
-
-
-def _timed_job(frozen_request: PortfolioRequest):
-    """Picklable pool task: runs `_run_pricing_job` and returns the worker-side monotonic
-    start/end times and `os.getpid()`, so a test can assert where and when the work ran
-    (distinct PIDs are the mechanism; overlapping intervals the symptom, which depends on the
-    scheduler; I-15)."""
-    start = time.monotonic()
-    result = _run_pricing_job(frozen_request)
-    end = time.monotonic()
-    return start, end, result, os.getpid()
 
 
 def _sleep_job(seconds: float):
@@ -58,130 +47,60 @@ def _sleep_job(seconds: float):
     return start, time.monotonic(), os.getpid()
 
 
-def _submit_timed(request: PortfolioRequest, pool_size: int = 2) -> "Future":
-    """Submit `_timed_job` routed and frozen as `submit_pricing_job` does, to observe
-    worker-side timing."""
-    pool = _pool_for(request.config.precision.simulation, pool_size=pool_size)
-    return pool.submit(_timed_job, _freeze_trade(request))
-
-
 @pytest.fixture(scope="module", autouse=True)
-def _cleanup_pools():
+def _cleanup_pool():
     yield
-    # Shut down the pools so later modules do not inherit idle workers.
-    shutdown_pools(wait=True)
+    # Shut down the pool so later modules do not inherit idle workers.
+    shutdown_pool(wait=True)
 
 
 @pytest.mark.slow
-class TestSubmitPricingJobRouting:
-    """`submit_pricing_job` routes by `request.config.precision.simulation`, returns a
-    `Future[PortfolioResult]`, and matches `price_portfolio` called directly (so the
-    ORE-date freeze/thaw round trip is lossless)."""
+class TestSubmitPricingJob:
+    """`submit_pricing_job` returns a `Future[PortfolioResult]` equal to `price_portfolio`
+    called directly, bit for bit, at every precision."""
 
-    def test_float64_job_returns_correct_result(self):
-        precision = PrecisionConfig(simulation=64)
-        request = _make_request(precision)
-        future = submit_pricing_job(request)
+    @pytest.mark.parametrize("precision", [Precision(), Precision.throughout("float32")], ids=["float64", "float32"])
+    def test_a_job_equals_the_direct_call(self, precision):
+        future = submit_pricing_job(_make_request(precision))
         assert isinstance(future, Future)
         result = future.result(timeout=120)
-
         ref = price_portfolio(_make_request(precision))
-        assert result.npv_cube.dtype == jnp.float64
-        np.testing.assert_allclose(np.asarray(result.npv_cube), np.asarray(ref.npv_cube), rtol=1e-9)
-        np.testing.assert_allclose(result.base_npv, ref.base_npv, rtol=1e-9)
-
-    def test_float32_job_returns_correct_result(self):
-        precision = PrecisionConfig(simulation=32)
-        request = _make_request(precision)
-        future = submit_pricing_job(request)
-        result = future.result(timeout=120)
-
-        ref = price_portfolio(_make_request(precision))
-        # Only the simulation is float32; pricing on the paths is float64 (I-55), in the
-        # worker exactly as in this process. Before the fix the worker turned x64 off and
-        # priced in float32: paths deep in the tail came back 0.0 where this process had
-        # values below float32's range.
+        # Before I-71's fix a float32-tier worker turned x64 off and priced in float32 what
+        # this process priced in float64: paths deep in the tail came back 0.0.
         assert result.npv_cube.dtype == ref.npv_cube.dtype == jnp.float64
         np.testing.assert_array_equal(np.asarray(result.npv_cube), np.asarray(ref.npv_cube))
         assert result.base_npv == ref.base_npv
 
-    def test_a_refused_precision_fails_the_job_naming_the_field(self):
-        """The worker re-runs the validation: a stage the pipeline computes in float64 only
-        (I-55, roadmap 1.4) is refused there too, not silently computed in float64."""
-        future = submit_pricing_job(_make_request(PrecisionConfig(simulation=32, pricing=32)))
-        with pytest.raises(ValueError, match=r"config\.precision\.pricing"):
-            future.result(timeout=120)
+    def test_the_two_precisions_differ(self):
+        """The float32 job is priced in float32, not collapsed onto the float64 one."""
+        a, b = (submit_pricing_job(_make_request(p)) for p in (Precision(), Precision.throughout("float32")))
+        assert not np.array_equal(np.asarray(a.result(timeout=120).npv_cube), np.asarray(b.result(timeout=120).npv_cube))
+
+    def test_the_worker_re_runs_the_validation(self):
+        """A request the route would refuse fails its own job, naming the reason, in the
+        worker (`price_portfolio` validates before any work)."""
+        request = _make_request()
+        request.config = RunConfig(precision=request.config.precision)  # scenario risk without a simulation
+        with pytest.raises(ValueError, match="scenario_risk needs config.simulation"):
+            submit_pricing_job(request).result(timeout=120)
 
 
 @pytest.mark.slow
 class TestWorkerPoolConcurrency:
-    """A float32-tier and a float64-tier job submitted together both give correct results
-    (against sequential references) and overlap in wall-clock time, measured inside the
-    workers. Repeated over several pairs, since a single timing observation is weak."""
-
-    def _make_requests(self):
-        precision_a = PrecisionConfig(simulation=64)
-        precision_b = PrecisionConfig(simulation=32)
-        return _make_request(precision_a), _make_request(precision_b)
-
-    def test_cross_tier_jobs_correct_and_concurrent(self):
-        # Sequential references outside the pool (values, not just dtypes).
-        precision_a = PrecisionConfig(simulation=64)
-        precision_b = PrecisionConfig(simulation=32)
-        ref_a = price_portfolio(_make_request(precision_a))
-        ref_b = price_portfolio(_make_request(precision_b))
-
-        # Prime both pools once, unmeasured, so spawn and first-compile time do not dominate
-        # the timed jobs.
-        futures_wait([_submit_timed(_make_request(precision_a)), _submit_timed(_make_request(precision_b))])
-
-        NUM_ROUNDS = 4
-        intervals_a = []
-        intervals_b = []
-        for _ in range(NUM_ROUNDS):
-            req_a, req_b = self._make_requests()
-            fut_a = _submit_timed(req_a)
-            fut_b = _submit_timed(req_b)
-            start_a, end_a, result_a, _ = fut_a.result(timeout=120)
-            start_b, end_b, result_b, _ = fut_b.result(timeout=120)
-
-            assert result_a.npv_cube.dtype == jnp.float64
-            assert result_b.npv_cube.dtype == jnp.float64
-            np.testing.assert_allclose(np.asarray(result_a.npv_cube), np.asarray(ref_a.npv_cube), rtol=1e-9)
-            np.testing.assert_allclose(np.asarray(result_b.npv_cube), np.asarray(ref_b.npv_cube), rtol=1e-3)
-            np.testing.assert_allclose(result_a.base_npv, ref_a.base_npv, rtol=1e-9)
-            np.testing.assert_allclose(result_b.base_npv, ref_b.base_npv, rtol=1e-3)
-
-            intervals_a.append((start_a, end_a))
-            intervals_b.append((start_b, end_b))
-
-        def overlaps(iv1, iv2) -> bool:
-            return iv1[0] < iv2[1] and iv2[0] < iv1[1]
-
-        overlap_count = sum(
-            1 for ia, ib in zip(intervals_a, intervals_b) if overlaps(ia, ib)
-        )
-        assert overlap_count >= 1, (
-            f"expected at least one of {NUM_ROUNDS} concurrently-submitted "
-            f"float32-tier/float64-tier job pairs to show genuine wall-clock "
-            f"overlap (proving real cross-process concurrency), but none did. "
-            f"intervals_a={intervals_a} intervals_b={intervals_b}"
-        )
-
-    def test_same_tier_jobs_also_overlap_across_pool_workers(self):
-        """Two float64 jobs on a 2-worker pool run on two processes concurrently.
+    def test_two_jobs_run_on_two_workers_at_once(self):
+        """Two jobs on a 2-worker pool run on two processes concurrently.
 
         Regression (I-15): with the warm tiny portfolio each job took ~15ms, so job 1 often
-        finished before job 2 was dispatched and both ran on one process; the old overlap
-        assertion failed intermittently although the pool was fine. `_sleep_job` lasts long
-        enough to need a second worker, making distinct PIDs and overlap deterministic. Real
-        pricing concurrency is covered by `test_cross_tier_jobs_correct_and_concurrent`.
+        finished before job 2 was dispatched and both ran on one process; an overlap
+        assertion on pricing jobs failed intermittently although the pool was fine (I-27).
+        `_sleep_job` lasts long enough to need a second worker, making distinct PIDs and
+        overlap deterministic; the pricing jobs' values are `TestSubmitPricingJob`'s.
         """
         # A fresh pool: one left by the pricing tests above may hold a single started worker,
         # which Python's executor reuses rather than spawning the second (the test then failed
         # deterministically after them, passing alone).
-        shutdown_pools(wait=True)
-        pool = _pool_for(64, pool_size=2)
+        shutdown_pool(wait=True)
+        pool = _pool(pool_size=2)
         # Prime both workers so spawn time is outside the measured interval.
         futures_wait([pool.submit(_sleep_job, 0.05) for _ in range(2)])
 
@@ -192,11 +111,9 @@ class TestWorkerPoolConcurrency:
         start_2, end_2, pid_2 = fut_2.result(timeout=120)
 
         assert pid_1 != pid_2, (
-            f"both jobs ran in worker process {pid_1} -- a 2-worker pool "
-            f"serialized two concurrently-submitted same-tier jobs, so the "
-            f"tier has no real concurrency"
+            f"both jobs ran in worker process {pid_1} -- a 2-worker pool serialized two "
+            f"concurrently-submitted jobs"
         )
-
         # Both intervals use the same monotonic clock inside the workers, so overlap is real.
         assert start_1 < end_2 and start_2 < end_1, (
             f"two {JOB_SECONDS}s jobs on distinct workers did not overlap in "
@@ -246,6 +163,6 @@ class TestPoolsSpawnOnEveryPlatform:
                 built.update(kwargs)
 
         monkeypatch.setattr(worker_pool, "ProcessPoolExecutor", _RecordingExecutor)
-        monkeypatch.setattr(worker_pool, "_POOLS", {})
-        worker_pool._pool_for(64)
+        monkeypatch.setattr(worker_pool, "_POOL", None)
+        worker_pool._pool()
         assert built["mp_context"].get_start_method() == "spawn"

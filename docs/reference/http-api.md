@@ -168,7 +168,7 @@ Poll for a job's status/result.
 `status` is one of `pending` / `running` / `done` / `failed`. `result` is `null` until
 `status == "done"`. `error` is `null` unless `status == "failed"`, in which case it carries
 the exception message and traceback. `pending` currently covers both "genuinely queued
-behind this tier's worker pool" and "actively running in a worker process" — the worker
+behind the worker pool" and "actively running in a worker process" — the worker
 can't cheaply report its own sub-states back to the dispatcher without a mechanism this
 phase doesn't build (see `engine/api/routes.py`'s `get_portfolio_price` docstring); a
 `done`/`failed` job's error message/traceback come from
@@ -243,15 +243,14 @@ the dispatcher (`engine/api/routes.py`'s `_JOBS`) — that part hasn't changed. 
 is what it maps to and where the actual pricing work runs: `_JOBS[job_id]` now holds a
 `concurrent.futures.Future`, returned by `engine.portfolio.worker_pool.submit_pricing_job`,
 whose underlying `price_portfolio` call executes in a separate OS process — one of a fixed
-pool of worker processes per simulation-precision tier (float32/float64), each with its own
-independent JAX/XLA runtime. Polling
+pool of worker processes, each with its own independent JAX/XLA runtime (until roadmap 1.4
+there was one pool per simulation precision). Polling
 `GET /portfolio/price/{job_id}` now checks `future.done()`/`future.result()` instead of
 reading fields a background thread mutated directly, but the response shape/status values
 are unchanged. See [Architecture: Concurrency](../concepts/architecture.md) and
-`engine/portfolio/worker_pool.py`'s own module docstring for the full mechanism and why
-multi-process (not multi-thread, and not single-process device sharding) is the only model
-compatible with "different precision tiers running genuinely concurrently" under JAX's
-real constraints.
+`engine/portfolio/worker_pool.py`'s own module docstring for the full mechanism. Roadmap 1.8
+replaces the pool with one engine worker process per host behind a durable job queue
+([I-72](../planning/known-issues.md#i-72)).
 
 There remain **two separate, distinct motivations for a future shared store (Redis, a
 database table)**, worth keeping apart:
@@ -263,14 +262,9 @@ database table)**, worth keeping apart:
    **still deferred, still out of scope** — nothing in this phase changes it; it's a
    question about the *HTTP/dispatcher* layer's own process count, one level above the
    pricing worker pool.
-2. **Process-isolated precision/device concurrency.** This was the *other* reason a shared
-   store might once have seemed necessary — if the fix for `_PRICING_LOCK`'s serialization
-   had been "spread jobs across multiple dispatcher processes" instead of "give
-   `price_portfolio` itself a multi-process worker pool underneath one dispatcher." **This
-   motivation is now solved**, by `engine.portfolio.worker_pool`'s `ProcessPoolExecutor`-based
-   per-tier pools, not by Redis/a database — the dispatcher itself can stay a single
-   process while still achieving genuine cross-precision, cross-device concurrency one
-   layer down.
+2. **Concurrent pricing.** This was the *other* reason a shared store might once have
+   seemed necessary. It is solved one layer down, by `engine.portfolio.worker_pool`'s
+   process pool under a single dispatcher, not by Redis or a database.
 
 **The EOD path already has the durable store this section defers.** Since W0.8,
 `POST /eod/price` publishes every *terminal* attempt through a crash-safe filesystem store
@@ -322,26 +316,37 @@ A minimal body (one swap under the Hull-White model, with exposure):
  "compute_greeks": true}
 ```
 
-### Precision control: `PrecisionConfigSchema`
+### Precision control: `PrecisionSchema`
 
-Mirrors `engine.portfolio.PrecisionConfig` (see [The Portfolio Entry Point:
-PrecisionConfig](portfolio-entrypoint.md#precisionconfig) and
-[Architecture](../concepts/architecture.md#adjustable-precision)): `simulation`, `pricing`,
-`risk` (an int, or an object setting `delta_gamma`, `theta`, `vega` and `exposure`) and
-`calibration`, each 32 or 64. Only `simulation` is adjustable until roadmap 1.4; a
-`pricing`, `risk` or `calibration` below 64 is a `400` naming the field
-([I-55](../planning/known-issues.md#i-55)). Omitted, it is all 64. A value outside `{32, 64}`
-is an immediate `400`:
+Mirrors `engine.precision.Precision` (see [The Portfolio Entry Point:
+Precision](portfolio-entrypoint.md#precision) and
+[Architecture](../concepts/architecture.md#adjustable-precision)): `simulation`, `market` and
+`pricing`, each an object of format names `storage`, `compute` and `accumulate`, every field
+`"float64"` when omitted. Unknown fields are refused.
+
+```json
+"precision": {"simulation": {"storage": "float32", "compute": "float32", "accumulate": "float32"},
+              "pricing": {"storage": "float32"}}
+```
+
+The format names are the format table's (`float64`, `float32`, `float16`, `bfloat16`,
+`float8_e4m3fn`, `float8_e5m2`); another name is a `422`. A name in the table that is not yet
+enabled, or an inconsistent stage, is a `400` naming the stage, the field and the roadmap step
+that enables it:
 
 ```
 POST /portfolio/price
-{"precision": {"simulation": 16}, ...}
--> 400 {"detail": "PrecisionConfig.simulation must be 32 or 64, got 16"}
+{"precision": {"pricing": {"storage": "float8_e4m3fn"}}, ...}
+-> 400 {"detail": "precision.pricing: StagePrecision.storage='float8_e4m3fn': storage in float8_e4m3fn
+        (with block scales) is enabled by roadmap step 1.6; until then float64 or float32"}
 ```
 
-**Concurrency note:** jobs of different simulation precisions run in separate worker
-processes at the same time; same-tier jobs beyond the tier's pool size queue for a free
-worker. Each job's result is independent of what else is running.
+The 32/64 shape before roadmap 1.4 (`{"simulation": 32, "pricing": 64, "risk": ..., "calibration": ...}`)
+is a `422` whose message names the replacement (decision A-12); it is not translated.
+
+**Concurrency note:** jobs of every precision share one pool of worker processes; jobs
+beyond the pool's size queue for a free worker. Each job's result is independent of what
+else is running.
 
 ## Target: one configurable API
 
@@ -447,9 +452,11 @@ process needed:
   replacement; a trade carrying model parameters and an unknown model are `422`s; a currency
   the market lacks is a `400` naming the trade; malformed/missing/invalid-discriminator
   bodies are `422`s.
-- `TestPortfolioPricePrecision` — an invalid precision and a stage computed in float64 only
-  are `400`s, not failed jobs; omitted equals explicit all-64.
-- `TestPortfolioPriceWorkerPoolDispatch` — jobs of both tiers complete and equal direct calls.
+- `TestPortfolioPricePrecision` — the retired 32/64 shape and an unknown format are `422`s
+  naming the replacement or the table; a format not yet enabled is a `400` naming the stage,
+  field and step, not a failed job; omitted equals explicit float64.
+- `TestPortfolioPriceWorkerPoolDispatch` — a float64 and a float32 job complete, each equal to
+  the direct call, and differ from each other.
 - `TestGapFixesSurviveTheHttpBoundary` — swap Greeks and per-trade NPVs cross the worker
   boundary.
 - `TestPortfolioPriceUnknownJob` — an unknown `job_id` returns `404`.

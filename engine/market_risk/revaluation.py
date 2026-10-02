@@ -67,19 +67,20 @@ def revalue(
     trades: Sequence,
     market: Market,
     factors: RateRiskFactors,
-    shifts: np.ndarray,
+    moves,
     pricing: PricingConfig = PricingConfig(),
-    dtype=jnp.float64,
     batch_size: int = 256,
 ) -> Tuple[np.ndarray, jnp.ndarray]:
-    """Base values `[N]` and shocked values `[S, N]` of every trade.
+    """Base values `[N]` and shocked values `[S, N]` of every trade, computed in `moves`' dtype
+    (the pricing stage's compute dtype; `run_market_risk` casts them).
 
-    shifts: `[S, F]` absolute factor moves (`ShockScenarios.shifts`).
+    moves: `[S, F]` absolute factor moves (`ShockScenarios.shifts`).
     batch_size: the most scenarios to vmap at once; a grid pricer may use
         fewer to stay within `BATCH_MEMORY_BUDGET`.
     """
+    moves = jnp.asarray(moves)
+    dtype = moves.dtype
     base = jnp.asarray(factors.base_rates(), dtype=dtype)
-    moves = jnp.asarray(shifts, dtype=dtype)
     slices = [factors.slice_of(i) for i in range(len(factors.curves))]
 
     base_values: List[float] = []

@@ -179,11 +179,11 @@ between a number a reader can weigh and one they must simply trust. Part of
 [W0.6](../reference/eod-integration.md#w06--market-input-selection--closes-part-of-i-11),
 purely additively, so every pre-existing key and value is unchanged.
 
-**Precision.** `standardError` is a statistic and follows a
-`RiskPrecisionOverride(var_es=...)` like `VaR`/`ES` do — the override is applied by casting
-the P&L cube, so output dtype is how a caller observes it. `tailCount` is a *count* and stays
-integral at every precision: float32 cannot represent integers exactly above 2²⁴, so following
-the override would let a large-scenario count silently round.
+**Precision.** The statistics are computed in the dtype of the P&L they are given, and
+`standardError` follows it like `VaR`/`ES` do (the engine's own runs reduce in float64,
+decision A-10). `tailCount` is a *count* and stays integral at every precision: float32 cannot
+represent integers exactly above 2²⁴, so following the input would let a large-scenario count
+silently round.
 
 ## The measure a risk number is unactionable without
 

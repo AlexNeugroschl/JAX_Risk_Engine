@@ -151,9 +151,10 @@ spends its time. See [Profiling a pricing job](#profiling-a-pricing-job) below a
 python demos/demo_precision.py
 ```
 Runs `engine.market_risk.run_market_risk` on a sloped two-curve market and a mixed
-portfolio at FP64 and FP32 over five Sobol seeds, and compares the FP32 error in VaR 99%
-and ES 97.5% with the Monte Carlo noise those numbers already carry (the ES standard error
-and the spread across seeds).
+portfolio over five Sobol seeds at three `Precision` settings (FP64; FP32 throughout; the
+P&L computed in FP64 and stored in FP32), and compares each one's error in VaR 99% and ES
+97.5% with the Monte Carlo noise those numbers already carry (the ES standard error and the
+spread across seeds).
 
 **One engine module at a time:**
 ```bash
@@ -542,10 +543,24 @@ for this explicitly rather than assuming a numeric result (see
 
 ## Precision (float32 vs float64)
 
-`RunConfig(precision=PrecisionConfig(simulation=32))` simulates in 32-bit instead of the
-default 64. The pricing, risk and calibration stages run in 64-bit today and refuse a lower
-setting by name until roadmap 1.4 ([I-55](../planning/known-issues.md#i-55)), so the cube
-of a 32-bit simulation is still float64. See
+The run's `precision` sets the storage and compute format of each adjustable stage: the
+simulation, the scenario market and the pricing on paths. The default is float64 everywhere.
+
+```python
+from engine.portfolio import Precision, StagePrecision
+
+RunConfig(simulation=..., precision=Precision.throughout("float32"))        # everything float32
+RunConfig(simulation=..., precision=Precision(
+    pricing=StagePrecision(storage="float32", compute="float64", accumulate="float64")))  # priced in
+                                                                                 # float64, cube kept in float32
+```
+
+Calibration, today's values, Greeks and the exposure statistics are always float64; the
+result's `npv_cube` is the stored cube read back at float64. Over HTTP the same is
+`"precision": {"pricing": {"storage": "float32", "compute": "float32", "accumulate": "float32"}}`.
+Storage in float16, bfloat16 and FP8 is enabled by roadmap 1.6, and naming one earlier is
+refused. The 32/64 shape of before roadmap 1.4 (`PrecisionConfig(simulation=32)`) is refused
+with a message naming its replacement. See
 [Architecture: Adjustable precision](../concepts/architecture.md#adjustable-precision).
 
 ## Profiling a pricing job

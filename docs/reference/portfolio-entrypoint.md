@@ -41,13 +41,13 @@ configured by its files; `RunConfig()` is ORE's defaults.
 | `simulation` | `Optional[CamConfig]` | `None` | `simulation.xml` | The date grid, the model per currency (`ir[ccy]`: `LgmConfig`, or `HullWhiteConfig`), FX/equity volatilities, correlations, simulation-market tenors, samples, seed, swaption vol decay. Required for scenario risk. |
 | `pricing` | `PricingConfig` | ORE's builders | `pricingengine.xml` | The engine per product: `european` (`"Bachelier"`, ORE's default, or `"Jamshidian"` with its Hull-White model in `jamshidian`), `bermudan` and `american` (`LgmSwaptionEngineConfig`), `recalibrate` (per path, as ORE). |
 | `greeks` | `GreeksConfig` | `Bump`, ORE's settings | `sensitivity.xml` | `method` (`"Bump"`, ORE's, or `"AD"`) and `sensitivity` (`SensitivityConfig`: curve tenors, shift sizes, Theta horizon, vol decay on the Theta date). |
-| `precision` | `PrecisionConfig` | all 64 | none | The dtype per stage; see "`PrecisionConfig`" below. |
+| `precision` | `Precision` | float64 everywhere | none | Storage, compute and accumulate format per adjustable stage; see "`Precision`" below. |
 | `base_currency` | `Optional[str]` | `None` | `baseCurrency` | The reporting currency. `None` means the simulation's base currency, or USD without a simulation; a value contradicting the simulation's is refused. |
 
 Every option runs with every other: the models differ only in the simulation, and the
 engines and Greeks methods price whatever it produced. What the pipeline does not implement
-yet is refused **before any work**, with a `ValueError` naming the field (`check_run`): today
-a `pricing`, `risk` or `calibration` precision below 64 (I-55). An engine refuses a trade it
+yet is refused **before any work**, with a `ValueError` naming the field: today a precision
+format before the roadmap step that enables it (`engine.precision`). An engine refuses a trade it
 cannot price, naming the trade (`validate_trades`; e.g. the Jamshidian engine refuses a
 floating spread and cash settlement, as QuantLib's does). Nothing is priced with another
 engine than the one configured.
@@ -74,20 +74,30 @@ path, by discounting its remaining flows on its currency's curve (ORE's
 Vega) and scenario risk. (Until roadmap 1.3 the Hull-White model refused a bond with
 scenario risk, [I-24](../planning/known-issues.md#i-24).)
 
-## `PrecisionConfig`
+## `Precision`
 
-On `RunConfig.precision`. Four knobs, each 32 or 64; only `simulation` is adjustable until
-roadmap 1.4 ([I-55](../planning/known-issues.md#i-55)), and the others are refused below 64.
+On `RunConfig.precision` (`engine.precision`, exported by `engine.portfolio` too; design:
+[details/precision.md](../planning/details/precision.md)). A `StagePrecision(storage, compute,
+accumulate)` of format names per adjustable stage, each `"float64"` by default:
 
-| Field | Type | Default | Governs |
-|---|---|---|---|
-| `simulation` | `int` (`32`\|`64`) | `64` | The scenario market (`simulate`): states, curves, numeraire. |
-| `pricing` | `int` \| `PricingPrecisionOverride` | `64` | Valuation, per trade type with an override. float64 only until 1.4. |
-| `risk` | `int` \| `RiskPrecisionOverride` | `64` | Greeks and exposure, per metric with an override. float64 only until 1.4. |
-| `calibration` | `int` | `64` | The bootstraps. float64 only until 1.4. |
+| Field | Governs |
+|---|---|
+| `simulation` | The Sobol shocks and the model states (`simulate`). |
+| `market` | The scenario market built from the states: curves, numeraire, FX and equity spots. |
+| `pricing` | Every trade on every path (Bermudan/American per-path recalibration included) and the cube it stores. |
 
-The cube of a 32-bit simulation is float64, since pricing on it is. The worker pool routes a
-job by `simulation` ([HTTP API](http-api.md)).
+`compute` is the format a stage computes in, `storage` the format its output is kept in until
+the next stage reads it (no wider than `compute`), `accumulate` the format its sums
+accumulate in (equal to `compute` until roadmap 2.8). Today `storage` and `compute` are
+`"float64"` or `"float32"`; `"float16"`, `"bfloat16"`, `"float8_e4m3fn"` and `"float8_e5m2"` are
+in the format table and refused, naming the roadmap step that enables them (1.6 for storage,
+2.8 for compute). `Precision.throughout("float32")` sets every stage to float32.
+
+Calibration, today's values, Greeks and every reduction over paths (the exposure profiles)
+are float64 whatever the policy says (decision A-10): `base_npv_per_trade` is float64, and
+`npv_cube` is the stored cube read back at float64, so its values are float32 numbers when
+`pricing.storage` is `"float32"`. The 32/64 shape before roadmap 1.4 (`PrecisionConfig` and
+its override classes) is refused, naming the replacement (decision A-12).
 
 ## `PortfolioResult`
 
@@ -106,20 +116,22 @@ job by `simulation` ([HTTP API](http-api.md)).
 
 ## `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 
-Under `_PRICING_LOCK` (`engine/portfolio/request.py`), `engine.portfolio.market_path.price_on_market`:
+`engine.portfolio.market_path.price_on_market` (safe to call from several threads at once):
 
 1. **Validate before any JAX work** (`validate_request`): the configuration
-   (`check_run`), scenario risk needs a simulation, every trade valued on the market's date
+   (validated when it is built), scenario risk needs a simulation, every trade valued on the market's date
    with every curve and volatility it reads present and its engine's refusals
    (`validate_trades`, naming the trade), the reporting currency in the market. The HTTP
    route runs the same check synchronously, so such a request is a 400, not a failed job.
 2. **Calibrate and simulate** (with scenario risk): `build_cross_asset_model` calibrates
    each currency with a basket to the market's swaption volatilities, and `simulate` builds
-   the scenario market in `precision.simulation`.
+   the scenario market at `precision.simulation` and `precision.market`.
 3. **Value** every trade today and on every path with its configured engine
-   (`engine.valuation.portfolio.value_portfolio`), converting foreign trades at the spot
-   today and at the path FX on paths; without scenario risk, today only (`value_today`).
-4. **Exposure**: the netting set and each trade, deflated by the LGM numeraire.
+   (`engine.valuation.portfolio.value_portfolio`, at `precision.pricing`), converting
+   foreign trades at the spot today and at the path FX on paths; without scenario risk,
+   today only (`value_today`).
+4. **Exposure**: the netting set and each trade, deflated by the LGM numeraire, from the
+   cube and numeraire loaded at float64.
 5. **Greeks** (with `compute_greeks`): `portfolio_sensitivities` (Bump) or
    `portfolio_greeks` (AD).
 

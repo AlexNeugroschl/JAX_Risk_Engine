@@ -34,7 +34,7 @@ supplies curves and volatilities, the configuration supplies the models and engi
 
 Every option runs with every other: the models differ only in the simulation, and the
 engines and Greeks methods price whatever the simulation produced. What is not implemented
-yet is refused before any work, naming the field (`check_run`, `validate_trades`).
+yet is refused before any work, naming the field (`engine.precision.policy`, `validate_trades`).
 
 **History.** Until roadmap 1.3 the Hull-White model was a second pipeline, chosen by passing
 a `SimulationConfig` instead of a `Market`, with its own simulation, pricers and Greeks and
@@ -59,7 +59,7 @@ JAX_Risk_Engine/
 │   │                                       submit-and-print stages
 │   ├── demo_profile_small.py             Same end-to-end path, sized so its profiler
 │   │                                     trace is small enough to actually open
-│   ├── demo_precision.py                 FP64 vs FP32 market-risk VaR/ES against
+│   ├── demo_precision.py                 Market-risk VaR/ES at three precisions against
 │   │                                     Monte Carlo noise
 │   ├── demo_components.py                One engine module at a time, one section each
 │   └── demo_scenarios.py                 The shared demo/test market and simulation
@@ -78,14 +78,13 @@ JAX_Risk_Engine/
 │   ├── portfolio/
 │   │   ├── __init__.py                   The public surface: PortfolioRequest/Result,
 │   │   │                                 price_portfolio, RunConfig and its parts
-│   │   ├── config.py                     RunConfig: simulation, engines, Greeks, precision;
-│   │   │                                 check_run
+│   │   ├── config.py                     RunConfig: simulation, engines, Greeks, precision
 │   │   ├── request.py                    PortfolioRequest/PortfolioResult/price_portfolio
-│   │   │                                 (unique trade ids, _PRICING_LOCK)
+│   │   │                                 (unique trade ids)
 │   │   ├── market_path.py                The pipeline: calibrate the CAM, simulate, value,
 │   │   │                                 exposure, Greeks; validate_request
 │   │   ├── validation.py                 Re-exports the trade validators
-│   │   ├── worker_pool.py                One process pool per simulation precision, plus
+│   │   ├── worker_pool.py                The process pool behind HTTP jobs, plus
 │   │   │                                 the opt-in XProf profiler hook and its
 │   │   │                                 silent-truncation guard (see profiling.md)
 │   │   └── profiling.py                  phase() -- the TraceAnnotation/named_scope pair
@@ -106,6 +105,10 @@ JAX_Risk_Engine/
 │   │                                     everything else is REFUSED. Imports no simulation
 │   │                                     pricer, no FastAPI, no Pydantic, no JAX
 │   │                                     (one module per W-task; see eod-integration.md)
+│   ├── precision/                        The precision of a run (details/precision.md):
+│   │   ├── formats.py                    the format table, the only name -> dtype map
+│   │   ├── policy.py                     Precision / StagePrecision and their validation
+│   │   └── storage.py                    store / load, the only casts between stages
 │   ├── simulation/
 │   │   ├── cam.py                        ORE's CrossAssetModel: per currency the LGM in
 │   │   │                                 Hagan's or the Hull-White parametrization,
@@ -384,141 +387,82 @@ pricing endpoint.
 
 ## Adjustable precision
 
-**Decisions (2026-09-30,** [compliance/decisions.md](../../compliance/decisions.md) **A-9, D-9).**
-Adjustable precision is a requirement: any combination of precisions may be run for any
-calculation, and a run whose combination has not been shown adequate for a figure is to
-carry a warning with the evidence ([I-55](../planning/known-issues.md#i-55)).
+**Decisions (2026-10-01,** [compliance/decisions.md](../../compliance/decisions.md) **A-9 to
+A-16, D-9).** Which precision each calculation needs is what the project studies, so precision
+is part of the run configuration: any combination may be run, the default is float64
+everywhere and carries ORE parity, and a combination not yet shown adequate for a figure is
+to carry a warning ([I-55](../planning/known-issues.md#i-55), roadmap 2.7). The full design,
+down to FP8 storage, is [details/precision.md](../planning/details/precision.md).
 
-One of the project's core long-term research goals (see [Overview](../getting-started/overview.md)) is
-comparing risk results computed with different numeric precision — 64-bit ("double",
-very precise, slower) versus 32-bit ("single", less precise, faster), and eventually
-pushing well below that.
-
-`PrecisionConfig` (`engine/portfolio/config.py`, on `RunConfig.precision`) has four knobs:
+**The policy.** `engine.precision.Precision` (on `RunConfig.precision` and
+`MarketRiskRequest.precision`) gives each adjustable stage a `StagePrecision` of three format
+names:
 
 ```python
-@dataclass(frozen=True)
-class PrecisionConfig:
-    simulation: int = 64                                  # the scenario market's dtype
-    pricing: Union[int, PricingPrecisionOverride] = 64     # per product type
-    risk: Union[int, RiskPrecisionOverride] = 64           # per Greek, and the exposure
-    calibration: int = 64                                  # the bootstrap
+Precision(
+    simulation=StagePrecision(storage, compute, accumulate),  # Sobol shocks, model states
+    market=StagePrecision(...),                               # scenario curves, numeraire, FX
+    pricing=StagePrecision(...),                              # path pricing and the cube it stores
+)
+Precision()                       # float64 everywhere (the default)
+Precision.throughout("float32")   # every stage stored, computed and accumulated in float32
 ```
 
-**What is honored today.** `simulation`: the scenario market (states, curves, numeraire) is
-built in that dtype. The other three stages run in float64, and a value below 64 for any of
-them is refused by name (`check_run`) until roadmap 1.4 gives every stage an explicit dtype
-from the configuration. (Before roadmap 1.3 the separate Hull-White pipeline also took
-`pricing` and `risk` below 64; that option went with the pipeline and returns for both models
-with 1.4.) The market-risk path, `engine.market_risk`, has a single `precision` of its own:
-the revaluation and its VaR/ES statistics run at one dtype, 32 or 64.
+`storage` is the format a stage's output is kept in until the next stage reads it; `compute`
+the format its arithmetic runs in; `accumulate` the format its sums accumulate in. The format
+names come from one table (`engine/precision/formats.py`), which validation, the HTTP schema
+and storage all read. Today `storage` and `compute` are `float64` or `float32` and
+`accumulate` equals `compute`; FP16/BF16/FP8 storage is enabled by roadmap 1.6 and compute
+below float32 by 2.8, and using one earlier is refused naming the step. Calibration, t=0
+values, Greeks and every reduction over paths (exposure, VaR/ES) are float64 by decision
+(A-10).
+
+**The cast points.** Only these read the policy; everything between them follows the dtype
+of its inputs (kernels cast their own constant inputs, coupon tables, volatilities and
+calibration baskets, to the dtype of the curves they are given):
+
+| Stage boundary | Where | What happens |
+|---|---|---|
+| shocks, states | `engine.simulation.config.simulate` | normals generated and bridged at `simulation.compute`, stored; states evolved at `simulation.compute` from the loaded shocks, stored |
+| market | `simulate` | the scenario market built at `market.compute` from the loaded states, returned stored at `market.storage` |
+| values | `engine.valuation.portfolio.value_portfolio` | the market loaded at `pricing.compute`; each trade priced; each cube column stored at `pricing.storage` |
+| reductions | `engine.portfolio.market_path` | the cube and the numeraire loaded at float64, then exposure; `PortfolioResult.npv_cube` is the float64-loaded cube |
+| market risk | `engine.market_risk.run_market_risk` | shifts rounded to `simulation.compute` and stored; revaluation and P&L at `pricing.compute`, the P&L stored at `pricing.storage`; VaR/ES in float64 |
+
+`store`/`load` (`engine/precision/storage.py`) are the only casts between stages. For
+float64 and float32 storing is a plain cast and storing at an array's own dtype returns it
+unchanged, so the float64 default runs exactly the arithmetic it ran before the policy
+existed. Continuous integration runs the fast tier with JAX's strict dtype promotion, under
+which any accidental float32/float64 mix is an error.
 
 **The x64 flag.** JAX can create 64-bit arrays only while one process-global setting,
 `jax_enable_x64`, is on; it cannot be scoped per thread or per call. `engine` turns it on once,
 when imported, and nothing turns it off: a float32 computation is float32 because its arrays
-are created in float32, not because the flag is off. Every pipeline array takes its dtype
-explicitly, so the flag only makes float64 possible.
+are float32, not because the flag is off.
 
-### Concurrency: a multi-process worker pool, with `_PRICING_LOCK` as defense-in-depth
+### Concurrency
 
-`engine/portfolio/worker_pool.py` keeps one `ProcessPoolExecutor` per precision tier
-(float32 and float64, the values `PrecisionConfig.simulation` allows); `submit_pricing_job`
-routes a job by its simulation precision. Each worker runs one job at a time and keeps x64 on,
-as the parent does, so a job prices bit for bit as a direct `price_portfolio` call would. (Until
-roadmap 1.3 a float32-tier worker turned the flag off, which silently made its float64 stages
-float32, [I-71](../planning/known-issues.md#i-71).) With every dtype explicit the tiers only
-route; roadmap 1.4 removes them with `_PRICING_LOCK`
-([I-55](../planning/known-issues.md#i-55)).
+`price_portfolio` may run on several threads at once: every precision is a dtype of the
+run's own arrays, and the pipeline keeps no module-level state and never reads ORE's global
+evaluation date (each trade carries its own, I-64). Until roadmap 1.4 a lock serialized runs.
 
-Separate processes give real concurrency: `N` workers in a tier's pool run `N` jobs at once,
-and the two tiers run side by side. The cost: compiled XLA programs are not shared across
-processes, so each worker pays its own compilation. Workers are always spawned, never forked
-(forking a process that has initialized JAX hangs, I-33). Device-count-aware pool sizing and
-TPU device pinning are deferred to a real TPU deployment
-([I-61](../planning/known-issues.md#i-61)).
+HTTP jobs run in `engine/portfolio/worker_pool.py`'s one `ProcessPoolExecutor`, whatever
+their precision (until 1.4, one pool per simulation precision). Each worker runs one job at a
+time with x64 on, as the parent does, so a job prices bit for bit as a direct `price_portfolio`
+call (until 1.3 a float32 worker turned the flag off, [I-71](../planning/known-issues.md#i-71)).
+Compiled programs are not shared across processes, so each worker pays its own compilation.
+Workers are always spawned, never forked (forking a process that has initialized JAX hangs,
+I-33). Roadmap 1.8 replaces the pool with one engine worker process per host
+([I-72](../planning/known-issues.md#i-72)).
 
-`_PRICING_LOCK` serializes `price_portfolio`'s JAX work for direct multi-threaded callers.
-It is no longer what limits concurrency (the process boundaries are), and is cheap next to a
-compile-dominated job.
+### Below float32
 
-### Option B: why uniform sub-float32 precision is not achievable today
-
-This project's long-term research goal includes pushing precision down to 8-bit and 4-bit
-formats *throughout* the pipeline, not just at isolated points. Two materially different
-paths exist, and it matters which one this codebase has:
-
-- **Option A (designed, not yet implemented in this codebase — `MatmulPrecisionConfig`).**
-  FP8/FP4 applied only at two matmul-shaped sub-steps inside the simulation, paired with
-  float32 accumulation — deliberately narrow, targeting exactly the operations where a
-  low-precision matmul kernel exists and is numerically sound. Everything else stays at
-  `PrecisionConfig`'s float32-or-float64 knobs described above. This is a separate,
-  previously-scoped piece of work, tracked on its own; it does not exist as code yet.
-- **Option B (NOT implemented, this section).** Uniform sub-float32 precision *everywhere*,
-  including the two operations Option A targets. A fundamentally different, larger
-  undertaking — not a natural extension of Option A or of the `PrecisionConfig` hierarchy
-  this document otherwise describes.
-
-**What's confirmed broken, on which exact backend.** Live-tested against this project's
-installed `jax==0.10.2`/`jaxlib==0.10.2` CPU backend: `jnp.linalg.cholesky` raises
-`NotImplementedError` for `bfloat16`, `float16`, `float8_e4m3fn`, `float8_e5m2`, and
-`float4_e2m1fn` alike — the CPU backend's LAPACK-backed linalg path has no reduced-precision
-kernel at all, for any format below float32, not specifically for bfloat16 or the FP8/FP4
-family. `jax.scipy.stats.norm.ppf` raises `TypeError` on the same set of dtypes — an
-independently confirmed, not inferred, second instance of the same class of gap.
-`PrecisionConfig` therefore accepts only `{32, 64}` for every one of its four knobs.
-
-**A previously-considered belief, corrected.** An earlier planning pass considered bfloat16
-specifically "a first-class XLA dtype with full CPU kernel coverage," reasoning from its
-broad ML-training use. Tested live, this doesn't hold: `cholesky`/`norm.ppf` fail on
-bfloat16 with the *exact same* signature as FP8/FP4 — there is no meaningfully
-easier-to-reach reduced-precision tier on this backend.
-
-**Why these two operations are architecturally central, not a peripheral gap.**
-`jnp.linalg.cholesky` factorizes the joint covariance matrix into the correlation structure
-coupling every rate/equity factor's simulated shocks — this *is* how cross-asset correlation
-enters the simulation. `jax.scipy.stats.norm.ppf` converts each Sobol uniform draw into a
-normal shock — the fundamental step every path/factor/time-step consumes. Both run once per
-(scenario, time step, factor), not once per simulation — there's no way to "work around"
-them the way Option A already routes around the two matmul sub-steps; Option B means running
-these operations *themselves* below float32, which is exactly the part with no kernel to
-fall back to.
-
-**What would actually need to be built.** Two independent, from-scratch numerical-kernel
-efforts: (1) a custom low-precision Cholesky avoiding LAPACK entirely, built from primitives
-that *do* have low-precision coverage — matmul, proven by Option A's own two insertion
-points — via Newton-Schulz iteration (matmul-only, quadratically convergent) or
-blocked/recursive elimination; (2) a custom inverse-normal-CDF avoiding `norm.ppf`'s
-special-function kernel, built from pure elementwise arithmetic — a rational/polynomial
-minimax approximation (e.g. Wichura's AS 241) or an Acklam/Beasley-Springer-Moro-style
-closed-form approximation. Both would then need this codebase's own established validation
-bar, not a lighter one: cross-checked against the float64 originals for numerical agreement,
-*and* a separate pass confirming every downstream computation (pricing, VaR/ES, Greeks)
-stays within an acceptable error band at the target precision.
-
-**Honest sizing.** This is materially larger and higher-risk than the `PrecisionConfig`
-hierarchy this document otherwise describes — not a quick follow-on. The hierarchy is
-dtype-plumbing through code paths that already work correctly at every precision they
-support; Option B means designing, implementing, and independently validating two new
-numerical algorithms from scratch, each replacing a library primitive this codebase has
-relied on since its first ORE cross-check. No timeline is given deliberately — an honest
-estimate needs a working prototype of at least one candidate first, which is research work,
-not implementation work with a knowable estimate.
-
-**TPU behavior: an explicit, labeled, unverified hypothesis.** Everything above was tested
-on this CPU-only dev machine. It is *plausible* — genuinely unverified, not merely "probably
-fine" — that a Cloud TPU's native XLA backend has broader low-precision kernel coverage,
-since bfloat16 is TPU's own native compute format. This cannot be tested on this repo's
-current CPU-only environment and is not claimed as fact. Confirming or refuting it is real
-TPU deployment work, listed here once, not duplicated speculatively elsewhere.
-
-### Out of scope for v1
-
-- **Sub-float32 precision outside Option A's two targeted matmul sub-steps.** See "Option B"
-  above for the full accounting of what's blocked, why, and what building it would require.
-- **FP8/INT8/INT4/NF4 anywhere in this codebase**, including Option A's own
-  `MatmulPrecisionConfig` mechanism, remain a further-out research goal not yet implemented
-  (see [Overview](../getting-started/overview.md)) — this pass built `PrecisionConfig`'s
-  {32, 64} hierarchy (Option C) and documented Option A/B; it did not build Option A itself.
+Measured on this project's CPU backend (`jax==0.10.2`): `jnp.linalg.cholesky` and
+`jax.scipy.stats.norm.ppf` have no kernel below float32, and computing the inverse normal CDF
+in a low format overflows. Storage below float32 needs neither, since values are loaded to a
+float32-or-wider compute dtype; compute below float32 needs the heavy kernels rewritten in
+difference form with explicit accumulators. The measurements and the plan are in
+[details/precision.md §8 and §15](../planning/details/precision.md#8-compute-below-float32).
 
 ## Typed configuration
 

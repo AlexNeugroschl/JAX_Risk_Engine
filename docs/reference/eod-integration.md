@@ -504,18 +504,19 @@ working untouched. `include_diagnostics=False` returns exactly the pre-W0.6 key 
 diagnostics reach the HTTP boundary with no schema change, since `RiskMetricsSchema` is a
 generic `Dict[str, List[Optional[float]]]` that already maps NaN → `null`.
 
-### Precision: `standardError` follows the override, `tailCount` does not
+### Precision: `standardError` follows the P&L's dtype, `tailCount` does not
 
-`RiskPrecisionOverride(var_es=32)` is applied by casting the P&L cube, so a statistic's
-**output dtype is how a caller observes the override**. `standardError` is a statistic and
-honours it; `tailCount` is a *count* and stays integral at every precision — float32 cannot
-represent integers exactly above 2²⁴, so following the override would let a large-scenario
-count silently round.
+`compute_risk_metrics` computes in the dtype of the P&L it is given, so a statistic's
+**output dtype is how a caller observes the input's precision** (the engine's own runs reduce
+in float64, decision A-10, so they pass float64). `standardError` is a statistic and follows
+it; `tailCount` is a *count* and stays integral at every precision — float32 cannot represent
+integers exactly above 2²⁴, so following the input would let a large-scenario count silently
+round.
 
 > **A real bug lived here.** The first implementation promoted float32 P&L to a float64
 > standard error, because `jnp.maximum(count, 2)` is integer-typed and the Bessel-correction
 > arithmetic promoted the whole expression under `jax_enable_x64`. That silently defeated the
-> `var_es=32` override for the one new statistic. It was caught by the *existing*
+> float32 precision setting of the time for the one new statistic. It was caught by the *existing*
 > `TestPricePortfolioPrecision`, which sweeps every key in `result.risk` — a test written long
 > before these keys existed. `TestDiagnosticsRespectInputPrecision` now pins it directly, and
 > fails against the buggy version in float32 only; float64 passes either way, which is exactly

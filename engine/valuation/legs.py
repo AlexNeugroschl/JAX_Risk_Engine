@@ -225,7 +225,8 @@ def on_every_date(value_fn, legs: Legs, schedule: PathSchedule, times: np.ndarra
 
 def legs_cube(legs: Legs, schedule: PathSchedule, times: np.ndarray, disc: ScenarioCurves,
               index: ScenarioCurves, fixings: jax.Array) -> jax.Array:
-    """`[S, D]` NPVs on every path and simulation date."""
+    """`[S, D]` NPVs on every path and simulation date, in the curves' dtype."""
+    legs = legs.astype(disc.log_discounts.dtype)
     return on_every_date(lambda *args: legs_npv(legs, *args), legs, schedule, times, disc, index, fixings)
 
 

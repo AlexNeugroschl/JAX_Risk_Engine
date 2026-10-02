@@ -7,25 +7,19 @@ this codebase's JAX code.
 
 ## Core constraints
 
-- **Dynamic precision.** Never hardcode `jnp.float64`. Every function that does real
-  numerical work accepts a `dtype` parameter, to support switching between 64-bit and
-  32-bit precision (see [Architecture: Adjustable precision](architecture.md#adjustable-precision)).
-  `PrecisionConfig`'s `pricing`/`risk` knobs brought `engine/portfolio/request.py`
-  (`step_times`, `_base_npv`, `_flat_curve_cube`), `engine/risk/greeks.py`'s
-  Delta/Gamma/Vega closures, `bermudan_swaption.py`'s own `_zero_curve_of`/
-  `_state_grid`/`_run_backward_induction`/`_cashflow_values_at_nodes`, and
-  `european_swaption.py`'s `_solve_rstar`/`_bisect_rstar` into compliance — each now
-  derives its dtype from a `curve`/`x_nodes`/`disc_curve`/`params` value it already
-  receives rather than hardcoding one or (in `_bisect_rstar`'s case) relying on
-  `jnp.ones`'s own ambient-default-dtype fallback, which is just as silent a violation as
-  a literal `dtype=jnp.float64` since it tracks JAX's process-global `jax_enable_x64`
-  state rather than the caller's own requested precision. Two deliberate, narrower
-  exceptions remain, not silent violations: `bermudan_swaption.py`'s `_state_grid` takes
-  an explicit `dtype` parameter rather than deriving one internally (it's shared between
-  Greeks and plain pricing, which must stay governed by `pricing`, not `risk` — see that
-  function's own docstring), and `engine.calibration.lgm.calibrate_lgm_sigma`'s bootstrap
-  internals stay float64-only by design (calibration precision isn't one of
-  `PrecisionConfig`'s three knobs).
+- **Precision follows the inputs.** Only the cast points read the run's `Precision`
+  (`simulate`, `value_portfolio`, the exposure and market-risk reductions; see
+  [Architecture: Adjustable precision](architecture.md#adjustable-precision)). Between them a
+  kernel computes in the dtype of the arrays it is given and takes no dtype argument: it
+  casts its own constant inputs (coupon tables, volatilities, calibration baskets, grid
+  nodes) to the dtype of its curves (`engine.models.curves.curve_dtype`), and never builds an
+  array with JAX's default dtype (`jnp.ones(shape)` is float64 under x64 whatever the curves
+  are). Scalars that enter arithmetic with curve arrays are Python floats, which follow the
+  array's dtype, not NumPy scalars, which do not. Strict dtype promotion in CI catches a
+  violation. Constants that depend on the dtype (tolerances, clip epsilons) are derived from
+  it (`jnp.finfo(dtype).eps`), never written for float64 only. Calibration today, t=0 values,
+  Greeks and reductions over paths are float64 by decision (A-10); the factories that build a
+  stage's functions (`trade_price_function`) take the stage's dtype once.
 - **No state mutation.** JAX requires pure functions — never use in-place array updates
   (`x[0] = 1`).
 - **Vectorization over loops.** Never use an ordinary Python `for` loop inside

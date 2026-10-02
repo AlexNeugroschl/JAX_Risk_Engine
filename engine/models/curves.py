@@ -151,3 +151,9 @@ def loglinear_log_discount(curve: DiscountCurve, t: jax.Array) -> jax.Array:
     weight = (times[right] - t) / (times[right] - times[left])
     values = curve.log_discounts
     return (1.0 - weight) * values[..., right] + weight * values[..., left]
+
+
+def curve_dtype(curve):
+    """The working dtype of a `ZeroCurve` or a `DiscountCurve`: kernels that read a curve
+    compute in it (docs/planning/details/precision.md §6.4)."""
+    return (curve.log_discounts if isinstance(curve, DiscountCurve) else curve.pillar_rates).dtype

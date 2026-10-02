@@ -22,7 +22,7 @@ from typing import Annotated, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from engine.api.schemas import (
-    CouponPeriodSchema, PrecisionConfigSchema, ZeroCurveConfigSchema, _parse_fixings, _parse_optional_date,
+    CouponPeriodSchema, PrecisionSchema, ZeroCurveConfigSchema, _parse_fixings, _parse_optional_date,
     _parse_ore_date, _parse_ore_period,
 )
 from engine.calibration.ore_lgm import SwapIndexConventions
@@ -32,7 +32,7 @@ from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
 from engine.market import CurrencyMarket, EquityMarket, Market, SwaptionVolSurface
-from engine.portfolio import GreeksConfig, PortfolioRequest, PrecisionConfig, RunConfig, SensitivityConfig
+from engine.portfolio import GreeksConfig, PortfolioRequest, RunConfig, SensitivityConfig
 from engine.simulation.config import CamConfig, HullWhiteConfig, LgmConfig
 from engine.valuation.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
 
@@ -356,7 +356,7 @@ class MarketPortfolioRequestSchema(_Strict):
     pfe_quantiles: List[float] = Field(default_factory=lambda: [0.95, 0.99])
     compute_greeks: bool = False
     scenario_risk: bool = True
-    precision: Optional[PrecisionConfigSchema] = None
+    precision: PrecisionSchema = Field(default_factory=PrecisionSchema)
 
     @model_validator(mode="before")
     @classmethod
@@ -380,7 +380,7 @@ class MarketPortfolioRequestSchema(_Strict):
             config=RunConfig(simulation=self.simulation.to_dataclass() if self.simulation else None,
                              pricing=self.pricing.to_dataclass(), greeks=self.greeks.to_dataclass(),
                              base_currency=self.base_currency,
-                             precision=self.precision.to_dataclass() if self.precision else PrecisionConfig()),
+                             precision=self.precision.to_dataclass()),
             pfe_quantiles=tuple(self.pfe_quantiles), compute_greeks=self.compute_greeks,
             scenario_risk=self.scenario_risk)
 

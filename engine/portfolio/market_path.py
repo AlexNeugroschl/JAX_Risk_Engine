@@ -18,6 +18,11 @@ Every choice comes from the request's run configuration (`engine.portfolio.confi
 `simulation` (the CAM, its model per currency, the grid), `pricing` (the engine per product),
 `greeks` (the method and ORE's sensitivity settings), `precision` and the reporting currency.
 What the pipeline does not implement is refused before any work (`validate_request`).
+
+Precision (`engine.precision`, docs/planning/details/precision.md): `simulate` and
+`value_portfolio` hold the cast points of the simulation, market and pricing stages; the
+calibration, t=0 values and Greeks are float64; every reduction over paths loads the stored
+cube and the numeraire at float64 first (`_exposures`), and so does the result's `npv_cube`.
 """
 from typing import TYPE_CHECKING, List, Sequence
 
@@ -26,7 +31,7 @@ import numpy as np
 
 from engine.market import Market
 from engine.models.curves import ZeroCurve, discount
-from engine.portfolio.config import _dtype_of, check_run
+from engine.precision import load
 from engine.portfolio.profiling import phase
 from engine.risk.exposure import ExposureProfile, exposure_profile, netting_set_profile
 from engine.risk.var_es import ENGINE_RISK_MEASURE
@@ -53,10 +58,11 @@ def price_on_market(request) -> "PortfolioResult":
         with phase("calibration"):
             model = build_cross_asset_model(market, simulation)
         with phase("simulation"):
-            scenarios = simulate(market, simulation, model, dtype=_dtype_of(run.precision.simulation))
+            scenarios = simulate(market, simulation, model, run.precision)
         with phase("pricing"):
-            valuation = value_portfolio(trades, market, scenarios, base, run.pricing, simulation.swaption_vol_decay)
-        today, cube = valuation.today, valuation.cube
+            valuation = value_portfolio(trades, market, scenarios, base, run.pricing, simulation.swaption_vol_decay,
+                                        run.precision)
+        today, cube = valuation.today, load(valuation.cube, jnp.float64)
         with phase("exposure"):
             exposure, trade_exposures = _exposures(trades, today, cube, scenarios, market, base, request.pfe_quantiles)
     else:
@@ -84,11 +90,11 @@ def _greeks(method: str):
 
 def validate_request(request) -> None:
     """Refuse, before any JAX work, a request the pipeline cannot price: a setting it does
-    not implement yet (`check_run`), scenario risk without a simulation, a trade the market
-    cannot value or its engine refuses (`validate_trades`), or a reporting currency the market
-    lacks. The HTTP route runs it synchronously so such a request is a 400, not a failed job."""
+    not implement: scenario risk without a simulation, a trade the market cannot value or its
+    engine refuses (`validate_trades`), or a reporting currency the market lacks (the
+    configuration itself is validated when it is built). The HTTP route runs it synchronously
+    so such a request is a 400, not a failed job."""
     run = request.config
-    check_run(run)
     if request.scenario_risk and run.simulation is None:
         raise ValueError("scenario_risk needs config.simulation (a CamConfig); set scenario_risk=False for "
                          "today's NPVs and Greeks only")
@@ -99,10 +105,11 @@ def validate_request(request) -> None:
 def _exposures(trades: Sequence, today: List[float], cube, scenarios, market: Market, base: str,
                quantiles) -> "tuple[ExposureProfile, List[ExposureProfile]]":
     """Netting-set and per-trade profiles, deflated by the LGM numeraire, EE_B against the base
-    currency's discount curve, time weights on the simulation dates."""
-    curve = ZeroCurve.from_config(market.currency(base).discount_curve, dtype=cube.dtype)
-    p0 = discount(curve, jnp.asarray(scenarios.times, dtype=cube.dtype))
-    numeraire = jnp.asarray(scenarios.numeraire, dtype=cube.dtype)
+    currency's discount curve, time weights on the simulation dates. Reductions over paths:
+    `cube` is float64 and the stored numeraire is loaded at float64 (cast point 5)."""
+    curve = ZeroCurve.from_config(market.currency(base).discount_curve)
+    p0 = discount(curve, jnp.asarray(scenarios.times, dtype=jnp.float64))
+    numeraire = load(scenarios.numeraire, jnp.float64)
     common = dict(numeraire=numeraire, discount=p0, times=scenarios.times, quantiles=quantiles,
                   dates=scenarios.dates, asof=market.asof)
     netting_set = netting_set_profile(cube, today, **common)

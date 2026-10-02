@@ -13,13 +13,12 @@ with its configured engine, exercise and fixings as ORE handles them. Before roa
 Hull-White model was a second pipeline selected by passing a `SimulationConfig` as the market;
 that shape is retired.
 
-Concurrency: `jax_enable_x64` is process-global and the worker pool still sets it per precision
-tier, so two threads pricing in one process could see each other's setting. `_PRICING_LOCK`
-serializes the JAX work of `price_portfolio` for direct multi-threaded callers; the HTTP path
-runs each job in a single-threaded worker process (`engine.portfolio.worker_pool`). Roadmap 1.4
-removes the lock with the mechanism (I-55).
+Concurrency: `price_portfolio` may be called from several threads at once. Every precision is
+an explicit dtype of the run's own arrays (`engine.precision`) and `jax_enable_x64` is set once,
+when `engine` is imported, never per run; the pipeline keeps no module-level state and never
+reads ORE's global evaluation date (trades carry their own, I-64). Roadmap 1.4 removed the lock
+that serialized runs while the flag was switched per precision.
 """
-import threading
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Union
 
@@ -41,9 +40,6 @@ from engine.portfolio.validation import _validate_common_fields, _validate_tenor
 TradeConfig = Union[
     SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig, BondConfig,
 ]
-
-# Serializes price_portfolio's JAX work within a process (see the module docstring).
-_PRICING_LOCK = threading.Lock()
 
 
 @dataclass
@@ -116,7 +112,6 @@ def price_portfolio(request: PortfolioRequest) -> PortfolioResult:
     model, value every trade today and on every path, build the exposure profiles, and
     optionally the Greeks. The result carries the trades' ids."""
     from engine.portfolio.market_path import price_on_market
-    with _PRICING_LOCK:
-        result = price_on_market(request)
+    result = price_on_market(request)
     result.trade_ids = [cfg.trade_id for cfg in request.trades]
     return result

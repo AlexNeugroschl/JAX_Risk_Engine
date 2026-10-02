@@ -8,17 +8,16 @@ nothing below `engine/api/` imports Pydantic.
 ORE types travel as strings: dates as ISO `YYYY-MM-DD` (`ORE.DateParser.parseISO`), periods
 in ORE syntax (`"5Y"`, `"18M"`), fixings as `{"YYYY-MM-DD": rate}`.
 """
-from typing import Dict, List, Literal, Optional, Union
+from typing import Dict, List, Literal, Optional
 
 import numpy as np
 import ORE
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from engine.market import ZeroCurveConfig
 from engine.risk.exposure import ExposureProfile
-from engine.portfolio import (
-    PortfolioResult, PrecisionConfig, PricingPrecisionOverride, RiskPrecisionOverride,
-)
+from engine.portfolio import PortfolioResult
+from engine.precision import FORMAT_NAMES, RETIRED_SHAPE, STAGES, Precision, StagePrecision
 
 
 def _parse_ore_date(value: str) -> ORE.Date:
@@ -64,42 +63,43 @@ class CouponPeriodSchema(BaseModel):
     payment_date: Optional[str] = None
 
 
-class PricingPrecisionOverrideSchema(BaseModel):
-    """`engine.portfolio.PricingPrecisionOverride`; validated by the dataclass."""
-    default: int = 64
-    swap: Optional[int] = None
-    european_swaption: Optional[int] = None
-    bermudan_swaption: Optional[int] = None
-    american_swaption: Optional[int] = None
-
-    def to_dataclass(self) -> PricingPrecisionOverride:
-        return PricingPrecisionOverride(**self.model_dump())
+#: A number format of `engine.precision.FORMATS`, by name.
+FormatName = Literal[FORMAT_NAMES]
 
 
-class RiskPrecisionOverrideSchema(BaseModel):
-    """`engine.portfolio.RiskPrecisionOverride`; validated by the dataclass."""
-    default: int = 64
-    delta_gamma: Optional[int] = None
-    theta: Optional[int] = None
-    vega: Optional[int] = None
-    exposure: Optional[int] = None
-
-    def to_dataclass(self) -> RiskPrecisionOverride:
-        return RiskPrecisionOverride(**self.model_dump())
+class StagePrecisionSchema(BaseModel):
+    """`engine.precision.StagePrecision`; validated by the dataclass."""
+    model_config = ConfigDict(extra="forbid")
+    storage: FormatName = "float64"
+    compute: FormatName = "float64"
+    accumulate: FormatName = "float64"
 
 
-class PrecisionConfigSchema(BaseModel):
-    """`engine.portfolio.PrecisionConfig`; validated by the dataclass. `pricing`/`risk`
-    take an int or an override object."""
-    simulation: int = 64
-    pricing: Union[int, PricingPrecisionOverrideSchema] = 64
-    risk: Union[int, RiskPrecisionOverrideSchema] = 64
-    calibration: int = 64
+class PrecisionSchema(BaseModel):
+    """`engine.precision.Precision`: storage, compute and accumulate per adjustable stage, each
+    float64 by default. The 32/64 shape before roadmap 1.4 is refused, naming the replacement
+    (decision A-12)."""
+    model_config = ConfigDict(extra="forbid")
+    simulation: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
+    market: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
+    pricing: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
 
-    def to_dataclass(self) -> PrecisionConfig:
-        pricing = self.pricing if isinstance(self.pricing, int) else self.pricing.to_dataclass()
-        risk = self.risk if isinstance(self.risk, int) else self.risk.to_dataclass()
-        return PrecisionConfig(simulation=self.simulation, pricing=pricing, risk=risk, calibration=self.calibration)
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_the_retired_shape(cls, data):
+        if isinstance(data, dict) and (any(k in data for k in ("risk", "calibration"))
+                                       or any(isinstance(v, int) for v in data.values())):
+            raise ValueError(RETIRED_SHAPE)
+        return data
+
+    def to_dataclass(self) -> Precision:
+        stages = {}
+        for stage in STAGES:
+            try:
+                stages[stage] = StagePrecision(**getattr(self, stage).model_dump())
+            except ValueError as exc:
+                raise ValueError(f"precision.{stage}: {exc}") from None
+        return Precision(**stages)
 
 
 class RiskMetricsSchema(BaseModel):

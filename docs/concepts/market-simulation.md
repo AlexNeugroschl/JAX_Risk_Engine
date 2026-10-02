@@ -3,7 +3,7 @@
 **Modules:** [`engine/simulation/`](../../engine/simulation/) — `config.py` (the configuration and
 `simulate`), `cam.py` (ORE's cross-asset model), `scenario_market.py` (the simulated market),
 `random.py` (Sobol normals and the Brownian bridge).
-**Public entry point:** `simulate(market: Market, config: CamConfig, model=None, dtype=jnp.float64) -> ScenarioMarket`
+**Public entry point:** `simulate(market: Market, config: CamConfig, model=None, precision=Precision()) -> ScenarioMarket`
 
 ## Plain-language summary
 
@@ -174,12 +174,16 @@ curve, not on the model's exact bond price. Configure denser tenors where that m
 
 ### Phase 4 — Public API
 
-**Function:** `simulate(market, config, model=None, dtype=jnp.float64) -> ScenarioMarket`
+**Function:** `simulate(market, config, model=None, precision=Precision()) -> ScenarioMarket`
 
 Builds (and calibrates) the cross-asset model from the market and the configuration
 (`build_cross_asset_model`), draws the Sobol normals with the Brownian bridge, evolves the
-states, and builds the scenario market, every array in `dtype` (the run configuration's
-`precision.simulation`). Pass a calibrated `CrossAssetModel` as `model` to reuse it.
+states, and builds the scenario market. Pass a calibrated `CrossAssetModel` as `model` to
+reuse it. `precision` is the run's `engine.precision.Precision`: the shocks and states are
+computed at `precision.simulation.compute` and stored at its `storage`; the market is built
+at `precision.market.compute` and every array of the returned `ScenarioMarket` is in
+`precision.market.storage` (float64 by default). The step moments and the path-independent
+parts of the curves are computed in float64 and cast.
 
 ## Output shapes at a glance
 

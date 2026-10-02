@@ -131,9 +131,11 @@ def european_value(cfg: SwaptionConfig, context: PricingContext) -> jax.Array:
 
 def european_cube(terms: EuropeanTerms, schedule: PathSchedule, times: np.ndarray, disc: ScenarioCurves,
                   index: ScenarioCurves, fixings: jax.Array, variances: np.ndarray) -> jax.Array:
-    """`[S, D]` option NPVs on every path and date (0 from expiry on); `variances` `[D]`
-    from `variance_on_path`."""
+    """`[S, D]` option NPVs on every path and date (0 from expiry on), in the curves' dtype;
+    `variances` `[D]` from `variance_on_path`."""
     alive = np.asarray([v > 0.0 for v in variances])
+    dtype = disc.log_discounts.dtype
+    terms, variances = terms.astype(dtype), np.asarray(variances, dtype=dtype)
 
     def value(disc_j, idx_j, t_j, _fixed, _float, projected_j, known_j, variance_j, alive_j):
         npv = black_multileg_npv(terms, disc_j, idx_j, t_j, variance_j, projected_j, known_j)

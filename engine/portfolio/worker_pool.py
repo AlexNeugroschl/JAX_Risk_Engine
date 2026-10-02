@@ -1,14 +1,13 @@
 """
-Worker-process pools for `price_portfolio`, one per precision tier.
+The worker-process pool for `price_portfolio`'s HTTP jobs.
 
-One `ProcessPoolExecutor` per tier (float32, float64), selected by
-`request.config.precision.simulation`; each worker runs one job at a time and jobs beyond a
-pool's size queue. Every worker runs with `jax_enable_x64` on, as the parent does (`engine`
-enables it at import): the pipeline gives every array an explicit dtype from the run
-configuration, so a float32 simulation is float32 under the flag and the stages computed in
-float64 stay float64, exactly as in a direct `price_portfolio` call. (Until roadmap 1.3 a
-float32 worker turned the flag off, which made those stages float32 too; I-55.) The tiers go
-with roadmap 1.4.
+One `ProcessPoolExecutor` for every job, whatever its precision; each worker runs one job at a
+time and jobs beyond the pool's size queue. Every worker runs with `jax_enable_x64` on, as the
+parent does (`engine` enables it at import): the pipeline gives every array an explicit dtype
+from the run's `Precision`, so a worker prices exactly as a direct `price_portfolio` call.
+(Until roadmap 1.4 there was one pool per simulation precision, a remnant of the per-precision
+flag that roadmap 1.3 removed; I-55, I-71.) Roadmap 1.8 replaces the pool with one engine
+worker process per host (I-72).
 
 Workers are always spawned, never forked: forking a process that has initialized JAX hangs
 (I-33, on Linux). Spawn pickles the initializer by reference, so `_worker_init` is a
@@ -29,19 +28,20 @@ import time
 import warnings
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass, fields, is_dataclass
+from typing import Optional
 
 from engine.portfolio.request import PortfolioRequest, PortfolioResult
 
 # Small development default; each worker is a full Python + JAX process.
 _DEFAULT_POOL_SIZE = 2
 
-_POOLS: dict = {}  # precision_bits (32 or 64) -> ProcessPoolExecutor
+_POOL: Optional[ProcessPoolExecutor] = None  # created on first use
 
 
-def _worker_init(precision_bits: int) -> None:
+def _worker_init() -> None:
     """Pool initializer: runs once per worker, before its first job, and turns
-    `jax_enable_x64` on whatever the tier (see the module docstring). A worker runs one job at
-    a time, so the flag never changes under a job.
+    `jax_enable_x64` on (see the module docstring). A worker runs one job at a time, so the
+    flag never changes under a job.
 
     JAX is already imported when this runs (unpickling this function imports this
     module, which imports `engine.portfolio.request`), so device selection by environment
@@ -52,7 +52,6 @@ def _worker_init(precision_bits: int) -> None:
 
     import jax
 
-    del precision_bits  # the tier only routes the job; every dtype is explicit
     jax.config.update("jax_enable_x64", True)
 
 
@@ -230,35 +229,29 @@ def _warn_if_trace_truncated(out_dir: str, wall_seconds: float) -> None:
         pass
 
 
-def _pool_for(precision_bits: int, pool_size: int = _DEFAULT_POOL_SIZE) -> ProcessPoolExecutor:
-    """The pool for tier 32 or 64, created on first use and kept for this process's
-    lifetime."""
-    if precision_bits not in (32, 64):
-        raise ValueError(f"precision_bits must be 32 or 64, got {precision_bits!r}")
-    pool = _POOLS.get(precision_bits)
-    if pool is None:
+def _pool(pool_size: int = _DEFAULT_POOL_SIZE) -> ProcessPoolExecutor:
+    """The pool, created on first use and kept for this process's lifetime."""
+    global _POOL
+    if _POOL is None:
         # Spawn explicitly; fork hangs once the parent has run JAX (I-33).
-        pool = ProcessPoolExecutor(
+        _POOL = ProcessPoolExecutor(
             max_workers=pool_size,
             mp_context=multiprocessing.get_context("spawn"),
             initializer=_worker_init,
-            initargs=(precision_bits,),
         )
-        _POOLS[precision_bits] = pool
-    return pool
+    return _POOL
 
 
 def submit_pricing_job(request: PortfolioRequest, pool_size: int = _DEFAULT_POOL_SIZE) -> "Future[PortfolioResult]":
-    """Submit `request` to the pool for `request.config.precision.simulation` and return a
-    `Future[PortfolioResult]`. `pool_size` applies only when that tier's pool is first
-    created."""
-    pool = _pool_for(request.config.precision.simulation, pool_size=pool_size)
-    return pool.submit(_run_pricing_job, _freeze_trade(request))
+    """Submit `request` to the pool and return a `Future[PortfolioResult]`. `pool_size`
+    applies only when the pool is first created."""
+    return _pool(pool_size).submit(_run_pricing_job, _freeze_trade(request))
 
 
-def shutdown_pools(wait: bool = True) -> None:
-    """Shut down every pool this process created (mainly for tests); a long-running API
-    process keeps its pools."""
-    for precision_bits in list(_POOLS.keys()):
-        pool = _POOLS.pop(precision_bits)
+def shutdown_pool(wait: bool = True) -> None:
+    """Shut down the pool if this process created one (mainly for tests); a long-running API
+    process keeps it."""
+    global _POOL
+    pool, _POOL = _POOL, None
+    if pool is not None:
         pool.shutdown(wait=wait)

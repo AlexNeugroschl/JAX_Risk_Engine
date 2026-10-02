@@ -469,7 +469,7 @@ dispatch from?" is unanswerable from the raw trace. That is bought back by
 with phase("calibration"):
     model = build_cross_asset_model(market, simulation)
 with phase("simulation"):
-    scenarios = simulate(market, simulation, model, dtype=...)
+    scenarios = simulate(market, simulation, model, run.precision)
 ```
 
 `phase()` enters **two** mechanisms, deliberately — neither alone is sufficient:

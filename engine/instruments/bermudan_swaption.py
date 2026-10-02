@@ -55,6 +55,7 @@ import numpy as np
 import ORE
 from jax.tree_util import register_pytree_node_class
 
+from engine.models.curves import curve_dtype
 from engine.models.static_key import StaticKeyMixin
 from engine.models.ore_builders import (  # noqa: F401  (DAY_COUNTER is a re-export)
     DAY_COUNTER,
@@ -391,11 +392,6 @@ def _index_curve_of(swap: _PreparedBermudan):
     return swap.curve if swap.index_curve is None else swap.index_curve
 
 
-def _curve_dtype(curve):
-    """The working dtype of either curve type."""
-    return (curve.log_discounts if hasattr(curve, "log_discounts") else curve.pillar_rates).dtype
-
-
 # State grid and Hagan quadrature convolution, as QuantExt::LgmConvolutionSolver2
 # (QuantExt/qle/models/lgmconvolutionsolver2.cpp), in the LGM state variable x(t).
 def _state_grid(sigma: float, t: jax.Array, n_per_std: int, std_devs: float, dtype=jnp.float64) -> jax.Array:
@@ -679,7 +675,7 @@ def _backward_induction_arrays(swap: _PreparedBermudan, schedule: "_GridSchedule
     curve = _zero_curve_of(swap)
     # Work in the curve's dtype (pricing or risk precision); hardcoded float64 constants
     # would upcast a float32 Greeks trace.
-    dtype = _curve_dtype(curve)
+    dtype = curve_dtype(curve)
     quad_w = jnp.asarray(_hagan_quadrature_weights(n_per_std, std_devs), dtype=dtype)
     quad_y = jnp.asarray(_quadrature_nodes(n_per_std, std_devs), dtype=dtype)
     as_mask = lambda mask: jnp.asarray(mask, dtype=dtype)  # noqa: E731
