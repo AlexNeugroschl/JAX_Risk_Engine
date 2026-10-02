@@ -24,7 +24,7 @@ discount-curve time `t` and index-curve time `t_dc` coincide (plan V-10).
 """
 import dataclasses
 from dataclasses import dataclass
-from typing import Callable, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -70,6 +70,9 @@ class ScenarioMarket:
     fx: foreign currency -> [S, D], domestic units per unit of it.
     equity: name -> [S, D] spot.
     states: [S, D, d], the CAM states (for pricers that condition on them).
+    simulation_formats: the formats `simulate` stored the shocks and the states in, read from
+        those arrays (`engine.precision.format_name`), which it does not keep: `{"shocks": ...,
+        "states": ...}`, for the precision report. Empty for a market not from `simulate`.
 
     As `simulate` returns it, each path array is stored at the market stage's storage format:
     a plain array, or an `engine.precision.Stored` (values and block scales) in a scaled
@@ -85,6 +88,7 @@ class ScenarioMarket:
     fx: Dict[str, jax.Array]
     equity: Dict[str, jax.Array]
     states: jax.Array
+    simulation_formats: Mapping[str, str] = dataclasses.field(default_factory=dict)
 
     @property
     def num_paths(self) -> int:
@@ -103,6 +107,12 @@ class ScenarioMarket:
             index={k: curves(c) for k, c in self.index.items()},
             fx={k: fn(v) for k, v in self.fx.items()}, equity={k: fn(v) for k, v in self.equity.items()},
             states=fn(self.states))
+
+    def path_arrays(self) -> List:
+        """Every path array, in `map_arrays`' order (the tenor grids are not path arrays)."""
+        arrays = []
+        self.map_arrays(lambda a: arrays.append(a) or a, grid=lambda grid: grid)
+        return arrays
 
 
 def tenor_times(dates: Sequence[ORE.Date], tenors: Sequence[str]) -> np.ndarray:

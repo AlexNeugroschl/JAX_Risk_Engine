@@ -11,27 +11,29 @@ exposure are not yet compared with an ORE run ([I-50](#i-50)).
 
 ## Verification status
 
-Last full run, 2026-10-02, on the code of roadmap 1.6 (storage below 32 bits), 2,454
-collected (2,340 before it; +110 in `tests/test_precision.py`, the scaled formats' storage,
-policy and pipeline tests; +4 in `tests/test_api.py`, the rounding fields on the wire),
+Last full run, 2026-10-02, on the code of roadmap 1.7 (the paired sample and the precision
+report), 2,529 collected (2,454 before it; +73 in `tests/test_precision_report.py`, +2 in
+`tests/test_api_market_path.py`, the report over HTTP and `paired_fraction` on the wire),
 summary line printed:
 
-- **Windows**, `-n 8`: **2,453 passed, 1 skipped, 0 failed**, 7m44s (the skip is the
+- **Windows**, `-n 8`: **2,528 passed, 1 skipped, 0 failed**, 6m59s (the skip is the
   parametrized case of a storage wider than its compute, refused by design).
 - **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the CI
-  job, `-n 8`): 2,353 passed, 1 skipped, 2m13s.
-- **Linux** was not rerun: 1.6 changes no process, path or platform default. The last Linux
-  run (the jit change, same day): 2,339 passed, 1 skipped (`reference/traderX` not in the
-  container), 18m06s.
+  job, `-n 8`): 2,427 passed, 1 skipped, 2m02s.
+- **Linux** was not rerun: 1.7 changes no process, path or platform default (the report is
+  built inside the existing worker). The last Linux run (the jit change, 2026-10-02): 2,339
+  passed, 1 skipped (`reference/traderX` not in the container), 18m06s.
 - `-n auto` on the 24-thread, 32 GB Windows machine started 24 processes and failed 20 tests
   with `MemoryError` and its after-effects: memory, not the code; see the user guide.
 
-Bit for bit (the exit criterion of 1.6): the 232 snapshot arrays from a worktree of `f51227c`
-(the jit change) against the 1.6 tree, all identical in value, dtype and shape, float32 runs
-included ([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
-float64 market risk on four trades, old and new trees interleaved, 18 warm runs each: median
-1.85 s before and 1.92 s after, fastest 1.43 and 1.41 s, within the spread. Red first: on the
-code before 1.6 every new storage test fails at `store`, which refused the scaled formats.
+Bit for bit (the exit criterion of 1.7): the 232 snapshot arrays from a worktree of `f0a438c`
+(1.6) against the 1.7 tree, all identical in value, dtype and shape, float32 runs included
+([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)). float64
+speed, old and new trees interleaved, 15 warm runs each: market risk on four trades, median
+2.19 s before and after; a five-trade portfolio, 39 ms before and 37 ms after. Red first: on
+the code before 1.7 the I-12 test fails (the request's `paired_fraction` is refused and the
+result has no `precision`); the market-risk float64-against-float64 test failed by one ulp of
+an ES until the paired scenarios were revalued in the run's batches.
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
 
@@ -45,7 +47,6 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-08](#i-08) | Portfolio job store in memory; a running EOD attempt is lost on restart | Medium | PARTIAL | API | 1.8, 4.2 |
 | [I-09](#i-09) | Whole scenario cube serialized into the JSON response | Medium | OPEN | API | 4.1 |
 | [I-10](#i-10) | Per-trade results keyed by position beside the echoed ids | Low | PARTIAL | API | 4.1 |
-| [I-12](#i-12) | `/version` reports the dispatcher's backend, not the worker's device | Low | OPEN | Correctness | 1.7 |
 | [I-16](#i-16) | `rateSensitivity` is parallel-only | Medium | OPEN | Scope | External |
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
 | [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | 4.3 |
@@ -81,18 +82,6 @@ model" before 1.3 meant the separate pipeline 1.3 removed.
 ---
 
 ## Correctness
-
-<a id="i-12"></a>
-### I-12 — `/version` reports the dispatcher's backend, not the worker's device
-
-**Severity:** Low · **Status:** OPEN
-
-**What is wrong.** `GET /version` reports `jax.default_backend()` of the HTTP process, which
-runs no JAX work; pricing runs in `worker_pool` processes. On a multi-device host a precision
-or hardware study reading this field would attribute results to the wrong device.
-
-**To close.** Report the device and the realised per-stage dtypes from the worker, on each
-result: the precision report of roadmap 1.7 ([details](details/precision.md#95-the-report)).
 
 <a id="i-32"></a>
 ### I-32 — Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5
@@ -504,14 +493,22 @@ power-of-two block scale per 32 paths and nearest or stochastic rounding (`Store
 `Precision.rounding`, `rounding_seed`; `tests/test_precision.py::TestScaledStorage`,
 `TestScaledStoragePipeline`); its first measurements are
 [details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline) and
-[I-75](#i-75).
+[I-75](#i-75). Roadmap 1.7 (2026-10-02) put a `PrecisionReport` on every result (the policy as
+run, the formats read from the stored arrays, the devices) and the paired float64 sample
+(`Precision.paired_fraction`, decision A-13): EPE and ENE are two-level estimates, PFE, VaR and
+ES measured against float64 on the same paths (`tests/test_precision_report.py`). A result
+now says how far it is from float64; it does not yet say whether that is good enough.
 
 **Reach.** Every reduced-precision result: its figures carry no statement of whether the
 combination has been validated for them. Default (float64) runs are unaffected.
 
 **To close.** Roadmap 2.7 (A-11): the evidence table per figure and precision combination
 against the acceptance standard (Basel III's P&L attribution test and the Basel plan's P6.2
-rule), and a warning on any result whose combination has no passing row. Compute below
+rule), and a warning on any result whose combination has no passing row. 2.7 also measures
+the paired estimator's coverage through the pipeline: its standard errors treat paths as
+independent, while Sobol paths are not and the rounding errors of the 32 paths of a block
+share a scale (the synthetic coverage tests and three pipeline seeds pass; that is not yet
+evidence at scale). Compute below
 float32 is [F-07](features.md#f-07) (roadmap 2.8).
 
 <a id="i-72"></a>
@@ -715,6 +712,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-06"></a>I-06 | American exercise ignored ORE's broken-period `couponRatio` (up to 6× off) | `tests/test_ore_lgm_parity.py`, `tests/test_bermudan_swaption.py::TestMidPeriodBermudanExercise` |
 | <a id="i-11"></a>I-11 | Risk measure unlabelled; no Monte Carlo error reported | `tests/test_risk_measure_label.py::TestPortfolioResultStatesItsMeasure` |
 | <a id="i-10-configs"></a>I-10 (configs) | Trade configs had no identity (now a required `trade_id`, echoed as `PortfolioResult.trade_ids`) | `tests/test_trade_configs.py::TestEveryTradeNamesItselfAndItsDate`, `tests/test_portfolio_market_path.py::test_a_repeated_trade_id_is_refused` |
+| <a id="i-12"></a>I-12 | `/version` named the API process's backend, the only device a result could be attributed to (every result now carries a `PrecisionReport` built where the job ran: its devices, backend and the formats read from its arrays; roadmap 1.7) | `tests/test_api_market_path.py::test_a_result_carries_the_workers_precision_report`, `tests/test_precision_report.py::TestReport` |
 | <a id="i-13"></a>I-13 | A negative curve index priced against the wrong curve (trades now name a currency and index; a missing curve is refused before pricing, naming the trade) | `tests/test_portfolio_gap_fixes.py::TestCurveIndexValidatedBeforeAllPricing` |
 | <a id="i-14"></a>I-14 | `generate_paths(precision=32)` leaked `jax_enable_x64=False` (`generate_paths` removed by roadmap 1.3; nothing toggles the flag) | `tests/test_portfolio_entrypoint.py::TestPricePortfolioConcurrency` |
 | <a id="i-15"></a>I-15 | The worker-pool concurrency test could not observe concurrency (and, until 1.3, failed after the pricing tests by reusing one worker) | `tests/test_worker_pool.py::TestWorkerPoolConcurrency` |

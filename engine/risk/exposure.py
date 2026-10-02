@@ -27,16 +27,27 @@ ENE = max(-NPV0, 0). A netting set sums paths across trades before the statistic
 The numeraire is whatever the simulation supplies: on the market path ORE's LGM numeraire of
 the base currency (`engine.simulation.scenario_market`), so E[1/N(t)] = P(0,t) and EE_B is
 exact; on the Hull-White path a discretely accrued bank account (I-45).
+
+With a paired float64 sample (`paired`: the first n paths again at float64, of a cube priced
+at reduced precision; decision A-13), EPE and ENE are the two-level estimates, means over the
+run's paths corrected by the paired paths' float64 differences (`engine.precision.estimate`),
+and EE_B, EEE_B, EPE_B, EEPE_B and the Basel figures follow from the corrected EPE. PFE is the
+run's own, measured on the pair. `ExposureProfile.estimates` holds each figure's estimate.
 """
-from dataclasses import dataclass
-from typing import Dict, Optional, Sequence
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import ORE
 
+from engine.precision.estimate import MeanEstimate, QuantileEstimate, paired_quantile, two_level_mean
 from engine.risk.var_es import quantile_label
+
+#: A paired float64 sample: the NPVs `[n, T]` (or the cube `[n, T, N]`) and the numeraire
+#: `[n, T]` of the first n paths, run at float64 throughout.
+PairedPaths = Tuple[jnp.ndarray, jnp.ndarray]
 
 
 @dataclass(frozen=True)
@@ -56,6 +67,10 @@ class ExposureProfile:
     #: ORE's Basel EPE_B / EEPE_B (the profiles at the one-year horizon); `None` without dates.
     basel_epe: Optional[float] = None
     basel_eepe: Optional[float] = None
+    #: With a paired sample, each figure's estimate over the simulated dates (t=0 excluded):
+    #: `"EPE"`, `"ENE"` (two-level, `MeanEstimate`) and each `"PFE_95"` (`QuantileEstimate`).
+    #: Empty without one.
+    estimates: Dict[str, Union[MeanEstimate, QuantileEstimate]] = field(default_factory=dict)
 
 
 def exposure_profile(
@@ -68,6 +83,7 @@ def exposure_profile(
     dates: Optional[Sequence[ORE.Date]] = None,
     asof: Optional[ORE.Date] = None,
     maturity: Optional[ORE.Date] = None,
+    paired: Optional[PairedPaths] = None,
 ) -> ExposureProfile:
     """ORE exposure statistics for one trade or netting set.
 
@@ -81,8 +97,10 @@ def exposure_profile(
     dates / asof / maturity: the simulated dates, the as-of date and the trade's maturity, for
         ORE's time weights and Basel horizon (without them EPE_B/EEPE_B weigh by `times`, and
         there is no Basel figure).
+    paired: the paired float64 sample `(npv [n, T], numeraire [n, T])` of the first n paths
+        (see the module docstring), or None.
 
-    Statistics are computed in `npv`'s dtype.
+    Statistics are computed in `npv`'s dtype, the paired estimates in float64.
     """
     npv = jnp.asarray(npv)
     dtype = npv.dtype
@@ -102,8 +120,23 @@ def exposure_profile(
     zero = jnp.zeros((), dtype=dtype)
     npv0 = jnp.asarray(npv0, dtype=dtype)
 
-    epe = jnp.concatenate([jnp.maximum(npv0, zero)[None], jnp.mean(jnp.maximum(deflated, zero), axis=0)])
-    ene = jnp.concatenate([jnp.maximum(-npv0, zero)[None], jnp.mean(jnp.maximum(-deflated, zero), axis=0)])
+    estimates = {}
+    if paired is None:
+        positive = jnp.mean(jnp.maximum(deflated, zero), axis=0)
+        negative = jnp.mean(jnp.maximum(-deflated, zero), axis=0)
+    else:
+        paired_npv, paired_numeraire = (jnp.asarray(a) for a in paired)
+        if paired_npv.shape != paired_numeraire.shape or paired_npv.shape[1:] != npv.shape[1:]:
+            raise ValueError(f"paired npv {paired_npv.shape} and numeraire {paired_numeraire.shape} must be [n, "
+                             f"{num_dates}]")
+        paired_deflated = paired_npv / paired_numeraire
+        positive_of = lambda x: jnp.maximum(x, 0.0)  # noqa: E731
+        estimates["EPE"] = two_level_mean(positive_of(deflated), positive_of(paired_deflated))
+        estimates["ENE"] = two_level_mean(positive_of(-deflated), positive_of(-paired_deflated))
+        positive, negative = (estimates[k].value.astype(dtype) for k in ("EPE", "ENE"))
+
+    epe = jnp.concatenate([jnp.maximum(npv0, zero)[None], positive])
+    ene = jnp.concatenate([jnp.maximum(-npv0, zero)[None], negative])
     discount_with_t0 = jnp.concatenate([jnp.ones((1,), dtype=dtype), jnp.asarray(discount, dtype=dtype)])
     ee_b = epe / discount_with_t0
     eee_b = jax.lax.cummax(ee_b)
@@ -111,17 +144,24 @@ def exposure_profile(
     ordered = jnp.sort(deflated, axis=0)
     pfe = {}
     for q in quantiles:
-        index = int(np.floor(q * (num_paths - 1) + 0.5))
-        pfe[f"PFE_{quantile_label(q)}"] = jnp.concatenate(
-            [jnp.maximum(npv0, zero)[None], jnp.maximum(ordered[index], zero)]
-        )
+        key = f"PFE_{quantile_label(q)}"
+        pfe[key] = jnp.concatenate([jnp.maximum(npv0, zero)[None], _pfe(ordered, q)])
+        if paired is not None:
+            estimates[key] = paired_quantile(lambda x, q=q: _pfe(jnp.sort(x, axis=0), q), deflated, paired_deflated)
 
     epe_b, eepe_b, basel_epe, basel_eepe = _time_weighted(ee_b, eee_b, times, dates, asof, maturity)
     return ExposureProfile(
         times=np.concatenate([[0.0], np.asarray(times, dtype=np.float64)]),
         epe=epe, ene=ene, ee_b=ee_b, eee_b=eee_b, pfe=pfe, epe_b=epe_b, eepe_b=eepe_b,
-        basel_epe=basel_epe, basel_eepe=basel_eepe,
+        basel_epe=basel_epe, basel_eepe=basel_eepe, estimates=estimates,
     )
+
+
+def _pfe(ordered, quantile: float):
+    """ORE's PFE at `quantile` of paths sorted along axis 0: the order statistic
+    `floor(q (S - 1) + 0.5)`, floored at 0."""
+    index = int(np.floor(quantile * (ordered.shape[0] - 1) + 0.5))
+    return jnp.maximum(ordered[index], jnp.zeros((), dtype=ordered.dtype))
 
 
 def _time_weighted(ee_b, eee_b, times, dates, asof, maturity):
@@ -158,11 +198,15 @@ def netting_set_profile(
     quantiles: Sequence[float] = (0.95, 0.99),
     dates: Optional[Sequence[ORE.Date]] = None,
     asof: Optional[ORE.Date] = None,
+    paired: Optional[PairedPaths] = None,
 ) -> ExposureProfile:
     """Exposure of a single netting set holding every trade in `npv_cube`
     (`[S, T, N]`), without collateral: paths are summed across trades before
-    any statistic is taken, so offsetting trades net."""
+    any statistic is taken, so offsetting trades net. `paired`, if given, is the paired
+    sample's cube `[n, T, N]` and numeraire `[n, T]`, netted the same way."""
+    if paired is not None:
+        paired = (jnp.sum(paired[0], axis=-1), paired[1])
     return exposure_profile(
         jnp.sum(npv_cube, axis=-1), float(np.sum(npv0_per_trade)),
-        numeraire, discount, times, quantiles, dates=dates, asof=asof,
+        numeraire, discount, times, quantiles, dates=dates, asof=asof, paired=paired,
     )

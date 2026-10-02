@@ -89,6 +89,7 @@ accumulate)` of format names per adjustable stage, each `"float64"` by default:
 | `by_trade` | `{trade_id: StagePrecision}`: replaces `by_product` and `pricing` for one trade. |
 | `rounding` | `"nearest"` (default) or `"stochastic"`: how values are rounded into a storage format below 32 bits. Stochastic rounding without such a format is refused. |
 | `rounding_seed` | Non-negative integer, 0 by default: the seed of the stochastic rounding. |
+| `paired_fraction` | In [0, 1], 0 by default: the share of paths also simulated and priced at float64 throughout (rounded up to whole blocks of 32 paths), to measure the run against float64 (roadmap 1.7). |
 
 `compute` is the format a stage computes in, `storage` the format its output is kept in until
 the next stage reads it (no wider than `compute`), `accumulate` the format its sums
@@ -126,6 +127,34 @@ its `storage` is `"float32"`, and FP8 numbers times their block scales when it i
 32/64 shape before roadmap 1.4 (`PrecisionConfig` and its override classes) is refused,
 naming the replacement (decision A-12).
 
+**The paired sample and the precision report** (roadmap 1.7, decision A-13). With
+`paired_fraction > 0` the first paths are simulated and priced again at float64 throughout (the
+same Sobol points, so the same paths a float64 run would give, bit for bit), and every figure is
+measured against float64 on them. Means are corrected by the two-level estimator,
+`mean over the run's paths + mean over the paired paths of (float64 − run)`, which turns a
+precision bias into variance: `exposure.epe`/`ene` and everything computed from EPE (EE_B,
+EEE_B, EPE_B, EEPE_B, the Basel figures) are the corrected values. PFE is a quantile: it stays
+the run's own, measured on the pair. Every result carries `precision`, a `PrecisionReport`:
+
+| Field | Meaning |
+|---|---|
+| `policy` | The `Precision` as run. |
+| `trades` | `{trade_id: StagePrecision}`: each trade's resolved pricing stage. |
+| `realized` | `{array: format}`, read from the stored arrays: `"shocks"`, `"states"`, `"market"` and `"values/<trade_id>"` (a market-risk run: `"shocks"` and the P&L per trade). |
+| `devices`, `backend`, `jax_version` | The devices holding the stored arrays (`"cpu:0 (cpu)"`), the JAX backend and version of the process that ran the job. |
+| `paths`, `paired_paths` | The run's paths (scenarios), and how many were re-run at float64. |
+| `figures` | With a paired sample: `"netting_set/EPE"`, `"trades/<trade_id>/ENE"`, `"netting_set/PFE_95"`, ... (market risk: `"portfolio/VaR_99"`, `"portfolio/ES_97.5"`). A mean (`MeanEstimate`): `value` (the reported, corrected figure), `uncorrected`, `correction`, `standard_error`, `uncorrected_standard_error`, `correction_standard_error`, `max_difference`. A quantile (`QuantileEstimate`): `value` (the run's own), `paired`, `paired_float64`, `difference`. Arrays per simulation date (t=0 excluded). |
+
+```python
+result = price_portfolio(PortfolioRequest(market, trades, RunConfig(
+    simulation=sim, precision=Precision(pricing=StagePrecision("float8_e4m3fn"), paired_fraction=0.05))))
+epe = result.precision.figures["netting_set/EPE"]
+epe.correction, epe.correction_standard_error   # the FP8 cube's bias on EPE, and its error
+```
+
+At float64 everywhere a paired sample measures exactly zero. Whether a combination is
+validated for a figure is roadmap 2.7's evidence table ([I-55](../planning/known-issues.md#i-55)).
+
 ## `PortfolioResult`
 
 | Field | Type | Meaning |
@@ -140,6 +169,7 @@ naming the replacement (decision A-12).
 | `trade_ids` | `List[str]` | Each trade's `trade_id`, in `request.trades` order: the names of every per-trade row ([I-10](../planning/known-issues.md#i-10)). |
 | `scenario_risk_available` | `bool` | `False` when the run was `scenario_risk=False`, meaning `exposure` is **absent** and `npv_cube` zero-width. |
 | `measure` | `Optional[str]` | The exposure's measure: `"risk-neutral-pricing"` (`engine.risk.var_es.ENGINE_RISK_MEASURE`) whenever it was computed, `None` without scenario risk. An exposure under the pricing measure, **not** a forecast of tomorrow's loss ([I-11](../planning/known-issues.md#i-11)). |
+| `precision` | `PrecisionReport` | The precision as run, read from the run's arrays, and with a paired sample each figure's estimate ([above](#precision)). |
 
 ## `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 
@@ -159,12 +189,14 @@ naming the replacement (decision A-12).
    foreign trades at the spot today and at the path FX on paths; without scenario risk,
    today only (`value_today`).
 4. **Exposure**: the netting set and each trade, deflated by the LGM numeraire, from the
-   cube and numeraire loaded at float64.
+   cube and numeraire loaded at float64; with `precision.paired_fraction`, first the paired
+   float64 sample (`paired_sample`), and the exposure means corrected by it.
 5. **Greeks** (with `compute_greeks`): `portfolio_sensitivities` (Bump) or
    `portfolio_greeks` (AD).
 
 The result carries the trades' ids. Each stage is labelled for the profiler (`calibration`,
-`simulation`, `pricing`, `exposure`, or `base_npv` without scenario risk, then `greeks`;
+`simulation`, `pricing`, `paired_sample`, `exposure`, or `base_npv` without scenario risk,
+then `greeks`;
 [Profiling](../concepts/profiling.md)).
 
 ### Automatic calibration

@@ -3,10 +3,12 @@
 over HTTP (plan §6.2 L6). On the shared test portfolio (tests/support/portfolio.py) the polled
 result equals a direct `price_portfolio` call, including ORE's time-weighted and Basel
 exposure figures and the 2-D Vega matrix; a request the market path cannot price is a 400
-before any job starts, and a trade carrying a model of its own is a 422.
+before any job starts, and a trade carrying a model of its own is a 422. The result carries the
+precision report of the worker that ran it (roadmap 1.7, I-12).
 """
 import time
 
+import jax
 import numpy as np
 import ORE
 import pytest
@@ -109,3 +111,22 @@ def test_trade_ids_are_given_on_every_trade_or_none(test_client):
     assert r.status_code == 400 and "every trade or on none" in r.json()["detail"]
     r = test_client.post("/v2/portfolio/price", json=_body([_swap(trade_id="a"), _swap(trade_id="a")]))
     assert r.status_code == 400 and "unique" in r.json()["detail"]
+
+
+@pytest.mark.slow
+def test_a_result_carries_the_workers_precision_report(test_client):
+    """I-12: `/version` names the API process's backend; the devices, the realized formats and
+    the paired-sample estimates of a job are read in the worker that ran it, on its result."""
+    precision = {"pricing": {"storage": "float16", "compute": "float32", "accumulate": "float32"},
+                 "paired_fraction": 0.5}
+    report = _submit_and_poll(test_client, _body([_swap(trade_id="s1")], precision=precision))["precision"]
+    assert report["realized"] == {"shocks": "float64", "states": "float64", "market": "float64", "values/s1": "float16"}
+    assert report["devices"] and report["backend"] == jax.default_backend()
+    assert report["policy"]["paired_fraction"] == 0.5 and (report["paths"], report["paired_paths"]) == (128, 64)
+    assert report["figures"]["trades/s1/EPE"]["kind"] == "mean"
+    assert report["figures"]["netting_set/PFE_95"]["kind"] == "quantile"
+
+
+def test_a_paired_fraction_outside_the_unit_interval_is_a_422(test_client):
+    response = test_client.post("/v2/portfolio/price", json=_body([_swap()], precision={"paired_fraction": 2.0}))
+    assert response.status_code == 422 and "paired_fraction" in response.text

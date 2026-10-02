@@ -46,7 +46,9 @@ double-precision simulations in the same wall-clock time.
   below 32 bits with a power-of-two scale per block of 32 paths and nearest or stochastic
   rounding; calibration, today's values, Greeks and every reduction over paths kept in FP64;
   path pricing overridable per product and per trade (say, Bermudans in FP64 inside an FP32
-  run); a precision report on every result follows in roadmap 1.7
+  run); a precision report on every result (the policy as run, the formats read from the
+  arrays, the device) and an optional paired float64 sample that corrects mean figures (EPE,
+  ENE) by a two-level estimator and measures quantiles (PFE, VaR, ES) against float64
   ([I-55](docs/planning/known-issues.md#i-55), [design](docs/planning/details/precision.md))
 - HTTP API: one portfolio request reaching the run configuration (market risk and the
   cross-asset calibration routes are still to come,

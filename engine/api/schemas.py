@@ -8,7 +8,8 @@ nothing below `engine/api/` imports Pydantic.
 ORE types travel as strings: dates as ISO `YYYY-MM-DD` (`ORE.DateParser.parseISO`), periods
 in ORE syntax (`"5Y"`, `"18M"`), fixings as `{"YYYY-MM-DD": rate}`.
 """
-from typing import Dict, List, Literal, Optional
+import dataclasses
+from typing import Dict, List, Literal, Optional, Union
 
 import numpy as np
 import ORE
@@ -18,7 +19,8 @@ from engine.market import ZeroCurveConfig
 from engine.risk.exposure import ExposureProfile
 from engine.portfolio import PortfolioResult
 from engine.precision import (
-    FORMAT_NAMES, OVERRIDES, RETIRED_SHAPE, ROUNDINGS, STAGES, Precision, StagePrecision,
+    FORMAT_NAMES, OVERRIDES, RETIRED_SHAPE, ROUNDINGS, STAGES, MeanEstimate, Precision, PrecisionReport,
+    StagePrecision,
 )
 from engine.valuation.portfolio import PRODUCTS
 
@@ -83,13 +85,18 @@ class StagePrecisionSchema(BaseModel):
     compute: FormatName = "float64"
     accumulate: FormatName = "float64"
 
+    @classmethod
+    def from_dataclass(cls, stage: StagePrecision) -> "StagePrecisionSchema":
+        return cls(**dataclasses.asdict(stage))
+
 
 class PrecisionSchema(BaseModel):
     """`engine.precision.Precision`: storage, compute and accumulate per adjustable stage, each
     float64 by default, and the pricing stage overridden per product (`by_product`, keyed by
     `trade_type`) and per trade (`by_trade`, keyed by `trade_id`); the rounding into a scaled
     storage format and its seed. The 32/64 shape before roadmap 1.4 is refused, naming the
-    replacement (decision A-12)."""
+    replacement (decision A-12). `paired_fraction`: the share of paths also run at float64, whose
+    estimates the result's `precision` report carries (decision A-13)."""
     model_config = ConfigDict(extra="forbid")
     simulation: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
     market: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
@@ -98,6 +105,7 @@ class PrecisionSchema(BaseModel):
     by_trade: Dict[str, StagePrecisionSchema] = Field(default_factory=dict)
     rounding: RoundingName = "nearest"
     rounding_seed: int = Field(default=0, ge=0)
+    paired_fraction: float = Field(default=0.0, ge=0.0, le=1.0)
 
     @model_validator(mode="before")
     @classmethod
@@ -112,7 +120,16 @@ class PrecisionSchema(BaseModel):
         stages = {stage: _stage(f"precision.{stage}", getattr(self, stage)) for stage in STAGES}
         overrides = {name: {key: _stage(f"precision.{name}[{key!r}]", value)
                             for key, value in getattr(self, name).items()} for name in OVERRIDES}
-        return Precision(**stages, **overrides, rounding=self.rounding, rounding_seed=self.rounding_seed)
+        return Precision(**stages, **overrides, rounding=self.rounding, rounding_seed=self.rounding_seed,
+                         paired_fraction=self.paired_fraction)
+
+    @classmethod
+    def from_dataclass(cls, precision: Precision) -> "PrecisionSchema":
+        stage = StagePrecisionSchema.from_dataclass
+        return cls(**{s: stage(getattr(precision, s)) for s in STAGES},
+                   **{name: {k: stage(v) for k, v in getattr(precision, name).items()} for name in OVERRIDES},
+                   rounding=precision.rounding, rounding_seed=precision.rounding_seed,
+                   paired_fraction=precision.paired_fraction)
 
 
 def _stage(where: str, schema: StagePrecisionSchema) -> StagePrecision:
@@ -123,22 +140,79 @@ def _stage(where: str, schema: StagePrecisionSchema) -> StagePrecision:
         raise ValueError(f"{where}: {exc}") from None
 
 
+def _floats(values) -> List[Optional[float]]:
+    """An array (or a scalar) as a flat list of floats, NaN as null."""
+    return [None if np.isnan(v) else float(v) for v in np.atleast_1d(np.asarray(values, dtype=np.float64)).ravel()]
+
+
+class MeanEstimateSchema(BaseModel):
+    """`engine.precision.MeanEstimate`: a mean figure's two-level estimate, each array a list
+    (per simulation date for an exposure figure), NaN as null."""
+    kind: Literal["mean"] = "mean"
+    value: List[Optional[float]]
+    uncorrected: List[Optional[float]]
+    correction: List[Optional[float]]
+    standard_error: List[Optional[float]]
+    uncorrected_standard_error: List[Optional[float]]
+    correction_standard_error: List[Optional[float]]
+    max_difference: List[Optional[float]]
+    paths: int
+    paired_paths: int
+
+
+class QuantileEstimateSchema(BaseModel):
+    """`engine.precision.QuantileEstimate`: a quantile figure measured on the paired sample."""
+    kind: Literal["quantile"] = "quantile"
+    value: List[Optional[float]]
+    paired: List[Optional[float]]
+    paired_float64: List[Optional[float]]
+    difference: List[Optional[float]]
+    paths: int
+    paired_paths: int
+
+
+def _estimate_schema(estimate) -> Union[MeanEstimateSchema, QuantileEstimateSchema]:
+    schema = MeanEstimateSchema if isinstance(estimate, MeanEstimate) else QuantileEstimateSchema
+    fields = {f.name: getattr(estimate, f.name) for f in dataclasses.fields(estimate)}
+    return schema(**{k: v if k.endswith("paths") else _floats(v) for k, v in fields.items()})
+
+
+class PrecisionReportSchema(BaseModel):
+    """`engine.precision.PrecisionReport`: the precision as run, read from the run's arrays in
+    the worker that ran it (I-12): the policy, each trade's pricing stage, the realized format
+    of every stored array, the devices and backend, and with a paired float64 sample each
+    figure's estimate, keyed `"netting_set/EPE"`, `"trades/<trade id>/PFE_95"`."""
+    policy: PrecisionSchema
+    trades: Dict[str, StagePrecisionSchema]
+    realized: Dict[str, str]
+    devices: List[str]
+    backend: str
+    jax_version: str
+    paths: int
+    paired_paths: int
+    figures: Dict[str, Union[MeanEstimateSchema, QuantileEstimateSchema]] = Field(default_factory=dict)
+
+    @classmethod
+    def from_dataclass(cls, report: PrecisionReport) -> "PrecisionReportSchema":
+        return cls(policy=PrecisionSchema.from_dataclass(report.policy),
+                   trades={k: StagePrecisionSchema.from_dataclass(v) for k, v in report.trades.items()},
+                   realized=dict(report.realized), devices=list(report.devices), backend=report.backend,
+                   jax_version=report.jax_version, paths=report.paths, paired_paths=report.paired_paths,
+                   figures={k: _estimate_schema(v) for k, v in report.figures.items()})
+
+
 class RiskMetricsSchema(BaseModel):
     """A `compute_risk_metrics` dict on the wire: key -> values, NaN as null."""
     values: Dict[str, List[Optional[float]]]
 
     @classmethod
     def from_dataclass(cls, risk: Dict[str, "np.ndarray"]) -> "RiskMetricsSchema":
-        out = {}
-        for key, arr in risk.items():
-            arr_np = np.atleast_1d(np.asarray(arr))
-            out[key] = [None if np.isnan(v) else float(v) for v in arr_np.tolist()]
-        return cls(values=out)
+        return cls(values={key: _floats(values) for key, values in risk.items()})
 
 
 class ExposureProfileSchema(BaseModel):
     """`engine.risk.exposure.ExposureProfile`; every list is indexed like `times`, starting
-    at t=0."""
+    at t=0. Its paired-sample `estimates` travel in the result's `precision.figures`."""
     times: List[float]
     epe: List[float]
     ene: List[float]
@@ -206,6 +280,8 @@ class PortfolioResultSchema(BaseModel):
     measure: Optional[str] = None
     # Every trade's id, in request order: the key of each per-trade figure (I-10).
     trade_ids: List[str] = Field(default_factory=list)
+    # The precision as run, read in the worker that ran the job (roadmap 1.7, I-12).
+    precision: Optional[PrecisionReportSchema] = None
 
     @classmethod
     def from_dataclass(cls, result: PortfolioResult) -> "PortfolioResultSchema":
@@ -226,6 +302,8 @@ class PortfolioResultSchema(BaseModel):
             scenario_risk_available=result.scenario_risk_available,
             measure=result.measure,
             trade_ids=result.trade_ids,
+            precision=(PrecisionReportSchema.from_dataclass(result.precision)
+                       if result.precision is not None else None),
         )
 
 

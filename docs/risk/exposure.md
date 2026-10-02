@@ -46,6 +46,15 @@ model's numeraire was a left-point money-market account, [I-45](../planning/know
 offsetting trades net before any statistic is taken. It is never the sum of the trades'
 standalone exposures, and it is never larger.
 
+## Precision
+
+With `RunConfig.precision.paired_fraction > 0` the first paths are re-run at float64 and EPE and
+ENE are two-level estimates: the run's mean corrected by the paired paths' mean float64
+difference, so a reduced-precision bias becomes variance (decision A-13). EE_B, EEE_B, EPE_B,
+EEPE_B and the Basel figures follow from the corrected EPE; PFE stays the run's own, measured
+on the pair. Each figure's estimate, with its standard errors, is in
+`PortfolioResult.precision.figures` ([The Portfolio Entry Point](../reference/portfolio-entrypoint.md#precision)).
+
 ## Requesting it
 
 ```python

@@ -16,7 +16,8 @@ path's FX rate, and not deflated (ORE's cube stores NPVs; the numeraire travels 
 Each trade is priced on paths at its own precision, `Precision.precision_for(trade)` (an
 override for its id, else for its product, else the pricing stage; decision A-15): the scenario
 market is loaded at that compute dtype and the trade's cube column stored at that storage
-format. t=0 values are float64 (A-10).
+format. t=0 values are float64 (A-10). `value_paths` prices the paths alone, as the paired
+float64 sample of a reduced-precision run does (decision A-13).
 
 Trades name their currency and index; the market supplies the curves and volatilities and the
 pricing configuration the models (audit A-3, I-63). A trade valued on another date than the
@@ -130,38 +131,56 @@ def reads_swaption_vols(cfg: Trade, pricing: PricingConfig) -> bool:
 def value_portfolio(trades: Sequence[Trade], market: Market, scenarios: ScenarioMarket, base_currency: str,
                     pricing: PricingConfig = PricingConfig(), decay: str = "ForwardVariance",
                     precision: Precision = Precision()) -> PortfolioValuation:
-    """Every trade today and on every path and date (see the module docstring).
-
-    Cast point 4 of docs/planning/details/precision.md §6.3, per trade: the scenario market is
-    loaded at the compute dtype of `precision.precision_for(trade)` (once per dtype), the
-    trade priced in it, and its cube column stored at that storage format, named by the
-    trade's id (`Precision.store`). t=0 values are float64 (decision A-10)."""
+    """Every trade today and on every path and date (see the module docstring): `value_today`
+    and `value_paths` in one."""
     require_precision("value_portfolio's precision", precision)
     validate_trades(trades, market, pricing, precision)
+    return PortfolioValuation(today=_today(trades, market, base_currency, pricing),
+                              columns=_columns(trades, market, scenarios, base_currency, pricing, decay, precision),
+                              num_paths=scenarios.num_paths, num_dates=len(scenarios.dates))
+
+
+def value_today(trades: Sequence[Trade], market: Market, base_currency: str,
+                pricing: PricingConfig = PricingConfig()) -> List[float]:
+    """t=0 NPVs only (no simulation), in the base currency, float64 (decision A-10)."""
+    validate_trades(trades, market, pricing)
+    return _today(trades, market, base_currency, pricing)
+
+
+def value_paths(trades: Sequence[Trade], market: Market, scenarios: ScenarioMarket, base_currency: str,
+                pricing: PricingConfig = PricingConfig(), decay: str = "ForwardVariance",
+                precision: Precision = Precision()) -> List[Union[jax.Array, Stored]]:
+    """Every trade on every path and date only (no t=0 value): `PortfolioValuation.columns`.
+    The paired float64 sample of a reduced-precision run reprices its paths with it
+    (`engine.portfolio.market_path`)."""
+    require_precision("value_paths' precision", precision)
+    validate_trades(trades, market, pricing, precision)
+    return _columns(trades, market, scenarios, base_currency, pricing, decay, precision)
+
+
+def _today(trades, market: Market, base_currency: str, pricing: PricingConfig) -> List[float]:
+    context = from_market(market)
+    return [float(value_on(cfg, context, pricing)) * market.fx_spot(cfg.currency, base_currency) for cfg in trades]
+
+
+def _columns(trades, market: Market, scenarios: ScenarioMarket, base_currency: str, pricing: PricingConfig,
+             decay: str, precision: Precision) -> List[Union[jax.Array, Stored]]:
+    """Cast point 4 of docs/planning/details/precision.md §6.3, per trade: the scenario market
+    is loaded at the compute dtype of `precision.precision_for(trade)` (once per dtype), the
+    trade priced in it, and its cube column stored at that storage format, named by the trade's
+    id (`Precision.store`)."""
     loaded = {}  # compute dtype -> (the scenario market at it, its path fixings)
-    today, columns = [], []
+    columns = []
     for cfg in trades:
         stage = precision.precision_for(cfg)
         if stage.compute_dtype not in loaded:
             at_dtype = scenarios.map_arrays(lambda a: load(a, stage.compute_dtype))
             loaded[stage.compute_dtype] = at_dtype, _index_fixings(trades, market, at_dtype)
         sm, fixings = loaded[stage.compute_dtype]
-        currency = cfg.currency
-        spot = market.fx_spot(currency, base_currency)
-        fx_path = 1.0 if currency == base_currency else sm.fx[currency]
-        value, cube = _value_trade(cfg, market, sm, fixings, pricing, decay)
-        today.append(float(value) * spot)
+        fx_path = 1.0 if cfg.currency == base_currency else sm.fx[cfg.currency]
+        cube = _path_values(cfg, market, sm, fixings, pricing, decay)
         columns.append(precision.store(cube * fx_path, stage.storage, f"values/{cfg.trade_id}"))
-    return PortfolioValuation(today=today, columns=columns, num_paths=scenarios.num_paths,
-                              num_dates=len(scenarios.dates))
-
-
-def value_today(trades: Sequence[Trade], market: Market, base_currency: str,
-                pricing: PricingConfig = PricingConfig()) -> List[float]:
-    """t=0 NPVs only (no simulation), in the base currency."""
-    validate_trades(trades, market, pricing)
-    context = from_market(market)
-    return [value_on(cfg, context, pricing) * market.fx_spot(cfg.currency, base_currency) for cfg in trades]
+    return columns
 
 
 def _index_fixings(trades, market: Market, scenarios: ScenarioMarket) -> Dict[str, jax.Array]:
@@ -202,14 +221,13 @@ def _engine(cfg, pricing: PricingConfig):
     return pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
 
 
-def _value_trade(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricing: PricingConfig, decay: str):
-    """(t=0 NPV, `[S, D]` cube) of one trade in its own currency."""
+def _path_values(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricing: PricingConfig, decay: str):
+    """The `[S, D]` cube column of one trade in its own currency."""
     currency = cfg.currency
     disc = sm.discount[currency]
-    today = value_on(cfg, from_market(market), pricing)
     if isinstance(cfg, BondConfig):
         legs = bond_legs(cfg)
-        return today, legs_cube(legs, path_schedule(legs, market.asof, sm.dates), sm.times, disc, disc,
+        return legs_cube(legs, path_schedule(legs, market.asof, sm.dates), sm.times, disc, disc,
                                 jnp.zeros((sm.num_paths, len(sm.dates)), dtype=disc.log_discounts.dtype))
     name = index_name(currency, cfg.index_tenor_months)
     index, index_fixings = sm.index[name], fixings[name]
@@ -218,7 +236,7 @@ def _value_trade(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricin
         return legs_cube(legs, path_schedule(legs, market.asof, sm.dates), sm.times, disc, index, index_fixings)
 
     if isinstance(cfg, SwapConfig):
-        return today, swap_cube(legs_of(_swap_underlying(cfg), cfg.payer, market.asof, cfg.fixings))
+        return swap_cube(legs_of(_swap_underlying(cfg), cfg.payer, market.asof, cfg.fixings))
     if isinstance(cfg, SwaptionConfig):
         terms = european_terms(cfg, market.asof)
         schedule = path_schedule(terms.legs, market.asof, sm.dates)
@@ -237,7 +255,7 @@ def _value_trade(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricin
         exercises, fixings_history = contract_exercise_dates(cfg), cfg.fixings
     underlyings = [swap_cube(_underlying_legs(swap, cfg.payer, market.asof, fixings_history, e)) for e in exercises]
     steps = effective_steps(exercises, market.asof, sm.dates)
-    return today, wrap(option, underlyings, steps, physical=cfg.settlement == "Physical")
+    return wrap(option, underlyings, steps, physical=cfg.settlement == "Physical")
 
 
 def _underlying_legs(swap: ORE.VanillaSwap, payer: bool, asof: ORE.Date, fixings, exercise: ORE.Date) -> Legs:

@@ -34,7 +34,7 @@ from engine.market import Market
 from engine.models.curves import ZeroCurve
 from engine.models.lgm import Sigma, as_sigma
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
-from engine.precision import Precision, load, require_precision
+from engine.precision import Precision, format_name, load, require_precision
 from engine.simulation.cam import (
     CrossAssetModel, EqComponent, FxComponent, IrComponent, evolve_states, step_moments,
 )
@@ -233,7 +233,8 @@ def simulate(market: Market, config: CamConfig, model: Optional[CrossAssetModel]
     no scenario axis: it is the curves' coordinates, not scenario data). The step moments and
     the path-independent parts of the curves are computed in float64 and cast. A scaled
     storage format keeps block scales along each array's scenario axis (axis 1 of the shocks
-    `[T, S, d]`, axis 0 of everything else)."""
+    `[T, S, d]`, axis 0 of everything else). The shocks and states are not kept: the market
+    records the formats they were stored in (`ScenarioMarket.simulation_formats`)."""
     require_precision("simulate's precision", precision)
     sim, mkt = precision.simulation, precision.market
     model = model or build_cross_asset_model(market, config)
@@ -254,6 +255,7 @@ def simulate(market: Market, config: CamConfig, model: Optional[CrossAssetModel]
     }
     scenarios = build_scenario_market(model, market.asof, config.dates, load(states, mkt.compute_dtype),
                                       config.curve_tenors, index_curves)
+    scenarios.simulation_formats = {"shocks": format_name(shocks), "states": format_name(states)}
     arrays = itertools.count()  # names each market array, in map_arrays' fixed order
     return scenarios.map_arrays(lambda a: precision.store(a, mkt.storage, f"market/{next(arrays)}"),
                                 grid=lambda grid: grid)

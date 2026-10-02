@@ -327,7 +327,9 @@ Precision](portfolio-entrypoint.md#precision) and
 is priced at its `by_trade` entry, else its product's, else `pricing` (roadmap 1.5).
 `rounding` (`"nearest"`, the default, or `"stochastic"`) is how values are rounded into a
 storage format below 32 bits, and `rounding_seed` (a non-negative integer, 0 by default) seeds
-the stochastic rounding (roadmap 1.6). Unknown fields are refused.
+the stochastic rounding (roadmap 1.6). `paired_fraction` (in [0, 1], 0 by default; outside it a
+`422`) is the share of paths also run at float64, whose estimates the result's `precision`
+carries (roadmap 1.7). Unknown fields are refused.
 
 ```json
 "precision": {"simulation": {"storage": "float32", "compute": "float32", "accumulate": "float32"},
@@ -404,6 +406,7 @@ Mirrors `engine.portfolio.PortfolioResult`:
 | `greeks` | `{"<trade_index>": {"values": {"<key>": [...]}, "shapes": {...}, "theta": ...}} \| null` | `null` unless the request set `compute_greeks: true`. Keys are trade indices (as strings, JSON's own object-key requirement) matching the request's `trades` order. Every Greek is flattened row-major into `values`; one of more than one dimension (`vega:<ccy>`, option tenors × swap tenors) also has its shape in `shapes`. The keys are `delta:discount:<ccy>`, `gamma:discount:<ccy>`, `delta:index:<name>`, `gamma:index:<name>` (per curve tenor for `Bump`, per market pillar for `AD`), `vega:<ccy>` for a trade whose engine reads the swaption volatilities, and `theta`. See [Greeks](../risk/greeks.md). |
 | `trade_ids` | `List[str]` | The trades' ids in request order (`trade-0`, ... when the request gave none) ([I-10](../planning/known-issues.md#i-10)). |
 | `measure` | `str \| null` | `risk-neutral-pricing`, or `null` without scenario risk (I-11). |
+| `precision` | `object` | The precision report, built in the worker that ran the job, so its `devices` and `backend` are the worker's, not those `/version` names ([I-12](../planning/known-issues.md#i-12), closed): `policy` (the request's `precision`, defaults filled in), `trades`, `realized`, `devices`, `backend`, `jax_version`, `paths`, `paired_paths`, `figures` (each with `"kind": "mean"` or `"quantile"`; NaN as `null`). See [The Portfolio Entry Point](portfolio-entrypoint.md#precision). |
 | `warnings` | `List[str]` | Run warnings (none are emitted today; see [The Portfolio Entry Point: Known-limitation flagging](portfolio-entrypoint.md#known-limitation-flagging)). |
 
 ## Example: a Python `requests` session

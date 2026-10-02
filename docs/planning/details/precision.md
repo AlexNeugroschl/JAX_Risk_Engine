@@ -174,7 +174,8 @@ class Precision:
     paired_fraction: float = 0.0                    # share of paths re-run at float64 (§9)
 ```
 
-`rounding` and `rounding_seed` were added in step 1.6 (§6.2); `paired_fraction` comes with 1.7.
+`rounding` and `rounding_seed` were added in step 1.6 (§6.2), `paired_fraction` in step 1.7
+(§9.6).
 
 `Precision()` is float64 everywhere. It replaces `PrecisionConfig`,
 `PricingPrecisionOverride`, `RiskPrecisionOverride` and `MarketRiskRequest.precision`. The old
@@ -223,7 +224,9 @@ Checked before any work, by `engine/precision/policy.py`, each refusal naming it
 - every `by_trade` key is a trade in the request, every `by_product` key a product;
 - `rounding` is `nearest` or `stochastic`, and `stochastic` only when some stage or override
   stores in a scaled format (otherwise it would be accepted and ignored); `rounding_seed` is a
-  non-negative integer (1.6).
+  non-negative integer (1.6);
+- `paired_fraction` is a number in [0, 1] (1.7). At float64 everywhere it is accepted: it
+  measures zero, a check of the pairing, not a setting that does nothing.
 
 Everything else may be run (D-9). An unvalidated combination gets a warning
 ([§10](#10-acceptance-standard-and-evidence)), never a refusal.
@@ -256,10 +259,9 @@ engine/precision/
 ```
 
 Step 1.4 built the first three at float64/float32; step 1.6 added `Stored` and the scaled
-formats. At float64 and float32 a stored value is still the array itself (§6.2): a wrapper
-would carry no scales and only change every consumer's types, and it keeps the default bit
-for bit. `report.py` comes with
-1.7, whose report it is; until then tests read the realized dtypes from the arrays.
+formats; step 1.7 added `estimate.py` and `report.py` (§9.6). At float64 and float32 a stored
+value is still the array itself (§6.2): a wrapper would carry no scales and only change every
+consumer's types, and it keeps the default bit for bit.
 
 The pipeline imports these; they import nothing from it. Each module has its own unit tests
 that need no market, trade or ORE ([§13.4](#134-storage-properties)).
@@ -554,7 +556,76 @@ estimation (Giles and Haji-Ali) is a later research item (step 6.3).
   error, the largest paired difference, the path counts;
 - the evidence verdict per figure: validated, or the warning ([§10](#10-acceptance-standard-and-evidence)).
 
-## 10. Acceptance standard and evidence
+The verdict comes with step 2.7's evidence table; the rest was built in step 1.7 (§9.6).
+
+### 9.6 As built (step 1.7, 2026-10-02)
+
+**The paired sample.** `paired_paths(N, f)` (`engine/precision/estimate.py`) is 0 at `f = 0`,
+else `f·N` rounded up to whole blocks of 32 paths, at least one block and at most every path.
+Whole blocks keep the paired paths' block scales the run's own, and keep the number of
+distinct paired shapes small (each compiles once). The portfolio pipeline
+(`engine.portfolio.market_path._paired_sample`) simulates `n` paths with the same `CamConfig`
+(its `samples` replaced) on the same calibrated model, at `Precision()`, and prices them with
+`value_paths`, which prices paths only: t=0 values, calibrations and Greeks are float64 already
+and are not repeated. Market risk revalues the first `n` scenarios' shifts at float64, in the
+vmapped batches a float64 run uses (whole batches from the first scenario, then cut to `n`):
+in a batch of their own shape the values differed from the float64 run's by an ulp (an ES by
+1.5e-16 relative; XLA vectorizes by shape), and the run's batches reuse its compiled programs.
+
+That the paired paths are the run's own was measured before building on it: a float64 run of
+96 paths and runs of 32 and 64 with the same seed agree on their common paths bit for bit, in
+the cube and the numeraire, under the LGM and the Hull-White model, the per-path Bermudan
+recalibration included. scipy's scrambled Sobol sequence gives the same first points whatever
+the sample size, and every kernel is per path. A test holds it: at float64 every paired
+difference is exactly 0, and the figures equal the run without a paired sample bit for bit.
+
+**The estimator.** `two_level_mean(low [N, ...], high [n, ...])` returns a `MeanEstimate`:
+`value = mean_N(low) + mean_n(high - low)`, `uncorrected`, `correction`, `max_difference` and
+three standard errors, all float64 and one jitted program per pair of shapes. The paired
+paths are among the N, so the two terms are correlated and the corrected figure's variance is
+
+    Var(F) = Var(f) / N + Var(d) / n + 2 Cov(f, d) / N,        d = g − f on the paired paths,
+
+each moment the sample's (`ddof=1`; NaN with fewer than two paths). Without the covariance
+term a 95% interval covers 99.9% or 87% of the time when `d` is correlated with `f` at −0.9 or
+0.9 (the coverage test). `paired_quantile(statistic, low, high)` returns a `QuantileEstimate`:
+the statistic on every path at the run's precision (the reported figure), on the paired paths
+at the run's precision and at float64, and their difference.
+
+**The figures.** Portfolio: EPE and ENE are two-level estimates per simulation date
+(`ExposureProfile.estimates`, t=0 excluded since it has no paths), and the profile's EE_B,
+EEE_B, EPE_B, EEPE_B and Basel figures are computed from the corrected EPE; PFE per quantile
+is measured. Both for the netting set (`"netting_set/EPE"`) and each trade
+(`"trades/<trade id>/PFE_95"`). The t=0 NPV is float64 and needs no estimate. Market risk:
+each VaR and ES measured (`"portfolio/VaR_99"`); the reported VaR/ES are the run's own. A
+paired sample too small for a quantile's tail gives NaN, as the ES of an empty tail is (ORE
+refuses it): 64 paired scenarios hold no observation beyond a 99% VaR.
+
+**The report.** `PrecisionReport` (`engine/precision/report.py`) on `PortfolioResult.precision`
+and `MarketRiskResult.precision`, and over HTTP on the job's result (`PrecisionReportSchema`):
+`policy`, `trades` (each trade's resolved stage), `realized` (`"shocks"`, `"states"`,
+`"market"`, `"values/<trade id>"`, the names `Precision.store` gives the arrays; read from the
+arrays: `simulate` records the formats of the shocks and states it does not keep, in
+`ScenarioMarket.simulation_formats`), `devices` (`"cpu:0 (cpu)"`, read from the stored
+arrays), `backend`, `jax_version`, `paths`, `paired_paths`, `figures`. It is built in the
+process that ran the job, so an HTTP job reports its worker's device (I-12). A run without
+scenario risk reports its policy, no stored array, and JAX's default device.
+
+**What a paired sample costs.** The paired run is a float64 run of `n` paths: about
+`n / N` of a float64 run's path work, plus a first compile of its shapes (a repeated run
+compiles nothing). Measured 2026-10-02 on CPU, five cheap trades (swaps, Europeans, a bond),
+4,096 paths, the cube in FP8 e4m3, warm medians: 45 ms without a paired sample, 90 ms at 2%
+(96 paths), 100 ms at 25%, 154 ms with every path paired. On a portfolio this cheap the second
+simulation's and pricing's per-call dispatch dominates, not path work; on one with
+Bermudans the path work does. The same runs show what the report is for: the FP8 cube's EPE
+correction is 11 (2%) to 79 (100%) of its standard errors from zero, the nearest-rounding bias
+of [I-75](../known-issues.md#i-75), measured on the run itself.
+
+**Limits.** The standard errors treat paths as independent. Sobol paths are not, and the
+rounding errors of the 32 paths of a block share a scale, so on the pipeline they are
+nominal until step 2.7 measures their coverage there (the synthetic coverage tests and three
+pipeline seeds pass). A quantile's paired measurement needs a tail on the paired paths: ES at
+99% on 64 scenarios is NaN.
 
 The standard labels results; it never stops a run (D-9).
 
@@ -632,7 +703,7 @@ nothing in the precision work depends on it; step 3.2 does.
 | **1.4** (done 2026-10-01) | `engine/precision/` (formats, policy, storage at float64/float32; the report skeleton moved to 1.7, `Stored` to 1.6, §5); `Precision` replaces the old types in `RunConfig`, `MarketRiskRequest` and the HTTP schema, the old shape refused (A-12); the cast points; inputs follow dtype; float64 reductions; the constants of §6.5; market risk on the same module; remove `check_run`'s refusal, the flag set, the lock and the tiers; strict promotion in CI | Default: golden snapshot bit for bit, every ORE parity suite unchanged. float32: the scenario market and the market-risk revaluation bit for bit as before; the portfolio cube is not, and cannot be (§13.1); exposure and VaR/ES differ by the float64 reductions. Fast tier green under strict promotion. Met: §13.1 | M |
 | **1.5** (done 2026-10-02) | Per-product and per-trade precision (A-15): `by_product`, `by_trade`, `precision_for`; per-trade stored columns; market risk per trade | Bit for bit at the default; a mixed run (Bermudan float32, swaps float64) equals each trade run alone at its precision, column for column. Met: §13.1 | S |
 | **1.6** (done 2026-10-02) | Sub-32-bit storage: block scales, both roundings; `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2` enabled for storage | The storage properties of §13.4; bit for bit at the default. Met: §13.1, §13.4 | M |
-| **1.7** | Paired sample, two-level estimator for means, `PrecisionReport` with realized dtypes and device (closes I-12) | §13.6; bit for bit at the default | M |
+| **1.7** (done 2026-10-02) | Paired sample, two-level estimator for means, `PrecisionReport` with realized dtypes and device (closes I-12) | §13.6; bit for bit at the default. Met: §13.1, §13.6 | M |
 | **1.8** | Engine worker process and the SQLite queue (A-14); delete `worker_pool.py`'s pool and freeze/thaw | §13.8, including the Linux run; float64 job time and compile count no worse | M |
 | **2.7** | *Parallel with stage 2.* Measurement campaign for storage formats per class and product, at several path counts, fixed seeds; the evidence table and the warnings (§10) | Table complete for every figure × class × format; thresholds fixed before measuring; a verdict and path ceiling per row | M |
 | **2.8** | Difference-form kernels (§8.2), one family at a time; compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the re-baseline of §2.1; emulated FP8/bfloat16 compute measured into the evidence table | L |
@@ -701,6 +772,15 @@ process changes.
   dtype and shape, the float32 runs included. float64 and float32 storage are the same plain
   cast as before, and the one float32 behaviour 1.6 changes, the tenor grid under a float32
   market storage with float64 compute (§6.3), is in no snapshot run.
+- **Step 1.7's result (2026-10-02).** The same snapshot script, 232 arrays, from a worktree of
+  `f0a438c` (1.6) against the 1.7 tree: all 232 identical in value, dtype and shape, the
+  float32 runs included. The default path changed shape (t=0 values computed apart from the
+  path pricing, `value_paths`; one pricing context for every trade's t=0 value; the report
+  built from the arrays) but not its arithmetic. A paired sample is off by default, and at
+  float64 it measures exactly zero (`tests/test_precision_report.py`). float64 speed (§13.9),
+  old and new trees interleaved, three passes of five warm runs each: market risk on four
+  trades, median 2.19 s before and after (fastest 1.87 and 1.65 s); a five-trade, 1,024-path
+  portfolio, median 39 ms before and 37 ms after.
 - Step 2.8: parity suites pass at their tolerances first; then the snapshot is re-baselined,
   with the largest change per array recorded in the commit and in known-issues' verification
   status.
@@ -718,7 +798,10 @@ process changes.
 
 - A CI job runs the fast tier with `jax_numpy_dtype_promotion="strict"`.
 - A parametrized test over every class × enabled format runs a small portfolio and compares
-  the realized dtypes in `PrecisionReport` with the policy.
+  the realized dtypes in `PrecisionReport` with the policy. Done in step 1.7:
+  `tests/test_precision_report.py::TestReport::test_the_realized_format_of_every_class_is_the_policys`
+  (each stage in each of the six formats, one trade overridden), and market risk's shifts and
+  P&L (`TestMarketRisk`).
 - A test that the resolver is the only lookup: per-trade overrides change only that trade's
   column. Done in step 1.5: `tests/test_precision.py::TestPerTradePortfolio` and
   `TestPerTradeMarketRisk` (a mixed run equals each trade alone at its precision, bit for bit,
@@ -770,6 +853,22 @@ constants of §6.5.
 - Coverage: over independent seeds, the corrected estimate's confidence interval contains
   the float64 figure at the stated rate.
 
+Done in step 1.7, `tests/test_precision_report.py`: the estimator on synthetic samples
+(identical samples give the plain mean bit for bit and a zero correction; a "format" adding 0.3
+and noise is corrected to within three standard errors while its correction is 50 of its own
+from zero; with every path paired the estimate is the float64 mean; 95% coverage over 400 seeds
+at correlations −0.9, 0 and 0.9 between the difference and the value); the portfolio pipeline
+(float64 against float64 under both models: every paired difference exactly 0 and every
+figure the plain run's bit for bit; FP8 cube storage with every path paired: EPE/ENE equal the
+float64 run's to 1e-12 of the peak while the uncorrected means are off; FP8 e5m2 storage of a
+bond's concentrated cube, three seeds: the corrected EPE within three standard errors of the
+float64 run on the same paths; a repeated paired run compiles nothing; a float32 paired run
+under strict promotion); market risk (float64 against float64 exactly 0; with every scenario
+paired the float64 VaR/ES measured exactly); the report (realized formats, devices, a run
+without paths, the wire form); over HTTP, the worker's report on a job's result
+(`tests/test_api_market_path.py`, I-12). The quantiles' measurement is exact by construction;
+their correction is step 6.3.
+
 ### 13.7 Statistical acceptance (slow tier)
 
 The evidence table's rows become slow-tier tests with fixed seeds and the thresholds fixed
@@ -795,7 +894,7 @@ before measuring: bias against the rule of §10 at the stated path counts.
 
 `demos/demo_precision.py` moves to `Precision` (done in 1.4, with a storage-only float32 run
 beside float32 throughout), adds FP16, BF16 and FP8 storage runs, FP8 with both roundings
-(done in 1.6), and prints each run's report (1.7).
+(done in 1.6), and prints a run's report with a paired sample (done in 1.7).
 
 ## 14. Scope
 

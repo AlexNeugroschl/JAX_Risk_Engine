@@ -134,6 +134,14 @@ zero shift is exactly zero P&L at every precision. Trade ids must be unique (the
 are keyed by them). The integer
 `precision=64|32` of before roadmap 1.4 is refused, naming the replacement.
 
+`result.precision` is the run's `PrecisionReport`: the policy, each trade's stage, the
+formats the shifts and each P&L were stored in (read from the arrays) and the device. With
+`precision.paired_fraction > 0` the first scenarios (whole blocks of 32) are revalued again at
+float64, and each VaR and ES is measured on them: `figures["portfolio/VaR_99"]` holds the run's
+VaR, the VaR of the paired scenarios at the run's precision and at float64, and their
+difference. VaR and ES are quantiles, so the reported figures are the run's own, not corrected
+(decision A-13); an ES whose tail is empty on the paired scenarios is NaN.
+
 Every price function derives its working dtype from the curve it is given, so a float32
 revaluation is float32 end to end (strict dtype promotion in CI) — a property pinned by
 `tests/test_market_risk.py::TestRevaluation::test_the_european_price_function_keeps_float32`

@@ -23,9 +23,14 @@ scenarios; the shifts are named `"shocks"` and each P&L `"values/<trade id>"` fo
 stochastic rounding (`Precision.store`). A trade's base value is its revaluation of the
 unshocked curves at its compute format, the anchor its P&L is measured from, so a zero shift
 is exactly zero P&L at every precision, in every storage format.
+
+With `precision.paired_fraction > 0` the first scenarios are revalued again at float64 (the
+paired sample, decision A-13), and the result's `PrecisionReport` measures each VaR and ES on
+it: the figure at the run's precision and at float64 on the same scenarios. They are quantiles,
+so the reported VaR/ES are the run's own, not corrected.
 """
 from dataclasses import dataclass, field
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import jax.numpy as jnp
 import numpy as np
@@ -35,10 +40,12 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.market import Market
 from engine.market_risk.factors import RateRiskFactors
-from engine.market_risk.revaluation import factor_indices, revalue_trade
+from engine.market_risk.revaluation import factor_indices, revalue_trade, scenario_batch_size
 from engine.market_risk.scenarios import ShockScenarios
-from engine.precision import Precision, load, require_precision
-from engine.risk.var_es import compute_risk_metrics
+from engine.precision import (
+    Precision, PrecisionReport, format_name, load, paired_paths, paired_quantile, require_precision,
+)
+from engine.risk.var_es import compute_risk_metrics, expected_shortfall, quantile_label, value_at_risk
 from engine.valuation.config import PricingConfig
 from engine.valuation.portfolio import require_unique_ids, validate_trades
 
@@ -100,6 +107,9 @@ class MarketRiskResult:
     num_scenarios: int
     risk_factors: List[str]
     warnings: List[str] = field(default_factory=list)
+    #: The precision as run, read from the run's arrays, and with a paired float64 sample each
+    #: VaR/ES measured on it ("portfolio/VaR_99", "portfolio/ES_97.5"); see `PrecisionReport`.
+    precision: Optional[PrecisionReport] = None
 
 
 def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
@@ -110,21 +120,23 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     precision = request.precision
     shifts = precision.store(jnp.asarray(scenarios.shifts, dtype=precision.simulation.compute_dtype),
                              precision.simulation.storage, "shocks")
-    base, columns = [], []
+    base, columns, stored = [], [], []
     for cfg in request.trades:
         stage = precision.precision_for(cfg)
-        moves = load(shifts, stage.compute_dtype)
-        value, shocked = revalue_trade(cfg, request.market, scenarios.factors, moves, request.pricing,
-                                       request.batch_size)
+        value, trade_pnl = _trade_pnl(cfg, request, load(shifts, stage.compute_dtype))
         base.append(value)
-        stored = precision.store(shocked - jnp.asarray(value, dtype=moves.dtype), stage.storage,
-                                 f"values/{cfg.trade_id}")
-        columns.append(load(stored, jnp.float64))
+        stored.append(precision.store(trade_pnl, stage.storage, f"values/{cfg.trade_id}"))
+        columns.append(load(stored[-1], jnp.float64))
     pnl = jnp.stack(columns, axis=-1)
     portfolio_pnl = jnp.sum(pnl, axis=-1)
 
     metrics = compute_risk_metrics(pnl[:, None, :], 0.0, percentiles=request.quantiles)
     risk = {key: _scalar(value) for key, value in metrics.items()}
+
+    paired = paired_paths(scenarios.num_scenarios, precision.paired_fraction)
+    figures = _paired_figures(request, portfolio_pnl, paired) if paired else {}
+    realized = {"shocks": format_name(shifts),
+                **{f"values/{cfg.trade_id}": format_name(s) for cfg, s in zip(request.trades, stored)}}
 
     return MarketRiskResult(
         base_npv=float(np.sum(base)),
@@ -138,7 +150,41 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
         num_scenarios=scenarios.num_scenarios,
         risk_factors=scenarios.factors.labels(),
         warnings=_warnings(request),
+        precision=PrecisionReport.of(precision, request.trades, realized, stored, scenarios.num_scenarios, paired,
+                                     figures),
     )
+
+
+def _trade_pnl(cfg, request: MarketRiskRequest, moves):
+    """One trade's base value and P&L `[S]` under `moves`, in their dtype: the shocked values
+    less the base, so the cancellation happens at the compute precision."""
+    value, shocked = revalue_trade(cfg, request.market, request.scenarios.factors, moves, request.pricing,
+                                   request.batch_size)
+    return value, shocked - jnp.asarray(value, dtype=moves.dtype)
+
+
+def _paired_figures(request: MarketRiskRequest, portfolio_pnl, paired: int) -> Dict:
+    """The paired sample (decision A-13): the first `paired` scenarios revalued at float64, and
+    each VaR and ES at the run's precision and at float64 on them.
+
+    Each trade is revalued in the batches a float64 run uses (`scenario_batch_size`): whole
+    batches from the first scenario, then cut to `paired`. A batch of another shape may round
+    differently (XLA vectorizes by shape), so this is what makes the paired values exactly the
+    float64 run's, and it reuses that run's compiled programs."""
+    moves = jnp.asarray(request.scenarios.shifts, dtype=jnp.float64)
+    total = moves.shape[0]
+
+    def float64_pnl(cfg):
+        batch = scenario_batch_size(cfg, request.pricing, request.batch_size, moves.dtype.itemsize)
+        return _trade_pnl(cfg, request, moves[:min(total, -(-paired // batch) * batch)])[1][:paired]
+
+    paired_pnl = jnp.sum(jnp.stack([float64_pnl(cfg) for cfg in request.trades], axis=-1), axis=-1)
+    figures = {}
+    for q in request.quantiles:
+        for name, statistic in (("VaR", value_at_risk), ("ES", expected_shortfall)):
+            figures[f"portfolio/{name}_{quantile_label(q)}"] = paired_quantile(
+                lambda sample, statistic=statistic, q=q: statistic(sample[:, None], q)[0], portfolio_pnl, paired_pnl)
+    return figures
 
 
 def _scalar(value) -> float:

@@ -91,7 +91,9 @@ The scenario market: `numeraire [S, D]`, `discount[ccy]`/`index[name]` (`Scenari
 `states [S, D, factors]`, `dates`, `times`. `model` defaults to
 `build_cross_asset_model(market, config)` (which calibrates). `precision.simulation` sets the
 shocks and states, `precision.market` the market; every path array is returned in
-`precision.market.storage`. `ScenarioMarket.map_arrays(fn)` applies `fn` to every path array.
+`precision.market.storage`. `ScenarioMarket.map_arrays(fn)` applies `fn` to every path array,
+`path_arrays()` lists them; `simulation_formats` holds the formats the shocks and states were
+stored in, read from those arrays (they are not kept).
 
 ### `build_cross_asset_model(market, config, sigmas=None) -> CrossAssetModel`
 
@@ -189,6 +191,7 @@ See [Instruments](../instruments/swaps.md).
 | Function | Returns |
 |---|---|
 | `value_today(trades, market, base_currency, pricing=PricingConfig()) -> List[float]` | Today's values in the base currency. |
+| `value_paths(trades, market, scenarios, base_currency, pricing=PricingConfig(), decay="ForwardVariance", precision=Precision())` | `value_portfolio`'s `columns` alone, without the t=0 values (the paired float64 sample reprices paths with it). |
 | `value_portfolio(trades, market, scenarios, base_currency, pricing=PricingConfig(), decay="ForwardVariance", precision=Precision()) -> PortfolioValuation` | `today [T]` (float64) and `columns` (each trade's `[S, D]`) in the base currency; each trade priced on the scenarios loaded at its `precision.precision_for(trade).compute`, its column stored at that `storage`. `PortfolioValuation.cube` is `[S, D, T]`, in the columns' shared format, or float64 when they differ. |
 | `value_on(cfg, context, pricing) -> float` | One trade on a `PricingContext` (a date's curves, volatilities, fixings). |
 | `validate_trades(trades, market, pricing=PricingConfig(), precision=Precision())` | Refuses, naming the trade, a trade off the market's date, a curve or volatility the market lacks, or an engine's refusal; and a precision override naming no trade or product (`Precision.check_overrides`). |
@@ -282,8 +285,8 @@ ORE's `ExposureCalculator` statistics over a simulated cube — see [Exposure](.
 
 | Function | Returns |
 |---|---|
-| `exposure_profile(npv [S,D], npv0, numeraire, discount, times, quantiles, maturity=None, dates=None, asof=None)` | `ExposureProfile` for one trade: `times` (t=0 first), `epe`, `ene`, `ee_b`, `eee_b`, `epe_b`, `eepe_b`, `basel_epe`, `basel_eepe`, `pfe` (`"PFE_95"` → `[D+1]`) |
-| `netting_set_profile(npv_cube [S,D,N], npv0_per_trade, numeraire, discount, times, quantiles, dates=None, asof=None)` | The same for the netted sum of `N` trades |
+| `exposure_profile(npv [S,D], npv0, numeraire, discount, times, quantiles, maturity=None, dates=None, asof=None, paired=None)` | `ExposureProfile` for one trade: `times` (t=0 first), `epe`, `ene`, `ee_b`, `eee_b`, `epe_b`, `eepe_b`, `basel_epe`, `basel_eepe`, `pfe` (`"PFE_95"` → `[D+1]`). With `paired=(npv [n,D], numeraire [n,D])`, the first `n` paths at float64: EPE/ENE are two-level estimates and `estimates` holds each figure's (`"EPE"`, `"ENE"`, `"PFE_95"`) |
+| `netting_set_profile(npv_cube [S,D,N], npv0_per_trade, numeraire, discount, times, quantiles, dates=None, asof=None, paired=None)` | The same for the netted sum of `N` trades (`paired` a cube `[n,D,N]` and numeraire) |
 
 ## `engine.market_risk`
 
@@ -298,7 +301,7 @@ Short-horizon VaR/ES by full revaluation at t=0 — see [Market Risk](../risk/ma
 | `horizon_moves(history, horizon_days)` | function | The overlapping moves themselves, `[D-h, F]` |
 | `ShockScenarios` | dataclass | `factors`, `shifts [S, F]`, `horizon_days`, `source`, `measure`, `windows` |
 | `MarketRiskRequest(trades, market, scenarios, pricing=PricingConfig(), quantiles=(0.99, 0.975), precision=Precision(), batch_size=256)` | dataclass | Every factor must be the market's curve of its name; every curve a trade reads must be a factor. `precision.simulation` rounds and stores the shifts, `precision.precision_for(trade)` sets each trade's revaluation and stored P&L; VaR/ES are float64. Trade ids are unique |
-| `run_market_risk(request) -> MarketRiskResult` | function | `base_npv`, `base_npv_per_trade` (each trade's revaluation at its pricing compute precision), `pnl [S, N]` (float64-loaded), `portfolio_pnl [S]`, `risk` (`VaR_99`, `ES_97.5`, tail counts, standard errors), `measure`, `source`, `horizon_days`, `num_scenarios`, `risk_factors`, `warnings` |
+| `run_market_risk(request) -> MarketRiskResult` | function | `base_npv`, `base_npv_per_trade` (each trade's revaluation at its pricing compute precision), `pnl [S, N]` (float64-loaded), `portfolio_pnl [S]`, `risk` (`VaR_99`, `ES_97.5`, tail counts, standard errors), `measure`, `source`, `horizon_days`, `num_scenarios`, `risk_factors`, `warnings`, `precision` (a `PrecisionReport`; with `precision.paired_fraction`, each VaR/ES measured on the first scenarios revalued at float64) |
 
 ---
 
@@ -393,6 +396,7 @@ full write-up (this is the quick reference).
 | `trade_ids` | `List[str]` | Each trade's id, in request order. |
 | `scenario_risk_available` | `bool` | Whether `exposure`/`npv_cube` were computed. |
 | `measure` | `Optional[str]` | `"risk-neutral-pricing"`, or `None` without scenario risk. |
+| `precision` | `Optional[PrecisionReport]` | The precision as run and, with a paired sample, each figure's estimate (`engine.precision` below). |
 
 ### `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 
@@ -411,13 +415,18 @@ nothing from the pipeline. `Precision` and `StagePrecision` are also exported by
 | Name | Kind | Summary |
 |---|---|---|
 | `StagePrecision(storage="float64", compute="float64", accumulate="float64")` | frozen dataclass | One stage's formats, by name. Refused, naming the field: a name outside the table; a format before the roadmap step that enables it (compute below float32 or `accumulate != compute`: 2.8); `storage` wider than `compute`; `accumulate` narrower than `compute`. `storage_dtype`, `compute_dtype`, `scaled_storage` |
-| `Precision(simulation, market, pricing, by_product={}, by_trade={}, rounding="nearest", rounding_seed=0)` | frozen dataclass | A `StagePrecision` per adjustable stage, each float64 by default, and the pricing stage's overrides by product and by trade id (kept as an immutable `Overrides`); the rounding into a scaled storage format (`"nearest"` or `"stochastic"`, refused when nothing is stored scaled) and its seed. `Precision.throughout(name)` sets all three stages to `name`; `precision_for(trade)` is a trade's pricing stage (`by_trade`, else `by_product`, else `pricing`); `check_overrides(trades, products)` refuses a key that names nothing; `store(x, storage, stream, axis=0)` stores with the policy's rounding, `stream` naming the array (it seeds a stochastic rounding) |
+| `Precision(simulation, market, pricing, by_product={}, by_trade={}, rounding="nearest", rounding_seed=0, paired_fraction=0.0)` | frozen dataclass | A `StagePrecision` per adjustable stage, each float64 by default, and the pricing stage's overrides by product and by trade id (kept as an immutable `Overrides`); the rounding into a scaled storage format (`"nearest"` or `"stochastic"`, refused when nothing is stored scaled) and its seed; the share of paths also run at float64 (in [0, 1]). `Precision.throughout(name)` sets all three stages to `name`; `precision_for(trade)` is a trade's pricing stage (`by_trade`, else `by_product`, else `pricing`); `check_overrides(trades, products)` refuses a key that names nothing; `store(x, storage, stream, axis=0)` stores with the policy's rounding, `stream` naming the array (it seeds a stochastic rounding) |
 | `FORMATS`, `FORMAT_NAMES`, `Format` | table | name -> dtype, bits, mantissa bits, minimum normal exponent, max, scaled, enabling steps: `float64`, `float32`, `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2` |
 | `format_of(name)`, `dtype_of(name)`, `name_of(dtype)` | functions | Table lookups; an unknown name is refused |
 | `store(x, name, rounding="nearest", key=None, axis=0)`, `load(x, dtype)` | functions | The only casts between stages; at the array's own dtype both return it unchanged. A scaled format returns a `Stored`; `stochastic` needs a `key` (`rounding_key(seed, stream)`) |
 | `Stored(values, scales, format, axis)` | pytree | A scaled format's values (the array's shape) and float32 power-of-two scales, one per `BLOCK` (32) entries along `axis`, the scenario axis; `shape`, `dtype` (the format's), `nbytes` (scales included) |
 | `BLOCK`, `ROUNDINGS` | constants | 32; `("nearest", "stochastic")` |
 | `require_precision(owner, value)` | function | Refuses anything but a `Precision`, naming the replacement of the retired 32/64 shape (`RETIRED_SHAPE`, decision A-12) |
+| `paired_paths(num_paths, fraction)` | function | The paired sample's size: 0 at 0, else `fraction × num_paths` rounded up to whole `BLOCK`s, at most `num_paths` |
+| `two_level_mean(low [N, ...], high [n, ...]) -> MeanEstimate` | function | The two-level estimate of a mean from every path at the run's precision and the first `n` at float64: `value`, `uncorrected`, `correction`, `standard_error` (covariance included), `uncorrected_standard_error`, `correction_standard_error`, `max_difference`, `paths`, `paired_paths`; float64, one compiled program per pair of shapes |
+| `paired_quantile(statistic, low, high) -> QuantileEstimate` | function | `statistic` on every path (`value`), on the paired paths at the run's precision (`paired`) and at float64 (`paired_float64`), and `difference` |
+| `PrecisionReport` | frozen dataclass | `policy`, `trades`, `realized`, `devices`, `backend`, `jax_version`, `paths`, `paired_paths`, `figures`; `PrecisionReport.of(policy, trades, realized, arrays, paths, paired_paths=0, figures=None)` reads the devices from the stored `arrays` |
+| `format_name(x)`, `realized_format(arrays)`, `devices_of(arrays)` | functions | A stored array's format, read from its dtype; a class's (formats joined by `+` should they differ); the devices holding the arrays |
 
 ---
 

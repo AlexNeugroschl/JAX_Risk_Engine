@@ -12,6 +12,7 @@ The precision of a run (docs/planning/details/precision.md §3, §4; decisions A
 
       rounding       "nearest" | "stochastic"   how values are rounded into a scaled storage format
       rounding_seed  int                        the seed of the stochastic rounding
+      paired_fraction  float in [0, 1]          the share of paths also run at float64 (1.7)
 
 Each adjustable stage has three precisions: `storage`, the format its output is kept in until
 the next stage reads it; `compute`, the format its arithmetic is done in; `accumulate`, the
@@ -31,17 +32,25 @@ pipeline stores: it names each array (`"shocks"`, `"values/<trade id>"`), and a 
 rounding draws from `rounding_seed` and that name, so arrays round independently, a trade's
 column rounds the same in a mixed run as alone, and a run reproduces.
 
+With `paired_fraction > 0`, that share of the paths (or market-risk scenarios), rounded up to
+whole blocks (`engine.precision.estimate.paired_paths`), is also run at float64 throughout, and
+the result's precision report gives each figure's distance from float64 on it: means are
+corrected by the two-level estimator, quantiles measured (decision A-13). At float64 everywhere
+it measures zero, and is allowed as a check of the pairing.
+
 Calibration, t=0 values, Greeks and every reduction over paths or scenarios (exposure, VaR/ES)
 are not stages here: they are float64 by decision (A-10).
 
 Validation refuses, naming the field, before any work: a name outside the format table, a
 format used before the roadmap step that enables it, `storage` wider than `compute` (storing
 wider gains nothing), `accumulate` narrower than `compute`, a rounding outside
-`ROUNDINGS`, and `stochastic` rounding when no stage stores in a scaled format (it would round
-nothing). Every other combination may be run (D-9). The 32/64 shape before roadmap 1.4
-(`PrecisionConfig`) is refused, not translated (A-12): `RETIRED_SHAPE` says what replaces it.
+`ROUNDINGS`, `stochastic` rounding when no stage stores in a scaled format (it would round
+nothing), and a `paired_fraction` outside [0, 1]. Every other combination may be run (D-9).
+The 32/64 shape before roadmap 1.4 (`PrecisionConfig`) is refused, not translated (A-12): `RETIRED_SHAPE` says what replaces it.
 """
+import math
 from dataclasses import dataclass, field, fields
+from numbers import Real
 from typing import Iterable, Iterator, Mapping, Sequence
 
 from engine.precision.formats import format_of
@@ -155,6 +164,7 @@ class Precision:
     by_trade: Mapping[str, StagePrecision] = field(default_factory=Overrides)
     rounding: str = "nearest"
     rounding_seed: int = 0
+    paired_fraction: float = 0.0
 
     def __post_init__(self):
         for stage in STAGES:
@@ -180,6 +190,13 @@ class Precision:
                              "bfloat16, FP8), and no stage or override stores in one")
         if not isinstance(self.rounding_seed, int) or isinstance(self.rounding_seed, bool) or self.rounding_seed < 0:
             raise TypeError(f"Precision.rounding_seed must be a non-negative integer, got {self.rounding_seed!r}")
+        fraction = self.paired_fraction
+        if not isinstance(fraction, Real) or isinstance(fraction, bool) or not math.isfinite(fraction):
+            raise TypeError(f"Precision.paired_fraction must be a number in [0, 1], got {fraction!r}")
+        if not 0.0 <= fraction <= 1.0:
+            raise ValueError(f"Precision.paired_fraction={fraction!r}: the share of paths also run at float64 is in "
+                             f"[0, 1]")
+        object.__setattr__(self, "paired_fraction", float(fraction))
 
     def _stages(self) -> Iterator[StagePrecision]:
         """Every `StagePrecision` of the policy, overrides included."""

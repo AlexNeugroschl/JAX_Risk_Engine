@@ -23,20 +23,24 @@ Precision (`engine.precision`, docs/planning/details/precision.md): `simulate` a
 `value_portfolio` hold the cast points of the simulation, market and pricing stages; the
 calibration, t=0 values and Greeks are float64; every reduction over paths loads the stored
 cube and the numeraire at float64 first (`_exposures`), and so does the result's `npv_cube`.
+With `precision.paired_fraction > 0` the first paths are simulated and priced again at float64
+throughout (`_paired_sample`, decision A-13): the exposure means are the two-level estimates,
+and each figure's estimate is in the result's `PrecisionReport`, which every result carries.
 """
-from typing import TYPE_CHECKING, List, Sequence
+import dataclasses
+from typing import TYPE_CHECKING, List, Optional, Sequence
 
 import jax.numpy as jnp
 import numpy as np
 
 from engine.market import Market
 from engine.models.curves import ZeroCurve, discount
-from engine.precision import load
+from engine.precision import PrecisionReport, format_name, load, paired_paths, realized_format
 from engine.portfolio.profiling import phase
-from engine.risk.exposure import ExposureProfile, exposure_profile, netting_set_profile
+from engine.risk.exposure import ExposureProfile, PairedPaths, exposure_profile, netting_set_profile
 from engine.risk.var_es import ENGINE_RISK_MEASURE
 from engine.simulation.config import build_cross_asset_model, simulate
-from engine.valuation.portfolio import validate_trades, value_portfolio, value_today
+from engine.valuation.portfolio import validate_trades, value_paths, value_portfolio, value_today
 
 if TYPE_CHECKING:
     from engine.portfolio.request import PortfolioResult
@@ -62,21 +66,47 @@ def price_on_market(request) -> "PortfolioResult":
         with phase("pricing"):
             valuation = value_portfolio(trades, market, scenarios, base, run.pricing, simulation.swaption_vol_decay,
                                         run.precision)
+        paired = paired_paths(scenarios.num_paths, run.precision.paired_fraction)
+        sample = None
+        if paired:
+            with phase("paired_sample"):
+                sample = _paired_sample(trades, market, model, run, paired)
         today, cube = valuation.today, load(valuation.cube, jnp.float64)
         with phase("exposure"):
-            exposure, trade_exposures = _exposures(trades, today, cube, scenarios, market, base, request.pfe_quantiles)
+            exposure, trade_exposures = _exposures(trades, today, cube, scenarios, market, base, request.pfe_quantiles,
+                                                   sample)
+        figures = {f"netting_set/{k}": v for k, v in exposure.estimates.items()}
+        figures.update({f"trades/{t.trade_id}/{k}": v
+                        for t, profile in zip(trades, trade_exposures) for k, v in profile.estimates.items()})
+        realized = {**scenarios.simulation_formats, "market": realized_format(scenarios.path_arrays()),
+                    **{f"values/{t.trade_id}": format_name(c) for t, c in zip(trades, valuation.columns)}}
+        report = PrecisionReport.of(run.precision, trades, realized, valuation.columns, scenarios.num_paths,
+                                    paired, figures)
     else:
         with phase("base_npv"):
             today = value_today(trades, market, base, run.pricing)
         cube = jnp.zeros((0, 0, 0))
+        report = PrecisionReport.of(run.precision, trades, {}, (), paths=0)
     if request.compute_greeks:
         with phase("greeks"):
             greeks = _greeks(run.greeks.method)(trades, market, base, run.pricing, run.greeks.sensitivity)
     return PortfolioResult(
         base_npv=float(np.sum(today)), npv_cube=cube, exposure=exposure, trade_exposures=trade_exposures,
         greeks=greeks, warnings=[], base_npv_per_trade=list(today), scenario_risk_available=request.scenario_risk,
-        measure=ENGINE_RISK_MEASURE if request.scenario_risk else None,
+        measure=ENGINE_RISK_MEASURE if request.scenario_risk else None, precision=report,
     )
+
+
+def _paired_sample(trades: Sequence, market: Market, model, run, paths: int) -> PairedPaths:
+    """The paired float64 sample (decision A-13): the first `paths` paths simulated and priced
+    again at float64 throughout, on the same calibrated model, as the cube `[n, D, T]` and the
+    numeraire `[n, D]`. A Sobol sequence's first points do not depend on the sample size, and
+    every kernel is per path, so these are exactly the paths a float64 run would give."""
+    simulation = run.simulation
+    scenarios = simulate(market, dataclasses.replace(simulation, samples=paths), model)
+    columns = value_paths(trades, market, scenarios, run.reporting_currency, run.pricing,
+                          simulation.swaption_vol_decay)
+    return jnp.stack(columns, axis=-1), scenarios.numeraire
 
 
 def _greeks(method: str):
@@ -103,17 +133,19 @@ def validate_request(request) -> None:
     request.market.currency(run.reporting_currency)
 
 
-def _exposures(trades: Sequence, today: List[float], cube, scenarios, market: Market, base: str,
-               quantiles) -> "tuple[ExposureProfile, List[ExposureProfile]]":
+def _exposures(trades: Sequence, today: List[float], cube, scenarios, market: Market, base: str, quantiles,
+               paired: Optional[PairedPaths] = None) -> "tuple[ExposureProfile, List[ExposureProfile]]":
     """Netting-set and per-trade profiles, deflated by the LGM numeraire, EE_B against the base
-    currency's discount curve, time weights on the simulation dates. Reductions over paths:
-    `cube` is float64 and the stored numeraire is loaded at float64 (cast point 5)."""
+    currency's discount curve, time weights on the simulation dates; with the `paired` float64
+    sample, their two-level estimates. Reductions over paths: `cube` is float64 and the stored
+    numeraire is loaded at float64 (cast point 5)."""
     curve = ZeroCurve.from_config(market.currency(base).discount_curve)
     p0 = discount(curve, jnp.asarray(scenarios.times, dtype=jnp.float64))
     numeraire = load(scenarios.numeraire, jnp.float64)
     common = dict(numeraire=numeraire, discount=p0, times=scenarios.times, quantiles=quantiles,
                   dates=scenarios.dates, asof=market.asof)
-    netting_set = netting_set_profile(cube, today, **common)
-    per_trade = [exposure_profile(cube[:, :, i], today[i], maturity=trade.maturity_date, **common)
+    netting_set = netting_set_profile(cube, today, paired=paired, **common)
+    per_trade = [exposure_profile(cube[:, :, i], today[i], maturity=trade.maturity_date,
+                                  paired=None if paired is None else (paired[0][:, :, i], paired[1]), **common)
                  for i, trade in enumerate(trades)]
     return netting_set, per_trade

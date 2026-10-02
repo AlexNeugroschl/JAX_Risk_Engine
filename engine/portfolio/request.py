@@ -31,6 +31,7 @@ from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig
 from engine.market import Market
 from engine.portfolio.config import RunConfig
+from engine.precision import PrecisionReport
 from engine.risk.exposure import ExposureProfile
 from engine.valuation.portfolio import require_unique_ids
 
@@ -102,6 +103,9 @@ class PortfolioResult:
     measure: Optional[str] = None
     # Every trade's `trade_id`, in request order: the key of each per-trade figure (I-10).
     trade_ids: List[str] = field(default_factory=list)
+    # The precision as run, read from the run's arrays: the policy, the realized formats, the
+    # devices, and with a paired float64 sample each figure's estimate (roadmap 1.7, I-12).
+    precision: Optional[PrecisionReport] = None
 
 
 def price_portfolio(request: PortfolioRequest) -> PortfolioResult:

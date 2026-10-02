@@ -404,6 +404,7 @@ Precision(
     by_trade={"swap-7": StagePrecision(...)},                 # overrides both for one trade
     rounding="nearest",                                       # or "stochastic", into a scaled format
     rounding_seed=0,                                          # the stochastic rounding's seed
+    paired_fraction=0.0,                                      # share of paths also run at float64
 )
 Precision()                       # float64 everywhere (the default)
 Precision.throughout("float32")   # every stage stored, computed and accumulated in float32
@@ -456,6 +457,18 @@ column in an eighth of float64's memory plus an eighth for the scales. Compute s
 or float64: `load` reads the stored values back at the next stage's compute dtype.
 Continuous integration runs the fast tier with JAX's strict dtype promotion, under
 which any accidental float32/float64 mix is an error.
+
+**The paired sample and the report** (roadmap 1.7, decision A-13). With `paired_fraction > 0`
+the first paths (whole blocks of 32) are simulated and priced again at float64 throughout,
+`engine.portfolio.market_path._paired_sample` (market risk: the first scenarios revalued). A
+scrambled Sobol sequence's first points do not depend on the sample size and every kernel is
+per path, so these are the paths a float64 run gives, bit for bit. Means (EPE, ENE) become
+two-level estimates, the run's mean corrected by the paired paths' mean float64 difference
+(`engine/precision/estimate.py`), so a precision bias becomes variance; quantiles (PFE, VaR,
+ES) are measured on the pair, not corrected. Every result carries a `PrecisionReport`
+(`engine/precision/report.py`): the policy, each trade's stage, the format of every stored
+array and the devices, read from the arrays in the process that ran the job, and each
+figure's estimate.
 
 **The x64 flag.** JAX can create 64-bit arrays only while one process-global setting,
 `jax_enable_x64`, is on; it cannot be scoped per thread or per call. `engine` turns it on once,

@@ -36,6 +36,11 @@ from FP64 are pure arithmetic. Two yardsticks measure them:
   * the spread of the FP64 estimate across independent Sobol seeds -- the
     empirical version of the same thing.
 
+Every result carries a precision report (roadmap 1.7): the policy as run, the format each
+array was actually stored in, the device, and with a paired float64 sample
+(`Precision.paired_fraction`) each VaR/ES measured at the run's precision and at float64 on
+the same scenarios. The last section prints one.
+
 Compute below float32 arrives with roadmap step 2.8.
 
 ORE parity of this path is established in
@@ -43,6 +48,7 @@ tests/test_market_risk_ore_parity.py; this demo is only about precision.
 
 Run with: .venv/Scripts/python.exe demos/demo_precision.py
 """
+import dataclasses
 import time
 import warnings
 
@@ -173,6 +179,22 @@ for name in PRECISIONS:
         pnl = np.asarray(results[name, SEEDS[0]].portfolio_pnl)
         print(f"  per-scenario portfolio P&L, {name}: max |x - FP64| / max |P&L| = "
               f"{np.max(np.abs(pnl - pnl64)) / scale:.1e}")
+
+# =============================================================================
+section("The precision report of one run, with a paired float64 sample")
+# =============================================================================
+paired_policy = dataclasses.replace(PRECISIONS["FP8 stored"], paired_fraction=0.05)
+report = run(paired_policy, SEEDS[0])[0].precision
+print(f"  policy: FP8 stored, paired_fraction {paired_policy.paired_fraction}; ran on {', '.join(report.devices)} "
+      f"({report.backend}, jax {report.jax_version})")
+print(f"  stored as: {report.realized}")
+print(f"  {report.paired_paths} of {report.paths} scenarios re-run at float64:")
+print(f"  {'figure':<20}{'run':>16}{'paired, run':>16}{'paired, FP64':>16}{'difference':>14}")
+for key, figure in report.figures.items():
+    print(f"  {key:<20}{float(figure.value):>16,.2f}{float(figure.paired):>16,.2f}"
+          f"{float(figure.paired_float64):>16,.2f}{float(figure.difference):>14,.2f}")
+print("  (VaR and ES are quantiles: measured on the pair, not corrected; decision A-13. ES at a\n"
+      "  quantile whose tail is empty on the paired scenarios is nan, as ORE refuses it.)")
 
 # =============================================================================
 section("Reading the result")
