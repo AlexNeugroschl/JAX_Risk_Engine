@@ -37,6 +37,8 @@ the discount curve (QuantLib's engine is single-curve): the index's forwarding c
 read. Refused as QuantLib refuses them (`validate_jamshidian`): a floating spread and cash
 settlement.
 """
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -63,7 +65,11 @@ def validate_jamshidian(cfg: SwaptionConfig) -> None:
 def jamshidian_npv(terms: EuropeanTerms, model: JamshidianEngineConfig, disc, t) -> jax.Array:
     """The engine's NPV on a valuation date at model time `t`, on the discount curve `disc`
     measured from it (any batch axes, e.g. paths). The option must not have expired
-    (expiry after the date)."""
+    (expiry after the date).
+
+    Not jitted on its own: x*'s derivative rule closes over this function's intermediates,
+    which `jax.grad` through a jit boundary cannot carry (the AD Greeks differentiate it). Its
+    path cube is jitted (`_jamshidian_cube`)."""
     legs = terms.legs
     a, sigma = model.reversion, model.volatility
     p_bond = discount_from(disc, t, legs.fixed_pay)                  # [..., n] P(T_i)
@@ -75,7 +81,7 @@ def jamshidian_npv(terms: EuropeanTerms, model: JamshidianEngineConfig, disc, t)
     H_i = H(jnp.asarray(legs.fixed_pay - t, dtype=dtype))
     H_v = H(jnp.asarray(terms.start_time - t, dtype=dtype))
     dH, convexity = H_i - H_v, 0.5 * (H_i ** 2 - H_v ** 2) * zeta
-    amounts = jnp.asarray(np.asarray(legs.fixed_amount, dtype=np.float64), dtype=dtype)
+    amounts = jnp.asarray(legs.fixed_amount, dtype=dtype)
     amounts = amounts.at[-1].add(jnp.asarray(terms.nominal, dtype=dtype))
     nominal = jnp.asarray(terms.nominal, dtype=dtype)
 
@@ -107,8 +113,13 @@ def jamshidian_cube(terms: EuropeanTerms, model: JamshidianEngineConfig, schedul
                     disc, index, fixings: jax.Array, alive: np.ndarray) -> jax.Array:
     """`[S, D]` NPVs on every path and date (0 from expiry on), in the curves' dtype; `alive`
     `[D]` says the option has not expired on each date."""
-    terms = terms.astype(disc.log_discounts.dtype)
+    return _jamshidian_cube(terms.astype(disc.log_discounts.dtype), model, schedule, times, disc, index, fixings,
+                            alive)
 
+
+@partial(jax.jit, static_argnums=1)
+def _jamshidian_cube(terms: EuropeanTerms, model: JamshidianEngineConfig, schedule: PathSchedule, times, disc, index,
+                     fixings: jax.Array, alive) -> jax.Array:
     def value(disc_j, _index, t_j, _fixed, _float, _projected, _known, alive_j):
         return jnp.where(alive_j, jamshidian_npv(terms, model, disc_j, t_j), 0.0)
 

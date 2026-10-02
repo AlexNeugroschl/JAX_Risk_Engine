@@ -46,7 +46,6 @@ docs/instruments/american-bermudan-swaptions.md for the derivation.
 import math
 from dataclasses import InitVar, dataclass, field, fields
 from enum import Enum
-from functools import partial
 from typing import ClassVar, Dict, List, Optional, Sequence, Union
 
 import jax
@@ -56,7 +55,6 @@ import ORE
 from jax.tree_util import register_pytree_node_class
 
 from engine.models.curves import curve_dtype
-from engine.models.static_key import StaticKeyMixin
 from engine.models.ore_builders import (  # noqa: F401  (DAY_COUNTER is a re-export)
     DAY_COUNTER,
     TIME_AXIS_DAY_COUNTER,
@@ -167,22 +165,20 @@ def _build_ore_swap(cfg) -> ORE.VanillaSwap:
 
 @register_pytree_node_class
 @dataclass(frozen=True, eq=False)
-class _PreparedBermudan(StaticKeyMixin):
+class _PreparedBermudan:
     """A Bermudan/American swaption's prepared structure.
 
-    A pytree split between traced children (`_TRACED`) and static aux data:
-      - `curve`, `index_curve`, `sigma`: the model's curves (a `ZeroCurve` today, a
-        path's `DiscountCurve` in the simulation; `index_curve=None` means the discount
-        curve) and volatility, the differentiation targets (Delta/Gamma, Vega);
-        `engine.risk.price_functions` substitutes tracers into them.
-      - `notional`, `fixed_amounts`: scale only, traced so trades differing only in size
-        share one compiled kernel.
-      - everything else (schedule, exercise times, grid settings): static structure that
-        keys the jit cache.
+    A pytree whose static aux data is only what fixes the program's shape or control flow:
+    `payer` and the grid settings `n_per_std`/`std_devs` (`_STATIC`). Every other field is a
+    traced child: the model's curves (a `ZeroCurve` today, a path's `DiscountCurve` in the
+    simulation; `index_curve=None` means the discount curve) and volatility, which are the
+    differentiation targets (Delta/Gamma, Vega; `engine.risk.price_functions` substitutes
+    tracers into them), and every time, amount and fixing of the schedule.
 
-    This lets `_backward_induction_arrays` be jitted even when called with tracers, so it
-    compiles once per trade shape for pricing, `jax.grad` and `jax.hessian`.
-    `StaticKeyMixin` makes the aux data hashable by value.
+    So `_backward_induction_arrays` compiles once per trade shape (coupon and exercise
+    counts, grid size) for pricing, `jax.grad` and `jax.hessian`, whatever the trade's
+    dates, the valuation date or its size. The host-side schedule (`_build_grid_schedule`)
+    reads the concrete fields before the jit boundary.
     """
     payer: bool
     notional: float
@@ -221,40 +217,17 @@ class _PreparedBermudan(StaticKeyMixin):
     std_devs: float
     final_maturity: float
 
-    # Pytree children, in tree_flatten order (see the class docstring).
-    _TRACED = ("curve", "index_curve", "sigma", "notional", "fixed_amounts", "float_known_rates")
+    # Static aux data, in tree_flatten order (see the class docstring).
+    _STATIC = ("payer", "n_per_std", "std_devs")
 
     def tree_flatten(self):
-        """Children: the `_TRACED` fields (`sigma` may itself be a `Sigma` pytree).
-        Aux data: every other field as a hashable by-value tuple."""
-        children = tuple(getattr(self, name) for name in self._TRACED)
-        static_fields = tuple(
-            (f.name, _norm_static(getattr(self, f.name)))
-            for f in fields(self) if f.name not in self._TRACED
-        )
-        return children, static_fields
+        children = tuple(getattr(self, f.name) for f in fields(self) if f.name not in self._STATIC)
+        return children, tuple(getattr(self, name) for name in self._STATIC)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        kwargs = {name: _denorm_static(value) for name, value in aux_data}
-        kwargs.update(dict(zip(cls._TRACED, children)))
-        return cls(**kwargs)
-
-
-def _norm_static(value):
-    """NumPy array -> hashable `(tag, bytes, shape, dtype)`. Like `static_key._norm`, but
-    reversible, because `tree_unflatten` must rebuild the array."""
-    if isinstance(value, np.ndarray):
-        return ("__ndarray__", value.tobytes(), value.shape, str(value.dtype))
-    return value
-
-
-def _denorm_static(value):
-    """Inverse of `_norm_static`. Returns a writable copy (`np.frombuffer` is read-only)."""
-    if isinstance(value, tuple) and len(value) == 4 and value[0] == "__ndarray__":
-        _, raw, shape, dtype = value
-        return np.frombuffer(raw, dtype=np.dtype(dtype)).reshape(shape).copy()
-    return value
+        traced = [f.name for f in fields(cls) if f.name not in cls._STATIC]
+        return cls(**dict(zip(cls._STATIC, aux_data)), **dict(zip(traced, children)))
 
 
 def exercisable_dates(cfg) -> List[ORE.Date]:
@@ -497,8 +470,9 @@ def _close_enough(x: float, y: float) -> bool:
 
 
 # Grid-time schedule and ORE's cashflow bookkeeping (precomputed per trade)
+@jax.tree_util.register_dataclass
 @dataclass(frozen=True, eq=False)
-class _GridSchedule(StaticKeyMixin):
+class _GridSchedule:
     """The descending grid times of the backward induction and, per grid time and
     cashflow, what ORE's backward loop does with that cashflow there.
 
@@ -517,6 +491,9 @@ class _GridSchedule(StaticKeyMixin):
     The exercise value at an option time is
     `underlyingNpv + provisionalNpv + provisionalNpvNonCached`. ORE's `mustBeEstimated`
     branch applies only to capped/floored coupons, which a vanilla swap does not have.
+
+    A pytree of arrays: the induction reads it traced, so schedules of one shape share a
+    program.
     """
     times: np.ndarray            # [G] descending
     is_exercise: np.ndarray      # [G] bool
@@ -659,7 +636,7 @@ def grid_value(swap: _PreparedBermudan) -> jax.Array:
     return values[-1, values.shape[1] // 2]
 
 
-@partial(jax.jit, static_argnums=1)
+@jax.jit
 def _backward_induction_arrays(swap: _PreparedBermudan, schedule: "_GridSchedule"):
     """ORE's backward loop, returning `(x_all, option_values_all)`, each
     `[NumGridTimes, NumStateGridPoints]` (option values re-inflated to raw units).
@@ -671,7 +648,7 @@ def _backward_induction_arrays(swap: _PreparedBermudan, schedule: "_GridSchedule
       2. apply the row's cashflow actions (see `_GridSchedule`);
       3. at an option time, `option = max(option, underlying + provisional + non_cached)`.
 
-    Jitted with `swap` as a pytree and `schedule` static: one program per trade shape.
+    Jitted with `swap` and `schedule` as pytrees: one program per trade shape.
     """
     a, sigma, n_per_std, std_devs = swap.reversion, swap.sigma, swap.n_per_std, swap.std_devs
     curve = _zero_curve_of(swap)

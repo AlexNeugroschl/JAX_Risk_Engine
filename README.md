@@ -97,9 +97,14 @@ Requires Python 3.11 or later.
 ```bash
 python -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements.txt   # Linux/macOS: .venv/bin/python
-.venv/Scripts/python.exe -m pytest tests/ -m "not slow" -q   # fast tier, as CI runs it
-.venv/Scripts/python.exe -m pytest tests/ -q                  # full suite, about 45–50 minutes (I-53)
+.venv/Scripts/python.exe -m pytest tests/ -m "not slow" -q -n 8   # fast tier, as CI runs it: about 2 minutes
+.venv/Scripts/python.exe -m pytest tests/ -q -n 8                  # full suite: about 8 minutes
 ```
+
+`-n 8` runs the tests in 8 processes; choose the count by memory (1.5–3 GB each), not by
+cores. The times are with the compiled XLA programs already in `.jax_cache/`: the first run
+after a clone or a jax upgrade compiles them all (the fast tier takes about 11 minutes in one
+process), and later runs read them back.
 
 Use the virtualenv's interpreter to run the tests; the API and schema tests need
 `pydantic` and `jsonschema`. `requirements.txt` installs the exact versions in

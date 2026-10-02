@@ -123,7 +123,8 @@ pass events against ~630 `ThunkExecutor::Execute`). Two distinct reasons:
    emit far more trace events than 630 kernel executions over 256 scenarios.
 
 So warmup answers "what does a steady-state repeat cost," not "show me execution only." A
-genuinely execution-dominated timeline needs the closure-identity recompile fixed first.
+genuinely execution-dominated timeline needs the closure-identity recompile fixed first
+(done, §3.7: a repeated Greeks call now compiles nothing; these measurements predate it).
 §2.2 is the full warm lane/category breakdown, which quantifies exactly that: 79%
 compilation against 1.6% arithmetic even after the cache is warm.
 All 31 are enumerated with exact callsites, root cause and a vetted fix plan in
@@ -232,8 +233,8 @@ The reason is entirely §3.5's residual recompile. All 31 warm compilations sit 
 `PjitFunction(combined)` and `PjitFunction(price_fn)` in the Greeks phase — `price_fn` is a
 fresh closure per call and `jax.jit` keys on function identity, so the grad+Hessian-diagonal
 program recompiles on every Greeks call even for an identical trade. That is the whole warm
-cost. Fixing it (Known Issues [I-21](../planning/known-issues.md#i-21)/[I-22](../planning/known-issues.md#i-22))
-is what would turn this into an execution-dominated timeline; nothing else on the list would
+cost. Fixing it (Known Issues [I-21](../planning/known-issues.md#i-21)/[I-22](../planning/known-issues.md#i-22),
+done in §3.7) is what would turn this into an execution-dominated timeline; nothing else on the list would
 move the number meaningfully, because there is only 0.25 s of arithmetic to expose.
 
 **On "Python vs JAX".** This trace cannot answer that question, and neither can any trace
@@ -300,8 +301,8 @@ each compiled and dispatched on its own.
 > **tracers** rather than concrete arrays. A jit static argument must be **hashable and
 > concrete**, so a tracer-carrying `_PreparedBermudan` can never be one.
 
-Every other pricer passes its `_Prepared*` struct as a jit static argument via
-[`StaticKeyMixin`](../../engine/models/static_key.py)'s by-value hashing. The Bermudan
+Every other pricer passed its `_Prepared*` struct as a jit static argument via
+`StaticKeyMixin`'s by-value hashing (removed since, §3.7). The Bermudan
 pricer structurally could not, because under `jax.grad` the very fields being hashed are
 tracers. So every elementwise op around the `lax.scan` dispatched as its own tiny program
 — and `jax.hessian`, being `jacfwd(jacrev(f))`, traced all of it twice more.
@@ -325,7 +326,8 @@ its cache on the static structure.
 
 `notional`/`fixed_amounts` are children for a different reason: they are pure scale, not
 structure, so two trades differing only in size now share one compiled kernel instead of
-forcing a recompile per notional.
+forcing a recompile per notional. (Since §3.7 every field but `payer` and the grid settings
+is a child, and the schedule is traced too.)
 
 ### 3.4 The other four changes
 
@@ -351,7 +353,8 @@ bisection was never the problem — `_bisect_bucket_sigma`'s `lax.scan` already 
 `bachelier_swaption_price`/`price_lgm_swaption` calls *around* it ran eagerly, once per
 basket instrument plus once more for the diagnostics.
 
-Those are jitted through a closure rather than with `static_argnums`, deliberately:
+Those were jitted through a closure rather than with `static_argnums` (superseded by §3.7,
+which passes the target as a pytree argument):
 `CalibrationTarget` holds NumPy arrays and so is not hashable, and it **must not become**
 hashable/frozen, because `bermudan_vega` substitutes a live `jax.grad` tracer into its
 `market_vol` via `dataclasses.replace`. Closing over the target and jitting a nullary
@@ -422,7 +425,8 @@ Cache behavior, verified directly:
 | forward pricing, different `n_per_std` (a real shape change) | 1 (correct — must recompile) |
 | identical `bermudan_delta_gamma` call | **1** (see below) |
 
-**One residual compile per Greeks call.** `price_fn` is a fresh closure every time (each
+**One residual compile per Greeks call** (fixed by §3.7: a repeated call now compiles
+nothing). `price_fn` is a fresh closure every time (each
 `_*_price_fn` rebuilds it around that trade's prepared structure), and `jax.jit` keys on
 function identity — so the combined grad+Hessian-diagonal program recompiles once per call
 even for an identical trade. Fixing it properly means a closure cache keyed on the full
@@ -456,6 +460,54 @@ measurement, which would put this well past the ~1M cap and back into silent tru
 The attribution it would buy is already available for free via §4's phase annotations. The
 flag remains available for a narrowly-scoped single-phase investigation, which is the only
 context where it fits under the cap.
+
+### 3.7 Trade data as traced arguments (2026-10-02)
+
+Measured across the test suite, most wall time was still XLA compilation: 75-90% of the
+market-path, calibration and Greeks tests, from two sources. Programs were keyed on a
+trade's *values* (a static `_Prepared*`, a calibration basket closed over, a fresh closure
+per Greeks or market-risk call), so each trade, each path date and each call compiled anew;
+and pricers that ran eagerly compiled one tiny program per primitive and shape.
+
+The rule now: **a pricer is a module-level `jax.jit` function, and the trade's data reaches
+it as a pytree argument.** Only what fixes a program's shape or Python control flow is
+static (`payer`, the grid's `n_per_std`/`std_devs`, the proRata mapping of a calibration
+helper, a Jamshidian model). Programs are therefore keyed on shapes (coupon, exercise and
+helper counts, paths, dates), so one compile serves every trade, date, bump and call of
+that shape.
+
+| Pytree | Jitted with it |
+|---|---|
+| `Legs`, `PathSchedule` | `legs_npv`, `_legs_cube`, `_path_fixings` |
+| `EuropeanTerms` (expiry as a serial date) | `black_multileg_npv`, `_european_cube`, `_jamshidian_cube` |
+| `_PreparedBermudan`, `_GridSchedule` | `_backward_induction_arrays`, `_rollback_every_path` |
+| `BasketInstrument` | `_bootstrap` (I-22), the Vega Jacobian's `_residual_gradient` |
+| `CalibrationTarget` | the legacy `calibrate_lgm_sigma`'s prices and bisection |
+
+Callers that build a fresh closure per call are deliberately *not* jitted as a whole: the
+AD Greeks (`_grad_and_hessian_diagonal`) and market risk (`revalue_trade`) differentiate or
+vmap closures over the jitted pricers, and JAX caches the derivative and batched programs
+per pricer. `jamshidian_npv` itself stays eager because its x* derivative rule closes over
+intermediates that `jax.grad` cannot carry through a jit boundary; its cube is jitted.
+
+Measured, cold process, no disk cache (repeat = the same call again in the process):
+
+| | Before | After |
+|---|---:|---:|
+| AD Greeks, one Bermudan, repeat call | 12.8 s, 30 compiles | **0.3 s, 0 compiles** |
+| AD Greeks, one Bermudan, first call | 24.4 s, 276 compiles | 18.9 s, 60 compiles |
+| Market risk, 4 trades × 512 scenarios, repeat | 7.7 s, 8 compiles | **1.5 s, 0 compiles** |
+| `tests/test_portfolio_market_path.py` | 65 s, 1,247 compiles | 36 s, 700 compiles |
+
+Floating-point results move at rounding level: XLA fuses a whole program differently from
+op-by-op dispatch, and the old eager results also depended on which operands XLA folded as
+constants. This was accepted for this change on 2026-10-02 (planning `details/precision.md`
+§13.1 records the measured size); every ORE parity suite passes at its tolerance.
+
+**Across processes**, the test suite also keeps JAX's persistent compilation cache in
+`.jax_cache/` (`tests/conftest.py`), so a rerun reads back most programs instead of
+compiling them. The engine does not enable it on its own; a deployment can, by setting
+`JAX_COMPILATION_CACHE_DIR` for its worker processes.
 
 ---
 

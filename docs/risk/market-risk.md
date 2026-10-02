@@ -86,8 +86,8 @@ A-8): a European on Bachelier or Jamshidian, a Bermudan/American on the LGM grid
 calibrated on today's market and held fixed under every scenario. The same function prices
 the base market and every scenario, so a trade's P&L is exactly `f(base + shift) − f(base)`.
 
-Scenarios run through `jax.lax.map` in vmapped batches, which keeps the work on the
-accelerator. The batch is `batch_size` (default 256) for closed-form trades, and smaller
+Scenarios run in vmapped batches, which keeps the work on the accelerator; the pricers are
+jitted with the trade as an argument, so a repeated run compiles nothing. The batch is `batch_size` (default 256) for closed-form trades, and smaller
 for a Bermudan or American: its rollback interpolates every grid node at every quadrature
 node for the option, the underlying and each cashflow column, about 80 MB per scenario at
 `n_per_std=64`. `scenario_batch_size` caps each batch at `BATCH_MEMORY_BUDGET` (512 MB).

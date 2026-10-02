@@ -36,9 +36,8 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
   apply throughout the codebase (JAX purity/vectorization constraints, how ORE's C++ gets
   translated into JAX).
 - **[Profiling & the Tracer](concepts/profiling.md)** — how the XProf hook works, what a
-  trace contains, which programs still recompile on every warm repeat (the calibrations and
-  the AD Greeks' closures, [I-21](planning/known-issues.md#i-21),
-  [I-22](planning/known-issues.md#i-22)), and how to read a trace's phase annotations.
+  trace contains, why pricers are jitted with the trade as a traced argument (one program
+  per shape, not per trade or call), and how to read a trace's phase annotations.
 - **[Glossary](concepts/glossary.md)** — plain-language definitions for every finance and
   engineering term used in these docs.
 

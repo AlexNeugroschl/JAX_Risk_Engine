@@ -9,6 +9,7 @@ Compiles are counted by patching `jax._src.compiler.backend_compile_and_load`, t
 an xprof trace records as XLA compilation; cache hits do not call it.
 """
 import collections
+import dataclasses
 from contextlib import contextmanager
 
 import jax
@@ -39,11 +40,17 @@ PRICING = PricingConfig(bermudan=ENGINE)
 @contextmanager
 def count_compiles():
     """Count XLA compilations in the block, as a `Counter` keyed by the program's MLIR
-    `sym_name` (`jit_<fn>`, the name xprof shows). A cache hit is not counted."""
+    `sym_name` (`jit_<fn>`, the name xprof shows). A hit in JAX's in-memory caches is not
+    counted. The persistent (on-disk) cache the suite keeps (`tests/conftest.py`) is off
+    inside the block: a program read back from disk would otherwise look like a cache hit."""
+    import jax._src.compilation_cache as _compilation_cache
     import jax._src.compiler as _compiler
 
     counter: collections.Counter = collections.Counter()
     original = _compiler.backend_compile_and_load
+    persistent = jax.config.jax_enable_compilation_cache
+    jax.config.update("jax_enable_compilation_cache", False)
+    _compilation_cache.reset_cache()
 
     def counting(backend, module, *args, **kwargs):
         name = "?"
@@ -59,6 +66,8 @@ def count_compiles():
         yield counter
     finally:
         _compiler.backend_compile_and_load = original
+        jax.config.update("jax_enable_compilation_cache", persistent)
+        _compilation_cache.reset_cache()
 
 
 def bermudan_cfg(**overrides) -> BermudanSwaptionConfig:
@@ -81,44 +90,38 @@ def prepared_bermudan(cfg=None):
 # THE PYTREE SPLIT (_PreparedBermudan)
 # =============================================================================
 class TestPreparedBermudanPytree:
-    """`_PreparedBermudan` is a pytree whose children are exactly the traced fields, so
-    `_backward_induction_arrays` can be jitted while Greeks differentiate through it."""
+    """`_PreparedBermudan` is a pytree whose static aux data is only what fixes the
+    program's shape, so `_backward_induction_arrays` is jitted once per trade shape while
+    Greeks differentiate through it."""
 
-    def test_flatten_exposes_only_the_traced_fields_as_children(self):
+    def test_only_shape_fixing_fields_are_static(self):
         children, aux = prepared_bermudan().tree_flatten()
-        assert len(children) == len(_PreparedBermudan._TRACED)
-        # The differentiation targets must be children, or a tracer would be frozen into the
-        # cache key instead of carrying a gradient: the curves (Delta) and the volatility (Vega).
-        assert {"curve", "index_curve", "sigma"} <= set(_PreparedBermudan._TRACED)
-        aux_names = {name for name, _ in aux}
-        assert aux_names.isdisjoint(set(_PreparedBermudan._TRACED))
-        # Trade structure stays static: it keys the cache.
-        assert {"exercise_times", "fixed_times", "n_per_std", "payer", "reversion"} <= aux_names
+        assert _PreparedBermudan._STATIC == ("payer", "n_per_std", "std_devs")
+        assert aux == (True, 16, 6.0)
+        assert len(children) == len(dataclasses.fields(_PreparedBermudan)) - len(aux)
 
     def test_round_trips_through_flatten_unflatten(self):
         """Flatten/unflatten round-trips exactly (JAX does it at every jit/grad boundary)."""
         original = prepared_bermudan()
         children, aux = original.tree_flatten()
         rebuilt = _PreparedBermudan.tree_unflatten(aux, children)
-        assert rebuilt == original
-        for name in ("exercise_times", "fixed_times", "fixed_amounts"):
-            np.testing.assert_array_equal(np.asarray(getattr(rebuilt, name)), np.asarray(getattr(original, name)))
-        np.testing.assert_array_equal(np.asarray(rebuilt.curve.pillar_rates), np.asarray(original.curve.pillar_rates))
-
-    def test_round_tripped_arrays_stay_writable(self):
-        """Unflattened schedule arrays are writable copies (`np.frombuffer` is read-only)."""
-        children, aux = prepared_bermudan().tree_flatten()
-        rebuilt = _PreparedBermudan.tree_unflatten(aux, children)
-        assert rebuilt.fixed_times.flags.writeable and rebuilt.exercise_times.flags.writeable
+        for f in dataclasses.fields(_PreparedBermudan):
+            for x, y in zip(jax.tree_util.tree_leaves(getattr(rebuilt, f.name)),
+                            jax.tree_util.tree_leaves(getattr(original, f.name))):
+                np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
 
     def test_aux_data_is_hashable(self):
-        """The aux tuple is the jit cache key, so it must hash (a raw NumPy array would not)."""
+        """The aux tuple is part of the jit cache key, so it must hash."""
         _children, aux = prepared_bermudan().tree_flatten()
         assert isinstance(hash(aux), int)
 
     def test_jax_tree_util_sees_it_as_a_pytree(self):
-        # An unregistered dataclass would be a single opaque leaf.
-        assert len(jax.tree_util.tree_leaves(prepared_bermudan())) >= len(_PreparedBermudan._TRACED)
+        # An unregistered dataclass would be a single opaque leaf; the differentiation
+        # targets (the curves for Delta, the volatility for Vega) must be leaves.
+        swap = prepared_bermudan()
+        leaves = jax.tree_util.tree_leaves(swap)
+        for target in (swap.curve.pillar_rates, swap.sigma):
+            assert any(leaf is target for leaf in leaves)
 
 
 # =============================================================================
@@ -159,28 +162,44 @@ class TestCompileCounts:
             engine_npv(n_per_std=20)
         assert sum(counter.values()) >= 1, dict(counter)
 
-    def test_calibration_recompiles_a_few_programs_per_call(self):
-        """Pins a known residue (I-22): the bootstrap's bisection bakes each helper's market
-        price into its traced program, so every call compiles again. Measured 6 per call for
-        a two-helper basket; tighten when I-22 is fixed."""
+    def test_calibrations_of_one_basket_shape_share_one_program(self):
+        """I-22: the bootstrap takes the basket, curves and volatilities as arguments, so a
+        calibration of another trade with the same basket shape (here another deal strike
+        and notional) compiles nothing, and still gets its own answer."""
         market = from_market(shared.market())
-        calibrate_on(bermudan_cfg(), ENGINE, market)  # warm
+        first = calibrate_on(bermudan_cfg(), ENGINE, market)
+        other = bermudan_cfg(fixed_rate=0.045, notional=3_000_000.0)
         with count_compiles() as counter:
-            calibrate_on(bermudan_cfg(), ENGINE, market)
-        assert 0 < sum(counter.values()) <= 12, dict(counter)
+            second = calibrate_on(other, ENGINE, market)
+        assert sum(counter.values()) == 0, dict(counter)
+        assert not np.array_equal(np.asarray(first.sigma.values), np.asarray(second.sigma.values))
+        np.testing.assert_allclose(second.model, second.market, rtol=1e-10)
 
     @pytest.mark.slow
-    def test_repeated_greeks_call_compiles_a_bounded_number_of_programs(self):
-        """Pins a known residue (I-21): the AD Greeks build fresh closures per call (and each
-        calibration recompiles, I-22), so a repeated call compiles again. Measured 30 for one
-        Bermudan (28 of them calibration scans). When I-21 is fixed, tighten this and add
-        I-21's negative test (a trade differing in notional, rate or tenor must still get its
-        own answer), since a count alone would pass a broken cache."""
+    def test_repeated_greeks_call_compiles_nothing(self):
+        """I-21: the pricers are jitted with the trade as an argument and the Greeks are not
+        jitted as a closure, so a repeated call reuses every program."""
         trades, market = [bermudan_cfg()], shared.market()
         portfolio_greeks(trades, market, "USD", PRICING)  # warm
         with count_compiles() as counter:
             portfolio_greeks(trades, market, "USD", PRICING)
-        assert sum(counter.values()) <= 60, dict(counter)
+        assert sum(counter.values()) == 0, dict(counter)
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("change", [dict(fixed_rate=0.041), dict(swap_tenor="4Y")], ids=["rate", "tenor"])
+    def test_a_different_trade_gets_its_own_greeks_from_warm_programs(self, change):
+        """I-21's negative test: after another trade warmed the caches, a trade differing in
+        rate or tenor gets exactly the Greeks it gets from cold caches (a cache keyed on too
+        little would hand it the first trade's program)."""
+        market = shared.market()
+        jax.clear_caches()
+        portfolio_greeks([bermudan_cfg()], market, "USD", PRICING)
+        warm = portfolio_greeks([bermudan_cfg(**change)], market, "USD", PRICING)[0]
+        jax.clear_caches()
+        cold = portfolio_greeks([bermudan_cfg(**change)], market, "USD", PRICING)[0]
+        assert warm.keys() == cold.keys()
+        for key in cold:
+            np.testing.assert_array_equal(warm[key], cold[key], err_msg=key)
 
     @pytest.mark.slow
     def test_greeks_scale_linearly_with_notional(self):

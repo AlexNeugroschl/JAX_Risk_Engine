@@ -127,10 +127,7 @@ JAX_Risk_Engine/
 │   │   │                                 both parametrizations: H, zeta, Hull-White zeta
 │   │   ├── hull_white.py                 Bond options on the Hull-White model (the
 │   │   │                                 Jamshidian engine's building block)
-│   │   ├── ore_builders.py               ORE VanillaSwap construction and the time axis
-│   │   └── static_key.py                 By-value hashing for the _Prepared* trade
-│   │                                     structures, so they can be jax.jit STATIC
-│   │                                     arguments instead of recompiling every call
+│   │   └── ore_builders.py               ORE VanillaSwap construction and the time axis
 │   ├── calibration/
 │   │   ├── ore_lgm.py                    ORE's LgmBuilder: SwaptionHelper baskets and the
 │   │   │                                 bootstrap, batched over path curves

@@ -18,7 +18,7 @@ x(T0) ~ N(0, zeta(T0)) in tests/test_calibration_basket.py. It is separate from
 `engine.instruments.european_swaption`, which prices under Hull-White (see
 `engine.models.lgm` for why the two differ).
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Union
 
 import jax
@@ -33,12 +33,14 @@ from engine.models.ore_builders import (
 )
 
 
+@jax.tree_util.register_dataclass
 @dataclass
 class CalibrationTarget:
     """One co-terminal European swaption to fit: the underlying's fixed-leg cashflows
     (from a real ORE swap) and its market volatility.
 
     `market_vol` is a normal (Bachelier) volatility in absolute rate units (0.01 = 100bp).
+    A pytree (`payer` static), so the pricers are jitted with it as an argument.
     """
     expiry_time: float                 # T0, year-fraction from evaluation_date
     accrual_start_time: float          # T_start, the underlying's own first accrual date
@@ -46,7 +48,7 @@ class CalibrationTarget:
     fixed_cashflow_amounts: np.ndarray  # [N], at the ATM fixed rate (see build_coterminal_basket)
     fixed_accrual_fractions: np.ndarray  # [N], ORE's own accrualPeriod() per coupon
     notional: float
-    payer: bool
+    payer: bool = field(metadata=dict(static=True))
     forward_rate: float                # the underlying's own par/ATM rate (== strike, by construction)
     market_vol: float
 

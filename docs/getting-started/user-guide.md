@@ -14,8 +14,9 @@ This page is about *running* the code. For how it works internally, see
   [Architecture: ORE as a dependency](../concepts/architecture.md#ore-as-a-dependency)), `pandas`,
   `jax`, `jaxlib`, `numpy`, `scipy`.
 - Three optional extras: `api` (`fastapi`, `pydantic>=2`, `uvicorn[standard]` — needed only
-  to run [the HTTP API](../reference/http-api.md)), `dev` (`pytest`, `httpx`, `jsonschema` —
-  needed to run the test suite; `httpx` is required by FastAPI's own `TestClient`, and
+  to run [the HTTP API](../reference/http-api.md)), `dev` (`pytest`, `pytest-xdist`, `httpx`,
+  `jsonschema` — needed to run the test suite; `pytest-xdist` runs it in parallel
+  processes, `httpx` is required by FastAPI's own `TestClient`, and
   `jsonschema` is deliberately test-only, since the engine must emit correct EOD documents
   without depending on a validator to produce them — see
   [the EOD boundary doc](../reference/eod-integration.md)), and `profiling`
@@ -183,22 +184,56 @@ also guards [I-28](../planning/known-issues.md#i-28).
 ## Running the tests
 
 ```bash
-python -m pytest tests/ -m "not slow" -q    # fast tier: what CI runs on every push
-python -m pytest tests/ -q                   # full suite
+.venv/Scripts/python.exe -m pytest tests/ -m "not slow" -q -n 8   # fast tier, in 8 processes
+.venv/Scripts/python.exe -m pytest tests/ -q -n 8                  # full suite
+.venv/Scripts/python.exe -m pytest tests/test_valuation.py -q      # one area while working on it
 ```
+
+(`.venv/bin/python` on Linux.) Use the virtualenv's interpreter: the system one lacks the API
+and schema dependencies.
 
 See each deep-dive doc's "Tested by" section for what's covered where, and
 [Architecture: Testing philosophy](../concepts/architecture.md#testing-philosophy)
 for the general approach (every formula is checked both for internal mathematical
 correctness and against ORE's own installed software directly).
 
-**Two tiers.** The full suite took 46:00 on the reference Windows machine and 50:09 in a
-4-core Linux container on 2026-09-29 (22–27 minutes before the market path; see
-[I-53](../planning/known-issues.md#i-53)), because the Monte Carlo and ORE-parity tests
-genuinely simulate and reprice. Tests marked `@pytest.mark.slow` are excluded by the
-**fast tier**, `-m "not slow"`. The tier timings last measured (2026-09-24, before the market
-path): fast tier about 9½ minutes on Windows and 9m32s on Linux (1,986 tests), slow tier
-12m58s on Linux. They have not been re-measured since. A test is marked `slow` when either:
+**What makes it fast.** Most of a test's time is XLA compiling programs, not arithmetic, so
+three things matter:
+
+- **The pricers compile once per shape.** They are jitted with the trade as an argument
+  ([profiling §3.7](../concepts/profiling.md#37-trade-data-as-traced-arguments-2026-10-02)),
+  so a test reuses the programs every earlier test of the same shape compiled.
+- **Compiled programs are kept on disk** in `.jax_cache/` (JAX's persistent compilation
+  cache, set up by `tests/conftest.py`), so a rerun reads most of them back. The first run
+  after a fresh clone, or after a jax upgrade, pays the full compile. Point
+  `JAX_COMPILATION_CACHE_DIR` elsewhere to keep it outside the tree; delete the directory
+  to reset it, for example to measure cold compiles.
+- **`-n N` runs the tests in `N` processes** (`pytest-xdist`). Each takes 1.5–3 GB, so
+  choose `N` by memory, not cores: `-n auto` starts one per logical core, which on the
+  reference machine (24 threads, 32 GB) ran out of memory and failed tests with
+  `MemoryError`. `-n 8` is as fast there. `--dist loadscope` keeps each module on one
+  process, so its module-scoped fixtures (a portfolio run, a market-risk run) are computed
+  once, about 10% faster again.
+
+Measured on the reference Windows machine on 2026-10-02 (2,254 fast-tier tests):
+
+| Fast tier | Time |
+|---|---:|
+| Before (one process, every program compiled per trade, date and call) | 28m33s |
+| One process, empty `.jax_cache/` | 11m42s |
+| `-n 8`, warm `.jax_cache/` | 2m17s |
+| `-n 8 --dist loadscope`, warm `.jax_cache/` | 2m05s |
+
+The full suite, `-n 8`, with the fast tier's programs already on disk: 7m45s (2,340 tests).
+Before this change it took 46 minutes in one process (2026-09-29), and longer since.
+
+**While changing one area**, run its test files directly (they are named by area:
+`test_valuation.py`, `test_ore_lgm_*.py`, `test_greeks*.py`, `test_market_risk*.py`,
+`test_integration_*.py`, ...), add `-x` to stop at the first failure, and run the fast tier
+before committing. `--lf` reruns only what failed last time.
+
+**Two tiers.** Tests marked `@pytest.mark.slow` are excluded by the **fast tier**,
+`-m "not slow"`. A test is marked `slow` when either:
 
 - it starts `engine.portfolio.worker_pool` processes (the job-submitting classes in
   `tests/test_api.py` and `tests/test_worker_pool.py`), or
@@ -213,7 +248,8 @@ and can't silently put a test in the wrong tier.
 
 **CI.** [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) installs through
 `requirements.txt` (so with the pinned versions) on Linux, Python 3.11, and runs the fast
-tier on every push to `main` and every pull request. The full suite is the `full` job:
+tier on every push to `main` and every pull request, with `-n auto` (one process per core of
+the 4-core runner). The full suite is the `full` job:
 start it by hand from the repository's Actions tab ("Run workflow"). Run it before
 merging anything that touches pricing, calibration or Greeks, and after upgrading a pin.
 CI does not check out the `reference/` submodules; the one test that reads

@@ -2,7 +2,7 @@
 
 **Modules:** [`engine/models/`](../../engine/models/) — [`curves.py`](../../engine/models/curves.py),
 [`lgm.py`](../../engine/models/lgm.py), [`hull_white.py`](../../engine/models/hull_white.py),
-[`ore_builders.py`](../../engine/models/ore_builders.py), [`static_key.py`](../../engine/models/static_key.py)
+[`ore_builders.py`](../../engine/models/ore_builders.py)
 
 ## Plain-language summary
 

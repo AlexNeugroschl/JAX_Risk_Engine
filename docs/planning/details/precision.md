@@ -40,7 +40,10 @@ conflicts with one is redesigned rather than excused.
   at the default is therefore never traded for precision features.
 - **Steps 1.4 to 1.8 keep the default bit for bit.** Their cast points are no-ops at float64
   (`astype` to the same dtype, which XLA removes), and a golden snapshot proves it
-  ([§13.1](#131-bit-for-bit-and-ore-parity)).
+  ([§13.1](#131-bit-for-bit-and-ore-parity)). One change between 1.5 and 1.6 was allowed to
+  move float64 at rounding level, by decision of 2026-10-02: jitting the pricers with the
+  trade as a traced argument (I-21, I-22). It followed step 2.8's procedure below, and the
+  snapshot was re-baselined after it (§13.1); 1.6 to 1.8 are bit for bit against that.
 - **Step 2.8 is the one step that moves float64 numbers.** It rewrites the kernels for
   low-precision compute and uses the same kernels at float64 (A-16), so float64 changes at
   rounding level. Every ORE parity suite must pass at its existing tolerance (1e-14 to 1e-8)
@@ -615,6 +618,22 @@ process changes.
   market risk on four trades, median of ten warm runs, 5.95/6.07 s before and 5.73/5.84 s
   after (no regression); the shared portfolio's run varies 2.5× from run to run (per-path
   recalibration, I-53), and the fastest of five was 118.7 s before and 120.3 s after.
+- **Re-baseline after the jit change (2026-10-02, between 1.5 and 1.6).** The pricers,
+  the LGM bootstrap and the grid engine became module-level jitted programs taking the trade
+  as a traced argument (I-21, I-22; [profiling §3.7](../../concepts/profiling.md#37-trade-data-as-traced-arguments-2026-10-02)),
+  which moves float64 at rounding level: XLA fuses whole programs where values were computed
+  op by op, and some old results depended on which operands XLA folded as constants. The same
+  snapshot script, 232 arrays, old tree (a worktree of `a6c63bf`) against new: 40 identical,
+  among them the float32 scenario market (simulation is untouched); the rest moved by at most,
+  relative to each array's largest magnitude: today's values 2.3e-16; the LGM and Hull-White
+  cubes 5.1e-15 and 5.0e-15; market-risk P&L 9.8e-15; every bump and AD Greek by at most
+  5.1e-14 of its trade's NPV (a Gamma's own relative change looks larger, up to 2e-7, since it
+  is a second difference of NPVs). float32 runs, at float32 rounding: the cube 2.7e-6, the
+  raw shocked revaluation 1.6e-6, market-risk statistics 7.5e-6. Every ORE parity suite
+  passes at its tolerance. Steps 1.6 to 1.8 compare against a snapshot of the commit that
+  made this change, not of `a6c63bf`. The
+  whole snapshot took 14 minutes instead of 69 (bump Greeks 21 s instead of 29 minutes),
+  both measured with other jobs running.
 - Step 2.8: parity suites pass at their tolerances first; then the snapshot is re-baselined,
   with the largest change per array recorded in the commit and in known-issues' verification
   status.

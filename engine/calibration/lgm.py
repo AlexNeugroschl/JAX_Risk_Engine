@@ -17,6 +17,7 @@ the same root when one exists in the bracket. Market prices are Bachelier (norma
 prices.
 """
 from dataclasses import dataclass
+from functools import partial
 from typing import List
 
 import jax
@@ -41,16 +42,26 @@ class CalibrationResult:
 _SIGMA_BRACKET = (1e-6, 0.20)
 
 
-def _bisect_bucket_sigma(
-    price_fn, market_price: float, lo: float = _SIGMA_BRACKET[0], hi: float = _SIGMA_BRACKET[1],
-    iterations: int = 60,
-) -> jax.Array:
-    """Bisection for the sigma with `price_fn(sigma) == market_price`, on a fixed bracket.
+#: The closed forms, jitted with the target as an argument: one program per target shape.
+_market_price = jax.jit(bachelier_swaption_price)
+_model_price = jax.jit(price_lgm_swaption)
 
-    `price_fn` is increasing in sigma. The bracket is not expanded: a result on the
-    ceiling means the market vol is unattainable and `calibrate_lgm_sigma` raises; a
-    result on the floor is left to show up in `rmse`."""
-    lo_arr, hi_arr = jnp.array(lo), jnp.array(hi)
+
+@partial(jax.jit, static_argnames="iterations")
+def _bisect_bucket_sigma(curve: ZeroCurve, a, times, earlier, target: CalibrationTarget, market_price,
+                         iterations: int = 60) -> jax.Array:
+    """Bisection on `_SIGMA_BRACKET` for the next bucket's sigma, the buckets before it
+    (`earlier`, ending at `times`) held fixed, with the target's LGM price equal to
+    `market_price`.
+
+    The price is increasing in sigma. The bracket is not expanded: a result on the ceiling
+    means the market vol is unattainable and `calibrate_lgm_sigma` raises; a result on the
+    floor is left to show up in `rmse`."""
+    lo_arr, hi_arr = jnp.array(_SIGMA_BRACKET[0]), jnp.array(_SIGMA_BRACKET[1])
+
+    def price_fn(new_sigma):
+        values = jnp.concatenate([earlier, jnp.reshape(new_sigma, (1,))]).astype(earlier.dtype)
+        return price_lgm_swaption(curve, a, Sigma(times=times, values=values), target)
 
     def body(carry, _):
         lo, hi = carry
@@ -88,23 +99,10 @@ def calibrate_lgm_sigma(
     bucket_times: List[float] = []       # interior breakpoints calibrated so far
     bucket_values: List[float] = []      # calibrated sigma per bucket so far
 
-    # Jit the closed forms as one program each rather than dispatching every elementwise op
-    # (see docs/concepts/profiling.md). The target is closed over, not passed as a static
-    # argument, because `engine.risk.greeks.bermudan_vega` puts a tracer in its
-    # `market_vol`, so it cannot be hashed.
-    def _jit_over_target(fn, target):
-        return jax.jit(lambda: fn(target, curve))
-
     for i, target in enumerate(targets):
-        times_arr = jnp.asarray(bucket_times, dtype=dtype)
-
-        def price_fn(new_sigma, _times=times_arr, _values=bucket_values, _target=target):
-            values_arr = jnp.asarray(_values + [new_sigma], dtype=dtype)
-            sigma = Sigma(times=_times, values=values_arr)
-            return price_lgm_swaption(curve, a, sigma, _target)
-
-        market_price = float(_jit_over_target(bachelier_swaption_price, target)())
-        new_value = float(_bisect_bucket_sigma(price_fn, market_price))
+        market_price = float(_market_price(target, curve))
+        new_value = float(_bisect_bucket_sigma(curve, a, jnp.asarray(bucket_times, dtype=dtype),
+                                               jnp.asarray(bucket_values, dtype=dtype), target, market_price))
         # Saturating at the ceiling means the market vol is out of range: refuse.
         # Saturating at the floor happens on a spike-then-dip vol curve, where earlier
         # buckets already carry too much variance; it is reported through `rmse`
@@ -127,13 +125,8 @@ def calibrate_lgm_sigma(
     )
 
     # Diagnostics: reprice every instrument at the final Sigma.
-    market_prices = jnp.asarray([
-        float(_jit_over_target(bachelier_swaption_price, t)()) for t in targets
-    ])
-    model_prices = jnp.asarray([
-        float(jax.jit(lambda _t=t: price_lgm_swaption(curve, a, final_sigma, _t))())
-        for t in targets
-    ])
+    market_prices = jnp.asarray([float(_market_price(t, curve)) for t in targets])
+    model_prices = jnp.asarray([float(_model_price(curve, a, final_sigma, t)) for t in targets])
     rmse = float(jnp.sqrt(jnp.mean((model_prices - market_prices) ** 2)))
 
     return CalibrationResult(

@@ -2,7 +2,8 @@
 # environment (constraints.txt, via requirements.txt) and every test not
 # marked `slow` -- unit, integration and ORE-parity tests. The slow tier
 # (worker-pool and HTTP-job tests, a handful of long runs) is the `full` job,
-# started by hand from the Actions tab. See docs/getting-started/user-guide.md.
+# started by hand from the Actions tab. Every job runs the tests in one process
+# per core (pytest-xdist, `-n auto`). See docs/getting-started/user-guide.md.
 name: CI
 
 on:
@@ -29,7 +30,7 @@ jobs:
           cache: pip
           cache-dependency-path: constraints.txt
       - run: python -m pip install -r requirements.txt
-      - run: python -m pytest -m "not slow" -q --durations=15
+      - run: python -m pytest -m "not slow" -q -n auto --durations=15
 
   # The fast tier again under JAX's strict dtype promotion, which turns any implicit
   # float32/float64 mix into an error: kernels follow the dtype of their inputs, so a float32
@@ -47,7 +48,7 @@ jobs:
           cache: pip
           cache-dependency-path: constraints.txt
       - run: python -m pip install -r requirements.txt
-      - run: python -m pytest -m "not slow" -q --durations=15
+      - run: python -m pytest -m "not slow" -q -n auto --durations=15
 
   full:
     if: github.event_name == 'workflow_dispatch'
@@ -61,4 +62,4 @@ jobs:
           cache: pip
           cache-dependency-path: constraints.txt
       - run: python -m pip install -r requirements.txt
-      - run: python -m pytest -q --durations=25
+      - run: python -m pytest -q -n auto --durations=25

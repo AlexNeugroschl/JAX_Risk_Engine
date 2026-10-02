@@ -153,6 +153,7 @@ def bermudan_cube(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Ma
     grid_serials = np.array([d.serialNumber() for d in scenarios.dates], dtype=np.int64)
     disc_curves = scenarios.discount[cfg.currency]
     index_curves = scenarios.index[index_name(cfg.currency, cfg.index_tenor_months)]
+    fixing_serials = _fixing_serials(cfg)
     columns = []
     for j, date in enumerate(scenarios.dates):
         if not any(d > date for d in contract_exercise_dates(cfg)):
@@ -160,7 +161,7 @@ def bermudan_cube(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Ma
             continue
         disc = disc_curves.on_date(j)
         index = index_curves.on_date(j)
-        fixed_on_path = {ORE.Date(int(s)): 0.0 for s in _fixing_serials(cfg) if asof.serialNumber() <= s < date.serialNumber()}
+        fixed_on_path = {ORE.Date(int(s)): 0.0 for s in fixing_serials if asof.serialNumber() <= s < date.serialNumber()}
         dated = dataclasses.replace(cfg, evaluation_date=date, fixings={**history, **fixed_on_path})
         sigma = _path_sigma(cfg, engine, surface, asof, date, disc, index, decay, today)
         prepared = prepared_option(dated, engine, engine.volatility)
@@ -204,6 +205,7 @@ def _known_rates(prepared, history: Mapping[ORE.Date, float], asof: ORE.Date, gr
     return jnp.where(path_known[None, :], fixings[:, step], jnp.asarray(values, dtype=fixings.dtype))
 
 
+@jax.jit
 def _rollback_every_path(prepared, schedule, disc: DiscountCurve, index: DiscountCurve, sigma: Sigma,
                          known: jax.Array) -> jax.Array:
     """The grid engine's t=0 value on every path: the rollback vmapped over the path curves,

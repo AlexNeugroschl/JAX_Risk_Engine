@@ -53,9 +53,10 @@ def _grad_and_hessian_diagonal(price_fn, x, *rest):
     `tests/test_profiling_and_jit.py::TestHessianDiagonalEquivalence`.
     Differentiates with respect to the first argument; `rest` is held fixed.
 
-    Both outputs come from one jitted program. `price_fn` is a fresh closure on every
-    call, so it recompiles once per call (I-21; read that entry before memoizing it, since
-    a wrongly keyed memo returns a program compiled for a different trade).
+    Not jitted as a whole: `price_fn` is a fresh closure on every call, so a jit here would
+    compile once per call (I-21). The pricers it calls are jitted with the trade as an
+    argument (or, Jamshidian's, run op by op), and JAX caches their derivative programs, so a
+    repeated call, or another trade of the same shape, compiles nothing.
     """
     def combined(xi, *fixed):
         def f(inner):
@@ -70,7 +71,7 @@ def _grad_and_hessian_diagonal(price_fn, x, *rest):
         rows = jax.vmap(hvp)(basis)   # [n, n]; only its diagonal escapes
         return grad, jnp.diagonal(rows)
 
-    return jax.jit(combined)(x, *rest)
+    return combined(x, *rest)
 
 
 def portfolio_greeks(trades: Sequence[Trade], market: Market, base_currency: str,
@@ -158,15 +159,21 @@ def _bootstrap_jacobian(basket, disc, index, surface, asof, reversion: float, si
     J = np.zeros((n, n))
     for j, helper in enumerate(basket):
         zeta = float(np.sum(values[: j + 1] ** 2 * dt[: j + 1]))
-
-        def residual(v, z, _helper=helper):
-            market, model = price_pair(_helper, disc, index, v, reversion, z)
-            return model - market
-
-        dg_dv, dg_dzeta = (float(d) for d in jax.grad(residual, argnums=(0, 1))(
-            jnp.asarray(vols[j]), jnp.asarray(zeta)))
+        dg_dv, dg_dzeta = (float(d) for d in _residual_gradient(jnp.asarray(vols[j]), jnp.asarray(zeta), helper,
+                                                                disc, index, reversion))
         dg_dsigma = dg_dzeta * 2.0 * values[: j + 1] * dt[: j + 1]
         row = -(dg_dsigma[:j] @ J[:j]) if j > 0 else np.zeros(n)
         row[j] -= dg_dv
         J[j] = row / dg_dsigma[j]
     return J
+
+
+def _residual(v, z, helper, disc, index, reversion):
+    """A bootstrap bucket's g = model - market as a function of the helper's volatility `v`
+    and zeta at its expiry `z`."""
+    market, model = price_pair(helper, disc, index, v, reversion, z)
+    return model - market
+
+
+#: `(dg/dv, dg/dzeta)`, one program per helper shape.
+_residual_gradient = jax.jit(jax.grad(_residual, argnums=(0, 1)))

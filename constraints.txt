@@ -32,6 +32,7 @@ colorama==0.4.6
 cryptography==50.0.1
 decorator==5.3.1
 etils==1.14.0
+execnet==2.1.2
 fastapi==0.141.1
 fire==0.7.1
 frozenlist==1.8.0
@@ -83,6 +84,7 @@ pydantic==2.13.5
 pydantic_core==2.46.5
 Pygments==2.21.0
 pytest==9.1.1
+pytest-xdist==3.8.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.3
 PyYAML==6.0.3

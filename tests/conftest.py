@@ -2,9 +2,28 @@
 Shared fixtures: the demo scenarios' evaluation date, a minimal `PortfolioRequest` and an API
 client. x64 is enabled here, before any test builds an array (importing `engine` enables it
 too).
+
+XLA programs are cached on disk across runs (JAX's persistent compilation cache), in
+`.jax_cache/` at the repository root unless `JAX_COMPILATION_CACHE_DIR` names another
+directory. A program is keyed on its HLO, the compile options and the jax/jaxlib versions, so
+a hit is the executable a fresh compile would build. Set through the environment as well, so
+worker processes the tests start use it too. Delete the directory to measure cold compiles.
 """
+import os
+from pathlib import Path
+
+os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", str(Path(__file__).resolve().parents[1] / ".jax_cache"))
+# Cache every program: the suite compiles thousands of small ones, each cheaper to read back.
+os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
+os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
+
 import jax
 jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_compilation_cache_dir", os.environ["JAX_COMPILATION_CACHE_DIR"])
+jax.config.update("jax_persistent_cache_min_compile_time_secs",
+                  float(os.environ["JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS"]))
+jax.config.update("jax_persistent_cache_min_entry_size_bytes",
+                  int(os.environ["JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES"]))
 
 import dataclasses
 

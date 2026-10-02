@@ -26,6 +26,9 @@ __pycache__/
 !tests/fixtures/**/*.csv
 !tests/fixtures/**/*.json
 
+# JAX's persistent XLA compilation cache (tests/conftest.py).
+.jax_cache/
+
 # Profiler traces (JAX_RISK_PROFILE_DIR) -- .profile-out/.profile-out-small are
 # the demos' own defaults; the glob covers ad-hoc dirs from a manual capture.
 .profile-out*/

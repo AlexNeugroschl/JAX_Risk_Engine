@@ -7,11 +7,13 @@ Greeks differentiate). The same function prices the base market and every scenar
 trade's P&L is exactly `f(base + shift) - f(base)`: there is no second pricer whose base could
 disagree.
 
-Scenarios are evaluated with `jax.lax.map` in batches of vmapped rows. The batch is bounded by
-memory per trade (`scenario_batch_size`): a Bermudan's rollback interpolates every grid node at
-every quadrature node for every cashflow column, about 80 MB per scenario at `n_per_std=64`, so
-a fixed batch of a few hundred would need tens of gigabytes, while a Python loop would leave the
-accelerator idle.
+Scenarios are evaluated in batches of vmapped rows. The batch is bounded by memory per trade
+(`scenario_batch_size`): a Bermudan's rollback interpolates every grid node at every quadrature
+node for every cashflow column, about 80 MB per scenario at `n_per_std=64`, so a fixed batch of
+a few hundred would need tens of gigabytes, while a loop over single scenarios would leave the
+accelerator idle. The price function is not jitted as a closure, which would compile again on
+every run: the pricers it calls are jitted with the trade as an argument, so a repeated run, or
+another trade of the same shape, reuses their programs.
 
 **Engines.** Each product's engine is the pricing configuration's (`PricingConfig`): a European
 on ORE's Bachelier engine (the normal volatility read from the market, held fixed) or on
@@ -96,12 +98,10 @@ def revalue_trade(cfg, market: Market, factors: RateRiskFactors, moves, pricing:
         return fn.price(*[vector[s] for s in own])
 
     batch = scenario_batch_size(cfg, pricing, batch_size, jnp.dtype(dtype).itemsize)
-    return float(jax.jit(on_factors)(base)), _map_scenarios(on_factors, base, moves, batch)
+    return float(on_factors(base)), _map_scenarios(on_factors, base, moves, batch)
 
 
 def _map_scenarios(on_factors, base, moves, batch_size):
-    """`on_factors(base + moves[s])` for every scenario `s`, in batches."""
-    @jax.jit
-    def run(all_moves):
-        return jax.lax.map(lambda move: on_factors(base + move), all_moves, batch_size=batch_size)
-    return run(moves)
+    """`on_factors(base + moves[s])` for every scenario `s`, vmapped in batches."""
+    batched = jax.vmap(lambda move: on_factors(base + move))
+    return jnp.concatenate([batched(moves[i:i + batch_size]) for i in range(0, moves.shape[0], batch_size)])

@@ -16,6 +16,7 @@ as a `BermudanOptionWrapper`, one underlying swap per exercise date (plan T-11, 
     accruing from e (`buildUnderlyingSwaps`: `lower_bound` on the accrual start, then one
     back), on both legs.
 """
+from functools import partial
 from typing import List, Optional, Sequence
 
 import jax
@@ -47,6 +48,11 @@ def wrap(option: jax.Array, underlyings: Sequence[jax.Array], steps: Sequence[Op
     """`[S, D]` NPV of the wrapped option from the option's own cube `option` and each
     exercise's underlying cube (`underlyings[i]` for contract date i), as `OptionWrapper::NPV`
     walks the grid. A long position."""
+    return _wrap(option, tuple(underlyings), tuple(steps), physical)
+
+
+@partial(jax.jit, static_argnums=(2, 3))
+def _wrap(option: jax.Array, underlyings, steps, physical: bool) -> jax.Array:
     num_dates = option.shape[1]
     after = jnp.arange(num_dates)
     value = option

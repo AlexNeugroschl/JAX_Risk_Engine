@@ -220,7 +220,7 @@ def _value_trade(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricin
         terms = european_terms(cfg, market.asof)
         schedule = path_schedule(terms.legs, market.asof, sm.dates)
         if pricing.european == "Jamshidian":
-            alive = np.asarray([terms.expiry > d for d in sm.dates])
+            alive = np.asarray([terms.expiry_serial > d.serialNumber() for d in sm.dates])
             option = jamshidian_cube(terms, pricing.jamshidian, schedule, sm.times, disc, index, index_fixings, alive)
         else:
             surface = market.swaption_vols(currency)

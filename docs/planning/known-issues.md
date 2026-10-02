@@ -11,33 +11,29 @@ exposure are not yet compared with an ORE run ([I-50](#i-50)).
 
 ## Verification status
 
-Last full run, 2026-10-02, on the code after roadmap 1.5 (precision per product and per
-trade), 2,337 collected (2,309 after 1.4; +28: `tests/test_precision.py` +23, `test_api` +5),
-summary line printed:
+Last full run, 2026-10-02, on the code after the jit change (the pricers jitted with the
+trade as a traced argument, closing [I-21](#i-21) and [I-22](#i-22), and [I-74](#i-74)),
+2,340 collected (2,337 after 1.5; +4: the `pytest-xdist` pin check, the I-74 test and I-21's
+two negative tests; -1: a test of the removed by-value pytree split), summary line printed:
 
-- **Windows**: **2,337 passed, 0 failed**. Its wall time (9h12m) spans a night with the
-  machine likely asleep, so it says nothing about speed; float64 timing is measured
-  separately (precision.md §13.1).
+- **Windows**, `-n 8`: **2,340 passed, 0 failed**, 7m45s. The fast tier: 2,254 passed in
+  11m42s in one process from an empty compilation cache, 2m17s with `-n 8` and a warm one;
+  the code before the change took 28m33s in one process (2,252 passed, 1 skipped in its
+  worktree, which lacks `reference/traderX`).
+- **Linux** (Docker `python:3.11`, 4 CPUs, `-n auto`, as CI): **2,339 passed, 1 skipped**
+  (`reference/traderX` not in the container), 18m06s; the fast tier before it, from an empty
+  cache, 2,253 passed and 1 skipped in 5m55s.
 - **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the CI
-  job): 2,253 passed, 0 failed.
-- **Linux** not re-run: 1.5 changes no process, path or platform default (rule 5). The last
-  Linux run, after 1.4: 2,308 passed, 1 skipped (`reference/traderX` not in the container).
-- Earlier the same day a fast-tier run of the touched modules, started beside the golden
-  snapshot (three JAX processes, about 6 GB free), died with `Fatal Python error: Aborted`
-  inside an XLA compile in `engine/risk/greeks.py`, code 1.5 does not touch: another
-  instance of [I-27](#i-27), under memory pressure. Run alone, everything passed.
+  job, `-n 8`): 2,254 passed, 0 failed.
+- `-n auto` on the 24-thread, 32 GB Windows machine started 24 processes and failed 20 tests
+  with `MemoryError` and its after-effects: memory, not the code; see the user guide.
 
-Bit for bit: a snapshot of 232 arrays was saved from the code before 1.5 (a worktree of
-`2b70d15`) and compared after it with `np.array_equal` (value, dtype, shape): **all 232
-identical**, the 76 of float32 runs included (a policy without overrides prices exactly as
-before): today's values under two engines; the shared portfolio's cube, exposure and per-trade
-EPE under the LGM and the Hull-White model at float64, float32 throughout and a float32
-simulation and market; bump and AD Greeks; market risk at float64 and float32. Red first: the
-exit-criterion tests (a mixed run equals each trade alone at its precision) fail when the
-scenario market is loaded at `pricing.compute` for every trade. Earlier steps' snapshots
-(1.4: 164 of 164 default arrays identical, the float32 cube moved by design) are in
-[details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity). The fast tier
-(`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
+Not bit for bit, by decision (2026-10-02): of the 232 snapshot arrays, 40 are identical and
+the rest moved at rounding level, at most 1e-14 relative in float64 cubes and P&L and 5.1e-14
+of a trade's NPV in any Greek ([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
+Red first: on the code before the change (`a6c63bf`) the I-22 test compiles 6 programs, the
+I-21 test 30, and the I-74 test raises the missing fixing. The fast tier (`-m "not slow"`)
+alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
 
 ## Summary
@@ -53,8 +49,6 @@ scenario market is loaded at `pricing.compute` for every trade. Earlier steps' s
 | [I-12](#i-12) | `/version` reports the dispatcher's backend, not the worker's device | Low | OPEN | Correctness | 1.7 |
 | [I-16](#i-16) | `rateSensitivity` is parallel-only | Medium | OPEN | Scope | External |
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
-| [I-21](#i-21) | AD Greeks recompile about 30 XLA programs per repeated call | Medium | OPEN | Performance | 3.3 |
-| [I-22](#i-22) | Each LGM calibration recompiles its bisection (6 programs per call) | Low | OPEN | Performance | 3.3 |
 | [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | 4.3 |
 | [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA | Medium | OPEN | Tooling | 5.1 |
 | [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | 2.5 |
@@ -63,7 +57,7 @@ scenario market is loaded at `pricing.compute` for every trade. Earlier steps' s
 | [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | 2.4 |
 | [I-50](#i-50) | No path- or distribution-level parity test against an ORE simulation | Medium | OPEN | Validation | 2.2 |
 | [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | 2.3 |
-| [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | OPEN | Performance | 3.1 |
+| [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | PARTIAL | Performance | 3.1 |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | 2.6 |
 | [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | 2.7 |
 | [I-72](#i-72) | Worker pools pickle ORE objects, compile per worker and would contend for TPU chips | Medium | OPEN | Architecture | 1.8 |
@@ -241,72 +235,39 @@ shift convention in ORE's simulation market would pass every current test.
 
 ## Performance
 
-<a id="i-21"></a>
-### I-21 — AD Greeks recompile about 30 XLA programs per repeated call
-
-**Severity:** Medium · **Status:** OPEN · every number is correct · re-measured 2026-10-01
-after roadmap 1.3
-
-**What is wrong.** A repeated identical AD Greeks call (`engine.risk.greeks.portfolio_greeks`)
-on one two-exercise Bermudan compiles 30 programs (150 cold): 2 `jit_combined` (each Greek's
-`_grad_and_hessian_diagonal` jits a closure built fresh per call, and `jax.jit` caches on
-function identity) and 28 `jit_scan`, the calibrations it runs for the base, Theta and Vega
-markets ([I-22](#i-22)). The Hull-White pipeline's 23 closures this entry was first measured on
-were removed by 1.3.
-
-**To close.** Fix [I-22](#i-22) first (most of the count). Then memoize the jitted wrapper in a
-bounded LRU keyed on the trade's prepared structure (`static_key`) plus the curves' shapes and
-dtypes; never on the config or `id()`. The test must also show that trades differing only in
-`notional`, `fixed_rate` or tenor still get their own answer.
-`tests/test_profiling_and_jit.py::TestCompileCounts::test_repeated_greeks_call_compiles_a_bounded_number_of_programs`
-pins today's bound and changes with the fix.
-
-<a id="i-22"></a>
-### I-22 — Each LGM calibration recompiles its bisection (6 programs per call)
-
-**Severity:** Low · **Status:** OPEN · every number is correct · re-measured 2026-10-01
-
-**What is wrong.** `engine/calibration/ore_lgm.py`'s bootstrap bakes each helper's market
-price into its traced bisection, so every calibration compiles again: 6 `jit_scan` per call
-for a two-helper basket (`calibrate_on`). A Bermudan's value today, its Greeks and every
-path date it is recalibrated on pay it again. A content-keyed memo would miss every time.
-
-**To close.** Pass the market price (and the bucket's fixed prefix) as traced arguments to a
-stable, module-level jitted function; expect 6 → 1 per basket size. Do not trade the bisection
-iterations for compile count. `tests/test_profiling_and_jit.py::TestCompileCounts::
-test_calibration_recompiles_a_few_programs_per_call` pins today's bound.
-
 <a id="i-53"></a>
 ### I-53 — The pipeline is slow: per-path recalibration and bump Greeks of options
 
-**Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-29 · re-measured 2026-10-01
+**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-29 · re-measured 2026-10-02
 
-**What is wrong.** The full suite went from 22:54 before the ORE alignment to 46:00, and the
-Hull-White model's move onto the shared pipeline (roadmap 1.3) gave its options the same
-cost. Measured (CPU, shared test market, Bermudan/American grid at `n_per_std=16`):
+**What is wrong.** Most of the cost was XLA compiling the same work again: per trade, per
+path date, per bump and per call ([I-21](#i-21), [I-22](#i-22), profiling §3.7). With the
+pricers jitted once per shape (2026-10-02), measured on CPU, shared test market, grid at
+`n_per_std=16`, each job in a fresh process with no disk cache, old and new code
+interleaved; "repeat" is the same call again in the process:
 
-| Work | Time |
-|---|---|
-| One Bermudan (4 exercises) on 64 paths × 3 dates, recalibrated per path date | 43 s |
-| One American (3-year window) on 64 paths × 3 dates | 44 s |
-| The same with `PricingConfig(recalibrate=False)` (warm) | 6 s / 21 s |
-| Bump Greeks of the Bermudan / the American (each bump recalibrates) | 128 s / 587 s |
-| AD Greeks of the same | 31 s / 48 s |
+| Work | Before: first / repeat | Now: first / repeat |
+|---|---|---|
+| One Bermudan on 64 paths × 3 dates, recalibrated per path date | 41 s / 13 s | 15 s / 1.3 s |
+| One American (3-year window), the same | 74 s / 50 s | 39 s / 20 s |
+| Bump Greeks of the Bermudan / the American | 164 s / 583 s first, 168 s / 754 s repeat | 7.4 s / 22 s first, 1.3 s / 12 s repeat |
+| AD Greeks of the Bermudan / the American | 38 s / 73 s first, 21 s / 57 s repeat | 21 s / 27 s first, 0.4 s / 5.9 s repeat |
+| Market risk, 4 trades × 512 scenarios | 8.1 s / 6.9 s | 6.1 s / 2.8 s |
 
-Profiling it is blocked by the same cost: `demos/demo_profile_small.py` (5 trades, 256 paths,
-3 dates) fills the profiler's ~1M-event cap within the first 7-10 s of a 112 s job (398 s
-with Bump Greeks) and its trace is truncated; without its Bermudan and American the whole
-job is 205k events, 12.8 MB. The events are the options' recalibration and pricing per path
-date, not the Greeks (AD and Bump both overflow).
+What remains: an American's repeat on the path is arithmetic, not compiling (13 s alone,
+no compiles): every path date recalibrates a basket of one helper per reference-grid month,
+each bucket a 60-step bisection around the 160-step root solve of `_analytic_lgm`. A first
+call still compiles a few large programs (each bootstrap bucket per helper shape, the grid
+induction and its derivatives), and each worker process compiles them again unless a
+persistent compilation cache is configured (`JAX_COMPILATION_CACHE_DIR`; [I-72](#i-72)).
+`demos/demo_profile_small.py`'s trace was truncated at the profiler's event cap before this
+change and has not been re-measured.
 
-Suspects: each Bermudan/American rebuilds its basket through `ORE.SwaptionHelper`
-and bootstraps on every path date (ORE's `recalibrate = true`), with its bisection recompiled
-each time ([I-22](#i-22)); sensitivities revalue one bump at a time in Python loops; nothing
-is jitted end to end; each worker process recompiles.
-
-**To close.** Profile a job (`JAX_RISK_PROFILE_DIR`, [profiling](../concepts/profiling.md)),
-then optimize, keeping every parity test bit-identical in FP64. `PricingConfig(recalibrate=
-False)` and the AD Greeks method exist where ORE's semantics are not needed.
+**To close.** Profile a portfolio job (`JAX_RISK_PROFILE_DIR`,
+[profiling](../concepts/profiling.md)); cut the American recalibration's arithmetic without
+changing its root (an early exit of a bisection once its bracket stops moving keeps every
+value); measure first-call compile time per product. `PricingConfig(recalibrate=False)` and
+the AD Greeks method exist where ORE's semantics are not needed.
 
 <a id="i-61"></a><a id="p-1"></a>
 ### I-61 — Nothing runs on more than one device
@@ -647,8 +608,12 @@ same command later passed in full, and no abort occurred in the recorded runs si
 
 **Hypothesis, unproven.** The worker pool lives for the interpreter; before roadmap 1.3
 `tests/test_api.py` created pools and never shut them down, so later in-process compiles ran
-with worker children attached. Pairing modules does not reproduce it. Also check whether
-XLA's on-disk compilation cache is shared unsafely with spawned workers.
+with worker children attached. Pairing modules does not reproduce it. Since 2026-10-02 the
+suite does share JAX's on-disk compilation cache between its processes (xdist workers and
+the pools they start, `tests/conftest.py`); JAX writes an entry without a lock and recompiles
+when one cannot be read, so a torn entry costs a compile, not a crash, but an abort after
+that date should rule the cache in or out first (rerun with `JAX_COMPILATION_CACHE_DIR`
+pointing at an empty directory).
 
 **Current handling.** `tests/test_api.py` and `tests/test_worker_pool.py` shut the pool down
 after the module, and the concurrency test builds a fresh pool (it failed deterministically
@@ -713,6 +678,8 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-17"></a>I-17 | A malformed note date failed the whole bundle | `tests/test_integration_note.py::TestRefusalsAreNotePricingErrors` |
 | <a id="i-19"></a>I-19 | The accrual tolerance rounded its own bound | `tests/test_integration_note.py::TestToleranceIsDerivedNotConstant` |
 | <a id="i-20"></a>I-20 | Impossible calendar dates aborted the whole bundle | `tests/test_integration_note.py::TestImpossibleCalendarDates` |
+| <a id="i-21"></a>I-21 | AD Greeks recompiled about 30 XLA programs per repeated call (the pricers are jitted with the trade as an argument; the Greeks no longer jit a fresh closure) | `tests/test_profiling_and_jit.py::TestCompileCounts::test_repeated_greeks_call_compiles_nothing`, `::test_a_different_trade_gets_its_own_greeks_from_warm_programs` |
+| <a id="i-22"></a>I-22 | Each LGM calibration recompiled its bisection (now one program per helper shape, the basket an argument) | `tests/test_profiling_and_jit.py::TestCompileCounts::test_calibrations_of_one_basket_shape_share_one_program` |
 | <a id="i-25"></a>I-25 | A scalar Greek crashed the HTTP result serializer | `tests/test_api_bond_schemas.py::TestBondGreeksSerializeOverHttp` |
 | <a id="i-24"></a>I-24 | Bonds had no scenario NPV on the Hull-White model (refused; a broadcast t=0 value gave VaR 0, ES NaN) | `tests/test_hull_white_model.py::TestBondsOnEveryPath`, `tests/test_portfolio_bond_wire_through.py::TestBondsArePricedOnEveryPath` |
 | <a id="i-26"></a>I-26 | Greeks for a bond maturing tomorrow crashed on the Theta reprice | `tests/test_portfolio_bond_wire_through.py::TestBondGreeksReachThePortfolioPath` |
@@ -744,6 +711,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-69"></a>I-69 | The market path silently ignored `precision.pricing`/`risk`/`calibration`, `calibration_targets`, and a `base_currency` contradicting the simulation (now refused by name) | `tests/test_run_config.py::TestWhatThePipelineDoesNotImplementIsRefused`, `::TestConfigurationValues`, `tests/test_api_market_path.py::test_an_unpriceable_request_is_a_400_and_no_job` |
 | <a id="i-70"></a>I-70 | Bump Theta of a bond maturing the next day raised `BondPricingError` (now redemption − NPV, as ORE) | `tests/test_portfolio_bond_wire_through.py::TestBondGreeksReachThePortfolioPath::test_a_bond_maturing_tomorrow_does_not_crash_the_greeks` |
 | <a id="i-71"></a>I-71 | A float32-tier worker turned x64 off, so its pricing and exposure ran in float32 where an in-process run used float64 | `tests/test_worker_pool.py::TestSubmitPricingJobRouting::test_float32_job_returns_correct_result` |
+| <a id="i-74"></a>I-74 | A calibration basket read ORE's global evaluation date, so a later date (another caller's, or the wall clock past a helper's fixing) failed it with a missing fixing | `tests/test_ore_lgm_calibration.py::test_the_basket_does_not_depend_on_ores_global_evaluation_date` |
 | <a id="m-4"></a>Audit M-4 | Trades were defined relative to the evaluation date (now absolute dates) | `tests/test_trade_dates.py` |
 | <a id="m-5"></a>Audit M-5 | Theta re-rolled the trade instead of ageing it | `tests/test_trade_dates.py` |
 | <a id="r-1"></a>Audit R-1 | Cube quantiles were reported as VaR/ES (now exposure profiles; market-risk VaR/ES by t=0 revaluation) | `tests/test_exposure.py`, `tests/test_market_risk.py`, `tests/test_market_risk_ore_parity.py` |

@@ -11,6 +11,7 @@ index (SOFR: ACT/360, compounded in arrears, US calendar, lookback/lockout). Suc
 must be refused, not priced here; see I-05 in docs/planning/known-issues.md.
 """
 import math
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import numpy as np
@@ -39,6 +40,22 @@ def time_from_reference(evaluation_date: ORE.Date, date: ORE.Date) -> float:
     `timeFromReference(d)` on a curve with day counter `TIME_AXIS_DAY_COUNTER`. Equal
     dates map to identical floats, so exercise dates match accrual dates exactly."""
     return TIME_AXIS_DAY_COUNTER.yearFraction(evaluation_date, date)
+
+
+@contextmanager
+def evaluation_date(date: ORE.Date):
+    """ORE's global evaluation date set to `date` inside the block and restored after it.
+    For ORE objects that read it while the engine extracts their data (a `SwaptionHelper`
+    building its underlying asks for every fixing before it), so they see the date they are
+    built on, not whatever a previous caller left there or the wall-clock default."""
+    settings = ORE.Settings.instance()
+    previous = settings.evaluationDate
+    settings.evaluationDate = date
+    try:
+        yield
+    finally:
+        settings.evaluationDate = previous
+
 
 #: The accrual day-count vocabulary lives in the leaf module `engine.day_count`, so that
 #: `engine.integration` can use it without importing this module (see that module).

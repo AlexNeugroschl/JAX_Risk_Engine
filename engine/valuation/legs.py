@@ -21,9 +21,12 @@ On valuation date d, a floating coupon with fixing date f is:
 `legs_npv` values one date; `legs_cube` is it vmapped over the simulation dates, every path
 at once. Today's price is `legs_npv` on today's `ZeroCurve`s, which is ORE's t=0 value
 (tests/test_valuation.py checks both against ORE).
+
+`Legs` and `PathSchedule` are pytrees and the pricers are jitted with them as arguments, so a
+program is compiled once per shape (coupon counts, paths, dates), not per trade or date.
 """
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Mapping, Sequence
 
 import jax
@@ -35,15 +38,16 @@ from engine.models.curves import DiscountCurve, log_discount
 from engine.models.ore_builders import (
     SWAP_CALENDAR, TIME_AXIS_DAY_COUNTER, ibor_index, known_fixing, par_coupon_forecast_period,
 )
-from engine.models.static_key import StaticKeyMixin
 from engine.simulation.scenario_market import ScenarioCurves
 
 
+@jax.tree_util.register_dataclass
 @dataclass(frozen=True, eq=False)
-class Legs(StaticKeyMixin):
+class Legs:
     """Every coupon of one vanilla swap (paid or not): serial dates for the date rules, times
-    from the as-of date for the curves. `payer` pays the fixed leg."""
-    payer: bool
+    from the as-of date for the curves. `payer` pays the fixed leg (static under `jax.jit`;
+    every other field is traced)."""
+    payer: bool = field(metadata=dict(static=True))
     fixed_pay_serial: np.ndarray
     fixed_pay: np.ndarray
     fixed_amount: np.ndarray        # nominal * rate * accrual
@@ -116,6 +120,7 @@ def coupon_rates(legs: Legs, index, t, projected, known_rates) -> jax.Array:
     return jnp.where(projected, forecast, known_rates)
 
 
+@jax.jit
 def legs_npv(legs: Legs, disc, index, t, alive_fixed, alive_float, projected, known_rates) -> jax.Array:
     """NPV on one valuation date at model time `t` (curves measured from it): alive
     cashflows only, floating coupons at `coupon_rates` (any batch axes of the curves)."""
@@ -173,9 +178,10 @@ def _require_history(legs: Legs, missing: np.ndarray, asof: ORE.Date) -> None:
         known_fixing(dates[0], asof, {})  # raises MissingFixingError naming the first
 
 
+@jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class PathSchedule:
-    """The date rules of one `Legs` on the simulation dates (host, static)."""
+    """The date rules of one `Legs` on the simulation dates, worked out on the host."""
     alive_fixed: np.ndarray   # [D, Nf]
     alive_float: np.ndarray   # [D, Nc]
     projected: np.ndarray     # [D, Nc]
@@ -206,7 +212,7 @@ def on_every_date(value_fn, legs: Legs, schedule: PathSchedule, times: np.ndarra
     are the trade's history before the as-of date and FixingManager's path fixings after it
     (`fixings` `[S, D]`, the index's `path_fixings`). Extra `per_date` arrays are indexed by
     date on their first axis."""
-    history = jnp.asarray(np.nan_to_num(legs.history), dtype=fixings.dtype)
+    history = jnp.nan_to_num(jnp.asarray(legs.history)).astype(fixings.dtype)
     known = jnp.where(jnp.asarray(schedule.path_fixed)[None], fixings[:, schedule.fixing_step][:, None, :],
                       history)                                                    # [S, D, Nc]
 
@@ -226,7 +232,12 @@ def on_every_date(value_fn, legs: Legs, schedule: PathSchedule, times: np.ndarra
 def legs_cube(legs: Legs, schedule: PathSchedule, times: np.ndarray, disc: ScenarioCurves,
               index: ScenarioCurves, fixings: jax.Array) -> jax.Array:
     """`[S, D]` NPVs on every path and simulation date, in the curves' dtype."""
-    legs = legs.astype(disc.log_discounts.dtype)
+    return _legs_cube(legs.astype(disc.log_discounts.dtype), schedule, times, disc, index, fixings)
+
+
+@jax.jit
+def _legs_cube(legs: Legs, schedule: PathSchedule, times, disc: ScenarioCurves, index: ScenarioCurves,
+               fixings: jax.Array) -> jax.Array:
     return on_every_date(lambda *args: legs_npv(legs, *args), legs, schedule, times, disc, index, fixings)
 
 
@@ -246,14 +257,19 @@ def path_fixings(index_tenor_months: int, asof: ORE.Date, dates: Sequence[ORE.Da
         ends.append(TIME_AXIS_DAY_COUNTER.yearFraction(asof, d2))
         fractions.append(ibor.dayCounter().yearFraction(d1, d2))
     dtype = index.log_discounts.dtype
-    rel = lambda a: jnp.asarray(np.asarray(a) - times, dtype=dtype)  # noqa: E731
+    rel = lambda a: np.asarray(np.asarray(a) - times, dtype=dtype)  # noqa: E731
+    return _path_fixings(index, rel(starts), rel(ends), np.asarray(fractions, dtype=dtype))
 
+
+@jax.jit
+def _path_fixings(index: ScenarioCurves, starts, ends, fractions) -> jax.Array:
+    """`[S, D]` forecasts over [starts_j, ends_j] (times from date j) off each date's curve."""
     def forecast(tenor_times, logs, t1, t2, fraction):
         curve = DiscountCurve(tenor_times, logs)
         return (jnp.exp(log_discount(curve, t1) - log_discount(curve, t2)) - 1.0) / fraction
 
-    per_date = jax.vmap(forecast, in_axes=(0, 1, 0, 0, 0))(
-        index.tenor_times, index.log_discounts, rel(starts), rel(ends), jnp.asarray(fractions, dtype=dtype))
+    per_date = jax.vmap(forecast, in_axes=(0, 1, 0, 0, 0))(index.tenor_times, index.log_discounts, starts, ends,
+                                                           fractions)
     return per_date.T
 
 

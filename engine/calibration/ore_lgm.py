@@ -27,6 +27,7 @@ calibrates every path at once.
 """
 import dataclasses
 from dataclasses import dataclass, fields
+from functools import partial
 from typing import List, Optional, Sequence, Union
 
 import jax
@@ -41,9 +42,8 @@ from engine.market import (
 from engine.models.curves import curve_dtype, discount
 from engine.models.lgm import H as lgm_H
 from engine.models.ore_builders import (
-    TIME_AXIS_DAY_COUNTER, ibor_index, par_coupon_forecast_period, resolve_accrual_day_count,
+    TIME_AXIS_DAY_COUNTER, evaluation_date, ibor_index, par_coupon_forecast_period, resolve_accrual_day_count,
 )
-from engine.models.static_key import StaticKeyMixin
 
 #: `IrModelBuilder::maxAtmStdDev`: a helper strike further from ATM is moved to this many ATM
 #: standard deviations (fallback rule 1).
@@ -63,15 +63,20 @@ class SwapIndexConventions:
     index_tenor_months: int = 6
 
 
+@jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True, eq=False)
-class BasketInstrument(StaticKeyMixin):
+class BasketInstrument:
     """One `SwaptionHelper` on a reference date: times are ACT/365 from it (the model's and
     the helper's pricing time axis).
 
     `vol_option_time`/`vol_swap_length` are where ORE reads its volatility (for a tenor
     expiry the vol surface's own option date, which can differ from the helper's exercise
     date). Floating coupons carry the owner fixed coupon and weight of ORE's proRata mapping
-    (`owner = -1`: beyond the fixed schedule, ignored as ORE's loop ignores it)."""
+    (`owner = -1`: beyond the fixed schedule, ignored as ORE's loop ignores it).
+
+    A pytree, so a basket is an argument of the jitted bootstrap rather than baked into it:
+    one program serves every basket of the same shape (I-22). The proRata mapping (`owner`,
+    `lambda2`) is static, as `_corrections` builds a matrix from it on the host."""
     expiry_time: float
     vol_option_time: float
     vol_swap_length: float
@@ -94,6 +99,21 @@ class BasketInstrument(StaticKeyMixin):
         cast = {f.name: np.asarray(getattr(self, f.name), dtype=dtype) for f in fields(self)
                 if isinstance(getattr(self, f.name), np.ndarray) and getattr(self, f.name).dtype.kind == "f"}
         return dataclasses.replace(self, **cast)
+
+    def tree_flatten(self):
+        children = tuple(getattr(self, f.name) for f in fields(self) if f.name not in _STATIC_FIELDS)
+        static = tuple((tuple(getattr(self, name).tolist()), getattr(self, name).dtype.str) for name in _STATIC_FIELDS)
+        return children, static
+
+    @classmethod
+    def tree_unflatten(cls, static, children):
+        names = [f.name for f in fields(cls) if f.name not in _STATIC_FIELDS]
+        arrays = {name: np.asarray(values, dtype=dtype) for name, (values, dtype) in zip(_STATIC_FIELDS, static)}
+        return cls(**dict(zip(names, children)), **arrays)
+
+
+#: `BasketInstrument` fields kept on the host when it crosses a `jax.jit` boundary.
+_STATIC_FIELDS = ("owner", "lambda2")
 
 
 def _helper(reference: ORE.Date, expiry, term, conventions: SwapIndexConventions):
@@ -126,43 +146,44 @@ def build_basket(
     deal_strikes = list(deal_strikes) if deal_strikes is not None else [None] * len(expiries)
     t_of = lambda d: TIME_AXIS_DAY_COUNTER.yearFraction(reference, d)  # noqa: E731
     basket = []
-    for expiry, term, strike in zip(expiries, terms, deal_strikes):
-        if isinstance(expiry, ORE.Date) != isinstance(term, ORE.Date):
-            raise TypeError("give expiry and term both as tenors or both as dates")
-        if isinstance(expiry, ORE.Date):
-            index = ibor_index(conventions.index_tenor_months)
-            start = index.valueDate(index.fixingCalendar().adjust(expiry))
-            term = max(term, start + ORE.Period(1, ORE.Months))
-            helper = _helper(reference, expiry, term, conventions)
-            vol_option_time, vol_length = t_of(expiry), max(swap_length_between(start, term), 1.0 / 12.0)
-        else:
-            helper = _helper(reference, ORE.Period(expiry), ORE.Period(term), conventions)
-            option_date = VOL_CALENDAR.advance(reference, ORE.Period(expiry), VOL_BUSINESS_DAY_CONVENTION)
-            vol_option_time, vol_length = t_of(option_date), max(swap_length(term), 1.0 / 12.0)
-        swap = helper.underlying()
-        fixed = [ORE.as_fixed_rate_coupon(c) for c in swap.fixedLeg()]
-        floating = [ORE.as_floating_rate_coupon(c) for c in swap.floatingLeg()]
-        ratio = max(1, int(len(floating) / len(fixed) + 0.5))
-        owner = np.full(len(floating), -1, dtype=np.int64)
-        lambda2 = np.zeros(len(floating))
-        for k in range(min(len(floating), ratio * len(fixed))):
-            owner[k], lambda2[k] = k // ratio, (k % ratio + 1) / ratio
-        periods = [par_coupon_forecast_period(c) for c in floating]
-        basket.append(BasketInstrument(
-            expiry_time=t_of(helper.swaptionExpiryDate()),
-            vol_option_time=vol_option_time,
-            vol_swap_length=vol_length,
-            fixed_pay=np.array([t_of(c.date()) for c in fixed]),
-            fixed_accrual=np.array([c.accrualPeriod() for c in fixed]),
-            float_pay=np.array([t_of(c.date()) for c in floating]),
-            float_start=np.array([t_of(c.accrualStartDate()) for c in floating]),
-            float_end=np.array([t_of(c.accrualEndDate()) for c in floating]),
-            float_accrual=np.array([c.accrualPeriod() for c in floating]),
-            forecast_start=np.array([t_of(p[0]) for p in periods]),
-            forecast_end=np.array([t_of(p[1]) for p in periods]),
-            spanning=np.array([p[2] for p in periods]),
-            owner=owner, lambda2=lambda2, deal_strike=strike,
-        ))
+    with evaluation_date(reference):  # the helper projects its underlying from it
+        for expiry, term, strike in zip(expiries, terms, deal_strikes):
+            if isinstance(expiry, ORE.Date) != isinstance(term, ORE.Date):
+                raise TypeError("give expiry and term both as tenors or both as dates")
+            if isinstance(expiry, ORE.Date):
+                index = ibor_index(conventions.index_tenor_months)
+                start = index.valueDate(index.fixingCalendar().adjust(expiry))
+                term = max(term, start + ORE.Period(1, ORE.Months))
+                helper = _helper(reference, expiry, term, conventions)
+                vol_option_time, vol_length = t_of(expiry), max(swap_length_between(start, term), 1.0 / 12.0)
+            else:
+                helper = _helper(reference, ORE.Period(expiry), ORE.Period(term), conventions)
+                option_date = VOL_CALENDAR.advance(reference, ORE.Period(expiry), VOL_BUSINESS_DAY_CONVENTION)
+                vol_option_time, vol_length = t_of(option_date), max(swap_length(term), 1.0 / 12.0)
+            swap = helper.underlying()
+            fixed = [ORE.as_fixed_rate_coupon(c) for c in swap.fixedLeg()]
+            floating = [ORE.as_floating_rate_coupon(c) for c in swap.floatingLeg()]
+            ratio = max(1, int(len(floating) / len(fixed) + 0.5))
+            owner = np.full(len(floating), -1, dtype=np.int64)
+            lambda2 = np.zeros(len(floating))
+            for k in range(min(len(floating), ratio * len(fixed))):
+                owner[k], lambda2[k] = k // ratio, (k % ratio + 1) / ratio
+            periods = [par_coupon_forecast_period(c) for c in floating]
+            basket.append(BasketInstrument(
+                expiry_time=t_of(helper.swaptionExpiryDate()),
+                vol_option_time=vol_option_time,
+                vol_swap_length=vol_length,
+                fixed_pay=np.array([t_of(c.date()) for c in fixed]),
+                fixed_accrual=np.array([c.accrualPeriod() for c in fixed]),
+                float_pay=np.array([t_of(c.date()) for c in floating]),
+                float_start=np.array([t_of(c.accrualStartDate()) for c in floating]),
+                float_end=np.array([t_of(c.accrualEndDate()) for c in floating]),
+                float_accrual=np.array([c.accrualPeriod() for c in floating]),
+                forecast_start=np.array([t_of(p[0]) for p in periods]),
+                forecast_end=np.array([t_of(p[1]) for p in periods]),
+                spanning=np.array([p[2] for p in periods]),
+                owner=owner, lambda2=lambda2, deal_strike=strike,
+            ))
     return basket
 
 
@@ -333,44 +354,59 @@ def bootstrap_sigma(basket: Sequence[BasketInstrument], disc, index, vols, rever
     [expiry_{i-1}, expiry_i) (the last is open), and zeta(expiry_i) = zeta(expiry_{i-1}) +
     sigma_i^2 (expiry_i - expiry_{i-1}). `vols` is `[..., n]` (or `[n]`), matched to the
     curves' batch axes. Computed in the curves' dtype (float64 for a calibration today; the
-    pricing stage's compute dtype on a path)."""
+    pricing stage's compute dtype on a path).
+
+    Each bucket is one jitted program per helper shape and curve shape (`_bootstrap_bucket`),
+    whatever the dates, rates and volatilities (I-22); a basket's helpers recur in the
+    baskets of later dates and other trades, which reuse them."""
     expiries = np.array([b.expiry_time for b in basket])
     if np.any(np.diff(expiries) <= 0.0):
         raise ValueError("basket expiries must increase strictly")
-    # One calibration per path: the batch shape is the curves' batch axes broadcast with the
-    # vols' (either may be unbatched).
     dtype = curve_dtype(disc)
-    basket = [b.astype(dtype) for b in basket]
-    batch = jnp.broadcast_shapes(jnp.shape(vols)[:-1], _legs(basket[0], disc, index).annuity.shape)
-    vols = jnp.broadcast_to(jnp.asarray(vols, dtype=dtype), batch + (len(basket),))
-    lo, hi = SIGMA_BRACKET
-    at_ceiling = hi * (1.0 - ceiling_tolerance(dtype))
+    vols = jnp.asarray(vols, dtype=dtype)
     values, markets, models, ceiling = [], [], [], []
-    zeta_before = None
+    zeta_before = jnp.zeros(vols.shape[:-1], dtype=dtype)
     for i, instrument in enumerate(basket):
-        dt = float(expiries[i] - (expiries[i - 1] if i > 0 else 0.0))  # weakly typed: follows the curves
-        vol_i = vols[..., i]
-        base = jnp.zeros_like(vol_i) if zeta_before is None else zeta_before
-
-        def residual(sigma, _instrument=instrument, _vol=vol_i, _base=base, _dt=dt):
-            market, model = price_pair(_instrument, disc, index, _vol, reversion, _base + sigma ** 2 * _dt)
-            return model - market
-
-        def halve(bounds, _):
-            a, b = bounds
-            mid = 0.5 * (a + b)
-            below = residual(mid) < 0.0
-            return (jnp.where(below, mid, a), jnp.where(below, b, mid)), None
-
-        start = (jnp.full(vol_i.shape, lo, dtype=dtype), jnp.full(vol_i.shape, hi, dtype=dtype))
-        (a, b), _ = jax.lax.scan(halve, start, None, length=iterations)
-        sigma = 0.5 * (a + b)
-        zeta_before = base + sigma ** 2 * dt
-        market, model = price_pair(instrument, disc, index, vol_i, reversion, zeta_before)
+        # Weakly typed, as a Python float: it follows the curves' dtype.
+        dt = float(expiries[i] - (expiries[i - 1] if i > 0 else 0.0))
+        sigma, market, model, hit, zeta_before = _bootstrap_bucket(
+            instrument.astype(dtype), disc, index, vols[..., i], zeta_before, dt, reversion, iterations)
         values.append(sigma)
         markets.append(market)
         models.append(model)
-        ceiling.append(sigma >= at_ceiling)
+        ceiling.append(hit)
     stack = lambda xs: jnp.stack(xs, axis=-1)  # noqa: E731
     return BootstrapResult(times=expiries[:-1], values=stack(values), market=stack(markets),
                            model=stack(models), hit_ceiling=stack(ceiling))
+
+
+@partial(jax.jit, static_argnums=7)
+def _bootstrap_bucket(instrument: BasketInstrument, disc, index, vol, zeta_before, dt, reversion, iterations: int):
+    """One bucket of the bootstrap, the earlier ones fixed (they reach it as `zeta_before`,
+    zeta at the previous helper's expiry): its volatility bisected on `SIGMA_BRACKET` so the
+    helper's model value matches its market value. Returns `(sigma, market, model,
+    hit_ceiling, zeta at this expiry)`, each over the batch: the curves' batch axes
+    broadcast with the volatility's (either may be unbatched)."""
+    dtype = curve_dtype(disc)
+    # `price_pair` with what does not depend on the bucket's volatility taken out of the
+    # bisection: the helper's legs, its market value, strike and type.
+    legs = _legs(instrument, disc, index)
+    batch = jnp.broadcast_shapes(jnp.shape(vol), jnp.shape(zeta_before), legs.annuity.shape)
+    vol, base = jnp.broadcast_to(vol, batch), jnp.broadcast_to(zeta_before, batch)
+    market, strike, receiver = _market(instrument, legs, vol)
+
+    def model_value(zeta):
+        return _analytic_lgm(instrument, legs, reversion, zeta, strike, receiver)
+
+    def halve(bounds, _):
+        a, b = bounds
+        mid = 0.5 * (a + b)
+        below = model_value(base + mid ** 2 * dt) - market < 0.0
+        return (jnp.where(below, mid, a), jnp.where(below, b, mid)), None
+
+    lo, hi = SIGMA_BRACKET
+    start = (jnp.full(batch, lo, dtype=dtype), jnp.full(batch, hi, dtype=dtype))
+    (a, b), _ = jax.lax.scan(halve, start, None, length=iterations)
+    sigma = 0.5 * (a + b)
+    zeta = base + sigma ** 2 * dt
+    return sigma, market, model_value(zeta), sigma >= hi * (1.0 - ceiling_tolerance(dtype)), zeta

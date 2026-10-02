@@ -51,13 +51,15 @@ from engine.valuation.legs import (
 FORWARD_VARIANCE_FLOOR = 1e-6
 
 
+@jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class EuropeanTerms:
     """What a European engine reads from the trade: the exercise-into coupons (as `Legs`,
-    times from the as-of date), the expiry, the exercise-into swap's start and nominal, and
-    where the volatility is read."""
+    times from the as-of date), the expiry (a serial date, as `Legs` keeps its dates), the
+    exercise-into swap's start and nominal, and where the volatility is read. A pytree, so
+    the engines are jitted with it as an argument."""
     legs: Legs
-    expiry: ORE.Date
+    expiry_serial: int
     expiry_time: float        # model time from the as-of date
     swap_length: float        # the vol surface's rounded swap length
     start_time: float         # the earliest accrual start (model time from the as-of date)
@@ -89,7 +91,7 @@ def european_terms(cfg: SwaptionConfig, asof: ORE.Date, fixings=None) -> Europea
         par_yield = np.array([c.dayCounter().yearFraction(start, c.date()) for c in fixed[first_fixed:]])
     return EuropeanTerms(
         legs=legs_of(swap, cfg.payer, asof, fixings or {}, first_fixed, first_float),
-        expiry=cfg.exercise_date,
+        expiry_serial=cfg.exercise_date.serialNumber(),
         expiry_time=TIME_AXIS_DAY_COUNTER.yearFraction(asof, cfg.exercise_date),
         swap_length=max(swap_length_between(start, max(ends)), 1.0 / 12.0),
         start_time=TIME_AXIS_DAY_COUNTER.yearFraction(asof, start),
@@ -98,6 +100,7 @@ def european_terms(cfg: SwaptionConfig, asof: ORE.Date, fixings=None) -> Europea
     )
 
 
+@jax.jit
 def black_multileg_npv(terms: EuropeanTerms, disc, index, t, variance, projected=True, known_rates=0.0) -> jax.Array:
     """The engine's NPV on a valuation date at model time `t` (curves measured from it, any
     batch axes), for a normal `variance` to expiry; the cash annuity when `terms.par_yield`. Coupons pay `coupon_rates` (a coupon that
@@ -135,8 +138,13 @@ def european_cube(terms: EuropeanTerms, schedule: PathSchedule, times: np.ndarra
     `variances` `[D]` from `variance_on_path`."""
     alive = np.asarray([v > 0.0 for v in variances])
     dtype = disc.log_discounts.dtype
-    terms, variances = terms.astype(dtype), np.asarray(variances, dtype=dtype)
+    return _european_cube(terms.astype(dtype), schedule, times, disc, index, fixings,
+                          np.asarray(variances, dtype=dtype), alive)
 
+
+@jax.jit
+def _european_cube(terms: EuropeanTerms, schedule: PathSchedule, times, disc: ScenarioCurves, index: ScenarioCurves,
+                   fixings: jax.Array, variances, alive) -> jax.Array:
     def value(disc_j, idx_j, t_j, _fixed, _float, projected_j, known_j, variance_j, alive_j):
         npv = black_multileg_npv(terms, disc_j, idx_j, t_j, variance_j, projected_j, known_j)
         return jnp.where(alive_j, npv, 0.0)
@@ -173,7 +181,7 @@ def volatility_on_path(surface: SwaptionVolSurface, asof: ORE.Date, date: ORE.Da
 def variance_on_path(terms: EuropeanTerms, surface: SwaptionVolSurface, asof: ORE.Date, date: ORE.Date,
                      decay: str) -> float:
     """The normal variance to expiry the engine reads on `date` (0 once expired)."""
-    if not terms.expiry > date:
+    if not terms.expiry_serial > date.serialNumber():
         return 0.0
-    tau = VOL_DAY_COUNTER.yearFraction(date, terms.expiry)
+    tau = VOL_DAY_COUNTER.yearFraction(date, ORE.Date(terms.expiry_serial))
     return volatility_on_path(surface, asof, date, tau, terms.swap_length, decay) ** 2 * tau

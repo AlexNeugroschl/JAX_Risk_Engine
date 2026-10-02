@@ -10,8 +10,9 @@ here is not planned ([rules](README.md#lifecycle)).
    other fixes would touch.
 2. **Correctness and precision**: wrong, unverified or silently imprecise numbers.
 3. **Performance**, only once stage 2 has frozen the numbers: every performance change keeps
-   the parity tests bit-identical in FP64, so optimizing numbers that are about to move is
-   wasted.
+   the parity suites passing and records any float64 change it makes, so optimizing numbers
+   that are about to move is wasted. (Removing recompiles could not wait: it made the test
+   suite usable again, and was done ahead of 1.6.)
 4. **API robustness.**
 5. **Tests and tooling.**
 6. **Features**, in the order their dependencies allow.
@@ -94,13 +95,16 @@ precision: [details/precision.md](details/precision.md).
 <a id="stage-3--performance"></a>
 ## Stage 3 — Performance
 
-Rule: every change leaves the FP64 parity tests bit-identical.
+Rule: every ORE parity suite passes at its existing tolerance after every change. A change
+that moves float64 numbers re-baselines the golden snapshot and records the largest change
+per array ([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
+Jitting the pricers with the trade as a traced argument (2026-10-02, ahead of 1.6, which
+closed I-21 and I-22) moved them at rounding level, the one such change so far.
 
 | Step | Work | Closes | Size |
 |---|---|---|---|
-| 3.1 | Profile a portfolio job, then remove the dominant costs (per-path recalibration, Python bump loops, recompiles per process) | [I-53](known-issues.md#i-53) | M |
+| 3.1 | Profile a portfolio job, then remove the remaining dominant costs (an American's per-path recalibration arithmetic, first-call compiles, compiles per worker process); recompiles per trade, date, bump and call went on 2026-10-02 | [I-53](known-issues.md#i-53) | M |
 | 3.2 | Shard the scenario axis across the devices the engine worker (1.8) owns; one worker per host on a Cloud TPU pod slice | [I-61](known-issues.md#i-61) | L |
-| 3.3 | Pass the calibration's market prices as traced arguments (6 → 1 compile per basket), then memoize the AD Greeks' jitted closures (re-measured after 1.3: 30 programs per repeated call, 28 of them calibrations) | [I-22](known-issues.md#i-22), [I-21](known-issues.md#i-21) | S |
 | 3.4 | Low-precision timing on Ironwood and H100: the storage formats, then matrix-product forms of the heavy kernels (leg pricing, Bermudan rollback) on native FP8; wall time per figure at equal accuracy, read from the evidence table's path ceilings | [F-07](features.md#f-07) (speed) | M |
 
 <a id="stage-4--api-robustness"></a>

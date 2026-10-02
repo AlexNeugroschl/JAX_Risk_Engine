@@ -158,3 +158,23 @@ def test_swap_index_conventions_shape_the_helpers():
     semi = build_basket(ASOF, ["2Y"], ["5Y"], SwapIndexConventions(fixed_tenor="6M"))[0]
     assert annual.fixed_pay.size == 5 and semi.fixed_pay.size == 10
     assert annual.float_pay.size == semi.float_pay.size == 10
+
+
+def test_the_basket_does_not_depend_on_ores_global_evaluation_date():
+    """`build_basket` builds its helpers on their reference date whatever ORE's global
+    evaluation date is (another caller's, or the wall clock's), and leaves it as it found it.
+    A later global date once made the helper ask for fixings it could not have."""
+    settings = ORE.Settings.instance()
+    previous = settings.evaluationDate
+    try:
+        settings.evaluationDate = ASOF
+        expected = build_basket(ASOF, ["1Y", "2Y", "5Y"], ["9Y", "8Y", "5Y"])
+        later = ORE.Date(1, 1, 2035)
+        settings.evaluationDate = later
+        basket = build_basket(ASOF, ["1Y", "2Y", "5Y"], ["9Y", "8Y", "5Y"])
+        assert settings.evaluationDate == later
+    finally:
+        settings.evaluationDate = previous
+    for ours, theirs in zip(basket, expected):
+        for f in dataclasses.fields(ours):
+            np.testing.assert_array_equal(np.asarray(getattr(ours, f.name)), np.asarray(getattr(theirs, f.name)))

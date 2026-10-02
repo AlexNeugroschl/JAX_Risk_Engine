@@ -35,6 +35,9 @@ dev = [
     # produce a correct document. It is the *tests* that prove the two
     # agree -- see tests/test_integration_schema.py.
     "jsonschema",
+    # Runs the suite in parallel processes (`pytest -n auto`); see
+    # docs/getting-started/user-guide.md, "Running the tests".
+    "pytest-xdist",
 ]
 profiling = [
     # XProf bundles the TensorBoard Profiler plugin + a standalone `xprof`
