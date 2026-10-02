@@ -43,8 +43,9 @@ double-precision simulations in the same wall-clock time.
 - Adjustable precision, since which precision each calculation needs is what the project
   studies: storage and compute in FP64 or FP32 per stage (the simulation, the scenario
   market, path pricing) of a portfolio or market-risk run, with calibration, today's values,
-  Greeks and every reduction over paths kept in FP64; per product and per trade, storage down
-  to FP8 and a precision report on every result follow in roadmap 1.5 to 1.7
+  Greeks and every reduction over paths kept in FP64; path pricing overridable per product
+  and per trade (say, Bermudans in FP64 inside an FP32 run); storage down to FP8 and a
+  precision report on every result follow in roadmap 1.6 and 1.7
   ([I-55](docs/planning/known-issues.md#i-55), [design](docs/planning/details/precision.md))
 - HTTP API: one portfolio request reaching the run configuration (market risk and the
   cross-asset calibration routes are still to come,

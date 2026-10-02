@@ -11,7 +11,7 @@ The EOD integration boundary prices TraderX's bills and notes with its own price
 (`engine.integration.bill`, `engine.integration.note`).
 """
 from dataclasses import dataclass, field
-from typing import Optional, Sequence, Tuple
+from typing import ClassVar, Optional, Sequence, Tuple
 
 import ORE
 
@@ -58,6 +58,8 @@ class BondConfig:
     currency: str = "USD"
     trade_id: str = field(kw_only=True)
     evaluation_date: ORE.Date = field(kw_only=True)
+    #: The product name precision overrides are keyed by (`engine.precision.Precision.by_product`).
+    product: ClassVar[str] = "bond"
 
     def __post_init__(self):
         _validate_identity(self.trade_id, self.evaluation_date)

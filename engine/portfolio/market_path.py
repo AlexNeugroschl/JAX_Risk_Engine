@@ -91,14 +91,15 @@ def _greeks(method: str):
 def validate_request(request) -> None:
     """Refuse, before any JAX work, a request the pipeline cannot price: a setting it does
     not implement: scenario risk without a simulation, a trade the market cannot value or its
-    engine refuses (`validate_trades`), or a reporting currency the market lacks (the
-    configuration itself is validated when it is built). The HTTP route runs it synchronously
+    engine refuses, a precision override naming no trade or product (`validate_trades`), or a
+    reporting currency the market lacks (the configuration itself is validated when it is
+    built). The HTTP route runs it synchronously
     so such a request is a 400, not a failed job."""
     run = request.config
     if request.scenario_risk and run.simulation is None:
         raise ValueError("scenario_risk needs config.simulation (a CamConfig); set scenario_risk=False for "
                          "today's NPVs and Greeks only")
-    validate_trades(request.trades, request.market, run.pricing)
+    validate_trades(request.trades, request.market, run.pricing, run.precision)
     request.market.currency(run.reporting_currency)
 
 

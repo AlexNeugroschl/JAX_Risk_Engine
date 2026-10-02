@@ -32,7 +32,8 @@ shown is that the assembled simulation, exposure and sensitivities equal an ORE 
 model, engine, Greeks and precision choice is one run configuration with ORE's defaults; since
 1.4 the simulation, the scenario market and path pricing each take a storage and a compute
 precision (float64 or float32), in portfolio and market-risk runs alike, with the float64
-default bit for bit as before. Nothing runs on more than one device.
+default bit for bit as before; since 1.5 path pricing is set per product and per trade too.
+Nothing runs on more than one device.
 The TraderX EOD boundary prices Treasuries end to end and refuses everything else by name.
 
 ---
@@ -44,18 +45,18 @@ The configurable engine (decision A-1). The run configuration (`RunConfig`, step
 Hull-White model as one of its options on the shared pipeline, with trades that carry no model
 and name themselves (step 1.3), and the precision mechanism, `engine/precision/` with a
 storage, compute and accumulate format per adjustable stage at float64/float32 (step 1.4,
-2026-10-01), are done. Steps 1.5 to 1.7 extend precision per trade, down to FP8 storage, with
-a report on every result, and 1.8 replaces the worker pool with one engine worker process.
+2026-10-01), and the pricing stage per product and per trade (step 1.5, 2026-10-02), are done.
+Steps 1.6 and 1.7 extend precision down to FP8 storage, with a report on every result, and 1.8
+replaces the worker pool with one engine worker process.
 Designs: [details/configurable-engine.md](details/configurable-engine.md),
 [details/precision.md](details/precision.md) (decisions A-10 to A-16, D-9 revised
 2026-10-01).
 
 | Step | Work | Closes | Size |
 |---|---|---|---|
-| 1.5 | Precision per product and per trade (A-15): one resolver, per-trade stored cube columns, market risk per trade | [F-07](features.md#f-07) (per instrument) | S |
 | 1.6 | Sub-32-bit storage: block scales along the scenario axis, nearest and stochastic rounding; float16, bfloat16 and both FP8 formats | [F-07](features.md#f-07) (storage) | M |
 | 1.7 | Paired float64 sample, two-level estimator for means (A-13), a precision report on every result: policy as run, realized dtypes, device, paired errors | [I-12](known-issues.md#i-12) | M |
-| 1.8 | One engine worker process per host behind a durable SQLite job queue (A-14); delete the pools and the freeze/thaw of ORE objects. Not a main priority: nothing in 1.4 to 1.7 or stage 2 waits for it; 3.2 does | [I-72](known-issues.md#i-72), [I-08](known-issues.md#i-08) (portfolio jobs) | M |
+| 1.8 | One engine worker process per host behind a durable SQLite job queue (A-14); delete the pools and the freeze/thaw of ORE objects. Not a main priority: nothing in 1.6, 1.7 or stage 2 waits for it; 3.2 does | [I-72](known-issues.md#i-72), [I-08](known-issues.md#i-08) (portfolio jobs) | M |
 
 Exit: every step's defaults reproduce the previous step's numbers bit for bit (the shared
 portfolio and the parity suites; [details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
@@ -65,8 +66,9 @@ code before it, on a sloped curve ([known-issues.md](known-issues.md#verificatio
 exposure, bump and AD Greeks, market risk), and the float32 scenario market and float32
 market-risk revaluation identical to before. A float32 portfolio cube is not, by design: the
 old `simulation=32` cube was priced in mixed precision, mostly float64
-([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)). 1.8 runs
-the full suite on Linux.
+([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)). 1.5 met
+it: 232 of 232 arrays identical, the float32 runs included, and a mixed run equals each trade
+priced alone at its precision, column for column. 1.8 runs the full suite on Linux.
 
 <a id="stage-2--correctness-and-precision"></a>
 ## Stage 2 — Correctness and precision

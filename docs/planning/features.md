@@ -15,7 +15,7 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 | [F-04](#f-04) | FX and equity trades on the market path; FX/EQ vol calibration | L | — | 6.4 |
 | [F-05](#f-05) | Basel III regulatory figures | L | See entry | 6.1, 6.6 |
 | [F-06](#f-06) | CVA/DVA from the exposure profiles | M | I-50 | 6.6 |
-| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-55 | 1.5, 1.6, 2.8, 3.4, 6.3 |
+| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-55 | 1.6, 2.8, 3.4, 6.3 |
 
 ---
 
@@ -110,8 +110,9 @@ Parity against ORE's XVA analytic through the same oracle as I-50. The regulator
 
 **Value.** The research goal: whether many low-precision paths match fewer FP64 paths in
 equal wall time. Storage, compute and accumulate precision per adjustable stage (simulation,
-scenario market, path pricing), overridable per product and per trade (A-15); sub-32-bit
-storage with block scales and nearest or stochastic rounding (1.5, 1.6); compute below
+scenario market, path pricing), overridable per product and per trade (A-15; done in roadmap
+1.5, 2026-10-02: `Precision.by_product`, `by_trade`, `precision_for`); sub-32-bit storage with
+block scales and nearest or stochastic rounding (1.6); compute below
 float32 through kernels in difference form, one implementation for every precision (A-16,
 2.8); timing on Ironwood and H100 (3.4); FP4 on TPU 8t/8i (6.3). Measured so far: FP8
 storage of the shocks biases a call payoff by about one Monte Carlo standard error at 4M

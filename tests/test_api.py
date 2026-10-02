@@ -17,6 +17,7 @@ from demos.demo_scenarios import demo_market_json, demo_simulation_json
 from engine.api.market_schemas import MarketPortfolioRequestSchema
 from engine.portfolio import price_portfolio
 from engine.portfolio.worker_pool import shutdown_pool
+from engine.precision import StagePrecision
 from tests.support import portfolio as shared
 
 ZERO_CURVE_SCHEMA = {"times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0], "rates": [0.03, 0.03, 0.032, 0.035, 0.038, 0.04]}
@@ -236,6 +237,33 @@ class TestPortfolioPricePrecision:
     def test_a_format_not_enabled_is_a_400_naming_the_stage_and_field(self, test_client, stage, block, message):
         r = test_client.post("/portfolio/price", json=_body([_swap()], precision={stage: block}))
         assert r.status_code == 400 and f"precision.{stage}" in r.json()["detail"] and message in r.json()["detail"]
+
+    def test_overrides_per_product_and_trade_reach_the_run_configuration(self):
+        """Roadmap 1.5: `by_product` keyed by `trade_type`, `by_trade` by `trade_id`."""
+        f32 = {"storage": "float32", "compute": "float32", "accumulate": "float32"}
+        body = _body([_swap(trade_id="s"), _european(trade_id="e")],
+                     precision={"by_product": {"european_swaption": f32}, "by_trade": {"s": {"storage": "float32"}}})
+        request = MarketPortfolioRequestSchema.model_validate(body).to_dataclass()
+        precision = request.config.precision
+        assert [precision.precision_for(t) for t in request.trades] == [
+            StagePrecision("float32", "float64", "float64"), StagePrecision("float32", "float32", "float32")]
+
+    def test_an_unknown_product_is_a_422_listing_the_products(self, test_client):
+        r = test_client.post("/portfolio/price", json=_body([_swap()], precision={"by_product": {"swaption": {}}}))
+        assert r.status_code == 422 and "european_swaption" in r.text and "bermudan_swaption" in r.text
+
+    def test_an_override_naming_no_trade_is_a_400(self, test_client):
+        """Checked synchronously with the request (`validate_request`): no job is created."""
+        r = test_client.post("/portfolio/price", json=_body([_swap(trade_id="s")],
+                                                            precision={"by_trade": {"s2": {"storage": "float32"}}}))
+        assert r.status_code == 400 and "Precision.by_trade: ['s2'] not the id of a trade" in r.json()["detail"]
+
+    @pytest.mark.parametrize("name", ["by_product", "by_trade"])
+    def test_an_override_not_enabled_is_a_400_naming_its_key(self, test_client, name):
+        key = "swap" if name == "by_product" else "s"
+        r = test_client.post("/portfolio/price", json=_body([_swap(trade_id="s")],
+                                                            precision={name: {key: {"storage": "float16"}}}))
+        assert r.status_code == 400 and f"precision.{name}['{key}']" in r.json()["detail"]
 
     @pytest.mark.slow
     def test_omitted_precision_equals_explicit_float64(self, test_client):

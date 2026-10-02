@@ -403,10 +403,19 @@ Precision(
     simulation=StagePrecision(storage, compute, accumulate),  # Sobol shocks, model states
     market=StagePrecision(...),                               # scenario curves, numeraire, FX
     pricing=StagePrecision(...),                              # path pricing and the cube it stores
+    by_product={"bermudan_swaption": StagePrecision(...)},    # overrides pricing for a product
+    by_trade={"swap-7": StagePrecision(...)},                 # overrides both for one trade
 )
 Precision()                       # float64 everywhere (the default)
 Precision.throughout("float32")   # every stage stored, computed and accumulated in float32
 ```
+
+The pricing stage is per trade (decision A-15, roadmap 1.5): `Precision.precision_for(trade)`
+is the one lookup, `by_trade[trade_id]`, else `by_product[product]`, else `pricing`, and both
+the portfolio and the market-risk pipeline call it. A product is the name each trade config
+carries (`SwapConfig.product == "swap"`, and so on: the HTTP `trade_type`s). An override that
+names no trade of the run or no product is refused before any work. The simulation and the
+scenario market are shared by every trade, so they have no overrides.
 
 `storage` is the format a stage's output is kept in until the next stage reads it; `compute`
 the format its arithmetic runs in; `accumulate` the format its sums accumulate in. The format
@@ -425,9 +434,9 @@ calibration baskets, to the dtype of the curves they are given):
 |---|---|---|
 | shocks, states | `engine.simulation.config.simulate` | normals generated and bridged at `simulation.compute`, stored; states evolved at `simulation.compute` from the loaded shocks, stored |
 | market | `simulate` | the scenario market built at `market.compute` from the loaded states, returned stored at `market.storage` |
-| values | `engine.valuation.portfolio.value_portfolio` | the market loaded at `pricing.compute`; each trade priced; each cube column stored at `pricing.storage` |
-| reductions | `engine.portfolio.market_path` | the cube and the numeraire loaded at float64, then exposure; `PortfolioResult.npv_cube` is the float64-loaded cube |
-| market risk | `engine.market_risk.run_market_risk` | shifts rounded to `simulation.compute` and stored; revaluation and P&L at `pricing.compute`, the P&L stored at `pricing.storage`; VaR/ES in float64 |
+| values | `engine.valuation.portfolio.value_portfolio` | per trade, at `precision_for(trade)`: the market loaded at its `compute` (once per dtype), the trade priced, its cube column stored at its `storage` |
+| reductions | `engine.portfolio.market_path` | the cube and the numeraire loaded at float64, then exposure; `PortfolioResult.npv_cube` is the float64-loaded cube, so columns stored in different formats never meet in arithmetic |
+| market risk | `engine.market_risk.run_market_risk` | shifts rounded to `simulation.compute` and stored; per trade, revaluation and P&L at its `precision_for(trade).compute`, the P&L stored at its `storage`; VaR/ES in float64 |
 
 `store`/`load` (`engine/precision/storage.py`) are the only casts between stages. For
 float64 and float32 storing is a plain cast and storing at an array's own dtype returns it

@@ -11,7 +11,7 @@ are dropped, and a coupon fixed before it pays its historical fixing from `fixin
 refused if missing (`ore_builders.known_fixing`).
 """
 from dataclasses import InitVar, dataclass, field
-from typing import Dict, Optional
+from typing import ClassVar, Dict, Optional
 
 import ORE
 
@@ -62,6 +62,8 @@ class SwapConfig:
     currency: str = "USD"
     trade_id: str = field(kw_only=True)
     evaluation_date: ORE.Date = field(kw_only=True)
+    #: The product name precision overrides are keyed by (`engine.precision.Precision.by_product`).
+    product: ClassVar[str] = "swap"
 
     def __post_init__(self, swap_tenor: Optional[str]) -> None:
         _validate_identity(self.trade_id, self.evaluation_date)

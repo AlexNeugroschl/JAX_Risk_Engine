@@ -11,33 +11,32 @@ exposure are not yet compared with an ORE run ([I-50](#i-50)).
 
 ## Verification status
 
-Last full runs, 2026-10-01, on the code after roadmap 1.4 (`engine/precision/`), 2,309 collected
-(2,243 after 1.3; +66: `tests/test_precision.py` 60, the precision tests rewritten in
-`test_api` +4, `test_market_risk` +5, `test_portfolio_entrypoint` +2, `test_run_config` −5,
-`test_worker_pool` ±0), summary line printed in each:
+Last full run, 2026-10-02, on the code after roadmap 1.5 (precision per product and per
+trade), 2,337 collected (2,309 after 1.4; +28: `tests/test_precision.py` +23, `test_api` +5),
+summary line printed:
 
-- **Linux** `python:3.11` container on 4 cores: **2,308 passed, 1 skipped, 0 failed** (1h24m).
-  The skip is the test that reads `reference/traderX`, which was not copied into the container.
-- **Windows**: **2,308 passed, 1 failed** (1h14m). The failure is
-  `tests/test_ore_bermudan_oracle.py::TestGapIsTheParametrizationNotTheInduction::test_engine_is_grid_converged`,
-  `Out of memory allocating 10150229872 bytes` on its 384-node-per-std grid: eight stray
-  system-Python processes from earlier sessions held about 51 GB of committed memory on the
-  32 GB machine. It passes alone (19 s) and with its module (51 passed); it does not touch the
-  code 1.4 changed beyond a renamed dtype helper. Not counted as green, and not an engine defect.
-- **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the new CI
-  job): 2,225 passed, 0 failed.
+- **Windows**: **2,337 passed, 0 failed**. Its wall time (9h12m) spans a night with the
+  machine likely asleep, so it says nothing about speed; float64 timing is measured
+  separately (precision.md §13.1).
+- **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the CI
+  job): 2,253 passed, 0 failed.
+- **Linux** not re-run: 1.5 changes no process, path or platform default (rule 5). The last
+  Linux run, after 1.4: 2,308 passed, 1 skipped (`reference/traderX` not in the container).
+- Earlier the same day a fast-tier run of the touched modules, started beside the golden
+  snapshot (three JAX processes, about 6 GB free), died with `Fatal Python error: Aborted`
+  inside an XLA compile in `engine/risk/greeks.py`, code 1.5 does not touch: another
+  instance of [I-27](#i-27), under memory pressure. Run alone, everything passed.
 
-Bit for bit: a snapshot of 203 arrays was saved from the code before 1.4 (a worktree of
-`625399f`) and compared after it with `np.array_equal` (value, dtype, shape): all 164 at the
-default precision are identical (today's values under two engines; the shared portfolio's
-cube, exposure and per-trade EPE under the LGM and the Hull-White model; bump and AD Greeks;
-market risk at float64), as are the float32 scenario market and the raw float32 market-risk
-revaluation. At float32 the market-risk P&L is identical in value and VaR/ES moved by at most
-1e-7 relative (float64 reductions); the portfolio cube moved by at most 1.5e-6 relative,
-because the old "float32" cube was float64, priced in mixed precision
-([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)). Red
-first: the float32 recalibration ceiling test fails with the old fixed 1e-9 tolerance; the
-strict-promotion tests fail at the first leg kernel on the old float32 path. The fast tier
+Bit for bit: a snapshot of 232 arrays was saved from the code before 1.5 (a worktree of
+`2b70d15`) and compared after it with `np.array_equal` (value, dtype, shape): **all 232
+identical**, the 76 of float32 runs included (a policy without overrides prices exactly as
+before): today's values under two engines; the shared portfolio's cube, exposure and per-trade
+EPE under the LGM and the Hull-White model at float64, float32 throughout and a float32
+simulation and market; bump and AD Greeks; market risk at float64 and float32. Red first: the
+exit-criterion tests (a mixed run equals each trade alone at its precision) fail when the
+scenario market is loaded at `pricing.compute` for every trade. Earlier steps' snapshots
+(1.4: 164 of 164 default arrays identical, the float32 cube moved by design) are in
+[details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity). The fast tier
 (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
 
@@ -497,16 +496,19 @@ and the per-precision pool tiers are gone. Tests: `tests/test_precision.py`,
 `tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision`,
 `tests/test_market_risk.py::TestRun`. Before 1.4 a "float32" (`simulation=32`) run priced its
 paths partly in float64: NumPy float64 coupons and volatilities promoted the float32 curves
-(the cube was float64), while path fixings ran in float32.
+(the cube was float64), while path fixings ran in float32. Roadmap 1.5 (2026-10-02) made the
+pricing stage per product and per trade (`Precision.by_product`, `by_trade`, one resolver
+`precision_for`, decision A-15) in both pipelines: each cube column and each market-risk P&L
+column is priced and stored at its trade's precision, exactly as the trade alone at that
+precision (`tests/test_precision.py::TestPerTradePortfolio`, `TestPerTradeMarketRisk`).
 
 **Reach.** Every reduced-precision result: its figures carry no statement of whether the
 combination has been validated for them. Default (float64) runs are unaffected.
 
 **To close.** Roadmap 2.7 (A-11): the evidence table per figure and precision combination
 against the acceptance standard (Basel III's P&L attribution test and the Basel plan's P6.2
-rule), and a warning on any result whose combination has no passing row. Per-product and
-per-trade precision, storage below float32 and compute below float32 are
-[F-07](features.md#f-07) (roadmap 1.5, 1.6, 2.8).
+rule), and a warning on any result whose combination has no passing row. Storage below
+float32 and compute below float32 are [F-07](features.md#f-07) (roadmap 1.6, 2.8).
 
 <a id="i-72"></a>
 ### I-72 — Worker pools pickle ORE objects, compile per worker and would contend for TPU chips

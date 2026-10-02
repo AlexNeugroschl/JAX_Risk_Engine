@@ -22,7 +22,7 @@ fixed (decision A-8: the engine is chosen by configuration, not by the trade).
 values (the surface, a calibrated LGM, the Jamshidian model), so volatility risk is not
 captured. `run_market_risk` says so in its warnings for every option trade.
 """
-from typing import List, Sequence, Tuple
+from typing import Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -72,30 +72,31 @@ def revalue(
     batch_size: int = 256,
 ) -> Tuple[np.ndarray, jnp.ndarray]:
     """Base values `[N]` and shocked values `[S, N]` of every trade, computed in `moves`' dtype
-    (the pricing stage's compute dtype; `run_market_risk` casts them).
+    (`revalue_trade` per trade).
 
     moves: `[S, F]` absolute factor moves (`ShockScenarios.shifts`).
     batch_size: the most scenarios to vmap at once; a grid pricer may use
         fewer to stay within `BATCH_MEMORY_BUDGET`.
     """
+    values = [revalue_trade(cfg, market, factors, moves, pricing, batch_size) for cfg in trades]
+    return np.asarray([base for base, _ in values]), jnp.stack([shocked for _, shocked in values], axis=-1)
+
+
+def revalue_trade(cfg, market: Market, factors: RateRiskFactors, moves, pricing: PricingConfig = PricingConfig(),
+                  batch_size: int = 256) -> Tuple[float, jnp.ndarray]:
+    """One trade's base value and its shocked values `[S]`, computed in `moves`' dtype (the
+    trade's pricing compute dtype; `run_market_risk` casts them per trade)."""
     moves = jnp.asarray(moves)
     dtype = moves.dtype
     base = jnp.asarray(factors.base_rates(), dtype=dtype)
-    slices = [factors.slice_of(i) for i in range(len(factors.curves))]
+    fn = trade_price_function(cfg, market, pricing, dtype)
+    own = [factors.slice_of(i) for i in factor_indices(cfg, factors)]
 
-    base_values: List[float] = []
-    shocked_columns: List[jnp.ndarray] = []
-    for cfg in trades:
-        fn = trade_price_function(cfg, market, pricing, dtype)
-        own = [slices[i] for i in factor_indices(cfg, factors)]
+    def on_factors(vector):
+        return fn.price(*[vector[s] for s in own])
 
-        def on_factors(vector, _price=fn.price, _own=own):
-            return _price(*[vector[s] for s in _own])
-
-        base_values.append(float(jax.jit(on_factors)(base)))
-        batch = scenario_batch_size(cfg, pricing, batch_size, jnp.dtype(dtype).itemsize)
-        shocked_columns.append(_map_scenarios(on_factors, base, moves, batch))
-    return np.asarray(base_values), jnp.stack(shocked_columns, axis=-1)
+    batch = scenario_batch_size(cfg, pricing, batch_size, jnp.dtype(dtype).itemsize)
+    return float(jax.jit(on_factors)(base)), _map_scenarios(on_factors, base, moves, batch)
 
 
 def _map_scenarios(on_factors, base, moves, batch_size):

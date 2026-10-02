@@ -189,9 +189,10 @@ See [Instruments](../instruments/swaps.md).
 | Function | Returns |
 |---|---|
 | `value_today(trades, market, base_currency, pricing=PricingConfig()) -> List[float]` | Today's values in the base currency. |
-| `value_portfolio(trades, market, scenarios, base_currency, pricing=PricingConfig(), decay="ForwardVariance", precision=Precision()) -> PortfolioValuation` | `today [T]` (float64) and `cube [S, D, T]` in the base currency; the scenarios are loaded at `precision.pricing.compute`, the cube stored at its `storage`. |
+| `value_portfolio(trades, market, scenarios, base_currency, pricing=PricingConfig(), decay="ForwardVariance", precision=Precision()) -> PortfolioValuation` | `today [T]` (float64) and `columns` (each trade's `[S, D]`) in the base currency; each trade priced on the scenarios loaded at its `precision.precision_for(trade).compute`, its column stored at that `storage`. `PortfolioValuation.cube` is `[S, D, T]`, in the columns' shared format, or float64 when they differ. |
 | `value_on(cfg, context, pricing) -> float` | One trade on a `PricingContext` (a date's curves, volatilities, fixings). |
-| `validate_trades(trades, market, pricing=PricingConfig())` | Refuses, naming the trade, a trade off the market's date, a curve or volatility the market lacks, or an engine's refusal. |
+| `validate_trades(trades, market, pricing=PricingConfig(), precision=Precision())` | Refuses, naming the trade, a trade off the market's date, a curve or volatility the market lacks, or an engine's refusal; and a precision override naming no trade or product (`Precision.check_overrides`). |
+| `PRODUCTS` | The products the pipeline prices (each trade config's `product`): the keys of `Precision.by_product`. |
 | `reads_swaption_vols(cfg, pricing) -> bool` | Whether the trade's engine reads the market's swaption volatilities. |
 
 ---
@@ -296,8 +297,8 @@ Short-horizon VaR/ES by full revaluation at t=0 — see [Market Risk](../risk/ma
 | `covariance_from_history(history, horizon_days)` | function | Sample covariance of those moves, `[F, F]` |
 | `horizon_moves(history, horizon_days)` | function | The overlapping moves themselves, `[D-h, F]` |
 | `ShockScenarios` | dataclass | `factors`, `shifts [S, F]`, `horizon_days`, `source`, `measure`, `windows` |
-| `MarketRiskRequest(trades, market, scenarios, pricing=PricingConfig(), quantiles=(0.99, 0.975), precision=Precision(), batch_size=256)` | dataclass | Every factor must be the market's curve of its name; every curve a trade reads must be a factor. `precision.simulation` rounds and stores the shifts, `precision.pricing` sets the revaluation and the stored P&L; VaR/ES are float64 |
-| `run_market_risk(request) -> MarketRiskResult` | function | `base_npv`, `base_npv_per_trade` (the revaluation at the pricing compute precision), `pnl [S, N]` (float64-loaded), `portfolio_pnl [S]`, `risk` (`VaR_99`, `ES_97.5`, tail counts, standard errors), `measure`, `source`, `horizon_days`, `num_scenarios`, `risk_factors`, `warnings` |
+| `MarketRiskRequest(trades, market, scenarios, pricing=PricingConfig(), quantiles=(0.99, 0.975), precision=Precision(), batch_size=256)` | dataclass | Every factor must be the market's curve of its name; every curve a trade reads must be a factor. `precision.simulation` rounds and stores the shifts, `precision.precision_for(trade)` sets each trade's revaluation and stored P&L; VaR/ES are float64. Trade ids are unique |
+| `run_market_risk(request) -> MarketRiskResult` | function | `base_npv`, `base_npv_per_trade` (each trade's revaluation at its pricing compute precision), `pnl [S, N]` (float64-loaded), `portfolio_pnl [S]`, `risk` (`VaR_99`, `ES_97.5`, tail counts, standard errors), `measure`, `source`, `horizon_days`, `num_scenarios`, `risk_factors`, `warnings` |
 
 ---
 
@@ -410,7 +411,7 @@ nothing from the pipeline. `Precision` and `StagePrecision` are also exported by
 | Name | Kind | Summary |
 |---|---|---|
 | `StagePrecision(storage="float64", compute="float64", accumulate="float64")` | frozen dataclass | One stage's formats, by name. Refused, naming the field: a name outside the table; a format before the roadmap step that enables it (storage below float32: 1.6; compute below float32 or `accumulate != compute`: 2.8); `storage` wider than `compute`; `accumulate` narrower than `compute`. `storage_dtype`, `compute_dtype` |
-| `Precision(simulation, market, pricing)` | frozen dataclass | A `StagePrecision` per adjustable stage, each float64 by default; `Precision.throughout(name)` sets all three to `name` |
+| `Precision(simulation, market, pricing, by_product={}, by_trade={})` | frozen dataclass | A `StagePrecision` per adjustable stage, each float64 by default, and the pricing stage's overrides by product and by trade id (kept as an immutable `Overrides`); `Precision.throughout(name)` sets all three stages to `name`; `precision_for(trade)` is a trade's pricing stage (`by_trade`, else `by_product`, else `pricing`); `check_overrides(trades, products)` refuses a key that names nothing |
 | `FORMATS`, `FORMAT_NAMES`, `Format` | table | name -> dtype, bits, mantissa bits, max, scaled, enabling steps: `float64`, `float32`, `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2` |
 | `format_of(name)`, `dtype_of(name)`, `name_of(dtype)` | functions | Table lookups; an unknown name is refused |
 | `store(x, name)`, `load(x, dtype)` | functions | The only casts between stages; at the array's own dtype both return it unchanged |

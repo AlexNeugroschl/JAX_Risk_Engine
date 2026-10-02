@@ -1,7 +1,7 @@
 """
-`engine.precision` (roadmap 1.4, I-55; docs/planning/details/precision.md): the format table,
-the `Precision` policy and its refusals, `store`/`load`, and the dtype discipline of the
-pipeline built on them.
+`engine.precision` (roadmap 1.4 and 1.5, I-55; docs/planning/details/precision.md): the format
+table, the `Precision` policy and its refusals, `store`/`load`, the dtype discipline of the
+pipeline built on them, and the pricing stage per product and per trade.
 
   * The table, the policy and storage need no market, trade or ORE (§13.2, §13.4).
   * Every adjustable stage's arrays come out in the formats the policy names (§13.3), read
@@ -12,9 +12,15 @@ pipeline built on them.
   * A float32 recalibration at its bracket's top is flagged (§6.5): `hi * (1 - 1e-9)` rounds
     to `hi` in float32.
   * Float32 throughout on the sloped shared market: no NaN, the cube near float64 (§13.5).
+  * Per product and per trade (1.5, decision A-15): `precision_for` resolves trade over product
+    over stage; a mixed run equals each trade run alone at its precision, column for column,
+    in the portfolio cube and the market-risk P&L; an override naming nothing is refused.
 """
 import dataclasses
 import pathlib
+import pickle
+import types
+import typing
 
 import jax
 import jax.numpy as jnp
@@ -22,6 +28,7 @@ import numpy as np
 import ORE
 import pytest
 
+from engine.api.market_schemas import MarketTradeSchema
 from engine.api.schemas import PrecisionSchema, StagePrecisionSchema
 from engine.calibration.ore_lgm import SIGMA_BRACKET, bootstrap_sigma, ceiling_tolerance
 from engine.models.curves import ZeroCurve
@@ -29,16 +36,21 @@ from engine.portfolio import (
     CamConfig, HullWhiteConfig, JamshidianEngineConfig, LgmConfig, LgmSwaptionEngineConfig, PortfolioRequest,
     PricingConfig, RunConfig, price_portfolio,
 )
+from engine.market_risk import MarketRiskRequest, monte_carlo_scenarios, run_market_risk
 from engine.precision import (
-    FORMAT_NAMES, FORMATS, RETIRED_SHAPE, STAGES, Precision, StagePrecision, dtype_of, format_of, load, name_of,
-    store,
+    FORMAT_NAMES, FORMATS, OVERRIDES, RETIRED_SHAPE, STAGES, Overrides, Precision, StagePrecision, dtype_of,
+    format_of, load, name_of, store,
 )
 from engine.simulation.config import build_cross_asset_model, simulate
 from engine.valuation.bermudan import calibration_basket
-from engine.valuation.portfolio import value_portfolio
+from engine.valuation.portfolio import PRODUCTS, Trade, value_portfolio
+from tests import market_risk_support as mr
 from tests.support import portfolio as shared
 
 ENABLED = ("float64", "float32")
+F32 = StagePrecision("float32", "float32", "float32")
+#: float64 arithmetic, float32 storage.
+STORED32 = StagePrecision("float32", "float64", "float64")
 SCALED = ("float16", "bfloat16", "float8_e4m3fn", "float8_e5m2")
 FAST = LgmSwaptionEngineConfig(n_per_std=8, std_devs=3.0)
 DATES = tuple(shared.ASOF + ORE.Period(m, ORE.Months) for m in (3, 12, 24))
@@ -167,9 +179,23 @@ class TestSchemaCompleteness:
 
     def test_the_schema_round_trips_a_policy(self):
         policy = Precision(simulation=StagePrecision("float32", "float32", "float32"),
-                           pricing=StagePrecision("float32"))
+                           pricing=StagePrecision("float32"), by_product={"bermudan_swaption": F32},
+                           by_trade={"swap-1": STORED32})
         wire = {s: dataclasses.asdict(getattr(policy, s)) for s in STAGES}
+        wire.update({name: {k: dataclasses.asdict(v) for k, v in getattr(policy, name).items()} for name in OVERRIDES})
         assert PrecisionSchema.model_validate(wire).to_dataclass() == policy
+
+    def test_the_products_are_the_trade_types_on_the_wire(self):
+        """`by_product` is keyed by the name each trade carries, which is its HTTP `trade_type`."""
+        schemas = typing.get_args(typing.get_args(MarketTradeSchema)[0])
+        on_the_wire = {typing.get_type_hints(s.to_dataclass)["return"]: s.model_fields["trade_type"].default
+                       for s in schemas}
+        assert on_the_wire == {cls: cls.product for cls in typing.get_args(Trade)}
+        assert set(PRODUCTS) == set(on_the_wire.values()) and len(PRODUCTS) == len(set(PRODUCTS))
+
+    def test_an_override_on_the_wire_names_its_key_when_refused(self):
+        with pytest.raises(ValueError, match=r"precision\.by_trade\['s'\]: StagePrecision\.storage='float16'"):
+            PrecisionSchema.model_validate({"by_trade": {"s": {"storage": "float16"}}}).to_dataclass()
 
 
 # ---------------------------------------------------------------------------
@@ -313,3 +339,170 @@ def test_the_precision_package_imports_nothing_from_the_pipeline():
             offenders += [f"{path.name} imports {m}" for m in modules
                           if m.startswith("engine") and not m.startswith("engine.precision")]
     assert not offenders, offenders
+
+
+# ---------------------------------------------------------------------------
+# Per product and per trade (roadmap 1.5, decision A-15)
+# ---------------------------------------------------------------------------
+def _trade(trade_id, product):
+    return types.SimpleNamespace(trade_id=trade_id, product=product)
+
+
+class TestOverrides:
+    """`Precision.by_product`, `by_trade` and `precision_for`, the one lookup (§4.2)."""
+    POLICY = Precision(pricing=STORED32, by_product={"bermudan_swaption": F32}, by_trade={"b2": StagePrecision()})
+
+    def test_the_default_overrides_nothing(self):
+        assert Precision().by_product == {} and Precision().by_trade == {}
+        assert Precision().precision_for(_trade("x", "swap")) == StagePrecision()
+
+    @pytest.mark.parametrize("trade, expected", [
+        (_trade("s1", "swap"), STORED32),                       # no override: the pricing stage
+        (_trade("b1", "bermudan_swaption"), F32),               # its product's
+        (_trade("b2", "bermudan_swaption"), StagePrecision()),  # its own, over its product's
+    ])
+    def test_trade_over_product_over_stage(self, trade, expected):
+        assert self.POLICY.precision_for(trade) == expected
+
+    def test_it_stays_a_frozen_hashable_picklable_value(self):
+        """A dict given is kept as an immutable `Overrides`, equal to that dict."""
+        same = Precision(pricing=STORED32, by_product={"bermudan_swaption": F32}, by_trade={"b2": StagePrecision()})
+        assert same == self.POLICY and hash(same) == hash(self.POLICY)
+        assert isinstance(self.POLICY.by_product, Overrides) and self.POLICY.by_product == {"bermudan_swaption": F32}
+        assert pickle.loads(pickle.dumps(self.POLICY)) == self.POLICY
+        with pytest.raises(TypeError):
+            self.POLICY.by_trade["b3"] = F32
+        assert self.POLICY != dataclasses.replace(self.POLICY, by_trade={})
+
+    def test_the_mapping_given_is_copied(self):
+        given = {"s1": F32}
+        policy = Precision(by_trade=given)
+        given["s2"] = F32
+        assert set(policy.by_trade) == {"s1"}
+
+    @pytest.mark.parametrize("fields, message", [
+        ({"by_product": {"swap": "float32"}}, r"Precision\.by_product\['swap'\] must be a StagePrecision"),
+        ({"by_trade": {"": F32}}, r"Precision\.by_trade: every key is a trade id"),
+        ({"by_trade": {7: F32}}, r"Precision\.by_trade: every key is a trade id"),
+        ({"by_product": ["swap"]}, r"Precision\.by_product must be a mapping of product"),
+    ])
+    def test_malformed_overrides_are_refused_naming_the_field(self, fields, message):
+        with pytest.raises(TypeError, match=message):
+            Precision(**fields)
+
+    def test_an_override_naming_no_product_or_trade_is_refused(self):
+        trades = [_trade("s1", "swap")]
+        Precision(by_product={p: F32 for p in PRODUCTS}, by_trade={"s1": F32}).check_overrides(trades, PRODUCTS)
+        with pytest.raises(ValueError, match=r"Precision\.by_product: \['bermudan'\] not a product; the products"):
+            Precision(by_product={"bermudan": F32}).check_overrides(trades, PRODUCTS)
+        with pytest.raises(ValueError, match=r"Precision\.by_trade: \['s2'\] not the id of a trade in this run"):
+            Precision(by_trade={"s2": F32}).check_overrides(trades, PRODUCTS)
+
+
+#: The shared portfolio's trades the per-trade tests price: one of each kind of kernel.
+_MIXED_TRADES = ("swap-payer", "european-payer", "bermudan-payer-physical", "bond")
+
+#: Mixed policies: a product and a trade overridden, narrower and wider than `pricing`, on a
+#: float64 and a float32 scenario market.
+_MIXED = {
+    "bermudans-f32": Precision(by_product={"bermudan_swaption": F32}, by_trade={"swap-payer": STORED32}),
+    "f32-but-two": Precision(simulation=F32, market=F32, pricing=F32, by_product={"european_swaption": STORED32},
+                             by_trade={"bond": StagePrecision()}),
+}
+
+
+@pytest.fixture(scope="module")
+def mixed_scenarios():
+    return {name: simulate(shared.market(), _simulation(), precision=policy) for name, policy in _MIXED.items()}
+
+
+class TestPerTradePortfolio:
+    """Cast point 4 per trade: each cube column is priced at its trade's compute dtype and
+    stored at its storage format (precision.md §12, the exit criterion of step 1.5)."""
+
+    @pytest.mark.parametrize("case", _MIXED)
+    def test_a_mixed_run_equals_each_trade_alone_at_its_precision(self, case, mixed_scenarios):
+        policy, scenarios, pricing = _MIXED[case], mixed_scenarios[case], PricingConfig(bermudan=FAST)
+        trades = [shared.trades()[n] for n in _MIXED_TRADES]
+        mixed = value_portfolio(trades, shared.market(), scenarios, "USD", pricing, precision=policy)
+        for i, cfg in enumerate(trades):
+            stage = policy.precision_for(cfg)
+            alone = value_portfolio([cfg], shared.market(), scenarios, "USD", pricing, precision=Precision(pricing=stage))
+            assert mixed.columns[i].dtype == stage.storage_dtype, cfg.trade_id
+            np.testing.assert_array_equal(np.asarray(mixed.columns[i]), np.asarray(alone.columns[0]),
+                                          err_msg=cfg.trade_id)
+            assert mixed.today[i] == alone.today[0]
+        assert mixed.cube.dtype == jnp.float64  # formats differ: loaded at float64, every value as stored
+        for i, column in enumerate(mixed.columns):
+            np.testing.assert_array_equal(np.asarray(mixed.cube[..., i]), np.asarray(column, np.float64))
+
+    def test_overrides_equal_to_the_stage_change_no_bit(self, mixed_scenarios):
+        """Overriding every product and trade with the pricing stage itself is the run without
+        overrides."""
+        trades = [shared.trades()[n] for n in _MIXED_TRADES]
+        run = lambda policy: value_portfolio(trades, shared.market(), mixed_scenarios["bermudans-f32"],  # noqa: E731
+                                             "USD", PricingConfig(bermudan=FAST), precision=policy)
+        plain = run(Precision())
+        overridden = run(Precision(by_product={p: StagePrecision() for p in PRODUCTS},
+                                   by_trade={t.trade_id: StagePrecision() for t in trades}))
+        assert plain.cube.dtype == overridden.cube.dtype == jnp.float64
+        np.testing.assert_array_equal(np.asarray(plain.cube), np.asarray(overridden.cube))
+
+    def test_a_mixed_run_never_mixes_dtypes(self):
+        """Under strict promotion, end to end: per-trade loads and stores, the float64 result."""
+        model, pricing, names = _STRICT_CASES["LGM-Bachelier"]
+        policy = Precision(simulation=F32, market=F32, pricing=F32, by_product={"bermudan_swaption": StagePrecision()},
+                           by_trade={"swap-payer": STORED32})
+        request = PortfolioRequest(market=shared.market(), trades=[shared.trades()[n] for n in names],
+                                   config=RunConfig(simulation=_simulation(model), pricing=pricing, precision=policy))
+        with jax.numpy_dtype_promotion("strict"):
+            result = price_portfolio(request)
+        assert result.npv_cube.dtype == jnp.float64 and np.all(np.isfinite(np.asarray(result.npv_cube)))
+
+    @pytest.mark.parametrize("policy, message", [
+        (Precision(by_trade={"swap-payr": F32}), r"by_trade: \['swap-payr'\] not the id of a trade"),
+        (Precision(by_product={"swaption": F32}), r"by_product: \['swaption'\] not a product"),
+    ])
+    def test_a_misspelt_override_is_refused_before_any_work(self, policy, message, monkeypatch):
+        import engine.portfolio.market_path as market_path
+        monkeypatch.setattr(market_path, "build_cross_asset_model", lambda *a: pytest.fail("work was done"))
+        request = PortfolioRequest(market=shared.market(), trades=[shared.trades()["swap-payer"]],
+                                   config=RunConfig(simulation=_simulation(), precision=policy))
+        with pytest.raises(ValueError, match=message):
+            price_portfolio(request)
+
+
+class TestPerTradeMarketRisk:
+    """Market risk on the same resolver: each trade revalued at its compute dtype, its P&L
+    stored at its storage format."""
+
+    @staticmethod
+    def _scenarios(num):
+        return monte_carlo_scenarios(mr.factors(), mr.covariance(), 10, num, seed=3)
+
+    @pytest.mark.parametrize("policy", [
+        Precision(by_product={"european_swaption": F32}, by_trade={"bond": STORED32}),
+        Precision(simulation=F32, pricing=F32, by_trade={"swap": StagePrecision()}),
+    ], ids=["europeans-f32", "f32-but-one"])
+    def test_a_mixed_run_equals_each_trade_alone_at_its_precision(self, policy):
+        scenarios, trades = self._scenarios(64), [mr.swap(), mr.european(), mr.bermudan(), mr.bond()]
+        mixed = run_market_risk(MarketRiskRequest(trades, mr.market(), scenarios, mr.PRICING, precision=policy))
+        assert mixed.pnl.dtype == jnp.float64
+        for i, cfg in enumerate(trades):
+            stage = policy.precision_for(cfg)
+            alone = run_market_risk(MarketRiskRequest([cfg], mr.market(), scenarios, mr.PRICING, precision=Precision(
+                simulation=policy.simulation, pricing=stage)))
+            pnl = np.asarray(mixed.pnl[:, i])
+            np.testing.assert_array_equal(pnl, np.asarray(alone.pnl[:, 0]), err_msg=cfg.trade_id)
+            np.testing.assert_array_equal(pnl, pnl.astype(stage.storage_dtype).astype(np.float64))  # stored there
+            assert mixed.base_npv_per_trade[i] == alone.base_npv_per_trade[0]
+
+    def test_an_override_naming_no_trade_is_refused(self):
+        with pytest.raises(ValueError, match=r"by_trade: \['bermudan-1'\] not the id of a trade"):
+            run_market_risk(MarketRiskRequest([mr.swap()], mr.market(), self._scenarios(16),
+                                              precision=Precision(by_trade={"bermudan-1": F32})))
+
+    def test_repeated_trade_ids_are_refused(self):
+        """Overrides and per-trade results are keyed by id, so ids are unique, as in a portfolio."""
+        with pytest.raises(ValueError, match=r"trade ids must be unique.*\['swap'\]"):
+            run_market_risk(MarketRiskRequest([mr.swap(), mr.swap()], mr.market(), self._scenarios(16)))

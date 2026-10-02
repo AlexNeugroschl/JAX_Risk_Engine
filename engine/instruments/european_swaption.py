@@ -12,7 +12,7 @@ A config holds its booked `exercise_date` and underlying dates; on or after the 
 the option is expired and worth 0 (ORE's `Instrument::isExpired`).
 """
 from dataclasses import InitVar, dataclass, field
-from typing import Optional
+from typing import ClassVar, Optional
 
 import ORE
 
@@ -57,6 +57,8 @@ class SwaptionConfig:
     settlement: str = "Physical"
     trade_id: str = field(kw_only=True)
     evaluation_date: ORE.Date = field(kw_only=True)
+    #: The product name precision overrides are keyed by (`engine.precision.Precision.by_product`).
+    product: ClassVar[str] = "european_swaption"
 
     def __post_init__(self, swap_tenor, forward_start, exercise_lag_days) -> None:
         _validate_identity(self.trade_id, self.evaluation_date)

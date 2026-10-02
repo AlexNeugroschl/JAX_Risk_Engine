@@ -10,8 +10,9 @@ in compliance/decisions.md). ORE configures a run with files; each component is 
                                       simulation-market tenors, samples and seed
       pricing        PricingConfig    pricingengine.xml: the engine per product
       greeks         GreeksConfig     the Greeks method; sensitivity.xml's settings
-      precision      Precision        storage, compute and accumulate formats per adjustable stage
-                                      (`engine.precision`; not in ORE: the research axis)
+      precision      Precision        storage, compute and accumulate formats per adjustable stage,
+                                      pricing per product and per trade (`engine.precision`; not
+                                      in ORE: the research axis)
       base_currency                   ore.xml's `baseCurrency`, when there is no simulation
 
 | Component | Options | Default |
@@ -20,7 +21,7 @@ in compliance/decisions.md). ORE configures a run with files; each component is 
 | Simulation | classic revaluation (ORE's AMC is F-03) | classic |
 | Engine per product | swap: discounting; European: `Bachelier`, `Jamshidian`; Bermudan/American: LGM grid | ORE's builders |
 | Greeks method | `Bump`, `AD` | `Bump` |
-| Precision per stage | simulation, market, pricing: float64 or float32 storage and compute (FP8 storage from roadmap 1.6) | float64 |
+| Precision per stage | simulation, market, pricing: float64 or float32 storage and compute (FP8 storage from roadmap 1.6); pricing overridable per product and per trade | float64 |
 
 Every option runs with every other: the models differ only in the simulation, and the engines
 and Greeks methods price whatever the simulation produced. What the pipeline does not

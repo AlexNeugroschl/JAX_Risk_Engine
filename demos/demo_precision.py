@@ -7,17 +7,19 @@ not "is FP32 exact?" (it is not) but "is FP32's error small next to the Monte
 Carlo sampling error the VaR/ES number already carries?" This demo measures
 both on one portfolio.
 
-**What runs.** `engine.market_risk.run_market_risk`, unmodified, at three
+**What runs.** `engine.market_risk.run_market_risk`, unmodified, at four
 `engine.precision.Precision` settings:
 
     FP64          Precision(): float64 everywhere, the default
     FP32          Precision.throughout("float32"): shifts, revaluation and P&L in float32
     FP32 stored   Precision(pricing=StagePrecision("float32")): revalued in float64,
                   the P&L stored in float32
+    FP32, Berm 64 FP32, but the Bermudan revalued and stored in float64
+                  (`by_product`; a single trade would be `by_trade`, roadmap 1.5)
 
     10-day Monte Carlo shocks of every pillar of two sloped curves
-        -> full revaluation of every trade at t=0, at the pricing stage's compute precision
-        -> P&L per scenario, stored at the pricing stage's storage precision
+        -> full revaluation of every trade at t=0, at its pricing stage's compute precision
+        -> P&L per scenario, stored at its pricing stage's storage precision
         -> VaR 99% and ES 97.5% of the portfolio P&L, reduced in float64
 
 The same seed gives the same scenarios at every precision, so the differences
@@ -60,6 +62,9 @@ PRECISIONS = {
     "FP64": Precision(),
     "FP32": Precision.throughout("float32"),
     "FP32 stored": Precision(pricing=StagePrecision("float32", "float64", "float64")),
+    "FP32, Berm 64": Precision(simulation=StagePrecision("float32", "float32", "float32"),
+                               pricing=StagePrecision("float32", "float32", "float32"),
+                               by_product={"bermudan_swaption": StagePrecision()}),
 }
 
 
@@ -127,7 +132,7 @@ for seed in SEEDS:
     for name, precision in PRECISIONS.items():
         result, seconds = run(precision, seed)
         results[name, seed] = result
-        print(f"  seed {seed}  {name:<12} VaR 99% {result.risk['VaR_99']:>14,.2f}   "
+        print(f"  seed {seed}  {name:<13} VaR 99% {result.risk['VaR_99']:>14,.2f}   "
               f"ES 97.5% {result.risk['ES_97.5']:>14,.2f}   ({seconds:.1f}s)")
 
 base = results["FP64", SEEDS[0]].base_npv
@@ -146,9 +151,9 @@ for name in PRECISIONS:
         rows.append((name, metric, np.max(np.abs(other - fp64)), np.std(fp64, ddof=1)))
 standard_error = np.mean([results["FP64", s].risk["ES_97.5_standardError"] for s in SEEDS])
 
-print(f"  {'precision':<13}{'metric':<9}{'max |x - FP64|':>17}{'FP64 seed std':>16}{'ratio':>10}")
+print(f"  {'precision':<14}{'metric':<9}{'max |x - FP64|':>17}{'FP64 seed std':>16}{'ratio':>10}")
 for name, metric, error, spread in rows:
-    print(f"  {name:<13}{metric:<9}{error:>17,.4f}{spread:>16,.2f}{error / spread:>10.1e}")
+    print(f"  {name:<14}{metric:<9}{error:>17,.4f}{spread:>16,.2f}{error / spread:>10.1e}")
 print(f"\n  ES 97.5% Monte Carlo standard error (mean over seeds): {standard_error:,.2f}")
 
 pnl64 = np.asarray(results["FP64", SEEDS[0]].portfolio_pnl)

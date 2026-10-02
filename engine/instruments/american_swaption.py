@@ -18,7 +18,7 @@ differently from a Bermudan in two places, both reproduced here:
 Checked against ORE's engine by tests/test_ore_lgm_parity.py.
 """
 from dataclasses import InitVar, dataclass, field
-from typing import Dict, List, Optional
+from typing import ClassVar, Dict, List, Optional
 
 import ORE
 
@@ -53,6 +53,8 @@ class AmericanSwaptionConfig:
     settlement: str = "Physical"
     trade_id: str = field(kw_only=True)
     evaluation_date: ORE.Date = field(kw_only=True)
+    #: The product name precision overrides are keyed by (`engine.precision.Precision.by_product`).
+    product: ClassVar[str] = "american_swaption"
 
     exercise_style = ExerciseStyle.AMERICAN
 

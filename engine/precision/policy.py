@@ -7,10 +7,19 @@ The precision of a run (docs/planning/details/precision.md §3, §4; decisions A
       pricing      StagePrecision   pricing on paths (and market-risk revaluation) and the
                                     values it stores (the cube, the scenario NPVs)
 
+      by_product   {product: StagePrecision}    overrides `pricing` for every trade of a product
+      by_trade     {trade_id: StagePrecision}   overrides `by_product` and `pricing` for one trade
+
 Each adjustable stage has three precisions: `storage`, the format its output is kept in until
 the next stage reads it; `compute`, the format its arithmetic is done in; `accumulate`, the
 format its sums accumulate in. `Precision()` is float64 everywhere, the engine's default and
 the one every ORE parity suite runs on.
+
+The pricing stage is per trade (decision A-15): `precision_for(trade)` is the one lookup, and
+returns `by_trade[trade.trade_id]`, else `by_product[trade.product]`, else `pricing`. The
+simulation and the scenario market are shared by every trade, so they have no overrides.
+`check_overrides` refuses a key that names no trade of the run or no product, so a misspelt
+override is never silently ignored.
 
 Calibration, t=0 values, Greeks and every reduction over paths or scenarios (exposure, VaR/ES)
 are not stages here: they are float64 by decision (A-10).
@@ -21,12 +30,17 @@ wider gains nothing), `accumulate` narrower than `compute`. Every other combinat
 (D-9). The 32/64 shape before roadmap 1.4 (`PrecisionConfig`) is refused, not translated
 (A-12): `RETIRED_SHAPE` says what replaces it.
 """
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
+from typing import Iterable, Iterator, Mapping, Sequence
 
 from engine.precision.formats import format_of
 
 #: The adjustable stages, in pipeline order.
 STAGES = ("simulation", "market", "pricing")
+
+#: The overrides of the pricing stage and what they are keyed by, most general first
+#: (`Precision.precision_for` reads them in reverse).
+OVERRIDES = {"by_product": "product", "by_trade": "trade id"}
 
 #: Why the 32/64 shape is refused, and what replaces it (Python and HTTP).
 RETIRED_SHAPE = (
@@ -89,25 +103,80 @@ def _refuse(name: str, value: str, reason: str) -> None:
     raise ValueError(f"StagePrecision.{name}={value!r}: {reason}")
 
 
+class Overrides(Mapping):
+    """An immutable, hashable mapping of override keys (a product or a trade id) to the
+    `StagePrecision` they select; `Precision` keeps its overrides in one so that it stays a
+    frozen, hashable value."""
+
+    def __init__(self, items: Mapping = ()):
+        self._items = dict(items)
+
+    def __getitem__(self, key):
+        return self._items[key]
+
+    def __iter__(self) -> Iterator:
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self._items.items()))
+
+    def __repr__(self) -> str:
+        return repr(self._items)
+
+
 @dataclass(frozen=True)
 class Precision:
-    """The precision of each adjustable stage (see the module docstring). `Precision()` is
-    float64 everywhere."""
+    """The precision of each adjustable stage, and the pricing stage's overrides per product
+    and per trade (see the module docstring). `Precision()` is float64 everywhere."""
     simulation: StagePrecision = StagePrecision()
     market: StagePrecision = StagePrecision()
     pricing: StagePrecision = StagePrecision()
+    by_product: Mapping[str, StagePrecision] = field(default_factory=Overrides)
+    by_trade: Mapping[str, StagePrecision] = field(default_factory=Overrides)
 
     def __post_init__(self):
         for stage in STAGES:
             value = getattr(self, stage)
             if not isinstance(value, StagePrecision):
                 raise TypeError(f"Precision.{stage} must be a StagePrecision, got {value!r}; {RETIRED_SHAPE}")
+        for name in OVERRIDES:
+            value = getattr(self, name)
+            if not isinstance(value, Mapping):
+                raise TypeError(f"Precision.{name} must be a mapping of {OVERRIDES[name]} to StagePrecision, "
+                                f"got {value!r}")
+            for key, stage in value.items():
+                if not isinstance(key, str) or not key:
+                    raise TypeError(f"Precision.{name}: every key is a {OVERRIDES[name]} (a non-empty string), "
+                                    f"got {key!r}")
+                if not isinstance(stage, StagePrecision):
+                    raise TypeError(f"Precision.{name}[{key!r}] must be a StagePrecision, got {stage!r}")
+            object.__setattr__(self, name, Overrides(value))
 
     @classmethod
     def throughout(cls, name: str) -> "Precision":
         """Every stage stored, computed and accumulated in format `name`."""
         stage = StagePrecision(name, name, name)
         return cls(**{s: stage for s in STAGES})
+
+    def precision_for(self, trade) -> StagePrecision:
+        """The pricing stage of `trade` (any object with `trade_id` and `product`):
+        `by_trade`, else `by_product`, else `pricing` (decision A-15)."""
+        if trade.trade_id in self.by_trade:
+            return self.by_trade[trade.trade_id]
+        return self.by_product.get(trade.product, self.pricing)
+
+    def check_overrides(self, trades: Iterable, products: Sequence[str]) -> None:
+        """Refuse an override that selects nothing, before any work: a `by_product` key outside
+        `products` (every product the pipeline prices), a `by_trade` key that is no trade's id."""
+        unknown = sorted(set(self.by_product) - set(products))
+        if unknown:
+            raise ValueError(f"Precision.by_product: {unknown} not a product; the products are {list(products)}")
+        unknown = sorted(set(self.by_trade) - {t.trade_id for t in trades})
+        if unknown:
+            raise ValueError(f"Precision.by_trade: {unknown} not the id of a trade in this run")
 
 
 def require_precision(owner: str, value) -> None:

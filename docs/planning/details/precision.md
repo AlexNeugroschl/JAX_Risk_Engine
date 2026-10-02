@@ -183,6 +183,27 @@ its shifts and `pricing` for its revaluation.
 `pricing` (A-15). It is the only lookup; a misspelt trade id or product is refused, not
 ignored.
 
+Built in step 1.5 (2026-10-02):
+
+- `Precision.precision_for(trade)` is a method of the policy and reads only `trade.trade_id`
+  and `trade.product`, so `engine.precision` still imports nothing from the pipeline.
+- A product is a class constant of each trade config (`SwapConfig.product == "swap"`,
+  `"european_swaption"`, `"bermudan_swaption"`, `"american_swaption"`, `BondConfig.product ==
+  "bond"`), the same names as the HTTP `trade_type`s (a test holds them equal).
+  `engine.valuation.portfolio.PRODUCTS` collects them from the `Trade` union, so a new trade
+  type adds its product by existing.
+- `Precision.check_overrides(trades, PRODUCTS)` refuses a `by_product` key outside `PRODUCTS`
+  and a `by_trade` key that is no trade's id. `validate_trades` calls it, so the portfolio
+  run (`validate_request`, synchronously on the HTTP route: a 400), `value_portfolio` and
+  `run_market_risk` all check before any work. Over HTTP an unknown product is already a 422
+  (the schema's keys are the products).
+- Overrides are keyed by trade id, so ids must be unique. `PortfolioRequest` already required
+  it; `run_market_risk`, which accepted repeated ids, now refuses them too
+  (`require_unique_ids`, shared). Below the requests (`value_portfolio` called directly) a
+  `by_trade` override applies to every trade of its id.
+- The overrides are kept in an immutable mapping (`Overrides`), so `Precision` stays a frozen,
+  hashable, picklable value; a dict given is copied.
+
 ### 4.3 Validation
 
 Checked before any work, by `engine/precision/policy.py`, each refusal naming its field:
@@ -219,7 +240,7 @@ Precision(simulation=StagePrecision(storage="float8_e4m3fn", compute="float32", 
 ```
 engine/precision/
   formats.py   # the format table: name -> dtype, bits, mantissa bits, max, scaled?   (1.4)
-  policy.py    # StagePrecision, Precision, validation (1.4); precision_for (1.5)
+  policy.py    # StagePrecision, Precision, validation (1.4); by_product, by_trade, precision_for (1.5)
   storage.py   # store(), load() (1.4); Stored (pytree: values, scales, format) (1.6)
   report.py    # PrecisionReport: the policy as run, realized dtypes, device, paired errors (1.7)
   estimate.py  # two-level estimator for means; paired differences for quantiles (1.7)
@@ -275,7 +296,7 @@ The only places that read the configuration:
 | 1 | `engine.simulation.config.simulate` | Normals generated (`engine/simulation/random.py`, the clip epsilon from the compute dtype) and bridged at `simulation.compute`, then `store(shocks)` |
 | 2 | `simulate` | `load(shocks)`; `evolve_states` runs at `simulation.compute` (it follows the shocks' dtype; the moments are cast to it); `store(states)` |
 | 3 | `simulate` | `load(states)` at `market.compute`; `build_scenario_market` follows the states' dtype (the z-independent terms keep coming from float64); the whole market stored at `market.storage` (`ScenarioMarket.map_arrays`) |
-| 4 | `engine.valuation.portfolio.value_portfolio`; `engine.market_risk.run_market_risk` | `load(market)` at `pricing.compute`, price every trade, `store` each cube column at `pricing.storage` (1.5: per trade, `precision_for(trade)`). Market risk: shifts rounded to `simulation.compute`, stored, loaded at `pricing.compute`; the revaluation follows the shifts' dtype; the P&L stored |
+| 4 | `engine.valuation.portfolio.value_portfolio`; `engine.market_risk.run_market_risk` | Per trade, at `stage = precision_for(trade)` (1.5): `load(market)` at `stage.compute` (once per dtype, with its path fixings), price the trade, `store` its cube column at `stage.storage`. Market risk: shifts rounded to `simulation.compute` and stored once; per trade loaded at `stage.compute`, revalued (`revalue_trade` follows the shifts' dtype), the P&L stored at `stage.storage` |
 | 5 | `engine.portfolio.market_path` (exposure); `run_market_risk` (VaR/ES) | `load(values, float64)` and the numeraire at float64, then reduce |
 
 The first three live in `simulate`, the orchestrator of the simulation and market stages;
@@ -283,9 +304,14 @@ the kernels it calls (`generate_sobol_normals`, `apply_brownian_bridge`, `evolve
 `build_scenario_market`) follow the dtype they are given. `generate_sobol_normals` keeps its
 `dtype` argument: it is where the shocks are created, so it has no input to follow.
 
-The cube becomes a sequence of per-trade `Stored` columns (one array when every trade
-shares a format). `PortfolioResult.npv_cube` stays an array, loaded at float64, so
-consumers see no change.
+The cube is a sequence of per-trade columns, each in its own storage format
+(`PortfolioValuation.columns`, step 1.5; `Stored` columns from 1.6).
+`PortfolioValuation.cube` sets them side by side in their shared format, as before, or loaded
+at float64 when the formats differ (exact: float64 holds every format's values).
+`PortfolioResult.npv_cube` stays an array, loaded at float64, so consumers see no change. A
+trade priced at its precision inside a mixed run gives exactly the column it gives priced
+alone with that `pricing` stage: trades share only the loaded scenario market and fixings,
+which depend on the dtype alone.
 
 ### 6.4 Inputs follow dtype
 
@@ -539,7 +565,7 @@ nothing in the precision work depends on it; step 3.2 does.
 | Step | Work | Exit criterion | Size |
 |---|---|---|---|
 | **1.4** (done 2026-10-01) | `engine/precision/` (formats, policy, storage at float64/float32; the report skeleton moved to 1.7, `Stored` to 1.6, §5); `Precision` replaces the old types in `RunConfig`, `MarketRiskRequest` and the HTTP schema, the old shape refused (A-12); the cast points; inputs follow dtype; float64 reductions; the constants of §6.5; market risk on the same module; remove `check_run`'s refusal, the flag set, the lock and the tiers; strict promotion in CI | Default: golden snapshot bit for bit, every ORE parity suite unchanged. float32: the scenario market and the market-risk revaluation bit for bit as before; the portfolio cube is not, and cannot be (§13.1); exposure and VaR/ES differ by the float64 reductions. Fast tier green under strict promotion. Met: §13.1 | M |
-| **1.5** | Per-product and per-trade precision (A-15): `by_product`, `by_trade`, `precision_for`; per-trade stored columns; market risk per trade | Bit for bit at the default; a mixed run (Bermudan float32, swaps float64) equals each trade run alone at its precision, column for column | S |
+| **1.5** (done 2026-10-02) | Per-product and per-trade precision (A-15): `by_product`, `by_trade`, `precision_for`; per-trade stored columns; market risk per trade | Bit for bit at the default; a mixed run (Bermudan float32, swaps float64) equals each trade run alone at its precision, column for column. Met: §13.1 | S |
 | **1.6** | Sub-32-bit storage: block scales, both roundings; `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2` enabled for storage | The storage properties of §13.4; bit for bit at the default | M |
 | **1.7** | Paired sample, two-level estimator for means, `PrecisionReport` with realized dtypes and device (closes I-12) | §13.6; bit for bit at the default | M |
 | **1.8** | Engine worker process and the SQLite queue (A-14); delete `worker_pool.py`'s pool and freeze/thaw | §13.8, including the Linux run; float64 job time and compile count no worse | M |
@@ -580,6 +606,15 @@ process changes.
   path fixings ran in float32; §6.4). Float32 throughout differs from it by at most 1.5e-6
   relative (both are about 2e-6 from float64); a float32 simulation and market priced in
   float64 is 5.6e-7 from float64.
+- **Step 1.5's result (2026-10-02).** The same snapshot script, 232 arrays from a worktree of
+  `2b70d15` (the default runs and, as before, the float32 runs): all 232 identical in value,
+  dtype and shape, float32 included, since a policy without overrides prices exactly as
+  before. Every ORE parity suite passed unchanged (full suite 2,337 passed). The exit
+  criterion's tests (`TestPerTradePortfolio`, `TestPerTradeMarketRisk`) are red when every
+  trade is priced at `pricing.compute`. float64 speed (§13.9), old and new trees interleaved:
+  market risk on four trades, median of ten warm runs, 5.95/6.07 s before and 5.73/5.84 s
+  after (no regression); the shared portfolio's run varies 2.5× from run to run (per-path
+  recalibration, I-53), and the fastest of five was 118.7 s before and 120.3 s after.
 - Step 2.8: parity suites pass at their tolerances first; then the snapshot is re-baselined,
   with the largest change per array recorded in the commit and in known-issues' verification
   status.
@@ -599,7 +634,11 @@ process changes.
 - A parametrized test over every class × enabled format runs a small portfolio and compares
   the realized dtypes in `PrecisionReport` with the policy.
 - A test that the resolver is the only lookup: per-trade overrides change only that trade's
-  column.
+  column. Done in step 1.5: `tests/test_precision.py::TestPerTradePortfolio` and
+  `TestPerTradeMarketRisk` (a mixed run equals each trade alone at its precision, bit for bit,
+  in the cube and the market-risk P&L; red when the market is loaded at `pricing.compute`
+  for every trade), `TestOverrides` (trade over product over stage) and a mixed run under
+  strict promotion.
 
 ### 13.4 Storage properties
 

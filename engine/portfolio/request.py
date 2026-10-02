@@ -32,6 +32,7 @@ from engine.instruments.treasury import BondConfig
 from engine.market import Market
 from engine.portfolio.config import RunConfig
 from engine.risk.exposure import ExposureProfile
+from engine.valuation.portfolio import require_unique_ids
 
 # Re-exported so `engine.portfolio._validate_common_fields` resolves (implemented in
 # validation.py to avoid an import cycle).
@@ -76,10 +77,7 @@ class PortfolioRequest:
                             f"model is a HullWhiteConfig in config.simulation.ir, not a SimulationConfig market)")
         if not isinstance(self.config, RunConfig):
             raise TypeError(f"config must be a RunConfig; got {type(self.config).__name__}")
-        ids = [cfg.trade_id for cfg in self.trades]
-        duplicates = sorted({i for i in ids if ids.count(i) > 1})
-        if duplicates:
-            raise ValueError(f"trade ids must be unique in a portfolio; repeated: {duplicates}")
+        require_unique_ids(self.trades)
 
 
 @dataclass

@@ -31,7 +31,7 @@ Every choice is one `RunConfig` (`engine/portfolio/config.py`) on
 | European engine | `Bachelier` (ORE's default) or `Jamshidian` with `PricingConfig.jamshidian` |
 | Greeks | `Bump` (`engine.risk.sensitivities`, settings `config.greeks.sensitivity`) or `AD` (`engine.risk.greeks`) |
 | Market risk | `engine.market_risk.run_market_risk` on a `Market` with the same `PricingConfig` (A-8) |
-| Precision | `config.precision` (`engine.precision.Precision`, step 1.4): storage, compute and accumulate per adjustable stage (simulation, market, pricing), float64 or float32; steps 1.5 to 1.7 add per-trade precision, FP8 storage and the report ([precision.md](precision.md)) |
+| Precision | `config.precision` (`engine.precision.Precision`, step 1.4): storage, compute and accumulate per adjustable stage (simulation, market, pricing), float64 or float32; per product and per trade since step 1.5; steps 1.6 and 1.7 add FP8 storage and the report ([precision.md](precision.md)) |
 
 ## Step 1.2 — the run configuration (I-68) — done
 

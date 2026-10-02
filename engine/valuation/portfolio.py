@@ -13,13 +13,19 @@ and a cash-settled one leaves the portfolio. Paid cashflows drop out and fixings
 `FixingManager` (`engine.valuation.legs`). NPVs are in the base currency, converted with the
 path's FX rate, and not deflated (ORE's cube stores NPVs; the numeraire travels beside them).
 
+Each trade is priced on paths at its own precision, `Precision.precision_for(trade)` (an
+override for its id, else for its product, else the pricing stage; decision A-15): the scenario
+market is loaded at that compute dtype and the trade's cube column stored at that storage
+format. t=0 values are float64 (A-10).
+
 Trades name their currency and index; the market supplies the curves and volatilities and the
 pricing configuration the models (audit A-3, I-63). A trade valued on another date than the
 market's is refused.
 """
 import dataclasses
+from collections import Counter
 from dataclasses import dataclass, field
-from typing import Dict, List, Sequence, Union
+from typing import Dict, List, Sequence, Tuple, Union, get_args
 
 import jax
 import jax.numpy as jnp
@@ -45,20 +51,51 @@ from engine.valuation.options import effective_steps, underlying_start, wrap
 
 Trade = Union[SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig, BondConfig]
 
+#: Every product the pipeline prices, by the name its trades carry (`product`): the keys of
+#: `Precision.by_product`.
+PRODUCTS: Tuple[str, ...] = tuple(t.product for t in get_args(Trade))
+
 
 @dataclass
 class PortfolioValuation:
-    """t=0 NPVs `[T]` (float64) and the cube `[S, D, T]` (stored at the pricing stage's
-    storage format), both in the base currency, in trade order."""
+    """t=0 NPVs `[T]` (float64) and the cube, both in the base currency, in trade order.
+
+    columns: each trade's `[S, D]` cube column, stored at its own pricing storage format
+        (`Precision.precision_for`).
+    """
     today: List[float]
-    cube: jax.Array
+    columns: List[jax.Array]
+    num_paths: int
+    num_dates: int
     warnings: List[str] = field(default_factory=list)
 
+    @property
+    def cube(self) -> jax.Array:
+        """`[S, D, T]`: the columns side by side, in their shared format, or loaded at float64
+        when their formats differ (exact: float64 holds every format's values)."""
+        if not self.columns:
+            return jnp.zeros((self.num_paths, self.num_dates, 0))
+        dtypes = {c.dtype for c in self.columns}
+        dtype = dtypes.pop() if len(dtypes) == 1 else jnp.float64
+        return jnp.stack([load(c, dtype) for c in self.columns], axis=-1)
 
-def validate_trades(trades: Sequence[Trade], market: Market, pricing: PricingConfig = PricingConfig()) -> None:
-    """Refuse what the market path cannot price as specified: a trade valued on another date
-    than the market's, a trade whose curves or volatilities the market lacks, or one its
-    configured engine refuses."""
+
+def require_unique_ids(trades: Sequence[Trade]) -> None:
+    """Trade ids are unique in a portfolio, as ORE requires: every per-trade result and
+    precision override is keyed by them. The requests check it (`PortfolioRequest`,
+    `MarketRiskRequest`); below them a `by_trade` override applies to every trade of its id."""
+    duplicates = sorted(i for i, n in Counter(cfg.trade_id for cfg in trades).items() if n > 1)
+    if duplicates:
+        raise ValueError(f"trade ids must be unique in a portfolio; repeated: {duplicates}")
+
+
+def validate_trades(trades: Sequence[Trade], market: Market, pricing: PricingConfig = PricingConfig(),
+                    precision: Precision = Precision()) -> None:
+    """Refuse what the market path cannot price as specified: a precision override that names
+    no trade or product (`Precision.check_overrides`), a trade valued on another date than the
+    market's, a trade whose curves or volatilities the market lacks, or one its configured
+    engine refuses."""
+    precision.check_overrides(trades, PRODUCTS)
     for cfg in trades:
         label = f"trade {cfg.trade_id!r} ({type(cfg).__name__})"
         if cfg.evaluation_date != market.asof:
@@ -92,26 +129,28 @@ def value_portfolio(trades: Sequence[Trade], market: Market, scenarios: Scenario
                     precision: Precision = Precision()) -> PortfolioValuation:
     """Every trade today and on every path and date (see the module docstring).
 
-    `precision.pricing` sets the path pricing (cast point 4 of
-    docs/planning/details/precision.md §6.3): the scenario market is loaded at its compute
-    dtype, every trade priced in it, and each cube column stored at its storage format. t=0
-    values are float64 (decision A-10)."""
+    Cast point 4 of docs/planning/details/precision.md §6.3, per trade: the scenario market is
+    loaded at the compute dtype of `precision.precision_for(trade)` (once per dtype), the
+    trade priced in it, and its cube column stored at that storage format. t=0 values are
+    float64 (decision A-10)."""
     require_precision("value_portfolio's precision", precision)
-    stage = precision.pricing
-    validate_trades(trades, market, pricing)
-    scenarios = scenarios.map_arrays(lambda a: load(a, stage.compute_dtype))
-    fixings = _index_fixings(trades, market, scenarios)
+    validate_trades(trades, market, pricing, precision)
+    loaded = {}  # compute dtype -> (the scenario market at it, its path fixings)
     today, columns = [], []
     for cfg in trades:
+        stage = precision.precision_for(cfg)
+        if stage.compute_dtype not in loaded:
+            at_dtype = scenarios.map_arrays(lambda a: load(a, stage.compute_dtype))
+            loaded[stage.compute_dtype] = at_dtype, _index_fixings(trades, market, at_dtype)
+        sm, fixings = loaded[stage.compute_dtype]
         currency = cfg.currency
         spot = market.fx_spot(currency, base_currency)
-        fx_path = 1.0 if currency == base_currency else scenarios.fx[currency]
-        value, cube = _value_trade(cfg, market, scenarios, fixings, pricing, decay)
+        fx_path = 1.0 if currency == base_currency else sm.fx[currency]
+        value, cube = _value_trade(cfg, market, sm, fixings, pricing, decay)
         today.append(float(value) * spot)
         columns.append(store(cube * fx_path, stage.storage))
-    cube = (jnp.stack(columns, axis=-1) if columns
-            else jnp.zeros((scenarios.num_paths, len(scenarios.dates), 0), dtype=stage.storage_dtype))
-    return PortfolioValuation(today=today, cube=cube)
+    return PortfolioValuation(today=today, columns=columns, num_paths=scenarios.num_paths,
+                              num_dates=len(scenarios.dates))
 
 
 def value_today(trades: Sequence[Trade], market: Market, base_currency: str,

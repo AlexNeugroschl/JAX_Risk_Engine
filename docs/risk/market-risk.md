@@ -124,11 +124,14 @@ Fractional percentages keep their decimals: Basel's 97.5% is `ES_97.5`.
 `MarketRiskRequest.precision` is the portfolio run's `engine.precision.Precision`
 ([Architecture: Adjustable precision](../concepts/architecture.md#adjustable-precision)), its
 stages read for this pipeline: the shifts are rounded to `simulation.compute` and stored at
-`simulation.storage`; the revaluation and each trade's P&L are computed at `pricing.compute`
-and the P&L stored at `pricing.storage`; `result.pnl` is that P&L read back at float64, and
-VaR/ES are float64 reductions of it (decision A-10). The base values (`base_npv_per_trade`) are
-the revaluation of the unshocked curves at `pricing.compute`: they are the anchor every P&L is
-measured from, so a zero shift is exactly zero P&L at every precision. The integer
+`simulation.storage`; each trade is revalued and its P&L computed at the compute format of
+its own pricing stage, `precision.precision_for(trade)` (its `by_trade` entry, else its
+product's `by_product` entry, else `pricing`), and its P&L stored at that stage's storage
+format; `result.pnl` is the P&L read back at float64, and VaR/ES are float64 reductions of it
+(decision A-10). The base values (`base_npv_per_trade`) are each trade's revaluation of the
+unshocked curves at its compute format: they are the anchor its P&L is measured from, so a
+zero shift is exactly zero P&L at every precision. Trade ids must be unique (the overrides
+are keyed by them). The integer
 `precision=64|32` of before roadmap 1.4 is refused, naming the replacement.
 
 Every price function derives its working dtype from the curve it is given, so a float32

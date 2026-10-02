@@ -85,6 +85,8 @@ accumulate)` of format names per adjustable stage, each `"float64"` by default:
 | `simulation` | The Sobol shocks and the model states (`simulate`). |
 | `market` | The scenario market built from the states: curves, numeraire, FX and equity spots. |
 | `pricing` | Every trade on every path (Bermudan/American per-path recalibration included) and the cube it stores. |
+| `by_product` | `{product: StagePrecision}`: replaces `pricing` for every trade of a product. The products are `"swap"`, `"european_swaption"`, `"bermudan_swaption"`, `"american_swaption"` and `"bond"` (each trade config's `product`). |
+| `by_trade` | `{trade_id: StagePrecision}`: replaces `by_product` and `pricing` for one trade. |
 
 `compute` is the format a stage computes in, `storage` the format its output is kept in until
 the next stage reads it (no wider than `compute`), `accumulate` the format its sums
@@ -93,10 +95,23 @@ accumulate in (equal to `compute` until roadmap 2.8). Today `storage` and `compu
 in the format table and refused, naming the roadmap step that enables them (1.6 for storage,
 2.8 for compute). `Precision.throughout("float32")` sets every stage to float32.
 
+A trade is priced at `Precision.precision_for(trade)`: its `by_trade` entry, else its
+product's `by_product` entry, else `pricing` (decision A-15). Each trade's cube column is
+computed at that `compute` and stored at that `storage`, exactly as if the trade were priced
+alone with that `pricing`. An override that names no trade of the request, or no product, is
+refused before any work:
+
+```python
+f32 = StagePrecision("float32", "float32", "float32")
+Precision(simulation=f32, market=f32, pricing=f32,
+          by_product={"bermudan_swaption": StagePrecision()},   # Bermudans in float64
+          by_trade={"swap-7": StagePrecision(storage="float32")})  # one swap: float64, stored float32
+```
+
 Calibration, today's values, Greeks and every reduction over paths (the exposure profiles)
 are float64 whatever the policy says (decision A-10): `base_npv_per_trade` is float64, and
 `npv_cube` is the stored cube read back at float64, so its values are float32 numbers when
-`pricing.storage` is `"float32"`. The 32/64 shape before roadmap 1.4 (`PrecisionConfig` and
+its `storage` is `"float32"`. The 32/64 shape before roadmap 1.4 (`PrecisionConfig` and
 its override classes) is refused, naming the replacement (decision A-12).
 
 ## `PortfolioResult`
@@ -120,14 +135,15 @@ its override classes) is refused, naming the replacement (decision A-12).
 
 1. **Validate before any JAX work** (`validate_request`): the configuration
    (validated when it is built), scenario risk needs a simulation, every trade valued on the market's date
-   with every curve and volatility it reads present and its engine's refusals
-   (`validate_trades`, naming the trade), the reporting currency in the market. The HTTP
+   with every curve and volatility it reads present and its engine's refusals, precision
+   overrides that name a trade or product (`validate_trades`, naming the trade or override),
+   the reporting currency in the market. The HTTP
    route runs the same check synchronously, so such a request is a 400, not a failed job.
 2. **Calibrate and simulate** (with scenario risk): `build_cross_asset_model` calibrates
    each currency with a basket to the market's swaption volatilities, and `simulate` builds
    the scenario market at `precision.simulation` and `precision.market`.
 3. **Value** every trade today and on every path with its configured engine
-   (`engine.valuation.portfolio.value_portfolio`, at `precision.pricing`), converting
+   (`engine.valuation.portfolio.value_portfolio`, each at `precision.precision_for(trade)`), converting
    foreign trades at the spot today and at the path FX on paths; without scenario risk,
    today only (`value_today`).
 4. **Exposure**: the netting set and each trade, deflated by the LGM numeraire, from the

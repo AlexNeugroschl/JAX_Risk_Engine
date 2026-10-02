@@ -47,7 +47,7 @@ import math
 from dataclasses import InitVar, dataclass, field, fields
 from enum import Enum
 from functools import partial
-from typing import Dict, List, Optional, Sequence, Union
+from typing import ClassVar, Dict, List, Optional, Sequence, Union
 
 import jax
 import jax.numpy as jnp
@@ -125,6 +125,8 @@ class BermudanSwaptionConfig:
     settlement: str = "Physical"
     trade_id: str = field(kw_only=True)
     evaluation_date: ORE.Date = field(kw_only=True)
+    #: The product name precision overrides are keyed by (`engine.precision.Precision.by_product`).
+    product: ClassVar[str] = "bermudan_swaption"
 
     exercise_style = ExerciseStyle.BERMUDAN
 

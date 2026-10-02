@@ -14,10 +14,12 @@ This is the engine's market-risk measure. The multi-step simulation in
 `engine.portfolio` is an exposure profile, not a VaR (audit finding R-1).
 
 Precision (`engine.precision`), the portfolio run's stages on this pipeline: the shifts are
-rounded to `simulation.compute` and stored at `simulation.storage`; the revaluation and each
-trade's P&L are computed at `pricing.compute` and the P&L stored at `pricing.storage`; VaR/ES
-load it at float64 (decision A-10). The base values are the revaluation of the unshocked
-curves at `pricing.compute`, the anchor every P&L is measured from, so a zero shift is exactly
+rounded to `simulation.compute` and stored at `simulation.storage`; each trade is revalued, and
+its P&L computed, at the compute format of its own pricing stage
+(`Precision.precision_for(trade)`: an override for its id, else for its product, else
+`pricing`; decision A-15) and its P&L stored at that stage's storage format; VaR/ES load every
+P&L at float64 (decision A-10). A trade's base value is its revaluation of the unshocked
+curves at its compute format, the anchor its P&L is measured from, so a zero shift is exactly
 zero P&L at every precision.
 """
 from dataclasses import dataclass, field
@@ -31,12 +33,12 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.market import Market
 from engine.market_risk.factors import RateRiskFactors
-from engine.market_risk.revaluation import factor_indices, revalue
+from engine.market_risk.revaluation import factor_indices, revalue_trade
 from engine.market_risk.scenarios import ShockScenarios
 from engine.precision import Precision, load, require_precision, store
 from engine.risk.var_es import compute_risk_metrics
 from engine.valuation.config import PricingConfig
-from engine.valuation.portfolio import validate_trades
+from engine.valuation.portfolio import require_unique_ids, validate_trades
 
 OPTION_TYPES = (SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig)
 
@@ -48,7 +50,8 @@ class MarketRiskRequest:
     """A portfolio, today's market, and the shock scenarios to revalue it under.
 
     trades: any mix of `SwapConfig`, `SwaptionConfig`, `BermudanSwaptionConfig`,
-        `AmericanSwaptionConfig` and `BondConfig`, each valued on `market.asof`.
+        `AmericanSwaptionConfig` and `BondConfig`, each valued on `market.asof`, with unique
+        `trade_id`s.
     market: today's market: the curves the factors shock, and the volatilities held fixed.
     scenarios: `ShockScenarios` on factors named after the market's curves
         (`RateRiskFactors.from_market`), each equal to the market's curve of its name. Every
@@ -59,6 +62,7 @@ class MarketRiskRequest:
     quantiles: VaR/ES confidence levels, e.g. 0.99 for VaR and 0.975 for
         Basel's ES.
     precision: the `Precision` of the run (see the module docstring); float64 by default.
+        `by_product` and `by_trade` set single trades' revaluation.
     batch_size: scenarios vmapped at once inside the revaluation loop; lower
         it if a large Bermudan runs out of memory.
     """
@@ -101,12 +105,18 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     portfolio P&L. See the module docstring for the pipeline."""
     _validate(request)
     scenarios = request.scenarios
-    simulation, pricing = request.precision.simulation, request.precision.pricing
-    shifts = store(jnp.asarray(scenarios.shifts, dtype=simulation.compute_dtype), simulation.storage)
-    moves = load(shifts, pricing.compute_dtype)
-    base, shocked = revalue(request.trades, request.market, scenarios.factors, moves, request.pricing,
-                            request.batch_size)
-    pnl = load(store(shocked - jnp.asarray(base, dtype=moves.dtype)[None, :], pricing.storage), jnp.float64)
+    precision = request.precision
+    shifts = store(jnp.asarray(scenarios.shifts, dtype=precision.simulation.compute_dtype),
+                   precision.simulation.storage)
+    base, columns = [], []
+    for cfg in request.trades:
+        stage = precision.precision_for(cfg)
+        moves = load(shifts, stage.compute_dtype)
+        value, shocked = revalue_trade(cfg, request.market, scenarios.factors, moves, request.pricing,
+                                       request.batch_size)
+        base.append(value)
+        columns.append(load(store(shocked - jnp.asarray(value, dtype=moves.dtype), stage.storage), jnp.float64))
+    pnl = jnp.stack(columns, axis=-1)
     portfolio_pnl = jnp.sum(pnl, axis=-1)
 
     metrics = compute_risk_metrics(pnl[:, None, :], 0.0, percentiles=request.quantiles)
@@ -142,7 +152,8 @@ def _validate(request: MarketRiskRequest) -> None:
             raise ValueError(f"quantile must lie in (0, 1); got {q}")
     if not isinstance(request.pricing, PricingConfig):
         raise TypeError(f"pricing must be a PricingConfig; got {type(request.pricing).__name__}")
-    validate_trades(request.trades, request.market, request.pricing)
+    require_unique_ids(request.trades)
+    validate_trades(request.trades, request.market, request.pricing, request.precision)
 
     factors = request.scenarios.factors
     market_curves = _market_curves(request.market)

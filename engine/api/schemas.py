@@ -17,7 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from engine.market import ZeroCurveConfig
 from engine.risk.exposure import ExposureProfile
 from engine.portfolio import PortfolioResult
-from engine.precision import FORMAT_NAMES, RETIRED_SHAPE, STAGES, Precision, StagePrecision
+from engine.precision import FORMAT_NAMES, OVERRIDES, RETIRED_SHAPE, STAGES, Precision, StagePrecision
+from engine.valuation.portfolio import PRODUCTS
 
 
 def _parse_ore_date(value: str) -> ORE.Date:
@@ -66,6 +67,9 @@ class CouponPeriodSchema(BaseModel):
 #: A number format of `engine.precision.FORMATS`, by name.
 FormatName = Literal[FORMAT_NAMES]
 
+#: A product the pipeline prices (`engine.valuation.portfolio.PRODUCTS`, the trades' `trade_type`).
+ProductName = Literal[PRODUCTS]
+
 
 class StagePrecisionSchema(BaseModel):
     """`engine.precision.StagePrecision`; validated by the dataclass."""
@@ -77,12 +81,15 @@ class StagePrecisionSchema(BaseModel):
 
 class PrecisionSchema(BaseModel):
     """`engine.precision.Precision`: storage, compute and accumulate per adjustable stage, each
-    float64 by default. The 32/64 shape before roadmap 1.4 is refused, naming the replacement
-    (decision A-12)."""
+    float64 by default, and the pricing stage overridden per product (`by_product`, keyed by
+    `trade_type`) and per trade (`by_trade`, keyed by `trade_id`). The 32/64 shape before
+    roadmap 1.4 is refused, naming the replacement (decision A-12)."""
     model_config = ConfigDict(extra="forbid")
     simulation: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
     market: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
     pricing: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
+    by_product: Dict[ProductName, StagePrecisionSchema] = Field(default_factory=dict)
+    by_trade: Dict[str, StagePrecisionSchema] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -93,13 +100,18 @@ class PrecisionSchema(BaseModel):
         return data
 
     def to_dataclass(self) -> Precision:
-        stages = {}
-        for stage in STAGES:
-            try:
-                stages[stage] = StagePrecision(**getattr(self, stage).model_dump())
-            except ValueError as exc:
-                raise ValueError(f"precision.{stage}: {exc}") from None
-        return Precision(**stages)
+        stages = {stage: _stage(f"precision.{stage}", getattr(self, stage)) for stage in STAGES}
+        overrides = {name: {key: _stage(f"precision.{name}[{key!r}]", value)
+                            for key, value in getattr(self, name).items()} for name in OVERRIDES}
+        return Precision(**stages, **overrides)
+
+
+def _stage(where: str, schema: StagePrecisionSchema) -> StagePrecision:
+    """The dataclass of one `StagePrecisionSchema`, its refusal naming the wire field."""
+    try:
+        return StagePrecision(**schema.model_dump())
+    except ValueError as exc:
+        raise ValueError(f"{where}: {exc}") from None
 
 
 class RiskMetricsSchema(BaseModel):

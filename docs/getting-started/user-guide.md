@@ -553,7 +553,18 @@ RunConfig(simulation=..., precision=Precision.throughout("float32"))        # ev
 RunConfig(simulation=..., precision=Precision(
     pricing=StagePrecision(storage="float32", compute="float64", accumulate="float64")))  # priced in
                                                                                  # float64, cube kept in float32
+RunConfig(simulation=..., precision=Precision(
+    pricing=StagePrecision("float32", "float32", "float32"),
+    by_product={"bermudan_swaption": StagePrecision()},          # but Bermudans in float64
+    by_trade={"swap-7": StagePrecision(storage="float32")}))     # and this swap computed in float64
 ```
+
+The pricing stage can be set per product (`by_product`, keyed by `"swap"`,
+`"european_swaption"`, `"bermudan_swaption"`, `"american_swaption"`, `"bond"`) and per trade
+(`by_trade`, keyed by `trade_id`); a trade's own entry wins over its product's, which wins over
+`pricing`. Each trade's cube column comes out exactly as if it were priced alone at its
+precision, and a key that names no product or no trade of the request is refused. Market risk
+(`MarketRiskRequest.precision`) takes the same overrides.
 
 Calibration, today's values, Greeks and the exposure statistics are always float64; the
 result's `npv_cube` is the stored cube read back at float64. Over HTTP the same is

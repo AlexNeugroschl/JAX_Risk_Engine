@@ -322,17 +322,25 @@ Mirrors `engine.precision.Precision` (see [The Portfolio Entry Point:
 Precision](portfolio-entrypoint.md#precision) and
 [Architecture](../concepts/architecture.md#adjustable-precision)): `simulation`, `market` and
 `pricing`, each an object of format names `storage`, `compute` and `accumulate`, every field
-`"float64"` when omitted. Unknown fields are refused.
+`"float64"` when omitted; and the pricing stage's overrides, `by_product` (keyed by a
+`trade_type`) and `by_trade` (keyed by a `trade_id`), each mapping to such an object. A trade
+is priced at its `by_trade` entry, else its product's, else `pricing` (roadmap 1.5). Unknown
+fields are refused.
 
 ```json
 "precision": {"simulation": {"storage": "float32", "compute": "float32", "accumulate": "float32"},
-              "pricing": {"storage": "float32"}}
+              "pricing": {"storage": "float32"},
+              "by_product": {"bermudan_swaption": {}},
+              "by_trade": {"swap-7": {"storage": "float32", "compute": "float32", "accumulate": "float32"}}}
 ```
+
+A `by_product` key that is not a `trade_type` is a `422`; a `by_trade` key that names no
+trade of the request is a `400` (checked with the request, so no job is created).
 
 The format names are the format table's (`float64`, `float32`, `float16`, `bfloat16`,
 `float8_e4m3fn`, `float8_e5m2`); another name is a `422`. A name in the table that is not yet
-enabled, or an inconsistent stage, is a `400` naming the stage, the field and the roadmap step
-that enables it:
+enabled, or an inconsistent stage, is a `400` naming the stage (or override, e.g.
+`precision.by_trade['swap-7']`), the field and the roadmap step that enables it:
 
 ```
 POST /portfolio/price
@@ -452,7 +460,7 @@ process needed:
   replacement; a trade carrying model parameters and an unknown model are `422`s; a currency
   the market lacks is a `400` naming the trade; malformed/missing/invalid-discriminator
   bodies are `422`s.
-- `TestPortfolioPricePrecision` — the retired 32/64 shape and an unknown format are `422`s
+- `TestPortfolioPricePrecision` — the overrides per product and trade reach the run configuration, an unknown product is a `422` and an unknown trade id a `400`; the retired 32/64 shape and an unknown format are `422`s
   naming the replacement or the table; a format not yet enabled is a `400` naming the stage,
   field and step, not a failed job; omitted equals explicit float64.
 - `TestPortfolioPriceWorkerPoolDispatch` — a float64 and a float32 job complete, each equal to
