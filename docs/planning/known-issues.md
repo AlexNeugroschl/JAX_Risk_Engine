@@ -735,6 +735,19 @@ four-device sharding test (a fifth JAX process with four XLA host devices) timed
 30 minutes at a cgroup peak of 24.4 GB of 25.2; one on a quiet host where the Docker VM went
 down at 98%. Memory is the leading suspect: the suite now runs at the VM's limit.
 
+**CI, 2026-10-05: memory, confirmed and fixed for the fast tier.** Every CI run since `-n auto`
+(`f51227c`, run #14) died after 7–9 minutes with "The operation was canceled": the 4-vCPU,
+16 GB runner ran out of memory and lost its runner agent. Reproduced in Docker with the
+runner's limits (4 CPUs, 16 GB, no swap, no compile cache): OOM-killed, three of four xdist
+processes lost. Two causes, two test-only fixes, the engine unchanged:
+`tests/test_ore_bermudan_oracle.py::test_engine_is_grid_converged` alone peaked at 11.5 GB on
+its 384-per-std, 10-std control grid, now 192 and 8 (within 1.6e-6 of it, 3.3 GB; the
+rollback's memory is fixed properly by its matrix form, step 2.8, [details](details/precision.md#83-emulation-and-native-speed));
+and each test process kept every XLA program it compiled, now dropped after each module
+(`jax.clear_caches()` in `tests/conftest.py`). The same container then passed the fast tier,
+2,461 passed, 2 skipped, at a 13.1 GB peak (page cache included), in 5m22s. The full suite
+on that runner is not yet shown.
+
 **Current handling.** Since roadmap 1.8 no pool, and no executor thread, exists: HTTP tests
 start one engine worker, a separate process with no thread in the test process, and each
 module stops it when it ends (`tests/conftest.py`); a worker also exits once its parent is

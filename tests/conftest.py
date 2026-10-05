@@ -27,6 +27,7 @@ jax.config.update("jax_persistent_cache_min_entry_size_bytes",
                   int(os.environ["JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES"]))
 
 import dataclasses
+import gc
 
 import ORE
 import pytest
@@ -58,6 +59,18 @@ def with_simulation(request: PortfolioRequest, **changes) -> PortfolioRequest:
     """Helper (not a fixture): `request` with its simulation's fields replaced."""
     simulation = dataclasses.replace(request.config.simulation, **changes)
     return dataclasses.replace(request, config=dataclasses.replace(request.config, simulation=simulation))
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _clear_jax_caches_after_each_module():
+    """Drop this process's compiled XLA programs after each module (I-27). JAX keeps every
+    program for the process's lifetime, so a test process grows with each module it runs: four
+    of them on CI's 4-vCPU, 16 GB runner (`-n auto`) ran out of memory, and the runner reported
+    both jobs "canceled". The next module compiles what it needs again, or reads it back from
+    the persistent cache above."""
+    yield
+    jax.clear_caches()
+    gc.collect()
 
 
 @pytest.fixture(scope="module", autouse=True)

@@ -110,7 +110,7 @@ closed I-21 and I-22) moved them at rounding level, the one such change so far.
 
 | Step | Work | Closes | Size |
 |---|---|---|---|
-| 5.1 | Characterize the full-suite aborts and lost worker processes: peak memory per xdist process on Linux (`-n 4` peaked at 24.2 GB with page cache, CI's runner has 16 GB), then repeated full runs against a known-bad baseline (the pools went with 1.8) | [I-27](known-issues.md#i-27) | M |
+| 5.1 | Characterize the full-suite aborts and lost worker processes: the fast tier's CI deaths were memory and are fixed (2026-10-05: the grid-convergence test's grid, compiled programs dropped per module); show the full suite on CI's 16 GB runner (`-n 4` peaked at 24.2 GB with page cache before those fixes), then repeated full runs against a known-bad baseline | [I-27](known-issues.md#i-27) | M |
 | 5.2 | Ruff in `pyproject.toml` and CI, then a type checker on `engine/` | [I-66](known-issues.md#i-66) | S |
 | 5.3 | Shared test helpers in `tests/support/`; public-entry tests where stage 1 made private-symbol tests obsolete | [I-67](known-issues.md#i-67) | S |
 

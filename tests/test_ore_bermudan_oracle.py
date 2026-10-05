@@ -230,13 +230,18 @@ class TestGapIsTheParametrizationNotTheInduction:
 
     def test_engine_is_grid_converged(self):
         """Refining the grid does not move the price beyond the 5th significant figure, so
-        the gap is not discretization error."""
+        the gap is not discretization error.
+
+        The fine grid is 192 nodes per standard deviation over 8: measured 2026-10-05, it is
+        within 1.6e-6 of 384 over 10 (8 or 10 standard deviations agree to 1e-11), at a peak of
+        3.3 GB against 11.5 GB, which with three other test processes ran CI's 16 GB runner out
+        of memory (I-27)."""
         flat, a, sigma, rate, payer, tenor, ex = 0.03, 0.03, 0.01, 0.03, True, "5Y", [1, 2, 3]
         times = _engine_exercise_dates(flat, a, sigma, rate, payer, tenor, ex)
         coarse = _npv(
             _engine_cfg(flat, a, sigma, rate, payer, tenor, times, n_per_std=48, std_devs=6.0))
         fine = _npv(
-            _engine_cfg(flat, a, sigma, rate, payer, tenor, times, n_per_std=384, std_devs=10.0))
+            _engine_cfg(flat, a, sigma, rate, payer, tenor, times, n_per_std=192, std_devs=8.0))
         assert abs(coarse - fine) / abs(fine) < 1e-4, (
             f"engine not grid-converged: coarse={coarse:.4f} fine={fine:.4f}"
         )

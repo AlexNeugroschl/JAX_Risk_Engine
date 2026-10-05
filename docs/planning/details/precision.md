@@ -511,6 +511,14 @@ rollback and its per-path recalibration, exposure. One implementation serves eve
   correlation mixing (already a product, but small). These forms are written in step 2.8,
   in the same rewrite as the difference form, so no kernel is rewritten twice; step 3.4 times
   them.
+- The rollback's matrix form also fixes its memory. Today each column (the option, the
+  underlying, each cached cashflow) is interpolated at `[nodes, quadrature nodes]` points,
+  vmapped over the columns, although the interpolation weights depend only on the grids:
+  measured 2026-10-05, one Bermudan on a 384-per-std, 10-std grid peaked at 11.5 GB (under
+  1 MB per column at ORE's default 30 and 5). One `[nodes, nodes]` operator per step, applied
+  to all columns at once, holds one such buffer and runs on the matrix units. Rolling the
+  columns back one at a time (`lax.map`) also cut the peak, to 5.6 GB, bit for bit, but trades
+  away the batched kernel on an accelerator, so it was not adopted.
 
 ## 9. Estimation and the precision report
 
