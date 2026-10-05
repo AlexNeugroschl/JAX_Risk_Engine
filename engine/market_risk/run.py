@@ -48,6 +48,7 @@ from engine.precision import (
 from engine.risk.var_es import compute_risk_metrics, expected_shortfall, quantile_label, value_at_risk
 from engine.valuation.config import PricingConfig
 from engine.valuation.portfolio import require_unique_ids, validate_trades
+from engine.simulation.sharding import shard_scenarios
 
 OPTION_TYPES = (SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig)
 
@@ -118,7 +119,8 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     _validate(request)
     scenarios = request.scenarios
     precision = request.precision
-    shifts = precision.store(jnp.asarray(scenarios.shifts, dtype=precision.simulation.compute_dtype),
+    shifts = precision.store(shard_scenarios(jnp.asarray(scenarios.shifts, dtype=precision.simulation.compute_dtype),
+                                             axis=0),
                              precision.simulation.storage, "shocks")
     base, columns, stored = [], [], []
     for cfg in request.trades:

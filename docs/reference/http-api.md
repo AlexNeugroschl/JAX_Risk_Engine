@@ -268,7 +268,9 @@ Since roadmap 1.8 (decision A-14; [details/precision.md §11](../planning/detail
   exactly as the route did (so nothing is pickled), calls `price_portfolio`, and stores the
   result document, which the route then sends verbatim. It owns every device JAX sees on the
   host and keeps its compiled programs for its lifetime, so a repeated job shape compiles
-  nothing. A file lock (`<queue>.worker.lock`) makes it the queue's only worker; the
+  nothing. It also keeps them on disk, in JAX's persistent compilation cache, so a restarted
+  worker reads them back instead of compiling again: in `JAX_COMPILATION_CACHE_DIR` if set
+  (set it empty to turn the cache off), else in `xla-cache/` beside the queue file. A file lock (`<queue>.worker.lock`) makes it the queue's only worker; the
   operating system releases the lock however the worker dies.
 - **Failures stay in their row.** A job that raises is `failed` with its class and traceback,
   and the worker takes the next job. A worker that dies mid-job leaves the row `running`; the
@@ -284,9 +286,12 @@ Since roadmap 1.8 (decision A-14; [details/precision.md §11](../planning/detail
     under systemd (`Restart=always`), a container restart policy or a pod's process manager.
     `pip install -e .` registers the command; `python -c "from engine.api.worker import
     main; main()"` is the same thing.
-- **Jobs run one at a time.** Two jobs no longer price side by side in two processes: XLA
-  already uses the whole device for one job, and on TPU one process owns a chip. Sharding one
-  job across the host's devices is roadmap 3.2.
+- **Jobs run one at a time, each on every device of the host.** A job's scenarios (the
+  simulation's paths, market risk's shocks) are split across the host's devices
+  (`engine/simulation/sharding.py`): as many devices as divide the scenario count evenly,
+  at most `JAX_RISK_SCENARIO_DEVICES` if set (`1` keeps a job on one device). The result's
+  precision report lists the devices. Several hosts (a TPU pod slice) are not yet supported
+  ([I-61](../planning/known-issues.md#i-61)).
 
 Not yet built: rows are never deleted (results accumulate in the file,
 [I-76](../planning/known-issues.md#i-76)); a worker that cannot start at all leaves jobs

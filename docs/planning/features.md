@@ -9,10 +9,10 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 
 | ID | Feature | Size | Depends on | Stage |
 |---|---|---|---|---|
-| [F-01](#f-01) | Engine options beyond ORE's defaults | M | — | 6.2 |
-| [F-02](#f-02) | SABR swaption volatility | M | I-54 | 6.5 |
-| [F-03](#f-03) | ORE's AMC engine as a valuation option | L | I-50 | 6.7 |
-| [F-04](#f-04) | FX and equity trades on the market path; FX/EQ vol calibration | L | — | 6.4 |
+| [F-01](#f-01) | Engine options beyond ORE's defaults | M | Roadmap 2.8; the FD solver also I-32 | 6.2 |
+| [F-02](#f-02) | SABR swaption volatility | M | I-54, roadmap 2.8 | 6.5 |
+| [F-03](#f-03) | ORE's AMC engine as a valuation option | L | I-50, roadmap 2.8 | 6.7 |
+| [F-04](#f-04) | FX and equity trades on the market path; FX/EQ vol calibration | L | Roadmap 2.8 | 6.4 |
 | [F-05](#f-05) | Basel III regulatory figures | L | See entry | 6.1, 6.6 |
 | [F-06](#f-06) | CVA/DVA from the exposure profiles | M | I-50 | 6.6 |
 | [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-55 | 2.8, 3.4, 6.3 |
@@ -33,18 +33,17 @@ product** (A-8: `engine.market_risk` takes the `PricingConfig`). Left:
 
 - **ORE's `AnalyticLgmSwaptionEngine`** for Europeans on the simulated LGM, beside Bachelier
   and Jamshidian.
-- **Agreement of the two Greeks methods** as the bump halves: shown so far on flat curves,
-  where the bump method's sensitivity market and the market's curves coincide
-  (`tests/test_greeks.py::TestAgainstTheBumpMethod`: parallel Deltas to 1e-4 once the forward
-  difference's curvature is removed). A Bermudan's AD Delta holds its calibration fixed, its
-  bump Delta recalibrates.
 - **Settlement method** (A-6): a trade field with ORE's values and defaults (`PhysicalOTC`,
   `CollateralizedCashPrice`, `ParYieldCurve`, ...). Low priority.
 - **Bermudan/American solver** (A-3): ORE's `LgmFdSolver` beside the Grid solver. ORE's two
   solvers disagree by up to 1e-3 on broken-period exercise, so understand that gap first.
 
-**Depends on.** Nothing open. **Size.** M. **Details.**
-[details/configurable-engine.md](details/configurable-engine.md).
+The AD Greeks method's agreement with the bump method on sloped curves is an open issue,
+[I-78](known-issues.md#i-78).
+
+**Depends on.** Roadmap 2.8: each option adds a path-pricing kernel, written in 2.8's form
+(A-16). The FD solver also needs [I-32](known-issues.md#i-32)'s shift. **Size.** M.
+**Details.** [details/configurable-engine.md](details/configurable-engine.md).
 
 <a id="f-02"></a>
 ### F-02 — SABR swaption volatility
@@ -52,7 +51,7 @@ product** (A-8: `engine.market_risk` takes the `PricingConfig`). Left:
 **Value.** ORE offers SABR smiles beside volatility cubes. After [I-54](known-issues.md#i-54)
 adds a strike axis, SABR is a second way to supply it.
 
-**Depends on.** I-54. **Size.** M.
+**Depends on.** I-54; roadmap 2.8 (A-16). **Size.** M.
 
 <a id="f-03"></a>
 ### F-03 — ORE's AMC engine as a valuation option
@@ -62,7 +61,7 @@ revaluation, and much cheaper for Bermudans than per-path recalibration
 ([I-53](known-issues.md#i-53)). Out of scope so far (X-6); a candidate simulation option under
 decision A-1. Parity against ORE's AMC analytic.
 
-**Depends on.** I-50's oracle for parity. It adds a simulation option to `RunConfig`
+**Depends on.** I-50's oracle for parity; roadmap 2.8 (A-16). It adds a simulation option to `RunConfig`
 (classic revaluation is the only one today). **Size.** L.
 
 <a id="f-04"></a><a id="x-10"></a><a id="x-11"></a>
@@ -74,7 +73,8 @@ constant inputs rather than calibrated to options as `CrossAssetModelBuilder` do
 Both decided: close eventually, not urgent. Brings the two-currency end-to-end test (layer
 L6) within reach.
 
-**Depends on.** Nothing open. Equity positions from TraderX additionally need
+**Depends on.** Roadmap 2.8: the new trades' path kernels are written in its form (A-16).
+Equity positions from TraderX additionally need
 [I-18](known-issues.md#i-18)'s market data. **Size.** L.
 
 <a id="f-05"></a>
@@ -114,8 +114,9 @@ scenario market, path pricing), overridable per product and per trade (A-15; don
 1.5, 2026-10-02: `Precision.by_product`, `by_trade`, `precision_for`); sub-32-bit storage with
 block scales and nearest or stochastic rounding (done in roadmap 1.6, 2026-10-02: float16,
 bfloat16, `float8_e4m3fn`, `float8_e5m2`; `Stored`, `Precision.rounding`); compute below
-float32 through kernels in difference form, one implementation for every precision (A-16,
-2.8); timing on Ironwood and H100 (3.4); FP4 on TPU 8t/8i (6.3). Measured so far: FP8
+float32 through kernels in difference form, matrix products where a kernel can be one, one
+implementation for every precision (A-16, 2.8); the evidence table and warnings (2.9);
+timing across devices on Ironwood and H100 (3.4, after the sharding of 3.2); FP4 on TPU 8t/8i (6.3). Measured so far: FP8
 storage of the shocks biases a call payoff by about one Monte Carlo standard error at 4M
 paths (stochastic rounding: 0.15), so the earlier rejection of FP8, which compared error per
 value with Monte Carlo error, is withdrawn; FP4 stored naively is biased with either

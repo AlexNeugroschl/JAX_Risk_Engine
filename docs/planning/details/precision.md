@@ -508,7 +508,9 @@ rollback and its per-path recalibration, exposure. One implementation serves eve
 - So the wall-clock half of the research question depends on expressing the heavy kernels as
   matrix products where they can be: leg pricing (amounts per flow × discount factors per
   path and flow), the Bermudan rollback (a fixed Gaussian kernel matrix × values), the
-  correlation mixing (already a product, but small). Step 3.4.
+  correlation mixing (already a product, but small). These forms are written in step 2.8,
+  in the same rewrite as the difference form, so no kernel is rewritten twice; step 3.4 times
+  them.
 
 ## 9. Estimation and the precision report
 
@@ -557,7 +559,7 @@ estimation (Giles and Haji-Ali) is a later research item (step 6.3).
   error, the largest paired difference, the path counts;
 - the evidence verdict per figure: validated, or the warning ([§10](#10-acceptance-standard-and-evidence)).
 
-The verdict comes with step 2.7's evidence table; the rest was built in step 1.7 (§9.6).
+The verdict comes with step 2.9's evidence table; the rest was built in step 1.7 (§9.6).
 
 ### 9.6 As built (step 1.7, 2026-10-02)
 
@@ -690,8 +692,13 @@ thread pool, and the EOD path its locks (`engine/integration/`), which 1.8 does 
 
 ### 11.3 Multi-device and multi-host
 
-- **One host:** the worker builds a `jax.sharding.Mesh` over its devices once and shards the
-  scenario axis inside each job (step 3.2). No threads, no pinning.
+- **One host (done 2026-10-04):** the scenario draws of each job (the Sobol normals, market
+  risk's shifts) are placed on a one-axis `jax.sharding.Mesh` of the host's devices, split
+  along the scenario axis, and XLA's sharding propagation carries the split through the rest
+  of the job (`engine/simulation/sharding.py`). As many devices as divide the scenario count,
+  capped by `JAX_RISK_SCENARIO_DEVICES`; one device places nothing, so one-device runs are
+  unchanged bit for bit. Four CPU host devices equal one to about 6e-16 relative
+  (`tests/test_sharding.py`). No threads, no pinning.
 - **Several hosts (a TPU pod slice):** one worker per host, all running the same program
   (`jax.distributed.initialize`). Under SPMD every host must run *the same job* at the same
   time, so the hosts cannot each claim from the queue as one host's worker does: process 0
@@ -742,17 +749,20 @@ Decisions taken while building it (1.8):
 | **1.6** (done 2026-10-02) | Sub-32-bit storage: block scales, both roundings; `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2` enabled for storage | The storage properties of §13.4; bit for bit at the default. Met: §13.1, §13.4 | M |
 | **1.7** (done 2026-10-02) | Paired sample, two-level estimator for means, `PrecisionReport` with realized dtypes and device (closes I-12) | §13.6; bit for bit at the default. Met: §13.1, §13.6 | M |
 | **1.8** (done 2026-10-04) | Engine worker process and the SQLite queue (A-14); delete `worker_pool.py`'s pool and freeze/thaw | §13.8, including the Linux run; float64 job time and compile count no worse. Met: §13.8, §13.9 | M |
-| **2.7** | *Parallel with stage 2.* Measurement campaign for storage formats per class and product, at several path counts, fixed seeds; the evidence table and the warnings (§10) | Table complete for every figure × class × format; thresholds fixed before measuring; a verdict and path ceiling per row | M |
-| **2.8** | Difference-form kernels (§8.2), one family at a time; compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the re-baseline of §2.1; emulated FP8/bfloat16 compute measured into the evidence table | L |
-| **3.2** | Shard the scenario axis in the worker (I-61) | Results equal the one-device run within reduction-order rounding; scaling measured | L |
-| **3.4** | Timing on Ironwood and H100: storage formats, then matrix-product forms of the heavy kernels with native FP8 | Wall time per figure and precision against float64 at equal accuracy (the evidence table's path ceilings) | M |
+| **2.7** | *Parallel with stage 2.* Storage relative to a level for classes whose level swamps their spread (I-75); a measurement harness for storage formats per class and product, at several path counts, fixed seeds, rerunnable on any kernel change | Harness covers every figure × class × format; thresholds fixed before measuring; I-75's FP8 bond column unbiased within its Monte Carlo standard error | M |
+| **2.8** | Difference-form kernels (§8.2), one family at a time, as matrix products where a family can be one (§8.3); compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the re-baseline of §2.1; emulated FP8/bfloat16 compute measured by the harness | L |
+| **2.9** | The evidence table and the warnings (§10), from 2.7's harness on the kernels after 2.4, 2.5 and 2.8 | Table complete; a verdict and path ceiling per row; a warning on every result without a passing row | S |
+| **3.2** | Shard the scenario axis in the worker (I-61): one host done 2026-10-04; several hosts next | Results equal the one-device run within reduction-order rounding (one host: met, `tests/test_sharding.py`); scaling measured on TPU | M |
+| **3.4** | After 3.2. Timing across devices on Ironwood and H100: storage formats, then 2.8's matrix-product kernels with native FP8 | The research result: wall time per figure and precision against float64 at equal accuracy (the evidence table's path ceilings), many low-precision paths against fewer float64 ones | M |
 | **6.3** | FP4 storage (variance correction through the block scales), FP4 compute on TPU 8t/8i, multilevel quantile estimation | Evidence rows for FP4 | L |
 
-**Order (decided, K):** the structure first (1.4 to 1.8), stage 2's correctness work next,
-with the storage measurement (2.7) alongside because it changes no float64 number; the kernel
-rewrite (2.8) after stage 2's own kernel changes (2.4 recalibration, 2.5 `ShiftHorizon`, 2.6
-the volatility strike axis), so no kernel is rewritten twice; then performance, which
-requires frozen numbers.
+**Order (decided, K; revised 2026-10-04):** the structure first (1.4 to 1.8), stage 2's
+correctness work next, with the storage measurement (2.7) alongside because it changes no
+float64 number; the kernel rewrite (2.8), difference form and matrix products together, after
+stage 2's own kernel changes (2.4 recalibration, 2.5 `ShiftHorizon`), so no kernel is
+rewritten twice; the evidence table (2.9) on the kernels that ship; then performance, which
+requires frozen numbers. The volatility strike axis (2.6) changes no number on any current
+market and gates nothing.
 
 ## 13. Testing
 
@@ -955,7 +965,7 @@ ran on Linux ([verification status](../known-issues.md#verification-status)).
   job built 122, each of the 18 repeats 0
   (`test_a_second_identical_job_compiles_nothing`). The pool built the same programs once per
   worker (two by default).
-- Step 3.4 on Ironwood and H100: wall time per figure at equal accuracy.
+- Step 3.4 on Ironwood and H100, across devices (after 3.2): wall time per figure at equal accuracy.
 
 ### 13.10 Demos
 

@@ -35,6 +35,7 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, _grid_h
 from engine.market import Market
 from engine.market_risk.factors import RateRiskFactors, curve_name
 from engine.risk.price_functions import curve_keys, trade_price_function
+from engine.simulation.sharding import scenario_device_count, shard_scenarios
 from engine.valuation.bermudan import prepared_option
 from engine.valuation.config import PricingConfig
 
@@ -102,6 +103,15 @@ def revalue_trade(cfg, market: Market, factors: RateRiskFactors, moves, pricing:
 
 
 def _map_scenarios(on_factors, base, moves, batch_size):
-    """`on_factors(base + moves[s])` for every scenario `s`, vmapped in batches."""
+    """`on_factors(base + moves[s])` for every scenario `s`, vmapped in batches. With the
+    scenarios split across devices (`engine.simulation.sharding`), each batch takes
+    `batch_size` scenarios from every device's share, so every device works on every batch
+    and holds one batch's memory."""
     batched = jax.vmap(lambda move: on_factors(base + move))
-    return jnp.concatenate([batched(moves[i:i + batch_size]) for i in range(0, moves.shape[0], batch_size)])
+    devices = scenario_device_count(moves.shape[0])
+    if devices == 1:
+        return jnp.concatenate([batched(moves[i:i + batch_size]) for i in range(0, moves.shape[0], batch_size)])
+    shares = shard_scenarios(moves.reshape(devices, -1, moves.shape[-1]), axis=0)   # [devices, S / devices, F]
+    per_device = jax.vmap(batched)
+    values = [per_device(shares[:, i:i + batch_size]) for i in range(0, shares.shape[1], batch_size)]
+    return jnp.concatenate(values, axis=1).reshape(-1)

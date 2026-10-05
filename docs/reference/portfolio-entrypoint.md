@@ -153,7 +153,7 @@ epe.correction, epe.correction_standard_error   # the FP8 cube's bias on EPE, an
 ```
 
 At float64 everywhere a paired sample measures exactly zero. Whether a combination is
-validated for a figure is roadmap 2.7's evidence table ([I-55](../planning/known-issues.md#i-55)).
+validated for a figure is roadmap 2.9's evidence table ([I-55](../planning/known-issues.md#i-55)).
 
 ## `PortfolioResult`
 

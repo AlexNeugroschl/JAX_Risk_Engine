@@ -15,6 +15,10 @@ document `PortfolioResultSchema` serializes, the bytes a route would have sent. 
 at a time, in submission order. The process owns every device JAX sees on its host; no device
 is pinned or shared with another engine process. XLA programs stay compiled for the process's
 lifetime, so a repeated job shape compiles nothing (each job's count is stored in its row).
+Across restarts, a worker started by `main` keeps JAX's persistent compilation cache: in
+`JAX_COMPILATION_CACHE_DIR` if set (empty turns it off), else in `xla-cache/` beside the queue
+file, every program cached (`compilation_cache_environment`). A restarted worker then reads
+its programs back instead of compiling them again.
 
 A failing job fails only its own row, with a failure class (`failure_class`) and the
 traceback; the worker goes on to the next job. A worker that dies mid-job leaves the row
@@ -36,6 +40,7 @@ import sys
 import time
 import traceback
 import warnings
+from pathlib import Path
 from typing import Callable, Optional
 
 from engine.api.job_queue import (
@@ -53,6 +58,10 @@ LOCK_WAIT_SECONDS = 2.0
 #: 2.5 ms to a job's latency on average.
 POLL_SECONDS = 0.005
 
+#: The persistent compilation cache's directory beside the queue file, when
+#: `JAX_COMPILATION_CACHE_DIR` is unset.
+COMPILATION_CACHE_DIRNAME = "xla-cache"
+
 #: `request body -> result document`, the work of one job.
 Pricer = Callable[[bytes], str]
 
@@ -65,7 +74,26 @@ def main(argv=None) -> None:
                         help="exit once this process is gone (the supervising API)")
     parser.add_argument("--poll-seconds", type=float, default=POLL_SECONDS)
     args = parser.parse_args(argv)
+    # Before JAX is imported (`serve` imports it after taking the lock), which reads these.
+    for name, value in compilation_cache_environment(args.queue, os.environ).items():
+        os.environ.setdefault(name, value)
     sys.exit(serve(args.queue, parent_pid=args.parent_pid, poll_seconds=args.poll_seconds))
+
+
+def compilation_cache_environment(queue_path, environ) -> dict:
+    """The environment that turns on JAX's persistent compilation cache for a worker on
+    `queue_path`, for the variables `environ` does not set already: the cache beside the queue
+    file, and every program cached, as the tests do (JAX's own default skips programs that
+    compile in under a second; a job builds about a hundred small ones). A program is keyed on
+    its HLO, the compile options and the jax/jaxlib versions, so a hit is the executable a
+    fresh compile would build. An explicit `JAX_COMPILATION_CACHE_DIR` wins, and an empty one
+    turns the cache off."""
+    defaults = {
+        "JAX_COMPILATION_CACHE_DIR": str(Path(queue_path).resolve().parent / COMPILATION_CACHE_DIRNAME),
+        "JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS": "0",
+        "JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES": "0",
+    }
+    return {name: value for name, value in defaults.items() if name not in environ}
 
 
 def serve(queue_path, *, price: Optional[Pricer] = None, parent_pid: Optional[int] = None,

@@ -506,8 +506,10 @@ constants. This was accepted for this change on 2026-10-02 (planning `details/pr
 
 **Across processes**, the test suite also keeps JAX's persistent compilation cache in
 `.jax_cache/` (`tests/conftest.py`), so a rerun reads back most programs instead of
-compiling them. The engine does not enable it on its own; a deployment can, by setting
-`JAX_COMPILATION_CACHE_DIR` for its worker processes.
+compiling them. The engine worker enables it too (`engine.api.worker.compilation_cache_environment`):
+in `JAX_COMPILATION_CACHE_DIR` if set, else `xla-cache/` beside its job queue, every program
+cached, so a restarted worker reads its programs back. An in-process `price_portfolio`
+caller enables it as JAX documents, if wanted.
 
 ---
 

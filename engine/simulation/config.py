@@ -40,6 +40,7 @@ from engine.simulation.cam import (
 )
 from engine.simulation.random import apply_brownian_bridge, generate_sobol_normals
 from engine.simulation.scenario_market import ScenarioMarket, build_scenario_market
+from engine.simulation.sharding import shard_scenarios
 
 #: Simulation-market curve tenors when none are configured: the yield-curve tenors of ORE's
 #: example simulation configuration (Examples/Exposure/Input/simulation.xml).
@@ -241,7 +242,9 @@ def simulate(market: Market, config: CamConfig, model: Optional[CrossAssetModel]
     times = grid_times(market, config)
     moments = step_moments(model, times)
     compute = sim.compute_dtype
-    normals = generate_sobol_normals(config.samples, len(config.dates), model.dimension, compute, seed=config.seed)
+    # Split across the host's devices along the paths; the rest of the run follows (I-61).
+    normals = shard_scenarios(generate_sobol_normals(config.samples, len(config.dates), model.dimension, compute,
+                                                     seed=config.seed), axis=1)
     shocks = precision.store(apply_brownian_bridge(normals, jnp.asarray(times, dtype=compute)), sim.storage,
                              "shocks", axis=1)
     cast = lambda a: jnp.asarray(a, dtype=compute)  # noqa: E731

@@ -264,6 +264,19 @@ class TestWorkerLoop:
         assert [queue.get(i).compiles for i in ids] == [1, 1]
 
 
+class TestCompilationCache:
+    def test_unset_the_cache_sits_beside_the_queue_and_keeps_every_program(self, tmp_path):
+        env = worker.compilation_cache_environment(tmp_path / "jobs.sqlite3", {})
+        assert env == {"JAX_COMPILATION_CACHE_DIR": str((tmp_path / worker.COMPILATION_CACHE_DIRNAME).resolve()),
+                       "JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS": "0",
+                       "JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES": "0"}
+
+    def test_a_variable_already_set_wins_and_empty_turns_the_cache_off(self, tmp_path):
+        env = worker.compilation_cache_environment(
+            tmp_path / "jobs.sqlite3", {"JAX_COMPILATION_CACHE_DIR": "", "JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS": "1"})
+        assert env == {"JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES": "0"}
+
+
 @pytest.mark.slow
 class TestWorkerProcesses:
     """Real worker processes around the stub pricer."""
@@ -484,6 +497,24 @@ class TestEngineWorkerPricing:
             assert result["base_npv"] == direct.base_npv
             np.testing.assert_array_equal(np.asarray(result["exposure"]["epe"]), np.asarray(direct.exposure.epe))
         assert together[0]["npv_cube"] != together[1]["npv_cube"], "the float32 job was not priced in float32"
+
+    def test_a_worker_keeps_its_programs_on_disk_beside_its_queue(self, queue):
+        """A worker started with no cache settings (`main`, as the supervisor starts it) keeps
+        JAX's persistent compilation cache in `xla-cache/` beside its queue file, so a
+        restarted worker reads its programs back (roadmap 3.1, I-53)."""
+        import os
+
+        cache = queue.path.parent / worker.COMPILATION_CACHE_DIRNAME
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("JAX_COMPILATION_CACHE", "JAX_PERSISTENT_CACHE"))}
+        process = subprocess.Popen(
+            [sys.executable, "-c", "from engine.api.worker import main; main()", "--queue", str(queue.path)],
+            cwd=ROOT, env=env, stdin=subprocess.DEVNULL)
+        try:
+            self._result(queue, queue.submit(json.dumps(_pricing_body(_trades("swap-payer"), samples=8)).encode()))
+        finally:
+            process.kill()
+            process.wait()
+        assert cache.is_dir() and any(cache.iterdir()), "the worker compiled without a persistent cache"
 
     def test_a_second_identical_job_compiles_nothing(self, running):
         """§13.9: the worker keeps its programs, so a repeated job shape builds no program,

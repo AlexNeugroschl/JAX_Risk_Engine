@@ -11,33 +11,31 @@ exposure are not yet compared with an ORE run ([I-50](#i-50)).
 
 ## Verification status
 
-Last full run, 2026-10-04, on the code of roadmap 1.8 (the engine worker and the job queue),
-2,556 collected (2,529 before it; +41 in `tests/test_engine_worker.py`; −7 with
-`tests/test_worker_pool.py`, and −7 freeze/thaw round trips in `test_run_config.py` (1),
-`test_trade_configs.py` (5) and `test_trade_dates.py` (1), whose mechanism is gone), summary
-line printed:
+Last full run, 2026-10-04, on the code of roadmap 1.8 plus the worker's persistent
+compilation cache and the one-host scenario sharding (I-53, I-61), 2,568 collected (2,556
+before; +3 in `tests/test_engine_worker.py`, +9 in `tests/test_sharding.py`), summary line
+printed:
 
-- **Windows**, `-n 8`: **2,555 passed, 1 skipped, 0 failed**, 6m51s (the skip is the
-  parametrized case of a storage wider than its compute, refused by design).
+- **Windows**, `-n 8`: **2,567 passed, 1 skipped, 0 failed**, 7m07s (the skip is the
+  parametrized case of a storage wider than its compute, refused by design). No engine
+  process outlived the run.
 - **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the CI
-  job, `-n 8`): 2,452 passed, 1 skipped, 2m18s.
-- **Linux** (Docker `python:3.11`, 4 CPUs, `-n 4`; 1.8 changes processes): **2,554 passed,
-  2 skipped, 0 failed**, 15m10s (the second skip: `reference/traderX` is not in the
-  container). A first Linux run lost one xdist process silently, inside
-  `test_scaled_storage_on_the_sloped_shared_market_is_sane[float8_e5m2-pricing]`; that test
-  file passed alone (peak 2.9 GB), and the rerun, with each module now stopping its engine
-  worker, was green but peaked at 24.2 GB of the container's 25.2 GB (cgroup peak, page cache
-  included). Recorded under [I-27](#i-27).
-- No engine process outlived any run (process listing after each).
+  job, `-n 8`): 2,462 passed, 1 skipped, 2m17s.
+- **Linux** (Docker `python:3.11`, 4 CPUs, `-n 4`): **not green yet.** Three attempts: (1)
+  beside another session's container in the same Docker VM, 6 failed (names partly lost);
+  (2) alone in Docker but on a loaded host, 2,565 passed, 2 skipped, 1 failed in 45 min: the
+  four-device sharding test hit its 30-minute subprocess timeout (cgroup peak 24.4 GB of
+  25.2); (3) on a quiet host, the Docker VM itself went down at 98% (no summary; the engine
+  answers 500 since). The failing modules pass alone on Linux (`test_sharding.py`,
+  `test_shared_portfolio.py`, `test_greeks.py`: 47 passed), and the sharding check
+  finishes in 85 s on one CPU, so a stall of XLA's CPU collectives under starved cores is
+  ruled out. Recorded under [I-27](#i-27). The previous green Linux run is 1.8's (2,554
+  passed, 2 skipped).
 
-Bit for bit (the exit criterion of 1.8): no file of the pipeline changed, so the snapshot was
-not rerun; the HTTP path equals the direct call bit for bit at float64 and float32
-([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)). float64
-speed, old and new trees interleaved, three passes of 15 warm jobs over HTTP (five trades,
-1,024 paths): median 56.8 ms before and 54.2 ms after, cold 5.39 s and 5.22 s; a repeated job
-compiles nothing (122 programs on the first job, 0 on each repeat). Red first: on the code
-before 1.8 a job id was a `404` from a second app process, and a pool worker killed while idle
-made the next submission fail with `BrokenProcessPool`.
+Bit for bit: on one device `shard_scenarios` places nothing and market risk takes its old
+batching branch, so every one-device run is unchanged by construction; the golden snapshot
+was not rerun. Red first: without the call sites every four-device result sat on one device;
+without the worker's cache settings no cache directory was written.
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
 
@@ -62,9 +60,10 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-75](#i-75) | Storage below 32 bits keeps few bits of a concentrated array's spread | Low | OPEN | Correctness | 2.7 |
 | [I-50](#i-50) | No path- or distribution-level parity test against an ORE simulation | Medium | OPEN | Validation | 2.2 |
 | [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | 2.3 |
+| [I-78](#i-78) | AD and bump Greeks differ by up to 2% on a sloped market | Medium | OPEN | Validation | 2.3 |
 | [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | PARTIAL | Performance | 3.1 |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | 2.6 |
-| [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | 2.7 |
+| [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | 2.9 |
 | [I-56](#i-56) | Market risk and the CAM calibration have no route; two routes named like versions | Medium | PARTIAL | API | 4.1 |
 | [I-57](#i-57) | EOD: a cached result is served before the submission id is checked | High | OPEN | API | 2.1 |
 | [I-58](#i-58) | EOD: two concurrent submissions of one workload both execute | Medium | OPEN | API | 2.1 |
@@ -72,7 +71,7 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-60](#i-60) | EOD result schema has no stated policy on added fields | Low | ASSUMPTION | API | 4.3 |
 | [I-76](#i-76) | The job queue keeps every job and result forever | Low | OPEN | API | 4.2 |
 | [I-77](#i-77) | A worker that cannot start leaves jobs `pending` with no signal | Low | OPEN | API | 4.2 |
-| [I-61](#i-61) | Nothing runs on more than one device | Medium | OPEN | Performance | 3.2 |
+| [I-61](#i-61) | Nothing runs on more than one host; multi-device speed unmeasured | Medium | PARTIAL | Performance | 3.2 |
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | 5.2 |
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | 5.3 |
 
@@ -132,7 +131,9 @@ checked against the formula but not against ORE running it (no Python constructo
 **Reach.** Market-path Bermudan/American values past t=0 and their exposure. Size unmeasured.
 
 **To close.** Decided (X-9): after [I-50](#i-50)'s oracle, compare a Bermudan's cube with
-ORE's, then reproduce both details.
+ORE's, then reproduce both details. The same comparison confirms decision A-7 (an American's
+basket on a path keeps the as-of reference grid), which is implemented but not yet checked
+against ORE's simulation.
 
 <a id="i-73"></a>
 ### I-73 — A per-path recalibration that misses its basket is not flagged
@@ -186,7 +187,7 @@ float64 across seeds, stochastic rounding more than nearest (float16: at most 0.
 [details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline)).
 
 **Current handling.** None: the runs are allowed (D-9) and carry no warning until
-[I-55](#i-55)'s evidence table and warnings (roadmap 2.7). Documented in the user guide and the
+[I-55](#i-55)'s evidence table and warnings (roadmap 2.9). Documented in the user guide and the
 portfolio entry point.
 
 **To close.** Roadmap 2.7: store such classes relative to a level, so the format's bits go to
@@ -262,6 +263,32 @@ shift convention in ORE's simulation market would pass every current test.
 (`tests/support/portfolio.py`), compare per trade, factor and tenor to 1e-8 relative
 ([details](details/ore-parity-validation.md)).
 
+<a id="i-78"></a>
+### I-78 — AD and bump Greeks agree on flat curves only; on a sloped market they differ by up to 2%
+
+**Severity:** Medium · **Status:** OPEN · **Category:** Validation · **Found:** 2026-10-04,
+roadmap review (moved from F-01)
+
+**What is wrong.** The AD Greeks method (decision A-5, `GreeksConfig.method="AD"`) is a
+shipped option for every model and engine. It agrees with ORE's bump-and-revalue Greeks on
+flat curves (`tests/test_greeks.py::TestAgainstTheBumpMethod`: parallel Deltas to 1e-4 once
+the forward difference's curvature is removed). On the sloped shared market the two differ:
+a near-par swap's discount Delta by 2% and a European's Vega by 0.9%. The AD derivatives are
+correct derivatives of the engine's own curves (finite differences hold to 1e-6 there); the
+gap is that the bump method differentiates ORE's sensitivity market and AD the market's curve
+representation, so an AD Greek is not ORE's Greek on a sloped curve. A Bermudan's AD Delta
+also holds its calibration fixed while its bump Delta recalibrates.
+
+**Reach.** Every sloped-market result run with `method="AD"`, by the percentages above;
+the default (bump) is unaffected.
+
+**Current handling.** The difference is stated in the test's docstring, not on the result.
+
+**To close.** With roadmap 2.3: differentiate the sensitivity market's representation
+(so AD equals the bump halves on the sloped shared portfolio, `tests/support/portfolio.py`,
+per trade, factor and tenor), or label AD Greeks as the derivative of a different quantity
+and state the gap; measure and document the Bermudan's fixed-calibration difference.
+
 ---
 
 ## Performance
@@ -290,8 +317,10 @@ no compiles): every path date recalibrates a basket of one helper per reference-
 each bucket a 60-step bisection around the 160-step root solve of `_analytic_lgm`. A first
 call still compiles a few large programs (each bootstrap bucket per helper shape, the grid
 induction and its derivatives), which the engine worker keeps for its lifetime (since
-roadmap 1.8; the pool's workers each compiled their own) and a restarted worker builds again
-unless a persistent compilation cache is configured (`JAX_COMPILATION_CACHE_DIR`).
+roadmap 1.8; the pool's workers each compiled their own) and, since 2026-10-04, keeps on disk
+in JAX's persistent compilation cache (`xla-cache/` beside the queue unless
+`JAX_COMPILATION_CACHE_DIR` says otherwise), so a restarted worker reads them back
+(`tests/test_engine_worker.py::TestEngineWorkerPricing::test_a_worker_keeps_its_programs_on_disk_beside_its_queue`).
 `demos/demo_profile_small.py`'s trace was truncated at the profiler's event cap before this
 change and has not been re-measured.
 
@@ -302,22 +331,35 @@ value); measure first-call compile time per product. `PricingConfig(recalibrate=
 the AD Greeks method exist where ORE's semantics are not needed.
 
 <a id="i-61"></a><a id="p-1"></a>
-### I-61 — Nothing runs on more than one device
+### I-61 — Nothing runs on more than one host; multi-device speed unmeasured
 
-**Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-24, audit P-1
+**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-24, audit P-1
+
+**Closed part (2026-10-04, roadmap 3.2's one-host half).** A job's scenarios are split across
+the devices of its host (`engine/simulation/sharding.py`): the simulation's Sobol normals and
+market risk's shifts are placed on a one-axis mesh along the scenario axis, and XLA's sharding
+propagation carries the split through path evolution, the scenario market, pricing and the
+stored cube, gathering at the reductions (exposure, VaR/ES). Market risk's memory-bounded
+batches take their scenarios from every device's share. The device count is the largest that
+divides the scenario count, capped by `JAX_RISK_SCENARIO_DEVICES`; on one device nothing is
+placed, so one-device runs are unchanged bit for bit. On four XLA host devices a portfolio run
+(LGM, Bermudan, paired sample), an FP8 stochastic-rounding run and a market-risk run hold
+their results on all four devices and equal the one-device run to about 6e-16 relative (the
+batch shape's rounding; FP8 bit for bit). Tests: `tests/test_sharding.py`; red first: before
+the change every result sat on one device.
 
 **What is wrong.** The project's goal is to run across multiple TPUs and compare many
-low-precision paths against fewer FP64 paths in equal wall time. No code uses `shard_map`,
-`jax.sharding` or `pmap`; the engine worker (roadmap 1.8) runs one job at a time on one
-device.
+low-precision paths against fewer FP64 paths in equal wall time. Two parts are missing:
 
-**To close.** Shard the scenario axis: Sobol draws (per-device skip-ahead or scrambles; the
-seed exists), path evolution, pricing and exposure are scenario-parallel; VaR/ES order
-statistics need one cross-device step. The engine worker of roadmap 1.8 owns every device on its
-host, so there is no pool sizing or chip pinning; on a pod slice, one worker per host
-(`jax.distributed.initialize`), process 0 claiming each job and handing it to the others,
-since under SPMD every host runs the same job
-([details](details/precision.md#113-multi-device-and-multi-host)).
+- **Several hosts.** On a pod slice every host must run the same job (SPMD); the worker
+  claims jobs for its own host only and uses `jax.local_devices()`.
+- **Speed.** The split is verified for its numbers on CPU host devices, which share the
+  host's cores, so it says nothing about speed. Scaling on real devices is unmeasured.
+
+**To close.** Roadmap 3.2: one worker per host (`jax.distributed.initialize`), process 0
+claiming each job and handing it to the others
+([details](details/precision.md#113-multi-device-and-multi-host)); then wall time against
+device count on TPU (and H100), feeding 3.4.
 
 ---
 
@@ -554,10 +596,11 @@ now says how far it is from float64; it does not yet say whether that is good en
 **Reach.** Every reduced-precision result: its figures carry no statement of whether the
 combination has been validated for them. Default (float64) runs are unaffected.
 
-**To close.** Roadmap 2.7 (A-11): the evidence table per figure and precision combination
+**To close.** Roadmap 2.9 (A-11): the evidence table per figure and precision combination
 against the acceptance standard (Basel III's P&L attribution test and the Basel plan's P6.2
-rule), and a warning on any result whose combination has no passing row. 2.7 also measures
-the paired estimator's coverage through the pipeline: its standard errors treat paths as
+rule), and a warning on any result whose combination has no passing row. It is measured by
+roadmap 2.7's harness after the kernel changes of 2.4, 2.5 and 2.8, so it describes the
+kernels that ship. 2.7 also measures the paired estimator's coverage through the pipeline: its standard errors treat paths as
 independent, while Sobol paths are not and the rounding errors of the 32 paths of a block
 share a scale (the synthetic coverage tests and three pipeline seeds pass; that is not yet
 evidence at scale). Compute below
@@ -685,6 +728,12 @@ lost one xdist process with no traceback ("node down: Not properly terminated") 
 storage test that passes alone at a 2.9 GB peak; the green rerun peaked at 24.2 GB (cgroup
 peak, page cache included). GitHub's 4-vCPU runner, where CI's `full` job runs with `-n auto`,
 has 16 GB.
+
+**2026-10-04, three Linux full runs, none green** (see the verification status): one
+beside another container in the same Docker VM, 6 failed; one alone on a loaded host, the
+four-device sharding test (a fifth JAX process with four XLA host devices) timed out after
+30 minutes at a cgroup peak of 24.4 GB of 25.2; one on a quiet host where the Docker VM went
+down at 98%. Memory is the leading suspect: the suite now runs at the VM's limit.
 
 **Current handling.** Since roadmap 1.8 no pool, and no executor thread, exists: HTTP tests
 start one engine worker, a separate process with no thread in the test process, and each

@@ -73,8 +73,9 @@ ambitions (see the root [README.md](../../README.md) for the full roadmap):
   question once multiple devices are actually in flight at once, not a single device
   running one precision at a time. That's why the engine sets the precision of each stage
   of a run separately, as data on the run (see
-  [Adjustable Precision](../concepts/architecture.md#adjustable-precision)), and runs jobs of
-  any precision side by side (see [Architecture: Concurrency](../concepts/architecture.md#concurrency)).
+  [Adjustable Precision](../concepts/architecture.md#adjustable-precision)), and splits each
+  job's scenarios across the devices of its host (see
+  [Architecture: Concurrency](../concepts/architecture.md#concurrency)).
 - **Correctness against a known-good reference.** Rather than inventing new math, this
   project continuously checks its own output against ORE's — a mature, real-world risk
   engine used by actual financial institutions. Every pricing formula and risk formula
