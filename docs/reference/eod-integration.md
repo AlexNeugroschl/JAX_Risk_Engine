@@ -1358,8 +1358,10 @@ publishing at the same instant can issue the same sequence. That is a tie, and t
 deterministically by attempt id, which is safe precisely because two successful attempts
 under one workload key are the same computation by construction.
 
-And it is **EOD-only**. The portfolio path's `_JOBS` dict is untouched, which is why
-[I-08](../planning/known-issues.md#i-08) is `PARTIAL` rather than closed.
+And it is **EOD-only**. The portfolio path has its own durable store since roadmap 1.8 (the
+SQLite job queue, [HTTP API](http-api.md#jobs-the-queue-and-the-engine-worker)); a *running*
+EOD attempt is still memory-only, which is why [I-08](../planning/known-issues.md#i-08) is
+`PARTIAL` rather than closed.
 
 ---
 

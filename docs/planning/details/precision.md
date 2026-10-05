@@ -78,7 +78,8 @@ conflicts with one is redesigned rather than excused.
 - **Speed is measured on the target hardware** (Ironwood, H100; the owner has access),
   step 3.4. CPU numbers are accuracy evidence only.
 - **One compile cache per host.** The worker process ([§11](#11-execution-architecture))
-  compiles a job shape once; the per-process pools compiled it once per worker.
+  compiles a job shape once (measured: a second identical job builds no program); the
+  per-process pools compiled it once per worker.
 
 ### 2.4 Design: DRY, KISS, modularity
 
@@ -434,7 +435,7 @@ Outcome (step 1.4):
 - `_PRICING_LOCK` (`engine/portfolio/request.py`), after the thread-safety audit of step 1.4
   (no module-level caches and no ORE globals were found; a concurrency test confirms it).
 - The per-precision pool tiers (`engine/portfolio/worker_pool.py`): one pool from step 1.4;
-  the pool itself goes with step 1.8.
+  the pool itself went with step 1.8.
 
 Removing the lock rests on the audit: the pipeline keeps no module-level caches or mutable
 state, and never reads ORE's global evaluation date (trades carry theirs, I-64; only the test
@@ -661,12 +662,16 @@ the row that is missing.
 
 ## 11. Execution architecture
 
-### 11.1 Decision (A-14)
+### 11.1 Decision (A-14), built in step 1.8 (2026-10-04)
 
 The HTTP API and the engine are separate processes. The API validates a request, writes it
 to a durable job queue (a SQLite file) and returns `202`. **One engine worker process** per
 host takes jobs from the queue one at a time, parses the request JSON itself, prices it and
 writes the result back. The worker is single-threaded and owns every device on its host.
+
+As built: `engine/api/job_queue.py` (the queue and the worker lock), `engine/api/worker.py`
+(the worker, command `jax-risk-worker`), `engine/api/supervisor.py` (the API's supervision);
+the user-facing description is [HTTP API: Jobs](../../reference/http-api.md#jobs-the-queue-and-the-engine-worker).
 
 ### 11.2 Why
 
@@ -675,26 +680,58 @@ writes the result back. The worker is single-threaded and owns every device on i
 | A different x64 flag per tier | Gone since 1.3; x64 is always on |
 | Keep the HTTP server responsive during minutes-long jobs | The separate worker process does it |
 | Run jobs in parallel | XLA uses the whole device per job; on TPU one process owns a chip, so several processes need pinning and fight step 3.2's sharding |
-| Crash isolation | Today a dead worker likely breaks the pool (no `BrokenProcessPool` handling); a separate worker is restarted by its supervisor without touching the API |
+| Crash isolation | A dead pool worker likely broke the pool (no `BrokenProcessPool` handling); the separate worker is restarted by its supervisor without touching the API |
 
-What it removes: the freeze/thaw of ORE objects (the worker reads JSON, not pickled
-dataclasses), the spawn setup (I-33), the per-worker compile, `_PRICING_LOCK`, and threads
-altogether. `price_portfolio` called from Python never involved any of this and is unchanged.
+What it removed: the freeze/thaw of ORE objects (the worker reads JSON, not pickled
+dataclasses), the `multiprocessing` spawn setup (I-33), the per-worker compile, and every
+thread on the engine side (`_PRICING_LOCK` went in 1.4). `price_portfolio` called from Python
+never involved any of this and is unchanged. The API process keeps the server's own request
+thread pool, and the EOD path its locks (`engine/integration/`), which 1.8 does not touch.
 
 ### 11.3 Multi-device and multi-host
 
 - **One host:** the worker builds a `jax.sharding.Mesh` over its devices once and shards the
   scenario axis inside each job (step 3.2). No threads, no pinning.
 - **Several hosts (a TPU pod slice):** one worker per host, all running the same program
-  (`jax.distributed.initialize`), coordinated through the queue.
+  (`jax.distributed.initialize`). Under SPMD every host must run *the same job* at the same
+  time, so the hosts cannot each claim from the queue as one host's worker does: process 0
+  claims and the others receive the body from it (`jax.experimental.multihost_utils`, or the
+  distributed client's key-value store), and only process 0 writes the row. SQLite on a
+  shared filesystem is not a safe multi-host lock. Step 3.2 designs this; 1.8 built the
+  one-host case.
 
 ### 11.4 The queue (A-14; not a main priority)
 
-SQLite rows: request JSON, status (`pending`, `running`, `done`, `failed`, `interrupted`),
-failure class, result reference, timestamps. It survives restarts and closes the portfolio
-half of [I-08](../known-issues.md#i-08); the EOD path keeps its publication store. A worker
-that restarts marks its `running` row `interrupted`. Step 1.8 is placed last in stage 1 and
-nothing in the precision work depends on it; step 3.2 does.
+SQLite rows: the request body as received, status (`pending`, `running`, `done`, `failed`,
+`interrupted`), failure class and error, the result document, the claiming worker, the XLA
+programs the job built, timestamps. It survives restarts and closes the portfolio half of
+[I-08](../known-issues.md#i-08); the EOD path keeps its publication store.
+
+Decisions taken while building it (1.8):
+
+- **One worker per queue, by an OS file lock** (`<queue>.worker.lock`, `flock`/`msvcrt`). A
+  starting worker takes it before importing JAX, so a redundant one exits in milliseconds,
+  and the OS frees it however the holder dies. Holding it proves no other worker runs, so a
+  starting worker marks every `running` row `interrupted` (its predecessor's job; never
+  retried, so a job that kills the worker cannot crash-loop it).
+- **The result is stored in the row**, not as a reference to a file: one atomic write, and
+  the poll route splices the stored document into its response without parsing it. SQLite's
+  1 GB limit fails such a job as `infrastructure`; cubes that large are I-09's problem first.
+- **Supervision without a thread.** In `spawn` mode the API checks its child on every
+  submission and poll and restarts it if dead; a dead worker matters only then. With several
+  API processes (`uvicorn --workers`), a supervisor starts no worker while another process's
+  worker holds the lock. The worker watches the process that started it and exits when it
+  is gone (between jobs), so a killed server or test run leaves no engine process (the pool's
+  orphans held tens of GB for days). `external` mode leaves supervision to systemd or a
+  container.
+- **The body as received** is what is queued and parsed again (`json.loads`, then the
+  route's schema), so the worker prices the dataclass the route validated, by construction.
+- **`running` is reported** (the pool could not distinguish it from `pending`), and
+  `JobStatusSchema` gained `interrupted` and `failure_class`.
+- **Failure classes by exception type**: `KeyError`/`MissingFixingError` →
+  `missing-market-data`; `NotImplementedError`/`UnsupportedDayCountError` →
+  `unsupported-product`; `ArithmeticError` → `numerical-failure`; other `ValueError`/
+  `TypeError` → `bad-terms`; anything else → `infrastructure`.
 
 ## 12. Plan
 
@@ -704,7 +741,7 @@ nothing in the precision work depends on it; step 3.2 does.
 | **1.5** (done 2026-10-02) | Per-product and per-trade precision (A-15): `by_product`, `by_trade`, `precision_for`; per-trade stored columns; market risk per trade | Bit for bit at the default; a mixed run (Bermudan float32, swaps float64) equals each trade run alone at its precision, column for column. Met: §13.1 | S |
 | **1.6** (done 2026-10-02) | Sub-32-bit storage: block scales, both roundings; `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2` enabled for storage | The storage properties of §13.4; bit for bit at the default. Met: §13.1, §13.4 | M |
 | **1.7** (done 2026-10-02) | Paired sample, two-level estimator for means, `PrecisionReport` with realized dtypes and device (closes I-12) | §13.6; bit for bit at the default. Met: §13.1, §13.6 | M |
-| **1.8** | Engine worker process and the SQLite queue (A-14); delete `worker_pool.py`'s pool and freeze/thaw | §13.8, including the Linux run; float64 job time and compile count no worse | M |
+| **1.8** (done 2026-10-04) | Engine worker process and the SQLite queue (A-14); delete `worker_pool.py`'s pool and freeze/thaw | §13.8, including the Linux run; float64 job time and compile count no worse. Met: §13.8, §13.9 | M |
 | **2.7** | *Parallel with stage 2.* Measurement campaign for storage formats per class and product, at several path counts, fixed seeds; the evidence table and the warnings (§10) | Table complete for every figure × class × format; thresholds fixed before measuring; a verdict and path ceiling per row | M |
 | **2.8** | Difference-form kernels (§8.2), one family at a time; compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the re-baseline of §2.1; emulated FP8/bfloat16 compute measured into the evidence table | L |
 | **3.2** | Shard the scenario axis in the worker (I-61) | Results equal the one-device run within reduction-order rounding; scaling measured | L |
@@ -781,6 +818,20 @@ process changes.
   old and new trees interleaved, three passes of five warm runs each: market risk on four
   trades, median 2.19 s before and after (fastest 1.87 and 1.65 s); a five-trade, 1,024-path
   portfolio, median 39 ms before and 37 ms after.
+- **Step 1.8's result (2026-10-04).** No file of the pipeline changed (`git diff` against
+  `0e44f1d` touches `engine/api/`, a docstring of `engine/portfolio/profiling.py` and the
+  deleted `engine/portfolio/worker_pool.py`), so the snapshot was not rerun: it would compare
+  the same code. What 1.8 changed is the path from the HTTP body to `price_portfolio` and
+  back, and that is shown bit for bit: float64 and float32 jobs through the real worker equal
+  the direct call in the test process, cube, base NPV and EPE
+  (`tests/test_engine_worker.py::TestEngineWorkerPricing`), and the HTTP tests of
+  `tests/test_api.py` pass unchanged in what they assert. float64 speed (§13.9), old and new
+  trees interleaved, three passes of 15 warm jobs each, the whole HTTP round trip (submit,
+  poll, parse) on a five-trade, 1,024-path portfolio: median 56.8 ms before and 54.2 ms after
+  (p10 46/44 ms, p90 117/118 ms); the cold first job 5.39 s before and 5.22 s after; the
+  results identical across trees. A first attempt cost 20 ms more per job: the queue opened
+  an SQLite connection per call, and closing a WAL database's last connection checkpoints
+  it; one connection per thread fixed it without giving up `synchronous=FULL`.
 - Step 2.8: parity suites pass at their tolerances first; then the snapshot is re-baselined,
   with the largest change per array recorded in the commit and in known-issues' verification
   status.
@@ -882,12 +933,28 @@ before measuring: bias against the rule of §10 at the stated path counts.
 - The existing API tests pass unchanged (`202`, poll, result).
 - The full suite on Linux (Docker `python:3.11`), as process changes require.
 
+Met by step 1.8 (2026-10-04), in `tests/test_engine_worker.py`:
+`test_jobs_queued_together_give_the_bits_of_jobs_run_one_after_another`,
+`test_a_failing_job_fails_only_its_own_row` with the failure-class table,
+`test_a_worker_killed_mid_job_leaves_it_interrupted`. `tests/test_api.py` passes with two
+changes that follow from the design, not from a result: the module fixture that shut the pool
+down went (the session's worker is stopped by `tests/conftest.py`), and the test that a
+fresh job is not priced eagerly accepts `running`, which the pool could not report. Red
+first on the code before 1.8: a pool worker killed while idle made the next submission fail
+with `BrokenProcessPool` (the new worker: the killed job `interrupted`, the next `done`), and
+a job id was a `404` from a second app process (now served from the queue). The full suite
+ran on Linux ([verification status](../known-issues.md#verification-status)).
+
 ### 13.9 Performance
 
 - float64 wall time and compile count of the shared portfolio against the previous step,
   median of five warm runs: no regression beyond the run-to-run spread.
 - float32 timing recorded.
-- After 1.8: a second identical job compiles nothing.
+- After 1.8: a second identical job compiles nothing. Met: each job's row records the XLA
+  programs it built (JAX's `backend_compile_duration` event); the benchmark portfolio's first
+  job built 122, each of the 18 repeats 0
+  (`test_a_second_identical_job_compiles_nothing`). The pool built the same programs once per
+  worker (two by default).
 - Step 3.4 on Ironwood and H100: wall time per figure at equal accuracy.
 
 ### 13.10 Demos

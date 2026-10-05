@@ -308,9 +308,16 @@ class PortfolioResultSchema(BaseModel):
 
 
 class JobStatusSchema(BaseModel):
-    status: Literal["pending", "running", "done", "failed"]
+    """A portfolio job's row in the job queue (`engine.api.job_queue`): "pending" (queued),
+    "running", "done" with the result, "failed" with a failure class and the worker's
+    traceback, or "interrupted" (the engine worker stopped during the job; submit it again)."""
+    status: Literal["pending", "running", "done", "failed", "interrupted"]
     result: Optional[PortfolioResultSchema] = None
     error: Optional[str] = None
+    #: Set when "failed": bad-terms, missing-market-data, unsupported-product,
+    #: numerical-failure or infrastructure (I-08).
+    failure_class: Optional[Literal[
+        "bad-terms", "missing-market-data", "unsupported-product", "numerical-failure", "infrastructure"]] = None
 
 
 class HealthSchema(BaseModel):

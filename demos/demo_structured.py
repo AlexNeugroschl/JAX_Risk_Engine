@@ -82,12 +82,11 @@ API_BASE = "http://127.0.0.1:8000"
 _MANAGE_SERVER = os.environ.get("JAX_RISK_ENGINE_DEMO_SKIP_SERVER") != "1"
 
 # The profiler is on by default: the server starts with JAX_RISK_PROFILE_DIR set, so each job
-# the worker pool runs is wrapped in jax.profiler.trace
-# (engine/portfolio/worker_pool.py::_run_pricing_job), one pid-<worker-pid>/ subdirectory
-# per worker. Needs the `profiling` extra (`pip install -e .[api,profiling]`). View with
+# the engine worker runs is wrapped in jax.profiler.trace (engine/api/worker.py::_profiled),
+# in a pid-<worker-pid>/ subdirectory. Needs the `profiling` extra (`pip install -e .[api,profiling]`). View with
 # `xprof --port 8791 <dir>`. Override from the environment, or set "" to opt out.
 #
-# Two more knobs, read by _run_pricing_job and passed through below:
+# Two more knobs, read by _profiled and passed through below:
 #   JAX_RISK_PROFILE_WARMUP=1        run the job once untraced first, so the trace shows
 #       warm execution rather than compilation (the job runs twice). Off by default.
 #   JAX_RISK_PROFILE_PYTHON_TRACER=1 turn on JAX's Python tracer (JAX defaults it on; off
@@ -112,7 +111,7 @@ def wait_until_healthy(timeout_s: float = 60.0) -> None:
 
 def start_server() -> subprocess.Popen:
     # Pass the profiler dir explicitly so PROFILE_DIR's default applies even when the caller
-    # did not set JAX_RISK_PROFILE_DIR; the pool workers inherit it from uvicorn.
+    # did not set JAX_RISK_PROFILE_DIR; the engine worker inherits it from uvicorn.
     env = os.environ.copy()
     if PROFILE_DIR:
         env["JAX_RISK_PROFILE_DIR"] = PROFILE_DIR

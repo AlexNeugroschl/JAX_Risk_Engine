@@ -1,7 +1,7 @@
 """
 A small portfolio sized for a profiler trace that is practical to open, on the same path as
 `demo_structured.py`: calibration -> simulation -> all four instrument pricers -> exposure
--> Greeks, over the HTTP API, in a pool worker, under `jax.profiler.trace`.
+-> Greeks, over the HTTP API, in the engine worker, under `jax.profiler.trace`.
 
 Output: one `pid-<pid>/` directory under `.profile-out-small`, with the timeline labelled by
 phase (calibration / simulation / pricing / base_npv / exposure / greeks, plus one region per
@@ -79,8 +79,8 @@ API_BASE = "http://127.0.0.1:8000"
 _MANAGE_SERVER = os.environ.get("JAX_RISK_ENGINE_DEMO_SKIP_SERVER") != "1"
 
 # A separate directory from demo_structured.py's `.profile-out`. Passed to uvicorn and its
-# pool workers via os.environ.copy() in start_server; it arms the profiler hook in
-# engine/portfolio/worker_pool.py::_run_pricing_job.
+# engine worker via os.environ.copy() in start_server; it arms the profiler hook in
+# engine/api/worker.py::_profiled.
 PROFILE_DIR = ".profile-out-small"
 
 # WARM CACHE: run the job once untraced so the traced run reuses the XLA compilation caches.

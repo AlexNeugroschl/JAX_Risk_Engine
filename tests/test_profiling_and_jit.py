@@ -284,21 +284,22 @@ class TestGradientsSurviveTheJitBoundary:
 # PROFILER HOOK / TRACE TRUNCATION GUARD
 # =============================================================================
 class TestProfilerHook:
-    def test_hook_is_inert_without_the_env_var(self, monkeypatch):
-        """With `JAX_RISK_PROFILE_DIR` unset, nothing is traced and no directory is
-        created."""
+    def test_hook_is_inert_without_the_env_var(self, monkeypatch, tmp_path):
+        """With `JAX_RISK_PROFILE_DIR` unset, the engine worker's job runs untraced: its value
+        comes back and no directory is created."""
         monkeypatch.delenv("JAX_RISK_PROFILE_DIR", raising=False)
-        from engine.portfolio import worker_pool
+        monkeypatch.chdir(tmp_path)
+        from engine.api.worker import _profiled
 
-        # No trace directory, and the job returns normally.
-        assert worker_pool.os.environ.get("JAX_RISK_PROFILE_DIR") is None
+        assert _profiled(lambda: "the job's result") == "the job's result"
+        assert list(tmp_path.iterdir()) == []
 
     def test_truncation_guard_warns_on_a_short_trace(self, tmp_path):
         """A trace spanning far less than the job's wall time (the signature of the silent
         buffer cap) warns, not raises."""
         import gzip
         import json
-        from engine.portfolio.worker_pool import _warn_if_trace_truncated
+        from engine.api.worker import _warn_if_trace_truncated
 
         run_dir = tmp_path / "pid-1" / "plugins" / "profile" / "run"
         run_dir.mkdir(parents=True)
@@ -313,7 +314,7 @@ class TestProfilerHook:
     def test_truncation_guard_is_quiet_on_a_complete_trace(self, tmp_path):
         import gzip
         import json
-        from engine.portfolio.worker_pool import _warn_if_trace_truncated
+        from engine.api.worker import _warn_if_trace_truncated
 
         run_dir = tmp_path / "pid-1" / "plugins" / "profile" / "run"
         run_dir.mkdir(parents=True)
@@ -330,7 +331,7 @@ class TestProfilerHook:
 
     def test_truncation_guard_never_raises_on_a_broken_trace(self, tmp_path):
         """The self-check never breaks a pricing job."""
-        from engine.portfolio.worker_pool import _warn_if_trace_truncated
+        from engine.api.worker import _warn_if_trace_truncated
 
         run_dir = tmp_path / "pid-1"
         run_dir.mkdir(parents=True)
@@ -339,7 +340,7 @@ class TestProfilerHook:
         _warn_if_trace_truncated(str(tmp_path), wall_seconds=10.0)  # must not raise
 
     def test_truncation_guard_is_quiet_when_no_trace_exists(self, tmp_path):
-        from engine.portfolio.worker_pool import _warn_if_trace_truncated
+        from engine.api.worker import _warn_if_trace_truncated
 
         _warn_if_trace_truncated(str(tmp_path), wall_seconds=10.0)  # must not raise
 

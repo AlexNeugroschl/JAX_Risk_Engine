@@ -55,8 +55,9 @@ Rules the implementation follows, which steps 1.3, 1.4 and 4.1 keep:
   refusals only for a European on it).
 - **One fact, one field.** The reporting currency is the simulation's; a `base_currency`
   contradicting it is refused (before 1.2 it was silently ignored).
-- **The request travels whole.** The worker pool freezes the entire request, so every
-  configuration component reaches the worker and is validated again there.
+- **The request travels whole.** The engine worker parses the HTTP body exactly as the
+  route did, so every configuration component reaches it and is validated again there
+  (until roadmap 1.8 a worker pool froze the request into a picklable form).
 
 Evidence that the defaults reproduce the market path bit for bit: the shared portfolio
 (8 trades, scenario risk, exposure, bump Greeks), an FP32-simulation run and the Hull-White
@@ -118,7 +119,7 @@ curve; every per-path ORE comparison of `tests/test_valuation.py` run under both
 `tests/test_end_to_end.py` prices the Hull-White simulation's paths in QuantLib
 ([verification status](../known-issues.md#verification-status)).
 
-## Steps 1.4 to 1.8 — precision and the engine worker (I-55, I-12, I-72); 1.4 to 1.7 done 2026-10-01/02
+## Steps 1.4 to 1.8 — precision and the engine worker (I-55, I-12, I-72); done 2026-10-01 to 10-04
 
 Designed in [precision.md](precision.md): a `Precision` with storage, compute and accumulate
 per adjustable stage, overridable per product and trade (A-10, A-15); the old configuration

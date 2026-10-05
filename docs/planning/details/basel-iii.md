@@ -88,7 +88,7 @@ reports exposure profiles (EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B, PFE, ORE's
 | IMA capital (60-day averages, m_c) | None | New |
 | SA-CCR | None | New; ORE oracle available |
 | BA-CVA | None | New; ORE oracle available |
-| Audit trail, reproducibility | EOD bundles hash-verified; portfolio job store in memory | [I-08](../known-issues.md#i-08), [I-10](../known-issues.md#i-10) |
+| Audit trail, reproducibility | EOD bundles hash-verified; portfolio jobs in a durable SQLite queue since roadmap 1.8 (kept forever, I-76); a running EOD attempt is memory only | [I-08](../known-issues.md#i-08), [I-10](../known-issues.md#i-10), [I-76](../known-issues.md#i-76) |
 
 ### Register items that block a compliance claim
 
@@ -103,7 +103,7 @@ precondition, not a side issue:
 | [I-10](../known-issues.md#i-10) per-trade results keyed by position (every trade carries a `trade_id` since roadmap 1.3) | Desk attribution, backtesting per desk, audit | P0 |
 | [I-18](../known-issues.md#i-18) no equity spot/FX | EQ risk class impossible | EQ only; refused until fixed |
 | [I-27](../known-issues.md#i-27) full-suite runs can abort inside XLA | An evidence pack needs a complete, reproducible suite run | P7 |
-| [I-08](../known-issues.md#i-08) portfolio job store in memory | Regulatory runs must survive restart and stay retrievable | P0 |
+| [I-08](../known-issues.md#i-08) a running EOD attempt is lost on restart (portfolio jobs durable since roadmap 1.8) | Regulatory runs must survive restart and stay retrievable | P0 |
 | [I-32](../known-issues.md#i-32) Bermudan engine only at `ShiftHorizon = 0` | The reference configuration must be fixed before it is cited as an oracle | P1 vega/curvature for Americans |
 
 ---
@@ -285,7 +285,7 @@ is met, not when its tasks are merged.
 | P0.6 | Close I-10 on the portfolio path: trade ID, desk, book, currency on every trade and result | `portfolio/request.py`, `api/schemas.py` | The I-10 closing tests the register already specifies | I-10 FIXED in the register |
 | P0.7 | Run manifest on every regulatory result | `manifest.py` | Test: manifest has git SHA, dirty flag, package versions, JAX backend and dtype, profile hash, input hashes; two identical runs give identical output hashes | Deterministic reruns proven byte-identical on CPU FP64 |
 | P0.8 | Extend the OREApp oracle of roadmap 2.2 (XVA, sensitivity) to the remaining analytics (stress, SA-CCR, BA-CVA, HistSimVaR, backtest) | `tests/support/` oracle | Smoke test per analytic against an ORE Example's `ExpectedOutput` | Each analytic reproduces its ORE example output |
-| P0.9 | Port the durable job store to the portfolio path (I-08) | `portfolio/`, `api/routes.py` | Existing I-08 closing criteria | I-08 FIXED |
+| P0.9 | Regulatory runs through the durable job queue (roadmap 1.8 built it for portfolio jobs); a retention rule that keeps them (I-76); the EOD half of I-08 | `api/job_queue.py`, `integration/` | I-08's and I-76's closing criteria | I-08 FIXED, I-76 FIXED |
 
 ### Phase 1 — FRTB standardised approach (≈6 weeks)
 

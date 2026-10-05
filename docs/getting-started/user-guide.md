@@ -141,7 +141,7 @@ options' per-path recalibration, [I-53](../planning/known-issues.md#i-53)):
 python demos/demo_profile_small.py
 ```
 Exercises what `demo_structured.py` does — calibration, simulation, every trade type,
-exposure and Greeks, over the real HTTP API, in a real pool worker, under
+exposure and Greeks, over the real HTTP API, in the real engine worker, under
 `jax.profiler.trace` — on a deliberately small portfolio, writing its trace under
 `.profile-out-small/`. It leaves Greeks **on**: they are a large part of where the engine
 spends its time. See [Profiling a pricing job](#profiling-a-pricing-job) below and
@@ -235,8 +235,8 @@ before committing. `--lf` reruns only what failed last time.
 **Two tiers.** Tests marked `@pytest.mark.slow` are excluded by the **fast tier**,
 `-m "not slow"`. A test is marked `slow` when either:
 
-- it starts `engine.portfolio.worker_pool` processes (the job-submitting classes in
-  `tests/test_api.py` and `tests/test_worker_pool.py`), or
+- it starts engine worker processes (the job-submitting classes in `tests/test_api.py`
+  and the process tests of `tests/test_engine_worker.py`), or
 - it takes 5 seconds or more.
 
 **ORE-parity tests are never marked slow**, however long they take
@@ -326,7 +326,7 @@ behave differently on purpose:
 |---|---|---|
 | Shape | **Asynchronous** — `202` + `job_id`, then poll | **Synchronous** — one call returns the result |
 | Body | the portfolio request (`MarketPortfolioRequestSchema`, Pydantic) | `EodSubmissionSchema`, pointing at a bundle on disk |
-| Durability | In-memory `_JOBS`, lost on restart ([I-08](../planning/known-issues.md#i-08)) | Published to a crash-safe store; survives restart |
+| Durability | A durable SQLite job queue; a job survives restarts, and one killed mid-run reads `interrupted` (roadmap 1.8) | Published to a crash-safe store; survives restart ([I-08](../planning/known-issues.md#i-08): a running attempt does not) |
 | Refusals | An unsupported trade is an error | An unsupported instrument is a **`200`** whose coverage names the refusal |
 
 That last row is the design: returning an HTTP error for a refusal would make "we correctly
@@ -631,14 +631,14 @@ pip install -e .[api,profiling]
 ```
 
 **2. Run a job with the profiler enabled.** The hook lives in
-`engine.portfolio.worker_pool._run_pricing_job` and is **opt-in**: it does nothing unless
-the environment variable `JAX_RISK_PROFILE_DIR` is set, in which case it wraps the
-`price_portfolio` call in `jax.profiler.trace(...)` and writes a trace into
-`$JAX_RISK_PROFILE_DIR/pid-<pid>/` (one subdir per process — safe whether the job runs
-directly or fans out across pool workers).
+`engine.api.worker._profiled`, around each job the engine worker runs, and is **opt-in**: it
+does nothing unless the environment variable `JAX_RISK_PROFILE_DIR` is set, in which case it
+wraps the `price_portfolio` call in `jax.profiler.trace(...)` and writes a trace into
+`$JAX_RISK_PROFILE_DIR/pid-<pid>/` (one subdir per process).
 
-This traces the job **as it actually runs in a fresh worker — XLA lowering and compilation
-included**, not just steady-state execution. That is on purpose: for this engine the
+The first job of a fresh worker is traced **as it actually runs — XLA lowering and
+compilation included**, not just steady-state execution; later jobs of the same shape reuse
+the worker's compiled programs. That is on purpose: for this engine the
 compilation cost is a first-class thing to measure (the Bermudan/American tree pricers and
 the LGM calibration bisection lower a number of `jit` programs — on a small portfolio that
 compilation *is* most of the wall time, and the trace's "mostly Python" flame graph is
@@ -663,16 +663,16 @@ python demos/demo_structured.py
 # -> .profile-out/pid-<worker-pid>/plugins/profile/<timestamp>/*.xplane.pb
 ```
 
-To profile a single job directly, with no server or pool, set the variable yourself and
-call `_run_pricing_job` on a frozen request:
+To profile a single job directly, with no server or worker process, set the variable
+yourself and call `price_job` on the request body (the JSON the HTTP route takes):
 
 ```python
-import os
+import json, os
 os.environ["JAX_RISK_PROFILE_DIR"] = ".profile-out"   # set before the call
 
-from engine.portfolio.worker_pool import _run_pricing_job, _freeze_trade
-# build `request` as a PortfolioRequest (see "Running the demos" / demos/demo.py)
-_run_pricing_job(_freeze_trade(request))   # the whole request travels frozen
+from engine.api.worker import price_job
+# `body` is the HTTP request as a dict (see demos/demo_api.py)
+result_json = price_job(json.dumps(body).encode())
 ```
 
 **3. Open the timeline:**

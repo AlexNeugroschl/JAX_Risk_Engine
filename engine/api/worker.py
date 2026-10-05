@@ -1,0 +1,306 @@
+"""
+The engine worker: one single-threaded process per host that takes portfolio jobs from the
+job queue (`engine.api.job_queue`), prices them and writes the results back (decision A-14,
+roadmap 1.8; docs/planning/details/precision.md §11).
+
+    jax-risk-worker [--queue PATH] [--parent-pid PID]
+
+(or `python -c "from engine.api.worker import main; main()" ...`). The API starts and
+supervises one itself unless `JAX_RISK_WORKER=external` (`engine.api.supervisor`).
+
+A job is the HTTP body as the API received it. The worker parses it exactly as the route did
+(`json.loads`, then `MarketPortfolioRequestSchema`), so nothing is pickled and no ORE object
+crosses a process boundary, calls `price_portfolio` in this process, and stores the result
+document `PortfolioResultSchema` serializes, the bytes a route would have sent. Jobs run one
+at a time, in submission order. The process owns every device JAX sees on its host; no device
+is pinned or shared with another engine process. XLA programs stay compiled for the process's
+lifetime, so a repeated job shape compiles nothing (each job's count is stored in its row).
+
+A failing job fails only its own row, with a failure class (`failure_class`) and the
+traceback; the worker goes on to the next job. A worker that dies mid-job leaves the row
+`running`; the next worker to take the queue marks it `interrupted` before claiming anything.
+
+The queue's lock is taken before JAX is imported, so a redundant worker (another already
+holds the queue) exits within milliseconds with `EXIT_QUEUE_OWNED`. With `--parent-pid` the
+worker exits once that process is gone (checked between jobs), so a killed API or test run
+leaves no engine process behind.
+
+Profiling (opt-in): with `JAX_RISK_PROFILE_DIR` set, each job's `price_portfolio` runs under
+`jax.profiler.trace`, written to `$JAX_RISK_PROFILE_DIR/pid-<pid>/` (see `_profiled`).
+"""
+import argparse
+import json
+import os
+import socket
+import sys
+import time
+import traceback
+import warnings
+from typing import Callable, Optional
+
+from engine.api.job_queue import (
+    BAD_TERMS, INFRASTRUCTURE, MISSING_MARKET_DATA, NUMERICAL_FAILURE, UNSUPPORTED_PRODUCT, Job, JobQueue,
+    WorkerLock, default_queue_path,
+)
+
+#: Exit status of a worker that found another worker serving its queue.
+EXIT_QUEUE_OWNED = 3
+#: How long a starting worker retries the lock: a supervisor's probe holds it for an instant
+#: (`engine.api.job_queue.worker_lock_held`).
+LOCK_WAIT_SECONDS = 2.0
+#: Idle sleep between looks at the queue. A look costs about 5 us on the worker's kept
+#: connection (`engine.api.job_queue`), so a 5 ms period is well under 1% of a core and adds
+#: 2.5 ms to a job's latency on average.
+POLL_SECONDS = 0.005
+
+#: `request body -> result document`, the work of one job.
+Pricer = Callable[[bytes], str]
+
+
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(prog="jax-risk-worker", description=__doc__.split("\n\n")[0])
+    parser.add_argument("--queue", default=str(default_queue_path()),
+                        help="the job queue's SQLite file (default: JAX_RISK_JOB_QUEUE or the temp directory)")
+    parser.add_argument("--parent-pid", type=int, default=None,
+                        help="exit once this process is gone (the supervising API)")
+    parser.add_argument("--poll-seconds", type=float, default=POLL_SECONDS)
+    args = parser.parse_args(argv)
+    sys.exit(serve(args.queue, parent_pid=args.parent_pid, poll_seconds=args.poll_seconds))
+
+
+def serve(queue_path, *, price: Optional[Pricer] = None, parent_pid: Optional[int] = None,
+          poll_seconds: float = POLL_SECONDS, drain: bool = False) -> int:
+    """Be the queue's engine worker until the parent is gone (or, with `drain`, until no job
+    is pending); the process exit status. `price` defaults to `price_job`."""
+    lock = WorkerLock(queue_path)
+    if not lock.acquire(wait_seconds=LOCK_WAIT_SECONDS):
+        return EXIT_QUEUE_OWNED
+    compiles = queue = None
+    try:
+        queue = JobQueue(queue_path)
+        queue.interrupt_running()
+        compiles = _CompileCounter()
+        price = price or price_job
+        parent = _ParentWatch(parent_pid)
+        worker = f"{socket.gethostname()}:{os.getpid()}"
+        while parent.alive():
+            job = queue.claim(worker)
+            if job is None:
+                if drain:
+                    return 0
+                time.sleep(poll_seconds)
+                continue
+            run_job(queue, job, price, compiles)
+        return 0
+    finally:
+        if compiles is not None:
+            compiles.close()
+        if queue is not None:
+            queue.close()
+        lock.release()
+
+
+def run_job(queue: JobQueue, job: Job, price: Pricer, compiles: "_CompileCounter") -> None:
+    """Price one claimed job and close its row: `done` with the result document, or `failed`
+    with the failure class and traceback. Nothing raised by the job escapes; a result the
+    queue cannot store (larger than SQLite's 1 GB limit) fails the job as `infrastructure`.
+    Only a queue that cannot be written at all stops the worker."""
+    before = compiles.count
+    try:
+        result = price(job.request)
+    except Exception as exc:
+        queue.fail(job.id, failure_class(exc), _describe(exc), compiles=compiles.count - before)
+        return
+    try:
+        queue.finish(job.id, result, compiles=compiles.count - before)
+    except Exception as exc:
+        queue.fail(job.id, INFRASTRUCTURE, f"storing the result failed: {_describe(exc)}",
+                   compiles=compiles.count - before)
+
+
+def _describe(exc: BaseException) -> str:
+    return "".join(traceback.format_exception(exc))
+
+
+def price_job(request: bytes) -> str:
+    """One job's work: the HTTP body -> `price_portfolio` -> the result document. Parsed as
+    the route parsed it, so the dataclass request is the one the route validated, and
+    serialized as the route would have, so the document is the bytes it would have sent."""
+    from engine.api.market_schemas import MarketPortfolioRequestSchema
+    from engine.api.schemas import PortfolioResultSchema
+    from engine.portfolio import price_portfolio
+
+    dataclass_request = MarketPortfolioRequestSchema.model_validate(json.loads(request)).to_dataclass()
+    result = _profiled(lambda: price_portfolio(dataclass_request))
+    return PortfolioResultSchema.from_dataclass(result).model_dump_json()
+
+
+def failure_class(exc: BaseException) -> str:
+    """The failure class of a job that raised `exc`, by the exception's type. The route has
+    validated the request before queueing it, so a failure here is mostly a pricing one;
+    a request that reaches the worker unvalidated is classified the same way."""
+    from engine.day_count import UnsupportedDayCountError
+    from engine.models.ore_builders import MissingFixingError
+
+    if isinstance(exc, (KeyError, MissingFixingError)):  # a curve, currency or fixing not supplied
+        return MISSING_MARKET_DATA
+    if isinstance(exc, (NotImplementedError, UnsupportedDayCountError)):
+        return UNSUPPORTED_PRODUCT
+    if isinstance(exc, ArithmeticError):  # FloatingPointError, OverflowError, ZeroDivisionError
+        return NUMERICAL_FAILURE
+    if isinstance(exc, (ValueError, TypeError)):  # pydantic's ValidationError is a ValueError
+        return BAD_TERMS
+    return INFRASTRUCTURE  # MemoryError, XLA runtime errors, OSError, ...
+
+
+class _CompileCounter:
+    """XLA programs this process has had to build, compiled or read from the persistent cache:
+    JAX's `backend_compile_duration` event, recorded on every miss of its in-memory caches
+    (`jax._src.interpreters.pxla`). A repeated job shape adds nothing."""
+
+    EVENT = "/jax/core/compile/backend_compile_duration"
+
+    def __init__(self):
+        import jax.monitoring
+
+        self.count = 0
+        jax.monitoring.register_event_duration_secs_listener(self)
+
+    def __call__(self, event: str, duration: float, **kwargs) -> None:
+        if event == self.EVENT:
+            self.count += 1
+
+    def close(self) -> None:
+        import jax.monitoring
+
+        jax.monitoring.unregister_event_duration_listener(self)
+
+
+class _ParentWatch:
+    """Whether the process `pid` is still running (always, without a `pid`). On Windows a
+    handle opened now keeps the process object, so a reused pid cannot be mistaken for it;
+    on POSIX an orphan is re-parented, so `getppid` changes."""
+
+    def __init__(self, pid: Optional[int]):
+        self._pid = pid
+        self._handle = None
+        if pid is not None and os.name == "nt":
+            import ctypes
+
+            synchronize = 0x00100000
+            self._handle = ctypes.windll.kernel32.OpenProcess(synchronize, False, pid)
+            if not self._handle:  # already gone
+                self._pid = -1
+
+    def alive(self) -> bool:
+        if self._pid is None:
+            return True
+        if self._pid == -1:
+            return False
+        if os.name == "nt":
+            import ctypes
+
+            wait_timeout = 0x102
+            return ctypes.windll.kernel32.WaitForSingleObject(self._handle, 0) == wait_timeout
+        return os.getppid() == self._pid
+
+
+def _profile_options(jax):
+    """`jax.profiler.ProfileOptions` for `_profiled`'s trace: Python tracer off unless
+    `JAX_RISK_PROFILE_PYTHON_TRACER=1`; host tracer and HLO protos at JAX's defaults. `jax` is
+    passed in so this module does not import it itself.
+
+    With the Python tracer off, the host tracer still records XLA compilation, pjit dispatch,
+    tracing and device execution, so compile vs dispatch vs execute remain separable (measured
+    on the 4-trade demo: compilation ~119s, dispatch ~76s, tracing ~3s, execution ~3s, summed
+    across concurrent lanes). What is lost is Python source attribution: no event names the
+    engine function that dispatched it. Phase-level attribution comes from
+    `engine.portfolio.profiling.phase` regardless; only per-callsite attribution needs the
+    Python tracer.
+    """
+    options = jax.profiler.ProfileOptions()
+    options.python_tracer_level = 1 if os.environ.get("JAX_RISK_PROFILE_PYTHON_TRACER") == "1" else 0
+    return options
+
+
+def _profiled(run):
+    """`run()`, under `jax.profiler.trace` when `JAX_RISK_PROFILE_DIR` is set (written to
+    `$JAX_RISK_PROFILE_DIR/pid-<pid>/`, compilation included; view with
+    `xprof --port 8791 <dir>`). Unset, nothing is traced.
+
+    The Python tracer is off by default (see `_profile_options`). With it on, 97% of events
+    were interpreter frames from JAX's dispatch machinery, and the profiler's ~1M-event
+    buffer, which drops events silently, filled after the first 1.6s of a ~90s job. Off, the
+    trace shrank from 467MB to 50MB and covered 93% of the job instead of 2%.
+
+    `JAX_RISK_PROFILE_WARMUP=1` runs the job once untraced first, so the trace shows warm
+    execution rather than compilation (and the job runs twice).
+    """
+    profile_dir = os.environ.get("JAX_RISK_PROFILE_DIR")
+    if not profile_dir:
+        return run()
+
+    import jax
+
+    if os.environ.get("JAX_RISK_PROFILE_WARMUP") == "1":
+        # Untraced warm-up run to populate the compilation caches.
+        jax.block_until_ready(run().npv_cube)
+
+    out_dir = os.path.join(profile_dir, f"pid-{os.getpid()}")
+    started = time.time()
+    with jax.profiler.trace(out_dir, profiler_options=_profile_options(jax)):
+        result = run()
+        # Wait for device execution before the trace closes, or the timeline is cut short.
+        jax.block_until_ready(result.npv_cube)
+    _warn_if_trace_truncated(out_dir, time.time() - started)
+    return result
+
+
+# The profiler's event buffer is capped and drops events silently once full.
+_TRACE_EVENT_CAP = 1_000_000
+_TRACE_EVENT_WARN = 950_000
+# Minimum fraction of the job's wall time a complete trace should span (a complete trace
+# still starts slightly after and ends slightly before the measured window).
+_TRACE_COVERAGE_WARN = 0.5
+
+
+def _warn_if_trace_truncated(out_dir: str, wall_seconds: float) -> None:
+    """Warn if a trace looks truncated: near the event cap, or spanning less than half the
+    job's wall time. A truncated trace is otherwise indistinguishable from a complete one.
+    Warns rather than raises, and swallows any error reading the trace, so profiling
+    cannot break a job."""
+    try:
+        newest, total_bytes = None, 0
+        for root, _dirs, files in os.walk(out_dir):
+            for name in files:
+                path = os.path.join(root, name)
+                total_bytes += os.path.getsize(path)
+                if name.endswith(".trace.json.gz"):
+                    if newest is None or os.path.getmtime(path) > os.path.getmtime(newest):
+                        newest = path
+        if newest is None:
+            return
+
+        import gzip
+        events = json.load(gzip.open(newest, "rt"))["traceEvents"]
+        stamps = [e["ts"] for e in events if "ts" in e]
+        span = (max(stamps) - min(stamps)) / 1e6 if stamps else 0.0
+
+        if len(events) >= _TRACE_EVENT_WARN:
+            warnings.warn(
+                f"profiler trace in {out_dir!r} has {len(events):,} events, at or near "
+                f"the profiler's ~{_TRACE_EVENT_CAP:,}-event buffer cap -- it is probably "
+                f"TRUNCATED and silently covers only part of this job. Shrink the "
+                f"portfolio, turn Greeks off, or unset JAX_RISK_PROFILE_PYTHON_TRACER.",
+                UserWarning, stacklevel=2,
+            )
+        elif wall_seconds > 1.0 and span < _TRACE_COVERAGE_WARN * wall_seconds:
+            warnings.warn(
+                f"profiler trace in {out_dir!r} spans only {span:.1f}s of a "
+                f"{wall_seconds:.1f}s job ({span / wall_seconds:.0%}) -- it is probably "
+                f"truncated or was stopped early; treat the timeline as partial.",
+                UserWarning, stacklevel=2,
+            )
+    except Exception:
+        # Profiling must not interfere with a completed job.
+        pass

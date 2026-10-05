@@ -45,6 +45,12 @@ venv/Scripts/pip install -e .[api]      # if not already installed via requireme
 venv/Scripts/python.exe -m uvicorn engine.api.app:app --reload
 ```
 
+The server starts its engine worker, a second Python process, on the first portfolio job and
+stops it on shutdown. Jobs are kept in `JAX_RISK_JOB_QUEUE` (default: `jax-risk-jobs/` under
+the system temp directory). To run the worker under your own supervisor instead, start the
+server with `JAX_RISK_WORKER=external` and run `jax-risk-worker --queue <the same file>`
+([Jobs](#jobs-the-queue-and-the-engine-worker)).
+
 Then visit `http://127.0.0.1:8000/docs` for FastAPI's interactive Swagger UI (a live
 supplement to this doc, not a replacement for it — this page stays the authoritative
 narrative reference, matching every other doc in this repository).
@@ -110,20 +116,17 @@ this isn't a git checkout).
 {"engine_version": "0.1.0", "jax_backend": "cpu (Windows)", "git_commit": "abc1234..."}
 ```
 
-**Known nuance, not solved in this phase:** `jax_backend` reports `jax.default_backend()`
-*of the dispatcher process itself*, which does no JAX work (see `engine/api/routes.py`'s
-module docstring) — it does not necessarily reflect the actual device a given
-`/portfolio/price` job ran on, since that job's real work happens inside a separate
-`engine.portfolio.worker_pool` worker process with its own independent JAX runtime. On this
-single-`CpuDevice` dev machine dispatcher and worker report the same backend, so the
-distinction is invisible; on a real multi-TPU-chip host it would not be.
+`jax_backend` is the backend *of the API process*, which does no pricing. A job runs in the
+engine worker, a separate process with its own JAX runtime; each result names the devices
+and backend it actually ran on in its `precision` report (roadmap 1.7, I-12).
 
 ### `POST /portfolio/price`
 
 The main endpoint. Body: the portfolio request, `MarketPortfolioRequestSchema` (mirrors
 `PortfolioRequest` and its `RunConfig` — see "Request schema" below). Validates
-synchronously (`engine.portfolio.market_path.validate_request`, no JAX work), then submits
-the pricing to the worker pool and returns immediately.
+synchronously (`engine.portfolio.market_path.validate_request`, no JAX work), then writes the
+body, byte for byte as received, to the job queue and returns immediately (see
+[Jobs: the queue and the engine worker](#jobs-the-queue-and-the-engine-worker)).
 
 **Success:** `202 Accepted`
 ```json
@@ -158,23 +161,31 @@ model's request and `/v2` the market path's; the `/v2` and the body's optional
 
 ### `GET /portfolio/price/{job_id}`
 
-Poll for a job's status/result.
+Poll for a job's status/result: a read of the job's row in the queue.
 
 **Response:**
 ```json
-{"status": "done", "result": { "...": "PortfolioResultSchema" }, "error": null}
+{"status": "done", "result": { "...": "PortfolioResultSchema" }, "error": null, "failure_class": null}
 ```
 
-`status` is one of `pending` / `running` / `done` / `failed`. `result` is `null` until
-`status == "done"`. `error` is `null` unless `status == "failed"`, in which case it carries
-the exception message and traceback. `pending` currently covers both "genuinely queued
-behind the worker pool" and "actively running in a worker process" — the worker
-can't cheaply report its own sub-states back to the dispatcher without a mechanism this
-phase doesn't build (see `engine/api/routes.py`'s `get_portfolio_price` docstring); a
-`done`/`failed` job's error message/traceback come from
-`concurrent.futures.Future.result()` re-raising the worker-side exception, which
-`concurrent.futures.process` automatically annotates with the full remote (worker-process)
-traceback.
+| `status` | Meaning | `result` | `error`, `failure_class` |
+|---|---|---|---|
+| `pending` | Queued; the worker has not started it | `null` | `null` |
+| `running` | The engine worker is pricing it | `null` | `null` |
+| `done` | Priced | the result | `null` |
+| `failed` | The job raised; the worker went on to the next job | `null` | the exception and traceback; the class below |
+| `interrupted` | The worker stopped during the job (killed, crashed, restarted). Nothing was priced to completion; submit the request again | `null` | the reason; `null` |
+
+`failure_class` (I-08), from the exception's type (`engine.api.worker.failure_class`):
+`missing-market-data` (a curve, currency or fixing not supplied: `KeyError`,
+`MissingFixingError`), `unsupported-product` (`NotImplementedError`, an unsupported day
+count), `numerical-failure` (`ArithmeticError`: overflow, division by zero, floating-point
+error), `bad-terms` (any other `ValueError` or `TypeError`), `infrastructure` (anything else:
+memory, XLA runtime, a result too large to store). The route validates before queueing, so
+terms the engine refuses are normally a `400`, not a failed job.
+
+Until roadmap 1.8 `running` was never reported (`pending` covered both) and there was no
+`interrupted` or `failure_class`.
 
 **Unknown `job_id`:** `404 Not Found`.
 
@@ -235,46 +246,58 @@ single synchronous call: re-derive this reasoning first.** The measured latency 
 the reason this exists, not a design preference — a synchronous version would need to
 re-solve the timeout/retry/progress problems this pattern already avoids.
 
-## Job store: in-process `job_id -> Future` table, over a multi-process worker pool
+## Jobs: the queue and the engine worker
 
-**This section describes a genuine architecture change**, not a terminology fix. The job
-store backing `GET /portfolio/price/{job_id}` is still a plain in-process Python `dict` in
-the dispatcher (`engine/api/routes.py`'s `_JOBS`) — that part hasn't changed. What changed
-is what it maps to and where the actual pricing work runs: `_JOBS[job_id]` now holds a
-`concurrent.futures.Future`, returned by `engine.portfolio.worker_pool.submit_pricing_job`,
-whose underlying `price_portfolio` call executes in a separate OS process — one of a fixed
-pool of worker processes, each with its own independent JAX/XLA runtime (until roadmap 1.4
-there was one pool per simulation precision). Polling
-`GET /portfolio/price/{job_id}` now checks `future.done()`/`future.result()` instead of
-reading fields a background thread mutated directly, but the response shape/status values
-are unchanged. See [Architecture: Concurrency](../concepts/architecture.md) and
-`engine/portfolio/worker_pool.py`'s own module docstring for the full mechanism. Roadmap 1.8
-replaces the pool with one engine worker process per host behind a durable job queue
-([I-72](../planning/known-issues.md#i-72)).
+Since roadmap 1.8 (decision A-14; [details/precision.md §11](../planning/details/precision.md#11-execution-architecture)):
 
-There remain **two separate, distinct motivations for a future shared store (Redis, a
-database table)**, worth keeping apart:
+```
+ API process(es)                   job queue (SQLite)                 engine worker (one per host)
+ POST: validate, insert body ───▶  pending ─▶ running ─▶ done    ◀──  claim oldest, parse body,
+ GET:  read the row          ◀───             └─▶ failed / interrupted   price_portfolio, store result
+```
 
-1. **HTTP-scaling to multiple uvicorn worker processes.** Running more than one uvicorn
-   worker still means each worker process has its own, mutually invisible `_JOBS` dict (and
-   its own separate `engine.portfolio.worker_pool` pools underneath it) — a `job_id`
-   returned by one uvicorn worker would still 404 against another. This motivation is
-   **still deferred, still out of scope** — nothing in this phase changes it; it's a
-   question about the *HTTP/dispatcher* layer's own process count, one level above the
-   pricing worker pool.
-2. **Concurrent pricing.** This was the *other* reason a shared store might once have
-   seemed necessary. It is solved one layer down, by `engine.portfolio.worker_pool`'s
-   process pool under a single dispatcher, not by Redis or a database.
+- **The queue** (`engine/api/job_queue.py`) is one SQLite file, `JAX_RISK_JOB_QUEUE`
+  (default `jax-risk-jobs/jobs.sqlite3` under the system temp directory). Each row holds the
+  request body as received, the status, the failure class and error, the result document,
+  the worker that claimed it, the number of XLA programs the job built, and timestamps. It
+  survives restarts of the API and the worker, and every API process that opens it sees the
+  same jobs, so `uvicorn --workers N` works: a `job_id` issued by one API process is served
+  by any other.
+- **The engine worker** (`engine/api/worker.py`, command `jax-risk-worker`) is one
+  single-threaded process per host. It takes jobs in submission order, parses each body
+  exactly as the route did (so nothing is pickled), calls `price_portfolio`, and stores the
+  result document, which the route then sends verbatim. It owns every device JAX sees on the
+  host and keeps its compiled programs for its lifetime, so a repeated job shape compiles
+  nothing. A file lock (`<queue>.worker.lock`) makes it the queue's only worker; the
+  operating system releases the lock however the worker dies.
+- **Failures stay in their row.** A job that raises is `failed` with its class and traceback,
+  and the worker takes the next job. A worker that dies mid-job leaves the row `running`; the
+  next worker to start marks it `interrupted` before claiming anything, so a job that kills
+  the worker is not retried into a crash loop.
+- **Supervision**, `JAX_RISK_WORKER` (`engine/api/supervisor.py`):
+  - `spawn` (default): the API starts the worker as a child process on the first job and
+    checks it on every submission and poll, restarting it if it died. No thread watches it.
+    With several API processes, a supervisor starts no worker while another process's worker
+    holds the lock. The worker exits once the API process that started it is gone, so a
+    killed server leaves no engine process behind.
+  - `external`: the API only reads and writes the queue; run `jax-risk-worker --queue PATH`
+    under systemd (`Restart=always`), a container restart policy or a pod's process manager.
+    `pip install -e .` registers the command; `python -c "from engine.api.worker import
+    main; main()"` is the same thing.
+- **Jobs run one at a time.** Two jobs no longer price side by side in two processes: XLA
+  already uses the whole device for one job, and on TPU one process owns a chip. Sharding one
+  job across the host's devices is roadmap 3.2.
 
-**The EOD path already has the durable store this section defers.** Since W0.8,
-`POST /eod/price` publishes every *terminal* attempt through a crash-safe filesystem store
-(`engine/integration/publication.py`), so an EOD result survives a restart and stays
-addressable by `attemptId`. That work is deliberately **EOD-only**: `_JOBS` above is
-untouched, and a `job_id` from `/portfolio/price` is still lost on restart. The two paths
-have different durability guarantees today, which is a real difference a caller needs to
-know rather than an inconsistency to gloss over — see
-[I-08](../planning/known-issues.md#i-08) and
-[EOD Integration](eod-integration.md#w164--the-eod-http-routes).
+Not yet built: rows are never deleted (results accumulate in the file,
+[I-76](../planning/known-issues.md#i-76)); a worker that cannot start at all leaves jobs
+`pending` with no signal ([I-77](../planning/known-issues.md#i-77)); there is no cancel
+route.
+
+**The EOD path keeps its own store.** `POST /eod/price` publishes every *terminal* attempt
+through a crash-safe filesystem store (`engine/integration/publication.py`), so an EOD result
+survives a restart and stays addressable by `attemptId`; a *running* EOD attempt is still
+memory-only ([I-08](../planning/known-issues.md#i-08),
+[EOD Integration](eod-integration.md#w164--the-eod-http-routes)).
 
 ## Request schema: `MarketPortfolioRequestSchema`
 
@@ -364,9 +387,9 @@ POST /portfolio/price
 The 32/64 shape before roadmap 1.4 (`{"simulation": 32, "pricing": 64, "risk": ..., "calibration": ...}`)
 is a `422` whose message names the replacement (decision A-12); it is not translated.
 
-**Concurrency note:** jobs of every precision share one pool of worker processes; jobs
-beyond the pool's size queue for a free worker. Each job's result is independent of what
-else is running.
+**Concurrency note:** jobs of every precision go to the one engine worker, in submission
+order. Each job's result is independent of what was queued with it: jobs queued together
+give the bits they give run one after another (`tests/test_engine_worker.py`).
 
 ## Target: one configurable API
 

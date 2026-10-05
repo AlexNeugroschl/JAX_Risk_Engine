@@ -4,10 +4,12 @@ logic.
 
 `POST /portfolio/price` takes the portfolio request (`engine.api.market_schemas`: today's
 market, the trades, the run configuration with the model per currency, engines, Greeks and
-precision), validates it synchronously (no JAX work), then submits the job to
-`engine.portfolio.worker_pool` and returns `202` with a `job_id`; pricing a portfolio with a
-simulation can take minutes, too long to hold a request open. `GET /portfolio/price/{job_id}`
-polls the job's `Future`.
+precision), validates it synchronously (no JAX work), then writes the body as received to the
+durable job queue (`engine.api.job_queue`) and returns `202` with a `job_id`; pricing a
+portfolio with a simulation can take minutes, too long to hold a request open. The engine
+worker (`engine.api.worker`, one process per host, kept alive by `engine.api.supervisor`)
+prices queued jobs one at a time and writes each result document back.
+`GET /portfolio/price/{job_id}` reads the job's row (roadmap 1.8, decision A-14).
 
 `POST /v2/portfolio/price` takes the same request: the `/v2` is a historical name, not a
 version (roadmap 4.1 retires it; compliance/decisions.md A-2). Until roadmap 1.3
@@ -15,37 +17,78 @@ version (roadmap 4.1 retires it; compliance/decisions.md A-2). Until roadmap 1.3
 now `"model": "HullWhite"` in the request's simulation, and the old shape is refused with a
 422 naming its replacement.
 
-Job store: an in-process `job_id -> Future` dict, lost on restart and not shared between
-uvicorn workers (I-08; see docs/reference/http-api.md).
+Job store: the queue's SQLite file (`JAX_RISK_JOB_QUEUE`), which survives restarts and is
+shared by every API process that opens it (docs/reference/http-api.md).
 """
 import platform
 import subprocess
-import traceback
-import uuid
-from concurrent.futures import Future
-from typing import Dict
+import threading
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
+from starlette.concurrency import run_in_threadpool
 
+from engine.api.job_queue import DONE, TERMINAL, JobQueue, default_queue_path
+from engine.api.supervisor import SPAWN, WorkerSupervisor, worker_mode
 from engine.portfolio.market_path import validate_request
-from engine.portfolio.worker_pool import submit_pricing_job
 from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.lgm import calibrate_lgm_sigma
 from engine.models.hull_white import ZeroCurve as _HwZeroCurve
 
 from engine.api.market_schemas import MarketPortfolioRequestSchema
 from engine.api.schemas import (
-    CalibrationRequestSchema, CalibrationResultSchema, HealthSchema, JobStatusSchema,
-    PortfolioResultSchema, VersionSchema, _parse_ore_date,
+    CalibrationRequestSchema, CalibrationResultSchema, HealthSchema, JobStatusSchema, VersionSchema,
+    _parse_ore_date,
 )
 
 router = APIRouter()
 
-# In-process job store: job_id -> Future[PortfolioResult] (see the module docstring).
-_JOBS: Dict[str, "Future"] = {}
+# The job queue and, in `spawn` mode, the supervisor of this process's worker; created on first
+# use from the environment, or by `configure_jobs`.
+_QUEUE: Optional[JobQueue] = None
+_SUPERVISOR: Optional[WorkerSupervisor] = None
+_CONFIGURING = threading.Lock()  # the first requests may arrive together, on the thread pool
+
+
+def configure_jobs(queue_path=None, mode: Optional[str] = None) -> JobQueue:
+    """Use the queue at `queue_path` (default: `JAX_RISK_JOB_QUEUE`, else the temp directory)
+    with the worker `mode` (default: `JAX_RISK_WORKER`, else `spawn`), stopping a worker this
+    process started for a previous queue. Called on first use; tests call it with a queue of
+    their own."""
+    global _QUEUE, _SUPERVISOR
+    shutdown_worker()
+    _QUEUE = JobQueue(queue_path if queue_path is not None else default_queue_path())
+    _SUPERVISOR = WorkerSupervisor(_QUEUE.path) if (mode or worker_mode()) == SPAWN else None
+    return _QUEUE
+
+
+def job_queue() -> JobQueue:
+    if _QUEUE is None:
+        with _CONFIGURING:
+            if _QUEUE is None:
+                configure_jobs()
+    return _QUEUE
+
+
+def worker_supervisor() -> Optional[WorkerSupervisor]:
+    """This process's worker supervisor; None in `external` mode."""
+    job_queue()
+    return _SUPERVISOR
+
+
+def shutdown_worker() -> None:
+    """Stop the worker this process started, if any (the app's shutdown, and tests)."""
+    if _SUPERVISOR is not None:
+        _SUPERVISOR.stop()
+
+
+def _ensure_worker() -> None:
+    supervisor = worker_supervisor()
+    if supervisor is not None:
+        supervisor.ensure_running()
 
 
 @router.get("/health", response_model=HealthSchema)
@@ -58,7 +101,7 @@ def health() -> HealthSchema:
 def version() -> VersionSchema:
     """Engine version, JAX backend of this (API) process, and git commit if available. The
     backend is not where jobs run: each job's result names its own devices and backend in its
-    `precision` report, built in the worker that ran it (roadmap 1.7, I-12)."""
+    `precision` report, built in the engine worker that ran it (roadmap 1.7, I-12)."""
     try:
         import importlib.metadata
         engine_version = importlib.metadata.version("jax-risk-engine")
@@ -84,46 +127,59 @@ def version() -> VersionSchema:
 
 
 @router.post("/portfolio/price", status_code=status.HTTP_202_ACCEPTED)
-def submit_portfolio_price(request: MarketPortfolioRequestSchema) -> dict:
+async def submit_portfolio_price(request: MarketPortfolioRequestSchema, http_request: Request) -> dict:
     """Validate the request synchronously (a failure is a 400, and no job is created),
-    then submit it to the worker pool and return its `job_id`."""
-    return {"job_id": _validate_and_submit(request)}
+    then queue its body and return the job's `job_id`."""
+    return {"job_id": await _validate_and_submit(request, http_request)}
 
 
 @router.post("/v2/portfolio/price", status_code=status.HTTP_202_ACCEPTED)
-def submit_market_portfolio_price(request: MarketPortfolioRequestSchema) -> dict:
+async def submit_market_portfolio_price(request: MarketPortfolioRequestSchema, http_request: Request) -> dict:
     """The same request at its historical name (see the module docstring)."""
-    return {"job_id": _validate_and_submit(request)}
+    return {"job_id": await _validate_and_submit(request, http_request)}
 
 
-def _validate_and_submit(request: MarketPortfolioRequestSchema) -> str:
+async def _validate_and_submit(request: MarketPortfolioRequestSchema, http_request: Request) -> str:
+    # The body as received; the worker parses it exactly as FastAPI parsed it here. FastAPI
+    # has already read and cached it, so this does not read the stream again.
+    body = await http_request.body()
+    return await run_in_threadpool(_validate_and_queue, request, body)
+
+
+def _validate_and_queue(request: MarketPortfolioRequestSchema, body: bytes) -> str:
     try:
-        dataclass_request = request.to_dataclass()
-        validate_request(dataclass_request)
+        validate_request(request.to_dataclass())
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    job_id = str(uuid.uuid4())
-    _JOBS[job_id] = submit_pricing_job(dataclass_request)
+    job_id = job_queue().submit(body)
+    _ensure_worker()
     return job_id
 
 
 @router.get("/portfolio/price/{job_id}", response_model=JobStatusSchema)
-def get_portfolio_price(job_id: str) -> JobStatusSchema:
-    """Job status: "pending" (queued or running; not distinguished), "done" with the
-    result, or "failed" with the worker's exception and traceback."""
-    future = _JOBS.get(job_id)
-    if future is None:
+def get_portfolio_price(job_id: str):
+    """Job status: "pending" (queued), "running", "done" with the result, "failed" with the
+    failure class and the worker's traceback, or "interrupted" (the worker stopped during the
+    job; submit it again). A done job's result document is sent as the worker stored it."""
+    queue = job_queue()
+    current = queue.status(job_id)
+    if current is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"unknown job_id: {job_id}")
+    if current not in TERMINAL:
+        _ensure_worker()  # a pending job needs a live worker
+        return JobStatusSchema(status=current)
 
-    if not future.done():
-        return JobStatusSchema(status="pending", result=None, error=None)
+    job = queue.get(job_id)
+    if job.status == DONE:
+        # The stored document is `PortfolioResultSchema`'s JSON: spliced in, not parsed and
+        # serialized again (a cube can run to megabytes).
+        return Response(content=_DONE_PREFIX + job.result + _DONE_SUFFIX, media_type="application/json")
+    return JobStatusSchema(status=job.status, error=job.error, failure_class=job.failure_class)
 
-    try:
-        result = future.result()
-    except Exception as exc:
-        return JobStatusSchema(status="failed", result=None, error=f"{exc}\n{traceback.format_exc()}")
 
-    return JobStatusSchema(status="done", result=PortfolioResultSchema.from_dataclass(result), error=None)
+# `JobStatusSchema(status="done", result=...)` as JSON, around the stored result document.
+_DONE_PREFIX = '{"status":"done","result":'
+_DONE_SUFFIX = ',"error":null,"failure_class":null}'
 
 
 @router.post("/calibration/lgm", response_model=CalibrationResultSchema)

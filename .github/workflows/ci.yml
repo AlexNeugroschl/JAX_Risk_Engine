@@ -1,7 +1,7 @@
 # Fast tier on every push to main and every pull request: the pinned
 # environment (constraints.txt, via requirements.txt) and every test not
 # marked `slow` -- unit, integration and ORE-parity tests. The slow tier
-# (worker-pool and HTTP-job tests, a handful of long runs) is the `full` job,
+# (HTTP-job and engine-worker tests, a handful of long runs) is the `full` job,
 # started by hand from the Actions tab. Every job runs the tests in one process
 # per core (pytest-xdist, `-n auto`). See docs/getting-started/user-guide.md.
 name: CI

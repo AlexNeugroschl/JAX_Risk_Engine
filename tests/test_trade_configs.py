@@ -1,9 +1,8 @@
 """
 What every trade config is, whatever its type (roadmap 1.3):
 
-  * I-10: it names itself. `trade_id` (ORE's `<Trade id>`) is required and non-empty, travels
-    with the trade through the worker pool, and a portfolio refuses a repeated id, so results
-    are never keyed by position alone.
+  * I-10: it names itself. `trade_id` (ORE's `<Trade id>`) is required and non-empty, and a
+    portfolio refuses a repeated id, so results are never keyed by position alone.
   * I-64: it names its valuation date. `evaluation_date` is required: a trade never takes ORE's
     thread-local evaluation date, which defaults to the wall clock on a fresh thread.
   * I-63: it carries no model and no curve. The curves are the market's (named by currency
@@ -21,7 +20,6 @@ from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig
 from engine.portfolio import PortfolioRequest
-from engine.portfolio.worker_pool import _freeze_trade, _thaw_trade
 from tests.support import portfolio
 
 TODAY = ORE.Date(30, 7, 2026)
@@ -74,10 +72,6 @@ class TestEveryTradeNamesItselfAndItsDate:
     def test_the_id_and_date_are_the_booking(self, cls):
         cfg = _build(cls, evaluation_date=TODAY, trade_id="the-trade")
         assert cfg.trade_id == "the-trade" and cfg.evaluation_date == TODAY
-
-    def test_the_id_survives_the_worker_pool(self, cls):
-        cfg = _build(cls, evaluation_date=TODAY, trade_id="the-trade")
-        assert _thaw_trade(_freeze_trade(cfg)) == cfg
 
     @pytest.mark.parametrize("field", RETIRED_FIELDS)
     def test_a_model_or_curve_on_the_trade_is_refused(self, cls, field):

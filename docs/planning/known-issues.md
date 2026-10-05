@@ -11,29 +11,33 @@ exposure are not yet compared with an ORE run ([I-50](#i-50)).
 
 ## Verification status
 
-Last full run, 2026-10-02, on the code of roadmap 1.7 (the paired sample and the precision
-report), 2,529 collected (2,454 before it; +73 in `tests/test_precision_report.py`, +2 in
-`tests/test_api_market_path.py`, the report over HTTP and `paired_fraction` on the wire),
-summary line printed:
+Last full run, 2026-10-04, on the code of roadmap 1.8 (the engine worker and the job queue),
+2,556 collected (2,529 before it; +41 in `tests/test_engine_worker.py`; −7 with
+`tests/test_worker_pool.py`, and −7 freeze/thaw round trips in `test_run_config.py` (1),
+`test_trade_configs.py` (5) and `test_trade_dates.py` (1), whose mechanism is gone), summary
+line printed:
 
-- **Windows**, `-n 8`: **2,528 passed, 1 skipped, 0 failed**, 6m59s (the skip is the
+- **Windows**, `-n 8`: **2,555 passed, 1 skipped, 0 failed**, 6m51s (the skip is the
   parametrized case of a storage wider than its compute, refused by design).
 - **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the CI
-  job, `-n 8`): 2,427 passed, 1 skipped, 2m02s.
-- **Linux** was not rerun: 1.7 changes no process, path or platform default (the report is
-  built inside the existing worker). The last Linux run (the jit change, 2026-10-02): 2,339
-  passed, 1 skipped (`reference/traderX` not in the container), 18m06s.
-- `-n auto` on the 24-thread, 32 GB Windows machine started 24 processes and failed 20 tests
-  with `MemoryError` and its after-effects: memory, not the code; see the user guide.
+  job, `-n 8`): 2,452 passed, 1 skipped, 2m18s.
+- **Linux** (Docker `python:3.11`, 4 CPUs, `-n 4`; 1.8 changes processes): **2,554 passed,
+  2 skipped, 0 failed**, 15m10s (the second skip: `reference/traderX` is not in the
+  container). A first Linux run lost one xdist process silently, inside
+  `test_scaled_storage_on_the_sloped_shared_market_is_sane[float8_e5m2-pricing]`; that test
+  file passed alone (peak 2.9 GB), and the rerun, with each module now stopping its engine
+  worker, was green but peaked at 24.2 GB of the container's 25.2 GB (cgroup peak, page cache
+  included). Recorded under [I-27](#i-27).
+- No engine process outlived any run (process listing after each).
 
-Bit for bit (the exit criterion of 1.7): the 232 snapshot arrays from a worktree of `f0a438c`
-(1.6) against the 1.7 tree, all identical in value, dtype and shape, float32 runs included
+Bit for bit (the exit criterion of 1.8): no file of the pipeline changed, so the snapshot was
+not rerun; the HTTP path equals the direct call bit for bit at float64 and float32
 ([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)). float64
-speed, old and new trees interleaved, 15 warm runs each: market risk on four trades, median
-2.19 s before and after; a five-trade portfolio, 39 ms before and 37 ms after. Red first: on
-the code before 1.7 the I-12 test fails (the request's `paired_fraction` is refused and the
-result has no `precision`); the market-risk float64-against-float64 test failed by one ulp of
-an ES until the paired scenarios were revalued in the run's batches.
+speed, old and new trees interleaved, three passes of 15 warm jobs over HTTP (five trades,
+1,024 paths): median 56.8 ms before and 54.2 ms after, cold 5.39 s and 5.22 s; a repeated job
+compiles nothing (122 programs on the first job, 0 on each repeat). Red first: on the code
+before 1.8 a job id was a `404` from a second app process, and a pool worker killed while idle
+made the next submission fail with `BrokenProcessPool`.
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
 
@@ -44,13 +48,13 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-04](#i-04) | Seasoned TraderX swaps: the export has no past fixings | High | OPEN | Scope | External |
 | [I-05](#i-05) | No faithful USD-SOFR / ACT-360 swap construction | High | OPEN | Scope | External |
 | [I-07](#i-07) | No corporate bond, equity or listed-option pricer | Medium | OPEN | Scope | By demand |
-| [I-08](#i-08) | Portfolio job store in memory; a running EOD attempt is lost on restart | Medium | PARTIAL | API | 1.8, 4.2 |
+| [I-08](#i-08) | A running EOD attempt is lost on restart | Medium | PARTIAL | API | 4.2 |
 | [I-09](#i-09) | Whole scenario cube serialized into the JSON response | Medium | OPEN | API | 4.1 |
 | [I-10](#i-10) | Per-trade results keyed by position beside the echoed ids | Low | PARTIAL | API | 4.1 |
 | [I-16](#i-16) | `rateSensitivity` is parallel-only | Medium | OPEN | Scope | External |
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
 | [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | 4.3 |
-| [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA | Medium | OPEN | Tooling | 5.1 |
+| [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | 5.1 |
 | [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | 2.5 |
 | [I-34](#i-34) | The ORE oracle's curve differs before the first pillar | Low | OPEN | Validation | 2.2 |
 | [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | 2.4 |
@@ -61,12 +65,13 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | PARTIAL | Performance | 3.1 |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | 2.6 |
 | [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | 2.7 |
-| [I-72](#i-72) | Worker pools pickle ORE objects, compile per worker and would contend for TPU chips | Medium | OPEN | Architecture | 1.8 |
 | [I-56](#i-56) | Market risk and the CAM calibration have no route; two routes named like versions | Medium | PARTIAL | API | 4.1 |
 | [I-57](#i-57) | EOD: a cached result is served before the submission id is checked | High | OPEN | API | 2.1 |
 | [I-58](#i-58) | EOD: two concurrent submissions of one workload both execute | Medium | OPEN | API | 2.1 |
 | [I-59](#i-59) | EOD: `calculations` and `reportingCurrency` accepted, keyed, then ignored | Medium | OPEN | API | 2.1 |
 | [I-60](#i-60) | EOD result schema has no stated policy on added fields | Low | ASSUMPTION | API | 4.3 |
+| [I-76](#i-76) | The job queue keeps every job and result forever | Low | OPEN | API | 4.2 |
+| [I-77](#i-77) | A worker that cannot start leaves jobs `pending` with no signal | Low | OPEN | API | 4.2 |
 | [I-61](#i-61) | Nothing runs on more than one device | Medium | OPEN | Performance | 3.2 |
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | 5.2 |
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | 5.3 |
@@ -284,8 +289,9 @@ What remains: an American's repeat on the path is arithmetic, not compiling (13 
 no compiles): every path date recalibrates a basket of one helper per reference-grid month,
 each bucket a 60-step bisection around the 160-step root solve of `_analytic_lgm`. A first
 call still compiles a few large programs (each bootstrap bucket per helper shape, the grid
-induction and its derivatives), and each worker process compiles them again unless a
-persistent compilation cache is configured (`JAX_COMPILATION_CACHE_DIR`; [I-72](#i-72)).
+induction and its derivatives), which the engine worker keeps for its lifetime (since
+roadmap 1.8; the pool's workers each compiled their own) and a restarted worker builds again
+unless a persistent compilation cache is configured (`JAX_COMPILATION_CACHE_DIR`).
 `demos/demo_profile_small.py`'s trace was truncated at the profiler's event cap before this
 change and has not been re-measured.
 
@@ -302,35 +308,44 @@ the AD Greeks method exist where ORE's semantics are not needed.
 
 **What is wrong.** The project's goal is to run across multiple TPUs and compare many
 low-precision paths against fewer FP64 paths in equal wall time. No code uses `shard_map`,
-`jax.sharding` or `pmap`; the worker pool runs whole jobs side by side, one per process.
+`jax.sharding` or `pmap`; the engine worker (roadmap 1.8) runs one job at a time on one
+device.
 
 **To close.** Shard the scenario axis: Sobol draws (per-device skip-ahead or scrambles; the
 seed exists), path evolution, pricing and exposure are scenario-parallel; VaR/ES order
 statistics need one cross-device step. The engine worker of roadmap 1.8 owns every device on its
 host, so there is no pool sizing or chip pinning; on a pod slice, one worker per host
-(`jax.distributed.initialize`).
+(`jax.distributed.initialize`), process 0 claiming each job and handing it to the others,
+since under SPMD every host runs the same job
+([details](details/precision.md#113-multi-device-and-multi-host)).
 
 ---
 
 ## API
 
 <a id="i-08"></a>
-### I-08 — Portfolio job store in memory; a running EOD attempt is lost on restart
+### I-08 — A running EOD attempt is lost on restart
 
 **Severity:** Medium · **Status:** PARTIAL
 
-**What is wrong.** `_JOBS` in `engine/api/routes.py` is a dict in the HTTP process: a
-restart loses every portfolio job, and a second uvicorn worker 404s on ids issued by the
-first. States are `pending/running/done/failed` only, with no failure classes. The EOD path
-is durable for finished work (`engine/integration/publication.py`: manifest as commit point,
-scan recovery, idempotent `submissionId` across restarts), but a *running* attempt is memory
-only and reads as unknown after a restart. The store is single-machine.
+**Closed part (roadmap 1.8, 2026-10-04).** Portfolio jobs: the durable SQLite job queue
+(`engine/api/job_queue.py`, decision A-14) replaced the in-memory `_JOBS` dict. A job
+survives restarts, every API process on the queue serves every `job_id`, a job running when
+its worker died reads `interrupted`, and a failure names its class (`bad-terms`,
+`missing-market-data`, `unsupported-product`, `numerical-failure`, `infrastructure`).
+Tests: `tests/test_engine_worker.py` (`test_jobs_survive_reopening_the_file`,
+`test_a_worker_killed_mid_job_leaves_it_interrupted`,
+`test_supervisors_of_one_queue_share_one_worker`, the failure classes); red first: on the code
+before 1.8 a job id from one app process was a `404` in the next.
 
-**To close.** Portfolio jobs: the durable SQLite job queue of roadmap 1.8 (decision A-14,
-[details](details/precision.md#114-the-queue-a-14-not-a-main-priority)), with failure classes
-(`bad-terms`, `missing-market-data`, `unsupported-product`, `numerical-failure`,
-`infrastructure`) and an `interrupted` state. On the EOD path, add the durable accepted-attempt record, a boot sweep and
-an `interrupted` lookup state (TraderX acceptance case A-09).
+**What is wrong.** The EOD path is durable for finished work
+(`engine/integration/publication.py`: manifest as commit point, scan recovery, idempotent
+`submissionId` across restarts), but a *running* attempt is memory only and reads as unknown
+after a restart. The store is single-machine.
+
+**To close.** Roadmap 4.2: on the EOD path, the durable accepted-attempt record, a boot sweep
+and an `interrupted` lookup state (TraderX acceptance case A-09); the portfolio queue's
+`interrupt_running` is the pattern.
 
 <a id="i-09"></a>
 ### I-09 — Whole scenario cube serialized into the JSON response
@@ -459,6 +474,43 @@ shape. TraderX's validator does, so the next field added breaks them. Proposed t
 **To close.** Their answer, recorded as a decision; then state it in the published schema
 with a test.
 
+<a id="i-76"></a>
+### I-76 — The job queue keeps every job and result forever
+
+**Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-04, building
+roadmap 1.8
+
+**What is wrong.** `engine/api/job_queue.py` never deletes a row, so the SQLite file grows by
+each job's request and result document (a 4096-path cube is tens of MB of JSON, I-09).
+
+**Reach.** Disk on a long-running API host; no number. A result stays retrievable, which the
+Basel plan's audit trail wants (P0).
+
+**Current handling.** None; delete the file, or old rows, by hand.
+
+**To close.** A retention policy chosen by the owner (an age or a count, kept results for
+regulatory runs), applied by the worker between jobs; a test that a purged id is a `404` and a
+kept one is served.
+
+<a id="i-77"></a>
+### I-77 — A worker that cannot start leaves jobs `pending` with no signal
+
+**Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-04, building
+roadmap 1.8
+
+**What is wrong.** If the engine worker dies at startup (a broken install, an unwritable
+queue directory), the API restarts it on every poll and the job stays `pending`; the client
+sees no error. The worker's traceback reaches the server's stderr, not the job.
+
+**Reach.** HTTP portfolio jobs, only when the worker cannot run at all. A job that kills a
+running worker is `interrupted`, not stuck.
+
+**Current handling.** The traceback in the server log.
+
+**To close.** The supervisor records its child's exit status, and a poll of a `pending` job
+while the worker has exited at startup N times running reports it (in `error`, or a
+`worker` field on `/health`); a test with a worker command that exits at once.
+
 ---
 
 ## Architecture
@@ -510,34 +562,6 @@ independent, while Sobol paths are not and the rounding errors of the 32 paths o
 share a scale (the synthetic coverage tests and three pipeline seeds pass; that is not yet
 evidence at scale). Compute below
 float32 is [F-07](features.md#f-07) (roadmap 2.8).
-
-<a id="i-72"></a>
-### I-72 — Worker pools pickle ORE objects, compile per worker and would contend for TPU chips
-
-**Severity:** Medium · **Status:** OPEN · **Category:** Architecture · **Found:** 2026-10-01,
-precision design review; decision A-14
-
-**What is wrong.** `engine/portfolio/worker_pool.py` runs HTTP jobs in a
-`ProcessPoolExecutor` (one pool for every precision since roadmap 1.4; one per precision tier
-before). Each job's request is frozen and thawed because ORE's
-SWIG objects do not pickle; each worker compiles every job shape again; a crashed worker
-likely breaks its pool for every later job (nothing handles `BrokenProcessPool`); and on a
-TPU host, where one process owns a chip, several workers would need chip pinning and would
-stand in the way of sharding one job across all devices ([I-61](#i-61)).
-
-**Reach.** HTTP portfolio jobs only. `price_portfolio` called from Python runs in the
-caller's process and is unaffected; the EOD path has its own execution and store.
-
-**Current handling.** Works on one CPU device; the cost is complexity and a compile per
-worker.
-
-**To close.** Roadmap 1.8: the API writes the request JSON to a durable SQLite job queue; one
-single-threaded engine worker process per host takes jobs from it, parses the JSON itself
-(no freeze/thaw), owns every device on the host and writes results back; a supervisor
-restarts a crashed worker, whose running job is marked `interrupted`
-([details](details/precision.md#11-execution-architecture)). Tests: jobs queued together give
-the same bits as run one after another; a failing job fails only its own row; a killed worker
-leaves `interrupted`; a second identical job compiles nothing; the full suite on Linux.
 
 ---
 
@@ -636,13 +660,14 @@ bundle. The pricer is four multiplications.
 ## Tooling
 
 <a id="i-27"></a>
-### I-27 — Long full-suite runs can hard-abort inside XLA
+### I-27 — Long full-suite runs can hard-abort inside XLA or lose a worker process
 
 **Severity:** Medium · **Status:** OPEN · located, not root-caused · **Found:** 2026-09-17
 
 **What is wrong.** A long `pytest tests/` run has died with `Fatal Python error: Aborted` and
 no summary line, the crashing thread inside `jax/_src/compiler.py`
-(`backend_compile_and_load`) while `ProcessPoolExecutor` threads were alive. Intermittent: the
+(`backend_compile_and_load`) while `ProcessPoolExecutor` threads were alive (the worker pool
+of the time; roadmap 1.8 removed it, so no test starts one now). Intermittent: the
 same command later passed in full, and no abort occurred in the recorded runs since
 2026-09-24.
 
@@ -650,20 +675,27 @@ same command later passed in full, and no abort occurred in the recorded runs si
 `tests/test_api.py` created pools and never shut them down, so later in-process compiles ran
 with worker children attached. Pairing modules does not reproduce it. Since 2026-10-02 the
 suite does share JAX's on-disk compilation cache between its processes (xdist workers and
-the pools they start, `tests/conftest.py`); JAX writes an entry without a lock and recompiles
+the engine workers they start, `tests/conftest.py`); JAX writes an entry without a lock and recompiles
 when one cannot be read, so a torn entry costs a compile, not a crash, but an abort after
 that date should rule the cache in or out first (rerun with `JAX_COMPILATION_CACHE_DIR`
 pointing at an empty directory).
 
-**Current handling.** `tests/test_api.py` and `tests/test_worker_pool.py` shut the pool down
-after the module, and the concurrency test builds a fresh pool (it failed deterministically
-when run after the pricing tests, because the executor reused one started worker instead of
-spawning a second). The intermittent wall-clock overlap assertion between pricing jobs of two
-precision tiers went with the tiers (roadmap 1.4); concurrency is shown by two sleeping jobs
-on two worker PIDs, which is deterministic.
+**Second hypothesis: memory.** On 2026-10-04 a Linux full run (Docker, 4 CPUs, `-n 4`, 25.2 GB)
+lost one xdist process with no traceback ("node down: Not properly terminated") inside an FP8
+storage test that passes alone at a 2.9 GB peak; the green rerun peaked at 24.2 GB (cgroup
+peak, page cache included). GitHub's 4-vCPU runner, where CI's `full` job runs with `-n auto`,
+has 16 GB.
 
-**To close.** Repeated clean full runs against a known-bad baseline; one green run proves
-nothing.
+**Current handling.** Since roadmap 1.8 no pool, and no executor thread, exists: HTTP tests
+start one engine worker, a separate process with no thread in the test process, and each
+module stops it when it ends (`tests/conftest.py`); a worker also exits once its parent is
+gone. If an abort recurs, the pool hypothesis is ruled out.
+
+**To close.** Measure each xdist process's peak resident memory over a full run (Linux,
+`-n 4`) and the heaviest tests; if memory explains the deaths, lower `-n` for the `full` CI job
+or slim the heaviest fixtures. Then repeated clean full runs against a known-bad baseline,
+with `JAX_COMPILATION_CACHE_DIR` on an empty directory to rule the cache in or out; one green
+run proves nothing.
 
 <a id="i-66"></a><a id="q-2"></a>
 ### I-66 — No linter or type checker
@@ -715,7 +747,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-12"></a>I-12 | `/version` named the API process's backend, the only device a result could be attributed to (every result now carries a `PrecisionReport` built where the job ran: its devices, backend and the formats read from its arrays; roadmap 1.7) | `tests/test_api_market_path.py::test_a_result_carries_the_workers_precision_report`, `tests/test_precision_report.py::TestReport` |
 | <a id="i-13"></a>I-13 | A negative curve index priced against the wrong curve (trades now name a currency and index; a missing curve is refused before pricing, naming the trade) | `tests/test_portfolio_gap_fixes.py::TestCurveIndexValidatedBeforeAllPricing` |
 | <a id="i-14"></a>I-14 | `generate_paths(precision=32)` leaked `jax_enable_x64=False` (`generate_paths` removed by roadmap 1.3; nothing toggles the flag) | `tests/test_portfolio_entrypoint.py::TestPricePortfolioConcurrency` |
-| <a id="i-15"></a>I-15 | The worker-pool concurrency test could not observe concurrency (and, until 1.3, failed after the pricing tests by reusing one worker) | `tests/test_worker_pool.py::TestWorkerPoolConcurrency` |
+| <a id="i-15"></a>I-15 | The worker-pool concurrency test could not observe concurrency (and, until 1.3, failed after the pricing tests by reusing one worker) | The pool and its test went with roadmap 1.8; jobs now run one at a time (`tests/test_engine_worker.py::TestEngineWorkerPricing`) |
 | <a id="i-17"></a>I-17 | A malformed note date failed the whole bundle | `tests/test_integration_note.py::TestRefusalsAreNotePricingErrors` |
 | <a id="i-19"></a>I-19 | The accrual tolerance rounded its own bound | `tests/test_integration_note.py::TestToleranceIsDerivedNotConstant` |
 | <a id="i-20"></a>I-20 | Impossible calendar dates aborted the whole bundle | `tests/test_integration_note.py::TestImpossibleCalendarDates` |
@@ -728,7 +760,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-29"></a>I-29 | A rounded exercise time silently dropped a coupon (exercise now given as dates) | `tests/test_ore_bermudan_oracle.py::TestExerciseDatesAreExact` |
 | <a id="i-30"></a>I-30 | The `A(t,T)` variance term was nearly uncovered at t=0 (that formula went with the Hull-White pipeline; the model's bonds are QuantLib's on every state) | `tests/test_cam.py::test_hull_white_path_curves_equal_quantlibs_hull_white` |
 | <a id="i-31"></a>I-31 | Bermudan/American floating coupons projected over the wrong period | `tests/test_ore_lgm_parity.py` |
-| <a id="i-33"></a>I-33 | On Linux, worker-pool jobs hung once the parent had run JAX (fork) | `tests/test_worker_pool.py::TestPoolsSpawnOnEveryPlatform` |
+| <a id="i-33"></a>I-33 | On Linux, worker-pool jobs hung once the parent had run JAX (fork) | The engine worker is a fresh interpreter (`subprocess`, never fork) since roadmap 1.8: `tests/test_engine_worker.py::TestWorkerProcesses`, the full suite on Linux |
 | <a id="i-35"></a>I-35 | An American already in its window was exercisable on the evaluation date | `tests/test_trade_dates.py::test_seasoned_bermudan_and_american_equal_ore` |
 | <a id="i-36"></a>I-36 | A non-ACT/365 floating leg projected the wrong forward | `tests/test_trade_dates.py::test_any_leg_day_count_equals_ore` |
 | <a id="i-37"></a>I-37 | A European silently ignored `floating_spread` (refused by the Jamshidian engine, priced by Bachelier) | `tests/test_jamshidian.py::TestConfiguration::test_a_spread_is_refused_naming_the_trade`, `tests/test_valuation.py::test_european_today_equals_ores_default_engine` |
@@ -751,7 +783,8 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-68"></a>I-68 | The Hull-White model was chosen by the market's type, not by the configuration (now `HullWhiteConfig` in `CamConfig.ir`) | `tests/test_run_config.py::TestEveryModelRunsWithEveryEngineAndMethod` |
 | <a id="i-69"></a>I-69 | The market path silently ignored `precision.pricing`/`risk`/`calibration`, `calibration_targets`, and a `base_currency` contradicting the simulation (now refused by name) | `tests/test_run_config.py::TestWhatThePipelineDoesNotImplementIsRefused`, `::TestConfigurationValues`, `tests/test_api_market_path.py::test_an_unpriceable_request_is_a_400_and_no_job` |
 | <a id="i-70"></a>I-70 | Bump Theta of a bond maturing the next day raised `BondPricingError` (now redemption − NPV, as ORE) | `tests/test_portfolio_bond_wire_through.py::TestBondGreeksReachThePortfolioPath::test_a_bond_maturing_tomorrow_does_not_crash_the_greeks` |
-| <a id="i-71"></a>I-71 | A float32-tier worker turned x64 off, so its pricing and exposure ran in float32 where an in-process run used float64 | `tests/test_worker_pool.py::TestSubmitPricingJobRouting::test_float32_job_returns_correct_result` |
+| <a id="i-71"></a>I-71 | A float32-tier worker turned x64 off, so its pricing and exposure ran in float32 where an in-process run used float64 | `tests/test_engine_worker.py::TestEngineWorkerPricing::test_jobs_queued_together_give_the_bits_of_jobs_run_one_after_another` (float64 and float32 jobs equal the direct call) |
+| <a id="i-72"></a>I-72 | HTTP jobs ran in a process pool that pickled each request with its ORE dates frozen as text, compiled every job shape once per worker, broke for every later job when one worker died (`BrokenProcessPool`), and would have needed chip pinning on TPU (now one engine worker per host behind a durable queue, roadmap 1.8) | `tests/test_engine_worker.py` (`test_a_second_identical_job_compiles_nothing`, `test_a_failing_job_fails_only_its_own_row`, `test_a_worker_killed_mid_job_leaves_it_interrupted`, `test_the_worker_prices_the_request_the_route_validated`) |
 | <a id="i-74"></a>I-74 | A calibration basket read ORE's global evaluation date, so a later date (another caller's, or the wall clock past a helper's fixing) failed it with a missing fixing | `tests/test_ore_lgm_calibration.py::test_the_basket_does_not_depend_on_ores_global_evaluation_date` |
 | <a id="m-4"></a>Audit M-4 | Trades were defined relative to the evaluation date (now absolute dates) | `tests/test_trade_dates.py` |
 | <a id="m-5"></a>Audit M-5 | Theta re-rolled the trade instead of ageing it | `tests/test_trade_dates.py` |

@@ -10,6 +10,7 @@ a hit is the executable a fresh compile would build. Set through the environment
 worker processes the tests start use it too. Delete the directory to measure cold compiles.
 """
 import os
+import sys
 from pathlib import Path
 
 os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", str(Path(__file__).resolve().parents[1] / ".jax_cache"))
@@ -59,10 +60,26 @@ def with_simulation(request: PortfolioRequest, **changes) -> PortfolioRequest:
     return dataclasses.replace(request, config=dataclasses.replace(request.config, simulation=simulation))
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _stop_the_engine_worker_after_each_module():
+    """Stop the engine worker a module's HTTP jobs started, so the modules after it do not run
+    beside an idle JAX process holding its compiled programs (the next job starts a new one).
+    Until roadmap 1.8 the pool's modules shut their pools down the same way."""
+    yield
+    routes = sys.modules.get("engine.api.routes")
+    if routes is not None:
+        routes.shutdown_worker()
+
+
 @pytest.fixture(scope="session")
-def test_client():
-    """In-process `TestClient` over `engine.api.app`. Session-scoped; the only state is the
-    job store, and each submission gets a unique job_id."""
+def test_client(tmp_path_factory):
+    """In-process `TestClient` over `engine.api.app`, on a job queue of this session's own (each
+    xdist process has its own, and so its own engine worker). Session-scoped; the only state is
+    the queue, and each submission gets a unique job_id. The worker, started by the first job,
+    is stopped at the end of the session (it would exit with this process anyway)."""
     from fastapi.testclient import TestClient
+    from engine.api import routes
     from engine.api.app import app
-    return TestClient(app)
+    routes.configure_jobs(tmp_path_factory.mktemp("jobs") / "jobs.sqlite3", mode="spawn")
+    yield TestClient(app)
+    routes.shutdown_worker()

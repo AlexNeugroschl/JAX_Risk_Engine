@@ -14,22 +14,18 @@ and settings, and the precision per stage, with ORE's defaults.
     and what the Jamshidian engine cannot price.
   * The bump-and-revalue settings (`GreeksConfig.sensitivity`, ORE's sensitivity.xml) reach
     the Greeks.
-  * The configuration survives the trip to a pricing worker.
 """
 import dataclasses
-import pickle
 
 import numpy as np
 import ORE
 import pytest
 
-from engine.market import Market
 from engine.portfolio import (
     CamConfig, GreeksConfig, HullWhiteConfig, JamshidianEngineConfig, LgmConfig, LgmSwaptionEngineConfig,
     PortfolioRequest, Precision, PricingConfig, RunConfig, SensitivityConfig, StagePrecision, price_portfolio,
 )
 from engine.portfolio.market_path import validate_request
-from engine.portfolio.worker_pool import _freeze_trade, _thaw_trade
 from engine.risk.sensitivities import portfolio_sensitivities
 from tests.support import portfolio as shared
 
@@ -179,21 +175,3 @@ class TestTheSensitivitySettingsReachTheGreeks:
             for key in direct[i]:
                 np.testing.assert_array_equal(greeks[i][key], direct[i][key])
         assert float(greeks[0]["theta"]) != pytest.approx(float(default[0]["theta"]), rel=1e-3)
-
-
-def test_the_configuration_survives_the_trip_to_a_worker():
-    """The whole request is frozen (ORE dates in the CamConfig and the market as text) and
-    rebuilt in the worker, re-running every validation."""
-    pricing = dataclasses.replace(JAMSHIDIAN, bermudan=FAST, recalibrate=False)
-    config = RunConfig(simulation=_cam(model="HullWhite"), pricing=pricing,
-                       greeks=GreeksConfig("AD", SensitivityConfig(curve_tenors=("1Y", "2Y"))),
-                       precision=Precision(simulation=StagePrecision("float32", "float32", "float32"),
-                                           pricing=StagePrecision("float32")))
-    request = _market_request(config=config)
-    thawed = _thaw_trade(pickle.loads(pickle.dumps(_freeze_trade(request))))
-    assert isinstance(thawed, PortfolioRequest) and isinstance(thawed.market, Market)
-    assert thawed.config == config
-    assert isinstance(thawed.config.simulation.ir["USD"], HullWhiteConfig)
-    assert [t.trade_id for t in thawed.trades] == ["swap-payer", "european-payer"]
-    assert thawed.market.asof == shared.ASOF
-    assert [type(t) for t in thawed.trades] == [type(t) for t in request.trades]

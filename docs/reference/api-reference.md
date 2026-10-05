@@ -401,8 +401,9 @@ full write-up (this is the quick reference).
 ### `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 
 The main entry point — see [The Portfolio Entry Point](portfolio-entrypoint.md#price_portfoliorequest-portfoliorequest---portfolioresult).
-`engine.portfolio.worker_pool.submit_pricing_job(request) -> Future[PortfolioResult]` runs it
-in a worker process (the HTTP route's path).
+Over HTTP it runs in the engine worker (`engine.api.worker.price_job(body) -> result JSON`,
+the request body in, the result document out), fed by the job queue (`engine.api.job_queue`);
+see [HTTP API: Jobs](http-api.md#jobs-the-queue-and-the-engine-worker).
 
 ---
 

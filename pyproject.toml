@@ -20,6 +20,11 @@ dependencies = [
     "scipy",
 ]
 
+# The engine worker behind the HTTP API (roadmap 1.8; engine/api/worker.py). The API
+# starts one itself unless JAX_RISK_WORKER=external.
+[project.scripts]
+jax-risk-worker = "engine.api.worker:main"
+
 [project.optional-dependencies]
 api = [
     "fastapi",
@@ -42,7 +47,7 @@ dev = [
 profiling = [
     # XProf bundles the TensorBoard Profiler plugin + a standalone `xprof`
     # viewer. Only needed to collect/view a `jax.profiler.trace` timeline of a
-    # pricing job -- see engine/portfolio/worker_pool.py::_run_pricing_job's
+    # pricing job -- see engine/api/worker.py::_profiled's
     # JAX_RISK_PROFILE_DIR opt-in and docs/getting-started/user-guide.md.
     "xprof",
 ]
@@ -55,7 +60,7 @@ include = ["engine*"]
 # trees; a bare `pytest` from the repo root must not wander into them.
 testpaths = ["tests"]
 # `slow` marks the tests CI's fast tier skips (`pytest -m "not slow"`): the
-# worker-pool and HTTP-job tests that start process pools, and tests taking
+# HTTP-job and engine-worker tests that start worker processes, and tests taking
 # 5 s or more. ORE-parity tests are never marked slow, so the fast tier runs
 # all of them. --strict-markers turns a misspelt marker into an error instead of
 # a test that silently lands in the wrong tier.

@@ -37,47 +37,22 @@ default bit for bit as before; since 1.5 path pricing is set per product and per
 since 1.6 storage goes down to float16, bfloat16 and FP8, with block scales and nearest or
 stochastic rounding; since 1.7 every result carries a precision report (the policy as run,
 the formats read from the arrays, the device), and a paired float64 sample corrects the mean
-figures by a two-level estimator and measures the quantiles.
+figures by a two-level estimator and measures the quantiles; since 1.8 HTTP jobs go through a
+durable SQLite job queue to one single-threaded engine worker process per host, which owns
+the host's devices (decision A-14).
 Nothing runs on more than one device.
 The TraderX EOD boundary prices Treasuries end to end and refuses everything else by name.
 
 ---
 
 <a id="stage-1--structure"></a>
-## Stage 1 — Structure
-
-The configurable engine (decision A-1). The run configuration (`RunConfig`, step 1.2), the
-Hull-White model as one of its options on the shared pipeline, with trades that carry no model
-and name themselves (step 1.3), and the precision mechanism, `engine/precision/` with a
-storage, compute and accumulate format per adjustable stage at float64/float32 (step 1.4,
-2026-10-01), the pricing stage per product and per trade (step 1.5, 2026-10-02), and storage
-below 32 bits, float16, bfloat16 and FP8 with block scales along the scenario axis and nearest
-or stochastic rounding (step 1.6, 2026-10-02), and the paired float64 sample, the two-level
-estimator and the precision report on every result (step 1.7, 2026-10-02), are done. Step 1.8
-replaces the worker pool with one engine worker process.
-Designs: [details/configurable-engine.md](details/configurable-engine.md),
-[details/precision.md](details/precision.md) (decisions A-10 to A-16, D-9 revised
-2026-10-01).
-
-| Step | Work | Closes | Size |
-|---|---|---|---|
-| 1.8 | One engine worker process per host behind a durable SQLite job queue (A-14); delete the pools and the freeze/thaw of ORE objects. Not a main priority: nothing in stage 2 waits for it; 3.2 does | [I-72](known-issues.md#i-72), [I-08](known-issues.md#i-08) (portfolio jobs) | M |
-
-Exit: every step's defaults reproduce the previous step's numbers bit for bit (the shared
-portfolio and the parity suites; [details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
-1.3 met it: 103 of 103 saved arrays identical, and each Hull-White fix measured red on the
-code before it, on a sloped curve ([known-issues.md](known-issues.md#verification-status)).
-1.4 met it: 164 of 164 default-precision arrays identical (the LGM and Hull-White runs,
-exposure, bump and AD Greeks, market risk), and the float32 scenario market and float32
-market-risk revaluation identical to before. A float32 portfolio cube is not, by design: the
-old `simulation=32` cube was priced in mixed precision, mostly float64
-([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)). 1.5 met
-it: 232 of 232 arrays identical, the float32 runs included, and a mixed run equals each trade
-priced alone at its precision, column for column. 1.6 met it: 232 of 232 arrays identical
-against the snapshot of the jit change, and the mixed run's equality holds with storage below
-32 bits and stochastic rounding too. 1.7 met it: 232 of 232 arrays identical against a
-worktree of `f0a438c` (1.6), and at float64 a paired sample measures exactly zero, its figures
-the run's own bit for bit. 1.8 runs the full suite on Linux.
+Stage 1, structure (the configurable engine, decision A-1, steps 1.2 to 1.8), is done
+(2026-10-04): one run configuration, the precision mechanism through storage below 32 bits
+and the precision report, and the engine worker behind the job queue. Each step reproduced
+the previous step's numbers bit for bit; the evidence is in
+[details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity) and the
+designs in [details/configurable-engine.md](details/configurable-engine.md) and
+[details/precision.md](details/precision.md).
 
 <a id="stage-2--correctness-and-precision"></a>
 ## Stage 2 — Correctness and precision
@@ -111,8 +86,8 @@ closed I-21 and I-22) moved them at rounding level, the one such change so far.
 
 | Step | Work | Closes | Size |
 |---|---|---|---|
-| 3.1 | Profile a portfolio job, then remove the remaining dominant costs (an American's per-path recalibration arithmetic, first-call compiles, compiles per worker process); recompiles per trade, date, bump and call went on 2026-10-02 | [I-53](known-issues.md#i-53) | M |
-| 3.2 | Shard the scenario axis across the devices the engine worker (1.8) owns; one worker per host on a Cloud TPU pod slice | [I-61](known-issues.md#i-61) | L |
+| 3.1 | Profile a portfolio job, then remove the remaining dominant costs (an American's per-path recalibration arithmetic, first-call compiles, which a restarted engine worker pays again unless the persistent compilation cache is configured); recompiles per trade, date, bump and call went on 2026-10-02, and per worker process with 1.8 | [I-53](known-issues.md#i-53) | M |
+| 3.2 | Shard the scenario axis across the devices the engine worker (1.8) owns; one worker per host on a Cloud TPU pod slice, process 0 claiming each job and handing it to the other hosts, since under SPMD every host runs the same job ([details/precision.md §11.3](details/precision.md#113-multi-device-and-multi-host)) | [I-61](known-issues.md#i-61) | L |
 | 3.4 | Low-precision timing on Ironwood and H100: the storage formats, then matrix-product forms of the heavy kernels (leg pricing, Bermudan rollback) on native FP8; wall time per figure at equal accuracy, read from the evidence table's path ceilings | [F-07](features.md#f-07) (speed) | M |
 
 <a id="stage-4--api-robustness"></a>
@@ -121,7 +96,7 @@ closed I-21 and I-22) moved them at rounding level, the one such change so far.
 | Step | Work | Closes | Size |
 |---|---|---|---|
 | 4.1 | One route (the old names as aliases; the request is already one shape since 1.3), a market-risk route, the CAM calibration route, and a completeness test failing on any configuration setting without an API field. Every per-trade result row carries its trade id; the cube returns as a chunked artifact reference | [I-56](known-issues.md#i-56), [I-10](known-issues.md#i-10) (results), [I-09](known-issues.md#i-09) | L |
-| 4.2 | Durable portfolio jobs with failure classes; EOD accepted-attempt record, boot sweep, `interrupted` state | [I-08](known-issues.md#i-08) | M |
+| 4.2 | EOD accepted-attempt record, boot sweep, `interrupted` state (portfolio jobs have had all three since 1.8); a retention policy for the job queue; a job status that says when the engine worker cannot start | [I-08](known-issues.md#i-08), [I-76](known-issues.md#i-76), [I-77](known-issues.md#i-77) | M |
 | 4.3 | Chase TraderX's answers; apply them (a widened allowlist, a schema statement) | [I-23](known-issues.md#i-23), [I-60](known-issues.md#i-60) | S |
 
 <a id="stage-5--tests-and-tooling"></a>
@@ -129,7 +104,7 @@ closed I-21 and I-22) moved them at rounding level, the one such change so far.
 
 | Step | Work | Closes | Size |
 |---|---|---|---|
-| 5.1 | Characterize the full-suite XLA abort (repeated full runs against a known-bad baseline; `tests/test_api.py`'s pool shutdown is in since 1.3; the flaky cross-tier overlap test went with the tiers in 1.4) | [I-27](known-issues.md#i-27) | M |
+| 5.1 | Characterize the full-suite aborts and lost worker processes: peak memory per xdist process on Linux (`-n 4` peaked at 24.2 GB with page cache, CI's runner has 16 GB), then repeated full runs against a known-bad baseline (the pools went with 1.8) | [I-27](known-issues.md#i-27) | M |
 | 5.2 | Ruff in `pyproject.toml` and CI, then a type checker on `engine/` | [I-66](known-issues.md#i-66) | S |
 | 5.3 | Shared test helpers in `tests/support/`; public-entry tests where stage 1 made private-symbol tests obsolete | [I-67](known-issues.md#i-67) | S |
 

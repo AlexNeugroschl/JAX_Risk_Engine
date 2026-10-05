@@ -232,8 +232,9 @@ See [Greeks](../risk/greeks.md).
   by hand for every trade type under the Hull-White model; reordering, calibration,
   precision, concurrency, one evaluation date.
 - `tests/test_run_config.py` — the defaults, every model with every engine and Greeks method,
-  refusals naming the field, the sensitivity settings reaching the Greeks, the configuration
-  surviving the worker pool.
+  refusals naming the field, the sensitivity settings reaching the Greeks.
+- `tests/test_engine_worker.py` — the HTTP path's engine worker: the request it prices is the
+  one the route validated; jobs queued together equal jobs run alone and the direct call.
 - `tests/test_portfolio_gap_fixes.py` — regressions for I-01/I-02/I-03/I-13.
 - `tests/test_portfolio_bond_wire_through.py` — bonds through `price_portfolio`: today,
   Greeks (I-26, I-70), every path (I-24).

@@ -1,7 +1,7 @@
 """
 Phase labels for profiler traces.
 
-The worker pool traces with `python_tracer_level=0`, so trace events carry no Python source
+The engine worker traces with `python_tracer_level=0`, so trace events carry no Python source
 location and a JAX dispatch cannot be attributed to calibration, pricing or a Greek. `phase`
 labels regions two ways, since each covers what the other misses:
 
@@ -19,8 +19,8 @@ from contextlib import contextmanager
 @contextmanager
 def phase(name: str):
     """Label a region of the pricing path as `name` in a profiler trace (both mechanisms;
-    see the module docstring). JAX is imported here, not at module scope, so the worker
-    pool's profiler hook imports nothing when `JAX_RISK_PROFILE_DIR` is unset."""
+    see the module docstring). JAX is imported here, not at module scope, so the engine
+    worker's profiler hook imports nothing when `JAX_RISK_PROFILE_DIR` is unset."""
     import jax
 
     with jax.profiler.TraceAnnotation(name):

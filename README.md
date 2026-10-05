@@ -52,8 +52,9 @@ double-precision simulations in the same wall-clock time.
   ([I-55](docs/planning/known-issues.md#i-55), [design](docs/planning/details/precision.md))
 - HTTP API: one portfolio request reaching the run configuration (market risk and the
   cross-asset calibration routes are still to come,
-  [I-56](docs/planning/known-issues.md#i-56)); plus a versioned end-of-day contract for
-  hash-verified portfolio bundles
+  [I-56](docs/planning/known-issues.md#i-56)), priced by one engine worker process per host
+  behind a durable job queue; plus a versioned end-of-day contract for hash-verified
+  portfolio bundles
 
 ## ORE and hardware acceleration
 

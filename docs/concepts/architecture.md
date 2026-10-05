@@ -84,9 +84,6 @@ JAX_Risk_Engine/
 │   │   ├── market_path.py                The pipeline: calibrate the CAM, simulate, value,
 │   │   │                                 exposure, Greeks; validate_request
 │   │   ├── validation.py                 Re-exports the trade validators
-│   │   ├── worker_pool.py                The process pool behind HTTP jobs, plus
-│   │   │                                 the opt-in XProf profiler hook and its
-│   │   │                                 silent-truncation guard (see profiling.md)
 │   │   └── profiling.py                  phase() -- the TraceAnnotation/named_scope pair
 │   │                                     that labels each pricing stage on a trace
 │   ├── api/                              FastAPI HTTP boundary -- TWO separate contracts
@@ -94,6 +91,11 @@ JAX_Risk_Engine/
 │   │   ├── routes.py                     /health, /version, /portfolio/price (also served
 │   │   │                                 as /v2/portfolio/price; async job pattern),
 │   │   │                                 /calibration/lgm
+│   │   ├── job_queue.py                  The durable SQLite job queue and the worker lock
+│   │   ├── worker.py                     The engine worker (jax-risk-worker): one process
+│   │   │                                 per host prices queued jobs; the opt-in XProf
+│   │   │                                 hook and its truncation guard (profiling.md)
+│   │   ├── supervisor.py                 Starts and restarts the worker from the API
 │   │   ├── market_schemas.py             The portfolio request; refuses unknown fields
 │   │   │                                 and the retired Hull-White shape
 │   │   ├── schemas.py                    Shared Pydantic schemas (curves, precision,
@@ -197,7 +199,7 @@ JAX_Risk_Engine/
     ├── test_greeks*.py                   AD Greeks against finite differences and the
     │                                     bump method
     ├── test_market_risk*.py, test_var_es*.py, test_exposure.py
-    ├── test_api*.py, test_worker_pool.py, test_profiling_and_jit.py
+    ├── test_api*.py, test_engine_worker.py, test_profiling_and_jit.py
     ├── test_import_layering.py           No package imports a layer above it; no demo
     │                                     or test code in engine/ (I-65)
     ├── test_demos.py, test_demo_scenarios.py
@@ -481,14 +483,19 @@ are float32, not because the flag is off.
 run's own arrays, and the pipeline keeps no module-level state and never reads ORE's global
 evaluation date (each trade carries its own, I-64). Until roadmap 1.4 a lock serialized runs.
 
-HTTP jobs run in `engine/portfolio/worker_pool.py`'s one `ProcessPoolExecutor`, whatever
-their precision (until 1.4, one pool per simulation precision). Each worker runs one job at a
-time with x64 on, as the parent does, so a job prices bit for bit as a direct `price_portfolio`
-call (until 1.3 a float32 worker turned the flag off, [I-71](../planning/known-issues.md#i-71)).
-Compiled programs are not shared across processes, so each worker pays its own compilation.
-Workers are always spawned, never forked (forking a process that has initialized JAX hangs,
-I-33). Roadmap 1.8 replaces the pool with one engine worker process per host
-([I-72](../planning/known-issues.md#i-72)).
+HTTP jobs (roadmap 1.8, decision A-14) go through a durable SQLite job queue
+(`engine/api/job_queue.py`) to one single-threaded engine worker process per host
+(`engine/api/worker.py`). The API stores each request body as received; the worker parses it
+as the route did, calls `price_portfolio` with x64 on, as every engine process has it, and
+stores the result document, so a job prices bit for bit as a direct call. Jobs run one at a
+time in submission order: the worker owns every device on its host and keeps its compiled
+programs, so a repeated job shape compiles nothing. A failing job fails only its own row; a
+worker that dies mid-job leaves it `interrupted` for the next worker to record. The API
+starts and restarts the worker (`engine/api/supervisor.py`), never by fork (forking a process
+that has initialized JAX hangs, I-33), unless `JAX_RISK_WORKER=external` leaves that to
+systemd or a container. Until 1.8 a `ProcessPoolExecutor` ran jobs side by side, each worker
+compiling its own programs and receiving the request pickled, its ORE dates frozen as text
+(I-72). See [HTTP API: Jobs](../reference/http-api.md#jobs-the-queue-and-the-engine-worker).
 
 ### Below float32
 

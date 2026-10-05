@@ -16,19 +16,10 @@ import pytest
 from demos.demo_scenarios import demo_market_json, demo_simulation_json
 from engine.api.market_schemas import MarketPortfolioRequestSchema
 from engine.portfolio import price_portfolio
-from engine.portfolio.worker_pool import shutdown_pool
 from engine.precision import Precision, StagePrecision
 from tests.support import portfolio as shared
 
 ZERO_CURVE_SCHEMA = {"times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0], "rates": [0.03, 0.03, 0.032, 0.035, 0.038, 0.04]}
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _cleanup_pools():
-    """Shut this module's worker pool down so later in-process compiles do not run with idle
-    workers attached (I-27's first step)."""
-    yield
-    shutdown_pool(wait=True)
 
 
 def _simulation(samples=64, model="HullWhite"):
@@ -293,9 +284,9 @@ class TestPortfolioPricePrecision:
 
 
 @pytest.mark.slow
-class TestPortfolioPriceWorkerPoolDispatch:
-    """`/portfolio/price` dispatches through `engine.portfolio.worker_pool`, one pool for every
-    precision."""
+class TestPortfolioPriceJobQueueDispatch:
+    """`/portfolio/price` queues jobs of every precision for the one engine worker
+    (`engine.api.worker`, roadmap 1.8)."""
 
     def test_two_precisions_submitted_back_to_back_both_complete_correctly(self, test_client):
         f32 = {"storage": "float32", "compute": "float32", "accumulate": "float32"}
@@ -314,11 +305,12 @@ class TestPortfolioPriceWorkerPoolDispatch:
         np.testing.assert_array_equal(np.asarray(r32["npv_cube"]), np.asarray(_direct(body_32).npv_cube))
         assert r64["npv_cube"] != r32["npv_cube"], "the float32 job was not priced in float32"
 
-    def test_job_id_maps_to_a_future_not_an_eagerly_computed_result(self, test_client):
-        """The route returns as soon as it has a `Future`; the 202 rules out blocking."""
+    def test_the_route_queues_the_job_rather_than_pricing_it(self, test_client):
+        """The route returns as soon as the job is queued; the 202 rules out blocking."""
         r = test_client.post("/portfolio/price", json=_body([_swap(), _european()], simulation=_simulation(2048)))
         assert r.status_code == 202, r.text
-        assert test_client.get(f"/portfolio/price/{r.json()['job_id']}").json()["status"] in ("pending", "done")
+        status = test_client.get(f"/portfolio/price/{r.json()['job_id']}").json()["status"]
+        assert status in ("pending", "running", "done")
 
 
 @pytest.mark.slow

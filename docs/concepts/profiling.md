@@ -28,34 +28,34 @@ writes — shrank along with it, because the trace is mostly a record of compila
 There is no custom tracer in this codebase. The profiling hook is a thin, **opt-in**
 wrapper around JAX's own [XProf](https://github.com/openxla/xprof) (TensorBoard-profiler)
 integration, living in
-[`engine/portfolio/worker_pool.py`](../../engine/portfolio/worker_pool.py)'s
-`_run_pricing_job`:
+[`engine/api/worker.py`](../../engine/api/worker.py)'s `_profiled`, around each job's
+`price_portfolio` call:
 
 ```python
 profile_dir = os.environ.get("JAX_RISK_PROFILE_DIR")
 if not profile_dir:
-    return _run()                    # inert: does not even import jax
+    return run()                     # inert: does not even import jax
 
 import jax
 if os.environ.get("JAX_RISK_PROFILE_WARMUP") == "1":
-    jax.block_until_ready(_run().npv_cube)     # discarded warm-up run
+    jax.block_until_ready(run().npv_cube)      # discarded warm-up run
 
 out_dir = os.path.join(profile_dir, f"pid-{os.getpid()}")
 with jax.profiler.trace(out_dir, profiler_options=_profile_options(jax)):
-    result = _run()
+    result = run()
     jax.block_until_ready(result.npv_cube)     # trace must outlive device work
 _warn_if_trace_truncated(out_dir, elapsed)
 ```
 
 Five decisions define its behavior:
 
-### 1.1 It traces inside the pool worker
+### 1.1 It traces inside the engine worker
 
-The trace is taken where `price_portfolio` actually executes — a freshly spawned worker
-process with cold JAX caches — not in the API handler. Output goes to
-`$JAX_RISK_PROFILE_DIR/pid-<pid>/`, **one directory per process**, so a job fanned out
-across pool workers produces one independent trace per worker instead of a corrupted
-shared file.
+The trace is taken where `price_portfolio` actually executes — the engine worker process
+(roadmap 1.8), whose first job runs on cold JAX caches — not in the API handler. Output goes
+to `$JAX_RISK_PROFILE_DIR/pid-<pid>/`, **one directory per process**, so a restarted worker
+or a direct call in another process writes its own trace instead of a corrupted shared file.
+(Until 1.8 jobs ran in a pool of workers, one trace directory each.)
 
 ### 1.2 Completely inert when unset
 
@@ -386,7 +386,7 @@ Separately, on the 2-instrument demo basket:
 there — `_bisect_bucket_sigma`'s `lax.scan` already compiles all 60 iterations as one
 program; the eager `bachelier_swaption_price`/`price_lgm_swaption` calls around it were.
 
-Full 4-trade portfolio through the real HTTP/worker-pool path. Two configurations, because
+Full 4-trade portfolio through the real HTTP/worker path (the pool of the time). Two configurations, because
 they answer different questions — the first is `demos/demo_profile_small.py` exactly as
 shipped (uncalibrated tree trades, so calibration and Vega are both exercised), the second
 a hand-built request with a flat trade volatility (no calibration, no Vega):

@@ -58,7 +58,6 @@ from engine.models.ore_builders import (
     resolve_accrual_day_count,
     resolve_swap_dates,
 )
-from engine.portfolio.worker_pool import _freeze_trade, _thaw_trade
 from engine.risk.greeks import curve_greeks, portfolio_greeks
 from engine.risk.price_functions import curves_of, trade_price_function
 from engine.risk.sensitivities import SensitivityConfig, portfolio_sensitivities, sensitivity_context, theta_context
@@ -184,12 +183,6 @@ class TestBookedDatesAreTheTrade:
         by_dates = SwapConfig(notional=NOTIONAL, fixed_rate=0.032, payer=True, effective_date=by_tenor.effective_date,
                               maturity_date=by_tenor.maturity_date, evaluation_date=TODAY, trade_id="swap")
         assert by_dates == by_tenor
-
-    def test_worker_pool_round_trip_keeps_dates_and_fixings(self):
-        cfg = _swap_cfg(evaluation_date=TODAY + 10, fixings={TODAY: 0.025})
-        thawed = _thaw_trade(_freeze_trade(cfg))
-        assert thawed == cfg
-        assert thawed.fixings == {TODAY: 0.025}
 
 
 class TestConfigValidation:
