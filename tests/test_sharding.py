@@ -1,5 +1,5 @@
 """
-The scenario axis across devices (`engine.simulation.sharding`, roadmap 3.2, I-61):
+The scenario axis across devices (`engine.simulation.sharding`, roadmap 3.8, I-61):
 
   * the device count is the largest that divides the scenario count, capped by the local
     devices and `JAX_RISK_SCENARIO_DEVICES`; on one device nothing is placed, so a one-device

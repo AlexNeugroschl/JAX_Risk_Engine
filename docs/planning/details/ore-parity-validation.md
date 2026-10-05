@@ -3,7 +3,7 @@
 How the engine is shown to equal ORE, what is proven, and the work that remains:
 [I-50](../known-issues.md#i-50), [I-51](../known-issues.md#i-51),
 [I-49](../known-issues.md#i-49) and [I-34](../known-issues.md#i-34) (roadmap
-[2.2 – 2.4](../roadmap.md#stage-2--correctness-and-precision)). The formula-by-formula
+[3.2](../roadmap.md#stage-3--foundations), [3.5](../roadmap.md#stage-3--foundations), [4.5](../roadmap.md#stage-4--completeness)). The formula-by-formula
 mapping is in [ORE Parity](../../reference/ore-parity.md); the differences from ORE that remain
 by decision (X-1 to X-11) are in [compliance/decisions.md](../../../compliance/decisions.md) §3.
 
@@ -60,7 +60,7 @@ be followed from L6 down to L2. An equity position joins it with [F-04](../featu
 
 ## Remaining work
 
-**Step 2.2 — an OREApp XVA oracle ([I-50](../known-issues.md#i-50)).** Generalize the in-process
+**Step 3.2 — an OREApp XVA oracle ([I-50](../known-issues.md#i-50)).** Generalize the in-process
 oracle (`tests/support/ore_lgm_oracle.py`) from pricing analytics to an XVA run:
 write `simulation.xml` from a `CamConfig`, the portfolio from the shared portfolio's trades,
 and read ORE's cube and exposure reports. Check it first by reproducing an ORE
@@ -75,11 +75,11 @@ and read ORE's cube and exposure reports. Check it first by reproducing an ORE
    as-of quote that its rebuild maps onto `z0`. Until then keep oracle checks off sloped
    first segments.
 
-**Step 2.3 — sensitivities ([I-51](../known-issues.md#i-51)).** Run ORE's sensitivity analytic
+**Step 4.5 — sensitivities ([I-51](../known-issues.md#i-51)).** Run ORE's sensitivity analytic
 through the same oracle on the shared portfolio; compare per trade, factor and tenor to 1e-8
 relative. Also confirms A-7 (an American's path basket keeps the as-of reference grid).
 
-**Step 2.4 — recalibration details ([I-49](../known-issues.md#i-49)).** Compare a Bermudan's cube
+**Step 3.5 — recalibration details ([I-49](../known-issues.md#i-49)).** Compare a Bermudan's cube
 with ORE's (L3, or L4 if V-4 stays closed), then reproduce ORE's two details: the
 parametrization's time grid kept from the as-of build, and helpers whose expiry has passed
 still passed on later dates.

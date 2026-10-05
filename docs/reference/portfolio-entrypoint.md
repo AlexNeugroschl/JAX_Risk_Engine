@@ -93,9 +93,9 @@ accumulate)` of format names per adjustable stage, each `"float64"` by default:
 
 `compute` is the format a stage computes in, `storage` the format its output is kept in until
 the next stage reads it (no wider than `compute`), `accumulate` the format its sums
-accumulate in (equal to `compute` until roadmap 2.8). `compute` is `"float64"` or
+accumulate in (equal to `compute` until roadmap 3.7). `compute` is `"float64"` or
 `"float32"`; `storage` may also be `"float16"`, `"bfloat16"`, `"float8_e4m3fn"` or
-`"float8_e5m2"` (roadmap 1.6), while compute in them is refused, naming roadmap 2.8.
+`"float8_e5m2"` (roadmap 1.6), while compute in them is refused, naming roadmap 3.7.
 `Precision.throughout("float32")` sets every stage to float32.
 
 Storage below 32 bits keeps a float32 power-of-two scale per block of 32 paths that brings the
@@ -153,7 +153,7 @@ epe.correction, epe.correction_standard_error   # the FP8 cube's bias on EPE, an
 ```
 
 At float64 everywhere a paired sample measures exactly zero. Whether a combination is
-validated for a figure is roadmap 2.9's evidence table ([I-55](../planning/known-issues.md#i-55)).
+validated for a figure is roadmap 5.1's evidence table ([I-55](../planning/known-issues.md#i-55)).
 
 ## `PortfolioResult`
 

@@ -390,7 +390,7 @@ pricing endpoint.
 A-16, D-9).** Which precision each calculation needs is what the project studies, so precision
 is part of the run configuration: any combination may be run, the default is float64
 everywhere and carries ORE parity, and a combination not yet shown adequate for a figure is
-to carry a warning ([I-55](../planning/known-issues.md#i-55), roadmap 2.9). The full design,
+to carry a warning ([I-55](../planning/known-issues.md#i-55), roadmap 5.1). The full design,
 down to FP8 storage, is [details/precision.md](../planning/details/precision.md).
 
 **The policy.** `engine.precision.Precision` (on `RunConfig.precision` and
@@ -424,7 +424,7 @@ the format its arithmetic runs in; `accumulate` the format its sums accumulate i
 names come from one table (`engine/precision/formats.py`), which validation, the HTTP schema
 and storage all read. `storage` is any format of the table no wider than `compute` (`float64`,
 `float32`, and since roadmap 1.6 `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2`);
-`compute` is `float64` or `float32` and `accumulate` equals it until roadmap 2.8, and using
+`compute` is `float64` or `float32` and `accumulate` equals it until roadmap 3.7, and using
 one earlier is refused naming the step. Calibration, t=0 values, Greeks and every reduction
 over paths (exposure, VaR/ES) are float64 by decision (A-10).
 
@@ -489,7 +489,7 @@ HTTP jobs (roadmap 1.8, decision A-14) go through a durable SQLite job queue
 as the route did, calls `price_portfolio` with x64 on, as every engine process has it, and
 stores the result document, so a job prices bit for bit as a direct call. Jobs run one at a
 time in submission order: the worker owns every device on its host, splits each job's
-scenarios across them (`engine/simulation/sharding.py`, roadmap 3.2), and keeps its compiled
+scenarios across them (`engine/simulation/sharding.py`, roadmap 3.8), and keeps its compiled
 programs, in memory and in JAX's persistent compilation cache on disk, so a repeated job
 shape compiles nothing and a restarted worker reads its programs back. A failing job fails only its own row; a
 worker that dies mid-job leaves it `interrupted` for the next worker to record. The API

@@ -1,7 +1,7 @@
 # Configurable engine
 
 Design for roadmap [stage 1](../roadmap.md#stage-1--structure) and step
-[4.1](../roadmap.md#stage-4--api-robustness): one run configuration whose options are
+[3.1](../roadmap.md#stage-3--foundations): one run configuration whose options are
 models, engines, methods and precision, as ORE configures a run. Implements owner decisions
 A-1 to A-9 ([compliance/decisions.md](../../../compliance/decisions.md) §1–2).
 
@@ -46,7 +46,7 @@ Every choice is one `RunConfig` (`engine/portfolio/config.py`) on
 | Swaption vol decay | `simulation.swaption_vol_decay` | `ForwardVariance`; `ConstantVariance` (A-4) | `ForwardVariance` |
 | Reporting currency | `base_currency` | Any market currency; `None` is the simulation's, else USD | `None` |
 
-Rules the implementation follows, which steps 1.3, 1.4 and 4.1 keep:
+Rules the implementation follows, which steps 1.3, 1.4 and 3.1 keep:
 
 - **An option the pipeline does not implement is refused, never substituted.** The
   configuration's own validation (a precision format before its step, `engine.precision`)
@@ -128,19 +128,19 @@ float64 sample, the two-level estimator and the precision report (A-13); then on
 worker process per host behind a durable job queue (A-14). Every step keeps the default bit
 for bit. Adjustable precision stays available throughout.
 
-## Step 2.5 — `ShiftHorizon` (I-32)
+## Step 3.4 — `ShiftHorizon` (I-32)
 
 `H → H + shift`, with the state grid built in the shifted variable (`engine.models.lgm`,
 `_state_grid`). Add `shift_horizon=0.5` cases to `tests/test_ore_lgm_parity.py`, then make 0.5
 the default (ORE's builder default, `OREData/ored/portfolio/builders/swaption.cpp`).
 
-## Steps 2.7 and 2.8 — precision evidence and low-precision kernels (I-55, F-07)
+## Steps 3.6 and 3.7 — precision evidence and low-precision kernels (I-55, F-07)
 
 In [precision.md](precision.md) §8 and §10: the evidence table per figure and precision
 against the acceptance standard (A-11), shared with Basel P6; then the kernels in difference
 form, one implementation for every precision (A-16).
 
-## Step 4.1 — one request (I-56)
+## Step 3.1 — one request (I-56)
 
 - One route. Since 1.3 one request shape (`MarketPortfolioRequestSchema`) reaches the model
   per currency, the engines, the Greeks method and sensitivity settings, precision and the

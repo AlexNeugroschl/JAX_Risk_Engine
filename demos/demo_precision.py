@@ -41,7 +41,7 @@ array was actually stored in, the device, and with a paired float64 sample
 (`Precision.paired_fraction`) each VaR/ES measured at the run's precision and at float64 on
 the same scenarios. The last section prints one.
 
-Compute below float32 arrives with roadmap step 2.8.
+Compute below float32 arrives with roadmap step 3.7.
 
 ORE parity of this path is established in
 tests/test_market_risk_ore_parity.py; this demo is only about precision.

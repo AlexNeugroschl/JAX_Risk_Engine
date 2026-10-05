@@ -609,7 +609,7 @@ Storage can go below 32 bits (roadmap 1.6): `float16`, `bfloat16`, `float8_e4m3f
 `float8_e5m2`, kept with a power-of-two scale per block of 32 paths, and rounded to nearest or,
 with `Precision(..., rounding="stochastic")`, stochastically (reproducibly, from
 `rounding_seed`). For example `pricing=StagePrecision("float8_e4m3fn")` prices in float64 and
-keeps the cube in FP8. Compute below float32 is enabled by roadmap 2.8, and naming it earlier
+keeps the cube in FP8. Compute below float32 is enabled by roadmap 3.7, and naming it earlier
 is refused. How much a low-precision market or cube costs in accuracy is measured, not
 assumed: curves stored below 32 bits lose forward rates to cancellation
 ([I-75](../planning/known-issues.md#i-75)). The 32/64 shape of before roadmap 1.4 (`PrecisionConfig(simulation=32)`) is refused

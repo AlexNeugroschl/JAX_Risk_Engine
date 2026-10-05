@@ -2,20 +2,21 @@
 
 Additive work: capability beyond today's scope. The engine is correct and honest without
 any of it. Defects and shortcomings are in [known-issues.md](known-issues.md); the order of
-work is in [roadmap.md](roadmap.md#stage-6--features); the rules are in
+work is in [roadmap.md](roadmap.md#stage-4--completeness); the rules are in
 [README.md](README.md).
 
 Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 
 | ID | Feature | Size | Depends on | Stage |
 |---|---|---|---|---|
-| [F-01](#f-01) | Engine options beyond ORE's defaults | M | Roadmap 2.8; the FD solver also I-32 | 6.2 |
-| [F-02](#f-02) | SABR swaption volatility | M | I-54, roadmap 2.8 | 6.5 |
-| [F-03](#f-03) | ORE's AMC engine as a valuation option | L | I-50, roadmap 2.8 | 6.7 |
-| [F-04](#f-04) | FX and equity trades on the market path; FX/EQ vol calibration | L | Roadmap 2.8 | 6.4 |
-| [F-05](#f-05) | Basel III regulatory figures | L | See entry | 6.1, 6.6 |
-| [F-06](#f-06) | CVA/DVA from the exposure profiles | M | I-50 | 6.6 |
-| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-55 | 2.8, 3.4, 6.3 |
+| [F-01](#f-01) | Engine options beyond ORE's defaults | M | Roadmap 3.7; the FD solver also I-32 | 4.6 |
+| [F-02](#f-02) | SABR swaption volatility | M | I-54, roadmap 3.7 | 4.8 |
+| [F-03](#f-03) | ORE's AMC engine as a valuation option | L | I-50, roadmap 3.7 | 4.10 |
+| [F-04](#f-04) | FX and equity trades on the market path; FX/EQ vol calibration | L | Roadmap 3.7 | 4.7 |
+| [F-05](#f-05) | Basel III regulatory figures | L | See entry | 4.4, 4.11 |
+| [F-06](#f-06) | CVA/DVA from the exposure profiles | M | I-50 | 4.9 |
+| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-55 | 3.7, 5.1 to 5.3 |
+| [F-08](#f-08) | Reporting currencies other than USD at the EOD boundary | S | I-18 (an FX source), I-59 | 4.12 |
 
 ---
 
@@ -41,7 +42,7 @@ product** (A-8: `engine.market_risk` takes the `PricingConfig`). Left:
 The AD Greeks method's agreement with the bump method on sloped curves is an open issue,
 [I-78](known-issues.md#i-78).
 
-**Depends on.** Roadmap 2.8: each option adds a path-pricing kernel, written in 2.8's form
+**Depends on.** Roadmap 3.7: each option adds a path-pricing kernel, written in 3.7's form
 (A-16). The FD solver also needs [I-32](known-issues.md#i-32)'s shift. **Size.** M.
 **Details.** [details/configurable-engine.md](details/configurable-engine.md).
 
@@ -51,7 +52,7 @@ The AD Greeks method's agreement with the bump method on sloped curves is an ope
 **Value.** ORE offers SABR smiles beside volatility cubes. After [I-54](known-issues.md#i-54)
 adds a strike axis, SABR is a second way to supply it.
 
-**Depends on.** I-54; roadmap 2.8 (A-16). **Size.** M.
+**Depends on.** I-54; roadmap 3.7 (A-16). **Size.** M.
 
 <a id="f-03"></a>
 ### F-03 — ORE's AMC engine as a valuation option
@@ -61,7 +62,7 @@ revaluation, and much cheaper for Bermudans than per-path recalibration
 ([I-53](known-issues.md#i-53)). Out of scope so far (X-6); a candidate simulation option under
 decision A-1. Parity against ORE's AMC analytic.
 
-**Depends on.** I-50's oracle for parity; roadmap 2.8 (A-16). It adds a simulation option to `RunConfig`
+**Depends on.** I-50's oracle for parity; roadmap 3.7 (A-16). It adds a simulation option to `RunConfig`
 (classic revaluation is the only one today). **Size.** L.
 
 <a id="f-04"></a><a id="x-10"></a><a id="x-11"></a>
@@ -73,7 +74,7 @@ constant inputs rather than calibrated to options as `CrossAssetModelBuilder` do
 Both decided: close eventually, not urgent. Brings the two-currency end-to-end test (layer
 L6) within reach.
 
-**Depends on.** Roadmap 2.8: the new trades' path kernels are written in its form (A-16).
+**Depends on.** Roadmap 3.7: the new trades' path kernels are written in its form (A-16).
 Equity positions from TraderX additionally need
 [I-18](known-issues.md#i-18)'s market data. **Size.** L.
 
@@ -115,8 +116,8 @@ scenario market, path pricing), overridable per product and per trade (A-15; don
 block scales and nearest or stochastic rounding (done in roadmap 1.6, 2026-10-02: float16,
 bfloat16, `float8_e4m3fn`, `float8_e5m2`; `Stored`, `Precision.rounding`); compute below
 float32 through kernels in difference form, matrix products where a kernel can be one, one
-implementation for every precision (A-16, 2.8); the evidence table and warnings (2.9);
-timing across devices on Ironwood and H100 (3.4, after the sharding of 3.2); FP4 on TPU 8t/8i (6.3). Measured so far: FP8
+implementation for every precision (A-16, 3.7); the evidence table and warnings (5.1);
+timing across devices on Ironwood and H100 (5.2, after the sharding of 3.8); FP4 on TPU 8t/8i (5.3). Measured so far: FP8
 storage of the shocks biases a call payoff by about one Monte Carlo standard error at 4M
 paths (stochastic rounding: 0.15), so the earlier rejection of FP8, which compared error per
 value with Monte Carlo error, is withdrawn; FP4 stored naively is biased with either
@@ -127,3 +128,19 @@ level swamps its spread ([I-75](known-issues.md#i-75)).
 **Depends on.** The mechanism and cast points (roadmap 1.4, done 2026-10-01; [I-55](known-issues.md#i-55));
 the speed case needs the target hardware, which the owner has. **Size.** L.
 **Details.** [details/precision.md](details/precision.md).
+
+<a id="f-08"></a>
+### F-08 — Reporting currencies other than USD at the EOD boundary
+
+**Value.** The EOD submission's `reportingCurrency` lets a consumer ask for results in its
+own currency, as ORE reports in the `baseCurrency` of its run, converting with its market's
+FX. Decision A-18 refuses anything but USD until then
+([I-59](known-issues.md#i-59), roadmap 4.1), so a request for EUR gets a 400 rather than
+USD numbers labelled EUR. This feature turns that refusal into a conversion: t=0 figures
+at the as-of FX spot, ORE's convention; the capability document's `reportingCurrencies`
+lists each currency the FX source covers. Parity against an ORE run with that
+`baseCurrency`.
+
+**Depends on.** An FX source at the boundary ([I-18](known-issues.md#i-18), blocked on
+TraderX or a market-data decision); I-59's refusal first, so the field is never silently
+ignored meanwhile. **Size.** S once the FX source exists.

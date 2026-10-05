@@ -156,7 +156,7 @@ replacement: the Hull-White model is `"model": "HullWhite"` per currency in `sim
 The same request and behaviour as `POST /portfolio/price`, polled at the same
 `GET /portfolio/price/{job_id}`. Until roadmap 1.3 `/portfolio/price` took the Hull-White
 model's request and `/v2` the market path's; the `/v2` and the body's optional
-`schema_version: "2"` are historical names, not versions. Roadmap 4.1 keeps one route (see
+`schema_version: "2"` are historical names, not versions. Roadmap 3.1 keeps one route (see
 [Target: one configurable API](#target-one-configurable-api)).
 
 ### `GET /portfolio/price/{job_id}`
@@ -196,7 +196,7 @@ Standalone calibration — wraps `engine.calibration.basket.build_coterminal_bas
 caller-given co-terminal basket. Synchronous (a bootstrap bisection, not a Monte Carlo
 simulation). It is not the portfolio's calibration, which is the cross-asset model's per
 currency and each option's own basket ([Calibration](calibration.md)); a route for those is
-roadmap 4.1 ([I-56](../planning/known-issues.md#i-56)).
+roadmap 3.1 ([I-56](../planning/known-issues.md#i-56)).
 
 **Request:**
 ```json
@@ -377,7 +377,7 @@ trade of the request is a `400` (checked with the request, so no job is created)
 
 The format names are the format table's (`float64`, `float32`, `float16`, `bfloat16`,
 `float8_e4m3fn`, `float8_e5m2`); another name, or another rounding, is a `422`. Every format
-stores; a format not yet enabled for compute (below float32, roadmap 2.8), or an inconsistent
+stores; a format not yet enabled for compute (below float32, roadmap 3.7), or an inconsistent
 stage, is a `400` naming the stage (or override, e.g. `precision.by_trade['swap-7']`), the
 field and the roadmap step that enables it. So is `"rounding": "stochastic"` when no stage
 stores below 32 bits:
@@ -386,7 +386,7 @@ stores below 32 bits:
 POST /portfolio/price
 {"precision": {"pricing": {"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"}}, ...}
 -> 400 {"detail": "precision.pricing: StagePrecision.compute='float16': compute in float16 is enabled by
-        roadmap step 2.8 (difference-form kernels); until then float64 or float32"}
+        roadmap step 3.7 (difference-form kernels); until then float64 or float32"}
 ```
 
 The 32/64 shape before roadmap 1.4 (`{"simulation": 32, "pricing": 64, "risk": ..., "calibration": ...}`)

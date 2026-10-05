@@ -76,7 +76,7 @@ RETIRED_SHAPE = (
 @dataclass(frozen=True)
 class StagePrecision:
     """The storage, compute and accumulate formats of one stage, by name (see the module
-    docstring). Until roadmap 2.8, `compute` is float64 or float32 and `accumulate` equals
+    docstring). Until roadmap 3.7, `compute` is float64 or float32 and `accumulate` equals
     it; `storage` is any format no wider than `compute`."""
     storage: str = "float64"
     compute: str = "float64"
@@ -108,7 +108,7 @@ class StagePrecision:
             _refuse("accumulate", accumulate.name, f"narrower than compute={compute.name!r}")
         if accumulate.name != compute.name:
             _refuse("accumulate", accumulate.name, f"an accumulate format other than compute={compute.name!r} is "
-                                                   f"enabled by roadmap step 2.8 (kernels with explicit "
+                                                   f"enabled by roadmap step 3.7 (kernels with explicit "
                                                    f"accumulators); until then they are equal")
 
     @property

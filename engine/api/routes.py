@@ -12,7 +12,7 @@ prices queued jobs one at a time and writes each result document back.
 `GET /portfolio/price/{job_id}` reads the job's row (roadmap 1.8, decision A-14).
 
 `POST /v2/portfolio/price` takes the same request: the `/v2` is a historical name, not a
-version (roadmap 4.1 retires it; compliance/decisions.md A-2). Until roadmap 1.3
+version (roadmap 3.1 retires it; compliance/decisions.md A-2). Until roadmap 1.3
 `POST /portfolio/price` took the Hull-White model's own request shape; the Hull-White model is
 now `"model": "HullWhite"` in the request's simulation, and the old shape is refused with a
 422 naming its replacement.

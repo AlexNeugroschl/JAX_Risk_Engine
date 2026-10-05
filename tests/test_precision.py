@@ -77,8 +77,8 @@ class TestFormats:
                 for f in FORMATS.values()}
         assert rows == {
             "float64": (64, 52, -1022, False, None, None), "float32": (32, 23, -126, False, None, None),
-            "float16": (16, 10, -14, True, None, "2.8"), "bfloat16": (16, 7, -126, True, None, "2.8"),
-            "float8_e4m3fn": (8, 3, -6, True, None, "2.8"), "float8_e5m2": (8, 2, -14, True, None, "2.8"),
+            "float16": (16, 10, -14, True, None, "3.7"), "bfloat16": (16, 7, -126, True, None, "3.7"),
+            "float8_e4m3fn": (8, 3, -6, True, None, "3.7"), "float8_e5m2": (8, 2, -14, True, None, "3.7"),
         }
         assert FORMATS["float8_e4m3fn"].max == 448.0 and FORMATS["float16"].max == 65504.0
 
@@ -117,21 +117,21 @@ class TestPolicy:
         assert stage.scaled_storage == (storage in SCALED)
 
     def test_a_format_before_its_storage_step_is_refused_naming_the_step(self, monkeypatch):
-        """The refusal FP4 will meet until step 6.3 (no format of the table has one since 1.6)."""
-        monkeypatch.setitem(FORMATS, "float16", dataclasses.replace(FORMATS["float16"], storage_step="6.3"))
+        """The refusal FP4 will meet until step 5.3 (no format of the table has one since 1.6)."""
+        monkeypatch.setitem(FORMATS, "float16", dataclasses.replace(FORMATS["float16"], storage_step="5.3"))
         with pytest.raises(ValueError, match=r"StagePrecision\.storage='float16': storage in float16 is enabled by "
-                                             r"roadmap step 6\.3"):
+                                             r"roadmap step 5\.3"):
             StagePrecision("float16")
 
     @pytest.mark.parametrize("fields, message", [
-        ({"compute": "bfloat16", "accumulate": "bfloat16"}, r"StagePrecision\.compute='bfloat16'.*roadmap step 2\.8"),
+        ({"compute": "bfloat16", "accumulate": "bfloat16"}, r"StagePrecision\.compute='bfloat16'.*roadmap step 3\.7"),
         ({"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"},
-         r"StagePrecision\.compute='float16'.*roadmap step 2\.8"),
+         r"StagePrecision\.compute='float16'.*roadmap step 3\.7"),
         ({"storage": "float64", "compute": "float32", "accumulate": "float32"},
          r"StagePrecision\.storage='float64': wider than compute"),
         ({"compute": "float64", "accumulate": "float32"}, r"StagePrecision\.accumulate='float32': narrower"),
         ({"compute": "float32", "accumulate": "float64", "storage": "float32"},
-         r"StagePrecision\.accumulate='float64'.*roadmap step 2\.8"),
+         r"StagePrecision\.accumulate='float64'.*roadmap step 3\.7"),
         ({"compute": "float128"}, r"StagePrecision\.compute: unknown number format"),
     ])
     def test_refusals_name_the_field_and_the_step(self, fields, message):
@@ -903,7 +903,7 @@ class TestScaledStoragePipeline:
 #: The slow sanity bounds of scaled storage (nearest) on the shared portfolio, per format and
 #: stage: the largest cube error per unit notional, and the largest bias (the mean over 256
 #: paths) per unit notional; about four times the values measured on 2026-10-02 (precision.md
-#: §15.3). Regression guards, not acceptance (step 2.7). The largest errors are exercise
+#: §15.3). Regression guards, not acceptance (step 3.6). The largest errors are exercise
 #: decisions that flip on a path (a cash Bermudan worth 0 or 1.7% of its notional).
 _SCALED_BOUNDS = {
     ("float16", "simulation"): (3e-4, 3e-6), ("float16", "market"): (4e-4, 1.2e-5),

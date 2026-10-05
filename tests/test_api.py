@@ -192,7 +192,7 @@ class TestPortfolioPriceUnknownJob:
 
 class TestCalibrationEndpoint:
     """The standalone calibration route (its own Hagan bootstrap on the basket it is given;
-    the portfolio's calibration is the CAM's, per currency; roadmap 4.1)."""
+    the portfolio's calibration is the CAM's, per currency; roadmap 3.1)."""
 
     def test_valid_calibration_request_returns_fitted_sigma(self, test_client):
         body = {"evaluation_date": shared.ASOF_ISO, "exercise_times": [1.0, 2.0, 3.0, 4.0], "final_maturity_time": 5.0,
@@ -221,8 +221,8 @@ class TestPortfolioPricePrecision:
         assert r.status_code == 422 and "float8_e4m3fn" in r.text
 
     @pytest.mark.parametrize("stage, block, message", [
-        ("pricing", {"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"}, "roadmap step 2.8"),
-        ("market", {"compute": "bfloat16"}, "roadmap step 2.8"),
+        ("pricing", {"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"}, "roadmap step 3.7"),
+        ("market", {"compute": "bfloat16"}, "roadmap step 3.7"),
         ("simulation", {"storage": "float64", "compute": "float32", "accumulate": "float32"}, "wider than compute"),
     ])
     def test_a_format_not_enabled_is_a_400_naming_the_stage_and_field(self, test_client, stage, block, message):

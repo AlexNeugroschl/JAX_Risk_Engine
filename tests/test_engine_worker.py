@@ -501,7 +501,7 @@ class TestEngineWorkerPricing:
     def test_a_worker_keeps_its_programs_on_disk_beside_its_queue(self, queue):
         """A worker started with no cache settings (`main`, as the supervisor starts it) keeps
         JAX's persistent compilation cache in `xla-cache/` beside its queue file, so a
-        restarted worker reads its programs back (roadmap 3.1, I-53)."""
+        restarted worker reads its programs back (roadmap 2.3, I-53)."""
         import os
 
         cache = queue.path.parent / worker.COMPILATION_CACHE_DIRNAME

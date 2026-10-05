@@ -47,33 +47,34 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-05](#i-05) | No faithful USD-SOFR / ACT-360 swap construction | High | OPEN | Scope | External |
 | [I-07](#i-07) | No corporate bond, equity or listed-option pricer | Medium | OPEN | Scope | By demand |
 | [I-08](#i-08) | A running EOD attempt is lost on restart | Medium | PARTIAL | API | 4.2 |
-| [I-09](#i-09) | Whole scenario cube serialized into the JSON response | Medium | OPEN | API | 4.1 |
-| [I-10](#i-10) | Per-trade results keyed by position beside the echoed ids | Low | PARTIAL | API | 4.1 |
+| [I-09](#i-09) | Whole scenario cube serialized into the JSON response | Medium | OPEN | API | 3.1 |
+| [I-10](#i-10) | Per-trade results keyed by position beside the echoed ids | Low | PARTIAL | API | 3.1 |
 | [I-16](#i-16) | `rateSensitivity` is parallel-only | Medium | OPEN | Scope | External |
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
 | [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | 4.3 |
-| [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | 5.1 |
-| [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | 2.5 |
-| [I-34](#i-34) | The ORE oracle's curve differs before the first pillar | Low | OPEN | Validation | 2.2 |
-| [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | 2.4 |
-| [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | 2.4 |
-| [I-75](#i-75) | Storage below 32 bits keeps few bits of a concentrated array's spread | Low | OPEN | Correctness | 2.7 |
-| [I-50](#i-50) | No path- or distribution-level parity test against an ORE simulation | Medium | OPEN | Validation | 2.2 |
-| [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | 2.3 |
-| [I-78](#i-78) | AD and bump Greeks differ by up to 2% on a sloped market | Medium | OPEN | Validation | 2.3 |
-| [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | PARTIAL | Performance | 3.1 |
-| [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | 2.6 |
-| [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | 2.9 |
-| [I-56](#i-56) | Market risk and the CAM calibration have no route; two routes named like versions | Medium | PARTIAL | API | 4.1 |
-| [I-57](#i-57) | EOD: a cached result is served before the submission id is checked | High | OPEN | API | 2.1 |
-| [I-58](#i-58) | EOD: two concurrent submissions of one workload both execute | Medium | OPEN | API | 2.1 |
-| [I-59](#i-59) | EOD: `calculations` and `reportingCurrency` accepted, keyed, then ignored | Medium | OPEN | API | 2.1 |
+| [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | 6.1 |
+| [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | 3.4 |
+| [I-34](#i-34) | The ORE oracle's curve differs before the first pillar | Low | OPEN | Validation | 3.2 |
+| [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | 3.5 |
+| [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | 3.5 |
+| [I-75](#i-75) | Storage below 32 bits keeps few bits of a concentrated array's spread | Low | OPEN | Correctness | 3.6 |
+| [I-50](#i-50) | No path- or distribution-level parity test against an ORE simulation | Medium | OPEN | Validation | 3.2 |
+| [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | 4.5 |
+| [I-78](#i-78) | AD and bump Greeks differ by up to 2% on a sloped market | Medium | OPEN | Validation | 4.5 |
+| [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | PARTIAL | Performance | 2.3 |
+| [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | 3.3 |
+| [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | 5.1 |
+| [I-56](#i-56) | Market risk and the CAM calibration have no route; two routes named like versions | Medium | PARTIAL | API | 3.1 |
+| [I-57](#i-57) | EOD: a cached result is served before the submission id is checked | High | OPEN | API | 4.1 |
+| [I-58](#i-58) | EOD: two concurrent submissions of one workload both execute | Medium | OPEN | API | 4.1 |
+| [I-59](#i-59) | EOD: `calculations` and `reportingCurrency` accepted, keyed, then ignored | Medium | OPEN | API | 4.1 |
 | [I-60](#i-60) | EOD result schema has no stated policy on added fields | Low | ASSUMPTION | API | 4.3 |
 | [I-76](#i-76) | The job queue keeps every job and result forever | Low | OPEN | API | 4.2 |
 | [I-77](#i-77) | A worker that cannot start leaves jobs `pending` with no signal | Low | OPEN | API | 4.2 |
-| [I-61](#i-61) | Nothing runs on more than one host; multi-device speed unmeasured | Medium | PARTIAL | Performance | 3.2 |
-| [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | 5.2 |
-| [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | 5.3 |
+| [I-61](#i-61) | Nothing runs on more than one host; multi-device speed unmeasured | Medium | PARTIAL | Performance | 3.8 |
+| [I-79](#i-79) | Never run on a GPU: the stated GPU support is unverified | Medium | OPEN | Scope | 2.2 |
+| [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | 6.2, 6.4 |
+| [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | 6.3 |
 
 **One pipeline.** Since roadmap 1.3 every run is `price_portfolio` on a `Market`
 (`engine.portfolio.market_path`; HTTP `POST /portfolio/price`, also served as
@@ -157,7 +158,7 @@ through them. Not seen on the test markets. Since 1.4 the flag is also correct i
 
 **Current handling.** None.
 
-**To close.** With roadmap 2.4 (the per-path recalibration against ORE's): count the paths and
+**To close.** With roadmap 3.5 (the per-path recalibration against ORE's): count the paths and
 dates whose recalibration hit the bracket and carry a warning naming the trade and the counts
 on the result, as ORE's structured warning; a test with an unattainable path volatility.
 
@@ -187,10 +188,10 @@ float64 across seeds, stochastic rounding more than nearest (float16: at most 0.
 [details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline)).
 
 **Current handling.** None: the runs are allowed (D-9) and carry no warning until
-[I-55](#i-55)'s evidence table and warnings (roadmap 2.9). Documented in the user guide and the
+[I-55](#i-55)'s evidence table and warnings (roadmap 5.1). Documented in the user guide and the
 portfolio entry point.
 
-**To close.** Roadmap 2.7: store such classes relative to a level, so the format's bits go to
+**To close.** Roadmap 3.6: store such classes relative to a level, so the format's bits go to
 the spread: the cube relative to each trade's t=0 value and the curves relative to their
 path-independent part (the difference form of [§8.2](details/precision.md#82-the-difference-form),
 already computed in float64 by `build_scenario_market`), or a per-block offset beside the scale
@@ -231,7 +232,7 @@ fall inside a first segment rising 3% → 3.2% differs from ORE by up to 2.4e-6 
 **Current handling.** Parity tests needing 1e-10 use a curve flat to its first non-zero
 pillar (`tests/test_trade_dates.py`); the oracle's docstring states the limit.
 
-**To close.** With roadmap 2.2 (same file): hand ORE a curve it does not rebuild, or solve
+**To close.** With roadmap 3.2 (same file): hand ORE a curve it does not rebuild, or solve
 for the as-of quote that ORE's rebuild maps onto `z0`.
 
 <a id="i-50"></a>
@@ -284,7 +285,7 @@ the default (bump) is unaffected.
 
 **Current handling.** The difference is stated in the test's docstring, not on the result.
 
-**To close.** With roadmap 2.3: differentiate the sensitivity market's representation
+**To close.** With roadmap 4.5: differentiate the sensitivity market's representation
 (so AD equals the bump halves on the sloped shared portfolio, `tests/support/portfolio.py`,
 per trade, factor and tenor), or label AD Greeks as the derivative of a different quantity
 and state the gap; measure and document the Bermudan's fixed-calibration difference.
@@ -324,8 +325,9 @@ in JAX's persistent compilation cache (`xla-cache/` beside the queue unless
 `demos/demo_profile_small.py`'s trace was truncated at the profiler's event cap before this
 change and has not been re-measured.
 
-**To close.** Profile a portfolio job (`JAX_RISK_PROFILE_DIR`,
-[profiling](../concepts/profiling.md)); cut the American recalibration's arithmetic without
+**To close.** Roadmap 2.1 and 2.3, on `demos/demo_profile_small.py`: profile it
+(`JAX_RISK_PROFILE_DIR`, [profiling](../concepts/profiling.md)) until its trace covers the
+whole job on CPU and GPU; cut the American recalibration's arithmetic without
 changing its root (an early exit of a bisection once its bracket stops moving keeps every
 value); measure first-call compile time per product. `PricingConfig(recalibrate=False)` and
 the AD Greeks method exist where ORE's semantics are not needed.
@@ -335,7 +337,7 @@ the AD Greeks method exist where ORE's semantics are not needed.
 
 **Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-24, audit P-1
 
-**Closed part (2026-10-04, roadmap 3.2's one-host half).** A job's scenarios are split across
+**Closed part (2026-10-04, roadmap 3.8's one-host half).** A job's scenarios are split across
 the devices of its host (`engine/simulation/sharding.py`): the simulation's Sobol normals and
 market risk's shifts are placed on a one-axis mesh along the scenario axis, and XLA's sharding
 propagation carries the split through path evolution, the scenario market, pricing and the
@@ -356,10 +358,40 @@ low-precision paths against fewer FP64 paths in equal wall time. Two parts are m
 - **Speed.** The split is verified for its numbers on CPU host devices, which share the
   host's cores, so it says nothing about speed. Scaling on real devices is unmeasured.
 
-**To close.** Roadmap 3.2: one worker per host (`jax.distributed.initialize`), process 0
+**To close.** Roadmap 3.8: one worker per host (`jax.distributed.initialize`), process 0
 claiming each job and handing it to the others
 ([details](details/precision.md#113-multi-device-and-multi-host)); then wall time against
-device count on TPU (and H100), feeding 3.4.
+device count on TPU (and H100), feeding 5.2.
+
+<a id="i-79"></a>
+### I-79 — Never run on a GPU: the stated GPU support is unverified
+
+**Severity:** Medium · **Status:** OPEN · **Category:** Scope · **Found:** 2026-10-05, roadmap
+reorder (the owner's local GPU checked)
+
+**What is wrong.** The README says the engine also runs on GPU, and every result's
+`PrecisionReport` names a backend, but no run, test or demo has been made on one. In the
+project's virtualenv `jax.devices()` is `[CpuDevice(id=0)]`; there is no install recipe, extra
+or memory setting for a GPU. JAX publishes no CUDA build for native Windows, so on the owner's
+machine (an RTX 5060 Laptop GPU: Blackwell, 8 GB) a GPU run needs WSL2 or Docker with GPU
+access. Known risks there, unchecked:
+
+- XLA preallocates most of a device's memory in each process that opens it. The API process
+  calls `jax.default_backend()` for `/version`, so it can open a second GPU client beside the
+  worker's. Parallel test processes would each open one too.
+- SQLite's locks, which the job queue and the worker lock rely on, are unreliable on the
+  Windows filesystem as WSL2 mounts it (`/mnt/c`).
+- The profiler's device lanes need CUPTI, whose support under WSL2 is unchecked.
+- float64, the default, runs at 1/64 of float32's rate on this card: correct, but slow.
+
+**Reach.** Every GPU run. No CPU number is affected.
+
+**Current handling.** None: CPU only.
+
+**To close.** Roadmap 2.2: JAX's CUDA build for the pinned 0.10 line under WSL2, a `gpu`
+extra and the recipe in the user guide, and a memory setting under which only the worker opens
+the GPU. Then `demos/demo_profile_small.py`, and the ORE parity, precision and sharding suites,
+on the GPU at their tolerances, recorded in the verification status.
 
 ---
 
@@ -397,9 +429,11 @@ and an `interrupted` lookup state (TraderX acceptance case A-09); the portfolio 
 **What is wrong.** `PortfolioResultSchema.npv_cube` is nested JSON: 4096 × 24 × 211 is about
 20M floats in one HTTP body.
 
-**To close.** With roadmap 4.1: write the cube to a chunked artifact (shape, dtype, axis
-order, hash, item-order file) and return a reference plus summaries, as the EOD contract
-already specifies.
+**To close.** With roadmap 3.1, as decided (A-17): a request may ask for the cube as a
+chunked artifact (shape, dtype, axis order, hash, item-order file), returned as a reference
+beside the summaries as the EOD contract already specifies, or for no cube at all. Inline
+stays the default, so no client breaks; ORE too writes its cube only when asked
+(`cubeFile`). The reference becomes the default only at a revision of the result contract.
 
 <a id="i-10"></a>
 ### I-10 — Per-trade results keyed by position beside the echoed ids
@@ -412,7 +446,7 @@ unique in a portfolio) and `PortfolioResult.trade_ids` echoes them in request or
 position, so a consumer must zip them with `trade_ids`. The EOD boundary is closed
 (`engine/integration/identity.py`).
 
-**To close.** Roadmap 4.1: every per-trade result row carries its id.
+**To close.** Roadmap 3.1: every per-trade result row carries its id.
 
 <a id="i-23"></a>
 ### I-23 — `accrualBasis` strictness rests on an unconfirmed reading
@@ -499,10 +533,12 @@ workload key, and `price_bundle(bundle, request.marketInputs)` receives neither.
 request returns USD results with 200 OK, cached separately from the identical USD run; an
 unknown calculation name is accepted.
 
-**To close.** Reject an unknown calculation (400 `UNKNOWN_CALCULATION`, allowlist
+**To close.** Roadmap 4.1, as decided (A-18, as ORE fails on an unknown analytic): reject
+an unknown calculation (400 `UNKNOWN_CALCULATION`, allowlist
 `engine.integration.result.CALCULATIONS`); add `reportingCurrencies: ["USD"]` to the
 capability document and reject others (400 `UNSUPPORTED_REPORTING_CURRENCY`). Tests assert
-the consequence, not that the field parses.
+the consequence, not that the field parses. Reporting in other currencies is
+[F-08](features.md#f-08), once an FX source exists.
 
 <a id="i-60"></a>
 ### I-60 — EOD result schema has no stated policy on added fields
@@ -596,15 +632,15 @@ now says how far it is from float64; it does not yet say whether that is good en
 **Reach.** Every reduced-precision result: its figures carry no statement of whether the
 combination has been validated for them. Default (float64) runs are unaffected.
 
-**To close.** Roadmap 2.9 (A-11): the evidence table per figure and precision combination
+**To close.** Roadmap 5.1 (A-11): the evidence table per figure and precision combination
 against the acceptance standard (Basel III's P&L attribution test and the Basel plan's P6.2
 rule), and a warning on any result whose combination has no passing row. It is measured by
-roadmap 2.7's harness after the kernel changes of 2.4, 2.5 and 2.8, so it describes the
+roadmap 3.6's harness after the kernel changes of 3.4, 3.5 and 3.7, so it describes the
 kernels that ship. 2.7 also measures the paired estimator's coverage through the pipeline: its standard errors treat paths as
 independent, while Sobol paths are not and the rounding errors of the 32 paths of a block
 share a scale (the synthetic coverage tests and three pipeline seeds pass; that is not yet
 evidence at scale). Compute below
-float32 is [F-07](features.md#f-07) (roadmap 2.8).
+float32 is [F-07](features.md#f-07) (roadmap 3.7).
 
 ---
 
@@ -742,7 +778,7 @@ runner's limits (4 CPUs, 16 GB, no swap, no compile cache): OOM-killed, three of
 processes lost. Two causes, two test-only fixes, the engine unchanged:
 `tests/test_ore_bermudan_oracle.py::test_engine_is_grid_converged` alone peaked at 11.5 GB on
 its 384-per-std, 10-std control grid, now 192 and 8 (within 1.6e-6 of it, 3.3 GB; the
-rollback's memory is fixed properly by its matrix form, step 2.8, [details](details/precision.md#83-emulation-and-native-speed));
+rollback's memory is fixed properly by its matrix form, step 3.7, [details](details/precision.md#83-emulation-and-native-speed));
 and each test process kept every XLA program it compiled, now dropped after each module
 (`jax.clear_caches()` in `tests/conftest.py`). The same container then passed the fast tier,
 2,461 passed, 2 skipped, at a 13.1 GB peak (page cache included), in 5m22s. The full suite
@@ -771,8 +807,11 @@ f-string without placeholders in `integration/equity.py`, a string forward refer
 `# noqa`: `portfolio/{__init__,validation,request}.py`, `models/{ore_builders,hull_white}.py`,
 `instruments/bermudan_swaption.py`). `requirements.txt` does not mention the `profiling` extra.
 
-**To close.** Add ruff to `pyproject.toml` and CI, fix or mark each finding (check that a
-"re-export" is actually imported elsewhere first), then a type checker on `engine/`.
+**To close.** As decided (A-20), in two steps. Roadmap 6.2, parallel and now: ruff in
+`pyproject.toml` and CI with pyflakes' rules only, each finding fixed or marked (check that a
+"re-export" is actually imported elsewhere first, then list it in `__all__`). Measured
+2026-10-05 with pyflakes: 24 findings in `engine/`, 19 in `tests/` and `demos/`. Roadmap 6.4,
+in stage 6: a type checker on `engine/`.
 
 <a id="i-67"></a><a id="q-3"></a>
 ### I-67 — Test modules import each other and repeat fixtures

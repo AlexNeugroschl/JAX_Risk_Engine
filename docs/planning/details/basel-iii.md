@@ -1,7 +1,7 @@
 # Basel III Compliance Plan
 
 **Status:** proposed; feature [F-05](../features.md#f-05), roadmap steps
-[6.1 and 6.6](../roadmap.md#stage-6--features) · **Written:** 2026-09-24, §2 updated
+[4.4 and 4.11](../roadmap.md#stage-4--completeness) · **Written:** 2026-09-24, §2 updated
 2026-09-30 · **Scope:** market risk (FRTB), with counterparty credit and CVA as later phases
 
 This plan covers three things: what "Basel III compliant" can honestly mean for this
@@ -200,7 +200,7 @@ engine/regulatory/
   cva/
     ba_cva.py
 tests/support/
-  ore_lgm_oracle.py          # the OREApp oracle, generalised in roadmap 2.2
+  ore_lgm_oracle.py          # the OREApp oracle, generalised in roadmap 3.2
 compliance/
   requirements.yaml          # the requirement catalogue (Appendix A seeds it)
   decisions.md               # D-1..D-n, dated
@@ -284,7 +284,7 @@ is met, not when its tasks are merged.
 | P0.5 | Measure guards: IMA functions accept only `HistoricalScenarioSet`; passing a risk-neutral cube raises | `measures.py` | Test that `ima.es` given a simulated exposure cube raises with a message naming the measure | Guard in place, red-first shown |
 | P0.6 | Close I-10 on the portfolio path: trade ID, desk, book, currency on every trade and result | `portfolio/request.py`, `api/schemas.py` | The I-10 closing tests the register already specifies | I-10 FIXED in the register |
 | P0.7 | Run manifest on every regulatory result | `manifest.py` | Test: manifest has git SHA, dirty flag, package versions, JAX backend and dtype, profile hash, input hashes; two identical runs give identical output hashes | Deterministic reruns proven byte-identical on CPU FP64 |
-| P0.8 | Extend the OREApp oracle of roadmap 2.2 (XVA, sensitivity) to the remaining analytics (stress, SA-CCR, BA-CVA, HistSimVaR, backtest) | `tests/support/` oracle | Smoke test per analytic against an ORE Example's `ExpectedOutput` | Each analytic reproduces its ORE example output |
+| P0.8 | Extend the OREApp oracle of roadmap 3.2 (XVA, sensitivity) to the remaining analytics (stress, SA-CCR, BA-CVA, HistSimVaR, backtest) | `tests/support/` oracle | Smoke test per analytic against an ORE Example's `ExpectedOutput` | Each analytic reproduces its ORE example output |
 | P0.9 | Regulatory runs through the durable job queue (roadmap 1.8 built it for portfolio jobs); a retention rule that keeps them (I-76); the EOD half of I-08 | `api/job_queue.py`, `integration/` | I-08's and I-76's closing criteria | I-08 FIXED, I-76 FIXED |
 
 ### Phase 1 — FRTB standardised approach (≈6 weeks)
@@ -366,7 +366,7 @@ The project researches how much precision each figure needs, down to FP8. For ca
 must be settled per figure, and a figure must say whether it has been (D-9: any precision may
 be run, and an unproven one is flagged, not refused). The mechanism, the measurement
 campaign and the shared evidence table are in [precision.md](precision.md) (§9, §10;
-roadmap 1.7, 2.7); this phase applies them to the regulatory figures.
+roadmap 1.7, 3.6); this phase applies them to the regulatory figures.
 
 | ID | Task | Exit |
 |---|---|---|
