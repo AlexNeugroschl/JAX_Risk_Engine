@@ -37,14 +37,14 @@ if not profile_dir:
     return run()                     # inert: does not even import jax
 
 import jax
+warmup = None
 if os.environ.get("JAX_RISK_PROFILE_WARMUP") == "1":
-    jax.block_until_ready(run().npv_cube)      # discarded warm-up run
+    _, warmup = _measured(jax, run)            # untraced warm-up run: wall time, compiles
 
 out_dir = os.path.join(profile_dir, f"pid-{os.getpid()}")
 with jax.profiler.trace(out_dir, profiler_options=_profile_options(jax)):
-    result = run()
-    jax.block_until_ready(result.npv_cube)     # trace must outlive device work
-_warn_if_trace_truncated(out_dir, elapsed)
+    result, traced = _measured(jax, run)       # waits for device work inside the trace
+_record_trace(out_dir, traced, warmup)         # <run>.summary.json, and a warning if partial
 ```
 
 Five decisions define its behavior:
@@ -80,10 +80,11 @@ not just this engine's frames. Measured on the 4-trade demo portfolio:
 The top "hot" entries with it on were `isinstance` × 90,235, `append` × 33,156, `len` ×
 21,073 — all from inside JAX's own dispatch machinery, none of them this engine's code.
 
-Worse than the noise: the profiler's event buffer is a **fixed ~1M-event cap with no
-backpressure and no warning**. Those interpreter frames saturated it during startup, so
-the trace silently covered only **the first 1.6 s of a ~90 s job** while reporting
-success. See §4 for the guard that now catches this.
+Worse than the noise: the trace's `.trace.json.gz` keeps only the **~1M events that start
+first**, with no warning. Those interpreter frames filled it during startup, so that file
+covered only **the first 1.6 s of a ~90 s job**. (This was read as a cap on the profiler's
+own buffer until roadmap 2.1 found the cap in the export: the `.xplane.pb` beside it, which
+xprof reads, held all 1.5M events of a cold demo run. §5 is the check that now reports it.)
 
 Turning it off loses exactly one thing — attribution of a dispatch back to the engine
 function that issued it, since no event then carries a Python source file or line
@@ -91,7 +92,7 @@ function that issued it, since no event then carries a Python source file or lin
 that attribution was bought back for ~0 cost.
 
 `JAX_RISK_PROFILE_PYTHON_TRACER=1` opts back in, accepting the ~9x size, ~2x slowdown and
-near-certain silent truncation.
+a `.trace.json.gz` that covers only the start of the job (§5).
 
 ### 1.4 Cold-start compilation is deliberately included
 
@@ -125,7 +126,7 @@ pass events against ~630 `ThunkExecutor::Execute`). Two distinct reasons:
 So warmup answers "what does a steady-state repeat cost," not "show me execution only." A
 genuinely execution-dominated timeline needs the closure-identity recompile fixed first
 (done, §3.7: a repeated Greeks call now compiles nothing; these measurements predate it).
-§2.2 is the full warm lane/category breakdown, which quantifies exactly that: 79%
+§2.2's warm half is the full lane/category breakdown, which quantifies exactly that: 79%
 compilation against 1.6% arithmetic even after the cache is warm.
 All 31 are enumerated with exact callsites, root cause and a vetted fix plan in
 [Known Issues I-21 and I-22](../planning/known-issues.md#i-21) — two different mechanisms needing
@@ -140,10 +141,75 @@ queued, the timeline is truncated. `npv_cube` is the dominant device-side tail.
 
 ## 2. What the trace contains
 
-> Measured before roadmap 1.3 (the 4-trade Hull-White pipeline). Since 1.3 the demo's trace
-> overflows the profiler's event cap: [I-53](../planning/known-issues.md#i-53).
+### 2.0 The demo, measured (2026-10-05, roadmap 2.1)
 
-### 2.1 Cold (warmup off — the default)
+`demos/demo_profile_small.py` as it stands: five trades (swap, European, Bermudan, American,
+bill), 256 paths on 3 dates, the Hull-White model calibrated to a two-helper basket, AD
+Greeks, on CPU (Windows, 24 threads), through the HTTP API and the engine worker. Each mode
+was run in a fresh API and worker on a fresh queue, one run at a time, and read back from the
+worker's summary (§5). Wall time is the traced `price_portfolio` call; compiles are XLA
+programs the worker had to build or read back (`/jax/core/compile/backend_compile_duration`).
+
+| Mode (demo switches) | Wall | Compiles | Events | JSON export | Size |
+|---|---:|---:|---:|---|---:|
+| Cold, no disk cache (`--cold --no-disk-cache`) | 43.1 s | 269 | 1,499,875 | partial | 122 MB |
+| Cold, empty disk cache, which it fills (`--cold`, first run) | 46.7 s | 269 | 1,499,270 | partial | 122 MB |
+| Cold, disk cache read back (`--cold`, a restarted worker) | 18.8 s | 269 | 916,387 | whole | 108 MB |
+| Warm, the job repeated in the worker (default) | 2.8 s | 9 | 830,171 | whole | 105 MB |
+
+A first run in the same series (before the summary read the `.xplane.pb`) gave 47.9 s, 20.4 s
+and 2.8 s for the same modes, and 45.1 s without the disk cache.
+
+**Every trace is whole.** In every mode the trace spans the whole run and holds every phase,
+including each trade's Greeks. The profiler records everything in the `.xplane.pb`, and xprof
+serves all of it (its `trace_viewer` returned 1,530,243 events for the cold trace). Only the
+`.trace.json.gz` beside it is capped: it keeps the ~1,000,000 events that start first, so for
+a cold trace a viewer reading that file (Perfetto, `chrome://tracing`) loses everything that
+started after about 23 s, except the long regions that began earlier. The 2026-10-01 reading
+"truncated at the event cap" was this file.
+
+Time per phase (host time, so device work lands in the phase that waits for it):
+
+| Phase | Cold, no disk cache | Disk cache | Warm |
+|---|---:|---:|---:|
+| calibration | 1.06 s | 0.41 s | 0.00 s |
+| simulation | 1.78 s | 0.42 s | 0.01 s |
+| pricing | 9.04 s | 3.58 s | 0.80 s |
+| exposure | 0.71 s | 0.81 s | 1.09 s |
+| greeks | 30.44 s | 13.59 s | 0.90 s |
+| &nbsp;&nbsp;swap | 1.59 s | 0.65 s | 0.19 s |
+| &nbsp;&nbsp;European | 2.24 s | 0.87 s | 0.27 s |
+| &nbsp;&nbsp;Bermudan | 13.89 s | 6.82 s | 0.17 s |
+| &nbsp;&nbsp;American | 11.85 s | 4.84 s | 0.19 s |
+| &nbsp;&nbsp;bill | 0.62 s | 0.25 s | 0.01 s |
+
+What the numbers say:
+
+- **From scratch, compilation is the job.** 269 programs; the disk cache, reading them back,
+  takes the job from 43 s to 19 s, and a repeat in the same worker to 2.8 s. The Bermudan's
+  and American's AD Greeks are 26 s of the 43 s: two large differentiated programs each,
+  mostly MLIR passes (`CSEPass`, `CanonicalizerPass`) on the compiler threads.
+- **Events follow executed loop iterations, not programs.** About 624k events on
+  `tf_XLAEigen` in every mode, warm included: XLA's CPU runtime records each op of a loop
+  body on every iteration. By HLO module, 251,554 are `_bootstrap_bucket`, the 60-step
+  bisection that recalibrates the Bermudan's and American's model on every path date
+  (I-53), and 34,608 `_backward_induction_arrays`; 517k of the cold trace's events fall
+  inside `pricing`. Compilation adds ~470k on `tf_xla-cpu-codegen`, which is what pushes a
+  cold trace past the JSON export's cap.
+- **A repeat is not yet compile-free.** The warm repeat compiles 9 programs: the swap's and
+  European's AD Greeks (`legs_npv`, `black_multileg_npv` under the gradient and the
+  Hessian-vector product) and one European Vega. A third run of the job compiles none, and a
+  trade's Greeks repeated on their own compile none from the second call, so the cause is
+  in how the first full job's tracing seeds JAX's caches, not a closure per call (I-53).
+- **On CPU, `exposure` is mostly waiting.** Dispatch is asynchronous; `exposure` is the first
+  phase to read the cube, so it absorbs pricing's device time (1.09 s of a 2.8 s repeat).
+
+### 2.1 and 2.2: the 4-trade pipeline before roadmap 1.3 (history)
+
+The two sections below measured an older pipeline (four trades, the legacy Hull-White
+path) and are kept for the reasoning that followed from them.
+
+#### Cold (warmup off — the default)
 
 With the Python tracer off, the host tracer still records everything JAX and XLA do.
 Measured lane breakdown on the 4-trade demo portfolio (durations exceed wall time because
@@ -169,7 +235,7 @@ below**:
 
 **~98% of the job was compile and dispatch overhead around 3 seconds of arithmetic.**
 
-### 2.2 Warm (`JAX_RISK_PROFILE_WARMUP=1` — what `demo_profile_small.py` ships as)
+#### Warm (`JAX_RISK_PROFILE_WARMUP=1` — what `demo_profile_small.py` ships as)
 
 The cold table above answers "what does this job cost from scratch." It is **not** the
 steady-state picture, and the difference is large enough that quoting the cold numbers for
@@ -456,7 +522,7 @@ Two honest limits remain:
 
 **On returning to `python_tracer_level=1`:** it is still the wrong trade. The Greeks-on
 trace is ~262k events; the Python tracer multiplied event count by ~35x in the original
-measurement, which would put this well past the ~1M cap and back into silent truncation.
+measurement, which would put this well past the JSON export's ~1M cap (§5).
 The attribution it would buy is already available for free via §4's phase annotations. The
 flag remains available for a narrowly-scoped single-phase investigation, which is the only
 context where it fits under the cap.
@@ -565,21 +631,26 @@ suspect and turned out to cost only 19.
 
 ---
 
-## 5. The silent-truncation guard
+## 5. The trace summary and its checks
 
-The profiler's ~1M-event buffer has no backpressure: once full, remaining events are
-dropped silently and the resulting trace is **byte-indistinguishable from a complete one**.
-That failure mode already hid 98% of a job once (§1.3).
+After every traced job the worker reads the trace back
+(`engine.portfolio.profiling.summarize_trace`, on the `.xplane.pb` through
+`jax.profiler.ProfileData`, so it sees every event) and writes
+`$JAX_RISK_PROFILE_DIR/pid-<pid>/<run>.summary.json` beside the run: the traced run's wall
+time and compiles (and the untraced warm-up's), the trace's events, size and span, the share
+of the run it spans, events per thread, and seconds per phase label. `demos/demo_profile_small.py`
+prints it. Reading 1.5M events back takes about 3 s, after the job's result is computed.
 
-`_warn_if_trace_truncated` now runs after every traced job and emits a `UserWarning` when
-either:
+It then warns (`UserWarning`, and the `warning` field of the summary) when either:
 
-- the trace is at or near the ~1M-event cap, or
-- the captured events' own timestamp span covers less than 50% of the job's wall time.
+- the trace spans less than 50% of the run's wall time: the record itself stopped early; or
+- the trace has more events than the `.trace.json.gz` export keeps (~1M, the earliest-starting):
+  that file is partial, though xprof, which reads the `.xplane.pb`, shows everything.
 
-It **warns rather than raises**, and swallows every error reading the trace back: a
-degraded diagnostic must never fail a pricing job whose result is already correct. This
-was previously only in `demos/demo_profile_small.py`; it now guards the production hook.
+A span check alone cannot catch the second: the export keeps the long regions that start
+early (`greeks` ran to the end of the cold demo's partial file), so its span still looks
+complete. It **warns rather than raises**, and swallows every error reading the trace back: a
+degraded diagnostic must never fail a pricing job whose result is already correct.
 
 ---
 
@@ -588,7 +659,7 @@ was previously only in `demos/demo_profile_small.py`; it now guards the producti
 ```bash
 pip install -e ".[api,profiling]"     # brings in xprof; quote it in PowerShell
 rm -rf .profile-out-small             # the profiler never cleans up after itself
-python demos/demo_profile_small.py    # truncated since roadmap 1.3: see I-53
+python demos/demo_profile_small.py    # warm; --cold [--no-disk-cache] for a first run
 xprof --port 8791 .profile-out-small
 ```
 
@@ -633,7 +704,10 @@ time, they were merely arrived at via ~600 compilations.
   introduces is a differentiable field landing in static aux data, for which JAX does not
   raise: it silently returns a **zero gradient**. Guarded by a nonzero-delta check plus a
   finite-difference cross-check that shares no autodiff machinery.
-- **Truncation guard** — warns on a short trace, quiet on a healthy one, never raises on a
-  corrupt one.
+- **Trace summary** — a real traced job (warm-up on) writes `<run>.summary.json` with both
+  runs' compiles (the repeat compiles none) and its phase; on a synthetic `.xplane.pb`, events,
+  span, phase seconds and threads are counted; a short trace and one past the JSON export's
+  cap are reported, a healthy one is not; a corrupt trace never raises.
 - **Phase annotations** — both mechanisms entered; a real `price_portfolio` run hits every
-  expected phase.
+  expected phase, all of them in `PHASES`; both Greeks methods label each trade
+  (`greeks/trade<i>/<type>`).

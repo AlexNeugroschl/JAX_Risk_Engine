@@ -33,6 +33,7 @@ Profiling (opt-in): with `JAX_RISK_PROFILE_DIR` set, each job's `price_portfolio
 `jax.profiler.trace`, written to `$JAX_RISK_PROFILE_DIR/pid-<pid>/` (see `_profiled`).
 """
 import argparse
+import dataclasses
 import json
 import os
 import socket
@@ -257,12 +258,14 @@ def _profiled(run):
     `xprof --port 8791 <dir>`). Unset, nothing is traced.
 
     The Python tracer is off by default (see `_profile_options`). With it on, 97% of events
-    were interpreter frames from JAX's dispatch machinery, and the profiler's ~1M-event
-    buffer, which drops events silently, filled after the first 1.6s of a ~90s job. Off, the
-    trace shrank from 467MB to 50MB and covered 93% of the job instead of 2%.
+    were interpreter frames from JAX's dispatch machinery, and the trace's `.trace.json.gz`,
+    which keeps only the ~1M events that start first, covered the first 1.6s of a ~90s job.
+    Off, the trace shrank from 467MB to 50MB and covered 93% of the job instead of 2%.
 
     `JAX_RISK_PROFILE_WARMUP=1` runs the job once untraced first, so the trace shows warm
     execution rather than compilation (and the job runs twice).
+
+    Beside each trace goes its summary, `<trace run>.summary.json` (`_record_trace`).
     """
     profile_dir = os.environ.get("JAX_RISK_PROFILE_DIR")
     if not profile_dir:
@@ -270,65 +273,75 @@ def _profiled(run):
 
     import jax
 
+    warmup = None
     if os.environ.get("JAX_RISK_PROFILE_WARMUP") == "1":
         # Untraced warm-up run to populate the compilation caches.
-        jax.block_until_ready(run().npv_cube)
+        _, warmup = _measured(jax, run)
 
     out_dir = os.path.join(profile_dir, f"pid-{os.getpid()}")
-    started = time.time()
     with jax.profiler.trace(out_dir, profiler_options=_profile_options(jax)):
-        result = run()
-        # Wait for device execution before the trace closes, or the timeline is cut short.
-        jax.block_until_ready(result.npv_cube)
-    _warn_if_trace_truncated(out_dir, time.time() - started)
+        result, traced = _measured(jax, run)
+    _record_trace(out_dir, traced, warmup)
     return result
 
 
-# The profiler's event buffer is capped and drops events silently once full.
-_TRACE_EVENT_CAP = 1_000_000
-_TRACE_EVENT_WARN = 950_000
+def _measured(jax, run):
+    """`run()`'s result once its device work is done (a trace closed before it would be cut
+    short), and `{"wall_seconds", "compiles"}` of that run."""
+    compiles = _CompileCounter()
+    started = time.perf_counter()
+    try:
+        result = run()
+        jax.block_until_ready(result.npv_cube)
+    finally:
+        compiles.close()
+    return result, {"wall_seconds": time.perf_counter() - started, "compiles": compiles.count}
+
+
+def _record_trace(out_dir: str, traced: dict, warmup: Optional[dict]) -> None:
+    """Summarize the trace just written under `out_dir` (`engine.portfolio.profiling.summarize_trace`)
+    into `out_dir/<trace run>.summary.json`, with the traced run's and the warm-up's wall time
+    and compiles and the share of the traced run the trace covers, and warn if it is partial
+    (`_trace_warning`). Swallows any error, so profiling cannot break a job whose result is
+    already correct."""
+    try:
+        from engine.portfolio.profiling import latest_trace, summarize_trace
+
+        path = latest_trace(out_dir)
+        if path is None:
+            return
+        summary = summarize_trace(path)
+        warning = _trace_warning(summary, traced["wall_seconds"])
+        document = {"traced": traced, "warmup": warmup, "coverage": summary.coverage(traced["wall_seconds"]),
+                    "warning": warning, **dataclasses.asdict(summary)}
+        run_name = os.path.basename(os.path.dirname(path))
+        with open(os.path.join(out_dir, f"{run_name}.summary.json"), "w", encoding="utf-8") as handle:
+            json.dump(document, handle, indent=1)
+        if warning:
+            warnings.warn(warning, UserWarning, stacklevel=2)
+    except Exception:
+        # Profiling must not interfere with a completed job.
+        pass
+
+
 # Minimum fraction of the job's wall time a complete trace should span (a complete trace
 # still starts slightly after and ends slightly before the measured window).
 _TRACE_COVERAGE_WARN = 0.5
 
 
-def _warn_if_trace_truncated(out_dir: str, wall_seconds: float) -> None:
-    """Warn if a trace looks truncated: near the event cap, or spanning less than half the
-    job's wall time. A truncated trace is otherwise indistinguishable from a complete one.
-    Warns rather than raises, and swallows any error reading the trace, so profiling
-    cannot break a job."""
-    try:
-        newest, total_bytes = None, 0
-        for root, _dirs, files in os.walk(out_dir):
-            for name in files:
-                path = os.path.join(root, name)
-                total_bytes += os.path.getsize(path)
-                if name.endswith(".trace.json.gz"):
-                    if newest is None or os.path.getmtime(path) > os.path.getmtime(newest):
-                        newest = path
-        if newest is None:
-            return
+def _trace_warning(summary, wall_seconds: float) -> Optional[str]:
+    """What is partial about the trace of `summary` (a `TraceSummary`), or None: the record
+    itself, if it spans less than half the job's `wall_seconds` (stopped early); else its
+    `.trace.json.gz` export, if the trace has more events than the export keeps."""
+    from engine.portfolio.profiling import JSON_EXPORT_EVENT_CAP
 
-        import gzip
-        events = json.load(gzip.open(newest, "rt"))["traceEvents"]
-        stamps = [e["ts"] for e in events if "ts" in e]
-        span = (max(stamps) - min(stamps)) / 1e6 if stamps else 0.0
-
-        if len(events) >= _TRACE_EVENT_WARN:
-            warnings.warn(
-                f"profiler trace in {out_dir!r} has {len(events):,} events, at or near "
-                f"the profiler's ~{_TRACE_EVENT_CAP:,}-event buffer cap -- it is probably "
-                f"TRUNCATED and silently covers only part of this job. Shrink the "
-                f"portfolio, turn Greeks off, or unset JAX_RISK_PROFILE_PYTHON_TRACER.",
-                UserWarning, stacklevel=2,
-            )
-        elif wall_seconds > 1.0 and span < _TRACE_COVERAGE_WARN * wall_seconds:
-            warnings.warn(
-                f"profiler trace in {out_dir!r} spans only {span:.1f}s of a "
-                f"{wall_seconds:.1f}s job ({span / wall_seconds:.0%}) -- it is probably "
-                f"truncated or was stopped early; treat the timeline as partial.",
-                UserWarning, stacklevel=2,
-            )
-    except Exception:
-        # Profiling must not interfere with a completed job.
-        pass
+    if wall_seconds > 1.0 and summary.coverage(wall_seconds) < _TRACE_COVERAGE_WARN:
+        return (f"profiler trace {summary.path!r} spans only {summary.span_seconds:.1f}s of a "
+                f"{wall_seconds:.1f}s job ({summary.coverage(wall_seconds):.0%}) -- it was probably "
+                f"stopped early; treat the timeline as partial.")
+    if not summary.json_export_complete:
+        return (f"profiler trace {summary.path!r} has {summary.events:,} events; the .trace.json.gz "
+                f"beside it keeps only the ~{JSON_EXPORT_EVENT_CAP:,} that start first, so a viewer "
+                f"reading that file (Perfetto, chrome://tracing) sees part of the job. xprof reads the "
+                f"whole trace.")
+    return None

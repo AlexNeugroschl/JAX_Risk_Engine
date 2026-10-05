@@ -79,19 +79,23 @@ def portfolio_greeks(trades: Sequence[Trade], market: Market, base_currency: str
                      config: SensitivityConfig = SensitivityConfig()) -> Dict[int, Dict[str, np.ndarray]]:
     """Per trade (by request index), the AD Greeks in the base currency (see the module
     docstring)."""
+    # Not at module scope: importing engine.portfolio runs its __init__, which imports engine.risk.
+    from engine.portfolio.profiling import trade_greeks_phase
+
     validate_trades(trades, market, pricing)
     base_context, theta_ctx = sensitivity_context(market, config), theta_context(market, config)
     result: Dict[int, Dict[str, np.ndarray]] = {}
     for i, cfg in enumerate(trades):
-        fx = market.fx_spot(cfg.currency, base_currency)
-        greeks = curve_greeks(cfg, market, pricing, config.curve_shift)
-        greeks = {key: value * fx for key, value in greeks.items()}
-        vega = vega_greek(cfg, market, pricing, config.vol_shift)
-        if vega is not None:
-            greeks[f"vega:{cfg.currency}"] = vega * fx
-        value = lambda context, _cfg=cfg: value_on(_cfg, context, pricing) * fx  # noqa: E731
-        greeks["theta"] = trade_theta(value, value(base_context), cfg, theta_ctx, fx)
-        result[i] = greeks
+        with trade_greeks_phase(i, cfg):
+            fx = market.fx_spot(cfg.currency, base_currency)
+            greeks = curve_greeks(cfg, market, pricing, config.curve_shift)
+            greeks = {key: value * fx for key, value in greeks.items()}
+            vega = vega_greek(cfg, market, pricing, config.vol_shift)
+            if vega is not None:
+                greeks[f"vega:{cfg.currency}"] = vega * fx
+            value = lambda context, _cfg=cfg: value_on(_cfg, context, pricing) * fx  # noqa: E731
+            greeks["theta"] = trade_theta(value, value(base_context), cfg, theta_ctx, fx)
+            result[i] = greeks
     return result
 
 

@@ -130,32 +130,36 @@ def portfolio_sensitivities(trades: Sequence[Trade], market: Market, base_curren
     `gamma:index:<name>` `[K]` per curve tenor (the trade's own curves), `vega:<ccy>`
     `[option tenors, swap tenors]` for a trade whose engine reads the swaption volatilities
     (`reads_swaption_vols`), and `theta`."""
+    # Not at module scope: importing engine.portfolio runs its __init__, which imports engine.risk.
+    from engine.portfolio.profiling import trade_greeks_phase
+
     validate_trades(trades, market, pricing)
     base_context = sensitivity_context(market, config)
     theta_ctx = theta_context(market, config)
     result: Dict[int, Dict[str, np.ndarray]] = {}
     for i, cfg in enumerate(trades):
-        currency = cfg.currency
-        fx = market.fx_spot(currency, base_currency)
-        value = lambda context: value_on(cfg, context, pricing) * fx  # noqa: E731
-        base = value(base_context)
-        greeks: Dict[str, np.ndarray] = {}
-        curves = [("discount", currency, base_context.discount)]
-        if not isinstance(cfg, BondConfig):
-            curves.append(("index", index_name(currency, cfg.index_tenor_months), base_context.index))
-        for kind, key, table in curves:
-            deltas, gammas = [], []
-            for k in range(1, len(table[key].times)):
-                up = value(_with(base_context, kind, key, _shifted(table[key], k, config.curve_shift)))
-                down = value(_with(base_context, kind, key, _shifted(table[key], k, -config.curve_shift)))
-                deltas.append(up - base)
-                gammas.append(up - 2.0 * base + down)
-            greeks[f"delta:{kind}:{key}"] = np.asarray(deltas)
-            greeks[f"gamma:{kind}:{key}"] = np.asarray(gammas)
-        if reads_swaption_vols(cfg, pricing):
-            greeks[f"vega:{currency}"] = _vega(value, base, market, currency, base_context, config.vol_shift)
-        greeks["theta"] = trade_theta(value, base, cfg, theta_ctx, fx)
-        result[i] = greeks
+        with trade_greeks_phase(i, cfg):
+            currency = cfg.currency
+            fx = market.fx_spot(currency, base_currency)
+            value = lambda context: value_on(cfg, context, pricing) * fx  # noqa: E731
+            base = value(base_context)
+            greeks: Dict[str, np.ndarray] = {}
+            curves = [("discount", currency, base_context.discount)]
+            if not isinstance(cfg, BondConfig):
+                curves.append(("index", index_name(currency, cfg.index_tenor_months), base_context.index))
+            for kind, key, table in curves:
+                deltas, gammas = [], []
+                for k in range(1, len(table[key].times)):
+                    up = value(_with(base_context, kind, key, _shifted(table[key], k, config.curve_shift)))
+                    down = value(_with(base_context, kind, key, _shifted(table[key], k, -config.curve_shift)))
+                    deltas.append(up - base)
+                    gammas.append(up - 2.0 * base + down)
+                greeks[f"delta:{kind}:{key}"] = np.asarray(deltas)
+                greeks[f"gamma:{kind}:{key}"] = np.asarray(gammas)
+            if reads_swaption_vols(cfg, pricing):
+                greeks[f"vega:{currency}"] = _vega(value, base, market, currency, base_context, config.vol_shift)
+            greeks["theta"] = trade_theta(value, base, cfg, theta_ctx, fx)
+            result[i] = greeks
     return result
 
 

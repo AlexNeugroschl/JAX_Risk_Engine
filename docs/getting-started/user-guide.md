@@ -135,16 +135,20 @@ JSON), and **submit and print**. A template for a real integration: it makes exp
 parts change for a different portfolio (stage 1), which don't (stage 2), and which are
 boilerplate reshaping (stage 3).
 
-**The same end-to-end path, sized for a profiler trace** (truncated since roadmap 1.3 by the
-options' per-path recalibration, [I-53](../planning/known-issues.md#i-53)):
+**The same end-to-end path, sized for a profiler trace:**
 ```bash
-python demos/demo_profile_small.py
+python demos/demo_profile_small.py                          # traces a repeat of the job
+python demos/demo_profile_small.py --cold                   # traces the first run
+python demos/demo_profile_small.py --cold --no-disk-cache   # ... compiling everything
 ```
 Exercises what `demo_structured.py` does — calibration, simulation, every trade type,
 exposure and Greeks, over the real HTTP API, in the real engine worker, under
 `jax.profiler.trace` — on a deliberately small portfolio, writing its trace under
-`.profile-out-small/`. It leaves Greeks **on**: they are a large part of where the engine
-spends its time. See [Profiling a pricing job](#profiling-a-pricing-job) below and
+`.profile-out-small/` and printing the worker's summary of it: wall time, compiles, events,
+and time per phase and per trade's Greeks. It leaves Greeks **on**: they are a large part of
+where the engine spends its time. On CPU the job takes 43 s from scratch, 19 s with the
+worker's disk cache and 2.8 s repeated
+([measured](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)). See [Profiling a pricing job](#profiling-a-pricing-job) below and
 [Profiling & the Tracer](../concepts/profiling.md).
 
 **How much precision market risk needs:**
@@ -697,8 +701,8 @@ tool from the **Tools** dropdown:
 
 **Finding your way around the timeline.** The pricing path is annotated with named regions
 — `calibration`, `simulation`, `pricing`, `exposure` (or `base_npv` without scenario risk)
-and `greeks` — so you can attribute time per phase without turning the (very expensive)
-Python tracer on. See
+and `greeks`, with one region per trade inside it (`greeks/trade<i>/<type>`) — so you can
+attribute time per phase without turning the (very expensive) Python tracer on. See
 [Profiling & the Tracer §4](../concepts/profiling.md).
 
 If a small-portfolio trace looks entirely compile-bound, that is the real result — see
@@ -706,10 +710,14 @@ step 2. Profile a bigger portfolio (more trades, `samples` 16k+) to see executio
 over; drop `compute_greeks` if you only care about the forward pricing path, which is
 roughly a 5x difference in trace size.
 
-**A truncated trace looks exactly like a complete one.** The profiler's event buffer is a
-fixed ~1M-event cap with no backpressure — once full, the rest is dropped silently. Every
-traced job now self-checks for this and emits a `UserWarning` if the captured events span
-far less than the job's wall time; heed it rather than trusting a partial timeline.
+**Open the trace in xprof, not from its `.trace.json.gz`.** The profiler records every
+event in the run's `.xplane.pb`, which xprof reads. The `.trace.json.gz` beside it keeps only
+the ~1M events that start first, so in a viewer that reads that file (Perfetto,
+`chrome://tracing`) a large trace — the demo's cold run has 1.5M events — silently loses its
+second half. After every traced job the worker writes `<run>.summary.json` beside the run
+(wall time, compiles, events, seconds per phase) and emits a `UserWarning` when the JSON file
+is partial or the trace spans less than half the job
+([Profiling & the Tracer §5](../concepts/profiling.md#5-the-trace-summary-and-its-checks)).
 
 Unset `JAX_RISK_PROFILE_DIR` (or run any other demo/test — none of them set it) to go back
 to zero-overhead normal runs; the hook is completely inert when the variable is absent.

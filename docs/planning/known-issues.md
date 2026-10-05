@@ -11,31 +11,39 @@ exposure are not yet compared with an ORE run ([I-50](#i-50)).
 
 ## Verification status
 
-Last full run, 2026-10-04, on the code of roadmap 1.8 plus the worker's persistent
-compilation cache and the one-host scenario sharding (I-53, I-61), 2,568 collected (2,556
-before; +3 in `tests/test_engine_worker.py`, +9 in `tests/test_sharding.py`), summary line
-printed:
+Last full run, 2026-10-05, on the code of roadmap 2.1 (the worker's trace summary, the
+per-trade Greeks regions), 2,574 collected (2,568 before; in `tests/test_profiling_and_jit.py`
+the profiler-hook tests went from 5 to 4, plus 5 trace-summary tests and 2 per-trade phase
+cases), summary line printed:
 
-- **Windows**, `-n 8`: **2,567 passed, 1 skipped, 0 failed**, 7m07s (the skip is the
+- **Windows**, `-n 8`: **2,573 passed, 1 skipped, 0 failed**, 6m45s (the skip is the
   parametrized case of a storage wider than its compute, refused by design). No engine
   process outlived the run.
 - **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the CI
-  job, `-n 8`): 2,462 passed, 1 skipped, 2m17s.
-- **Linux** (Docker `python:3.11`, 4 CPUs, `-n 4`): **not green yet.** Three attempts: (1)
+  job, `-n 8`): 2,468 passed, 1 skipped, 2m02s.
+- **Linux** (Docker `python:3.11`, 4 CPUs, `-n 4`): the two changed modules
+  (`tests/test_profiling_and_jit.py`, `tests/test_engine_worker.py`): 79 passed of 79, 1m29s.
+  The last full-suite attempts on Linux (2026-10-04, roadmap 1.8's code plus the persistent
+  compilation cache and the one-host sharding, 2,568 collected) were not green, for reasons
+  outside the code (below); 2.1 changes no arithmetic and the worker only when profiling.
+- **Linux, full suite, 2026-10-04**: **not green yet.** Three attempts: (1)
   beside another session's container in the same Docker VM, 6 failed (names partly lost);
   (2) alone in Docker but on a loaded host, 2,565 passed, 2 skipped, 1 failed in 45 min: the
   four-device sharding test hit its 30-minute subprocess timeout (cgroup peak 24.4 GB of
-  25.2); (3) on a quiet host, the Docker VM itself went down at 98% (no summary; the engine
-  answers 500 since). The failing modules pass alone on Linux (`test_sharding.py`,
+  25.2); (3) on a quiet host, the Docker VM itself went down at 98% (no summary; Docker
+  answered 500 until 2026-10-05, when it ran again). The failing modules pass alone on Linux (`test_sharding.py`,
   `test_shared_portfolio.py`, `test_greeks.py`: 47 passed), and the sharding check
   finishes in 85 s on one CPU, so a stall of XLA's CPU collectives under starved cores is
   ruled out. Recorded under [I-27](#i-27). The previous green Linux run is 1.8's (2,554
   passed, 2 skipped).
 
-Bit for bit: on one device `shard_scenarios` places nothing and market risk takes its old
-batching branch, so every one-device run is unchanged by construction; the golden snapshot
-was not rerun. Red first: without the call sites every four-device result sat on one device;
-without the worker's cache settings no cache directory was written.
+Bit for bit (2.1): the per-trade Greeks regions add a `TraceAnnotation` and a `named_scope`
+around each trade's Greeks; all 86 Greek arrays of the shared portfolio, AD and bump, equal
+those computed without them (`np.array_equal`). Nothing else on the pricing path changed, so
+the golden snapshot was not rerun. Red first: without the regions the per-trade phase test
+fails under both methods. (2026-10-04: on one device `shard_scenarios` places nothing, so
+one-device runs are unchanged by construction; red first, without the call sites every
+four-device result sat on one device.)
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
 
@@ -297,7 +305,7 @@ and state the gap; measure and document the Bermudan's fixed-calibration differe
 <a id="i-53"></a>
 ### I-53 — The pipeline is slow: per-path recalibration and bump Greeks of options
 
-**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-29 · re-measured 2026-10-02
+**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-29 · re-measured 2026-10-02, 2026-10-05 (roadmap 2.1)
 
 **What is wrong.** Most of the cost was XLA compiling the same work again: per trade, per
 path date, per bump and per call ([I-21](#i-21), [I-22](#i-22), profiling §3.7). With the
@@ -322,15 +330,34 @@ roadmap 1.8; the pool's workers each compiled their own) and, since 2026-10-04, 
 in JAX's persistent compilation cache (`xla-cache/` beside the queue unless
 `JAX_COMPILATION_CACHE_DIR` says otherwise), so a restarted worker reads them back
 (`tests/test_engine_worker.py::TestEngineWorkerPricing::test_a_worker_keeps_its_programs_on_disk_beside_its_queue`).
-`demos/demo_profile_small.py`'s trace was truncated at the profiler's event cap before this
-change and has not been re-measured.
 
-**To close.** Roadmap 2.1 and 2.3, on `demos/demo_profile_small.py`: profile it
-(`JAX_RISK_PROFILE_DIR`, [profiling](../concepts/profiling.md)) until its trace covers the
-whole job on CPU and GPU; cut the American recalibration's arithmetic without
-changing its root (an early exit of a bisection once its bracket stops moving keeps every
-value); measure first-call compile time per product. `PricingConfig(recalibrate=False)` and
-the AD Greeks method exist where ORE's semantics are not needed.
+**The demo, measured (roadmap 2.1, 2026-10-05, CPU;
+[profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)).**
+`demos/demo_profile_small.py` (five trades, 256 paths, 3 dates, AD Greeks): 43.1 s and 269
+compiles from scratch, 18.8 s with the worker's disk cache, 2.8 s repeated in the worker; the
+Bermudan's and American's AD Greeks are 26 s of the 43 s. Its trace is whole in every mode
+(the 2026-10-01 "truncated at the event cap" was the `.trace.json.gz` export, which keeps the
+~1M earliest-starting events; xprof reads the complete `.xplane.pb`, 1.5M events cold).
+What the measurement leaves for 2.3:
+
+- **Events are loop iterations.** ~624k kernel events in every mode, 251,554 of them
+  `_bootstrap_bucket`'s 60-step bisection recalibrating the options on every path date: XLA's
+  CPU runtime records each op of a loop body per iteration. Fewer iterations (the early exit
+  below) cut both time and events.
+- **A repeated job still compiles 9 programs once.** The second run of the job in a worker
+  compiles `legs_npv` and `black_multileg_npv` under the swap's and European's AD gradient and
+  Hessian-vector product (4 + 4) and one European Vega; the third compiles none, and a
+  trade's Greeks repeated alone compile none from their second call. So the miss comes from
+  how the first full job seeds JAX's tracing caches, not a closure per call; about 1.6 s on
+  the second job (4.1 s against 2.5 s for the third, in-process).
+
+**To close.** Roadmap 2.3, on `demos/demo_profile_small.py`: cut the recalibration's
+arithmetic without changing its root (an early exit of a bisection once its bracket stops
+moving keeps every value); cut first-call compile time per product (the options' AD Greeks)
+and the second job's 9 compiles; then re-measure on CPU and GPU with the demo's summary
+([profiling §5](../concepts/profiling.md#5-the-trace-summary-and-its-checks)).
+`PricingConfig(recalibrate=False)` and the AD Greeks method exist where ORE's semantics are
+not needed.
 
 <a id="i-61"></a><a id="p-1"></a>
 ### I-61 — Nothing runs on more than one host; multi-device speed unmeasured

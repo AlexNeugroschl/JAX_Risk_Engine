@@ -94,7 +94,7 @@ JAX_Risk_Engine/
 │   │   ├── job_queue.py                  The durable SQLite job queue and the worker lock
 │   │   ├── worker.py                     The engine worker (jax-risk-worker): one process
 │   │   │                                 per host prices queued jobs; the opt-in XProf
-│   │   │                                 hook and its truncation guard (profiling.md)
+│   │   │                                 hook and its trace summary (profiling.md)
 │   │   ├── supervisor.py                 Starts and restarts the worker from the API
 │   │   ├── market_schemas.py             The portfolio request; refuses unknown fields
 │   │   │                                 and the retired Hull-White shape

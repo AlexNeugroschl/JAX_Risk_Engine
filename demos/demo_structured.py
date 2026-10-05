@@ -92,7 +92,7 @@ _MANAGE_SERVER = os.environ.get("JAX_RISK_ENGINE_DEMO_SKIP_SERVER") != "1"
 #   JAX_RISK_PROFILE_PYTHON_TRACER=1 turn on JAX's Python tracer (JAX defaults it on; off
 #       here). Off still keeps compilation, dispatch, tracing and execution; it drops only
 #       CPython frames. Measured on this portfolio: on, CPython frames were 97% of events
-#       and the capture truncated to the first 1.6s of a ~90s job (469MB vs 50MB).
+#       and the trace's .trace.json.gz covered the first 1.6s of a ~90s job (469MB vs 50MB).
 PROFILE_DIR = os.environ.get("JAX_RISK_PROFILE_DIR", ".profile-out")
 
 

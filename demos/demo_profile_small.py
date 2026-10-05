@@ -4,20 +4,33 @@ A small portfolio sized for a profiler trace that is practical to open, on the s
 -> Greeks, over the HTTP API, in the engine worker, under `jax.profiler.trace`.
 
 Output: one `pid-<pid>/` directory under `.profile-out-small`, with the timeline labelled by
-phase (calibration / simulation / pricing / base_npv / exposure / greeks, plus one region per
-trade inside greeks); see `docs/concepts/profiling.md`. Measured 2026-10-01: the job takes
-about 112 s and the trace is TRUNCATED at the profiler's ~1M-event cap (160 MB): the
-Bermudan's and American's recalibration on every path date dispatches that many events in
-its first 10 s (I-53). Without those two trades the whole job is 205k events, 12.8 MB.
+phase (calibration / simulation / pricing / exposure / greeks, and one region per trade inside
+greeks, `greeks/trade<i>/<type>`), and beside each trace the worker's summary of it
+(`<run>.summary.json`: wall time, compiles, events, time per phase), which this script prints;
+see `docs/concepts/profiling.md` §2.
 
-Trace size follows the number of dispatched XLA programs, not array sizes. Greeks are left on
-(AD) because they are a large part of the real timeline.
+Measured 2026-10-05 on CPU (roadmap 2.1; the traced run, the server's start-up excluded):
 
-Run with:  .venv/Scripts/python.exe demos/demo_profile_small.py
+    mode                                 wall    compiles  events     phases: pricing / greeks
+    --cold --no-disk-cache (scratch)     43.1 s  269       1,499,875  9.0 s / 30.4 s
+    --cold (disk cache read back)        18.8 s  269       916,387    3.6 s / 13.6 s
+    default (warm: the repeat)            2.8 s    9       830,171    0.8 s /  0.9 s
+
+Every trace is whole: it spans the run and holds every phase. xprof reads it all from the
+`.xplane.pb`; the `.trace.json.gz` beside it keeps only the ~1M events that start first, so a
+cold trace is partial in viewers that read that file (the summary warns). Most events are
+executed XLA kernels, not compiles: 517k of a cold trace's 1.5M run inside "pricing", most
+of them the 60-step bisection of `_bootstrap_bucket`, the Bermudan's and American's
+recalibration on every path date, one event per op per iteration (I-53).
+
+Run with:  .venv/Scripts/python.exe demos/demo_profile_small.py [--cold] [--no-disk-cache]
 View with: xprof --port 8791 .profile-out-small
 
 Delete `.profile-out-small` between runs when comparing: each run adds a `pid-<pid>/`.
 """
+import argparse
+import glob
+import json
 import os
 import subprocess
 import sys
@@ -49,7 +62,7 @@ CALIBRATION_EXPIRIES, CALIBRATION_TERMS = ["1Y", "2Y"], ["2Y", "1Y"]
 NUM_PATHS = 256
 
 # AD: each trade's Greeks are a few fused programs. Bump reprices every trade under ~40 shifts,
-# recalibrating each option under each, and overflows the profiler's ~1M-event cap (I-53).
+# recalibrating each option under each, many times the work and the events (I-53).
 GREEKS_METHOD = "AD"
 SIMULATION_DATES = ["2027-07-30", "2028-07-30", "2029-07-30"]
 
@@ -83,19 +96,13 @@ _MANAGE_SERVER = os.environ.get("JAX_RISK_ENGINE_DEMO_SKIP_SERVER") != "1"
 # engine/api/worker.py::_profiled.
 PROFILE_DIR = ".profile-out-small"
 
-# WARM CACHE: run the job once untraced so the traced run reuses the XLA compilation caches.
-# Comment this line out for a cold-start trace.
+# Cache modes (command-line switches, see `parse_args`):
 #
-#   warm: what a repeat costs. Measured here: the discarded run does 208 of 239
-#         compilations, the traced run 31; wall time ~26s -> ~18s.
-#   cold: what the job costs from scratch. All compilations land in the trace, ~98% of wall
-#         time for a portfolio this small.
-#
-# Compilation still dominates the warm trace's event count: the Greeks recompile on every
-# call because `engine.risk.greeks` builds a fresh price_fn closure each time (I-21; see
-# _grad_and_hessian_diagonal), and a compilation emits many more events than a kernel
-# execution. Event count is not time.
-WARM_CACHE = True
+#   default:          warm. The worker runs the job once untraced, then traced: the trace shows
+#                     what a REPEAT costs, the summary also gives the untraced first run.
+#   --cold:           one traced run; with the worker's persistent compilation cache populated
+#                     by an earlier run (a restarted worker), compiles read it back.
+#   --no-disk-cache:  turns that cache off, so a --cold trace is the job from scratch.
 
 
 def wait_until_healthy(timeout_s: float = 60.0) -> None:
@@ -110,13 +117,13 @@ def wait_until_healthy(timeout_s: float = 60.0) -> None:
     raise RuntimeError(f"server at {API_BASE} did not become healthy within {timeout_s}s")
 
 
-def start_server() -> subprocess.Popen:
+def start_server(cold: bool, disk_cache: bool) -> subprocess.Popen:
     env = os.environ.copy()
     env["JAX_RISK_PROFILE_DIR"] = PROFILE_DIR
-    # globals().get so that commenting out WARM_CACHE turns warmup off instead of raising
-    # NameError.
-    if globals().get("WARM_CACHE", False):
+    if not cold:
         env["JAX_RISK_PROFILE_WARMUP"] = "1"
+    if not disk_cache:
+        env["JAX_COMPILATION_CACHE_DIR"] = ""  # empty turns the worker's disk cache off
     process = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "engine.api.app:app", "--host", "127.0.0.1", "--port", "8000"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -213,76 +220,65 @@ def print_result(result: dict) -> None:
         print(f"  {trade_ids[int(idx)]:>10}: {delta} theta={greeks['theta']:,.2f}")
 
 
-def report_trace_size() -> None:
-    """Print the run's trace size, and whether the trace covers the whole job: the
-    profiler's event buffer (about 1M events) silently drops events once full, so the
-    captured timestamp span is compared with the job's wall time."""
-    if not os.path.isdir(PROFILE_DIR):
+def report_trace() -> None:
+    """Print the newest trace's summary, which the engine worker writes beside it
+    (`engine.api.worker._record_trace`): the traced run's wall time and compiles (and the
+    untraced warm-up's), the trace's events and size, the share of the run it covers, and the
+    time per phase."""
+    summaries = glob.glob(os.path.join(PROFILE_DIR, "pid-*", "*.summary.json"))
+    if not summaries:
+        print(f"\nno trace summary in {PROFILE_DIR!r} (was the server started with profiling?)")
         return
-
-    # Size is per run (per pid- subdirectory); the directory accumulates every run.
-    runs = [
-        os.path.join(PROFILE_DIR, name) for name in os.listdir(PROFILE_DIR)
-        if name.startswith("pid-") and os.path.isdir(os.path.join(PROFILE_DIR, name))
-    ]
-    if not runs:
-        return
-    this_run = max(runs, key=os.path.getmtime)
-
-    total = 0
-    newest = None
-    for root, _dirs, files in os.walk(this_run):
-        for name in files:
-            path = os.path.join(root, name)
-            total += os.path.getsize(path)
-            if name.endswith(".trace.json.gz") and (newest is None or os.path.getmtime(path) > os.path.getmtime(newest)):
-                newest = path
-    print(f"\ntrace written to {this_run!r}: {total / 1e6:.1f} MB")
-    if len(runs) > 1:
-        print(f"  ({len(runs) - 1} older run(s) also in {PROFILE_DIR!r}"
-              f" -- delete it between runs for a clean comparison)")
-
-    if newest is None:
-        return
-    try:
-        import gzip
-        import json
-        events = json.load(gzip.open(newest, "rt"))["traceEvents"]
-    except Exception as exc:  # a partially-flushed trace shouldn't fail the demo
-        print(f"  (could not read {os.path.basename(newest)}: {exc})")
-        return
-    stamps = [e["ts"] for e in events if "ts" in e]
-    python_frames = sum(1 for e in events if str(e.get("name", "")).startswith("$"))
-    if stamps:
-        print(f"  {len(events):,} events spanning {(max(stamps) - min(stamps)) / 1e6:.1f}s"
-              f" ({python_frames:,} CPython frames)")
-    if len(events) > 950_000:
-        print("  WARNING: near the profiler's ~1M-event cap -- this trace is"
-              " probably truncated. Shrink the portfolio.")
+    with open(max(summaries, key=os.path.getmtime), encoding="utf-8") as handle:
+        summary = json.load(handle)
+    traced, warmup = summary["traced"], summary["warmup"]
+    print(f"\ntrace: {summary['path']}")
+    if len(glob.glob(os.path.join(PROFILE_DIR, "pid-*"))) > 1:
+        print(f"  (older runs also in {PROFILE_DIR!r} -- delete it between runs for a clean comparison)")
+    if warmup:
+        print(f"  untraced first run: {warmup['wall_seconds']:.1f}s, {warmup['compiles']} compiles")
+    print(f"  traced run:         {traced['wall_seconds']:.1f}s, {traced['compiles']} compiles")
+    print(f"  {summary['events']:,} events, {summary['bytes'] / 1e6:.1f} MB, spanning {summary['span_seconds']:.1f}s"
+          f" = {summary['coverage']:.0%} of the traced run")
+    for thread, count in list(summary["threads"].items())[:3]:
+        print(f"    {count:>9,} events on {thread or 'the job thread'}")
+    print("  time per phase (host time; device work lands in the phase that waits for it):")
+    for name, seconds in summary["phases"].items():
+        print(f"    {name:<40}{seconds:>8.2f}s")
+    if summary["warning"]:
+        print(f"  WARNING: {summary['warning']}")
     print(f"  view with: xprof --port 8791 {PROFILE_DIR}")
 
 
-def main() -> None:
+def parse_args(argv=None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--cold", action="store_true",
+                        help="trace the first run, compiles included (default: run once untraced, trace the repeat)")
+    parser.add_argument("--no-disk-cache", dest="disk_cache", action="store_false",
+                        help="turn the worker's persistent compilation cache off, so --cold compiles everything")
+    return parser.parse_args(argv)
+
+
+def main(argv=None) -> None:
+    args = parse_args(argv)
     print("=== stage 1: given inputs (small portfolio) ===")
     print(f"{NUM_PATHS:,} paths, {len(PORTFOLIO_TRADES)} trades (one of each type), "
           f"{len(SIMULATION_DATES)} simulation dates, the {MODEL} model, greeks=ON")
 
     print("\n=== stage 2: server setup ===")
-    server_process = start_server() if _MANAGE_SERVER else None
+    server_process = start_server(args.cold, args.disk_cache) if _MANAGE_SERVER else None
     if server_process is None:
         wait_until_healthy()
         print(f"reusing an already-running server at {API_BASE}")
         print("note: profiling is only active if THAT server was itself started "
               "with JAX_RISK_PROFILE_DIR set")
     else:
-        warm = globals().get("WARM_CACHE", False)
         print(f"pricing-job profiler ON -> traces in {PROFILE_DIR!r}")
-        if warm:
-            print("  cache: WARM -- job runs twice, first run discarded; the trace "
-                  "shows what a REPEAT costs")
-            print("         (compilation is reduced, NOT eliminated -- see WARM_CACHE's comment)")
+        if args.cold:
+            print("  cache: COLD -- the trace includes every compile"
+                  + ("" if args.disk_cache else " (disk cache off)"))
         else:
-            print("  cache: COLD -- the trace includes all XLA lowering/compilation")
+            print("  cache: WARM -- job runs twice, first run untraced; the trace shows what a REPEAT costs")
 
     try:
         print("\n=== stage 3: server inputs ===")
@@ -292,7 +288,7 @@ def main() -> None:
         print("\n=== stage 4: submit and print ===")
         result = submit_and_wait(request_body)
         print_result(result)
-        report_trace_size()
+        report_trace()
     finally:
         if server_process is not None:
             stop_server(server_process)

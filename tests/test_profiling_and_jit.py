@@ -10,6 +10,7 @@ an xprof trace records as XLA compilation; cache hits do not call it (`tests/sup
 """
 import dataclasses
 from contextlib import contextmanager
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -22,6 +23,7 @@ from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.market import ZeroCurveConfig
 from engine.models.lgm import Sigma
+from engine.portfolio.profiling import PHASES
 from engine.risk.greeks import _grad_and_hessian_diagonal, curve_greeks, portfolio_greeks
 from engine.risk.price_functions import bermudan_price_function, curves_of, trade_price_function
 from engine.valuation.bermudan import calibrate_on
@@ -294,55 +296,132 @@ class TestProfilerHook:
         assert _profiled(lambda: "the job's result") == "the job's result"
         assert list(tmp_path.iterdir()) == []
 
-    def test_truncation_guard_warns_on_a_short_trace(self, tmp_path):
-        """A trace spanning far less than the job's wall time (the signature of the silent
-        buffer cap) warns, not raises."""
-        import gzip
+    def test_a_traced_job_writes_its_summary_beside_the_trace(self, monkeypatch, tmp_path):
+        """With `JAX_RISK_PROFILE_DIR` and `JAX_RISK_PROFILE_WARMUP=1`, a real job is traced
+        and `<trace run>.summary.json` holds both runs' wall time and compiles, the trace's
+        events and the time in each phase: the warm-up compiled the job's program, the traced
+        repeat compiled nothing."""
         import json
-        from engine.api.worker import _warn_if_trace_truncated
+        from types import SimpleNamespace
 
-        run_dir = tmp_path / "pid-1" / "plugins" / "profile" / "run"
+        from engine.api.worker import _profiled
+        from engine.portfolio.profiling import phase
+
+        monkeypatch.setenv("JAX_RISK_PROFILE_DIR", str(tmp_path))
+        monkeypatch.setenv("JAX_RISK_PROFILE_WARMUP", "1")
+        doubled = jax.jit(lambda x: 2.0 * x)  # a fresh function: its first call compiles
+
+        def job():
+            with phase("pricing"):
+                return SimpleNamespace(npv_cube=doubled(jnp.arange(5.0)))
+
+        result = _profiled(job)
+
+        np.testing.assert_array_equal(np.asarray(result.npv_cube), 2.0 * np.arange(5.0))
+        [path] = list(tmp_path.glob("pid-*/*.summary.json"))
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        assert summary["warmup"]["compiles"] >= 1 and summary["traced"]["compiles"] == 0
+        assert summary["traced"]["wall_seconds"] > 0 and summary["events"] > 0 and summary["bytes"] > 0
+        assert set(summary["phases"]) == {"pricing"} and summary["phases"]["pricing"] > 0
+        assert summary["warning"] is None and summary["coverage"] > 0
+        assert path.name == f"{Path(summary['path']).parent.name}.summary.json"
+
+    def test_recording_never_raises_on_a_broken_trace(self, tmp_path):
+        """Reading the trace back never breaks a pricing job."""
+        from engine.api.worker import _record_trace
+
+        run_dir = tmp_path / "plugins" / "profile" / "run"
         run_dir.mkdir(parents=True)
-        # 0.1s of events against a 100s job.
-        events = {"traceEvents": [{"ts": 0.0}, {"ts": 100_000.0}]}
-        with gzip.open(run_dir / "host.trace.json.gz", "wt") as handle:
-            json.dump(events, handle)
+        (run_dir / "host.xplane.pb").write_bytes(b"not actually an XSpace")
 
-        with pytest.warns(UserWarning, match="spans only"):
-            _warn_if_trace_truncated(str(tmp_path), wall_seconds=100.0)
+        _record_trace(str(tmp_path), {"wall_seconds": 10.0, "compiles": 0}, None)  # must not raise
+        assert not list(tmp_path.glob("*.summary.json"))
 
-    def test_truncation_guard_is_quiet_on_a_complete_trace(self, tmp_path):
-        import gzip
-        import json
-        from engine.api.worker import _warn_if_trace_truncated
+    def test_recording_is_quiet_when_no_trace_exists(self, tmp_path):
+        from engine.api.worker import _record_trace
 
-        run_dir = tmp_path / "pid-1" / "plugins" / "profile" / "run"
-        run_dir.mkdir(parents=True)
-        # 9.5s of events against a 10s job: healthy.
-        events = {"traceEvents": [{"ts": 0.0}, {"ts": 9_500_000.0}]}
-        with gzip.open(run_dir / "host.trace.json.gz", "wt") as handle:
-            json.dump(events, handle)
+        _record_trace(str(tmp_path), {"wall_seconds": 10.0, "compiles": 0}, None)  # must not raise
 
-        import warnings as _warnings
 
-        with _warnings.catch_warnings():
-            _warnings.simplefilter("error")  # any warning fails the test
-            _warn_if_trace_truncated(str(tmp_path), wall_seconds=10.0)
+def _write_trace(directory, lines) -> str:
+    """An `.xplane.pb` of one host plane: `lines` maps a thread name to its events,
+    `(name, start seconds, duration seconds)`."""
+    from jax.profiler import ProfileData
 
-    def test_truncation_guard_never_raises_on_a_broken_trace(self, tmp_path):
-        """The self-check never breaks a pricing job."""
-        from engine.api.worker import _warn_if_trace_truncated
+    names = sorted({name for events in lines.values() for name, _, _ in events})
+    ids = {name: i + 1 for i, name in enumerate(names)}
+    text = 'planes { name: "/host:CPU" '
+    for i, (thread, events) in enumerate(lines.items()):
+        text += f'lines {{ id: {i + 1} name: "{thread}" timestamp_ns: 0 '
+        text += "".join(f"events {{ metadata_id: {ids[name]} offset_ps: {round(start * 1e12)} "
+                        f"duration_ps: {round(duration * 1e12)} }} " for name, start, duration in events)
+        text += "} "
+    text += "".join(f'event_metadata {{ key: {i} value {{ id: {i} name: "{name}" }} }} ' for name, i in ids.items())
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "host.xplane.pb"
+    path.write_bytes(ProfileData.text_proto_to_serialized_xspace(text + "}"))
+    return str(path)
 
-        run_dir = tmp_path / "pid-1"
-        run_dir.mkdir(parents=True)
-        (run_dir / "host.trace.json.gz").write_bytes(b"not actually gzip")
 
-        _warn_if_trace_truncated(str(tmp_path), wall_seconds=10.0)  # must not raise
+def _summary(events: int, span_seconds: float):
+    from engine.portfolio.profiling import TraceSummary
 
-    def test_truncation_guard_is_quiet_when_no_trace_exists(self, tmp_path):
-        from engine.api.worker import _warn_if_trace_truncated
+    return TraceSummary(path="t", bytes=0, events=events, span_seconds=span_seconds, phases={}, threads={})
 
-        _warn_if_trace_truncated(str(tmp_path), wall_seconds=10.0)  # must not raise
+
+class TestTraceSummary:
+    """`engine.portfolio.profiling.summarize_trace` and the worker's check of a trace."""
+
+    def test_counts_events_span_phases_and_threads(self, tmp_path):
+        from engine.portfolio.profiling import summarize_trace
+
+        path = _write_trace(tmp_path / "run", {
+            "": [("pricing", 0.0, 0.25), ("pricing", 0.5, 0.25), ("greeks", 1.0, 3.0),
+                 ("greeks/trade0/SwapConfig", 1.0, 1.0)],
+            "tf_XLAEigen": [("wrapped_add", 0.2, 1e-5)],
+        })
+        (tmp_path / "run" / "host.trace.json.gz").write_bytes(b"0123")  # the export beside it
+
+        summary = summarize_trace(path)
+
+        assert summary.events == 5
+        assert summary.span_seconds == pytest.approx(4.0)  # 0 to the end of "greeks"
+        assert summary.phases == pytest.approx({"greeks": 3.0, "greeks/trade0/SwapConfig": 1.0, "pricing": 0.5})
+        assert summary.threads == {"": 4, "tf_XLAEigen": 1}
+        assert summary.bytes == Path(path).stat().st_size + 4
+        assert summary.coverage(8.0) == pytest.approx(0.5)
+        assert summary.json_export_complete
+
+    def test_latest_trace_is_the_newest_or_none(self, tmp_path):
+        import os
+
+        from engine.portfolio.profiling import latest_trace
+
+        assert latest_trace(str(tmp_path)) is None
+        old = _write_trace(tmp_path / "plugins" / "profile" / "a", {"": [("pricing", 0.0, 1.0)]})
+        new = _write_trace(tmp_path / "plugins" / "profile" / "b", {"": [("pricing", 0.0, 1.0)]})
+        os.utime(old, (1_000, 1_000))
+        assert latest_trace(str(tmp_path)) == new
+
+    def test_a_short_trace_is_reported(self):
+        """A trace spanning far less than the job's wall time was stopped early."""
+        from engine.api.worker import _trace_warning
+
+        assert "spans only" in _trace_warning(_summary(events=2, span_seconds=0.1), wall_seconds=100.0)
+
+    def test_a_trace_beyond_the_json_export_cap_is_reported(self):
+        """The `.trace.json.gz` export keeps about a million events; xprof reads them all."""
+        from engine.api.worker import _trace_warning
+        from engine.portfolio.profiling import JSON_EXPORT_EVENT_CAP
+
+        warning = _trace_warning(_summary(events=JSON_EXPORT_EVENT_CAP + 1, span_seconds=10.0), wall_seconds=10.0)
+        assert ".trace.json.gz" in warning and "xprof reads the whole trace" in warning
+        assert _summary(events=JSON_EXPORT_EVENT_CAP, span_seconds=10.0).json_export_complete
+
+    def test_a_complete_trace_is_not_reported(self):
+        from engine.api.worker import _trace_warning
+
+        assert _trace_warning(_summary(events=1_000, span_seconds=9.5), wall_seconds=10.0) is None
 
 
 # =============================================================================
@@ -407,7 +486,28 @@ class TestPhaseAnnotations:
 
         monkeypatch.setattr(market_path, "phase", recording)
         price_portfolio(dataclasses.replace(portfolio_request, compute_greeks=True))
-        assert {"calibration", "simulation", "pricing", "exposure", "greeks"} <= set(seen)
+        assert {"calibration", "simulation", "pricing", "exposure", "greeks"} <= set(seen) <= set(PHASES)
         seen.clear()
         price_portfolio(dataclasses.replace(portfolio_request, scenario_risk=False))
         assert seen == ["base_npv"]
+
+    @pytest.mark.parametrize("method", ["AD", "bump"])
+    def test_each_trade_has_its_own_greeks_phase(self, method, monkeypatch):
+        """Both Greeks methods label each trade's Greeks `greeks/trade<index>/<config type>`,
+        the per-trade time a trace summary reports."""
+        import engine.portfolio.profiling as profiling
+        from engine.portfolio.market_path import _greeks
+
+        seen = []
+        original = profiling.phase
+
+        @contextmanager
+        def recording(name):
+            seen.append(name)
+            with original(name):
+                yield
+
+        monkeypatch.setattr(profiling, "phase", recording)
+        trades = [shared.trades()[name] for name in ("swap-payer", "bond")]
+        _greeks(method)(trades, shared.market(), "USD", PRICING)
+        assert seen == ["greeks/trade0/SwapConfig", "greeks/trade1/BondConfig"]
