@@ -13,7 +13,7 @@ This page is about *running* the code. For how it works internally, see
   `open-source-risk-engine` (the ORE Python bindings — see
   [Architecture: ORE as a dependency](../concepts/architecture.md#ore-as-a-dependency)), `pandas`,
   `jax`, `jaxlib`, `numpy`, `scipy`.
-- Three optional extras: `api` (`fastapi`, `pydantic>=2`, `uvicorn[standard]` — needed only
+- Four optional extras: `api` (`fastapi`, `pydantic>=2`, `uvicorn[standard]` — needed only
   to run [the HTTP API](../reference/http-api.md)), `dev` (`pytest`, `pytest-xdist`, `httpx`,
   `jsonschema` — needed to run the test suite; `pytest-xdist` runs it in parallel
   processes, `httpx` is required by FastAPI's own `TestClient`, and
@@ -21,7 +21,8 @@ This page is about *running* the code. For how it works internally, see
   without depending on a validator to produce them — see
   [the EOD boundary doc](../reference/eod-integration.md)), and `profiling`
   (`xprof` — needed only to collect/view a profiler trace of a pricing job, see
-  [Profiling a pricing job](#profiling-a-pricing-job)).
+  [Profiling a pricing job](#profiling-a-pricing-job)), and `gpu` (JAX's CUDA 13 plugin, Linux
+  or WSL2 only — see [On a GPU](#on-a-gpu-linux-or-wsl2-on-windows)).
 
 > **⚠ Run everything through the venv's own interpreter**, e.g.
 > `.venv/Scripts/python.exe` on Windows (`.venv/bin/python` on Linux/macOS). A bare `python`
@@ -78,9 +79,59 @@ pinned set.
 3. `pip freeze --exclude-editable > constraints.txt`, then restore the file's header comment.
 4. Commit both files together.
 
-The lock was frozen on Windows. On Linux, pip skips pins for packages it does not need
-(`colorama`), and the Linux-only `uvloop` (pulled in by `uvicorn[standard]`) installs
-unpinned. Neither affects numerical results.
+The lock was frozen on Windows, with a Linux block at its end: the `gpu` extra's packages and
+the Linux-only `uvloop` (pulled in by `uvicorn[standard]`), frozen from the GPU environment
+below. pip skips pins for packages a platform does not need (`colorama` on Linux, the Linux
+block on Windows).
+
+### On a GPU (Linux, or WSL2 on Windows)
+
+The engine runs on an NVIDIA GPU through JAX's CUDA 13 plugin, the `gpu` extra. JAX publishes
+no CUDA build for native Windows, so on Windows it runs under WSL2. Verified on the
+reference machine's RTX 5060 Laptop GPU (Blackwell, 8 GB) under WSL2 Ubuntu 24.04
+(roadmap 2.2). It needs an NVIDIA driver of 580 or later, which on WSL2 is the Windows driver
+(nothing NVIDIA is installed inside WSL; the CUDA libraries come as pip wheels with the
+extra). `nvidia-smi` inside WSL should list the card.
+
+```bash
+# In WSL2: clone onto the Linux filesystem, not under /mnt/c
+git clone https://github.com/AlexNeugroschl/JAX_Risk_Engine.git ~/JAX_Risk_Engine
+cd ~/JAX_Risk_Engine
+python3.11 -m venv .venv          # any Python 3.11, e.g. conda-forge's
+.venv/bin/python -m pip install -c constraints.txt -e ".[api,dev,gpu]"   # requirements.txt plus the extra
+.venv/bin/python -c "import jax; print(jax.devices())"   # [CudaDevice(id=0)]
+```
+
+The clone has to be on WSL's own filesystem: the job queue and the engine worker's lock are
+SQLite and OS file locks, which are unreliable on the Windows drive as WSL mounts it
+(`/mnt/c`), and file access there is several times slower. The extra brings about 3 GB of
+CUDA wheels.
+
+**Device memory.** XLA's default is to take 75% of a GPU's memory in every process that opens
+it. The engine turns that off: importing `engine` sets `XLA_PYTHON_CLIENT_PREALLOCATE=false`
+unless the environment sets it, so each process holds what it has used and grows on demand
+(on WSL2 the default's 6 GB request failed on the 8 GB card, and XLA logged out-of-memory errors until a 4 GB one succeeded). The API server keeps its
+own JAX on the CPU (it prices nothing; `/version` and `/calibration/lgm` are its only JAX
+work), so the engine worker is the one process with a GPU client. `/version` therefore says
+`cpu`; a job's result names the GPU in its `precision` report. The demo's whole job peaked
+at 2.6 GB of the card.
+
+**Tests on the GPU.** Each test process opens its own GPU client, so choose `-n` by device
+memory as well as host memory: `-n 4` on the 8 GB card, where the full suite peaked at 5.5 GB of
+the card and took 22 minutes. Without a GPU plugin installed the same commands run on the CPU,
+as before.
+
+**What to expect.** Results equal the CPU's to the last bits, not bit for bit (a GPU sums in
+a different order): the parity suites hold at their tolerances. They are the same bits on
+every run of a compiled job: importing `engine` adds `--xla_gpu_exclude_nondeterministic_ops=true`
+to `XLA_FLAGS` (without it the AD Greeks moved by an ulp between identical runs).
+`--xla_gpu_deterministic_ops=true` instead also pins the compiler's choice of kernels, at
+twice the compile time; either one set by you wins. This card's float64 runs at
+1/64 of its float32 rate, and a job of a few hundred paths is too small to fill it, so the
+demo is slower than on the CPU (a repeat: about 6 s against 2.4 s). A consumer GPU is where the
+GPU path is checked, not where speed is measured (roadmap 5.2). Profiling works as on the
+CPU, and the trace gains the GPU's own lanes, but tracing a GPU job costs several times its
+untraced time ([profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)).
 
 The examples on this page assume you're running from the repository root. `engine` itself
 is importable from anywhere once installed — `pip install -e .` puts it on the path, so
@@ -607,7 +658,10 @@ precision, and a key that names no product or no trade of the request is refused
 (`MarketRiskRequest.precision`) takes the same overrides.
 
 Calibration, today's values, Greeks and the exposure statistics are always float64; the
-result's `npv_cube` is the stored cube read back at float64. Over HTTP the same is
+result's `npv_cube` is the stored cube read back at float64. A compute format means the same on
+every device: on a GPU or TPU, XLA would by default run a float32 matrix product in
+TensorFloat-32 or bfloat16 passes, and importing `engine` sets JAX's matmul precision to
+`"highest"` so it does not (roadmap 2.2). Over HTTP the same is
 `"precision": {"pricing": {"storage": "float32", "compute": "float32", "accumulate": "float32"}}`.
 Storage can go below 32 bits (roadmap 1.6): `float16`, `bfloat16`, `float8_e4m3fn` and
 `float8_e5m2`, kept with a power-of-two scale per block of 32 paths, and rounded to nearest or,

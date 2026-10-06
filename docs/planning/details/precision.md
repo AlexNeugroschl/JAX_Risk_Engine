@@ -511,6 +511,17 @@ rollback and its per-path recalibration, exposure. One implementation serves eve
   correlation mixing (already a product, but small). These forms are written in step 3.7,
   in the same rewrite as the difference form, so no kernel is rewritten twice; step 5.2 times
   them.
+- **A product's precision is the policy's, not the device's.** XLA's default runs a float32
+  matrix product in TensorFloat-32 on an NVIDIA GPU (a 10-bit mantissa) and in bfloat16
+  passes on a TPU. Measured on the RTX 5060 (roadmap 2.2): a float32 simulation's cube was
+  1.5% off the float64 one under that default, and within float32 rounding at full
+  precision. Since 2.2 `engine/__init__.py` sets `jax_default_matmul_precision` to
+  `"highest"` unless the process sets it, so a float32 compute policy is float32 on every
+  device. Roadmap 2.3 (decision A-22) replaces that process-wide setting: each of the engine's
+  matrix products states its precision through one helper in `engine/precision/`, taken from
+  its operands' compute format, so the policy alone decides it (a test enforces the rule). TensorFloat-32, bfloat16 passes and FP8 products are compute formats in their own
+  right, which step 3.7 makes selectable in the policy (and the report names) and 5.2 times;
+  the device's default is never the silent choice.
 - The rollback's matrix form also fixes its memory. Today each column (the option, the
   underlying, each cached cashflow) is interpolated at `[nodes, quadrature nodes]` points,
   vmapped over the columns, although the interpolation weights depend only on the grids:
@@ -533,6 +544,13 @@ noise when they are unbiased.
 With `paired_fraction > 0`, that share of paths (the first paths of the same scrambled Sobol
 sequence, so the same random numbers) is also run at float64 throughout. The differences
 measure the precision error on this run.
+
+On a CPU the paired paths are the run's own bit for bit, since every kernel is per path, so a
+float64 run measures exactly zero. A GPU chooses its kernels by batch shape, and the paired
+sample is a smaller batch than the run, so there the paired paths equal the run's own to
+about an ulp (measured on an RTX 5060, roadmap 2.2: a float64 EPE's correction of 1e-11 on
+values near 1e6). That noise is far below any precision error the sample measures. Removing
+it would mean pricing every path at float64.
 
 ### 9.3 Means: the two-level estimator (A-13)
 
@@ -852,6 +870,19 @@ process changes.
   results identical across trees. A first attempt cost 20 ms more per job: the queue opened
   an SQLite connection per call, and closing a WAL database's last connection checkpoints
   it; one connection per thread fixed it without giving up `synchronous=FULL`.
+- **Step 2.2's result (2026-10-05).** 2.2 changes no kernel, but it sets three process
+  defaults in `engine/__init__.py` (no GPU preallocation, matrix products at their operands'
+  precision, deterministic GPU kernels), and the last two change every program's HLO or
+  compile options. The same snapshot script, 232 arrays, from a worktree of `1a533f3` against
+  the 2.2 tree, on CPU: all 232 identical in value, dtype and shape, the float32 runs included
+  (XLA's CPU backend computes a float32 product in float32 whatever the precision
+  configuration says). On the GPU (RTX 5060, WSL2) float64 is not bit for bit with the CPU,
+  and is held to the parity tolerances, which every ORE parity suite meets: the demo's job
+  equals the CPU's today's value exactly, the cube and EPE to 9e-16 of their scale, the AD
+  Greeks to 2.3e-11 relative.
+- Step 2.5 (the configurable root solver, decision A-21): with `"Bisection"` the snapshot
+  stays bit for bit; every ORE parity suite passes under both solvers, then the snapshot is
+  re-baselined once for the `"Newton"` default, with the largest change per array recorded.
 - Step 3.7: parity suites pass at their tolerances first; then the snapshot is re-baselined,
   with the largest change per array recorded in the commit and in known-issues' verification
   status.

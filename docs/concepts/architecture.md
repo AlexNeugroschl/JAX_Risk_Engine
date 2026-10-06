@@ -488,7 +488,8 @@ HTTP jobs (roadmap 1.8, decision A-14) go through a durable SQLite job queue
 (`engine/api/worker.py`). The API stores each request body as received; the worker parses it
 as the route did, calls `price_portfolio` with x64 on, as every engine process has it, and
 stores the result document, so a job prices bit for bit as a direct call. Jobs run one at a
-time in submission order: the worker owns every device on its host, splits each job's
+time in submission order: the worker owns every device on its host (the API server keeps its
+own JAX on the CPU, and no process preallocates a GPU; roadmap 2.2), splits each job's
 scenarios across them (`engine/simulation/sharding.py`, roadmap 3.8), and keeps its compiled
 programs, in memory and in JAX's persistent compilation cache on disk, so a repeated job
 shape compiles nothing and a restarted worker reads its programs back. A failing job fails only its own row; a

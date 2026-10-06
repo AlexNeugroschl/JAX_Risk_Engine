@@ -57,7 +57,8 @@ class TestDeviceCount:
 
 @pytest.mark.slow
 def test_four_devices_hold_the_scenarios_and_give_the_one_device_numbers():
-    env = {**os.environ, "XLA_FLAGS": "--xla_force_host_platform_device_count=4"}
+    # Four XLA host devices are CPU devices: on a GPU host JAX would otherwise default to its one GPU.
+    env = {**os.environ, "XLA_FLAGS": "--xla_force_host_platform_device_count=4", "JAX_PLATFORMS": "cpu"}
     env.pop(SCENARIO_DEVICES_ENV, None)
     completed = subprocess.run([sys.executable, "-m", "tests.support.sharding_check"], cwd=ROOT, env=env,
                                capture_output=True, text=True, timeout=1800)

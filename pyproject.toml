@@ -44,6 +44,13 @@ dev = [
     # docs/getting-started/user-guide.md, "Running the tests".
     "pytest-xdist",
 ]
+# JAX's CUDA 13 plugin and the CUDA libraries, for an NVIDIA GPU on Linux (WSL2 on Windows,
+# where JAX has no CUDA build). CUDA 13 runs every NVIDIA architecture JAX supports, Blackwell
+# included, on a driver of 580 or later. See docs/getting-started/user-guide.md, "On a GPU"
+# (roadmap 2.2).
+gpu = [
+    "jax[cuda13]>=0.10.2,<0.11",
+]
 profiling = [
     # XProf bundles the TensorBoard Profiler plugin + a standalone `xprof`
     # viewer. Only needed to collect/view a `jax.profiler.trace` timeline of a

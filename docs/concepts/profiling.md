@@ -204,6 +204,59 @@ What the numbers say:
 - **On CPU, `exposure` is mostly waiting.** Dispatch is asynchronous; `exposure` is the first
   phase to read the cube, so it absorbs pricing's device time (1.09 s of a 2.8 s repeat).
 
+#### On the GPU (2026-10-05, roadmap 2.2)
+
+The same demo and modes on the owner's RTX 5060 Laptop GPU (Blackwell, 8 GB) under WSL2,
+with JAX's CUDA 13 plugin and the engine's accelerator defaults (no preallocation, matrix
+products at full precision, no non-deterministic kernels; `engine/__init__.py`). Each
+mode was run once, in a fresh API and worker, one after another, from
+`.venv/bin/python demos/demo_profile_small.py`:
+
+| Mode (demo switches) | Wall | Compiles | Events | Size |
+|---|---:|---:|---:|---:|
+| Cold, no disk cache (`--cold --no-disk-cache`) | 118.8 s | 269 | 5,971,696 | 359 MB |
+| Cold, empty disk cache, which it fills (`--cold`, first run) | 126.4 s | 269 | 5,969,631 | 359 MB |
+| Cold, disk cache read back (`--cold`, a restarted worker) | 55.3 s | 269 | 3,961,501 | 304 MB |
+| Warm, the job repeated in the worker (default) | 35.7 s | 9 | 3,860,704 | 302 MB |
+
+| Phase | Cold, no disk cache | Disk cache | Warm |
+|---|---:|---:|---:|
+| calibration | 2.93 s | 0.87 s | 0.48 s |
+| simulation | 2.94 s | 0.62 s | 0.06 s |
+| pricing | 17.30 s | 7.31 s | 4.56 s |
+| exposure | 0.69 s | 0.18 s | 0.09 s |
+| greeks | 94.46 s | 46.07 s | 30.45 s |
+| &nbsp;&nbsp;swap | 2.68 s | 0.64 s | 0.22 s |
+| &nbsp;&nbsp;European | 3.31 s | 0.93 s | 0.26 s |
+| &nbsp;&nbsp;Bermudan | 35.11 s | 14.71 s | 6.59 s |
+| &nbsp;&nbsp;American | 51.45 s | 28.92 s | 22.82 s |
+| &nbsp;&nbsp;bill | 1.08 s | 0.30 s | 0.03 s |
+
+The same job untraced, `price_portfolio` called three times in one process with no disk cache
+(two interleaved rounds): 89 s, then 8.4–9.1 s, then 6.1 s; on the CPU 44.0 s, 4.1 s and
+2.4 s. The results equal the CPU's to the last bits (the cube to 9e-16 of its scale, the AD
+Greeks to 2.3e-11 relative).
+
+What the numbers say:
+
+- **The trace has the GPU's own lanes.** CUPTI works under WSL2: 1.37M events on the compute
+  stream (`Stream #14(Compute,MemcpyD2D,MemcpyH2D,Memset)`), the same in every mode, so these
+  are the job's kernel executions; compiles add none. The job's host thread is `python`.
+- **Tracing is the cost on the GPU.** A warm repeat is about 6 s untraced and 35.7 s traced;
+  from scratch 89 s untraced and 119 s traced. On the CPU tracing cost little. A GPU trace
+  measures where time goes, not how long a job takes.
+- **The options' Greeks dominate even when warm.** The Bermudan's and American's AD Greeks are
+  29 s of the 35.7 s traced repeat (0.36 s on the CPU). The likely reason, still to be read
+  from the device lane: their loops, the per-path-date bisection and the rollback, are many
+  small kernels in sequence, which a CPU runs in-thread and a GPU launches one by one, and at
+  256 paths in float64 (1/64 of this card's float32 rate) there is little arithmetic to hide
+  a launch behind. Roadmap 2.4 measures it, and 2.5 replaces the bisections' fixed 60- and
+  160-step loops with a configurable solver (decision A-21).
+- **The defaults' cost.** Excluding non-deterministic kernels costs nothing measurable warm;
+  `--xla_gpu_deterministic_ops=true`, which also pins autotuning, doubled the compile from
+  scratch (184 s against 89 s untraced) for the same bits, so it is an opt-in, not the
+  default.
+
 ### 2.1 and 2.2: the 4-trade pipeline before roadmap 1.3 (history)
 
 The two sections below measured an older pipeline (four trades, the legacy Hull-White
@@ -319,6 +372,14 @@ interleaved with dispatch. `tf_PjRtCompilerThreadPool` and `tf_xla-cpu-codegen` 
 background compilation threads. A tall Python stack (`price_portfolio` → `scan` →
 `_run_python_pjit` → `_uncached_lowering` → `compile_or_get_cached`) is XLA
 *lowering/compilation*, not the math.
+
+### Reading the timeline on the GPU
+
+On a GPU (roadmap 2.2) the device has its own rows: one per CUDA stream, named for the work on
+it (`Stream #14(Compute,MemcpyD2D,MemcpyH2D,Memset)` on the RTX 5060), one event per kernel or
+copy. The host rows are as on the CPU, with the job's thread named `python` and compilation on
+`tf_pjrt_compile_thread_pool`. A gap on the stream row while the host row is busy is the device
+waiting for the host: dispatch, a launch, or a compile.
 
 ---
 

@@ -6,8 +6,9 @@ decision A-13, I-12; docs/planning/details/precision.md §9, §13.6).
     correction; a known bias is removed within the estimate's standard error, and the
     uncorrected mean is flagged by its correction's; over many seeds the corrected estimate's
     95% interval holds the float64 figure at its stated rate, which needs the covariance term.
-  * Pipelines: at float64 against float64 every paired difference is exactly 0, which holds
-    only if the paired paths are the run's own (§9.2); with every path paired the estimate is
+  * Pipelines: at float64 against float64 every paired difference is exactly 0 (to an ulp on a
+    GPU, which picks its kernels by batch shape), which holds only if the paired paths are the
+    run's own (§9.2); with every path paired the estimate is
     the float64 run's figure; a stored-cube bias is corrected within its standard error.
   * The report reads the realized format of every stored array (§13.3), the devices and the
     backend from the run (over HTTP, the worker's: tests/test_api_market_path.py, I-12), and a
@@ -239,15 +240,23 @@ class TestExposureWithAPairedSample:
 # ---------------------------------------------------------------------------
 # The portfolio pipeline
 # ---------------------------------------------------------------------------
-def _all_figures_exactly_zero(report):
+def _equal_within(atol):
+    """`_same`, or equality within `atol` where values are equal only to their last bits."""
+    if atol == 0.0:
+        return _same
+    return lambda a, b, err_msg="": np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=0, atol=atol,
+                                                               err_msg=err_msg)
+
+
+def _all_figures_exactly_zero(report, same=_same):
     for key, figure in report.figures.items():
         if isinstance(figure, MeanEstimate):
-            _same(figure.correction, 0.0, err_msg=key)
-            _same(figure.max_difference, 0.0, err_msg=key)
-            _same(figure.value, figure.uncorrected, err_msg=key)
+            same(figure.correction, 0.0, err_msg=key)
+            same(figure.max_difference, 0.0, err_msg=key)
+            same(figure.value, figure.uncorrected, err_msg=key)
         else:
-            _same(figure.paired, figure.paired_float64, err_msg=key)
-            _same(figure.difference, 0.0, err_msg=key)
+            same(figure.paired, figure.paired_float64, err_msg=key)
+            same(figure.difference, 0.0, err_msg=key)
 
 
 class TestPortfolioPairedSample:
@@ -255,7 +264,10 @@ class TestPortfolioPairedSample:
     def test_float64_against_float64_every_paired_difference_is_exactly_zero(self, model):
         """The paired paths are the run's own: same Sobol points, same kernels, bit for bit,
         including a Bermudan recalibrated on every path; and the figures are those of the run
-        without a paired sample."""
+        without a paired sample. Bit for bit on a CPU, where every kernel is per path. A GPU
+        picks its kernels by batch shape, and the paired paths (64) are not the run's (96), so
+        there they are the run's own to about an ulp, and so are the corrected means (roadmap
+        2.2; as tests/test_sharding.py's split). The run's own cube is bit for bit everywhere."""
         plain = _price(Precision(), model=model)
         paired = _price(Precision(paired_fraction=0.5), model=model)
         report = paired.precision
@@ -263,13 +275,15 @@ class TestPortfolioPairedSample:
         expected = {f"{scope}/{f}" for scope in ["netting_set"] + [f"trades/{n}" for n in TRADES]
                     for f in ("EPE", "ENE", "PFE_95", "PFE_99")}
         assert set(report.figures) == expected
-        _all_figures_exactly_zero(report)
+        scale = np.max(np.abs(np.asarray(plain.npv_cube)))
+        same = _equal_within(0.0 if jax.default_backend() == "cpu" else 1e-13 * scale)
+        _all_figures_exactly_zero(report, same)
         _same(paired.npv_cube, plain.npv_cube)
         for name in ("epe", "ene", "ee_b", "eee_b", "epe_b", "eepe_b"):
-            _same(getattr(paired.exposure, name), getattr(plain.exposure, name), err_msg=name)
+            same(getattr(paired.exposure, name), getattr(plain.exposure, name), err_msg=name)
             for i in range(len(TRADES)):
-                _same(getattr(paired.trade_exposures[i], name), getattr(plain.trade_exposures[i], name))
-        assert paired.exposure.basel_eepe == plain.exposure.basel_eepe
+                same(getattr(paired.trade_exposures[i], name), getattr(plain.trade_exposures[i], name))
+        same(paired.exposure.basel_eepe, plain.exposure.basel_eepe)
 
     def test_with_every_path_paired_the_figures_are_the_float64_runs(self):
         """An FP8 cube with every path paired: EPE/ENE equal the float64 run's to rounding,

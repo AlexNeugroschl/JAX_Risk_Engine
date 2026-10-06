@@ -116,7 +116,9 @@ scenario market, path pricing), overridable per product and per trade (A-15; don
 block scales and nearest or stochastic rounding (done in roadmap 1.6, 2026-10-02: float16,
 bfloat16, `float8_e4m3fn`, `float8_e5m2`; `Stored`, `Precision.rounding`); compute below
 float32 through kernels in difference form, matrix products where a kernel can be one, one
-implementation for every precision (A-16, 3.7); the evidence table and warnings (5.1);
+implementation for every precision (A-16, 3.7), with a product's own precision (TensorFloat-32,
+bfloat16 passes, FP8) chosen by the policy (roadmap 2.3 makes every product state its precision
+through one helper, never the device's default); the evidence table and warnings (5.1);
 timing across devices on Ironwood and H100 (5.2, after the sharding of 3.8); FP4 on TPU 8t/8i (5.3). Measured so far: FP8
 storage of the shocks biases a call payoff by about one Monte Carlo standard error at 4M
 paths (stochastic rounding: 0.15), so the earlier rejection of FP8, which compared error per

@@ -116,9 +116,11 @@ this isn't a git checkout).
 {"engine_version": "0.1.0", "jax_backend": "cpu (Windows)", "git_commit": "abc1234..."}
 ```
 
-`jax_backend` is the backend *of the API process*, which does no pricing. A job runs in the
-engine worker, a separate process with its own JAX runtime; each result names the devices
-and backend it actually ran on in its `precision` report (roadmap 1.7, I-12).
+`jax_backend` is the backend *of the API process*, which does no pricing. A served API keeps
+its own JAX on the CPU (`engine.api.app.keep_jax_on_the_cpu`, roadmap 2.2), so this says `cpu`
+on a GPU host too: the accelerators belong to the engine worker, a separate process with its
+own JAX runtime, and each result names the devices and backend it actually ran on in its
+`precision` report (roadmap 1.7, I-12).
 
 ### `POST /portfolio/price`
 
@@ -267,7 +269,8 @@ Since roadmap 1.8 (decision A-14; [details/precision.md §11](../planning/detail
   single-threaded process per host. It takes jobs in submission order, parses each body
   exactly as the route did (so nothing is pickled), calls `price_portfolio`, and stores the
   result document, which the route then sends verbatim. It owns every device JAX sees on the
-  host and keeps its compiled programs for its lifetime, so a repeated job shape compiles
+  host (a served API keeps its own JAX on the CPU, and no engine process preallocates a GPU's
+  memory; roadmap 2.2) and keeps its compiled programs for its lifetime, so a repeated job shape compiles
   nothing. It also keeps them on disk, in JAX's persistent compilation cache, so a restarted
   worker reads them back instead of compiling again: in `JAX_COMPILATION_CACHE_DIR` if set
   (set it empty to turn the cache off), else in `xla-cache/` beside the queue file. A file lock (`<queue>.worker.lock`) makes it the queue's only worker; the

@@ -146,7 +146,7 @@ Where the IDs of retired planning documents went. Their full text is in git hist
 | Audit Q-3, cleanup plan Phase 3 | [I-67](known-issues.md#i-67) |
 | Audit Q-4 | Done by this reorganization |
 | ORE alignment plan Phases 0–6, 8 | Done; remaining items are issues |
-| ORE alignment plan Phase 7 (performance) | [I-53](known-issues.md#i-53), roadmap [2.3](roadmap.md#stage-2--the-demo-on-a-local-gpu) |
+| ORE alignment plan Phase 7 (performance) | [I-53](known-issues.md#i-53), roadmap [2.4 and 2.5](roadmap.md#stage-2--the-demo-on-a-local-gpu) |
 | ORE alignment plan Phase 9 (configurable engine) | Roadmap [stage 1](roadmap.md#stage-1--structure); [details/configurable-engine.md](details/configurable-engine.md) |
 | ORE alignment plan Phase 10.1, 10.2 | [I-49](known-issues.md#i-49), [I-54](known-issues.md#i-54) |
 | ORE alignment plan Phase 10.3, 10.4 | [F-04](features.md#f-04) |

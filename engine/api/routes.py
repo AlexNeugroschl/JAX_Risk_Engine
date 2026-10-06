@@ -100,8 +100,9 @@ def health() -> HealthSchema:
 @router.get("/version", response_model=VersionSchema)
 def version() -> VersionSchema:
     """Engine version, JAX backend of this (API) process, and git commit if available. The
-    backend is not where jobs run: each job's result names its own devices and backend in its
-    `precision` report, built in the engine worker that ran it (roadmap 1.7, I-12)."""
+    backend is not where jobs run: a served API's own JAX is on the CPU (`keep_jax_on_the_cpu`),
+    and each job's result names its own devices and backend in its `precision` report, built in
+    the engine worker that ran it (roadmap 1.7 and 2.2, I-12)."""
     try:
         import importlib.metadata
         engine_version = importlib.metadata.version("jax-risk-engine")

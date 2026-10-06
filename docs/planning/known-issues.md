@@ -11,39 +11,41 @@ exposure are not yet compared with an ORE run ([I-50](#i-50)).
 
 ## Verification status
 
-Last full run, 2026-10-05, on the code of roadmap 2.1 (the worker's trace summary, the
-per-trade Greeks regions), 2,574 collected (2,568 before; in `tests/test_profiling_and_jit.py`
-the profiler-hook tests went from 5 to 4, plus 5 trace-summary tests and 2 per-trade phase
-cases), summary line printed:
+Last full runs, 2026-10-05, on the code of roadmap 2.2 (the `gpu` extra, the accelerator
+defaults in `engine/__init__.py`, the API's JAX on the CPU). 2,587 collected on Windows and
+2,590 on Linux with the GPU plugin installed: 2,574 before, plus `tests/test_accelerator_defaults.py`
+(11), the new `gpu` extra's case of the lock check (1), and the GPU plugin's checks (on Linux
+4: two plugins, each against its pin and against jaxlib; on Windows 1 skip, none installed).
+Every summary line printed:
 
-- **Windows**, `-n 8`: **2,573 passed, 1 skipped, 0 failed**, 6m45s (the skip is the
-  parametrized case of a storage wider than its compute, refused by design). No engine
-  process outlived the run.
+- **Windows**, `-n 8`: **2,583 passed, 4 skipped, 0 failed**, 8m32s. The skips: the two
+  accelerator-only tests, the GPU plugin check (none installed), and the parametrized case of
+  a storage wider than its compute, refused by design. No engine process outlived the run.
 - **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the CI
-  job, `-n 8`): 2,468 passed, 1 skipped, 2m02s.
-- **Linux** (Docker `python:3.11`, 4 CPUs, `-n 4`): the two changed modules
-  (`tests/test_profiling_and_jit.py`, `tests/test_engine_worker.py`): 79 passed of 79, 1m29s.
-  The last full-suite attempts on Linux (2026-10-04, roadmap 1.8's code plus the persistent
-  compilation cache and the one-host sharding, 2,568 collected) were not green, for reasons
-  outside the code (below); 2.1 changes no arithmetic and the worker only when profiling.
-- **Linux, full suite, 2026-10-04**: **not green yet.** Three attempts: (1)
-  beside another session's container in the same Docker VM, 6 failed (names partly lost);
-  (2) alone in Docker but on a loaded host, 2,565 passed, 2 skipped, 1 failed in 45 min: the
-  four-device sharding test hit its 30-minute subprocess timeout (cgroup peak 24.4 GB of
-  25.2); (3) on a quiet host, the Docker VM itself went down at 98% (no summary; Docker
-  answered 500 until 2026-10-05, when it ran again). The failing modules pass alone on Linux (`test_sharding.py`,
-  `test_shared_portfolio.py`, `test_greeks.py`: 47 passed), and the sharding check
-  finishes in 85 s on one CPU, so a stall of XLA's CPU collectives under starved cores is
-  ruled out. Recorded under [I-27](#i-27). The previous green Linux run is 1.8's (2,554
-  passed, 2 skipped).
+  job, `-n 8`): 2,478 passed, 4 skipped, 1m57s.
+- **Linux, CPU** (WSL2 Ubuntu 24.04, Python 3.11, `JAX_PLATFORMS=cpu`, `-n 4`, a 23 GB VM):
+  **2,586 passed, 4 skipped, 0 failed**, 9m24s (the skips: the two accelerator-only tests,
+  the `reference/traderX` test without its checkout, the refused storage case). The first
+  green Linux full run since 1.8's (2,554 passed); see [I-27](#i-27).
+- **Linux, GPU** (the same VM, an RTX 5060 Laptop GPU, JAX's CUDA 13 plugin, `-n 4`):
+  **2,588 passed, 2 skipped, 0 failed**, 21m49s, the card's memory peaking at 5.5 GB of 8;
+  every ORE parity suite at its tolerance, the precision and sharding suites, and the
+  accelerator-only tests. The first GPU run found 9 failures, all fixed before this one: 5
+  float32 or bfloat16 results off by up to 1.5% (XLA computed float32 products in
+  TensorFloat-32; now full precision), 2 Greeks differing by an ulp between identical runs
+  (the GPU's atomics; now excluded), and 2 tests asserting a CPU-only bit-identity, which now
+  hold exactly on CPU and to 1e-13 of the cube's scale elsewhere (the paired sample) or derive
+  their tolerance from float32's epsilon (a swap's float32 cube).
 
-Bit for bit (2.1): the per-trade Greeks regions add a `TraceAnnotation` and a `named_scope`
-around each trade's Greeks; all 86 Greek arrays of the shared portfolio, AD and bump, equal
-those computed without them (`np.array_equal`). Nothing else on the pricing path changed, so
-the golden snapshot was not rerun. Red first: without the regions the per-trade phase test
-fails under both methods. (2026-10-04: on one device `shard_scenarios` places nothing, so
-one-device runs are unchanged by construction; red first, without the call sites every
-four-device result sat on one device.)
+Bit for bit (2.2), on CPU: the golden snapshot (232 arrays: today's values, the shared
+portfolio's cube and exposure under the LGM and Hull-White models, float32 runs, market risk
+at float64 and float32, AD and bump Greeks), from a worktree of `1a533f3` against the 2.2
+tree with its final defaults: all 232 identical in value, dtype and shape
+([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)). On the
+GPU the demo's job equals the CPU's to the last bits (today's value exactly, the cube to 9e-16
+of its scale, the AD Greeks to 2.3e-11 relative). Red first: without the defaults, the
+preallocation and matmul-precision checks fail, and on the GPU the served API opens a CUDA
+client (`/version` said `gpu (Linux)`) and a repeated Greeks call moves by 5e-15.
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
 
@@ -69,9 +71,10 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-50](#i-50) | No path- or distribution-level parity test against an ORE simulation | Medium | OPEN | Validation | 3.2 |
 | [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | 4.5 |
 | [I-78](#i-78) | AD and bump Greeks differ by up to 2% on a sloped market | Medium | OPEN | Validation | 4.5 |
-| [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | PARTIAL | Performance | 2.3 |
+| [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | PARTIAL | Performance | 2.4, 2.5 |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | 3.3 |
 | [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | 5.1 |
+| [I-80](#i-80) | Importing `engine` changes JAX and XLA settings for the whole process | Low | OPEN | Architecture | 2.3 |
 | [I-56](#i-56) | Market risk and the CAM calibration have no route; two routes named like versions | Medium | PARTIAL | API | 3.1 |
 | [I-57](#i-57) | EOD: a cached result is served before the submission id is checked | High | OPEN | API | 4.1 |
 | [I-58](#i-58) | EOD: two concurrent submissions of one workload both execute | Medium | OPEN | API | 4.1 |
@@ -80,7 +83,6 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-76](#i-76) | The job queue keeps every job and result forever | Low | OPEN | API | 4.2 |
 | [I-77](#i-77) | A worker that cannot start leaves jobs `pending` with no signal | Low | OPEN | API | 4.2 |
 | [I-61](#i-61) | Nothing runs on more than one host; multi-device speed unmeasured | Medium | PARTIAL | Performance | 3.8 |
-| [I-79](#i-79) | Never run on a GPU: the stated GPU support is unverified | Medium | OPEN | Scope | 2.2 |
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | 6.2, 6.4 |
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | 6.3 |
 
@@ -338,12 +340,12 @@ compiles from scratch, 18.8 s with the worker's disk cache, 2.8 s repeated in th
 Bermudan's and American's AD Greeks are 26 s of the 43 s. Its trace is whole in every mode
 (the 2026-10-01 "truncated at the event cap" was the `.trace.json.gz` export, which keeps the
 ~1M earliest-starting events; xprof reads the complete `.xplane.pb`, 1.5M events cold).
-What the measurement leaves for 2.3:
+What the measurement leaves for 2.4 and 2.5:
 
 - **Events are loop iterations.** ~624k kernel events in every mode, 251,554 of them
   `_bootstrap_bucket`'s 60-step bisection recalibrating the options on every path date: XLA's
-  CPU runtime records each op of a loop body per iteration. Fewer iterations (the early exit
-  below) cut both time and events.
+  CPU runtime records each op of a loop body per iteration. Fewer iterations (roadmap 2.5's
+  solver) cut both time and events.
 - **A repeated job still compiles 9 programs once.** The second run of the job in a worker
   compiles `legs_npv` and `black_multileg_npv` under the swap's and European's AD gradient and
   Hessian-vector product (4 + 4) and one European Vega; the third compiles none, and a
@@ -351,11 +353,25 @@ What the measurement leaves for 2.3:
   how the first full job seeds JAX's tracing caches, not a closure per call; about 1.6 s on
   the second job (4.1 s against 2.5 s for the third, in-process).
 
-**To close.** Roadmap 2.3, on `demos/demo_profile_small.py`: cut the recalibration's
-arithmetic without changing its root (an early exit of a bisection once its bracket stops
-moving keeps every value); cut first-call compile time per product (the options' AD Greeks)
-and the second job's 9 compiles; then re-measure on CPU and GPU with the demo's summary
-([profiling §5](../concepts/profiling.md#5-the-trace-summary-and-its-checks)).
+**The recalibration's loops** (2026-10-05). Each bucket of each basket, on each path date, is
+60 bisection steps; each step prices the helper, whose exercise boundary y* is itself 60
+widening and 100 halving steps (`_bootstrap_bucket` and `_solve_monotone_root` in
+`engine/calibration/ore_lgm.py`): 9,600 dependent steps per bucket and date, vectorized over
+paths only. The dates, which are independent, run one after another from Python
+(`bermudan_cube`). On a CPU a step is cheap; on a GPU each is a few kernel launches with
+little work in them (the measured gap: the Bermudan's and American's AD Greeks take 29 s of a
+traced repeat on the RTX 5060, 0.36 s on the CPU; the recalibration's share is still to be read
+from the device lane). ORE solves the same equations with Brent at accuracy 1e-6 for y* and
+Levenberg-Marquardt per bucket, and stops far earlier: 100 halvings are about 45 past float64's
+resolution. Five separate bisections do this work (`ore_lgm.py` twice,
+`engine/valuation/jamshidian.py`, `engine/calibration/lgm.py`, `engine/calibration/basket.py`).
+
+**To close.** Two steps, both measured on `demos/demo_profile_small.py`'s job and its summary
+([profiling §5](../concepts/profiling.md#5-the-trace-summary-and-its-checks)). Roadmap 2.4,
+bit for bit: cut first-call compile time per product (the options' AD Greeks) and the second
+job's 9 compiles, and the profiler's cost on the GPU. Roadmap 2.5: the configurable root solver
+of decision A-21 (a safeguarded Newton method by default, today's bisection as the reference)
+in one shared module, and the dates batched; it moves float64 at rounding level, once.
 `PricingConfig(recalibrate=False)` and the AD Greeks method exist where ORE's semantics are
 not needed.
 
@@ -389,36 +405,6 @@ low-precision paths against fewer FP64 paths in equal wall time. Two parts are m
 claiming each job and handing it to the others
 ([details](details/precision.md#113-multi-device-and-multi-host)); then wall time against
 device count on TPU (and H100), feeding 5.2.
-
-<a id="i-79"></a>
-### I-79 — Never run on a GPU: the stated GPU support is unverified
-
-**Severity:** Medium · **Status:** OPEN · **Category:** Scope · **Found:** 2026-10-05, roadmap
-reorder (the owner's local GPU checked)
-
-**What is wrong.** The README says the engine also runs on GPU, and every result's
-`PrecisionReport` names a backend, but no run, test or demo has been made on one. In the
-project's virtualenv `jax.devices()` is `[CpuDevice(id=0)]`; there is no install recipe, extra
-or memory setting for a GPU. JAX publishes no CUDA build for native Windows, so on the owner's
-machine (an RTX 5060 Laptop GPU: Blackwell, 8 GB) a GPU run needs WSL2 or Docker with GPU
-access. Known risks there, unchecked:
-
-- XLA preallocates most of a device's memory in each process that opens it. The API process
-  calls `jax.default_backend()` for `/version`, so it can open a second GPU client beside the
-  worker's. Parallel test processes would each open one too.
-- SQLite's locks, which the job queue and the worker lock rely on, are unreliable on the
-  Windows filesystem as WSL2 mounts it (`/mnt/c`).
-- The profiler's device lanes need CUPTI, whose support under WSL2 is unchecked.
-- float64, the default, runs at 1/64 of float32's rate on this card: correct, but slow.
-
-**Reach.** Every GPU run. No CPU number is affected.
-
-**Current handling.** None: CPU only.
-
-**To close.** Roadmap 2.2: JAX's CUDA build for the pinned 0.10 line under WSL2, a `gpu`
-extra and the recipe in the user guide, and a memory setting under which only the worker opens
-the GPU. Then `demos/demo_profile_small.py`, and the ORE parity, precision and sharding suites,
-on the GPU at their tolerances, recorded in the verification status.
 
 ---
 
@@ -620,6 +606,43 @@ while the worker has exited at startup N times running reports it (in `error`, o
 
 ## Architecture
 
+<a id="i-80"></a>
+### I-80 — Importing `engine` changes JAX and XLA settings for the whole process
+
+**Severity:** Low · **Status:** OPEN · **Category:** Architecture · **Found:** 2026-10-06, review
+of roadmap 2.2
+
+**What is wrong.** Since roadmap 2.2, `engine/__init__.py` sets three device settings when the
+package is imported, each unless the environment or the process already sets it:
+`XLA_PYTHON_CLIENT_PREALLOCATE=false`; JAX's default matrix-product precision to `"highest"`
+(`JAX_DEFAULT_MATMUL_PRECISION`, or `jax_default_matmul_precision` if JAX is already
+loaded); and `--xla_gpu_exclude_nondeterministic_ops=true` appended to `XLA_FLAGS`. Each
+fixed something measured on the owner's RTX 5060 (WSL2): XLA preallocates 75% of a GPU in
+every process that opens it, and the 6 GB request failed on the 8 GB card until a 4 GB one
+succeeded, so parallel test processes could not share it; by default XLA runs a float32
+product in TensorFloat-32 (10-bit mantissa) on an NVIDIA GPU and in bfloat16 passes on a TPU,
+and a float32 run's cube was 1.5% off; a GPU's scatter-adds accumulate with atomics in
+whatever order they land, and the AD Greeks moved by 5e-15 between identical runs. But a
+package import is the wrong place for all three. They apply to every computation in the
+process, a library user's own included. Preallocation is a deployment choice: a server with
+one engine worker per GPU wants JAX's default. Product precision belongs to the run's
+precision policy, yet a process-wide value can be overridden by anyone setting the
+variable, and the engine then computes float32 products in TensorFloat-32 while its
+precision report says float32. Determinism can only be set per process (an XLA flag; there is
+no per-computation switch), so it belongs to the process whose results the engine vouches
+for, the engine worker.
+
+**Reach.** No CPU number: the golden snapshot is bit for bit with and without the settings,
+and on a CPU the precision setting does nothing. Today nothing is wrong unless a variable is
+overridden; the cost is surprise and fragility.
+
+**Current handling.** The three defaults, each yielding to an explicit setting.
+
+**To close.** Roadmap 2.3, decision A-22: `engine/__init__.py` back to x64 only; preallocation
+off in the demos and tests only; every matrix product's precision explicit, through one helper
+in `engine/precision/`, enforced by a test and documented as a coding convention; the
+determinism flag set by the engine worker and the tests.
+
 <a id="i-55"></a><a id="a-1"></a>
 ### I-55 — Unproven precision combinations are not flagged
 
@@ -798,6 +821,11 @@ four-device sharding test (a fifth JAX process with four XLA host devices) timed
 30 minutes at a cgroup peak of 24.4 GB of 25.2; one on a quiet host where the Docker VM went
 down at 98%. Memory is the leading suspect: the suite now runs at the VM's limit.
 
+**2026-10-05, five Linux full runs under WSL2, all with summary lines** (roadmap 2.2; a 23 GB
+VM, `-n 4`): four on the GPU (the first two with failures in the code since fixed, none a lost
+process or an abort; the last two green, 20–22 min) and one on CPU, green in 9m24s. WSL2 is the steadier Linux host here;
+the Docker attempts above remain unexplained.
+
 **CI, 2026-10-05: memory, confirmed and fixed for the fast tier.** Every CI run since `-n auto`
 (`f51227c`, run #14) died after 7–9 minutes with "The operation was canceled": the 4-vCPU,
 16 GB runner ran out of memory and lost its runner agent. Reproduced in Docker with the
@@ -914,6 +942,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-71"></a>I-71 | A float32-tier worker turned x64 off, so its pricing and exposure ran in float32 where an in-process run used float64 | `tests/test_engine_worker.py::TestEngineWorkerPricing::test_jobs_queued_together_give_the_bits_of_jobs_run_one_after_another` (float64 and float32 jobs equal the direct call) |
 | <a id="i-72"></a>I-72 | HTTP jobs ran in a process pool that pickled each request with its ORE dates frozen as text, compiled every job shape once per worker, broke for every later job when one worker died (`BrokenProcessPool`), and would have needed chip pinning on TPU (now one engine worker per host behind a durable queue, roadmap 1.8) | `tests/test_engine_worker.py` (`test_a_second_identical_job_compiles_nothing`, `test_a_failing_job_fails_only_its_own_row`, `test_a_worker_killed_mid_job_leaves_it_interrupted`, `test_the_worker_prices_the_request_the_route_validated`) |
 | <a id="i-74"></a>I-74 | A calibration basket read ORE's global evaluation date, so a later date (another caller's, or the wall clock past a helper's fixing) failed it with a missing fixing | `tests/test_ore_lgm_calibration.py::test_the_basket_does_not_depend_on_ores_global_evaluation_date` |
+| <a id="i-79"></a>I-79 | Never run on a GPU (now the `gpu` extra under Linux or WSL2, verified on an RTX 5060: no preallocation, the API's JAX on the CPU, float32 products at float32 rather than TensorFloat-32, deterministic kernels; the demo and the full suite run on the GPU; roadmap 2.2) | `tests/test_accelerator_defaults.py`, `tests/test_environment.py::test_a_gpu_plugin_is_jaxlibs_version`, the full suite on the GPU |
 | <a id="m-4"></a>Audit M-4 | Trades were defined relative to the evaluation date (now absolute dates) | `tests/test_trade_dates.py` |
 | <a id="m-5"></a>Audit M-5 | Theta re-rolled the trade instead of ageing it | `tests/test_trade_dates.py` |
 | <a id="r-1"></a>Audit R-1 | Cube quantiles were reported as VaR/ES (now exposure profiles; market-risk VaR/ES by t=0 revaluation) | `tests/test_exposure.py`, `tests/test_market_risk.py`, `tests/test_market_risk_ore_parity.py` |

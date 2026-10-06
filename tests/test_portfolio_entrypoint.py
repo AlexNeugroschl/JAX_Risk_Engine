@@ -160,11 +160,15 @@ class TestPricePortfolioPrecision:
     def test_each_stage_is_honoured(self, stage, stage_precision):
         """No stage's setting is accepted and ignored: float32 at one stage alone, stored only
         or computed too, moves the cube off the float64 one by rounding, and nothing else."""
-        exact = price_portfolio(_request(("swap-payer",)))
+        request = _request(("swap-payer",))
+        exact = price_portfolio(request)
         rounded = price_portfolio(_request(("swap-payer",), precision=Precision(**{stage: stage_precision})))
         assert rounded.base_npv_per_trade == exact.base_npv_per_trade, "t=0 values are float64"
         assert not np.array_equal(np.asarray(rounded.npv_cube), np.asarray(exact.npv_cube))
-        np.testing.assert_allclose(np.asarray(rounded.npv_cube), np.asarray(exact.npv_cube), rtol=1e-4, atol=2.0)
+        # A swap's value is a difference of legs of the notional's size, so float32 rounding is
+        # a few of float32's ulps at the notional (2.2 of 1e7 on a GPU, under 2 on a CPU).
+        atol = 4 * np.finfo(np.float32).eps * request.trades[0].notional
+        np.testing.assert_allclose(np.asarray(rounded.npv_cube), np.asarray(exact.npv_cube), rtol=1e-4, atol=atol)
 
     @pytest.mark.slow
     def test_float32_throughout_stores_float32_values_and_reduces_in_float64(self):

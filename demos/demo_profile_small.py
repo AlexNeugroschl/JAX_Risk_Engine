@@ -26,6 +26,10 @@ recalibration on every path date, one event per op per iteration (I-53).
 Run with:  .venv/Scripts/python.exe demos/demo_profile_small.py [--cold] [--no-disk-cache]
 View with: xprof --port 8791 .profile-out-small
 
+On a GPU (roadmap 2.2: Linux or WSL2 with the `gpu` extra, docs/getting-started/user-guide.md)
+the same command runs the job on the GPU; the result's `ran on:` line names the device the
+engine worker used. Measured on an RTX 5060 in `docs/concepts/profiling.md` §2.0.
+
 Delete `.profile-out-small` between runs when comparing: each run adds a `pid-<pid>/`.
 """
 import argparse
@@ -205,6 +209,8 @@ def print_result(result: dict) -> None:
         means = [sum(npv_cube[s][i][j] for s in range(num_paths)) / num_paths for j in range(len(trade_ids))]
         print(f"  {t:>4.2f}  " + "".join(f"{m:>12,.0f}" for m in means))
     print(f"\nportfolio NPV today: {result['base_npv']:,.2f}")
+    # Where the engine worker ran the job (its precision report), not the API process.
+    print(f"ran on: {result['precision']['backend']} ({', '.join(result['precision']['devices'])})")
 
     print("\nexposure profile:")
     exposure = result["exposure"]

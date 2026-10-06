@@ -13,12 +13,13 @@ A job is the HTTP body as the API received it. The worker parses it exactly as t
 crosses a process boundary, calls `price_portfolio` in this process, and stores the result
 document `PortfolioResultSchema` serializes, the bytes a route would have sent. Jobs run one
 at a time, in submission order. The process owns every device JAX sees on its host; no device
-is pinned or shared with another engine process. XLA programs stay compiled for the process's
-lifetime, so a repeated job shape compiles nothing (each job's count is stored in its row).
-Across restarts, a worker started by `main` keeps JAX's persistent compilation cache: in
-`JAX_COMPILATION_CACHE_DIR` if set (empty turns it off), else in `xla-cache/` beside the queue
-file, every program cached (`compilation_cache_environment`). A restarted worker then reads
-its programs back instead of compiling them again.
+is pinned or shared with another engine process (the API keeps its own JAX on the CPU,
+`engine.api.app.keep_jax_on_the_cpu`, and `engine` turns GPU preallocation off). XLA programs
+stay compiled for the process's lifetime, so a repeated job shape compiles nothing (each job's
+count is stored in its row). Across restarts, a worker started by `main` keeps JAX's
+persistent compilation cache: in `JAX_COMPILATION_CACHE_DIR` if set (empty turns it off), else
+in `xla-cache/` beside the queue file, every program cached (`compilation_cache_environment`).
+A restarted worker then reads its programs back instead of compiling them again.
 
 A failing job fails only its own row, with a failure class (`failure_class`) and the
 traceback; the worker goes on to the next job. A worker that dies mid-job leaves the row

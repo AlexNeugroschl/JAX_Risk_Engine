@@ -11,7 +11,7 @@ must admit the locked versions, and every declared dependency must be
 locked. See the header of constraints.txt for how to upgrade a pin.
 """
 import tomllib
-from importlib.metadata import version
+from importlib.metadata import distributions, version
 from pathlib import Path
 
 import pytest
@@ -24,6 +24,11 @@ ROOT = Path(__file__).resolve().parents[1]
 # packages (pytest, fastapi, ...) may drift locally without invalidating a
 # numerical result, so they are not checked here.
 NUMERICAL_PACKAGES = ["jax", "jaxlib", "open-source-risk-engine", "numpy", "scipy"]
+
+# JAX's GPU plugin, where the `gpu` extra installed it (roadmap 2.2): its kernels are what a
+# GPU run computes with, and JAX refuses to load a plugin whose version is not jaxlib's.
+GPU_PLUGINS = sorted(canonicalize_name(d.metadata["Name"]) for d in distributions()
+                     if canonicalize_name(d.metadata["Name"]).startswith("jax-cuda"))
 
 
 def _locked_versions():
@@ -48,8 +53,9 @@ def _declared_requirements():
 LOCKED = _locked_versions()
 
 
-@pytest.mark.parametrize("package", NUMERICAL_PACKAGES)
+@pytest.mark.parametrize("package", NUMERICAL_PACKAGES + GPU_PLUGINS)
 def test_installed_numerical_package_matches_lock(package):
+    assert canonicalize_name(package) in LOCKED, f"{package} {version(package)} is installed but not pinned in constraints.txt"
     assert version(package) == LOCKED[canonicalize_name(package)], (
         f"{package} {version(package)} is installed but constraints.txt pins "
         f"{LOCKED[canonicalize_name(package)]}. Parity tolerances are only "
@@ -57,6 +63,12 @@ def test_installed_numerical_package_matches_lock(package):
         f"`pip install -r requirements.txt`, or upgrade the pin as described "
         f"in constraints.txt."
     )
+
+
+@pytest.mark.skipif(not GPU_PLUGINS, reason="no GPU plugin installed (the `gpu` extra)")
+@pytest.mark.parametrize("plugin", GPU_PLUGINS)
+def test_a_gpu_plugin_is_jaxlibs_version(plugin):
+    assert version(plugin) == version("jaxlib"), f"{plugin} {version(plugin)} beside jaxlib {version('jaxlib')}"
 
 
 @pytest.mark.parametrize("requirement", _declared_requirements(), ids=str)

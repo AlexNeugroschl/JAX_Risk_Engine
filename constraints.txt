@@ -14,7 +14,9 @@
 #   pip install -e ".[api,dev,profiling]"
 # run the FULL suite (not only the fast tier), then regenerate with
 #   pip freeze --exclude-editable > constraints.txt
-# and restore this header. See docs/getting-started/user-guide.md.
+# and restore this header. The Linux block at the end comes from a freeze of the GPU
+# environment (`.[api,dev,profiling,gpu]` under WSL2 or Linux) after the same suite runs on
+# the GPU. See docs/getting-started/user-guide.md.
 absl-py==2.5.0
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.3
@@ -107,3 +109,25 @@ Werkzeug==3.1.8
 xprof==2.23.2
 yarl==1.25.1
 zipp==4.1.0
+
+# Linux only: the `gpu` extra (JAX's CUDA 13 plugin and the CUDA libraries it installs) and
+# uvicorn's `uvloop`, from the environment verified on the owner's RTX 5060 under WSL2
+# (roadmap 2.2). pip skips them where they are not asked for, as on Windows.
+jax-cuda13-pjrt==0.10.2
+jax-cuda13-plugin==0.10.2
+nvidia-cublas==13.8.1.7
+nvidia-cuda-cccl==13.3.4.3.1
+nvidia-cuda-crt==13.4.92
+nvidia-cuda-cupti==13.4.92
+nvidia-cuda-nvcc==13.4.92
+nvidia-cuda-nvrtc==13.4.92
+nvidia-cuda-runtime==13.4.92
+nvidia-cudnn-cu13==9.27.0.42
+nvidia-cufft==12.4.0.43
+nvidia-cusolver==12.3.4.7
+nvidia-cusparse==12.8.6.72
+nvidia-nccl-cu13==2.32.3
+nvidia-nvjitlink==13.4.92
+nvidia-nvshmem-cu13==3.8.0
+nvidia-nvvm==13.4.92
+uvloop==0.23.0
