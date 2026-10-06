@@ -36,11 +36,8 @@ import argparse
 import glob
 import json
 import os
-import subprocess
-import sys
-import time
 
-import httpx
+from demo_http import API_BASE, MANAGE_SERVER, start_server, stop_server, submit_and_wait, wait_until_healthy
 
 # =============================================================================
 # STAGE 1 -- GIVEN INPUTS (small, but the same KINDS of input as demo_structured)
@@ -92,11 +89,11 @@ RISK_PERCENTILES = [0.95, 0.99]
 # STAGE 2 -- SERVER SETUP (identical mechanics to demo_structured.py)
 # =============================================================================
 
-API_BASE = "http://127.0.0.1:8000"
-_MANAGE_SERVER = os.environ.get("JAX_RISK_ENGINE_DEMO_SKIP_SERVER") != "1"
+# The server and its job polling are demo_http.py's (a server on API_BASE, GPU preallocation
+# off unless the environment sets it).
 
 # A separate directory from demo_structured.py's `.profile-out`. Passed to uvicorn and its
-# engine worker via os.environ.copy() in start_server; it arms the profiler hook in
+# engine worker by start_server; it arms the profiler hook in
 # engine/api/worker.py::_profiled.
 PROFILE_DIR = ".profile-out-small"
 
@@ -109,44 +106,14 @@ PROFILE_DIR = ".profile-out-small"
 #   --no-disk-cache:  turns that cache off, so a --cold trace is the job from scratch.
 
 
-def wait_until_healthy(timeout_s: float = 60.0) -> None:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            if httpx.get(f"{API_BASE}/health", timeout=2.0).status_code == 200:
-                return
-        except httpx.TransportError:
-            pass
-        time.sleep(0.5)
-    raise RuntimeError(f"server at {API_BASE} did not become healthy within {timeout_s}s")
-
-
-def start_server(cold: bool, disk_cache: bool) -> subprocess.Popen:
-    env = os.environ.copy()
-    env["JAX_RISK_PROFILE_DIR"] = PROFILE_DIR
+def server_variables(cold: bool, disk_cache: bool) -> dict:
+    """The server's environment variables for a cache mode (see above)."""
+    variables = {"JAX_RISK_PROFILE_DIR": PROFILE_DIR}
     if not cold:
-        env["JAX_RISK_PROFILE_WARMUP"] = "1"
+        variables["JAX_RISK_PROFILE_WARMUP"] = "1"
     if not disk_cache:
-        env["JAX_COMPILATION_CACHE_DIR"] = ""  # empty turns the worker's disk cache off
-    process = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "engine.api.app:app", "--host", "127.0.0.1", "--port", "8000"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        env=env,
-    )
-    print(f"launched uvicorn (pid {process.pid}), waiting for {API_BASE}/health ...")
-    try:
-        wait_until_healthy()
-    except Exception:
-        process.terminate()
-        raise
-    print("server is up")
-    return process
-
-
-def stop_server(process: subprocess.Popen) -> None:
-    process.terminate()
-    process.wait(timeout=10)
-    print(f"stopped uvicorn (pid {process.pid})")
+        variables["JAX_COMPILATION_CACHE_DIR"] = ""  # empty turns the worker's disk cache off
+    return variables
 
 
 # =============================================================================
@@ -175,28 +142,6 @@ def build_portfolio_request() -> dict:
 # =============================================================================
 # STAGE 4 -- SUBMIT AND PRINT
 # =============================================================================
-
-def submit_and_wait(request_body: dict) -> dict:
-    submit = httpx.post(f"{API_BASE}/portfolio/price", json=request_body, timeout=30.0)
-    if submit.status_code != 202:
-        raise RuntimeError(f"submission failed ({submit.status_code}): {submit.text}")
-    job_id = submit.json()["job_id"]
-    print(f"job_id: {job_id} (202 Accepted -- pricing is running in the background)")
-
-    start = time.time()
-    while True:
-        poll = httpx.get(f"{API_BASE}/portfolio/price/{job_id}", timeout=30.0)
-        poll.raise_for_status()
-        status = poll.json()
-        print(f"  [{time.time() - start:6.1f}s] status: {status['status']}")
-        if status["status"] in ("done", "failed"):
-            break
-        time.sleep(1.0)
-
-    if status["status"] == "failed":
-        raise RuntimeError(f"pricing job failed:\n{status['error']}")
-    return status["result"]
-
 
 def print_result(result: dict) -> None:
     trade_ids = result["trade_ids"]
@@ -272,7 +217,7 @@ def main(argv=None) -> None:
           f"{len(SIMULATION_DATES)} simulation dates, the {MODEL} model, greeks=ON")
 
     print("\n=== stage 2: server setup ===")
-    server_process = start_server(args.cold, args.disk_cache) if _MANAGE_SERVER else None
+    server_process = start_server(**server_variables(args.cold, args.disk_cache)) if MANAGE_SERVER else None
     if server_process is None:
         wait_until_healthy()
         print(f"reusing an already-running server at {API_BASE}")
@@ -292,7 +237,7 @@ def main(argv=None) -> None:
         print(f"built the portfolio request: {len(request_body['trades'])} trades")
 
         print("\n=== stage 4: submit and print ===")
-        result = submit_and_wait(request_body)
+        result = submit_and_wait(request_body, poll_seconds=1.0)
         print_result(result)
         report_trace()
     finally:

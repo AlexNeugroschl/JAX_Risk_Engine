@@ -269,12 +269,20 @@ Since roadmap 1.8 (decision A-14; [details/precision.md §11](../planning/detail
   single-threaded process per host. It takes jobs in submission order, parses each body
   exactly as the route did (so nothing is pickled), calls `price_portfolio`, and stores the
   result document, which the route then sends verbatim. It owns every device JAX sees on the
-  host (a served API keeps its own JAX on the CPU, and no engine process preallocates a GPU's
-  memory; roadmap 2.2) and keeps its compiled programs for its lifetime, so a repeated job shape compiles
-  nothing. It also keeps them on disk, in JAX's persistent compilation cache, so a restarted
+  host (a served API keeps its own JAX on the CPU; roadmap 2.2) and keeps its compiled
+  programs for its lifetime, so a repeated job shape compiles nothing. It also keeps them on disk, in JAX's persistent compilation cache, so a restarted
   worker reads them back instead of compiling again: in `JAX_COMPILATION_CACHE_DIR` if set
   (set it empty to turn the cache off), else in `xla-cache/` beside the queue file. A file lock (`<queue>.worker.lock`) makes it the queue's only worker; the
   operating system releases the lock however the worker dies.
+- **The worker's device settings** (decision A-22, roadmap 2.3). It runs deterministic GPU
+  kernels, so a job gives the same bits on every run of its compiled program: at start-up it
+  adds `--xla_gpu_exclude_nondeterministic_ops=true` to its `XLA_FLAGS`, unless they already
+  name `--xla_gpu_exclude_nondeterministic_ops` or `--xla_gpu_deterministic_ops` (either
+  value; the second also pins autotuning, at twice the compile time). GPU memory is the
+  deployment's choice: the worker keeps JAX's default of preallocating 75% of a GPU, right for
+  one worker per GPU; start the server (or `jax-risk-worker`) with
+  `XLA_PYTHON_CLIENT_PREALLOCATE=false` where other processes share the card, as the demos
+  do. Both apply on a GPU only; neither changes a CPU number.
 - **Failures stay in their row.** A job that raises is `failed` with its class and traceback,
   and the worker takes the next job. A worker that dies mid-job leaves the row `running`; the
   next worker to start marks it `interrupted` before claiming anything, so a job that kills

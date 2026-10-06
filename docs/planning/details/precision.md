@@ -3,11 +3,11 @@
 Design and plan for adjustable numeric precision, from float64 down to FP8, and for the
 execution architecture that runs it. It implements [I-55](../known-issues.md#i-55),
 [F-07](../features.md#f-07), [I-12](../known-issues.md#i-12) and
-[I-72](../known-issues.md#i-72), and the owner decisions A-9 and A-10 to A-16 and the revised
+[I-72](../known-issues.md#i-72), and the owner decisions A-9, A-10 to A-16, A-22 and the revised
 D-9 ([compliance/decisions.md](../../../compliance/decisions.md)). It replaces
 `sub-fp32-precision.md`; its findings are kept, corrected, in [§15](#15-measurements).
 
-**Written:** 2026-10-01 · **Steps:** roadmap [1.4 to 1.8](../roadmap.md#stage-1--structure),
+**Written:** 2026-10-01 · **Steps:** roadmap [1.4 to 1.8](../roadmap.md#stage-1--structure), 2.3,
 [3.6, 3.7, 3.8](../roadmap.md#stage-3--foundations),
 [5.1 to 5.3](../roadmap.md#stage-5--precision-research)
 
@@ -257,6 +257,7 @@ engine/precision/
   storage.py   # store(), load() (1.4); Stored (pytree: values, scales, format, axis), rounding (1.6)
   report.py    # PrecisionReport: the policy as run, realized dtypes, device, paired errors (1.7)
   estimate.py  # two-level estimator for means; paired differences for quantiles (1.7)
+  products.py  # matmul(): every matrix product, at its compute format's precision (2.3)
 ```
 
 Step 1.4 built the first three at float64/float32; step 1.6 added `Stored` and the scaled
@@ -443,6 +444,33 @@ oracle sets it). `tests/test_portfolio_entrypoint.py::TestPricePortfolioConcurre
 float64 and a float32 request on two threads at once, repeatedly, each bit for bit equal to
 its sequential run.
 
+### 6.7 Matrix products (step 2.3)
+
+A matrix product's precision is part of the compute format, so the policy states it, never
+the device (decision A-22). `engine.precision.matmul(a, b)` (the semantics of `a @ b`) asks
+`product_precision(dtype)` for the operands' format and passes it to `jnp.matmul`; the
+precision is then in the program itself (`dot_general`'s `precision`), and AD's transposes
+of the product carry it too. float64 and float32 map to `lax.Precision.HIGHEST`; a format not
+yet enabled for compute is refused, naming step 3.7, which maps TensorFloat-32, bfloat16
+passes and FP8 products to formats of the policy (§8.3).
+
+Every matrix product of the engine's JAX code goes through it; at step 2.3 there are nine:
+the simulation step (`evolve_states`, 2), the Brownian bridge (1, as one `[T, T] x [T, S*d]`
+product), the Bermudan rollback's bookkeeping (4) and the calibration's spread correction
+(`_corrections`, 2). NumPy products on the host are exact in their dtype and are left alone.
+JAX's process-wide `jax_default_matmul_precision`, which 2.2 set on import, is neither set
+nor read: anyone could override it, and the report would then be false.
+`tests/test_accelerator_defaults.py::TestEveryMatrixProductStatesItsPrecision` records every
+`dot_general` JAX binds while the pipelines run from cleared caches (the simulation under
+both models, the scenario market, every product's path pricing with the per-path
+recalibration, today's values, AD Greeks, market risk; float64 and float32) and fails on any
+without its format's precision or outside the engine's code, naming the line. The coding
+rule is in [coding-style.md](../../concepts/coding-style.md#core-constraints).
+
+On a CPU the precision does nothing (XLA's CPU backend computes a float32 product in float32
+whatever it says), so step 2.3 moved no bit (§13.1); on a GPU it is what 2.2's process
+default did, product by product.
+
 ## 7. Low-precision storage
 
 Storage below 32 bits needs no kernel changes: values are loaded to the compute precision,
@@ -515,13 +543,13 @@ rollback and its per-path recalibration, exposure. One implementation serves eve
   matrix product in TensorFloat-32 on an NVIDIA GPU (a 10-bit mantissa) and in bfloat16
   passes on a TPU. Measured on the RTX 5060 (roadmap 2.2): a float32 simulation's cube was
   1.5% off the float64 one under that default, and within float32 rounding at full
-  precision. Since 2.2 `engine/__init__.py` sets `jax_default_matmul_precision` to
-  `"highest"` unless the process sets it, so a float32 compute policy is float32 on every
-  device. Roadmap 2.3 (decision A-22) replaces that process-wide setting: each of the engine's
-  matrix products states its precision through one helper in `engine/precision/`, taken from
-  its operands' compute format, so the policy alone decides it (a test enforces the rule). TensorFloat-32, bfloat16 passes and FP8 products are compute formats in their own
-  right, which step 3.7 makes selectable in the policy (and the report names) and 5.2 times;
-  the device's default is never the silent choice.
+  precision. Since step 2.3 (decision A-22) each of the engine's matrix products states its
+  precision, taken from its operands' compute format (`engine.precision.matmul`, §6.7), so a
+  float32 compute policy is float32 on every device and no process setting can change it
+  (2.2 had set JAX's process-wide default instead). TensorFloat-32, bfloat16 passes and FP8
+  products are compute formats in their own right, which step 3.7 makes selectable in the
+  policy (and the report names) through the same helper, and 5.2 times; the device's default
+  is never the silent choice.
 - The rollback's matrix form also fixes its memory. Today each column (the option, the
   underlying, each cached cashflow) is interpolated at `[nodes, quadrature nodes]` points,
   vmapped over the columns, although the interpolation weights depend only on the grids:
@@ -880,6 +908,14 @@ process changes.
   and is held to the parity tolerances, which every ORE parity suite meets: the demo's job
   equals the CPU's today's value exactly, the cube and EPE to 9e-16 of their scale, the AD
   Greeks to 2.3e-11 relative.
+- **Step 2.3's result (2026-10-06).** 2.3 moves 2.2's three process defaults to the processes
+  that own them and states every matrix product's precision in the program
+  (`engine.precision.matmul`, §6.7), so the products' HLO carries the same precision 2.2's
+  process default gave it; the Brownian bridge's `tensordot` became a reshaped matrix product
+  (checked bit for bit against it on its own first, at float64 and float32, up to
+  `[120, 2048, 4]`). The same snapshot script, 232 arrays, from a worktree of `7b51e19` (2.2)
+  against the 2.3 tree, on CPU: all 232 identical in value, dtype and shape, the float32 runs
+  included.
 - Step 2.5 (the configurable root solver, decision A-21): with `"Bisection"` the snapshot
   stays bit for bit; every ORE parity suite passes under both solvers, then the snapshot is
   re-baselined once for the `"Newton"` default, with the largest change per array recorded.
@@ -1152,6 +1188,7 @@ Recorded in [compliance/decisions.md](../../../compliance/decisions.md), 2026-10
 | A-14 | Execution: API and one single-threaded engine worker process per host, through a durable SQLite queue |
 | A-15 | Precision per stage, overridable per product and per trade (trade over product over stage) |
 | A-16 | One kernel implementation for every precision; float64 is re-baselined once, after ORE parity passes |
+| A-22 (2026-10-06) | A matrix product's precision is its compute format's, stated by the product (`engine.precision.matmul`, §6.7), never a process-wide default (step 2.3) |
 
 Engineering defaults, changeable without a decision: block size 32 along the scenario axis;
 the rounding default chosen by step 3.6; `paired_fraction` 0 by default, 0.02 suggested for

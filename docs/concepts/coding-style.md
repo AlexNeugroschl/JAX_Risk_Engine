@@ -20,11 +20,26 @@ this codebase's JAX code.
   it (`jnp.finfo(dtype).eps`), never written for float64 only. Calibration today, t=0 values,
   Greeks and reductions over paths are float64 by decision (A-10); the factories that build a
   stage's functions (`trade_price_function`) take the stage's dtype once.
+- **Matrix products through `engine.precision.matmul`.** No bare `@`, `jnp.matmul`,
+  `jnp.dot`, `jnp.einsum` or `jnp.tensordot` on JAX arrays in engine code: `matmul(a, b)` (the
+  semantics of `a @ b`) states the product's precision from its operands' compute format,
+  full precision for float32 and float64 (decision A-22). Why: a product that states none
+  runs at the device's default, which is below float32 on accelerators (TensorFloat-32 on an
+  NVIDIA GPU, bfloat16 passes on a TPU), so a float32 policy would compute below float32 while
+  its precision report says float32; on an RTX 5060 a float32 cube came out 1.5% off. Nor is
+  the process-wide `jax_default_matmul_precision` set, which any process could override. A
+  contraction that is not a matrix product takes that form first (reshape, transpose; the
+  Brownian bridge's `[T, T] x [T, S, d]` is one product over `[T, S*d]`), or an elementwise
+  product and a sum where it is small. NumPy products on the host are exact in their dtype and
+  stay as they are. Enforced by `tests/test_accelerator_defaults.py::
+  TestEveryMatrixProductStatesItsPrecision`, which traces the pipelines (AD's transposes
+  included) and fails on any product without its precision, naming the line (slow tier).
 - **No state mutation.** JAX requires pure functions — never use in-place array updates
   (`x[0] = 1`).
 - **Vectorization over loops.** Never use an ordinary Python `for` loop inside
-  JIT-compiled code. Use `jax.lax.scan` for chronological time-stepping and
-  `jnp.einsum`/`jnp.where` for cross-sectional trade logic.
+  JIT-compiled code. Use `jax.lax.scan` for chronological time-stepping, and broadcasting,
+  `jnp.where` and matrix products (`engine.precision.matmul`, above) for cross-sectional
+  trade logic.
 - **API-first design.** Data-ingestion logic is written to expect dictionaries/JSON
   natively, treating the XML parser (where used) as a test/validation adapter rather than
   a hard dependency.
@@ -40,7 +55,7 @@ read-only clone — see [ORE Parity](../reference/ore-parity.md)), the rule is: 
   handful of plain functions operating on arrays, not a class.
 - **Do not port loops.** ORE iterates over scenarios and time steps with ordinary `for`
   loops. Translate these into `jax.lax.scan` for time, and vectorized tensor operations
-  (`jnp.where`, `jnp.einsum`) for scenarios and assets.
+  (broadcasting, `jnp.where`, `engine.precision.matmul`) for scenarios and assets.
 - **Preserve variable names where mathematically logical.** Keep parameter names aligned
   with ORE's own math (`A(t,T)`, `B(t,T)`, `mean_reversion`, `theta`) so the correspondence
   to ORE's source stays legible — this is what makes the

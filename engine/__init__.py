@@ -8,44 +8,24 @@ Until roadmap 1.3 this was a side effect of importing the Hull-White simulation 
 
 This module does not import JAX itself, so `engine.integration` stays free of it (I-05): it
 sets `JAX_ENABLE_X64`, which JAX reads when it is first imported, or updates the flag when JAX
-is already loaded. Worker processes switch it on again in their initializer (I-71).
+is already loaded. The engine worker gets it the same way, by importing `engine` (I-71).
 
-Three more defaults hold on accelerators (roadmap 2.2), each unless the environment or the
-process already sets it, and none changes a CPU number:
+It is the one process-wide setting importing `engine` makes (decision A-22, roadmap 2.3). The
+others belong to the process that owns them:
 
-- **No GPU preallocation** (`XLA_PYTHON_CLIENT_PREALLOCATE=false`). By default XLA takes 75%
-  of a GPU's memory in every process that opens it, and an engine host runs several (the
-  engine worker, test processes, a notebook). Each process holds what it has used instead.
-- **Matrix products at their operands' precision** (`jax_default_matmul_precision` "highest").
-  By default a float32 product runs in TensorFloat-32 on an NVIDIA GPU (a 10-bit mantissa) and
-  in bfloat16 passes on a TPU, so a run whose policy computes in float32 would compute below
-  it. A lower product precision is a compute format of its own (roadmap 3.7, 5.2), chosen by
-  the policy, never by the device.
-- **Deterministic GPU kernels** (`--xla_gpu_exclude_nondeterministic_ops=true` in `XLA_FLAGS`).
-  A compiled program gives the same bits on every run: without it the AD Greeks' scatter-adds
-  accumulate in whatever order the GPU's atomics land, and move by an ulp between runs.
-  Compilation may still autotune, so two compiles of one program could in principle choose
-  different kernels; a restarted worker reads its programs back from the disk cache, and
-  `--xla_gpu_deterministic_ops=true` pins compilation too, at twice the compile time
-  (measured on the demo's job, roadmap 2.2).
-
-JAX reads the device variables when the process first opens a device, so they apply to any
-process that imports `engine` before its first device operation.
+- **Matrix-product precision** is stated by each product (`engine.precision.matmul`), from its
+  operands' compute format, so `jax_default_matmul_precision` is neither set nor read.
+- **Deterministic GPU kernels** (`--xla_gpu_exclude_nondeterministic_ops=true` in `XLA_FLAGS`)
+  are set by the engine worker for itself (`engine.api.worker.deterministic_kernels_environment`)
+  and by the test suite; a library user who wants reproducible GPU bits sets the flag.
+- **GPU preallocation** stays JAX's default (75% of a GPU per process) unless the environment
+  says otherwise; the demos that start a server and the test suite turn it off, since their
+  processes share one GPU.
 """
 import os as _os
 import sys as _sys
 
-_os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
-
-_XLA_FLAGS = _os.environ.get("XLA_FLAGS", "")
-if "deterministic_ops" not in _XLA_FLAGS:  # either XLA determinism flag set by the operator wins
-    _os.environ["XLA_FLAGS"] = f"{_XLA_FLAGS} --xla_gpu_exclude_nondeterministic_ops=true".strip()
-
 if "jax" in _sys.modules:
-    _jax = _sys.modules["jax"]
-    _jax.config.update("jax_enable_x64", True)
-    if _jax.config.jax_default_matmul_precision is None:
-        _jax.config.update("jax_default_matmul_precision", "highest")
+    _sys.modules["jax"].config.update("jax_enable_x64", True)
 else:
     _os.environ["JAX_ENABLE_X64"] = "1"
-    _os.environ.setdefault("JAX_DEFAULT_MATMUL_PRECISION", "highest")

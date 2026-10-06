@@ -44,6 +44,7 @@ import numpy as np
 
 from engine.models.curves import ZeroCurve, log_discount
 from engine.models.lgm import VOLATILITY_TYPES, Sigma, as_sigma, hull_white_zeta, zeta as hagan_zeta
+from engine.precision import matmul
 
 #: Gauss-Legendre nodes per interval between breakpoints. The integrands are smooth there
 #: (products of constants and exponentials), and 20 nodes are exact to double precision for
@@ -498,7 +499,7 @@ def evolve_states(x0: jax.Array, moments: Tuple[jax.Array, jax.Array, jax.Array]
 
     def step(x, inputs):
         M, b, L, z = inputs
-        x_next = x @ M.T + b + z @ L.T
+        x_next = matmul(x, M.T) + b + matmul(z, L.T)
         return x_next, x_next
 
     initial = jnp.broadcast_to(x0, (normals.shape[1], x0.shape[0]))

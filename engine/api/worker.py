@@ -14,12 +14,20 @@ crosses a process boundary, calls `price_portfolio` in this process, and stores 
 document `PortfolioResultSchema` serializes, the bytes a route would have sent. Jobs run one
 at a time, in submission order. The process owns every device JAX sees on its host; no device
 is pinned or shared with another engine process (the API keeps its own JAX on the CPU,
-`engine.api.app.keep_jax_on_the_cpu`, and `engine` turns GPU preallocation off). XLA programs
-stay compiled for the process's lifetime, so a repeated job shape compiles nothing (each job's
-count is stored in its row). Across restarts, a worker started by `main` keeps JAX's
-persistent compilation cache: in `JAX_COMPILATION_CACHE_DIR` if set (empty turns it off), else
-in `xla-cache/` beside the queue file, every program cached (`compilation_cache_environment`).
-A restarted worker then reads its programs back instead of compiling them again.
+`engine.api.app.keep_jax_on_the_cpu`), so the worker keeps JAX's default of preallocating
+75% of a GPU; set `XLA_PYTHON_CLIENT_PREALLOCATE=false` where other processes share the card
+(the demos and the tests do). XLA programs stay compiled for the process's lifetime, so a
+repeated job shape compiles nothing (each job's count is stored in its row). Across restarts,
+a worker started by `main` keeps JAX's persistent compilation cache: in
+`JAX_COMPILATION_CACHE_DIR` if set (empty turns it off), else in `xla-cache/` beside the queue
+file, every program cached (`compilation_cache_environment`). A restarted worker then reads its
+programs back instead of compiling them again.
+
+A worker started by `main` also runs deterministic GPU kernels, so a compiled job gives the
+same bits on every run (`deterministic_kernels_environment`, decision A-22): it appends
+`--xla_gpu_exclude_nondeterministic_ops=true` to its `XLA_FLAGS`, unless they name either XLA
+determinism flag. XLA has no per-computation switch, so it is set for the process whose
+results the engine vouches for; it changes nothing on a CPU.
 
 A failing job fails only its own row, with a failure class (`failure_class`) and the
 traceback; the worker goes on to the next job. A worker that dies mid-job leaves the row
@@ -64,6 +72,12 @@ POLL_SECONDS = 0.005
 #: `JAX_COMPILATION_CACHE_DIR` is unset.
 COMPILATION_CACHE_DIRNAME = "xla-cache"
 
+#: XLA's flag that excludes GPU kernels whose results depend on scheduling (atomics). Without
+#: it the AD Greeks' scatter-adds moved by an ulp between identical runs on an RTX 5060
+#: (roadmap 2.2). `--xla_gpu_deterministic_ops=true` also pins autotuning, at twice the
+#: compile time; an operator who sets either flag, true or false, is not overridden.
+DETERMINISTIC_KERNELS_FLAG = "--xla_gpu_exclude_nondeterministic_ops=true"
+
 #: `request body -> result document`, the work of one job.
 Pricer = Callable[[bytes], str]
 
@@ -77,8 +91,8 @@ def main(argv=None) -> None:
     parser.add_argument("--poll-seconds", type=float, default=POLL_SECONDS)
     args = parser.parse_args(argv)
     # Before JAX is imported (`serve` imports it after taking the lock), which reads these.
-    for name, value in compilation_cache_environment(args.queue, os.environ).items():
-        os.environ.setdefault(name, value)
+    os.environ.update(compilation_cache_environment(args.queue, os.environ))
+    os.environ.update(deterministic_kernels_environment(os.environ))
     sys.exit(serve(args.queue, parent_pid=args.parent_pid, poll_seconds=args.poll_seconds))
 
 
@@ -96,6 +110,17 @@ def compilation_cache_environment(queue_path, environ) -> dict:
         "JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES": "0",
     }
     return {name: value for name, value in defaults.items() if name not in environ}
+
+
+def deterministic_kernels_environment(environ) -> dict:
+    """`XLA_FLAGS` with `DETERMINISTIC_KERNELS_FLAG` appended to the flags `environ` has, or
+    nothing when they already name a determinism flag (`--xla_gpu_deterministic_ops` or
+    `--xla_gpu_exclude_nondeterministic_ops`, either value). For the engine worker and the test
+    suite, before JAX opens a device; XLA reads the flags then."""
+    flags = environ.get("XLA_FLAGS", "")
+    if "deterministic_ops" in flags:
+        return {}
+    return {"XLA_FLAGS": f"{flags} {DETERMINISTIC_KERNELS_FLAG}".strip()}
 
 
 def serve(queue_path, *, price: Optional[Pricer] = None, parent_pid: Optional[int] = None,

@@ -72,6 +72,7 @@ from engine.models.lgm import (
     numeraire as _lgm_numeraire,
     zeta as _lgm_zeta,
 )
+from engine.precision import matmul
 
 # `TIME_AXIS_DAY_COUNTER` (ACT/365) comes from `engine.models.ore_builders`: every time here
 # is on the simulation's time axis, never an instrument's accrual basis.
@@ -694,11 +695,11 @@ def _backward_induction_arrays(swap: _PreparedBermudan, schedule: "_GridSchedule
         numeraire = _lgm_numeraire(curve, a, sigma, t, x_t)
         pv = _cashflow_values_at_nodes(swap, curve, x_t, t) / numeraire[:, None]  # reduced, [Nn, C]
 
-        underlying = underlying + pv @ add_pv + cache @ cache_to_under
+        underlying = underlying + matmul(pv, add_pv) + matmul(cache, cache_to_under)
         cache = jnp.where(start_cache[None, :] > 0.0, pv, cache)
         cache = jnp.where(cache_to_under[None, :] > 0.0, 0.0, cache)
-        provisional = (cache * coupon_ratio[None, :]) @ from_cache
-        provisional_non_cached = (pv * coupon_ratio[None, :]) @ non_cached
+        provisional = matmul(cache * coupon_ratio[None, :], from_cache)
+        provisional_non_cached = matmul(pv * coupon_ratio[None, :], non_cached)
 
         exercise_value = underlying + provisional + provisional_non_cached
         option = jnp.where(is_exercise, jnp.maximum(option, exercise_value), option)

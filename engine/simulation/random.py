@@ -13,6 +13,8 @@ import numpy as np
 from jax.scipy.stats import norm
 from scipy.stats.qmc import Sobol
 
+from engine.precision import matmul
+
 
 def generate_sobol_normals(num_scenarios: int, num_steps: int, num_assets: int, dtype, seed: int = 42) -> jax.Array:
     """
@@ -112,7 +114,8 @@ def _build_bridge_matrix(time_grid: np.ndarray) -> np.ndarray:
 
 @jax.jit
 def _apply_bridge_matrix(B_matrix: jax.Array, Z: jax.Array) -> jax.Array:
-    return jnp.tensordot(B_matrix, Z, axes=([1], [0]))
+    """`B @ Z` over the time axis of `Z` `[T, ...]`, as one `[T, T] x [T, rest]` product."""
+    return matmul(B_matrix, Z.reshape(Z.shape[0], -1)).reshape(Z.shape)
 
 
 def apply_brownian_bridge(Z: jax.Array, time_grid: jax.Array) -> jax.Array:

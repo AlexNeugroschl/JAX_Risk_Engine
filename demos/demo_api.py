@@ -4,63 +4,32 @@ market, trades naming their currency, the run configuration with the Hull-White 
 currency), submit it, poll the async job, and read back a `PortfolioResultSchema`. Same
 instruments, market and configuration as `demo.py`, so the printed numbers are comparable.
 
-Starts its own `uvicorn` server as a subprocess; set `JAX_RISK_ENGINE_DEMO_SKIP_SERVER=1` to
-use one already running at `API_BASE`. Endpoint reference: docs/reference/http-api.md.
+Starts its own `uvicorn` server as a subprocess (`demo_http.py`); set
+`JAX_RISK_ENGINE_DEMO_SKIP_SERVER=1` to use one already running at `API_BASE`. Endpoint
+reference: docs/reference/http-api.md.
 
 Run with: .venv/Scripts/python.exe demos/demo_api.py
 """
-import os
-import subprocess
-import sys
-import time
-
 import httpx
 
+from demo_http import API_BASE, MANAGE_SERVER, start_server, stop_server, submit_and_wait, wait_until_healthy
 from demo_scenarios import demo_market_json, demo_simulation_json
-
-API_BASE = "http://127.0.0.1:8000"
-_START_SERVER = os.environ.get("JAX_RISK_ENGINE_DEMO_SKIP_SERVER") != "1"
 
 
 def section(title: str) -> None:
     print(f"\n--- {title} ---")
 
 
-def _wait_for_server(timeout_s: float = 60.0) -> None:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            r = httpx.get(f"{API_BASE}/health", timeout=2.0)
-            if r.status_code == 200:
-                return
-        except httpx.TransportError:
-            # ConnectError (nothing listening) or a timeout (still importing JAX/ORE)
-            # are expected while uvicorn starts.
-            pass
-        time.sleep(0.5)
-    raise RuntimeError(f"server at {API_BASE} did not become healthy within {timeout_s}s")
-
-
 # =============================================================================
 # Start the server (unless the caller already has one running).
 # =============================================================================
 server_process = None
-if _START_SERVER:
+if MANAGE_SERVER:
     section("Starting the API server")
-    server_process = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "engine.api.app:app", "--host", "127.0.0.1", "--port", "8000"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    print(f"launched uvicorn (pid {server_process.pid}), waiting for {API_BASE}/health ...")
-    try:
-        _wait_for_server()
-    except Exception:
-        server_process.terminate()
-        raise
-    print("server is up")
+    server_process = start_server()
 else:
     section("Reusing an already-running server")
-    _wait_for_server()
+    wait_until_healthy()
     print(f"found a healthy server at {API_BASE}")
 
 try:
@@ -114,29 +83,8 @@ try:
     # =========================================================================
     # Submit the portfolio and poll until it's done.
     # =========================================================================
-    section("Submitting the portfolio")
-
-    submit = httpx.post(f"{API_BASE}/portfolio/price", json=request_body, timeout=30.0)
-    if submit.status_code != 202:
-        raise RuntimeError(f"submission failed ({submit.status_code}): {submit.text}")
-    job_id = submit.json()["job_id"]
-    print(f"job_id: {job_id} (202 Accepted -- pricing is running in the background)")
-
-    section("Polling for the result")
-    start = time.time()
-    while True:
-        poll = httpx.get(f"{API_BASE}/portfolio/price/{job_id}", timeout=30.0)
-        poll.raise_for_status()
-        status = poll.json()
-        print(f"  [{time.time() - start:6.1f}s] status: {status['status']}")
-        if status["status"] in ("done", "failed"):
-            break
-        time.sleep(2.0)
-
-    if status["status"] == "failed":
-        raise RuntimeError(f"pricing job failed:\n{status['error']}")
-
-    result = status["result"]
+    section("Submitting the portfolio and polling for the result")
+    result = submit_and_wait(request_body)
 
     # =========================================================================
     # Print the result -- same shape as demo.py's own output.
@@ -172,6 +120,4 @@ try:
 finally:
     if server_process is not None:
         section("Shutting down the API server")
-        server_process.terminate()
-        server_process.wait(timeout=10)
-        print(f"stopped uvicorn (pid {server_process.pid})")
+        stop_server(server_process)

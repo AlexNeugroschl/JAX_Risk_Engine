@@ -3,6 +3,14 @@ Shared fixtures: the demo scenarios' evaluation date, a minimal `PortfolioReques
 client. x64 is enabled here, before any test builds an array (importing `engine` enables it
 too).
 
+Two device settings, each unless the environment sets it (decision A-22; importing `engine`
+sets neither): no GPU preallocation (`XLA_PYTHON_CLIENT_PREALLOCATE=false`), since every test
+process (`-n`) and every engine worker the tests start opens the same GPU, and XLA's default
+takes 75% of it per process; and deterministic GPU kernels, as the engine worker runs
+(`engine.api.worker.deterministic_kernels_environment`), since the tests price in-process. Both
+are environment variables, so the worker processes the tests start inherit them, and both are
+read when a process first opens a device. Neither changes anything on a CPU.
+
 XLA programs are cached on disk across runs (JAX's persistent compilation cache), in
 `.jax_cache/` at the repository root unless `JAX_COMPILATION_CACHE_DIR` names another
 directory. A program is keyed on its HLO, the compile options and the jax/jaxlib versions, so
@@ -13,6 +21,10 @@ import os
 import sys
 from pathlib import Path
 
+from engine.api.worker import deterministic_kernels_environment
+
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+os.environ.update(deterministic_kernels_environment(os.environ))
 os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", str(Path(__file__).resolve().parents[1] / ".jax_cache"))
 # Cache every program: the suite compiles thousands of small ones, each cheaper to read back.
 os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")

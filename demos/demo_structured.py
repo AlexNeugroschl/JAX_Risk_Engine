@@ -15,11 +15,8 @@ is deployment or translation.
 Run with: .venv/Scripts/python.exe demos/demo_structured.py
 """
 import os
-import subprocess
-import sys
-import time
 
-import httpx
+from demo_http import API_BASE, MANAGE_SERVER, start_server, stop_server, submit_and_wait, wait_until_healthy
 
 # =============================================================================
 # STAGE 1 -- GIVEN INPUTS
@@ -78,8 +75,8 @@ GREEKS_METHOD = "AD"
 # docs/getting-started/user-guide.md#running-the-api to run a server by hand.
 # =============================================================================
 
-API_BASE = "http://127.0.0.1:8000"
-_MANAGE_SERVER = os.environ.get("JAX_RISK_ENGINE_DEMO_SKIP_SERVER") != "1"
+# The server and its job polling are demo_http.py's, shared by the API demos: a server on
+# API_BASE in the demo's environment, with GPU preallocation off unless the environment sets it.
 
 # The profiler is on by default: the server starts with JAX_RISK_PROFILE_DIR set, so each job
 # the engine worker runs is wrapped in jax.profiler.trace (engine/api/worker.py::_profiled),
@@ -94,46 +91,6 @@ _MANAGE_SERVER = os.environ.get("JAX_RISK_ENGINE_DEMO_SKIP_SERVER") != "1"
 #       CPython frames. Measured on this portfolio: on, CPython frames were 97% of events
 #       and the trace's .trace.json.gz covered the first 1.6s of a ~90s job (469MB vs 50MB).
 PROFILE_DIR = os.environ.get("JAX_RISK_PROFILE_DIR", ".profile-out")
-
-
-def wait_until_healthy(timeout_s: float = 60.0) -> None:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            if httpx.get(f"{API_BASE}/health", timeout=2.0).status_code == 200:
-                return
-        except httpx.TransportError:
-            # Not listening yet, or still importing JAX/ORE: expected during startup.
-            pass
-        time.sleep(0.5)
-    raise RuntimeError(f"server at {API_BASE} did not become healthy within {timeout_s}s")
-
-
-def start_server() -> subprocess.Popen:
-    # Pass the profiler dir explicitly so PROFILE_DIR's default applies even when the caller
-    # did not set JAX_RISK_PROFILE_DIR; the engine worker inherits it from uvicorn.
-    env = os.environ.copy()
-    if PROFILE_DIR:
-        env["JAX_RISK_PROFILE_DIR"] = PROFILE_DIR
-    process = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "engine.api.app:app", "--host", "127.0.0.1", "--port", "8000"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        env=env,
-    )
-    print(f"launched uvicorn (pid {process.pid}), waiting for {API_BASE}/health ...")
-    try:
-        wait_until_healthy()
-    except Exception:
-        process.terminate()
-        raise
-    print("server is up")
-    return process
-
-
-def stop_server(process: subprocess.Popen) -> None:
-    process.terminate()
-    process.wait(timeout=10)
-    print(f"stopped uvicorn (pid {process.pid})")
 
 
 # =============================================================================
@@ -172,28 +129,6 @@ def build_portfolio_request() -> dict:
 # Send stage 3's request to stage 2's server, poll the async job
 # (docs/reference/http-api.md#why-async-not-sync), and print the result.
 # =============================================================================
-
-def submit_and_wait(request_body: dict) -> dict:
-    submit = httpx.post(f"{API_BASE}/portfolio/price", json=request_body, timeout=30.0)
-    if submit.status_code != 202:
-        raise RuntimeError(f"submission failed ({submit.status_code}): {submit.text}")
-    job_id = submit.json()["job_id"]
-    print(f"job_id: {job_id} (202 Accepted -- pricing is running in the background)")
-
-    start = time.time()
-    while True:
-        poll = httpx.get(f"{API_BASE}/portfolio/price/{job_id}", timeout=30.0)
-        poll.raise_for_status()
-        status = poll.json()
-        print(f"  [{time.time() - start:6.1f}s] status: {status['status']}")
-        if status["status"] in ("done", "failed"):
-            break
-        time.sleep(2.0)
-
-    if status["status"] == "failed":
-        raise RuntimeError(f"pricing job failed:\n{status['error']}")
-    return status["result"]
-
 
 def print_result(result: dict) -> None:
     trade_ids = result["trade_ids"]
@@ -235,7 +170,8 @@ def main() -> None:
           f"evaluation date {EVALUATION_DATE}")
 
     print("\n=== stage 2: server setup ===")
-    server_process = start_server() if _MANAGE_SERVER else None
+    # PROFILE_DIR is passed even when empty: an empty JAX_RISK_PROFILE_DIR turns the profiler off.
+    server_process = start_server(JAX_RISK_PROFILE_DIR=PROFILE_DIR) if MANAGE_SERVER else None
     if server_process is None:
         wait_until_healthy()
         print(f"reusing an already-running server at {API_BASE}")

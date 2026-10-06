@@ -62,6 +62,8 @@ JAX_Risk_Engine/
 │   ├── demo_precision.py                 Market-risk VaR/ES at three precisions against
 │   │                                     Monte Carlo noise
 │   ├── demo_components.py                One engine module at a time, one section each
+│   ├── demo_http.py                      The HTTP demos' server (start, stop, its
+│   │                                     environment) and job polling
 │   └── demo_scenarios.py                 The shared demo/test market and simulation
 │                                         (dataclasses and their HTTP JSON)
 ├── docs/                                 Organized by topic (you are here)
@@ -110,7 +112,11 @@ JAX_Risk_Engine/
 │   ├── precision/                        The precision of a run (details/precision.md):
 │   │   ├── formats.py                    the format table, the only name -> dtype map
 │   │   ├── policy.py                     Precision / StagePrecision and their validation
-│   │   └── storage.py                    store / load, the only casts between stages
+│   │   ├── storage.py                    store / load, the only casts between stages
+│   │   ├── estimate.py                   the paired sample's estimators (means, quantiles)
+│   │   ├── report.py                     PrecisionReport, on every result
+│   │   └── products.py                   matmul: every matrix product, at its format's
+│   │                                     precision, never the device's default
 │   ├── simulation/
 │   │   ├── cam.py                        ORE's CrossAssetModel: per currency the LGM in
 │   │   │                                 Hagan's or the Hull-White parametrization,
@@ -477,6 +483,15 @@ figure's estimate.
 when imported, and nothing turns it off: a float32 computation is float32 because its arrays
 are float32, not because the flag is off.
 
+**Matrix products** (roadmap 2.3, decision A-22). A product's precision is part of its compute
+format. Left unstated, XLA picks the device's: TensorFloat-32 for a float32 product on an
+NVIDIA GPU, bfloat16 passes on a TPU. So every matrix product of the engine's JAX code goes
+through `engine.precision.matmul`, which states its operands' format's precision in the
+program (full precision for float32 and float64); no process-wide setting is set or read, and
+importing `engine` changes nothing but the x64 flag. A test traces the pipelines and fails on
+a product without it ([coding style](coding-style.md#core-constraints),
+[details/precision.md §6.7](../planning/details/precision.md#67-matrix-products-step-23)).
+
 ### Concurrency
 
 `price_portfolio` may run on several threads at once: every precision is a dtype of the
@@ -489,8 +504,9 @@ HTTP jobs (roadmap 1.8, decision A-14) go through a durable SQLite job queue
 as the route did, calls `price_portfolio` with x64 on, as every engine process has it, and
 stores the result document, so a job prices bit for bit as a direct call. Jobs run one at a
 time in submission order: the worker owns every device on its host (the API server keeps its
-own JAX on the CPU, and no process preallocates a GPU; roadmap 2.2), splits each job's
-scenarios across them (`engine/simulation/sharding.py`, roadmap 3.8), and keeps its compiled
+own JAX on the CPU; roadmap 2.2), splits each job's scenarios across them
+(`engine/simulation/sharding.py`, roadmap 3.8), runs deterministic GPU kernels (the XLA flag
+it adds to its own environment at start-up; decision A-22, roadmap 2.3), and keeps its compiled
 programs, in memory and in JAX's persistent compilation cache on disk, so a repeated job
 shape compiles nothing and a restarted worker reads its programs back. A failing job fails only its own row; a
 worker that dies mid-job leaves it `interrupted` for the next worker to record. The API

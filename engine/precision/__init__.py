@@ -11,6 +11,8 @@
                  a quantile measured on it (decision A-13)
     report.py    PrecisionReport, on every result: the policy as run, the realized formats,
                  the devices, and each figure's estimate
+    products.py  matmul, every matrix product of the engine's JAX code, at the precision of
+                 its operands' compute format (product_precision), never the device's default
 
 Depends on JAX and NumPy only: the pipeline imports it, it imports nothing from the pipeline.
 """
@@ -19,6 +21,7 @@ from engine.precision.formats import FORMAT_NAMES, FORMATS, Format, dtype_of, fo
 from engine.precision.policy import (
     OVERRIDES, RETIRED_SHAPE, STAGES, Overrides, Precision, StagePrecision, require_precision,
 )
+from engine.precision.products import matmul, product_precision
 from engine.precision.report import PrecisionReport, devices_of, format_name, realized_format
 from engine.precision.storage import BLOCK, ROUNDINGS, Stored, load, rounding_key, store
 
@@ -43,9 +46,11 @@ __all__ = [
     "format_name",
     "format_of",
     "load",
+    "matmul",
     "name_of",
     "paired_paths",
     "paired_quantile",
+    "product_precision",
     "realized_format",
     "require_precision",
     "rounding_key",

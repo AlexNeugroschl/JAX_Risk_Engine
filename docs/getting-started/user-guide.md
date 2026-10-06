@@ -107,28 +107,62 @@ SQLite and OS file locks, which are unreliable on the Windows drive as WSL mount
 (`/mnt/c`), and file access there is several times slower. The extra brings about 3 GB of
 CUDA wheels.
 
-**Device memory.** XLA's default is to take 75% of a GPU's memory in every process that opens
-it. The engine turns that off: importing `engine` sets `XLA_PYTHON_CLIENT_PREALLOCATE=false`
-unless the environment sets it, so each process holds what it has used and grows on demand
-(on WSL2 the default's 6 GB request failed on the 8 GB card, and XLA logged out-of-memory errors until a 4 GB one succeeded). The API server keeps its
-own JAX on the CPU (it prices nothing; `/version` and `/calibration/lgm` are its only JAX
-work), so the engine worker is the one process with a GPU client. `/version` therefore says
-`cpu`; a job's result names the GPU in its `precision` report. The demo's whole job peaked
-at 2.6 GB of the card.
+**What the engine sets, and what you set.** Importing `engine` changes no device setting:
+only x64 (decision A-22). The engine's matrix products state their own precision, so a float32
+run is float32 on any device (see [Precision](#precision-float32-vs-float64)), and the engine
+worker runs deterministic kernels (below). How a process holds GPU memory is the deployment's
+choice, made in the environment before the process first opens the GPU:
 
-**Tests on the GPU.** Each test process opens its own GPU client, so choose `-n` by device
-memory as well as host memory: `-n 4` on the 8 GB card, where the full suite peaked at 5.5 GB of
-the card and took 22 minutes. Without a GPU plugin installed the same commands run on the CPU,
+| Who | GPU preallocation (`XLA_PYTHON_CLIENT_PREALLOCATE`) | Deterministic kernels (`XLA_FLAGS`) |
+|---|---|---|
+| A served API's engine worker | JAX's default: 75% of the card, which suits one worker per GPU. Set `false` where other processes share the card | Added by the worker unless your flags name one |
+| The demos that start a server (`demo_api.py`, `demo_structured.py`, `demo_profile_small.py`) | `false` (`demos/demo_http.py`), unless your environment sets it | As any engine worker |
+| The test suite | `false` (`tests/conftest.py`), unless set | Added (`tests/conftest.py`), unless set |
+| Your own script or notebook | JAX's default; set `false` to share the card | JAX's default; set the flag for reproducible bits |
+
+**Device memory.** XLA's default is to take 75% of a GPU's memory in every process that opens
+it, which leaves nothing for a second process: on WSL2 the default's 6 GB request failed on the
+8 GB card while another process held it, and XLA logged out-of-memory errors until a 4 GB one
+succeeded. With `XLA_PYTHON_CLIENT_PREALLOCATE=false` a process holds what it has used and grows
+on demand. To run your own server beside a notebook or the tests on one card:
+
+```bash
+XLA_PYTHON_CLIENT_PREALLOCATE=false .venv/bin/python -m uvicorn engine.api.app:app
+```
+
+The API server keeps its own JAX on the CPU (it prices nothing; `/version` and
+`/calibration/lgm` are its only JAX work), so the engine worker is the one process with a GPU
+client. `/version` therefore says `cpu`; a job's result names the GPU in its `precision`
+report. The demo's whole job peaked at 2.6 GB of the card.
+
+**Tests on the GPU.** Each test process opens its own GPU client (the suite turns
+preallocation off and deterministic kernels on for itself, in `tests/conftest.py`), so choose
+`-n` by device memory as well as host memory: `-n 4` on the 8 GB card, where the full suite
+peaked at 5.5 GB of the card and took 22 minutes. Without a GPU plugin installed the same commands run on the CPU,
 as before.
 
 **What to expect.** Results equal the CPU's to the last bits, not bit for bit (a GPU sums in
-a different order): the parity suites hold at their tolerances. They are the same bits on
-every run of a compiled job: importing `engine` adds `--xla_gpu_exclude_nondeterministic_ops=true`
-to `XLA_FLAGS` (without it the AD Greeks moved by an ulp between identical runs).
-`--xla_gpu_deterministic_ops=true` instead also pins the compiler's choice of kernels, at
-twice the compile time; either one set by you wins. This card's float64 runs at
-1/64 of its float32 rate, and a job of a few hundred paths is too small to fill it, so the
-demo is slower than on the CPU (a repeat: about 6 s against 2.4 s). A consumer GPU is where the
+a different order): the parity suites hold at their tolerances. A job is the same bits on
+every run of its compiled program: the engine worker adds `--xla_gpu_exclude_nondeterministic_ops=true`
+to its own `XLA_FLAGS` at start-up (without it the AD Greeks moved by an ulp between
+identical runs, the GPU's atomics adding in whatever order they land), and the test suite
+does the same. A program compiled again can differ by an ulp, most likely because the compiler tunes its
+choice of kernels on the card: the demo's job, compiled from scratch on 2026-10-05 and
+2026-10-06, matched to the last bit within each day but differed by about an ulp between them
+(the cube by 4e-11 at a scale of 1e6, the Greeks by 3e-13 at 571), with the same code.
+`--xla_gpu_deterministic_ops=true` instead also pins that choice, at twice the compile time;
+either one set by you, true or false, wins. Pricing
+in your own process (`price_portfolio` in a script or notebook) gets JAX's default unless
+you set the flag before JAX opens the GPU:
+
+```python
+import os
+os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "") + " --xla_gpu_exclude_nondeterministic_ops=true").strip()
+from engine.portfolio import price_portfolio   # before the first JAX computation
+```
+
+This card's float64 runs at 1/64 of its float32 rate, and a job of a few hundred paths is too
+small to fill it, so the demo is slower than on the CPU (a repeat: about 6 s against 2.4 s). A consumer GPU is where the
 GPU path is checked, not where speed is measured (roadmap 5.2). Profiling works as on the
 CPU, and the trace gains the GPU's own lanes, but tracing a GPU job costs several times its
 untraced time ([profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)).
@@ -660,8 +694,11 @@ precision, and a key that names no product or no trade of the request is refused
 Calibration, today's values, Greeks and the exposure statistics are always float64; the
 result's `npv_cube` is the stored cube read back at float64. A compute format means the same on
 every device: on a GPU or TPU, XLA would by default run a float32 matrix product in
-TensorFloat-32 or bfloat16 passes, and importing `engine` sets JAX's matmul precision to
-`"highest"` so it does not (roadmap 2.2). Over HTTP the same is
+TensorFloat-32 or bfloat16 passes, so each of the engine's matrix products states the
+precision of its compute format itself (`engine.precision.matmul`, full precision for float32
+and float64). No process setting changes it, JAX's `jax_default_matmul_precision` included,
+which the engine neither sets nor reads (roadmap 2.3); your own JAX code in the same process
+keeps whatever you set. Over HTTP the same is
 `"precision": {"pricing": {"storage": "float32", "compute": "float32", "accumulate": "float32"}}`.
 Storage can go below 32 bits (roadmap 1.6): `float16`, `bfloat16`, `float8_e4m3fn` and
 `float8_e5m2`, kept with a power-of-two scale per block of 32 paths, and rounded to nearest or,

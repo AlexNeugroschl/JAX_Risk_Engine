@@ -44,6 +44,7 @@ from engine.models.lgm import H as lgm_H
 from engine.models.ore_builders import (
     TIME_AXIS_DAY_COUNTER, evaluation_date, ibor_index, par_coupon_forecast_period, resolve_accrual_day_count,
 )
+from engine.precision import matmul
 
 #: `IrModelBuilder::maxAtmStdDev`: a helper strike further from ATM is moved to this many ATM
 #: standard deviations (fallback rule 1).
@@ -267,8 +268,8 @@ def _corrections(instrument: BasketInstrument, legs: _Legs):
     lambda1 = np.where(owned, 1.0 - instrument.lambda2, 0.0)
     n_fixed = instrument.fixed_pay.size
     to_fixed = np.eye(n_fixed, dtype=lambda2.dtype)[owner] * owned[:, None]  # [Nc, Nf]
-    sum1 = (correction * lambda1) @ to_fixed                    # [..., Nf]
-    sum2 = (correction * lambda2) @ to_fixed
+    sum1 = matmul(correction * lambda1, to_fixed)               # [..., Nf]
+    sum2 = matmul(correction * lambda2, to_fixed)
     # S_j = sum2_j / D_j + sum1_{j+1} / D_j; S_m1 = sum1_0 / D0.
     shifted = jnp.concatenate([sum1[..., 1:], jnp.zeros_like(sum1[..., :1])], axis=-1)
     S = (sum2 + shifted) / legs.fixed_df

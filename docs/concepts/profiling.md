@@ -208,7 +208,9 @@ What the numbers say:
 
 The same demo and modes on the owner's RTX 5060 Laptop GPU (Blackwell, 8 GB) under WSL2,
 with JAX's CUDA 13 plugin and the engine's accelerator defaults (no preallocation, matrix
-products at full precision, no non-deterministic kernels; `engine/__init__.py`). Each
+products at full precision, no non-deterministic kernels; set by `engine/__init__.py` then,
+and since roadmap 2.3 by the demo's server environment, each product and the engine worker,
+with the same effect). Each
 mode was run once, in a fresh API and worker, one after another, from
 `.venv/bin/python demos/demo_profile_small.py`:
 
