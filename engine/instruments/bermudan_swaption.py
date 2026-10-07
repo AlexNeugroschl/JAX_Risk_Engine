@@ -625,15 +625,18 @@ def _cashflow_values_at_nodes(swap: _PreparedBermudan, curve, x_nodes: jax.Array
 # =============================================================================
 # BACKWARD INDUCTION (jax.lax.scan)
 # =============================================================================
-def grid_value(swap: _PreparedBermudan) -> jax.Array:
+def grid_value(swap: _PreparedBermudan, schedule: Optional["_GridSchedule"] = None) -> jax.Array:
     """ORE's NPV on the prepared trade's curves (`NumericLgmMultiLegOptionEngineBase::
     calculate()`): the induction's value at t=0 on the state x=0, as
     `LgmConvolutionSolver2::stateGrid(0)`. A JAX scalar, so `jax.grad` differentiates it.
 
+    `schedule` is `_build_grid_schedule(swap)`, built here when omitted; a caller inside a
+    jit builds it beforehand, since it reads the trade's times on the host.
+
     Values are numeraire-deflated, as in ORE (`LgmVectorised::reducedDiscountBond`); x is
     driftless, so the rollback of a deflated value is its conditional expectation. The
     exercise max is taken in the same units."""
-    _, values = _backward_induction_arrays(swap, _build_grid_schedule(swap))
+    _, values = _backward_induction_arrays(swap, _build_grid_schedule(swap) if schedule is None else schedule)
     return values[-1, values.shape[1] // 2]
 
 

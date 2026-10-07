@@ -11,44 +11,42 @@ exposure are not yet compared with an ORE run ([I-50](#i-50)).
 
 ## Verification status
 
-Last full runs, 2026-10-06, on the code of roadmap 2.3 (decision A-22: importing `engine`
-sets x64 only; every matrix product through `engine.precision.matmul`; deterministic GPU
-kernels set by the engine worker and the tests; GPU preallocation off in the demos and the
-tests). 2,604 collected on Windows and 2,607 on Linux with the GPU plugin installed: 2,587
-and 2,590 before, plus 14 in the rewritten `tests/test_accelerator_defaults.py` (11 to 25)
-and 3 for the HTTP demos' job polling (`tests/test_demos.py`). Every summary line printed:
+Last full runs, 2026-10-06, on the code of roadmap 2.4 (each trade's AD Greeks one jitted
+program per product and derivative, on the price function as data; the profiler hook's phase
+window). 2,613 collected on Windows and 2,616 on Linux with the GPU plugin installed: 2,607
+and 2,610 before, plus 5 in `tests/test_profiling_and_jit.py` (the repeated job compiles
+nothing, an option's Greeks are a program per derivative, three for the phase window), less 1
+there (the Hessian test of a private helper folded into the public `curve_greeks` one), plus 2
+in `tests/test_demos.py` (the profiling demo's switches). Every summary line printed, no
+`FAILED` or `ERROR` line, and no engine process outlived the Windows run:
 
-- **Windows**, `-n 8`: **2,600 passed, 4 skipped, 0 failed**, 10m26s. The skips: the two
+- **Windows**, `-n 8`: **2,609 passed, 4 skipped, 0 failed**, 9m50s. The skips: the two
   accelerator-only tests, the GPU plugin check (none installed), and the parametrized case of
-  a storage wider than its compute, refused by design. No engine process outlived the run.
+  a storage wider than its compute, refused by design.
 - **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the CI
-  job, `-n 8`): 2,494 passed, 4 skipped, 3m21s (the new tests but the slow pipeline trace).
+  job, `-n 8`): 2,501 passed, 4 skipped, 2m02s.
 - **Linux, CPU** (WSL2 Ubuntu 24.04, Python 3.11, `JAX_PLATFORMS=cpu`, `-n 4`):
-  **2,603 passed, 4 skipped, 0 failed**, 11m14s (the skips: the two accelerator-only tests,
+  **2,612 passed, 4 skipped, 0 failed**, 7m38s (the skips: the two accelerator-only tests,
   the `reference/traderX` test without its checkout, the refused storage case).
 - **Linux, GPU** (the same VM, an RTX 5060 Laptop GPU, JAX's CUDA 13 plugin, `-n 4`):
-  **2,605 passed, 2 skipped, 0 failed**, 25m46s, the card's memory peaking at 5.5 GB of 8;
-  every ORE parity suite at its tolerance, the precision and sharding suites, and the
-  accelerator-only tests (a float32 product through `matmul` is float32 with no process
-  setting; the AD Greeks repeat bit for bit under the suite's own flag). The new pipeline
-  trace (`TestEveryMatrixProductStatesItsPrecision::test_in_every_pipeline`) took 468 s of it,
-  the suite's longest test: it clears JAX's caches and compiles every program again, on a
-  persistent cache that held none of them yet.
+  **2,614 passed, 2 skipped, 0 failed**, 20m16s; every ORE parity suite at its tolerance.
 
-Bit for bit (2.3), on CPU: the golden snapshot (232 arrays: today's values, the shared
-portfolio's cube and exposure under the LGM and Hull-White models, float32 runs, market risk
-at float64 and float32, AD and bump Greeks), from a worktree of `7b51e19` (2.2) against the
-2.3 tree: all 232 identical in value, dtype and shape
+One change came after these runs: in the worker's phase window the compile counter starts
+after the profiler rather than before (two lines swapped, so a profiler that fails to start
+leaves no listener); its tests (`TestProfilerHook`, 7) pass on Windows after it.
+
+Golden snapshot (2.4), on CPU, from a worktree of `2df78cb` (2.3) against the 2.4 tree, now
+332 arrays (232 as before, plus the demo's own job run twice, 100): 286 identical in value,
+dtype and shape, every cube, exposure, today's value, bump Greek, market-risk figure and
+float32 run among them; the 46 AD Greek arrays moved at rounding level, at most 3.4e-14 of
+each array's largest magnitude, and the snapshot was re-baselined
 ([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)). On the
-GPU, the demo (`demo_profile_small.py`, its server started by `demos/demo_http.py` from an
-environment with no XLA variable) ran on the card, its traced repeat 35.8 s (2.2: 35.7 s); its
-job through the server twice gave the same bits, and those of 2.2's code compiled the same day
-in-process with 2.2's import-time defaults (cube, EPE and Greeks identical). 2.2's own record
-of that job, compiled the day before, differs from both by about an ulp (the cube by 4e-11 at
-a scale of 1e6), most likely because a recompile on the GPU may tune to other kernels, which
-`--xla_gpu_deterministic_ops=true` would pin. Red first: the pipeline trace failed on the
-bare products (`cam.py:501`, `random.py:115`, `ore_lgm.py:270`, `bermudan_swaption.py:697,
-700, 701`, float64 and float32), and the demos' polling test on `interrupted`.
+GPU the demo's cube, EPE and today's value equal the old code's, the AD Greeks within 6.6e-16
+of their scale; two runs of each tree are identical. Red first: on 2.3's code the repeated
+demo job compiled `{'jit_legs_npv': 4, 'jit_black_multileg_npv': 5}`, an option's Greeks
+compiled no `_curve_derivatives` or `_option_vega` program (they were eager), and the three
+phase-window tests failed (no window: every phase traced; no warning; no `traced_phase`).
+
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
 
@@ -74,7 +72,7 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-50](#i-50) | No path- or distribution-level parity test against an ORE simulation | Medium | OPEN | Validation | 3.2 |
 | [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | 4.5 |
 | [I-78](#i-78) | AD and bump Greeks differ by up to 2% on a sloped market | Medium | OPEN | Validation | 4.5 |
-| [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | PARTIAL | Performance | 2.4, 2.5 |
+| [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | PARTIAL | Performance | 2.5 |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | 3.3 |
 | [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | 5.1 |
 | [I-56](#i-56) | Market risk and the CAM calibration have no route; two routes named like versions | Medium | PARTIAL | API | 3.1 |
@@ -87,6 +85,7 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-61](#i-61) | Nothing runs on more than one host; multi-device speed unmeasured | Medium | PARTIAL | Performance | 3.8 |
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | 6.2, 6.4 |
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | 6.3 |
+| [I-81](#i-81) | A cold job compiles about 180 one-operation programs; market risk vmaps a closure | Low | OPEN | Performance | 6.5 |
 
 **One pipeline.** Since roadmap 1.3 every run is `price_portfolio` on a `Market`
 (`engine.portfolio.market_path`; HTTP `POST /portfolio/price`, also served as
@@ -309,7 +308,7 @@ and state the gap; measure and document the Bermudan's fixed-calibration differe
 <a id="i-53"></a>
 ### I-53 — The pipeline is slow: per-path recalibration and bump Greeks of options
 
-**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-29 · re-measured 2026-10-02, 2026-10-05 (roadmap 2.1)
+**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-29 · re-measured 2026-10-02, 2026-10-05 (roadmap 2.1), 2026-10-06 (roadmap 2.4)
 
 **What is wrong.** Most of the cost was XLA compiling the same work again: per trade, per
 path date, per bump and per call ([I-21](#i-21), [I-22](#i-22), profiling §3.7). With the
@@ -335,25 +334,38 @@ in JAX's persistent compilation cache (`xla-cache/` beside the queue unless
 `JAX_COMPILATION_CACHE_DIR` says otherwise), so a restarted worker reads them back
 (`tests/test_engine_worker.py::TestEngineWorkerPricing::test_a_worker_keeps_its_programs_on_disk_beside_its_queue`).
 
-**The demo, measured (roadmap 2.1, 2026-10-05, CPU;
+**The demo, measured (roadmap 2.4, 2026-10-06;
 [profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)).**
-`demos/demo_profile_small.py` (five trades, 256 paths, 3 dates, AD Greeks): 43.1 s and 269
-compiles from scratch, 18.8 s with the worker's disk cache, 2.8 s repeated in the worker; the
-Bermudan's and American's AD Greeks are 26 s of the 43 s. Its trace is whole in every mode
-(the 2026-10-01 "truncated at the event cap" was the `.trace.json.gz` export, which keeps the
-~1M earliest-starting events; xprof reads the complete `.xplane.pb`, 1.5M events cold).
-What the measurement leaves for 2.4 and 2.5:
+`demos/demo_profile_small.py` (five trades, 256 paths, 3 dates, AD Greeks), traced on CPU:
+32.6 s and 217 compiles from scratch (2.1: 43.1 s, 269), 16.1 s with the worker's disk cache,
+1.8 s repeated in the worker, compiling nothing (2.1: 2.8 s, 9 compiles). 2.4 made each
+trade's AD Greeks one jitted program per product and derivative (profiling §3.8): the eager
+derivatives' programs lived only in JAX's internal caches of 2,048 entries, which one job
+overflowed, so the next job compiled the swap's and European's again. Untraced, three runs in
+a process, old and new code interleaved: from scratch 14–22% faster on Windows CPU, Linux CPU
+and the GPU; the second run as fast as the third; the third unchanged on Linux and the GPU.
+Its trace is whole in every mode, and a phase can be traced alone (`JAX_RISK_PROFILE_PHASE`).
+What remains:
 
-- **Events are loop iterations.** ~624k kernel events in every mode, 251,554 of them
-  `_bootstrap_bucket`'s 60-step bisection recalibrating the options on every path date: XLA's
-  CPU runtime records each op of a loop body per iteration. Fewer iterations (roadmap 2.5's
-  solver) cut both time and events.
-- **A repeated job still compiles 9 programs once.** The second run of the job in a worker
-  compiles `legs_npv` and `black_multileg_npv` under the swap's and European's AD gradient and
-  Hessian-vector product (4 + 4) and one European Vega; the third compiles none, and a
-  trade's Greeks repeated alone compile none from their second call. So the miss comes from
-  how the first full job seeds JAX's tracing caches, not a closure per call; about 1.6 s on
-  the second job (4.1 s against 2.5 s for the third, in-process).
+- **The recalibration is the job on a GPU** (the device lane of a traced repeat on the RTX
+  5060): the LGM bootstrap's bisection is 84% of the kernel time and 97% of the 1.36M kernel
+  launches, the card busy 7% of the time. 61% of that kernel time is in the options' Greeks,
+  which calibrate each trade again on today's, the sensitivity and the Theta markets, and 34%
+  on the path dates. Untraced the repeat is 5.5 s on the GPU against 2.1 s on the CPU.
+- **Events are loop iterations.** About 580k kernel events on the CPU in every mode, most of
+  them `_bootstrap_bucket`'s 60-step bisection: XLA's CPU runtime records each op of a loop
+  body per iteration. Fewer iterations (roadmap 2.5's solver) cut both time and events.
+- **Tracing a whole job on a GPU costs about 6×** (32.4 s traced, 5.5 s untraced), whatever
+  the profiler records: the tracer slows each kernel launch. Fewer launches (2.5) cut it; until
+  then a phase is traced alone.
+- **On Windows only, the AD Greeks slow later pricing.** In a process that has run any AD
+  Greeks (the old code's too), every later job's pricing phase runs 10–20% slower: pricing-only
+  jobs 1.60 s before one Greeks call and 1.89 s after, 1.49 → 1.71 s with the old code; on
+  Linux 1.32 → 1.32–1.38 s. No compile, trace or garbage collection is involved and one large
+  allocation does not do it; the Windows heap is the likely cause, not established. So the
+  warm demo job on Windows' CPU is 0.2–0.4 s slower than before 2.4 (2.1–2.3 s against 1.9 s),
+  while its first two runs are faster. The deployments that matter run Linux; 2.5 re-measures it.
+- **One-operation programs** on a cold job: [I-81](#i-81).
 
 **The recalibration's loops** (2026-10-05). Each bucket of each basket, on each path date, is
 60 bisection steps; each step prices the helper, whose exercise boundary y* is itself 60
@@ -361,19 +373,19 @@ widening and 100 halving steps (`_bootstrap_bucket` and `_solve_monotone_root` i
 `engine/calibration/ore_lgm.py`): 9,600 dependent steps per bucket and date, vectorized over
 paths only. The dates, which are independent, run one after another from Python
 (`bermudan_cube`). On a CPU a step is cheap; on a GPU each is a few kernel launches with
-little work in them (the measured gap: the Bermudan's and American's AD Greeks take 29 s of a
-traced repeat on the RTX 5060, 0.36 s on the CPU; the recalibration's share is still to be read
-from the device lane). ORE solves the same equations with Brent at accuracy 1e-6 for y* and
+little work in them (the Bermudan's and American's Greeks took 29 s of a traced repeat on the
+RTX 5060 and 0.36 s on the CPU; the device lane says it is their calibrations, above). ORE solves the same equations with Brent at accuracy 1e-6 for y* and
 Levenberg-Marquardt per bucket, and stops far earlier: 100 halvings are about 45 past float64's
 resolution. Five separate bisections do this work (`ore_lgm.py` twice,
 `engine/valuation/jamshidian.py`, `engine/calibration/lgm.py`, `engine/calibration/basket.py`).
 
-**To close.** Two steps, both measured on `demos/demo_profile_small.py`'s job and its summary
-([profiling §5](../concepts/profiling.md#5-the-trace-summary-and-its-checks)). Roadmap 2.4,
-bit for bit: cut first-call compile time per product (the options' AD Greeks) and the second
-job's 9 compiles, and the profiler's cost on the GPU. Roadmap 2.5: the configurable root solver
-of decision A-21 (a safeguarded Newton method by default, today's bisection as the reference)
-in one shared module, and the dates batched; it moves float64 at rounding level, once.
+**To close.** Roadmap 2.5, measured on `demos/demo_profile_small.py`'s job and its summary
+([profiling §5](../concepts/profiling.md#5-the-trace-summary-and-its-checks)): the
+configurable root solver of decision A-21 (a safeguarded Newton method by default, today's
+bisection as the reference) in one shared module, and the dates batched; it moves float64 at
+rounding level, once. (2.4 closed the compile part: the repeated job's 9 compiles, the options'
+AD Greeks compile, `tests/test_profiling_and_jit.py::TestCompileCounts::test_a_repeated_job_compiles_nothing`
+and `::test_an_option_s_greeks_are_a_program_per_derivative`, both red on 2.3's code.)
 `PricingConfig(recalibrate=False)` and the AD Greeks method exist where ORE's semantics are
 not needed.
 
@@ -848,6 +860,36 @@ refactors (roadmap stage 1) break tests without behaviour changing.
 **To close.** Shared helpers and constants in `tests/support/`; replace private-symbol tests
 with public-entry tests where the refactors of stage 1 touch them. Collection must stay
 identical except where a test is deliberately rewritten.
+
+<a id="i-81"></a>
+### I-81 — A cold job compiles about 180 one-operation programs; market risk vmaps a closure
+
+**Severity:** Low · **Status:** OPEN · **Category:** Performance · **Found:** 2026-10-06,
+roadmap 2.4
+
+**What is wrong.** Code outside any jit runs JAX operations one by one, and each operation
+compiles once per shape: on a cold demo job (`demos/demo_profile_small.py`, CPU) 180 of the
+217 programs are a single `multiply`, `where`, `stack` and the like, about 2.5 s of
+compilation plus their tracing. Most come from the scenario market's construction
+(`lgm_numeraire`, `implied_log_discounts` in `engine/simulation/scenario_market.py`, about 60),
+the CAM calibration (`cam.py`'s `zeta`, `calibrate_currency`), the options' known path
+fixings (`engine/valuation/bermudan.py::_known_rates`) and the sensitivity market. Separately,
+market risk vmaps a fresh closure over the jitted pricers per run (`revalue_trade`), the
+pattern whose derivative programs roadmap 2.4 found JAX keeps only in internal caches of 2,048
+entries (profiling §3.8): a market-risk job large enough to overflow them would compile its
+batched programs again on the next run.
+
+**Reach.** First-call time only: each such program is compiled once per process and shape and
+then reused (a repeated demo job compiles nothing). No number is wrong.
+
+**Current handling.** None.
+
+**To close.** Jit the scenario market's construction and the other eager sites as
+module-level functions with their data as arguments, and give market risk's batch a
+module-level jitted function of `TradePriceFunction.pricer` and `.terms`, as the AD Greeks
+(`engine.risk.greeks._curve_derivatives`). Jitting can move float64 at rounding level (XLA
+fuses what ran op by op), so it shows the golden snapshot's change per array. Measured by the
+compile probe of profiling §3.8 on the demo's job.
 
 ---
 

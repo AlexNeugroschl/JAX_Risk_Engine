@@ -9,6 +9,9 @@ Compiles are counted by patching `jax._src.compiler.backend_compile_and_load`, t
 an xprof trace records as XLA compilation; cache hits do not call it (`tests/support/compiles.py`).
 """
 import dataclasses
+import json
+import subprocess
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -24,7 +27,7 @@ from engine.instruments.swap import SwapConfig
 from engine.market import ZeroCurveConfig
 from engine.models.lgm import Sigma
 from engine.portfolio.profiling import PHASES
-from engine.risk.greeks import _grad_and_hessian_diagonal, curve_greeks, portfolio_greeks
+from engine.risk.greeks import curve_greeks, portfolio_greeks, vega_greek
 from engine.risk.price_functions import bermudan_price_function, curves_of, trade_price_function
 from engine.valuation.bermudan import calibrate_on
 from engine.valuation.config import LgmSwaptionEngineConfig, PricingConfig
@@ -33,6 +36,7 @@ from tests.support import portfolio as shared
 from tests.support.compiles import count_compiles
 from tests.support.lgm_engine import grid_npv, prepared
 
+ROOT = Path(__file__).resolve().parent.parent
 ASOF = shared.ASOF
 CURVE = ZeroCurveConfig(times=[0.0, 1.0, 3.0], rates=[0.03, 0.03, 0.03])
 ENGINE = LgmSwaptionEngineConfig(n_per_std=16, std_devs=6.0)
@@ -171,6 +175,45 @@ class TestCompileCounts:
             np.testing.assert_array_equal(warm[key], cold[key], err_msg=key)
 
     @pytest.mark.slow
+    def test_an_option_s_greeks_are_a_program_per_derivative(self):
+        """Roadmap 2.4: a Bermudan's Delta and Gamma on every curve are one program and its
+        Vega gradient another, each jitted with the trade as an argument. Differentiated
+        eagerly they were a forward and a backward program per curve and derivative, about
+        ten for one option."""
+        market = shared.market()
+        jax.clear_caches()
+        with count_compiles() as counter:
+            curve_greeks(bermudan_cfg(), market, PRICING, 1e-4)
+            vega_greek(bermudan_cfg(), market, PRICING, 1e-4)
+        assert counter["jit__curve_derivatives"] == 1 and counter["jit__option_vega"] == 1, dict(counter)
+        assert counter["jit__backward_induction_arrays"] == 0, dict(counter)
+
+    @pytest.mark.slow
+    def test_a_repeated_job_compiles_nothing(self):
+        """Roadmap 2.4 (I-53): the demo's job, every trade type with AD Greeks, run twice in a
+        fresh process with no disk cache, compiles nothing the second time. It compiled 9
+        programs: the swap's and European's eagerly differentiated pricers were kept only in
+        JAX's internal caches of 2,048 traced programs, which the rest of the job overflowed."""
+        script = (
+            "import json, jax\n"
+            "from demos.demo_profile_small import build_portfolio_request\n"
+            "from engine.api.market_schemas import MarketPortfolioRequestSchema\n"
+            "from engine.portfolio import price_portfolio\n"
+            "from tests.support.compiles import count_compiles\n"
+            "request = MarketPortfolioRequestSchema.model_validate(build_portfolio_request()).to_dataclass()\n"
+            "counts = []\n"
+            "for _ in range(2):\n"
+            "    with count_compiles() as counter:\n"
+            "        jax.block_until_ready(price_portfolio(request).npv_cube)\n"
+            "    counts.append(dict(counter))\n"
+            "print(json.dumps(counts))\n")
+        process = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, cwd=ROOT,
+                                 timeout=900)
+        assert process.returncode == 0, process.stderr[-3000:]
+        first, second = json.loads(process.stdout.strip().splitlines()[-1])
+        assert sum(first.values()) > 0 and second == {}, second
+
+    @pytest.mark.slow
     def test_greeks_scale_linearly_with_notional(self):
         """7x the notional gives exactly 7x the Delta (`notional` is a traced child)."""
         market = shared.market()
@@ -183,30 +226,11 @@ class TestCompileCounts:
 # =============================================================================
 # HESSIAN DIAGONAL VIA HVP == DIAGONAL OF THE FULL HESSIAN
 # =============================================================================
-def _full_and_hvp_diagonal(cfg):
-    """The diagonal of d^2 NPV / d(discount pillar rates)^2 both ways, other curves fixed."""
-    fn = trade_price_function(cfg, shared.market(), PRICING)
-    rates = curves_of(fn, shared.market(), jnp.float64)
-    _grad, diag = _grad_and_hessian_diagonal(fn.price, rates[0], *rates[1:])
-    full = jnp.diagonal(jax.hessian(fn.price, argnums=0)(*rates))
-    return np.asarray(diag), np.asarray(full)
-
-
 class TestHessianDiagonalEquivalence:
-    """`_grad_and_hessian_diagonal` equals `jnp.diagonal(jax.hessian(f))`, the expression it
-    replaced, for every trade's price function."""
-
-    def test_matches_full_hessian_on_an_analytic_function(self):
-        """A closed form with a known Hessian diagonal."""
-        def f(x):
-            # sum(x_i^3) + x_0*x_1 -> d2f/dx_i^2 = 6*x_i (the cross term is off-diagonal).
-            return jnp.sum(x ** 3) + x[0] * x[1]
-
-        x = jnp.asarray([1.0, 2.0, 3.0])
-        grad, diag = _grad_and_hessian_diagonal(f, x)
-        np.testing.assert_allclose(np.asarray(grad), np.asarray(jax.grad(f)(x)), rtol=1e-12)
-        np.testing.assert_allclose(np.asarray(diag), 6.0 * np.asarray(x), rtol=1e-12)
-        np.testing.assert_allclose(np.asarray(diag), np.asarray(jnp.diagonal(jax.hessian(f)(x))), rtol=1e-12)
+    """`curve_greeks`' Delta and Gamma, each curve's gradient and Hessian diagonal from one
+    linearization over all of the trade's curves (`engine.risk.greeks`), equal `jax.grad` and
+    `jnp.diagonal(jax.hessian(...))` of the price function in each curve, for every trade's
+    price function."""
 
     @pytest.mark.parametrize("cfg", [
         SwapConfig(notional=1e6, fixed_rate=0.032, payer=True, swap_tenor="3Y", evaluation_date=ASOF,
@@ -215,11 +239,20 @@ class TestHessianDiagonalEquivalence:
                        forward_start=ORE.Period("1Y"), evaluation_date=ASOF, trade_id="european"),
         pytest.param(bermudan_cfg(), marks=pytest.mark.slow),
     ], ids=["swap", "european", "bermudan"])
-    def test_matches_full_hessian(self, cfg):
-        diag, full = _full_and_hvp_diagonal(cfg)
-        # atol scaled to the compared magnitude: a pillar whose true Gamma is zero lands on
-        # different tiny values by the two routes, so rtol alone is meaningless there.
-        np.testing.assert_allclose(diag, full, rtol=1e-7, atol=1e-6 * float(np.max(np.abs(full))))
+    def test_matches_the_gradient_and_full_hessian_of_every_curve(self, cfg):
+        market, shift = shared.market(), 1e-4
+        greeks = curve_greeks(cfg, market, PRICING, shift)
+        fn = trade_price_function(cfg, market, PRICING)
+        rates = curves_of(fn, market, jnp.float64)
+        for k, (kind, name) in enumerate(fn.curves):
+            grad = np.asarray(jax.grad(fn.price, argnums=k)(*rates))
+            full = np.diagonal(np.asarray(jax.hessian(fn.price, argnums=k)(*rates)))
+            np.testing.assert_allclose(greeks[f"delta:{kind}:{name}"] / shift, grad, rtol=1e-12,
+                                       atol=1e-12 * float(np.max(np.abs(grad))))
+            # atol scaled to the compared magnitude: a pillar whose true Gamma is zero lands on
+            # different tiny values by the two routes, so rtol alone is meaningless there.
+            np.testing.assert_allclose(greeks[f"gamma:{kind}:{name}"] / shift ** 2, full, rtol=1e-7,
+                                       atol=1e-6 * float(np.max(np.abs(full))))
 
 
 # =============================================================================
@@ -325,6 +358,68 @@ class TestProfilerHook:
         assert set(summary["phases"]) == {"pricing"} and summary["phases"]["pricing"] > 0
         assert summary["warning"] is None and summary["coverage"] > 0
         assert path.name == f"{Path(summary['path']).parent.name}.summary.json"
+
+    def test_a_traced_phase_is_all_the_trace_holds(self, monkeypatch, tmp_path):
+        """With `JAX_RISK_PROFILE_PHASE` (roadmap 2.4) the job runs whole but only that phase
+        is traced: the summary's phases are that phase's, its wall time and compiles are the
+        phase's, and the job's own are kept beside them."""
+        import json
+        from types import SimpleNamespace
+
+        from engine.api.worker import _profiled
+        from engine.portfolio.profiling import phase
+
+        monkeypatch.setenv("JAX_RISK_PROFILE_DIR", str(tmp_path))
+        monkeypatch.setenv("JAX_RISK_PROFILE_PHASE", "pricing")
+        doubled, tripled = jax.jit(lambda x: 2.0 * x), jax.jit(lambda x: 3.0 * x)  # each compiles once
+
+        def job():
+            with phase("calibration"):
+                x = doubled(jnp.arange(5.0))
+            with phase("pricing"):
+                x = tripled(x)
+            with phase("exposure"):
+                return SimpleNamespace(npv_cube=x + 1.0)
+
+        result = _profiled(job)
+
+        np.testing.assert_array_equal(np.asarray(result.npv_cube), 6.0 * np.arange(5.0) + 1.0)
+        [path] = list(tmp_path.glob("pid-*/*.summary.json"))
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        traced = summary["traced"]
+        assert set(summary["phases"]) == {"pricing"} and traced["phase"] == "pricing"
+        assert traced["compiles"] == 1 and traced["job_compiles"] >= 3
+        assert 0 < traced["wall_seconds"] <= traced["job_wall_seconds"]
+
+    def test_a_phase_the_job_does_not_have_traces_nothing(self, monkeypatch, tmp_path):
+        from types import SimpleNamespace
+
+        from engine.api.worker import _profiled
+
+        monkeypatch.setenv("JAX_RISK_PROFILE_DIR", str(tmp_path))
+        monkeypatch.setenv("JAX_RISK_PROFILE_PHASE", "princing")
+        with pytest.warns(UserWarning, match="'princing': the job has no such phase"):
+            result = _profiled(lambda: SimpleNamespace(npv_cube=jnp.ones(3)))
+        assert result.npv_cube.shape == (3,)
+        assert not list(tmp_path.rglob("*.xplane.pb")) and not list(tmp_path.rglob("*.summary.json"))
+
+    def test_the_window_opens_on_the_phase_s_first_run_only(self):
+        """Started and stopped once, around the first run of the phase, even one that
+        raises; other phases and later runs are not traced, and the window closes with the
+        block."""
+        import engine.portfolio.profiling as profiling
+
+        calls = []
+        with profiling.traced_phase("pricing", lambda: calls.append("start"), lambda: calls.append("stop")) as window:
+            with profiling.phase("calibration"):
+                pass
+            with pytest.raises(ValueError):
+                with profiling.phase("pricing"):
+                    raise ValueError("a failing phase still closes its window")
+            with profiling.phase("pricing"):
+                pass
+        assert calls == ["start", "stop"] and window.wall_seconds is not None
+        assert profiling._window is None
 
     def test_recording_never_raises_on_a_broken_trace(self, tmp_path):
         """Reading the trace back never breaks a pricing job."""

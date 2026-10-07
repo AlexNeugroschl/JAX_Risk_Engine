@@ -23,7 +23,19 @@ Per trade, in the base currency (`portfolio_greeks`):
 Differs from the bump method beyond the shift size: a Bermudan's/American's Delta and Gamma
 hold its calibrated LGM fixed while the curve moves, where ORE recalibrates under each bump.
 A test of the two agreeing as the shift halves is feature F-01.
+
+**Compiled programs** (roadmap 2.4). Each derivative is a module-level jitted function of the
+trade's price function as data (`TradePriceFunction.pricer`, static, and its pytree `terms`):
+every curve's Delta and Gamma is one program per product and shape (`_curve_derivatives`,
+from one linearization of the gradient over all its curves), each Vega gradient another. So a
+trade's Greeks are at most two programs, compiled once and shared by every trade of that shape,
+whatever its dates, rates or size. Differentiating the jitted pricers eagerly instead compiled
+a forward and a backward program per curve and per derivative (about ten per option), and kept
+them only while JAX's internal caches of 2,048 traced programs did: a job that traced more
+than that evicted the first trades' derivative programs, so the same job compiled them again
+on its next run.
 """
+from functools import partial
 from typing import Dict, Sequence
 
 import jax
@@ -36,8 +48,8 @@ from engine.instruments.european_swaption import SwaptionConfig
 from engine.market import Market
 from engine.models.curves import ZeroCurve
 from engine.risk.price_functions import (
-    bermudan_price_function, curve_keys, curves_of, european_price_function, market_curve, trade_price_function,
-    vol_point,
+    bachelier_price, bachelier_terms, bermudan_price_function, curve_keys, curves_of, market_curve, on_pillars,
+    trade_price_function, vol_point,
 )
 from engine.risk.sensitivities import SensitivityConfig, sensitivity_context, theta_context, trade_theta
 from engine.valuation.bermudan import calibration_basket
@@ -45,33 +57,22 @@ from engine.valuation.config import PricingConfig
 from engine.valuation.portfolio import Trade, reads_swaption_vols, validate_trades, value_on
 
 
-def _grad_and_hessian_diagonal(price_fn, x, *rest):
-    """`(df/dx_i, d^2f/dx_i^2)` for every `i`, without building the Hessian.
+def _gradients_and_hessian_diagonals(f, xs):
+    """Per array `x` of the tuple `xs`, `(df/dx_i, d^2f/dx_i^2)` for every `i`, without
+    building the Hessian.
 
-    Each diagonal entry is one Hessian-vector product against a basis vector, batched
-    with `vmap`; checked against `jnp.diagonal(jax.hessian(...))` in
-    `tests/test_profiling_and_jit.py::TestHessianDiagonalEquivalence`.
-    Differentiates with respect to the first argument; `rest` is held fixed.
-
-    Not jitted as a whole: `price_fn` is a fresh closure on every call, so a jit here would
-    compile once per call (I-21). The pricers it calls are jitted with the trade as an
-    argument (or, Jamshidian's, run op by op), and JAX caches their derivative programs, so a
-    repeated call, or another trade of the same shape, compiles nothing.
+    One linearization of the gradient (`jax.linearize`), so the forward and backward pass run
+    once for every array; each diagonal entry is then the Hessian-vector product along a basis
+    vector, all of them batched with `vmap`. Checked against `jnp.diagonal(jax.hessian(...))`
+    in `tests/test_profiling_and_jit.py::TestHessianDiagonalEquivalence`.
     """
-    def combined(xi, *fixed):
-        def f(inner):
-            return price_fn(inner, *fixed)
-
-        grad = jax.grad(f)(xi)
-        basis = jnp.eye(xi.shape[0], dtype=xi.dtype)
-
-        def hvp(v):
-            return jax.jvp(jax.grad(f), (xi,), (v,))[1]
-
-        rows = jax.vmap(hvp)(basis)   # [n, n]; only its diagonal escapes
-        return grad, jnp.diagonal(rows)
-
-    return combined(x, *rest)
+    gradients, hessian_times = jax.linearize(jax.grad(f), xs)
+    sizes = [x.shape[0] for x in xs]
+    offsets = np.cumsum([0] + sizes)
+    # Row j of the identity, split into one block per array: the j-th basis vector of `xs`.
+    basis = tuple(jnp.split(jnp.eye(offsets[-1], dtype=xs[0].dtype), offsets[1:-1], axis=1))
+    rows = jax.vmap(hessian_times)(basis)   # per array, [sum(sizes), size]; only its diagonal block escapes
+    return tuple((gradients[k], jnp.diagonal(rows[k][offsets[k]:offsets[k + 1]])) for k in range(len(xs)))
 
 
 def portfolio_greeks(trades: Sequence[Trade], market: Market, base_currency: str,
@@ -102,18 +103,19 @@ def portfolio_greeks(trades: Sequence[Trade], market: Market, base_currency: str
 def curve_greeks(cfg, market: Market, pricing: PricingConfig, shift: float) -> Dict[str, np.ndarray]:
     """Delta and Gamma per pillar of each curve the trade reads, in its currency."""
     fn = trade_price_function(cfg, market, pricing)
-    rates = curves_of(fn, market, jnp.float64)
+    derivatives = _curve_derivatives(fn.pricer, fn.terms, fn.times, tuple(curves_of(fn, market, jnp.float64)))
     out: Dict[str, np.ndarray] = {}
-    for k, (kind, name) in enumerate(fn.curves):
-        def along(x, *others, _k=k):
-            args = list(others)
-            args.insert(_k, x)
-            return fn.price(*args)
-
-        delta, gamma = _grad_and_hessian_diagonal(along, rates[k], *(rates[:k] + rates[k + 1:]))
+    for (kind, name), (delta, gamma) in zip(fn.curves, derivatives):
         out[f"delta:{kind}:{name}"] = np.asarray(delta) * shift
         out[f"gamma:{kind}:{name}"] = np.asarray(gamma) * shift ** 2
     return out
+
+
+@partial(jax.jit, static_argnums=0)
+def _curve_derivatives(pricer, terms, times, rates):
+    """Per curve, `(dNPV/dz, diag d^2NPV/dz^2)` in its pillar rates `z`: one program per
+    pricer and trade shape for every curve (see the module docstring)."""
+    return _gradients_and_hessian_diagonals(lambda moved: pricer(terms, *on_pillars(times, moved)), rates)
 
 
 def vega_greek(cfg, market: Market, pricing: PricingConfig, shift: float):
@@ -127,20 +129,31 @@ def vega_greek(cfg, market: Market, pricing: PricingConfig, shift: float):
     if isinstance(cfg, SwaptionConfig):
         if not cfg.exercise_date > asof:
             return np.zeros((len(surface.option_tenors), len(surface.swap_tenors)))
-        price = european_price_function(cfg, market, jnp.float64)
         t, swap_len = vol_point(cfg, market)
         volatility = jnp.asarray(float(surface.volatility(asof, t, swap_len)))
-        d_npv = float(jax.grad(lambda v: price(disc, index, v))(volatility))
+        d_npv = float(_bachelier_vega(bachelier_terms(cfg, market, jnp.float64), disc, index, volatility))
         return d_npv * surface.weights(asof, t, swap_len) * shift
     option = bermudan_price_function(cfg, market, pricing, jnp.float64)
     if option.calibration is None:
         return np.zeros((len(surface.option_tenors), len(surface.swap_tenors)))
-    d_npv_d_sigma = np.asarray(jax.grad(lambda values: option.price(disc, index, values))(option.sigma.values))
+    d_npv_d_sigma = np.asarray(_option_vega(option.pricer, option.terms, disc, index, option.sigma.values))
     engine = pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
     basket = calibration_basket(cfg, engine, asof, asof)
     jacobian = _bootstrap_jacobian(basket, disc, index, surface, asof, engine.reversion, option.sigma)
     weights = np.stack([surface.weights(asof, b.vol_option_time, b.vol_swap_length) for b in basket])
     return np.tensordot(d_npv_d_sigma @ jacobian, weights, axes=1) * shift
+
+
+@jax.jit
+def _bachelier_vega(terms, disc, index, volatility):
+    """dNPV/d(normal volatility) of a European on Bachelier's engine."""
+    return jax.grad(lambda v: bachelier_price(terms, disc, index, v))(volatility)
+
+
+@partial(jax.jit, static_argnums=0)
+def _option_vega(pricer, terms, disc, index, values):
+    """dNPV/d(LGM volatility bucket) of a Bermudan/American on its grid engine."""
+    return jax.grad(lambda v: pricer(terms, disc, index, v))(values)
 
 
 def _bootstrap_jacobian(basket, disc, index, surface, asof, reversion: float, sigma) -> np.ndarray:

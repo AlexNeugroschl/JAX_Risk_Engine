@@ -38,8 +38,9 @@ holds the queue) exits within milliseconds with `EXIT_QUEUE_OWNED`. With `--pare
 worker exits once that process is gone (checked between jobs), so a killed API or test run
 leaves no engine process behind.
 
-Profiling (opt-in): with `JAX_RISK_PROFILE_DIR` set, each job's `price_portfolio` runs under
-`jax.profiler.trace`, written to `$JAX_RISK_PROFILE_DIR/pid-<pid>/` (see `_profiled`).
+Profiling (opt-in): with `JAX_RISK_PROFILE_DIR` set, each job's `price_portfolio` (or, with
+`JAX_RISK_PROFILE_PHASE`, one phase of it) runs under the JAX profiler, written to
+`$JAX_RISK_PROFILE_DIR/pid-<pid>/` (see `_profiled`).
 """
 import argparse
 import dataclasses
@@ -291,6 +292,11 @@ def _profiled(run):
     `JAX_RISK_PROFILE_WARMUP=1` runs the job once untraced first, so the trace shows warm
     execution rather than compilation (and the job runs twice).
 
+    `JAX_RISK_PROFILE_PHASE=<phase>` traces only that phase of the job (a label of
+    `engine.portfolio.profiling.PHASES`, or one trade's Greeks, `greeks/trade<i>/<type>`); the
+    rest runs untraced. On a GPU the profiler slows every kernel launch, whatever it records
+    (docs/concepts/profiling.md §2.0), so a phase is traced at its own cost alone.
+
     Beside each trace goes its summary, `<trace run>.summary.json` (`_record_trace`).
     """
     profile_dir = os.environ.get("JAX_RISK_PROFILE_DIR")
@@ -305,8 +311,33 @@ def _profiled(run):
         _, warmup = _measured(jax, run)
 
     out_dir = os.path.join(profile_dir, f"pid-{os.getpid()}")
-    with jax.profiler.trace(out_dir, profiler_options=_profile_options(jax)):
-        result, traced = _measured(jax, run)
+    traced_phase = os.environ.get("JAX_RISK_PROFILE_PHASE")
+    if not traced_phase:
+        with jax.profiler.trace(out_dir, profiler_options=_profile_options(jax)):
+            result, traced = _measured(jax, run)
+        _record_trace(out_dir, traced, warmup)
+        return result
+
+    from engine.portfolio.profiling import traced_phase as window_on
+
+    compiles = []
+
+    def start():
+        jax.profiler.start_trace(out_dir, profiler_options=_profile_options(jax))
+        compiles.append(_CompileCounter())
+
+    def stop():
+        jax.profiler.stop_trace()
+        compiles[0].close()
+
+    with window_on(traced_phase, start, stop) as window:
+        result, job = _measured(jax, run)
+    if window.wall_seconds is None:
+        warnings.warn(f"JAX_RISK_PROFILE_PHASE={traced_phase!r}: the job has no such phase; nothing was traced "
+                      f"(see engine.portfolio.profiling.PHASES)", UserWarning, stacklevel=2)
+        return result
+    traced = {"wall_seconds": window.wall_seconds, "compiles": compiles[0].count, "phase": traced_phase,
+              "job_wall_seconds": job["wall_seconds"], "job_compiles": job["compiles"]}
     _record_trace(out_dir, traced, warmup)
     return result
 

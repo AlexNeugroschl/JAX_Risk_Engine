@@ -13,7 +13,9 @@ node for every cashflow column, about 80 MB per scenario at `n_per_std=64`, so a
 a few hundred would need tens of gigabytes, while a loop over single scenarios would leave the
 accelerator idle. The price function is not jitted as a closure, which would compile again on
 every run: the pricers it calls are jitted with the trade as an argument, so a repeated run, or
-another trade of the same shape, reuses their programs.
+another trade of the same shape, reuses their programs. (JAX keeps those batched programs in
+internal caches of 2,048 entries, which a large enough job can overflow; jitting the batch on
+`TradePriceFunction.pricer` and `.terms`, as the AD Greeks do, is I-81.)
 
 **Engines.** Each product's engine is the pricing configuration's (`PricingConfig`): a European
 on ORE's Bachelier engine (the normal volatility read from the market, held fixed) or on

@@ -44,6 +44,8 @@ conflicts with one is redesigned rather than excused.
   move float64 at rounding level, by decision of 2026-10-02: jitting the pricers with the
   trade as a traced argument (I-21, I-22). It followed step 3.7's procedure below, and the
   snapshot was re-baselined after it (§13.1); 1.6 to 1.8 are bit for bit against that.
+  Step 2.4 re-baselined the AD Greeks alone in the same way, each now one compiled program
+  (§13.1); every other array stayed bit for bit.
 - **Step 3.7 is the one step that moves float64 numbers.** It rewrites the kernels for
   low-precision compute and uses the same kernels at float64 (A-16), so float64 changes at
   rounding level. Every ORE parity suite must pass at its existing tolerance (1e-14 to 1e-8)
@@ -916,6 +918,28 @@ process changes.
   `[120, 2048, 4]`). The same snapshot script, 232 arrays, from a worktree of `7b51e19` (2.2)
   against the 2.3 tree, on CPU: all 232 identical in value, dtype and shape, the float32 runs
   included.
+- **Step 2.4's result (2026-10-06): the AD Greeks re-baselined.** 2.4 makes each trade's AD
+  Greeks one jitted program per product (Delta and Gamma from one linearization of the
+  gradient over all its curves; Vega another), where they were eager derivatives of the
+  jitted pricers ([profiling §3.8](../../concepts/profiling.md#38-the-ad-greeks-as-one-program-per-product-2026-10-06-roadmap-24)).
+  The roadmap expected 2.4 to keep every number; it cannot for the AD Greeks: the repeated
+  job's recompiles came from the eager derivatives' programs living only in JAX's bounded
+  internal caches, and once a derivative is one XLA program, XLA fuses its forward and
+  backward passes and reorders their reductions. The snapshot gained the demo's own job
+  (`demos/demo_profile_small.py`'s request through the API's schema, run twice in the
+  process: Hull-White calibrated, options recalibrated on every path date, AD Greeks), 100
+  arrays, so 332 in all, from a worktree of `2df78cb` (2.3) against the 2.4 tree, on CPU:
+  286 identical in value, dtype and shape, every cube, exposure, today's value, bump Greek,
+  market-risk figure and float32 run among them. The 46 that moved are AD Greeks, by at most,
+  relative to each array's largest magnitude: the demo Bermudan's discount Gamma 3.4e-14 and
+  Delta 1.7e-14, the demo American's discount Delta 1.2e-14, every other below 1e-14 (the
+  shared portfolio's at most 9.5e-15, the demo swap's and European's at most 5.8e-16). A pillar
+  whose true sensitivity is zero changed between rounding noises of order 1e-18. A Jamshidian
+  European's AD Greeks, in no snapshot run, moved by at most 2.7e-16 of their scale. On the GPU
+  the demo's cube, EPE and today's value are identical to the old code's, the AD Greeks
+  within 6.6e-16 of their scale, and two runs of each tree are identical. Every ORE parity
+  suite passes at its tolerance (none compares an AD Greek with ORE: ORE's are bump
+  sensitivities, I-51). Steps from 2.5 on compare against a snapshot of the 2.4 commit.
 - Step 2.5 (the configurable root solver, decision A-21): with `"Bisection"` the snapshot
   stays bit for bit; every ORE parity suite passes under both solvers, then the snapshot is
   re-baselined once for the `"Newton"` default, with the largest change per array recorded.

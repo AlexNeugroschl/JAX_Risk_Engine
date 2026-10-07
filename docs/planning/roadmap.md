@@ -29,8 +29,10 @@ result served) or blocks a step, in which case it goes before the step it blocks
 - **ORE parity.** Every ORE parity suite passes at its existing tolerance after every step. A
   new capability comes with its own ORE parity test (through 3.2's oracle where it needs a
   simulation), or it is refused by name.
-- **Accuracy.** float64 numbers stay bit for bit unless the step says it moves them. The steps
-  planned to move them are 2.5 (rounding level: the default root solver), 3.4 and 3.5
+- **Accuracy.** float64 numbers stay bit for bit unless the step says it moves them. 2.4,
+  planned bit for bit, moved the AD Greeks at rounding level (each became one compiled
+  program, which removed the repeated job's recompiles; everything else stayed bit for bit).
+  The steps planned to move them are 2.5 (rounding level: the default root solver), 3.4 and 3.5
   (default Bermudan/American values, towards ORE's) and 3.7 (rounding level, once). Such a step shows parity first, then re-baselines the golden
   snapshot and records the largest change per array
   ([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
@@ -77,8 +79,9 @@ the host's devices (decision A-14); since 2026-10-04 each job's scenarios are sp
 them; since 2.2 the engine runs on an NVIDIA GPU (Linux or WSL2, the `gpu` extra), shown on
 the owner's RTX 5060 by the demo and the full suite, with float32 products at float32 and
 deterministic kernels on any accelerator; since 2.3 each matrix product states its own
-precision, and importing `engine` changes no process setting but x64. Nothing runs on more
-than one host.
+precision, and importing `engine` changes no process setting but x64; since 2.4 a repeated job
+compiles nothing, each trade's AD Greeks are one compiled program per product, and a trace can
+be narrowed to one phase. Nothing runs on more than one host.
 The TraderX EOD boundary prices Treasuries end to end and refuses everything else by name.
 
 ---
@@ -103,20 +106,28 @@ CPU and GPU alike.
 
 | Step | Work | Closes | Size |
 |---|---|---|---|
-| 2.4 | Make the demo's trace useful on both backends, by fixing what 2.1 and 2.2 found. 2.1 (CPU, 2026-10-05; [profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)): the trace is already whole in xprof in every mode, and the job is 43 s from scratch, 19 s with the disk cache, 2.8 s repeated. What dominates: the options' AD Greeks compile (26 s of the 43 s), and the recalibration's bisection on every path date (`_bootstrap_bucket`, 251k of the trace's kernel events; 2.5); a repeated job still compiles 9 programs once (I-53). 2.2 (GPU, RTX 5060 under WSL2, same section): the trace is whole too and already has the GPU's own lanes (CUPTI works under WSL2; 1.37M kernel events on the compute stream), but tracing is the cost: a repeated job is about 6 s untraced and 35.7 s traced, and a cold trace holds 6M events. Untraced the job is 89 s from scratch and 6–9 s repeated, slower than the CPU's 44 s and 2.4 s; the Bermudan's and American's Greeks are 29 s of a traced repeat (0.36 s on the CPU), likely their loops' kernels launched one by one with little float64 work each (1/64 of the card's float32 rate, 256 paths), which the device lane will show. Cut the profiler's cost on the GPU (which CUPTI activities are recorded, or a traced window of the job), the first-call compile time of the options' AD Greeks, and the repeated job's 9 compiles. Read from the device lane what share of the job the recalibration is, for 2.5's baseline. A cold trace's events also exceed the `.trace.json.gz` export (~1M), which only xprof-less viewers need. Then re-measure on CPU and GPU with the demo's summary, and update the demo's docstring, [profiling.md](../concepts/profiling.md)'s tables and the user guide | [I-53](known-issues.md#i-53) (compiles, trace) | M |
-| 2.5 | A configurable root solver for every calibration and exercise boundary (decision A-21). **Baseline first**: the job untraced against path count (256, 4k, 64k, 256k) on CPU and GPU, and 2.4's device-lane share of the recalibration. **One module**, `engine/numerics/roots.py`, replacing the five bisections (`_bootstrap_bucket` and `_solve_monotone_root` in `engine/calibration/ore_lgm.py`, `engine/valuation/jamshidian.py`, `engine/calibration/lgm.py`, `engine/calibration/basket.py`), with two solvers: `"Newton"`, the default, a safeguarded Newton method (the derivative by `jax.jvp`, a bisection step wherever Newton would leave the bracket, each y* started from the last one found), and `"Bisection"`, today's, the reference, bit for bit. Both run a fixed number of steps on every backend (no data-dependent stop, which on a GPU reports to the host each step); Newton's count is set from its measured convergence, with a test that every root's residual is at float64 rounding on the parity suites' markets. **The setting**, `solver`, on every configuration that solves a root (the Bermudan/American engine, `LgmSwaptionEngineConfig`; the CAM's interest-rate models' calibration; the Jamshidian European engine), with its API field. A market value out of reach in the bracket is refused under either solver, as today. **The dates batched**: `bermudan_cube`'s loop over path dates becomes one program per basket shape over dates × paths. Jitted with the configuration static, so no compile per date, trade or call (compile-count tests), under the scenario sharding and strict promotion, and in 3.7's form where it already applies (one implementation for every precision). **Proof**: every ORE parity suite at its existing tolerance under both solvers (ORE's own solvers stop at 1e-6 for y* and 1e-8 per bucket, so the gap to ORE is ORE's); the two solvers agree to about 1e-14 on every parity market; `"Bisection"` reproduces the golden snapshot bit for bit; then the snapshot is re-baselined for the `"Newton"` default, with the largest change per array recorded. **Then** re-measure the baseline, old and new interleaved, and update profiling.md, the user guide and the solver's reference docs | [I-53](known-issues.md#i-53) (recalibration) | M |
+| 2.5 | A configurable root solver for every calibration and exercise boundary (decision A-21). **Baseline first**: the job untraced against path count (256, 4k, 64k, 256k) on CPU and GPU. 2.4 read the device lane of a repeated demo job on the GPU ([profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)): the LGM bootstrap's bisection is 84% of the kernel time and 97% of the launches, the card busy 7% of the time; 34% of that time is the recalibration on the path dates and 61% the options' Greeks, which calibrate each trade on today's, the sensitivity and the Theta markets. So the solver's step count is what matters on a GPU; batching the dates cuts only the path dates' share. Re-measure there too the Windows-only slowdown of pricing after AD Greeks (I-53). **One module**, `engine/numerics/roots.py`, replacing the five bisections (`_bootstrap_bucket` and `_solve_monotone_root` in `engine/calibration/ore_lgm.py`, `engine/valuation/jamshidian.py`, `engine/calibration/lgm.py`, `engine/calibration/basket.py`), with two solvers: `"Newton"`, the default, a safeguarded Newton method (the derivative by `jax.jvp`, a bisection step wherever Newton would leave the bracket, each y* started from the last one found), and `"Bisection"`, today's, the reference, bit for bit. Both run a fixed number of steps on every backend (no data-dependent stop, which on a GPU reports to the host each step); Newton's count is set from its measured convergence, with a test that every root's residual is at float64 rounding on the parity suites' markets. **The setting**, `solver`, on every configuration that solves a root (the Bermudan/American engine, `LgmSwaptionEngineConfig`; the CAM's interest-rate models' calibration; the Jamshidian European engine), with its API field. A market value out of reach in the bracket is refused under either solver, as today. **The dates batched**: `bermudan_cube`'s loop over path dates becomes one program per basket shape over dates × paths. Jitted with the configuration static, so no compile per date, trade or call (compile-count tests), under the scenario sharding and strict promotion, and in 3.7's form where it already applies (one implementation for every precision). **Proof**: every ORE parity suite at its existing tolerance under both solvers (ORE's own solvers stop at 1e-6 for y* and 1e-8 per bucket, so the gap to ORE is ORE's); the two solvers agree to about 1e-14 on every parity market; `"Bisection"` reproduces the golden snapshot bit for bit; then the snapshot is re-baselined for the `"Newton"` default, with the largest change per array recorded. **Then** re-measure the baseline, old and new interleaved, and update profiling.md, the user guide and the solver's reference docs | [I-53](known-issues.md#i-53) (recalibration) | M |
 
 Order within the stage: 2.1 (measuring the demo on CPU) and 2.2 (running it on the GPU) are
 done (2026-10-05), and 2.3 (2026-10-06, decision A-22, closing [I-80](known-issues.md#i-80)):
 importing `engine` sets only x64; every matrix product states its precision through
 `engine.precision.matmul` (a test traces the pipelines for it, and the coding style forbids a
 bare product); the engine worker and the tests run deterministic GPU kernels; the demos and
-the tests turn GPU preallocation off. 2.4 and 2.5 therefore measure under the settings the
-engine keeps; 2.4 fixes the trace and the compiles and measures what 2.5 starts from. 2.2 and
-2.3 changed no number: the golden snapshot is bit for bit on CPU after each
-([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)). 2.4
-changes when work is dispatched, never the arithmetic, so float64 numbers stay bit for bit
-(golden snapshot, on CPU). 2.5 moves the
+the tests turn GPU preallocation off. 2.2 and 2.3 changed no number: the golden snapshot is
+bit for bit on CPU after each
+([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
+
+2.4 is done (2026-10-06, the compile part of [I-53](known-issues.md#i-53)): each trade's AD
+Greeks are one jitted program per product and derivative, the trade's price function passed
+as data, so a repeated job compiles nothing (it compiled 9: the eager derivatives' programs
+lived in JAX's bounded internal caches) and an option's Greeks compile 40% faster; the demo's
+job from scratch is 14–22% faster on CPU and GPU. The profiler's cost on the GPU is per kernel
+launch and no CUPTI setting cuts it, so the hook traces one phase on request
+(`JAX_RISK_PROFILE_PHASE`, the demo's `--phase`). The device lane gave 2.5 its baseline (in
+its row). The AD Greeks moved at rounding level, at most 3.4e-14 of their scale, and the
+snapshot was re-baselined; everything else stayed bit for bit (§13.1). Found along the way:
+the cold job's one-operation programs ([I-81](known-issues.md#i-81), 6.5) and, on Windows
+only, slower pricing after AD Greeks (I-53, re-measured in 2.5). 2.5 moves the
 default float64 numbers at rounding level, once (the reference solver keeps them bit for
 bit); it comes before stage 3 so that 3.5's and 3.7's recalibration are written on the shared
 solver, and stage 3 rewrites nothing that 2.3 to 2.5 did. The
@@ -212,6 +223,7 @@ Its float64 rate makes its speed ratios unlike an H100's, so no result is drawn 
 | 6.2 | *Parallel, start now* (A-20). Ruff in `pyproject.toml` and CI with pyflakes' rules only (ruff's `F` set: unused imports and variables, undefined names, empty f-strings; no style or formatting rules). Fix or mark each finding; an "unused" import that other modules import from there is a re-export and goes in `__all__`, checked one by one. Earlier is cheaper: every later step's code is then written lint-clean once | [I-66](known-issues.md#i-66) (linter) | S |
 | 6.3 | Shared test helpers in `tests/support/`; public-entry tests where stage 1 made private-symbol tests obsolete | [I-67](known-issues.md#i-67) | S |
 | 6.4 | A type checker on `engine/` (A-20) | [I-66](known-issues.md#i-66) (type checker) | S |
+| 6.5 | The cold job's one-operation programs: jit the scenario market's construction and the other eager sites, and market risk's batch on the price function as data, as 2.4 did for the AD Greeks; the golden snapshot's change per array shown | [I-81](known-issues.md#i-81) | S |
 
 6.1's runs can be made whenever a full run is being made anyway. 2.2's five full runs under
 WSL2 (`-n 4`, a 23 GB VM; four on the GPU, one on CPU) all printed their summary lines, the

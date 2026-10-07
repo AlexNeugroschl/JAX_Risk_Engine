@@ -71,9 +71,12 @@ The AD method gives the derivatives exactly, in one pass per trade, where the bu
 reprices once per tenor and quote. Each trade's price is a pure JAX function of its market
 curves' pillar rates (`trade_price_function`: discounting legs, Bachelier or Jamshidian, the
 grid engine on the calibrated LGM, discounted bond flows), and `curve_greeks` takes its
-gradient and the diagonal of its Hessian — one Hessian-vector product per pillar, batched with
-`vmap`, never the full Hessian (`_grad_and_hessian_diagonal`). Scaled by the shift (Delta) and
-its square (Gamma), they are the shift → 0 limit of ORE's numbers.
+gradient and the diagonal of its Hessian — one linearization of the gradient over all the
+trade's curves, then one Hessian-vector product per pillar, batched with `vmap`, never the
+full Hessian (`_gradients_and_hessian_diagonals`). Scaled by the shift (Delta) and its square
+(Gamma), they are the shift → 0 limit of ORE's numbers. Each trade's Delta and Gamma are one
+compiled program, and its Vega gradient another, shared by every trade of the same product
+and shape ([profiling §3.8](../concepts/profiling.md#38-the-ad-greeks-as-one-program-per-product-2026-10-06-roadmap-24)).
 
 **How the two methods differ, beyond the shift size.**
 
@@ -148,7 +151,7 @@ gradient was silently zero.
 | `engine.risk.greeks.portfolio_greeks(trades, market, base_currency, pricing, config)` | AD Greeks per trade |
 | `engine.risk.greeks.curve_greeks(cfg, market, pricing, shift)` | AD Delta/Gamma per pillar of each curve a trade reads, in its currency |
 | `engine.risk.greeks.vega_greek(cfg, market, pricing, shift)` | AD Vega per quote, or None |
-| `engine.risk.price_functions.trade_price_function(cfg, market, pricing, dtype)` | `TradePriceFunction(curves, price)`: the trade's price as a JAX function of its curves' pillar rates (shared with market risk) |
+| `engine.risk.price_functions.trade_price_function(cfg, market, pricing, dtype)` | `TradePriceFunction(curves, pricer, terms, times)`: the trade's price as a JAX function of its curves' pillar rates, `.price(*rates)` (shared with market risk); `pricer(terms, *curves)` is the same function as data, a module-level pricer and the trade's terms as a pytree, which the AD Greeks jit once per product and shape |
 
 ## Tested by
 

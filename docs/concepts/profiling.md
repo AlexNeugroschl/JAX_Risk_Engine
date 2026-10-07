@@ -137,6 +137,24 @@ two different fixes, which is why they are filed separately.
 JAX dispatch is asynchronous. If the trace context closes while device work is still
 queued, the timeline is truncated. `npv_cube` is the dominant device-side tail.
 
+### 1.6 A phase window (roadmap 2.4)
+
+`JAX_RISK_PROFILE_PHASE=<phase>` traces one phase of the job instead of all of it: a label of
+`PHASES` (`calibration`, `simulation`, `pricing`, `exposure`, `greeks`, ...) or one trade's
+Greeks (`greeks/trade3/AmericanSwaptionConfig`). The job runs whole; the worker arms
+`engine.portfolio.profiling.traced_phase`, and `phase()` starts the profiler when that phase
+is entered for the first time and stops it when the phase is left. Before starting and before
+stopping it waits for every device to finish its queued work (`jax.live_arrays()`), since
+dispatch is asynchronous: the window holds exactly that phase's device work, which an untraced
+run would leave to the next phase to wait for. A name the job does not have traces nothing and
+warns. The window's trace is written inside the job, so the job's own wall time includes it.
+
+Why it exists: on a GPU the profiler's cost is per kernel launch, whatever it records (§2.0,
+after 2.4), and grows with the trace's length, so a whole job traced runs several times slower
+than untraced. A phase is traced at its own cost alone: the American's Greeks took 7.3 s
+traced on their own and 22.5 s inside a whole-job trace. On the CPU, where tracing is cheap,
+it narrows the timeline to what is being studied.
+
 ---
 
 ## 2. What the trace contains
@@ -201,6 +219,8 @@ What the numbers say:
   Hessian-vector product) and one European Vega. A third run of the job compiles none, and a
   trade's Greeks repeated on their own compile none from the second call, so the cause is
   in how the first full job's tracing seeds JAX's caches, not a closure per call (I-53).
+  Roadmap 2.4 found it (JAX's internal caches of 2,048 entries evicted those programs) and
+  fixed it: a repeat compiles nothing (§3.8, and the re-measurement below).
 - **On CPU, `exposure` is mostly waiting.** Dispatch is asynchronous; `exposure` is the first
   phase to read the cube, so it absorbs pricing's device time (1.09 s of a 2.8 s repeat).
 
@@ -248,16 +268,99 @@ What the numbers say:
   from scratch 89 s untraced and 119 s traced. On the CPU tracing cost little. A GPU trace
   measures where time goes, not how long a job takes.
 - **The options' Greeks dominate even when warm.** The Bermudan's and American's AD Greeks are
-  29 s of the 35.7 s traced repeat (0.36 s on the CPU). The likely reason, still to be read
-  from the device lane: their loops, the per-path-date bisection and the rollback, are many
+  29 s of the 35.7 s traced repeat (0.36 s on the CPU). The likely reason, as read then
+  before the device lane: their loops, the per-path-date bisection and the rollback, are many
   small kernels in sequence, which a CPU runs in-thread and a GPU launches one by one, and at
   256 paths in float64 (1/64 of this card's float32 rate) there is little arithmetic to hide
-  a launch behind. Roadmap 2.4 measures it, and 2.5 replaces the bisections' fixed 60- and
-  160-step loops with a configurable solver (decision A-21).
+  a launch behind. Roadmap 2.4 measured it (below): most of the launches are the LGM
+  bootstrap's, in the options' Greeks more than on the path dates, and 2.5 replaces the
+  bisections' fixed 60- and 160-step loops with a configurable solver (decision A-21).
 - **The defaults' cost.** Excluding non-deterministic kernels costs nothing measurable warm;
   `--xla_gpu_deterministic_ops=true`, which also pins autotuning, doubled the compile from
   scratch (184 s against 89 s untraced) for the same bits, so it is an opt-in, not the
   default.
+
+#### After roadmap 2.4 (2026-10-06)
+
+2.4 made the AD Greeks one compiled program per product and derivative (§3.8) and added a
+phase window to the profiler hook (§1.6). The same demo and modes, each in a fresh API and
+worker, one run each, one after another; CPU on Windows (24 threads), GPU the RTX 5060 under
+WSL2 (§2.0 above for the settings). Every mode compiles 217 programs where 2.1's compiled 269,
+and the warm repeat compiles none where it compiled 9.
+
+| Mode (demo switches) | CPU 2.1 | CPU 2.4 | GPU 2.2 | GPU 2.4 |
+|---|---:|---:|---:|---:|
+| Cold, no disk cache (`--cold --no-disk-cache`) | 43.1 s | **32.6 s** | 118.8 s | **102.6 s** |
+| Cold, empty disk cache, which it fills (`--cold`, first run) | 46.7 s | 35.2 s | 126.4 s | 104.7 s |
+| Cold, disk cache read back (`--cold`, a restarted worker) | 18.8 s | 16.1 s | 55.3 s | 47.2 s |
+| Warm, the job repeated in the worker (default) | 2.8 s, 9 compiles | **1.8 s, 0** | 35.7 s, 9 compiles | **32.4 s, 0** |
+| Warm, `--phase pricing` (the phase alone traced) | — | 1.5 s | — | 3.3 s |
+| Warm, `--phase greeks/trade3/AmericanSwaptionConfig` | — | 0.1 s | — | 7.3 s |
+
+Events: on the CPU 1.23M cold, 0.77M warm; on the GPU 5.3M cold, 3.8M warm, 1.0M for the
+pricing phase alone. The phase window's run time includes writing its trace (the warm GPU job
+with the pricing phase traced took 14.3 s against 32.4 s for the whole job traced).
+
+Untraced, `price_portfolio` called three times in one process with no disk cache, the old tree
+(a worktree of `2df78cb`) and the new run alternately, three pairs on Windows and Linux CPU,
+two on the GPU:
+
+| | Run 1 (cold) | Run 2 | Run 3 |
+|---|---:|---:|---:|
+| Windows CPU, old | 36.8–37.0 s | 2.95–2.98 s | 1.88–1.90 s |
+| Windows CPU, new | **31.7–32.5 s** | **1.96–2.09 s** | 2.12–2.32 s |
+| Linux CPU (WSL2), old | 74.2–80.7 s | 4.48–4.81 s | 2.38–2.45 s |
+| Linux CPU (WSL2), new | **62.0–70.4 s** | **2.28–2.38 s** | 2.19–2.53 s |
+| GPU, old | 75.6–76.1 s | 7.85–7.94 s | 5.57–5.61 s |
+| GPU, new | **58.5–62.9 s** | **5.34–5.67 s** | 5.38–5.51 s |
+
+From scratch the job is 14–22% faster, and the second run costs what the third does. The
+steady state is unchanged on Linux and the GPU, and 0.2–0.4 s slower on Windows' CPU, where
+any AD Greeks call (the old code's too) slows the pricing of every later job in the process,
+the new single programs more than the old pieces: measured, pricing-only jobs before and after
+one Greeks call, 1.60 → 1.89 s new and 1.49 → 1.71 s old; on Linux 1.32 → 1.32–1.38 s new. No
+compile, trace or garbage collection is involved, and one large allocation does not do it
+([I-53](../planning/known-issues.md#i-53)).
+
+**What tracing costs on the GPU.** Measured on the warm repeat in process, the same job under
+each profiler setting (untraced 5.8 s):
+
+| Setting | Traced run | Writing the trace | Events | Size |
+|---|---:|---:|---:|---:|
+| Default (host tracer level 2, the GPU's CUPTI tracer on) | 33.3 s | 20.9 s | 3.85M | 303 MB |
+| Host tracer level 1 | 32.8 s | 22.6 s | 3.81M | 300 MB |
+| Host tracer off | 36.0 s | 16.2 s | 2.32M | 272 MB |
+| No CUPTI callback events (`gpu_max_callback_api_events=0`) | 34.0 s | 18.8 s | 3.85M | 303 MB |
+| No CUPTI activity events (`gpu_max_activity_api_events=0`) | 32.8 s | 8.3 s | 2.40M | 144 MB |
+| Aggregated kernel records (`gpu_aggregated_tracing`) | 32.6 s | 5.4 s | 1.54M | 97 MB |
+| Default, with XLA's command buffers kept during profiling (`--xla_enable_command_buffers_during_profiling=true`) | 50.3 s | 28.9 s | 3.85M | 304 MB |
+
+No setting cuts the run: what a GPU trace costs is the tracer being attached at all, about
+20 µs on every kernel launch (the repeat launches 1.36M kernels, about 4 µs each untraced),
+and more the longer the trace runs. Options change only what is written: aggregated records
+take the export from 21 s to 5 s, but replace each kernel's record by a summary, which loses
+the device timeline. The engine keeps the defaults and narrows the window instead
+(`JAX_RISK_PROFILE_PHASE`, §1.6). The JSON export's cap (~1M events) still cuts a whole-job or
+a pricing trace short for viewers that read the `.trace.json.gz`; xprof reads all of it.
+
+**The device lane** (the warm repeat's trace, kernel time on the compute stream, attributed to
+the host phase whose region the kernel started in):
+
+| | Kernel time | Kernels |
+|---|---:|---:|
+| Whole job (a 34.1 s traced span) | 2.37 s | 1,360,342 |
+| … `_bootstrap_bucket` (the LGM bootstrap's bisection) | **1.99 s (84%)** | **1,322,350 (97%)** |
+| … `_curve_derivatives`, `_option_vega` (the AD derivatives) | 0.22 s | 17,562 |
+| … `_rollback_every_path` (the grid engine on the paths) | 0.14 s | 1,432 |
+| `pricing` (the options recalibrated on every path date) | 0.72 s, of which 0.68 s the bootstrap | 339,829 |
+| `greeks` (each option calibrated on today's, the sensitivity and the Theta markets, and its Vega Jacobian) | 1.54 s, of which 1.21 s the bootstrap | 939,683 |
+
+The card is busy for 7% of the trace and the job is launch-bound: the recalibration is the
+job on the GPU, by launches and by kernel time, and most of it is not on the path dates
+but in the options' Greeks (61% of the bootstrap's kernel time, 73% of its launches), where each
+Greek calibrates the trade's LGM again. That is 2.5's
+baseline: a Newton solver cuts every one of these loops; batching the path dates
+(`bermudan_cube`) cuts only the third in `pricing`.
 
 ### 2.1 and 2.2: the 4-trade pipeline before roadmap 1.3 (history)
 
@@ -464,8 +567,9 @@ is a child, and the schedule is traced too.)
 second partial (ORE's `SensitivityCube::gamma` is a cross-scenario second difference, so
 there is no cross-pillar term to match). Building the full `[n, n]` Hessian to keep `n`
 entries meant tracing the pricer `n` times over and discarding `n² − n` results.
-`_grad_and_hessian_diagonal` computes each diagonal entry as one Hessian-vector product
-against a basis vector instead — `hvp(f, x, eᵢ)[i] == ∂²f/∂xᵢ²` — batched under `vmap`.
+Each diagonal entry is one Hessian-vector product against a basis vector instead —
+`hvp(f, x, eᵢ)[i] == ∂²f/∂xᵢ²` — batched under `vmap` (since §3.8 from one linearization of
+the gradient over all of a trade's curves, `_gradients_and_hessian_diagonals`).
 
 **Jitted Theta valuations.** `swaption_theta` measured **56 compilations** — worse than
 the entire Delta/Gamma pair — because both Jamshidian valuations ran eagerly. Now 2.
@@ -612,12 +716,16 @@ that shape.
 | `_PreparedBermudan`, `_GridSchedule` | `_backward_induction_arrays`, `_rollback_every_path` |
 | `BasketInstrument` | `_bootstrap` (I-22), the Vega Jacobian's `_residual_gradient` |
 | `CalibrationTarget` | the legacy `calibrate_lgm_sigma`'s prices and bisection |
+| `TradePriceFunction.terms` (`_LegsTerms`, `BachelierTerms`, `EuropeanTerms`, `OptionTerms`), the pricer static (since 2.4, §3.8) | the AD Greeks' `_curve_derivatives`, `_option_vega`, `_bachelier_vega` |
 
-Callers that build a fresh closure per call are deliberately *not* jitted as a whole: the
-AD Greeks (`_grad_and_hessian_diagonal`) and market risk (`revalue_trade`) differentiate or
-vmap closures over the jitted pricers, and JAX caches the derivative and batched programs
-per pricer. `jamshidian_npv` itself stays eager because its x* derivative rule closes over
-intermediates that `jax.grad` cannot carry through a jit boundary; its cube is jitted.
+Callers that build a fresh closure per call were deliberately *not* jitted as a whole: the
+AD Greeks and market risk (`revalue_trade`) differentiated or vmapped closures over the
+jitted pricers, relying on JAX to cache the derivative and batched programs per pricer. That
+cache turned out to be bounded (§3.8), and since roadmap 2.4 the AD Greeks are jitted whole
+on the price function as data; market risk still vmaps its closure ([I-53](../planning/known-issues.md#i-53)).
+`jamshidian_npv` itself stays eager when pricing because its x* derivative rule closes over
+intermediates that `jax.grad` cannot carry through a jit boundary; its cube is jitted, and its
+Greeks trace it inside their own jit (§3.8).
 
 Measured, cold process, no disk cache (repeat = the same call again in the process):
 
@@ -639,6 +747,58 @@ compiling them. The engine worker enables it too (`engine.api.worker.compilation
 in `JAX_COMPILATION_CACHE_DIR` if set, else `xla-cache/` beside its job queue, every program
 cached, so a restarted worker reads its programs back. An in-process `price_portfolio`
 caller enables it as JAX documents, if wanted.
+
+### 3.8 The AD Greeks as one program per product (2026-10-06, roadmap 2.4)
+
+**What 2.1 found.** The demo's job repeated in the worker compiled 9 programs (the swap's and
+European's pricers under the gradient and the Hessian-vector product, and the European's Vega);
+a third run compiled none.
+
+**Why.** The AD Greeks differentiated the jitted pricers eagerly (`jax.grad` outside any
+jit). JAX then builds each derivative's forward and backward programs from jaxprs it keeps in
+internal caches of 2,048 entries, least recently used first out (`_dce_jaxpr_pjit`,
+`_cached_abstract_eval`, ... in `jax._src`), and lowers them keyed on the jaxpr object. One
+cold demo job filled several of those caches (8,036 misses on `_dce_jaxpr`, 2,914 on
+`_dce_jaxpr_pjit`), so by the end of the job the first trades' derivative jaxprs were evicted;
+the next job built new ones and compiled them again, and churned little enough that the third
+found them. Found with `jax_explain_cache_misses` and the caches' `cache_info()`.
+
+**The fix.** A trade's price function is data: a module-level pricer, the trade's terms as a
+pytree, its curves' pillar times (`engine.risk.price_functions.TradePriceFunction`: `pricer`,
+`terms`, `times`; `price(*rates)` as before, which market risk and the tests use). The
+derivatives are module-level jits with the pricer static: `_curve_derivatives` (every curve's
+Delta and Gamma), `_option_vega` and `_bachelier_vega`. Each is one program per product and
+shape, held by JAX's jit cache for the process like any pricer, and shared by every trade of
+that shape. A pricer that carries settings is an object equal for equal settings
+(`JamshidianPrice`), so it keys the cache by value.
+
+**Compile time.** An option's Greeks were about ten programs: per curve, a forward and a
+backward program for the gradient and for the Hessian-vector product, then the Vega's two.
+Measured on the demo's Bermudan, in a fresh process (trace, lower, compile):
+
+| Structure | Trace | Lower | Compile | HLO | Temporary memory |
+|---|---:|---:|---:|---:|---:|
+| Per curve, a gradient and a Hessian-vector product, each jitted (4 programs) | 2.2 s | 1.3 s | 6.9 s | 3.0 MB | 34–94 MB |
+| One jit, the same per-curve gradients and products | 2.4 s | 0.7 s | 6.7 s | 2.6 MB | — |
+| **One jit, one linearization of the gradient over every curve** (`_gradients_and_hessian_diagonals`) | 1.8 s | 0.5 s | **3.5 s** | 1.6 MB | 138 MB |
+| Vega (`_option_vega`) | 0.5 s | 0.2 s | 1.3 s | 0.7 MB | 58 MB |
+
+One merged program compiles no faster than the same work split, but the linearization runs
+the forward and backward pass once for all curves instead of once per curve and per Hessian
+product, which cuts an option's Delta and Gamma compile by 40%. Finding the interpolation's
+interval without a loop (`searchsorted(method="compare_all")` inside `jnp.interp`) cut the
+compile by 7% and slowed the run, so the grid engine keeps JAX's default. On the demo's job, a
+cold run compiles 217 programs instead of 269 and takes 32 s instead of 37 on the CPU, and a
+repeat compiles none (§2.0, after 2.4).
+
+**Numbers.** The derivatives are the same mathematics, but one XLA program fuses what ran as
+separate programs and the linearization accumulates the gradient over every curve in one
+backward pass, so the AD Greeks move at rounding level: on the golden snapshot (332 arrays,
+CPU) 46 AD Greek arrays moved, by at most 3.4e-14 of each array's largest magnitude (the
+demo Bermudan's discount-curve Gamma), and all but three Greeks of the demo's options (each
+in both of its runs) by less than 1e-14; everything else, cubes, exposures, today's values,
+bump Greeks, market risk and the float32 runs, is bit for bit. On the GPU the cube and exposure are bit for bit with the old code, the AD Greeks
+within 6.6e-16 of their scale (planning `details/precision.md` §13.1).
 
 ---
 
@@ -701,7 +861,9 @@ After every traced job the worker reads the trace back
 `jax.profiler.ProfileData`, so it sees every event) and writes
 `$JAX_RISK_PROFILE_DIR/pid-<pid>/<run>.summary.json` beside the run: the traced run's wall
 time and compiles (and the untraced warm-up's), the trace's events, size and span, the share
-of the run it spans, events per thread, and seconds per phase label. `demos/demo_profile_small.py`
+of the run it spans, events per thread, and seconds per phase label. With a phase window
+(§1.6) the traced run is the phase: `traced` holds its wall time, compiles and name, beside
+the whole job's (`job_wall_seconds`, `job_compiles`). `demos/demo_profile_small.py`
 prints it. Reading 1.5M events back takes about 3 s, after the job's result is computed.
 
 It then warns (`UserWarning`, and the `warning` field of the summary) when either:
@@ -723,6 +885,7 @@ degraded diagnostic must never fail a pricing job whose result is already correc
 pip install -e ".[api,profiling]"     # brings in xprof; quote it in PowerShell
 rm -rf .profile-out-small             # the profiler never cleans up after itself
 python demos/demo_profile_small.py    # warm; --cold [--no-disk-cache] for a first run
+python demos/demo_profile_small.py --phase pricing   # one phase only (the GPU's way, §1.6)
 xprof --port 8791 .profile-out-small
 ```
 
@@ -745,6 +908,7 @@ Environment variables:
 |---|---|---|
 | `JAX_RISK_PROFILE_DIR` | unset | Enables profiling; traces to `$DIR/pid-<pid>/` |
 | `JAX_RISK_PROFILE_WARMUP` | `0` | `1` = discard one run first, so the trace shows a repeat (§1.4) |
+| `JAX_RISK_PROFILE_PHASE` | unset | A phase's name: trace only that phase of the job (§1.6) |
 | `JAX_RISK_PROFILE_PYTHON_TRACER` | `0` | `1` = CPython frames (~9x size; see §1.3) |
 
 ---
@@ -760,15 +924,21 @@ time, they were merely arrived at via ~600 compilations.
 - **Compile counts** — upper bounds per operation (deliberately loose: they catch a return
   to eager dispatch, not a JAX version bump). Includes both directions of cache behavior:
   a repeat call must compile **zero**, a changed `n_per_std` (a genuine shape change) must
-  compile **at least one**.
-- **HVP diagonal ≡ full Hessian diagonal** — against an analytic case with a known answer,
-  and against `jnp.diagonal(jax.hessian(...))` for all three instrument types.
+  compile **at least one**. Since §3.8: an option's Greeks are one Delta/Gamma program and
+  one Vega program, and the demo's whole job, run twice in a fresh process, compiles nothing
+  the second time (it compiled 9 programs before).
+- **HVP diagonal ≡ full Hessian diagonal** — `curve_greeks`' Delta and Gamma against
+  `jax.grad` and `jnp.diagonal(jax.hessian(...))` in every curve, for all three instrument
+  types (since §3.8 they come from one linearization over all the trade's curves).
 - **Gradients survive the jit boundary** — the failure mode the split most easily
   introduces is a differentiable field landing in static aux data, for which JAX does not
   raise: it silently returns a **zero gradient**. Guarded by a nonzero-delta check plus a
   finite-difference cross-check that shares no autodiff machinery.
 - **Trace summary** — a real traced job (warm-up on) writes `<run>.summary.json` with both
-  runs' compiles (the repeat compiles none) and its phase; on a synthetic `.xplane.pb`, events,
+  runs' compiles (the repeat compiles none) and its phase; with `JAX_RISK_PROFILE_PHASE`
+  only that phase is in the trace, its compiles and wall time are the phase's and the job's
+  are kept beside them; a phase the job lacks traces nothing and warns; the window opens on
+  the phase's first run only, and closes even when the phase raises; on a synthetic `.xplane.pb`, events,
   span, phase seconds and threads are counted; a short trace and one past the JSON export's
   cap are reported, a healthy one is not; a corrupt trace never raises.
 - **Phase annotations** — both mechanisms entered; a real `price_portfolio` run hits every

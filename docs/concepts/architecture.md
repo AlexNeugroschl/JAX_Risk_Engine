@@ -62,8 +62,6 @@ JAX_Risk_Engine/
 │   ├── demo_precision.py                 Market-risk VaR/ES at three precisions against
 │   │                                     Monte Carlo noise
 │   ├── demo_components.py                One engine module at a time, one section each
-│   ├── demo_http.py                      The HTTP demos' server (start, stop, its
-│   │                                     environment) and job polling
 │   └── demo_scenarios.py                 The shared demo/test market and simulation
 │                                         (dataclasses and their HTTP JSON)
 ├── docs/                                 Organized by topic (you are here)

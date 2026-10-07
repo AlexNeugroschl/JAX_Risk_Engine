@@ -116,7 +116,7 @@ choice, made in the environment before the process first opens the GPU:
 | Who | GPU preallocation (`XLA_PYTHON_CLIENT_PREALLOCATE`) | Deterministic kernels (`XLA_FLAGS`) |
 |---|---|---|
 | A served API's engine worker | JAX's default: 75% of the card, which suits one worker per GPU. Set `false` where other processes share the card | Added by the worker unless your flags name one |
-| The demos that start a server (`demo_api.py`, `demo_structured.py`, `demo_profile_small.py`) | `false` (`demos/demo_http.py`), unless your environment sets it | As any engine worker |
+| The demos that start a server (`demo_api.py`, `demo_structured.py`, `demo_profile_small.py`) | `false` (each demo's `start_server`), unless your environment sets it | As any engine worker |
 | The test suite | `false` (`tests/conftest.py`), unless set | Added (`tests/conftest.py`), unless set |
 | Your own script or notebook | JAX's default; set `false` to share the card | JAX's default; set the flag for reproducible bits |
 
@@ -146,12 +146,12 @@ a different order): the parity suites hold at their tolerances. A job is the sam
 every run of its compiled program: the engine worker adds `--xla_gpu_exclude_nondeterministic_ops=true`
 to its own `XLA_FLAGS` at start-up (without it the AD Greeks moved by an ulp between
 identical runs, the GPU's atomics adding in whatever order they land), and the test suite
-does the same. A program compiled again can differ by an ulp, most likely because the compiler tunes its
-choice of kernels on the card: the demo's job, compiled from scratch on 2026-10-05 and
-2026-10-06, matched to the last bit within each day but differed by about an ulp between them
-(the cube by 4e-11 at a scale of 1e6, the Greeks by 3e-13 at 571), with the same code.
-`--xla_gpu_deterministic_ops=true` instead also pins that choice, at twice the compile time;
-either one set by you, true or false, wins. Pricing
+does the same. Measured on the demo's job: without the flag two runs differed by about an ulp
+(the cube by 4e-11 at a scale of 1e6, and the Greeks), and with it four separate compiles
+(in-process and through the server, 2.2's code and 2.3's) gave identical bits. The compiler
+may still tune its choice of kernels on the card, so a program compiled again could in
+principle differ; `--xla_gpu_deterministic_ops=true` instead also pins that choice, at twice
+the compile time. Either one set by you, true or false, wins. Pricing
 in your own process (`price_portfolio` in a script or notebook) gets JAX's default unless
 you set the flag before JAX opens the GPU:
 
@@ -162,10 +162,13 @@ from engine.portfolio import price_portfolio   # before the first JAX computatio
 ```
 
 This card's float64 runs at 1/64 of its float32 rate, and a job of a few hundred paths is too
-small to fill it, so the demo is slower than on the CPU (a repeat: about 6 s against 2.4 s). A consumer GPU is where the
+small to fill it, so the demo is slower than on the CPU (a repeat: about 5.5 s against 2.1 s). A consumer GPU is where the
 GPU path is checked, not where speed is measured (roadmap 5.2). Profiling works as on the
-CPU, and the trace gains the GPU's own lanes, but tracing a GPU job costs several times its
-untraced time ([profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)).
+CPU, and the trace gains the GPU's own lanes, but tracing a whole GPU job costs several times
+its untraced time, whatever the profiler is set to record: the tracer slows every kernel
+launch, and the job is a million small launches, most of them the LGM calibration's bisection.
+Trace one phase at a time instead (`JAX_RISK_PROFILE_PHASE`, below;
+[profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)).
 
 The examples on this page assume you're running from the repository root. `engine` itself
 is importable from anywhere once installed — `pip install -e .` puts it on the path, so
@@ -225,14 +228,15 @@ boilerplate reshaping (stage 3).
 python demos/demo_profile_small.py                          # traces a repeat of the job
 python demos/demo_profile_small.py --cold                   # traces the first run
 python demos/demo_profile_small.py --cold --no-disk-cache   # ... compiling everything
+python demos/demo_profile_small.py --phase pricing          # traces only one phase of the repeat
 ```
 Exercises what `demo_structured.py` does — calibration, simulation, every trade type,
 exposure and Greeks, over the real HTTP API, in the real engine worker, under
 `jax.profiler.trace` — on a deliberately small portfolio, writing its trace under
 `.profile-out-small/` and printing the worker's summary of it: wall time, compiles, events,
 and time per phase and per trade's Greeks. It leaves Greeks **on**: they are a large part of
-where the engine spends its time. On CPU the job takes 43 s from scratch, 19 s with the
-worker's disk cache and 2.8 s repeated
+where the engine spends its time. On CPU the job takes 33 s from scratch, 16 s with the
+worker's disk cache and 1.8 s repeated, a repeat compiling nothing
 ([measured](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)). See [Profiling a pricing job](#profiling-a-pricing-job) below and
 [Profiling & the Tracer](../concepts/profiling.md).
 
@@ -743,6 +747,15 @@ Set `JAX_RISK_PROFILE_WARMUP=1` to run the job once and discard it before the tr
 so the traced run measures **warm steady-state execution** against populated compilation
 caches instead. Which default you want depends on the question: leave it off for "what does
 this job cost from cold," turn it on for "where does the *execution* time go."
+
+Set `JAX_RISK_PROFILE_PHASE` to one phase's name (`calibration`, `simulation`, `pricing`,
+`exposure`, `greeks`, or one trade's Greeks such as `greeks/trade3/AmericanSwaptionConfig`;
+the summary lists them) to trace **only that phase**: the job runs whole, the rest untraced,
+and the worker waits for the devices at the phase's start and end, so the trace holds exactly
+that phase's work. On a GPU this is the way to trace: the profiler slows every kernel launch
+whatever it records, so a whole job traced runs several times slower than untraced
+([measured](../concepts/profiling.md#on-the-gpu-2026-10-05-roadmap-22)), while a phase is
+traced at its own cost alone. A name the job does not have traces nothing and warns.
 
 > **Background:** why compilation dominates, and what was done to reduce it (the Bermudan
 > Greeks path went from ~600 XLA compilations per job to 13), is written up in

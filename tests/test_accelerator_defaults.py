@@ -33,7 +33,7 @@ import pytest
 from jax._src import source_info_util, xla_bridge
 from jax._src.lax.lax import dot_general_p
 
-from demos import demo_http
+from demos import demo_profile_small, demo_structured
 from engine.api import app as api_app
 from engine.api import worker
 from engine.market_risk import MarketRiskRequest, monte_carlo_scenarios, run_market_risk
@@ -103,19 +103,40 @@ class TestTheWorkerRunsDeterministicKernels:
         assert PREALLOCATE in os.environ
 
 
+#: The demos that start a server, each starting it in its own way. `demo_api.py` does the same
+#: but runs as a script on import.
+DEMO_SERVERS = {"demo_structured": lambda: demo_structured.start_server(),
+                "demo_profile_small": lambda: demo_profile_small.start_server(cold=True, disk_cache=True)}
+
+
 class TestADemoServerSharesTheGpu:
-    def test_preallocation_is_off(self):
-        assert demo_http.server_environment({"PATH": "x"}) == {"PATH": "x", PREALLOCATE: "false"}
+    """The environment each demo starts its server in (the server is not started)."""
 
-    @pytest.mark.parametrize("explicit", [{"environ": {PREALLOCATE: "true"}}, {"variables": {PREALLOCATE: "true"}}],
-                             ids=["environment", "demo"])
-    def test_an_explicit_setting_wins(self, explicit):
-        env = demo_http.server_environment(explicit.get("environ", {}), **explicit.get("variables", {}))
-        assert env[PREALLOCATE] == "true"
+    @pytest.fixture
+    def server_environment(self, monkeypatch):
+        def started(start, environ):
+            seen = {}
 
-    def test_the_demos_variables_are_added(self):
-        env = demo_http.server_environment({"JAX_RISK_PROFILE_DIR": "a"}, JAX_RISK_PROFILE_DIR="b", OTHER="c")
-        assert env == {"JAX_RISK_PROFILE_DIR": "b", "OTHER": "c", PREALLOCATE: "false"}
+            def popen(*args, env=None, **kwargs):
+                seen.update(env)
+                return type("Process", (), {"pid": 0})()
+
+            monkeypatch.setattr(os, "environ", dict(environ))
+            monkeypatch.setattr(subprocess, "Popen", popen)
+            for module in (demo_structured, demo_profile_small):
+                monkeypatch.setattr(module, "wait_until_healthy", lambda: None)
+            start()
+            return seen
+        return started
+
+    @pytest.mark.parametrize("demo", DEMO_SERVERS)
+    def test_preallocation_is_off(self, server_environment, demo):
+        env = server_environment(DEMO_SERVERS[demo], {"PATH": "x"})
+        assert env[PREALLOCATE] == "false" and env["PATH"] == "x"
+
+    @pytest.mark.parametrize("demo", DEMO_SERVERS)
+    def test_an_explicit_setting_wins(self, server_environment, demo):
+        assert server_environment(DEMO_SERVERS[demo], {PREALLOCATE: "true"})[PREALLOCATE] == "true"
 
 
 def _engine_line() -> str:

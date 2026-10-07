@@ -9,26 +9,32 @@ greeks, `greeks/trade<i>/<type>`), and beside each trace the worker's summary of
 (`<run>.summary.json`: wall time, compiles, events, time per phase), which this script prints;
 see `docs/concepts/profiling.md` §2.
 
-Measured 2026-10-05 on CPU (roadmap 2.1; the traced run, the server's start-up excluded):
+Measured 2026-10-06 on CPU (roadmap 2.4; the traced run, the server's start-up excluded):
 
     mode                                 wall    compiles  events     phases: pricing / greeks
-    --cold --no-disk-cache (scratch)     43.1 s  269       1,499,875  9.0 s / 30.4 s
-    --cold (disk cache read back)        18.8 s  269       916,387    3.6 s / 13.6 s
-    default (warm: the repeat)            2.8 s    9       830,171    0.8 s /  0.9 s
+    --cold --no-disk-cache (scratch)     32.6 s  217       1,225,929  7.8 s / 21.4 s
+    --cold (disk cache read back)        16.1 s  217         857,931  3.5 s / 11.1 s
+    default (warm: the repeat)            1.8 s    0         772,284  0.6 s /  0.3 s
 
 Every trace is whole: it spans the run and holds every phase. xprof reads it all from the
 `.xplane.pb`; the `.trace.json.gz` beside it keeps only the ~1M events that start first, so a
 cold trace is partial in viewers that read that file (the summary warns). Most events are
-executed XLA kernels, not compiles: 517k of a cold trace's 1.5M run inside "pricing", most
-of them the 60-step bisection of `_bootstrap_bucket`, the Bermudan's and American's
-recalibration on every path date, one event per op per iteration (I-53).
+executed XLA kernels, not compiles: on the CPU 580k of them are loop iterations, most of them
+the 60-step bisection of `_bootstrap_bucket`, the Bermudan's and American's LGM calibrated on
+every path date and again in their Greeks, one event per op per iteration (I-53, roadmap 2.5).
 
-Run with:  .venv/Scripts/python.exe demos/demo_profile_small.py [--cold] [--no-disk-cache]
+`--phase NAME` traces one phase of the job (any name the summary lists) and runs the rest
+untraced. On a GPU that is the way to trace: the profiler slows every kernel launch whatever
+it records, so the whole repeat traced takes 32 s against 5.5 s untraced on an RTX 5060, while
+`--phase pricing` traces the recalibration on the path dates in 3.3 s.
+
+Run with:  .venv/Scripts/python.exe demos/demo_profile_small.py [--cold] [--no-disk-cache] [--phase NAME]
 View with: xprof --port 8791 .profile-out-small
 
 On a GPU (roadmap 2.2: Linux or WSL2 with the `gpu` extra, docs/getting-started/user-guide.md)
 the same command runs the job on the GPU; the result's `ran on:` line names the device the
-engine worker used. Measured on an RTX 5060 in `docs/concepts/profiling.md` §2.0.
+engine worker used. Measured on an RTX 5060 in `docs/concepts/profiling.md` §2.0, with the
+device lane read phase by phase.
 
 Delete `.profile-out-small` between runs when comparing: each run adds a `pid-<pid>/`.
 """
@@ -36,8 +42,11 @@ import argparse
 import glob
 import json
 import os
+import subprocess
+import sys
+import time
 
-from demo_http import API_BASE, MANAGE_SERVER, start_server, stop_server, submit_and_wait, wait_until_healthy
+import httpx
 
 # =============================================================================
 # STAGE 1 -- GIVEN INPUTS (small, but the same KINDS of input as demo_structured)
@@ -89,11 +98,11 @@ RISK_PERCENTILES = [0.95, 0.99]
 # STAGE 2 -- SERVER SETUP (identical mechanics to demo_structured.py)
 # =============================================================================
 
-# The server and its job polling are demo_http.py's (a server on API_BASE, GPU preallocation
-# off unless the environment sets it).
+API_BASE = "http://127.0.0.1:8000"
+_MANAGE_SERVER = os.environ.get("JAX_RISK_ENGINE_DEMO_SKIP_SERVER") != "1"
 
 # A separate directory from demo_structured.py's `.profile-out`. Passed to uvicorn and its
-# engine worker by start_server; it arms the profiler hook in
+# engine worker via os.environ.copy() in start_server; it arms the profiler hook in
 # engine/api/worker.py::_profiled.
 PROFILE_DIR = ".profile-out-small"
 
@@ -104,16 +113,56 @@ PROFILE_DIR = ".profile-out-small"
 #   --cold:           one traced run; with the worker's persistent compilation cache populated
 #                     by an earlier run (a restarted worker), compiles read it back.
 #   --no-disk-cache:  turns that cache off, so a --cold trace is the job from scratch.
+#
+# And what is traced (`--phase`): the whole job by default, or only one phase of it
+# (`--phase pricing`, `--phase greeks/trade3/AmericanSwaptionConfig`, any name the summary
+# lists), the rest running untraced. On a GPU the profiler slows every kernel launch, so a
+# phase is traced at its own cost alone.
 
 
-def server_variables(cold: bool, disk_cache: bool) -> dict:
-    """The server's environment variables for a cache mode (see above)."""
-    variables = {"JAX_RISK_PROFILE_DIR": PROFILE_DIR}
+def wait_until_healthy(timeout_s: float = 60.0) -> None:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            if httpx.get(f"{API_BASE}/health", timeout=2.0).status_code == 200:
+                return
+        except httpx.TransportError:
+            pass
+        time.sleep(0.5)
+    raise RuntimeError(f"server at {API_BASE} did not become healthy within {timeout_s}s")
+
+
+def start_server(cold: bool, disk_cache: bool, phase: str = None) -> subprocess.Popen:
+    env = os.environ.copy()
+    env["JAX_RISK_PROFILE_DIR"] = PROFILE_DIR
     if not cold:
-        variables["JAX_RISK_PROFILE_WARMUP"] = "1"
+        env["JAX_RISK_PROFILE_WARMUP"] = "1"
+    if phase:
+        env["JAX_RISK_PROFILE_PHASE"] = phase
     if not disk_cache:
-        variables["JAX_COMPILATION_CACHE_DIR"] = ""  # empty turns the worker's disk cache off
-    return variables
+        env["JAX_COMPILATION_CACHE_DIR"] = ""  # empty turns the worker's disk cache off
+    # The GPU is shared on a developer's machine: grow on demand rather than XLA's 75% of the
+    # card per process, unless your environment says otherwise (as demo_structured.py).
+    env.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    process = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "engine.api.app:app", "--host", "127.0.0.1", "--port", "8000"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env=env,
+    )
+    print(f"launched uvicorn (pid {process.pid}), waiting for {API_BASE}/health ...")
+    try:
+        wait_until_healthy()
+    except Exception:
+        process.terminate()
+        raise
+    print("server is up")
+    return process
+
+
+def stop_server(process: subprocess.Popen) -> None:
+    process.terminate()
+    process.wait(timeout=10)
+    print(f"stopped uvicorn (pid {process.pid})")
 
 
 # =============================================================================
@@ -142,6 +191,28 @@ def build_portfolio_request() -> dict:
 # =============================================================================
 # STAGE 4 -- SUBMIT AND PRINT
 # =============================================================================
+
+def submit_and_wait(request_body: dict) -> dict:
+    submit = httpx.post(f"{API_BASE}/portfolio/price", json=request_body, timeout=30.0)
+    if submit.status_code != 202:
+        raise RuntimeError(f"submission failed ({submit.status_code}): {submit.text}")
+    job_id = submit.json()["job_id"]
+    print(f"job_id: {job_id} (202 Accepted -- pricing is running in the background)")
+
+    start = time.time()
+    while True:
+        poll = httpx.get(f"{API_BASE}/portfolio/price/{job_id}", timeout=30.0)
+        poll.raise_for_status()
+        status = poll.json()
+        print(f"  [{time.time() - start:6.1f}s] status: {status['status']}")
+        if status["status"] in ("done", "failed", "interrupted"):  # the final statuses
+            break
+        time.sleep(1.0)
+
+    if status["status"] != "done":
+        raise RuntimeError(f"pricing job {status['status']}:\n{status['error']}")
+    return status["result"]
+
 
 def print_result(result: dict) -> None:
     trade_ids = result["trade_ids"]
@@ -188,7 +259,12 @@ def report_trace() -> None:
         print(f"  (older runs also in {PROFILE_DIR!r} -- delete it between runs for a clean comparison)")
     if warmup:
         print(f"  untraced first run: {warmup['wall_seconds']:.1f}s, {warmup['compiles']} compiles")
-    print(f"  traced run:         {traced['wall_seconds']:.1f}s, {traced['compiles']} compiles")
+    if "phase" in traced:
+        print(f"  the run:            {traced['job_wall_seconds']:.1f}s, {traced['job_compiles']} compiles,"
+              f" of which only the phase {traced['phase']!r} was traced:")
+        print(f"  traced phase:       {traced['wall_seconds']:.1f}s, {traced['compiles']} compiles")
+    else:
+        print(f"  traced run:         {traced['wall_seconds']:.1f}s, {traced['compiles']} compiles")
     print(f"  {summary['events']:,} events, {summary['bytes'] / 1e6:.1f} MB, spanning {summary['span_seconds']:.1f}s"
           f" = {summary['coverage']:.0%} of the traced run")
     for thread, count in list(summary["threads"].items())[:3]:
@@ -207,6 +283,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="trace the first run, compiles included (default: run once untraced, trace the repeat)")
     parser.add_argument("--no-disk-cache", dest="disk_cache", action="store_false",
                         help="turn the worker's persistent compilation cache off, so --cold compiles everything")
+    parser.add_argument("--phase", metavar="NAME",
+                        help="trace only this phase of the job, e.g. pricing or greeks/trade3/AmericanSwaptionConfig "
+                             "(default: the whole job)")
     return parser.parse_args(argv)
 
 
@@ -217,7 +296,7 @@ def main(argv=None) -> None:
           f"{len(SIMULATION_DATES)} simulation dates, the {MODEL} model, greeks=ON")
 
     print("\n=== stage 2: server setup ===")
-    server_process = start_server(**server_variables(args.cold, args.disk_cache)) if MANAGE_SERVER else None
+    server_process = start_server(args.cold, args.disk_cache, args.phase) if _MANAGE_SERVER else None
     if server_process is None:
         wait_until_healthy()
         print(f"reusing an already-running server at {API_BASE}")
@@ -230,6 +309,8 @@ def main(argv=None) -> None:
                   + ("" if args.disk_cache else " (disk cache off)"))
         else:
             print("  cache: WARM -- job runs twice, first run untraced; the trace shows what a REPEAT costs")
+        if args.phase:
+            print(f"  traced: the phase {args.phase!r} only; the rest of the job runs untraced")
 
     try:
         print("\n=== stage 3: server inputs ===")
@@ -237,7 +318,7 @@ def main(argv=None) -> None:
         print(f"built the portfolio request: {len(request_body['trades'])} trades")
 
         print("\n=== stage 4: submit and print ===")
-        result = submit_and_wait(request_body, poll_seconds=1.0)
+        result = submit_and_wait(request_body)
         print_result(result)
         report_trace()
     finally:
