@@ -11,41 +11,45 @@ exposure are not yet compared with an ORE run ([I-50](#i-50)).
 
 ## Verification status
 
-Last full runs, 2026-10-06, on the code of roadmap 2.4 (each trade's AD Greeks one jitted
-program per product and derivative, on the price function as data; the profiler hook's phase
-window). 2,613 collected on Windows and 2,616 on Linux with the GPU plugin installed: 2,607
-and 2,610 before, plus 5 in `tests/test_profiling_and_jit.py` (the repeated job compiles
-nothing, an option's Greeks are a program per derivative, three for the phase window), less 1
-there (the Hessian test of a private helper folded into the public `curve_greeks` one), plus 2
-in `tests/test_demos.py` (the profiling demo's switches). Every summary line printed, no
-`FAILED` or `ERROR` line, and no engine process outlived the Windows run:
+Last full runs, 2026-10-07, on the code of roadmap 2.5 (one root solver for every calibration and
+exercise boundary, `engine.numerics.roots`: Newton by default, the bisection as the reference; a
+Bermudan's or American's path dates of one basket shape calibrated together). 2,667 collected on
+Windows: 2,613 before, plus 57 in `tests/test_root_solvers.py`, less 4 there moved from
+`tests/test_greeks.py` (the Jamshidian root's derivative, now for both solvers), plus 1 in
+`tests/test_import_layering.py` (`engine.numerics`). Every summary line printed, no `FAILED` or
+`ERROR` line:
 
-- **Windows**, `-n 8`: **2,609 passed, 4 skipped, 0 failed**, 9m50s. The skips: the two
-  accelerator-only tests, the GPU plugin check (none installed), and the parametrized case of
-  a storage wider than its compute, refused by design.
-- **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the CI
-  job, `-n 8`): 2,501 passed, 4 skipped, 2m02s.
-- **Linux, CPU** (WSL2 Ubuntu 24.04, Python 3.11, `JAX_PLATFORMS=cpu`, `-n 4`):
-  **2,612 passed, 4 skipped, 0 failed**, 7m38s (the skips: the two accelerator-only tests,
-  the `reference/traderX` test without its checkout, the refused storage case).
-- **Linux, GPU** (the same VM, an RTX 5060 Laptop GPU, JAX's CUDA 13 plugin, `-n 4`):
-  **2,614 passed, 2 skipped, 0 failed**, 20m16s; every ORE parity suite at its tolerance.
+- **Windows**, `-n 8`: **2,663 passed, 4 skipped, 0 failed**, 9m17s (the skips as before: the
+  two accelerator-only tests, the GPU plugin check, the refused storage case).
+- **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the CI job,
+  `-n 8`): 2,555 passed, 4 skipped, 2m26s.
+- **Linux, GPU** (WSL2 Ubuntu 24.04, Python 3.11, an RTX 5060 Laptop GPU, JAX's CUDA 13 plugin,
+  `-n 4`, 2,670 collected: 2,616 before, the same changes): **2,668 passed, 2 skipped, 0
+  failed**, 15m08s (2.4's 20m16s); every ORE parity suite at its tolerance.
+- **Every ORE parity suite under the reference solver** (Windows, the default set to
+  `"Bisection"` for the run, so every configuration and API default took it): the 15 modules
+  that compare with ORE or QuantLib, 509 passed, 2m51s.
+- **Linux, CPU** (the same VM, `JAX_PLATFORMS=cpu`, `-n 4`): **2,666 passed, 4 skipped, 0
+  failed**, 12m34s (the skips: the two accelerator-only tests, the `reference/traderX` test
+  without its checkout, the refused storage case).
 
-One change came after these runs: in the worker's phase window the compile counter starts
-after the profiler rather than before (two lines swapped, so a profiler that fails to start
-leaves no listener); its tests (`TestProfilerHook`, 7) pass on Windows after it.
+Red first: on 2.4's code `tests/test_root_solvers.py::test_a_date_with_an_exercise_left_and_no_helper_keeps_the_engine_volatility`
+raised `ValueError: Need at least one array to stack` ([I-82](#i-82)). Found and fixed on the
+way, each with its test: three defects of the first Newton drafts, none in the committed code
+(a bucket started at the floored bucket before it; `rtsafe`'s halving test bisecting a converged
+root away at a fixed count, `TestNewton::test_more_steps_never_lose_a_converged_root`; and a
+residual XLA rounded differently for the bracket and for the step, which in float32 on 128 paths
+left a bucket's volatility 74% off, `tests/test_precision.py::test_float32_throughout_on_the_sloped_shared_market_is_sane`,
+red on that draft); and one flaky test, `tests/test_engine_worker.py::TestWorkerLock::test_a_dead_holders_lock_is_free`,
+which failed once under the full suite's load (a venv's launcher is killed before its child, the
+interpreter holding the lock, ends) and now waits for the lock to be released.
 
-Golden snapshot (2.4), on CPU, from a worktree of `2df78cb` (2.3) against the 2.4 tree, now
-332 arrays (232 as before, plus the demo's own job run twice, 100): 286 identical in value,
-dtype and shape, every cube, exposure, today's value, bump Greek, market-risk figure and
-float32 run among them; the 46 AD Greek arrays moved at rounding level, at most 3.4e-14 of
-each array's largest magnitude, and the snapshot was re-baselined
-([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)). On the
-GPU the demo's cube, EPE and today's value equal the old code's, the AD Greeks within 6.6e-16
-of their scale; two runs of each tree are identical. Red first: on 2.3's code the repeated
-demo job compiled `{'jit_legs_npv': 4, 'jit_black_multileg_npv': 5}`, an option's Greeks
-compiled no `_curve_derivatives` or `_option_vega` program (they were eager), and the three
-phase-window tests failed (no window: every phase traced; no warning; no `traced_phase`).
+Golden snapshot (2.5), on CPU, from a worktree of `eadbcc6` (2.4) against the 2.5 tree, now 359
+arrays (332 as before, plus the Jamshidian engine and the standalone bootstrap, 27): with every
+solver `"Bisection"`, all 359 identical in value, dtype and shape; with the `"Newton"` default,
+149 identical and 210 moved at rounding level, float64 at most 7.0e-15 of each array's scale in
+the cubes and exposures and 2.2e-14 in the AD Greeks, and the snapshot was re-baselined
+([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
 
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
@@ -72,7 +76,7 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-50](#i-50) | No path- or distribution-level parity test against an ORE simulation | Medium | OPEN | Validation | 3.2 |
 | [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | 4.5 |
 | [I-78](#i-78) | AD and bump Greeks differ by up to 2% on a sloped market | Medium | OPEN | Validation | 4.5 |
-| [I-53](#i-53) | The pipeline is slow: per-path recalibration and bump Greeks of options | Medium | PARTIAL | Performance | 2.5 |
+| [I-53](#i-53) | On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch | Low | PARTIAL | Performance | 6.6 |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | 3.3 |
 | [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | 5.1 |
 | [I-56](#i-56) | Market risk and the CAM calibration have no route; two routes named like versions | Medium | PARTIAL | API | 3.1 |
@@ -86,6 +90,7 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | 6.2, 6.4 |
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | 6.3 |
 | [I-81](#i-81) | A cold job compiles about 180 one-operation programs; market risk vmaps a closure | Low | OPEN | Performance | 6.5 |
+| [I-83](#i-83) | A Bermudan/American on the paths needs 0.3–0.7 MB per path and step: 64k paths run out of memory | Medium | OPEN | Performance | 3.7 |
 
 **One pipeline.** Since roadmap 1.3 every run is `price_portfolio` on a `Market`
 (`engine.portfolio.market_path`; HTTP `POST /portfolio/price`, also served as
@@ -135,7 +140,10 @@ and date, as ORE's `ValuationEngine` does with `recalibrate = true`
 - ORE keeps the parametrization's time grid from the as-of build; the engine measures each
   date's bucket times from that date.
 - ORE still passes helpers whose expiry has passed; the engine's basket on a date keeps only
-  later exercise dates.
+  later exercise dates. So on a date with an exercise left but no helper ahead (an American's
+  last days, after the last reference-grid date in its window), the engine prices on its
+  configured volatility, as a calibration today with no helper does ([I-82](#i-82)), where ORE
+  would keep the parametrization it last calibrated.
 
 The path-date volatility transcribes `DynamicSwaptionVolatilityMatrix` (`ForwardVariance`),
 checked against the formula but not against ORE running it (no Python constructor).
@@ -153,10 +161,11 @@ against ORE's simulation.
 **Severity:** Low · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-01, roadmap
 1.4's dtype review
 
-**What is wrong.** On every path and date a Bermudan/American is recalibrated by bisection on
-σ ∈ [1e-6, 0.2] (`engine.calibration.ore_lgm.bootstrap_sigma`). A helper whose volatility is
-not attainable in the bracket ends at its edge, and `bootstrap_sigma` flags it
-(`hit_ceiling`), but `engine.valuation.bermudan._path_sigma` drops the flag, so that path is
+**What is wrong.** On every path and date a Bermudan/American is recalibrated on
+σ ∈ [1e-6, 0.2] (`engine.calibration.ore_lgm.bootstrap_sigma`, by the engine's root solver). A
+helper whose volatility is not attainable in the bracket ends at its edge, and
+`bootstrap_sigma` flags it (`hit_ceiling`), but `engine.valuation.bermudan.path_sigmas` drops
+the flag, so that path is
 priced on a model that does not reprice its basket and nothing says so. Today's calibration
 refuses the same case (`calibrate_on`). ORE's `LgmBuilder` logs a structured warning when the
 calibration error exceeds its tolerance and fails unless `continueOnCalibrationError`
@@ -306,88 +315,74 @@ and state the gap; measure and document the Bermudan's fixed-calibration differe
 ## Performance
 
 <a id="i-53"></a>
-### I-53 — The pipeline is slow: per-path recalibration and bump Greeks of options
+### I-53 — On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch
 
-**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-29 · re-measured 2026-10-02, 2026-10-05 (roadmap 2.1), 2026-10-06 (roadmap 2.4)
+**Severity:** Low · **Status:** PARTIAL · **Category:** Performance · **Found:** 2026-09-29 ·
+re-measured 2026-10-02, 2026-10-05 (roadmap 2.1), 2026-10-06 (2.4), 2026-10-07 (2.5)
 
-**What is wrong.** Most of the cost was XLA compiling the same work again: per trade, per
-path date, per bump and per call ([I-21](#i-21), [I-22](#i-22), profiling §3.7). With the
-pricers jitted once per shape (2026-10-02), measured on CPU, shared test market, grid at
-`n_per_std=16`, each job in a fresh process with no disk cache, old and new code
-interleaved; "repeat" is the same call again in the process:
+**Closed parts.** The pipeline was slow, first by compiling the same work again per trade, path
+date, bump and call (pricers jitted once per shape, 2026-10-02; [I-21](#i-21), [I-22](#i-22));
+then a repeated job compiled 9 programs, the AD Greeks' derivatives living only in JAX's internal
+caches (roadmap 2.4, `tests/test_profiling_and_jit.py::TestCompileCounts::test_a_repeated_job_compiles_nothing`,
+`::test_an_option_s_greeks_are_a_program_per_derivative`, both red on 2.3's code); and the
+recalibration of every Bermudan/American, on every path date and in its Greeks, ran bisections
+of 60 steps per bucket around 160 per y\*, the dates one after another (roadmap 2.5, decision
+A-21: one root solver, Newton by default, the dates of one basket shape calibrated together;
+`tests/test_root_solvers.py`). Measured untraced, old and new code alternately: the path
+recalibration 35–55 times faster on the CPU (262,144 paths: 144–185 s to 2.8–3.4 s) and 15–38
+times on the RTX 5060 (7.3 s to 0.19 s); the demo's repeated job on the GPU 5.4–5.6 s to
+1.35–1.43 s, and its trace 32 s to 1.6 s
+([profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)).
 
-| Work | Before: first / repeat | Now: first / repeat |
-|---|---|---|
-| One Bermudan on 64 paths × 3 dates, recalibrated per path date | 41 s / 13 s | 15 s / 1.3 s |
-| One American (3-year window), the same | 74 s / 50 s | 39 s / 20 s |
-| Bump Greeks of the Bermudan / the American | 164 s / 583 s first, 168 s / 754 s repeat | 7.4 s / 22 s first, 1.3 s / 12 s repeat |
-| AD Greeks of the Bermudan / the American | 38 s / 73 s first, 21 s / 57 s repeat | 21 s / 27 s first, 0.4 s / 5.9 s repeat |
-| Market risk, 4 trades × 512 scenarios | 8.1 s / 6.9 s | 6.1 s / 2.8 s |
+**What is wrong.**
 
-What remains: an American's repeat on the path is arithmetic, not compiling (13 s alone,
-no compiles): every path date recalibrates a basket of one helper per reference-grid month,
-each bucket a 60-step bisection around the 160-step root solve of `_analytic_lgm`. A first
-call still compiles a few large programs (each bootstrap bucket per helper shape, the grid
-induction and its derivatives), which the engine worker keeps for its lifetime (since
-roadmap 1.8; the pool's workers each compiled their own) and, since 2026-10-04, keeps on disk
-in JAX's persistent compilation cache (`xla-cache/` beside the queue unless
-`JAX_COMPILATION_CACHE_DIR` says otherwise), so a restarted worker reads them back
-(`tests/test_engine_worker.py::TestEngineWorkerPricing::test_a_worker_keeps_its_programs_on_disk_beside_its_queue`).
-
-**The demo, measured (roadmap 2.4, 2026-10-06;
-[profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)).**
-`demos/demo_profile_small.py` (five trades, 256 paths, 3 dates, AD Greeks), traced on CPU:
-32.6 s and 217 compiles from scratch (2.1: 43.1 s, 269), 16.1 s with the worker's disk cache,
-1.8 s repeated in the worker, compiling nothing (2.1: 2.8 s, 9 compiles). 2.4 made each
-trade's AD Greeks one jitted program per product and derivative (profiling §3.8): the eager
-derivatives' programs lived only in JAX's internal caches of 2,048 entries, which one job
-overflowed, so the next job compiled the swap's and European's again. Untraced, three runs in
-a process, old and new code interleaved: from scratch 14–22% faster on Windows CPU, Linux CPU
-and the GPU; the second run as fast as the third; the third unchanged on Linux and the GPU.
-Its trace is whole in every mode, and a phase can be traced alone (`JAX_RISK_PROFILE_PHASE`).
-What remains:
-
-- **The recalibration is the job on a GPU** (the device lane of a traced repeat on the RTX
-  5060): the LGM bootstrap's bisection is 84% of the kernel time and 97% of the 1.36M kernel
-  launches, the card busy 7% of the time. 61% of that kernel time is in the options' Greeks,
-  which calibrate each trade again on today's, the sensitivity and the Theta markets, and 34%
-  on the path dates. Untraced the repeat is 5.5 s on the GPU against 2.1 s on the CPU.
-- **Events are loop iterations.** About 580k kernel events on the CPU in every mode, most of
-  them `_bootstrap_bucket`'s 60-step bisection: XLA's CPU runtime records each op of a loop
-  body per iteration. Fewer iterations (roadmap 2.5's solver) cut both time and events.
-- **Tracing a whole job on a GPU costs about 6×** (32.4 s traced, 5.5 s untraced), whatever
-  the profiler records: the tracer slows each kernel launch. Fewer launches (2.5) cut it; until
-  then a phase is traced alone.
 - **On Windows only, the AD Greeks slow later pricing.** In a process that has run any AD
-  Greeks (the old code's too), every later job's pricing phase runs 10–20% slower: pricing-only
-  jobs 1.60 s before one Greeks call and 1.89 s after, 1.49 → 1.71 s with the old code; on
-  Linux 1.32 → 1.32–1.38 s. No compile, trace or garbage collection is involved and one large
-  allocation does not do it; the Windows heap is the likely cause, not established. So the
-  warm demo job on Windows' CPU is 0.2–0.4 s slower than before 2.4 (2.1–2.3 s against 1.9 s),
-  while its first two runs are faster. The deployments that matter run Linux; 2.5 re-measures it.
-- **One-operation programs** on a cold job: [I-81](#i-81).
+  Greeks, every later job's pricing phase runs 10–25% slower: pricing-only jobs 1.57–1.83 s
+  before one Greeks call and 1.98–2.25 s after, the code before 2.5 and after it alike; on Linux
+  1.32 → 1.32–1.38 s (2.4). No compile, trace or garbage collection is involved and one large
+  allocation does not do it; the Windows heap is suspected, not shown. The deployments that
+  matter run Linux.
+- **A cold job is 3–4 s (8–11%) slower since 2.5.** Each bootstrap bucket's program under Newton
+  traces the helper's price, with its nested y\* solve, at the bracket's ends, in the step (under
+  `jax.jvp`) and for the model value: the demo's ten bucket programs compile in 5.4 s against
+  3.3 s (7.1 s before the bracket's two ends were evaluated in one call). The programs stay in
+  the worker and on disk, so a repeated or restarted job does not pay it.
 
-**The recalibration's loops** (2026-10-05). Each bucket of each basket, on each path date, is
-60 bisection steps; each step prices the helper, whose exercise boundary y* is itself 60
-widening and 100 halving steps (`_bootstrap_bucket` and `_solve_monotone_root` in
-`engine/calibration/ore_lgm.py`): 9,600 dependent steps per bucket and date, vectorized over
-paths only. The dates, which are independent, run one after another from Python
-(`bermudan_cube`). On a CPU a step is cheap; on a GPU each is a few kernel launches with
-little work in them (the Bermudan's and American's Greeks took 29 s of a traced repeat on the
-RTX 5060 and 0.36 s on the CPU; the device lane says it is their calibrations, above). ORE solves the same equations with Brent at accuracy 1e-6 for y* and
-Levenberg-Marquardt per bucket, and stops far earlier: 100 halvings are about 45 past float64's
-resolution. Five separate bisections do this work (`ore_lgm.py` twice,
-`engine/valuation/jamshidian.py`, `engine/calibration/lgm.py`, `engine/calibration/basket.py`).
+**Reach.** Wall time only; no number. Windows CPU runs; a worker's first job.
 
-**To close.** Roadmap 2.5, measured on `demos/demo_profile_small.py`'s job and its summary
-([profiling §5](../concepts/profiling.md#5-the-trace-summary-and-its-checks)): the
-configurable root solver of decision A-21 (a safeguarded Newton method by default, today's
-bisection as the reference) in one shared module, and the dates batched; it moves float64 at
-rounding level, once. (2.4 closed the compile part: the repeated job's 9 compiles, the options'
-AD Greeks compile, `tests/test_profiling_and_jit.py::TestCompileCounts::test_a_repeated_job_compiles_nothing`
-and `::test_an_option_s_greeks_are_a_program_per_derivative`, both red on 2.3's code.)
-`PricingConfig(recalibrate=False)` and the AD Greeks method exist where ORE's semantics are
-not needed.
+**Current handling.** None needed for correctness.
+
+**To close.** Roadmap 6.6: the Windows slowdown's cause, and the helper's price traced once per
+bucket program, the snapshot bit for bit. Related: the grid rollback's memory and time on the
+paths ([I-83](#i-83), roadmap 3.7) and the cold job's one-operation programs ([I-81](#i-81)).
+
+<a id="i-83"></a>
+### I-83 — A Bermudan/American on the paths needs 0.3–0.7 MB per path and step: 64k paths run out of memory
+
+**Severity:** Medium · **Status:** OPEN · **Category:** Performance · **Found:** 2026-10-07,
+roadmap 2.5's baseline
+
+**What is wrong.** The grid engine on the paths (`engine.valuation.bermudan._rollback_every_path`,
+the rollback vmapped over paths) builds each step's `[nodes, nodes]` interpolation operator per
+path: arrays `[paths, steps, nodes, nodes]`, 193 nodes at the demo's grid (`n_per_std=16`,
+`std_devs=6`), 301 at ORE's default (30 and 5), so 0.3 MB (0.7 MB) per path and exercise step.
+The demo's job at 65,536 paths asked for 277 GB and failed (`Out of memory allocating
+277260800480 bytes`) on a 31 GB machine, before roadmap 2.5 and after it; 4,096 paths fit, and
+their time is this rollback (the options' path cubes take 31–36 s of the CPU's 36 s pricing,
+their recalibration 0.09 s, against 2.3 s for the whole job at 256 paths). The 8 GB GPU fails
+at 1,024 paths (a 6 GB allocation).
+
+**Reach.** Every market-path run with a Bermudan or American beyond a few thousand paths: the
+path counts the precision research needs (roadmap 5.2) and any exposure run of size. Not
+market risk (t=0 revaluation) or the t=0 Greeks.
+
+**Current handling.** None: the job fails with XLA's out-of-memory error.
+
+**To close.** Roadmap 3.7: the rollback as one `[nodes, nodes]` operator per step applied to
+all columns and paths at once, as a matrix product ([details/precision.md
+§8.3](details/precision.md#83-emulation-and-native-speed)), which holds one such buffer per
+step; then the demo's job at 65,536 and 262,144 paths on the CPU and the GPU, the measurement
+roadmap 2.5 could not make.
 
 <a id="i-61"></a><a id="p-1"></a>
 ### I-61 — Nothing runs on more than one host; multi-device speed unmeasured
@@ -951,6 +946,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-74"></a>I-74 | A calibration basket read ORE's global evaluation date, so a later date (another caller's, or the wall clock past a helper's fixing) failed it with a missing fixing | `tests/test_ore_lgm_calibration.py::test_the_basket_does_not_depend_on_ores_global_evaluation_date` |
 | <a id="i-79"></a>I-79 | Never run on a GPU (now the `gpu` extra under Linux or WSL2, verified on an RTX 5060: no preallocation, the API's JAX on the CPU, float32 products at float32 rather than TensorFloat-32, deterministic kernels; the demo and the full suite run on the GPU; roadmap 2.2) | `tests/test_accelerator_defaults.py`, `tests/test_environment.py::test_a_gpu_plugin_is_jaxlibs_version`, the full suite on the GPU |
 | <a id="i-80"></a>I-80 | Importing `engine` changed JAX and XLA settings for the whole process (now x64 only: each matrix product states its precision through `engine.precision.matmul`; deterministic GPU kernels set by the engine worker and the tests; GPU preallocation off in the demos and the tests; roadmap 2.3, decision A-22) | `tests/test_accelerator_defaults.py` (`TestImportingTheEngine`; `TestEveryMatrixProductStatesItsPrecision::test_in_every_pipeline`, red on the bare products) |
+| <a id="i-82"></a>I-82 | An American priced on a path date after the last reference-grid date in its window and before its last exercise (no calibration helper left) raised `ValueError: Need at least one array to stack` (now the engine's volatility, as a calibration today with no helper; found in roadmap 2.5) | `tests/test_root_solvers.py::test_a_date_with_an_exercise_left_and_no_helper_keeps_the_engine_volatility` |
 | <a id="m-4"></a>Audit M-4 | Trades were defined relative to the evaluation date (now absolute dates) | `tests/test_trade_dates.py` |
 | <a id="m-5"></a>Audit M-5 | Theta re-rolled the trade instead of ageing it | `tests/test_trade_dates.py` |
 | <a id="r-1"></a>Audit R-1 | Cube quantiles were reported as VaR/ES (now exposure profiles; market-risk VaR/ES by t=0 revaluation) | `tests/test_exposure.py`, `tests/test_market_risk.py`, `tests/test_market_risk_ore_parity.py` |

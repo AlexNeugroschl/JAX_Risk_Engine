@@ -274,7 +274,8 @@ What the numbers say:
   256 paths in float64 (1/64 of this card's float32 rate) there is little arithmetic to hide
   a launch behind. Roadmap 2.4 measured it (below): most of the launches are the LGM
   bootstrap's, in the options' Greeks more than on the path dates, and 2.5 replaces the
-  bisections' fixed 60- and 160-step loops with a configurable solver (decision A-21).
+  bisections' fixed 60- and 160-step loops with a configurable solver (decision A-21); the
+  re-measurement after it is below.
 - **The defaults' cost.** Excluding non-deterministic kernels costs nothing measurable warm;
   `--xla_gpu_deterministic_ops=true`, which also pins autotuning, doubled the compile from
   scratch (184 s against 89 s untraced) for the same bits, so it is an opt-in, not the
@@ -361,6 +362,72 @@ but in the options' Greeks (61% of the bootstrap's kernel time, 73% of its launc
 Greek calibrates the trade's LGM again. That is 2.5's
 baseline: a Newton solver cuts every one of these loops; batching the path dates
 (`bermudan_cube`) cuts only the third in `pricing`.
+
+#### After roadmap 2.5 (2026-10-07)
+
+2.5 solves every calibration and exercise boundary with one solver (`engine.numerics.roots`,
+decision A-21): a safeguarded Newton method by default, 7 steps per bootstrap bucket and 5 per
+y\*, where the bisection took 60 and 100 (plus 60 widening steps for each y\*); and it
+calibrates a Bermudan's or American's path dates of one basket shape in one call. Measured
+untraced in fresh processes with no disk cache, the old tree (a worktree of `eadbcc6`, 2.4) and
+the new one alternately, two pairs each; Windows CPU (24 threads) and the RTX 5060 under WSL2.
+
+**The recalibration alone** (the demo's Bermudan and American on every path date, the demo's
+simulation at each path count; the second and third call of a process):
+
+| Paths | CPU old | CPU new | GPU old | GPU new |
+|---:|---:|---:|---:|---:|
+| 256 | 0.08–0.10 s | **0.010 s** | 0.59–0.67 s | **0.018–0.022 s** |
+| 4,096 | 3.35–3.52 s | **0.068–0.071 s** | 0.41–0.42 s | **0.020–0.024 s** |
+| 65,536 | 27–30 s | **0.53–0.90 s** | 2.13 s | **0.06–0.14 s** |
+| 262,144 | 144–185 s | **2.8–3.4 s** | 7.3 s | **0.19 s** |
+
+35 to 55 times faster on the CPU, where the cost was arithmetic (9,600 dependent loop
+iterations per bucket and date), and 15 to 38 times on the GPU, where it was kernel launches.
+The first call compiles: 3.2–5.9 s on the CPU against 1.7–4.2 s before (and 187 s at 256k
+paths, which the old code spent computing), 4.9–6.4 s on the GPU against 3.2–10.2 s.
+
+**The demo's job** (`demos/demo_profile_small.py`'s request, five trades with AD Greeks; run 1
+compiles, run 2 repeats; "pricing" is the same request without Greeks, after them):
+
+| | Paths | Run 1 (cold) | Run 2 | Pricing |
+|---|---:|---:|---:|---:|
+| CPU, old | 256 | 37.1–38.0 s | 2.32–2.33 s | 1.97–2.37 s |
+| CPU, new | 256 | 40.9–41.3 s | 2.15–2.29 s | 1.92–2.17 s |
+| CPU, old | 4,096 | 67.8–77.1 s | 39.6–43.3 s | 38.5–43.2 s |
+| CPU, new | 4,096 | 74.3–76.6 s | 37.5–38.7 s | 35.8–37.9 s |
+| GPU, old | 256 | 60.8–62.9 s | 5.42–5.55 s | 1.89–1.99 s |
+| GPU, new | 256 | 64.0–64.4 s | **1.35–1.43 s** | **0.37–0.40 s** |
+
+On the GPU a repeated job is four times faster and its pricing five: the recalibration was
+2.4's device lane's 84% of kernel time and 97% of launches, in the options' Greeks (their
+calibration today, on the sensitivity markets and the Theta market) and on the path dates. On
+the CPU the repeat is unchanged at 256 paths and 3–4 s faster at 4,096: there the job is now the
+grid rollback on the paths (at 4,096 paths the options' path cubes take 31–36 s, their
+recalibration 0.07–0.09 s of it), whose memory also stops the job at 65,536
+paths on the CPU (a 277 GB allocation, the old code's too) and at 1,024 on the 8 GB GPU (6 GB),
+so the roadmap's 64k and 256k job baseline cannot be taken until step 3.7 gives the rollback its
+matrix form ([I-83](../planning/known-issues.md#i-83)). A cold job is 3 s (8%) slower on the CPU
+and 1–3 s on the GPU: each bootstrap bucket's program now holds Newton's derivative of the
+helper's price and the nested y\* solve in several places (the bracket's ends, the step, the
+model value), 5.4 s of compile for the job's ten bucket programs against 3.3 s. Evaluating a
+widened bracket's two sides in one call took it from 7.1 s; the compiled programs stay for the
+worker's lifetime and on disk, so a repeated or restarted job does not pay it.
+
+**The demo traced** (`demos/demo_profile_small.py`, a fresh API and worker per mode). The
+warm repeat, traced whole: on the RTX 5060 1.6 s and 0 compiles, 276,344 events of which
+46,213 on the compute stream (2.4: 32.4 s, 3.86M events, 1.36M kernels; the profiler's cost is
+per launch, so the trace now costs what the job does, 1.4 s untraced); on the CPU 1.9 s,
+181,523 events (2.4: 1.8 s, 772,284). From scratch on the CPU (`--cold --no-disk-cache`) 42.2 s
+and 680,210 events against 37.9 s and 1,226,160 for the old tree the same hour; with the disk
+cache read back (`--cold`) 20.2 s. Every trace spans 100% of its run. The milestone stands on
+both: the job runs through the API and the engine worker on the GPU and its trace is whole.
+
+Unchanged by 2.5, on Windows' CPU only: pricing after an AD Greeks call is slower, 1.57–1.83 s
+before one Greeks call and 1.98–2.25 s after, with the old and the new code alike
+([I-53](../planning/known-issues.md#i-53)). The options' bump Greeks (each bump recalibrates)
+take 0.58–0.67 s warm on the CPU, as before (0.61–0.75 s): their cost there is the grid, not the
+calibration.
 
 ### 2.1 and 2.2: the 4-trade pipeline before roadmap 1.3 (history)
 

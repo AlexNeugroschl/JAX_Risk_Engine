@@ -134,14 +134,17 @@ maturing on the Theta date is worth 0 there and its redemption is a paid flow
 ([I-70](../planning/known-issues.md#i-70)). On a flat curve, curves fixed in dates mean a
 bill's Theta is 0, not a pull to par.
 
-## Differentiating through bisection root-finds
+<a id="differentiating-through-bisection-root-finds"></a>
+## Differentiating through root-finds
 
-Two prices depend on a root found by bisection, which has no derivative: the Jamshidian
-engine's critical state x*, and each calibration bucket's σ. Both get the implicit function
-theorem's derivative instead: the Jamshidian root through a `jax.custom_jvp`
-(`_solve_decreasing_root`: `dx = −(∂g/∂p · dp) / (∂g/∂x)`, itself differentiable, so Gamma is
-right too), the calibration through `_bootstrap_jacobian` above. Before these, a bisection's
-gradient was silently zero.
+Two prices depend on a root found by the engine's root solver
+([the root solver](../reference/calibration.md#the-root-solver)), whose iterations carry no
+derivative of the root: the Jamshidian engine's critical state x*, and each calibration
+bucket's σ. Both get the implicit function theorem's derivative instead: the Jamshidian root
+through a `jax.custom_jvp` (`engine.numerics.roots.implicit_root`: `dx = −(∂g/∂p · dp) /
+(∂g/∂x)`, itself differentiable, so Gamma is right too), the calibration through
+`_bootstrap_jacobian` above. Before these, a bisection's gradient was silently zero. The ORE
+helper's y* needs none: its price is stationary in y*.
 
 ## The functions
 

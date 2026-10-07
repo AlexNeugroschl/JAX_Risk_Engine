@@ -34,6 +34,7 @@ from engine.market import Market
 from engine.models.curves import ZeroCurve
 from engine.models.lgm import Sigma, as_sigma
 from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
+from engine.numerics.roots import DEFAULT_SOLVER, check_solver
 from engine.precision import Precision, format_name, load, require_precision
 from engine.simulation.cam import (
     CrossAssetModel, EqComponent, FxComponent, IrComponent, evolve_states, step_moments,
@@ -64,17 +65,21 @@ class LgmConfig:
         is used as given. ATM strikes (`<Strikes/>`). Bootstrapped by
         `engine.calibration.cam` when the model is built.
     swap_index: the conventions the basket's helpers are built on.
+    solver: the bootstrap's root solver (`engine.numerics.roots`, decision A-21): `"Newton"`
+        (the default) or `"Bisection"` (the reference).
     """
     reversion: float
     volatility: Volatility = 0.01
     calibration_expiries: Tuple[str, ...] = ()
     calibration_terms: Tuple[str, ...] = ()
     swap_index: SwapIndexConventions = SwapIndexConventions()
+    solver: str = DEFAULT_SOLVER
 
     #: ORE's `LgmData::VolatilityType` of this model's volatility (`engine.models.lgm`).
     volatility_type: ClassVar[str] = "Hagan"
 
     def __post_init__(self):
+        check_solver(self.solver, f"{type(self).__name__}.solver")
         if not np.isfinite(self.reversion):
             raise ValueError(f"reversion must be finite; got {self.reversion}")
         if len(self.calibration_expiries) != len(self.calibration_terms):

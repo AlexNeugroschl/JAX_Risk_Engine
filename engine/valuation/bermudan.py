@@ -14,8 +14,11 @@ less the float spread) or ATM, at most one per interval of the reference grid
 On a path (ORE's `ValuationEngine` with `recalibrate = true`, its default): on each date the
 basket is rebuilt from that date, its volatilities read off the t=0 surface seen from that
 date (`DynamicSwaptionVolatilityMatrix`), and the LGM bootstrapped to the path's own curves,
-every path at once; the grid engine then prices on the path curves with the fixings
-FixingManager stored. With `recalibrate = false` the t=0 volatility is kept.
+every path at once, and the dates whose baskets have one shape at once too (`_path_sigmas`);
+the grid engine then prices on the path curves with the fixings FixingManager stored. With
+`recalibrate = false` the t=0 volatility is kept. A date with an exercise left but no helper
+(an American's last days, after the last reference-grid date in its window) keeps the
+engine's volatility, as a calibration today with no helper does.
 
 Not yet confirmed against an ORE simulation (gate V-1, docs/planning/known-issues.md I-49): ORE keeps
 the parametrization's time grid from its first build and still passes helpers whose expiry has
@@ -23,23 +26,26 @@ passed on a later date; here each date's basket holds only the exercise dates af
 bucket times measured from it.
 """
 import dataclasses
+from collections import defaultdict
 from dataclasses import dataclass
-from typing import Mapping, Optional, Tuple, Union
+from typing import Dict, Mapping, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import ORE
 
-from engine.calibration.ore_lgm import BasketInstrument, bootstrap_sigma, build_basket
+from engine.calibration.ore_lgm import (
+    SIGMA_BRACKET, BasketInstrument, bootstrap_sigma, build_basket, stack_instruments,
+)
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import (
     BermudanSwaptionConfig, _backward_induction_arrays, _build_grid_schedule, grid_value, prepare_bermudan,
 )
-from engine.market import Market, SwaptionVolSurface, index_name
-from engine.models.curves import DiscountCurve, curve_dtype
+from engine.market import Market, index_name
+from engine.models.curves import DiscountCurve
 from engine.models.lgm import Sigma
-from engine.simulation.scenario_market import ScenarioMarket
+from engine.simulation.scenario_market import ScenarioCurves, ScenarioMarket
 from engine.valuation.config import LgmSwaptionEngineConfig, reference_grid_dates
 from engine.valuation.context import PricingContext, from_market
 from engine.valuation.european import volatility_on_path
@@ -120,10 +126,10 @@ def calibrate_on(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, context: Pr
         return None
     disc, index = context.curves(cfg.currency, index_name(cfg.currency, cfg.index_tenor_months))
     vols = np.array([context.volatility(cfg.currency, b.vol_option_time, b.vol_swap_length) for b in basket])
-    result = bootstrap_sigma(basket, disc, index, vols, engine.reversion)
+    result = bootstrap_sigma(basket, disc, index, vols, engine.reversion, engine.solver)
     if np.any(np.asarray(result.hit_ceiling)):
         raise ValueError(f"calibration of the {type(cfg).__name__} on {context.date} failed: a helper's market "
-                         f"volatility is not attainable with a volatility in the bisection bracket")
+                         f"volatility is not attainable with a volatility in the bracket {list(SIGMA_BRACKET)}")
     return Calibration(Sigma(jnp.asarray(result.times), result.values), np.asarray(result.market),
                        np.asarray(result.model))
 
@@ -147,27 +153,24 @@ def bermudan_cube(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Ma
 
     `fixings` `[S, D]`: FixingManager's path fixings for the trade's index."""
     asof = market.asof
-    surface = market.swaption_vols(cfg.currency)
-    today = calibrate_on(cfg, engine, from_market(market)) if not recalibrate else None
     history = dict(cfg.fixings)
     grid_serials = np.array([d.serialNumber() for d in scenarios.dates], dtype=np.int64)
     disc_curves = scenarios.discount[cfg.currency]
     index_curves = scenarios.index[index_name(cfg.currency, cfg.index_tenor_months)]
     fixing_serials = _fixing_serials(cfg)
+    sigmas = path_sigmas(cfg, engine, market, scenarios, decay, recalibrate)
     columns = []
     for j, date in enumerate(scenarios.dates):
-        if not any(d > date for d in contract_exercise_dates(cfg)):
+        if j not in sigmas:
             columns.append(jnp.zeros(scenarios.num_paths, dtype=fixings.dtype))
             continue
-        disc = disc_curves.on_date(j)
-        index = index_curves.on_date(j)
         fixed_on_path = {ORE.Date(int(s)): 0.0 for s in fixing_serials if asof.serialNumber() <= s < date.serialNumber()}
         dated = dataclasses.replace(cfg, evaluation_date=date, fixings={**history, **fixed_on_path})
-        sigma = _path_sigma(cfg, engine, surface, asof, date, disc, index, decay, today)
         prepared = prepared_option(dated, engine, engine.volatility)
         schedule = _build_grid_schedule(prepared)
         known = _known_rates(prepared, history, asof, grid_serials, fixings)
-        columns.append(_rollback_every_path(prepared, schedule, disc, index, sigma, known))
+        columns.append(_rollback_every_path(prepared, schedule, disc_curves.on_date(j), index_curves.on_date(j),
+                                            sigmas[j], known))
     return jnp.stack(columns, axis=1)
 
 
@@ -176,21 +179,84 @@ def _fixing_serials(cfg: OptionConfig):
     return [ORE.as_floating_rate_coupon(c).fixingDate().serialNumber() for c in _build_ore_swap(cfg).floatingLeg()]
 
 
-def _path_sigma(cfg, engine, surface: SwaptionVolSurface, asof, date, disc: DiscountCurve, index: DiscountCurve,
-                decay: str, today: Optional[Calibration]) -> Sigma:
-    """The LGM volatility on `date`, in the path curves' dtype: recalibrated to the basket on
-    every path, or today's (`recalibrate=false`, or `calibration="None"`: the engine's fixed
-    volatility)."""
-    dtype = curve_dtype(disc)
+def path_sigmas(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Market, scenarios: ScenarioMarket,
+                decay: str, recalibrate: bool = True) -> Dict[int, Sigma]:
+    """The option's LGM volatility on each simulation date with an exercise after it (date
+    index -> `Sigma`, its values `[S, n]` when recalibrated), in the path curves' dtype:
+    recalibrated to the date's basket on every path (`decay` reads the basket's volatilities
+    on the date), or today's (`recalibrate=false`), or the engine's own (`calibration="None"`,
+    and a date with an exercise left but no helper).
+
+    The dates whose baskets have one shape are calibrated in one call over dates and paths,
+    their count padded to a power of two (the last date repeated), so a trade compiles a
+    bootstrap per basket shape and power of two, whatever its dates (I-53). The reference
+    solver (`"Bisection"`) keeps one date per call: it reproduces the engine's numbers before
+    roadmap 2.5 bit for bit, which a batch over dates cannot (XLA vectorizes another shape, and
+    a bisection's last comparisons move with the residual's last bit)."""
+    asof, dates = market.asof, scenarios.dates
+    disc = scenarios.discount[cfg.currency]
+    index = scenarios.index[index_name(cfg.currency, cfg.index_tenor_months)]
+    alive = [j for j, date in enumerate(dates) if any(d > date for d in contract_exercise_dates(cfg))]
+    dtype = disc.log_discounts.dtype
+    flat = Sigma.flat(engine.volatility, dtype=dtype)
     if engine.calibration == "None":
-        return Sigma.flat(engine.volatility, dtype=dtype)
-    if today is not None:
-        return today.sigma.astype(dtype)
-    basket = calibration_basket(cfg, engine, date, asof)
-    vols = np.array([volatility_on_path(surface, asof, date, b.vol_option_time, b.vol_swap_length, decay)
-                     for b in basket])
-    result = bootstrap_sigma(basket, disc, index, vols, engine.reversion)
-    return Sigma(times=jnp.asarray(result.times, dtype=dtype), values=result.values)   # values [S, n]
+        return {j: flat for j in alive}
+    if not recalibrate:
+        today = calibrate_on(cfg, engine, from_market(market))
+        return {j: today.sigma.astype(dtype) if today is not None else flat for j in alive}
+    surface = market.swaption_vols(cfg.currency)
+    sigmas, groups = {}, defaultdict(list)
+    baskets = {j: calibration_basket(cfg, engine, dates[j], asof) for j in alive}
+    for j, basket in baskets.items():
+        if basket:
+            groups[_basket_shape(basket)].append(j)
+        else:
+            sigmas[j] = flat
+    def vols(j):
+        return [volatility_on_path(surface, asof, dates[j], b.vol_option_time, b.vol_swap_length, decay)
+                for b in baskets[j]]
+
+    for js in groups.values():
+        if engine.solver == "Bisection":
+            for j in js:
+                result = bootstrap_sigma(baskets[j], disc.on_date(j), index.on_date(j), np.array(vols(j)),
+                                         engine.reversion, engine.solver)
+                sigmas[j] = Sigma(times=jnp.asarray(result.times, dtype=dtype), values=result.values)
+            continue
+        padded = js + [js[-1]] * (_power_of_two(len(js)) - len(js))
+        stacked = [stack_instruments(helpers) for helpers in zip(*(baskets[j] for j in padded))]
+        dates_of = np.asarray(padded)
+        result = bootstrap_sigma(stacked, _on_dates(disc, dates_of), _on_dates(index, dates_of),
+                                 np.array([vols(j) for j in padded]), engine.reversion, engine.solver, dated=True)
+        values = _unstack(result.values)
+        for g, j in enumerate(js):
+            sigmas[j] = Sigma(times=jnp.asarray(result.times[g], dtype=dtype), values=values[g])  # [S, n]
+    return sigmas
+
+
+def _basket_shape(basket: Sequence[BasketInstrument]):
+    """What fixes a basket's bootstrap programs: each helper's pytree structure (its static
+    fields included) and array shapes."""
+    return tuple((jax.tree_util.tree_structure(b), tuple(np.shape(x) for x in jax.tree_util.tree_leaves(b)))
+                 for b in basket)
+
+
+def _power_of_two(n: int) -> int:
+    return 1 << (n - 1).bit_length()
+
+
+@jax.jit
+def _on_dates(curves: ScenarioCurves, dates: jax.Array) -> DiscountCurve:
+    """The curves on `dates`, batched over dates then paths: times `[D, K]`, logs `[D, S, K]`
+    (jitted, as `_unstack`: one program per shape, not one per eager operation, I-81)."""
+    return DiscountCurve(times=curves.tenor_times[dates],
+                         log_discounts=jnp.swapaxes(curves.log_discounts[:, dates], 0, 1))
+
+
+@jax.jit
+def _unstack(values: jax.Array):
+    """`values` `[D, ...]` as D arrays."""
+    return tuple(values)
 
 
 def _known_rates(prepared, history: Mapping[ORE.Date, float], asof: ORE.Date, grid_serials: np.ndarray,

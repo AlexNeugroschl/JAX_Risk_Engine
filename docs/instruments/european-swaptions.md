@@ -106,9 +106,11 @@ receiver. This is QuantLib's formula term by term (its `discountBond(T0, T, r)` 
 forward f(0, T0) into K_i's numerator and denominator alike), so the engine reads only
 discount factors and prices on any curve: today's, a bumped one, a path's.
 
-x* is solved by bisection to machine precision, where QuantLib's Brent stops at 1e-8; the
-bisection has no derivative, so its tangent is the implicit function theorem's
-(`_solve_decreasing_root`, a `jax.custom_jvp`), and AD Greeks differentiate through the root.
+x* is solved to float64 rounding by the engine's root solver (`JamshidianEngineConfig.solver`:
+`"Newton"` by default, `"Bisection"` the reference; [the root solver](../reference/calibration.md#the-root-solver)),
+where QuantLib's Brent stops at 1e-8. A solver's iterations carry no derivative of the root, so
+its tangent is the implicit function theorem's (`engine.numerics.roots.implicit_root`, a
+`jax.custom_jvp`), and AD Greeks differentiate through the root.
 
 ### 5. Why T_start matters: the floating leg's notional timing
 

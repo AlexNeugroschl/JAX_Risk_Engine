@@ -88,7 +88,7 @@ bucket's own partial contribution — live-verified against
 both `times` and `values` as children (not static/auxiliary data). This is required for
 `jax.jvp`/`jax.custom_jvp`/`jax.grad` to differentiate correctly whenever a `Sigma` is
 passed as part of a **larger** pytree argument — e.g.
-`engine.calibration.basket._bisect_xstar`'s `params = (a, sigma)` tuple — rather than
+`engine.calibration.basket.price_lgm_swaption`'s x* params, the `(a, sigma)` tuple — rather than
 having its own `.values` array unpacked and passed directly as a bare `jax.Array`.
 
 **This was a real, not merely theoretical, gap.** An unregistered `@dataclass` is treated
@@ -109,7 +109,7 @@ registering it as a child regardless is the conservative choice, since a differe
 field mistakenly marked static would silently drop its own gradient, while a
 non-differentiable field marked as a child costs nothing (its cotangent is simply unused).
 
-See [Calibration: the `_bisect_xstar` gradient bug](calibration.md#the-_bisect_xstar-gradient-bug)
+See [Calibration: the x* gradient bug](calibration.md#the-_bisect_xstar-gradient-bug)
 and [Delta, Gamma, and Theta: two real bugs](../risk/greeks.md#differentiating-through-bisection-root-finds)
 for the full incident this bug was caught inside.
 

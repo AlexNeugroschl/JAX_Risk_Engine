@@ -18,6 +18,9 @@ ENGINE = pathlib.Path(__file__).resolve().parents[1] / "engine"
 FORBIDDEN = {
     "models": ("engine.portfolio", "engine.instruments", "engine.api", "engine.risk"),
     "instruments": ("engine.portfolio", "engine.api", "engine.risk", "engine.market_risk"),
+    # The shared numerical methods depend on JAX only: every layer imports them.
+    "numerics": tuple(f"engine.{p.name}" for p in sorted(ENGINE.iterdir())
+                      if p.is_dir() and p.name not in ("numerics", "__pycache__")) + ("engine.market", "engine.day_count"),
 }
 
 

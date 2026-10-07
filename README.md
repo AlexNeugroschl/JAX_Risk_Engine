@@ -37,7 +37,9 @@ double-precision simulations in the same wall-clock time.
 - One run configuration (`RunConfig`), as ORE configures a run with its files and with
   ORE's defaults: the simulation and its model per currency (LGM or Hull-White), the engine
   per product (Bachelier or Jamshidian Europeans, ORE's LGM grid for Bermudans/Americans),
-  the Greeks method (bump or AD) and ORE's sensitivity settings, and the precision per stage.
+  the root solver of every calibration and exercise boundary (a safeguarded Newton method, or
+  the bisection it replaced, kept as the reference), the Greeks method (bump or AD) and ORE's
+  sensitivity settings, and the precision per stage.
   Every option runs with every other; an option not implemented yet is refused by name
   rather than substituted ([decisions](compliance/decisions.md))
 - Trades as ORE books them: each names its id, its valuation date, its currency and index,

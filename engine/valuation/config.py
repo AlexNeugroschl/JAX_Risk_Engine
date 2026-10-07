@@ -25,6 +25,7 @@ from typing import Optional
 import ORE
 
 from engine.calibration.ore_lgm import SwapIndexConventions
+from engine.numerics.roots import DEFAULT_SOLVER, check_solver
 
 #: European swaption engines; the first is ORE's default.
 EUROPEAN_ENGINES = ("Bachelier", "Jamshidian")
@@ -45,6 +46,10 @@ class LgmSwaptionEngineConfig:
     n_per_std / std_devs: the Grid engine's `nx`/`sx` (ORE's example: 30 and 5).
     exercise_time_steps_per_year: an American's exercise grid.
     swap_index: the conventions the calibration helpers are built on.
+    solver: the root solver of the bootstrap's buckets and of each helper's y*
+        (`engine.numerics.roots`, decision A-21): `"Newton"` (the default) or `"Bisection"`
+        (the reference, the engine's numbers before roadmap 2.5 bit for bit). Both reach
+        ORE's root, more exactly than ORE's own solvers.
     """
     reversion: float = 0.0
     volatility: float = 0.01
@@ -56,8 +61,10 @@ class LgmSwaptionEngineConfig:
     std_devs: float = 5.0
     exercise_time_steps_per_year: int = 24
     swap_index: SwapIndexConventions = SwapIndexConventions()
+    solver: str = DEFAULT_SOLVER
 
     def __post_init__(self):
+        check_solver(self.solver, "LgmSwaptionEngineConfig.solver")
         if not math.isfinite(self.reversion):
             raise ValueError(f"reversion must be finite; got {self.reversion!r}")
         if not math.isfinite(self.volatility) or self.volatility < 0.0:
@@ -81,11 +88,15 @@ class JamshidianEngineConfig:
     """The Hull-White model of the `Jamshidian` European engine: `dr = (theta(t) - a r) dt +
     sigma dW` fitted to the curve it prices on, with constant `reversion` a and `volatility`
     sigma (QuantLib's `HullWhite(termStructure, a, sigma)`, whose parameters are held under a
-    positive constraint, so both must be positive: at a = 0 QuantLib raises, I-41)."""
+    positive constraint, so both must be positive: at a = 0 QuantLib raises, I-41). `solver`
+    finds the exercise boundary x* (`engine.numerics.roots`, decision A-21): `"Newton"` (the
+    default) or `"Bisection"` (the reference)."""
     reversion: float
     volatility: float
+    solver: str = DEFAULT_SOLVER
 
     def __post_init__(self):
+        check_solver(self.solver, "JamshidianEngineConfig.solver")
         for name in ("reversion", "volatility"):
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0.0:

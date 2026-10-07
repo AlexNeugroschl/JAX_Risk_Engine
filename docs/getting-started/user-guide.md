@@ -162,12 +162,13 @@ from engine.portfolio import price_portfolio   # before the first JAX computatio
 ```
 
 This card's float64 runs at 1/64 of its float32 rate, and a job of a few hundred paths is too
-small to fill it, so the demo is slower than on the CPU (a repeat: about 5.5 s against 2.1 s). A consumer GPU is where the
-GPU path is checked, not where speed is measured (roadmap 5.2). Profiling works as on the
-CPU, and the trace gains the GPU's own lanes, but tracing a whole GPU job costs several times
-its untraced time, whatever the profiler is set to record: the tracer slows every kernel
-launch, and the job is a million small launches, most of them the LGM calibration's bisection.
-Trace one phase at a time instead (`JAX_RISK_PROFILE_PHASE`, below;
+small to fill it, so a consumer GPU is where the GPU path is checked, not where speed is
+measured (roadmap 5.2); the demo's repeat takes about 1.4 s on it against 2.2 s on a 24-thread
+CPU. Profiling works as on the CPU, and the trace gains the GPU's own lanes. The tracer slows
+every kernel launch, whatever the profiler is set to record, so a trace costs in proportion to
+a job's launches: the demo's repeat, 1.6 s traced against 1.4 s untraced since roadmap 2.5's
+root solver (32 s against 5.5 s before it, when the calibration's bisection was most of the
+launches). A long job can still be traced one phase at a time (`JAX_RISK_PROFILE_PHASE`, below;
 [profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)).
 
 The examples on this page assume you're running from the repository root. `engine` itself
@@ -609,6 +610,27 @@ engine (`PricingConfig.bermudan`/`american`, `LgmSwaptionEngineConfig`), calibra
 trade's own basket. Greeks default to ORE's bump and revalue; `"AD"` gives the same keys by
 automatic differentiation ([Greeks](../risk/greeks.md)).
 
+Every calibration and exercise boundary is solved by a root solver you can choose (`solver`,
+decision A-21): `"Newton"`, the default, a safeguarded Newton method, or `"Bisection"`, the
+reference, which reproduces the engine's numbers from before the choice existed. Both reach
+the same root, to float64 rounding (ORE's own solvers stop earlier); Newton takes a handful of
+steps where bisection takes 60 to 100, which is what a GPU's run time is made of. The setting is
+on each configuration that solves a root:
+
+```python
+from engine.portfolio import LgmSwaptionEngineConfig
+from engine.simulation.config import LgmConfig
+
+engine = LgmSwaptionEngineConfig(solver="Bisection")         # a Bermudan's/American's calibration
+pricing = PricingConfig(bermudan=engine, american=engine,
+                        european="Jamshidian", jamshidian=JamshidianEngineConfig(0.03, 0.01, solver="Bisection"))
+model = LgmConfig(0.03, 0.01, ("1Y", "2Y"), ("9Y", "8Y"), solver="Bisection")  # the CAM's calibration
+```
+
+Over HTTP the same field sits in `pricing.bermudan`, `pricing.american`,
+`pricing.jamshidian`, each `simulation.ir` currency, and `POST /calibration/lgm`'s body
+([Calibration: the root solver](../reference/calibration.md#the-root-solver)).
+
 ## Pricing without the whole pipeline
 
 The pieces `price_portfolio` assembles can be called directly:
@@ -718,7 +740,7 @@ with a message naming its replacement. See
 ## Profiling a pricing job
 
 To see where a pricing job's wall clock goes — XLA compilation, XLA execution, or Python
-(ORE calls, dispatch, the calibration bisection) — collect an
+(ORE calls, dispatch, the calibration's root solves) — collect an
 [XProf](https://github.com/openxla/xprof) trace and open it in the TensorBoard-style
 profiler UI.
 
@@ -739,7 +761,7 @@ The first job of a fresh worker is traced **as it actually runs — XLA lowering
 compilation included**, not just steady-state execution; later jobs of the same shape reuse
 the worker's compiled programs. That is on purpose: for this engine the
 compilation cost is a first-class thing to measure (the Bermudan/American tree pricers and
-the LGM calibration bisection lower a number of `jit` programs — on a small portfolio that
+the LGM calibration lower a number of `jit` programs — on a small portfolio that
 compilation *is* most of the wall time, and the trace's "mostly Python" flame graph is
 largely XLA lowering, which is real work).
 

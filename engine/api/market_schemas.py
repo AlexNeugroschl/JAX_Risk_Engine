@@ -22,7 +22,7 @@ from typing import Annotated, Dict, List, Literal, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from engine.api.schemas import (
-    CouponPeriodSchema, PrecisionSchema, ZeroCurveConfigSchema, _parse_fixings, _parse_optional_date,
+    CouponPeriodSchema, PrecisionSchema, SolverName, ZeroCurveConfigSchema, _parse_fixings, _parse_optional_date,
     _parse_ore_date, _parse_ore_period,
 )
 from engine.calibration.ore_lgm import SwapIndexConventions
@@ -32,6 +32,7 @@ from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
 from engine.market import CurrencyMarket, EquityMarket, Market, SwaptionVolSurface
+from engine.numerics.roots import DEFAULT_SOLVER
 from engine.portfolio import GreeksConfig, PortfolioRequest, RunConfig, SensitivityConfig
 from engine.simulation.config import CamConfig, HullWhiteConfig, LgmConfig
 from engine.valuation.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
@@ -109,13 +110,15 @@ class LgmConfigSchema(_Strict):
     calibration_expiries: List[str] = Field(default_factory=list)
     calibration_terms: List[str] = Field(default_factory=list)
     swap_index: SwapIndexConventionsSchema = Field(default_factory=SwapIndexConventionsSchema)
+    #: The bootstrap's root solver (decision A-21).
+    solver: SolverName = DEFAULT_SOLVER
 
     #: The configuration type this schema builds.
     _config = LgmConfig
 
     def to_dataclass(self) -> LgmConfig:
         return self._config(self.reversion, self.volatility, tuple(self.calibration_expiries),
-                            tuple(self.calibration_terms), self.swap_index.to_dataclass())
+                            tuple(self.calibration_terms), self.swap_index.to_dataclass(), self.solver)
 
 
 class HullWhiteConfigSchema(LgmConfigSchema):
@@ -167,6 +170,8 @@ class LgmEngineSchema(_Strict):
     std_devs: float = 5.0
     exercise_time_steps_per_year: int = 24
     swap_index: SwapIndexConventionsSchema = Field(default_factory=SwapIndexConventionsSchema)
+    #: The root solver of the calibration and of each helper's exercise boundary (decision A-21).
+    solver: SolverName = DEFAULT_SOLVER
 
     def to_dataclass(self) -> LgmSwaptionEngineConfig:
         fields = self.model_dump(exclude={"swap_index"})
@@ -177,9 +182,11 @@ class JamshidianEngineSchema(_Strict):
     """`engine.valuation.config.JamshidianEngineConfig`: the Jamshidian engine's Hull-White model."""
     reversion: float
     volatility: float
+    #: The root solver of the exercise boundary x* (decision A-21).
+    solver: SolverName = DEFAULT_SOLVER
 
     def to_dataclass(self) -> JamshidianEngineConfig:
-        return JamshidianEngineConfig(self.reversion, self.volatility)
+        return JamshidianEngineConfig(self.reversion, self.volatility, self.solver)
 
 
 class PricingConfigSchema(_Strict):

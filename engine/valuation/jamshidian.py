@@ -28,8 +28,9 @@ sqrt(zeta(T0)). So the engine reads only discount factors and prices on any curv
 model is time-homogeneous with a constant volatility, so the price on a path's curve is the
 model's conditional price there.
 
-Differs from QuantLib: x* is solved to machine precision (bisection, differentiated by the
-implicit function theorem) where QuantLib's Brent stops at 1e-8; and the exercise-into swap is
+Differs from QuantLib: x* is solved to float64 rounding (by the configured solver,
+`JamshidianEngineConfig.solver`, decision A-21; differentiated by the implicit function
+theorem) where QuantLib's Brent stops at 1e-8; and the exercise-into swap is
 the coupons `BlackMultiLegOptionEngine` reads (paying after expiry and accruing from it,
 `engine.valuation.european.european_terms`), which is QuantLib's whole underlying for any
 European exercising on or before its first accrual start. The floating leg is valued at par on
@@ -45,11 +46,27 @@ import numpy as np
 
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.models.hull_white import bond_call, bond_put
+from engine.numerics.roots import Steps, implicit_root
 from engine.valuation.config import JamshidianEngineConfig
 from engine.valuation.context import PricingContext
 from engine.valuation.european import EuropeanTerms, european_terms
 from engine.valuation.legs import PathSchedule, discount_from, on_every_date
 from engine.market import index_name
+
+
+#: Steps of x* (`engine.numerics.roots`): Bisection's are the count before roadmap 2.5,
+#: Newton's measured (2026-10-07): x* from 0 reaches its rounding in 5 steps for the shared
+#: European struck from 0% to 15%, payer and receiver, today and on 256 LGM paths under two
+#: Hull-White models (the NPV then within 6e-16 of the nominal of Bisection's), and in 24 for
+#: the hardest strike the formula still resolves, -99% (its coupons cancel the nominal, and the
+#: coupon bond is not monotone across the window, so Newton bisects its way in; scanned from
+#: -99% to 200%, tenors 2Y to 30Y; tests/test_root_solvers.py, tests/test_jamshidian.py). A
+#: trade's strike is unbounded, unlike a helper's, so the count covers the hardest case, with
+#: two steps of margin.
+X_STAR_STEPS = Steps(bisection=100, newton=26)
+
+#: x*'s starting window, widened when it does not hold the root.
+X_STAR_WINDOW = 2.0
 
 
 def validate_jamshidian(cfg: SwaptionConfig) -> None:
@@ -67,9 +84,10 @@ def jamshidian_npv(terms: EuropeanTerms, model: JamshidianEngineConfig, disc, t)
     measured from it (any batch axes, e.g. paths). The option must not have expired
     (expiry after the date).
 
-    Not jitted on its own: x*'s derivative rule closes over this function's intermediates,
-    which `jax.grad` through a jit boundary cannot carry (the AD Greeks differentiate it). Its
-    path cube is jitted (`_jamshidian_cube`)."""
+    x* is the root of the coupon bond less the nominal, by `model.solver`, with its derivative
+    in the curve by the implicit function theorem. Not jitted on its own: x*'s derivative rule
+    closes over this function's intermediates, which `jax.grad` through a jit boundary cannot
+    carry (the AD Greeks differentiate it). Its path cube is jitted (`_jamshidian_cube`)."""
     legs = terms.legs
     a, sigma = model.reversion, model.volatility
     p_bond = discount_from(disc, t, legs.fixed_pay)                  # [..., n] P(T_i)
@@ -92,7 +110,8 @@ def jamshidian_npv(terms: EuropeanTerms, model: JamshidianEngineConfig, disc, t)
         return jnp.sum(amounts * forward_bonds(x, ratio), axis=-1) - nominal
 
     ratio = p_bond / p_start[..., None]
-    x_star = _solve_decreasing_root(coupon_bond, ratio, p_start.shape)
+    x_star = implicit_root(coupon_bond, ratio, jnp.zeros(p_start.shape, dtype=dtype), solver=model.solver,
+                           steps=X_STAR_STEPS, increasing=False, window=X_STAR_WINDOW)
     strikes = forward_bonds(x_star, ratio)
     option = bond_put if legs.payer else bond_call
     std_dev = jnp.abs(dH) * jnp.sqrt(zeta)
@@ -124,54 +143,3 @@ def _jamshidian_cube(terms: EuropeanTerms, model: JamshidianEngineConfig, schedu
         return jnp.where(alive_j, jamshidian_npv(terms, model, disc_j, t_j), 0.0)
 
     return on_every_date(value, terms.legs, schedule, times, disc, index, fixings, alive)
-
-
-# ---------------------------------------------------------------------------
-# The state x*: a root of a decreasing function, differentiable in its parameters
-# ---------------------------------------------------------------------------
-def _bisect_decreasing(f, shape, dtype, iterations: int = 100) -> jax.Array:
-    """A root of the elementwise decreasing `f` over `shape`: the window [-2, 2] is shifted by
-    its width (up to 20 times) until it brackets the sign change, then bisected. A fixed
-    iteration count, so it vectorizes under jit."""
-    lo = jnp.full(shape, -2.0, dtype=dtype)
-    hi = jnp.full(shape, 2.0, dtype=dtype)
-
-    def shift(_, bounds):
-        lo, hi = bounds
-        width = hi - lo
-        up, down = f(hi) > 0.0, f(lo) < 0.0
-        return (jnp.where(up, hi, jnp.where(down, lo - width, lo)),
-                jnp.where(up, hi + width, jnp.where(down, lo, hi)))
-
-    def halve(_, bounds):
-        lo, hi = bounds
-        mid = 0.5 * (lo + hi)
-        above = f(mid) > 0.0
-        return jnp.where(above, mid, lo), jnp.where(above, hi, mid)
-
-    lo, hi = jax.lax.fori_loop(0, 20, shift, (lo, hi))
-    lo, hi = jax.lax.fori_loop(0, iterations, halve, (lo, hi))
-    return 0.5 * (lo + hi)
-
-
-def _solve_decreasing_root(g, params, shape) -> jax.Array:
-    """x with g(x, params) = 0, elementwise over `shape` (g decreasing in x). Bisection gives
-    no derivative, so the tangent is the implicit function theorem's,
-    dx = -(dg/dparams . dparams) / (dg/dx); the rule is itself differentiable, so second
-    derivatives (Gamma) are right too. dg/dx is the gradient of the batch sum, exact because
-    each element depends on its own inputs only."""
-    dtype = jnp.result_type(params)
-
-    @jax.custom_jvp
-    def solve(p):
-        return jax.lax.stop_gradient(_bisect_decreasing(lambda x: g(x, p), shape, dtype))
-
-    @solve.defjvp
-    def solve_jvp(primals, tangents):
-        (p,), (p_dot,) = primals, tangents
-        x = solve(p)
-        dg_dx = jax.grad(lambda y: jnp.sum(g(y, p)))(x)
-        _, dg = jax.jvp(lambda q: g(x, q), (p,), (p_dot,))
-        return x, -dg / dg_dx
-
-    return solve(params)

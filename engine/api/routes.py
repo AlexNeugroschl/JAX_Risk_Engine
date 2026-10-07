@@ -200,7 +200,7 @@ def calibrate(request: CalibrationRequestSchema) -> CalibrationResultSchema:
             notional=request.notional, payer=request.payer, market_vols=request.market_vols,
             zero_curve=curve_jax, evaluation_date=eval_date, index_tenor_months=request.index_tenor_months,
         )
-        result = calibrate_lgm_sigma(targets, curve_jax, a=request.hw_a)
+        result = calibrate_lgm_sigma(targets, curve_jax, a=request.hw_a, solver=request.solver)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

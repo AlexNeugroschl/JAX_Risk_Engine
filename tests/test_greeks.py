@@ -10,14 +10,12 @@ tests/test_greeks_bermudan.py.
     the same function). Their Deltas sit on different axes: the market curve's pillars vs ORE's
     sensitivity tenors.
   * Vega is the derivative in each quote of the volatility surface.
-  * The Jamshidian engine's root x* has the implicit function theorem's derivative.
 
-The t=0 prices differentiated here equal ORE's (tests/test_shared_portfolio.py).
+The Jamshidian engine's root x* has the implicit function theorem's derivative
+(`engine.numerics.roots.implicit_root`, tests/test_root_solvers.py). The t=0 prices differentiated here equal ORE's (tests/test_shared_portfolio.py).
 """
 import dataclasses
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import ORE
 import pytest
@@ -29,7 +27,6 @@ from engine.portfolio import JamshidianEngineConfig
 from engine.risk.greeks import curve_greeks, portfolio_greeks, vega_greek
 from engine.risk.sensitivities import SensitivityConfig, portfolio_sensitivities
 from engine.valuation.config import PricingConfig
-from engine.valuation.jamshidian import _solve_decreasing_root
 from engine.valuation.portfolio import value_today
 from tests.support import portfolio as shared
 from tests.support.greeks import assert_close, bumped_market
@@ -216,39 +213,3 @@ class TestAgainstTheBumpMethod:
             np.testing.assert_allclose(in_usd[key], 1.10 * np.asarray(in_eur[key]), rtol=1e-14)
 
 
-class TestJamshidianRootDerivative:
-    """Bisection gives x* but no derivative (the comparison has none); `custom_jvp` applies the
-    implicit function theorem. On roots with known derivatives."""
-
-    @staticmethod
-    def solve(g, params):
-        return _solve_decreasing_root(g, params, jnp.shape(params))
-
-    def test_linear_root(self):
-        """g(x, c) = c - x: x* = c, dx*/dc = 1."""
-        g = lambda x, c: c - x  # noqa: E731
-        c = jnp.asarray(0.5)
-        assert float(self.solve(g, c)) == pytest.approx(0.5, abs=1e-12)
-        assert float(jax.grad(lambda p: self.solve(g, p))(c)) == pytest.approx(1.0, abs=1e-12)
-
-    def test_cubic_root_first_and_second_derivative(self):
-        """g(x, c) = c - x^3: x* = c^(1/3), with the closed-form first and second derivatives
-        (the rule is itself differentiable, which Gamma needs)."""
-        g = lambda x, c: c - x ** 3  # noqa: E731
-        c = jnp.asarray(0.5)
-        root = lambda p: self.solve(g, p)  # noqa: E731
-        assert float(root(c)) == pytest.approx(0.5 ** (1 / 3), rel=1e-12)
-        assert float(jax.grad(root)(c)) == pytest.approx(1 / (3 * 0.5 ** (2 / 3)), rel=1e-10)
-        assert float(jax.hessian(root)(c)) == pytest.approx(-2 / 9 * 0.5 ** (-5 / 3), rel=1e-8)
-
-    def test_a_batch_of_roots_each_with_its_own_derivative(self):
-        """Elementwise over a batch (paths): each root depends on its own parameter only."""
-        g = lambda x, c: c - jnp.sinh(x)  # noqa: E731
-        c = jnp.asarray([-1.0, 0.2, 3.0])
-        jac = jax.jacobian(lambda p: self.solve(g, p))(c)
-        np.testing.assert_allclose(np.diag(jac), 1 / np.sqrt(1 + np.asarray(c) ** 2), rtol=1e-10)
-        np.testing.assert_allclose(jac - np.diag(np.diag(jac)), 0.0, atol=1e-14)
-
-    def test_a_root_far_outside_the_first_window_is_bracketed(self):
-        g = lambda x, c: c - x  # noqa: E731
-        assert float(self.solve(g, jnp.asarray(25.0))) == pytest.approx(25.0, abs=1e-10)

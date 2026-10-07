@@ -456,15 +456,15 @@ def test_american_on_every_path_equals_ores_grid_engine_on_the_path_curves(optio
     -- the oracle -- calibrates to other expiries. Here ORE prices with the engine's own path
     calibration (`Calibration=None`): the rollback on the path curves, its exercise grid from
     the path date, and the fixings."""
-    from engine.valuation.bermudan import _path_sigma
+    from engine.valuation.bermudan import path_sigmas
     from engine.models.lgm import Sigma
     cfg = OPTIONS["american-payer"]()
     sm = option_scenarios
     fixings = path_fixings(6, ASOF, sm.dates, sm.times, sm.index[INDEX])
     cube = np.asarray(bermudan_cube(cfg, ENGINE, _oracle_market(FLAT_VOLS), sm, fixings, "ForwardVariance"))
+    sigmas = path_sigmas(cfg, ENGINE, _oracle_market(FLAT_VOLS), sm, "ForwardVariance")
     for j, date in enumerate(sm.dates):
-        sigma = _path_sigma(cfg, ENGINE, FLAT_VOLS, ASOF, date, sm.discount["USD"].on_date(j),
-                            sm.index[INDEX].on_date(j), "ForwardVariance", None)
+        sigma = sigmas[j]
         for s in range(sm.num_paths):
             curves, history = _path_oracle_inputs(cfg, sm, j, s, fixings)
             ore = ore_lgm_swaption_npv(

@@ -195,8 +195,9 @@ Until roadmap 1.8 `running` was never reported (`pending` covered both) and ther
 
 Standalone calibration — wraps `engine.calibration.basket.build_coterminal_basket` +
 `engine.calibration.lgm.calibrate_lgm_sigma`: a Hagan bootstrap of an LGM `Sigma` to a
-caller-given co-terminal basket. Synchronous (a bootstrap bisection, not a Monte Carlo
-simulation). It is not the portfolio's calibration, which is the cross-asset model's per
+caller-given co-terminal basket, each bucket by the body's `solver` (`"Newton"`, the default,
+or `"Bisection"`; [the root solver](calibration.md#the-root-solver)). Synchronous (a bootstrap,
+not a Monte Carlo simulation). It is not the portfolio's calibration, which is the cross-asset model's per
 currency and each option's own basket ([Calibration](calibration.md)); a route for those is
 roadmap 3.1 ([I-56](../planning/known-issues.md#i-56)).
 
@@ -210,7 +211,8 @@ roadmap 3.1 ([I-56](../planning/known-issues.md#i-56)).
   "payer": true,
   "market_vols": [0.008, 0.0088, 0.0095, 0.01],
   "zero_curve": {"times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0], "rates": [0.03, 0.03, 0.03, 0.03, 0.03, 0.03]},
-  "hw_a": 0.03
+  "hw_a": 0.03,
+  "solver": "Newton"
 }
 ```
 
@@ -324,8 +326,8 @@ Mirrors `engine.portfolio.PortfolioRequest` and its run configuration
 |---|---|
 | `market` | `asof` (ISO date; every trade is valued on it); `currencies`: per currency a `discount_curve`, `index_curves` keyed by index name (`"USD-SIMINDEX-6M"`), and `swaption_vols` (ATM normal matrix: `option_tenors`, `swap_tenors`, `vols`); `fx_spots` keyed `"EURUSD"`; `equities` |
 | `trades` | Discriminated by `trade_type`: `swap`, `european_swaption`, `bermudan_swaption`, `american_swaption`, `bond`. Each names its `currency` and `index_tenor_months` and carries no model or curve. Swaptions take `settlement` (`Physical` or `Cash`). `trade_id` on every trade or on none (none numbers them `trade-0`, `trade-1`, ...) |
-| `simulation` | `RunConfig.simulation`: ORE's `simulation.xml` as `CamConfigSchema`: `dates`, `base_currency`, `ir` per currency (`model`: `"LGM"`, the default, or `"HullWhite"`; `reversion`, `volatility`, optional calibration basket `calibration_expiries` × `calibration_terms`, `swap_index`), `fx_volatilities`, `equity_volatilities`, `correlations` between factors `IR:USD`, `FX:EURUSD`, `EQ:SP5`, `curve_tenors`, `samples`, `seed`, `swaption_vol_decay`. Required with `scenario_risk` |
-| `pricing` | `RunConfig.pricing`: `european` (`"Bachelier"`, the default, or `"Jamshidian"` with `jamshidian: {"reversion", "volatility"}`), the `bermudan` and `american` engines (`LgmEngineSchema`), and `recalibrate` (default `true`, as ORE's `ValuationEngine`) |
+| `simulation` | `RunConfig.simulation`: ORE's `simulation.xml` as `CamConfigSchema`: `dates`, `base_currency`, `ir` per currency (`model`: `"LGM"`, the default, or `"HullWhite"`; `reversion`, `volatility`, optional calibration basket `calibration_expiries` × `calibration_terms`, `swap_index`, and the bootstrap's root `solver`: `"Newton"`, the default, or `"Bisection"`), `fx_volatilities`, `equity_volatilities`, `correlations` between factors `IR:USD`, `FX:EURUSD`, `EQ:SP5`, `curve_tenors`, `samples`, `seed`, `swaption_vol_decay`. Required with `scenario_risk`. Every `solver` is [the root solver](calibration.md#the-root-solver) (decision A-21) |
+| `pricing` | `RunConfig.pricing`: `european` (`"Bachelier"`, the default, or `"Jamshidian"` with `jamshidian: {"reversion", "volatility", "solver"}`), the `bermudan` and `american` engines (`LgmEngineSchema`, its `solver` that of the calibration and of each helper's exercise boundary), and `recalibrate` (default `true`, as ORE's `ValuationEngine`) |
 | `greeks` | `RunConfig.greeks`: `method` (`"Bump"`, the default, or `"AD"`) and `sensitivity` (ORE's `sensitivity.xml`: `curve_tenors`, `curve_shift`, `vol_shift`, `theta_days`, `swaption_vol_decay`) |
 | `base_currency` | The reporting currency. Omitted: the simulation's base currency, or USD without a simulation. One contradicting the simulation's is a 400 |
 | `precision` | `RunConfig.precision`, see below |

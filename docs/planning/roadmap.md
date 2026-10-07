@@ -8,7 +8,7 @@ here is not planned ([rules](README.md#lifecycle)).
 defects and inefficiencies that do not stop it working come after.
 
 1. **The near-term milestone**: `demos/demo_profile_small.py` runs on the owner's local GPU
-   and its profiler trace covers the whole job.
+   and its profiler trace covers the whole job (stage 2, done 2026-10-07).
 2. **Foundations**: changes that reshape what later work builds on (the request and result
    shapes, the ORE reference, the market's volatility shape, the Bermudan/American engine's
    semantics, how values are stored, the kernels' form), so that no later step is written
@@ -32,8 +32,10 @@ result served) or blocks a step, in which case it goes before the step it blocks
 - **Accuracy.** float64 numbers stay bit for bit unless the step says it moves them. 2.4,
   planned bit for bit, moved the AD Greeks at rounding level (each became one compiled
   program, which removed the repeated job's recompiles; everything else stayed bit for bit).
-  The steps planned to move them are 2.5 (rounding level: the default root solver), 3.4 and 3.5
-  (default Bermudan/American values, towards ORE's) and 3.7 (rounding level, once). Such a step shows parity first, then re-baselines the golden
+  2.5 moved them at rounding level once more (the default root solver, Newton; its reference,
+  the bisection, keeps the numbers before it bit for bit). The steps planned to move them are
+  3.4 and 3.5 (default Bermudan/American values, towards ORE's) and 3.7 (rounding level,
+  once). Such a step shows parity first, then re-baselines the golden
   snapshot and records the largest change per array
   ([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
   Bit-for-bit checks run on CPU. A GPU's float64 differs in the last bits and is held to the
@@ -81,7 +83,10 @@ the owner's RTX 5060 by the demo and the full suite, with float32 products at fl
 deterministic kernels on any accelerator; since 2.3 each matrix product states its own
 precision, and importing `engine` changes no process setting but x64; since 2.4 a repeated job
 compiles nothing, each trade's AD Greeks are one compiled program per product, and a trace can
-be narrowed to one phase. Nothing runs on more than one host.
+be narrowed to one phase; since 2.5 every calibration and exercise boundary is solved by one
+configurable root solver (a safeguarded Newton method by default, the bisection as the
+reference), and a Bermudan's or American's path dates of one basket shape are calibrated
+together. Nothing runs on more than one host.
 The TraderX EOD boundary prices Treasuries end to end and refuses everything else by name.
 
 ---
@@ -96,43 +101,24 @@ designs in [details/configurable-engine.md](details/configurable-engine.md) and
 [details/precision.md](details/precision.md).
 
 <a id="stage-2--the-demo-on-a-local-gpu"></a>
-## Stage 2 — The demo on a local GPU, with a whole trace
-
-`demos/demo_profile_small.py` runs one of every trade type through calibration, simulation,
-pricing, exposure and AD Greeks, over the HTTP API, in the engine worker, under
-`jax.profiler.trace`. The milestone: it runs on the owner's GPU (an RTX 5060 Laptop GPU,
-Blackwell, 8 GB, on Windows), and its trace covers the whole job and labels every phase, on
-CPU and GPU alike.
-
-| Step | Work | Closes | Size |
-|---|---|---|---|
-| 2.5 | A configurable root solver for every calibration and exercise boundary (decision A-21). **Baseline first**: the job untraced against path count (256, 4k, 64k, 256k) on CPU and GPU. 2.4 read the device lane of a repeated demo job on the GPU ([profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)): the LGM bootstrap's bisection is 84% of the kernel time and 97% of the launches, the card busy 7% of the time; 34% of that time is the recalibration on the path dates and 61% the options' Greeks, which calibrate each trade on today's, the sensitivity and the Theta markets. So the solver's step count is what matters on a GPU; batching the dates cuts only the path dates' share. Re-measure there too the Windows-only slowdown of pricing after AD Greeks (I-53). **One module**, `engine/numerics/roots.py`, replacing the five bisections (`_bootstrap_bucket` and `_solve_monotone_root` in `engine/calibration/ore_lgm.py`, `engine/valuation/jamshidian.py`, `engine/calibration/lgm.py`, `engine/calibration/basket.py`), with two solvers: `"Newton"`, the default, a safeguarded Newton method (the derivative by `jax.jvp`, a bisection step wherever Newton would leave the bracket, each y* started from the last one found), and `"Bisection"`, today's, the reference, bit for bit. Both run a fixed number of steps on every backend (no data-dependent stop, which on a GPU reports to the host each step); Newton's count is set from its measured convergence, with a test that every root's residual is at float64 rounding on the parity suites' markets. **The setting**, `solver`, on every configuration that solves a root (the Bermudan/American engine, `LgmSwaptionEngineConfig`; the CAM's interest-rate models' calibration; the Jamshidian European engine), with its API field. A market value out of reach in the bracket is refused under either solver, as today. **The dates batched**: `bermudan_cube`'s loop over path dates becomes one program per basket shape over dates × paths. Jitted with the configuration static, so no compile per date, trade or call (compile-count tests), under the scenario sharding and strict promotion, and in 3.7's form where it already applies (one implementation for every precision). **Proof**: every ORE parity suite at its existing tolerance under both solvers (ORE's own solvers stop at 1e-6 for y* and 1e-8 per bucket, so the gap to ORE is ORE's); the two solvers agree to about 1e-14 on every parity market; `"Bisection"` reproduces the golden snapshot bit for bit; then the snapshot is re-baselined for the `"Newton"` default, with the largest change per array recorded. **Then** re-measure the baseline, old and new interleaved, and update profiling.md, the user guide and the solver's reference docs | [I-53](known-issues.md#i-53) (recalibration) | M |
-
-Order within the stage: 2.1 (measuring the demo on CPU) and 2.2 (running it on the GPU) are
-done (2026-10-05), and 2.3 (2026-10-06, decision A-22, closing [I-80](known-issues.md#i-80)):
-importing `engine` sets only x64; every matrix product states its precision through
-`engine.precision.matmul` (a test traces the pipelines for it, and the coding style forbids a
-bare product); the engine worker and the tests run deterministic GPU kernels; the demos and
-the tests turn GPU preallocation off. 2.2 and 2.3 changed no number: the golden snapshot is
-bit for bit on CPU after each
-([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
-
-2.4 is done (2026-10-06, the compile part of [I-53](known-issues.md#i-53)): each trade's AD
-Greeks are one jitted program per product and derivative, the trade's price function passed
-as data, so a repeated job compiles nothing (it compiled 9: the eager derivatives' programs
-lived in JAX's bounded internal caches) and an option's Greeks compile 40% faster; the demo's
-job from scratch is 14–22% faster on CPU and GPU. The profiler's cost on the GPU is per kernel
-launch and no CUPTI setting cuts it, so the hook traces one phase on request
-(`JAX_RISK_PROFILE_PHASE`, the demo's `--phase`). The device lane gave 2.5 its baseline (in
-its row). The AD Greeks moved at rounding level, at most 3.4e-14 of their scale, and the
-snapshot was re-baselined; everything else stayed bit for bit (§13.1). Found along the way:
-the cold job's one-operation programs ([I-81](known-issues.md#i-81), 6.5) and, on Windows
-only, slower pricing after AD Greeks (I-53, re-measured in 2.5). 2.5 moves the
-default float64 numbers at rounding level, once (the reference solver keeps them bit for
-bit); it comes before stage 3 so that 3.5's and 3.7's recalibration are written on the shared
-solver, and stage 3 rewrites nothing that 2.3 to 2.5 did. The
-card's float64 runs at 1/64 of its float32 rate, so it is where correctness and the trace
-are checked, not where speed is measured (5.2).
+Stage 2, the demo on a local GPU with a whole trace (steps 2.1 to 2.5), is done (2026-10-07):
+`demos/demo_profile_small.py` runs through the HTTP API and the engine worker on the owner's
+RTX 5060 (Linux or WSL2, the `gpu` extra) as on the CPU, and its trace covers the whole job, each
+phase labelled, or one phase on request. On the way: importing `engine` sets only x64 and every
+matrix product states its precision (2.3, A-22); each trade's AD Greeks are one program per
+product, and a repeated job compiles nothing (2.4); every calibration and exercise boundary is
+solved by one configurable root solver, a safeguarded Newton method by default with the
+bisection kept as the reference (2.5, A-21), and an option's path dates of one basket shape are
+calibrated together. The recalibration is 35–55 times faster on the CPU and 15–38 times on the
+GPU, where a repeated demo job went from 5.5 s to 1.4 s
+([profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)). Each step
+kept float64 bit for bit but 2.4 (the AD Greeks) and 2.5 (the Newton default, at rounding level;
+the reference keeps the numbers before it bit for bit); the evidence is in
+[details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity). What it left:
+the cold job's one-operation programs (6.5), a slower pricing on Windows after AD Greeks and a
+cold job 3 s slower for Newton's compile (6.6), and the grid rollback's memory, which stops the
+demo's job beyond a few thousand paths (3.7). The card's float64 runs at 1/64 of its float32
+rate, so it is where correctness and the trace are checked, not where speed is measured (5.2).
 
 <a id="stage-3--foundations"></a>
 ## Stage 3 — Foundations
@@ -149,7 +135,7 @@ form.
 | 3.4 | `ShiftHorizon` as a setting, with its API field; parity at 0.5 against the LGM oracle; then 0.5 as the default | [I-32](known-issues.md#i-32) | M |
 | 3.5 | Reproduce ORE's two per-path recalibration details, measured against 3.2's cube; confirm an American's basket on a path against ORE's (decision A-7); warn, as ORE's `LgmBuilder` does, when a path's recalibration misses its basket | [I-49](known-issues.md#i-49), [I-73](known-issues.md#i-73) | M |
 | 3.6 | *Parallel, can start now* (it changes no float64 number). Store classes whose level swamps their spread relative to a level (the cube to its t=0 value, the curves to their path-independent part, or a block offset). Build a measurement harness, rerunnable on any kernel change, for the storage formats per class, product and path count, with 1.7's paired sample and its estimator's coverage on the pipeline | [I-75](known-issues.md#i-75) | M |
-| 3.7 | Kernels in difference form with explicit accumulators, one family at a time (simulation scan, scenario curves, legs, Europeans, Bermudan rollback and recalibration, exposure), one implementation for every precision (A-16); compute below float32 enabled. Where a family can be a matrix product (leg pricing, the Bermudan rollback), it takes that form in the same rewrite, so native FP8 (5.2) needs no second one. A product's own precision (TensorFloat-32, bfloat16 passes, FP8) becomes a compute format of the policy, named in the report: 2.3's product helper (`engine.precision.product_precision`) maps the policy's format to it, so every product follows the policy and never a device's default. Where a device has no such unit (TensorFloat-32 on a CPU, which computes float32 instead) the format is emulated by rounding the operands to its mantissa, as FP8 storage is, and the report says which ran ([details/precision.md §8.3](details/precision.md#83-emulation-and-native-speed)). ORE parity at existing tolerances first, then the float64 snapshot re-baselined once | [F-07](features.md#f-07) (compute) | L |
+| 3.7 | Kernels in difference form with explicit accumulators, one family at a time (simulation scan, scenario curves, legs, Europeans, Bermudan rollback and recalibration, exposure), one implementation for every precision (A-16); compute below float32 enabled. Where a family can be a matrix product (leg pricing, the Bermudan rollback), it takes that form in the same rewrite, so native FP8 (5.2) needs no second one. A product's own precision (TensorFloat-32, bfloat16 passes, FP8) becomes a compute format of the policy, named in the report: 2.3's product helper (`engine.precision.product_precision`) maps the policy's format to it, so every product follows the policy and never a device's default. Where a device has no such unit (TensorFloat-32 on a CPU, which computes float32 instead) the format is emulated by rounding the operands to its mantissa, as FP8 storage is, and the report says which ran ([details/precision.md §8.3](details/precision.md#83-emulation-and-native-speed)). ORE parity at existing tolerances first, then the float64 snapshot re-baselined once. The rollback's matrix form also holds one operator per step instead of one per path and step, so the demo's job runs at 65,536 and 262,144 paths | [F-07](features.md#f-07) (compute), [I-83](known-issues.md#i-83) | L |
 | 3.8 | *Parallel, can start now* (it moves no kernel's arithmetic). One worker per host on a Cloud TPU pod slice, with process 0 claiming each job and handing it to the other hosts, since under SPMD every host runs the same job ([details/precision.md §11.3](details/precision.md#113-multi-device-and-multi-host)). Measure wall time against device count on TPU and H100. The one-host split of the scenario axis is done (2026-10-04) | [I-61](known-issues.md#i-61) | M |
 
 Order within the stage:
@@ -224,6 +210,7 @@ Its float64 rate makes its speed ratios unlike an H100's, so no result is drawn 
 | 6.3 | Shared test helpers in `tests/support/`; public-entry tests where stage 1 made private-symbol tests obsolete | [I-67](known-issues.md#i-67) | S |
 | 6.4 | A type checker on `engine/` (A-20) | [I-66](known-issues.md#i-66) (type checker) | S |
 | 6.5 | The cold job's one-operation programs: jit the scenario market's construction and the other eager sites, and market risk's batch on the price function as data, as 2.4 did for the AD Greeks; the golden snapshot's change per array shown | [I-81](known-issues.md#i-81) | S |
+| 6.6 | What roadmap 2.5 left of the pipeline's speed: find why, on Windows' CPU only, pricing runs 10–25% slower in a process that has run AD Greeks (the Windows heap is suspected, not shown; Linux is unaffected); and win back the 3 s (8%) a cold job lost to the bootstrap's compile under Newton, by tracing the helper's price once per bucket program where it is traced at the bracket's ends, the step and the model value today, with the snapshot bit for bit | [I-53](known-issues.md#i-53) | S |
 
 6.1's runs can be made whenever a full run is being made anyway. 2.2's five full runs under
 WSL2 (`-n 4`, a 23 GB VM; four on the GPU, one on CPU) all printed their summary lines, the

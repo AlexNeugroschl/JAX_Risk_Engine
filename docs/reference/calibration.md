@@ -2,7 +2,8 @@
 
 **Module:** [`engine/calibration/`](../../engine/calibration) —
 [`basket.py`](../../engine/calibration/basket.py),
-[`lgm.py`](../../engine/calibration/lgm.py)
+[`lgm.py`](../../engine/calibration/lgm.py), [`ore_lgm.py`](../../engine/calibration/ore_lgm.py);
+the root solver, [`engine/numerics/roots.py`](../../engine/numerics/roots.py)
 
 ## Plain-language summary
 
@@ -73,16 +74,15 @@ price_lgm_swaption(Sigma(times=[T0_0..T0_{i-1}], values=[s_0..s_{i-1}, s_i]), ta
     == bachelier_swaption_price(targets[i])
 ```
 
-found via a 60-iteration scalar bisection (`_bisect_bucket_sigma`) over `sigma in [1e-6,
-0.20]` — a fixed (not dynamically expanded) bracket, deliberately: a piecewise LGM sigma
+found by the configured root solver (`_solve_bucket_sigma`, [below](#the-root-solver)) on
+`sigma in [1e-6, 0.20]` — a fixed (not expanded) bracket, deliberately: a piecewise LGM sigma
 bucket calibrating outside a 1bp-20% annual vol range indicates a misconfigured basket
 (e.g. a market vol far outside realistic rates levels), not a case this bootstrap should
-silently paper over the way `european_swaption._solve_rstar`'s dynamically-expanding
-bracket does for its own, different reason (see
-[ORE Parity](ore-parity.md#6-european-swaption-pricing-jamshidians-decomposition)).
+silently paper over the way an exercise boundary's widened window does for its own, different
+reason (an exercise boundary has no natural bound).
 
-An exact bootstrap reprices every basket instrument exactly (RMSE ~`1e-10`, limited only
-by the bisection's own root-find tolerance) — unlike a joint least-squares/`BestFit`
+An exact bootstrap reprices every basket instrument exactly (to the rounding of the
+instrument's price) — unlike a joint least-squares/`BestFit`
 calibration, whose RMSE is generally nonzero even at convergence, since it's trading off
 fit quality across every instrument simultaneously rather than fitting each one exactly in
 turn.
@@ -225,21 +225,100 @@ sigma bucket's own value — a swaption is long volatility, and raising the newe
 sigma strictly increases the model's total `zeta(T0_i)` for every `t` in that bucket. This
 property (confirmed directly,
 `tests/test_calibration_basket.py::TestPriceLgmSwaptionSanity::test_higher_sigma_gives_higher_price`)
-is exactly what makes each bucket's calibration a simple, well-posed scalar bisection
-rather than something needing a more general root-finder.
+is exactly what makes each bucket's calibration a simple, well-posed scalar root: bracketed,
+monotone, with one root when the market value is attainable.
 
-## The `_bisect_xstar` gradient bug
+## The root solver
 
-**This engine:** `engine.calibration.basket._bisect_xstar`/`_bisect_xstar_raw`.
+**This engine:** `engine.numerics.roots` (decision A-21, roadmap 2.5), for every root the
+engine solves: each bucket of ORE's bootstrap (`engine.calibration.ore_lgm`: the CAM's
+calibration and every Bermudan's/American's, today and on every path date), each helper's
+exercise boundary y\*, the standalone bootstrap here (`calibrate_lgm_sigma`) and its x\*, and
+the Jamshidian European engine's x\*.
+
+| Setting | Where | Default |
+|---|---|---|
+| `LgmSwaptionEngineConfig.solver` (`pricing.bermudan.solver`, `pricing.american.solver`) | the option's calibration and its helpers' y\* | `"Newton"` |
+| `LgmConfig.solver`, `HullWhiteConfig.solver` (`simulation.ir.<ccy>.solver`) | the CAM's calibration | `"Newton"` |
+| `JamshidianEngineConfig.solver` (`pricing.jamshidian.solver`) | x\* | `"Newton"` |
+| `calibrate_lgm_sigma(..., solver)` (`POST /calibration/lgm`'s `solver`) | the buckets and x\* | `"Newton"` |
+
+Two solvers, both a fixed number of steps on every backend (a data-dependent stop would make
+a GPU report to the host each step; a fixed count is one loop on the device):
+
+- **`"Newton"`**, a safeguarded Newton method: each step evaluates the function and its
+  derivative (`jax.jvp`), narrows the bracket to the side of the root the function's sign
+  shows, and takes the Newton step where it stays inside the bracket, a bisection step where
+  it would leave it (a zero or non-finite derivative included), so it is never less robust
+  than bisection. Where the slope has the sign monotony gives it, the side of the root is the
+  Newton step's direction (the residual's sign, when the residual is computed once; XLA may
+  compute it twice, rounded differently, and the step then fall just outside a bracket moved
+  by the other rounding: seen in float32 on 128 paths, where a bucket's volatility ended 74%
+  off), so a root once found is kept to its rounding however many steps follow. Where it is not monotone across the bracket (a Jamshidian European struck far below
+  the money: its coupons and its nominal cancel), Newton can step against the bracket and
+  falls back to bisecting, which its count covers. `rtsafe`'s second safeguard (bisect unless
+  a step halves an earlier one) is not used: it suits a loop that stops at a tolerance, and at
+  a fixed count the root's own rounding-level steps, which need not halve, would set off
+  bisection steps across a bracket still wide on one side (tried: a bucket's volatility
+  halved). A bucket starts at its helper's market normal volatility, close to the bucket's in
+  level and never at an edge of the bracket (the bucket before it can sit at the floor, where
+  the slope vanishes and Newton would spend its steps bisecting); each y\* starts from 0, near
+  which a helper's lies (it is struck within 3 ATM standard deviations), not from the y\* of
+  the previous evaluation, which can sit far up the boundary's steep side (tried: in float32
+  on a path, a helper's model value ended 2% off its market value). Steps: 7 per bucket, 5 per y\*, 26 per
+  Jamshidian x\*, 5 per the standalone bootstrap's x\*.
+- **`"Bisection"`**, the reference: the engine's halvings before 2.5 (60 per bucket, 100 per
+  y\* and x\*), reproducing its numbers bit for bit. It keeps one path date per calibration
+  call: under Newton a Bermudan's/American's path dates of one basket shape are calibrated in
+  one call over dates and paths, which a bisection cannot share bit for bit (XLA vectorizes
+  another shape, and the bisection's last comparisons move with the residual's last bit; the
+  roots move within their resolution, 1.7e-13).
+
+Newton's counts are measured (2026-10-07, the shared sloped market today and on 256 LGM and
+Hull-White paths, the shared European struck from 0% to 15%, and the standalone baskets on a
+sloped and a flat curve): a bucket reaches the rounding of its residual in 5 steps, a y\* from 0
+in 3, Jamshidian's x\* in 5 (in 24 for a strike of -99%, where its coupons cancel the
+nominal and the coupon bond is not monotone across the window), the standalone x\* in 3, and each count keeps two steps of margin, which `tests/test_root_solvers.py` checks (two
+steps fewer give the same roots, one step does not). Both solvers reach the same root: on those
+markets a bucket's volatility under one equals the other's to 7e-13 and a Jamshidian NPV to
+3e-16 of its nominal (a root is resolvable only to its residual's rounding over its slope), and
+both reprice every helper to its rounding (at worst 7.5e-12 of the market value, a helper far
+out of the money on a path).
+
+**Against ORE.** ORE solves the same equations — each bucket's model value equals its market
+value; `yStarHelper(y*) = 0` — with Levenberg-Marquardt to
+`EndCriteria(1000, 500, 1e-8, 1e-8, 1e-8)` per bucket (`irmodelbuilder.cpp`) and Brent at
+accuracy 1e-6 for y\* (`analyticlgmswaptionengine.cpp`). Both of the engine's solvers go to
+float64 rounding, so the gap to ORE is ORE's stopping error, which is why calibrated
+Bermudans agree with ORE to about 4e-11, under either solver. ORE's algorithms are not offered:
+their per-element branching does not batch over paths.
+
+**Brackets.** A bucket's bracket is fixed: a volatility beyond it ends at the edge (Newton
+returns the edge itself) and is flagged (`hit_ceiling`), and today's calibration refuses it.
+An exercise boundary has none: its starting window (`[-1, 1]` for y\*, `[-2, 2]` for x\*) is
+widened side by side to 2, 8, 128, 32768, 2^31 or 2^63 times itself, the first that holds the
+sign change, all candidates evaluated at once (one vectorized evaluation, not a loop).
+
+**Derivatives.** A root carries no derivative of its own (`solve` stops its inputs'
+tangents). The ORE helper's price is stationary in y\*, so its derivatives with y\* held fixed
+are exact (the AD Vega's bootstrap Jacobian, `engine.risk.greeks`, uses them). Where a price
+is not stationary in its root — x\* here and in the Jamshidian engine — `implicit_root` gives
+the root its derivative by the implicit function theorem, below.
+
+<a id="the-_bisect_xstar-gradient-bug"></a>
+## The x\* gradient bug
+
+**This engine:** `engine.numerics.roots.implicit_root`, which `price_lgm_swaption` (and the
+Jamshidian engine) find x\* with. Before roadmap 2.5 this was `engine.calibration.basket.
+_bisect_xstar`/`_bisect_xstar_raw`, the history below.
 
 `price_lgm_swaption` finds the exercise boundary — the state `x*` at which the signed
 coupon bond (every fixed cashflow, the final notional, minus the notional received back at
-the swap's own accrual start) is worth exactly `0` — via a 100-iteration bisection,
-`_bisect_xstar_raw`. This is the LGM analogue of
-`european_swaption._solve_rstar`'s own bisection for Jamshidian's critical short rate
-`r*` (see
-[ORE Parity](ore-parity.md#6-european-swaption-pricing-jamshidians-decomposition)), and it
-had the identical bug, for the identical underlying reason.
+the swap's own accrual start) is worth exactly `0` — then a 100-iteration bisection,
+`_bisect_xstar_raw`. The Hull-White European engine's bisection for Jamshidian's critical
+short rate `r*` (see
+[ORE Parity](ore-parity.md#6-european-swaption-pricing-jamshidians-decomposition)) had the
+identical bug, for the identical underlying reason.
 
 **The bug.** `_bisect_xstar_raw`'s bisection loop narrows a bracket using
 `jnp.where(val > 0.0, ...)` at every iteration. `val > 0.0`'s comparison has zero gradient
@@ -260,9 +339,9 @@ finite-difference cross-check against a literal recalibration (bump one market v
 and nothing calling this module for a forward price alone (i.e. `calibrate_lgm_sigma`
 itself, whose bisections never need `price_lgm_swaption`'s gradient) could have noticed.
 
-**The fix.** `_bisect_xstar` wraps `_bisect_xstar_raw` with the same
+**The fix.** `_bisect_xstar` wrapped `_bisect_xstar_raw` with the
 [implicit function theorem](https://en.wikipedia.org/wiki/Implicit_function_theorem)
-correction `european_swaption._solve_rstar` already uses (see
+correction (see
 [Delta, Gamma, and Theta](../risk/greeks.md#differentiating-through-bisection-root-finds)) —
 a `jax.custom_jvp` implementing, at a root of `f(x*, params) = 0`:
 
@@ -272,11 +351,12 @@ dx*/dparams · v = -(df/dparams · v) / (df/dx)
 
 for any tangent direction `v`, computed via one `jax.grad` (for `df/dx`, at the
 stop-gradient'd converged root) and one `jax.jvp` (for the directional derivative
-`df/dparams · v`) — cheap relative to the 100-iteration bisection itself, and exact rather
-than approximate. This requires `coupon_bond_value_fn`'s parameters to be passed as an
-explicit pytree (`params = (a, sigma)`) rather than only captured in a Python closure,
-since `jax.custom_jvp` needs an explicit primal argument to attach a JVP rule to — the
-same structural requirement `_solve_rstar`'s own docstring explains.
+`df/dparams · v`) — cheap relative to the solve itself, and exact rather than approximate.
+This requires `coupon_bond_value_fn`'s parameters to be passed as an explicit pytree
+(`params = (a, sigma)`) rather than only captured in a Python closure, since
+`jax.custom_jvp` needs an explicit primal argument to attach a JVP rule to. Newton's
+iterations would carry a derivative of their own, but only of the steps taken, not of the
+root: the rule is the same for either solver (`implicit_root`, roadmap 2.5).
 
 **A second, related fix this bug's investigation surfaced: `Sigma` needed pytree
 registration.** The implicit-function-theorem correction above only works if a tangent can
@@ -303,18 +383,22 @@ finite-difference recalibration — see
 - `tests/test_calibration_basket.py` (15 tests) — `build_coterminal_basket`'s schedule/par-
   rate construction, `price_lgm_swaption`'s two-route verification described above (formula
   pieces against live `ORE.LinearGaussMarkovModel` objects, full price against the
-  numeraire-deflated Monte Carlo), monotonicity, and the `_bisect_xstar` gradient-
-  correctness regression tests (value-level, not just sign/finiteness, cross-checks against
-  finite difference).
+  numeraire-deflated Monte Carlo), monotonicity, and the x\* gradient-correctness
+  regression tests (value-level, not just sign/finiteness, cross-checks against finite
+  difference).
 - `tests/test_calibration_lgm.py` (9 tests) — `calibrate_lgm_sigma`'s bootstrap: exact
-  reprice of every basket instrument (RMSE ~`1e-10`), the triangular
+  reprice of every basket instrument, the triangular
   `aTimes = swaptionExpiries[:-1]` bucket construction, ordering assertions, and
   `CalibrationResult`'s diagnostic fields.
 - `tests/test_calibration_integration.py` (6 tests) — end-to-end: build a basket, calibrate
   a `Sigma`, price a Bermudan on it with the grid engine, confirming
   the calibrated `Sigma` behaves correctly as a drop-in replacement for a flat scalar
   throughout the full pricing pipeline.
-- `tests/test_greeks_bermudan.py::TestBermudanVega` — the `_bisect_xstar` fix's
+- `tests/test_root_solvers.py` — the solver (roadmap 2.5): both solvers on known roots,
+  brackets, widening, Newton's fallback, the implicit derivatives (first and second); on the
+  parity markets every root under Newton equal to Bisection's and at rounding, with two
+  steps of margin; the setting and its API fields; the path dates batched.
+- `tests/test_greeks_bermudan.py::TestBermudanVega` — the x\* fix's
   real-world consequence: Vega matches a literal finite-difference recalibration to within
   ~0.005% for every bucket in a 4-instrument basket (see
   [Delta, Gamma, and Theta](../risk/greeks.md#vega-bermudanamerican-only)).

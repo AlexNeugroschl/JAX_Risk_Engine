@@ -341,8 +341,8 @@ this engine's conditional-pricing generalization allows an arbitrary `t` — see
 comparison against real `ORE.Swaption` + `ORE.JamshidianSwaptionEngine`, spot- and
 forward-starting, payer/receiver, within QuantLib's Brent tolerance on r*, 5e-6) and
 `::TestAgainstQuantLibWithAnExactRoot` (QuantLib's formula evaluated at the exact root,
-1e-10). The engine solves x* by bisection to machine precision where QuantLib's Brent stops
-at 1e-8.
+1e-10). The engine solves x* to float64 rounding (by `JamshidianEngineConfig.solver`, Newton
+by default) where QuantLib's Brent stops at 1e-8.
 
 ## 7. American & Bermudan swaptions: numeric LGM backward induction
 
@@ -577,10 +577,10 @@ configured period (calendar days, [I-38](../planning/known-issues.md#i-38)), bui
 there from today's curves fixed in dates, reprices, and adds back the interim cashflows:
 `Theta = NPV(t+dt) − NPV(t) + CF(t, t+dt]`. Both methods report it (`trade_theta`).
 
-**Root-finds.** Naively differentiating through a bisection gives a silently wrong
-gradient (its comparison has none). The Jamshidian root and each calibration bucket get the
-implicit function theorem's derivative instead (`_solve_decreasing_root`'s `custom_jvp`,
-`_bootstrap_jacobian`); see [Greeks](../risk/greeks.md#differentiating-through-bisection-root-finds).
+**Root-finds.** Naively differentiating through a root solver gives a silently wrong
+gradient (a bisection's comparisons have none, Newton's iterations only the steps'). The
+Jamshidian root and each calibration bucket get the implicit function theorem's derivative
+instead (`engine.numerics.roots.implicit_root`'s `custom_jvp`, `_bootstrap_jacobian`); see [Greeks](../risk/greeks.md#differentiating-through-bisection-root-finds).
 
 **Verified:** `tests/test_sensitivities.py`, `tests/test_trade_dates.py` (Theta against ORE),
 `tests/test_greeks.py` and `tests/test_greeks_bermudan.py` (AD against finite differences,
@@ -601,7 +601,10 @@ per-instrument pricer.
 **Full writeup in [Calibration](calibration.md)**, which is more extensive than a
 single-section summary can cover here — includes the `aTimes = swaptionExpiries[:-1]`
 triangular-bootstrap construction, why mean reversion is never calibrated, and the
-`_bisect_xstar` gradient bug (cross-referenced above in section 9). Two findings worth
+x* gradient bug (cross-referenced above in section 9), and the root solver both
+calibrations use ([decision A-21](../../compliance/decisions.md): Newton by default, the
+bisection kept as the reference; each reaches ORE's root more exactly than ORE's own
+solvers). Two findings worth
 calling out directly on this page:
 
 **`price_lgm_swaption` could not be checked against ORE's own engine directly.**

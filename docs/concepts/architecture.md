@@ -134,9 +134,14 @@ JAX_Risk_Engine/
 │   │   ├── hull_white.py                 Bond options on the Hull-White model (the
 │   │   │                                 Jamshidian engine's building block)
 │   │   └── ore_builders.py               ORE VanillaSwap construction and the time axis
+│   ├── numerics/
+│   │   ├── roots.py                      The root solver of every calibration and exercise
+│   │   │                                 boundary (decision A-21): safeguarded Newton (the
+│   │   │                                 default) or bisection (the reference), a fixed
+│   │   │                                 number of steps on every backend; implicit_root
 │   ├── calibration/
 │   │   ├── ore_lgm.py                    ORE's LgmBuilder: SwaptionHelper baskets and the
-│   │   │                                 bootstrap, batched over path curves
+│   │   │                                 bootstrap, batched over path curves (and dates)
 │   │   ├── cam.py                        The CAM's IR calibration to CalibrationSwaptions
 │   │   │                                 (either parametrization)
 │   │   ├── basket.py, lgm.py             The standalone /calibration/lgm route's basket
@@ -157,7 +162,8 @@ JAX_Risk_Engine/
 │   │   ├── jamshidian.py                 QuantLib's JamshidianSwaptionEngine on a
 │   │   │                                 configured Hull-White model
 │   │   ├── bermudan.py                   Each Bermudan/American on its own calibrated LGM,
-│   │   │                                 recalibrated per path
+│   │   │                                 recalibrated per path (path_sigmas: the dates of
+│   │   │                                 one basket shape in one call under Newton)
 │   │   ├── options.py                    OptionWrapper's exercise, physical and cash
 │   │   ├── portfolio.py                  value_portfolio / value_today / value_on,
 │   │   │                                 validate_trades, bond legs

@@ -22,6 +22,7 @@ from engine.precision import (
     FORMAT_NAMES, OVERRIDES, RETIRED_SHAPE, ROUNDINGS, STAGES, MeanEstimate, Precision, PrecisionReport,
     StagePrecision,
 )
+from engine.numerics.roots import DEFAULT_SOLVER, SOLVERS
 from engine.valuation.portfolio import PRODUCTS
 
 
@@ -76,6 +77,9 @@ RoundingName = Literal[ROUNDINGS]
 
 #: A product the pipeline prices (`engine.valuation.portfolio.PRODUCTS`, the trades' `trade_type`).
 ProductName = Literal[PRODUCTS]
+
+#: A root solver of calibrations and exercise boundaries (`engine.numerics.roots.SOLVERS`, decision A-21).
+SolverName = Literal[SOLVERS]
 
 
 class StagePrecisionSchema(BaseModel):
@@ -342,6 +346,8 @@ class CalibrationRequestSchema(BaseModel):
     zero_curve: ZeroCurveConfigSchema
     hw_a: float
     index_tenor_months: int = 6
+    #: The bootstrap's root solver (decision A-21).
+    solver: SolverName = DEFAULT_SOLVER
 
 
 class CalibrationResultSchema(BaseModel):

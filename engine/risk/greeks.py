@@ -139,7 +139,7 @@ def vega_greek(cfg, market: Market, pricing: PricingConfig, shift: float):
     d_npv_d_sigma = np.asarray(_option_vega(option.pricer, option.terms, disc, index, option.sigma.values))
     engine = pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
     basket = calibration_basket(cfg, engine, asof, asof)
-    jacobian = _bootstrap_jacobian(basket, disc, index, surface, asof, engine.reversion, option.sigma)
+    jacobian = _bootstrap_jacobian(basket, disc, index, surface, asof, engine.reversion, option.sigma, engine.solver)
     weights = np.stack([surface.weights(asof, b.vol_option_time, b.vol_swap_length) for b in basket])
     return np.tensordot(d_npv_d_sigma @ jacobian, weights, axes=1) * shift
 
@@ -156,7 +156,7 @@ def _option_vega(pricer, terms, disc, index, values):
     return jax.grad(lambda v: pricer(terms, disc, index, v))(values)
 
 
-def _bootstrap_jacobian(basket, disc, index, surface, asof, reversion: float, sigma) -> np.ndarray:
+def _bootstrap_jacobian(basket, disc, index, surface, asof, reversion: float, sigma, solver: str) -> np.ndarray:
     """`J[j, h] = d sigma_j / d v_h`: how each bucket of the bootstrap (`engine.calibration.
     ore_lgm.bootstrap_sigma`) moves with each helper's volatility v_h. Bucket j solves
     g_j = model_j(zeta_j) - market_j(v_j) = 0 with zeta_j = sum_{k<=j} sigma_k^2 dt_k, so by
@@ -177,7 +177,7 @@ def _bootstrap_jacobian(basket, disc, index, surface, asof, reversion: float, si
     for j, helper in enumerate(basket):
         zeta = float(np.sum(values[: j + 1] ** 2 * dt[: j + 1]))
         dg_dv, dg_dzeta = (float(d) for d in _residual_gradient(jnp.asarray(vols[j]), jnp.asarray(zeta), helper,
-                                                                disc, index, reversion))
+                                                                disc, index, reversion, solver))
         dg_dsigma = dg_dzeta * 2.0 * values[: j + 1] * dt[: j + 1]
         row = -(dg_dsigma[:j] @ J[:j]) if j > 0 else np.zeros(n)
         row[j] -= dg_dv
@@ -185,12 +185,12 @@ def _bootstrap_jacobian(basket, disc, index, surface, asof, reversion: float, si
     return J
 
 
-def _residual(v, z, helper, disc, index, reversion):
+def _residual(v, z, helper, disc, index, reversion, solver):
     """A bootstrap bucket's g = model - market as a function of the helper's volatility `v`
-    and zeta at its expiry `z`."""
-    market, model = price_pair(helper, disc, index, v, reversion, z)
+    and zeta at its expiry `z` (y* by the engine's `solver`)."""
+    market, model = price_pair(helper, disc, index, v, reversion, z, solver)
     return model - market
 
 
-#: `(dg/dv, dg/dzeta)`, one program per helper shape.
-_residual_gradient = jax.jit(jax.grad(_residual, argnums=(0, 1)))
+#: `(dg/dv, dg/dzeta)`, one program per helper shape and solver.
+_residual_gradient = jax.jit(jax.grad(_residual, argnums=(0, 1)), static_argnums=6)

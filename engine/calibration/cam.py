@@ -44,7 +44,7 @@ def calibrate_currency(market: Market, currency: str, lgm) -> CamCalibration:
     disc = ZeroCurve.from_config(market.currency(currency).discount_curve)
     index = ZeroCurve.from_config(market.index_curve(currency, index_name(currency, conventions.index_tenor_months)))
     result = bootstrap_sigma(basket, disc, index, basket_vols(basket, market.swaption_vols(currency), market.asof),
-                             lgm.reversion)
+                             lgm.reversion, lgm.solver)
     if np.any(np.asarray(result.hit_ceiling)):
         raise ValueError(f"{currency} CAM calibration failed: a helper's volatility is not attainable")
     sigma = Sigma(jnp.asarray(result.times), result.values)

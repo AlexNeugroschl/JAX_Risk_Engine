@@ -66,7 +66,7 @@ conflicts with one is redesigned rather than excused.
   so precision error becomes variance, not bias (A-13).
 - **Fragile stages stay float64.** Calibration, t=0 prices, Greeks and every reduction over
   paths are fixed at float64 (A-10): they cost little, and low precision breaks them (bump
-  gamma in float32 is noise; the bisection cannot converge).
+  gamma in float32 is noise; a root solve cannot converge past float32's resolution).
 - **Red first, on sloped curves.** Flat curves cancel the drift and convexity terms that
   rounding errors also hide in. Every accuracy test runs on a 3% → 5% curve as well as flat.
 
@@ -124,7 +124,7 @@ what lets the study say which one limits accuracy.
 | Pricing on paths (every pricer, incl. the Bermudan per-path recalibration) | Yes | **Yes** | Trades are priced one at a time |
 | Values (the cube column of a trade) | Yes | **Yes** | Every reduction goes through float64, so mixed formats never meet in arithmetic |
 | Market-risk revaluation and P&L | Yes | **Yes** | Same resolver |
-| Calibration (cross-asset model, each trade at t=0) | No, float64 | — | Cheap; bisection to 1e-12 needs float64 |
+| Calibration (cross-asset model, each trade at t=0) | No, float64 | — | Cheap; a root solve to 1e-12 needs float64 |
 | t=0 NPVs, step moments | No, float64 | — | Cheap |
 | Greeks (bump and AD) | No, float64 | — | Bump gamma is a second difference; float32 makes it noise |
 | Reductions over paths or scenarios (EPE, PFE, netting sums, VaR/ES) | No, float64 | — | Where precision error would become bias; free to do in float64 |
@@ -940,9 +940,33 @@ process changes.
   within 6.6e-16 of their scale, and two runs of each tree are identical. Every ORE parity
   suite passes at its tolerance (none compares an AD Greek with ORE: ORE's are bump
   sensitivities, I-51). Steps from 2.5 on compare against a snapshot of the 2.4 commit.
-- Step 2.5 (the configurable root solver, decision A-21): with `"Bisection"` the snapshot
-  stays bit for bit; every ORE parity suite passes under both solvers, then the snapshot is
-  re-baselined once for the `"Newton"` default, with the largest change per array recorded.
+- **Step 2.5's result (2026-10-07): the solver re-baselined.** 2.5 puts every root of the
+  engine on one solver (`engine.numerics.roots`, decision A-21): a safeguarded Newton method
+  by default, the bisections as the reference (`"Bisection"`), and batches a Bermudan's or
+  American's path dates of one basket shape into one calibration under Newton. The snapshot
+  gained the Jamshidian engine (the shared portfolio's European on the paths, its AD Greeks)
+  and the standalone bootstrap (`POST /calibration/lgm`'s, on a sloped curve, its Vega through
+  x*): 359 arrays, from a worktree of `eadbcc6` (2.4) against the 2.5 tree, on CPU.
+  - With every solver set to `"Bisection"`: all 359 identical in value, dtype and shape. The
+    reference keeps one path date per calibration call: batched over dates, even the
+    bisection moved 43 arrays (float64 at most 3.9e-16 of their scale, the cubes and
+    exposures through the recalibrated options; float32 at most 1.2e-7), since XLA vectorizes
+    another shape and the bisection's last comparisons follow the residual's last bit.
+  - With the `"Newton"` default: 149 identical (every market-risk figure, whose engines do not
+    calibrate, the raw float32 scenario market, the standalone Vega); 210 moved. In float64,
+    relative to each array's largest magnitude: today's values at most 7.1e-17; the cubes and
+    exposures at most 3.3e-15 (shared portfolio, LGM), 5.6e-15 (Hull-White), 5.3e-15
+    (Jamshidian), 7.0e-15 (the demo's job); AD Greeks at most 2.2e-14 (Delta, Gamma, Vega);
+    the standalone calibration's volatilities 4.4e-14 and model values 1.0e-14. Larger, and
+    still rounding: a difference of recalibrated prices amplifies it, bump Delta to 2.3e-11,
+    bump Vega to 9.3e-13 and bump Gamma to 6.4e-8 of their scale (second differences at a 1bp
+    shift), Theta to 1.1e-11 of itself (1e-16 of the values it is the difference of); the
+    standalone calibration's `rmse`, itself 4e-11 of rounding, by 70% of itself; float32 runs
+    at most 1.5e-7 (float32's rounding on the recalibrated paths).
+  Every ORE parity suite passes at its tolerance under the default, and under the reference
+  too (the 15 modules that compare with ORE or QuantLib, 509 tests, with the default set to
+  `"Bisection"` for the run). Steps from 2.5 on compare against a
+  snapshot of the 2.5 commit.
 - Step 3.7: parity suites pass at their tolerances first; then the snapshot is re-baselined,
   with the largest change per array recorded in the commit and in known-issues' verification
   status.

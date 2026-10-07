@@ -156,7 +156,11 @@ class TestWorkerLock:
 
     @pytest.mark.slow
     def test_a_dead_holders_lock_is_free(self, queue):
-        """The OS releases the lock however the holder dies, so a killed worker leaves none."""
+        """The OS releases the lock however the holder dies, so a killed worker leaves none.
+
+        Once it has died: on Windows a venv's `python.exe` is a launcher whose child, the real
+        interpreter, holds the lock and ends a moment after the launcher is killed (the full
+        suite under load saw the lock still held right after `wait()`)."""
         code = (f"from engine.api.job_queue import WorkerLock; import time; lock = WorkerLock({str(queue.path)!r}); "
                 f"assert lock.acquire(); print('locked', flush=True); time.sleep(60)")
         holder = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
@@ -166,6 +170,9 @@ class TestWorkerLock:
         finally:
             holder.kill()
             holder.wait()
+        deadline = time.monotonic() + 30.0
+        while worker_lock_held(queue.path) and time.monotonic() < deadline:
+            time.sleep(0.1)
         assert not worker_lock_held(queue.path)
 
 

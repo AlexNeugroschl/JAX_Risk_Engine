@@ -31,6 +31,7 @@ from engine.models.lgm import Sigma, bond_option_sigma, bond_price
 from engine.models.ore_builders import (
     TIME_AXIS_DAY_COUNTER, build_vanilla_swap, fixed_leg_cashflows, resolve_swap_dates,
 )
+from engine.numerics.roots import DEFAULT_SOLVER, Steps, implicit_root
 
 
 @jax.tree_util.register_dataclass
@@ -129,56 +130,18 @@ def build_coterminal_basket(
     return targets
 
 
-def _bisect_xstar_raw(coupon_bond_value_fn, iterations: int = 100) -> jax.Array:
-    """Bisection for x* on the fixed bracket [-2, 2] (forward value only).
+#: Steps of x* (`engine.numerics.roots`): Bisection's are the count before roadmap 2.5,
+#: Newton's measured (2026-10-07: x* from 0 reaches its rounding in 3 steps; two of margin,
+#: tests/test_root_solvers.py).
+X_STAR_STEPS = Steps(bisection=100, newton=5)
 
-    Its gradient is wrong on its own: the comparison has zero derivative, so `jax.grad`
-    misses how x* moves with the parameters (a ~6% Vega error when this was used
-    uncorrected). Use `_bisect_xstar`."""
-    lo, hi = jnp.array(-2.0), jnp.array(2.0)
-
-    def body(carry, _):
-        lo, hi = carry
-        mid = 0.5 * (lo + hi)
-        val = coupon_bond_value_fn(mid)
-        lo = jnp.where(val > 0.0, mid, lo)
-        hi = jnp.where(val > 0.0, hi, mid)
-        return (lo, hi), None
-
-    (lo, hi), _ = jax.lax.scan(body, (lo, hi), None, length=iterations)
-    return 0.5 * (lo + hi)
-
-
-def _bisect_xstar(coupon_bond_value_fn, params, iterations: int = 100) -> jax.Array:
-    """
-    `_bisect_xstar_raw` with an implicit-function-theorem JVP: at the root of
-    f(x*, params) = 0, dx* = -(df/dparams . v) / (df/dx). The single-scalar case of
-    `european_swaption._solve_rstar`.
-
-    `params` (here `(a, sigma)`) is an explicit argument because `jax.custom_jvp` can only
-    attach tangents to explicit primals, not to tracers captured in a closure.
-    """
-    @jax.custom_jvp
-    def solve(p):
-        f = lambda x: coupon_bond_value_fn(x, p)
-        xstar = _bisect_xstar_raw(f)
-        return jax.lax.stop_gradient(xstar)
-
-    @solve.defjvp
-    def solve_jvp(primals, tangents):
-        p, = primals
-        p_dot, = tangents
-        xstar_val = solve(p)
-        df_dx = jax.grad(lambda x: coupon_bond_value_fn(x, p))(xstar_val)
-        _, df_dparams_dot = jax.jvp(lambda pp: coupon_bond_value_fn(xstar_val, pp), (p,), (p_dot,))
-        xstar_dot = -df_dparams_dot / df_dx
-        return xstar_val, xstar_dot
-
-    return solve(params)
+#: x*'s starting window, widened when it does not hold the root.
+X_STAR_WINDOW = 2.0
 
 
 def price_lgm_swaption(
     curve: ZeroCurve, a: float, sigma: Union[float, Sigma], target: CalibrationTarget,
+    solver: str = DEFAULT_SOLVER,
 ) -> jax.Array:
     """
     t=0 price of one co-terminal European swaption under LGM for trial `(a, sigma)`.
@@ -187,7 +150,10 @@ def price_lgm_swaption(
     the notional at accrual start) is worth 0 at expiry, then price each cashflow as a zero
     bond option struck at its price at x*. Payer = sum of puts, receiver = sum of calls.
 
-    Differentiable in `a` and `sigma` through `_bisect_xstar`.
+    Differentiable in `a` and `sigma`: x* by `solver`, with its derivative by the implicit
+    function theorem (`implicit_root`). The comparisons of a bisection, or Newton's
+    iterations, carry no derivative of how x* moves with the parameters, a ~6% Vega error
+    when the bisection was used uncorrected.
     """
     T0 = target.expiry_time
     T_start = target.accrual_start_time
@@ -206,7 +172,8 @@ def price_lgm_swaption(
         P_T0_Ti = bond_price(curve, a_p, sigma_p, T0, all_times, x)
         return jnp.sum(P_T0_Ti * all_amounts)
 
-    xstar = _bisect_xstar(coupon_bond_value, (a, sigma))
+    xstar = implicit_root(coupon_bond_value, (a, sigma), jnp.zeros((), dtype=P0_T0.dtype), solver=solver,
+                          steps=X_STAR_STEPS, increasing=False, window=X_STAR_WINDOW)
     K = bond_price(curve, a, sigma, T0, all_times, xstar)
     sigma_p = bond_option_sigma(a, sigma, T0, all_times, 0.0)
 

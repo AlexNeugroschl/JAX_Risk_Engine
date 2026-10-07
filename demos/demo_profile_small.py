@@ -9,24 +9,28 @@ greeks, `greeks/trade<i>/<type>`), and beside each trace the worker's summary of
 (`<run>.summary.json`: wall time, compiles, events, time per phase), which this script prints;
 see `docs/concepts/profiling.md` §2.
 
-Measured 2026-10-06 on CPU (roadmap 2.4; the traced run, the server's start-up excluded):
+Measured 2026-10-07 on CPU (roadmap 2.5; the traced run, the server's start-up excluded):
 
     mode                                 wall    compiles  events     phases: pricing / greeks
-    --cold --no-disk-cache (scratch)     32.6 s  217       1,225,929  7.8 s / 21.4 s
-    --cold (disk cache read back)        16.1 s  217         857,931  3.5 s / 11.1 s
-    default (warm: the repeat)            1.8 s    0         772,284  0.6 s /  0.3 s
+    --cold --no-disk-cache (scratch)     42.2 s  225         680,210  11.4 s / 26.3 s
+    --cold (disk cache read back)        20.2 s  225         275,243   5.2 s / 13.1 s
+    default (warm: the repeat)            1.9 s    0         181,523   0.6 s /  0.3 s
+
+(Before 2.5, the same day: 37.9 s and 1,226,160 events from scratch. Newton's bootstrap
+programs take longer to compile, and the job runs far fewer loop iterations.)
 
 Every trace is whole: it spans the run and holds every phase. xprof reads it all from the
 `.xplane.pb`; the `.trace.json.gz` beside it keeps only the ~1M events that start first, so a
-cold trace is partial in viewers that read that file (the summary warns). Most events are
-executed XLA kernels, not compiles: on the CPU 580k of them are loop iterations, most of them
-the 60-step bisection of `_bootstrap_bucket`, the Bermudan's and American's LGM calibrated on
-every path date and again in their Greeks, one event per op per iteration (I-53, roadmap 2.5).
+trace past that is partial in viewers that read that file (the summary warns). Most events are
+executed XLA kernels, not compiles; XLA's CPU runtime records each op of a loop body on every
+iteration, which made the bisection that calibrated the Bermudan and the American on every path
+date most of a trace before roadmap 2.5's root solver.
 
 `--phase NAME` traces one phase of the job (any name the summary lists) and runs the rest
-untraced. On a GPU that is the way to trace: the profiler slows every kernel launch whatever
-it records, so the whole repeat traced takes 32 s against 5.5 s untraced on an RTX 5060, while
-`--phase pricing` traces the recalibration on the path dates in 3.3 s.
+untraced. On a GPU the profiler slows every kernel launch whatever it records; since roadmap
+2.5 a repeat launches few enough kernels (46,213 on the compute stream, 1.36M before) that the
+whole repeat traced takes 1.6 s against 1.4 s untraced on an RTX 5060 (32 s against 5.5 s
+before), and a phase traced alone is a choice rather than a necessity.
 
 Run with:  .venv/Scripts/python.exe demos/demo_profile_small.py [--cold] [--no-disk-cache] [--phase NAME]
 View with: xprof --port 8791 .profile-out-small
