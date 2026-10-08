@@ -8,8 +8,7 @@ D-9 ([compliance/decisions.md](../../../compliance/decisions.md)). It replaces
 `sub-fp32-precision.md`; its findings are kept, corrected, in [§15](#15-measurements).
 
 **Written:** 2026-10-01 · **Steps:** roadmap [1.4 to 1.8](../roadmap.md#stage-1--structure), 2.3,
-[3.6, 3.7, 3.8](../roadmap.md#stage-3--foundations),
-[5.1 to 5.3](../roadmap.md#stage-5--precision-research)
+[3.6, 3.7, 3.8 and 5.1 to 5.3](../roadmap.md#stage-3--the-core)
 
 ---
 
@@ -807,21 +806,22 @@ Decisions taken while building it (1.8):
 | **1.7** (done 2026-10-02) | Paired sample, two-level estimator for means, `PrecisionReport` with realized dtypes and device (closes I-12) | §13.6; bit for bit at the default. Met: §13.1, §13.6 | M |
 | **1.8** (done 2026-10-04) | Engine worker process and the SQLite queue (A-14); delete `worker_pool.py`'s pool and freeze/thaw | §13.8, including the Linux run; float64 job time and compile count no worse. Met: §13.8, §13.9 | M |
 | **3.6** | *Parallel with stage 3.* Storage relative to a level for classes whose level swamps their spread (I-75); a measurement harness for storage formats per class and product, at several path counts, fixed seeds, rerunnable on any kernel change | Harness covers every figure × class × format; thresholds fixed before measuring; I-75's FP8 bond column unbiased within its Monte Carlo standard error | M |
-| **3.7** | Difference-form kernels (§8.2), one family at a time, as matrix products where a family can be one (§8.3); compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the re-baseline of §2.1; emulated FP8/bfloat16 compute measured by the harness | L |
+| **3.7** | Difference-form kernels (§8.2), one family at a time (those 3.4 and 3.5 do not change first, the Bermudan/American rollback and recalibration after them), as matrix products where a family can be one (§8.3); compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the re-baseline of §2.1; emulated FP8/bfloat16 compute measured by the harness | L |
 | **3.8** | Shard the scenario axis in the worker (I-61): one host done 2026-10-04; several hosts next | Results equal the one-device run within reduction-order rounding (one host: met, `tests/test_sharding.py`); scaling measured on TPU | M |
-| **5.1** | The evidence table and the warnings (§10), from 3.6's harness on the kernels after 3.4, 3.5 and 3.7 | Table complete; a verdict and path ceiling per row; a warning on every result without a passing row | S |
+| **5.1** | The evidence table and the warnings (§10), from 3.6's harness on each kernel family as 3.7 rewrites it (the Bermudan/American rows after 3.4 and 3.5) | Table complete; a verdict and path ceiling per row; a warning on every result without a passing row | S |
 | **5.2** | After 3.8 and 5.1. Timing across devices on Ironwood and H100: storage formats, then 3.7's matrix-product kernels with native FP8 | The research result: wall time per figure and precision against float64 at equal accuracy (the evidence table's path ceilings), many low-precision paths against fewer float64 ones | M |
 | **5.3** | FP4 storage (variance correction through the block scales), FP4 compute on TPU 8t/8i, multilevel quantile estimation | Evidence rows for FP4 | L |
 
-**Order (decided: A-19, 2026-10-05, which replaced the earlier structure-first order):** the structure first
-(1.4 to 1.8, done); then the roadmap's near-term milestone (stage 2: the profiling demo on a
-local GPU), which moves no float64 number; then the foundations (stage 3), where the storage
-measurement (3.6) runs alongside because it changes no float64 number, and the kernel rewrite
-(3.7), difference form and matrix products together, comes after stage 3's own kernel changes
-(3.3 strike axis, 3.4 `ShiftHorizon`, 3.5 recalibration), so no kernel is rewritten twice, and
-before stage 4 adds any kernel; multi-host (3.8) moves no arithmetic and is parallel. The
-evidence table (5.1) is measured on the kernels that ship, starting once 3.7 is done; timing
-(5.2) and FP4 (5.3) follow it.
+**Order (decided: A-19, revised 2026-10-08):** the structure first (1.4 to 1.8, done); then
+the roadmap's near-term milestone (stage 2: the profiling demo on a local GPU, done); then the
+core (stage 3), where the precision research comes first among the project's goals. The
+storage measurement (3.6) starts at once, because it changes no float64 number. The kernel
+rewrite (3.7), difference form and matrix products together, takes first the families 3.4
+(`ShiftHorizon`) and 3.5 (recalibration) do not change, and the Bermudan/American rollback and
+recalibration after them, so no kernel is rewritten twice; stage 4's kernels and the strike
+axis (3.3) come after it. The evidence table (5.1) is read off each family as it lands, so it
+describes the kernels that ship. Multi-host (3.8) moves no arithmetic and is parallel; timing
+(5.2) needs it and the table, and FP4 (5.3) comes last.
 
 ## 13. Testing
 

@@ -75,6 +75,9 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | 3.5 |
 | [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | 3.5 |
 | [I-75](#i-75) | Storage below 32 bits keeps few bits of a concentrated array's spread | Low | OPEN | Correctness | 3.6 |
+| [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | 3.9 |
+| [I-88](#i-88) | The API completeness test checks field names, not that a value reaches the engine | Low | OPEN | Tooling | 3.9 |
+| [I-89](#i-89) | A retried job submission runs the job twice | Low | OPEN | API | 3.9 |
 | [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | 4.5 |
 | [I-78](#i-78) | AD and bump Greeks differ by up to 2% on a sloped market | Medium | OPEN | Validation | 4.5 |
 | [I-53](#i-53) | On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch | Low | PARTIAL | Performance | 6.6 |
@@ -86,11 +89,14 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-60](#i-60) | EOD result schema has no stated policy on added fields | Low | ASSUMPTION | API | 4.3 |
 | [I-76](#i-76) | The job queue keeps every job and result forever | Low | OPEN | API | 4.2 |
 | [I-77](#i-77) | A worker that cannot start leaves jobs `pending` with no signal | Low | OPEN | API | 4.2 |
+| [I-91](#i-91) | A long job delays every job behind it, and no job can be cancelled | Low | OPEN | API | 4.2 |
+| [I-90](#i-90) | The HTTP API has no authentication, rate limit or body-size limit | Low | OPEN | API | 6.7 |
 | [I-61](#i-61) | Nothing runs on more than one host; multi-device speed unmeasured | Medium | PARTIAL | Performance | 3.8 |
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | 6.2, 6.4 |
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | 6.3 |
 | [I-81](#i-81) | A cold job compiles about 180 one-operation programs; market risk vmaps a closure | Low | OPEN | Performance | 6.5 |
 | [I-83](#i-83) | A Bermudan/American on the paths needs 0.3–0.7 MB per path and step: 64k paths run out of memory | Medium | OPEN | Performance | 3.7 |
+| [I-92](#i-92) | Two modules sit directly under `engine/`, beside its subpackages | Low | OPEN | Architecture | 3.10 |
 
 **One pipeline.** Since roadmap 1.3 every run is `price_portfolio` on a `Market`
 (`engine.portfolio.market_path`; HTTP `POST /portfolio/price`): ORE's cross-asset model with a
@@ -543,6 +549,99 @@ running worker is `interrupted`, not stuck.
 while the worker has exited at startup N times running reports it (in `error`, or a
 `worker` field on `/health`); a test with a worker command that exits at once.
 
+<a id="i-87"></a>
+### I-87 — The HTTP API is one route per engine function, not one run request
+
+**Severity:** Medium · **Status:** OPEN · **Category:** API · **Found:** 2026-10-08, owner
+review of roadmap 3.1
+
+**What is wrong.** Decision A-2 asks for a single route and a single request. Roadmap 3.1
+reached every setting but kept one route per engine function: `POST /portfolio/price`,
+`POST /portfolio/market-risk`, `POST /calibration/cam` and `POST /calibration/lgm`.
+
+- **The same input is sent twice.** Exposure and VaR on one book are two requests with the
+  same market, trades, pricing and precision, and two jobs.
+- **One setting has two places.** The model per currency is `simulation.ir` in one request and
+  `ir` in another. The reporting currency is both `base_currency` and
+  `simulation.base_currency`.
+- **What to compute is mixed in with how.** `scenario_risk` and `compute_greeks` are flags
+  beside the configuration they switch on.
+- **The routes behave differently.** Two are queued jobs and two answer at once, and
+  `/calibration/lgm` takes year fractions and `hw_a` instead of a market.
+
+**Reach.** Every HTTP caller. No number is wrong. There are no clients yet, so this is the
+cheapest time to change the contract.
+
+**Current handling.** None; [docs/reference/http-api.md](../reference/http-api.md) documents
+each route.
+
+**To close.** Roadmap 3.9: one `POST /runs` with `market`, `portfolio`, an `analytics` list
+and a `config` whose sections follow ORE's files, as
+[details/configurable-engine.md](details/configurable-engine.md#step-39--one-run-request-i-87-i-88-i-89)
+describes. A run of one analytic must equal today's direct call bit for bit.
+
+<a id="i-89"></a>
+### I-89 — A retried job submission runs the job twice
+
+**Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-08, review of
+roadmap 3.1
+
+**What is wrong.** `POST /portfolio/price` and `POST /portfolio/market-risk` give every
+submission a new `job_id` (`engine/api/job_queue.py`, `submit`). A client that loses the
+`202` and retries queues the job a second time, and the worker prices both. The EOD routes
+have `submissionId` for this; the job routes have nothing.
+
+**Reach.** Engine time, and a duplicate result a client may not know about. No number is
+wrong.
+
+**Current handling.** None.
+
+**To close.** Roadmap 3.9: an optional `idempotency_key`. The same key and body return the
+first `run_id`; the same key with a different body is a `409`, checked before anything is
+returned (the binding I-57 found missing on the EOD path). Tests for a retry, a conflicting
+body, and two API processes on one queue.
+
+<a id="i-90"></a>
+### I-90 — The HTTP API has no authentication, rate limit or body-size limit
+
+**Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-08, review of
+roadmap 3.1
+
+**What is wrong.** Every route, the EOD routes included, serves anyone who can reach the
+port. Nothing limits how many jobs a caller queues or how large a body it sends; one large
+body is held in memory and stored in the queue whole.
+
+**Reach.** Only a server reachable from outside a trusted network. uvicorn binds
+`127.0.0.1` unless started with `--host`, and every use so far has been local.
+
+**Current handling.** None; deploy behind a trusted network or a reverse proxy that
+authenticates.
+
+**To close.** Roadmap 6.7, before the API is reachable from outside a trusted network:
+authentication chosen with TraderX (a bearer token or mutual TLS), a body-size limit, and a
+per-caller limit on queued jobs; a test per refusal (`401`, `413`, `429`).
+
+<a id="i-91"></a>
+### I-91 — A long job delays every job behind it, and no job can be cancelled
+
+**Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-08, review of
+roadmap 3.1
+
+**What is wrong.** The engine worker runs jobs one at a time in submission order (decision
+A-14), so a calibration queued behind a ten-minute simulation waits ten minutes. There is no
+route to cancel a job, so a job submitted by mistake runs to the end.
+
+**Reach.** Wall time of HTTP jobs when several are queued. No number is wrong. Running one
+job at a time on every device is deliberate.
+
+**Current handling.** None; stop the worker, which marks its job `interrupted`.
+
+**To close.** Roadmap 4.2, with the worker loop's other changes. A cancel route: a pending
+job becomes `cancelled` at once, and a running job stops at the worker's next phase boundary
+(calibration, simulation, each trade's pricing, Greeks) and reads `cancelled`, with the
+worker kept alive and its compiled programs kept. A test for each case. Priorities between
+callers are not planned until there are several callers.
+
 ---
 
 ## Architecture
@@ -589,12 +688,42 @@ combination has been validated for them. Default (float64) runs are unaffected.
 **To close.** Roadmap 5.1 (A-11): the evidence table per figure and precision combination
 against the acceptance standard (Basel III's P&L attribution test and the Basel plan's P6.2
 rule), and a warning on any result whose combination has no passing row. It is measured by
-roadmap 3.6's harness after the kernel changes of 3.4, 3.5 and 3.7, so it describes the
-kernels that ship. 2.7 also measures the paired estimator's coverage through the pipeline: its standard errors treat paths as
+roadmap 3.6's harness on each kernel family as 3.7 rewrites it (the Bermudan/American rows
+after 3.4 and 3.5), so it describes the kernels that ship. 3.6 also measures the paired estimator's coverage through the pipeline: its standard errors treat paths as
 independent, while Sobol paths are not and the rounding errors of the 32 paths of a block
 share a scale (the synthetic coverage tests and three pipeline seeds pass; that is not yet
 evidence at scale). Compute below
 float32 is [F-07](features.md#f-07) (roadmap 3.7).
+
+<a id="i-92"></a>
+### I-92 — Two modules sit directly under `engine/`, beside its subpackages
+
+**Severity:** Low · **Status:** OPEN · **Category:** Architecture · **Found:** 2026-10-08, owner
+
+**What is wrong.** Every part of the engine is a subpackage of `engine/` except two modules at
+its root: `market.py` (today's market: `ZeroCurveConfig`, `CurrencyMarket`, `Market`, the
+swaption volatility matrix) and `day_count.py` (the accrual day counts a trade may name). The
+owner's rule: the root holds `__init__.py` and subpackages only, so the layout reads as the
+engine's parts.
+
+**Reach.** No number and no caller. Where code lives, and where later packages land (roadmap
+3.9's run request, the Basel plan's `engine/regulatory/`).
+
+**Current handling.** None.
+
+**To close.** Roadmap 3.10. A package `engine/market/` takes both. `market.py`'s contents go
+in a module of it, re-exported by `engine/market/__init__.py`, so the imports of
+`engine.market` in code, tests, demos and docs stand. `day_count.py` becomes
+`engine.market.day_count`, and the simulation time axis's ACT/365 (`TIME_AXIS_DAY_COUNTER`,
+defined today in `engine.models.ore_builders`, which then imports it) moves beside it: it is
+the only thing `engine.market` imports from `engine.models`, so the package then imports
+neither JAX nor `engine.models`, and the EOD boundary, which may import neither
+(`tests/test_integration_pipeline.py`), can import its day counts as it imports
+`engine.day_count` today. The references to `engine.day_count` (`engine/models/ore_builders.py`,
+`engine/instruments/treasury.py`, `engine/integration/note.py`, `engine/api/worker.py`, three
+tests, two reference docs) are renamed, and `tests/test_import_layering.py` drops its special cases for the two root
+modules. A test fails on any module at the root of `engine/` but `__init__.py`, red first on
+today's tree. Bit for bit: no code changes but its place.
 
 ---
 
@@ -776,7 +905,7 @@ f-string without placeholders in `integration/equity.py`, a string forward refer
 `pyproject.toml` and CI with pyflakes' rules only, each finding fixed or marked (check that a
 "re-export" is actually imported elsewhere first, then list it in `__all__`). Measured
 2026-10-05 with pyflakes: 24 findings in `engine/`, 19 in `tests/` and `demos/`. Roadmap 6.4,
-in stage 6: a type checker on `engine/`.
+in stage 5 (hardening): a type checker on `engine/`.
 
 <a id="i-67"></a><a id="q-3"></a>
 ### I-67 — Test modules import each other and repeat fixtures
@@ -823,6 +952,27 @@ module-level jitted function of `TradePriceFunction.pricer` and `.terms`, as the
 (`engine.risk.greeks._curve_derivatives`). Jitting can move float64 at rounding level (XLA
 fuses what ran op by op), so it shows the golden snapshot's change per array. Measured by the
 compile probe of profiling §3.8 on the demo's job.
+
+<a id="i-88"></a>
+### I-88 — The API completeness test checks field names, not that a value reaches the engine
+
+**Severity:** Low · **Status:** OPEN · **Category:** Tooling · **Found:** 2026-10-08, review
+of roadmap 3.1
+
+**What is wrong.** `tests/test_api_completeness.py` fails on a configuration setting without
+an API field of the same name, but it does not check what a schema's `.to_dataclass()` does
+with the field. A field that is accepted, then dropped or sent to the wrong setting, passes.
+
+**Reach.** Any setting not exercised by a route test that compares the HTTP result with a
+direct call (`tests/test_api_market_path.py`, `tests/test_api_market_risk.py`,
+`tests/test_api.py`). Those cover the defaults and the commonly used settings, not every
+field. No such field is known to be dropped today.
+
+**Current handling.** The route tests above.
+
+**To close.** Roadmap 3.9: for every field the walk finds, build a request with that field set
+to a non-default value, convert it, and assert the value arrives in the engine's
+configuration. Red first: a schema that drops a field must fail the test.
 
 ---
 

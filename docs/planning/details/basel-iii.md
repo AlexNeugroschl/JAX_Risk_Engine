@@ -1,7 +1,7 @@
 # Basel III Compliance Plan
 
 **Status:** proposed; feature [F-05](../features.md#f-05), roadmap steps
-[4.4 and 4.11](../roadmap.md#stage-4--completeness) · **Written:** 2026-09-24, §2 updated
+[4.4, 4.5 and 4.11](../roadmap.md#stage-3--the-core) · **Written:** 2026-09-24, §2 updated
 2026-09-30 · **Scope:** market risk (FRTB), with counterparty credit and CVA as later phases
 
 This plan covers three things: what "Basel III compliant" can honestly mean for this

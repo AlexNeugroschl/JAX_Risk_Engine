@@ -2,7 +2,7 @@
 
 Additive work: capability beyond today's scope. The engine is correct and honest without
 any of it. Defects and shortcomings are in [known-issues.md](known-issues.md); the order of
-work is in [roadmap.md](roadmap.md#stage-4--completeness); the rules are in
+work is in [roadmap.md](roadmap.md); the rules are in
 [README.md](README.md).
 
 Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
@@ -17,6 +17,7 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 | [F-06](#f-06) | CVA/DVA from the exposure profiles | M | — | 4.9 |
 | [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-55 | 3.7, 5.1 to 5.3 |
 | [F-08](#f-08) | Reporting currencies other than USD at the EOD boundary | S | I-18 (an FX source), I-59 | 4.12 |
+| [F-09](#f-09) | ORE's XML input files as a run request | M | Roadmap 3.9 | 4.13 |
 
 ---
 
@@ -146,3 +147,21 @@ lists each currency the FX source covers. Parity against an ORE run with that
 **Depends on.** An FX source at the boundary ([I-18](known-issues.md#i-18), blocked on
 TraderX or a market-data decision); I-59's refusal first, so the field is never silently
 ignored meanwhile. **Size.** S once the FX source exists.
+
+<a id="f-09"></a>
+### F-09 — ORE's XML input files as a run request
+
+**Value.** An ORE user can run an existing setup without rewriting it as JSON: `ore.xml`'s
+analytics, `simulation.xml`, `pricingengine.xml`, `sensitivity.xml` and `portfolio.xml`,
+translated into roadmap 3.9's run request. The engine and an ORE run could then be compared
+on the same files. Whatever the engine does not support (a product, an engine, a model
+parameter) is refused by name, never dropped. Nice to have, not critical (owner,
+2026-10-08); nothing waits on it.
+
+**Scope.** The configuration and portfolio files. ORE's market data only as zero-rate quotes
+on `Zero` curve configurations, the form the ORE oracles already write
+(`tests/support/ore_inputs.py`, which does the reverse translation). The engine takes zero
+curves, so bootstrapping curves from instrument quotes is out of scope.
+
+**Depends on.** Roadmap 3.9, whose configuration sections follow ORE's files, so the adapter
+is a translation and adds no setting of its own. **Size.** M.
