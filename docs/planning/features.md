@@ -11,10 +11,10 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 |---|---|---|---|---|
 | [F-01](#f-01) | Engine options beyond ORE's defaults | M | Roadmap 3.7; the FD solver also I-32 | 4.6 |
 | [F-02](#f-02) | SABR swaption volatility | M | I-54, roadmap 3.7 | 4.8 |
-| [F-03](#f-03) | ORE's AMC engine as a valuation option | L | I-50, roadmap 3.7 | 4.10 |
+| [F-03](#f-03) | ORE's AMC engine as a valuation option | L | Roadmap 3.7 | 4.10 |
 | [F-04](#f-04) | FX and equity trades on the market path; FX/EQ vol calibration | L | Roadmap 3.7 | 4.7 |
 | [F-05](#f-05) | Basel III regulatory figures | L | See entry | 4.4, 4.11 |
-| [F-06](#f-06) | CVA/DVA from the exposure profiles | M | I-50 | 4.9 |
+| [F-06](#f-06) | CVA/DVA from the exposure profiles | M | — | 4.9 |
 | [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-55 | 3.7, 5.1 to 5.3 |
 | [F-08](#f-08) | Reporting currencies other than USD at the EOD boundary | S | I-18 (an FX source), I-59 | 4.12 |
 
@@ -62,7 +62,7 @@ revaluation, and much cheaper for Bermudans than per-path recalibration
 ([I-53](known-issues.md#i-53)). Out of scope so far (X-6); a candidate simulation option under
 decision A-1. Parity against ORE's AMC analytic.
 
-**Depends on.** I-50's oracle for parity; roadmap 3.7 (A-16). It adds a simulation option to `RunConfig`
+**Depends on.** The ORE simulation oracle (`tests/support/ore_xva_oracle.py`, roadmap 3.2) for parity; roadmap 3.7 (A-16). It adds a simulation option to `RunConfig`
 (classic revaluation is the only one today). **Size.** L.
 
 <a id="f-04"></a><a id="x-10"></a><a id="x-11"></a>
@@ -88,7 +88,7 @@ SA-CCR and BA-CVA, a precision gate per figure, and an evidence pack.
 
 **Depends on.** P0 and P2's data acquisition can start any time (P2 is calendar time).
 P1 (FRTB-SA) needs [I-51](known-issues.md#i-51) (sensitivities proven against ORE).
-P5's IMM needs the exposure proven ([I-50](known-issues.md#i-50)). USD swaps need
+P5's IMM needs the exposure proven: done for linear trades by roadmap 3.2, Bermudans and Americans by 3.5 ([I-49](known-issues.md#i-49)). USD swaps need
 [I-05](known-issues.md#i-05). P6's precision gate reuses
 [I-55](known-issues.md#i-55)'s evidence table. PLA needs an independent front-office P&L from
 TraderX (decision D-7).
@@ -101,10 +101,10 @@ TraderX (decision D-7).
 **Value.** The market path produces ORE's exposure profiles (EPE, ENE, EE_B, EEPE_B, PFE);
 CVA/DVA is the next step of ORE's XVA analytic: default curves per counterparty and the
 bank, netting sets, and the integral of discounted exposure against default probability.
-Parity against ORE's XVA analytic through the same oracle as I-50. The regulatory CVA
+Parity against ORE's XVA analytic through the ORE simulation oracle (roadmap 3.2), with credit curves added. The regulatory CVA
 (BA-CVA, SA-CVA) is part of F-05.
 
-**Depends on.** I-50 (exposure proven first). **Size.** M.
+**Depends on.** The exposure proven against ORE (roadmap 3.2; Bermudans and Americans 3.5). **Size.** M.
 
 <a id="f-07"></a>
 ### F-07 — Precision below float32, down to FP8 (FP4 later), per stage, product and trade

@@ -21,7 +21,8 @@ from engine.portfolio import (
 from engine.precision import STAGES
 from engine.risk.exposure import netting_set_profile
 from engine.simulation.config import build_cross_asset_model, simulate
-from engine.valuation.portfolio import value_portfolio
+from engine.valuation.context import simulation_market_today
+from engine.valuation.portfolio import value_portfolio, value_today
 from tests.support import portfolio as shared
 
 FAST = LgmSwaptionEngineConfig(n_per_std=12, std_devs=4.0)
@@ -40,6 +41,13 @@ def _request(names=NAMES, precision=Precision(), **kwargs) -> PortfolioRequest:
     trades = [shared.trades()[n] for n in names]
     config = RunConfig(simulation=_simulation(), pricing=PRICING, precision=precision)
     return PortfolioRequest(market=shared.market(), trades=trades, config=config, **kwargs)
+
+
+def _start(request):
+    """Where an exposure profile starts: each trade's value on the simulation market of the
+    as-of date, as ORE's cube starts (I-85)."""
+    return value_today(request.trades, request.market, "USD", PRICING,
+                       simulation_market_today(request.market, request.config.simulation.curve_tenors))
 
 
 class TestPortfolioRequestFixture:
@@ -66,7 +74,7 @@ class TestPricePortfolioMatchesHandOrchestration:
         scenarios = simulate(market, simulation, build_cross_asset_model(market, simulation))
         valuation = value_portfolio(request.trades, market, scenarios, "USD", PRICING, simulation.swaption_vol_decay)
         p0 = discount(ZeroCurve.from_config(market.currency("USD").discount_curve), jnp.asarray(scenarios.times))
-        exposure = netting_set_profile(valuation.cube, valuation.today, numeraire=jnp.asarray(scenarios.numeraire),
+        exposure = netting_set_profile(valuation.cube, _start(request), numeraire=jnp.asarray(scenarios.numeraire),
                                        discount=p0, times=scenarios.times, quantiles=request.pfe_quantiles,
                                        dates=scenarios.dates, asof=market.asof)
         return valuation, exposure
@@ -186,7 +194,7 @@ class TestPricePortfolioPrecision:
         np.testing.assert_array_equal(np.asarray(result.npv_cube), cube)
         assert result.npv_cube.dtype == jnp.float64
         p0 = discount(ZeroCurve.from_config(market.currency("USD").discount_curve), jnp.asarray(scenarios.times))
-        expected = netting_set_profile(jnp.asarray(cube), valuation.today,
+        expected = netting_set_profile(jnp.asarray(cube), _start(request),
                                        numeraire=jnp.asarray(scenarios.numeraire, jnp.float64), discount=p0,
                                        times=scenarios.times, quantiles=request.pfe_quantiles, dates=scenarios.dates,
                                        asof=market.asof)

@@ -10,8 +10,10 @@ makes a difference a pricing difference, not sampling noise. Each path's state z
 mapped to its short rate, r = f(0, t) + H'(t) z + zeta(t) H(t) H'(t) (tests/test_cam.py
 shows the simulated curve is then QuantLib's `HullWhite.discountBond(t, T, r)` to 1e-12), and
 ORE prices on that path's curve as ORE's `ScenarioSimMarket` holds it: QuantLib's Hull-White
-discount factors at the simulation-market tenors (`CamConfig.curve_tenors`), log-linear in
-between (`ORE.DiscountCurve`). On a sloped curve (a flat one hides drift errors, I-42).
+discount factors at the simulation-market tenors from the simulation date
+(`CamConfig.curve_tenors`, as the scenario generator computes them), held at the tenors' times
+from the as-of date (`ScenarioSimMarket::addYieldCurve`, I-84), log-linear in between
+(`ORE.DiscountCurve`). On a sloped curve (a flat one hides drift errors, I-42).
 
 Dates: `date + N` adds calendar days; the simulation date is `TODAY + 365`, t = 1 exactly on
 the ACT/365 time axis.
@@ -116,8 +118,10 @@ def _price_ore(states: np.ndarray):
     zeta = HW_SIGMA ** 2 * np.expm1(2 * a * T_EVAL) / (2 * a)
     f0 = curve0.forwardRate(T_EVAL, T_EVAL, ORE.Continuous, ORE.NoFrequency, True).rate()
 
-    nodes = [EVAL_DATE + ORE.Period(tenor) for tenor in DEFAULT_CURVE_TENORS]
-    times = [T_EVAL + DC.yearFraction(EVAL_DATE, d) for d in nodes]
+    # The model's discount factors at the tenors from the simulation date, held at the
+    # tenors' day counts from the as-of date.
+    times = [T_EVAL + DC.yearFraction(EVAL_DATE, EVAL_DATE + ORE.Period(tenor)) for tenor in DEFAULT_CURVE_TENORS]
+    nodes = [EVAL_DATE + ((TODAY + ORE.Period(tenor)) - TODAY) for tenor in DEFAULT_CURVE_TENORS]
     start = time.perf_counter()
     values = []
     for z in states:

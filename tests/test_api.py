@@ -1,10 +1,11 @@
 """
 `engine.api` through FastAPI's in-process TestClient: /health and /version; /portfolio/price
-returns 202 and a job id, and polling reaches a result equal to a direct `price_portfolio`
-call, here with the Hull-White model named in the request's `simulation.ir` (the market path
-over HTTP on the shared portfolio is tests/test_api_market_path.py); the Hull-White request
-shape retired by roadmap 1.3 is a 422 naming its replacement; invalid bodies give a 4xx with
-the validator's message (malformed schemas a 422); /calibration/lgm.
+returns 202 and a job id, and polling `/jobs/{job_id}` reaches a result equal to a direct
+`price_portfolio` call, here with the Hull-White model named in the request's `simulation.ir`
+(the market path over HTTP on the shared portfolio is tests/test_api_market_path.py, market risk
+tests/test_api_market_risk.py); the Hull-White request shape retired by roadmap 1.3 is a 422
+naming its replacement, and so are the names roadmap 3.1 retired; invalid bodies give a 4xx with
+the validator's message (malformed schemas a 422); /calibration/cam and /calibration/lgm.
 """
 import copy
 import time
@@ -51,7 +52,7 @@ def _submit_and_poll(client, body, timeout_s=300):
     deadline = time.time() + timeout_s
     data = None
     while time.time() < deadline:
-        r = client.get(f"/portfolio/price/{job_id}")
+        r = client.get(f"/jobs/{job_id}")
         assert r.status_code == 200
         data = r.json()
         if data["status"] in ("done", "failed"):
@@ -89,8 +90,11 @@ class TestPortfolioPriceHappyPath:
                                           np.asarray(getattr(direct.exposure, name)))
         for key, values in direct.exposure.pfe.items():
             np.testing.assert_array_equal(np.asarray(result["exposure"]["pfe"][key]), np.asarray(values))
-        assert len(result["trade_exposures"]) == 2
-        assert result["trade_ids"] == ["trade-0", "trade-1"]
+        assert [t["trade_id"] for t in result["trades"]] == ["trade-0", "trade-1"]
+        assert all(t["exposure"] is not None and t["greeks"] is None for t in result["trades"])
+        np.testing.assert_array_equal([t["base_npv"] for t in result["trades"]], direct.base_npv_per_trade)
+        for row, profile in zip(result["trades"], direct.trade_exposures):
+            np.testing.assert_array_equal(row["exposure"]["epe"], np.asarray(profile.epe))
 
     def test_the_model_and_engine_are_the_requests(self, test_client):
         """The Hull-White model and the Jamshidian engine reach the worker: the result differs
@@ -104,7 +108,7 @@ class TestPortfolioPriceHappyPath:
 
     def test_greeks_included_when_requested(self, test_client):
         result = _submit_and_poll(test_client, _body([_european()], compute_greeks=True))
-        entry = result["greeks"]["0"]
+        entry = result["trades"][0]["greeks"]
         assert "vega:USD" in entry["values"] and entry["theta"] is not None
 
 
@@ -129,7 +133,7 @@ class TestPortfolioPriceAtScale:
         data = {}
         while time.time() < deadline and not all(data.get(j, {}).get("status") in ("done", "failed")
                                                   for j in (job_a, job_b)):
-            data = {j: test_client.get(f"/portfolio/price/{j}").json() for j in (job_a, job_b)}
+            data = {j: test_client.get(f"/jobs/{j}").json() for j in (job_a, job_b)}
             time.sleep(0.2)
         npv = [np.asarray(data[j]["result"]["npv_cube"])[:, :, 0] for j in (job_a, job_b)]
         np.testing.assert_allclose(npv[1], 9.0 * npv[0], rtol=1e-12)
@@ -142,6 +146,14 @@ class TestPortfolioPriceInvalidPayload:
         r = test_client.post("/portfolio/price", json=body)
         assert r.status_code == 422
         assert "retired by roadmap 1.3" in r.text and "simulation.ir" in r.text
+
+    @pytest.mark.parametrize("retired", [{"schema_version": "2"}])
+    def test_the_names_retired_by_roadmap_3_1_are_refused(self, test_client, retired):
+        """`schema_version: "2"` and `/v2/portfolio/price` looked like versions and were not
+        (decision A-2); `GET /portfolio/price/{job_id}` is now `GET /jobs/{job_id}`."""
+        assert test_client.post("/portfolio/price", json=_body([_swap()], **retired)).status_code == 422
+        assert test_client.post("/v2/portfolio/price", json=_body([_swap()])).status_code == 404
+        assert test_client.get("/portfolio/price/any-id").status_code in (404, 405)
 
     def test_a_market_with_equities_is_not_mistaken_for_the_retired_shape(self):
         """The retired market had `equities` too; the current one must not be refused for it
@@ -187,7 +199,7 @@ class TestPortfolioPriceInvalidPayload:
 
 class TestPortfolioPriceUnknownJob:
     def test_unknown_job_id_returns_404(self, test_client):
-        assert test_client.get("/portfolio/price/not-a-real-job-id").status_code == 404
+        assert test_client.get("/jobs/not-a-real-job-id").status_code == 404
 
 
 class TestCalibrationEndpoint:
@@ -204,6 +216,44 @@ class TestCalibrationEndpoint:
 
     def test_calibration_malformed_schema_returns_422(self, test_client):
         assert test_client.post("/calibration/lgm", json={"evaluation_date": shared.ASOF_ISO}).status_code == 422
+
+
+class TestCamCalibrationEndpoint:
+    """`POST /calibration/cam`: the cross-asset model's calibration per currency, the one a
+    portfolio run simulates with (`engine.calibration.cam`, roadmap 3.1, I-56)."""
+
+    BASKET = {"calibration_expiries": ["1Y", "2Y", "5Y"], "calibration_terms": ["5Y", "4Y", "1Y"]}
+
+    @pytest.mark.parametrize("model", ["LGM", "HullWhite"])
+    def test_the_result_is_the_calibration_a_portfolio_run_uses(self, test_client, model):
+        from engine.calibration.cam import calibrate_cam
+        from engine.simulation.config import build_cross_asset_model
+
+        ir = {"USD": {"model": model, "reversion": 0.03, "volatility": 0.01, **self.BASKET}}
+        r = test_client.post("/calibration/cam", json={"market": shared.market_json(), "ir": ir})
+        assert r.status_code == 200, r.text
+        usd = r.json()["currencies"]["USD"]
+        simulation = MarketPortfolioRequestSchema.model_validate(
+            _body([_swap()], simulation={**_simulation(), "ir": ir})).to_dataclass().config.simulation
+        direct = calibrate_cam(shared.market(), simulation.ir)["USD"]
+        assert usd["model"] == model and usd["reversion"] == 0.03
+        np.testing.assert_array_equal(usd["sigma_times"], np.asarray(direct.sigma.times))
+        np.testing.assert_array_equal(usd["sigma_values"], np.asarray(direct.sigma.values))
+        model_sigma = build_cross_asset_model(shared.market(), simulation).ir[0].sigma
+        np.testing.assert_array_equal(usd["sigma_values"], np.asarray(model_sigma.values))
+        assert [(h["expiry"], h["term"]) for h in usd["helpers"]] == [("1Y", "5Y"), ("2Y", "4Y"), ("5Y", "1Y")]
+        np.testing.assert_allclose([h["model_value"] for h in usd["helpers"]],
+                                   [h["market_value"] for h in usd["helpers"]], rtol=1e-8)
+
+    def test_a_currency_without_a_basket_is_a_422(self, test_client):
+        r = test_client.post("/calibration/cam", json={"market": shared.market_json(),
+                                                       "ir": {"USD": {"reversion": 0.03}}})
+        assert r.status_code == 422 and "nothing to calibrate" in r.text
+
+    def test_a_currency_the_market_lacks_is_a_400(self, test_client):
+        r = test_client.post("/calibration/cam", json={"market": shared.market_json(),
+                                                       "ir": {"EUR": {"reversion": 0.03, **self.BASKET}}})
+        assert r.status_code == 400 and "EUR" in r.json()["detail"]
 
 
 class TestPortfolioPricePrecision:
@@ -298,7 +348,7 @@ class TestPortfolioPriceJobQueueDispatch:
         data = {}
         while time.time() < deadline and not all(data.get(j, {}).get("status") in ("done", "failed")
                                                   for j in (job_64, job_32)):
-            data = {j: test_client.get(f"/portfolio/price/{j}").json() for j in (job_64, job_32)}
+            data = {j: test_client.get(f"/jobs/{j}").json() for j in (job_64, job_32)}
             time.sleep(0.1)
         r64, r32 = data[job_64]["result"], data[job_32]["result"]
         np.testing.assert_array_equal(np.asarray(r64["npv_cube"]), np.asarray(_direct(body_64).npv_cube))
@@ -309,7 +359,7 @@ class TestPortfolioPriceJobQueueDispatch:
         """The route returns as soon as the job is queued; the 202 rules out blocking."""
         r = test_client.post("/portfolio/price", json=_body([_swap(), _european()], simulation=_simulation(2048)))
         assert r.status_code == 202, r.text
-        status = test_client.get(f"/portfolio/price/{r.json()['job_id']}").json()["status"]
+        status = test_client.get(f"/jobs/{r.json()['job_id']}").json()["status"]
         assert status in ("pending", "running", "done")
 
 
@@ -320,11 +370,12 @@ class TestGapFixesSurviveTheHttpBoundary:
 
     def test_swap_greeks_present_over_http(self, test_client):
         result = _submit_and_poll(test_client, _body([_swap()], compute_greeks=True))
-        entry = result["greeks"]["0"]  # JSON object keys are strings
+        entry = result["trades"][0]["greeks"]
         assert "delta:discount:USD" in entry["values"] and f"delta:index:{shared.INDEX}" in entry["values"]
         assert entry["theta"] is not None
 
     def test_per_trade_base_npv_present_and_reconciles_over_http(self, test_client):
         result = _submit_and_poll(test_client, _body([_swap(), _swap(notional=250_000.0)]))
-        assert len(result["base_npv_per_trade"]) == 2
-        assert result["base_npv"] == pytest.approx(sum(result["base_npv_per_trade"]), rel=0.0, abs=1e-9)
+        values = [t["base_npv"] for t in result["trades"]]
+        assert len(values) == 2
+        assert result["base_npv"] == pytest.approx(sum(values), rel=0.0, abs=1e-9)

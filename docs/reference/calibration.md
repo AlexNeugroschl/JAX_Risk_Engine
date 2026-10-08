@@ -378,6 +378,16 @@ finite-difference recalibration — see
 `tests/test_calibration_basket.py`'s gradient-correctness tests and
 `tests/test_greeks_bermudan.py::TestBermudanVega`.
 
+## Over HTTP
+
+`POST /calibration/cam` returns the cross-asset model's calibration per currency
+(`engine.calibration.cam.calibrate_cam`, the bootstrap of each currency's LGM or Hull-White
+volatility to its tenor basket on today's market): the calibration a portfolio run with the same
+market and models simulates with, which roadmap 3.2 checked against ORE's own
+`CrossAssetModelBuilder` through its simulation (`tests/test_ore_xva_parity.py`).
+`POST /calibration/lgm` is the standalone bootstrap of this page's co-terminal basket on a
+caller-given curve and volatilities ([HTTP API](http-api.md#post-calibrationcam)).
+
 ## Tested by
 
 - `tests/test_calibration_basket.py` (15 tests) — `build_coterminal_basket`'s schedule/par-

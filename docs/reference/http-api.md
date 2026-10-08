@@ -2,16 +2,20 @@
 
 **Modules:** [`engine/api/app.py`](../../engine/api/app.py),
 [`engine/api/routes.py`](../../engine/api/routes.py),
-[`engine/api/market_schemas.py`](../../engine/api/market_schemas.py) (the portfolio request),
-[`engine/api/schemas.py`](../../engine/api/schemas.py) (shared schemas and the result)
+[`engine/api/market_schemas.py`](../../engine/api/market_schemas.py) (the requests),
+[`engine/api/schemas.py`](../../engine/api/schemas.py) (shared schemas and the results),
+[`engine/api/artifacts.py`](../../engine/api/artifacts.py) (arrays returned by reference)
 
 ## Plain-language summary
 
-Everything described in [The Portfolio Entry Point](portfolio-entrypoint.md) is reachable
-from plain Python already — `price_portfolio(request)`. This module wraps that same
-function behind an HTTP API, for a caller (like TraderX — see
+Everything described in [The Portfolio Entry Point](portfolio-entrypoint.md) and
+[Market Risk](../risk/market-risk.md) is reachable from plain Python already —
+`price_portfolio(request)`, `run_market_risk(request)`, `calibrate_cam(market, models)`. This
+module wraps those same functions behind an HTTP API, for a caller (like TraderX — see
 [TraderX integration](../planning/details/traderx-integration.md)) that isn't a Python process
-sharing this codebase's own memory space.
+sharing this codebase's own memory space. Every setting the engine has is a field of a request
+(decision A-2): `tests/test_api_completeness.py` walks the configuration types and fails on any
+setting without one.
 
 **Wrap, not replace.** `engine.portfolio.PortfolioRequest`/`PortfolioResult` and every
 instrument config dataclass stay the single source of truth for the engine's own internal
@@ -76,8 +80,10 @@ the routers separate keeps either free to change.
 | `GET /health` | portfolio | below |
 | `GET /version` | portfolio | below |
 | `POST /portfolio/price` | portfolio | below |
-| `POST /v2/portfolio/price` | portfolio (the same request; an older name) | below |
-| `GET /portfolio/price/{job_id}` | portfolio | below |
+| `POST /portfolio/market-risk` | portfolio | below |
+| `GET /jobs/{job_id}` | portfolio | below |
+| `GET /jobs/{job_id}/artifacts/{name}/{chunk}` | portfolio | below |
+| `POST /calibration/cam` | portfolio | below |
 | `POST /calibration/lgm` | portfolio | below |
 | `GET /eod/capabilities` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
 | `GET /eod/schemas/result` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
@@ -90,11 +96,18 @@ The EOD routes are documented in full in
 [The EOD Integration Boundary](eod-integration.md#w164--the-eod-http-routes); this page covers
 the portfolio contract.
 
-**One behavioural difference worth knowing up front.** `POST /portfolio/price` is
-**asynchronous** (`202` + a `job_id` to poll, because a 4096-scenario Monte Carlo measured
-~52s — see below), while `POST /eod/price` is **synchronous**: the EOD path is closed-form
-discounted cashflows over a handful of rows and returns the priced result in the response.
-The two contracts differ here on purpose, not by accident of implementation order.
+Roadmap 3.1 (2026-10-07) removed `POST /v2/portfolio/price`, the request's
+`schema_version: "2"` (names that looked like versions and were not) and
+`GET /portfolio/price/{job_id}` (now `GET /jobs/{job_id}`, for every kind of job), and replaced
+the result's position-keyed fields with one row per trade. There were no clients to keep them
+for (decision A-2, revised 2026-10-07).
+
+**One behavioural difference worth knowing up front.** `POST /portfolio/price` and
+`POST /portfolio/market-risk` are **asynchronous** (`202` + a `job_id` to poll, because a
+4096-scenario Monte Carlo measured ~52s — see below), while `POST /eod/price` and the two
+calibration routes are **synchronous**: the EOD path is closed-form discounted cashflows over a
+handful of rows, and a calibration a bootstrap of a few helpers. The contracts differ here on
+purpose, not by accident of implementation order.
 
 ---
 
@@ -127,8 +140,8 @@ own JAX runtime, and each result names the devices and backend it actually ran o
 The main endpoint. Body: the portfolio request, `MarketPortfolioRequestSchema` (mirrors
 `PortfolioRequest` and its `RunConfig` — see "Request schema" below). Validates
 synchronously (`engine.portfolio.market_path.validate_request`, no JAX work), then writes the
-body, byte for byte as received, to the job queue and returns immediately (see
-[Jobs: the queue and the engine worker](#jobs-the-queue-and-the-engine-worker)).
+body, byte for byte as received, to the job queue as a `portfolio` job and returns immediately
+(see [Jobs: the queue and the engine worker](#jobs-the-queue-and-the-engine-worker)).
 
 **Success:** `202 Accepted`
 ```json
@@ -153,22 +166,27 @@ model: curves come from the market and models from the run configuration (audit 
 `calibration_basket`, a top-level `evaluation_date`) is a `422` whose message names its
 replacement: the Hull-White model is `"model": "HullWhite"` per currency in `simulation.ir`.
 
-### `POST /v2/portfolio/price`
+### `POST /portfolio/market-risk`
 
-The same request and behaviour as `POST /portfolio/price`, polled at the same
-`GET /portfolio/price/{job_id}`. Until roadmap 1.3 `/portfolio/price` took the Hull-White
-model's request and `/v2` the market path's; the `/v2` and the body's optional
-`schema_version: "2"` are historical names, not versions. Roadmap 3.1 keeps one route (see
-[Target: one configurable API](#target-one-configurable-api)).
+Short-horizon VaR and Expected Shortfall of a portfolio by full revaluation under shock
+scenarios ([Market Risk](../risk/market-risk.md), `engine.market_risk.run_market_risk`). Body:
+`MarketRiskRequestSchema` (see [Market-risk request](#market-risk-request-marketriskrequestschema)).
+Validated synchronously without drawing a scenario (no JAX work; a refusal is a `400` naming
+the field), then queued as a `market-risk` job: `202` with a `job_id`, polled at
+`GET /jobs/{job_id}`. The result is `MarketRiskResultSchema`
+([below](#market-risk-result-marketriskresultschema)).
 
-### `GET /portfolio/price/{job_id}`
+### `GET /jobs/{job_id}`
 
-Poll for a job's status/result: a read of the job's row in the queue.
+Poll for a job's status/result, of either kind: a read of the job's row in the queue.
 
 **Response:**
 ```json
-{"status": "done", "result": { "...": "PortfolioResultSchema" }, "error": null, "failure_class": null}
+{"kind": "portfolio", "status": "done", "result": { "...": "PortfolioResultSchema" }, "error": null, "failure_class": null}
 ```
+
+`kind` is `portfolio` (the result a `PortfolioResultSchema`) or `market-risk` (a
+`MarketRiskResultSchema`).
 
 | `status` | Meaning | `result` | `error`, `failure_class` |
 |---|---|---|---|
@@ -191,15 +209,70 @@ Until roadmap 1.8 `running` was never reported (`pending` covered both) and ther
 
 **Unknown `job_id`:** `404 Not Found`.
 
+### `GET /jobs/{job_id}/artifacts/{name}/{chunk}`
+
+One chunk of an array a done job returns by reference (`cube_output` or `pnl_output`
+`"artifact"`; decision A-17, [I-09](../planning/known-issues.md#closed) closed): the raw bytes,
+`application/octet-stream`, exactly as the result's reference describes them. A chunk that does
+not exist is a `404`. The chunks are written to the job queue in the same transaction as the
+result, so a `done` job always has all of them.
+
+**The reference** (`npv_cube_artifact`, `pnl_artifact`; `engine.api.artifacts`):
+
+```json
+{"name": "npv_cube", "dtype": "float64", "byte_order": "little",
+ "shape": [4096, 24, 8], "axes": ["scenario", "date", "trade"],
+ "chunks": [{"url": "/jobs/<id>/artifacts/npv_cube/0", "rows": [0, 5461], "bytes": 8387328, "sha256": "..."}, ...],
+ "sha256": "<of every chunk's bytes, in order>",
+ "items": {"axis": "trade", "ids": ["swap-1", "..."], "sha256": "<of the ids' canonical JSON>"}}
+```
+
+The array is C-ordered (the last axis fastest), little-endian, split along its first axis into
+chunks of whole rows of at most 8 MiB. To read it: fetch each chunk, check its `sha256`,
+concatenate in order, check the whole array's `sha256`, and reshape. The trade order travels as
+its own hashed record (`items`: the ids' canonical JSON, `json.dumps(ids, separators=(",",
+":"))`), so a consumer can verify the order it read is the order published, as the EOD result's
+`itemOrder`. `engine.api.artifacts.read_array(reference, fetch)` does all of it in Python;
+`demos/demo_api.py` does it with `hashlib` and `struct` alone.
+
+### `POST /calibration/cam`
+
+The cross-asset model's calibration (`engine.calibration.cam.calibrate_cam`): each currency's
+model bootstrapped to its calibration basket on today's market, the calibration a portfolio
+run with this market and these models simulates with ([Calibration](calibration.md)).
+Synchronous. Body: today's `market` (the portfolio request's) and `ir`, each currency's model
+as the simulation's `ir` gives it (`"model": "LGM"` or `"HullWhite"`, `reversion`,
+`volatility` as the bootstrap's start, `calibration_expiries` × `calibration_terms`,
+`swap_index`, `solver`). A currency without a basket is a `422` ("nothing to calibrate"); one
+the market lacks, or a helper whose volatility cannot be reached, a `400`.
+
+**Request:**
+```json
+{"market": {"asof": "2026-07-30", "currencies": {"USD": {"...": "..."}}},
+ "ir": {"USD": {"model": "LGM", "reversion": 0.03, "volatility": 0.01,
+                "calibration_expiries": ["1Y", "2Y", "5Y"], "calibration_terms": ["5Y", "4Y", "1Y"]}}}
+```
+
+**Response:** per currency, the model, the reversion it was calibrated with, the volatility in
+its model's parametrization (the LGM's alpha, or the Hull-White short rate's sigma):
+`sigma_values[i]` on bucket `i` of `[0, sigma_times[0]), ..., [sigma_times[-1], inf)`; and each
+helper's expiry, term, market value (Bachelier on the ATM volatility) and model value.
+
+```json
+{"currencies": {"USD": {"model": "LGM", "reversion": 0.03, "sigma_times": [1.0, 2.005...],
+  "sigma_values": [0.0081, 0.0089, 0.0094],
+  "helpers": [{"expiry": "1Y", "term": "5Y", "market_value": 0.0164..., "model_value": 0.0164...}, "..."]}}}
+```
+
 ### `POST /calibration/lgm`
 
 Standalone calibration — wraps `engine.calibration.basket.build_coterminal_basket` +
 `engine.calibration.lgm.calibrate_lgm_sigma`: a Hagan bootstrap of an LGM `Sigma` to a
-caller-given co-terminal basket, each bucket by the body's `solver` (`"Newton"`, the default,
-or `"Bisection"`; [the root solver](calibration.md#the-root-solver)). Synchronous (a bootstrap,
-not a Monte Carlo simulation). It is not the portfolio's calibration, which is the cross-asset model's per
-currency and each option's own basket ([Calibration](calibration.md)); a route for those is
-roadmap 3.1 ([I-56](../planning/known-issues.md#i-56)).
+caller-given co-terminal basket (its times and volatilities given directly, on a zero curve),
+each bucket by the body's `solver` (`"Newton"`, the default, or `"Bisection"`;
+[the root solver](calibration.md#the-root-solver)). Synchronous. It is not the portfolio's
+calibration, which is the cross-asset model's per currency (`POST /calibration/cam`) and each
+option's own basket ([Calibration](calibration.md)).
 
 **Request:**
 ```json
@@ -229,8 +302,8 @@ roadmap 3.1 ([I-56](../planning/known-issues.md#i-56)).
 
 ## Why async, not sync: the measured latency
 
-`POST /portfolio/price` returns `202 Accepted` + a job id and prices in the background,
-rather than blocking the HTTP response until pricing finishes. This is a direct consequence
+`POST /portfolio/price` (and `POST /portfolio/market-risk`) returns `202 Accepted` + a job id
+and prices in the background, rather than blocking the HTTP response until pricing finishes. This is a direct consequence
 of measured timing, not a default framework choice:
 
 **A 4-trade, 4096-scenario portfolio took ~52 seconds wall time end-to-end**, dominated by
@@ -256,21 +329,26 @@ Since roadmap 1.8 (decision A-14; [details/precision.md §11](../planning/detail
 
 ```
  API process(es)                   job queue (SQLite)                 engine worker (one per host)
- POST: validate, insert body ───▶  pending ─▶ running ─▶ done    ◀──  claim oldest, parse body,
- GET:  read the row          ◀───             └─▶ failed / interrupted   price_portfolio, store result
+ POST: validate, insert body ───▶  pending ─▶ running ─▶ done    ◀──  claim oldest, parse body by
+       and its kind                           └─▶ failed / interrupted   kind, run it, store result
+ GET:  read the row, chunks  ◀───                                         (and artifact chunks)
 ```
 
 - **The queue** (`engine/api/job_queue.py`) is one SQLite file, `JAX_RISK_JOB_QUEUE`
   (default `jax-risk-jobs/jobs.sqlite3` under the system temp directory). Each row holds the
-  request body as received, the status, the failure class and error, the result document,
-  the worker that claimed it, the number of XLA programs the job built, and timestamps. It
-  survives restarts of the API and the worker, and every API process that opens it sees the
-  same jobs, so `uvicorn --workers N` works: a `job_id` issued by one API process is served
-  by any other.
+  job's kind (`portfolio` or `market-risk`), the request body as received, the status, the
+  failure class and error, the result document, the worker that claimed it, the number of XLA
+  programs the job built, and timestamps; a second table holds the chunks of the arrays a
+  result returns by reference, written with the result. It survives restarts of the API and the
+  worker, and every API process that opens it sees the same jobs, so `uvicorn --workers N`
+  works: a `job_id` issued by one API process is served by any other. A queue file of roadmap
+  1.8's schema (version 1) is migrated in place when first opened: its jobs become portfolio
+  jobs.
 - **The engine worker** (`engine/api/worker.py`, command `jax-risk-worker`) is one
   single-threaded process per host. It takes jobs in submission order, parses each body
-  exactly as the route did (so nothing is pickled), calls `price_portfolio`, and stores the
-  result document, which the route then sends verbatim. It owns every device JAX sees on the
+  exactly as the route did (so nothing is pickled), runs the kind's entry point
+  (`price_portfolio` or `run_market_risk`), and stores the result document, which the route
+  then sends verbatim. It owns every device JAX sees on the
   host (a served API keeps its own JAX on the CPU; roadmap 2.2) and keeps its compiled
   programs for its lifetime, so a repeated job shape compiles nothing. It also keeps them on disk, in JAX's persistent compilation cache, so a restarted
   worker reads them back instead of compiling again: in `JAX_COMPILATION_CACHE_DIR` if set
@@ -317,7 +395,7 @@ survives a restart and stays addressable by `attemptId`; a *running* EOD attempt
 memory-only ([I-08](../planning/known-issues.md#i-08),
 [EOD Integration](eod-integration.md#w164--the-eod-http-routes)).
 
-## Request schema: `MarketPortfolioRequestSchema`
+## Portfolio request: `MarketPortfolioRequestSchema`
 
 Mirrors `engine.portfolio.PortfolioRequest` and its run configuration
 (`engine/api/market_schemas.py`):
@@ -326,15 +404,15 @@ Mirrors `engine.portfolio.PortfolioRequest` and its run configuration
 |---|---|
 | `market` | `asof` (ISO date; every trade is valued on it); `currencies`: per currency a `discount_curve`, `index_curves` keyed by index name (`"USD-SIMINDEX-6M"`), and `swaption_vols` (ATM normal matrix: `option_tenors`, `swap_tenors`, `vols`); `fx_spots` keyed `"EURUSD"`; `equities` |
 | `trades` | Discriminated by `trade_type`: `swap`, `european_swaption`, `bermudan_swaption`, `american_swaption`, `bond`. Each names its `currency` and `index_tenor_months` and carries no model or curve. Swaptions take `settlement` (`Physical` or `Cash`). `trade_id` on every trade or on none (none numbers them `trade-0`, `trade-1`, ...) |
-| `simulation` | `RunConfig.simulation`: ORE's `simulation.xml` as `CamConfigSchema`: `dates`, `base_currency`, `ir` per currency (`model`: `"LGM"`, the default, or `"HullWhite"`; `reversion`, `volatility`, optional calibration basket `calibration_expiries` × `calibration_terms`, `swap_index`, and the bootstrap's root `solver`: `"Newton"`, the default, or `"Bisection"`), `fx_volatilities`, `equity_volatilities`, `correlations` between factors `IR:USD`, `FX:EURUSD`, `EQ:SP5`, `curve_tenors`, `samples`, `seed`, `swaption_vol_decay`. Required with `scenario_risk`. Every `solver` is [the root solver](calibration.md#the-root-solver) (decision A-21) |
-| `pricing` | `RunConfig.pricing`: `european` (`"Bachelier"`, the default, or `"Jamshidian"` with `jamshidian: {"reversion", "volatility", "solver"}`), the `bermudan` and `american` engines (`LgmEngineSchema`, its `solver` that of the calibration and of each helper's exercise boundary), and `recalibrate` (default `true`, as ORE's `ValuationEngine`) |
+| `simulation` | `RunConfig.simulation`: ORE's `simulation.xml` as `CamConfigSchema`: `dates`, `base_currency`, `ir` per currency (`model`: `"LGM"`, the default, or `"HullWhite"`; `reversion`, `volatility`, optional calibration basket `calibration_expiries` × `calibration_terms`, `swap_index`, and the bootstrap's root `solver`: `"Newton"`, the default, or `"Bisection"`), `fx_volatilities`, `equity_volatilities`, `correlations` between factors `IR:USD`, `FX:EURUSD`, `EQ:SP5`, `curve_tenors`, `samples`, `seed`, `swaption_vol_decay`. Every volatility is a number, or piecewise constant: `{"times": [1.0, 3.0], "values": [0.008, 0.011, 0.009]}`, `values[i]` on bucket `i` of `[0, times[0]), ..., [times[-1], inf)` (ORE's `VolatilityTimes`/`Volatility`). Required with `scenario_risk`. Every `solver` is [the root solver](calibration.md#the-root-solver) (decision A-21) |
+| `pricing` | `RunConfig.pricing`: `european` (`"Bachelier"`, the default, or `"Jamshidian"` with `jamshidian: {"reversion", "volatility", "solver"}`), the `bermudan` and `american` engines (`LgmEngineSchema`: `reversion`, `volatility`, `calibration`, `strategy`, `reference_calibration_grid`, `shift_horizon` (ORE's `ShiftHorizon`; only `0` is implemented, another value is a `400`, [I-32](../planning/known-issues.md#i-32)), `n_per_std`, `std_devs`, `exercise_time_steps_per_year`, `swap_index`, and `solver`, that of the calibration and of each helper's exercise boundary), and `recalibrate` (default `true`, as ORE's `ValuationEngine`) |
 | `greeks` | `RunConfig.greeks`: `method` (`"Bump"`, the default, or `"AD"`) and `sensitivity` (ORE's `sensitivity.xml`: `curve_tenors`, `curve_shift`, `vol_shift`, `theta_days`, `swaption_vol_decay`) |
 | `base_currency` | The reporting currency. Omitted: the simulation's base currency, or USD without a simulation. One contradicting the simulation's is a 400 |
 | `precision` | `RunConfig.precision`, see below |
 | `pfe_quantiles` | Quantiles of the PFE profiles. Default `[0.95, 0.99]` |
 | `compute_greeks` | Default `false` |
 | `scenario_risk` | Default `true`; `false` prices today's values (and Greeks) only |
-| `schema_version` | Optional, `"2"` only: a historical name, not a version |
+| `cube_output` | How the result carries the NPV cube (decision A-17): `"inline"` (the default, `npv_cube`), `"artifact"` (a chunked, hashed reference, `npv_cube_artifact`, read at [`GET /jobs/{job_id}/artifacts/...`](#get-jobsjob_idartifactsnamechunk)) or `"none"` (neither; ORE too writes its cube only when asked, `cubeFile`) |
 
 Representational differences from the dataclasses (SWIG-bound `ORE` types are not natively
 Pydantic-serializable): dates are ISO strings (`"2026-07-30"`), periods are ORE strings
@@ -409,46 +487,97 @@ is a `422` whose message names the replacement (decision A-12); it is not transl
 order. Each job's result is independent of what was queued with it: jobs queued together
 give the bits they give run one after another (`tests/test_engine_worker.py`).
 
-## Target: one configurable API
+## Market-risk request: `MarketRiskRequestSchema`
+
+Mirrors `engine.market_risk.MarketRiskRequest` ([Market Risk](../risk/market-risk.md)):
+
+| Field | Meaning |
+|---|---|
+| `market`, `trades` | As the portfolio request's; every trade valued on `market.asof`, `trade_id` on every trade or none |
+| `scenarios` | The shock scenarios, by `source` (below) |
+| `pricing` | The engine per product, as the portfolio request's `pricing`; options are priced with fixed volatility (the result's warnings say so) |
+| `quantiles` | VaR/ES confidence levels; default `[0.99, 0.975]` |
+| `precision` | As the portfolio request's: the simulation stage stores the shifts, each trade's pricing stage its revaluation and P&L |
+| `batch_size` | Scenarios revalued at once per trade (lowered automatically for a large Bermudan); default 256 |
+| `pnl_output` | How the result carries the P&L matrix, as `cube_output`: `"inline"` (default), `"artifact"`, `"none"` |
+
+`scenarios.factors` names the risk factors, the pillar zero rates of market curves, in the order
+of the covariance's or the history's columns: each curve's labels `"<curve>/<pillar time>y"`
+for every pillar in the market's order, curve after curve, e.g. `"discount:USD/1y"`,
+`"index:USD-SIMINDEX-6M/1y"` (`engine.market_risk.RateRiskFactors.labels`). Any curves of the
+market, in any order; every curve a trade reads must be among them. A label out of its curve's
+pillar order, a curve the market lacks, or a trade's curve left out is a `400` naming the
+expected labels.
+
+- `{"source": "monte-carlo", "factors", "covariance", "horizon_days", "num_scenarios", "seed"}`:
+  zero-mean Gaussian moves over the horizon with the given `[F][F]` covariance (symmetric
+  positive semi-definite), scrambled Sobol normals (`monte_carlo_scenarios`). Drawn by the engine
+  worker, not at validation.
+- `{"source": "historical", "factors", "history", "horizon_days", "dates"}`: one scenario per
+  overlapping `horizon_days` window of a `[D][F]` history of the factors' levels, oldest first;
+  `dates`, optional, label each window (`historical_scenarios`).
+
+```json
+{"market": {"...": "..."}, "trades": [{"trade_type": "swap", "trade_id": "swap-1", "...": "..."}],
+ "scenarios": {"source": "monte-carlo", "factors": ["discount:USD/0y", "discount:USD/1y", "..."],
+               "covariance": [[6.4e-6, "..."], "..."], "horizon_days": 10, "num_scenarios": 16384, "seed": 1},
+ "quantiles": [0.99, 0.975]}
+```
+
+## Design: one configurable API
 
 Decided 2026-09-30 ([compliance/decisions.md](../../compliance/decisions.md) A-2; ORE
-alignment plan 9.2; [I-56](../planning/known-issues.md#i-56)):
+alignment plan 9.2), done by roadmap 3.1 (2026-10-07):
 
-- **One route, one request.** The request's configuration selects the model (LGM, the default,
-  or Hull-White), the simulation, the pricing engine per product, the Greeks method, the
-  settlement method and the precision per stage, as ORE's configuration files do. Defaults are
-  ORE's.
+- **One route per analytic, one request each.** A portfolio's pricing and exposure, its market
+  risk, and the cross-asset model's calibration; every job polled at one route. The request's
+  configuration selects the model (LGM, the default, or Hull-White), the simulation, the pricing
+  engine per product, the Greeks method, the settlement method and the precision per stage, as
+  ORE's configuration files do. Defaults are ORE's.
 - **Every setting reachable.** Anything the engine can be configured to do, the API can ask
-  for. Since roadmap 1.3 one request reaches the model per currency, the engines, the Greeks
-  method and settings and precision; it cannot yet reach market-risk VaR/ES, the
-  cross-asset calibration as a standalone run, or `shift_horizon`
-  ([I-56](../planning/known-issues.md#i-56)). A completeness test will compare the configuration types
-  with the request schema, so a new setting cannot ship without its API field.
+  for. `tests/test_api_completeness.py` walks every configuration type a request can hold,
+  from `PortfolioRequest`, `MarketRiskRequest`, the scenario generators and `calibrate_cam`,
+  and fails on a field without an API field (by name, renamed, or exempt with its reason: a
+  trade's `evaluation_date` is the market's, a curve's `provenance` is the EOD boundary's
+  metadata), on a configuration type without a schema, and on an exemption naming no field.
 - **Robust.** Validated before any job starts: types, unknown fields refused, cross-field
   checks, each refusal a `400` or `422` naming its field.
 - **Names say what they are.** No route or field is named like a version unless it marks a
-  revision of the contract itself. `/v2` and `schema_version: "2"` go.
-- **Nothing silently breaks.** Both route names keep answering the one request; the
-  retired Hull-White shape is a `422` naming its replacement.
+  revision of the contract itself. `/v2` and `schema_version: "2"` went with roadmap 3.1.
+- **Every per-trade figure is keyed by its trade.** Each result has one row per trade with its
+  `trade_id` ([I-10](../planning/known-issues.md#closed)); the arrays' trade axes follow the
+  rows, and an array by reference carries the trade order hashed.
 
-## Response schema: `PortfolioResultSchema`
+## Portfolio result: `PortfolioResultSchema`
 
-Mirrors `engine.portfolio.PortfolioResult`:
+Mirrors `engine.portfolio.PortfolioResult`, with one row per trade:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `base_npv` | `float` | Portfolio total. By construction `sum(base_npv_per_trade)` — the total and the breakdown are the same numbers, not two independent computations. |
-| `base_npv_per_trade` | `List[float]` | Per-trade t=0 NPV, in the request's own `trades` order. Lets a caller reconcile the portfolio total against identified positions/contracts instead of receiving only an unattributable aggregate. |
-| `npv_cube` | `List[List[List[float]]]` | `[Scenarios, TimeSteps, Trades]`, JSON-nested. |
-| `exposure` | `{"times": [...], "epe": [...], "ene": [...], "ee_b": [...], "eee_b": [...], "pfe": {"PFE_95": [...], ...}} \| null` | The whole portfolio as one netting set; every list has one entry per date in `times`, starting at t=0. See [Exposure](../risk/exposure.md). |
-| `trade_exposures` | `List[...]` | The same object per trade, in the request's `trades` order. |
+| `base_npv` | `float` | Portfolio total on today's market: the sum of the rows' `base_npv`, the same numbers. |
+| `trades` | `List[{"trade_id", "base_npv", "exposure", "greeks"}]` | One row per trade, in the request's `trades` order, which is also the cube's trade axis: its id ([I-10](../planning/known-issues.md#closed)), its t=0 NPV on today's market, its standalone exposure (the object below; `null` without scenario risk) and its Greeks (`null` unless `compute_greeks`). Each Greek is flattened row-major into `values`; one of more than one dimension (`vega:<ccy>`, option tenors × swap tenors) also has its shape in `shapes`. The keys are `delta:discount:<ccy>`, `gamma:discount:<ccy>`, `delta:index:<name>`, `gamma:index:<name>` (per curve tenor for `Bump`, per market pillar for `AD`), `vega:<ccy>` for a trade whose engine reads the swaption volatilities, and `theta`. See [Greeks](../risk/greeks.md). |
+| `exposure` | `{"times": [...], "epe": [...], "ene": [...], "ee_b": [...], "eee_b": [...], "pfe": {"PFE_95": [...], ...}} \| null` | The whole portfolio as one netting set; every list has one entry per date in `times`, starting at t=0, where each trade is valued on the simulation market of the as-of date, as ORE's cube starts (roadmap 3.2). See [Exposure](../risk/exposure.md). |
 | `exposure.epe_b`, `exposure.eepe_b` | `List[float]` | ORE's time-weighted EPE_B / EEPE_B profiles. |
 | `exposure.basel_epe`, `exposure.basel_eepe` | `float \| null` | ORE's Basel EPE_B / EEPE_B at the one-year horizon. |
-| `greeks` | `{"<trade_index>": {"values": {"<key>": [...]}, "shapes": {...}, "theta": ...}} \| null` | `null` unless the request set `compute_greeks: true`. Keys are trade indices (as strings, JSON's own object-key requirement) matching the request's `trades` order. Every Greek is flattened row-major into `values`; one of more than one dimension (`vega:<ccy>`, option tenors × swap tenors) also has its shape in `shapes`. The keys are `delta:discount:<ccy>`, `gamma:discount:<ccy>`, `delta:index:<name>`, `gamma:index:<name>` (per curve tenor for `Bump`, per market pillar for `AD`), `vega:<ccy>` for a trade whose engine reads the swaption volatilities, and `theta`. See [Greeks](../risk/greeks.md). |
-| `trade_ids` | `List[str]` | The trades' ids in request order (`trade-0`, ... when the request gave none) ([I-10](../planning/known-issues.md#i-10)). |
+| `npv_cube` | `List[List[List[float]]] \| null` | `[Scenarios, Dates, Trades]`, JSON-nested, with `cube_output: "inline"` (the default). |
+| `npv_cube_artifact` | `object \| null` | The cube by reference, with `cube_output: "artifact"` ([format](#get-jobsjob_idartifactsnamechunk)). |
 | `measure` | `str \| null` | `risk-neutral-pricing`, or `null` without scenario risk (I-11). |
 | `precision` | `object` | The precision report, built in the worker that ran the job, so its `devices` and `backend` are the worker's, not those `/version` names ([I-12](../planning/known-issues.md#i-12), closed): `policy` (the request's `precision`, defaults filled in), `trades`, `realized`, `devices`, `backend`, `jax_version`, `paths`, `paired_paths`, `figures` (each with `"kind": "mean"` or `"quantile"`; NaN as `null`). See [The Portfolio Entry Point](portfolio-entrypoint.md#precision). |
 | `warnings` | `List[str]` | Run warnings (none are emitted today; see [The Portfolio Entry Point: Known-limitation flagging](portfolio-entrypoint.md#known-limitation-flagging)). |
+
+## Market-risk result: `MarketRiskResultSchema`
+
+Mirrors `engine.market_risk.MarketRiskResult`:
+
+| Field | Meaning |
+|---|---|
+| `base_npv`, `trades` | The total and one row per trade (`trade_id`, `base_npv`), in request order: the P&L's trade axis |
+| `risk` | `VaR_<q>`, `ES_<q>` as positive losses, `ES_<q>_tailCount`, `ES_<q>_standardError`, per quantile label (`99`, `97.5`); NaN as `null` |
+| `measure`, `source`, `horizon_days`, `num_scenarios` | The scenarios' description (`historical-forecast`, `monte-carlo` or `historical`) |
+| `risk_factors` | The factors shocked, `"<curve>/<pillar time>y"`, in the scenarios' order |
+| `pnl` / `pnl_artifact` | The P&L `[Scenarios, Trades]`, inline or by reference (`pnl_output`); the portfolio P&L the statistics use is each scenario's sum |
+| `warnings` | Volatility held fixed for options; a tail too thin for a stable estimate |
+| `precision` | The precision report, as the portfolio result's; with a paired float64 sample each VaR/ES measured on it |
 
 ## Example: a Python `requests` session
 
@@ -478,16 +607,17 @@ job_id = r.json()["job_id"]
 print("submitted job", job_id)
 
 while True:
-    r = requests.get(f"{BASE}/portfolio/price/{job_id}")
+    r = requests.get(f"{BASE}/jobs/{job_id}")
     data = r.json()
-    if data["status"] in ("done", "failed"):
+    if data["status"] in ("done", "failed", "interrupted"):
         break
     time.sleep(1.0)
 
-if data["status"] == "failed":
+if data["status"] != "done":
     raise RuntimeError(data["error"])
 
 print("base NPV:", data["result"]["base_npv"])
+print("per trade:", {row["trade_id"]: row["base_npv"] for row in data["result"]["trades"]})
 print("PFE 95% at each date:", data["result"]["exposure"]["pfe"]["PFE_95"])
 ```
 
@@ -497,9 +627,19 @@ See a curl-only version in [User Guide: Running the API](../getting-started/user
 
 `tests/test_api_market_path.py`: on the shared test portfolio (`tests/support/portfolio.py`),
 the polled result equals a direct `price_portfolio` call: NPVs, cube, the exposure profiles
-including EPE_B/EEPE_B and Basel, trade ids, and the 2-D Vega. It also checks the `400`s and
+including EPE_B/EEPE_B and Basel, each trade's row, and the 2-D Vega; the cube by reference is
+the inline cube, its hashes checked, and `"none"` leaves it out. It also checks the `400`s and
 the `422` for a trade carrying `hw_sigma`. `tests/test_shared_portfolio.py` checks that the
 HTTP body of that portfolio is the dataclass portfolio.
+
+`tests/test_api_market_risk.py`: the market-risk result equals a direct `run_market_risk` call
+for Monte Carlo and historical scenarios, the P&L by reference is the inline P&L, and each
+request the run would refuse is a `400` before any job (factor order, an unknown curve, a
+trade's curve left out, a covariance that is not PSD or of the wrong shape, a short history, a
+quantile, no trades, the batch). `tests/test_api_artifacts.py`: the artifact format rebuilds an
+array bit for bit and refuses a tampered chunk, order or array. `tests/test_api_completeness.py`:
+every configuration setting has an API field. `tests/test_engine_worker.py`: the queue's kinds,
+artifacts written with their result, the version-1 migration, the poll and chunk routes.
 
 `tests/test_api.py`, using FastAPI's `TestClient` (backed by `httpx`) — no running server
 process needed:
@@ -523,3 +663,8 @@ process needed:
   boundary.
 - `TestPortfolioPriceUnknownJob` — an unknown `job_id` returns `404`.
 - `TestCalibrationEndpoint` — `/calibration/lgm` happy path and malformed-schema `422`.
+- `TestCamCalibrationEndpoint` — `/calibration/cam` under both models equals
+  `calibrate_cam` and the model a portfolio run simulates with; a currency without a basket is
+  a `422`, one the market lacks a `400`.
+- The names roadmap 3.1 retired are refused: `schema_version` a `422`, `/v2/portfolio/price` a
+  `404`.

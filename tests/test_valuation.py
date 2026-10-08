@@ -47,9 +47,16 @@ def _ore_zero_curve(rates, pillars=PILLARS):
     return handle
 
 
+def _tenor_dates(date):
+    """Where ORE's simulation market holds its tenor points on `date`: at each tenor's time from
+    the as-of date (`ScenarioSimMarket::addYieldCurve` builds the curve on those times once, on a
+    reference date that moves with the evaluation date), so `date` plus the as-of tenor's days."""
+    return [date + ((ASOF + ORE.Period(t)) - ASOF) for t in TENORS]
+
+
 def _ore_path_curve(date, tenor_times, log_discounts):
-    """The scenario curve of one path and date as an ORE curve on the tenor dates."""
-    dates = [date] + [date + ORE.Period(t) for t in TENORS]
+    """The scenario curve of one path and date as ORE's simulation market holds it."""
+    dates = [date] + _tenor_dates(date)
     np.testing.assert_allclose([DC.yearFraction(date, d) for d in dates], tenor_times, rtol=0, atol=1e-15)
     curve = ORE.DiscountCurve(dates, [float(np.exp(v)) for v in log_discounts], DC)
     curve.enableExtrapolation()
@@ -182,7 +189,7 @@ VOLS = SwaptionVolSurface(
     ("6M", "1Y", "2Y", "5Y", "10Y"), ("1Y", "2Y", "5Y", "10Y"),
     ((0.0070, 0.0080, 0.0085, 0.0090), (0.0080, 0.0085, 0.0090, 0.0092), (0.0085, 0.0088, 0.0091, 0.0093),
      (0.0090, 0.0092, 0.0093, 0.0095), (0.0092, 0.0093, 0.0094, 0.0096)))
-# Flat to the first non-zero pillar (I-34), for the oracle's curve rebuild.
+# Flat to the first non-zero pillar, as written before the oracle's fix of I-34 (no longer needed).
 ORACLE_PILLARS = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
 ORACLE_DISC = [0.020, 0.020, 0.025, 0.030, 0.035, 0.040]
 ORACLE_INDEX = [0.025, 0.025, 0.031, 0.036, 0.040, 0.044]
@@ -424,7 +431,7 @@ def option_scenarios(request):
 
 def _path_oracle_inputs(cfg, sm, j, s, fixings):
     date = sm.dates[j]
-    tenor_dates = [date + ORE.Period(t) for t in TENORS]
+    tenor_dates = _tenor_dates(date)
     curves = OreDiscountCurves(
         tenor_dates, np.exp(np.asarray(sm.discount["USD"].log_discounts[s, j, 1:])),
         tenor_dates, np.exp(np.asarray(sm.index[INDEX].log_discounts[s, j, 1:])))

@@ -12,11 +12,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def echo_pricer(request: bytes) -> str:
-    """`{"echo": <the request>}` after sleeping the request's `"sleep"` seconds (default 0)."""
-    body = json.loads(request)
+def echo_pricer(job):
+    """`{"echo": <the request>, "kind": <the job's kind>}` after sleeping the request's `"sleep"`
+    seconds (default 0)."""
+    from engine.api.worker import JobResult
+
+    body = json.loads(job.request)
     time.sleep(float(body.get("sleep", 0.0)))
-    return json.dumps({"echo": body})
+    return JobResult(json.dumps({"echo": body, "kind": job.kind}))
 
 
 def stub_worker_command(queue_path, parent_pid=None) -> list:

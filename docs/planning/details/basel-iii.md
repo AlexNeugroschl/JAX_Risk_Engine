@@ -99,8 +99,7 @@ precondition, not a side issue:
 |---|---|---|
 | [I-05](../known-issues.md#i-05) no faithful USD-SOFR swap construction | Every USD swap sensitivity rests on it | P1 for USD swaps (other books can proceed) |
 | [I-51](../known-issues.md#i-51) sensitivities not checked against ORE | SA figures rest on them | P1 |
-| [I-50](../known-issues.md#i-50) exposure not checked against an ORE simulation | IMM exposure rests on it | P5.3, P5.4 |
-| [I-10](../known-issues.md#i-10) per-trade results keyed by position (every trade carries a `trade_id` since roadmap 1.3) | Desk attribution, backtesting per desk, audit | P0 |
+| [I-49](../known-issues.md#i-49) Bermudan/American exposure 0.5–4% above ORE's simulation (linear trades equal it since roadmap 3.2, which closed I-50) | IMM exposure rests on it | P5.3, P5.4 |
 | [I-18](../known-issues.md#i-18) no equity spot/FX | EQ risk class impossible | EQ only; refused until fixed |
 | [I-27](../known-issues.md#i-27) full-suite runs can abort inside XLA | An evidence pack needs a complete, reproducible suite run | P7 |
 | [I-08](../known-issues.md#i-08) a running EOD attempt is lost on restart (portfolio jobs durable since roadmap 1.8) | Regulatory runs must survive restart and stay retrievable | P0 |
@@ -200,7 +199,9 @@ engine/regulatory/
   cva/
     ba_cva.py
 tests/support/
-  ore_lgm_oracle.py          # the OREApp oracle, generalised in roadmap 3.2
+  ore_inputs.py              # ORE's inputs in memory (roadmap 3.2)
+  ore_lgm_oracle.py          # the OREApp NPV oracle
+  ore_xva_oracle.py          # the OREApp exposure-simulation oracle (roadmap 3.2)
 compliance/
   requirements.yaml          # the requirement catalogue (Appendix A seeds it)
   decisions.md               # D-1..D-n, dated
@@ -282,9 +283,9 @@ is met, not when its tasks are merged.
 | P0.3 | Transcribe the BCBS profile twice independently; diff; resolve against the text | `engine/regulatory/profiles/bcbs.yaml`, `profile.py` | `test_profile.py`: schema, every key cited, the two transcriptions agree | Zero diff between transcriptions; every value has a paragraph |
 | P0.4 | Requirement catalogue plus traceability check | `compliance/requirements.yaml`, `tests/regulatory/test_traceability.py`, `basel` marker in `conftest.py` | The check fails if a requirement has no test, a test cites an unknown requirement, or a requirement's status is `implemented` with no passing oracle test. Include a negative test that feeds it a broken catalogue | Catalogue seeded from Appendix A; check green; negative test red on a broken catalogue |
 | P0.5 | Measure guards: IMA functions accept only `HistoricalScenarioSet`; passing a risk-neutral cube raises | `measures.py` | Test that `ima.es` given a simulated exposure cube raises with a message naming the measure | Guard in place, red-first shown |
-| P0.6 | Close I-10 on the portfolio path: trade ID, desk, book, currency on every trade and result | `portfolio/request.py`, `api/schemas.py` | The I-10 closing tests the register already specifies | I-10 FIXED in the register |
+| P0.6 | Desk, book and currency on every trade and result (the trade id is on every result row since roadmap 3.1, I-10 closed) | `portfolio/request.py`, `api/schemas.py` | Tests that each result row carries the trade's desk and book | Every row attributable to a desk and book |
 | P0.7 | Run manifest on every regulatory result | `manifest.py` | Test: manifest has git SHA, dirty flag, package versions, JAX backend and dtype, profile hash, input hashes; two identical runs give identical output hashes | Deterministic reruns proven byte-identical on CPU FP64 |
-| P0.8 | Extend the OREApp oracle of roadmap 3.2 (XVA, sensitivity) to the remaining analytics (stress, SA-CCR, BA-CVA, HistSimVaR, backtest) | `tests/support/` oracle | Smoke test per analytic against an ORE Example's `ExpectedOutput` | Each analytic reproduces its ORE example output |
+| P0.8 | Extend the OREApp oracles of roadmap 3.2 (`tests/support/ore_xva_oracle.py`; sensitivity with 4.5) to the remaining analytics (stress, SA-CCR, BA-CVA, HistSimVaR, backtest) | `tests/support/` oracle | Smoke test per analytic against an ORE Example's `ExpectedOutput` | Each analytic reproduces its ORE example output |
 | P0.9 | Regulatory runs through the durable job queue (roadmap 1.8 built it for portfolio jobs); a retention rule that keeps them (I-76); the EOD half of I-08 | `api/job_queue.py`, `integration/` | I-08's and I-76's closing criteria | I-08 FIXED, I-76 FIXED |
 
 ### Phase 1 — FRTB standardised approach (≈6 weeks)
@@ -351,13 +352,13 @@ computes the same quantity and to the independent implementation everywhere else
 test compares the engine with itself. Report it as `pla_status: "not-independent"`, never
 as green.
 
-### Phase 5 — Counterparty credit and CVA (≈4 weeks; IMM needs I-50)
+### Phase 5 — Counterparty credit and CVA (≈4 weeks; IMM needs I-49)
 
 | ID | Task | Detail | Oracle | Exit |
 |---|---|---|---|---|
 | P5.1 | SA-CCR | Replacement cost, PFE multiplier (5% floor), IR hedging sets by currency, maturity buckets with the profile's correlations, supervisory duration, supervisory delta for swaptions, α = 1.4. Needs netting set and collateral inputs | ORE `SaccrCalculator` (`Examples/CreditRisk/run_saccr.py`) | 1e-10 relative per netting set |
 | P5.2 | BA-CVA (reduced) | Counterparty-level SCVA from SA-CCR EAD, supervisory discount factor, discount scalar, ρ | ORE `BaCvaCalculator` | 1e-10 |
-| P5.3 | IMM exposure (optional) | EE, Effective EE (non-decreasing), EPE, EEPE over the first year from the existing `npv_cube`. Stressed calibration, α. Market path only. **Blocked on [I-50](../known-issues.md#i-50)**: the exposure is not yet checked against an ORE simulation | ORE exposure simulation (`Examples/Exposure`) on the same model | EEPE within MC error of ORE; I-50 closed first |
+| P5.3 | IMM exposure (optional) | EE, Effective EE (non-decreasing), EPE, EEPE over the first year from the existing `npv_cube`. Stressed calibration, α. Market path only. **Blocked on [I-49](../known-issues.md#i-49)** (roadmap 3.5): since roadmap 3.2 linear trades' exposure equals ORE's simulation, a Bermudan's or American's is 0.5–4% apart | ORE's exposure simulation through `tests/support/ore_xva_oracle.py`, on the same model | EEPE within MC error of ORE; I-49 closed first |
 | P5.4 | IMM backtesting (optional) | Exposure-model backtesting against realised MtM paths, as CRE53 requires | Statistical tests (§7.5) | Documented test passes over the history available |
 
 ### Phase 6 — Precision gate for regulatory figures (≈1–2 weeks)
@@ -525,7 +526,7 @@ P0 ──► P1 ─────────────────────�
                  D-7 (TraderX HPL/APL)
 
 P5.1, P5.2 (SA-CCR, BA-CVA): after P0, independent of P1–P4
-P5.3, P5.4 (IMM):            after I-50
+P5.3, P5.4 (IMM):            after I-49 (roadmap 3.5)
 USD swaps in any phase:      after I-05
 ```
 

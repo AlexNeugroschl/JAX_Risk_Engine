@@ -26,6 +26,7 @@ from engine.market_risk.scenarios import (
     historical_scenarios,
     horizon_moves,
     monte_carlo_scenarios,
+    validate_monte_carlo,
 )
 
 __all__ = [
@@ -40,4 +41,5 @@ __all__ = [
     "horizon_moves",
     "monte_carlo_scenarios",
     "run_market_risk",
+    "validate_monte_carlo",
 ]

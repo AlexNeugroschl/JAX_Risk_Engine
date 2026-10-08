@@ -27,8 +27,8 @@ result served) or blocks a step, in which case it goes before the step it blocks
 **Every step keeps the project's goals.** Nothing above trades one away:
 
 - **ORE parity.** Every ORE parity suite passes at its existing tolerance after every step. A
-  new capability comes with its own ORE parity test (through 3.2's oracle where it needs a
-  simulation), or it is refused by name.
+  new capability comes with its own ORE parity test (through the ORE simulation oracle,
+  `tests/support/ore_xva_oracle.py`, where it needs a simulation), or it is refused by name.
 - **Accuracy.** float64 numbers stay bit for bit unless the step says it moves them. 2.4,
   planned bit for bit, moved the AD Greeks at rounding level (each became one compiled
   program, which removed the repeated job's recompiles; everything else stayed bit for bit).
@@ -51,11 +51,13 @@ result served) or blocks a step, in which case it goes before the step it blocks
 - **Basel III.** Nothing a regulatory figure relies on is approximated silently: an input
   outside scope is refused by name, as today. Results stay auditable: the job queue keeps
   them, and 4.2's retention policy keeps regulatory runs.
-- **API compatibility.** Changes are additive. Every existing route, field, default and result
-  shape keeps working, and old names become aliases, never removals. A new setting arrives
-  with its API field, which 3.1's completeness test checks. Two narrowings are planned, both
-  deliberate: 4.1 refuses inputs that are now accepted and then ignored (the old answer is
-  wrong), and 3.4 changes a default number to ORE's (decision A-3).
+- **API compatibility.** Once the HTTP API has a client, changes are additive: every route,
+  field, default and result shape keeps working, and a change of the contract is a revision of
+  it (A-2; 3.1 removed the names A-2 retired outright, there being no client yet, by the
+  owner's revision of 2026-10-07). A new setting arrives with its API field, which
+  `tests/test_api_completeness.py` checks. Two narrowings are planned, both deliberate: 4.1
+  refuses inputs that are now accepted and then ignored (the old answer is wrong), and 3.4
+  changes a default number to ORE's (decision A-3).
 - **Tests.** A step that breaks a test of a private symbol rewrites it against the public
   entry ([I-67](known-issues.md#i-67)'s rule), so restructuring does not wait for 6.3.
 
@@ -86,7 +88,12 @@ compiles nothing, each trade's AD Greeks are one compiled program per product, a
 be narrowed to one phase; since 2.5 every calibration and exercise boundary is solved by one
 configurable root solver (a safeguarded Newton method by default, the bisection as the
 reference), and a Bermudan's or American's path dates of one basket shape are calibrated
-together. Nothing runs on more than one host.
+together; since 3.1 the HTTP API reaches every setting the engine has (one route per analytic:
+portfolio pricing, market risk, the cross-asset model's calibration; every per-trade result a
+row keyed by its trade; a cube or P&L by hashed reference on request); since 3.2 an ORE
+simulation run in-process is the reference for the assembled pipeline, and swaps, Europeans and
+bonds equal it path by path (Bermudans and Americans 0.5–4% apart, I-49, which 3.5 closes).
+Nothing runs on more than one host.
 The TraderX EOD boundary prices Treasuries end to end and refuses everything else by name.
 
 ---
@@ -129,22 +136,22 @@ form.
 
 | Step | Work | Closes | Size |
 |---|---|---|---|
-| 3.1 | One API (A-2). One route, with the old names as aliases (the request is already one shape since 1.3). A market-risk route and the CAM calibration route. A completeness test that fails on any configuration setting without an API field. Every per-trade result row carries its trade id, beside the positional fields, which stay. The cube can be returned as a chunked artifact reference, or left out, on request; inline stays the default (A-17, as ORE writes its cube only when asked) | [I-56](known-issues.md#i-56), [I-10](known-issues.md#i-10) (results), [I-09](known-issues.md#i-09) | L |
-| 3.2 | *Parallel with 3.1* (test side only). Generalize the oracle to an OREApp XVA run; L4 distribution parity of exposure profiles; L3 path parity once gate V-4 closes. Fix the oracle's first-segment curve while in that file | [I-50](known-issues.md#i-50), [I-34](known-issues.md#i-34) | L |
 | 3.3 | Swaption vol strike axis, read at each option's and helper's strike: an additive market field, with ATM-only markets bit for bit | [I-54](known-issues.md#i-54) | M |
-| 3.4 | `ShiftHorizon` as a setting, with its API field; parity at 0.5 against the LGM oracle; then 0.5 as the default | [I-32](known-issues.md#i-32) | M |
-| 3.5 | Reproduce ORE's two per-path recalibration details, measured against 3.2's cube; confirm an American's basket on a path against ORE's (decision A-7); warn, as ORE's `LgmBuilder` does, when a path's recalibration misses its basket | [I-49](known-issues.md#i-49), [I-73](known-issues.md#i-73) | M |
+| 3.4 | `ShiftHorizon`: the setting and its API field exist since 3.1 and refuse anything but 0; implement the shift, parity at 0.5 against the LGM oracle, then 0.5 as the default | [I-32](known-issues.md#i-32) | M |
+| 3.5 | Reproduce ORE's two per-path recalibration details against `tests/test_ore_xva_parity.py`, until its Bermudan/American L3 cases (strict expected failures today, 0.5–4% apart) pass; confirm an American's basket on a path against ORE's (decision A-7); warn, as ORE's `LgmBuilder` does, when a path's recalibration misses its basket | [I-49](known-issues.md#i-49), [I-73](known-issues.md#i-73) | M |
 | 3.6 | *Parallel, can start now* (it changes no float64 number). Store classes whose level swamps their spread relative to a level (the cube to its t=0 value, the curves to their path-independent part, or a block offset). Build a measurement harness, rerunnable on any kernel change, for the storage formats per class, product and path count, with 1.7's paired sample and its estimator's coverage on the pipeline | [I-75](known-issues.md#i-75) | M |
 | 3.7 | Kernels in difference form with explicit accumulators, one family at a time (simulation scan, scenario curves, legs, Europeans, Bermudan rollback and recalibration, exposure), one implementation for every precision (A-16); compute below float32 enabled. Where a family can be a matrix product (leg pricing, the Bermudan rollback), it takes that form in the same rewrite, so native FP8 (5.2) needs no second one. A product's own precision (TensorFloat-32, bfloat16 passes, FP8) becomes a compute format of the policy, named in the report: 2.3's product helper (`engine.precision.product_precision`) maps the policy's format to it, so every product follows the policy and never a device's default. Where a device has no such unit (TensorFloat-32 on a CPU, which computes float32 instead) the format is emulated by rounding the operands to its mantissa, as FP8 storage is, and the report says which ran ([details/precision.md §8.3](details/precision.md#83-emulation-and-native-speed)). ORE parity at existing tolerances first, then the float64 snapshot re-baselined once. The rollback's matrix form also holds one operator per step instead of one per path and step, so the demo's job runs at 65,536 and 262,144 paths | [F-07](features.md#f-07) (compute), [I-83](known-issues.md#i-83) | L |
 | 3.8 | *Parallel, can start now* (it moves no kernel's arithmetic). One worker per host on a Cloud TPU pod slice, with process 0 claiming each job and handing it to the other hosts, since under SPMD every host runs the same job ([details/precision.md §11.3](details/precision.md#113-multi-device-and-multi-host)). Measure wall time against device count on TPU and H100. The one-host split of the scenario axis is done (2026-10-04) | [I-61](known-issues.md#i-61) | M |
 
+Steps 3.1 (one API reaching every setting) and 3.2 (the ORE simulation oracle) are done
+(2026-10-07). From here every step that adds a setting (3.3's strikes, stage 4's options,
+trades and analytics) adds its API field once, and `tests/test_api_completeness.py` holds it to
+that; and 3.5, 4.5, 4.7's two-currency test, 4.9 and 4.10 prove themselves against the ORE
+simulation oracle. 3.2 moved float64 exposure numbers towards ORE's (I-84, I-85, I-86), with
+the golden snapshot re-baselined ([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
+
 Order within the stage:
 
-- **3.1 first.** Every later step that adds a setting (3.3's strikes, 3.4's shift, stage 4's
-  options, trades and analytics) then adds its API field once, and the completeness test holds
-  it to that.
-- **3.2 alongside 3.1.** It is the reference that 3.5, 4.5, 4.7's two-currency test, 4.9 and
-  4.10 prove themselves against.
 - **3.3 to 3.5 before 3.7.** They change what the European and Bermudan/American kernels
   compute: the volatility a helper reads, the state grid, and the recalibration's basket and
   time grid. 3.6 changes what is stored and builds the harness that measures 3.7. 3.7 comes
@@ -171,13 +178,13 @@ Everything in scope that the engine does not do yet. A step that adds a path-pri
 | 4.2 | EOD accepted-attempt record, boot sweep, `interrupted` state (portfolio jobs have had all three since 1.8); a retention policy for the job queue; a job status that says when the engine worker cannot start | [I-08](known-issues.md#i-08), [I-76](known-issues.md#i-76), [I-77](known-issues.md#i-77) | 3.8 | M |
 | 4.3 | Chase TraderX's answers; apply them (a widened allowlist, a schema statement) | [I-23](known-issues.md#i-23), [I-60](known-issues.md#i-60) | Their answers | S |
 | 4.4 | *Parallel, start now.* Basel P0 (decisions, pinned text, profile, traceability) and P2 data acquisition, which is calendar time | [F-05](features.md#f-05) (P0, P2) | — | L |
-| 4.5 | Sensitivities against ORE's sensitivity analytic on the shared portfolio; the AD Greeks against the bump Greeks on the same sloped portfolio | [I-51](known-issues.md#i-51), [I-78](known-issues.md#i-78) | 3.2 | M |
+| 4.5 | Sensitivities against ORE's sensitivity analytic on the shared portfolio; the AD Greeks against the bump Greeks on the same sloped portfolio | [I-51](known-issues.md#i-51), [I-78](known-issues.md#i-78) | — | M |
 | 4.6 | Engine options: ORE's `AnalyticLgm` European engine, settlement methods, FD solver (the AD Greeks method and the market-risk engine by configuration are done) | [F-01](features.md#f-01) | 3.7; the FD solver also 3.4 | M |
-| 4.7 | FX and equity trades on the market path; FX/EQ calibration; the two-currency end-to-end test (L6) against 3.2's oracle | [F-04](features.md#f-04) | 3.2, 3.7 | L |
+| 4.7 | FX and equity trades on the market path; FX/EQ calibration; the two-currency end-to-end test (L6) against the ORE simulation oracle, extended to a second currency | [F-04](features.md#f-04) | 3.7 | L |
 | 4.8 | SABR volatility | [F-02](features.md#f-02) | 3.3, 3.7 | M |
-| 4.9 | CVA/DVA | [F-06](features.md#f-06) | 3.2 | M |
-| 4.10 | AMC engine | [F-03](features.md#f-03) | 3.2, 3.7 | L |
-| 4.11 | Basel P1 (FRTB-SA) onward | [F-05](features.md#f-05) | 4.5 (USD swaps also I-05); P5's IMM 3.2; P6's precision gate 5.1 | L |
+| 4.9 | CVA/DVA | [F-06](features.md#f-06) | — | M |
+| 4.10 | AMC engine | [F-03](features.md#f-03) | 3.7 | L |
+| 4.11 | Basel P1 (FRTB-SA) onward | [F-05](features.md#f-05) | 4.5 (USD swaps also I-05); P5's IMM 3.5 (Bermudan exposure equal to ORE's); P6's precision gate 5.1 | L |
 | 4.12 | Reporting currencies other than USD at the EOD boundary: convert at the as-of FX spot, as ORE reports in its `baseCurrency`; parity against an ORE run with that base currency | [F-08](features.md#f-08) | 4.1; an FX source ([I-18](known-issues.md#i-18), waiting on others) | S |
 
 Order within the stage: 4.1, 4.3 and 4.4 can be done at any time; 4.12 as soon as its FX source arrives. 4.5 comes before 4.11,

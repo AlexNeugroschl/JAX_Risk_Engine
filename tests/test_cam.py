@@ -37,7 +37,16 @@ from engine.simulation.cam import (
     _piecewise, flexible_cholesky, step_moments,
 )
 from engine.simulation.config import CamConfig, HullWhiteConfig, LgmConfig, build_cross_asset_model, simulate
-from engine.simulation.scenario_market import DISCOUNT_FLOOR, implied_log_discounts, lgm_numeraire
+from engine.simulation.scenario_market import (
+    DISCOUNT_FLOOR, as_of_tenor_times, implied_log_discounts, lgm_numeraire, tenor_times,
+)
+
+
+def _value_times(sm):
+    """`[D, K+1]`: the times each date's curve values are computed at (the tenors from that
+    date, `nextPath`), not the times the market holds them at (`ScenarioCurves.tenor_times`, the
+    as-of date's, I-84)."""
+    return tenor_times(sm.dates, _config().curve_tenors)
 
 ASOF = ORE.Date(30, 7, 2026)
 PILLARS = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
@@ -405,9 +414,10 @@ def test_simulated_assets_are_martingales_on_sloped_curves(fmt, se_bound, model)
         se = samples.std() / np.sqrt(samples.size)
         assert abs(samples.mean() - expected) <= se_bound * se + 1e-6 * abs(expected)
 
+    taus = _value_times(sm)
     for j, t in enumerate(sm.times):
         for k in (2, 6, 12):
-            tau = float(sm.discount["USD"].tenor_times[j, k])
+            tau = float(taus[j, k])
             ln = lambda ccy: np.asarray(sm.discount[ccy].log_discounts[:, j, k], dtype=np.float64)  # noqa: E731
             check(np.exp(ln("USD")) / N[:, j], float(discount(_curve(PILLAR_CURVES["USD"]), t + tau)))
             fx = np.asarray(sm.fx["EUR"][:, j], dtype=np.float64)
@@ -422,7 +432,7 @@ def test_the_index_basis_is_deterministic_on_every_path():
     sm = simulate(_market(), _config(samples=64))
     usd, idx = _curve(PILLAR_CURVES["USD"]), _curve(USD_INDEX)
     for j, t in enumerate(sm.times):
-        tau = np.asarray(sm.discount["USD"].tenor_times[j])
+        tau = _value_times(sm)[j]
         basis = (np.asarray(log_discount(idx, t + tau)) - float(log_discount(idx, t))
                  - np.asarray(log_discount(usd, t + tau)) + float(log_discount(usd, t)))
         spread = np.asarray(sm.index["USD-SIMINDEX-6M"].log_discounts[:, j] - sm.discount["USD"].log_discounts[:, j])
@@ -434,17 +444,32 @@ def test_zero_volatility_paths_are_todays_forward_curves(model):
     sm = simulate(_market(), _config(ir={"USD": model(0.03, 0.0), "EUR": model(0.02, 0.0)}, samples=8))
     usd = _curve(PILLAR_CURVES["USD"])
     for j, t in enumerate(sm.times):
-        tau = np.asarray(sm.discount["USD"].tenor_times[j])
+        tau = _value_times(sm)[j]
         expected = np.asarray(log_discount(usd, t + tau)) - float(log_discount(usd, t))
         np.testing.assert_allclose(np.asarray(sm.discount["USD"].log_discounts[:, j]),
                                    np.broadcast_to(expected, (8, tau.size)), atol=1e-15)
         np.testing.assert_allclose(np.asarray(sm.numeraire[:, j]), np.exp(-float(log_discount(usd, t))), rtol=1e-15)
 
 
-def test_tenor_times_are_measured_from_each_date_with_period_arithmetic():
-    sm = simulate(_market(), _config(dates=(ORE.Date(28, 2, 2027),), samples=4))
-    one_year = float(sm.discount["USD"].tenor_times[0, 3])  # "1Y" is the third configured tenor
-    assert one_year == pytest.approx((ORE.Date(28, 2, 2028) - ORE.Date(28, 2, 2027)) / 365.0, rel=1e-15)
+def test_values_are_computed_at_each_dates_tenors_and_held_at_the_as_of_dates():
+    """ORE: `nextPath` computes a curve's discount factors at the tenors from the simulation
+    date, by period arithmetic (1Y from 2027-03-01 is 366 days), and `ScenarioSimMarket` holds them
+    at the tenors from the as-of date (1Y from 2026-07-30 is 365 days) on every date, its curve
+    built once with a moving reference date (`addYieldCurve`; I-84, found against ORE's own
+    simulation in roadmap 3.2)."""
+    date = ORE.Date(1, 3, 2027)
+    sm = simulate(_market(), _config(dates=(date,), samples=4, ir={"USD": LgmConfig(0.03, 0.0),
+                                                                   "EUR": LgmConfig(0.02, 0.0)}))
+    one_year = 3  # "1Y" is the third configured tenor
+    assert tenor_times([date], _config().curve_tenors)[0, one_year] == 366 / 365
+    held = np.asarray(sm.discount["USD"].tenor_times[0])
+    np.testing.assert_array_equal(held, as_of_tenor_times(ASOF, _config().curve_tenors))
+    assert held[one_year] == 365 / 365
+    # At zero volatility the value held at 365 days is today's forward over 366.
+    t = float(sm.times[0])
+    usd = _curve(PILLAR_CURVES["USD"])
+    expected = float(log_discount(usd, t + 366 / 365) - log_discount(usd, t))
+    assert float(sm.discount["USD"].log_discounts[0, 0, one_year]) == pytest.approx(expected, rel=1e-14)
 
 
 def test_a_currency_takes_the_model_of_its_configuration():

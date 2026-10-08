@@ -54,10 +54,10 @@ double-precision simulations in the same wall-clock time.
   arrays, the device) and an optional paired float64 sample that corrects mean figures (EPE,
   ENE) by a two-level estimator and measures quantiles (PFE, VaR, ES) against float64
   ([I-55](docs/planning/known-issues.md#i-55), [design](docs/planning/details/precision.md))
-- HTTP API: one portfolio request reaching the run configuration (market risk and the
-  cross-asset calibration routes are still to come,
-  [I-56](docs/planning/known-issues.md#i-56)), priced by one engine worker process per host
-  behind a durable job queue; plus a versioned end-of-day contract for hash-verified
+- HTTP API reaching every setting the engine has: portfolio pricing and exposure, market-risk
+  VaR/ES and the cross-asset model's calibration, each per-trade figure a row keyed by its
+  trade, a cube or P&L inline or by chunked, hashed reference; jobs priced by one engine worker
+  process per host behind a durable job queue; plus a versioned end-of-day contract for hash-verified
   portfolio bundles
 
 ## ORE and hardware acceleration
@@ -86,8 +86,12 @@ against ORE running in the same process:
 - Market-risk VaR and ES agree with ORE repricing every shocked scenario and running its
   own `RiskStatistics`: swaps, bonds and European swaptions per scenario to about `1e-14`,
   Bermudans to `2e-13`.
-- Not yet shown: that the assembled simulation, exposure and sensitivities equal an ORE run
-  end to end ([I-50](docs/planning/known-issues.md#i-50), [I-51](docs/planning/known-issues.md#i-51)).
+- The assembled simulation and exposure against ORE's own exposure simulation, run in-process:
+  on ORE's paths every swap's, European's and bond's NPV equals ORE's cube to `3e-11` of its
+  scale, ORE's exposure definitions hold on its cube to `2e-13`, and the profiles agree in
+  distribution. Bermudans and Americans are `0.5–4%` apart on the paths
+  ([I-49](docs/planning/known-issues.md#i-49)), and the sensitivities are not yet compared with
+  ORE's ([I-51](docs/planning/known-issues.md#i-51)).
 
 See [ORE Parity](docs/reference/ore-parity.md) for the full mapping.
 

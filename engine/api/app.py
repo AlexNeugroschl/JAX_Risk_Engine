@@ -20,7 +20,8 @@ from engine.api.routes import router, shutdown_worker
 
 def keep_jax_on_the_cpu() -> None:
     """Run this process's JAX on the CPU (roadmap 2.2). The server prices nothing: its JAX work
-    is `/version` and the synchronous `/calibration/lgm`, a small bootstrap. A GPU client would
+    is `/version` and the synchronous `/calibration/cam` and `/calibration/lgm`, small float64
+    bootstraps (decision A-10). A GPU client would
     take device memory beside the engine worker's, which prices every job (on a TPU host a
     second process cannot open the chips at all). The worker is a fresh interpreter started
     from the environment, not from this setting, so it still sees every device.
@@ -49,10 +50,11 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="JAX Risk Engine API",
         description=(
-            "HTTP API over engine.portfolio.price_portfolio -- simulate, "
-            "validate, price, and profile exposure for a portfolio of "
-            "interest-rate swaps, swaptions and Treasuries. See "
-            "docs/reference/http-api.md for the full reference."
+            "HTTP API over the engine: price a portfolio and profile its exposure "
+            "(engine.portfolio.price_portfolio), its market-risk VaR and ES "
+            "(engine.market_risk.run_market_risk), and calibrate the cross-asset model "
+            "(engine.calibration.cam), for interest-rate swaps, swaptions and Treasuries. "
+            "See docs/reference/http-api.md for the full reference."
         ),
         version="0.1.0",
         lifespan=_lifespan,

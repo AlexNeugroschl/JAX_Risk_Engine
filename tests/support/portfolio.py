@@ -25,8 +25,9 @@ swap starting after expiry, cash settled by `ParYieldCurve`), the OREApp oracle'
 physical one: ORE approximates it by `CollateralizedCashPrice`, swaption.cpp), and
 `DiscountingBondEngine`.
 
-The curves are flat to their first non-zero pillar: the oracle reads the t=0 zero rate at
-`zeroRate(1e-4)`, so a slope inside the first segment would be a ~1e-6 oracle artefact (I-34).
+The curves are flat to their first non-zero pillar, as they were written before the oracle
+handed ORE the as-of quote its curve rebuild needs (I-34, fixed in roadmap 3.2); a slope there
+would now reach ORE unchanged too.
 """
 import ORE
 

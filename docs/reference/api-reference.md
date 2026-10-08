@@ -456,9 +456,10 @@ has no dependency on this package.
 | Module | Contents |
 |---|---|
 | `engine.api.app` | `create_app() -> FastAPI` / `app`. Run with `uvicorn engine.api.app:app`. |
-| `engine.api.routes` | `GET /health`, `GET /version`, `POST /portfolio/price` (also `/v2/portfolio/price`), `GET /portfolio/price/{job_id}`, `POST /calibration/lgm`. |
-| `engine.api.market_schemas` | `MarketPortfolioRequestSchema` and its parts (market, trades, `CamConfigSchema` with `LgmConfigSchema`/`HullWhiteConfigSchema`, `PricingConfigSchema`, `GreeksConfigSchema`), each with `.to_dataclass()`. Refuses unknown fields and the retired Hull-White shape. |
-| `engine.api.schemas` | Shared schemas (curves, coupon periods, precision) and the results: `PortfolioResultSchema`, `GreeksSchema`, `ExposureProfileSchema`, `JobStatusSchema`, the calibration route's schemas. |
+| `engine.api.routes` | `GET /health`, `GET /version`, `POST /portfolio/price`, `POST /portfolio/market-risk`, `GET /jobs/{job_id}`, `GET /jobs/{job_id}/artifacts/{name}/{chunk}`, `POST /calibration/cam`, `POST /calibration/lgm`. |
+| `engine.api.market_schemas` | The requests: `MarketPortfolioRequestSchema` and its parts (market, trades, `CamConfigSchema` with `LgmConfigSchema`/`HullWhiteConfigSchema` and piecewise volatilities, `PricingConfigSchema`, `GreeksConfigSchema`), `MarketRiskRequestSchema` (Monte Carlo or historical scenarios), `CamCalibrationRequestSchema`; each with `.to_dataclass()`, the queued ones with `.check()` (the route's validation, no JAX work). Refuses unknown fields and the retired Hull-White shape. |
+| `engine.api.schemas` | Shared schemas (curves, coupon periods, precision) and the results: `PortfolioResultSchema` (one `TradeResultSchema` row per trade), `MarketRiskResultSchema`, `CamCalibrationResultSchema`, `ArrayArtifactSchema`, `GreeksSchema`, `ExposureProfileSchema`, `JobStatusSchema`, the LGM calibration route's schemas. |
+| `engine.api.artifacts` | `array_artifact`, `items_record`, `read_array`: an array as chunked, hashed bytes with its trade order (decision A-17). |
 | `engine.api.eod_routes` | `router` (prefix `/eod`) — the TraderX EOD contract, plain dicts under a published JSON Schema. See [EOD Integration](eod-integration.md#w164--the-eod-http-routes). |
 
 ---

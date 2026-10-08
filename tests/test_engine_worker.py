@@ -87,6 +87,44 @@ class TestJobQueue:
         with pytest.raises(RuntimeError, match="not running"):
             queue.fail(job_id, jq.BAD_TERMS, "late")
 
+    def test_a_job_keeps_its_kind_and_an_unknown_kind_is_refused(self, queue):
+        job_id = queue.submit(_body(), jq.MARKET_RISK)
+        assert queue.get(job_id).kind == jq.MARKET_RISK and queue.state(job_id) == (jq.MARKET_RISK, jq.PENDING)
+        assert queue.get(queue.submit(_body())).kind == jq.PORTFOLIO
+        with pytest.raises(ValueError, match="job kind"):
+            queue.submit(_body(), "greeks")
+
+    def test_a_result_and_its_artifacts_are_written_together(self, queue):
+        """`finish` stores the chunks in the transaction that marks the row done: a job that
+        cannot be finished leaves no chunk behind."""
+        job_id = queue.submit(_body())
+        with pytest.raises(RuntimeError, match="not running"):
+            queue.finish(job_id, "{}", artifacts={"npv_cube": [b"orphan"]})
+        assert queue.artifact(job_id, "npv_cube", 0) is None
+        queue.claim("w")
+        queue.finish(job_id, "{}", artifacts={"npv_cube": [b"a", b"bc"], "pnl": [b"d"]})
+        assert [queue.artifact(job_id, "npv_cube", i) for i in (0, 1, 2)] == [b"a", b"bc", None]
+        assert queue.artifact(job_id, "pnl", 0) == b"d" and queue.artifact("other", "pnl", 0) is None
+
+    def test_a_queue_of_schema_version_1_is_migrated(self, tmp_path):
+        """Roadmap 1.8's file: its jobs become portfolio jobs, and it gains the artifacts table."""
+        import sqlite3
+
+        path = tmp_path / "v1.sqlite3"
+        with sqlite3.connect(path) as con:
+            con.executescript("""
+                CREATE TABLE jobs (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+                    request BLOB NOT NULL, status TEXT NOT NULL, failure_class TEXT, error TEXT, result TEXT,
+                    worker TEXT, compiles INTEGER, submitted REAL NOT NULL, started REAL, finished REAL);
+                INSERT INTO jobs (id, request, status, submitted) VALUES ('old', x'7b7d', 'pending', 0);
+                PRAGMA user_version=1;""")
+        migrated = JobQueue(path)
+        assert migrated.get("old").kind == jq.PORTFOLIO and migrated.claim("w").id == "old"
+        migrated.finish("old", "{}", artifacts={"npv_cube": [b"x"]})
+        assert migrated.artifact("old", "npv_cube", 0) == b"x"
+        with sqlite3.connect(path) as con:
+            assert con.execute("PRAGMA user_version").fetchone()[0] == 2
+
     def test_a_failure_names_one_of_the_classes(self, queue):
         job_id = queue.submit(_body())
         queue.claim("w")
@@ -142,6 +180,7 @@ class TestJobQueue:
 
         fields = JobStatusSchema.model_fields
         assert get_args(fields["status"].annotation) == jq.STATUSES
+        assert get_args(fields["kind"].annotation) == jq.KINDS
         assert get_args(get_args(fields["failure_class"].annotation)[0]) == jq.FAILURE_CLASSES
 
 
@@ -184,14 +223,28 @@ class TestWorkerLoop:
         assert worker.serve(queue.path, price=echo_pricer, drain=True) == 0
         for n, job_id in enumerate(ids):
             job = queue.get(job_id)
-            assert job.status == jq.DONE and json.loads(job.result) == {"echo": {"n": n}}
+            assert job.status == jq.DONE and json.loads(job.result) == {"echo": {"n": n}, "kind": jq.PORTFOLIO}
+
+    def test_each_job_is_run_by_its_kinds_pricer(self, queue):
+        """A market-risk job reaches the worker as one (roadmap 3.1)."""
+        ids = {kind: queue.submit(_body(), kind) for kind in jq.KINDS}
+        worker.serve(queue.path, price=echo_pricer, drain=True)
+        assert {kind: json.loads(queue.get(i).result)["kind"] for kind, i in ids.items()} == {k: k for k in jq.KINDS}
+        assert set(worker.JOB_KINDS) == set(jq.KINDS)
+
+    def test_a_jobs_artifacts_are_stored_with_its_result(self, queue):
+        job_id = queue.submit(_body())
+        chunks = [b"\x00" * 8, b"\x01" * 8]
+        worker.serve(queue.path, price=lambda job: worker.JobResult("{}", {"npv_cube": chunks}), drain=True)
+        assert queue.get(job_id).status == jq.DONE
+        assert [queue.artifact(job_id, "npv_cube", i) for i in range(3)] == chunks + [None]
 
     def test_a_failing_job_fails_only_its_own_row(self, queue):
         """§13.8: with a failure class and the traceback; the worker goes on to the next job."""
-        def pricer(request):
-            if json.loads(request).get("bad"):
+        def pricer(job):
+            if json.loads(job.request).get("bad"):
                 raise KeyError("no market for currency 'GBP'")
-            return echo_pricer(request)
+            return echo_pricer(job)
 
         ok_before, bad, ok_after = (queue.submit(_body(bad=b)) for b in (False, True, False))
         worker.serve(queue.path, price=pricer, drain=True)
@@ -228,7 +281,7 @@ class TestWorkerLoop:
 
     def test_a_result_the_queue_cannot_store_fails_as_infrastructure(self, queue):
         job_id = queue.submit(_body())
-        worker.serve(queue.path, price=lambda request: object(), drain=True)
+        worker.serve(queue.path, price=lambda job: worker.JobResult(object()), drain=True)
         failed = queue.get(job_id)
         assert failed.failure_class == jq.INFRASTRUCTURE and "storing the result failed" in failed.error
 
@@ -261,10 +314,10 @@ class TestWorkerLoop:
 
         x = jax.block_until_ready(jnp.ones(3))
 
-        def pricer(request):
-            n = json.loads(request)["n"]
+        def pricer(job):
+            n = json.loads(job.request)["n"]
             jax.jit(lambda v: v * 2.0 + n)(x)  # a new program each job: one compile
-            return "{}"
+            return worker.JobResult("{}")
 
         ids = [queue.submit(_body(n=n)) for n in range(2)]
         worker.serve(queue.path, price=pricer, drain=True)
@@ -382,25 +435,36 @@ class TestRoutesOverTheQueue:
 
     def test_the_route_queues_the_body_as_received(self, client, queue):
         job_id = self._submit(client, queue)
-        assert client.get(f"/portfolio/price/{job_id}").json() == {
-            "status": "pending", "result": None, "error": None, "failure_class": None}
+        assert client.get(f"/jobs/{job_id}").json() == {
+            "kind": "portfolio", "status": "pending", "result": None, "error": None, "failure_class": None}
         assert json.loads(queue.get(job_id).request)["trades"][0]["trade_id"] == "swap-payer"
 
     def test_a_done_job_returns_the_stored_document(self, client, queue):
         job_id = self._submit(client, queue)
         worker.serve(queue.path, price=echo_pricer, drain=True)
-        data = client.get(f"/portfolio/price/{job_id}").json()
-        assert data["status"] == "done" and data["error"] is None and data["failure_class"] is None
+        data = client.get(f"/jobs/{job_id}").json()
+        assert data["kind"] == "portfolio" and data["status"] == "done"
+        assert data["error"] is None and data["failure_class"] is None
         assert data["result"]["echo"]["trades"][0]["trade_id"] == "swap-payer"
+
+    def test_an_artifact_chunk_is_served_as_stored(self, client, queue):
+        job_id = self._submit(client, queue)
+        worker.serve(queue.path, price=lambda job: worker.JobResult("{}", {"npv_cube": [b"\x00\x01", b"\x02"]}),
+                     drain=True)
+        response = client.get(f"/jobs/{job_id}/artifacts/npv_cube/1")
+        assert response.status_code == 200 and response.content == b"\x02"
+        assert response.headers["content-type"] == "application/octet-stream"
+        assert client.get(f"/jobs/{job_id}/artifacts/npv_cube/2").status_code == 404
+        assert client.get(f"/jobs/{job_id}/artifacts/pnl/0").status_code == 404
 
     def test_a_failed_job_returns_its_class_and_traceback(self, client, queue):
         job_id = self._submit(client, queue)
 
-        def pricer(request):
+        def pricer(job):
             raise NotImplementedError("no such product")
 
         worker.serve(queue.path, price=pricer, drain=True)
-        data = client.get(f"/portfolio/price/{job_id}").json()
+        data = client.get(f"/jobs/{job_id}").json()
         assert (data["status"], data["failure_class"], data["result"]) == ("failed", jq.UNSUPPORTED_PRODUCT, None)
         assert "NotImplementedError: no such product" in data["error"]
 
@@ -408,7 +472,7 @@ class TestRoutesOverTheQueue:
         job_id = self._submit(client, queue)
         queue.claim("dead-worker")
         queue.interrupt_running()
-        data = client.get(f"/portfolio/price/{job_id}").json()
+        data = client.get(f"/jobs/{job_id}").json()
         assert (data["status"], data["error"]) == ("interrupted", jq.INTERRUPTED_ERROR)
 
 
@@ -463,10 +527,23 @@ def test_the_worker_prices_the_request_the_route_validated(monkeypatch):
 
     monkeypatch.setattr(engine.portfolio, "price_portfolio", capture)
     with pytest.raises(Stop):
-        worker.price_job(raw)
+        worker.price_job(jq.Job(id="j", kind=jq.PORTFOLIO, status=jq.RUNNING, request=raw))
     route = MarketPortfolioRequestSchema.model_validate(body).to_dataclass()
     assert seen["request"] == route
     assert seen["request"].trades[0].fixings == route.trades[0].fixings and route.trades[0].fixings
+
+
+def test_a_cube_by_reference_without_scenario_risk_is_none_not_a_failure():
+    """`cube_output: "artifact"` with `scenario_risk: false` has no cube to return: the job
+    completes with neither the cube nor a reference (it once failed building a reference for a
+    cube with no trade axis)."""
+    body = {"market": shared.market_json(), "trades": _trades("swap-payer", "bond"), "scenario_risk": False,
+            "cube_output": "artifact"}
+    result = worker.price_job(jq.Job(id="j", kind=jq.PORTFOLIO, status=jq.RUNNING, request=json.dumps(body).encode()))
+    document = json.loads(result.document)
+    assert result.artifacts == {}
+    assert document["npv_cube"] is None and document["npv_cube_artifact"] is None
+    assert [row["trade_id"] for row in document["trades"]] == ["swap-payer", "bond"]
 
 
 @pytest.mark.slow

@@ -17,10 +17,18 @@ On date t with the currency's LGM state z (`nextPath`):
     adaptor's, so a Hull-White currency's curves are its own bond prices;
   * FX and equity spots: exp of their states.
 
-Tenor times are measured from the scenario date, `dc.yearFraction(date, date + tenor)` on the
-model's ACT/365, and the scenario curve between tenors is `engine.models.curves.DiscountCurve`
-(log-linear, flat forward). Model time on the grid is ACT/365 from the as-of date, so ORE's
-discount-curve time `t` and index-curve time `t_dc` coincide (plan V-10).
+Each curve's discount factors are the model's at the tenors measured from the scenario date,
+`dc.yearFraction(date, date + tenor)` (`nextPath`'s `time_dsc_`), but the simulation market
+holds them at the tenors measured from the as-of date, `dc.yearFraction(asof, asof + tenor)`:
+`ScenarioSimMarket::addYieldCurve` builds each curve once, on those times and a reference date
+that moves with the evaluation date, and every scenario only replaces its discount factors
+(`as_of_tenor_times`). Between tenors the curve is `engine.models.curves.DiscountCurve`
+(log-linear, flat forward), ORE's `LogLinear` interpolation and `FlatFwd` extrapolation. Until
+roadmap 3.2 the engine held each value at the time it was computed for; on a 6M tenor that is
+two days apart, and the swaps of the shared portfolio moved by up to 0.3% of their largest
+path value against ORE's own simulation (`tests/test_ore_xva_parity.py`). Model time on the
+grid is ACT/365 from the as-of date, so ORE's discount-curve time `t` and index-curve time
+`t_dc` coincide (plan V-10).
 """
 import dataclasses
 from dataclasses import dataclass
@@ -43,8 +51,9 @@ DISCOUNT_FLOOR = 1e-5
 @jax.tree_util.register_pytree_node_class
 @dataclass
 class ScenarioCurves:
-    """One curve on every path and date: log discount factors `[S, D, K+1]` at tenor times
-    `[D, K+1]` measured from each date (column 0 is t = 0, log discount 0)."""
+    """One curve on every path and date: log discount factors `[S, D, K+1]` at the simulation
+    market's tenor times `[D, K+1]`, measured from each date (column 0 is t = 0, log discount
+    0); since roadmap 3.2 every date's are the as-of date's (`as_of_tenor_times`)."""
     tenor_times: jax.Array    # [D, K+1]
     log_discounts: jax.Array  # [S, D, K+1]
 
@@ -126,6 +135,12 @@ def tenor_times(dates: Sequence[ORE.Date], tenors: Sequence[str]) -> np.ndarray:
     return times
 
 
+def as_of_tenor_times(asof: ORE.Date, tenors: Sequence[str]) -> np.ndarray:
+    """`[K+1]`: the times the simulation market holds its tenor points at on every date,
+    `dc.yearFraction(asof, asof + tenor)` with a leading 0 (`ScenarioSimMarket::addYieldCurve`)."""
+    return tenor_times([asof], tenors)[0]
+
+
 def implied_log_discounts(target: ZeroCurve, model: IrComponent, t: np.ndarray,
                           tenors: np.ndarray, z: jax.Array) -> jax.Array:
     """ln P(t, t + tau | z) of the LGM `model` with `target` as its t=0 curve (ORE's
@@ -163,16 +178,19 @@ def build_scenario_market(
     tenors: Sequence[str],
     index_curves: Mapping[str, Tuple[str, ZeroCurve]],
 ) -> ScenarioMarket:
-    """The scenario market from the CAM states `[S, D, d]` on `dates`.
+    """The scenario market from the CAM states `[S, D, d]` on `dates`: each curve's discount
+    factors computed at the tenors from each date, held at the tenors from the as-of date (see
+    the module docstring).
 
     `index_curves`: index name -> (currency, the index's t=0 forwarding curve)."""
     times = np.asarray([TIME_AXIS_DAY_COUNTER.yearFraction(asof, d) for d in dates], dtype=np.float64)
     taus = tenor_times(dates, tenors)
+    pillars = jnp.asarray(np.broadcast_to(as_of_tenor_times(asof, tenors), taus.shape), dtype=states.dtype)
 
     def curves_for(currency: str, target: ZeroCurve) -> ScenarioCurves:
         i = model.ir_index(currency)
         log_dfs = implied_log_discounts(target, model.ir[i], times, taus, states[:, :, i])
-        return ScenarioCurves(tenor_times=jnp.asarray(taus, dtype=states.dtype), log_discounts=log_dfs)
+        return ScenarioCurves(tenor_times=pillars, log_discounts=log_dfs)
 
     numeraire = lgm_numeraire(model.ir[0], times, states[:, :, 0])
     return ScenarioMarket(

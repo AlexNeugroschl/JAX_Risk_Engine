@@ -88,9 +88,10 @@ JAX_Risk_Engine/
 │   │                                     that labels each pricing stage on a trace
 │   ├── api/                              FastAPI HTTP boundary -- TWO separate contracts
 │   │   ├── app.py                        FastAPI app factory, mounting both routers
-│   │   ├── routes.py                     /health, /version, /portfolio/price (also served
-│   │   │                                 as /v2/portfolio/price; async job pattern),
-│   │   │                                 /calibration/lgm
+│   │   ├── routes.py                     /health, /version; jobs (async): /portfolio/price,
+│   │   │                                 /portfolio/market-risk, /jobs/{id} and its
+│   │   │                                 artifact chunks; /calibration/cam, /calibration/lgm
+│   │   ├── artifacts.py                  Arrays by reference: chunked, hashed, trade order
 │   │   ├── job_queue.py                  The durable SQLite job queue and the worker lock
 │   │   ├── worker.py                     The engine worker (jax-risk-worker): one process
 │   │   │                                 per host prices queued jobs; the opt-in XProf

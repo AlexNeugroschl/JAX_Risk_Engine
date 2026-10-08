@@ -113,8 +113,8 @@ class TestBondGreeksSerializeOverHttp:
         """Price a bond with Greeks, then serialize the whole result and round-trip it."""
         result = price_portfolio(parse([BILL_JSON], compute_greeks=True))
         serialized = PortfolioResultSchema.from_dataclass(result)
-        assert serialized.greeks is not None
-        assert sum(serialized.greeks[0].values["delta:discount:USD"]) < 0
+        assert serialized.trades[0].greeks is not None
+        assert sum(serialized.trades[0].greeks.values["delta:discount:USD"]) < 0
         assert "delta:discount:USD" in serialized.model_dump_json()
 
 
@@ -131,11 +131,11 @@ class TestScenarioRiskOverHttp:
     def test_the_result_reports_scenario_risk_unavailable(self):
         serialized = PortfolioResultSchema.from_dataclass(price_portfolio(parse([BILL_JSON])))
         assert serialized.scenario_risk_available is False
-        assert serialized.exposure is None and serialized.trade_exposures == []
+        assert serialized.exposure is None and [t.exposure for t in serialized.trades] == [None]
 
     def test_base_npv_is_still_reported_when_risk_is_absent(self):
         serialized = PortfolioResultSchema.from_dataclass(price_portfolio(parse([BILL_JSON])))
-        assert serialized.base_npv > 90_000.0 and len(serialized.base_npv_per_trade) == 1
+        assert serialized.base_npv > 90_000.0 and [t.base_npv for t in serialized.trades] == [serialized.base_npv]
 
     def test_a_bond_with_scenario_risk_is_priced_on_every_path_over_http(self):
         """I-24: before roadmap 1.3 this was refused (`ScenarioPricingNotSupported`)."""

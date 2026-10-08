@@ -326,7 +326,7 @@ class TestProfilerHook:
         monkeypatch.chdir(tmp_path)
         from engine.api.worker import _profiled
 
-        assert _profiled(lambda: "the job's result") == "the job's result"
+        assert _profiled(lambda: "the job's result", lambda result: result) == "the job's result"
         assert list(tmp_path.iterdir()) == []
 
     def test_a_traced_job_writes_its_summary_beside_the_trace(self, monkeypatch, tmp_path):
@@ -348,7 +348,7 @@ class TestProfilerHook:
             with phase("pricing"):
                 return SimpleNamespace(npv_cube=doubled(jnp.arange(5.0)))
 
-        result = _profiled(job)
+        result = _profiled(job, lambda result: result.npv_cube)
 
         np.testing.assert_array_equal(np.asarray(result.npv_cube), 2.0 * np.arange(5.0))
         [path] = list(tmp_path.glob("pid-*/*.summary.json"))
@@ -381,7 +381,7 @@ class TestProfilerHook:
             with phase("exposure"):
                 return SimpleNamespace(npv_cube=x + 1.0)
 
-        result = _profiled(job)
+        result = _profiled(job, lambda result: result.npv_cube)
 
         np.testing.assert_array_equal(np.asarray(result.npv_cube), 6.0 * np.arange(5.0) + 1.0)
         [path] = list(tmp_path.glob("pid-*/*.summary.json"))
@@ -399,7 +399,7 @@ class TestProfilerHook:
         monkeypatch.setenv("JAX_RISK_PROFILE_DIR", str(tmp_path))
         monkeypatch.setenv("JAX_RISK_PROFILE_PHASE", "princing")
         with pytest.warns(UserWarning, match="'princing': the job has no such phase"):
-            result = _profiled(lambda: SimpleNamespace(npv_cube=jnp.ones(3)))
+            result = _profiled(lambda: SimpleNamespace(npv_cube=jnp.ones(3)), lambda result: result.npv_cube)
         assert result.npv_cube.shape == (3,)
         assert not list(tmp_path.rglob("*.xplane.pb")) and not list(tmp_path.rglob("*.summary.json"))
 

@@ -21,6 +21,9 @@ Case groups and the ORE behaviour each pins:
   * American with a fractional step count >= 0.5: ORE truncates (`static_cast<Size>`).
   * zero volatility: the best intrinsic value, checking the underlying's cashflows.
   * piecewise Sigma: ORE's `VolatilityTimes`/`Volatility`.
+  * a curve sloped in its first segment, where every exercise and flow lies: the oracle hands
+    ORE the as-of quote its zero-curve rebuild maps onto the engine's t=0 rate (I-34; before
+    the fix ORE's curve there was tilted: 2.3e-6 relative on this case, 1.5e-12 after).
 """
 from dataclasses import dataclass
 from typing import Callable, Union
@@ -110,12 +113,12 @@ CASES = [
 ]
 
 
-def _engine_npv(case: Case, exercise_dates: list) -> float:
+def _engine_npv(case: Case, exercise_dates: list, curve=(CURVE_TIMES, CURVE_RATES)) -> float:
     """The one place this file touches the engine's API: the trade, and the model as ORE's
     engine takes it with `Calibration=None`."""
     common = dict(notional=NOTIONAL, fixed_rate=case.fixed_rate, payer=case.payer, swap_tenor=SWAP_TENOR,
                   index_tenor_months=INDEX_TENOR_MONTHS, evaluation_date=EVAL_DATE, trade_id=case.id)
-    model = dict(a=HW_A, sigma=case.sigma, curve=ZeroCurveConfig(times=CURVE_TIMES, rates=CURVE_RATES),
+    model = dict(a=HW_A, sigma=case.sigma, curve=ZeroCurveConfig(times=curve[0], rates=curve[1]),
                  n_per_std=N_PER_STD, std_devs=STD_DEVS, steps_per_year=STEPS_PER_YEAR)
     if case.style == "Bermudan":
         return grid_npv(BermudanSwaptionConfig(exercise_dates=exercise_dates, **common), **model)
@@ -123,9 +126,9 @@ def _engine_npv(case: Case, exercise_dates: list) -> float:
     return grid_npv(AmericanSwaptionConfig(first_exercise_date=first, last_exercise_date=last, **common), **model)
 
 
-def _ore_npv(case: Case, exercise_dates: list) -> float:
+def _ore_npv(case: Case, exercise_dates: list, curve=(CURVE_TIMES, CURVE_RATES)) -> float:
     return ore_lgm_swaption_npv(
-        evaluation_date=EVAL_DATE, curve_times=CURVE_TIMES, curve_rates=CURVE_RATES,
+        evaluation_date=EVAL_DATE, curve_times=curve[0], curve_rates=curve[1],
         swap=_swap(case.fixed_rate, case.payer), notional=NOTIONAL, fixed_rate=case.fixed_rate,
         payer=case.payer, floating_spread=0.0, index_tenor_months=INDEX_TENOR_MONTHS,
         style=case.style, exercise_dates=exercise_dates, hw_a=HW_A, hw_sigma=case.sigma,
@@ -140,6 +143,17 @@ def test_engine_equals_ore_lgm_engine(case):
     engine = _engine_npv(case, exercise_dates)
     assert ore > 0.0, "a case must price something to test"
     assert engine == pytest.approx(ore, rel=RTOL, abs=ATOL)
+
+
+def test_a_curve_sloped_in_its_first_segment_is_the_engines():
+    """I-34: every exercise and flow before the first pillar after t=0, on a curve rising from
+    2% to 2.6% there. Before the oracle solved for the as-of quote, ORE's rebuild read the t=0
+    rate at t = 1e-4 and tilted this segment."""
+    curve = ([0.0, 3.0, 5.0, 10.0, 30.0], [0.020, 0.026, 0.030, 0.035, 0.035])
+    case = Case("bermudan-in-a-sloped-first-segment", "Bermudan", True, 0.025, 0.01, _aligned)
+    exercise_dates = case.exercise(_swap(case.fixed_rate, case.payer))
+    assert _engine_npv(case, exercise_dates, curve) == pytest.approx(_ore_npv(case, exercise_dates, curve),
+                                                                      rel=RTOL, abs=ATOL)
 
 
 @pytest.mark.parametrize("payer", [True, False], ids=["payer", "receiver"])

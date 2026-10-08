@@ -1,7 +1,7 @@
 # Configurable engine
 
-Design for roadmap [stage 1](../roadmap.md#stage-1--structure) and step
-[3.1](../roadmap.md#stage-3--foundations): one run configuration whose options are
+Design for roadmap [stage 1](../roadmap.md#stage-1--structure) and step 3.1 (done
+2026-10-07): one run configuration whose options are
 models, engines, methods and precision, as ORE configures a run. Implements owner decisions
 A-1 to A-9 ([compliance/decisions.md](../../../compliance/decisions.md) §1–2).
 
@@ -25,7 +25,7 @@ Every choice is one `RunConfig` (`engine/portfolio/config.py`) on
 | | |
 |---|---|
 | Entry | `price_portfolio(PortfolioRequest(market=Market(...), trades=[...], config=RunConfig(...)))` |
-| HTTP | `POST /portfolio/price` (also served as `/v2/portfolio/price`), one request shape |
+| HTTP | `POST /portfolio/price`, `POST /portfolio/market-risk`, `POST /calibration/cam`, every job polled at `GET /jobs/{job_id}`; every setting has an API field (`tests/test_api_completeness.py`) |
 | Simulation | `config.simulation` (`CamConfig`), `engine.simulation.cam`: per currency `LgmConfig` or `HullWhiteConfig`, exact step moments, LGM numeraire |
 | Valuation | `engine.valuation`: every trade by its t=0 engine on every path (scenario market, legs, `OptionWrapper`, bond legs, per-trade basket) |
 | European engine | `Bachelier` (ORE's default) or `Jamshidian` with `PricingConfig.jamshidian` |
@@ -140,21 +140,30 @@ In [precision.md](precision.md) §8 and §10: the evidence table per figure and 
 against the acceptance standard (A-11), shared with Basel P6; then the kernels in difference
 form, one implementation for every precision (A-16).
 
-## Step 3.1 — one request (I-56)
+## Step 3.1 — one API reaching every setting (I-56, I-10, I-09) — done 2026-10-07
 
-- One route. Since 1.3 one request shape (`MarketPortfolioRequestSchema`) reaches the model
-  per currency, the engines, the Greeks method and sensitivity settings, precision and the
-  reporting currency; still missing: market-risk runs (`engine.market_risk.run_market_risk`),
-  the CAM calibration as a standalone run, and `shift_horizon` (I-32).
-- Validated before any job starts: types, unknown fields refused, cross-field checks, each
-  refusal naming its field.
-- Names say what they are: `/v2` and `schema_version: "2"` go; a version marks a revision of
-  the contract, never a model.
-- `POST /portfolio/price` and `POST /v2/portfolio/price` keep answering. (The Hull-White
-  request shape retired by 1.3 is refused with a 422 naming its replacement, not translated:
-  its trades carried model copies the new request has no place for.)
-- A completeness test compares the Python configuration types with the request schema and
-  fails on any setting without an API field.
-- Every per-trade result row carries its `trade_id` (today a list beside position-keyed rows,
-  I-10), and the cube returns as a chunked artifact reference (shape, dtype, axis order, hash,
-  item order) instead of nested JSON (I-09).
+- **One route per analytic.** `POST /portfolio/price` (the portfolio request since 1.3),
+  `POST /portfolio/market-risk` (`MarketRiskRequestSchema`: the market and trades, Monte Carlo
+  or historical scenarios on named factors, engines, quantiles, precision), both jobs for the
+  engine worker, polled at `GET /jobs/{job_id}`; `POST /calibration/cam`, synchronous. The job
+  queue keeps each job's kind (schema version 2, migrating version 1 in place) and the worker
+  runs the kind's entry point (`engine.api.worker.JOB_KINDS`).
+- **Validated before any job starts**, without JAX work: each queued request's `.check()` runs
+  the engine's own validation (`validate_request`; for market risk `validate_portfolio`,
+  `validate_factors` and the scenario generators' input checks, never drawing a scenario).
+- **Names say what they are.** `/v2/portfolio/price`, `schema_version: "2"` and
+  `GET /portfolio/price/{job_id}` are removed, not aliased: there was no client (A-2, revised
+  2026-10-07).
+- **Every setting reachable.** `tests/test_api_completeness.py` walks every configuration type a
+  request can hold and fails on a field without an API field. It found three: the LGM engine's
+  `shift_horizon` (now a field, refused unless 0 until 3.4), piecewise volatilities (now
+  `{"times", "values"}` wherever a volatility is taken), and market risk and the CAM calibration
+  (the new routes).
+- **Every per-trade figure keyed by its trade** (I-10): one row per trade (`trade_id`, t=0
+  value, exposure, Greeks); the arrays' trade axes follow the rows.
+- **Arrays by reference on request** (A-17, I-09): `cube_output` / `pnl_output` `"inline"`
+  (default), `"artifact"` (chunks of at most 8 MiB, each hashed, the whole array hashed, the
+  trade order hashed beside it, written to the queue in the result's transaction) or `"none"`.
+
+The Python result dataclasses keep their array-oriented fields (`trade_ids` beside positional
+lists and the cube's trade axis), which NumPy code indexes; the rows are the wire's.

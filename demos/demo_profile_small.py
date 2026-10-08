@@ -205,7 +205,7 @@ def submit_and_wait(request_body: dict) -> dict:
 
     start = time.time()
     while True:
-        poll = httpx.get(f"{API_BASE}/portfolio/price/{job_id}", timeout=30.0)
+        poll = httpx.get(f"{API_BASE}/jobs/{job_id}", timeout=30.0)
         poll.raise_for_status()
         status = poll.json()
         print(f"  [{time.time() - start:6.1f}s] status: {status['status']}")
@@ -219,7 +219,8 @@ def submit_and_wait(request_body: dict) -> dict:
 
 
 def print_result(result: dict) -> None:
-    trade_ids = result["trade_ids"]
+    rows = result["trades"]  # one row per trade, in request order: the cube's trade axis
+    trade_ids = [row["trade_id"] for row in rows]
     npv_cube = result["npv_cube"]
     num_paths = len(npv_cube)
 
@@ -241,9 +242,9 @@ def print_result(result: dict) -> None:
         print(f"  {t:>4.2f}" + "".join(f"{v:>12,.0f}" for v in values))
 
     print("\nGreeks (discount-curve Delta per tenor, Theta):")
-    for idx, greeks in sorted(result["greeks"].items(), key=lambda kv: int(kv[0])):
-        delta = [round(v, 2) for v in greeks["values"]["delta:discount:USD"]]
-        print(f"  {trade_ids[int(idx)]:>10}: {delta} theta={greeks['theta']:,.2f}")
+    for row in rows:
+        delta = [round(v, 2) for v in row["greeks"]["values"]["delta:discount:USD"]]
+        print(f"  {row['trade_id']:>10}: {delta} theta={row['greeks']['theta']:,.2f}")
 
 
 def report_trace() -> None:

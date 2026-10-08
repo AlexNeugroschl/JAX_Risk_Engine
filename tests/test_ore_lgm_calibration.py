@@ -37,7 +37,7 @@ from tests.support.ore_lgm_oracle import OreCalibration, ore_lgm_swaption_npv
 
 ASOF = ORE.Date(30, 7, 2026)
 PILLARS = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
-# Flat to the first non-zero pillar, so ORE's curve rebuild keeps it exactly (I-34).
+# Flat to the first non-zero pillar, as written before the oracle's fix of I-34 (no longer needed).
 DISC_RATES = [0.02, 0.02, 0.025, 0.03, 0.035, 0.04]
 INDEX_RATES = [0.025, 0.025, 0.031, 0.036, 0.04, 0.044]
 VOLS = SwaptionVolSurface(

@@ -40,7 +40,8 @@ from engine.portfolio.profiling import phase
 from engine.risk.exposure import ExposureProfile, PairedPaths, exposure_profile, netting_set_profile
 from engine.risk.var_es import ENGINE_RISK_MEASURE
 from engine.simulation.config import build_cross_asset_model, simulate
-from engine.valuation.portfolio import validate_trades, value_paths, value_portfolio, value_today
+from engine.valuation.context import simulation_market_today
+from engine.valuation.portfolio import trade_maturity, validate_trades, value_paths, value_portfolio, value_today
 
 if TYPE_CHECKING:
     from engine.portfolio.request import PortfolioResult
@@ -73,7 +74,9 @@ def price_on_market(request) -> "PortfolioResult":
                 sample = _paired_sample(trades, market, model, run, paired)
         today, cube = valuation.today, load(valuation.cube, jnp.float64)
         with phase("exposure"):
-            exposure, trade_exposures = _exposures(trades, today, cube, scenarios, market, base, request.pfe_quantiles,
+            start = value_today(trades, market, base, run.pricing,
+                                simulation_market_today(market, simulation.curve_tenors))
+            exposure, trade_exposures = _exposures(trades, start, cube, scenarios, market, base, request.pfe_quantiles,
                                                    sample)
         figures = {f"netting_set/{k}": v for k, v in exposure.estimates.items()}
         figures.update({f"trades/{t.trade_id}/{k}": v
@@ -133,19 +136,24 @@ def validate_request(request) -> None:
     request.market.currency(run.reporting_currency)
 
 
-def _exposures(trades: Sequence, today: List[float], cube, scenarios, market: Market, base: str, quantiles,
+def _exposures(trades: Sequence, start: List[float], cube, scenarios, market: Market, base: str, quantiles,
                paired: Optional[PairedPaths] = None) -> "tuple[ExposureProfile, List[ExposureProfile]]":
     """Netting-set and per-trade profiles, deflated by the LGM numeraire, EE_B against the base
     currency's discount curve, time weights on the simulation dates; with the `paired` float64
     sample, their two-level estimates. Reductions over paths: `cube` is float64 and the stored
-    numeraire is loaded at float64 (cast point 5)."""
+    numeraire is loaded at float64 (cast point 5).
+
+    The profiles start from `start`, each trade's value on the simulation market of the as-of
+    date (its curves sampled at the simulation tenors), as ORE's start from the cube's `T0`
+    (`ValuationEngine::buildCube` prices t=0 on the `ScenarioSimMarket`). The result's
+    `base_npv` stays the value on today's market, ORE's NPV analytic (roadmap 3.2)."""
     curve = ZeroCurve.from_config(market.currency(base).discount_curve)
     p0 = discount(curve, jnp.asarray(scenarios.times, dtype=jnp.float64))
     numeraire = load(scenarios.numeraire, jnp.float64)
     common = dict(numeraire=numeraire, discount=p0, times=scenarios.times, quantiles=quantiles,
                   dates=scenarios.dates, asof=market.asof)
-    netting_set = netting_set_profile(cube, today, paired=paired, **common)
-    per_trade = [exposure_profile(cube[:, :, i], today[i], maturity=trade.maturity_date,
+    netting_set = netting_set_profile(cube, start, paired=paired, **common)
+    per_trade = [exposure_profile(cube[:, :, i], start[i], maturity=trade_maturity(trade),
                                   paired=None if paired is None else (paired[0][:, :, i], paired[1]), **common)
                  for i, trade in enumerate(trades)]
     return netting_set, per_trade

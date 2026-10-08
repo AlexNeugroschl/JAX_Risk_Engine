@@ -189,7 +189,7 @@ def submit_and_wait(request_body: dict) -> dict:
 
     start = time.time()
     while True:
-        poll = httpx.get(f"{API_BASE}/portfolio/price/{job_id}", timeout=30.0)
+        poll = httpx.get(f"{API_BASE}/jobs/{job_id}", timeout=30.0)
         poll.raise_for_status()
         status = poll.json()
         print(f"  [{time.time() - start:6.1f}s] status: {status['status']}")
@@ -203,13 +203,14 @@ def submit_and_wait(request_body: dict) -> dict:
 
 
 def print_result(result: dict) -> None:
-    trade_ids = result["trade_ids"]
+    rows = result["trades"]  # one row per trade, in request order: the cube's trade axis
+    trade_ids = [row["trade_id"] for row in rows]
     npv_cube = result["npv_cube"]  # [Paths, Dates, Trades]
     num_paths = len(npv_cube)
 
     print("\nmean NPV across paths, at each simulation date:")
     print("  time  " + "".join(f"{n:>12}" for n in trade_ids))
-    print("  0.00  " + "".join(f"{v:>12,.0f}" for v in result["base_npv_per_trade"]))
+    print("  0.00  " + "".join(f"{row['base_npv']:>12,.0f}" for row in rows))
     for i, t in enumerate(result["exposure"]["times"][1:]):  # the cube's dates (times[0] is t=0)
         means = [sum(npv_cube[s][i][j] for s in range(num_paths)) / num_paths for j in range(len(trade_ids))]
         print(f"  {t:>4.2f}  " + "".join(f"{m:>12,.0f}" for m in means))
@@ -224,8 +225,8 @@ def print_result(result: dict) -> None:
         print(f"  {t:>4.2f}" + "".join(f"{v:>12,.0f}" for v in values))
     print(f"(netting set; ORE's ExposureCalculator definitions; measure: {result['measure']})")
 
-    if result["greeks"] is not None:
-        greeks = result["greeks"][str(trade_ids.index("bermudan"))]
+    greeks = next(row for row in rows if row["trade_id"] == "bermudan")["greeks"]
+    if greeks is not None:
         print(f"\nBermudan Greeks ({GREEKS_METHOD}):")
         for key, values in greeks["values"].items():
             print(f"  {key}: {[round(v, 2) for v in values]}")

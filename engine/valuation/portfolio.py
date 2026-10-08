@@ -26,7 +26,7 @@ market's is refused.
 import dataclasses
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Dict, List, Sequence, Tuple, Union, get_args
+from typing import Dict, List, Optional, Sequence, Tuple, Union, get_args
 
 import jax
 import jax.numpy as jnp
@@ -118,6 +118,19 @@ def validate_trades(trades: Sequence[Trade], market: Market, pricing: PricingCon
             validate_jamshidian(cfg)
 
 
+def trade_maturity(cfg: Trade) -> ORE.Date:
+    """ORE's `Trade::maturity()`, after which a trade's exposure takes no time weight
+    (`ExposureCalculator`): a swap's or a bond's last date and a physically settled option's
+    underlying maturity, but a cash-settled option's last exercise date, on which it settles
+    (`Swaption::build`, step 8). Until roadmap 3.2 every option took its underlying's, so a
+    cash-settled option's time-weighted EPE kept accruing after it had settled."""
+    if isinstance(cfg, SwaptionConfig) and cfg.settlement == "Cash":
+        return cfg.exercise_date
+    if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)) and cfg.settlement == "Cash":
+        return max(contract_exercise_dates(cfg))
+    return cfg.maturity_date
+
+
 def reads_swaption_vols(cfg: Trade, pricing: PricingConfig) -> bool:
     """Whether the trade's engine reads the market's swaption volatilities: a European on the
     Bachelier engine, a Bermudan/American calibrated to them."""
@@ -141,10 +154,12 @@ def value_portfolio(trades: Sequence[Trade], market: Market, scenarios: Scenario
 
 
 def value_today(trades: Sequence[Trade], market: Market, base_currency: str,
-                pricing: PricingConfig = PricingConfig()) -> List[float]:
-    """t=0 NPVs only (no simulation), in the base currency, float64 (decision A-10)."""
+                pricing: PricingConfig = PricingConfig(), context: Optional[PricingContext] = None) -> List[float]:
+    """t=0 NPVs only (no simulation), in the base currency, float64 (decision A-10): on today's
+    market, or on another market of the as-of date, `context` (the simulation market's,
+    `engine.valuation.context.simulation_market_today`, where an exposure profile starts)."""
     validate_trades(trades, market, pricing)
-    return _today(trades, market, base_currency, pricing)
+    return _today(trades, market, base_currency, pricing, context)
 
 
 def value_paths(trades: Sequence[Trade], market: Market, scenarios: ScenarioMarket, base_currency: str,
@@ -158,8 +173,9 @@ def value_paths(trades: Sequence[Trade], market: Market, scenarios: ScenarioMark
     return _columns(trades, market, scenarios, base_currency, pricing, decay, precision)
 
 
-def _today(trades, market: Market, base_currency: str, pricing: PricingConfig) -> List[float]:
-    context = from_market(market)
+def _today(trades, market: Market, base_currency: str, pricing: PricingConfig,
+           context: Optional[PricingContext] = None) -> List[float]:
+    context = context or from_market(market)
     return [float(value_on(cfg, context, pricing)) * market.fx_spot(cfg.currency, base_currency) for cfg in trades]
 
 

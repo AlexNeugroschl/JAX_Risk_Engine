@@ -29,9 +29,9 @@ What is checked, and against what:
 
 Curves are sloped, and each pillar is a whole number of ACT/365 days so ORE
 and the engine read identical dates. The Bermudan/American curve is flat up
-to its first non-zero pillar: ORE's zero-curve build moves the as-of zero to
-`z(1e-4)`, which only a flat first segment leaves unchanged (see the oracle's
-module docstring and I-34 in docs/planning/known-issues.md).
+to its first non-zero pillar, as written before the oracle handed ORE the
+as-of quote its zero-curve rebuild needs (I-34, fixed in roadmap 3.2; see
+tests/support/ore_inputs.py); a sloped first segment would now match too.
 """
 import dataclasses
 
@@ -78,7 +78,7 @@ INDEX = index_name("USD", 6)
 PILLARS = [0.0, 73 / 365, 1.0, 2.0, 5.0, 10.0, 30.0]
 DISC_RATES = [0.020, 0.021, 0.024, 0.028, 0.034, 0.038, 0.040]
 FWD_RATES = [0.025, 0.027, 0.031, 0.034, 0.039, 0.042, 0.043]
-# Flat to the first non-zero pillar (see module docstring), sloped after it.
+# Flat to the first non-zero pillar (see the module docstring), sloped after it.
 LGM_RATES = [0.030, 0.030, 0.032, 0.035, 0.040, 0.042, 0.045]
 FLAT_RATE = 0.03
 VOLS = SwaptionVolSurface(("1Y", "5Y", "10Y"), ("1Y", "5Y", "10Y"),

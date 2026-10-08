@@ -50,6 +50,12 @@ result.pnl                                               # [S, N] per-trade P&L
 `demos/demo.py` ends with a worked run; `demos/demo_precision.py` runs it at FP64, FP32,
 and with the P&L only stored in FP32.
 
+Over HTTP the same run is a job: `POST /portfolio/market-risk` with the market, the trades and
+the scenarios' inputs (a covariance or a history of the factors, the factors named in the
+order of its columns), polled at `GET /jobs/{job_id}`; the P&L comes inline, by hashed
+reference or not at all (`pnl_output`). `demos/demo_api.py` runs one
+([HTTP API](../reference/http-api.md#post-portfoliomarket-risk)).
+
 ## Risk factors
 
 The pillar zero rates of named market curves (`RateRiskFactors`). `from_market(market)`
@@ -158,7 +164,7 @@ float64.
 - **Thin tails.** Fewer than 10 observations beyond a quantile is flagged.
 
 Not yet covered: equity, FX, credit and volatility risk factors; stressed calibration and
-the liquidity-horizon cascade Basel's ES needs (plan phase P3); an HTTP endpoint.
+the liquidity-horizon cascade Basel's ES needs (plan phase P3).
 
 ## Validation against ORE
 

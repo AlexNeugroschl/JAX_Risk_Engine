@@ -1,18 +1,20 @@
 """
-The engine worker: one single-threaded process per host that takes portfolio jobs from the
-job queue (`engine.api.job_queue`), prices them and writes the results back (decision A-14,
-roadmap 1.8; docs/planning/details/precision.md §11).
+The engine worker: one single-threaded process per host that takes jobs from the job queue
+(`engine.api.job_queue`), runs them and writes the results back (decision A-14, roadmap 1.8;
+docs/planning/details/precision.md §11).
 
     jax-risk-worker [--queue PATH] [--parent-pid PID]
 
 (or `python -c "from engine.api.worker import main; main()" ...`). The API starts and
 supervises one itself unless `JAX_RISK_WORKER=external` (`engine.api.supervisor`).
 
-A job is the HTTP body as the API received it. The worker parses it exactly as the route did
-(`json.loads`, then `MarketPortfolioRequestSchema`), so nothing is pickled and no ORE object
-crosses a process boundary, calls `price_portfolio` in this process, and stores the result
-document `PortfolioResultSchema` serializes, the bytes a route would have sent. Jobs run one
-at a time, in submission order. The process owns every device JAX sees on its host; no device
+A job is the HTTP body as the API received it, and its kind. The worker parses the body exactly
+as the route did (the kind's request schema, `JOB_KINDS`), so nothing is pickled and no ORE
+object crosses a process boundary, runs the kind's engine entry point in this process
+(`price_portfolio`, `run_market_risk`), and stores the result document the kind's result schema
+serializes, the bytes a route would have sent, with the arrays the request asked for by
+reference as chunked artifacts (`engine.api.artifacts`). Jobs run one at a time, in submission
+order. The process owns every device JAX sees on its host; no device
 is pinned or shared with another engine process (the API keeps its own JAX on the CPU,
 `engine.api.app.keep_jax_on_the_cpu`), so the worker keeps JAX's default of preallocating
 75% of a GPU; set `XLA_PYTHON_CLIENT_PREALLOCATE=false` where other processes share the card
@@ -52,11 +54,11 @@ import time
 import traceback
 import warnings
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from engine.api.job_queue import (
-    BAD_TERMS, INFRASTRUCTURE, MISSING_MARKET_DATA, NUMERICAL_FAILURE, UNSUPPORTED_PRODUCT, Job, JobQueue,
-    WorkerLock, default_queue_path,
+    BAD_TERMS, INFRASTRUCTURE, MARKET_RISK, MISSING_MARKET_DATA, NUMERICAL_FAILURE, PORTFOLIO, UNSUPPORTED_PRODUCT,
+    Job, JobQueue, WorkerLock, default_queue_path,
 )
 
 #: Exit status of a worker that found another worker serving its queue.
@@ -79,8 +81,16 @@ COMPILATION_CACHE_DIRNAME = "xla-cache"
 #: compile time; an operator who sets either flag, true or false, is not overridden.
 DETERMINISTIC_KERNELS_FLAG = "--xla_gpu_exclude_nondeterministic_ops=true"
 
-#: `request body -> result document`, the work of one job.
-Pricer = Callable[[bytes], str]
+@dataclasses.dataclass(frozen=True)
+class JobResult:
+    """What a job leaves in its row: the result document (JSON) and its artifacts (name ->
+    chunks of bytes), stored together (`JobQueue.finish`)."""
+    document: str
+    artifacts: Mapping[str, Sequence[bytes]] = dataclasses.field(default_factory=dict)
+
+
+#: `job -> JobResult`, the work of one job.
+Pricer = Callable[[Job], JobResult]
 
 
 def main(argv=None) -> None:
@@ -163,12 +173,12 @@ def run_job(queue: JobQueue, job: Job, price: Pricer, compiles: "_CompileCounter
     Only a queue that cannot be written at all stops the worker."""
     before = compiles.count
     try:
-        result = price(job.request)
+        result = price(job)
     except Exception as exc:
         queue.fail(job.id, failure_class(exc), _describe(exc), compiles=compiles.count - before)
         return
     try:
-        queue.finish(job.id, result, compiles=compiles.count - before)
+        queue.finish(job.id, result.document, compiles=compiles.count - before, artifacts=result.artifacts)
     except Exception as exc:
         queue.fail(job.id, INFRASTRUCTURE, f"storing the result failed: {_describe(exc)}",
                    compiles=compiles.count - before)
@@ -178,17 +188,60 @@ def _describe(exc: BaseException) -> str:
     return "".join(traceback.format_exception(exc))
 
 
-def price_job(request: bytes) -> str:
-    """One job's work: the HTTP body -> `price_portfolio` -> the result document. Parsed as
-    the route parsed it, so the dataclass request is the one the route validated, and
-    serialized as the route would have, so the document is the bytes it would have sent."""
+def price_job(job: Job) -> JobResult:
+    """One job's work, by its kind (`JOB_KINDS`): the HTTP body -> the engine -> the result
+    document. Parsed as the route parsed it, so the dataclass request is the one the route
+    validated, and serialized as the route would have, so the document is the bytes it would
+    have sent."""
+    return JOB_KINDS[job.kind](job)
+
+
+def _portfolio_job(job: Job) -> JobResult:
     from engine.api.market_schemas import MarketPortfolioRequestSchema
     from engine.api.schemas import PortfolioResultSchema
     from engine.portfolio import price_portfolio
 
-    dataclass_request = MarketPortfolioRequestSchema.model_validate(json.loads(request)).to_dataclass()
-    result = _profiled(lambda: price_portfolio(dataclass_request))
-    return PortfolioResultSchema.from_dataclass(result).model_dump_json()
+    schema = MarketPortfolioRequestSchema.model_validate(json.loads(job.request))
+    request = schema.to_dataclass()
+    result = _profiled(lambda: price_portfolio(request), lambda r: r.npv_cube)
+    # Without scenario risk nothing was simulated: there is no cube to return by reference.
+    output = schema.cube_output if result.scenario_risk_available or schema.cube_output != "artifact" else "none"
+    reference, artifacts = _array_output(job, output, "npv_cube", result.npv_cube, ("scenario", "date", "trade"),
+                                         result.trade_ids)
+    return JobResult(PortfolioResultSchema.from_dataclass(result, output, reference).model_dump_json(), artifacts)
+
+
+def _market_risk_job(job: Job) -> JobResult:
+    from engine.api.market_schemas import MarketRiskRequestSchema
+    from engine.api.schemas import MarketRiskResultSchema
+    from engine.market_risk import run_market_risk
+
+    schema = MarketRiskRequestSchema.model_validate(json.loads(job.request))
+    request = schema.to_dataclass()
+    trade_ids = [t.trade_id for t in request.trades]
+    result = _profiled(lambda: run_market_risk(request), lambda r: r.pnl)
+    reference, artifacts = _array_output(job, schema.pnl_output, "pnl", result.pnl, ("scenario", "trade"), trade_ids)
+    return JobResult(MarketRiskResultSchema.from_dataclass(result, trade_ids, schema.pnl_output, reference)
+                     .model_dump_json(), artifacts)
+
+
+#: The work of each job kind (`engine.api.job_queue.KINDS`).
+JOB_KINDS: Dict[str, Pricer] = {PORTFOLIO: _portfolio_job, MARKET_RISK: _market_risk_job}
+
+
+def _array_output(job: Job, output: str, name: str, array, axes: Tuple[str, ...],
+                  trade_ids: List[str]) -> Tuple[Optional[dict], Dict[str, List[bytes]]]:
+    """The reference and chunks of `array` when the request asked for it as an artifact
+    (`output == "artifact"`), else nothing; its trade axis named by `trade_ids`."""
+    if output != "artifact":
+        return None, {}
+    import numpy as np
+
+    from engine.api.artifacts import array_artifact, items_record
+
+    reference, chunks = array_artifact(np.asarray(array, dtype=np.float64), name, f"/jobs/{job.id}/artifacts/{name}",
+                                       axes, items_record("trade", trade_ids))
+    return reference, {name: chunks}
 
 
 def failure_class(exc: BaseException) -> str:
@@ -279,10 +332,11 @@ def _profile_options(jax):
     return options
 
 
-def _profiled(run):
+def _profiled(run, ready):
     """`run()`, under `jax.profiler.trace` when `JAX_RISK_PROFILE_DIR` is set (written to
     `$JAX_RISK_PROFILE_DIR/pid-<pid>/`, compilation included; view with
-    `xprof --port 8791 <dir>`). Unset, nothing is traced.
+    `xprof --port 8791 <dir>`). Unset, nothing is traced. `ready(result)` is the array the job
+    is done once computed (a portfolio's cube, a market-risk run's P&L).
 
     The Python tracer is off by default (see `_profile_options`). With it on, 97% of events
     were interpreter frames from JAX's dispatch machinery, and the trace's `.trace.json.gz`,
@@ -308,13 +362,13 @@ def _profiled(run):
     warmup = None
     if os.environ.get("JAX_RISK_PROFILE_WARMUP") == "1":
         # Untraced warm-up run to populate the compilation caches.
-        _, warmup = _measured(jax, run)
+        _, warmup = _measured(jax, run, ready)
 
     out_dir = os.path.join(profile_dir, f"pid-{os.getpid()}")
     traced_phase = os.environ.get("JAX_RISK_PROFILE_PHASE")
     if not traced_phase:
         with jax.profiler.trace(out_dir, profiler_options=_profile_options(jax)):
-            result, traced = _measured(jax, run)
+            result, traced = _measured(jax, run, ready)
         _record_trace(out_dir, traced, warmup)
         return result
 
@@ -331,7 +385,7 @@ def _profiled(run):
         compiles[0].close()
 
     with window_on(traced_phase, start, stop) as window:
-        result, job = _measured(jax, run)
+        result, job = _measured(jax, run, ready)
     if window.wall_seconds is None:
         warnings.warn(f"JAX_RISK_PROFILE_PHASE={traced_phase!r}: the job has no such phase; nothing was traced "
                       f"(see engine.portfolio.profiling.PHASES)", UserWarning, stacklevel=2)
@@ -342,14 +396,14 @@ def _profiled(run):
     return result
 
 
-def _measured(jax, run):
+def _measured(jax, run, ready):
     """`run()`'s result once its device work is done (a trace closed before it would be cut
     short), and `{"wall_seconds", "compiles"}` of that run."""
     compiles = _CompileCounter()
     started = time.perf_counter()
     try:
         result = run()
-        jax.block_until_ready(result.npv_cube)
+        jax.block_until_ready(ready(result))
     finally:
         compiles.close()
     return result, {"wall_seconds": time.perf_counter() - started, "compiles": compiles.count}

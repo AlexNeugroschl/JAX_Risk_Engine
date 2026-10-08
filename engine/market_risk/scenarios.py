@@ -89,9 +89,7 @@ def monte_carlo_scenarios(
     num_scenarios: a power of two keeps the Sobol sequence balanced.
     seed: Sobol scrambling seed.
     """
-    cov = _validated_covariance(covariance, factors.size)
-    if num_scenarios < 2:
-        raise ValueError(f"num_scenarios must be at least 2; got {num_scenarios}")
+    cov = validate_monte_carlo(factors, covariance, horizon_days, num_scenarios)
     eigenvalues, eigenvectors = np.linalg.eigh(cov)
     # Eigenvalues below round-off of the largest are zero: a rank-deficient
     # covariance otherwise gains ~1e-10 of spurious noise per move from the
@@ -102,6 +100,16 @@ def monte_carlo_scenarios(
     return ShockScenarios(
         factors=factors, shifts=normals @ root.T, horizon_days=horizon_days, source=SOURCE_MONTE_CARLO,
     )
+
+
+def validate_monte_carlo(factors: RateRiskFactors, covariance, horizon_days: int, num_scenarios: int) -> np.ndarray:
+    """`monte_carlo_scenarios`' inputs checked without drawing a scenario (no JAX work, so the
+    HTTP route checks them before queueing a job); the covariance, symmetrized."""
+    if horizon_days < 1:
+        raise ValueError(f"horizon_days must be at least 1; got {horizon_days}")
+    if num_scenarios < 2:
+        raise ValueError(f"num_scenarios must be at least 2; got {num_scenarios}")
+    return _validated_covariance(covariance, factors.size)
 
 
 def horizon_moves(history, horizon_days: int) -> np.ndarray:

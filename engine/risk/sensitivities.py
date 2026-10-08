@@ -34,12 +34,12 @@ import ORE
 
 from engine.instruments.swap import SwapConfig, _build_ore_swap as _swap_underlying
 from engine.instruments.treasury import BondConfig
-from engine.market import Market, SwaptionVolSurface, index_name
+from engine.market import Market, index_name
 from engine.models.curves import DiscountCurve, ZeroCurve, log_discount
 from engine.models.ore_builders import SWAP_CALENDAR, TIME_AXIS_DAY_COUNTER, ibor_index
 from engine.simulation.config import DEFAULT_CURVE_TENORS
 from engine.valuation.config import PricingConfig
-from engine.valuation.context import PricingContext
+from engine.valuation.context import PricingContext, sampled_curve, simulation_market_today
 from engine.valuation.european import volatility_on_path
 from engine.valuation.legs import Legs, legs_of
 from engine.valuation.portfolio import Trade, bond_legs, reads_swaption_vols, validate_trades, value_on
@@ -57,37 +57,16 @@ class SensitivityConfig:
     swaption_vol_decay: str = "ForwardVariance"
 
 
-def _sampled(curve: ZeroCurve, asof: ORE.Date, reference: ORE.Date, tenors: Sequence[str]) -> DiscountCurve:
-    """ORE's sim-market curve on `reference`: points at `reference + tenor` carrying the
-    original (as-of) curve's discount factors there, and 1 at `reference`."""
-    dates = [reference + ORE.Period(t) for t in tenors]
-    times = [0.0] + [TIME_AXIS_DAY_COUNTER.yearFraction(reference, d) for d in dates]
-    values = [0.0] + [float(log_discount(curve, TIME_AXIS_DAY_COUNTER.yearFraction(asof, d))) for d in dates]
-    return DiscountCurve(times=jnp.asarray(times), log_discounts=jnp.asarray(values))
-
-
 def _shifted(curve: DiscountCurve, k: int, shift: float) -> DiscountCurve:
     """The tenor point k's zero rate shifted by `shift` (its log discount by `-shift t_k`)."""
     bump = jnp.zeros_like(curve.log_discounts).at[k].set(-shift * curve.times[k])
     return DiscountCurve(curve.times, curve.log_discounts + bump)
 
 
-def _static_volatility(market: Market, surfaces: Dict[str, SwaptionVolSurface]):
-    def volatility(currency, option_time, swap_length):
-        return float(surfaces[currency].volatility(market.asof, option_time, swap_length))
-    return volatility
-
-
 def sensitivity_context(market: Market, config: SensitivityConfig) -> PricingContext:
-    """The base sensitivity market (see the module docstring)."""
-    discount, index = {}, {}
-    for code, data in market.currencies.items():
-        discount[code] = _sampled(ZeroCurve.from_config(data.discount_curve), market.asof, market.asof,
-                                  config.curve_tenors)
-        index.update({name: _sampled(ZeroCurve.from_config(c), market.asof, market.asof, config.curve_tenors)
-                      for name, c in data.index_curves.items()})
-    surfaces = {c: d.swaption_vols for c, d in market.currencies.items() if d.swaption_vols is not None}
-    return PricingContext(market.asof, discount, index, _static_volatility(market, surfaces))
+    """The base sensitivity market (see the module docstring): ORE's simulation market on the
+    as-of date at the sensitivity tenors."""
+    return simulation_market_today(market, config.curve_tenors)
 
 
 def theta_context(market: Market, config: SensitivityConfig) -> PricingContext:
@@ -95,9 +74,10 @@ def theta_context(market: Market, config: SensitivityConfig) -> PricingContext:
     asof, theta_date = market.asof, market.asof + config.theta_days
     discount, index, fixings = {}, {}, {}
     for code, data in market.currencies.items():
-        discount[code] = _sampled(ZeroCurve.from_config(data.discount_curve), asof, theta_date, config.curve_tenors)
+        discount[code] = sampled_curve(ZeroCurve.from_config(data.discount_curve), asof, theta_date,
+                                       config.curve_tenors)
         for name, curve in data.index_curves.items():
-            index[name] = _sampled(ZeroCurve.from_config(curve), asof, theta_date, config.curve_tenors)
+            index[name] = sampled_curve(ZeroCurve.from_config(curve), asof, theta_date, config.curve_tenors)
             fixings[name] = _backfilled_fixings(name, index[name], asof, theta_date)
 
     def volatility(currency, option_time, swap_length):

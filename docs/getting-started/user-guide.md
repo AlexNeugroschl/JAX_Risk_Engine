@@ -207,10 +207,12 @@ python demos/demo_api.py
 Requires the `api` extra (see [Running the API](#running-the-api) below). Launches its own
 `uvicorn` server (or reuses one already running at `http://127.0.0.1:8000` if
 `JAX_RISK_ENGINE_DEMO_SKIP_SERVER=1` is set), builds the same market, portfolio and
-configuration as `demo.py` as the portfolio request's JSON, submits it to
-`POST /portfolio/price`, polls `GET /portfolio/price/{job_id}` until it completes, and prints
-the same summary read back out of the JSON response — see [HTTP API](../reference/http-api.md)
-for what's on the wire.
+configuration as `demo.py` as the portfolio request's JSON, calibrates the cross-asset model
+(`POST /calibration/cam`), submits the portfolio to `POST /portfolio/price` (its cube returned by
+reference, each chunk's hash checked), polls `GET /jobs/{job_id}` until it completes, prints the
+same summary read back out of the JSON response, and then runs the trades' market-risk VaR and
+ES (`POST /portfolio/market-risk`) — see [HTTP API](../reference/http-api.md) for what's on the
+wire.
 
 **The same portfolio again, restructured to show the shape of a real integration:**
 ```bash
@@ -401,11 +403,15 @@ This returns `202 Accepted` with a `job_id` — pricing runs in the background (
 for why). Poll for the result:
 
 ```bash
-curl http://127.0.0.1:8000/portfolio/price/<job_id>
+curl http://127.0.0.1:8000/jobs/<job_id>
 ```
 
-See [HTTP API](../reference/http-api.md) for the full endpoint reference, request/response
-schemas, and the async job pattern's reasoning.
+The done result has one row per trade in `trades` (its `trade_id`, today's value, exposure and
+Greeks), the netting set's `exposure`, and the cube inline (add `"cube_output": "artifact"` to
+the request to receive it as hashed chunks, or `"none"` to leave it out). The same server runs
+market-risk VaR and ES (`POST /portfolio/market-risk`, polled at the same route) and calibrates
+the cross-asset model (`POST /calibration/cam`). See [HTTP API](../reference/http-api.md) for
+the full endpoint reference, request/response schemas, and the async job pattern's reasoning.
 
 The same app also mounts a second router at `/eod`, the TraderX overnight batch contract —
 see [Pricing a TraderX EOD bundle](#pricing-a-traderx-eod-bundle) below.
@@ -416,7 +422,7 @@ The same server also exposes a **second, separate contract** under `/eod` — th
 batch boundary for TraderX. It is worth knowing which one you are talking to, because they
 behave differently on purpose:
 
-| | `/portfolio/price` | `/eod/price` |
+| | `/portfolio/price` (and `/portfolio/market-risk`) | `/eod/price` |
 |---|---|---|
 | Shape | **Asynchronous** — `202` + `job_id`, then poll | **Synchronous** — one call returns the result |
 | Body | the portfolio request (`MarketPortfolioRequestSchema`, Pydantic) | `EodSubmissionSchema`, pointing at a bundle on disk |

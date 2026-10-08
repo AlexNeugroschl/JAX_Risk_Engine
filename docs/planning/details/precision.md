@@ -779,7 +779,8 @@ Decisions taken while building it (1.8):
   retried, so a job that kills the worker cannot crash-loop it).
 - **The result is stored in the row**, not as a reference to a file: one atomic write, and
   the poll route splices the stored document into its response without parsing it. SQLite's
-  1 GB limit fails such a job as `infrastructure`; cubes that large are I-09's problem first.
+  1 GB limit fails such a job as `infrastructure`; a cube that large is asked for by reference
+  instead (`cube_output: "artifact"`, roadmap 3.1), stored as chunks of at most 8 MiB.
 - **Supervision without a thread.** In `spawn` mode the API checks its child on every
   submission and poll and restarts it if dead; a dead worker matters only then. With several
   API processes (`uvicorn --workers`), a supervisor starts no worker while another process's
@@ -967,6 +968,24 @@ process changes.
   too (the 15 modules that compare with ORE or QuantLib, 509 tests, with the default set to
   `"Bisection"` for the run). Steps from 2.5 on compare against a
   snapshot of the 2.5 commit.
+- **Steps 3.1 and 3.2's result (2026-10-07): the exposure re-baselined towards ORE.** 3.1
+  changes no number (the HTTP layer, and market risk's validation split without its
+  arithmetic). 3.2's ORE simulation oracle found three differences from ORE in the assembled
+  pipeline, each fixed: the simulation market holds its tenor points at the times from the
+  as-of date (I-84), the exposure starts from the simulation market's t=0 values (I-85), and a
+  cash-settled option's maturity is its last exercise date (I-86). The same script, 359 arrays,
+  from a worktree of `c8e21ea` (2.5) against the 3.2 tree, on CPU: 198 identical in value,
+  dtype and shape (today's values, both Greeks methods, the Jamshidian Greeks, every market-risk
+  figure and its raw float32 revaluation, the standalone bootstrap, the float32 scenario
+  market's discount factors); 161 moved, as intended, relative to each array's largest
+  magnitude: the cubes up to 1.8e-3 (shared portfolio, LGM and Hull-White), 2.8e-3
+  (Jamshidian), 1.6e-2 (the demo's job, monthly dates to 5 years); the exposure profiles up to
+  3.2e-2 (a cash-settled European's EPE, its start moved to the simulation market's value), the
+  netting set's up to 2.5e-2 (EPE_B); the scenario market's tenor times by 2.7e-4 of their
+  scale (3 days on the 30Y point of a later date). The float32 runs moved with the float64
+  ones. Every ORE parity suite passes at its tolerance, and swaps, Europeans and bonds now
+  equal ORE's own simulation on its paths (`tests/test_ore_xva_parity.py`). Steps from 3.2 on
+  compare against a snapshot of the 3.2 commit.
 - Step 3.7: parity suites pass at their tolerances first; then the snapshot is re-baselined,
   with the largest change per array recorded in the commit and in known-issues' verification
   status.

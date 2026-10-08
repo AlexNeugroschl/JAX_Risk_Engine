@@ -116,7 +116,7 @@ class MarketRiskResult:
 def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     """Revalue `request.trades` under every scenario and take VaR/ES of the
     portfolio P&L. See the module docstring for the pipeline."""
-    _validate(request)
+    validate_request(request)
     scenarios = request.scenarios
     precision = request.precision
     shifts = precision.store(shard_scenarios(jnp.asarray(scenarios.shifts, dtype=precision.simulation.compute_dtype),
@@ -193,22 +193,17 @@ def _scalar(value) -> float:
     return float(np.asarray(value).reshape(()))
 
 
-def _validate(request: MarketRiskRequest) -> None:
-    if not request.trades:
-        raise ValueError("a market-risk run needs at least one trade")
-    require_precision("MarketRiskRequest.precision", request.precision)
-    if request.batch_size < 1:
-        raise ValueError(f"batch_size must be at least 1; got {request.batch_size}")
-    for q in request.quantiles:
-        if not 0.0 < q < 1.0:
-            raise ValueError(f"quantile must lie in (0, 1); got {q}")
-    if not isinstance(request.pricing, PricingConfig):
-        raise TypeError(f"pricing must be a PricingConfig; got {type(request.pricing).__name__}")
-    require_unique_ids(request.trades)
-    validate_trades(request.trades, request.market, request.pricing, request.precision)
+def validate_request(request: MarketRiskRequest) -> None:
+    """Refuse a request `run_market_risk` cannot run, naming the field, before any work."""
+    validate_portfolio(request.trades, request.market, request.pricing, request.precision, request.quantiles,
+                       request.batch_size)
+    validate_factors(request.trades, request.market, request.scenarios.factors)
 
-    factors = request.scenarios.factors
-    market_curves = _market_curves(request.market)
+
+def validate_factors(trades, market: Market, factors: RateRiskFactors) -> None:
+    """Every factor is the market's curve of its name, and every curve a trade reads is a
+    factor."""
+    market_curves = _market_curves(market)
     for name, curve in zip(factors.names, factors.curves):
         if name not in market_curves:
             raise ValueError(f"risk factor {name!r} is not a curve of the market (have {sorted(market_curves)}); "
@@ -216,11 +211,31 @@ def _validate(request: MarketRiskRequest) -> None:
         if not _same_curve(curve, market_curves[name]):
             raise ValueError(f"risk factor {name!r} differs from the market's curve of that name; its trades would "
                              f"be shocked from a base they are not priced on")
-    for cfg in request.trades:
+    for cfg in trades:
         try:
             factor_indices(cfg, factors)
         except KeyError as exc:
             raise ValueError(f"trade {cfg.trade_id!r}: {exc.args[0]}") from None
+
+
+def validate_portfolio(trades, market: Market, pricing: PricingConfig, precision: Precision,
+                       quantiles: Sequence[float], batch_size: int) -> None:
+    """Everything of a market-risk request but its scenarios: the HTTP route checks this before
+    queueing the job, then the scenarios' inputs without drawing them (no JAX work:
+    `engine.market_risk.scenarios.validate_monte_carlo`, `historical_scenarios`) and
+    `validate_factors`."""
+    if not trades:
+        raise ValueError("a market-risk run needs at least one trade")
+    require_precision("MarketRiskRequest.precision", precision)
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be at least 1; got {batch_size}")
+    for q in quantiles:
+        if not 0.0 < q < 1.0:
+            raise ValueError(f"quantile must lie in (0, 1); got {q}")
+    if not isinstance(pricing, PricingConfig):
+        raise TypeError(f"pricing must be a PricingConfig; got {type(pricing).__name__}")
+    require_unique_ids(trades)
+    validate_trades(trades, market, pricing, precision)
 
 
 def _market_curves(market: Market):
