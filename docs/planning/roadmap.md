@@ -18,8 +18,8 @@ here is not planned ([rules](README.md#lifecycle)).
       and reproduced by an oracle. It is also the precision research's acceptance standard
       (A-11), so the two meet in the evidence table.
    4. **A clear `engine/`**: packages named for what they hold, nothing at the root but
-      `__init__.py` ([details/package-layout.md](details/package-layout.md)). It goes first,
-      so that every later step is written in the final layout.
+      `__init__.py` ([details/package-layout.md](details/package-layout.md)). Done first
+      (2026-10-08), so that every later step is written in the final layout.
 3. **Fix what exists** (stage 4): the defects of what the engine already does, small and
    large, and its tests and tooling. What the engine has must work before it gains more.
 4. **New capabilities** (stage 5): what the engine does not do yet, beyond the core.
@@ -99,7 +99,9 @@ compiles nothing; every calibration and exercise boundary is solved by one confi
 solver (A-21). The HTTP API reaches every setting the engine has, through one route per
 analytic (portfolio pricing, market risk, the cross-asset model's calibration). Nothing runs
 on more than one host. TraderX submits end-of-day bundles through its own routes (`/eod/...`),
-which price its Treasuries with their own pricers and refuse everything else by name.
+which price its Treasuries with their own pricers and refuse everything else by name. Since
+2026-10-08 `engine/` holds subpackages only, each named for what it holds and importing only
+the layers below it ([details/package-layout.md](details/package-layout.md)).
 
 ---
 
@@ -138,9 +140,8 @@ precision comes first. A defect is here only where a core step needs it fixed fi
 
 | Step | Goal | Work | Closes | After | Size |
 |---|---|---|---|---|---|
-| 3.1 | Layout | Packages named for what they hold, and nothing at the root of `engine/` but `__init__.py`: today's market and day counts in `marketdata/`, `instruments/` as `trades/` (its Bermudan grid engine to `valuation/`), `risk/` split into `exposure/` and `sensitivities/`, `portfolio/` as `run/`, `api/` split into `server/` (HTTP) and `jobs/` (queue and worker), `integration/` as `traderx/`, and the smaller renames of the [design](details/package-layout.md#2-proposed-layout). Renames and moves only, with `git mv`: float64 bit for bit, the suite's count unchanged; a test fails on any module at the root | [I-92](known-issues.md#i-92) | — | M |
 | 3.2 | Precision | *Parallel, can start now* (it changes no float64 number). Store classes whose level swamps their spread relative to a level (the cube to its t=0 value, the curves to their path-independent part, or a block offset). Build a measurement harness, rerunnable on any kernel change, for the storage formats per class, product and path count, with the paired sample and its estimator's coverage on the pipeline | [I-75](known-issues.md#i-75) | — | M |
-| 3.3 | API | One run request in place of a route per engine function, as ORE runs a portfolio with a list of analytics: `POST /runs` with `market`, `portfolio`, `analytics` (`npv`, `exposure`, `sensitivities`, `market_risk`, `calibration`) and a `config` whose sections follow ORE's files, each setting in one place; one result with the configuration as run; `GET /config/defaults`; an idempotency key; a Python entry, `run(RunRequest)`, in `run/`. The four routes and `/jobs` go, there being no client. The completeness test also checks each field's wiring. A run of one analytic equals today's direct call bit for bit ([design](details/configurable-engine.md#one-run-request-i-87-i-88-i-89)) | [I-87](known-issues.md#i-87), [I-88](known-issues.md#i-88), [I-89](known-issues.md#i-89) | 3.1 | M |
+| 3.3 | API | One run request in place of a route per engine function, as ORE runs a portfolio with a list of analytics: `POST /runs` with `market`, `portfolio`, `analytics` (`npv`, `exposure`, `sensitivities`, `market_risk`, `calibration`) and a `config` whose sections follow ORE's files, each setting in one place; one result with the configuration as run; `GET /config/defaults`; an idempotency key; a Python entry, `run(RunRequest)`, in `run/`. The four routes and `/jobs` go, there being no client. The completeness test also checks each field's wiring. A run of one analytic equals today's direct call bit for bit ([design](details/configurable-engine.md#one-run-request-i-87-i-88-i-89)) | [I-87](known-issues.md#i-87), [I-88](known-issues.md#i-88), [I-89](known-issues.md#i-89) | — | M |
 | 3.4 | API | One way into the engine for TraderX: its bundle becomes a run request, after its convention checks and refusals (so a refused booking still never reaches a pricer, I-05), and the engine prices its bills and notes; the TraderX path's own pricers go. Its routes, result document, attempt store and accrued-interest reconciliation stay. First, the engine's bond and the TraderX note agree on every bundle row of the tests to rounding ([design](details/package-layout.md#3-merges)) | [I-93](known-issues.md#i-93) | 3.3 | M |
 | 3.5 | Basel | *Parallel, start now.* Basel P0 (decisions D-1 to D-10, pinned text, the BCBS profile, the requirement catalogue and traceability check, measure guards, desk and book on every row, the run manifest, the remaining ORE oracles) and P2's data acquisition, which is calendar time. P0.9 (regulatory runs kept by the job queue) waits for 3.13; the rest of P0 does not | [F-05](features.md#f-05) (P0, P2) | P0.9: 3.13 | L |
 | 3.6 | Precision | Kernels in difference form with explicit accumulators, one family at a time, one implementation for every precision (A-16); compute below float32 enabled. The families 3.8 and 3.9 do not change come first (simulation scan, scenario curves, legs, Europeans, exposure), so 3.7 starts on them; the Bermudan/American rollback and recalibration come last, after 3.8 and 3.9, so no kernel is rewritten twice. Where a family can be a matrix product (leg pricing, the Bermudan rollback), it takes that form in the same rewrite, so native FP8 (3.11) needs no second one. A product's own precision (TensorFloat-32, bfloat16 passes, FP8) becomes a compute format of the policy, named in the report: the product helper (`product_precision`) maps the policy's format to it, so every product follows the policy and never a device's default. Where a device has no such unit (TensorFloat-32 on a CPU, which computes float32 instead) the format is emulated by rounding the operands to its mantissa, as FP8 storage is, and the report says which ran ([details/precision.md §8.3](details/precision.md#83-emulation-and-native-speed)). Per family, ORE parity at existing tolerances first, then the float64 snapshot re-baselined. The rollback's matrix form also holds one operator per step instead of one per path and step, so the demo's job runs at 65,536 and 262,144 paths | [F-07](features.md#f-07) (compute), [I-83](known-issues.md#i-83) | 3.2; the Bermudan/American family 3.8, 3.9 | L |
@@ -156,9 +157,11 @@ precision comes first. A defect is here only where a core step needs it fixed fi
 
 Order within the stage:
 
-- **3.1 first.** It moves code and changes no number, and every step after it adds code: 3.3
-  the run request, 3.14 `engine/regulatory/`. Done first, nothing is written in the old layout
-  and moved later.
+- **The layout is done** (2026-10-08, [I-92](known-issues.md#i-92)): `engine/` is the
+  [layout](details/package-layout.md#2-the-layout) every later step writes in (3.3's run
+  request in `engine/run/`, 3.14's `engine/regulatory/` above `engine/risk/`), and
+  `tests/test_import_layering.py` keeps it: a module at the root of `engine/` or
+  `engine/risk/`, a package without a layer, or an import of a layer above fails.
 - **Precision ahead where steps compete.** 3.2 builds the harness, 3.6 rewrites the kernels it
   measures, and 3.7 reads the table off each family as it lands, so swaps, Europeans and bonds
   have evidence rows while 3.8 and 3.9 make the Bermudan/American kernel ORE's. The rollback
@@ -180,7 +183,7 @@ Order within the stage:
 - **3.10 before 3.13.** 3.10 needs a pod slice, and it has to finish before 3.13, which
   changes the same worker loop; 3.13 in turn comes before Basel P0.9, which keeps regulatory
   runs in the job queue.
-- **Numbers.** 3.1, 3.2, 3.3, 3.10 and 3.13 move no float64 number; 3.4 moves none of the
+- **Numbers.** 3.2, 3.3, 3.10 and 3.13 move no float64 number; 3.4 moves none of the
   engine's, and TraderX's only within the agreement it starts by showing. 3.8 and 3.9 move
   default Bermudan/American numbers towards ORE's. 3.6 moves float64 at rounding level, each
   family once, with the snapshot re-baselined after each.

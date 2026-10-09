@@ -2,8 +2,8 @@
 
 **Modules:** [`engine/api/app.py`](../../engine/api/app.py),
 [`engine/api/routes.py`](../../engine/api/routes.py),
-[`engine/api/market_schemas.py`](../../engine/api/market_schemas.py) (the requests),
-[`engine/api/schemas.py`](../../engine/api/schemas.py) (shared schemas and the results),
+[`engine/api/requests.py`](../../engine/api/requests.py) (the requests and the wire forms they share),
+[`engine/api/results.py`](../../engine/api/results.py) (the results),
 [`engine/api/artifacts.py`](../../engine/api/artifacts.py) (arrays returned by reference)
 
 ## Plain-language summary
@@ -17,12 +17,12 @@ sharing this codebase's own memory space. Every setting the engine has is a fiel
 (decision A-2): `tests/test_api_completeness.py` walks the configuration types and fails on any
 setting without one.
 
-**Wrap, not replace.** `engine.portfolio.PortfolioRequest`/`PortfolioResult` and every
+**Wrap, not replace.** `engine.run.PortfolioRequest`/`PortfolioResult` and every
 instrument config dataclass stay the single source of truth for the engine's own internal
 shape (see [Architecture: Typed configuration](../concepts/architecture.md#typed-configuration)).
-Pydantic models in `engine/api/market_schemas.py` and `engine/api/schemas.py` mirror them field-for-field, each with a
+Pydantic models in `engine/api/requests.py` and `engine/api/results.py` mirror them field-for-field, each with a
 `.to_dataclass()` method converting into the real dataclass and — for results — a
-`.from_dataclass()` classmethod for the reverse direction. `engine/portfolio/` and
+`.from_dataclass()` classmethod for the reverse direction. `engine/run/` and
 everything below it has **zero** Pydantic/FastAPI dependency; the heavy `api` extra
 (FastAPI, Pydantic, uvicorn) is only needed to run this HTTP layer, not the core
 simulation/pricing/risk engine.
@@ -66,7 +66,7 @@ This app serves **two independent contracts**, mounted as separate routers:
 | Prefix | Contract | Shape |
 |---|---|---|
 | *(none)* | The portfolio API — simulate, price, aggregate | Pydantic-wrapped engine dataclasses |
-| `/eod` | The [TraderX EOD boundary](eod-integration.md) (W1.6.4) | Plain dicts governed by a **published JSON Schema** |
+| `/eod` | The [TraderX path](traderx-path.md) (W1.6.4) | Plain dicts governed by a **published JSON Schema** |
 
 They share no state and speak deliberately different shapes. The EOD result is *not* wrapped
 in a Pydantic model, because its contract is the published schema — re-describing it here
@@ -85,15 +85,15 @@ the routers separate keeps either free to change.
 | `GET /jobs/{job_id}/artifacts/{name}/{chunk}` | portfolio | below |
 | `POST /calibration/cam` | portfolio | below |
 | `POST /calibration/lgm` | portfolio | below |
-| `GET /eod/capabilities` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
-| `GET /eod/schemas/result` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
-| `GET /eod/schemas/capabilities` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
-| `POST /eod/price` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
-| `GET /eod/results/by-workload/{key}` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
-| `GET /eod/attempts/{attemptId}` | EOD | [EOD Integration](eod-integration.md#w164--the-eod-http-routes) |
+| `GET /eod/capabilities` | EOD | [The TraderX Path](traderx-path.md#w164--the-eod-http-routes) |
+| `GET /eod/schemas/result` | EOD | [The TraderX Path](traderx-path.md#w164--the-eod-http-routes) |
+| `GET /eod/schemas/capabilities` | EOD | [The TraderX Path](traderx-path.md#w164--the-eod-http-routes) |
+| `POST /eod/price` | EOD | [The TraderX Path](traderx-path.md#w164--the-eod-http-routes) |
+| `GET /eod/results/by-workload/{key}` | EOD | [The TraderX Path](traderx-path.md#w164--the-eod-http-routes) |
+| `GET /eod/attempts/{attemptId}` | EOD | [The TraderX Path](traderx-path.md#w164--the-eod-http-routes) |
 
 The EOD routes are documented in full in
-[The EOD Integration Boundary](eod-integration.md#w164--the-eod-http-routes); this page covers
+[The TraderX Path](traderx-path.md#w164--the-eod-http-routes); this page covers
 the portfolio contract.
 
 On 2026-10-07 the API removed `POST /v2/portfolio/price`, the request's
@@ -105,7 +105,7 @@ for (decision A-2, revised 2026-10-07).
 **One behavioural difference worth knowing up front.** `POST /portfolio/price` and
 `POST /portfolio/market-risk` are **asynchronous** (`202` + a `job_id` to poll, because a
 4096-scenario Monte Carlo measured ~52s — see below), while `POST /eod/price` and the two
-calibration routes are **synchronous**: the EOD path is closed-form discounted cashflows over a
+calibration routes are **synchronous**: the TraderX path is closed-form discounted cashflows over a
 handful of rows, and a calibration a bootstrap of a few helpers. The contracts differ here on
 purpose, not by accident of implementation order.
 
@@ -139,7 +139,7 @@ own JAX runtime, and each result names the devices and backend it actually ran o
 
 The main endpoint. Body: the portfolio request, `MarketPortfolioRequestSchema` (mirrors
 `PortfolioRequest` and its `RunConfig` — see "Request schema" below). Validates
-synchronously (`engine.portfolio.market_path.validate_request`, no JAX work), then writes the
+synchronously (`engine.run.pipeline.validate_request`, no JAX work), then writes the
 body, byte for byte as received, to the job queue as a `portfolio` job and returns immediately
 (see [Jobs: the queue and the engine worker](#jobs-the-queue-and-the-engine-worker)).
 
@@ -169,7 +169,7 @@ replacement: the Hull-White model is `"model": "HullWhite"` per currency in `sim
 ### `POST /portfolio/market-risk`
 
 Short-horizon VaR and Expected Shortfall of a portfolio by full revaluation under shock
-scenarios ([Market Risk](../risk/market-risk.md), `engine.market_risk.run_market_risk`). Body:
+scenarios ([Market Risk](../risk/market-risk.md), `engine.risk.market.run_market_risk`). Body:
 `MarketRiskRequestSchema` (see [Market-risk request](#market-risk-request-marketriskrequestschema)).
 Validated synchronously without drawing a scenario (no JAX work; a refusal is a `400` naming
 the field), then queued as a `market-risk` job: `202` with a `job_id`, polled at
@@ -379,7 +379,7 @@ Since 2026-10-04 (decision A-14; [details/precision.md §11](../planning/details
     main; main()"` is the same thing.
 - **Jobs run one at a time, each on every device of the host.** A job's scenarios (the
   simulation's paths, market risk's shocks) are split across the host's devices
-  (`engine/simulation/sharding.py`): as many devices as divide the scenario count evenly,
+  (`engine/market_simulation/sharding.py`): as many devices as divide the scenario count evenly,
   at most `JAX_RISK_SCENARIO_DEVICES` if set (`1` keeps a job on one device). The result's
   precision report lists the devices. Several hosts (a TPU pod slice) are not yet supported
   ([I-61](../planning/known-issues.md#i-61)).
@@ -389,16 +389,16 @@ Not yet built: rows are never deleted (results accumulate in the file,
 `pending` with no signal ([I-77](../planning/known-issues.md#i-77)); there is no cancel
 route.
 
-**The EOD path keeps its own store.** `POST /eod/price` publishes every *terminal* attempt
-through a crash-safe filesystem store (`engine/integration/publication.py`), so an EOD result
+**The TraderX path keeps its own store.** `POST /eod/price` publishes every *terminal* attempt
+through a crash-safe filesystem store (`engine/traderx/publication.py`), so an EOD result
 survives a restart and stays addressable by `attemptId`; a *running* EOD attempt is still
 memory-only ([I-08](../planning/known-issues.md#i-08),
-[EOD Integration](eod-integration.md#w164--the-eod-http-routes)).
+[The TraderX Path](traderx-path.md#w164--the-eod-http-routes)).
 
 ## Portfolio request: `MarketPortfolioRequestSchema`
 
-Mirrors `engine.portfolio.PortfolioRequest` and its run configuration
-(`engine/api/market_schemas.py`):
+Mirrors `engine.run.PortfolioRequest` and its run configuration
+(`engine/api/requests.py`):
 
 | Field | Meaning |
 |---|---|
@@ -489,7 +489,7 @@ give the bits they give run one after another (`tests/test_engine_worker.py`).
 
 ## Market-risk request: `MarketRiskRequestSchema`
 
-Mirrors `engine.market_risk.MarketRiskRequest` ([Market Risk](../risk/market-risk.md)):
+Mirrors `engine.risk.market.MarketRiskRequest` ([Market Risk](../risk/market-risk.md)):
 
 | Field | Meaning |
 |---|---|
@@ -504,7 +504,7 @@ Mirrors `engine.market_risk.MarketRiskRequest` ([Market Risk](../risk/market-ris
 `scenarios.factors` names the risk factors, the pillar zero rates of market curves, in the order
 of the covariance's or the history's columns: each curve's labels `"<curve>/<pillar time>y"`
 for every pillar in the market's order, curve after curve, e.g. `"discount:USD/1y"`,
-`"index:USD-SIMINDEX-6M/1y"` (`engine.market_risk.RateRiskFactors.labels`). Any curves of the
+`"index:USD-SIMINDEX-6M/1y"` (`engine.risk.market.RateRiskFactors.labels`). Any curves of the
 market, in any order; every curve a trade reads must be among them. A label out of its curve's
 pillar order, a curve the market lacks, or a trade's curve left out is a `400` naming the
 expected labels.
@@ -538,7 +538,7 @@ alignment plan 9.2), done on 2026-10-07:
   for. `tests/test_api_completeness.py` walks every configuration type a request can hold,
   from `PortfolioRequest`, `MarketRiskRequest`, the scenario generators and `calibrate_cam`,
   and fails on a field without an API field (by name, renamed, or exempt with its reason: a
-  trade's `evaluation_date` is the market's, a curve's `provenance` is the EOD boundary's
+  trade's `evaluation_date` is the market's, a curve's `provenance` is the TraderX path's
   metadata), on a configuration type without a schema, and on an exemption naming no field.
 - **Robust.** Validated before any job starts: types, unknown fields refused, cross-field
   checks, each refusal a `400` or `422` naming its field.
@@ -550,7 +550,7 @@ alignment plan 9.2), done on 2026-10-07:
 
 ## Portfolio result: `PortfolioResultSchema`
 
-Mirrors `engine.portfolio.PortfolioResult`, with one row per trade:
+Mirrors `engine.run.PortfolioResult`, with one row per trade:
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -567,7 +567,7 @@ Mirrors `engine.portfolio.PortfolioResult`, with one row per trade:
 
 ## Market-risk result: `MarketRiskResultSchema`
 
-Mirrors `engine.market_risk.MarketRiskResult`:
+Mirrors `engine.risk.market.MarketRiskResult`:
 
 | Field | Meaning |
 |---|---|
@@ -625,7 +625,7 @@ See a curl-only version in [User Guide: Running the API](../getting-started/user
 
 ## Tested by
 
-`tests/test_api_market_path.py`: on the shared test portfolio (`tests/support/portfolio.py`),
+`tests/test_api_portfolio.py`: on the shared test portfolio (`tests/support/portfolio.py`),
 the polled result equals a direct `price_portfolio` call: NPVs, cube, the exposure profiles
 including EPE_B/EEPE_B and Basel, each trade's row, and the 2-D Vega; the cube by reference is
 the inline cube, its hashes checked, and `"none"` leaves it out. It also checks the `400`s and

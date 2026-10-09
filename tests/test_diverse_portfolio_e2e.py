@@ -25,11 +25,11 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig
-from engine.portfolio import (
+from engine.pricing.cube import value_today
+from engine.run import (
     CamConfig, GreeksConfig, HullWhiteConfig, LgmSwaptionEngineConfig, PortfolioRequest, PricingConfig, RunConfig,
     price_portfolio,
 )
-from engine.valuation.portfolio import value_today
 from tests.support import portfolio as shared
 
 ASOF = shared.ASOF

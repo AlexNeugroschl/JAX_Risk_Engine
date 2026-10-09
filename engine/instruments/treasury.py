@@ -3,20 +3,20 @@ Treasury bills and notes: the trade and its remaining cashflows.
 
 A bond names its currency; it carries no curve. It is priced by discounting every remaining
 cashflow on its currency's discount curve, today and on every simulated path
-(`engine.valuation.portfolio.bond_legs`): ORE's `DiscountingRiskyBondEngine` with no credit
+(`engine.pricing.cube.bond_legs`): ORE's `DiscountingRiskyBondEngine` with no credit
 curve and no security spread, which is how a Treasury without credit is set up (plan V-9).
 NPV is dirty. The coupon schedule is supplied, not generated.
 
-The EOD integration boundary prices TraderX's bills and notes with its own pricers
-(`engine.integration.bill`, `engine.integration.note`).
+The TraderX path prices TraderX's bills and notes with its own pricers
+(`engine.traderx.bill`, `engine.traderx.note`).
 """
 from dataclasses import dataclass, field
 from typing import ClassVar, Optional, Sequence, Tuple
 
 import ORE
 
-from engine.day_count import UnsupportedDayCountError, resolve_accrual_day_count
 from engine.instruments._validation import _validate_identity
+from engine.market_data.day_counts import UnsupportedDayCountError, resolve_accrual_day_count
 
 
 class BondPricingError(Exception):
@@ -104,7 +104,7 @@ class BondConfig:
 
 def _validate_schedule(schedule: Sequence[CouponPeriod], maturity: ORE.Date) -> None:
     """Structure and contiguity of an explicit coupon schedule, as
-    `engine.integration.note._parse_schedule` checks it. Gaps and overlaps are refused."""
+    `engine.traderx.note._parse_schedule` checks it. Gaps and overlaps are refused."""
     for i, period in enumerate(schedule):
         if period.end_date <= period.start_date:
             raise BondPricingError(
@@ -141,7 +141,7 @@ def accrued_interest(cfg: BondConfig) -> float:
     bill or before the first period.
 
     This is the recomputed-schedule figure only. The integration boundary also reconciles
-    against the exporter's published accrued fraction (`engine.integration.note`); a
+    against the exporter's published accrued fraction (`engine.traderx.note`); a
     direct caller has no exporter to reconcile against.
     """
     if not cfg.coupon_schedule:
@@ -160,7 +160,7 @@ def accrued_interest(cfg: BondConfig) -> float:
 def _remaining_cashflows(cfg: BondConfig) -> Tuple[Tuple[ORE.Date, float], ...]:
     """Remaining cashflows as `(payment_date, amount per unit face)`: coupons in schedule
     order, then the redemption. A coupon paid on or before the evaluation date is
-    excluded. `engine.valuation.portfolio.bond_legs` discounts them."""
+    excluded. `engine.pricing.cube.bond_legs` discounts them."""
     flows = []
     if cfg.coupon_schedule:
         day_count = resolve_accrual_day_count(cfg.accrual_day_count)

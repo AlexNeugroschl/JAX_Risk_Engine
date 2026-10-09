@@ -1,6 +1,6 @@
 """
 The test portfolio shared across the ORE alignment's test layers (plan §6.3): one sloped
-two-curve USD market and one trade of each kind the market path prices, so a discrepancy can
+two-curve USD market and one trade of each kind the pipeline prices, so a discrepancy can
 be followed from the HTTP result (L6) down to one trade against ORE (L2).
 
     swap-payer                     ACT/365, 5Y, payer
@@ -32,13 +32,14 @@ would now reach ORE unchanged too.
 import ORE
 
 from engine.instruments.american_swaption import AmericanSwaptionConfig
-from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, _build_ore_swap as option_underlying
-from engine.instruments.european_swaption import SwaptionConfig, _build_ore_swap as european_underlying
-from engine.instruments.swap import SwapConfig, _build_ore_swap as swap_underlying
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, underlying_swap as option_underlying
+from engine.instruments.european_swaption import SwaptionConfig, underlying_swap as european_underlying
+from engine.instruments.schedules import ibor_index
+from engine.instruments.swap import SwapConfig, underlying_swap as swap_underlying
 from engine.instruments.treasury import BondConfig, CouponPeriod
-from engine.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
-from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER as DC, ibor_index
-from engine.valuation.config import LgmSwaptionEngineConfig
+from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER as DC
+from engine.market_data.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
+from engine.pricing.config import LgmSwaptionEngineConfig
 from tests.support.ore_lgm_oracle import OreCalibration, ore_lgm_swaption_npv
 
 ASOF = ORE.Date(30, 7, 2026)
@@ -50,7 +51,7 @@ INDEX = index_name("USD", 6)
 VOLS = SwaptionVolSurface(("1Y", "2Y", "5Y", "10Y"), ("1Y", "5Y", "10Y"),
                           ((0.0080, 0.0088, 0.0090), (0.0085, 0.0091, 0.0093), (0.0090, 0.0093, 0.0094),
                            (0.0092, 0.0094, 0.0096)))
-#: The Bermudan/American engine as ORE's example configuration (the market path's default).
+#: The Bermudan/American engine as ORE's example configuration (the pipeline's default).
 ENGINE = LgmSwaptionEngineConfig()
 
 #: The seasoned swap's one past fixing (its first coupon fixed on 2026-04-29).

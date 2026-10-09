@@ -2,13 +2,13 @@
 A vanilla fixed-vs-floating swap: the trade and its ORE schedule (`MakeVanillaSwap`).
 
 The trade names its currency and Ibor index; it carries no curve or model. It is priced by the
-valuation pipeline (`engine.valuation.legs`: ORE's `DiscountingSwapEngine` with at-par Ibor
+valuation pipeline (`engine.pricing.legs`: ORE's `DiscountingSwapEngine` with at-par Ibor
 coupons, paid cashflows dropped and path fixings as `FixingManager` stores them) on today's
 market, a bumped one, and every simulated path, whichever model simulates it.
 
 Seasoned trades are priced as ORE prices them: cashflows paid on or before the evaluation date
 are dropped, and a coupon fixed before it pays its historical fixing from `fixings`, or is
-refused if missing (`ore_builders.known_fixing`).
+refused if missing (`schedules.known_fixing`).
 """
 from dataclasses import InitVar, dataclass, field
 from typing import ClassVar, Dict, Optional
@@ -16,13 +16,8 @@ from typing import ClassVar, Dict, Optional
 import ORE
 
 from engine.instruments._validation import _validate_common_fields, _validate_identity
-from engine.models.ore_builders import (
-    DEFAULT_ACCRUAL_DAY_COUNT,
-    book_swap_dates,
-    build_vanilla_swap,
-    resolve_accrual_day_count,
-    validate_fixings,
-)
+from engine.instruments.schedules import book_swap_dates, build_vanilla_swap, validate_fixings
+from engine.market_data.day_counts import DEFAULT_ACCRUAL_DAY_COUNT, resolve_accrual_day_count
 
 
 @dataclass
@@ -56,7 +51,7 @@ class SwapConfig:
     floating_spread: float = 0.0
     #: Coupon accrual day count, a property of the booking. Names outside
     #: `SUPPORTED_ACCRUAL_DAY_COUNTS` are refused. Not the simulation time axis (always
-    #: ACT/365; see `engine.models.ore_builders`).
+    #: ACT/365; see `engine.instruments.schedules`).
     accrual_day_count: str = DEFAULT_ACCRUAL_DAY_COUNT
     fixings: Dict[ORE.Date, float] = field(default_factory=dict)
     currency: str = "USD"
@@ -74,8 +69,8 @@ class SwapConfig:
         resolve_accrual_day_count(self.accrual_day_count)
 
 
-def _build_ore_swap(cfg: SwapConfig) -> ORE.VanillaSwap:
-    """The ORE trade (see `engine.models.ore_builders.build_vanilla_swap`)."""
+def underlying_swap(cfg: SwapConfig) -> ORE.VanillaSwap:
+    """The ORE trade (see `engine.instruments.schedules.build_vanilla_swap`)."""
     return build_vanilla_swap(
         notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
         effective_date=cfg.effective_date, maturity_date=cfg.maturity_date,

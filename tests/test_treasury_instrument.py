@@ -11,8 +11,8 @@ import ORE
 import pytest
 
 from engine.instruments.treasury import BondConfig, BondPricingError, CouponPeriod, accrued_interest
-from engine.market import CurrencyMarket, Market, ZeroCurveConfig
-from engine.valuation.portfolio import value_today
+from engine.market_data.market import CurrencyMarket, Market, ZeroCurveConfig
+from engine.pricing.cube import value_today
 
 VALUATION = ORE.Date(2, 6, 2025)
 FLAT_3PCT = ZeroCurveConfig(times=[0.0, 1.0, 2.0, 5.0, 10.0, 30.0], rates=[0.03] * 6)
@@ -98,7 +98,7 @@ class TestNotePricing:
 
     def test_the_npv_is_the_DIRTY_value(self):
         """Dirty: every remaining discounted cashflow, no accrued deduction, as
-        `engine.integration.note.NotePrice.npv`. (A clean-returning version once passed all
+        `engine.traderx.note.NotePrice.npv`. (A clean-returning version once passed all
         but one test.)"""
         day_count = ORE.ActualActual(ORE.ActualActual.ISMA)
         expected_per_unit = 0.0
@@ -129,12 +129,12 @@ class TestAgreesWithTheIntegrationPricers:
     and is not imported by it) cannot drift apart unnoticed."""
 
     def _profile_and_curve(self):
-        from engine.integration.market_inputs import ASSUMED_PROFILES
+        from engine.traderx.market_inputs import ASSUMED_PROFILES
         profile = ASSUMED_PROFILES["flat-3pct-v1"]
         return profile, ZeroCurveConfig(times=list(profile.times), rates=list(profile.rates()))
 
     def _note_entry(self):
-        from engine.integration.terms import TermsEntry
+        from engine.traderx.terms import TermsEntry
         schedule = [
             {"startDate": "2024-12-15", "endDate": "2025-06-15", "paymentDate": "2025-06-15"},
             {"startDate": "2025-06-15", "endDate": "2025-12-15", "paymentDate": "2025-12-15"},
@@ -148,8 +148,8 @@ class TestAgreesWithTheIntegrationPricers:
             missing_terms=(), provenance={}, identity={})
 
     def test_bill_matches_the_integration_bill_pricer(self):
-        from engine.integration.bill import price_bill
-        from engine.integration.terms import TermsEntry
+        from engine.traderx.bill import price_bill
+        from engine.traderx.terms import TermsEntry
 
         profile, curve = self._profile_and_curve()
         entry = TermsEntry(instrument_type="BILL", terms={"couponFrequency": "NONE", "maturityDate": "2025-12-15",
@@ -158,7 +158,7 @@ class TestAgreesWithTheIntegrationPricers:
         assert price(make_bill(), curve) == pytest.approx(price_bill(entry, 100_000.0, VALUATION, profile).npv, abs=1e-6)
 
     def test_note_matches_the_integration_note_pricer(self):
-        from engine.integration.note import price_note
+        from engine.traderx.note import price_note
 
         profile, curve = self._profile_and_curve()
         integration = price_note(self._note_entry(), 100_000.0, VALUATION, profile)
@@ -167,7 +167,7 @@ class TestAgreesWithTheIntegrationPricers:
     def test_accrued_matches_the_integration_recomputed_path(self):
         """ACT/ACT (ICMA) accrual against the integration pricer's recomputed path (a direct
         caller has no exported accrued figure)."""
-        from engine.integration.note import price_note
+        from engine.traderx.note import price_note
 
         profile, _ = self._profile_and_curve()
         integration = price_note(self._note_entry(), 100_000.0, VALUATION, profile)

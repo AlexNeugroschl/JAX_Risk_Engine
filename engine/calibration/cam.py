@@ -22,8 +22,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from engine.calibration.ore_lgm import basket_vols, bootstrap_sigma, build_basket
-from engine.market import Market, index_name
-from engine.models.curves import ZeroCurve
+from engine.market_data.curves import ZeroCurve
+from engine.market_data.market import Market, index_name
 from engine.models.lgm import Sigma, hull_white_matching_zeta
 
 
@@ -37,7 +37,7 @@ class CamCalibration:
 
 
 def calibrate_currency(market: Market, currency: str, lgm) -> CamCalibration:
-    """Bootstrap `lgm` (an `engine.simulation.config.LgmConfig` or `HullWhiteConfig` with a
+    """Bootstrap `lgm` (an `engine.market_simulation.config.LgmConfig` or `HullWhiteConfig` with a
     basket) on today's market."""
     conventions = lgm.swap_index
     basket = build_basket(market.asof, list(lgm.calibration_expiries), list(lgm.calibration_terms), conventions)

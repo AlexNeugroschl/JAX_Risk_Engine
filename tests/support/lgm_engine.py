@@ -1,18 +1,18 @@
 """
-The Bermudan/American grid engine (`engine.instruments.bermudan_swaption`) with an explicit
+The Bermudan/American grid engine (`engine.pricing.lgm_grid`) with an explicit
 model: the LGM's reversion, volatility and term structure given directly, as ORE's engine takes
 them with `Calibration=None`. Tests that pin the engine itself (against ORE's own engine,
 QuantLib's Hull-White engines or closed forms) price through `grid_npv`; a portfolio prices
-through `engine.valuation.bermudan`, which calibrates the model first.
+through `engine.pricing.bermudan`, which calibrates the model first.
 """
 from typing import Optional, Union
 
 import jax.numpy as jnp
 
-from engine.instruments.bermudan_swaption import grid_value, prepare_bermudan
-from engine.market import ZeroCurveConfig
-from engine.models.curves import ZeroCurve
+from engine.market_data.curves import ZeroCurve
+from engine.market_data.market import ZeroCurveConfig
 from engine.models.lgm import Sigma
+from engine.pricing.lgm_grid import grid_value, prepare_bermudan
 
 
 def prepared(cfg, *, a: float, sigma: Union[float, Sigma], curve: ZeroCurveConfig,

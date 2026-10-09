@@ -25,15 +25,15 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.instruments.european_swaption import SwaptionConfig, _build_ore_swap as european_underlying
-from engine.instruments.swap import SwapConfig, _build_ore_swap as swap_underlying
-from engine.market import CurrencyMarket, Market, ZeroCurveConfig, index_name
-from engine.models.ore_builders import ibor_index
-from engine.portfolio import (
+from engine.instruments.european_swaption import SwaptionConfig, underlying_swap as european_underlying
+from engine.instruments.schedules import ibor_index
+from engine.instruments.swap import SwapConfig, underlying_swap as swap_underlying
+from engine.market_data.market import CurrencyMarket, Market, ZeroCurveConfig, index_name
+from engine.market_simulation.config import DEFAULT_CURVE_TENORS, simulate
+from engine.risk.market.var_es import compute_risk_metrics
+from engine.run import (
     CamConfig, HullWhiteConfig, JamshidianEngineConfig, PortfolioRequest, PricingConfig, RunConfig, price_portfolio,
 )
-from engine.risk.var_es import compute_risk_metrics
-from engine.simulation.config import DEFAULT_CURVE_TENORS, simulate
 
 TODAY = ORE.Date(30, 7, 2026)
 HW_A, HW_SIGMA = 0.03, 0.01

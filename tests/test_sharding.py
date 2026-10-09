@@ -1,5 +1,5 @@
 """
-The scenario axis across devices (`engine.simulation.sharding`, I-61):
+The scenario axis across devices (`engine.market_simulation.sharding`, I-61):
 
   * the device count is the largest that divides the scenario count, capped by the local
     devices and `JAX_RISK_SCENARIO_DEVICES`; on one device nothing is placed, so a one-device
@@ -21,8 +21,8 @@ import jax
 import numpy as np
 import pytest
 
-from engine.simulation import sharding
-from engine.simulation.sharding import SCENARIO_DEVICES_ENV, scenario_device_count, shard_scenarios
+from engine.market_simulation import sharding
+from engine.market_simulation.sharding import SCENARIO_DEVICES_ENV, scenario_device_count, shard_scenarios
 from tests.support.worker_stubs import ROOT
 
 

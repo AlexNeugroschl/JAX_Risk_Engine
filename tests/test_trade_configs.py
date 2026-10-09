@@ -19,7 +19,7 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig
-from engine.portfolio import PortfolioRequest
+from engine.run import PortfolioRequest
 from tests.support import portfolio
 
 TODAY = ORE.Date(30, 7, 2026)

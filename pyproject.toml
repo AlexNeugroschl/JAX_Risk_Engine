@@ -35,10 +35,10 @@ dev = [
     "pytest",
     "httpx",
     # Validates published EOD documents against the JSON Schemas
-    # `engine.integration.schema` derives (W1.6.2). Test-only on purpose:
+    # `engine.traderx.schema` derives (W1.6.2). Test-only on purpose:
     # the engine emits the schema and must never depend on a validator to
     # produce a correct document. It is the *tests* that prove the two
-    # agree -- see tests/test_integration_schema.py.
+    # agree -- see tests/test_traderx_schema.py.
     "jsonschema",
     # Runs the suite in parallel processes (`pytest -n auto`); see
     # docs/getting-started/user-guide.md, "Running the tests".

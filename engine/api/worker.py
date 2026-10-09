@@ -197,9 +197,9 @@ def price_job(job: Job) -> JobResult:
 
 
 def _portfolio_job(job: Job) -> JobResult:
-    from engine.api.market_schemas import MarketPortfolioRequestSchema
-    from engine.api.schemas import PortfolioResultSchema
-    from engine.portfolio import price_portfolio
+    from engine.api.requests import MarketPortfolioRequestSchema
+    from engine.api.results import PortfolioResultSchema
+    from engine.run import price_portfolio
 
     schema = MarketPortfolioRequestSchema.model_validate(json.loads(job.request))
     request = schema.to_dataclass()
@@ -212,9 +212,9 @@ def _portfolio_job(job: Job) -> JobResult:
 
 
 def _market_risk_job(job: Job) -> JobResult:
-    from engine.api.market_schemas import MarketRiskRequestSchema
-    from engine.api.schemas import MarketRiskResultSchema
-    from engine.market_risk import run_market_risk
+    from engine.api.requests import MarketRiskRequestSchema
+    from engine.api.results import MarketRiskResultSchema
+    from engine.risk.market import run_market_risk
 
     schema = MarketRiskRequestSchema.model_validate(json.loads(job.request))
     request = schema.to_dataclass()
@@ -248,8 +248,8 @@ def failure_class(exc: BaseException) -> str:
     """The failure class of a job that raised `exc`, by the exception's type. The route has
     validated the request before queueing it, so a failure here is mostly a pricing one;
     a request that reaches the worker unvalidated is classified the same way."""
-    from engine.day_count import UnsupportedDayCountError
-    from engine.models.ore_builders import MissingFixingError
+    from engine.market_data.day_counts import UnsupportedDayCountError
+    from engine.instruments.schedules import MissingFixingError
 
     if isinstance(exc, (KeyError, MissingFixingError)):  # a curve, currency or fixing not supplied
         return MISSING_MARKET_DATA
@@ -324,7 +324,7 @@ def _profile_options(jax):
     on the 4-trade demo: compilation ~119s, dispatch ~76s, tracing ~3s, execution ~3s, summed
     across concurrent lanes). What is lost is Python source attribution: no event names the
     engine function that dispatched it. Phase-level attribution comes from
-    `engine.portfolio.profiling.phase` regardless; only per-callsite attribution needs the
+    `engine.run.trace.phase` regardless; only per-callsite attribution needs the
     Python tracer.
     """
     options = jax.profiler.ProfileOptions()
@@ -347,7 +347,7 @@ def _profiled(run, ready):
     execution rather than compilation (and the job runs twice).
 
     `JAX_RISK_PROFILE_PHASE=<phase>` traces only that phase of the job (a label of
-    `engine.portfolio.profiling.PHASES`, or one trade's Greeks, `greeks/trade<i>/<type>`); the
+    `engine.run.trace.PHASES`, or one trade's Greeks, `greeks/trade<i>/<type>`); the
     rest runs untraced. On a GPU the profiler slows every kernel launch, whatever it records
     (docs/concepts/profiling.md §2.0), so a phase is traced at its own cost alone.
 
@@ -372,7 +372,7 @@ def _profiled(run, ready):
         _record_trace(out_dir, traced, warmup)
         return result
 
-    from engine.portfolio.profiling import traced_phase as window_on
+    from engine.run.trace import traced_phase as window_on
 
     compiles = []
 
@@ -388,7 +388,7 @@ def _profiled(run, ready):
         result, job = _measured(jax, run, ready)
     if window.wall_seconds is None:
         warnings.warn(f"JAX_RISK_PROFILE_PHASE={traced_phase!r}: the job has no such phase; nothing was traced "
-                      f"(see engine.portfolio.profiling.PHASES)", UserWarning, stacklevel=2)
+                      f"(see engine.run.trace.PHASES)", UserWarning, stacklevel=2)
         return result
     traced = {"wall_seconds": window.wall_seconds, "compiles": compiles[0].count, "phase": traced_phase,
               "job_wall_seconds": job["wall_seconds"], "job_compiles": job["compiles"]}
@@ -410,13 +410,13 @@ def _measured(jax, run, ready):
 
 
 def _record_trace(out_dir: str, traced: dict, warmup: Optional[dict]) -> None:
-    """Summarize the trace just written under `out_dir` (`engine.portfolio.profiling.summarize_trace`)
+    """Summarize the trace just written under `out_dir` (`engine.run.trace.summarize_trace`)
     into `out_dir/<trace run>.summary.json`, with the traced run's and the warm-up's wall time
     and compiles and the share of the traced run the trace covers, and warn if it is partial
     (`_trace_warning`). Swallows any error, so profiling cannot break a job whose result is
     already correct."""
     try:
-        from engine.portfolio.profiling import latest_trace, summarize_trace
+        from engine.run.trace import latest_trace, summarize_trace
 
         path = latest_trace(out_dir)
         if path is None:
@@ -444,7 +444,7 @@ def _trace_warning(summary, wall_seconds: float) -> Optional[str]:
     """What is partial about the trace of `summary` (a `TraceSummary`), or None: the record
     itself, if it spans less than half the job's `wall_seconds` (stopped early); else its
     `.trace.json.gz` export, if the trace has more events than the export keeps."""
-    from engine.portfolio.profiling import JSON_EXPORT_EVENT_CAP
+    from engine.run.trace import JSON_EXPORT_EVENT_CAP
 
     if wall_seconds > 1.0 and summary.coverage(wall_seconds) < _TRACE_COVERAGE_WARN:
         return (f"profiler trace {summary.path!r} spans only {summary.span_seconds:.1f}s of a "

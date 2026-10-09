@@ -46,7 +46,7 @@ import pytest
 
 from demos.demo_scenarios import EVAL_DATE, demo_market, demo_simulation
 from engine.instruments.swap import SwapConfig
-from engine.portfolio import PortfolioRequest, RunConfig
+from engine.run import PortfolioRequest, RunConfig
 
 
 @pytest.fixture(scope="session")

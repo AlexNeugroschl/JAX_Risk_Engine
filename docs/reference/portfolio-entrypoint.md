@@ -1,13 +1,13 @@
 # The Portfolio Entry Point
 
-**Modules:** [`engine/portfolio/request.py`](../../engine/portfolio/request.py), the pipeline in
-[`engine/portfolio/market_path.py`](../../engine/portfolio/market_path.py), and the run
-configuration in [`engine/portfolio/config.py`](../../engine/portfolio/config.py)
+**Modules:** [`engine/run/request.py`](../../engine/run/request.py), the pipeline in
+[`engine/run/pipeline.py`](../../engine/run/pipeline.py), and the run
+configuration in [`engine/run/config.py`](../../engine/run/config.py)
 **Public entry point:** `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 
 ## Plain-language summary
 
-`engine.portfolio` answers the question "what should a caller of the whole system hand
+`engine.run` answers the question "what should a caller of the whole system hand
 over, and what do they get back?" with two dataclasses — `PortfolioRequest` in,
 `PortfolioResult` out — and one function, `price_portfolio`, that does everything in
 between: validate, calibrate and simulate the cross-asset model, price every trade today and
@@ -18,13 +18,13 @@ request's `Market`; the trades name their currency and index and carry no model.
 **This is the exposure path.** Its simulation runs months to years forward under the
 risk-neutral measure, so its risk output is an exposure profile (EPE, ENE, PFE through
 time — [Exposure](../risk/exposure.md)), not a VaR. Short-horizon market-risk VaR/ES is
-`engine.market_risk.run_market_risk` ([Market Risk](../risk/market-risk.md)).
+`engine.risk.market.run_market_risk` ([Market Risk](../risk/market-risk.md)).
 
 ## `PortfolioRequest`
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `market` | `Market` | *required* | Today's market: curves per currency and index, swaption volatilities, FX and equity spots (`engine/market.py`). Anything else is a `TypeError` (the Hull-White model is a `HullWhiteConfig` in `config.simulation.ir`, not a market type). |
+| `market` | `Market` | *required* | Today's market: curves per currency and index, swaption volatilities, FX and equity spots (`engine/market_data/market.py`). Anything else is a `TypeError` (the Hull-White model is a `HullWhiteConfig` in `config.simulation.ir`, not a market type). |
 | `trades` | `List[TradeConfig]` | *required* | Any mix of `SwapConfig`, `SwaptionConfig`, `BermudanSwaptionConfig`, `AmericanSwaptionConfig`, `BondConfig`. Each has a `trade_id`, unique in the portfolio (a repeat is refused), and is valued on `market.asof` (its `evaluation_date`). |
 | `config` | `RunConfig` | ORE's defaults | See below. |
 | `pfe_quantiles` | `Sequence[float]` | `(0.95, 0.99)` | The exposure profiles' PFE quantiles. |
@@ -33,7 +33,7 @@ time — [Exposure](../risk/exposure.md)), not a VaR. Short-horizon market-risk 
 
 ## `RunConfig`
 
-`engine/portfolio/config.py`. One value for every choice a run makes, as ORE's run is
+`engine/run/config.py`. One value for every choice a run makes, as ORE's run is
 configured by its files; `RunConfig()` is ORE's defaults.
 
 | Field | Type | Default | ORE | Meaning |
@@ -53,7 +53,7 @@ floating spread and cash settlement, as QuantLib's does). Nothing is priced with
 engine than the one configured.
 
 ```python
-from engine.portfolio import (
+from engine.run import (
     CamConfig, GreeksConfig, HullWhiteConfig, JamshidianEngineConfig, PortfolioRequest, PricingConfig, RunConfig,
     SensitivityConfig, price_portfolio,
 )
@@ -76,7 +76,7 @@ scenario risk, [I-24](../planning/known-issues.md#i-24).)
 
 ## `Precision`
 
-On `RunConfig.precision` (`engine.precision`, exported by `engine.portfolio` too; design:
+On `RunConfig.precision` (`engine.precision`, exported by `engine.run` too; design:
 [details/precision.md](../planning/details/precision.md)). A `StagePrecision(storage, compute,
 accumulate)` of format names per adjustable stage, each `"float64"` by default:
 
@@ -168,12 +168,12 @@ validated for a figure is the evidence table of [I-55](../planning/known-issues.
 | `base_npv_per_trade` | `List[float]` | Each trade's value today, in `request.trades` order. |
 | `trade_ids` | `List[str]` | Each trade's `trade_id`, in `request.trades` order: the names of every per-trade row ([I-10](../planning/known-issues.md#i-10)). |
 | `scenario_risk_available` | `bool` | `False` when the run was `scenario_risk=False`, meaning `exposure` is **absent** and `npv_cube` zero-width. |
-| `measure` | `Optional[str]` | The exposure's measure: `"risk-neutral-pricing"` (`engine.risk.var_es.ENGINE_RISK_MEASURE`) whenever it was computed, `None` without scenario risk. An exposure under the pricing measure, **not** a forecast of tomorrow's loss ([I-11](../planning/known-issues.md#i-11)). |
+| `measure` | `Optional[str]` | The exposure's measure: `"risk-neutral-pricing"` (`engine.risk.market.var_es.ENGINE_RISK_MEASURE`) whenever it was computed, `None` without scenario risk. An exposure under the pricing measure, **not** a forecast of tomorrow's loss ([I-11](../planning/known-issues.md#i-11)). |
 | `precision` | `PrecisionReport` | The precision as run, read from the run's arrays, and with a paired sample each figure's estimate ([above](#precision)). |
 
 ## `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 
-`engine.portfolio.market_path.price_on_market` (safe to call from several threads at once):
+`engine.run.pipeline.price_on_market` (safe to call from several threads at once):
 
 1. **Validate before any JAX work** (`validate_request`): the configuration
    (validated when it is built), scenario risk needs a simulation, every trade valued on the market's date
@@ -185,7 +185,7 @@ validated for a figure is the evidence table of [I-55](../planning/known-issues.
    each currency with a basket to the market's swaption volatilities, and `simulate` builds
    the scenario market at `precision.simulation` and `precision.market`.
 3. **Value** every trade today and on every path with its configured engine
-   (`engine.valuation.portfolio.value_portfolio`, each at `precision.precision_for(trade)`), converting
+   (`engine.pricing.cube.value_portfolio`, each at `precision.precision_for(trade)`), converting
    foreign trades at the spot today and at the path FX on paths; without scenario risk,
    today only (`value_today`).
 4. **Exposure**: the netting set and each trade, deflated by the LGM numeraire, from the
@@ -225,7 +225,7 @@ See [Greeks](../risk/greeks.md).
 
 ## Tested by
 
-- `tests/test_portfolio_market_path.py` — the result is the valuation layer's, exposure
+- `tests/test_pipeline.py` — the result is the valuation layer's, exposure
   identities (a bill's EE is its forward value), ORE's time-weighted and Basel profiles,
   trade ids.
 - `tests/test_portfolio_entrypoint.py` — `price_portfolio` equals the pipeline orchestrated

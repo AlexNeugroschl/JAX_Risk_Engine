@@ -2,7 +2,7 @@
 
 The end-of-day (EOD) integration with [TraderX](https://github.com/finos/traderX): what is
 agreed, what is open with TraderX, and the remaining work. How the boundary works today is in
-[EOD Integration](../../reference/eod-integration.md). The negotiation itself (the proposal
+[The TraderX Path](../../reference/traderx-path.md). The negotiation itself (the proposal
 and responses v2 to v7, the readiness and bond plans) is in git history, last present at
 commit `8306073` under `docs/planning/traderX_integration/`.
 

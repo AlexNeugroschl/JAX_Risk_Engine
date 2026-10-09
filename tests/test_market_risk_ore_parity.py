@@ -3,7 +3,7 @@ ORE parity for the market-risk path, end to end: every shocked scenario is
 repriced independently in ORE, and ORE's own `RiskStatistics` computes VaR
 and ES from ORE's P&L vector.
 
-    engine: scenarios -> engine.market_risk.run_market_risk -> VaR/ES
+    engine: scenarios -> engine.risk.market.run_market_risk -> VaR/ES
     ORE:    same shifted pillar rates -> ORE.ZeroCurve -> ORE instruments and
             engines -> P&L vector -> ORE.RiskStatistics -> VaR/ES
 
@@ -34,13 +34,13 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.market_risk import (
+from engine.instruments.schedules import build_vanilla_swap
+from engine.risk.market import (
     MarketRiskRequest,
     historical_scenarios,
     monte_carlo_scenarios,
     run_market_risk,
 )
-from engine.models.ore_builders import build_vanilla_swap
 from tests.support.ore_lgm_oracle import ore_lgm_swaption_npv
 from tests import market_risk_support as m
 

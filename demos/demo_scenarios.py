@@ -8,8 +8,8 @@ how the Hull-White model's old simulation hid a 4-9% bias (I-42).
 """
 import ORE
 
-from engine.market import CurrencyMarket, EquityMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
-from engine.simulation.config import CamConfig, HullWhiteConfig, LgmConfig
+from engine.market_data.market import CurrencyMarket, EquityMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
+from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfig
 
 #: Evaluation date of every scenario here.
 EVAL_DATE = ORE.Date(30, 7, 2026)

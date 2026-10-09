@@ -1,5 +1,5 @@
 """
-Curve primitives (`engine.models.curves`) against QuantLib's `InterpolatedZeroCurve<Linear>`
+Curve primitives (`engine.market_data.curves`) against QuantLib's `InterpolatedZeroCurve<Linear>`
 (`ORE.ZeroCurve`): inside the pillars, and past the last one, where QuantLib holds the
 instantaneous forward flat (`ContinuousForward`, I-48). Sloped curves only: a flat curve
 cannot tell a flat zero from a flat forward.
@@ -10,7 +10,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.models.curves import ZeroCurve, discount, forward_rate, log_discount, zero_rate
+from engine.market_data.curves import ZeroCurve, discount, forward_rate, log_discount, zero_rate
 
 ASOF = ORE.Date(30, 7, 2026)
 DC = ORE.Actual365Fixed()
@@ -80,7 +80,7 @@ def test_extrapolation_is_differentiable_in_the_pillar_rates():
 
 
 class TestForwardRatePrecision:
-    """`engine.models.curves.forward_rate` is exact. It was once a 1e-6 finite difference on ln P,
+    """`engine.market_data.curves.forward_rate` is exact. It was once a 1e-6 finite difference on ln P,
     which in float32 put forward rates off by up to ~2 percentage points."""
 
     TIMES = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]

@@ -19,8 +19,9 @@ import ORE
 import pytest
 
 from engine.instruments.american_swaption import AmericanSwaptionConfig
-from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, _build_grid_schedule, exercisable_dates
-from engine.market import ZeroCurveConfig
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, exercisable_dates
+from engine.market_data.market import ZeroCurveConfig
+from engine.pricing.lgm_grid import _build_grid_schedule
 from date_helpers import in_years
 from tests.support.lgm_engine import grid_npv, prepared
 

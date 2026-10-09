@@ -2,7 +2,7 @@
 `engine.api` through FastAPI's in-process TestClient: /health and /version; /portfolio/price
 returns 202 and a job id, and polling `/jobs/{job_id}` reaches a result equal to a direct
 `price_portfolio` call, here with the Hull-White model named in the request's `simulation.ir`
-(the market path over HTTP on the shared portfolio is tests/test_api_market_path.py, market risk
+(the pipeline over HTTP on the shared portfolio is tests/test_api_portfolio.py, market risk
 tests/test_api_market_risk.py); the Hull-White request shape retired on 2026-10-01 is a 422
 naming its replacement, and so are the names retired on 2026-10-07; invalid bodies give a 4xx with
 the validator's message (malformed schemas a 422); /calibration/cam and /calibration/lgm.
@@ -15,9 +15,9 @@ import ORE
 import pytest
 
 from demos.demo_scenarios import demo_market_json, demo_simulation_json
-from engine.api.market_schemas import MarketPortfolioRequestSchema
-from engine.portfolio import price_portfolio
+from engine.api.requests import MarketPortfolioRequestSchema
 from engine.precision import Precision, StagePrecision
+from engine.run import price_portfolio
 from tests.support import portfolio as shared
 
 ZERO_CURVE_SCHEMA = {"times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0], "rates": [0.03, 0.03, 0.032, 0.035, 0.038, 0.04]}
@@ -227,7 +227,7 @@ class TestCamCalibrationEndpoint:
     @pytest.mark.parametrize("model", ["LGM", "HullWhite"])
     def test_the_result_is_the_calibration_a_portfolio_run_uses(self, test_client, model):
         from engine.calibration.cam import calibrate_cam
-        from engine.simulation.config import build_cross_asset_model
+        from engine.market_simulation.config import build_cross_asset_model
 
         ir = {"USD": {"model": model, "reversion": 0.03, "volatility": 0.01, **self.BASKET}}
         r = test_client.post("/calibration/cam", json={"market": shared.market_json(), "ir": ir})

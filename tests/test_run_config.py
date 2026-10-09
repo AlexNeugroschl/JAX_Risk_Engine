@@ -1,5 +1,5 @@
 """
-The run configuration (`engine.portfolio.config.RunConfig`, I-68): one
+The run configuration (`engine.run.config.RunConfig`, I-68): one
 value naming the model per currency and simulation, the engine per product, the Greeks method
 and settings, and the precision per stage, with ORE's defaults.
 
@@ -21,12 +21,12 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.portfolio import (
+from engine.risk.greeks.bump import portfolio_sensitivities
+from engine.run import (
     CamConfig, GreeksConfig, HullWhiteConfig, JamshidianEngineConfig, LgmConfig, LgmSwaptionEngineConfig,
     PortfolioRequest, Precision, PricingConfig, RunConfig, SensitivityConfig, StagePrecision, price_portfolio,
 )
-from engine.portfolio.market_path import validate_request
-from engine.risk.sensitivities import portfolio_sensitivities
+from engine.run.pipeline import validate_request
 from tests.support import portfolio as shared
 
 FAST = LgmSwaptionEngineConfig(n_per_std=12, std_devs=4.0)
@@ -142,7 +142,7 @@ class TestWhatThePipelineDoesNotImplementIsRefused:
 class TestEveryModelRunsWithEveryEngineAndMethod:
     """I-68: the model is an option of the run, not a pipeline. Every combination prices
     today, on the paths and its Greeks; before 2026-10-01 the Hull-White request refused the Bachelier
-    engine and AD Greeks' market path, and the market path refused Jamshidian and AD."""
+    engine and AD Greeks, and the pipeline on a `Market` refused Jamshidian and AD."""
 
     @pytest.mark.parametrize("model", MODELS)
     @pytest.mark.parametrize("pricing", [PricingConfig(), JAMSHIDIAN], ids=["Bachelier", "Jamshidian"])

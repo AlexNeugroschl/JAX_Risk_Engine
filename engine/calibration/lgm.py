@@ -12,7 +12,7 @@ Mean reversion `a` is an input, not calibrated (ORE's default, `calibrateH == fa
 
 Differs from ORE: ORE fits each instrument with its configured optimizer
 (Levenberg-Marquardt by default). Here each bucket's sigma is the root on a fixed bracket of
-[1e-6, 0.20], by the configured solver (`engine.numerics.roots`, decision A-21). The price is
+[1e-6, 0.20], by the configured solver (`engine.solvers.roots`, decision A-21). The price is
 increasing in the new bucket's sigma, so the root is the same when one exists in the bracket.
 Market prices are Bachelier (normal-vol) prices.
 """
@@ -23,10 +23,10 @@ from typing import List
 import jax
 import jax.numpy as jnp
 
-from engine.models.hull_white import ZeroCurve
-from engine.models.lgm import Sigma
 from engine.calibration.basket import CalibrationTarget, bachelier_swaption_price, price_lgm_swaption
-from engine.numerics.roots import DEFAULT_SOLVER, Steps, check_solver, solve
+from engine.market_data.curves import ZeroCurve
+from engine.models.lgm import Sigma
+from engine.solvers.roots import DEFAULT_SOLVER, Steps, check_solver, solve
 
 
 @dataclass

@@ -21,17 +21,18 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, _PreparedBermudan
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
-from engine.market import ZeroCurveConfig
+from engine.market_data.market import ZeroCurveConfig
 from engine.models.lgm import Sigma
-from engine.portfolio.profiling import PHASES
-from engine.risk.greeks import curve_greeks, portfolio_greeks, vega_greek
-from engine.risk.price_functions import bermudan_price_function, curves_of, trade_price_function
-from engine.valuation.bermudan import calibrate_on
-from engine.valuation.config import LgmSwaptionEngineConfig, PricingConfig
-from engine.valuation.context import from_market
+from engine.pricing.bermudan import calibrate_on
+from engine.pricing.config import LgmSwaptionEngineConfig, PricingConfig
+from engine.pricing.context import from_market
+from engine.pricing.lgm_grid import _PreparedBermudan
+from engine.risk.greeks.ad import curve_greeks, portfolio_greeks, vega_greek
+from engine.risk.greeks.price_functions import bermudan_price_function, curves_of, trade_price_function
+from engine.run.trace import PHASES
 from tests.support import portfolio as shared
 from tests.support.compiles import count_compiles
 from tests.support.lgm_engine import grid_npv, prepared
@@ -197,8 +198,8 @@ class TestCompileCounts:
         script = (
             "import json, jax\n"
             "from demos.demo_profile_small import build_portfolio_request\n"
-            "from engine.api.market_schemas import MarketPortfolioRequestSchema\n"
-            "from engine.portfolio import price_portfolio\n"
+            "from engine.api.requests import MarketPortfolioRequestSchema\n"
+            "from engine.run import price_portfolio\n"
             "from tests.support.compiles import count_compiles\n"
             "request = MarketPortfolioRequestSchema.model_validate(build_portfolio_request()).to_dataclass()\n"
             "counts = []\n"
@@ -228,7 +229,7 @@ class TestCompileCounts:
 # =============================================================================
 class TestHessianDiagonalEquivalence:
     """`curve_greeks`' Delta and Gamma, each curve's gradient and Hessian diagonal from one
-    linearization over all of the trade's curves (`engine.risk.greeks`), equal `jax.grad` and
+    linearization over all of the trade's curves (`engine.risk.greeks.ad`), equal `jax.grad` and
     `jnp.diagonal(jax.hessian(...))` of the price function in each curve, for every trade's
     price function."""
 
@@ -272,7 +273,7 @@ class TestGradientsSurviveTheJitBoundary:
 
     @staticmethod
     def _price(option, disc_rates):
-        from engine.models.curves import ZeroCurve
+        from engine.market_data.curves import ZeroCurve
         fn, _disc, index = option
         times = jnp.asarray(shared.PILLARS)
         return fn.price(ZeroCurve(times, disc_rates), ZeroCurve(times, index))
@@ -299,7 +300,7 @@ class TestGradientsSurviveTheJitBoundary:
         cfg = bermudan_cfg()
 
         def npv(values):
-            from engine.instruments.bermudan_swaption import grid_value
+            from engine.pricing.lgm_grid import grid_value
             sigma = Sigma(times=jnp.asarray([1.0]), values=values)
             return grid_value(prepared(cfg, a=0.03, sigma=sigma, curve=CURVE, n_per_std=16))
 
@@ -338,7 +339,7 @@ class TestProfilerHook:
         from types import SimpleNamespace
 
         from engine.api.worker import _profiled
-        from engine.portfolio.profiling import phase
+        from engine.run.trace import phase
 
         monkeypatch.setenv("JAX_RISK_PROFILE_DIR", str(tmp_path))
         monkeypatch.setenv("JAX_RISK_PROFILE_WARMUP", "1")
@@ -367,7 +368,7 @@ class TestProfilerHook:
         from types import SimpleNamespace
 
         from engine.api.worker import _profiled
-        from engine.portfolio.profiling import phase
+        from engine.run.trace import phase
 
         monkeypatch.setenv("JAX_RISK_PROFILE_DIR", str(tmp_path))
         monkeypatch.setenv("JAX_RISK_PROFILE_PHASE", "pricing")
@@ -407,7 +408,7 @@ class TestProfilerHook:
         """Started and stopped once, around the first run of the phase, even one that
         raises; other phases and later runs are not traced, and the window closes with the
         block."""
-        import engine.portfolio.profiling as profiling
+        import engine.run.trace as profiling
 
         calls = []
         with profiling.traced_phase("pricing", lambda: calls.append("start"), lambda: calls.append("stop")) as window:
@@ -459,16 +460,16 @@ def _write_trace(directory, lines) -> str:
 
 
 def _summary(events: int, span_seconds: float):
-    from engine.portfolio.profiling import TraceSummary
+    from engine.run.trace import TraceSummary
 
     return TraceSummary(path="t", bytes=0, events=events, span_seconds=span_seconds, phases={}, threads={})
 
 
 class TestTraceSummary:
-    """`engine.portfolio.profiling.summarize_trace` and the worker's check of a trace."""
+    """`engine.run.trace.summarize_trace` and the worker's check of a trace."""
 
     def test_counts_events_span_phases_and_threads(self, tmp_path):
-        from engine.portfolio.profiling import summarize_trace
+        from engine.run.trace import summarize_trace
 
         path = _write_trace(tmp_path / "run", {
             "": [("pricing", 0.0, 0.25), ("pricing", 0.5, 0.25), ("greeks", 1.0, 3.0),
@@ -490,7 +491,7 @@ class TestTraceSummary:
     def test_latest_trace_is_the_newest_or_none(self, tmp_path):
         import os
 
-        from engine.portfolio.profiling import latest_trace
+        from engine.run.trace import latest_trace
 
         assert latest_trace(str(tmp_path)) is None
         old = _write_trace(tmp_path / "plugins" / "profile" / "a", {"": [("pricing", 0.0, 1.0)]})
@@ -507,7 +508,7 @@ class TestTraceSummary:
     def test_a_trace_beyond_the_json_export_cap_is_reported(self):
         """The `.trace.json.gz` export keeps about a million events; xprof reads them all."""
         from engine.api.worker import _trace_warning
-        from engine.portfolio.profiling import JSON_EXPORT_EVENT_CAP
+        from engine.run.trace import JSON_EXPORT_EVENT_CAP
 
         warning = _trace_warning(_summary(events=JSON_EXPORT_EVENT_CAP + 1, span_seconds=10.0), wall_seconds=10.0)
         assert ".trace.json.gz" in warning and "xprof reads the whole trace" in warning
@@ -523,10 +524,10 @@ class TestTraceSummary:
 # PHASE ANNOTATIONS
 # =============================================================================
 class TestPhaseAnnotations:
-    """`engine.portfolio.profiling.phase` is wired correctly and safe in the pricing path."""
+    """`engine.run.trace.phase` is wired correctly and safe in the pricing path."""
 
     def test_phase_is_a_no_op_context_manager_outside_a_trace(self):
-        from engine.portfolio.profiling import phase
+        from engine.run.trace import phase
 
         with phase("unit-test"):
             value = 1 + 1
@@ -535,7 +536,7 @@ class TestPhaseAnnotations:
     def test_phase_enters_both_annotation_mechanisms(self):
         """Both mechanisms are entered (host timeline and compiled-HLO names);
         `named_scope` alone gave no host events for eager phases."""
-        import engine.portfolio.profiling as profiling
+        import engine.run.trace as profiling
 
         entered = []
 
@@ -567,11 +568,11 @@ class TestPhaseAnnotations:
         """A real pricing run enters the phases."""
         import dataclasses
 
-        import engine.portfolio.market_path as market_path
-        from engine.portfolio.request import price_portfolio
+        import engine.run.pipeline as pipeline
+        from engine.run.request import price_portfolio
 
         seen = []
-        original = market_path.phase
+        original = pipeline.phase
 
         @contextmanager
         def recording(name):
@@ -579,7 +580,7 @@ class TestPhaseAnnotations:
             with original(name):
                 yield
 
-        monkeypatch.setattr(market_path, "phase", recording)
+        monkeypatch.setattr(pipeline, "phase", recording)
         price_portfolio(dataclasses.replace(portfolio_request, compute_greeks=True))
         assert {"calibration", "simulation", "pricing", "exposure", "greeks"} <= set(seen) <= set(PHASES)
         seen.clear()
@@ -590,8 +591,8 @@ class TestPhaseAnnotations:
     def test_each_trade_has_its_own_greeks_phase(self, method, monkeypatch):
         """Both Greeks methods label each trade's Greeks `greeks/trade<index>/<config type>`,
         the per-trade time a trace summary reports."""
-        import engine.portfolio.profiling as profiling
-        from engine.portfolio.market_path import _greeks
+        import engine.run.trace as profiling
+        from engine.run.pipeline import _greeks
 
         seen = []
         original = profiling.phase

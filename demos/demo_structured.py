@@ -6,7 +6,7 @@ The portfolio of `demo_api.py`, split into the four stages an integrator meets:
   2. SERVER SETUP     starting an engine.api server, with the pricing-job profiler on
                       (JAX_RISK_PROFILE_DIR; see PROFILE_DIR below). Same for any portfolio.
   3. SERVER INPUTS    reshaping stage 1 into the portfolio request's JSON
-                      (`engine.api.market_schemas.MarketPortfolioRequestSchema`).
+                      (`engine.api.requests.MarketPortfolioRequestSchema`).
   4. SUBMIT AND PRINT send, poll, print.
 
 Meant as a template for a real integration: it shows what a caller must supply versus what

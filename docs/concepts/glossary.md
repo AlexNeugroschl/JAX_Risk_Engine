@@ -7,7 +7,7 @@ skim for the terms you don't recognize.
 **Accrued interest** — Interest a bond has earned but not yet paid out, because the next
 coupon date hasn't arrived. A buyer pays it on top of the quoted price, which is why a
 bond has two prices — see **clean price / dirty price**. See
-[EOD Integration](../reference/eod-integration.md).
+[The TraderX Path](../reference/traderx-path.md).
 
 **At-par (coupon pricing)** — A convention for pricing a floating-rate payment using a
 single forward interest rate covering its whole accrual period, rather than
@@ -90,7 +90,7 @@ periodically based on actual market conditions. See [Instruments](../instruments
 **Forward-starting (swap or swaption)** — A trade whose accrual/exercise begins at some
 point in the future rather than immediately (beyond the standard few-day settlement lag).
 E.g. a swaption exercisable in 5Y, on a swap that itself doesn't start accruing interest
-until that 5Y point. See [Instruments: European Swaptions](../instruments/european-swaptions.md#2-building-the-real-trade-_build_ore_swap-european_terms).
+until that 5Y point. See [Instruments: European Swaptions](../instruments/european-swaptions.md#2-building-the-real-trade-underlying_swap-european_terms).
 
 **FX (foreign exchange)** — The market for exchanging one currency for another; an "FX
 rate" is the price of one currency in terms of another (e.g. how many US dollars one
@@ -159,7 +159,7 @@ referencing the role of randomness. See [Market Simulation](market-simulation.md
 interest rate curves for a single trade: one to figure out what a floating payment will
 actually be (the "forwarding curve," tied to a specific lending benchmark), and a
 separate one to discount all cashflows back to today (the "discounting curve," usually
-tied to an overnight/OIS rate). See [Instruments](../instruments/swaps.md#2-building-the-real-trade-_build_ore_swap-legs_of).
+tied to an overnight/OIS rate). See [Instruments](../instruments/swaps.md#2-building-the-real-trade-underlying_swap-legs_of).
 
 **Notional** — The reference amount of money a trade's payments are calculated from,
 without that amount itself ever actually changing hands (in an interest rate swap,
@@ -197,7 +197,7 @@ stable answer.
 when it cannot price something faithfully, it returns an explicit, named refusal saying
 what it would need, rather than a plausible-looking number. An explicit refusal is
 recoverable; a confidently wrong number is not. See
-[EOD Integration](../reference/eod-integration.md).
+[The TraderX Path](../reference/traderx-path.md).
 
 **Scenario** — One simulated "alternate future" — one complete, self-consistent
 simulated path for every rate/price being modeled, from today out to the simulation's
@@ -222,7 +222,7 @@ variants, which allow exercise on multiple dates rather than just one, also exis
 an offline script. Two integrations exist: the general portfolio API
 ([HTTP API](../reference/http-api.md)), and the stricter **end-of-day (EOD)** contract,
 which accepts a hash-pinned overnight snapshot of TraderX's book and returns an identified
-result per position ([EOD Integration](../reference/eod-integration.md)). See also the
+result per position ([The TraderX Path](../reference/traderx-path.md)). See also the
 [TraderX integration](../planning/details/traderx-integration.md).
 
 **Value at Risk (VaR)** — The most standard risk number in finance: "what's the cutoff
@@ -239,7 +239,7 @@ requirement throughout this codebase's JIT-compiled code.
 volatility means bigger, more frequent swings. Usually written as `σ` (sigma) in
 formulas.
 
-**Workload key** — At the EOD boundary, a hash over *everything that can change a number*
+**Workload key** — On the TraderX path, a hash over *everything that can change a number*
 (bundle identity, market inputs, requested calculations, mapping/engine/schema versions,
 precision). Two submissions with the same key are the same computation, so a retry can
 return the stored result instead of recomputing it. Deliberately excludes the

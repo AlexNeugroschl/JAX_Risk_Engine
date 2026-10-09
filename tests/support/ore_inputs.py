@@ -48,13 +48,13 @@ import numpy as np
 import ORE
 
 from engine.instruments.american_swaption import AmericanSwaptionConfig
-from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, _build_ore_swap as option_underlying
-from engine.instruments.european_swaption import SwaptionConfig, _build_ore_swap as european_underlying
-from engine.instruments.swap import SwapConfig, _build_ore_swap as swap_underlying
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, underlying_swap as option_underlying
+from engine.instruments.european_swaption import SwaptionConfig, underlying_swap as european_underlying
+from engine.instruments.swap import SwapConfig, underlying_swap as swap_underlying
 from engine.instruments.treasury import BondConfig
-from engine.market import SwaptionVolSurface
+from engine.market_data.day_counts import resolve_accrual_day_count
+from engine.market_data.market import SwaptionVolSurface
 from engine.models.lgm import Sigma
-from engine.models.ore_builders import resolve_accrual_day_count
 
 CCY = "USD"
 CURVE_ID = "SIMCURVE"
@@ -321,7 +321,7 @@ class OreLgmEngine:
 
     @classmethod
     def of(cls, config, tolerance: float = 1e-4) -> "OreLgmEngine":
-        """The engine of an `engine.valuation.config.LgmSwaptionEngineConfig`."""
+        """The engine of an `engine.pricing.config.LgmSwaptionEngineConfig`."""
         strategy = config.strategy if config.calibration == "Bootstrap" else "None"
         return cls(config.reversion, config.volatility, config.n_per_std, config.std_devs,
                    config.exercise_time_steps_per_year, config.shift_horizon, config.reference_calibration_grid,

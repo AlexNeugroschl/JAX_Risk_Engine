@@ -1,9 +1,9 @@
 # Instruments: Interest Rate Swaps
 
 **Modules:** [`engine/instruments/swap.py`](../../engine/instruments/swap.py) (the trade),
-[`engine/valuation/legs.py`](../../engine/valuation/legs.py) (its valuation)
+[`engine/pricing/legs.py`](../../engine/pricing/legs.py) (its valuation)
 **Entry points:** `price_portfolio` (with every other trade), or `value_today` /
-`value_portfolio` (`engine/valuation/portfolio.py`)
+`value_portfolio` (`engine/pricing/cube.py`)
 
 ## Plain-language summary
 
@@ -62,10 +62,10 @@ The dates are the trade: `swap_tenor="5Y"` is resolved once to the booked
 `effective_date`/`maturity_date`, so `dataclasses.replace(swap, evaluation_date=later)` prices
 the same swap on a later day, with the coupons it has already paid gone.
 
-### 2. Building the real trade: `_build_ore_swap()`, `legs_of()`
+### 2. Building the real trade: `underlying_swap()`, `legs_of()`
 
-`_build_ore_swap(cfg)` builds the swap with ORE's own `MakeVanillaSwap`
-(`engine/models/ore_builders.py`), so the payment dates, accrual fractions and fixing dates
+`underlying_swap(cfg)` builds the swap with ORE's own `MakeVanillaSwap`
+(`engine/instruments/schedules.py`), so the payment dates, accrual fractions and fixing dates
 are exactly ORE's. `legs_of(swap, payer, asof, fixings)` turns its coupons into arrays: each
 fixed coupon's pay time and amount, each floating coupon's pay time, accrual, its index's
 forecast period (`par_coupon_forecast_period`) and fixing date, and any historical fixing.
@@ -90,9 +90,9 @@ the curves are the scenario market's, so the pricer does not depend on the model
 
 ## Tested by
 
-- `tests/test_valuation.py::test_today_equals_ores_discounting_swap_engine` — today's value
+- `tests/test_pricing.py::test_today_equals_ores_discounting_swap_engine` — today's value
   against ORE's `DiscountingSwapEngine`, including seasoned and ICMA swaps.
-- `tests/test_valuation.py::test_every_path_and_date_equals_ores_discounting_swap_engine` and
+- `tests/test_pricing.py::test_every_path_and_date_equals_ores_discounting_swap_engine` and
   `::test_path_fixings_are_ores_index_forecast_on_the_path_curve` — every path and date
   against ORE on that path's curve, with `FixingManager`'s fixings (dates between fixing and
   payment, on a holiday, after maturity), under both interest-rate models.

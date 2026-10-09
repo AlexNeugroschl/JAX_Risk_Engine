@@ -17,8 +17,8 @@ import numpy as np
 def _portfolio_runs():
     import ORE
 
-    from engine.api.market_schemas import MarketPortfolioRequestSchema
-    from engine.portfolio import price_portfolio
+    from engine.api.requests import MarketPortfolioRequestSchema
+    from engine.run import price_portfolio
     from tests.support import portfolio as shared
 
     dates = [(shared.ASOF + ORE.Period(m, ORE.Months)).ISO() for m in (6, 12)]
@@ -47,7 +47,7 @@ def _portfolio_figures(result) -> dict:
 
 
 def _market_risk_run():
-    from engine.market_risk import MarketRiskRequest, monte_carlo_scenarios, run_market_risk
+    from engine.risk.market import MarketRiskRequest, monte_carlo_scenarios, run_market_risk
     from tests import market_risk_support as m
 
     scenarios = monte_carlo_scenarios(m.factors(), m.covariance(horizon_days=10), 10, 64, seed=3)

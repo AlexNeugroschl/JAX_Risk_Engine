@@ -20,7 +20,7 @@ itself is never modified by this project — it exists purely as a read-only ref
 
 ## One pipeline
 
-`price_portfolio` on an `engine.market.Market` (HTTP `POST /portfolio/price`) reproduces ORE's
+`price_portfolio` on an `engine.market_data.market.Market` (HTTP `POST /portfolio/price`) reproduces ORE's
 classic exposure and sensitivity pipeline: `CrossAssetModel` simulation, `ScenarioSimMarket`,
 `ValuationEngine` with each trade's own t=0 engine, `ExposureCalculator` and
 `SensitivityAnalysis`. The next section maps it; sections 1 to 10 map the individual
@@ -29,31 +29,31 @@ parametrizations (Hagan's, the default, or Hull-White's); until 2026-10-01 the H
 model was a separate pipeline with known differences from ORE, closed with it
 ([I-42](../planning/known-issues.md#i-42) to [I-47](../planning/known-issues.md#i-47)).
 
-## The market path
+## The pipeline
 
 (The pipeline; the section keeps its earlier name for links.)
 
 | ORE (file under `reference/ORE/`) | Engine | Checked against ORE by | Measured |
 |---|---|---|---|
-| `CrossAssetModel` (QuantExt/qle/models/crossassetmodel.cpp): LGM per currency, FX/EQ Black-Scholes, LGM measure | `engine.simulation.cam` | tests/test_cam.py: ζ, H, bond price and numeraire vs `LinearGaussMarkovModel`; one step vs `IrLgm1fStateProcess` | 1e-12 |
-| `IrLgm1fPiecewiseConstantHullWhiteAdaptor` (`<LGM>` with `VolatilityType HullWhite`), not bound in Python | `engine.simulation.cam` (`volatility_type="HullWhite"`), `engine.models.lgm.hull_white_zeta` | tests/test_cam.py: path curves vs QuantLib `HullWhite::discountBond` at the state's short rate; martingales; ζ against its integral. tests/test_end_to_end.py: the simulation's paths priced by QuantLib | 1e-12 |
+| `CrossAssetModel` (QuantExt/qle/models/crossassetmodel.cpp): LGM per currency, FX/EQ Black-Scholes, LGM measure | `engine.models.cam` | tests/test_cam.py: ζ, H, bond price and numeraire vs `LinearGaussMarkovModel`; one step vs `IrLgm1fStateProcess` | 1e-12 |
+| `IrLgm1fPiecewiseConstantHullWhiteAdaptor` (`<LGM>` with `VolatilityType HullWhite`), not bound in Python | `engine.models.cam` (`volatility_type="HullWhite"`), `engine.models.lgm.hull_white_zeta` | tests/test_cam.py: path curves vs QuantLib `HullWhite::discountBond` at the state's short rate; martingales; ζ against its integral. tests/test_end_to_end.py: the simulation's paths priced by QuantLib | 1e-12 |
 | Exact discretization, `CrossAssetAnalytics` (qle/models/crossassetanalytics.hpp) | `cam.step_moments` (Gauss-Legendre per volatility piece), `flexible_cholesky` | tests/test_cam.py: every covariance block = the integral of the Brownian loadings; Cholesky vs `CholeskyDecomposition`; martingales exact and by Monte Carlo (FP64, FP32) | 1e-12 (analytic) |
-| `CrossAssetModelScenarioGenerator::nextPath` (OREAnalytics/orea/scenario/crossassetmodelscenariogenerator.cpp): model-implied curves, `ModelImpliedYtsFwdFwdCorrected` index curves, floor 1e-5, LGM numeraire | `engine.simulation.scenario_market` | tests/test_cam.py (curves reprice the input at t=0, basis deterministic, floor) | exact |
-| `ScenarioSimMarket` curves (`addYieldCurve`): LogLinear, FlatFwd, the tenor points at the times from the as-of date on every simulation date | `engine.models.curves.DiscountCurve`, `scenario_market.as_of_tenor_times` (since 2026-10-07, I-84) | tests/test_valuation.py hands each path curve to ORE as `ORE.DiscountCurve`; tests/test_ore_xva_parity.py: ORE's own scenario dump rebuilt from each path's state | 1e-12; 1.2e-11 (dump) |
+| `CrossAssetModelScenarioGenerator::nextPath` (OREAnalytics/orea/scenario/crossassetmodelscenariogenerator.cpp): model-implied curves, `ModelImpliedYtsFwdFwdCorrected` index curves, floor 1e-5, LGM numeraire | `engine.market_simulation.scenario_market` | tests/test_cam.py (curves reprice the input at t=0, basis deterministic, floor) | exact |
+| `ScenarioSimMarket` curves (`addYieldCurve`): LogLinear, FlatFwd, the tenor points at the times from the as-of date on every simulation date | `engine.market_data.curves.DiscountCurve`, `scenario_market.as_of_tenor_times` (since 2026-10-07, I-84) | tests/test_pricing.py hands each path curve to ORE as `ORE.DiscountCurve`; tests/test_ore_xva_parity.py: ORE's own scenario dump rebuilt from each path's state | 1e-12; 1.2e-11 (dump) |
 | `CrossAssetModelBuilder` IR calibration (`CalibrationSwaptions`, Bootstrap) | `engine.calibration.cam` | same helpers and bootstrap as below; tests/test_ore_xva_parity.py: ORE's calibrated simulation rebuilt by the engine's model | 1.2e-11 (dump) |
-| The cube's `T0`: every trade on the `ScenarioSimMarket` of the as-of date | `engine.valuation.context.simulation_market_today` (since 2026-10-07, I-85) | tests/test_ore_xva_parity.py | 3.9e-11 |
-| `Trade::maturity()` (OREData/ored/portfolio/swaption.cpp step 8: a cash-settled option's last exercise date) | `engine.valuation.portfolio.trade_maturity` (since 2026-10-07, I-86) | tests/test_ore_xva_parity.py (the profiles of ORE's cube) | exact |
-| `ValuationEngine::buildCube` (orea/engine/valuationengine.cpp), `recalibrate = true` | `engine.valuation.portfolio` | per trade type, below | — |
-| `FixingManager::applyFixings` (orea/simulation/fixingmanager.cpp) | `engine.valuation.legs.path_fixings` | tests/test_valuation.py | 1e-12 |
-| `DiscountingSwapEngine` with at-par coupons (`IborCouponPricer::initializeCachedData`), `hasOccurred` | `engine.valuation.legs` | tests/test_valuation.py (t=0 and every path/date), tests/test_shared_portfolio.py | 1e-10 |
-| `BlackMultiLegOptionEngine` (qle/pricingengines/blackmultilegoptionengine.cpp), incl. `ParYieldCurve` cash settlement; `DynamicSwaptionVolatilityMatrix` on paths | `engine.valuation.european` | OREApp oracle at t=0; QuantLib `BachelierSwaptionEngine` on every path | 1e-10 (t=0), 2e-14 (cash) |
-| QuantLib `JamshidianSwaptionEngine` (configured, not ORE's default) | `engine.valuation.jamshidian` | tests/test_jamshidian.py (QuantLib's engine, and its formula at the exact root); tests/test_end_to_end.py on Hull-White paths | Brent's 1e-8 on r* (≤ 5e-6); 1e-10 at the exact root |
-| `LgmBuilder` + `IrModelBuilder::buildSwaptionBasket` (OREData/ored/model/), `AnalyticLgmSwaptionEngine`, `NumericLgmMultiLegOptionEngine` | `engine.valuation.bermudan`, `engine.calibration.ore_lgm` | tests/test_ore_lgm_calibration.py (OREApp, `Calibration=Bootstrap`), tests/test_valuation.py (paths, recalibrated on ORE's path curves) | 2e-11 (t=0), 1e-8 (paths) |
-| `OptionWrapper` / `BermudanOptionWrapper` (OREData/ored/portfolio/optionwrapper.cpp) | `engine.valuation.options` | tests/test_valuation.py (exercise, physical vs cash) | rule-level |
-| `DiscountingRiskyBondEngine` without credit | `engine.valuation.portfolio.bond_legs` | tests/test_shared_portfolio.py vs `DiscountingBondEngine` | 2e-16 |
-| `ExposureCalculator` (orea/aggregation/exposurecalculator.cpp): EPE, ENE, EE_B, EEE_B, PFE, time-weighted EPE_B/EEPE_B, Basel horizon | `engine.risk.exposure` | tests/test_ore_xva_parity.py: the engine's profiles of ORE's own cube are ORE's reports, per trade and netting set; tests/test_portfolio_market_path.py (a bill's EE_B identity) | 1.8e-13 |
+| The cube's `T0`: every trade on the `ScenarioSimMarket` of the as-of date | `engine.pricing.context.simulation_market_today` (since 2026-10-07, I-85) | tests/test_ore_xva_parity.py | 3.9e-11 |
+| `Trade::maturity()` (OREData/ored/portfolio/swaption.cpp step 8: a cash-settled option's last exercise date) | `engine.pricing.cube.trade_maturity` (since 2026-10-07, I-86) | tests/test_ore_xva_parity.py (the profiles of ORE's cube) | exact |
+| `ValuationEngine::buildCube` (orea/engine/valuationengine.cpp), `recalibrate = true` | `engine.pricing.cube` | per trade type, below | — |
+| `FixingManager::applyFixings` (orea/simulation/fixingmanager.cpp) | `engine.pricing.legs.path_fixings` | tests/test_pricing.py | 1e-12 |
+| `DiscountingSwapEngine` with at-par coupons (`IborCouponPricer::initializeCachedData`), `hasOccurred` | `engine.pricing.legs` | tests/test_pricing.py (t=0 and every path/date), tests/test_shared_portfolio.py | 1e-10 |
+| `BlackMultiLegOptionEngine` (qle/pricingengines/blackmultilegoptionengine.cpp), incl. `ParYieldCurve` cash settlement; `DynamicSwaptionVolatilityMatrix` on paths | `engine.pricing.european` | OREApp oracle at t=0; QuantLib `BachelierSwaptionEngine` on every path | 1e-10 (t=0), 2e-14 (cash) |
+| QuantLib `JamshidianSwaptionEngine` (configured, not ORE's default) | `engine.pricing.jamshidian` | tests/test_jamshidian.py (QuantLib's engine, and its formula at the exact root); tests/test_end_to_end.py on Hull-White paths | Brent's 1e-8 on r* (≤ 5e-6); 1e-10 at the exact root |
+| `LgmBuilder` + `IrModelBuilder::buildSwaptionBasket` (OREData/ored/model/), `AnalyticLgmSwaptionEngine`, `NumericLgmMultiLegOptionEngine` | `engine.pricing.bermudan`, `engine.calibration.ore_lgm` | tests/test_ore_lgm_calibration.py (OREApp, `Calibration=Bootstrap`), tests/test_pricing.py (paths, recalibrated on ORE's path curves) | 2e-11 (t=0), 1e-8 (paths) |
+| `OptionWrapper` / `BermudanOptionWrapper` (OREData/ored/portfolio/optionwrapper.cpp) | `engine.pricing.options` | tests/test_pricing.py (exercise, physical vs cash) | rule-level |
+| `DiscountingRiskyBondEngine` without credit | `engine.pricing.cube.bond_legs` | tests/test_shared_portfolio.py vs `DiscountingBondEngine` | 2e-16 |
+| `ExposureCalculator` (orea/aggregation/exposurecalculator.cpp): EPE, ENE, EE_B, EEE_B, PFE, time-weighted EPE_B/EEPE_B, Basel horizon | `engine.risk.counterparty.exposure` | tests/test_ore_xva_parity.py: the engine's profiles of ORE's own cube are ORE's reports, per trade and netting set; tests/test_pipeline.py (a bill's EE_B identity) | 1.8e-13 |
 | The assembled pipeline: `XvaAnalytic` (`EXPOSURE`, `PFE`) | `price_portfolio` | tests/test_ore_xva_parity.py: on ORE's paths each trade's cube against ORE's (L3); independent simulations within four standard errors (L4) | swaps, Europeans, bonds 3.0e-11 of scale; Bermudans/Americans 0.5–4% ([I-49](../planning/known-issues.md#i-49)) |
-| `SensitivityAnalysis`, `SensitivityCube` (orea/engine/sensitivityanalysis.cpp, orea/cube/sensitivitycube.cpp) | `engine.risk.sensitivities` (Bump), `engine.risk.greeks` (AD) | tests/test_sensitivities.py, tests/test_greeks.py (the two methods agree; AD against finite differences) — **not against an OREApp sensitivity run** ([I-51](../planning/known-issues.md#i-51)) | — |
+| `SensitivityAnalysis`, `SensitivityCube` (orea/engine/sensitivityanalysis.cpp, orea/cube/sensitivitycube.cpp) | `engine.risk.greeks.bump` (Bump), `engine.risk.greeks.ad` (AD) | tests/test_sensitivities.py, tests/test_greeks.py (the two methods agree; AD against finite differences) — **not against an OREApp sensitivity run** ([I-51](../planning/known-issues.md#i-51)) | — |
 
 The whole portfolio at t=0 against ORE, trade by trade, on one sloped market:
 tests/test_shared_portfolio.py ([the shared portfolio](../planning/details/ore-parity-validation.md#the-shared-portfolio)), worst case 3.8e-11 (a calibrated Bermudan).
@@ -80,7 +80,7 @@ by an OREApp run; the column says which.
 | V-5 | Co-terminal basket from the trade's exercise dates; `CoterminalDealStrike` (first fixed rate less spread) with the ±3 std-dev fallback, or ATM; `ReferenceCalibrationGrid` keeps one helper per interval; an American's expiries are the grid dates in its window | lgmbuilder.cpp, irmodelbuilder.cpp | **OREApp run**: tests/test_ore_lgm_calibration.py, calibrated price = ORE's to 2e-11 |
 | V-6 | `CalibrationSwaptions`: tenor-based expiries and terms, ATM | crossassetmodelbuilder.cpp | **OREApp run**: tests/test_ore_xva_parity.py (ORE's calibrated simulation rebuilt by the engine's calibration, both models) |
 | V-7 | Drift and covariance of every IR/FX/EQ block under the LGM measure | crossassetanalytics.hpp | Bindings: tests/test_cam.py (analytic martingales exact; covariance = loading integral) |
-| V-8 | `includeReferenceDateEvents = false`: a flow paid on the valuation date has occurred | cashflow.cpp, valuationengine.cpp | Bindings: tests/test_valuation.py |
+| V-8 | `includeReferenceDateEvents = false`: a flow paid on the valuation date has occurred | cashflow.cpp, valuationengine.cpp | Bindings: tests/test_pricing.py |
 | V-9 | A Treasury without credit is `DiscountingRiskyBondEngine` with no credit curve and no security spread, i.e. discounting | discountingriskybondengine.cpp | Bindings: tests/test_shared_portfolio.py |
 | V-10 | Index curves use the index day counter's time `t_dc`; on the engine's ACT/365 grid `t_dc = t` | crossassetmodelscenariogenerator.cpp | Source |
 
@@ -112,7 +112,7 @@ given algorithm:
 
 ## 1. Sobol sequence generation
 
-**This engine:** `engine/simulation/random.py::generate_sobol_normals`, via
+**This engine:** `engine/market_simulation/sobol.py::generate_sobol_normals`, via
 `scipy.stats.qmc.Sobol`.
 
 **ORE:** `QuantLib::SobolRsg` —
@@ -135,7 +135,7 @@ literal random numbers.
 
 ## 2. Brownian bridge construction
 
-**This engine:** `engine/simulation/random.py::_build_bridge_matrix`,
+**This engine:** `engine/market_simulation/sobol.py::_build_bridge_matrix`,
 `apply_brownian_bridge`.
 
 **ORE:** `QuantLib::BrownianBridge` —
@@ -170,15 +170,15 @@ in both — converting the bridged absolute path values back into standardized s
 increments (`output[i] -= output[i-1]; output[i] /= sqrtdt_[i]` in QuantLib, `dW =
 diff(W); dW / sqrt(dt)` in `apply_brownian_bridge`) — is identical.
 
-**Verified:** `tests/test_random.py::TestBrownianBridge` (the resulting
+**Verified:** `tests/test_sobol.py::TestBrownianBridge` (the resulting
 matrix reproduces the exact covariance structure `min(s,t)` real Brownian motion has —
 the property this construction exists to guarantee) and
 `tests/test_ore_parity.py::TestBrownianBridgeParity` (below).
 
 ## 3. Interest rate model: the LGM, in two parametrizations
 
-**This engine:** `engine/simulation/cam.py` (the components and the exact step moments),
-`engine/simulation/scenario_market.py` (the model-implied curves and numeraire),
+**This engine:** `engine/models/cam.py` (the components and the exact step moments),
+`engine/market_simulation/scenario_market.py` (the model-implied curves and numeraire),
 `engine/models/lgm.py` (the closed forms).
 
 **ORE:** `QuantExt::CrossAssetModel`'s rates leg, an `IrLgm1fParametrization` per currency —
@@ -228,7 +228,7 @@ Bermudan engine is always ORE's LGM.
 
 ## 4. Multi-asset correlation and the Cholesky factor
 
-**This engine:** `engine/simulation/cam.py::flexible_cholesky` of each step's covariance
+**This engine:** `engine/models/cam.py::flexible_cholesky` of each step's covariance
 (`step_moments`).
 
 **ORE:** `QuantExt::CrossAssetModel` keeps a `correlation()` matrix (unit diagonal) separate
@@ -240,7 +240,7 @@ CAM's default `SalvagingAlgorithm::None` is `CholeskyDecomposition(cov, flexible
 
 ## 5. Vanilla interest rate swap pricing
 
-**This engine:** `engine/valuation/legs.py` (`legs_npv`, `today_npv`, `legs_cube`).
+**This engine:** `engine/pricing/legs.py` (`legs_npv`, `today_npv`, `legs_cube`).
 
 **ORE:** `QuantLib::DiscountingSwapEngine::calculate()` —
 [`QuantLib/ql/pricingengines/swap/discountingswapengine.cpp`](../../reference/ORE/QuantLib/ql/pricingengines/swap/discountingswapengine.cpp)
@@ -262,24 +262,24 @@ coupon's at-par forecast period, `IborCouponPricer::initializeCachedData`'s at-p
 (`QuantLib/ql/cashflows/couponpricer.cpp`): the period is the fixing's value date to the
 index maturity (or the accrual period, adjusted, for an at-par coupon) and `spanning` is the
 **index** day counter's year fraction over it, which is then multiplied by the leg's accrual.
-`engine.models.ore_builders.par_coupon_forecast_period` returns the three from QuantLib's own
+`engine.instruments.schedules.par_coupon_forecast_period` returns the three from QuantLib's own
 coupon. Until 2026-09-29 the engine divided by the leg's accrual instead, which differs for
 any leg day count other than the index's ([I-36](../planning/known-issues.md#i-36)).
 
 **Verified:** `tests/test_swap.py::TestAgainstORE` (direct NPV comparison against a real
 `ORE.VanillaSwap` + `ORE.DiscountingSwapEngine`, 1e-12, across payer/receiver/par/spread
-cases) and `tests/test_valuation.py` (today and on every path and date).
+cases) and `tests/test_pricing.py` (today and on every path and date).
 
 ## 6. European swaption pricing: Jamshidian's decomposition
 
 **The configured alternative.** ORE's default European engine is `BlackMultiLegOptionEngine`
-(Bachelier on the market volatility, `engine.valuation.european`, [above](#the-market-path)).
+(Bachelier on the market volatility, `engine.pricing.european`, [above](#the-pipeline)).
 This section documents the Jamshidian engine (`PricingConfig.european="Jamshidian"` with its
 Hull-White model), which matches QuantLib's `JamshidianSwaptionEngine` and refuses what it
 refuses: a floating spread, `a <= 0`, cash settlement ([I-37](../planning/known-issues.md#i-37),
 [I-41](../planning/known-issues.md#i-41), [I-52](../planning/known-issues.md#i-52)).
 
-**This engine:** `engine/valuation/jamshidian.py` (`jamshidian_npv`, `_solve_decreasing_root`),
+**This engine:** `engine/pricing/jamshidian.py` (`jamshidian_npv`, `_solve_decreasing_root`),
 `engine/models/hull_white.py::bond_call`/`bond_put`. It is written in discount factors only
 (the LGM form of the Hull-White model), so it prices on any curve; the description below of
 QuantLib's algorithm applies term by term.
@@ -354,7 +354,7 @@ by default) where QuantLib's Brent stops at 1e-8.
 **This engine:** `engine/instruments/bermudan_swaption.py` — `_lgm_bond`,
 `_hagan_quadrature_weights`, `_rollback_one_step`, `_run_backward_induction` — plus
 `engine/instruments/american_swaption.py`, which supplies ORE's American option times and
-exercise style to this same engine; `engine/valuation/bermudan.py` calibrates each trade's
+exercise style to this same engine; `engine/pricing/bermudan.py` calibrates each trade's
 basket and runs the engine today and on every path.
 
 **ORE:** `QuantExt::NumericLgmMultiLegOptionEngineBase::calculate()` —
@@ -492,7 +492,7 @@ engine, 7b).
 
 ## 8. Value at Risk & Expected Shortfall
 
-**This engine:** `engine/risk/var_es.py::value_at_risk`,
+**This engine:** `engine/risk/market/var_es.py::value_at_risk`,
 `expected_shortfall`.
 
 **ORE:** `QuantLib::GenericRiskStatistics<GaussianStatistics>::valueAtRisk`,
@@ -541,8 +541,8 @@ comparison, including the tie-at-VaR-boundary and empty-tail edge cases).
 
 ## 9. Delta, Gamma, Vega, and Theta
 
-**This engine:** `engine/risk/sensitivities.py` (`Bump`, the default: ORE's sensitivity
-analysis, and Theta for both methods), `engine/risk/greeks.py` (`AD`). See
+**This engine:** `engine/risk/greeks/bump.py` (`Bump`, the default: ORE's sensitivity
+analysis, and Theta for both methods), `engine/risk/greeks/ad.py` (`AD`). See
 [Greeks](../risk/greeks.md).
 
 **ORE:** `OREAnalytics::SensitivityAnalysis::generateSensitivities` —
@@ -585,7 +585,7 @@ there from today's curves fixed in dates, reprices, and adds back the interim ca
 **Root-finds.** Naively differentiating through a root solver gives a silently wrong
 gradient (a bisection's comparisons have none, Newton's iterations only the steps'). The
 Jamshidian root and each calibration bucket get the implicit function theorem's derivative
-instead (`engine.numerics.roots.implicit_root`'s `custom_jvp`, `_bootstrap_jacobian`); see [Greeks](../risk/greeks.md#differentiating-through-bisection-root-finds).
+instead (`engine.solvers.roots.implicit_root`'s `custom_jvp`, `_bootstrap_jacobian`); see [Greeks](../risk/greeks.md#differentiating-through-bisection-root-finds).
 
 **Verified:** `tests/test_sensitivities.py`, `tests/test_trade_dates.py` (Theta against ORE),
 `tests/test_greeks.py` and `tests/test_greeks_bermudan.py` (AD against finite differences,
@@ -654,7 +654,7 @@ The cross-asset model's and each trade's calibration is `engine/calibration/ore_
 |---|---|---|
 | Sobol sequence | `random.generate_sobol_normals` | `QuantLib::SobolRsg` (`ql/math/randomnumbers/sobolrsg.cpp`) — same sequence *class*, independent implementation |
 | Brownian bridge | `random._build_bridge_matrix`, `apply_brownian_bridge` | `QuantLib::BrownianBridge::initialize`/`transform` (`ql/methods/montecarlo/brownianbridge.cpp`) |
-| LGM state step (exact) | `cam.step_moments`, `evolve_states` | `CrossAssetStateProcess::ExactDiscretization`, `CrossAssetAnalytics`, `IrLgm1fStateProcess` |
+| LGM state step (exact) | `models.cam.step_moments`, `market_simulation.paths.evolve_states` | `CrossAssetStateProcess::ExactDiscretization`, `CrossAssetAnalytics`, `IrLgm1fStateProcess` |
 | Hull-White parametrization | `cam.IrComponent(volatility_type="HullWhite")`, `lgm.hull_white_zeta` | `IrLgm1fPiecewiseConstantHullWhiteAdaptor`; bonds equal `QuantLib::HullWhite::discountBond` |
 | Model-implied curves, numeraire | `scenario_market.implied_log_discounts`, `lgm_numeraire` | `CrossAssetModelScenarioGenerator::nextPath`, `LinearGaussMarkovModel::discountBond`/`numeraire` |
 | Correlation and square root | `cam.flexible_cholesky` | `CrossAssetModel` correlation; `CholeskyDecomposition(cov, flexible = true)` |
@@ -679,9 +679,9 @@ The cross-asset model's and each trade's calibration is `engine/calibration/ore_
 
 ## Tested by
 
-- The pipeline: `tests/test_cam.py`, `tests/test_valuation.py` (every path test under both
+- The pipeline: `tests/test_cam.py`, `tests/test_pricing.py` (every path test under both
   models), `tests/test_ore_lgm_calibration.py`, `tests/test_shared_portfolio.py`,
-  `tests/test_portfolio_market_path.py`, `tests/test_sensitivities.py`, `tests/test_curves.py`,
+  `tests/test_pipeline.py`, `tests/test_sensitivities.py`, `tests/test_curves.py`,
   `tests/test_end_to_end.py` (the Hull-White simulation's paths priced in QuantLib) and
   `tests/test_market_risk_ore_parity.py`.
 - `tests/test_ore_parity.py` — the tests specific to this page: independent

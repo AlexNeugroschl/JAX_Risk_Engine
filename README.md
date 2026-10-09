@@ -100,7 +100,7 @@ reference trading platform, which sends it end-of-day portfolio bundles. This ch
 engine against another system's data and conventions, and the TraderX team verifies the
 results independently. Treasury bills and notes are currently priced on this path; other
 instruments are added as their market inputs and conventions are agreed. See
-[EOD Integration](docs/reference/eod-integration.md).
+[The TraderX Path](docs/reference/traderx-path.md).
 
 ## Getting started
 
@@ -133,7 +133,7 @@ portfolio from Python or over HTTP.
 - [Overview](docs/getting-started/overview.md)
 - [Architecture](docs/concepts/architecture.md)
 - [HTTP API](docs/reference/http-api.md)
-- [EOD Integration](docs/reference/eod-integration.md)
+- [The TraderX Path](docs/reference/traderx-path.md)
 - [Planning](docs/planning/README.md): [known issues](docs/planning/known-issues.md), [features](docs/planning/features.md), [roadmap](docs/planning/roadmap.md), and [decisions](compliance/decisions.md)
 - [Precision design](docs/planning/details/precision.md)
 - [Full documentation index](docs/README.md)

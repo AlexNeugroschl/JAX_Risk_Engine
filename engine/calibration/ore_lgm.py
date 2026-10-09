@@ -21,7 +21,7 @@ simulated path.
     with Levenberg-Marquardt to `EndCriteria(1000, 500, 1e-8, 1e-8, 1e-8)`, and finds y* with
     Brent at accuracy 1e-6; here each bucket's volatility is the root on [1e-6, 0.2], and y*
     the root of `yStarHelper`, both to float64 rounding with the configured solver
-    (`engine.numerics.roots`, decision A-21): the same roots where they exist, more exactly.
+    (`engine.solvers.roots`, decision A-21): the same roots where they exist, more exactly.
 
 Every pricing function takes discount and index curves of either type (`ZeroCurve` today,
 `DiscountCurve` on a path) and broadcasts over their leading batch axes, so one call
@@ -39,16 +39,15 @@ import numpy as np
 import ORE
 from jax.scipy.stats import norm
 
-from engine.market import (
+from engine.instruments.schedules import evaluation_date, ibor_index, par_coupon_forecast_period
+from engine.market_data.curves import curve_dtype, discount
+from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER, resolve_accrual_day_count
+from engine.market_data.market import (
     VOL_BUSINESS_DAY_CONVENTION, VOL_CALENDAR, SwaptionVolSurface, swap_length, swap_length_between,
 )
-from engine.models.curves import curve_dtype, discount
 from engine.models.lgm import H as lgm_H
-from engine.models.ore_builders import (
-    TIME_AXIS_DAY_COUNTER, evaluation_date, ibor_index, par_coupon_forecast_period, resolve_accrual_day_count,
-)
-from engine.numerics.roots import DEFAULT_SOLVER, Steps, solve
 from engine.precision import matmul
+from engine.solvers.roots import DEFAULT_SOLVER, Steps, solve
 
 #: `IrModelBuilder::maxAtmStdDev`: a helper strike further from ATM is moved to this many ATM
 #: standard deviations (fallback rule 1).
@@ -57,7 +56,7 @@ MAX_ATM_STD_DEV = 3.0
 #: The bracket of one bucket's volatility, as `engine.calibration.lgm`'s.
 SIGMA_BRACKET = (1e-6, 0.20)
 
-#: Steps of a bucket's volatility and of a helper's y* (`engine.numerics.roots`). Bisection's
+#: Steps of a bucket's volatility and of a helper's y* (`engine.solvers.roots`). Bisection's
 #: are the counts before Newton (A-21). Newton's are measured (2026-10-07, the shared sloped market
 #: today and on 256 LGM and Hull-White paths): a bucket reaches its rounding in 5 steps, a y*
 #: from 0 in 3; each count has two steps of margin

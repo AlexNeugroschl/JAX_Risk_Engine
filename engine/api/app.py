@@ -14,8 +14,8 @@ from contextlib import asynccontextmanager
 import jax
 from fastapi import FastAPI
 
-from engine.api.eod_routes import router as eod_router
 from engine.api.routes import router, shutdown_worker
+from engine.api.traderx_routes import router as traderx_router
 
 
 def keep_jax_on_the_cpu() -> None:
@@ -51,8 +51,8 @@ def create_app() -> FastAPI:
         title="JAX Risk Engine API",
         description=(
             "HTTP API over the engine: price a portfolio and profile its exposure "
-            "(engine.portfolio.price_portfolio), its market-risk VaR and ES "
-            "(engine.market_risk.run_market_risk), and calibrate the cross-asset model "
+            "(engine.run.price_portfolio), its market-risk VaR and ES "
+            "(engine.risk.market.run_market_risk), and calibrate the cross-asset model "
             "(engine.calibration.cam), for interest-rate swaps, swaptions and Treasuries. "
             "See docs/reference/http-api.md for the full reference."
         ),
@@ -60,9 +60,9 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
     app.include_router(router)
-    # The TraderX EOD boundary, under `/eod`. A separate router: it has a different
+    # The TraderX path, under `/eod`. A separate router: it has a different
     # contract (a JSON-Schema-published result document) and shares no state.
-    app.include_router(eod_router)
+    app.include_router(traderx_router)
     return app
 
 

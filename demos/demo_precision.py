@@ -7,7 +7,7 @@ not "is FP32 exact?" (it is not) but "is FP32's error small next to the Monte
 Carlo sampling error the VaR/ES number already carries?" This demo measures
 both on one portfolio.
 
-**What runs.** `engine.market_risk.run_market_risk`, unmodified, at eight
+**What runs.** `engine.risk.market.run_market_risk`, unmodified, at eight
 `engine.precision.Precision` settings:
 
     FP64           Precision(): float64 everywhere, the default
@@ -59,10 +59,10 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
-from engine.market import CurrencyMarket, Market, ZeroCurveConfig, index_name
-from engine.market_risk import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
+from engine.market_data.market import CurrencyMarket, Market, ZeroCurveConfig, index_name
 from engine.precision import Precision, StagePrecision
-from engine.valuation.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
+from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
+from engine.risk.market import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
 
 warnings.simplefilter("ignore")  # Sobol balance notices; the demo prints its own caveats
 

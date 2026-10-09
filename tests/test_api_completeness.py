@@ -19,8 +19,7 @@ import typing
 
 import pytest
 
-from engine.api import market_schemas as wire
-from engine.api import schemas
+from engine.api import requests as wire
 from engine.calibration.cam import calibrate_cam
 from engine.calibration.ore_lgm import SwapIndexConventions
 from engine.instruments.american_swaption import AmericanSwaptionConfig
@@ -28,14 +27,14 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
-from engine.market import CurrencyMarket, EquityMarket, Market, SwaptionVolSurface, ZeroCurveConfig
-from engine.market_risk import MarketRiskRequest, RateRiskFactors, ShockScenarios, historical_scenarios, monte_carlo_scenarios
+from engine.market_data.market import CurrencyMarket, EquityMarket, Market, SwaptionVolSurface, ZeroCurveConfig
 from engine.models.lgm import Sigma
-from engine.portfolio import (
+from engine.precision import Precision, StagePrecision
+from engine.risk.market import MarketRiskRequest, RateRiskFactors, ShockScenarios, historical_scenarios, monte_carlo_scenarios
+from engine.run import (
     CamConfig, GreeksConfig, HullWhiteConfig, JamshidianEngineConfig, LgmConfig, LgmSwaptionEngineConfig,
     PortfolioRequest, PricingConfig, RunConfig, SensitivityConfig,
 )
-from engine.precision import Precision, StagePrecision
 
 #: Every trade is valued on the market's date: the request has one date, not one per trade.
 ON_THE_MARKET_DATE = {"evaluation_date": "every trade is valued on market.asof"}
@@ -59,20 +58,20 @@ MIRRORS = {
     JamshidianEngineConfig: (wire.JamshidianEngineSchema, {}),
     GreeksConfig: (wire.GreeksConfigSchema, {}),
     SensitivityConfig: (wire.SensitivityConfigSchema, {}),
-    Precision: (schemas.PrecisionSchema, {}),
-    StagePrecision: (schemas.StagePrecisionSchema, {}),
+    Precision: (wire.PrecisionSchema, {}),
+    StagePrecision: (wire.StagePrecisionSchema, {}),
     Market: (wire.MarketSchema, {}),
     CurrencyMarket: (wire.CurrencyMarketSchema, {}),
     EquityMarket: (wire.EquityMarketSchema, {}),
     SwaptionVolSurface: (wire.SwaptionVolSurfaceSchema, {}),
-    ZeroCurveConfig: (schemas.ZeroCurveConfigSchema,
-                      {"provenance": "the EOD boundary's metadata, which pricing never reads (engine.market)"}),
+    ZeroCurveConfig: (wire.ZeroCurveConfigSchema,
+                      {"provenance": "the TraderX path's metadata, which pricing never reads (engine.market_data.market)"}),
     SwapConfig: (wire.SwapTradeSchema, ON_THE_MARKET_DATE),
     SwaptionConfig: (wire.EuropeanTradeSchema, ON_THE_MARKET_DATE),
     BermudanSwaptionConfig: (wire.BermudanTradeSchema, ON_THE_MARKET_DATE),
     AmericanSwaptionConfig: (wire.AmericanTradeSchema, ON_THE_MARKET_DATE),
     BondConfig: (wire.BondTradeSchema, ON_THE_MARKET_DATE),
-    CouponPeriod: (schemas.CouponPeriodSchema, {}),
+    CouponPeriod: (wire.CouponPeriodSchema, {}),
     MarketRiskRequest: (wire.MarketRiskRequestSchema, {}),
     ShockScenarios: ((wire.MonteCarloScenariosSchema, wire.HistoricalScenariosSchema), {
         "shifts": "drawn from the covariance (monte_carlo_scenarios) or observed in the history "
@@ -141,7 +140,7 @@ def _missing(names, mirror):
 def test_every_configuration_type_has_a_schema():
     unmirrored = sorted(cls.__qualname__ for cls in _reachable() if cls not in MIRRORS)
     assert not unmirrored, (f"configuration types with no request schema: {unmirrored}; add one to "
-                            f"engine/api/market_schemas.py and to MIRRORS")
+                            f"engine/api/requests.py and to MIRRORS")
 
 
 @pytest.mark.parametrize("cls", sorted(MIRRORS, key=lambda c: c.__qualname__), ids=lambda c: c.__qualname__)

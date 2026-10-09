@@ -11,7 +11,7 @@ A-13, I-12; docs/planning/details/precision.md §9, §13.6).
     run's own (§9.2); with every path paired the estimate is
     the float64 run's figure; a stored-cube bias is corrected within its standard error.
   * The report reads the realized format of every stored array (§13.3), the devices and the
-    backend from the run (over HTTP, the worker's: tests/test_api_market_path.py, I-12), and a
+    backend from the run (over HTTP, the worker's: tests/test_api_portfolio.py, I-12), and a
     repeated run compiles nothing.
 """
 import dataclasses
@@ -22,18 +22,19 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.api.schemas import PrecisionReportSchema, PrecisionSchema
-from engine.market_risk import MarketRiskRequest, monte_carlo_scenarios, run_market_risk
-from engine.portfolio import (
-    CamConfig, HullWhiteConfig, LgmConfig, LgmSwaptionEngineConfig, PortfolioRequest, PricingConfig, RunConfig,
-    price_portfolio,
-)
+from engine.api.requests import PrecisionSchema
+from engine.api.results import PrecisionReportSchema
 from engine.precision import (
     BLOCK, FORMAT_NAMES, MeanEstimate, Precision, QuantileEstimate, StagePrecision, paired_paths,
     paired_quantile, two_level_mean,
 )
 from engine.precision import estimate as estimate_module
-from engine.risk.exposure import exposure_profile, netting_set_profile
+from engine.risk.counterparty.exposure import exposure_profile, netting_set_profile
+from engine.risk.market import MarketRiskRequest, monte_carlo_scenarios, run_market_risk
+from engine.run import (
+    CamConfig, HullWhiteConfig, LgmConfig, LgmSwaptionEngineConfig, PortfolioRequest, PricingConfig, RunConfig,
+    price_portfolio,
+)
 from tests import market_risk_support as mr
 from tests.support import portfolio as shared
 from tests.support.compiles import count_compiles

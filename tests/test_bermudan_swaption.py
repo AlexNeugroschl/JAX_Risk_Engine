@@ -1,7 +1,8 @@
 """
-`engine.instruments.bermudan_swaption`, the LGM backward induction (also used for
-Americans, whose own tests are in tests/test_american_swaption.py), with an explicit model
-(`tests.support.lgm_engine`: the trade carries none).
+The Bermudan swaption (`engine.instruments.bermudan_swaption`) and the LGM backward induction
+(`engine.pricing.lgm_grid`, also used for Americans, whose own tests are in
+tests/test_american_swaption.py), with an explicit model (`tests.support.lgm_engine`: the
+trade carries none).
 
 The authoritative check is tests/test_ore_lgm_parity.py (ORE's own
 `NumericLgmMultiLegOptionEngine`, ~1e-11). These tests are independent of ORE's engine:
@@ -20,19 +21,15 @@ import pytest
 
 from bermudan_references import single_exercise_value_by_integration
 from date_helpers import in_years
-from engine.instruments.bermudan_swaption import (
-    BermudanSwaptionConfig,
-    _hagan_quadrature_weights,
-    exercisable_dates,
-    _state_grid,
-)
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, exercisable_dates
 from engine.instruments.european_swaption import SwaptionConfig
-from engine.market import ZeroCurveConfig
-from engine.models.hull_white import ZeroCurve as HwZeroCurve
+from engine.market_data.curves import ZeroCurve as HwZeroCurve
+from engine.market_data.market import ZeroCurveConfig
 from engine.models.lgm import H as _H, bond_price as _lgm_bond_price, zeta as _zeta
-from engine.valuation.config import JamshidianEngineConfig
-from engine.valuation.european import european_terms
-from engine.valuation.jamshidian import jamshidian_npv
+from engine.pricing.config import JamshidianEngineConfig
+from engine.pricing.european import european_terms
+from engine.pricing.jamshidian import jamshidian_npv
+from engine.pricing.lgm_grid import _hagan_quadrature_weights, _state_grid
 from tests.support.lgm_engine import grid_npv, prepared
 
 
@@ -258,7 +255,7 @@ class TestMidPeriodBermudanExercise:
         assert np.array_equal(swap.float_belongs_until, swap.float_start_times)
 
     def test_mid_period_exercise_does_not_enter_the_coupon_in_progress(self):
-        from engine.instruments.bermudan_swaption import _build_grid_schedule
+        from engine.pricing.lgm_grid import _build_grid_schedule
         starts = exercisable_dates(_make_bermudan()[0])
         swap = _prepared(_make_bermudan(exercise_dates=[starts[1] + 90]))
         t = float(swap.exercise_times[0])
@@ -431,7 +428,7 @@ class TestDegenerateSingleExerciseCases:
         cfg = _make_bermudan(fixed_rate=0.001, payer=True, exercise_dates=_in_years([3.0]))
         npv = _npv(cfg)
         swap = _prepared(cfg)
-        from engine.instruments.bermudan_swaption import _cashflow_values_at_nodes, _zero_curve_of
+        from engine.pricing.lgm_grid import _cashflow_values_at_nodes, _zero_curve_of
         curve = _zero_curve_of(swap)
         t = float(swap.exercise_times[0])
         values = np.asarray(_cashflow_values_at_nodes(swap, curve, jnp.array([0.0]), jnp.array(t))[0])

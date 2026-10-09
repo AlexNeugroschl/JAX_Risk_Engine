@@ -1,5 +1,5 @@
 """
-Tests for engine.market_risk: risk factors, shock scenarios, revaluation and
+Tests for engine.risk.market: risk factors, shock scenarios, revaluation and
 the VaR/ES run. ORE parity is in tests/test_market_risk_ore_parity.py.
 """
 import dataclasses
@@ -8,8 +8,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from engine.market import ZeroCurveConfig
-from engine.market_risk import (
+from engine.market_data.market import ZeroCurveConfig
+from engine.precision import Precision, StagePrecision
+from engine.pricing.config import PricingConfig
+from engine.pricing.cube import value_today
+from engine.risk.greeks.ad import curve_greeks
+from engine.risk.greeks.price_functions import curves_of, trade_price_function
+from engine.risk.market import (
     MarketRiskRequest,
     SOURCE_HISTORICAL,
     RateRiskFactors,
@@ -20,13 +25,8 @@ from engine.market_risk import (
     monte_carlo_scenarios,
     run_market_risk,
 )
-from engine.market_risk.revaluation import revalue
-from engine.precision import Precision, StagePrecision
-from engine.risk.greeks import curve_greeks
-from engine.risk.price_functions import curves_of, trade_price_function
-from engine.risk.var_es import RISK_MEASURE_HISTORICAL, compute_risk_metrics
-from engine.valuation.config import PricingConfig
-from engine.valuation.portfolio import value_today
+from engine.risk.market.revaluation import revalue
+from engine.risk.market.var_es import RISK_MEASURE_HISTORICAL, compute_risk_metrics
 from tests import market_risk_support as m
 
 FACTORS = m.factors()
@@ -233,7 +233,7 @@ class TestRevaluation:
         """A fine-grid Bermudan must not be vmapped hundreds of scenarios at a time: at
         n_per_std=64 one scenario's rollback holds ~80 MB, and a batch of 256 thrashed a
         32 GB machine."""
-        from engine.market_risk.revaluation import BATCH_MEMORY_BUDGET, scenario_batch_size
+        from engine.risk.market.revaluation import BATCH_MEMORY_BUDGET, scenario_batch_size
 
         fine = PricingConfig(bermudan=dataclasses.replace(m.ENGINE, n_per_std=64, std_devs=6.0))
         batch = scenario_batch_size(m.bermudan(), fine, 256, itemsize=8)

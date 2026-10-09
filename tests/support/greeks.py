@@ -6,7 +6,7 @@ import dataclasses
 
 import numpy as np
 
-from engine.market import Market, ZeroCurveConfig
+from engine.market_data.market import Market, ZeroCurveConfig
 from tests.support import portfolio as shared
 
 

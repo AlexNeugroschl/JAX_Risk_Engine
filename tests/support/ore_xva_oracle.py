@@ -40,12 +40,12 @@ from typing import Dict, Sequence, Tuple
 import numpy as np
 import ORE
 
-from engine.market import Market
-from engine.models.curves import log_discount
+from engine.market_data.curves import log_discount
+from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER
+from engine.market_data.market import Market
+from engine.market_simulation.config import CamConfig, LgmConfig
 from engine.models.lgm import H as lgm_H, Sigma
-from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
-from engine.simulation.config import CamConfig, LgmConfig
-from engine.valuation.config import PricingConfig
+from engine.pricing.config import PricingConfig
 from tests.support.ore_inputs import (
     CCY, DISCOUNT_INDEX, NETTING_SET, OreCurves, OreLgmEngine, fixing_lines, index_name, inputs, market_lines,
     netting_xml, portfolio_xml, pricingengine_xml, report_columns, run_app, trade_xml,
@@ -253,7 +253,7 @@ def _profile(app, report: str) -> Dict[str, np.ndarray]:
 def implied_states(model, times: np.ndarray, numeraire: np.ndarray) -> np.ndarray:
     """`[S, D, 1]`: the domestic LGM state on each path and date whose numeraire is ORE's,
     N(t, z) = exp(H(t) z + 1/2 H(t)^2 zeta(t)) / P(0, t) solved for z on the engine's model
-    (an `engine.simulation.cam.CrossAssetModel` of one currency). Every other quantity of the
+    (an `engine.models.cam.CrossAssetModel` of one currency). Every other quantity of the
     simulation market follows from the state (gate V-4)."""
     ir = model.ir[0]
     h = np.asarray(lgm_H(ir.reversion, times))

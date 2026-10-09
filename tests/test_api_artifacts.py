@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from engine.api.artifacts import ArtifactError, array_artifact, items_record, read_array
-from engine.api.schemas import ArrayArtifactSchema
+from engine.api.results import ArrayArtifactSchema
 
 IDS = ["swap", "bond", "bermudan"]
 

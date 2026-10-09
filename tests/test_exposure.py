@@ -1,5 +1,5 @@
 """
-Tests for engine.risk.exposure -- ORE's ExposureCalculator statistics.
+Tests for engine.risk.counterparty.exposure -- ORE's ExposureCalculator statistics.
 
 ORE's `ExposureCalculator` has no constructor in the Python bindings, so it
 cannot be called here directly. The reference below is a line-by-line
@@ -14,7 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from engine.risk.exposure import ExposureProfile, exposure_profile, netting_set_profile
+from engine.risk.counterparty.exposure import ExposureProfile, exposure_profile, netting_set_profile
 
 
 def _ore_reference(npv, npv0, numeraire, discount, quantile):

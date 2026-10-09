@@ -3,7 +3,7 @@
 **Module:** [`engine/calibration/`](../../engine/calibration) —
 [`basket.py`](../../engine/calibration/basket.py),
 [`lgm.py`](../../engine/calibration/lgm.py), [`ore_lgm.py`](../../engine/calibration/ore_lgm.py);
-the root solver, [`engine/numerics/roots.py`](../../engine/numerics/roots.py)
+the root solver, [`engine/solvers/roots.py`](../../engine/solvers/roots.py)
 
 ## Plain-language summary
 
@@ -140,7 +140,7 @@ par-swap-rate identity: `par_rate = (P(0,T_start) - P(0,T_end)) / annuity`) — 
 "use the ATM strike," whenever no explicit strike is configured (the common case this
 module targets). Both the swap schedule and the par rate are computed from a real
 `ORE.VanillaSwap`/`ORE.MakeVanillaSwap` build (via
-[`engine.models.ore_builders`](models-and-trades.md#enginemodelsore_builderspy)) against
+[`engine.instruments.schedules`](models-and-trades.md#engineinstrumentsschedulespy)) against
 the *caller-supplied* `ZeroCurve`, not ORE's own discount curve — deliberately, so
 calibration prices consistently against the same curve `engine.models.lgm` itself
 discounts with.
@@ -230,7 +230,7 @@ monotone, with one root when the market value is attainable.
 
 ## The root solver
 
-**This engine:** `engine.numerics.roots` (decision A-21), for every root the
+**This engine:** `engine.solvers.roots` (decision A-21), for every root the
 engine solves: each bucket of ORE's bootstrap (`engine.calibration.ore_lgm`: the CAM's
 calibration and every Bermudan's/American's, today and on every path date), each helper's
 exercise boundary y\*, the standalone bootstrap here (`calibrate_lgm_sigma`) and its x\*, and
@@ -301,14 +301,14 @@ sign change, all candidates evaluated at once (one vectorized evaluation, not a 
 
 **Derivatives.** A root carries no derivative of its own (`solve` stops its inputs'
 tangents). The ORE helper's price is stationary in y\*, so its derivatives with y\* held fixed
-are exact (the AD Vega's bootstrap Jacobian, `engine.risk.greeks`, uses them). Where a price
+are exact (the AD Vega's bootstrap Jacobian, `engine.risk.greeks.ad`, uses them). Where a price
 is not stationary in its root — x\* here and in the Jamshidian engine — `implicit_root` gives
 the root its derivative by the implicit function theorem, below.
 
 <a id="the-_bisect_xstar-gradient-bug"></a>
 ## The x\* gradient bug
 
-**This engine:** `engine.numerics.roots.implicit_root`, which `price_lgm_swaption` (and the
+**This engine:** `engine.solvers.roots.implicit_root`, which `price_lgm_swaption` (and the
 Jamshidian engine) find x\* with. Before 2026-10-07 this was `engine.calibration.basket.
 _bisect_xstar`/`_bisect_xstar_raw`, the history below.
 

@@ -25,7 +25,7 @@ are strict expected failures.
 
 Found by this test and fixed on 2026-10-07: the simulation market held each curve's tenor
 points at the tenors' times from the simulation date, where ORE holds them at the times from the
-as-of date (`engine.simulation.scenario_market`), up to 0.3% of a swap's path values; and the
+as-of date (`engine.market_simulation.scenario_market`), up to 0.3% of a swap's path values; and the
 exposure started from today's value, where ORE starts from the simulation market's (`T0`).
 """
 import csv
@@ -41,14 +41,14 @@ import pytest
 
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
-from engine.models.curves import ZeroCurve, discount
-from engine.portfolio import PortfolioRequest, RunConfig, price_portfolio
-from engine.risk.exposure import exposure_profile, netting_set_profile
-from engine.simulation.config import CamConfig, HullWhiteConfig, LgmConfig, build_cross_asset_model, simulate
-from engine.simulation.scenario_market import build_scenario_market
-from engine.valuation.config import LgmSwaptionEngineConfig, PricingConfig
-from engine.valuation.context import simulation_market_today
-from engine.valuation.portfolio import trade_maturity, value_paths, value_today
+from engine.market_data.curves import ZeroCurve, discount
+from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfig, build_cross_asset_model, simulate
+from engine.market_simulation.scenario_market import build_scenario_market
+from engine.pricing.config import LgmSwaptionEngineConfig, PricingConfig
+from engine.pricing.context import simulation_market_today
+from engine.pricing.cube import trade_maturity, value_paths, value_today
+from engine.risk.counterparty.exposure import exposure_profile, netting_set_profile
+from engine.run import PortfolioRequest, RunConfig, price_portfolio
 from tests.support import portfolio as shared
 from tests.support.ore_inputs import DISCOUNT_INDEX, report_columns, run_app, _scratch_dir
 from tests.support.ore_xva_oracle import NETTING_SET_PROFILE, implied_states, ore_xva_run
@@ -142,7 +142,7 @@ def test_the_pipelines_profiles_start_from_ores_t0(on_ores_paths, request):
 
 
 def test_the_profiles_of_ores_cube_are_ores_reports(on_ores_paths):
-    """ORE's `ExposureCalculator` definitions (`engine.risk.exposure`), on ORE's own cube and
+    """ORE's `ExposureCalculator` definitions (`engine.risk.counterparty.exposure`), on ORE's own cube and
     numeraire, per trade and for the netting set."""
     ore, scenarios, _ = on_ores_paths
     market, trades = shared.market(), _trades()

@@ -3,10 +3,10 @@ A European swaption: the trade and its ORE underlying (`MakeVanillaSwap`).
 
 The trade names its currency, index and settlement; it carries no curve or model. Its engine
 is the run configuration's (`PricingConfig.european`): ORE's default Bachelier engine on the
-market's normal swaption volatilities (`engine.valuation.european`), or Jamshidian on the
-pricing configuration's Hull-White model (`engine.valuation.jamshidian`). Either engine prices
+market's normal swaption volatilities (`engine.pricing.european`), or Jamshidian on the
+pricing configuration's Hull-White model (`engine.pricing.jamshidian`). Either engine prices
 it today and on every simulated path; in a simulation it is wrapped as ORE wraps it
-(`engine.valuation.options`), so an exercised physical option becomes its swap.
+(`engine.pricing.options`), so an exercised physical option becomes its swap.
 
 A config holds its booked `exercise_date` and underlying dates; on or after the exercise date
 the option is expired and worth 0 (ORE's `Instrument::isExpired`).
@@ -17,7 +17,7 @@ from typing import ClassVar, Optional
 import ORE
 
 from engine.instruments._validation import _validate_common_fields, _validate_identity, _validate_settlement
-from engine.models.ore_builders import SWAP_CALENDAR, book_swap_dates, build_vanilla_swap, is_live
+from engine.instruments.schedules import SWAP_CALENDAR, book_swap_dates, build_vanilla_swap, is_live
 
 
 @dataclass
@@ -92,8 +92,8 @@ def resolve_exercise_date(trade_date: ORE.Date, forward_start, exercise_lag_days
     return SWAP_CALENDAR.advance(forward_start_date, exercise_lag_days, ORE.Days)
 
 
-def _build_ore_swap(cfg: SwaptionConfig) -> ORE.VanillaSwap:
-    """The ORE underlying swap (see `engine.models.ore_builders.build_vanilla_swap`)."""
+def underlying_swap(cfg: SwaptionConfig) -> ORE.VanillaSwap:
+    """The ORE underlying swap (see `engine.instruments.schedules.build_vanilla_swap`)."""
     return build_vanilla_swap(
         notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
         effective_date=cfg.effective_date, maturity_date=cfg.maturity_date,

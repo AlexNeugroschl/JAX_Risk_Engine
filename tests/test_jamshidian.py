@@ -1,5 +1,5 @@
 """
-The Jamshidian European engine (`engine.valuation.jamshidian`, `PricingConfig.european =
+The Jamshidian European engine (`engine.pricing.jamshidian`, `PricingConfig.european =
 "Jamshidian"`) against QuantLib's `JamshidianSwaptionEngine` on `HullWhite(curve, a, sigma)`, and
 `SwaptionConfig`'s own validation.
 
@@ -16,14 +16,14 @@ import ORE
 import pytest
 
 from engine.instruments.european_swaption import SwaptionConfig
-from engine.market import CurrencyMarket, Market, ZeroCurveConfig, index_name
-from engine.models.curves import DiscountCurve, ZeroCurve
+from engine.market_data.curves import DiscountCurve, ZeroCurve
+from engine.market_data.market import CurrencyMarket, Market, ZeroCurveConfig, index_name
 from engine.models.hull_white import bond_call as _bond_call, bond_put as _bond_put
-from engine.valuation.config import JamshidianEngineConfig, PricingConfig
-from engine.valuation.context import PricingContext
-from engine.valuation.european import european_terms
-from engine.valuation.jamshidian import jamshidian_value
-from engine.valuation.portfolio import validate_trades
+from engine.pricing.config import JamshidianEngineConfig, PricingConfig
+from engine.pricing.context import PricingContext
+from engine.pricing.cube import validate_trades
+from engine.pricing.european import european_terms
+from engine.pricing.jamshidian import jamshidian_value
 
 TODAY = ORE.Date(30, 7, 2026)
 HW_A = 0.03

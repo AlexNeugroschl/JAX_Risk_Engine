@@ -3,13 +3,13 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.risk.var_es import (
+from engine.risk.market.var_es import (
     compute_risk_metrics,
     expected_shortfall,
     portfolio_pnl,
     value_at_risk,
 )
-from engine.portfolio import price_portfolio
+from engine.run import price_portfolio
 
 
 def _ore_risk_stats(pnl: np.ndarray) -> "ORE.RiskStatistics":

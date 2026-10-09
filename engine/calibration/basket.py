@@ -26,12 +26,12 @@ import jax.numpy as jnp
 import numpy as np
 import ORE
 
-from engine.models.hull_white import ZeroCurve, bond_call, bond_put, discount
+from engine.instruments.schedules import build_vanilla_swap, fixed_leg_cashflows, resolve_swap_dates
+from engine.market_data.curves import ZeroCurve, discount
+from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER
+from engine.models.hull_white import bond_call, bond_put
 from engine.models.lgm import Sigma, bond_option_sigma, bond_price
-from engine.models.ore_builders import (
-    TIME_AXIS_DAY_COUNTER, build_vanilla_swap, fixed_leg_cashflows, resolve_swap_dates,
-)
-from engine.numerics.roots import DEFAULT_SOLVER, Steps, implicit_root
+from engine.solvers.roots import DEFAULT_SOLVER, Steps, implicit_root
 
 
 @jax.tree_util.register_dataclass
@@ -130,7 +130,7 @@ def build_coterminal_basket(
     return targets
 
 
-#: Steps of x* (`engine.numerics.roots`): Bisection's are the count before Newton (A-21),
+#: Steps of x* (`engine.solvers.roots`): Bisection's are the count before Newton (A-21),
 #: Newton's measured (2026-10-07: x* from 0 reaches its rounding in 3 steps; two of margin,
 #: tests/test_root_solvers.py).
 X_STAR_STEPS = Steps(bisection=100, newton=5)

@@ -35,9 +35,9 @@ import pytest
 
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
-from engine.market import ZeroCurveConfig
+from engine.instruments.schedules import build_vanilla_swap, resolve_swap_dates
+from engine.market_data.market import ZeroCurveConfig
 from engine.models.lgm import Sigma
-from engine.models.ore_builders import build_vanilla_swap, resolve_swap_dates
 from tests.support.lgm_engine import grid_npv
 from tests.support.ore_lgm_oracle import ore_lgm_swaption_npv
 

@@ -6,7 +6,7 @@ Portfolio: one swap, one European swaption, one Bermudan swaption, one American 
 one Treasury note -- one of each trade type the engine prices -- on the demo USD market (a
 curve rising from 3% to 5%, demos/demo_scenarios.py).
 
-The run configuration names every choice (engine.portfolio.RunConfig): here the Hull-White
+The run configuration names every choice (engine.run.RunConfig): here the Hull-White
 model for USD, calibrated to the market's swaption volatilities, ORE's default engines, and
 Greeks by automatic differentiation (ORE's bump-and-revalue is the default; for the options
 it recalibrates under every bump, which takes minutes here, I-53). Switching the model is one
@@ -34,11 +34,11 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
-from engine.market_risk import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
-from engine.portfolio import (
+from engine.market_simulation.config import build_cross_asset_model
+from engine.risk.market import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
+from engine.run import (
     GreeksConfig, LgmSwaptionEngineConfig, PortfolioRequest, PricingConfig, RunConfig, price_portfolio,
 )
-from engine.simulation.config import build_cross_asset_model
 
 
 def section(title: str) -> None:
@@ -165,7 +165,7 @@ section("Market risk (10-day, Monte Carlo)")
 # The risk factors are the pillar zero rates of the market's curves (USD discount and its 6M
 # index), named as the trades read them. Their 10-day moves are drawn from a Gaussian: 8bp
 # daily vol per pillar, correlation decaying with pillar distance. A real run would estimate
-# this from history (engine.market_risk.covariance_from_history) or use historical_scenarios.
+# this from history (engine.risk.market.covariance_from_history) or use historical_scenarios.
 factors = RateRiskFactors.from_market(market)
 pillar_index = np.arange(factors.size) % len(usd.discount_curve.times)
 correlation = np.exp(-np.abs(pillar_index[:, None] - pillar_index[None, :]) / 3.0)

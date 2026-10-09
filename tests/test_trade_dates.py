@@ -43,29 +43,27 @@ import pytest
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import (
     BermudanSwaptionConfig,
-    _build_ore_swap as _bermudan_underlying,
+    underlying_swap as _bermudan_underlying,
     exercisable_dates,
 )
 from engine.instruments.european_swaption import SwaptionConfig
-from engine.instruments.swap import SwapConfig, _build_ore_swap
-from engine.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
-from engine.models.curves import ZeroCurve
-from engine.models.ore_builders import (
+from engine.instruments.schedules import MissingFixingError, build_vanilla_swap, resolve_swap_dates
+from engine.instruments.swap import SwapConfig, underlying_swap
+from engine.market_data.curves import ZeroCurve
+from engine.market_data.day_counts import (
     SUPPORTED_ACCRUAL_DAY_COUNTS,
     TIME_AXIS_DAY_COUNTER,
-    MissingFixingError,
-    build_vanilla_swap,
     resolve_accrual_day_count,
-    resolve_swap_dates,
 )
-from engine.risk.greeks import curve_greeks, portfolio_greeks
-from engine.risk.price_functions import curves_of, trade_price_function
-from engine.risk.sensitivities import SensitivityConfig, portfolio_sensitivities, sensitivity_context, theta_context
-from engine.valuation.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
-from engine.valuation.context import PricingContext
-from engine.valuation.european import european_terms
-from engine.valuation.jamshidian import jamshidian_value
-from engine.valuation.portfolio import value_today
+from engine.market_data.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
+from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
+from engine.pricing.context import PricingContext
+from engine.pricing.cube import value_today
+from engine.pricing.european import european_terms
+from engine.pricing.jamshidian import jamshidian_value
+from engine.risk.greeks.ad import curve_greeks, portfolio_greeks
+from engine.risk.greeks.bump import SensitivityConfig, portfolio_sensitivities, sensitivity_context, theta_context
+from engine.risk.greeks.price_functions import curves_of, trade_price_function
 from tests.support.lgm_engine import grid_npv
 from tests.support.ore_lgm_oracle import ore_lgm_swaption_npv
 
@@ -168,7 +166,7 @@ class TestBookedDatesAreTheTrade:
         cfg = _swap_cfg()
         later = dataclasses.replace(cfg, evaluation_date=TODAY + 30)
         assert (later.effective_date, later.maturity_date) == (cfg.effective_date, cfg.maturity_date)
-        assert _coupons(_build_ore_swap(later)) == _coupons(_build_ore_swap(cfg))
+        assert _coupons(underlying_swap(later)) == _coupons(underlying_swap(cfg))
         assert cfg.maturity_date == ORE.Date(3, 8, 2031)
 
     def test_a_swaption_expiry_approaches(self):
@@ -291,7 +289,7 @@ SEASONED_SWAP_DATES = {
 def test_seasoned_swap_equals_ore(date_id, payer):
     booked = _swap_cfg(payer=payer)
     later = SEASONED_SWAP_DATES[date_id]
-    cfg = dataclasses.replace(booked, evaluation_date=later, fixings=_history(_build_ore_swap(booked), later))
+    cfg = dataclasses.replace(booked, evaluation_date=later, fixings=_history(underlying_swap(booked), later))
     ore = _ore_swap_npv(cfg)
     for engine in _engine_swap_npvs(cfg):
         assert engine == pytest.approx(ore, rel=1e-10, abs=1e-6)
@@ -305,7 +303,7 @@ def test_any_leg_day_count_equals_ore(date_id, day_count):
     which is right only for an ACT/365 leg: a 1mm 5Y ACT/ACT (ICMA) payer was 161 off."""
     booked = _swap_cfg(accrual_day_count=day_count)
     later = SEASONED_SWAP_DATES[date_id]
-    cfg = dataclasses.replace(booked, evaluation_date=later, fixings=_history(_build_ore_swap(booked), later))
+    cfg = dataclasses.replace(booked, evaluation_date=later, fixings=_history(underlying_swap(booked), later))
     ore = _ore_swap_npv(cfg)
     for engine in _engine_swap_npvs(cfg):
         assert engine == pytest.approx(ore, rel=1e-10, abs=1e-6)
@@ -316,7 +314,7 @@ def test_a_fixing_supplied_for_today_is_used():
     its forecast; so does the engine, and it changes the price."""
     booked = _swap_cfg()
     today = SEASONED_SWAP_DATES["fixes-today"]
-    swap = _build_ore_swap(booked)
+    swap = underlying_swap(booked)
     forecast = dataclasses.replace(booked, evaluation_date=today, fixings=_history(swap, today))
     stored = dataclasses.replace(forecast, fixings={**forecast.fixings, today: 0.05})
     assert _engine_swap_npvs(stored)[0] == pytest.approx(_ore_swap_npv(stored), rel=1e-10)
@@ -514,7 +512,7 @@ def test_swap_theta_equals_ore(base):
     floating coupon pays the next day, so the flow term is material. Both Greeks methods give
     this Theta."""
     booked = _swap_cfg()
-    swap = _build_ore_swap(booked)
+    swap = underlying_swap(booked)
     cfg = dataclasses.replace(booked, evaluation_date=base, fixings=_history(swap, base))
     market = _market(base)
     base_ctx, theta_ctx = sensitivity_context(market, CONFIG), theta_context(market, CONFIG)
@@ -547,13 +545,13 @@ def test_theta_rolls_one_calendar_day_as_ore():
 # =============================================================================
 def test_price_portfolio_prices_a_seasoned_swap_like_ore():
     """End to end on either model: the base NPV is ORE's, and the scenario cube takes the aged
-    schedule (the accruing coupon at its fixing, no paid flow; tests/test_valuation.py)."""
-    from engine.portfolio import PortfolioRequest, RunConfig, price_portfolio
-    from engine.simulation.config import CamConfig, HullWhiteConfig, LgmConfig
+    schedule (the accruing coupon at its fixing, no paid flow; tests/test_pricing.py)."""
+    from engine.run import PortfolioRequest, RunConfig, price_portfolio
+    from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfig
 
     later = SEASONED_SWAP_DATES["mid-coupon"]
     booked = _swap_cfg()
-    cfg = dataclasses.replace(booked, evaluation_date=later, fixings=_history(_build_ore_swap(booked), later))
+    cfg = dataclasses.replace(booked, evaluation_date=later, fixings=_history(underlying_swap(booked), later))
     for model in (LgmConfig, HullWhiteConfig):
         simulation = CamConfig(dates=(later + 91,), base_currency="USD", ir={"USD": model(0.03, 0.01)}, samples=64)
         result = price_portfolio(PortfolioRequest(market=_market(later), trades=[cfg],
@@ -564,7 +562,7 @@ def test_price_portfolio_prices_a_seasoned_swap_like_ore():
 
 
 def test_http_schema_takes_booked_dates_and_fixings():
-    from engine.api.market_schemas import EuropeanTradeSchema, SwapTradeSchema
+    from engine.api.requests import EuropeanTradeSchema, SwapTradeSchema
 
     swap = SwapTradeSchema(notional=NOTIONAL, fixed_rate=0.03, payer=True, effective_date="2026-08-03",
                            maturity_date="2031-08-03", fixings={"2026-07-30": 0.025}).to_dataclass(TODAY + 10, "s")
@@ -578,7 +576,7 @@ def test_http_schema_takes_booked_dates_and_fixings():
 
 def test_http_schema_without_a_schedule_is_refused():
     """No default tenor: a trade without dates is an error, not a 5Y swap."""
-    from engine.api.market_schemas import SwapTradeSchema
+    from engine.api.requests import SwapTradeSchema
 
     with pytest.raises(ValueError, match="needs its dates"):
         SwapTradeSchema(notional=NOTIONAL, fixed_rate=0.03, payer=True).to_dataclass(TODAY, "s")

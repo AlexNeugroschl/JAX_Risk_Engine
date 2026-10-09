@@ -86,7 +86,7 @@ ambitions (see the root [README.md](../../README.md) for the full roadmap):
   ("TraderX") can call, rather than only running as an overnight batch script. Two separate
   contracts are served: a general portfolio-pricing one, and a stricter end-of-day one for
   TraderX's hash-verified overnight bundles. See [HTTP API](../reference/http-api.md) and
-  [EOD Integration](../reference/eod-integration.md). What remains planned is *coverage* —
+  [The TraderX Path](../reference/traderx-path.md). What remains planned is *coverage* —
   the range of instruments the end-of-day path can price without refusing.
 
 ## What's actually built right now
@@ -110,7 +110,7 @@ ambitions (see the root [README.md](../../README.md) for the full roadmap):
 guesses. If it cannot price something faithfully — a USD-SOFR swap, a cash equity, a corporate
 bond — it returns a *named refusal* saying exactly what it would need, rather than a
 confident-looking number that happens to be wrong. See
-[EOD Integration](../reference/eod-integration.md).
+[The TraderX Path](../reference/traderx-path.md).
 
 ## Where to go next
 

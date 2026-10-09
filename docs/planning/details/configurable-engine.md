@@ -19,18 +19,18 @@ A-1 to A-9 ([compliance/decisions.md](../../../compliance/decisions.md) §1–2)
 
 ## Today
 
-Every choice is one `RunConfig` (`engine/portfolio/config.py`) on
-`PortfolioRequest.config`, and every run is one pipeline (`engine.portfolio.market_path`):
+Every choice is one `RunConfig` (`engine/run/config.py`) on
+`PortfolioRequest.config`, and every run is one pipeline (`engine.run.pipeline`):
 
 | | |
 |---|---|
 | Entry | `price_portfolio(PortfolioRequest(market=Market(...), trades=[...], config=RunConfig(...)))` |
 | HTTP | `POST /portfolio/price`, `POST /portfolio/market-risk`, `POST /calibration/cam`, every job polled at `GET /jobs/{job_id}`; every setting has an API field (`tests/test_api_completeness.py`) |
-| Simulation | `config.simulation` (`CamConfig`), `engine.simulation.cam`: per currency `LgmConfig` or `HullWhiteConfig`, exact step moments, LGM numeraire |
-| Valuation | `engine.valuation`: every trade by its t=0 engine on every path (scenario market, legs, `OptionWrapper`, bond legs, per-trade basket) |
+| Simulation | `config.simulation` (`CamConfig`), `engine.models.cam`: per currency `LgmConfig` or `HullWhiteConfig`, exact step moments, LGM numeraire |
+| Valuation | `engine.pricing`: every trade by its t=0 engine on every path (scenario market, legs, `OptionWrapper`, bond legs, per-trade basket) |
 | European engine | `Bachelier` (ORE's default) or `Jamshidian` with `PricingConfig.jamshidian` |
-| Greeks | `Bump` (`engine.risk.sensitivities`, settings `config.greeks.sensitivity`) or `AD` (`engine.risk.greeks`) |
-| Market risk | `engine.market_risk.run_market_risk` on a `Market` with the same `PricingConfig` (A-8) |
+| Greeks | `Bump` (`engine.risk.greeks.bump`, settings `config.greeks.sensitivity`) or `AD` (`engine.risk.greeks.ad`) |
+| Market risk | `engine.risk.market.run_market_risk` on a `Market` with the same `PricingConfig` (A-8) |
 | Precision | `config.precision` (`engine.precision.Precision`, the precision mechanism (2026-10-01)): storage, compute and accumulate per adjustable stage (simulation, market, pricing), float64 or float32 compute, storage down to FP8 with block scales and nearest or stochastic rounding since sub-32-bit storage (2026-10-02); per product and per trade since per-trade precision (2026-10-02); the paired float64 sample and the precision report on every result since the precision report (2026-10-02) ([precision.md](precision.md)) |
 
 ## The run configuration (I-68) — done 2026-09-30
@@ -59,7 +59,7 @@ Rules the implementation follows, which every change since keeps:
   route did, so every configuration component reaches it and is validated again there
   (until 2026-10-04 a worker pool froze the request into a picklable form).
 
-Evidence that the defaults reproduce the market path bit for bit: the shared portfolio
+Evidence that the defaults reproduce the pipeline bit for bit: the shared portfolio
 (8 trades, scenario risk, exposure, bump Greeks), an FP32-simulation run and the Hull-White
 model, compared array for array against the code before the change (114 arrays, all
 identical: [verification status](../known-issues.md#verification-status)), and the parity
@@ -77,7 +77,7 @@ their date. What closed which issue:
 |---|---|
 | The model is ORE's `<LGM>` with `ReversionType`/`VolatilityType` `HullWhite` (`IrLgm1fPiecewiseConstantHullWhiteAdaptor`): α(t) = σ(t)e^{at}, ζ(t) = ∫σ²e^{2as}ds, H(t) = (1 − e^{−at})/a, simulated exactly under the LGM measure by the CAM; its curves are its own bond prices, fitted to today's curve by construction | [I-42](../known-issues.md#i-42), [I-44](../known-issues.md#i-44) |
 | The model's exact LGM numeraire | [I-45](../known-issues.md#i-45) |
-| Every trade valued by `engine.valuation` on the paths: legs (paid flows drop out, path fixings), `OptionWrapper`, bond legs, per-trade basket recalibrated per path, vectorized on device | [I-04](../known-issues.md#i-04) (model half), [I-43](../known-issues.md#i-43), [I-24](../known-issues.md#i-24), [I-47](../known-issues.md#i-47), [I-62](../known-issues.md#i-62) |
+| Every trade valued by `engine.pricing` on the paths: legs (paid flows drop out, path fixings), `OptionWrapper`, bond legs, per-trade basket recalibrated per path, vectorized on device | [I-04](../known-issues.md#i-04) (model half), [I-43](../known-issues.md#i-43), [I-24](../known-issues.md#i-24), [I-47](../known-issues.md#i-47), [I-62](../known-issues.md#i-62) |
 | Bachelier on the market volatility is the default European engine for every model; Jamshidian is an option with its own Hull-White model | [I-46](../known-issues.md#i-46) |
 | Trades name currency and index only; a model or curve field on a trade is refused | [I-63](../known-issues.md#i-63) |
 | `evaluation_date` and `trade_id` required keyword fields on every trade config | [I-64](../known-issues.md#i-64), [I-10](../known-issues.md#i-10) (configs) |
@@ -112,10 +112,10 @@ Design decisions taken in the step, with their reasons:
   the shared pipeline computed those stages in float64 and refused less (I-55). Kept rather
   than ported: the precision mechanism made them adjustable for both models at once.
 
-Evidence: the shared portfolio's market-path numbers (t=0, an FP64 and an FP32-simulation
+Evidence: the shared portfolio's pipeline numbers (t=0, an FP64 and an FP32-simulation
 scenario run, bump Greeks) bit for bit before and after, 103 of 103 arrays; each closed
 Hull-White defect measured on the code before the step and asserted after, on a 3% → 5%
-curve; every per-path ORE comparison of `tests/test_valuation.py` run under both models;
+curve; every per-path ORE comparison of `tests/test_pricing.py` run under both models;
 `tests/test_end_to_end.py` prices the Hull-White simulation's paths in QuantLib
 ([verification status](../known-issues.md#verification-status)).
 
@@ -193,7 +193,7 @@ analytics.
   default, to copy and edit; `/docs` shows the one request schema.
 - **Idempotent submission** ([I-89](../known-issues.md#i-89)). The same `idempotency_key`
   and body return the first `run_id`. The same key with a different body is a `409`, checked
-  before anything is returned, which is I-57's lesson on the EOD path.
+  before anything is returned, which is I-57's lesson on the TraderX path.
 
 **In Python too.** `engine.run(RunRequest) -> RunResult` dispatches to `price_portfolio`,
 `run_market_risk` and `calibrate_cam`, which stay as they are. The HTTP schema mirrors

@@ -1,5 +1,5 @@
 """
-The root solver (`engine.numerics.roots`, decision A-21) and the roots the engine
+The root solver (`engine.solvers.roots`, decision A-21) and the roots the engine
 solves with it.
 
   * The solvers on functions with known roots: both to rounding, elementwise over a batch,
@@ -31,25 +31,25 @@ from pydantic import ValidationError
 import engine.calibration.basket as basket_module
 import engine.calibration.lgm as lgm_module
 import engine.calibration.ore_lgm as ore_lgm
-import engine.valuation.jamshidian as jamshidian
-from engine.api.market_schemas import (
+import engine.pricing.jamshidian as jamshidian
+from engine.api.requests import (
     HullWhiteConfigSchema, JamshidianEngineSchema, LgmConfigSchema, LgmEngineSchema,
 )
 from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.lgm import calibrate_lgm_sigma
 from engine.calibration.ore_lgm import basket_vols, bootstrap_sigma, build_basket
-from engine.market import index_name
-from engine.models.curves import ZeroCurve
-from engine.models.hull_white import ZeroCurve as HwZeroCurve
-from engine.numerics import roots
-from engine.numerics.roots import SOLVERS, Steps, implicit_root, solve
-from engine.portfolio import PortfolioRequest, RunConfig, price_portfolio
-from engine.simulation.config import CamConfig, HullWhiteConfig, LgmConfig, simulate
-from engine.valuation.bermudan import bermudan_cube, calibration_basket, contract_exercise_dates, path_sigmas
-from engine.valuation.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
-from engine.valuation.european import european_terms, volatility_on_path
-from engine.valuation.legs import path_fixings
-from engine.valuation.portfolio import value_today
+from engine.market_data.curves import ZeroCurve
+from engine.market_data.curves import ZeroCurve as HwZeroCurve
+from engine.market_data.market import index_name
+from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfig, simulate
+from engine.pricing.bermudan import bermudan_cube, calibration_basket, contract_exercise_dates, path_sigmas
+from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
+from engine.pricing.cube import value_today
+from engine.pricing.european import european_terms, volatility_on_path
+from engine.pricing.legs import path_fixings
+from engine.run import PortfolioRequest, RunConfig, price_portfolio
+from engine.solvers import roots
+from engine.solvers.roots import SOLVERS, Steps, implicit_root, solve
 from tests.support import portfolio as shared
 from tests.support.compiles import count_compiles
 

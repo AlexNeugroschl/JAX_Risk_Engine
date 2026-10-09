@@ -13,7 +13,7 @@ at t=0).
 
 ---
 
-## `engine.market`
+## `engine.market_data.market`
 
 Today's market (ORE's `TodaysMarket`), what every trade is valued against.
 
@@ -56,7 +56,7 @@ option_time, swap_length)` reads it; `weights(reference, option_time, swap_lengt
 
 ---
 
-## `engine.simulation.config`
+## `engine.market_simulation.config`
 
 The simulation: ORE's `simulation.xml`. See [Market Simulation](../concepts/market-simulation.md).
 
@@ -144,7 +144,7 @@ As the Bermudan, with `first_exercise_date`/`last_exercise_date` instead of `exe
 `option_times(exercise_time_steps_per_year)` is ORE's uniform option-time grid over the
 window (the step count from the engine's `LgmSwaptionEngineConfig`, `>= 1`).
 
-### The grid engine (`engine.instruments.bermudan_swaption`)
+### The grid engine (`engine.pricing.lgm_grid`)
 
 | Function | Notes |
 |---|---|
@@ -154,7 +154,7 @@ window (the step count from the engine's `LgmSwaptionEngineConfig`, `>= 1`).
 ### `BondConfig`, `CouponPeriod` (`engine.instruments.treasury`)
 
 A Treasury bill or note, discounted on its currency's curve (ORE's `DiscountingRiskyBondEngine`
-without credit; `engine.valuation.portfolio.bond_legs`), today and on every path.
+without credit; `engine.pricing.cube.bond_legs`), today and on every path.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
@@ -172,12 +172,12 @@ schedule with a zero coupon and a coupon without a schedule (`BondPricingError`)
 
 ---
 
-## `engine.valuation`
+## `engine.pricing`
 
 ORE's `ValuationEngine`: every trade with its configured engine, today and on every path.
 See [Instruments](../instruments/swaps.md).
 
-### `PricingConfig` (`engine.valuation.config`)
+### `PricingConfig` (`engine.pricing.config`)
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
@@ -186,7 +186,7 @@ See [Instruments](../instruments/swaps.md).
 | `bermudan`, `american` | `LgmSwaptionEngineConfig` | ORE's builder defaults | `reversion` (`0.0`), `volatility` (`0.01`, the start or the fixed model), `calibration` (`"Bootstrap"` \| `"None"`), `strategy` (`"CoterminalDealStrike"`), `reference_calibration_grid` (`"400,3M"`), `shift_horizon` (`0.0`, the only value implemented, I-32), `n_per_std` (`30`), `std_devs` (`5.0`), `exercise_time_steps_per_year` (`24`), `swap_index`. |
 | `recalibrate` | `bool` | `True` | Recalibrate each Bermudan/American on every path date, as ORE's `ValuationEngine`. |
 
-### `engine.valuation.portfolio`
+### `engine.pricing.cube`
 
 | Function | Returns |
 |---|---|
@@ -200,7 +200,7 @@ See [Instruments](../instruments/swaps.md).
 
 ---
 
-## `engine.risk.var_es`
+## `engine.risk.market.var_es`
 
 Every function here is instrument-agnostic — see
 [Risk Statistics](../risk/var_es.md) and
@@ -253,7 +253,7 @@ The main entry point — combines the three functions above.
 
 The two diagnostic keys are additive (W0.6, part of [I-11](../planning/known-issues.md#i-11)); the
 `VaR_*`/`ES_*` keys and values are unchanged. See
-[EOD Integration: tail diagnostics](eod-integration.md#tail-statistics-carry-their-own-convergence-diagnostics).
+[The TraderX Path: tail diagnostics](traderx-path.md#tail-statistics-carry-their-own-convergence-diagnostics).
 
 ### Risk measure constants
 
@@ -264,7 +264,7 @@ the other is expected is a category error no numerical accuracy fixes.
 
 ---
 
-## `engine.risk.sensitivities`, `engine.risk.greeks`, `engine.risk.price_functions`
+## `engine.risk.greeks.bump`, `engine.risk.greeks.ad`, `engine.risk.greeks.price_functions`
 
 The Greeks — see [Greeks](../risk/greeks.md) for the keys and the two methods.
 
@@ -279,7 +279,7 @@ The Greeks — see [Greeks](../risk/greeks.md) for the keys and the two methods.
 | `trade_price_function(cfg, market, pricing=PricingConfig(), dtype=jnp.float64)` | `TradePriceFunction(curves, pricer, terms, times)`: the trade's t=0 price as a JAX function of its curves' pillar rates, `.price(*rates)`; `curves` are `(kind, name)` keys (`("discount", "USD")`, `("index", "USD-SIMINDEX-6M")`). The same function as data: `price(*rates) == pricer(terms, *on_pillars(times, rates))`, with `pricer` a module-level function (static under `jax.jit`) and `terms` the trade's data as a pytree. Shared by the AD Greeks and market-risk revaluation. |
 | `bermudan_price_function(cfg, market, pricing, dtype)` | `BermudanPriceFunction(price, sigma, calibration)`: the grid engine on today's calibration, `price(disc, index, sigma_values=None)`. |
 
-## `engine.risk.exposure`
+## `engine.risk.counterparty.exposure`
 
 ORE's `ExposureCalculator` statistics over a simulated cube — see [Exposure](../risk/exposure.md).
 
@@ -288,7 +288,7 @@ ORE's `ExposureCalculator` statistics over a simulated cube — see [Exposure](.
 | `exposure_profile(npv [S,D], npv0, numeraire, discount, times, quantiles, maturity=None, dates=None, asof=None, paired=None)` | `ExposureProfile` for one trade: `times` (t=0 first), `epe`, `ene`, `ee_b`, `eee_b`, `epe_b`, `eepe_b`, `basel_epe`, `basel_eepe`, `pfe` (`"PFE_95"` → `[D+1]`). With `paired=(npv [n,D], numeraire [n,D])`, the first `n` paths at float64: EPE/ENE are two-level estimates and `estimates` holds each figure's (`"EPE"`, `"ENE"`, `"PFE_95"`) |
 | `netting_set_profile(npv_cube [S,D,N], npv0_per_trade, numeraire, discount, times, quantiles, dates=None, asof=None, paired=None)` | The same for the netted sum of `N` trades (`paired` a cube `[n,D,N]` and numeraire) |
 
-## `engine.market_risk`
+## `engine.risk.market`
 
 Short-horizon VaR/ES by full revaluation at t=0 — see [Market Risk](../risk/market-risk.md).
 
@@ -315,11 +315,11 @@ Short-horizon VaR/ES by full revaluation at t=0 — see [Market Risk](../risk/ma
 
 ---
 
-## `engine.models`
+## The foundation: `engine.market_data`, `engine.models`, `engine.instruments.schedules`
 
 The shared foundation — see [Models & Trades](models-and-trades.md).
 
-### `engine.models.curves`
+### `engine.market_data.curves`
 
 | Name | Notes |
 |---|---|
@@ -343,18 +343,32 @@ The shared foundation — see [Models & Trades](models-and-trades.md).
 
 `bond_call` / `bond_put`: Black on a bond, the Jamshidian engine's building block.
 
-### `engine.models.ore_builders`
+### `engine.models.cam`
 
-ORE trade building and the time axis: `build_vanilla_swap` (from booked dates, via
+ORE's cross-asset model: `IrComponent` / `FxComponent` / `EqComponent`, `CrossAssetModel`, and
+the exact discretization's `step_moments` (transition, drift, covariance and its
+`flexible_cholesky`, per step). The device recursion over them is
+`engine.market_simulation.paths.evolve_states`.
+
+### `engine.market_data.day_counts`
+
+The time axis, `TIME_AXIS_DAY_COUNTER` (ACT/365) and `time_from_reference`, and the accrual
+day counts a trade may name: `SUPPORTED_ACCRUAL_DAY_COUNTS`, `DEFAULT_ACCRUAL_DAY_COUNT`,
+`resolve_accrual_day_count`, `UnsupportedDayCountError`. Imports only ORE.
+
+### `engine.instruments.schedules`
+
+ORE trade building: `build_vanilla_swap` (from booked dates, via
 `MakeVanillaSwap`), `resolve_swap_dates` / `book_swap_dates` (`MakeVanillaSwap`'s tenor rule),
 `ibor_index`, `par_coupon_forecast_period` (the Ibor index's own fixing period, I-31),
 `known_fixing` / `MissingFixingError` (ORE's `InterestRateIndex::fixing`), `is_live` (ORE's
-`hasOccurred`), `time_from_reference` and `TIME_AXIS_DAY_COUNTER` (ACT/365), `validate_tenor`,
-`validate_fixings`, `fixed_leg_cashflows` / `LegCashflows` (the standalone basket's fixed leg).
+`hasOccurred`), `evaluation_date` (ORE's global evaluation date, set inside a block),
+`validate_tenor`, `validate_fixings`, `fixed_leg_cashflows` / `LegCashflows` (the standalone
+basket's fixed leg).
 
 ---
 
-## `engine.portfolio`
+## `engine.run`
 
 The top-level entry point — see [The Portfolio Entry Point](portfolio-entrypoint.md) for the
 full write-up (this is the quick reference).
@@ -370,7 +384,7 @@ full write-up (this is the quick reference).
 | `compute_greeks` | `bool` | `False` | By `config.greeks.method`. |
 | `scenario_risk` | `bool` | `True` | Build `npv_cube` and the exposure profiles (needs `config.simulation`). |
 
-### `RunConfig` (`engine/portfolio/config.py`)
+### `RunConfig` (`engine/run/config.py`)
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
@@ -411,7 +425,7 @@ see [HTTP API: Jobs](http-api.md#jobs-the-queue-and-the-engine-worker).
 
 The precision of a run ([details/precision.md](../planning/details/precision.md)); imports
 nothing from the pipeline. `Precision` and `StagePrecision` are also exported by
-`engine.portfolio`.
+`engine.run`.
 
 | Name | Kind | Summary |
 |---|---|---|
@@ -449,32 +463,32 @@ them; the engine never imports them. See
 
 ## `engine.api`
 
-The HTTP boundary over `engine.portfolio.price_portfolio` — see [HTTP API](http-api.md).
-Requires the `api` extra (`pip install -e .[api]`); `engine.portfolio` and everything below it
+The HTTP boundary over `engine.run.price_portfolio` — see [HTTP API](http-api.md).
+Requires the `api` extra (`pip install -e .[api]`); `engine.run` and everything below it
 has no dependency on this package.
 
 | Module | Contents |
 |---|---|
 | `engine.api.app` | `create_app() -> FastAPI` / `app`. Run with `uvicorn engine.api.app:app`. |
 | `engine.api.routes` | `GET /health`, `GET /version`, `POST /portfolio/price`, `POST /portfolio/market-risk`, `GET /jobs/{job_id}`, `GET /jobs/{job_id}/artifacts/{name}/{chunk}`, `POST /calibration/cam`, `POST /calibration/lgm`. |
-| `engine.api.market_schemas` | The requests: `MarketPortfolioRequestSchema` and its parts (market, trades, `CamConfigSchema` with `LgmConfigSchema`/`HullWhiteConfigSchema` and piecewise volatilities, `PricingConfigSchema`, `GreeksConfigSchema`), `MarketRiskRequestSchema` (Monte Carlo or historical scenarios), `CamCalibrationRequestSchema`; each with `.to_dataclass()`, the queued ones with `.check()` (the route's validation, no JAX work). Refuses unknown fields and the retired Hull-White shape. |
-| `engine.api.schemas` | Shared schemas (curves, coupon periods, precision) and the results: `PortfolioResultSchema` (one `TradeResultSchema` row per trade), `MarketRiskResultSchema`, `CamCalibrationResultSchema`, `ArrayArtifactSchema`, `GreeksSchema`, `ExposureProfileSchema`, `JobStatusSchema`, the LGM calibration route's schemas. |
+| `engine.api.requests` | The requests and the wire forms they share (curves, coupon periods, the precision policy): `MarketPortfolioRequestSchema` and its parts (market, trades, `CamConfigSchema` with `LgmConfigSchema`/`HullWhiteConfigSchema` and piecewise volatilities, `PricingConfigSchema`, `GreeksConfigSchema`), `MarketRiskRequestSchema` (Monte Carlo or historical scenarios), `CamCalibrationRequestSchema`, the LGM calibration route's `CalibrationRequestSchema`; each with `.to_dataclass()`, the queued ones with `.check()` (the route's validation, no JAX work). Refuses unknown fields and the retired Hull-White shape. |
+| `engine.api.results` | The results: `PortfolioResultSchema` (one `TradeResultSchema` row per trade), `MarketRiskResultSchema`, `CamCalibrationResultSchema`, `ArrayArtifactSchema`, `GreeksSchema`, `ExposureProfileSchema`, `JobStatusSchema`, the precision report, the LGM calibration route's result. |
 | `engine.api.artifacts` | `array_artifact`, `items_record`, `read_array`: an array as chunked, hashed bytes with its trade order (decision A-17). |
-| `engine.api.eod_routes` | `router` (prefix `/eod`) — the TraderX EOD contract, plain dicts under a published JSON Schema. See [EOD Integration](eod-integration.md#w164--the-eod-http-routes). |
+| `engine.api.traderx_routes` | `router` (prefix `/eod`) — the TraderX path's contract, plain dicts under a published JSON Schema. See [The TraderX Path](traderx-path.md#w164--the-eod-http-routes). |
 
 ---
 
-## `engine.integration`
+## `engine.traderx`
 
-The TraderX EOD boundary: a hash-verified bundle in, an **identified** risk result out. Its
+The TraderX path: a hash-verified bundle in, an **identified** risk result out. Its
 governing rule is that **nothing is ever silently approximated** — an explicit `unsupported`
 is recoverable, a plausible wrong number is not.
 
-Documented in full in [The EOD Integration Boundary](eod-integration.md); this table is the
+Documented in full in [The TraderX Path](traderx-path.md); this table is the
 module index. **This package imports no FastAPI, no Pydantic, no JAX, and no simulation
 pricer** — only `ORE`, for date and day-count arithmetic. The dependency runs
-`engine.api` → `engine.integration`, never the reverse, and it is enforced by
-`tests/test_integration_pipeline.py::TestPackageImportsNoSimulationPricer`.
+`engine.api` → `engine.traderx`, never the reverse, and it is enforced by
+`tests/test_traderx_pipeline.py::TestPackageImportsNoSimulationPricer`.
 
 | Module | Task | Contents |
 |---|---|---|

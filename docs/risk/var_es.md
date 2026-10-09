@@ -1,6 +1,6 @@
 # Risk Statistics: Value at Risk & Expected Shortfall
 
-**Module:** [`engine/risk/var_es.py`](../../engine/risk/var_es.py)
+**Module:** [`engine/risk/market/var_es.py`](../../engine/risk/market/var_es.py)
 **Public entry point:** `compute_risk_metrics(npv_cube, base_npv, percentiles=(0.95, 0.99))`
 
 > **Where these statistics are used.** The engine's VaR/ES is
@@ -176,7 +176,7 @@ the case where the estimate is least trustworthy.
 This does not make any estimate better. It makes the uncertainty visible — the difference
 between a number a reader can weigh and one they must simply trust. Part of
 [I-11](../planning/known-issues.md#i-11); added by
-[W0.6](../reference/eod-integration.md#w06--market-input-selection--closes-part-of-i-11),
+[W0.6](../reference/traderx-path.md#w06--market-input-selection--closes-part-of-i-11),
 purely additively, so every pre-existing key and value is unchanged.
 
 **Precision.** The statistics are computed in the dtype of the P&L they are given, and
@@ -223,7 +223,7 @@ vocabulary:
 - `TestExpectedShortfallStandardError` — cross-checked against numpy's `ddof=1` computation
   on the same tail; `test_single_observation_is_nan_not_zero` pins the `n < 2` behavior.
 - **`TestAdditiveOnly`** — every pre-existing key and value is unchanged, which is what lets
-  `engine/api/schemas.py`, `engine/portfolio/` and the other consumers keep working
+  `engine/api/results.py`, `engine/run/` and the other consumers keep working
   untouched.
 - `TestDiagnosticsReachTheHttpBoundary` — the new keys serialize through `RiskMetricsSchema`,
   with a NaN standard error arriving as `null` rather than a readable float.

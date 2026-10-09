@@ -16,10 +16,10 @@ import pytest
 
 from engine.calibration.cam import calibrate_cam
 from engine.calibration.ore_lgm import basket_vols, build_basket, price_pair
-from engine.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
-from engine.models.curves import ZeroCurve
+from engine.market_data.curves import ZeroCurve
+from engine.market_data.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
+from engine.market_simulation.config import HullWhiteConfig, LgmConfig
 from engine.models.lgm import hull_white_zeta, zeta as hagan_zeta
-from engine.simulation.config import HullWhiteConfig, LgmConfig
 
 ASOF = ORE.Date(30, 7, 2026)
 PILLARS = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
@@ -75,20 +75,20 @@ class TestCalibration:
 # Regressions of the defects the Hull-White model had as a separate pipeline (before
 # 2026-10-01), on the 3% -> 5% curve. Each was measured on the code before then
 # (docs/planning/known-issues.md, ledger); the per-path ORE comparisons of the shared pricers
-# on Hull-White paths are tests/test_valuation.py (parametrized over both models).
+# on Hull-White paths are tests/test_pricing.py (parametrized over both models).
 # =============================================================================
 from engine.instruments.european_swaption import SwaptionConfig  # noqa: E402
 from engine.instruments.swap import SwapConfig  # noqa: E402
 from engine.instruments.treasury import BondConfig  # noqa: E402
-from engine.models.curves import discount  # noqa: E402
-from engine.portfolio import (  # noqa: E402
+from engine.market_data.curves import discount  # noqa: E402
+from engine.market_simulation.config import CamConfig, build_cross_asset_model, simulate  # noqa: E402
+from engine.pricing.context import from_market  # noqa: E402
+from engine.pricing.cube import value_portfolio, value_today  # noqa: E402
+from engine.pricing.european import european_value  # noqa: E402
+from engine.risk.market.var_es import compute_risk_metrics  # noqa: E402
+from engine.run import (  # noqa: E402
     JamshidianEngineConfig, PortfolioRequest, PricingConfig, RunConfig, price_portfolio,
 )
-from engine.risk.var_es import compute_risk_metrics  # noqa: E402
-from engine.simulation.config import CamConfig, build_cross_asset_model, simulate  # noqa: E402
-from engine.valuation.european import european_value  # noqa: E402
-from engine.valuation.context import from_market  # noqa: E402
-from engine.valuation.portfolio import value_portfolio, value_today  # noqa: E402
 
 HW = HullWhiteConfig(0.03, 0.01)
 DATES = tuple(ASOF + ORE.Period(y, ORE.Years) for y in (1, 2, 3))

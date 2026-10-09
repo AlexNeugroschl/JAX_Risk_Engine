@@ -72,7 +72,7 @@ MEAN_REVERSION = 0.03
 CALIBRATION_EXPIRIES, CALIBRATION_TERMS = ["1Y", "2Y"], ["2Y", "1Y"]
 
 # 256 paths on 3 dates (vs 512 on 8): cuts wall time, not trace size. A power of two, which
-# Sobol' balance needs (engine.simulation.random warns otherwise).
+# Sobol' balance needs (engine.market_simulation.sobol warns otherwise).
 NUM_PATHS = 256
 
 # AD: each trade's Greeks are a few fused programs. Bump reprices every trade under ~40 shifts,

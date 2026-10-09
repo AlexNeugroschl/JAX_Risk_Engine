@@ -1,6 +1,6 @@
 """
 ORE's own Bermudan/American swaption engine, run in-process: the reference
-`engine.instruments.bermudan_swaption` is validated against (tests/test_ore_lgm_parity.py).
+`engine.pricing.lgm_grid` is validated against (tests/test_ore_lgm_parity.py).
 
 Test tooling, not a pricer: the engine never imports it. Each call runs a full `OREApp`
 (about a second) over the in-memory inputs of `tests.support.ore_inputs`, which describes what
@@ -21,7 +21,7 @@ from typing import Mapping, Optional, Sequence, Union
 
 import ORE
 
-from engine.market import SwaptionVolSurface
+from engine.market_data.market import SwaptionVolSurface
 from engine.models.lgm import Sigma
 from tests.support.ore_inputs import (  # noqa: F401  (re-exported: the tests import them from here)
     PLACEHOLDER_VOLS, OreCalibration, OreCurves, OreDiscountCurves, OreFdSolver, OreLgmEngine, fixing_lines,

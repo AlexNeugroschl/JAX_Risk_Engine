@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 
 from engine.api.artifacts import read_array
-from engine.api.market_schemas import MarketRiskRequestSchema
-from engine.market_risk import RateRiskFactors, run_market_risk
+from engine.api.requests import MarketRiskRequestSchema
+from engine.risk.market import RateRiskFactors, run_market_risk
 from tests.support import portfolio as shared
 
 TRADES = ("swap-payer", "european-payer", "bond")

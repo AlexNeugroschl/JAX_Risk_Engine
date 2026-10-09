@@ -3,8 +3,8 @@ One component at a time: each section runs a single engine module's public API e
 on the shared scenarios of demos/demo_scenarios.py, and prints what it returns.
 
     simulation     simulate the cross-asset model with the Hull-White model per currency
-                   (`engine.simulation.config.simulate`)
-    swap           a 2Y payer swap today and on every path (`engine.valuation.portfolio`)
+                   (`engine.market_simulation.config.simulate`)
+    swap           a 2Y payer swap today and on every path (`engine.pricing.cube`)
     european       a 3Y-into-2Y European swaption, Bachelier (ORE's default) and Jamshidian
     bermudan       a Bermudan swaption today and on the paths (LGM grid engine, recalibrated on
                    every path and date as ORE does; 128 paths, as that is the slow part, I-53)
@@ -26,12 +26,12 @@ from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
-from engine.risk.greeks import portfolio_greeks
-from engine.risk.sensitivities import portfolio_sensitivities
-from engine.risk.var_es import compute_risk_metrics
-from engine.simulation.config import simulate
-from engine.valuation.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
-from engine.valuation.portfolio import value_portfolio
+from engine.market_simulation.config import simulate
+from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
+from engine.pricing.cube import value_portfolio
+from engine.risk.greeks.ad import portfolio_greeks
+from engine.risk.greeks.bump import portfolio_sensitivities
+from engine.risk.market.var_es import compute_risk_metrics
 
 #: A coarser grid than ORE's default for the Bermudan/American engine, to keep the demo quick.
 FAST = PricingConfig(bermudan=LgmSwaptionEngineConfig(n_per_std=16), american=LgmSwaptionEngineConfig(n_per_std=16))

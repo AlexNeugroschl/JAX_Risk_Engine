@@ -176,7 +176,7 @@ class TestJobQueue:
         """`JobStatusSchema` spells the queue's values out as literals; they must agree."""
         from typing import get_args
 
-        from engine.api.schemas import JobStatusSchema
+        from engine.api.results import JobStatusSchema
 
         fields = JobStatusSchema.model_fields
         assert get_args(fields["status"].annotation) == jq.STATUSES
@@ -256,10 +256,10 @@ class TestWorkerLoop:
 
     @pytest.mark.parametrize("make, expected", [
         (lambda: KeyError("curve"), jq.MISSING_MARKET_DATA),
-        (lambda: __import__("engine.models.ore_builders", fromlist=["x"]).MissingFixingError("fixing"),
+        (lambda: __import__("engine.instruments.schedules", fromlist=["x"]).MissingFixingError("fixing"),
          jq.MISSING_MARKET_DATA),
         (lambda: NotImplementedError("product"), jq.UNSUPPORTED_PRODUCT),
-        (lambda: __import__("engine.day_count", fromlist=["x"]).UnsupportedDayCountError("30/360 German"),
+        (lambda: __import__("engine.market_data.day_counts", fromlist=["x"]).UnsupportedDayCountError("30/360 German"),
          jq.UNSUPPORTED_PRODUCT),
         (lambda: FloatingPointError("overflow"), jq.NUMERICAL_FAILURE),
         (lambda: ZeroDivisionError("x"), jq.NUMERICAL_FAILURE),
@@ -494,8 +494,8 @@ def _trades(*names):
 
 
 def _direct(body: dict):
-    from engine.api.market_schemas import MarketPortfolioRequestSchema
-    from engine.portfolio import price_portfolio
+    from engine.api.requests import MarketPortfolioRequestSchema
+    from engine.run import price_portfolio
 
     return price_portfolio(MarketPortfolioRequestSchema.model_validate(body).to_dataclass())
 
@@ -504,8 +504,8 @@ def test_the_worker_prices_the_request_the_route_validated(monkeypatch):
     """The worker builds its dataclass request from the stored body exactly as the route did
     (until 2026-10-04 the request travelled pickled, its ORE dates frozen as text): every part of the
     run configuration, the trades' dates and fixings and the market arrive equal."""
-    import engine.portfolio
-    from engine.api.market_schemas import MarketPortfolioRequestSchema
+    import engine.run
+    from engine.api.requests import MarketPortfolioRequestSchema
 
     f32 = {"storage": "float32", "compute": "float32", "accumulate": "float32"}
     body = _pricing_body(
@@ -525,7 +525,7 @@ def test_the_worker_prices_the_request_the_route_validated(monkeypatch):
         seen["request"] = request
         raise Stop
 
-    monkeypatch.setattr(engine.portfolio, "price_portfolio", capture)
+    monkeypatch.setattr(engine.run, "price_portfolio", capture)
     with pytest.raises(Stop):
         worker.price_job(jq.Job(id="j", kind=jq.PORTFOLIO, status=jq.RUNNING, request=raw))
     route = MarketPortfolioRequestSchema.model_validate(body).to_dataclass()

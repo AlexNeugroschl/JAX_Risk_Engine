@@ -9,13 +9,13 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.models.hull_white import ZeroCurve
-from engine.models.lgm import Sigma, bond_price, numeraire
 from engine.calibration.basket import (
     build_coterminal_basket,
     bachelier_swaption_price,
     price_lgm_swaption,
 )
+from engine.market_data.curves import ZeroCurve
+from engine.models.lgm import Sigma, bond_price, numeraire
 
 TODAY = ORE.Date(30, 7, 2026)
 
@@ -68,7 +68,7 @@ class TestBuildCoterminalBasket:
             zero_curve=FLAT_CURVE, evaluation_date=TODAY,
         )
         t = targets[0]
-        from engine.models.hull_white import discount
+        from engine.market_data.curves import discount
         P_start = float(discount(FLAT_CURVE, t.accrual_start_time))
         P_end = float(discount(FLAT_CURVE, t.fixed_cashflow_times[-1]))
         annuity = float(jnp.sum(jnp.asarray(t.fixed_accrual_fractions) * discount(FLAT_CURVE, jnp.asarray(t.fixed_cashflow_times))))
@@ -275,7 +275,7 @@ class TestBachelierSwaptionPrice:
             zero_curve=FLAT_CURVE, evaluation_date=TODAY,
         )
         target = targets[0]
-        from engine.models.hull_white import discount
+        from engine.market_data.curves import discount
         annuity = float(jnp.sum(jnp.asarray(target.fixed_accrual_fractions) * discount(FLAT_CURVE, jnp.asarray(target.fixed_cashflow_times))))
         expected = target.notional * annuity * target.market_vol * np.sqrt(target.expiry_time / (2 * np.pi))
         price = float(bachelier_swaption_price(target, FLAT_CURVE))

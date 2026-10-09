@@ -1,8 +1,8 @@
 # Instruments: European Swaptions
 
 **Modules:** [`engine/instruments/european_swaption.py`](../../engine/instruments/european_swaption.py)
-(the trade), [`engine/valuation/european.py`](../../engine/valuation/european.py) (Bachelier,
-the default engine), [`engine/valuation/jamshidian.py`](../../engine/valuation/jamshidian.py)
+(the trade), [`engine/pricing/european.py`](../../engine/pricing/european.py) (Bachelier,
+the default engine), [`engine/pricing/jamshidian.py`](../../engine/pricing/jamshidian.py)
 (Jamshidian, the configured alternative)
 **Entry points:** `price_portfolio`, or `value_today` / `value_portfolio`; the engine is
 `PricingConfig.european`
@@ -58,13 +58,13 @@ The trade: `trade_id`, `evaluation_date`, the underlying swap's terms as for a
 `forward_start` with an exercise lag), and `settlement` (`"Physical"` or `"Cash"`). It
 carries no curve, volatility or model: those are the market's and the configuration's.
 
-### 2. Building the real trade: `_build_ore_swap()`, `european_terms()`
+### 2. Building the real trade: `underlying_swap()`, `european_terms()`
 
-`_build_ore_swap(cfg)` builds the underlying with ORE's `MakeVanillaSwap`.
+`underlying_swap(cfg)` builds the underlying with ORE's `MakeVanillaSwap`.
 `european_terms(cfg, date)` keeps the coupons `BlackMultiLegOptionEngine` reads: those paying
 after expiry and accruing from it, with the swap's start time Tv and its nominal.
 
-### 3. Bachelier (`engine/valuation/european.py`)
+### 3. Bachelier (`engine/pricing/european.py`)
 
 ```
 annuity  = |fixed BPS| = Σ_i N τ_i P(T_i)
@@ -90,7 +90,7 @@ on one side of x* only, so the option on the whole coupon bond splits into a por
 options on single zero-coupon bonds, each struck at that bond's value at x*, each with a
 closed-form Black price.
 
-### 4. The Jamshidian engine (`engine/valuation/jamshidian.py`)
+### 4. The Jamshidian engine (`engine/pricing/jamshidian.py`)
 
 The engine is QuantLib's decomposition written in the LGM form of the Hull-White model
 (H(t) = (1 − e^{−at})/a, ζ(t) = σ²(e^{2at} − 1)/(2a)): on a valuation date, with every time
@@ -109,7 +109,7 @@ discount factors and prices on any curve: today's, a bumped one, a path's.
 x* is solved to float64 rounding by the engine's root solver (`JamshidianEngineConfig.solver`:
 `"Newton"` by default, `"Bisection"` the reference; [the root solver](../reference/calibration.md#the-root-solver)),
 where QuantLib's Brent stops at 1e-8. A solver's iterations carry no derivative of the root, so
-its tangent is the implicit function theorem's (`engine.numerics.roots.implicit_root`, a
+its tangent is the implicit function theorem's (`engine.solvers.roots.implicit_root`, a
 `jax.custom_jvp`), and AD Greeks differentiate through the root.
 
 ### 5. Why T_start matters: the floating leg's notional timing
@@ -129,11 +129,11 @@ the engine is evaluated on that path's scenario curve, with every time measured 
 path date. The Hull-White model is time-homogeneous with a constant volatility, so the
 decomposition applies verbatim on the later date; once the exercise date has passed the
 option is 0 and, if physically settled, the path carries the swap it entered
-(`engine.valuation.options`, ORE's `OptionWrapper`).
+(`engine.pricing.options`, ORE's `OptionWrapper`).
 
 ## Tested by
 
-- `tests/test_valuation.py::test_european_today_equals_ores_default_engine` and
+- `tests/test_pricing.py::test_european_today_equals_ores_default_engine` and
   `::test_european_on_every_path_equals_quantlibs_bachelier_engine` — Bachelier against ORE
   (1e-10) and QuantLib's `BachelierSwaptionEngine` on every path, under both models;
   `::test_a_cash_settled_european_uses_the_par_yield_annuity` (2e-14).

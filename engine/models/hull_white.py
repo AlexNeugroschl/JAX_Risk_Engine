@@ -1,25 +1,17 @@
 """
 Black's formula on zero-coupon bonds, as `QuantLib::HullWhite::discountBondOption` evaluates
 it once the bond's volatility is known: shared by the Jamshidian European engine
-(`engine.valuation.jamshidian`) and the standalone calibration's LGM swaption pricer
-(`engine.calibration.basket`). The curve primitives are re-exported here for existing callers.
+(`engine.pricing.jamshidian`) and the standalone calibration's LGM swaption pricer
+(`engine.calibration.basket`).
 
 The Hull-White model itself is the LGM with the Hull-White volatility parametrization
 (`engine.models.lgm`: `hull_white_zeta`), simulated by the cross-asset model
-(`engine.simulation.config.HullWhiteConfig`). Its closed forms in short-rate form (A(t,T),
+(`engine.market_simulation.config.HullWhiteConfig`). Its closed forms in short-rate form (A(t,T),
 B(t,T)) belonged to the Hull-White simulation retired on 2026-10-01.
 """
 import jax
 import jax.numpy as jnp
 from jax.scipy.stats import norm
-
-from engine.models.curves import (  # noqa: F401  (re-exports)
-    ZeroCurve,
-    discount,
-    forward_rate,
-    log_discount,
-    zero_rate,
-)
 
 
 def bond_call(P_t_Topt: jax.Array, P_t_S: jax.Array, K: jax.Array, sigma_p: jax.Array) -> jax.Array:

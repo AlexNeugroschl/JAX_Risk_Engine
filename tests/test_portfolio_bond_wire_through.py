@@ -12,10 +12,10 @@ import pytest
 
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
-from engine.market import CurrencyMarket, Market, ZeroCurveConfig, index_name
-from engine.portfolio import GreeksConfig, HullWhiteConfig, PortfolioRequest, RunConfig, price_portfolio
-from engine.simulation.config import CamConfig
-from engine.valuation.portfolio import value_today
+from engine.market_data.market import CurrencyMarket, Market, ZeroCurveConfig, index_name
+from engine.market_simulation.config import CamConfig
+from engine.pricing.cube import value_today
+from engine.run import GreeksConfig, HullWhiteConfig, PortfolioRequest, RunConfig, price_portfolio
 
 VALUATION = ORE.Date(2, 6, 2025)
 FLAT_3PCT = ZeroCurveConfig(times=(0.0, 1.0, 2.0, 5.0, 10.0, 30.0), rates=(0.03,) * 6)

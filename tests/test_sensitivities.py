@@ -1,5 +1,5 @@
 """
-ORE's sensitivity analysis on the market path (`engine.risk.sensitivities`, plan T-18/T-19).
+ORE's sensitivity analysis on today's market (`engine.risk.greeks.bump`, plan T-18/T-19).
 
   * The bump machinery: a forward-difference Delta at a tenor equals AD's first derivative
     times the shift plus half the second-derivative term, and Gamma the second derivative
@@ -21,15 +21,15 @@ import ORE
 import pytest
 
 from engine.instruments.european_swaption import SwaptionConfig
-from engine.instruments.swap import SwapConfig, _build_ore_swap
-from engine.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
-from engine.models.curves import DiscountCurve
-from engine.risk.sensitivities import (
+from engine.instruments.swap import SwapConfig, underlying_swap
+from engine.market_data.curves import DiscountCurve
+from engine.market_data.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
+from engine.pricing.config import PricingConfig
+from engine.pricing.cube import value_on
+from engine.pricing.legs import legs_of, today_npv
+from engine.risk.greeks.bump import (
     SensitivityConfig, portfolio_sensitivities, sensitivity_context, theta_context,
 )
-from engine.valuation.config import PricingConfig
-from engine.valuation.legs import legs_of, today_npv
-from engine.valuation.portfolio import value_on
 
 PILLARS = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
 DISC = [0.020, 0.020, 0.025, 0.030, 0.035, 0.040]
@@ -46,7 +46,7 @@ def _market(asof):
 
 
 def _history(cfg, asof):
-    swap = _build_ore_swap(cfg)
+    swap = underlying_swap(cfg)
     dates = [ORE.as_floating_rate_coupon(c).fixingDate() for c in swap.floatingLeg()]
     return {d: 0.021 + 0.0007 * i for i, d in enumerate(d for d in dates if d < asof)}
 
@@ -67,7 +67,7 @@ def test_delta_and_gamma_are_the_forward_difference_of_the_npv():
     market = _market(ASOF)
     greeks = portfolio_sensitivities([cfg], market, "USD", config=CONFIG)[0]
     base = sensitivity_context(market, CONFIG)
-    legs = legs_of(_build_ore_swap(cfg), True, ASOF, cfg.fixings)
+    legs = legs_of(underlying_swap(cfg), True, ASOF, cfg.fixings)
     index_curve = base.index[NAME]
 
     def npv(disc_logs):
@@ -107,7 +107,7 @@ def test_a_fixing_on_the_as_of_date_is_backfilled_on_the_theta_date():
     """The coupon fixing on the as-of date is history on the Theta date: FixingManager sets
     it to the index forecast off the Theta market (ORE refuses a missing past fixing)."""
     swap = _swap(ASOF)
-    fixing_dates = [ORE.as_floating_rate_coupon(c).fixingDate() for c in _build_ore_swap(swap).floatingLeg()]
+    fixing_dates = [ORE.as_floating_rate_coupon(c).fixingDate() for c in underlying_swap(swap).floatingLeg()]
     asof = next(d for d in fixing_dates if d > ASOF)
     cfg = _swap(asof)
     assert asof not in cfg.fixings
@@ -130,7 +130,7 @@ def test_the_vega_matrix_adds_up_to_a_parallel_bump():
 
 
 def test_theta_adds_back_a_bond_coupon_paid_on_the_theta_date():
-    """A bond's coupon paid on the Theta date is added back too (I-39 on the market path)."""
+    """A bond's coupon paid on the Theta date is added back too (I-39 in the pipeline)."""
     from engine.instruments.treasury import BondConfig, CouponPeriod
     asof = ORE.Date(14, 8, 2026)
     periods = (CouponPeriod(ORE.Date(15, 2, 2026), ORE.Date(15, 8, 2026)),

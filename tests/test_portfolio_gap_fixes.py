@@ -1,6 +1,6 @@
 """
 Regression tests for gaps where `price_portfolio` returned a quietly incomplete result
-(found while writing the EOD contract proposal; see docs/planning/details/traderx-integration.md).
+(found while writing the TraderX contract proposal; see docs/planning/details/traderx-integration.md).
 Each class failed against the code it was written for; since 2026-10-01 they run on the one
 pipeline (a `Market`, any model).
 
@@ -24,11 +24,11 @@ from demos.demo_scenarios import EVAL_DATE, demo_market
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
-from engine.market import index_name
-from engine.portfolio import (
+from engine.market_data.market import index_name
+from engine.risk.greeks.bump import portfolio_sensitivities
+from engine.run import (
     LgmSwaptionEngineConfig, PortfolioRequest, PricingConfig, RunConfig, price_portfolio,
 )
-from engine.risk.sensitivities import portfolio_sensitivities
 
 FAST = LgmSwaptionEngineConfig(n_per_std=12, std_devs=4.0)
 EUR_6M = index_name("EUR", 6)

@@ -1,8 +1,9 @@
 # Market Simulation
 
-**Modules:** [`engine/simulation/`](../../engine/simulation/) — `config.py` (the configuration and
-`simulate`), `cam.py` (ORE's cross-asset model), `scenario_market.py` (the simulated market),
-`random.py` (Sobol normals and the Brownian bridge).
+**Modules:** [`engine/market_simulation/`](../../engine/market_simulation/) — `config.py` (the configuration and
+`simulate`), `sobol.py` (Sobol normals and the Brownian bridge), `paths.py` (the state
+recursion on every path), `scenario_market.py` (the simulated market); the model itself is
+[`engine/models/cam.py`](../../engine/models/cam.py) (ORE's cross-asset model).
 **Public entry point:** `simulate(market: Market, config: CamConfig, model=None, precision=Precision()) -> ScenarioMarket`
 
 ## Plain-language summary
@@ -40,12 +41,12 @@ suite (`tests/test_cam.py`).
 
 ## The configuration
 
-`CamConfig` (`engine/simulation/config.py`, ORE's `simulation.xml`) holds the date grid, the
+`CamConfig` (`engine/market_simulation/config.py`, ORE's `simulation.xml`) holds the date grid, the
 model of each currency (`ir`), the FX and equity volatilities, the correlations, the
 simulation-market tenors, the number of paths (`samples`) and the seed:
 
 ```python
-from engine.simulation.config import CamConfig, HullWhiteConfig, LgmConfig
+from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfig
 
 CamConfig(
     dates=(...),                          # simulation dates, after the market's as-of date
@@ -81,7 +82,7 @@ swaption volatilities (`calibration_expiries` × `calibration_terms`, ORE's
 
 ### Phase 1 — Quasi-Monte Carlo shock generation
 
-**Module:** `engine/simulation/random.py` — `generate_sobol_normals()`,
+**Module:** `engine/market_simulation/sobol.py` — `generate_sobol_normals()`,
 `_build_bridge_matrix()` / `_apply_bridge_matrix()` / `apply_brownian_bridge()`
 Simulating "thousands of alternate futures" requires thousands of sets of random numbers
 — one set per scenario, one number per (time step × thing-being-simulated). This module
@@ -105,7 +106,7 @@ specific call. This function now explicitly converts its result back to the requ
 `dtype` before returning, so calling it directly with `dtype=float32` reliably returns
 32-bit numbers. (See [Adjustable Precision](architecture.md#adjustable-precision) for
 why this global-setting behavior exists in the first place, and
-`tests/test_random.py::TestGenerateSobolNormals` for the regression test.)
+`tests/test_sobol.py::TestGenerateSobolNormals` for the regression test.)
 
 **The Brownian Bridge.** Sobol sequences are most accurate in their *first* few
 dimensions and progressively noisier in later ones. A naive mapping (dimension 1 → time
@@ -127,7 +128,7 @@ matrix for every scenario, so it's cheap to compute once.
 *Verified:* `B @ B.T` (the matrix multiplied by its own transpose) is checked to exactly
 equal the true covariance structure of Brownian motion, `Cov(W(s), W(t)) = min(s, t)`
 — this is a strong, closed-form correctness check on the whole construction, and it's
-enforced by `tests/test_random.py::TestBrownianBridge::test_matrix_reproduces_bm_covariance`.
+enforced by `tests/test_sobol.py::TestBrownianBridge::test_matrix_reproduces_bm_covariance`.
 
 ```python
 def apply_brownian_bridge(Z: jax.Array, time_grid: jax.Array) -> jax.Array:
@@ -140,7 +141,7 @@ steps" — which is the form the state recursion (Phase 2) needs.
 
 ### Phase 2 — The cross-asset model's states
 
-**Module:** `engine/simulation/cam.py` — `step_moments()`, `evolve_states()`
+**Modules:** `engine/models/cam.py` — `step_moments()`; `engine/market_simulation/paths.py` — `evolve_states()`
 
 The model's state, in ORE's order: one LGM state z per currency (the domestic first), the log
 FX rate of each foreign currency, then the log equity spots. Over each step the state is
@@ -154,7 +155,7 @@ formula reads the IR components through their α and ζ, so the two parametrizat
 
 ### Phase 3 — The scenario market
 
-**Module:** `engine/simulation/scenario_market.py` — `build_scenario_market()`
+**Module:** `engine/market_simulation/scenario_market.py` — `build_scenario_market()`
 
 On each date of each path, ORE's `CrossAssetModelScenarioGenerator`:
 
@@ -203,10 +204,10 @@ parts of the curves are computed in float64 and cast.
   curves against QuantLib's `HullWhite.discountBond`; one step against
   `ORE.IrLgm1fStateProcess`; the square root against QuantLib's `CholeskyDecomposition`;
   configuration refusals.
-- `tests/test_random.py` — the Sobol normals and the Brownian bridge (its matrix reproduces
+- `tests/test_sobol.py` — the Sobol normals and the Brownian bridge (its matrix reproduces
   Brownian motion's covariance; agreement with QuantLib's `BrownianBridge`; grids and edge
   cases).
 - `tests/test_hull_white_model.py` — the Hull-White model's calibration, and deflated zero
   bonds and swaps as martingales on a curve rising from 3% to 5% (the defect of the model's
   pre-1.3 simulation, I-42), with the exact numeraire.
-- `tests/test_valuation.py` — every pricer on path curves against ORE, under both models.
+- `tests/test_pricing.py` — every pricer on path curves against ORE, under both models.

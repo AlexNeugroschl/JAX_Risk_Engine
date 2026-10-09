@@ -12,9 +12,9 @@ import numpy as np
 import ORE
 import pytest
 
+from engine.market_simulation.sobol import _build_bridge_matrix
 from engine.models.lgm import H as lgm_H
-from engine.risk.var_es import value_at_risk, expected_shortfall
-from engine.simulation.random import _build_bridge_matrix
+from engine.risk.market.var_es import value_at_risk, expected_shortfall
 
 TODAY = ORE.Date(30, 7, 2026)
 FLAT_RATE = 0.03

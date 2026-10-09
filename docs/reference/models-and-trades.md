@@ -1,8 +1,9 @@
 # Models & Trades: The Shared Foundation Layer
 
-**Modules:** [`engine/models/`](../../engine/models/) — [`curves.py`](../../engine/models/curves.py),
-[`lgm.py`](../../engine/models/lgm.py), [`hull_white.py`](../../engine/models/hull_white.py),
-[`ore_builders.py`](../../engine/models/ore_builders.py)
+**Modules:** [`engine/market_data/curves.py`](../../engine/market_data/curves.py),
+[`engine/market_data/day_counts.py`](../../engine/market_data/day_counts.py),
+[`engine/models/lgm.py`](../../engine/models/lgm.py), [`engine/models/hull_white.py`](../../engine/models/hull_white.py),
+[`engine/instruments/schedules.py`](../../engine/instruments/schedules.py)
 
 ## Plain-language summary
 
@@ -12,7 +13,7 @@ formulas, and a real ORE trade object with a real payment schedule. This layer h
 implementation of each, used by the simulation, the valuation, the calibration and the
 Greeks, so no formula or schedule loop is written twice.
 
-## `engine/models/curves.py`
+## `engine/market_data/curves.py`
 
 The curve primitives: `ZeroCurve` (today's market curve as `jax.Array`s, linear in the zero
 rate between pillars and QuantLib's flat forward beyond the last, differentiable in its
@@ -116,18 +117,18 @@ for the full incident this bug was caught inside.
 ## `engine/models/hull_white.py`
 
 `bond_call` / `bond_put`: Black's formula on a zero-coupon bond option, the building block of
-the Jamshidian engine (`engine/valuation/jamshidian.py`). The Hull-White model's own curves and
+the Jamshidian engine (`engine/pricing/jamshidian.py`). The Hull-White model's own curves and
 numeraire are the LGM's in the Hull-White parametrization (above); its earlier affine
 `A(t,T)`/`B(t,T)` implementation went with the separate Hull-White pipeline on 2026-10-01.
 
-## `engine/models/ore_builders.py`
+## `engine/instruments/schedules.py`
 
 **The single source of truth for turning a trade into a real ORE object and its schedule.**
 
 | Name | What it does |
 |---|---|
 | `TIME_AXIS_DAY_COUNTER` | `ORE.Actual365Fixed()` — the **time axis**. Permanently ACT/365, not configurable. `DAY_COUNTER` is a deprecated alias. |
-| `SUPPORTED_ACCRUAL_DAY_COUNTS`, `resolve_accrual_day_count(name)` | The **instrument accrual** allowlist (`ACT/365`, the default, and `ACT/ACT (ICMA)`) and its resolution, refusing anything else (`UnsupportedDayCountError`). Defined in [`engine/day_count.py`](../../engine/day_count.py), re-exported here. |
+| `SUPPORTED_ACCRUAL_DAY_COUNTS`, `resolve_accrual_day_count(name)` | The **instrument accrual** allowlist (`ACT/365`, the default, and `ACT/ACT (ICMA)`) and its resolution, refusing anything else (`UnsupportedDayCountError`). Defined in [`engine/market_data/day_counts.py`](../../engine/market_data/day_counts.py), re-exported here. |
 | `build_vanilla_swap(...)` | A real `ORE.VanillaSwap` via `ORE.MakeVanillaSwap` from the booked `effective_date`/`maturity_date`, independent of any evaluation date (audit M-4). |
 | `resolve_swap_dates(trade_date, swap_tenor, forward_start=None)`, `book_swap_dates` | A tenor-quoted swap's dates by `MakeVanillaSwap`'s own rule, resolved once at booking. |
 | `ibor_index(tenor_months, curve=None)` | The `SimIndex` Ibor index the swaps and baskets are built on. |
@@ -137,20 +138,20 @@ numeraire are the LGM's in the Hull-White parametrization (above); its earlier a
 | `time_from_reference`, `validate_tenor`, `validate_fixings` | Shared helpers. |
 | `fixed_leg_cashflows`, `LegCashflows` | A swap's remaining fixed coupons, for the standalone calibration route's basket. |
 
-The trades' legs as arrays, valued on any date and path, are `engine/valuation/legs.py`
+The trades' legs as arrays, valued on any date and path, are `engine/pricing/legs.py`
 ([Interest Rate Swaps](../instruments/swaps.md)).
 
 ### Where the accrual vocabulary lives (moved in W1.3)
 
 `SUPPORTED_ACCRUAL_DAY_COUNTS`, `DEFAULT_ACCRUAL_DAY_COUNT`, `resolve_accrual_day_count` and
-`UnsupportedDayCountError` are **defined in [`engine/day_count.py`](../../engine/day_count.py)**
+`UnsupportedDayCountError` are **defined in [`engine/market_data/day_counts.py`](../../engine/market_data/day_counts.py)**
 and re-exported from this module, so every existing import and all 27 of
 `tests/test_day_count_roles.py` are unchanged.
 
 **Why they moved.** W1.3's note pricer
-([`engine/integration/note.py`](../../engine/integration/note.py)) needs ACT/ACT (ICMA), but
-`engine/integration/` is **forbidden** to import `engine.models` — this module is where
-`build_vanilla_swap` lives, the exact object the EOD boundary's convention refusal exists to
+([`engine/traderx/note.py`](../../engine/traderx/note.py)) needs ACT/ACT (ICMA), but
+`engine/traderx/` is **forbidden** to import `engine.models` — this module is where
+`build_vanilla_swap` lives, the exact object the TraderX path's convention refusal exists to
 keep unreachable ([I-05](../planning/known-issues.md#i-05)). Importing it just to borrow a dictionary
 would put that builder one attribute access from the refusal boundary. The dictionary moved to
 a leaf module that imports only `ORE` and can therefore pull nothing in behind it.
@@ -170,7 +171,7 @@ count per-instrument" look like a one-line change when it is not:
 | **Instrument accrual** — the day count a contract's coupons accrue on | `accrual_day_count` | **Yes, per-instrument.** A property of the booking, not the engine: the TraderX note is ACT/ACT (ICMA), a USD-SOFR swap is ACT/360. |
 
 Tracing every use: **49 are the time axis, 2 are the accrual**
-([`ore_builders.py:90-91`](../../engine/models/ore_builders.py#L90-L91)'s
+([`schedules.py:173-174`](../../engine/instruments/schedules.py#L173-L174)'s
 `fixedLegDayCount`/`floatingLegDayCount`). So the risky part of this change — what a contract
 accrues on — is two lines; everything else is a rename that must not move a number.
 
@@ -195,12 +196,13 @@ therefore always set here deliberately, rather than inherited by accident from w
 given index happens to default to.
 
 **There is exactly one `TIME_AXIS_DAY_COUNTER`**, defined in
-[`ore_builders.py`](../../engine/models/ore_builders.py) and *imported* everywhere else (the
-market, the simulation, the valuation, the calibration).
+[`day_counts.py`](../../engine/market_data/day_counts.py) beside the accrual day counts, and
+*imported* everywhere else (the market, the schedules, the simulation, the pricing, the
+calibration).
 
 Those two modules previously constructed their own `ORE.Actual365Fixed()`, which was
 described here as being "for import-cycle reasons" — that was not accurate. Both already
-imported `ore_builders` for `build_vanilla_swap`, so no cycle ever required it; the
+imported the swap builder's module for `build_vanilla_swap`, so no cycle ever required it; the
 duplication was incidental. Three equal-but-distinct objects are a real hazard for a value
 whose defining property is that it is *not configurable*: a change to one would leave the
 others silently on the old value, and the tests of the day could not tell the difference

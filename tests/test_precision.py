@@ -33,23 +33,23 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.api.market_schemas import MarketTradeSchema
-from engine.api.schemas import PrecisionSchema, StagePrecisionSchema
+from engine.api.requests import MarketTradeSchema
+from engine.api.requests import PrecisionSchema, StagePrecisionSchema
 from engine.calibration.ore_lgm import SIGMA_BRACKET, bootstrap_sigma, ceiling_tolerance
-from engine.models.curves import ZeroCurve
-from engine.portfolio import (
-    CamConfig, HullWhiteConfig, JamshidianEngineConfig, LgmConfig, LgmSwaptionEngineConfig, PortfolioRequest,
-    PricingConfig, RunConfig, price_portfolio,
-)
-from engine.market_risk import MarketRiskRequest, monte_carlo_scenarios, run_market_risk
+from engine.market_data.curves import ZeroCurve
+from engine.market_simulation.config import build_cross_asset_model, simulate
 from engine.precision import (
     BLOCK, FORMAT_NAMES, FORMATS, OVERRIDES, RETIRED_SHAPE, ROUNDINGS, STAGES, Overrides, Precision, StagePrecision,
     Stored, dtype_of, format_of, load, name_of, rounding_key, store,
 )
 from engine.precision import storage as storage_module
-from engine.simulation.config import build_cross_asset_model, simulate
-from engine.valuation.bermudan import calibration_basket
-from engine.valuation.portfolio import PRODUCTS, Trade, value_portfolio
+from engine.pricing.bermudan import calibration_basket
+from engine.pricing.cube import PRODUCTS, Trade, value_portfolio
+from engine.risk.market import MarketRiskRequest, monte_carlo_scenarios, run_market_risk
+from engine.run import (
+    CamConfig, HullWhiteConfig, JamshidianEngineConfig, LgmConfig, LgmSwaptionEngineConfig, PortfolioRequest,
+    PricingConfig, RunConfig, price_portfolio,
+)
 from tests import market_risk_support as mr
 from tests.support import portfolio as shared
 
@@ -176,9 +176,9 @@ class TestPolicy:
         assert Precision(rounding="stochastic", **fields).rounding == "stochastic"
 
     def test_the_retired_names_are_gone(self):
-        import engine.portfolio
+        import engine.run
         for name in ("PrecisionConfig", "PricingPrecisionOverride", "RiskPrecisionOverride"):
-            assert not hasattr(engine.portfolio, name)
+            assert not hasattr(engine.run, name)
 
 
 # ---------------------------------------------------------------------------
@@ -741,8 +741,8 @@ class TestPerTradePortfolio:
         (Precision(by_product={"swaption": F32}), r"by_product: \['swaption'\] not a product"),
     ])
     def test_a_misspelt_override_is_refused_before_any_work(self, policy, message, monkeypatch):
-        import engine.portfolio.market_path as market_path
-        monkeypatch.setattr(market_path, "build_cross_asset_model", lambda *a: pytest.fail("work was done"))
+        import engine.run.pipeline as pipeline
+        monkeypatch.setattr(pipeline, "build_cross_asset_model", lambda *a: pytest.fail("work was done"))
         request = PortfolioRequest(market=shared.market(), trades=[shared.trades()["swap-payer"]],
                                    config=RunConfig(simulation=_simulation(), precision=policy))
         with pytest.raises(ValueError, match=message):

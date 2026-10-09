@@ -26,12 +26,13 @@ from engine.calibration.ore_lgm import (
     SwapIndexConventions, basket_vols, bootstrap_sigma, build_basket, market_price,
 )
 from engine.instruments.bermudan_swaption import (
-    BermudanSwaptionConfig, _build_ore_swap, exercisable_dates,
+    BermudanSwaptionConfig, underlying_swap, exercisable_dates,
 )
-from engine.market import SwaptionVolSurface, ZeroCurveConfig
-from engine.models.curves import DiscountCurve, ZeroCurve, log_discount
+from engine.instruments.schedules import ibor_index
+from engine.market_data.curves import DiscountCurve, ZeroCurve, log_discount
+from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER as DC
+from engine.market_data.market import SwaptionVolSurface, ZeroCurveConfig
 from engine.models.lgm import Sigma
-from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER as DC, ibor_index
 from tests.support.lgm_engine import grid_npv
 from tests.support.ore_lgm_oracle import OreCalibration, ore_lgm_swaption_npv
 
@@ -122,7 +123,7 @@ def test_calibrated_bermudan_equals_ores_bootstrap(strategy, fixed_rate):
     result = bootstrap_sigma(basket, _curve(DISC_RATES), _curve(INDEX_RATES), basket_vols(basket, VOLS, ASOF),
                              REVERSION)
     ore = ore_lgm_swaption_npv(
-        evaluation_date=ASOF, curve_times=PILLARS, curve_rates=DISC_RATES, swap=_build_ore_swap(cfg),
+        evaluation_date=ASOF, curve_times=PILLARS, curve_rates=DISC_RATES, swap=underlying_swap(cfg),
         notional=cfg.notional, fixed_rate=fixed_rate, payer=True, floating_spread=0.0, index_tenor_months=6,
         style="Bermudan", exercise_dates=cfg.exercise_dates, hw_a=REVERSION, hw_sigma=0.01, n_per_std=48,
         std_devs=6.0, index_curve_rates=INDEX_RATES, swaption_vols=VOLS,

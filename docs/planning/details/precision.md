@@ -87,8 +87,8 @@ conflicts with one is redesigned rather than excused.
 
 - **One table of formats** (`engine/precision/formats.py`) serves validation, the HTTP
   schema, storage and the report. No other module maps names or bit counts to dtypes. Both
-  of today's `64 → float64 else float32` helpers go (`engine/portfolio/config.py:116`,
-  `engine/market_risk/run.py:96`); the second silently maps any value to float32.
+  of today's `64 → float64 else float32` helpers go (`engine/run/config.py:116`,
+  `engine/risk/market/run.py:96`); the second silently maps any value to float32.
 - **One resolver** (`precision_for(trade)`) decides a trade's precision; pricing and market
   risk both call it.
 - **One storage mechanism** (`store`/`load`) for every class and both pipelines.
@@ -200,7 +200,7 @@ Built with per-trade precision (2026-10-02):
 - A product is a class constant of each trade config (`SwapConfig.product == "swap"`,
   `"european_swaption"`, `"bermudan_swaption"`, `"american_swaption"`, `BondConfig.product ==
   "bond"`), the same names as the HTTP `trade_type`s (a test holds them equal).
-  `engine.valuation.portfolio.PRODUCTS` collects them from the `Trade` union, so a new trade
+  `engine.pricing.cube.PRODUCTS` collects them from the `Trade` union, so a new trade
   type adds its product by existing.
 - `Precision.check_overrides(trades, PRODUCTS)` refuses a `by_product` key outside `PRODUCTS`
   and a `by_trade` key that is no trade's id. `validate_trades` calls it, so the portfolio
@@ -347,11 +347,11 @@ The only places that read the configuration:
 
 | # | Where | What it does |
 |---|---|---|
-| 1 | `engine.simulation.config.simulate` | Normals generated (`engine/simulation/random.py`, the clip epsilon from the compute dtype) and bridged at `simulation.compute`, then `store(shocks)` |
+| 1 | `engine.market_simulation.config.simulate` | Normals generated (`engine/market_simulation/sobol.py`, the clip epsilon from the compute dtype) and bridged at `simulation.compute`, then `store(shocks)` |
 | 2 | `simulate` | `load(shocks)`; `evolve_states` runs at `simulation.compute` (it follows the shocks' dtype; the moments are cast to it); `store(states)` |
 | 3 | `simulate` | `load(states)` at `market.compute`; `build_scenario_market` follows the states' dtype (the z-independent terms keep coming from float64); every path array of the market stored at `market.storage` (`ScenarioMarket.map_arrays`); the tenor grid, which has no scenario axis, kept at `market.compute` (since sub-32-bit storage) |
-| 4 | `engine.valuation.portfolio.value_portfolio`; `engine.market_risk.run_market_risk` | Per trade, at `stage = precision_for(trade)` (2026-10-02): `load(market)` at `stage.compute` (once per dtype, with its path fixings), price the trade, `store` its cube column at `stage.storage`. Market risk: shifts rounded to `simulation.compute` and stored once; per trade loaded at `stage.compute`, revalued (`revalue_trade` follows the shifts' dtype), the P&L stored at `stage.storage` |
-| 5 | `engine.portfolio.market_path` (exposure); `run_market_risk` (VaR/ES) | `load(values, float64)` and the numeraire at float64, then reduce |
+| 4 | `engine.pricing.cube.value_portfolio`; `engine.risk.market.run_market_risk` | Per trade, at `stage = precision_for(trade)` (2026-10-02): `load(market)` at `stage.compute` (once per dtype, with its path fixings), price the trade, `store` its cube column at `stage.storage`. Market risk: shifts rounded to `simulation.compute` and stored once; per trade loaded at `stage.compute`, revalued (`revalue_trade` follows the shifts' dtype), the P&L stored at `stage.storage` |
+| 5 | `engine.run.pipeline` (exposure); `run_market_risk` (VaR/ES) | `load(values, float64)` and the numeraire at float64, then reduce |
 
 Every store goes through `Precision.store`, which adds the policy's rounding (§6.2). The
 shocks `[T, S, d]` have their scenario axis at 1, every other class at 0.
@@ -380,7 +380,7 @@ which depend on the dtype alone.
 ### 6.4 Inputs follow dtype
 
 Inside a stage, every array takes the dtype of the arrays it is computed from. About 46
-`jnp.asarray/zeros/...` calls in `engine/valuation`, `engine/calibration`, `engine/models`
+`jnp.asarray/zeros/...` calls in `engine/pricing`, `engine/calibration`, `engine/models`
 and `engine/risk` name no dtype today and so become float64 under the x64 flag; each becomes
 "the input's dtype". No kernel signature gains a dtype argument.
 
@@ -393,7 +393,7 @@ coupon tables and variances to the curves' dtype (`Legs.astype`, `EuropeanTerms.
 per-path recalibration casts its basket (`BasketInstrument.astype`), volatilities and bracket
 to the curves' dtype, keeps its bucket widths as Python floats (a NumPy float64 scalar is not
 weakly typed) and its root bracket in that dtype; the path volatility (`Sigma.astype`) follows
-the path curves. `engine.models.curves.curve_dtype` is the one helper that reads a curve's
+the path curves. `engine.market_data.curves.curve_dtype` is the one helper that reads a curve's
 dtype. Each cast is a no-op at float64. Before the precision mechanism the "float32" path was in fact mixed: the
 float64 constants promoted the float32 curves, so pricing on paths ran mostly in float64 and
 the cube came out float64, while path fixings ran in float32.
@@ -404,9 +404,9 @@ Found while designing; fixed or derived from the dtype in the precision mechanis
 
 - `hi * (1.0 - 1e-9)` (`engine/calibration/ore_lgm.py:354`) rounds to `hi` in float32. The same
   bisection runs per path in the Bermudan recalibration.
-- `jnp.finfo(dtype).eps` in the Sobol clip (`engine/simulation/random.py:42`) must use the
+- `jnp.finfo(dtype).eps` in the Sobol clip (`engine/market_simulation/sobol.py:42`) must use the
   compute dtype once storage is narrower.
-- `scenario_batch_size(itemsize)` (`engine/market_risk/revaluation.py`) must use the compute
+- `scenario_batch_size(itemsize)` (`engine/risk/market/revaluation.py`) must use the compute
   itemsize.
 
 The precision mechanism (2026-10-01) also searches every path kernel for literal tolerances (`1e-`) and either derives
@@ -435,9 +435,9 @@ Outcome (the precision mechanism (2026-10-01)):
 - `check_run`'s refusal of `pricing`, `risk` and `calibration` below 64.
 - `run_market_risk`'s `jax.config.update("jax_enable_x64", True)`. x64 stays on, set once
   when `engine` is imported, as since 2026-10-01.
-- `_PRICING_LOCK` (`engine/portfolio/request.py`), after the thread-safety audit of the precision mechanism (2026-10-01)
+- `_PRICING_LOCK` (`engine/run/request.py`), after the thread-safety audit of the precision mechanism (2026-10-01)
   (no module-level caches and no ORE globals were found; a concurrency test confirms it).
-- The per-precision pool tiers (`engine/portfolio/worker_pool.py`): one pool from the precision mechanism (2026-10-01);
+- The per-precision pool tiers (`engine/portfolio/worker_pool.py`, as it then was): one pool from the precision mechanism (2026-10-01);
   the pool itself went with the engine worker (2026-10-04).
 
 Removing the lock rests on the audit: the pipeline keeps no module-level caches or mutable
@@ -522,7 +522,7 @@ Each kernel splits a value into a part that does not depend on the path, compute
 float64, and the path's deviation from it, which is small and well conditioned. Example: a
 swap's path NPV uses `K − F(0)` from float64 and only the deviation `F(path) − F(0)` at low
 precision, so the near-cancellation of the two legs happens in float64. The scenario market
-already does this for its z-independent terms (`engine/simulation/scenario_market.py`,
+already does this for its z-independent terms (`engine/market_simulation/scenario_market.py`,
 `implied_log_discounts`).
 
 Kernel families, rewritten one at a time, each measured by emulation before the next: the
@@ -623,7 +623,7 @@ The verdict comes with the evidence table (I-55); the rest was built with the pr
 else `f·N` rounded up to whole blocks of 32 paths, at least one block and at most every path.
 Whole blocks keep the paired paths' block scales the run's own, and keep the number of
 distinct paired shapes small (each compiles once). The portfolio pipeline
-(`engine.portfolio.market_path._paired_sample`) simulates `n` paths with the same `CamConfig`
+(`engine.run.pipeline._paired_sample`) simulates `n` paths with the same `CamConfig`
 (its `samples` replaced) on the same calibrated model, at `Precision()`, and prices them with
 `value_paths`, which prices paths only: t=0 values, calibrations and Greeks are float64 already
 and are not repeated. Market risk revalues the first `n` scenarios' shifts at float64, in the
@@ -746,14 +746,14 @@ What it removed: the freeze/thaw of ORE objects (the worker reads JSON, not pick
 dataclasses), the `multiprocessing` spawn setup (I-33), the per-worker compile, and every
 thread on the engine side (`_PRICING_LOCK` went in the precision mechanism). `price_portfolio` called from Python
 never involved any of this and is unchanged. The API process keeps the server's own request
-thread pool, and the EOD path its locks (`engine/integration/`), which the engine worker did not touch.
+thread pool, and the TraderX path its locks (`engine/traderx/`), which the engine worker did not touch.
 
 ### 11.3 Multi-device and multi-host
 
 - **One host (done 2026-10-04):** the scenario draws of each job (the Sobol normals, market
   risk's shifts) are placed on a one-axis `jax.sharding.Mesh` of the host's devices, split
   along the scenario axis, and XLA's sharding propagation carries the split through the rest
-  of the job (`engine/simulation/sharding.py`). As many devices as divide the scenario count,
+  of the job (`engine/market_simulation/sharding.py`). As many devices as divide the scenario count,
   capped by `JAX_RISK_SCENARIO_DEVICES`; one device places nothing, so one-device runs are
   unchanged bit for bit. Four CPU host devices equal one to about 6e-16 relative
   (`tests/test_sharding.py`). No threads, no pinning.
@@ -770,7 +770,7 @@ thread pool, and the EOD path its locks (`engine/integration/`), which the engin
 SQLite rows: the request body as received, status (`pending`, `running`, `done`, `failed`,
 `interrupted`), failure class and error, the result document, the claiming worker, the XLA
 programs the job built, timestamps. It survives restarts and closes the portfolio half of
-[I-08](../known-issues.md#i-08); the EOD path keeps its publication store.
+[I-08](../known-issues.md#i-08); the TraderX path keeps its publication store.
 
 Decisions taken while building it (2026-10-04):
 
@@ -891,7 +891,7 @@ process changes.
   trades, median 2.19 s before and after (fastest 1.87 and 1.65 s); a five-trade, 1,024-path
   portfolio, median 39 ms before and 37 ms after.
 - **Result of the engine worker (2026-10-04).** No file of the pipeline changed (`git diff` against
-  `0e44f1d` touches `engine/api/`, a docstring of `engine/portfolio/profiling.py` and the
+  `0e44f1d` touches `engine/api/`, a docstring of `engine/run/trace.py` and the
   deleted `engine/portfolio/worker_pool.py`), so the snapshot was not rerun: it would compare
   the same code. What the engine worker changed is the path from the HTTP body to `price_portfolio` and
   back, and that is shown bit for bit: float64 and float32 jobs through the real worker equal
@@ -945,7 +945,7 @@ process changes.
   suite passes at its tolerance (none compares an AD Greek with ORE: ORE's are bump
   sensitivities, I-51). Later changes compare against a snapshot of its commit.
 - **Result of the Newton solver (2026-10-07): the solver re-baselined.** It puts every root of the
-  engine on one solver (`engine.numerics.roots`, decision A-21): a safeguarded Newton method
+  engine on one solver (`engine.solvers.roots`, decision A-21): a safeguarded Newton method
   by default, the bisections as the reference (`"Bisection"`), and batches a Bermudan's or
   American's path dates of one basket shape into one calibration under Newton. The snapshot
   gained the Jamshidian engine (the shared portfolio's European on the paths, its AD Greeks)
@@ -989,6 +989,12 @@ process changes.
   ones. Every ORE parity suite passes at its tolerance, and swaps, Europeans and bonds now
   equal ORE's own simulation on its paths (`tests/test_ore_xva_parity.py`). Later changes
   compare against a snapshot of its commit.
+- **Result of the package layout (2026-10-08, I-92).** Renames and moves only
+  ([package-layout.md](package-layout.md)). The same script, made layout-adaptive (each import
+  tried under its new name, then its old), 359 arrays, from a worktree of `7d52e17` against
+  the new tree, on CPU: all 359 identical in value, dtype and shape, the Greeks of both
+  methods, the float32 runs and the demo's job included. Later changes compare against a
+  snapshot of its commit.
 - The kernel rewrite (F-07): parity suites pass at their tolerances first; then the snapshot is re-baselined,
   with the largest change per array recorded in the commit and in known-issues' verification
   status.
@@ -1074,7 +1080,7 @@ float64 run on the same paths; a repeated paired run compiles nothing; a float32
 under strict promotion); market risk (float64 against float64 exactly 0; with every scenario
 paired the float64 VaR/ES measured exactly); the report (realized formats, devices, a run
 without paths, the wire form); over HTTP, the worker's report on a job's result
-(`tests/test_api_market_path.py`, I-12). The quantiles' measurement is exact by construction;
+(`tests/test_api_portfolio.py`, I-12). The quantiles' measurement is exact by construction;
 their correction is FP4 (F-07).
 
 ### 13.7 Statistical acceptance (slow tier)

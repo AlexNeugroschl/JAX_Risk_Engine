@@ -10,8 +10,8 @@ import ORE
 import pytest
 
 from demos.demo_scenarios import DATES, EVAL_DATE, MODELS, PILLARS, USD_6M, demo_market, demo_simulation
-from engine.models.curves import ZeroCurve, discount
-from engine.simulation.config import HullWhiteConfig, LgmConfig, build_cross_asset_model, simulate
+from engine.market_data.curves import ZeroCurve, discount
+from engine.market_simulation.config import HullWhiteConfig, LgmConfig, build_cross_asset_model, simulate
 
 
 class TestDemoMarket:
@@ -78,7 +78,7 @@ class TestTheHttpForms:
 
     def test_the_market_round_trips(self):
         from demos.demo_scenarios import demo_market_json
-        from engine.api.market_schemas import MarketSchema
+        from engine.api.requests import MarketSchema
         parsed = MarketSchema.model_validate(demo_market_json(("USD", "EUR"))).to_dataclass()
         expected = demo_market()
         assert parsed.asof == expected.asof and parsed.fx_spots == expected.fx_spots
@@ -89,7 +89,7 @@ class TestTheHttpForms:
     @pytest.mark.parametrize("model", MODELS)
     def test_the_simulation_round_trips(self, model):
         from demos.demo_scenarios import demo_simulation_json
-        from engine.api.market_schemas import CamConfigSchema
+        from engine.api.requests import CamConfigSchema
         body = demo_simulation_json(model, 8, currencies=("USD", "EUR"), calibrated=True)
         assert CamConfigSchema.model_validate(body).to_dataclass() == \
             demo_simulation(model, 8, currencies=("USD", "EUR"), calibrated=True)

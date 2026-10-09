@@ -8,11 +8,11 @@ import json
 import ORE
 
 from demos.demo_scenarios import EVAL_DATE, demo_market, demo_simulation
-from engine.api.schemas import PortfolioResultSchema
+from engine.api.results import PortfolioResultSchema
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig
-from engine.portfolio import PortfolioRequest, RunConfig, price_portfolio
-from engine.risk.var_es import ENGINE_RISK_MEASURE, RISK_MEASURE_RISK_NEUTRAL, RISK_MEASURES
+from engine.risk.market.var_es import ENGINE_RISK_MEASURE, RISK_MEASURE_RISK_NEUTRAL, RISK_MEASURES
+from engine.run import PortfolioRequest, RunConfig, price_portfolio
 
 
 def _swap() -> SwapConfig:

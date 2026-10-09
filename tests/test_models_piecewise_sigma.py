@@ -9,7 +9,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.models.hull_white import ZeroCurve
+from engine.market_data.curves import ZeroCurve
 from engine.models.lgm import H, Sigma, as_sigma, bond_price, numeraire, zeta
 
 TODAY = ORE.Date(30, 7, 2026)

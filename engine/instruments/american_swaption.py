@@ -1,5 +1,5 @@
 """
-American swaptions, priced by the Bermudan engine in `engine.instruments.bermudan_swaption`.
+American swaptions, priced by the Bermudan engine (`engine.pricing.lgm_grid`).
 
 ORE's `NumericLgmMultiLegOptionEngineBase::calculate()`
 (QuantExt/qle/pricingengines/numericlgmmultilegoptionengine.cpp) treats an American
@@ -13,7 +13,7 @@ differently from a Bermudan in two places, both reproduced here:
      (`LgmSwaptionEngineConfig.exercise_time_steps_per_year`), not the trade.
   2. Coupon membership: a coupon belongs until its accrual end and is credited
      `couponRatio(t) = (accrualEnd - t) / (accrualEnd - accrualStart)`
-     (`ExerciseStyle.AMERICAN`, applied in `bermudan_swaption._build_grid_schedule`).
+     (`ExerciseStyle.AMERICAN`, applied in `lgm_grid._build_grid_schedule`).
 
 Checked against ORE's engine by tests/test_ore_lgm_parity.py.
 """
@@ -24,7 +24,8 @@ import ORE
 
 from engine.instruments._validation import _validate_common_fields, _validate_identity, _validate_settlement
 from engine.instruments.bermudan_swaption import ExerciseStyle
-from engine.models.ore_builders import book_swap_dates, is_live, time_from_reference, validate_fixings
+from engine.instruments.schedules import book_swap_dates, is_live, validate_fixings
+from engine.market_data.day_counts import time_from_reference
 
 
 @dataclass

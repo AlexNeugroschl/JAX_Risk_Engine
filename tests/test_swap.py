@@ -1,17 +1,17 @@
 """
 Vanilla swaps at t=0 against ORE's `DiscountingSwapEngine`: the valuation pipeline's swap pricer
-(`engine.valuation.legs`, ORE's at-par Ibor coupons) on flat discount and forwarding curves,
+(`engine.pricing.legs`, ORE's at-par Ibor coupons) on flat discount and forwarding curves,
 over directions, spreads, single-curve discounting, tenors with stubs, rate and notional
 extremes, distinct curves and portfolios. The same pricer values every simulated path
-(tests/test_valuation.py); `SwapConfig`'s own validation is at the end.
+(tests/test_pricing.py); `SwapConfig`'s own validation is at the end.
 """
 import numpy as np
 import ORE
 import pytest
 
 from engine.instruments.swap import SwapConfig
-from engine.market import CurrencyMarket, Market, ZeroCurveConfig, index_name
-from engine.valuation.portfolio import value_today
+from engine.market_data.market import CurrencyMarket, Market, ZeroCurveConfig, index_name
+from engine.pricing.cube import value_today
 
 TODAY = ORE.Date(30, 7, 2026)
 DISCOUNT_RATE = 0.030

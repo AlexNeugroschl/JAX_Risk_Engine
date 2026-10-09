@@ -117,7 +117,7 @@ portfolio, three consecutive `price_portfolio` calls in one process:
 The 31 never go away, and compilation still visibly dominates a warm timeline (~27k MLIR
 pass events against ~630 `ThunkExecutor::Execute`). Two distinct reasons:
 
-1. **Those 31 are genuine recompiles.** `engine.risk.greeks` builds a fresh `price_fn`
+1. **Those 31 are genuine recompiles.** `engine.risk.greeks.ad` builds a fresh `price_fn`
    closure per call and `jax.jit` keys on function identity — the §3.5 residue, at
    portfolio scale rather than single-trade scale.
 2. **Event count is not proportional to time.** 31 compilations of *large fused* programs
@@ -142,7 +142,7 @@ queued, the timeline is truncated. `npv_cube` is the dominant device-side tail.
 `JAX_RISK_PROFILE_PHASE=<phase>` traces one phase of the job instead of all of it: a label of
 `PHASES` (`calibration`, `simulation`, `pricing`, `exposure`, `greeks`, ...) or one trade's
 Greeks (`greeks/trade3/AmericanSwaptionConfig`). The job runs whole; the worker arms
-`engine.portfolio.profiling.traced_phase`, and `phase()` starts the profiler when that phase
+`engine.run.trace.traced_phase`, and `phase()` starts the profiler when that phase
 is entered for the first time and stops it when the phase is left. Before starting and before
 stopping it waits for every device to finish its queued work (`jax.live_arrays()`), since
 dispatch is asynchronous: the window holds exactly that phase's device work, which an untraced
@@ -365,7 +365,7 @@ baseline: a Newton solver cuts every one of these loops; batching the path dates
 
 #### After the Newton solver (2026-10-07)
 
-2.5 solves every calibration and exercise boundary with one solver (`engine.numerics.roots`,
+2.5 solves every calibration and exercise boundary with one solver (`engine.solvers.roots`,
 decision A-21): a safeguarded Newton method by default, 7 steps per bootstrap bucket and 5 per
 y\*, where the bisection took 60 and 100 (plus 60 widening steps for each y\*); and it
 calibrates a Bermudan's or American's path dates of one basket shape in one call. Measured
@@ -592,10 +592,10 @@ each compiled and dispatched on its own.
 
 ### 3.2 The root cause
 
-`engine.risk.greeks.bermudan_delta_gamma` runs `jax.grad`/`jax.hessian` through
+`engine.risk.greeks.bermudan_delta_gamma` (as it then was) runs `jax.grad`/`jax.hessian` through
 `bermudan_swaption._run_backward_induction`, which **could not be `jax.jit`-wrapped**:
 
-> `engine.risk.greeks` differentiates straight through this function, calling it with a
+> `engine.risk.greeks.ad` differentiates straight through this function, calling it with a
 > `_PreparedBermudan` whose `zero_rates` (and, for Vega, its volatility) are live `jax.grad`
 > **tracers** rather than concrete arrays. A jit static argument must be **hashable and
 > concrete**, so a tracer-carrying `_PreparedBermudan` can never be one.
@@ -764,7 +764,7 @@ context where it fits under the cap.
 ### 3.7 Trade data as traced arguments (2026-10-02)
 
 Measured across the test suite, most wall time was still XLA compilation: 75-90% of the
-market-path, calibration and Greeks tests, from two sources. Programs were keyed on a
+pipeline, calibration and Greeks tests, from two sources. Programs were keyed on a
 trade's *values* (a static `_Prepared*`, a calibration basket closed over, a fresh closure
 per Greeks or market-risk call), so each trade, each path date and each call compiled anew;
 and pricers that ran eagerly compiled one tiny program per primitive and shape.
@@ -801,7 +801,7 @@ Measured, cold process, no disk cache (repeat = the same call again in the proce
 | AD Greeks, one Bermudan, repeat call | 12.8 s, 30 compiles | **0.3 s, 0 compiles** |
 | AD Greeks, one Bermudan, first call | 24.4 s, 276 compiles | 18.9 s, 60 compiles |
 | Market risk, 4 trades × 512 scenarios, repeat | 7.7 s, 8 compiles | **1.5 s, 0 compiles** |
-| `tests/test_portfolio_market_path.py` | 65 s, 1,247 compiles | 36 s, 700 compiles |
+| `tests/test_pipeline.py` | 65 s, 1,247 compiles | 36 s, 700 compiles |
 
 Floating-point results move at rounding level: XLA fuses a whole program differently from
 op-by-op dispatch, and the old eager results also depended on which operands XLA folded as
@@ -831,7 +831,7 @@ the next job built new ones and compiled them again, and churned little enough t
 found them. Found with `jax_explain_cache_misses` and the caches' `cache_info()`.
 
 **The fix.** A trade's price function is data: a module-level pricer, the trade's terms as a
-pytree, its curves' pillar times (`engine.risk.price_functions.TradePriceFunction`: `pricer`,
+pytree, its curves' pillar times (`engine.risk.greeks.price_functions.TradePriceFunction`: `pricer`,
 `terms`, `times`; `price(*rates)` as before, which market risk and the tests use). The
 derivatives are module-level jits with the pricer static: `_curve_derivatives` (every curve's
 Delta and Gamma), `_option_vega` and `_bachelier_vega`. Each is one program per product and
@@ -873,7 +873,7 @@ within 6.6e-16 of their scale (planning `details/precision.md` §13.1).
 
 With the Python tracer off, no event carries a Python source line, so "which phase is this
 dispatch from?" is unanswerable from the raw trace. That is bought back by
-[`engine/portfolio/profiling.py`](../../engine/portfolio/profiling.py):
+[`engine/run/trace.py`](../../engine/run/trace.py):
 
 ```python
 with phase("calibration"):
@@ -924,7 +924,7 @@ suspect and turned out to cost only 19.
 ## 5. The trace summary and its checks
 
 After every traced job the worker reads the trace back
-(`engine.portfolio.profiling.summarize_trace`, on the `.xplane.pb` through
+(`engine.run.trace.summarize_trace`, on the `.xplane.pb` through
 `jax.profiler.ProfileData`, so it sees every event) and writes
 `$JAX_RISK_PROFILE_DIR/pid-<pid>/<run>.summary.json` beside the run: the traced run's wall
 time and compiles (and the untraced warm-up's), the trace's events, size and span, the share

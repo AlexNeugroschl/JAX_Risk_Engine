@@ -2,7 +2,7 @@
 One-factor Linear Gauss-Markov (LGM) model, in ORE's state-variable parametrization.
 
 This is the model behind ORE's `NumericLgmMultiLegOptionEngine` and the model
-`bermudan_swaption.py` rolls back on. Formulas follow `QuantExt::Lgm1fParametrization` and
+`engine.pricing.lgm_grid` rolls back on. Formulas follow `QuantExt::Lgm1fParametrization` and
 `LinearGaussMarkovModel` (QuantExt/qle/models/lgm.hpp):
 
     H(t)      = (1 - exp(-a*t)) / a
@@ -45,7 +45,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from engine.models.curves import ZeroCurve, discount, forward_rate
+from engine.market_data.curves import ZeroCurve, discount, forward_rate
 
 #: ORE's `LgmData::VolatilityType`: the LGM's own volatility (alpha, `Hagan`) or the short
 #: rate's (`HullWhite`, the Hull-White adaptor).

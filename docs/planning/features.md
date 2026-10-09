@@ -26,12 +26,12 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 
 **Value.** Decision A-1 makes the engine configurable, with ORE's defaults; these are the
 non-default options the owner asked for, each a choice in the run configuration
-(`RunConfig`, `engine/portfolio/config.py`). Done so far: the **Greeks method** (A-5,
+(`RunConfig`, `engine/run/config.py`). Done so far: the **Greeks method** (A-5,
 `GreeksConfig.method="AD"` for any model and engine, beside ORE's bump-and-revalue), the
 **Jamshidian European engine** on a configured Hull-White model (`PricingConfig.european=
 "Jamshidian"` with `PricingConfig.jamshidian`, whichever model simulates), the **Hull-White
 model** per currency (`HullWhiteConfig`), and the **market-risk engine per
-product** (A-8: `engine.market_risk` takes the `PricingConfig`). Left:
+product** (A-8: `engine.risk.market` takes the `PricingConfig`). Left:
 
 - **ORE's `AnalyticLgmSwaptionEngine`** for Europeans on the simulated LGM, beside Bachelier
   and Jamshidian.
@@ -67,10 +67,10 @@ decision A-1. Parity against ORE's AMC analytic.
 (classic revaluation is the only one today). **Size.** L.
 
 <a id="f-04"></a><a id="x-10"></a><a id="x-11"></a>
-### F-04 — FX and equity trades on the market path; FX/EQ vol calibration
+### F-04 — FX and equity trades in the pipeline; FX/EQ vol calibration
 
-**Value.** The cross-asset model already simulates FX and equity (`engine.simulation.cam`),
-but no FX or equity trade prices on the market path (X-11), and FX/EQ volatilities are
+**Value.** The cross-asset model already simulates FX and equity (`engine.models.cam`),
+but no FX or equity trade prices in the pipeline (X-11), and FX/EQ volatilities are
 constant inputs rather than calibrated to options as `CrossAssetModelBuilder` does (X-10).
 Both decided: close eventually, not urgent. Brings the two-currency end-to-end test (layer
 L6) within reach.
@@ -99,7 +99,7 @@ TraderX (decision D-7).
 <a id="f-06"></a>
 ### F-06 — CVA/DVA from the exposure profiles
 
-**Value.** The market path produces ORE's exposure profiles (EPE, ENE, EE_B, EEPE_B, PFE);
+**Value.** The pipeline produces ORE's exposure profiles (EPE, ENE, EE_B, EEPE_B, PFE);
 CVA/DVA is the next step of ORE's XVA analytic: default curves per counterparty and the
 bank, netting sets, and the integral of discounted exposure against default probability.
 Parity against ORE's XVA analytic through the ORE simulation oracle (2026-10-07), with credit curves added. The regulatory CVA

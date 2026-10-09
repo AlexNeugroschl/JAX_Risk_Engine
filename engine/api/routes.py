@@ -1,5 +1,5 @@
 """
-HTTP routes over `engine.portfolio`, `engine.market_risk` and `engine.calibration`; translation
+HTTP routes over `engine.run`, `engine.risk.market` and `engine.calibration`; translation
 only, no pricing logic (docs/reference/http-api.md; decision A-2).
 
 Jobs, for work that can take minutes (a simulation, a revaluation under thousands of scenarios),
@@ -48,12 +48,15 @@ from engine.api.supervisor import SPAWN, WorkerSupervisor, worker_mode
 from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.cam import calibrate_cam
 from engine.calibration.lgm import calibrate_lgm_sigma
-from engine.models.hull_white import ZeroCurve as _HwZeroCurve
+from engine.market_data.curves import ZeroCurve as _HwZeroCurve
 
-from engine.api.market_schemas import CamCalibrationRequestSchema, MarketPortfolioRequestSchema, MarketRiskRequestSchema
-from engine.api.schemas import (
-    CalibrationRequestSchema, CalibrationResultSchema, CamCalibrationResultSchema, CurrencyCalibrationSchema,
-    HealthSchema, JobStatusSchema, VersionSchema, _parse_ore_date,
+from engine.api.requests import (
+    CalibrationRequestSchema, CamCalibrationRequestSchema, MarketPortfolioRequestSchema, MarketRiskRequestSchema,
+    _parse_ore_date,
+)
+from engine.api.results import (
+    CalibrationResultSchema, CamCalibrationResultSchema, CurrencyCalibrationSchema, HealthSchema, JobStatusSchema,
+    VersionSchema,
 )
 
 router = APIRouter()
@@ -151,7 +154,7 @@ def version() -> VersionSchema:
 
 @router.post("/portfolio/price", status_code=status.HTTP_202_ACCEPTED)
 async def submit_portfolio_price(request: MarketPortfolioRequestSchema, http_request: Request) -> dict:
-    """Price a portfolio (`engine.portfolio.price_portfolio`): validate the request synchronously
+    """Price a portfolio (`engine.run.price_portfolio`): validate the request synchronously
     (a refusal is a 400, and no job is created), then queue its body and return the `job_id`."""
     return {"job_id": await _validate_and_submit(request, http_request, PORTFOLIO)}
 
@@ -159,7 +162,7 @@ async def submit_portfolio_price(request: MarketPortfolioRequestSchema, http_req
 @router.post("/portfolio/market-risk", status_code=status.HTTP_202_ACCEPTED)
 async def submit_market_risk(request: MarketRiskRequestSchema, http_request: Request) -> dict:
     """VaR and Expected Shortfall of a portfolio by full revaluation under shock scenarios
-    (`engine.market_risk.run_market_risk`): validated, then queued, as `POST /portfolio/price`."""
+    (`engine.risk.market.run_market_risk`): validated, then queued, as `POST /portfolio/price`."""
     return {"job_id": await _validate_and_submit(request, http_request, MARKET_RISK)}
 
 

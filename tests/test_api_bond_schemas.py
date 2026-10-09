@@ -1,5 +1,5 @@
 """
-The bond's HTTP surface (`engine.api.market_schemas.BondTradeSchema`): discriminated-union
+The bond's HTTP surface (`engine.api.requests.BondTradeSchema`): discriminated-union
 routing, the request/response round trip, serialization of Greeks (I-25), and scenario risk.
 """
 import ORE
@@ -7,11 +7,11 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from engine.api.market_schemas import BondTradeSchema, MarketPortfolioRequestSchema
-from engine.api.schemas import GreeksSchema, PortfolioResultSchema
+from engine.api.requests import BondTradeSchema, MarketPortfolioRequestSchema
+from engine.api.results import GreeksSchema, PortfolioResultSchema
 from engine.instruments.treasury import BondConfig, BondPricingError
-from engine.portfolio.request import price_portfolio
-from engine.valuation.portfolio import value_today
+from engine.pricing.cube import value_today
+from engine.run.request import price_portfolio
 
 CURVE = {"times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0], "rates": [0.03, 0.03, 0.032, 0.035, 0.038, 0.04]}
 MARKET = {"asof": "2025-06-02", "currencies": {"USD": {"discount_curve": CURVE}}}

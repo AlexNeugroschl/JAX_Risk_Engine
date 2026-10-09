@@ -2,7 +2,7 @@
 Field validators shared by every trade config's `__post_init__`.
 
 They live in the instruments layer so that instrument modules import nothing from
-`engine.portfolio`, the layer above them (audit A-5; enforced by
+`engine.run`, the layer above them (audit A-5; enforced by
 tests/test_import_layering.py). Only malformed input (e.g. non-finite values) is rejected;
 zero and negative notionals and rates are allowed.
 

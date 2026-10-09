@@ -21,8 +21,9 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.stats import norm as scipy_norm
 
-from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, _cashflow_values_at_nodes, _zero_curve_of
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.models.lgm import numeraire as _numeraire, zeta as _zeta
+from engine.pricing.lgm_grid import _cashflow_values_at_nodes, _zero_curve_of
 from tests.support.lgm_engine import prepared
 
 

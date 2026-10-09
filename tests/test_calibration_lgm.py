@@ -9,10 +9,10 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.models.hull_white import ZeroCurve
-from engine.models.lgm import Sigma
 from engine.calibration.basket import build_coterminal_basket, price_lgm_swaption
 from engine.calibration.lgm import calibrate_lgm_sigma
+from engine.market_data.curves import ZeroCurve
+from engine.models.lgm import Sigma
 
 TODAY = ORE.Date(30, 7, 2026)
 

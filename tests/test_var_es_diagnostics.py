@@ -1,5 +1,5 @@
 """
-Tail-statistic diagnostics and the risk-measure label (`engine.risk.var_es`, W0.6; part of
+Tail-statistic diagnostics and the risk-measure label (`engine.risk.market.var_es`, W0.6; part of
 I-11): effective sample size and Monte Carlo standard error, so an ES from 3 tail
 observations is distinguishable from a converged one.
 
@@ -12,7 +12,7 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-from engine.risk.var_es import (
+from engine.risk.market.var_es import (
     ENGINE_RISK_MEASURE,
     RISK_MEASURES,
     compute_risk_metrics,
@@ -224,7 +224,7 @@ class TestDiagnosticsReachTheHttpBoundary:
     pass through; pinned so a future typed schema does not drop them."""
 
     def test_diagnostics_survive_serialization(self, normal_pnl):
-        from engine.api.schemas import RiskMetricsSchema
+        from engine.api.results import RiskMetricsSchema
         cube = normal_pnl[:, :, None]
         payload = RiskMetricsSchema.from_dataclass(
             compute_risk_metrics(cube, 0.0, percentiles=(0.99,))
@@ -236,7 +236,7 @@ class TestDiagnosticsReachTheHttpBoundary:
     def test_nan_standard_error_serializes_as_null(self):
         """A NaN standard error reaches the consumer as `null` (the schema's NaN -> None
         conversion)."""
-        from engine.api.schemas import RiskMetricsSchema
+        from engine.api.results import RiskMetricsSchema
         tied = jnp.zeros((10, 1, 1))
         payload = RiskMetricsSchema.from_dataclass(
             compute_risk_metrics(tied, 0.0, percentiles=(0.95,))

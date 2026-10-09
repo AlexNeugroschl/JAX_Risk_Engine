@@ -104,7 +104,7 @@ _MIGRATE_FROM_1 = f"ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT '{POR
 
 def default_queue_path() -> Path:
     """`JAX_RISK_JOB_QUEUE` if set, else `jax-risk-jobs/jobs.sqlite3` under the system temp
-    directory (the EOD store's convention, `engine.integration.publication.default_store_root`:
+    directory (the TraderX path's store convention, `engine.traderx.publication.default_store_root`:
     not the working directory, so the queue does not depend on where a process started)."""
     configured = os.environ.get("JAX_RISK_JOB_QUEUE")
     if configured:

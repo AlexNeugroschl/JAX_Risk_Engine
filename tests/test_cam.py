@@ -1,5 +1,5 @@
 """
-The cross-asset simulation (`engine.simulation.cam`, `scenario_market`, `config`) against
+The cross-asset simulation (`engine.models.cam`, `scenario_market`, `config`) against
 ORE and against the identities an arbitrage-free model must satisfy.
 
   L1 (exact): the step moments make every traded asset deflated by the LGM numeraire a
@@ -28,18 +28,18 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.market import CurrencyMarket, EquityMarket, Market, ZeroCurveConfig
-from engine.models.curves import ZeroCurve, discount, log_discount
-from engine.models.lgm import Sigma, hull_white_zeta, zeta as hagan_zeta
-from engine.precision import Precision
-from engine.simulation.cam import (
+from engine.market_data.curves import ZeroCurve, discount, log_discount
+from engine.market_data.market import CurrencyMarket, EquityMarket, Market, ZeroCurveConfig
+from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfig, build_cross_asset_model, simulate
+from engine.market_simulation.scenario_market import (
+    DISCOUNT_FLOOR, as_of_tenor_times, implied_log_discounts, lgm_numeraire, tenor_times,
+)
+from engine.models.cam import (
     CrossAssetModel, EqComponent, FxComponent, IrComponent, _H, _integral_of_square, _ir_alpha, _ir_zeta,
     _piecewise, flexible_cholesky, step_moments,
 )
-from engine.simulation.config import CamConfig, HullWhiteConfig, LgmConfig, build_cross_asset_model, simulate
-from engine.simulation.scenario_market import (
-    DISCOUNT_FLOOR, as_of_tenor_times, implied_log_discounts, lgm_numeraire, tenor_times,
-)
+from engine.models.lgm import Sigma, hull_white_zeta, zeta as hagan_zeta
+from engine.precision import Precision
 
 
 def _value_times(sm):

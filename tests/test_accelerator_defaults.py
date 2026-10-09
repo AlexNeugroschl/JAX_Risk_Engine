@@ -36,12 +36,12 @@ from jax._src.lax.lax import dot_general_p
 from demos import demo_profile_small, demo_structured
 from engine.api import app as api_app
 from engine.api import worker
-from engine.market_risk import MarketRiskRequest, monte_carlo_scenarios, run_market_risk
-from engine.portfolio import GreeksConfig, PortfolioRequest, RunConfig, price_portfolio
+from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfig
 from engine.precision import Precision, matmul, product_precision
-from engine.risk.greeks import portfolio_greeks
-from engine.simulation.config import CamConfig, HullWhiteConfig, LgmConfig
-from engine.valuation.config import LgmSwaptionEngineConfig, PricingConfig
+from engine.pricing.config import LgmSwaptionEngineConfig, PricingConfig
+from engine.risk.greeks.ad import portfolio_greeks
+from engine.risk.market import MarketRiskRequest, monte_carlo_scenarios, run_market_risk
+from engine.run import GreeksConfig, PortfolioRequest, RunConfig, price_portfolio
 from tests import market_risk_support as mr
 from tests.support import portfolio as shared
 from tests.support.worker_stubs import ROOT
@@ -200,8 +200,8 @@ class TestEveryMatrixProductStatesItsPrecision:
         float32. A product without its compute format's precision would run at the device's
         default; one outside the engine's code would be a product the engine cannot vouch for.
         Red first: with the nine products bare (before 2026-10-06), it named `cam.py:501`,
-        `random.py:115`, `ore_lgm.py:270` and `bermudan_swaption.py:697, 700, 701`, each at
-        float64 and float32."""
+        `random.py:115`, `ore_lgm.py:270` and `bermudan_swaption.py:697, 700, 701` (the modules'
+        names then), each at float64 and float32."""
         assert jax.config.jax_default_matmul_precision is None  # nothing fills it in for them
         trades, market = list(shared.trades().values()), shared.market()
         dates = tuple(shared.ASOF + ORE.Period(m, ORE.Months) for m in (6, 12))
@@ -222,8 +222,8 @@ class TestEveryMatrixProductStatesItsPrecision:
                         if line == "outside the engine" or precision != (product_precision(dtype),) * 2})
         assert not wrong, f"{len(wrong)} matrix products without their stated precision: {wrong}"
         lines = {line.rsplit(":", 1)[0] for line, _, _ in products}
-        assert lines == {"engine/simulation/cam.py", "engine/simulation/random.py", "engine/calibration/ore_lgm.py",
-                         "engine/instruments/bermudan_swaption.py"}, lines
+        assert lines == {"engine/market_simulation/paths.py", "engine/market_simulation/sobol.py",
+                         "engine/calibration/ore_lgm.py", "engine/pricing/lgm_grid.py"}, lines
         assert {str(dtype) for _, dtype, _ in products} == {"float64", "float32"}
 
 

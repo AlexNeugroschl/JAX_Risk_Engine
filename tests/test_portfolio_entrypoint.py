@@ -1,5 +1,5 @@
 """
-`engine.portfolio.price_portfolio` equals the same pipeline orchestrated by hand (calibrate
+`engine.run.price_portfolio` equals the same pipeline orchestrated by hand (calibrate
 and simulate the cross-asset model, value every trade today and on every path, deflate into
 exposure profiles), trade by trade, for every instrument type under the Hull-White model; its
 results follow the request's trade order; the model is calibrated per currency; the precision
@@ -13,16 +13,16 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.models.curves import ZeroCurve, discount
-from engine.portfolio import (
+from engine.market_data.curves import ZeroCurve, discount
+from engine.market_simulation.config import build_cross_asset_model, simulate
+from engine.precision import STAGES
+from engine.pricing.context import simulation_market_today
+from engine.pricing.cube import value_portfolio, value_today
+from engine.risk.counterparty.exposure import netting_set_profile
+from engine.run import (
     CamConfig, HullWhiteConfig, LgmSwaptionEngineConfig, PortfolioRequest, PortfolioResult, Precision,
     PricingConfig, RunConfig, StagePrecision, price_portfolio,
 )
-from engine.precision import STAGES
-from engine.risk.exposure import netting_set_profile
-from engine.simulation.config import build_cross_asset_model, simulate
-from engine.valuation.context import simulation_market_today
-from engine.valuation.portfolio import value_portfolio, value_today
 from tests.support import portfolio as shared
 
 FAST = LgmSwaptionEngineConfig(n_per_std=12, std_devs=4.0)

@@ -17,7 +17,7 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 | Look up exact function signatures and data shapes | [API Reference](reference/api-reference.md) |
 | Price a whole portfolio in one call, from Python | [The Portfolio Entry Point](reference/portfolio-entrypoint.md) |
 | Price a whole portfolio over HTTP | [HTTP API](reference/http-api.md) |
-| Consume a TraderX end-of-day bundle (and know what gets refused) | [EOD Integration Boundary](reference/eod-integration.md) |
+| Consume a TraderX end-of-day bundle (and know what gets refused) | [The TraderX Path](reference/traderx-path.md) |
 | Actually submit an EOD bundle over HTTP, end to end | [User Guide: Pricing a TraderX EOD bundle](getting-started/user-guide.md#pricing-a-traderx-eod-bundle) |
 | Profile a pricing job's JAX vs. Python time | [User Guide](getting-started/user-guide.md#profiling-a-pricing-job) |
 | Understand the tracer, and why Greeks used to dominate a trace | [Profiling & the Tracer](concepts/profiling.md) |
@@ -44,7 +44,7 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 ## Instruments
 
 Every trade is valued today and on every simulated path by the engine ORE uses for it
-(`engine/valuation/`), producing a common `[Scenarios, Dates, Trades]` NPV cube:
+(`engine/pricing/`), producing a common `[Scenarios, Dates, Trades]` NPV cube:
 
 - **[Interest Rate Swaps](instruments/swaps.md)** — discounted cashflows, as ORE's
   `DiscountingSwapEngine`, with path fixings.
@@ -59,7 +59,7 @@ Every trade is valued today and on every simulated path by the engine ORE uses f
 **Treasury bills and notes** (`engine/instruments/treasury.py`) are discounted cashflows on
 their currency's curve, today and on every path, as ORE's `DiscountingRiskyBondEngine`
 without credit. Their TraderX-bundle counterparts live at the integration boundary
-([EOD Integration](reference/eod-integration.md)).
+([The TraderX Path](reference/traderx-path.md)).
 
 ## Risk
 
@@ -79,14 +79,14 @@ without credit. Their TraderX-bundle counterparts live at the integration bounda
 
 - **[API Reference](reference/api-reference.md)** — exact inputs/outputs for every public
   function and config dataclass.
-- **[The Portfolio Entry Point](reference/portfolio-entrypoint.md)** — `engine/portfolio/`'s
+- **[The Portfolio Entry Point](reference/portfolio-entrypoint.md)** — `engine/run/`'s
   `PortfolioRequest`/`PortfolioResult`/`price_portfolio` and the run configuration
   (`RunConfig`), the single call that ties every module together.
 - **[HTTP API](reference/http-api.md)** — the FastAPI wrapper (`engine/api/`) over
   `price_portfolio`: endpoint-by-endpoint reference, the async job pattern and why, request/
-  response schemas. The same app also serves the EOD contract under `/eod` — a second,
+  response schemas. The same app also serves the TraderX path's contract under `/eod` — a second,
   deliberately different contract governed by a published JSON Schema rather than Pydantic.
-- **[EOD Integration Boundary](reference/eod-integration.md)** — `engine/integration/`'s
+- **[The TraderX Path](reference/traderx-path.md)** — `engine/traderx/`'s
   hash-verified TraderX bundle ingestion, terms join, unit normalization, convention
   allowlist and per-calculation coverage model, plus both Treasury pricers, (W1.6) the
   versioned contract interface served over HTTP under `/eod`, and (W0.8) the crash-safe
@@ -95,8 +95,9 @@ without credit. Their TraderX-bundle counterparts live at the integration bounda
   builder, why an equity is refused rather than valued at its own exported mark, and why
   a published manifest — not a pointer file — is the commit point for a result.
 - **[Models & Trades](reference/models-and-trades.md)** — the shared foundation layer
-  (`engine/models/`): the LGM's analytics in both parametrizations (Hagan's, and the
-  Hull-White model's), curves, and ORE trade building.
+  (`engine/market_data/`, `engine/models/`, `engine/instruments/schedules.py`): the LGM's
+  analytics in both parametrizations (Hagan's, and the Hull-White model's), curves, the time
+  axis, and ORE trade building.
 - **[Calibration](reference/calibration.md)** — `engine/calibration/`'s bootstrap fit of a
   piecewise LGM (or Hull-White) volatility term structure to market swaption quotes,
   matching `ore::data::LgmBuilder::calibrate()`'s own bootstrap convention.
@@ -133,7 +134,7 @@ without credit. Their TraderX-bundle counterparts live at the integration bounda
 - Every deep-dive doc ends with a **"Tested by"** section pointing to the exact test file
   and test classes that verify what's described.
 - Code is referenced by path and, where helpful, by function/class name — e.g.
-  `engine/simulation/config.py::simulate`.
+  `engine/market_simulation/config.py::simulate`.
 - Where a claim about ORE's own behavior is made (a formula, a convention, a design
   decision), it's backed by either a citation of what was read in ORE's own source, or a
   description of how it was live-tested against the installed ORE package — not assumed

@@ -12,7 +12,7 @@ this codebase's JAX code.
   [Architecture: Adjustable precision](architecture.md#adjustable-precision)). Between them a
   kernel computes in the dtype of the arrays it is given and takes no dtype argument: it
   casts its own constant inputs (coupon tables, volatilities, calibration baskets, grid
-  nodes) to the dtype of its curves (`engine.models.curves.curve_dtype`), and never builds an
+  nodes) to the dtype of its curves (`engine.market_data.curves.curve_dtype`), and never builds an
   array with JAX's default dtype (`jnp.ones(shape)` is float64 under x64 whatever the curves
   are). Scalars that enter arithmetic with curve arrays are Python floats, which follow the
   array's dtype, not NumPy scalars, which do not. Strict dtype promotion in CI catches a

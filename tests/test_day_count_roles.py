@@ -15,18 +15,15 @@ import pytest
 
 import ORE
 
-from engine.models.ore_builders import (
-    DAY_COUNTER,
+from engine.instruments.schedules import build_vanilla_swap, fixed_leg_cashflows, resolve_swap_dates
+from engine.instruments.swap import SwapConfig
+from engine.market_data.day_counts import (
     DEFAULT_ACCRUAL_DAY_COUNT,
     SUPPORTED_ACCRUAL_DAY_COUNTS,
     TIME_AXIS_DAY_COUNTER,
     UnsupportedDayCountError,
-    build_vanilla_swap,
-    fixed_leg_cashflows,
     resolve_accrual_day_count,
-    resolve_swap_dates,
 )
-from engine.instruments.swap import SwapConfig
 
 EVAL_DATE = ORE.DateParser.parseISO("2025-06-02")
 
@@ -93,9 +90,25 @@ class TestOnlyTheAccrualRoleIsConfigurable:
         assert np.array_equal(act365.accrual_end_times, actact.accrual_end_times)
         assert not np.allclose(act365.accrual_fractions, actact.accrual_fractions)
 
-    def test_deprecated_alias_still_points_at_the_time_axis(self):
-        """The `DAY_COUNTER` alias still means the time axis."""
-        assert DAY_COUNTER is TIME_AXIS_DAY_COUNTER
+    def test_the_time_axis_has_one_name(self):
+        """No engine module binds `DAY_COUNTER`, the time axis's old alias, which did not say
+        which of the two roles it played (removed with I-92)."""
+        import ast
+        from pathlib import Path
+
+        engine_root = Path(__file__).parents[1] / "engine"
+        offenders = []
+        for source in sorted(engine_root.rglob("*.py")):
+            for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Assign):
+                    names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    names = [a.asname or a.name for a in node.names]
+                else:
+                    continue
+                if "DAY_COUNTER" in names:
+                    offenders.append(f"{source.relative_to(engine_root)}:{node.lineno}")
+        assert offenders == [], offenders
 
 
 class TestActActIcmaIsSupported:
@@ -170,53 +183,54 @@ class TestUnsupportedDayCountIsRefused:
 
 class TestSwapConfigThreadsItThrough:
     def test_config_reaches_the_builder(self):
-        from engine.instruments.swap import _build_ore_swap
+        from engine.instruments.swap import underlying_swap
 
         cfg = SwapConfig(trade_id="swap-L179", 
             notional=1e6, fixed_rate=0.04, payer=True,
             swap_tenor="5Y", evaluation_date=EVAL_DATE,
             accrual_day_count="ACT/ACT (ICMA)",
         )
-        built = fixed_leg_cashflows(_build_ore_swap(cfg), EVAL_DATE)
+        built = fixed_leg_cashflows(underlying_swap(cfg), EVAL_DATE)
         expected = fixed_leg_cashflows(_swap("ACT/ACT (ICMA)"), EVAL_DATE)
 
         assert np.array_equal(built.accrual_fractions, expected.accrual_fractions)
 
     def test_default_config_still_builds_act365(self):
         """An unmodified `SwapConfig` builds exactly as before."""
-        from engine.instruments.swap import _build_ore_swap
+        from engine.instruments.swap import underlying_swap
 
         cfg = SwapConfig(trade_id="swap-L194", 
             notional=1e6, fixed_rate=0.04, payer=True,
             swap_tenor="5Y", evaluation_date=EVAL_DATE,
         )
-        built = fixed_leg_cashflows(_build_ore_swap(cfg), EVAL_DATE)
+        built = fixed_leg_cashflows(underlying_swap(cfg), EVAL_DATE)
         expected = fixed_leg_cashflows(_swap(), EVAL_DATE)
 
         assert np.array_equal(built.accrual_fractions, expected.accrual_fractions)
 
 
 class TestTimeAxisConstantsAgree:
-    """The time-axis references in `bermudan_swaption`, `valuation.legs` and `ore_builders` all
-    resolve to ACT/365. (Equality alone cannot catch divergence between modules;
-    `TestTimeAxisIsOneObject` asserts identity.)"""
+    """The time-axis references in `market_data.day_counts`, `instruments.schedules` and
+    `pricing.legs` all resolve to ACT/365. (Equality alone cannot catch divergence between
+    modules; `TestTimeAxisIsOneObject` asserts identity.)"""
 
     def test_all_three_are_act365(self):
-        from engine.instruments import bermudan_swaption
-        from engine.valuation import legs
-        from engine.models import ore_builders
+        from engine.instruments import schedules
+        from engine.market_data import day_counts
+        from engine.pricing import legs
 
         expected = ORE.Actual365Fixed().name()
-        assert ore_builders.TIME_AXIS_DAY_COUNTER.name() == expected
-        assert bermudan_swaption.TIME_AXIS_DAY_COUNTER.name() == expected
+        assert day_counts.TIME_AXIS_DAY_COUNTER.name() == expected
+        assert schedules.TIME_AXIS_DAY_COUNTER.name() == expected
         assert legs.TIME_AXIS_DAY_COUNTER.name() == expected
 
-    def test_deprecated_aliases_all_still_resolve(self):
-        from engine.instruments import bermudan_swaption
-        from engine.models import ore_builders
+    def test_time_from_reference_is_on_the_time_axis(self):
+        """`time_from_reference`, which places exercise dates, is the time axis's year
+        fraction, so an exercise date and the accrual date it names map to the same float."""
+        from engine.market_data.day_counts import time_from_reference
 
-        assert bermudan_swaption.DAY_COUNTER is bermudan_swaption.TIME_AXIS_DAY_COUNTER
-        assert ore_builders.DAY_COUNTER is ore_builders.TIME_AXIS_DAY_COUNTER
+        later = EVAL_DATE + ORE.Period(7, ORE.Months)
+        assert time_from_reference(EVAL_DATE, later) == TIME_AXIS_DAY_COUNTER.yearFraction(EVAL_DATE, later)
 
 
 class TestTimeAxisIsOneObject:
@@ -225,17 +239,17 @@ class TestTimeAxisIsOneObject:
     single definition. A local re-construction in any module fails here."""
 
     def test_every_module_exposes_the_canonical_object(self):
-        from engine.instruments import bermudan_swaption
-        from engine.valuation import legs
-        from engine.models import ore_builders
+        from engine.instruments import schedules
+        from engine.market_data import day_counts, market
+        from engine.pricing import legs
 
-        canonical = ore_builders.TIME_AXIS_DAY_COUNTER
-        assert bermudan_swaption.TIME_AXIS_DAY_COUNTER is canonical
+        canonical = day_counts.TIME_AXIS_DAY_COUNTER
+        assert schedules.TIME_AXIS_DAY_COUNTER is canonical
         assert legs.TIME_AXIS_DAY_COUNTER is canonical
-        assert bermudan_swaption.DAY_COUNTER is canonical
+        assert market.TIME_AXIS_DAY_COUNTER is canonical
 
     def test_no_module_constructs_its_own_time_axis_day_counter(self):
-        """No module other than `ore_builders` constructs its own time-axis day counter
+        """No module other than `market_data.day_counts` constructs its own time-axis day counter
         (read from the source, catching the line that would reintroduce one)."""
         import ast
         from pathlib import Path
@@ -243,8 +257,8 @@ class TestTimeAxisIsOneObject:
         engine_root = Path(__file__).parents[1] / "engine"
         offenders = []
         for source in sorted(engine_root.rglob("*.py")):
-            # ore_builders is the one place allowed to construct it.
-            if source.name == "ore_builders.py":
+            # day_counts is the one place allowed to construct it.
+            if source.name == "day_counts.py":
                 continue
             for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
                 if not isinstance(node, ast.Assign):
@@ -259,7 +273,7 @@ class TestTimeAxisIsOneObject:
 
         assert offenders == [], (
             "the simulation time axis must be imported from "
-            "engine.models.ore_builders, never re-constructed -- three "
+            "engine.market_data.day_counts, never re-constructed -- three "
             "equal-but-distinct copies can drift apart silently: "
             + "; ".join(offenders)
         )

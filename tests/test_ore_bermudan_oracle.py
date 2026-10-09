@@ -1,5 +1,5 @@
 """
-Bermudan/American backward induction (`engine.instruments.bermudan_swaption`) against
+Bermudan/American backward induction (`engine.pricing.lgm_grid`) against
 ORE's constructible multi-exercise engines, `ORE.TreeSwaptionEngine` (Hull-White trinomial
 tree) and `ORE.FdHullWhiteSwaptionEngine` (Hull-White finite differences).
 
@@ -29,8 +29,8 @@ import ORE
 import pytest
 
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, exercisable_dates
-from engine.market import ZeroCurveConfig
-from engine.models.ore_builders import TIME_AXIS_DAY_COUNTER
+from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER
+from engine.market_data.market import ZeroCurveConfig
 from tests.support.lgm_engine import grid_npv, prepared
 
 EVAL_DATE = ORE.Date(30, 7, 2026)

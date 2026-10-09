@@ -10,12 +10,12 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.models.hull_white import ZeroCurve
-from engine.market import ZeroCurveConfig
 from engine.calibration.basket import build_coterminal_basket
 from engine.calibration.lgm import calibrate_lgm_sigma
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.market_data.curves import ZeroCurve
+from engine.market_data.market import ZeroCurveConfig
 from date_helpers import in_years
 from tests.support.lgm_engine import grid_npv
 

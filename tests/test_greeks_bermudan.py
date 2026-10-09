@@ -1,6 +1,6 @@
 """
-Bermudan/American AD Greeks (`engine.risk.greeks`): the option priced by the LGM grid engine
-with the model calibrated to today's market (`engine.risk.price_functions.
+Bermudan/American AD Greeks (`engine.risk.greeks.ad`): the option priced by the LGM grid engine
+with the model calibrated to today's market (`engine.risk.greeks.price_functions.
 bermudan_price_function`).
 
   * Delta/Gamma differentiate the price in each market-curve pillar with the calibrated
@@ -22,11 +22,11 @@ import pytest
 
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
-from engine.models.curves import ZeroCurve
-from engine.risk.greeks import curve_greeks, portfolio_greeks, vega_greek
-from engine.risk.price_functions import bermudan_price_function
-from engine.valuation.config import LgmSwaptionEngineConfig, PricingConfig
-from engine.valuation.portfolio import value_today
+from engine.market_data.curves import ZeroCurve
+from engine.pricing.config import LgmSwaptionEngineConfig, PricingConfig
+from engine.pricing.cube import value_today
+from engine.risk.greeks.ad import curve_greeks, portfolio_greeks, vega_greek
+from engine.risk.greeks.price_functions import bermudan_price_function
 from tests.support import portfolio as shared
 from tests.support.greeks import assert_close, bumped_market
 

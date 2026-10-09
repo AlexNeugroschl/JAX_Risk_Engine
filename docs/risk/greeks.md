@@ -12,9 +12,9 @@ greeks = price_portfolio(PortfolioRequest(market=market, trades=trades, config=c
                                           compute_greeks=True)).greeks
 ```
 
-**Modules:** [`engine/risk/sensitivities.py`](../../engine/risk/sensitivities.py) (`Bump`,
-`portfolio_sensitivities`, and Theta for both), [`engine/risk/greeks.py`](../../engine/risk/greeks.py)
-(`AD`, `portfolio_greeks`), [`engine/risk/price_functions.py`](../../engine/risk/price_functions.py)
+**Modules:** [`engine/risk/greeks/bump.py`](../../engine/risk/greeks/bump.py) (`Bump`,
+`portfolio_sensitivities`, and Theta for both), [`engine/risk/greeks/ad.py`](../../engine/risk/greeks/ad.py)
+(`AD`, `portfolio_greeks`), [`engine/risk/greeks/price_functions.py`](../../engine/risk/greeks/price_functions.py)
 (each trade's price as a JAX function of its market curves)
 
 ## Plain-language summary
@@ -141,7 +141,7 @@ Two prices depend on a root found by the engine's root solver
 ([the root solver](../reference/calibration.md#the-root-solver)), whose iterations carry no
 derivative of the root: the Jamshidian engine's critical state x*, and each calibration
 bucket's σ. Both get the implicit function theorem's derivative instead: the Jamshidian root
-through a `jax.custom_jvp` (`engine.numerics.roots.implicit_root`: `dx = −(∂g/∂p · dp) /
+through a `jax.custom_jvp` (`engine.solvers.roots.implicit_root`: `dx = −(∂g/∂p · dp) /
 (∂g/∂x)`, itself differentiable, so Gamma is right too), the calibration through
 `_bootstrap_jacobian` above. Before these, a bisection's gradient was silently zero. The ORE
 helper's y* needs none: its price is stationary in y*.
@@ -150,11 +150,11 @@ helper's y* needs none: its price is stationary in y*.
 
 | Function | Returns |
 |---|---|
-| `engine.risk.sensitivities.portfolio_sensitivities(trades, market, base_currency, pricing, config)` | Bump Greeks per trade |
-| `engine.risk.greeks.portfolio_greeks(trades, market, base_currency, pricing, config)` | AD Greeks per trade |
-| `engine.risk.greeks.curve_greeks(cfg, market, pricing, shift)` | AD Delta/Gamma per pillar of each curve a trade reads, in its currency |
-| `engine.risk.greeks.vega_greek(cfg, market, pricing, shift)` | AD Vega per quote, or None |
-| `engine.risk.price_functions.trade_price_function(cfg, market, pricing, dtype)` | `TradePriceFunction(curves, pricer, terms, times)`: the trade's price as a JAX function of its curves' pillar rates, `.price(*rates)` (shared with market risk); `pricer(terms, *curves)` is the same function as data, a module-level pricer and the trade's terms as a pytree, which the AD Greeks jit once per product and shape |
+| `engine.risk.greeks.bump.portfolio_sensitivities(trades, market, base_currency, pricing, config)` | Bump Greeks per trade |
+| `engine.risk.greeks.ad.portfolio_greeks(trades, market, base_currency, pricing, config)` | AD Greeks per trade |
+| `engine.risk.greeks.ad.curve_greeks(cfg, market, pricing, shift)` | AD Delta/Gamma per pillar of each curve a trade reads, in its currency |
+| `engine.risk.greeks.ad.vega_greek(cfg, market, pricing, shift)` | AD Vega per quote, or None |
+| `engine.risk.greeks.price_functions.trade_price_function(cfg, market, pricing, dtype)` | `TradePriceFunction(curves, pricer, terms, times)`: the trade's price as a JAX function of its curves' pillar rates, `.price(*rates)` (shared with market risk); `pricer(terms, *curves)` is the same function as data, a module-level pricer and the trade's terms as a pytree, which the AD Greeks jit once per product and shape |
 
 ## Tested by
 

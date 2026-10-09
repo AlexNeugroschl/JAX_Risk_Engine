@@ -1,6 +1,6 @@
 # Exposure Profiles: EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B and PFE
 
-**Module:** [`engine/risk/exposure.py`](../../engine/risk/exposure.py)
+**Module:** [`engine/risk/counterparty/exposure.py`](../../engine/risk/counterparty/exposure.py)
 **Produced by:** `price_portfolio` → `PortfolioResult.exposure` (the portfolio as one
 netting set) and `PortfolioResult.trade_exposures` (each trade standalone)
 
@@ -94,5 +94,5 @@ line-by-line transcription of ORE's C++ loop at several quantiles (ORE's
 `ExposureCalculator` cannot be constructed from Python). It also checks the defining
 identities: EPE−ENE is the mean deflated NPV, EEE_B never decreases, the PFE rank rule
 and floor, and netting. `tests/test_portfolio_entrypoint.py` and
-`tests/test_portfolio_market_path.py` check that `price_portfolio` wires the numeraire and
+`tests/test_pipeline.py` check that `price_portfolio` wires the numeraire and
 discount curve in correctly.

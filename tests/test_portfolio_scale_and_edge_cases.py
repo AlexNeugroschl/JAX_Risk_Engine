@@ -17,7 +17,7 @@ from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
-from engine.portfolio import (
+from engine.run import (
     LgmSwaptionEngineConfig, PortfolioRequest, PricingConfig, RunConfig, price_portfolio,
 )
 
@@ -116,7 +116,7 @@ class TestMultiCurrencyPortfolios:
 
     def test_a_eur_trade_is_reported_in_usd_at_the_spot(self):
         """Today's value of a EUR trade is its EUR value at the EURUSD spot."""
-        from engine.valuation.portfolio import value_today
+        from engine.pricing.cube import value_today
         eur = _swap(1, "EUR")
         result = _price([eur])
         in_eur = value_today([eur], demo_market(), "EUR")[0]

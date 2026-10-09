@@ -136,7 +136,7 @@ of a standard coterminal Bermudan.
 
 The configs carry no model. The engine's model comes from the run configuration
 (`PricingConfig.bermudan`/`american`, `LgmSwaptionEngineConfig`: reversion, the bootstrap,
-the grid): `engine.valuation.bermudan` calibrates the trade's own co-terminal basket on the
+the grid): `engine.pricing.bermudan` calibrates the trade's own co-terminal basket on the
 market and hands the calibrated LGM to `prepare_bermudan(cfg, reversion=..., sigma=..., ...)`.
 `sigma` is a flat float or a piecewise `engine.models.lgm.Sigma`; every downstream formula
 calls `engine.models.lgm.zeta(sigma, t)`, which handles both (see
@@ -315,7 +315,7 @@ mathematics.
 At `t=0` the grid collapses to `x=0`, and reading off that single node gives the NPV —
 `grid_value`.
 
-### 8. On every path: `engine.valuation.bermudan.bermudan_cube`
+### 8. On every path: `engine.pricing.bermudan.bermudan_cube`
 
 On a path date the option is priced as ORE's `ValuationEngine` prices it with
 `recalibrate = true`: the trade's basket is rebuilt on that date, its LGM bootstrapped on the
@@ -433,7 +433,7 @@ case where the two styles must coincide exactly (a single exercise on an accrual
 `tests/test_ore_bermudan_oracle.py` (51 tests) — against QuantLib's Hull-White tree and FD
 engines, a model-level comparison of a few percent, plus `TestExerciseDatesAreExact`.
 
-`tests/test_valuation.py` — today's value against ORE's calibrated engine on the trade's own
+`tests/test_pricing.py` — today's value against ORE's calibrated engine on the trade's own
 basket (`test_option_today_equals_ores_calibrated_grid_engine`), and every path and date
 against ORE recalibrated on the path's curves, under both simulation models.
 

@@ -1,5 +1,5 @@
 """
-Greeks by automatic differentiation (`engine.risk.greeks`, `GreeksConfig.method = "AD"`) for
+Greeks by automatic differentiation (`engine.risk.greeks.ad`, `GreeksConfig.method = "AD"`) for
 swaps, Europeans (Bachelier and Jamshidian) and bonds; Bermudans/Americans are
 tests/test_greeks_bermudan.py.
 
@@ -12,7 +12,7 @@ tests/test_greeks_bermudan.py.
   * Vega is the derivative in each quote of the volatility surface.
 
 The Jamshidian engine's root x* has the implicit function theorem's derivative
-(`engine.numerics.roots.implicit_root`, tests/test_root_solvers.py). The t=0 prices differentiated here equal ORE's (tests/test_shared_portfolio.py).
+(`engine.solvers.roots.implicit_root`, tests/test_root_solvers.py). The t=0 prices differentiated here equal ORE's (tests/test_shared_portfolio.py).
 """
 import dataclasses
 
@@ -22,12 +22,12 @@ import pytest
 
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
-from engine.market import CurrencyMarket, Market, ZeroCurveConfig
-from engine.portfolio import JamshidianEngineConfig
-from engine.risk.greeks import curve_greeks, portfolio_greeks, vega_greek
-from engine.risk.sensitivities import SensitivityConfig, portfolio_sensitivities
-from engine.valuation.config import PricingConfig
-from engine.valuation.portfolio import value_today
+from engine.market_data.market import CurrencyMarket, Market, ZeroCurveConfig
+from engine.pricing.config import PricingConfig
+from engine.pricing.cube import value_today
+from engine.risk.greeks.ad import curve_greeks, portfolio_greeks, vega_greek
+from engine.risk.greeks.bump import SensitivityConfig, portfolio_sensitivities
+from engine.run import JamshidianEngineConfig
 from tests.support import portfolio as shared
 from tests.support.greeks import assert_close, bumped_market
 

@@ -71,7 +71,7 @@ if it has one.
 
 - IDs are permanent. Never renumber, never reuse. `I-NN` IDs are cited from code, tests,
   other docs, and TraderX's published capability document
-  (`engine/integration/capabilities.py`), so a renumbering breaks an external contract.
+  (`engine/traderx/capabilities.py`), so a renumbering breaks an external contract.
 - New issues take the next free `I-NN`; new features the next free `F-NN`.
 - Roadmap step numbers are not IDs. They follow the order of work and are renumbered when it
   changes, so only roadmap.md uses them: code, error messages, tests and the other documents

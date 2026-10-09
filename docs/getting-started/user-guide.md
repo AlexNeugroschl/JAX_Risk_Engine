@@ -19,7 +19,7 @@ This page is about *running* the code. For how it works internally, see
   processes, `httpx` is required by FastAPI's own `TestClient`, and
   `jsonschema` is deliberately test-only, since the engine must emit correct EOD documents
   without depending on a validator to produce them — see
-  [the EOD boundary doc](../reference/eod-integration.md)), and `profiling`
+  [the TraderX path doc](../reference/traderx-path.md)), and `profiling`
   (`xprof` — needed only to collect/view a profiler trace of a pricing job, see
   [Profiling a pricing job](#profiling-a-pricing-job)), and `gpu` (JAX's CUDA 13 plugin, Linux
   or WSL2 only — see [On a GPU](#on-a-gpu-linux-or-wsl2-on-windows)).
@@ -158,7 +158,7 @@ you set the flag before JAX opens the GPU:
 ```python
 import os
 os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "") + " --xla_gpu_exclude_nondeterministic_ops=true").strip()
-from engine.portfolio import price_portfolio   # before the first JAX computation
+from engine.run import price_portfolio   # before the first JAX computation
 ```
 
 This card's float64 runs at 1/64 of its float32 rate, and a job of a few hundred paths is too
@@ -173,7 +173,7 @@ launches). A long job can still be traced one phase at a time (`JAX_RISK_PROFILE
 
 The examples on this page assume you're running from the repository root. `engine` itself
 is importable from anywhere once installed — `pip install -e .` puts it on the path, so
-`from engine.portfolio import ...` works without any extra path setup and
+`from engine.run import ...` works without any extra path setup and
 without `cd`-ing anywhere in particular. What the repository root buys you is that the
 **relative paths in these examples resolve**: `tests/fixtures/traderx-eod/...`,
 `demos/demo.py`, `tests/`.
@@ -195,7 +195,7 @@ python demos/demo.py
 Builds today's USD market (a curve rising from 3% to 5%), a run configuration with the
 Hull-White model calibrated to the market's swaption volatilities, and one of each trade
 type (swap, European/Bermudan/American swaption, Treasury note); prices them in one
-[`engine.portfolio.price_portfolio`](../reference/portfolio-entrypoint.md) call; prints the
+[`engine.run.price_portfolio`](../reference/portfolio-entrypoint.md) call; prints the
 NPVs on every date, the exposure profile and the Bermudan's Greeks; shows the same run under
 the LGM (the model is one field of the configuration); and ends with a 10-day market-risk
 VaR/ES of the same portfolio. Start here to see the whole system working end to end.
@@ -247,7 +247,7 @@ worker's disk cache and 1.8 s repeated, a repeat compiling nothing
 ```bash
 python demos/demo_precision.py
 ```
-Runs `engine.market_risk.run_market_risk` on a sloped two-curve market and a mixed
+Runs `engine.risk.market.run_market_risk` on a sloped two-curve market and a mixed
 portfolio over five Sobol seeds at three `Precision` settings (FP64; FP32 throughout; the
 P&L computed in FP64 and stored in FP32), and compares each one's error in VaR 99% and ES
 97.5% with the Monte Carlo noise those numbers already carry (the ES standard error and the
@@ -282,7 +282,7 @@ also guards [I-28](../planning/known-issues.md#i-28).
 ```bash
 .venv/Scripts/python.exe -m pytest tests/ -m "not slow" -q -n 8   # fast tier, in 8 processes
 .venv/Scripts/python.exe -m pytest tests/ -q -n 8                  # full suite
-.venv/Scripts/python.exe -m pytest tests/test_valuation.py -q      # one area while working on it
+.venv/Scripts/python.exe -m pytest tests/test_pricing.py -q      # one area while working on it
 ```
 
 (`.venv/bin/python` on Linux.) Use the virtualenv's interpreter: the system one lacks the API
@@ -324,8 +324,8 @@ The full suite, `-n 8`, with the fast tier's programs already on disk: 7m45s (2,
 Before this change it took 46 minutes in one process (2026-09-29), and longer since.
 
 **While changing one area**, run its test files directly (they are named by area:
-`test_valuation.py`, `test_ore_lgm_*.py`, `test_greeks*.py`, `test_market_risk*.py`,
-`test_integration_*.py`, ...), add `-x` to stop at the first failure, and run the fast tier
+`test_pricing.py`, `test_ore_lgm_*.py`, `test_greeks*.py`, `test_market_risk*.py`,
+`test_traderx_*.py`, ...), add `-x` to stop at the first failure, and run the fast tier
 before committing. `--lf` reruns only what failed last time.
 
 **Two tiers.** Tests marked `@pytest.mark.slow` are excluded by the **fast tier**,
@@ -352,14 +352,14 @@ CI does not check out the `reference/` submodules; the one test that reads
 `reference/traderX` skips without it.
 
 For a fast inner loop while working on
-the TraderX EOD boundary, the integration tests are a self-contained subset — 751 tests in
+the TraderX path, the integration tests are a self-contained subset — 751 tests in
 a few seconds:
 
 ```bash
-python -m pytest tests/test_integration_*.py -q
+python -m pytest tests/test_traderx_*.py -q
 ```
 
-They are fast because [`engine.integration`](../reference/eod-integration.md#module-map)
+They are fast because [`engine.traderx`](../reference/traderx-path.md#module-map)
 imports **no simulation pricer, no ORE builder and no curve construction** — it does import
 `ORE` itself, which W1.2 permitted for date and day-count arithmetic, but nothing that
 builds a pricing object. (Running them via `tests/` rather than by path still pays for
@@ -431,7 +431,7 @@ behave differently on purpose:
 
 That last row is the design: returning an HTTP error for a refusal would make "we correctly
 declined to guess" indistinguishable from "we broke." See
-[the EOD boundary doc](../reference/eod-integration.md) for the reasoning behind all four.
+[the TraderX path doc](../reference/traderx-path.md) for the reasoning behind all four.
 
 **Ask what the engine can price, before submitting anything:**
 
@@ -525,7 +525,7 @@ curl http://127.0.0.1:8000/eod/attempts/<attempt_id>
 
 Both survive a restart, because terminal attempts are published to a durable store rather
 than held in memory — see
-[EOD: W0.8](../reference/eod-integration.md#w08--crash-safe-publication-and-the-durable-result-store)
+[TraderX path: W0.8](../reference/traderx-path.md#w08--crash-safe-publication-and-the-durable-result-store)
 for the four-step protocol and where the store lives (`JAX_EOD_STORE_ROOT`, else a per-user
 directory under the system temp root).
 
@@ -545,10 +545,10 @@ example:
 
 ```python
 import ORE
-from engine.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
+from engine.market_data.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
 from engine.instruments.swap import SwapConfig
 from engine.instruments.european_swaption import SwaptionConfig
-from engine.portfolio import CamConfig, HullWhiteConfig, PortfolioRequest, RunConfig, price_portfolio
+from engine.run import CamConfig, HullWhiteConfig, PortfolioRequest, RunConfig, price_portfolio
 
 today = ORE.Date(30, 7, 2026)
 pillars = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
@@ -601,7 +601,7 @@ The configuration's other fields choose the engine per product and how Greeks ar
 for any model:
 
 ```python
-from engine.portfolio import GreeksConfig, JamshidianEngineConfig, PricingConfig
+from engine.run import GreeksConfig, JamshidianEngineConfig, PricingConfig
 
 config = RunConfig(
     simulation=simulation,
@@ -624,8 +624,8 @@ steps where bisection takes 60 to 100, which is what a GPU's run time is made of
 on each configuration that solves a root:
 
 ```python
-from engine.portfolio import LgmSwaptionEngineConfig
-from engine.simulation.config import LgmConfig
+from engine.run import LgmSwaptionEngineConfig
+from engine.market_simulation.config import LgmConfig
 
 engine = LgmSwaptionEngineConfig(solver="Bisection")         # a Bermudan's/American's calibration
 pricing = PricingConfig(bermudan=engine, american=engine,
@@ -642,8 +642,8 @@ Over HTTP the same field sits in `pricing.bermudan`, `pricing.american`,
 The pieces `price_portfolio` assembles can be called directly:
 
 ```python
-from engine.simulation.config import simulate
-from engine.valuation.portfolio import value_portfolio, value_today
+from engine.market_simulation.config import simulate
+from engine.pricing.cube import value_portfolio, value_today
 
 value_today(trades, market, "USD")                     # today's values, no simulation
 scenarios = simulate(market, simulation)               # the scenario market
@@ -658,7 +658,7 @@ Short-horizon VaR and ES come from revaluing the portfolio at t=0 under shocked 
 
 ```python
 import numpy as np
-from engine.market_risk import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
+from engine.risk.market import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
 
 factors = RateRiskFactors.from_market(market)          # discount:USD, index:USD-SIMINDEX-6M
 covariance = np.eye(factors.size) * 0.0008 ** 2 * 10    # 8bp daily, independent pillars
@@ -682,7 +682,7 @@ starting at t=0 ([Exposure](../risk/exposure.md)).
 ## Computing VaR/ES statistics on your own cube
 
 ```python
-from engine.risk.var_es import compute_risk_metrics
+from engine.risk.market.var_es import compute_risk_metrics
 
 # base_npv: the portfolio's value today (result.base_npv from price_portfolio)
 metrics = compute_risk_metrics(result.npv_cube, result.base_npv, percentiles=(0.95, 0.99))
@@ -704,7 +704,7 @@ The run's `precision` sets the storage and compute format of each adjustable sta
 simulation, the scenario market and the pricing on paths. The default is float64 everywhere.
 
 ```python
-from engine.portfolio import Precision, StagePrecision
+from engine.run import Precision, StagePrecision
 
 RunConfig(simulation=..., precision=Precision.throughout("float32"))        # everything float32
 RunConfig(simulation=..., precision=Precision(

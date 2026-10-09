@@ -21,9 +21,9 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
-from engine.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
-from engine.market_risk import RateRiskFactors
-from engine.valuation.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
+from engine.market_data.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
+from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
+from engine.risk.market import RateRiskFactors
 
 TODAY = ORE.Date(30, 7, 2026)
 DAY_COUNTER = ORE.Actual365Fixed()

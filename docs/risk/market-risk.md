@@ -1,6 +1,6 @@
 # Market Risk: Short-Horizon VaR and Expected Shortfall
 
-**Package:** [`engine/market_risk/`](../../engine/market_risk/)
+**Package:** [`engine/risk/market/`](../../engine/risk/market/)
 **Entry point:** `run_market_risk(MarketRiskRequest(trades, market, scenarios, pricing))`
 
 ## What it measures
@@ -18,17 +18,17 @@ under the risk-neutral measure, which gives an exposure profile
 see [audit finding R-1](../planning/known-issues.md#r-1).
 
 ```
-scenarios (Monte Carlo or historical)      engine/market_risk/scenarios.py
+scenarios (Monte Carlo or historical)      engine/risk/market/scenarios.py
     -> shocked curves at t=0
-    -> every trade repriced in every scenario   engine/market_risk/revaluation.py
+    -> every trade repriced in every scenario   engine/risk/market/revaluation.py
     -> P&L per scenario  [S]
-    -> VaR / ES + tail count + standard error   engine/risk/var_es.py
+    -> VaR / ES + tail count + standard error   engine/risk/market/var_es.py
 ```
 
 ## Using it
 
 ```python
-from engine.market_risk import (
+from engine.risk.market import (
     MarketRiskRequest, RateRiskFactors, covariance_from_history,
     historical_scenarios, monte_carlo_scenarios, run_market_risk,
 )
@@ -86,7 +86,7 @@ Both sources are real-world forecasts of the horizon move and carry the measure 
 ## Revaluation
 
 Every trade is a pure JAX function of its curves' pillar rates
-([`engine/risk/price_functions.py`](../../engine/risk/price_functions.py), the same
+([`engine/risk/greeks/price_functions.py`](../../engine/risk/greeks/price_functions.py), the same
 functions the AD Greeks differentiate), with the engine its `PricingConfig` names (decision
 A-8): a European on Bachelier or Jamshidian, a Bermudan/American on the LGM grid engine
 calibrated on today's market and held fixed under every scenario. The same function prices
@@ -112,7 +112,7 @@ results. It is part of the open performance item
 
 ## Statistics
 
-`engine.risk.var_es.compute_risk_metrics` on the one-date portfolio P&L sample — ORE's
+`engine.risk.market.var_es.compute_risk_metrics` on the one-date portfolio P&L sample — ORE's
 `RiskStatistics` conventions, including the nearest-rank quantile and the strict
 value-based ES tail ([VaR & ES](var_es.md)). For each quantile `q`:
 
