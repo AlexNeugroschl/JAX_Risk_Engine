@@ -1,5 +1,5 @@
 """
-`engine.precision` (roadmap 1.4 to 1.6, I-55, F-07; docs/planning/details/precision.md): the
+`engine.precision` (I-55, F-07; docs/planning/details/precision.md): the
 format table, the `Precision` policy and its refusals, `store`/`load`, the dtype discipline of
 the pipeline built on them, the pricing stage per product and per trade, and storage below
 32 bits.
@@ -72,13 +72,13 @@ def _simulation(model=LgmConfig, samples=16) -> CamConfig:
 # ---------------------------------------------------------------------------
 class TestFormats:
     def test_the_table_is_the_design_table(self):
-        """precision.md §6.1: name, bits, mantissa bits, max, scaled, enabling steps."""
-        rows = {f.name: (f.bits, f.mantissa_bits, f.min_exponent, f.scaled, f.storage_step, f.compute_step)
+        """precision.md §6.1: name, bits, mantissa bits, max, scaled, the items that enable them."""
+        rows = {f.name: (f.bits, f.mantissa_bits, f.min_exponent, f.scaled, f.storage_pending, f.compute_pending)
                 for f in FORMATS.values()}
         assert rows == {
             "float64": (64, 52, -1022, False, None, None), "float32": (32, 23, -126, False, None, None),
-            "float16": (16, 10, -14, True, None, "3.7"), "bfloat16": (16, 7, -126, True, None, "3.7"),
-            "float8_e4m3fn": (8, 3, -6, True, None, "3.7"), "float8_e5m2": (8, 2, -14, True, None, "3.7"),
+            "float16": (16, 10, -14, True, None, "F-07"), "bfloat16": (16, 7, -126, True, None, "F-07"),
+            "float8_e4m3fn": (8, 3, -6, True, None, "F-07"), "float8_e5m2": (8, 2, -14, True, None, "F-07"),
         }
         assert FORMATS["float8_e4m3fn"].max == 448.0 and FORMATS["float16"].max == 65504.0
 
@@ -116,22 +116,22 @@ class TestPolicy:
         assert stage.storage_dtype == jnp.dtype(storage) and stage.compute_dtype == jnp.dtype(compute)
         assert stage.scaled_storage == (storage in SCALED)
 
-    def test_a_format_before_its_storage_step_is_refused_naming_the_step(self, monkeypatch):
-        """The refusal FP4 will meet until step 5.3 (no format of the table has one since 1.6)."""
-        monkeypatch.setitem(FORMATS, "float16", dataclasses.replace(FORMATS["float16"], storage_step="5.3"))
-        with pytest.raises(ValueError, match=r"StagePrecision\.storage='float16': storage in float16 is enabled by "
-                                             r"roadmap step 5\.3"):
+    def test_a_format_not_enabled_for_storage_is_refused_naming_the_item(self, monkeypatch):
+        """The refusal FP4 will meet until F-07 enables it (no format of the table has one today)."""
+        monkeypatch.setitem(FORMATS, "float16", dataclasses.replace(FORMATS["float16"], storage_pending="F-07"))
+        with pytest.raises(ValueError, match=r"StagePrecision\.storage='float16': storage in float16 is not enabled "
+                                             r"yet \(F-07\)"):
             StagePrecision("float16")
 
     @pytest.mark.parametrize("fields, message", [
-        ({"compute": "bfloat16", "accumulate": "bfloat16"}, r"StagePrecision\.compute='bfloat16'.*roadmap step 3\.7"),
+        ({"compute": "bfloat16", "accumulate": "bfloat16"}, r"StagePrecision\.compute='bfloat16'.*not enabled yet \(F-07"),
         ({"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"},
-         r"StagePrecision\.compute='float16'.*roadmap step 3\.7"),
+         r"StagePrecision\.compute='float16'.*not enabled yet \(F-07"),
         ({"storage": "float64", "compute": "float32", "accumulate": "float32"},
          r"StagePrecision\.storage='float64': wider than compute"),
         ({"compute": "float64", "accumulate": "float32"}, r"StagePrecision\.accumulate='float32': narrower"),
         ({"compute": "float32", "accumulate": "float64", "storage": "float32"},
-         r"StagePrecision\.accumulate='float64'.*roadmap step 3\.7"),
+         r"StagePrecision\.accumulate='float64'.*not enabled yet \(F-07"),
         ({"compute": "float128"}, r"StagePrecision\.compute: unknown number format"),
     ])
     def test_refusals_name_the_field_and_the_step(self, fields, message):
@@ -205,7 +205,7 @@ class TestStorage:
 
     @pytest.mark.parametrize("name", ENABLED)
     def test_an_unscaled_format_ignores_the_rounding_and_carries_no_scales(self, name):
-        """float64/float32 storage is a plain cast, rounded to nearest, as since 1.4."""
+        """float64/float32 storage is a plain cast, rounded to nearest."""
         x = jnp.asarray(self.VALUES)
         stochastic = store(x, name, "stochastic", rounding_key(0, "x"))
         assert not isinstance(stochastic, Stored)
@@ -213,7 +213,7 @@ class TestStorage:
 
 
 # ---------------------------------------------------------------------------
-# Storage below 32 bits (roadmap 1.6, §6.2, §13.4)
+# Storage below 32 bits (§6.2, §13.4)
 # ---------------------------------------------------------------------------
 def _format_values(name, n, rng, normal_only=False):
     """Finite values of the format from random bit patterns, as float64 (`normal_only`: no
@@ -437,7 +437,7 @@ class TestSchemaCompleteness:
 
     @pytest.mark.parametrize("old", [{"simulation": 32}, {"pricing": 64}, {"risk": 32}])
     def test_the_retired_shape_is_refused_but_an_integer_seed_is_not(self, old):
-        with pytest.raises(ValueError, match="retired by roadmap 1.4"):
+        with pytest.raises(ValueError, match="retired on 2026-10-01"):
             PrecisionSchema.model_validate(old)
         assert PrecisionSchema.model_validate({"rounding_seed": 32}).to_dataclass() == Precision(rounding_seed=32)
 
@@ -484,7 +484,7 @@ class TestRealizedDtypes:
                                         StagePrecision("float32", "float32", "float32")])
     @pytest.mark.parametrize("simulation", [StagePrecision(), StagePrecision("float32", "float32", "float32")])
     def test_the_scenario_market_is_stored_at_the_market_storage(self, simulation, market):
-        """Its tenor grid, which has no scenario axis, stays at the market compute (since 1.6:
+        """Its tenor grid, which has no scenario axis, stays at the market compute (since 2026-10-02:
         before, a float32 storage under float64 compute rounded it to float32)."""
         policy = Precision(simulation=simulation, market=market)
         scenarios = simulate(shared.market(), _simulation(), precision=policy)
@@ -526,7 +526,7 @@ _STRICT_CASES = {
 class TestStrictPromotion:
     """`jax_numpy_dtype_promotion="strict"` turns any float32/float64 mix into an error: the
     float32 pipeline computes in float32 throughout (§6.4). Each case failed on the code
-    before 1.4 at the first leg kernel (float64 coupon arrays against float32 curves)."""
+    before 2026-10-01 at the first leg kernel (float64 coupon arrays against float32 curves)."""
 
     @pytest.mark.parametrize("case", _STRICT_CASES)
     def test_float32_throughout_never_mixes_dtypes(self, case):
@@ -609,7 +609,7 @@ def test_the_precision_package_imports_nothing_from_the_pipeline():
 
 
 # ---------------------------------------------------------------------------
-# Per product and per trade (roadmap 1.5, decision A-15)
+# Per product and per trade (decision A-15)
 # ---------------------------------------------------------------------------
 def _trade(trade_id, product):
     return types.SimpleNamespace(trade_id=trade_id, product=product)
@@ -696,7 +696,7 @@ def mixed_scenarios():
 
 class TestPerTradePortfolio:
     """Cast point 4 per trade: each cube column is priced at its trade's compute dtype and
-    stored at its storage format (precision.md §12, the exit criterion of step 1.5)."""
+    stored at its storage format (precision.md §12, an exit criterion of per-trade precision, decision A-15)."""
 
     @pytest.mark.parametrize("case", _MIXED)
     def test_a_mixed_run_equals_each_trade_alone_at_its_precision(self, case, mixed_scenarios):
@@ -789,7 +789,7 @@ class TestPerTradeMarketRisk:
 
 
 # ---------------------------------------------------------------------------
-# Storage below 32 bits in the pipelines (roadmap 1.6)
+# Storage below 32 bits in the pipelines
 # ---------------------------------------------------------------------------
 #: Trades with a cheap kernel each: legs, a European, a bond.
 _CHEAP_TRADES = ("swap-payer", "european-payer", "bond")
@@ -903,7 +903,7 @@ class TestScaledStoragePipeline:
 #: The slow sanity bounds of scaled storage (nearest) on the shared portfolio, per format and
 #: stage: the largest cube error per unit notional, and the largest bias (the mean over 256
 #: paths) per unit notional; about four times the values measured on 2026-10-02 (precision.md
-#: §15.3). Regression guards, not acceptance (step 3.6). The largest errors are exercise
+#: §15.3). Regression guards, not acceptance (that is I-55's evidence table). The largest errors are exercise
 #: decisions that flip on a path (a cash Bermudan worth 0 or 1.7% of its notional).
 _SCALED_BOUNDS = {
     ("float16", "simulation"): (3e-4, 3e-6), ("float16", "market"): (4e-4, 1.2e-5),

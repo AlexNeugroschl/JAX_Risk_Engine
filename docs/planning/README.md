@@ -70,9 +70,12 @@ if it has one.
 ## IDs
 
 - IDs are permanent. Never renumber, never reuse. `I-NN` IDs are cited from code, tests,
-  other docs, and the published EOD capability document
+  other docs, and TraderX's published capability document
   (`engine/integration/capabilities.py`), so a renumbering breaks an external contract.
 - New issues take the next free `I-NN`; new features the next free `F-NN`.
+- Roadmap step numbers are not IDs. They follow the order of work and are renumbered when it
+  changes, so only roadmap.md uses them: code, error messages, tests and the other documents
+  cite the item, the decision or a date (`tests/test_import_layering.py` checks the code).
 - Retired ID schemes (the 2026-09-24 audit's `M-`, `P-`, `A-`, `Q-`, `R-` items, the ORE
   alignment plan's phases, the TraderX plan's `W` tasks) still appear in code comments. The
   [ID map](#retired-ids) below says where each went. Do not create new IDs in those schemes.
@@ -132,7 +135,7 @@ Where the IDs of retired planning documents went. Their full text is in git hist
 | Retired ID | Now |
 |---|---|
 | Audit M-1 | [I-42](known-issues.md#i-42) (fixed) |
-| Audit M-2 | [I-04](known-issues.md#i-04) (the Hull-White half fixed by roadmap 1.3; the TraderX half open) |
+| Audit M-2 | [I-04](known-issues.md#i-04) (the Hull-White half fixed on 2026-10-01; the TraderX half open) |
 | Audit M-3 | [I-43](known-issues.md#i-43) (fixed) |
 | Audit M-4, M-5, R-1, P-3, A-5, A-7, Q-1 | Fixed; [closed ledger](known-issues.md#closed) |
 | Audit P-1 | [I-61](known-issues.md#i-61) |
@@ -146,7 +149,7 @@ Where the IDs of retired planning documents went. Their full text is in git hist
 | Audit Q-3, cleanup plan Phase 3 | [I-67](known-issues.md#i-67) |
 | Audit Q-4 | Done by this reorganization |
 | ORE alignment plan Phases 0–6, 8 | Done; remaining items are issues |
-| ORE alignment plan Phase 7 (performance) | [I-53](known-issues.md#i-53), roadmap [2.4 and 2.5](roadmap.md#stage-2--the-demo-on-a-local-gpu) |
+| ORE alignment plan Phase 7 (performance) | [I-53](known-issues.md#i-53); done 2026-10-06 and 2026-10-07 (roadmap [stage 2](roadmap.md#stage-2--the-demo-on-a-local-gpu)) |
 | ORE alignment plan Phase 9 (configurable engine) | Roadmap [stage 1](roadmap.md#stage-1--structure); [details/configurable-engine.md](details/configurable-engine.md) |
 | ORE alignment plan Phase 10.1, 10.2 | [I-49](known-issues.md#i-49), [I-54](known-issues.md#i-54) |
 | ORE alignment plan Phase 10.3, 10.4 | [F-04](features.md#f-04) |

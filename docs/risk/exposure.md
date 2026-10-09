@@ -38,14 +38,14 @@ Every profile starts at t=0, where ORE sets EPE = EE_B = EEE_B = PFE = max(NPV�
 ENE = max(−NPV₀, 0). NPV₀ is each trade's value on the simulation market of the as-of date (its
 curves sampled at the simulation tenors, log-linear between them), as ORE's cube starts from
 its `T0`; the result's `base_npv` is the value on today's market, ORE's NPV analytic (they
-differ by the curves' interpolation between the tenors; since roadmap 3.2, I-85). A trade's
+differ by the curves' interpolation between the tenors; since 2026-10-07, I-85). A trade's
 time weights stop at its maturity as ORE's `Trade::maturity()` defines it: a cash-settled
 option's is its last exercise date (I-86). `times[0]` is 0; the rest are the simulation dates'
 times (ACT/365; ORE's report labels the dates with ActualActual (ISDA) times instead).
 
 The numeraire is the base currency's LGM numeraire `N(t, x)`, exact at each date (ORE's),
 whichever model simulates it (the Hull-White model is ORE's LGM in another parametrization);
-`P(0,t)` comes from the base currency's discount curve. (Until roadmap 1.3 the Hull-White
+`P(0,t)` comes from the base currency's discount curve. (Until 2026-10-01 the Hull-White
 model's numeraire was a left-point money-market account, [I-45](../planning/known-issues.md#i-45).)
 
 **Netting.** A netting set's exposure is computed on the *sum* of its trades' paths, so
@@ -79,13 +79,13 @@ trade's row, its `exposure`, objects with the same fields ([HTTP API](../referen
 
 The statistics above are exact on the cube they are given, and the cube is ORE's: the
 cross-asset model, paid flows dropping out, options wrapped as ORE wraps them, under either
-interest-rate model. (Until roadmap 1.3 the Hull-White model had a separate cube with three
+interest-rate model. (Until 2026-10-01 the Hull-White model had a separate cube with three
 known weaknesses, [I-42](../planning/known-issues.md#i-42), [I-04](../planning/known-issues.md#i-04)
-and [I-43](../planning/known-issues.md#i-43), and warned about them.) Since roadmap 3.2 the
+and [I-43](../planning/known-issues.md#i-43), and warned about them.) Since 2026-10-07 the
 assembled profiles are compared with an ORE simulation (`tests/test_ore_xva_parity.py`): the
 definitions on ORE's own cube to 1.8e-13, swaps', Europeans' and bonds' cubes on ORE's paths to
 3e-11, and the profiles in distribution. A Bermudan's or American's values on the paths are
-0.5–4% above ORE's ([I-49](../planning/known-issues.md#i-49), roadmap 3.5), and so is its exposure.
+0.5–4% above ORE's ([I-49](../planning/known-issues.md#i-49)), and so is its exposure.
 
 ## Tested by
 

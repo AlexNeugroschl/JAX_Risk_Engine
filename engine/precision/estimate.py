@@ -22,7 +22,7 @@ Carlo as Giles and Sheridan-Methven use it for reduced-precision random variable
 corrected value is the figure the run reports.
 
 **Quantiles** (PFE, VaR, ES): not means, so not corrected (A-13; multilevel quantile
-estimation is roadmap 5.3). The figure is the run's own, from every path at its precision;
+estimation is F-07's FP4 part). The figure is the run's own, from every path at its precision;
 the paired sample measures the precision error as the same statistic at the run's precision
 and at float64 on the paired paths, and their difference.
 

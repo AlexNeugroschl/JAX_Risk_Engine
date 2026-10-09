@@ -1,6 +1,6 @@
 """
 HTTP routes over `engine.portfolio`, `engine.market_risk` and `engine.calibration`; translation
-only, no pricing logic (docs/reference/http-api.md; decision A-2, roadmap 3.1).
+only, no pricing logic (docs/reference/http-api.md; decision A-2).
 
 Jobs, for work that can take minutes (a simulation, a revaluation under thousands of scenarios),
 too long to hold a request open:
@@ -15,7 +15,7 @@ Each submission is validated synchronously (no JAX work; a refusal is a 400 and 
 created), then its body is written as received to the durable job queue
 (`engine.api.job_queue`) with its kind, and the route returns `202` with a `job_id`. The engine
 worker (`engine.api.worker`, one process per host, kept alive by `engine.api.supervisor`) runs
-queued jobs one at a time and writes each result document back (roadmap 1.8, decision A-14).
+queued jobs one at a time and writes each result document back (decision A-14).
 
 Synchronous, for small bootstraps that answer in about a second once compiled:
 
@@ -26,7 +26,7 @@ Both run in the API process, whose JAX is on the CPU (`engine.api.app.keep_jax_o
 calibration is float64 by decision (A-10), and a few helpers' bootstraps gain nothing from an
 accelerator.
 
-Roadmap 3.1 retired `POST /v2/portfolio/price` (the same request at a name that looked like a
+On 2026-10-07 the API retired `POST /v2/portfolio/price` (the same request at a name that looked like a
 version) and `GET /portfolio/price/{job_id}` (now `GET /jobs/{job_id}`, for every kind).
 
 Job store: the queue's SQLite file (`JAX_RISK_JOB_QUEUE`), which survives restarts and is
@@ -122,7 +122,7 @@ def version() -> VersionSchema:
     """Engine version, JAX backend of this (API) process, and git commit if available. The
     backend is not where jobs run: a served API's own JAX is on the CPU (`keep_jax_on_the_cpu`),
     and each job's result names its own devices and backend in its `precision` report, built in
-    the engine worker that ran it (roadmap 1.7 and 2.2, I-12)."""
+    the engine worker that ran it (I-12)."""
     try:
         import importlib.metadata
         engine_version = importlib.metadata.version("jax-risk-engine")

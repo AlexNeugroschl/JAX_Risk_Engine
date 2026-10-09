@@ -76,7 +76,7 @@ trade's curves, then one Hessian-vector product per pillar, batched with `vmap`,
 full Hessian (`_gradients_and_hessian_diagonals`). Scaled by the shift (Delta) and its square
 (Gamma), they are the shift → 0 limit of ORE's numbers. Each trade's Delta and Gamma are one
 compiled program, and its Vega gradient another, shared by every trade of the same product
-and shape ([profiling §3.8](../concepts/profiling.md#38-the-ad-greeks-as-one-program-per-product-2026-10-06-roadmap-24)).
+and shape ([profiling §3.8](../concepts/profiling.md#38-the-ad-greeks-as-one-program-per-product-2026-10-06)).
 
 **How the two methods differ, beyond the shift size.**
 

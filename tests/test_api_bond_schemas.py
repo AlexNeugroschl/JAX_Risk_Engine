@@ -138,7 +138,7 @@ class TestScenarioRiskOverHttp:
         assert serialized.base_npv > 90_000.0 and [t.base_npv for t in serialized.trades] == [serialized.base_npv]
 
     def test_a_bond_with_scenario_risk_is_priced_on_every_path_over_http(self):
-        """I-24: before roadmap 1.3 this was refused (`ScenarioPricingNotSupported`)."""
+        """I-24: before 2026-10-01 this was refused (`ScenarioPricingNotSupported`)."""
         result = price_portfolio(parse([NOTE_JSON], scenario_risk=True, simulation=SIMULATION))
         serialized = PortfolioResultSchema.from_dataclass(result)
         assert serialized.scenario_risk_available is True and serialized.exposure is not None

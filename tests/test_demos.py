@@ -35,7 +35,7 @@ class TestComponentDemosRun:
 
 @pytest.mark.parametrize("demo", [demo_structured, demo_profile_small], ids=lambda m: m.__name__.split(".")[-1])
 class TestTheHttpDemosPolling:
-    """Until roadmap 2.3 each HTTP demo polled until `done` or `failed`, so a job whose worker
+    """Until 2026-10-06 each HTTP demo polled until `done` or `failed`, so a job whose worker
     died (`interrupted`, final too) was polled forever. Each demo polls with its own code
     (`demo_api.py` too, which runs as a script on import and is not tested here)."""
 
@@ -92,6 +92,6 @@ class TestTheProfilingDemosSwitches:
         assert env["JAX_RISK_PROFILE_WARMUP"] == "1" and "JAX_RISK_PROFILE_PHASE" not in env
 
     def test_a_phase_is_traced_alone(self, server_environment):
-        """Roadmap 2.4: `--phase` traces one phase of the job (`engine.api.worker._profiled`)."""
+        """`--phase` traces one phase of the job (`engine.api.worker._profiled`)."""
         env = server_environment(["--cold", "--phase", "pricing"])
         assert env["JAX_RISK_PROFILE_PHASE"] == "pricing" and "JAX_RISK_PROFILE_WARMUP" not in env

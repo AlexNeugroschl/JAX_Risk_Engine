@@ -155,7 +155,7 @@ class TestPricePortfolioGreeks:
 
 
 class TestPricePortfolioPrecision:
-    """The run's `Precision` reaches every adjustable stage (roadmap 1.4, I-55); t=0 values and
+    """The run's `Precision` reaches every adjustable stage (I-55); t=0 values and
     the reductions over paths are float64 whatever it says (decision A-10)."""
 
     def test_default_precision_is_float64(self):
@@ -206,14 +206,14 @@ class TestPricePortfolioPrecision:
         np.testing.assert_allclose(np.asarray(result.npv_cube), np.asarray(exact.npv_cube), rtol=1e-3, atol=5.0)
 
     def test_the_retired_32_64_shape_is_refused_naming_the_replacement(self):
-        with pytest.raises(TypeError, match=r"RunConfig\.precision.*retired by roadmap 1\.4"):
+        with pytest.raises(TypeError, match=r"RunConfig\.precision.*retired on 2026-10-01"):
             _request(("swap-payer",), precision=32)
 
 
 @pytest.mark.slow
 class TestPricePortfolioConcurrency:
     """Two requests at different precisions on two threads at once each get their own values,
-    bit for bit. Nothing serializes them since roadmap 1.4 removed the lock: every precision is
+    bit for bit. Nothing serializes them since the lock was removed (2026-10-01): every precision is
     a dtype of the run's own arrays, and the pipeline keeps no global state. A
     `threading.Barrier` forces overlap, and the body repeats to make a race likely."""
 

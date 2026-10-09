@@ -1,5 +1,5 @@
 """
-The run configuration (roadmap 1.2 and 1.3, I-68): every choice of model, engine, method and
+The run configuration (I-68): every choice of model, engine, method and
 precision a portfolio run makes, in one value, with ORE's defaults (decisions A-1, A-5, A-9
 in compliance/decisions.md). ORE configures a run with files; each component is one of them:
 
@@ -21,12 +21,12 @@ in compliance/decisions.md). ORE configures a run with files; each component is 
 | Simulation | classic revaluation (ORE's AMC is F-03) | classic |
 | Engine per product | swap: discounting; European: `Bachelier`, `Jamshidian`; Bermudan/American: LGM grid | ORE's builders |
 | Greeks method | `Bump`, `AD` | `Bump` |
-| Precision per stage | simulation, market, pricing: float64 or float32 compute; storage also float16, bfloat16 or FP8 (block scales, nearest or stochastic rounding, roadmap 1.6); pricing overridable per product and per trade | float64 |
+| Precision per stage | simulation, market, pricing: float64 or float32 compute; storage also float16, bfloat16 or FP8 (block scales, nearest or stochastic rounding); pricing overridable per product and per trade | float64 |
 
 Every option runs with every other: the models differ only in the simulation, and the engines
 and Greeks methods price whatever the simulation produced. What the pipeline does not
 implement yet is refused before any work, naming the field, never done some other way: a
-precision format before the roadmap step that enables it (`engine.precision.policy`), an
+precision format not enabled yet (`engine.precision.policy`), an
 engine option where a trade meets it (`engine.valuation.portfolio.validate_trades`).
 Calibration, t=0 values, Greeks and reductions over paths are float64 by decision (A-10).
 """

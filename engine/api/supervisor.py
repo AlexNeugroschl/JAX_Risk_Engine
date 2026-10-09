@@ -1,5 +1,5 @@
 """
-Keeping one engine worker (`engine.api.worker`) alive behind the API (roadmap 1.8).
+Keeping one engine worker (`engine.api.worker`) alive behind the API (decision A-14).
 
 `JAX_RISK_WORKER` chooses who runs the worker:
 

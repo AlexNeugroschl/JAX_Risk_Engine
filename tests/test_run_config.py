@@ -1,16 +1,16 @@
 """
-The run configuration (`engine.portfolio.config.RunConfig`, roadmap 1.2 and 1.3, I-68): one
+The run configuration (`engine.portfolio.config.RunConfig`, I-68): one
 value naming the model per currency and simulation, the engine per product, the Greeks method
 and settings, and the precision per stage, with ORE's defaults.
 
   * The defaults are ORE's, and a request that spells them out prices bit for bit as one that
     omits the configuration.
-  * Every model runs with every engine and Greeks method (1.3): the Hull-White model is
+  * Every model runs with every engine and Greeks method: the Hull-White model is
     `HullWhiteConfig` in `CamConfig.ir`, on the same pipeline as the LGM. Before 1.3 it was a
     second pipeline selected by the market's type, with its own engines and Greeks, and each
     pipeline refused the other's options.
   * What the pipeline does not implement yet is refused before any work, naming the field:
-    today a precision format before the roadmap step that enables it (tests/test_precision.py),
+    today a precision format not enabled yet (tests/test_precision.py),
     and what the Jamshidian engine cannot price.
   * The bump-and-revalue settings (`GreeksConfig.sensitivity`, ORE's sensitivity.xml) reach
     the Greeks.
@@ -125,7 +125,7 @@ class TestWhatThePipelineDoesNotImplementIsRefused:
 
     @pytest.mark.parametrize("model", MODELS)
     def test_every_enabled_precision_is_accepted_under_every_model(self, model):
-        """Since roadmap 1.4 every stage is adjustable under either model; before it, a stage
+        """Since 2026-10-01 every stage is adjustable under either model; before it, a stage
         other than the simulation below float64 was refused here."""
         for precision in (Precision.throughout("float32"), Precision(pricing=StagePrecision("float32"))):
             request = _market_request(("swap-payer",), config=RunConfig(simulation=_cam(model=model),
@@ -134,14 +134,14 @@ class TestWhatThePipelineDoesNotImplementIsRefused:
 
     def test_calibration_targets_are_not_a_request_field(self):
         """The basket is the model's (the `LgmConfig`/`HullWhiteConfig` tenors), per currency;
-        before 1.3 the Hull-White request took its own `calibration_targets`."""
+        before 2026-10-01 the Hull-White request took its own `calibration_targets`."""
         with pytest.raises(TypeError, match="calibration_targets"):
             PortfolioRequest(market=shared.market(), trades=[], calibration_targets=[])
 
 
 class TestEveryModelRunsWithEveryEngineAndMethod:
     """I-68: the model is an option of the run, not a pipeline. Every combination prices
-    today, on the paths and its Greeks; before 1.3 the Hull-White request refused the Bachelier
+    today, on the paths and its Greeks; before 2026-10-01 the Hull-White request refused the Bachelier
     engine and AD Greeks' market path, and the market path refused Jamshidian and AD."""
 
     @pytest.mark.parametrize("model", MODELS)

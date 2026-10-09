@@ -24,7 +24,7 @@ holds them at the tenors measured from the as-of date, `dc.yearFraction(asof, as
 that moves with the evaluation date, and every scenario only replaces its discount factors
 (`as_of_tenor_times`). Between tenors the curve is `engine.models.curves.DiscountCurve`
 (log-linear, flat forward), ORE's `LogLinear` interpolation and `FlatFwd` extrapolation. Until
-roadmap 3.2 the engine held each value at the time it was computed for; on a 6M tenor that is
+2026-10-07 (I-84) the engine held each value at the time it was computed for; on a 6M tenor that is
 two days apart, and the swaps of the shared portfolio moved by up to 0.3% of their largest
 path value against ORE's own simulation (`tests/test_ore_xva_parity.py`). Model time on the
 grid is ACT/365 from the as-of date, so ORE's discount-curve time `t` and index-curve time
@@ -53,7 +53,7 @@ DISCOUNT_FLOOR = 1e-5
 class ScenarioCurves:
     """One curve on every path and date: log discount factors `[S, D, K+1]` at the simulation
     market's tenor times `[D, K+1]`, measured from each date (column 0 is t = 0, log discount
-    0); since roadmap 3.2 every date's are the as-of date's (`as_of_tenor_times`)."""
+    0); since 2026-10-07 every date's are the as-of date's (`as_of_tenor_times`)."""
     tenor_times: jax.Array    # [D, K+1]
     log_discounts: jax.Array  # [S, D, K+1]
 

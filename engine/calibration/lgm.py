@@ -42,7 +42,7 @@ class CalibrationResult:
 #: The bracket of one bucket's sigma: [0.01bp, 2000bp] of normal vol.
 _SIGMA_BRACKET = (1e-6, 0.20)
 
-#: Steps of one bucket's sigma: Bisection's the count before roadmap 2.5, Newton's measured
+#: Steps of one bucket's sigma: Bisection's the count before Newton (A-21), Newton's measured
 #: (2026-10-07: a bucket reaches its rounding in 5 steps; two of margin, tests/test_root_solvers.py).
 _SIGMA_STEPS = Steps(bisection=60, newton=7)
 

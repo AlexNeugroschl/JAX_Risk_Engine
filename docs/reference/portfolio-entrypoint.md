@@ -71,7 +71,7 @@ result = price_portfolio(PortfolioRequest(market=market, trades=trades, config=c
 `BondConfig` (Treasury bills and notes) prices like every other trade: today and on every
 path, by discounting its remaining flows on its currency's curve (ORE's
 `DiscountingRiskyBondEngine` without credit), with exposure, Greeks (discount curve only, no
-Vega) and scenario risk. (Until roadmap 1.3 the Hull-White model refused a bond with
+Vega) and scenario risk. (Until 2026-10-01 the Hull-White model refused a bond with
 scenario risk, [I-24](../planning/known-issues.md#i-24).)
 
 ## `Precision`
@@ -89,13 +89,13 @@ accumulate)` of format names per adjustable stage, each `"float64"` by default:
 | `by_trade` | `{trade_id: StagePrecision}`: replaces `by_product` and `pricing` for one trade. |
 | `rounding` | `"nearest"` (default) or `"stochastic"`: how values are rounded into a storage format below 32 bits. Stochastic rounding without such a format is refused. |
 | `rounding_seed` | Non-negative integer, 0 by default: the seed of the stochastic rounding. |
-| `paired_fraction` | In [0, 1], 0 by default: the share of paths also simulated and priced at float64 throughout (rounded up to whole blocks of 32 paths), to measure the run against float64 (roadmap 1.7). |
+| `paired_fraction` | In [0, 1], 0 by default: the share of paths also simulated and priced at float64 throughout (rounded up to whole blocks of 32 paths), to measure the run against float64 (2026-10-02). |
 
 `compute` is the format a stage computes in, `storage` the format its output is kept in until
 the next stage reads it (no wider than `compute`), `accumulate` the format its sums
-accumulate in (equal to `compute` until roadmap 3.7). `compute` is `"float64"` or
+accumulate in (equal to `compute` until F-07's compute formats). `compute` is `"float64"` or
 `"float32"`; `storage` may also be `"float16"`, `"bfloat16"`, `"float8_e4m3fn"` or
-`"float8_e5m2"` (roadmap 1.6), while compute in them is refused, naming roadmap 3.7.
+`"float8_e5m2"` (2026-10-02), while compute in them is refused, naming F-07.
 `Precision.throughout("float32")` sets every stage to float32.
 
 Storage below 32 bits keeps a float32 power-of-two scale per block of 32 paths that brings the
@@ -124,10 +124,10 @@ Calibration, today's values, Greeks and every reduction over paths (the exposure
 are float64 whatever the policy says (decision A-10): `base_npv_per_trade` is float64, and
 `npv_cube` is the stored cube read back at float64, so its values are float32 numbers when
 its `storage` is `"float32"`, and FP8 numbers times their block scales when it is FP8. The
-32/64 shape before roadmap 1.4 (`PrecisionConfig` and its override classes) is refused,
+32/64 shape before 2026-10-01 (`PrecisionConfig` and its override classes) is refused,
 naming the replacement (decision A-12).
 
-**The paired sample and the precision report** (roadmap 1.7, decision A-13). With
+**The paired sample and the precision report** (decision A-13). With
 `paired_fraction > 0` the first paths are simulated and priced again at float64 throughout (the
 same Sobol points, so the same paths a float64 run would give, bit for bit), and every figure is
 measured against float64 on them. Means are corrected by the two-level estimator,
@@ -153,7 +153,7 @@ epe.correction, epe.correction_standard_error   # the FP8 cube's bias on EPE, an
 ```
 
 At float64 everywhere a paired sample measures exactly zero. Whether a combination is
-validated for a figure is roadmap 5.1's evidence table ([I-55](../planning/known-issues.md#i-55)).
+validated for a figure is the evidence table of [I-55](../planning/known-issues.md#i-55).
 
 ## `PortfolioResult`
 
@@ -204,15 +204,15 @@ then `greeks`;
 There is no request-level calibration: each currency's model is calibrated to its own basket
 when `CamConfig.ir[ccy]` names one (`calibration_expiries` × `calibration_terms`), and each
 Bermudan/American's engine to the trade's own co-terminal basket (ORE's `LgmBuilder`, per
-trade, recalibrated on every path). Until roadmap 1.3 the Hull-White model took one shared
+trade, recalibrated on every path). Until 2026-10-01 the Hull-White model took one shared
 basket for every uncalibrated trade (`calibration_targets`,
 [I-47](../planning/known-issues.md#i-47)).
 
 ### Known-limitation flagging
 
 (Section title kept for links.) The Hull-White model's cube warnings (aged swaps, options
-expiring in the horizon, a curve inconsistent with its short rate) went with that pipeline in
-roadmap 1.3: what they warned about is priced correctly now. A run's known limitations are in
+expiring in the horizon, a curve inconsistent with its short rate) went with that pipeline on
+2026-10-01: what they warned about is priced correctly now. A run's known limitations are in
 [known issues](../planning/known-issues.md).
 
 ## Greeks

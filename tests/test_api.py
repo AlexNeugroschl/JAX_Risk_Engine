@@ -3,8 +3,8 @@
 returns 202 and a job id, and polling `/jobs/{job_id}` reaches a result equal to a direct
 `price_portfolio` call, here with the Hull-White model named in the request's `simulation.ir`
 (the market path over HTTP on the shared portfolio is tests/test_api_market_path.py, market risk
-tests/test_api_market_risk.py); the Hull-White request shape retired by roadmap 1.3 is a 422
-naming its replacement, and so are the names roadmap 3.1 retired; invalid bodies give a 4xx with
+tests/test_api_market_risk.py); the Hull-White request shape retired on 2026-10-01 is a 422
+naming its replacement, and so are the names retired on 2026-10-07; invalid bodies give a 4xx with
 the validator's message (malformed schemas a 422); /calibration/cam and /calibration/lgm.
 """
 import copy
@@ -145,10 +145,10 @@ class TestPortfolioPriceInvalidPayload:
                 "trades": [_swap()]}
         r = test_client.post("/portfolio/price", json=body)
         assert r.status_code == 422
-        assert "retired by roadmap 1.3" in r.text and "simulation.ir" in r.text
+        assert "retired on 2026-10-01" in r.text and "simulation.ir" in r.text
 
     @pytest.mark.parametrize("retired", [{"schema_version": "2"}])
-    def test_the_names_retired_by_roadmap_3_1_are_refused(self, test_client, retired):
+    def test_the_names_retired_as_false_versions_are_refused(self, test_client, retired):
         """`schema_version: "2"` and `/v2/portfolio/price` looked like versions and were not
         (decision A-2); `GET /portfolio/price/{job_id}` is now `GET /jobs/{job_id}`."""
         assert test_client.post("/portfolio/price", json=_body([_swap()], **retired)).status_code == 422
@@ -204,7 +204,7 @@ class TestPortfolioPriceUnknownJob:
 
 class TestCalibrationEndpoint:
     """The standalone calibration route (its own Hagan bootstrap on the basket it is given;
-    the portfolio's calibration is the CAM's, per currency; roadmap 3.1)."""
+    the portfolio's calibration is the CAM's, per currency)."""
 
     def test_valid_calibration_request_returns_fitted_sigma(self, test_client):
         body = {"evaluation_date": shared.ASOF_ISO, "exercise_times": [1.0, 2.0, 3.0, 4.0], "final_maturity_time": 5.0,
@@ -220,7 +220,7 @@ class TestCalibrationEndpoint:
 
 class TestCamCalibrationEndpoint:
     """`POST /calibration/cam`: the cross-asset model's calibration per currency, the one a
-    portfolio run simulates with (`engine.calibration.cam`, roadmap 3.1, I-56)."""
+    portfolio run simulates with (`engine.calibration.cam`, I-56)."""
 
     BASKET = {"calibration_expiries": ["1Y", "2Y", "5Y"], "calibration_terms": ["5Y", "4Y", "1Y"]}
 
@@ -264,15 +264,15 @@ class TestPortfolioPricePrecision:
     def test_the_retired_32_64_shape_is_a_422_naming_the_replacement(self, test_client, old):
         """Refused, not translated (decision A-12)."""
         r = test_client.post("/portfolio/price", json=_body([_swap()], precision=old))
-        assert r.status_code == 422 and "retired by roadmap 1.4" in r.text and "StagePrecision" in r.text
+        assert r.status_code == 422 and "retired on 2026-10-01" in r.text and "StagePrecision" in r.text
 
     def test_a_format_outside_the_table_is_a_422(self, test_client):
         r = test_client.post("/portfolio/price", json=_body([_swap()], precision={"pricing": {"compute": "fp32"}}))
         assert r.status_code == 422 and "float8_e4m3fn" in r.text
 
     @pytest.mark.parametrize("stage, block, message", [
-        ("pricing", {"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"}, "roadmap step 3.7"),
-        ("market", {"compute": "bfloat16"}, "roadmap step 3.7"),
+        ("pricing", {"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"}, "not enabled yet (F-07"),
+        ("market", {"compute": "bfloat16"}, "not enabled yet (F-07"),
         ("simulation", {"storage": "float64", "compute": "float32", "accumulate": "float32"}, "wider than compute"),
     ])
     def test_a_format_not_enabled_is_a_400_naming_the_stage_and_field(self, test_client, stage, block, message):
@@ -280,7 +280,7 @@ class TestPortfolioPricePrecision:
         assert r.status_code == 400 and f"precision.{stage}" in r.json()["detail"] and message in r.json()["detail"]
 
     def test_overrides_per_product_and_trade_reach_the_run_configuration(self):
-        """Roadmap 1.5: `by_product` keyed by `trade_type`, `by_trade` by `trade_id`."""
+        """Decision A-15: `by_product` keyed by `trade_type`, `by_trade` by `trade_id`."""
         f32 = {"storage": "float32", "compute": "float32", "accumulate": "float32"}
         body = _body([_swap(trade_id="s"), _european(trade_id="e")],
                      precision={"by_product": {"european_swaption": f32}, "by_trade": {"s": {"storage": "float32"}}})
@@ -307,7 +307,7 @@ class TestPortfolioPricePrecision:
         assert r.status_code == 400 and f"precision.{name}['{key}']" in r.json()["detail"]
 
     def test_scaled_storage_and_its_rounding_reach_the_run_configuration(self):
-        """Roadmap 1.6: float16, bfloat16 and FP8 storage, `rounding` and `rounding_seed`."""
+        """Float16, bfloat16 and FP8 storage, `rounding` and `rounding_seed`."""
         fp8 = {"storage": "float8_e4m3fn", "compute": "float32", "accumulate": "float32"}
         body = _body([_swap()], precision={"simulation": fp8, "pricing": {"storage": "bfloat16"},
                                            "rounding": "stochastic", "rounding_seed": 7})
@@ -336,7 +336,7 @@ class TestPortfolioPricePrecision:
 @pytest.mark.slow
 class TestPortfolioPriceJobQueueDispatch:
     """`/portfolio/price` queues jobs of every precision for the one engine worker
-    (`engine.api.worker`, roadmap 1.8)."""
+    (`engine.api.worker`, decision A-14)."""
 
     def test_two_precisions_submitted_back_to_back_both_complete_correctly(self, test_client):
         f32 = {"storage": "float32", "compute": "float32", "accumulate": "float32"}

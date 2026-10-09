@@ -1,7 +1,7 @@
 # Configurable engine
 
-Design for roadmap [stage 1](../roadmap.md#stage-1--structure), step 3.1 (done
-2026-10-07) and step 3.9: one run configuration whose options are
+Design for roadmap [stage 1](../roadmap.md#stage-1--structure), the API reaching every setting (done
+2026-10-07) and the run request (I-87): one run configuration whose options are
 models, engines, methods and precision, as ORE configures a run. Implements owner decisions
 A-1 to A-9 ([compliance/decisions.md](../../../compliance/decisions.md) §1–2).
 
@@ -31,33 +31,33 @@ Every choice is one `RunConfig` (`engine/portfolio/config.py`) on
 | European engine | `Bachelier` (ORE's default) or `Jamshidian` with `PricingConfig.jamshidian` |
 | Greeks | `Bump` (`engine.risk.sensitivities`, settings `config.greeks.sensitivity`) or `AD` (`engine.risk.greeks`) |
 | Market risk | `engine.market_risk.run_market_risk` on a `Market` with the same `PricingConfig` (A-8) |
-| Precision | `config.precision` (`engine.precision.Precision`, step 1.4): storage, compute and accumulate per adjustable stage (simulation, market, pricing), float64 or float32 compute, storage down to FP8 with block scales and nearest or stochastic rounding since step 1.6; per product and per trade since step 1.5; the paired float64 sample and the precision report on every result since step 1.7 ([precision.md](precision.md)) |
+| Precision | `config.precision` (`engine.precision.Precision`, the precision mechanism (2026-10-01)): storage, compute and accumulate per adjustable stage (simulation, market, pricing), float64 or float32 compute, storage down to FP8 with block scales and nearest or stochastic rounding since sub-32-bit storage (2026-10-02); per product and per trade since per-trade precision (2026-10-02); the paired float64 sample and the precision report on every result since the precision report (2026-10-02) ([precision.md](precision.md)) |
 
-## Step 1.2 — the run configuration (I-68) — done
+## The run configuration (I-68) — done 2026-09-30
 
 | Component | Field | Options | Default |
 |---|---|---|---|
-| Model per currency | `simulation.ir[ccy]` (`CamConfig`, ORE's `CrossAssetModelData`) | `LgmConfig`; `HullWhiteConfig` (step 1.3) | none: named per currency |
+| Model per currency | `simulation.ir[ccy]` (`CamConfig`, ORE's `CrossAssetModelData`) | `LgmConfig`; `HullWhiteConfig` (the shared pipeline (2026-10-01)) | none: named per currency |
 | Simulation | `simulation` | Classic revaluation; AMC is [F-03](../features.md#f-03) | Classic |
 | Engine per product | `pricing` (`PricingConfig`) | Swap: discounting. European: `Bachelier`, `Jamshidian`. Bermudan/American: `LgmSwaptionEngineConfig` (FD solver in F-01) | ORE's builder defaults |
 | Greeks method | `greeks.method` | `Bump`; `AD` | `Bump` |
 | Sensitivity settings | `greeks.sensitivity` (`SensitivityConfig`) | Tenors, shifts, Theta horizon, vol decay | ORE's |
-| Precision per stage | `precision` (`Precision`, step 1.4) | Storage, compute and accumulate format per adjustable stage | FP64 |
+| Precision per stage | `precision` (`Precision`, the precision mechanism (2026-10-01)) | Storage, compute and accumulate format per adjustable stage | FP64 |
 | Swaption vol decay | `simulation.swaption_vol_decay` | `ForwardVariance`; `ConstantVariance` (A-4) | `ForwardVariance` |
 | Reporting currency | `base_currency` | Any market currency; `None` is the simulation's, else USD | `None` |
 
-Rules the implementation follows, which steps 1.3, 1.4 and 3.1 keep:
+Rules the implementation follows, which every change since keeps:
 
 - **An option the pipeline does not implement is refused, never substituted.** The
-  configuration's own validation (a precision format before its step, `engine.precision`)
-  and `validate_trades` run before any work and name the field (since step 1.3 one check for
+  configuration's own validation (a precision format not enabled yet, `engine.precision`)
+  and `validate_trades` run before any work and name the field (since 2026-10-01 one check for
   both models). An engine is checked where the run uses it (the Jamshidian engine's
   refusals only for a European on it).
 - **One fact, one field.** The reporting currency is the simulation's; a `base_currency`
-  contradicting it is refused (before 1.2 it was silently ignored).
+  contradicting it is refused (before 2026-09-30 it was silently ignored).
 - **The request travels whole.** The engine worker parses the HTTP body exactly as the
   route did, so every configuration component reaches it and is validated again there
-  (until roadmap 1.8 a worker pool froze the request into a picklable form).
+  (until 2026-10-04 a worker pool froze the request into a picklable form).
 
 Evidence that the defaults reproduce the market path bit for bit: the shared portfolio
 (8 trades, scenario risk, exposure, bump Greeks), an FP32-simulation run and the Hull-White
@@ -65,7 +65,7 @@ model, compared array for array against the code before the change (114 arrays, 
 identical: [verification status](../known-issues.md#verification-status)), and the parity
 suites in the full run.
 
-## Step 1.3 — the Hull-White model on the shared pipeline — done
+## The Hull-White model on the shared pipeline — done 2026-10-01
 
 The Hull-White model is a model per currency (`HullWhiteConfig` in `CamConfig.ir`, `"model":
 "HullWhite"` over HTTP) on the same pipeline as the LGM; the separate Hull-White pipeline
@@ -108,9 +108,9 @@ Design decisions taken in the step, with their reasons:
 - **ORE globals.** The engine sets no ORE global (every date is passed explicitly; the
   calibration helpers take their dates from their own curve's reference date), so there is
   nothing to scope.
-- **Precision narrowed until 1.4.** The Hull-White pipeline took `pricing`/`risk` below 64;
+- **Precision narrowed until 2026-10-01.** The Hull-White pipeline took `pricing`/`risk` below 64;
   the shared pipeline computed those stages in float64 and refused less (I-55). Kept rather
-  than ported: 1.4 made them adjustable for both models at once.
+  than ported: the precision mechanism made them adjustable for both models at once.
 
 Evidence: the shared portfolio's market-path numbers (t=0, an FP64 and an FP32-simulation
 scenario run, bump Greeks) bit for bit before and after, 103 of 103 arrays; each closed
@@ -119,32 +119,32 @@ curve; every per-path ORE comparison of `tests/test_valuation.py` run under both
 `tests/test_end_to_end.py` prices the Hull-White simulation's paths in QuantLib
 ([verification status](../known-issues.md#verification-status)).
 
-## Steps 1.4 to 1.8 — precision and the engine worker (I-55, I-12, I-72); done 2026-10-01 to 10-04
+## Precision and the engine worker (I-55, I-12, I-72) — done 2026-10-01 to 10-04
 
 Designed in [precision.md](precision.md): a `Precision` with storage, compute and accumulate
 per adjustable stage, overridable per product and trade (A-10, A-15); the old configuration
 refused (A-12); five cast points with inputs following dtype; storage down to FP8; the paired
 float64 sample, the two-level estimator and the precision report (A-13); then one engine
-worker process per host behind a durable job queue (A-14). Every step keeps the default bit
+worker process per host behind a durable job queue (A-14). Each change kept the default bit
 for bit. Adjustable precision stays available throughout.
 
-## Step 3.4 — `ShiftHorizon` (I-32)
+## `ShiftHorizon` (I-32)
 
 `H → H + shift`, with the state grid built in the shifted variable (`engine.models.lgm`,
 `_state_grid`). Add `shift_horizon=0.5` cases to `tests/test_ore_lgm_parity.py`, then make 0.5
 the default (ORE's builder default, `OREData/ored/portfolio/builders/swaption.cpp`).
 
-## Steps 3.6 and 3.7 — precision evidence and low-precision kernels (I-55, F-07)
+## Precision evidence and low-precision kernels (I-75, I-55, F-07)
 
 In [precision.md](precision.md) §8 and §10: the evidence table per figure and precision
 against the acceptance standard (A-11), shared with Basel P6; then the kernels in difference
 form, one implementation for every precision (A-16).
 
-## Step 3.9 — one run request (I-87, I-88, I-89)
+## One run request (I-87, I-88, I-89)
 
-3.1 made every setting reachable but kept one route per engine function, so the API is shaped
+The API of 2026-10-07 made every setting reachable but kept one route per engine function, so the API is shaped
 like the engine's Python entry points rather than like a user's task
-([I-87](../known-issues.md#i-87)). This step does what A-2 says: a single route and a single
+([I-87](../known-issues.md#i-87)). The run request does what A-2 says: a single route and a single
 request, as ORE runs a portfolio, market data and its configuration files with a list of
 analytics.
 
@@ -206,8 +206,8 @@ optimization for later, not a requirement.
 `POST /portfolio/market-risk`, `POST /calibration/cam`, `POST /calibration/lgm` (its Python
 function `calibrate_lgm_sigma` stays), `GET /jobs/...`, and the fields `scenario_risk`,
 `compute_greeks`, `cube_output` and `pnl_output`. `/health`, `/version` and the EOD routes
-stay; the EOD contract is TraderX's. A version-2 queue file is migrated in place, as 3.1
-migrated version 1.
+stay; the `/eod` contract is TraderX's. A version-2 queue file is migrated in place, as version 1
+was on 2026-10-07.
 
 **Wiring, not only names** ([I-88](../known-issues.md#i-88)). For every field the
 completeness walk finds, a test builds a request with that field set to a non-default value,
@@ -224,9 +224,9 @@ The demos and `docs/reference/http-api.md` move to the run request. No engine nu
 
 Saving a market or a configuration on the server to use by reference is not planned.
 
-## Step 3.1 — one API reaching every setting (I-56, I-10, I-09) — done 2026-10-07
+## One API reaching every setting (I-56, I-10, I-09) — done 2026-10-07
 
-- **One route per analytic.** `POST /portfolio/price` (the portfolio request since 1.3),
+- **One route per analytic.** `POST /portfolio/price` (the portfolio request since the shared pipeline),
   `POST /portfolio/market-risk` (`MarketRiskRequestSchema`: the market and trades, Monte Carlo
   or historical scenarios on named factors, engines, quantiles, precision), both jobs for the
   engine worker, polled at `GET /jobs/{job_id}`; `POST /calibration/cam`, synchronous. The job
@@ -240,7 +240,7 @@ Saving a market or a configuration on the server to use by reference is not plan
   2026-10-07).
 - **Every setting reachable.** `tests/test_api_completeness.py` walks every configuration type a
   request can hold and fails on a field without an API field. It found three: the LGM engine's
-  `shift_horizon` (now a field, refused unless 0 until 3.4), piecewise volatilities (now
+  `shift_horizon` (now a field, refused unless 0 until `ShiftHorizon`), piecewise volatilities (now
   `{"times", "values"}` wherever a volatility is taken), and market risk and the CAM calibration
   (the new routes).
 - **Every per-trade figure keyed by its trade** (I-10): one row per trade (`trade_id`, t=0

@@ -52,7 +52,7 @@ Five decisions define its behavior:
 ### 1.1 It traces inside the engine worker
 
 The trace is taken where `price_portfolio` actually executes — the engine worker process
-(roadmap 1.8), whose first job runs on cold JAX caches — not in the API handler. Output goes
+(2026-10-04), whose first job runs on cold JAX caches — not in the API handler. Output goes
 to `$JAX_RISK_PROFILE_DIR/pid-<pid>/`, **one directory per process**, so a restarted worker
 or a direct call in another process writes its own trace instead of a corrupted shared file.
 (Until 1.8 jobs ran in a pool of workers, one trace directory each.)
@@ -83,7 +83,7 @@ The top "hot" entries with it on were `isinstance` × 90,235, `append` × 33,156
 Worse than the noise: the trace's `.trace.json.gz` keeps only the **~1M events that start
 first**, with no warning. Those interpreter frames filled it during startup, so that file
 covered only **the first 1.6 s of a ~90 s job**. (This was read as a cap on the profiler's
-own buffer until roadmap 2.1 found the cap in the export: the `.xplane.pb` beside it, which
+own buffer until the profiling of 2026-10-05 found the cap in the export: the `.xplane.pb` beside it, which
 xprof reads, held all 1.5M events of a cold demo run. §5 is the check that now reports it.)
 
 Turning it off loses exactly one thing — attribution of a dispatch back to the engine
@@ -137,7 +137,7 @@ two different fixes, which is why they are filed separately.
 JAX dispatch is asynchronous. If the trace context closes while device work is still
 queued, the timeline is truncated. `npv_cube` is the dominant device-side tail.
 
-### 1.6 A phase window (roadmap 2.4)
+### 1.6 A phase window (2026-10-06)
 
 `JAX_RISK_PROFILE_PHASE=<phase>` traces one phase of the job instead of all of it: a label of
 `PHASES` (`calibration`, `simulation`, `pricing`, `exposure`, `greeks`, ...) or one trade's
@@ -159,7 +159,7 @@ it narrows the timeline to what is being studied.
 
 ## 2. What the trace contains
 
-### 2.0 The demo, measured (2026-10-05, roadmap 2.1)
+### 2.0 The demo, measured (2026-10-05)
 
 `demos/demo_profile_small.py` as it stands: five trades (swap, European, Bermudan, American,
 bill), 256 paths on 3 dates, the Hull-White model calibrated to a two-helper basket, AD
@@ -219,17 +219,17 @@ What the numbers say:
   Hessian-vector product) and one European Vega. A third run of the job compiles none, and a
   trade's Greeks repeated on their own compile none from the second call, so the cause is
   in how the first full job's tracing seeds JAX's caches, not a closure per call (I-53).
-  Roadmap 2.4 found it (JAX's internal caches of 2,048 entries evicted those programs) and
+  The work of 2026-10-06 found it (JAX's internal caches of 2,048 entries evicted those programs) and
   fixed it: a repeat compiles nothing (§3.8, and the re-measurement below).
 - **On CPU, `exposure` is mostly waiting.** Dispatch is asynchronous; `exposure` is the first
   phase to read the cube, so it absorbs pricing's device time (1.09 s of a 2.8 s repeat).
 
-#### On the GPU (2026-10-05, roadmap 2.2)
+#### On the GPU (2026-10-05)
 
 The same demo and modes on the owner's RTX 5060 Laptop GPU (Blackwell, 8 GB) under WSL2,
 with JAX's CUDA 13 plugin and the engine's accelerator defaults (no preallocation, matrix
 products at full precision, no non-deterministic kernels; set by `engine/__init__.py` then,
-and since roadmap 2.3 by the demo's server environment, each product and the engine worker,
+and since 2026-10-06 by the demo's server environment, each product and the engine worker,
 with the same effect). Each
 mode was run once, in a fresh API and worker, one after another, from
 `.venv/bin/python demos/demo_profile_small.py`:
@@ -272,8 +272,8 @@ What the numbers say:
   before the device lane: their loops, the per-path-date bisection and the rollback, are many
   small kernels in sequence, which a CPU runs in-thread and a GPU launches one by one, and at
   256 paths in float64 (1/64 of this card's float32 rate) there is little arithmetic to hide
-  a launch behind. Roadmap 2.4 measured it (below): most of the launches are the LGM
-  bootstrap's, in the options' Greeks more than on the path dates, and 2.5 replaces the
+  a launch behind. It was measured on 2026-10-06 (below): most of the launches are the LGM
+  bootstrap's, in the options' Greeks more than on the path dates, and the Newton solver (A-21) replaces the
   bisections' fixed 60- and 160-step loops with a configurable solver (decision A-21); the
   re-measurement after it is below.
 - **The defaults' cost.** Excluding non-deterministic kernels costs nothing measurable warm;
@@ -281,7 +281,7 @@ What the numbers say:
   scratch (184 s against 89 s untraced) for the same bits, so it is an opt-in, not the
   default.
 
-#### After roadmap 2.4 (2026-10-06)
+#### After the compiled Greeks (2026-10-06)
 
 2.4 made the AD Greeks one compiled program per product and derivative (§3.8) and added a
 phase window to the profiler hook (§1.6). The same demo and modes, each in a fresh API and
@@ -359,11 +359,11 @@ the host phase whose region the kernel started in):
 The card is busy for 7% of the trace and the job is launch-bound: the recalibration is the
 job on the GPU, by launches and by kernel time, and most of it is not on the path dates
 but in the options' Greeks (61% of the bootstrap's kernel time, 73% of its launches), where each
-Greek calibrates the trade's LGM again. That is 2.5's
+Greek calibrates the trade's LGM again. That is the Newton solver's
 baseline: a Newton solver cuts every one of these loops; batching the path dates
 (`bermudan_cube`) cuts only the third in `pricing`.
 
-#### After roadmap 2.5 (2026-10-07)
+#### After the Newton solver (2026-10-07)
 
 2.5 solves every calibration and exercise boundary with one solver (`engine.numerics.roots`,
 decision A-21): a safeguarded Newton method by default, 7 steps per bootstrap bucket and 5 per
@@ -400,13 +400,13 @@ compiles, run 2 repeats; "pricing" is the same request without Greeks, after the
 | GPU, new | 256 | 64.0–64.4 s | **1.35–1.43 s** | **0.37–0.40 s** |
 
 On the GPU a repeated job is four times faster and its pricing five: the recalibration was
-2.4's device lane's 84% of kernel time and 97% of launches, in the options' Greeks (their
+the previous device lane's 84% of kernel time and 97% of launches, in the options' Greeks (their
 calibration today, on the sensitivity markets and the Theta market) and on the path dates. On
 the CPU the repeat is unchanged at 256 paths and 3–4 s faster at 4,096: there the job is now the
 grid rollback on the paths (at 4,096 paths the options' path cubes take 31–36 s, their
 recalibration 0.07–0.09 s of it), whose memory also stops the job at 65,536
 paths on the CPU (a 277 GB allocation, the old code's too) and at 1,024 on the 8 GB GPU (6 GB),
-so the roadmap's 64k and 256k job baseline cannot be taken until step 3.7 gives the rollback its
+so the 64k and 256k job baseline cannot be taken until the kernel rewrite (F-07) gives the rollback its
 matrix form ([I-83](../planning/known-issues.md#i-83)). A cold job is 3 s (8%) slower on the CPU
 and 1–3 s on the GPU: each bootstrap bucket's program now holds Newton's derivative of the
 helper's price and the nested y\* solve in several places (the bracket's ends, the step, the
@@ -429,7 +429,7 @@ before one Greeks call and 1.98–2.25 s after, with the old and the new code al
 take 0.58–0.67 s warm on the CPU, as before (0.61–0.75 s): their cost there is the grid, not the
 calibration.
 
-### 2.1 and 2.2: the 4-trade pipeline before roadmap 1.3 (history)
+### 2.1 and 2.2: the 4-trade pipeline before 2026-10-01 (history)
 
 The two sections below measured an older pipeline (four trades, the legacy Hull-White
 path) and are kept for the reasoning that followed from them.
@@ -547,7 +547,7 @@ background compilation threads. A tall Python stack (`price_portfolio` → `scan
 
 ### Reading the timeline on the GPU
 
-On a GPU (roadmap 2.2) the device has its own rows: one per CUDA stream, named for the work on
+On a GPU (2026-10-06) the device has its own rows: one per CUDA stream, named for the work on
 it (`Stream #14(Compute,MemcpyD2D,MemcpyH2D,Memset)` on the RTX 5060), one event per kernel or
 copy. The host rows are as on the CPU, with the job's thread named `python` and compilation on
 `tf_pjrt_compile_thread_pool`. A gap on the stream row while the host row is busy is the device
@@ -557,7 +557,7 @@ waiting for the host: dispatch, a launch, or a compile.
 
 ## 3. Why Greeks dominated the trace
 
-> **History.** This investigation and its numbers predate roadmap 1.3: they were measured on
+> **History.** This investigation and its numbers predate 2026-10-01: they were measured on
 > the Hull-White pipeline, where each trade carried its model (`hw_sigma`) and the Greeks
 > were the bump-and-AD hybrid of that path. The lessons (§3.2–3.4, §3.6) carry over
 > unchanged; the current pipeline's costs are in [I-53](../planning/known-issues.md#i-53)
@@ -788,7 +788,7 @@ that shape.
 Callers that build a fresh closure per call were deliberately *not* jitted as a whole: the
 AD Greeks and market risk (`revalue_trade`) differentiated or vmapped closures over the
 jitted pricers, relying on JAX to cache the derivative and batched programs per pricer. That
-cache turned out to be bounded (§3.8), and since roadmap 2.4 the AD Greeks are jitted whole
+cache turned out to be bounded (§3.8), and since 2026-10-06 the AD Greeks are jitted whole
 on the price function as data; market risk still vmaps its closure ([I-53](../planning/known-issues.md#i-53)).
 `jamshidian_npv` itself stays eager when pricing because its x* derivative rule closes over
 intermediates that `jax.grad` cannot carry through a jit boundary; its cube is jitted, and its
@@ -815,7 +815,7 @@ in `JAX_COMPILATION_CACHE_DIR` if set, else `xla-cache/` beside its job queue, e
 cached, so a restarted worker reads its programs back. An in-process `price_portfolio`
 caller enables it as JAX documents, if wanted.
 
-### 3.8 The AD Greeks as one program per product (2026-10-06, roadmap 2.4)
+### 3.8 The AD Greeks as one program per product (2026-10-06)
 
 **What 2.1 found.** The demo's job repeated in the worker compiled 9 programs (the swap's and
 European's pricers under the gradient and the Hessian-vector product, and the European's Vega);

@@ -1,5 +1,5 @@
 """
-`POST /portfolio/market-risk` (roadmap 3.1, I-56): market-risk VaR and ES over HTTP, queued for
+`POST /portfolio/market-risk` (I-56): market-risk VaR and ES over HTTP, queued for
 the engine worker as a portfolio is. On the shared portfolio's market the polled result equals a
 direct `run_market_risk` call, for Monte Carlo and historical scenarios, each trade's row keyed
 by its id; the P&L by reference is the inline P&L; a request the run would refuse is a 400

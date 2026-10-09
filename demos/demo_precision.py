@@ -15,11 +15,11 @@ both on one portfolio.
     FP32 stored    Precision(pricing=StagePrecision("float32")): revalued in float64,
                    the P&L stored in float32
     FP32, Berm 64  FP32, but the Bermudan revalued and stored in float64
-                   (`by_product`; a single trade would be `by_trade`, roadmap 1.5)
+                   (`by_product`; a single trade would be `by_trade`)
     FP16 stored    the shifts and the P&L stored in float16, revalued in float64
     BF16 stored    the same in bfloat16
     FP8 stored     the same in FP8 (e4m3), rounded to nearest
-    FP8 stochastic the same, rounded stochastically (roadmap 1.6)
+    FP8 stochastic the same, rounded stochastically
 
 Storage below 32 bits keeps a power-of-two scale per block of 32 scenarios, so each
 block uses the format's whole range; see docs/planning/details/precision.md §6.2.
@@ -36,12 +36,12 @@ from FP64 are pure arithmetic. Two yardsticks measure them:
   * the spread of the FP64 estimate across independent Sobol seeds -- the
     empirical version of the same thing.
 
-Every result carries a precision report (roadmap 1.7): the policy as run, the format each
+Every result carries a precision report: the policy as run, the format each
 array was actually stored in, the device, and with a paired float64 sample
 (`Precision.paired_fraction`) each VaR/ES measured at the run's precision and at float64 on
 the same scenarios. The last section prints one.
 
-Compute below float32 arrives with roadmap step 3.7.
+Compute below float32 is not enabled yet (F-07).
 
 ORE parity of this path is established in
 tests/test_market_risk_ore_parity.py; this demo is only about precision.

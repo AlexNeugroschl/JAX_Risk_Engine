@@ -357,7 +357,7 @@ class TestRunValidation:
     @pytest.mark.parametrize("old", [32, 64])
     def test_the_retired_integer_precision_is_refused_naming_the_replacement(self, old):
         """Refused, not translated (decision A-12)."""
-        with pytest.raises(TypeError, match=r"MarketRiskRequest\.precision.*retired by roadmap 1\.4"):
+        with pytest.raises(TypeError, match=r"MarketRiskRequest\.precision.*retired on 2026-10-01"):
             run_market_risk(self._request([m.swap()], precision=old))
 
     @pytest.mark.parametrize("kwargs, match", [

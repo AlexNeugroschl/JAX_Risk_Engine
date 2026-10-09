@@ -17,7 +17,7 @@ phase), for the engine worker's trace checks and `demos/demo_profile_small.py`. 
 profiler's whole record, the `.xplane.pb` that xprof opens, not the `.trace.json.gz` beside it,
 which keeps at most about `JSON_EXPORT_EVENT_CAP` events. See docs/concepts/profiling.md.
 
-`traced_phase` narrows a trace to one phase (roadmap 2.4): the profiler runs only while that
+`traced_phase` narrows a trace to one phase: the profiler runs only while that
 phase does. On a GPU the profiler costs per kernel launch whatever it records (measured: a
 repeated demo job 5.8 s untraced, 33 s traced, under every CUPTI setting), so a phase's window
 is the way to trace it at the cost of that phase alone.

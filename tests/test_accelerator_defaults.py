@@ -1,5 +1,5 @@
 """
-Device settings and who sets them (decision A-22, roadmap 2.3; I-79, I-80):
+Device settings and who sets them (decision A-22; I-79, I-80):
 
   * importing `engine` sets no device setting, only x64: no GPU preallocation variable, no
     XLA flag and no default matrix-product precision, whether JAX was imported first or not;
@@ -189,7 +189,7 @@ class TestEveryMatrixProductStatesItsPrecision:
 
     @pytest.mark.parametrize("name", ["float16", "bfloat16", "float8_e4m3fn", "float8_e5m2"])
     def test_a_format_not_enabled_for_compute_is_refused(self, name):
-        with pytest.raises(ValueError, match=rf"{name} is enabled by roadmap step 3\.7"):
+        with pytest.raises(ValueError, match=rf"{name} is not enabled yet \(F-07\)"):
             product_precision(jnp.dtype(name))
 
     @pytest.mark.slow
@@ -199,7 +199,7 @@ class TestEveryMatrixProductStatesItsPrecision:
         recalibration included), today's values, the AD Greeks and market risk, at float64 and
         float32. A product without its compute format's precision would run at the device's
         default; one outside the engine's code would be a product the engine cannot vouch for.
-        Red first: with the nine products bare (before roadmap 2.3), it named `cam.py:501`,
+        Red first: with the nine products bare (before 2026-10-06), it named `cam.py:501`,
         `random.py:115`, `ore_lgm.py:270` and `bermudan_swaption.py:697, 700, 701`, each at
         float64 and float32."""
         assert jax.config.jax_default_matmul_precision is None  # nothing fills it in for them

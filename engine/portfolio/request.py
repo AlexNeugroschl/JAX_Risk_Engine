@@ -9,15 +9,14 @@ Every model, engine, Greeks method and precision choice is in `request.config`, 
 (`engine.portfolio.config`) whose defaults are ORE's. One pipeline prices every
 configuration (`engine.portfolio.market_path`): the cross-asset model with each currency's
 model (`config.simulation.ir`: the LGM by default, or Hull-White), then each trade on every path
-with its configured engine, exercise and fixings as ORE handles them. Before roadmap 1.3 the
+with its configured engine, exercise and fixings as ORE handles them. Before 2026-10-01 the
 Hull-White model was a second pipeline selected by passing a `SimulationConfig` as the market;
 that shape is retired.
 
 Concurrency: `price_portfolio` may be called from several threads at once. Every precision is
 an explicit dtype of the run's own arrays (`engine.precision`) and `jax_enable_x64` is set once,
 when `engine` is imported, never per run; the pipeline keeps no module-level state and never
-reads ORE's global evaluation date (trades carry their own, I-64). Roadmap 1.4 removed the lock
-that serialized runs while the flag was switched per precision.
+reads ORE's global evaluation date (trades carry their own, I-64). The lock that serialized runs while the flag was switched per precision went on 2026-10-01.
 """
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Union
@@ -104,7 +103,7 @@ class PortfolioResult:
     # Every trade's `trade_id`, in request order: the key of each per-trade figure (I-10).
     trade_ids: List[str] = field(default_factory=list)
     # The precision as run, read from the run's arrays: the policy, the realized formats, the
-    # devices, and with a paired float64 sample each figure's estimate (roadmap 1.7, I-12).
+    # devices, and with a paired float64 sample each figure's estimate (I-12).
     precision: Optional[PrecisionReport] = None
 
 

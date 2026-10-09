@@ -118,7 +118,7 @@ for the full incident this bug was caught inside.
 `bond_call` / `bond_put`: Black's formula on a zero-coupon bond option, the building block of
 the Jamshidian engine (`engine/valuation/jamshidian.py`). The Hull-White model's own curves and
 numeraire are the LGM's in the Hull-White parametrization (above); its earlier affine
-`A(t,T)`/`B(t,T)` implementation went with the separate Hull-White pipeline in roadmap 1.3.
+`A(t,T)`/`B(t,T)` implementation went with the separate Hull-White pipeline on 2026-10-01.
 
 ## `engine/models/ore_builders.py`
 

@@ -3,18 +3,18 @@ The format table: every number format the engine knows, by name. It is the only 
 maps a name to a dtype, a bit count or a range (docs/planning/details/precision.md §6.1);
 validation, the HTTP schema and storage read it.
 
-| Name | Bits | Mantissa bits | Min normal exponent | Max | Scaled when stored | Storage from | Compute from |
+| Name | Bits | Mantissa bits | Min normal exponent | Max | Scaled when stored | Storage | Compute |
 |---|---|---|---|---|---|---|---|
-| float64 | 64 | 52 | -1022 | 1.8e308 | no | 1.4 | 1.4 |
-| float32 | 32 | 23 | -126 | 3.4e38 | no | 1.4 | 1.4 |
-| float16 | 16 | 10 | -14 | 65,504 | yes | 1.6 | 3.7 |
-| bfloat16 | 16 | 7 | -126 | 3.4e38 | yes | 1.6 | 3.7 |
-| float8_e4m3fn | 8 | 3 | -6 | 448 | yes | 1.6 | 3.7 |
-| float8_e5m2 | 8 | 2 | -14 | 57,344 | yes | 1.6 | 3.7 |
+| float64 | 64 | 52 | -1022 | 1.8e308 | no | yes | yes |
+| float32 | 32 | 23 | -126 | 3.4e38 | no | yes | yes |
+| float16 | 16 | 10 | -14 | 65,504 | yes | yes | F-07 |
+| bfloat16 | 16 | 7 | -126 | 3.4e38 | yes | yes | F-07 |
+| float8_e4m3fn | 8 | 3 | -6 | 448 | yes | yes | F-07 |
+| float8_e5m2 | 8 | 2 | -14 | 57,344 | yes | yes | F-07 |
 
-"Storage from" and "compute from" are the roadmap steps that enable each use; a format used
-before its step is refused, naming the step (`engine.precision.policy`). Every format is
-enabled for storage since step 1.6; FP4 joins at step 5.3. The mantissa bits, the minimum
+"Storage" and "compute" say whether each use is enabled, or name the planning item
+(docs/planning) whose work enables it; a format used before then is refused, naming the item
+(`engine.precision.policy`). Every format is enabled for storage; FP4 joins with F-07. The mantissa bits, the minimum
 normal exponent and the max define the grid a scaled format rounds to
 (`engine.precision.storage`).
 """
@@ -28,8 +28,9 @@ import numpy as np
 @dataclass(frozen=True)
 class Format:
     """One row of the table. `min_exponent`: the exponent of the smallest normal number
-    (below it the spacing stays that of the subnormals). `storage_step`/`compute_step`: the
-    roadmap step that enables the format for storage/compute, `None` once it is enabled."""
+    (below it the spacing stays that of the subnormals). `storage_pending`/`compute_pending`: the
+    planning item (docs/planning) whose work enables the format for storage/compute, `None` once
+    it is enabled."""
     name: str
     dtype: np.dtype
     bits: int
@@ -37,25 +38,25 @@ class Format:
     min_exponent: int
     max: float
     scaled: bool
-    storage_step: Optional[str]
-    compute_step: Optional[str]
+    storage_pending: Optional[str]
+    compute_pending: Optional[str]
 
 
-def _row(name, bits, scaled, storage_step=None, compute_step=None) -> Format:
+def _row(name, bits, scaled, storage_pending=None, compute_pending=None) -> Format:
     dtype = jnp.dtype(getattr(jnp, name))
     info = jnp.finfo(dtype)
-    return Format(name, dtype, bits, int(info.nmant), int(info.minexp), float(info.max), scaled, storage_step,
-                  compute_step)
+    return Format(name, dtype, bits, int(info.nmant), int(info.minexp), float(info.max), scaled, storage_pending,
+                  compute_pending)
 
 
 #: Name -> format, widest first.
 FORMATS: Mapping[str, Format] = {f.name: f for f in (
     _row("float64", 64, scaled=False),
     _row("float32", 32, scaled=False),
-    _row("float16", 16, scaled=True, compute_step="3.7"),
-    _row("bfloat16", 16, scaled=True, compute_step="3.7"),
-    _row("float8_e4m3fn", 8, scaled=True, compute_step="3.7"),
-    _row("float8_e5m2", 8, scaled=True, compute_step="3.7"),
+    _row("float16", 16, scaled=True, compute_pending="F-07"),
+    _row("bfloat16", 16, scaled=True, compute_pending="F-07"),
+    _row("float8_e4m3fn", 8, scaled=True, compute_pending="F-07"),
+    _row("float8_e5m2", 8, scaled=True, compute_pending="F-07"),
 )}
 
 #: Every name in the table, widest first (the HTTP schema's choices).

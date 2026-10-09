@@ -105,7 +105,7 @@ class TestPortfolioSizeScaling:
 # =============================================================================
 class TestMultiCurrencyPortfolios:
     """Trades in each currency through `price_portfolio`'s validation, valuation and FX
-    conversion, which work per currency (before roadmap 1.3 the Hull-White model indexed
+    conversion, which work per currency (before 2026-10-01 the Hull-White model indexed
     rate factors and curves by position instead)."""
 
     def test_swaps_in_both_currencies_price_finite(self):

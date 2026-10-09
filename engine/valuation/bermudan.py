@@ -191,7 +191,7 @@ def path_sigmas(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Mark
     their count padded to a power of two (the last date repeated), so a trade compiles a
     bootstrap per basket shape and power of two, whatever its dates (I-53). The reference
     solver (`"Bisection"`) keeps one date per call: it reproduces the engine's numbers before
-    roadmap 2.5 bit for bit, which a batch over dates cannot (XLA vectorizes another shape, and
+    Newton (A-21) bit for bit, which a batch over dates cannot (XLA vectorizes another shape, and
     a bisection's last comparisons move with the residual's last bit)."""
     asof, dates = market.asof, scenarios.dates
     disc = scenarios.discount[cfg.currency]

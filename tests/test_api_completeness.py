@@ -1,5 +1,5 @@
 """
-Every setting the engine has reaches the HTTP API (decision A-2, roadmap 3.1, I-56).
+Every setting the engine has reaches the HTTP API (decision A-2, I-56).
 
 From each entry point an HTTP route serves (`price_portfolio`'s `PortfolioRequest`,
 `run_market_risk`'s `MarketRiskRequest`, the scenario generators and `calibrate_cam`), the walk

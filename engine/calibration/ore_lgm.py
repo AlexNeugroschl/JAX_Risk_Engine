@@ -58,7 +58,7 @@ MAX_ATM_STD_DEV = 3.0
 SIGMA_BRACKET = (1e-6, 0.20)
 
 #: Steps of a bucket's volatility and of a helper's y* (`engine.numerics.roots`). Bisection's
-#: are the counts before roadmap 2.5. Newton's are measured (2026-10-07, the shared sloped market
+#: are the counts before Newton (A-21). Newton's are measured (2026-10-07, the shared sloped market
 #: today and on 256 LGM and Hull-White paths): a bucket reaches its rounding in 5 steps, a y*
 #: from 0 in 3; each count has two steps of margin
 #: (tests/test_root_solvers.py).

@@ -5,7 +5,7 @@ L6). On the shared test portfolio (tests/support/portfolio.py) the polled result
 matrix, and each trade's row keyed by its id (I-10); the cube returned by reference is the
 inline cube, its hashes checked, and can be left out (A-17, I-09); a request the market path
 cannot price is a 400 before any job starts, and a trade carrying a model of its own is a 422.
-The result carries the precision report of the worker that ran it (roadmap 1.7, I-12).
+The result carries the precision report of the worker that ran it (I-12).
 """
 import time
 
@@ -115,8 +115,8 @@ def test_the_cube_by_reference_is_the_inline_cube_and_none_leaves_it_out(test_cl
     ({"trades": [_swap(index_tenor_months=3)]}, "USD-SIMINDEX-3M"),
     ({"trades": [_swap(currency="EUR")]}, "EUR"),
     # The run configuration (I-68): a reporting currency contradicting the simulation's was
-    # silently ignored before roadmap 1.2; a precision format is refused until the roadmap step
-    # that enables it (compute below float32: 2.8).
+    # silently ignored before 2026-09-30; a precision format is refused until it is enabled
+    # (compute below float32: F-07).
     ({"base_currency": "EUR"}, "contradicts"),
     ({"precision": {"pricing": {"storage": "float16", "compute": "float16", "accumulate": "float16"}}},
      "precision.pricing"),

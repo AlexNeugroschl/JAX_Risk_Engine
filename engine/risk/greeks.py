@@ -24,7 +24,7 @@ Differs from the bump method beyond the shift size: a Bermudan's/American's Delt
 hold its calibrated LGM fixed while the curve moves, where ORE recalibrates under each bump.
 A test of the two agreeing as the shift halves is feature F-01.
 
-**Compiled programs** (roadmap 2.4). Each derivative is a module-level jitted function of the
+**Compiled programs**. Each derivative is a module-level jitted function of the
 trade's price function as data (`TradePriceFunction.pricer`, static, and its pytree `terms`):
 every curve's Delta and Gamma is one program per product and shape (`_curve_derivatives`,
 from one linearization of the gradient over all its curves), each Vega gradient another. So a

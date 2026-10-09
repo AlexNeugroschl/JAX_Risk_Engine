@@ -96,7 +96,7 @@ The EOD routes are documented in full in
 [The EOD Integration Boundary](eod-integration.md#w164--the-eod-http-routes); this page covers
 the portfolio contract.
 
-Roadmap 3.1 (2026-10-07) removed `POST /v2/portfolio/price`, the request's
+On 2026-10-07 the API removed `POST /v2/portfolio/price`, the request's
 `schema_version: "2"` (names that looked like versions and were not) and
 `GET /portfolio/price/{job_id}` (now `GET /jobs/{job_id}`, for every kind of job), and replaced
 the result's position-keyed fields with one row per trade. There were no clients to keep them
@@ -130,10 +130,10 @@ this isn't a git checkout).
 ```
 
 `jax_backend` is the backend *of the API process*, which does no pricing. A served API keeps
-its own JAX on the CPU (`engine.api.app.keep_jax_on_the_cpu`, roadmap 2.2), so this says `cpu`
+its own JAX on the CPU (`engine.api.app.keep_jax_on_the_cpu`), so this says `cpu`
 on a GPU host too: the accelerators belong to the engine worker, a separate process with its
 own JAX runtime, and each result names the devices and backend it actually ran on in its
-`precision` report (roadmap 1.7, I-12).
+`precision` report (I-12).
 
 ### `POST /portfolio/price`
 
@@ -161,7 +161,7 @@ spread); a precision the pipeline does not implement yet.
 unknown fields, so a trade carrying `hw_sigma` or a curve is not silently stripped of its
 model: curves come from the market and models from the run configuration (audit A-3).
 
-**The Hull-White request shape retired by roadmap 1.3** (a `SimulationConfig` market with
+**The Hull-White request shape retired on 2026-10-01** (a `SimulationConfig` market with
 `time_grid`/`rates`/`joint_covariance`, model parameters on the trades, a
 `calibration_basket`, a top-level `evaluation_date`) is a `422` whose message names its
 replacement: the Hull-White model is `"model": "HullWhite"` per currency in `simulation.ir`.
@@ -204,7 +204,7 @@ error), `bad-terms` (any other `ValueError` or `TypeError`), `infrastructure` (a
 memory, XLA runtime, a result too large to store). The route validates before queueing, so
 terms the engine refuses are normally a `400`, not a failed job.
 
-Until roadmap 1.8 `running` was never reported (`pending` covered both) and there was no
+Until 2026-10-04 `running` was never reported (`pending` covered both) and there was no
 `interrupted` or `failure_class`.
 
 **Unknown `job_id`:** `404 Not Found`.
@@ -325,7 +325,7 @@ re-solve the timeout/retry/progress problems this pattern already avoids.
 
 ## Jobs: the queue and the engine worker
 
-Since roadmap 1.8 (decision A-14; [details/precision.md §11](../planning/details/precision.md#11-execution-architecture)):
+Since 2026-10-04 (decision A-14; [details/precision.md §11](../planning/details/precision.md#11-execution-architecture)):
 
 ```
  API process(es)                   job queue (SQLite)                 engine worker (one per host)
@@ -341,20 +341,20 @@ Since roadmap 1.8 (decision A-14; [details/precision.md §11](../planning/detail
   programs the job built, and timestamps; a second table holds the chunks of the arrays a
   result returns by reference, written with the result. It survives restarts of the API and the
   worker, and every API process that opens it sees the same jobs, so `uvicorn --workers N`
-  works: a `job_id` issued by one API process is served by any other. A queue file of roadmap
-  1.8's schema (version 1) is migrated in place when first opened: its jobs become portfolio
+  works: a `job_id` issued by one API process is served by any other. A queue file of the
+  first schema (version 1, 2026-10-04) is migrated in place when first opened: its jobs become portfolio
   jobs.
 - **The engine worker** (`engine/api/worker.py`, command `jax-risk-worker`) is one
   single-threaded process per host. It takes jobs in submission order, parses each body
   exactly as the route did (so nothing is pickled), runs the kind's entry point
   (`price_portfolio` or `run_market_risk`), and stores the result document, which the route
   then sends verbatim. It owns every device JAX sees on the
-  host (a served API keeps its own JAX on the CPU; roadmap 2.2) and keeps its compiled
+  host (a served API keeps its own JAX on the CPU) and keeps its compiled
   programs for its lifetime, so a repeated job shape compiles nothing. It also keeps them on disk, in JAX's persistent compilation cache, so a restarted
   worker reads them back instead of compiling again: in `JAX_COMPILATION_CACHE_DIR` if set
   (set it empty to turn the cache off), else in `xla-cache/` beside the queue file. A file lock (`<queue>.worker.lock`) makes it the queue's only worker; the
   operating system releases the lock however the worker dies.
-- **The worker's device settings** (decision A-22, roadmap 2.3). It runs deterministic GPU
+- **The worker's device settings** (decision A-22). It runs deterministic GPU
   kernels, so a job gives the same bits on every run of its compiled program: at start-up it
   adds `--xla_gpu_exclude_nondeterministic_ops=true` to its `XLA_FLAGS`, unless they already
   name `--xla_gpu_exclude_nondeterministic_ops` or `--xla_gpu_deterministic_ops` (either
@@ -443,12 +443,12 @@ Precision](portfolio-entrypoint.md#precision) and
 `pricing`, each an object of format names `storage`, `compute` and `accumulate`, every field
 `"float64"` when omitted; and the pricing stage's overrides, `by_product` (keyed by a
 `trade_type`) and `by_trade` (keyed by a `trade_id`), each mapping to such an object. A trade
-is priced at its `by_trade` entry, else its product's, else `pricing` (roadmap 1.5).
+is priced at its `by_trade` entry, else its product's, else `pricing` (2026-10-02).
 `rounding` (`"nearest"`, the default, or `"stochastic"`) is how values are rounded into a
 storage format below 32 bits, and `rounding_seed` (a non-negative integer, 0 by default) seeds
-the stochastic rounding (roadmap 1.6). `paired_fraction` (in [0, 1], 0 by default; outside it a
+the stochastic rounding (2026-10-02). `paired_fraction` (in [0, 1], 0 by default; outside it a
 `422`) is the share of paths also run at float64, whose estimates the result's `precision`
-carries (roadmap 1.7). Unknown fields are refused.
+carries (2026-10-02). Unknown fields are refused.
 
 ```json
 "precision": {"simulation": {"storage": "float32", "compute": "float32", "accumulate": "float32"},
@@ -468,7 +468,7 @@ trade of the request is a `400` (checked with the request, so no job is created)
 
 The format names are the format table's (`float64`, `float32`, `float16`, `bfloat16`,
 `float8_e4m3fn`, `float8_e5m2`); another name, or another rounding, is a `422`. Every format
-stores; a format not yet enabled for compute (below float32, roadmap 3.7), or an inconsistent
+stores; a format not yet enabled for compute (below float32, F-07), or an inconsistent
 stage, is a `400` naming the stage (or override, e.g. `precision.by_trade['swap-7']`), the
 field and the roadmap step that enables it. So is `"rounding": "stochastic"` when no stage
 stores below 32 bits:
@@ -476,11 +476,11 @@ stores below 32 bits:
 ```
 POST /portfolio/price
 {"precision": {"pricing": {"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"}}, ...}
--> 400 {"detail": "precision.pricing: StagePrecision.compute='float16': compute in float16 is enabled by
-        roadmap step 3.7 (difference-form kernels); until then float64 or float32"}
+-> 400 {"detail": "precision.pricing: StagePrecision.compute='float16': compute in float16 is not enabled
+        yet (F-07: difference-form kernels); until then float64 or float32"}
 ```
 
-The 32/64 shape before roadmap 1.4 (`{"simulation": 32, "pricing": 64, "risk": ..., "calibration": ...}`)
+The 32/64 shape before 2026-10-01 (`{"simulation": 32, "pricing": 64, "risk": ..., "calibration": ...}`)
 is a `422` whose message names the replacement (decision A-12); it is not translated.
 
 **Concurrency note:** jobs of every precision go to the one engine worker, in submission
@@ -527,7 +527,7 @@ expected labels.
 ## Design: one configurable API
 
 Decided 2026-09-30 ([compliance/decisions.md](../../compliance/decisions.md) A-2; ORE
-alignment plan 9.2), done by roadmap 3.1 (2026-10-07):
+alignment plan 9.2), done on 2026-10-07:
 
 - **One route per analytic, one request each.** A portfolio's pricing and exposure, its market
   risk, and the cross-asset model's calibration; every job polled at one route. The request's
@@ -543,7 +543,7 @@ alignment plan 9.2), done by roadmap 3.1 (2026-10-07):
 - **Robust.** Validated before any job starts: types, unknown fields refused, cross-field
   checks, each refusal a `400` or `422` naming its field.
 - **Names say what they are.** No route or field is named like a version unless it marks a
-  revision of the contract itself. `/v2` and `schema_version: "2"` went with roadmap 3.1.
+  revision of the contract itself. `/v2` and `schema_version: "2"` went on 2026-10-07.
 - **Every per-trade figure is keyed by its trade.** Each result has one row per trade with its
   `trade_id` ([I-10](../planning/known-issues.md#closed)); the arrays' trade axes follow the
   rows, and an array by reference carries the trade order hashed.
@@ -556,7 +556,7 @@ Mirrors `engine.portfolio.PortfolioResult`, with one row per trade:
 |---|---|---|
 | `base_npv` | `float` | Portfolio total on today's market: the sum of the rows' `base_npv`, the same numbers. |
 | `trades` | `List[{"trade_id", "base_npv", "exposure", "greeks"}]` | One row per trade, in the request's `trades` order, which is also the cube's trade axis: its id ([I-10](../planning/known-issues.md#closed)), its t=0 NPV on today's market, its standalone exposure (the object below; `null` without scenario risk) and its Greeks (`null` unless `compute_greeks`). Each Greek is flattened row-major into `values`; one of more than one dimension (`vega:<ccy>`, option tenors × swap tenors) also has its shape in `shapes`. The keys are `delta:discount:<ccy>`, `gamma:discount:<ccy>`, `delta:index:<name>`, `gamma:index:<name>` (per curve tenor for `Bump`, per market pillar for `AD`), `vega:<ccy>` for a trade whose engine reads the swaption volatilities, and `theta`. See [Greeks](../risk/greeks.md). |
-| `exposure` | `{"times": [...], "epe": [...], "ene": [...], "ee_b": [...], "eee_b": [...], "pfe": {"PFE_95": [...], ...}} \| null` | The whole portfolio as one netting set; every list has one entry per date in `times`, starting at t=0, where each trade is valued on the simulation market of the as-of date, as ORE's cube starts (roadmap 3.2). See [Exposure](../risk/exposure.md). |
+| `exposure` | `{"times": [...], "epe": [...], "ene": [...], "ee_b": [...], "eee_b": [...], "pfe": {"PFE_95": [...], ...}} \| null` | The whole portfolio as one netting set; every list has one entry per date in `times`, starting at t=0, where each trade is valued on the simulation market of the as-of date, as ORE's cube starts (2026-10-07). See [Exposure](../risk/exposure.md). |
 | `exposure.epe_b`, `exposure.eepe_b` | `List[float]` | ORE's time-weighted EPE_B / EEPE_B profiles. |
 | `exposure.basel_epe`, `exposure.basel_eepe` | `float \| null` | ORE's Basel EPE_B / EEPE_B at the one-year horizon. |
 | `npv_cube` | `List[List[List[float]]] \| null` | `[Scenarios, Dates, Trades]`, JSON-nested, with `cube_output: "inline"` (the default). |
@@ -666,5 +666,5 @@ process needed:
 - `TestCamCalibrationEndpoint` — `/calibration/cam` under both models equals
   `calibrate_cam` and the model a portfolio run simulates with; a currency without a basket is
   a `422`, one the market lacks a `400`.
-- The names roadmap 3.1 retired are refused: `schema_version` a `422`, `/v2/portfolio/price` a
+- The names retired on 2026-10-07 are refused: `schema_version` a `422`, `/v2/portfolio/price` a
   `404`.

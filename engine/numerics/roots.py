@@ -1,5 +1,5 @@
 """
-The root solver of every calibration and exercise boundary (decision A-21, roadmap 2.5): each
+The root solver of every calibration and exercise boundary (decision A-21): each
 bucket of an LGM bootstrap (`engine.calibration.ore_lgm`, `engine.calibration.lgm`) and each
 exercise boundary, the LGM's y* (`ore_lgm`), Jamshidian's x* (`engine.valuation.jamshidian`)
 and the co-terminal basket's x* (`engine.calibration.basket`).
@@ -13,7 +13,7 @@ result depends on element i of `x` only: paths, dates). Two solvers, chosen by n
     leave it (a zero or non-finite derivative included). So it is never less robust than
     bisection; started near the root (`start`) it converges in a few steps.
   * `"Bisection"`: the reference. It halves the bracket a fixed number of times, as the
-    engine did before 2.5, and reproduces its numbers bit for bit.
+    engine did before Newton, and reproduces its numbers bit for bit.
 
 Both run a fixed number of steps (`Steps`, per problem) on every backend. A data-dependent stop
 would make a GPU report to the host on every step; a fixed count compiles to one loop on the

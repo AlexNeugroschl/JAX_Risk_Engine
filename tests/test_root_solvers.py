@@ -1,5 +1,5 @@
 """
-The root solver (`engine.numerics.roots`, decision A-21, roadmap 2.5) and the roots the engine
+The root solver (`engine.numerics.roots`, decision A-21) and the roots the engine
 solves with it.
 
   * The solvers on functions with known roots: both to rounding, elementwise over a batch,
@@ -124,7 +124,7 @@ class TestNewton:
         """y*'s shape (a coupon bond less a strike: exponentials of several rates, its root near
         0 in a window of 1), for 4,001 strikes: a root once found stays at its rounding whatever
         the count. Red under `rtsafe`'s second safeguard (bisect unless a step halves an earlier
-        one), tried in roadmap 2.5: at the root a rounding-level step need not halve, and the
+        one), tried on 2026-10-07: at the root a rounding-level step need not halve, and the
         bisection step across the window, still wide on one side, carried the iterate away (the
         worst root 0.5 off after 5 steps, 3e-11 after 40)."""
         rates = jnp.arange(1.0, 11.0)
@@ -515,7 +515,7 @@ def _drop_first_date(curves):
 def test_a_date_with_an_exercise_left_and_no_helper_keeps_the_engine_volatility():
     """An American on a date after its window's last reference-grid date (2031-01-30) and
     before its last exercise (2031-02-03): no helper is left. It raised `ValueError: Need at
-    least one array to stack` before roadmap 2.5; it prices on the engine's volatility, as a
+    least one array to stack` before 2026-10-07; it prices on the engine's volatility, as a
     calibration today with no helper does."""
     cfg = shared.trades()["american-payer"]
     market = shared.market()

@@ -36,7 +36,7 @@ Every option runs with every other: the models differ only in the simulation, an
 engines and Greeks methods price whatever the simulation produced. What is not implemented
 yet is refused before any work, naming the field (`engine.precision.policy`, `validate_trades`).
 
-**History.** Until roadmap 1.3 the Hull-White model was a second pipeline, chosen by passing
+**History.** Until 2026-10-01 the Hull-White model was a second pipeline, chosen by passing
 a `SimulationConfig` instead of a `Market`, with its own simulation, pricers and Greeks and
 the defects listed in the closed ledger ([I-42](../planning/known-issues.md#i-42) to
 [I-47](../planning/known-issues.md#i-47)); it is now one model option of the configuration
@@ -401,7 +401,7 @@ pricing endpoint.
 A-16, D-9).** Which precision each calculation needs is what the project studies, so precision
 is part of the run configuration: any combination may be run, the default is float64
 everywhere and carries ORE parity, and a combination not yet shown adequate for a figure is
-to carry a warning ([I-55](../planning/known-issues.md#i-55), roadmap 5.1). The full design,
+to carry a warning ([I-55](../planning/known-issues.md#i-55)). The full design,
 down to FP8 storage, is [details/precision.md](../planning/details/precision.md).
 
 **The policy.** `engine.precision.Precision` (on `RunConfig.precision` and
@@ -423,7 +423,7 @@ Precision()                       # float64 everywhere (the default)
 Precision.throughout("float32")   # every stage stored, computed and accumulated in float32
 ```
 
-The pricing stage is per trade (decision A-15, roadmap 1.5): `Precision.precision_for(trade)`
+The pricing stage is per trade (decision A-15): `Precision.precision_for(trade)`
 is the one lookup, `by_trade[trade_id]`, else `by_product[product]`, else `pricing`, and both
 the portfolio and the market-risk pipeline call it. A product is the name each trade config
 carries (`SwapConfig.product == "swap"`, and so on: the HTTP `trade_type`s). An override that
@@ -434,9 +434,9 @@ scenario market are shared by every trade, so they have no overrides.
 the format its arithmetic runs in; `accumulate` the format its sums accumulate in. The format
 names come from one table (`engine/precision/formats.py`), which validation, the HTTP schema
 and storage all read. `storage` is any format of the table no wider than `compute` (`float64`,
-`float32`, and since roadmap 1.6 `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2`);
-`compute` is `float64` or `float32` and `accumulate` equals it until roadmap 3.7, and using
-one earlier is refused naming the step. Calibration, t=0 values, Greeks and every reduction
+`float32`, and since 2026-10-02 `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2`);
+`compute` is `float64` or `float32` and `accumulate` equals it until F-07's compute formats, and using
+one earlier is refused naming F-07. Calibration, t=0 values, Greeks and every reduction
 over paths (exposure, VaR/ES) are float64 by decision (A-10).
 
 **The cast points.** Only these read the policy; everything between them follows the dtype
@@ -457,7 +457,7 @@ float32 storing is a plain cast and storing at an array's own dtype returns it u
 the float64 default runs exactly the arithmetic it ran before the policy
 existed.
 
-**Storage below 32 bits** (roadmap 1.6). float16, bfloat16 and the two FP8 formats are stored
+**Storage below 32 bits** (2026-10-02). float16, bfloat16 and the two FP8 formats are stored
 as a `Stored`: the values in the format and, per block of 32 consecutive scenarios (paths),
 a float32 power-of-two scale that brings the block's largest magnitude to the format's
 maximum, so FP8's 448 or float16's 65,504 never limits the range. A power of two scales
@@ -471,7 +471,7 @@ or float64: `load` reads the stored values back at the next stage's compute dtyp
 Continuous integration runs the fast tier with JAX's strict dtype promotion, under
 which any accidental float32/float64 mix is an error.
 
-**The paired sample and the report** (roadmap 1.7, decision A-13). With `paired_fraction > 0`
+**The paired sample and the report** (decision A-13). With `paired_fraction > 0`
 the first paths (whole blocks of 32) are simulated and priced again at float64 throughout,
 `engine.portfolio.market_path._paired_sample` (market risk: the first scenarios revalued). A
 scrambled Sobol sequence's first points do not depend on the sample size and every kernel is
@@ -488,30 +488,30 @@ figure's estimate.
 when imported, and nothing turns it off: a float32 computation is float32 because its arrays
 are float32, not because the flag is off.
 
-**Matrix products** (roadmap 2.3, decision A-22). A product's precision is part of its compute
+**Matrix products** (decision A-22). A product's precision is part of its compute
 format. Left unstated, XLA picks the device's: TensorFloat-32 for a float32 product on an
 NVIDIA GPU, bfloat16 passes on a TPU. So every matrix product of the engine's JAX code goes
 through `engine.precision.matmul`, which states its operands' format's precision in the
 program (full precision for float32 and float64); no process-wide setting is set or read, and
 importing `engine` changes nothing but the x64 flag. A test traces the pipelines and fails on
 a product without it ([coding style](coding-style.md#core-constraints),
-[details/precision.md §6.7](../planning/details/precision.md#67-matrix-products-step-23)).
+[details/precision.md §6.7](../planning/details/precision.md#67-matrix-products-2026-10-06)).
 
 ### Concurrency
 
 `price_portfolio` may run on several threads at once: every precision is a dtype of the
 run's own arrays, and the pipeline keeps no module-level state and never reads ORE's global
-evaluation date (each trade carries its own, I-64). Until roadmap 1.4 a lock serialized runs.
+evaluation date (each trade carries its own, I-64). Until 2026-10-01 a lock serialized runs.
 
-HTTP jobs (roadmap 1.8, decision A-14) go through a durable SQLite job queue
+HTTP jobs (decision A-14) go through a durable SQLite job queue
 (`engine/api/job_queue.py`) to one single-threaded engine worker process per host
 (`engine/api/worker.py`). The API stores each request body as received; the worker parses it
 as the route did, calls `price_portfolio` with x64 on, as every engine process has it, and
 stores the result document, so a job prices bit for bit as a direct call. Jobs run one at a
 time in submission order: the worker owns every device on its host (the API server keeps its
-own JAX on the CPU; roadmap 2.2), splits each job's scenarios across them
-(`engine/simulation/sharding.py`, roadmap 3.8), runs deterministic GPU kernels (the XLA flag
-it adds to its own environment at start-up; decision A-22, roadmap 2.3), and keeps its compiled
+own JAX on the CPU), splits each job's scenarios across them
+(`engine/simulation/sharding.py`, I-61), runs deterministic GPU kernels (the XLA flag
+it adds to its own environment at start-up; decision A-22), and keeps its compiled
 programs, in memory and in JAX's persistent compilation cache on disk, so a repeated job
 shape compiles nothing and a restarted worker reads its programs back. A failing job fails only its own row; a
 worker that dies mid-job leaves it `interrupted` for the next worker to record. The API

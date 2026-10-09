@@ -17,7 +17,7 @@ refusal, contract interface, portfolio wire-through) are done. TraderX independe
 reproduced every priced figure (bill ±98,507.15, note ±103,308.33, accrued ±1,857.10, +1bp
 sensitivity ∓15.28).
 
-Remaining engine work: the three EOD bugs TraderX's acceptance kit found
+Remaining engine work: the three bugs in the submission path that TraderX's acceptance kit found
 ([I-57](../known-issues.md#i-57), [I-58](../known-issues.md#i-58),
 [I-59](../known-issues.md#i-59)), running-attempt durability ([I-08](../known-issues.md#i-08)),
 and W2 below once its inputs arrive.

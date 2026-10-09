@@ -122,7 +122,7 @@ def trade_maturity(cfg: Trade) -> ORE.Date:
     """ORE's `Trade::maturity()`, after which a trade's exposure takes no time weight
     (`ExposureCalculator`): a swap's or a bond's last date and a physically settled option's
     underlying maturity, but a cash-settled option's last exercise date, on which it settles
-    (`Swaption::build`, step 8). Until roadmap 3.2 every option took its underlying's, so a
+    (`Swaption::build`, step 8). Until 2026-10-07 every option took its underlying's, so a
     cash-settled option's time-weighted EPE kept accruing after it had settled."""
     if isinstance(cfg, SwaptionConfig) and cfg.settlement == "Cash":
         return cfg.exercise_date

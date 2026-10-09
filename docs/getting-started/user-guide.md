@@ -89,7 +89,7 @@ block on Windows).
 The engine runs on an NVIDIA GPU through JAX's CUDA 13 plugin, the `gpu` extra. JAX publishes
 no CUDA build for native Windows, so on Windows it runs under WSL2. Verified on the
 reference machine's RTX 5060 Laptop GPU (Blackwell, 8 GB) under WSL2 Ubuntu 24.04
-(roadmap 2.2). It needs an NVIDIA driver of 580 or later, which on WSL2 is the Windows driver
+(2026-10-06). It needs an NVIDIA driver of 580 or later, which on WSL2 is the Windows driver
 (nothing NVIDIA is installed inside WSL; the CUDA libraries come as pip wheels with the
 extra). `nvidia-smi` inside WSL should list the card.
 
@@ -148,7 +148,7 @@ to its own `XLA_FLAGS` at start-up (without it the AD Greeks moved by an ulp bet
 identical runs, the GPU's atomics adding in whatever order they land), and the test suite
 does the same. Measured on the demo's job: without the flag two runs differed by about an ulp
 (the cube by 4e-11 at a scale of 1e6, and the Greeks), and with it four separate compiles
-(in-process and through the server, 2.2's code and 2.3's) gave identical bits. The compiler
+(in-process and through the server, two versions of the code of 2026-10-06) gave identical bits. The compiler
 may still tune its choice of kernels on the card, so a program compiled again could in
 principle differ; `--xla_gpu_deterministic_ops=true` instead also pins that choice, at twice
 the compile time. Either one set by you, true or false, wins. Pricing
@@ -163,13 +163,13 @@ from engine.portfolio import price_portfolio   # before the first JAX computatio
 
 This card's float64 runs at 1/64 of its float32 rate, and a job of a few hundred paths is too
 small to fill it, so a consumer GPU is where the GPU path is checked, not where speed is
-measured (roadmap 5.2); the demo's repeat takes about 1.4 s on it against 2.2 s on a 24-thread
+measured (F-07); the demo's repeat takes about 1.4 s on it against 2.2 s on a 24-thread
 CPU. Profiling works as on the CPU, and the trace gains the GPU's own lanes. The tracer slows
 every kernel launch, whatever the profiler is set to record, so a trace costs in proportion to
-a job's launches: the demo's repeat, 1.6 s traced against 1.4 s untraced since roadmap 2.5's
+a job's launches: the demo's repeat, 1.6 s traced against 1.4 s untraced since the Newton
 root solver (32 s against 5.5 s before it, when the calibration's bisection was most of the
 launches). A long job can still be traced one phase at a time (`JAX_RISK_PROFILE_PHASE`, below;
-[profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)).
+[profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05)).
 
 The examples on this page assume you're running from the repository root. `engine` itself
 is importable from anywhere once installed — `pip install -e .` puts it on the path, so
@@ -240,7 +240,7 @@ exposure and Greeks, over the real HTTP API, in the real engine worker, under
 and time per phase and per trade's Greeks. It leaves Greeks **on**: they are a large part of
 where the engine spends its time. On CPU the job takes 33 s from scratch, 16 s with the
 worker's disk cache and 1.8 s repeated, a repeat compiling nothing
-([measured](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)). See [Profiling a pricing job](#profiling-a-pricing-job) below and
+([measured](../concepts/profiling.md#20-the-demo-measured-2026-10-05)). See [Profiling a pricing job](#profiling-a-pricing-job) below and
 [Profiling & the Tracer](../concepts/profiling.md).
 
 **How much precision market risk needs:**
@@ -426,7 +426,7 @@ behave differently on purpose:
 |---|---|---|
 | Shape | **Asynchronous** — `202` + `job_id`, then poll | **Synchronous** — one call returns the result |
 | Body | the portfolio request (`MarketPortfolioRequestSchema`, Pydantic) | `EodSubmissionSchema`, pointing at a bundle on disk |
-| Durability | A durable SQLite job queue; a job survives restarts, and one killed mid-run reads `interrupted` (roadmap 1.8) | Published to a crash-safe store; survives restart ([I-08](../planning/known-issues.md#i-08): a running attempt does not) |
+| Durability | A durable SQLite job queue; a job survives restarts, and one killed mid-run reads `interrupted` (2026-10-04) | Published to a crash-safe store; survives restart ([I-08](../planning/known-issues.md#i-08): a running attempt does not) |
 | Refusals | An unsupported trade is an error | An unsupported instrument is a **`200`** whose coverage names the refusal |
 
 That last row is the design: returning an HTTP error for a refusal would make "we correctly
@@ -729,17 +729,17 @@ every device: on a GPU or TPU, XLA would by default run a float32 matrix product
 TensorFloat-32 or bfloat16 passes, so each of the engine's matrix products states the
 precision of its compute format itself (`engine.precision.matmul`, full precision for float32
 and float64). No process setting changes it, JAX's `jax_default_matmul_precision` included,
-which the engine neither sets nor reads (roadmap 2.3); your own JAX code in the same process
+which the engine neither sets nor reads (2026-10-06); your own JAX code in the same process
 keeps whatever you set. Over HTTP the same is
 `"precision": {"pricing": {"storage": "float32", "compute": "float32", "accumulate": "float32"}}`.
-Storage can go below 32 bits (roadmap 1.6): `float16`, `bfloat16`, `float8_e4m3fn` and
+Storage can go below 32 bits (2026-10-02): `float16`, `bfloat16`, `float8_e4m3fn` and
 `float8_e5m2`, kept with a power-of-two scale per block of 32 paths, and rounded to nearest or,
 with `Precision(..., rounding="stochastic")`, stochastically (reproducibly, from
 `rounding_seed`). For example `pricing=StagePrecision("float8_e4m3fn")` prices in float64 and
-keeps the cube in FP8. Compute below float32 is enabled by roadmap 3.7, and naming it earlier
+keeps the cube in FP8. Compute below float32 is not enabled yet (F-07), and naming it
 is refused. How much a low-precision market or cube costs in accuracy is measured, not
 assumed: curves stored below 32 bits lose forward rates to cancellation
-([I-75](../planning/known-issues.md#i-75)). The 32/64 shape of before roadmap 1.4 (`PrecisionConfig(simulation=32)`) is refused
+([I-75](../planning/known-issues.md#i-75)). The 32/64 shape of before 2026-10-01 (`PrecisionConfig(simulation=32)`) is refused
 with a message naming its replacement. See
 [Architecture: Adjustable precision](../concepts/architecture.md#adjustable-precision).
 
@@ -782,7 +782,7 @@ the summary lists them) to trace **only that phase**: the job runs whole, the re
 and the worker waits for the devices at the phase's start and end, so the trace holds exactly
 that phase's work. On a GPU this is the way to trace: the profiler slows every kernel launch
 whatever it records, so a whole job traced runs several times slower than untraced
-([measured](../concepts/profiling.md#on-the-gpu-2026-10-05-roadmap-22)), while a phase is
+([measured](../concepts/profiling.md#on-the-gpu-2026-10-05)), while a phase is
 traced at its own cost alone. A name the job does not have traces nothing and warns.
 
 > **Background:** why compilation dominates, and what was done to reduce it (the Bermudan

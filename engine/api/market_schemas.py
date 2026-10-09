@@ -15,9 +15,9 @@ setting the engine has; `tests/test_api_completeness.py` fails on a setting with
   * `CamCalibrationRequestSchema` (`POST /calibration/cam`): the market and each currency's model
     with its calibration basket (`engine.calibration.cam.calibrate_cam`).
 
-Until roadmap 1.3 `POST /portfolio/price` took the Hull-White model's own request (a
+Until 2026-10-01 `POST /portfolio/price` took the Hull-White model's own request (a
 `SimulationConfig` market, model parameters on the trades); that shape is refused with a message
-naming its replacement. Roadmap 3.1 removed the `/v2/portfolio/price` route and the request's
+naming its replacement. On 2026-10-07 the API dropped the `/v2/portfolio/price` route and the request's
 `schema_version: "2"`, names that looked like versions but were not.
 
 Conventions: ISO dates, ORE periods ("5Y"), fixings `{"YYYY-MM-DD": rate}`. Unknown fields are
@@ -215,7 +215,7 @@ class LgmEngineSchema(_Strict):
     calibration: Literal["Bootstrap", "None"] = "Bootstrap"
     strategy: Literal["CoterminalDealStrike", "CoterminalATM"] = "CoterminalDealStrike"
     reference_calibration_grid: str = "400,3M"
-    #: ORE's `ShiftHorizon`. Only 0 is implemented; another value is refused (I-32, roadmap 3.4).
+    #: ORE's `ShiftHorizon`. Only 0 is implemented; another value is refused (I-32).
     shift_horizon: float = 0.0
     n_per_std: int = 30
     std_devs: float = 5.0
@@ -383,14 +383,14 @@ MarketTradeSchema = Annotated[
 ]
 
 
-#: Fields of the Hull-White request shape retired by roadmap 1.3, at the top of the body and in
+#: Fields of the Hull-White request shape retired on 2026-10-01, at the top of the body and in
 #: its market; a body carrying one is refused with `RETIRED_SHAPE`. Only fields the current
 #: shape does not have: its market's `equities` is the current market's too.
 RETIRED_FIELDS = ("evaluation_date", "calibration_basket")
 RETIRED_MARKET_FIELDS = ("time_grid", "rates", "joint_covariance")
 RETIRED_SHAPE = (
     "the Hull-White request shape (a SimulationConfig market with time_grid/rates/joint_covariance, model "
-    "parameters on the trades, calibration_basket) was retired by roadmap 1.3. Send the portfolio request: "
+    "parameters on the trades, calibration_basket) was retired on 2026-10-01. Send the portfolio request: "
     "today's market (market.asof, currencies), trades naming their currency and index, and the Hull-White "
     "model per currency in simulation.ir, e.g. {\"USD\": {\"model\": \"HullWhite\", \"reversion\": 0.03, "
     "\"volatility\": 0.01}}; Jamshidian Europeans are pricing.european=\"Jamshidian\" with pricing.jamshidian "

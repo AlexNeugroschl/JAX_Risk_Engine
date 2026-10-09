@@ -48,7 +48,7 @@ class LgmSwaptionEngineConfig:
     swap_index: the conventions the calibration helpers are built on.
     solver: the root solver of the bootstrap's buckets and of each helper's y*
         (`engine.numerics.roots`, decision A-21): `"Newton"` (the default) or `"Bisection"`
-        (the reference, the engine's numbers before roadmap 2.5 bit for bit). Both reach
+        (the reference, the engine's numbers before Newton bit for bit). Both reach
         ORE's root, more exactly than ORE's own solvers.
     """
     reversion: float = 0.0

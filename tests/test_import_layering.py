@@ -9,6 +9,7 @@ it happens to import cleanly today.
 """
 import ast
 import pathlib
+import re
 
 import pytest
 
@@ -65,4 +66,21 @@ def test_engine_ships_no_demo_or_test_code():
         for module in _imported_modules(path):
             if module.split(".")[0] in ("demos", "tests"):
                 offenders.append(f"{name} imports {module}")
+    assert not offenders, "; ".join(offenders)
+
+
+#: A roadmap step number: "roadmap", optionally "step", then n.m, possibly wrapped across a
+#: comment line.
+ROADMAP_STEP = re.compile(r"roadmap[\s#:]*(?:step[\s#:]*)?\d+\.\d+", re.IGNORECASE)
+
+
+def test_no_code_cites_a_roadmap_step():
+    """Roadmap steps are renumbered whenever the order of work changes, so code, error messages
+    and configuration cite the permanent IDs instead: an issue (I-NN), a feature (F-NN), a
+    decision (A-n), or a date."""
+    root = ENGINE.parent
+    paths = [p for tree in ("engine", "tests", "demos") for p in (root / tree).rglob("*.py")]
+    paths += [root / "pyproject.toml", root / "constraints.txt", *(root / ".github").rglob("*.yml")]
+    offenders = [f"{p.relative_to(root).as_posix()}: {m.group(0)!r}"
+                 for p in paths for m in ROADMAP_STEP.finditer(p.read_text(encoding="utf-8"))]
     assert not offenders, "; ".join(offenders)

@@ -1,7 +1,7 @@
 """
 ORE's exposure simulation of a portfolio, run in-process: the reference the engine's assembled
-simulation, NPV cube and exposure are validated against (tests/test_ore_xva_parity.py; roadmap
-3.2, I-50; docs/planning/details/ore-parity-validation.md, layers L3 and L4, gate V-4).
+simulation, NPV cube and exposure are validated against (tests/test_ore_xva_parity.py;
+I-50; docs/planning/details/ore-parity-validation.md, layers L3 and L4, gate V-4).
 
 Test tooling, not a pricer: the engine never imports it. One `OREApp` run of ORE's `EXPOSURE`
 and `PFE` analytics (`XvaAnalytic`) over in-memory inputs (`tests.support.ore_inputs`): the
@@ -29,7 +29,7 @@ time grid the basket's expiries) to the tenor basket at ATM; the simulation mark
 the configured tenors, log-linear, flat forward, and the swaption volatilities not simulated
 but decayed (`ReactionToTimeDecay`). ORE values every trade with the engine's configured
 engine and recalibrates options on each path and date. One currency, no FX or equity
-(the two-currency end-to-end test is roadmap 4.7); what the oracle cannot express is refused
+(the two-currency end-to-end test is F-04); what the oracle cannot express is refused
 by name.
 """
 from __future__ import annotations
@@ -172,7 +172,7 @@ def simulation_xml(asof: ORE.Date, config: CamConfig, indices: Sequence[str], vo
 def _require_supported(config: CamConfig) -> None:
     if set(config.ir) != {CCY} or config.fx_volatilities or config.equity_volatilities or config.correlations:
         raise NotImplementedError(f"the XVA oracle simulates {CCY} alone (no FX, equity or correlations); the "
-                                  f"two-currency test is roadmap 4.7")
+                                  f"two-currency test is F-04")
     conventions = config.ir[CCY].swap_index
     if (conventions.fixed_tenor, conventions.fixed_day_counter) != ("1Y", "ACT/365"):
         raise NotImplementedError(f"the XVA oracle's swap index is annual ACT/365; got {conventions}")

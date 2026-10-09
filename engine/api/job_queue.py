@@ -1,5 +1,5 @@
 """
-The durable job queue between the HTTP API and the engine worker (decision A-14, roadmap 1.8;
+The durable job queue between the HTTP API and the engine worker (decision A-14;
 docs/planning/details/precision.md §11).
 
 One SQLite file, one row per job, of a kind (`KINDS`: a portfolio pricing or a market-risk run):
@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
 );
 """
 
-# Schema version 1 (roadmap 1.8) had portfolio jobs only and no artifacts: its rows are
+# Schema version 1 (2026-10-04) had portfolio jobs only and no artifacts: its rows are
 # portfolio jobs (the column's default), and the artifacts table is created with the schema.
 _MIGRATE_FROM_1 = f"ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT '{PORTFOLIO}' CHECK (kind IN {_in(KINDS)})"
 

@@ -146,7 +146,7 @@ def _exposures(trades: Sequence, start: List[float], cube, scenarios, market: Ma
     The profiles start from `start`, each trade's value on the simulation market of the as-of
     date (its curves sampled at the simulation tenors), as ORE's start from the cube's `T0`
     (`ValuationEngine::buildCube` prices t=0 on the `ScenarioSimMarket`). The result's
-    `base_npv` stays the value on today's market, ORE's NPV analytic (roadmap 3.2)."""
+    `base_npv` stays the value on today's market, ORE's NPV analytic."""
     curve = ZeroCurve.from_config(market.currency(base).discount_curve)
     p0 = discount(curve, jnp.asarray(scenarios.times, dtype=jnp.float64))
     numeraire = load(scenarios.numeraire, jnp.float64)

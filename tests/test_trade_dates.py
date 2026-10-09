@@ -30,7 +30,7 @@ What is checked, and against what:
 Curves are sloped, and each pillar is a whole number of ACT/365 days so ORE
 and the engine read identical dates. The Bermudan/American curve is flat up
 to its first non-zero pillar, as written before the oracle handed ORE the
-as-of quote its zero-curve rebuild needs (I-34, fixed in roadmap 3.2; see
+as-of quote its zero-curve rebuild needs (I-34, fixed 2026-10-07; see
 tests/support/ore_inputs.py); a sloped first segment would now match too.
 """
 import dataclasses

@@ -10,7 +10,7 @@ the float64 default moves no bit.
 
 **The scaled formats** (float16, bfloat16, FP8) are stored as a `Stored`: the values in the
 format and a block scale per `BLOCK` consecutive entries along the scenario axis (the axis
-step 3.8 shards, so blocks fall inside shards; a short last block when the scenario count is
+the scenario sharding splits, so blocks fall inside shards; a short last block when the scenario count is
 not a multiple). Each scale is a power of two, kept as float32, that brings its block's
 largest finite magnitude as close to the format's maximum as it goes without passing it. A
 power of two scales exactly (the idea behind the OCP MX formats), so the scale adds no

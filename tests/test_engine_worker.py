@@ -1,5 +1,5 @@
 """
-The engine worker behind the HTTP API (roadmap 1.8, decision A-14;
+The engine worker behind the HTTP API (decision A-14;
 docs/planning/details/precision.md §11 and §13.8): the durable job queue
 (`engine.api.job_queue`), the single-threaded worker (`engine.api.worker`) and its supervisor
 (`engine.api.supervisor`).
@@ -107,7 +107,7 @@ class TestJobQueue:
         assert queue.artifact(job_id, "pnl", 0) == b"d" and queue.artifact("other", "pnl", 0) is None
 
     def test_a_queue_of_schema_version_1_is_migrated(self, tmp_path):
-        """Roadmap 1.8's file: its jobs become portfolio jobs, and it gains the artifacts table."""
+        """The version-1 file (2026-10-04): its jobs become portfolio jobs, and it gains the artifacts table."""
         import sqlite3
 
         path = tmp_path / "v1.sqlite3"
@@ -226,7 +226,7 @@ class TestWorkerLoop:
             assert job.status == jq.DONE and json.loads(job.result) == {"echo": {"n": n}, "kind": jq.PORTFOLIO}
 
     def test_each_job_is_run_by_its_kinds_pricer(self, queue):
-        """A market-risk job reaches the worker as one (roadmap 3.1)."""
+        """A market-risk job reaches the worker as one."""
         ids = {kind: queue.submit(_body(), kind) for kind in jq.KINDS}
         worker.serve(queue.path, price=echo_pricer, drain=True)
         assert {kind: json.loads(queue.get(i).result)["kind"] for kind, i in ids.items()} == {k: k for k in jq.KINDS}
@@ -502,7 +502,7 @@ def _direct(body: dict):
 
 def test_the_worker_prices_the_request_the_route_validated(monkeypatch):
     """The worker builds its dataclass request from the stored body exactly as the route did
-    (until 1.8 the request travelled pickled, its ORE dates frozen as text): every part of the
+    (until 2026-10-04 the request travelled pickled, its ORE dates frozen as text): every part of the
     run configuration, the trades' dates and fixings and the market arrive equal."""
     import engine.portfolio
     from engine.api.market_schemas import MarketPortfolioRequestSchema
@@ -585,7 +585,7 @@ class TestEngineWorkerPricing:
     def test_a_worker_keeps_its_programs_on_disk_beside_its_queue(self, queue):
         """A worker started with no cache settings (`main`, as the supervisor starts it) keeps
         JAX's persistent compilation cache in `xla-cache/` beside its queue file, so a
-        restarted worker reads its programs back (roadmap 2.4, I-53)."""
+        restarted worker reads its programs back (I-53)."""
         import os
 
         cache = queue.path.parent / worker.COMPILATION_CACHE_DIRNAME
@@ -602,7 +602,7 @@ class TestEngineWorkerPricing:
 
     def test_a_second_identical_job_compiles_nothing(self, running):
         """§13.9: the worker keeps its programs, so a repeated job shape builds no program,
-        compiled or read from the persistent cache (until 1.8 every pool worker built its own)."""
+        compiled or read from the persistent cache (until 2026-10-04 every pool worker built its own)."""
         body = json.dumps(_pricing_body(_trades("swap-payer", "european-payer", "bermudan-payer-physical"),
                                         pricing={"bermudan": {"n_per_std": 12, "std_devs": 4.0}})).encode()
         first = self._result(running, running.submit(body))

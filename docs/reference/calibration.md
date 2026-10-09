@@ -230,7 +230,7 @@ monotone, with one root when the market value is attainable.
 
 ## The root solver
 
-**This engine:** `engine.numerics.roots` (decision A-21, roadmap 2.5), for every root the
+**This engine:** `engine.numerics.roots` (decision A-21), for every root the
 engine solves: each bucket of ORE's bootstrap (`engine.calibration.ore_lgm`: the CAM's
 calibration and every Bermudan's/American's, today and on every path date), each helper's
 exercise boundary y\*, the standalone bootstrap here (`calibrate_lgm_sigma`) and its x\*, and
@@ -309,7 +309,7 @@ the root its derivative by the implicit function theorem, below.
 ## The x\* gradient bug
 
 **This engine:** `engine.numerics.roots.implicit_root`, which `price_lgm_swaption` (and the
-Jamshidian engine) find x\* with. Before roadmap 2.5 this was `engine.calibration.basket.
+Jamshidian engine) find x\* with. Before 2026-10-07 this was `engine.calibration.basket.
 _bisect_xstar`/`_bisect_xstar_raw`, the history below.
 
 `price_lgm_swaption` finds the exercise boundary — the state `x*` at which the signed
@@ -356,7 +356,7 @@ This requires `coupon_bond_value_fn`'s parameters to be passed as an explicit py
 (`params = (a, sigma)`) rather than only captured in a Python closure, since
 `jax.custom_jvp` needs an explicit primal argument to attach a JVP rule to. Newton's
 iterations would carry a derivative of their own, but only of the steps taken, not of the
-root: the rule is the same for either solver (`implicit_root`, roadmap 2.5).
+root: the rule is the same for either solver (`implicit_root`).
 
 **A second, related fix this bug's investigation surfaced: `Sigma` needed pytree
 registration.** The implicit-function-theorem correction above only works if a tangent can
@@ -383,7 +383,7 @@ finite-difference recalibration — see
 `POST /calibration/cam` returns the cross-asset model's calibration per currency
 (`engine.calibration.cam.calibrate_cam`, the bootstrap of each currency's LGM or Hull-White
 volatility to its tenor basket on today's market): the calibration a portfolio run with the same
-market and models simulates with, which roadmap 3.2 checked against ORE's own
+market and models simulates with, which was checked on 2026-10-07 against ORE's own
 `CrossAssetModelBuilder` through its simulation (`tests/test_ore_xva_parity.py`).
 `POST /calibration/lgm` is the standalone bootstrap of this page's co-terminal basket on a
 caller-given curve and volatilities ([HTTP API](http-api.md#post-calibrationcam)).
@@ -404,7 +404,7 @@ caller-given curve and volatilities ([HTTP API](http-api.md#post-calibrationcam)
   a `Sigma`, price a Bermudan on it with the grid engine, confirming
   the calibrated `Sigma` behaves correctly as a drop-in replacement for a flat scalar
   throughout the full pricing pipeline.
-- `tests/test_root_solvers.py` — the solver (roadmap 2.5): both solvers on known roots,
+- `tests/test_root_solvers.py` — the solver (2026-10-07): both solvers on known roots,
   brackets, widening, Newton's fallback, the implicit derivatives (first and second); on the
   parity markets every root under Newton equal to Bisection's and at rounding, with two
   steps of margin; the setting and its API fields; the path dates batched.

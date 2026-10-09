@@ -54,7 +54,7 @@ from engine.valuation.legs import PathSchedule, discount_from, on_every_date
 from engine.market import index_name
 
 
-#: Steps of x* (`engine.numerics.roots`): Bisection's are the count before roadmap 2.5,
+#: Steps of x* (`engine.numerics.roots`): Bisection's are the count before Newton (A-21),
 #: Newton's measured (2026-10-07): x* from 0 reaches its rounding in 5 steps for the shared
 #: European struck from 0% to 15%, payer and receiver, today and on 256 LGM paths under two
 #: Hull-White models (the NPV then within 6e-16 of the nominal of Bisection's), and in 24 for

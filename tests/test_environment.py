@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # numerical result, so they are not checked here.
 NUMERICAL_PACKAGES = ["jax", "jaxlib", "open-source-risk-engine", "numpy", "scipy"]
 
-# JAX's GPU plugin, where the `gpu` extra installed it (roadmap 2.2): its kernels are what a
+# JAX's GPU plugin, where the `gpu` extra installed it: its kernels are what a
 # GPU run computes with, and JAX refuses to load a plugin whose version is not jaxlib's.
 GPU_PLUGINS = sorted(canonicalize_name(d.metadata["Name"]) for d in distributions()
                      if canonicalize_name(d.metadata["Name"]).startswith("jax-cuda"))

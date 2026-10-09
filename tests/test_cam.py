@@ -13,7 +13,7 @@ ORE and against the identities an arbitrage-free model must satisfy.
      a Hull-White currency's path curves against QuantLib's `HullWhite.discountBond`.
 
 Every model-level identity runs for both IR parametrizations, the Hagan LGM and the Hull-White
-model (roadmap 1.3, I-42: the Hull-White model's simulated curves are its own bond prices).
+model (I-42: the Hull-White model's simulated curves are its own bond prices).
   Independent derivation: every covariance block equals the integral of the products of the
      states' Brownian loadings, a different route to the same numbers than ORE's expanded
      `CrossAssetAnalytics` formulas.
@@ -400,7 +400,7 @@ def _config(**overrides):
 @pytest.mark.parametrize("fmt, se_bound", [("float64", 4.0), ("float32", 4.0)])
 def test_simulated_assets_are_martingales_on_sloped_curves(fmt, se_bound, model):
     """The permanent check audit M-1 asked for (I-42): E[P(t,T)/N(t)] = P(0,T) on a 3% -> 5%
-    curve (the Hull-White simulation before roadmap 1.3, a constant-theta short rate, missed by
+    curve (the Hull-White simulation before 2026-10-01, a constant-theta short rate, missed by
     4.2% and 8.8% at t=2y for 5y and 10y bonds), plus the foreign bond and the equity, within
     `se_bound` standard errors, for either IR model."""
     market = _market()
@@ -456,7 +456,7 @@ def test_values_are_computed_at_each_dates_tenors_and_held_at_the_as_of_dates():
     date, by period arithmetic (1Y from 2027-03-01 is 366 days), and `ScenarioSimMarket` holds them
     at the tenors from the as-of date (1Y from 2026-07-30 is 365 days) on every date, its curve
     built once with a moving reference date (`addYieldCurve`; I-84, found against ORE's own
-    simulation in roadmap 3.2)."""
+    simulation on 2026-10-07)."""
     date = ORE.Date(1, 3, 2027)
     sm = simulate(_market(), _config(dates=(date,), samples=4, ir={"USD": LgmConfig(0.03, 0.0),
                                                                    "EUR": LgmConfig(0.02, 0.0)}))

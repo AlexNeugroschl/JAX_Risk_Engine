@@ -1,5 +1,5 @@
 """
-What every trade config is, whatever its type (roadmap 1.3):
+What every trade config is, whatever its type:
 
   * I-10: it names itself. `trade_id` (ORE's `<Trade id>`) is required and non-empty, and a
     portfolio refuses a repeated id, so results are never keyed by position alone.
@@ -37,7 +37,7 @@ BOOKINGS = {
 }
 TYPES = list(BOOKINGS)
 
-#: The fields a trade carried before roadmap 1.3: a model, or a curve by index or by value.
+#: The fields a trade carried before 2026-10-01: a model, or a curve by index or by value.
 RETIRED_FIELDS = {"hw_a": 0.03, "hw_sigma": 0.01, "rate_factor_index": 0, "discount_curve_index": 0,
                   "forward_curve_index": 1, "initial_zero_curve": None, "index_zero_curve": None,
                   "curve_index": 0, "n_per_std": 48, "std_devs": 6.0, "exercise_time_steps_per_year": 24}
@@ -50,7 +50,7 @@ def _build(cls, **fields):
 @pytest.mark.parametrize("cls", TYPES, ids=lambda c: c.__name__)
 class TestEveryTradeNamesItselfAndItsDate:
     def test_without_either_it_is_refused(self, cls):
-        """Before roadmap 1.3 this booked a trade on whatever ORE's global evaluation date was,
+        """Before 2026-10-01 this booked a trade on whatever ORE's global evaluation date was,
         with no identity."""
         with pytest.raises(TypeError, match="trade_id|evaluation_date"):
             _build(cls)

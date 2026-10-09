@@ -176,7 +176,7 @@ class TestCompileCounts:
 
     @pytest.mark.slow
     def test_an_option_s_greeks_are_a_program_per_derivative(self):
-        """Roadmap 2.4: a Bermudan's Delta and Gamma on every curve are one program and its
+        """A Bermudan's Delta and Gamma on every curve are one program and its
         Vega gradient another, each jitted with the trade as an argument. Differentiated
         eagerly they were a forward and a backward program per curve and derivative, about
         ten for one option."""
@@ -190,7 +190,7 @@ class TestCompileCounts:
 
     @pytest.mark.slow
     def test_a_repeated_job_compiles_nothing(self):
-        """Roadmap 2.4 (I-53): the demo's job, every trade type with AD Greeks, run twice in a
+        """I-53: the demo's job, every trade type with AD Greeks, run twice in a
         fresh process with no disk cache, compiles nothing the second time. It compiled 9
         programs: the swap's and European's eagerly differentiated pricers were kept only in
         JAX's internal caches of 2,048 traced programs, which the rest of the job overflowed."""
@@ -360,7 +360,7 @@ class TestProfilerHook:
         assert path.name == f"{Path(summary['path']).parent.name}.summary.json"
 
     def test_a_traced_phase_is_all_the_trace_holds(self, monkeypatch, tmp_path):
-        """With `JAX_RISK_PROFILE_PHASE` (roadmap 2.4) the job runs whole but only that phase
+        """With `JAX_RISK_PROFILE_PHASE` the job runs whole but only that phase
         is traced: the summary's phases are that phase's, its wall time and compiles are the
         phase's, and the job's own are kept beside them."""
         import json

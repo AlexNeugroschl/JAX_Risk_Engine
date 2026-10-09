@@ -1358,7 +1358,7 @@ publishing at the same instant can issue the same sequence. That is a tie, and t
 deterministically by attempt id, which is safe precisely because two successful attempts
 under one workload key are the same computation by construction.
 
-And it is **EOD-only**. The portfolio path has its own durable store since roadmap 1.8 (the
+And it is **EOD-only**. The portfolio path has its own durable store since 2026-10-04 (the
 SQLite job queue, [HTTP API](http-api.md#jobs-the-queue-and-the-engine-worker)); a *running*
 EOD attempt is still memory-only, which is why [I-08](../planning/known-issues.md#i-08) is
 `PARTIAL` rather than closed.
@@ -1370,7 +1370,7 @@ EOD attempt is still memory-only, which is why [I-08](../planning/known-issues.m
 | Task | Status | Why |
 |---|---|---|
 | **W0.8** crash-safe publication | Done (2026-09-17) | The four lookup states, the workload key and attempt immutability landed in W1.6.4; the durable store, the four-step publication protocol and manifest-scan recovery landed in W0.8's second half. Still EOD-only, and *running* state is deliberately not published ([I-08](../planning/known-issues.md#i-08)). |
-| **W1.5** wire-through to the portfolio path | Done (2026-09-17) | `engine/instruments/treasury.py`'s `BondConfig` reaches `price_portfolio`'s base NPV and Greeks, pinned bit-exact against the two pricers here. **No VaR/ES** at the time — a deterministic bond had no scenario column, refused rather than broadcast ([I-24](../planning/known-issues.md#i-24), closed by roadmap 1.3: bonds are priced on every path). No effect on this boundary. |
+| **W1.5** wire-through to the portfolio path | Done (2026-09-17) | `engine/instruments/treasury.py`'s `BondConfig` reaches `price_portfolio`'s base NPV and Greeks, pinned bit-exact against the two pricers here. **No VaR/ES** at the time — a deterministic bond had no scenario column, refused rather than broadcast ([I-24](../planning/known-issues.md#i-24), closed on 2026-10-01: bonds are priced on every path). No effect on this boundary. |
 | Equity **valuation** | Blocked | The refusal path landed (W1.4); pricing needs a spot/FX source ([I-18](../planning/known-issues.md#i-18)). |
 | Per-pillar `rateSensitivity` | Blocked | Needs a curve with pillar structure - `mode: "package"`, i.e. W2 ([I-16](../planning/known-issues.md#i-16)). |
 

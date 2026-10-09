@@ -10,7 +10,7 @@ trade with its default engine, and that is the reference for the cube.
 
 Every path test runs under both interest-rate models (`MODELS`): the pricers read only the
 path curves, so the Hull-White model's cube is ORE's on its own paths exactly as the LGM's is
-(roadmap 1.3: I-43 exercised options, I-44 one model, I-24 bonds, I-04 paid flows).
+(2026-10-01: I-43 exercised options, I-44 one model, I-24 bonds, I-04 paid flows).
 """
 import dataclasses
 

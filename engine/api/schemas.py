@@ -108,7 +108,7 @@ class PrecisionSchema(BaseModel):
     """`engine.precision.Precision`: storage, compute and accumulate per adjustable stage, each
     float64 by default, and the pricing stage overridden per product (`by_product`, keyed by
     `trade_type`) and per trade (`by_trade`, keyed by `trade_id`); the rounding into a scaled
-    storage format and its seed. The 32/64 shape before roadmap 1.4 is refused, naming the
+    storage format and its seed. The 32/64 shape retired on 2026-10-01 is refused, naming the
     replacement (decision A-12). `paired_fraction`: the share of paths also run at float64, whose
     estimates the result's `precision` report carries (decision A-13)."""
     model_config = ConfigDict(extra="forbid")
@@ -336,7 +336,7 @@ class PortfolioResultSchema(BaseModel):
     scenario_risk_available: bool = True
     # Measure of the exposure (`risk-neutral-pricing`), or null (I-11).
     measure: Optional[str] = None
-    # The precision as run, read in the worker that ran the job (roadmap 1.7, I-12).
+    # The precision as run, read in the worker that ran the job (I-12).
     precision: Optional[PrecisionReportSchema] = None
 
     @classmethod

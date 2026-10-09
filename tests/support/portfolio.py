@@ -26,7 +26,7 @@ physical one: ORE approximates it by `CollateralizedCashPrice`, swaption.cpp), a
 `DiscountingBondEngine`.
 
 The curves are flat to their first non-zero pillar, as they were written before the oracle
-handed ORE the as-of quote its curve rebuild needs (I-34, fixed in roadmap 3.2); a slope there
+handed ORE the as-of quote its curve rebuild needs (I-34, fixed 2026-10-07); a slope there
 would now reach ORE unchanged too.
 """
 import ORE

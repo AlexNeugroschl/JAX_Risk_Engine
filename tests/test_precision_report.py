@@ -1,6 +1,6 @@
 """
-The paired float64 sample, the two-level estimator and the precision report (roadmap 1.7,
-decision A-13, I-12; docs/planning/details/precision.md §9, §13.6).
+The paired float64 sample, the two-level estimator and the precision report (decision
+A-13, I-12; docs/planning/details/precision.md §9, §13.6).
 
   * The estimator needs no market (§13.6): identical samples give the plain mean and a zero
     correction; a known bias is removed within the estimate's standard error, and the
@@ -266,8 +266,8 @@ class TestPortfolioPairedSample:
         including a Bermudan recalibrated on every path; and the figures are those of the run
         without a paired sample. Bit for bit on a CPU, where every kernel is per path. A GPU
         picks its kernels by batch shape, and the paired paths (64) are not the run's (96), so
-        there they are the run's own to about an ulp, and so are the corrected means (roadmap
-        2.2; as tests/test_sharding.py's split). The run's own cube is bit for bit everywhere."""
+        there they are the run's own to about an ulp, and so are the corrected means (as
+        tests/test_sharding.py's split). The run's own cube is bit for bit everywhere."""
         plain = _price(Precision(), model=model)
         paired = _price(Precision(paired_fraction=0.5), model=model)
         report = paired.precision

@@ -138,7 +138,7 @@ format; `result.pnl` is the P&L read back at float64, and VaR/ES are float64 red
 unshocked curves at its compute format: they are the anchor its P&L is measured from, so a
 zero shift is exactly zero P&L at every precision. Trade ids must be unique (the overrides
 are keyed by them). The integer
-`precision=64|32` of before roadmap 1.4 is refused, naming the replacement.
+`precision=64|32` of before 2026-10-01 is refused, naming the replacement.
 
 `result.precision` is the run's `PrecisionReport`: the policy, each trade's stage, the
 formats the shifts and each P&L were stored in (read from the arrays) and the device. With

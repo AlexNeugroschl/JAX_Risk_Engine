@@ -1,5 +1,5 @@
 """
-The Hull-White model as an option of the run configuration (roadmap 1.3, decision A-1): a
+The Hull-White model as an option of the run configuration (decision A-1): a
 `HullWhiteConfig` per currency in `CamConfig.ir` (ORE's `<LGM>` with `VolatilityType
 HullWhite`), simulated by the cross-asset model and valued by the same pipeline as the default
 LGM model. The model-level identities (bond prices against QuantLib's `HullWhite`, zeta,
@@ -72,8 +72,8 @@ class TestCalibration:
 
 
 # =============================================================================
-# Regressions of the defects the Hull-White model had as a separate pipeline (before roadmap
-# 1.3), on the 3% -> 5% curve. Each was measured on the pre-1.3 code
+# Regressions of the defects the Hull-White model had as a separate pipeline (before
+# 2026-10-01), on the 3% -> 5% curve. Each was measured on the code before then
 # (docs/planning/known-issues.md, ledger); the per-path ORE comparisons of the shared pricers
 # on Hull-White paths are tests/test_valuation.py (parametrized over both models).
 # =============================================================================

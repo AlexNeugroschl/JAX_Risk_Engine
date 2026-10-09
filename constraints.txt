@@ -111,8 +111,8 @@ yarl==1.25.1
 zipp==4.1.0
 
 # Linux only: the `gpu` extra (JAX's CUDA 13 plugin and the CUDA libraries it installs) and
-# uvicorn's `uvloop`, from the environment verified on the owner's RTX 5060 under WSL2
-# (roadmap 2.2). pip skips them where they are not asked for, as on Windows.
+# uvicorn's `uvloop`, from the environment verified on the owner's RTX 5060 under WSL2.
+# pip skips them where they are not asked for, as on Windows.
 jax-cuda13-pjrt==0.10.2
 jax-cuda13-plugin==0.10.2
 nvidia-cublas==13.8.1.7

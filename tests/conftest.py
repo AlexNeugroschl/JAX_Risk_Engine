@@ -89,7 +89,7 @@ def _clear_jax_caches_after_each_module():
 def _stop_the_engine_worker_after_each_module():
     """Stop the engine worker a module's HTTP jobs started, so the modules after it do not run
     beside an idle JAX process holding its compiled programs (the next job starts a new one).
-    Until roadmap 1.8 the pool's modules shut their pools down the same way."""
+    Until 2026-10-04 the pool's modules shut their pools down the same way."""
     yield
     routes = sys.modules.get("engine.api.routes")
     if routes is not None:

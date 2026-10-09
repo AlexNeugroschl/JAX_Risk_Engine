@@ -6,7 +6,7 @@ They live in the instruments layer so that instrument modules import nothing fro
 tests/test_import_layering.py). Only malformed input (e.g. non-finite values) is rejected;
 zero and negative notionals and rates are allowed.
 
-Every trade config names itself and its valuation date (roadmap 1.3): `trade_id`, ORE's
+Every trade config names itself and its valuation date: `trade_id`, ORE's
 `<Trade id>`, and `evaluation_date`, both required keyword fields. A trade never reads ORE's
 thread-local evaluation date (I-64), and results are never keyed by position alone (I-10).
 """

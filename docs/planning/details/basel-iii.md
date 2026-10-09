@@ -1,7 +1,7 @@
 # Basel III Compliance Plan
 
-**Status:** proposed; feature [F-05](../features.md#f-05), roadmap steps
-[4.4, 4.5 and 4.11](../roadmap.md#stage-3--the-core) · **Written:** 2026-09-24, §2 updated
+**Status:** proposed; feature [F-05](../features.md#f-05), in the
+[roadmap's core](../roadmap.md#stage-3--the-core) · **Written:** 2026-09-24, §2 updated
 2026-09-30 · **Scope:** market risk (FRTB), with counterparty credit and CVA as later phases
 
 This plan covers three things: what "Basel III compliant" can honestly mean for this
@@ -88,7 +88,7 @@ reports exposure profiles (EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B, PFE, ORE's
 | IMA capital (60-day averages, m_c) | None | New |
 | SA-CCR | None | New; ORE oracle available |
 | BA-CVA | None | New; ORE oracle available |
-| Audit trail, reproducibility | EOD bundles hash-verified; portfolio jobs in a durable SQLite queue since roadmap 1.8 (kept forever, I-76); a running EOD attempt is memory only | [I-08](../known-issues.md#i-08), [I-10](../known-issues.md#i-10), [I-76](../known-issues.md#i-76) |
+| Audit trail, reproducibility | EOD bundles hash-verified; portfolio jobs in a durable SQLite queue since 2026-10-04 (kept forever, I-76); a running EOD attempt is memory only | [I-08](../known-issues.md#i-08), [I-10](../known-issues.md#i-10), [I-76](../known-issues.md#i-76) |
 
 ### Register items that block a compliance claim
 
@@ -99,10 +99,10 @@ precondition, not a side issue:
 |---|---|---|
 | [I-05](../known-issues.md#i-05) no faithful USD-SOFR swap construction | Every USD swap sensitivity rests on it | P1 for USD swaps (other books can proceed) |
 | [I-51](../known-issues.md#i-51) sensitivities not checked against ORE | SA figures rest on them | P1 |
-| [I-49](../known-issues.md#i-49) Bermudan/American exposure 0.5–4% above ORE's simulation (linear trades equal it since roadmap 3.2, which closed I-50) | IMM exposure rests on it | P5.3, P5.4 |
+| [I-49](../known-issues.md#i-49) Bermudan/American exposure 0.5–4% above ORE's simulation (linear trades equal it since 2026-10-07, which closed I-50) | IMM exposure rests on it | P5.3, P5.4 |
 | [I-18](../known-issues.md#i-18) no equity spot/FX | EQ risk class impossible | EQ only; refused until fixed |
 | [I-27](../known-issues.md#i-27) full-suite runs can abort inside XLA | An evidence pack needs a complete, reproducible suite run | P7 |
-| [I-08](../known-issues.md#i-08) a running EOD attempt is lost on restart (portfolio jobs durable since roadmap 1.8) | Regulatory runs must survive restart and stay retrievable | P0 |
+| [I-08](../known-issues.md#i-08) a running EOD attempt is lost on restart (portfolio jobs durable since 2026-10-04) | Regulatory runs must survive restart and stay retrievable | P0 |
 | [I-32](../known-issues.md#i-32) Bermudan engine only at `ShiftHorizon = 0` | The reference configuration must be fixed before it is cited as an oracle | P1 vega/curvature for Americans |
 
 ---
@@ -199,9 +199,9 @@ engine/regulatory/
   cva/
     ba_cva.py
 tests/support/
-  ore_inputs.py              # ORE's inputs in memory (roadmap 3.2)
+  ore_inputs.py              # ORE's inputs in memory (2026-10-07)
   ore_lgm_oracle.py          # the OREApp NPV oracle
-  ore_xva_oracle.py          # the OREApp exposure-simulation oracle (roadmap 3.2)
+  ore_xva_oracle.py          # the OREApp exposure-simulation oracle (2026-10-07)
 compliance/
   requirements.yaml          # the requirement catalogue (Appendix A seeds it)
   decisions.md               # D-1..D-n, dated
@@ -283,10 +283,10 @@ is met, not when its tasks are merged.
 | P0.3 | Transcribe the BCBS profile twice independently; diff; resolve against the text | `engine/regulatory/profiles/bcbs.yaml`, `profile.py` | `test_profile.py`: schema, every key cited, the two transcriptions agree | Zero diff between transcriptions; every value has a paragraph |
 | P0.4 | Requirement catalogue plus traceability check | `compliance/requirements.yaml`, `tests/regulatory/test_traceability.py`, `basel` marker in `conftest.py` | The check fails if a requirement has no test, a test cites an unknown requirement, or a requirement's status is `implemented` with no passing oracle test. Include a negative test that feeds it a broken catalogue | Catalogue seeded from Appendix A; check green; negative test red on a broken catalogue |
 | P0.5 | Measure guards: IMA functions accept only `HistoricalScenarioSet`; passing a risk-neutral cube raises | `measures.py` | Test that `ima.es` given a simulated exposure cube raises with a message naming the measure | Guard in place, red-first shown |
-| P0.6 | Desk, book and currency on every trade and result (the trade id is on every result row since roadmap 3.1, I-10 closed) | `portfolio/request.py`, `api/schemas.py` | Tests that each result row carries the trade's desk and book | Every row attributable to a desk and book |
+| P0.6 | Desk, book and currency on every trade and result (the trade id is on every result row since 2026-10-07, I-10 closed) | `portfolio/request.py`, `api/schemas.py` | Tests that each result row carries the trade's desk and book | Every row attributable to a desk and book |
 | P0.7 | Run manifest on every regulatory result | `manifest.py` | Test: manifest has git SHA, dirty flag, package versions, JAX backend and dtype, profile hash, input hashes; two identical runs give identical output hashes | Deterministic reruns proven byte-identical on CPU FP64 |
-| P0.8 | Extend the OREApp oracles of roadmap 3.2 (`tests/support/ore_xva_oracle.py`; sensitivity with 4.5) to the remaining analytics (stress, SA-CCR, BA-CVA, HistSimVaR, backtest) | `tests/support/` oracle | Smoke test per analytic against an ORE Example's `ExpectedOutput` | Each analytic reproduces its ORE example output |
-| P0.9 | Regulatory runs through the durable job queue (roadmap 1.8 built it for portfolio jobs); a retention rule that keeps them (I-76); the EOD half of I-08 | `api/job_queue.py`, `integration/` | I-08's and I-76's closing criteria | I-08 FIXED, I-76 FIXED |
+| P0.8 | Extend the OREApp oracles of 2026-10-07 (`tests/support/ore_xva_oracle.py`; sensitivity with I-51) to the remaining analytics (stress, SA-CCR, BA-CVA, HistSimVaR, backtest) | `tests/support/` oracle | Smoke test per analytic against an ORE Example's `ExpectedOutput` | Each analytic reproduces its ORE example output |
+| P0.9 | Regulatory runs through the durable job queue (built for portfolio jobs on 2026-10-04); a retention rule that keeps them (I-76); TraderX's half of I-08 | `api/job_queue.py`, `integration/` | I-08's and I-76's closing criteria | I-08 FIXED, I-76 FIXED |
 
 ### Phase 1 — FRTB standardised approach (≈6 weeks)
 
@@ -358,7 +358,7 @@ as green.
 |---|---|---|---|---|
 | P5.1 | SA-CCR | Replacement cost, PFE multiplier (5% floor), IR hedging sets by currency, maturity buckets with the profile's correlations, supervisory duration, supervisory delta for swaptions, α = 1.4. Needs netting set and collateral inputs | ORE `SaccrCalculator` (`Examples/CreditRisk/run_saccr.py`) | 1e-10 relative per netting set |
 | P5.2 | BA-CVA (reduced) | Counterparty-level SCVA from SA-CCR EAD, supervisory discount factor, discount scalar, ρ | ORE `BaCvaCalculator` | 1e-10 |
-| P5.3 | IMM exposure (optional) | EE, Effective EE (non-decreasing), EPE, EEPE over the first year from the existing `npv_cube`. Stressed calibration, α. Market path only. **Blocked on [I-49](../known-issues.md#i-49)** (roadmap 3.5): since roadmap 3.2 linear trades' exposure equals ORE's simulation, a Bermudan's or American's is 0.5–4% apart | ORE's exposure simulation through `tests/support/ore_xva_oracle.py`, on the same model | EEPE within MC error of ORE; I-49 closed first |
+| P5.3 | IMM exposure (optional) | EE, Effective EE (non-decreasing), EPE, EEPE over the first year from the existing `npv_cube`. Stressed calibration, α. Market path only. **Blocked on [I-49](../known-issues.md#i-49)** (I-49): since 2026-10-07 linear trades' exposure equals ORE's simulation, a Bermudan's or American's is 0.5–4% apart | ORE's exposure simulation through `tests/support/ore_xva_oracle.py`, on the same model | EEPE within MC error of ORE; I-49 closed first |
 | P5.4 | IMM backtesting (optional) | Exposure-model backtesting against realised MtM paths, as CRE53 requires | Statistical tests (§7.5) | Documented test passes over the history available |
 
 ### Phase 6 — Precision gate for regulatory figures (≈1–2 weeks)
@@ -367,13 +367,13 @@ The project researches how much precision each figure needs, down to FP8. For ca
 must be settled per figure, and a figure must say whether it has been (D-9: any precision may
 be run, and an unproven one is flagged, not refused). The mechanism, the measurement
 campaign and the shared evidence table are in [precision.md](precision.md) (§9, §10;
-roadmap 1.7, 3.6); this phase applies them to the regulatory figures.
+[I-55](../known-issues.md#i-55), [I-75](../known-issues.md#i-75)); this phase applies them to the regulatory figures.
 
 | ID | Task | Exit |
 |---|---|---|
 | P6.1 | Run every regulatory figure at float64 and at each reduced combination of the precision evidence table, on the Phase 1 portfolio and on a large synthetic one | Rows in the shared evidence table |
 | P6.2 | Acceptance rule per figure (decision A-11): the P&L attribution test (MAR32: Spearman and Kolmogorov–Smirnov, green zone) between the reduced-precision and float64 P&L where Basel has the test, and the precision error below 1% of the figure's own statistical error (VaR, ES) or below 1e-6 relative (SA, which is deterministic) | Rule in the profile; `RegulatoryResult` carries a warning (with the evidence: which precisions were validated, at how many paths) for any figure run at a precision that has not passed its gate (D-9; ORE alignment plan 9.5) |
-| P6.3 | Record the realised dtypes and device on every regulatory result: the precision report (roadmap 1.7, [I-12](../known-issues.md#i-12)) | Present in the manifest |
+| P6.3 | Record the realised dtypes and device on every regulatory result: the precision report ([I-12](../known-issues.md#i-12)) | Present in the manifest |
 
 ### Phase 7 — Proof: evidence pack and independent validation (≈2–3 weeks, then continuous)
 
@@ -526,7 +526,7 @@ P0 ──► P1 ─────────────────────�
                  D-7 (TraderX HPL/APL)
 
 P5.1, P5.2 (SA-CCR, BA-CVA): after P0, independent of P1–P4
-P5.3, P5.4 (IMM):            after I-49 (roadmap 3.5)
+P5.3, P5.4 (IMM):            after I-49 (I-49)
 USD swaps in any phase:      after I-05
 ```
 

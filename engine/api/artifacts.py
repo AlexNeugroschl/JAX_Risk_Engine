@@ -1,5 +1,5 @@
 """
-Arrays returned by reference instead of inline (decision A-17, roadmap 3.1, I-09): a result's
+Arrays returned by reference instead of inline (decision A-17, I-09): a result's
 NPV cube or P&L matrix, split into chunks of bytes that the job queue stores beside the result
 (`engine.api.job_queue`, `artifacts`) and `GET /jobs/{job_id}/artifacts/{name}/{chunk}` serves.
 

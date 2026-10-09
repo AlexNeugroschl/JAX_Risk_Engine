@@ -20,7 +20,7 @@ dependencies = [
     "scipy",
 ]
 
-# The engine worker behind the HTTP API (roadmap 1.8; engine/api/worker.py). The API
+# The engine worker behind the HTTP API (decision A-14; engine/api/worker.py). The API
 # starts one itself unless JAX_RISK_WORKER=external.
 [project.scripts]
 jax-risk-worker = "engine.api.worker:main"
@@ -46,8 +46,7 @@ dev = [
 ]
 # JAX's CUDA 13 plugin and the CUDA libraries, for an NVIDIA GPU on Linux (WSL2 on Windows,
 # where JAX has no CUDA build). CUDA 13 runs every NVIDIA architecture JAX supports, Blackwell
-# included, on a driver of 580 or later. See docs/getting-started/user-guide.md, "On a GPU"
-# (roadmap 2.2).
+# included, on a driver of 580 or later. See docs/getting-started/user-guide.md, "On a GPU".
 gpu = [
     "jax[cuda13]>=0.10.2,<0.11",
 ]

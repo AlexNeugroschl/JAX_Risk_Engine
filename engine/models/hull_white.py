@@ -7,7 +7,7 @@ it once the bond's volatility is known: shared by the Jamshidian European engine
 The Hull-White model itself is the LGM with the Hull-White volatility parametrization
 (`engine.models.lgm`: `hull_white_zeta`), simulated by the cross-asset model
 (`engine.simulation.config.HullWhiteConfig`). Its closed forms in short-rate form (A(t,T),
-B(t,T)) belonged to the Hull-White simulation retired by roadmap 1.3.
+B(t,T)) belonged to the Hull-White simulation retired on 2026-10-01.
 """
 import jax
 import jax.numpy as jnp

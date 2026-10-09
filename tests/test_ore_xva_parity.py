@@ -1,6 +1,5 @@
 """
-The engine's assembled exposure pipeline against ORE's own exposure simulation (roadmap 3.2;
-I-50; docs/planning/details/ore-parity-validation.md, layers L3 and L4, gate V-4), through
+The engine's assembled exposure pipeline against ORE's own exposure simulation (I-50; docs/planning/details/ore-parity-validation.md, layers L3 and L4, gate V-4), through
 `tests/support/ore_xva_oracle.py`, on the shared portfolio's sloped two-curve market
 (tests/support/portfolio.py), under both interest-rate models calibrated to a tenor basket:
 
@@ -21,10 +20,10 @@ value; T0 to 3.9e-11 relative; the profiles of ORE's cube to 1.8e-13. Bermudans 
 are worth 0.5-4% more than ORE says on paths after t=0, before their exercise (ORE's per-path
 recalibration, I-49), and the same on a path after exercising into the swap; near the exercise
 boundary that moves a decision (one cell in 160: a cash-settled Bermudan ORE exercised, 0, the
-engine did not). Roadmap 3.5 reproduces ORE there against this test; until then their L3 cases
+engine did not). I-49 is to reproduce ORE there against this test; until then their L3 cases
 are strict expected failures.
 
-Found by this test and fixed in roadmap 3.2: the simulation market held each curve's tenor
+Found by this test and fixed on 2026-10-07: the simulation market held each curve's tenor
 points at the tenors' times from the simulation date, where ORE holds them at the times from the
 as-of date (`engine.simulation.scenario_market`), up to 0.3% of a swap's path values; and the
 exposure started from today's value, where ORE starts from the simulation market's (`T0`).
@@ -111,7 +110,7 @@ def test_every_trades_cube_equals_ores_on_ores_paths(on_ores_paths, name, reques
     """L3: each cell within `CUBE_RTOL` of the trade's largest value."""
     ore, _, cube = on_ores_paths
     if isinstance(shared.trades()[name], OPTIONS):
-        request.applymarker(pytest.mark.xfail(strict=True, reason="I-49: ORE's per-path recalibration (roadmap 3.5)"))
+        request.applymarker(pytest.mark.xfail(strict=True, reason="I-49: ORE's per-path recalibration"))
     j = ore.trade_ids.index(name)
     scale = np.max(np.abs(ore.cube[:, :, j]))
     assert scale > 0.0, "the trade must be worth something on the paths"
@@ -131,7 +130,7 @@ def test_t0_is_the_value_on_the_simulation_market_of_the_as_of_date(on_ores_path
 
 def test_the_pipelines_profiles_start_from_ores_t0(on_ores_paths, request):
     """I-85: `price_portfolio`'s exposure at t=0 is ORE's, each trade's and the netting set's
-    (until roadmap 3.2 it started from today's value, up to 4.2% away on this portfolio)."""
+    (until 2026-10-07 it started from today's value, up to 4.2% away on this portfolio)."""
     ore, _, _ = on_ores_paths
     model = request.node.callspec.params["on_ores_paths"]
     result = price_portfolio(PortfolioRequest(shared.market(), _trades(),

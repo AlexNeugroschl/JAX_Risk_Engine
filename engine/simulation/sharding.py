@@ -1,5 +1,5 @@
 """
-The scenario axis across the devices this process owns (roadmap 3.8, I-61;
+The scenario axis across the devices this process owns (I-61;
 docs/planning/details/precision.md §11.3).
 
 A run's scenario draws (the simulation's Sobol normals, market risk's shifts) are placed on a

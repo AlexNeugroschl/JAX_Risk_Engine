@@ -22,7 +22,7 @@ run's precision was, read from what it did, and how far its figures are from flo
 `realized` and `devices` are read from the arrays, not the configuration, so the report says
 what ran even if a cast point were wrong. Built in the process that ran the job, so an HTTP
 job reports its worker's device, not the API's (I-12). An unvalidated combination's warning
-per figure joins with roadmap 5.1's evidence table (decision A-11).
+per figure joins with the evidence table (I-55) (decision A-11).
 
 Depends on JAX and NumPy only.
 """

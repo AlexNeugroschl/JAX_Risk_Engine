@@ -19,7 +19,7 @@ from engine.api.routes import router, shutdown_worker
 
 
 def keep_jax_on_the_cpu() -> None:
-    """Run this process's JAX on the CPU (roadmap 2.2). The server prices nothing: its JAX work
+    """Run this process's JAX on the CPU. The server prices nothing: its JAX work
     is `/version` and the synchronous `/calibration/cam` and `/calibration/lgm`, small float64
     bootstraps (decision A-10). A GPU client would
     take device memory beside the engine worker's, which prices every job (on a TPU host a

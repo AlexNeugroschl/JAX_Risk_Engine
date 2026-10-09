@@ -1,7 +1,7 @@
 """
 Regression tests for gaps where `price_portfolio` returned a quietly incomplete result
 (found while writing the EOD contract proposal; see docs/planning/details/traderx-integration.md).
-Each class failed against the code it was written for; since roadmap 1.3 they run on the one
+Each class failed against the code it was written for; since 2026-10-01 they run on the one
 pipeline (a `Market`, any model).
 
 1. Swap Greeks were skipped (I-01): the Greeks dispatcher could not resolve a swap's curves

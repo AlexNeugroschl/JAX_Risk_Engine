@@ -12,7 +12,7 @@ The precision of a run (docs/planning/details/precision.md §3, §4; decisions A
 
       rounding       "nearest" | "stochastic"   how values are rounded into a scaled storage format
       rounding_seed  int                        the seed of the stochastic rounding
-      paired_fraction  float in [0, 1]          the share of paths also run at float64 (1.7)
+      paired_fraction  float in [0, 1]          the share of paths also run at float64 (A-13)
 
 Each adjustable stage has three precisions: `storage`, the format its output is kept in until
 the next stage reads it; `compute`, the format its arithmetic is done in; `accumulate`, the
@@ -25,7 +25,7 @@ simulation and the scenario market are shared by every trade, so they have no ov
 `check_overrides` refuses a key that names no trade of the run or no product, so a misspelt
 override is never silently ignored.
 
-Storage below 32 bits (float16, bfloat16, FP8, roadmap 1.6) is kept with block scales along
+Storage below 32 bits (float16, bfloat16, FP8) is kept with block scales along
 the scenario axis and rounded by `rounding` (`engine.precision.storage`); float64 and float32
 storage rounds to nearest whatever `rounding` says. `Precision.store` is the one way the
 pipeline stores: it names each array (`"shocks"`, `"values/<trade id>"`), and a stochastic
@@ -42,11 +42,11 @@ Calibration, t=0 values, Greeks and every reduction over paths or scenarios (exp
 are not stages here: they are float64 by decision (A-10).
 
 Validation refuses, naming the field, before any work: a name outside the format table, a
-format used before the roadmap step that enables it, `storage` wider than `compute` (storing
+format not enabled yet (the format table names the item that enables it), `storage` wider than `compute` (storing
 wider gains nothing), `accumulate` narrower than `compute`, a rounding outside
 `ROUNDINGS`, `stochastic` rounding when no stage stores in a scaled format (it would round
 nothing), and a `paired_fraction` outside [0, 1]. Every other combination may be run (D-9).
-The 32/64 shape before roadmap 1.4 (`PrecisionConfig`) is refused, not translated (A-12): `RETIRED_SHAPE` says what replaces it.
+The 32/64 shape retired on 2026-10-01 (`PrecisionConfig`) is refused, not translated (A-12): `RETIRED_SHAPE` says what replaces it.
 """
 import math
 from dataclasses import dataclass, field, fields
@@ -66,7 +66,7 @@ OVERRIDES = {"by_product": "product", "by_trade": "trade id"}
 #: Why the 32/64 shape is refused, and what replaces it (Python and HTTP).
 RETIRED_SHAPE = (
     "the 32/64 precision shape (PrecisionConfig with simulation/pricing/risk/calibration bits, "
-    "PricingPrecisionOverride, RiskPrecisionOverride, MarketRiskRequest.precision=64|32) was retired by roadmap 1.4 "
+    "PricingPrecisionOverride, RiskPrecisionOverride, MarketRiskRequest.precision=64|32) was retired on 2026-10-01 "
     "(decision A-12). Give an engine.precision.Precision: a StagePrecision(storage, compute, accumulate) of format "
     "names per stage (simulation, market, pricing), e.g. Precision.throughout('float32'), or over HTTP "
     "{\"simulation\": {\"storage\": \"float32\", \"compute\": \"float32\", \"accumulate\": \"float32\"}, ...}. "
@@ -76,7 +76,7 @@ RETIRED_SHAPE = (
 @dataclass(frozen=True)
 class StagePrecision:
     """The storage, compute and accumulate formats of one stage, by name (see the module
-    docstring). Until roadmap 3.7, `compute` is float64 or float32 and `accumulate` equals
+    docstring). Until F-07's compute formats, `compute` is float64 or float32 and `accumulate` equals
     it; `storage` is any format no wider than `compute`."""
     storage: str = "float64"
     compute: str = "float64"
@@ -94,13 +94,13 @@ class StagePrecision:
             except ValueError as exc:
                 raise ValueError(f"StagePrecision.{f.name}: {exc}") from None
         storage, compute, accumulate = rows["storage"], rows["compute"], rows["accumulate"]
-        if storage.storage_step:
-            _refuse("storage", storage.name, f"storage in {storage.name} is enabled by roadmap step "
-                                             f"{storage.storage_step}")
-        if compute.compute_step:
-            _refuse("compute", compute.name, f"compute in {compute.name} is enabled by roadmap step "
-                                             f"{compute.compute_step} (difference-form kernels); until then float64 "
-                                             f"or float32")
+        if storage.storage_pending:
+            _refuse("storage", storage.name, f"storage in {storage.name} is not enabled yet "
+                                             f"({storage.storage_pending})")
+        if compute.compute_pending:
+            _refuse("compute", compute.name, f"compute in {compute.name} is not enabled yet "
+                                             f"({compute.compute_pending}: difference-form kernels); until then "
+                                             f"float64 or float32")
         if storage.bits > compute.bits:
             _refuse("storage", storage.name, f"wider than compute={compute.name!r}; storing wider than computed adds "
                                              f"no precision")
@@ -108,7 +108,7 @@ class StagePrecision:
             _refuse("accumulate", accumulate.name, f"narrower than compute={compute.name!r}")
         if accumulate.name != compute.name:
             _refuse("accumulate", accumulate.name, f"an accumulate format other than compute={compute.name!r} is "
-                                                   f"enabled by roadmap step 3.7 (kernels with explicit "
+                                                   f"not enabled yet (F-07: kernels with explicit "
                                                    f"accumulators); until then they are equal")
 
     @property

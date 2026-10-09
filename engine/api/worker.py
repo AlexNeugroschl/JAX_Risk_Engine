@@ -1,6 +1,6 @@
 """
 The engine worker: one single-threaded process per host that takes jobs from the job queue
-(`engine.api.job_queue`), runs them and writes the results back (decision A-14, roadmap 1.8;
+(`engine.api.job_queue`), runs them and writes the results back (decision A-14;
 docs/planning/details/precision.md §11).
 
     jax-risk-worker [--queue PATH] [--parent-pid PID]
@@ -77,7 +77,7 @@ COMPILATION_CACHE_DIRNAME = "xla-cache"
 
 #: XLA's flag that excludes GPU kernels whose results depend on scheduling (atomics). Without
 #: it the AD Greeks' scatter-adds moved by an ulp between identical runs on an RTX 5060
-#: (roadmap 2.2). `--xla_gpu_deterministic_ops=true` also pins autotuning, at twice the
+#: (2026-10-06). `--xla_gpu_deterministic_ops=true` also pins autotuning, at twice the
 #: compile time; an operator who sets either flag, true or false, is not overridden.
 DETERMINISTIC_KERNELS_FLAG = "--xla_gpu_exclude_nondeterministic_ops=true"
 

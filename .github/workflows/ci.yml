@@ -34,7 +34,7 @@ jobs:
 
   # The fast tier again under JAX's strict dtype promotion, which turns any implicit
   # float32/float64 mix into an error: kernels follow the dtype of their inputs, so a float32
-  # stage stays float32 (roadmap 1.4, docs/planning/details/precision.md §6.4).
+  # stage stays float32 (docs/planning/details/precision.md §6.4).
   fast-strict-dtypes:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

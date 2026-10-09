@@ -130,7 +130,7 @@ def build_coterminal_basket(
     return targets
 
 
-#: Steps of x* (`engine.numerics.roots`): Bisection's are the count before roadmap 2.5,
+#: Steps of x* (`engine.numerics.roots`): Bisection's are the count before Newton (A-21),
 #: Newton's measured (2026-10-07: x* from 0 reaches its rounding in 3 steps; two of margin,
 #: tests/test_root_solvers.py).
 X_STAR_STEPS = Steps(bisection=100, newton=5)

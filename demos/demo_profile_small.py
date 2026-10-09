@@ -9,7 +9,7 @@ greeks, `greeks/trade<i>/<type>`), and beside each trace the worker's summary of
 (`<run>.summary.json`: wall time, compiles, events, time per phase), which this script prints;
 see `docs/concepts/profiling.md` §2.
 
-Measured 2026-10-07 on CPU (roadmap 2.5; the traced run, the server's start-up excluded):
+Measured 2026-10-07 on CPU (the Newton root solver, A-21; the traced run, the server's start-up excluded):
 
     mode                                 wall    compiles  events     phases: pricing / greeks
     --cold --no-disk-cache (scratch)     42.2 s  225         680,210  11.4 s / 26.3 s
@@ -24,18 +24,18 @@ Every trace is whole: it spans the run and holds every phase. xprof reads it all
 trace past that is partial in viewers that read that file (the summary warns). Most events are
 executed XLA kernels, not compiles; XLA's CPU runtime records each op of a loop body on every
 iteration, which made the bisection that calibrated the Bermudan and the American on every path
-date most of a trace before roadmap 2.5's root solver.
+date most of a trace before the Newton root solver (A-21).
 
 `--phase NAME` traces one phase of the job (any name the summary lists) and runs the rest
-untraced. On a GPU the profiler slows every kernel launch whatever it records; since roadmap
-2.5 a repeat launches few enough kernels (46,213 on the compute stream, 1.36M before) that the
+untraced. On a GPU the profiler slows every kernel launch whatever it records; since the
+Newton solver (A-21) a repeat launches few enough kernels (46,213 on the compute stream, 1.36M before) that the
 whole repeat traced takes 1.6 s against 1.4 s untraced on an RTX 5060 (32 s against 5.5 s
 before), and a phase traced alone is a choice rather than a necessity.
 
 Run with:  .venv/Scripts/python.exe demos/demo_profile_small.py [--cold] [--no-disk-cache] [--phase NAME]
 View with: xprof --port 8791 .profile-out-small
 
-On a GPU (roadmap 2.2: Linux or WSL2 with the `gpu` extra, docs/getting-started/user-guide.md)
+On a GPU (Linux or WSL2 with the `gpu` extra, docs/getting-started/user-guide.md)
 the same command runs the job on the GPU; the result's `ran on:` line names the device the
 engine worker used. Measured on an RTX 5060 in `docs/concepts/profiling.md` §2.0, with the
 device lane read phase by phase.

@@ -5,14 +5,14 @@ closing it takes. The order of work is in [roadmap.md](roadmap.md); the rules fo
 (statuses, severities, how to add and close an entry) are in [README.md](README.md). Fixed
 issues keep one line in the [closed ledger](#closed).
 
-Read this before trusting an exposure profile or a result served by the EOD routes:
+Read this before trusting an exposure profile or a result served by the TraderX routes:
 [I-57](#i-57) can return another submission's result, and a Bermudan's or American's values on
 the paths, and so its exposure, are 0.5–4% above ORE's simulation ([I-49](#i-49)); swaps,
-Europeans and bonds equal ORE's simulation path by path since roadmap 3.2.
+Europeans and bonds equal ORE's simulation path by path since 2026-10-07.
 
 ## Verification status
 
-Last full runs, 2026-10-07/08, on the code of roadmap 3.1 and 3.2 (one HTTP API reaching every
+Last full runs, 2026-10-07/08, on the code of 2026-10-07 (one HTTP API reaching every
 setting; the ORE simulation oracle, and the three differences from ORE it found in the assembled
 pipeline fixed: I-84, I-85, I-86). 2,765 collected on Windows: 2,667 before, plus 33 in
 `tests/test_api_completeness.py`, 29 in `tests/test_ore_xva_parity.py`, 15 in
@@ -43,14 +43,14 @@ its summary line, and no run has a `FAILED` or `ERROR` line:
   under both models (linear trades 16,384 paths, options 1,024) and the in-memory run of ORE's
   `Examples/Exposure` swap against ORE's own file-driven run, 5 passed.
 
-Red first, on 2.5's code (a worktree of `c8e21ea`, the new oracle copied in): a swap's and a
+Red first, on the code before (a worktree of `c8e21ea`, the new oracle copied in): a swap's and a
 European's cube on ORE's paths 3.4e-3 and 4.5e-3 of their scale from ORE's (bound 1e-10, I-84);
 the exposure's start 4.2% from ORE's `T0` (I-85); a cash European's time-weighted EPE on its last
 date 1,772 where ORE has 0 (I-86); the completeness test's three gaps (`shift_horizon`, piecewise
 volatilities, no market-risk or calibration request); the oracle on a sloped first segment 2.3e-6
 from the engine (I-34; 1.5e-12 after).
 
-Golden snapshot (3.1, 3.2), on CPU, from a worktree of `c8e21ea` (2.5) against the 3.2 tree, 359
+Golden snapshot (2026-10-07), on CPU, from a worktree of `c8e21ea` against the new tree, 359
 arrays: 198 identical in value, dtype and shape (today's values, both Greeks methods, every
 market-risk figure, the standalone bootstrap), 161 moved as intended by I-84 to I-86: the cubes
 up to 1.6e-2 of their scale, the exposure profiles up to 3.2e-2; the snapshot was re-baselined
@@ -61,50 +61,52 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 
 ## Summary
 
-| ID | Issue | Sev. | Status | Category | Stage |
+| ID | Issue | Sev. | Status | Category | Roadmap |
 |---|---|---|---|---|---|
 | [I-04](#i-04) | Seasoned TraderX swaps: the export has no past fixings | High | OPEN | Scope | External |
 | [I-05](#i-05) | No faithful USD-SOFR / ACT-360 swap construction | High | OPEN | Scope | External |
 | [I-07](#i-07) | No corporate bond, equity or listed-option pricer | Medium | OPEN | Scope | By demand |
-| [I-08](#i-08) | A running EOD attempt is lost on restart | Medium | PARTIAL | API | 4.2 |
+| [I-08](#i-08) | A running TraderX attempt is lost on restart | Medium | PARTIAL | API | Core |
 | [I-16](#i-16) | `rateSensitivity` is parallel-only | Medium | OPEN | Scope | External |
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
-| [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | 4.3 |
-| [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | 6.1 |
-| [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | 3.4 |
-| [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | 3.5 |
-| [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | 3.5 |
-| [I-75](#i-75) | Storage below 32 bits keeps few bits of a concentrated array's spread | Low | OPEN | Correctness | 3.6 |
-| [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | 3.9 |
-| [I-88](#i-88) | The API completeness test checks field names, not that a value reaches the engine | Low | OPEN | Tooling | 3.9 |
-| [I-89](#i-89) | A retried job submission runs the job twice | Low | OPEN | API | 3.9 |
-| [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | 4.5 |
-| [I-78](#i-78) | AD and bump Greeks differ by up to 2% on a sloped market | Medium | OPEN | Validation | 4.5 |
-| [I-53](#i-53) | On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch | Low | PARTIAL | Performance | 6.6 |
-| [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | 3.3 |
-| [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | 5.1 |
-| [I-57](#i-57) | EOD: a cached result is served before the submission id is checked | High | OPEN | API | 4.1 |
-| [I-58](#i-58) | EOD: two concurrent submissions of one workload both execute | Medium | OPEN | API | 4.1 |
-| [I-59](#i-59) | EOD: `calculations` and `reportingCurrency` accepted, keyed, then ignored | Medium | OPEN | API | 4.1 |
-| [I-60](#i-60) | EOD result schema has no stated policy on added fields | Low | ASSUMPTION | API | 4.3 |
-| [I-76](#i-76) | The job queue keeps every job and result forever | Low | OPEN | API | 4.2 |
-| [I-77](#i-77) | A worker that cannot start leaves jobs `pending` with no signal | Low | OPEN | API | 4.2 |
-| [I-91](#i-91) | A long job delays every job behind it, and no job can be cancelled | Low | OPEN | API | 4.2 |
-| [I-90](#i-90) | The HTTP API has no authentication, rate limit or body-size limit | Low | OPEN | API | 6.7 |
-| [I-61](#i-61) | Nothing runs on more than one host; multi-device speed unmeasured | Medium | PARTIAL | Performance | 3.8 |
-| [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | 6.2, 6.4 |
-| [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | 6.3 |
-| [I-81](#i-81) | A cold job compiles about 180 one-operation programs; market risk vmaps a closure | Low | OPEN | Performance | 6.5 |
-| [I-83](#i-83) | A Bermudan/American on the paths needs 0.3–0.7 MB per path and step: 64k paths run out of memory | Medium | OPEN | Performance | 3.7 |
-| [I-92](#i-92) | Two modules sit directly under `engine/`, beside its subpackages | Low | OPEN | Architecture | 3.10 |
+| [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | Fix what exists |
+| [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | Fix what exists |
+| [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | Core |
+| [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | Core |
+| [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | Core |
+| [I-75](#i-75) | Storage below 32 bits keeps few bits of a concentrated array's spread | Low | OPEN | Correctness | Core |
+| [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Core |
+| [I-88](#i-88) | The API completeness test checks field names, not that a value reaches the engine | Low | OPEN | Tooling | Core |
+| [I-89](#i-89) | A retried job submission runs the job twice | Low | OPEN | API | Core |
+| [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | Core |
+| [I-78](#i-78) | AD and bump Greeks differ by up to 2% on a sloped market | Medium | OPEN | Validation | Core |
+| [I-53](#i-53) | On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch | Low | PARTIAL | Performance | Fix what exists |
+| [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | New |
+| [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | Core |
+| [I-57](#i-57) | TraderX: a cached result is served before the submission id is checked | High | OPEN | API | Fix what exists |
+| [I-58](#i-58) | TraderX: two concurrent submissions of one workload both execute | Medium | OPEN | API | Fix what exists |
+| [I-59](#i-59) | TraderX: `calculations` and `reportingCurrency` accepted, keyed, then ignored | Medium | OPEN | API | Fix what exists |
+| [I-60](#i-60) | TraderX result schema has no stated policy on added fields | Low | ASSUMPTION | API | Fix what exists |
+| [I-76](#i-76) | The job queue keeps every job and result forever | Low | OPEN | API | Core |
+| [I-77](#i-77) | A worker that cannot start leaves jobs `pending` with no signal | Low | OPEN | API | Core |
+| [I-91](#i-91) | A long job delays every job behind it, and no job can be cancelled | Low | OPEN | API | Core |
+| [I-90](#i-90) | The HTTP API has no authentication, rate limit or body-size limit | Low | OPEN | API | Fix what exists |
+| [I-61](#i-61) | Nothing runs on more than one host; multi-device speed unmeasured | Medium | PARTIAL | Performance | Core |
+| [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | Fix what exists |
+| [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | Fix what exists |
+| [I-81](#i-81) | A cold job compiles about 180 one-operation programs; market risk vmaps a closure | Low | OPEN | Performance | Fix what exists |
+| [I-83](#i-83) | A Bermudan/American on the paths needs 0.3–0.7 MB per path and step: 64k paths run out of memory | Medium | OPEN | Performance | Core |
+| [I-92](#i-92) | `engine/`'s packages are named for layers, not for what they hold | Low | OPEN | Architecture | Core |
+| [I-93](#i-93) | TraderX's submissions are priced by their own pricers, not the engine's | Medium | OPEN | API | Core |
+| [I-94](#i-94) | The LGM is calibrated by two implementations | Low | OPEN | Architecture | Fix what exists |
 
-**One pipeline.** Since roadmap 1.3 every run is `price_portfolio` on a `Market`
+**One pipeline.** Since 2026-10-01 every run is `price_portfolio` on a `Market`
 (`engine.portfolio.market_path`; HTTP `POST /portfolio/price`): ORE's cross-asset model with a
 model per currency
 (`CamConfig.ir`: the LGM by default, or Hull-White, decision A-1 in
 [compliance/decisions.md](../../compliance/decisions.md)), and ORE's valuation of every trade on
 every path. "Market path" in older entries and commits means this pipeline; "the Hull-White
-model" before 1.3 meant the separate pipeline 1.3 removed.
+model" before 2026-10-01 meant the separate pipeline removed that day.
 
 ---
 
@@ -155,7 +157,7 @@ The path-date volatility transcribes `DynamicSwaptionVolatilityMatrix` (`Forward
 checked against the formula but not against ORE running it (no Python constructor).
 
 **Reach.** Market-path Bermudan/American values past t=0 and their exposure. Measured by
-roadmap 3.2's ORE simulation on ORE's own paths (`tests/test_ore_xva_parity.py`, the shared
+the ORE simulation oracle on ORE's own paths (`tests/test_ore_xva_parity.py`, the shared
 portfolio, both models, 32 paths, dates 3M to 3Y): before exercise the engine's values are
 0.5–4% above ORE's on every path (largest cell gap 0.5% of the trade's largest value for the
 physical Bermudan, 0.6% for the American; mean 0.6–0.7% of their values), growing with the
@@ -173,8 +175,8 @@ as-of date (there the parametrization's time grid) and moves its reference date.
 <a id="i-73"></a>
 ### I-73 — A per-path recalibration that misses its basket is not flagged
 
-**Severity:** Low · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-01, roadmap
-1.4's dtype review
+**Severity:** Low · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-01, the
+dtype review
 
 **What is wrong.** On every path and date a Bermudan/American is recalibrated on
 σ ∈ [1e-6, 0.2] (`engine.calibration.ore_lgm.bootstrap_sigma`, by the engine's root solver). A
@@ -193,7 +195,7 @@ through them. Not seen on the test markets. Since 1.4 the flag is also correct i
 
 **Current handling.** None.
 
-**To close.** With roadmap 3.5 (the per-path recalibration against ORE's): count the paths and
+**To close.** With [I-49](#i-49) (the per-path recalibration against ORE's): count the paths and
 dates whose recalibration hit the bracket and carry a warning naming the trade and the counts
 on the result, as ORE's structured warning; a test with an unattainable path volatility.
 
@@ -201,9 +203,9 @@ on the result, as ORE's structured warning; a test with an unattainable path vol
 ### I-75 — Storage below 32 bits keeps few bits of a concentrated array's spread
 
 **Severity:** Low · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-02,
-roadmap 1.6's measurements ([details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline))
+the storage measurements ([details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline))
 
-**What is wrong.** A scaled storage format (roadmap 1.6) keeps each value to the format's
+**What is wrong.** A scaled storage format (2026-10-02) keeps each value to the format's
 precision relative to its block's largest value: FP8 keeps 3 (e4m3) or 2 (e5m2) mantissa bits.
 Where the 32 paths of a block sit close together against their level, as a bond's cube column
 (near 1e6, spread near 1e4) or a long log discount factor of the scenario curves do, those
@@ -223,10 +225,10 @@ float64 across seeds, stochastic rounding more than nearest (float16: at most 0.
 [details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline)).
 
 **Current handling.** None: the runs are allowed (D-9) and carry no warning until
-[I-55](#i-55)'s evidence table and warnings (roadmap 5.1). Documented in the user guide and the
+[I-55](#i-55)'s evidence table and warnings (I-55). Documented in the user guide and the
 portfolio entry point.
 
-**To close.** Roadmap 3.6: store such classes relative to a level, so the format's bits go to
+**To close.** Store such classes relative to a level, so the format's bits go to
 the spread: the cube relative to each trade's t=0 value and the curves relative to their
 path-independent part (the difference form of [§8.2](details/precision.md#82-the-difference-form),
 already computed in float64 by `build_scenario_market`), or a per-block offset beside the scale
@@ -268,7 +270,7 @@ shift convention in ORE's simulation market would pass every current test.
 **To close.** Run ORE's sensitivity analytic through the oracle on the shared portfolio
 (`tests/support/portfolio.py`), compare per trade, factor and tenor to 1e-8 relative
 ([details](details/ore-parity-validation.md)). Check Theta's rolled market in particular:
-roadmap 3.2 found that ORE's simulation market holds its tenor points at the times from the
+the ORE simulation oracle found that ORE's simulation market holds its tenor points at the times from the
 as-of date as its reference date moves ([I-84](#i-84)), where the engine's Theta market
 measures them from the Theta date (`engine.risk.sensitivities.theta_context`).
 
@@ -293,7 +295,7 @@ the default (bump) is unaffected.
 
 **Current handling.** The difference is stated in the test's docstring, not on the result.
 
-**To close.** With roadmap 4.5: differentiate the sensitivity market's representation
+**To close.** With [I-51](#i-51): differentiate the sensitivity market's representation
 (so AD equals the bump halves on the sloped shared portfolio, `tests/support/portfolio.py`,
 per trade, factor and tenor), or label AD Greeks as the derivative of a different quantity
 and state the gap; measure and document the Bermudan's fixed-calibration difference.
@@ -306,31 +308,31 @@ and state the gap; measure and document the Bermudan's fixed-calibration differe
 ### I-53 — On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch
 
 **Severity:** Low · **Status:** PARTIAL · **Category:** Performance · **Found:** 2026-09-29 ·
-re-measured 2026-10-02, 2026-10-05 (roadmap 2.1), 2026-10-06 (2.4), 2026-10-07 (2.5)
+re-measured 2026-10-02, 2026-10-05, 2026-10-06, 2026-10-07
 
 **Closed parts.** The pipeline was slow, first by compiling the same work again per trade, path
 date, bump and call (pricers jitted once per shape, 2026-10-02; [I-21](#i-21), [I-22](#i-22));
 then a repeated job compiled 9 programs, the AD Greeks' derivatives living only in JAX's internal
-caches (roadmap 2.4, `tests/test_profiling_and_jit.py::TestCompileCounts::test_a_repeated_job_compiles_nothing`,
-`::test_an_option_s_greeks_are_a_program_per_derivative`, both red on 2.3's code); and the
+caches (`tests/test_profiling_and_jit.py::TestCompileCounts::test_a_repeated_job_compiles_nothing`,
+`::test_an_option_s_greeks_are_a_program_per_derivative`, both red on the code before); and the
 recalibration of every Bermudan/American, on every path date and in its Greeks, ran bisections
-of 60 steps per bucket around 160 per y\*, the dates one after another (roadmap 2.5, decision
+of 60 steps per bucket around 160 per y\*, the dates one after another (decision
 A-21: one root solver, Newton by default, the dates of one basket shape calibrated together;
 `tests/test_root_solvers.py`). Measured untraced, old and new code alternately: the path
 recalibration 35–55 times faster on the CPU (262,144 paths: 144–185 s to 2.8–3.4 s) and 15–38
 times on the RTX 5060 (7.3 s to 0.19 s); the demo's repeated job on the GPU 5.4–5.6 s to
 1.35–1.43 s, and its trace 32 s to 1.6 s
-([profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05-roadmap-21)).
+([profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05)).
 
 **What is wrong.**
 
 - **On Windows only, the AD Greeks slow later pricing.** In a process that has run any AD
   Greeks, every later job's pricing phase runs 10–25% slower: pricing-only jobs 1.57–1.83 s
-  before one Greeks call and 1.98–2.25 s after, the code before 2.5 and after it alike; on Linux
-  1.32 → 1.32–1.38 s (2.4). No compile, trace or garbage collection is involved and one large
+  before one Greeks call and 1.98–2.25 s after, the code before Newton and after it alike; on Linux
+  1.32 → 1.32–1.38 s (2026-10-06). No compile, trace or garbage collection is involved and one large
   allocation does not do it; the Windows heap is suspected, not shown. The deployments that
   matter run Linux.
-- **A cold job is 3–4 s (8–11%) slower since 2.5.** Each bootstrap bucket's program under Newton
+- **A cold job is 3–4 s (8–11%) slower since the Newton solver.** Each bootstrap bucket's program under Newton
   traces the helper's price, with its nested y\* solve, at the bracket's ends, in the step (under
   `jax.jvp`) and for the model value: the demo's ten bucket programs compile in 5.4 s against
   3.3 s (7.1 s before the bracket's two ends were evaluated in one call). The programs stay in
@@ -340,45 +342,45 @@ times on the RTX 5060 (7.3 s to 0.19 s); the demo's repeated job on the GPU 5.4�
 
 **Current handling.** None needed for correctness.
 
-**To close.** Roadmap 6.6: the Windows slowdown's cause, and the helper's price traced once per
+**To close.** The Windows slowdown's cause, and the helper's price traced once per
 bucket program, the snapshot bit for bit. Related: the grid rollback's memory and time on the
-paths ([I-83](#i-83), roadmap 3.7) and the cold job's one-operation programs ([I-81](#i-81)).
+paths ([I-83](#i-83), F-07) and the cold job's one-operation programs ([I-81](#i-81)).
 
 <a id="i-83"></a>
 ### I-83 — A Bermudan/American on the paths needs 0.3–0.7 MB per path and step: 64k paths run out of memory
 
 **Severity:** Medium · **Status:** OPEN · **Category:** Performance · **Found:** 2026-10-07,
-roadmap 2.5's baseline
+the Newton solver's baseline
 
 **What is wrong.** The grid engine on the paths (`engine.valuation.bermudan._rollback_every_path`,
 the rollback vmapped over paths) builds each step's `[nodes, nodes]` interpolation operator per
 path: arrays `[paths, steps, nodes, nodes]`, 193 nodes at the demo's grid (`n_per_std=16`,
 `std_devs=6`), 301 at ORE's default (30 and 5), so 0.3 MB (0.7 MB) per path and exercise step.
 The demo's job at 65,536 paths asked for 277 GB and failed (`Out of memory allocating
-277260800480 bytes`) on a 31 GB machine, before roadmap 2.5 and after it; 4,096 paths fit, and
+277260800480 bytes`) on a 31 GB machine, before 2026-10-07 and after it; 4,096 paths fit, and
 their time is this rollback (the options' path cubes take 31–36 s of the CPU's 36 s pricing,
 their recalibration 0.09 s, against 2.3 s for the whole job at 256 paths). The 8 GB GPU fails
 at 1,024 paths (a 6 GB allocation).
 
 **Reach.** Every market-path run with a Bermudan or American beyond a few thousand paths: the
-path counts the precision research needs (roadmap 5.2), any exposure run of size, and the
+path counts the precision research needs (F-07), any exposure run of size, and the
 ORE distribution test's options (`tests/test_ore_xva_parity.py`, L4 at 1,024 paths where the
 linear trades run 16,384). Not market risk (t=0 revaluation) or the t=0 Greeks.
 
 **Current handling.** None: the job fails with XLA's out-of-memory error.
 
-**To close.** Roadmap 3.7: the rollback as one `[nodes, nodes]` operator per step applied to
+**To close.** The rollback as one `[nodes, nodes]` operator per step applied to
 all columns and paths at once, as a matrix product ([details/precision.md
 §8.3](details/precision.md#83-emulation-and-native-speed)), which holds one such buffer per
 step; then the demo's job at 65,536 and 262,144 paths on the CPU and the GPU, the measurement
-roadmap 2.5 could not make.
+the Newton solver's work could not make.
 
 <a id="i-61"></a><a id="p-1"></a>
 ### I-61 — Nothing runs on more than one host; multi-device speed unmeasured
 
 **Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-24, audit P-1
 
-**Closed part (2026-10-04, roadmap 3.8's one-host half).** A job's scenarios are split across
+**Closed part (2026-10-04, the one-host half).** A job's scenarios are split across
 the devices of its host (`engine/simulation/sharding.py`): the simulation's Sobol normals and
 market risk's shifts are placed on a one-axis mesh along the scenario axis, and XLA's sharding
 propagation carries the split through path evolution, the scenario market, pricing and the
@@ -399,7 +401,7 @@ low-precision paths against fewer FP64 paths in equal wall time. Two parts are m
 - **Speed.** The split is verified for its numbers on CPU host devices, which share the
   host's cores, so it says nothing about speed. Scaling on real devices is unmeasured.
 
-**To close.** Roadmap 3.8: one worker per host (`jax.distributed.initialize`), process 0
+**To close.** One worker per host (`jax.distributed.initialize`), process 0
 claiming each job and handing it to the others
 ([details](details/precision.md#113-multi-device-and-multi-host)); then wall time against
 device count on TPU (and H100), feeding 5.2.
@@ -409,11 +411,11 @@ device count on TPU (and H100), feeding 5.2.
 ## API
 
 <a id="i-08"></a>
-### I-08 — A running EOD attempt is lost on restart
+### I-08 — A running TraderX attempt is lost on restart
 
 **Severity:** Medium · **Status:** PARTIAL
 
-**Closed part (roadmap 1.8, 2026-10-04).** Portfolio jobs: the durable SQLite job queue
+**Closed part (2026-10-04).** Portfolio jobs: the durable SQLite job queue
 (`engine/api/job_queue.py`, decision A-14) replaced the in-memory `_JOBS` dict. A job
 survives restarts, every API process on the queue serves every `job_id`, a job running when
 its worker died reads `interrupted`, and a failure names its class (`bad-terms`,
@@ -421,14 +423,14 @@ its worker died reads `interrupted`, and a failure names its class (`bad-terms`,
 Tests: `tests/test_engine_worker.py` (`test_jobs_survive_reopening_the_file`,
 `test_a_worker_killed_mid_job_leaves_it_interrupted`,
 `test_supervisors_of_one_queue_share_one_worker`, the failure classes); red first: on the code
-before 1.8 a job id from one app process was a `404` in the next.
+before 2026-10-04 a job id from one app process was a `404` in the next.
 
-**What is wrong.** The EOD path is durable for finished work
+**What is wrong.** The TraderX path is durable for finished work
 (`engine/integration/publication.py`: manifest as commit point, scan recovery, idempotent
 `submissionId` across restarts), but a *running* attempt is memory only and reads as unknown
 after a restart. The store is single-machine.
 
-**To close.** Roadmap 4.2: on the EOD path, the durable accepted-attempt record, a boot sweep
+**To close.** On the TraderX path, the durable accepted-attempt record, a boot sweep
 and an `interrupted` lookup state (TraderX acceptance case A-09); the portfolio queue's
 `interrupt_running` is the pattern.
 
@@ -453,7 +455,7 @@ with a test per value. `tests/test_integration_terms_v2.py::TestUnrecognizedValu
 pins today's rule.
 
 <a id="i-57"></a>
-### I-57 — EOD: a cached result is served before the submission id is checked
+### I-57 — TraderX: a cached result is served before the submission id is checked
 
 **Severity:** High · **Status:** OPEN · **Found:** 2026-09-17, TraderX acceptance case A-02
 (FR-07), reproduced in response v7; still present
@@ -467,7 +469,7 @@ bundles gets another workload's priced result under its own id, with `"reused": 
 cache read. Red first with A-02's case, added to this suite.
 
 <a id="i-58"></a>
-### I-58 — EOD: two concurrent submissions of one workload both execute
+### I-58 — TraderX: two concurrent submissions of one workload both execute
 
 **Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-17, TraderX case A-03 (FR-08);
 still present
@@ -482,7 +484,7 @@ submission joins the running attempt (200 with its `attemptId` if it finishes in
 exclusion is not claimed.
 
 <a id="i-59"></a>
-### I-59 — EOD: `calculations` and `reportingCurrency` accepted, keyed, then ignored
+### I-59 — TraderX: `calculations` and `reportingCurrency` accepted, keyed, then ignored
 
 **Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-17, TraderX cases A-04, A-05
 (FR-06); still present
@@ -492,7 +494,7 @@ workload key, and `price_bundle(bundle, request.marketInputs)` receives neither.
 request returns USD results with 200 OK, cached separately from the identical USD run; an
 unknown calculation name is accepted.
 
-**To close.** Roadmap 4.1, as decided (A-18, as ORE fails on an unknown analytic): reject
+**To close.** As decided (A-18, as ORE fails on an unknown analytic): reject
 an unknown calculation (400 `UNKNOWN_CALCULATION`, allowlist
 `engine.integration.result.CALCULATIONS`); add `reportingCurrencies: ["USD"]` to the
 capability document and reject others (400 `UNSUPPORTED_REPORTING_CURRENCY`). Tests assert
@@ -500,7 +502,7 @@ the consequence, not that the field parses. Reporting in other currencies is
 [F-08](features.md#f-08), once an FX source exists.
 
 <a id="i-60"></a>
-### I-60 — EOD result schema has no stated policy on added fields
+### I-60 — TraderX result schema has no stated policy on added fields
 
 **Severity:** Low · **Status:** ASSUMPTION · **Raised:** 2026-09-17, response v7 §5.2
 
@@ -515,11 +517,11 @@ with a test.
 ### I-76 — The job queue keeps every job and result forever
 
 **Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-04, building
-roadmap 1.8
+the job queue
 
 **What is wrong.** `engine/api/job_queue.py` never deletes a row, so the SQLite file grows by
 each job's request and result document (a 4096-path cube is tens of MB of JSON inline, or
-as many bytes of artifact chunks since roadmap 3.1).
+as many bytes of artifact chunks since 2026-10-07).
 
 **Reach.** Disk on a long-running API host; no number. A result stays retrievable, which the
 Basel plan's audit trail wants (P0).
@@ -534,7 +536,7 @@ kept one is served.
 ### I-77 — A worker that cannot start leaves jobs `pending` with no signal
 
 **Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-04, building
-roadmap 1.8
+the job queue
 
 **What is wrong.** If the engine worker dies at startup (a broken install, an unwritable
 queue directory), the API restarts it on every poll and the job stays `pending`; the client
@@ -553,10 +555,10 @@ while the worker has exited at startup N times running reports it (in `error`, o
 ### I-87 — The HTTP API is one route per engine function, not one run request
 
 **Severity:** Medium · **Status:** OPEN · **Category:** API · **Found:** 2026-10-08, owner
-review of roadmap 3.1
+review of the API of 2026-10-07
 
-**What is wrong.** Decision A-2 asks for a single route and a single request. Roadmap 3.1
-reached every setting but kept one route per engine function: `POST /portfolio/price`,
+**What is wrong.** Decision A-2 asks for a single route and a single request. The API of
+2026-10-07 reached every setting but kept one route per engine function: `POST /portfolio/price`,
 `POST /portfolio/market-risk`, `POST /calibration/cam` and `POST /calibration/lgm`.
 
 - **The same input is sent twice.** Exposure and VaR on one book are two requests with the
@@ -575,20 +577,20 @@ cheapest time to change the contract.
 **Current handling.** None; [docs/reference/http-api.md](../reference/http-api.md) documents
 each route.
 
-**To close.** Roadmap 3.9: one `POST /runs` with `market`, `portfolio`, an `analytics` list
+**To close.** One `POST /runs` with `market`, `portfolio`, an `analytics` list
 and a `config` whose sections follow ORE's files, as
-[details/configurable-engine.md](details/configurable-engine.md#step-39--one-run-request-i-87-i-88-i-89)
+[details/configurable-engine.md](details/configurable-engine.md#one-run-request-i-87-i-88-i-89)
 describes. A run of one analytic must equal today's direct call bit for bit.
 
 <a id="i-89"></a>
 ### I-89 — A retried job submission runs the job twice
 
 **Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-08, review of
-roadmap 3.1
+the API of 2026-10-07
 
 **What is wrong.** `POST /portfolio/price` and `POST /portfolio/market-risk` give every
 submission a new `job_id` (`engine/api/job_queue.py`, `submit`). A client that loses the
-`202` and retries queues the job a second time, and the worker prices both. The EOD routes
+`202` and retries queues the job a second time, and the worker prices both. TraderX's routes
 have `submissionId` for this; the job routes have nothing.
 
 **Reach.** Engine time, and a duplicate result a client may not know about. No number is
@@ -596,18 +598,18 @@ wrong.
 
 **Current handling.** None.
 
-**To close.** Roadmap 3.9: an optional `idempotency_key`. The same key and body return the
+**To close.** An optional `idempotency_key`. The same key and body return the
 first `run_id`; the same key with a different body is a `409`, checked before anything is
-returned (the binding I-57 found missing on the EOD path). Tests for a retry, a conflicting
+returned (the binding I-57 found missing on the TraderX path). Tests for a retry, a conflicting
 body, and two API processes on one queue.
 
 <a id="i-90"></a>
 ### I-90 — The HTTP API has no authentication, rate limit or body-size limit
 
 **Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-08, review of
-roadmap 3.1
+the API of 2026-10-07
 
-**What is wrong.** Every route, the EOD routes included, serves anyone who can reach the
+**What is wrong.** Every route, TraderX's included, serves anyone who can reach the
 port. Nothing limits how many jobs a caller queues or how large a body it sends; one large
 body is held in memory and stored in the queue whole.
 
@@ -617,7 +619,7 @@ body is held in memory and stored in the queue whole.
 **Current handling.** None; deploy behind a trusted network or a reverse proxy that
 authenticates.
 
-**To close.** Roadmap 6.7, before the API is reachable from outside a trusted network:
+**To close.** Before the API is reachable from outside a trusted network:
 authentication chosen with TraderX (a bearer token or mutual TLS), a body-size limit, and a
 per-caller limit on queued jobs; a test per refusal (`401`, `413`, `429`).
 
@@ -625,7 +627,7 @@ per-caller limit on queued jobs; a test per refusal (`401`, `413`, `429`).
 ### I-91 — A long job delays every job behind it, and no job can be cancelled
 
 **Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-08, review of
-roadmap 3.1
+the API of 2026-10-07
 
 **What is wrong.** The engine worker runs jobs one at a time in submission order (decision
 A-14), so a calibration queued behind a ten-minute simulation waits ten minutes. There is no
@@ -636,11 +638,38 @@ job at a time on every device is deliberate.
 
 **Current handling.** None; stop the worker, which marks its job `interrupted`.
 
-**To close.** Roadmap 4.2, with the worker loop's other changes. A cancel route: a pending
+**To close.** With the worker loop's other changes. A cancel route: a pending
 job becomes `cancelled` at once, and a running job stops at the worker's next phase boundary
 (calibration, simulation, each trade's pricing, Greeks) and reads `cancelled`, with the
 worker kept alive and its compiled programs kept. A test for each case. Priorities between
 callers are not planned until there are several callers.
+
+<a id="i-93"></a>
+### I-93 — TraderX's submissions are priced by their own pricers, not the engine's
+
+**Severity:** Medium · **Status:** OPEN · **Category:** API · **Found:** 2026-10-08, owner
+review of the roadmap
+
+**What is wrong.** The engine has two ways in. Portfolio, market-risk and calibration
+requests reach the engine's pipeline; TraderX's end-of-day bundles (`POST /eod/price`) are
+priced by the TraderX path's own closed-form pricers (`engine/integration/bill.py`,
+`note.py`) on a flat assumed rate, while the engine prices the same bills and notes in
+`engine/instruments/treasury.py` on any curve, today and on every path. Two pricers of one
+product can disagree, every fix is made twice, and nothing the engine gains (curves, paths,
+Greeks, precision, Basel figures) reaches TraderX.
+
+**Reach.** Every TraderX result. No disagreement between the two is known: both discount the
+same cashflows, and on the assumed profile's flat curve they should agree to rounding, which
+no test checks today.
+
+**Current handling.** None.
+
+**To close.** The TraderX path builds a run request from its bundle, after its convention
+checks and refusals (so a refused booking never reaches a pricer, I-05), and the engine
+prices it; its own pricers go. Its routes, result document, attempt store and the
+accrued-interest reconciliation against the exporter's figure stay. First, a test that the
+engine's bond and the TraderX note agree on every bundle row of the tests, to rounding
+([details/package-layout.md §3](details/package-layout.md#3-merges)).
 
 ---
 
@@ -656,7 +685,7 @@ audit A-1; decisions A-9, D-9
 which combinations are shown adequate for which figure, so a float32 exposure profile looks
 exactly like a validated one.
 
-**Closed part (roadmap 1.4, 2026-10-01).** The stages and the mechanism: `engine/precision/`
+**Closed part (2026-10-01).** The stages and the mechanism: `engine/precision/`
 gives the simulation, the scenario market and path pricing (market-risk revaluation included)
 a storage, compute and accumulate format each (`Precision`, float64 by default, float64 or
 float32 today), at explicit cast points; kernels follow their inputs' dtype under strict
@@ -664,19 +693,19 @@ promotion (CI); reductions over paths are float64. The 32/64 `PrecisionConfig` i
 naming the replacement. `check_run`'s refusal, `run_market_risk`'s flag set, `_PRICING_LOCK`
 and the per-precision pool tiers are gone. Tests: `tests/test_precision.py`,
 `tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision`,
-`tests/test_market_risk.py::TestRun`. Before 1.4 a "float32" (`simulation=32`) run priced its
+`tests/test_market_risk.py::TestRun`. Before then a "float32" (`simulation=32`) run priced its
 paths partly in float64: NumPy float64 coupons and volatilities promoted the float32 curves
-(the cube was float64), while path fixings ran in float32. Roadmap 1.5 (2026-10-02) made the
-pricing stage per product and per trade (`Precision.by_product`, `by_trade`, one resolver
+(the cube was float64), while path fixings ran in float32. On 2026-10-02 the
+pricing stage became per product and per trade (`Precision.by_product`, `by_trade`, one resolver
 `precision_for`, decision A-15) in both pipelines: each cube column and each market-risk P&L
 column is priced and stored at its trade's precision, exactly as the trade alone at that
 precision (`tests/test_precision.py::TestPerTradePortfolio`, `TestPerTradeMarketRisk`).
-Roadmap 1.6 (2026-10-02) enabled storage in float16, bfloat16 and both FP8 formats, with a
+Then storage was enabled in float16, bfloat16 and both FP8 formats, with a
 power-of-two block scale per 32 paths and nearest or stochastic rounding (`Stored`,
 `Precision.rounding`, `rounding_seed`; `tests/test_precision.py::TestScaledStorage`,
 `TestScaledStoragePipeline`); its first measurements are
 [details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline) and
-[I-75](#i-75). Roadmap 1.7 (2026-10-02) put a `PrecisionReport` on every result (the policy as
+[I-75](#i-75). The same day every result gained a `PrecisionReport` (the policy as
 run, the formats read from the stored arrays, the devices) and the paired float64 sample
 (`Precision.paired_fraction`, decision A-13): EPE and ENE are two-level estimates, PFE, VaR and
 ES measured against float64 on the same paths (`tests/test_precision_report.py`). A result
@@ -685,45 +714,61 @@ now says how far it is from float64; it does not yet say whether that is good en
 **Reach.** Every reduced-precision result: its figures carry no statement of whether the
 combination has been validated for them. Default (float64) runs are unaffected.
 
-**To close.** Roadmap 5.1 (A-11): the evidence table per figure and precision combination
+**To close.** The evidence table (A-11) per figure and precision combination
 against the acceptance standard (Basel III's P&L attribution test and the Basel plan's P6.2
 rule), and a warning on any result whose combination has no passing row. It is measured by
-roadmap 3.6's harness on each kernel family as 3.7 rewrites it (the Bermudan/American rows
-after 3.4 and 3.5), so it describes the kernels that ship. 3.6 also measures the paired estimator's coverage through the pipeline: its standard errors treat paths as
+[I-75](#i-75)'s harness on each kernel family as F-07 rewrites it (the Bermudan/American rows
+after [I-32](#i-32) and [I-49](#i-49)), so it describes the kernels that ship. The harness also measures the paired estimator's coverage through the pipeline: its standard errors treat paths as
 independent, while Sobol paths are not and the rounding errors of the 32 paths of a block
 share a scale (the synthetic coverage tests and three pipeline seeds pass; that is not yet
 evidence at scale). Compute below
-float32 is [F-07](features.md#f-07) (roadmap 3.7).
+float32 is [F-07](features.md#f-07).
 
 <a id="i-92"></a>
-### I-92 — Two modules sit directly under `engine/`, beside its subpackages
+### I-92 — `engine/`'s packages are named for layers, not for what they hold
 
 **Severity:** Low · **Status:** OPEN · **Category:** Architecture · **Found:** 2026-10-08, owner
 
-**What is wrong.** Every part of the engine is a subpackage of `engine/` except two modules at
-its root: `market.py` (today's market: `ZeroCurveConfig`, `CurrencyMarket`, `Market`, the
-swaption volatility matrix) and `day_count.py` (the accrual day counts a trade may name). The
-owner's rule: the root holds `__init__.py` and subpackages only, so the layout reads as the
-engine's parts.
+**What is wrong.** The layout does not say where things are. Two modules sit at the root of
+`engine/` (`market.py`, `day_count.py`) beside the subpackages. Packages are named for a
+layer: `api/` holds HTTP and the job queue and worker, `integration/` is the TraderX path,
+`portfolio/` is the run, `risk/` holds exposure, two Greeks methods and VaR/ES estimators.
+Things sit outside the package of their kind: the Bermudan grid engine in `instruments/`,
+schedules and curve primitives in `models/`. "Market" names five different things, and
+`simulation/random.py` shares a name with the standard library. The full evaluation is
+[details/package-layout.md §1](details/package-layout.md#1-what-is-confusing-today).
 
-**Reach.** No number and no caller. Where code lives, and where later packages land (roadmap
-3.9's run request, the Basel plan's `engine/regulatory/`).
+**Reach.** No number and no caller: where code is found, and where new code goes (the run
+request of [I-87](#i-87), the Basel plan's `engine/regulatory/`).
 
 **Current handling.** None.
 
-**To close.** Roadmap 3.10. A package `engine/market/` takes both. `market.py`'s contents go
-in a module of it, re-exported by `engine/market/__init__.py`, so the imports of
-`engine.market` in code, tests, demos and docs stand. `day_count.py` becomes
-`engine.market.day_count`, and the simulation time axis's ACT/365 (`TIME_AXIS_DAY_COUNTER`,
-defined today in `engine.models.ore_builders`, which then imports it) moves beside it: it is
-the only thing `engine.market` imports from `engine.models`, so the package then imports
-neither JAX nor `engine.models`, and the EOD boundary, which may import neither
-(`tests/test_integration_pipeline.py`), can import its day counts as it imports
-`engine.day_count` today. The references to `engine.day_count` (`engine/models/ore_builders.py`,
-`engine/instruments/treasury.py`, `engine/integration/note.py`, `engine/api/worker.py`, three
-tests, two reference docs) are renamed, and `tests/test_import_layering.py` drops its special cases for the two root
-modules. A test fails on any module at the root of `engine/` but `__init__.py`, red first on
-today's tree. Bit for bit: no code changes but its place.
+**To close.** The renames and moves of
+[details/package-layout.md §2](details/package-layout.md#2-proposed-layout), with `git mv`,
+names and imports only: float64 bit for bit and the suite's count unchanged. The layering
+tests are restated on the new names, the docs and demos follow, and a test fails on any
+module at the root of `engine/` but `__init__.py`, red first on today's tree.
+
+<a id="i-94"></a>
+### I-94 — The LGM is calibrated by two implementations
+
+**Severity:** Low · **Status:** OPEN · **Category:** Architecture · **Found:** 2026-10-08,
+evaluating the package layout
+
+**What is wrong.** Every run calibrates with ORE's bootstrap (`engine.calibration.ore_lgm`).
+An older standalone bootstrap (`engine.calibration.lgm.calibrate_lgm_sigma`, with
+`engine.calibration.basket`: Bachelier helper prices, its own solver steps) serves only
+`POST /calibration/lgm`, which the run request of [I-87](#i-87) removes.
+
+**Reach.** `POST /calibration/lgm` and its Python function. The two are tested separately and
+can drift; a fix to one is not made to the other.
+
+**Current handling.** None.
+
+**To close.** Once the run request's `calibration` analytic returns what
+`POST /calibration/lgm` returns, retire the standalone bootstrap, or move it to
+`tests/support/` as an independent check of ORE's if its tests are worth keeping
+([details/package-layout.md §3](details/package-layout.md#3-merges)).
 
 ---
 
@@ -742,10 +787,10 @@ widened by the 2026-09-24 audit (M-2)
 trade config takes `fixings` and refuses a missing one (`MissingFixingError`), as ORE does,
 but TraderX exports no `pastFixings`, so a seasoned TraderX swap cannot be priced.
 
-**Reach.** Seasoned swaps from the EOD boundary only; the engine itself prices seasoned
+**Reach.** Seasoned swaps from the TraderX path only; the engine itself prices seasoned
 swaps given their fixings, and on every path paid flows drop out and coupons fix by
 `FixingManager`'s rule, under either model (the first half of this entry, the Hull-White
-model keeping paid flows, closed with roadmap 1.3: `tests/test_hull_white_model.py::
+model keeping paid flows, closed on 2026-10-01: `tests/test_hull_white_model.py::
 TestPaidFlowsAndMaturity`, `tests/test_valuation.py`).
 
 **To close.** `pastFixings` from TraderX ([details](details/traderx-integration.md)).
@@ -760,7 +805,7 @@ ACT/365 legs, TARGET, no compounding). A USD-SOFR booking is overnight, ACT/360,
 calendars, compounded in arrears, with lookback/lockout/payment lag. ACT/360 vs ACT/365 alone
 moves every accrual by 1.389% (about 46 × a 1bp DV01 on a 5Y fixed leg).
 
-**Current handling.** The EOD boundary refuses any booking outside an explicit allowlist
+**Current handling.** The TraderX path refuses any booking outside an explicit allowlist
 (`engine/integration/conventions.py`, `CONVENTION_NOT_SUPPORTED` naming the fields; the
 TraderX SOFR fixture's 13 missing terms). A direct Python caller cannot express SOFR in a
 `SwapConfig`.
@@ -789,7 +834,7 @@ are not a position pricer. FX and equity trades are [F-04](features.md#f-04).
 **Severity:** Medium · **Status:** OPEN · blocked on an observed curve (TraderX W2)
 
 **What is wrong.** The note's `rateSensitivity` is a 1bp parallel shift, labelled
-`shockedFactor: "zero-curve-parallel"`. The only market input the EOD boundary accepts is an
+`shockedFactor: "zero-curve-parallel"`. The only market input the TraderX path accepts is an
 assumed flat profile, so there is no pillar structure to shift. Parallel DV01 cannot tell a
 2y position from a 10y one of equal duration.
 
@@ -805,7 +850,7 @@ then shifts one pillar at a time and names it.
 **Severity:** Medium · **Status:** OPEN · blocked on a market-data decision
 
 **What is wrong.** An equity position is `signedQuantity × multiplier × spot × fx`, and the
-EOD boundary has no spot or FX input (`engine/integration/market_inputs.py` registers flat
+TraderX path has no spot or FX input (`engine/integration/market_inputs.py` registers flat
 rate profiles only). Positions are read, validated and refused (`SPOT_SOURCE_NOT_SUPPLIED`,
 `FX_SOURCE_NOT_SUPPLIED`), echoing the quantities read; `capabilities()` reports equity NPV
 as `blockedOnMarketInput`.
@@ -829,11 +874,11 @@ bundle. The pricer is four multiplications.
 **What is wrong.** A long `pytest tests/` run has died with `Fatal Python error: Aborted` and
 no summary line, the crashing thread inside `jax/_src/compiler.py`
 (`backend_compile_and_load`) while `ProcessPoolExecutor` threads were alive (the worker pool
-of the time; roadmap 1.8 removed it, so no test starts one now). Intermittent: the
+of the time; it was removed on 2026-10-04, so no test starts one now). Intermittent: the
 same command later passed in full, and no abort occurred in the recorded runs since
 2026-09-24.
 
-**Hypothesis, unproven.** The worker pool lives for the interpreter; before roadmap 1.3
+**Hypothesis, unproven.** The worker pool lives for the interpreter; before 2026-10-01
 `tests/test_api.py` created pools and never shut them down, so later in-process compiles ran
 with worker children attached. Pairing modules does not reproduce it. Since 2026-10-02 the
 suite does share JAX's on-disk compilation cache between its processes (xdist workers and
@@ -854,7 +899,7 @@ four-device sharding test (a fifth JAX process with four XLA host devices) timed
 30 minutes at a cgroup peak of 24.4 GB of 25.2; one on a quiet host where the Docker VM went
 down at 98%. Memory is the leading suspect: the suite now runs at the VM's limit.
 
-**2026-10-05, five Linux full runs under WSL2, all with summary lines** (roadmap 2.2; a 23 GB
+**2026-10-05, five Linux full runs under WSL2, all with summary lines** (a 23 GB
 VM, `-n 4`): four on the GPU (the first two with failures in the code since fixed, none a lost
 process or an abort; the last two green, 20–22 min) and one on CPU, green in 9m24s. WSL2 is the steadier Linux host here;
 the Docker attempts above remain unexplained.
@@ -866,19 +911,19 @@ runner's limits (4 CPUs, 16 GB, no swap, no compile cache): OOM-killed, three of
 processes lost. Two causes, two test-only fixes, the engine unchanged:
 `tests/test_ore_bermudan_oracle.py::test_engine_is_grid_converged` alone peaked at 11.5 GB on
 its 384-per-std, 10-std control grid, now 192 and 8 (within 1.6e-6 of it, 3.3 GB; the
-rollback's memory is fixed properly by its matrix form, step 3.7, [details](details/precision.md#83-emulation-and-native-speed));
+rollback's memory is fixed properly by its matrix form, [I-83](#i-83), [details](details/precision.md#83-emulation-and-native-speed));
 and each test process kept every XLA program it compiled, now dropped after each module
 (`jax.clear_caches()` in `tests/conftest.py`). The same container then passed the fast tier,
 2,461 passed, 2 skipped, at a 13.1 GB peak (page cache included), in 5m22s. The full suite
 on that runner is not yet shown.
 
-**2026-10-08, roadmap 3.2's Linux run under WSL2 (24 GB VM, CPU, `-n 4`)** reached 78% with no
+**2026-10-08, the Linux run of the 2026-10-07 code under WSL2 (24 GB VM, CPU, `-n 4`)** reached 78% with no
 failure when the kernel's global OOM killer took a test process (5.9 GB resident); the suite
 gained the ORE simulation tests (an OREApp run and the engine on the same portfolio per model)
 since the green runs of 2026-10-05. Afterwards the distro instance stopped about 90 s after each
 start, idle or not, until WSL was restarted. Memory remains the leading suspect.
 
-**Current handling.** Since roadmap 1.8 no pool, and no executor thread, exists: HTTP tests
+**Current handling.** Since 2026-10-04 no pool, and no executor thread, exists: HTTP tests
 start one engine worker, a separate process with no thread in the test process, and each
 module stops it when it ends (`tests/conftest.py`); a worker also exits once its parent is
 gone. If an abort recurs, the pool hypothesis is ruled out.
@@ -901,33 +946,33 @@ f-string without placeholders in `integration/equity.py`, a string forward refer
 `# noqa`: `portfolio/{__init__,validation,request}.py`, `models/{ore_builders,hull_white}.py`,
 `instruments/bermudan_swaption.py`). `requirements.txt` does not mention the `profiling` extra.
 
-**To close.** As decided (A-20), in two steps. Roadmap 6.2, parallel and now: ruff in
+**To close.** As decided (A-20), in two steps. First, now: ruff in
 `pyproject.toml` and CI with pyflakes' rules only, each finding fixed or marked (check that a
 "re-export" is actually imported elsewhere first, then list it in `__all__`). Measured
-2026-10-05 with pyflakes: 24 findings in `engine/`, 19 in `tests/` and `demos/`. Roadmap 6.4,
-in stage 5 (hardening): a type checker on `engine/`.
+2026-10-05 with pyflakes: 24 findings in `engine/`, 19 in `tests/` and `demos/`. Then, among
+the fixes of what exists: a type checker on `engine/`.
 
 <a id="i-67"></a><a id="q-3"></a>
 ### I-67 — Test modules import each other and repeat fixtures
 
 **Severity:** Low · **Status:** OPEN · **Found:** 2026-09-24, audit Q-3
 
-**What is wrong.** Most cross-module imports moved to `tests/support/` with roadmap 1.3
+**What is wrong.** Most cross-module imports moved to `tests/support/` on 2026-10-01
 (`portfolio`, `lgm_engine`, `greeks`); test modules still import `bermudan_references` and
 `date_helpers` from the tests directory itself.
 `FIXTURES = ...traderx-eod` is defined in 15 files and `MARKET = {...flat-3pct-v1}` in 7.
 Many tests reach into private functions, which freezes internal structure and makes
-refactors (roadmap stage 1) break tests without behaviour changing.
+refactors (the configurable engine of 2026-10-04) break tests without behaviour changing.
 
 **To close.** Shared helpers and constants in `tests/support/`; replace private-symbol tests
-with public-entry tests where the refactors of stage 1 touch them. Collection must stay
+with public-entry tests where those refactors touched them. Collection must stay
 identical except where a test is deliberately rewritten.
 
 <a id="i-81"></a>
 ### I-81 — A cold job compiles about 180 one-operation programs; market risk vmaps a closure
 
 **Severity:** Low · **Status:** OPEN · **Category:** Performance · **Found:** 2026-10-06,
-roadmap 2.4
+making the AD Greeks one program
 
 **What is wrong.** Code outside any jit runs JAX operations one by one, and each operation
 compiles once per shape: on a cold demo job (`demos/demo_profile_small.py`, CPU) 180 of the
@@ -937,7 +982,7 @@ compilation plus their tracing. Most come from the scenario market's constructio
 the CAM calibration (`cam.py`'s `zeta`, `calibrate_currency`), the options' known path
 fixings (`engine/valuation/bermudan.py::_known_rates`) and the sensitivity market. Separately,
 market risk vmaps a fresh closure over the jitted pricers per run (`revalue_trade`), the
-pattern whose derivative programs roadmap 2.4 found JAX keeps only in internal caches of 2,048
+pattern whose derivative programs were found (2026-10-06) to be kept by JAX only in internal caches of 2,048
 entries (profiling §3.8): a market-risk job large enough to overflow them would compile its
 batched programs again on the next run.
 
@@ -957,7 +1002,7 @@ compile probe of profiling §3.8 on the demo's job.
 ### I-88 — The API completeness test checks field names, not that a value reaches the engine
 
 **Severity:** Low · **Status:** OPEN · **Category:** Tooling · **Found:** 2026-10-08, review
-of roadmap 3.1
+of the API of 2026-10-07
 
 **What is wrong.** `tests/test_api_completeness.py` fails on a configuration setting without
 an API field of the same name, but it does not check what a schema's `.to_dataclass()` does
@@ -970,7 +1015,7 @@ field. No such field is known to be dropped today.
 
 **Current handling.** The route tests above.
 
-**To close.** Roadmap 3.9: for every field the walk finds, build a request with that field set
+**To close.** For every field the walk finds, build a request with that field set
 to a non-default value, convert it, and assert the value arrives in the engine's
 configuration. Red first: a schema that drops a field must fail the test.
 
@@ -989,13 +1034,13 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-03"></a>I-03 | No per-instrument NPV | `tests/test_portfolio_gap_fixes.py::TestPerTradeBaseNpv` |
 | <a id="i-06"></a>I-06 | American exercise ignored ORE's broken-period `couponRatio` (up to 6× off) | `tests/test_ore_lgm_parity.py`, `tests/test_bermudan_swaption.py::TestMidPeriodBermudanExercise` |
 | <a id="i-11"></a>I-11 | Risk measure unlabelled; no Monte Carlo error reported | `tests/test_risk_measure_label.py::TestPortfolioResultStatesItsMeasure` |
-| <a id="i-09"></a>I-09 | The whole scenario cube was serialized into the JSON response (a request now asks for it inline, as a chunked, hashed artifact reference, or not at all: `cube_output`, decision A-17; roadmap 3.1) | `tests/test_api_market_path.py::test_the_cube_by_reference_is_the_inline_cube_and_none_leaves_it_out`, `tests/test_api_artifacts.py` |
-| <a id="i-10"></a>I-10 (results) | Per-trade results were keyed by position beside the echoed ids (now one row per trade with its `trade_id`, the arrays' trade axes in that order; roadmap 3.1) | `tests/test_api_market_path.py::test_result_matches_direct_price_portfolio_call`, `tests/test_api_market_risk.py::test_the_result_equals_a_direct_run` |
+| <a id="i-09"></a>I-09 | The whole scenario cube was serialized into the JSON response (a request now asks for it inline, as a chunked, hashed artifact reference, or not at all: `cube_output`, decision A-17) | `tests/test_api_market_path.py::test_the_cube_by_reference_is_the_inline_cube_and_none_leaves_it_out`, `tests/test_api_artifacts.py` |
+| <a id="i-10"></a>I-10 (results) | Per-trade results were keyed by position beside the echoed ids (now one row per trade with its `trade_id`, the arrays' trade axes in that order) | `tests/test_api_market_path.py::test_result_matches_direct_price_portfolio_call`, `tests/test_api_market_risk.py::test_the_result_equals_a_direct_run` |
 | <a id="i-10-configs"></a>I-10 (configs) | Trade configs had no identity (now a required `trade_id`, echoed as `PortfolioResult.trade_ids`) | `tests/test_trade_configs.py::TestEveryTradeNamesItselfAndItsDate`, `tests/test_portfolio_market_path.py::test_a_repeated_trade_id_is_refused` |
-| <a id="i-12"></a>I-12 | `/version` named the API process's backend, the only device a result could be attributed to (every result now carries a `PrecisionReport` built where the job ran: its devices, backend and the formats read from its arrays; roadmap 1.7) | `tests/test_api_market_path.py::test_a_result_carries_the_workers_precision_report`, `tests/test_precision_report.py::TestReport` |
+| <a id="i-12"></a>I-12 | `/version` named the API process's backend, the only device a result could be attributed to (every result now carries a `PrecisionReport` built where the job ran: its devices, backend and the formats read from its arrays) | `tests/test_api_market_path.py::test_a_result_carries_the_workers_precision_report`, `tests/test_precision_report.py::TestReport` |
 | <a id="i-13"></a>I-13 | A negative curve index priced against the wrong curve (trades now name a currency and index; a missing curve is refused before pricing, naming the trade) | `tests/test_portfolio_gap_fixes.py::TestCurveIndexValidatedBeforeAllPricing` |
-| <a id="i-14"></a>I-14 | `generate_paths(precision=32)` leaked `jax_enable_x64=False` (`generate_paths` removed by roadmap 1.3; nothing toggles the flag) | `tests/test_portfolio_entrypoint.py::TestPricePortfolioConcurrency` |
-| <a id="i-15"></a>I-15 | The worker-pool concurrency test could not observe concurrency (and, until 1.3, failed after the pricing tests by reusing one worker) | The pool and its test went with roadmap 1.8; jobs now run one at a time (`tests/test_engine_worker.py::TestEngineWorkerPricing`) |
+| <a id="i-14"></a>I-14 | `generate_paths(precision=32)` leaked `jax_enable_x64=False` (`generate_paths` removed on 2026-10-01; nothing toggles the flag) | `tests/test_portfolio_entrypoint.py::TestPricePortfolioConcurrency` |
+| <a id="i-15"></a>I-15 | The worker-pool concurrency test could not observe concurrency (and, until 2026-10-01, failed after the pricing tests by reusing one worker) | The pool and its test went on 2026-10-04; jobs now run one at a time (`tests/test_engine_worker.py::TestEngineWorkerPricing`) |
 | <a id="i-17"></a>I-17 | A malformed note date failed the whole bundle | `tests/test_integration_note.py::TestRefusalsAreNotePricingErrors` |
 | <a id="i-19"></a>I-19 | The accrual tolerance rounded its own bound | `tests/test_integration_note.py::TestToleranceIsDerivedNotConstant` |
 | <a id="i-20"></a>I-20 | Impossible calendar dates aborted the whole bundle | `tests/test_integration_note.py::TestImpossibleCalendarDates` |
@@ -1008,8 +1053,8 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-29"></a>I-29 | A rounded exercise time silently dropped a coupon (exercise now given as dates) | `tests/test_ore_bermudan_oracle.py::TestExerciseDatesAreExact` |
 | <a id="i-30"></a>I-30 | The `A(t,T)` variance term was nearly uncovered at t=0 (that formula went with the Hull-White pipeline; the model's bonds are QuantLib's on every state) | `tests/test_cam.py::test_hull_white_path_curves_equal_quantlibs_hull_white` |
 | <a id="i-31"></a>I-31 | Bermudan/American floating coupons projected over the wrong period | `tests/test_ore_lgm_parity.py` |
-| <a id="i-33"></a>I-33 | On Linux, worker-pool jobs hung once the parent had run JAX (fork) | The engine worker is a fresh interpreter (`subprocess`, never fork) since roadmap 1.8: `tests/test_engine_worker.py::TestWorkerProcesses`, the full suite on Linux |
-| <a id="i-34"></a>I-34 | The ORE oracle tilted a curve's first segment (ORE's rebuild reads the t=0 rate at t = 1e-4; the oracle now hands it the as-of quote that maps onto the engine's, 2.3e-6 → 1.5e-12 on a sloped first segment; roadmap 3.2) | `tests/test_ore_lgm_parity.py::test_a_curve_sloped_in_its_first_segment_is_the_engines` |
+| <a id="i-33"></a>I-33 | On Linux, worker-pool jobs hung once the parent had run JAX (fork) | The engine worker is a fresh interpreter (`subprocess`, never fork) since 2026-10-04: `tests/test_engine_worker.py::TestWorkerProcesses`, the full suite on Linux |
+| <a id="i-34"></a>I-34 | The ORE oracle tilted a curve's first segment (ORE's rebuild reads the t=0 rate at t = 1e-4; the oracle now hands it the as-of quote that maps onto the engine's, 2.3e-6 → 1.5e-12 on a sloped first segment) | `tests/test_ore_lgm_parity.py::test_a_curve_sloped_in_its_first_segment_is_the_engines` |
 | <a id="i-35"></a>I-35 | An American already in its window was exercisable on the evaluation date | `tests/test_trade_dates.py::test_seasoned_bermudan_and_american_equal_ore` |
 | <a id="i-36"></a>I-36 | A non-ACT/365 floating leg projected the wrong forward | `tests/test_trade_dates.py::test_any_leg_day_count_equals_ore` |
 | <a id="i-37"></a>I-37 | A European silently ignored `floating_spread` (refused by the Jamshidian engine, priced by Bachelier) | `tests/test_jamshidian.py::TestConfiguration::test_a_spread_is_refused_naming_the_trade`, `tests/test_valuation.py::test_european_today_equals_ores_default_engine` |
@@ -1024,9 +1069,9 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-46"></a>I-46 | Hull-White Europeans were priced off the model volatility, without Vega | `tests/test_hull_white_model.py::TestEuropeansOnTheMarketVolatility` |
 | <a id="i-47"></a>I-47 | Hull-White options calibrated to one caller basket, not their own | `tests/test_valuation.py::test_option_today_equals_ores_calibrated_grid_engine`, `tests/test_hull_white_model.py::TestOneModelOnePipeline` |
 | <a id="i-48"></a>I-48 | Zero curves extrapolated a flat zero rate; ORE a flat forward | `tests/test_treasury_instrument.py::TestCurveInterpolation`, `tests/test_curves.py` |
-| <a id="i-50"></a>I-50 | Nothing compared the assembled simulation, cube or exposure with an ORE simulation (now an OREApp XVA oracle: its scenario dump rebuilds the engine's simulation market, swaps, Europeans and bonds equal ORE's cube path by path, the exposure definitions on ORE's cube are ORE's, and L4 holds; Bermudans/Americans wait on I-49; roadmap 3.2) | `tests/test_ore_xva_parity.py` |
+| <a id="i-50"></a>I-50 | Nothing compared the assembled simulation, cube or exposure with an ORE simulation (now an OREApp XVA oracle: its scenario dump rebuilds the engine's simulation market, swaps, Europeans and bonds equal ORE's cube path by path, the exposure definitions on ORE's cube are ORE's, and L4 holds; Bermudans/Americans wait on I-49) | `tests/test_ore_xva_parity.py` |
 | <a id="i-52"></a>I-52 | Cash settlement was priced as physical | `tests/test_valuation.py::test_a_cash_settled_european_uses_the_par_yield_annuity` |
-| <a id="i-56"></a>I-56 | Market risk and the CAM calibration had no route, and two routes were named like versions (now `POST /portfolio/market-risk` and `POST /calibration/cam`, one poll route for every job, `/v2/portfolio/price` and `schema_version` removed, and a test that fails on any setting without an API field; roadmap 3.1, decision A-2) | `tests/test_api_market_risk.py`, `tests/test_api.py::TestCamCalibrationEndpoint`, `tests/test_api_completeness.py` |
+| <a id="i-56"></a>I-56 | Market risk and the CAM calibration had no route, and two routes were named like versions (now `POST /portfolio/market-risk` and `POST /calibration/cam`, one poll route for every job, `/v2/portfolio/price` and `schema_version` removed, and a test that fails on any setting without an API field; 2026-10-07, decision A-2) | `tests/test_api_market_risk.py`, `tests/test_api.py::TestCamCalibrationEndpoint`, `tests/test_api_completeness.py` |
 | <a id="i-62"></a><a id="p-2"></a>I-62 | Hull-White Bermudan/American scenario pricing ran on the host (that pricer is removed; options are priced by the vectorized per-path engine) | `tests/test_valuation.py::test_bermudan_on_every_path_equals_ore_recalibrated_on_the_path_curves` |
 | <a id="i-63"></a><a id="a-3"></a>I-63 | Hull-White trade configs carried copies of model parameters | `tests/test_trade_configs.py::TestEveryTradeNamesItselfAndItsDate::test_a_model_or_curve_on_the_trade_is_refused` |
 | <a id="i-64"></a><a id="a-4"></a>I-64 | A trade's evaluation date defaulted to ORE's thread-local global | `tests/test_trade_configs.py::TestEveryTradeNamesItselfAndItsDate::test_without_an_evaluation_date_it_is_refused` |
@@ -1035,14 +1080,14 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-69"></a>I-69 | The market path silently ignored `precision.pricing`/`risk`/`calibration`, `calibration_targets`, and a `base_currency` contradicting the simulation (now refused by name) | `tests/test_run_config.py::TestWhatThePipelineDoesNotImplementIsRefused`, `::TestConfigurationValues`, `tests/test_api_market_path.py::test_an_unpriceable_request_is_a_400_and_no_job` |
 | <a id="i-70"></a>I-70 | Bump Theta of a bond maturing the next day raised `BondPricingError` (now redemption − NPV, as ORE) | `tests/test_portfolio_bond_wire_through.py::TestBondGreeksReachThePortfolioPath::test_a_bond_maturing_tomorrow_does_not_crash_the_greeks` |
 | <a id="i-71"></a>I-71 | A float32-tier worker turned x64 off, so its pricing and exposure ran in float32 where an in-process run used float64 | `tests/test_engine_worker.py::TestEngineWorkerPricing::test_jobs_queued_together_give_the_bits_of_jobs_run_one_after_another` (float64 and float32 jobs equal the direct call) |
-| <a id="i-72"></a>I-72 | HTTP jobs ran in a process pool that pickled each request with its ORE dates frozen as text, compiled every job shape once per worker, broke for every later job when one worker died (`BrokenProcessPool`), and would have needed chip pinning on TPU (now one engine worker per host behind a durable queue, roadmap 1.8) | `tests/test_engine_worker.py` (`test_a_second_identical_job_compiles_nothing`, `test_a_failing_job_fails_only_its_own_row`, `test_a_worker_killed_mid_job_leaves_it_interrupted`, `test_the_worker_prices_the_request_the_route_validated`) |
+| <a id="i-72"></a>I-72 | HTTP jobs ran in a process pool that pickled each request with its ORE dates frozen as text, compiled every job shape once per worker, broke for every later job when one worker died (`BrokenProcessPool`), and would have needed chip pinning on TPU (now one engine worker per host behind a durable queue) | `tests/test_engine_worker.py` (`test_a_second_identical_job_compiles_nothing`, `test_a_failing_job_fails_only_its_own_row`, `test_a_worker_killed_mid_job_leaves_it_interrupted`, `test_the_worker_prices_the_request_the_route_validated`) |
 | <a id="i-74"></a>I-74 | A calibration basket read ORE's global evaluation date, so a later date (another caller's, or the wall clock past a helper's fixing) failed it with a missing fixing | `tests/test_ore_lgm_calibration.py::test_the_basket_does_not_depend_on_ores_global_evaluation_date` |
-| <a id="i-79"></a>I-79 | Never run on a GPU (now the `gpu` extra under Linux or WSL2, verified on an RTX 5060: no preallocation, the API's JAX on the CPU, float32 products at float32 rather than TensorFloat-32, deterministic kernels; the demo and the full suite run on the GPU; roadmap 2.2) | `tests/test_accelerator_defaults.py`, `tests/test_environment.py::test_a_gpu_plugin_is_jaxlibs_version`, the full suite on the GPU |
-| <a id="i-80"></a>I-80 | Importing `engine` changed JAX and XLA settings for the whole process (now x64 only: each matrix product states its precision through `engine.precision.matmul`; deterministic GPU kernels set by the engine worker and the tests; GPU preallocation off in the demos and the tests; roadmap 2.3, decision A-22) | `tests/test_accelerator_defaults.py` (`TestImportingTheEngine`; `TestEveryMatrixProductStatesItsPrecision::test_in_every_pipeline`, red on the bare products) |
-| <a id="i-82"></a>I-82 | An American priced on a path date after the last reference-grid date in its window and before its last exercise (no calibration helper left) raised `ValueError: Need at least one array to stack` (now the engine's volatility, as a calibration today with no helper; found in roadmap 2.5) | `tests/test_root_solvers.py::test_a_date_with_an_exercise_left_and_no_helper_keeps_the_engine_volatility` |
-| <a id="i-84"></a>I-84 | The simulation market held each curve's tenor points at the tenors' times from the simulation date; ORE's `ScenarioSimMarket` holds them at the times from the as-of date (swaps and Europeans up to 0.45% of their largest path value off ORE's cube; found by roadmap 3.2's L3) | `tests/test_ore_xva_parity.py::test_every_trades_cube_equals_ores_on_ores_paths`, `tests/test_valuation.py` (path curves at ORE's times) |
-| <a id="i-85"></a>I-85 | Exposure profiles started from each trade's value on today's market; ORE's start from its value on the simulation market of the as-of date, the cube's `T0` (up to 4.2% on the shared portfolio; roadmap 3.2) | `tests/test_ore_xva_parity.py::test_the_pipelines_profiles_start_from_ores_t0` |
-| <a id="i-86"></a>I-86 | A cash-settled option's exposure stopped at its underlying's maturity, so its time-weighted EPE kept accruing after it settled; ORE's `Trade::maturity()` is its last exercise date (roadmap 3.2) | `tests/test_ore_xva_parity.py::test_the_profiles_of_ores_cube_are_ores_reports` |
+| <a id="i-79"></a>I-79 | Never run on a GPU (now the `gpu` extra under Linux or WSL2, verified on an RTX 5060: no preallocation, the API's JAX on the CPU, float32 products at float32 rather than TensorFloat-32, deterministic kernels; the demo and the full suite run on the GPU) | `tests/test_accelerator_defaults.py`, `tests/test_environment.py::test_a_gpu_plugin_is_jaxlibs_version`, the full suite on the GPU |
+| <a id="i-80"></a>I-80 | Importing `engine` changed JAX and XLA settings for the whole process (now x64 only: each matrix product states its precision through `engine.precision.matmul`; deterministic GPU kernels set by the engine worker and the tests; GPU preallocation off in the demos and the tests; 2026-10-06, decision A-22) | `tests/test_accelerator_defaults.py` (`TestImportingTheEngine`; `TestEveryMatrixProductStatesItsPrecision::test_in_every_pipeline`, red on the bare products) |
+| <a id="i-82"></a>I-82 | An American priced on a path date after the last reference-grid date in its window and before its last exercise (no calibration helper left) raised `ValueError: Need at least one array to stack` (now the engine's volatility, as a calibration today with no helper; found on 2026-10-07) | `tests/test_root_solvers.py::test_a_date_with_an_exercise_left_and_no_helper_keeps_the_engine_volatility` |
+| <a id="i-84"></a>I-84 | The simulation market held each curve's tenor points at the tenors' times from the simulation date; ORE's `ScenarioSimMarket` holds them at the times from the as-of date (swaps and Europeans up to 0.45% of their largest path value off ORE's cube; found by the ORE simulation oracle's L3, 2026-10-07) | `tests/test_ore_xva_parity.py::test_every_trades_cube_equals_ores_on_ores_paths`, `tests/test_valuation.py` (path curves at ORE's times) |
+| <a id="i-85"></a>I-85 | Exposure profiles started from each trade's value on today's market; ORE's start from its value on the simulation market of the as-of date, the cube's `T0` (up to 4.2% on the shared portfolio) | `tests/test_ore_xva_parity.py::test_the_pipelines_profiles_start_from_ores_t0` |
+| <a id="i-86"></a>I-86 | A cash-settled option's exposure stopped at its underlying's maturity, so its time-weighted EPE kept accruing after it settled; ORE's `Trade::maturity()` is its last exercise date (2026-10-07) | `tests/test_ore_xva_parity.py::test_the_profiles_of_ores_cube_are_ores_reports` |
 | <a id="m-4"></a>Audit M-4 | Trades were defined relative to the evaluation date (now absolute dates) | `tests/test_trade_dates.py` |
 | <a id="m-5"></a>Audit M-5 | Theta re-rolled the trade instead of ageing it | `tests/test_trade_dates.py` |
 | <a id="r-1"></a>Audit R-1 | Cube quantiles were reported as VaR/ES (now exposure profiles; market-risk VaR/ES by t=0 revaluation) | `tests/test_exposure.py`, `tests/test_market_risk.py`, `tests/test_market_risk_ore_parity.py` |
