@@ -42,7 +42,8 @@ from engine.market_data.market import CurrencyMarket, EquityMarket, Market, Swap
 from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfig
 from engine.models.lgm import Sigma
 from engine.precision import (
-    FORMAT_NAMES, OVERRIDES, RETIRED_SHAPE as RETIRED_PRECISION_SHAPE, ROUNDINGS, STAGES, Precision, StagePrecision,
+    FORMAT_NAMES, OFFSETS, OVERRIDES, RETIRED_SHAPE as RETIRED_PRECISION_SHAPE, ROUNDINGS, STAGES, Precision,
+    StagePrecision,
 )
 from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
 from engine.pricing.cube import PRODUCTS
@@ -103,6 +104,9 @@ FormatName = Literal[FORMAT_NAMES]
 #: A rounding into a scaled storage format (`engine.precision.ROUNDINGS`).
 RoundingName = Literal[ROUNDINGS]
 
+#: A scaled storage format's block layout (`engine.precision.OFFSETS`).
+OffsetName = Literal[OFFSETS]
+
 #: A product the pipeline prices (`engine.pricing.cube.PRODUCTS`, the trades' `trade_type`).
 ProductName = Literal[PRODUCTS]
 
@@ -129,7 +133,8 @@ class PrecisionSchema(BaseModel):
     """`engine.precision.Precision`: storage, compute and accumulate per adjustable stage, each
     float64 by default, and the pricing stage overridden per product (`by_product`, keyed by
     `trade_type`) and per trade (`by_trade`, keyed by `trade_id`); the rounding into a scaled
-    storage format and its seed. The 32/64 shape retired on 2026-10-01 is refused, naming the
+    storage format, its seed, and its block layout (`offset`: an offset beside each block
+    scale, or none; I-75). The 32/64 shape retired on 2026-10-01 is refused, naming the
     replacement (decision A-12). `paired_fraction`: the share of paths also run at float64, whose
     estimates the result's `precision` report carries (decision A-13)."""
     model_config = ConfigDict(extra="forbid")
@@ -140,6 +145,7 @@ class PrecisionSchema(BaseModel):
     by_trade: Dict[str, StagePrecisionSchema] = Field(default_factory=dict)
     rounding: RoundingName = "nearest"
     rounding_seed: int = Field(default=0, ge=0)
+    offset: OffsetName = "block"
     paired_fraction: float = Field(default=0.0, ge=0.0, le=1.0)
 
     @model_validator(mode="before")
@@ -156,14 +162,14 @@ class PrecisionSchema(BaseModel):
         overrides = {name: {key: _stage(f"precision.{name}[{key!r}]", value)
                             for key, value in getattr(self, name).items()} for name in OVERRIDES}
         return Precision(**stages, **overrides, rounding=self.rounding, rounding_seed=self.rounding_seed,
-                         paired_fraction=self.paired_fraction)
+                         offset=self.offset, paired_fraction=self.paired_fraction)
 
     @classmethod
     def from_dataclass(cls, precision: Precision) -> "PrecisionSchema":
         stage = StagePrecisionSchema.from_dataclass
         return cls(**{s: stage(getattr(precision, s)) for s in STAGES},
                    **{name: {k: stage(v) for k, v in getattr(precision, name).items()} for name in OVERRIDES},
-                   rounding=precision.rounding, rounding_seed=precision.rounding_seed,
+                   rounding=precision.rounding, rounding_seed=precision.rounding_seed, offset=precision.offset,
                    paired_fraction=precision.paired_fraction)
 
 

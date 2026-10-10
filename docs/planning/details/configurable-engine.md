@@ -134,11 +134,12 @@ for bit. Adjustable precision stays available throughout.
 `_state_grid`). Add `shift_horizon=0.5` cases to `tests/test_ore_lgm_parity.py`, then make 0.5
 the default (ORE's builder default, `OREData/ored/portfolio/builders/swaption.cpp`).
 
-## Precision evidence and low-precision kernels (I-75, I-55, F-07)
+## Precision evidence and low-precision kernels (I-55, F-07)
 
 In [precision.md](precision.md) §8 and §10: the evidence table per figure and precision
-against the acceptance standard (A-11), shared with Basel P6; then the kernels in difference
-form, one implementation for every precision (A-16).
+against the acceptance standard (A-11), shared with Basel P6, read off the storage harness
+(§15.4, 2026-10-09, which closed I-75); then the kernels in difference form, one implementation
+for every precision (A-16).
 
 ## One run request (I-87, I-88, I-89)
 

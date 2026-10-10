@@ -736,10 +736,18 @@ Storage can go below 32 bits (2026-10-02): `float16`, `bfloat16`, `float8_e4m3fn
 `float8_e5m2`, kept with a power-of-two scale per block of 32 paths, and rounded to nearest or,
 with `Precision(..., rounding="stochastic")`, stochastically (reproducibly, from
 `rounding_seed`). For example `pricing=StagePrecision("float8_e4m3fn")` prices in float64 and
-keeps the cube in FP8. Compute below float32 is not enabled yet (F-07), and naming it
-is refused. How much a low-precision market or cube costs in accuracy is measured, not
-assumed: curves stored below 32 bits lose forward rates to cancellation
-([I-75](../planning/known-issues.md#i-75)). The 32/64 shape of before 2026-10-01 (`PrecisionConfig(simulation=32)`) is refused
+keeps the cube in FP8. By default a block whose paths sit close together against their level
+(all of one sign, the farthest from zero at most three times the nearest) also keeps its
+midpoint beside its scale and stores its values' deviations from it
+(`Precision.offset="block"`, 2026-10-09): a bond's values near 1e6 that vary by 1e4 then keep
+their spread to the format's precision rather than spending the format's few bits on the
+level, which biased their mean ([I-75](../planning/known-issues.md#i-75),
+closed). `offset="none"` stores the values themselves, as the OCP MX formats do. Compute below
+float32 is not enabled yet (F-07), and naming it is refused. How much each format costs in
+accuracy, per stage, figure and path count, is measured, not assumed: the storage harness's
+measurements are in [compliance/precision-measurements/](../../compliance/precision-measurements/)
+([details/precision.md §15.4](../planning/details/precision.md#154-the-storage-harness-2026-10-09)).
+The 32/64 shape of before 2026-10-01 (`PrecisionConfig(simulation=32)`) is refused
 with a message naming its replacement. See
 [Architecture: Adjustable precision](../concepts/architecture.md#adjustable-precision).
 

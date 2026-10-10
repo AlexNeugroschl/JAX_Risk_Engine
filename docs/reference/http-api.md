@@ -446,7 +446,11 @@ Precision](portfolio-entrypoint.md#precision) and
 is priced at its `by_trade` entry, else its product's, else `pricing` (2026-10-02).
 `rounding` (`"nearest"`, the default, or `"stochastic"`) is how values are rounded into a
 storage format below 32 bits, and `rounding_seed` (a non-negative integer, 0 by default) seeds
-the stochastic rounding (2026-10-02). `paired_fraction` (in [0, 1], 0 by default; outside it a
+the stochastic rounding (2026-10-02). `offset` (`"block"`, the default, or `"none"`) is the
+layout of such a format: with `"block"` a block of 32 paths whose values sit close together
+against their level (one sign, the farthest at most three times the nearest) is kept as its
+deviations from its midpoint, beside its scale, so it keeps its spread (I-75, 2026-10-09); `"none"` stores the
+values themselves. `paired_fraction` (in [0, 1], 0 by default; outside it a
 `422`) is the share of paths also run at float64, whose estimates the result's `precision`
 carries (2026-10-02). Unknown fields are refused.
 
@@ -467,11 +471,11 @@ A `by_product` key that is not a `trade_type` is a `422`; a `by_trade` key that 
 trade of the request is a `400` (checked with the request, so no job is created).
 
 The format names are the format table's (`float64`, `float32`, `float16`, `bfloat16`,
-`float8_e4m3fn`, `float8_e5m2`); another name, or another rounding, is a `422`. Every format
+`float8_e4m3fn`, `float8_e5m2`); another name, rounding or layout is a `422`. Every format
 stores; a format not yet enabled for compute (below float32, F-07), or an inconsistent
 stage, is a `400` naming the stage (or override, e.g. `precision.by_trade['swap-7']`), the
-field and the roadmap step that enables it. So is `"rounding": "stochastic"` when no stage
-stores below 32 bits:
+field and the roadmap step that enables it. So is `"rounding": "stochastic"` or
+`"offset": "none"` when no stage stores below 32 bits:
 
 ```
 POST /portfolio/price

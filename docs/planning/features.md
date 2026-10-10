@@ -125,8 +125,13 @@ storage of the shocks biases a call payoff by about one Monte Carlo standard err
 paths (stochastic rounding: 0.15), so the earlier rejection of FP8, which compared error per
 value with Monte Carlo error, is withdrawn; FP4 stored naively is biased with either
 rounding. Through the pipeline (2026-10-02, [details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline)):
-float16 storage is within 1e-5 of notional in every stage; FP8 is limited where an array's
-level swamps its spread ([I-75](known-issues.md#i-75)).
+float16 storage is within 1e-5 of notional in every stage; FP8 was limited where an array's
+level swamps its spread ([I-75](known-issues.md#i-75)), which block offsets remove
+(2026-10-09). Since then the storage harness measures every format per stage, figure, product
+and path count against float64 over 16 seeds ([details/precision.md
+§15.4](details/precision.md#154-the-storage-harness-2026-10-09)): float16 cube storage stays
+below a fifth of the statistical error to 16,384 paths, FP8 is many statistical errors off
+but unbiased in a concentrated mean, and every format below float32 has a path ceiling.
 
 **Depends on.** The mechanism and cast points (done 2026-10-01; [I-55](known-issues.md#i-55));
 the speed case needs the target hardware, which the owner has. **Size.** L.

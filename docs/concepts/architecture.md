@@ -425,6 +425,7 @@ Precision(
     by_trade={"swap-7": StagePrecision(...)},                 # overrides both for one trade
     rounding="nearest",                                       # or "stochastic", into a scaled format
     rounding_seed=0,                                          # the stochastic rounding's seed
+    offset="block",                                           # or "none": a scaled format's block layout
     paired_fraction=0.0,                                      # share of paths also run at float64
 )
 Precision()                       # float64 everywhere (the default)
@@ -473,9 +474,22 @@ exactly; loading multiplies it back. Blocks run along the scenario axis, the axi
 runs will shard. Values are rounded to the format's grid either to nearest or stochastically
 (up or down in proportion to the distance, so the rounding has mean zero), with draws from
 `Precision.rounding_seed` and the array's name in the run (`"shocks"`, `"values/<trade id>"`),
-so a run reproduces and a trade's column rounds the same in a mixed run as alone. FP8 holds a
-column in an eighth of float64's memory plus an eighth for the scales. Compute stays float32
-or float64: `load` reads the stored values back at the next stage's compute dtype.
+so a run reproduces and a trade's column rounds the same in a mixed run as alone. By default
+(`Precision.offset="block"`, 2026-10-09) a concentrated block, one whose values all have one
+sign and whose farthest from zero is at most three times its nearest, is stored as their
+deviations from its midpoint, a float32 offset kept beside the scale, so the format's bits go
+to the block's spread instead of its level: a bond's cube column near 1e6 with a spread near
+1e4 kept about one bit of its spread in FP8 without it, and every path of a block rounded the
+same way, a bias ([I-75](../planning/known-issues.md#i-75), closed). The deviations are
+symmetric about zero, so nearest rounding moves as many up as down; no value changes sign; the
+error bound is never worse than without an offset; and every other block (shocks, states, P&L,
+an option's values reaching zero) is stored exactly as without one. `"none"`
+stores the values themselves, the OCP MX layout. FP8 holds a column in an eighth of float64's
+memory plus an eighth for the scales and, with offsets, another for the offsets. Compute stays
+float32 or float64: `load` reads the stored values back at the next stage's compute dtype.
+What each format costs in accuracy is measured by the storage harness
+(`tests/support/precision_harness.py`; [details/precision.md
+§15.4](../planning/details/precision.md#154-the-storage-harness-2026-10-09)).
 Continuous integration runs the fast tier with JAX's strict dtype promotion, under
 which any accidental float32/float64 mix is an error.
 

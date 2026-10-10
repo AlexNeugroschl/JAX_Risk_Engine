@@ -22,7 +22,12 @@ both on one portfolio.
     FP8 stochastic the same, rounded stochastically
 
 Storage below 32 bits keeps a power-of-two scale per block of 32 scenarios, so each
-block uses the format's whole range; see docs/planning/details/precision.md §6.2.
+block uses the format's whole range; see docs/planning/details/precision.md §6.2. A block whose
+values sit close together against their level (one sign, the farthest at most three times the
+nearest) is also stored as its deviations from its midpoint, an offset kept beside the scale
+(`Precision.offset="block"`, the default), so its bits go to its spread. Every block of P&L or shifts holds both signs, so offsets change nothing in this
+market-risk run; the section before the last shows what they do to an exposure cube, where a
+bond's values sit near their level on every path (I-75).
 
     10-day Monte Carlo shocks of every pillar of two sloped curves
         -> full revaluation of every trade at t=0, at its pricing stage's compute precision
@@ -40,6 +45,11 @@ Every result carries a precision report: the policy as run, the format each
 array was actually stored in, the device, and with a paired float64 sample
 (`Precision.paired_fraction`) each VaR/ES measured at the run's precision and at float64 on
 the same scenarios. The last section prints one.
+
+The precision of every stage, figure and path count is measured systematically, over many
+seeds, by the storage harness (tests/support/precision_harness.py, with its campaigns in
+tests/support/precision_campaigns.py; docs/planning/details/precision.md §15.4); this demo is
+one portfolio and one look.
 
 Compute below float32 is not enabled yet (F-07).
 
@@ -63,6 +73,7 @@ from engine.market_data.market import CurrencyMarket, Market, ZeroCurveConfig, i
 from engine.precision import Precision, StagePrecision
 from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
 from engine.risk.market import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
+from engine.run import CamConfig, LgmConfig, PortfolioRequest, RunConfig, price_portfolio
 
 warnings.simplefilter("ignore")  # Sobol balance notices; the demo prints its own caveats
 
@@ -179,6 +190,37 @@ for name in PRECISIONS:
         pnl = np.asarray(results[name, SEEDS[0]].portfolio_pnl)
         print(f"  per-scenario portfolio P&L, {name}: max |x - FP64| / max |P&L| = "
               f"{np.max(np.abs(pnl - pnl64)) / scale:.1e}")
+
+# =============================================================================
+section("An exposure cube in FP8: a bond's column with and without block offsets (I-75)")
+# =============================================================================
+# The bond and the payer swap on 4,096 paths of the market's LGM (reversion 3%, volatility
+# 1%), six dates to 3 years; the cube stored in FP8 (e4m3, nearest), priced in float64. The
+# bond's values sit near its level on every path: without offsets FP8's 4 significant bits go
+# to the level, and every path of a block rounds the same way.
+PATHS = 4096
+EXPOSURE = CamConfig(dates=tuple(TODAY + ORE.Period(m, ORE.Months) for m in (3, 6, 12, 18, 24, 36)),
+                     base_currency="USD", ir={"USD": LgmConfig(0.03, 0.01)}, samples=PATHS, seed=SEEDS[0])
+note, payer = TRADES[4], TRADES[0]
+
+
+def cube(precision: Precision) -> np.ndarray:
+    result = price_portfolio(PortfolioRequest(MARKET, [payer, note], RunConfig(simulation=EXPOSURE,
+                                                                               precision=precision)))
+    return np.asarray(result.npv_cube)
+
+
+exact = cube(Precision())
+standard_error = exact[:, :, 1].std(axis=0, ddof=1) / np.sqrt(PATHS)
+print("  the note's mean value per date, its Monte Carlo standard error, and FP8's error of the mean:")
+print(f"  {'date':<12}{'mean':>14}{'MC std err':>12}{'offset none':>14}{'offset block':>14}")
+errors = {o: (cube(Precision(pricing=StagePrecision("float8_e4m3fn"), offset=o)) - exact)[:, :, 1].mean(axis=0)
+          for o in ("none", "block")}
+for j, date in enumerate(EXPOSURE.dates):
+    print(f"  {date.ISO():<12}{exact[:, j, 1].mean():>14,.0f}{standard_error[j]:>12,.1f}"
+          f"{errors['none'][j]:>14,.1f}{errors['block'][j]:>14,.1f}")
+print("  Without offsets the stored mean is off by tens of standard errors on every date before the\n"
+      "  note matures, a bias that more paths would not remove; with them the error is a fraction of one.")
 
 # =============================================================================
 section("The precision report of one run, with a paired float64 sample")

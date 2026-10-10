@@ -12,37 +12,35 @@ Europeans and bonds equal ORE's simulation path by path since 2026-10-07.
 
 ## Verification status
 
-Last full runs, 2026-10-08/09, on the code of the package layout (I-92: renames and moves
-only). 2,772 collected on Windows and Linux: the 2,767 of before, each mapped to its test in
-the renamed files, less six replaced (the two `DAY_COUNTER` alias tests of
-`tests/test_day_count_roles.py`, the three cases of the old layering test and its eager-import
-test) and plus eleven (their replacements and the layout's rules in
-`tests/test_import_layering.py`). Every run printed its summary line, and no run has a
-`FAILED` or `ERROR` line:
+Last full run, 2026-10-09, on the code of the storage harness (I-75: block offsets in
+`engine/precision/storage.py`, the policy's `offset`, the harness and its campaigns in
+`tests/support/`). 2,861 collected on Windows: the 2,772 of the package layout's runs, less 32
+(storage tests now parametrized over both block layouts, each of which reappears twice, and the
+bytes test renamed) plus 121 (those, `TestBlockOffsets`, the policy's layout tests, market risk
+in both layouts, and `tests/test_precision_harness.py`). The run printed its summary line and
+has no `FAILED` or `ERROR` line:
 
-- **Windows**, `-n 8`: **2,762 passed, 4 skipped, 6 xfailed, 0 failed**, 15m00s (the skips as
-  before; the expected failures are the Bermudan/American L3 cases of
-  `tests/test_ore_xva_parity.py`, strict, waiting on [I-49](#i-49)). After it, three edits
-  that change no behaviour (an f-string without placeholders in `engine/traderx/equity.py`,
-  two docstrings); their modules' tests passed (148), and the runs below include the first.
-- **Linux, CPU** (Docker `python:3.11`, the pinned requirements, `-n 4`): **2,760 passed,
-  6 skipped, 6 xfailed, 0 failed**, 24m35s; the two further skips need the `reference/` ORE
-  and TraderX checkouts, which were not copied in. The first complete Linux run since the
-  WSL run of 2026-10-07 stopped at 78% (out of memory), so rule 5 is met for the job queue's
-  changes of 2026-10-07 too.
+- **Windows**, `-n 8`: **2,851 passed, 4 skipped, 6 xfailed, 0 failed**, 13m57s (the skips and
+  the expected failures as before: the Bermudan/American L3 cases of
+  `tests/test_ore_xva_parity.py`, strict, waiting on [I-49](#i-49)). After it, one f-string
+  without placeholders in `demos/demo_precision.py` lost its `f`, and the demo ran to its end.
 - **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the CI job,
-  `-n 8`): 2,645 passed, 4 skipped, 6 xfailed, 3m18s.
-- The GPU suite was not run: no kernel changed.
+  `-n 8`): 2,730 passed, 4 skipped, 6 xfailed, 3m20s.
+- Not run on Linux: the change touches no process, file path or platform default (rule 5); the
+  last Linux run is the package layout's (2026-10-08/09: 2,760 passed, 6 skipped, 6 xfailed).
+  Nor on the GPU: the storage kernels follow their inputs' dtype as before.
 
-Red first, on the code before (a worktree of `7d52e17`, the new `tests/test_import_layering.py`
-copied in): 6 of its 11 tests fail, naming `market.py` and `day_count.py` at the root of
-`engine/`, `var_es.py` and the other modules at the root of `engine/risk/`, the packages with
-no layer, and 62 imports against the layers (among them every instrument importing
-`engine.models`, where the schedules and the Bermudan's grid engine's model then lived).
+Red first: `test_a_bonds_fp8_cube_column_is_unbiased_with_block_offsets` asserts both halves,
+the bias with `offset="none"` (the storage of the code before, bit for bit) and its absence with
+the default; the code before has no layout, and its storage is the half that fails. The layout
+first tried, offsets at each block's entry nearest zero, also failed it (a bias of 4.7 to 28 of
+its standard errors; [details/precision.md §15.4](details/precision.md#154-the-storage-harness-2026-10-09)).
 
-Golden snapshot (2026-10-09), on CPU, from a worktree of `7d52e17` against the new tree, 359
-arrays: all 359 identical in value, dtype and shape
-([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
+Golden snapshot (2026-10-09), on CPU, from a worktree of `d19f9c5` against the new tree, 359
+arrays: all 359 identical in value, dtype and shape. Scaled storage with `offset="none"`, a
+snapshot of its own (every scaled format, both roundings, from float64 and float32, a portfolio
+and a market-risk run with every stage stored scaled), 168 arrays: all identical to the code
+before ([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
 
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
@@ -62,10 +60,10 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | Core |
 | [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | Core |
 | [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | Core |
-| [I-75](#i-75) | Storage below 32 bits keeps few bits of a concentrated array's spread | Low | OPEN | Correctness | Core |
 | [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Core |
 | [I-88](#i-88) | The API completeness test checks field names, not that a value reaches the engine | Low | OPEN | Tooling | Core |
 | [I-89](#i-89) | A retried job submission runs the job twice | Low | OPEN | API | Core |
+| [I-95](#i-95) | A precision setting the run does not read is accepted and ignored | Low | OPEN | API | Core |
 | [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | Core |
 | [I-78](#i-78) | AD and bump Greeks differ by up to 2% on a sloped market | Medium | OPEN | Validation | Core |
 | [I-53](#i-53) | On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch | Low | PARTIAL | Performance | Fix what exists |
@@ -185,43 +183,6 @@ through them. Not seen on the test markets. Since 1.4 the flag is also correct i
 **To close.** With [I-49](#i-49) (the per-path recalibration against ORE's): count the paths and
 dates whose recalibration hit the bracket and carry a warning naming the trade and the counts
 on the result, as ORE's structured warning; a test with an unattainable path volatility.
-
-<a id="i-75"></a>
-### I-75 — Storage below 32 bits keeps few bits of a concentrated array's spread
-
-**Severity:** Low · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-02,
-the storage measurements ([details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline))
-
-**What is wrong.** A scaled storage format (2026-10-02) keeps each value to the format's
-precision relative to its block's largest value: FP8 keeps 3 (e4m3) or 2 (e5m2) mantissa bits.
-Where the 32 paths of a block sit close together against their level, as a bond's cube column
-(near 1e6, spread near 1e4) or a long log discount factor of the scenario curves do, those
-bits go to the level and the spread between paths, the part that carries risk, is kept to
-about one bit. Rounded to nearest, every path of such a block moves the same way: a bias that
-more paths do not remove. Measured on the shared portfolio at 256 paths: an FP8 e5m2 cube is
-biased by 3.7% of a trade's notional and an FP8 e4m3 market moves the EPE by 2.6%; float16 is
-within 1e-5 of notional in every stage.
-
-**Reach.** Runs that choose a storage below 32 bits, and only the stages they choose (no
-default and no float32 run). Stochastic rounding (`Precision(rounding="stochastic")`) already
-turns the bias into noise that shrinks with the path count (the FP8 cube's bias falls 3 to 4
-times at 256 paths), but its variance stays that of a format with one bit of the spread, and
-added variance biases a quantile: in market risk, where offsetting trades' stored P&Ls
-cancel in the portfolio's, FP8 storage moves VaR and ES by 1.8 to 4.5 times the spread of
-float64 across seeds, stochastic rounding more than nearest (float16: at most 0.044;
-[details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline)).
-
-**Current handling.** None: the runs are allowed (D-9) and carry no warning until
-[I-55](#i-55)'s evidence table and warnings (I-55). Documented in the user guide and the
-portfolio entry point.
-
-**To close.** Store such classes relative to a level, so the format's bits go to
-the spread: the cube relative to each trade's t=0 value and the curves relative to their
-path-independent part (the difference form of [§8.2](details/precision.md#82-the-difference-form),
-already computed in float64 by `build_scenario_market`), or a per-block offset beside the scale
-in `Stored` (a decision on A-10's single rule). Measure each class with and without it, keep
-what the evidence table needs, and test that an FP8 bond column's bias falls below its Monte
-Carlo standard error.
 
 <a id="i-54"></a>
 ### I-54 — No swaption smile: options away from the money read the ATM vol
@@ -569,6 +530,30 @@ and a `config` whose sections follow ORE's files, as
 [details/configurable-engine.md](details/configurable-engine.md#one-run-request-i-87-i-88-i-89)
 describes. A run of one analytic must equal today's direct call bit for bit.
 
+<a id="i-95"></a>
+### I-95 — A precision setting the run does not read is accepted and ignored
+
+**Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-09, building the
+storage harness (I-75)
+
+**What is wrong.** A market-risk run has no scenario market: it reads `Precision.simulation`
+for its shifts and `pricing` (with its overrides) for its revaluation, and accepts a `market`
+stage, which `Precision.throughout` also sets, without reading it. A portfolio run with
+`scenario_risk=False` simulates nothing and accepts every stage, the rounding, the block layout
+and `paired_fraction`, and reads none of them. Both are inputs accepted and then ignored, which
+the API otherwise refuses ([I-59](#i-59)'s rule; a stochastic rounding with nothing stored
+below 32 bits is refused for that reason).
+
+**Reach.** No number: the setting does nothing. But the result's precision report echoes the
+policy as given, so it states a precision the run did not use. `demos/demo_precision.py` runs
+market risk with `Precision.throughout("float32")`, whose `market` stage is one of these.
+
+**Current handling.** None.
+
+**To close.** In the run request ([I-87](#i-87)): each analytic refuses a precision setting it
+does not read, naming the field, as it refuses a configuration section no requested analytic
+reads; a test per analytic; the demo's market-risk policies set the two stages they use.
+
 <a id="i-89"></a>
 ### I-89 — A retried job submission runs the job twice
 
@@ -703,13 +688,31 @@ combination has been validated for them. Default (float64) runs are unaffected.
 
 **To close.** The evidence table (A-11) per figure and precision combination
 against the acceptance standard (Basel III's P&L attribution test and the Basel plan's P6.2
-rule), and a warning on any result whose combination has no passing row. It is measured by
-[I-75](#i-75)'s harness on each kernel family as F-07 rewrites it (the Bermudan/American rows
-after [I-32](#i-32) and [I-49](#i-49)), so it describes the kernels that ship. The harness also measures the paired estimator's coverage through the pipeline: its standard errors treat paths as
-independent, while Sobol paths are not and the rounding errors of the 32 paths of a block
-share a scale (the synthetic coverage tests and three pipeline seeds pass; that is not yet
-evidence at scale). Compute below
-float32 is [F-07](features.md#f-07).
+rule), and a warning on any result whose combination has no passing row. It is read off the
+storage harness (`tests/support/precision_harness.py`, built 2026-10-09 with [I-75](#i-75);
+measurements in `compliance/precision-measurements/`, [details/precision.md
+§15.4](details/precision.md#154-the-storage-harness-2026-10-09)) on each kernel family as
+F-07 rewrites it (the Bermudan/American rows after [I-32](#i-32) and [I-49](#i-49)), so it
+describes the kernels that ship. Three findings of its first campaigns bear on the table:
+
+- **The paired estimator's standard errors.** For storage of the cube they are right (the
+  standardized errors' root mean square 1.00 to 1.01, coverage 0.95). For storage of the shocks,
+  states and curves the correction's standard error is too small in heavy-tailed figures (an
+  option's ENE, non-zero on few paths): root mean square 1.5 to 3.0, single checks at 17 to 29
+  standard errors, though pooled coverage is 0.93 to 0.95. A row that rests on the paired
+  correction needs a robust standard error there (by blocks of paths, or across seeds). The
+  total standard error, which treats Sobol paths as independent, is about three times too wide
+  (root mean square 0.30 to 0.40).
+- **Figures float64 holds fixed** (a netting set's ENE where every path is in the money, an
+  EEE_B or EEPE_B at its t=0 value, a matured trade's) have no statistical error, so the P6.2
+  rule, a share of it, cannot judge them; they need an absolute rule (offsets move them by at
+  most 4e-5 of their scale).
+- **A path ceiling exists for every format below float32**: the relative error grows nearly as
+  sqrt(N) on Sobol paths, and a paired sample of an eighth of the paths raises it for smooth
+  figures (it trades a bias, which block offsets removed for concentrated columns, for
+  variance).
+
+Compute below float32 is [F-07](features.md#f-07).
 
 <a id="i-94"></a>
 ### I-94 — The LGM is calibrated by two implementations
@@ -1041,6 +1044,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-70"></a>I-70 | Bump Theta of a bond maturing the next day raised `BondPricingError` (now redemption − NPV, as ORE) | `tests/test_portfolio_bond_wire_through.py::TestBondGreeksReachThePortfolioPath::test_a_bond_maturing_tomorrow_does_not_crash_the_greeks` |
 | <a id="i-71"></a>I-71 | A float32-tier worker turned x64 off, so its pricing and exposure ran in float32 where an in-process run used float64 | `tests/test_engine_worker.py::TestEngineWorkerPricing::test_jobs_queued_together_give_the_bits_of_jobs_run_one_after_another` (float64 and float32 jobs equal the direct call) |
 | <a id="i-72"></a>I-72 | HTTP jobs ran in a process pool that pickled each request with its ORE dates frozen as text, compiled every job shape once per worker, broke for every later job when one worker died (`BrokenProcessPool`), and would have needed chip pinning on TPU (now one engine worker per host behind a durable queue) | `tests/test_engine_worker.py` (`test_a_second_identical_job_compiles_nothing`, `test_a_failing_job_fails_only_its_own_row`, `test_a_worker_killed_mid_job_leaves_it_interrupted`, `test_the_worker_prices_the_request_the_route_validated`) |
+| <a id="i-75"></a>I-75 | Storage below 32 bits kept few bits of a concentrated column's spread: FP8 put its bits on the level of a bond's cube (1e6 ± 1e4) or a long log discount factor, and every path of a block rounded alike, a bias more paths did not remove (now a concentrated block, one sign and the farthest entry at most three times the nearest, is stored as its deviations from its midpoint, `Precision.offset="block"`, the default; the storage harness measures every format, 2026-10-09) | `tests/test_precision_harness.py::test_a_bonds_fp8_cube_column_is_unbiased_with_block_offsets`, `tests/test_precision.py::TestBlockOffsets` |
 | <a id="i-74"></a>I-74 | A calibration basket read ORE's global evaluation date, so a later date (another caller's, or the wall clock past a helper's fixing) failed it with a missing fixing | `tests/test_ore_lgm_calibration.py::test_the_basket_does_not_depend_on_ores_global_evaluation_date` |
 | <a id="i-79"></a>I-79 | Never run on a GPU (now the `gpu` extra under Linux or WSL2, verified on an RTX 5060: no preallocation, the API's JAX on the CPU, float32 products at float32 rather than TensorFloat-32, deterministic kernels; the demo and the full suite run on the GPU) | `tests/test_accelerator_defaults.py`, `tests/test_environment.py::test_a_gpu_plugin_is_jaxlibs_version`, the full suite on the GPU |
 | <a id="i-80"></a>I-80 | Importing `engine` changed JAX and XLA settings for the whole process (now x64 only: each matrix product states its precision through `engine.precision.matmul`; deterministic GPU kernels set by the engine worker and the tests; GPU preallocation off in the demos and the tests; 2026-10-06, decision A-22) | `tests/test_accelerator_defaults.py` (`TestImportingTheEngine`; `TestEveryMatrixProductStatesItsPrecision::test_in_every_pipeline`, red on the bare products) |

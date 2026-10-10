@@ -8,8 +8,9 @@ D-9 ([compliance/decisions.md](../../../compliance/decisions.md)). It replaces
 `sub-fp32-precision.md`; its findings are kept, corrected, in [§15](#15-measurements).
 
 **Written:** 2026-10-01 · **Items:** [F-07](../features.md#f-07), [I-55](../known-issues.md#i-55),
-[I-61](../known-issues.md#i-61), [I-75](../known-issues.md#i-75), in the
-[roadmap's core](../roadmap.md#stage-3--the-core); stage 1 (done) built the mechanism
+[I-61](../known-issues.md#i-61), in the [roadmap's core](../roadmap.md#stage-3--the-core); stage 1
+(done) built the mechanism, and the storage harness (2026-10-09) closed
+[I-75](../known-issues.md#i-75)
 
 ---
 
@@ -174,11 +175,12 @@ class Precision:
                                                     # trade_id: overrides by_product and pricing
     rounding: str = "nearest"                       # nearest | stochastic (sub-32-bit storage)
     rounding_seed: int = 0                          # the stochastic rounding's seed (2026-10-02)
+    offset: str = "block"                           # block | none: a scaled format's block layout (2026-10-09)
     paired_fraction: float = 0.0                    # share of paths re-run at float64 (§9)
 ```
 
 `rounding` and `rounding_seed` were added in sub-32-bit storage (2026-10-02) (§6.2), `paired_fraction` in the precision report (2026-10-02)
-(§9.6).
+(§9.6), `offset` with the storage harness (2026-10-09, §6.2).
 
 `Precision()` is float64 everywhere. It replaces `PrecisionConfig`,
 `PricingPrecisionOverride`, `RiskPrecisionOverride` and `MarketRiskRequest.precision`. The old
@@ -228,6 +230,8 @@ Checked before any work, by `engine/precision/policy.py`, each refusal naming it
 - `rounding` is `nearest` or `stochastic`, and `stochastic` only when some stage or override
   stores in a scaled format (otherwise it would be accepted and ignored); `rounding_seed` is a
   non-negative integer (2026-10-02);
+- `offset` is `block` or `none`, and `none` only when some stage or override stores in a scaled
+  format, for the same reason (2026-10-09);
 - `paired_fraction` is a number in [0, 1] (2026-10-02). At float64 everywhere it is accepted: it
   measures zero, a check of the pairing, not a setting that does nothing.
 
@@ -256,7 +260,8 @@ Precision(simulation=StagePrecision(storage="float8_e4m3fn", compute="float32", 
 engine/precision/
   formats.py   # the format table: name -> dtype, bits, mantissa bits, max, scaled?   (2026-10-01)
   policy.py    # StagePrecision, Precision, validation (2026-10-01); by_product, by_trade, precision_for (2026-10-02)
-  storage.py   # store(), load() (2026-10-01); Stored (pytree: values, scales, format, axis), rounding (2026-10-02)
+  storage.py   # store(), load() (2026-10-01); Stored (pytree: values, scales, format, axis), rounding (2026-10-02);
+               # block offsets (Stored.offsets, 2026-10-09)
   report.py    # PrecisionReport: the policy as run, realized dtypes, device, paired errors (2026-10-02)
   estimate.py  # two-level estimator for means; paired differences for quantiles (2026-10-02)
   products.py  # matmul(): every matrix product, at its compute format's precision (2026-10-06)
@@ -340,6 +345,49 @@ As built (sub-32-bit storage (2026-10-02), `engine/precision/storage.py`):
   format, axis and dtype static: one compile per array shape, format and rounding, reused by
   every trade, date and run (a test counts the compiled programs).
 - Overhead: FP8 holds an array in an eighth of float64 plus 4 bytes per 32 values.
+
+**Block offsets** (2026-10-09, I-75; `Precision.offset`, `"block"` by default). A block whose
+entries sit close together against their level spends the format's few mantissa bits on the
+level: a bond's cube column (near 1e6, spread near 1e4) keeps about one bit of its spread in
+FP8, and rounded to nearest every path of a block moves the same way, a bias (§15.3). With
+offsets, a concentrated block, one whose finite entries all have one sign and whose farthest
+from zero is at most three times its nearest, is stored as their deviations from its midpoint
+(the mean of its largest and smallest finite entries), rounded to float32 and kept beside the
+scale (`Stored.offsets`, the shape of `scales`); the scale is then set by the deviations, at
+most half the block's range. Every other block has offset 0.
+
+- **Which offset.** Three were weighed. The level the plan named first, the cube's t=0 value
+  and the curves' path-independent part (§8.2), needs each class's own level in the pipeline,
+  and a t=0 value does not follow the level's drift over dates; an offset per block and date
+  follows it, needs nothing from the pipeline, and serves every class through one mechanism
+  (§2.4). Of the per-block offsets, three were tried in turn. The midpoint of every one-signed
+  block let a small entry of a positive block (a deep out-of-the-money option on one path) load
+  negative: on the first trial runs an option's ENE, exactly 0 in float64, came out positive.
+  The entry nearest zero keeps every sign, but its deviations lie in [0, range], skewed, so
+  nearest rounding no longer cancels: on the first record run of the `linear` campaign the
+  bond's FP8 column kept a bias of 18 to 36 (e4m3) and 75 to 120 (e5m2) on values near 1e6,
+  4.7 to 28 of its standard errors at 16 seeds, which failed threshold 1 of §15.4 (a thousandth
+  of the bias without offsets, but detectable; the run is summarized there). The midpoint of a
+  concentrated block only does both: its deviations are symmetric, and a rounding error, at most
+  a spacing of the format at the largest deviation (an eighth of the range in e5m2, the
+  coarsest), is below a concentrated block's nearest magnitude, at least half its range, so no
+  entry changes sign. A one-signed block that reaches nearer zero than half its range would
+  gain less than a bit from any offset (its largest magnitude is less than 1.5 times its
+  range), and keeps offset 0.
+- **Never worse.** Half a block's range is no larger than its largest magnitude, so a
+  concentrated block's scale, and the format's step, is never coarser than without an offset.
+  Every other block keeps offset 0 and stores exactly what it stores without one, bit for bit,
+  so zeros (signed) pass through, a zero shift's P&L stays exactly zero, and shocks, states and
+  P&L, which straddle zero, are stored alike in both layouts.
+- **Exactness.** The deviations are computed from the stored offset in the input's dtype (exact
+  where an entry is within a factor two of it), and loading adds the offset back with one
+  rounding in the loaded dtype, where an offset is non-zero.
+- **Cost.** 4 more bytes per 32 values: FP8 holds an array in an eighth of float64 plus 8 bytes
+  per 32. `offset="none"` keeps the OCP MX layout (scales only), which FP8 matrix units read
+  directly; a stored array reports its layout (`Stored.offset`, read from the arrays).
+- **Bit for bit.** With `offset="none"` scaled storage is the code before it bit for bit: a
+  snapshot of every scaled format, both roundings, from float64 and float32, and a portfolio and
+  a market-risk run with every stage stored scaled, 168 arrays, all identical (§13.1).
 
 ### 6.3 Cast points
 
@@ -497,8 +545,8 @@ What is known (measured 2026-10-01, [§15](#15-measurements)):
   together against their level (a bond's cube, a long log discount factor) keeps only the
   format's few bits of its spread, and rounded to nearest every path of a block moves the same
   way, a bias; stochastic rounding turns that into noise (the cube's FP8 bias 3 to 4 times
-  smaller at 256 paths). Storing the deviation from a level (the difference form of §8.2, or a
-  block offset) is the remedy; the storage harness (I-75) measures, per class, which formats need it.
+  smaller at 256 paths). Block offsets (§6.2, 2026-10-09) are the remedy, and the storage
+  harness measures every format per stage, figure and path count (§15.4).
 
 ## 8. Compute below float32
 
@@ -681,9 +729,11 @@ correction is 11 (2%) to 79 (100%) of its standard errors from zero, the nearest
 of [I-75](../known-issues.md#i-75), measured on the run itself.
 
 **Limits.** The standard errors treat paths as independent. Sobol paths are not, and the
-rounding errors of the 32 paths of a block share a scale, so on the pipeline they are
-nominal until the storage harness (I-75) measures their coverage there (the synthetic coverage tests and three
-pipeline seeds pass). A quantile's paired measurement needs a tail on the paired paths: ES at
+rounding errors of the 32 paths of a block share a scale and offset. The storage harness
+measured their coverage on the pipeline (2026-10-09, §15.4): the correction's standard error
+is right for cube storage and too small in heavy-tailed figures for storage of the shocks,
+states and curves; the total standard error is about three times too wide on Sobol paths
+(I-55). A quantile's paired measurement needs a tail on the paired paths: ES at
 99% on 64 scenarios is NaN.
 
 ## 10. Acceptance standard and evidence
@@ -808,7 +858,7 @@ Decisions taken while building it (2026-10-04):
 | **Sub-32-bit storage** (done 2026-10-02) | Sub-32-bit storage: block scales, both roundings; `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2` enabled for storage | The storage properties of §13.4; bit for bit at the default. Met: §13.1, §13.4 | M |
 | **The precision report** (done 2026-10-02) | Paired sample, two-level estimator for means, `PrecisionReport` with realized dtypes and device (closes I-12) | §13.6; bit for bit at the default. Met: §13.1, §13.6 | M |
 | **The engine worker** (done 2026-10-04) | Engine worker process and the SQLite queue (A-14); delete `worker_pool.py`'s pool and freeze/thaw | §13.8, including the Linux run; float64 job time and compile count no worse. Met: §13.8, §13.9 | M |
-| **The storage harness** (I-75) | *Parallel, can start now.* Storage relative to a level for classes whose level swamps their spread (I-75); a measurement harness for storage formats per class and product, at several path counts, fixed seeds, rerunnable on any kernel change | Harness covers every figure × class × format; thresholds fixed before measuring; I-75's FP8 bond column unbiased within its Monte Carlo standard error | M |
+| **The storage harness** (I-75, done 2026-10-09) | Storage relative to a level for classes whose level swamps their spread (block offsets, §6.2); a measurement harness for storage formats per class and product, at several path counts, fixed seeds, rerunnable on any kernel change (§15.4) | Harness covers every figure × class × format; thresholds fixed before measuring; I-75's FP8 bond column unbiased within its Monte Carlo standard error. Met: §15.4 | M |
 | **The kernel rewrite** (F-07) | Difference-form kernels (§8.2), one family at a time (those `ShiftHorizon` and the recalibration fix do not change first, the Bermudan/American rollback and recalibration after them), as matrix products where a family can be one (§8.3); compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the re-baseline of §2.1; emulated FP8/bfloat16 compute measured by the harness | L |
 | **Multi-host** (I-61) | Shard the scenario axis in the worker (I-61): one host done 2026-10-04; several hosts next | Results equal the one-device run within reduction-order rounding (one host: met, `tests/test_sharding.py`); scaling measured on TPU | M |
 | **The evidence table** (I-55) | The evidence table and the warnings (§10), from the storage harness on each kernel family as the kernel rewrite lands it (the Bermudan/American rows after `ShiftHorizon` and the recalibration fix, I-32 and I-49) | Table complete; a verdict and path ceiling per row; a warning on every result without a passing row | S |
@@ -995,6 +1045,17 @@ process changes.
   the new tree, on CPU: all 359 identical in value, dtype and shape, the Greeks of both
   methods, the float32 runs and the demo's job included. Later changes compare against a
   snapshot of its commit.
+- **Result of the storage harness (2026-10-09, I-75).** It adds block offsets to scaled storage,
+  the default for every scaled format, and changes no float64 or float32 arithmetic. The same
+  script, 359 arrays, from a worktree of `d19f9c5` against the new tree, on CPU: all 359
+  identical in value, dtype and shape. A second snapshot covers scaled storage, which the first
+  does not: `store`/`load` of three arrays (normals, a concentrated column, zeros beside NaN) in
+  every scaled format under both roundings from float64 and float32, and a portfolio and a
+  market-risk run with every stage stored scaled under both roundings, 168 arrays; with
+  `offset="none"` all 168 are identical to the code before, so the layout without offsets is
+  the storage of before, bit for bit (the NaN padding of a short block, which replaced zeros,
+  counts towards no scale either way). The default layout moves the scaled runs' numbers, as
+  intended (§15.4). Later changes compare against a snapshot of its commit.
 - The kernel rewrite (F-07): parity suites pass at their tolerances first; then the snapshot is re-baselined,
   with the largest change per array recorded in the commit and in known-issues' verification
   status.
@@ -1050,7 +1111,23 @@ new compile and moving with its seed, market risk's P&L within a step and exactl
 zero shift; per trade, a mixed run with scaled formats and stochastic rounding equals each
 trade alone, column for column, in the cube and the P&L. Slow tier: every stage × format on
 the shared portfolio within measured bounds (§15.3), and stochastic rounding's smaller bias of
-an FP8 cube.
+an FP8 cube without offsets.
+
+Block offsets (2026-10-09): every property above that holds in both layouts is tested in both
+(nearest equal to ml_dtypes' rounding of the deviations, the scale set by the largest
+deviation, stochastic rounding to a neighbour, signed zeros, NaN and infinities, short blocks,
+independent blocks, the pytree, bytes held), and the round trip of the format's own values,
+which an offset breaks, without them. `TestBlockOffsets`: a concentrated column (1e6 ± 1e4)
+loses more than 7/8 of its largest error and its mean error is noise, where without offsets
+FP8 moves the mean by more than ten of its standard errors; the offset is a concentrated
+block's midpoint in float32, and 0 for a block of both signs, a zero, one reaching nearer zero
+than half its range, or no finite entry; the scale is never coarser and the error never above
+the bound without an offset; a constant block is held to float32's precision of it; no entry
+changes sign, at the rule's edge (the farthest three times the nearest) in e5m2 and
+stochastically too;
+no dtype mix under strict promotion. The policy's `offset` reaches `Precision.store` and is
+refused where it would change nothing; with `offset="none"` scaled storage is the code before
+it bit for bit (§6.2).
 
 ### 13.5 Low-precision sanity on sloped curves
 
@@ -1086,7 +1163,10 @@ their correction is FP4 (F-07).
 ### 13.7 Statistical acceptance (slow tier)
 
 The evidence table's rows become slow-tier tests with fixed seeds and the thresholds fixed
-before measuring: bias against the rule of §10 at the stated path counts.
+before measuring: bias against the rule of §10 at the stated path counts. The first is the
+storage harness's (2026-10-09): `tests/test_precision_harness.py::
+test_a_bonds_fp8_cube_column_is_unbiased_with_block_offsets` (§15.4, threshold 1), on the
+harness the evidence table's rows will run on.
 
 ### 13.8 Execution
 
@@ -1249,6 +1329,148 @@ across seeds:
   quantiles are not (§9.4), so for VaR/ES the storage itself must be precise enough. The storage harness (I-75)
   measures it per figure; [I-75](../known-issues.md#i-75).
 
+### 15.4 The storage harness (2026-10-09)
+
+The harness (`tests/support/precision_harness.py`) runs a campaign's cases through the public
+entries (`price_portfolio`, `run_market_risk`) at each path count, over independent Sobol
+seeds, against the float64 run on the same paths; the campaigns of record and the command that
+runs them are `tests/support/precision_campaigns.py`, and their measurements are kept in
+[compliance/precision-measurements/](../../../compliance/precision-measurements/) (JSON, with a
+generated markdown summary). Per case, figure and path count it records the precision error's
+mean (the bias), its standard error and root mean square, and the figure's statistical error
+(its float64 spread over the seeds); per paired case the coverage of the paired estimator's
+two standard errors; per market-risk case Spearman's correlation and the Kolmogorov–Smirnov
+statistic of its P&L against float64's; per case the programs compiled after its first seed.
+
+**Thresholds, fixed before the campaigns of record were measured** (the trial runs that
+debugged the harness used two to four seeds on slices of the cases):
+
+1. **I-75 closes** if, rounded to nearest in FP8 (e4m3, e5m2), the bond's cube column of the
+   `linear` campaign at 1,024 and 4,096 paths and 16 seeds, with block offsets, has at every
+   date a bias within three of its standard errors of zero and below the Monte Carlo standard
+   error of the column's mean (its float64 spread over the paths over sqrt(paths)); and without
+   them is beyond both at some date (I-75's bias, so the test can fail).
+   `tests/test_precision_harness.py::test_a_bonds_fp8_cube_column_is_unbiased_with_block_offsets`.
+2. **The block layout default stays `"block"`** if, for every stage, scaled format, rounding and
+   path count of the `linear` and `options` campaigns, the worst relative error over the figures
+   with offsets is at most 1.1 times the one without (the 10% for the seeds' noise in a worst
+   case over many figures). Otherwise the default is `"none"`, and the classes where offsets
+   help are recorded.
+3. **The rounding default stays `"nearest"`** unless stochastic rounding, in the default layout,
+   has the smaller worst relative error for every stage, scaled format and path count of the
+   `linear` campaign, and for VaR and ES in every case of the `market_risk` campaign (§15.3
+   found stochastic rounding's added variance biases quantiles).
+4. **The paired estimator's standard errors are adequate** where each interval's pooled coverage
+   (nominal 95%) is at least 90% for every paired case and path count of the `linear` campaign.
+   A case below it is a finding for the evidence table (I-55), recorded there.
+5. **No case compiles after its first seed**, in any campaign.
+
+**The first record run failed threshold 1** (2026-10-09). Its block offset was each one-signed
+block's entry nearest zero, chosen on the trial runs to keep every entry's sign (§6.2). On the
+`linear` campaign it cut the bond column's FP8 error a thousandfold, but its deviations,
+measured from a block's minimum, are skewed, and nearest rounding of them left a bias of 18 to
+36 (e4m3) and 75 to 120 (e5m2) on values near 1e6: 4.7 to 28 of its standard errors. The layout
+was changed to the midpoint of concentrated blocks (§6.2), the thresholds left as they were,
+and every campaign measured again. Of that run, thresholds 2, 4 and 5 passed but for one
+comparison of threshold 2, which the zero statistical error of a fixed figure (below) made
+infinite, and that the harness has since left out of its ratios.
+
+**Results of the record run** (2026-10-09, CPU, 16 seeds; [linear.md](../../../compliance/precision-measurements/linear.md),
+[options.md](../../../compliance/precision-measurements/options.md),
+[market_risk.md](../../../compliance/precision-measurements/market_risk.md)):
+
+1. **I-75 is closed.** With block offsets the bond's FP8 column has no detectable bias at any
+   path count: significance at most 0.97, 1.9 and 2.3 (e4m3) and 0.75, 1.3 and 2.8 (e5m2) at
+   1,024, 4,096 and 16,384 paths, its bias at most 4 on values near 1e6, a hundredth (1,024
+   paths) to a thirtieth (16,384) of the column's Monte Carlo standard error; without them 370
+   to 1,700 (e4m3) and 300,000 to 10 million (e5m2) of its standard errors.
+   The test passes, and its half without offsets fails as it must.
+2. **The block layout stays `"block"`**: in every comparison of every campaign its worst
+   relative error is at most the layout's without, and for a concentrated class much smaller.
+   The simulation stage's arrays (shocks, states) straddle zero and are stored alike,
+   bit for bit.
+3. **The rounding stays `"nearest"`**: stochastic rounding has the smaller worst relative error
+   in 8 of 36 comparisons of the `linear` campaign (FP8 cube storage at 16,384 paths among
+   them), not in all; and in market risk (below).
+4. **The paired estimator's standard errors.** Its precision interval covers 0.950 (pricing),
+   0.934 to 0.946 (simulation, market) of the checks, nominal 0.95, every case at least 0.91,
+   so threshold 4 passes. But the standardized errors' root mean square is 1.00 to 1.01 for
+   storage of the cube and 1.5 to 3.0 for storage of the shocks, states and curves: there the
+   correction's standard error is too small in a heavy tail, the ENE of an option, non-zero on
+   few paths (single checks at 17 to 29 standard errors). Its total interval covers 0.99 to 1.0
+   with a root mean square of 0.30 to 0.40: on Sobol paths a figure's Monte Carlo error is about
+   a third of what the independent-paths formula states. Both are recorded on I-55.
+5. **No recompiles**: every case, in every campaign, compiles nothing after its first seed.
+
+The relative error, worst over every figure and date of the `linear` campaign, the root mean
+square precision error in units of the figure's statistical error (nearest rounding; the
+summary has every case, rounding and paired run):
+
+| Stage, storage | 1,024 | 4,096 | 16,384 | Worst figure at 16,384 | Bias significance at 16,384 |
+|---|---|---|---|---|---|
+| `simulation:float32` | 9.8e-06 | 2.7e-05 | 5.8e-05 | trades/swap-payer/PFE_95 | 4.1 |
+| `simulation:float16` | 0.063 | 0.16 | 0.41 | trades/swap-payer/PFE_95 | 2.8 |
+| `simulation:bfloat16` | 0.63 | 1.1 | 2.1 | trades/bond/NPV | 3.2 |
+| `simulation:float8_e4m3fn` | 5.9 | 15 | 45 | trades/european-payer/PFE_95 | 103 |
+| `simulation:float8_e5m2` | 11 | 37 | 130 | trades/swap-payer/EPE | 301 |
+| `market:float32` | 0.00024 | 0.0003 | 0.0016 | trades/bond/EPE | 4.1 |
+| `market:float16`, block / none | 0.33 / 1.4 | 0.54 / 2.9 | 1.2 / 6.7 | trades/swap-payer/PFE_95 | 2.7 / 115 |
+| `market:bfloat16`, block / none | 0.98 / 39 | 1.5 / 154 | 2.9 / 1,380 | trades/swap-payer/NPV | 10 / 588 |
+| `market:float8_e4m3fn`, block / none | 9.8 / 2,140 | 64 / 9,670 | 215 / 52,700 | trades/swap-payer/EPE | 117 / 7,550 |
+| `market:float8_e5m2`, block / none | 50 / 2,420 | 153 / 16,700 | 569 / 95,600 | trades/swap-receiver-seasoned-icma/NPV | 572 / 16,300 |
+| `pricing:float32` | 0.001 | 0.0041 | 0.011 | trades/bond/NPV | 3.2 |
+| `pricing:float16`, block / none | 0.042 / 11 | 0.076 / 37 | 0.21 / 98 | netting_set/PFE_95 | 3.0 / 186 |
+| `pricing:bfloat16`, block / none | 0.35 / 1,570 | 0.62 / 9,190 | 2.9 / 53,300 | netting_set/EE_B | 3.8 / 2,160 |
+| `pricing:float8_e4m3fn`, block / none | 7.3 / 60,300 | 16 / 354,000 | 83 / 2,060,000 | trades/european-payer/EPE | 162 / 26,600 |
+| `pricing:float8_e5m2`, block / none | 19 / 73,800 | 56 / 435,000 | 330 / 2,530,000 | trades/european-payer/EPE | 192 / 10,100,000 |
+| `throughout:float32` | 0.003 | 0.014 | 0.069 | trades/bond/NPV | 158 |
+
+Reading it:
+
+- **Block offsets remove I-75's mechanism wherever it acts**: the cube (bond) and the curves,
+  by factors of 100 to 30,000. What remains in FP8 is the format itself: its few bits on
+  blocks that are not concentrated (an option's values, from zero up) and on the shocks, and the
+  nonlinear figures (EPE, PFE) that turn rounding noise into a bias. These are the significant
+  biases the table shows, and the evidence table's rows for FP8.
+- **The relative error grows with the path count**, nearly as sqrt(N) or faster: on Sobol paths
+  a smooth figure's statistical error falls almost as 1/N, while rounding noise that differs
+  from path to path averages out only as 1/sqrt(N). Every format below float32 thus has a path
+  count beyond which its error passes any fixed share of the statistical error (the evidence
+  table's path ceiling, I-55); below 1% (the P6.2 rule), only float32 storage and compute, at
+  these path counts.
+- **float16 cube storage** stays below a fifth of the statistical error to 16,384 paths, and
+  float16 curves near one; bfloat16 is three to ten times worse; FP8 is many statistical errors
+  off, but without a bias in a concentrated mean (I-75), and its cube in an eighth of float64's
+  memory plus a quarter for scales and offsets.
+- **A paired sample of an eighth of the paths raises the relative error** of smooth figures here
+  (FP8 cube: 17, 31 and 119 against 7.3, 16 and 83): it removes the bias of a mean, but adds the
+  correction's variance, and on Sobol paths the statistical error it is measured against is
+  small. It pays where a bias dominates, which block offsets have removed for concentrated
+  columns.
+- **Figures float64 holds fixed** (a netting set's ENE where every path is in the money, an
+  EEE_B or EEPE_B at its t=0 value) are moved by at most 3.9e-5 of their scale in any case with
+  offsets; they have no statistical error to measure a rule against, so the evidence table needs
+  an absolute rule for them (I-55).
+
+**Options** (`options`, 256 paths, 8 seeds; the Bermudan/American kernel moves with I-32 and
+I-49, and these rows are measured again after them). An option's cube column reaches zero, so
+its blocks keep offset 0 and both layouts store it alike up to the noise (FP8 cube storage 5.0
+with offsets, 5.4 without; float16 0.047 and 0.045); the curves gain as in `linear` (FP8 e4m3
+market 4.2 against 72, e5m2 18 against 126). float16 is below a twentieth of the statistical
+error in every stage but the shocks (0.13); FP8 is 3.6 to 18 statistical errors off, the
+largest on the Bermudans' EPE and EE_B. Stochastic rounding is worse in all three stages.
+
+**Market risk** (`market_risk`, 2,048 and 8,192 scenarios, 16 seeds). VaR and ES at 8,192
+scenarios, worst relative error, nearest rounding: shifts stored in float16 0.028, bfloat16
+0.12, FP8 e4m3 0.55, e5m2 0.91; P&L stored in float16 0.096, bfloat16 0.18, FP8 e4m3 1.95,
+e5m2 5.4 (§15.3's one-portfolio measurement, FP8 e4m3 P&L 1.8 times the seed spread, agrees).
+Stochastic rounding is worse for VaR and ES in 12 of 16 comparisons, its added variance
+widening the tail. P&L attribution against float64, worst over the seeds: Spearman 1.000000 and
+Kolmogorov–Smirnov 0.00098 for float16 P&L, 0.9924 and 0.0081 for FP8 e4m3, 0.9706 and 0.0166
+for e5m2; the evidence table judges them against MAR32's thresholds as transcribed (A-11). The P&L's
+mean is where a format's error is largest in units of its statistical error, being the
+smallest of these errors on Sobol scenarios.
+
 ## 16. Decisions this document implements
 
 Recorded in [compliance/decisions.md](../../../compliance/decisions.md), 2026-10-01.
@@ -1267,5 +1489,6 @@ Recorded in [compliance/decisions.md](../../../compliance/decisions.md), 2026-10
 | A-22 (2026-10-06) | A matrix product's precision is its compute format's, stated by the product (`engine.precision.matmul`, §6.7), never a process-wide default (the stated product precision (2026-10-06)) |
 
 Engineering defaults, changeable without a decision: block size 32 along the scenario axis;
-the rounding default chosen by the storage harness (I-75); `paired_fraction` 0 by default, 0.02 suggested for
-reduced-precision runs; the evidence table's location.
+the block layout (`offset="block"`) and the rounding (`"nearest"`), both chosen by the storage
+harness (2026-10-09, §15.4); `paired_fraction` 0 by default, 0.02 suggested for reduced-precision
+runs; the evidence table's location.

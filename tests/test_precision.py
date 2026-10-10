@@ -19,13 +19,16 @@ the pipeline built on them, the pricing stage per product and per trade, and sto
   * Storage below 32 bits (1.6, §6.2, §13.4): block scales along the scenario axis, nearest
     and stochastic rounding, checked against ml_dtypes' correctly rounded conversion; every
     stage stored in every scaled format, on the sloped shared market, under strict promotion;
-    each kernel compiled once per shape.
+    each kernel compiled once per shape. Block offsets (I-75, 2026-10-09): a concentrated block
+    stores its entries' deviations from its midpoint, so it keeps its spread without a bias,
+    every entry keeps its sign, and the error bound is never worse than without.
 """
 import dataclasses
 import pathlib
 import pickle
 import types
 import typing
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -39,8 +42,8 @@ from engine.calibration.ore_lgm import SIGMA_BRACKET, bootstrap_sigma, ceiling_t
 from engine.market_data.curves import ZeroCurve
 from engine.market_simulation.config import build_cross_asset_model, simulate
 from engine.precision import (
-    BLOCK, FORMAT_NAMES, FORMATS, OVERRIDES, RETIRED_SHAPE, ROUNDINGS, STAGES, Overrides, Precision, StagePrecision,
-    Stored, dtype_of, format_of, load, name_of, rounding_key, store,
+    BLOCK, FORMAT_NAMES, FORMATS, OFFSETS, OVERRIDES, RETIRED_SHAPE, ROUNDINGS, STAGES, Overrides, Precision,
+    StagePrecision, Stored, dtype_of, format_of, load, name_of, rounding_key, store,
 )
 from engine.precision import storage as storage_module
 from engine.pricing.bermudan import calibration_basket
@@ -174,6 +177,36 @@ class TestPolicy:
     ])
     def test_stochastic_rounding_is_accepted_with_any_scaled_storage(self, fields):
         assert Precision(rounding="stochastic", **fields).rounding == "stochastic"
+        assert Precision(offset="none", **fields).offset == "none"
+
+    def test_the_block_layout_defaults_to_an_offset_per_block(self):
+        """Chosen by the storage harness (I-75, precision.md §15.4)."""
+        assert Precision().offset == "block" and OFFSETS == ("block", "none")
+
+    @pytest.mark.parametrize("fields, message", [
+        ({"offset": "mean"}, r"Precision\.offset='mean': the block layouts are \['block', 'none'\]"),
+        ({"offset": None, "pricing": StagePrecision("float16")}, r"Precision\.offset=None"),
+        ({"offset": "none"}, r"offset='none'.*no stage or override stores in one"),
+        ({"offset": "none", "pricing": STORED32}, r"no stage or override stores in one"),
+    ])
+    def test_a_block_layout_that_cannot_apply_is_refused(self, fields, message):
+        """`offset="none"` with nothing stored in a scaled format would be accepted and then
+        ignored, as stochastic rounding would."""
+        with pytest.raises(ValueError, match=message):
+            Precision(**fields)
+
+    @pytest.mark.parametrize("offset", OFFSETS)
+    @pytest.mark.parametrize("rounding", ROUNDINGS)
+    def test_the_policy_stores_in_its_block_layout(self, offset, rounding):
+        """`Precision.store`, the pipeline's one way to store, lays out a scaled format by the
+        policy's `offset` (read from the stored arrays) and leaves a plain format a plain array."""
+        policy = Precision(pricing=StagePrecision("float8_e4m3fn"), rounding=rounding, offset=offset)
+        x = jnp.asarray(np.random.default_rng(0).standard_normal((40, 2)))
+        stored = policy.store(x, "float8_e4m3fn", "values/t")
+        assert isinstance(stored, Stored) and stored.offset == offset
+        key = rounding_key(0, "values/t") if rounding == "stochastic" else None
+        _assert_same_bits(stored, store(x, "float8_e4m3fn", rounding, key, offset=offset))
+        assert not isinstance(policy.store(x, "float32", "values/t"), Stored)
 
     def test_the_retired_names_are_gone(self):
         import engine.run
@@ -231,9 +264,39 @@ def _wide_range(rng, shape):
     return rng.standard_normal(shape) * np.logspace(-6, 6, shape[-1])
 
 
+def _per_entry(stored, blocks):
+    """A per-block array of `stored` (its scales or offsets) repeated over each block's entries."""
+    blocks = np.asarray(blocks, np.float64)
+    return np.repeat(blocks, BLOCK, axis=stored.axis).take(range(stored.shape[stored.axis]), axis=stored.axis)
+
+
 def _per_entry_scales(stored):
-    scales = np.asarray(stored.scales, np.float64)
-    return np.repeat(scales, BLOCK, axis=stored.axis).take(range(stored.shape[stored.axis]), axis=stored.axis)
+    return _per_entry(stored, stored.scales)
+
+
+def _per_entry_offsets(stored):
+    """Each entry's block offset, 0 without offsets."""
+    return np.zeros(stored.shape) if stored.offsets is None else _per_entry(stored, stored.offsets)
+
+
+def _offsets_of(blocks):
+    """The offsets `store` gives blocks `[nb, BLOCK, ...]` (NaN and infinities ignored): a
+    concentrated block's midpoint (one sign, the farthest from zero at most three times the
+    nearest), rounded to float32; else 0."""
+    blocks = np.asarray(blocks, np.float64)
+    finite = np.where(np.isfinite(blocks), blocks, np.nan)
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # an all-NaN block
+        top, bottom = np.nanmax(finite, axis=1), np.nanmin(finite, axis=1)
+    concentrated = ((bottom > 0) & (top <= 3 * bottom)) | ((top < 0) & (bottom >= 3 * top))
+    return np.where(concentrated, 0.5 * top + 0.5 * bottom, 0.0).astype(np.float32)
+
+
+def _deviations(x, stored):
+    """What `stored` holds of `x`: its entries less their block's offset, in `x`'s dtype, as
+    `store` computes them."""
+    x = np.asarray(x)
+    return (x - _per_entry_offsets(stored).astype(x.dtype)).astype(np.float64)
 
 
 def _half_spacing(v, name):
@@ -251,57 +314,65 @@ class TestScaledStorage:
     @pytest.mark.parametrize("rounding", ROUNDINGS)
     @pytest.mark.parametrize("name", SCALED)
     def test_values_of_the_format_round_trip_exactly(self, name, rounding, dtype):
-        """Any value the format holds, in any block, comes back bit for bit, with either
-        rounding (in float32 without subnormals, which XLA's CPU flushes)."""
+        """Without offsets, any value the format holds, in any block, comes back bit for bit,
+        with either rounding (in float32 without subnormals, which XLA's CPU flushes)."""
         rng = np.random.default_rng(1)
         values = _format_values(name, 4096, rng, normal_only=dtype == jnp.float32)[:BLOCK * 40]
         x = jnp.asarray(values.reshape(-1, 4), dtype)
-        stored = store(x, name, rounding, rounding_key(0, "x"))
+        stored = store(x, name, rounding, rounding_key(0, "x"), offset="none")
         assert isinstance(stored, Stored) and stored.dtype == FORMATS[name].dtype and stored.shape == x.shape
         for at in (jnp.float64, dtype):
             np.testing.assert_array_equal(np.asarray(load(stored, at)), np.asarray(x).astype(at))
 
+    @pytest.mark.parametrize("offset", OFFSETS)
     @pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
     @pytest.mark.parametrize("name", SCALED)
-    def test_nearest_is_the_correctly_rounded_value_within_half_a_step(self, name, dtype):
-        """Equal to ml_dtypes' conversion of the scaled values, so at most half the format's
-        spacing times the block scale from the input. JAX's own float64 -> FP8 conversion
-        rounds twice (through float32) and is not used."""
+    def test_nearest_is_the_correctly_rounded_value_within_half_a_step(self, name, dtype, offset):
+        """Equal to ml_dtypes' conversion of the scaled values (the entries, or their deviations
+        from the block offset), so at most half the format's spacing times the block scale from
+        them; with offsets, loading at float64 adds the offset back with one float64 rounding.
+        JAX's own float64 -> FP8 conversion rounds twice (through float32) and is not used."""
         rng = np.random.default_rng(2)
         x = jnp.asarray(_wide_range(rng, (300, 9)), dtype)
-        stored = store(x, name)
-        exact = np.asarray(x, np.float64)
-        scales = _per_entry_scales(stored)
-        reference = (exact / scales).astype(FORMATS[name].dtype).astype(np.float64) * scales
+        stored = store(x, name, offset=offset)
+        scales, offsets, deviations = _per_entry_scales(stored), _per_entry_offsets(stored), _deviations(x, stored)
+        with np.errstate(over="ignore"):  # ml_dtypes warns at float16's largest finite value
+            reference = (deviations / scales).astype(FORMATS[name].dtype).astype(np.float64) * scales + offsets
         loaded = np.asarray(load(stored, jnp.float64))
         np.testing.assert_array_equal(loaded, reference)
-        assert np.all(np.abs(loaded - exact) <= _half_spacing(exact / scales, name) * scales)
+        exact = np.asarray(x, np.float64)
+        subtraction = np.abs(exact - (deviations + offsets))  # the deviation's rounding in x's dtype
+        bound = _half_spacing(deviations / scales, name) * scales + subtraction + 2.0 ** -52 * np.abs(exact)
+        assert np.all(np.abs(loaded - exact) <= bound)
 
+    @pytest.mark.parametrize("offset", OFFSETS)
     @pytest.mark.parametrize("name", SCALED)
-    def test_each_scale_brings_its_blocks_largest_magnitude_to_the_formats_maximum(self, name):
+    def test_each_scale_brings_its_blocks_largest_magnitude_to_the_formats_maximum(self, name, offset):
         """A float32 power of two per block of `BLOCK` paths, the largest possible: the block's
-        largest magnitude lands in (max / 2, max], unless the scale is at its bound (a normal
-        float32: bfloat16's range is float32's). No block overflows, however wide the range of
-        the whole array."""
+        largest magnitude (of its entries, or of their deviations from the block offset) lands
+        in (max / 2, max], unless the scale is at its bound (a normal float32: bfloat16's range
+        is float32's). No block overflows, however wide the range of the whole array."""
         fmt, rng = FORMATS[name], np.random.default_rng(3)
         x = _wide_range(rng, (BLOCK * 5 + 7, 6))
-        stored = store(jnp.asarray(x), name)
+        stored = store(jnp.asarray(x), name, offset=offset)
         scales = np.asarray(stored.scales)
         assert stored.scales.dtype == jnp.float32 and scales.shape == (6, 6)  # ceil(167 / 32) blocks
         assert np.all(np.frexp(scales)[0] == 0.5)
-        padded = np.concatenate([np.abs(x), np.zeros((-x.shape[0] % BLOCK, 6))]).reshape(-1, BLOCK, 6)
+        held = np.abs(_deviations(x, stored))
+        padded = np.concatenate([held, np.zeros((-x.shape[0] % BLOCK, 6))]).reshape(-1, BLOCK, 6)
         top = padded.max(axis=1) / scales.astype(np.float64)
         assert np.all(top <= fmt.max) and np.all((top > fmt.max / 2) | (scales == 2.0 ** -126))
         assert np.all(np.isfinite(np.asarray(load(stored, jnp.float64))))
 
     @pytest.mark.parametrize("name", SCALED)
     def test_stochastic_rounding_is_unbiased_where_nearest_is_not(self, name):
-        """The same value on every path: nearest moves all of them the same way (a bias);
-        stochastic rounding moves each to one of its two neighbours, the mean within three
-        standard errors of the value."""
+        """The same value on every path, stored without offsets: nearest moves all of them the
+        same way (a bias); stochastic rounding moves each to one of its two neighbours, the
+        mean within three standard errors of the value. (With offsets a constant block is held
+        to float32's precision of it: `TestBlockOffsets`.)"""
         x = jnp.full((BLOCK * 2048,), 1.1)
-        nearest = np.asarray(load(store(x, name), jnp.float64))
-        draws = np.asarray(load(store(x, name, "stochastic", rounding_key(4, "x")), jnp.float64))
+        nearest = np.asarray(load(store(x, name, offset="none"), jnp.float64))
+        draws = np.asarray(load(store(x, name, "stochastic", rounding_key(4, "x"), offset="none"), jnp.float64))
         assert np.ptp(nearest) == 0 and nearest[0] != 1.1
         neighbours = np.unique(draws)
         assert len(neighbours) == 2 and neighbours[0] < 1.1 < neighbours[1]
@@ -309,14 +380,16 @@ class TestScaledStorage:
         assert abs(error.mean()) < 3 * error.std() / np.sqrt(error.size)
         assert abs(nearest[0] - 1.1) > 10 * error.std() / np.sqrt(error.size)
 
+    @pytest.mark.parametrize("offset", OFFSETS)
     @pytest.mark.parametrize("name", SCALED)
-    def test_stochastic_rounding_errors_average_out_on_varied_values(self, name):
+    def test_stochastic_rounding_errors_average_out_on_varied_values(self, name, offset):
         rng = np.random.default_rng(5)
         x = jnp.asarray(rng.standard_normal((BLOCK * 512, 4)))
-        stored = store(x, name, "stochastic", rounding_key(5, "x"))
+        stored = store(x, name, "stochastic", rounding_key(5, "x"), offset=offset)
         error = np.asarray(load(stored, jnp.float64)) - np.asarray(x)
-        scales = _per_entry_scales(stored)
-        assert np.all(np.abs(error) < 2 * _half_spacing(np.asarray(x) / scales, name) * scales)  # a neighbour
+        scales, held = _per_entry_scales(stored), _deviations(x, stored)
+        neighbour = 2 * _half_spacing(held / scales, name) * scales * (1 + 2.0 ** -40)
+        assert np.all(np.abs(error) < neighbour)
         assert np.all(np.abs(error.mean(axis=0)) < 3 * error.std(axis=0) / np.sqrt(error.shape[0]))
 
     def test_stochastic_rounding_repeats_for_its_key_and_differs_for_another(self):
@@ -327,54 +400,70 @@ class TestScaledStorage:
             other = store(x, "float8_e4m3fn", "stochastic", key)
             assert not np.array_equal(np.asarray(other.values, np.float32), np.asarray(a.values, np.float32))
 
+    @pytest.mark.parametrize("offset", OFFSETS)
     @pytest.mark.parametrize("name", SCALED)
-    def test_zeros_and_nan_pass_through_and_infinities_where_the_format_has_them(self, name):
+    def test_zeros_and_nan_pass_through_and_infinities_where_the_format_has_them(self, name, offset):
+        """Zeros (signed), NaN, and infinities where the format has them, pass through with
+        either layout: non-finite entries count towards no block's scale or offset, and a block
+        holding a zero keeps an offset of 0."""
         x = jnp.asarray([0.0, -0.0, np.nan, np.inf, -np.inf, 1.0, -3.0])
         for rounding in ROUNDINGS:
-            loaded = np.asarray(load(store(x, name, rounding, rounding_key(0, "x")), jnp.float64))
-            assert loaded[0] == 0.0 and np.signbit(loaded[1]) and np.isnan(loaded[2])
+            loaded = np.asarray(load(store(x, name, rounding, rounding_key(0, "x"), offset=offset), jnp.float64))
+            assert np.isnan(loaded[2])
             if name == "float8_e4m3fn":  # no infinities in the format
                 assert np.all(np.isnan(loaded[3:5]))
             else:
                 assert loaded[3] == np.inf and loaded[4] == -np.inf
             np.testing.assert_array_equal(loaded[5:], [1.0, -3.0])
+            assert loaded[0] == 0.0 and np.signbit(loaded[1])
 
-    def test_an_all_zero_block_stays_zero(self):
-        stored = store(jnp.zeros((BLOCK + 3, 2)), "float8_e5m2")
+    @pytest.mark.parametrize("offset", OFFSETS)
+    def test_an_all_zero_block_stays_zero(self, offset):
+        stored = store(jnp.zeros((BLOCK + 3, 2)), "float8_e5m2", offset=offset)
         np.testing.assert_array_equal(np.asarray(load(stored, jnp.float64)), np.zeros((BLOCK + 3, 2)))
 
+    @pytest.mark.parametrize("offset", OFFSETS)
     @pytest.mark.parametrize("shape, axis", [((5,), 0), ((BLOCK + 1, 3), 0), ((4, 70, 2), 1), ((3, 2, 33), -1)])
-    def test_any_scenario_count_and_axis_short_last_block(self, shape, axis):
+    def test_any_scenario_count_and_axis_short_last_block(self, shape, axis, offset):
         """Blocks run along `axis` (the shocks' scenario axis is 1); a count not divisible by
-        `BLOCK` ends in a short block."""
+        `BLOCK` ends in a short block, whose scale and offset are its own entries' (the
+        padding counts towards neither)."""
         x = jnp.asarray(np.random.default_rng(7).standard_normal(shape))
-        stored = store(x, "float16", axis=axis)
+        stored = store(x, "float16", axis=axis, offset=offset)
         expected = list(shape)
         expected[axis] = -(-shape[axis] // BLOCK)
         assert stored.shape == shape and stored.scales.shape == tuple(expected) and stored.axis == axis % len(shape)
-        loaded = np.asarray(load(stored, jnp.float64))
-        np.testing.assert_allclose(loaded, np.asarray(x), rtol=2.0 ** -11, atol=0)
+        assert stored.offset == offset and (stored.offsets is None or stored.offsets.shape == tuple(expected))
+        held = np.asarray(load(stored, jnp.float64)) - _per_entry_offsets(stored)
+        np.testing.assert_allclose(held, _deviations(x, stored), rtol=2.0 ** -11, atol=0)
+        if offset == "block":
+            front = np.moveaxis(np.asarray(x), axis, 0)
+            last = front[(expected[axis] - 1) * BLOCK:][None]
+            np.testing.assert_array_equal(np.moveaxis(np.asarray(stored.offsets), axis, 0)[-1:], _offsets_of(last))
 
-    def test_blocks_are_independent_along_the_scenario_axis_only(self):
-        """A block's scale depends on its own 32 paths: changing another block's paths, or the
-        same paths on another date, changes nothing else."""
+    @pytest.mark.parametrize("offset", OFFSETS)
+    def test_blocks_are_independent_along_the_scenario_axis_only(self, offset):
+        """A block's scale and offset depend on its own 32 paths: changing another block's
+        paths, or the same paths on another date, changes nothing else."""
         rng = np.random.default_rng(8)
         x = rng.standard_normal((BLOCK * 3, 2))
         y = x.copy()
-        y[BLOCK:2 * BLOCK, 1] *= 1000.0
-        a, b = (np.asarray(load(store(jnp.asarray(v), "float8_e4m3fn"), jnp.float64)) for v in (x, y))
+        y[BLOCK:2 * BLOCK, 1] = 1000.0 * y[BLOCK:2 * BLOCK, 1] + 5000.0
+        a, b = (np.asarray(load(store(jnp.asarray(v), "float8_e4m3fn", offset=offset), jnp.float64)) for v in (x, y))
         mask = np.ones_like(x, bool)
         mask[BLOCK:2 * BLOCK, 1] = False
         np.testing.assert_array_equal(a[mask], b[mask])
 
-    def test_fp8_holds_an_eighth_of_float64_plus_the_scales(self):
-        stored = store(jnp.ones((BLOCK * 32, 10)), "float8_e4m3fn")
-        assert stored.values.nbytes == BLOCK * 32 * 10 and stored.nbytes == BLOCK * 32 * 10 * (1 + 4 / BLOCK)
+    @pytest.mark.parametrize("offset, per_block", [("none", 4), ("block", 8)])
+    def test_fp8_holds_an_eighth_of_float64_plus_the_scales_and_offsets(self, offset, per_block):
+        stored = store(jnp.ones((BLOCK * 32, 10)), "float8_e4m3fn", offset=offset)
+        assert stored.values.nbytes == BLOCK * 32 * 10 and stored.nbytes == BLOCK * 32 * 10 * (1 + per_block / BLOCK)
 
-    def test_it_is_a_pytree_and_loads_inside_jit(self):
-        stored = store(jnp.linspace(-1.0, 1.0, 64), "bfloat16")
+    @pytest.mark.parametrize("offset, arrays", [("none", 2), ("block", 3)])
+    def test_it_is_a_pytree_and_loads_inside_jit(self, offset, arrays):
+        stored = store(jnp.linspace(-1.0, 1.0, 64), "bfloat16", offset=offset)
         leaves, tree = jax.tree_util.tree_flatten(stored)
-        assert len(leaves) == 2
+        assert len(leaves) == arrays
         _assert_same_bits(jax.tree_util.tree_unflatten(tree, leaves), stored)
         np.testing.assert_array_equal(np.asarray(jax.jit(lambda s: load(s, jnp.float64))(stored)),
                                       np.asarray(load(stored, jnp.float64)))
@@ -382,6 +471,7 @@ class TestScaledStorage:
     @pytest.mark.parametrize("call, message", [
         (lambda: store(jnp.ones(3), "float16", "up"), r"rounding 'up': the roundings are"),
         (lambda: store(jnp.ones(3), "float16", "stochastic"), r"stochastic rounding needs a key"),
+        (lambda: store(jnp.ones(3), "float16", offset="mean"), r"offset 'mean': the block layouts are"),
         (lambda: store(jnp.float64(1.0), "float16"), r"needs a scenario axis"),
     ])
     def test_misuse_is_refused(self, call, message):
@@ -399,6 +489,103 @@ class TestScaledStorage:
             load(store(x, "float16", "stochastic", rounding_key(i, "y")), jnp.float64)
         assert storage_module._quantize._cache_size() == quantize
         assert storage_module._dequantize._cache_size() == dequantize
+
+
+class TestBlockOffsets:
+    """The block offset (I-75): a concentrated block of a scaled format (one sign, the farthest
+    entry from zero at most three times the nearest) stores its entries' deviations from its
+    midpoint, rounded to float32, so the format's bits go to the block's spread, rounding errors
+    cancel, and every entry keeps its sign. No market, trade or ORE."""
+
+    @staticmethod
+    def _concentrated(rows=BLOCK * 64):
+        """A bond's cube in miniature: three dates near 1e6, with a path spread near 1e4."""
+        return 1e6 + 1e4 * np.random.default_rng(10).standard_normal((rows, 3))
+
+    @pytest.mark.parametrize("name", SCALED)
+    def test_a_concentrated_column_keeps_its_spread_and_loses_its_bias(self, name):
+        """Without offsets the format's bits go to the level: every path of a block rounds the
+        same way, and in FP8 the column's mean moves by many of its own standard errors (I-75).
+        With them the largest error falls by about the ratio of the level to a block's range
+        (more than 8 times here), and the mean error is noise, within four of its standard
+        errors of zero."""
+        x = self._concentrated()
+        error = {o: np.asarray(load(store(jnp.asarray(x), name, offset=o), jnp.float64)) - x for o in OFFSETS}
+        standard_error = {o: e.std(axis=0) / np.sqrt(e.shape[0]) for o, e in error.items()}
+        assert np.max(np.abs(error["block"])) < np.max(np.abs(error["none"])) / 8
+        assert np.all(np.abs(error["block"].mean(axis=0)) < 4 * standard_error["block"])
+        if FORMATS[name].bits == 8:
+            assert np.any(np.abs(error["none"].mean(axis=0)) > 10 * standard_error["none"])
+
+    @pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
+    def test_the_offset_is_a_concentrated_blocks_midpoint_in_float32(self, dtype):
+        """NaN and infinities count towards no block's offset; a block of both signs, holding a
+        zero, reaching nearer zero than half its range, or without a finite entry has offset 0."""
+        x = self._concentrated(BLOCK * 3)
+        x[5, 0], x[40, 1], x[BLOCK * 2:, 2] = np.nan, np.inf, np.nan
+        x[:BLOCK, 1] *= -1.0                                      # concentrated, negative
+        x[:BLOCK, 2] = np.linspace(1.0, 1e6, BLOCK)               # one sign, not concentrated
+        x[BLOCK:BLOCK * 2, 2] -= 1e6                              # both signs
+        x[BLOCK * 2 + 3, 0] = 0.0                                 # a zero
+        stored = store(jnp.asarray(x, dtype), "float8_e5m2")
+        expected = _offsets_of(np.asarray(jnp.asarray(x, dtype), np.float64).reshape(3, BLOCK, 3))
+        assert np.count_nonzero(expected) == 5
+        assert stored.offsets.dtype == jnp.float32
+        np.testing.assert_array_equal(np.asarray(stored.offsets), expected)
+
+    @pytest.mark.parametrize("name", SCALED)
+    def test_the_error_bound_is_never_worse_than_without(self, name):
+        """The largest deviation from a midpoint, half a block's range, is no larger than its
+        largest entry, so each block's scale, and with it the format's step, is never coarser
+        than without an offset: on blocks of either sign, mixed signs and widely different
+        sizes."""
+        rng = np.random.default_rng(11)
+        x = _wide_range(rng, (BLOCK * 6, 9)) + np.logspace(-6, 6, 9) * rng.choice([-3.0, 0.0, 3.0], (BLOCK * 6, 9))
+        with_offset, without = (store(jnp.asarray(x), name, offset=o) for o in OFFSETS)
+        assert np.all(np.asarray(with_offset.scales) <= np.asarray(without.scales))
+        bound = _half_spacing(np.asarray(x) / _per_entry_scales(without), name) * _per_entry_scales(without)
+        error = np.abs(np.asarray(load(with_offset, jnp.float64)) - x)
+        assert np.all(error <= np.max((bound * (1 + 2.0 ** -40)).reshape(6, BLOCK, 9), axis=1).repeat(BLOCK, axis=0))
+
+    @pytest.mark.parametrize("name", SCALED)
+    def test_a_constant_block_is_held_to_float32s_precision_of_it(self, name):
+        """A block of one value (an exercised option's, a matured trade's): exact where the
+        value is a float32 number, else within float32's rounding of it, whatever the format."""
+        values = np.repeat([[1e6 + 0.25, 3.0], [1.1, -7e5 / 3]], BLOCK, axis=0)
+        loaded = np.asarray(load(store(jnp.asarray(values), name), jnp.float64))
+        np.testing.assert_array_equal(loaded[:BLOCK, 1], 3.0)
+        np.testing.assert_array_equal(loaded[:BLOCK, 0], 1e6 + 0.25)
+        assert np.all(np.abs(loaded - values) <= 2.0 ** -24 * np.abs(values))
+
+    @pytest.mark.parametrize("rounding", ROUNDINGS)
+    @pytest.mark.parametrize("name", SCALED)
+    def test_every_entry_keeps_its_sign(self, name, rounding):
+        """A deep out-of-the-money option's path values beside its money paths (a block reaching
+        near zero, offset 0), and concentrated blocks at the rule's edge, the farthest entry three
+        times the nearest: every entry loads with its sign (an option's ENE stays 0), in the
+        coarsest format and stochastically too."""
+        rng = np.random.default_rng(12)
+        x = np.abs(rng.standard_normal((BLOCK * 16, 2))) * np.array([1e5, 1.0]) + np.array([1e-3, 1e-5])
+        x[::7] *= 1e-6
+        edge = 1.0 + 2.0 * rng.random((BLOCK * 16, 1))
+        edge[::BLOCK], edge[1::BLOCK] = 1.0, 3.0
+        x = np.concatenate([x, edge], axis=1)
+        assert np.count_nonzero(np.asarray(store(jnp.asarray(x), name).offsets)[:, 2]) == 16
+        for sign in (1.0, -1.0):
+            loaded = np.asarray(load(store(jnp.asarray(sign * x), name, rounding, rounding_key(1, "x")), jnp.float64))
+            assert np.all(sign * loaded >= 0)          # an entry far below its block's largest may underflow to 0
+            assert np.all(sign * loaded[:, 2] > 0)     # as without offsets; a concentrated block's never does
+
+    @pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
+    @pytest.mark.parametrize("rounding", ROUNDINGS)
+    def test_it_never_mixes_dtypes(self, dtype, rounding):
+        """Under strict promotion: the offset is subtracted in the input's dtype and added back
+        in the loaded one."""
+        x = jnp.asarray(self._concentrated(BLOCK * 2), dtype)
+        with jax.numpy_dtype_promotion("strict"):
+            stored = store(x, "float8_e4m3fn", rounding, rounding_key(0, "x"))
+            for at in (jnp.float64, jnp.float32):
+                assert load(stored, at).dtype == at
 
 
 # ---------------------------------------------------------------------------
@@ -460,9 +647,11 @@ def _grid_dtypes(scenarios):
 
 
 def _bits(stored):
-    """A stored array's content, comparable bit for bit: its values (and scales, if scaled)."""
+    """A stored array's content, comparable bit for bit: its values (and scales and offsets, if
+    scaled)."""
     if isinstance(stored, Stored):
-        return stored.format, stored.axis, np.asarray(stored.values), np.asarray(stored.scales)
+        return (stored.format, stored.axis, stored.offset, np.asarray(stored.values), np.asarray(stored.scales),
+                np.asarray(stored.offsets) if stored.offsets is not None else None)
     return np.asarray(stored)
 
 
@@ -813,17 +1002,21 @@ class TestScaledStoragePipeline:
     """Every adjustable stage stored in float16, bfloat16 and FP8 (cast points 1 to 4)."""
 
     @pytest.mark.parametrize("name", SCALED)
-    def test_every_stage_stores_in_the_format(self, name):
+    @pytest.mark.parametrize("offset", OFFSETS)
+    def test_every_stage_stores_in_the_format(self, name, offset):
         """Read from the arrays: the market's path arrays and the cube columns are `Stored` in
-        the format; the tenor grid stays at the market compute; the cube loads at float64."""
+        the format and the policy's block layout; the tenor grid stays at the market compute;
+        the cube loads at float64."""
         stage = StagePrecision(name, "float32", "float32")
-        policy = Precision(simulation=stage, market=stage, pricing=stage)
+        policy = Precision(simulation=stage, market=stage, pricing=stage, offset=offset)
         trades = [shared.trades()[n] for n in _CHEAP_TRADES]
         scenarios = simulate(shared.market(), _simulation(), precision=policy)
-        assert all(isinstance(a, Stored) and a.dtype == stage.storage_dtype for a in _path_arrays(scenarios))
+        assert all(isinstance(a, Stored) and a.dtype == stage.storage_dtype and a.offset == offset
+                   for a in _path_arrays(scenarios))
         assert _grid_dtypes(scenarios) == {jnp.dtype(jnp.float32)}
         valuation = value_portfolio(trades, shared.market(), scenarios, "USD", precision=policy)
-        assert all(isinstance(c, Stored) and c.dtype == stage.storage_dtype for c in valuation.columns)
+        assert all(isinstance(c, Stored) and c.dtype == stage.storage_dtype and c.offset == offset
+                   for c in valuation.columns)
         assert valuation.cube.dtype == jnp.float64 and np.all(np.isfinite(np.asarray(valuation.cube)))
         assert valuation.today == value_portfolio(trades, shared.market(), scenarios, "USD").today
 
@@ -875,6 +1068,20 @@ class TestScaledStoragePipeline:
             _assert_same_bits(a, b)
         assert not np.array_equal(np.asarray(first[1].cube), np.asarray(other[1].cube))
 
+    @pytest.mark.parametrize("rounding", ROUNDINGS)
+    def test_market_risk_stores_alike_in_both_layouts(self, rounding):
+        """Under zero-mean Monte Carlo shifts every block of shifts and of P&L holds both signs
+        (32 draws of one sign are a chance of 2^-31), so its offset is 0 and the block layouts
+        store them alike, bit for bit: the storage harness measures such market-risk runs in the
+        default layout alone (`tests/support/precision_campaigns.py`)."""
+        scenarios = TestPerTradeMarketRisk._scenarios(96)
+        trades = [mr.swap(), mr.european(), mr.bond()]
+        fp8 = StagePrecision("float8_e4m3fn")
+        runs = {o: run_market_risk(MarketRiskRequest(trades, mr.market(), scenarios, mr.PRICING, precision=Precision(
+            simulation=fp8, pricing=fp8, rounding=rounding, offset=o))) for o in OFFSETS}
+        np.testing.assert_array_equal(np.asarray(runs["block"].pnl), np.asarray(runs["none"].pnl))
+        np.testing.assert_equal(runs["block"].risk, runs["none"].risk)  # NaN where a tail is empty
+
     @pytest.mark.parametrize("name", SCALED)
     def test_market_risk_pnl_is_stored_in_the_format_and_a_zero_shift_is_zero(self, name):
         """The shifts and each P&L stored scaled; the P&L within a step of the float64 P&L
@@ -903,8 +1110,9 @@ class TestScaledStoragePipeline:
 #: The slow sanity bounds of scaled storage (nearest) on the shared portfolio, per format and
 #: stage: the largest cube error per unit notional, and the largest bias (the mean over 256
 #: paths) per unit notional; about four times the values measured on 2026-10-02 (precision.md
-#: §15.3). Regression guards, not acceptance (that is I-55's evidence table). The largest errors are exercise
-#: decisions that flip on a path (a cash Bermudan worth 0 or 1.7% of its notional).
+#: §15.3), without block offsets, whose step per value they never coarsen. Regression guards, not
+#: acceptance (that is the storage harness's and I-55's evidence table). The largest errors are
+#: exercise decisions that flip on a path (a cash Bermudan worth 0 or 1.7% of its notional).
 _SCALED_BOUNDS = {
     ("float16", "simulation"): (3e-4, 3e-6), ("float16", "market"): (4e-4, 1.2e-5),
     ("float16", "pricing"): (2e-3, 4e-5),
@@ -953,14 +1161,16 @@ def test_scaled_storage_on_the_sloped_shared_market_is_sane(name, stage, shared_
 @pytest.mark.slow
 @pytest.mark.parametrize("name", ["float8_e4m3fn", "float8_e5m2"])
 def test_stochastic_rounding_removes_the_bias_of_a_concentrated_fp8_cube(name, shared_float64):
-    """§15.3: a column whose paths sit close together against their level (the bond's, about
-    1e6 with a spread of 1e4) rounds the same way on every path of a block to nearest, a bias
-    that more paths do not remove; rounded stochastically, the error of its path mean is noise
-    (I-75). Measured on 2026-10-02: e4m3 6.8e-3 of notional to nearest, 2.7e-3 stochastically;
-    e5m2 3.7e-2 and 8.5e-3."""
+    """§15.3, without block offsets (the layout of before 2026-10-09): a column whose paths sit
+    close together against their level (the bond's, about 1e6 with a spread of 1e4) rounds the
+    same way on every path of a block to nearest, a bias that more paths do not remove; rounded
+    stochastically, the error of its path mean is noise (I-75). Measured on 2026-10-02: e4m3
+    6.8e-3 of notional to nearest, 2.7e-3 stochastically; e5m2 3.7e-2 and 8.5e-3. Block offsets,
+    the default since, remove the bias at its cause
+    (`tests/test_precision_harness.py::test_a_bonds_fp8_cube_column_is_unbiased_with_block_offsets`)."""
     exact, notional = shared_float64
     reference = np.asarray(exact.npv_cube)
     bias = {rounding: np.max(np.abs(np.mean(np.asarray(_shared_run(Precision(
-        pricing=StagePrecision(name), rounding=rounding)).npv_cube) - reference, axis=0)) / notional)
+        pricing=StagePrecision(name), rounding=rounding, offset="none")).npv_cube) - reference, axis=0)) / notional)
         for rounding in ROUNDINGS}
     assert bias["stochastic"] < bias["nearest"] / 2

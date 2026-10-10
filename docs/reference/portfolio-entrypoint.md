@@ -89,6 +89,7 @@ accumulate)` of format names per adjustable stage, each `"float64"` by default:
 | `by_trade` | `{trade_id: StagePrecision}`: replaces `by_product` and `pricing` for one trade. |
 | `rounding` | `"nearest"` (default) or `"stochastic"`: how values are rounded into a storage format below 32 bits. Stochastic rounding without such a format is refused. |
 | `rounding_seed` | Non-negative integer, 0 by default: the seed of the stochastic rounding. |
+| `offset` | `"block"` (default) or `"none"`: the layout of a storage format below 32 bits. With `"block"` a block of 32 paths whose values sit close together against their level (one sign, the farthest at most three times the nearest) is stored as its deviations from its midpoint, kept beside its scale (I-75, 2026-10-09); `"none"` stores the values themselves. `"none"` without such a format is refused. |
 | `paired_fraction` | In [0, 1], 0 by default: the share of paths also simulated and priced at float64 throughout (rounded up to whole blocks of 32 paths), to measure the run against float64 (2026-10-02). |
 
 `compute` is the format a stage computes in, `storage` the format its output is kept in until
@@ -100,12 +101,22 @@ accumulate in (equal to `compute` until F-07's compute formats). `compute` is `"
 
 Storage below 32 bits keeps a float32 power-of-two scale per block of 32 paths that brings the
 block's largest value to the format's maximum, so the format's range never limits the values;
-its precision does (FP8 e4m3 keeps 4 significant bits). Each value is rounded to the format's
+its precision does (FP8 e4m3 keeps 4 significant bits). With `offset="block"`, the default, a
+concentrated block, one whose values all have one sign and whose farthest from zero is at most
+three times its nearest, is stored as its deviations from its midpoint (in float32, kept beside
+the scale), so the format's bits go to the block's spread: a bond's values near 1e6 that vary by 1e4 across paths keep that variation to
+the format's precision, where without an offset FP8 kept about one bit of it and every path of
+a block rounded the same way, a bias more paths did not remove
+([I-75](../planning/known-issues.md#i-75), closed 2026-10-09). The deviations are symmetric,
+so nearest rounding moves as many values up as down; no value changes sign; the error bound is
+never worse than without an offset; and every other block (shocks, P&L, an option's values
+reaching zero) is stored exactly as without one. Each value is rounded to the format's
 nearest value, or with `rounding="stochastic"` up or down in proportion to the distance, so
 rounding errors average out over the paths instead of biasing a mean; the draws come from
 `rounding_seed` and the array's name (the trade id for a cube column), so runs reproduce. The
-scenario market's tenor grid is not stored narrower than `market.compute`. Curves stored below
-32 bits lose forward rates to cancellation ([I-75](../planning/known-issues.md#i-75)).
+scenario market's tenor grid is not stored narrower than `market.compute`. What each format
+costs in accuracy, per stage, figure and path count, is measured by the storage harness
+([details/precision.md §15.4](../planning/details/precision.md#154-the-storage-harness-2026-10-09)).
 
 A trade is priced at `Precision.precision_for(trade)`: its `by_trade` entry, else its
 product's `by_product` entry, else `pricing` (decision A-15). Each trade's cube column is

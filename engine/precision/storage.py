@@ -9,12 +9,36 @@ is a cast, and storing or loading at the dtype an array already has returns it u
 the float64 default moves no bit.
 
 **The scaled formats** (float16, bfloat16, FP8) are stored as a `Stored`: the values in the
-format and a block scale per `BLOCK` consecutive entries along the scenario axis (the axis
-the scenario sharding splits, so blocks fall inside shards; a short last block when the scenario count is
-not a multiple). Each scale is a power of two, kept as float32, that brings its block's
-largest finite magnitude as close to the format's maximum as it goes without passing it. A
-power of two scales exactly (the idea behind the OCP MX formats), so the scale adds no
-rounding of its own and loading multiplies it back exactly.
+format, a block scale per `BLOCK` consecutive entries along the scenario axis (the axis the
+scenario sharding splits, so blocks fall inside shards; a short last block when the scenario
+count is not a multiple) and, by default, a block offset beside each scale. Each scale is a
+power of two, kept as float32, that brings its block's largest finite magnitude as close to
+the format's maximum as it goes without passing it. A power of two scales exactly (the idea
+behind the OCP MX formats), so the scale adds no rounding of its own and loading multiplies it
+back exactly.
+
+**The block offset** (`offset="block"`, I-75): a block whose entries sit close together
+against their level (a bond's cube column, near 1e6 with a spread near 1e4 across paths; a
+long log discount factor) would spend the format's few mantissa bits on the level, and keep
+its spread, the part that carries risk, to about one bit; rounded to nearest every entry of
+the block then moves the same way, a bias that more paths do not remove. With an offset, a
+concentrated block, one whose finite entries all have one sign and whose farthest from zero is
+at most three times its nearest (its range at most twice its nearest magnitude), stores their
+deviations from its midpoint, the mean of its largest and smallest finite entries rounded to
+float32 and kept beside the scale. The scale is then set by the deviations, at most half the
+block's range, so the format's bits go to the spread; and the deviations lie symmetrically
+about zero, so rounding them to nearest moves as many up as down. A rounding error is at most a
+spacing of the format at the largest deviation, an eighth of the range in the coarsest format
+(e5m2), so in a concentrated block no entry changes sign: an option's value is never
+negative, a discount factor never below zero. Every other block keeps an offset of 0 and is
+stored as without one, bit for bit: one that holds zero or both signs has no level apart from
+zero (its range is at least its largest magnitude), and one that reaches nearer zero than half
+its range would gain less than a bit, at the cost of signs. The midpoint never makes the
+largest deviation larger than the largest entry, so the rounding error bound is never worse
+than without an offset, at 4 more bytes per block. The deviations are computed from the stored
+offset in the input's dtype, so the offset adds no error but that dtype's rounding, far below
+the format's step; loading adds it back with one rounding in the loaded dtype. `offset="none"`
+stores the entries themselves, the layout the OCP MX formats and the FP8 matrix units read.
 
 Rounding, in the scaled domain:
 
@@ -29,8 +53,9 @@ normal), and `x / spacing` is rounded to an integer. Every step is exact (powers
 the cast to the format at the end is too, since the result lies on the format's grid. The
 rounding is not left to the dtype conversion: XLA converts float64 to FP8 and float16 through
 float32, rounding twice. NaN passes through, and so do infinities except in `float8_e4m3fn`,
-which has none (they become NaN). Zero passes through. Magnitudes beyond float32's range
-cannot be scaled into a format and overflow, as they would stored in float32.
+which has none (they become NaN), and so do zeros, signed (a block holding one has offset 0).
+Magnitudes beyond float32's range cannot be scaled into a format and overflow, as they would
+stored in float32.
 """
 import functools
 import math
@@ -50,6 +75,10 @@ BLOCK = 32
 #: The rounding modes of the scaled formats.
 ROUNDINGS = ("nearest", "stochastic")
 
+#: The layouts of a scaled format's blocks: a float32 offset beside each block scale, the
+#: deviations from it stored (`"block"`), or none, the entries themselves stored (`"none"`).
+OFFSETS = ("block", "none")
+
 #: The range of a scale's exponent: every scale, and its inverse, a normal float32.
 _SCALE_EXPONENTS = (-126, 126)
 
@@ -57,18 +86,20 @@ _SCALE_EXPONENTS = (-126, 126)
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True, eq=False)
 class Stored:
-    """An array kept in a scaled format: `values` in the format, with the array's shape, and
+    """An array kept in a scaled format: `values` in the format, with the array's shape;
     `scales`, float32 powers of two, one per block of `BLOCK` entries along `axis` (the
-    array's shape with `axis` of length ceil(n / BLOCK)). The value of an entry is
-    `values * scales` of its block; `load` computes it. Compared by identity, as arrays have
-    no single truth value."""
+    array's shape with `axis` of length ceil(n / BLOCK)); and `offsets`, float32, one beside
+    each scale, or None (`offset="none"`). The value of an entry is
+    `values * scales + offsets` of its block; `load` computes it. Compared by identity, as
+    arrays have no single truth value."""
     values: jax.Array
     scales: jax.Array
+    offsets: Optional[jax.Array]
     format: str
     axis: int
 
     def tree_flatten(self):
-        return (self.values, self.scales), (self.format, self.axis)
+        return (self.values, self.scales, self.offsets), (self.format, self.axis)
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
@@ -84,9 +115,14 @@ class Stored:
         return self.values.dtype
 
     @property
+    def offset(self) -> str:
+        """The block layout, read from the arrays: `"block"` with offsets, else `"none"`."""
+        return "none" if self.offsets is None else "block"
+
+    @property
     def nbytes(self) -> int:
-        """Bytes held, the scales included."""
-        return self.values.nbytes + self.scales.nbytes
+        """Bytes held, the scales and offsets included."""
+        return self.values.nbytes + self.scales.nbytes + (0 if self.offsets is None else self.offsets.nbytes)
 
 
 def rounding_key(seed: int, stream: str) -> jax.Array:
@@ -97,63 +133,94 @@ def rounding_key(seed: int, stream: str) -> jax.Array:
 
 
 def store(x, name: str, rounding: str = "nearest", key: Optional[jax.Array] = None,
-          axis: int = 0) -> Union[jax.Array, Stored]:
+          axis: int = 0, offset: str = "block") -> Union[jax.Array, Stored]:
     """`x` kept in format `name`: a plain array at float64 and float32 (rounded to nearest;
-    `rounding` is for the scaled formats), else a `Stored` with block scales along `axis`, the
-    scenario axis, rounded by `rounding` (`stochastic` needs `key`)."""
+    `rounding` and `offset` are for the scaled formats), else a `Stored` with block scales
+    along `axis`, the scenario axis, and with `offset="block"` an offset beside each, rounded
+    by `rounding` (`stochastic` needs `key`)."""
     fmt = format_of(name)
     x = jnp.asarray(x)
     if not fmt.scaled:
         return x.astype(fmt.dtype)
     if rounding not in ROUNDINGS:
         raise ValueError(f"rounding {rounding!r}: the roundings are {list(ROUNDINGS)}")
+    if offset not in OFFSETS:
+        raise ValueError(f"offset {offset!r}: the block layouts are {list(OFFSETS)}")
     if rounding == "stochastic" and key is None:
         raise ValueError("stochastic rounding needs a key (`rounding_key`)")
     if x.ndim == 0:
         raise ValueError(f"storing in {name} needs a scenario axis for its block scales; got a scalar")
     axis = axis % x.ndim
-    values, scales = _quantize(x, key if rounding == "stochastic" else None, name=name, axis=axis)
-    return Stored(values, scales, name, axis)
+    values, scales, offsets = _quantize(x, key if rounding == "stochastic" else None, name=name, axis=axis,
+                                        offset=offset == "block")
+    return Stored(values, scales, offsets, name, axis)
 
 
 def load(x, dtype) -> jax.Array:
     """A stored array (a plain array or a `Stored`) read at `dtype` (a compute dtype, or
-    float64 for a reduction). Exact for a `Stored` loaded at float32 or wider."""
+    float64 for a reduction). A `Stored` without offsets loads exactly at float32 or wider;
+    adding its offsets back rounds once in `dtype`."""
     dtype = jnp.dtype(dtype)
     if isinstance(x, Stored):
-        return _dequantize(x.values, x.scales, axis=x.axis, dtype=dtype)
+        return _dequantize(x.values, x.scales, x.offsets, axis=x.axis, dtype=dtype)
     return jnp.asarray(x).astype(dtype)
 
 
 # ---------------------------------------------------------------------------
-# The kernels: one compiled program per shape, dtype, format, axis and rounding.
+# The kernels: one compiled program per shape, dtype, format, axis, rounding and layout.
 # ---------------------------------------------------------------------------
-@functools.partial(jax.jit, static_argnames=("name", "axis"))
-def _quantize(x, key, name: str, axis: int):
+@functools.partial(jax.jit, static_argnames=("name", "axis", "offset"))
+def _quantize(x, key, name: str, axis: int, offset: bool):
     fmt = FORMATS[name]
     blocks = _blocks(x, axis)                                            # [nb, BLOCK, *rest]
-    amax = jnp.max(jnp.where(jnp.isfinite(blocks), jnp.abs(blocks), 0), axis=1)
+    finite = jnp.isfinite(blocks)                                        # the padding is NaN
+    levels = _levels(blocks, finite) if offset else None                 # [nb, *rest], float32
+    if offset:
+        blocks = blocks - levels.astype(x.dtype)[:, None]
+    amax = jnp.max(jnp.where(finite, jnp.abs(blocks), 0), axis=1)
     k = _scale_exponent(amax, fmt.max)                                   # [nb, *rest]
     scaled = blocks * _pow2(k, x.dtype)[:, None]
     uniforms = None if key is None else jax.random.uniform(key, scaled.shape, x.dtype)
     rounded = _round_to_grid(scaled, fmt.mantissa_bits, fmt.min_exponent, uniforms)
     n = x.shape[axis]
     values = jnp.moveaxis(rounded.reshape((-1,) + rounded.shape[2:])[:n], 0, axis).astype(fmt.dtype)
-    return values, jnp.moveaxis(_pow2(-k, jnp.float32), 0, axis)
+    per_block = lambda a: jnp.moveaxis(a, 0, axis)  # noqa: E731
+    return values, per_block(_pow2(-k, jnp.float32)), None if levels is None else per_block(levels)
 
 
 @functools.partial(jax.jit, static_argnames=("axis", "dtype"))
-def _dequantize(values, scales, axis: int, dtype):
-    per_entry = lax.slice_in_dim(jnp.repeat(scales.astype(dtype), BLOCK, axis=axis), 0, values.shape[axis], axis=axis)
-    return values.astype(dtype) * per_entry
+def _dequantize(values, scales, offsets, axis: int, dtype):
+    def per_entry(blocks):
+        return lax.slice_in_dim(jnp.repeat(blocks.astype(dtype), BLOCK, axis=axis), 0, values.shape[axis], axis=axis)
+
+    deviations = values.astype(dtype) * per_entry(scales)
+    if offsets is None:
+        return deviations
+    offsets = per_entry(offsets)
+    return jnp.where(offsets == 0, deviations, deviations + offsets)  # keeps a block of offset 0 bit for bit, -0.0 too
 
 
 def _blocks(x, axis: int):
-    """`x` with `axis` moved first, padded with zeros to whole blocks, split `[nb, BLOCK, ...]`."""
+    """`x` with `axis` moved first, padded with NaN to whole blocks (so the padding counts
+    towards no block's scale or offset; it is cut off after rounding), split
+    `[nb, BLOCK, ...]`."""
     front = jnp.moveaxis(x, axis, 0)
     n = front.shape[0]
-    padded = jnp.pad(front, [(0, -n % BLOCK)] + [(0, 0)] * (front.ndim - 1))
+    padded = jnp.pad(front, [(0, -n % BLOCK)] + [(0, 0)] * (front.ndim - 1), constant_values=jnp.nan)
     return padded.reshape((-1, BLOCK) + front.shape[1:])
+
+
+def _levels(blocks, finite):
+    """Each block's offset: for a concentrated block, one whose finite entries all have one sign
+    and whose farthest from zero is at most three times its nearest (its range at most twice
+    its nearest magnitude), the midpoint of its largest and smallest finite entries, rounded to
+    float32; else 0. Each end is halved before the two are added, which is exact and cannot
+    overflow."""
+    top = jnp.max(jnp.where(finite, blocks, -jnp.inf), axis=1)
+    bottom = jnp.min(jnp.where(finite, blocks, jnp.inf), axis=1)
+    concentrated = jnp.any(finite, axis=1) & (((bottom > 0) & (top <= 3 * bottom))
+                                              | ((top < 0) & (bottom >= 3 * top)))
+    return jnp.where(concentrated, 0.5 * top + 0.5 * bottom, 0).astype(jnp.float32)
 
 
 def _scale_exponent(amax, fmt_max: float):

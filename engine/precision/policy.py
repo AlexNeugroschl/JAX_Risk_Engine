@@ -12,6 +12,8 @@ The precision of a run (docs/planning/details/precision.md §3, §4; decisions A
 
       rounding       "nearest" | "stochastic"   how values are rounded into a scaled storage format
       rounding_seed  int                        the seed of the stochastic rounding
+      offset         "block" | "none"           a scaled format's block layout: an offset beside
+                                                each block scale, or none (I-75)
       paired_fraction  float in [0, 1]          the share of paths also run at float64 (A-13)
 
 Each adjustable stage has three precisions: `storage`, the format its output is kept in until
@@ -26,9 +28,13 @@ simulation and the scenario market are shared by every trade, so they have no ov
 override is never silently ignored.
 
 Storage below 32 bits (float16, bfloat16, FP8) is kept with block scales along
-the scenario axis and rounded by `rounding` (`engine.precision.storage`); float64 and float32
-storage rounds to nearest whatever `rounding` says. `Precision.store` is the one way the
-pipeline stores: it names each array (`"shocks"`, `"values/<trade id>"`), and a stochastic
+the scenario axis, laid out by `offset` and rounded by `rounding` (`engine.precision.storage`):
+with `offset="block"`, the default, a block whose entries sit close together against their
+level (all of one sign, the farthest from zero at most three times the nearest) stores their
+deviations from its midpoint, an offset kept beside its scale, so it keeps its spread to the
+format's precision (I-75); `"none"` stores the entries themselves, the layout of the OCP MX
+formats. float64 and float32 storage is a plain cast whatever `rounding` and `offset` say.
+`Precision.store` is the one way the pipeline stores: it names each array (`"shocks"`, `"values/<trade id>"`), and a stochastic
 rounding draws from `rounding_seed` and that name, so arrays round independently, a trade's
 column rounds the same in a mixed run as alone, and a run reproduces.
 
@@ -44,8 +50,9 @@ are not stages here: they are float64 by decision (A-10).
 Validation refuses, naming the field, before any work: a name outside the format table, a
 format not enabled yet (the format table names the item that enables it), `storage` wider than `compute` (storing
 wider gains nothing), `accumulate` narrower than `compute`, a rounding outside
-`ROUNDINGS`, `stochastic` rounding when no stage stores in a scaled format (it would round
-nothing), and a `paired_fraction` outside [0, 1]. Every other combination may be run (D-9).
+`ROUNDINGS`, a block layout outside `OFFSETS`, `stochastic` rounding or `offset="none"` when no
+stage stores in a scaled format (it would change nothing), and a `paired_fraction` outside
+[0, 1]. Every other combination may be run (D-9).
 The 32/64 shape retired on 2026-10-01 (`PrecisionConfig`) is refused, not translated (A-12): `RETIRED_SHAPE` says what replaces it.
 """
 import math
@@ -54,7 +61,7 @@ from numbers import Real
 from typing import Iterable, Iterator, Mapping, Sequence
 
 from engine.precision.formats import format_of
-from engine.precision.storage import ROUNDINGS, rounding_key, store
+from engine.precision.storage import OFFSETS, ROUNDINGS, rounding_key, store
 
 #: The adjustable stages, in pipeline order.
 STAGES = ("simulation", "market", "pricing")
@@ -164,6 +171,7 @@ class Precision:
     by_trade: Mapping[str, StagePrecision] = field(default_factory=Overrides)
     rounding: str = "nearest"
     rounding_seed: int = 0
+    offset: str = "block"
     paired_fraction: float = 0.0
 
     def __post_init__(self):
@@ -185,9 +193,15 @@ class Precision:
             object.__setattr__(self, name, Overrides(value))
         if self.rounding not in ROUNDINGS:
             raise ValueError(f"Precision.rounding={self.rounding!r}: the roundings are {list(ROUNDINGS)}")
-        if self.rounding == "stochastic" and not any(s.scaled_storage for s in self._stages()):
+        if self.offset not in OFFSETS:
+            raise ValueError(f"Precision.offset={self.offset!r}: the block layouts are {list(OFFSETS)}")
+        scaled = any(s.scaled_storage for s in self._stages())
+        if self.rounding == "stochastic" and not scaled:
             raise ValueError("Precision.rounding='stochastic' rounds values into a scaled storage format (float16, "
                              "bfloat16, FP8), and no stage or override stores in one")
+        if self.offset == "none" and not scaled:
+            raise ValueError("Precision.offset='none' lays out a scaled storage format's blocks (float16, bfloat16, "
+                             "FP8), and no stage or override stores in one")
         if not isinstance(self.rounding_seed, int) or isinstance(self.rounding_seed, bool) or self.rounding_seed < 0:
             raise TypeError(f"Precision.rounding_seed must be a non-negative integer, got {self.rounding_seed!r}")
         fraction = self.paired_fraction
@@ -218,12 +232,12 @@ class Precision:
         return self.by_product.get(trade.product, self.pricing)
 
     def store(self, x, storage: str, stream: str, axis: int = 0):
-        """`x` stored at format `storage` with this policy's rounding (`engine.precision.store`),
-        its block scales along `axis`, the scenario axis. `stream` names the array in the run
-        (see the module docstring): it seeds a stochastic rounding."""
+        """`x` stored at format `storage` with this policy's rounding and block layout
+        (`engine.precision.store`), its block scales along `axis`, the scenario axis. `stream`
+        names the array in the run (see the module docstring): it seeds a stochastic rounding."""
         if self.rounding == "stochastic" and format_of(storage).scaled:
-            return store(x, storage, "stochastic", rounding_key(self.rounding_seed, stream), axis)
-        return store(x, storage, axis=axis)
+            return store(x, storage, "stochastic", rounding_key(self.rounding_seed, stream), axis, self.offset)
+        return store(x, storage, axis=axis, offset=self.offset)
 
     def check_overrides(self, trades: Iterable, products: Sequence[str]) -> None:
         """Refuse an override that selects nothing, before any work: a `by_product` key outside

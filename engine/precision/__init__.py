@@ -5,8 +5,9 @@
     policy.py    StagePrecision, Precision and their validation; Precision.precision_for, the
                  pricing stage of one trade (overrides per product and per trade);
                  Precision.store, storage with the policy's rounding
-    storage.py   store / load, the only casts between stages; Stored, a scaled format's values
-                 and block scales (float16, bfloat16, FP8); nearest and stochastic rounding
+    storage.py   store / load, the only casts between stages; Stored, a scaled format's values,
+                 block scales and block offsets (float16, bfloat16, FP8); nearest and stochastic
+                 rounding
     estimate.py  the paired float64 sample: its size, the two-level estimator of a mean,
                  a quantile measured on it (decision A-13)
     report.py    PrecisionReport, on every result: the policy as run, the realized formats,
@@ -23,7 +24,7 @@ from engine.precision.policy import (
 )
 from engine.precision.products import matmul, product_precision
 from engine.precision.report import PrecisionReport, devices_of, format_name, realized_format
-from engine.precision.storage import BLOCK, ROUNDINGS, Stored, load, rounding_key, store
+from engine.precision.storage import BLOCK, OFFSETS, ROUNDINGS, Stored, load, rounding_key, store
 
 __all__ = [
     "BLOCK",
@@ -31,6 +32,7 @@ __all__ = [
     "FORMAT_NAMES",
     "Format",
     "MeanEstimate",
+    "OFFSETS",
     "OVERRIDES",
     "Overrides",
     "Precision",
