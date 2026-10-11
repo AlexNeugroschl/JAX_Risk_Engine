@@ -14,8 +14,9 @@ second. `engine.traderx.workload`'s state machine would support an async variant
 
 Status codes: a bundle failing integrity checks (including a missing file) or an unusable
 terms artifact is 422; unresolvable market inputs 400; a submission id bound to different
-inputs 409; an unknown workload or attempt 404; a result that priced but could not be
-published 500. A refused instrument is a 200 whose coverage block names the refusal.
+inputs 409, checked before any cached result is served (I-57); an unknown workload or attempt
+404; a submission id whose binding could not be recorded, or a result that priced but could
+not be published, 500. A refused instrument is a 200 whose coverage block names the refusal.
 """
 from typing import Dict, List, Optional
 
@@ -133,6 +134,21 @@ def _key_for(request: EodSubmissionSchema, bundle) -> str:
     )
 
 
+def _attempt_document(attempt) -> Dict:
+    """The fields every route reports for an attempt: its workload, id and state, with the
+    result when it completed and the reason when it failed."""
+    document = {
+        "workloadKey": attempt.workload_key,
+        "attemptId": attempt.attempt_id,
+        "state": attempt.state,
+    }
+    if attempt.state == STATE_COMPLETED:
+        document["result"] = attempt.result
+    elif attempt.state == STATE_FAILED:
+        document["reason"] = attempt.reason
+    return document
+
+
 def _record_failure(attempt, reason: str) -> None:
     """Mark an attempt failed, swallowing a publication error so it cannot replace the real
     cause (and turn a non-retryable 422 into a retryable 500). The attempt is still marked
@@ -157,40 +173,32 @@ def submit_eod_price(request: EodSubmissionSchema) -> Dict:
             detail={"reason": "BUNDLE_INTEGRITY_FAILED", "detail": str(exc)},
         ) from exc
 
-    key = _key_for(request, bundle)
-
-    # Serve a completed result unless the caller opted out; submissionId idempotency below
-    # applies either way.
-    if request.reuseExistingResult:
-        existing = STORE.lookup(key)
-        if existing is not None and existing.state == STATE_COMPLETED:
-            return {
-                "workloadKey": key,
-                "attemptId": existing.attempt_id,
-                "state": STATE_COMPLETED,
-                "reused": True,
-                "result": existing.result,
-            }
-
+    # The submission id's binding is checked before a cached result is served (I-57), in
+    # one step of the store, so nothing can come between the check and the answer.
     try:
-        attempt = STORE.start(key, submission_id=request.submissionId)
+        submission = STORE.submit(
+            _key_for(request, bundle),
+            submission_id=request.submissionId,
+            reuse_existing=request.reuseExistingResult,
+        )
     except SubmissionIdConflict as exc:
         # 409: the submission id is already bound to different inputs.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"reason": "SUBMISSION_ID_CONFLICT", "detail": str(exc)},
         ) from exc
+    except PublicationError as exc:
+        # Nothing was bound or priced; a retry is the same submission.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"reason": "SUBMISSION_NOT_RECORDED", "detail": str(exc)},
+        ) from exc
 
-    # A repeated submissionId returns the existing attempt, including a finished one.
-    if attempt.is_terminal:
-        return {
-            "workloadKey": key,
-            "attemptId": attempt.attempt_id,
-            "state": attempt.state,
-            "reused": True,
-            "result": attempt.result,
-            "reason": attempt.reason,
-        }
+    attempt = submission.attempt
+    if submission.reused:
+        # A retry's attempt or a cached result, reported in whatever state it is in (a
+        # running one is not executed a second time).
+        return {**_attempt_document(attempt), "reused": True}
 
     try:
         result = price_bundle(bundle, request.marketInputs)
@@ -228,13 +236,7 @@ def submit_eod_price(request: EodSubmissionSchema) -> Dict:
             },
         ) from exc
 
-    return {
-        "workloadKey": key,
-        "attemptId": attempt.attempt_id,
-        "state": STATE_COMPLETED,
-        "reused": False,
-        "result": attempt.result,
-    }
+    return {**_attempt_document(attempt), "reused": False}
 
 
 @router.get("/results/by-workload/{workload_key_value}")
@@ -246,7 +248,7 @@ def lookup_by_workload(workload_key_value: str) -> Dict:
     | Never submitted  | `404 UNKNOWN_WORKLOAD`                    |
     | Accepted, running| `200 {"state": "running", ...}`           |
     | Accepted, failed | `200 {"state": "failed", "reason": ...}`  |
-    | Completed        | `200 {"state": "completed", "result": â€¦}` |
+    | Completed        | `200 {"state": "completed", "result": ...}`|
 
     Returns the most recent successful attempt when one exists.
     """
@@ -264,16 +266,7 @@ def lookup_by_workload(workload_key_value: str) -> Dict:
             },
         )
 
-    payload = {
-        "workloadKey": workload_key_value,
-        "attemptId": attempt.attempt_id,
-        "state": attempt.state,
-    }
-    if attempt.state == STATE_COMPLETED:
-        payload["result"] = attempt.result
-    elif attempt.state == STATE_FAILED:
-        payload["reason"] = attempt.reason
-    return payload
+    return _attempt_document(attempt)
 
 
 @router.get("/attempts/{attempt_id}")
@@ -286,14 +279,4 @@ def get_attempt(attempt_id: str) -> Dict:
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"reason": "UNKNOWN_ATTEMPT", "detail": f"no attempt {attempt_id}"},
         )
-    payload = {
-        "attemptId": attempt.attempt_id,
-        "workloadKey": attempt.workload_key,
-        "state": attempt.state,
-        "submissionId": attempt.submission_id,
-    }
-    if attempt.state == STATE_COMPLETED:
-        payload["result"] = attempt.result
-    elif attempt.state == STATE_FAILED:
-        payload["reason"] = attempt.reason
-    return payload
+    return {**_attempt_document(attempt), "submissionId": attempt.submission_id}

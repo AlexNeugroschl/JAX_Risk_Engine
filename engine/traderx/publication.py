@@ -18,20 +18,29 @@ Each manifest records a `publicationSequence`, recovered from disk rather than f
 process-local counter, so "most recent" survives restarts (directory order and mtimes are
 not reliable). Attempts are immutable once terminal; each has its own manifest.
 
+A submission id's binding (the attempt, and so the workload, it names) is recorded when it is
+made, before the caller is answered (I-57): a binding record is the only record of an id that
+was served a cached result, or whose attempt is still running, since neither has a manifest
+of its own. A manifest also carries its attempt's `submissionId`, so an id whose record is
+missing (a store written before 2026-10-10) is still found, by a scan.
+
 Layout under the store root::
 
-    attempts/<attemptId>.json        one attempt's manifest (the commit point)
-    pointers/<workloadKeyDigest>     the most recent successful attemptId and its sequence
-    sequence                         high-water mark for publicationSequence
-    tmp/<attemptId>.<uuid>.json      step-1 scratch; never read by lookup
+    attempts/<attemptId>.json             one attempt's manifest (the commit point)
+    pointers/<workloadKeyDigest>          the most recent successful attemptId and its sequence
+    submissions/<submissionIdDigest>.json the attempt a submission id is bound to
+    sequence                              high-water mark for publicationSequence
+    tmp/                                  scratch for every write; never read by lookup
 
-`tmp/` sits beside `attempts/` because `os.replace` is atomic only within one filesystem.
-Workload keys (`sha256:<hex>`) are digested for filenames, since `:` is not legal on
-Windows.
+`tmp/` sits beside the others because `os.replace` is atomic only within one filesystem.
+Workload keys (`sha256:<hex>`) and submission ids (caller text) are digested for filenames,
+since `:` is not legal on Windows and an id may hold any character.
 
 Thread-safe within a process. Across processes nothing is coordinated: two processes can
 issue the same sequence, and ties resolve by attempt id, which is safe because two
-successful attempts under one workload key are the same computation.
+successful attempts under one workload key are the same computation; and two processes that
+bind one new submission id at the same moment both succeed, the later record replacing the
+earlier. Within a process `engine.traderx.workload.AttemptStore` serializes bindings.
 """
 import hashlib
 import json
@@ -49,7 +58,12 @@ PUBLICATION_SCHEMA = "jax.eod-publication.v1"
 
 _ATTEMPTS_DIR = "attempts"
 _POINTERS_DIR = "pointers"
+_SUBMISSIONS_DIR = "submissions"
 _TMP_DIR = "tmp"
+_STORE_DIRS = (_ATTEMPTS_DIR, _POINTERS_DIR, _SUBMISSIONS_DIR, _TMP_DIR)
+
+#: The fields of a submission binding, as `ResultStore.find_submission` returns it.
+_BINDING_FIELDS = ("submissionId", "workloadKey", "attemptId")
 
 #: Store-wide high-water mark for `publicationSequence` (a cache; see the module docstring).
 _SEQUENCE_FILE = "sequence"
@@ -77,6 +91,15 @@ def _pointer_name(workload_key: str) -> str:
     return _sha256(workload_key.encode("utf-8"))
 
 
+def _binding_of(record: Dict) -> Optional[Dict]:
+    """The binding fields of a binding record or manifest, or `None` if one is not a
+    string (an unreadable record is absent, as an unreadable manifest is)."""
+    binding = {name: record.get(name) for name in _BINDING_FIELDS}
+    if not all(isinstance(value, str) for value in binding.values()):
+        return None
+    return binding
+
+
 class ResultStore:
     """Filesystem-backed, crash-safe store for published EOD results. Thread-safe; the
     atomicity is that of `os.replace` within one filesystem (POSIX and Windows)."""
@@ -92,7 +115,7 @@ class ResultStore:
         self._sequence_lock = threading.Lock()
         #: Highest sequence issued by this object, including ones not yet on disk.
         self._issued_sequence = -1
-        for sub in (_ATTEMPTS_DIR, _POINTERS_DIR, _TMP_DIR):
+        for sub in _STORE_DIRS:
             (self.root / sub).mkdir(parents=True, exist_ok=True)
 
     # -- paths ---------------------------------------------------------
@@ -102,6 +125,24 @@ class ResultStore:
 
     def _pointer_path(self, workload_key: str) -> Path:
         return self.root / _POINTERS_DIR / _pointer_name(workload_key)
+
+    def _submission_path(self, submission_id: str) -> Path:
+        return self.root / _SUBMISSIONS_DIR / f"{_sha256(submission_id.encode('utf-8'))}.json"
+
+    def _write_atomically(self, destination: Path, payload: bytes) -> None:
+        """Replace `destination` with `payload` through a fsynced file in `tmp/`, so a
+        reader sees the old bytes or the new, never a torn write. Raises `OSError`, leaving
+        no temporary file behind."""
+        tmp_path = self.root / _TMP_DIR / f"{destination.name}.{uuid.uuid4().hex}"
+        try:
+            with open(tmp_path, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, destination)
+        except OSError:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
     # -- sequencing ----------------------------------------------------
 
@@ -133,15 +174,12 @@ class ResultStore:
 
             nxt = highest + 1
             self._issued_sequence = nxt
-            tmp_path = self.root / _TMP_DIR / f"seq.{uuid.uuid4().hex}"
             try:
-                with open(tmp_path, "wb") as handle:
-                    handle.write(str(nxt).encode("utf-8"))
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(tmp_path, self.root / _SEQUENCE_FILE)
+                self._write_atomically(
+                    self.root / _SEQUENCE_FILE, str(nxt).encode("utf-8")
+                )
             except OSError:  # pragma: no cover - filesystem failure
-                tmp_path.unlink(missing_ok=True)
+                pass  # a cache: a lost write costs the scan above, never an order
             return nxt
 
     # -- publication ---------------------------------------------------
@@ -263,37 +301,82 @@ class ResultStore:
         _, current = self._read_pointer(workload_key)
         if current > sequence:
             return
-
-        pointer = self._pointer_path(workload_key)
-        tmp_path = self.root / _TMP_DIR / f"ptr.{uuid.uuid4().hex}"
         try:
-            with open(tmp_path, "wb") as handle:
-                handle.write(f"{attempt_id}\n{sequence}".encode("utf-8"))
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp_path, pointer)
+            self._write_atomically(
+                self._pointer_path(workload_key),
+                f"{attempt_id}\n{sequence}".encode("utf-8"),
+            )
         except OSError:  # pragma: no cover - filesystem failure
-            tmp_path.unlink(missing_ok=True)
+            pass
+
+    # -- submission bindings -------------------------------------------
+
+    def bind_submission(
+        self, *, submission_id: str, workload_key: str, attempt_id: str
+    ) -> None:
+        """Record that `submission_id` is bound to `attempt_id` of `workload_key`, replacing
+        any earlier record of the id (the caller rebinds an id only to a new attempt of the
+        same workload, when its attempt was lost running). Raises `PublicationError`: a
+        binding that did not land cannot be honoured after a restart, so the caller must
+        not answer as if it had."""
+        record = {
+            "publicationSchema": PUBLICATION_SCHEMA,
+            "submissionId": submission_id,
+            "workloadKey": workload_key,
+            "attemptId": attempt_id,
+        }
+        destination = self._submission_path(submission_id)
+        try:
+            self._write_atomically(destination, _canonical_bytes(record))
+        except OSError as exc:
+            raise PublicationError(
+                f"submission {submission_id!r}: its binding to attempt {attempt_id} could "
+                f"not be recorded at {destination}: {exc}. Nothing was bound, so the "
+                f"submission should be retried."
+            ) from exc
+
+    def find_submission(self, submission_id: str) -> Optional[Dict]:
+        """The binding of `submission_id` (`submissionId`, `workloadKey`, `attemptId`), or
+        `None` if the id was never bound: its record, else the newest published manifest
+        carrying the id (see the module docstring)."""
+        record = self._read_record(self._submission_path(submission_id))
+        if record is not None and record.get("submissionId") == submission_id:
+            binding = _binding_of(record)
+            if binding is not None:
+                return binding
+
+        newest = None
+        newest_sequence = -2
+        for manifest in self.iter_manifests():
+            if manifest.get("submissionId") != submission_id:
+                continue
+            sequence = manifest.get("publicationSequence")
+            if not isinstance(sequence, int):
+                sequence = -1
+            if sequence > newest_sequence:
+                newest, newest_sequence = manifest, sequence
+        return None if newest is None else _binding_of(newest)
 
     # -- reading -------------------------------------------------------
 
+    @staticmethod
+    def _read_record(path: Path) -> Optional[Dict]:
+        """A JSON record of this layout, or `None` if missing, unparseable or of an
+        unfamiliar `publicationSchema` (so one unreadable file cannot break every
+        lookup)."""
+        try:
+            record = json.loads(path.read_bytes())
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if not isinstance(record, dict):
+            return None
+        if record.get("publicationSchema") != PUBLICATION_SCHEMA:
+            return None
+        return record
+
     def read_attempt(self, attempt_id: str) -> Optional[Dict]:
-        """One published manifest, or `None` if missing, unparseable or of an unfamiliar
-        `publicationSchema` (so one unreadable file cannot break every lookup)."""
-        path = self._attempt_path(attempt_id)
-        try:
-            raw = path.read_bytes()
-        except OSError:
-            return None
-        try:
-            manifest = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(manifest, dict):
-            return None
-        if manifest.get("publicationSchema") != PUBLICATION_SCHEMA:
-            return None
-        return manifest
+        """One published manifest, or `None` if missing or unreadable."""
+        return self._read_record(self._attempt_path(attempt_id))
 
     def iter_manifests(self) -> Iterator[Dict]:
         """Every readable published manifest, in no particular order."""
@@ -364,31 +447,12 @@ class ResultStore:
         candidates.sort(key=lambda entry: (entry[0], entry[1]))
         return candidates[-1][2]
 
-    def find_by_submission(self, submission_id: str) -> Optional[Dict]:
-        """The newest published attempt with this `submissionId`, by scan, so submission
-        idempotency survives a restart."""
-        newest = None
-        newest_sequence = -2
-        attempts_dir = self.root / _ATTEMPTS_DIR
-        if not attempts_dir.is_dir():
-            return None
-        for path in attempts_dir.glob("*.json"):
-            manifest = self.read_attempt(path.stem)
-            if manifest is None or manifest.get("submissionId") != submission_id:
-                continue
-            sequence = manifest.get("publicationSequence")
-            if not isinstance(sequence, int):
-                sequence = -1
-            if sequence > newest_sequence:
-                newest, newest_sequence = manifest, sequence
-        return newest
-
     # -- test support --------------------------------------------------
 
     def clear(self) -> None:
         """Delete everything. Test support only; no route reaches it."""
         with self._lock:
-            for sub in (_ATTEMPTS_DIR, _POINTERS_DIR, _TMP_DIR):
+            for sub in _STORE_DIRS:
                 shutil.rmtree(self.root / sub, ignore_errors=True)
                 (self.root / sub).mkdir(parents=True, exist_ok=True)
             (self.root / _SEQUENCE_FILE).unlink(missing_ok=True)

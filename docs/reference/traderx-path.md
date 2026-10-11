@@ -1124,8 +1124,10 @@ can drift from the first.
 | Bundle fails hash verification, or is missing | `422` |
 | Terms artifact structurally unusable | `422` |
 | Market inputs unresolvable | `400` |
-| `submissionId` reused for a **different** workload | `409` |
+| `submissionId` reused for a **different** workload, cached or not | `409 SUBMISSION_ID_CONFLICT` |
 | Workload never submitted | `404` — the only one |
+| `submissionId`'s binding could not be recorded (nothing priced) | `500 SUBMISSION_NOT_RECORDED` |
+| Priced, but the result could not be published | `500 RESULT_NOT_PUBLISHED` |
 
 Returning an HTTP error for a refusal would make *"we correctly declined to guess"*
 indistinguishable from *"we broke"*, and the entire design rests on that being distinguishable.
@@ -1165,6 +1167,38 @@ A reused id against a different workload is now a **`409 SUBMISSION_ID_CONFLICT`
 Idempotency means *"this exact request, again"*; it cannot mean *"whatever I sent last time
 under this name"*. Four regression tests, verified to fail against the pre-fix code — plus a
 fifth that passes both ways by design, confirming the guard did not break idempotency itself.
+
+#### The binding comes before the cache ([I-57](../planning/known-issues.md#i-57), fixed 2026-10-10)
+
+That guard sat in `AttemptStore.start`, and the route read the cache *before* calling it. So
+with `reuseExistingResult: true` (the default) a reused id still got another workload's result
+whenever that workload was cached. TraderX's acceptance case A-02 (FR-07: *"a submission ID
+binds to one workload before any cache return"*) found it:
+
+```python
+submit(bundle="note", submissionId="note-id")   # computes the note; binds note-id
+submit(bundle="bill", submissionId="bill-id")   # computes the bill
+submit(bundle="bill", submissionId="note-id")   # → 200, the bill's cached result, "reused": true
+```
+
+Since then a submission is one atomic step of the store, `AttemptStore.submit`, in this order:
+
+1. **The id's binding.** Bound to another workload → `409`, whether or not either workload is
+   cached. Bound to this one → its attempt, in whatever state it is in.
+2. **The cache**, with `reuseExistingResult: true`: the most recent completed attempt, and the
+   id is **bound to it**. An id served a cached result is then as bound as one that ran.
+3. **A new attempt**, bound to the id. Only this call prices.
+
+The response says which it was: `"reused": false` for the call that priced, `"reused": true`
+for steps 1 and 2. The attempt is reported as it stands, so a retry that arrives while its
+attempt is still pricing gets `200 {"state": "running", "reused": true}` and is not priced a
+second time. Before this change the attempt was priced again, and the second call to finish
+failed with a `500`. Two submissions of one workload under *different* ids (or none) still
+both price ([I-58](../planning/known-issues.md#i-58)).
+
+An id binds to the **attempt**, not to "the latest result", so a retry gets exactly what the
+lost response held, even after a newer attempt of the same workload completes. That includes
+an id whose attempt failed: the retry gets the failure. A deliberate rerun uses a new id.
 
 #### Four lookup states
 
@@ -1276,10 +1310,11 @@ platform-dependent resolution that a backup or a copy rewrites).
 ### Layout, and two platform details that are not incidental
 
 ```
-attempts/<attemptId>.json        one attempt's manifest — the commit point
-pointers/<workloadKeyDigest>     the most recent successful attemptId
-tmp/<attemptId>.<uuid>.json      step-1 scratch; never read by lookup
-sequence                         high-water mark, advisory only
+attempts/<attemptId>.json             one attempt's manifest — the commit point
+pointers/<workloadKeyDigest>          the most recent successful attemptId
+submissions/<submissionIdDigest>.json the attempt a submission id is bound to
+tmp/                                  scratch for every write; never read by lookup
+sequence                              high-water mark, advisory only
 ```
 
 `tmp/` is a **sibling** of `attempts/` on purpose: `os.replace` is only atomic within a
@@ -1300,10 +1335,17 @@ restart, a job that was running reports as **unknown** rather than as something 
 the coordinator resubmits, and the workload key makes the recomputation identical. That is an
 infrastructure event, not a financial one.
 
-**Idempotency survives the restart too.** `find_by_submission` scans published manifests, so
-a coordinator retrying a lost response after the engine bounced recovers its original attempt
-instead of starting a second — the exact duplicate-overnight-batch that `submissionId` exists
-to prevent, just reached through a restart rather than through a race.
+**Idempotency survives the restart too.** A submission id's binding is written to
+`submissions/` when it is made, before the caller is answered. So a coordinator retrying a
+lost response after the engine bounced recovers its original attempt instead of starting a
+second, which is the duplicate overnight batch that `submissionId` exists to prevent, reached
+through a restart instead of a race. The binding record is the *only* record of two kinds of
+binding: an id that was served a cached result, and an id whose attempt was still running
+when the process died. That second id stays bound to its workload, and its resubmission is
+bound to the new attempt. Manifests carry their attempt's `submissionId` too, so
+`find_submission` falls back to a manifest scan when a record is missing (a store written
+before 2026-10-10). A binding that cannot be written is a `500 SUBMISSION_NOT_RECORDED`, and
+nothing is priced: a binding that did not land could not be honoured after a restart.
 
 ### A publication failure is loud on success and quiet on failure
 
@@ -1357,7 +1399,10 @@ from a thread pool — an unguarded version was measured issuing **2 distinct se
 30 concurrent publications**. Across *processes* it does not coordinate: two engines
 publishing at the same instant can issue the same sequence. That is a tie, and ties resolve
 deterministically by attempt id, which is safe precisely because two successful attempts
-under one workload key are the same computation by construction.
+under one workload key are the same computation by construction. Nor are submission ids
+bound across processes: two engines binding one *new* id at the same instant both succeed,
+and the later record replaces the earlier (within a process the attempt store's lock
+serializes bindings).
 
 And it is **EOD-only**. The portfolio path has its own durable store since 2026-10-04 (the
 SQLite job queue, [HTTP API](http-api.md#jobs-the-queue-and-the-engine-worker)); a *running*

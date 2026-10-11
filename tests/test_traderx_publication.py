@@ -31,6 +31,7 @@ from engine.traderx.workload import (
     STATE_FAILED,
     STATE_RUNNING,
     AttemptStore,
+    SubmissionIdConflict,
 )
 
 KEY = "sha256:" + "a" * 64
@@ -395,6 +396,92 @@ class TestRestartSurvival:
         assert restarted.lookup(OTHER_KEY).result["bundleId"] == "B2"
 
 
+class TestSubmissionBindingsAreDurable:
+    """A submission id's binding is recorded before it is returned (I-57), including the two
+    a manifest cannot hold: an id served a cached result, and an attempt still running."""
+
+    def test_a_binding_is_recorded_before_the_attempt_finishes(self, store):
+        attempt = AttemptStore(store=store).start(KEY, submission_id="sid")
+        assert attempt.state == STATE_RUNNING
+        assert store.find_submission("sid") == {
+            "submissionId": "sid", "workloadKey": KEY, "attemptId": attempt.attempt_id,
+        }
+
+    def test_an_id_served_a_cached_result_keeps_its_binding_across_a_restart(self, store):
+        live = AttemptStore(store=store)
+        live.start(KEY).complete(RESULT)
+        served = live.submit(KEY, submission_id="sid", reuse_existing=True)
+        assert served.reused is True
+
+        restarted = AttemptStore(store=ResultStore(store.root))
+        with pytest.raises(SubmissionIdConflict):
+            restarted.submit(OTHER_KEY, submission_id="sid", reuse_existing=True)
+        retried = restarted.submit(KEY, submission_id="sid")
+        assert retried.reused is True
+        assert retried.attempt.attempt_id == served.attempt.attempt_id
+
+    def test_an_id_whose_attempt_was_lost_running_stays_bound_to_its_workload(self, store):
+        """A process died while the attempt ran: the id still names its workload, and is
+        bound to the new attempt its resubmission creates."""
+        AttemptStore(store=store).start(KEY, submission_id="sid")
+
+        restarted = AttemptStore(store=ResultStore(store.root))
+        with pytest.raises(SubmissionIdConflict):
+            restarted.submit(OTHER_KEY, submission_id="sid")
+        resubmitted = restarted.submit(KEY, submission_id="sid")
+        assert resubmitted.reused is False
+        assert store.find_submission("sid")["attemptId"] == resubmitted.attempt.attempt_id
+
+    def test_a_missing_binding_record_is_recovered_from_the_manifest(self, store):
+        """A store written before binding records (or one that lost them) still knows its
+        published ids, by the manifest scan."""
+        attempt = AttemptStore(store=store).start(KEY, submission_id="sid")
+        attempt.complete(RESULT)
+        for record in (store.root / "submissions").iterdir():
+            record.unlink()
+
+        restarted = AttemptStore(store=ResultStore(store.root))
+        assert restarted.start(KEY, submission_id="sid").attempt_id == attempt.attempt_id
+        with pytest.raises(SubmissionIdConflict):
+            restarted.start(OTHER_KEY, submission_id="sid")
+
+    def test_a_binding_that_cannot_be_recorded_binds_nothing(self, store, monkeypatch):
+        live = AttemptStore(store=store)
+
+        def refuse(**kwargs):
+            raise PublicationError("disk full")
+
+        monkeypatch.setattr(store, "bind_submission", refuse)
+        with pytest.raises(PublicationError):
+            live.submit(KEY, submission_id="sid")
+        monkeypatch.undo()
+
+        assert live.lookup(KEY) is None
+        assert store.find_submission("sid") is None
+        assert live.submit(KEY, submission_id="sid").reused is False
+
+    def test_a_failed_write_raises_and_leaves_nothing_behind(self, store, monkeypatch):
+        def refuse(src, dst):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr("engine.traderx.publication.os.replace", refuse)
+        with pytest.raises(PublicationError, match="could not be recorded"):
+            store.bind_submission(submission_id="sid", workload_key=KEY, attempt_id="a")
+        monkeypatch.undo()
+
+        assert store.find_submission("sid") is None
+        assert list((store.root / "tmp").iterdir()) == []
+
+    def test_any_caller_text_is_a_legal_record_name(self, store):
+        """Submission ids are caller text; the record is named by a digest of it."""
+        submission_id = 'eod:2025-06-02/run\\1 "a"'
+        AttemptStore(store=store).start(KEY, submission_id=submission_id)
+        names = [p.name for p in (store.root / "submissions").iterdir()]
+        assert len(names) == 1 and ":" not in names[0]
+        assert store.find_submission(submission_id)["submissionId"] == submission_id
+        assert list((store.root / "tmp").iterdir()) == []
+
+
 class TestMemoryAndStorePrecedence:
     """Memory is authoritative for running state, the store across restarts."""
 
@@ -559,7 +646,8 @@ class TestAFailedPublicationLeavesNoTerminalAttemptInMemory:
     """
 
     class _Boom:
-        """A store that fails at step 3, after the work is done."""
+        """A store that fails at step 3, after the work is done (the submission's binding,
+        recorded before it, landed)."""
 
         root = None
 
@@ -569,7 +657,10 @@ class TestAFailedPublicationLeavesNoTerminalAttemptInMemory:
         def lookup(self, workload_key):
             return None
 
-        def find_by_submission(self, submission_id):
+        def bind_submission(self, **kwargs):
+            pass
+
+        def find_submission(self, submission_id):
             return None
 
     def _attempt(self):

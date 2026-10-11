@@ -506,5 +506,5 @@ pricer** — only `ORE`, for date and day-count arithmetic. The dependency runs
 | `equity` | W1.4 | `price_equity`, `EquityPosition`, `read_position`, `is_equity` — a **refusal** naming the missing spot/FX source ([I-18](../planning/known-issues.md#i-18)). |
 | `schema_version` | W1.6.2 | `RESULT_SCHEMA_VERSION`, `CAPABILITY_SCHEMA_VERSION` — a dependency-free leaf that breaks the `result` ↔ `schema` cycle. |
 | `schema` | W1.6.2 | `result_schema()`, `capability_schema()` — JSON Schema **derived** from the frozen vocabulary, never hand-written. |
-| `workload` | W1.6.4 / W0.8 | `workload_key`, `AttemptStore`, `Attempt`, `UNKNOWN_WORKLOAD` — the attempt state machine and the four lookup states. |
+| `workload` | W1.6.4 / W0.8 | `workload_key`, `AttemptStore`, `Attempt`, `UNKNOWN_WORKLOAD` — the attempt state machine and the four lookup states. `AttemptStore.submit(key, submission_id, reuse_existing=...) -> Submission(attempt, reused)` binds a submission id before any cached result is returned (I-57); only a call that gets `reused=False` executes the attempt. |
 | `pipeline` | — | `price_bundle(bundle_or_path, market_inputs=None) -> RiskResult` — the composition of all of the above. Accepts a loaded `Bundle` or a path to load one from. |

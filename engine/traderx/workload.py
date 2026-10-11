@@ -5,7 +5,9 @@ The workload key is a canonical hash of what can change a result: bundle identit
 inputs, calculation set, reporting currency, adapter/engine/schema versions (and, when given,
 precision and a terms hash). Same key, same computation; results may be shared. A
 `submissionId` identifies a request, not a computation, so it is not in the key: a retry
-with the same id recovers the same attempt.
+with the same id recovers the same attempt. An id binds to one attempt, and so to one
+workload, before anything is returned, a cached result included, so it can never carry
+another workload's result (I-57; `AttemptStore.submit`).
 
 Lookup has four states and only "never submitted" is `UNKNOWN_WORKLOAD` (a 404); running,
 failed and completed are reported as such, so accepted work is never mistaken for unknown.
@@ -13,16 +15,17 @@ Lookup prefers the most recent successful attempt. Attempts are immutable once t
 addressable by `attemptId`.
 
 Storage is in memory, optionally backed by an `engine.traderx.publication.ResultStore`
-that publishes terminal attempts and is consulted when memory has no answer (I-08). Running
-attempts are never published, so after a restart a job that was running reads as unknown
-and is resubmitted; the workload key makes the recomputation identical.
+that publishes terminal attempts and submission bindings and is consulted when memory has no
+answer (I-08). Running attempts are never published, so after a restart a job that was
+running reads as unknown and is resubmitted; the workload key makes the recomputation
+identical, and its id, still bound to that workload, is bound to the new attempt.
 """
 import hashlib
 import json
 import threading
 import uuid
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 #: Lookup states. Only `UNKNOWN_WORKLOAD` is a 404; the rest are 200s carrying the state.
 STATE_RUNNING = "running"
@@ -165,47 +168,71 @@ def _attempt_from_manifest(manifest: Dict) -> Attempt:
     )
 
 
+class Submission(NamedTuple):
+    """What `AttemptStore.submit` hands a caller: the attempt its submission is bound to, and
+    whether that attempt existed before (a retry's, or a cached result). A reused attempt is
+    reported as it stands, never executed: only the caller that created an attempt runs it."""
+    attempt: Attempt
+    reused: bool
+
+
 class AttemptStore:
     """Attempts indexed by workload key and submission id. Thread-safe (the API serves
-    requests from a thread pool, and the submission-id check-then-create must be atomic).
-    With a `ResultStore`, terminal attempts are published and reads fall back to the store
-    (I-08)."""
+    requests from a thread pool, and a submission's check-then-bind must be atomic). With a
+    `ResultStore`, terminal attempts and submission bindings are published and reads fall
+    back to the store (I-08)."""
 
     def __init__(self, store=None) -> None:
         self._lock = threading.Lock()
         self._attempts: Dict[str, Attempt] = {}
         #: workload key -> attempt ids, most recent last.
         self._by_workload: Dict[str, List[str]] = {}
-        #: submission id -> attempt id, for idempotent retry recovery.
+        #: submission id -> the attempt id it is bound to, for idempotent retry recovery.
         self._by_submission: Dict[str, str] = {}
         #: Durable backing store, or None for memory-only.
         self._store = store
 
-    def start(self, key: str, submission_id: Optional[str] = None) -> Attempt:
-        """Create a running attempt, or return the existing one for a repeated
-        `submission_id` (so a lost response can be retried safely). A submission id reused
-        for a different workload key raises `SubmissionIdConflict`."""
+    def submit(
+        self,
+        key: str,
+        submission_id: Optional[str] = None,
+        *,
+        reuse_existing: bool = False,
+    ) -> Submission:
+        """Bind one submission of workload `key` to an attempt, atomically, in this order:
+
+        1. A `submission_id` already bound is checked before anything is returned (I-57):
+           bound to another workload it raises `SubmissionIdConflict`, even when either
+           workload has a cached result; bound to this one, its attempt is returned in
+           whatever state it is in, so a retry recovers what the lost response carried.
+        2. With `reuse_existing`, the most recent completed attempt of `key` is returned,
+           and the id bound to it.
+        3. Otherwise a new running attempt, bound to the id, for the caller to execute.
+
+        With a durable store the binding is recorded before it is returned, so it holds
+        across a restart; a binding that cannot be recorded raises `PublicationError` and
+        binds nothing. An id whose attempt was lost running (in a process that died) is
+        rebound to a new attempt of the same workload.
+        """
         with self._lock:
             if submission_id is not None:
-                existing = self._by_submission.get(submission_id)
-                if existing is None and self._store is not None:
-                    # Idempotency must survive a restart: check published attempts too.
-                    published = self._store.find_by_submission(submission_id)
-                    if published is not None:
-                        attempt = self._rehydrate(published)
-                        existing = attempt.attempt_id
-                if existing is not None:
-                    attempt = self._attempts[existing]
-                    if attempt.workload_key != key:
-                        raise SubmissionIdConflict(
-                            f"submissionId {submission_id!r} was already used for "
-                            f"workload {attempt.workload_key}, but this submission is "
-                            f"for {key}. A submission id identifies one computation; "
-                            f"reusing it for different inputs would return a result "
-                            f"computed from those other inputs. Use a new "
-                            f"submissionId for a different workload."
-                        )
-                    return attempt
+                bound_key, bound = self._binding(submission_id)
+                if bound_key is not None and bound_key != key:
+                    raise SubmissionIdConflict(
+                        f"submissionId {submission_id!r} was already used for workload "
+                        f"{bound_key}, but this submission is for {key}. A submission id "
+                        f"identifies one computation; reusing it for different inputs "
+                        f"would return a result computed from those other inputs. Use a "
+                        f"new submissionId for a different workload."
+                    )
+                if bound is not None:
+                    return Submission(bound, reused=True)
+
+            if reuse_existing:
+                cached = self._latest_completed(key)
+                if cached is not None:
+                    self._bind(submission_id, cached)
+                    return Submission(cached, reused=True)
 
             attempt = Attempt(
                 attempt_id=str(uuid.uuid4()),
@@ -213,11 +240,46 @@ class AttemptStore:
                 submission_id=submission_id,
                 _store=self._store,
             )
+            # Bound first: an attempt whose binding failed is never indexed.
+            self._bind(submission_id, attempt)
             self._attempts[attempt.attempt_id] = attempt
             self._by_workload.setdefault(key, []).append(attempt.attempt_id)
-            if submission_id is not None:
-                self._by_submission[submission_id] = attempt.attempt_id
-            return attempt
+            return Submission(attempt, reused=False)
+
+    def start(self, key: str, submission_id: Optional[str] = None) -> Attempt:
+        """`submit` without a cached result: a new running attempt, or the attempt a
+        repeated `submission_id` is bound to."""
+        return self.submit(key, submission_id).attempt
+
+    def _binding(self, submission_id: str) -> Tuple[Optional[str], Optional[Attempt]]:
+        """The workload key `submission_id` is bound to and its attempt (caller holds the
+        lock): `(None, None)` if unbound, and `(key, None)` if the attempt is gone (bound
+        by a process that died while it ran)."""
+        attempt_id = self._by_submission.get(submission_id)
+        if attempt_id is not None:
+            attempt = self._attempts[attempt_id]
+            return attempt.workload_key, attempt
+        if self._store is None:
+            return None, None
+        binding = self._store.find_submission(submission_id)
+        if binding is None:
+            return None, None
+        attempt = self._get(binding["attemptId"])
+        if attempt is not None:
+            self._by_submission[submission_id] = attempt.attempt_id
+        return binding["workloadKey"], attempt
+
+    def _bind(self, submission_id: Optional[str], attempt: Attempt) -> None:
+        """Bind `submission_id` to `attempt`, durably first (caller holds the lock)."""
+        if submission_id is None:
+            return
+        if self._store is not None:
+            self._store.bind_submission(
+                submission_id=submission_id,
+                workload_key=attempt.workload_key,
+                attempt_id=attempt.attempt_id,
+            )
+        self._by_submission[submission_id] = attempt.attempt_id
 
     def _rehydrate(self, manifest: Dict) -> Attempt:
         """Index a published attempt into memory (caller holds the lock). An attempt
@@ -239,40 +301,46 @@ class AttemptStore:
         """One attempt by id, from memory or the durable store (ids stay addressable
         across restarts)."""
         with self._lock:
-            cached = self._attempts.get(attempt_id)
-            if cached is not None:
-                return cached
-            if self._store is None:
-                return None
-            manifest = self._store.read_attempt(attempt_id)
-            if manifest is None:
-                return None
-            return self._rehydrate(manifest)
+            return self._get(attempt_id)
+
+    def _get(self, attempt_id: str) -> Optional[Attempt]:
+        """`get`, for a caller that holds the lock."""
+        cached = self._attempts.get(attempt_id)
+        if cached is not None:
+            return cached
+        if self._store is None:
+            return None
+        manifest = self._store.read_attempt(attempt_id)
+        if manifest is None:
+            return None
+        return self._rehydrate(manifest)
 
     def lookup(self, key: str) -> Optional[Attempt]:
         """The attempt a lookup reports for `key`: the most recent completed one, else the
-        most recent of any state.
+        most recent of any state in memory."""
+        with self._lock:
+            completed = self._latest_completed(key)
+            if completed is not None:
+                return completed
+            ids = self._by_workload.get(key)
+            return self._attempts[ids[-1]] if ids else None
+
+    def _latest_completed(self, key: str) -> Optional[Attempt]:
+        """The most recent completed attempt of `key`, or `None` (caller holds the lock).
 
         Memory first (it alone knows running attempts), then the store; consulting the
         store first could let a published result hide a running retry.
         """
-        with self._lock:
-            ids = self._by_workload.get(key) or []
-            attempts = [self._attempts[i] for i in ids]
-            completed = [a for a in attempts if a.state == STATE_COMPLETED]
-            if completed:
-                return completed[-1]
-
-            if self._store is not None:
-            # ResultStore.lookup serves only successful attempts and reconciles the
-            # pointer with a manifest scan (the crash window between publish and pointer).
-                published = self._store.lookup(key)
-                if published is not None:
-                    return self._rehydrate(published)
-
-            if attempts:
-                return attempts[-1]
+        for attempt_id in reversed(self._by_workload.get(key) or []):
+            attempt = self._attempts[attempt_id]
+            if attempt.state == STATE_COMPLETED:
+                return attempt
+        if self._store is None:
             return None
+        # ResultStore.lookup serves only successful attempts and reconciles the pointer
+        # with a manifest scan (the crash window between publish and pointer).
+        published = self._store.lookup(key)
+        return None if published is None else self._rehydrate(published)
 
     def clear(self) -> None:
         """Drop every attempt, in memory and in the durable store. For tests only (no route

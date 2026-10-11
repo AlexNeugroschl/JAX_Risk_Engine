@@ -279,6 +279,38 @@ class TestSubmissionIdCannotCrossWorkloads:
         with pytest.raises(SubmissionIdConflict, match="different"):
             store.start("sha256:B", submission_id="dup")
 
+    def test_store_level_conflict_raises_even_when_the_target_is_cached(self):
+        """I-57 at the store: the binding is checked before the cache is read."""
+        from engine.traderx.workload import SubmissionIdConflict
+
+        store = AttemptStore()
+        store.start("sha256:A", submission_id="dup").complete({"npv": 1.0})
+        store.start("sha256:B").complete({"npv": 2.0})
+        with pytest.raises(SubmissionIdConflict):
+            store.submit("sha256:B", submission_id="dup", reuse_existing=True)
+
+    def test_a_cached_result_binds_the_id_it_is_served_under(self):
+        from engine.traderx.workload import SubmissionIdConflict
+
+        store = AttemptStore()
+        cached = store.start("sha256:A")
+        cached.complete({"npv": 1.0})
+        served = store.submit("sha256:A", submission_id="sid", reuse_existing=True)
+        assert served.reused is True
+        assert served.attempt is cached
+        with pytest.raises(SubmissionIdConflict):
+            store.submit("sha256:B", submission_id="sid")
+
+    def test_only_a_new_attempt_is_the_callers_to_execute(self):
+        """`reused` is False exactly once: for the call that created the attempt."""
+        store = AttemptStore()
+        created = store.submit("sha256:A", submission_id="sid", reuse_existing=True)
+        assert created.reused is False
+        assert created.attempt.state == STATE_RUNNING
+        retried = store.submit("sha256:A", submission_id="sid", reuse_existing=True)
+        assert retried.reused is True
+        assert retried.attempt is created.attempt
+
     def test_conflict_is_detected_even_after_the_first_completed(self):
         """The conflict is caught after the first attempt completed (when it has a result
         to hand back)."""
@@ -289,6 +321,108 @@ class TestSubmissionIdCannotCrossWorkloads:
         first.complete({"npv": 1.0})
         with pytest.raises(SubmissionIdConflict):
             store.start("sha256:B", submission_id="dup")
+
+
+class TestTheSubmissionIdBindsBeforeAnyCacheReturn:
+    """I-57 (TraderX acceptance case A-02, FR-07): a submission id binds to one workload
+    before any cached result is returned, so reusing it for another workload is refused
+    even when either workload is cached. The cache was read first, and a reused id came
+    back with the other workload's result under it, `"reused": true`."""
+
+    def test_reusing_an_id_for_a_cached_workload_is_refused(self, client):
+        """A-02 as TraderX wrote it: both cached, then the note's id reused for the bill."""
+        assert _submit(client, case="note", submissionId="note-id").status_code == 200
+        assert _submit(client, case="bill", submissionId="bill-id").status_code == 200
+
+        response = _submit(client, case="bill", submissionId="note-id")
+        assert response.status_code == 409
+        assert response.json()["detail"]["reason"] == "SUBMISSION_ID_CONFLICT"
+        assert "result" not in response.json()
+
+    def test_an_id_served_a_cached_result_is_bound_to_that_workload(self, client):
+        """The other direction: the id's first use is served from the cache, which binds
+        it, so the bill cannot then run under it."""
+        _submit(client, case="note")
+        served = _submit(client, case="note", submissionId="sid").json()
+        assert served["reused"] is True
+
+        response = _submit(client, case="bill", submissionId="sid")
+        assert response.status_code == 409
+        assert response.json()["detail"]["reason"] == "SUBMISSION_ID_CONFLICT"
+
+    def test_a_retry_recovers_the_attempt_it_was_served_not_a_newer_one(self, client):
+        """The id binds to the attempt served, so a retry answers as the lost response did,
+        even after a newer attempt of the workload completes."""
+        first = _submit(client, case="note").json()
+        served = _submit(client, case="note", submissionId="sid").json()
+        newer = _submit(client, case="note", reuseExistingResult=False).json()
+        retry = _submit(client, case="note", submissionId="sid").json()
+
+        assert served["attemptId"] == first["attemptId"]
+        assert newer["attemptId"] != first["attemptId"]
+        assert retry["attemptId"] == first["attemptId"]
+        assert retry["reused"] is True
+
+    def test_a_binding_that_cannot_be_recorded_is_a_500_and_prices_nothing(
+        self, client, monkeypatch,
+    ):
+        """An id whose binding did not reach the durable store is refused before pricing:
+        after a restart the engine could not recognize its retry."""
+        def refuse(**kwargs):
+            raise PublicationError("simulated store failure")
+
+        def must_not_price(*args, **kwargs):
+            raise AssertionError("priced a submission whose binding was not recorded")
+
+        monkeypatch.setattr(traderx_routes.STORE._store, "bind_submission", refuse)
+        monkeypatch.setattr(traderx_routes, "price_bundle", must_not_price)
+        response = _submit(client, submissionId="sid")
+        assert response.status_code == 500
+        assert response.json()["detail"]["reason"] == "SUBMISSION_NOT_RECORDED"
+
+
+class TestARetryOfARunningSubmissionIsNotExecutedAgain:
+    """A retry with the id of an attempt still running reports it as running instead of
+    pricing it a second time (TraderX case A-03 under one id). Two submissions of one
+    workload under different ids, or none, still both run (I-58)."""
+
+    def test_the_retry_reports_the_running_attempt_and_prices_nothing(
+        self, client, monkeypatch,
+    ):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+
+        real_price_bundle = traderx_routes.price_bundle
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+
+        def held(*args, **kwargs):
+            # Only the first call waits, so a second execution shows as a count, not a hang.
+            calls.append(1)
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(60), "the test never released the first pricing"
+            return real_price_bundle(*args, **kwargs)
+
+        monkeypatch.setattr(traderx_routes, "price_bundle", held)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(
+                _submit, client, submissionId="sid", reuseExistingResult=False,
+            )
+            try:
+                assert entered.wait(60), "the first submission never reached pricing"
+                retry = _submit(client, submissionId="sid", reuseExistingResult=False)
+            finally:
+                release.set()
+            first = pending.result(timeout=120)
+
+        assert first.status_code == 200
+        assert first.json()["state"] == STATE_COMPLETED
+        assert retry.status_code == 200
+        assert retry.json()["state"] == STATE_RUNNING
+        assert retry.json()["reused"] is True
+        assert retry.json()["attemptId"] == first.json()["attemptId"]
+        assert len(calls) == 1
 
 
 class TestAttemptAddressing:
@@ -459,6 +593,16 @@ class TestResultsSurviveARestartOverHttp:
         second = _submit(client, submissionId="sub-restart").json()
         assert second["attemptId"] == first["attemptId"]
         assert second["reused"] is True
+
+    def test_an_id_served_a_cached_result_stays_bound_after_a_restart(self, client):
+        """The binding a cached result made has no manifest of its own; it survives the
+        restart all the same (I-57)."""
+        _submit(client, case="note")
+        _submit(client, case="note", submissionId="sid")
+        self._restart()
+        response = _submit(client, case="bill", submissionId="sid")
+        assert response.status_code == 409
+        assert response.json()["detail"]["reason"] == "SUBMISSION_ID_CONFLICT"
 
     def test_an_unrelated_workload_is_still_unknown_after_a_restart(self, client):
         """A never-submitted key is still a 404."""

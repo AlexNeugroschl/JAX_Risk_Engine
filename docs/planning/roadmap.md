@@ -110,7 +110,8 @@ compiles nothing; every calibration and exercise boundary is solved by one confi
 solver (A-21). The HTTP API reaches every setting the engine has, through one route per
 analytic (portfolio pricing, market risk, the cross-asset model's calibration). Nothing runs
 on more than one host. TraderX submits end-of-day bundles through its own routes (`/eod/...`),
-which price its Treasuries with their own pricers and refuse everything else by name. Since
+which price its Treasuries with their own pricers and refuse everything else by name; a
+submission id binds to one workload before any cached result is returned (2026-10-10). Since
 2026-10-08 `engine/` holds subpackages only, each named for what it holds and importing only
 the layers below it ([details/package-layout.md](details/package-layout.md)).
 
@@ -145,13 +146,13 @@ rate, so it is where correctness and the trace are checked, not where speed is m
 <a id="stage-3--the-focus"></a>
 ## Stage 3 — The focus: low precision, critical bugs, a robust API
 
-Low precision first where the three compete. The critical bugs are here because they are High
-(3.1) or because the precision work and the later stages build on the numbers they fix (3.4,
-3.5, 3.8).
+Low precision first where the three compete. The critical bugs are here because the precision
+work and the later stages build on the numbers they fix (3.4, 3.5, 3.8). The stage's one High
+defect of engineering work is fixed (2026-10-10, I-57): a TraderX submission id binds to one
+workload before any cached result is returned, so one caller is never served another's result.
 
 | Step | Goal | Work | Closes | After | Size |
 |---|---|---|---|---|---|
-| 3.1 | Critical bug | *Start now.* TraderX's submissions: check the submission binding before any cache return, so one caller is never served another's result. A fix in today's attempt store, which 4.1 keeps | [I-57](known-issues.md#i-57) | — | S |
 | 3.2 | Precision | Kernels in difference form with explicit accumulators, one family at a time, one implementation for every precision (A-16); compute below float32 enabled. This step takes the families 3.4 and 3.5 do not change (simulation scan, scenario curves, legs, Europeans, exposure); the Bermudan/American rollback and recalibration are 3.6, after the fixes, so no kernel is rewritten twice. Where a family can be a matrix product (leg pricing), it takes that form in the same rewrite, so native FP8 (3.13) needs no second one. A product's own precision (TensorFloat-32, bfloat16 passes, FP8) becomes a compute format of the policy, named in the report: the product helper (`product_precision`) maps the policy's format to it, so every product follows the policy and never a device's default. Where a device has no such unit (TensorFloat-32 on a CPU, which computes float32 instead) the format is emulated by rounding the operands to its mantissa, as FP8 storage is, and the report says which ran ([details/precision.md §8.3](details/precision.md#83-emulation-and-native-speed)). Per family: ORE parity at existing tolerances, the snapshot within the margin | [F-07](features.md#f-07) (compute) | — | L |
 | 3.3 | Precision | The evidence table against the acceptance standard (A-11: Basel III's P&L attribution test and the Basel plan's P6.2 rule, as transcribed; P6.2 labelled as engineering for figures Basel does not cover), from the storage harness on each family of 3.2 and 3.6 as it lands, then on each kernel stage 7 adds. With what the harness's first campaigns found (I-55): a robust standard error for the paired correction where the shocks or curves are stored below 32 bits (by blocks of paths or across seeds), an absolute rule for figures float64 holds fixed, and each row's path ceiling; a warning on any result whose combination has no passing row | [I-55](known-issues.md#i-55) (warnings) | Each family of 3.2 and 3.6 | M |
 | 3.4 | Critical bug, precision | `ShiftHorizon`: the setting and its API field exist and refuse anything but 0; implement the shift, parity at 0.5 against the LGM oracle, then 0.5 as the default | [I-32](known-issues.md#i-32) | — | M |
@@ -167,8 +168,6 @@ Low precision first where the three compete. The critical bugs are here because 
 
 Order within the stage:
 
-- **3.1 first.** It is the one High defect that is engineering work (I-04 and I-05 wait on
-  TraderX), and it is small. The rest of TraderX's path waits for stage 4.
 - **Low precision in full before anything else competes.** The storage harness is built
   (2026-10-09, I-75); 3.2 rewrites the kernels it measures, and 3.3 reads the table off each
   family as it lands, so swaps, Europeans and bonds have evidence rows while 3.4 and 3.5 make
@@ -190,7 +189,7 @@ Order within the stage:
   are moved onto it (4.1). A setting added before it gets its API field in the request shape of
   the day, and 3.9 carries it over. 3.11 comes before 3.12, which is written on the worker loop
   3.11 changes.
-- **Numbers.** 3.1 and 3.9 to 3.12 move no number beyond the margin. 3.4 and 3.5 move default
+- **Numbers.** 3.9 to 3.12 move no number beyond the margin. 3.4 and 3.5 move default
   Bermudan/American numbers towards ORE's, and 3.8 may move the AD Greeks to ORE's, planned
   changes of the model. 3.2, 3.6 and 3.7 may
   move float64 at rounding level, within the margin.
@@ -208,7 +207,7 @@ focus, before Basel.
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|
 | 4.1 | One way into the engine for TraderX: its bundle becomes a run request, after its convention checks and refusals (so a refused booking still never reaches a pricer, I-05), and the engine prices its bills and notes; the TraderX path's own pricers go. Its routes, result document, attempt store and accrued-interest reconciliation stay. First, the engine's bond and the TraderX note agree on every bundle row of the tests to rounding ([design](details/package-layout.md#3-merges)) | [I-93](known-issues.md#i-93) | 3.9 | M |
-| 4.2 | TraderX's submissions: one execution owner per workload; refuse unknown calculations and a reporting currency other than USD (A-18, as ORE rejects an unknown analytic) | [I-58](known-issues.md#i-58), [I-59](known-issues.md#i-59) | 4.1 | S |
+| 4.2 | TraderX's submissions: one execution owner per workload (a retry under the same id has had one since 2026-10-10); refuse unknown calculations and a reporting currency other than USD (A-18, as ORE rejects an unknown analytic) | [I-58](known-issues.md#i-58), [I-59](known-issues.md#i-59) | 4.1 | S |
 | 4.3 | TraderX's attempts in the job queue: the accepted-attempt record, boot sweep and `interrupted` state that portfolio jobs have had since 2026-10-04 | [I-08](known-issues.md#i-08) | 3.11, 4.1 | S |
 | 4.4 | Before the API is reachable from outside a trusted network: authentication chosen with TraderX, a body-size limit, a per-caller limit on queued jobs | [I-90](known-issues.md#i-90) | — | S |
 | 4.5 | Chase TraderX's answers; apply them (a widened allowlist, a schema statement). When they arrive | [I-23](known-issues.md#i-23), [I-60](known-issues.md#i-60) | Their answers | S |

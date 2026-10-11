@@ -17,10 +17,13 @@ refusal, contract interface, portfolio wire-through) are done. TraderX independe
 reproduced every priced figure (bill ±98,507.15, note ±103,308.33, accrued ±1,857.10, +1bp
 sensitivity ∓15.28).
 
-Remaining engine work: the three bugs in the submission path that TraderX's acceptance kit found
-([I-57](../known-issues.md#i-57), [I-58](../known-issues.md#i-58),
-[I-59](../known-issues.md#i-59)), running-attempt durability ([I-08](../known-issues.md#i-08)),
-and W2 below once its inputs arrive.
+TraderX's acceptance kit found three bugs in the submission path. The first is fixed
+(2026-10-10, [I-57](../known-issues.md#i-57)): a submission id binds to one workload before any
+cached result is returned, and A-01 to A-03 of their starter (`check_current_api.py`, with its
+imports updated to today's module names) pass. Remaining engine work: concurrent submissions
+of one workload under different ids ([I-58](../known-issues.md#i-58)), the request options
+accepted and ignored ([I-59](../known-issues.md#i-59), their A-04 and A-05), running-attempt
+durability ([I-08](../known-issues.md#i-08)), and W2 below once its inputs arrive.
 
 ## Settled — do not reopen
 
@@ -42,7 +45,7 @@ and W2 below once its inputs arrive.
 | Cube output | An artifact reference with shape, dtype, ordering and hash plus a hashed item-order file; never inline JSON |
 | Attempts | Lookup returns the most recent successful attempt; attempts are immutable; the result manifest is the commit point and lookup falls back to a scan when the pointer is behind |
 | Lookup states | `UNKNOWN_WORKLOAD`, `running`, `failed`, `completed`: never a bare 404 for accepted work |
-| Submission identity | Caller-generated idempotent `submissionId`; a retry recovers the same attempt. `reuseExistingResult: false` means "do not serve the cache", not "always start a new attempt" |
+| Submission identity | Caller-generated idempotent `submissionId`; a retry recovers the same attempt. `reuseExistingResult: false` means "do not serve the cache", not "always start a new attempt". An id binds to one workload before any cache return (FR-07) |
 | `synthetic` vs `assumed` | Distinct: their `provenance.origin` is `synthetic` or `supplied`; the engine's curve `inputOrigin` is separate |
 | `accrualBasis` shape | `traderx.accrual-basis.v1` field shape frozen; its value vocabulary is not ([I-23](../known-issues.md#i-23)) |
 | Schemas | Engine-owned and served at `/eod/schemas/*`; a joint spec pack references them by URL and version rather than copying them |
@@ -58,6 +61,7 @@ and W2 below once its inputs arrive.
 | `pastFixings` for seasoned swaps | Proposal §2.2 | [I-04](../known-issues.md#i-04) (data half) |
 | An equity spot and FX source, or observed spots in the bundle | W1.4 | [I-18](../known-issues.md#i-18) |
 | Their compatibility work pushed with a commit SHA (`reference/traderX` is pinned at `a102e498`, which lacks their `.gitattributes` and checkout proof), so their tests can be re-run here | v4 | Independent re-verification |
+| Their acceptance starter imports `engine.api.eod_routes` and `engine.integration.*`, renamed on 2026-10-08 to `engine.api.traderx_routes` and `engine.traderx.*`, so it fails at import against today's tree; ask them to update the names, or to bind to the HTTP routes alone so a rename cannot break it | Found 2026-10-10 | Their re-run of A-01 to A-05 |
 | Their side of v7's sequence: `coordinator.py` calls `/eod`; retire their `fake_worker.py`; move `pricing_result.py` / `w0_result.py` under their tests as an independent reference; a consumer-side validator pinned to `jaxrisk.eod-result.v1` | v7 §6 | Nothing here; their duplicate pricer drifts until done |
 
 ## W2 — observed market data and USD-SOFR

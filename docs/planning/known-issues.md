@@ -5,42 +5,38 @@ closing it takes. The order of work is in [roadmap.md](roadmap.md); the rules fo
 (statuses, severities, how to add and close an entry) are in [README.md](README.md). Fixed
 issues keep one line in the [closed ledger](#closed).
 
-Read this before trusting an exposure profile or a result served by the TraderX routes:
-[I-57](#i-57) can return another submission's result, and a Bermudan's or American's values on
-the paths, and so its exposure, are 0.5–4% above ORE's simulation ([I-49](#i-49)); swaps,
+Read this before trusting an exposure profile: a Bermudan's or American's values on the
+paths, and so its exposure, are 0.5–4% above ORE's simulation ([I-49](#i-49)); swaps,
 Europeans and bonds equal ORE's simulation path by path since 2026-10-07.
 
 ## Verification status
 
-Last full run, 2026-10-09, on the code of the storage harness (I-75: block offsets in
-`engine/precision/storage.py`, the policy's `offset`, the harness and its campaigns in
-`tests/support/`). 2,861 collected on Windows: the 2,772 of the package layout's runs, less 32
-(storage tests now parametrized over both block layouts, each of which reappears twice, and the
-bytes test renamed) plus 121 (those, `TestBlockOffsets`, the policy's layout tests, market risk
-in both layouts, and `tests/test_precision_harness.py`). The run printed its summary line and
-has no `FAILED` or `ERROR` line:
+Last full run, 2026-10-10, on the code of the submission binding (I-57: `AttemptStore.submit`
+in `engine/traderx/workload.py`, binding records in `engine/traderx/publication.py`, the
+`/eod/price` route). 2,877 collected on Windows: the 2,861 of the storage harness's run plus 16
+(`TestTheSubmissionIdBindsBeforeAnyCacheReturn`, `TestARetryOfARunningSubmissionIsNotExecutedAgain`,
+three store tests in `TestSubmissionIdCannotCrossWorkloads`, the restart case over HTTP, and
+`TestSubmissionBindingsAreDurable`). The run printed its summary line and has no `FAILED` or
+`ERROR` line:
 
-- **Windows**, `-n 8`: **2,851 passed, 4 skipped, 6 xfailed, 0 failed**, 13m57s (the skips and
+- **Windows**, `-n 8`: **2,867 passed, 4 skipped, 6 xfailed, 0 failed**, 14m44s (the skips and
   the expected failures as before: the Bermudan/American L3 cases of
-  `tests/test_ore_xva_parity.py`, strict, waiting on [I-49](#i-49)). After it, one f-string
-  without placeholders in `demos/demo_precision.py` lost its `f`, and the demo ran to its end.
-- **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, the CI job,
-  `-n 8`): 2,730 passed, 4 skipped, 6 xfailed, 3m20s.
-- Not run on Linux: the change touches no process, file path or platform default (rule 5); the
-  last Linux run is the package layout's (2026-10-08/09: 2,760 passed, 6 skipped, 6 xfailed).
-  Nor on the GPU: the storage kernels follow their inputs' dtype as before.
+  `tests/test_ore_xva_parity.py`, strict, waiting on [I-49](#i-49)).
+- **Linux** (Docker `python:3.11`, the store gained a directory and digested file names, rule
+  5): the TraderX route and publication suites and `tests/test_import_layering.py`, 142 passed.
+  The last full Linux run is the package layout's (2026-10-08/09: 2,760 passed, 6 skipped, 6
+  xfailed).
+- Not rerun: the fast tier under strict dtype promotion (2026-10-09: 2,730 passed, 4 skipped, 6
+  xfailed), the GPU and the golden snapshot, since the change touches no JAX code and moves no
+  number; the 2026-10-09 snapshot (359 arrays, and 168 of scaled storage, identical to the code
+  before) stands.
 
-Red first: `test_a_bonds_fp8_cube_column_is_unbiased_with_block_offsets` asserts both halves,
-the bias with `offset="none"` (the storage of the code before, bit for bit) and its absence with
-the default; the code before has no layout, and its storage is the half that fails. The layout
-first tried, offsets at each block's entry nearest zero, also failed it (a bias of 4.7 to 28 of
-its standard errors; [details/precision.md §15.4](details/precision.md#154-the-storage-harness-2026-10-09)).
-
-Golden snapshot (2026-10-09), on CPU, from a worktree of `d19f9c5` against the new tree, 359
-arrays: all 359 identical in value, dtype and shape. Scaled storage with `offset="none"`, a
-snapshot of its own (every scaled format, both roundings, from float64 and float32, a portfolio
-and a market-risk run with every stage stored scaled), 168 arrays: all identical to the code
-before ([details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
+Red first: the 16 tests, run against the code before in a worktree of `c27d43c`, all fail (A-02's
+case answered `200` with the bill's cached result; the running retry priced the attempt twice
+and the second to finish raised a `500`). TraderX's acceptance starter
+(`reference/traderX/.../acceptance/check_current_api.py`, its imports updated to today's
+module names) passes A-01 to A-03, where it passed A-01 only; A-04 and A-05 are
+[I-59](#i-59).
 
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
@@ -69,8 +65,7 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-53](#i-53) | On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch | Low | PARTIAL | Performance | Fix what exists |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | New |
 | [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | Focus |
-| [I-57](#i-57) | TraderX: a cached result is served before the submission id is checked | High | OPEN | API | Focus |
-| [I-58](#i-58) | TraderX: two concurrent submissions of one workload both execute | Medium | OPEN | API | TraderX |
+| [I-58](#i-58) | TraderX: two concurrent submissions of one workload under different ids both execute | Medium | PARTIAL | API | TraderX |
 | [I-59](#i-59) | TraderX: `calculations` and `reportingCurrency` accepted, keyed, then ignored | Medium | OPEN | API | TraderX |
 | [I-60](#i-60) | TraderX result schema has no stated policy on added fields | Low | ASSUMPTION | API | TraderX |
 | [I-76](#i-76) | The job queue keeps every job and result forever | Low | OPEN | API | Focus |
@@ -402,34 +397,29 @@ bundle.
 with a test per value. `tests/test_traderx_terms_v2.py::TestUnrecognizedValuesAreRefused`
 pins today's rule.
 
-<a id="i-57"></a>
-### I-57 — TraderX: a cached result is served before the submission id is checked
-
-**Severity:** High · **Status:** OPEN · **Found:** 2026-09-17, TraderX acceptance case A-02
-(FR-07), reproduced in response v7; still present
-
-**What is wrong.** In `engine/api/traderx_routes.py` the `reuseExistingResult` branch returns a
-completed attempt from `STORE.lookup(key)` before `STORE.start(key, submission_id=...)`, which
-is where `SubmissionIdConflict` is raised. A coordinator that reuses a submission id across
-bundles gets another workload's priced result under its own id, with `"reused": true`.
-
-**To close.** Extract the binding check from `AttemptStore.start` and run it before any
-cache read. Red first with A-02's case, added to this suite.
-
 <a id="i-58"></a>
-### I-58 — TraderX: two concurrent submissions of one workload both execute
+### I-58 — TraderX: two concurrent submissions of one workload under different ids both execute
 
-**Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-17, TraderX case A-03 (FR-08);
-still present
+**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-17, TraderX case A-03 (FR-08)
 
-**What is wrong.** `AttemptStore.start` deduplicates on `submissionId` only. Two submissions
-of the same workload with no id (or `reuseExistingResult=false`) each get a running attempt,
-and both run `price_bundle`. The lock protects the dict, not the computation.
+**Closed part (2026-10-10, with [I-57](#i-57)).** A retry under the *same* `submissionId`
+while its attempt is pricing is answered `200 {"state": "running", "reused": true}` and
+not executed: `AttemptStore.submit` returns `reused` for an attempt it did not create, and
+the route prices only a new one. Before, the retry priced the same attempt again and the
+second to finish raised on the immutable attempt, a `500`. Test:
+`tests/test_traderx_routes.py::TestARetryOfARunningSubmissionIsNotExecutedAgain`; TraderX's
+A-03 starter retries under one id, so it now passes and does not exercise the open part.
 
-**To close.** A per-workload running-attempt index under the existing lock: a second
-submission joins the running attempt (200 with its `attemptId` if it finishes in time, else
-202 `running`). Regression test with a deterministic barrier, not timing. Cross-process
-exclusion is not claimed.
+**What is wrong.** Two submissions of one workload under *different* ids, or with none, while
+nothing is completed (or with `reuseExistingResult=false`) each get a running attempt, and
+both run `price_bundle`. The lock protects the binding, not the computation.
+
+**To close.** In `AttemptStore.submit`, under its lock, a per-workload running-attempt index:
+a submission of a workload with a running attempt joins it (`reused`, so the route does not
+price it), and its id is bound to that attempt. Decide there whether a joined or retried
+running attempt answers `200 running` (today's retry) or `202`, the same for both.
+Regression test with a deterministic barrier, not timing. Cross-process exclusion is not
+claimed.
 
 <a id="i-59"></a>
 ### I-59 — TraderX: `calculations` and `reportingCurrency` accepted, keyed, then ignored
@@ -1035,6 +1025,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-50"></a>I-50 | Nothing compared the assembled simulation, cube or exposure with an ORE simulation (now an OREApp XVA oracle: its scenario dump rebuilds the engine's simulation market, swaps, Europeans and bonds equal ORE's cube path by path, the exposure definitions on ORE's cube are ORE's, and L4 holds; Bermudans/Americans wait on I-49) | `tests/test_ore_xva_parity.py` |
 | <a id="i-52"></a>I-52 | Cash settlement was priced as physical | `tests/test_pricing.py::test_a_cash_settled_european_uses_the_par_yield_annuity` |
 | <a id="i-56"></a>I-56 | Market risk and the CAM calibration had no route, and two routes were named like versions (now `POST /portfolio/market-risk` and `POST /calibration/cam`, one poll route for every job, `/v2/portfolio/price` and `schema_version` removed, and a test that fails on any setting without an API field; 2026-10-07, decision A-2) | `tests/test_api_market_risk.py`, `tests/test_api.py::TestCamCalibrationEndpoint`, `tests/test_api_completeness.py` |
+| <a id="i-57"></a>I-57 | TraderX: a cached result was served before the submission id's binding was checked, so an id reused for a cached workload came back with that workload's result (TraderX case A-02; now one atomic `AttemptStore.submit` checks the binding, then the cache, binds the id to whatever it returns, and records the binding durably first; 2026-10-10) | `tests/test_traderx_routes.py::TestTheSubmissionIdBindsBeforeAnyCacheReturn`, `::TestSubmissionIdCannotCrossWorkloads::test_store_level_conflict_raises_even_when_the_target_is_cached`, `tests/test_traderx_publication.py::TestSubmissionBindingsAreDurable` |
 | <a id="i-62"></a><a id="p-2"></a>I-62 | Hull-White Bermudan/American scenario pricing ran on the host (that pricer is removed; options are priced by the vectorized per-path engine) | `tests/test_pricing.py::test_bermudan_on_every_path_equals_ore_recalibrated_on_the_path_curves` |
 | <a id="i-63"></a><a id="a-3"></a>I-63 | Hull-White trade configs carried copies of model parameters | `tests/test_trade_configs.py::TestEveryTradeNamesItselfAndItsDate::test_a_model_or_curve_on_the_trade_is_refused` |
 | <a id="i-64"></a><a id="a-4"></a>I-64 | A trade's evaluation date defaulted to ORE's thread-local global | `tests/test_trade_configs.py::TestEveryTradeNamesItselfAndItsDate::test_without_an_evaluation_date_it_is_refused` |

@@ -469,7 +469,9 @@ thing to try this against.
 - **`submissionId` is a caller-generated idempotency key.** Retrying a lost response with the
   same value recovers the *same* attempt instead of launching a second overnight batch — and
   since W0.8 that holds across an engine restart too. Reusing it with *different* inputs is a
-  `409`, not a silently different answer.
+  `409`, not a silently different answer, even when a result for those inputs is cached. A
+  retry that arrives while its attempt is still pricing gets `"state": "running"`; it does not
+  price the attempt again.
 - **`reuseExistingResult`** (default `true`) controls whether a previously completed result
   may be served. `false` means "don't serve me a cache" — it does not disable `submissionId`
   idempotency.
