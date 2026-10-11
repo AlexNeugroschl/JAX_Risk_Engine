@@ -21,9 +21,16 @@ this codebase's JAX code.
   Greeks and reductions over paths are float64 by decision (A-10); the factories that build a
   stage's functions (`trade_price_function`) take the stage's dtype once.
 - **Matrix products through `engine.precision.matmul`.** No bare `@`, `jnp.matmul`,
-  `jnp.dot`, `jnp.einsum` or `jnp.tensordot` on JAX arrays in engine code: `matmul(a, b)` (the
-  semantics of `a @ b`) states the product's precision from its operands' compute format,
-  full precision for float32 and float64 (decision A-22). Why: a product that states none
+  `jnp.dot`, `jnp.einsum` or `jnp.tensordot` on JAX arrays in engine code: `matmul(a, b,
+  arithmetic)` (the semantics of `a @ b`) runs the product in the stage's compute format and
+  accumulates it in its accumulate format (`engine.precision.Arithmetic`, a static argument of
+  the kernel), stating its precision in the program; without an arithmetic, float32 or float64
+  operands in their own format, full precision (decision A-22). A kernel with products is in
+  difference form: what enters a product is a path's deviation from a level no path depends on,
+  the level computed and added at the accumulate format (F-07; [details/precision.md
+  §8](../planning/details/precision.md#8-compute-below-float32)). Never round a value by a
+  dtype round trip inside a kernel (`x.astype(low).astype(float32)`): XLA may remove it; round
+  on the format's grid (`engine.precision.grid`). Why: a product that states none
   runs at the device's default, which is below float32 on accelerators (TensorFloat-32 on an
   NVIDIA GPU, bfloat16 passes on a TPU), so a float32 policy would compute below float32 while
   its precision report says float32; on an RTX 5060 a float32 cube came out 1.5% off. Nor is

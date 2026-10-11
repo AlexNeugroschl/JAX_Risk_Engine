@@ -248,10 +248,12 @@ worker's disk cache and 1.8 s repeated, a repeat compiling nothing
 python demos/demo_precision.py
 ```
 Runs `engine.risk.market.run_market_risk` on a sloped two-curve market and a mixed
-portfolio over five Sobol seeds at three `Precision` settings (FP64; FP32 throughout; the
-P&L computed in FP64 and stored in FP32), and compares each one's error in VaR 99% and ES
-97.5% with the Monte Carlo noise those numbers already carry (the ES standard error and the
-spread across seeds).
+portfolio over five Sobol seeds at ten `Precision` settings (FP64; FP32 throughout; the P&L
+computed in FP64 and stored in FP32, FP16, BF16 or FP8, rounded to nearest or stochastically;
+the Bermudan kept in FP64 inside an FP32 run; and the revaluation's matrix products in BF16 or
+FP8, the Bermudan kept in FP32), and compares each one's error in VaR 99% and ES 97.5% with the
+Monte Carlo noise those numbers already carry (the ES standard error and the spread across
+seeds). It takes about an hour on a CPU, the Bermudan's revaluation most of it.
 
 **One engine module at a time:**
 ```bash
@@ -700,10 +702,13 @@ no simulated losses severe enough to have anything "worse than the VaR cutoff" �
 for this explicitly rather than assuming a numeric result (see
 [Risk Statistics: the formulas](../risk/var_es.md#the-formulas)).
 
-## Precision (float32 vs float64)
+## Precision (float64 down to FP8)
 
-The run's `precision` sets the storage and compute format of each adjustable stage: the
-simulation, the scenario market and the pricing on paths. The default is float64 everywhere.
+The run's `precision` sets the storage, compute and accumulate format of each adjustable stage:
+the simulation, the scenario market and the pricing on paths. `storage` is what a stage's
+output is kept in, `compute` the format of its matrix products, `accumulate` the format those
+products accumulate in and everything else of the stage runs in. The default is float64
+everywhere.
 
 ```python
 from engine.run import Precision, StagePrecision
@@ -716,6 +721,11 @@ RunConfig(simulation=..., precision=Precision(
     pricing=StagePrecision("float32", "float32", "float32"),
     by_product={"bermudan_swaption": StagePrecision()},          # but Bermudans in float64
     by_trade={"swap-7": StagePrecision(storage="float32")}))     # and this swap computed in float64
+fp8 = StagePrecision(storage="float8_e4m3fn", compute="float8_e4m3fn", accumulate="float32")
+RunConfig(simulation=..., precision=Precision(
+    simulation=fp8, market=fp8, pricing=fp8,                    # FP8 products and storage
+    by_product={"bermudan_swaption": StagePrecision("float32", "float32", "float32")}))
+RunConfig(simulation=..., precision=Precision.throughout("tensorfloat32"))  # TF32 products, float32 else
 ```
 
 The pricing stage can be set per product (`by_product`, keyed by `"swap"`,
@@ -729,8 +739,8 @@ Calibration, today's values, Greeks and the exposure statistics are always float
 result's `npv_cube` is the stored cube read back at float64. A compute format means the same on
 every device: on a GPU or TPU, XLA would by default run a float32 matrix product in
 TensorFloat-32 or bfloat16 passes, so each of the engine's matrix products states the
-precision of its compute format itself (`engine.precision.matmul`, full precision for float32
-and float64). No process setting changes it, JAX's `jax_default_matmul_precision` included,
+precision of its compute format itself (`engine.precision.matmul`: full precision for float32
+and float64; TensorFloat-32 or bfloat16 passes only when you name them). No process setting changes it, JAX's `jax_default_matmul_precision` included,
 which the engine neither sets nor reads (2026-10-06); your own JAX code in the same process
 keeps whatever you set. Over HTTP the same is
 `"precision": {"pricing": {"storage": "float32", "compute": "float32", "accumulate": "float32"}}`.
@@ -744,11 +754,30 @@ midpoint beside its scale and stores its values' deviations from it
 (`Precision.offset="block"`, 2026-10-09): a bond's values near 1e6 that vary by 1e4 then keep
 their spread to the format's precision rather than spending the format's few bits on the
 level, which biased their mean ([I-75](../planning/known-issues.md#i-75),
-closed). `offset="none"` stores the values themselves, as the OCP MX formats do. Compute below
-float32 is not enabled yet (F-07), and naming it is refused. How much each format costs in
-accuracy, per stage, figure and path count, is measured, not assumed: the storage harness's
-measurements are in [compliance/precision-measurements/](../../compliance/precision-measurements/)
-([details/precision.md §15.4](../planning/details/precision.md#154-the-storage-harness-2026-10-09)).
+closed). `offset="none"` stores the values themselves, as the OCP MX formats do.
+
+Compute goes below float32 too (2026-10-10): `float16`, `bfloat16`, `float8_e4m3fn`,
+`float8_e5m2`, and two formats that only say how a float32 product runs, `tensorfloat32` (an
+NVIDIA GPU's TensorFloat-32) and `bfloat16_3x` (a TPU's three bfloat16 passes). Each
+accumulates in float32, as the matrix units that run them do (`accumulate="float32"`; anything
+else is refused, as is storing in a product format). The kernels are written so that a product
+multiplies each path's deviation from a level no path depends on, never a level itself, so the
+precision lost is relative to how far the paths move, not to the size of the numbers: a swap's
+legs, a long log discount factor, a log equity spot keep float32's precision. Everything around
+the products (the levels, the option formulas, sums) runs at the accumulate format. A device
+with units for the format runs it natively; elsewhere (always on a CPU) the engine emulates it
+with the same numbers, and the result's precision report says which (`products`,
+`{"float8_e4m3fn": "emulated"}`). Bermudans and Americans compute and accumulate in one format,
+float32 or float64, until their rollback is rewritten the same way (I-32, I-49 first): a run
+that would compute one below float32 is refused, naming the overrides that keep it wider.
+Below float32 every figure carries a bias, since a product's operand that no path depends on is
+rounded once for every path ([I-96](../planning/known-issues.md#i-96)): pair such a run with
+float64 paths (`paired_fraction`, say 0.02), whose two-level estimate corrects the means. How
+much each format costs in accuracy, per stage, figure and path count, is measured, not assumed:
+the precision harness's measurements are in
+[compliance/precision-measurements/](../../compliance/precision-measurements/)
+([details/precision.md §15.4](../planning/details/precision.md#154-the-storage-harness-2026-10-09),
+[§15.5](../planning/details/precision.md#155-compute-below-float32-2026-10-10)).
 The 32/64 shape of before 2026-10-01 (`PrecisionConfig(simulation=32)`) is refused
 with a message naming its replacement. See
 [Architecture: Adjustable precision](../concepts/architecture.md#adjustable-precision).

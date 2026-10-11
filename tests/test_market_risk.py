@@ -25,7 +25,7 @@ from engine.risk.market import (
     monte_carlo_scenarios,
     run_market_risk,
 )
-from engine.risk.market.revaluation import revalue
+from engine.risk.market.revaluation import revalue, revalue_trade
 from engine.risk.market.var_es import RISK_MEASURE_HISTORICAL, compute_risk_metrics
 from tests import market_risk_support as m
 
@@ -305,15 +305,17 @@ class TestRun:
     @pytest.mark.slow
     def test_float32_run_is_float32_and_close(self, mixed_run):
         """Float32 throughout: the revaluation and P&L are computed and stored in float32 (the
-        float32 revaluation's P&L, bit for bit) and VaR/ES reduce them in float64."""
+        float32 revaluation's P&L, bit for bit: in difference form for the swaps, the bond and
+        the European, the shocked values less the base for the Bermudan) and VaR/ES reduce them
+        in float64."""
         trades, result64 = mixed_run
         scenarios = _scenarios(num=512)
         result32 = run_market_risk(MarketRiskRequest(trades, m.market(), scenarios, m.PRICING,
                                                      precision=Precision.throughout("float32")))
-        base, shocked = revalue(trades, m.market(), FACTORS, jnp.asarray(scenarios.shifts, jnp.float32), m.PRICING)
-        assert shocked.dtype == jnp.float32 and result32.pnl.dtype == jnp.float64
-        np.testing.assert_array_equal(np.asarray(result32.pnl),
-                                      np.asarray(shocked - jnp.asarray(base, jnp.float32)[None, :], np.float64))
+        moves = jnp.asarray(scenarios.shifts, jnp.float32)
+        pnl = [revalue_trade(cfg, m.market(), FACTORS, moves, m.PRICING)[1] for cfg in trades]
+        assert all(p.dtype == jnp.float32 for p in pnl) and result32.pnl.dtype == jnp.float64
+        np.testing.assert_array_equal(np.asarray(result32.pnl), np.stack([np.asarray(p, np.float64) for p in pnl], -1))
         assert result32.risk["VaR_99"] == pytest.approx(result64.risk["VaR_99"], rel=1e-4)
 
     @pytest.mark.parametrize("precision", [Precision(), Precision.throughout("float32"),

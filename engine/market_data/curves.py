@@ -153,6 +153,49 @@ def loglinear_log_discount(curve: DiscountCurve, t: jax.Array) -> jax.Array:
     return (1.0 - weight) * values[..., right] + weight * values[..., left]
 
 
+def node_values(curve) -> jax.Array:
+    """The values a curve's log discount factors are linear in: a `DiscountCurve`'s log
+    discount factors, a `ZeroCurve`'s pillar rates (`log_discount_deviation`)."""
+    return curve.log_discounts if isinstance(curve, DiscountCurve) else curve.pillar_rates
+
+
+def log_discount_deviation(curve, deviation: jax.Array, t: jax.Array) -> jax.Array:
+    """`[..., *t.shape]`: how far ln P(t) moves when the curve's node values (`node_values`)
+    move by `deviation` `[..., K]` (any batch axes leading it). ln P is linear in the node values
+    for both curve types (a `DiscountCurve` is log-linear between its tenors and continues its
+    last segment; a `ZeroCurve` is linear in the zero rate, flat before its first pillar, and its
+    flat-forward extrapolation is linear in its last two rates), so this is the curve's own
+    two-node interpolation applied to the deviations: a gather and two multiplications per time,
+    in the deviation's dtype. A path's deviation of the curve from a level is carried to every
+    flow this way (F-07's difference form, `engine.pricing.legs`)."""
+    left, right, w_left, w_right = _stencil(curve, jnp.asarray(t, dtype=deviation.dtype))
+    return deviation[..., left] * w_left + deviation[..., right] * w_right
+
+
+def _stencil(curve, t):
+    """ln P(t) as `values[left] * w_left + values[right] * w_right` of the curve's node values
+    (see `log_discount_deviation`): the two nodes and their weights, each of `t`'s shape. A
+    `DiscountCurve`'s are `loglinear_log_discount`'s; a `ZeroCurve`'s are `-t` times
+    `zero_rate`'s, with its extrapolation's coefficients past the last pillar."""
+    times = (curve.times if isinstance(curve, DiscountCurve) else curve.pillar_times).astype(t.dtype)
+    n = times.shape[0]
+    if n < 2:
+        zero = jnp.zeros(t.shape, dtype=jnp.int32)
+        return zero, zero, jnp.zeros_like(t), (-t if isinstance(curve, ZeroCurve) else jnp.ones_like(t))
+    right = jnp.clip(jnp.searchsorted(times, t, side="right"), 1, n - 1)
+    left = right - 1
+    if isinstance(curve, DiscountCurve):
+        weight = (times[right] - t) / (times[right] - times[left])
+        return left, right, weight, 1.0 - weight
+    share = jnp.clip((t - times[left]) / (times[right] - times[left]), 0.0, 1.0)
+    t_n, gap = times[-1], times[-1] - times[-2]
+    past = t - t_n
+    beyond = t > t_n
+    return (jnp.where(beyond, n - 2, left), jnp.where(beyond, n - 1, right),
+            jnp.where(beyond, past * t_n / gap, -t * (1.0 - share)),
+            jnp.where(beyond, -(t_n + past * (1.0 + t_n / gap)), -t * share))
+
+
 def curve_dtype(curve):
     """The working dtype of a `ZeroCurve` or a `DiscountCurve`: kernels that read a curve
     compute in it (docs/planning/details/precision.md §6.4)."""

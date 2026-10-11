@@ -13,7 +13,7 @@ import numpy as np
 from jax.scipy.stats import norm
 from scipy.stats.qmc import Sobol
 
-from engine.precision import matmul
+from engine.precision import Arithmetic
 
 
 def generate_sobol_normals(num_scenarios: int, num_steps: int, num_assets: int, dtype, seed: int = 42) -> jax.Array:
@@ -112,32 +112,27 @@ def _build_bridge_matrix(time_grid: np.ndarray) -> np.ndarray:
     return B
 
 
-@jax.jit
-def _apply_bridge_matrix(B_matrix: jax.Array, Z: jax.Array) -> jax.Array:
-    """`B @ Z` over the time axis of `Z` `[T, ...]`, as one `[T, T] x [T, rest]` product."""
-    return matmul(B_matrix, Z.reshape(Z.shape[0], -1)).reshape(Z.shape)
+def bridge_increments_matrix(time_grid) -> np.ndarray:
+    """`[T, T]`: the matrix A with `A @ Z` the bridged increments standardized by sqrt(dt),
+    `dW_i / sqrt(dt_i)`: the bridge `B` (`_build_bridge_matrix`) differenced along time and
+    scaled, on the host in float64. Folding the difference in keeps it out of the device's
+    arithmetic: differencing the path values there would subtract numbers that grow as sqrt(t)
+    to get increments that do not, a cancellation a format below float32 cannot afford (F-07)."""
+    times = np.asarray(time_grid, dtype=np.float64)
+    bridge = _build_bridge_matrix(times)
+    increments = np.diff(np.concatenate([np.zeros((1, bridge.shape[1])), bridge]), axis=0)
+    return increments / np.sqrt(np.diff(times))[:, None]
 
 
-def apply_brownian_bridge(Z: jax.Array, time_grid: jax.Array) -> jax.Array:
+@partial(jax.jit, static_argnames="arithmetic")
+def _apply_bridge_matrix(matrix: jax.Array, Z: jax.Array, arithmetic: Arithmetic) -> jax.Array:
+    """`matrix @ Z` over the time axis of `Z` `[T, ...]`, as one `[T, T] x [T, rest]` product."""
+    return arithmetic.matmul(matrix, Z.reshape(Z.shape[0], -1)).reshape(Z.shape)
+
+
+def apply_brownian_bridge(Z: jax.Array, time_grid, arithmetic: Arithmetic = None) -> jax.Array:
     """Independent normals `[TimeSteps, Scenarios, Assets]` -> bridged increments,
-    standardized by sqrt(dt)."""
-    num_steps, num_scenarios, num_assets = Z.shape
-
-    B_matrix_np = _build_bridge_matrix(np.asarray(time_grid))
-    B_matrix = jnp.asarray(B_matrix_np, dtype=Z.dtype)
-
-    # Path values W(t_i), variance ordered by the bridge.
-    W_paths = _apply_bridge_matrix(B_matrix, Z)
-    
-    # Path values -> increments dW.
-    W_paths_with_zero = jnp.concatenate(
-        [jnp.zeros((1, num_scenarios, num_assets), dtype=Z.dtype), W_paths], 
-        axis=0
-    )
-    dW = jnp.diff(W_paths_with_zero, axis=0)
-    
-    # Standardize the increments to N(0, 1) per step.
-    dt = jnp.diff(time_grid)
-    Z_sequential = dW / jnp.sqrt(dt)[:, None, None]
-    
-    return Z_sequential
+    standardized by sqrt(dt): one product with `bridge_increments_matrix`, in `arithmetic`
+    (the normals' own format, float64 or float32, by default)."""
+    arithmetic = arithmetic or Arithmetic.of(Z.dtype)
+    return _apply_bridge_matrix(jnp.asarray(bridge_increments_matrix(np.asarray(time_grid))), Z, arithmetic)

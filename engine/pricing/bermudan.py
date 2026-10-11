@@ -47,6 +47,7 @@ from engine.models.lgm import Sigma
 from engine.pricing.config import LgmSwaptionEngineConfig, reference_grid_dates
 from engine.pricing.context import PricingContext, from_market
 from engine.pricing.european import volatility_on_path
+from engine.pricing.legs import PathFixings
 from engine.pricing.lgm_grid import (
     _backward_induction_arrays,
     _build_grid_schedule,
@@ -151,11 +152,13 @@ def bermudan_value(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, context: 
 
 
 def bermudan_cube(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Market, scenarios: ScenarioMarket,
-                  fixings: jax.Array, decay: str, recalibrate: bool = True) -> jax.Array:
+                  fixings: PathFixings, decay: str, recalibrate: bool = True) -> jax.Array:
     """`[S, D]` NPVs of the option (its continuation value; exercise is `engine.pricing.
     options.wrap`'s job) on every path and date; 0 once no exercise date is after the date.
 
-    `fixings` `[S, D]`: FixingManager's path fixings for the trade's index."""
+    `fixings`: FixingManager's path fixings for the trade's index, read as rates `[S, D]` (the
+    rollback is not in difference form yet: it computes in the curves' one format)."""
+    fixings = fixings.rates
     asof = market.asof
     history = dict(cfg.fixings)
     grid_serials = np.array([d.serialNumber() for d in scenarios.dates], dtype=np.int64)
@@ -253,7 +256,7 @@ def _power_of_two(n: int) -> int:
 def _on_dates(curves: ScenarioCurves, dates: jax.Array) -> DiscountCurve:
     """The curves on `dates`, batched over dates then paths: times `[D, K]`, logs `[D, S, K]`
     (jitted, as `_unstack`: one program per shape, not one per eager operation, I-81)."""
-    return DiscountCurve(times=curves.tenor_times[dates],
+    return DiscountCurve(times=curves.tenor_times[dates].astype(curves.log_discounts.dtype),
                          log_discounts=jnp.swapaxes(curves.log_discounts[:, dates], 0, 1))
 
 

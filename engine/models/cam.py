@@ -18,7 +18,10 @@ plus the H-increment couplings of FX and EQ to their rates); `drift` is the stat
 part (`*_expectation_1`); the covariance is ORE's `covarianceImpl`. They depend only on the
 time grid and the parameters, so they are computed once on the host in float64 and the path
 recursion `x_{i+1} = M_i x_i + b_i + L_i Z_i` runs on device
-(`engine.market_simulation.paths.evolve_states`). `L_i` is the Cholesky factor of
+(`engine.market_simulation.paths.evolve_states`), in difference form: the state is its mean
+path, computed here in float64, plus a deviation in units of a power of two near its standard
+deviation (`path_moments`), so the device's products multiply numbers near 1 that no level
+swamps (F-07; docs/planning/details/precision.md §8.2). `L_i` is the Cholesky factor of
 the step covariance: ORE's `pseudoSqrt` with the CAM's default `SalvagingAlgorithm::None`
 is `CholeskyDecomposition(cov, flexible = true)`, reproduced by `flexible_cholesky`.
 
@@ -485,3 +488,33 @@ def step_moments(model: CrossAssetModel, times: Sequence[float]) -> StepMoments:
         transition=np.asarray(transitions), drift=np.asarray(drifts), covariance=covariances,
         cholesky=np.asarray([flexible_cholesky(c) for c in covariances]),
     )
+
+
+@dataclass(frozen=True)
+class PathMoments:
+    """The state's unconditional law on the grid `0 = times[0] < times[1] < ...`: its mean
+    `[T+1, d]`, and per component and date a power of two within a factor two of its standard
+    deviation, `scale` `[T+1, d]` (1 where the deviation is 0: at t = 0, and for a component
+    without volatility). The simulation and the scenario market work with each path's
+    deviation from the mean in units of the scale, `(x - mean) / scale`: numbers near 1 in every
+    component, which a product in a format below float32 rounds relative to the deviation, not
+    to a level such as a log equity spot. The scale is a power of two, so dividing by it and
+    multiplying back are exact."""
+    mean: np.ndarray   # [T+1, d]
+    scale: np.ndarray  # [T+1, d]
+
+
+def path_moments(model: CrossAssetModel, moments: StepMoments) -> PathMoments:
+    """The `PathMoments` of `model` on the grid of `moments` (float64, host): the mean and the
+    covariance carried through each step, `m <- M m + b`, `V <- M V M' + C`."""
+    d = model.dimension
+    means, variances = [model.initial_state()], [np.zeros(d)]
+    covariance = np.zeros((d, d))
+    for transition, drift, step_covariance in zip(moments.transition, moments.drift, moments.covariance):
+        means.append(transition @ means[-1] + drift)
+        covariance = transition @ covariance @ transition.T + step_covariance
+        variances.append(np.diag(covariance))
+    deviation = np.sqrt(np.maximum(np.asarray(variances), 0.0))
+    _, exponent = np.frexp(deviation)                       # deviation in [2^(e-1), 2^e)
+    scale = np.where(deviation > 0.0, np.ldexp(1.0, exponent), 1.0)
+    return PathMoments(mean=np.asarray(means), scale=scale)

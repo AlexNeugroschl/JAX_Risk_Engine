@@ -27,9 +27,18 @@ seen from the simulation date (`DynamicSwaptionVolatilityMatrix`, `volatility_on
 
 This is the European's default engine for either simulation model (I-46); the configurable
 alternative is QuantLib's Jamshidian engine on a Hull-White model (`engine.pricing.jamshidian`).
+
+In difference form (F-07): the engine reads the exercise-into swap through `leg_values` as a
+payer swap's value V, its annuity A and floating basis points B (and, cash settled, the
+discount factor at the start), each a level plus each path's deviation from matrix products in
+the stage's compute format. The forward less the effective strike is `V / A`, so the moneyness
+is a swap's value, whose legs cancel in the level; the Bachelier formula on it, and the cash
+annuity, are evaluated in the stage's accumulate format, as a native low-precision kernel
+evaluates them (`engine.precision.arithmetic`).
 """
 import dataclasses
 from dataclasses import dataclass
+from functools import partial
 from typing import Optional
 
 import jax
@@ -42,9 +51,10 @@ from engine.instruments.european_swaption import SwaptionConfig, underlying_swap
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER
 from engine.market_data.market import VOL_DAY_COUNTER, SwaptionVolSurface, index_name, swap_length_between
 from engine.market_simulation.scenario_market import ScenarioCurves
+from engine.precision import Arithmetic, add_level
 from engine.pricing.context import PricingContext
 from engine.pricing.legs import (
-    Legs, PathSchedule, coupon_rates, discount_from, legs_of, on_every_date, today_schedule,
+    Deviations, Legs, LegValues, PathFixings, PathSchedule, leg_values, legs_of, on_every_date, today_schedule,
 )
 
 #: `DynamicSwaptionVolatilityMatrix::volatilityImpl`'s floor on the forward variance rate.
@@ -100,22 +110,45 @@ def european_terms(cfg: SwaptionConfig, asof: ORE.Date, fixings=None) -> Europea
     )
 
 
+def european_legs(terms: EuropeanTerms, disc, index, t, projected=True, known_rates=0.0,
+                  deviations: Optional[Deviations] = None, arithmetic: Optional[Arithmetic] = None):
+    """The exercise-into swap's `LegValues` on a valuation date at model time `t` (curves
+    measured from it), every coupon alive (the engine keeps those paying after the expiry), and
+    the discount factor at the start when cash settled: `(level, deviation)` (`leg_values`), its
+    value and annuity, and its floating basis points when cash settled (the forward the cash
+    annuity compounds at reads them)."""
+    legs = terms.legs
+    alive_fixed, alive_float = jnp.ones(legs.fixed_pay.shape, dtype=bool), jnp.ones(legs.float_pay.shape, dtype=bool)
+    cash = terms.par_yield is not None
+    return leg_values(legs, disc, index, t, alive_fixed, alive_float, projected, known_rates, deviations,
+                      terms.start_time if cash else None,
+                      ("value", "annuity", "float_bps") if cash else ("value", "annuity"), arithmetic)
+
+
+def bachelier_on_legs(terms: EuropeanTerms, values: LegValues, variance) -> jax.Array:
+    """The engine's NPV from the exercise-into swap's values (`european_legs`, any batch axes)
+    for a normal `variance` to expiry: the annuity times the Bachelier price of the forward less
+    the effective strike, `values.value / values.annuity`; the cash annuity when
+    `terms.par_yield`."""
+    legs = terms.legs
+    cast = lambda x: jnp.asarray(x, dtype=values.value.dtype)  # noqa: E731  (the terms in the values' format)
+    moneyness = values.value / values.annuity
+    annuity = values.annuity
+    if terms.par_yield is not None:
+        forward = moneyness + cast(legs.fixed_rate) - cast(legs.float_spread) * values.float_bps / values.annuity
+        compounded = (1.0 + jnp.expand_dims(forward, -1)) ** (-cast(terms.par_yield))
+        annuity = values.discounts[..., 0] * jnp.sum(cast(legs.fixed_bps) * compounded, axis=-1)
+    return annuity * bachelier(moneyness, 0.0, jnp.sqrt(cast(variance)), call=legs.payer)
+
+
 @jax.jit
 def black_multileg_npv(terms: EuropeanTerms, disc, index, t, variance, projected=True, known_rates=0.0) -> jax.Array:
-    """The engine's NPV on a valuation date at model time `t` (curves measured from it, any
-    batch axes), for a normal `variance` to expiry; the cash annuity when `terms.par_yield`. Coupons pay `coupon_rates` (a coupon that
-    fixed before the valuation date pays its fixing: ORE reads the coupon's amount)."""
-    legs = terms.legs
-    annuity = jnp.sum(legs.fixed_bps * discount_from(disc, t, legs.fixed_pay), axis=-1)
-    float_df = discount_from(disc, t, legs.float_pay)
-    rate = coupon_rates(legs, index, t, projected, known_rates)
-    float_bps = jnp.sum(legs.float_nominal * legs.float_accrual * float_df, axis=-1)
-    forward = jnp.sum(legs.float_nominal * rate * legs.float_accrual * float_df, axis=-1) / annuity
-    strike = legs.fixed_rate - legs.float_spread * float_bps / annuity
-    if terms.par_yield is not None:
-        compounded = (1.0 + jnp.expand_dims(forward, -1)) ** (-terms.par_yield)
-        annuity = discount_from(disc, t, terms.start_time) * jnp.sum(legs.fixed_bps * compounded, axis=-1)
-    return annuity * bachelier(forward, strike, jnp.sqrt(variance), call=legs.payer)
+    """The engine's NPV on a valuation date at model time `t` (curves measured from it), for a
+    normal `variance` to expiry; the cash annuity when `terms.par_yield`. Coupons pay their
+    forecast, or `known_rates` where not `projected` (a coupon that fixed before the valuation
+    date pays its fixing: ORE reads the coupon's amount)."""
+    level, _ = european_legs(terms, disc, index, t, projected, known_rates)
+    return bachelier_on_legs(terms, level, variance)
 
 
 def european_value(cfg: SwaptionConfig, context: PricingContext) -> jax.Array:
@@ -133,23 +166,32 @@ def european_value(cfg: SwaptionConfig, context: PricingContext) -> jax.Array:
 
 
 def european_cube(terms: EuropeanTerms, schedule: PathSchedule, times: np.ndarray, disc: ScenarioCurves,
-                  index: ScenarioCurves, fixings: jax.Array, variances: np.ndarray) -> jax.Array:
-    """`[S, D]` option NPVs on every path and date (0 from expiry on), in the curves' dtype;
-    `variances` `[D]` from `variance_on_path`."""
+                  index: ScenarioCurves, fixings: PathFixings, variances: np.ndarray,
+                  arithmetic: Optional[Arithmetic] = None) -> jax.Array:
+    """`[S, D]` option NPVs on every path and date (0 from expiry on), in `arithmetic` (the
+    curves' own format, float64 or float32, by default); `variances` `[D]` from
+    `variance_on_path`."""
     alive = np.asarray([v > 0.0 for v in variances])
-    dtype = disc.log_discounts.dtype
-    return _european_cube(terms.astype(dtype), schedule, times, disc, index, fixings,
-                          np.asarray(variances, dtype=dtype), alive)
+    arithmetic = arithmetic or Arithmetic.of(disc.log_discounts.dtype)
+    return _european_cube(terms, schedule, times, disc, index, fixings,
+                          np.asarray(variances, dtype=arithmetic.dtype), alive, arithmetic)
 
 
-@jax.jit
+@partial(jax.jit, static_argnames="arithmetic")
 def _european_cube(terms: EuropeanTerms, schedule: PathSchedule, times, disc: ScenarioCurves, index: ScenarioCurves,
-                   fixings: jax.Array, variances, alive) -> jax.Array:
-    def value(disc_j, idx_j, t_j, _fixed, _float, projected_j, known_j, variance_j, alive_j):
-        npv = black_multileg_npv(terms, disc_j, idx_j, t_j, variance_j, projected_j, known_j)
+                   fixings: PathFixings, variances, alive, arithmetic: Arithmetic) -> jax.Array:
+    def value(disc_j, idx_j, t_j, _fixed, _float, projected_j, known_j, deviations, variance_j, alive_j):
+        level, moved = european_legs(terms, disc_j, idx_j, t_j, projected_j, known_j, deviations, arithmetic)
+        npv = bachelier_on_legs(terms, on_path(level, moved), variance_j)
         return jnp.where(alive_j, npv, 0.0)
 
     return on_every_date(value, terms.legs, schedule, times, disc, index, fixings, variances, alive)
+
+
+def on_path(level, deviation):
+    """A level's values plus each path's deviation (`LegValues` or arrays alike; an output not
+    asked for, None, stays None), in the deviation's format (`engine.precision.add_level`)."""
+    return jax.tree_util.tree_map(add_level, level, deviation)
 
 
 def bachelier(forward, strike, std_dev, call: bool):

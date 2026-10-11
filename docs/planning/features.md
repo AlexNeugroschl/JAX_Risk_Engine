@@ -118,8 +118,11 @@ block scales and nearest or stochastic rounding (done 2026-10-02: float16,
 bfloat16, `float8_e4m3fn`, `float8_e5m2`; `Stored`, `Precision.rounding`); compute below
 float32 through kernels in difference form, matrix products where a kernel can be one, one
 implementation for every precision (A-16), with a product's own precision (TensorFloat-32,
-bfloat16 passes, FP8) chosen by the policy (every product states its precision through one helper since
-2026-10-06, never the device's default); the evidence table and warnings (I-55);
+bfloat16 passes, FP8) chosen by the policy (done 2026-10-10 for the simulation, the scenario
+market, the legs, the Europeans and market risk: compute in float16, bfloat16, both FP8
+formats, `tensorfloat32` and `bfloat16_3x`, accumulated in float32, each native or emulated by
+device and named in the report; [details/precision.md §8](details/precision.md#8-compute-below-float32);
+the Bermudan/American rollback follows I-32 and I-49); the evidence table and warnings (I-55);
 timing across devices on Ironwood and H100 (after the sharding of I-61); FP4 on TPU 8t/8i. Measured so far: FP8
 storage of the shocks biases a call payoff by about one Monte Carlo standard error at 4M
 paths (stochastic rounding: 0.15), so the earlier rejection of FP8, which compared error per

@@ -49,7 +49,8 @@ from tests.support.worker_stubs import ROOT
 PREALLOCATE, MATMUL, XLA_FLAGS = "XLA_PYTHON_CLIENT_PREALLOCATE", "JAX_DEFAULT_MATMUL_PRECISION", "XLA_FLAGS"
 DETERMINISTIC = worker.DETERMINISTIC_KERNELS_FLAG
 ENGINE = ROOT / "engine"
-HELPER = ENGINE / "precision" / "products.py"
+#: The product helpers: a product through them is its caller's (`Arithmetic.matmul` calls `matmul`).
+HELPERS = {ENGINE / "precision" / "products.py", ENGINE / "precision" / "arithmetic.py"}
 FAST = LgmSwaptionEngineConfig(n_per_std=12, std_devs=4.0)
 
 on_an_accelerator = pytest.mark.skipif(jax.default_backend() == "cpu", reason="an accelerator's default, not the CPU's")
@@ -140,8 +141,9 @@ class TestADemoServerSharesTheGpu:
 
 
 def _engine_line() -> str:
-    """The innermost line of engine code that binds the current product, the helper's caller
-    for a product through `engine.precision.matmul`, or "outside the engine". A transpose AD generates is the original product's, from the source information
+    """The innermost line of engine code that binds the current product, the helpers' caller
+    for a product through `engine.precision.matmul` or `Arithmetic.matmul`, or "outside the
+    engine". A transpose AD generates is the original product's, from the source information
     JAX sets while transposing; otherwise the Python stack (JAX's own captured traceback stops
     at `jnp.matmul`'s jit boundary)."""
     context = source_info_util._source_info_context.context.traceback
@@ -152,7 +154,7 @@ def _engine_line() -> str:
         frame = frame.f_back
     for file_name, line in frames:
         path = Path(file_name)
-        if path.is_relative_to(ENGINE) and path != HELPER:
+        if path.is_relative_to(ENGINE) and path not in HELPERS:
             return f"{path.relative_to(ROOT).as_posix()}:{line}"
     return "outside the engine"
 
@@ -188,9 +190,16 @@ class TestEveryMatrixProductStatesItsPrecision:
         np.testing.assert_array_equal(matmul(a, a.T), np.asarray(a) @ np.asarray(a).T)
 
     @pytest.mark.parametrize("name", ["float16", "bfloat16", "float8_e4m3fn", "float8_e5m2"])
-    def test_a_format_not_enabled_for_compute_is_refused(self, name):
-        with pytest.raises(ValueError, match=rf"{name} is not enabled yet \(F-07\)"):
-            product_precision(jnp.dtype(name))
+    def test_an_array_format_below_float32_states_full_precision_on_its_rounded_operands(self, name):
+        """Its operands are rounded to the format (`engine.precision.products`), and the product
+        of two of them is exact in its float32 accumulator: nothing is left to the device."""
+        assert product_precision(jnp.dtype(name)) == jax.lax.Precision.HIGHEST
+
+    @pytest.mark.parametrize("name", ["float16", "bfloat16", "float8_e4m3fn"])
+    def test_operands_below_float32_need_the_stages_arithmetic(self, name):
+        a = jnp.ones((2, 2), dtype=name)
+        with pytest.raises(ValueError, match=rf"a product of {name} operands needs the stage's arithmetic"):
+            matmul(a, a)
 
     @pytest.mark.slow
     def test_in_every_pipeline(self, products):
@@ -223,6 +232,7 @@ class TestEveryMatrixProductStatesItsPrecision:
         assert not wrong, f"{len(wrong)} matrix products without their stated precision: {wrong}"
         lines = {line.rsplit(":", 1)[0] for line, _, _ in products}
         assert lines == {"engine/market_simulation/paths.py", "engine/market_simulation/sobol.py",
+                         "engine/market_simulation/scenario_market.py", "engine/pricing/legs.py",
                          "engine/calibration/ore_lgm.py", "engine/pricing/lgm_grid.py"}, lines
         assert {str(dtype) for _, dtype, _ in products} == {"float64", "float32"}
 

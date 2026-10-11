@@ -430,6 +430,7 @@ Precision(
 )
 Precision()                       # float64 everywhere (the default)
 Precision.throughout("float32")   # every stage stored, computed and accumulated in float32
+Precision.throughout("bfloat16")  # bfloat16 products and storage, float32 accumulation (2026-10-10)
 ```
 
 The pricing stage is per trade (decision A-15): `Precision.precision_for(trade)`
@@ -440,13 +441,30 @@ names no trade of the run or no product is refused before any work. The simulati
 scenario market are shared by every trade, so they have no overrides.
 
 `storage` is the format a stage's output is kept in until the next stage reads it; `compute`
-the format its arithmetic runs in; `accumulate` the format its sums accumulate in. The format
-names come from one table (`engine/precision/formats.py`), which validation, the HTTP schema
-and storage all read. `storage` is any format of the table no wider than `compute` (`float64`,
-`float32`, and since 2026-10-02 `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2`);
-`compute` is `float64` or `float32` and `accumulate` equals it until F-07's compute formats, and using
-one earlier is refused naming F-07. Calibration, t=0 values, Greeks and every reduction
-over paths (exposure, VaR/ES) are float64 by decision (A-10).
+the format of its matrix products; `accumulate` the format those products accumulate in and
+the rest of the stage runs in. The format names come from one table
+(`engine/precision/formats.py`), which validation, the HTTP schema, storage and the products all
+read. `storage` is an array format no wider than `accumulate` (`float64`, `float32`, and since
+2026-10-02 `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2`); `compute` any format of the
+table, since 2026-10-10 the four below float32 and the product formats `tensorfloat32` and
+`bfloat16_3x` too; `accumulate` float32 or float64, and float32 under a compute format below
+float32. Calibration, t=0 values, Greeks and every reduction over paths (exposure, VaR/ES) are
+float64 by decision (A-10).
+
+**Compute below float32** (2026-10-10, F-07; [details/precision.md
+§8](../planning/details/precision.md#8-compute-below-float32)). The path kernels are in
+difference form: each value is a level no path depends on, computed in float64 (the model's
+mean path; the market at the mean state; every flow valued off the level curves), plus each
+path's deviation from it, joined in two terms of the accumulate format so each path is rounded
+once by itself, and only the deviation enters a matrix product. The products are the Brownian bridge (its differencing folded into the matrix), the
+simulation step on standardized state deviations, the scenario market's loadings on the state,
+the legs' amounts times each path's discount-factor deviations, and the Jamshidian engine's
+option sum. Each runs through `engine.precision.matmul` in the stage's `Arithmetic`: operands
+rounded to the compute format's grid (scaled by a power of two per path and per column into its
+range), accumulated in float32, natively where the device has units for the format, emulated
+otherwise with the same numbers; the report names which (`PrecisionReport.products`). The
+Bermudan/American rollback keeps one format, float32 or float64, until it is rewritten so
+(after I-32 and I-49).
 
 **The cast points.** Only these read the policy; everything between them follows the dtype
 of its inputs (kernels cast their own constant inputs, coupon tables, volatilities and
@@ -454,11 +472,11 @@ calibration baskets, to the dtype of the curves they are given):
 
 | Stage boundary | Where | What happens |
 |---|---|---|
-| shocks, states | `engine.market_simulation.config.simulate` | normals generated and bridged at `simulation.compute`, stored; states evolved at `simulation.compute` from the loaded shocks, stored |
-| market | `simulate` | the scenario market built at `market.compute` from the loaded states, returned stored at `market.storage`; its tenor grid (no scenario axis) stays at `market.compute` |
-| values | `engine.pricing.cube.value_portfolio` | per trade, at `precision_for(trade)`: the market loaded at its `compute` (once per dtype), the trade priced, its cube column stored at its `storage` |
+| shocks, states | `engine.market_simulation.config.simulate` | normals generated in the simulation's accumulate format and bridged in its arithmetic, stored; states evolved in its arithmetic from the loaded shocks, stored |
+| market | `simulate` | the scenario market built in the market's arithmetic from the states loaded at its accumulate format, returned stored at `market.storage`; its tenor grid and curve levels (no scenario axis) stay float64, as every level is |
+| values | `engine.pricing.cube.value_portfolio` | per trade, at `precision_for(trade)`: the market loaded at its accumulate format (once per format), the trade priced in its arithmetic, its cube column stored at its `storage` |
 | reductions | `engine.run.pipeline` | the cube and the numeraire loaded at float64, then exposure; `PortfolioResult.npv_cube` is the float64-loaded cube, so columns stored in different formats never meet in arithmetic |
-| market risk | `engine.risk.market.run_market_risk` | shifts rounded to `simulation.compute` and stored; per trade, revaluation and P&L at its `precision_for(trade).compute`, the P&L stored at its `storage`; VaR/ES in float64 |
+| market risk | `engine.risk.market.run_market_risk` | shifts rounded to the simulation's accumulate format and stored; per trade, the P&L as the deviation from its base value in its `precision_for(trade)` arithmetic (in full for a Bermudan/American), stored at its `storage`; VaR/ES in float64 |
 
 `store`/`load` (`engine/precision/storage.py`) are the only casts between stages, and the
 pipeline stores through `Precision.store`, which adds the policy's rounding. For float64 and

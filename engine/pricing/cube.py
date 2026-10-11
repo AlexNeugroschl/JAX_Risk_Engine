@@ -14,10 +14,14 @@ and a cash-settled one leaves the portfolio. Paid cashflows drop out and fixings
 path's FX rate, and not deflated (ORE's cube stores NPVs; the numeraire travels beside them).
 
 Each trade is priced on paths at its own precision, `Precision.precision_for(trade)` (an
-override for its id, else for its product, else the pricing stage; decision A-15): the scenario
-market is loaded at that compute dtype and the trade's cube column stored at that storage
-format. t=0 values are float64 (A-10). `value_paths` prices the paths alone, as the paired
-float64 sample of a reduced-precision run does (decision A-13).
+override for its id, else for its product, else the pricing stage; decision A-15), in its
+arithmetic (`engine.precision.Arithmetic`): the scenario market is loaded at the accumulate
+format, the kernels' products run in the compute format, and the trade's cube column is stored
+at the storage format. Swaps, bonds and Europeans are priced in difference form at every
+precision (F-07); the Bermudan/American rollback and recalibration are not yet, so their
+compute format must equal their accumulate format, float32 or float64, until they are
+(`RESTRICTED_PRODUCTS`). t=0 values are float64 (A-10). `value_paths` prices the paths alone,
+as the paired float64 sample of a reduced-precision run does (decision A-13).
 
 Trades name their currency and index; the market supplies the curves and volatilities and the
 pricing configuration the models (audit A-3, I-63). A trade valued on another date than the
@@ -41,13 +45,13 @@ from engine.instruments.treasury import BondConfig, _remaining_cashflows
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER
 from engine.market_data.market import Market, index_name
 from engine.market_simulation.scenario_market import ScenarioMarket
-from engine.precision import Precision, Stored, load, require_precision
+from engine.precision import Arithmetic, Precision, Stored, load, require_precision
 from engine.pricing.bermudan import bermudan_cube, bermudan_value, contract_exercise_dates
 from engine.pricing.config import PricingConfig
 from engine.pricing.context import PricingContext, from_market
 from engine.pricing.european import european_cube, european_terms, european_value, variance_on_path
 from engine.pricing.jamshidian import jamshidian_cube, jamshidian_value, validate_jamshidian
-from engine.pricing.legs import Legs, legs_cube, legs_of, path_fixings, path_schedule, today_npv
+from engine.pricing.legs import Legs, PathFixings, legs_cube, legs_of, path_fixings, path_schedule, today_npv
 from engine.pricing.options import effective_steps, underlying_start, wrap
 
 Trade = Union[SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig, BondConfig]
@@ -55,6 +59,10 @@ Trade = Union[SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwapti
 #: Every product the pipeline prices, by the name its trades carry (`product`): the keys of
 #: `Precision.by_product`.
 PRODUCTS: Tuple[str, ...] = tuple(t.product for t in get_args(Trade))
+
+#: The products whose path kernels are not in difference form yet, and the item that makes them
+#: so: their pricing stage computes and accumulates in one format, float32 or float64.
+RESTRICTED_PRODUCTS = {BermudanSwaptionConfig.product: "F-07", AmericanSwaptionConfig.product: "F-07"}
 
 
 @dataclass
@@ -97,11 +105,19 @@ def validate_trades(trades: Sequence[Trade], market: Market, pricing: PricingCon
                     precision: Precision = Precision()) -> None:
     """Refuse what the pipeline cannot price as specified: a precision override that names
     no trade or product (`Precision.check_overrides`), a trade valued on another date than the
-    market's, a trade whose curves or volatilities the market lacks, or one its configured
-    engine refuses."""
+    market's, a trade whose curves or volatilities the market lacks, one its configured engine
+    refuses, or one whose kernel cannot compute in its pricing stage's arithmetic
+    (`RESTRICTED_PRODUCTS`)."""
     precision.check_overrides(trades, PRODUCTS)
     for cfg in trades:
         label = f"trade {cfg.trade_id!r} ({type(cfg).__name__})"
+        stage = precision.precision_for(cfg)
+        if cfg.product in RESTRICTED_PRODUCTS and not stage.arithmetic.plain:
+            raise ValueError(f"{label}: its pricing stage computes in {stage.compute!r} and accumulates in "
+                             f"{stage.accumulate!r}; the {cfg.product} kernel (the rollback and its recalibration) is "
+                             f"not in difference form yet ({RESTRICTED_PRODUCTS[cfg.product]}), so it computes and "
+                             f"accumulates in one format, float32 or float64: set its precision with "
+                             f"Precision.by_product or by_trade")
         if cfg.evaluation_date != market.asof:
             raise ValueError(f"{label}: evaluation_date {cfg.evaluation_date} is not the market's as-of date "
                              f"{market.asof}; book trades on the valuation date (audit A-4)")
@@ -182,24 +198,25 @@ def _today(trades, market: Market, base_currency: str, pricing: PricingConfig,
 def _columns(trades, market: Market, scenarios: ScenarioMarket, base_currency: str, pricing: PricingConfig,
              decay: str, precision: Precision) -> List[Union[jax.Array, Stored]]:
     """Cast point 4 of docs/planning/details/precision.md §6.3, per trade: the scenario market
-    is loaded at the compute dtype of `precision.precision_for(trade)` (once per dtype), the
-    trade priced in it, and its cube column stored at that storage format, named by the trade's
-    id (`Precision.store`)."""
-    loaded = {}  # compute dtype -> (the scenario market at it, its path fixings)
+    is loaded at the accumulate format of `precision.precision_for(trade)` (once per format, with
+    its path fixings), the trade priced in its arithmetic, and its cube column stored at its
+    storage format, named by the trade's id (`Precision.store`)."""
+    loaded = {}  # accumulate dtype -> (the scenario market at it, its path fixings)
     columns = []
     for cfg in trades:
         stage = precision.precision_for(cfg)
-        if stage.compute_dtype not in loaded:
-            at_dtype = scenarios.map_arrays(lambda a: load(a, stage.compute_dtype))
-            loaded[stage.compute_dtype] = at_dtype, _index_fixings(trades, market, at_dtype)
-        sm, fixings = loaded[stage.compute_dtype]
+        arithmetic = stage.arithmetic
+        if arithmetic.dtype not in loaded:
+            at_dtype = scenarios.map_arrays(lambda a: load(a, arithmetic.dtype), grid=lambda grid: grid)
+            loaded[arithmetic.dtype] = at_dtype, _index_fixings(trades, market, at_dtype)
+        sm, fixings = loaded[arithmetic.dtype]
         fx_path = 1.0 if cfg.currency == base_currency else sm.fx[cfg.currency]
-        cube = _path_values(cfg, market, sm, fixings, pricing, decay)
+        cube = _path_values(cfg, market, sm, fixings, pricing, decay, arithmetic)
         columns.append(precision.store(cube * fx_path, stage.storage, f"values/{cfg.trade_id}"))
     return columns
 
 
-def _index_fixings(trades, market: Market, scenarios: ScenarioMarket) -> Dict[str, jax.Array]:
+def _index_fixings(trades, market: Market, scenarios: ScenarioMarket) -> Dict[str, PathFixings]:
     """FixingManager's path fixings for every index a trade references."""
     tenors = {index_name(c.currency, c.index_tenor_months): c.index_tenor_months
               for c in trades if not isinstance(c, BondConfig)}
@@ -237,19 +254,20 @@ def _engine(cfg, pricing: PricingConfig):
     return pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
 
 
-def _path_values(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricing: PricingConfig, decay: str):
-    """The `[S, D]` cube column of one trade in its own currency."""
+def _path_values(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricing: PricingConfig, decay: str,
+                 arithmetic: Arithmetic):
+    """The `[S, D]` cube column of one trade in its own currency, in `arithmetic`."""
     currency = cfg.currency
     disc = sm.discount[currency]
     if isinstance(cfg, BondConfig):
         legs = bond_legs(cfg)
-        return legs_cube(legs, path_schedule(legs, market.asof, sm.dates), sm.times, disc, disc,
-                                jnp.zeros((sm.num_paths, len(sm.dates)), dtype=disc.log_discounts.dtype))
+        return legs_cube(legs, path_schedule(legs, market.asof, sm.dates), sm.times, disc, disc, None, arithmetic)
     name = index_name(currency, cfg.index_tenor_months)
     index, index_fixings = sm.index[name], fixings[name]
 
     def swap_cube(legs: Legs):
-        return legs_cube(legs, path_schedule(legs, market.asof, sm.dates), sm.times, disc, index, index_fixings)
+        return legs_cube(legs, path_schedule(legs, market.asof, sm.dates), sm.times, disc, index, index_fixings,
+                         arithmetic)
 
     if isinstance(cfg, SwapConfig):
         return swap_cube(legs_of(_swap_underlying(cfg), cfg.payer, market.asof, cfg.fixings))
@@ -258,11 +276,12 @@ def _path_values(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricin
         schedule = path_schedule(terms.legs, market.asof, sm.dates)
         if pricing.european == "Jamshidian":
             alive = np.asarray([terms.expiry_serial > d.serialNumber() for d in sm.dates])
-            option = jamshidian_cube(terms, pricing.jamshidian, schedule, sm.times, disc, index, index_fixings, alive)
+            option = jamshidian_cube(terms, pricing.jamshidian, schedule, sm.times, disc, index, index_fixings, alive,
+                                     arithmetic)
         else:
             surface = market.swaption_vols(currency)
             variances = [variance_on_path(terms, surface, market.asof, d, decay) for d in sm.dates]
-            option = european_cube(terms, schedule, sm.times, disc, index, index_fixings, variances)
+            option = european_cube(terms, schedule, sm.times, disc, index, index_fixings, variances, arithmetic)
         swap = _european_underlying(cfg)
         exercises, fixings_history = (cfg.exercise_date,), {}
     else:

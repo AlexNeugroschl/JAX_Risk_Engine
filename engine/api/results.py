@@ -66,11 +66,14 @@ def _estimate_schema(estimate) -> Union[MeanEstimateSchema, QuantileEstimateSche
 class PrecisionReportSchema(BaseModel):
     """`engine.precision.PrecisionReport`: the precision as run, read from the run's arrays in
     the worker that ran it (I-12): the policy, each trade's pricing stage, the realized format
-    of every stored array, the devices and backend, and with a paired float64 sample each
-    figure's estimate, keyed `"netting_set/EPE"`, `"trades/<trade id>/PFE_95"`."""
+    of every stored array, every compute format whose matrix products ran and whether the
+    device ran it natively or the engine emulated it (`products`), the devices and backend, and
+    with a paired float64 sample each figure's estimate, keyed `"netting_set/EPE"`,
+    `"trades/<trade id>/PFE_95"`."""
     policy: PrecisionSchema
     trades: Dict[str, StagePrecisionSchema]
     realized: Dict[str, str]
+    products: Dict[str, Literal["native", "emulated"]] = Field(default_factory=dict)
     devices: List[str]
     backend: str
     jax_version: str
@@ -82,9 +85,9 @@ class PrecisionReportSchema(BaseModel):
     def from_dataclass(cls, report: PrecisionReport) -> "PrecisionReportSchema":
         return cls(policy=PrecisionSchema.from_dataclass(report.policy),
                    trades={k: StagePrecisionSchema.from_dataclass(v) for k, v in report.trades.items()},
-                   realized=dict(report.realized), devices=list(report.devices), backend=report.backend,
-                   jax_version=report.jax_version, paths=report.paths, paired_paths=report.paired_paths,
-                   figures={k: _estimate_schema(v) for k, v in report.figures.items()})
+                   realized=dict(report.realized), products=dict(report.products), devices=list(report.devices),
+                   backend=report.backend, jax_version=report.jax_version, paths=report.paths,
+                   paired_paths=report.paired_paths, figures={k: _estimate_schema(v) for k, v in report.figures.items()})
 
 
 class RiskMetricsSchema(BaseModel):

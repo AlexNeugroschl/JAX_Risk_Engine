@@ -9,8 +9,9 @@ D-9 ([compliance/decisions.md](../../../compliance/decisions.md)). It replaces
 
 **Written:** 2026-10-01 · **Items:** [F-07](../features.md#f-07), [I-55](../known-issues.md#i-55),
 [I-61](../known-issues.md#i-61), in the [roadmap's focus](../roadmap.md#stage-3--the-focus); stage 1
-(done) built the mechanism, and the storage harness (2026-10-09) closed
-[I-75](../known-issues.md#i-75)
+(done) built the mechanism, the storage harness (2026-10-09) closed
+[I-75](../known-issues.md#i-75), and the kernel rewrite (2026-10-10) enabled compute below
+float32 for every path kernel but the Bermudan/American rollback ([§8](#8-compute-below-float32))
 
 ---
 
@@ -47,11 +48,12 @@ conflicts with one is redesigned rather than excused.
   snapshot was re-baselined after it (§13.1); the rest of stage 1 is bit for bit against that.
   The compiled Greeks (2026-10-06) re-baselined the AD Greeks alone in the same way, each now one compiled program
   (§13.1); every other array stayed bit for bit.
-- **The kernel rewrite (F-07) is the one step that moves float64 numbers.** It rewrites the kernels for
-  low-precision compute and uses the same kernels at float64 (A-16), so float64 changes at
-  rounding level. Every ORE parity suite must pass at its existing tolerance (1e-14 to 1e-8)
-  before the golden snapshot is re-baselined, and the re-baseline is recorded with the
-  measured size of the change.
+- **The kernel rewrite (F-07) moves float64 numbers at rounding level.** It rewrites the kernels
+  for low-precision compute and uses the same kernels at float64 (A-16). Every ORE parity suite
+  passes at its existing tolerance (1e-14 to 1e-8), and the golden snapshot stays within the
+  margin of A-19's 2026-10-10 revision (the first families, 2026-10-10: float64 within 2.2e-14
+  of each array's scale, float32 within 8.2e-6; §13.1). The Bermudan/American rollback's rewrite
+  follows the same procedure after `ShiftHorizon` and the recalibration fix.
 - **Low-precision results are compared with the engine's own float64 result,** not with ORE.
   The float64 result carries the ORE parity; the precision report carries the distance from it.
   The chain is ORE ⇄ engine float64 ⇄ engine low precision, and each link has its own evidence.
@@ -77,7 +79,9 @@ conflicts with one is redesigned rather than excused.
   ([§13.9](#139-performance)).
 - **Low precision pays in two ways only:** fewer bytes moved and stored (any hardware), and
   native low-precision matrix units (FP8 on Ironwood and H100). Elementwise arithmetic below
-  float32 is emulated on every chip. The design puts the low precision where these pay.
+  float32 is emulated on every chip. The design puts the low precision where these pay: the
+  storage format between stages, the compute format in the matrix products, and everything
+  else at the accumulate format ([§3.1](#31-three-precisions)).
 - **Speed is measured on the target hardware** (Ironwood, H100; the owner has access),
   the research result (F-07). CPU numbers are accuracy evidence only.
 - **One compile cache per host.** The worker process ([§11](#11-execution-architecture))
@@ -94,7 +98,10 @@ conflicts with one is redesigned rather than excused.
   risk both call it.
 - **One storage mechanism** (`store`/`load`) for every class and both pipelines.
 - **Few cast points.** Only the lines in [§6.3](#63-cast-points) read the configuration.
-  Inside a stage, code follows the dtype of its inputs and never takes a dtype argument.
+  Inside a stage, code follows the dtype of its inputs and never takes a dtype argument; a
+  kernel with matrix products takes the stage's `Arithmetic` (its compute and accumulate
+  formats) as one static argument, since a product format such as TensorFloat-32 has no dtype
+  of its own to follow ([§8](#8-compute-below-float32)).
 - **One kernel implementation for every precision** (A-16). A second, low-precision copy of
   each pricer would drift from the one ORE parity is proven on.
 - **Refuse, never coerce.** An unknown format, a compute narrower than allowed, or the old
@@ -109,12 +116,24 @@ conflicts with one is redesigned rather than excused.
 | Precision | What it is | Rounding happens | What it buys |
 |---|---|---|---|
 | **storage** | The format a value is kept in between steps | Once per value, when stored | Memory and bandwidth: the cube in FP8 is 8× smaller than in float64 |
-| **compute** | The format each arithmetic result is rounded to | At every operation, so errors build up over a scan, a sum of flows, a rollback | Time, on hardware with native units for it |
-| **accumulate** | The format sums and matrix products accumulate in | At every addition into the sum | Keeps long sums from drifting or overflowing |
+| **compute** | The format of a stage's matrix products: their operands, and how the product runs (TensorFloat-32, bfloat16 passes, FP8 units) | Once per operand, at every product, so errors build up over a scan's steps | Time, on hardware with native units for it |
+| **accumulate** | The format the products accumulate in, and every other operation of the stage is evaluated in (sums, the scan's carry, a level plus a path's deviation, payoff formulas) | At every operation | Keeps long sums from drifting or overflowing, and the levels the deviations are measured from |
 
 Low-precision hardware works this way: FP8 inputs to a matrix multiply, with sums
-accumulated in float16 or float32. No accelerator sums in FP8. Keeping the three apart is
-what lets the study say which one limits accuracy.
+accumulated in float16 or float32, and the elementwise work around the products in float32
+(no device runs it faster below float32, §2.3). No accelerator sums in FP8. Keeping the three
+apart is what lets the study say which one limits accuracy.
+
+**As built (the kernel rewrite, 2026-10-10).** Levels are float64 and meet each path's
+deviation in two terms of the accumulate format (§8.2). The plan's first reading of compute was "the
+format each arithmetic result is rounded to, at every operation". It was not built that way:
+elementwise arithmetic below float32 models no device (every chip emulates it, §2.3), several
+of its kernels do not exist below float32 (`norm.cdf`, `norm.ppf`, a root solve, §8.1), and an
+FP8 exponential of a level-sized number is noise. So compute is the format of the products,
+where native units pay, and accumulate is the format of the rest, as a native low-precision
+kernel runs it; the kernels are in difference form so that what a product multiplies is a
+path's deviation, never a level ([§8.2](#82-the-difference-form)). Recorded in A-16's row of
+decisions.md as a reading, for the owner's review.
 
 ### 3.2 Stages: adjustable and fixed
 
@@ -187,7 +206,13 @@ class Precision:
 shapes are refused with an error naming the replacement, in Python and over HTTP (a 422), as
 the shared pipeline did with the Hull-White request (A-12). `RunConfig.precision` and
 `MarketRiskRequest.precision` take the same type; a market-risk run reads `simulation` for
-its shifts and `pricing` for its revaluation.
+its shifts (their storage, and the accumulate format they are rounded to: the scenarios are
+drawn before the run, so its simulation stage has no product, and its compute format is not
+read, [I-95](../known-issues.md#i-95)) and `pricing` for its revaluation.
+
+`StagePrecision.arithmetic` is the stage's compute and accumulate formats as its kernels take
+them (`engine.precision.Arithmetic`, frozen and hashable, a static argument: one compile per
+pair of formats), since the kernel rewrite (2026-10-10).
 
 ### 4.2 Resolution
 
@@ -221,11 +246,18 @@ Built with per-trade precision (2026-10-02):
 Checked before any work, by `engine/precision/policy.py`, each refusal naming its field:
 
 - every name is in the format table;
-- `accumulate` is at least as wide as `compute`, and no narrower than float32 below 32-bit
-  compute (no accelerator accumulates narrower);
-- `storage` is no wider than `compute` (storing wider gains nothing);
-- `compute` below float32, and `accumulate` different from `compute`, are refused until
-  the kernel rewrite enables them, naming F-07;
+- `accumulate` is an array format (not `tensorfloat32` or `bfloat16_3x`), float32 or float64
+  (no matrix unit accumulates narrower), at least as wide as `compute`'s values, and float32
+  under a compute format below float32, whose matrix units accumulate in float32
+  (`engine.precision.arithmetic.arithmetic_refusal`, shared by `Arithmetic`);
+- `storage` is an array format no wider than `accumulate` (storing wider than the stage
+  computes gains nothing; until the kernel rewrite, no wider than `compute`, which accumulated
+  in itself);
+- a compute format the table marks pending is refused naming its item (none since the kernel
+  rewrite, 2026-10-10; FP4 will be until F-07's FP4 part);
+- a Bermudan's or American's pricing stage computes and accumulates in one format, float32 or
+  float64, until its rollback is rewritten (`engine.pricing.cube.RESTRICTED_PRODUCTS`, F-07;
+  checked by `validate_trades`, so in portfolio and market-risk runs alike);
 - every `by_trade` key is a trade in the request, every `by_product` key a product;
 - `rounding` is `nearest` or `stochastic`, and `stochastic` only when some stage or override
   stores in a scaled format (otherwise it would be accepted and ignored); `rounding_seed` is a
@@ -252,19 +284,31 @@ Precision(simulation=StagePrecision(storage="float8_e4m3fn", compute="float32", 
           pricing=StagePrecision(storage="float8_e4m3fn", compute="float32", accumulate="float32"),
           by_product={"bermudan_swaption": StagePrecision("float32", "float32", "float32")},
           rounding="stochastic", paired_fraction=0.02)               # FP8 storage, Bermudans kept wider
+
+fp8 = StagePrecision(storage="float8_e4m3fn", compute="float8_e4m3fn", accumulate="float32")
+Precision(simulation=fp8, market=fp8, pricing=fp8,
+          by_product={"bermudan_swaption": StagePrecision("float32", "float32", "float32")},
+          paired_fraction=0.02)                   # FP8 products and storage (2026-10-10), Bermudans in float32
+
+Precision.throughout("tensorfloat32")             # TensorFloat-32 products, float32 everywhere else
 ```
 
 ## 5. Modules
 
 ```
 engine/precision/
-  formats.py   # the format table: name -> dtype, bits, mantissa bits, max, scaled?   (2026-10-01)
+  formats.py   # the format table: name -> dtype, bits, mantissa bits, max, scaled?   (2026-10-01);
+               # array or product format, the kind of product (2026-10-10)
+  arithmetic.py  # Arithmetic: a stage's compute and accumulate formats, as kernels take them (2026-10-10)
   policy.py    # StagePrecision, Precision, validation (2026-10-01); by_product, by_trade, precision_for (2026-10-02)
   storage.py   # store(), load() (2026-10-01); Stored (pytree: values, scales, format, axis), rounding (2026-10-02);
                # block offsets (Stored.offsets, 2026-10-09)
-  report.py    # PrecisionReport: the policy as run, realized dtypes, device, paired errors (2026-10-02)
+  grid.py      # exact rounding onto a format's grid, power-of-two scales: storage's and the products' (2026-10-10)
+  report.py    # PrecisionReport: the policy as run, realized dtypes, device, paired errors (2026-10-02);
+               # each compute format's execution, native or emulated (2026-10-10)
   estimate.py  # two-level estimator for means; paired differences for quantiles (2026-10-02)
-  products.py  # matmul(): every matrix product, at its compute format's precision (2026-10-06)
+  products.py  # matmul(): every matrix product, at its compute format's precision (2026-10-06); in every
+               # compute format, accumulated in the accumulate format; product_execution (2026-10-10)
 ```
 
 The precision mechanism (2026-10-01) built the first three at float64/float32; sub-32-bit storage (2026-10-02) added `Stored` and the scaled
@@ -279,16 +323,25 @@ that need no market, trade or ORE ([§13.4](#134-storage-properties)).
 
 ### 6.1 The format table
 
-| Name | Bits | Mantissa bits | Max | Scaled when stored | Storage enabled |
-|---|---|---|---|---|---|
-| `float64` | 64 | 52 | 1.8e308 | No | Yes |
-| `float32` | 32 | 23 | 3.4e38 | No | Yes |
-| `float16` | 16 | 10 | 65,504 | Yes | Yes |
-| `bfloat16` | 16 | 7 | 3.4e38 | Yes | Yes |
-| `float8_e4m3fn` | 8 | 3 | 448 | Yes | Yes |
-| `float8_e5m2` | 8 | 2 | 57,344 | Yes | Yes |
+| Name | Bits | Mantissa bits | Max | Array format | Scaled when stored | Product | Storage enabled | Compute enabled |
+|---|---|---|---|---|---|---|---|---|
+| `float64` | 64 | 52 | 1.8e308 | Yes | No | its dtype | Yes | Yes |
+| `float32` | 32 | 23 | 3.4e38 | Yes | No | its dtype | Yes | Yes |
+| `float16` | 16 | 10 | 65,504 | Yes | Yes | its dtype | Yes | Yes (2026-10-10) |
+| `bfloat16` | 16 | 7 | 3.4e38 | Yes | Yes | its dtype | Yes | Yes (2026-10-10) |
+| `float8_e4m3fn` | 8 | 3 | 448 | Yes | Yes | its dtype | Yes | Yes (2026-10-10) |
+| `float8_e5m2` | 8 | 2 | 57,344 | Yes | Yes | its dtype | Yes | Yes (2026-10-10) |
+| `tensorfloat32` | 32 | 10 | 3.4e38 | No | No | TensorFloat-32 | No | Yes (2026-10-10) |
+| `bfloat16_3x` | 32 | 16 | 3.4e38 | No | No | three bfloat16 passes | No | Yes (2026-10-10) |
 
-FP4 (`float4_e2m1fn`) is added at FP4 (F-07). A name outside the table is refused.
+An **array format** has a dtype of its own, so it stores and accumulates. A **product format**
+(2026-10-10) is a way of running a matrix product on float32 operands, the TensorFloat-32 of an
+NVIDIA GPU (operands rounded to a 10-bit mantissa) and the three bfloat16 passes of a TPU
+(each operand split into a bfloat16 and the bfloat16 of its remainder, the remainders' product
+dropped: about 16 bits); its values are float32 arrays, and it is a compute format only. These
+are the product precisions XLA picks by default for a float32 product on those devices, made
+choices of the policy (A-22). FP4 (`float4_e2m1fn`) is added at FP4 (F-07). A name outside the
+table is refused.
 
 ### 6.2 Storage: `store` and `load`
 
@@ -395,11 +448,15 @@ The only places that read the configuration:
 
 | # | Where | What it does |
 |---|---|---|
-| 1 | `engine.market_simulation.config.simulate` | Normals generated (`engine/market_simulation/sobol.py`, the clip epsilon from the compute dtype) and bridged at `simulation.compute`, then `store(shocks)` |
-| 2 | `simulate` | `load(shocks)`; `evolve_states` runs at `simulation.compute` (it follows the shocks' dtype; the moments are cast to it); `store(states)` |
-| 3 | `simulate` | `load(states)` at `market.compute`; `build_scenario_market` follows the states' dtype (the z-independent terms keep coming from float64); every path array of the market stored at `market.storage` (`ScenarioMarket.map_arrays`); the tenor grid, which has no scenario axis, kept at `market.compute` (since sub-32-bit storage) |
-| 4 | `engine.pricing.cube.value_portfolio`; `engine.risk.market.run_market_risk` | Per trade, at `stage = precision_for(trade)` (2026-10-02): `load(market)` at `stage.compute` (once per dtype, with its path fixings), price the trade, `store` its cube column at `stage.storage`. Market risk: shifts rounded to `simulation.compute` and stored once; per trade loaded at `stage.compute`, revalued (`revalue_trade` follows the shifts' dtype), the P&L stored at `stage.storage` |
+| 1 | `engine.market_simulation.config.simulate` | Normals generated in the simulation's accumulate format (`engine/market_simulation/sobol.py`, the clip epsilon from it) and bridged by one product in `simulation.arithmetic`, then `store(shocks)` |
+| 2 | `simulate` | `load(shocks)` at the accumulate format; `evolve_states` in `simulation.arithmetic` (§8.2); `store(states)` |
+| 3 | `simulate` | `load(states)` at the market's accumulate format; `build_scenario_market` in `market.arithmetic` (the level from float64, one product for the deviations, §8.2); every path array of the market stored at `market.storage` (`ScenarioMarket.map_arrays`); the tenor grid and the curves' levels, which have no scenario axis, kept in float64, as every level is (§8.2) |
+| 4 | `engine.pricing.cube.value_portfolio`; `engine.risk.market.run_market_risk` | Per trade, at `stage = precision_for(trade)` (2026-10-02): `load(market)` at the stage's accumulate format (once per format; path fixings once per arithmetic), price the trade in `stage.arithmetic`, `store` its cube column at `stage.storage`. Market risk: shifts rounded to the simulation's accumulate format and stored once; per trade loaded at its stage's accumulate format, revalued in `stage.arithmetic`, the P&L stored at `stage.storage` |
 | 5 | `engine.run.pipeline` (exposure); `run_market_risk` (VaR/ES) | `load(values, float64)` and the numeraire at float64, then reduce |
+
+Before the kernel rewrite (2026-10-10) the stages loaded at, and computed in, their compute
+format, which equalled their accumulate format; since then each stage loads at its accumulate
+format and runs its products in its compute format (`StagePrecision.arithmetic`).
 
 Every store goes through `Precision.store`, which adds the policy's rounding (§6.2). The
 shocks `[T, S, d]` have their scenario axis at 1, every other class at 0.
@@ -408,12 +465,16 @@ The tenor grid (`ScenarioCurves.tenor_times`, `[D, K+1]`) is the curves' coordin
 scenario data: block scales need a scenario axis, and an FP8 grid would move every pillar.
 Until sub-32-bit storage it was stored at `market.storage` like the curves, so a float32 market storage under
 float64 compute rounded it to float32; since sub-32-bit storage it stays at `market.compute`, which changes
-that one combination's numbers at float32 rounding level (no default and no snapshot run).
+that one combination's numbers at float32 rounding level (no default and no snapshot run). Since
+the kernel rewrite (2026-10-10) the grid and the curves' levels (`ScenarioCurves.level`) are
+float64 in every run, as every level is (§8.2); the precision policy neither stores nor loads
+them, and a kernel reading a curve in one format (the Bermudan's) casts the times to it.
 
 The first three live in `simulate`, the orchestrator of the simulation and market stages;
 the kernels it calls (`generate_sobol_normals`, `apply_brownian_bridge`, `evolve_states`,
-`build_scenario_market`) follow the dtype they are given. `generate_sobol_normals` keeps its
-`dtype` argument: it is where the shocks are created, so it has no input to follow.
+`build_scenario_market`) follow the dtype they are given and take the stage's arithmetic for
+their products. `generate_sobol_normals` keeps its `dtype` argument: it is where the shocks are
+created, so it has no input to follow.
 
 The cube is a sequence of per-trade columns, each in its own storage format
 (`PortfolioValuation.columns`, per-trade precision (2026-10-02); `Stored` columns from sub-32-bit storage).
@@ -423,14 +484,19 @@ holds every format's values times their power-of-two scales).
 `PortfolioResult.npv_cube` stays an array, loaded at float64, so consumers see no change. A
 trade priced at its precision inside a mixed run gives exactly the column it gives priced
 alone with that `pricing` stage: trades share only the loaded scenario market and fixings,
-which depend on the dtype alone.
+which depend on the accumulate format and the arithmetic alone.
 
 ### 6.4 Inputs follow dtype
 
 Inside a stage, every array takes the dtype of the arrays it is computed from. About 46
 `jnp.asarray/zeros/...` calls in `engine/pricing`, `engine/calibration`, `engine/models`
 and `engine/risk` name no dtype today and so become float64 under the x64 flag; each becomes
-"the input's dtype". No kernel signature gains a dtype argument.
+"the input's dtype". No kernel signature gains a dtype argument. Since the kernel rewrite
+(2026-10-10) a kernel with matrix products takes the stage's `Arithmetic` as one static
+argument, whose accumulate format is its inputs' dtype: the compute format of a product cannot
+be read from an array (TensorFloat-32's operands are float32 arrays), and a process-wide or
+traced-context setting would be a cache key JAX does not see (and the report could not vouch
+for it, A-22).
 
 Strict promotion (`jax_numpy_dtype_promotion="strict"`) in CI turns any accidental
 float32/float64 mix into a failing test ([§13.3](#133-dtype-discipline)).
@@ -500,14 +566,23 @@ A matrix product's precision is part of the compute format, so the policy states
 the device (decision A-22). `engine.precision.matmul(a, b)` (the semantics of `a @ b`) asks
 `product_precision(dtype)` for the operands' format and passes it to `jnp.matmul`; the
 precision is then in the program itself (`dot_general`'s `precision`), and AD's transposes
-of the product carry it too. float64 and float32 map to `lax.Precision.HIGHEST`; a format not
-yet enabled for compute is refused, naming the kernel rewrite (F-07), which maps TensorFloat-32, bfloat16
-passes and FP8 products to formats of the policy (§8.3).
+of the product carry it too. float64 and float32 map to `lax.Precision.HIGHEST`; since the
+kernel rewrite (2026-10-10) every compute format of the table does, its operands rounded first,
+but for a product format run natively, which states its algorithm (`TF32_TF32_F32`,
+`BF16_BF16_F32_X3`), and `matmul(a, b, arithmetic)` takes the stage's compute and accumulate
+formats (§8.3). Without an arithmetic it multiplies float64 or float32 operands in their own
+format, as the stages fixed at float64 (A-10) and the kernels not yet rewritten do; operands
+below float32 without one are refused, since their format does not say what they accumulate
+in.
 
-Every matrix product of the engine's JAX code goes through it; at the stated product precision (2026-10-06) there are nine:
+Every matrix product of the engine's JAX code goes through it; at the stated product precision (2026-10-06) there were nine:
 the simulation step (`evolve_states`, 2), the Brownian bridge (1, as one `[T, T] x [T, S*d]`
 product), the Bermudan rollback's bookkeeping (4) and the calibration's spread correction
-(`_corrections`, 2). NumPy products on the host are exact in their dtype and are left alone.
+(`_corrections`, 2). The kernel rewrite (2026-10-10) made the simulation step one product and
+added the scenario market's (1), the legs' flow sums (one per block of columns: the fixed flows,
+the coupons, the coupons' basis points when asked for) and the Jamshidian engine's option sum
+(1) (§8.2). NumPy products on the host are exact in their dtype and
+are left alone.
 JAX's process-wide `jax_default_matmul_precision`, which the GPU run set on import, is neither set
 nor read: anyone could override it, and the report would then be false.
 `tests/test_accelerator_defaults.py::TestEveryMatrixProductStatesItsPrecision` records every
@@ -523,8 +598,9 @@ default did, product by product.
 
 ## 7. Low-precision storage
 
-Storage below 32 bits needs no kernel changes: values are loaded to the compute precision,
-which stays at float32 or above until the kernel rewrite (F-07). It is the first low-precision capability
+Storage below 32 bits needs no kernel changes: values are loaded to the stage's accumulate
+format, float32 or float64 (its compute format before the kernel rewrite, which equalled it).
+It is the first low-precision capability
 (sub-32-bit storage, done 2026-10-02), and the first measurement campaign (the storage harness, I-75) runs on it
 alongside the kernel work, because it never changes float64 numbers.
 
@@ -550,6 +626,13 @@ What is known (measured 2026-10-01, [§15](#15-measurements)):
 
 ## 8. Compute below float32
 
+Built by the kernel rewrite (F-07, 2026-10-10) for every path kernel but the Bermudan/American
+rollback and its per-path recalibration, whose rewrite follows `ShiftHorizon` and the
+recalibration fix (I-32, I-49), so that no kernel is rewritten twice. Until then a Bermudan's or
+American's pricing stage computes and accumulates in one format, float32 or float64, refused
+otherwise by name (`engine.pricing.cube.RESTRICTED_PRODUCTS`); overriding it by product keeps it
+wide inside a low-precision run.
+
 ### 8.1 What blocks it
 
 JAX already runs `+`, `*`, `exp`, `log`, `max`, `sum` and `cumsum` in bfloat16, float16 and
@@ -557,26 +640,88 @@ both FP8 formats; on CPU, XLA computes each operation wider and rounds the resul
 format, so the numerics are those of low-precision arithmetic. Only `cholesky` and
 `norm.ppf` have no kernel. The obstacles are numerical:
 
-| Obstacle | Example | Remedy |
+| Obstacle | Example | Remedy (as built, 2026-10-10) |
 |---|---|---|
-| **Range** | FP8 e4m3 tops at 448, float16 at 65,504; NPVs reach 1e6 and more | Scaled units: per unit notional, block scales, values relative to their t=0 value |
-| **Accumulation** | An FP8 `cumsum` of 10,000 × 0.1 returns NaN (it passes 448); bfloat16 returns 1008 | The `accumulate` precision: low-precision operands, float32 sums |
-| **Cancellation** | A swap NPV is two legs of ~1e8 that nearly cancel; FP8 keeps about one significant digit | Difference form: deterministic part in float64, path deviation in low precision (§8.2) |
-| **Missing or unstable kernels** | `norm.ppf`, `cholesky`; the inverse normal CDF overflows in FP8 | Computed at float32 and rounded: they are inputs, not where the time goes. Cholesky already runs once on the host |
+| **Range** | FP8 e4m3 tops at 448, float16 at 65,504; NPVs reach 1e6 and more | A product's operands are scaled into the format's range by a power of two per row (a path) and per column (§8.3); the arrays around the products are in the accumulate format |
+| **Accumulation** | An FP8 `cumsum` of 10,000 × 0.1 returns NaN (it passes 448); bfloat16 returns 1008 | The `accumulate` format: every product accumulates in float32 (or float64 under float32 compute), every sum and carry is in it |
+| **Cancellation** | A swap NPV is two legs of ~1e8 that nearly cancel; FP8 keeps about one significant digit | Difference form (§8.2): the level, which no path depends on, in float64, added to each path in two terms of the accumulate format; a product multiplies only each path's deviation from it |
+| **Missing or unstable kernels** | `norm.ppf`, `cholesky`; the inverse normal CDF overflows in FP8 | Everything but the products runs at the accumulate format, float32 or wider (§3.1): the inverse normal CDF, the Bachelier and Black formulas, the Jamshidian root. Cholesky runs once on the host |
 
 ### 8.2 The difference form
 
-Each kernel splits a value into a part that does not depend on the path, computed once at
-float64, and the path's deviation from it, which is small and well conditioned. Example: a
-swap's path NPV uses `K − F(0)` from float64 and only the deviation `F(path) − F(0)` at low
-precision, so the near-cancellation of the two legs happens in float64. The scenario market
-already does this for its z-independent terms (`engine/market_simulation/scenario_market.py`,
-`implied_log_discounts`).
+Each kernel splits a value into a level that does not depend on the path, computed in
+float64, and the path's deviation from it, small and well conditioned, which is all a product
+multiplies. Any level gives the same values, up to rounding (a test values the legs at the
+model's level and at none); a near one keeps the deviations small.
 
-Kernel families, rewritten one at a time, each measured by emulation before the next: the
-simulation scan, scenario curves, legs, the Bachelier and Jamshidian Europeans, the Bermudan
-rollback and its per-path recalibration, exposure. One implementation serves every precision
-(A-16); [§2.1](#21-ore-parity) gives the re-baseline protocol.
+**A level meets a path in two terms** (`engine.precision.add_level`, `deviation_from`): the
+level in float64 (it has no path axis, so this is cheap even on a TPU, which emulates float64),
+then `hi + (lo + deviation)` in the accumulate format, `hi` the level on the format's grid and
+`lo` what it leaves (rounded on the grid in float64, not through a round trip XLA may remove).
+Each path's value is then rounded once, by itself. Rounding the level once to the accumulate
+format and adding it to every path, as the first build of the rewrite did, shares that rounding
+with every path: a bias more paths do not remove, measured at 0.04 on a float32 bond's mean
+near 1e6 (significance 287 over 8 seeds, ten times the code before the rewrite); with two terms
+it is at most 3e-4, within 2 of its standard errors, below the code before (0.003). At float64
+the low term is absent and nothing changes. The curves' levels and tenor times
+(`ScenarioCurves`), the mean path, the legs' coefficients and their path fixings' levels are
+float64 in every run for the same reason.
+
+As built (2026-10-10), family by family:
+
+- **The Brownian bridge** (`engine.market_simulation.sobol`): the bridge, the differencing of
+  its path values into increments and their standardization by sqrt(dt) are one `[T, T]` matrix
+  built on the host in float64 (`bridge_increments_matrix`), applied by one product. Differencing
+  on the device subtracted path values that grow as sqrt(t) to get increments that do not.
+- **The simulation scan** (`engine.market_simulation.paths`, `engine.models.cam.path_moments`):
+  a state is its mean path (float64, host) plus a deviation in units of a power of two near its
+  standard deviation; the deviation's step `y <- [y, z] @ [M~, L~]'` is one product, its carry
+  the accumulator; the drift and the mean cancel; the mean is added in two terms. A log equity
+  spot near 4.6 deviates by 0.06 to 0.5: the same scan on the states themselves errs on the
+  level, several times more (a test holds it). Every operand is near 1, and the scales are exact powers of two.
+- **The scenario market** (`engine.market_simulation.scenario_market`): every path array, each
+  curve's log discount factors, the log numeraire, log FX and equity spots, is linear in the
+  state, so the market is a level (the model's at the mean state, float64) plus one product of
+  each path's standardized state deviation with the market's loadings on the state (`_Layout`,
+  `[D, d, C]`: one column per curve tenor, the numeraire, each spot), then the discount floor and
+  the exponentials in the accumulate format. A multi-factor model's curves are the same product
+  with more rows. The curves keep their level (`ScenarioCurves.level`).
+- **The legs** (`engine.pricing.legs.leg_values`): the level values every flow off the level
+  curves with ORE's arithmetic (it is the t=0 value when there are no deviations, so today's
+  price is the same code); a path's deviation is `[e, h] @ C`, with `e = expm1(dL)` at every
+  fixed payment, `dL` the curve's node deviations carried to the time by the curve's own
+  two-node interpolation (a curve's log discount factor is linear in its node values for both
+  curve types, `log_discount_deviation`: a stencil in the accumulate format, not a product, a
+  dense interpolation product having cost the float64 kernel twice its time for 14 nodes of
+  which each time reads 2), `h = (F0 + m) e + dF (1 + e)` per coupon, `dF` its rate's deviation
+  (the forecast ratio's, or a path fixing's), and `C` the level's present value of each fixed
+  flow and of a unit rate on each coupon, since `(F + m) P - (F0 + m) P0 = P0 [(F0 + m) e + dF
+  (1 + e)]`. Every term is a sensitivity times a deviation, so the legs' cancellation stays in
+  the level. The outputs are a payer swap's value, the annuity and the floating basis points, as
+  many as the engine reads; each block of columns is its own product (§13.9). FixingManager's
+  path fixings are a level and deviations alike (`PathFixings`).
+- **The Europeans** (`engine.pricing.european`, `engine.pricing.jamshidian`): Bachelier reads the
+  exercise-into swap's value V, annuity A and floating basis points from the legs; the forward
+  less the effective strike is `V / A`, a swap's value whose legs cancel in the level; the formula
+  and the cash annuity at the accumulate format. Jamshidian reads its discount factors as the
+  level times `1 + e`; x* and the bond options at the accumulate format, and their sum against
+  the coupons' amounts a product in the compute format.
+- **Market risk** (`engine.risk.market.revaluation`): a scenario's P&L is the deviation of a
+  trade's value under its shift of the pillar rates (a zero curve's log discount factor is linear
+  in its rates too), so the legs' P&L is the product alone and a scenario that moves nothing has
+  exactly zero P&L by construction; an option's P&L is its formula on the shifted values less on
+  the level, and exactly 0 where nothing moved, not left to two evaluations of one value agreeing
+  (XLA may round them apart). Bermudans and Americans are revalued in full, in one format.
+- **Exposure** (`engine.risk.counterparty.exposure`) is a reduction over paths, float64 by
+  decision (A-10): its inputs, the cube columns and the numeraire, are loaded at float64. It was
+  already in its final form.
+
+One implementation serves every precision (A-16): at float64 the difference form moves the
+numbers at rounding level (§13.1), and every ORE parity suite passes at its tolerance. Below
+float32 one rounding remains shared by every path: each product's path-independent operand (the
+bridge's matrix, the step moments, the loadings, the flows' present values) is rounded once, a
+bias the measurements show and two terms of that operand mostly remove ([I-96](../known-issues.md#i-96),
+§15.5).
 
 ### 8.3 Emulation and native speed
 
@@ -586,9 +731,10 @@ rollback and its per-path recalibration, exposure. One implementation serves eve
 - So the wall-clock half of the research question depends on expressing the heavy kernels as
   matrix products where they can be: leg pricing (amounts per flow × discount factors per
   path and flow), the Bermudan rollback (a fixed Gaussian kernel matrix × values), the
-  correlation mixing (already a product, but small). These forms are written in the kernel rewrite (F-07),
-  in the same rewrite as the difference form, so no kernel is rewritten twice; the research result (F-07) times
-  them.
+  correlation mixing (already a product, but small). The kernel rewrite (2026-10-10) wrote the
+  simulation, the scenario market, the legs and the Europeans this way (§8.2), in the same
+  rewrite as the difference form, so no kernel is rewritten twice; the rollback's comes with
+  its rewrite, and the research result (F-07) times them.
 - **A product's precision is the policy's, not the device's.** XLA's default runs a float32
   matrix product in TensorFloat-32 on an NVIDIA GPU (a 10-bit mantissa) and in bfloat16
   passes on a TPU. Measured on the RTX 5060 (2026-10-06): a float32 simulation's cube was
@@ -596,10 +742,52 @@ rollback and its per-path recalibration, exposure. One implementation serves eve
   precision. Since the stated product precision (2026-10-06) (decision A-22) each of the engine's matrix products states its
   precision, taken from its operands' compute format (`engine.precision.matmul`, §6.7), so a
   float32 compute policy is float32 on every device and no process setting can change it
-  (the GPU run had set JAX's process-wide default instead). TensorFloat-32, bfloat16 passes and FP8
-  products are compute formats in their own right, which the kernel rewrite (F-07) makes selectable in the
-  policy (and the report names) through the same helper, and 5.2 times; the device's default
-  is never the silent choice.
+  (the GPU run had set JAX's process-wide default instead). Since the kernel rewrite
+  (2026-10-10) TensorFloat-32 (`tensorfloat32`), bfloat16 passes (`bfloat16_3x`) and FP8 products
+  are compute formats in their own right, selectable in the policy through the same helper; the
+  device's default is never the silent choice.
+- **As built (2026-10-10).** `matmul(a, b, arithmetic)` multiplies in the compute format and
+  accumulates in the accumulate format:
+  - float64, float32: the operands cast to the format, full precision (`HIGHEST`), accumulated
+    in the accumulate format. float32 operands accumulated in float64 are rounded onto float32's
+    grid in float64 and multiplied as float64 (every product of two is exact there): asked for
+    float32 operands with a float64 result (`preferred_element_type`), an RTX 5060 summed in
+    float32 (7.6e-7 off, 2026-10-11; the CPU summed in float64, so only the GPU run showed it);
+  - float16, bfloat16, FP8: each row of the left operand (a path) and each column of the right
+    one scaled by the power of two that brings its largest magnitude to the format's top
+    (bfloat16 has float32's range and is not scaled: scaling two operands to its top would
+    overflow the accumulator), rounded to the format's grid exactly (`engine.precision.grid`,
+    shared with storage: XLA converts float64 to FP8 through float32, rounding twice), cast to it,
+    multiplied into float32, and the scales taken back out. A per-row scale keeps each path's
+    rounding independent of every other path's operands, whatever its batch, sample or device
+    (XLA may still sum another shape's product in another order, an ulp apart, as at float32);
+    per-tensor scales (cuBLASLt's FP8 default) would have tied every path's rounding to the
+    largest path. A product of two values of these formats is exact in float32;
+  - tensorfloat32: float32 operands rounded to a 10-bit mantissa (the device's algorithm,
+    `TF32_TF32_F32`, where native), float32 accumulation;
+  - bfloat16_3x: each float32 operand split into its bfloat16 and the bfloat16 of its remainder,
+    `lo·hi + hi·lo + hi·hi` (`BF16_BF16_F32_X3` where native), float32 accumulation. The split
+    rounds on bfloat16's grid in float32 arithmetic, never through a float32 -> bfloat16 ->
+    float32 round trip, which XLA may remove (`xla_allow_excess_precision`, on by default): on a
+    GPU it did, the remainder came out 0 and the three passes one (2026-10-10).
+
+  `product_execution(format, device)` says which ran: native where the device has units for the
+  format and they were shown to give its numbers (`tests/support/precision_devices.py`, every
+  arithmetic a stage accepts against its emulation on four shapes): an NVIDIA GPU's float16 from compute capability
+  7.0, bfloat16 and TensorFloat-32 from 8.0; a TPU's bfloat16 and its passes (XLA's own float32
+  there; to be checked on the device). Else emulated: a CPU emulates every format below float32;
+  every device emulates FP8, and a GPU bfloat16 passes, until a device's are shown right. On an
+  RTX 5060 (compute capability 12.0, jax 0.10.2, 2026-10-10) the check found XLA's FP8 product
+  70% off for some shapes and precisions (and its `ANY_F8_ANY_F8_F32` algorithm unsupported or
+  wrong), and its `BF16_BF16_F32_X3` a single pass's error for some shapes; with both emulated,
+  every format equals its emulation there, TensorFloat-32 within its unit roundoff (the device
+  rounds its operands its own way). Emulated and native give the same numbers up to the order of
+  the float32 sums: the engine rounds the operands as the unit would, and an emulated FP8
+  product multiplies them as float16 values, which hold every FP8 value, with exact products.
+  Native FP8 is for the timing (F-07) to enable per device, after the check. The report names each compute format the run used and
+  its execution (`PrecisionReport.products`). Measured on CPU (2026-10-10, 6 × 40 by 40 × 5
+  operands spanning six decades, against references built with ml_dtypes): every format within
+  its unit roundoff plus float32 accumulation (`tests/test_compute_precision.py::TestProducts`).
 - The rollback's matrix form also fixes its memory. Today each column (the option, the
   underlying, each cached cashflow) is interpolated at `[nodes, quadrature nodes]` points,
   vmapped over the columns, although the interpolation weights depend only on the grids:
@@ -859,7 +1047,7 @@ Decisions taken while building it (2026-10-04):
 | **The precision report** (done 2026-10-02) | Paired sample, two-level estimator for means, `PrecisionReport` with realized dtypes and device (closes I-12) | §13.6; bit for bit at the default. Met: §13.1, §13.6 | M |
 | **The engine worker** (done 2026-10-04) | Engine worker process and the SQLite queue (A-14); delete `worker_pool.py`'s pool and freeze/thaw | §13.8, including the Linux run; float64 job time and compile count no worse. Met: §13.8, §13.9 | M |
 | **The storage harness** (I-75, done 2026-10-09) | Storage relative to a level for classes whose level swamps their spread (block offsets, §6.2); a measurement harness for storage formats per class and product, at several path counts, fixed seeds, rerunnable on any kernel change (§15.4) | Harness covers every figure × class × format; thresholds fixed before measuring; I-75's FP8 bond column unbiased within its Monte Carlo standard error. Met: §15.4 | M |
-| **The kernel rewrite** (F-07) | Difference-form kernels (§8.2), one family at a time (those `ShiftHorizon` and the recalibration fix do not change first, the Bermudan/American rollback and recalibration after them), as matrix products where a family can be one (§8.3); compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the re-baseline of §2.1; emulated FP8/bfloat16 compute measured by the harness | L |
+| **The kernel rewrite** (F-07; the first families done 2026-10-10) | Difference-form kernels (§8.2), one family at a time (those `ShiftHorizon` and the recalibration fix do not change first, the Bermudan/American rollback and recalibration after them), as matrix products where a family can be one (§8.3); compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the snapshot within the margin (§2.1); emulated FP8/bfloat16 compute measured by the harness. Met for the simulation, the scenario market, the legs, the Europeans and market risk (§13.1, §15.5); the rollback and recalibration after `ShiftHorizon` and the recalibration fix | L |
 | **Multi-host** (I-61) | Shard the scenario axis in the worker (I-61): one host done 2026-10-04; several hosts next | Results equal the one-device run within reduction-order rounding (one host: met, `tests/test_sharding.py`); scaling measured on TPU | M |
 | **The evidence table** (I-55) | The evidence table and the warnings (§10), from the storage harness on each kernel family as the kernel rewrite lands it (the Bermudan/American rows after `ShiftHorizon` and the recalibration fix, I-32 and I-49) | Table complete; a verdict and path ceiling per row; a warning on every result without a passing row | S |
 | **The research result** (F-07) | After multi-host and the evidence table. Timing across devices on Ironwood and H100: storage formats, then the kernel rewrite's matrix-product kernels with native FP8 | The research result: wall time per figure and precision against float64 at equal accuracy (the evidence table's path ceilings), many low-precision paths against fewer float64 ones | M |
@@ -1064,9 +1252,19 @@ record of stages 1 and 2.
   the storage of before, bit for bit (the NaN padding of a short block, which replaced zeros,
   counts towards no scale either way). The default layout moves the scaled runs' numbers, as
   intended (§15.4). Later changes compare against a snapshot of its commit.
-- The kernel rewrite (F-07): parity suites pass at their tolerances first; then the snapshot is re-baselined,
-  with the largest change per array recorded in the commit and in known-issues' verification
-  status.
+- **Result of the kernel rewrite's first families (2026-10-10).** The simulation scan and the
+  Brownian bridge, the scenario market, the legs and path fixings, the Bachelier and Jamshidian
+  Europeans and market-risk revaluation in difference form (§8.2), compute below float32 enabled
+  for them. Every ORE parity suite passes at its tolerance (the full suite, the verification
+  status). The same script, 359 arrays, from a worktree of `53f85b9` against the new tree, on
+  CPU, compared within the margin of A-19's 2026-10-10 revision: 136 identical, none beyond the
+  margin. Largest change relative to each array's scale (a Greek's to its trade's NPV): float64
+  cubes and exposures 2.2e-14 (LGM), 2.1e-14 (Hull-White), 3.7e-15 (Jamshidian), 7.0e-15 (the
+  demo's job); market risk 1.5e-14; today's values 1.6e-16; AD Greeks 2.2e-15, bump Greeks
+  7.6e-15; the standalone bootstrap and the Jamshidian Greeks identical. float32: the cube
+  2.2e-6, market risk 8.3e-6, the raw shocked revaluation 2.5e-6, the scenario market 3.6e-7
+  (margin 1e-4); before the levels met the paths in two terms (§8.2) the float32 cube had moved
+  5.1e-6. This snapshot is the reference for the Bermudan/American rollback's rewrite (§2.1).
 
 ### 13.2 Configuration
 
@@ -1143,6 +1341,38 @@ At float32 throughout, on the 3% → 5% curve: no NaN, no calibration at its cei
 within a stated float32 tolerance of float64. These tests are written red first against the
 constants of §6.5.
 
+### 13.5a Compute below float32 (2026-10-10)
+
+`tests/test_compute_precision.py`, fast tier:
+
+- **The products**: every array format below float32 against an independent reference
+  (ml_dtypes' correctly rounded conversion of operands scaled per row and column, an exact
+  product, the float32 accumulation's bound), TensorFloat-32 against a 10-bit mantissa rounding,
+  bfloat16 passes against their pieces; every compute format within its unit roundoff on
+  operands spanning six decades; a row's rounding independent of every other row (scales per
+  path); vectors, batches, zeros, an empty contraction; the program's operands of the format
+  accumulated into float32; float32 accumulated in float64 (on any device: red first on the
+  GPU, 2026-10-11); the native/emulated table for CPU,
+  three GPU generations and two TPU kinds, a native product format stating its algorithm.
+- **The arithmetic**: its refusals, naming the field.
+- **Each family at float64 is the direct formula to rounding**: the scan against `x <- M x + b +
+  L z`, the bridge against differencing the path values, the market against the model's
+  formulas (its level the curve at the mean state), the legs against ORE's arithmetic on each
+  path's own curve at the model's level and at a level of 0, a path on the level exactly the
+  level, the P&L against `f(base + shift) - f(base)`; the path moments against a 200,000-path
+  sample, the curves' interpolation of deviations exactly linear.
+- **Below float32 the error is relative to the deviation**: the scan's error within a few unit
+  roundoffs of each step's scale and, for a log equity spot, below a third of the same scan's on
+  the states themselves; the curves' within four unit roundoffs of their deviation from the
+  level; a swap's cube within thirty of its paths' spread; every trade's mean value within eight
+  of the paths' spread (plus float32's rounding of the level) with every stage in the format,
+  under strict promotion; market-risk P&L within four of each trade's largest.
+- **The pipeline**: the report names every compute format of a run and its execution; a
+  repeated run compiles nothing; a Bermudan or American below float32, or computing and
+  accumulating in two formats, is refused naming F-07, and kept wider by product beside a
+  low-precision run; the paired sample corrects an FP8 run to float64; a scenario that moves
+  nothing has exactly zero P&L at every compute format and both European engines.
+
 ### 13.6 The estimator and the report
 
 - float64 against float64: every paired difference exactly 0, the corrected figure equal to
@@ -1207,17 +1437,29 @@ ran on Linux ([verification status](../known-issues.md#verification-status)).
   (`test_a_second_identical_job_compiles_nothing`). The pool built the same programs once per
   worker (two by default).
 - The research result (F-07) on Ironwood and H100, across devices (after multi-host): wall time per figure at equal accuracy.
+- **The kernel rewrite's first families (2026-10-10)**, old and new trees interleaved, three
+  passes of five warm runs, float64 on CPU: a five-trade linear portfolio (4,096 paths, 20 dates)
+  0.370 s against 0.352 s (median; within the run-to-run spread, 5%), market risk on a swap, a
+  European and a bond (8,192 scenarios) 0.075 s against 0.23 s, three times faster (the P&L is
+  one product, not a revaluation less a base). The leg kernel alone is a third slower on a CPU
+  ([I-53](../known-issues.md#i-53)): the same operations (11.6 ms against 11.7 ms in a trace)
+  scheduled less concurrently. Two layouts measured and discarded on the way: dense
+  interpolation weights as a product (2.1 times the old kernel; a two-node stencil in the
+  accumulate format replaced it) and two columns per coupon (twice the operand's bytes).
 
 ### 13.10 Demos
 
 `demos/demo_precision.py` moves to `Precision` (done in the precision mechanism, with a storage-only float32 run
 beside float32 throughout), adds FP16, BF16 and FP8 storage runs, FP8 with both roundings
 (done in sub-32-bit storage), and prints a run's report with a paired sample (done in the precision report).
+The kernel rewrite (2026-10-10) adds bfloat16 and FP8 compute runs, the Bermudan kept in
+float32 by product, and prints the report's product executions.
 
 ## 14. Scope
 
 **In:** float64/float32 compute and storage; float16, bfloat16 and FP8 storage; compute below
-float32 after the kernel rewrite; per-stage, per-product and per-trade precision; block scales and both
+float32 (float16, bfloat16, FP8, TensorFloat-32, bfloat16 passes; since 2026-10-10 for every path
+kernel but the Bermudan/American rollback, which follows `ShiftHorizon` and the recalibration fix); per-stage, per-product and per-trade precision; block scales and both
 roundings; the paired sample, the two-level estimator for means and the report; the evidence
 table and warnings; the worker process and queue; timing on Ironwood and H100.
 
@@ -1230,6 +1472,7 @@ table and warnings; the worker process and queue; timing on Ironwood and H100.
 | Variance correction of stored shocks | Only if the storage harness shows bias | F-07 (FP4) |
 | Multilevel quantile estimation | A research project of its own | F-07 (FP4) |
 | Low-precision speed on CPU | Emulated; CPU is accuracy evidence only | — |
+| Elementwise arithmetic below float32 | No device runs it faster; several of its kernels do not exist; an FP8 exponential of a level is noise (§3.1) | — |
 
 ## 15. Measurements
 
@@ -1479,6 +1722,65 @@ for e5m2; the evidence table judges them against MAR32's thresholds as transcrib
 mean is where a format's error is largest in units of its statistical error, being the
 smallest of these errors on Sobol scenarios.
 
+### 15.5 Compute below float32 (2026-10-10)
+
+The kernel rewrite's two campaigns of the precision harness (`tests/support/precision_campaigns.py`,
+`compute` and `compute_market_risk`; [compute.md](../../../compliance/precision-measurements/compute.md),
+[compute_market_risk.md](../../../compliance/precision-measurements/compute_market_risk.md)), on CPU
+(every format below float32 emulated, with the numbers a native unit computes, §8.3), 16 seeds:
+the `linear` campaign's portfolio with one stage's products in each compute format, accumulated
+and stored in float32 (the `float32` case is the floor of the accumulator), and every stage in the
+format at once (`throughout`, stored in the format where it has one); market risk's revaluation
+the same, its trades but the Bermudan. The storage campaigns were measured again on the same code:
+every case computed in float64 equals its record of 2026-10-09 (§15.4) to three significant
+figures, in `linear`, `options` and `market_risk` alike (282 rows), and `throughout:float32` fell
+to 0.29 to 0.65 of its record. The worst relative error over every figure and date, means and quantiles
+apart (the root mean square precision error in units of the figure's statistical error):
+
+| Case | 1,024 means / quantiles | 4,096 | 16,384 |
+|---|---|---|---|
+| `throughout:float32` | 0.0015 / 9e-5 | 0.0041 / 2e-4 | 0.045 / 6e-4 |
+| `throughout:bfloat16_3x` | 0.0040 / 1e-3 | 0.019 / 4e-3 | 0.095 / 0.010 |
+| `throughout:tensorfloat32` | 0.57 / 0.20 | 3.5 / 0.41 | 12 / 1.8 |
+| `throughout:float16` | 0.59 / 0.32 | 3.6 / 0.74 | 12 / 3.3 |
+| `throughout:bfloat16` | 2.2 / 1.5 | 11 / 3.4 | 45 / 3.8 |
+| `throughout:float8_e4m3fn` | 81 / 17 | 500 / 47 | 1,700 / 135 |
+| `throughout:float8_e5m2` | 120 / 42 | 650 / 118 | 3,000 / 341 |
+| `pricing:compute:float32` | 0.0010 / 4e-5 | 0.0038 / 1e-4 | 0.011 / 3e-4 |
+| `pricing:compute:bfloat16` | 2.0 / 0.42 | 9.9 / 0.99 | 39 / 3.0 |
+| `pricing:compute:float8_e4m3fn` | 45 / 15 | 281 / 42 | 948 / 121 |
+
+Market risk at 8,192 scenarios (VaR and ES, the quantiles): float32 5e-5, TensorFloat-32 and
+float16 0.014, bfloat16 0.17, FP8 e4m3 1.7, e5m2 1.8 (P&L storage in the format, §15.4: float16
+0.096, bfloat16 0.18, FP8 1.95 and 5.4); P&L attribution against float64, worst over the seeds:
+Spearman 1.000000 to 0.995006 and Kolmogorov–Smirnov 0.00024 to 0.011 (FP8 e5m2), for the evidence
+table to judge against MAR32's thresholds (A-11).
+
+Reading it:
+
+- **float32 is better than before the rewrite**: every stage in float32 0.0015, 0.0041 and 0.045
+  of the statistical error at 1,024, 4,096 and 16,384 paths, against 0.003, 0.014 and 0.069 on
+  the code before (§15.4's `throughout:float32`). The difference form keeps the legs'
+  cancellation in the level, and the levels meet the paths in two terms (§8.2). A first build
+  that added a level rounded once to float32 to every path was ten times worse than the code
+  before on a bond (its mean moved 0.04 near 1e6, significance 287), which the two terms fixed.
+- **bfloat16 passes are float32's equal** within a factor two to four; **TensorFloat-32 and
+  float16 measure alike** (10-bit operands both); bfloat16 is about ten times float16's error,
+  FP8 a hundred.
+- **Below float32 the error is all bias** (relative bias equal to relative error, significance
+  100 to 2,000): each product's path-independent operand (the bridge's matrix, the step moments,
+  the market's loadings, each flow's present value at the level) is rounded once for every path,
+  so its error moves every path alike, and grows against the statistical error with the paths.
+  Storage in the same format, rounded path by path, is 5 to 50 times closer. Carrying that operand
+  in two terms of the format removes most of it ([I-96](../known-issues.md#i-96): the pricing
+  stage's worst bias in bfloat16 2.1 to 0.04 statistical errors, in FP8 41 to 5.3), at twice the
+  matrix work: a decision for the roadmap's next step, before the evidence table. Until then the
+  paired float64 sample corrects the means (A-13).
+- **Quantiles fare far better than means**: a case's quantiles are 1.5 to 75 times closer than its
+  means (typically 5 to 10), and market risk's VaR and ES in FP8 compute are 1.7 to 1.8 statistical
+  errors off, closer than FP8 storage of the P&L (why the bias spares them is not established).
+- **No recompiles**: every case, in both campaigns, compiles nothing after its first seed.
+
 ## 16. Decisions this document implements
 
 Recorded in [compliance/decisions.md](../../../compliance/decisions.md), 2026-10-01.
@@ -1493,7 +1795,7 @@ Recorded in [compliance/decisions.md](../../../compliance/decisions.md), 2026-10
 | A-13 | Means are corrected by the two-level estimator; quantiles are measured |
 | A-14 | Execution: API and one single-threaded engine worker process per host, through a durable SQLite queue |
 | A-15 | Precision per stage, overridable per product and per trade (trade over product over stage) |
-| A-16 | One kernel implementation for every precision; float64 is re-baselined once, after ORE parity passes |
+| A-16 | One kernel implementation for every precision; float64 moves at rounding level, within the margin, after ORE parity passes (the first families 2026-10-10, §8) |
 | A-22 (2026-10-06) | A matrix product's precision is its compute format's, stated by the product (`engine.precision.matmul`, §6.7), never a process-wide default (the stated product precision (2026-10-06)) |
 
 Engineering defaults, changeable without a decision: block size 32 along the scenario axis;

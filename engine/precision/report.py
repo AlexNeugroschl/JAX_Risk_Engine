@@ -9,6 +9,11 @@ run's precision was, read from what it did, and how far its figures are from flo
                                                    the arrays: "shocks", "states", "market",
                                                    "values/<trade id>" (the names `Precision.store`
                                                    gives them; one entry for the whole market)
+      products      {compute format: "native" | "emulated"}
+                                                   every compute format whose matrix products
+                                                   the run ran, and whether the device has units
+                                                   for it or the engine emulated it
+                                                   (`engine.precision.products`)
       devices       ("cpu:0 (cpu)", ...)           the devices holding the run's stored arrays
       backend       "cpu" | "gpu" | "tpu"          the JAX backend of the process that ran it
       jax_version   str
@@ -34,6 +39,7 @@ import jax
 from engine.precision.estimate import MeanEstimate, QuantileEstimate
 from engine.precision.formats import name_of
 from engine.precision.policy import Precision, StagePrecision
+from engine.precision.products import product_execution
 from engine.precision.storage import Stored
 
 Estimate = Union[MeanEstimate, QuantileEstimate]
@@ -51,15 +57,21 @@ class PrecisionReport:
     paths: int
     paired_paths: int = 0
     figures: Mapping[str, Estimate] = field(default_factory=dict)
+    products: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def of(cls, policy: Precision, trades: Iterable, realized: Mapping[str, str], arrays: Iterable,
-           paths: int, paired_paths: int = 0, figures: Mapping[str, Estimate] = None) -> "PrecisionReport":
+           paths: int, paired_paths: int = 0, figures: Mapping[str, Estimate] = None,
+           computed: Iterable[str] = ()) -> "PrecisionReport":
         """The report of a run of `trades` (each with `trade_id` and `product`) under `policy`,
-        whose stored `arrays` (plain or `Stored`) give the devices it ran on."""
+        whose stored `arrays` (plain or `Stored`) give the devices it ran on, and whose matrix
+        products ran in the compute formats `computed` (on the first of those devices)."""
+        arrays = list(arrays)
+        device = _devices(arrays)[0]
         return cls(policy=policy, trades={t.trade_id: policy.precision_for(t) for t in trades},
                    realized=dict(realized), devices=devices_of(arrays), backend=jax.default_backend(),
-                   jax_version=jax.__version__, paths=paths, paired_paths=paired_paths, figures=dict(figures or {}))
+                   jax_version=jax.__version__, paths=paths, paired_paths=paired_paths, figures=dict(figures or {}),
+                   products={name: product_execution(name, device) for name in sorted(set(computed))})
 
 
 def format_name(x) -> str:
@@ -76,8 +88,12 @@ def realized_format(arrays: Iterable) -> str:
 def devices_of(arrays: Iterable) -> Tuple[str, ...]:
     """The devices holding `arrays`, as `"<platform>:<id> (<kind>)"`, or JAX's default device
     when there are none (a run with no paths computes on it)."""
+    return tuple(f"{d.platform}:{d.id} ({d.device_kind})" for d in _devices(arrays))
+
+
+def _devices(arrays: Iterable) -> list:
+    """The devices holding `arrays`, in order, or JAX's default device when there are none."""
     found = set()
     for a in arrays:
         found.update((a.values if isinstance(a, Stored) else a).devices())
-    found = found or {jax.devices()[0]}
-    return tuple(f"{d.platform}:{d.id} ({d.device_kind})" for d in sorted(found, key=lambda d: (d.platform, d.id)))
+    return sorted(found or {jax.devices()[0]}, key=lambda d: (d.platform, d.id))

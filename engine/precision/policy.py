@@ -17,9 +17,11 @@ The precision of a run (docs/planning/details/precision.md §3, §4; decisions A
       paired_fraction  float in [0, 1]          the share of paths also run at float64 (A-13)
 
 Each adjustable stage has three precisions: `storage`, the format its output is kept in until
-the next stage reads it; `compute`, the format its arithmetic is done in; `accumulate`, the
-format its sums accumulate in. `Precision()` is float64 everywhere, the engine's default and
-the one every ORE parity suite runs on.
+the next stage reads it; `compute`, the format of its matrix products; `accumulate`, the format
+those products accumulate in and every other operation of the stage is evaluated in (its
+`arithmetic`, `engine.precision.Arithmetic`: the kernels are in difference form, so a product
+multiplies a path's deviation from a level, not the level). `Precision()` is float64
+everywhere, the engine's default and the one every ORE parity suite runs on.
 
 The pricing stage is per trade (decision A-15): `precision_for(trade)` is the one lookup, and
 returns `by_trade[trade.trade_id]`, else `by_product[trade.product]`, else `pricing`. The
@@ -48,8 +50,11 @@ Calibration, t=0 values, Greeks and every reduction over paths or scenarios (exp
 are not stages here: they are float64 by decision (A-10).
 
 Validation refuses, naming the field, before any work: a name outside the format table, a
-format not enabled yet (the format table names the item that enables it), `storage` wider than `compute` (storing
-wider gains nothing), `accumulate` narrower than `compute`, a rounding outside
+format not enabled yet (the format table names the item that enables it), a matrix-product
+format (`tensorfloat32`, `bfloat16_3x`) as `storage`, `storage` wider than `accumulate`
+(storing wider than the stage computes gains nothing), an `accumulate` the stage's arithmetic
+refuses (`engine.precision.arithmetic`: narrower than float32 or than `compute`, or other than
+float32 under a compute format below float32), a rounding outside
 `ROUNDINGS`, a block layout outside `OFFSETS`, `stochastic` rounding or `offset="none"` when no
 stage stores in a scaled format (it would change nothing), and a `paired_fraction` outside
 [0, 1]. Every other combination may be run (D-9).
@@ -60,6 +65,7 @@ from dataclasses import dataclass, field, fields
 from numbers import Real
 from typing import Iterable, Iterator, Mapping, Sequence
 
+from engine.precision.arithmetic import Arithmetic, arithmetic_refusal
 from engine.precision.formats import format_of
 from engine.precision.storage import OFFSETS, ROUNDINGS, rounding_key, store
 
@@ -83,8 +89,9 @@ RETIRED_SHAPE = (
 @dataclass(frozen=True)
 class StagePrecision:
     """The storage, compute and accumulate formats of one stage, by name (see the module
-    docstring). Until F-07's compute formats, `compute` is float64 or float32 and `accumulate` equals
-    it; `storage` is any format no wider than `compute`."""
+    docstring): `storage` an array format no wider than `accumulate`; `compute` any format of the
+    table; `accumulate` float32 or float64, no narrower than `compute`, and float32 under a
+    compute format below float32."""
     storage: str = "float64"
     compute: str = "float64"
     accumulate: str = "float64"
@@ -101,30 +108,26 @@ class StagePrecision:
             except ValueError as exc:
                 raise ValueError(f"StagePrecision.{f.name}: {exc}") from None
         storage, compute, accumulate = rows["storage"], rows["compute"], rows["accumulate"]
+        if not storage.array:
+            _refuse("storage", storage.name, "a matrix-product format, not an array format to store in")
         if storage.storage_pending:
             _refuse("storage", storage.name, f"storage in {storage.name} is not enabled yet "
                                              f"({storage.storage_pending})")
-        if compute.compute_pending:
-            _refuse("compute", compute.name, f"compute in {compute.name} is not enabled yet "
-                                             f"({compute.compute_pending}: difference-form kernels); until then "
-                                             f"float64 or float32")
-        if storage.bits > compute.bits:
-            _refuse("storage", storage.name, f"wider than compute={compute.name!r}; storing wider than computed adds "
-                                             f"no precision")
-        if accumulate.bits < compute.bits:
-            _refuse("accumulate", accumulate.name, f"narrower than compute={compute.name!r}")
-        if accumulate.name != compute.name:
-            _refuse("accumulate", accumulate.name, f"an accumulate format other than compute={compute.name!r} is "
-                                                   f"not enabled yet (F-07: kernels with explicit "
-                                                   f"accumulators); until then they are equal")
+        refusal = arithmetic_refusal(compute, accumulate)
+        if refusal is not None:
+            _refuse(refusal[0], getattr(self, refusal[0]), refusal[1])
+        if storage.bits > accumulate.bits:
+            _refuse("storage", storage.name, f"wider than accumulate={accumulate.name!r}; storing wider than the "
+                                             f"stage computes adds no precision")
 
     @property
     def storage_dtype(self):
         return format_of(self.storage).dtype
 
     @property
-    def compute_dtype(self):
-        return format_of(self.compute).dtype
+    def arithmetic(self) -> Arithmetic:
+        """The stage's compute and accumulate formats, as its kernels take them."""
+        return Arithmetic(self.compute, self.accumulate)
 
     @property
     def scaled_storage(self) -> bool:
@@ -220,8 +223,11 @@ class Precision:
 
     @classmethod
     def throughout(cls, name: str) -> "Precision":
-        """Every stage stored, computed and accumulated in format `name`."""
-        stage = StagePrecision(name, name, name)
+        """Every stage computed in format `name`, stored and accumulated in it where it can be:
+        a format below float32 accumulates in float32, and a product format
+        (`tensorfloat32`, `bfloat16_3x`) is stored in float32."""
+        fmt = format_of(name)
+        stage = StagePrecision(name if fmt.array else "float32", name, "float32" if fmt.below_float32 else name)
         return cls(**{s: stage for s in STAGES})
 
     def precision_for(self, trade) -> StagePrecision:

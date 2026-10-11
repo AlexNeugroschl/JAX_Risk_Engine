@@ -25,7 +25,6 @@ import itertools
 from dataclasses import dataclass, field
 from typing import ClassVar, Mapping, Optional, Tuple, Union
 
-import jax.numpy as jnp
 import numpy as np
 import ORE
 
@@ -33,11 +32,11 @@ from engine.calibration.ore_lgm import SwapIndexConventions
 from engine.market_data.curves import ZeroCurve
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER
 from engine.market_data.market import Market
-from engine.market_simulation.paths import evolve_states
+from engine.market_simulation.paths import evolve_states, standardized_steps
 from engine.market_simulation.scenario_market import ScenarioMarket, build_scenario_market
 from engine.market_simulation.sharding import shard_scenarios
 from engine.market_simulation.sobol import apply_brownian_bridge, generate_sobol_normals
-from engine.models.cam import CrossAssetModel, EqComponent, FxComponent, IrComponent, step_moments
+from engine.models.cam import CrossAssetModel, EqComponent, FxComponent, IrComponent, path_moments, step_moments
 from engine.models.lgm import Sigma, as_sigma
 from engine.precision import Precision, format_name, load, require_precision
 from engine.solvers.roots import DEFAULT_SOLVER, check_solver
@@ -231,38 +230,38 @@ def simulate(market: Market, config: CamConfig, model: Optional[CrossAssetModel]
     pass a calibrated one to use it.
 
     `precision` sets the simulation and market stages (`engine.precision`; cast points 1 to
-    3 of docs/planning/details/precision.md §6.3): the shocks are generated and bridged at
-    `simulation.compute` and stored; the states are evolved at `simulation.compute` from the
-    loaded shocks and stored; the market is built at `market.compute` from the loaded states
-    and returned stored at `market.storage`, its tenor grid kept at `market.compute` (it has
-    no scenario axis: it is the curves' coordinates, not scenario data). The step moments and
-    the path-independent parts of the curves are computed in float64 and cast. A scaled
-    storage format keeps block scales along each array's scenario axis (axis 1 of the shocks
-    `[T, S, d]`, axis 0 of everything else). The shocks and states are not kept: the market
-    records the formats they were stored in (`ScenarioMarket.simulation_formats`)."""
+    3 of docs/planning/details/precision.md §6.3), each computing in its arithmetic (its compute
+    format for the matrix products, its accumulate format for the rest, `StagePrecision.
+    arithmetic`): the normals are generated in the simulation's accumulate format, bridged by one
+    product and stored; the states are evolved from the loaded shocks in difference form
+    (`engine.market_simulation.paths`) and stored; the market is built from the states loaded in
+    the market's accumulate format (`build_scenario_market`) and returned stored at
+    `market.storage`, its tenor grid and curve levels kept in float64 (they have no scenario
+    axis: they are the curves' coordinates and path-independent parts, not scenario data). The
+    step and path moments are computed in float64 on the host. A scaled storage format keeps
+    block scales along each array's scenario axis (axis 1 of the shocks `[T, S, d]`, axis 0 of
+    everything else). The shocks and states are not kept: the market records the formats they
+    were stored in (`ScenarioMarket.simulation_formats`)."""
     require_precision("simulate's precision", precision)
-    sim, mkt = precision.simulation, precision.market
+    sim, mkt = precision.simulation.arithmetic, precision.market.arithmetic
     model = model or build_cross_asset_model(market, config)
     times = grid_times(market, config)
     moments = step_moments(model, times)
-    compute = sim.compute_dtype
+    path = path_moments(model, moments)
     # Split across the host's devices along the paths; the rest of the run follows (I-61).
-    normals = shard_scenarios(generate_sobol_normals(config.samples, len(config.dates), model.dimension, compute,
+    normals = shard_scenarios(generate_sobol_normals(config.samples, len(config.dates), model.dimension, sim.dtype,
                                                      seed=config.seed), axis=1)
-    shocks = precision.store(apply_brownian_bridge(normals, jnp.asarray(times, dtype=compute)), sim.storage,
-                             "shocks", axis=1)
-    cast = lambda a: jnp.asarray(a, dtype=compute)  # noqa: E731
-    states = precision.store(evolve_states(cast(model.initial_state()),
-                                           (cast(moments.transition), cast(moments.drift), cast(moments.cholesky)),
-                                           load(shocks, compute)), sim.storage, "states")
+    shocks = precision.store(apply_brownian_bridge(normals, times, sim), precision.simulation.storage, "shocks", axis=1)
+    states = precision.store(evolve_states((path.mean, path.scale), standardized_steps(moments, path),
+                                           load(shocks, sim.dtype), sim), precision.simulation.storage, "states")
     index_curves = {
         name: (ccy, ZeroCurve.from_config(curve))
         for ccy in config.currencies
         for name, curve in market.currency(ccy).index_curves.items()
     }
-    scenarios = build_scenario_market(model, market.asof, config.dates, load(states, mkt.compute_dtype),
-                                      config.curve_tenors, index_curves)
+    scenarios = build_scenario_market(model, market.asof, config.dates, load(states, mkt.dtype), config.curve_tenors,
+                                      index_curves, mkt, path)
     scenarios.simulation_formats = {"shocks": format_name(shocks), "states": format_name(states)}
     arrays = itertools.count()  # names each market array, in map_arrays' fixed order
-    return scenarios.map_arrays(lambda a: precision.store(a, mkt.storage, f"market/{next(arrays)}"),
+    return scenarios.map_arrays(lambda a: precision.store(a, precision.market.storage, f"market/{next(arrays)}"),
                                 grid=lambda grid: grid)

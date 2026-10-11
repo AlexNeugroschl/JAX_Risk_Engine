@@ -14,6 +14,13 @@ and market risk revalues under shocked curves (`engine.risk.market`).
                  function (or an object equal for equal settings) and `terms` the trade's
                  data as a pytree, so a caller jits it with `pricer` static and compiles once
                  per product and shape, not per trade or call (`engine.risk.greeks.ad`)
+        .pnl     for a trade priced in difference form (swaps, bonds, Europeans; F-07):
+                 `pnl(terms, curves, shifts, arithmetic)`, each scenario's change of the price
+                 when the pillar rates of `curves` (`ZeroCurve`s) move by `shifts` (`[S, K]`
+                 per curve), computed as the deviation from the level in the matrix products
+                 of `arithmetic` (`engine.pricing.legs.leg_values`), so a move of nothing is
+                 exactly 0 and the legs' cancellation stays in the level. None for a
+                 Bermudan/American, which market risk revalues in full (`engine.risk.market`)
 
 The engines are the valuation pipeline's own (`engine.pricing`), so the price at the market's
 rates is the portfolio's t=0 NPV: swaps and bonds by `legs_npv`, Europeans by
@@ -41,13 +48,16 @@ from engine.instruments.treasury import BondConfig
 from engine.market_data.curves import ZeroCurve
 from engine.market_data.market import VOL_DAY_COUNTER, Market, index_name
 from engine.models.lgm import Sigma
+from engine.precision import Arithmetic
 from engine.pricing.bermudan import Calibration, calibrate_on, prepared_option
 from engine.pricing.config import JamshidianEngineConfig, PricingConfig
 from engine.pricing.context import from_market
 from engine.pricing.cube import bond_legs
-from engine.pricing.european import EuropeanTerms, black_multileg_npv, european_terms
-from engine.pricing.jamshidian import jamshidian_npv
-from engine.pricing.legs import Legs, legs_npv, legs_of, today_schedule
+from engine.pricing.european import (
+    EuropeanTerms, bachelier_on_legs, black_multileg_npv, european_legs, european_terms, on_path,
+)
+from engine.pricing.jamshidian import jamshidian_discounts, jamshidian_npv, jamshidian_on_discounts
+from engine.pricing.legs import Deviations, Legs, leg_values, legs_npv, legs_of, today_schedule
 from engine.pricing.lgm_grid import _build_grid_schedule, _GridSchedule, _PreparedBermudan, grid_value
 
 #: A market curve: `("discount", currency)` or `("index", index name)`.
@@ -57,12 +67,14 @@ CurveKey = Tuple[str, str]
 @dataclass(frozen=True)
 class TradePriceFunction:
     """`price(*pillar_rates)`, one rates array per curve of `curves`, in that order:
-    `pricer(terms, *curves)` on `ZeroCurve`s at the pillar `times` (see the module
+    `pricer(terms, *curves)` on `ZeroCurve`s at the pillar `times`; and `pnl`, the change of
+    the price under shifts of the rates in difference form, or None (see the module
     docstring)."""
     curves: Tuple[CurveKey, ...]
     pricer: Callable
     terms: Any
     times: Tuple[jnp.ndarray, ...]
+    pnl: Optional[Callable] = None
 
     def price(self, *rates):
         return self.pricer(self.terms, *on_pillars(self.times, rates))
@@ -98,20 +110,21 @@ def trade_price_function(cfg, market: Market, pricing: PricingConfig = PricingCo
     times = tuple(jnp.asarray(market_curve(market, k).times, dtype=dtype) for k in keys)
     asof = market.asof
 
-    def priced(pricer, terms=None):
-        return TradePriceFunction(keys, pricer, terms, times)
+    def priced(pricer, terms=None, pnl=None):
+        return TradePriceFunction(keys, pricer, terms, times, pnl)
 
     if isinstance(cfg, BondConfig):
-        return priced(_legs_price, _legs_terms(bond_legs(cfg), asof, dtype))
+        return priced(_legs_price, _legs_terms(bond_legs(cfg), asof, dtype), _legs_pnl)
     if isinstance(cfg, SwapConfig):
         legs = legs_of(_swap_underlying(cfg), cfg.payer, asof, cfg.fixings)
-        return priced(_legs_price, _legs_terms(legs, asof, dtype))
+        return priced(_legs_price, _legs_terms(legs, asof, dtype), _legs_pnl)
     if isinstance(cfg, SwaptionConfig):
         if not cfg.exercise_date > asof:
-            return priced(_zero_price)
+            return priced(_zero_price, pnl=_zero_pnl)
         if pricing.european == "Jamshidian":
-            return priced(JamshidianPrice(pricing.jamshidian), european_terms(cfg, asof).astype(dtype))
-        return priced(bachelier_price, bachelier_terms(cfg, market, dtype))
+            return priced(JamshidianPrice(pricing.jamshidian), european_terms(cfg, asof).astype(dtype),
+                          JamshidianPnl(pricing.jamshidian))
+        return priced(bachelier_price, bachelier_terms(cfg, market, dtype), bachelier_pnl)
     if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
         option = bermudan_price_function(cfg, market, pricing, dtype)
         return priced(option.pricer, option.terms)
@@ -121,6 +134,27 @@ def trade_price_function(cfg, market: Market, pricing: PricingConfig = PricingCo
 def _zero_price(_terms, *curves):
     """An expired option's price: 0, still a function of the curves."""
     return jnp.zeros((), dtype=curves[0].pillar_rates.dtype) * sum(jnp.sum(c.pillar_rates) for c in curves)
+
+
+def _zero_pnl(_terms, curves, shifts, arithmetic: Arithmetic):
+    """An expired option's P&L: 0 in every scenario."""
+    return jnp.zeros(shifts[0].shape[:-1], dtype=arithmetic.dtype)
+
+
+def _deviations(terms_legs: Legs, shifts) -> Deviations:
+    """The `Deviations` of a leg whose curves' rates move by `shifts` (one curve: a bond, whose
+    one curve is both) and whose known fixings do not."""
+    discount, index = shifts[0], shifts[-1]
+    return Deviations(discount, index, jnp.zeros(discount.shape[:-1] + terms_legs.float_pay.shape, discount.dtype))
+
+
+def _changed(level_value, shocked_value, deviations: Deviations):
+    """`shocked - level` per scenario, exactly 0 where nothing moved (rather than the difference
+    of one value evaluated twice, which XLA may round apart)."""
+    moved = jnp.zeros(deviations.discount.shape[:-1], dtype=bool)
+    for deviation in (deviations.discount, deviations.index, deviations.fixings):
+        moved = moved | jnp.any(deviation != 0, axis=-1)
+    return jnp.where(moved, shocked_value - level_value, 0.0)
 
 
 class _LegsTerms(NamedTuple):
@@ -144,6 +178,15 @@ def _legs_price(terms: _LegsTerms, disc, index=None):
                     terms.projected, terms.known_rates)
 
 
+def _legs_pnl(terms: _LegsTerms, curves, shifts, arithmetic: Arithmetic):
+    """The coupons' t=0 NPV's change under `shifts` of the pillar rates: the deviation of
+    `leg_values`, nothing else (see the module docstring)."""
+    disc, index = curves[0], curves[-1]
+    _, moved = leg_values(terms.legs, disc, index, 0.0, terms.alive_fixed, terms.alive_float, terms.projected,
+                          terms.known_rates, _deviations(terms.legs, shifts), arithmetic=arithmetic)
+    return moved.value if terms.legs.payer else -moved.value
+
+
 @dataclass(frozen=True)
 class JamshidianPrice:
     """`(terms, disc, index) -> NPV` on the Jamshidian engine of `model`: a pricer that
@@ -152,6 +195,22 @@ class JamshidianPrice:
 
     def __call__(self, terms: EuropeanTerms, disc, index):
         return jamshidian_npv(terms, self.model, disc, 0.0)
+
+
+@dataclass(frozen=True)
+class JamshidianPnl:
+    """`(terms, curves, shifts, arithmetic) -> P&L` on the Jamshidian engine of `model`: the
+    discount factors in difference form (`engine.pricing.jamshidian.jamshidian_discounts`), x*
+    and the bond options in the accumulate format, their sum in the compute format, less the
+    price at the level."""
+    model: JamshidianEngineConfig
+
+    def __call__(self, terms: EuropeanTerms, curves, shifts, arithmetic: Arithmetic):
+        disc = curves[0]
+        deviations = _deviations(terms.legs, shifts)
+        p_bond, p_start = jamshidian_discounts(terms, disc, 0.0, deviations.discount)
+        return _changed(jamshidian_npv(terms, self.model, disc, 0.0),
+                        jamshidian_on_discounts(terms, self.model, p_bond, p_start, 0.0, arithmetic), deviations)
 
 
 class BachelierTerms(NamedTuple):
@@ -181,6 +240,18 @@ def bachelier_price(terms: BachelierTerms, disc, index, volatility=None):
     """`(terms, disc, index) -> NPV`; a `volatility` replaces the market's (Vega)."""
     variance = terms.variance if volatility is None else volatility ** 2 * terms.expiry
     return black_multileg_npv(terms.terms, disc, index, 0.0, variance, terms.projected, terms.known_rates)
+
+
+def bachelier_pnl(terms: BachelierTerms, curves, shifts, arithmetic: Arithmetic):
+    """The European's t=0 NPV's change under `shifts` of the pillar rates: the exercise-into
+    swap's values in difference form (`european_legs`), the Bachelier formula at the level and
+    on each scenario in the accumulate format."""
+    disc, index = curves
+    deviations = _deviations(terms.terms.legs, shifts)
+    level, moved = european_legs(terms.terms, disc, index, 0.0, terms.projected, terms.known_rates, deviations,
+                                 arithmetic)
+    return _changed(bachelier_on_legs(terms.terms, level, terms.variance),
+                    bachelier_on_legs(terms.terms, on_path(level, moved), terms.variance), deviations)
 
 
 def vol_point(cfg: SwaptionConfig, market: Market) -> Tuple[float, float]:

@@ -25,7 +25,7 @@ import pytest
 from engine.api.requests import PrecisionSchema
 from engine.api.results import PrecisionReportSchema
 from engine.precision import (
-    BLOCK, FORMAT_NAMES, MeanEstimate, Precision, QuantileEstimate, StagePrecision, paired_paths,
+    BLOCK, FORMAT_NAMES, FORMATS, MeanEstimate, Precision, QuantileEstimate, StagePrecision, paired_paths,
     paired_quantile, two_level_mean,
 )
 from engine.precision import estimate as estimate_module
@@ -349,10 +349,10 @@ def _expected_realized(policy, names):
 
 
 class TestReport:
-    @pytest.mark.parametrize("name", FORMAT_NAMES)
+    @pytest.mark.parametrize("name", [n for n in FORMAT_NAMES if FORMATS[n].array])
     @pytest.mark.parametrize("stage", ["simulation", "market", "pricing"])
     def test_the_realized_format_of_every_class_is_the_policys(self, stage, name):
-        """§13.3: each class × enabled format, read from the arrays; one trade overridden."""
+        """§13.3: each class × storage format, read from the arrays; one trade overridden."""
         compute = "float64" if name == "float64" else "float32"
         policy = dataclasses.replace(Precision(by_trade={"bond": StagePrecision("float32")}),
                                      **{stage: StagePrecision(name, compute, compute)})

@@ -7,7 +7,7 @@ not "is FP32 exact?" (it is not) but "is FP32's error small next to the Monte
 Carlo sampling error the VaR/ES number already carries?" This demo measures
 both on one portfolio.
 
-**What runs.** `engine.risk.market.run_market_risk`, unmodified, at eight
+**What runs.** `engine.risk.market.run_market_risk`, unmodified, at ten
 `engine.precision.Precision` settings:
 
     FP64           Precision(): float64 everywhere, the default
@@ -20,6 +20,10 @@ both on one portfolio.
     BF16 stored    the same in bfloat16
     FP8 stored     the same in FP8 (e4m3), rounded to nearest
     FP8 stochastic the same, rounded stochastically
+    BF16 compute   the revaluation's matrix products in bfloat16, accumulated in float32, the
+                   P&L stored in bfloat16 (2026-10-10); the Bermudan, whose rollback is not in
+                   difference form yet, kept in float32
+    FP8 compute    the same with FP8 (e4m3) products and storage
 
 Storage below 32 bits keeps a power-of-two scale per block of 32 scenarios, so each
 block uses the format's whole range; see docs/planning/details/precision.md §6.2. A block whose
@@ -30,7 +34,9 @@ market-risk run; the section before the last shows what they do to an exposure c
 bond's values sit near their level on every path (I-75).
 
     10-day Monte Carlo shocks of every pillar of two sloped curves
-        -> full revaluation of every trade at t=0, at its pricing stage's compute precision
+        -> every trade's P&L at t=0 in its pricing stage's arithmetic: the deviation from its
+           base value, its matrix products in the compute format (a full revaluation for the
+           Bermudan)
         -> P&L per scenario, stored at its pricing stage's storage precision
         -> VaR 99% and ES 97.5% of the portfolio P&L, reduced in float64
 
@@ -51,7 +57,10 @@ seeds, by the storage harness (tests/support/precision_harness.py, with its camp
 tests/support/precision_campaigns.py; docs/planning/details/precision.md §15.4); this demo is
 one portfolio and one look.
 
-Compute below float32 is not enabled yet (F-07).
+Compute below float32 (2026-10-10) runs the products in the format and everything else in
+float32; a CPU emulates it with the numbers a device with units for the format computes, and the
+report says which ran (`products`). The P&L is the deviation itself, so the error is relative
+to it, not to the trades' values.
 
 ORE parity of this path is established in
 tests/test_market_risk_ore_parity.py; this demo is only about precision.
@@ -92,6 +101,9 @@ PRECISIONS = {
        for label, name, rounding in (("FP16 stored", "float16", "nearest"), ("BF16 stored", "bfloat16", "nearest"),
                                      ("FP8 stored", "float8_e4m3fn", "nearest"),
                                      ("FP8 stochastic", "float8_e4m3fn", "stochastic"))},
+    **{label: Precision(pricing=StagePrecision(name, name, "float32"),
+                        by_product={"bermudan_swaption": StagePrecision("float32", "float32", "float32")})
+       for label, name in (("BF16 compute", "bfloat16"), ("FP8 compute", "float8_e4m3fn"))},
 }
 
 
@@ -229,7 +241,7 @@ paired_policy = dataclasses.replace(PRECISIONS["FP8 stored"], paired_fraction=0.
 report = run(paired_policy, SEEDS[0])[0].precision
 print(f"  policy: FP8 stored, paired_fraction {paired_policy.paired_fraction}; ran on {', '.join(report.devices)} "
       f"({report.backend}, jax {report.jax_version})")
-print(f"  stored as: {report.realized}")
+print(f"  stored as: {report.realized}; products: {report.products}")
 print(f"  {report.paired_paths} of {report.paths} scenarios re-run at float64:")
 print(f"  {'figure':<20}{'run':>16}{'paired, run':>16}{'paired, FP64':>16}{'difference':>14}")
 for key, figure in report.figures.items():

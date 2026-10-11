@@ -509,7 +509,8 @@ def test_one_bootstrap_program_per_basket_shape_and_power_of_two(path_market):
 
 
 def _drop_first_date(curves):
-    return dataclasses.replace(curves, tenor_times=curves.tenor_times[1:], log_discounts=curves.log_discounts[:, 1:])
+    return dataclasses.replace(curves, tenor_times=curves.tenor_times[1:], log_discounts=curves.log_discounts[:, 1:],
+                               level=curves.level[1:])
 
 
 def test_a_date_with_an_exercise_left_and_no_helper_keeps_the_engine_volatility():

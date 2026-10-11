@@ -132,7 +132,7 @@ def scenarios(request):
 
 
 def test_path_fixings_are_ores_index_forecast_on_the_path_curve(scenarios):
-    fixings = np.asarray(path_fixings(6, ASOF, scenarios.dates, scenarios.times, scenarios.index[INDEX]))
+    fixings = np.asarray(path_fixings(6, ASOF, scenarios.dates, scenarios.times, scenarios.index[INDEX]).rates)
     for j, date in enumerate(scenarios.dates):
         for s in range(scenarios.num_paths):
             curve = _ore_path_curve(date, np.asarray(scenarios.index[INDEX].tenor_times[j]),
@@ -163,7 +163,7 @@ def test_every_path_and_date_equals_ores_discounting_swap_engine(name, scenarios
             history = dict(cfg.fixings)
             for f in fixing_dates:
                 if ASOF <= f < date:
-                    history[f] = float(fixings[s, np.searchsorted(serials, f.serialNumber(), side="right")])
+                    history[f] = float(fixings.rates[s, np.searchsorted(serials, f.serialNumber(), side="right")])
             disc = _ore_path_curve(date, np.asarray(scenarios.discount["USD"].tenor_times[j]),
                                    np.asarray(scenarios.discount["USD"].log_discounts[s, j]))
             fwd = _ore_path_curve(date, np.asarray(scenarios.index[INDEX].tenor_times[j]),
@@ -326,7 +326,7 @@ def test_european_on_every_path_equals_quantlibs_bachelier_engine(name, scenario
             for c in underlying.floatingLeg():
                 f = ORE.as_floating_rate_coupon(c).fixingDate()
                 if ASOF <= f < date:
-                    index.addFixing(f, float(fixings[s, np.searchsorted(serials, f.serialNumber(), side="right")]),
+                    index.addFixing(f, float(fixings.rates[s, np.searchsorted(serials, f.serialNumber(), side="right")]),
                                     True)
             vol = float(np.sqrt(variances[j] / DC.yearFraction(date, cfg.exercise_date)))
             swaption = _ql_swaption(cfg, index, disc, vol)
@@ -438,7 +438,7 @@ def _path_oracle_inputs(cfg, sm, j, s, fixings):
         tenor_dates, np.exp(np.asarray(sm.index[INDEX].log_discounts[s, j, 1:])))
     serials = [d.serialNumber() for d in sm.dates]
     fixing_dates = [ORE.as_floating_rate_coupon(c).fixingDate() for c in build_option_underlying(cfg).floatingLeg()]
-    history = {f: float(fixings[s, np.searchsorted(serials, f.serialNumber(), side="right")])
+    history = {f: float(fixings.rates[s, np.searchsorted(serials, f.serialNumber(), side="right")])
                for f in fixing_dates if ASOF <= f < date}
     return curves, history
 

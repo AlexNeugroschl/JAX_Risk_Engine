@@ -115,8 +115,8 @@ def test_the_cube_by_reference_is_the_inline_cube_and_none_leaves_it_out(test_cl
     ({"trades": [_swap(index_tenor_months=3)]}, "USD-SIMINDEX-3M"),
     ({"trades": [_swap(currency="EUR")]}, "EUR"),
     # The run configuration (I-68): a reporting currency contradicting the simulation's was
-    # silently ignored before 2026-09-30; a precision format is refused until it is enabled
-    # (compute below float32: F-07).
+    # silently ignored before 2026-09-30; a stage the precision rules refuse (accumulating below
+    # float32), or a Bermudan priced below float32 before its kernel's rewrite (F-07).
     ({"base_currency": "EUR"}, "contradicts"),
     ({"precision": {"pricing": {"storage": "float16", "compute": "float16", "accumulate": "float16"}}},
      "precision.pricing"),

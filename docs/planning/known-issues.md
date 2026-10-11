@@ -11,32 +11,45 @@ Europeans and bonds equal ORE's simulation path by path since 2026-10-07.
 
 ## Verification status
 
-Last full run, 2026-10-10, on the code of the submission binding (I-57: `AttemptStore.submit`
-in `engine/traderx/workload.py`, binding records in `engine/traderx/publication.py`, the
-`/eod/price` route). 2,877 collected on Windows: the 2,861 of the storage harness's run plus 16
-(`TestTheSubmissionIdBindsBeforeAnyCacheReturn`, `TestARetryOfARunningSubmissionIsNotExecutedAgain`,
-three store tests in `TestSubmissionIdCannotCrossWorkloads`, the restart case over HTTP, and
-`TestSubmissionBindingsAreDurable`). The run printed its summary line and has no `FAILED` or
-`ERROR` line:
+Last full run, 2026-10-11, on the kernel rewrite (F-07: compute below float32 in difference
+form, `engine/precision/{arithmetic,grid,products}.py` and the simulation, scenario market,
+legs, Europeans and market risk on them; [details](details/precision.md#8-compute-below-float32)).
+3,029 collected on Windows: the 2,877 of the submission binding's run plus
+`tests/test_compute_precision.py` (106) and 46 cases of the compute formats in the existing
+precision tests. Each run printed its summary line:
 
-- **Windows**, `-n 8`: **2,867 passed, 4 skipped, 6 xfailed, 0 failed**, 14m44s (the skips and
-  the expected failures as before: the Bermudan/American L3 cases of
-  `tests/test_ore_xva_parity.py`, strict, waiting on [I-49](#i-49)).
-- **Linux** (Docker `python:3.11`, the store gained a directory and digested file names, rule
-  5): the TraderX route and publication suites and `tests/test_import_layering.py`, 142 passed.
-  The last full Linux run is the package layout's (2026-10-08/09: 2,760 passed, 6 skipped, 6
-  xfailed).
-- Not rerun: the fast tier under strict dtype promotion (2026-10-09: 2,730 passed, 4 skipped, 6
-  xfailed), the GPU and the golden snapshot, since the change touches no JAX code and moves no
-  number; the 2026-10-09 snapshot (359 arrays, and 168 of scaled storage, identical to the code
-  before) stands.
+- **Windows**, `-n 8`: **3,020 passed, 3 skipped, 6 xfailed, 0 failed**, 12m00s (the skips:
+  the two accelerator-only defaults and the GPU plugin check; the expected failures as before:
+  the Bermudan/American L3 cases of `tests/test_ore_xva_parity.py`, strict, waiting on
+  [I-49](#i-49)).
+- **Linux** (WSL2, CPU, `-n 2`: at `-n 4` and `-n 8` the VM ran out of memory, [I-27](#i-27)):
+  **3,020 passed, 4 skipped, 6 xfailed**, 18m11s, and 2 failed in `tests/test_import_layering.py`
+  on bytecode-only folders of the old layout (`engine/simulation`, `engine/valuation`, …) left
+  in the clone; with them removed, the module passes (11 passed).
+- **GPU** (RTX 5060, WSL2): `tests/test_compute_precision.py` and
+  `tests/test_accelerator_defaults.py`, 134 passed, and the device check
+  (`python -m tests.support.precision_devices --platform gpu`): every arithmetic a stage accepts
+  equals its emulation.
+- **Golden snapshot** (2026-10-10, against the code before; compared within a margin, not bit for
+  bit): 359 arrays, 136 identical, none beyond its margin. float64 at most 2.2e-14 relative (the
+  simulation; Hull-White 2.1e-14, Jamshidian 3.7e-15, today's values 1.6e-16, AD Greeks 2.2e-15,
+  bump Greeks 7.6e-15, market risk 1.5e-14), float32 at most 8.3e-6 (market risk; the cube
+  2.2e-6, float32 storage 3.6e-7). ORE parity: the pricing and parity modules within the
+  existing tolerances (527 passed, 6 xfailed).
+- **Precision harness**: the `compute` and `compute_market_risk` campaigns are new
+  ([precision.md §15.5](details/precision.md#155-compute-below-float32-2026-10-10)); `linear`,
+  `options` and `market_risk` rerun, every float64-computed case equal to its record to three
+  significant figures, `throughout:float32` 0.29 to 0.65 of its record. No case recompiles
+  after its first seed.
+- Not rerun: the fast tier under strict dtype promotion as a whole; the compute paths run under
+  strict promotion in `tests/test_compute_precision.py`.
 
-Red first: the 16 tests, run against the code before in a worktree of `c27d43c`, all fail (A-02's
-case answered `200` with the bill's cached result; the running retry priced the attempt twice
-and the second to finish raised a `500`). TraderX's acceptance starter
-(`reference/traderX/.../acceptance/check_current_api.py`, its imports updated to today's
-module names) passes A-01 to A-03, where it passed A-01 only; A-04 and A-05 are
-[I-59](#i-59).
+Red first: the GPU's float32-operand, float64-accumulate product was 7.6e-7 off before the fix
+(`TestProducts::test_float32_operands_may_accumulate_in_float64`, failed on the RTX 5060,
+passes after); the device check failed XLA's native FP8 product (70% off for some shapes) and
+its `BF16_BF16_F32_X3` (a single pass's error), passes with both emulated; a level rounded once
+to float32 put a bond's mean 0.04 off near 1e6 (287 statistical errors); with the level in two
+terms every case is at most 3e-4 off, within two statistical errors.
 
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
@@ -56,6 +69,7 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | Focus |
 | [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | Focus |
 | [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | Focus |
+| [I-96](#i-96) | Compute below float32 biases every figure: each product's path-independent operand is rounded once for all paths | Medium | OPEN | Correctness | Focus |
 | [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Focus |
 | [I-88](#i-88) | The API completeness test checks field names, not that a value reaches the engine | Low | OPEN | Tooling | Focus |
 | [I-89](#i-89) | A retried job submission runs the job twice | Low | OPEN | API | Focus |
@@ -195,6 +209,44 @@ With a smile: European NPV and Vega away from the money, and calibrated Bermudan
 **To close.** Decided (X-5): a strike axis in the market's volatilities, read at each
 option's and helper's strike as ORE reads its cube. SABR is [F-02](features.md#f-02).
 
+<a id="i-96"></a>
+### I-96 — Compute below float32 biases every figure: each product's path-independent operand is rounded once for all paths
+
+**Severity:** Medium · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-10, the
+kernel rewrite's `compute` campaign (F-07)
+
+**What is wrong.** A product in a compute format below float32 rounds both operands to the
+format (`engine.precision.products`), as a matrix unit does. One operand varies by path (a path's
+state or curve deviation, its flows' discount deviations); the other does not (the Brownian
+bridge's matrix, the standardized step moments, the market's loadings on the state, each flow's
+present value at the level). The path-independent operand is rounded once and its error is the
+same on every path, so it moves every figure systematically: in the `compute` campaign
+(compliance/precision-measurements/compute.md) the error of every case below float32 is all
+bias (relative bias equal to the relative error, 100 to 2,000 of its standard errors), and grows
+against the statistical error with the paths as a bias does (TensorFloat-32 and float16 0.2 to
+12 statistical errors from 1,024 to 16,384 paths, bfloat16 1 to 56, FP8 20 to 3,000; storage in
+the same format, whose rounding is per path, is 5 to 50 times closer). Carrying the
+path-independent operand in two terms of the format (two products, the second on what the first
+leaves) removes most of it: on 4,096 paths and 8 seeds, the pricing stage's worst bias over the
+dates, in statistical errors, falls from 2.1 to 0.04 (bfloat16, a European) and from 41 to 5.3
+(FP8 e4m3, the European; a swap 2.5 to 1.8, a bond 4.2 to 2.6), the rest being the per-path
+operand's rounding.
+
+**Reach.** Runs that compute a stage below float32 (opt-in since 2026-10-10); float32 and float64
+compute are unaffected (their products' operands are rounded at float32 or not at all). Means are
+corrected by a paired float64 sample (`Precision.paired_fraction`, A-13); quantiles (PFE, VaR,
+ES) are not.
+
+**Current handling.** The precision report names the compute formats and their execution; the
+harness measures the bias. Nothing warns (I-55).
+
+**To close.** Decide whether a product below float32 carries its path-independent operand in
+two terms (twice the matrix work on a native unit; the right-hand operand of every product but
+the Brownian bridge's, which would multiply its transpose instead), as the default or as a
+product format of the policy beside the single pass, from the `compute` campaign rerun with it
+and its timing; then the evidence table (I-55) reads the rows of what ships. Red first: a
+campaign case whose bias significance falls below 3 at 4,096 paths with it and not without.
+
 ---
 
 ## Validation
@@ -280,13 +332,25 @@ times on the RTX 5060 (7.3 s to 0.19 s); the demo's repeated job on the GPU 5.4�
   `jax.jvp`) and for the model value: the demo's ten bucket programs compile in 5.4 s against
   3.3 s (7.1 s before the bracket's two ends were evaluated in one call). The programs stay in
   the worker and on disk, so a repeated or restarted job does not pay it.
+- **The leg kernel in difference form is a third slower on its own on a CPU** (since the kernel
+  rewrite, 2026-10-10, F-07). A swap's cube on 4,096 paths and 20 dates takes 13.4 ms against
+  10.2 ms in float64, though the operations are the same work (11.6 ms against 11.7 ms summed
+  over a trace): the old code's one reduction overlapped its two operand fusions, the new
+  kernel's products (one per block of columns) run after theirs. End to end it is within the
+  run-to-run spread: a five-trade linear portfolio 4% slower (medians 0.370 s and 0.352 s, three
+  interleaved passes), market risk on its trades three times faster (0.075 s against 0.23 s).
+  Concatenating the blocks into one product's operand cost a quarter more; two columns per coupon
+  doubled it (both measured and discarded).
 
-**Reach.** Wall time only; no number. Windows CPU runs; a worker's first job.
+**Reach.** Wall time only; no number. Windows CPU runs; a worker's first job; float64 path
+pricing of linear trades on a CPU.
 
 **Current handling.** None needed for correctness.
 
 **To close.** The Windows slowdown's cause, and the helper's price traced once per
-bucket program, the snapshot bit for bit. Related: the grid rollback's memory and time on the
+bucket program, the snapshot within the margin; the leg kernel's products scheduled with their
+operand fusions (or the trades of one shape priced as one product, their columns side by side,
+which a matrix unit wants anyway), timed against the code before the kernel rewrite. Related: the grid rollback's memory and time on the
 paths ([I-83](#i-83), F-07) and the cold job's one-operation programs ([I-81](#i-81)).
 
 <a id="i-83"></a>
@@ -528,7 +592,10 @@ storage harness (I-75)
 
 **What is wrong.** A market-risk run has no scenario market: it reads `Precision.simulation`
 for its shifts and `pricing` (with its overrides) for its revaluation, and accepts a `market`
-stage, which `Precision.throughout` also sets, without reading it. A portfolio run with
+stage, which `Precision.throughout` also sets, without reading it. Since the kernel rewrite
+(2026-10-10) a stage's `compute` is the format of its matrix products, and market risk's
+simulation stage has none (the shifts are drawn before the run, then rounded to the stage's
+accumulate format and stored): its `simulation.compute` is accepted and not read either. A portfolio run with
 `scenario_risk=False` simulates nothing and accepts every stage, the rounding, the block layout
 and `paired_fraction`, and reads none of them. Both are inputs accepted and then ignored, which
 the API otherwise refuses ([I-59](#i-59)'s rule; a stochastic rounding with nothing stored
@@ -542,7 +609,8 @@ market risk with `Precision.throughout("float32")`, whose `market` stage is one 
 
 **To close.** In the run request ([I-87](#i-87)): each analytic refuses a precision setting it
 does not read, naming the field, as it refuses a configuration section no requested analytic
-reads; a test per analytic; the demo's market-risk policies set the two stages they use.
+reads (market risk: the `market` stage, and `simulation.compute` other than its accumulate
+format); a test per analytic; the demo's market-risk policies set the two stages they use.
 
 <a id="i-89"></a>
 ### I-89 — A retried job submission runs the job twice
@@ -702,7 +770,12 @@ describes the kernels that ship. Three findings of its first campaigns bear on t
   figures (it trades a bias, which block offsets removed for concentrated columns, for
   variance).
 
-Compute below float32 is [F-07](features.md#f-07).
+Compute below float32 is built (2026-10-10, [F-07](features.md#f-07)) for every path kernel but
+the Bermudan/American rollback: the precision harness measures it in the `compute` and
+`compute_market_risk` campaigns ([details/precision.md
+§15.5](details/precision.md#155-compute-below-float32-2026-10-10)), whose rows the table reads
+beside the storage campaigns'. Their first run found a bias floor below float32
+([I-96](#i-96)), settled before the table's rows are read.
 
 <a id="i-94"></a>
 ### I-94 — The LGM is calibrated by two implementations
@@ -877,6 +950,21 @@ failure when the kernel's global OOM killer took a test process (5.9 GB resident
 gained the ORE simulation tests (an OREApp run and the engine on the same portfolio per model)
 since the green runs of 2026-10-05. Afterwards the distro instance stopped about 90 s after each
 start, idle or not, until WSL was restarted. Memory remains the leading suspect.
+
+**2026-10-11, memory confirmed for WSL2 at `-n 8` and `-n 4`.** The Linux runs of the kernel
+rewrite (24 GB VM, CPU) took the whole VM down twice, at about 11% and with no summary line. A
+log of each xdist process's resident memory and running test every 3 s showed the VM's use
+rising past 17 GB at a rate of 1.4 GB per 5 s: four processes at 2.9 to 5.1 GB each plus the
+demos' subprocesses. A process holds more than its test needs alone (the American's finer
+grids at 5.1 GB, against a 1.3 GB peak alone): it keeps memory from the tests it ran before,
+despite `jax.clear_caches()` after each module. The heaviest tests at that point need the same peak alone before and
+after the rewrite (`/usr/bin/time`, HEAD against the working copy: Hull-White's pipeline 2,342
+and 2,323 MB, the American's finer grids 1,273 and 1,272, the calibration portfolio 1,590 and
+1,591, the component demos 2,803 and 2,808), so the rewrite added nothing; four processes no
+longer fit in 24 GB. At `-n 2` the run finished in 18m11s, the VM at a 19.4 GB peak, two
+processes at 7.8 GB (`tests/test_ore_xva_parity.py`'s simulation tests) and 8.8 GB
+(`tests/test_profiling_and_jit.py`'s Greeks compile counts). A Linux full run here now uses
+`-n 2`, and `-n auto` on a 16 GB CI runner would not fit.
 
 **Current handling.** Since 2026-10-04 no pool, and no executor thread, exists: HTTP tests
 start one engine worker, a separate process with no thread in the test process, and each

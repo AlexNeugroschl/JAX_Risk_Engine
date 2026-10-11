@@ -42,8 +42,8 @@ from engine.calibration.ore_lgm import SIGMA_BRACKET, bootstrap_sigma, ceiling_t
 from engine.market_data.curves import ZeroCurve
 from engine.market_simulation.config import build_cross_asset_model, simulate
 from engine.precision import (
-    BLOCK, FORMAT_NAMES, FORMATS, OFFSETS, OVERRIDES, RETIRED_SHAPE, ROUNDINGS, STAGES, Overrides, Precision,
-    StagePrecision, Stored, dtype_of, format_of, load, name_of, rounding_key, store,
+    BLOCK, FORMAT_NAMES, FORMATS, OFFSETS, OVERRIDES, RETIRED_SHAPE, ROUNDINGS, STAGES, Arithmetic, Overrides,
+    Precision, StagePrecision, Stored, dtype_of, format_of, load, name_of, rounding_key, store,
 )
 from engine.precision import storage as storage_module
 from engine.pricing.bermudan import calibration_basket
@@ -56,7 +56,20 @@ from engine.run import (
 from tests import market_risk_support as mr
 from tests.support import portfolio as shared
 
+#: The formats that compute and accumulate in themselves (an `Arithmetic` that is plain).
 ENABLED = ("float64", "float32")
+#: The array formats (storage and accumulate), widest first.
+ARRAYS = tuple(name for name, f in FORMATS.items() if f.array)
+
+
+def _accumulate(compute: str) -> str:
+    """A stage's accumulate format under `compute`: float32 below float32, else the format's own."""
+    return "float32" if FORMATS[compute].below_float32 else compute
+
+
+#: Every (storage, compute) pair a stage accepts: storage no wider than the accumulator.
+ACCEPTED = tuple((storage, compute) for compute in FORMAT_NAMES for storage in ARRAYS
+                 if FORMATS[storage].bits <= FORMATS[_accumulate(compute)].bits)
 F32 = StagePrecision("float32", "float32", "float32")
 #: float64 arithmetic, float32 storage.
 STORED32 = StagePrecision("float32", "float64", "float64")
@@ -75,20 +88,34 @@ def _simulation(model=LgmConfig, samples=16) -> CamConfig:
 # ---------------------------------------------------------------------------
 class TestFormats:
     def test_the_table_is_the_design_table(self):
-        """precision.md §6.1: name, bits, mantissa bits, max, scaled, the items that enable them."""
-        rows = {f.name: (f.bits, f.mantissa_bits, f.min_exponent, f.scaled, f.storage_pending, f.compute_pending)
-                for f in FORMATS.values()}
+        """precision.md §6.1: name, bits, mantissa bits, minimum exponent, array format, scaled,
+        product, the items that enable them. Every format computes since the kernel rewrite
+        (F-07), the product formats among them."""
+        rows = {f.name: (f.bits, f.mantissa_bits, f.min_exponent, f.array, f.scaled, f.product, f.storage_pending,
+                         f.compute_pending) for f in FORMATS.values()}
         assert rows == {
-            "float64": (64, 52, -1022, False, None, None), "float32": (32, 23, -126, False, None, None),
-            "float16": (16, 10, -14, True, None, "F-07"), "bfloat16": (16, 7, -126, True, None, "F-07"),
-            "float8_e4m3fn": (8, 3, -6, True, None, "F-07"), "float8_e5m2": (8, 2, -14, True, None, "F-07"),
+            "float64": (64, 52, -1022, True, False, "dtype", None, None),
+            "float32": (32, 23, -126, True, False, "dtype", None, None),
+            "float16": (16, 10, -14, True, True, "dtype", None, None),
+            "bfloat16": (16, 7, -126, True, True, "dtype", None, None),
+            "float8_e4m3fn": (8, 3, -6, True, True, "dtype", None, None),
+            "float8_e5m2": (8, 2, -14, True, True, "dtype", None, None),
+            "tensorfloat32": (32, 10, -126, False, False, "tensorfloat32", None, None),
+            "bfloat16_3x": (32, 16, -126, False, False, "bfloat16_3x", None, None),
         }
         assert FORMATS["float8_e4m3fn"].max == 448.0 and FORMATS["float16"].max == 65504.0
+        assert [name for name, f in FORMATS.items() if not f.below_float32] == ["float64", "float32"]
 
-    @pytest.mark.parametrize("name", FORMAT_NAMES)
+    @pytest.mark.parametrize("name", ARRAYS)
     def test_bits_are_the_dtypes_and_names_round_trip(self, name):
         assert dtype_of(name).itemsize * 8 == FORMATS[name].bits
         assert name_of(dtype_of(name)) == name
+
+    @pytest.mark.parametrize("name", ["tensorfloat32", "bfloat16_3x"])
+    def test_a_product_formats_values_are_float32(self, name):
+        """A product format has no array of its own: its values are float32, which `name_of`
+        names, never the product format."""
+        assert dtype_of(name) == jnp.float32 and name_of(dtype_of(name)) == "float32"
 
     def test_a_name_outside_the_table_is_refused_listing_the_table(self):
         with pytest.raises(ValueError, match=r"unknown number format 'fp8'.*float8_e4m3fn"):
@@ -109,15 +136,21 @@ class TestPolicy:
         with pytest.raises(dataclasses.FrozenInstanceError):
             Precision().pricing = StagePrecision("float32")
 
-    @pytest.mark.parametrize("compute", ENABLED)
-    @pytest.mark.parametrize("storage", FORMAT_NAMES)
-    def test_every_storage_no_wider_than_compute_is_accepted(self, storage, compute):
-        """Since 1.6 every format of the table stores, below float64 or float32 compute."""
-        if FORMATS[storage].bits > FORMATS[compute].bits:
-            pytest.skip("storage wider than compute is refused below")
-        stage = StagePrecision(storage, compute, compute)
-        assert stage.storage_dtype == jnp.dtype(storage) and stage.compute_dtype == jnp.dtype(compute)
+    @pytest.mark.parametrize(("storage", "compute"), ACCEPTED)
+    def test_every_storage_no_wider_than_accumulate_is_accepted(self, storage, compute):
+        """Every array format stores (since 1.6), under every compute format (since the kernel
+        rewrite, F-07), no wider than the stage accumulates: float32 under a compute format
+        below float32, else the compute format's own (wider storage is refused below)."""
+        accumulate = _accumulate(compute)
+        stage = StagePrecision(storage, compute, accumulate)
+        assert stage.storage_dtype == jnp.dtype(storage) and stage.arithmetic.dtype == jnp.dtype(accumulate)
+        assert stage.arithmetic == Arithmetic(compute, accumulate)
         assert stage.scaled_storage == (storage in SCALED)
+
+    @pytest.mark.parametrize("compute", ENABLED)
+    def test_float32_compute_may_accumulate_in_float64(self, compute):
+        stage = StagePrecision("float32", compute, "float64")
+        assert stage.arithmetic.dtype == jnp.float64 and stage.arithmetic.plain == (compute == "float64")
 
     def test_a_format_not_enabled_for_storage_is_refused_naming_the_item(self, monkeypatch):
         """The refusal FP4 will meet until F-07 enables it (no format of the table has one today)."""
@@ -127,19 +160,40 @@ class TestPolicy:
             StagePrecision("float16")
 
     @pytest.mark.parametrize("fields, message", [
-        ({"compute": "bfloat16", "accumulate": "bfloat16"}, r"StagePrecision\.compute='bfloat16'.*not enabled yet \(F-07"),
-        ({"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"},
-         r"StagePrecision\.compute='float16'.*not enabled yet \(F-07"),
+        ({"compute": "bfloat16", "accumulate": "bfloat16"},
+         r"StagePrecision\.accumulate='bfloat16': narrower than float32: no matrix unit accumulates narrower"),
+        ({"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float64"},
+         r"StagePrecision\.accumulate='float64': compute='float16' runs on matrix units that accumulate in float32"),
+        ({"storage": "float32", "compute": "tensorfloat32", "accumulate": "tensorfloat32"},
+         r"StagePrecision\.accumulate='tensorfloat32': tensorfloat32 is a matrix-product format, not an array"),
+        ({"storage": "bfloat16_3x", "compute": "bfloat16_3x", "accumulate": "float32"},
+         r"StagePrecision\.storage='bfloat16_3x': a matrix-product format, not an array format to store in"),
         ({"storage": "float64", "compute": "float32", "accumulate": "float32"},
-         r"StagePrecision\.storage='float64': wider than compute"),
+         r"StagePrecision\.storage='float64': wider than accumulate='float32'"),
         ({"compute": "float64", "accumulate": "float32"}, r"StagePrecision\.accumulate='float32': narrower"),
-        ({"compute": "float32", "accumulate": "float64", "storage": "float32"},
-         r"StagePrecision\.accumulate='float64'.*not enabled yet \(F-07"),
         ({"compute": "float128"}, r"StagePrecision\.compute: unknown number format"),
     ])
-    def test_refusals_name_the_field_and_the_step(self, fields, message):
+    def test_refusals_name_the_field_and_the_rule(self, fields, message):
         with pytest.raises(ValueError, match=message):
             StagePrecision(**fields)
+
+    def test_a_format_not_enabled_for_compute_is_refused_naming_the_item(self, monkeypatch):
+        """The refusal FP4 will meet until F-07's FP4 part enables it (no format of the table has
+        one today)."""
+        monkeypatch.setitem(FORMATS, "float16", dataclasses.replace(FORMATS["float16"], compute_pending="F-07"))
+        with pytest.raises(ValueError, match=r"StagePrecision\.compute='float16': compute in float16 is not enabled "
+                                             r"yet \(F-07\)"):
+            StagePrecision("float16", "float16", "float32")
+
+    @pytest.mark.parametrize("name, stage", [
+        ("float64", StagePrecision("float64", "float64", "float64")),
+        ("float32", StagePrecision("float32", "float32", "float32")),
+        ("bfloat16", StagePrecision("bfloat16", "bfloat16", "float32")),
+        ("float8_e4m3fn", StagePrecision("float8_e4m3fn", "float8_e4m3fn", "float32")),
+        ("tensorfloat32", StagePrecision("float32", "tensorfloat32", "float32")),
+    ])
+    def test_throughout_a_format_accumulates_and_stores_where_it_can(self, name, stage):
+        assert all(getattr(Precision.throughout(name), s) == stage for s in STAGES)
 
     @pytest.mark.parametrize("build, owner", [
         (lambda: StagePrecision(32), r"StagePrecision\.storage must be a format name"),
@@ -619,7 +673,8 @@ class TestSchemaCompleteness:
         assert set(PRODUCTS) == set(on_the_wire.values()) and len(PRODUCTS) == len(set(PRODUCTS))
 
     def test_an_override_on_the_wire_names_its_key_when_refused(self):
-        with pytest.raises(ValueError, match=r"precision\.by_trade\['s'\]: StagePrecision\.compute='float16'"):
+        with pytest.raises(ValueError, match=r"precision\.by_trade\['s'\]: StagePrecision\.accumulate='float64': "
+                                             r"compute='float16' runs on matrix units"):
             PrecisionSchema.model_validate({"by_trade": {"s": {"compute": "float16"}}}).to_dataclass()
 
     @pytest.mark.parametrize("old", [{"simulation": 32}, {"pricing": 64}, {"risk": 32}])
@@ -643,7 +698,9 @@ def _scenario_dtypes(scenarios):
 
 
 def _grid_dtypes(scenarios):
-    return {c.tenor_times.dtype for c in (*scenarios.discount.values(), *scenarios.index.values())}
+    """The dtypes of the curves' path-independent arrays: tenor times and levels."""
+    curves = (*scenarios.discount.values(), *scenarios.index.values())
+    return {c.tenor_times.dtype for c in curves} | {c.level.dtype for c in curves}
 
 
 def _bits(stored):
@@ -673,12 +730,13 @@ class TestRealizedDtypes:
                                         StagePrecision("float32", "float32", "float32")])
     @pytest.mark.parametrize("simulation", [StagePrecision(), StagePrecision("float32", "float32", "float32")])
     def test_the_scenario_market_is_stored_at_the_market_storage(self, simulation, market):
-        """Its tenor grid, which has no scenario axis, stays at the market compute (since 2026-10-02:
-        before, a float32 storage under float64 compute rounded it to float32)."""
+        """Its tenor grid and curve levels, which have no scenario axis, are float64, as every
+        level is (since the kernel rewrite, 2026-10-10; from 2026-10-02 the grid was kept at the
+        market compute, and before that a float32 storage under float64 compute rounded it)."""
         policy = Precision(simulation=simulation, market=market)
         scenarios = simulate(shared.market(), _simulation(), precision=policy)
         assert _scenario_dtypes(scenarios) == {market.storage_dtype}
-        assert _grid_dtypes(scenarios) == {market.compute_dtype}
+        assert _grid_dtypes(scenarios) == {jnp.dtype(jnp.float64)}
 
     @pytest.mark.parametrize("pricing", [StagePrecision(), StagePrecision("float32"),
                                          StagePrecision("float32", "float32", "float32")])
@@ -1005,7 +1063,7 @@ class TestScaledStoragePipeline:
     @pytest.mark.parametrize("offset", OFFSETS)
     def test_every_stage_stores_in_the_format(self, name, offset):
         """Read from the arrays: the market's path arrays and the cube columns are `Stored` in
-        the format and the policy's block layout; the tenor grid stays at the market compute;
+        the format and the policy's block layout; the tenor grid and levels stay float64;
         the cube loads at float64."""
         stage = StagePrecision(name, "float32", "float32")
         policy = Precision(simulation=stage, market=stage, pricing=stage, offset=offset)
@@ -1013,7 +1071,7 @@ class TestScaledStoragePipeline:
         scenarios = simulate(shared.market(), _simulation(), precision=policy)
         assert all(isinstance(a, Stored) and a.dtype == stage.storage_dtype and a.offset == offset
                    for a in _path_arrays(scenarios))
-        assert _grid_dtypes(scenarios) == {jnp.dtype(jnp.float32)}
+        assert _grid_dtypes(scenarios) == {jnp.dtype(jnp.float64)}
         valuation = value_portfolio(trades, shared.market(), scenarios, "USD", precision=policy)
         assert all(isinstance(c, Stored) and c.dtype == stage.storage_dtype and c.offset == offset
                    for c in valuation.columns)

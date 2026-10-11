@@ -39,6 +39,7 @@ read. Refused as QuantLib refuses them (`validate_jamshidian`): a floating sprea
 settlement.
 """
 from functools import partial
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -47,10 +48,11 @@ import numpy as np
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.market_data.market import index_name
 from engine.models.hull_white import bond_call, bond_put
+from engine.precision import Arithmetic, add_level
 from engine.pricing.config import JamshidianEngineConfig
 from engine.pricing.context import PricingContext
 from engine.pricing.european import EuropeanTerms, european_terms
-from engine.pricing.legs import PathSchedule, discount_from, on_every_date
+from engine.pricing.legs import PathFixings, PathSchedule, discount_deviations, discount_from, on_every_date
 from engine.solvers.roots import Steps, implicit_root
 
 
@@ -88,10 +90,28 @@ def jamshidian_npv(terms: EuropeanTerms, model: JamshidianEngineConfig, disc, t)
     in the curve by the implicit function theorem. Not jitted on its own: x*'s derivative rule
     closes over this function's intermediates, which `jax.grad` through a jit boundary cannot
     carry (the AD Greeks differentiate it). Its path cube is jitted (`_jamshidian_cube`)."""
+    return jamshidian_on_discounts(terms, model, discount_from(disc, t, terms.legs.fixed_pay),
+                                   discount_from(disc, t, terms.start_time), t)
+
+
+def jamshidian_discounts(terms: EuropeanTerms, disc, t, deviation):
+    """The discount factors the engine reads, `(P(T_i) [S, n], P(Tv) [S])`, on each path whose
+    discount curve deviates by `deviation` `[S, K]` from the level `disc` (F-07's difference
+    form, `engine.pricing.legs.discount_deviations`)."""
+    times = jnp.concatenate([jnp.asarray(terms.legs.fixed_pay), jnp.atleast_1d(terms.start_time)])
+    level, e = discount_deviations(disc, t, times, deviation)
+    discounts = level if e is None else add_level(level, jnp.asarray(level, dtype=e.dtype) * e)
+    return discounts[..., :-1], discounts[..., -1]
+
+
+def jamshidian_on_discounts(terms: EuropeanTerms, model: JamshidianEngineConfig, p_bond, p_start, t,
+                            arithmetic: Optional[Arithmetic] = None) -> jax.Array:
+    """`jamshidian_npv` on the discount factors at the fixed coupons' payments `p_bond`
+    `[..., n]` and at the start `p_start` `[...]` (any batch axes), in their format: x* and the
+    bond options in it, their sum against the coupons' amounts a matrix product in
+    `arithmetic` (their own format, float64 or float32, by default)."""
     legs = terms.legs
     a, sigma = model.reversion, model.volatility
-    p_bond = discount_from(disc, t, legs.fixed_pay)                  # [..., n] P(T_i)
-    p_start = discount_from(disc, t, terms.start_time)               # [...]    P(Tv)
     dtype = p_bond.dtype
     H = lambda s: -jnp.expm1(-a * s) / a                             # noqa: E731
     expiry = jnp.maximum(jnp.asarray(terms.expiry_time - t, dtype=dtype), 0.0)
@@ -115,7 +135,8 @@ def jamshidian_npv(terms: EuropeanTerms, model: JamshidianEngineConfig, disc, t)
     strikes = forward_bonds(x_star, ratio)
     option = bond_put if legs.payer else bond_call
     std_dev = jnp.abs(dH) * jnp.sqrt(zeta)
-    return jnp.sum(amounts * option(p_start[..., None], p_bond, strikes, std_dev), axis=-1)
+    arithmetic = arithmetic or Arithmetic.of(dtype)
+    return arithmetic.matmul(option(p_start[..., None], p_bond, strikes, std_dev), amounts)
 
 
 def jamshidian_value(cfg: SwaptionConfig, context: PricingContext, model: JamshidianEngineConfig) -> jax.Array:
@@ -129,17 +150,22 @@ def jamshidian_value(cfg: SwaptionConfig, context: PricingContext, model: Jamshi
 
 
 def jamshidian_cube(terms: EuropeanTerms, model: JamshidianEngineConfig, schedule: PathSchedule, times: np.ndarray,
-                    disc, index, fixings: jax.Array, alive: np.ndarray) -> jax.Array:
-    """`[S, D]` NPVs on every path and date (0 from expiry on), in the curves' dtype; `alive`
-    `[D]` says the option has not expired on each date."""
-    return _jamshidian_cube(terms.astype(disc.log_discounts.dtype), model, schedule, times, disc, index, fixings,
-                            alive)
+                    disc, index, fixings: PathFixings, alive: np.ndarray,
+                    arithmetic: Optional[Arithmetic] = None) -> jax.Array:
+    """`[S, D]` NPVs on every path and date (0 from expiry on), in `arithmetic` (the curves' own
+    format, float64 or float32, by default): the discount factors in difference form
+    (`jamshidian_discounts`), x* and the bond options in the accumulate format, their sum a
+    product in the compute format; `alive` `[D]` says the option has not expired on each
+    date."""
+    arithmetic = arithmetic or Arithmetic.of(disc.log_discounts.dtype)
+    return _jamshidian_cube(terms, model, schedule, times, disc, index, fixings, alive, arithmetic)
 
 
-@partial(jax.jit, static_argnums=1)
+@partial(jax.jit, static_argnames=("model", "arithmetic"))
 def _jamshidian_cube(terms: EuropeanTerms, model: JamshidianEngineConfig, schedule: PathSchedule, times, disc, index,
-                     fixings: jax.Array, alive) -> jax.Array:
-    def value(disc_j, _index, t_j, _fixed, _float, _projected, _known, alive_j):
-        return jnp.where(alive_j, jamshidian_npv(terms, model, disc_j, t_j), 0.0)
+                     fixings: PathFixings, alive, arithmetic: Arithmetic) -> jax.Array:
+    def value(disc_j, _index, t_j, _fixed, _float, _projected, _known, deviations, alive_j):
+        p_bond, p_start = jamshidian_discounts(terms, disc_j, t_j, deviations.discount)
+        return jnp.where(alive_j, jamshidian_on_discounts(terms, model, p_bond, p_start, t_j, arithmetic), 0.0)
 
     return on_every_date(value, terms.legs, schedule, times, disc, index, fixings, alive)

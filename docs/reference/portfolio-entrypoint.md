@@ -92,12 +92,24 @@ accumulate)` of format names per adjustable stage, each `"float64"` by default:
 | `offset` | `"block"` (default) or `"none"`: the layout of a storage format below 32 bits. With `"block"` a block of 32 paths whose values sit close together against their level (one sign, the farthest at most three times the nearest) is stored as its deviations from its midpoint, kept beside its scale (I-75, 2026-10-09); `"none"` stores the values themselves. `"none"` without such a format is refused. |
 | `paired_fraction` | In [0, 1], 0 by default: the share of paths also simulated and priced at float64 throughout (rounded up to whole blocks of 32 paths), to measure the run against float64 (2026-10-02). |
 
-`compute` is the format a stage computes in, `storage` the format its output is kept in until
-the next stage reads it (no wider than `compute`), `accumulate` the format its sums
-accumulate in (equal to `compute` until F-07's compute formats). `compute` is `"float64"` or
-`"float32"`; `storage` may also be `"float16"`, `"bfloat16"`, `"float8_e4m3fn"` or
-`"float8_e5m2"` (2026-10-02), while compute in them is refused, naming F-07.
-`Precision.throughout("float32")` sets every stage to float32.
+`compute` is the format of a stage's matrix products (their operands, and how the product
+runs), `accumulate` the format the products accumulate in and every other operation of the
+stage runs in (float32 or float64, and float32 under a compute format below float32), `storage`
+the format its output is kept in until the next stage reads it (no wider than `accumulate`).
+`storage` is `"float64"`, `"float32"`, `"float16"`, `"bfloat16"`, `"float8_e4m3fn"` or
+`"float8_e5m2"` (2026-10-02); `compute` any of these, or `"tensorfloat32"` or `"bfloat16_3x"`,
+a float32 product run as TensorFloat-32 or as three bfloat16 passes (2026-10-10). The kernels
+are in difference form, so a product multiplies each path's deviation from a level no path
+depends on: the precision a compute format loses is relative to how far the paths move. A
+Bermudan's or American's stage computes and accumulates in one format, float32 or float64,
+until its rollback is rewritten that way (refused otherwise, naming F-07).
+`Precision.throughout("float32")` sets every stage to float32; `Precision.throughout("bfloat16")`
+computes and stores every stage in bfloat16, accumulating in float32. The report names each
+compute format the run used and whether the device ran it natively or the engine emulated it
+(`PrecisionReport.products`; a CPU emulates everything below float32, with the same numbers).
+Below float32 every figure carries a bias, a product's path-independent operand being rounded
+once for every path ([I-96](../planning/known-issues.md#i-96)); a paired float64 sample
+(`paired_fraction`) corrects the means.
 
 Storage below 32 bits keeps a float32 power-of-two scale per block of 32 paths that brings the
 block's largest value to the format's maximum, so the format's range never limits the values;
@@ -114,13 +126,15 @@ reaching zero) is stored exactly as without one. Each value is rounded to the fo
 nearest value, or with `rounding="stochastic"` up or down in proportion to the distance, so
 rounding errors average out over the paths instead of biasing a mean; the draws come from
 `rounding_seed` and the array's name (the trade id for a cube column), so runs reproduce. The
-scenario market's tenor grid is not stored narrower than `market.compute`. What each format
-costs in accuracy, per stage, figure and path count, is measured by the storage harness
-([details/precision.md §15.4](../planning/details/precision.md#154-the-storage-harness-2026-10-09)).
+scenario market's tenor grid and its curves' levels stay float64, as every path-independent level does.
+What each format costs in accuracy, per stage, figure and path count, is measured by the
+precision harness ([details/precision.md
+§15.4](../planning/details/precision.md#154-the-storage-harness-2026-10-09),
+[§15.5](../planning/details/precision.md#155-compute-below-float32-2026-10-10)).
 
 A trade is priced at `Precision.precision_for(trade)`: its `by_trade` entry, else its
 product's `by_product` entry, else `pricing` (decision A-15). Each trade's cube column is
-computed at that `compute` and stored at that `storage`, exactly as if the trade were priced
+computed in that stage's arithmetic and stored at that `storage`, exactly as if the trade were priced
 alone with that `pricing`. An override that names no trade of the request, or no product, is
 refused before any work:
 

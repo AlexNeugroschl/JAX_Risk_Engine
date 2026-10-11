@@ -1,5 +1,5 @@
 """
-The storage harness's campaigns of record (`tests/support/precision_harness.py`; I-75,
+The precision harness's campaigns of record (`tests/support/precision_harness.py`; I-75, F-07,
 docs/planning/details/precision.md §15.4), and the command that runs them:
 
     .venv/Scripts/python.exe -m tests.support.precision_campaigns CAMPAIGN [--paths N ...]
@@ -28,6 +28,17 @@ kernel it prices.
                  P&L (`pricing`) stored in every format and rounding. Under zero-mean shifts both
                  straddle zero in every block, so a block offset is 0 and both layouts store
                  them alike, bit for bit (a test holds it): the default layout alone is measured
+    compute      the `linear` campaign's portfolio with the stages computed below float32 (the
+                 kernel rewrite, 2026-10-10): each stage's products in each compute format,
+                 accumulated and stored in float32 (float32's own case the floor of the
+                 accumulator), and every stage computed in each format at once
+                 (`Precision.throughout`, its storage the format's where it has one); 1,024,
+                 4,096 and 16,384 paths, 16 seeds
+    compute_market_risk
+                 the `market_risk` campaign's revaluation with each trade's products in each
+                 compute format, accumulated and stored in float32; its trades but the Bermudan,
+                 whose rollback is rewritten after `ShiftHorizon` and the recalibration fix
+                 (I-32, I-49); 2,048 and 8,192 scenarios, 16 seeds
 """
 import argparse
 import dataclasses
@@ -42,7 +53,8 @@ from engine.pricing.config import LgmSwaptionEngineConfig, PricingConfig
 from tests import market_risk_support as mr
 from tests.support import portfolio as shared
 from tests.support.precision_harness import (
-    SCALED, MarketRiskCampaign, Measurements, PortfolioCampaign, measure, storage_cases, summary, throughout_case,
+    COMPUTE, SCALED, MarketRiskCampaign, Measurements, PortfolioCampaign, compute_cases, measure, storage_cases,
+    summary, throughout_case,
 )
 
 #: Where the measurements of record are kept.
@@ -96,28 +108,53 @@ def options() -> PortfolioCampaign:
         paths=(256,), seeds=tuple(range(1, 9)))
 
 
-def market_risk() -> MarketRiskCampaign:
+def compute() -> PortfolioCampaign:
+    return dataclasses.replace(
+        linear(), name="compute",
+        description="The `linear` campaign's portfolio, market and simulation, computed below float32 (the kernel "
+                    "rewrite, F-07): each case runs one stage's matrix products in one compute format, accumulated "
+                    "and stored in float32, every other stage float64 (the `float32` case is the accumulator's "
+                    "floor), or every stage in the format (`throughout`).",
+        cases=compute_cases() + tuple(throughout_case(name) for name in COMPUTE))
+
+
+def _market_risk_trades():
     receiver = SwapConfig(notional=9e6, fixed_rate=0.035, payer=False, swap_tenor="9Y", evaluation_date=mr.TODAY,
                           trade_id="swap-receiver")
+    return mr.swap(), receiver, mr.european(), mr.bermudan(), mr.bond()
+
+
+def compute_market_risk() -> MarketRiskCampaign:
+    return dataclasses.replace(
+        market_risk(), name="compute_market_risk",
+        description="The `market_risk` campaign's revaluation, each trade's matrix products in one compute format, "
+                    "accumulated and stored in float32 (the `float32` case is the accumulator's floor); its trades "
+                    "but the Bermudan, whose rollback is rewritten after ShiftHorizon and the recalibration fix.",
+        trades=tuple(t for t in _market_risk_trades() if t.product != "bermudan_swaption"),
+        cases=compute_cases(stages=("pricing",)))
+
+
+def market_risk() -> MarketRiskCampaign:
     return MarketRiskCampaign(
         name="market_risk",
         description="Market risk on the market-risk tests' sloped two-curve market (tests/market_risk_support.py): "
                     "a 10Y payer swap and a 9Y receiver that offsets most of it, a European, a Bermudan and a bond, "
                     "revalued under 10-day Monte Carlo shifts of every pillar. Each case stores the shifts "
                     "(`simulation`) or each trade's P&L (`pricing`) in one format, revalued in float64.",
-        market=mr.market(), trades=(mr.swap(), receiver, mr.european(), mr.bermudan(), mr.bond()),
+        market=mr.market(), trades=_market_risk_trades(),
         covariance=mr.covariance(), horizon_days=10,
         pricing=dataclasses.replace(mr.PRICING, bermudan=dataclasses.replace(mr.ENGINE, n_per_std=8, std_devs=3.0)),
         cases=storage_cases(stages=("simulation", "pricing"), offsets=("block",)),
         paths=(2048, 8192), seeds=tuple(range(1, 17)))
 
 
-CAMPAIGNS = {"linear": linear, "options": options, "market_risk": market_risk}
+CAMPAIGNS = {"linear": linear, "options": options, "market_risk": market_risk, "compute": compute,
+             "compute_market_risk": compute_market_risk}
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tests.support.precision_campaigns",
-                                     description="Run a campaign of the storage harness (I-75).")
+                                     description="Run a campaign of the precision harness (I-75, F-07).")
     parser.add_argument("campaign", choices=sorted(CAMPAIGNS))
     parser.add_argument("--paths", type=int, nargs="+", help="path counts (default: the campaign's)")
     parser.add_argument("--seeds", type=int, help="the first K of the campaign's seeds (at least 2)")

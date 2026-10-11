@@ -14,15 +14,18 @@ This is the engine's market-risk measure. The multi-step simulation in
 `engine.run` is an exposure profile, not a VaR (audit finding R-1).
 
 Precision (`engine.precision`), the portfolio run's stages on this pipeline: the shifts are
-rounded to `simulation.compute` and stored at `simulation.storage`; each trade is revalued, and
-its P&L computed, at the compute format of its own pricing stage
+rounded to the accumulate format of `simulation` and stored at `simulation.storage` (they are
+drawn before the run, so the simulation stage has no product to compute); each trade is
+revalued, and its P&L computed, in the arithmetic of its own pricing stage
 (`Precision.precision_for(trade)`: an override for its id, else for its product, else
-`pricing`; decision A-15) and its P&L stored at that stage's storage format; VaR/ES load every
-P&L at float64 (decision A-10). A scaled storage format keeps block scales along the
+`pricing`; decision A-15): the shifts loaded at its accumulate format, its products in its
+compute format, in difference form for swaps, bonds and Europeans
+(`engine.risk.market.revaluation`); its P&L stored at that stage's storage format; VaR/ES load
+every P&L at float64 (decision A-10). A scaled storage format keeps block scales along the
 scenarios; the shifts are named `"shocks"` and each P&L `"values/<trade id>"` for a
-stochastic rounding (`Precision.store`). A trade's base value is its revaluation of the
-unshocked curves at its compute format, the anchor its P&L is measured from, so a zero shift
-is exactly zero P&L at every precision, in every storage format.
+stochastic rounding (`Precision.store`). A trade's base value is its value on the unshocked
+curves in its accumulate format; a zero shift is exactly zero P&L at every precision, in every
+storage format.
 
 With `precision.paired_fraction > 0` the first scenarios are revalued again at float64 (the
 paired sample, decision A-13), and the result's `PrecisionReport` measures each VaR and ES on
@@ -41,7 +44,7 @@ from engine.instruments.european_swaption import SwaptionConfig
 from engine.market_data.market import Market
 from engine.market_simulation.sharding import shard_scenarios
 from engine.precision import (
-    Precision, PrecisionReport, format_name, load, paired_paths, paired_quantile, require_precision,
+    Arithmetic, Precision, PrecisionReport, format_name, load, paired_paths, paired_quantile, require_precision,
 )
 from engine.pricing.config import PricingConfig
 from engine.pricing.cube import require_unique_ids, validate_trades
@@ -119,13 +122,12 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     validate_request(request)
     scenarios = request.scenarios
     precision = request.precision
-    shifts = precision.store(shard_scenarios(jnp.asarray(scenarios.shifts, dtype=precision.simulation.compute_dtype),
-                                             axis=0),
+    shifts = precision.store(shard_scenarios(precision.simulation.arithmetic.cast(scenarios.shifts), axis=0),
                              precision.simulation.storage, "shocks")
     base, columns, stored = [], [], []
     for cfg in request.trades:
         stage = precision.precision_for(cfg)
-        value, trade_pnl = _trade_pnl(cfg, request, load(shifts, stage.compute_dtype))
+        value, trade_pnl = _trade_pnl(cfg, request, load(shifts, stage.arithmetic.dtype), stage.arithmetic)
         base.append(value)
         stored.append(precision.store(trade_pnl, stage.storage, f"values/{cfg.trade_id}"))
         columns.append(load(stored[-1], jnp.float64))
@@ -153,16 +155,15 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
         risk_factors=scenarios.factors.labels(),
         warnings=_warnings(request),
         precision=PrecisionReport.of(precision, request.trades, realized, stored, scenarios.num_scenarios, paired,
-                                     figures),
+                                     figures, [precision.precision_for(cfg).compute for cfg in request.trades]),
     )
 
 
-def _trade_pnl(cfg, request: MarketRiskRequest, moves):
-    """One trade's base value and P&L `[S]` under `moves`, in their dtype: the shocked values
-    less the base, so the cancellation happens at the compute precision."""
-    value, shocked = revalue_trade(cfg, request.market, request.scenarios.factors, moves, request.pricing,
-                                   request.batch_size)
-    return value, shocked - jnp.asarray(value, dtype=moves.dtype)
+def _trade_pnl(cfg, request: MarketRiskRequest, moves, arithmetic: Optional[Arithmetic] = None):
+    """One trade's base value and P&L `[S]` under `moves`, in `arithmetic` (the moves' own
+    format by default; `revalue_trade`)."""
+    return revalue_trade(cfg, request.market, request.scenarios.factors, moves, request.pricing, request.batch_size,
+                         arithmetic)
 
 
 def _paired_figures(request: MarketRiskRequest, portfolio_pnl, paired: int) -> Dict:

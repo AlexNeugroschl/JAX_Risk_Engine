@@ -467,22 +467,38 @@ Storage below 32 bits, the cube in FP8 with stochastic rounding:
 "precision": {"pricing": {"storage": "float8_e4m3fn"}, "rounding": "stochastic", "rounding_seed": 7}
 ```
 
+Compute below 32 bits (2026-10-10), the pricing stage's matrix products in FP8, accumulated in
+float32, the Bermudans kept in float32:
+
+```json
+"precision": {"pricing": {"storage": "float8_e4m3fn", "compute": "float8_e4m3fn", "accumulate": "float32"},
+              "by_product": {"bermudan_swaption": {"storage": "float32", "compute": "float32", "accumulate": "float32"}}}
+```
+
 A `by_product` key that is not a `trade_type` is a `422`; a `by_trade` key that names no
 trade of the request is a `400` (checked with the request, so no job is created).
 
 The format names are the format table's (`float64`, `float32`, `float16`, `bfloat16`,
-`float8_e4m3fn`, `float8_e5m2`); another name, rounding or layout is a `422`. Every format
-stores; a format not yet enabled for compute (below float32, F-07), or an inconsistent
-stage, is a `400` naming the stage (or override, e.g. `precision.by_trade['swap-7']`), the
-field and the roadmap step that enables it. So is `"rounding": "stochastic"` or
-`"offset": "none"` when no stage stores below 32 bits:
+`float8_e4m3fn`, `float8_e5m2`, and the product formats `tensorfloat32` and `bfloat16_3x`,
+compute only); another name, rounding or layout is a `422`. `compute` is the format of a
+stage's matrix products, `accumulate` the format they accumulate in and the rest of the stage
+runs in: float32 or float64, at least as wide as `compute`, and float32 under a compute format
+below float32; `storage` no wider than `accumulate` and not a product format. An inconsistent
+stage, or a Bermudan or American priced below float32 (its rollback is not in difference form
+yet, F-07), is a `400` naming the stage (or override, e.g. `precision.by_trade['swap-7']`), the
+field and the rule. So is `"rounding": "stochastic"` or `"offset": "none"` when no stage
+stores below 32 bits:
 
 ```
 POST /portfolio/price
 {"precision": {"pricing": {"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"}}, ...}
--> 400 {"detail": "precision.pricing: StagePrecision.compute='float16': compute in float16 is not enabled
-        yet (F-07: difference-form kernels); until then float64 or float32"}
+-> 400 {"detail": "precision.pricing: StagePrecision.accumulate='float16': narrower than float32: no matrix
+        unit accumulates narrower; float32 or float64"}
 ```
+
+The result's `precision` report carries `products`: each compute format the run used, and
+whether the worker's device ran it natively or the engine emulated it (`"native"`,
+`"emulated"`; a CPU emulates every format below float32).
 
 The 32/64 shape before 2026-10-01 (`{"simulation": 32, "pricing": 64, "risk": ..., "calibration": ...}`)
 is a `422` whose message names the replacement (decision A-12); it is not translated.

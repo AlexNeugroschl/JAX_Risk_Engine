@@ -47,7 +47,8 @@ Rounding, in the scaled domain:
     equal to the distance from the lower one in units of their spacing, so each value's
     rounding error has mean zero. The uniform draws come from a `key`, so a run reproduces.
 
-Both round on the format's own grid, computed in the input's dtype: the spacing at `x` is
+Both round on the format's own grid, computed in the input's dtype
+(`engine.precision.grid`, shared with the matrix products' operands): the spacing at `x` is
 `2^(max(binade(x), min_exponent) - mantissa_bits)` (the subnormal spacing below the smallest
 normal), and `x / spacing` is rounded to an integer. Every step is exact (powers of two), and
 the cast to the format at the end is too, since the result lies on the format's grid. The
@@ -58,7 +59,6 @@ Magnitudes beyond float32's range cannot be scaled into a format and overflow, a
 stored in float32.
 """
 import functools
-import math
 import zlib
 from dataclasses import dataclass
 from typing import Optional, Union
@@ -68,6 +68,9 @@ import jax.numpy as jnp
 from jax import lax
 
 from engine.precision.formats import FORMATS, format_of
+from engine.precision.grid import pow2 as _pow2
+from engine.precision.grid import round_to_grid as _round_to_grid
+from engine.precision.grid import scale_exponent as _scale_exponent
 
 #: Entries per block scale along the scenario axis (an engineering default, precision.md §16).
 BLOCK = 32
@@ -78,10 +81,6 @@ ROUNDINGS = ("nearest", "stochastic")
 #: The layouts of a scaled format's blocks: a float32 offset beside each block scale, the
 #: deviations from it stored (`"block"`), or none, the entries themselves stored (`"none"`).
 OFFSETS = ("block", "none")
-
-#: The range of a scale's exponent: every scale, and its inverse, a normal float32.
-_SCALE_EXPONENTS = (-126, 126)
-
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True, eq=False)
@@ -221,38 +220,3 @@ def _levels(blocks, finite):
     concentrated = jnp.any(finite, axis=1) & (((bottom > 0) & (top <= 3 * bottom))
                                               | ((top < 0) & (bottom >= 3 * top)))
     return jnp.where(concentrated, 0.5 * top + 0.5 * bottom, 0).astype(jnp.float32)
-
-
-def _scale_exponent(amax, fmt_max: float):
-    """The largest k with `amax * 2^k <= fmt_max`, within `_SCALE_EXPONENTS` (0 -> the top)."""
-    max_mantissa, max_exponent = math.frexp(fmt_max)
-    mantissa, exponent = jnp.frexp(amax)          # amax = mantissa 2^exponent, mantissa in [0.5, 1)
-    k = max_exponent - exponent - (mantissa > max_mantissa).astype(exponent.dtype)
-    return jnp.clip(k, *_SCALE_EXPONENTS)
-
-
-def _round_to_grid(x, mantissa_bits: int, min_exponent: int, uniforms):
-    """`x` rounded to the grid of a format with `mantissa_bits` and `min_exponent`, to nearest
-    (ties to even) or, given `uniforms` in [0, 1), stochastically. Exact in `x`'s dtype: the
-    spacing is a power of two, kept a normal number of that dtype (XLA's CPU flushes
-    subnormals), which coarsens only bfloat16's subnormals under float32, values at least 2^119
-    below their block's largest."""
-    _, exponent = jnp.frexp(x)                    # |x| in [2^(exponent - 1), 2^exponent)
-    spacing = jnp.maximum(exponent - 1, min_exponent) - mantissa_bits
-    spacing = jnp.maximum(spacing, jnp.finfo(x.dtype).minexp)
-    units = x * _pow2(-spacing, x.dtype)
-    if uniforms is None:
-        whole = jnp.round(units)
-    else:
-        lower = jnp.floor(units)
-        whole = jnp.where(uniforms < units - lower, lower + 1, lower)  # keeps -0.0
-    return jnp.where(jnp.isfinite(x), whole * _pow2(spacing, x.dtype), x)
-
-
-def _pow2(exponent, dtype):
-    """2^exponent in `dtype` (float32 or float64), exactly, for exponents of normal numbers:
-    built from its bits."""
-    info = jnp.finfo(dtype)
-    bits = {32: jnp.int32, 64: jnp.int64}[info.bits]
-    biased = (exponent.astype(bits) - (info.minexp - 1)) << info.nmant
-    return lax.bitcast_convert_type(biased, dtype)

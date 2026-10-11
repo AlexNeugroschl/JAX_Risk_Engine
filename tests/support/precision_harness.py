@@ -1,8 +1,10 @@
 """
-The storage harness (I-75; docs/planning/details/precision.md §15.4): how far each precision
-policy moves every figure of a run from float64, measured on the run's own paths, per case,
-product and path count, over independent Sobol seeds. Rerunnable on any kernel change; the
-campaigns of record are `tests/support/precision_campaigns.py`, which also runs them.
+The precision harness (I-75; docs/planning/details/precision.md §15.4), built as the storage
+harness and measuring compute formats too since the kernel rewrite (F-07, 2026-10-10): how far
+each precision policy moves every figure of a run from float64, measured on the run's own
+paths, per case, product and path count, over independent Sobol seeds. Rerunnable on any kernel
+change; the campaigns of record are `tests/support/precision_campaigns.py`, which also runs
+them.
 
     Campaign: a portfolio run (`PortfolioCampaign`) or a market-risk run
               (`MarketRiskCampaign`), its cases (a labelled `Precision` each), path counts, seeds
@@ -128,9 +130,25 @@ def storage_cases(stages: Sequence[str] = STAGES, formats: Sequence[str] = ("flo
 
 
 def throughout_case(name: str, paired_fraction: float = 0.0) -> Case:
-    """Every adjustable stage stored and computed in `name` (`Precision.throughout`)."""
+    """Every adjustable stage computed in `name`, stored and accumulated in it where it can be
+    (`Precision.throughout`: a format below float32 accumulates in float32, a product format is
+    stored in float32)."""
     return Case(f"throughout:{name}" + (":paired" if paired_fraction else ""),
                 dataclasses.replace(Precision.throughout(name), paired_fraction=paired_fraction))
+
+
+#: The compute formats from float32 down: float32's own row is the floor every other one is
+#: read against, its accumulator being theirs.
+COMPUTE = ("float32", "tensorfloat32", "bfloat16_3x", "float16", "bfloat16", "float8_e4m3fn", "float8_e5m2")
+
+
+def compute_cases(stages: Sequence[str] = STAGES, formats: Sequence[str] = COMPUTE) -> Tuple[Case, ...]:
+    """A case per stage and compute format: that stage's matrix products in the format,
+    accumulated and stored in float32, every other stage float64, so the products and the
+    float32 accumulator are the only differences from the reference (the `float32` case is the
+    accumulator's share). Labels: `"<stage>:compute:<format>"`."""
+    return tuple(Case(f"{stage}:compute:{name}", Precision(**{stage: StagePrecision("float32", name, "float32")}))
+                 for stage in stages for name in formats)
 
 
 # ---------------------------------------------------------------------------

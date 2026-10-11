@@ -3,9 +3,13 @@ Full revaluation of a portfolio at t=0 under shocked curves.
 
 Every trade becomes a pure JAX function of the pillar rates of the market curves it reads, with
 its configured engine (`engine.risk.greeks.price_functions.trade_price_function`, the functions AD
-Greeks differentiate). The same function prices the base market and every scenario, so a
-trade's P&L is exactly `f(base + shift) - f(base)`: there is no second pricer whose base could
-disagree.
+Greeks differentiate). The same function prices the base market and every scenario, so there is
+no second pricer whose base could disagree. Swaps, bonds and Europeans are revalued in
+difference form (F-07): a scenario's P&L is the deviation of the trade's value from its value
+at the base, the shift carried to every flow by matrix products in the trade's compute format
+(`TradePriceFunction.pnl`), so a scenario that moves nothing has exactly zero P&L and the legs'
+cancellation stays in the base. Bermudans and Americans, whose kernel is not in difference form
+yet, are revalued in full, `f(base + shift) - f(base)`, in one format, float32 or float64.
 
 Scenarios are evaluated in batches of vmapped rows. The batch is bounded by memory per trade
 (`scenario_batch_size`): a Bermudan's rollback interpolates every grid node at every quadrature
@@ -26,7 +30,8 @@ fixed (decision A-8: the engine is chosen by configuration, not by the trade).
 values (the surface, a calibrated LGM, the Jamshidian model), so volatility risk is not
 captured. `run_market_risk` says so in its warnings for every option trade.
 """
-from typing import Sequence, Tuple
+from functools import partial
+from typing import Optional, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -36,10 +41,11 @@ from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.market_data.market import Market
 from engine.market_simulation.sharding import scenario_device_count, shard_scenarios
+from engine.precision import Arithmetic
 from engine.pricing.bermudan import prepared_option
 from engine.pricing.config import PricingConfig
 from engine.pricing.lgm_grid import grid_half_width
-from engine.risk.greeks.price_functions import curve_keys, trade_price_function
+from engine.risk.greeks.price_functions import curve_keys, on_pillars, trade_price_function
 from engine.risk.market.factors import RateRiskFactors, curve_name
 
 #: Upper bound on the working memory of one vmapped batch of scenarios.
@@ -76,41 +82,58 @@ def revalue(
     moves,
     pricing: PricingConfig = PricingConfig(),
     batch_size: int = 256,
+    arithmetic: Optional[Arithmetic] = None,
 ) -> Tuple[np.ndarray, jnp.ndarray]:
-    """Base values `[N]` and shocked values `[S, N]` of every trade, computed in `moves`' dtype
-    (`revalue_trade` per trade).
+    """Base values `[N]` and shocked values `[S, N]` of every trade (each its base value plus its
+    P&L, `revalue_trade`), in `arithmetic` (the moves' own format, float64 or float32, by
+    default).
 
     moves: `[S, F]` absolute factor moves (`ShockScenarios.shifts`).
-    batch_size: the most scenarios to vmap at once; a grid pricer may use
+    batch_size: the most scenarios to revalue at once; a grid pricer may use
         fewer to stay within `BATCH_MEMORY_BUDGET`.
     """
-    values = [revalue_trade(cfg, market, factors, moves, pricing, batch_size) for cfg in trades]
-    return np.asarray([base for base, _ in values]), jnp.stack([shocked for _, shocked in values], axis=-1)
+    values = [revalue_trade(cfg, market, factors, moves, pricing, batch_size, arithmetic) for cfg in trades]
+    return (np.asarray([base for base, _ in values]),
+            jnp.stack([jnp.asarray(base, dtype=pnl.dtype) + pnl for base, pnl in values], axis=-1))
 
 
 def revalue_trade(cfg, market: Market, factors: RateRiskFactors, moves, pricing: PricingConfig = PricingConfig(),
-                  batch_size: int = 256) -> Tuple[float, jnp.ndarray]:
-    """One trade's base value and its shocked values `[S]`, computed in `moves`' dtype (the
-    trade's pricing compute dtype; `run_market_risk` casts them per trade)."""
+                  batch_size: int = 256, arithmetic: Optional[Arithmetic] = None) -> Tuple[float, jnp.ndarray]:
+    """One trade's base value and its P&L `[S]`, in `arithmetic` (the moves' own format,
+    float64 or float32, by default; `run_market_risk` gives each trade its pricing stage's), its
+    accumulate format the moves' and the base's: in difference form where the trade's price
+    function has one (`TradePriceFunction.pnl`), else the shocked values less the base value."""
     moves = jnp.asarray(moves)
-    dtype = moves.dtype
-    base = jnp.asarray(factors.base_rates(), dtype=dtype)
-    fn = trade_price_function(cfg, market, pricing, dtype)
+    arithmetic = arithmetic or Arithmetic.of(moves.dtype)
+    moves = arithmetic.cast(moves)
+    base = arithmetic.cast(factors.base_rates())
+    fn = trade_price_function(cfg, market, pricing, arithmetic.dtype)
     own = [factors.slice_of(i) for i in factor_indices(cfg, factors)]
+    value = float(fn.price(*[base[s] for s in own]))
+    batch = scenario_batch_size(cfg, pricing, batch_size, jnp.dtype(arithmetic.dtype).itemsize)
+    if fn.pnl is not None:
+        curves = on_pillars(fn.times, [base[s] for s in own])
+        return value, _map_scenarios(
+            lambda shifts: _pnl(fn.pnl, fn.terms, curves, tuple(shifts[..., s] for s in own), arithmetic), moves, batch)
 
-    def on_factors(vector):
+    def shocked(vector):
         return fn.price(*[vector[s] for s in own])
 
-    batch = scenario_batch_size(cfg, pricing, batch_size, jnp.dtype(dtype).itemsize)
-    return float(on_factors(base)), _map_scenarios(on_factors, base, moves, batch)
+    values = _map_scenarios(jax.vmap(lambda move: shocked(base + move)), moves, batch)
+    return value, values - jnp.asarray(value, dtype=values.dtype)
 
 
-def _map_scenarios(on_factors, base, moves, batch_size):
-    """`on_factors(base + moves[s])` for every scenario `s`, vmapped in batches. With the
+@partial(jax.jit, static_argnames=("pnl", "arithmetic"))
+def _pnl(pnl, terms, curves, shifts, arithmetic: Arithmetic):
+    """`pnl(terms, curves, shifts, arithmetic)`: one program per product, shape and arithmetic."""
+    return pnl(terms, curves, shifts, arithmetic)
+
+
+def _map_scenarios(batched, moves, batch_size):
+    """`batched(moves[i:j])` `[j - i]` for every batch of `batch_size` scenarios. With the
     scenarios split across devices (`engine.market_simulation.sharding`), each batch takes
     `batch_size` scenarios from every device's share, so every device works on every batch
     and holds one batch's memory."""
-    batched = jax.vmap(lambda move: on_factors(base + move))
     devices = scenario_device_count(moves.shape[0])
     if devices == 1:
         return jnp.concatenate([batched(moves[i:i + batch_size]) for i in range(0, moves.shape[0], batch_size)])

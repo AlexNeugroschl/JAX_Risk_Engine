@@ -271,11 +271,14 @@ class TestPortfolioPricePrecision:
         assert r.status_code == 422 and "float8_e4m3fn" in r.text
 
     @pytest.mark.parametrize("stage, block, message", [
-        ("pricing", {"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"}, "not enabled yet (F-07"),
-        ("market", {"compute": "bfloat16"}, "not enabled yet (F-07"),
-        ("simulation", {"storage": "float64", "compute": "float32", "accumulate": "float32"}, "wider than compute"),
+        ("pricing", {"storage": "float8_e4m3fn", "compute": "float16", "accumulate": "float16"},
+         "accumulate='float16': narrower than float32"),
+        ("market", {"compute": "bfloat16"}, "accumulate='float64': compute='bfloat16' runs on matrix units"),
+        ("simulation", {"storage": "float64", "compute": "float32", "accumulate": "float32"}, "wider than accumulate"),
+        ("pricing", {"storage": "tensorfloat32", "compute": "tensorfloat32", "accumulate": "float32"},
+         "a matrix-product format"),
     ])
-    def test_a_format_not_enabled_is_a_400_naming_the_stage_and_field(self, test_client, stage, block, message):
+    def test_a_refused_stage_is_a_400_naming_the_stage_and_field(self, test_client, stage, block, message):
         r = test_client.post("/portfolio/price", json=_body([_swap()], precision={stage: block}))
         assert r.status_code == 400 and f"precision.{stage}" in r.json()["detail"] and message in r.json()["detail"]
 
