@@ -2,8 +2,10 @@
 # environment (constraints.txt, via requirements.txt) and every test not
 # marked `slow` -- unit, integration and ORE-parity tests. The slow tier
 # (HTTP-job and engine-worker tests, a handful of long runs) is the `full` job,
-# started by hand from the Actions tab. Every job runs the tests in one process
-# per core (pytest-xdist, `-n auto`). See docs/getting-started/user-guide.md.
+# started by hand from the Actions tab. The fast-tier jobs run the tests in one
+# process per core (pytest-xdist, `-n auto`); the full job in two, since four
+# full-suite processes outgrow a 16 GB runner (I-27). See
+# docs/getting-started/user-guide.md.
 name: CI
 
 on:
@@ -62,4 +64,4 @@ jobs:
           cache: pip
           cache-dependency-path: constraints.txt
       - run: python -m pip install -r requirements.txt
-      - run: python -m pytest -q -n auto --durations=25
+      - run: python -m pytest -q -n 2 --durations=25

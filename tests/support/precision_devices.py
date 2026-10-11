@@ -13,7 +13,9 @@ order of the sums in the accumulate format, or, for a product format (TensorFloa
 device's own rounding of the operands (a few of the format's unit roundoffs); an emulated one
 must equal it up to the sums' order. On an RTX 5060 (2026-10-10, jax 0.10.2) this check found
 XLA's FP8 product 70% off for some shapes and its bfloat16 passes (`BF16_BF16_F32_X3`) a single
-pass's error for some shapes, so the engine emulates both there (FP8 through float16 units); every
+pass's error for some shapes (XLA's faults, not the card's: its Triton GEMM emitter for FP8, and a
+matrix-vector product compiled without the algorithm; docs/planning/known-issues.md I-97), so the
+engine emulates both there (FP8 through float16 units); every
 format then passes, TensorFloat-32 within 4.5e-4 of the scale of the emulation (the device rounds
 its operands its own way, within the format's unit roundoff). The same card summed float32
 operands asked for a float64 result in float32 (7.6e-7 off, 2026-10-11): the engine now

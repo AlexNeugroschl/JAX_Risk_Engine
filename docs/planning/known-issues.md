@@ -70,6 +70,7 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | Focus |
 | [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | Focus |
 | [I-96](#i-96) | Compute below float32 biases every figure: each product's path-independent operand is rounded once for all paths | Medium | OPEN | Correctness | Focus |
+| [I-97](#i-97) | XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU | Medium | OPEN | Performance | Focus |
 | [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Focus |
 | [I-88](#i-88) | The API completeness test checks field names, not that a value reaches the engine | Low | OPEN | Tooling | Focus |
 | [I-89](#i-89) | A retried job submission runs the job twice | Low | OPEN | API | Focus |
@@ -240,12 +241,61 @@ ES) are not.
 **Current handling.** The precision report names the compute formats and their execution; the
 harness measures the bias. Nothing warns (I-55).
 
-**To close.** Decide whether a product below float32 carries its path-independent operand in
-two terms (twice the matrix work on a native unit; the right-hand operand of every product but
-the Brownian bridge's, which would multiply its transpose instead), as the default or as a
-product format of the policy beside the single pass, from the `compute` campaign rerun with it
-and its timing; then the evidence table (I-55) reads the rows of what ships. Red first: a
+**To close.** Decided (A-23, 2026-10-11): each format below float32 carries the
+path-independent operand in two terms (twice the matrix work on a native unit; the right-hand
+operand of every product but the Brownian bridge's, whose shared operand is the left one), and
+the single pass stays selectable as a product format of its own. Rerun the `compute` campaigns
+with both, the two-term rows replacing today's, and time both where a unit is native; where two
+terms leave a bias significant at 4,096 paths (FP8 e4m3 today), measure a third term or a wider
+shared operand. Then the evidence table (I-55) reads the rows of what ships. Red first: a
 campaign case whose bias significance falls below 3 at 4,096 paths with it and not without.
+
+
+<a id="i-97"></a>
+### I-97 — XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU
+
+**Severity:** Medium (a stated goal unmet: the speed of native units) · **Status:** OPEN ·
+**Category:** Performance · **Found:** 2026-10-10, the device check (`tests/support/precision_devices.py`);
+located 2026-10-11
+
+**What is wrong.** Three matrix products XLA compiles for the GPU return wrong numbers without
+an error (RTX 5060, compute capability 12.0, jax and jaxlib 0.10.2, driver 592.01; each against
+the exact product of the same operands, relative to `|a|·|b|`, five shapes):
+
+- **FP8** (e4m3 and e5m2 operands, float32 result): 0.39 to 0.72 off on every shape but the
+  matrix-vector one, under any precision flag. XLA compiles these products with its own Triton
+  GEMM emitter; with `--xla_gpu_enable_triton_gemm=false` it calls cuBLASLt instead
+  (`__cublas$lt$matmul$f8` for e4m3) and every shape is exact to 3e-8. The card's FP8 units
+  and NVIDIA's library are right; XLA's Triton code for FP8 on this architecture is not.
+  e5m2 by e5m2 goes to cuBLASLt's non-FP8 path, consistent with FP8 units that do not take two
+  e5m2 operands: a native e5m2 product would pair it with e4m3.
+- **bfloat16 passes** (`BF16_BF16_F32_X3`): 2e-6 to 1.4e-5, as three passes should be, on every
+  matrix shape, Triton or cuBLASLt; 9.9e-4, a single pass's error, on the matrix-vector shape
+  (512 by 64 by 1), which XLA compiles as a fusion, not a GEMM, ignoring the requested
+  algorithm. `--xla_allow_excess_precision=false` changes nothing.
+- **float32 operands with a float64 result** (`preferred_element_type`): float32's error (2e-7)
+  through Triton; cuBLASLt refuses it ("GEMM is not supported"), so only Triton's answer is
+  silent. Fixed in the engine on 2026-10-11 (`engine.precision.products`: float32's values
+  multiplied as float64).
+
+**Reach.** No number the engine reports: `product_execution` marks FP8 and bfloat16 passes
+emulated on every GPU, and the emulation is exact. What it costs is speed: on a GPU the FP8
+compute formats run on float16 units, and bfloat16 passes as three float32 products, so their
+timing on a GPU (F-07's research result) is not yet measurable. Unknown elsewhere: H100
+(compute capability 9.0) is XLA's most exercised FP8 target and may compile FP8 another way;
+the matrix-vector and float64-result faults look independent of the architecture.
+
+**Current handling.** Emulated on a GPU; the precision report says so per format. The device
+check covers every allowed arithmetic and a matrix-vector shape.
+
+**To close.** Native FP8 and bfloat16 passes on any GPU that has the units, each shown right by
+the device check: (1) route the engine's FP8 products to cuBLASLt (the engine worker's
+`--xla_gpu_enable_triton_gemm=false`, timed against Triton on every other product, or a
+narrower mechanism if XLA offers one per product); (2) a product format's matrix-vector product
+run in a shape XLA honours the algorithm for, or emulated; (3) e5m2 paired with e4m3 where the
+units need it; (4) the device check on H100 and on a newer jax, and minimal reproductions
+reported to XLA. Red first: the device check with the formats marked native fails on the RTX 5060
+today (FP8 0.7 off) and passes after.
 
 ---
 
@@ -340,7 +390,10 @@ times on the RTX 5060 (7.3 s to 0.19 s); the demo's repeated job on the GPU 5.4�
   run-to-run spread: a five-trade linear portfolio 4% slower (medians 0.370 s and 0.352 s, three
   interleaved passes), market risk on its trades three times faster (0.075 s against 0.23 s).
   Concatenating the blocks into one product's operand cost a quarter more; two columns per coupon
-  doubled it (both measured and discarded).
+  doubled it (both measured and discarded). Accepted by the owner (2026-10-11): the one kernel at
+  every precision stays (A-16), rather than a float64 kernel of its own beside it; the fix is the
+  batching below, done with the timing on accelerators if it shows there, else when fixing what
+  exists.
 
 **Reach.** Wall time only; no number. Windows CPU runs; a worker's first job; float64 path
 pricing of linear trades on a CPU.

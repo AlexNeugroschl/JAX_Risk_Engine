@@ -133,7 +133,7 @@ FP8 exponential of a level-sized number is noise. So compute is the format of th
 where native units pay, and accumulate is the format of the rest, as a native low-precision
 kernel runs it; the kernels are in difference form so that what a product multiplies is a
 path's deviation, never a level ([§8.2](#82-the-difference-form)). Recorded in A-16's row of
-decisions.md as a reading, for the owner's review.
+decisions.md, the reading confirmed by the owner on 2026-10-11.
 
 ### 3.2 Stages: adjustable and fixed
 
@@ -781,7 +781,11 @@ bias the measurements show and two terms of that operand mostly remove ([I-96](.
   70% off for some shapes and precisions (and its `ANY_F8_ANY_F8_F32` algorithm unsupported or
   wrong), and its `BF16_BF16_F32_X3` a single pass's error for some shapes; with both emulated,
   every format equals its emulation there, TensorFloat-32 within its unit roundoff (the device
-  rounds its operands its own way). Emulated and native give the same numbers up to the order of
+  rounds its operands its own way). The faults are XLA's, not the card's (2026-10-11,
+  [I-97](../known-issues.md#i-97)): its Triton GEMM emitter computes the FP8 products wrong,
+  while the same products through cuBLASLt (`--xla_gpu_enable_triton_gemm=false`) are exact; and
+  it compiles a matrix-vector product as a fusion that ignores the bfloat16-passes algorithm.
+  Native FP8 and passes on a GPU wait on the work I-97 names. Emulated and native give the same numbers up to the order of
   the float32 sums: the engine rounds the operands as the unit would, and an emulated FP8
   product multiplies them as float16 values, which hold every FP8 value, with exact products.
   Native FP8 is for the timing (F-07) to enable per device, after the check. The report names each compute format the run used and
@@ -1774,8 +1778,8 @@ Reading it:
   Storage in the same format, rounded path by path, is 5 to 50 times closer. Carrying that operand
   in two terms of the format removes most of it ([I-96](../known-issues.md#i-96): the pricing
   stage's worst bias in bfloat16 2.1 to 0.04 statistical errors, in FP8 41 to 5.3), at twice the
-  matrix work: a decision for the roadmap's next step, before the evidence table. Until then the
-  paired float64 sample corrects the means (A-13).
+  matrix work. Decided (A-23, 2026-10-11): two terms by default, the single pass a product format
+  of its own; until it is built the paired float64 sample corrects the means (A-13).
 - **Quantiles fare far better than means**: a case's quantiles are 1.5 to 75 times closer than its
   means (typically 5 to 10), and market risk's VaR and ES in FP8 compute are 1.7 to 1.8 statistical
   errors off, closer than FP8 storage of the P&L (why the bias spares them is not established).

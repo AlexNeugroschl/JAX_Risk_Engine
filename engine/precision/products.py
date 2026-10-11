@@ -61,7 +61,9 @@ from engine.precision.grid import pow2, round_to_grid, scale_exponent
 #: `tests/support/precision_devices.py`). Not FP8, nor bfloat16 passes: there (compute capability
 #: 12.0, jax 0.10.2) XLA's FP8 product returned products 70% off for some shapes and precisions,
 #: and its `BF16_BF16_F32_X3` one a single pass's error (8.8e-4 of the scale) for some shapes, so
-#: both are emulated on a GPU until a device's are shown right, which F-07's timing does.
+#: both are emulated on a GPU until a device's are shown right. The faults are XLA's (I-97): its
+#: Triton GEMM emitter gets FP8 wrong where cuBLASLt is exact, and a matrix-vector product
+#: compiles to a fusion that ignores the passes' algorithm.
 _GPU_UNITS = {"float16": 7.0, "bfloat16": 8.0, "tensorfloat32": 8.0}
 #: The formats below float32 a TPU's matrix units run: bfloat16 and its passes on every
 #: generation, XLA's own way of running a float32 product there, to be shown right on the device

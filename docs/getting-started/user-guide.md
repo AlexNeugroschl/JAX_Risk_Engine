@@ -347,7 +347,8 @@ and can't silently put a test in the wrong tier.
 **CI.** [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) installs through
 `requirements.txt` (so with the pinned versions) on Linux, Python 3.11, and runs the fast
 tier on every push to `main` and every pull request, with `-n auto` (one process per core of
-the 4-core runner). The full suite is the `full` job:
+the 4-core runner). The full suite is the `full` job, with `-n 2`: a full-suite process grows to
+8–9 GB, and four of them outgrew a 24 GB Linux VM (2026-10-11):
 start it by hand from the repository's Actions tab ("Run workflow"). Run it before
 merging anything that touches pricing, calibration or Greeks, and after upgrading a pin.
 CI does not check out the `reference/` submodules; the one test that reads
