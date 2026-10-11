@@ -24,6 +24,7 @@ multiplies them as float64 values on float32's grid.
 Exit status 1 when a format fails.
 """
 import argparse
+import itertools
 import os
 import sys
 
@@ -35,7 +36,7 @@ import jax  # noqa: E402
 import numpy as np  # noqa: E402
 
 from engine.precision import (  # noqa: E402  (importing engine turns float64 on)
-    FORMAT_NAMES, FORMATS, Arithmetic, matmul, product_execution, product_precision,
+    FORMAT_NAMES, FORMATS, SHARED, Arithmetic, matmul, product_execution, product_precision,
 )
 from engine.precision.arithmetic import arithmetic_refusal  # noqa: E402
 
@@ -43,8 +44,9 @@ from engine.precision.arithmetic import arithmetic_refusal  # noqa: E402
 ARITHMETICS = tuple(Arithmetic(compute, accumulate) for compute in FORMAT_NAMES for accumulate in ("float32", "float64")
                     if arithmetic_refusal(FORMATS[compute], FORMATS[accumulate]) is None)
 
-#: Operand shapes checked: a tall product (paths by flows), a matrix-vector one, a square one and
-#: a small one, rows and columns of very different scales.
+#: Operand shapes checked, each with either operand shared by the paths (its terms in one product,
+#: A-23): a tall product (paths by flows), a matrix-vector one, a square one and a small one, rows
+#: and columns of very different scales.
 SHAPES = ((512, 64, 8), (512, 64, 1), (64, 64, 64), (16, 32, 16))
 
 
@@ -59,11 +61,11 @@ def check(device) -> int:
         name, fmt = arithmetic.compute, FORMATS[arithmetic.compute]
         execution = product_execution(name, device)
         worst_cpu = worst_exact = 0.0
-        for m, k, n in SHAPES:
+        for (m, k, n), shared in itertools.product(SHAPES, SHARED):
             a = rng.standard_normal((m, k)) * np.logspace(-3, 3, m)[:, None]
             b = rng.standard_normal((k, n)) * np.logspace(3, -2, n)[None, :]
             scale = np.abs(a) @ np.abs(b)
-            program = jax.jit(lambda x, y: matmul(x, y, arithmetic))
+            program = jax.jit(lambda x, y: matmul(x, y, arithmetic, shared))
             with jax.default_device(device):
                 on_device = np.asarray(program(jax.device_put(a, device), jax.device_put(b, device)), np.float64)
             with jax.default_device(cpu):
@@ -75,7 +77,7 @@ def check(device) -> int:
             tolerance = 4 * 2.0 ** -(fmt.mantissa_bits + 1)
         ok = worst_cpu <= tolerance
         failures += not ok
-        print(f"  {name:15s} {arithmetic.accumulate:8s} {execution:9s} {str(product_precision(name, device)):30s} "
+        print(f"  {name:17s} {arithmetic.accumulate:8s} {execution:9s} {str(product_precision(name, device)):30s} "
               f"device - emulation {worst_cpu:.2e}  device - exact {worst_exact:.2e}  {'ok' if ok else 'FAILED'}")
     return failures
 

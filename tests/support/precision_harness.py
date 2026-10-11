@@ -138,8 +138,11 @@ def throughout_case(name: str, paired_fraction: float = 0.0) -> Case:
 
 
 #: The compute formats from float32 down: float32's own row is the floor every other one is
-#: read against, its accumulator being theirs.
-COMPUTE = ("float32", "tensorfloat32", "bfloat16_3x", "float16", "bfloat16", "float8_e4m3fn", "float8_e5m2")
+#: read against, its accumulator being theirs; each format below float32 whose product is one
+#: pass carries the operand every path shares in two terms, and its single pass (`<name>_1x`)
+#: follows it (decision A-23).
+COMPUTE = ("float32", "bfloat16_3x", "tensorfloat32", "tensorfloat32_1x", "float16", "float16_1x", "bfloat16",
+           "bfloat16_1x", "float8_e4m3fn", "float8_e4m3fn_1x", "float8_e5m2", "float8_e5m2_1x")
 
 
 def compute_cases(stages: Sequence[str] = STAGES, formats: Sequence[str] = COMPUTE) -> Tuple[Case, ...]:

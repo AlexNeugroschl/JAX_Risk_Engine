@@ -447,7 +447,8 @@ the rest of the stage runs in. The format names come from one table
 read. `storage` is an array format no wider than `accumulate` (`float64`, `float32`, and since
 2026-10-02 `float16`, `bfloat16`, `float8_e4m3fn`, `float8_e5m2`); `compute` any format of the
 table, since 2026-10-10 the four below float32 and the product formats `tensorfloat32` and
-`bfloat16_3x` too; `accumulate` float32 or float64, and float32 under a compute format below
+`bfloat16_3x` too, and since 2026-10-11 each format's single pass, `<format>_1x`;
+`accumulate` float32 or float64, and float32 under a compute format below
 float32. Calibration, t=0 values, Greeks and every reduction over paths (exposure, VaR/ES) are
 float64 by decision (A-10).
 
@@ -462,7 +463,12 @@ the legs' amounts times each path's discount-factor deviations, and the Jamshidi
 option sum. Each runs through `engine.precision.matmul` in the stage's `Arithmetic`: operands
 rounded to the compute format's grid (scaled by a power of two per path and per column into its
 range), accumulated in float32, natively where the device has units for the format, emulated
-otherwise with the same numbers; the report names which (`PrecisionReport.products`). The
+otherwise with the same numbers; the report names which (`PrecisionReport.products`). Each
+product names the operand every path shares (the bridge's matrix, the step moments, the
+loadings, the flows' values at the level), which below float32 is carried in two terms of the
+format, stacked into the same product (2026-10-11, decision A-23): rounded once, its error would
+be common to every path, a bias. The single pass is a compute format of its own,
+`<format>_1x`. The
 Bermudan/American rollback keeps one format, float32 or float64, until it is rewritten so
 (after I-32 and I-49).
 

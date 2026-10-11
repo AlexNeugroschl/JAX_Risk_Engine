@@ -98,7 +98,8 @@ stage runs in (float32 or float64, and float32 under a compute format below floa
 the format its output is kept in until the next stage reads it (no wider than `accumulate`).
 `storage` is `"float64"`, `"float32"`, `"float16"`, `"bfloat16"`, `"float8_e4m3fn"` or
 `"float8_e5m2"` (2026-10-02); `compute` any of these, or `"tensorfloat32"` or `"bfloat16_3x"`,
-a float32 product run as TensorFloat-32 or as three bfloat16 passes (2026-10-10). The kernels
+a float32 product run as TensorFloat-32 or as three bfloat16 passes (2026-10-10), or a format's
+single pass, `"<format>_1x"` (2026-10-11, below). The kernels
 are in difference form, so a product multiplies each path's deviation from a level no path
 depends on: the precision a compute format loses is relative to how far the paths move. A
 Bermudan's or American's stage computes and accumulates in one format, float32 or float64,
@@ -107,8 +108,13 @@ until its rollback is rewritten that way (refused otherwise, naming F-07).
 computes and stores every stage in bfloat16, accumulating in float32. The report names each
 compute format the run used and whether the device ran it natively or the engine emulated it
 (`PrecisionReport.products`; a CPU emulates everything below float32, with the same numbers).
-Below float32 every figure carries a bias, a product's path-independent operand being rounded
-once for every path ([I-96](../planning/known-issues.md#i-96)); a paired float64 sample
+Below float32 a product's path-independent operand (a flow's value at the level, a market
+loading) is carried in two terms of the format (2026-10-11, decision A-23): rounded once, its
+error would move every path alike, a bias more paths do not remove
+([I-96](../planning/known-issues.md#i-96), fixed). `"<format>_1x"` (`"float16_1x"`,
+`"bfloat16_1x"`, `"float8_e4m3fn_1x"`, `"float8_e5m2_1x"`, `"tensorfloat32_1x"`) is the single
+pass, a compute format only, kept for measuring it. FP8 compute keeps a bias of its own
+rounding ([I-98](../planning/known-issues.md#i-98)); a paired float64 sample
 (`paired_fraction`) corrects the means.
 
 Storage below 32 bits keeps a float32 power-of-two scale per block of 32 paths that brings the

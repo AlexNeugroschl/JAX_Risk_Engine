@@ -11,45 +11,40 @@ Europeans and bonds equal ORE's simulation path by path since 2026-10-07.
 
 ## Verification status
 
-Last full run, 2026-10-11, on the kernel rewrite (F-07: compute below float32 in difference
-form, `engine/precision/{arithmetic,grid,products}.py` and the simulation, scenario market,
-legs, Europeans and market risk on them; [details](details/precision.md#8-compute-below-float32)).
-3,029 collected on Windows: the 2,877 of the submission binding's run plus
-`tests/test_compute_precision.py` (106) and 46 cases of the compute formats in the existing
-precision tests. Each run printed its summary line:
+Last full run, 2026-10-11, on the shared operand in two terms (decision A-23, closing
+[I-96](#i-96): `engine/precision/{formats,products}.py` and the five kernel products naming their
+shared operand) and the storage offset's rounding ([I-99](#i-99)). 3,155 collected on Windows:
+the 3,029 of the kernel rewrite's run plus 89 in `tests/test_compute_precision.py` (the new
+tests, and the five single-pass formats in every case parametrized by compute format) and 37 in
+`tests/test_precision.py` (the format table's new rows the same way). Each run printed its
+summary line:
 
-- **Windows**, `-n 8`: **3,020 passed, 3 skipped, 6 xfailed, 0 failed**, 12m00s (the skips:
-  the two accelerator-only defaults and the GPU plugin check; the expected failures as before:
-  the Bermudan/American L3 cases of `tests/test_ore_xva_parity.py`, strict, waiting on
+- **Windows**, `-n 8`: **3,146 passed, 3 skipped, 6 xfailed, 0 failed**, 14m54s (the skips: the
+  two accelerator-only defaults and the GPU plugin check; the expected failures as before: the
+  Bermudan/American L3 cases of `tests/test_ore_xva_parity.py`, strict, waiting on
   [I-49](#i-49)).
-- **Linux** (WSL2, CPU, `-n 2`: at `-n 4` and `-n 8` the VM ran out of memory, [I-27](#i-27)):
-  **3,020 passed, 4 skipped, 6 xfailed**, 18m11s, and 2 failed in `tests/test_import_layering.py`
-  on bytecode-only folders of the old layout (`engine/simulation`, `engine/valuation`, …) left
-  in the clone; with them removed, the module passes (11 passed).
-- **GPU** (RTX 5060, WSL2): `tests/test_compute_precision.py` and
-  `tests/test_accelerator_defaults.py`, 134 passed, and the device check
-  (`python -m tests.support.precision_devices --platform gpu`): every arithmetic a stage accepts
-  equals its emulation.
-- **Golden snapshot** (2026-10-10, against the code before; compared within a margin, not bit for
-  bit): 359 arrays, 136 identical, none beyond its margin. float64 at most 2.2e-14 relative (the
-  simulation; Hull-White 2.1e-14, Jamshidian 3.7e-15, today's values 1.6e-16, AD Greeks 2.2e-15,
-  bump Greeks 7.6e-15, market risk 1.5e-14), float32 at most 8.3e-6 (market risk; the cube
-  2.2e-6, float32 storage 3.6e-7). ORE parity: the pricing and parity modules within the
-  existing tolerances (527 passed, 6 xfailed).
-- **Precision harness**: the `compute` and `compute_market_risk` campaigns are new
-  ([precision.md §15.5](details/precision.md#155-compute-below-float32-2026-10-10)); `linear`,
-  `options` and `market_risk` rerun, every float64-computed case equal to its record to three
-  significant figures, `throughout:float32` 0.29 to 0.65 of its record. No case recompiles
-  after its first seed.
-- Not rerun: the fast tier under strict dtype promotion as a whole; the compute paths run under
-  strict promotion in `tests/test_compute_precision.py`.
+- **GPU** (RTX 5060, WSL2): `tests/test_compute_precision.py`, `tests/test_accelerator_defaults.py`,
+  `tests/test_precision.py` and `tests/test_precision_report.py`, 638 passed, and the device check
+  (`python -m tests.support.precision_devices --platform gpu`): every arithmetic a stage accepts,
+  the single passes among them, with either operand shared, equals its emulation (native
+  TensorFloat-32 now 3e-7 of the scale, the engine rounding its operands itself).
+- **Linux** (CPU): not rerun; the change touches no process, path or platform default
+  ([rule 5](README.md#verification-rules)). The last Linux run is the kernel rewrite's, 2026-10-11.
+- **Golden snapshot** (against the code before): 359 of 359 arrays identical, bit for bit: float64
+  and float32 compute do not move. Taken before the storage offset's fix, which no snapshot
+  array stores through.
+- **Precision harness**: the `compute` and `compute_market_risk` campaigns rerun with each format
+  below float32 by its name (two terms) and as its single pass (`<name>_1x`): every single-pass
+  row equals the first run's row of its format, and every other row is in
+  [precision.md §15.5](details/precision.md#155-compute-below-float32-2026-10-10). No case
+  recompiles after its first seed (168 rows).
 
-Red first: the GPU's float32-operand, float64-accumulate product was 7.6e-7 off before the fix
-(`TestProducts::test_float32_operands_may_accumulate_in_float64`, failed on the RTX 5060,
-passes after); the device check failed XLA's native FP8 product (70% off for some shapes) and
-its `BF16_BF16_F32_X3` (a single pass's error), passes with both emulated; a level rounded once
-to float32 put a bond's mean 0.04 off near 1e6 (287 statistical errors); with the level in two
-terms every case is at most 3e-4 off, within two statistical errors.
+Red first: the pipeline's bias test failed on the code before at 14 to 24 standard errors
+(`TestPipeline::test_no_rounding_of_a_shared_operand_biases_the_paths`, float16, bfloat16,
+TensorFloat-32), and passes at 1.4 or less; `test_any_scenario_count_and_axis_short_last_block`
+failed on the RTX 5060 at the code before (two of its cases, one-entry blocks 5e-8 off), and
+passes. Not rerun: the fast tier under strict dtype promotion as a whole; the compute paths run
+under strict promotion in `tests/test_compute_precision.py`.
 
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
@@ -69,7 +64,7 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | Focus |
 | [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | Focus |
 | [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | Focus |
-| [I-96](#i-96) | Compute below float32 biases every figure: each product's path-independent operand is rounded once for all paths | Medium | OPEN | Correctness | Focus |
+| [I-98](#i-98) | FP8 compute keeps a bias: each path's operand is rounded to nearest on FP8's grid | Medium | OPEN | Correctness | Focus |
 | [I-97](#i-97) | XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU | Medium | OPEN | Performance | Focus |
 | [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Focus |
 | [I-88](#i-88) | The API completeness test checks field names, not that a value reaches the engine | Low | OPEN | Tooling | Focus |
@@ -210,45 +205,45 @@ With a smile: European NPV and Vega away from the money, and calibrated Bermudan
 **To close.** Decided (X-5): a strike axis in the market's volatilities, read at each
 option's and helper's strike as ORE reads its cube. SABR is [F-02](features.md#f-02).
 
-<a id="i-96"></a>
-### I-96 — Compute below float32 biases every figure: each product's path-independent operand is rounded once for all paths
+<a id="i-98"></a>
+### I-98 — FP8 compute keeps a bias: each path's operand is rounded to nearest on FP8's grid
 
-**Severity:** Medium · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-10, the
-kernel rewrite's `compute` campaign (F-07)
+**Severity:** Medium · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-11, the
+`compute` campaign rerun with the shared operands in two terms (I-96, decision A-23)
 
-**What is wrong.** A product in a compute format below float32 rounds both operands to the
-format (`engine.precision.products`), as a matrix unit does. One operand varies by path (a path's
-state or curve deviation, its flows' discount deviations); the other does not (the Brownian
-bridge's matrix, the standardized step moments, the market's loadings on the state, each flow's
-present value at the level). The path-independent operand is rounded once and its error is the
-same on every path, so it moves every figure systematically: in the `compute` campaign
-(compliance/precision-measurements/compute.md) the error of every case below float32 is all
-bias (relative bias equal to the relative error, 100 to 2,000 of its standard errors), and grows
-against the statistical error with the paths as a bias does (TensorFloat-32 and float16 0.2 to
-12 statistical errors from 1,024 to 16,384 paths, bfloat16 1 to 56, FP8 20 to 3,000; storage in
-the same format, whose rounding is per path, is 5 to 50 times closer). Carrying the
-path-independent operand in two terms of the format (two products, the second on what the first
-leaves) removes most of it: on 4,096 paths and 8 seeds, the pricing stage's worst bias over the
-dates, in statistical errors, falls from 2.1 to 0.04 (bfloat16, a European) and from 41 to 5.3
-(FP8 e4m3, the European; a swap 2.5 to 1.8, a bond 4.2 to 2.6), the rest being the per-path
-operand's rounding.
+**What is wrong.** Since each product carries the operand every path shares in two terms of
+its format (A-23), what is left of its error below float32 is the per-path operand's own
+rounding. On the 10-bit grids (float16, TensorFloat-32) and bfloat16's that averages out: one
+stage computed in the format moves no mean figure by more than 1.2 of its statistical errors at
+16,384 paths (compliance/precision-measurements/compute.md). On FP8's it does not. Rounded to
+nearest on a grid whose spacing doubles at every power of two, a smooth spread of values has a
+mean error that is not zero: on 786,432 operands near 1 ± 0.3, each row scaled as the products
+scale it, −2.7% of the rounding's own spread for e4m3, −5% for e5m2 (float16's 0.02%). So a stage
+computed in FP8 still moves its figures systematically: pricing in e4m3 9.5 statistical errors on
+a mean at 4,096 paths and 30 at 16,384 (significance 35 and 86), e5m2 a quantile 73 and 213 (a
+payer swap's 5-year PFE), one stage's means 8 to 34 times closer than the single pass's (I-96)
+but growing with the paths as a bias does. Neither a third term of the shared operand nor the shared operand
+unrounded (eight terms) changes any FP8 case beyond its noise ([precision.md
+§15.5](details/precision.md#155-compute-below-float32-2026-10-10)).
 
-**Reach.** Runs that compute a stage below float32 (opt-in since 2026-10-10); float32 and float64
-compute are unaffected (their products' operands are rounded at float32 or not at all). Means are
-corrected by a paired float64 sample (`Precision.paired_fraction`, A-13); quantiles (PFE, VaR,
-ES) are not.
+**Reach.** Runs that compute a stage in FP8 (`float8_e4m3fn`, `float8_e5m2`; opt-in). Every
+other compute format is unaffected. Means are corrected by a paired float64 sample
+(`Precision.paired_fraction`, A-13); quantiles are not: market risk's VaR and ES at 8,192
+scenarios are 0.26 (e4m3) and 0.42 (e5m2) statistical errors off.
 
-**Current handling.** The precision report names the compute formats and their execution; the
-harness measures the bias. Nothing warns (I-55).
+**Current handling.** The precision report names the compute format; the precision harness
+measures the bias, from which the evidence table (I-55) reads FP8's path ceilings. Nothing
+warns.
 
-**To close.** Decided (A-23, 2026-10-11): each format below float32 carries the
-path-independent operand in two terms (twice the matrix work on a native unit; the right-hand
-operand of every product but the Brownian bridge's, whose shared operand is the left one), and
-the single pass stays selectable as a product format of its own. Rerun the `compute` campaigns
-with both, the two-term rows replacing today's, and time both where a unit is native; where two
-terms leave a bias significant at 4,096 paths (FP8 e4m3 today), measure a third term or a wider
-shared operand. Then the evidence table (I-55) reads the rows of what ships. Red first: a
-campaign case whose bias significance falls below 3 at 4,096 paths with it and not without.
+**To close.** Round the per-path operand without bias: stochastically, as storage can
+(`Precision.rounding`), each path drawing its own uniforms so that its rounding depends on no
+other path (I-75's rule). On the product alone it removes the per-path part (e4m3 at 65,536
+paths: significance 12.3 to 4.7, the rest the second term's own rounding) at 40% more root mean
+square error, the trade storage measured too (stochastic rounding worse for VaR and ES in 12 of
+16 storage comparisons, §15.4). So: a choice of the policy, both measured in the `compute`
+campaigns, the FP8 default decided by the evidence table's path ceilings; FP4 compute (F-07)
+meets the same rounding, coarser. Red first: an FP8 campaign case whose significance at 4,096
+paths falls below 3 with it and not without.
 
 
 <a id="i-97"></a>
@@ -828,7 +823,8 @@ the Bermudan/American rollback: the precision harness measures it in the `comput
 `compute_market_risk` campaigns ([details/precision.md
 §15.5](details/precision.md#155-compute-below-float32-2026-10-10)), whose rows the table reads
 beside the storage campaigns'. Their first run found a bias floor below float32
-([I-96](#i-96)), settled before the table's rows are read.
+([I-96](#i-96)), fixed on 2026-10-11 (the shared operands in two terms, A-23); what is left is
+FP8's own rounding ([I-98](#i-98)), whose rows the table reads as they are.
 
 <a id="i-94"></a>
 ### I-94 — The LGM is calibrated by two implementations
@@ -1185,6 +1181,8 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-85"></a>I-85 | Exposure profiles started from each trade's value on today's market; ORE's start from its value on the simulation market of the as-of date, the cube's `T0` (up to 4.2% on the shared portfolio) | `tests/test_ore_xva_parity.py::test_the_pipelines_profiles_start_from_ores_t0` |
 | <a id="i-86"></a>I-86 | A cash-settled option's exposure stopped at its underlying's maturity, so its time-weighted EPE kept accruing after it settled; ORE's `Trade::maturity()` is its last exercise date (2026-10-07) | `tests/test_ore_xva_parity.py::test_the_profiles_of_ores_cube_are_ores_reports` |
 | <a id="i-92"></a>I-92 | `engine/`'s packages were named for layers and two modules sat at its root (now subpackages only, each named for what it holds and layered: `market_data`, `models`, `instruments`, `traderx`, `calibration`, `market_simulation`, `pricing`, `risk/{greeks,market,counterparty}`, `run`, `api`; [details/package-layout.md](details/package-layout.md)) | `tests/test_import_layering.py::test_no_module_but_init_at_the_root`, `::test_packages_import_only_the_layers_below`, `::test_risk_kinds_import_only_the_kinds_below` |
+| <a id="i-96"></a>I-96 | Compute below float32 biased every figure: each product's path-independent operand was rounded once for every path (now carried in two terms of the format, the single pass a format of its own, `<name>_1x`; 2026-10-11, decision A-23) | `tests/test_compute_precision.py::TestPipeline::test_no_rounding_of_a_shared_operand_biases_the_paths` (red on the code before: 14 to 24 standard errors), `TestProducts::test_the_shared_operands_rounding_biases_a_single_pass_not_two_terms` |
+| <a id="i-99"></a>I-99 | On a GPU a block-offset storage took a block's deviations from its unrounded midpoint while keeping the float32 one, so a stored entry missed its value by float32's rounding of it: XLA removed the float64 -> float32 -> float64 round trip of the offset's cast (found and fixed 2026-10-11, the offset now rounded on float32's grid) | `tests/test_precision.py::TestScaledStorage::test_any_scenario_count_and_axis_short_last_block` (red on an RTX 5060 at the code before, its one-entry blocks 5e-8 off) |
 | <a id="m-4"></a>Audit M-4 | Trades were defined relative to the evaluation date (now absolute dates) | `tests/test_trade_dates.py` |
 | <a id="m-5"></a>Audit M-5 | Theta re-rolled the trade instead of ageing it | `tests/test_trade_dates.py` |
 | <a id="r-1"></a>Audit R-1 | Cube quantiles were reported as VaR/ES (now exposure profiles; market-risk VaR/ES by t=0 revaluation) | `tests/test_exposure.py`, `tests/test_market_risk.py`, `tests/test_market_risk_ore_parity.py` |

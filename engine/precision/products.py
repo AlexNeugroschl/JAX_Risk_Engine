@@ -10,26 +10,39 @@ off). Every matrix product of the engine's JAX code therefore goes through `matm
 states the product in the program itself; JAX's process-wide `jax_default_matmul_precision`
 is neither set nor read. NumPy products on the host are exact in their dtype and do not need it.
 
-A product in compute format `c`, accumulated in `a` (`matmul(x, y, arithmetic)`):
+A product in compute format `c`, accumulated in `a` (`matmul(x, y, arithmetic, shared=...)`):
 
   * float64, float32: the operands cast to `c`, multiplied at full precision
     (`lax.Precision.HIGHEST`), accumulated in `a`. float32 operands accumulated in float64 are
     rounded onto float32's grid in float64 (exact) and multiplied in float64, where every
     product of two is exact: a GPU asked for float32 operands with a float64 result
     (`preferred_element_type`) accumulates in float32 (an RTX 5060, 2026-10-11);
-  * float16, bfloat16, FP8 (an array format below float32): each row of the left operand and
-    each column of the right one is scaled by a power of two that brings its largest magnitude
-    to the format's top (but bfloat16's, whose range is float32's), rounded to the format's grid
-    exactly (`engine.precision.grid`: XLA would round float64 to FP8 twice) and cast to it; the
-    product accumulates in float32 and the scales are taken back out. The scales are exact and
-    per row (a path), so no path's rounding depends on another path's operands, whatever its
-    batch, sample or device split (XLA may still sum a product of another shape in another
-    order, an ulp apart, as at float32). This is how an FP8 matrix unit is fed (per-tensor or
-    finer scales, float32 accumulation);
-  * tensorfloat32: float32 operands rounded to a 10-bit mantissa, float32 accumulation;
+  * float16, bfloat16, FP8, tensorfloat32 and their single passes (`<name>_1x`): each row of the
+    left operand and each column of the right one is scaled by a power of two that brings its
+    largest magnitude to the format's top (but where the format has float32's range: bfloat16,
+    TensorFloat-32), rounded to the format's grid exactly (`engine.precision.grid`: XLA would
+    round float64 to FP8 twice) and cast to it; the product accumulates in float32 and the
+    scales are taken back out. The scales are exact and per row (a path), so no path's rounding
+    depends on another path's operands, whatever its batch, sample or device split (XLA may
+    still sum a product of another shape in another order, an ulp apart, as at float32). This is
+    how an FP8 matrix unit is fed (per-tensor or finer scales, float32 accumulation);
   * bfloat16_3x: each float32 operand split into its bfloat16 and the bfloat16 of the
     remainder, three products of the pieces (the remainders' product dropped), float32
     accumulation.
+
+**The shared operand** (decision A-23, I-96). Every product of a stage's kernels multiplies a
+per-path operand by one that every path shares, and says which (`shared="left"`: the Brownian
+bridge's matrix; `"right"`: the step moments, the market's loadings, each flow's value at the
+level). Rounded once, the shared operand's error is the same on every path, so it moves every
+figure the same way: a bias, which grows against the statistical error with the paths. A format
+below float32 carries it in `Format.shared_terms` terms of the format instead: the first its
+rounding, each next one the rounding of what the terms before leave, each scaled into the range
+by its own powers of two. The terms are stacked along the shared operand's free axis, so the
+product stays one product, that many times as wide, and the terms' products are summed in
+float32, the smallest first: the shared operand's rounding is then the last term's, far below
+the per-path operand's, which is each path's own and averages out over the paths. Two terms by
+default; the single pass (`<name>_1x`, one term) is what one native product does, kept so that
+its bias and its speed are measured (the evidence table, the timing).
 
 Every format below float32 accumulates in float32, as the matrix units that run it do
 (`engine.precision.arithmetic`). A product format is **native** on a device with units for it,
@@ -56,8 +69,9 @@ from engine.precision.formats import Format, format_of, name_of
 from engine.precision.grid import pow2, round_to_grid, scale_exponent
 
 #: Compute capability (major.minor) from which an NVIDIA GPU has units for each format below
-#: float32 that the engine runs natively: float16 from Volta (7.0), TensorFloat-32 and bfloat16
-#: from Ampere (8.0), each shown equal to the emulation on an RTX 5060 (2026-10-10,
+#: float32 that the engine runs natively, by base (a single pass runs on its base's units):
+#: float16 from Volta (7.0), TensorFloat-32 and bfloat16 from Ampere (8.0), each shown equal to the
+#: emulation on an RTX 5060 (2026-10-10,
 #: `tests/support/precision_devices.py`). Not FP8, nor bfloat16 passes: there (compute capability
 #: 12.0, jax 0.10.2) XLA's FP8 product returned products 70% off for some shapes and precisions,
 #: and its `BF16_BF16_F32_X3` one a single pass's error (8.8e-4 of the scale) for some shapes, so
@@ -65,18 +79,21 @@ from engine.precision.grid import pow2, round_to_grid, scale_exponent
 #: Triton GEMM emitter gets FP8 wrong where cuBLASLt is exact, and a matrix-vector product
 #: compiles to a fusion that ignores the passes' algorithm.
 _GPU_UNITS = {"float16": 7.0, "bfloat16": 8.0, "tensorfloat32": 8.0}
-#: The formats below float32 a TPU's matrix units run: bfloat16 and its passes on every
+#: The formats below float32 a TPU's matrix units run, by base: bfloat16 and its passes on every
 #: generation, XLA's own way of running a float32 product there, to be shown right on the device
 #: as on a GPU (FP8, from Ironwood, emulated until then).
 _TPU_UNITS = {"bfloat16": "", "bfloat16_3x": ""}
-#: The dtype an emulated format's operands are multiplied in: one that holds every value of the
-#: format exactly and whose products are exact in float32 (every FP8 value is a float16 value).
+#: The dtype an emulated format's operands are multiplied in, by base: one that holds every value
+#: of the format exactly and whose products are exact in float32 (every FP8 value is a float16
+#: value).
 _CARRIERS = {"float8_e4m3fn": jnp.float16, "float8_e5m2": jnp.float16}
 #: The algorithm XLA is given for a native product format.
 _ALGORITHMS = {"tensorfloat32": lax.DotAlgorithmPreset.TF32_TF32_F32,
                "bfloat16_3x": lax.DotAlgorithmPreset.BF16_BF16_F32_X3}
 #: The exponent of float32's largest binade: a format that reaches it has float32's range.
 _FLOAT32_TOP_EXPONENT = math.frexp(float(jnp.finfo(jnp.float32).max))[1]
+#: Which operand of a product every path shares (see the module docstring).
+SHARED = ("left", "right")
 
 
 def product_execution(name: str, device: Optional[jax.Device] = None) -> str:
@@ -91,10 +108,10 @@ def product_execution(name: str, device: Optional[jax.Device] = None) -> str:
         return "emulated" if platform == "tpu" and fmt.bits == 64 else "native"
     if platform == "gpu":
         capability = getattr(device, "compute_capability", None)
-        units = _GPU_UNITS.get(fmt.name)
+        units = _GPU_UNITS.get(fmt.base)
         return "native" if None not in (capability, units) and float(capability) >= units else "emulated"
-    if platform == "tpu" and fmt.name in _TPU_UNITS:
-        return "native" if _TPU_UNITS[fmt.name] in device.device_kind else "emulated"
+    if platform == "tpu" and fmt.base in _TPU_UNITS:
+        return "native" if _TPU_UNITS[fmt.base] in device.device_kind else "emulated"
     return "emulated"
 
 
@@ -119,11 +136,14 @@ def product_precision(compute, device: Optional[jax.Device] = None):
     return lax.Precision.HIGHEST
 
 
-def matmul(a, b, arithmetic=None):
+def matmul(a, b, arithmetic=None, shared: Optional[str] = None):
     """`a @ b` (`jnp.matmul`: broadcast over leading axes, a 1-D operand as a vector) in
     `arithmetic`'s compute format, accumulated and returned in its accumulate format (an
-    `engine.precision.Arithmetic`). Without one, the operands' own format, float64 or float32,
-    accumulated in it: the products of the stages fixed at float64 or float32 (A-10)."""
+    `engine.precision.Arithmetic`), `shared` the operand every path shares, `"left"` or `"right"`,
+    which a product in a stage's arithmetic must name (see the module docstring). Without an
+    arithmetic, the operands' own format, float64 or float32, accumulated in it: the products of
+    the stages fixed at float64 or float32 (A-10), whose operands are never rounded below
+    float32."""
     a, b = jnp.asarray(a), jnp.asarray(b)
     if arithmetic is None:
         name = name_of(jnp.result_type(a, b))
@@ -132,6 +152,9 @@ def matmul(a, b, arithmetic=None):
                              f"(engine.precision.Arithmetic): the format alone does not say what it accumulates in")
         compute, accumulate = name, name
     else:
+        if shared not in SHARED:
+            raise ValueError(f"a product in a stage's arithmetic names the operand every path shares, "
+                             f"shared='left' or 'right' (decision A-23), got {shared!r}")
         compute, accumulate = arithmetic.compute, arithmetic.accumulate
     fmt, out = format_of(compute), format_of(accumulate).dtype
     precision = product_precision(compute)
@@ -141,18 +164,15 @@ def matmul(a, b, arithmetic=None):
         return jnp.matmul(a.astype(out), b.astype(out), precision=precision)
     vector_a, vector_b = a.ndim == 1, b.ndim == 1
     a, b = (a[None, :] if vector_a else a), (b[:, None] if vector_b else b)
-    if fmt.product == "dtype":
-        carrier = fmt.dtype if product_execution(compute) == "native" else _CARRIERS.get(compute, fmt.dtype)
-        product = _scaled_product(a, b, fmt, carrier, precision)
-    elif fmt.product == "tensorfloat32" and precision is lax.Precision.HIGHEST:
-        product = _matmul32(*(round_to_grid(x.astype(jnp.float32), fmt.mantissa_bits, fmt.min_exponent)
-                              for x in (a, b)), precision)
-    elif fmt.product == "bfloat16_3x" and precision is lax.Precision.HIGHEST:
+    if fmt.product == "bfloat16_3x" and precision is lax.Precision.HIGHEST:
         (a_hi, a_lo), (b_hi, b_lo) = _split_bfloat16(a), _split_bfloat16(b)
         product = (_matmul32(a_lo, b_hi, precision) + _matmul32(a_hi, b_lo, precision)) + _matmul32(a_hi, b_hi,
                                                                                                      precision)
-    else:
+    elif fmt.product == "bfloat16_3x":
         product = _matmul32(a.astype(jnp.float32), b.astype(jnp.float32), precision)
+    else:
+        carrier = fmt.dtype if product_execution(compute) == "native" else _CARRIERS.get(fmt.base, fmt.dtype)
+        product = _rounded_product(a, b, fmt, carrier, precision, shared)
     product = product[..., 0, :] if vector_a else product
     return (product[..., 0] if vector_b else product).astype(out)
 
@@ -164,21 +184,45 @@ def _matmul32(a, b, precision):
     return jnp.matmul(a, b, precision=precision, preferred_element_type=jnp.float32)
 
 
-def _scaled_product(a, b, fmt: Format, carrier, precision):
-    """`a @ b` on operands rounded to the array format `fmt` (below float32), each row of `a`
-    and column of `b` scaled into its range by a power of two (see the module docstring), held
-    in `carrier` (the format's dtype, or one that holds it exactly)."""
-    qa, ka = _quantize(a, fmt, axis=-1)          # ka [..., M, 1]: per row
-    qb, kb = _quantize(b, fmt, axis=-2)          # kb [..., 1, N]: per column
+def _rounded_product(a, b, fmt: Format, carrier, precision, shared: str):
+    """`a @ b` on operands rounded to `fmt`'s grid (below float32), each row of `a` and column of
+    `b` scaled into its range by a power of two, the `shared` operand in `fmt.shared_terms` terms,
+    held in `carrier` (the format's dtype, or one that holds it exactly), as one product: see the
+    module docstring."""
+    terms = fmt.shared_terms
+    qa, ka = _terms(a, fmt, axis=-1, count=terms if shared == "left" else 1)    # ka [..., terms M, 1]: per row
+    qb, kb = _terms(b, fmt, axis=-2, count=terms if shared == "right" else 1)   # kb [..., 1, terms N]: per column
     product = _matmul32(qa.astype(carrier), qb.astype(carrier), precision)
-    return product * pow2(-ka, jnp.float32) * pow2(-kb, jnp.float32)
+    product = product * pow2(-ka, jnp.float32) * pow2(-kb, jnp.float32)
+    parts = jnp.split(product, terms, axis=-2 if shared == "left" else -1)
+    total = parts[-1]
+    for part in reversed(parts[:-1]):
+        total = total + part
+    return total
+
+
+def _terms(x, fmt: Format, axis: int, count: int):
+    """`x` as `count` terms of `fmt`, each rounded and scaled along `axis` by `_quantize`, the
+    first `x`'s rounding and each next one the rounding of what the terms before leave, stacked
+    along the other matrix axis; and their scale exponents, stacked alike. What a term leaves is
+    exact in `x`'s dtype (float32 or float64), being a rounding error onto a coarser grid."""
+    terms, exponents, rest = [], [], x
+    for i in range(count):
+        term, k = _quantize(rest, fmt, axis)
+        terms.append(term)
+        exponents.append(k)
+        if i + 1 < count:
+            taken = term.astype(rest.dtype) * pow2(-k, rest.dtype)
+            rest = jnp.where(jnp.isfinite(taken), rest - taken, 0)
+    stack = -1 if axis == -2 else -2
+    return jnp.concatenate(terms, axis=stack), jnp.concatenate(exponents, axis=stack)
 
 
 def _quantize(x, fmt: Format, axis: int):
     """`x` scaled along `axis` by the powers of two `2^k` that bring each slice's largest finite
     magnitude into (max/2, max] of `fmt`, rounded to its grid and cast to it; and `k`. A format
-    with float32's range (bfloat16) needs no scale: `k` is 0, and scaling it to its top would
-    overflow the float32 accumulator."""
+    with float32's range (bfloat16, TensorFloat-32) needs no scale: `k` is 0, and scaling it to
+    its top would overflow the float32 accumulator."""
     if math.frexp(fmt.max)[1] >= _FLOAT32_TOP_EXPONENT:
         k = jnp.zeros(x.shape[:axis % x.ndim] + (1,) + x.shape[axis % x.ndim + 1:], dtype=jnp.int32)
     else:

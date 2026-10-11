@@ -479,8 +479,11 @@ A `by_product` key that is not a `trade_type` is a `422`; a `by_trade` key that 
 trade of the request is a `400` (checked with the request, so no job is created).
 
 The format names are the format table's (`float64`, `float32`, `float16`, `bfloat16`,
-`float8_e4m3fn`, `float8_e5m2`, and the product formats `tensorfloat32` and `bfloat16_3x`,
-compute only); another name, rounding or layout is a `422`. `compute` is the format of a
+`float8_e4m3fn`, `float8_e5m2`, and the product formats `tensorfloat32`, `bfloat16_3x` and
+each format's single pass `float16_1x`, `bfloat16_1x`, `float8_e4m3fn_1x`, `float8_e5m2_1x`,
+`tensorfloat32_1x`, compute only); another name, rounding or layout is a `422`. Below float32
+a product carries the operand every path shares in two terms of the format; the single pass
+rounds it once, a bias more paths do not remove, and is there to be measured (decision A-23). `compute` is the format of a
 stage's matrix products, `accumulate` the format they accumulate in and the rest of the stage
 runs in: float32 or float64, at least as wide as `compute`, and float32 under a compute format
 below float32; `storage` no wider than `accumulate` and not a product format. An inconsistent

@@ -2,7 +2,8 @@
 `engine.precision`: the numeric precision of a run (docs/planning/details/precision.md).
 
     formats.py   the format table: name -> dtype, bits, mantissa bits, max, array or product
-                 format, scaled, the kind of matrix product, enabled step
+                 format, scaled, the kind of matrix product, the shared operand's terms (each
+                 format's single pass `<name>_1x` a row of its own), enabled step
     arithmetic.py  Arithmetic, a stage's compute and accumulate formats as its kernels take
                  them (static), and their validation
     policy.py    StagePrecision, Precision and their validation; Precision.precision_for, the
@@ -16,9 +17,10 @@
     report.py    PrecisionReport, on every result: the policy as run, the realized formats,
                  the devices, and each figure's estimate
     products.py  matmul, every matrix product of the engine's JAX code, in a stage's compute
-                 format and accumulated in its accumulate format, its precision stated in the
-                 program (product_precision), never the device's default; product_execution,
-                 native or emulated on a device
+                 format and accumulated in its accumulate format, the operand every path shares
+                 (SHARED: left or right) in two terms of a format below float32 (A-23), its
+                 precision stated in the program (product_precision), never the device's
+                 default; product_execution, native or emulated on a device
     grid.py      exact rounding onto a format's grid and power-of-two scales (storage and
                  products)
 
@@ -30,7 +32,7 @@ from engine.precision.formats import FORMAT_NAMES, FORMATS, Format, dtype_of, fo
 from engine.precision.policy import (
     OVERRIDES, RETIRED_SHAPE, STAGES, Overrides, Precision, StagePrecision, require_precision,
 )
-from engine.precision.products import matmul, product_execution, product_precision
+from engine.precision.products import SHARED, matmul, product_execution, product_precision
 from engine.precision.report import PrecisionReport, devices_of, format_name, realized_format
 from engine.precision.storage import BLOCK, OFFSETS, ROUNDINGS, Stored, load, rounding_key, store
 
@@ -50,6 +52,7 @@ __all__ = [
     "QuantileEstimate",
     "RETIRED_SHAPE",
     "ROUNDINGS",
+    "SHARED",
     "STAGES",
     "StagePrecision",
     "Stored",

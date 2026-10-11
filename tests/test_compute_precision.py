@@ -5,9 +5,11 @@ the policy's product formats (A-22).
 
   * The products (`engine.precision.products`): every compute format multiplies what a unit of
     that format multiplies (operands rounded to its grid, per-row and per-column power-of-two
-    scales into its range, float32 accumulation), checked against an independent reference built
-    with ml_dtypes; a row's value does not depend on the other rows (a path's value is the same
-    in any batch); native or emulated by device.
+    scales into its range, float32 accumulation), the operand every path shares in two terms of
+    the format and in one by its single pass (A-23), checked against an independent reference
+    built with ml_dtypes; a row's value does not depend on the other rows (a path's value is the
+    same in any batch); the shared operand's rounding biases a single pass's paths, not two
+    terms'; native or emulated by device.
   * The arithmetic (`engine.precision.Arithmetic`) and the policy's rules for it.
   * Per family, at float64 the difference form is the direct formula to rounding, at any level;
     below float32 its error is relative to the paths' deviation from the level, not to the level
@@ -53,6 +55,9 @@ from tests.support.compiles import count_compiles
 BELOW = tuple(name for name, f in FORMATS.items() if f.below_float32)
 #: The arrays formats below float32 (their products run on operands of their own dtype).
 LOW_ARRAYS = ("float16", "bfloat16", "float8_e4m3fn", "float8_e5m2")
+#: Every format whose product is one pass of its rounded operands, and each one's single pass:
+#: their names and their bases (A-23).
+ROUNDED = tuple(name for name, f in FORMATS.items() if f.below_float32 and f.product != "bfloat16_3x")
 #: Each compute format's unit roundoff: half a spacing at 1 of its operands.
 EPS = {name: 2.0 ** -(FORMATS[name].mantissa_bits + 1) for name in FORMAT_NAMES}
 DATES = tuple(shared.ASOF + ORE.Period(m, ORE.Months) for m in (3, 12, 36))
@@ -76,24 +81,42 @@ def _simulation(samples=64, seed=3) -> CamConfig:
 # The products
 # ---------------------------------------------------------------------------
 def _reference_operand(x: np.ndarray, name: str, axis: int) -> np.ndarray:
-    """`x` as a unit of format `name` sees it, independently of the engine: scaled along `axis`
-    by the power of two that brings each slice's largest magnitude to the format's top (none for
-    bfloat16, whose range is float32's), rounded by ml_dtypes' correct conversion, scaled back."""
+    """`x` as a unit of format `name` (an array format, or TensorFloat-32) sees it, independently
+    of the engine: scaled along `axis` by the power of two that brings each slice's largest
+    magnitude to the format's top (none for bfloat16 and TensorFloat-32, whose range is
+    float32's), rounded by ml_dtypes' correct conversion (TensorFloat-32: to a 10-bit mantissa),
+    scaled back."""
     fmt = FORMATS[name]
-    dtype = fmt.dtype
+    if name == "tensorfloat32":
+        return _round_mantissa(x, fmt.mantissa_bits)
     if name == "bfloat16":
-        return x.astype(dtype).astype(np.float64)
+        return x.astype(fmt.dtype).astype(np.float64)
     amax = np.max(np.abs(x), axis=axis, keepdims=True)
     mantissa, exponent = np.frexp(amax)
     top_mantissa, top_exponent = np.frexp(fmt.max)
     k = np.where(amax > 0, top_exponent - exponent - (mantissa > top_mantissa), 0)
-    return (x * 2.0 ** k).astype(dtype).astype(np.float64) / 2.0 ** k
+    return (x * 2.0 ** k).astype(fmt.dtype).astype(np.float64) / 2.0 ** k
+
+
+def _reference_terms(x: np.ndarray, name: str, axis: int, count: int) -> list:
+    """`x` as `count` terms of format `name` (`_reference_operand`), each the rounding of what the
+    ones before leave."""
+    terms = []
+    for _ in range(count):
+        terms.append(_reference_operand(x - sum(terms), name, axis))
+    return terms
 
 
 def _round_mantissa(x: np.ndarray, bits: int) -> np.ndarray:
     """`x` rounded to nearest (ties to even) with `bits` mantissa bits: TensorFloat-32's grid."""
     mantissa, exponent = np.frexp(x)
     return np.ldexp(np.round(np.ldexp(mantissa, bits + 1)), exponent - bits - 1)
+
+
+def _bias_significance(error: np.ndarray) -> float:
+    """The worst over the columns of `error` `[paths, ...]` of its mean over the paths in units of
+    that mean's standard error."""
+    return float(np.max(np.abs(error.mean(axis=0)) / (error.std(axis=0) / np.sqrt(error.shape[0]) + 1e-300)))
 
 
 class TestProducts:
@@ -105,19 +128,54 @@ class TestProducts:
         """A float32 accumulation's error bound on `a @ b`: n eps32 sum |a||b|."""
         return a.shape[-1] * 2.0 ** -24 * (np.abs(a) @ np.abs(b))
 
-    @pytest.mark.parametrize("name", LOW_ARRAYS)
-    def test_an_array_format_multiplies_its_scaled_rounded_operands_in_float32(self, name):
-        reference_a = _reference_operand(self.A, name, axis=-1)
-        reference_b = _reference_operand(self.B, name, axis=-2)
-        exact = reference_a @ reference_b
-        result = np.asarray(matmul(self.A, self.B, Arithmetic(name, "float32")), dtype=np.float64)
-        assert np.all(np.abs(result - exact) <= self._bound(reference_a, reference_b))
+    @pytest.mark.parametrize("side", ["left", "right"])
+    @pytest.mark.parametrize("name", ROUNDED)
+    def test_a_format_multiplies_its_rounded_operands_the_shared_one_in_its_terms(self, name, side):
+        """Each operand rounded to the format's grid with its scales, the shared one in two terms
+        of it (one for a single pass), the products of the terms accumulated in float32 and
+        summed there."""
+        fmt = FORMATS[name]
+        a_terms = _reference_terms(self.A, fmt.base, -1, fmt.shared_terms if side == "left" else 1)
+        b_terms = _reference_terms(self.B, fmt.base, -2, fmt.shared_terms if side == "right" else 1)
+        a, b = sum(a_terms), sum(b_terms)
+        result = np.asarray(matmul(self.A, self.B, Arithmetic(name, "float32"), side), dtype=np.float64)
+        bound = sum(self._bound(np.abs(x), np.abs(y)) for x in a_terms for y in b_terms) \
+            + 2.0 ** -23 * (np.abs(a) @ np.abs(b))
+        assert np.all(np.abs(result - a @ b) <= bound)
 
-    def test_tensorfloat32_rounds_its_operands_to_a_10_bit_mantissa(self):
-        a, b = _round_mantissa(self.A.astype(np.float32).astype(np.float64), 10), \
-            _round_mantissa(self.B.astype(np.float32).astype(np.float64), 10)
-        result = np.asarray(matmul(self.A, self.B, Arithmetic("tensorfloat32", "float32")), dtype=np.float64)
-        assert np.all(np.abs(result - a @ b) <= self._bound(a, b))
+    @pytest.mark.parametrize("side", ["left", "right"])
+    def test_the_shared_operands_rounding_biases_a_single_pass_not_two_terms(self, side):
+        """4,096 paths of a per-path operand whose mean is far from 0, the worst case: the shared
+        operand's rounding then moves every path the same way. Its mean error over the paths, in
+        units of its standard error, is that bias's significance (measured 2026-10-11: one pass 40
+        to 150, two terms 1.5 for a 10-bit grid and 2.3 for bfloat16's). FP8's two terms leave 5
+        (e4m3) and 8 (e5m2), a twelfth of one pass's or less; that rest is each path's own
+        rounding on FP8's grid, not the shared operand's: a third term, or the shared operand
+        unrounded, leaves the same (docs/planning/details/precision.md §15.5)."""
+        rng = np.random.default_rng(11)
+        paths = 1.0 + 0.3 * rng.standard_normal((4096, 12))
+        weights = rng.standard_normal((12, 6)) * np.logspace(0, -2, 6)
+        exact = paths @ weights
+        for base in ("float16", "tensorfloat32", "bfloat16", "float8_e4m3fn", "float8_e5m2"):
+            significance = {}
+            for name in (base, f"{base}_1x"):
+                arithmetic = Arithmetic(name, "float32")
+                if side == "right":
+                    result = matmul(jnp.asarray(paths, jnp.float32), weights, arithmetic, side)
+                else:
+                    result = matmul(weights.T, jnp.asarray(paths.T, jnp.float32), arithmetic, side).T
+                significance[name] = _bias_significance(np.asarray(result, np.float64) - exact)
+            assert significance[f"{base}_1x"] > 20, (base, significance)
+            if FORMATS[base].mantissa_bits >= 7:
+                assert significance[base] < 4, (base, significance)
+            else:
+                assert significance[base] < significance[f"{base}_1x"] / 8, (base, significance)
+
+    def test_a_product_in_a_stages_arithmetic_names_its_shared_operand(self):
+        for side in (None, "both"):
+            with pytest.raises(ValueError, match=r"names the operand every path shares, shared='left' or 'right' "
+                                                 r"\(decision A-23\)"):
+                matmul(self.A, self.B, Arithmetic("float64", "float64"), side)
 
     def test_bfloat16_3x_is_three_products_of_the_bfloat16_pieces(self):
         def pieces(x):
@@ -128,7 +186,7 @@ class TestProducts:
 
         (a_hi, a_lo), (b_hi, b_lo) = pieces(self.A), pieces(self.B)
         exact = a_hi @ b_hi + a_hi @ b_lo + a_lo @ b_hi
-        result = np.asarray(matmul(self.A, self.B, Arithmetic("bfloat16_3x", "float32")), dtype=np.float64)
+        result = np.asarray(matmul(self.A, self.B, Arithmetic("bfloat16_3x", "float32"), "right"), dtype=np.float64)
         assert np.all(np.abs(result - exact) <= 3 * self._bound(np.abs(a_hi), np.abs(b_hi)))
         # ~16 bits: far closer than one bfloat16 pass, as far as TensorFloat-32 or better
         relative = np.max(np.abs(result - self.A @ self.B) / (np.abs(self.A) @ np.abs(self.B)))
@@ -137,41 +195,59 @@ class TestProducts:
     @pytest.mark.parametrize("name", FORMAT_NAMES)
     def test_every_format_is_within_its_unit_roundoff_and_accumulates_where_it_is_told(self, name):
         arithmetic = _arithmetic(name)
-        result = matmul(self.A, self.B, arithmetic)
+        result = matmul(self.A, self.B, arithmetic, "right")
         assert result.dtype == arithmetic.dtype
         error = np.abs(np.asarray(result, np.float64) - self.A @ self.B)
         scale = np.abs(self.A) @ np.abs(self.B)
         assert np.all(error <= (2 * EPS[name] + 40 * 2.0 ** -24) * scale)
 
-    @pytest.mark.parametrize("name", LOW_ARRAYS)
-    def test_a_rows_rounding_does_not_depend_on_the_other_rows(self, name):
-        """Scales are per row (a path) and per column, never per tensor: rescaling every other row
-        a millionfold leaves a row's product as it was, bit for bit (in a batch of the same shape;
-        XLA may sum a product of another shape in another order, an ulp apart, as it does at
-        float32)."""
+    @pytest.mark.parametrize("side", ["left", "right"])
+    @pytest.mark.parametrize("name", ROUNDED)
+    def test_a_paths_rounding_does_not_depend_on_the_other_paths(self, name, side):
+        """Scales are per path (a row of the left operand, or a column of the right one when the
+        left is shared) and per row or column of the shared operand's terms, never per tensor:
+        rescaling every other path a millionfold leaves a path's product as it was, bit for bit (in
+        a batch of the same shape; XLA may sum a product of another shape in another order, an ulp
+        apart, as it does at float32)."""
         arithmetic = Arithmetic(name, "float32")
-        full = np.asarray(matmul(self.A, self.B, arithmetic))
+
+        def product(paths):
+            """`paths @ B` `[paths, N]`, the paths on the side that is not shared."""
+            if side == "right":
+                return np.asarray(matmul(paths, self.B, arithmetic, side))
+            return np.asarray(matmul(self.B.T, paths.T, arithmetic, side)).T
+
+        full = product(self.A)
         for i in range(self.A.shape[0]):
             others = np.where(np.arange(self.A.shape[0])[:, None] == i, 1.0, 1e6) * self.A
-            np.testing.assert_array_equal(np.asarray(matmul(others, self.B, arithmetic))[i], full[i])
+            np.testing.assert_array_equal(product(others)[i], full[i])
 
     def test_vectors_batches_zeros_and_an_empty_contraction(self):
         arithmetic = Arithmetic("float8_e4m3fn", "float32")
-        assert matmul(self.A[0], self.B, arithmetic).shape == (5,)
-        assert matmul(self.A, self.B[:, 0], arithmetic).shape == (6,)
-        batched = matmul(np.stack([self.A, -self.A]), self.B, arithmetic)
-        np.testing.assert_array_equal(np.asarray(batched[1]), -np.asarray(batched[0]))
-        np.testing.assert_array_equal(np.asarray(matmul(np.zeros((3, 4)), np.ones((4, 2)), arithmetic)), 0.0)
-        np.testing.assert_array_equal(np.asarray(matmul(np.ones((3, 0)), np.ones((0, 2)), arithmetic)), 0.0)
+        for side in ("left", "right"):
+            assert matmul(self.A[0], self.B, arithmetic, side).shape == (5,)
+            assert matmul(self.A, self.B[:, 0], arithmetic, side).shape == (6,)
+            batched = matmul(np.stack([self.A, -self.A]), self.B, arithmetic, side)
+            np.testing.assert_array_equal(np.asarray(batched[1]), -np.asarray(batched[0]))
+            np.testing.assert_array_equal(np.asarray(matmul(np.zeros((3, 4)), np.ones((4, 2)), arithmetic, side)),
+                                          0.0)
+            np.testing.assert_array_equal(np.asarray(matmul(np.ones((3, 0)), np.ones((0, 2)), arithmetic, side)),
+                                          0.0)
 
-    @pytest.mark.parametrize("name", LOW_ARRAYS)
-    def test_the_program_multiplies_operands_of_the_format_into_float32(self, name):
+    @pytest.mark.parametrize("side", ["left", "right"])
+    @pytest.mark.parametrize("name", LOW_ARRAYS + tuple(f"{name}_1x" for name in LOW_ARRAYS))
+    def test_the_program_is_one_product_of_operands_of_the_format_into_float32(self, name, side):
         """Native, the format's own dtype; emulated FP8 (on every device until one's FP8 product
-        is shown right), float16, which holds every FP8 value."""
-        jaxpr = jax.make_jaxpr(lambda a, b: matmul(a, b, Arithmetic(name, "float32")))(self.A, self.B)
-        (dot,) = [e for e in jaxpr.eqns if e.primitive.name == "dot_general"]
-        carrier = jnp.float16 if name.startswith("float8") else jnp.dtype(name)
+        is shown right), float16, which holds every FP8 value. The shared operand's terms are one
+        product with it, as wide as its terms (twice the work for two terms, A-23)."""
+        program = jax.make_jaxpr(lambda a, b: matmul(a, b, Arithmetic(name, "float32"), side))
+        (dot,) = [e for e in program(self.A, self.B).eqns if e.primitive.name == "dot_general"]
+        base = FORMATS[name].base
+        carrier = jnp.float16 if base.startswith("float8") else jnp.dtype(base)
         assert [v.aval.dtype for v in dot.invars] == [jnp.dtype(carrier)] * 2
+        terms = FORMATS[name].shared_terms
+        assert [v.aval.shape for v in dot.invars] == ([(6 * terms, 40), (40, 5)] if side == "left"
+                                                      else [(6, 40), (40, 5 * terms)])
         assert dot.params["preferred_element_type"] == jnp.float32
         assert dot.params["precision"] == (jax.lax.Precision.HIGHEST,) * 2
 
@@ -180,7 +256,7 @@ class TestProducts:
         float32's roundoff. Red first on an RTX 5060 (2026-10-11), with the product asked of
         the device as float32 operands with a float64 result: 7.6e-7 off, float32's sums."""
         a32, b32 = self.A.astype(np.float32).astype(np.float64), self.B.astype(np.float32).astype(np.float64)
-        result = matmul(self.A, self.B, Arithmetic("float32", "float64"))
+        result = matmul(self.A, self.B, Arithmetic("float32", "float64"), "right")
         assert result.dtype == jnp.float64
         expected, scale = a32 @ b32, np.abs(a32) @ np.abs(b32)
         assert np.max(np.abs(np.asarray(result) - expected) / scale) <= 64 * 2.0 ** -53
@@ -198,15 +274,17 @@ class TestProducts:
     def test_native_where_the_device_has_units_for_the_format_else_emulated(self, platform, kind, capability,
                                                                              expected):
         """FP8 nowhere, and bfloat16 passes not on a GPU, until a device's are shown right
-        (`tests/support/precision_devices.py`: an RTX 5060's were not, 2026-10-10)."""
+        (`tests/support/precision_devices.py`: an RTX 5060's were not, 2026-10-10). A single pass
+        runs on its format's units."""
         device = types.SimpleNamespace(platform=platform, device_kind=kind, compute_capability=capability)
         assert {name: product_execution(name, device) for name in FORMAT_NAMES} == {
-            name: expected.get(name, "emulated") for name in FORMAT_NAMES}
+            name: expected.get(name.removesuffix("_1x"), "emulated") for name in FORMAT_NAMES}
 
     def test_a_native_product_format_states_its_algorithm(self):
         ampere = types.SimpleNamespace(platform="gpu", device_kind="NVIDIA A100", compute_capability="8.0")
         tpu = types.SimpleNamespace(platform="tpu", device_kind="TPU v5 lite", compute_capability=None)
-        assert product_precision("tensorfloat32", ampere) == jax.lax.DotAlgorithmPreset.TF32_TF32_F32
+        assert product_precision("tensorfloat32", ampere) == product_precision("tensorfloat32_1x", ampere) \
+            == jax.lax.DotAlgorithmPreset.TF32_TF32_F32
         assert product_precision("bfloat16_3x", tpu) == jax.lax.DotAlgorithmPreset.BF16_BF16_F32_X3
         assert product_precision("bfloat16_3x", ampere) == jax.lax.Precision.HIGHEST
         cpu = jax.devices("cpu")[0]
@@ -347,7 +425,8 @@ class TestSimulation:
         direct = []
         for i in range(len(self.TIMES) - 1):
             moments_i = np.concatenate([moments.transition[i].T, moments.cholesky[i].T])
-            x = (arithmetic.matmul(jnp.concatenate([x, jnp.asarray(normals[i], jnp.float32)], axis=-1), moments_i)
+            x = (arithmetic.matmul(jnp.concatenate([x, jnp.asarray(normals[i], jnp.float32)], axis=-1), moments_i,
+                                   shared="right")
                  + jnp.asarray(moments.drift[i], jnp.float32))
             direct.append(np.asarray(x, np.float64))
         direct_error = np.max(np.abs(np.stack(direct, axis=1) - exact), axis=0)
@@ -520,6 +599,27 @@ class TestPipeline:
         spread = np.std(exact, axis=0) + 1e-9
         mean_error = np.abs(cube.mean(axis=0) - exact.mean(axis=0))
         assert np.all(mean_error <= 8 * EPS[name] * spread + 4 * 2.0 ** -24 * np.abs(exact.mean(axis=0)))
+
+    @pytest.mark.parametrize("name", ["float16", "bfloat16", "tensorfloat32"])
+    def test_no_rounding_of_a_shared_operand_biases_the_paths(self, name):
+        """I-96, red first: every stage in the format, accumulating and stored in float32, and
+        each trade's value on each date over 2,048 paths against float64's on the same paths: the
+        mean error in units of its standard error is the significance of a bias that every path
+        shares, which more paths do not remove. Measured 2026-10-11: at most 1.4 with the shared
+        operands in two terms (A-23), 14 to 24 with the single pass (`<name>_1x`, what the code
+        before ran under the format's name). FP8 e4m3's two terms leave up to 9 on the bond, the
+        paths' own rounding on FP8's grid, which a third term does not change
+        (docs/planning/details/precision.md §15.5)."""
+        exact = np.asarray(price_portfolio(_request(samples=2048)).npv_cube)
+
+        def significance(compute):
+            stage = StagePrecision("float32", compute, "float32")
+            policy = Precision(simulation=stage, market=stage, pricing=stage)
+            return _bias_significance(np.asarray(price_portfolio(_request(samples=2048, precision=policy)).npv_cube,
+                                                 np.float64) - exact)
+
+        assert significance(name) < 4
+        assert significance(f"{name}_1x") > 6
 
     def test_float32_products_accumulating_in_float64(self, float64_run):
         stage = StagePrecision("float32", "float32", "float64")

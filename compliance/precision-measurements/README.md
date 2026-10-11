@@ -12,8 +12,12 @@ table (I-55, `compliance/precision-evidence.md` when it lands) is read off them.
 | `<campaign>.md` | The summary generated from it |
 
 The campaigns are `linear` (the shared portfolio's swaps, Europeans and bond), `options` (its
-Bermudans and American) and `market_risk`; `tests/support/precision_campaigns.py` defines
-them. Rerun one after any change to a kernel it prices, from the repository's root:
+Bermudans and American) and `market_risk`, which store in each format, and `compute` and
+`compute_market_risk` (2026-10-10), which compute in each format below float32
+([precision.md §15.5](../../docs/planning/details/precision.md#155-compute-below-float32-2026-10-10)):
+each such format by its name, the operand every path shares in two terms, and as its single
+pass, `<format>_1x` (decision A-23, rerun 2026-10-11); `tests/support/precision_campaigns.py`
+defines them. Rerun one after any change to a kernel it prices, from the repository's root:
 
 ```
 .venv/Scripts/python.exe -m tests.support.precision_campaigns linear

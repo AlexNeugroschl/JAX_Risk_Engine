@@ -89,21 +89,29 @@ def _simulation(model=LgmConfig, samples=16) -> CamConfig:
 class TestFormats:
     def test_the_table_is_the_design_table(self):
         """precision.md §6.1: name, bits, mantissa bits, minimum exponent, array format, scaled,
-        product, the items that enable them. Every format computes since the kernel rewrite
-        (F-07), the product formats among them."""
-        rows = {f.name: (f.bits, f.mantissa_bits, f.min_exponent, f.array, f.scaled, f.product, f.storage_pending,
-                         f.compute_pending) for f in FORMATS.values()}
+        product, the shared operand's terms (A-23), the base, the items that enable them. Every
+        format computes since the kernel rewrite (F-07), the product formats among them; each
+        format below float32 whose product is one pass has its single pass as a format of its
+        own."""
+        rows = {f.name: (f.bits, f.mantissa_bits, f.min_exponent, f.array, f.scaled, f.product, f.shared_terms,
+                         f.base, f.storage_pending, f.compute_pending) for f in FORMATS.values()}
         assert rows == {
-            "float64": (64, 52, -1022, True, False, "dtype", None, None),
-            "float32": (32, 23, -126, True, False, "dtype", None, None),
-            "float16": (16, 10, -14, True, True, "dtype", None, None),
-            "bfloat16": (16, 7, -126, True, True, "dtype", None, None),
-            "float8_e4m3fn": (8, 3, -6, True, True, "dtype", None, None),
-            "float8_e5m2": (8, 2, -14, True, True, "dtype", None, None),
-            "tensorfloat32": (32, 10, -126, False, False, "tensorfloat32", None, None),
-            "bfloat16_3x": (32, 16, -126, False, False, "bfloat16_3x", None, None),
+            "float64": (64, 52, -1022, True, False, "dtype", 1, "float64", None, None),
+            "float32": (32, 23, -126, True, False, "dtype", 1, "float32", None, None),
+            "float16": (16, 10, -14, True, True, "dtype", 2, "float16", None, None),
+            "bfloat16": (16, 7, -126, True, True, "dtype", 2, "bfloat16", None, None),
+            "float8_e4m3fn": (8, 3, -6, True, True, "dtype", 2, "float8_e4m3fn", None, None),
+            "float8_e5m2": (8, 2, -14, True, True, "dtype", 2, "float8_e5m2", None, None),
+            "tensorfloat32": (32, 10, -126, False, False, "tensorfloat32", 2, "tensorfloat32", None, None),
+            "bfloat16_3x": (32, 16, -126, False, False, "bfloat16_3x", 1, "bfloat16_3x", None, None),
+            "float16_1x": (16, 10, -14, False, False, "dtype", 1, "float16", None, None),
+            "bfloat16_1x": (16, 7, -126, False, False, "dtype", 1, "bfloat16", None, None),
+            "float8_e4m3fn_1x": (8, 3, -6, False, False, "dtype", 1, "float8_e4m3fn", None, None),
+            "float8_e5m2_1x": (8, 2, -14, False, False, "dtype", 1, "float8_e5m2", None, None),
+            "tensorfloat32_1x": (32, 10, -126, False, False, "tensorfloat32", 1, "tensorfloat32", None, None),
         }
         assert FORMATS["float8_e4m3fn"].max == 448.0 and FORMATS["float16"].max == 65504.0
+        assert FORMATS["float8_e4m3fn_1x"].max == 448.0 and FORMATS["float16_1x"].max == 65504.0
         assert [name for name, f in FORMATS.items() if not f.below_float32] == ["float64", "float32"]
 
     @pytest.mark.parametrize("name", ARRAYS)
@@ -111,11 +119,19 @@ class TestFormats:
         assert dtype_of(name).itemsize * 8 == FORMATS[name].bits
         assert name_of(dtype_of(name)) == name
 
-    @pytest.mark.parametrize("name", ["tensorfloat32", "bfloat16_3x"])
+    @pytest.mark.parametrize("name", ["tensorfloat32", "bfloat16_3x", "tensorfloat32_1x"])
     def test_a_product_formats_values_are_float32(self, name):
         """A product format has no array of its own: its values are float32, which `name_of`
         names, never the product format."""
         assert dtype_of(name) == jnp.float32 and name_of(dtype_of(name)) == "float32"
+
+    @pytest.mark.parametrize("name", ["float16", "bfloat16", "float8_e4m3fn", "float8_e5m2"])
+    def test_a_single_pass_holds_its_formats_values_under_another_name(self, name):
+        """`<name>_1x` multiplies values of `name` (its dtype), which `name_of` names, never the
+        single pass; it is neither stored nor accumulated in (a product format)."""
+        assert dtype_of(f"{name}_1x") == dtype_of(name) and name_of(dtype_of(f"{name}_1x")) == name
+        with pytest.raises(ValueError, match=rf"StagePrecision\.storage='{name}_1x': a matrix-product format"):
+            StagePrecision(f"{name}_1x", f"{name}_1x", "float32")
 
     def test_a_name_outside_the_table_is_refused_listing_the_table(self):
         with pytest.raises(ValueError, match=r"unknown number format 'fp8'.*float8_e4m3fn"):
@@ -191,6 +207,8 @@ class TestPolicy:
         ("bfloat16", StagePrecision("bfloat16", "bfloat16", "float32")),
         ("float8_e4m3fn", StagePrecision("float8_e4m3fn", "float8_e4m3fn", "float32")),
         ("tensorfloat32", StagePrecision("float32", "tensorfloat32", "float32")),
+        ("float8_e4m3fn_1x", StagePrecision("float8_e4m3fn", "float8_e4m3fn_1x", "float32")),
+        ("tensorfloat32_1x", StagePrecision("float32", "tensorfloat32_1x", "float32")),
     ])
     def test_throughout_a_format_accumulates_and_stores_where_it_can(self, name, stage):
         assert all(getattr(Precision.throughout(name), s) == stage for s in STAGES)

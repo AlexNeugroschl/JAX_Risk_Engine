@@ -214,9 +214,15 @@ def _levels(blocks, finite):
     and whose farthest from zero is at most three times its nearest (its range at most twice
     its nearest magnitude), the midpoint of its largest and smallest finite entries, rounded to
     float32; else 0. Each end is halved before the two are added, which is exact and cannot
-    overflow."""
+    overflow. The midpoint is rounded on float32's grid in the blocks' dtype before the cast, so
+    the deviations taken from it are taken from the offset kept: XLA may remove a float64 ->
+    float32 -> float64 round trip inside a fusion (`xla_allow_excess_precision`), which on a GPU
+    took a one-entry block's deviation from the unrounded midpoint (2026-10-11, I-99)."""
     top = jnp.max(jnp.where(finite, blocks, -jnp.inf), axis=1)
     bottom = jnp.min(jnp.where(finite, blocks, jnp.inf), axis=1)
     concentrated = jnp.any(finite, axis=1) & (((bottom > 0) & (top <= 3 * bottom))
                                               | ((top < 0) & (bottom >= 3 * top)))
-    return jnp.where(concentrated, 0.5 * top + 0.5 * bottom, 0).astype(jnp.float32)
+    float32 = FORMATS["float32"]
+    level = _round_to_grid(jnp.where(concentrated, 0.5 * top + 0.5 * bottom, 0), float32.mantissa_bits,
+                           float32.min_exponent)
+    return level.astype(jnp.float32)

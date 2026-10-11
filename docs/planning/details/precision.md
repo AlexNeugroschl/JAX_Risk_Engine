@@ -116,7 +116,7 @@ conflicts with one is redesigned rather than excused.
 | Precision | What it is | Rounding happens | What it buys |
 |---|---|---|---|
 | **storage** | The format a value is kept in between steps | Once per value, when stored | Memory and bandwidth: the cube in FP8 is 8× smaller than in float64 |
-| **compute** | The format of a stage's matrix products: their operands, and how the product runs (TensorFloat-32, bfloat16 passes, FP8 units) | Once per operand, at every product, so errors build up over a scan's steps | Time, on hardware with native units for it |
+| **compute** | The format of a stage's matrix products: their operands, and how the product runs (TensorFloat-32, bfloat16 passes, FP8 units); below float32 the operand every path shares in two terms of the format (A-23, §8.3) | Once per operand, at every product, so errors build up over a scan's steps | Time, on hardware with native units for it |
 | **accumulate** | The format the products accumulate in, and every other operation of the stage is evaluated in (sums, the scan's carry, a level plus a path's deviation, payoff formulas) | At every operation | Keeps long sums from drifting or overflowing, and the levels the deviations are measured from |
 
 Low-precision hardware works this way: FP8 inputs to a matrix multiply, with sums
@@ -246,7 +246,8 @@ Built with per-trade precision (2026-10-02):
 Checked before any work, by `engine/precision/policy.py`, each refusal naming its field:
 
 - every name is in the format table;
-- `accumulate` is an array format (not `tensorfloat32` or `bfloat16_3x`), float32 or float64
+- `accumulate` is an array format (not `tensorfloat32`, `bfloat16_3x` or a single pass
+  `<name>_1x`), float32 or float64
   (no matrix unit accumulates narrower), at least as wide as `compute`'s values, and float32
   under a compute format below float32, whose matrix units accumulate in float32
   (`engine.precision.arithmetic.arithmetic_refusal`, shared by `Arithmetic`);
@@ -291,6 +292,9 @@ Precision(simulation=fp8, market=fp8, pricing=fp8,
           paired_fraction=0.02)                   # FP8 products and storage (2026-10-10), Bermudans in float32
 
 Precision.throughout("tensorfloat32")             # TensorFloat-32 products, float32 everywhere else
+
+Precision.throughout("bfloat16_1x")               # bfloat16 products in one pass, the shared operands
+                                                  # rounded once (biased, A-23): for measuring it
 ```
 
 ## 5. Modules
@@ -298,7 +302,8 @@ Precision.throughout("tensorfloat32")             # TensorFloat-32 products, flo
 ```
 engine/precision/
   formats.py   # the format table: name -> dtype, bits, mantissa bits, max, scaled?   (2026-10-01);
-               # array or product format, the kind of product (2026-10-10)
+               # array or product format, the kind of product (2026-10-10); the shared operand's
+               # terms, the base, each format's single pass <name>_1x (2026-10-11, A-23)
   arithmetic.py  # Arithmetic: a stage's compute and accumulate formats, as kernels take them (2026-10-10)
   policy.py    # StagePrecision, Precision, validation (2026-10-01); by_product, by_trade, precision_for (2026-10-02)
   storage.py   # store(), load() (2026-10-01); Stored (pytree: values, scales, format, axis), rounding (2026-10-02);
@@ -308,7 +313,8 @@ engine/precision/
                # each compute format's execution, native or emulated (2026-10-10)
   estimate.py  # two-level estimator for means; paired differences for quantiles (2026-10-02)
   products.py  # matmul(): every matrix product, at its compute format's precision (2026-10-06); in every
-               # compute format, accumulated in the accumulate format; product_execution (2026-10-10)
+               # compute format, accumulated in the accumulate format; product_execution (2026-10-10);
+               # the shared operand named and carried in its terms (2026-10-11, A-23)
 ```
 
 The precision mechanism (2026-10-01) built the first three at float64/float32; sub-32-bit storage (2026-10-02) added `Stored` and the scaled
@@ -323,25 +329,32 @@ that need no market, trade or ORE ([§13.4](#134-storage-properties)).
 
 ### 6.1 The format table
 
-| Name | Bits | Mantissa bits | Max | Array format | Scaled when stored | Product | Storage enabled | Compute enabled |
-|---|---|---|---|---|---|---|---|---|
-| `float64` | 64 | 52 | 1.8e308 | Yes | No | its dtype | Yes | Yes |
-| `float32` | 32 | 23 | 3.4e38 | Yes | No | its dtype | Yes | Yes |
-| `float16` | 16 | 10 | 65,504 | Yes | Yes | its dtype | Yes | Yes (2026-10-10) |
-| `bfloat16` | 16 | 7 | 3.4e38 | Yes | Yes | its dtype | Yes | Yes (2026-10-10) |
-| `float8_e4m3fn` | 8 | 3 | 448 | Yes | Yes | its dtype | Yes | Yes (2026-10-10) |
-| `float8_e5m2` | 8 | 2 | 57,344 | Yes | Yes | its dtype | Yes | Yes (2026-10-10) |
-| `tensorfloat32` | 32 | 10 | 3.4e38 | No | No | TensorFloat-32 | No | Yes (2026-10-10) |
-| `bfloat16_3x` | 32 | 16 | 3.4e38 | No | No | three bfloat16 passes | No | Yes (2026-10-10) |
+| Name | Bits | Mantissa bits | Max | Array format | Scaled when stored | Product | Shared terms | Storage enabled | Compute enabled |
+|---|---|---|---|---|---|---|---|---|---|
+| `float64` | 64 | 52 | 1.8e308 | Yes | No | its dtype | 1 | Yes | Yes |
+| `float32` | 32 | 23 | 3.4e38 | Yes | No | its dtype | 1 | Yes | Yes |
+| `float16` | 16 | 10 | 65,504 | Yes | Yes | its dtype | 2 | Yes | Yes (2026-10-10) |
+| `bfloat16` | 16 | 7 | 3.4e38 | Yes | Yes | its dtype | 2 | Yes | Yes (2026-10-10) |
+| `float8_e4m3fn` | 8 | 3 | 448 | Yes | Yes | its dtype | 2 | Yes | Yes (2026-10-10) |
+| `float8_e5m2` | 8 | 2 | 57,344 | Yes | Yes | its dtype | 2 | Yes | Yes (2026-10-10) |
+| `tensorfloat32` | 32 | 10 | 3.4e38 | No | No | TensorFloat-32 | 2 | No | Yes (2026-10-10) |
+| `bfloat16_3x` | 32 | 16 | 3.4e38 | No | No | three bfloat16 passes | 1 | No | Yes (2026-10-10) |
+| `<name>_1x` | as `<name>` | as `<name>` | as `<name>` | No | No | as `<name>` | 1 | No | Yes (2026-10-11) |
 
 An **array format** has a dtype of its own, so it stores and accumulates. A **product format**
-(2026-10-10) is a way of running a matrix product on float32 operands, the TensorFloat-32 of an
-NVIDIA GPU (operands rounded to a 10-bit mantissa) and the three bfloat16 passes of a TPU
-(each operand split into a bfloat16 and the bfloat16 of its remainder, the remainders' product
-dropped: about 16 bits); its values are float32 arrays, and it is a compute format only. These
-are the product precisions XLA picks by default for a float32 product on those devices, made
-choices of the policy (A-22). FP4 (`float4_e2m1fn`) is added at FP4 (F-07). A name outside the
-table is refused.
+(2026-10-10) is a way of running a matrix product, a compute format only: the TensorFloat-32 of
+an NVIDIA GPU (float32 operands rounded to a 10-bit mantissa) and the three bfloat16 passes of
+a TPU (each operand split into a bfloat16 and the bfloat16 of its remainder, the remainders'
+product dropped: about 16 bits), whose values are float32 arrays. These are the product
+precisions XLA picks by default for a float32 product on those devices, made choices of the
+policy (A-22). **Shared terms** (2026-10-11, A-23, §8.3): every format below float32 whose
+product is one pass carries the operand every path shares in two terms of the format; its
+single pass is a product format of its own, `<name>_1x` (`float16_1x`, `bfloat16_1x`,
+`float8_e4m3fn_1x`, `float8_e5m2_1x`, `tensorfloat32_1x`), the row of `<name>` under another
+name, whose values are `<name>`'s (`dtype_of`) but which is neither stored nor accumulated in.
+`bfloat16_3x` carries each operand in two bfloat16 terms already. Each row names its **base**,
+the row whose grid, dtype and units its products use (itself, or the format a single pass is
+of). FP4 (`float4_e2m1fn`) is added at FP4 (F-07). A name outside the table is refused.
 
 ### 6.2 Storage: `store` and `load`
 
@@ -407,7 +420,12 @@ offsets, a concentrated block, one whose finite entries all have one sign and wh
 from zero is at most three times its nearest, is stored as their deviations from its midpoint
 (the mean of its largest and smallest finite entries), rounded to float32 and kept beside the
 scale (`Stored.offsets`, the shape of `scales`); the scale is then set by the deviations, at
-most half the block's range. Every other block has offset 0.
+most half the block's range. Every other block has offset 0. The midpoint is rounded on
+float32's grid in the input's dtype, not by a cast alone, so that the deviations are taken from
+the offset kept: XLA on a GPU removed the float64 -> float32 -> float64 round trip of the cast
+inside a fusion, and a one-entry block then stored its deviation from the unrounded midpoint,
+missing its value by float32's rounding of it (2026-10-11, I-99; red on an RTX 5060 in
+`tests/test_precision.py::TestScaledStorage::test_any_scenario_count_and_axis_short_last_block`).
 
 - **Which offset.** Three were weighed. The level the plan named first, the cube's t=0 value
   and the curves' path-independent part (§8.2), needs each class's own level in the pipeline,
@@ -569,8 +587,9 @@ precision is then in the program itself (`dot_general`'s `precision`), and AD's 
 of the product carry it too. float64 and float32 map to `lax.Precision.HIGHEST`; since the
 kernel rewrite (2026-10-10) every compute format of the table does, its operands rounded first,
 but for a product format run natively, which states its algorithm (`TF32_TF32_F32`,
-`BF16_BF16_F32_X3`), and `matmul(a, b, arithmetic)` takes the stage's compute and accumulate
-formats (§8.3). Without an arithmetic it multiplies float64 or float32 operands in their own
+`BF16_BF16_F32_X3`), and `matmul(a, b, arithmetic, shared)` takes the stage's compute and
+accumulate formats (§8.3) and, since 2026-10-11, which operand every path shares (`"left"` or
+`"right"`, A-23), refusing a product in a stage's arithmetic that does not say. Without an arithmetic it multiplies float64 or float32 operands in their own
 format, as the stages fixed at float64 (A-10) and the kernels not yet rewritten do; operands
 below float32 without one are refused, since their format does not say what they accumulate
 in.
@@ -718,10 +737,10 @@ As built (2026-10-10), family by family:
 
 One implementation serves every precision (A-16): at float64 the difference form moves the
 numbers at rounding level (§13.1), and every ORE parity suite passes at its tolerance. Below
-float32 one rounding remains shared by every path: each product's path-independent operand (the
-bridge's matrix, the step moments, the loadings, the flows' present values) is rounded once, a
-bias the measurements show and two terms of that operand mostly remove ([I-96](../known-issues.md#i-96),
-§15.5).
+float32 each product's path-independent operand (the bridge's matrix, the step moments, the
+loadings, the flows' present values) would be one rounding shared by every path, a bias: since
+2026-10-11 it is carried in two terms of the format (A-23, §8.3), and the single pass that rounds
+it once is a format of its own (§6.1, §15.5).
 
 ### 8.3 Emulation and native speed
 
@@ -746,25 +765,40 @@ bias the measurements show and two terms of that operand mostly remove ([I-96](.
   (2026-10-10) TensorFloat-32 (`tensorfloat32`), bfloat16 passes (`bfloat16_3x`) and FP8 products
   are compute formats in their own right, selectable in the policy through the same helper; the
   device's default is never the silent choice.
-- **As built (2026-10-10).** `matmul(a, b, arithmetic)` multiplies in the compute format and
-  accumulates in the accumulate format:
+- **As built (2026-10-10, the shared operand 2026-10-11).** `matmul(a, b, arithmetic, shared)`
+  multiplies in the compute format and accumulates in the accumulate format:
   - float64, float32: the operands cast to the format, full precision (`HIGHEST`), accumulated
     in the accumulate format. float32 operands accumulated in float64 are rounded onto float32's
     grid in float64 and multiplied as float64 (every product of two is exact there): asked for
     float32 operands with a float64 result (`preferred_element_type`), an RTX 5060 summed in
     float32 (7.6e-7 off, 2026-10-11; the CPU summed in float64, so only the GPU run showed it);
-  - float16, bfloat16, FP8: each row of the left operand (a path) and each column of the right
-    one scaled by the power of two that brings its largest magnitude to the format's top
-    (bfloat16 has float32's range and is not scaled: scaling two operands to its top would
-    overflow the accumulator), rounded to the format's grid exactly (`engine.precision.grid`,
-    shared with storage: XLA converts float64 to FP8 through float32, rounding twice), cast to it,
-    multiplied into float32, and the scales taken back out. A per-row scale keeps each path's
-    rounding independent of every other path's operands, whatever its batch, sample or device
-    (XLA may still sum another shape's product in another order, an ulp apart, as at float32);
-    per-tensor scales (cuBLASLt's FP8 default) would have tied every path's rounding to the
-    largest path. A product of two values of these formats is exact in float32;
-  - tensorfloat32: float32 operands rounded to a 10-bit mantissa (the device's algorithm,
-    `TF32_TF32_F32`, where native), float32 accumulation;
+  - float16, bfloat16, FP8, tensorfloat32: each row of the left operand (a path) and each column
+    of the right one scaled by the power of two that brings its largest magnitude to the format's
+    top (bfloat16 and TensorFloat-32 have float32's range and are not scaled: scaling two operands
+    to the top would overflow the accumulator), rounded to the format's grid exactly
+    (`engine.precision.grid`, shared with storage: XLA converts float64 to FP8 through float32,
+    rounding twice), cast to it, multiplied into float32 (TensorFloat-32 by the device's
+    algorithm, `TF32_TF32_F32`, where native, on operands already on its grid), and the scales
+    taken back out. A per-row scale keeps each path's rounding independent of every other path's
+    operands, whatever its batch, sample or device (XLA may still sum another shape's product in
+    another order, an ulp apart, as at float32); per-tensor scales (cuBLASLt's FP8 default) would
+    have tied every path's rounding to the largest path. A product of two values of these formats
+    is exact in float32;
+  - **the shared operand in two terms** (2026-10-11, A-23, [I-96](../known-issues.md#i-96)):
+    every product of a stage's kernels names the operand every path shares (`shared="left"`, the
+    bridge's matrix; `"right"`, the step moments, the market's loadings, the legs' and the
+    Jamshidian engine's flow values at the level). Rounded once, its error is the same on every
+    path: a bias that more paths do not remove (§15.5). The formats of the bullet above carry it
+    in two terms of the format (`Format.shared_terms`): its rounding, and the rounding of what
+    that leaves, each scaled into the range by its own powers of two (the left terms per row,
+    the right per column, as any operand). The terms are stacked along the shared operand's free
+    axis, so the product is still one product, twice as wide on that side (`[S, K] x [K, 2N]`,
+    `[2T, T] x [T, S]`), and the two halves are summed in float32, the smaller first. The
+    shared operand's error is then the second term's rounding, about the square of the format's
+    unit roundoff, and what is left is each path's own rounding, which averages out. The single
+    pass is `<name>_1x` (§6.1), one term, what one native product does, kept so that its bias and
+    its speed are measured. Every term is a value of the format, so a native unit runs the
+    product as before, on its own operands;
   - bfloat16_3x: each float32 operand split into its bfloat16 and the bfloat16 of its remainder,
     `lo·hi + hi·lo + hi·hi` (`BF16_BF16_F32_X3` where native), float32 accumulation. The split
     rounds on bfloat16's grid in float32 arithmetic, never through a float32 -> bfloat16 ->
@@ -780,8 +814,10 @@ bias the measurements show and two terms of that operand mostly remove ([I-96](.
   RTX 5060 (compute capability 12.0, jax 0.10.2, 2026-10-10) the check found XLA's FP8 product
   70% off for some shapes and precisions (and its `ANY_F8_ANY_F8_F32` algorithm unsupported or
   wrong), and its `BF16_BF16_F32_X3` a single pass's error for some shapes; with both emulated,
-  every format equals its emulation there, TensorFloat-32 within its unit roundoff (the device
-  rounds its operands its own way). The faults are XLA's, not the card's (2026-10-11,
+  every format equals its emulation there. TensorFloat-32 was within its unit roundoff of it
+  (4.5e-4 of the scale, the device rounding the operands its own way) until the engine rounded
+  them itself (2026-10-11): since, 3e-7, the float32 sums' order, with either operand shared and
+  every single pass (`<name>_1x`) as close as its format. The faults are XLA's, not the card's (2026-10-11,
   [I-97](../known-issues.md#i-97)): its Triton GEMM emitter computes the FP8 products wrong,
   while the same products through cuBLASLt (`--xla_gpu_enable_triton_gemm=false`) are exact; and
   it compiles a matrix-vector product as a fusion that ignores the bfloat16-passes algorithm.
@@ -1349,15 +1385,26 @@ constants of §6.5.
 
 `tests/test_compute_precision.py`, fast tier:
 
-- **The products**: every array format below float32 against an independent reference
-  (ml_dtypes' correctly rounded conversion of operands scaled per row and column, an exact
-  product, the float32 accumulation's bound), TensorFloat-32 against a 10-bit mantissa rounding,
-  bfloat16 passes against their pieces; every compute format within its unit roundoff on
-  operands spanning six decades; a row's rounding independent of every other row (scales per
-  path); vectors, batches, zeros, an empty contraction; the program's operands of the format
-  accumulated into float32; float32 accumulated in float64 (on any device: red first on the
-  GPU, 2026-10-11); the native/emulated table for CPU,
-  three GPU generations and two TPU kinds, a native product format stating its algorithm.
+- **The products**: every format below float32 whose product is one pass, and its single pass,
+  against an independent reference (ml_dtypes' correctly rounded conversion of operands scaled
+  per row and column, or a 10-bit mantissa rounding for TensorFloat-32, the shared operand in
+  its terms, each the reference rounding of what the ones before leave, an exact product, the
+  float32 accumulation's bound), with either operand shared; bfloat16 passes against their
+  pieces; every compute format within its unit roundoff on operands spanning six decades; a
+  path's rounding independent of every other path (scales per path), the left or the right
+  operand shared; vectors, batches, zeros, an empty contraction; the program one product of
+  operands of the format into float32, as wide as the shared operand's terms; float32
+  accumulated in float64 (on any device: red first on the GPU, 2026-10-11); the native/emulated
+  table for CPU, three GPU generations and two TPU kinds, a single pass on its format's units, a
+  native product format stating its algorithm; a product in a stage's arithmetic that does not
+  name its shared operand refused (A-23).
+- **The shared operand's bias** (2026-10-11, A-23, I-96): over 4,096 paths of a per-path operand
+  whose mean is far from 0, the mean error of a single pass is 20 or more of its standard errors
+  in every format, with either operand shared, and of two terms below 4 (10-bit grids,
+  bfloat16's) or below an eighth of the single pass's (FP8, whose rest is each path's own
+  rounding, §15.5). Through the pipeline, every stage in float16, bfloat16 or TensorFloat-32 at
+  2,048 paths: every trade's mean error on every date below 4 standard errors with two terms,
+  above 6 with the single pass; red first, the code before failing it at 14 to 24.
 - **The arithmetic**: its refusals, naming the field.
 - **Each family at float64 is the direct formula to rounding**: the scan against `x <- M x + b +
   L z`, the bridge against differencing the path values, the market against the model's
@@ -1738,27 +1785,66 @@ format at once (`throughout`, stored in the format where it has one); market ris
 the same, its trades but the Bermudan. The storage campaigns were measured again on the same code:
 every case computed in float64 equals its record of 2026-10-09 (§15.4) to three significant
 figures, in `linear`, `options` and `market_risk` alike (282 rows), and `throughout:float32` fell
-to 0.29 to 0.65 of its record. The worst relative error over every figure and date, means and quantiles
-apart (the root mean square precision error in units of the figure's statistical error):
+to 0.29 to 0.65 of its record.
+
+**Rerun on 2026-10-11 with the shared operands in two terms** (A-23, [I-96](../known-issues.md#i-96)):
+each format below float32 whose product is one pass measured twice, by its name (two terms) and
+as its single pass (`<name>_1x`, the first run's numbers: every single-pass row equals the first
+run's row of its format to the digits recorded, and `float32` and `bfloat16_3x` theirs). The
+worst relative error over every figure and date, means and quantiles apart (the root mean square
+precision error in units of the figure's statistical error), two terms, then the single pass:
 
 | Case | 1,024 means / quantiles | 4,096 | 16,384 |
 |---|---|---|---|
 | `throughout:float32` | 0.0015 / 9e-5 | 0.0041 / 2e-4 | 0.045 / 6e-4 |
 | `throughout:bfloat16_3x` | 0.0040 / 1e-3 | 0.019 / 4e-3 | 0.095 / 0.010 |
-| `throughout:tensorfloat32` | 0.57 / 0.20 | 3.5 / 0.41 | 12 / 1.8 |
-| `throughout:float16` | 0.59 / 0.32 | 3.6 / 0.74 | 12 / 3.3 |
-| `throughout:bfloat16` | 2.2 / 1.5 | 11 / 3.4 | 45 / 3.8 |
-| `throughout:float8_e4m3fn` | 81 / 17 | 500 / 47 | 1,700 / 135 |
-| `throughout:float8_e5m2` | 120 / 42 | 650 / 118 | 3,000 / 341 |
+| `throughout:tensorfloat32` | 0.15 / 0.32 | 0.15 / 0.53 | 0.47 / 0.99 |
+| `throughout:tensorfloat32_1x` | 0.57 / 0.20 | 3.5 / 0.41 | 12 / 1.8 |
+| `throughout:float16` | 0.16 / 0.32 | 0.30 / 0.53 | 0.50 / 1.9 |
+| `throughout:float16_1x` | 0.59 / 0.32 | 3.6 / 0.74 | 12 / 3.3 |
+| `throughout:bfloat16` | 0.63 / 1.0 | 2.4 / 1.7 | 17 / 5.5 |
+| `throughout:bfloat16_1x` | 2.2 / 1.5 | 11 / 3.4 | 45 / 3.8 |
+| `throughout:float8_e4m3fn` | 21 / 6.3 | 133 / 13 | 677 / 40 |
+| `throughout:float8_e4m3fn_1x` | 81 / 17 | 500 / 47 | 1,700 / 135 |
+| `throughout:float8_e5m2` | 55 / 32 | 300 / 90 | 1,860 / 258 |
+| `throughout:float8_e5m2_1x` | 120 / 42 | 650 / 118 | 3,000 / 341 |
 | `pricing:compute:float32` | 0.0010 / 4e-5 | 0.0038 / 1e-4 | 0.011 / 3e-4 |
-| `pricing:compute:bfloat16` | 2.0 / 0.42 | 9.9 / 0.99 | 39 / 3.0 |
-| `pricing:compute:float8_e4m3fn` | 45 / 15 | 281 / 42 | 948 / 121 |
+| `pricing:compute:float16` | 0.024 / 0.059 | 0.065 / 0.16 | 0.15 / 0.55 |
+| `pricing:compute:float16_1x` | 0.31 / 0.091 | 1.9 / 0.23 | 6.4 / 1.0 |
+| `pricing:compute:bfloat16` | 0.17 / 0.41 | 0.58 / 0.97 | 0.95 / 2.2 |
+| `pricing:compute:bfloat16_1x` | 2.0 / 0.42 | 9.9 / 0.99 | 39 / 3.0 |
+| `pricing:compute:float8_e4m3fn` | 2.6 / 2.8 | 9.5 / 5.4 | 30 / 14 |
+| `pricing:compute:float8_e4m3fn_1x` | 45 / 15 | 281 / 42 | 948 / 121 |
+| `pricing:compute:float8_e5m2` | 5.7 / 26 | 33 / 73 | 115 / 213 |
+| `pricing:compute:float8_e5m2_1x` | 44 / 14 | 274 / 41 | 928 / 120 |
 
-Market risk at 8,192 scenarios (VaR and ES, the quantiles): float32 5e-5, TensorFloat-32 and
-float16 0.014, bfloat16 0.17, FP8 e4m3 1.7, e5m2 1.8 (P&L storage in the format, §15.4: float16
-0.096, bfloat16 0.18, FP8 1.95 and 5.4); P&L attribution against float64, worst over the seeds:
-Spearman 1.000000 to 0.995006 and Kolmogorov–Smirnov 0.00024 to 0.011 (FP8 e5m2), for the evidence
-table to judge against MAR32's thresholds (A-11).
+Market risk at 8,192 scenarios (VaR and ES, the quantiles), two terms (single pass): float32
+5e-5, TensorFloat-32 and float16 0.0078 (0.014), bfloat16 0.069 (0.17), FP8 e4m3 0.26 (1.7), e5m2
+0.42 (1.8), the bias's significance 2.0 to 6.3 (55 to 172); P&L stored in the format (§15.4):
+float16 0.096, bfloat16 0.18, FP8 1.95 and 5.4. P&L attribution against float64, worst over the
+seeds: Spearman 1.000000 to 0.999633 (single pass to 0.995006) and Kolmogorov–Smirnov 0.00024 to
+0.0045 (0.011), FP8 e5m2 the worst, for the evidence table to judge against MAR32's thresholds
+(A-11).
+
+**A third term, or a wider shared operand** (A-23's open option), on the FP8 cases where two
+terms leave a significant bias, measured at 4,096 and 16,384 paths (a scratch run of the
+campaign with `Format.shared_terms` at 3, and at 8, which is as good as the shared operand
+unrounded, the limit of any wider one): every case's means within 0.77 to 1.33 of its two-term
+value, both ways (pricing in e4m3 at 16,384 paths 30 to 23, the market in e4m3 18 to 23), its
+quantiles within 4%, and eight terms equal to three within 3%. On the product alone (a per-path
+operand near 1 ± 0.3, 65,536 paths) the split is plain: e4m3's per-path rounding alone biases the
+mean 15.0 standard errors, with the shared operand in one term 258, two 19.2, three 15.2; e5m2
+26.8, then 405, 23.5, 26.2. A third term removes the second term's own rounding, which shows only
+from about 16,384 paths on, and not FP8's rest, so it is not adopted ([I-98](../known-issues.md#i-98)).
+
+**Timing** (RTX 5060, jax 0.10.2, 65,536 paths, interleaved, warm): where the card's units are
+native (float16, bfloat16, TensorFloat-32) two terms take 0.96 to 1.09 of the single pass's time
+on the engine's product shapes (the legs `[S, 40] x [40, 3]`, the market `[6, S, 1] x [6, 1, 45]`,
+the bridge `[24, 24] x [24, S]`, and `[S, 256] x [256, 64]`) and 0.97 to 1.08 for a whole job
+(the `linear` trades, every stage in the format): no cost measurable. The engine's products are
+narrow on their shared side (3 to 64 columns), so dispatch and memory traffic, not the doubled
+arithmetic, decide their time; a compute-bound product (the rollback's, F-07 after I-32 and I-49)
+is where the factor two would show, and the timing on Ironwood and H100 (F-07) measures both.
 
 Reading it:
 
@@ -1769,21 +1855,33 @@ Reading it:
   that added a level rounded once to float32 to every path was ten times worse than the code
   before on a bond (its mean moved 0.04 near 1e6, significance 287), which the two terms fixed.
 - **bfloat16 passes are float32's equal** within a factor two to four; **TensorFloat-32 and
-  float16 measure alike** (10-bit operands both); bfloat16 is about ten times float16's error,
-  FP8 a hundred.
-- **Below float32 the error is all bias** (relative bias equal to relative error, significance
-  100 to 2,000): each product's path-independent operand (the bridge's matrix, the step moments,
-  the market's loadings, each flow's present value at the level) is rounded once for every path,
-  so its error moves every path alike, and grows against the statistical error with the paths.
-  Storage in the same format, rounded path by path, is 5 to 50 times closer. Carrying that operand
-  in two terms of the format removes most of it ([I-96](../known-issues.md#i-96): the pricing
-  stage's worst bias in bfloat16 2.1 to 0.04 statistical errors, in FP8 41 to 5.3), at twice the
-  matrix work. Decided (A-23, 2026-10-11): two terms by default, the single pass a product format
-  of its own; until it is built the paired float64 sample corrects the means (A-13).
-- **Quantiles fare far better than means**: a case's quantiles are 1.5 to 75 times closer than its
-  means (typically 5 to 10), and market risk's VaR and ES in FP8 compute are 1.7 to 1.8 statistical
-  errors off, closer than FP8 storage of the P&L (why the bias spares them is not established).
-- **No recompiles**: every case, in both campaigns, compiles nothing after its first seed.
+  float16 measure alike** (10-bit operands both).
+- **The single pass is all bias; two terms are not** (A-23, I-96). In one pass the error of every
+  case below float32 is bias (relative bias equal to relative error, significance 100 to 2,000):
+  each product's path-independent operand (the bridge's matrix, the step moments, the market's
+  loadings, each flow's present value at the level) is rounded once for every path, so its error
+  moves every path alike, and grows against the statistical error with the paths. In two terms one
+  stage's means at 16,384 paths are 0.15 to 0.20 statistical errors off in float16 and
+  TensorFloat-32 and 0.95 to 1.2 in bfloat16 (single pass 4.4 to 56), the bias's significance
+  2.9 to 7.7 (98 to 1,300), so they grow far more slowly with the paths. Compute is now closer than
+  storage in the same format, where it was 5 to 50 times farther: one stage stored in bfloat16 is
+  2.0 to 2.9 statistical errors off at 16,384 paths (§15.4), computed in it 0.95 to 1.2; so
+  `throughout:bfloat16`'s 17 is mostly its storage.
+- **FP8 keeps a bias of its own** ([I-98](../known-issues.md#i-98)): one stage's means 8 to 34
+  times closer than the single pass's, yet 18 to 147 statistical errors off at 16,384 paths. It is
+  each path's own rounding: to nearest on a grid whose spacing doubles at every power of two, a
+  smooth spread of values has a mean error that is not zero (−2.7% of the rounding's spread for
+  e4m3, −5% for e5m2, 0.02% for float16). More terms do not touch it (above); rounding the
+  per-path operand stochastically does, on the product alone (e4m3 at 65,536 paths, significance
+  12.3 to 4.7, the rest the second term's own), at 40% more root mean square error.
+- **Quantiles**: in market risk two terms bring VaR and ES 1.7 to 6.4 times closer. In the
+  portfolio's PFE the 10-bit formats' rows are noise either way (no significant bias; 0.06 to
+  0.54 statistical errors to 4,096 paths), and FP8 e5m2's pricing quantiles are 1.8 times
+  farther with two terms: a payer swap's 5-year PFE, −41 statistical errors in one pass and −73 in
+  two at 4,096 paths, the same sign, so the single pass's shared bias had offset part of FP8's own
+  (I-98).
+- **No recompiles**: every case, in both campaigns, compiles nothing after its first seed (168
+  rows).
 
 ## 16. Decisions this document implements
 
@@ -1801,6 +1899,7 @@ Recorded in [compliance/decisions.md](../../../compliance/decisions.md), 2026-10
 | A-15 | Precision per stage, overridable per product and per trade (trade over product over stage) |
 | A-16 | One kernel implementation for every precision; float64 moves at rounding level, within the margin, after ORE parity passes (the first families 2026-10-10, §8) |
 | A-22 (2026-10-06) | A matrix product's precision is its compute format's, stated by the product (`engine.precision.matmul`, §6.7), never a process-wide default (the stated product precision (2026-10-06)) |
+| A-23 (2026-10-11) | Below float32 a product carries the operand every path shares in two terms of the format; the single pass is a format of its own, `<name>_1x` (§6.1, §8.3, §15.5) |
 
 Engineering defaults, changeable without a decision: block size 32 along the scenario axis;
 the block layout (`offset="block"`) and the rounding (`"nearest"`), both chosen by the storage

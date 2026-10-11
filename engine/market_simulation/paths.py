@@ -51,7 +51,7 @@ def evolve_states(path: Tuple[jax.Array, jax.Array], steps: jax.Array, normals: 
 
     def step(deviation, inputs):
         moments, z = inputs
-        deviation = arithmetic.matmul(jnp.concatenate([deviation, z], axis=-1), moments)
+        deviation = arithmetic.matmul(jnp.concatenate([deviation, z], axis=-1), moments, shared="right")
         return deviation, deviation
 
     start = jnp.zeros(normals.shape[1:], dtype=arithmetic.dtype)

@@ -121,7 +121,9 @@ implementation for every precision (A-16), with a product's own precision (Tenso
 bfloat16 passes, FP8) chosen by the policy (done 2026-10-10 for the simulation, the scenario
 market, the legs, the Europeans and market risk: compute in float16, bfloat16, both FP8
 formats, `tensorfloat32` and `bfloat16_3x`, accumulated in float32, each native or emulated by
-device and named in the report; [details/precision.md §8](details/precision.md#8-compute-below-float32);
+device and named in the report; since 2026-10-11 the operand every path shares in two terms of
+the format, the single pass `<format>_1x` a format of its own, A-23;
+[details/precision.md §8](details/precision.md#8-compute-below-float32);
 the Bermudan/American rollback follows I-32 and I-49); the evidence table and warnings (I-55);
 timing across devices on Ironwood and H100 (after the sharding of I-61); FP4 on TPU 8t/8i. Measured so far: FP8
 storage of the shocks biases a call payoff by about one Monte Carlo standard error at 4M

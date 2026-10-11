@@ -127,7 +127,7 @@ def bridge_increments_matrix(time_grid) -> np.ndarray:
 @partial(jax.jit, static_argnames="arithmetic")
 def _apply_bridge_matrix(matrix: jax.Array, Z: jax.Array, arithmetic: Arithmetic) -> jax.Array:
     """`matrix @ Z` over the time axis of `Z` `[T, ...]`, as one `[T, T] x [T, rest]` product."""
-    return arithmetic.matmul(matrix, Z.reshape(Z.shape[0], -1)).reshape(Z.shape)
+    return arithmetic.matmul(matrix, Z.reshape(Z.shape[0], -1), shared="left").reshape(Z.shape)
 
 
 def apply_brownian_bridge(Z: jax.Array, time_grid, arithmetic: Arithmetic = None) -> jax.Array:

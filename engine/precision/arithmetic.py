@@ -2,7 +2,8 @@
 The arithmetic of a stage (F-07; docs/planning/details/precision.md §3.1, §8): the two
 formats its kernels compute with, one implementation for every precision (decision A-16).
 
-    compute     the format of its matrix products: their operands are rounded to it, and the
+    compute     the format of its matrix products: their operands are rounded to it, the one
+                every path shares in two terms of it below float32 (decision A-23), and the
                 product runs as the format runs (`engine.precision.products`)
     accumulate  the format the products accumulate in and every other operation of the stage
                 is evaluated in: sums, the scan's carry, a path-independent level plus a path's
@@ -98,9 +99,10 @@ class Arithmetic:
         of a kernel not yet split into products and accumulators computes in it throughout."""
         return self.compute == self.accumulate
 
-    def matmul(self, a, b):
-        """`a @ b` in this arithmetic (`engine.precision.products.matmul`)."""
-        return matmul(a, b, self)
+    def matmul(self, a, b, *, shared: str):
+        """`a @ b` in this arithmetic, `shared` the operand every path shares, `"left"` or
+        `"right"` (`engine.precision.products.matmul`; decision A-23)."""
+        return matmul(a, b, self, shared)
 
     def cast(self, x):
         """`x` in the accumulate format."""

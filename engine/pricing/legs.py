@@ -231,7 +231,8 @@ def leg_values(legs: Legs, disc, index, t, alive_fixed, alive_float, projected, 
     for operand, coefficients in blocks:
         if any(name in coefficients for name in asked):
             none = jnp.zeros_like(next(iter(coefficients.values())))
-            moved = moved + arithmetic.matmul(operand, jnp.stack([coefficients.get(name, none) for name in asked], -1))
+            moved = moved + arithmetic.matmul(operand, jnp.stack([coefficients.get(name, none) for name in asked], -1),
+                                              shared="right")
     by_name = {name: moved[..., i] for i, name in enumerate(asked)}
     extra = jnp.asarray(extra_df, dtype=dtype) * e_extra
     return level, LegValues(*(by_name.get(name) for name in OUTPUTS), extra)

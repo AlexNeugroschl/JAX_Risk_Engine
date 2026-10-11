@@ -32,8 +32,9 @@ kernel it prices.
                  kernel rewrite, 2026-10-10): each stage's products in each compute format,
                  accumulated and stored in float32 (float32's own case the floor of the
                  accumulator), and every stage computed in each format at once
-                 (`Precision.throughout`, its storage the format's where it has one); 1,024,
-                 4,096 and 16,384 paths, 16 seeds
+                 (`Precision.throughout`, its storage the format's where it has one); each
+                 format's shared operands in two terms and in its single pass (`<name>_1x`,
+                 decision A-23); 1,024, 4,096 and 16,384 paths, 16 seeds
     compute_market_risk
                  the `market_risk` campaign's revaluation with each trade's products in each
                  compute format, accumulated and stored in float32; its trades but the Bermudan,
@@ -114,7 +115,8 @@ def compute() -> PortfolioCampaign:
         description="The `linear` campaign's portfolio, market and simulation, computed below float32 (the kernel "
                     "rewrite, F-07): each case runs one stage's matrix products in one compute format, accumulated "
                     "and stored in float32, every other stage float64 (the `float32` case is the accumulator's "
-                    "floor), or every stage in the format (`throughout`).",
+                    "floor), or every stage in the format (`throughout`). A format below float32 carries the "
+                    "operand every path shares in two terms; `<format>_1x` is its single pass (A-23).",
         cases=compute_cases() + tuple(throughout_case(name) for name in COMPUTE))
 
 
@@ -129,7 +131,9 @@ def compute_market_risk() -> MarketRiskCampaign:
         market_risk(), name="compute_market_risk",
         description="The `market_risk` campaign's revaluation, each trade's matrix products in one compute format, "
                     "accumulated and stored in float32 (the `float32` case is the accumulator's floor); its trades "
-                    "but the Bermudan, whose rollback is rewritten after ShiftHorizon and the recalibration fix.",
+                    "but the Bermudan, whose rollback is rewritten after ShiftHorizon and the recalibration fix. A "
+                    "format below float32 carries the operand every path shares in two terms; `<format>_1x` is its "
+                    "single pass (A-23).",
         trades=tuple(t for t in _market_risk_trades() if t.product != "bermudan_swaption"),
         cases=compute_cases(stages=("pricing",)))
 

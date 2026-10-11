@@ -235,7 +235,7 @@ def _market_values(states, mean, scale, level, loading, arithmetic: Arithmetic, 
     [S, D] each)`, in `arithmetic`'s accumulate format."""
     curves, tenors, fx, equity = counts
     deviation = deviation_from(mean, states) / arithmetic.cast(scale)                        # [S, D, d]
-    product = arithmetic.matmul(jnp.swapaxes(deviation, 0, 1), loading)                      # [D, S, C]
+    product = arithmetic.matmul(jnp.swapaxes(deviation, 0, 1), loading, shared="right")      # [D, S, C]
     values = add_level(level, jnp.swapaxes(product, 0, 1))                                    # [S, D, C]
     floor = jnp.asarray(np.log(DISCOUNT_FLOOR), dtype=arithmetic.dtype)
     logs = tuple(jnp.maximum(values[:, :, k * tenors:(k + 1) * tenors], floor) for k in range(curves))

@@ -136,7 +136,7 @@ def jamshidian_on_discounts(terms: EuropeanTerms, model: JamshidianEngineConfig,
     option = bond_put if legs.payer else bond_call
     std_dev = jnp.abs(dH) * jnp.sqrt(zeta)
     arithmetic = arithmetic or Arithmetic.of(dtype)
-    return arithmetic.matmul(option(p_start[..., None], p_bond, strikes, std_dev), amounts)
+    return arithmetic.matmul(option(p_start[..., None], p_bond, strikes, std_dev), amounts, shared="right")
 
 
 def jamshidian_value(cfg: SwaptionConfig, context: PricingContext, model: JamshidianEngineConfig) -> jax.Array:

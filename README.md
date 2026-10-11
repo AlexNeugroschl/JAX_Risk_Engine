@@ -47,7 +47,9 @@ double-precision simulations in the same wall-clock time.
 - Adjustable precision, since which precision each calculation needs is what the project
   studies: compute in FP64, FP32, TF32, BF16 passes, FP16, BF16 or FP8 (matrix products in the
   format, accumulated in FP32, in kernels written so that only each path's deviation from a
-  level enters a product; native or emulated by device, the Bermudan/American rollback still
+  level enters a product, the operand every path shares carried in two terms of the format so
+  that its rounding biases no figure, the single pass selectable to measure it; native or
+  emulated by device, the Bermudan/American rollback still
   FP32 or FP64) and storage in FP64, FP32, FP16, BF16 or FP8 per stage (the
   simulation, the scenario market, path pricing) of a portfolio or market-risk run, storage
   below 32 bits with a power-of-two scale per block of 32 paths and nearest or stochastic

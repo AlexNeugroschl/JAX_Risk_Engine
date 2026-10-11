@@ -51,7 +51,7 @@ are not stages here: they are float64 by decision (A-10).
 
 Validation refuses, naming the field, before any work: a name outside the format table, a
 format not enabled yet (the format table names the item that enables it), a matrix-product
-format (`tensorfloat32`, `bfloat16_3x`) as `storage`, `storage` wider than `accumulate`
+format (`tensorfloat32`, `bfloat16_3x`, a single pass `<name>_1x`) as `storage`, `storage` wider than `accumulate`
 (storing wider than the stage computes gains nothing), an `accumulate` the stage's arithmetic
 refuses (`engine.precision.arithmetic`: narrower than float32 or than `compute`, or other than
 float32 under a compute format below float32), a rounding outside
@@ -224,10 +224,11 @@ class Precision:
     @classmethod
     def throughout(cls, name: str) -> "Precision":
         """Every stage computed in format `name`, stored and accumulated in it where it can be:
-        a format below float32 accumulates in float32, and a product format
-        (`tensorfloat32`, `bfloat16_3x`) is stored in float32."""
+        a format below float32 accumulates in float32, a single pass (`<name>_1x`) is stored in
+        the format it is of, and `tensorfloat32` and `bfloat16_3x` in float32."""
         fmt = format_of(name)
-        stage = StagePrecision(name if fmt.array else "float32", name, "float32" if fmt.below_float32 else name)
+        storage = fmt.base if format_of(fmt.base).array else "float32"
+        stage = StagePrecision(storage, name, "float32" if fmt.below_float32 else name)
         return cls(**{s: stage for s in STAGES})
 
     def precision_for(self, trade) -> StagePrecision:

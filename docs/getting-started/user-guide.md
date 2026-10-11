@@ -758,8 +758,9 @@ level, which biased their mean ([I-75](../planning/known-issues.md#i-75),
 closed). `offset="none"` stores the values themselves, as the OCP MX formats do.
 
 Compute goes below float32 too (2026-10-10): `float16`, `bfloat16`, `float8_e4m3fn`,
-`float8_e5m2`, and two formats that only say how a float32 product runs, `tensorfloat32` (an
-NVIDIA GPU's TensorFloat-32) and `bfloat16_3x` (a TPU's three bfloat16 passes). Each
+`float8_e5m2`, and formats that only say how a product runs: `tensorfloat32` (an NVIDIA GPU's
+TensorFloat-32), `bfloat16_3x` (a TPU's three bfloat16 passes) and each format's single pass
+(`<format>_1x`, below). Each
 accumulates in float32, as the matrix units that run them do (`accumulate="float32"`; anything
 else is refused, as is storing in a product format). The kernels are written so that a product
 multiplies each path's deviation from a level no path depends on, never a level itself, so the
@@ -771,9 +772,14 @@ with the same numbers, and the result's precision report says which (`products`,
 `{"float8_e4m3fn": "emulated"}`). Bermudans and Americans compute and accumulate in one format,
 float32 or float64, until their rollback is rewritten the same way (I-32, I-49 first): a run
 that would compute one below float32 is refused, naming the overrides that keep it wider.
-Below float32 every figure carries a bias, since a product's operand that no path depends on is
-rounded once for every path ([I-96](../planning/known-issues.md#i-96)): pair such a run with
-float64 paths (`paired_fraction`, say 0.02), whose two-level estimate corrects the means. How
+Each product multiplies a per-path operand by one every path shares (a flow's value at the
+level, a market loading); below float32 the shared one is carried in two terms of the format
+(2026-10-11, decision A-23), since rounded once its error would move every path alike, a bias
+more paths do not remove. The single pass is a format of its own, `<format>_1x`
+(`"bfloat16_1x"`, `"float8_e4m3fn_1x"`, ...), for measuring what one native product does. FP8
+compute still leaves a bias of its own rounding ([I-98](../planning/known-issues.md#i-98)): pair
+such a run with float64 paths (`paired_fraction`, say 0.02), whose two-level estimate corrects
+the means. How
 much each format costs in accuracy, per stage, figure and path count, is measured, not assumed:
 the precision harness's measurements are in
 [compliance/precision-measurements/](../../compliance/precision-measurements/)
