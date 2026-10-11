@@ -2,6 +2,73 @@
 
 Date: 2026-10-10. Base Git revision at the final source checks: `53f85b970586089b51e3309c2d0437d1dcb647b0`.
 
+<a id="disposition-2026-10-11"></a>
+## Disposition (2026-10-11)
+
+Each finding was checked against the code at `c6e59da`, and those marked *run* by executing
+the engine. Each now lives in the [issue register](known-issues.md) (or a feature) and is
+ordered by the [roadmap](roadmap.md); the report below is kept as written, and this table is
+the only part of it that is maintained. Severities are the register's
+([README](README.md#entries): High is a wrong number on an ordinary input, or another caller's
+result served), so some differ from the audit's.
+
+| Finding | Verdict | Severity | Now |
+|---|---|---|---|
+| AUD-01 VaR rank | Confirmed, *run* (VaR 15 against ORE's 16). Narrow: no level among 0.9 to 0.999 meets the boundary at any N up to 200,000 | Low | [I-102](known-issues.md#i-102) |
+| AUD-02 Currencies in market risk | Confirmed | High | [I-100](known-issues.md#i-100) |
+| AUD-03 Quantile keys | Confirmed, *run* (`0.95` and `0.9500000001` both `95`) | Low | [I-102](known-issues.md#i-102) |
+| AUD-04 Confidence domain | The broader domain is kept and documented as broader than ORE's | Low | [I-102](known-issues.md#i-102) |
+| AUD-05 Input validation | Confirmed, *run*: an unsorted curve prices 50,697 against 51,133 with no error | Medium | [I-103](known-issues.md#i-103) |
+| AUD-06 Calibration acceptance | Confirmed: only the ceiling is checked, at t=0; nothing on the paths | Medium | [I-73](known-issues.md#i-73), widened |
+| AUD-07 Zero volatility in calibration | Confirmed (0/0 at an ATM helper) | Medium | [I-73](known-issues.md#i-73) |
+| AUD-08 Zero-variance European | Confirmed; only under `ConstantVariance` with a zero volatility | Low | [I-104](known-issues.md#i-104) |
+| AUD-09 Zero and negative notionals | Confirmed, *run*, and worse than reported: a negative-notional Bermudan is a long option on the reversed swap (+15,018 where the short is −35,713), a European the short; zero notional NaN | High | [I-101](known-issues.md#i-101) |
+| AUD-10 Late exercise | Confirmed, *run* (`StopIteration`) | Medium | [I-103](known-issues.md#i-103) |
+| AUD-11 Delayed last payment | Confirmed; a window of the days between maturity and payment | Low | [I-104](known-issues.md#i-104) |
+| AUD-12 Theta fixings | Confirmed; only when `theta_days` reaches a coupon fixing and paying inside the roll | Low | [I-104](known-issues.md#i-104) |
+| AUD-13 Root solver contract | In part. The missing fit check is real ([I-73](known-issues.md#i-73)). Set aside: a general status from a fixed-step solver (its design, A-21: a root beyond a bounded bracket is that end, and the calibration's acceptance judges it); derivatives at a clipped root (the unbounded problems widen to 2^63; bounded bootstrap roots carry no tangent) | — | [I-73](known-issues.md#i-73) |
+| AUD-14 H at small reversion | Confirmed; float32 only, about one rounding of a log discount | Low | [I-104](known-issues.md#i-104) |
+| AUD-15 Qualification matrix | Valid (documentation) | Low | [I-110](known-issues.md#i-110) |
+| AUD-16 Bermudan path parity | Known and planned | Medium | [I-32](known-issues.md#i-32), [I-49](known-issues.md#i-49) |
+| AUD-17 AD versus bump Greeks | Known and planned | Medium | [I-51](known-issues.md#i-51), [I-78](known-issues.md#i-78) |
+| AUD-18 Generic index conventions | Known scope; unsupported indices are refused by name | — | [I-05](known-issues.md#i-05), [I-54](known-issues.md#i-54) |
+| AUD-19 Standard errors assume independence | Valid | Medium | [I-55](known-issues.md#i-55), extended |
+| AUD-20 Precision qualification on results | Known and planned | Medium | [I-55](known-issues.md#i-55) |
+| AUD-21 Empty portfolio warnings | Confirmed (`warnings=[]`) | Medium | [I-55](known-issues.md#i-55), [I-73](known-issues.md#i-73) |
+| AUD-22 Bundle identity | Confirmed; needs a bundle that breaks the contract's identity rule | Medium | [I-107](known-issues.md#i-107) |
+| AUD-23 Publication retry | Confirmed; also staging errors escape `PublicationError`. A hung retry, no wrong number | Medium | [I-109](known-issues.md#i-109) |
+| AUD-24 Cross-process binding | Confirmed; the store's docs already say one process | Medium | [I-08](known-issues.md#i-08), extended |
+| AUD-25 Failed lookup after restart | Confirmed | Medium | [I-08](known-issues.md#i-08) |
+| AUD-26 Directory fsync | Confirmed | Low | [I-08](known-issues.md#i-08) |
+| AUD-27 to AUD-31 Bundle rows and outcomes | Confirmed (non-finite numbers parse; the row's coupon is never compared with the terms'; duplicate rows; structural errors; payload keys) | Medium | [I-108](known-issues.md#i-108) |
+| AUD-32 Ignored EOD settings | Known and planned | Medium | [I-59](known-issues.md#i-59) |
+| AUD-33 TraderX's own pricers | Known and planned; the import-layer consequence added | Medium | [I-93](known-issues.md#i-93) |
+| AUD-34 Filesystem trust boundary | Confirmed (no path containment); matters only off a trusted network | Low | [I-90](known-issues.md#i-90), extended |
+| AUD-35 Preflight | Confirmed | Medium | [I-103](known-issues.md#i-103), [I-87](known-issues.md#i-87) |
+| AUD-36 Migration | Confirmed; only a version-1 file | Low | [I-106](known-issues.md#i-106) |
+| AUD-37 Admission and lifecycle | Known; queue-before-start added | Low | [I-76](known-issues.md#i-76), [I-77](known-issues.md#i-77), [I-89](known-issues.md#i-89), [I-91](known-issues.md#i-91) |
+| AUD-38 Worker per queue file | Confirmed | Low | [I-106](known-issues.md#i-106) |
+| AUD-39 Result provenance | Confirmed | Medium | [I-87](known-issues.md#i-87), extended; the run manifest of [F-05](features.md#f-05) |
+| AUD-40 Strictness and immutability | Confirmed for four non-strict schemas ([I-103](known-issues.md#i-103)); ignored settings known ([I-95](known-issues.md#i-95), [I-88](known-issues.md#i-88)). Set aside: deep immutability of Python inputs (a Python caller owns its objects; HTTP jobs are rebuilt from JSON in the worker) | Low | [I-103](known-issues.md#i-103) |
+| AUD-41 Rollback memory | Known and planned | Medium | [I-83](known-issues.md#i-83) |
+| AUD-42 Full float64 cube | Confirmed | Medium | [I-105](known-issues.md#i-105) |
+| AUD-43 Host work and transfers | In part: eager programs known ([I-81](known-issues.md#i-81)); the XLA claim is documentation ([I-110](known-issues.md#i-110)). Set aside: the Brownian-bridge matrix is `[T, T]` over time steps, a few hundred, negligible | Low | [I-81](known-issues.md#i-81), [I-110](known-issues.md#i-110) |
+| AUD-44 Hessian diagonal | Not a defect: the diagonal needs one Hessian-vector product per factor, each yields its whole column anyway, and the factors are tens of pillars (an `F × F` block of kilobytes) | — | Set aside |
+| AUD-45 Sharding by divisors | Confirmed | Low | [I-61](known-issues.md#i-61), extended |
+| AUD-46 Stale documentation | Confirmed (all the listed statements) | Low | [I-110](known-issues.md#i-110) |
+| AUD-47 CI coverage | In part: the full tier is manual for the memory of [I-27](known-issues.md#i-27), now to be scheduled once it fits; the `pyproject.toml` comment is [I-110](known-issues.md#i-110). Component oracles price the engine's own ORE-built schedules, so a convention chosen wrongly would agree on both sides; independently booked trades come with ORE's XML inputs ([F-09](features.md#f-09)) and mixed currencies with [F-04](features.md#f-04)'s L6 test | Low | [I-27](known-issues.md#i-27), [I-110](known-issues.md#i-110) |
+| AUD-48 Duplicate algorithms | Known and planned | Low | [I-93](known-issues.md#i-93), [I-94](known-issues.md#i-94) |
+| AUD-49 Dependency hygiene | `pandas` is unused ([I-66](known-issues.md#i-66)); the licence is the owner's decision (roadmap, waiting on others). Set aside: broad metadata ranges (`constraints.txt` is the qualified environment, checked by `tests/test_environment.py`) | Low | [I-66](known-issues.md#i-66) |
+| AUD-50 Profiling demo | Set aside: the demo served the stage-2 milestone and is not the research's timing instrument, whose conditions the research result states (F-07) | — | Set aside |
+| AUD-51 bfloat16 scaling | Resolved before the merge: `products._quantize` gives formats of float32's range no scale | — | Resolved |
+
+The architectural recommendations map onto planned work rather than new items: one semantic
+run plan is the run request ([I-87](known-issues.md#i-87)) with checked inputs
+([I-103](known-issues.md#i-103)); bounded execution is [I-83](known-issues.md#i-83) and
+[I-105](known-issues.md#i-105); one durable lifecycle is TraderX's attempts in the job queue
+([I-08](known-issues.md#i-08)); evidence on results is [I-55](known-issues.md#i-55); TraderX
+on the shared core is [I-93](known-issues.md#i-93), with its layer placement.
+
 ## Scope, method, and limitations
 
 This is a static audit of the first-party project: the README, engine packages, HTTP API and worker, TraderX adapter, demos, test infrastructure and assertions, precision compliance artifacts, dependency declarations, CI configuration, and project documentation. The review followed request construction through calibration, simulation, valuation, sensitivities, exposure and market-risk reduction, serialization, persistence, and retry handling. Tests were reviewed as evidence of intended behavior and coverage; test bodies and fixtures were inspected selectively around the relevant implementations. Vendored ORE and TraderX material was used to check specific formulas and exchange contracts, rather than treated as first-party code requiring a wholesale upstream audit.

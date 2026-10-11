@@ -161,3 +161,4 @@ Where the IDs of retired planning documents went. Their full text is in git hist
 | Roadmap phase 12 (lower-precision formats) | [F-07](features.md#f-07) |
 | Basel plan P0–P7 | [F-05](features.md#f-05); [details/basel-iii.md](details/basel-iii.md) |
 | Precision research, `details/sub-fp32-precision.md` | [F-07](features.md#f-07); [details/precision.md](details/precision.md) (its findings, corrected, in §15) |
+| Project audit of 2026-10-10, AUD-01 to AUD-51 | Each finding's item, or the reason it was set aside: the audit's [disposition table](project-audit.md#disposition-2026-10-11) (merged 2026-10-11) |

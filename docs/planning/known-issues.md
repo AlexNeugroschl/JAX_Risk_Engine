@@ -7,7 +7,10 @@ issues keep one line in the [closed ledger](#closed).
 
 Read this before trusting an exposure profile: a Bermudan's or American's values on the
 paths, and so its exposure, are 0.5–4% above ORE's simulation ([I-49](#i-49)); swaps,
-Europeans and bonds equal ORE's simulation path by path since 2026-10-07.
+Europeans and bonds equal ORE's simulation path by path since 2026-10-07. Before trusting a
+market-risk VaR/ES: a portfolio in more than one currency adds the currencies' amounts
+unconverted ([I-100](#i-100)). Before booking a short option: a negative notional is a short
+European but a long Bermudan or American on the reversed swap ([I-101](#i-101)).
 
 ## Verification status
 
@@ -61,9 +64,20 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
 | [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | TraderX |
 | [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | Fix what exists |
+| [I-100](#i-100) | Market risk adds the P&Ls of trades in different currencies without converting them | High | OPEN | Correctness | Focus |
+| [I-101](#i-101) | A negative option notional: a European is valued as the short, a Bermudan/American as a long option on the reversed swap | High | OPEN | Correctness | Focus |
 | [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | Focus |
 | [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | Focus |
-| [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | Focus |
+| [I-73](#i-73) | A calibration that misses its basket is accepted unless it hits the bracket's ceiling, and on a path not even then | Medium | OPEN | Correctness | Focus |
+| [I-102](#i-102) | VaR takes the order statistic above ORE's where N(1−p) is a whole number; close quantiles share a key | Low | OPEN | Correctness | Focus |
+| [I-103](#i-103) | Malformed market and trade inputs are accepted: an unsorted curve prices silently, a late expiry crashes | Medium | OPEN | Validation | Focus |
+| [I-104](#i-104) | Edge cases valued wrong: a zero-variance European, a bond awaiting a delayed payment, a long Theta, H at small a·t | Low | OPEN | Correctness | Fix what exists |
+| [I-105](#i-105) | Storage below float64 does not lower a run's peak memory: the reductions load the whole cube at float64 | Medium | OPEN | Performance | Focus |
+| [I-106](#i-106) | The job queue's file: an interrupted migration stops it opening; a second file starts a second worker | Low | OPEN | API | Focus |
+| [I-107](#i-107) | TraderX: `bundleId` is trusted, not recomputed, so a changed bundle can get the old result | Medium | OPEN | API | TraderX |
+| [I-108](#i-108) | TraderX: NaN amounts priced as `ok`, terms contradicting the row priced, duplicate rows counted twice | Medium | OPEN | API | TraderX |
+| [I-109](#i-109) | TraderX: after a failed publication a same-id retry never prices or publishes | Medium | OPEN | API | TraderX |
+| [I-110](#i-110) | The documentation contradicts the code in places; no single parity table | Low | OPEN | Tooling | Fix what exists |
 | [I-98](#i-98) | FP8 compute keeps a bias: each path's operand is rounded to nearest on FP8's grid | Medium | OPEN | Correctness | Focus |
 | [I-97](#i-97) | XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU | Medium | OPEN | Performance | Focus |
 | [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Focus |
@@ -101,6 +115,62 @@ model" before 2026-10-01 meant the separate pipeline removed that day.
 ---
 
 ## Correctness
+
+<a id="i-100"></a>
+### I-100 — Market risk adds the P&Ls of trades in different currencies without converting them
+
+**Severity:** High · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-10, the
+project audit (AUD-02); confirmed in the code 2026-10-11
+
+**What is wrong.** `engine.risk.market.run.run_market_risk` revalues each trade in its own
+currency (`revalue_trade`, through `engine/risk/greeks/price_functions.py`) and sums the
+columns into `portfolio_pnl` and `base_npv`. `MarketRiskRequest` has no reporting currency and
+nothing refuses a second one, so a USD trade's P&L is added to a EUR trade's as if both were
+dollars. The portfolio pipeline converts every value at the as-of FX spot into the run's
+reporting currency (`engine.pricing.cube._today`, `_columns`); market risk does not.
+
+**Reach.** Every VaR/ES, `base_npv` and `portfolio_pnl` of a market-risk portfolio in more than
+one currency, in Python and over `POST /portfolio/market-risk`. Single-currency portfolios,
+which every test, demo and precision campaign uses, are unaffected.
+
+**Current handling.** None.
+
+**To close.** A reporting currency on the request (defaulted as the portfolio run's
+`base_currency` is), each trade's base value and P&L converted at the market's as-of FX spot
+(`Market.fx_spot`), a missing spot refused by name before any work, and a result warning that
+FX moves are not among the shocked factors (market risk shocks rate pillars only). Test: a USD
+and a EUR trade whose VaR moves with the EURUSD spot as the converted P&Ls say, red on
+today's code.
+
+<a id="i-101"></a>
+### I-101 — A negative option notional: a European is valued as the short, a Bermudan/American as a long option on the reversed swap
+
+**Severity:** High · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-10, the
+project audit (AUD-09); measured 2026-10-11
+
+**What is wrong.** Option configs have no long/short field, and
+`engine/instruments/_validation.py` allows a negative notional, so a sign is the only way to
+book a short option. The engines read it differently. On the shared test portfolio's market
+(`tests/support/portfolio.py`), the European payer (5Y into 1Y) at notional −2e6 is
+−51,133.41, exactly minus its value at +2e6: a short. The Bermudan payer at −1e6 is
+**+15,017.85**, not −35,712.95: the grid engine takes the larger of exercise and continuation
+on the negated swap, which is a long option on the receiver swap. Americans go through the
+same rollback (not run). At notional 0 the European is NaN (`black_multileg_npv` divides by a
+zero annuity), the Bermudan 0. ORE books a short option as `<LongShort>Short</LongShort>` on a
+positive notional.
+
+**Reach.** Every Bermudan or American booked short by its sign, with the wrong sign and size in
+its t=0 NPV, path values, exposure, Greeks and VaR; and a zero-notional European, NaN through
+every portfolio figure. Long options, and swaps and bonds of either sign, are unaffected. No
+test, demo or TraderX row books a short option.
+
+**Current handling.** None.
+
+**To close.** ORE's `LongShort` on every option config and its API schema (an additive field,
+`Long` by default), a `Short` option valued as minus its `Long` value by every engine, today
+and on the paths; a negative or zero option notional refused, naming the trade. Tests: a short
+European, Bermudan and American each minus the long one, on the paths and in the AD and bump
+Greeks, and a `Short` Bermudan against ORE through the LGM oracle; red first on the Bermudan.
 
 <a id="i-32"></a>
 ### I-32 — Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5
@@ -163,31 +233,117 @@ ORE's simulation. Detail 1 is the pattern of [I-84](#i-84): ORE keeps a structur
 as-of date (there the parametrization's time grid) and moves its reference date.
 
 <a id="i-73"></a>
-### I-73 — A per-path recalibration that misses its basket is not flagged
+### I-73 — A calibration that misses its basket is accepted unless it hits the bracket's ceiling, and on a path not even then
 
-**Severity:** Low · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-01, the
-dtype review
+**Severity:** Medium · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-01, the
+dtype review; widened 2026-10-11 from the project audit (AUD-06, AUD-07, AUD-13)
 
-**What is wrong.** On every path and date a Bermudan/American is recalibrated on
-σ ∈ [1e-6, 0.2] (`engine.calibration.ore_lgm.bootstrap_sigma`, by the engine's root solver). A
-helper whose volatility is not attainable in the bracket ends at its edge, and
-`bootstrap_sigma` flags it (`hit_ceiling`), but `engine.pricing.bermudan.path_sigmas` drops
-the flag, so that path is
-priced on a model that does not reprice its basket and nothing says so. Today's calibration
-refuses the same case (`calibrate_on`). ORE's `LgmBuilder` logs a structured warning when the
-calibration error exceeds its tolerance and fails unless `continueOnCalibrationError`
+**What is wrong.** The LGM bootstrap (`engine.calibration.ore_lgm.bootstrap_sigma`) solves each
+bucket's σ on [1e-6, 0.2] with the engine's root solver, which returns the bracket's end for a
+root beyond it, and flags only the top (`hit_ceiling`). Three gaps follow:
+
+- **The floor and the fit.** A bucket whose helper is worth less than the model gives at the
+  floor (a volatility dip after a spike, which no non-negative variance can fit) ends at 1e-6,
+  unflagged, and nothing compares a helper's model value with its market value. Today's
+  calibrations (`engine.pricing.bermudan.calibrate_on`, `engine.calibration.cam`) refuse only
+  the ceiling. `tests/test_calibration_edge_cases.py::test_large_dip_after_a_spike_cannot_reprice_exactly`
+  shows the mechanism on the standalone bootstrap (σ at the floor, a large RMSE).
+- **A zero volatility.** The helper's market value (`ore_lgm._market`) divides by its standard
+  deviation without the zero guard of the European's Bachelier (`european.bachelier`); a zero
+  volatility at an ATM helper, which the surface accepts, gives a NaN market value, and the
+  bucket a meaningless σ at an end of the bracket.
+- **The paths.** On every path and date a Bermudan/American is recalibrated the same way, and
+  `engine.pricing.bermudan.path_sigmas` drops even the ceiling flag, so a path is priced on a
+  model that does not reprice its basket and nothing says so.
+
+ORE's `LgmBuilder` computes the calibration's RMSE, logs a structured warning when it exceeds
+`BootstrapTolerance`, and fails unless `continueOnCalibrationError`
 (`OREData/ored/model/lgmbuilder.cpp`).
 
-**Reach.** Bermudan/American cube values on paths where rates move far enough that a
-helper's market volatility is out of reach (extreme paths, long horizons); exposure figures
-through them. Not seen on the test markets. Since 1.4 the flag is also correct in float32 (its
-`1 - 1e-9` tolerance rounded away there; `tests/test_precision.py::TestRecalibrationInFloat32`).
+**Reach.** Bermudan/American values, today and on the paths, wherever a basket cannot be fitted:
+volatility term structures with a sharp dip, zero volatilities, and paths where rates move far
+enough (extreme paths, long horizons); exposure figures through them. Not seen on the test
+markets. Since 1.4 the ceiling flag is also correct in float32
+(`tests/test_precision.py::TestRecalibrationInFloat32`).
+
+**Current handling.** Today's calibrations refuse a bucket at the ceiling; nothing else.
+
+**To close.** With [I-49](#i-49): ORE's acceptance on every calibration, the RMSE of model
+against market over the basket compared with ORE's `BootstrapTolerance`, a non-finite market
+value or σ a miss; today's calibration refuses a miss naming the currency or trade (as ORE
+without `continueOnCalibrationError`), and the paths count their misses per trade and carry
+them as a result warning, as ORE's structured warning. Tests: a dip basket refused at t=0, a
+zero ATM volatility refused, an unattainable path volatility counted.
+
+<a id="i-102"></a>
+### I-102 — VaR takes the order statistic above ORE's where N(1−p) is a whole number; close quantiles share a key
+
+**Severity:** Low · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-10, the
+project audit (AUD-01, AUD-03, AUD-04); measured 2026-10-11
+
+**What is wrong.** `engine.risk.market.var_es._value_at_risk_jit` takes index floor(N(1−p)) of
+the sorted P&L. ORE's `RiskStatistics::valueAtRisk` reads QuantLib's
+`GeneralStatistics::percentile`, which advances while the cumulative weight is strictly below
+N(1−p): index ceil(N(1−p)) − 1. The two differ when N(1−p) is a whole number in floating
+point: P&Ls −16, …, −1 at p = 0.9375 give ORE a VaR of 16 (and an ES that raises, its strict
+tail empty) and the engine a VaR of 15 and an ES of 16. Separately, `quantile_label` rounds to
+six decimals and prints six significant digits, so 0.95 and 0.9500000001 are both `95` and the
+second overwrites the first in the result's `risk` and its precision report. And market risk
+accepts any level in (0, 1) where ORE's statistics take [0.9, 1).
+
+**Reach.** Narrow. No level among 0.9, 0.95, 0.975, 0.99, 0.995 and 0.999 meets the boundary
+at any scenario count up to 200,000 (1 − p is inexact in binary, so N(1−p) is never whole);
+dyadic levels (0.9375, 0.96875, ...) do. The module docstring and
+[docs/risk/var_es.md](../risk/var_es.md) state the floor rule as ORE's.
+
+**Current handling.** None; the sweep of `tests/test_var_es.py` has no exact boundary.
+
+**To close.** The index ceil(N(1−p)) − 1, clamped to [0, N − 1], as QuantLib's loop; result
+keys that cannot collide (or two levels of one key refused); levels outside [0.9, 1) still
+accepted, documented as broader than ORE's. Tests against `ORE.RiskStatistics`: the
+16-scenario case, a target weight of two, ties at the boundary; and two close quantiles.
+
+<a id="i-104"></a>
+### I-104 — Edge cases valued wrong: a zero-variance European, a bond awaiting a delayed payment, a long Theta, H at small a·t
+
+**Severity:** Low · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-10, the
+project audit (AUD-08, AUD-11, AUD-12, AUD-14); confirmed in the code 2026-10-11
+
+**What is wrong.** Four narrow cases, each a number off on an input the engine accepts:
+
+- **A zero-variance European before expiry is 0 on the paths.** `european_cube`
+  (`engine/pricing/european.py`) marks a date alive by `variance > 0`, but expiry is a date.
+  Under `ConstantVariance` with a zero volatility the option's discounted intrinsic value is
+  dropped. (`ForwardVariance`, the default, floors the variance, so it never meets this.)
+- **A bond between its maturity and a delayed last payment is 0.** A coupon period may pay
+  after its accrual end (`CouponPeriod.payment_date`), so the last coupon can pay after
+  `maturity_date`, which must equal the last accrual end; `value_on`
+  (`engine/pricing/cube.py`) values the bond at 0 from `maturity_date` on, and the redemption
+  is paid on `maturity_date` though the coupon beside it is paid later. A weekend maturity
+  with a Monday payment loses that coupon for two days: a Theta date or exposure date there.
+- **Theta beyond an index tenor adds back an unfixed coupon at 0%.** The rolled market
+  backfills fixings (`engine/risk/greeks/bump.py`, `theta_context`), but the add-back of flows
+  paid in the roll (`_period_flows`) rebuilds the legs from the trade's own fixings and reads a
+  missing rate as 0 (`nan_to_num`). With the default `theta_days = 1` every paying coupon fixed
+  before the as-of date; a `theta_days` reaching a coupon that fixes and pays inside the roll
+  does not, and nothing bounds it.
+- **The LGM's H(t) cancels at small a·t.** `engine.models.lgm.H` computes (1 − exp(−a t))/a;
+  the host's twin (`engine.models.cam`) uses −expm1(−a t)/a. The relative error is about
+  ε/(a t): 2e-3 in float32 at a = 0.01 and a one-day t, its effect on a path's log discount
+  of float32's own rounding size. float64 is unaffected at the reversions used.
+
+**Reach.** Configurations no test, demo or default uses: zero volatility under
+`ConstantVariance`, explicit bond payment dates after maturity, multi-month Theta; and float32
+runs, by about one rounding.
 
 **Current handling.** None.
 
-**To close.** With [I-49](#i-49) (the per-path recalibration against ORE's): count the paths and
-dates whose recalibration hit the bracket and carry a warning naming the trade and the counts
-on the result, as ORE's structured warning; a test with an unattainable path volatility.
+**To close.** Liveness from the expiry date, the Bachelier formula taking zero variance (it
+does); a bond valued until its last payment, the redemption's payment date stated and checked
+against ORE's bond; `theta_days` at least 1 and the add-back on
+the rolled market's fixings, or a horizon past the shortest index tenor refused; H by
+`expm1`, host and JAX alike, with the a → 0 limit for its derivative. A test per case; the
+golden snapshot within the margin.
 
 <a id="i-54"></a>
 ### I-54 — No swaption smile: options away from the money read the ATM vol
@@ -340,6 +496,44 @@ the default (bump) is unaffected.
 per trade, factor and tenor), or label AD Greeks as the derivative of a different quantity
 and state the gap; measure and document the Bermudan's fixed-calibration difference.
 
+<a id="i-103"></a>
+### I-103 — Malformed market and trade inputs are accepted: an unsorted curve prices silently, a late expiry crashes
+
+**Severity:** Medium · **Status:** OPEN · **Category:** Validation · **Found:** 2026-10-10, the
+project audit (AUD-05, AUD-10, AUD-35, AUD-40); measured 2026-10-11
+
+**What is wrong.** The checks before work stop short of what the pricers assume:
+
+- **Curves.** `ZeroCurveConfig` (`engine/market_data/market.py`) and its API schema check
+  nothing. On the shared test portfolio's market, a discount curve with pillars [5, 1, 10]
+  prices the European payer at 50,697.19 instead of 51,133.41, with no error; a NaN rate gives
+  a NaN price; three times and two rates fail inside the interpolation (`xp and fp must be
+  one-dimensional arrays of equal size`), after the job has started.
+- **An expiry inside the last accrual period.** `SwaptionConfig` checks that expiry precedes
+  maturity, but `european_terms` (`engine/pricing/european.py`) looks for each leg's first
+  whole period after expiry with `next` and no default: an expiry of 2028-12-01 on a
+  2027-01-15 → 2029-01-15 swap passes the config and raises a bare `StopIteration` when
+  priced.
+- **Preflight.** `validate_request` (`engine/run/pipeline.py`) and market risk's
+  `validate_portfolio` check trades against the market's names, not the market's values, so
+  these become failed jobs, not `400`s.
+- **Unknown fields.** Four API models accept and drop fields they do not know, though the API
+  documents refusing them: `ZeroCurveConfigSchema`, `CouponPeriodSchema`,
+  `CalibrationRequestSchema` (`engine/api/requests.py`, plain `BaseModel`, not `_Strict`) and
+  TraderX's `EodSubmissionSchema`.
+
+**Reach.** A caller's mistake: a mis-ordered or NaN curve gives a wrong or NaN number with no
+error, the others an error late. Well-formed inputs are unaffected. The swaption volatility
+surface is validated (shape, finite, non-negative, increasing tenors).
+
+**Current handling.** None.
+
+**To close.** Host-side checks on construction, before any JAX work: a curve's pillars
+non-empty, as many rates as times, finite, times non-negative and strictly increasing
+(negative rates allowed); an exercise that leaves no whole period of a leg refused, naming the
+trade and the dates; every API model strict (`extra="forbid"`). The run request's preflight
+([I-87](#i-87)) then runs them all. A test per refusal, red first.
+
 ---
 
 ## Performance
@@ -430,6 +624,31 @@ all columns and paths at once, as a matrix product ([details/precision.md
 step; then the demo's job at 65,536 and 262,144 paths on the CPU and the GPU, the measurement
 the Newton solver's work could not make.
 
+<a id="i-105"></a>
+### I-105 — Storage below float64 does not lower a run's peak memory: the reductions load the whole cube at float64
+
+**Severity:** Medium · **Status:** OPEN · **Category:** Performance · **Found:** 2026-10-10, the
+project audit (AUD-42); confirmed in the code 2026-10-11
+
+**What is wrong.** `engine.run.pipeline` loads the stored cube whole at float64
+(`load(valuation.cube, jnp.float64)`; `PortfolioValuation.cube` stacks every column at once),
+and the exposure reductions read it whole, beside the paired float64 cube when there is one. A
+cube stored in FP8 holds one byte per path, date and trade, but the run's peak still holds
+eight, whether or not the result exports the cube (`cube_output`).
+
+**Reach.** The path count a run reaches on one device, which the precision research's
+equal-time comparison rests on ([F-07](features.md#f-07)): many low-precision paths need the
+memory of as many float64 paths at the reductions. No number is wrong. The rollback's working
+memory ([I-83](#i-83)) is larger today and comes first.
+
+**Current handling.** None.
+
+**To close.** The reductions over the stored columns trade by trade, each loaded at float64
+alone: a trade's profile from its column, the netting set from a running float64 sum
+`[paths, dates]`, PFE's quantiles from that sum as today (exact, not approximated); the float64
+cube built only when the result asks for it. The peak measured against path count before and
+after, at float64 and at FP8 storage; the golden snapshot within the margin.
+
 <a id="i-61"></a><a id="p-1"></a>
 ### I-61 — Nothing runs on more than one host; multi-device speed unmeasured
 
@@ -455,11 +674,17 @@ low-precision paths against fewer FP64 paths in equal wall time. Two parts are m
   claims jobs for its own host only and uses `jax.local_devices()`.
 - **Speed.** The split is verified for its numbers on CPU host devices, which share the
   host's cores, so it says nothing about speed. Scaling on real devices is unmeasured.
+- **Awkward path counts use fewer devices, silently.** The device count is the largest divisor
+  of the path count (`scenario_device_count`): 1,001 paths on eight devices run on seven, a
+  prime count on one, with no warning (found by the project audit, AUD-45).
 
 **To close.** One worker per host (`jax.distributed.initialize`), process 0
 claiming each job and handing it to the others
 ([details](details/precision.md#113-multi-device-and-multi-host)); then wall time against
-device count on TPU (and H100), feeding 5.2.
+device count on TPU (and H100), feeding the research result ([F-07](features.md#f-07)). A run on fewer devices than
+it was given says so in its precision report (or pads its paths to a multiple of the devices
+and drops the padding before any reduction); the storage blocks' alignment with each device's
+share is checked on the real devices.
 
 ---
 
@@ -485,9 +710,29 @@ before 2026-10-04 a job id from one app process was a `404` in the next.
 `submissionId` across restarts), but a *running* attempt is memory only and reads as unknown
 after a restart. The store is single-machine.
 
+Three more gaps of the same store (found by the project audit, AUD-24 to AUD-26, confirmed
+2026-10-11):
+
+- **A failed workload is unknown after a restart.** `ResultStore.lookup` serves successes only,
+  by design, and `AttemptStore.lookup` falls back to attempts in memory; after a restart a
+  workload whose only attempt failed, published, reads as `UNKNOWN_WORKLOAD` (its attempt is
+  still found by id).
+- **Bindings and publication are one process's.** `AttemptStore` holds an in-process lock and
+  `ResultStore` has no cross-process coordination, so two API processes on one directory can
+  bind one id to two workloads and both publish.
+- **Power loss.** Publication fsyncs each file and renames it atomically, but does not fsync
+  the directory after the rename, so on Linux a published manifest may not survive a power cut
+  that the code's comments call durable; a failed stage can leave its temporary file behind.
+
 **To close.** On the TraderX path, the durable accepted-attempt record, a boot sweep
 and an `interrupted` lookup state (TraderX acceptance case A-09); the portfolio queue's
-`interrupt_running` is the pattern.
+`interrupt_running` is the pattern. With it, attempts, bindings and terminal states in the
+queue's SQLite transactions (one owner across processes), a workload's latest terminal state
+served when it has no success, and stale stages swept at boot. Until then one TraderX process
+per store, as [docs/reference/traderx-path.md](../reference/traderx-path.md) ("What this is
+still not") says of publication, and now of bindings too. Tests: a
+fresh store finds a published failure by workload; two processes binding one id to two
+workloads, one refused.
 
 <a id="i-23"></a>
 ### I-23 — `accrualBasis` strictness rests on an unconfirmed reading
@@ -551,6 +796,94 @@ capability document and reject others (400 `UNSUPPORTED_REPORTING_CURRENCY`). Te
 the consequence, not that the field parses. Reporting in other currencies is
 [F-08](features.md#f-08), once an FX source exists.
 
+<a id="i-107"></a>
+### I-107 — TraderX: `bundleId` is trusted, not recomputed, so a changed bundle can get the old result
+
+**Severity:** Medium · **Status:** OPEN · **Category:** API · **Found:** 2026-10-10, the project
+audit (AUD-22); confirmed in the code 2026-10-11
+
+**What is wrong.** The exchange contract
+(`reference/traderX/specs/YU18-eod-risk-bundles/contracts/bundle-v2-and-terms.md`) defines
+`bundleId` as the SHA-256 of the canonical manifest without it (sorted keys, two-space
+indentation, ASCII escaping, finite numbers, UTF-8, one final LF). `engine.traderx.bundle`
+checks each artifact against the hash the manifest gives, but takes `bundleId` as given
+(`Bundle.bundle_id`), and the workload key is built from it (`_key_for`,
+`engine/api/traderx_routes.py`), not from the manifest's content. A bundle re-exported with a
+corrected artifact and that artifact's new hash, under the old `bundleId`, loads, gets the old
+workload key, and with `reuseExistingResult` is answered with the old bundle's result.
+
+**Reach.** Only a bundle that breaks the contract's identity rule (an exporter defect or a hand
+edit); then a stale result for changed positions or terms, with `200`. A conforming exporter
+changes the id with any artifact.
+
+**Current handling.** Artifact hashes are checked against the manifest; the id is not.
+
+**To close.** On load, the canonical manifest hash recomputed and a mismatch refused (`422`,
+naming both ids); test fixtures that edit an artifact rebuild the id. Tests: a changed artifact
+under the old id refused; the rebuilt bundle gets a new workload key.
+
+<a id="i-108"></a>
+### I-108 — TraderX: NaN amounts priced as `ok`, terms contradicting the row priced, duplicate rows counted twice
+
+**Severity:** Medium · **Status:** OPEN · **Category:** API · **Found:** 2026-10-10, the project
+audit (AUD-27 to AUD-31); confirmed in the code 2026-10-11
+
+**What is wrong.** A bundle's rows are checked for shape and identity, not for every property
+the pricers assume:
+
+- **Non-finite numbers.** `normalize._parse_float` accepts `nan` and `inf` as Python's `float`
+  does (`quantity`, `coupon`, `closingMark`, `accruedInterestFraction`), and so do the terms'
+  numbers (`note._terms_float`, `bill.py`). A NaN quantity is priced to a NaN value with status
+  `ok`; publication writes it as `json.dumps`' `NaN`, which is not JSON, and an HTTP answer
+  that serializes it fails.
+- **Terms that contradict the row.** `terms.join_terms` matches rows to entries by identity and
+  refuses duplicate or unused entries, but compares no economics: the row's `coupon` is parsed
+  and the terms' `couponRatePercent` priced, never checked against each other, though the
+  contract forbids a supplement changing a booked rate, index, date, currency or direction.
+- **Duplicate rows.** Duplicate terms entries are refused; a position row repeated (one account
+  and security twice) or a contract row repeated is priced and aggregated twice.
+- **Structure.** A manifest that is not a JSON object, or a field of the wrong type, fails
+  outside `BundleIntegrityError` (a `500`, not a `422`); `CalculationOutcome.to_dict`
+  (`engine/traderx/result.py`) lets a `payload` overwrite `status` and `value`.
+
+**Reach.** Bundles with such rows, an exporter defect: then a NaN or double-counted figure
+reported `ok`, or a `500`. Conforming fixtures are unaffected.
+
+**Current handling.** Artifacts are hash-checked, terms entries de-duplicated, and accrued
+interest reconciled against the exporter's figure, which can catch a contradicting coupon when
+the accrual is not zero.
+
+**To close.** Every parsed number finite (the row refused with a reason, not priced); each
+joined row's booked fields reconciled with its terms (rate, currency, maturity, direction), a
+contradiction refused with its own reason; repeated position and contract identities refused;
+the manifest's structure validated before `Bundle` is built (`422` naming the field);
+`CalculationOutcome` keeping its own keys; publication with `allow_nan=False`. A test per case,
+from the CSV to the HTTP answer.
+
+<a id="i-109"></a>
+### I-109 — TraderX: after a failed publication a same-id retry never prices or publishes
+
+**Severity:** Medium · **Status:** OPEN · **Category:** API · **Found:** 2026-10-10, the project
+audit (AUD-23); confirmed in the code 2026-10-11
+
+**What is wrong.** `Attempt.complete` (`engine/traderx/workload.py`) publishes before it changes
+state, so a publication error leaves the attempt `running` and its priced result dropped. The
+route answers `500 RESULT_NOT_PUBLISHED` and asks the coordinator to retry; the retry under the
+same `submissionId` gets the bound attempt back as `reused` ([I-58](#i-58)'s closed part), and
+the route returns `running` without pricing or publishing. Until the process restarts, that
+submission cannot complete, even after the storage recovers. The staging file's open, write
+and fsync also raise outside the `PublicationError` the route catches.
+
+**Reach.** A TraderX submission whose publication fails transiently (a full or unavailable
+disk). A new `submissionId` recovers it; the retry the route asks for does not.
+
+**Current handling.** None.
+
+**To close.** A priced-but-unpublished state that keeps the result, a same-id retry publishing
+it (or the attempt failed retryably and the retry pricing again); every staging error a
+`PublicationError`. Test: the first publication fails, storage is restored, a retry under the
+same id yields one discoverable result; red first.
+
 <a id="i-60"></a>
 ### I-60 — TraderX result schema has no stated policy on added fields
 
@@ -597,9 +930,39 @@ running worker is `interrupted`, not stuck.
 
 **Current handling.** The traceback in the server log.
 
+The route also queues the job before it starts the worker (`_validate_and_submit`,
+`engine/api/routes.py`): if starting it raises, the client gets an error for a job that is
+queued, and a retry queues a second (project audit, AUD-37).
+
 **To close.** The supervisor records its child's exit status, and a poll of a `pending` job
 while the worker has exited at startup N times running reports it (in `error`, or a
-`worker` field on `/health`); a test with a worker command that exits at once.
+`worker` field on `/health`, which today shows only that the HTTP process is up); a failed
+worker start answered with the queued job's id; a test with a worker command that exits at
+once.
+
+<a id="i-106"></a>
+### I-106 — The job queue's file: an interrupted migration stops it opening; a second file starts a second worker
+
+**Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-10, the project
+audit (AUD-36, AUD-38); confirmed in the code 2026-10-11
+
+**What is wrong.** `JobQueue.__init__` (`engine/api/job_queue.py`) migrates a version-1 file in
+autocommit statements: an `ALTER TABLE` adds the `kind` column, the schema script runs (and
+commits), then `user_version` is set. A crash between the first and the last leaves the
+column at version 1, and the next start repeats the `ALTER` and fails on the duplicate
+column; two processes opening an old file at once can race the same way. Separately, the
+worker lock is per queue file (`<queue>.worker.lock`, `engine/api/supervisor.py`), so two API
+instances on one host with different `JAX_RISK_JOB_QUEUE` paths start two workers on the same
+devices, against decision A-14's one worker per host.
+
+**Reach.** Only a version-1 queue file (none outside development) and a host serving two queue
+files. No number.
+
+**Current handling.** None.
+
+**To close.** The migration in one `BEGIN IMMEDIATE` transaction, or idempotent (the column
+added only if missing), and a test that interrupts it; the worker's lock taken per host (a
+fixed path per device set), or a second queue file on one host refused; a test each.
 
 <a id="i-87"></a>
 ### I-87 — The HTTP API is one route per engine function, not one run request
@@ -630,7 +993,13 @@ each route.
 **To close.** One `POST /runs` with `market`, `portfolio`, an `analytics` list
 and a `config` whose sections follow ORE's files, as
 [details/configurable-engine.md](details/configurable-engine.md#one-run-request-i-87-i-88-i-89)
-describes. A run of one analytic must equal today's direct call bit for bit.
+describes. A run of one analytic must equal today's direct call within the margin. The one
+result says what each figure is without the request beside it (the project audit, AUD-39):
+the reporting currency, the as-of and simulation dates, the trade ids on every per-trade axis
+(today's Python `MarketRiskResult` keys its P&L columns by request order alone), each Greek
+array's factor labels (curve and tenor, or option and swap tenor), the Greeks method and
+calibration policy as run, and the engine's identity (its git revision and the versions of
+jax, jaxlib and ORE) in place of the fixed `0.1.0`.
 
 <a id="i-95"></a>
 ### I-95 — A precision setting the run does not read is accepted and ignored
@@ -697,9 +1066,16 @@ body is held in memory and stored in the queue whole.
 **Current handling.** None; deploy behind a trusted network or a reverse proxy that
 authenticates.
 
+TraderX's `POST /eod/price` also reads a server-side `bundlePath` and joins each manifest
+path to it without containment (`engine/traderx/bundle.py`): an absolute path or `..` reads
+any file the server can, its hash supplied by the same manifest; files are read whole, unbounded
+(project audit, AUD-34).
+
 **To close.** Before the API is reachable from outside a trusted network:
 authentication chosen with TraderX (a bearer token or mutual TLS), a body-size limit, and a
-per-caller limit on queued jobs; a test per refusal (`401`, `413`, `429`).
+per-caller limit on queued jobs; bundle paths confined to configured roots, every artifact
+path resolved inside its bundle (symlinks included), and a byte limit per artifact; a test per
+refusal (`401`, `413`, `429`, a path outside the root).
 
 <a id="i-91"></a>
 ### I-91 — A long job delays every job behind it, and no job can be cancelled
@@ -747,7 +1123,11 @@ checks and refusals (so a refused booking never reaches a pricer, I-05), and the
 prices it; its own pricers go. Its routes, result document, attempt store and the
 accrued-interest reconciliation against the exporter's figure stay. First, a test that the
 engine's bond and the TraderX note agree on every bundle row of the tests, to rounding
-([details/package-layout.md §3](details/package-layout.md#3-merges)).
+([details/package-layout.md §3](details/package-layout.md#3-merges)). The adapter then calls
+`run/`, which sits above it in the layers `tests/test_import_layering.py` enforces (`traderx`
+shares a layer with `models` and `instruments`): its orchestration moves above `run/` (or into
+`api/`), its terms and provenance types stay low, rather than an exception in the layer test
+(project audit).
 
 ---
 
@@ -825,6 +1205,19 @@ the Bermudan/American rollback: the precision harness measures it in the `comput
 beside the storage campaigns'. Their first run found a bias floor below float32
 ([I-96](#i-96)), fixed on 2026-10-11 (the shared operands in two terms, A-23); what is left is
 FP8's own rounding ([I-98](#i-98)), whose rows the table reads as they are.
+
+Two more points for the table and its warning (the project audit, AUD-19 to AUD-21):
+
+- **Where the warning goes.** A portfolio run's `PortfolioResult.warnings` is always empty
+  (`engine/run/pipeline.py` builds it with `warnings=[]`); market risk fills its own. The
+  table's warning, and [I-73](#i-73)'s calibration misses, need the portfolio run to carry
+  warnings at all: each with its reason, the trades and the counts.
+- **Standard errors that assume independence.** Market risk's `ES_<q>_standardError`
+  (`engine/risk/market/var_es.py`) is the tail's standard deviation over the square root of its
+  count, described as an effective sample size; overlapping historical windows and Sobol points
+  are not independent, and the tail's own selection adds variance. It is labelled as assuming
+  independent scenarios, or measured as the paired correction's is (by blocks, or across
+  randomized seeds).
 
 <a id="i-94"></a>
 ### I-94 — The LGM is calibrated by two implementations
@@ -1024,7 +1417,9 @@ gone. If an abort recurs, the pool hypothesis is ruled out.
 `-n 4`) and the heaviest tests; if memory explains the deaths, lower `-n` for the `full` CI job
 or slim the heaviest fixtures. Then repeated clean full runs against a known-bad baseline,
 with `JAX_COMPILATION_CACHE_DIR` on an empty directory to rule the cache in or out; one green
-run proves nothing.
+run proves nothing. Once the full tier fits CI's runner, run it on a schedule as well as by
+hand: it holds the slow ORE simulation tests (L4) and the worker tests, which no automatic run
+covers today (project audit, AUD-47).
 
 <a id="i-66"></a><a id="q-2"></a>
 ### I-66 — No linter or type checker
@@ -1036,10 +1431,12 @@ clean. `pyflakes engine` reports nothing since the layout change of 2026-10-08 (
 removed its findings with the modules they were in (re-export shims, unused imports, a string
 forward reference, an f-string without placeholders); `pyflakes tests demos` still reports 19
 unused imports and variables. `requirements.txt` does not mention the `profiling` extra.
+`pyproject.toml` declares `pandas`, which nothing in `engine/`, `tests/`, `demos/` or
+`compliance/` imports (project audit, AUD-49).
 
 **To close.** As decided (A-20), in two steps. First, now: ruff in
 `pyproject.toml` and CI with pyflakes' rules only, each finding fixed or marked (a re-export
-listed in `__all__`), so `engine/` stays clean. Then, among the fixes of what exists: a type
+listed in `__all__`), so `engine/` stays clean; `pandas` dropped from the dependencies. Then, among the fixes of what exists: a type
 checker on `engine/`.
 
 <a id="i-67"></a><a id="q-3"></a>
@@ -1108,6 +1505,35 @@ field. No such field is known to be dropped today.
 **To close.** For every field the walk finds, build a request with that field set
 to a non-default value, convert it, and assert the value arrives in the engine's
 configuration. Red first: a schema that drops a field must fail the test.
+
+<a id="i-110"></a>
+### I-110 — The documentation contradicts the code in places; no single parity table
+
+**Severity:** Low · **Status:** OPEN · **Category:** Tooling · **Found:** 2026-10-10, the
+project audit (AUD-15, AUD-46, AUD-47); checked 2026-10-11
+
+**What is wrong.**
+
+- [docs/getting-started/overview.md](../getting-started/overview.md) says engines like ORE run
+  single-threaded on CPUs, where the README describes ORE's threaded and GPU paths.
+- [docs/concepts/architecture.md](../concepts/architecture.md) calls the codebase three
+  independent modules, and `demo_precision.py` a demo at three precisions; it runs ten.
+- `engine/risk/market/var_es.py` and [docs/risk/var_es.md](../risk/var_es.md) give
+  floor(N(1−p)) as ORE's rank ([I-102](#i-102)).
+- The README says the full pipeline compiles through XLA; ORE schedules and calendars, Sobol
+  draws and other host work do not.
+- `pyproject.toml` says ORE-parity tests are never marked slow; two in
+  `tests/test_ore_xva_parity.py` are.
+- ORE parity is stated per component ([docs/reference/ore-parity.md](../reference/ore-parity.md)),
+  but no one table says, per product and analytic (t=0 value, path values, exposure, Greeks,
+  VaR/ES), what is shown equal to ORE, to what tolerance and by which test, so "matches ORE"
+  reads broader than it is (Bermudan paths, [I-49](#i-49); Greeks, [I-51](#i-51)).
+
+**Reach.** Readers; no number.
+
+**To close.** Each statement corrected; one table of products by analytics in
+docs/reference/ore-parity.md, linked from the README and the overview, which a change that
+moves a cell updates.
 
 ---
 
