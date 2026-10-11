@@ -52,38 +52,38 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-04](#i-04) | Seasoned TraderX swaps: the export has no past fixings | High | OPEN | Scope | External |
 | [I-05](#i-05) | No faithful USD-SOFR / ACT-360 swap construction | High | OPEN | Scope | External |
 | [I-07](#i-07) | No corporate bond, equity or listed-option pricer | Medium | OPEN | Scope | By demand |
-| [I-08](#i-08) | A running TraderX attempt is lost on restart | Medium | PARTIAL | API | Core |
+| [I-08](#i-08) | A running TraderX attempt is lost on restart | Medium | PARTIAL | API | TraderX |
 | [I-16](#i-16) | `rateSensitivity` is parallel-only | Medium | OPEN | Scope | External |
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
-| [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | Fix what exists |
+| [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | TraderX |
 | [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | Fix what exists |
-| [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | Core |
-| [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | Core |
-| [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | Core |
-| [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Core |
-| [I-88](#i-88) | The API completeness test checks field names, not that a value reaches the engine | Low | OPEN | Tooling | Core |
-| [I-89](#i-89) | A retried job submission runs the job twice | Low | OPEN | API | Core |
-| [I-95](#i-95) | A precision setting the run does not read is accepted and ignored | Low | OPEN | API | Core |
-| [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | Core |
-| [I-78](#i-78) | AD and bump Greeks differ by up to 2% on a sloped market | Medium | OPEN | Validation | Core |
+| [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | Focus |
+| [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | Focus |
+| [I-73](#i-73) | A per-path recalibration that misses its basket is not flagged | Low | OPEN | Correctness | Focus |
+| [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Focus |
+| [I-88](#i-88) | The API completeness test checks field names, not that a value reaches the engine | Low | OPEN | Tooling | Focus |
+| [I-89](#i-89) | A retried job submission runs the job twice | Low | OPEN | API | Focus |
+| [I-95](#i-95) | A precision setting the run does not read is accepted and ignored | Low | OPEN | API | Focus |
+| [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | Focus |
+| [I-78](#i-78) | AD and bump Greeks differ by up to 2% on a sloped market | Medium | OPEN | Validation | Focus |
 | [I-53](#i-53) | On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch | Low | PARTIAL | Performance | Fix what exists |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | New |
-| [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | Core |
-| [I-57](#i-57) | TraderX: a cached result is served before the submission id is checked | High | OPEN | API | Fix what exists |
-| [I-58](#i-58) | TraderX: two concurrent submissions of one workload both execute | Medium | OPEN | API | Fix what exists |
-| [I-59](#i-59) | TraderX: `calculations` and `reportingCurrency` accepted, keyed, then ignored | Medium | OPEN | API | Fix what exists |
-| [I-60](#i-60) | TraderX result schema has no stated policy on added fields | Low | ASSUMPTION | API | Fix what exists |
-| [I-76](#i-76) | The job queue keeps every job and result forever | Low | OPEN | API | Core |
-| [I-77](#i-77) | A worker that cannot start leaves jobs `pending` with no signal | Low | OPEN | API | Core |
-| [I-91](#i-91) | A long job delays every job behind it, and no job can be cancelled | Low | OPEN | API | Core |
-| [I-90](#i-90) | The HTTP API has no authentication, rate limit or body-size limit | Low | OPEN | API | Fix what exists |
-| [I-61](#i-61) | Nothing runs on more than one host; multi-device speed unmeasured | Medium | PARTIAL | Performance | Core |
+| [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | Focus |
+| [I-57](#i-57) | TraderX: a cached result is served before the submission id is checked | High | OPEN | API | Focus |
+| [I-58](#i-58) | TraderX: two concurrent submissions of one workload both execute | Medium | OPEN | API | TraderX |
+| [I-59](#i-59) | TraderX: `calculations` and `reportingCurrency` accepted, keyed, then ignored | Medium | OPEN | API | TraderX |
+| [I-60](#i-60) | TraderX result schema has no stated policy on added fields | Low | ASSUMPTION | API | TraderX |
+| [I-76](#i-76) | The job queue keeps every job and result forever | Low | OPEN | API | Focus |
+| [I-77](#i-77) | A worker that cannot start leaves jobs `pending` with no signal | Low | OPEN | API | Focus |
+| [I-91](#i-91) | A long job delays every job behind it, and no job can be cancelled | Low | OPEN | API | Focus |
+| [I-90](#i-90) | The HTTP API has no authentication, rate limit or body-size limit | Low | OPEN | API | TraderX |
+| [I-61](#i-61) | Nothing runs on more than one host; multi-device speed unmeasured | Medium | PARTIAL | Performance | Focus |
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | Fix what exists |
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | Fix what exists |
 | [I-81](#i-81) | A cold job compiles about 180 one-operation programs; market risk vmaps a closure | Low | OPEN | Performance | Fix what exists |
-| [I-83](#i-83) | A Bermudan/American on the paths needs 0.3–0.7 MB per path and step: 64k paths run out of memory | Medium | OPEN | Performance | Core |
-| [I-93](#i-93) | TraderX's submissions are priced by their own pricers, not the engine's | Medium | OPEN | API | Core |
-| [I-94](#i-94) | The LGM is calibrated by two implementations | Low | OPEN | Architecture | Fix what exists |
+| [I-83](#i-83) | A Bermudan/American on the paths needs 0.3–0.7 MB per path and step: 64k paths run out of memory | Medium | OPEN | Performance | Focus |
+| [I-93](#i-93) | TraderX's submissions are priced by their own pricers, not the engine's | Medium | OPEN | API | TraderX |
+| [I-94](#i-94) | The LGM is calibrated by two implementations | Low | OPEN | Architecture | Focus |
 
 **One pipeline.** Since 2026-10-01 every run is `price_portfolio` on a `Market`
 (`engine.run.pipeline`; HTTP `POST /portfolio/price`): ORE's cross-asset model with a

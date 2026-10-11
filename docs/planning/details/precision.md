@@ -8,7 +8,7 @@ D-9 ([compliance/decisions.md](../../../compliance/decisions.md)). It replaces
 `sub-fp32-precision.md`; its findings are kept, corrected, in [§15](#15-measurements).
 
 **Written:** 2026-10-01 · **Items:** [F-07](../features.md#f-07), [I-55](../known-issues.md#i-55),
-[I-61](../known-issues.md#i-61), in the [roadmap's core](../roadmap.md#stage-3--the-core); stage 1
+[I-61](../known-issues.md#i-61), in the [roadmap's focus](../roadmap.md#stage-3--the-focus); stage 1
 (done) built the mechanism, and the storage harness (2026-10-09) closed
 [I-75](../known-issues.md#i-75)
 
@@ -865,16 +865,17 @@ Decisions taken while building it (2026-10-04):
 | **The research result** (F-07) | After multi-host and the evidence table. Timing across devices on Ironwood and H100: storage formats, then the kernel rewrite's matrix-product kernels with native FP8 | The research result: wall time per figure and precision against float64 at equal accuracy (the evidence table's path ceilings), many low-precision paths against fewer float64 ones | M |
 | **FP4** (F-07) | FP4 storage (variance correction through the block scales), FP4 compute on TPU 8t/8i, multilevel quantile estimation | Evidence rows for FP4 | L |
 
-**Order (decided: A-19, revised 2026-10-08):** the structure first (stage 1, done); then
+**Order (decided: A-19, revised 2026-10-10):** the structure first (stage 1, done); then
 the roadmap's near-term milestone (stage 2: the profiling demo on a local GPU, done); then the
-core (stage 3), where the precision research comes first among the project's goals. The
-storage measurement (I-75) starts at once, because it changes no float64 number. The kernel
+focus (stage 3), where low precision comes first, ahead of the critical bugs and the API, and
+TraderX and Basel III wait for it. The storage measurement (I-75) is done. The kernel
 rewrite (F-07), difference form and matrix products together, takes first the families `ShiftHorizon`
 (I-32) and the recalibration fix (I-49) do not change, and the Bermudan/American rollback and
 recalibration after them, so no kernel is rewritten twice; new capabilities' kernels and the strike
 axis (I-54) come after it. The evidence table (I-55) is read off each family as it lands, so it
-describes the kernels that ship. Multi-host (I-61) moves no arithmetic and is parallel; timing
-(the research result) needs it and the table, and FP4 (F-07) comes last.
+describes the kernels that ship. FP4 storage and emulated compute (F-07) close the arithmetic.
+Multi-host (I-61) moves no arithmetic and follows the job queue's changes to the worker loop;
+timing (the research result, native FP8 and FP4 included) needs it and the table.
 
 ## 13. Testing
 
@@ -883,6 +884,13 @@ virtualenv's interpreter, counts from `--collect-only`, a summary line printed, 
 process changes.
 
 ### 13.1 Bit for bit and ORE parity
+
+**From 2026-10-10 (A-19 revised) the snapshot is compared within a margin, not bit for bit:**
+every array relative to its largest magnitude (a Greek to its trade's NPV), float64 to 1e-10
+and float32 to 1e-4; formats below float32 are judged by the storage harness (§15.4). A move
+beyond the margin is a planned model change, stated per array and re-baselined, or a bug.
+Every ORE parity suite still passes at its tolerance. The bit-for-bit results below are the
+record of stages 1 and 2.
 
 - Before the precision mechanism (2026-10-01), save a golden snapshot from `main` in a separate worktree: the shared
   portfolio's t=0 NPVs, cube, exposure and per-trade EPE at float64 and with a float32

@@ -13,9 +13,9 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 | [F-02](#f-02) | SABR swaption volatility | M | I-54, F-07's kernel rewrite | New |
 | [F-03](#f-03) | ORE's AMC engine as a valuation option | L | F-07's kernel rewrite | New |
 | [F-04](#f-04) | FX and equity trades on the pipeline; FX/EQ vol calibration | L | F-07's kernel rewrite | New |
-| [F-05](#f-05) | Basel III regulatory figures | L | See entry | Core |
+| [F-05](#f-05) | Basel III regulatory figures | L | See entry | Basel |
 | [F-06](#f-06) | CVA/DVA from the exposure profiles | M | I-87 | New |
-| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-55 | Core |
+| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-55 | Focus |
 | [F-08](#f-08) | Reporting currencies other than USD for TraderX | S | I-18 (an FX source), I-59 | New |
 | [F-09](#f-09) | ORE's XML input files as a run request | M | I-87 | New |
 

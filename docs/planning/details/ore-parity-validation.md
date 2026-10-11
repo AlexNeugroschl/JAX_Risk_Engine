@@ -2,7 +2,7 @@
 
 How the engine is shown to equal ORE, what is proven, and the work that remains:
 [I-51](../known-issues.md#i-51) and [I-49](../known-issues.md#i-49), both in the
-[roadmap's core](../roadmap.md#stage-3--the-core). The work of
+[roadmap's focus](../roadmap.md#stage-3--the-focus). The work of
 2026-10-07 built the ORE simulation oracle and closed I-50 and I-34. The formula-by-formula
 mapping is in [ORE Parity](../../reference/ore-parity.md); the differences from ORE that remain
 by decision (X-1 to X-11) are in [compliance/decisions.md](../../../compliance/decisions.md) §3.
