@@ -460,9 +460,10 @@ def _legs_xml(swap, notional, fixed_rate, payer, floating_spread, index, day_cou
 
 
 def swaption_trade_xml(trade_id, swap, notional, fixed_rate, payer, floating_spread, index, style,
-                       exercise_dates, mid_coupon_exercise=False, settlement="Physical") -> str:
-    """A long swaption on the engine's underlying `swap`: `style` "European", "Bermudan" (one
-    date per exercise) or "American" (the window's first and last day)."""
+                       exercise_dates, mid_coupon_exercise=False, settlement="Physical", long_short="Long") -> str:
+    """A swaption on the engine's underlying `swap`, `long_short` (ORE's `LongShort`) on a positive
+    notional: `style` "European", "Bermudan" (one date per exercise) or "American" (the window's
+    first and last day)."""
     exercise = "\n".join(f"          <ExerciseDate>{iso(d)}</ExerciseDate>" for d in exercise_dates)
     mid = "<MidCouponExercise>true</MidCouponExercise>" if mid_coupon_exercise else ""
     return f"""  <Trade id="{trade_id}">
@@ -470,7 +471,7 @@ def swaption_trade_xml(trade_id, swap, notional, fixed_rate, payer, floating_spr
     {_envelope()}
     <SwaptionData>
       <OptionData>
-        <LongShort>Long</LongShort>
+        <LongShort>{long_short}</LongShort>
         <OptionType>Call</OptionType>
         <Style>{style}</Style>
         <Settlement>{settlement}</Settlement>
@@ -505,14 +506,16 @@ def trade_xml(cfg) -> str:
     if isinstance(cfg, SwaptionConfig):
         return swaption_trade_xml(cfg.trade_id, european_underlying(cfg), cfg.notional, cfg.fixed_rate, cfg.payer,
                                   cfg.floating_spread, index, "European", [cfg.exercise_date],
-                                  settlement=cfg.settlement)
+                                  settlement=cfg.settlement, long_short=cfg.long_short)
     if isinstance(cfg, AmericanSwaptionConfig):
         return swaption_trade_xml(cfg.trade_id, option_underlying(cfg), cfg.notional, cfg.fixed_rate, cfg.payer,
                                   cfg.floating_spread, index, "American",
-                                  [cfg.first_exercise_date, cfg.last_exercise_date], settlement=cfg.settlement)
+                                  [cfg.first_exercise_date, cfg.last_exercise_date], settlement=cfg.settlement,
+                                  long_short=cfg.long_short)
     if isinstance(cfg, BermudanSwaptionConfig):
         return swaption_trade_xml(cfg.trade_id, option_underlying(cfg), cfg.notional, cfg.fixed_rate, cfg.payer,
-                                  cfg.floating_spread, index, "Bermudan", cfg.exercise_dates, settlement=cfg.settlement)
+                                  cfg.floating_spread, index, "Bermudan", cfg.exercise_dates, settlement=cfg.settlement,
+                                  long_short=cfg.long_short)
     if isinstance(cfg, BondConfig) and cfg.coupon_schedule and cfg.redemption_fraction == 1.0:
         periods = cfg.coupon_schedule
         if any(p.payment_date not in (None, p.end_date) for p in periods):

@@ -208,12 +208,6 @@ class TestMonotonicity:
         assert high_vol > low_vol
 
 
-class TestShape:
-    def test_zero_notional_prices_to_zero(self):
-        cfg = _make_bermudan(notional=0.0)
-        assert _npv(cfg) == pytest.approx(0.0, abs=1e-8)
-
-
 class TestEdgeCases:
     def test_rejects_exercise_time_at_or_after_final_maturity(self):
         with pytest.raises(ValueError):

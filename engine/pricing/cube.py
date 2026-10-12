@@ -8,8 +8,9 @@ Every trade is priced with its t=0 method on each path and date: swaps with
 default, or Jamshidian on its Hull-White model), Bermudans and Americans with their own
 calibrated LGM on the grid, bonds by discounting. The valuation reads only the scenario
 market, so it is the same whichever model (`CamConfig.ir`) simulated it. Swaptions are wrapped as
-ORE wraps them (`engine.pricing.options`), so an exercised physical option becomes its swap
-and a cash-settled one leaves the portfolio. Paid cashflows drop out and fixings follow
+ORE wraps them (`engine.pricing.options`), so an exercised physical option becomes its swap,
+a cash-settled one leaves the portfolio, and a short option is minus the long one, the holder
+deciding the exercise (ORE's `LongShort`, I-101). Paid cashflows drop out and fixings follow
 `FixingManager` (`engine.pricing.legs`). NPVs are in the base currency, converted with the
 path's FX rate, and not deflated (ORE's cube stores NPVs; the numeraire travels beside them).
 
@@ -52,9 +53,13 @@ from engine.pricing.context import PricingContext, from_market
 from engine.pricing.european import european_cube, european_terms, european_value, variance_on_path
 from engine.pricing.jamshidian import jamshidian_cube, jamshidian_value, validate_jamshidian
 from engine.pricing.legs import Legs, PathFixings, legs_cube, legs_of, path_fixings, path_schedule, today_npv
-from engine.pricing.options import effective_steps, underlying_start, wrap
+from engine.pricing.options import effective_steps, position_sign, underlying_start, wrap
 
 Trade = Union[SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig, BondConfig]
+
+#: The option trades: each has a position (`long_short`, ORE's `LongShort`), and its engines
+#: value the long option (`engine.pricing.options`).
+OPTIONS = (SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig)
 
 #: Every product the pipeline prices, by the name its trades carry (`product`): the keys of
 #: `Precision.by_product`.
@@ -255,7 +260,10 @@ def _index_fixings(trades, market: Market, scenarios: ScenarioMarket) -> Dict[st
 
 
 def value_on(cfg: Trade, context: PricingContext, pricing: PricingConfig) -> float:
-    """One trade's NPV in its currency on the context's date, with its configured engine."""
+    """One trade's NPV in its currency on the context's date, with its configured engine; an
+    option's in its position, a short minus the long (`engine.pricing.options.position_sign`)."""
+    if isinstance(cfg, OPTIONS):
+        return position_sign(cfg) * _long_option_on(cfg, context, pricing)
     currency = cfg.currency
     if isinstance(cfg, BondConfig):
         if context.date >= cfg.maturity_date:
@@ -271,13 +279,16 @@ def value_on(cfg: Trade, context: PricingContext, pricing: PricingConfig) -> flo
         fixings = {**cfg.fixings, **context.fixings.get(name, {})}
         return float(today_npv(legs_of(_swap_underlying(cfg), cfg.payer, context.date, fixings), context.date,
                                disc, index))
+    raise TypeError(f"no pricer for {type(cfg).__name__}")
+
+
+def _long_option_on(cfg, context: PricingContext, pricing: PricingConfig) -> float:
+    """The long option's NPV on the context's date, by its configured engine."""
     if isinstance(cfg, SwaptionConfig):
         if pricing.european == "Jamshidian":
             return float(jamshidian_value(cfg, context, pricing.jamshidian))
         return float(european_value(cfg, context))
-    if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
-        return bermudan_value(cfg, _engine(cfg, pricing), context)
-    raise TypeError(f"no pricer for {type(cfg).__name__}")
+    return bermudan_value(cfg, _engine(cfg, pricing), context)
 
 
 def _engine(cfg, pricing: PricingConfig):
@@ -320,7 +331,7 @@ def _path_values(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricin
         exercises, fixings_history = contract_exercise_dates(cfg), cfg.fixings
     underlyings = [swap_cube(_underlying_legs(swap, cfg.payer, market.asof, fixings_history, e)) for e in exercises]
     steps = effective_steps(exercises, market.asof, sm.dates)
-    return wrap(option, underlyings, steps, physical=cfg.settlement == "Physical")
+    return wrap(option, underlyings, steps, physical=cfg.settlement == "Physical", sign=position_sign(cfg))
 
 
 def _underlying_legs(swap: ORE.VanillaSwap, payer: bool, asof: ORE.Date, fixings, exercise: ORE.Date) -> Legs:

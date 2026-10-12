@@ -52,8 +52,7 @@ from engine.pricing.config import PricingConfig
 from engine.pricing.cube import Trade, reads_swaption_vols, validate_trades, value_on
 from engine.risk.greeks.bump import SensitivityConfig, sensitivity_context, theta_context, trade_theta
 from engine.risk.greeks.price_functions import (
-    bachelier_price, bachelier_terms, bermudan_price_function, curve_keys, curves_of, market_curve, on_pillars,
-    trade_price_function, vol_point,
+    bermudan_price_function, curve_keys, curves_of, market_curve, on_pillars, trade_price_function, vol_point,
 )
 
 
@@ -131,7 +130,8 @@ def vega_greek(cfg, market: Market, pricing: PricingConfig, shift: float):
             return np.zeros((len(surface.option_tenors), len(surface.swap_tenors)))
         t, swap_len = vol_point(cfg, market)
         volatility = jnp.asarray(float(surface.volatility(asof, t, swap_len)))
-        d_npv = float(_bachelier_vega(bachelier_terms(cfg, market, jnp.float64), disc, index, volatility))
+        fn = trade_price_function(cfg, market, pricing)
+        d_npv = float(_option_vega(fn.pricer, fn.terms, disc, index, volatility))
         return d_npv * surface.weights(asof, t, swap_len) * shift
     option = bermudan_price_function(cfg, market, pricing, jnp.float64)
     if option.calibration is None:
@@ -144,15 +144,10 @@ def vega_greek(cfg, market: Market, pricing: PricingConfig, shift: float):
     return np.tensordot(d_npv_d_sigma @ jacobian, weights, axes=1) * shift
 
 
-@jax.jit
-def _bachelier_vega(terms, disc, index, volatility):
-    """dNPV/d(normal volatility) of a European on Bachelier's engine."""
-    return jax.grad(lambda v: bachelier_price(terms, disc, index, v))(volatility)
-
-
 @partial(jax.jit, static_argnums=0)
 def _option_vega(pricer, terms, disc, index, values):
-    """dNPV/d(LGM volatility bucket) of a Bermudan/American on its grid engine."""
+    """dNPV/d(its volatility) of an option, in its position: a European's normal volatility on
+    Bachelier's engine, a Bermudan's/American's LGM volatility buckets on its grid engine."""
     return jax.grad(lambda v: pricer(terms, disc, index, v))(values)
 
 

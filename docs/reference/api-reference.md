@@ -128,15 +128,18 @@ date: paid flows drop out, a coupon fixed before `d` pays its historical fixing 
 
 The underlying swap's terms as `SwapConfig` (no `accrual_day_count`), plus the exercise:
 `exercise_date`, or with `swap_tenor` the booking conveniences `forward_start` (an
-`ORE.Period` beyond the spot lag) and `exercise_lag_days` (`2`); and `settlement`
-(`"Physical"` \| `"Cash"`). On or after `exercise_date` it has expired (`is_expired()`) and
-is worth 0.
+`ORE.Period` beyond the spot lag) and `exercise_lag_days` (`2`); `settlement`
+(`"Physical"` \| `"Cash"`); and `long_short` (`"Long"`, the default, \| `"Short"`: ORE's
+`LongShort`). An option's `notional` is positive: a short is booked by `long_short`, and is
+worth minus the long option today, on every path (the exercise still the holder's, as ORE's
+`OptionWrapper`) and in every Greek and P&L; a zero or negative notional is a `ValueError`
+naming the trade. On or after `exercise_date` it has expired (`is_expired()`) and is worth 0.
 
 ### `BermudanSwaptionConfig` (`engine.instruments.bermudan_swaption`)
 
 The underlying swap's terms, `exercise_dates` (ascending `ORE.Date`s; a year fraction is a
 `TypeError`; dates on or before `evaluation_date` are not exercise opportunities), `fixings`,
-`settlement`. `exercisable_dates(cfg)` lists the underlying's accrual starts.
+`settlement`, `long_short` (as the European's). `exercisable_dates(cfg)` lists the underlying's accrual starts.
 
 ### `AmericanSwaptionConfig` (`engine.instruments.american_swaption`)
 

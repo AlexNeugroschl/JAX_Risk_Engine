@@ -84,13 +84,13 @@ other documents cite the item (I-NN, F-NN), the decision (A-n), or a date, and
   it (A-2; the names A-2 retired were removed outright on 2026-10-07, there being no client
   yet, by the owner's revision of that day). 3.13 replaces the routes with one run request on
   the same terms, before any client exists. A new setting arrives with its API field, which
-  `tests/test_api_completeness.py` checks. The planned narrowings are each deliberate: 3.4
-  refuses a negative option notional (a short option takes ORE's `LongShort`), 3.12 refuses
-  malformed inputs that are now accepted (an unsorted curve, an expiry with no whole period
-  after it), 4.1 refuses bundles that break their contract, 4.3 refuses inputs that are now
-  accepted and then ignored (the old answer is wrong), and 3.6 changes a default number to
-  ORE's (decision A-3). TraderX's routes (`/eod/...`) are TraderX's contract and keep their
-  shape when 4.2 changes what runs behind them.
+  `tests/test_api_completeness.py` checks. The planned narrowings are each deliberate (as was
+  the refusal of a zero or negative option notional, a short option taking ORE's `LongShort`,
+  I-101, 2026-10-11): 3.12 refuses malformed inputs that are now accepted (an unsorted curve,
+  an expiry with no whole period after it), 4.1 refuses bundles that break their contract,
+  4.3 refuses inputs that are now accepted and then ignored (the old answer is wrong), and 3.6
+  changes a default number to ORE's (decision A-3). TraderX's routes (`/eod/...`) are
+  TraderX's contract and keep their shape when 4.2 changes what runs behind them.
 - **Tests.** A step that breaks a test of a private symbol rewrites it against the public
   entry ([I-67](known-issues.md#i-67)'s rule), so restructuring does not wait for 6.7.
 
@@ -104,8 +104,10 @@ Europeans, bonds) and 4e-11 (calibrated Bermudans/Americans), model analytics to
 1e-8 – 1e-12 under either model, market-risk VaR/ES per scenario to 2e-13, and since
 2026-10-07 an ORE simulation run in-process is the reference for the assembled pipeline:
 swaps, Europeans and bonds equal it path by path (Bermudans and Americans 0.5–4% apart, I-49,
-which 3.7 closes). Sensitivities are not yet shown to equal ORE's. Those comparisons are of
-long positions: a short Bermudan booked by a negative notional is a long option (I-101, 3.4).
+which 3.7 closes). Sensitivities are not yet shown to equal ORE's. Since 2026-10-11 an option
+has ORE's `LongShort` (I-101): a short is minus the long one in every engine, today, on the paths
+and in every risk figure, and equals ORE's short option booked through ORE's own trade builder,
+today and on ORE's paths.
 Since 2026-10-11 market risk reports in one currency, each trade converted at the as-of FX spot
 (FX is not a shocked factor, and the result says so), and takes QuantLib's VaR rank at exact
 boundaries (I-100, I-102).
@@ -166,16 +168,15 @@ rate, so it is where correctness and the trace are checked, not where speed is m
 ## Stage 3 — The focus: low precision, critical bugs, a robust API
 
 Low precision first where the three compete. The critical bugs are here because the precision
-work and the later stages build on the numbers they fix (3.4, 3.6, 3.7, 3.11). Of the two High
-defects the project audit of 2026-10-10 found, each small and touching no path kernel, one is
-fixed: market risk added trades' currencies unconverted (I-100, 2026-10-11, with VaR's rank at
-exact boundaries and colliding quantile keys, I-102). The other comes first: a negative option
-notional means a short European but a long Bermudan (I-101). The High defect of 2026-10-10
-(I-57, one caller served another's result) is fixed.
+work and the later stages build on the numbers they fix (3.6, 3.7, 3.11). Both High defects
+the project audit of 2026-10-10 found, each small and touching no path kernel, are fixed:
+market risk added trades' currencies unconverted (I-100, 2026-10-11, with VaR's rank at exact
+boundaries and colliding quantile keys, I-102), and a negative option notional meant a short
+European but a long Bermudan (I-101, 2026-10-11: ORE's `LongShort` on every option). The High
+defect of 2026-10-10 (I-57, one caller served another's result) is fixed.
 
 | Step | Goal | Work | Closes | After | Size |
 |---|---|---|---|---|---|
-| 3.4 | Critical bug | *Parallel, can start now.* ORE's `LongShort` on every option and its API field, a short option minus its long one in every engine, on the paths and in the Greeks; a negative or zero option notional refused; a `Short` Bermudan against ORE | [I-101](known-issues.md#i-101) | — | S |
 | 3.5 | Precision | The evidence table against the acceptance standard (A-11: Basel III's P&L attribution test and the Basel plan's P6.2 rule, as transcribed; P6.2 labelled as engineering for figures Basel does not cover), from the precision harness on the kernels rewritten in difference form (the simulation, scenario market, legs and Europeans, 2026-10-10: the `compute` and `compute_market_risk` campaigns beside the storage ones) and on 3.8's as it lands, then on each kernel stage 7 adds. With what the harness's first campaigns found (I-55): a robust standard error for the paired correction where the shocks or curves are stored below 32 bits (by blocks of paths or across seeds), an absolute rule for figures float64 holds fixed, and each row's path ceiling; each row naming its code revision, market, figure, path count, seeds and device. A warning on any result whose combination has no passing row, carried in the portfolio result's `warnings` (empty today) as in market risk's; market risk's ES standard error labelled as assuming independent scenarios | [I-55](known-issues.md#i-55) (warnings) | 3.8 for the Bermudan/American rows | M |
 | 3.6 | Critical bug, precision | `ShiftHorizon`: the setting and its API field exist and refuse anything but 0; implement the shift, parity at 0.5 against the LGM oracle, then 0.5 as the default | [I-32](known-issues.md#i-32) | — | M |
 | 3.7 | Critical bug, precision | Reproduce ORE's two per-path recalibration details against `tests/test_ore_xva_parity.py`, until its Bermudan/American L3 cases (strict expected failures today, 0.5–4% apart) pass; confirm an American's basket on a path against ORE's (decision A-7). ORE's calibration acceptance on every bootstrap: the basket's RMSE against `BootstrapTolerance`, a floor miss and a non-finite helper value (a zero ATM volatility) a miss as a ceiling is; refused today, counted per trade on the paths and carried as a result warning, as ORE's `LgmBuilder` warns | [I-49](known-issues.md#i-49), [I-73](known-issues.md#i-73) | — | M |
@@ -183,7 +184,7 @@ notional means a short European but a long Bermudan (I-101). The High defect of 
 | 3.9 | Precision | Storage that lowers the peak: the exposure reductions over the stored columns trade by trade, each loaded at float64 alone, the netting set as a running float64 sum and PFE's quantiles on it, exact as today; the float64 cube built only when the result asks for it. The peak measured against path count at float64 and FP8 storage | [I-105](known-issues.md#i-105) | 3.8 | M |
 | 3.10 | Precision | FP4: storage with a variance correction through the block scales, compute emulated as FP8's is (2026-10-10); an unbiased rounding of the products' per-path operands, which FP8 compute needs already (round to nearest on its grid leaves a bias, I-98) and FP4's coarser grid more, chosen by the evidence table's path ceilings; multilevel estimation of quantiles (PFE, VaR, ES); its rows in the evidence table. Native FP4 compute on TPU 8t/8i is timed in 3.18 | [F-07](features.md#f-07) (FP4), [I-98](known-issues.md#i-98) | 3.5, 3.8 | L |
 | 3.11 | Critical bug | *Parallel, can start now* (it moves no path kernel). Sensitivities against ORE's sensitivity analytic on the shared portfolio; the AD Greeks against the bump Greeks on the same sloped portfolio, until AD is ORE's Greek or is labelled as the derivative of a different quantity, with the gap stated | [I-51](known-issues.md#i-51), [I-78](known-issues.md#i-78) | — | M |
-| 3.12 | API | *Parallel, can start now.* Every input checked before any work, on the host: a curve's pillars (non-empty, as many rates as times, finite, strictly increasing; negative rates allowed), an option's exercise leaving a whole period of each leg, every API model strict (`extra="forbid"`); each refusal names the field or trade. 3.13's preflight runs them all | [I-103](known-issues.md#i-103) | — | S |
+| 3.12 | API | *Parallel, can start now.* Every input checked before any work, on the host: a curve's pillars (non-empty, as many rates as times, finite, strictly increasing; negative rates allowed), an option's exercise leaving a whole period of each leg, the standalone calibration's notional positive, every API model strict (`extra="forbid"`); each refusal names the field or trade. 3.13's preflight runs them all | [I-103](known-issues.md#i-103) | — | S |
 | 3.13 | API | One run request in place of a route per engine function, as ORE runs a portfolio with a list of analytics: `POST /runs` with `market`, `portfolio`, `analytics` (`npv`, `exposure`, `sensitivities`, `market_risk`, `calibration`) and a `config` whose sections follow ORE's files, each setting in one place; one result with the configuration as run, which says what each figure is without the request beside it (reporting currency, dates, trade ids on every axis, each Greek array's factors, the Greeks method and calibration policy, the engine's revision and its jax, jaxlib and ORE versions); `GET /config/defaults`; an idempotency key; a Python entry, `run(RunRequest)`, in `run/`. Each analytic refuses a precision setting or configuration section it does not read, naming the field. The four routes and `/jobs` go, there being no client. The completeness test also checks each field's wiring: every field set to a non-default value arrives in the engine's configuration. A run of one analytic equals today's direct call within the margin ([design](details/configurable-engine.md#one-run-request-i-87-i-88-i-89)) | [I-87](known-issues.md#i-87), [I-88](known-issues.md#i-88), [I-89](known-issues.md#i-89), [I-95](known-issues.md#i-95) | 3.12 | M |
 | 3.14 | API | One LGM calibration: the standalone bootstrap (`calibrate_lgm_sigma`, its basket and Bachelier helper prices) retires once 3.13's `calibration` analytic returns what `POST /calibration/lgm` returned, or moves to `tests/support/` as an independent check ([design](details/package-layout.md#3-merges)) | [I-94](known-issues.md#i-94) | 3.13 | S |
 | 3.15 | API | The job queue: a job status that says when the engine worker cannot start, and a failed start answered with the queued job's id; a cancel route (a pending job at once, a running one at the worker's next phase boundary); a retention policy, with a way to keep a run indefinitely (Basel P0.9 keeps regulatory runs with it); the schema migration in one transaction; the worker's lock per host, not per queue file | [I-76](known-issues.md#i-76), [I-77](known-issues.md#i-77), [I-91](known-issues.md#i-91), [I-106](known-issues.md#i-106) | 3.13 | M |
@@ -193,9 +194,10 @@ notional means a short European but a long Bermudan (I-101). The High defect of 
 
 Order within the stage:
 
-- **The High defect first.** 3.4 is small and touches no path kernel, so it goes ahead of
-  everything without delaying it. Market risk in one unit (I-100, done 2026-10-11) moved no
-  precision campaign, all in one currency; every later market-risk figure has a currency.
+- **The High defects first** (both done 2026-10-11). Market risk in one unit (I-100) moved no
+  precision campaign, all in one currency; every later market-risk figure has a currency. A
+  short option (I-101) is the long one's kernel and a sign, so every evidence row of a long
+  option holds for the short.
 - **Low precision in full before anything else competes.** The storage harness is built
   (2026-10-09, I-75) and the kernels it measures are rewritten (2026-10-10) but for the
   rollback. Their first measurements found a bias floor of compute below float32 (I-96), fixed
@@ -224,9 +226,7 @@ Order within the stage:
   the day, and 3.13 carries it over. 3.15 comes before 3.16, which is written on the worker
   loop 3.15 changes.
 - **Numbers.** 3.12 to 3.16 move no number beyond the margin (3.12 refuses inputs that gave
-  wrong ones). 3.4 changes the values of short Bermudans and Americans: a fix, red first, as
-  market risk's figures for portfolios in more than one currency and at VaR's exact rank
-  boundaries were (I-100, I-102, 2026-10-11). 3.6 and 3.7 move default Bermudan/American
+  wrong ones). 3.6 and 3.7 move default Bermudan/American
   numbers towards ORE's, and 3.11 may move the AD Greeks to ORE's, planned changes of the model. 3.8, 3.9 and 3.10 may move
   float64 at rounding level, within the margin, as the kernel rewrite of 2026-10-10 did
   (2.2e-14 of each array's scale).

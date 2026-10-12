@@ -783,7 +783,7 @@ that shape.
 | `_PreparedBermudan`, `_GridSchedule` | `_backward_induction_arrays`, `_rollback_every_path` |
 | `BasketInstrument` | `_bootstrap` (I-22), the Vega Jacobian's `_residual_gradient` |
 | `CalibrationTarget` | the legacy `calibrate_lgm_sigma`'s prices and bisection |
-| `TradePriceFunction.terms` (`_LegsTerms`, `BachelierTerms`, `EuropeanTerms`, `OptionTerms`), the pricer static (since 2.4, §3.8) | the AD Greeks' `_curve_derivatives`, `_option_vega`, `_bachelier_vega` |
+| `TradePriceFunction.terms` (`_LegsTerms`, `BachelierTerms`, `EuropeanTerms`, `OptionTerms`), the pricer static (since 2.4, §3.8) | the AD Greeks' `_curve_derivatives`, `_option_vega` (a European's and a Bermudan's/American's since 2026-10-11, I-101: an option's pricer is `OnPosition` of its engine's, its terms `Positioned`, the position's sign as data) |
 
 Callers that build a fresh closure per call were deliberately *not* jitted as a whole: the
 AD Greeks and market risk (`revalue_trade`) differentiated or vmapped closures over the

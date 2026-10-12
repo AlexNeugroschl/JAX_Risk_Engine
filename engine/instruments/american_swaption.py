@@ -22,7 +22,9 @@ from typing import ClassVar, Dict, List, Optional
 
 import ORE
 
-from engine.instruments._validation import _validate_common_fields, _validate_identity, _validate_settlement
+from engine.instruments._validation import (
+    _validate_common_fields, _validate_identity, _validate_option_position, _validate_settlement,
+)
 from engine.instruments.bermudan_swaption import ExerciseStyle
 from engine.instruments.schedules import book_swap_dates, is_live, validate_fixings
 from engine.market_data.day_counts import time_from_reference
@@ -52,6 +54,7 @@ class AmericanSwaptionConfig:
     fixings: Dict[ORE.Date, float] = field(default_factory=dict)
     currency: str = "USD"
     settlement: str = "Physical"
+    long_short: str = "Long"
     trade_id: str = field(kw_only=True)
     evaluation_date: ORE.Date = field(kw_only=True)
     #: The product name precision overrides are keyed by (`engine.precision.Precision.by_product`).
@@ -82,6 +85,7 @@ class AmericanSwaptionConfig:
     def __post_init__(self, swap_tenor: Optional[str]) -> None:
         _validate_identity(self.trade_id, self.evaluation_date)
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
+        _validate_option_position(self.trade_id, self.notional, self.long_short)
         book_swap_dates(self, swap_tenor)
         validate_fixings(self.fixings)
         _validate_settlement(self.settlement)

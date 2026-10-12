@@ -15,6 +15,16 @@ as a `BermudanOptionWrapper`, one underlying swap per exercise date (plan T-11, 
   * The underlying of exercise date e is the swap from the coupon before the first one
     accruing from e (`buildUnderlyingSwaps`: `lower_bound` on the accrual start, then one
     back), on both legs.
+  * The position (`OptionData/LongShort`) multiplies the whole value, the option's and, once
+    exercised, the underlying's (`multiplier2_`: 1 long, -1 short), but not the exercise
+    decision, which compares the long option with its underlying: the holder exercises, so a
+    short option is minus the long one on every path and date (I-101).
+
+The engines (`engine.pricing.european`, `jamshidian`, `bermudan`) value the long option, as
+ORE's pricing engines know nothing of the position; `position_sign` is applied where the trade's
+value is formed, as ORE's wrapper applies it: `wrap` on the paths, and today
+`engine.pricing.cube.value_on` and the price functions of the Greeks and market risk
+(`engine.risk.greeks.price_functions`).
 """
 from functools import partial
 from typing import List, Optional, Sequence
@@ -23,6 +33,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import ORE
+
+
+def position_sign(cfg) -> float:
+    """An option's position as ORE's `OptionWrapper` multiplies by it: 1.0 for `Long`, -1.0
+    for `Short` (`long_short`)."""
+    return -1.0 if cfg.long_short == "Short" else 1.0
 
 
 def effective_steps(exercise_dates: Sequence[ORE.Date], asof: ORE.Date,
@@ -44,15 +60,16 @@ def underlying_start(accrual_starts: Sequence[ORE.Date], exercise_date: ORE.Date
 
 
 def wrap(option: jax.Array, underlyings: Sequence[jax.Array], steps: Sequence[Optional[int]],
-         physical: bool) -> jax.Array:
-    """`[S, D]` NPV of the wrapped option from the option's own cube `option` and each
+         physical: bool, sign: float) -> jax.Array:
+    """`[S, D]` NPV of the wrapped option from the long option's own cube `option` and each
     exercise's underlying cube (`underlyings[i]` for contract date i), as `OptionWrapper::NPV`
-    walks the grid. A long position."""
-    return _wrap(option, tuple(underlyings), tuple(steps), physical)
+    walks the grid: the holder's exercise, the position's `sign` (`position_sign`) on the
+    value. The sign is data, so a long and a short option share one program."""
+    return _wrap(option, tuple(underlyings), tuple(steps), physical, jnp.asarray(sign, dtype=option.dtype))
 
 
 @partial(jax.jit, static_argnums=(2, 3))
-def _wrap(option: jax.Array, underlyings, steps, physical: bool) -> jax.Array:
+def _wrap(option: jax.Array, underlyings, steps, physical: bool, sign: jax.Array) -> jax.Array:
     num_dates = option.shape[1]
     after = jnp.arange(num_dates)
     value = option
@@ -66,4 +83,4 @@ def _wrap(option: jax.Array, underlyings, steps, physical: bool) -> jax.Array:
         settled = underlying if physical else jnp.zeros_like(underlying)
         value = jnp.where(exercise[:, None] & (after[None, :] >= step), settled, value)
         exercised = exercised | exercise
-    return value
+    return sign * value

@@ -113,6 +113,13 @@ moves its first day to `max(first, evaluation date + 1)` (`ExerciseBuilder`), so
 that is already open starts tomorrow. Starting it at `t = 0` instead was 7e-4 off ORE for a
 window opening on the evaluation date.
 
+A short option is booked by `long_short="Short"` (ORE's `LongShort`) on a positive notional,
+and is worth exactly minus the long one, today and on every path: the engine values the long
+option, and the position multiplies the wrapped value as ORE's `OptionWrapper` does, the
+holder deciding the exercise. A negative notional is refused: it would be the long option on
+the reversed swap, not the short (+15,018 where ORE's short is -35,713 on the shared test
+portfolio, [I-101](../planning/known-issues.md#i-101)).
+
 The underlying swap is booked with absolute dates, exactly as a
 [`SwapConfig`](swaps.md#1-describing-a-swap-swapconfig) is (`effective_date`/`maturity_date`,
 or `swap_tenor` resolved once at booking), so one config is one trade on every evaluation
@@ -323,8 +330,8 @@ path's own curves (with the volatility surface seen from the date), and the grid
 from the date on those curves, with the coupons that fixed during the simulation at their
 path fixings. The bootstrap and the rollback are batched over paths, on the device. After the
 last exercise the option is worth 0; once exercised, ORE's `OptionWrapper` carries the swap
-entered (physical) or nothing (cash). Under either simulation model the engine is the same:
-it reads only the path's curves. Two details of ORE's recalibration differ
+entered (physical) or nothing (cash), and a short position is minus all of it. Under either
+simulation model the engine is the same: it reads only the path's curves. Two details of ORE's recalibration differ
 ([I-49](../planning/known-issues.md#i-49)), and it is the slow part of a run
 ([I-53](../planning/known-issues.md#i-53); `PricingConfig(recalibrate=False)` keeps today's
 calibration on every path).
@@ -413,7 +420,7 @@ takes both settings as parameters, so the gap can be re-measured at any time.
 `tests/test_ore_lgm_parity.py` (23 tests) — equality with ORE's own LGM engine, as above.
 The authoritative check.
 
-`tests/test_bermudan_swaption.py` (58 tests) — the shared engine:
+`tests/test_bermudan_swaption.py` (57 tests) — the shared engine:
 
 - `TestLgmClosedFormsAgainstORE` — every closed-form primitive (`H`, `zeta`, `_lgm_bond`,
   the Hagan quadrature weights) checked directly against live `ORE.IrLgm1fConstantParametrization`
@@ -424,7 +431,7 @@ The authoritative check.
   `tests/bermudan_references.py`.
 - `TestMonotonicity` — model-independent no-arbitrage bounds.
 - `TestMidPeriodBermudanExercise` — the whole-period membership rule and its direction.
-- Shape, edge cases, grids, payer/receiver and date validation.
+- Edge cases, grids, payer/receiver and date validation.
 
 `tests/test_american_swaption.py` (23 tests) — the American-specific parts: ORE's option
 times (including the truncating step count), the broken-period `couponRatio`, and the one
@@ -437,9 +444,16 @@ engines, a model-level comparison of a few percent, plus `TestExerciseDatesAreEx
 basket (`test_option_today_equals_ores_calibrated_grid_engine`), and every path and date
 against ORE recalibrated on the path's curves, under both simulation models.
 
-`tests/test_greeks_bermudan.py` (12 tests) — AD Delta/Gamma against finite differences with
+`tests/test_greeks_bermudan.py` (11 tests) — AD Delta/Gamma against finite differences with
 the volatility held, Vega against finite differences of the full recalibrating pricing, an
 American's Greeks.
+
+`tests/test_option_position.py` — a short option (`long_short="Short"`) is exactly minus the
+long one today, on every path, in the AD and bump Greeks and in market risk, in float64 and
+float32, compiling nothing beyond the long one's programs; a zero or negative notional is
+refused. Against ORE's own trade builder with `LongShort` Short:
+`tests/test_shared_portfolio.py::test_a_short_option_today_is_ores_short_option` and, on ORE's
+paths, `tests/test_ore_xva_parity.py::test_a_short_option_on_ores_paths_is_ores_short_option`.
 
 `tests/test_calibration_integration.py` (6 tests) — a calibrated `Sigma` from
 `engine.calibration.lgm.calibrate_lgm_sigma` fed into the grid engine and priced end to end,

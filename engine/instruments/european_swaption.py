@@ -16,7 +16,9 @@ from typing import ClassVar, Optional
 
 import ORE
 
-from engine.instruments._validation import _validate_common_fields, _validate_identity, _validate_settlement
+from engine.instruments._validation import (
+    _validate_common_fields, _validate_identity, _validate_option_position, _validate_settlement,
+)
 from engine.instruments.schedules import SWAP_CALENDAR, book_swap_dates, build_vanilla_swap, is_live
 
 
@@ -34,6 +36,9 @@ class SwaptionConfig:
     settlement: Physical (ORE's default) or Cash: what the option becomes on exercise in a
         simulation (ORE's `OptionWrapper`), and for cash ORE's `ParYieldCurve` annuity (the
         Jamshidian engine refuses it, as QuantLib's does).
+    long_short: Long (the default) or Short, ORE's `OptionData/LongShort`: a short option is
+        worth minus the long one, today and on every path, its exercise still the holder's
+        (`engine.pricing.options`). `notional` is positive; a sign cannot book a short (I-101).
 
     Booking by tenor instead (resolved once, on `evaluation_date`, not stored):
       * swap_tenor: the underlying's length, e.g. "5Y";
@@ -55,6 +60,7 @@ class SwaptionConfig:
     exercise_lag_days: InitVar[Optional[int]] = None
     currency: str = "USD"
     settlement: str = "Physical"
+    long_short: str = "Long"
     trade_id: str = field(kw_only=True)
     evaluation_date: ORE.Date = field(kw_only=True)
     #: The product name precision overrides are keyed by (`engine.precision.Precision.by_product`).
@@ -63,6 +69,7 @@ class SwaptionConfig:
     def __post_init__(self, swap_tenor, forward_start, exercise_lag_days) -> None:
         _validate_identity(self.trade_id, self.evaluation_date)
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
+        _validate_option_position(self.trade_id, self.notional, self.long_short)
         if swap_tenor is not None:
             if self.exercise_date is not None:
                 raise ValueError("give either swap_tenor or exercise_date/effective_date/maturity_date, not both")

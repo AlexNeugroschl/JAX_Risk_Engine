@@ -7,36 +7,36 @@ issues keep one line in the [closed ledger](#closed).
 
 Read this before trusting an exposure profile: a Bermudan's or American's values on the
 paths, and so its exposure, are 0.5–4% above ORE's simulation ([I-49](#i-49)); swaps,
-Europeans and bonds equal ORE's simulation path by path since 2026-10-07. Before booking a
-short option: a negative notional is a short European but a long Bermudan or American on the
-reversed swap ([I-101](#i-101)).
+Europeans and bonds equal ORE's simulation path by path since 2026-10-07.
 
 ## Verification status
 
-Last full run, 2026-10-11, on market risk in one unit ([I-100](#i-100)) and VaR's rank and
-quantile keys ([I-102](#i-102)): `engine/risk/market/{run,var_es}.py`, the shared
-`reporting_fx_spots` in `engine/pricing/cube.py`, the portfolio preflight, the API schemas.
-3,235 collected on Windows: the 3,155 of the run before plus 63 in `tests/test_var_es.py`, 12 in
-`tests/test_market_risk.py`, 2 in `tests/test_api_market_risk.py`, 2 in
-`tests/test_run_config.py` and 1 in `tests/test_exposure.py`. Each run printed its summary line:
+Last full run, 2026-10-11, on an option's position ([I-101](#i-101)): `long_short` on the option
+configs and their API schemas, the sign in `engine/pricing/options.py` (`wrap`, `position_sign`),
+`engine/pricing/cube.py` (`value_on`) and `engine/risk/greeks/price_functions.py` (`OnPosition`,
+`Positioned`; the European's AD Vega on it, `ad._bachelier_vega` gone), the ORE oracles booking
+`LongShort`. 3,272 collected on Windows: the 3,235 of the run before plus 34 in
+`tests/test_option_position.py`, 5 in `tests/test_shared_portfolio.py` and 1 in
+`tests/test_ore_xva_parity.py`, less 3 that priced a zero-notional option to 0 (now refused).
+Each run printed its summary line:
 
-- **Windows**, `-n 8`: **3,226 passed, 3 skipped, 6 xfailed, 0 failed**, 15m49s (the skips: the
+- **Windows**, `-n 8`: **3,263 passed, 3 skipped, 6 xfailed, 0 failed**, 13m30s (the skips: the
   two accelerator-only defaults and the GPU plugin check; the expected failures as before: the
   Bermudan/American L3 cases of `tests/test_ore_xva_parity.py`, strict, waiting on
   [I-49](#i-49)).
 - **GPU**, **Linux**: not rerun; the change touches no device code, process, path or platform
   default ([rule 5](README.md#verification-rules)). The last GPU and Linux runs are of
   2026-10-11, before it.
-- **Golden snapshot** (against the code before, its Greeks section left out, the Greeks
-  untouched): 273 of 273 arrays identical, bit for bit, market risk at float64 and float32
-  among them: a portfolio in its reporting currency does not move.
-- **Precision harness**: not rerun; no kernel, format or single-currency figure changed.
+- **Golden snapshot** (against the code before, its Greeks section left out): 273 of 273 arrays
+  identical, bit for bit: a long position does not move (the sign is a multiplication by 1.0).
+- **Precision harness**: not rerun; no kernel, format or figure of a long position changed, and
+  a short one is its long one's negation, exact in every format.
 
-Red first: on the code before, 57 of the new tests failed and 3 errored, among them every
-exact-boundary oracle against `ORE.RiskStatistics` (VaR 15 where ORE's is 16), the close-level
-keys (`0.95` and `0.9500000001` both `95`), the two-currency figures (unmoved by the EURUSD spot:
-VaR_99 601,048 at 1.10 and 1.30, where the converted P&Ls give 633,967 and 702,256) and the two
-portfolio preflight refusals.
+Red first: on the code before, 38 of the 40 new tests failed or errored (the two that passed
+check what does not change: a swap's signed notional, and an unknown field over HTTP a 422),
+among them every refusal of a zero or negative option notional; the Bermudan payer booked at
+notional -1e6 priced +15,017.85, where ORE's `LongShort` Short is -35,712.95 (the engine now
+gives -35,712.953831242 against ORE's -35,712.953831256).
 
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
@@ -53,7 +53,6 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
 | [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | TraderX |
 | [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | Fix what exists |
-| [I-101](#i-101) | A negative option notional: a European is valued as the short, a Bermudan/American as a long option on the reversed swap | High | OPEN | Correctness | Focus |
 | [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | Focus |
 | [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | Focus |
 | [I-73](#i-73) | A calibration that misses its basket is accepted unless it hits the bracket's ceiling, and on a path not even then | Medium | OPEN | Correctness | Focus |
@@ -102,36 +101,6 @@ model" before 2026-10-01 meant the separate pipeline removed that day.
 ---
 
 ## Correctness
-
-<a id="i-101"></a>
-### I-101 — A negative option notional: a European is valued as the short, a Bermudan/American as a long option on the reversed swap
-
-**Severity:** High · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-10, the
-project audit (AUD-09); measured 2026-10-11
-
-**What is wrong.** Option configs have no long/short field, and
-`engine/instruments/_validation.py` allows a negative notional, so a sign is the only way to
-book a short option. The engines read it differently. On the shared test portfolio's market
-(`tests/support/portfolio.py`), the European payer (5Y into 1Y) at notional −2e6 is
-−51,133.41, exactly minus its value at +2e6: a short. The Bermudan payer at −1e6 is
-**+15,017.85**, not −35,712.95: the grid engine takes the larger of exercise and continuation
-on the negated swap, which is a long option on the receiver swap. Americans go through the
-same rollback (not run). At notional 0 the European is NaN (`black_multileg_npv` divides by a
-zero annuity), the Bermudan 0. ORE books a short option as `<LongShort>Short</LongShort>` on a
-positive notional.
-
-**Reach.** Every Bermudan or American booked short by its sign, with the wrong sign and size in
-its t=0 NPV, path values, exposure, Greeks and VaR; and a zero-notional European, NaN through
-every portfolio figure. Long options, and swaps and bonds of either sign, are unaffected. No
-test, demo or TraderX row books a short option.
-
-**Current handling.** None.
-
-**To close.** ORE's `LongShort` on every option config and its API schema (an additive field,
-`Long` by default), a `Short` option valued as minus its `Long` value by every engine, today
-and on the paths; a negative or zero option notional refused, naming the trade. Tests: a short
-European, Bermudan and American each minus the long one, on the paths and in the AD and bump
-Greeks, and a `Short` Bermudan against ORE through the LGM oracle; red first on the Bermudan.
 
 <a id="i-32"></a>
 ### I-32 — Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5
@@ -447,6 +416,11 @@ project audit (AUD-05, AUD-10, AUD-35, AUD-40); measured 2026-10-11
   whole period after expiry with `next` and no default: an expiry of 2028-12-01 on a
   2027-01-15 → 2029-01-15 swap passes the config and raises a bare `StopIteration` when
   priced.
+- **The standalone calibration's notional.** `POST /calibration/lgm` (`CalibrationRequestSchema`,
+  `build_coterminal_basket`) takes any `notional`, though its helpers' prices scale with it: on
+  a 1Y/2Y/3Y basket into 6Y at 0.9% normal volatility, 1e6 fits σ 0.0096–0.0110, while 0 returns
+  σ ≈ 7e-5 and −1e6 every bucket at the bracket's floor, 1e-6, both with no error (measured
+  2026-10-11; trade options refuse such a notional since I-101).
 - **Preflight.** `validate_request` (`engine/run/pipeline.py`) and market risk's
   `validate_portfolio` check trades against the market's names, not the market's values, so
   these become failed jobs, not `400`s.
@@ -464,7 +438,8 @@ surface is validated (shape, finite, non-negative, increasing tenors).
 **To close.** Host-side checks on construction, before any JAX work: a curve's pillars
 non-empty, as many rates as times, finite, times non-negative and strictly increasing
 (negative rates allowed); an exercise that leaves no whole period of a leg refused, naming the
-trade and the dates; every API model strict (`extra="forbid"`). The run request's preflight
+trade and the dates; the standalone calibration's notional positive (until [I-94](#i-94)
+retires it); every API model strict (`extra="forbid"`). The run request's preflight
 ([I-87](#i-87)) then runs them all. A test per refusal, red first.
 
 ---
@@ -1541,6 +1516,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-96"></a>I-96 | Compute below float32 biased every figure: each product's path-independent operand was rounded once for every path (now carried in two terms of the format, the single pass a format of its own, `<name>_1x`; 2026-10-11, decision A-23) | `tests/test_compute_precision.py::TestPipeline::test_no_rounding_of_a_shared_operand_biases_the_paths` (red on the code before: 14 to 24 standard errors), `TestProducts::test_the_shared_operands_rounding_biases_a_single_pass_not_two_terms` |
 | <a id="i-99"></a>I-99 | On a GPU a block-offset storage took a block's deviations from its unrounded midpoint while keeping the float32 one, so a stored entry missed its value by float32's rounding of it: XLA removed the float64 -> float32 -> float64 round trip of the offset's cast (found and fixed 2026-10-11, the offset now rounded on float32's grid) | `tests/test_precision.py::TestScaledStorage::test_any_scenario_count_and_axis_short_last_block` (red on an RTX 5060 at the code before, its one-entry blocks 5e-8 off) |
 | <a id="i-100"></a>I-100 | Market risk added the P&Ls of trades in different currencies unconverted (now every amount is in the request's `base_currency`, USD by default as a portfolio run's without a simulation, each trade converted at the as-of FX spot in float64, a missing spot refused before any work naming the trade and the pair, the result naming its currency and warning that FX is not shocked; the portfolio run's preflight refuses a missing spot, and a trade in a currency its simulation does not model, before any work; 2026-10-11) | `tests/test_market_risk.py::TestReportingCurrency` (red on the code before: the figures did not move with the EURUSD spot; VaR_99 601,048 where the converted P&Ls give 633,967 at 1.10), `tests/test_run_config.py::TestWhatThePipelineDoesNotImplementIsRefused::test_a_trade_with_no_spot_into_the_reporting_currency_is_refused_naming_it`, `::test_a_trade_in_a_currency_the_simulation_does_not_model_is_refused` |
+| <a id="i-101"></a>I-101 | A negative option notional booked a short European but a long Bermudan or American on the reversed swap (the Bermudan payer at -1e6 was +15,017.85 where ORE's short is -35,712.95), and a zero one priced a European to NaN (now every option has ORE's `LongShort`, `long_short` on the configs and the API, `Long` by default; a short is minus the long one in every engine, today, on the paths with the holder's exercise as ORE's `OptionWrapper`, in the AD and bump Greeks and in market risk; a zero or negative option notional refused naming the trade; 2026-10-11) | `tests/test_option_position.py`, `tests/test_shared_portfolio.py::test_a_short_option_today_is_ores_short_option` (against ORE's trade builder with `LongShort` Short), `tests/test_ore_xva_parity.py::test_a_short_option_on_ores_paths_is_ores_short_option` (each red on the code before) |
 | <a id="i-102"></a>I-102 | VaR took index floor(N(1−p)), one above QuantLib's ceil(N(1−p)) − 1 where N(1−p) is a whole number (VaR 15 where ORE's is 16 on 16 scenarios at 0.9375), and quantile keys were rounded to six decimals, so close levels shared one (now QuantLib's rank, `var_rank`; each key the level's percentage exactly; a run's levels in (0, 1), each once, documented as broader than ORE's [0.9, 1); 2026-10-11) | `tests/test_var_es.py::TestExactRankBoundaryAgainstORE`, `::TestQuantileLabels`, `tests/test_market_risk.py::TestRunValidation::test_close_quantiles_keep_their_own_figures`, `tests/test_exposure.py::TestDefinitions::test_close_quantiles_keep_their_own_keys` (each red on the code before) |
 | <a id="m-4"></a>Audit M-4 | Trades were defined relative to the evaluation date (now absolute dates) | `tests/test_trade_dates.py` |
 | <a id="m-5"></a>Audit M-5 | Theta re-rolled the trade instead of ageing it | `tests/test_trade_dates.py` |

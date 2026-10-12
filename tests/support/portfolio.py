@@ -23,7 +23,9 @@ engines:
 swap starting after expiry, cash settled by `ParYieldCurve`), the OREApp oracle's calibrated
 `NumericLgmMultiLegOptionEngine` (a cash-settled Bermudan/American is priced there as the
 physical one: ORE approximates it by `CollateralizedCashPrice`, swaption.cpp), and
-`DiscountingBondEngine`.
+`DiscountingBondEngine`. `ore_trade_npv(cfg)` is an option's value as ORE books it, through
+ORE's own `Swaption` trade builder in the OREApp oracle, its `LongShort` included: the
+reference for a short option (I-101), which QuantLib's `Swaption` cannot book.
 
 The curves are flat to their first non-zero pillar, as they were written before the oracle
 handed ORE the as-of quote its curve rebuild needs (I-34, fixed 2026-10-07); a slope there
@@ -169,15 +171,18 @@ def ore_vols() -> "ORE.SwaptionVolatilityStructureHandle":
 
 
 def ore_npv(cfg) -> float:
-    """ORE's t=0 value of one trade of `trades()` (see the module docstring)."""
+    """ORE's t=0 value of one long trade of `trades()` (see the module docstring)."""
     ORE.Settings.instance().evaluationDate = ASOF
     if isinstance(cfg, SwapConfig):
         return _ore_swap(cfg)
-    if isinstance(cfg, SwaptionConfig):
-        return _ore_european(cfg)
     if isinstance(cfg, BondConfig):
         return _ore_bond(cfg)
-    return _ore_lgm_option(cfg)
+    if cfg.long_short != "Long":
+        raise ValueError(f"{cfg.trade_id}: ore_npv's engines value the long option; ore_trade_npv books the "
+                         f"position")
+    if isinstance(cfg, SwaptionConfig):
+        return _ore_european(cfg)
+    return ore_trade_npv(cfg)
 
 
 def _ore_swap(cfg: SwapConfig) -> float:
@@ -209,16 +214,26 @@ def _ore_european(cfg: SwaptionConfig) -> float:
     return swaption.NPV()
 
 
-def _ore_lgm_option(cfg) -> float:
-    american = isinstance(cfg, AmericanSwaptionConfig)
+def ore_trade_npv(cfg) -> float:
+    """ORE's t=0 value of one option of `trades()`, in any position, as ORE books it: its
+    `Swaption` trade with the option's `LongShort`, priced by ORE's default European engine or
+    the calibrated `NumericLgmMultiLegOptionEngine` (a cash-settled Bermudan/American as the
+    physical one, see the module docstring)."""
+    if isinstance(cfg, SwaptionConfig):
+        style, exercises, swap, settlement = "European", [cfg.exercise_date], european_underlying(cfg), cfg.settlement
+    elif isinstance(cfg, AmericanSwaptionConfig):
+        style, exercises, swap, settlement = ("American", [cfg.first_exercise_date, cfg.last_exercise_date],
+                                              option_underlying(cfg), "Physical")
+    else:
+        style, exercises, swap, settlement = "Bermudan", cfg.exercise_dates, option_underlying(cfg), "Physical"
     return ore_lgm_swaption_npv(
-        evaluation_date=ASOF, curve_times=PILLARS, curve_rates=DISCOUNT, swap=option_underlying(cfg),
-        notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer, floating_spread=cfg.floating_spread,
-        index_tenor_months=cfg.index_tenor_months, style="American" if american else "Bermudan",
-        exercise_dates=[cfg.first_exercise_date, cfg.last_exercise_date] if american else cfg.exercise_dates,
-        hw_a=ENGINE.reversion, hw_sigma=ENGINE.volatility, n_per_std=ENGINE.n_per_std, std_devs=ENGINE.std_devs,
+        evaluation_date=ASOF, curve_times=PILLARS, curve_rates=DISCOUNT, swap=swap, notional=cfg.notional,
+        fixed_rate=cfg.fixed_rate, payer=cfg.payer, floating_spread=cfg.floating_spread,
+        index_tenor_months=cfg.index_tenor_months, style=style, exercise_dates=exercises, hw_a=ENGINE.reversion,
+        hw_sigma=ENGINE.volatility, n_per_std=ENGINE.n_per_std, std_devs=ENGINE.std_devs,
         exercise_time_steps_per_year=ENGINE.exercise_time_steps_per_year, index_curve_rates=FORWARDING,
-        swaption_vols=VOLS, calibration=OreCalibration("Bootstrap", ENGINE.strategy, 1e-8)).npv
+        swaption_vols=VOLS, calibration=OreCalibration("Bootstrap", ENGINE.strategy, 1e-8),
+        long_short=cfg.long_short, settlement=settlement).npv
 
 
 def _ore_bond(cfg: BondConfig) -> float:

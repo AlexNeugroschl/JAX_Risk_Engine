@@ -98,11 +98,6 @@ class TestBermudanDeltaGamma:
             expected[k] = (float(gradient(jnp.asarray(up))[k]) - float(gradient(jnp.asarray(down))[k])) / (2 * h)
         assert_close(greeks["gamma:discount:USD"], expected * SHIFT ** 2, rtol=1e-5)
 
-    def test_zero_notional_has_zero_delta_and_gamma(self):
-        zero = curve_greeks(bermudan(notional=0.0), shared.market(), PRICING, SHIFT)
-        for value in zero.values():
-            np.testing.assert_array_equal(value, 0.0)
-
     def test_payer_and_receiver_deltas_differ_in_sign_on_the_index_curve(self, greeks):
         receiver = curve_greeks(bermudan(payer=False, fixed_rate=0.035), shared.market(), PRICING, SHIFT)
         assert greeks[f"delta:index:{shared.INDEX}"].sum() > 0 > receiver[f"delta:index:{shared.INDEX}"].sum()

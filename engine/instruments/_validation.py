@@ -4,7 +4,10 @@ Field validators shared by every trade config's `__post_init__`.
 They live in the instruments layer so that instrument modules import nothing from
 `engine.run`, the layer above them (audit A-5; enforced by
 tests/test_import_layering.py). Only malformed input (e.g. non-finite values) is rejected;
-zero and negative notionals and rates are allowed.
+zero and negative notionals and rates are allowed on swaps (a negative notional is the reversed
+swap, as ORE's notional sign is). An option's notional is positive and its position is its
+`long_short` (ORE's `<LongShort>`): a sign cannot book a short option, since the option on the
+reversed swap is a different, long, option (I-101).
 
 Every trade config names itself and its valuation date: `trade_id`, ORE's
 `<Trade id>`, and `evaluation_date`, both required keyword fields. A trade never reads ORE's
@@ -42,3 +45,18 @@ def _validate_settlement(settlement: str) -> None:
     """Physical or Cash, as ORE's `OptionData/Settlement`."""
     if settlement not in SETTLEMENT_TYPES:
         raise ValueError(f"settlement must be one of {SETTLEMENT_TYPES}; got {settlement!r}")
+
+
+#: ORE's option positions (`OptionData/LongShort`, `Position::Type`).
+LONG_SHORT = ("Long", "Short")
+
+
+def _validate_option_position(trade_id: str, notional: float, long_short: str) -> None:
+    """An option's position: `long_short` Long or Short, as ORE's `OptionData/LongShort`, on a
+    positive notional. A zero or negative notional is refused, naming the trade: a short is
+    booked by `long_short`, never by the notional's sign (I-101)."""
+    if long_short not in LONG_SHORT:
+        raise ValueError(f"trade {trade_id!r}: long_short must be one of {LONG_SHORT}; got {long_short!r}")
+    if not notional > 0.0:
+        raise ValueError(f"trade {trade_id!r}: an option's notional must be positive; got {notional}. Book a short "
+                         f"option with long_short='Short' (ORE's LongShort) on a positive notional")

@@ -18,7 +18,9 @@ from typing import ClassVar, Dict, List, Optional, Sequence
 
 import ORE
 
-from engine.instruments._validation import _validate_common_fields, _validate_identity, _validate_settlement
+from engine.instruments._validation import (
+    _validate_common_fields, _validate_identity, _validate_option_position, _validate_settlement,
+)
 from engine.instruments.schedules import book_swap_dates, build_vanilla_swap, is_live, validate_fixings
 from engine.market_data.day_counts import time_from_reference
 
@@ -46,7 +48,8 @@ class BermudanSwaptionConfig:
     One Bermudan swaption: the option to enter a vanilla swap on any of a list of dates.
 
     trade_id / evaluation_date: as in `SwapConfig` (required, keyword only).
-    currency / settlement: as in `SwaptionConfig`.
+    currency / settlement / long_short: as in `SwaptionConfig` (`notional` positive, a short
+        booked by `long_short`).
     exercise_dates: ascending `ORE.Date`s. Converted to times with the curve's day counter,
         as ORE derives `optionTimes`, so an exercise date and the accrual date it names map
         to the same float. Dates on or before `evaluation_date` are not exercise
@@ -67,6 +70,7 @@ class BermudanSwaptionConfig:
     fixings: Dict[ORE.Date, float] = field(default_factory=dict)
     currency: str = "USD"
     settlement: str = "Physical"
+    long_short: str = "Long"
     trade_id: str = field(kw_only=True)
     evaluation_date: ORE.Date = field(kw_only=True)
     #: The product name precision overrides are keyed by (`engine.precision.Precision.by_product`).
@@ -89,6 +93,7 @@ class BermudanSwaptionConfig:
     def __post_init__(self, swap_tenor: Optional[str]) -> None:
         _validate_identity(self.trade_id, self.evaluation_date)
         _validate_common_fields(self.notional, self.fixed_rate, self.evaluation_date)
+        _validate_option_position(self.trade_id, self.notional, self.long_short)
         book_swap_dates(self, swap_tenor)
         validate_fixings(self.fixings)
         _validate_settlement(self.settlement)

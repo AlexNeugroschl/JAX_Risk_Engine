@@ -60,9 +60,12 @@ def ore_lgm_swaption_npv(
     swaption_vols: Optional[SwaptionVolSurface] = None,
     calibration: OreCalibration = OreCalibration(),
     discount_curves: Optional[OreDiscountCurves] = None,
+    long_short: str = "Long",
+    settlement: str = "Physical",
 ) -> OreLgmResult:
-    """NPV of a long, physically settled swaption on `swap`, by ORE's
-    `NumericLgmMultiLegOptionEngine`.
+    """NPV of a swaption on `swap`, by ORE's `NumericLgmMultiLegOptionEngine`, `long_short`
+    (ORE's `LongShort`: the position's sign on the NPV of ORE's `OptionWrapper`, I-101) on a
+    positive `notional`, physically settled unless `settlement` says otherwise.
 
     `style`: "Bermudan" (one date per exercise) or "American" (two dates: the window's
     first and last day). `swap` must be the engine's own underlying (normally
@@ -88,7 +91,7 @@ def ore_lgm_swaption_npv(
     engine = OreLgmEngine(hw_a, hw_sigma, n_per_std, std_devs, exercise_time_steps_per_year, shift_horizon,
                           calibration=calibration, fd_solver=fd_solver)
     trade = swaption_trade_xml("T", swap, notional, fixed_rate, payer, floating_spread, index, style, exercise_dates,
-                               mid_coupon_exercise)
+                               mid_coupon_exercise, settlement=settlement, long_short=long_short)
     parameters = inputs(evaluation_date, index, curves, vols, pricingengine_xml(engine), portfolio_xml([trade]))
     parameters.insertAnalytic("NPV")
     app = run_app(parameters, evaluation_date, market_lines(evaluation_date, curves, vols),

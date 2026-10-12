@@ -448,44 +448,53 @@ class SwapTradeSchema(_SwapTerms):
                           fixings=_parse_fixings(self.fixings))
 
 
-class EuropeanTradeSchema(_SwapTerms):
+class _OptionTerms(_SwapTerms):
+    """What every swaption names beyond its swap: ORE's `OptionData` `Settlement` and
+    `LongShort`. A short option is `Short` on a positive notional; a zero or negative option
+    notional is refused, naming the trade (I-101)."""
+    settlement: Literal["Physical", "Cash"] = "Physical"
+    long_short: Literal["Long", "Short"] = "Long"
+
+    def _common(self, evaluation_date, trade_id):
+        return dict(super()._common(evaluation_date, trade_id), settlement=self.settlement,
+                    long_short=self.long_short)
+
+
+class EuropeanTradeSchema(_OptionTerms):
     trade_type: Literal["european_swaption"] = "european_swaption"
     exercise_date: Optional[str] = None
     forward_start: Optional[str] = None
     exercise_lag_days: Optional[int] = None
-    settlement: Literal["Physical", "Cash"] = "Physical"
 
     def to_dataclass(self, evaluation_date, trade_id) -> SwaptionConfig:
         return SwaptionConfig(**self._common(evaluation_date, trade_id),
                               exercise_date=_parse_optional_date(self.exercise_date),
                               forward_start=_parse_ore_period(self.forward_start) if self.forward_start else None,
-                              exercise_lag_days=self.exercise_lag_days, settlement=self.settlement)
+                              exercise_lag_days=self.exercise_lag_days)
 
 
-class BermudanTradeSchema(_SwapTerms):
+class BermudanTradeSchema(_OptionTerms):
     trade_type: Literal["bermudan_swaption"] = "bermudan_swaption"
     exercise_dates: List[str]
-    settlement: Literal["Physical", "Cash"] = "Physical"
     fixings: Dict[str, float] = Field(default_factory=dict)
 
     def to_dataclass(self, evaluation_date, trade_id) -> BermudanSwaptionConfig:
         return BermudanSwaptionConfig(**self._common(evaluation_date, trade_id),
                                       exercise_dates=[_parse_ore_date(d) for d in self.exercise_dates],
-                                      settlement=self.settlement, fixings=_parse_fixings(self.fixings))
+                                      fixings=_parse_fixings(self.fixings))
 
 
-class AmericanTradeSchema(_SwapTerms):
+class AmericanTradeSchema(_OptionTerms):
     trade_type: Literal["american_swaption"] = "american_swaption"
     first_exercise_date: str
     last_exercise_date: str
-    settlement: Literal["Physical", "Cash"] = "Physical"
     fixings: Dict[str, float] = Field(default_factory=dict)
 
     def to_dataclass(self, evaluation_date, trade_id) -> AmericanSwaptionConfig:
         return AmericanSwaptionConfig(**self._common(evaluation_date, trade_id),
                                       first_exercise_date=_parse_ore_date(self.first_exercise_date),
                                       last_exercise_date=_parse_ore_date(self.last_exercise_date),
-                                      settlement=self.settlement, fixings=_parse_fixings(self.fixings))
+                                      fixings=_parse_fixings(self.fixings))
 
 
 class BondTradeSchema(_Trade):

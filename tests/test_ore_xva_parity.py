@@ -9,7 +9,8 @@ The engine's assembled exposure pipeline against ORE's own exposure simulation (
     state, read from ORE's numeraire, rebuilds every discount and index curve ORE simulated
     (which also checks the calibration ORE's `CrossAssetModelBuilder` ran against the engine's);
   * L3: on ORE's paths every trade's NPV equals ORE's cube, cell by cell, and t=0 (ORE's `T0`)
-    is the engine's value on the simulation market of the as-of date;
+    is the engine's value on the simulation market of the as-of date; an option booked `Short`
+    (ORE's `LongShort`) is minus the long one in ORE's cube and in the engine's (I-101);
   * ORE's exposure definitions: the engine's profiles of ORE's own cube are ORE's reports;
   * L4 (statistical, `slow`): the engine's simulation and exposure against ORE's, each on its
     own random numbers (decision X-1), within four combined standard errors.
@@ -29,6 +30,7 @@ as-of date (`engine.market_simulation.scenario_market`), up to 0.3% of a swap's 
 exposure started from today's value, where ORE starts from the simulation market's (`T0`).
 """
 import csv
+import dataclasses
 import os
 import shutil
 import tempfile
@@ -41,6 +43,7 @@ import pytest
 
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.instruments.european_swaption import SwaptionConfig
 from engine.market_data.curves import ZeroCurve, discount
 from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfig, build_cross_asset_model, simulate
 from engine.market_simulation.scenario_market import build_scenario_market
@@ -76,20 +79,36 @@ def _trades():
     return list(shared.trades().values())
 
 
-@pytest.fixture(scope="module", params=list(MODELS))
-def on_ores_paths(request):
-    """ORE's run on 32 paths, and the engine's simulation market and cube on ORE's paths."""
-    market, trades, config = shared.market(), _trades(), _simulation(request.param, samples=32)
+def _on_ores_paths(trades, model: str):
+    """ORE's run of `trades` on 32 paths, and the engine's simulation market and cube on ORE's
+    paths."""
+    market, config = shared.market(), _simulation(model, samples=32)
     ore = ore_xva_run(market, trades, config, PRICING, PFE_QUANTILE)
-    model = build_cross_asset_model(market, config)
+    cam = build_cross_asset_model(market, config)
     index_curves = {name: ("USD", ZeroCurve.from_config(curve))
                     for name, curve in market.currency("USD").index_curves.items()}
-    scenarios = build_scenario_market(model, market.asof, config.dates,
-                                      jnp.asarray(implied_states(model, ore.times, ore.numeraire)),
+    scenarios = build_scenario_market(cam, market.asof, config.dates,
+                                      jnp.asarray(implied_states(cam, ore.times, ore.numeraire)),
                                       config.curve_tenors, index_curves)
     columns = value_paths(trades, market, scenarios, "USD", PRICING, config.swaption_vol_decay)
     cube = np.stack([np.asarray(c) for c in columns], axis=-1) / ore.numeraire[:, :, None]
     return ore, scenarios, cube
+
+
+@pytest.fixture(scope="module", params=list(MODELS))
+def on_ores_paths(request):
+    """ORE's run of the shared portfolio on 32 paths, and the engine's on ORE's paths."""
+    return _on_ores_paths(_trades(), request.param)
+
+
+@pytest.fixture(scope="module")
+def shorts_on_ores_paths():
+    """ORE's run of every option of the shared portfolio, long and `Short` side by side, on 32
+    paths of the LGM, and the engine's on ORE's paths."""
+    longs = [cfg for cfg in _trades() if isinstance(cfg, (SwaptionConfig,) + OPTIONS)]
+    trades = [t for cfg in longs
+              for t in (cfg, dataclasses.replace(cfg, long_short="Short", trade_id=f"{cfg.trade_id}-short"))]
+    return trades, _on_ores_paths(trades, "LGM")
 
 
 def test_the_scenario_dump_is_the_engines_simulation_market_on_ores_paths(on_ores_paths):
@@ -115,6 +134,24 @@ def test_every_trades_cube_equals_ores_on_ores_paths(on_ores_paths, name, reques
     scale = np.max(np.abs(ore.cube[:, :, j]))
     assert scale > 0.0, "the trade must be worth something on the paths"
     assert np.max(np.abs(cube[:, :, j] - ore.cube[:, :, j])) <= CUBE_RTOL * scale
+
+
+def test_a_short_option_on_ores_paths_is_ores_short_option(shorts_on_ores_paths):
+    """I-101: ORE's `OptionWrapper` multiplies a short option's NPV by -1, its exercise the
+    holder's, so ORE's cube and T0 of a short option are minus the long one's; the engine's
+    are too, so the Europeans equal ORE's short cell by cell and the Bermudans and the American
+    differ from it by minus the long one's difference (I-49, the long's expected failure)."""
+    trades, (ore, _, cube) = shorts_on_ores_paths
+    for j in range(0, len(trades), 2):
+        long, sold = trades[j], trades[j + 1]
+        scale = np.max(np.abs(ore.cube[:, :, j]))
+        assert scale > 0.0, long.trade_id
+        np.testing.assert_allclose(ore.cube[:, :, j + 1], -ore.cube[:, :, j], rtol=0.0, atol=1e-14 * scale,
+                                   err_msg=f"ORE: {sold.trade_id}")
+        assert ore.t0[j + 1] == pytest.approx(-ore.t0[j], rel=1e-14)
+        np.testing.assert_array_equal(cube[:, :, j + 1], -cube[:, :, j], err_msg=f"engine: {sold.trade_id}")
+        if isinstance(long, SwaptionConfig):
+            assert np.max(np.abs(cube[:, :, j + 1] - ore.cube[:, :, j + 1])) <= CUBE_RTOL * scale, sold.trade_id
 
 
 def test_t0_is_the_value_on_the_simulation_market_of_the_as_of_date(on_ores_paths):

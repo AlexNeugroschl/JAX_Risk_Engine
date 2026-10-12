@@ -55,8 +55,13 @@ deflated value is a martingale (`tests/test_hull_white_model.py::TestEuropeansOn
 The trade: `trade_id`, `evaluation_date`, the underlying swap's terms as for a
 [swap](swaps.md#1-describing-a-swap-swapconfig) (`notional`, `fixed_rate`, `payer`, `currency`,
 `index_tenor_months`, `floating_spread`, the schedule), the exercise (`exercise_date`, or
-`forward_start` with an exercise lag), and `settlement` (`"Physical"` or `"Cash"`). It
-carries no curve, volatility or model: those are the market's and the configuration's.
+`forward_start` with an exercise lag), `settlement` (`"Physical"` or `"Cash"`) and
+`long_short` (`"Long"` or `"Short"`, ORE's `LongShort`). It carries no curve, volatility or
+model: those are the market's and the configuration's. The notional is positive: a short
+option is `"Short"`, worth exactly minus the long one, since ORE's `OptionWrapper` multiplies
+the engine's NPV by -1 and the holder still decides the exercise. A negative notional would be
+a different option, on the reversed swap, so it is refused
+([I-101](../planning/known-issues.md#i-101)).
 
 ### 2. Building the real trade: `underlying_swap()`, `european_terms()`
 
@@ -146,3 +151,7 @@ option is 0 and, if physically settled, the path carries the swap it entered
   Jamshidian engine on each path's curve, pathwise and in VaR/ES.
 - `tests/test_greeks.py::TestJamshidianRootDerivative` — the implicit-function derivative of
   x*, first and second order.
+- `tests/test_option_position.py` and
+  `tests/test_shared_portfolio.py::test_a_short_option_today_is_ores_short_option` — a short
+  European is minus the long one under both engines, on every path and in every risk figure,
+  and equals ORE's `LongShort` Short (1e-10).

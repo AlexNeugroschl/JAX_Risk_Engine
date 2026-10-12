@@ -22,7 +22,7 @@ result served), so some differ from the audit's.
 | AUD-06 Calibration acceptance | Confirmed: only the ceiling is checked, at t=0; nothing on the paths | Medium | [I-73](known-issues.md#i-73), widened |
 | AUD-07 Zero volatility in calibration | Confirmed (0/0 at an ATM helper) | Medium | [I-73](known-issues.md#i-73) |
 | AUD-08 Zero-variance European | Confirmed; only under `ConstantVariance` with a zero volatility | Low | [I-104](known-issues.md#i-104) |
-| AUD-09 Zero and negative notionals | Confirmed, *run*, and worse than reported: a negative-notional Bermudan is a long option on the reversed swap (+15,018 where the short is −35,713), a European the short; zero notional NaN | High | [I-101](known-issues.md#i-101) |
+| AUD-09 Zero and negative notionals | Confirmed, *run*, and worse than reported: a negative-notional Bermudan is a long option on the reversed swap (+15,018 where the short is −35,713), a European the short; zero notional NaN | High | [I-101](known-issues.md#i-101), fixed 2026-10-11 |
 | AUD-10 Late exercise | Confirmed, *run* (`StopIteration`) | Medium | [I-103](known-issues.md#i-103) |
 | AUD-11 Delayed last payment | Confirmed; a window of the days between maturity and payment | Low | [I-104](known-issues.md#i-104) |
 | AUD-12 Theta fixings | Confirmed; only when `theta_days` reaches a coupon fixing and paying inside the roll | Low | [I-104](known-issues.md#i-104) |

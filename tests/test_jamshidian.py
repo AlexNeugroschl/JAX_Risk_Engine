@@ -268,11 +268,6 @@ class TestLimits:
         assert np.isfinite(small)
         assert small == pytest.approx(limit, rel=10 * a)
 
-    def test_zero_notional_prices_to_zero(self):
-        cfg = SwaptionConfig(notional=0.0, fixed_rate=0.03, payer=True, swap_tenor="5Y", evaluation_date=TODAY,
-                             trade_id="european")
-        assert _price_at_t0(cfg) == pytest.approx(0.0, abs=1e-6)
-
     def test_expired_is_worth_zero(self):
         cfg = _make_cfg(0.03, True, "5Y", 2)
         after = _context(ZeroCurve.from_config(ZERO_CURVE), cfg.exercise_date)

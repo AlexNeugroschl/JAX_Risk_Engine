@@ -30,6 +30,12 @@ market and held fixed as the rates move (`bermudan_price_function`, which also e
 volatility buckets for Vega). ORE's bump sensitivities recalibrate under every bump instead
 (`engine.risk.greeks.bump`); the two differ by the calibration's response to the curve.
 
+An option's price is in its position (`long_short`, ORE's `LongShort`): its engine prices the
+long option and `OnPosition` multiplies by the position's sign, carried in its `Positioned`
+terms as data, as ORE's `OptionWrapper` multiplies its engine's NPV. A short option's price, its
+derivatives and its P&L are minus the long one's, and a long and a short option of one shape are
+one compiled program (I-101).
+
 The curve's dtype is the working dtype. An option expired on the market's date prices to a
 constant 0 (ORE's `isExpired`), so its sensitivities are 0.
 """
@@ -59,6 +65,7 @@ from engine.pricing.european import (
 from engine.pricing.jamshidian import jamshidian_discounts, jamshidian_npv, jamshidian_on_discounts
 from engine.pricing.legs import Deviations, Legs, leg_values, legs_npv, legs_of, today_schedule
 from engine.pricing.lgm_grid import _build_grid_schedule, _GridSchedule, _PreparedBermudan, grid_value
+from engine.pricing.options import position_sign
 
 #: A market curve: `("discount", currency)` or `("index", index name)`.
 CurveKey = Tuple[str, str]
@@ -78,6 +85,29 @@ class TradePriceFunction:
 
     def price(self, *rates):
         return self.pricer(self.terms, *on_pillars(self.times, rates))
+
+
+class Positioned(NamedTuple):
+    """An option's terms for its long pricer, and its position's sign
+    (`engine.pricing.options.position_sign`) in the working dtype: data, not a static setting."""
+    sign: np.ndarray
+    terms: Any
+
+
+@dataclass(frozen=True)
+class OnPosition:
+    """An option's pricer, or P&L, in its position: `sign * long(terms, ...)` on `Positioned`
+    terms, from the long option's `long` (see the module docstring). Equal for equal `long`, so
+    one compiled program serves a long and a short option."""
+    long: Callable
+
+    def __call__(self, terms: Positioned, *args):
+        return terms.sign * self.long(terms.terms, *args)
+
+
+def in_position(cfg, long: Callable, terms, dtype) -> Tuple[OnPosition, Positioned]:
+    """`(pricer, terms)` of the option `cfg` in its position, from its long pricer and terms."""
+    return OnPosition(long), Positioned(np.asarray(position_sign(cfg), dtype=dtype), terms)
 
 
 def on_pillars(times: Sequence, rates: Sequence) -> Tuple[ZeroCurve, ...]:
@@ -113,6 +143,10 @@ def trade_price_function(cfg, market: Market, pricing: PricingConfig = PricingCo
     def priced(pricer, terms=None, pnl=None):
         return TradePriceFunction(keys, pricer, terms, times, pnl)
 
+    def positioned(long, terms, long_pnl):
+        pricer, terms = in_position(cfg, long, terms, dtype)
+        return priced(pricer, terms, OnPosition(long_pnl))
+
     if isinstance(cfg, BondConfig):
         return priced(_legs_price, _legs_terms(bond_legs(cfg), asof, dtype), _legs_pnl)
     if isinstance(cfg, SwapConfig):
@@ -122,9 +156,9 @@ def trade_price_function(cfg, market: Market, pricing: PricingConfig = PricingCo
         if not cfg.exercise_date > asof:
             return priced(_zero_price, pnl=_zero_pnl)
         if pricing.european == "Jamshidian":
-            return priced(JamshidianPrice(pricing.jamshidian), european_terms(cfg, asof).astype(dtype),
-                          JamshidianPnl(pricing.jamshidian))
-        return priced(bachelier_price, bachelier_terms(cfg, market, dtype), bachelier_pnl)
+            return positioned(JamshidianPrice(pricing.jamshidian), european_terms(cfg, asof).astype(dtype),
+                              JamshidianPnl(pricing.jamshidian))
+        return positioned(bachelier_price, bachelier_terms(cfg, market, dtype), bachelier_pnl)
     if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
         option = bermudan_price_function(cfg, market, pricing, dtype)
         return priced(option.pricer, option.terms)
@@ -279,10 +313,11 @@ def option_price(terms: OptionTerms, disc, index, values=None):
 class BermudanPriceFunction:
     """`price(disc, index, sigma_values)`: the grid engine on the curves with the calibrated
     LGM's buckets `sigma_values` (None: `sigma`'s own), as `pricer(terms, disc, index,
-    sigma_values)`. `calibration` is today's (None when the engine does not calibrate, or
-    the option has expired, when `terms` is None too and the price is 0)."""
+    sigma_values)`, in the option's position (`OnPosition` of `option_price`). `calibration` is
+    today's (None when the engine does not calibrate, or the option has expired, when `terms`
+    is None too and the price is 0)."""
     pricer: Callable
-    terms: Optional[OptionTerms]
+    terms: Optional[Positioned]
     sigma: Sigma
     calibration: Optional[Calibration]
 
@@ -295,7 +330,7 @@ class BermudanPriceFunction:
 def bermudan_price_function(cfg, market: Market, pricing: PricingConfig, dtype) -> BermudanPriceFunction:
     """The Bermudan/American grid engine with the LGM calibrated on today's market as
     `engine.pricing.bermudan.bermudan_value` calibrates it, as a function of the curves and
-    the volatility buckets."""
+    the volatility buckets, in the option's position."""
     engine = pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
     if cfg.is_expired():
         return BermudanPriceFunction(_zero_price, None, Sigma.flat(engine.volatility, dtype=dtype), None)
@@ -305,8 +340,8 @@ def bermudan_price_function(cfg, market: Market, pricing: PricingConfig, dtype) 
     prepared = prepared_option(cfg, engine, sigma)
     prepared = dataclasses.replace(prepared, notional=jnp.asarray(prepared.notional, dtype=dtype),
                                    fixed_amounts=jnp.asarray(prepared.fixed_amounts, dtype=dtype))
-    return BermudanPriceFunction(option_price, OptionTerms(prepared, _build_grid_schedule(prepared)), sigma,
-                                 calibration)
+    pricer, terms = in_position(cfg, option_price, OptionTerms(prepared, _build_grid_schedule(prepared)), dtype)
+    return BermudanPriceFunction(pricer, terms, sigma, calibration)
 
 
 def curves_of(fn: TradePriceFunction, market: Market, dtype) -> Sequence[jnp.ndarray]:
