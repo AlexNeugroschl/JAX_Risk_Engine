@@ -26,8 +26,10 @@ run's precision was, read from what it did, and how far its figures are from flo
 
 `realized` and `devices` are read from the arrays, not the configuration, so the report says
 what ran even if a cast point were wrong. Built in the process that ran the job, so an HTTP
-job reports its worker's device, not the API's (I-12). An unvalidated combination's warning
-per figure joins with the evidence table (I-55) (decision A-11).
+job reports its worker's device, not the API's (I-12). Whether each figure's combination has
+passed the acceptance standard (A-11) is not here but in the result's `warnings`, one for each
+product and aggregate whose figures have no passing row of the evidence table
+(`engine.precision.evidence`, I-55).
 
 Depends on JAX and NumPy only.
 """

@@ -280,7 +280,7 @@ is met, not when its tasks are merged.
 |---|---|---|---|---|
 | P0.1 | Record D-1…D-10 with dates | `compliance/decisions.md` | Review | Owner has signed off each default or its replacement |
 | P0.2 | Download the Basel chapters in §1 into `reference/basel/` with retrieval date and SHA-256 | `reference/basel/README.md` | Hash check test | Text pinned; every citation resolves to a pinned file |
-| P0.3 | Transcribe the BCBS profile twice independently; diff; resolve against the text | `engine/regulatory/profiles/bcbs.yaml`, `profile.py` | `test_profile.py`: schema, every key cited, the two transcriptions agree | Zero diff between transcriptions; every value has a paragraph |
+| P0.3 | Transcribe the BCBS profile twice independently; diff; resolve against the text. MAR32.42's PLA thresholds have one entry already (2026-10-11, `compliance/precision-acceptance.json`, for the precision evidence table): enter them a second time, independently, and move the table's generator onto the profile | `engine/regulatory/profiles/bcbs.yaml`, `profile.py` | `test_profile.py`: schema, every key cited, the two transcriptions agree | Zero diff between transcriptions; every value has a paragraph |
 | P0.4 | Requirement catalogue plus traceability check | `compliance/requirements.yaml`, `tests/regulatory/test_traceability.py`, `basel` marker in `conftest.py` | The check fails if a requirement has no test, a test cites an unknown requirement, or a requirement's status is `implemented` with no passing oracle test. Include a negative test that feeds it a broken catalogue | Catalogue seeded from Appendix A; check green; negative test red on a broken catalogue |
 | P0.5 | Measure guards: IMA functions accept only `HistoricalScenarioSet`; passing a risk-neutral cube raises | `measures.py` | Test that `ima.es` given a simulated exposure cube raises with a message naming the measure | Guard in place, red-first shown |
 | P0.6 | Desk, book and currency on every trade and result (the trade id is on every result row since 2026-10-07, I-10 closed) | `run/request.py`, `api/results.py` | Tests that each result row carries the trade's desk and book | Every row attributable to a desk and book |
@@ -368,6 +368,13 @@ must be settled per figure, and a figure must say whether it has been (D-9: any 
 be run, and an unproven one is flagged, not refused). The mechanism, the measurement
 campaign and the shared evidence table are in [precision.md](precision.md) (§9, §10;
 [I-55](../known-issues.md#i-55), [I-75](../known-issues.md#i-75)); this phase applies them to the regulatory figures.
+The table is built (2026-10-11, [compliance/precision-evidence.md](../../../compliance/precision-evidence.md)),
+with the acceptance standard as cited data in `compliance/precision-acceptance.json`: P6.2's
+rules, and MAR32.42's green zone transcribed once from the BIS text. When P0.3 builds the
+profile, those thresholds move into it under the double-entry rule, and the table's generator
+(`tests/support/precision_evidence.py`) reads them from there. P6 adds the regulatory figures'
+campaigns and rows; their warnings follow the portfolio's and market risk's
+(`engine.precision.evidence`).
 
 | ID | Task | Exit |
 |---|---|---|

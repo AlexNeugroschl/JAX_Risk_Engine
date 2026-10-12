@@ -49,6 +49,19 @@ from engine.risk.market.var_es import quantile_label
 #: `[n, T]` of the first n paths, run at float64 throughout.
 PairedPaths = Tuple[jnp.ndarray, jnp.ndarray]
 
+#: The figures an `ExposureProfile` reports, by name: its profiles per date (`epe` is "EPE"),
+#: its Basel scalars (`basel_epe` is "Basel_EPE"), and one "PFE_<q>" per quantile (`pfe`).
+PROFILE_FIGURES = ("EPE", "ENE", "EE_B", "EEE_B", "EPE_B", "EEPE_B")
+BASEL_FIGURES = ("Basel_EPE", "Basel_EEPE")
+#: The figures a paired sample corrects (decision A-13): the two-level EPE and ENE and every
+#: figure computed from the corrected EPE. PFE is the run's own, measured on the pair.
+CORRECTED_FIGURES = frozenset(PROFILE_FIGURES + BASEL_FIGURES)
+
+
+def figure_names(quantiles: Sequence[float]) -> Tuple[str, ...]:
+    """Every figure of a profile with PFE at `quantiles`, by name."""
+    return PROFILE_FIGURES + tuple(f"PFE_{quantile_label(q)}" for q in quantiles) + BASEL_FIGURES
+
 
 @dataclass(frozen=True)
 class ExposureProfile:

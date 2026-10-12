@@ -183,8 +183,27 @@ epe = result.precision.figures["netting_set/EPE"]
 epe.correction, epe.correction_standard_error   # the FP8 cube's bias on EPE, and its error
 ```
 
-At float64 everywhere a paired sample measures exactly zero. Whether a combination is
-validated for a figure is the evidence table of [I-55](../planning/known-issues.md#i-55).
+At float64 everywhere a paired sample measures exactly zero.
+
+Whether a combination is validated for a figure is the evidence table
+([compliance/precision-evidence.md](../../compliance/precision-evidence.md)): per figure, product
+and precision combination, whether it meets decision A-11's acceptance standard (its precision
+error within 1% of its statistical error, measured across independent seeds), and up to how many
+paths. A run below float64 is never refused; its `warnings` name each product's and the netting
+set's figures without a passing row, with what is validated for them, for example:
+
+```
+precision: no passing row in the evidence table (compliance/precision-evidence.md) for trades
+['bond'] (bond) at 16,384 paths under simulation=float64/float64/float64 market=float64/float64/
+float64 pricing=float32/float64/float64: NPV validated up to 4,096 paths (acceptance
+standard, decision A-11). The run is not refused (D-9). NPV here is the paths' mean value per
+simulation date (the cube); today's NPV is float64 at every precision.
+```
+
+A row is evidence for the market and portfolio its campaign measured, not proof for every run
+([precision.md §10.4](../planning/details/precision.md#104-as-built-2026-10-11)). With a paired
+sample and the shocks or curves stored below 32 bits, a warning also says that the correction's
+standard error understates its error ([I-111](../planning/known-issues.md#i-111)).
 
 ## `PortfolioResult`
 
@@ -195,7 +214,7 @@ validated for a figure is the evidence table of [I-55](../planning/known-issues.
 | `exposure` | `Optional[ExposureProfile]` | The whole portfolio as one netting set: `times`, `epe`, `ene`, `ee_b`, `eee_b`, `epe_b`, `eepe_b`, `basel_epe`, `basel_eepe` and `pfe` (`"PFE_95"` → profile), with one entry per date including t=0. `None` without scenario risk. See [Exposure](../risk/exposure.md). |
 | `trade_exposures` | `List[ExposureProfile]` | Each trade's standalone exposure, in `request.trades` order. Empty without scenario risk. |
 | `greeks` | `Optional[Dict[int, Dict[str, jax.Array]]]` | `None` unless `request.compute_greeks=True`. Keyed by each trade's index in `request.trades`; see [Greeks](../risk/greeks.md) for the keys. |
-| `warnings` | `List[str]` | Run warnings (none are emitted today). |
+| `warnings` | `List[str]` | Run warnings: at a precision below float64, each figure without a passing row in the evidence table ([above](#precision)); none at float64. |
 | `base_npv_per_trade` | `List[float]` | Each trade's value today, in `request.trades` order. |
 | `trade_ids` | `List[str]` | Each trade's `trade_id`, in `request.trades` order: the names of every per-trade row ([I-10](../planning/known-issues.md#i-10)). |
 | `scenario_risk_available` | `bool` | `False` when the run was `scenario_risk=False`, meaning `exposure` is **absent** and `npv_cube` zero-width. |
@@ -244,7 +263,8 @@ basket for every uncalibrated trade (`calibration_targets`,
 (Section title kept for links.) The Hull-White model's cube warnings (aged swaps, options
 expiring in the horizon, a curve inconsistent with its short rate) went with that pipeline on
 2026-10-01: what they warned about is priced correctly now. A run's known limitations are in
-[known issues](../planning/known-issues.md).
+[known issues](../planning/known-issues.md). Since 2026-10-11 `warnings` carries the
+precision evidence's ([Precision](#precision)).
 
 ## Greeks
 

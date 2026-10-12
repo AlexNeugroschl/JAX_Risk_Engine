@@ -421,7 +421,7 @@ full write-up (this is the quick reference).
 | `exposure` | `Optional[ExposureProfile]` | Netting-set exposure; `None` without scenario risk. |
 | `trade_exposures` | `List[ExposureProfile]` | Standalone exposure per trade. |
 | `greeks` | `Optional[Dict[int, Dict[str, jax.Array]]]` | Keyed by trade index in `request.trades`. |
-| `warnings` | `List[str]` | Run warnings. |
+| `warnings` | `List[str]` | Run warnings: below float64, each figure without a passing row in the precision evidence table (`evidence_warnings` below). |
 | `base_npv_per_trade` | `List[float]` | Today's value per trade. |
 | `trade_ids` | `List[str]` | Each trade's id, in request order. |
 | `scenario_risk_available` | `bool` | Whether `exposure`/`npv_cube` were computed. |
@@ -460,6 +460,7 @@ nothing from the pipeline. `Precision` and `StagePrecision` are also exported by
 | `paired_quantile(statistic, low, high) -> QuantileEstimate` | function | `statistic` on every path (`value`), on the paired paths at the run's precision (`paired`) and at float64 (`paired_float64`), and `difference` |
 | `PrecisionReport` | frozen dataclass | `policy`, `trades`, `realized`, `devices`, `backend`, `jax_version`, `paths`, `paired_paths`, `figures`, `products` (each compute format the run used: `"native"` or `"emulated"`); `PrecisionReport.of(policy, trades, realized, arrays, paths, paired_paths=0, figures=None, computed=())` reads the devices from the stored `arrays` |
 | `format_name(x)`, `realized_format(arrays)`, `devices_of(arrays)` | functions | A stored array's format, read from its dtype; a class's (formats joined by `+` should they differ); the devices holding the arrays |
+| `RunFigures(stages, aggregate, trade, total, corrected=frozenset(), unit="paths", legend="")`, `evidence_warnings(precision, trades, paths, figures, evidence=None)`, `paired_error_warning(precision)` | dataclass, functions | The evidence table at run time (I-55, `engine.precision.evidence`): the figures a run reports (`engine.run.pipeline.run_figures`, `engine.risk.market.run.run_figures`), and the warnings for each product's and the aggregate's figures without a passing row in the engine's table (`evidence.json`, generated with `compliance/precision-evidence.md` by `python -m tests.support.precision_evidence`), each saying what is validated and up to how many paths; none at float64. `paired_error_warning`: the label of a paired correction's standard error where it understates (I-111) |
 
 ---
 

@@ -58,8 +58,11 @@ double-precision simulations in the same wall-clock time.
   path pricing overridable per product and per trade (say, Bermudans in FP64 inside an FP32
   run); a precision report on every result (the policy as run, the formats read from the
   arrays, the device) and an optional paired float64 sample that corrects mean figures (EPE,
-  ENE) by a two-level estimator and measures quantiles (PFE, VaR, ES) against float64
-  ([I-55](docs/planning/known-issues.md#i-55), [design](docs/planning/details/precision.md))
+  ENE) by a two-level estimator and measures quantiles (PFE, VaR, ES) against float64; an
+  evidence table of which combinations meet the acceptance standard for which figure, up to how
+  many paths ([compliance/precision-evidence.md](compliance/precision-evidence.md)), and a
+  warning on every result for each figure without a passing row
+  ([design](docs/planning/details/precision.md))
 - HTTP API reaching every setting the engine has: portfolio pricing and exposure, market-risk
   VaR/ES and the cross-asset model's calibration, each per-trade figure a row keyed by its
   trade, a cube or P&L inline or by chunked, hashed reference; jobs priced by one engine worker

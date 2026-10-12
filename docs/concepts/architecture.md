@@ -76,6 +76,9 @@ JAX_Risk_Engine/
 │   │   ├── storage.py                    store / load, the only casts between stages
 │   │   ├── estimate.py                   the paired sample's estimators (means, quantiles)
 │   │   ├── report.py                     PrecisionReport, on every result
+│   │   ├── evidence.py                   the evidence table at run time (I-55): each
+│   │   │                                 result's warnings for figures without a passing
+│   │   │                                 row (evidence.json, generated)
 │   │   └── products.py                   matmul: every matrix product, at its format's
 │   │                                     precision, never the device's default
 │   ├── solvers/
@@ -408,8 +411,9 @@ pricing endpoint.
 **Decisions (2026-10-01,** [compliance/decisions.md](../../compliance/decisions.md) **A-9 to
 A-16, D-9).** Which precision each calculation needs is what the project studies, so precision
 is part of the run configuration: any combination may be run, the default is float64
-everywhere and carries ORE parity, and a combination not yet shown adequate for a figure is
-to carry a warning ([I-55](../planning/known-issues.md#i-55)). The full design,
+everywhere and carries ORE parity, and a combination not yet shown adequate for a figure
+carries a warning (since 2026-10-11: the evidence table,
+[compliance/precision-evidence.md](../../compliance/precision-evidence.md), I-55). The full design,
 down to FP8 storage, is [details/precision.md](../planning/details/precision.md).
 
 **The policy.** `engine.precision.Precision` (on `RunConfig.precision` and

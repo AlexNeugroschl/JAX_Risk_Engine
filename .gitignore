@@ -26,6 +26,12 @@ __pycache__/
 !tests/fixtures/**/*.csv
 !tests/fixtures/**/*.json
 
+# The precision evidence table's source and its rows (I-55) are source too: the acceptance
+# standard, and the rows the engine reads to warn (generated, but shipped with the package and
+# held to the measurements by tests/test_precision_evidence.py).
+!compliance/precision-acceptance.json
+!engine/precision/evidence.json
+
 # JAX's persistent XLA compilation cache (tests/conftest.py).
 .jax_cache/
 

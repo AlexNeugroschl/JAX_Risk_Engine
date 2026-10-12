@@ -891,7 +891,10 @@ estimation (Giles and Haji-Ali) is a later research item (FP4 (F-07)).
   error, the largest paired difference, the path counts;
 - the evidence verdict per figure: validated, or the warning ([§10](#10-acceptance-standard-and-evidence)).
 
-The verdict comes with the evidence table (I-55); the rest was built with the precision report (2026-10-02, §9.6).
+The rest was built with the precision report (2026-10-02, §9.6). The verdict came with the
+evidence table (2026-10-11, §10.3) and is carried in the result's `warnings`, not the report:
+a figure validated says nothing, one without a passing row is named in a warning with what is
+validated for it and up to how many paths, beside the run's other warnings.
 
 ### 9.6 As built (2026-10-02)
 
@@ -960,9 +963,12 @@ of [I-75](../known-issues.md#i-75), measured on the run itself.
 rounding errors of the 32 paths of a block share a scale and offset. The storage harness
 measured their coverage on the pipeline (2026-10-09, §15.4): the correction's standard error
 is right for cube storage and too small in heavy-tailed figures for storage of the shocks,
-states and curves; the total standard error is about three times too wide on Sobol paths
-(I-55). A quantile's paired measurement needs a tail on the paired paths: ES at
-99% on 64 scenarios is NaN.
+states and curves; the total standard error is about three times too wide on Sobol paths. A
+standard error by blocks of paths does not fix the first (§15.6); independent replicates within
+a run would fix both ([I-111](../known-issues.md#i-111)). Until then a run whose correction's
+standard error is known to understate says so in its warnings, and the evidence table judges
+every row by its errors across independent seeds, never by these standard errors. A quantile's
+paired measurement needs a tail on the paired paths: ES at 99% on 64 scenarios is NaN.
 
 ## 10. Acceptance standard and evidence
 
@@ -977,7 +983,11 @@ backtesting and P&L attribution (MAR32). For market-risk P&L, VaR and ES:
    correlation and the Kolmogorov–Smirnov statistic, in the green zone. The thresholds are
    transcribed from MAR32 into the regulatory profile under the Basel plan's double-entry
    rule ([basel-iii.md](basel-iii.md) §4); they are not taken from memory. This test is loose
-   (it was built for front-office vs risk-model differences), so it is a floor.
+   (it was built for front-office vs risk-model differences), so it is a floor. Until the
+   profile exists (Basel P0.3), the evidence table reads them from
+   `compliance/precision-acceptance.json`, transcribed once from MAR32.42(1) as published at
+   bis.org (2026-10-11: green if the correlation is above 0.80 and the statistic below 0.09),
+   the second, independent entry being P0.3's.
 2. **The Basel plan's P6.2 rule:** the precision error below 1% of the figure's statistical
    error (ES, VaR), and below 1e-6 relative for the standardised figures, which have no
    randomness.
@@ -997,6 +1007,66 @@ was done, at how many paths, the measured bias and its standard error, the verdi
 `compliance/precision-evidence.md` and is produced by a script from the measurement runs, not
 typed. A result whose combination has no passing row for a figure carries a warning naming
 the row that is missing.
+
+### 10.4 As built (2026-10-11)
+
+**The standard as data.** `compliance/precision-acceptance.json` holds A-11's thresholds, each
+with its citation, read by the generator (a rule without one is refused; no threshold is a
+literal in code, the Basel plan's §4 rule 1):
+
+| Rule | Threshold | For |
+|---|---|---|
+| Statistical (P6.2) | root mean square precision error over the seeds at most 0.01 of the figure's statistical error, on every entry float64 does not hold fixed | every figure; Basel's for P&L, VaR and ES, engineering for the rest |
+| Fixed entries | root mean square precision error at most 1e-6 of the figure's largest float64 value, on every entry float64 holds fixed | P6.2's rule for deterministic figures, applied where a figure has no statistical error (I-55's finding: a netting set's ENE where every path is in the money, an EEE_B at its t=0 value, a matured trade's) |
+| P&L attribution (MAR32.42(1)) | Spearman above 0.80 and Kolmogorov–Smirnov below 0.09 at every seed | P&L, VaR and ES, with the statistical rule |
+
+**The generator.** `python -m tests.support.precision_evidence` reads every campaign of record
+(`compliance/precision-measurements/`) and the standard, and writes the table
+(`compliance/precision-evidence.md`) and the engine's rows (`engine/precision/evidence.json`);
+`--check` fails if either is out of date, and `tests/test_precision_evidence.py` runs it, so a
+campaign rerun without regenerating fails the suite. A row is one figure kind of one scope
+under one case: a product (the worst of the campaign's trades of it) or the aggregate (the
+netting set, the market-risk portfolio); its combination is the precision of every stage the
+figure depends on (`engine.precision.evidence.combination`: market risk has no market stage;
+the rounding and block layout count only where a stage stores in a scaled format). It passes
+at a path count when every rule holds; NaN fails. Its **path ceiling** is the largest measured
+path count at which it passes and at every smaller one, none if it fails at the smallest. Each
+row names its campaign, whose market, products, path counts, seeds, device, jax and code are
+in the table: the commit, whether the tree had local changes, and a digest of the engine's
+Python sources (`tests.support.precision_harness.engine_digest`), exact either way.
+
+**The warnings.** `engine.precision.evidence.evidence_warnings`, called by the portfolio
+pipeline (`engine.run.pipeline.precision_warnings`) and market risk (`run_market_risk`) once
+their figures exist: plain Python, no JAX work, nothing to compile. For each product of the
+run, and for the aggregate, the figures (`run_figures`: the cube's mean per date, EPE, ENE,
+EE_B, EEE_B, EPE_B, EEPE_B, PFE at the run's quantiles and the Basel EPE and EEPE; or each
+trade's mean P&L and the portfolio's with its VaR and ES) without a passing row whose ceiling
+is at least the run's paths, in one warning: the trades, the combination, the paths, and per
+figure "validated up to N paths", "passes at no path count measured" or "not measured". The
+matching rules, each the conservative reading:
+
+- a trade's figures by its product's rows, its pricing stage its own (`precision_for`); a trade
+  whose stages are all float64 is the reference and is never warned of;
+- the aggregate's by a row whose campaign held every product of the run, and only when every
+  trade has one pricing stage (no campaign measures a mix: such a run's aggregate is warned of);
+- fewer paths than a ceiling validate: in every campaign the precision error grows against the
+  statistical error with the path count (§15.4), so a ceiling bounds from above;
+- a figure the paired sample corrects (`CORRECTED_FIGURES`: EPE, ENE and everything computed
+  from the corrected EPE) by the rows of the largest paired share at most the run's, a larger
+  share only shrinking the correction's error; any other figure is the run's own, by the rows
+  without a sample;
+- rows of two campaigns for one combination give the smaller ceiling.
+
+A paired run with the shocks, states or curves stored below 32 bits also carries the label of
+its correction's standard error ([I-111](../known-issues.md#i-111)), and every market-risk run
+one for its ES standard errors, which treat the scenarios as independent.
+
+**What a row does not say.** A row is evidence for the market and portfolio its campaign
+names, measured on a CPU, where every format below float32 is emulated with the numbers a
+native unit computes (§8.3); a format runs natively on a device only once its device check
+passes (`product_execution`, I-97). Another market, model or product mix may need its own
+campaign; the warning says what was validated, not that a run is right. A passing row is not a
+regulatory approval.
 
 ## 11. Execution architecture
 
@@ -1089,7 +1159,7 @@ Decisions taken while building it (2026-10-04):
 | **The storage harness** (I-75, done 2026-10-09) | Storage relative to a level for classes whose level swamps their spread (block offsets, §6.2); a measurement harness for storage formats per class and product, at several path counts, fixed seeds, rerunnable on any kernel change (§15.4) | Harness covers every figure × class × format; thresholds fixed before measuring; I-75's FP8 bond column unbiased within its Monte Carlo standard error. Met: §15.4 | M |
 | **The kernel rewrite** (F-07; the first families done 2026-10-10) | Difference-form kernels (§8.2), one family at a time (those `ShiftHorizon` and the recalibration fix do not change first, the Bermudan/American rollback and recalibration after them), as matrix products where a family can be one (§8.3); compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the snapshot within the margin (§2.1); emulated FP8/bfloat16 compute measured by the harness. Met for the simulation, the scenario market, the legs, the Europeans and market risk (§13.1, §15.5); the rollback and recalibration after `ShiftHorizon` and the recalibration fix | L |
 | **Multi-host** (I-61) | Shard the scenario axis in the worker (I-61): one host done 2026-10-04; several hosts next | Results equal the one-device run within reduction-order rounding (one host: met, `tests/test_sharding.py`); scaling measured on TPU | M |
-| **The evidence table** (I-55) | The evidence table and the warnings (§10), from the storage harness on each kernel family as the kernel rewrite lands it (the Bermudan/American rows after `ShiftHorizon` and the recalibration fix, I-32 and I-49) | Table complete; a verdict and path ceiling per row; a warning on every result without a passing row | S |
+| **The evidence table** (I-55, done 2026-10-11) | The evidence table and the warnings (§10), from the storage harness on each kernel family as the kernel rewrite lands it (the Bermudan/American rows again after `ShiftHorizon`, the recalibration fix and the rollback's rewrite, I-32, I-49, F-07) | Table complete; a verdict and path ceiling per row; a warning on every result without a passing row. Met: §10.4, §15.6 | S |
 | **The research result** (F-07) | After multi-host and the evidence table. Timing across devices on Ironwood and H100: storage formats, then the kernel rewrite's matrix-product kernels with native FP8 | The research result: wall time per figure and precision against float64 at equal accuracy (the evidence table's path ceilings), many low-precision paths against fewer float64 ones | M |
 | **FP4** (F-07) | FP4 storage (variance correction through the block scales), FP4 compute on TPU 8t/8i, multilevel quantile estimation | Evidence rows for FP4 | L |
 
@@ -1451,11 +1521,13 @@ their correction is FP4 (F-07).
 
 ### 13.7 Statistical acceptance (slow tier)
 
-The evidence table's rows become slow-tier tests with fixed seeds and the thresholds fixed
-before measuring: bias against the rule of §10 at the stated path counts. The first is the
-storage harness's (2026-10-09): `tests/test_precision_harness.py::
-test_a_bonds_fp8_cube_column_is_unbiased_with_block_offsets` (§15.4, threshold 1), on the
-harness the evidence table's rows will run on.
+The thresholds are fixed before measuring. The storage harness's first such test (2026-10-09):
+`tests/test_precision_harness.py::test_a_bonds_fp8_cube_column_is_unbiased_with_block_offsets`
+(§15.4, threshold 1). The evidence table's rows are not rerun by the suite, its campaigns
+taking about 80 minutes: they are the measurements of record, and
+`tests/test_precision_evidence.py` holds the table and the engine's rows to them and to the
+standard (`--check`), and the rules, the lookup and a reduced run's warnings to their
+definitions (2026-10-11, §10.4).
 
 ### 13.8 Execution
 
@@ -1701,7 +1773,8 @@ infinite, and that the harness has since left out of its ratios.
    correction's standard error is too small in a heavy tail, the ENE of an option, non-zero on
    few paths (single checks at 17 to 29 standard errors). Its total interval covers 0.99 to 1.0
    with a root mean square of 0.30 to 0.40: on Sobol paths a figure's Monte Carlo error is about
-   a third of what the independent-paths formula states. Both are recorded on I-55.
+   a third of what the independent-paths formula states. Both were recorded on I-55, and are
+   [I-111](../known-issues.md#i-111) since the evidence table closed it (§15.6).
 5. **No recompiles**: every case, in every campaign, compiles nothing after its first seed.
 
 The relative error, worst over every figure and date of the `linear` campaign, the root mean
@@ -1752,7 +1825,7 @@ Reading it:
 - **Figures float64 holds fixed** (a netting set's ENE where every path is in the money, an
   EEE_B or EEPE_B at its t=0 value) are moved by at most 3.9e-5 of their scale in any case with
   offsets; they have no statistical error to measure a rule against, so the evidence table needs
-  an absolute rule for them (I-55).
+  an absolute rule for them (I-55; since 2026-10-11 the fixed rule, 1e-6 of the scale, §10.4).
 
 **Options** (`options`, 256 paths, 8 seeds; the Bermudan/American kernel moves with I-32 and
 I-49, and these rows are measured again after them). An option's cube column reaches zero, so
@@ -1883,6 +1956,89 @@ Reading it:
 - **No recompiles**: every case, in both campaigns, compiles nothing after its first seed (168
   rows).
 
+### 15.6 The evidence table (2026-10-11)
+
+All five campaigns were measured again for the table on one revision (commit `adc4359` with
+the evidence table's changes, engine digest `805c1a7f8cad963b`; CPU, jax 0.10.2; 16 seeds, the
+`options` campaign 8), 2026-10-11/12, about 57 minutes in all. Every one of their 23,736 rows
+equals its previous record bit for bit, those of 2026-10-11 (`compute`, `compute_market_risk`)
+and those of 2026-10-09/11 (`linear`, `options`, `market_risk`): the table's changes move no
+number, and nothing since the kernel rewrite moved a storage campaign's figure. No case compiles
+after its first seed. The table is
+[compliance/precision-evidence.md](../../../compliance/precision-evidence.md); A-11's rules are
+§10.4's.
+
+**Verdicts** (ceilings in paths, or scenarios for market risk; the largest measured counts are
+16,384, 256 for the options and 8,192 for market risk):
+
+| Combination | Ceiling |
+|---|---|
+| One stage stored in float32 | 16,384 for every scope, but the bond's cube mean under float32 cube storage, 4,096; market risk 8,192 |
+| Every stage in float32 (`throughout:float32`) | 4,096 for every scope |
+| One stage computed in float32 or `bfloat16_3x` | 4,096 to 16,384 (the simulation's 4,096; a European under `bfloat16_3x` in the market or throughout, 1,024) |
+| Market risk: P&L computed in float16 or TensorFloat-32 (two terms) | VaR and ES 8,192; the portfolio's mean P&L 2,048; some trades' mean P&L at no count |
+| Market risk: shifts or P&L stored in float16; P&L computed in bfloat16 | ES 8,192 (VaR 2,048 to none); the trades' mean P&L at most 2,048 |
+| Anything else below float32, in any stage | No ceiling for the cube's mean, EPE, PFE or a P&L mean. The first failing figure of a case, at the smallest count measured, with block offsets: 0.010 to 0.37 statistical errors for float16 and TensorFloat-32, 0.016 to 2.2 for bfloat16, 0.28 to 119 for FP8 (single passes the high ends; without offsets up to 74,000) |
+
+What does pass below float32 in the portfolio campaigns is of two kinds. Figures no format
+moves: a bond's ENE (zero on every path, whatever the rounding) and its EEE_B, EEPE_B and Basel
+EEPE where they are held at their t=0 value pass by the fixed rule in every format, FP8
+included, and the options' ENE in float16. And scattered figures in float16: pricing computed in
+it passes a swap's Basel EPE and EEPE to 16,384 paths and a European's EPE and cube mean to 1,024.
+In two terms and with block offsets the 10-bit formats fail by a factor of one to ten at 1,024
+paths, and pass where a figure's statistical error is large. Every market-risk case is in
+MAR32.42's green zone at every seed (the smallest Spearman 0.939 and the largest KS 0.030, both
+for P&L stored in FP8 e5m2 with stochastic rounding at 2,048 scenarios): the test is a floor that
+every format clears, as A-11 expected, and the statistical rule decides.
+
+**Reading it.**
+
+- **The 1% rule leaves little room below float32.** A figure passes when its precision error is a
+  hundredth of its statistical error, so the format adds a ten-thousandth to the variance: an
+  acceptance rule for results that must not move, not a measure of equal accuracy. Under it,
+  float32 storage and compute, and the three bfloat16 passes, are as good as float64 to 4,096 or
+  16,384 paths; float16 and TensorFloat-32 are within a factor of three of it at 1,024 paths and
+  pass the market-risk quantiles; bfloat16 and FP8 do not pass a figure they move. The research
+  question (3.18 in the roadmap: many low-precision paths against fewer float64 paths at equal
+  accuracy) needs a different reading of the same measurements: a format whose root mean square
+  precision error is r statistical errors at N paths is worth float64 at N / (1 + r²) paths, so
+  float16 at 1,024 paths (r about 0.03) loses nothing measurable and FP8 (r about 3) is worth a
+  tenth of its paths. The table keeps A-11's verdicts; the harness's relative errors, kept per
+  point, are what the research result reads.
+- **Path ceilings are coarse**: three path counts a factor of four apart, two for market risk, one
+  for the options. A ceiling says the row passes there and fails at the next count, or that the
+  next count was not measured (16,384 and 8,192 are the largest measured, not ceilings found).
+- **The options' rows are thin** (256 paths, 8 seeds, the rollback before its rewrite, F-07): they
+  will be measured again after `ShiftHorizon`, the recalibration fix and the rollback's rewrite.
+
+**A robust standard error for the paired correction, by blocks of paths** (I-55's proposal),
+measured on 2026-10-11 against a threshold fixed before: on the `linear` campaign's paired cases (a
+paired eighth of the paths, every stage stored in each scaled format, nearest rounding, block
+offsets; 16 seeds; EPE and ENE of the netting set and every trade, per date), the standardized
+errors of the two-level estimate against the run's own float64 figure, with the correction's
+standard error by batch means over the 32-path storage blocks against the one treating paths as
+independent. Threshold: adopted if its standardized errors' root mean square is within 0.75 to
+1.33 and its coverage at least 0.90 for every case at 1,024 and 4,096 paths.
+
+| Stored | Paths | Independent paths: root mean square, coverage, largest | Blocks of 32: root mean square, coverage, largest |
+|---|---|---|---|
+| shocks, float16 | 1,024 / 4,096 | 0.94, 0.97, 3.2 / 1.83, 0.95, 34 | 1.58, 0.86, 16 / 1.94, 0.93, 37 |
+| shocks, bfloat16 | 1,024 / 4,096 | 1.48, 0.94, 18 / 1.65, 0.91, 15 | 2.51, 0.85, 28 / 1.70, 0.89, 16 |
+| shocks, FP8 (both) | 1,024 / 4,096 | 0.94 to 1.09, 0.94 to 0.97 | 1.01 to 2.01, 0.85 to 0.94 |
+| curves, float16 | 1,024 / 4,096 | 3.30, 0.95, 48 / 3.22, 0.92, 74 | 3.09, 0.84, 37 / 3.24, 0.91, 72 |
+| curves, bfloat16 | 1,024 / 4,096 | 1.55, 0.93, 19 / 1.57, 0.92, 15 | 2.67, 0.83, 42 / 1.69, 0.90, 19 |
+| curves, FP8 (both) | 1,024 / 4,096 | 0.95 to 1.04, 0.94 to 0.96 | 1.05 to 1.84, 0.86 to 0.94 |
+| cube, every format | 1,024 / 4,096 | 0.95 to 1.03, 0.94 to 0.96 | 1.03 to 1.70, 0.84 to 0.94 |
+
+It fails: blocks of paths are no better anywhere, and at 1,024 paths (four blocks, three degrees
+of freedom) much noisier. The misses are not correlation within a block but rare large paired
+differences (single errors to 74 standard errors), with float16 and bfloat16 shocks or curves and
+not with FP8, whose errors are many and small: a rounded curve flips a payoff on one path, and a
+paired sample that misses those paths states too small an error. No standard error from the
+paired paths alone sees what they miss; independent replicates within the run would
+([I-111](../known-issues.md#i-111)). The evidence table does not use these standard errors, and
+the result says so where they understate.
+
 ## 16. Decisions this document implements
 
 Recorded in [compliance/decisions.md](../../../compliance/decisions.md), 2026-10-01.
@@ -1904,4 +2060,6 @@ Recorded in [compliance/decisions.md](../../../compliance/decisions.md), 2026-10
 Engineering defaults, changeable without a decision: block size 32 along the scenario axis;
 the block layout (`offset="block"`) and the rounding (`"nearest"`), both chosen by the storage
 harness (2026-10-09, §15.4); `paired_fraction` 0 by default, 0.02 suggested for reduced-precision
-runs; the evidence table's location.
+runs; the evidence table's location (`compliance/precision-evidence.md`) and its matching rules
+(§10.4); the fixed-entries rule's share, 1e-6 of a figure's scale (P6.2's rule for figures
+without randomness, applied where float64 holds an entry fixed; 2026-10-11).

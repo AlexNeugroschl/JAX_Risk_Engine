@@ -587,7 +587,7 @@ Mirrors `engine.run.PortfolioResult`, with one row per trade:
 | `npv_cube_artifact` | `object \| null` | The cube by reference, with `cube_output: "artifact"` ([format](#get-jobsjob_idartifactsnamechunk)). |
 | `measure` | `str \| null` | `risk-neutral-pricing`, or `null` without scenario risk (I-11). |
 | `precision` | `object` | The precision report, built in the worker that ran the job, so its `devices` and `backend` are the worker's, not those `/version` names ([I-12](../planning/known-issues.md#i-12), closed): `policy` (the request's `precision`, defaults filled in), `trades`, `realized`, `devices`, `backend`, `jax_version`, `paths`, `paired_paths`, `figures` (each with `"kind": "mean"` or `"quantile"`; NaN as `null`). See [The Portfolio Entry Point](portfolio-entrypoint.md#precision). |
-| `warnings` | `List[str]` | Run warnings (none are emitted today; see [The Portfolio Entry Point: Known-limitation flagging](portfolio-entrypoint.md#known-limitation-flagging)). |
+| `warnings` | `List[str]` | Run warnings: at a precision below float64, each figure without a passing row in the precision evidence table, with what is validated for it and up to how many paths; none at float64 (see [The Portfolio Entry Point: Precision](portfolio-entrypoint.md#precision)). |
 
 ## Market-risk result: `MarketRiskResultSchema`
 
@@ -601,7 +601,7 @@ Mirrors `engine.risk.market.MarketRiskResult`:
 | `measure`, `source`, `horizon_days`, `num_scenarios` | The scenarios' description (`historical-forecast`, `monte-carlo` or `historical`) |
 | `risk_factors` | The factors shocked, `"<curve>/<pillar time>y"`, in the scenarios' order |
 | `pnl` / `pnl_artifact` | The P&L `[Scenarios, Trades]`, inline or by reference (`pnl_output`); the portfolio P&L the statistics use is each scenario's sum |
-| `warnings` | Volatility held fixed for options; a tail too thin for a stable estimate |
+| `warnings` | Volatility held fixed for options; FX held at today's spot; a tail too thin for a stable estimate; the ES standard errors treating the scenarios as independent; at a precision below float64, each figure without a passing row in the precision evidence table |
 | `precision` | The precision report, as the portfolio result's; with a paired float64 sample each VaR/ES measured on it |
 
 ## Example: a Python `requests` session

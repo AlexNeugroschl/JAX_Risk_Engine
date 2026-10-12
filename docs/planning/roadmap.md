@@ -123,7 +123,9 @@ stochastic rounding), set per product and per trade for pricing, in portfolio an
 runs alike; every result carries a precision report, and a paired float64 sample corrects the
 mean figures by a two-level estimator and measures the quantiles. Since 2026-10-09 a storage
 harness measures every format's error against float64 per stage, figure, product and path
-count, over independent seeds, rerunnable on any kernel change (I-75). HTTP jobs go through a durable SQLite job queue to one single-threaded engine
+count, over independent seeds, rerunnable on any kernel change (I-75); since 2026-10-11 the
+evidence table reads A-11's verdicts and path ceilings off it, and every result warns of each
+figure whose combination has no passing row (I-55). HTTP jobs go through a durable SQLite job queue to one single-threaded engine
 worker process per host, which owns the host's devices (decision A-14) and splits each job's
 scenarios across them. The engine runs on an NVIDIA GPU (Linux or WSL2, the `gpu` extra) with
 deterministic kernels, and each matrix product states its own precision (A-22). A repeated job
@@ -175,14 +177,32 @@ boundaries and colliding quantile keys, I-102), and a negative option notional m
 European but a long Bermudan (I-101, 2026-10-11: ORE's `LongShort` on every option). The High
 defect of 2026-10-10 (I-57, one caller served another's result) is fixed.
 
+The evidence table is built (I-55, 2026-10-11): `compliance/precision-evidence.md`, generated
+from the precision harness's campaigns of record against A-11's standard as cited data
+(`compliance/precision-acceptance.json`: the P6.2 statistical rule, an absolute rule for
+figures float64 holds fixed, MAR32.42's P&L attribution test transcribed once from the BIS
+text, its second entry Basel P0.3's), each row with its path ceiling, code revision, market,
+seeds and device; every portfolio and market-risk result warns of each figure without a
+passing row. All five campaigns were measured again on one revision for it, every row equal to
+its record. Under the 1% rule float32 storage and compute and the three bfloat16 passes pass
+every figure to 4,096 or 16,384 paths (8,192 scenarios; a European under the bfloat16 passes
+in the market stage to 1,024); below them, market risk's ES (and in
+float16 and TensorFloat-32 compute its VaR) passes to 8,192 scenarios, while no format at 10
+bits or fewer passes a portfolio figure it moves beyond a few float16 ones, the 10-bit formats
+failing by one to ten times the rule and FP8 by tenths to a hundred
+([precision.md §15.6](details/precision.md#156-the-evidence-table-2026-10-11)). So the rule is an
+acceptance bar, not the research's equal-accuracy measure, which 3.18 reads off the same
+measurements. A standard error by blocks of paths was measured for the paired correction and
+does not fix it; the correction's and the total standard errors are I-111 (3.10), flagged on
+the results.
+
 | Step | Goal | Work | Closes | After | Size |
 |---|---|---|---|---|---|
-| 3.5 | Precision | The evidence table against the acceptance standard (A-11: Basel III's P&L attribution test and the Basel plan's P6.2 rule, as transcribed; P6.2 labelled as engineering for figures Basel does not cover), from the precision harness on the kernels rewritten in difference form (the simulation, scenario market, legs and Europeans, 2026-10-10: the `compute` and `compute_market_risk` campaigns beside the storage ones) and on 3.8's as it lands, then on each kernel stage 7 adds. With what the harness's first campaigns found (I-55): a robust standard error for the paired correction where the shocks or curves are stored below 32 bits (by blocks of paths or across seeds), an absolute rule for figures float64 holds fixed, and each row's path ceiling; each row naming its code revision, market, figure, path count, seeds and device. A warning on any result whose combination has no passing row, carried in the portfolio result's `warnings` (empty today) as in market risk's; market risk's ES standard error labelled as assuming independent scenarios | [I-55](known-issues.md#i-55) (warnings) | 3.8 for the Bermudan/American rows | M |
 | 3.6 | Critical bug, precision | `ShiftHorizon`: the setting and its API field exist and refuse anything but 0; implement the shift, parity at 0.5 against the LGM oracle, then 0.5 as the default | [I-32](known-issues.md#i-32) | — | M |
 | 3.7 | Critical bug, precision | Reproduce ORE's two per-path recalibration details against `tests/test_ore_xva_parity.py`, until its Bermudan/American L3 cases (strict expected failures today, 0.5–4% apart) pass; confirm an American's basket on a path against ORE's (decision A-7). ORE's calibration acceptance on every bootstrap: the basket's RMSE against `BootstrapTolerance`, a floor miss and a non-finite helper value (a zero ATM volatility) a miss as a ceiling is; refused today, counted per trade on the paths and carried as a result warning, as ORE's `LgmBuilder` warns | [I-49](known-issues.md#i-49), [I-73](known-issues.md#i-73) | — | M |
 | 3.8 | Precision | The Bermudan/American rollback and recalibration in difference form, as the other path kernels were rewritten (2026-10-10, [details/precision.md §8](details/precision.md#8-compute-below-float32)), the rollback as a matrix product; then its pricing stage takes any compute format, as the others' do (`RESTRICTED_PRODUCTS` empties). The matrix form holds one operator per step instead of one per path and step, so the demo's job runs at 65,536 and 262,144 paths, its peak memory measured against path count. Its products name their shared operand (A-23); being compute-bound, unlike the narrow products of 2026-10-10, they are where the second term's cost shows, measured beside the single pass | [F-07](features.md#f-07) (compute), [I-83](known-issues.md#i-83) | 3.6, 3.7 | L |
 | 3.9 | Precision | Storage that lowers the peak: the exposure reductions over the stored columns trade by trade, each loaded at float64 alone, the netting set as a running float64 sum and PFE's quantiles on it, exact as today; the float64 cube built only when the result asks for it. The peak measured against path count at float64 and FP8 storage | [I-105](known-issues.md#i-105) | 3.8 | M |
-| 3.10 | Precision | FP4: storage with a variance correction through the block scales, compute emulated as FP8's is (2026-10-10); an unbiased rounding of the products' per-path operands, which FP8 compute needs already (round to nearest on its grid leaves a bias, I-98) and FP4's coarser grid more, chosen by the evidence table's path ceilings; multilevel estimation of quantiles (PFE, VaR, ES); its rows in the evidence table. Native FP4 compute on TPU 8t/8i is timed in 3.18 | [F-07](features.md#f-07) (FP4), [I-98](known-issues.md#i-98) | 3.5, 3.8 | L |
+| 3.10 | Precision | FP4: storage with a variance correction through the block scales, compute emulated as FP8's is (2026-10-10); an unbiased rounding of the products' per-path operands, which FP8 compute needs already (round to nearest on its grid leaves a bias, I-98) and FP4's coarser grid more, chosen by the evidence table's path ceilings; multilevel estimation of quantiles (PFE, VaR, ES); standard errors from independent replicates within a run (randomized quasi-Monte Carlo; historical windows by block), since the paired correction's understates where the shocks or curves are stored in float16 or bfloat16 and blocks of paths did not fix it (I-111); its rows in the evidence table. Native FP4 compute on TPU 8t/8i is timed in 3.18 | [F-07](features.md#f-07) (FP4), [I-98](known-issues.md#i-98), [I-111](known-issues.md#i-111) | 3.8 | L |
 | 3.11 | Critical bug | *Parallel, can start now* (it moves no path kernel). Sensitivities against ORE's sensitivity analytic on the shared portfolio; the AD Greeks against the bump Greeks on the same sloped portfolio, until AD is ORE's Greek or is labelled as the derivative of a different quantity, with the gap stated | [I-51](known-issues.md#i-51), [I-78](known-issues.md#i-78) | — | M |
 | 3.12 | API | *Parallel, can start now.* Every input checked before any work, on the host: a curve's pillars (non-empty, as many rates as times, finite, strictly increasing; negative rates allowed), an option's exercise leaving a whole period of each leg, the standalone calibration's notional positive, every API model strict (`extra="forbid"`); each refusal names the field or trade. 3.13's preflight runs them all | [I-103](known-issues.md#i-103) | — | S |
 | 3.13 | API | One run request in place of a route per engine function, as ORE runs a portfolio with a list of analytics: `POST /runs` with `market`, `portfolio`, `analytics` (`npv`, `exposure`, `sensitivities`, `market_risk`, `calibration`) and a `config` whose sections follow ORE's files, each setting in one place; one result with the configuration as run, which says what each figure is without the request beside it (reporting currency, dates, trade ids on every axis, each Greek array's factors, the Greeks method and calibration policy, the engine's revision and its jax, jaxlib and ORE versions); `GET /config/defaults`; an idempotency key; a Python entry, `run(RunRequest)`, in `run/`. Each analytic refuses a precision setting or configuration section it does not read, naming the field. The four routes and `/jobs` go, there being no client. The completeness test also checks each field's wiring: every field set to a non-default value arrives in the engine's configuration. A run of one analytic equals today's direct call within the margin ([design](details/configurable-engine.md#one-run-request-i-87-i-88-i-89)) | [I-87](known-issues.md#i-87), [I-88](known-issues.md#i-88), [I-89](known-issues.md#i-89), [I-95](known-issues.md#i-95) | 3.12 | M |
@@ -190,7 +210,7 @@ defect of 2026-10-10 (I-57, one caller served another's result) is fixed.
 | 3.15 | API | The job queue: a job status that says when the engine worker cannot start, and a failed start answered with the queued job's id; a cancel route (a pending job at once, a running one at the worker's next phase boundary); a retention policy, with a way to keep a run indefinitely (Basel P0.9 keeps regulatory runs with it); the schema migration in one transaction; the worker's lock per host, not per queue file | [I-76](known-issues.md#i-76), [I-77](known-issues.md#i-77), [I-91](known-issues.md#i-91), [I-106](known-issues.md#i-106) | 3.13 | M |
 | 3.16 | Precision | One worker per host on a Cloud TPU pod slice, with process 0 claiming each job and handing it to the other hosts, since under SPMD every host runs the same job ([details/precision.md §11.3](details/precision.md#113-multi-device-and-multi-host)); a failed host fails the whole job, which is retried whole. Measure wall time against device count on TPU and H100; a run on fewer devices than it was given (a path count with no fitting divisor) says so. The one-host split of the scenario axis is done (2026-10-04) | [I-61](known-issues.md#i-61) | 3.15 (the same worker loop) | M |
 | 3.17 | Precision | *Parallel, can start now* (it moves no number). Native FP8 and bfloat16 passes on a GPU: XLA's Triton GEMM computes FP8 products 40–70% wrong on the RTX 5060 while cuBLASLt computes them exactly, and XLA ignores the bfloat16-passes algorithm on a matrix-vector product (2026-10-11). Route FP8 products to cuBLASLt in the engine worker, timed against Triton on every other product; run product formats' matrix-vector products in a shape XLA honours or emulate them; pair e5m2 with e4m3 where the units need it; the device check on H100 and a newer jax; minimal reproductions reported to XLA. Each format turns native per device in `product_execution`'s table once the device check passes | [I-97](known-issues.md#i-97) | — | M |
-| 3.18 | Precision | The research result: on several devices of Ironwood and H100, wall time per figure at equal accuracy, many low-precision paths against fewer float64 paths, read from the evidence table's path ceilings; the storage formats, then the matrix-product kernels (2026-10-10's and 3.8's) on native FP8, the native product formats' code paths confirmed on each device (`engine.precision.product_execution`'s table, TensorFloat-32 and bfloat16 passes by their algorithm, FP8 by its dtype), each format's two terms against its single pass (A-23; no cost measurable on an RTX 5060's float16, bfloat16 and TensorFloat-32 units, 2026-10-11), and FP4 compute on TPU 8t/8i. Each time is the whole job's (host preparation, the fixed float64 stages, the paired sample, transfers and reductions, the device synchronized before the clock stops), cold and warm compiles stated apart, with equal outputs on both sides; a format that does not pay is a result too | [F-07](features.md#f-07) (speed) | 3.5, 3.9, 3.10, 3.16, 3.17 | M |
+| 3.18 | Precision | The research result: on several devices of Ironwood and H100, wall time per figure at equal accuracy, many low-precision paths against fewer float64 paths, read from the precision harness's relative errors (a format r statistical errors off at N paths is worth float64 at N / (1 + r²); the evidence table's 1% path ceilings are an acceptance bar that little below float32 meets, 2026-10-11); the storage formats, then the matrix-product kernels (2026-10-10's and 3.8's) on native FP8, the native product formats' code paths confirmed on each device (`engine.precision.product_execution`'s table, TensorFloat-32 and bfloat16 passes by their algorithm, FP8 by its dtype), each format's two terms against its single pass (A-23; no cost measurable on an RTX 5060's float16, bfloat16 and TensorFloat-32 units, 2026-10-11), and FP4 compute on TPU 8t/8i. Each time is the whole job's (host preparation, the fixed float64 stages, the paired sample, transfers and reductions, the device synchronized before the clock stops), cold and warm compiles stated apart, with equal outputs on both sides; a format that does not pay is a result too | [F-07](features.md#f-07) (speed) | 3.9, 3.10, 3.16, 3.17 | M |
 
 Order within the stage:
 
@@ -204,10 +224,8 @@ Order within the stage:
   on 2026-10-11 by carrying each product's shared operand in two terms (A-23), so swaps,
   Europeans and bonds have evidence rows while 3.6 and 3.7 make the Bermudan/American kernel
   ORE's; FP8's own rounding leaves a bias (I-98), which the table reads as a path ceiling until
-  3.10 chooses an unbiased rounding. The harness's first
-  campaigns already bear on the table: a robust standard error for the paired correction where
-  the shocks or curves are stored low, an absolute rule for figures float64 holds fixed, and a
-  path ceiling for every format below float32 (I-55). The rollback family is then rewritten once, after them (3.8), its rows
+  3.10 chooses an unbiased rounding. The evidence table is built on them (I-55, 2026-10-11),
+  every result warning of figures without a passing row. The rollback family is then rewritten once, after them (3.8), its rows
   follow, and its memory with the cube's (3.9) decides how many paths the research can run; FP4
   (3.10) closes the arithmetic. What remains of the precision research after
   the API steps, multi-host (3.16) and the timing (3.18), is measurement on hardware that has
@@ -266,11 +284,13 @@ oracle, after the focus and TraderX. Each figure is an entry of 3.13's `analytic
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|
 | 5.1 | Basel P0 (decisions D-1 to D-10, pinned text, the BCBS profile, the requirement catalogue and traceability check, measure guards, desk and book on every row, the run manifest, the remaining ORE oracles; P0.9 keeps regulatory runs by 3.15's retention policy) and P2's data acquisition, which is calendar time and so is started first | [F-05](features.md#f-05) (P0, P2) | Stage 4 | L |
-| 5.2 | Basel P1 (FRTB-SA) onward, phase by phase of the [Basel plan](details/basel-iii.md#6-phases-and-tasks): historical scenarios and IMA expected shortfall, backtesting and PLA, SA-CCR and BA-CVA, the precision gate, the evidence pack | [F-05](features.md#f-05) | 5.1's P0, 3.11 (USD swaps also I-05); P5's IMM 3.7; P6's precision gate 3.5; P7's evidence pack 6.4 | L |
+| 5.2 | Basel P1 (FRTB-SA) onward, phase by phase of the [Basel plan](details/basel-iii.md#6-phases-and-tasks): historical scenarios and IMA expected shortfall, backtesting and PLA, SA-CCR and BA-CVA, the precision gate, the evidence pack | [F-05](features.md#f-05) | 5.1's P0, 3.11 (USD swaps also I-05); P5's IMM 3.7; P7's evidence pack 6.4 | L |
 
 5.2 follows the Basel plan's phases, each waiting only for what its row lists: FRTB-SA's
 sensitivities on 3.11 (shown to be ORE's), P5's IMM on 3.7 (a Bermudan's exposure equal to
-ORE's), P6's precision gate on 3.5, which is one table shared with the precision research. The
+ORE's). P6's precision gate is the evidence table (built 2026-10-11, I-55), one table shared
+with the precision research: P6 adds the regulatory figures' rows, and moves MAR32's
+thresholds into the regulatory profile once P0.3 has entered them a second time. The
 precision research uses Basel's criteria (A-11) as an engineering acceptance standard; a row
 that passes them is not a regulatory approval, and the evidence table says so. Basel III:
 [details/basel-iii.md](details/basel-iii.md).
@@ -304,7 +324,7 @@ runs.
 What the engine does not do yet, beyond the focus, TraderX and Basel. A step that adds a
 path-pricing kernel (7.2, 7.3, 7.4, 7.6) writes it in difference form, one implementation for
 every precision (A-16, [details/precision.md §8](details/precision.md#8-compute-below-float32)),
-and gets its rows in 3.5's table.
+and gets its rows in the evidence table (a campaign of the precision harness, I-55's table).
 
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|

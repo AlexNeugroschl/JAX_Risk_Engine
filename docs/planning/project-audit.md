@@ -32,9 +32,9 @@ result served), so some differ from the audit's.
 | AUD-16 Bermudan path parity | Known and planned | Medium | [I-32](known-issues.md#i-32), [I-49](known-issues.md#i-49) |
 | AUD-17 AD versus bump Greeks | Known and planned | Medium | [I-51](known-issues.md#i-51), [I-78](known-issues.md#i-78) |
 | AUD-18 Generic index conventions | Known scope; unsupported indices are refused by name | — | [I-05](known-issues.md#i-05), [I-54](known-issues.md#i-54) |
-| AUD-19 Standard errors assume independence | Valid | Medium | [I-55](known-issues.md#i-55), extended |
-| AUD-20 Precision qualification on results | Known and planned | Medium | [I-55](known-issues.md#i-55) |
-| AUD-21 Empty portfolio warnings | Confirmed (`warnings=[]`) | Medium | [I-55](known-issues.md#i-55), [I-73](known-issues.md#i-73) |
+| AUD-19 Standard errors assume independence | Valid | Medium | [I-55](known-issues.md#i-55), extended; labelled on results and the rest moved to [I-111](known-issues.md#i-111) when I-55 closed (2026-10-11) |
+| AUD-20 Precision qualification on results | Known and planned | Medium | [I-55](known-issues.md#i-55) (closed 2026-10-11: the evidence table and its warnings) |
+| AUD-21 Empty portfolio warnings | Confirmed (`warnings=[]`) | Medium | [I-55](known-issues.md#i-55) (closed 2026-10-11: precision warnings), [I-73](known-issues.md#i-73) |
 | AUD-22 Bundle identity | Confirmed; needs a bundle that breaks the contract's identity rule | Medium | [I-107](known-issues.md#i-107) |
 | AUD-23 Publication retry | Confirmed; also staging errors escape `PublicationError`. A hung retry, no wrong number | Medium | [I-109](known-issues.md#i-109) |
 | AUD-24 Cross-process binding | Confirmed; the store's docs already say one process | Medium | [I-08](known-issues.md#i-08), extended |

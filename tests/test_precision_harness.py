@@ -25,6 +25,8 @@ import pytest
 from engine.market_simulation.config import CamConfig, LgmConfig
 from engine.precision import OFFSETS, ROUNDINGS, STAGES, Precision, StagePrecision
 from engine.pricing.config import PricingConfig
+from engine.risk.market.run import run_figures as market_risk_figures
+from engine.run.pipeline import run_figures as portfolio_figures
 from tests import market_risk_support as mr
 from tests.support import portfolio as shared
 from tests.support.precision_campaigns import CAMPAIGNS, SIMULATION
@@ -39,7 +41,8 @@ DATES = tuple(shared.ASOF + ORE.Period(m, ORE.Months) for m in (3, 12))
 
 def _portfolio(cases, seeds=(1, 2, 3), names=("swap-payer", "bond")) -> PortfolioCampaign:
     return PortfolioCampaign(
-        name="tiny", description="Two of the shared portfolio's trades on two dates.", market=shared.market(),
+        name="tiny", description="Two of the shared portfolio's trades on two dates.", market_name="shared",
+        market=shared.market(),
         trades=tuple(shared.trades()[n] for n in names),
         simulation=CamConfig(dates=DATES, base_currency="USD", ir={"USD": LgmConfig(0.03, 0.01, ("1Y",), ("9Y",))}),
         pricing=PricingConfig(), cases=tuple(cases), paths=(64,), seeds=seeds)
@@ -108,6 +111,16 @@ class TestMeasure:
         assert m.dates == tuple(d.ISO() for d in DATES) and m.products == {"swap-payer": "swap", "bond": "bond"}
         assert m.row("pricing:fp8", 64, "trades/bond/NPV").product == "bond"
         assert m.row("pricing:fp8", 64, "netting_set/EPE").product == "netting_set"
+
+    def test_the_figures_measured_are_those_the_engine_warns_of(self, tiny):
+        """The evidence table's rows are the harness's figures, and a run's warnings name the
+        engine's (`run_figures`, I-55): the two lists are one."""
+        campaign, m = tiny
+        names = portfolio_figures(campaign.pfe_quantiles)
+        kinds = {scope: {r.figure.rsplit("/", 1)[1] for r in m.figures if r.figure.startswith(scope + "/")}
+                 for scope in ["netting_set"] + [f"trades/{t.trade_id}" for t in campaign.trades]}
+        assert kinds["netting_set"] == set(names.total) and names.aggregate == "netting_set"
+        assert all(found == set(names.trade) for scope, found in kinds.items() if scope.startswith("trades/"))
 
     def test_fp8_storage_moves_the_figures_and_the_bias_is_the_mean_error(self, tiny):
         campaign, m = tiny
@@ -196,7 +209,8 @@ class TestMarketRisk:
         """VaR, ES and the mean P&L are measured; each case's P&L carries Spearman's correlation
         and the Kolmogorov-Smirnov statistic against float64's, per seed."""
         campaign = MarketRiskCampaign(
-            name="tiny-risk", description="", market=mr.market(), trades=(mr.swap(), mr.bond()),
+            name="tiny-risk", description="", market_name="market risk", market=mr.market(),
+            trades=(mr.swap(), mr.bond()),
             covariance=mr.covariance(), horizon_days=10, pricing=mr.PRICING,
             cases=(Case("float64", Precision()), Case("pricing:fp8", Precision(pricing=FP8))), paths=(256,),
             seeds=(1, 2))
@@ -204,6 +218,9 @@ class TestMarketRisk:
         figures = {r.figure for r in m.figures if r.case == "pricing:fp8"}
         assert figures == {"portfolio/VaR_99", "portfolio/ES_99", "portfolio/VaR_97.5", "portfolio/ES_97.5",
                            "portfolio/PnL", "trades/swap/PnL", "trades/bond/PnL"} == set(m.scalars)
+        names = market_risk_figures(campaign.quantiles)  # the figures the engine warns of (I-55)
+        assert figures == ({f"portfolio/{k}" for k in names.total} | {f"trades/{t.trade_id}/{k}"
+                                                                       for t in campaign.trades for k in names.trade})
         exact, fp8 = m.attribution
         assert exact.spearman == pytest.approx((1.0, 1.0), abs=1e-15) and exact.kolmogorov_smirnov == (0.0, 0.0)
         assert all(0.9 < s < 1.0 for s in fp8.spearman) and all(0 <= k < 0.1 for k in fp8.kolmogorov_smirnov)

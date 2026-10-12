@@ -62,6 +62,13 @@ class MeanEstimate:
     correction_standard_error: of `correction`, which tests the precision bias: a correction
         several of these from zero is a bias the uncorrected figure carries.
     max_difference: the largest paired difference, |float64 - run| on one path.
+
+    Every standard error treats the paths as independent, which Sobol paths are not: measured
+    across independent seeds (the precision harness, 2026-10-09 and 2026-10-11), the total
+    one is about three times too wide, and the correction's is right for storage of the cube
+    but too small for figures that differ from float64 on few paths when the shocks, states or
+    curves are stored below 32 bits (I-111; the result warns). A standard error by blocks of
+    paths was measured and is no better.
     """
     value: jax.Array
     uncorrected: jax.Array

@@ -37,7 +37,9 @@ storage format.
 With `precision.paired_fraction > 0` the first scenarios are revalued again at float64 (the
 paired sample, decision A-13), and the result's `PrecisionReport` measures each VaR and ES on
 it: the figure at the run's precision and at float64 on the same scenarios. They are quantiles,
-so the reported VaR/ES are the run's own, not corrected.
+so the reported VaR/ES are the run's own, not corrected. The result's `warnings` name every
+figure whose precision has no passing row of the evidence table (`run_figures`,
+`engine.precision.evidence`, I-55; a float64 run has none).
 """
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
@@ -52,7 +54,8 @@ from engine.instruments.european_swaption import SwaptionConfig
 from engine.market_data.market import Market
 from engine.market_simulation.sharding import shard_scenarios
 from engine.precision import (
-    Arithmetic, Precision, PrecisionReport, format_name, load, paired_paths, paired_quantile, require_precision,
+    Arithmetic, Precision, PrecisionReport, RunFigures, evidence_warnings, format_name, load, paired_paths,
+    paired_quantile, require_precision,
 )
 from engine.pricing.config import PricingConfig
 from engine.pricing.cube import DEFAULT_REPORTING_CURRENCY, reporting_fx_spots, require_unique_ids, validate_trades
@@ -109,8 +112,9 @@ class MarketRiskResult:
 
     risk: `VaR_99`, `ES_97.5`, ... as positive losses, plus
         `ES_<q>_tailCount` (observations the ES averaged) and
-        `ES_<q>_standardError` (its Monte Carlo standard error); NaN where a
-        tail is empty.
+        `ES_<q>_standardError` (its Monte Carlo standard error, treating the scenarios as
+        independent draws, which Sobol and overlapping historical scenarios are not: indicative,
+        as the warnings say); NaN where a tail is empty.
     pnl: `[S, N]` P&L of each trade under each scenario, in request order, loaded at float64
         from its storage format and converted at its FX spot.
     portfolio_pnl: `[S]` the sum across trades, which the statistics use (float64).
@@ -299,4 +303,20 @@ def _warnings(request: MarketRiskRequest) -> List[str]:
                 f"only {request.scenarios.num_scenarios} scenarios: the {q:.1%} tail holds about "
                 f"{tail} observations, too few for a stable estimate."
             )
-    return out
+    out.append(
+        "the ES standard errors (ES_<q>_standardError) treat the scenarios as independent draws, which Sobol "
+        "(Monte Carlo) scenarios and overlapping historical horizons are not: read them as indicative (I-111)."
+    )
+    return out + evidence_warnings(request.precision, request.trades, request.scenarios.num_scenarios,
+                                   run_figures(request.quantiles))
+
+
+def run_figures(quantiles: Sequence[float]) -> RunFigures:
+    """The figures a market-risk run reports, as the evidence table names them (I-55): each
+    trade's mean P&L, and the portfolio's with its VaR and ES at `quantiles`, all the run's own
+    (a paired sample measures VaR and ES, and corrects nothing). The shifts are the simulation
+    stage and the revaluation the pricing stage; there is no scenario market."""
+    labels = [quantile_label(q) for q in quantiles]
+    return RunFigures(stages=("simulation", "pricing"), aggregate="portfolio", trade=("PnL",),
+                      total=("PnL",) + tuple(f"{name}_{label}" for label in labels for name in ("VaR", "ES")),
+                      unit="scenarios", legend="PnL here is the mean P&L over the scenarios.")

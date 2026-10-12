@@ -787,7 +787,11 @@ much each format costs in accuracy, per stage, figure and path count, is measure
 the precision harness's measurements are in
 [compliance/precision-measurements/](../../compliance/precision-measurements/)
 ([details/precision.md §15.4](../planning/details/precision.md#154-the-storage-harness-2026-10-09),
-[§15.5](../planning/details/precision.md#155-compute-below-float32-2026-10-10)).
+[§15.5](../planning/details/precision.md#155-compute-below-float32-2026-10-10)), and judged
+against decision A-11's acceptance standard in the evidence table
+([compliance/precision-evidence.md](../../compliance/precision-evidence.md)). A run is never
+refused on precision; its `warnings` name every figure whose combination has no passing row,
+with what is validated for it and up to how many paths.
 The 32/64 shape of before 2026-10-01 (`PrecisionConfig(simulation=32)`) is refused
 with a message naming its replacement. See
 [Architecture: Adjustable precision](../concepts/architecture.md#adjustable-precision).

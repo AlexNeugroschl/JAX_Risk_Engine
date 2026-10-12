@@ -23,11 +23,16 @@
                  default; product_execution, native or emulated on a device
     grid.py      exact rounding onto a format's grid and power-of-two scales (storage and
                  products)
+    evidence.py  the evidence table at run time (I-55): which combinations passed the
+                 acceptance standard (A-11) for which figure, up to how many paths, and the
+                 warnings of a result whose figures have no passing row (evidence.json, generated
+                 by tests/support/precision_evidence.py)
 
 Depends on JAX and NumPy only: the pipeline imports it, it imports nothing from the pipeline.
 """
 from engine.precision.arithmetic import FLOAT64, Arithmetic, add_level, deviation_from, level_terms
 from engine.precision.estimate import MeanEstimate, QuantileEstimate, paired_paths, paired_quantile, two_level_mean
+from engine.precision.evidence import RunFigures, evidence_warnings, paired_error_warning
 from engine.precision.formats import FORMAT_NAMES, FORMATS, Format, dtype_of, format_of, name_of
 from engine.precision.policy import (
     OVERRIDES, RETIRED_SHAPE, STAGES, Overrides, Precision, StagePrecision, require_precision,
@@ -52,6 +57,7 @@ __all__ = [
     "QuantileEstimate",
     "RETIRED_SHAPE",
     "ROUNDINGS",
+    "RunFigures",
     "SHARED",
     "STAGES",
     "StagePrecision",
@@ -60,12 +66,14 @@ __all__ = [
     "deviation_from",
     "devices_of",
     "dtype_of",
+    "evidence_warnings",
     "format_name",
     "format_of",
     "level_terms",
     "load",
     "matmul",
     "name_of",
+    "paired_error_warning",
     "paired_paths",
     "paired_quantile",
     "product_execution",

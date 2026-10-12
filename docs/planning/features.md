@@ -15,7 +15,7 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 | [F-04](#f-04) | FX and equity trades on the pipeline; FX/EQ vol calibration | L | F-07's kernel rewrite | New |
 | [F-05](#f-05) | Basel III regulatory figures | L | See entry | Basel |
 | [F-06](#f-06) | CVA/DVA from the exposure profiles | M | I-87 | New |
-| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-55 | Focus |
+| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-32, I-49 (the rollback's rewrite) | Focus |
 | [F-08](#f-08) | Reporting currencies other than USD for TraderX | S | I-18 (an FX source), I-59 | New |
 | [F-09](#f-09) | ORE's XML input files as a run request | M | I-87 | New |
 
@@ -93,7 +93,8 @@ SA-CCR and BA-CVA, a precision gate per figure, and an evidence pack.
 P1 (FRTB-SA) needs [I-51](known-issues.md#i-51) (sensitivities proven against ORE).
 P5's IMM needs the exposure proven: done for linear trades on 2026-10-07, Bermudans and Americans by [I-49](known-issues.md#i-49). USD swaps need
 [I-05](known-issues.md#i-05). P6's precision gate reuses
-[I-55](known-issues.md#i-55)'s evidence table. PLA needs an independent front-office P&L from
+[I-55](known-issues.md#i-55)'s evidence table (built 2026-10-11), adding the regulatory figures'
+rows. PLA needs an independent front-office P&L from
 TraderX (decision D-7).
 
 **Size.** L (about 26 engineer-weeks). **Details.** [details/basel-iii.md](details/basel-iii.md).
@@ -126,7 +127,8 @@ formats, `tensorfloat32` and `bfloat16_3x`, accumulated in float32, each native 
 device and named in the report; since 2026-10-11 the operand every path shares in two terms of
 the format, the single pass `<format>_1x` a format of its own, A-23;
 [details/precision.md §8](details/precision.md#8-compute-below-float32);
-the Bermudan/American rollback follows I-32 and I-49); the evidence table and warnings (I-55);
+the Bermudan/American rollback follows I-32 and I-49); the evidence table and warnings (I-55,
+done 2026-10-11: [compliance/precision-evidence.md](../../compliance/precision-evidence.md));
 timing across devices on Ironwood and H100 (after the sharding of I-61); FP4 on TPU 8t/8i. Measured so far: FP8
 storage of the shocks biases a call payoff by about one Monte Carlo standard error at 4M
 paths (stochastic rounding: 0.15), so the earlier rejection of FP8, which compared error per
@@ -138,7 +140,10 @@ level swamps its spread ([I-75](known-issues.md#i-75)), which block offsets remo
 and path count against float64 over 16 seeds ([details/precision.md
 §15.4](details/precision.md#154-the-storage-harness-2026-10-09)): float16 cube storage stays
 below a fifth of the statistical error to 16,384 paths, FP8 is many statistical errors off
-but unbiased in a concentrated mean, and every format below float32 has a path ceiling.
+but unbiased in a concentrated mean, and every format below float32 has a path ceiling. The
+evidence table (2026-10-11, [details/precision.md
+§15.6](details/precision.md#156-the-evidence-table-2026-10-11)) judges them by decision A-11's
+1% rule.
 
 **Depends on.** The mechanism and cast points (done 2026-10-01; [I-55](known-issues.md#i-55));
 the speed case needs the target hardware, which the owner has. **Size.** L.

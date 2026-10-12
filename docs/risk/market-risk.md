@@ -192,6 +192,15 @@ float64.
 - **FX risk.** A trade converted into the reporting currency is converted at today's spot in
   every scenario ([Reporting currency](#reporting-currency)).
 - **Thin tails.** Fewer than 10 observations beyond a quantile's rank is flagged.
+- **The ES standard error's assumption.** `ES_<q>_standardError` is the tail's standard
+  deviation over the square root of its count, as if the scenarios were independent draws;
+  Sobol scenarios and overlapping historical horizons are not, so it is indicative
+  ([I-111](../planning/known-issues.md#i-111)). Every result says so.
+- **Unvalidated precision.** At a precision below float64, each figure (each trade's mean P&L,
+  the portfolio's with its VaR and ES) without a passing row in the precision evidence table
+  ([compliance/precision-evidence.md](../../compliance/precision-evidence.md); decision A-11:
+  the P&L attribution test's green zone and a precision error within 1% of the figure's
+  statistical error) is named, with what is validated for it and up to how many scenarios.
 
 Not yet covered: equity, FX, credit and volatility risk factors; stressed calibration and
 the liquidity-horizon cascade Basel's ES needs (plan phase P3).

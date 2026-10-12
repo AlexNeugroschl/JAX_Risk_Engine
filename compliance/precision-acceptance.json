@@ -1,0 +1,25 @@
+{
+  "standard": "A-11",
+  "description": "The acceptance standard of the precision evidence table (I-55; docs/planning/details/precision.md §10): what a reduced-precision figure must meet, against float64 on the same paths, for its combination to pass at a path count. A passing row is engineering evidence, not a regulatory approval. Every value carries its citation; tests/support/precision_evidence.py reads them, and no threshold appears as a literal in code (Basel plan §4, rule 1).",
+  "statistical": {
+    "value": 0.01,
+    "rule": "The root mean square precision error over the seeds, at most this share of the figure's statistical error (its float64 spread over the seeds), on every entry float64 does not hold fixed.",
+    "cite": "Basel plan P6.2 (docs/planning/details/basel-iii.md, Phase 6), decision A-11",
+    "applies": "Every figure. For the market-risk figures (P&L, VaR, ES) it is the Basel plan's P6.2 rule; for every other figure (NPV, EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B, PFE and the Basel EPE and EEPE) an engineering rule, Basel setting no numeric tolerance for them (CRE53 requires EPE backtesting only)."
+  },
+  "fixed": {
+    "value": 1e-6,
+    "rule": "On an entry float64 holds fixed (its statistical error below 1e-9 of the figure's largest float64 value: a netting set's ENE where every path is in the money, an EEE_B or EEPE_B at its t=0 value, a matured trade's value), the root mean square precision error at most this share of the figure's largest float64 value.",
+    "cite": "Basel plan P6.2's rule for figures without randomness (1e-6 relative), applied to the entries float64 holds fixed (I-55, 2026-10-11): they have no statistical error for the statistical rule to take a share of",
+    "applies": "Every figure with such entries; an engineering rule."
+  },
+  "pla": {
+    "spearman_above": 0.8,
+    "ks_below": 0.09,
+    "rule": "The P&L attribution test's green zone between the reduced-precision and the float64 P&L on the same scenarios, at every seed: Spearman's rank correlation above 0.80 and the Kolmogorov-Smirnov statistic below 0.09.",
+    "cite": "MAR32.42(1) (green zone; MAR32.34, MAR32.38 and MAR32.41 define the two metrics)",
+    "source": "Basel Framework, MAR32, in force 2023-01-01, published 2020-03-27, https://www.bis.org/basel_framework/chapter/MAR/32.htm?inforce=20230101&published=20200327, retrieved 2026-10-11",
+    "transcription": "Single entry, from the source above, 2026-10-11; it agrees with the Basel plan's orientation values (Appendix B, which is not a source). The second, independent entry is the Basel plan's P0.3 double-entry transcription, after which these values are read from the regulatory profile.",
+    "applies": "The market-risk figures (P&L, VaR, ES), with the statistical rule (A-11). MAR32 tests 250 days of a desk's P&L; here it compares two P&Ls of thousands of scenarios, where its thresholds are loose, so it is a floor."
+  }
+}

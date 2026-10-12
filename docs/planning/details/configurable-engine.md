@@ -138,8 +138,8 @@ the default (ORE's builder default, `OREData/ored/portfolio/builders/swaption.cp
 
 In [precision.md](precision.md) §8 and §10: the evidence table per figure and precision
 against the acceptance standard (A-11), shared with Basel P6, read off the storage harness
-(§15.4, 2026-10-09, which closed I-75); then the kernels in difference form, one implementation
-for every precision (A-16).
+(§15.4, 2026-10-09, which closed I-75; built 2026-10-11, §10.4, which closed I-55); then the
+kernels in difference form, one implementation for every precision (A-16).
 
 ## One run request (I-87, I-88, I-89)
 

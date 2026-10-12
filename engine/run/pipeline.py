@@ -26,6 +26,8 @@ cube and the numeraire at float64 first (`_exposures`), and so does the result's
 With `precision.paired_fraction > 0` the first paths are simulated and priced again at float64
 throughout (`_paired_sample`, decision A-13): the exposure means are the two-level estimates,
 and each figure's estimate is in the result's `PrecisionReport`, which every result carries.
+The result's `warnings` name every figure whose precision has no passing row of the evidence
+table (`precision_warnings`, I-55; a float64 run has none).
 """
 import dataclasses
 from typing import TYPE_CHECKING, List, Optional, Sequence
@@ -36,12 +38,17 @@ import numpy as np
 from engine.market_data.curves import ZeroCurve, discount
 from engine.market_data.market import Market
 from engine.market_simulation.config import build_cross_asset_model, simulate
-from engine.precision import PrecisionReport, format_name, load, paired_paths, realized_format
+from engine.precision import (
+    STAGES, Precision, PrecisionReport, RunFigures, evidence_warnings, format_name, load, paired_error_warning,
+    paired_paths, realized_format,
+)
 from engine.pricing.context import simulation_market_today
 from engine.pricing.cube import (
     reporting_fx_spots, trade_maturity, validate_trades, value_paths, value_portfolio, value_today,
 )
-from engine.risk.counterparty.exposure import ExposureProfile, PairedPaths, exposure_profile, netting_set_profile
+from engine.risk.counterparty.exposure import (
+    CORRECTED_FIGURES, ExposureProfile, PairedPaths, exposure_profile, figure_names, netting_set_profile,
+)
 from engine.risk.market.var_es import ENGINE_RISK_MEASURE
 from engine.run.trace import phase
 
@@ -89,19 +96,41 @@ def price_on_market(request) -> "PortfolioResult":
                     *(run.precision.precision_for(t).compute for t in trades)]
         report = PrecisionReport.of(run.precision, trades, realized, valuation.columns, scenarios.num_paths,
                                     paired, figures, computed)
+        warnings = precision_warnings(run.precision, trades, scenarios.num_paths, request.pfe_quantiles)
     else:
         with phase("base_npv"):
             today = value_today(trades, market, base, run.pricing)
         cube = jnp.zeros((0, 0, 0))
         report = PrecisionReport.of(run.precision, trades, {}, (), paths=0)
+        warnings = []
     if request.compute_greeks:
         with phase("greeks"):
             greeks = _greeks(run.greeks.method)(trades, market, base, run.pricing, run.greeks.sensitivity)
     return PortfolioResult(
         base_npv=float(np.sum(today)), npv_cube=cube, exposure=exposure, trade_exposures=trade_exposures,
-        greeks=greeks, warnings=[], base_npv_per_trade=list(today), scenario_risk_available=request.scenario_risk,
-        measure=ENGINE_RISK_MEASURE if request.scenario_risk else None, precision=report,
+        greeks=greeks, warnings=warnings, base_npv_per_trade=list(today),
+        scenario_risk_available=request.scenario_risk, measure=ENGINE_RISK_MEASURE if request.scenario_risk else None,
+        precision=report,
     )
+
+
+def run_figures(quantiles: Sequence[float]) -> RunFigures:
+    """The figures a portfolio run reports, as the evidence table names them (I-55), each
+    trade's and the netting set's: the cube's mean per date ("NPV", the values a storage format
+    of the cube holds) and the exposure figures with PFE at `quantiles` (`figure_names`), of
+    which the paired sample corrects `CORRECTED_FIGURES`; every adjustable stage."""
+    names = ("NPV",) + figure_names(quantiles)
+    return RunFigures(stages=STAGES, aggregate="netting_set", trade=names, total=names, corrected=CORRECTED_FIGURES,
+                      legend="NPV here is the paths' mean value per simulation date (the cube); today's NPV is "
+                             "float64 at every precision.")
+
+
+def precision_warnings(precision: Precision, trades: Sequence, paths: int, quantiles: Sequence[float]) -> List[str]:
+    """A portfolio run's precision warnings: every figure (`run_figures`) without a passing row
+    in the evidence table (`engine.precision.evidence`, I-55), and the label of the paired
+    correction's standard error where it is known to understate it. None at float64."""
+    label = paired_error_warning(precision)
+    return evidence_warnings(precision, trades, paths, run_figures(quantiles)) + ([label] if label else [])
 
 
 def _paired_sample(trades: Sequence, market: Market, model, run, paths: int) -> PairedPaths:

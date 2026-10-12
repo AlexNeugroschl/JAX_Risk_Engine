@@ -63,6 +63,7 @@ and offset, are not (I-55).
 import dataclasses
 import datetime
 import gzip
+import hashlib
 import json
 import math
 import platform
@@ -82,6 +83,7 @@ from engine.market_data.market import Market
 from engine.market_simulation.config import CamConfig
 from engine.precision import OFFSETS, ROUNDINGS, STAGES, MeanEstimate, Precision, StagePrecision
 from engine.pricing.config import PricingConfig
+from engine.risk.counterparty.exposure import BASEL_FIGURES, PROFILE_FIGURES
 from engine.risk.market import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
 from engine.run import PortfolioRequest, RunConfig, price_portfolio
 from tests.support.compiles import count_compiles
@@ -160,9 +162,11 @@ def compute_cases(stages: Sequence[str] = STAGES, formats: Sequence[str] = COMPU
 @dataclass(frozen=True)
 class PortfolioCampaign:
     """`price_portfolio` of `trades` on `market` under `simulation` (whose `samples` and `seed`
-    the harness sets), with `pricing`, at each case's precision."""
+    the harness sets), with `pricing`, at each case's precision. `market_name` names the market
+    in every row measured on it (the evidence table's, I-55)."""
     name: str
     description: str
+    market_name: str
     market: Market
     trades: Tuple
     simulation: CamConfig
@@ -195,11 +199,11 @@ class PortfolioCampaign:
         scopes = [("netting_set", result.exposure)] + [(f"trades/{t.trade_id}", p)
                                                       for t, p in zip(self.trades, result.trade_exposures)]
         for scope, profile in scopes:
-            for name in ("epe", "ene", "ee_b", "eee_b", "epe_b", "eepe_b"):
-                out[f"{scope}/{name.upper()}"] = np.asarray(getattr(profile, name), dtype=np.float64)[1:]
+            for name in PROFILE_FIGURES:
+                out[f"{scope}/{name}"] = np.asarray(getattr(profile, name.lower()), dtype=np.float64)[1:]
             out.update({f"{scope}/{k}": np.asarray(v, dtype=np.float64)[1:] for k, v in profile.pfe.items()})
-            out[f"{scope}/Basel_EPE"] = np.float64(profile.basel_epe)
-            out[f"{scope}/Basel_EEPE"] = np.float64(profile.basel_eepe)
+            for name in BASEL_FIGURES:
+                out[f"{scope}/{name}"] = np.float64(getattr(profile, name.lower()))
         return out
 
     def pnl(self, result) -> Optional[np.ndarray]:
@@ -210,9 +214,11 @@ class PortfolioCampaign:
 class MarketRiskCampaign:
     """`run_market_risk` of `trades` on `market` under Monte Carlo shifts of every curve
     pillar (`covariance` of the `horizon_days` moves, in `RateRiskFactors.from_market`'s
-    order), `paths` scenarios each, at each case's precision."""
+    order), `paths` scenarios each, at each case's precision. `market_name` as a portfolio
+    campaign's."""
     name: str
     description: str
+    market_name: str
     market: Market
     trades: Tuple
     covariance: np.ndarray
@@ -349,12 +355,14 @@ class CaseRun:
 class Measurements:
     """A campaign's measurements (see the module docstring); `merge` joins path counts.
 
-    cases: each case's policy, in its wire form (`PrecisionSchema`); a stochastic rounding's
-        seed is each run's Sobol seed. dates: the entries of a profile figure; a scalar
-        figure (`scalars`) has one. products: each trade's product."""
+    market: the campaign's `market_name`. cases: each case's policy, in its wire form
+        (`PrecisionSchema`); a stochastic rounding's seed is each run's Sobol seed. dates: the
+        entries of a profile figure; a scalar figure (`scalars`) has one. products: each
+        trade's product. environment: what they ran on (`environment()`)."""
     campaign: str
     kind: str
     description: str
+    market: str
     cases: Dict[str, dict]
     seeds: Tuple[int, ...]
     dates: Tuple[str, ...]
@@ -372,7 +380,8 @@ class Measurements:
 
     def merge(self, other: "Measurements") -> "Measurements":
         """These measurements and `other`'s (the same campaign at other path counts)."""
-        if (other.campaign, other.cases, other.seeds) != (self.campaign, self.cases, self.seeds):
+        if (other.campaign, other.market, other.cases, other.seeds) != (self.campaign, self.market, self.cases,
+                                                                        self.seeds):
             raise ValueError("only measurements of one campaign, its cases and seeds merge")
         overlap = set(self.paths) & set(other.paths)
         if overlap:
@@ -431,7 +440,7 @@ def measure(campaign, paths: int, cases: Optional[Sequence[Case]] = None,
              f"{time.perf_counter() - started:.1f}s")
     figures = reference_figures[seeds[0]]
     out = Measurements(
-        campaign=campaign.name, kind=campaign.kind, description=campaign.description,
+        campaign=campaign.name, kind=campaign.kind, description=campaign.description, market=campaign.market_name,
         cases={c.label: PrecisionSchema.from_dataclass(c.precision).model_dump() for c in cases}, seeds=seeds,
         dates=campaign.dates(), scalars=tuple(k for k, v in figures.items() if np.ndim(v) == 0),
         products={t.trade_id: t.product for t in campaign.trades}, environment=environment())
@@ -550,8 +559,9 @@ def _worst_ratio(numerator: Sequence[float], denominator: Sequence[float]) -> fl
 
 
 def environment() -> Dict[str, str]:
-    """What the measurements ran on: the commit (and whether the tree had changes), JAX, the
-    backend and devices, the platform, and when."""
+    """What the measurements ran on: the commit (and whether the tree had changes), the engine's
+    source digest (`engine_digest`: exact even when the tree had changes), JAX, the backend and
+    devices, the platform, and when."""
     def git(*args) -> str:
         try:
             return subprocess.run(["git", *args], cwd=_REPOSITORY, capture_output=True, text=True,
@@ -560,10 +570,23 @@ def environment() -> Dict[str, str]:
             return "unknown"
 
     return {"commit": git("rev-parse", "HEAD"), "changes": "yes" if git("status", "--porcelain") else "no",
+            "engine": engine_digest(),
             "jax": jax.__version__, "backend": jax.default_backend(),
             "devices": ", ".join(sorted({d.device_kind for d in jax.devices()})),
             "platform": platform.platform(), "python": platform.python_version(),
             "measured": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+
+
+def engine_digest() -> str:
+    """The first 16 hex digits of a SHA-256 over the engine package's Python sources (each
+    file's path and its bytes with line endings as LF, in path order): the code that priced a
+    measurement, whatever the commit and the checkout's line endings."""
+    digest = hashlib.sha256()
+    root = _REPOSITORY / "engine"
+    for path in sorted(root.rglob("*.py")):
+        digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0")
+        digest.update(path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    return digest.hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -576,8 +599,9 @@ def summary(m: Measurements) -> str:
     setting only (the block layout, the rounding) side by side, and the P&L attribution
     statistics of market-risk cases."""
     lines = [f"# Precision measurements: {m.campaign}", "", m.description, "",
-             f"Kind: {m.kind}. Seeds: {len(m.seeds)} ({m.seeds[0]}..{m.seeds[-1]}). "
-             f"Commit {m.environment.get('commit', '?')[:12]} (local changes: {m.environment.get('changes', '?')}), "
+             f"Kind: {m.kind}. Market: {m.market}. Seeds: {len(m.seeds)} ({m.seeds[0]}..{m.seeds[-1]}). "
+             f"Commit {m.environment.get('commit', '?')[:12]} (local changes: {m.environment.get('changes', '?')}; "
+             f"engine digest {m.environment.get('engine', '?')}), "
              f"JAX {m.environment.get('jax', '?')} on {m.environment.get('backend', '?')} "
              f"({m.environment.get('devices', '?')}), {m.environment.get('measured', '?')}.", "",
              "Each figure's precision error is its value less the float64 run's on the same paths, per seed. "

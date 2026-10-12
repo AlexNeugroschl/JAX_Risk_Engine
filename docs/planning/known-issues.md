@@ -11,32 +11,36 @@ Europeans and bonds equal ORE's simulation path by path since 2026-10-07.
 
 ## Verification status
 
-Last full run, 2026-10-11, on an option's position ([I-101](#i-101)): `long_short` on the option
-configs and their API schemas, the sign in `engine/pricing/options.py` (`wrap`, `position_sign`),
-`engine/pricing/cube.py` (`value_on`) and `engine/risk/greeks/price_functions.py` (`OnPosition`,
-`Positioned`; the European's AD Vega on it, `ad._bachelier_vega` gone), the ORE oracles booking
-`LongShort`. 3,272 collected on Windows: the 3,235 of the run before plus 34 in
-`tests/test_option_position.py`, 5 in `tests/test_shared_portfolio.py` and 1 in
-`tests/test_ore_xva_parity.py`, less 3 that priced a zero-notional option to 0 (now refused).
-Each run printed its summary line:
+Last full run, 2026-10-12, on the precision evidence table ([I-55](#i-55), closed): the
+acceptance standard as data (`compliance/precision-acceptance.json`), the generator
+(`tests/support/precision_evidence.py`) and its files (`compliance/precision-evidence.md`,
+`engine/precision/evidence.json`), the run-time lookup and warnings (`engine/precision/evidence.py`,
+`engine.run.pipeline.precision_warnings`, `engine.risk.market.run`), the harness's market name and
+engine digest, all five precision campaigns measured again. 3,308 collected on Windows: the 3,272
+of the run before plus 35 in `tests/test_precision_evidence.py` and 1 in
+`tests/test_precision_harness.py`. Each run printed its summary line:
 
-- **Windows**, `-n 8`: **3,263 passed, 3 skipped, 6 xfailed, 0 failed**, 13m30s (the skips: the
-  two accelerator-only defaults and the GPU plugin check; the expected failures as before: the
-  Bermudan/American L3 cases of `tests/test_ore_xva_parity.py`, strict, waiting on
-  [I-49](#i-49)).
-- **GPU**, **Linux**: not rerun; the change touches no device code, process, path or platform
-  default ([rule 5](README.md#verification-rules)). The last GPU and Linux runs are of
-  2026-10-11, before it.
-- **Golden snapshot** (against the code before, its Greeks section left out): 273 of 273 arrays
-  identical, bit for bit: a long position does not move (the sign is a multiplication by 1.0).
-- **Precision harness**: not rerun; no kernel, format or figure of a long position changed, and
-  a short one is its long one's negation, exact in every format.
+- **Windows**, `-n 8`: **3,299 passed, 3 skipped, 6 xfailed, 0 failed**, 13m15s (the skips and
+  expected failures as before: the two accelerator-only defaults and the GPU plugin check; the
+  Bermudan/American L3 cases of `tests/test_ore_xva_parity.py`, strict, waiting on [I-49](#i-49)).
+- **Linux** (Docker `python:3.11`, 4 CPUs, `-n 4`, the fast tier of the seven modules the change
+  touches): **233 passed, 0 failed**, and `--check` passes: the change reads a data file through
+  `importlib.resources`, which a Linux checkout and install must find
+  ([rule 5](README.md#verification-rules)). Its first attempt failed, finding a defect: the
+  repository's `.gitignore` ignores every `*.json`, so `compliance/precision-acceptance.json`
+  and `engine/precision/evidence.json` would never have been committed; both are now negated
+  beside the TraderX fixtures.
+- **GPU**: not rerun; the change touches no device code and computes nothing on a device (the
+  warnings are plain Python).
+- **Golden snapshot**: not rerun; no array of any result changes (the change adds warnings and
+  docstrings, and no kernel, pricer or estimator line). The precision campaigns show it on
+  23,736 measured rows: every one equal bit for bit to its record before the change.
+- **Precision harness**: all five campaigns rerun on one revision (engine digest
+  `805c1a7f8cad963b`), 57 minutes; no case compiles after its first seed.
 
-Red first: on the code before, 38 of the 40 new tests failed or errored (the two that passed
-check what does not change: a swap's signed notional, and an unknown field over HTTP a 422),
-among them every refusal of a zero or negative option notional; the Bermudan payer booked at
-notional -1e6 priced +15,017.85, where ORE's `LongShort` Short is -35,712.95 (the engine now
-gives -35,712.953831242 against ORE's -35,712.953831256).
+Red first: on the code before, an FP8 portfolio run's `warnings` were `[]` (the pipeline built
+them empty) and `engine.precision.evidence` did not exist; the ceiling test fails when a ceiling
+skips a failing path count (checked by changing the generator's rule and restoring it).
 
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
@@ -64,6 +68,7 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-108](#i-108) | TraderX: NaN amounts priced as `ok`, terms contradicting the row priced, duplicate rows counted twice | Medium | OPEN | API | TraderX |
 | [I-109](#i-109) | TraderX: after a failed publication a same-id retry never prices or publishes | Medium | OPEN | API | TraderX |
 | [I-110](#i-110) | The documentation contradicts the code in places; no single parity table | Low | OPEN | Tooling | Fix what exists |
+| [I-111](#i-111) | Reported standard errors treat Sobol paths and historical windows as independent | Medium | FLAGGED | Correctness | Focus |
 | [I-98](#i-98) | FP8 compute keeps a bias: each path's operand is rounded to nearest on FP8's grid | Medium | OPEN | Correctness | Focus |
 | [I-97](#i-97) | XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU | Medium | OPEN | Performance | Focus |
 | [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Focus |
@@ -74,7 +79,6 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-78](#i-78) | AD and bump Greeks differ by up to 2% on a sloped market | Medium | OPEN | Validation | Focus |
 | [I-53](#i-53) | On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch | Low | PARTIAL | Performance | Fix what exists |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | New |
-| [I-55](#i-55) | Unproven precision combinations are not flagged | Medium | PARTIAL | Architecture | Focus |
 | [I-58](#i-58) | TraderX: two concurrent submissions of one workload under different ids both execute | Medium | PARTIAL | API | TraderX |
 | [I-59](#i-59) | TraderX: `calculations` and `reportingCurrency` accepted, keyed, then ignored | Medium | OPEN | API | TraderX |
 | [I-60](#i-60) | TraderX result schema has no stated policy on added fields | Low | ASSUMPTION | API | TraderX |
@@ -263,6 +267,55 @@ With a smile: European NPV and Vega away from the money, and calibrated Bermudan
 **To close.** Decided (X-5): a strike axis in the market's volatilities, read at each
 option's and helper's strike as ORE reads its cube. SABR is [F-02](features.md#f-02).
 
+<a id="i-111"></a>
+### I-111 — Reported standard errors treat Sobol paths and historical windows as independent
+
+**Severity:** Medium · **Status:** FLAGGED · **Category:** Correctness · **Found:** 2026-10-09,
+the storage harness's coverage (I-75); 2026-10-10, the project audit (AUD-19); split from
+[I-55](#i-55) when the evidence table closed it, 2026-10-11
+
+**What is wrong.** Every standard error a result reports is a sample standard deviation over
+the square root of a count, as if the paths or scenarios were independent draws. They are not:
+a scrambled Sobol sequence's points are dependent within a draw, the 32 paths of a storage block
+share a scale and offset, and overlapping historical horizons share days. Measured across
+independent seeds by the precision harness (16 seeds; §15.4 and §15.6 of
+[details/precision.md](details/precision.md)):
+
+- the paired estimate's total standard error (`MeanEstimate.standard_error`) is about three
+  times too wide on Sobol paths (standardized errors' root mean square 0.30 to 0.40);
+- the paired correction's (`MeanEstimate.correction_standard_error`) is right for storage of
+  the cube (root mean square 0.95 to 1.03 in every format) and for FP8 shocks and curves (0.94
+  to 1.09), but too small with the shocks, states or curves stored in float16 or bfloat16: root
+  mean square 1.5 to 3.3 and single errors up to 74 standard errors, at 1,024 and 4,096 paths,
+  in figures that differ from float64 on few paths (a rounded curve that flips an option's
+  payoff on one path), though pooled coverage stays 0.91 to 0.97. A standard error by blocks of
+  paths (batch means over the storage blocks, the fix I-55 proposed) was measured on 2026-10-11
+  against a threshold fixed before (root mean square within 0.75 to 1.33 and coverage at least
+  0.90 for every case): it fails it, being no better (root mean square 1.0 to 3.2, coverage
+  0.83 to 0.94), the misses being rare large differences that no block structure explains;
+- market risk's `ES_<q>_standardError` is the tail's standard deviation over the square root of
+  its count; its calibration on Sobol or historical scenarios is unmeasured.
+
+**Reach.** The standard errors in the precision report and market risk's ES standard error: a
+reader who takes one as a 95% interval is wrong by the factors above. No figure is wrong: the
+figures themselves and the evidence table, which judges every row by its errors across
+independent seeds, never by these standard errors, are unaffected.
+
+**Current handling.** Flagged on the result: a paired run with the shocks, states or curves
+stored below 32 bits carries a warning that its correction's standard errors understate the
+error (`engine.precision.evidence.paired_error_warning`), and every market-risk result one that
+its ES standard errors treat the scenarios as independent; `MeanEstimate`'s docstring states
+the measurements.
+
+**To close.** Standard errors from independent replicates within a run: the run's paths as K
+independently scrambled Sobol sequences (randomized quasi-Monte Carlo), each figure's standard
+error the spread of its K replicate values over sqrt(K), the paired correction's likewise per
+replicate; for historical scenarios, block resampling over non-overlapping windows. The
+replicates move the run's numbers (their union is not one Sobol sequence), so the precision
+harness measures both the coverage and the change; the project audit (AUD-19) recommends the
+same. Red first: on the paired cases of the `linear` campaign, the replicate standard error's
+standardized errors have a root mean square within 0.75 to 1.33 where today's reaches 3.3.
+
 <a id="i-98"></a>
 ### I-98 — FP8 compute keeps a bias: each path's operand is rounded to nearest on FP8's grid
 
@@ -290,8 +343,11 @@ other compute format is unaffected. Means are corrected by a paired float64 samp
 scenarios are 0.26 (e4m3) and 0.42 (e5m2) statistical errors off.
 
 **Current handling.** The precision report names the compute format; the precision harness
-measures the bias, from which the evidence table (I-55) reads FP8's path ceilings. Nothing
-warns.
+measures the bias, and the evidence table (2026-10-11,
+[compliance/precision-evidence.md](../../compliance/precision-evidence.md)) passes FP8 compute
+for no figure it moves at any path count measured (only figures no format moves, such as a
+bond's ENE, pass), so every run that computes a stage in FP8 carries the table's warning,
+naming its figures.
 
 **To close.** Round the per-path operand without bias: stochastically, as storage can
 (`Precision.rounding`), each path drawing its own uniforms so that its rounding depends on no
@@ -1041,92 +1097,6 @@ shares a layer with `models` and `instruments`): its orchestration moves above `
 
 ## Architecture
 
-<a id="i-55"></a><a id="a-1"></a>
-### I-55 — Unproven precision combinations are not flagged
-
-**Severity:** Medium · **Status:** PARTIAL · **Category:** Architecture · **Found:** 2026-09-24,
-audit A-1; decisions A-9, D-9
-
-**What is wrong.** Any per-stage combination may be run (decision D-9), but nothing records
-which combinations are shown adequate for which figure, so a float32 exposure profile looks
-exactly like a validated one.
-
-**Closed part (2026-10-01).** The stages and the mechanism: `engine/precision/`
-gives the simulation, the scenario market and path pricing (market-risk revaluation included)
-a storage, compute and accumulate format each (`Precision`, float64 by default, float64 or
-float32 today), at explicit cast points; kernels follow their inputs' dtype under strict
-promotion (CI); reductions over paths are float64. The 32/64 `PrecisionConfig` is refused,
-naming the replacement. `check_run`'s refusal, `run_market_risk`'s flag set, `_PRICING_LOCK`
-and the per-precision pool tiers are gone. Tests: `tests/test_precision.py`,
-`tests/test_portfolio_entrypoint.py::TestPricePortfolioPrecision`,
-`tests/test_market_risk.py::TestRun`. Before then a "float32" (`simulation=32`) run priced its
-paths partly in float64: NumPy float64 coupons and volatilities promoted the float32 curves
-(the cube was float64), while path fixings ran in float32. On 2026-10-02 the
-pricing stage became per product and per trade (`Precision.by_product`, `by_trade`, one resolver
-`precision_for`, decision A-15) in both pipelines: each cube column and each market-risk P&L
-column is priced and stored at its trade's precision, exactly as the trade alone at that
-precision (`tests/test_precision.py::TestPerTradePortfolio`, `TestPerTradeMarketRisk`).
-Then storage was enabled in float16, bfloat16 and both FP8 formats, with a
-power-of-two block scale per 32 paths and nearest or stochastic rounding (`Stored`,
-`Precision.rounding`, `rounding_seed`; `tests/test_precision.py::TestScaledStorage`,
-`TestScaledStoragePipeline`); its first measurements are
-[details/precision.md §15.3](details/precision.md#153-storage-through-the-pipeline) and
-[I-75](#i-75). The same day every result gained a `PrecisionReport` (the policy as
-run, the formats read from the stored arrays, the devices) and the paired float64 sample
-(`Precision.paired_fraction`, decision A-13): EPE and ENE are two-level estimates, PFE, VaR and
-ES measured against float64 on the same paths (`tests/test_precision_report.py`). A result
-now says how far it is from float64; it does not yet say whether that is good enough.
-
-**Reach.** Every reduced-precision result: its figures carry no statement of whether the
-combination has been validated for them. Default (float64) runs are unaffected.
-
-**To close.** The evidence table (A-11) per figure and precision combination
-against the acceptance standard (Basel III's P&L attribution test and the Basel plan's P6.2
-rule), and a warning on any result whose combination has no passing row. It is read off the
-storage harness (`tests/support/precision_harness.py`, built 2026-10-09 with [I-75](#i-75);
-measurements in `compliance/precision-measurements/`, [details/precision.md
-§15.4](details/precision.md#154-the-storage-harness-2026-10-09)) on each kernel family as
-F-07 rewrites it (the Bermudan/American rows after [I-32](#i-32) and [I-49](#i-49)), so it
-describes the kernels that ship. Three findings of its first campaigns bear on the table:
-
-- **The paired estimator's standard errors.** For storage of the cube they are right (the
-  standardized errors' root mean square 1.00 to 1.01, coverage 0.95). For storage of the shocks,
-  states and curves the correction's standard error is too small in heavy-tailed figures (an
-  option's ENE, non-zero on few paths): root mean square 1.5 to 3.0, single checks at 17 to 29
-  standard errors, though pooled coverage is 0.93 to 0.95. A row that rests on the paired
-  correction needs a robust standard error there (by blocks of paths, or across seeds). The
-  total standard error, which treats Sobol paths as independent, is about three times too wide
-  (root mean square 0.30 to 0.40).
-- **Figures float64 holds fixed** (a netting set's ENE where every path is in the money, an
-  EEE_B or EEPE_B at its t=0 value, a matured trade's) have no statistical error, so the P6.2
-  rule, a share of it, cannot judge them; they need an absolute rule (offsets move them by at
-  most 4e-5 of their scale).
-- **A path ceiling exists for every format below float32**: the relative error grows nearly as
-  sqrt(N) on Sobol paths, and a paired sample of an eighth of the paths raises it for smooth
-  figures (it trades a bias, which block offsets removed for concentrated columns, for
-  variance).
-
-Compute below float32 is built (2026-10-10, [F-07](features.md#f-07)) for every path kernel but
-the Bermudan/American rollback: the precision harness measures it in the `compute` and
-`compute_market_risk` campaigns ([details/precision.md
-§15.5](details/precision.md#155-compute-below-float32-2026-10-10)), whose rows the table reads
-beside the storage campaigns'. Their first run found a bias floor below float32
-([I-96](#i-96)), fixed on 2026-10-11 (the shared operands in two terms, A-23); what is left is
-FP8's own rounding ([I-98](#i-98)), whose rows the table reads as they are.
-
-Two more points for the table and its warning (the project audit, AUD-19 to AUD-21):
-
-- **Where the warning goes.** A portfolio run's `PortfolioResult.warnings` is always empty
-  (`engine/run/pipeline.py` builds it with `warnings=[]`); market risk fills its own. The
-  table's warning, and [I-73](#i-73)'s calibration misses, need the portfolio run to carry
-  warnings at all: each with its reason, the trades and the counts.
-- **Standard errors that assume independence.** Market risk's `ES_<q>_standardError`
-  (`engine/risk/market/var_es.py`) is the tail's standard deviation over the square root of its
-  count, described as an effective sample size; overlapping historical windows and Sobol points
-  are not independent, and the tail's own selection adds variance. It is labelled as assuming
-  independent scenarios, or measured as the paired correction's is (by blocks, or across
-  randomized seeds).
-
 <a id="i-94"></a>
 ### I-94 — The LGM is calibrated by two implementations
 
@@ -1518,6 +1488,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-100"></a>I-100 | Market risk added the P&Ls of trades in different currencies unconverted (now every amount is in the request's `base_currency`, USD by default as a portfolio run's without a simulation, each trade converted at the as-of FX spot in float64, a missing spot refused before any work naming the trade and the pair, the result naming its currency and warning that FX is not shocked; the portfolio run's preflight refuses a missing spot, and a trade in a currency its simulation does not model, before any work; 2026-10-11) | `tests/test_market_risk.py::TestReportingCurrency` (red on the code before: the figures did not move with the EURUSD spot; VaR_99 601,048 where the converted P&Ls give 633,967 at 1.10), `tests/test_run_config.py::TestWhatThePipelineDoesNotImplementIsRefused::test_a_trade_with_no_spot_into_the_reporting_currency_is_refused_naming_it`, `::test_a_trade_in_a_currency_the_simulation_does_not_model_is_refused` |
 | <a id="i-101"></a>I-101 | A negative option notional booked a short European but a long Bermudan or American on the reversed swap (the Bermudan payer at -1e6 was +15,017.85 where ORE's short is -35,712.95), and a zero one priced a European to NaN (now every option has ORE's `LongShort`, `long_short` on the configs and the API, `Long` by default; a short is minus the long one in every engine, today, on the paths with the holder's exercise as ORE's `OptionWrapper`, in the AD and bump Greeks and in market risk; a zero or negative option notional refused naming the trade; 2026-10-11) | `tests/test_option_position.py`, `tests/test_shared_portfolio.py::test_a_short_option_today_is_ores_short_option` (against ORE's trade builder with `LongShort` Short), `tests/test_ore_xva_parity.py::test_a_short_option_on_ores_paths_is_ores_short_option` (each red on the code before) |
 | <a id="i-102"></a>I-102 | VaR took index floor(N(1−p)), one above QuantLib's ceil(N(1−p)) − 1 where N(1−p) is a whole number (VaR 15 where ORE's is 16 on 16 scenarios at 0.9375), and quantile keys were rounded to six decimals, so close levels shared one (now QuantLib's rank, `var_rank`; each key the level's percentage exactly; a run's levels in (0, 1), each once, documented as broader than ORE's [0.9, 1); 2026-10-11) | `tests/test_var_es.py::TestExactRankBoundaryAgainstORE`, `::TestQuantileLabels`, `tests/test_market_risk.py::TestRunValidation::test_close_quantiles_keep_their_own_figures`, `tests/test_exposure.py::TestDefinitions::test_close_quantiles_keep_their_own_keys` (each red on the code before) |
+| <a id="i-55"></a><a id="a-1"></a>I-55 | No result said whether its precision combination had been shown adequate for its figures, so a float32 exposure profile looked exactly like a validated one (now the evidence table, `compliance/precision-evidence.md`, generated from the precision harness's measurements against decision A-11's standard, `compliance/precision-acceptance.json`: the statistical rule, an absolute rule for figures float64 holds fixed, MAR32.42's P&L attribution test for market risk, each row's path ceiling, code revision, market, seeds and device; every portfolio and market-risk result warns of each figure without a passing row; the paired standard errors' limits are [I-111](#i-111); 2026-10-11) | `tests/test_precision_evidence.py` (the rules, the lookup, the files of record against the measurements, a reduced run's warnings end to end; red on the code before, where an FP8 run's `warnings` were `[]`, and the ceiling test red under a ceiling that skips a failing path count), `tests/test_precision_harness.py::TestMeasure::test_the_figures_measured_are_those_the_engine_warns_of` |
 | <a id="m-4"></a>Audit M-4 | Trades were defined relative to the evaluation date (now absolute dates) | `tests/test_trade_dates.py` |
 | <a id="m-5"></a>Audit M-5 | Theta re-rolled the trade instead of ageing it | `tests/test_trade_dates.py` |
 | <a id="r-1"></a>Audit R-1 | Cube quantiles were reported as VaR/ES (now exposure profiles; market-risk VaR/ES by t=0 revaluation) | `tests/test_exposure.py`, `tests/test_market_risk.py`, `tests/test_market_risk_ore_parity.py` |

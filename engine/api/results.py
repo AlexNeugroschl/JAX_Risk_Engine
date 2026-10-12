@@ -243,8 +243,9 @@ class PortfolioResultSchema(BaseModel):
 
 class MarketRiskResultSchema(BaseModel):
     """`engine.risk.market.MarketRiskResult` on the wire: VaR/ES of the portfolio P&L
-    (`risk`: `VaR_99`, `ES_97.5`, `ES_97.5_tailCount`, `ES_97.5_standardError`, ...; NaN as
-    null), each trade's t=0 value, the scenarios' description, and the P&L matrix
+    (`risk`: `VaR_99`, `ES_97.5`, `ES_97.5_tailCount`, `ES_97.5_standardError` (scenarios
+    treated as independent: indicative, as `warnings` says), ...; NaN as null), each trade's
+    t=0 value, the scenarios' description, and the P&L matrix
     `[Scenarios, Trades]` (trade axis in `trades`' order) inline (`pnl`), by reference
     (`pnl_artifact`) or absent, as the request's `pnl_output` asked. The portfolio P&L the
     statistics use is the sum of each scenario's row. Every amount is in `base_currency`."""

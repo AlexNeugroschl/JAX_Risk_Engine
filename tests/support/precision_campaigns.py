@@ -71,6 +71,9 @@ SIMULATION = CamConfig(dates=DATES, base_currency="USD", ir={"USD": LgmConfig(0.
 COARSE_GRID = LgmSwaptionEngineConfig(n_per_std=8, std_devs=3.0)
 #: The paired sample's share of the paths: four blocks of 32 at 1,024 paths.
 PAIRED = 0.125
+#: The markets, as every row measured on them names them (the evidence table's, I-55).
+SHARED_MARKET = "USD, the shared portfolio's 3% -> 5% curves (tests/support/portfolio.py)"
+MARKET_RISK_MARKET = "USD, the market-risk tests' sloped two-curve market (tests/market_risk_support.py)"
 
 
 def _shared(*names):
@@ -84,7 +87,7 @@ def linear() -> PortfolioCampaign:
                     "curves, an LGM calibrated to the 1Y x 9Y and 2Y x 8Y swaptions, six dates to 5 years. Each "
                     "case stores one stage in one format (computed in float64), or runs float32 throughout; the "
                     "`:paired` cases add a paired float64 sample of an eighth of the paths.",
-        market=shared.market(),
+        market_name=SHARED_MARKET, market=shared.market(),
         trades=_shared("swap-payer", "swap-receiver-seasoned-icma", "european-payer", "european-receiver-otm-cash",
                        "bond"),
         simulation=SIMULATION, pricing=PricingConfig(),
@@ -101,7 +104,7 @@ def options() -> PortfolioCampaign:
                     "and simulation of the `linear` campaign. 256 paths: a path's rollback holds a [nodes, nodes] "
                     "operator per step until the kernel rewrite (I-83). The Bermudan/American kernel moves with "
                     "ShiftHorizon and the recalibration fix (I-32, I-49), after which these rows are measured again.",
-        market=shared.market(),
+        market_name=SHARED_MARKET, market=shared.market(),
         trades=_shared("bermudan-payer-physical", "bermudan-receiver-cash", "american-payer"),
         simulation=SIMULATION, pricing=PricingConfig(bermudan=COARSE_GRID, american=COARSE_GRID),
         cases=(storage_cases(formats=("float16", "float8_e4m3fn", "float8_e5m2"), roundings=("nearest",))
@@ -145,7 +148,7 @@ def market_risk() -> MarketRiskCampaign:
                     "a 10Y payer swap and a 9Y receiver that offsets most of it, a European, a Bermudan and a bond, "
                     "revalued under 10-day Monte Carlo shifts of every pillar. Each case stores the shifts "
                     "(`simulation`) or each trade's P&L (`pricing`) in one format, revalued in float64.",
-        market=mr.market(), trades=_market_risk_trades(),
+        market_name=MARKET_RISK_MARKET, market=mr.market(), trades=_market_risk_trades(),
         covariance=mr.covariance(), horizon_days=10,
         pricing=dataclasses.replace(mr.PRICING, bermudan=dataclasses.replace(mr.ENGINE, n_per_std=8, std_devs=3.0)),
         cases=storage_cases(stages=("simulation", "pricing"), offsets=("block",)),
