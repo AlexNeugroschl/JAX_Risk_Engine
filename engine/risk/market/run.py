@@ -13,6 +13,13 @@ conventions, already pinned against ORE -- applied to a one-date P&L sample.
 This is the engine's market-risk measure. The multi-step simulation in
 `engine.run` is an exposure profile, not a VaR (audit finding R-1).
 
+Currency: each trade is revalued in its own currency, and its base value and P&L are converted
+into the run's reporting currency (`MarketRiskRequest.base_currency`, USD by default, as a
+portfolio run without a simulation) at the market's as-of FX spot, in float64 after the P&L is
+loaded, so the portfolio P&L adds amounts in one unit. A trade with no spot into it is refused
+before any work. Only rate pillars are shocked, so the spot is the same in every scenario: FX
+risk is not in the VaR/ES, and the result says so when a trade was converted.
+
 Precision (`engine.precision`), the portfolio run's stages on this pipeline: the shifts are
 rounded to the accumulate format of `simulation` and stored at `simulation.storage` (they are
 drawn before the run, so the simulation stage has no product to compute); each trade is
@@ -35,6 +42,7 @@ so the reported VaR/ES are the run's own, not corrected.
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -47,11 +55,13 @@ from engine.precision import (
     Arithmetic, Precision, PrecisionReport, format_name, load, paired_paths, paired_quantile, require_precision,
 )
 from engine.pricing.config import PricingConfig
-from engine.pricing.cube import require_unique_ids, validate_trades
+from engine.pricing.cube import DEFAULT_REPORTING_CURRENCY, reporting_fx_spots, require_unique_ids, validate_trades
 from engine.risk.market.factors import RateRiskFactors
 from engine.risk.market.revaluation import factor_indices, revalue_trade, scenario_batch_size
 from engine.risk.market.scenarios import ShockScenarios
-from engine.risk.market.var_es import compute_risk_metrics, expected_shortfall, quantile_label, value_at_risk
+from engine.risk.market.var_es import (
+    compute_risk_metrics, expected_shortfall, quantile_label, validate_quantiles, value_at_risk, var_rank,
+)
 
 OPTION_TYPES = (SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig)
 
@@ -72,12 +82,15 @@ class MarketRiskRequest:
     pricing: the engine per product (`PricingConfig`), as in a portfolio run: a European's
         engine, and a Bermudan's/American's LGM engine, calibrated on today's market and held
         fixed under every scenario.
-    quantiles: VaR/ES confidence levels, e.g. 0.99 for VaR and 0.975 for
-        Basel's ES.
+    quantiles: VaR/ES confidence levels in (0, 1), each once, e.g. 0.99 for VaR and 0.975 for
+        Basel's ES (ORE's statistics take [0.9, 1); the rank rule is the same).
     precision: the `Precision` of the run (see the module docstring); float64 by default.
         `by_product` and `by_trade` set single trades' revaluation.
     batch_size: scenarios vmapped at once inside the revaluation loop; lower
         it if a large Bermudan runs out of memory.
+    base_currency: the reporting currency (ORE's `baseCurrency`) every base value, P&L and
+        figure is in; each trade in another currency converted at the market's as-of FX spot,
+        which must be given (`Market.fx_spots`, either way round).
     """
     trades: List
     market: Market
@@ -86,18 +99,20 @@ class MarketRiskRequest:
     quantiles: Sequence[float] = (0.99, 0.975)
     precision: Precision = field(default_factory=Precision)
     batch_size: int = 256
+    base_currency: str = DEFAULT_REPORTING_CURRENCY
 
 
 @dataclass
 class MarketRiskResult:
-    """VaR/ES of one run, with everything needed to reproduce and audit it.
+    """VaR/ES of one run, with everything needed to reproduce and audit it. Every amount is in
+    `base_currency`.
 
     risk: `VaR_99`, `ES_97.5`, ... as positive losses, plus
         `ES_<q>_tailCount` (observations the ES averaged) and
         `ES_<q>_standardError` (its Monte Carlo standard error); NaN where a
         tail is empty.
     pnl: `[S, N]` P&L of each trade under each scenario, in request order, loaded at float64
-        from its storage format.
+        from its storage format and converted at its FX spot.
     portfolio_pnl: `[S]` the sum across trades, which the statistics use (float64).
     """
     base_npv: float
@@ -110,6 +125,7 @@ class MarketRiskResult:
     horizon_days: int
     num_scenarios: int
     risk_factors: List[str]
+    base_currency: str
     warnings: List[str] = field(default_factory=list)
     #: The precision as run, read from the run's arrays, and with a paired float64 sample each
     #: VaR/ES measured on it ("portfolio/VaR_99", "portfolio/ES_97.5"); see `PrecisionReport`.
@@ -122,23 +138,23 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     validate_request(request)
     scenarios = request.scenarios
     precision = request.precision
+    spots = reporting_fx_spots(request.trades, request.market, request.base_currency, "base_currency")
     shifts = precision.store(shard_scenarios(precision.simulation.arithmetic.cast(scenarios.shifts), axis=0),
                              precision.simulation.storage, "shocks")
     base, columns, stored = [], [], []
-    for cfg in request.trades:
+    for cfg, spot in zip(request.trades, spots):
         stage = precision.precision_for(cfg)
         value, trade_pnl = _trade_pnl(cfg, request, load(shifts, stage.arithmetic.dtype), stage.arithmetic)
-        base.append(value)
+        base.append(value * spot)
         stored.append(precision.store(trade_pnl, stage.storage, f"values/{cfg.trade_id}"))
         columns.append(load(stored[-1], jnp.float64))
-    pnl = jnp.stack(columns, axis=-1)
-    portfolio_pnl = jnp.sum(pnl, axis=-1)
+    pnl, portfolio_pnl = _in_reporting_currency(tuple(columns), jnp.asarray(spots, dtype=jnp.float64))
 
     metrics = compute_risk_metrics(pnl[:, None, :], 0.0, percentiles=request.quantiles)
     risk = {key: _scalar(value) for key, value in metrics.items()}
 
     paired = paired_paths(scenarios.num_scenarios, precision.paired_fraction)
-    figures = _paired_figures(request, portfolio_pnl, paired) if paired else {}
+    figures = _paired_figures(request, spots, portfolio_pnl, paired) if paired else {}
     realized = {"shocks": format_name(shifts),
                 **{f"values/{cfg.trade_id}": format_name(s) for cfg, s in zip(request.trades, stored)}}
 
@@ -153,6 +169,7 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
         horizon_days=scenarios.horizon_days,
         num_scenarios=scenarios.num_scenarios,
         risk_factors=scenarios.factors.labels(),
+        base_currency=request.base_currency,
         warnings=_warnings(request),
         precision=PrecisionReport.of(precision, request.trades, realized, stored, scenarios.num_scenarios, paired,
                                      figures, [precision.precision_for(cfg).compute for cfg in request.trades]),
@@ -166,9 +183,19 @@ def _trade_pnl(cfg, request: MarketRiskRequest, moves, arithmetic: Optional[Arit
                          arithmetic)
 
 
-def _paired_figures(request: MarketRiskRequest, portfolio_pnl, paired: int) -> Dict:
-    """The paired sample (decision A-13): the first `paired` scenarios revalued at float64, and
-    each VaR and ES at the run's precision and at float64 on them.
+@jax.jit
+def _in_reporting_currency(columns, spots):
+    """Each trade's float64 P&L column `[S]` times its FX spot into the reporting currency:
+    the `[S, N]` P&L and its sum over trades `[S]`. A spot of 1.0 leaves a column's bits as
+    they are. One program per scenario and trade count."""
+    pnl = jnp.stack(columns, axis=-1) * spots
+    return pnl, jnp.sum(pnl, axis=-1)
+
+
+def _paired_figures(request: MarketRiskRequest, spots: Sequence[float], portfolio_pnl, paired: int) -> Dict:
+    """The paired sample (decision A-13): the first `paired` scenarios revalued at float64,
+    converted at the run's FX `spots`, and each VaR and ES at the run's precision and at float64
+    on them.
 
     Each trade is revalued in the batches a float64 run uses (`scenario_batch_size`): whole
     batches from the first scenario, then cut to `paired`. A batch of another shape may round
@@ -181,7 +208,8 @@ def _paired_figures(request: MarketRiskRequest, portfolio_pnl, paired: int) -> D
         batch = scenario_batch_size(cfg, request.pricing, request.batch_size, moves.dtype.itemsize)
         return _trade_pnl(cfg, request, moves[:min(total, -(-paired // batch) * batch)])[1][:paired]
 
-    paired_pnl = jnp.sum(jnp.stack([float64_pnl(cfg) for cfg in request.trades], axis=-1), axis=-1)
+    _, paired_pnl = _in_reporting_currency(tuple(float64_pnl(cfg) for cfg in request.trades),
+                                           jnp.asarray(spots, dtype=jnp.float64))
     figures = {}
     for q in request.quantiles:
         for name, statistic in (("VaR", value_at_risk), ("ES", expected_shortfall)):
@@ -197,7 +225,7 @@ def _scalar(value) -> float:
 def validate_request(request: MarketRiskRequest) -> None:
     """Refuse a request `run_market_risk` cannot run, naming the field, before any work."""
     validate_portfolio(request.trades, request.market, request.pricing, request.precision, request.quantiles,
-                       request.batch_size)
+                       request.batch_size, request.base_currency)
     validate_factors(request.trades, request.market, request.scenarios.factors)
 
 
@@ -220,7 +248,7 @@ def validate_factors(trades, market: Market, factors: RateRiskFactors) -> None:
 
 
 def validate_portfolio(trades, market: Market, pricing: PricingConfig, precision: Precision,
-                       quantiles: Sequence[float], batch_size: int) -> None:
+                       quantiles: Sequence[float], batch_size: int, base_currency: str) -> None:
     """Everything of a market-risk request but its scenarios: the HTTP route checks this before
     queueing the job, then the scenarios' inputs without drawing them (no JAX work:
     `engine.risk.market.scenarios.validate_monte_carlo`, `historical_scenarios`) and
@@ -230,13 +258,12 @@ def validate_portfolio(trades, market: Market, pricing: PricingConfig, precision
     require_precision("MarketRiskRequest.precision", precision)
     if batch_size < 1:
         raise ValueError(f"batch_size must be at least 1; got {batch_size}")
-    for q in quantiles:
-        if not 0.0 < q < 1.0:
-            raise ValueError(f"quantile must lie in (0, 1); got {q}")
+    validate_quantiles("quantiles", quantiles)
     if not isinstance(pricing, PricingConfig):
         raise TypeError(f"pricing must be a PricingConfig; got {type(pricing).__name__}")
     require_unique_ids(trades)
     validate_trades(trades, market, pricing, precision)
+    reporting_fx_spots(trades, market, base_currency, "base_currency")
 
 
 def _market_curves(market: Market):
@@ -259,8 +286,14 @@ def _warnings(request: MarketRiskRequest) -> List[str]:
             f"a calibrated LGM or the Jamshidian model): only curve pillar rates are shocked, so volatility "
             f"risk is not in this VaR/ES."
         )
+    converted = [cfg.trade_id for cfg in request.trades if cfg.currency != request.base_currency]
+    if converted:
+        out.append(
+            f"trades {converted} are converted into the reporting currency {request.base_currency} at today's FX "
+            f"spot, held fixed: only curve pillar rates are shocked, so FX risk is not in this VaR/ES."
+        )
     for q in request.quantiles:
-        tail = int(np.floor(request.scenarios.num_scenarios * (1.0 - q)))
+        tail = var_rank(request.scenarios.num_scenarios, q)
         if tail < 10:
             out.append(
                 f"only {request.scenarios.num_scenarios} scenarios: the {q:.1%} tail holds about "

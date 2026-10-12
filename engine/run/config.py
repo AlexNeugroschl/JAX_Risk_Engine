@@ -36,6 +36,7 @@ from typing import Optional
 from engine.market_simulation.config import CamConfig
 from engine.precision import Precision, require_precision
 from engine.pricing.config import PricingConfig
+from engine.pricing.cube import DEFAULT_REPORTING_CURRENCY
 from engine.risk.greeks.bump import SensitivityConfig
 
 #: The Greeks methods: ORE's bump-and-revalue sensitivities, or automatic differentiation.
@@ -96,5 +97,5 @@ class RunConfig:
     def reporting_currency(self) -> str:
         if self.simulation is not None:
             return self.simulation.base_currency
-        return self.base_currency or "USD"
+        return self.base_currency or DEFAULT_REPORTING_CURRENCY
 

@@ -247,8 +247,10 @@ class MarketRiskResultSchema(BaseModel):
     null), each trade's t=0 value, the scenarios' description, and the P&L matrix
     `[Scenarios, Trades]` (trade axis in `trades`' order) inline (`pnl`), by reference
     (`pnl_artifact`) or absent, as the request's `pnl_output` asked. The portfolio P&L the
-    statistics use is the sum of each scenario's row."""
+    statistics use is the sum of each scenario's row. Every amount is in `base_currency`."""
     base_npv: float
+    #: The reporting currency every amount is in, each trade converted at the as-of FX spot.
+    base_currency: str
     trades: List[TradeValueSchema]
     risk: Dict[str, Optional[float]]
     measure: str
@@ -267,6 +269,7 @@ class MarketRiskResultSchema(BaseModel):
                        pnl_artifact: Optional[Dict] = None) -> "MarketRiskResultSchema":
         return cls(
             base_npv=result.base_npv,
+            base_currency=result.base_currency,
             trades=[TradeValueSchema(trade_id=i, base_npv=float(v)) for i, v in zip(trade_ids,
                                                                                       result.base_npv_per_trade)],
             risk={key: _floats(value)[0] for key, value in result.risk.items()},

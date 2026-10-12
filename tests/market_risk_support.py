@@ -48,6 +48,24 @@ def market() -> Market:
     return Market(TODAY, {"USD": CurrencyMarket(OIS, {INDEX: IBOR}, VOLS)})
 
 
+#: A second currency's curves, sloped and below the dollar's.
+EUR_OIS = ZeroCurveConfig(PILLAR_TIMES, [r - 0.012 for r in OIS.rates])
+EUR_IBOR = ZeroCurveConfig(PILLAR_TIMES, [r + 0.003 for r in EUR_OIS.rates])
+EUR_INDEX = index_name("EUR", 6)
+
+
+def two_currency_market(fx_spots) -> Market:
+    """`market()` and a EUR market (`EUR_OIS`, `EUR_INDEX` on `EUR_IBOR`), with `fx_spots`
+    (`{"EURUSD": 1.1}`, or none). Its factors are the four curves, USD's first."""
+    return Market(TODAY, {"USD": market().currency("USD"), "EUR": CurrencyMarket(EUR_OIS, {EUR_INDEX: EUR_IBOR})},
+                  fx_spots)
+
+
+def two_currency_covariance() -> np.ndarray:
+    """`covariance()` for each currency's two curves, the currencies uncorrelated."""
+    return np.kron(np.eye(2), covariance())
+
+
 def factors() -> RateRiskFactors:
     """The market's curves, `discount:USD` (OIS) then `index:USD-SIMINDEX-6M` (IBOR)."""
     return RateRiskFactors.from_market(market())
@@ -69,6 +87,12 @@ def covariance(daily_vol: float = 0.0008, horizon_days: int = 10, decay: float =
 def swap() -> SwapConfig:
     return SwapConfig(notional=10e6, fixed_rate=0.036, payer=True, swap_tenor="10Y", evaluation_date=TODAY,
                       trade_id="swap")
+
+
+def eur_swap() -> SwapConfig:
+    """A EUR receiver on `EUR_INDEX`."""
+    return SwapConfig(notional=8e6, fixed_rate=0.025, payer=False, swap_tenor="7Y", evaluation_date=TODAY,
+                      currency="EUR", trade_id="swap-eur")
 
 
 def european() -> SwaptionConfig:

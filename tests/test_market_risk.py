@@ -365,10 +365,21 @@ class TestRunValidation:
     @pytest.mark.parametrize("kwargs, match", [
         ({"batch_size": 0}, "batch_size"),
         ({"quantiles": (1.0,)}, "quantile"),
+        ({"quantiles": (float("nan"),)}, "quantile"),
+        ({"quantiles": (0.99, 0.975, 0.99)}, r"quantiles: 0\.99 is given more than once"),
     ])
     def test_bad_settings(self, kwargs, match):
         with pytest.raises(ValueError, match=match):
             run_market_risk(self._request([m.swap()], **kwargs))
+
+    def test_close_quantiles_keep_their_own_figures(self):
+        """I-102: 0.99 and 0.9900000001 were both keyed `99`, the second overwriting the first in
+        `risk` and in the precision report's figures."""
+        close = (0.99, 0.9900000001)
+        result = run_market_risk(self._request([m.swap()], quantiles=close, precision=Precision(paired_fraction=0.5)))
+        for label in ("99", "99.00000001"):
+            assert {f"VaR_{label}", f"ES_{label}", f"ES_{label}_tailCount", f"ES_{label}_standardError"} <= set(result.risk)
+        assert {"portfolio/VaR_99", "portfolio/VaR_99.00000001"} <= set(result.precision.figures)
 
     def test_a_curve_the_market_lacks_is_refused_naming_the_trade(self):
         eur = dataclasses.replace(m.swap(), currency="EUR")
@@ -407,3 +418,79 @@ class TestRunValidation:
         shifted = dataclasses.replace(m.swap(), evaluation_date=m.TODAY + 1, trade_id="later")
         with pytest.raises(ValueError, match="'later'.*not the market's as-of date"):
             run_market_risk(self._request([m.swap(), shifted]))
+
+    def test_a_reporting_currency_the_market_lacks_is_refused(self):
+        with pytest.raises(KeyError, match="base_currency='EUR': no market for currency 'EUR'"):
+            run_market_risk(self._request([m.swap()], base_currency="EUR"))
+
+
+# ---------------------------------------------------------------------------
+# The reporting currency (I-100)
+# ---------------------------------------------------------------------------
+def _two_currency_run(trades, fx_spots, num=256, **kwargs):
+    market = m.two_currency_market(fx_spots)
+    shocks = monte_carlo_scenarios(RateRiskFactors.from_market(market), m.two_currency_covariance(), 10, num, seed=5)
+    return run_market_risk(MarketRiskRequest(trades, market, shocks, m.PRICING, **kwargs))
+
+
+@pytest.fixture(scope="module")
+def alone():
+    """Each swap's run on its own, in its own currency."""
+    return {cfg.trade_id: _two_currency_run([cfg], {}, base_currency=cfg.currency) for cfg in (m.swap(), m.eur_swap())}
+
+
+class TestReportingCurrency:
+    """Every amount of a run is in its reporting currency, `base_currency` (USD by default): a
+    trade in another currency is revalued in its own and converted at the as-of FX spot. Until
+    2026-10-11 a EUR trade's P&L was added to a USD trade's as if both were dollars."""
+
+    @pytest.mark.parametrize("spot", [1.10, 1.30])
+    def test_a_two_currency_var_moves_with_the_spot_as_the_converted_pnls_say(self, alone, spot):
+        result = _two_currency_run([m.swap(), m.eur_swap()], {"EURUSD": spot})
+        usd, eur = alone["swap"], alone["swap-eur"]
+        expected = np.stack([np.asarray(usd.pnl[:, 0]), spot * np.asarray(eur.pnl[:, 0])], axis=-1)
+        assert result.base_currency == "USD"
+        np.testing.assert_allclose(np.asarray(result.pnl), expected, rtol=1e-14, atol=0.0)
+        np.testing.assert_allclose(np.asarray(result.portfolio_pnl), expected.sum(axis=1), rtol=1e-14, atol=1e-9)
+        assert result.base_npv_per_trade == pytest.approx([usd.base_npv, spot * eur.base_npv], rel=1e-14)
+        statistics = compute_risk_metrics(expected[:, None, :], 0.0, percentiles=(0.99, 0.975))
+        for key in ("VaR_99", "ES_99", "VaR_97.5", "ES_97.5"):
+            assert result.risk[key] == pytest.approx(float(statistics[key][0]), rel=1e-12)
+
+    def test_the_spot_moves_the_figures(self):
+        """The two spots' VaRs differ, so the test above is not met by an unconverted sum."""
+        low, high = (_two_currency_run([m.swap(), m.eur_swap()], {"EURUSD": s}) for s in (1.10, 1.30))
+        assert abs(high.risk["VaR_99"] - low.risk["VaR_99"]) > 1e-3 * low.risk["VaR_99"]
+
+    def test_the_inverse_quote_converts_alike(self):
+        quoted = _two_currency_run([m.swap(), m.eur_swap()], {"EURUSD": 1.25})
+        inverse = _two_currency_run([m.swap(), m.eur_swap()], {"USDEUR": 0.8})
+        np.testing.assert_allclose(np.asarray(inverse.pnl), np.asarray(quoted.pnl), rtol=1e-15, atol=0.0)
+
+    def test_reporting_in_the_trades_currency_needs_no_spot_and_converts_nothing(self, alone):
+        eur = alone["swap-eur"]
+        assert eur.base_currency == "EUR"
+        assert not any("FX" in w for w in eur.warnings)
+        np.testing.assert_array_equal(np.asarray(eur.pnl[:, 0]), np.asarray(eur.portfolio_pnl))
+
+    def test_warns_that_fx_is_not_shocked_naming_the_converted_trades(self):
+        result = _two_currency_run([m.swap(), m.eur_swap()], {"EURUSD": 1.1}, num=64)
+        assert any("['swap-eur']" in w and "FX risk is not in this VaR/ES" in w for w in result.warnings)
+
+    def test_a_missing_spot_is_refused_before_any_work_naming_the_trade_and_the_pair(self, monkeypatch):
+        def no_work(*args, **kwargs):
+            raise AssertionError("revalued before the request was checked")
+
+        monkeypatch.setattr("engine.risk.market.run.revalue_trade", no_work)
+        with pytest.raises(KeyError, match=r"'swap-eur' is in EUR and the reporting currency is USD \(base_currency\), "
+                                           r"but the market has no EURUSD spot"):
+            _two_currency_run([m.swap(), m.eur_swap()], {})
+
+    def test_the_paired_sample_is_converted_too(self):
+        """At float64 the paired scenarios' figures at the run's precision and at float64 are the
+        same numbers: both converted."""
+        result = _two_currency_run([m.swap(), m.eur_swap()], {"EURUSD": 1.3}, num=128,
+                                   precision=Precision(paired_fraction=0.5))
+        for key in ("portfolio/VaR_99", "portfolio/ES_97.5"):
+            figure = result.precision.figures[key]
+            np.testing.assert_allclose(np.asarray(figure.paired), np.asarray(figure.paired_float64), rtol=1e-14)

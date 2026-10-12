@@ -10,7 +10,9 @@ the portfolio at t=0 under shocked curves.
     result.risk["VaR_99"], result.risk["ES_97.5"]
 
 Trades name their curves by currency and index; the engines are the pricing configuration's,
-as in a portfolio run.
+as in a portfolio run. Every amount is in the request's `base_currency` (USD by default), each
+trade in another currency converted at the market's as-of FX spot, held fixed (only rate
+pillars are shocked).
 
 This is the engine's market-risk measure. `engine.run.price_portfolio`
 simulates a multi-step risk-neutral cube, which gives exposure profiles

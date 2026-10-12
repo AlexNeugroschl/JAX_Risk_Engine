@@ -105,9 +105,10 @@ Europeans, bonds) and 4e-11 (calibrated Bermudans/Americans), model analytics to
 2026-10-07 an ORE simulation run in-process is the reference for the assembled pipeline:
 swaps, Europeans and bonds equal it path by path (Bermudans and Americans 0.5–4% apart, I-49,
 which 3.7 closes). Sensitivities are not yet shown to equal ORE's. Those comparisons are of
-long positions in one currency: a market-risk portfolio in two currencies adds them unconverted
-(I-100), and a short Bermudan booked by a negative notional is a long option (I-101), both
-3.3–3.4.
+long positions: a short Bermudan booked by a negative notional is a long option (I-101, 3.4).
+Since 2026-10-11 market risk reports in one currency, each trade converted at the as-of FX spot
+(FX is not a shocked factor, and the result says so), and takes QuantLib's VaR rank at exact
+boundaries (I-100, I-102).
 
 Every model, engine, Greeks and precision choice is one run configuration with ORE's
 defaults. The simulation, the scenario market and path pricing each take a storage, a compute
@@ -165,15 +166,15 @@ rate, so it is where correctness and the trace are checked, not where speed is m
 ## Stage 3 — The focus: low precision, critical bugs, a robust API
 
 Low precision first where the three compete. The critical bugs are here because the precision
-work and the later stages build on the numbers they fix (3.3, 3.4, 3.6, 3.7, 3.11). Two High
-defects found by the project audit of 2026-10-10 come first, each small and touching no path
-kernel: market risk adds trades' currencies unconverted (I-100) and a negative option notional
-means a short European but a long Bermudan (I-101). The High defect of 2026-10-10 (I-57, one
-caller served another's result) is fixed.
+work and the later stages build on the numbers they fix (3.4, 3.6, 3.7, 3.11). Of the two High
+defects the project audit of 2026-10-10 found, each small and touching no path kernel, one is
+fixed: market risk added trades' currencies unconverted (I-100, 2026-10-11, with VaR's rank at
+exact boundaries and colliding quantile keys, I-102). The other comes first: a negative option
+notional means a short European but a long Bermudan (I-101). The High defect of 2026-10-10
+(I-57, one caller served another's result) is fixed.
 
 | Step | Goal | Work | Closes | After | Size |
 |---|---|---|---|---|---|
-| 3.3 | Critical bug | *Parallel, can start now.* Market risk in one unit: a reporting currency on the request, each trade's base value and P&L converted at the as-of FX spot, a missing spot refused, a warning that FX is not shocked; VaR's rank as QuantLib's (ceil(N(1−p)) − 1) with an exact-boundary oracle; quantile keys that cannot collide | [I-100](known-issues.md#i-100), [I-102](known-issues.md#i-102) | — | S |
 | 3.4 | Critical bug | *Parallel, can start now.* ORE's `LongShort` on every option and its API field, a short option minus its long one in every engine, on the paths and in the Greeks; a negative or zero option notional refused; a `Short` Bermudan against ORE | [I-101](known-issues.md#i-101) | — | S |
 | 3.5 | Precision | The evidence table against the acceptance standard (A-11: Basel III's P&L attribution test and the Basel plan's P6.2 rule, as transcribed; P6.2 labelled as engineering for figures Basel does not cover), from the precision harness on the kernels rewritten in difference form (the simulation, scenario market, legs and Europeans, 2026-10-10: the `compute` and `compute_market_risk` campaigns beside the storage ones) and on 3.8's as it lands, then on each kernel stage 7 adds. With what the harness's first campaigns found (I-55): a robust standard error for the paired correction where the shocks or curves are stored below 32 bits (by blocks of paths or across seeds), an absolute rule for figures float64 holds fixed, and each row's path ceiling; each row naming its code revision, market, figure, path count, seeds and device. A warning on any result whose combination has no passing row, carried in the portfolio result's `warnings` (empty today) as in market risk's; market risk's ES standard error labelled as assuming independent scenarios | [I-55](known-issues.md#i-55) (warnings) | 3.8 for the Bermudan/American rows | M |
 | 3.6 | Critical bug, precision | `ShiftHorizon`: the setting and its API field exist and refuse anything but 0; implement the shift, parity at 0.5 against the LGM oracle, then 0.5 as the default | [I-32](known-issues.md#i-32) | — | M |
@@ -192,9 +193,9 @@ caller served another's result) is fixed.
 
 Order within the stage:
 
-- **The two High defects first.** 3.3 and 3.4 are small and touch no path kernel, so they go
-  ahead of everything without delaying it. 3.3 does not move the precision campaigns, which
-  are in one currency; it gives market risk a unit for every later figure.
+- **The High defect first.** 3.4 is small and touches no path kernel, so it goes ahead of
+  everything without delaying it. Market risk in one unit (I-100, done 2026-10-11) moved no
+  precision campaign, all in one currency; every later market-risk figure has a currency.
 - **Low precision in full before anything else competes.** The storage harness is built
   (2026-10-09, I-75) and the kernels it measures are rewritten (2026-10-10) but for the
   rollback. Their first measurements found a bias floor of compute below float32 (I-96), fixed
@@ -223,10 +224,10 @@ Order within the stage:
   the day, and 3.13 carries it over. 3.15 comes before 3.16, which is written on the worker
   loop 3.15 changes.
 - **Numbers.** 3.12 to 3.16 move no number beyond the margin (3.12 refuses inputs that gave
-  wrong ones). 3.3 changes market risk's figures for portfolios in more than one currency and
-  at VaR's exact rank boundaries, and 3.4 the values of short Bermudans and Americans: fixes,
-  each red first. 3.6 and 3.7 move default Bermudan/American numbers towards ORE's, and 3.11
-  may move the AD Greeks to ORE's, planned changes of the model. 3.8, 3.9 and 3.10 may move
+  wrong ones). 3.4 changes the values of short Bermudans and Americans: a fix, red first, as
+  market risk's figures for portfolios in more than one currency and at VaR's exact rank
+  boundaries were (I-100, I-102, 2026-10-11). 3.6 and 3.7 move default Bermudan/American
+  numbers towards ORE's, and 3.11 may move the AD Greeks to ORE's, planned changes of the model. 3.8, 3.9 and 3.10 may move
   float64 at rounding level, within the margin, as the kernel rewrite of 2026-10-10 did
   (2.2e-14 of each array's scale).
 

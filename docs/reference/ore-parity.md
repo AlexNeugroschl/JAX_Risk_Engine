@@ -504,14 +504,18 @@ lines 88-110.
 
 **Correspondence: confirmed exactly, formula and edge cases both.**
 `GeneralStatistics::percentile(percent)` sorts the (weight, value) sample ascending, then
-walks forward accumulating weight until the cumulative weight reaches `percent *
-totalWeight`, returning that sample's value — the "lower/nearest-rank" order statistic
-this engine's `value_at_risk` reproduces via `sorted_pnl[floor(N*(1-percentile))]` for
-unit weights (confirmed identical by direct construction: with every weight equal to 1,
-walking forward until cumulative count reaches `percent*N` is exactly indexing
-`sorted[floor(percent*N)]` for the standard 0-indexed convention `percentile.cpp` uses,
-confirmed to `1e-9` absolute tolerance against `ORE.RiskStatistics.valueAtRisk` directly
-in `tests/test_var_es.py`).
+walks forward while the cumulative weight is **strictly below** `target = percent *
+totalWeight`, returning the sample it stops on. With unit weights the cumulative weight at
+index `k` is `k + 1`, so it stops at `k = ceil(target) - 1`, clamped to the sample; this
+engine's `value_at_risk` reads `sorted_pnl[var_rank(N, p)]`, `var_rank` being that index with
+`target = (1 - p) * N` computed in double precision as QuantLib computes it. Where the target
+is not a whole number the index is `floor(target)`, which the engine took until 2026-10-11;
+where it is (16 scenarios at 0.9375), QuantLib's is the observation below, and so the engine's
+now is ([I-102](../planning/known-issues.md#i-102), closed). Confirmed against
+`ORE.RiskStatistics.valueAtRisk` directly in `tests/test_var_es.py`: the sweep of sizes and
+levels, and `TestExactRankBoundaryAgainstORE` at exact boundaries (dyadic levels, ties, a
+target weight of two, and `var_rank` against ORE's index at every count from 1 to 299). ORE
+requires a confidence level in [0.9, 1); the engine accepts any in (0, 1) on the same rule.
 
 `RiskStatistics::valueAtRisk(centile)` calls `percentile(1-centile)`, floors at `0.0`,
 and negates — exactly this engine's `max(-sorted_pnl[idx], 0.0)`.

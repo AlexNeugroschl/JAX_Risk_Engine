@@ -74,8 +74,8 @@ but no FX or equity trade prices in the pipeline (X-11), and FX/EQ volatilities 
 constant inputs rather than calibrated to options as `CrossAssetModelBuilder` does (X-10).
 Both decided: close eventually, not urgent. Brings the two-currency end-to-end test (layer
 L6) within reach. With FX trades priced, market risk shocks FX spots as factors too: until
-then it converts at the fixed as-of spot and says FX is not shocked
-([I-100](known-issues.md#i-100)).
+then it converts at the fixed as-of spot and says FX is not shocked (since 2026-10-11,
+[I-100](known-issues.md#i-100)).
 
 **Depends on.** [F-07](#f-07)'s kernel rewrite: the new trades' path kernels are written in its form (A-16).
 Equity positions from TraderX additionally need

@@ -673,7 +673,10 @@ print(risk.risk["VaR_99"], risk.risk["ES_97.5"])
 ```
 
 The factors are the pillar zero rates of the market's curves, named as the trades read them;
-a `pricing=` `PricingConfig` chooses the engines as in a portfolio run.
+a `pricing=` `PricingConfig` chooses the engines as in a portfolio run. Every figure is in
+`base_currency` (USD by default; `risk.base_currency` says which): a trade in another currency
+is converted at the market's as-of FX spot (`Market(..., fx_spots={"EURUSD": 1.10})`), which
+the run needs and does not shock.
 `covariance` is the `[F, F]` covariance of 10-day absolute moves of the curve pillars, in
 `factors.labels()` order; `historical_scenarios(factors, history, horizon_days=10)` uses
 observed moves instead. The end of `demos/demo.py` is a complete example.

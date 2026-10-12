@@ -195,6 +195,7 @@ See [Instruments](../instruments/swaps.md).
 | `value_portfolio(trades, market, scenarios, base_currency, pricing=PricingConfig(), decay="ForwardVariance", precision=Precision()) -> PortfolioValuation` | `today [T]` (float64) and `columns` (each trade's `[S, D]`) in the base currency; each trade priced on the scenarios loaded at its `precision.precision_for(trade).compute`, its column stored at that `storage`. `PortfolioValuation.cube` is `[S, D, T]`, in the columns' shared format, or float64 when they differ. |
 | `value_on(cfg, context, pricing) -> float` | One trade on a `PricingContext` (a date's curves, volatilities, fixings). |
 | `validate_trades(trades, market, pricing=PricingConfig(), precision=Precision())` | Refuses, naming the trade, a trade off the market's date, a curve or volatility the market lacks, or an engine's refusal; and a precision override naming no trade or product (`Precision.check_overrides`). |
+| `reporting_fx_spots(trades, market, currency, field) -> List[float]` | Each trade's as-of FX spot into the reporting `currency` (1.0 for a trade in it), quoted either way round. Refuses a reporting currency the market lacks, and a trade with no spot, naming the trade, the pair and `field`. `DEFAULT_REPORTING_CURRENCY` is `"USD"`, the default of a run that names none and has no simulation. |
 | `PRODUCTS` | The products the pipeline prices (each trade config's `product`): the keys of `Precision.by_product`. |
 | `reads_swaption_vols(cfg, pricing) -> bool` | Whether the trade's engine reads the market's swaption volatilities. |
 
@@ -221,7 +222,19 @@ Every function here is instrument-agnostic — see
 - `pnl` — `[Scenarios, TimeSteps]`, typically from `portfolio_pnl`.
 - `percentile` — e.g. `0.99` for 99% VaR.
 
-**Returns** `[TimeSteps]` — always `>= 0`.
+**Returns** `[TimeSteps]` — always `>= 0`: the order statistic at `var_rank`, negated.
+
+### `var_rank(num_scenarios: int, percentile: float) -> int`
+
+QuantLib's index into the ascending sample, `ceil(N(1 − p)) − 1` clamped to `[0, N − 1]`, its
+target `(1 − p) × N` computed as QuantLib computes it. See
+[Risk Statistics: the formulas](../risk/var_es.md#the-formulas).
+
+### `quantile_label(q: float) -> str`, `validate_quantiles(name, quantiles)`
+
+A level's result-key suffix, its percentage exactly (`0.975` → `"97.5"`,
+`0.9500000001` → `"95.00000001"`): distinct levels have distinct labels. `validate_quantiles`
+refuses, naming the field `name`, a level that is not a number in (0, 1) or one given twice.
 
 ### `expected_shortfall(pnl: jax.Array, percentile: float) -> jax.Array`
 
@@ -300,8 +313,8 @@ Short-horizon VaR/ES by full revaluation at t=0 — see [Market Risk](../risk/ma
 | `covariance_from_history(history, horizon_days)` | function | Sample covariance of those moves, `[F, F]` |
 | `horizon_moves(history, horizon_days)` | function | The overlapping moves themselves, `[D-h, F]` |
 | `ShockScenarios` | dataclass | `factors`, `shifts [S, F]`, `horizon_days`, `source`, `measure`, `windows` |
-| `MarketRiskRequest(trades, market, scenarios, pricing=PricingConfig(), quantiles=(0.99, 0.975), precision=Precision(), batch_size=256)` | dataclass | Every factor must be the market's curve of its name; every curve a trade reads must be a factor. `precision.simulation` rounds and stores the shifts, `precision.precision_for(trade)` sets each trade's revaluation and stored P&L; VaR/ES are float64. Trade ids are unique |
-| `run_market_risk(request) -> MarketRiskResult` | function | `base_npv`, `base_npv_per_trade` (each trade's value on the unshocked curves in its pricing stage's accumulate format), `pnl [S, N]` (float64-loaded), `portfolio_pnl [S]`, `risk` (`VaR_99`, `ES_97.5`, tail counts, standard errors), `measure`, `source`, `horizon_days`, `num_scenarios`, `risk_factors`, `warnings`, `precision` (a `PrecisionReport`; with `precision.paired_fraction`, each VaR/ES measured on the first scenarios revalued at float64) |
+| `MarketRiskRequest(trades, market, scenarios, pricing=PricingConfig(), quantiles=(0.99, 0.975), precision=Precision(), batch_size=256, base_currency="USD")` | dataclass | Every amount is in `base_currency`, each trade in another currency converted at the market's as-of FX spot (which must be given; FX is not shocked). Quantiles lie in (0, 1), each once. Every factor must be the market's curve of its name; every curve a trade reads must be a factor. `precision.simulation` rounds and stores the shifts, `precision.precision_for(trade)` sets each trade's revaluation and stored P&L; VaR/ES are float64. Trade ids are unique |
+| `run_market_risk(request) -> MarketRiskResult` | function | `base_npv`, `base_npv_per_trade` (each trade's value on the unshocked curves in its pricing stage's accumulate format), `pnl [S, N]` (float64-loaded), `portfolio_pnl [S]`, `risk` (`VaR_99`, `ES_97.5`, tail counts, standard errors), `measure`, `source`, `horizon_days`, `num_scenarios`, `risk_factors`, `base_currency`, `warnings`, `precision` (a `PrecisionReport`; with `precision.paired_fraction`, each VaR/ES measured on the first scenarios revalued at float64) |
 
 ---
 

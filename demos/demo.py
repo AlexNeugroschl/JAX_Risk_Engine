@@ -174,7 +174,7 @@ scenarios = monte_carlo_scenarios(factors, covariance, horizon_days=10, num_scen
 market_risk = run_market_risk(MarketRiskRequest(trades=trades, market=market, scenarios=scenarios,
                                                 pricing=config.pricing, quantiles=(0.99, 0.975)))
 print(f"{market_risk.num_scenarios:,} scenarios over {market_risk.horizon_days} days "
-      f"({market_risk.source}, measure: {market_risk.measure})")
+      f"({market_risk.source}, measure: {market_risk.measure}), in {market_risk.base_currency}")
 for q in ("99", "97.5"):
     print(f"  VaR {q:>4}%: {market_risk.risk[f'VaR_{q}']:>12,.0f}    "
           f"ES {q:>4}%: {market_risk.risk[f'ES_{q}']:>12,.0f}  "

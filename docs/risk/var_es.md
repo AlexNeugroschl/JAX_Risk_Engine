@@ -60,17 +60,30 @@ Given a sample of `N` profit-and-loss (P&L) values (positive = gain, negative = 
 sorted from worst (most negative) to best:
 
 ```
-index = floor(N × (1 − percentile))
+index = ceil(N × (1 − percentile)) − 1,   clamped to [0, N − 1]      (var_rank)
 
 VaR(percentile)  =  max( −sorted_pnl[index],  0 )
 ```
 
-This is a **"lower" / nearest-rank-below order statistic** — i.e. it picks an actual
-observed value from the data (the `index`-th worst outcome), rather than mathematically
-interpolating between two neighboring observed values the way `numpy.percentile`'s
-default method does. The `max(..., 0)` clamp means: if there are no losses at all in the
-sample, VaR is reported as exactly `0`, not a negative number — you can't have "negative
-risk."
+This is an **order statistic**: it picks an actual observed value from the data rather than
+interpolating between two neighbouring observations the way `numpy.percentile`'s default
+method does. The index is QuantLib's: `GeneralStatistics::percentile`, which ORE's
+`RiskStatistics` reads, walks up the sorted sample while the cumulative weight is *strictly
+below* the target `N × (1 − percentile)`, so with equal weights it stops at
+`ceil(target) − 1`. Where the target is not a whole number this is `floor(target)`; where it
+is, it is the observation one below. Sixteen P&Ls −16, …, −1 at 0.9375 have a target of
+exactly 1: ORE's VaR is 16 (index 0). Until 2026-10-11 the engine took `floor(target)`,
+index 1, and reported 15 ([I-102](../planning/known-issues.md#i-102), closed). The target is
+computed as QuantLib computes it, `(1 − p) × N` in double precision, so the usual levels
+(0.95, 0.99, whose `1 − p` is inexact in binary) meet the boundary exactly when ORE's do,
+and dyadic ones (0.9375, 0.96875) at every multiple of `1 / (1 − p)` scenarios.
+
+The `max(..., 0)` clamp means: if there are no losses at all in the sample, VaR is reported
+as exactly `0`, not a negative number — you can't have "negative risk."
+
+**Confidence levels.** ORE's statistics accept levels in [0.9, 1). These functions take any
+level in (0, 1), on the same rule: broader than ORE's, not different from it. A market-risk
+run refuses a level outside (0, 1), or one given twice (`validate_quantiles`).
 
 ```
 tail  =  { pnl values that are STRICTLY worse than −VaR(percentile) }
@@ -146,6 +159,12 @@ default, both 95% and 99% — matching ORE's convention of always reporting VaR 
 together, at multiple confidence levels, rather than a single number in isolation), and
 returns them in a dictionary keyed like `"VaR_95"`, `"ES_95"`, `"VaR_99"`, `"ES_99"`.
 
+Each key's suffix is the level's percentage exactly (`quantile_label`): 0.975 is `97.5`,
+0.9500000001 is `95.00000001`. The label is the shortest decimal that reads back as the level,
+its point moved two places in decimal arithmetic, so two levels share a key only if they are the
+same number. Until 2026-10-11 the percentage was rounded to six decimals, and 0.95 and
+0.9500000001 were both `95`, the second overwriting the first.
+
 ## Convergence diagnostics — how much to trust the tail
 
 `ES_99 = 1,240,000` reads as a precise figure. Computed from 3 tail observations it is not
@@ -163,9 +182,9 @@ surfaced through `compute_risk_metrics` as `"ES_99_tailCount"` and
 entered the ES mean. It is usually far smaller than the scenario count: **at 99% over 10,000
 scenarios roughly 100 observations carry the estimate**, and every one of them sits in the
 part of the distribution the Monte Carlo sampled least. It counts the same *strict
-value-based* tail (`pnl < -VaR`) that `expected_shortfall` averages — not a positional
-`floor(N·(1−p))` slice, which disagrees whenever there are ties at the VaR boundary (the
-same distinction described above for ES itself).
+value-based* tail (`pnl < -VaR`) that `expected_shortfall` averages — not a positional slice
+of the `index` worst observations, which disagrees whenever there are ties at the VaR boundary
+(the same distinction described above for ES itself).
 
 **`standardError`** is the standard error of that tail mean, `s/√n`, with the *sample*
 standard deviation (`ddof=1`) — the tail is a sample, and the population form would
@@ -207,6 +226,11 @@ label travels with the number rather than living only in documentation.
   `TestExpectedShortfallAgainstORE` — direct numeric comparison against
   `ORE.RiskStatistics`, including the tie-at-boundary and empty-tail edge cases described
   above.
+- `TestExactRankBoundaryAgainstORE` — the exact rank boundary against `ORE.RiskStatistics`:
+  the sixteen-scenario case, a target weight of two, ties at the boundary, every dyadic level
+  at whole targets, and `var_rank` equal to ORE's index at every count from 1 to 299.
+- `TestQuantileLabels` — each level's key is its percentage exactly, distinct levels keep
+  distinct keys, and a run's levels are checked.
 - `TestRiskMetricsProperties` — sanity properties that should always hold regardless of
   the exact formula details (ES is never smaller than VaR; VaR at 99% is never smaller
   than VaR at 95%; single-scenario/single-trade edge case doesn't crash).

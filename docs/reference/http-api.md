@@ -407,7 +407,7 @@ Mirrors `engine.run.PortfolioRequest` and its run configuration
 | `simulation` | `RunConfig.simulation`: ORE's `simulation.xml` as `CamConfigSchema`: `dates`, `base_currency`, `ir` per currency (`model`: `"LGM"`, the default, or `"HullWhite"`; `reversion`, `volatility`, optional calibration basket `calibration_expiries` × `calibration_terms`, `swap_index`, and the bootstrap's root `solver`: `"Newton"`, the default, or `"Bisection"`), `fx_volatilities`, `equity_volatilities`, `correlations` between factors `IR:USD`, `FX:EURUSD`, `EQ:SP5`, `curve_tenors`, `samples`, `seed`, `swaption_vol_decay`. Every volatility is a number, or piecewise constant: `{"times": [1.0, 3.0], "values": [0.008, 0.011, 0.009]}`, `values[i]` on bucket `i` of `[0, times[0]), ..., [times[-1], inf)` (ORE's `VolatilityTimes`/`Volatility`). Required with `scenario_risk`. Every `solver` is [the root solver](calibration.md#the-root-solver) (decision A-21) |
 | `pricing` | `RunConfig.pricing`: `european` (`"Bachelier"`, the default, or `"Jamshidian"` with `jamshidian: {"reversion", "volatility", "solver"}`), the `bermudan` and `american` engines (`LgmEngineSchema`: `reversion`, `volatility`, `calibration`, `strategy`, `reference_calibration_grid`, `shift_horizon` (ORE's `ShiftHorizon`; only `0` is implemented, another value is a `400`, [I-32](../planning/known-issues.md#i-32)), `n_per_std`, `std_devs`, `exercise_time_steps_per_year`, `swap_index`, and `solver`, that of the calibration and of each helper's exercise boundary), and `recalibrate` (default `true`, as ORE's `ValuationEngine`) |
 | `greeks` | `RunConfig.greeks`: `method` (`"Bump"`, the default, or `"AD"`) and `sensitivity` (ORE's `sensitivity.xml`: `curve_tenors`, `curve_shift`, `vol_shift`, `theta_days`, `swaption_vol_decay`) |
-| `base_currency` | The reporting currency. Omitted: the simulation's base currency, or USD without a simulation. One contradicting the simulation's is a 400 |
+| `base_currency` | The reporting currency. Omitted: the simulation's base currency, or USD without a simulation. One contradicting the simulation's is a 400, and so is a trade with no spot into it in `market.fx_spots` or, with `scenario_risk`, a trade in a currency the simulation does not model |
 | `precision` | `RunConfig.precision`, see below |
 | `pfe_quantiles` | Quantiles of the PFE profiles. Default `[0.95, 0.99]` |
 | `compute_greeks` | Default `false` |
@@ -519,7 +519,8 @@ Mirrors `engine.risk.market.MarketRiskRequest` ([Market Risk](../risk/market-ris
 | `market`, `trades` | As the portfolio request's; every trade valued on `market.asof`, `trade_id` on every trade or none |
 | `scenarios` | The shock scenarios, by `source` (below) |
 | `pricing` | The engine per product, as the portfolio request's `pricing`; options are priced with fixed volatility (the result's warnings say so) |
-| `quantiles` | VaR/ES confidence levels; default `[0.99, 0.975]` |
+| `quantiles` | VaR/ES confidence levels in (0, 1), each once (ORE's statistics take [0.9, 1); the rank rule is the same); default `[0.99, 0.975]` |
+| `base_currency` | The reporting currency every amount of the result is in; default `"USD"`, as the portfolio request's without a simulation. Each trade in another currency is converted at `market.fx_spots` (`"EURUSD"` or `"USDEUR"`); a trade with no spot, or a currency the market lacks, is a `400` naming the trade and the pair |
 | `precision` | As the portfolio request's: the simulation stage stores the shifts, each trade's pricing stage its revaluation and P&L |
 | `batch_size` | Scenarios revalued at once per trade (lowered automatically for a large Bermudan); default 256 |
 | `pnl_output` | How the result carries the P&L matrix, as `cube_output`: `"inline"` (default), `"artifact"`, `"none"` |
@@ -595,7 +596,8 @@ Mirrors `engine.risk.market.MarketRiskResult`:
 | Field | Meaning |
 |---|---|
 | `base_npv`, `trades` | The total and one row per trade (`trade_id`, `base_npv`), in request order: the P&L's trade axis |
-| `risk` | `VaR_<q>`, `ES_<q>` as positive losses, `ES_<q>_tailCount`, `ES_<q>_standardError`, per quantile label (`99`, `97.5`); NaN as `null` |
+| `base_currency` | The reporting currency every amount (`base_npv`, `trades`, `risk`, `pnl`) is in. A trade in another currency is converted at today's spot in every scenario, so FX risk is not in the figures; `warnings` names the converted trades |
+| `risk` | `VaR_<q>`, `ES_<q>` as positive losses, `ES_<q>_tailCount`, `ES_<q>_standardError`, per quantile label, the level's percentage exactly (`99`, `97.5`, `95.00000001`); NaN as `null` |
 | `measure`, `source`, `horizon_days`, `num_scenarios` | The scenarios' description (`historical-forecast`, `monte-carlo` or `historical`) |
 | `risk_factors` | The factors shocked, `"<curve>/<pillar time>y"`, in the scenarios' order |
 | `pnl` / `pnl_artifact` | The P&L `[Scenarios, Trades]`, inline or by reference (`pnl_output`); the portfolio P&L the statistics use is each scenario's sum |

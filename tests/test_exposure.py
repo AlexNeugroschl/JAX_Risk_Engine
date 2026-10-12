@@ -132,6 +132,14 @@ class TestDefinitions:
         )
         assert set(got.pfe) == {"PFE_97.5", "PFE_98"}
 
+    def test_close_quantiles_keep_their_own_keys(self, cube):
+        """I-102: both were `PFE_95` until 2026-10-11, the second profile overwriting the first."""
+        npv, numeraire, discount, times = cube
+        got = exposure_profile(
+            jnp.asarray(npv), 0.0, jnp.asarray(numeraire), jnp.asarray(discount), times, quantiles=(0.95, 0.9500000001),
+        )
+        assert set(got.pfe) == {"PFE_95", "PFE_95.00000001"}
+
 
 class TestNettingSet:
     def test_offsetting_trades_net_to_zero(self, cube):

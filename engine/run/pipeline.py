@@ -38,7 +38,9 @@ from engine.market_data.market import Market
 from engine.market_simulation.config import build_cross_asset_model, simulate
 from engine.precision import PrecisionReport, format_name, load, paired_paths, realized_format
 from engine.pricing.context import simulation_market_today
-from engine.pricing.cube import trade_maturity, validate_trades, value_paths, value_portfolio, value_today
+from engine.pricing.cube import (
+    reporting_fx_spots, trade_maturity, validate_trades, value_paths, value_portfolio, value_today,
+)
 from engine.risk.counterparty.exposure import ExposureProfile, PairedPaths, exposure_profile, netting_set_profile
 from engine.risk.market.var_es import ENGINE_RISK_MEASURE
 from engine.run.trace import phase
@@ -125,17 +127,23 @@ def _greeks(method: str):
 
 def validate_request(request) -> None:
     """Refuse, before any JAX work, a request the pipeline cannot price: a setting it does
-    not implement: scenario risk without a simulation, a trade the market cannot value or its
-    engine refuses, a precision override naming no trade or product (`validate_trades`), or a
-    reporting currency the market lacks (the configuration itself is validated when it is
-    built). The HTTP route runs it synchronously
-    so such a request is a 400, not a failed job."""
+    not implement: scenario risk without a simulation, or with a trade in a currency the
+    simulation does not model; a trade the market cannot value or its engine refuses, a
+    precision override naming no trade or product (`validate_trades`); a reporting currency the
+    market lacks, or a trade with no FX spot into it (`reporting_fx_spots`). The configuration
+    itself is validated when it is built. The HTTP route runs it synchronously so such a request
+    is a 400, not a failed job."""
     run = request.config
     if request.scenario_risk and run.simulation is None:
         raise ValueError("scenario_risk needs config.simulation (a CamConfig); set scenario_risk=False for "
                          "today's NPVs and Greeks only")
     validate_trades(request.trades, request.market, run.pricing, run.precision)
-    request.market.currency(run.reporting_currency)
+    if request.scenario_risk:
+        for cfg in request.trades:
+            if cfg.currency not in run.simulation.ir:
+                raise ValueError(f"trade {cfg.trade_id!r} is in {cfg.currency}, which the simulation does not model; "
+                                 f"give config.simulation.ir[{cfg.currency!r}] a model (and its FX volatility)")
+    reporting_fx_spots(request.trades, request.market, run.reporting_currency, "base_currency")
 
 
 def _exposures(trades: Sequence, start: List[float], cube, scenarios, market: Market, base: str, quantiles,

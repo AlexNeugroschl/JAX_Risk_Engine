@@ -14,10 +14,10 @@ result served), so some differ from the audit's.
 
 | Finding | Verdict | Severity | Now |
 |---|---|---|---|
-| AUD-01 VaR rank | Confirmed, *run* (VaR 15 against ORE's 16). Narrow: no level among 0.9 to 0.999 meets the boundary at any N up to 200,000 | Low | [I-102](known-issues.md#i-102) |
-| AUD-02 Currencies in market risk | Confirmed | High | [I-100](known-issues.md#i-100) |
-| AUD-03 Quantile keys | Confirmed, *run* (`0.95` and `0.9500000001` both `95`) | Low | [I-102](known-issues.md#i-102) |
-| AUD-04 Confidence domain | The broader domain is kept and documented as broader than ORE's | Low | [I-102](known-issues.md#i-102) |
+| AUD-01 VaR rank | Confirmed, *run* (VaR 15 against ORE's 16). Narrow: no level among 0.9 to 0.999 meets the boundary at any N up to 200,000 | Low | [I-102](known-issues.md#i-102), fixed 2026-10-11 |
+| AUD-02 Currencies in market risk | Confirmed | High | [I-100](known-issues.md#i-100), fixed 2026-10-11 |
+| AUD-03 Quantile keys | Confirmed, *run* (`0.95` and `0.9500000001` both `95`) | Low | [I-102](known-issues.md#i-102), fixed 2026-10-11 |
+| AUD-04 Confidence domain | The broader domain is kept and documented as broader than ORE's | Low | [I-102](known-issues.md#i-102), done 2026-10-11 |
 | AUD-05 Input validation | Confirmed, *run*: an unsorted curve prices 50,697 against 51,133 with no error | Medium | [I-103](known-issues.md#i-103) |
 | AUD-06 Calibration acceptance | Confirmed: only the ceiling is checked, at t=0; nothing on the paths | Medium | [I-73](known-issues.md#i-73), widened |
 | AUD-07 Zero volatility in calibration | Confirmed (0/0 at an ATM helper) | Medium | [I-73](known-issues.md#i-73) |

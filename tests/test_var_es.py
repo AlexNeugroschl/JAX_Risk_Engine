@@ -7,7 +7,10 @@ from engine.risk.market.var_es import (
     compute_risk_metrics,
     expected_shortfall,
     portfolio_pnl,
+    quantile_label,
+    validate_quantiles,
     value_at_risk,
+    var_rank,
 )
 from engine.run import price_portfolio
 
@@ -173,7 +176,7 @@ class TestValueAtRiskEdgeCases:
             np.testing.assert_allclose(es, stats.expectedShortfall(p), atol=1e-9)
 
     def test_single_scenario_matches_ore(self):
-        """N=1: floor(N*(1-p)) is index 0 for any p (the clamp in `value_at_risk`)."""
+        """N=1: the rank is index 0 for any p (the clamp in `var_rank`)."""
         stats = ORE.RiskStatistics()
         stats.add(-50.0, 1.0)
         pnl = jnp.asarray([[-50.0]], dtype=jnp.float64)  # [Scenarios=1, TimeSteps=1]
@@ -266,12 +269,6 @@ class TestPercentileConventionSweepAgainstORE:
         var = float(value_at_risk(pnl, p)[0])
         np.testing.assert_allclose(var, stats.valueAtRisk(p), atol=1e-9)
 
-        # Recompute ORE's index directly, to confirm the convention being exercised.
-        idx = int(np.floor(n * (1.0 - p)))
-        idx = min(max(idx, 0), n - 1)
-        expected = max(-np.sort(pnl_np)[idx], 0.0)
-        np.testing.assert_allclose(var, expected, atol=1e-9)
-
     @pytest.mark.parametrize("n", [10, 17, 50, 101, 250])
     @pytest.mark.parametrize("p", [0.9, 0.95, 0.99])
     def test_es_matches_ore_across_sizes_and_percentiles(self, n, p):
@@ -309,6 +306,115 @@ class TestPercentileConventionSweepAgainstORE:
             "expected the nearest-rank-below and linear-interpolation "
             "conventions to disagree for this N/p combination"
         )
+
+
+def _ore_and_engine(pnl_np, p):
+    """ORE's VaR and ES (None where ORE raises on an empty strict tail) and the engine's."""
+    stats = _ore_risk_stats(pnl_np)
+    try:
+        ore_es = stats.expectedShortfall(p)
+    except RuntimeError as exc:
+        assert "no data below the target" in str(exc)
+        ore_es = None
+    pnl = jnp.asarray(pnl_np[:, None], dtype=jnp.float64)
+    return (stats.valueAtRisk(p), ore_es), (float(value_at_risk(pnl, p)[0]), float(expected_shortfall(pnl, p)[0]))
+
+
+def _assert_engine_is_ores(pnl_np, p):
+    (ore_var, ore_es), (var, es) = _ore_and_engine(pnl_np, p)
+    assert var == ore_var
+    if ore_es is None:
+        assert np.isnan(es)
+    else:
+        assert es == pytest.approx(ore_es, rel=1e-15)
+
+
+#: Levels whose 1 - p is a power of two, so N(1 - p) is a whole number for N a multiple of
+#: 1 / (1 - p): QuantLib's rank meets its boundary exactly.
+DYADIC_LEVELS = [0.90625, 0.9375, 0.96875, 0.984375, 0.9921875, 0.99609375]
+
+
+class TestExactRankBoundaryAgainstORE:
+    """I-102: where N(1 - p) is a whole number, QuantLib's `GeneralStatistics::percentile` stops
+    at index N(1 - p) - 1, one observation below `floor(N(1 - p))`, the engine's rank until
+    2026-10-11 (VaR 15 where ORE's is 16 on the case below). None of the sweep's levels meets the
+    boundary, 1 - p being inexact in binary; dyadic levels do."""
+
+    def test_sixteen_scenarios_at_0_9375(self):
+        """The audit's case: P&Ls -16, ..., -1, a target weight of exactly one. ORE's VaR is 16
+        and its strict ES tail below -16 empty (ORE raises; the engine's ES is NaN)."""
+        pnl_np = np.arange(-16.0, 0.0)
+        (ore_var, ore_es), (var, es) = _ore_and_engine(pnl_np, 0.9375)
+        assert ore_var == 16.0 and ore_es is None
+        assert var == 16.0 and np.isnan(es)
+
+    def test_a_target_weight_of_two(self):
+        """32 scenarios at 0.9375: index 1, VaR 31; the tail is the one observation below it."""
+        pnl_np = np.arange(-32.0, 0.0)
+        (ore_var, ore_es), (var, es) = _ore_and_engine(pnl_np, 0.9375)
+        assert (ore_var, ore_es) == (31.0, 32.0)
+        assert (var, es) == (31.0, 32.0)
+
+    @pytest.mark.parametrize("pnl_np, p", [
+        (np.array([-20.0, -10.0, -10.0] + list(np.arange(-9.0, 20.0))), 0.9375),   # tie at index 1
+        (np.array([-30.0, -30.0] + list(np.arange(-14.0, 0.0))), 0.9375),            # tie at index 0
+        (np.array([-50.0, -40.0, -40.0, -40.0] + list(np.arange(-28.0, 32.0))), 0.96875),
+    ], ids=["tie-above-the-rank", "tie-at-the-lowest-rank", "three-way-tie"])
+    def test_ties_at_the_boundary(self, pnl_np, p):
+        assert (pnl_np.size * (1.0 - p)).is_integer()
+        _assert_engine_is_ores(np.random.default_rng(3).permutation(pnl_np), p)
+
+    @pytest.mark.parametrize("p", DYADIC_LEVELS)
+    @pytest.mark.parametrize("multiple", [1, 2, 3, 7])
+    def test_dyadic_levels_at_whole_targets(self, p, multiple):
+        n = round(multiple / (1.0 - p))
+        pnl_np = np.random.default_rng(n).normal(loc=5.0, scale=200.0, size=n)
+        _assert_engine_is_ores(pnl_np, p)
+
+    @pytest.mark.parametrize("p", DYADIC_LEVELS + [0.9, 0.925, 0.95, 0.975, 0.99, 0.995, 0.999])
+    def test_the_rank_is_quantlibs_at_every_count(self, p):
+        """`var_rank` against ORE itself: on the sample -N, ..., -1 ORE's VaR is N - index."""
+        for n in range(1, 300):
+            stats = _ore_risk_stats(np.arange(-float(n), 0.0))
+            assert var_rank(n, p) == n - stats.valueAtRisk(p), n
+
+
+class TestQuantileLabels:
+    """I-102: a confidence level's key is its percentage exactly, so two levels share a key only
+    if they are equal; `quantile_label` rounded to six decimals, and 0.95 and 0.9500000001 were
+    both `95`, the second figure overwriting the first."""
+
+    @pytest.mark.parametrize("q, label", [
+        (0.9, "90"), (0.95, "95"), (0.975, "97.5"), (0.98, "98"), (0.99, "99"), (0.995, "99.5"), (0.999, "99.9"),
+        (0.5, "50"), (0.9375, "93.75"), (0.9500000001, "95.00000001"), (1e-05, "0.001"), (np.float64(0.95), "95"),
+    ])
+    def test_the_label_is_the_percentage(self, q, label):
+        assert quantile_label(q) == label
+
+    def test_distinct_levels_have_distinct_labels(self):
+        rng = np.random.default_rng(4)
+        levels = list(rng.uniform(0.0, 1.0, size=2000))
+        levels += [np.nextafter(q, 1.0) for q in levels] + [0.95, 0.9500000001, np.nextafter(0.95, 0.0)]
+        levels = sorted(set(float(q) for q in levels))
+        assert len({quantile_label(q) for q in levels}) == len(levels)
+
+    def test_close_levels_keep_their_own_figures(self):
+        pnl = np.random.default_rng(5).normal(size=(4000, 1, 1))
+        metrics = compute_risk_metrics(jnp.asarray(pnl), 0.0, percentiles=(0.95, 0.9500000001), include_diagnostics=False)
+        assert set(metrics) == {"VaR_95", "ES_95", "VaR_95.00000001", "ES_95.00000001"}
+
+    @pytest.mark.parametrize("quantiles, match", [
+        ((0.99, 0.99), r"0\.99 is given more than once"),
+        ((0.0,), r"in \(0, 1\)"), ((1.0,), r"in \(0, 1\)"), ((float("nan"),), r"in \(0, 1\)"), ((True,), r"in \(0, 1\)"),
+        (("0.99",), r"in \(0, 1\)"),
+    ])
+    def test_a_run_refuses_a_level_outside_0_1_or_given_twice(self, quantiles, match):
+        with pytest.raises(ValueError, match=f"quantiles: .*{match}"):
+            validate_quantiles("quantiles", quantiles)
+
+    def test_levels_below_ores_domain_are_accepted(self):
+        """ORE's statistics take [0.9, 1); the engine's are broader, on the same rank rule."""
+        validate_quantiles("quantiles", (0.5, 0.8, 0.95))
 
 
 class TestTimeStepIndependence:

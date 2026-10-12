@@ -245,7 +245,7 @@ try:
                       "horizon_days": horizon_days, "num_scenarios": 1024, "seed": 1},
         "quantiles": [0.99, 0.975], "pnl_output": "none"})
     print(f"{risk['num_scenarios']} {risk['source']} scenarios of {len(risk['risk_factors'])} factors, "
-          f"{risk['horizon_days']}-day horizon ({risk['measure']})")
+          f"{risk['horizon_days']}-day horizon ({risk['measure']}), in {risk['base_currency']}")
     for key in ("VaR_99", "ES_97.5", "ES_97.5_standardError"):
         print(f"  {key}: {risk['risk'][key]:,.2f}")
     for warning in risk["warnings"]:

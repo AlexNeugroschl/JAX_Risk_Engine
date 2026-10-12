@@ -56,6 +56,30 @@ order of its columns), polled at `GET /jobs/{job_id}`; the P&L comes inline, by 
 reference or not at all (`pnl_output`). `demos/demo_api.py` runs one
 ([HTTP API](../reference/http-api.md#post-portfoliomarket-risk)).
 
+## Reporting currency
+
+Every amount of a run is in one currency, `MarketRiskRequest.base_currency` (ORE's
+`baseCurrency`; USD by default, as a portfolio run without a simulation), which the result
+names as `result.base_currency`. Each trade is revalued in its own currency, and its base
+value and P&L are converted at the market's as-of FX spot (`Market.fx_spots`, quoted either way
+round, never crossed through a third currency), in float64 after its P&L is read back from its
+storage format; a trade in the reporting currency is multiplied by 1, which changes no bit. The
+portfolio P&L, and so every VaR and ES, adds amounts in one unit.
+
+```python
+market = Market(asof, {"USD": usd, "EUR": eur}, fx_spots={"EURUSD": 1.10})
+result = run_market_risk(MarketRiskRequest(trades, market, scenarios))                       # in USD
+result = run_market_risk(MarketRiskRequest(trades, market, scenarios, base_currency="EUR"))  # in EUR
+```
+
+A trade whose currency has no spot against the reporting currency is refused before any work,
+naming the trade and the pair, as is a reporting currency the market has no market for. Only
+rate pillars are shocked, so a converted trade's spot is the same in every scenario: FX risk is
+not in the VaR/ES, and the result's warnings say so, naming the converted trades. Until
+2026-10-11 the run had no reporting currency and added a EUR trade's P&L to a USD trade's as if
+both were dollars ([I-100](../planning/known-issues.md#i-100), closed); FX as a shocked factor
+waits on FX trades in the pipeline ([F-04](../planning/features.md#f-04)).
+
 ## Risk factors
 
 The pillar zero rates of named market curves (`RateRiskFactors`). `from_market(market)`
@@ -113,8 +137,10 @@ results. It is part of the open performance item
 ## Statistics
 
 `engine.risk.market.var_es.compute_risk_metrics` on the one-date portfolio P&L sample — ORE's
-`RiskStatistics` conventions, including the nearest-rank quantile and the strict
-value-based ES tail ([VaR & ES](var_es.md)). For each quantile `q`:
+`RiskStatistics` conventions, including QuantLib's rank, `ceil(N(1−q)) − 1`, and the strict
+value-based ES tail ([VaR & ES](var_es.md)). Each quantile `q` lies in (0, 1) and is given once;
+ORE's own statistics take [0.9, 1), so the engine's domain is broader, on the same rule. For
+each quantile `q`:
 
 | Key | Meaning |
 |---|---|
@@ -123,7 +149,8 @@ value-based ES tail ([VaR & ES](var_es.md)). For each quantile `q`:
 | `ES_<q>_tailCount` | Observations the ES averaged |
 | `ES_<q>_standardError` | Monte Carlo standard error of the ES |
 
-Fractional percentages keep their decimals: Basel's 97.5% is `ES_97.5`.
+The key is the level's percentage exactly: Basel's 97.5% is `ES_97.5`, and two levels share a
+key only if they are equal (0.9500000001 is `95.00000001`).
 
 ## Precision
 
@@ -133,9 +160,10 @@ stages read for this pipeline: the shifts are rounded to `simulation.compute` an
 `simulation.storage`; each trade is revalued and its P&L computed at the compute format of
 its own pricing stage, `precision.precision_for(trade)` (its `by_trade` entry, else its
 product's `by_product` entry, else `pricing`), and its P&L stored at that stage's storage
-format; `result.pnl` is the P&L read back at float64, and VaR/ES are float64 reductions of it
-(decision A-10). The base values (`base_npv_per_trade`) are each trade's revaluation of the
-unshocked curves at its compute format: they are the anchor its P&L is measured from, so a
+format, in its own currency; `result.pnl` is the P&L read back at float64 and converted into the
+reporting currency, and VaR/ES are float64 reductions of it (decision A-10). The base values
+(`base_npv_per_trade`) are each trade's revaluation of the unshocked curves at its compute
+format, converted alike: they are the anchor its P&L is measured from, so a
 zero shift is exactly zero P&L at every precision. Trade ids must be unique (the overrides
 are keyed by them). The integer
 `precision=64|32` of before 2026-10-01 is refused, naming the replacement.
@@ -161,7 +189,9 @@ float64.
 - **Volatility risk.** Volatilities are held at their base values: the market's swaption
   volatilities, a Bermudan's calibrated LGM, the Jamshidian engine's model. Only curve pillars
   move, so an option's vega is not in the VaR/ES.
-- **Thin tails.** Fewer than 10 observations beyond a quantile is flagged.
+- **FX risk.** A trade converted into the reporting currency is converted at today's spot in
+  every scenario ([Reporting currency](#reporting-currency)).
+- **Thin tails.** Fewer than 10 observations beyond a quantile's rank is flagged.
 
 Not yet covered: equity, FX, credit and volatility risk factors; stressed calibration and
 the liquidity-horizon cascade Basel's ES needs (plan phase P3).
@@ -194,6 +224,8 @@ Parity is instead established by full revaluation in ORE plus ORE's statistics.
   generators (covariance recovered, seeds, singular covariance, historical windows),
   revaluation (zero shift, the base equals the portfolio's value, batching invariance,
   first-order agreement with AD Delta, the configured European engine), the run's statistics,
-  labels, warnings, precision and validation.
+  labels, warnings, precision and validation, and the reporting currency (a USD and a EUR swap
+  whose figures move with the EURUSD spot as the converted P&Ls say, the inverse quote, the
+  paired sample converted alike, a missing spot refused before any work).
 - [`tests/test_market_risk_ore_parity.py`](../../tests/test_market_risk_ore_parity.py) —
   the ORE parity above.

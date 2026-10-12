@@ -490,7 +490,7 @@ observations carry the estimate** — 1% of the sample, all from the part of the
 the Monte Carlo sampled least.
 
 `tailCount` counts the **strict value-based tail** (`pnl < -VaR`), i.e. exactly the
-observations `expected_shortfall` averages — not a positional `floor(N*(1-p))` slice, which
+observations `expected_shortfall` averages — not a positional slice of the worst observations, which
 disagrees whenever there are ties at the VaR boundary (the same distinction the module
 already documents for ES itself).
 

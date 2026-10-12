@@ -21,6 +21,7 @@ import numpy as np
 import ORE
 import pytest
 
+from engine.market_data.market import CurrencyMarket, index_name
 from engine.risk.greeks.bump import portfolio_sensitivities
 from engine.run import (
     CamConfig, GreeksConfig, HullWhiteConfig, JamshidianEngineConfig, LgmConfig, LgmSwaptionEngineConfig,
@@ -42,6 +43,17 @@ def _cam(base="USD", model="LGM"):
 def _market_request(names=("swap-payer", "european-payer"), **kwargs):
     trades = [shared.trades()[n] for n in names]
     return PortfolioRequest(market=shared.market(), trades=trades, scenario_risk=False, **kwargs)
+
+
+def _with_a_eur_swap(fx_spots):
+    """The shared market with a EUR market on the dollar's curves and `fx_spots`, and the payer
+    swap booked in EUR."""
+    market = shared.market()
+    usd = market.currency("USD")
+    swap = dataclasses.replace(shared.trades()["swap-payer"], currency="EUR", trade_id="swap-eur")
+    forwarding = usd.index_curves[index_name("USD", swap.index_tenor_months)]
+    eur = CurrencyMarket(usd.discount_curve, {index_name("EUR", swap.index_tenor_months): forwarding})
+    return dataclasses.replace(market, currencies={"USD": usd, "EUR": eur}, fx_spots=fx_spots), swap
 
 
 class TestDefaults:
@@ -131,6 +143,23 @@ class TestWhatThePipelineDoesNotImplementIsRefused:
             request = _market_request(("swap-payer",), config=RunConfig(simulation=_cam(model=model),
                                                                         precision=precision))
             validate_request(dataclasses.replace(request, scenario_risk=True))
+
+    def test_a_trade_with_no_spot_into_the_reporting_currency_is_refused_naming_it(self):
+        """Before 2026-10-11 the preflight passed, and the run failed at the trade's conversion."""
+        market, eur = _with_a_eur_swap({})
+        request = PortfolioRequest(market=market, trades=[eur], scenario_risk=False)
+        with pytest.raises(KeyError, match=r"'swap-eur' is in EUR and the reporting currency is USD "
+                                           r"\(base_currency\), but the market has no EURUSD spot"):
+            validate_request(request)
+        validate_request(dataclasses.replace(request, market=dataclasses.replace(market, fx_spots={"USDEUR": 0.9})))
+        validate_request(dataclasses.replace(request, config=RunConfig(base_currency="EUR")))
+
+    def test_a_trade_in_a_currency_the_simulation_does_not_model_is_refused(self):
+        """Before 2026-10-11 the preflight passed, and the job failed after the simulation."""
+        market, eur = _with_a_eur_swap({"EURUSD": 1.1})
+        request = PortfolioRequest(market=market, trades=[eur], config=RunConfig(simulation=_cam()))
+        with pytest.raises(ValueError, match=r"'swap-eur' is in EUR, which the simulation does not model"):
+            validate_request(request)
 
     def test_calibration_targets_are_not_a_request_field(self):
         """The basket is the model's (the `LgmConfig`/`HullWhiteConfig` tenors), per currency;

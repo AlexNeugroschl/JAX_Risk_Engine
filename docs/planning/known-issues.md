@@ -7,47 +7,36 @@ issues keep one line in the [closed ledger](#closed).
 
 Read this before trusting an exposure profile: a Bermudan's or American's values on the
 paths, and so its exposure, are 0.5–4% above ORE's simulation ([I-49](#i-49)); swaps,
-Europeans and bonds equal ORE's simulation path by path since 2026-10-07. Before trusting a
-market-risk VaR/ES: a portfolio in more than one currency adds the currencies' amounts
-unconverted ([I-100](#i-100)). Before booking a short option: a negative notional is a short
-European but a long Bermudan or American on the reversed swap ([I-101](#i-101)).
+Europeans and bonds equal ORE's simulation path by path since 2026-10-07. Before booking a
+short option: a negative notional is a short European but a long Bermudan or American on the
+reversed swap ([I-101](#i-101)).
 
 ## Verification status
 
-Last full run, 2026-10-11, on the shared operand in two terms (decision A-23, closing
-[I-96](#i-96): `engine/precision/{formats,products}.py` and the five kernel products naming their
-shared operand) and the storage offset's rounding ([I-99](#i-99)). 3,155 collected on Windows:
-the 3,029 of the kernel rewrite's run plus 89 in `tests/test_compute_precision.py` (the new
-tests, and the five single-pass formats in every case parametrized by compute format) and 37 in
-`tests/test_precision.py` (the format table's new rows the same way). Each run printed its
-summary line:
+Last full run, 2026-10-11, on market risk in one unit ([I-100](#i-100)) and VaR's rank and
+quantile keys ([I-102](#i-102)): `engine/risk/market/{run,var_es}.py`, the shared
+`reporting_fx_spots` in `engine/pricing/cube.py`, the portfolio preflight, the API schemas.
+3,235 collected on Windows: the 3,155 of the run before plus 63 in `tests/test_var_es.py`, 12 in
+`tests/test_market_risk.py`, 2 in `tests/test_api_market_risk.py`, 2 in
+`tests/test_run_config.py` and 1 in `tests/test_exposure.py`. Each run printed its summary line:
 
-- **Windows**, `-n 8`: **3,146 passed, 3 skipped, 6 xfailed, 0 failed**, 14m54s (the skips: the
+- **Windows**, `-n 8`: **3,226 passed, 3 skipped, 6 xfailed, 0 failed**, 15m49s (the skips: the
   two accelerator-only defaults and the GPU plugin check; the expected failures as before: the
   Bermudan/American L3 cases of `tests/test_ore_xva_parity.py`, strict, waiting on
   [I-49](#i-49)).
-- **GPU** (RTX 5060, WSL2): `tests/test_compute_precision.py`, `tests/test_accelerator_defaults.py`,
-  `tests/test_precision.py` and `tests/test_precision_report.py`, 638 passed, and the device check
-  (`python -m tests.support.precision_devices --platform gpu`): every arithmetic a stage accepts,
-  the single passes among them, with either operand shared, equals its emulation (native
-  TensorFloat-32 now 3e-7 of the scale, the engine rounding its operands itself).
-- **Linux** (CPU): not rerun; the change touches no process, path or platform default
-  ([rule 5](README.md#verification-rules)). The last Linux run is the kernel rewrite's, 2026-10-11.
-- **Golden snapshot** (against the code before): 359 of 359 arrays identical, bit for bit: float64
-  and float32 compute do not move. Taken before the storage offset's fix, which no snapshot
-  array stores through.
-- **Precision harness**: the `compute` and `compute_market_risk` campaigns rerun with each format
-  below float32 by its name (two terms) and as its single pass (`<name>_1x`): every single-pass
-  row equals the first run's row of its format, and every other row is in
-  [precision.md §15.5](details/precision.md#155-compute-below-float32-2026-10-10). No case
-  recompiles after its first seed (168 rows).
+- **GPU**, **Linux**: not rerun; the change touches no device code, process, path or platform
+  default ([rule 5](README.md#verification-rules)). The last GPU and Linux runs are of
+  2026-10-11, before it.
+- **Golden snapshot** (against the code before, its Greeks section left out, the Greeks
+  untouched): 273 of 273 arrays identical, bit for bit, market risk at float64 and float32
+  among them: a portfolio in its reporting currency does not move.
+- **Precision harness**: not rerun; no kernel, format or single-currency figure changed.
 
-Red first: the pipeline's bias test failed on the code before at 14 to 24 standard errors
-(`TestPipeline::test_no_rounding_of_a_shared_operand_biases_the_paths`, float16, bfloat16,
-TensorFloat-32), and passes at 1.4 or less; `test_any_scenario_count_and_axis_short_last_block`
-failed on the RTX 5060 at the code before (two of its cases, one-entry blocks 5e-8 off), and
-passes. Not rerun: the fast tier under strict dtype promotion as a whole; the compute paths run
-under strict promotion in `tests/test_compute_precision.py`.
+Red first: on the code before, 57 of the new tests failed and 3 errored, among them every
+exact-boundary oracle against `ORE.RiskStatistics` (VaR 15 where ORE's is 16), the close-level
+keys (`0.95` and `0.9500000001` both `95`), the two-currency figures (unmoved by the EURUSD spot:
+VaR_99 601,048 at 1.10 and 1.30, where the converted P&Ls give 633,967 and 702,256) and the two
+portfolio preflight refusals.
 
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
@@ -64,12 +53,10 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
 | [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | TraderX |
 | [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | Fix what exists |
-| [I-100](#i-100) | Market risk adds the P&Ls of trades in different currencies without converting them | High | OPEN | Correctness | Focus |
 | [I-101](#i-101) | A negative option notional: a European is valued as the short, a Bermudan/American as a long option on the reversed swap | High | OPEN | Correctness | Focus |
 | [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | Focus |
 | [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | Focus |
 | [I-73](#i-73) | A calibration that misses its basket is accepted unless it hits the bracket's ceiling, and on a path not even then | Medium | OPEN | Correctness | Focus |
-| [I-102](#i-102) | VaR takes the order statistic above ORE's where N(1−p) is a whole number; close quantiles share a key | Low | OPEN | Correctness | Focus |
 | [I-103](#i-103) | Malformed market and trade inputs are accepted: an unsorted curve prices silently, a late expiry crashes | Medium | OPEN | Validation | Focus |
 | [I-104](#i-104) | Edge cases valued wrong: a zero-variance European, a bond awaiting a delayed payment, a long Theta, H at small a·t | Low | OPEN | Correctness | Fix what exists |
 | [I-105](#i-105) | Storage below float64 does not lower a run's peak memory: the reductions load the whole cube at float64 | Medium | OPEN | Performance | Focus |
@@ -115,32 +102,6 @@ model" before 2026-10-01 meant the separate pipeline removed that day.
 ---
 
 ## Correctness
-
-<a id="i-100"></a>
-### I-100 — Market risk adds the P&Ls of trades in different currencies without converting them
-
-**Severity:** High · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-10, the
-project audit (AUD-02); confirmed in the code 2026-10-11
-
-**What is wrong.** `engine.risk.market.run.run_market_risk` revalues each trade in its own
-currency (`revalue_trade`, through `engine/risk/greeks/price_functions.py`) and sums the
-columns into `portfolio_pnl` and `base_npv`. `MarketRiskRequest` has no reporting currency and
-nothing refuses a second one, so a USD trade's P&L is added to a EUR trade's as if both were
-dollars. The portfolio pipeline converts every value at the as-of FX spot into the run's
-reporting currency (`engine.pricing.cube._today`, `_columns`); market risk does not.
-
-**Reach.** Every VaR/ES, `base_npv` and `portfolio_pnl` of a market-risk portfolio in more than
-one currency, in Python and over `POST /portfolio/market-risk`. Single-currency portfolios,
-which every test, demo and precision campaign uses, are unaffected.
-
-**Current handling.** None.
-
-**To close.** A reporting currency on the request (defaulted as the portfolio run's
-`base_currency` is), each trade's base value and P&L converted at the market's as-of FX spot
-(`Market.fx_spot`), a missing spot refused by name before any work, and a result warning that
-FX moves are not among the shocked factors (market risk shocks rate pillars only). Test: a USD
-and a EUR trade whose VaR moves with the EURUSD spot as the converted P&Ls say, red on
-today's code.
 
 <a id="i-101"></a>
 ### I-101 — A negative option notional: a European is valued as the short, a Bermudan/American as a long option on the reversed swap
@@ -274,34 +235,6 @@ value or σ a miss; today's calibration refuses a miss naming the currency or tr
 without `continueOnCalibrationError`), and the paths count their misses per trade and carry
 them as a result warning, as ORE's structured warning. Tests: a dip basket refused at t=0, a
 zero ATM volatility refused, an unattainable path volatility counted.
-
-<a id="i-102"></a>
-### I-102 — VaR takes the order statistic above ORE's where N(1−p) is a whole number; close quantiles share a key
-
-**Severity:** Low · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-10, the
-project audit (AUD-01, AUD-03, AUD-04); measured 2026-10-11
-
-**What is wrong.** `engine.risk.market.var_es._value_at_risk_jit` takes index floor(N(1−p)) of
-the sorted P&L. ORE's `RiskStatistics::valueAtRisk` reads QuantLib's
-`GeneralStatistics::percentile`, which advances while the cumulative weight is strictly below
-N(1−p): index ceil(N(1−p)) − 1. The two differ when N(1−p) is a whole number in floating
-point: P&Ls −16, …, −1 at p = 0.9375 give ORE a VaR of 16 (and an ES that raises, its strict
-tail empty) and the engine a VaR of 15 and an ES of 16. Separately, `quantile_label` rounds to
-six decimals and prints six significant digits, so 0.95 and 0.9500000001 are both `95` and the
-second overwrites the first in the result's `risk` and its precision report. And market risk
-accepts any level in (0, 1) where ORE's statistics take [0.9, 1).
-
-**Reach.** Narrow. No level among 0.9, 0.95, 0.975, 0.99, 0.995 and 0.999 meets the boundary
-at any scenario count up to 200,000 (1 − p is inexact in binary, so N(1−p) is never whole);
-dyadic levels (0.9375, 0.96875, ...) do. The module docstring and
-[docs/risk/var_es.md](../risk/var_es.md) state the floor rule as ORE's.
-
-**Current handling.** None; the sweep of `tests/test_var_es.py` has no exact boundary.
-
-**To close.** The index ceil(N(1−p)) − 1, clamped to [0, N − 1], as QuantLib's loop; result
-keys that cannot collide (or two levels of one key refused); levels outside [0.9, 1) still
-accepted, documented as broader than ORE's. Tests against `ORE.RiskStatistics`: the
-16-scenario case, a target weight of two, ties at the boundary; and two close quantiles.
 
 <a id="i-104"></a>
 ### I-104 — Edge cases valued wrong: a zero-variance European, a bond awaiting a delayed payment, a long Theta, H at small a·t
@@ -1518,8 +1451,6 @@ project audit (AUD-15, AUD-46, AUD-47); checked 2026-10-11
   single-threaded on CPUs, where the README describes ORE's threaded and GPU paths.
 - [docs/concepts/architecture.md](../concepts/architecture.md) calls the codebase three
   independent modules, and `demo_precision.py` a demo at three precisions; it runs ten.
-- `engine/risk/market/var_es.py` and [docs/risk/var_es.md](../risk/var_es.md) give
-  floor(N(1−p)) as ORE's rank ([I-102](#i-102)).
 - The README says the full pipeline compiles through XLA; ORE schedules and calendars, Sobol
   draws and other host work do not.
 - `pyproject.toml` says ORE-parity tests are never marked slow; two in
@@ -1609,6 +1540,8 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-92"></a>I-92 | `engine/`'s packages were named for layers and two modules sat at its root (now subpackages only, each named for what it holds and layered: `market_data`, `models`, `instruments`, `traderx`, `calibration`, `market_simulation`, `pricing`, `risk/{greeks,market,counterparty}`, `run`, `api`; [details/package-layout.md](details/package-layout.md)) | `tests/test_import_layering.py::test_no_module_but_init_at_the_root`, `::test_packages_import_only_the_layers_below`, `::test_risk_kinds_import_only_the_kinds_below` |
 | <a id="i-96"></a>I-96 | Compute below float32 biased every figure: each product's path-independent operand was rounded once for every path (now carried in two terms of the format, the single pass a format of its own, `<name>_1x`; 2026-10-11, decision A-23) | `tests/test_compute_precision.py::TestPipeline::test_no_rounding_of_a_shared_operand_biases_the_paths` (red on the code before: 14 to 24 standard errors), `TestProducts::test_the_shared_operands_rounding_biases_a_single_pass_not_two_terms` |
 | <a id="i-99"></a>I-99 | On a GPU a block-offset storage took a block's deviations from its unrounded midpoint while keeping the float32 one, so a stored entry missed its value by float32's rounding of it: XLA removed the float64 -> float32 -> float64 round trip of the offset's cast (found and fixed 2026-10-11, the offset now rounded on float32's grid) | `tests/test_precision.py::TestScaledStorage::test_any_scenario_count_and_axis_short_last_block` (red on an RTX 5060 at the code before, its one-entry blocks 5e-8 off) |
+| <a id="i-100"></a>I-100 | Market risk added the P&Ls of trades in different currencies unconverted (now every amount is in the request's `base_currency`, USD by default as a portfolio run's without a simulation, each trade converted at the as-of FX spot in float64, a missing spot refused before any work naming the trade and the pair, the result naming its currency and warning that FX is not shocked; the portfolio run's preflight refuses a missing spot, and a trade in a currency its simulation does not model, before any work; 2026-10-11) | `tests/test_market_risk.py::TestReportingCurrency` (red on the code before: the figures did not move with the EURUSD spot; VaR_99 601,048 where the converted P&Ls give 633,967 at 1.10), `tests/test_run_config.py::TestWhatThePipelineDoesNotImplementIsRefused::test_a_trade_with_no_spot_into_the_reporting_currency_is_refused_naming_it`, `::test_a_trade_in_a_currency_the_simulation_does_not_model_is_refused` |
+| <a id="i-102"></a>I-102 | VaR took index floor(N(1−p)), one above QuantLib's ceil(N(1−p)) − 1 where N(1−p) is a whole number (VaR 15 where ORE's is 16 on 16 scenarios at 0.9375), and quantile keys were rounded to six decimals, so close levels shared one (now QuantLib's rank, `var_rank`; each key the level's percentage exactly; a run's levels in (0, 1), each once, documented as broader than ORE's [0.9, 1); 2026-10-11) | `tests/test_var_es.py::TestExactRankBoundaryAgainstORE`, `::TestQuantileLabels`, `tests/test_market_risk.py::TestRunValidation::test_close_quantiles_keep_their_own_figures`, `tests/test_exposure.py::TestDefinitions::test_close_quantiles_keep_their_own_keys` (each red on the code before) |
 | <a id="m-4"></a>Audit M-4 | Trades were defined relative to the evaluation date (now absolute dates) | `tests/test_trade_dates.py` |
 | <a id="m-5"></a>Audit M-5 | Theta re-rolled the trade instead of ageing it | `tests/test_trade_dates.py` |
 | <a id="r-1"></a>Audit R-1 | Cube quantiles were reported as VaR/ES (now exposure profiles; market-risk VaR/ES by t=0 revaluation) | `tests/test_exposure.py`, `tests/test_market_risk.py`, `tests/test_market_risk_ore_parity.py` |

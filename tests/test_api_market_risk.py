@@ -2,8 +2,8 @@
 `POST /portfolio/market-risk` (I-56): market-risk VaR and ES over HTTP, queued for
 the engine worker as a portfolio is. On the shared portfolio's market the polled result equals a
 direct `run_market_risk` call, for Monte Carlo and historical scenarios, each trade's row keyed
-by its id; the P&L by reference is the inline P&L; a request the run would refuse is a 400
-before any job starts, naming the field.
+by its id, in the reporting currency it names; the P&L by reference is the inline P&L; a request
+the run would refuse is a 400 before any job starts, naming the field.
 """
 import time
 
@@ -81,6 +81,7 @@ def test_the_result_equals_a_direct_run(test_client, scenarios):
     assert result["risk"]["VaR_99"] > 0.0 and result["source"] == scenarios["source"]
     assert result["risk_factors"] == _labels() and result["num_scenarios"] == direct.num_scenarios
     assert result["warnings"] == direct.warnings and result["precision"]["paths"] == direct.num_scenarios
+    assert result["base_currency"] == direct.base_currency == "USD"
 
 
 @pytest.mark.slow
@@ -114,8 +115,10 @@ def _swapped(labels, i, j):
     (MONTE_CARLO, {"quantiles": [1.5]}, "quantile"),
     (MONTE_CARLO, {"trades": []}, "at least one trade"),
     (MONTE_CARLO, {"batch_size": 0}, "batch_size"),
+    (MONTE_CARLO, {"quantiles": [0.99, 0.99]}, "0.99 is given more than once"),
+    (MONTE_CARLO, {"base_currency": "EUR"}, "base_currency='EUR': no market for currency 'EUR'"),
 ], ids=["factor-order", "unknown-curve", "not-psd", "covariance-shape", "one-scenario", "missing-curve",
-        "short-history", "quantile", "no-trades", "batch"])
+        "short-history", "quantile", "no-trades", "batch", "repeated-quantile", "reporting-currency"])
 def test_a_request_the_run_would_refuse_is_a_400_and_no_job(test_client, scenarios, overrides, message):
     r = test_client.post("/portfolio/market-risk", json={**_body(scenarios), **overrides})
     assert r.status_code == 400, r.text

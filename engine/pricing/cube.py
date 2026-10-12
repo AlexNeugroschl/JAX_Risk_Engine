@@ -101,6 +101,35 @@ def require_unique_ids(trades: Sequence[Trade]) -> None:
         raise ValueError(f"trade ids must be unique in a portfolio; repeated: {duplicates}")
 
 
+#: The reporting currency of a run that names none and has no simulation to take one from
+#: (`RunConfig.reporting_currency`, `MarketRiskRequest.base_currency`). ORE's `ore.xml`
+#: requires its `baseCurrency`; the engine defaults it.
+DEFAULT_REPORTING_CURRENCY = "USD"
+
+
+def reporting_fx_spots(trades: Sequence[Trade], market: Market, currency: str, field: str) -> List[float]:
+    """Each trade's conversion into the reporting `currency` at the market's as-of FX spot:
+    units of `currency` per unit of the trade's currency, 1.0 for a trade in it.
+
+    Refuses, before any work, a reporting currency the market has no market for and a trade
+    whose currency has no spot against it (quoted either way, never a cross), naming the trade,
+    the pair and `field`, the setting that chose the currency."""
+    try:
+        market.currency(currency)
+    except KeyError as exc:
+        raise KeyError(f"{field}={currency!r}: {exc.args[0]}") from None
+    spots = []
+    for cfg in trades:
+        try:
+            spots.append(market.fx_spot(cfg.currency, currency))
+        except KeyError:
+            raise KeyError(f"trade {cfg.trade_id!r} is in {cfg.currency} and the reporting currency is {currency} "
+                           f"({field}), but the market has no {cfg.currency}{currency} spot: give fx_spots "
+                           f"{cfg.currency + currency!r} (or {currency + cfg.currency!r}), or report in "
+                           f"{cfg.currency}") from None
+    return spots
+
+
 def validate_trades(trades: Sequence[Trade], market: Market, pricing: PricingConfig = PricingConfig(),
                     precision: Precision = Precision()) -> None:
     """Refuse what the pipeline cannot price as specified: a precision override that names
@@ -192,7 +221,8 @@ def value_paths(trades: Sequence[Trade], market: Market, scenarios: ScenarioMark
 def _today(trades, market: Market, base_currency: str, pricing: PricingConfig,
            context: Optional[PricingContext] = None) -> List[float]:
     context = context or from_market(market)
-    return [float(value_on(cfg, context, pricing)) * market.fx_spot(cfg.currency, base_currency) for cfg in trades]
+    spots = reporting_fx_spots(trades, market, base_currency, "base_currency")
+    return [float(value_on(cfg, context, pricing)) * spot for cfg, spot in zip(trades, spots)]
 
 
 def _columns(trades, market: Market, scenarios: ScenarioMarket, base_currency: str, pricing: PricingConfig,

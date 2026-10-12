@@ -46,7 +46,7 @@ from engine.precision import (
     StagePrecision,
 )
 from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
-from engine.pricing.cube import PRODUCTS
+from engine.pricing.cube import DEFAULT_REPORTING_CURRENCY, PRODUCTS
 from engine.risk.market import (
     MarketRiskRequest, RateRiskFactors, historical_scenarios, monte_carlo_scenarios, validate_monte_carlo,
 )
@@ -659,7 +659,9 @@ class MarketRiskRequestSchema(_Strict):
     """`engine.risk.market.MarketRiskRequest` (`POST /portfolio/market-risk`): the market and
     trades as the portfolio request takes them, the shock `scenarios`, the engine per product
     (`pricing`), the VaR/ES `quantiles`, `precision`, the scenarios vmapped at once (`batch_size`),
-    and how the result carries the P&L matrix (`pnl_output`, as the portfolio's `cube_output`)."""
+    the reporting currency (`base_currency`, USD by default, as the portfolio's without a
+    simulation; each trade in another currency converted at `market.fx_spots`), and how the
+    result carries the P&L matrix (`pnl_output`, as the portfolio's `cube_output`)."""
     market: MarketSchema
     trades: List[MarketTradeSchema]
     scenarios: ScenariosSchema
@@ -667,6 +669,7 @@ class MarketRiskRequestSchema(_Strict):
     quantiles: List[float] = Field(default_factory=lambda: [0.99, 0.975])
     precision: PrecisionSchema = Field(default_factory=PrecisionSchema)
     batch_size: int = 256
+    base_currency: str = DEFAULT_REPORTING_CURRENCY
     pnl_output: ArrayOutputName = "inline"
 
     def to_dataclass(self) -> MarketRiskRequest:
@@ -674,7 +677,7 @@ class MarketRiskRequestSchema(_Strict):
         return MarketRiskRequest(trades=_trades(self.trades, market), market=market,
                                  scenarios=self.scenarios.to_dataclass(market), pricing=self.pricing.to_dataclass(),
                                  quantiles=tuple(self.quantiles), precision=self.precision.to_dataclass(),
-                                 batch_size=self.batch_size)
+                                 batch_size=self.batch_size, base_currency=self.base_currency)
 
     def check(self) -> None:
         """Refuse what `run_market_risk` would refuse, before the job is queued; the Monte Carlo
@@ -682,7 +685,7 @@ class MarketRiskRequestSchema(_Strict):
         market = self.market.to_dataclass()
         trades = _trades(self.trades, market)
         validate_portfolio(trades, market, self.pricing.to_dataclass(), self.precision.to_dataclass(), self.quantiles,
-                           self.batch_size)
+                           self.batch_size, self.base_currency)
         validate_factors(trades, market, self.scenarios.check(market))
 
 

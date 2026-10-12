@@ -6,15 +6,23 @@ Statistics match `ORE.RiskStatistics` (QuantLib `GenericRiskStatistics`), checke
 installed ORE package:
 
     sorted_pnl = ascending sort of the per-step P&L sample
-    idx        = floor(N * (1 - percentile))
+    idx        = ceil(N * (1 - percentile)) - 1, clamped to [0, N - 1]   (`var_rank`)
     VaR(p)     = max(-sorted_pnl[idx], 0.0)     # positive loss, clamped at 0
     tail       = pnl[pnl < -VaR(p)]             # strict, value-based
     ES(p)      = -mean(tail)                    # NaN if the tail is empty
 
-The quantile is a nearest-rank-below order statistic, not interpolated (as
-`numpy.percentile`'s default is). The ES tail is value-based, which differs from slicing
-`sorted[0:idx]` when there are ties at the VaR boundary. Where the tail is empty ORE raises
-"no data below the target"; this returns NaN, since traced JAX code cannot raise.
+The quantile is an order statistic, not interpolated (as `numpy.percentile`'s default is):
+QuantLib's `GeneralStatistics::percentile` advances through the sorted sample while the
+cumulative weight is strictly below the target N(1 - p), so with unit weights it stops at
+index ceil(N(1 - p)) - 1. Where N(1 - p) is not a whole number that is floor(N(1 - p)); where it
+is (16 scenarios at 0.9375), it is the observation below. The target is computed as QuantLib
+computes it, `(1 - p) * N` in float64, so a level whose 1 - p is inexact in binary (0.95, 0.99)
+meets the boundary exactly when ORE's does. The ES tail is value-based, which differs from
+slicing `sorted[0:idx]` when there are ties at the VaR boundary. Where the tail is empty ORE
+raises "no data below the target"; this returns NaN, since traced JAX code cannot raise.
+
+ORE accepts confidence levels in [0.9, 1); these functions take any level in (0, 1), a broader
+domain on the same rule (`validate_quantiles` checks a run's levels).
 
 P&L(scenario, t) = portfolio NPV(scenario, t) - base_npv, where `base_npv` is the t=0 NPV
 supplied by the caller.
@@ -26,6 +34,8 @@ market risk with the portfolio's expected drift and roll-down. The cube's known 
 `engine.risk.market`.
 """
 import math
+import numbers
+from decimal import Decimal
 from functools import partial
 from typing import Dict, Sequence
 
@@ -55,10 +65,34 @@ ENGINE_RISK_MEASURE = RISK_MEASURE_RISK_NEUTRAL
 
 
 def quantile_label(q: float) -> str:
-    """Quantile as a result-key suffix: 0.95 -> "95", 0.975 -> "97.5" (never rounded, so
-    two quantiles cannot share a key)."""
-    percent = round(q * 100, 6)
-    return f"{int(percent)}" if percent == int(percent) else f"{percent:g}"
+    """Quantile as a result-key suffix, its percentage exactly: 0.95 -> "95", 0.975 -> "97.5",
+    0.9500000001 -> "95.00000001". The shortest decimal that reads back as `q` (`repr`), its
+    point moved two places in decimal arithmetic, so no rounding: two levels share a label only
+    if they are the same float."""
+    percent = (Decimal(repr(float(q))) * 100).normalize()
+    return format(percent, "f")
+
+
+def validate_quantiles(name: str, quantiles: Sequence[float]) -> None:
+    """Refuse, naming the field `name`, a confidence level that is not a number in (0, 1), or
+    a level given twice (its figures would share one key). ORE's statistics take [0.9, 1);
+    this domain is broader, on the same rank rule."""
+    labels = set()
+    for q in quantiles:
+        if isinstance(q, bool) or not isinstance(q, numbers.Real) or not 0.0 < float(q) < 1.0:
+            raise ValueError(f"{name}: a quantile must lie in (0, 1); got {q!r}")
+        if quantile_label(q) in labels:
+            raise ValueError(f"{name}: {float(q)!r} is given more than once")
+        labels.add(quantile_label(q))
+
+
+def var_rank(num_scenarios: int, percentile: float) -> int:
+    """The index into the ascending P&L sample that VaR at `percentile` reads, as QuantLib's
+    `GeneralStatistics::percentile` (see the module docstring): ceil(N(1 - p)) - 1, clamped to
+    [0, N - 1]. It is also the number of observations below that order statistic, the ES tail
+    when there are no ties at it."""
+    target = (1.0 - float(percentile)) * num_scenarios
+    return min(max(math.ceil(target) - 1, 0), num_scenarios - 1)
 
 
 def portfolio_pnl(npv_cube: jax.Array, base_npv: float) -> jax.Array:
@@ -71,7 +105,7 @@ def portfolio_pnl(npv_cube: jax.Array, base_npv: float) -> jax.Array:
 def value_at_risk(pnl: jax.Array, percentile: float) -> jax.Array:
     """
     [Scenarios, TimeSteps] P&L -> [TimeSteps] VaR at `percentile` (0.99 for 99%), as
-    `ORE.RiskStatistics.valueAtRisk`: the nearest-rank-below order statistic, negated, clamped
+    `ORE.RiskStatistics.valueAtRisk`: the order statistic at `var_rank`, negated, clamped
     at 0.
 
     `percentile` is converted to a Python float because it is a static jit argument and
@@ -82,13 +116,9 @@ def value_at_risk(pnl: jax.Array, percentile: float) -> jax.Array:
 
 @partial(jax.jit, static_argnums=1)
 def _value_at_risk_jit(pnl: jax.Array, percentile: float) -> jax.Array:
-    num_scenarios = pnl.shape[0]
-    # The rank index is a compile-time constant (static percentile, static shape), so it
-    # is computed in Python; a traced index could not be converted with int().
-    idx = int(math.floor(num_scenarios * (1.0 - percentile)))
-    idx = min(max(idx, 0), num_scenarios - 1)
+    # The rank is a compile-time constant (static percentile, static shape), computed in Python.
     sorted_pnl = jnp.sort(pnl, axis=0)
-    return jnp.maximum(-sorted_pnl[idx], 0.0)
+    return jnp.maximum(-sorted_pnl[var_rank(pnl.shape[0], percentile)], 0.0)
 
 
 def expected_shortfall(pnl: jax.Array, percentile: float) -> jax.Array:
