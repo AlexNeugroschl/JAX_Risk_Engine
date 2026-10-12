@@ -26,6 +26,14 @@ the one-bucket case. Only zeta depends on sigma; H depends only on the reversion
 Black-on-bond formula in `hull_white.bond_call`/`bond_put`, which `engine.calibration`
 uses to price co-terminal Europeans as `AnalyticLgmSwaptionEngine` does.
 
+`shift` is ORE's `Lgm1fParametrization::shift()`: every formula reads `H(t) + shift` for `H(t)`.
+It is an exact invariance of the model (bond prices are unchanged when the state moves to
+`x - shift * zeta(t)`, and the numeraire's measure moves with it), so it changes no price in the
+limit, only where a discretization centres its state: the grid engine's state grid is centred on
+the shifted state. ORE's `LgmBuilder` sets `shift = -H(horizon)` (`horizon_shift`), so `H + shift`
+vanishes at the horizon; 0, the default, is the unshifted model. The cross-asset model's LGM is
+never shifted (ORE refuses a shift horizon there).
+
 The Hull-White model is the same LGM with another volatility parametrization, ORE's
 `Lgm1fPiecewiseConstantHullWhiteAdaptor` (QuantExt/qle/models/
 irlgm1fpiecewiseconstanthullwhiteadaptor.hpp, `ReversionType = VolatilityType = HullWhite`):
@@ -166,10 +174,11 @@ def hull_white_matching_zeta(a: float, hagan: "Sigma", last: float) -> "Sigma":
     return Sigma(times=jnp.asarray(times), values=jnp.asarray(hagan.values) * scale)
 
 
-def H(a: float, t: jax.Array) -> jax.Array:
-    """H(t) = (1-exp(-a*t))/a, with the a -> 0 limit H(t) = t."""
+def H(a: float, t: jax.Array, shift=0.0) -> jax.Array:
+    """H(t) = (1-exp(-a*t))/a + shift, with the a -> 0 limit H(t) = t + shift
+    (`Lgm1fParametrization::H`, its `shift_` added to the parametrization's own)."""
     a_safe = jnp.where(a == 0.0, 1.0, a)
-    return jnp.where(t > 0.0, jnp.where(a == 0.0, t, (1.0 - jnp.exp(-a_safe * t)) / a_safe), 0.0)
+    return jnp.where(t > 0.0, jnp.where(a == 0.0, t, (1.0 - jnp.exp(-a_safe * t)) / a_safe), 0.0) + shift
 
 
 def H_prime(a: float, t: jax.Array) -> jax.Array:
@@ -177,46 +186,58 @@ def H_prime(a: float, t: jax.Array) -> jax.Array:
     return jnp.exp(-a * t)
 
 
-def bond_price(curve: ZeroCurve, a: float, sigma: Union[float, Sigma], t: jax.Array, T: jax.Array, x: jax.Array) -> jax.Array:
+def horizon_shift(a: float, horizon: jax.Array) -> jax.Array:
+    """The shift that makes H vanish at `horizon` (years, >= 0): `-H(horizon)`, as ORE's
+    `LgmBuilder` sets it from `LgmData::shiftHorizon` (0 at horizon 0, the unshifted model)."""
+    return -H(a, horizon)
+
+
+def bond_price(curve: ZeroCurve, a: float, sigma: Union[float, Sigma], t: jax.Array, T: jax.Array, x: jax.Array,
+               shift=0.0) -> jax.Array:
     """
     Zero-bond price P(t,T) at LGM state x:
 
         P(t,T,x) = [P(0,T)/P(0,t)] * exp(-0.5*(H(T)^2-H(t)^2)*zeta(t) - (H(T)-H(t))*x)
 
-    Matches `ORE.LinearGaussMarkovModel.discountBond` to ~1e-16 relative.
+    with `H` shifted by `shift` (see the module docstring). Matches
+    `ORE.LinearGaussMarkovModel.discountBond` to ~1e-16 relative.
     """
     P0T = discount(curve, T)
     P0t = jnp.where(t > 0.0, discount(curve, jnp.maximum(t, 1e-12)), 1.0)
-    Ht, HT = H(a, t), H(a, T)
+    Ht, HT = H(a, t, shift), H(a, T, shift)
     return (P0T / P0t) * jnp.exp(-0.5 * (HT ** 2 - Ht ** 2) * zeta(sigma, t)) * jnp.exp(-(HT - Ht) * x)
 
 
-def numeraire(curve: ZeroCurve, a: float, sigma: Union[float, Sigma], t: jax.Array, x: jax.Array) -> jax.Array:
+def numeraire(curve: ZeroCurve, a: float, sigma: Union[float, Sigma], t: jax.Array, x: jax.Array,
+              shift=0.0) -> jax.Array:
     """
     N(t,x) = exp(0.5*H(t)^2*zeta(t) + H(t)*x) / P(0,t), as
-    `LinearGaussMarkovModel::numeraire`. The backward induction deflates by this, so the
-    rolled-back quantity is a martingale under x's driftless law.
+    `LinearGaussMarkovModel::numeraire`, with `H` shifted by `shift` (so N(0,x) = exp(shift*x)).
+    The backward induction deflates by this, so the rolled-back quantity is a martingale under
+    x's driftless law.
     """
     P0t = jnp.where(t > 0.0, discount(curve, jnp.maximum(t, 1e-12)), 1.0)
-    Ht = H(a, t)
-    return jnp.where(t > 0.0, jnp.exp(0.5 * Ht ** 2 * zeta(sigma, t) + Ht * x) / P0t, jnp.ones_like(x))
+    Ht = H(a, t, shift)
+    return jnp.exp(0.5 * Ht ** 2 * zeta(sigma, t) + Ht * x) / P0t
 
 
-def r_from_x(curve: ZeroCurve, a: float, sigma: Union[float, Sigma], t: jax.Array, x: jax.Array) -> jax.Array:
+def r_from_x(curve: ZeroCurve, a: float, sigma: Union[float, Sigma], t: jax.Array, x: jax.Array,
+             shift=0.0) -> jax.Array:
     """
     Short rate at LGM state x: r(t,x) = f(0,t) + x*H'(t) + zeta(t)*H'(t)*H(t),
-    i.e. -d/dT log P(t,T,x) at T=t.
+    i.e. -d/dT log P(t,T,x) at T=t, with `H` shifted by `shift`.
     """
     f0t = forward_rate(curve, t)
     Hp = H_prime(a, t)
-    return f0t + x * Hp + zeta(sigma, t) * Hp * H(a, t)
+    return f0t + x * Hp + zeta(sigma, t) * Hp * H(a, t, shift)
 
 
-def x_from_r(curve: ZeroCurve, a: float, sigma: Union[float, Sigma], t: jax.Array, r: jax.Array) -> jax.Array:
+def x_from_r(curve: ZeroCurve, a: float, sigma: Union[float, Sigma], t: jax.Array, r: jax.Array,
+             shift=0.0) -> jax.Array:
     """Inverse of `r_from_x` (affine in x). Returns 0 at t <= 0."""
     f0t = forward_rate(curve, t)
     Hp = H_prime(a, t)
-    x = (r - f0t - zeta(sigma, t) * Hp * H(a, t)) / Hp
+    x = (r - f0t - zeta(sigma, t) * Hp * H(a, t, shift)) / Hp
     return jnp.where(t > 0.0, x, jnp.zeros_like(r))
 
 

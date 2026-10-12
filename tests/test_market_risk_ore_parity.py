@@ -63,6 +63,7 @@ def _ore_bermudan_npv(cfg, disc_rates, fwd_rates) -> float:
         exercise_dates=list(cfg.exercise_dates), hw_a=m.ENGINE.reversion, hw_sigma=m.ENGINE.volatility,
         n_per_std=m.ENGINE.n_per_std, std_devs=m.ENGINE.std_devs,
         exercise_time_steps_per_year=m.ENGINE.exercise_time_steps_per_year, index_curve_rates=list(fwd_rates),
+        shift_horizon=m.ENGINE.shift_horizon,
     ).npv
 
 

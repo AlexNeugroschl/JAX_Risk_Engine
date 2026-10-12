@@ -453,7 +453,8 @@ that, in-process and entirely in memory: an `OREApp` run of the `NPV` analytic o
 - a convention-defined `USD-SIMINDEX-6M` with `SimIndex`'s terms;
 - the engine's zero curve, date-quoted and linear in zero rate;
 - the engine's LGM parameters (`ReversionType=HullWhite`, `VolatilityType=Hagan`,
-  `ShiftHorizon=0`; a piecewise `Sigma` as `VolatilityTimes`/`Volatility`).
+  `ShiftHorizon` 0 or ORE's default 0.5, or 1.5, each case at both, I-32; a piecewise `Sigma` as
+  `VolatilityTimes`/`Volatility`).
 
 Two inputs ORE requires but never reads for pricing are supplied so the model builder does
 not fall back to dummies. One of them, the swap index, is **not** inert:

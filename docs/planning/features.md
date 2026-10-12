@@ -9,13 +9,13 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 
 | ID | Feature | Size | Depends on | Roadmap |
 |---|---|---|---|---|
-| [F-01](#f-01) | Engine options beyond ORE's defaults | M | F-07's kernel rewrite; the FD solver also I-32 | New |
+| [F-01](#f-01) | Engine options beyond ORE's defaults | M | F-07's kernel rewrite | New |
 | [F-02](#f-02) | SABR swaption volatility | M | I-54, F-07's kernel rewrite | New |
 | [F-03](#f-03) | ORE's AMC engine as a valuation option | L | F-07's kernel rewrite | New |
 | [F-04](#f-04) | FX and equity trades on the pipeline; FX/EQ vol calibration | L | F-07's kernel rewrite | New |
 | [F-05](#f-05) | Basel III regulatory figures | L | See entry | Basel |
 | [F-06](#f-06) | CVA/DVA from the exposure profiles | M | I-87 | New |
-| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-32, I-49 (the rollback's rewrite) | Focus |
+| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-49 (the rollback's rewrite) | Focus |
 | [F-08](#f-08) | Reporting currencies other than USD for TraderX | S | I-18 (an FX source), I-59 | New |
 | [F-09](#f-09) | ORE's XML input files as a run request | M | I-87 | New |
 
@@ -44,7 +44,8 @@ The AD Greeks method's agreement with the bump method on sloped curves is an ope
 [I-78](known-issues.md#i-78).
 
 **Depends on.** [F-07](#f-07)'s kernel rewrite: each option adds a path-pricing kernel, written in
-its form (A-16). The FD solver also needs [I-32](known-issues.md#i-32)'s shift. **Size.** M.
+its form (A-16); the FD solver takes ORE's shift horizon, as the Grid solver does since I-32
+(2026-10-12). **Size.** M.
 **Details.** [details/configurable-engine.md](details/configurable-engine.md).
 
 <a id="f-02"></a>
@@ -127,7 +128,7 @@ formats, `tensorfloat32` and `bfloat16_3x`, accumulated in float32, each native 
 device and named in the report; since 2026-10-11 the operand every path shares in two terms of
 the format, the single pass `<format>_1x` a format of its own, A-23;
 [details/precision.md §8](details/precision.md#8-compute-below-float32);
-the Bermudan/American rollback follows I-32 and I-49); the evidence table and warnings (I-55,
+the Bermudan/American rollback follows I-49); the evidence table and warnings (I-55,
 done 2026-10-11: [compliance/precision-evidence.md](../../compliance/precision-evidence.md));
 timing across devices on Ironwood and H100 (after the sharding of I-61); FP4 on TPU 8t/8i. Measured so far: FP8
 storage of the shocks biases a call payoff by about one Monte Carlo standard error at 4M

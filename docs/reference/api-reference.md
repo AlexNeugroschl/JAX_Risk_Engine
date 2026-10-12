@@ -151,7 +151,7 @@ window (the step count from the engine's `LgmSwaptionEngineConfig`, `>= 1`).
 
 | Function | Notes |
 |---|---|
-| `prepare_bermudan(cfg, *, reversion, sigma, n_per_std, std_devs, exercise_time_steps_per_year, curve=None, index_curve=None)` | The trade's prepared structure for the engine, with an explicit LGM (`sigma`: float or `Sigma`). |
+| `prepare_bermudan(cfg, *, reversion, sigma, shift_horizon, n_per_std, std_devs, exercise_time_steps_per_year, built_on=None, curve=None, index_curve=None)` | The trade's prepared structure for the engine, with an explicit LGM (`sigma`: float or `Sigma`; H shifted to vanish at `shift_horizon` years, 0 for none), an American's window as built on `built_on` (default: the evaluation date). `engine.pricing.bermudan.prepared_option` builds it from a `LgmSwaptionEngineConfig`, converting ORE's `ShiftHorizon` fraction (`shift_horizon_time`). |
 | `grid_value(prepared) -> jax.Array` | ORE's `NumericLgmMultiLegOptionEngine` value on the prepared curves. |
 
 ### `BondConfig`, `CouponPeriod` (`engine.instruments.treasury`)
@@ -186,7 +186,7 @@ See [Instruments](../instruments/swaps.md).
 |---|---|---|---|
 | `european` | `str` | `"Bachelier"` | `"Bachelier"` (ORE's default, on the market volatility) or `"Jamshidian"`. |
 | `jamshidian` | `Optional[JamshidianEngineConfig]` | `None` | The Jamshidian engine's Hull-White model, `(reversion, volatility)`, both finite and > 0. Required with `european="Jamshidian"`, refused without. |
-| `bermudan`, `american` | `LgmSwaptionEngineConfig` | ORE's builder defaults | `reversion` (`0.0`), `volatility` (`0.01`, the start or the fixed model), `calibration` (`"Bootstrap"` \| `"None"`), `strategy` (`"CoterminalDealStrike"`), `reference_calibration_grid` (`"400,3M"`), `shift_horizon` (`0.0`, the only value implemented, I-32), `n_per_std` (`30`), `std_devs` (`5.0`), `exercise_time_steps_per_year` (`24`), `swap_index`. |
+| `bermudan`, `american` | `LgmSwaptionEngineConfig` | ORE's builder defaults | `reversion` (`0.0`), `volatility` (`0.01`, the start or the fixed model), `calibration` (`"Bootstrap"` \| `"None"`), `strategy` (`"CoterminalDealStrike"`), `reference_calibration_grid` (`"400,3M"`), `shift_horizon` (`0.5`, ORE's `ShiftHorizon`: the fraction of the time from the trade's build to its underlying's maturity where the LGM's H is shifted to vanish, which centres the grid; any value >= 0, 0 the unshifted model), `n_per_std` (`30`), `std_devs` (`5.0`), `exercise_time_steps_per_year` (`24`), `swap_index`. |
 | `recalibrate` | `bool` | `True` | Recalibrate each Bermudan/American on every path date, as ORE's `ValuationEngine`. |
 
 ### `engine.pricing.cube`
@@ -349,11 +349,12 @@ The shared foundation — see [Models & Trades](models-and-trades.md).
 |---|---|
 | `Sigma` | JAX pytree: `times`, `values` (`len(values) == len(times) + 1`); `Sigma.flat(sigma)`. |
 | `as_sigma` | Upgrades a scalar to a one-bucket `Sigma`. |
-| `H` / `H_prime` | `(a, t)`: the LGM's state-space function and its derivative. |
+| `H` / `H_prime` | `(a, t)`: the LGM's state-space function and its derivative; `H(a, t, shift)` adds ORE's parametrization shift. |
+| `horizon_shift` | `(a, horizon)`: `-H(horizon)`, the shift ORE's `LgmBuilder` sets for a shift horizon in years. |
 | `zeta` | `(sigma, t)`: Hagan's ζ(t) = ∫α². |
 | `hull_white_zeta` | `(a, sigma, t)`: the Hull-White parametrization's ζ(t) = ∫σ²e^{2as}ds, piecewise exact. |
 | `hull_white_matching_zeta` | `(a, hagan: Sigma, last) -> Sigma`: the Hull-White σ with Hagan's ζ at every bucket end (exact calibration conversion). |
-| `bond_price`, `numeraire`, `bond_option_sigma`, `r_from_x`, `x_from_r` | The LGM's closed forms (Hagan parametrization). |
+| `bond_price`, `numeraire`, `bond_option_sigma`, `r_from_x`, `x_from_r` | The LGM's closed forms (Hagan parametrization); all but `bond_option_sigma` (invariant) take `shift=0.0`. |
 
 ### `engine.models.hull_white`
 

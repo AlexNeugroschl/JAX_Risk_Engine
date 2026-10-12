@@ -346,8 +346,9 @@ class LgmEngineSchema(_Strict):
     calibration: Literal["Bootstrap", "None"] = "Bootstrap"
     strategy: Literal["CoterminalDealStrike", "CoterminalATM"] = "CoterminalDealStrike"
     reference_calibration_grid: str = "400,3M"
-    #: ORE's `ShiftHorizon`. Only 0 is implemented; another value is refused (I-32).
-    shift_horizon: float = 0.0
+    #: ORE's `ShiftHorizon`: the fraction of the time to the underlying's maturity where the LGM's
+    #: H is shifted to vanish (any value >= 0; 0 is the unshifted model).
+    shift_horizon: float = 0.5
     n_per_std: int = 30
     std_devs: float = 5.0
     exercise_time_steps_per_year: int = 24

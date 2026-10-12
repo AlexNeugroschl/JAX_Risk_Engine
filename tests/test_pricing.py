@@ -359,7 +359,7 @@ from engine.instruments.american_swaption import AmericanSwaptionConfig  # noqa:
 from engine.instruments.bermudan_swaption import (  # noqa: E402
     BermudanSwaptionConfig, underlying_swap as build_option_underlying, exercisable_dates,
 )
-from engine.pricing.bermudan import bermudan_cube, bermudan_value  # noqa: E402
+from engine.pricing.bermudan import bermudan_cube, bermudan_value, shift_horizon_time  # noqa: E402
 from engine.pricing.config import LgmSwaptionEngineConfig  # noqa: E402
 from tests.support.ore_lgm_oracle import OreCalibration, OreDiscountCurves  # noqa: E402
 
@@ -392,7 +392,7 @@ def _american_trade(**overrides):
     return AmericanSwaptionConfig(**fields)
 
 
-def _ore_option(cfg, evaluation_date, vols, discount_curves=None, fixings=None):
+def _ore_option(cfg, evaluation_date, vols, discount_curves=None, fixings=None, shift_horizon=ENGINE.shift_horizon):
     american = isinstance(cfg, AmericanSwaptionConfig)
     return ore_lgm_swaption_npv(
         evaluation_date=evaluation_date, curve_times=ORACLE_PILLARS, curve_rates=ORACLE_DISC,
@@ -402,7 +402,7 @@ def _ore_option(cfg, evaluation_date, vols, discount_curves=None, fixings=None):
         hw_a=ENGINE.reversion, hw_sigma=ENGINE.volatility, n_per_std=ENGINE.n_per_std, std_devs=ENGINE.std_devs,
         exercise_time_steps_per_year=ENGINE.exercise_time_steps_per_year, index_curve_rates=ORACLE_INDEX,
         swaption_vols=vols, calibration=OreCalibration("Bootstrap", ENGINE.strategy, 1e-8),
-        discount_curves=discount_curves, fixings=fixings).npv
+        discount_curves=discount_curves, fixings=fixings, shift_horizon=shift_horizon).npv
 
 
 OPTIONS = {
@@ -430,6 +430,15 @@ def option_scenarios(request):
     return simulate(_oracle_market(FLAT_VOLS), config)
 
 
+def _as_of_shift_horizon(cfg, date) -> float:
+    """The `ShiftHorizon` that makes ORE's NPV run on `date` shift the LGM where its simulation
+    does: at the horizon of the trade built on the as-of date (ORE shifts once, at the build,
+    while an NPV run measures the fraction from its own date)."""
+    maturity = build_option_underlying(cfg).maturityDate()
+    return (shift_horizon_time(cfg, ENGINE.shift_horizon, ASOF)
+            / ORE.ActualActual(ORE.ActualActual.ISDA).yearFraction(date, maturity))
+
+
 def _path_oracle_inputs(cfg, sm, j, s, fixings):
     date = sm.dates[j]
     tenor_dates = _tenor_dates(date)
@@ -446,7 +455,8 @@ def _path_oracle_inputs(cfg, sm, j, s, fixings):
 def test_bermudan_on_every_path_equals_ore_recalibrated_on_the_path_curves(option_scenarios):
     """On each path and date, ORE recalibrates the trade's LGM to its basket on the path's own
     curves (handed over as log-linear discount factors) and prices on the grid, with
-    FixingManager's fixings. A flat vol surface makes the time-decay rule immaterial."""
+    FixingManager's fixings. A flat vol surface makes the time-decay rule immaterial. The LGM is
+    shifted at the as-of build's horizon, as ORE's simulation shifts it (I-32)."""
     cfg = OPTIONS["bermudan-payer"]()
     sm = option_scenarios
     fixings = path_fixings(6, ASOF, sm.dates, sm.times, sm.index[INDEX])
@@ -454,7 +464,8 @@ def test_bermudan_on_every_path_equals_ore_recalibrated_on_the_path_curves(optio
     for j, date in enumerate(sm.dates):
         for s in range(sm.num_paths):
             curves, history = _path_oracle_inputs(cfg, sm, j, s, fixings)
-            ore = _ore_option(dataclasses.replace(cfg, evaluation_date=date), date, FLAT_VOLS, curves, history)
+            ore = _ore_option(dataclasses.replace(cfg, evaluation_date=date), date, FLAT_VOLS, curves, history,
+                              _as_of_shift_horizon(cfg, date))
             assert cube[s, j] == pytest.approx(ore, rel=1e-8), (date, s)
 
 
@@ -463,7 +474,12 @@ def test_american_on_every_path_equals_ores_grid_engine_on_the_path_curves(optio
     the as-of date (it builds the trade once, at t=0), so a trade built afresh on the path date
     -- the oracle -- calibrates to other expiries. Here ORE prices with the engine's own path
     calibration (`Calibration=None`): the rollback on the path curves, its exercise grid from
-    the path date, and the fixings."""
+    the path date, and the fixings, the LGM shifted at the as-of build's horizon.
+
+    Only on dates before the window: inside it, ORE's simulation values the trade it built on
+    the as-of date, exercisable on the path date itself, which no trade booked on the path date
+    is (ORE's builder opens the window the day after its date). Those cells are checked against
+    ORE's simulation, `tests/test_ore_xva_parity.py` (I-32)."""
     from engine.pricing.bermudan import path_sigmas
     from engine.models.lgm import Sigma
     cfg = OPTIONS["american-payer"]()
@@ -471,8 +487,10 @@ def test_american_on_every_path_equals_ores_grid_engine_on_the_path_curves(optio
     fixings = path_fixings(6, ASOF, sm.dates, sm.times, sm.index[INDEX])
     cube = np.asarray(bermudan_cube(cfg, ENGINE, _oracle_market(FLAT_VOLS), sm, fixings, "ForwardVariance"))
     sigmas = path_sigmas(cfg, ENGINE, _oracle_market(FLAT_VOLS), sm, "ForwardVariance")
-    for j, date in enumerate(sm.dates):
-        sigma = sigmas[j]
+    before_the_window = [j for j, date in enumerate(sm.dates) if date + 1 <= cfg.first_exercise_date]
+    assert before_the_window, "the test needs a date before the window"
+    for j in before_the_window:
+        date, sigma = sm.dates[j], sigmas[j]
         for s in range(sm.num_paths):
             curves, history = _path_oracle_inputs(cfg, sm, j, s, fixings)
             ore = ore_lgm_swaption_npv(
@@ -482,7 +500,8 @@ def test_american_on_every_path_equals_ores_grid_engine_on_the_path_curves(optio
                 exercise_dates=[cfg.first_exercise_date, cfg.last_exercise_date], hw_a=ENGINE.reversion,
                 hw_sigma=Sigma(sigma.times, sigma.values[s]), n_per_std=ENGINE.n_per_std, std_devs=ENGINE.std_devs,
                 exercise_time_steps_per_year=ENGINE.exercise_time_steps_per_year, index_curve_rates=ORACLE_INDEX,
-                swaption_vols=FLAT_VOLS, discount_curves=curves, fixings=history).npv
+                swaption_vols=FLAT_VOLS, discount_curves=curves, fixings=history,
+                shift_horizon=_as_of_shift_horizon(cfg, date)).npv
             assert cube[s, j] == pytest.approx(ore, rel=1e-10), (date, s)
 
 

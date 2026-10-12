@@ -53,9 +53,10 @@ and the Hagan LGM with α = σ differ for t > 0 (the reason an early comparison 
 | Name | Notes |
 |---|---|
 | `Sigma`, `as_sigma` | A piecewise-constant volatility (below). |
-| `H`, `H_prime` | The state-space function and its derivative; independent of the volatility. |
+| `H`, `H_prime` | The state-space function and its derivative; independent of the volatility. `H` takes ORE's parametrization `shift`. |
+| `horizon_shift` | `-H(horizon)`: the shift that makes H vanish at a horizon (ORE's `ShiftHorizon`, in years). |
 | `zeta`, `hull_white_zeta`, `hull_white_matching_zeta` | The variance in each parametrization, and the conversion. |
-| `bond_price`, `numeraire`, `r_from_x`, `x_from_r`, `bond_option_sigma` | The closed forms above (Hagan), checked against `ORE.LinearGaussMarkovModel`. |
+| `bond_price`, `numeraire`, `r_from_x`, `x_from_r`, `bond_option_sigma` | The closed forms above (Hagan), checked against `ORE.LinearGaussMarkovModel`; each but the invariant `bond_option_sigma` takes `shift` (H + shift throughout, an invariance of the model that moves only where its state is centred). |
 
 ### `Sigma`: a piecewise-constant volatility term structure
 

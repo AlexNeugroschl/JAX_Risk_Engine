@@ -12,16 +12,20 @@ import jax.numpy as jnp
 from engine.market_data.curves import ZeroCurve
 from engine.market_data.market import ZeroCurveConfig
 from engine.models.lgm import Sigma
+from engine.pricing.bermudan import shift_horizon_time
 from engine.pricing.lgm_grid import grid_value, prepare_bermudan
 
 
 def prepared(cfg, *, a: float, sigma: Union[float, Sigma], curve: ZeroCurveConfig,
              index_curve: Optional[ZeroCurveConfig] = None, n_per_std: int = 48, std_devs: float = 6.0,
-             steps_per_year: int = 24, dtype=jnp.float64):
+             steps_per_year: int = 24, shift_horizon: float = 0.0, dtype=jnp.float64):
     """`prepare_bermudan` on the trade's own date with the model `(a, sigma)` on `curve`
-    (and `index_curve` for the coupons, default `curve`)."""
+    (and `index_curve` for the coupons, default `curve`), shifted at ORE's `ShiftHorizon`
+    `shift_horizon` (a fraction of the time to maturity; 0, the default here as in
+    `tests.support.ore_lgm_oracle`, is the unshifted model)."""
     return prepare_bermudan(
         cfg, reversion=a, sigma=sigma, n_per_std=n_per_std, std_devs=std_devs,
+        shift_horizon=shift_horizon_time(cfg, shift_horizon, cfg.evaluation_date),
         exercise_time_steps_per_year=steps_per_year, curve=ZeroCurve.from_config(curve, dtype=dtype),
         index_curve=None if index_curve is None else ZeroCurve.from_config(index_curve, dtype=dtype))
 

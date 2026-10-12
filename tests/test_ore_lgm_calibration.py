@@ -110,12 +110,15 @@ def _bermudan(fixed_rate):
     return dataclasses.replace(booked, exercise_dates=exercisable_dates(booked)[1:])
 
 
+@pytest.mark.parametrize("shift_horizon", [0.0, 0.5], ids=["unshifted", "shift-0.5"])
 @pytest.mark.parametrize("strategy, fixed_rate", [
     ("CoterminalATM", 0.03), ("CoterminalDealStrike", 0.03), ("CoterminalDealStrike", 0.09),
 ], ids=["atm", "deal-strike", "deal-strike-beyond-3-std-devs"])
-def test_calibrated_bermudan_equals_ores_bootstrap(strategy, fixed_rate):
+def test_calibrated_bermudan_equals_ores_bootstrap(strategy, fixed_rate, shift_horizon):
     """I-47: the basket is built from the trade's own exercise dates and maturity, struck ATM
-    or at the deal strike, and calibrated per trade, as ORE does."""
+    or at the deal strike, and calibrated per trade, as ORE does. ORE calibrates the shifted
+    model (its `LgmBuilder` shifts before calibrating), the engine the unshifted one: the
+    analytic swaption price reads H only in differences, so both find one volatility (I-32)."""
     cfg = _bermudan(fixed_rate)
     n = len(cfg.exercise_dates)
     strikes = [fixed_rate] * n if strategy == "CoterminalDealStrike" else None
@@ -127,12 +130,12 @@ def test_calibrated_bermudan_equals_ores_bootstrap(strategy, fixed_rate):
         notional=cfg.notional, fixed_rate=fixed_rate, payer=True, floating_spread=0.0, index_tenor_months=6,
         style="Bermudan", exercise_dates=cfg.exercise_dates, hw_a=REVERSION, hw_sigma=0.01, n_per_std=48,
         std_devs=6.0, index_curve_rates=INDEX_RATES, swaption_vols=VOLS,
-        calibration=OreCalibration("Bootstrap", strategy, 1e-8)).npv
+        calibration=OreCalibration("Bootstrap", strategy, 1e-8), shift_horizon=shift_horizon).npv
     # Measured worst case 2.1e-11 (ORE's LM optimiser and the engine's bisection find the same
     # root to ~1e-14 in price).
     engine = grid_npv(cfg, a=REVERSION, sigma=Sigma(jnp.asarray(result.times), result.values),
                       curve=ZeroCurveConfig(PILLARS, DISC_RATES), index_curve=ZeroCurveConfig(PILLARS, INDEX_RATES),
-                      n_per_std=48, std_devs=6.0)
+                      n_per_std=48, std_devs=6.0, shift_horizon=shift_horizon)
     assert engine == pytest.approx(ore, rel=1e-9)
 
 

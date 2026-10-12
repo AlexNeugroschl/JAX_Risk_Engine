@@ -24,6 +24,11 @@ Case groups and the ORE behaviour each pins:
   * a curve sloped in its first segment, where every exercise and flow lies: the oracle hands
     ORE the as-of quote its zero-curve rebuild maps onto the engine's t=0 rate (I-34; before
     the fix ORE's curve there was tilted: 2.3e-6 relative on this case, 1.5e-12 after).
+
+Every case at `ShiftHorizon` 0 (the unshifted LGM) and 0.5 (ORE's builder default), and one
+beyond the maturity: ORE shifts H to vanish at that fraction of the time to maturity, which
+moves the state grid (I-32; before the engine took the shift, its unshifted price was 2.6e-6 to
+1.6e-4 from ORE's at 0.5, now as close as at 0).
 """
 from dataclasses import dataclass
 from typing import Callable, Union
@@ -60,8 +65,10 @@ AMERICAN_END = ORE.Date(20, 6, 2029)
 # rounding would give 73.
 AMERICAN_FRACTIONAL_END = AMERICAN_START + 1105
 
-# Measured worst case 8.7e-12 relative (floating-point summation order).
+# Measured worst case 8.7e-12 relative (floating-point summation order), at every shift horizon.
 RTOL = 1e-10
+#: ORE's `ShiftHorizon`: the unshifted LGM, and ORE's builder default.
+SHIFT_HORIZONS = (0.0, 0.5)
 ATOL = 1e-7  # currency units on a 1e6 notional, for small out-of-the-money values
 
 
@@ -113,36 +120,47 @@ CASES = [
 ]
 
 
-def _engine_npv(case: Case, exercise_dates: list, curve=(CURVE_TIMES, CURVE_RATES)) -> float:
+def _engine_npv(case: Case, exercise_dates: list, curve=(CURVE_TIMES, CURVE_RATES), shift_horizon=0.0) -> float:
     """The one place this file touches the engine's API: the trade, and the model as ORE's
     engine takes it with `Calibration=None`."""
     common = dict(notional=NOTIONAL, fixed_rate=case.fixed_rate, payer=case.payer, swap_tenor=SWAP_TENOR,
                   index_tenor_months=INDEX_TENOR_MONTHS, evaluation_date=EVAL_DATE, trade_id=case.id)
     model = dict(a=HW_A, sigma=case.sigma, curve=ZeroCurveConfig(times=curve[0], rates=curve[1]),
-                 n_per_std=N_PER_STD, std_devs=STD_DEVS, steps_per_year=STEPS_PER_YEAR)
+                 n_per_std=N_PER_STD, std_devs=STD_DEVS, steps_per_year=STEPS_PER_YEAR, shift_horizon=shift_horizon)
     if case.style == "Bermudan":
         return grid_npv(BermudanSwaptionConfig(exercise_dates=exercise_dates, **common), **model)
     first, last = exercise_dates
     return grid_npv(AmericanSwaptionConfig(first_exercise_date=first, last_exercise_date=last, **common), **model)
 
 
-def _ore_npv(case: Case, exercise_dates: list, curve=(CURVE_TIMES, CURVE_RATES)) -> float:
+def _ore_npv(case: Case, exercise_dates: list, curve=(CURVE_TIMES, CURVE_RATES), shift_horizon=0.0) -> float:
     return ore_lgm_swaption_npv(
         evaluation_date=EVAL_DATE, curve_times=curve[0], curve_rates=curve[1],
         swap=_swap(case.fixed_rate, case.payer), notional=NOTIONAL, fixed_rate=case.fixed_rate,
         payer=case.payer, floating_spread=0.0, index_tenor_months=INDEX_TENOR_MONTHS,
         style=case.style, exercise_dates=exercise_dates, hw_a=HW_A, hw_sigma=case.sigma,
         n_per_std=N_PER_STD, std_devs=STD_DEVS, exercise_time_steps_per_year=STEPS_PER_YEAR,
+        shift_horizon=shift_horizon,
     ).npv
 
 
+@pytest.mark.parametrize("shift_horizon", SHIFT_HORIZONS, ids=[f"shift-{h}" for h in SHIFT_HORIZONS])
 @pytest.mark.parametrize("case", CASES, ids=[c.id for c in CASES])
-def test_engine_equals_ore_lgm_engine(case):
+def test_engine_equals_ore_lgm_engine(case, shift_horizon):
     exercise_dates = case.exercise(_swap(case.fixed_rate, case.payer))
-    ore = _ore_npv(case, exercise_dates)
-    engine = _engine_npv(case, exercise_dates)
+    ore = _ore_npv(case, exercise_dates, shift_horizon=shift_horizon)
+    engine = _engine_npv(case, exercise_dates, shift_horizon=shift_horizon)
     assert ore > 0.0, "a case must price something to test"
     assert engine == pytest.approx(ore, rel=RTOL, abs=ATOL)
+
+
+@pytest.mark.parametrize("case", [c for c in CASES if c.id in ("bermudan-mid-period-receiver-0.04",
+                                                                "american-payer-0.04")], ids=lambda c: c.id)
+def test_a_shift_horizon_beyond_the_maturity_is_ores(case):
+    """ORE takes any non-negative `ShiftHorizon`: at 1.5 H vanishes after the last cashflow."""
+    exercise_dates = case.exercise(_swap(case.fixed_rate, case.payer))
+    assert _engine_npv(case, exercise_dates, shift_horizon=1.5) == pytest.approx(
+        _ore_npv(case, exercise_dates, shift_horizon=1.5), rel=RTOL, abs=ATOL)
 
 
 def test_a_curve_sloped_in_its_first_segment_is_the_engines():

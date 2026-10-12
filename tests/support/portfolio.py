@@ -233,7 +233,7 @@ def ore_trade_npv(cfg) -> float:
         hw_sigma=ENGINE.volatility, n_per_std=ENGINE.n_per_std, std_devs=ENGINE.std_devs,
         exercise_time_steps_per_year=ENGINE.exercise_time_steps_per_year, index_curve_rates=FORWARDING,
         swaption_vols=VOLS, calibration=OreCalibration("Bootstrap", ENGINE.strategy, 1e-8),
-        long_short=cfg.long_short, settlement=settlement).npv
+        shift_horizon=ENGINE.shift_horizon, long_short=cfg.long_short, settlement=settlement).npv
 
 
 def _ore_bond(cfg: BondConfig) -> float:

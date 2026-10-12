@@ -14,9 +14,7 @@ Every engine is the same for either simulation model (`CamConfig.ir`): an engine
 model, as in ORE's `pricingengine.xml`, and on a path it prices on the path's curves.
 
 Bermudan/American defaults are ORE's example configuration (Examples/Products/Input/pricingengine.xml,
-`BermudanSwaption`), with one recorded exception: `shift_horizon` is 0 (Basel decision D-10,
-the configuration ORE parity is proven for), where ORE's example uses 0.5; see I-32. Other
-shift horizons are refused rather than silently priced at 0.
+`BermudanSwaption`), `shift_horizon` its builder's default 0.5 (decisions A-3, D-10; I-32).
 """
 import math
 from dataclasses import dataclass, field
@@ -43,6 +41,10 @@ class LgmSwaptionEngineConfig:
         strike (`CoterminalDealStrike`) or ATM (`CoterminalATM`), or `None`.
     reference_calibration_grid: ORE's `ReferenceCalibrationGrid`: at most one helper per
         interval of this grid, and an American's basket expiries.
+    shift_horizon: ORE's `ShiftHorizon`, a fraction of the time from the trade's build to its
+        underlying's maturity; the LGM's H is shifted to vanish there, which moves the grid's
+        state, not the model (`engine.pricing.bermudan.shift_horizon_time`). 0 is the unshifted
+        model.
     n_per_std / std_devs: the Grid engine's `nx`/`sx` (ORE's example: 30 and 5).
     exercise_time_steps_per_year: an American's exercise grid.
     swap_index: the conventions the calibration helpers are built on.
@@ -56,7 +58,7 @@ class LgmSwaptionEngineConfig:
     calibration: str = "Bootstrap"
     strategy: str = "CoterminalDealStrike"
     reference_calibration_grid: str = "400,3M"
-    shift_horizon: float = 0.0
+    shift_horizon: float = 0.5
     n_per_std: int = 30
     std_devs: float = 5.0
     exercise_time_steps_per_year: int = 24
@@ -77,9 +79,9 @@ class LgmSwaptionEngineConfig:
             raise ValueError(f"calibration must be one of {CALIBRATION_METHODS}; got {self.calibration!r}")
         if self.strategy not in CALIBRATION_STRATEGIES:
             raise ValueError(f"strategy must be one of {CALIBRATION_STRATEGIES}; got {self.strategy!r}")
-        if self.shift_horizon != 0.0:
-            raise ValueError(
-                "shift_horizon must be 0 (Basel decision D-10): ORE's shifted grid is not reproduced (I-32)")
+        if not math.isfinite(self.shift_horizon) or self.shift_horizon < 0.0:
+            raise ValueError(f"shift_horizon must be finite and >= 0 (ORE's LgmBuilder requires a non-negative "
+                             f"horizon); got {self.shift_horizon!r}")
         reference_grid_dates(ORE.Date(1, 1, 2020), self.reference_calibration_grid)
 
 

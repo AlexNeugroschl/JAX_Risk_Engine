@@ -78,10 +78,11 @@ class BermudanSwaptionConfig:
 
     exercise_style = ExerciseStyle.BERMUDAN
 
-    def option_times(self, exercise_time_steps_per_year: Optional[int] = None) -> List[float]:
+    def option_times(self, exercise_time_steps_per_year: Optional[int] = None,
+                     built_on: Optional[ORE.Date] = None) -> List[float]:
         """ORE's Bermudan `optionTimes`: the time of every exercise date strictly after the
-        evaluation date (`calculate()`, lines 487-493). The argument is an American's; a
-        Bermudan ignores it."""
+        evaluation date (`calculate()`, lines 487-493). The arguments are an American's (its
+        step count, and the date its window was built on); a Bermudan ignores them."""
         return [time_from_reference(self.evaluation_date, d)
                 for d in self.exercise_dates if d > self.evaluation_date]
 

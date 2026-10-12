@@ -11,8 +11,10 @@ reach it: an `OREApp` NPV run over trade XML. (QuantLib's Hull-White tree/FD eng
 tests/test_ore_bermudan_oracle.py, are a different model realization and agree only to a few
 percent.) The model: `Calibration=None`, `ReversionType=HullWhite`, `VolatilityType=Hagan`,
 i.e. constant reversion `hw_a` and `zeta(t) = integral sigma^2`, as `engine.models.lgm`; or
-calibrated (`OreCalibration`). Defaults are the Grid solver and `ShiftHorizon=0` (what the
-engine reproduces); ORE's other settings are available (see `ore_lgm_swaption_npv`).
+calibrated (`OreCalibration`). Defaults are the Grid solver and `ShiftHorizon=0`, the
+unshifted LGM, as `tests.support.lgm_engine`'s; the engine's pricing configuration defaults to
+ORE's 0.5, which a comparison with it passes. ORE's FD solver is available too (see
+`ore_lgm_swaption_npv`).
 """
 from __future__ import annotations
 
@@ -72,9 +74,10 @@ def ore_lgm_swaption_npv(
     `build_vanilla_swap` with the same terms); only its schedule is used. Raises
     `RuntimeError` with ORE's messages if the market or trade fails to build.
 
-    Defaults match how the engine prices (Grid solver at `n_per_std`/`std_devs`,
-    `shift_horizon=0`). `shift_horizon` (ORE's builder default is 0.5) and `fd_solver`
-    measure the distance to ORE's other settings (I-32).
+    Defaults match `tests.support.lgm_engine` (Grid solver at `n_per_std`/`std_devs`, the
+    unshifted LGM). `shift_horizon` is ORE's `ShiftHorizon` (its builder's default 0.5), the
+    fraction of the time from `evaluation_date` to the swap's maturity where H is shifted to
+    vanish (I-32); `fd_solver` measures the distance to ORE's FD solver.
 
     `fixings`: historical index fixings `{ORE.Date: rate}`, for a seasoned trade.
 

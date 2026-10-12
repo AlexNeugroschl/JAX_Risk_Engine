@@ -11,11 +11,17 @@ less the float spread) or ATM, at most one per interval of the reference grid
 (`IrModelBuilder::buildSwaptionBasket`). The LGM's volatility is bootstrapped to it
 (`engine.calibration.ore_lgm`), with the engine's constant reversion.
 
+The model's H is shifted to vanish at the shift horizon (`shift_horizon_time`): ORE's
+`ShiftHorizon` (default 0.5) of the time from the trade's build to the underlying's maturity.
+
 On a path (ORE's `ValuationEngine` with `recalibrate = true`, its default): on each date the
 basket is rebuilt from that date, its volatilities read off the t=0 surface seen from that
 date (`DynamicSwaptionVolatilityMatrix`), and the LGM bootstrapped to the path's own curves,
 every path at once, and the dates whose baskets have one shape at once too (`_path_sigmas`);
-the grid engine then prices on the path curves with the fixings FixingManager stored. With
+the grid engine then prices on the path curves with the fixings FixingManager stored, the trade
+as ORE built it on the as-of date: the shift horizon measured from it (ORE sets the
+parametrization's shift once, `initParametrization`) and an American's window starting no
+earlier than the day after it, so exercisable on a path date inside the window. With
 `recalibrate = false` the t=0 volatility is kept. A date with an exercise left but no helper
 (an American's last days, after the last reference-grid date in its window) keeps the
 engine's volatility, as a calibration today with no helper does.
@@ -39,7 +45,7 @@ from engine.calibration.ore_lgm import (
     SIGMA_BRACKET, BasketInstrument, bootstrap_sigma, build_basket, stack_instruments,
 )
 from engine.instruments.american_swaption import AmericanSwaptionConfig
-from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, underlying_swap
 from engine.market_data.curves import DiscountCurve
 from engine.market_data.market import Market, index_name
 from engine.market_simulation.scenario_market import ScenarioCurves, ScenarioMarket
@@ -98,11 +104,26 @@ def calibration_basket(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, refer
                               [strike] * len(expiries)))
 
 
-def prepared_option(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, sigma, curve=None, index_curve=None):
-    """The grid engine's prepared trade with the engine's model (its reversion and `sigma`)
-    and grid settings, on `curve`/`index_curve` (set later per path when omitted)."""
-    return prepare_bermudan(cfg, reversion=engine.reversion, sigma=sigma, n_per_std=engine.n_per_std,
-                            std_devs=engine.std_devs, exercise_time_steps_per_year=engine.exercise_time_steps_per_year,
+def shift_horizon_time(cfg: OptionConfig, shift_horizon: float, built_on: ORE.Date) -> float:
+    """The LGM's shift horizon in years for a trade built on `built_on`: `shift_horizon` (ORE's
+    `ShiftHorizon`, a fraction) of the ActualActual(ISDA) time from `built_on` to the underlying's
+    maturity, its last payment date (`LGMBermudanAmericanSwaptionEngineBuilder::model`, which
+    measures it from the evaluation date to the trade's `maturity()`)."""
+    maturity = underlying_swap(cfg).maturityDate()
+    return ORE.ActualActual(ORE.ActualActual.ISDA).yearFraction(built_on, maturity) * shift_horizon
+
+
+def prepared_option(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, sigma, curve=None, index_curve=None,
+                    built_on: Optional[ORE.Date] = None):
+    """The grid engine's prepared trade, as ORE built it on `built_on` (the trade's own date
+    by default) and values it on the trade's evaluation date: the engine's model (its
+    reversion, `sigma` and the shift horizon from `built_on`), its grid settings, an American's
+    window from `built_on`, on `curve`/`index_curve` (set later per path when omitted)."""
+    built_on = cfg.evaluation_date if built_on is None else built_on
+    return prepare_bermudan(cfg, reversion=engine.reversion, sigma=sigma,
+                            shift_horizon=shift_horizon_time(cfg, engine.shift_horizon, built_on),
+                            n_per_std=engine.n_per_std, std_devs=engine.std_devs,
+                            exercise_time_steps_per_year=engine.exercise_time_steps_per_year, built_on=built_on,
                             curve=curve, index_curve=index_curve)
 
 
@@ -173,7 +194,7 @@ def bermudan_cube(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Ma
             continue
         fixed_on_path = {ORE.Date(int(s)): 0.0 for s in fixing_serials if asof.serialNumber() <= s < date.serialNumber()}
         dated = dataclasses.replace(cfg, evaluation_date=date, fixings={**history, **fixed_on_path})
-        prepared = prepared_option(dated, engine, engine.volatility)
+        prepared = prepared_option(dated, engine, engine.volatility, built_on=asof)
         schedule = _build_grid_schedule(prepared)
         known = _known_rates(prepared, history, asof, grid_serials, fixings)
         columns.append(_rollback_every_path(prepared, schedule, disc_curves.on_date(j), index_curves.on_date(j),
@@ -182,7 +203,6 @@ def bermudan_cube(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Ma
 
 
 def _fixing_serials(cfg: OptionConfig):
-    from engine.instruments.bermudan_swaption import underlying_swap
     return [ORE.as_floating_rate_coupon(c).fixingDate().serialNumber() for c in underlying_swap(cfg).floatingLeg()]
 
 

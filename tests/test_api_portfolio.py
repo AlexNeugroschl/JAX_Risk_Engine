@@ -120,6 +120,8 @@ def test_the_cube_by_reference_is_the_inline_cube_and_none_leaves_it_out(test_cl
     ({"base_currency": "EUR"}, "contradicts"),
     ({"precision": {"pricing": {"storage": "float16", "compute": "float16", "accumulate": "float16"}}},
      "precision.pricing"),
+    # ORE's LgmBuilder requires a non-negative shift horizon (I-32).
+    ({"pricing": {"bermudan": {"shift_horizon": -0.5}}}, "shift_horizon"),
 ])
 def test_an_unpriceable_request_is_a_400_and_no_job(test_client, overrides, message):
     r = test_client.post("/portfolio/price", json={**_body([_swap()]), **overrides})

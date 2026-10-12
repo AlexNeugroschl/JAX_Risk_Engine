@@ -6,7 +6,8 @@ With one exercise date `T0`, a Bermudan's value is exactly
     V(0) = E[ max(U(T0, x), 0) / N(T0, x) ],   x ~ Normal(0, zeta(T0)),
 
 where `U` is the value of the swap exercised into and `N` the LGM numeraire
-(`N(0, 0) = 1`). `single_exercise_value_by_integration` computes that
+(`N(0, 0) = 1`), both in the prepared trade's model, shifted at its horizon (the state is
+driftless in the shifted model as in the unshifted one). `single_exercise_value_by_integration` computes that
 expectation by a fine direct integral over x: no Hagan grid, no convolution
 rollback and none of ORE's cashflow bookkeeping, so agreement tests exactly
 the machinery the backward induction adds. The cashflow values are the
@@ -22,7 +23,7 @@ import numpy as np
 from scipy.stats import norm as scipy_norm
 
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
-from engine.models.lgm import numeraire as _numeraire, zeta as _zeta
+from engine.models.lgm import horizon_shift, numeraire as _numeraire, zeta as _zeta
 from engine.pricing.lgm_grid import _cashflow_values_at_nodes, _zero_curve_of
 from tests.support.lgm_engine import prepared
 
@@ -33,10 +34,12 @@ def single_exercise_value_by_integration(cfg: BermudanSwaptionConfig, **model) -
     assert swap.exercise_times.shape == (1,), "only defined for a single exercise date"
     t = float(swap.exercise_times[0])
     curve = _zero_curve_of(swap)
+    shift = horizon_shift(swap.reversion, swap.shift_horizon)
     belongs = np.concatenate([swap.fixed_belongs_until, swap.float_belongs_until]) >= t
 
     z = np.linspace(-12.0, 12.0, 240_001)
     x = jnp.asarray(z * np.sqrt(float(_zeta(swap.sigma, t))))
-    exercised = np.asarray(_cashflow_values_at_nodes(swap, curve, x, jnp.asarray(t)))[:, belongs].sum(axis=1)
-    deflated = np.maximum(exercised, 0.0) / np.asarray(_numeraire(curve, swap.reversion, swap.sigma, jnp.asarray(t), x))
+    exercised = np.asarray(_cashflow_values_at_nodes(swap, curve, x, jnp.asarray(t), shift))[:, belongs].sum(axis=1)
+    deflated = np.maximum(exercised, 0.0) / np.asarray(
+        _numeraire(curve, swap.reversion, swap.sigma, jnp.asarray(t), x, shift))
     return float(np.trapezoid(deflated * scipy_norm.pdf(z), z))

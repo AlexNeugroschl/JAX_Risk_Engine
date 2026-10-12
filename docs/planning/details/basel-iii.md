@@ -103,7 +103,6 @@ precondition, not a side issue:
 | [I-18](../known-issues.md#i-18) no equity spot/FX | EQ risk class impossible | EQ only; refused until fixed |
 | [I-27](../known-issues.md#i-27) full-suite runs can abort inside XLA | An evidence pack needs a complete, reproducible suite run | P7 |
 | [I-08](../known-issues.md#i-08) a running EOD attempt is lost on restart (portfolio jobs durable since 2026-10-04) | Regulatory runs must survive restart and stay retrievable | P0 |
-| [I-32](../known-issues.md#i-32) Bermudan engine only at `ShiftHorizon = 0` | The reference configuration must be fixed before it is cited as an oracle | P1 vega/curvature for Americans |
 
 ---
 
@@ -124,7 +123,7 @@ changing one later is a tracked change with a re-run of the affected evidence.
 | D-7 | Source of hypothetical/actual P&L for backtesting and PLA | TraderX front-office valuations (HPL, APL); engine produces RTPL | **If the engine produces both HPL and RTPL, PLA passes trivially and proves nothing.** An independent valuation is required for PLA to mean anything |
 | D-8 | Market-data history | Public US Treasury constant-maturity yields (daily, back to before 2007) for the reduced risk-factor set and stress-period search; SOFR history (2018+) for the current period; swaption vols from a named vendor or declared NMRF | Only freely available history reaching 2007–2009. Vol history is the hardest item; without it, vol factors are NMRFs |
 | D-9 | Precision of regulatory runs | **Decided 2026-09-30, revised 2026-10-01:** any precision may be chosen for the adjustable stages (simulation, scenario market, path pricing; A-10), per product and trade; calibration, t=0 and Greeks stay float64. A figure whose combination has not passed the acceptance standard (A-11, P6) carries a warning stating the evidence and what is missing | Testing which precision each calculation needs is the project's purpose, so nothing is refused. The warning keeps an unproven figure from passing as a proven one. Design: [precision.md](precision.md) |
-| D-10 | ORE reference config for Americans (I-32) | **Decided 2026-09-30:** configurable; default ORE's `ShiftHorizon = 0.5` with the Grid solver, FD as an option. Until parity at 0.5 is proven the engine runs at 0, cited explicitly | Defaults are ORE's defaults (ORE alignment plan 9.6) |
+| D-10 | ORE reference config for Americans (I-32) | **Decided 2026-09-30:** configurable; default ORE's `ShiftHorizon = 0.5` with the Grid solver, FD as an option. Done 2026-10-12 but the FD solver (F-01): 0.5 is the default, equal to ORE's engine (I-32) | Defaults are ORE's defaults (ORE alignment plan 9.6) |
 
 ---
 

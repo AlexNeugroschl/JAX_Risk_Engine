@@ -10,7 +10,9 @@ The engine's assembled exposure pipeline against ORE's own exposure simulation (
     (which also checks the calibration ORE's `CrossAssetModelBuilder` ran against the engine's);
   * L3: on ORE's paths every trade's NPV equals ORE's cube, cell by cell, and t=0 (ORE's `T0`)
     is the engine's value on the simulation market of the as-of date; an option booked `Short`
-    (ORE's `LongShort`) is minus the long one in ORE's cube and in the engine's (I-101);
+    (ORE's `LongShort`) is minus the long one in ORE's cube and in the engine's (I-101); an
+    uncalibrated Bermudan or American at ORE's default `ShiftHorizon` equals ORE's cube, the
+    trade as ORE built it on the as-of date (I-32);
   * ORE's exposure definitions: the engine's profiles of ORE's own cube are ORE's reports;
   * L4 (statistical, `slow`): the engine's simulation and exposure against ORE's, each on its
     own random numbers (decision X-1), within four combined standard errors.
@@ -23,6 +25,10 @@ recalibration, I-49), and the same on a path after exercising into the swap; nea
 boundary that moves a decision (one cell in 160: a cash-settled Bermudan ORE exercised, 0, the
 engine did not). I-49 is to reproduce ORE there against this test; until then their L3 cases
 are strict expected failures.
+
+Found by this test and fixed on 2026-10-12 (I-32): on a path date the engine measured the shift
+horizon and opened an American's window from that date, where ORE keeps the as-of build's: up to
+4.2e-5 of the Bermudan's largest value and 1.1e-3 of the American's, with the LGM uncalibrated.
 
 Found by this test and fixed on 2026-10-07: the simulation market held each curve's tenor
 points at the tenors' times from the simulation date, where ORE holds them at the times from the
@@ -62,6 +68,9 @@ BASKET = dict(calibration_expiries=("1Y", "2Y", "3Y"), calibration_terms=("5Y", 
 DATES = tuple(shared.ASOF + ORE.Period(m, ORE.Months) for m in (3, 6, 12, 24, 36))
 FAST = LgmSwaptionEngineConfig(n_per_std=12, std_devs=4.0)
 PRICING = PricingConfig(bermudan=FAST, american=FAST)
+#: The options' LGM uncalibrated, so ORE's per-path recalibration (I-49) is out of the way, at
+#: ORE's default `ShiftHorizon` (stated: the shift's horizon is what the test pins).
+UNCALIBRATED = dataclasses.replace(FAST, calibration="None", shift_horizon=0.5)
 PFE_QUANTILE = 0.95
 OPTIONS = (BermudanSwaptionConfig, AmericanSwaptionConfig)
 #: Cells of a trade's cube equal ORE's to this fraction of the trade's largest value.
@@ -79,18 +88,18 @@ def _trades():
     return list(shared.trades().values())
 
 
-def _on_ores_paths(trades, model: str):
+def _on_ores_paths(trades, model: str, pricing: PricingConfig = PRICING):
     """ORE's run of `trades` on 32 paths, and the engine's simulation market and cube on ORE's
     paths."""
     market, config = shared.market(), _simulation(model, samples=32)
-    ore = ore_xva_run(market, trades, config, PRICING, PFE_QUANTILE)
+    ore = ore_xva_run(market, trades, config, pricing, PFE_QUANTILE)
     cam = build_cross_asset_model(market, config)
     index_curves = {name: ("USD", ZeroCurve.from_config(curve))
                     for name, curve in market.currency("USD").index_curves.items()}
     scenarios = build_scenario_market(cam, market.asof, config.dates,
                                       jnp.asarray(implied_states(cam, ore.times, ore.numeraire)),
                                       config.curve_tenors, index_curves)
-    columns = value_paths(trades, market, scenarios, "USD", PRICING, config.swaption_vol_decay)
+    columns = value_paths(trades, market, scenarios, "USD", pricing, config.swaption_vol_decay)
     cube = np.stack([np.asarray(c) for c in columns], axis=-1) / ore.numeraire[:, :, None]
     return ore, scenarios, cube
 
@@ -134,6 +143,20 @@ def test_every_trades_cube_equals_ores_on_ores_paths(on_ores_paths, name, reques
     scale = np.max(np.abs(ore.cube[:, :, j]))
     assert scale > 0.0, "the trade must be worth something on the paths"
     assert np.max(np.abs(cube[:, :, j] - ore.cube[:, :, j])) <= CUBE_RTOL * scale
+
+
+def test_an_uncalibrated_option_equals_ores_cube_on_ores_paths():
+    """L3 for Bermudans and Americans short of ORE's recalibration (I-49): with the LGM
+    uncalibrated, every cell of every option equals ORE's. ORE builds the trade once, on the
+    as-of date, so on a later date its LGM is shifted at the as-of horizon (`LgmBuilder` shifts
+    once) and an American's window opened no later than the day after the as-of date, so the
+    path date itself is an exercise inside the window (I-32)."""
+    options = [cfg for cfg in _trades() if isinstance(cfg, OPTIONS)]
+    ore, _, cube = _on_ores_paths(options, "LGM", PricingConfig(bermudan=UNCALIBRATED, american=UNCALIBRATED))
+    for j, name in enumerate(ore.trade_ids):
+        scale = np.max(np.abs(ore.cube[:, :, j]))
+        assert scale > 0.0, name
+        assert np.max(np.abs(cube[:, :, j] - ore.cube[:, :, j])) <= CUBE_RTOL * scale, name
 
 
 def test_a_short_option_on_ores_paths_is_ores_short_option(shorts_on_ores_paths):

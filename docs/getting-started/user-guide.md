@@ -773,7 +773,7 @@ the products (the levels, the option formulas, sums) runs at the accumulate form
 with units for the format runs it natively; elsewhere (always on a CPU) the engine emulates it
 with the same numbers, and the result's precision report says which (`products`,
 `{"float8_e4m3fn": "emulated"}`). Bermudans and Americans compute and accumulate in one format,
-float32 or float64, until their rollback is rewritten the same way (I-32, I-49 first): a run
+float32 or float64, until their rollback is rewritten the same way (I-49 first): a run
 that would compute one below float32 is refused, naming the overrides that keep it wider.
 Each product multiplies a per-path operand by one every path shares (a flow's value at the
 level, a market loading); below float32 the shared one is carried in two terms of the format

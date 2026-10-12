@@ -62,16 +62,19 @@ class AmericanSwaptionConfig:
 
     exercise_style = ExerciseStyle.AMERICAN
 
-    def option_times(self, exercise_time_steps_per_year: int) -> List[float]:
+    def option_times(self, exercise_time_steps_per_year: int, built_on: Optional[ORE.Date] = None) -> List[float]:
         """ORE's American `optionTimes`, with its truncating step count and the same
-        arithmetic (`t1 + i * (t2 - t1) / steps`, left to right as in C++).
+        arithmetic (`t1 + i * (t2 - t1) / steps`, left to right as in C++), for the trade as
+        built on `built_on` (default: the evaluation date) and valued on the evaluation date.
 
-        The window starts no earlier than the day after the evaluation date, as ORE's
-        trade builder sets it (`ExerciseBuilder`, OREData/ored/portfolio/optiondata.cpp:
-        `max(today + 1, first)`)."""
+        ORE's trade builder starts the window no earlier than the day after its build date
+        (`ExerciseBuilder`, OREData/ored/portfolio/optiondata.cpp: `max(today + 1, first)`);
+        the engine starts the grid no earlier than the evaluation date (`max(0, t(first))`). A
+        trade built on an earlier date, as a simulation's is on the as-of date, can so be
+        exercised on the date it is valued on, inside its window."""
         if exercise_time_steps_per_year < 1:
             raise ValueError(f"exercise_time_steps_per_year must be >= 1; got {exercise_time_steps_per_year}")
-        first = max(self.evaluation_date + 1, self.first_exercise_date)
+        first = max((self.evaluation_date if built_on is None else built_on) + 1, self.first_exercise_date)
         t1 = max(0.0, time_from_reference(self.evaluation_date, first))
         t2 = max(t1, time_from_reference(self.evaluation_date, self.last_exercise_date))
         steps = max(1, int((t2 - t1) * float(exercise_time_steps_per_year)))

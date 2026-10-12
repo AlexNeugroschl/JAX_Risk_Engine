@@ -196,6 +196,20 @@ Hull-White model exactly, which is how the simulation offers it
 own model is always the LGM, calibrated to the trade's basket, whichever model simulates the
 paths: ORE's engine is the LGM, and on a path it reads only the path's curves.
 
+**The shift horizon** (`LgmSwaptionEngineConfig.shift_horizon`, ORE's `ShiftHorizon`, 0.5 by
+default). ORE's builder takes a fraction of the ActualActual(ISDA) time from the trade's build
+date to the underlying's maturity (its last payment), `h`, and its `LgmBuilder` shifts the
+parametrization's H by `C = -H(h)` before calibrating: every formula above reads `H(t) + C`, so
+H vanishes at `h` (`Lgm1fParametrization::shift()`). The LGM is invariant under the shift: a
+bond price at state `x` in the unshifted model is the shifted model's at `x - C·ζ(t)`, and the
+numeraire changes measure with it. So it changes no price in the limit and none of the analytic
+calibration (`AnalyticLgmSwaptionEngine` reads H in differences); what it moves is where the grid
+below is centred, the shifted state's zero, so the grid engine's price moves at its
+discretization level (up to 1.6e-4 for an American at ORE's settings, 48 points per standard
+deviation). The engine takes the shift as ORE does (`engine.models.lgm.horizon_shift`, traced data
+of the prepared trade, so every horizon shares one program) and equals ORE's engine at any
+horizon. 0 is the unshifted model.
+
 ### 4. The state grid and Hagan's quadrature convolution
 
 `QuantExt::LgmConvolutionSolver2` (`QuantExt/qle/models/lgmconvolutionsolver2.hpp/.cpp`,
@@ -331,7 +345,18 @@ from the date on those curves, with the coupons that fixed during the simulation
 path fixings. The bootstrap and the rollback are batched over paths, on the device. After the
 last exercise the option is worth 0; once exercised, ORE's `OptionWrapper` carries the swap
 entered (physical) or nothing (cash), and a short position is minus all of it. Under either
-simulation model the engine is the same: it reads only the path's curves. Two details of ORE's recalibration differ
+simulation model the engine is the same: it reads only the path's curves.
+
+The trade on a path is the one ORE built on the as-of date: ORE's simulation builds every trade
+once and values it on each date. So its LGM is shifted at the as-of build's horizon (the
+`LgmBuilder` shifts once), and an American's window opened no earlier than the day after the
+as-of date, not the day after the path date: on a path date inside the window the engine's grid
+starts at the date itself (`max(0, t(first))`), which is an exercise opportunity there
+(`prepared_option(..., built_on=asof)`). With the LGM uncalibrated, every option then equals
+ORE's cube on ORE's own paths to 2e-11
+(`tests/test_ore_xva_parity.py::test_an_uncalibrated_option_equals_ores_cube_on_ores_paths`);
+before 2026-10-12 both were measured from the path date, 1.1e-3 of an American's largest value
+from ORE (I-32). Two details of ORE's recalibration differ
 ([I-49](../planning/known-issues.md#i-49)), and it is the slow part of a run
 ([I-53](../planning/known-issues.md#i-53); `PricingConfig(recalibrate=False)` keeps today's
 calibration on every path).
@@ -406,18 +431,22 @@ discounting curve, so it is mapped to the engine's curve.
 
 `tests/test_ore_lgm_parity.py` then requires equality to 1e-10 relative across aligned and
 mid-period Bermudans, Americans (including high strike at low vol, and a window whose step
-count truncates), piecewise volatility and the zero-vol limit. Measured worst case: 8.7e-12.
-Before the changes on this page, 22 of those 23 cases failed.
+count truncates), piecewise volatility and the zero-vol limit, each at `ShiftHorizon` 0 and
+0.5 (ORE's default), and two beyond the maturity (1.5). Measured worst case: 8.7e-12 at every
+horizon. Before the changes on this page, 22 of the 23 cases at 0 failed; before the shift
+(2026-10-12), the engine was 1.6e-6 to 1.5e-4 from ORE at 0.5
+([I-32](../planning/known-issues.md#i-32)).
 
-**That parity is with ORE's Grid solver at `ShiftHorizon=0`**, the configuration this engine
-reproduces. Under ORE's own defaults the engine is close but not identical: `ShiftHorizon=0.5`
-(ORE's builder default) moves an American by up to 1.5e-4, and ORE's FD solver (used in its
-shipped American config) by up to 1.6e-3. See [I-32](../planning/known-issues.md#i-32). The oracle
-takes both settings as parameters, so the gap can be re-measured at any time.
+**That parity is with ORE's Grid solver**, the solver this engine reproduces. ORE's FD solver
+(used in its shipped American config) differs from the Grid solver by up to 1.6e-3; it is an
+option to add ([F-01](../planning/features.md#f-01)). The oracle takes it as a parameter, so the
+gap can be re-measured at any time.
 
 ## Tested by
 
-`tests/test_ore_lgm_parity.py` (23 tests) — equality with ORE's own LGM engine, as above.
+`tests/test_ore_lgm_parity.py` (47 tests) — equality with ORE's own LGM engine, as above.
+`tests/test_shift_horizon.py` — the shift's parts: the shifted model's invariance, ORE's
+horizon, the trade as built on the as-of date, the setting and its one program.
 The authoritative check.
 
 `tests/test_bermudan_swaption.py` (57 tests) — the shared engine:

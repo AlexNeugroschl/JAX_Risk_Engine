@@ -474,7 +474,7 @@ format, stacked into the same product (2026-10-11, decision A-23): rounded once,
 be common to every path, a bias. The single pass is a compute format of its own,
 `<format>_1x`. The
 Bermudan/American rollback keeps one format, float32 or float64, until it is rewritten so
-(after I-32 and I-49).
+(after I-49).
 
 **The cast points.** Only these read the policy; everything between them follows the dtype
 of its inputs (kernels cast their own constant inputs, coupon tables, volatilities and

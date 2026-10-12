@@ -10,11 +10,13 @@ are explicit arguments of `prepare_bermudan`.
 
 At the same grid settings this returns ORE's numbers, not just their converged limit:
 tests/test_ore_lgm_parity.py prices through ORE's own engine
-(tests/support/ore_lgm_oracle.py) and agrees to 1e-11 relative. Parity is with the
-Grid solver at `ShiftHorizon=0`; ORE's FD solver and default `ShiftHorizon=0.5` are not
-reproduced (I-32). It rests on matching each of:
+(tests/support/ore_lgm_oracle.py) and agrees to 1e-11 relative, at any `ShiftHorizon`. Parity
+is with the Grid solver; ORE's FD solver is not reproduced (F-01). It rests on matching each of:
 
-1. The model: LGM bond price and numeraire (`engine.models.lgm`).
+1. The model: LGM bond price and numeraire (`engine.models.lgm`), with H shifted to vanish
+   at the trade's shift horizon (`LgmBuilder`; the horizon is the builder's, see
+   `engine.pricing.bermudan.shift_horizon_time`), so the state grid below is centred on the
+   shifted state.
 2. The solver: `LgmConvolutionSolver2`'s state grid `x_k = k*sqrt(zeta(t))/nx` with
    `floor(sx*nx)` points either side of zero, Hagan's quadrature weights (including the
    boundary formula and clamping of rounding-negative weights), and linear interpolation
@@ -61,6 +63,7 @@ from engine.market_data.day_counts import time_from_reference
 from engine.models.lgm import (
     Sigma,
     bond_price as _lgm_bond_price,
+    horizon_shift as _lgm_horizon_shift,
     numeraire as _lgm_numeraire,
     zeta as _lgm_zeta,
 )
@@ -118,6 +121,7 @@ class _PreparedBermudan:
     float_spread: float
     reversion: float
     sigma: Union[float, Sigma]    # the LGM's (Hagan) volatility
+    shift_horizon: float          # years; H is shifted to vanish there (0: unshifted)
     curve: object                 # ZeroCurve or DiscountCurve (None until a caller sets it)
     index_curve: object           # None, ZeroCurve or DiscountCurve
     n_per_std: int
@@ -144,17 +148,20 @@ def _belongs_until(style: ExerciseStyle, accrual_start: float, accrual_end: floa
 
 
 def prepare_bermudan(cfg: Union[BermudanSwaptionConfig, AmericanSwaptionConfig], *, reversion: float,
-                     sigma: Union[float, Sigma], n_per_std: int, std_devs: float,
-                     exercise_time_steps_per_year: int, curve=None, index_curve=None) -> _PreparedBermudan:
+                     sigma: Union[float, Sigma], shift_horizon: float, n_per_std: int, std_devs: float,
+                     exercise_time_steps_per_year: int, built_on: Optional[ORE.Date] = None, curve=None,
+                     index_curve=None) -> _PreparedBermudan:
     """Build the ORE underlying and resolve what `NumericLgmMultiLegOptionEngineBase`
     resolves before its backward run, for a Bermudan or American config:
 
-      * the option times (`cfg.option_times`, an American's on `exercise_time_steps_per_year`);
+      * the option times (`cfg.option_times`, an American's on `exercise_time_steps_per_year`,
+        its window as built on `built_on`, by default the evaluation date);
       * per coupon, ORE's `CashflowInfo`: pay time, accrual start/end, the time it stops
         belonging to the exercised-into swap (by `cfg.exercise_style`), and for a floating
         coupon the index fixing period and its day count fraction.
 
-    The model is the engine's LGM: constant `reversion` and Hagan volatility `sigma`, on the
+    The model is the engine's LGM: constant `reversion` and Hagan volatility `sigma`, H shifted
+    to vanish at `shift_horizon` years (ORE's `LgmData::shiftHorizon`; 0 for none), on the
     grid `n_per_std`/`std_devs` (ORE's `nx`/`sx`). `curve` discounts and is the LGM's term
     structure; `index_curve` (default: `curve`) projects the coupons. Either may be left
     unset and replaced later (`dataclasses.replace`), as a simulation does per path.
@@ -163,6 +170,8 @@ def prepare_bermudan(cfg: Union[BermudanSwaptionConfig, AmericanSwaptionConfig],
     `isPartOfUnderlying(t)` is false for every `t >= 0`). A kept floating coupon whose
     fixing date has passed takes its fixing from `cfg.fixings`; a missing one raises.
     Fixed amounts are ORE's `FixedRateCoupon.amount()`."""
+    if not math.isfinite(shift_horizon) or shift_horizon < 0.0:
+        raise ValueError(f"shift_horizon must be finite and >= 0 years (ORE's LgmBuilder); got {shift_horizon!r}")
     swap = underlying_swap(cfg)
     today = cfg.evaluation_date
     style = cfg.exercise_style
@@ -209,7 +218,7 @@ def prepare_bermudan(cfg: Union[BermudanSwaptionConfig, AmericanSwaptionConfig],
         floating["known_rate"].append(0.0 if known is None else known)
         floating["fixing_serial"].append(fixing_date.serialNumber())
 
-    exercise_times = np.asarray(cfg.option_times(exercise_time_steps_per_year), dtype=np.float64)
+    exercise_times = np.asarray(cfg.option_times(exercise_time_steps_per_year, built_on), dtype=np.float64)
     if exercise_times.size == 0:
         raise ValueError(f"no exercise opportunity falls after the evaluation date {today}")
     final_maturity = max(fixed["pay"][-1], floating["pay"][-1])
@@ -243,7 +252,7 @@ def prepare_bermudan(cfg: Union[BermudanSwaptionConfig, AmericanSwaptionConfig],
         float_known_rates=as_array(floating["known_rate"]),
         float_fixing_serials=as_array(floating["fixing_serial"], dtype=np.int64),
         float_spread=cfg.floating_spread,
-        reversion=reversion, sigma=sigma, curve=curve, index_curve=index_curve,
+        reversion=reversion, sigma=sigma, shift_horizon=float(shift_horizon), curve=curve, index_curve=index_curve,
         n_per_std=n_per_std, std_devs=std_devs,
         final_maturity=final_maturity,
     )
@@ -465,16 +474,18 @@ def _build_grid_schedule(swap: _PreparedBermudan) -> _GridSchedule:
 
 
 def _bond_prices_at_nodes(curve, a: float, sigma, t: jax.Array,
-                          maturities: jax.Array, x_nodes: jax.Array) -> jax.Array:
+                          maturities: jax.Array, x_nodes: jax.Array, shift) -> jax.Array:
     """P(t, T; x) for every state node and maturity (`engine.models.lgm.bond_price`).
     Shape [Nnodes, Nmaturities]."""
-    return jax.vmap(lambda T: _lgm_bond_price(curve, a, sigma, t, T, x_nodes))(maturities).T
+    return jax.vmap(lambda T: _lgm_bond_price(curve, a, sigma, t, T, x_nodes, shift))(maturities).T
 
 
-def _cashflow_values_at_nodes(swap: _PreparedBermudan, curve, x_nodes: jax.Array, t: jax.Array) -> jax.Array:
+def _cashflow_values_at_nodes(swap: _PreparedBermudan, curve, x_nodes: jax.Array, t: jax.Array,
+                              shift) -> jax.Array:
     """
     Every cashflow's value at time `t` on every state node, signed for the option holder:
-    ORE's `CashflowInfo::pv`. Shape [Nnodes, C], fixed leg first, then floating.
+    ORE's `CashflowInfo::pv`, in the model shifted by `shift`. Shape [Nnodes, C], fixed leg
+    first, then floating.
 
       * fixed coupon: `amount * P(t, pay; x)`;
       * Ibor coupon: `(fixing(t, x) + spread) * accrual * notional * P(t, pay; x)`, with
@@ -490,7 +501,7 @@ def _cashflow_values_at_nodes(swap: _PreparedBermudan, curve, x_nodes: jax.Array
     dtype = x_nodes.dtype
     as_dtype = lambda values: jnp.asarray(values, dtype=dtype)  # noqa: E731
 
-    fixed = (_bond_prices_at_nodes(curve, a, sigma, t, as_dtype(swap.fixed_times), x_nodes)
+    fixed = (_bond_prices_at_nodes(curve, a, sigma, t, as_dtype(swap.fixed_times), x_nodes, shift)
              * as_dtype(swap.fixed_amounts)[None, :])
 
     index_curve = _index_curve_of(swap)
@@ -499,15 +510,15 @@ def _cashflow_values_at_nodes(swap: _PreparedBermudan, curve, x_nodes: jax.Array
     index_dcf = as_dtype(swap.float_index_dcf)
     T1 = jnp.maximum(t, index_start)
     T2 = jnp.maximum(T1, index_end)
-    projected = (_bond_prices_at_nodes(index_curve, a, sigma, t, T1, x_nodes)
-                 / _bond_prices_at_nodes(index_curve, a, sigma, t, T2, x_nodes) - 1.0) / index_dcf
+    projected = (_bond_prices_at_nodes(index_curve, a, sigma, t, T1, x_nodes, shift)
+                 / _bond_prices_at_nodes(index_curve, a, sigma, t, T2, x_nodes, shift) - 1.0) / index_dcf
     zero = jnp.zeros((), dtype=dtype)
-    fixed_today = (_lgm_bond_price(index_curve, a, sigma, zero, index_start, zero)
-                   / _lgm_bond_price(index_curve, a, sigma, zero, index_end, zero) - 1.0) / index_dcf
+    fixed_today = (_lgm_bond_price(index_curve, a, sigma, zero, index_start, zero, shift)
+                   / _lgm_bond_price(index_curve, a, sigma, zero, index_end, zero, shift) - 1.0) / index_dcf
     fixing = jnp.where(jnp.asarray(swap.float_fixed_today)[None, :], fixed_today[None, :], projected)
     fixing = jnp.where(jnp.asarray(swap.float_is_known)[None, :], as_dtype(swap.float_known_rates)[None, :], fixing)
     floating = (as_dtype(swap.notional) * (fixing + swap.float_spread) * as_dtype(swap.float_accrual)[None, :]
-                * _bond_prices_at_nodes(curve, a, sigma, t, as_dtype(swap.float_pay_times), x_nodes))
+                * _bond_prices_at_nodes(curve, a, sigma, t, as_dtype(swap.float_pay_times), x_nodes, shift))
 
     # The holder of a payer swaption pays the fixed leg and receives the
     # floating one; a receiver the reverse (ORE's per-leg `payrec`).
@@ -552,6 +563,8 @@ def _backward_induction_arrays(swap: _PreparedBermudan, schedule: "_GridSchedule
     # Work in the curve's dtype (pricing or risk precision); hardcoded float64 constants
     # would upcast a float32 Greeks trace.
     dtype = curve_dtype(curve)
+    # ORE's `LgmBuilder` shift, a traced scalar: every horizon shares the program.
+    shift = _lgm_horizon_shift(a, swap.shift_horizon).astype(dtype)
     quad_w = jnp.asarray(_hagan_quadrature_weights(n_per_std, std_devs), dtype=dtype)
     quad_y = jnp.asarray(_quadrature_nodes(n_per_std, std_devs), dtype=dtype)
     as_mask = lambda mask: jnp.asarray(mask, dtype=dtype)  # noqa: E731
@@ -588,8 +601,8 @@ def _backward_induction_arrays(swap: _PreparedBermudan, schedule: "_GridSchedule
         cache = jax.vmap(lambda column: roll_back(column, x_prev, x_t, std_step, identity),
                          in_axes=1, out_axes=1)(cache)
 
-        numeraire = _lgm_numeraire(curve, a, sigma, t, x_t)
-        pv = _cashflow_values_at_nodes(swap, curve, x_t, t) / numeraire[:, None]  # reduced, [Nn, C]
+        numeraire = _lgm_numeraire(curve, a, sigma, t, x_t, shift)
+        pv = _cashflow_values_at_nodes(swap, curve, x_t, t, shift) / numeraire[:, None]  # reduced, [Nn, C]
 
         underlying = underlying + matmul(pv, add_pv) + matmul(cache, cache_to_under)
         cache = jnp.where(start_cache[None, :] > 0.0, pv, cache)

@@ -425,7 +425,7 @@ class TestDegenerateSingleExerciseCases:
         from engine.pricing.lgm_grid import _cashflow_values_at_nodes, _zero_curve_of
         curve = _zero_curve_of(swap)
         t = float(swap.exercise_times[0])
-        values = np.asarray(_cashflow_values_at_nodes(swap, curve, jnp.array([0.0]), jnp.array(t))[0])
+        values = np.asarray(_cashflow_values_at_nodes(swap, curve, jnp.array([0.0]), jnp.array(t), 0.0)[0])  # unshifted
         belongs = np.concatenate([swap.fixed_belongs_until, swap.float_belongs_until]) >= t
         intrinsic_at_exercise = float(np.sum(values[belongs]))
         discounted_intrinsic = intrinsic_at_exercise * np.exp(-0.03 * t)

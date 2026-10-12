@@ -128,12 +128,6 @@ float64 sample, the two-level estimator and the precision report (A-13); then on
 worker process per host behind a durable job queue (A-14). Each change kept the default bit
 for bit. Adjustable precision stays available throughout.
 
-## `ShiftHorizon` (I-32)
-
-`H → H + shift`, with the state grid built in the shifted variable (`engine.models.lgm`,
-`_state_grid`). Add `shift_horizon=0.5` cases to `tests/test_ore_lgm_parity.py`, then make 0.5
-the default (ORE's builder default, `OREData/ored/portfolio/builders/swaption.cpp`).
-
 ## Precision evidence and low-precision kernels (I-55, F-07)
 
 In [precision.md](precision.md) §8 and §10: the evidence table per figure and precision
@@ -241,7 +235,7 @@ Saving a market or a configuration on the server to use by reference is not plan
   2026-10-07).
 - **Every setting reachable.** `tests/test_api_completeness.py` walks every configuration type a
   request can hold and fails on a field without an API field. It found three: the LGM engine's
-  `shift_horizon` (now a field, refused unless 0 until `ShiftHorizon`), piecewise volatilities (now
+  `shift_horizon` (now a field, any non-negative value with 0.5 the default since I-32), piecewise volatilities (now
   `{"times", "values"}` wherever a volatility is taken), and market risk and the CAM calibration
   (the new routes).
 - **Every per-trade figure keyed by its trade** (I-10): one row per trade (`trade_id`, t=0

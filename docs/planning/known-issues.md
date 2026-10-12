@@ -11,36 +11,48 @@ Europeans and bonds equal ORE's simulation path by path since 2026-10-07.
 
 ## Verification status
 
-Last full run, 2026-10-12, on the precision evidence table ([I-55](#i-55), closed): the
-acceptance standard as data (`compliance/precision-acceptance.json`), the generator
-(`tests/support/precision_evidence.py`) and its files (`compliance/precision-evidence.md`,
-`engine/precision/evidence.json`), the run-time lookup and warnings (`engine/precision/evidence.py`,
-`engine.run.pipeline.precision_warnings`, `engine.risk.market.run`), the harness's market name and
-engine digest, all five precision campaigns measured again. 3,308 collected on Windows: the 3,272
-of the run before plus 35 in `tests/test_precision_evidence.py` and 1 in
-`tests/test_precision_harness.py`. Each run printed its summary line:
+Last full run, 2026-10-12, on ORE's `ShiftHorizon` ([I-32](#i-32), closed): the shifted LGM
+(`engine.models.lgm`: `H + shift`, `horizon_shift`), the grid engine taking the shift as traced
+data of the prepared trade (`engine.pricing.lgm_grid`), the builder's horizon and the trade as
+built on the as-of date on the paths (`engine.pricing.bermudan.shift_horizon_time`,
+`prepared_option(..., built_on=)`, an American's `option_times(..., built_on=)`), 0.5 the default
+in the engine and the API. 3,349 collected on Windows: the 3,308 of the run before plus 23 in
+`tests/test_ore_lgm_parity.py` (every case at 0.5, two at 1.5), 3 in
+`tests/test_ore_lgm_calibration.py` (calibrated at 0.5), 13 in `tests/test_shift_horizon.py`, 1
+in `tests/test_ore_xva_parity.py` (uncalibrated options on ORE's paths) and 1 in
+`tests/test_api_portfolio.py` (a negative horizon is a 400). Each run printed its summary line:
 
-- **Windows**, `-n 8`: **3,299 passed, 3 skipped, 6 xfailed, 0 failed**, 13m15s (the skips and
-  expected failures as before: the two accelerator-only defaults and the GPU plugin check; the
+- **Windows**, `-n 8`: **3,340 passed, 3 skipped, 6 xfailed, 0 failed**, 15m13s (the skips
+  and expected failures as before: the two accelerator-only defaults and the GPU plugin check; the
   Bermudan/American L3 cases of `tests/test_ore_xva_parity.py`, strict, waiting on [I-49](#i-49)).
-- **Linux** (Docker `python:3.11`, 4 CPUs, `-n 4`, the fast tier of the seven modules the change
-  touches): **233 passed, 0 failed**, and `--check` passes: the change reads a data file through
-  `importlib.resources`, which a Linux checkout and install must find
-  ([rule 5](README.md#verification-rules)). Its first attempt failed, finding a defect: the
-  repository's `.gitignore` ignores every `*.json`, so `compliance/precision-acceptance.json`
-  and `engine/precision/evidence.json` would never have been committed; both are now negated
-  beside the TraderX fixtures.
-- **GPU**: not rerun; the change touches no device code and computes nothing on a device (the
-  warnings are plain Python).
-- **Golden snapshot**: not rerun; no array of any result changes (the change adds warnings and
-  docstrings, and no kernel, pricer or estimator line). The precision campaigns show it on
-  23,736 measured rows: every one equal bit for bit to its record before the change.
-- **Precision harness**: all five campaigns rerun on one revision (engine digest
-  `805c1a7f8cad963b`), 57 minutes; no case compiles after its first seed.
+  The first run took 26m56s on caches left cold by the campaigns and the WSL runs; the rerun's
+  15m13s is the record's, and the option modules time alike before and after the change,
+  interleaved (66 to 72 s for `tests/test_greeks_bermudan.py` and `tests/test_american_swaption.py`).
+- **Linux** (the WSL2 clone, `JAX_PLATFORMS=cpu`, `-n 2`, the eight modules the change touches or
+  that price options against ORE): **258 passed, 1 skipped, 6 xfailed, 0 failed**, 13m03s (the
+  skip: the clone has no `reference/ORE` for the ORE example check).
+- **GPU** (RTX 5060, WSL2, `-n 4`, the same eight modules): **258 passed, 1 skipped, 6 xfailed,
+  0 failed**, 9m11s; the change is in the rollback kernel the GPU runs.
+- **Golden snapshot** (273 arrays): in two steps. With the default still 0 (the shift implemented,
+  the American's as-of window on the paths), 213 identical and every move the American inside its
+  window (its EPE and EE_B up to 5.0e-4 of their scale, the portfolio cube 1.1e-4) or rounding
+  (2.9e-16); then 0.5 the default, a planned change of the model (A-3): only Bermudan/American
+  arrays move, today's option values by up to 5.3e-4 relative at ORE's example grid (3.3e-3 at the
+  coarse 12-point test grid), the demo's options by 9e-5 and 4e-4 and their Greeks by at most
+  5e-4 of the trade's NPV, exposures by about 1e-4 of their scale. Re-baselined.
+- **Precision harness**: `options` and `market_risk` (the campaigns with Bermudans or Americans)
+  measured again (engine digest `15de886690232ba1`, 46 minutes) and the evidence table
+  regenerated; every verdict as before but two rows: the options' netting-set EPE_B under float16
+  market storage with block offsets now passes at 256 paths, and market risk's ES_99 with the P&L
+  stored in float16 by stochastic rounding passes to 2,048 scenarios, no longer 8,192
+  ([precision.md §15.6](details/precision.md#156-the-evidence-table-2026-10-11)). No case
+  compiles after its first seed.
 
-Red first: on the code before, an FP8 portfolio run's `warnings` were `[]` (the pipeline built
-them empty) and `engine.precision.evidence` did not exist; the ceiling test fails when a ceiling
-skips a failing path count (checked by changing the generator's rule and restoring it).
+Red first, on the code before (a worktree of `44bb7e2`): `tests/test_ore_lgm_parity.py` with the
+engine unshifted fails the 23 shifted cases (1.6e-6 to 1.6e-4 from ORE at 0.5) and passes the 24
+unshifted; the uncalibrated-options test on ORE's paths fails on the American (1.1e-3 of its
+largest value; at 0.5 the old code refuses the horizon outright, and its path-date horizon put the
+Bermudan 4.2e-5 from ORE).
 
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
@@ -57,7 +69,6 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
 | [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | TraderX |
 | [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | Fix what exists |
-| [I-32](#i-32) | Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5 | Medium | OPEN | Correctness | Focus |
 | [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | Focus |
 | [I-73](#i-73) | A calibration that misses its basket is accepted unless it hits the bracket's ceiling, and on a path not even then | Medium | OPEN | Correctness | Focus |
 | [I-103](#i-103) | Malformed market and trade inputs are accepted: an unsorted curve prices silently, a late expiry crashes | Medium | OPEN | Validation | Focus |
@@ -106,30 +117,6 @@ model" before 2026-10-01 meant the separate pipeline removed that day.
 
 ## Correctness
 
-<a id="i-32"></a>
-### I-32 — Bermudan/American engine only at `ShiftHorizon = 0`, not ORE's default 0.5
-
-**Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-23
-
-**What is wrong.** Parity with ORE's LGM engine (about 1e-11) holds for ORE's Grid solver at
-`ShiftHorizon = 0`, the only configuration the engine accepts. ORE's builder defaults
-`ShiftHorizon` to 0.5 of the trade's maturity, and its shipped American example uses the FD
-solver. Measured on 5Y trades (engine at its 48-point grid):
-
-| ORE setting | Bermudan | Mid-period Bermudan | American |
-|---|---:|---:|---:|
-| Grid, `ShiftHorizon = 0` | ~1e-13 | ~1e-13 | ~1e-12 |
-| Grid, `ShiftHorizon = 0.5` (ORE's default) | 1.6e-6 | 2.7e-5 | 2.7e-5 – 1.5e-4 |
-| FD, shipped settings | 3.8e-4 | 1.0e-3 | 5.7e-4 – 1.6e-3 |
-
-The shift is an exact LGM invariance that moves the state grid, so the gap is ORE's
-discretization error.
-
-**To close.** Decided (A-3, D-10): implement the shift (`H → H + shift`, state grid in the
-shifted variable, in `engine.models.lgm` and `_state_grid`), prove parity at 0.5 against
-`tests/support/ore_lgm_oracle.py` (which already takes `shift_horizon=`), then make 0.5
-the default. The FD solver is an option, [F-01](features.md#f-01).
-
 <a id="i-49"></a>
 ### I-49 — Per-path recalibration differs from ORE's in two details
 
@@ -153,9 +140,12 @@ checked against the formula but not against ORE running it (no Python constructo
 **Reach.** Pipeline Bermudan/American values past t=0 and their exposure. Measured by
 the ORE simulation oracle on ORE's own paths (`tests/test_ore_xva_parity.py`, the shared
 portfolio, both models, 32 paths, dates 3M to 3Y): before exercise the engine's values are
-0.5–4% above ORE's on every path (largest cell gap 0.5% of the trade's largest value for the
-physical Bermudan, 0.6% for the American; mean 0.6–0.7% of their values), growing with the
-date; after exercise into the swap both are the swap. Near the exercise boundary the gap moves
+0.5–4% above ORE's on every path (largest cell gap 0.50% of the trade's largest value for the
+physical Bermudan, 0.55% for the American, measured again on 2026-10-12 at ORE's default
+`ShiftHorizon`), growing with the date; after exercise into the swap both are the swap. It is
+the recalibration alone: with the LGM uncalibrated every option equals ORE's cube to 2e-11
+(`tests/test_ore_xva_parity.py::test_an_uncalibrated_option_equals_ores_cube_on_ores_paths`,
+since I-32 made the trade on a path the one ORE built on the as-of date). Near the exercise boundary the gap moves
 a decision: one cell in 160, a cash-settled Bermudan ORE exercised (0 afterwards) and the
 engine did not (54% of its largest value). L4 at 1,024 paths does not resolve the bias.
 
@@ -1445,6 +1435,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-29"></a>I-29 | A rounded exercise time silently dropped a coupon (exercise now given as dates) | `tests/test_ore_bermudan_oracle.py::TestExerciseDatesAreExact` |
 | <a id="i-30"></a>I-30 | The `A(t,T)` variance term was nearly uncovered at t=0 (that formula went with the Hull-White pipeline; the model's bonds are QuantLib's on every state) | `tests/test_cam.py::test_hull_white_path_curves_equal_quantlibs_hull_white` |
 | <a id="i-31"></a>I-31 | Bermudan/American floating coupons projected over the wrong period | `tests/test_ore_lgm_parity.py` |
+| <a id="i-32"></a>I-32 | The Bermudan/American engine refused ORE's `ShiftHorizon` but 0, where ORE's builder defaults to 0.5 (1.6e-6 to 1.5e-4 from ORE's price there); on a path date it measured the shift horizon and opened an American's window from that date where ORE keeps the trade it built on the as-of date (up to 1.1e-3 of the American's largest value). Now any horizon, 0.5 by default, equal to ORE's engine today (1e-13 to 3e-12) and on ORE's simulated paths (1.7e-11, the LGM uncalibrated) | `tests/test_ore_lgm_parity.py` (`shift-0.5`), `tests/test_ore_xva_parity.py::test_an_uncalibrated_option_equals_ores_cube_on_ores_paths`, `tests/test_shift_horizon.py` |
 | <a id="i-33"></a>I-33 | On Linux, worker-pool jobs hung once the parent had run JAX (fork) | The engine worker is a fresh interpreter (`subprocess`, never fork) since 2026-10-04: `tests/test_engine_worker.py::TestWorkerProcesses`, the full suite on Linux |
 | <a id="i-34"></a>I-34 | The ORE oracle tilted a curve's first segment (ORE's rebuild reads the t=0 rate at t = 1e-4; the oracle now hands it the as-of quote that maps onto the engine's, 2.3e-6 → 1.5e-12 on a sloped first segment) | `tests/test_ore_lgm_parity.py::test_a_curve_sloped_in_its_first_segment_is_the_engines` |
 | <a id="i-35"></a>I-35 | An American already in its window was exercisable on the evaluation date | `tests/test_trade_dates.py::test_seasoned_bermudan_and_american_equal_ore` |
