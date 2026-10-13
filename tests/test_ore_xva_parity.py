@@ -9,22 +9,27 @@ The engine's assembled exposure pipeline against ORE's own exposure simulation (
     state, read from ORE's numeraire, rebuilds every discount and index curve ORE simulated
     (which also checks the calibration ORE's `CrossAssetModelBuilder` ran against the engine's);
   * L3: on ORE's paths every trade's NPV equals ORE's cube, cell by cell, and t=0 (ORE's `T0`)
-    is the engine's value on the simulation market of the as-of date; an option booked `Short`
-    (ORE's `LongShort`) is minus the long one in ORE's cube and in the engine's (I-101); an
-    uncalibrated Bermudan or American at ORE's default `ShiftHorizon` equals ORE's cube, the
-    trade as ORE built it on the as-of date (I-32);
+    is the engine's value on the simulation market of the as-of date; a Bermudan or American
+    is the trade as ORE built it on the as-of date, its LGM calibrated there and kept on every
+    path (I-49), at ORE's default `ShiftHorizon` (I-32), calibrated or not; an option booked
+    `Short` (ORE's `LongShort`) is minus the long one in ORE's cube and in the engine's, and
+    equals ORE's (I-101);
   * ORE's exposure definitions: the engine's profiles of ORE's own cube are ORE's reports;
   * L4 (statistical, `slow`): the engine's simulation and exposure against ORE's, each on its
     own random numbers (decision X-1), within four combined standard errors.
 
 Measured (2026-10-07, ORE 1.8.16, both models): the dumped curves rebuild to 1.2e-11
 relative; swaps, Europeans and the bond equal ORE's cube to 3.0e-11 of each trade's largest
-value; T0 to 3.9e-11 relative; the profiles of ORE's cube to 1.8e-13. Bermudans and Americans
-are worth 0.5-4% more than ORE says on paths after t=0, before their exercise (ORE's per-path
-recalibration, I-49), and the same on a path after exercising into the swap; near the exercise
-boundary that moves a decision (one cell in 160: a cash-settled Bermudan ORE exercised, 0, the
-engine did not). I-49 is to reproduce ORE there against this test; until then their L3 cases
-are strict expected failures.
+value; T0 to 3.9e-11 relative; the profiles of ORE's cube to 1.8e-13. Since 2026-10-12 (I-49)
+the calibrated Bermudans and the American equal ORE's cube to 1.9e-11 of their largest value.
+
+Found by this test and fixed on 2026-10-12 (I-49): the engine recalibrated every option's LGM on
+every path and date, where ORE's exposure simulation keeps the model it calibrated when it built
+the trade on the simulation market of the as-of date (its `XvaAnalytic` gives its valuation
+engine no model builders): the options were worth 0.5-4% more than ORE's on the paths, and near
+the exercise boundary one cell in 160 took the other decision (a cash-settled Bermudan ORE
+exercised, 0, the engine did not). Calibrated on today's market rather than the simulation
+market's, the kept model leaves 1e-5.
 
 Found by this test and fixed on 2026-10-12 (I-32): on a path date the engine measured the shift
 horizon and opened an American's window from that date, where ORE keeps the as-of build's: up to
@@ -68,7 +73,7 @@ BASKET = dict(calibration_expiries=("1Y", "2Y", "3Y"), calibration_terms=("5Y", 
 DATES = tuple(shared.ASOF + ORE.Period(m, ORE.Months) for m in (3, 6, 12, 24, 36))
 FAST = LgmSwaptionEngineConfig(n_per_std=12, std_devs=4.0)
 PRICING = PricingConfig(bermudan=FAST, american=FAST)
-#: The options' LGM uncalibrated, so ORE's per-path recalibration (I-49) is out of the way, at
+#: The options' LGM uncalibrated, so the shift horizon is checked apart from the calibration, at
 #: ORE's default `ShiftHorizon` (stated: the shift's horizon is what the test pins).
 UNCALIBRATED = dataclasses.replace(FAST, calibration="None", shift_horizon=0.5)
 PFE_QUANTILE = 0.95
@@ -134,11 +139,10 @@ def test_the_scenario_dump_is_the_engines_simulation_market_on_ores_paths(on_ore
 
 
 @pytest.mark.parametrize("name", list(shared.trades()))
-def test_every_trades_cube_equals_ores_on_ores_paths(on_ores_paths, name, request):
-    """L3: each cell within `CUBE_RTOL` of the trade's largest value."""
+def test_every_trades_cube_equals_ores_on_ores_paths(on_ores_paths, name):
+    """L3: each cell within `CUBE_RTOL` of the trade's largest value; a Bermudan's or
+    American's LGM calibrated once, where ORE builds the trade, and kept (I-49)."""
     ore, _, cube = on_ores_paths
-    if isinstance(shared.trades()[name], OPTIONS):
-        request.applymarker(pytest.mark.xfail(strict=True, reason="I-49: ORE's per-path recalibration"))
     j = ore.trade_ids.index(name)
     scale = np.max(np.abs(ore.cube[:, :, j]))
     assert scale > 0.0, "the trade must be worth something on the paths"
@@ -146,7 +150,7 @@ def test_every_trades_cube_equals_ores_on_ores_paths(on_ores_paths, name, reques
 
 
 def test_an_uncalibrated_option_equals_ores_cube_on_ores_paths():
-    """L3 for Bermudans and Americans short of ORE's recalibration (I-49): with the LGM
+    """L3 for Bermudans and Americans apart from their calibration: with the LGM
     uncalibrated, every cell of every option equals ORE's. ORE builds the trade once, on the
     as-of date, so on a later date its LGM is shifted at the as-of horizon (`LgmBuilder` shifts
     once) and an American's window opened no later than the day after the as-of date, so the
@@ -162,8 +166,7 @@ def test_an_uncalibrated_option_equals_ores_cube_on_ores_paths():
 def test_a_short_option_on_ores_paths_is_ores_short_option(shorts_on_ores_paths):
     """I-101: ORE's `OptionWrapper` multiplies a short option's NPV by -1, its exercise the
     holder's, so ORE's cube and T0 of a short option are minus the long one's; the engine's
-    are too, so the Europeans equal ORE's short cell by cell and the Bermudans and the American
-    differ from it by minus the long one's difference (I-49, the long's expected failure)."""
+    are too, so every short option equals ORE's cell by cell."""
     trades, (ore, _, cube) = shorts_on_ores_paths
     for j in range(0, len(trades), 2):
         long, sold = trades[j], trades[j + 1]
@@ -173,8 +176,7 @@ def test_a_short_option_on_ores_paths_is_ores_short_option(shorts_on_ores_paths)
                                    err_msg=f"ORE: {sold.trade_id}")
         assert ore.t0[j + 1] == pytest.approx(-ore.t0[j], rel=1e-14)
         np.testing.assert_array_equal(cube[:, :, j + 1], -cube[:, :, j], err_msg=f"engine: {sold.trade_id}")
-        if isinstance(long, SwaptionConfig):
-            assert np.max(np.abs(cube[:, :, j + 1] - ore.cube[:, :, j + 1])) <= CUBE_RTOL * scale, sold.trade_id
+        assert np.max(np.abs(cube[:, :, j + 1] - ore.cube[:, :, j + 1])) <= CUBE_RTOL * scale, sold.trade_id
 
 
 def test_t0_is_the_value_on_the_simulation_market_of_the_as_of_date(on_ores_paths):

@@ -15,7 +15,7 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 | [F-04](#f-04) | FX and equity trades on the pipeline; FX/EQ vol calibration | L | F-07's kernel rewrite | New |
 | [F-05](#f-05) | Basel III regulatory figures | L | See entry | Basel |
 | [F-06](#f-06) | CVA/DVA from the exposure profiles | M | I-87 | New |
-| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | I-49 (the rollback's rewrite) | Focus |
+| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | — | Focus |
 | [F-08](#f-08) | Reporting currencies other than USD for TraderX | S | I-18 (an FX source), I-59 | New |
 | [F-09](#f-09) | ORE's XML input files as a run request | M | I-87 | New |
 
@@ -60,8 +60,8 @@ adds a strike axis, SABR is a second way to supply it.
 ### F-03 — ORE's AMC engine as a valuation option
 
 **Value.** ORE's American Monte Carlo exposure engine is its alternative to classic
-revaluation, and much cheaper for Bermudans than per-path recalibration
-([I-53](known-issues.md#i-53)). Out of scope so far (X-6); a candidate simulation option under
+revaluation, and cheaper for Bermudans than a grid rollback on every path
+([I-83](known-issues.md#i-83)), which is how ORE's classic exposure simulation values them. Out of scope so far (X-6); a candidate simulation option under
 decision A-1. Parity against ORE's AMC analytic.
 
 **Depends on.** The ORE simulation oracle (`tests/support/ore_xva_oracle.py`) for parity; [F-07](#f-07)'s kernel rewrite (A-16). It adds a simulation option to `RunConfig`
@@ -92,7 +92,7 @@ SA-CCR and BA-CVA, a precision gate per figure, and an evidence pack.
 
 **Depends on.** P0 and P2's data acquisition can start any time (P2 is calendar time).
 P1 (FRTB-SA) needs [I-51](known-issues.md#i-51) (sensitivities proven against ORE).
-P5's IMM needs the exposure proven: done for linear trades on 2026-10-07, Bermudans and Americans by [I-49](known-issues.md#i-49). USD swaps need
+P5's IMM needs the exposure proven: done for linear trades on 2026-10-07, for Bermudans and Americans on 2026-10-12 ([I-49](known-issues.md#i-49)). USD swaps need
 [I-05](known-issues.md#i-05). P6's precision gate reuses
 [I-55](known-issues.md#i-55)'s evidence table (built 2026-10-11), adding the regulatory figures'
 rows. PLA needs an independent front-office P&L from
@@ -109,7 +109,7 @@ bank, netting sets, and the integral of discounted exposure against default prob
 Parity against ORE's XVA analytic through the ORE simulation oracle (2026-10-07), with credit curves added. The regulatory CVA
 (BA-CVA, SA-CVA) is part of F-05.
 
-**Depends on.** The exposure proven against ORE (Bermudans and Americans: [I-49](known-issues.md#i-49)). **Size.** M.
+**Depends on.** The exposure proven against ORE (every trade of the shared portfolio since 2026-10-12, [I-49](known-issues.md#i-49)). **Size.** M.
 
 <a id="f-07"></a>
 ### F-07 — Precision below float32, down to FP8 (FP4 later), per stage, product and trade
@@ -128,7 +128,7 @@ formats, `tensorfloat32` and `bfloat16_3x`, accumulated in float32, each native 
 device and named in the report; since 2026-10-11 the operand every path shares in two terms of
 the format, the single pass `<format>_1x` a format of its own, A-23;
 [details/precision.md §8](details/precision.md#8-compute-below-float32);
-the Bermudan/American rollback follows I-49); the evidence table and warnings (I-55,
+the Bermudan/American rollback next, its model ORE's on the paths since 2026-10-12, I-49); the evidence table and warnings (I-55,
 done 2026-10-11: [compliance/precision-evidence.md](../../compliance/precision-evidence.md));
 timing across devices on Ironwood and H100 (after the sharding of I-61); FP4 on TPU 8t/8i. Measured so far: FP8
 storage of the shocks biases a call payoff by about one Monte Carlo standard error at 4M

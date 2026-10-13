@@ -28,7 +28,7 @@ from typing import ClassVar, Mapping, Optional, Tuple, Union
 import numpy as np
 import ORE
 
-from engine.calibration.ore_lgm import SwapIndexConventions
+from engine.calibration.ore_lgm import BOOTSTRAP_TOLERANCE, SwapIndexConventions, check_tolerance
 from engine.market_data.curves import ZeroCurve
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER
 from engine.market_data.market import Market
@@ -129,6 +129,12 @@ class CamConfig:
     curve_tenors: simulation-market tenors of every discount and index curve.
     samples / seed: paths and Sobol scrambling seed.
     swaption_vol_decay: `ReactionToTimeDecay` of the (not simulated) swaption vols.
+    bootstrap_tolerance: ORE's `BootstrapTolerance`, one for the whole model as ORE's
+        `CrossAssetModelData` holds it: a currency's calibration whose error (the root mean
+        square of its helpers' relative price errors) is not below it misses its basket and is
+        refused, naming the currency, as ORE's `CrossAssetModelBuilder` fails (I-73,
+        `engine.calibration.ore_lgm.BootstrapResult.misses`). ORE has no default; 1e-4 is every
+        example simulation's (decision A-24).
     """
     dates: Tuple[ORE.Date, ...]
     base_currency: str
@@ -140,6 +146,7 @@ class CamConfig:
     samples: int = 1000
     seed: int = 42
     swaption_vol_decay: str = "ForwardVariance"
+    bootstrap_tolerance: float = BOOTSTRAP_TOLERANCE
 
     def __post_init__(self):
         dates = tuple(self.dates)
@@ -162,6 +169,7 @@ class CamConfig:
             raise ValueError(f"samples must be positive; got {self.samples}")
         if self.swaption_vol_decay not in SWAPTION_VOL_DECAY_MODES:
             raise ValueError(f"swaption_vol_decay must be one of {SWAPTION_VOL_DECAY_MODES}")
+        check_tolerance(self.bootstrap_tolerance, "CamConfig.bootstrap_tolerance")
         object.__setattr__(self, "dates", dates)
         object.__setattr__(self, "curve_tenors", tuple(self.curve_tenors))
 
@@ -181,7 +189,8 @@ def build_cross_asset_model(market: Market, config: CamConfig,
 
     sigmas = dict(sigmas or {})
     to_calibrate = {c: lgm for c, lgm in config.ir.items() if c not in sigmas}
-    sigmas.update({c: result.sigma for c, result in calibrate_cam(market, to_calibrate).items()})
+    sigmas.update({c: result.sigma
+                   for c, result in calibrate_cam(market, to_calibrate, config.bootstrap_tolerance).items()})
     base = config.base_currency
     ir = tuple(
         IrComponent(currency=c, curve=ZeroCurve.from_config(market.currency(c).discount_curve),

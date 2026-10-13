@@ -264,7 +264,7 @@ class TestPortfolioPairedSample:
     @pytest.mark.parametrize("model", [LgmConfig, HullWhiteConfig])
     def test_float64_against_float64_every_paired_difference_is_exactly_zero(self, model):
         """The paired paths are the run's own: same Sobol points, same kernels, bit for bit,
-        including a Bermudan recalibrated on every path; and the figures are those of the run
+        including a Bermudan on its LGM grid on every path; and the figures are those of the run
         without a paired sample. Bit for bit on a CPU, where every kernel is per path. A GPU
         picks its kernels by batch shape, and the paired paths (64) are not the run's (96), so
         there they are the run's own to about an ulp, and so are the corrected means (as

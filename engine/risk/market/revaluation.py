@@ -24,7 +24,9 @@ internal caches of 2,048 entries, which a large enough job can overflow; jitting
 **Engines.** Each product's engine is the pricing configuration's (`PricingConfig`): a European
 on ORE's Bachelier engine (the normal volatility read from the market, held fixed) or on
 Jamshidian; a Bermudan/American on its LGM grid engine, calibrated on today's market and held
-fixed (decision A-8: the engine is chosen by configuration, not by the trade).
+fixed (decision A-8: the engine is chosen by configuration, not by the trade). ORE's historical
+P&L recalibrates a calibrated LGM to each scenario's curves instead (its `HistoricalPnlGenerator`
+runs the valuation engine with the trades' model builders): I-112.
 
 **Which risk factors move.** Only curve pillar rates. Volatilities are held at their base
 values (the surface, a calibrated LGM, the Jamshidian model), so volatility risk is not

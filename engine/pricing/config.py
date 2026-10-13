@@ -14,7 +14,8 @@ Every engine is the same for either simulation model (`CamConfig.ir`): an engine
 model, as in ORE's `pricingengine.xml`, and on a path it prices on the path's curves.
 
 Bermudan/American defaults are ORE's example configuration (Examples/Products/Input/pricingengine.xml,
-`BermudanSwaption`), `shift_horizon` its builder's default 0.5 (decisions A-3, D-10; I-32).
+`BermudanSwaption`), `shift_horizon` its builder's default 0.5 (decisions A-3, D-10; I-32), and
+`bootstrap_tolerance` (ORE's `Tolerance`) its shared example configuration's 1e-4 (I-73).
 """
 import math
 from dataclasses import dataclass, field
@@ -22,7 +23,7 @@ from typing import Optional
 
 import ORE
 
-from engine.calibration.ore_lgm import SwapIndexConventions
+from engine.calibration.ore_lgm import BOOTSTRAP_TOLERANCE, SwapIndexConventions, check_tolerance
 from engine.solvers.roots import DEFAULT_SOLVER, check_solver
 
 #: European swaption engines; the first is ORE's default.
@@ -39,6 +40,11 @@ class LgmSwaptionEngineConfig:
         `calibration="None"`, the bootstrap's start otherwise).
     calibration / strategy: `Bootstrap` to the trade's co-terminal basket struck at the deal
         strike (`CoterminalDealStrike`) or ATM (`CoterminalATM`), or `None`.
+    bootstrap_tolerance: ORE's `Tolerance`: a calibration whose error (the root mean square of
+        its helpers' relative price errors) is not below it misses its basket and is refused,
+        as ORE's `LgmBuilder` fails (`engine.calibration.ore_lgm.BootstrapResult.misses`, I-73).
+        ORE has no default; 1e-4 is its shared example configuration's
+        (`engine.calibration.ore_lgm.BOOTSTRAP_TOLERANCE`).
     reference_calibration_grid: ORE's `ReferenceCalibrationGrid`: at most one helper per
         interval of this grid, and an American's basket expiries.
     shift_horizon: ORE's `ShiftHorizon`, a fraction of the time from the trade's build to its
@@ -57,6 +63,7 @@ class LgmSwaptionEngineConfig:
     volatility: float = 0.01
     calibration: str = "Bootstrap"
     strategy: str = "CoterminalDealStrike"
+    bootstrap_tolerance: float = BOOTSTRAP_TOLERANCE
     reference_calibration_grid: str = "400,3M"
     shift_horizon: float = 0.5
     n_per_std: int = 30
@@ -79,6 +86,7 @@ class LgmSwaptionEngineConfig:
             raise ValueError(f"calibration must be one of {CALIBRATION_METHODS}; got {self.calibration!r}")
         if self.strategy not in CALIBRATION_STRATEGIES:
             raise ValueError(f"strategy must be one of {CALIBRATION_STRATEGIES}; got {self.strategy!r}")
+        check_tolerance(self.bootstrap_tolerance, "LgmSwaptionEngineConfig.bootstrap_tolerance")
         if not math.isfinite(self.shift_horizon) or self.shift_horizon < 0.0:
             raise ValueError(f"shift_horizon must be finite and >= 0 (ORE's LgmBuilder requires a non-negative "
                              f"horizon); got {self.shift_horizon!r}")
@@ -109,13 +117,13 @@ class JamshidianEngineConfig:
 @dataclass(frozen=True)
 class PricingConfig:
     """The engine per product (see the module docstring). `jamshidian` is the model of the
-    `Jamshidian` European engine, required with it and refused without it. `recalibrate` is
-    ORE's `ValuationEngine` flag (default true): model-based trades are recalibrated on every
-    path and date."""
+    `Jamshidian` European engine, required with it and refused without it. A Bermudan's or
+    American's LGM is calibrated where ORE builds the trade and kept on every path, as ORE's
+    exposure simulation keeps it, which never recalibrates (I-49, decision A-24,
+    `engine.pricing.bermudan`)."""
     european: str = "Bachelier"
     bermudan: LgmSwaptionEngineConfig = field(default_factory=LgmSwaptionEngineConfig)
     american: LgmSwaptionEngineConfig = field(default_factory=LgmSwaptionEngineConfig)
-    recalibrate: bool = True
     jamshidian: Optional[JamshidianEngineConfig] = None
 
     def __post_init__(self):

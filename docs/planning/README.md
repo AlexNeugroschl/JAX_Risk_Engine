@@ -151,7 +151,7 @@ Where the IDs of retired planning documents went. Their full text is in git hist
 | ORE alignment plan Phases 0–6, 8 | Done; remaining items are issues |
 | ORE alignment plan Phase 7 (performance) | [I-53](known-issues.md#i-53); done 2026-10-06 and 2026-10-07 (roadmap [stage 2](roadmap.md#stage-2--the-demo-on-a-local-gpu)) |
 | ORE alignment plan Phase 9 (configurable engine) | Roadmap [stage 1](roadmap.md#stage-1--structure); [details/configurable-engine.md](details/configurable-engine.md) |
-| ORE alignment plan Phase 10.1, 10.2 | [I-49](known-issues.md#i-49), [I-54](known-issues.md#i-54) |
+| ORE alignment plan Phase 10.1, 10.2 | [I-49](known-issues.md#i-49) (closed 2026-10-12), [I-54](known-issues.md#i-54) |
 | ORE alignment plan Phase 10.3, 10.4 | [F-04](features.md#f-04) |
 | ORE alignment plan §1.5, §6 (test layers, shared portfolio), gates V-n | [details/ore-parity-validation.md](details/ore-parity-validation.md) |
 | TraderX plan W0, W1 | Done |

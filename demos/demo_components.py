@@ -6,8 +6,9 @@ on the shared scenarios of demos/demo_scenarios.py, and prints what it returns.
                    (`engine.market_simulation.config.simulate`)
     swap           a 2Y payer swap today and on every path (`engine.pricing.cube`)
     european       a 3Y-into-2Y European swaption, Bachelier (ORE's default) and Jamshidian
-    bermudan       a Bermudan swaption today and on the paths (LGM grid engine, recalibrated on
-                   every path and date as ORE does; 128 paths, as that is the slow part, I-53)
+    bermudan       a Bermudan swaption today and on the paths (LGM grid engine, calibrated where
+                   ORE builds the trade and kept on every path, as ORE's exposure simulation
+                   does; 128 paths, as the grid rollback is the slow part, I-83)
     american       an American swaption today and on the paths
     greeks         a swap's and a European's Greeks, by ORE's bump-and-revalue and by AD
     var_es         the risk statistics of a swap's NPV cube (`compute_risk_metrics`)

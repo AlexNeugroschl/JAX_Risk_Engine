@@ -8,15 +8,15 @@ solves with it.
     leave the bracket; state carried between evaluations; float32 stays float32; a fixed
     number of steps (no data-dependent loop).
   * `implicit_root`'s first and second derivatives on roots with known derivatives.
-  * On the parity markets (the shared sloped portfolio today and on simulated LGM paths, and
-    the ORE-calibration tests' market): every bootstrap bucket reprices its helper to
+  * On the parity markets (the shared sloped portfolio's options and a tenor basket today):
+    every bootstrap bucket reprices its helper to
     rounding under Newton and equals Bisection's; Jamshidian's x* and the standalone
     `/calibration/lgm` bootstrap likewise. Newton's step counts have two steps of margin: two
     fewer reach the same roots.
   * The setting on every configuration that solves a root, with its API field, refused by
     name when unknown; ORE parity at t=0 under the reference solver.
-  * The path dates batched (`path_sigmas`): equal to one date at a time; one program per
-    basket shape and power of two of dates; a date with an exercise left and no helper.
+  * An American on a path date with an exercise left after its last calibration helper
+    (I-82).
 """
 import dataclasses
 from contextlib import contextmanager
@@ -42,16 +42,15 @@ from engine.market_data.curves import ZeroCurve
 from engine.market_data.curves import ZeroCurve as HwZeroCurve
 from engine.market_data.market import index_name
 from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfig, simulate
-from engine.pricing.bermudan import bermudan_cube, calibration_basket, contract_exercise_dates, path_sigmas
+from engine.pricing.bermudan import bermudan_cube, calibration_basket
 from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
 from engine.pricing.cube import value_today
-from engine.pricing.european import european_terms, volatility_on_path
+from engine.pricing.european import european_terms
 from engine.pricing.legs import path_fixings
 from engine.run import PortfolioRequest, RunConfig, price_portfolio
 from engine.solvers import roots
 from engine.solvers.roots import SOLVERS, Steps, implicit_root, solve
 from tests.support import portfolio as shared
-from tests.support.compiles import count_compiles
 
 STEPS = Steps(bisection=100, newton=12)
 EPS = float(np.finfo(np.float64).eps)
@@ -217,26 +216,17 @@ AGREEMENT = 4e-12
 @pytest.fixture(scope="module")
 def problems():
     """`(label, basket, disc, index, vols)` of every bootstrap on the parity markets: each
-    option of the shared portfolio today and on 64 LGM paths on every path date, and the
-    ORE-calibration tests' tenor basket."""
+    option of the shared portfolio today, and the ORE-calibration tests' tenor basket. (Until
+    2026-10-12 the options were also recalibrated on every path date, and these were the
+    baskets of 64 LGM paths too: I-49.)"""
     market = shared.market()
     surface = market.swaption_vols("USD")
     disc = ZeroCurve.from_config(market.currency("USD").discount_curve)
     index = ZeroCurve.from_config(market.index_curve("USD", index_name("USD", 6)))
-    sm = simulate(market, CamConfig(dates=DATES, base_currency="USD", samples=64, seed=3,
-                                    ir={"USD": LgmConfig(0.03, 0.01, ("1Y", "2Y", "5Y"), ("9Y", "8Y", "5Y"))}))
     out = []
     for cfg in OPTIONS:
-        engine = LgmSwaptionEngineConfig()
-        basket = calibration_basket(cfg, engine, ASOF, ASOF)
+        basket = calibration_basket(cfg, LgmSwaptionEngineConfig(), ASOF)
         out.append((f"{cfg.trade_id} today", basket, disc, index, basket_vols(basket, surface, ASOF)))
-        for j, date in enumerate(sm.dates):
-            basket = calibration_basket(cfg, engine, date, ASOF)
-            if basket:
-                vols = [volatility_on_path(surface, ASOF, date, b.vol_option_time, b.vol_swap_length, "ForwardVariance")
-                        for b in basket]
-                out.append((f"{cfg.trade_id} on {date}", basket, sm.discount["USD"].on_date(j),
-                            sm.index[index_name("USD", 6)].on_date(j), np.asarray(vols)))
     tenors = build_basket(ASOF, ["1Y", "2Y", "3Y", "5Y"], ["9Y", "8Y", "7Y", "5Y"])
     out.append(("tenor basket today", tenors, disc, index, basket_vols(tenors, surface, ASOF)))
     return out
@@ -458,76 +448,25 @@ class TestTheSetting:
 
 
 # =============================================================================
-# The path dates batched
+# An American with no calibration helper left on a path date (I-82)
 # =============================================================================
 ENGINE = LgmSwaptionEngineConfig(n_per_std=8, std_devs=4.0)
-PATH_DATES = tuple(ASOF + ORE.Period(m, ORE.Months) for m in (1, 2, 3, 6, 9, 12, 15, 18, 24))
 
 
-@pytest.fixture(scope="module")
-def path_market():
-    market = shared.market()
-    return market, simulate(market, CamConfig(dates=PATH_DATES, base_currency="USD", samples=16, seed=5,
-                                              ir={"USD": LgmConfig(0.03, 0.01)}))
-
-
-@pytest.mark.parametrize("solver", SOLVERS)
-def test_dates_batched_equal_one_date_at_a_time(path_market, solver):
-    """Every date's volatilities equal its own bootstrap on that date's path curves: under
-    Newton, batched over dates, to the root's resolution (XLA vectorizes another shape); under
-    the reference, which keeps one date per call, bit for bit."""
-    market, sm = path_market
-    engine = dataclasses.replace(ENGINE, solver=solver)
-    surface = market.swaption_vols("USD")
-    for cfg in OPTIONS:
-        sigmas = path_sigmas(cfg, engine, market, sm, "ForwardVariance")
-        assert sorted(sigmas) == [j for j, d in enumerate(sm.dates) if any(e > d for e in contract_exercise_dates(cfg))]
-        for j, sigma in sigmas.items():
-            basket = calibration_basket(cfg, engine, sm.dates[j], ASOF)
-            vols = [volatility_on_path(surface, ASOF, sm.dates[j], b.vol_option_time, b.vol_swap_length,
-                                       "ForwardVariance") for b in basket]
-            one = bootstrap_sigma(basket, sm.discount["USD"].on_date(j), sm.index[index_name("USD", 6)].on_date(j),
-                                  np.asarray(vols), engine.reversion, solver)
-            np.testing.assert_allclose(np.asarray(sigma.times), one.times, rtol=0, atol=0)
-            np.testing.assert_allclose(np.asarray(sigma.values), np.asarray(one.values),
-                                       rtol=AGREEMENT if solver == "Newton" else 0,
-                                       err_msg=f"{cfg.trade_id} on {sm.dates[j]}")
-
-
-def test_one_bootstrap_program_per_basket_shape_and_power_of_two(path_market):
-    """A Bermudan whose dates group differently, but into the same powers of two, compiles no
-    new bootstrap; the dates are not a program each."""
-    market, sm = path_market
-    cfg = next(c for c in OPTIONS if type(c).__name__ == "BermudanSwaptionConfig")
-    path_sigmas(cfg, ENGINE, market, sm, "ForwardVariance")
-    later = dataclasses.replace(sm, dates=sm.dates[1:], times=sm.times[1:],
-                                discount={k: _drop_first_date(v) for k, v in sm.discount.items()},
-                                index={k: _drop_first_date(v) for k, v in sm.index.items()})
-    with count_compiles() as counter:
-        path_sigmas(cfg, ENGINE, market, later, "ForwardVariance")
-    assert counter["jit__bootstrap_bucket"] == 0, dict(counter)
-
-
-def _drop_first_date(curves):
-    return dataclasses.replace(curves, tenor_times=curves.tenor_times[1:], log_discounts=curves.log_discounts[:, 1:],
-                               level=curves.level[1:])
-
-
-def test_a_date_with_an_exercise_left_and_no_helper_keeps_the_engine_volatility():
+def test_a_date_with_an_exercise_left_and_no_helper_prices_on_the_model_as_built():
     """An American on a date after its window's last reference-grid date (2031-01-30) and
-    before its last exercise (2031-02-03): no helper is left. It raised `ValueError: Need at
-    least one array to stack` before 2026-10-07; it prices on the engine's volatility, as a
-    calibration today with no helper does."""
+    before its last exercise (2031-02-03): no helper of the trade's basket is left there. It
+    raised `ValueError: Need at least one array to stack` before 2026-10-07, when the engine
+    recalibrated on every path date (I-82); since 2026-10-12 the date prices on the LGM ORE
+    built the trade with (I-49)."""
     cfg = shared.trades()["american-payer"]
     market = shared.market()
     date = ORE.Date(1, 2, 2031)
-    assert not calibration_basket(cfg, ENGINE, date, ASOF) and cfg.last_exercise_date > date
+    assert not calibration_basket(cfg, ENGINE, date) and cfg.last_exercise_date > date
     sm = simulate(market, CamConfig(dates=(ORE.Date(30, 7, 2027), date), base_currency="USD", samples=16,
                                     ir={"USD": LgmConfig(0.03, 0.01)}))
-    sigmas = path_sigmas(cfg, ENGINE, market, sm, "ForwardVariance")
-    assert np.asarray(sigmas[1].values).tolist() == [ENGINE.volatility]
     fixings = path_fixings(6, ASOF, sm.dates, sm.times, sm.index[index_name("USD", 6)])
-    cube = np.asarray(bermudan_cube(cfg, ENGINE, market, sm, fixings, "ForwardVariance"))
+    cube = np.asarray(bermudan_cube(cfg, ENGINE, market, sm, fixings))
     assert cube.shape == (16, 2) and np.all(np.isfinite(cube)) and np.all(cube[:, 1] >= 0.0)
     result = price_portfolio(PortfolioRequest(market=market, trades=[cfg], config=RunConfig(
         simulation=CamConfig(dates=sm.dates, base_currency="USD", samples=16, ir={"USD": LgmConfig(0.03, 0.01)}),

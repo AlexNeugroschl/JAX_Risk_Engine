@@ -77,7 +77,7 @@ their date. What closed which issue:
 |---|---|
 | The model is ORE's `<LGM>` with `ReversionType`/`VolatilityType` `HullWhite` (`IrLgm1fPiecewiseConstantHullWhiteAdaptor`): α(t) = σ(t)e^{at}, ζ(t) = ∫σ²e^{2as}ds, H(t) = (1 − e^{−at})/a, simulated exactly under the LGM measure by the CAM; its curves are its own bond prices, fitted to today's curve by construction | [I-42](../known-issues.md#i-42), [I-44](../known-issues.md#i-44) |
 | The model's exact LGM numeraire | [I-45](../known-issues.md#i-45) |
-| Every trade valued by `engine.pricing` on the paths: legs (paid flows drop out, path fixings), `OptionWrapper`, bond legs, per-trade basket recalibrated per path, vectorized on device | [I-04](../known-issues.md#i-04) (model half), [I-43](../known-issues.md#i-43), [I-24](../known-issues.md#i-24), [I-47](../known-issues.md#i-47), [I-62](../known-issues.md#i-62) |
+| Every trade valued by `engine.pricing` on the paths: legs (paid flows drop out, path fixings), `OptionWrapper`, bond legs, per-trade LGM as ORE built it on the as-of date (I-49), vectorized on device | [I-04](../known-issues.md#i-04) (model half), [I-43](../known-issues.md#i-43), [I-24](../known-issues.md#i-24), [I-47](../known-issues.md#i-47), [I-62](../known-issues.md#i-62) |
 | Bachelier on the market volatility is the default European engine for every model; Jamshidian is an option with its own Hull-White model | [I-46](../known-issues.md#i-46) |
 | Trades name currency and index only; a model or curve field on a trade is refused | [I-63](../known-issues.md#i-63) |
 | `evaluation_date` and `trade_id` required keyword fields on every trade config | [I-64](../known-issues.md#i-64), [I-10](../known-issues.md#i-10) (configs) |
@@ -154,7 +154,7 @@ analytics.
     "base_currency": "USD",
     "models":      { "ir": {"USD": {"model": "LGM", ...}}, "fx_volatilities": {}, "correlations": {} },
     "simulation":  { "dates": [...], "samples": 4096, "seed": 42, "curve_tenors": [...] },
-    "pricing":     { "european": {...}, "bermudan": {...}, "american": {...}, "recalibrate": true },
+    "pricing":     { "european": {...}, "bermudan": {...}, "american": {...} },
     "sensitivity": { "method": "Bump", "curve_shift": 1e-4, ... },
     "exposure":    { "pfe_quantiles": [0.95, 0.99] },
     "market_risk": { "scenarios": {...}, "quantiles": [0.99, 0.975], "batch_size": 256 },

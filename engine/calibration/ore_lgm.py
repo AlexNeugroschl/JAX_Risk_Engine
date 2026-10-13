@@ -10,7 +10,8 @@ simulated path.
     deviations when further out (`createSwaptionHelper`'s fallback rule 1).
   * Market value (`market_price`): the helper's `BachelierSwaptionEngine` value on its own
     ATM forward and annuity (nominal 1), out of the money (`SwaptionHelper`: receiver when
-    the strike is at or below the forward).
+    the strike is at or below the forward); at a zero volatility its intrinsic value, as
+    QuantLib's formula gives it (`engine.models.bachelier`).
   * Model value (`price_pair`, with the market value): `AnalyticLgmSwaptionEngine` with ORE's default
     `FloatSpreadMapping::proRata`: the swaption is priced on the discount curve alone, and the
     difference between each floating coupon and its discount-curve "flat" amount is moved
@@ -22,13 +23,21 @@ simulated path.
     Brent at accuracy 1e-6; here each bucket's volatility is the root on [1e-6, 0.2], and y*
     the root of `yStarHelper`, both to float64 rounding with the configured solver
     (`engine.solvers.roots`, decision A-21): the same roots where they exist, more exactly.
+  * Acceptance (`BootstrapResult.misses`, `require_accepted`): `LgmBuilder::calibrate`'s. The
+    calibration error is the root mean square over the basket of each helper's relative price
+    error |market - model| / market (`getCalibrationError`, `RelativePriceError`), and a
+    calibration whose error is not below the tolerance (ORE's `Tolerance`, or the cross-asset
+    model's `BootstrapTolerance`) misses: a helper no non-negative variance reaches (its bucket
+    at the bracket's floor), a non-finite helper value (a zero ATM volatility's market value is
+    0), and a bucket at the bracket's ceiling, where ORE's unbounded optimizer would go on
+    (I-73). ORE then fails the build unless `ContinueOnCalibrationError`; the engine refuses a
+    miss the same way (`CalibrationError`; `ContinueOnCalibrationError` is not offered, A-24).
 
 Every pricing function takes discount and index curves of either type (`ZeroCurve` today,
-`DiscountCurve` on a path) and broadcasts over their leading batch axes, so one call
-calibrates every path at once; `bootstrap_sigma(..., dated=True)` calibrates the baskets of
-several dates, of one shape, at once as well.
+`DiscountCurve` on a path) and broadcasts over their leading batch axes.
 """
 import dataclasses
+import math
 from dataclasses import dataclass, fields
 from functools import partial
 from typing import List, Optional, Sequence, Union
@@ -45,6 +54,7 @@ from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER, resolve_accrual
 from engine.market_data.market import (
     VOL_BUSINESS_DAY_CONVENTION, VOL_CALENDAR, SwaptionVolSurface, swap_length, swap_length_between,
 )
+from engine.models.bachelier import bachelier
 from engine.models.lgm import H as lgm_H
 from engine.precision import matmul
 from engine.solvers.roots import DEFAULT_SOLVER, Steps, solve
@@ -55,6 +65,25 @@ MAX_ATM_STD_DEV = 3.0
 
 #: The bracket of one bucket's volatility, as `engine.calibration.lgm`'s.
 SIGMA_BRACKET = (1e-6, 0.20)
+
+#: The default acceptance tolerance of a calibration's error (`BootstrapResult.misses`). ORE has
+#: no default: its `Tolerance` (a trade's LGM) and `BootstrapTolerance` (the cross-asset model)
+#: must be configured. 1e-4 is the value of ORE's shared example configuration
+#: (Examples/Input/pricingengine.xml), of its products example's American swaption and of every
+#: example simulation's `BootstrapTolerance`; the products example's Bermudan takes 0.20.
+BOOTSTRAP_TOLERANCE = 1e-4
+
+
+def check_tolerance(tolerance: float, name: str) -> None:
+    """Refuse an acceptance tolerance that is not finite and positive, naming the setting."""
+    if not (isinstance(tolerance, (int, float)) and math.isfinite(tolerance) and tolerance > 0.0):
+        raise ValueError(f"{name} must be finite and > 0 (ORE compares the calibration error with it); "
+                         f"got {tolerance!r}")
+
+
+class CalibrationError(ValueError):
+    """A calibration that misses ORE's acceptance (`require_accepted`), as `LgmBuilder` fails
+    without `ContinueOnCalibrationError`."""
 
 #: Steps of a bucket's volatility and of a helper's y* (`engine.solvers.roots`). Bisection's
 #: are the counts before Newton (A-21). Newton's are measured (2026-10-07, the shared sloped market
@@ -110,7 +139,7 @@ class BasketInstrument:
 
     def astype(self, dtype) -> "BasketInstrument":
         """The same helper with every real-valued array in `dtype`, so it prices in the
-        dtype of the curves it is given (a float32 path's recalibration stays float32)."""
+        dtype of the curves it is given."""
         cast = {f.name: np.asarray(getattr(self, f.name), dtype=dtype) for f in fields(self)
                 if isinstance(getattr(self, f.name), np.ndarray) and getattr(self, f.name).dtype.kind == "f"}
         return dataclasses.replace(self, **cast)
@@ -155,7 +184,7 @@ def build_basket(
     Expiries and terms are both tenors (`"1Y"`, the CAM's basket) or both dates (a trade's
     exercise dates and maturity). A date term is extended to at least one month past the
     helper's start (`getExpiryAndTerm`). `deal_strikes[i] = None` means ATM. The vols are
-    read separately (`basket_vols`), since on a path they depend on the date."""
+    read separately (`basket_vols`, or the pricing context's lookup on a bumped or rolled market)."""
     if len(expiries) != len(terms):
         raise ValueError("expiries and terms must have the same length")
     deal_strikes = list(deal_strikes) if deal_strikes is not None else [None] * len(expiries)
@@ -250,13 +279,11 @@ def _strike_and_receiver(instrument: BasketInstrument, legs: _Legs, atm_std_dev)
 
 def _market(instrument: BasketInstrument, legs: _Legs, vol):
     """(market value, strike, is_receiver): Bachelier on the ATM forward and annuity, with
-    `vol` the normal volatility ORE reads for the helper."""
+    `vol` the normal volatility ORE reads for the helper (its intrinsic value at a zero
+    volatility, 0 at the money)."""
     std_dev = vol * jnp.sqrt(instrument.expiry_time)
     strike, receiver = _strike_and_receiver(instrument, legs, std_dev)
-    w = jnp.where(receiver, -1.0, 1.0)
-    d = (legs.forward - strike) / std_dev
-    value = legs.annuity * (w * (legs.forward - strike) * norm.cdf(w * d) + std_dev * norm.pdf(d))
-    return value, strike, receiver
+    return legs.annuity * bachelier(legs.forward, strike, std_dev, call=~receiver), strike, receiver
 
 
 def market_price(instrument: BasketInstrument, disc, index, vol) -> jax.Array:
@@ -335,12 +362,47 @@ def _y_star_helper(y, params):
 class BootstrapResult:
     """Bucket times (the helpers' expiries but the last) and values `[..., n]`, with each
     helper's market and model value at the result. `hit_ceiling` flags a bucket that could
-    not reach its market price inside the bracket."""
+    not reach its market price inside the bracket; `rmse` `[...]` is ORE's calibration error,
+    the root mean square of the helpers' relative price errors (`getCalibrationError`)."""
     times: np.ndarray
     values: jax.Array
     market: jax.Array
     model: jax.Array
     hit_ceiling: jax.Array
+    rmse: jax.Array
+
+    def misses(self, tolerance: float) -> jax.Array:
+        """`[...]`: True where the calibration misses ORE's acceptance (see the module
+        docstring): its error not below `tolerance` (a non-finite one included), or a bucket at
+        the bracket's ceiling."""
+        return _misses(self.rmse, self.hit_ceiling, tolerance)
+
+
+@jax.jit
+def _misses(rmse: jax.Array, hit_ceiling: jax.Array, tolerance) -> jax.Array:
+    """`BootstrapResult.misses`, one program per shape whatever the tolerance."""
+    return ~(rmse < tolerance) | jnp.any(hit_ceiling, axis=-1)
+
+
+def require_accepted(result: BootstrapResult, tolerance: float, what: str) -> None:
+    """Refuse an unbatched calibration that misses ORE's acceptance (`BootstrapResult.misses`),
+    with a `CalibrationError` naming `what` (the trade or currency, and the date), its error and
+    the tolerance, as `LgmBuilder` fails without `ContinueOnCalibrationError`."""
+    if not bool(result.misses(tolerance)):
+        return
+    rmse = float(result.rmse)
+    reasons = []
+    if not np.isfinite(rmse):
+        reasons.append("a helper's market or model value is not finite (a zero volatility at the money has no "
+                       "relative price error)")
+    elif not rmse < tolerance:
+        reasons.append(f"the root mean square of its helpers' relative price errors is {rmse:.3g}, not below the "
+                       f"tolerance {tolerance:g}")
+    ceiling = np.flatnonzero(np.asarray(result.hit_ceiling))
+    if ceiling.size:
+        reasons.append(f"helper(s) {ceiling.tolist()} need a volatility above the bracket's {SIGMA_BRACKET[1]}")
+    raise CalibrationError(f"{what}: the LGM calibration misses its basket (ORE's LgmBuilder acceptance): "
+                           + "; ".join(reasons))
 
 
 def ceiling_tolerance(dtype) -> float:
@@ -352,60 +414,52 @@ def ceiling_tolerance(dtype) -> float:
 
 
 def bootstrap_sigma(basket: Sequence[BasketInstrument], disc, index, vols, reversion: float,
-                    solver: str = DEFAULT_SOLVER, dated: bool = False) -> BootstrapResult:
+                    solver: str = DEFAULT_SOLVER) -> BootstrapResult:
     """`calibrateVolatilitiesIterative` over `basket` (ascending expiries): bucket i covers
     [expiry_{i-1}, expiry_i) (the last is open), and zeta(expiry_i) = zeta(expiry_{i-1}) +
     sigma_i^2 (expiry_i - expiry_{i-1}). `vols` is `[..., n]` (or `[n]`), matched to the
-    curves' batch axes. Computed in the curves' dtype (float64 for a calibration today; the
-    pricing stage's compute dtype on a path), each root by `solver`. Newton starts each bucket
+    curves' batch axes. Computed in the curves' dtype (float64: every calibration is on a
+    market of the as-of date, A-10), each root by `solver`. Newton starts each bucket
     at its helper's market volatility, close to the bucket's in level, and never at an edge of
     the bracket (where a bucket after a floored one would start, the slope vanishes).
 
-    `dated`: the baskets of several dates of one shape at once, each instrument stacked over
-    the dates on its first axis (`stack_instruments`), the curves' and `vols`' first axis the
-    dates too; `times` is then `[dates, n - 1]`.
-
     Each bucket is one jitted program per helper shape and curve shape (`_bootstrap_bucket`),
     whatever the dates, rates and volatilities (I-22); a basket's helpers recur in the
-    baskets of later dates and other trades, which reuse them."""
+    baskets of other trades and bumped markets, which reuse them."""
     if not basket:
         raise ValueError("a bootstrap needs at least one helper")
-    expiries = np.array([b.expiry_time for b in basket])                  # [n] or [n, dates]
-    if np.any(np.diff(expiries, axis=0) <= 0.0):
+    expiries = np.array([b.expiry_time for b in basket])
+    if np.any(np.diff(expiries) <= 0.0):
         raise ValueError("basket expiries must increase strictly")
     dtype = curve_dtype(disc)
     vols = jnp.asarray(vols, dtype=dtype)
-    dt = np.diff(expiries, axis=0, prepend=0.0)
+    dt = np.diff(expiries, prepend=0.0)
     values, markets, models, ceiling = [], [], [], []
     zeta_before = jnp.zeros(vols.shape[:-1], dtype=dtype)
     for i, instrument in enumerate(basket):
         sigma, market, model, hit, zeta_before = _bootstrap_bucket(
             instrument.astype(dtype), disc, index, vols[..., i], zeta_before, jnp.asarray(dt[i], dtype=dtype),
-            reversion, solver, dated)
+            reversion, solver)
         values.append(sigma)
         markets.append(market)
         models.append(model)
         ceiling.append(hit)
     stack = lambda xs: jnp.stack(xs, axis=-1)  # noqa: E731
-    return BootstrapResult(times=expiries[:-1].T, values=stack(values), market=stack(markets),
-                           model=stack(models), hit_ceiling=stack(ceiling))
+    market, model = stack(markets), stack(models)
+    return BootstrapResult(times=expiries[:-1], values=stack(values), market=market, model=model,
+                           hit_ceiling=stack(ceiling), rmse=_calibration_error(market, model))
 
 
-def stack_instruments(instruments: Sequence[BasketInstrument]) -> BasketInstrument:
-    """One helper of each of several dates' baskets, of one shape, as one instrument whose
-    every field has the dates on its first axis (`bootstrap_sigma(..., dated=True)`)."""
-    return jax.tree_util.tree_map(lambda *fields: np.stack([np.asarray(f) for f in fields]), *instruments)
+@jax.jit
+def _calibration_error(market: jax.Array, model: jax.Array) -> jax.Array:
+    """`getCalibrationError` with `RelativePriceError` over the last axis, the basket."""
+    return jnp.sqrt(jnp.mean(jnp.square((market - model) / market), axis=-1))
 
 
-@partial(jax.jit, static_argnums=(7, 8))
-def _bootstrap_bucket(instrument: BasketInstrument, disc, index, vol, zeta_before, dt, reversion, solver: str,
-                      dated: bool):
-    """One bucket of the bootstrap, vmapped over the first axis of every argument but
-    `reversion` when `dated`."""
-    bucket = partial(_bucket, reversion=reversion, solver=solver)
-    if dated:
-        return jax.vmap(bucket)(instrument, disc, index, vol, zeta_before, dt)
-    return bucket(instrument, disc, index, vol, zeta_before, dt)
+@partial(jax.jit, static_argnums=(7,))
+def _bootstrap_bucket(instrument: BasketInstrument, disc, index, vol, zeta_before, dt, reversion, solver: str):
+    """One bucket of the bootstrap (`_bucket`): one program per helper and curve shape."""
+    return _bucket(instrument, disc, index, vol, zeta_before, dt, reversion=reversion, solver=solver)
 
 
 def _bucket(instrument: BasketInstrument, disc, index, vol, zeta_before, dt, *, reversion, solver: str):

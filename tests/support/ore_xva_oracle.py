@@ -28,7 +28,10 @@ with constant HullWhite reversion, the volatility `Hagan` (`LgmConfig`) or `Hull
 time grid the basket's expiries) to the tenor basket at ATM; the simulation market's curves at
 the configured tenors, log-linear, flat forward, and the swaption volatilities not simulated
 but decayed (`ReactionToTimeDecay`). ORE values every trade with the engine's configured
-engine and recalibrates options on each path and date. One currency, no FX or equity
+engine, each built once on the simulation market of the as-of date: ORE's exposure simulation
+never recalibrates an option's model (its `ValuationEngine` gets no model builders). The
+calibrations' tolerances are the configuration's (`Tolerance`, `BootstrapTolerance`). One
+currency, no FX or equity
 (the two-currency end-to-end test is F-04); what the oracle cannot express is refused
 by name.
 """
@@ -121,7 +124,7 @@ def simulation_xml(asof: ORE.Date, config: CamConfig, indices: Sequence[str], vo
   <CrossAssetModel>
     <DomesticCcy>{CCY}</DomesticCcy>
     <Currencies><Currency>{CCY}</Currency></Currencies>
-    <BootstrapTolerance>0.0001</BootstrapTolerance>
+    <BootstrapTolerance>{config.bootstrap_tolerance!r}</BootstrapTolerance>
     <Measure>LGM</Measure>
     <Discretization>Exact</Discretization>
     <InterestRateModels>
@@ -183,9 +186,9 @@ def ore_xva_run(market: Market, trades: Sequence, simulation: CamConfig, pricing
     """ORE's exposure simulation of `trades` on `market` under `simulation` and `pricing` (see
     the module docstring). Raises `RuntimeError` with ORE's messages if a trade or the model
     fails to build."""
-    if pricing.european != "Bachelier" or not pricing.recalibrate:
-        raise NotImplementedError("the XVA oracle prices Europeans by ORE's Bachelier engine and recalibrates "
-                                  "options on every path (PricingConfig's defaults)")
+    if pricing.european != "Bachelier":
+        raise NotImplementedError("the XVA oracle prices Europeans by ORE's Bachelier engine (PricingConfig's "
+                                  "default)")
     data = market.currency(CCY)
     index = index_name(simulation.ir[CCY].swap_index.index_tenor_months)
     if set(data.index_curves) != {index} or list(data.index_curves[index].times) != list(data.discount_curve.times):

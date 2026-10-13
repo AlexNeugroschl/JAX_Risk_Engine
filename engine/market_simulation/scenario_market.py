@@ -88,6 +88,9 @@ class ScenarioMarket:
     fx: foreign currency -> [S, D], domestic units per unit of it.
     equity: name -> [S, D] spot.
     states: [S, D, d], the CAM states (for pricers that condition on them).
+    tenors: the simulation market's curve tenors (ORE's `ScenarioSimMarketParameters`), on
+        which it holds every curve, the as-of date's included: where ORE builds every trade
+        (`engine.pricing.context.simulation_market_today`).
     simulation_formats: the formats `simulate` stored the shocks and the states in, read from
         those arrays (`engine.precision.format_name`), which it does not keep: `{"shocks": ...,
         "states": ...}`, for the precision report. Empty for a market not from `simulate`.
@@ -106,6 +109,7 @@ class ScenarioMarket:
     fx: Dict[str, jax.Array]
     equity: Dict[str, jax.Array]
     states: jax.Array
+    tenors: Tuple[str, ...]
     simulation_formats: Mapping[str, str] = dataclasses.field(default_factory=dict)
 
     @property
@@ -295,4 +299,5 @@ def build_scenario_market(
         fx={c.currency: fx[j] for j, c in enumerate(model.fx)},
         equity={c.name: equity[k] for k, c in enumerate(model.eq)},
         states=states,
+        tenors=tuple(tenors),
     )

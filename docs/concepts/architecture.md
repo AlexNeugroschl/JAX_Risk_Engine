@@ -143,8 +143,8 @@ JAX_Risk_Engine/
 │   │   ├── lgm_grid.py                   ORE's grid engine: the numeric LGM backward
 │   │   │                                 induction every Bermudan/American is priced by
 │   │   ├── bermudan.py                   Each Bermudan/American on its own calibrated LGM,
-│   │   │                                 recalibrated per path (path_sigmas: the dates of
-│   │   │                                 one basket shape in one call under Newton)
+│   │   │                                 calibrated where ORE builds the trade and kept on
+│   │   │                                 every path, as ORE keeps it (built_sigma)
 │   │   ├── options.py                    OptionWrapper's exercise, physical and cash
 │   │   ├── cube.py                       The valuation cube: value_portfolio / value_today
 │   │   │                                 / value_on, validate_trades, bond legs
@@ -262,7 +262,9 @@ simpler, liquid options before pricing a more complex trade off it. `engine/cali
 does that step as ORE's `LgmBuilder` does: per currency for the cross-asset model
 (`cam.py`, the CAM's `CalibrationSwaptions`, for the LGM or the Hull-White model) and per
 Bermudan/American for its own engine (`ore_lgm.py`, a co-terminal basket built from the
-trade, recalibrated on every path). See [Calibration](../reference/calibration.md).
+trade, calibrated where ORE builds the trade and kept on every path, or recalibrated on every
+path as an option), each fit accepted or refused as ORE's builder accepts it. See
+[Calibration](../reference/calibration.md).
 
 Bermudan/American Vega exists because of it: "how much does this Bermudan's value change if
 a market quote moves" is only a well-posed question once there is a market-quote-to-model
@@ -292,8 +294,9 @@ reporting currency. Each trade is priced on each path by its t=0 engine, as ORE'
 `ValuationEngine` does: swaps by discounting their legs with path fixings and paid flows
 dropped (`legs.py`); Europeans by Bachelier on the market volatility seen from the date
 (`european.py`) or Jamshidian on a configured Hull-White model (`jamshidian.py`);
-Bermudans/Americans by the grid engine on their own basket, recalibrated per path
-(`bermudan.py`); bonds by discounting their remaining flows. After an exercise, ORE's
+Bermudans/Americans by the grid engine on the LGM calibrated to their own basket when ORE
+builds the trade, on the simulation market of the as-of date, and kept, as ORE's exposure
+simulation keeps it (`bermudan.py`); bonds by discounting their remaining flows. After an exercise, ORE's
 `OptionWrapper` carries the swap entered (physical) or nothing (cash) (`options.py`).
 ORE's own trade schedules come from `engine/instruments/schedules.py`, so "when does this swap
 pay cash, and how much" is computed as a trading desk's software computes it.
@@ -474,7 +477,7 @@ format, stacked into the same product (2026-10-11, decision A-23): rounded once,
 be common to every path, a bias. The single pass is a compute format of its own,
 `<format>_1x`. The
 Bermudan/American rollback keeps one format, float32 or float64, until it is rewritten so
-(after I-49).
+(F-07, I-83).
 
 **The cast points.** Only these read the policy; everything between them follows the dtype
 of its inputs (kernels cast their own constant inputs, coupon tables, volatilities and

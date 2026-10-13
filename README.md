@@ -25,7 +25,8 @@ double-precision simulations in the same wall-clock time.
 - Pricing, as ORE's default engines price: interest rate swaps (`DiscountingSwapEngine`),
   European swaptions (Bachelier on market swaption volatilities, physical or cash settled),
   Bermudan and American swaptions (each on its own LGM, calibrated to ORE's basket for the
-  trade and priced by ORE's numeric LGM engine), and US Treasury bills and notes
+  trade, accepted or refused as ORE's builder accepts the fit, and priced by ORE's numeric LGM
+  engine), and US Treasury bills and notes
 - Exposure profiles with ORE's `ExposureCalculator` definitions: EPE, ENE, EE_B, EEE_B, PFE,
   time-weighted EPE_B/EEPE_B and the Basel one-year figures
 - Sensitivities as ORE's sensitivity analysis defines them: bump-and-revalue Delta and Gamma
@@ -90,16 +91,18 @@ against ORE running in the same process:
   sloped two-curve market).
 - On simulated paths each component agrees with ORE: the cross-asset model's analytics to
   `1e-12` (the Hull-White model's bonds against QuantLib's `HullWhite` too), and every
-  pricer on a path's curves against the matching ORE engine to between `1e-12` and `1e-8`
-  (a Bermudan recalibrated on the path), under either interest-rate model.
+  pricer on a path's curves against the matching ORE engine to between `1e-12` and `1e-10`,
+  under either interest-rate model.
 - Market-risk VaR and ES agree with ORE repricing every shocked scenario and running its
   own `RiskStatistics`: swaps, bonds and European swaptions per scenario to about `1e-14`,
-  Bermudans to `2e-13`.
+  Bermudans (on a fixed LGM) to `2e-13`. A calibrated Bermudan keeps today's calibration under
+  every scenario where ORE recalibrates it, and the result says so
+  ([I-112](docs/planning/known-issues.md#i-112)).
 - The assembled simulation and exposure against ORE's own exposure simulation, run in-process:
-  on ORE's paths every swap's, European's and bond's NPV equals ORE's cube to `3e-11` of its
-  scale, ORE's exposure definitions hold on its cube to `2e-13`, and the profiles agree in
-  distribution. Bermudans and Americans are `0.5–4%` apart on the paths
-  ([I-49](docs/planning/known-issues.md#i-49)), and the sensitivities are not yet compared with
+  on ORE's paths every trade's NPV equals ORE's cube to `3e-11` of its scale, calibrated
+  Bermudans and Americans included (each keeps the LGM calibrated when the trade was built on
+  the as-of date, as ORE's simulation does), ORE's exposure definitions hold on its cube to
+  `2e-13`, and the profiles agree in distribution. The sensitivities are not yet compared with
   ORE's ([I-51](docs/planning/known-issues.md#i-51)).
 
 See [ORE Parity](docs/reference/ore-parity.md) for the full mapping.

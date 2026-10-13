@@ -40,7 +40,7 @@ from engine.api.requests import MarketTradeSchema
 from engine.api.requests import PrecisionSchema, StagePrecisionSchema
 from engine.calibration.ore_lgm import SIGMA_BRACKET, bootstrap_sigma, ceiling_tolerance
 from engine.market_data.curves import ZeroCurve
-from engine.market_simulation.config import build_cross_asset_model, simulate
+from engine.market_simulation.config import simulate
 from engine.precision import (
     BLOCK, FORMAT_NAMES, FORMATS, OFFSETS, OVERRIDES, RETIRED_SHAPE, ROUNDINGS, STAGES, Arithmetic, Overrides,
     Precision, StagePrecision, Stored, dtype_of, format_of, load, name_of, rounding_key, store,
@@ -815,13 +815,14 @@ class TestStrictPromotion:
 
 
 class TestRecalibrationInFloat32:
-    """The per-path recalibration runs at the pricing compute dtype; its ceiling is
-    resolvable there (§6.5)."""
+    """The bootstrap computes in its curves' dtype, and its ceiling is resolvable in float32
+    (§6.5). Every calibration of the pipeline is float64 since 2026-10-12, when the per-path
+    recalibration went (A-24); the bootstrap stays one implementation for any dtype."""
 
     def _bootstrap(self, dtype, vol_scale=1.0):
         cfg = shared.trades()["bermudan-payer-physical"]
         engine = LgmSwaptionEngineConfig()
-        basket = calibration_basket(cfg, engine, shared.ASOF, shared.ASOF)
+        basket = calibration_basket(cfg, engine, shared.ASOF)
         curve = lambda rates: ZeroCurve.from_config(shared.market().currency("USD").discount_curve, dtype=dtype) \
             if rates is None else ZeroCurve(jnp.asarray(shared.PILLARS, dtype), jnp.asarray(rates, dtype))  # noqa: E731
         disc, index = curve(None), curve(shared.FORWARDING)
@@ -1189,10 +1190,13 @@ class TestScaledStoragePipeline:
 #: §15.3), without block offsets, whose step per value they never coarsen. Regression guards, not
 #: acceptance (that is the storage harness's and I-55's evidence table). The largest errors are
 #: exercise decisions that flip on a path (a cash Bermudan worth 0 or 1.7% of its notional).
+#: bfloat16 simulation storage was measured again on 2026-10-12, when the options' LGM stopped
+#: being recalibrated on every path (I-49): one cash Bermudan's exercise flips on one of its 768
+#: cells (1.68e-2 of notional, a bias of 6.5e-5), every other cell as before.
 _SCALED_BOUNDS = {
     ("float16", "simulation"): (3e-4, 3e-6), ("float16", "market"): (4e-4, 1.2e-5),
     ("float16", "pricing"): (2e-3, 4e-5),
-    ("bfloat16", "simulation"): (2.5e-3, 1.1e-5), ("bfloat16", "market"): (7e-2, 2.7e-4),
+    ("bfloat16", "simulation"): (7e-2, 2.6e-4), ("bfloat16", "market"): (7e-2, 2.7e-4),
     ("bfloat16", "pricing"): (1.4e-2, 4.3e-4),
     ("float8_e4m3fn", "simulation"): (7e-2, 3.3e-4), ("float8_e4m3fn", "market"): (7e-2, 1.7e-3),
     ("float8_e4m3fn", "pricing"): (1.3e-1, 2.7e-2),

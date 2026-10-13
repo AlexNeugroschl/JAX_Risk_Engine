@@ -60,8 +60,8 @@ other documents cite the item (I-NN, F-NN), the decision (A-n), or a date, and
   relative to each array's largest magnitude (a Greek's to its trade's NPV): float64 to 1e-10,
   float32 to 1e-4. Formats below float32 are judged by the storage harness's statistical
   thresholds, not by the snapshot. A change beyond the margin is either a planned change of the
-  model (3.7 moves default Bermudan/American values on the paths towards ORE's) or a bug; a planned
-  one states its largest change per array and re-baselines. Nothing is held to bit-for-bit
+  model (as I-49 moved default Bermudan/American values on the paths onto ORE's, 2026-10-12) or a
+  bug; a planned one states its largest change per array and re-baselines. Nothing is held to bit-for-bit
   equality for its own sake, on CPU or GPU; the bisection solver stays as A-21's reference.
 - **Speed and JAX.** A new or changed pricer is a module-level jitted function that takes the
   trade's data as a pytree argument
@@ -102,11 +102,16 @@ valuation engine does. It matches ORE component by component: t=0 prices to 1e-1
 Europeans, bonds) and 4e-11 (calibrated Bermudans/Americans, at ORE's default `ShiftHorizon`
 since 2026-10-12, I-32), model analytics to 1e-12
 (the Hull-White model's bonds against QuantLib's `HullWhite` too), pricers on path curves to
-1e-8 – 1e-12 under either model, market-risk VaR/ES per scenario to 2e-13, and since
-2026-10-07 an ORE simulation run in-process is the reference for the assembled pipeline:
-swaps, Europeans and bonds equal it path by path (Bermudans and Americans 0.5–4% apart, I-49,
-which 3.7 closes; with their LGM uncalibrated they equal it too, the trade as ORE built it on the
-as-of date, since 2026-10-12). Sensitivities are not yet shown to equal ORE's. Since 2026-10-11 an option
+1e-10 – 1e-12 under either model, market-risk VaR/ES per scenario to 2e-13, and since
+2026-10-07 an ORE simulation run in-process is the reference for the assembled pipeline: every
+trade of the shared portfolio equals it path by path, Bermudans and Americans since 2026-10-12
+(to 1.9e-11), each the trade as ORE built it on the as-of date with the LGM it calibrated there,
+kept on every path, since ORE's exposure simulation never recalibrates (I-49; decision A-24
+removed the engine's per-path recalibration, which no ORE analytic does). Every LGM calibration
+is accepted or refused as ORE's builder accepts it, a miss named (I-73, 2026-10-12; the
+tolerance 1e-4 and one for the cross-asset model, A-24). Sensitivities are not yet shown to equal ORE's, and
+market risk holds a calibrated Bermudan's LGM where ORE's historical P&L recalibrates it (I-112,
+flagged on the result). Since 2026-10-11 an option
 has ORE's `LongShort` (I-101): a short is minus the long one in every engine, today, on the paths
 and in every risk figure, and equals ORE's short option booked through ORE's own trade builder,
 today and on ORE's paths.
@@ -172,7 +177,8 @@ rate, so it is where correctness and the trace are checked, not where speed is m
 ## Stage 3 — The focus: low precision, critical bugs, a robust API
 
 Low precision first where the three compete. The critical bugs are here because the precision
-work and the later stages build on the numbers they fix (3.7, 3.11). Both High defects
+work and the later stages build on the numbers they fix (3.11; the Bermudans and Americans on
+the paths, I-49 and I-73, closed 2026-10-12). Both High defects
 the project audit of 2026-10-10 found, each small and touching no path kernel, are fixed:
 market risk added trades' currencies unconverted (I-100, 2026-10-11, with VaR's rank at exact
 boundaries and colliding quantile keys, I-102), and a negative option notional meant a short
@@ -201,11 +207,10 @@ the results.
 
 | Step | Goal | Work | Closes | After | Size |
 |---|---|---|---|---|---|
-| 3.7 | Critical bug, precision | Reproduce ORE's two per-path recalibration details against `tests/test_ore_xva_parity.py`, until its Bermudan/American L3 cases (strict expected failures today, 0.5–4% apart; with the LGM uncalibrated they equal ORE's cube since 2026-10-12, so the gap is the recalibration's alone) pass; confirm an American's basket on a path against ORE's (decision A-7). ORE's calibration acceptance on every bootstrap: the basket's RMSE against `BootstrapTolerance`, a floor miss and a non-finite helper value (a zero ATM volatility) a miss as a ceiling is; refused today, counted per trade on the paths and carried as a result warning, as ORE's `LgmBuilder` warns | [I-49](known-issues.md#i-49), [I-73](known-issues.md#i-73) | — | M |
-| 3.8 | Precision | The Bermudan/American rollback and recalibration in difference form, as the other path kernels were rewritten (2026-10-10, [details/precision.md §8](details/precision.md#8-compute-below-float32)), the rollback as a matrix product; then its pricing stage takes any compute format, as the others' do (`RESTRICTED_PRODUCTS` empties). The matrix form holds one operator per step instead of one per path and step, so the demo's job runs at 65,536 and 262,144 paths, its peak memory measured against path count. Its products name their shared operand (A-23); being compute-bound, unlike the narrow products of 2026-10-10, they are where the second term's cost shows, measured beside the single pass | [F-07](features.md#f-07) (compute), [I-83](known-issues.md#i-83) | 3.7 | L |
+| 3.8 | Precision | The Bermudan/American rollback in difference form, as the other path kernels were rewritten (2026-10-10, [details/precision.md §8](details/precision.md#8-compute-below-float32)), the rollback as a matrix product; then its pricing stage takes any compute format, as the others' do (`RESTRICTED_PRODUCTS` empties). The exercise decision on each path and date is exposed by the option's wrapper, the precision harness measures the share of decisions each format flips (a cash-settled option's flipped exercise is its whole value, not a rounding: FP8 storage of the states or curves flips the cash Bermudan's exercise on 1.5–8% of the paths of a date, 2026-10-12), and the storage sanity bounds judge rounding apart from flipped decisions, measured again without them (decision A-24: the bfloat16 simulation-storage bound absorbs one flip until then). The matrix form holds one operator per step instead of one per path and step, so the demo's job runs at 65,536 and 262,144 paths, its peak memory measured against path count. Its products name their shared operand (A-23); being compute-bound, unlike the narrow products of 2026-10-10, they are where the second term's cost shows, measured beside the single pass | [F-07](features.md#f-07) (compute), [I-83](known-issues.md#i-83) | — | L |
 | 3.9 | Precision | Storage that lowers the peak: the exposure reductions over the stored columns trade by trade, each loaded at float64 alone, the netting set as a running float64 sum and PFE's quantiles on it, exact as today; the float64 cube built only when the result asks for it. The peak measured against path count at float64 and FP8 storage | [I-105](known-issues.md#i-105) | 3.8 | M |
 | 3.10 | Precision | FP4: storage with a variance correction through the block scales, compute emulated as FP8's is (2026-10-10); an unbiased rounding of the products' per-path operands, which FP8 compute needs already (round to nearest on its grid leaves a bias, I-98) and FP4's coarser grid more, chosen by the evidence table's path ceilings; multilevel estimation of quantiles (PFE, VaR, ES); standard errors from independent replicates within a run (randomized quasi-Monte Carlo; historical windows by block), since the paired correction's understates where the shocks or curves are stored in float16 or bfloat16 and blocks of paths did not fix it (I-111); its rows in the evidence table. Native FP4 compute on TPU 8t/8i is timed in 3.18 | [F-07](features.md#f-07) (FP4), [I-98](known-issues.md#i-98), [I-111](known-issues.md#i-111) | 3.8 | L |
-| 3.11 | Critical bug | *Parallel, can start now* (it moves no path kernel). Sensitivities against ORE's sensitivity analytic on the shared portfolio; the AD Greeks against the bump Greeks on the same sloped portfolio, until AD is ORE's Greek or is labelled as the derivative of a different quantity, with the gap stated | [I-51](known-issues.md#i-51), [I-78](known-issues.md#i-78) | — | M |
+| 3.11 | Critical bug | *Parallel, can start now* (it moves no path kernel). Sensitivities against ORE's sensitivity analytic on the shared portfolio; the AD Greeks against the bump Greeks on the same sloped portfolio, until AD is ORE's Greek or is labelled as the derivative of a different quantity, with the gap stated; a calibrated Bermudan's/American's LGM recalibrated inside the revaluation's price function under each market-risk scenario, as ORE's historical P&L recalibrates it, against ORE so recalibrating (the one calibration inside the price function serves the AD Greeks' fixed-calibration gap too) | [I-51](known-issues.md#i-51), [I-78](known-issues.md#i-78), [I-112](known-issues.md#i-112) | — | M |
 | 3.12 | API | *Parallel, can start now.* Every input checked before any work, on the host: a curve's pillars (non-empty, as many rates as times, finite, strictly increasing; negative rates allowed), an option's exercise leaving a whole period of each leg, the standalone calibration's notional positive, every API model strict (`extra="forbid"`); each refusal names the field or trade. 3.13's preflight runs them all | [I-103](known-issues.md#i-103) | — | S |
 | 3.13 | API | One run request in place of a route per engine function, as ORE runs a portfolio with a list of analytics: `POST /runs` with `market`, `portfolio`, `analytics` (`npv`, `exposure`, `sensitivities`, `market_risk`, `calibration`) and a `config` whose sections follow ORE's files, each setting in one place; one result with the configuration as run, which says what each figure is without the request beside it (reporting currency, dates, trade ids on every axis, each Greek array's factors, the Greeks method and calibration policy, the engine's revision and its jax, jaxlib and ORE versions); `GET /config/defaults`; an idempotency key; a Python entry, `run(RunRequest)`, in `run/`. Each analytic refuses a precision setting or configuration section it does not read, naming the field. The four routes and `/jobs` go, there being no client. The completeness test also checks each field's wiring: every field set to a non-default value arrives in the engine's configuration. A run of one analytic equals today's direct call within the margin ([design](details/configurable-engine.md#one-run-request-i-87-i-88-i-89)) | [I-87](known-issues.md#i-87), [I-88](known-issues.md#i-88), [I-89](known-issues.md#i-89), [I-95](known-issues.md#i-95) | 3.12 | M |
 | 3.14 | API | One LGM calibration: the standalone bootstrap (`calibrate_lgm_sigma`, its basket and Bachelier helper prices) retires once 3.13's `calibration` analytic returns what `POST /calibration/lgm` returned, or moves to `tests/support/` as an independent check ([design](details/package-layout.md#3-merges)) | [I-94](known-issues.md#i-94) | 3.13 | S |
@@ -224,19 +229,22 @@ Order within the stage:
   (2026-10-09, I-75) and the kernels it measures are rewritten (2026-10-10) but for the
   rollback. Their first measurements found a bias floor of compute below float32 (I-96), fixed
   on 2026-10-11 by carrying each product's shared operand in two terms (A-23), so swaps,
-  Europeans and bonds have evidence rows while 3.7 makes the Bermudan/American kernel ORE's on
-  the paths (its shift horizon is ORE's since 2026-10-12, I-32, the options' rows measured again); FP8's own rounding leaves a bias (I-98), which the table reads as a path ceiling until
+  Europeans and bonds have evidence rows, and since 2026-10-12 the Bermudan/American kernel is
+  ORE's on the paths (its shift horizon, I-32, and its model kept as ORE built it, I-49, the
+  options' rows measured again after each); FP8's own rounding leaves a bias (I-98), which the table reads as a path ceiling until
   3.10 chooses an unbiased rounding. The evidence table is built on them (I-55, 2026-10-11),
   every result warning of figures without a passing row. The rollback family is then rewritten once, after them (3.8), its rows
   follow, and its memory with the cube's (3.9) decides how many paths the research can run; FP4
   (3.10) closes the arithmetic. What remains of the precision research after
   the API steps, multi-host (3.16) and the timing (3.18), is measurement on hardware that has
   to be booked, not arithmetic.
-- **3.7 is a bug and a blocker both.** Default Bermudan/American values are 0.5–4% from
-  ORE's on the paths, all of it the per-path recalibration (I-32's shift horizon, done
-  2026-10-12, left them equal to ORE's cube with the LGM uncalibrated); the rollback family,
-  its evidence rows and Basel's IMM exposure all need it fixed first. 3.7 also makes a calibration that cannot fit its basket say so, as ORE
-  does, so no evidence row rests on a misfit model.
+- **The Bermudan/American kernel is ORE's on the paths** (2026-10-12). Its values were
+  0.5–4% from ORE's, all of it a per-path recalibration that ORE's exposure simulation never
+  makes (I-49): ORE keeps the LGM it calibrated when it built the trade. So the rollback family
+  (3.8), its evidence rows and Basel's IMM exposure build on ORE's numbers, and the rollback is
+  the kernel left to rewrite; the per-path recalibration is gone, since no ORE analytic
+  recalibrates on a path (decision A-24). A calibration that cannot fit its basket fails
+  explicitly, as ORE's does (I-73, A-24), so no evidence row rests on a misfit model.
 - **3.11 alongside.** The Greeks touch no path kernel, so they can be fixed at any time; Basel's
   FRTB-SA sensitivities rest on them.
 - **The API before TraderX and Basel.** 3.13 changes the HTTP contract and the way into the
@@ -247,8 +255,8 @@ Order within the stage:
   the day, and 3.13 carries it over. 3.15 comes before 3.16, which is written on the worker
   loop 3.15 changes.
 - **Numbers.** 3.12 to 3.16 move no number beyond the margin (3.12 refuses inputs that gave
-  wrong ones). 3.7 moves default Bermudan/American
-  numbers on the paths towards ORE's, and 3.11 may move the AD Greeks to ORE's, planned changes of the model. 3.8, 3.9 and 3.10 may move
+  wrong ones). 3.11 may move the AD Greeks and a calibrated Bermudan's market-risk P&L to ORE's,
+  planned changes of the model. 3.8, 3.9 and 3.10 may move
   float64 at rounding level, within the margin, as the kernel rewrite of 2026-10-10 did
   (2.2e-14 of each array's scale).
 
@@ -287,11 +295,11 @@ oracle, after the focus and TraderX. Each figure is an entry of 3.13's `analytic
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|
 | 5.1 | Basel P0 (decisions D-1 to D-10, pinned text, the BCBS profile, the requirement catalogue and traceability check, measure guards, desk and book on every row, the run manifest, the remaining ORE oracles; P0.9 keeps regulatory runs by 3.15's retention policy) and P2's data acquisition, which is calendar time and so is started first | [F-05](features.md#f-05) (P0, P2) | Stage 4 | L |
-| 5.2 | Basel P1 (FRTB-SA) onward, phase by phase of the [Basel plan](details/basel-iii.md#6-phases-and-tasks): historical scenarios and IMA expected shortfall, backtesting and PLA, SA-CCR and BA-CVA, the precision gate, the evidence pack | [F-05](features.md#f-05) | 5.1's P0, 3.11 (USD swaps also I-05); P5's IMM 3.7; P7's evidence pack 6.4 | L |
+| 5.2 | Basel P1 (FRTB-SA) onward, phase by phase of the [Basel plan](details/basel-iii.md#6-phases-and-tasks): historical scenarios and IMA expected shortfall, backtesting and PLA, SA-CCR and BA-CVA, the precision gate, the evidence pack | [F-05](features.md#f-05) | 5.1's P0, 3.11 (USD swaps also I-05; IMA's ES with calibrated Bermudans also I-112); P7's evidence pack 6.4 | L |
 
 5.2 follows the Basel plan's phases, each waiting only for what its row lists: FRTB-SA's
-sensitivities on 3.11 (shown to be ORE's), P5's IMM on 3.7 (a Bermudan's exposure equal to
-ORE's). P6's precision gate is the evidence table (built 2026-10-11, I-55), one table shared
+sensitivities on 3.11 (shown to be ORE's); P5's IMM needed a Bermudan's exposure equal to ORE's,
+which it is since 2026-10-12 (I-49). P6's precision gate is the evidence table (built 2026-10-11, I-55), one table shared
 with the precision research: P6 adds the regulatory figures' rows, and moves MAR32's
 thresholds into the regulatory profile once P0.3 has entered them a second time. The
 precision research uses Basel's criteria (A-11) as an engineering acceptance standard; a row

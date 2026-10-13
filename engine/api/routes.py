@@ -227,8 +227,8 @@ def calibrate_cross_asset_model(request: CamCalibrationRequestSchema) -> CamCali
     portfolio run calibrates the cross-asset model before simulating
     (`engine.calibration.cam.calibrate_cam`). Synchronous."""
     try:
-        market, models = request.to_dataclass()
-        calibrations = calibrate_cam(market, models)
+        market, models, tolerance = request.to_dataclass()
+        calibrations = calibrate_cam(market, models, tolerance)
     except _REFUSALS as exc:
         raise _refused(exc) from exc
     return CamCalibrationResultSchema(currencies={

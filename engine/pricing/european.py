@@ -45,12 +45,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import ORE
-from jax.scipy.stats import norm
 
 from engine.instruments.european_swaption import SwaptionConfig, underlying_swap
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER
 from engine.market_data.market import VOL_DAY_COUNTER, SwaptionVolSurface, index_name, swap_length_between
 from engine.market_simulation.scenario_market import ScenarioCurves
+from engine.models.bachelier import bachelier
 from engine.precision import Arithmetic, add_level
 from engine.pricing.context import PricingContext
 from engine.pricing.legs import (
@@ -192,16 +192,6 @@ def on_path(level, deviation):
     """A level's values plus each path's deviation (`LegValues` or arrays alike; an output not
     asked for, None, stays None), in the deviation's format (`engine.precision.add_level`)."""
     return jax.tree_util.tree_map(add_level, level, deviation)
-
-
-def bachelier(forward, strike, std_dev, call: bool):
-    """QuantLib's `bachelierBlackFormula` without the discount: w (F - K) N(w d) + s n(d),
-    intrinsic when `std_dev` is 0."""
-    w = 1.0 if call else -1.0
-    safe = jnp.where(std_dev > 0.0, std_dev, 1.0)
-    d = (forward - strike) / safe
-    value = w * (forward - strike) * norm.cdf(w * d) + safe * norm.pdf(d)
-    return jnp.where(std_dev > 0.0, value, jnp.maximum(w * (forward - strike), 0.0))
 
 
 def volatility_on_path(surface: SwaptionVolSurface, asof: ORE.Date, date: ORE.Date, option_time: float,

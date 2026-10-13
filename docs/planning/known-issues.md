@@ -5,54 +5,73 @@ closing it takes. The order of work is in [roadmap.md](roadmap.md); the rules fo
 (statuses, severities, how to add and close an entry) are in [README.md](README.md). Fixed
 issues keep one line in the [closed ledger](#closed).
 
-Read this before trusting an exposure profile: a Bermudan's or American's values on the
-paths, and so its exposure, are 0.5–4% above ORE's simulation ([I-49](#i-49)); swaps,
-Europeans and bonds equal ORE's simulation path by path since 2026-10-07.
+Read this before trusting a figure: every trade of the shared portfolio equals ORE's
+exposure simulation path by path (swaps, Europeans and bonds since 2026-10-07, Bermudans and
+Americans since 2026-10-12, [I-49](#i-49)); sensitivities are not yet shown equal to ORE's
+([I-51](#i-51)), and a calibrated Bermudan's market-risk P&L holds its calibration where ORE
+recalibrates ([I-112](#i-112)).
 
 ## Verification status
 
-Last full run, 2026-10-12, on ORE's `ShiftHorizon` ([I-32](#i-32), closed): the shifted LGM
-(`engine.models.lgm`: `H + shift`, `horizon_shift`), the grid engine taking the shift as traced
-data of the prepared trade (`engine.pricing.lgm_grid`), the builder's horizon and the trade as
-built on the as-of date on the paths (`engine.pricing.bermudan.shift_horizon_time`,
-`prepared_option(..., built_on=)`, an American's `option_times(..., built_on=)`), 0.5 the default
-in the engine and the API. 3,349 collected on Windows: the 3,308 of the run before plus 23 in
-`tests/test_ore_lgm_parity.py` (every case at 0.5, two at 1.5), 3 in
-`tests/test_ore_lgm_calibration.py` (calibrated at 0.5), 13 in `tests/test_shift_horizon.py`, 1
-in `tests/test_ore_xva_parity.py` (uncalibrated options on ORE's paths) and 1 in
-`tests/test_api_portfolio.py` (a negative horizon is a 400). Each run printed its summary line:
+Last full run, 2026-10-12, on ORE's exposure simulation for Bermudans and Americans and ORE's
+calibration acceptance ([I-49](#i-49), [I-73](#i-73), closed; decision A-24): each option's LGM
+calibrated once on the simulation market of the as-of date and kept on every path
+(`engine.pricing.bermudan.built_sigma`, `bermudan_cube`; `ScenarioMarket.tenors`), the engine's
+per-path recalibration removed with its batched bootstrap; ORE's acceptance on every bootstrap
+(`engine.calibration.ore_lgm.BootstrapResult.misses`, `require_accepted`, `CalibrationError`;
+`LgmSwaptionEngineConfig.bootstrap_tolerance` and `CamConfig.bootstrap_tolerance`, one for the
+cross-asset model, with their API fields; the helper's market value through
+`engine.models.bachelier`, shared with the European); market risk's warning of a held
+calibration ([I-112](#i-112)). 3,364 collected on Windows: the 3,349 of the run before plus 17 in
+`tests/test_calibration_acceptance.py` and 1 in `tests/test_market_risk.py` (the I-112 warning),
+less the 3 of `tests/test_root_solvers.py`'s batched path dates, which went with the per-path
+recalibration; in `tests/test_pricing.py` its 4 cases against ORE booked on the path date gave
+way to 4 of the path model ORE built (two options under both models). Each run printed its
+summary line:
 
-- **Windows**, `-n 8`: **3,340 passed, 3 skipped, 6 xfailed, 0 failed**, 15m13s (the skips
-  and expected failures as before: the two accelerator-only defaults and the GPU plugin check; the
-  Bermudan/American L3 cases of `tests/test_ore_xva_parity.py`, strict, waiting on [I-49](#i-49)).
-  The first run took 26m56s on caches left cold by the campaigns and the WSL runs; the rerun's
-  15m13s is the record's, and the option modules time alike before and after the change,
-  interleaved (66 to 72 s for `tests/test_greeks_bermudan.py` and `tests/test_american_swaption.py`).
-- **Linux** (the WSL2 clone, `JAX_PLATFORMS=cpu`, `-n 2`, the eight modules the change touches or
-  that price options against ORE): **258 passed, 1 skipped, 6 xfailed, 0 failed**, 13m03s (the
-  skip: the clone has no `reference/ORE` for the ORE example check).
-- **GPU** (RTX 5060, WSL2, `-n 4`, the same eight modules): **258 passed, 1 skipped, 6 xfailed,
-  0 failed**, 9m11s; the change is in the rollback kernel the GPU runs.
-- **Golden snapshot** (273 arrays): in two steps. With the default still 0 (the shift implemented,
-  the American's as-of window on the paths), 213 identical and every move the American inside its
-  window (its EPE and EE_B up to 5.0e-4 of their scale, the portfolio cube 1.1e-4) or rounding
-  (2.9e-16); then 0.5 the default, a planned change of the model (A-3): only Bermudan/American
-  arrays move, today's option values by up to 5.3e-4 relative at ORE's example grid (3.3e-3 at the
-  coarse 12-point test grid), the demo's options by 9e-5 and 4e-4 and their Greeks by at most
-  5e-4 of the trade's NPV, exposures by about 1e-4 of their scale. Re-baselined.
-- **Precision harness**: `options` and `market_risk` (the campaigns with Bermudans or Americans)
-  measured again (engine digest `15de886690232ba1`, 46 minutes) and the evidence table
-  regenerated; every verdict as before but two rows: the options' netting-set EPE_B under float16
-  market storage with block offsets now passes at 256 paths, and market risk's ES_99 with the P&L
-  stored in float16 by stochastic rounding passes to 2,048 scenarios, no longer 8,192
-  ([precision.md §15.6](details/precision.md#156-the-evidence-table-2026-10-11)). No case
+- **Windows**, `-n 8`: **3,361 passed, 3 skipped, 0 failed**, 9m31s (the skips as before: the two
+  accelerator-only defaults and the GPU plugin check; the six Bermudan/American L3 cases of
+  `tests/test_ore_xva_parity.py`, strict expected failures before, pass: ORE's cube to 1.9e-11 of
+  each option's largest value under either model). 15m13s before: the options' path cubes no
+  longer bootstrap on every path and date. The first run of the change found one failure, a slow
+  storage-sanity bound (`tests/test_precision.py::test_scaled_storage_on_the_sloped_shared_market_is_sane[bfloat16-simulation]`):
+  bfloat16-stored states flip one cash Bermudan's exercise on one of 768 cells (1.68e-2 of its
+  notional, every other cell as before), which the other formats' bounds already included; its
+  bound was measured again (7e-2, 2.6e-4) until the exercise decisions are measured apart
+  (A-24, roadmap 3.8).
+- **Linux** (the WSL2 clone, `JAX_PLATFORMS=cpu`, `-n 2`, the sixteen modules the change touches
+  or that price options against ORE): **850 passed, 1 skipped, 0 failed**, 7m41s (the skip: the clone has no `reference/ORE`
+  for the ORE example check).
+- **GPU** (RTX 5060, WSL2, `-n 4`, the same sixteen modules): **850 passed, 1 skipped, 0 failed**, 5m13s; ruff's pyflakes rules
+  clean on every changed file.
+- **Golden snapshot** (273 arrays, from a worktree of `ca290ad` before the change): 181 identical,
+  a planned change of the model (I-49) in the rest: only Bermudan/American arrays and the
+  aggregates holding them move. Swaps, Europeans, the bond, Jamshidian, every t=0 value, every
+  Greek and market risk are bit for bit; the options' cubes move by 2.1e-3 to 5.9e-3 of each
+  trade's scale (0.16 for the cash Bermudan under Hull-White, one exercise flipped), their EPE and
+  EE_B by up to 3.6e-2 of their scale, the netting set's by 9.3e-4. Re-baselined. Removing the
+  per-path recalibration option (A-24) moved nothing: 273 of 273 identical to the snapshot before.
+- **Precision harness**: `options` measured again (engine digest `eec51de554711f73`, 17 minutes,
+  4.6 to 7.2 s a case where it took 10 to 11) and the evidence table regenerated; every verdict
+  as before but one: the options' netting-set EPE_B under float16 market storage with block
+  offsets no longer passes at 256 paths (it had gained the count in the measurement before).
+  float16 storage of the states or curves moves the American's EPE_B by 0.16 statistical errors
+  (0.03 recalibrated), FP8 market storage without offsets the cash Bermudan's EEPE_B by up to 506
+  (126): a model kept on every path does not follow a path's rounded curves, so more exercise
+  decisions move ([precision.md §15.4](details/precision.md#154-the-storage-harness-2026-10-09)).
+  The removal of the recalibration option after it changed no number (the snapshot above), so the
+  rows stand. `market_risk` revalues on the as-of date, which the change does not touch. No case
   compiles after its first seed.
+- **Speed** (the demo's job without Greeks, 1,024 paths, CPU, the code before and after
+  alternated three times): warm 7.9 to 9.2 s before, 3.1 to 3.6 s after; cold 53 to 57 s before,
+  41 s after.
 
-Red first, on the code before (a worktree of `44bb7e2`): `tests/test_ore_lgm_parity.py` with the
-engine unshifted fails the 23 shifted cases (1.6e-6 to 1.6e-4 from ORE at 0.5) and passes the 24
-unshifted; the uncalibrated-options test on ORE's paths fails on the American (1.1e-3 of its
-largest value; at 0.5 the old code refuses the horizon outright, and its path-date horizon put the
-Bermudan 4.2e-5 from ORE).
+Red first, on the code before (a worktree of `ca290ad`): the six Bermudan/American L3 cases of
+`tests/test_ore_xva_parity.py` are strict expected failures there (0.50% of the physical
+Bermudan's largest value, 0.55% of the American's, 54% on one cell of the cash Bermudan), and a
+probe of the acceptance cases accepts a dip after a spike (σ at the floor from the second bucket,
+relative helper errors to 151), gives a zero volatility's helper a NaN market value and
+calibrates it at the floor, and accepts the dip in the cross-asset model.
 
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
@@ -69,8 +88,7 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
 | [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | TraderX |
 | [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | Fix what exists |
-| [I-49](#i-49) | Per-path recalibration differs from ORE's in two details | Medium | OPEN | Correctness | Focus |
-| [I-73](#i-73) | A calibration that misses its basket is accepted unless it hits the bracket's ceiling, and on a path not even then | Medium | OPEN | Correctness | Focus |
+| [I-112](#i-112) | Market risk holds a calibrated Bermudan's/American's LGM under every scenario; ORE's historical P&L recalibrates it | Medium | FLAGGED | Correctness | Focus |
 | [I-103](#i-103) | Malformed market and trade inputs are accepted: an unsorted curve prices silently, a late expiry crashes | Medium | OPEN | Validation | Focus |
 | [I-104](#i-104) | Edge cases valued wrong: a zero-variance European, a bond awaiting a delayed payment, a long Theta, H at small a·t | Low | OPEN | Correctness | Fix what exists |
 | [I-105](#i-105) | Storage below float64 does not lower a run's peak memory: the reductions load the whole cube at float64 | Medium | OPEN | Performance | Focus |
@@ -117,87 +135,37 @@ model" before 2026-10-01 meant the separate pipeline removed that day.
 
 ## Correctness
 
-<a id="i-49"></a>
-### I-49 — Per-path recalibration differs from ORE's in two details
+<a id="i-112"></a>
+### I-112 — Market risk holds a calibrated Bermudan's/American's LGM under every scenario; ORE's historical P&L recalibrates it
 
-**Severity:** Medium · **Status:** OPEN · *Difference from ORE* · **Found:** 2026-09-29
+**Severity:** Medium · **Status:** FLAGGED · **Category:** Correctness · **Found:** 2026-10-12,
+reading ORE's valuation engine while closing [I-49](#i-49)
 
-**What is wrong.** Every Bermudan/American is recalibrated on each path
-and date, as ORE's `ValuationEngine` does with `recalibrate = true`
-(`engine.pricing.bermudan`). Two details differ from ORE's source:
+**What is wrong.** `run_market_risk` revalues a Bermudan/American with the LGM calibrated on
+today's market and held under every shock (`engine.risk.market.revaluation`, through
+`engine.risk.greeks.price_functions.bermudan_price_function`). ORE's market-risk report runs
+its historical P&L with the trades' model builders (`MarketRiskReport` ->
+`HistoricalPnlGenerator` -> `ValuationEngine(..., factory->modelBuilders())`, whose
+`recalibrate` is true by default), so in each scenario the LGM is recalibrated to the
+unshocked swaption volatilities on the shocked curves: the helpers' market values move with the
+curves, and σ with them. (ORE's exposure simulation is the other way round: it never
+recalibrates, which the engine follows since 2026-10-12, I-49.)
 
-- ORE keeps the parametrization's time grid from the as-of build; the engine measures each
-  date's bucket times from that date.
-- ORE still passes helpers whose expiry has passed; the engine's basket on a date keeps only
-  later exercise dates. So on a date with an exercise left but no helper ahead (an American's
-  last days, after the last reference-grid date in its window), the engine prices on its
-  configured volatility, as a calibration today with no helper does ([I-82](#i-82)), where ORE
-  would keep the parametrization it last calibrated.
+**Reach.** The P&L, VaR and ES of every calibrated Bermudan/American in a market-risk run; an
+uncalibrated one (`calibration="None"`) is ORE's in every scenario. Not measured: the
+market-risk ORE parity test prices its Bermudan uncalibrated on both sides
+(`tests/test_market_risk_ore_parity.py`). The AD Greeks hold the calibration the same way
+([I-78](#i-78)); the bump Greeks recalibrate under every bump, as ORE's sensitivity analysis
+does.
 
-The path-date volatility transcribes `DynamicSwaptionVolatilityMatrix` (`ForwardVariance`),
-checked against the formula but not against ORE running it (no Python constructor).
+**Current handling.** Every market-risk result with a calibrated Bermudan/American warns of it,
+naming the trades (`tests/test_market_risk.py::TestRun::test_warns_that_a_calibrated_lgm_is_held_where_ore_recalibrates`).
 
-**Reach.** Pipeline Bermudan/American values past t=0 and their exposure. Measured by
-the ORE simulation oracle on ORE's own paths (`tests/test_ore_xva_parity.py`, the shared
-portfolio, both models, 32 paths, dates 3M to 3Y): before exercise the engine's values are
-0.5–4% above ORE's on every path (largest cell gap 0.50% of the trade's largest value for the
-physical Bermudan, 0.55% for the American, measured again on 2026-10-12 at ORE's default
-`ShiftHorizon`), growing with the date; after exercise into the swap both are the swap. It is
-the recalibration alone: with the LGM uncalibrated every option equals ORE's cube to 2e-11
-(`tests/test_ore_xva_parity.py::test_an_uncalibrated_option_equals_ores_cube_on_ores_paths`,
-since I-32 made the trade on a path the one ORE built on the as-of date). Near the exercise boundary the gap moves
-a decision: one cell in 160, a cash-settled Bermudan ORE exercised (0 afterwards) and the
-engine did not (54% of its largest value). L4 at 1,024 paths does not resolve the bias.
-
-**To close.** Decided (X-9): reproduce both details against `tests/test_ore_xva_parity.py`,
-whose Bermudan/American L3 cases are strict expected failures until the cube equals ORE's to
-the recalibration's tolerance. The same comparison confirms decision A-7 (an American's basket
-on a path keeps the as-of reference grid), which is implemented but not yet checked against
-ORE's simulation. Detail 1 is the pattern of [I-84](#i-84): ORE keeps a structure built on the
-as-of date (there the parametrization's time grid) and moves its reference date.
-
-<a id="i-73"></a>
-### I-73 — A calibration that misses its basket is accepted unless it hits the bracket's ceiling, and on a path not even then
-
-**Severity:** Medium · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-01, the
-dtype review; widened 2026-10-11 from the project audit (AUD-06, AUD-07, AUD-13)
-
-**What is wrong.** The LGM bootstrap (`engine.calibration.ore_lgm.bootstrap_sigma`) solves each
-bucket's σ on [1e-6, 0.2] with the engine's root solver, which returns the bracket's end for a
-root beyond it, and flags only the top (`hit_ceiling`). Three gaps follow:
-
-- **The floor and the fit.** A bucket whose helper is worth less than the model gives at the
-  floor (a volatility dip after a spike, which no non-negative variance can fit) ends at 1e-6,
-  unflagged, and nothing compares a helper's model value with its market value. Today's
-  calibrations (`engine.pricing.bermudan.calibrate_on`, `engine.calibration.cam`) refuse only
-  the ceiling. `tests/test_calibration_edge_cases.py::test_large_dip_after_a_spike_cannot_reprice_exactly`
-  shows the mechanism on the standalone bootstrap (σ at the floor, a large RMSE).
-- **A zero volatility.** The helper's market value (`ore_lgm._market`) divides by its standard
-  deviation without the zero guard of the European's Bachelier (`european.bachelier`); a zero
-  volatility at an ATM helper, which the surface accepts, gives a NaN market value, and the
-  bucket a meaningless σ at an end of the bracket.
-- **The paths.** On every path and date a Bermudan/American is recalibrated the same way, and
-  `engine.pricing.bermudan.path_sigmas` drops even the ceiling flag, so a path is priced on a
-  model that does not reprice its basket and nothing says so.
-
-ORE's `LgmBuilder` computes the calibration's RMSE, logs a structured warning when it exceeds
-`BootstrapTolerance`, and fails unless `continueOnCalibrationError`
-(`OREData/ored/model/lgmbuilder.cpp`).
-
-**Reach.** Bermudan/American values, today and on the paths, wherever a basket cannot be fitted:
-volatility term structures with a sharp dip, zero volatilities, and paths where rates move far
-enough (extreme paths, long horizons); exposure figures through them. Not seen on the test
-markets. Since 1.4 the ceiling flag is also correct in float32
-(`tests/test_precision.py::TestRecalibrationInFloat32`).
-
-**Current handling.** Today's calibrations refuse a bucket at the ceiling; nothing else.
-
-**To close.** With [I-49](#i-49): ORE's acceptance on every calibration, the RMSE of model
-against market over the basket compared with ORE's `BootstrapTolerance`, a non-finite market
-value or σ a miss; today's calibration refuses a miss naming the currency or trade (as ORE
-without `continueOnCalibrationError`), and the paths count their misses per trade and carry
-them as a result warning, as ORE's structured warning. Tests: a dip basket refused at t=0, a
-zero ATM volatility refused, an unattainable path volatility counted.
+**To close.** Recalibrate the LGM inside the revaluation's price function under each scenario,
+as ORE does (a bootstrap per scenario, batched over scenarios), and add a calibrated Bermudan to the market-risk ORE parity test,
+ORE recalibrating per scenario (`tests/support/ore_lgm_oracle.py` with `Bootstrap`). With
+I-78, whose AD Greeks need the same calibration inside the price function (the implicit-function
+Jacobian of `engine.risk.greeks.ad` already differentiates it for Vega).
 
 <a id="i-104"></a>
 ### I-104 — Edge cases valued wrong: a zero-variance European, a bond awaiting a delayed payment, a long Theta, H at small a·t
@@ -442,7 +410,9 @@ the default (bump) is unaffected.
 **To close.** With [I-51](#i-51): differentiate the sensitivity market's representation
 (so AD equals the bump halves on the sloped shared portfolio, `tests/support/portfolio.py`,
 per trade, factor and tenor), or label AD Greeks as the derivative of a different quantity
-and state the gap; measure and document the Bermudan's fixed-calibration difference.
+and state the gap; measure and document the Bermudan's fixed-calibration difference, which
+market risk's revaluation shares ([I-112](#i-112)): one calibration inside the price function
+serves both.
 
 <a id="i-103"></a>
 ### I-103 — Malformed market and trade inputs are accepted: an unsorted curve prices silently, a late expiry crashes
@@ -1099,7 +1069,11 @@ An older standalone bootstrap (`engine.calibration.lgm.calibrate_lgm_sigma`, wit
 `POST /calibration/lgm`, which the run request of [I-87](#i-87) removes.
 
 **Reach.** `POST /calibration/lgm` and its Python function. The two are tested separately and
-can drift; a fix to one is not made to the other.
+can drift; a fix to one is not made to the other. They have: since 2026-10-12 ORE's bootstrap
+refuses a calibration that misses its basket by ORE's acceptance (the root mean square of the
+helpers' relative price errors against a tolerance, [I-73](#i-73)), while the standalone one
+reports the root mean square of absolute price errors and refuses only a bucket at the
+bracket's ceiling.
 
 **Current handling.** None.
 
@@ -1393,7 +1367,8 @@ project audit (AUD-15, AUD-46, AUD-47); checked 2026-10-11
 - ORE parity is stated per component ([docs/reference/ore-parity.md](../reference/ore-parity.md)),
   but no one table says, per product and analytic (t=0 value, path values, exposure, Greeks,
   VaR/ES), what is shown equal to ORE, to what tolerance and by which test, so "matches ORE"
-  reads broader than it is (Bermudan paths, [I-49](#i-49); Greeks, [I-51](#i-51)).
+  reads broader than it is (Greeks, [I-51](#i-51); a calibrated Bermudan's market risk,
+  [I-112](#i-112)).
 
 **Reach.** Readers; no number.
 
@@ -1452,6 +1427,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-46"></a>I-46 | Hull-White Europeans were priced off the model volatility, without Vega | `tests/test_hull_white_model.py::TestEuropeansOnTheMarketVolatility` |
 | <a id="i-47"></a>I-47 | Hull-White options calibrated to one caller basket, not their own | `tests/test_pricing.py::test_option_today_equals_ores_calibrated_grid_engine`, `tests/test_hull_white_model.py::TestOneModelOnePipeline` |
 | <a id="i-48"></a>I-48 | Zero curves extrapolated a flat zero rate; ORE a flat forward | `tests/test_treasury_instrument.py::TestCurveInterpolation`, `tests/test_curves.py` |
+| <a id="i-49"></a>I-49 | Bermudans and Americans were recalibrated on every path and date, 0.5–4% above ORE's exposure simulation (and one decision in 160 cells the other way); ORE never recalibrates there (its `XvaAnalytic` gives the valuation engine no model builders) and keeps the LGM it calibrated when it built the trade on the simulation market of the as-of date, which the engine now keeps: ORE's cube to 1.9e-11 under either model (calibrated on today's market instead, 1e-5). Per-path recalibration, which no ORE analytic does, is removed (decision A-24) | `tests/test_ore_xva_parity.py::test_every_trades_cube_equals_ores_on_ores_paths` (the six option cases, strict expected failures before), `tests/test_pricing.py::test_the_path_model_is_the_calibration_ore_built_the_trade_with` |
 | <a id="i-50"></a>I-50 | Nothing compared the assembled simulation, cube or exposure with an ORE simulation (now an OREApp XVA oracle: its scenario dump rebuilds the engine's simulation market, swaps, Europeans and bonds equal ORE's cube path by path, the exposure definitions on ORE's cube are ORE's, and L4 holds; Bermudans/Americans wait on I-49) | `tests/test_ore_xva_parity.py` |
 | <a id="i-52"></a>I-52 | Cash settlement was priced as physical | `tests/test_pricing.py::test_a_cash_settled_european_uses_the_par_yield_annuity` |
 | <a id="i-56"></a>I-56 | Market risk and the CAM calibration had no route, and two routes were named like versions (now `POST /portfolio/market-risk` and `POST /calibration/cam`, one poll route for every job, `/v2/portfolio/price` and `schema_version` removed, and a test that fails on any setting without an API field; 2026-10-07, decision A-2) | `tests/test_api_market_risk.py`, `tests/test_api.py::TestCamCalibrationEndpoint`, `tests/test_api_completeness.py` |
@@ -1465,11 +1441,12 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-70"></a>I-70 | Bump Theta of a bond maturing the next day raised `BondPricingError` (now redemption − NPV, as ORE) | `tests/test_portfolio_bond_wire_through.py::TestBondGreeksReachThePortfolioPath::test_a_bond_maturing_tomorrow_does_not_crash_the_greeks` |
 | <a id="i-71"></a>I-71 | A float32-tier worker turned x64 off, so its pricing and exposure ran in float32 where an in-process run used float64 | `tests/test_engine_worker.py::TestEngineWorkerPricing::test_jobs_queued_together_give_the_bits_of_jobs_run_one_after_another` (float64 and float32 jobs equal the direct call) |
 | <a id="i-72"></a>I-72 | HTTP jobs ran in a process pool that pickled each request with its ORE dates frozen as text, compiled every job shape once per worker, broke for every later job when one worker died (`BrokenProcessPool`), and would have needed chip pinning on TPU (now one engine worker per host behind a durable queue) | `tests/test_engine_worker.py` (`test_a_second_identical_job_compiles_nothing`, `test_a_failing_job_fails_only_its_own_row`, `test_a_worker_killed_mid_job_leaves_it_interrupted`, `test_the_worker_prices_the_request_the_route_validated`) |
+| <a id="i-73"></a>I-73 | A calibration that missed its basket was accepted unless a bucket hit the bracket's ceiling, and on a path not even then: a volatility dip after a spike priced at σ's floor (relative helper errors to 151), a zero volatility gave a NaN market value. Now ORE's acceptance on every bootstrap (the root mean square of the relative helper errors below `bootstrap_tolerance`, ORE's `Tolerance` and `BootstrapTolerance`, 1e-4 by default, one for the cross-asset model, decision A-24), a miss refused naming the trade or currency | `tests/test_calibration_acceptance.py` |
 | <a id="i-75"></a>I-75 | Storage below 32 bits kept few bits of a concentrated column's spread: FP8 put its bits on the level of a bond's cube (1e6 ± 1e4) or a long log discount factor, and every path of a block rounded alike, a bias more paths did not remove (now a concentrated block, one sign and the farthest entry at most three times the nearest, is stored as its deviations from its midpoint, `Precision.offset="block"`, the default; the storage harness measures every format, 2026-10-09) | `tests/test_precision_harness.py::test_a_bonds_fp8_cube_column_is_unbiased_with_block_offsets`, `tests/test_precision.py::TestBlockOffsets` |
 | <a id="i-74"></a>I-74 | A calibration basket read ORE's global evaluation date, so a later date (another caller's, or the wall clock past a helper's fixing) failed it with a missing fixing | `tests/test_ore_lgm_calibration.py::test_the_basket_does_not_depend_on_ores_global_evaluation_date` |
 | <a id="i-79"></a>I-79 | Never run on a GPU (now the `gpu` extra under Linux or WSL2, verified on an RTX 5060: no preallocation, the API's JAX on the CPU, float32 products at float32 rather than TensorFloat-32, deterministic kernels; the demo and the full suite run on the GPU) | `tests/test_accelerator_defaults.py`, `tests/test_environment.py::test_a_gpu_plugin_is_jaxlibs_version`, the full suite on the GPU |
 | <a id="i-80"></a>I-80 | Importing `engine` changed JAX and XLA settings for the whole process (now x64 only: each matrix product states its precision through `engine.precision.matmul`; deterministic GPU kernels set by the engine worker and the tests; GPU preallocation off in the demos and the tests; 2026-10-06, decision A-22) | `tests/test_accelerator_defaults.py` (`TestImportingTheEngine`; `TestEveryMatrixProductStatesItsPrecision::test_in_every_pipeline`, red on the bare products) |
-| <a id="i-82"></a>I-82 | An American priced on a path date after the last reference-grid date in its window and before its last exercise (no calibration helper left) raised `ValueError: Need at least one array to stack` (now the engine's volatility, as a calibration today with no helper; found on 2026-10-07) | `tests/test_root_solvers.py::test_a_date_with_an_exercise_left_and_no_helper_keeps_the_engine_volatility` |
+| <a id="i-82"></a>I-82 | An American priced on a path date after the last reference-grid date in its window and before its last exercise (no calibration helper left) raised `ValueError: Need at least one array to stack` (now the engine's volatility, as a calibration today with no helper; found on 2026-10-07) | `tests/test_root_solvers.py::test_a_date_with_an_exercise_left_and_no_helper_prices_on_the_model_as_built` (since 2026-10-12 no date is recalibrated, I-49) |
 | <a id="i-84"></a>I-84 | The simulation market held each curve's tenor points at the tenors' times from the simulation date; ORE's `ScenarioSimMarket` holds them at the times from the as-of date (swaps and Europeans up to 0.45% of their largest path value off ORE's cube; found by the ORE simulation oracle's L3, 2026-10-07) | `tests/test_ore_xva_parity.py::test_every_trades_cube_equals_ores_on_ores_paths`, `tests/test_pricing.py` (path curves at ORE's times) |
 | <a id="i-85"></a>I-85 | Exposure profiles started from each trade's value on today's market; ORE's start from its value on the simulation market of the as-of date, the cube's `T0` (up to 4.2% on the shared portfolio) | `tests/test_ore_xva_parity.py::test_the_pipelines_profiles_start_from_ores_t0` |
 | <a id="i-86"></a>I-86 | A cash-settled option's exposure stopped at its underlying's maturity, so its time-weighted EPE kept accruing after it settled; ORE's `Trade::maturity()` is its last exercise date (2026-10-07) | `tests/test_ore_xva_parity.py::test_the_profiles_of_ores_cube_are_ores_reports` |

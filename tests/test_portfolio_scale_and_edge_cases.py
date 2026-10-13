@@ -196,8 +196,8 @@ class TestCompositionEdgeCases:
 class TestPortfolioTimingSanity:
     """A 50-trade portfolio of the path-vectorized types finishes within a generous bound
     (120 s), to catch a super-linear regression that correctness tests would not notice.
-    Bermudans and Americans are left out: each recalibrates on every path date, as ORE's
-    `recalibrate = true` does, at about 45 s per option today (I-53)."""
+    Bermudans and Americans are left out: their grid rollback on every path and date is the
+    slow and memory-bound part of a run (I-83)."""
 
     def test_fifty_trade_portfolio_completes_within_a_generous_bound(self):
         trades = ([_swap(i) for i in range(15)] + [_swap(i, "EUR") for i in range(15)]

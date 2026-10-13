@@ -338,28 +338,28 @@ At `t=0` the grid collapses to `x=0`, and reading off that single node gives the
 
 ### 8. On every path: `engine.pricing.bermudan.bermudan_cube`
 
-On a path date the option is priced as ORE's `ValuationEngine` prices it with
-`recalibrate = true`: the trade's basket is rebuilt on that date, its LGM bootstrapped on the
-path's own curves (with the volatility surface seen from the date), and the grid engine run
-from the date on those curves, with the coupons that fixed during the simulation at their
-path fixings. The bootstrap and the rollback are batched over paths, on the device. After the
-last exercise the option is worth 0; once exercised, ORE's `OptionWrapper` carries the swap
-entered (physical) or nothing (cash), and a short position is minus all of it. Under either
-simulation model the engine is the same: it reads only the path's curves.
+On a path date the option is priced as ORE's exposure simulation prices it. ORE builds the
+trade once, on the simulation market of the as-of date, calibrating its LGM there, and never
+recalibrates it: its `XvaAnalytic` runs the `ValuationEngine` without the trades' model
+builders. So the engine calibrates once, on that market (`built_sigma`), and on every path and
+date runs the grid engine with that LGM, its bucket times as built, from the date on the path's
+curves, with the coupons that fixed during the simulation at their path fixings. The rollback
+is batched over paths, on the device. After the last exercise the option is worth 0; once
+exercised, ORE's `OptionWrapper` carries the swap entered (physical) or nothing (cash), and a
+short position is minus all of it. Under either simulation model the engine is the same: it
+reads only the path's curves.
 
 The trade on a path is the one ORE built on the as-of date: ORE's simulation builds every trade
 once and values it on each date. So its LGM is shifted at the as-of build's horizon (the
 `LgmBuilder` shifts once), and an American's window opened no earlier than the day after the
 as-of date, not the day after the path date: on a path date inside the window the engine's grid
 starts at the date itself (`max(0, t(first))`), which is an exercise opportunity there
-(`prepared_option(..., built_on=asof)`). With the LGM uncalibrated, every option then equals
-ORE's cube on ORE's own paths to 2e-11
-(`tests/test_ore_xva_parity.py::test_an_uncalibrated_option_equals_ores_cube_on_ores_paths`);
-before 2026-10-12 both were measured from the path date, 1.1e-3 of an American's largest value
-from ORE (I-32). Two details of ORE's recalibration differ
-([I-49](../planning/known-issues.md#i-49)), and it is the slow part of a run
-([I-53](../planning/known-issues.md#i-53); `PricingConfig(recalibrate=False)` keeps today's
-calibration on every path).
+(`prepared_option(..., built_on=asof)`). Every option, calibrated or not, then equals ORE's
+cube on ORE's own paths to 2e-11 (`tests/test_ore_xva_parity.py`); before 2026-10-12 the shift
+horizon and the window were measured from the path date, 1.1e-3 of an American's largest value
+from ORE (I-32), and the LGM was recalibrated on every path, 0.5–4% above ORE
+([I-49](../planning/known-issues.md#i-49)). No ORE analytic recalibrates on a path, so the engine
+does not offer it (decision A-24).
 
 ## Delta, Gamma, Theta, and Vega
 
@@ -471,7 +471,11 @@ engines, a model-level comparison of a few percent, plus `TestExerciseDatesAreEx
 
 `tests/test_pricing.py` — today's value against ORE's calibrated engine on the trade's own
 basket (`test_option_today_equals_ores_calibrated_grid_engine`), and every path and date
-against ORE recalibrated on the path's curves, under both simulation models.
+against ORE's grid engine on the path's curves with the LGM ORE built the trade with, under
+both simulation models.
+
+`tests/test_calibration_acceptance.py` — a basket that cannot be fitted refused, naming the
+trade (ORE's `LgmBuilder` acceptance, I-73).
 
 `tests/test_greeks_bermudan.py` (11 tests) — AD Delta/Gamma against finite differences with
 the volatility held, Vega against finite differences of the full recalibrating pricing, an

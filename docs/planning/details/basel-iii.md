@@ -99,7 +99,7 @@ precondition, not a side issue:
 |---|---|---|
 | [I-05](../known-issues.md#i-05) no faithful USD-SOFR swap construction | Every USD swap sensitivity rests on it | P1 for USD swaps (other books can proceed) |
 | [I-51](../known-issues.md#i-51) sensitivities not checked against ORE | SA figures rest on them | P1 |
-| [I-49](../known-issues.md#i-49) Bermudan/American exposure 0.5–4% above ORE's simulation (linear trades equal it since 2026-10-07, which closed I-50) | IMM exposure rests on it | P5.3, P5.4 |
+| [I-112](../known-issues.md#i-112) a calibrated Bermudan's/American's market-risk P&L holds its calibration where ORE's historical P&L recalibrates it (flagged on the result) | IMA's expected shortfall and P&L attribution rest on it for those trades | P3, P4 for calibrated Bermudans/Americans |
 | [I-18](../known-issues.md#i-18) no equity spot/FX | EQ risk class impossible | EQ only; refused until fixed |
 | [I-27](../known-issues.md#i-27) full-suite runs can abort inside XLA | An evidence pack needs a complete, reproducible suite run | P7 |
 | [I-08](../known-issues.md#i-08) a running EOD attempt is lost on restart (portfolio jobs durable since 2026-10-04) | Regulatory runs must survive restart and stay retrievable | P0 |
@@ -351,13 +351,13 @@ computes the same quantity and to the independent implementation everywhere else
 test compares the engine with itself. Report it as `pla_status: "not-independent"`, never
 as green.
 
-### Phase 5 — Counterparty credit and CVA (≈4 weeks; IMM needs I-49)
+### Phase 5 — Counterparty credit and CVA (≈4 weeks)
 
 | ID | Task | Detail | Oracle | Exit |
 |---|---|---|---|---|
 | P5.1 | SA-CCR | Replacement cost, PFE multiplier (5% floor), IR hedging sets by currency, maturity buckets with the profile's correlations, supervisory duration, supervisory delta for swaptions, α = 1.4. Needs netting set and collateral inputs | ORE `SaccrCalculator` (`Examples/CreditRisk/run_saccr.py`) | 1e-10 relative per netting set |
 | P5.2 | BA-CVA (reduced) | Counterparty-level SCVA from SA-CCR EAD, supervisory discount factor, discount scalar, ρ | ORE `BaCvaCalculator` | 1e-10 |
-| P5.3 | IMM exposure (optional) | EE, Effective EE (non-decreasing), EPE, EEPE over the first year from the existing `npv_cube`. Stressed calibration, α. The pipeline only. **Blocked on [I-49](../known-issues.md#i-49)** (I-49): since 2026-10-07 linear trades' exposure equals ORE's simulation, a Bermudan's or American's is 0.5–4% apart | ORE's exposure simulation through `tests/support/ore_xva_oracle.py`, on the same model | EEPE within MC error of ORE; I-49 closed first |
+| P5.3 | IMM exposure (optional) | EE, Effective EE (non-decreasing), EPE, EEPE over the first year from the existing `npv_cube`. Stressed calibration, α. The pipeline only. Its exposure equals ORE's simulation path by path for every trade of the shared portfolio (linear trades since 2026-10-07, Bermudans and Americans since 2026-10-12, [I-49](../known-issues.md#i-49)) | ORE's exposure simulation through `tests/support/ore_xva_oracle.py`, on the same model | EEPE within MC error of ORE |
 | P5.4 | IMM backtesting (optional) | Exposure-model backtesting against realised MtM paths, as CRE53 requires | Statistical tests (§7.5) | Documented test passes over the history available |
 
 ### Phase 6 — Precision gate for regulatory figures (≈1–2 weeks)
@@ -532,7 +532,7 @@ P0 ──► P1 ─────────────────────�
                  D-7 (TraderX HPL/APL)
 
 P5.1, P5.2 (SA-CCR, BA-CVA): after P0, independent of P1–P4
-P5.3, P5.4 (IMM):            after I-49 (I-49)
+P5.3, P5.4 (IMM):            after P0 (the exposure equals ORE's since 2026-10-12)
 USD swaps in any phase:      after I-05
 ```
 

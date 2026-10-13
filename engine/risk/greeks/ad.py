@@ -138,7 +138,7 @@ def vega_greek(cfg, market: Market, pricing: PricingConfig, shift: float):
         return np.zeros((len(surface.option_tenors), len(surface.swap_tenors)))
     d_npv_d_sigma = np.asarray(_option_vega(option.pricer, option.terms, disc, index, option.sigma.values))
     engine = pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
-    basket = calibration_basket(cfg, engine, asof, asof)
+    basket = calibration_basket(cfg, engine, asof)
     jacobian = _bootstrap_jacobian(basket, disc, index, surface, asof, engine.reversion, option.sigma, engine.solver)
     weights = np.stack([surface.weights(asof, b.vol_option_time, b.vol_swap_length) for b in basket])
     return np.tensordot(d_npv_d_sigma @ jacobian, weights, axes=1) * shift

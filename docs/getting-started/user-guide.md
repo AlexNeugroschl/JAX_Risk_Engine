@@ -269,7 +269,7 @@ prints what it returns:
 | `simulation` | `simulate` on the two-currency demo market | the scenario market's shapes, curves, FX and equities, a path's discount factors, and E[1/N(t)] (today's discount factors) |
 | `swap` | `value_portfolio` for a 2Y swap | today's value and the mean NPV per date: coupons drop out as they pay, exactly 0 after maturity |
 | `european` | a 3Y-into-2Y European, Bachelier then Jamshidian | the mean NPV per date; after expiry an exercised path carries its swap |
-| `bermudan` | a Bermudan, recalibrated on every path and date | today's value and the mean NPV per date |
+| `bermudan` | a Bermudan on its LGM, calibrated today and kept on every path, as ORE's simulation keeps it | today's value and the mean NPV per date |
 | `american` | the same for an American | the number of exercise opportunities, then the same |
 | `greeks` | a swap's and a European's Greeks, bump and AD | every Greek, per tenor (bump) and per pillar (AD) |
 | `var_es` | `compute_risk_metrics` on a swap's NPV cube | the t=0 value and loss quantiles per date. These are statistics of the cube; the engine's market-risk VaR is `demos/demo.py`'s last section |
@@ -773,7 +773,7 @@ the products (the levels, the option formulas, sums) runs at the accumulate form
 with units for the format runs it natively; elsewhere (always on a CPU) the engine emulates it
 with the same numbers, and the result's precision report says which (`products`,
 `{"float8_e4m3fn": "emulated"}`). Bermudans and Americans compute and accumulate in one format,
-float32 or float64, until their rollback is rewritten the same way (I-49 first): a run
+float32 or float64, until their rollback is rewritten the same way (F-07): a run
 that would compute one below float32 is refused, naming the overrides that keep it wider.
 Each product multiplies a per-path operand by one every path shares (a flow's value at the
 level, a market loading); below float32 the shared one is carried in two terms of the format

@@ -5,8 +5,9 @@ engines (plan T-8 to T-16).
 
 Every trade is priced with its t=0 method on each path and date: swaps with
 `DiscountingSwapEngine`, Europeans with the configured engine (`BlackMultiLegOptionEngine`, the
-default, or Jamshidian on its Hull-White model), Bermudans and Americans with their own
-calibrated LGM on the grid, bonds by discounting. The valuation reads only the scenario
+default, or Jamshidian on its Hull-White model), Bermudans and Americans with their own LGM on
+the grid, calibrated where ORE builds them (the simulation market of the as-of date) and kept,
+as ORE's exposure simulation keeps it (`engine.pricing.bermudan`), bonds by discounting. The valuation reads only the scenario
 market, so it is the same whichever model (`CamConfig.ir`) simulated it. Swaptions are wrapped as
 ORE wraps them (`engine.pricing.options`), so an exercised physical option becomes its swap,
 a cash-settled one leaves the portfolio, and a short option is minus the long one, the holder
@@ -19,9 +20,8 @@ override for its id, else for its product, else the pricing stage; decision A-15
 arithmetic (`engine.precision.Arithmetic`): the scenario market is loaded at the accumulate
 format, the kernels' products run in the compute format, and the trade's cube column is stored
 at the storage format. Swaps, bonds and Europeans are priced in difference form at every
-precision (F-07); the Bermudan/American rollback and recalibration are not yet, so their
-compute format must equal their accumulate format, float32 or float64, until they are
-(`RESTRICTED_PRODUCTS`). t=0 values are float64 (A-10). `value_paths` prices the paths alone,
+precision (F-07); the Bermudan/American rollback is not yet, so its compute format must equal
+its accumulate format, float32 or float64, until it is (`RESTRICTED_PRODUCTS`). t=0 values are float64 (A-10). `value_paths` prices the paths alone,
 as the paired float64 sample of a reduced-precision run does (decision A-13).
 
 Trades name their currency and index; the market supplies the curves and volatilities and the
@@ -326,7 +326,7 @@ def _path_values(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricin
         swap = _european_underlying(cfg)
         exercises, fixings_history = (cfg.exercise_date,), {}
     else:
-        option = bermudan_cube(cfg, _engine(cfg, pricing), market, sm, index_fixings, decay, pricing.recalibrate)
+        option = bermudan_cube(cfg, _engine(cfg, pricing), market, sm, index_fixings)
         swap = _option_underlying(cfg)
         exercises, fixings_history = contract_exercise_dates(cfg), cfg.fixings
     underlyings = [swap_cube(_underlying_legs(swap, cfg.payer, market.asof, fixings_history, e)) for e in exercises]

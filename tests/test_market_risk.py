@@ -297,6 +297,15 @@ class TestRun:
         _, result = mixed_run
         assert any("volatility risk is not in this VaR/ES" in w and "['european', 'bermudan']" in w
                    for w in result.warnings)
+        assert not any("I-112" in w for w in result.warnings), "an uncalibrated LGM is ORE's in every scenario"
+
+    def test_warns_that_a_calibrated_lgm_is_held_where_ore_recalibrates(self):
+        """I-112: ORE's historical P&L recalibrates a calibrated LGM to each scenario's curves;
+        the revaluation holds today's calibration, and the result says so."""
+        calibrated = PricingConfig(bermudan=dataclasses.replace(m.ENGINE, calibration="Bootstrap"))
+        result = run_market_risk(MarketRiskRequest([m.bermudan()], m.market(), _scenarios(num=64), calibrated,
+                                                   quantiles=(0.99,)))
+        assert any("I-112" in w and "['bermudan']" in w for w in result.warnings)
 
     def test_warns_about_a_thin_tail(self):
         result = run_market_risk(MarketRiskRequest([m.swap()], m.market(), _scenarios(num=64), quantiles=(0.99,)))

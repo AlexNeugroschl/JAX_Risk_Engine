@@ -38,8 +38,8 @@ kernel it prices.
     compute_market_risk
                  the `market_risk` campaign's revaluation with each trade's products in each
                  compute format, accumulated and stored in float32; its trades but the Bermudan,
-                 whose rollback is rewritten after the recalibration fix (I-49); 2,048 and
-                 8,192 scenarios, 16 seeds
+                 whose rollback is not in difference form yet (F-07); 2,048 and 8,192
+                 scenarios, 16 seeds
 """
 import argparse
 import dataclasses
@@ -99,12 +99,12 @@ def linear() -> PortfolioCampaign:
 def options() -> PortfolioCampaign:
     return PortfolioCampaign(
         name="options",
-        description="The shared portfolio's Bermudans and American (tests/support/portfolio.py), calibrated on "
-                    "every path date, on a coarse grid (8 points per standard deviation, 3 deviations); the market "
-                    "and simulation of the `linear` campaign. 256 paths: a path's rollback holds a [nodes, nodes] "
-                    "operator per step until the kernel rewrite (I-83). Measured at ORE's default ShiftHorizon (I-32, "
-                    "2026-10-12); the kernel moves again with the recalibration fix (I-49), after which these rows "
-                    "are measured again.",
+        description="The shared portfolio's Bermudans and American (tests/support/portfolio.py), each LGM "
+                    "calibrated once on the simulation market of the as-of date and kept on every path date, as "
+                    "ORE's exposure simulation keeps it (I-49, 2026-10-12), on a coarse grid (8 points per standard "
+                    "deviation, 3 deviations); the market and simulation of the `linear` campaign, at ORE's default "
+                    "ShiftHorizon (I-32). 256 paths: a path's rollback holds a [nodes, nodes] operator per step "
+                    "until the kernel rewrite (I-83).",
         market_name=SHARED_MARKET, market=shared.market(),
         trades=_shared("bermudan-payer-physical", "bermudan-receiver-cash", "american-payer"),
         simulation=SIMULATION, pricing=PricingConfig(bermudan=COARSE_GRID, american=COARSE_GRID),
@@ -135,7 +135,7 @@ def compute_market_risk() -> MarketRiskCampaign:
         market_risk(), name="compute_market_risk",
         description="The `market_risk` campaign's revaluation, each trade's matrix products in one compute format, "
                     "accumulated and stored in float32 (the `float32` case is the accumulator's floor); its trades "
-                    "but the Bermudan, whose rollback is rewritten after the recalibration fix (I-49). A "
+                    "but the Bermudan, whose rollback is not in difference form yet (F-07). A "
                     "format below float32 carries the operand every path shares in two terms; `<format>_1x` is its "
                     "single pass (A-23).",
         trades=tuple(t for t in _market_risk_trades() if t.product != "bermudan_swaption"),

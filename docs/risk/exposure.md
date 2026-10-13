@@ -83,9 +83,9 @@ interest-rate model. (Until 2026-10-01 the Hull-White model had a separate cube 
 known weaknesses, [I-42](../planning/known-issues.md#i-42), [I-04](../planning/known-issues.md#i-04)
 and [I-43](../planning/known-issues.md#i-43), and warned about them.) Since 2026-10-07 the
 assembled profiles are compared with an ORE simulation (`tests/test_ore_xva_parity.py`): the
-definitions on ORE's own cube to 1.8e-13, swaps', Europeans' and bonds' cubes on ORE's paths to
-3e-11, and the profiles in distribution. A Bermudan's or American's values on the paths are
-0.5–4% above ORE's ([I-49](../planning/known-issues.md#i-49)), and so is its exposure.
+definitions on ORE's own cube to 1.8e-13, every trade's cube on ORE's paths to 3e-11
+(Bermudans and Americans since 2026-10-12, their LGM kept as ORE built it,
+[I-49](../planning/known-issues.md#i-49)), and the profiles in distribution.
 
 ## Tested by
 

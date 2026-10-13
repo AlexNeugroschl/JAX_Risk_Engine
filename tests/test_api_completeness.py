@@ -87,7 +87,7 @@ BUILT = {RateRiskFactors: "the market's curves `scenarios.factors` names (Market
 FUNCTIONS = {
     monte_carlo_scenarios: (wire.MonteCarloScenariosSchema, {}),
     historical_scenarios: (wire.HistoricalScenariosSchema, {}),
-    calibrate_cam: (wire.CamCalibrationRequestSchema, {"lgm_configs": Rename("ir")}),
+    calibrate_cam: (wire.CamCalibrationRequestSchema, {"lgm_configs": Rename("ir"), "tolerance": Rename("bootstrap_tolerance")}),
 }
 
 ROOTS = (PortfolioRequest, MarketRiskRequest)

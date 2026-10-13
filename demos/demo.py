@@ -56,8 +56,8 @@ usd = market.currency("USD")
 print(f"as of {TODAY.ISO()}: USD discount curve {usd.discount_curve.rates} at {usd.discount_curve.times}")
 
 # The Hull-White model for USD, calibrated to a 1Y/2Y/5Y co-terminal basket of the market's
-# swaption volatilities. 128 paths: every Bermudan/American is recalibrated on each path and
-# date as ORE does, which is the slow part of a run (I-53).
+# swaption volatilities. 128 paths: every Bermudan/American is rolled back on its LGM grid on
+# each path and date, which is the slow part of a run (I-83).
 simulation = demo_simulation("HullWhite", samples=128, currencies=("USD",), calibrated=True)
 # A coarser Bermudan/American grid than the default (n_per_std=30), for a quick demo.
 engine = LgmSwaptionEngineConfig(n_per_std=16)

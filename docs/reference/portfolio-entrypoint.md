@@ -39,7 +39,7 @@ configured by its files; `RunConfig()` is ORE's defaults.
 | Field | Type | Default | ORE | Meaning |
 |---|---|---|---|---|
 | `simulation` | `Optional[CamConfig]` | `None` | `simulation.xml` | The date grid, the model per currency (`ir[ccy]`: `LgmConfig`, or `HullWhiteConfig`), FX/equity volatilities, correlations, simulation-market tenors, samples, seed, swaption vol decay. Required for scenario risk. |
-| `pricing` | `PricingConfig` | ORE's builders | `pricingengine.xml` | The engine per product: `european` (`"Bachelier"`, ORE's default, or `"Jamshidian"` with its Hull-White model in `jamshidian`), `bermudan` and `american` (`LgmSwaptionEngineConfig`), `recalibrate` (per path, as ORE). |
+| `pricing` | `PricingConfig` | ORE's builders | `pricingengine.xml` | The engine per product: `european` (`"Bachelier"`, ORE's default, or `"Jamshidian"` with its Hull-White model in `jamshidian`), `bermudan` and `american` (`LgmSwaptionEngineConfig`), each option's LGM calibrated once where ORE builds the trade and kept on every path, as ORE's exposure simulation keeps it. |
 | `greeks` | `GreeksConfig` | `Bump`, ORE's settings | `sensitivity.xml` | `method` (`"Bump"`, ORE's, or `"AD"`) and `sensitivity` (`SensitivityConfig`: curve tenors, shift sizes, Theta horizon, vol decay on the Theta date). |
 | `precision` | `Precision` | float64 everywhere | none | Storage, compute and accumulate format per adjustable stage; see "`Precision`" below. |
 | `base_currency` | `Optional[str]` | `None` | `baseCurrency` | The reporting currency. `None` means the simulation's base currency, or USD without a simulation; a value contradicting the simulation's is refused. |
@@ -84,7 +84,7 @@ accumulate)` of format names per adjustable stage, each `"float64"` by default:
 |---|---|
 | `simulation` | The Sobol shocks and the model states (`simulate`). |
 | `market` | The scenario market built from the states: curves, numeraire, FX and equity spots. |
-| `pricing` | Every trade on every path (Bermudan/American per-path recalibration included) and the cube it stores. |
+| `pricing` | Every trade on every path and the cube it stores. |
 | `by_product` | `{product: StagePrecision}`: replaces `pricing` for every trade of a product. The products are `"swap"`, `"european_swaption"`, `"bermudan_swaption"`, `"american_swaption"` and `"bond"` (each trade config's `product`). |
 | `by_trade` | `{trade_id: StagePrecision}`: replaces `by_product` and `pricing` for one trade. |
 | `rounding` | `"nearest"` (default) or `"stochastic"`: how values are rounded into a storage format below 32 bits. Stochastic rounding without such a format is refused. |
@@ -254,7 +254,10 @@ then `greeks`;
 There is no request-level calibration: each currency's model is calibrated to its own basket
 when `CamConfig.ir[ccy]` names one (`calibration_expiries` × `calibration_terms`), and each
 Bermudan/American's engine to the trade's own co-terminal basket (ORE's `LgmBuilder`, per
-trade, recalibrated on every path). Until 2026-10-01 the Hull-White model took one shared
+trade, on the simulation market of the as-of date, where ORE builds it, and kept on every
+path). A calibration that misses its
+basket by ORE's acceptance is refused, naming the trade or currency
+([calibration](calibration.md#acceptance)). Until 2026-10-01 the Hull-White model took one shared
 basket for every uncalibrated trade (`calibration_targets`,
 [I-47](../planning/known-issues.md#i-47)).
 

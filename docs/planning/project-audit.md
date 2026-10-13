@@ -19,22 +19,22 @@ result served), so some differ from the audit's.
 | AUD-03 Quantile keys | Confirmed, *run* (`0.95` and `0.9500000001` both `95`) | Low | [I-102](known-issues.md#i-102), fixed 2026-10-11 |
 | AUD-04 Confidence domain | The broader domain is kept and documented as broader than ORE's | Low | [I-102](known-issues.md#i-102), done 2026-10-11 |
 | AUD-05 Input validation | Confirmed, *run*: an unsorted curve prices 50,697 against 51,133 with no error | Medium | [I-103](known-issues.md#i-103) |
-| AUD-06 Calibration acceptance | Confirmed: only the ceiling is checked, at t=0; nothing on the paths | Medium | [I-73](known-issues.md#i-73), widened |
-| AUD-07 Zero volatility in calibration | Confirmed (0/0 at an ATM helper) | Medium | [I-73](known-issues.md#i-73) |
+| AUD-06 Calibration acceptance | Confirmed: only the ceiling is checked, at t=0; nothing on the paths | Medium | [I-73](known-issues.md#i-73), widened (closed 2026-10-12) |
+| AUD-07 Zero volatility in calibration | Confirmed (0/0 at an ATM helper) | Medium | [I-73](known-issues.md#i-73) (closed 2026-10-12) |
 | AUD-08 Zero-variance European | Confirmed; only under `ConstantVariance` with a zero volatility | Low | [I-104](known-issues.md#i-104) |
 | AUD-09 Zero and negative notionals | Confirmed, *run*, and worse than reported: a negative-notional Bermudan is a long option on the reversed swap (+15,018 where the short is −35,713), a European the short; zero notional NaN | High | [I-101](known-issues.md#i-101), fixed 2026-10-11 |
 | AUD-10 Late exercise | Confirmed, *run* (`StopIteration`) | Medium | [I-103](known-issues.md#i-103) |
 | AUD-11 Delayed last payment | Confirmed; a window of the days between maturity and payment | Low | [I-104](known-issues.md#i-104) |
 | AUD-12 Theta fixings | Confirmed; only when `theta_days` reaches a coupon fixing and paying inside the roll | Low | [I-104](known-issues.md#i-104) |
-| AUD-13 Root solver contract | In part. The missing fit check is real ([I-73](known-issues.md#i-73)). Set aside: a general status from a fixed-step solver (its design, A-21: a root beyond a bounded bracket is that end, and the calibration's acceptance judges it); derivatives at a clipped root (the unbounded problems widen to 2^63; bounded bootstrap roots carry no tangent) | — | [I-73](known-issues.md#i-73) |
+| AUD-13 Root solver contract | In part. The missing fit check is real ([I-73](known-issues.md#i-73), closed 2026-10-12). Set aside: a general status from a fixed-step solver (its design, A-21: a root beyond a bounded bracket is that end, and the calibration's acceptance judges it); derivatives at a clipped root (the unbounded problems widen to 2^63; bounded bootstrap roots carry no tangent) | — | [I-73](known-issues.md#i-73) (closed 2026-10-12) |
 | AUD-14 H at small reversion | Confirmed; float32 only, about one rounding of a log discount | Low | [I-104](known-issues.md#i-104) |
 | AUD-15 Qualification matrix | Valid (documentation) | Low | [I-110](known-issues.md#i-110) |
-| AUD-16 Bermudan path parity | Known and planned | Medium | [I-32](known-issues.md#i-32), [I-49](known-issues.md#i-49) |
+| AUD-16 Bermudan path parity | Known and planned | Medium | [I-32](known-issues.md#i-32), [I-49](known-issues.md#i-49) (both closed 2026-10-12) |
 | AUD-17 AD versus bump Greeks | Known and planned | Medium | [I-51](known-issues.md#i-51), [I-78](known-issues.md#i-78) |
 | AUD-18 Generic index conventions | Known scope; unsupported indices are refused by name | — | [I-05](known-issues.md#i-05), [I-54](known-issues.md#i-54) |
 | AUD-19 Standard errors assume independence | Valid | Medium | [I-55](known-issues.md#i-55), extended; labelled on results and the rest moved to [I-111](known-issues.md#i-111) when I-55 closed (2026-10-11) |
 | AUD-20 Precision qualification on results | Known and planned | Medium | [I-55](known-issues.md#i-55) (closed 2026-10-11: the evidence table and its warnings) |
-| AUD-21 Empty portfolio warnings | Confirmed (`warnings=[]`) | Medium | [I-55](known-issues.md#i-55) (closed 2026-10-11: precision warnings), [I-73](known-issues.md#i-73) |
+| AUD-21 Empty portfolio warnings | Confirmed (`warnings=[]`) | Medium | [I-55](known-issues.md#i-55) (closed 2026-10-11: precision warnings), [I-73](known-issues.md#i-73) (closed 2026-10-12: calibration misses on the paths) |
 | AUD-22 Bundle identity | Confirmed; needs a bundle that breaks the contract's identity rule | Medium | [I-107](known-issues.md#i-107) |
 | AUD-23 Publication retry | Confirmed; also staging errors escape `PublicationError`. A hung retry, no wrong number | Medium | [I-109](known-issues.md#i-109) |
 | AUD-24 Cross-process binding | Confirmed; the store's docs already say one process | Medium | [I-08](known-issues.md#i-08), extended |

@@ -294,7 +294,7 @@ Bermudans agree with ORE to about 4e-11, under either solver. ORE's algorithms a
 their per-element branching does not batch over paths.
 
 **Brackets.** A bucket's bracket is fixed: a volatility beyond it ends at the edge (Newton
-returns the edge itself) and is flagged (`hit_ceiling`), and today's calibration refuses it.
+returns the edge itself) and is flagged (`hit_ceiling`), a miss of the calibration (below).
 An exercise boundary has none: its starting window (`[-1, 1]` for y\*, `[-2, 2]` for x\*) is
 widened side by side to 2, 8, 128, 32768, 2^31 or 2^63 times itself, the first that holds the
 sign change, all candidates evaluated at once (one vectorized evaluation, not a loop).
@@ -304,6 +304,37 @@ tangents). The ORE helper's price is stationary in y\*, so its derivatives with 
 are exact (the AD Vega's bootstrap Jacobian, `engine.risk.greeks.ad`, uses them). Where a price
 is not stationary in its root — x\* here and in the Jamshidian engine — `implicit_root` gives
 the root its derivative by the implicit function theorem, below.
+
+<a id="acceptance"></a>
+## Acceptance: when a calibration misses its basket
+
+**This engine:** `engine.calibration.ore_lgm.BootstrapResult.misses` and `require_accepted`, on
+every ORE-style bootstrap: a Bermudan's/American's (`engine.pricing.bermudan.calibrate_on`) and
+each currency's in the cross-asset model (`engine.calibration.cam`). Since 2026-10-12 (I-73).
+
+ORE's `LgmBuilder::calibrate` computes the calibration error, the root mean square over the
+basket of each helper's relative price error |market − model| / market (`getCalibrationError`
+with `RelativePriceError`), and when it is not below the tolerance — a trade's `Tolerance`,
+the cross-asset model's `BootstrapTolerance` — logs a structured warning and fails, unless the
+global `ContinueOnCalibrationError` is set. The engine applies the same rule with
+`LgmSwaptionEngineConfig.bootstrap_tolerance` and `CamConfig.bootstrap_tolerance`, one for the
+model as ORE holds it (1e-4 by default: ORE has none, and 1e-4 is its shared example
+configuration's and every example simulation's; decision A-24), and counts as a miss
+also a bucket at the bracket's ceiling, where ORE's unbounded optimizer would go on. What
+misses:
+
+- **A dip after a spike.** A helper worth less than the model gives at the bracket's floor (the
+  variance to its expiry below the variance the earlier buckets already carry) cannot be fitted
+  by any non-negative volatility; the bucket ends at the floor and its relative error is large.
+- **A zero volatility.** The helper's market value is then its intrinsic value, 0 at or out of
+  the money (QuantLib's `bachelierBlackFormula`, `engine.models.bachelier`), so its relative
+  error is not finite.
+- **A volatility beyond the bracket** (2000 bp normal), where the bucket ends at the ceiling.
+
+A miss on a market of the as-of date — today's, the simulation market where ORE builds the
+trade, a bumped one — is refused with a `CalibrationError` naming the trade or the currency and
+the date, as ORE fails without `ContinueOnCalibrationError`, which is not offered (A-24). On
+the paths nothing is calibrated: ORE's exposure simulation keeps the model it built (I-49).
 
 <a id="the-_bisect_xstar-gradient-bug"></a>
 ## The x\* gradient bug

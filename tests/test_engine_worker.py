@@ -511,7 +511,7 @@ def test_the_worker_prices_the_request_the_route_validated(monkeypatch):
     body = _pricing_body(
         _trades("swap-receiver-seasoned-icma", "european-payer", "bermudan-payer-physical", "bond"),
         pricing={"european": "Jamshidian", "jamshidian": {"reversion": 0.03, "volatility": 0.01},
-                 "bermudan": {"n_per_std": 12, "std_devs": 4.0}, "recalibrate": False},
+                 "bermudan": {"n_per_std": 12, "std_devs": 4.0, "bootstrap_tolerance": 1e-3}},
         compute_greeks=True, greeks={"method": "AD", "sensitivity": {"curve_tenors": ["1Y", "2Y"]}},
         precision={"simulation": f32, "pricing": {"storage": "float32"}, "by_trade": {"bond": f32}},
         pfe_quantiles=[0.9, 0.99])

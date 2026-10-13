@@ -284,8 +284,8 @@ class OreCalibration:
     """ORE's LGM calibration settings (`LGMGridSwaptionEngineBuilder` model parameters).
     `method="None"` prices with the given volatility; `"Bootstrap"` calibrates a piecewise
     volatility to the trade's co-terminal basket (`strategy` `CoterminalATM` or
-    `CoterminalDealStrike`), starting from it. `tolerance` is the error above which ORE's
-    builder reports the calibration as failed (it does not change the calibration)."""
+    `CoterminalDealStrike`), starting from it. `tolerance` is ORE's `Tolerance`: a calibration
+    error not below it fails the trade's build (it does not change the calibration)."""
     method: str = "None"
     strategy: str = "None"
     tolerance: float = 1e-4
@@ -320,12 +320,12 @@ class OreLgmEngine:
     fd_solver: Optional[OreFdSolver] = None
 
     @classmethod
-    def of(cls, config, tolerance: float = 1e-4) -> "OreLgmEngine":
+    def of(cls, config) -> "OreLgmEngine":
         """The engine of an `engine.pricing.config.LgmSwaptionEngineConfig`."""
         strategy = config.strategy if config.calibration == "Bootstrap" else "None"
         return cls(config.reversion, config.volatility, config.n_per_std, config.std_devs,
                    config.exercise_time_steps_per_year, config.shift_horizon, config.reference_calibration_grid,
-                   OreCalibration(config.calibration, strategy, tolerance))
+                   OreCalibration(config.calibration, strategy, config.bootstrap_tolerance))
 
 
 def _volatility_parameters(volatility) -> str:

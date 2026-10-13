@@ -32,7 +32,7 @@ import ORE
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from engine.api.artifacts import ARRAY_OUTPUTS
-from engine.calibration.ore_lgm import SwapIndexConventions
+from engine.calibration.ore_lgm import BOOTSTRAP_TOLERANCE, SwapIndexConventions
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
@@ -327,6 +327,9 @@ class CamConfigSchema(_Strict):
     samples: int = 1000
     seed: int = 42
     swaption_vol_decay: Literal["ForwardVariance", "ConstantVariance"] = "ForwardVariance"
+    #: ORE's `BootstrapTolerance`, one for the model: a currency's calibration whose error (the
+    #: root mean square of its helpers' relative price errors) is not below it is refused (I-73).
+    bootstrap_tolerance: float = BOOTSTRAP_TOLERANCE
 
     def to_dataclass(self) -> CamConfig:
         extra = {"curve_tenors": tuple(self.curve_tenors)} if self.curve_tenors else {}
@@ -336,7 +339,8 @@ class CamConfigSchema(_Strict):
             fx_volatilities={k: _volatility(v) for k, v in self.fx_volatilities.items()},
             equity_volatilities={k: _volatility(v) for k, v in self.equity_volatilities.items()},
             correlations={(c.factor1, c.factor2): c.value for c in self.correlations},
-            samples=self.samples, seed=self.seed, swaption_vol_decay=self.swaption_vol_decay, **extra)
+            samples=self.samples, seed=self.seed, swaption_vol_decay=self.swaption_vol_decay,
+            bootstrap_tolerance=self.bootstrap_tolerance, **extra)
 
 
 class LgmEngineSchema(_Strict):
@@ -345,6 +349,9 @@ class LgmEngineSchema(_Strict):
     volatility: float = 0.01
     calibration: Literal["Bootstrap", "None"] = "Bootstrap"
     strategy: Literal["CoterminalDealStrike", "CoterminalATM"] = "CoterminalDealStrike"
+    #: ORE's `Tolerance`: a calibration whose error (the root mean square of its helpers' relative
+    #: price errors) is not below it is refused, naming the trade (I-73).
+    bootstrap_tolerance: float = BOOTSTRAP_TOLERANCE
     reference_calibration_grid: str = "400,3M"
     #: ORE's `ShiftHorizon`: the fraction of the time to the underlying's maturity where the LGM's
     #: H is shifted to vanish (any value >= 0; 0 is the unshifted model).
@@ -379,13 +386,11 @@ class PricingConfigSchema(_Strict):
     jamshidian: Optional[JamshidianEngineSchema] = None
     bermudan: LgmEngineSchema = Field(default_factory=LgmEngineSchema)
     american: LgmEngineSchema = Field(default_factory=LgmEngineSchema)
-    recalibrate: bool = True
 
     def to_dataclass(self) -> PricingConfig:
         return PricingConfig(european=self.european,
                              jamshidian=self.jamshidian.to_dataclass() if self.jamshidian else None,
-                             bermudan=self.bermudan.to_dataclass(), american=self.american.to_dataclass(),
-                             recalibrate=self.recalibrate)
+                             bermudan=self.bermudan.to_dataclass(), american=self.american.to_dataclass())
 
 
 class SensitivityConfigSchema(_Strict):
@@ -704,9 +709,11 @@ class MarketRiskRequestSchema(_Strict):
 class CamCalibrationRequestSchema(_Strict):
     """`engine.calibration.cam.calibrate_cam` (`POST /calibration/cam`): today's market and the
     model of each currency to calibrate, as the simulation's `ir` gives it; each must have a
-    calibration basket (`calibration_expiries` x `calibration_terms`)."""
+    calibration basket (`calibration_expiries` x `calibration_terms`). `bootstrap_tolerance` is
+    the simulation's (ORE's `BootstrapTolerance`)."""
     market: MarketSchema
     ir: Dict[str, IrModelSchema]
+    bootstrap_tolerance: float = BOOTSTRAP_TOLERANCE
 
     @model_validator(mode="after")
     def _each_has_a_basket(self):
@@ -718,8 +725,10 @@ class CamCalibrationRequestSchema(_Strict):
                              f"so nothing to calibrate")
         return self
 
-    def to_dataclass(self) -> Tuple[Market, Dict[str, LgmConfig]]:
-        return self.market.to_dataclass(), {c: model.to_dataclass() for c, model in self.ir.items()}
+    def to_dataclass(self) -> Tuple[Market, Dict[str, LgmConfig], float]:
+        """Today's market, each currency's model and the tolerance (`calibrate_cam`'s arguments)."""
+        return (self.market.to_dataclass(), {c: model.to_dataclass() for c, model in self.ir.items()},
+                self.bootstrap_tolerance)
 
 
 __all__: Tuple[str, ...] = ("CamCalibrationRequestSchema", "MarketPortfolioRequestSchema", "MarketRiskRequestSchema")

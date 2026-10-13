@@ -186,8 +186,7 @@ See [Instruments](../instruments/swaps.md).
 |---|---|---|---|
 | `european` | `str` | `"Bachelier"` | `"Bachelier"` (ORE's default, on the market volatility) or `"Jamshidian"`. |
 | `jamshidian` | `Optional[JamshidianEngineConfig]` | `None` | The Jamshidian engine's Hull-White model, `(reversion, volatility)`, both finite and > 0. Required with `european="Jamshidian"`, refused without. |
-| `bermudan`, `american` | `LgmSwaptionEngineConfig` | ORE's builder defaults | `reversion` (`0.0`), `volatility` (`0.01`, the start or the fixed model), `calibration` (`"Bootstrap"` \| `"None"`), `strategy` (`"CoterminalDealStrike"`), `reference_calibration_grid` (`"400,3M"`), `shift_horizon` (`0.5`, ORE's `ShiftHorizon`: the fraction of the time from the trade's build to its underlying's maturity where the LGM's H is shifted to vanish, which centres the grid; any value >= 0, 0 the unshifted model), `n_per_std` (`30`), `std_devs` (`5.0`), `exercise_time_steps_per_year` (`24`), `swap_index`. |
-| `recalibrate` | `bool` | `True` | Recalibrate each Bermudan/American on every path date, as ORE's `ValuationEngine`. |
+| `bermudan`, `american` | `LgmSwaptionEngineConfig` | ORE's builder defaults | `reversion` (`0.0`), `volatility` (`0.01`, the start or the fixed model), `calibration` (`"Bootstrap"` \| `"None"`), `strategy` (`"CoterminalDealStrike"`), `reference_calibration_grid` (`"400,3M"`), `bootstrap_tolerance` (`1e-4`, ORE's `Tolerance`: a calibration whose root mean square of relative helper price errors is not below it is refused, naming the trade), `shift_horizon` (`0.5`, ORE's `ShiftHorizon`: the fraction of the time from the trade's build to its underlying's maturity where the LGM's H is shifted to vanish, which centres the grid; any value >= 0, 0 the unshifted model), `n_per_std` (`30`), `std_devs` (`5.0`), `exercise_time_steps_per_year` (`24`), `swap_index`. |
 
 ### `engine.pricing.cube`
 

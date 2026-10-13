@@ -53,7 +53,8 @@ conflicts with one is redesigned rather than excused.
   passes at its existing tolerance (1e-14 to 1e-8), and the golden snapshot stays within the
   margin of A-19's 2026-10-10 revision (the first families, 2026-10-10: float64 within 2.2e-14
   of each array's scale, float32 within 8.2e-6; §13.1). The Bermudan/American rollback's rewrite
-  follows the same procedure after the recalibration fix (`ShiftHorizon` done, I-32, 2026-10-12).
+  follows the same procedure, its model ORE's on the paths since 2026-10-12 (`ShiftHorizon`,
+  I-32; the calibration kept as ORE built the trade, I-49).
 - **Low-precision results are compared with the engine's own float64 result,** not with ORE.
   The float64 result carries the ORE parity; the precision report carries the distance from it.
   The chain is ORE ⇄ engine float64 ⇄ engine low precision, and each link has its own evidence.
@@ -141,7 +142,7 @@ decisions.md, the reading confirmed by the owner on 2026-10-11.
 |---|---|---|---|
 | Simulation (shocks, states) | Yes | No | One set of paths serves every trade |
 | Scenario market (curves, fixings, FX) | Yes | Storage per run; each trade reads it at its own compute | Shared input |
-| Pricing on paths (every pricer, incl. the Bermudan per-path recalibration) | Yes | **Yes** | Trades are priced one at a time |
+| Pricing on paths (every pricer) | Yes | **Yes** | Trades are priced one at a time |
 | Values (the cube column of a trade) | Yes | **Yes** | Every reduction goes through float64, so mixed formats never meet in arithmetic |
 | Market-risk revaluation and P&L | Yes | **Yes** | Same resolver |
 | Calibration (cross-asset model, each trade at t=0) | No, float64 | — | Cheap; a root solve to 1e-12 needs float64 |
@@ -549,8 +550,9 @@ Outcome (the precision mechanism (2026-10-01)):
 - The ceiling: `hi * (1 - ceiling_tolerance(dtype))`, with `ceiling_tolerance = max(1e-9,
   4 eps)` (`engine.calibration.ore_lgm`), unchanged at float64. Red first: with the fixed 1e-9 a
   float32 bisection stuck below the top was not flagged
-  (`tests/test_precision.py::TestRecalibrationInFloat32`). On a path the flag is still
-  dropped: [I-73](../known-issues.md#i-73).
+  (`tests/test_precision.py::TestRecalibrationInFloat32`). Since 2026-10-12 the flag is part of
+  ORE's acceptance on every bootstrap ([I-73](../known-issues.md#i-73)), and every calibration is
+  float64: the per-path recalibration, the bootstrap's one float32 use, went with A-24.
 - The Sobol clip: the normals are generated at `simulation.compute`, so `jnp.finfo(dtype).eps`
   is the compute dtype's.
 - `scenario_batch_size`: `revalue` passes the itemsize of the shifts' dtype, which is the
@@ -646,8 +648,9 @@ What is known (measured 2026-10-01, [§15](#15-measurements)):
 ## 8. Compute below float32
 
 Built by the kernel rewrite (F-07, 2026-10-10) for every path kernel but the Bermudan/American
-rollback and its per-path recalibration, whose rewrite follows the recalibration fix (I-49;
-`ShiftHorizon`, I-32, is done), so that no kernel is rewritten twice. Until then a Bermudan's or
+rollback, whose model is ORE's on the paths since
+2026-10-12 (`ShiftHorizon`, I-32; the calibration kept as ORE built the trade, I-49), so that no
+kernel is rewritten twice; its rewrite is next (I-83). Until then a Bermudan's or
 American's pricing stage computes and accumulates in one format, float32 or float64, refused
 otherwise by name (`engine.pricing.cube.RESTRICTED_PRODUCTS`); overriding it by product keeps it
 wide inside a low-precision run.
@@ -1157,9 +1160,9 @@ Decisions taken while building it (2026-10-04):
 | **The precision report** (done 2026-10-02) | Paired sample, two-level estimator for means, `PrecisionReport` with realized dtypes and device (closes I-12) | §13.6; bit for bit at the default. Met: §13.1, §13.6 | M |
 | **The engine worker** (done 2026-10-04) | Engine worker process and the SQLite queue (A-14); delete `worker_pool.py`'s pool and freeze/thaw | §13.8, including the Linux run; float64 job time and compile count no worse. Met: §13.8, §13.9 | M |
 | **The storage harness** (I-75, done 2026-10-09) | Storage relative to a level for classes whose level swamps their spread (block offsets, §6.2); a measurement harness for storage formats per class and product, at several path counts, fixed seeds, rerunnable on any kernel change (§15.4) | Harness covers every figure × class × format; thresholds fixed before measuring; I-75's FP8 bond column unbiased within its Monte Carlo standard error. Met: §15.4 | M |
-| **The kernel rewrite** (F-07; the first families done 2026-10-10) | Difference-form kernels (§8.2), one family at a time (those the recalibration fix does not change first, the Bermudan/American rollback and recalibration after it; `ShiftHorizon` is done), as matrix products where a family can be one (§8.3); compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the snapshot within the margin (§2.1); emulated FP8/bfloat16 compute measured by the harness. Met for the simulation, the scenario market, the legs, the Europeans and market risk (§13.1, §15.5); the rollback and recalibration after `ShiftHorizon` and the recalibration fix | L |
+| **The kernel rewrite** (F-07; the first families done 2026-10-10) | Difference-form kernels (§8.2), one family at a time (those the recalibration fix did not change first, the Bermudan/American rollback after it; `ShiftHorizon` and the recalibration fix done 2026-10-12), as matrix products where a family can be one (§8.3); compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the snapshot within the margin (§2.1); emulated FP8/bfloat16 compute measured by the harness. Met for the simulation, the scenario market, the legs, the Europeans and market risk (§13.1, §15.5); the rollback next (I-83; its model is ORE's since 2026-10-12, I-32 and I-49) | L |
 | **Multi-host** (I-61) | Shard the scenario axis in the worker (I-61): one host done 2026-10-04; several hosts next | Results equal the one-device run within reduction-order rounding (one host: met, `tests/test_sharding.py`); scaling measured on TPU | M |
-| **The evidence table** (I-55, done 2026-10-11) | The evidence table and the warnings (§10), from the storage harness on each kernel family as the kernel rewrite lands it (the Bermudan/American rows again after the recalibration fix and the rollback's rewrite, I-49, F-07; measured again after `ShiftHorizon`, I-32, 2026-10-12) | Table complete; a verdict and path ceiling per row; a warning on every result without a passing row. Met: §10.4, §15.6 | S |
+| **The evidence table** (I-55, done 2026-10-11) | The evidence table and the warnings (§10), from the storage harness on each kernel family as the kernel rewrite lands it (the Bermudan/American rows measured again after `ShiftHorizon`, I-32, and after the recalibration fix, I-49, both 2026-10-12, and again after the rollback's rewrite, F-07) | Table complete; a verdict and path ceiling per row; a warning on every result without a passing row. Met: §10.4, §15.6 | S |
 | **The research result** (F-07) | After multi-host and the evidence table. Timing across devices on Ironwood and H100: storage formats, then the kernel rewrite's matrix-product kernels with native FP8 | The research result: wall time per figure and precision against float64 at equal accuracy (the evidence table's path ceilings), many low-precision paths against fewer float64 ones | M |
 | **FP4** (F-07) | FP4 storage (variance correction through the block scales), FP4 compute on TPU 8t/8i, multilevel quantile estimation | Evidence rows for FP4 | L |
 
@@ -1167,9 +1170,9 @@ Decisions taken while building it (2026-10-04):
 the roadmap's near-term milestone (stage 2: the profiling demo on a local GPU, done); then the
 focus (stage 3), where low precision comes first, ahead of the critical bugs and the API, and
 TraderX and Basel III wait for it. The storage measurement (I-75) is done. The kernel
-rewrite (F-07), difference form and matrix products together, takes first the families the recalibration
-fix (I-49) does not change, and the Bermudan/American rollback and recalibration after it
-(`ShiftHorizon`, I-32, done 2026-10-12), so no kernel is rewritten twice; new capabilities' kernels and the strike
+rewrite (F-07), difference form and matrix products together, took first the families the recalibration
+fix (I-49) did not change, and takes the Bermudan/American rollback after it (`ShiftHorizon`,
+I-32, and the recalibration fix, both done 2026-10-12), so no kernel is rewritten twice; new capabilities' kernels and the strike
 axis (I-54) come after it. The evidence table (I-55) is read off each family as it lands, so it
 describes the kernels that ship. FP4 storage and emulated compute (F-07) close the arithmetic.
 Multi-host (I-61) moves no arithmetic and follows the job queue's changes to the worker loop;
@@ -1582,7 +1585,7 @@ float32 by product, and prints the report's product executions.
 
 **In:** float64/float32 compute and storage; float16, bfloat16 and FP8 storage; compute below
 float32 (float16, bfloat16, FP8, TensorFloat-32, bfloat16 passes; since 2026-10-10 for every path
-kernel but the Bermudan/American rollback, which follows the recalibration fix); per-stage, per-product and per-trade precision; block scales and both
+kernel but the Bermudan/American rollback, whose rewrite is next); per-stage, per-product and per-trade precision; block scales and both
 roundings; the paired sample, the two-level estimator for means and the report; the evidence
 table and warnings; the worker process and queue; timing on Ironwood and H100.
 
@@ -1827,16 +1830,21 @@ Reading it:
   offsets; they have no statistical error to measure a rule against, so the evidence table needs
   an absolute rule for them (I-55; since 2026-10-11 the fixed rule, 1e-6 of the scale, §10.4).
 
-**Options** (`options`, 256 paths, 8 seeds; measured again on 2026-10-12 at ORE's default
-`ShiftHorizon` with the American's as-of window, I-32; the kernel moves again with I-49, and these
-rows are measured again after it). An option's cube column reaches zero, so
-its blocks keep offset 0 and both layouts store it alike up to the noise (FP8 cube storage 5.6
-with offsets, 5.4 without; float16 0.053 and 0.055); the curves gain as in `linear` (FP8 e4m3
-market 4.3 against 72, e5m2 18 against 126). float16 with block offsets is below a twentieth of
-the statistical error in every stage (0.032 to 0.055; the curves without offsets 0.12); FP8 is
-3.6 to 18 statistical errors off, the largest on the Bermudans' EPE and EE_B. Before I-32 the
-same rows were within the noise of these but the shocks' float16 (0.13, its worst figure the
-netting set's PFE, now the American's EPE). Stochastic rounding is worse in all three stages.
+**Options** (`options`, 256 paths, 8 seeds; measured again on 2026-10-12 twice: at ORE's default
+`ShiftHorizon` with the American's as-of window, I-32, then with each LGM calibrated once where
+ORE builds the trade and kept on every path, I-49, engine digest `eec51de554711f73`). An option's
+cube column reaches zero, so its blocks keep offset 0 and both layouts store it alike up to the
+noise (FP8 e4m3 cube storage 3.9 with offsets, 4.1 without; float16 0.042 and 0.043); the curves
+gain as in `linear` (FP8 e4m3 market 4.2 against 148, e5m2 23 against 506). float16 is below a
+fifth of the statistical error in every stage (0.042 to 0.17); FP8 is 3.6 to 23 statistical
+errors off with block offsets, the largest on the cash Bermudan's PFE and EEPE_B. Against the
+rows measured with the LGM recalibrated on every path the same day: float16 in the simulation and
+market stages went from 0.03-0.04 to 0.16 (the American's EPE_B), FP8 market storage without
+offsets from 72 and 126 to 148 and 506 (the cash Bermudan's EEPE_B), the rest within the noise,
+and each case runs in 4.6-7.2 s where it took 10-11 s. A model kept on every path does not follow
+a path's rounded curves as a recalibrated one does, so rounding moves more exercise decisions
+(a cash Bermudan exercised is 0 thereafter): the options' errors are exercise decisions as much
+as values. Stochastic rounding is worse in all three stages.
 
 **Market risk** (`market_risk`, 2,048 and 8,192 scenarios, 16 seeds). VaR and ES at 8,192
 scenarios, worst relative error, nearest rounding: shifts stored in float16 0.028, bfloat16
@@ -1919,7 +1927,7 @@ on the engine's product shapes (the legs `[S, 40] x [40, 3]`, the market `[6, S,
 the bridge `[24, 24] x [24, S]`, and `[S, 256] x [256, 64]`) and 0.97 to 1.08 for a whole job
 (the `linear` trades, every stage in the format): no cost measurable. The engine's products are
 narrow on their shared side (3 to 64 columns), so dispatch and memory traffic, not the doubled
-arithmetic, decide their time; a compute-bound product (the rollback's, F-07 after I-49)
+arithmetic, decide their time; a compute-bound product (the rollback's, F-07)
 is where the factor two would show, and the timing on Ironwood and H100 (F-07) measures both.
 
 Reading it:
@@ -1983,6 +1991,14 @@ error, one of the 16 seeds 173 where the record before had 26 at most, with no s
 the same case's ES_97.5 and the nearest rounding's ES_99 still pass to 8,192). Every market-risk case stays in MAR32.42's green zone at every seed. The other rows
 moved within their statistics' noise.
 
+**Measured again on 2026-10-12** after I-49 (each option's LGM calibrated once where ORE builds
+the trade, no longer on every path): `options` (engine digest `eec51de554711f73`, 17 minutes;
+`market_risk` revalues on the as-of date, which the change does not touch), the table
+regenerated. Every verdict is as before but one, the options' netting set EPE_B under float16
+market storage with block offsets, which no longer passes at 256 paths (it had gained the count
+in the measurement before; its worst figure, the American's EPE_B, is 0.16 of its statistical
+error, §15.4's options).
+
 **Verdicts** (ceilings in paths, or scenarios for market risk; the largest measured counts are
 16,384, 256 for the options and 8,192 for market risk):
 
@@ -2024,8 +2040,8 @@ every format clears, as A-11 expected, and the statistical rule decides.
   for the options. A ceiling says the row passes there and fails at the next count, or that the
   next count was not measured (16,384 and 8,192 are the largest measured, not ceilings found).
 - **The options' rows are thin** (256 paths, 8 seeds, the rollback before its rewrite, F-07): they
-  were measured again after `ShiftHorizon` (2026-10-12) and will be after the recalibration fix
-  and the rollback's rewrite.
+  were measured again after `ShiftHorizon` and after the recalibration fix (both 2026-10-12) and
+  will be after the rollback's rewrite.
 
 **A robust standard error for the paired correction, by blocks of paths** (I-55's proposal),
 measured on 2026-10-11 against a threshold fixed before: on the `linear` campaign's paired cases (a
