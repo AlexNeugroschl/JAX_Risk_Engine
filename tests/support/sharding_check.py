@@ -37,6 +37,20 @@ def _portfolio_runs():
                 "precision": extra["precision"]}
         request = MarketPortfolioRequestSchema.model_validate(body).to_dataclass()
         yield name, lambda request=request: _portfolio_figures(price_portfolio(request))
+        if name == "lgm":
+            # The Bermudan's paths priced in blocks of one path per device (`engine.pricing.lgm_grid.blocked`).
+            yield "lgm-blocked", lambda request=request: _portfolio_figures(_with_budget(1, price_portfolio, request))
+
+
+def _with_budget(budget: int, run, *args):
+    """`run(*args)` with the grid engine's memory budget set to `budget` bytes."""
+    from engine.pricing import lgm_grid
+
+    saved, lgm_grid.INDUCTION_MEMORY_BUDGET = lgm_grid.INDUCTION_MEMORY_BUDGET, budget
+    try:
+        return run(*args)
+    finally:
+        lgm_grid.INDUCTION_MEMORY_BUDGET = saved
 
 
 def _portfolio_figures(result) -> dict:

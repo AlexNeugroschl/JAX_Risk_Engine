@@ -123,8 +123,9 @@ Every model, engine, Greeks and precision choice is one run configuration with O
 defaults. The simulation, the scenario market and path pricing each take a storage, a compute
 and an accumulate precision (since 2026-10-10 compute down to FP8, TensorFloat-32 and bfloat16
 passes in kernels in difference form, each product's operand that every path shares in two terms
-of the format since 2026-10-11, native or emulated by device, but for the
-Bermudan/American rollback, still float32 or float64; storage down to float16, bfloat16 and FP8
+of the format since 2026-10-11, native or emulated by device; the Bermudan/American rollback since
+2026-10-13, as matrix products, one operator per step shared by every path, so the demo's job runs
+at 262,144 paths; storage down to float16, bfloat16 and FP8
 with block scales, block offsets that keep a concentrated column's spread, and nearest or
 stochastic rounding), set per product and per trade for pricing, in portfolio and market-risk
 runs alike; every result carries a precision report, and a paired float64 sample corrects the
@@ -132,7 +133,8 @@ mean figures by a two-level estimator and measures the quantiles. Since 2026-10-
 harness measures every format's error against float64 per stage, figure, product and path
 count, over independent seeds, rerunnable on any kernel change (I-75); since 2026-10-11 the
 evidence table reads A-11's verdicts and path ceilings off it, and every result warns of each
-figure whose combination has no passing row (I-55). HTTP jobs go through a durable SQLite job queue to one single-threaded engine
+figure whose combination has no passing row (I-55), and since 2026-10-13 it measures the share
+of each option's exercise decisions a format flips (decision A-24). HTTP jobs go through a durable SQLite job queue to one single-threaded engine
 worker process per host, which owns the host's devices (decision A-14) and splits each job's
 scenarios across them. The engine runs on an NVIDIA GPU (Linux or WSL2, the `gpu` extra) with
 deterministic kernels, and each matrix product states its own precision (A-22). A repeated job
@@ -169,8 +171,9 @@ calibrated together. The recalibration is 35–55 times faster on the CPU and 15
 GPU, where a repeated demo job went from 5.5 s to 1.4 s
 ([profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05)). It left: the
 cold job's one-operation programs (6.5), a slower pricing on Windows after AD Greeks and a cold
-job 3 s slower for Newton's compile (6.6), and the grid rollback's memory, which stops the
-demo's job beyond a few thousand paths (3.8). The card's float64 runs at 1/64 of its float32
+job 3 s slower for Newton's compile (6.6), and the grid rollback's memory, which stopped the
+demo's job beyond a few thousand paths (fixed 2026-10-13, I-83: 262,144 paths run in 3.0 s and
+2.0 GB on the CPU, 2.4 s on the GPU). The card's float64 runs at 1/64 of its float32
 rate, so it is where correctness and the trace are checked, not where speed is measured (3.18).
 
 <a id="stage-3--the-focus"></a>
@@ -207,9 +210,8 @@ the results.
 
 | Step | Goal | Work | Closes | After | Size |
 |---|---|---|---|---|---|
-| 3.8 | Precision | The Bermudan/American rollback in difference form, as the other path kernels were rewritten (2026-10-10, [details/precision.md §8](details/precision.md#8-compute-below-float32)), the rollback as a matrix product; then its pricing stage takes any compute format, as the others' do (`RESTRICTED_PRODUCTS` empties). The exercise decision on each path and date is exposed by the option's wrapper, the precision harness measures the share of decisions each format flips (a cash-settled option's flipped exercise is its whole value, not a rounding: FP8 storage of the states or curves flips the cash Bermudan's exercise on 1.5–8% of the paths of a date, 2026-10-12), and the storage sanity bounds judge rounding apart from flipped decisions, measured again without them (decision A-24: the bfloat16 simulation-storage bound absorbs one flip until then). The matrix form holds one operator per step instead of one per path and step, so the demo's job runs at 65,536 and 262,144 paths, its peak memory measured against path count. Its products name their shared operand (A-23); being compute-bound, unlike the narrow products of 2026-10-10, they are where the second term's cost shows, measured beside the single pass | [F-07](features.md#f-07) (compute), [I-83](known-issues.md#i-83) | — | L |
-| 3.9 | Precision | Storage that lowers the peak: the exposure reductions over the stored columns trade by trade, each loaded at float64 alone, the netting set as a running float64 sum and PFE's quantiles on it, exact as today; the float64 cube built only when the result asks for it. The peak measured against path count at float64 and FP8 storage | [I-105](known-issues.md#i-105) | 3.8 | M |
-| 3.10 | Precision | FP4: storage with a variance correction through the block scales, compute emulated as FP8's is (2026-10-10); an unbiased rounding of the products' per-path operands, which FP8 compute needs already (round to nearest on its grid leaves a bias, I-98) and FP4's coarser grid more, chosen by the evidence table's path ceilings; multilevel estimation of quantiles (PFE, VaR, ES); standard errors from independent replicates within a run (randomized quasi-Monte Carlo; historical windows by block), since the paired correction's understates where the shocks or curves are stored in float16 or bfloat16 and blocks of paths did not fix it (I-111); its rows in the evidence table. Native FP4 compute on TPU 8t/8i is timed in 3.18 | [F-07](features.md#f-07) (FP4), [I-98](known-issues.md#i-98), [I-111](known-issues.md#i-111) | 3.8 | L |
+| 3.9 | Precision | Storage that lowers the peak: the exposure reductions over the stored columns trade by trade, each loaded at float64 alone, the netting set as a running float64 sum and PFE's quantiles on it, exact as today; the float64 cube built only when the result asks for it. The peak measured against path count at float64 and FP8 storage | [I-105](known-issues.md#i-105) | — | M |
+| 3.10 | Precision | FP4: storage with a variance correction through the block scales, compute emulated as FP8's is (2026-10-10); an unbiased rounding of the products' per-path operands, which FP8 compute needs already (round to nearest on its grid leaves a bias, I-98), and the Bermudan/American induction in every format below float32 (it rounds each path's columns at every step: float16 moves the American's means 7 statistical errors at 16,384 paths, 2026-10-13), and FP4's coarser grid more, chosen by the evidence table's path ceilings; a long option's path value projected onto its bound or the fixed rule judged against its scale (I-113); multilevel estimation of quantiles (PFE, VaR, ES); standard errors from independent replicates within a run (randomized quasi-Monte Carlo; historical windows by block), since the paired correction's understates where the shocks or curves are stored in float16 or bfloat16 and blocks of paths did not fix it (I-111); its rows in the evidence table. Native FP4 compute on TPU 8t/8i is timed in 3.18 | [F-07](features.md#f-07) (FP4), [I-98](known-issues.md#i-98), [I-111](known-issues.md#i-111), [I-113](known-issues.md#i-113) | — | L |
 | 3.11 | Critical bug | *Parallel, can start now* (it moves no path kernel). Sensitivities against ORE's sensitivity analytic on the shared portfolio; the AD Greeks against the bump Greeks on the same sloped portfolio, until AD is ORE's Greek or is labelled as the derivative of a different quantity, with the gap stated; a calibrated Bermudan's/American's LGM recalibrated inside the revaluation's price function under each market-risk scenario, as ORE's historical P&L recalibrates it, against ORE so recalibrating (the one calibration inside the price function serves the AD Greeks' fixed-calibration gap too) | [I-51](known-issues.md#i-51), [I-78](known-issues.md#i-78), [I-112](known-issues.md#i-112) | — | M |
 | 3.12 | API | *Parallel, can start now.* Every input checked before any work, on the host: a curve's pillars (non-empty, as many rates as times, finite, strictly increasing; negative rates allowed), an option's exercise leaving a whole period of each leg, the standalone calibration's notional positive, every API model strict (`extra="forbid"`); each refusal names the field or trade. 3.13's preflight runs them all | [I-103](known-issues.md#i-103) | — | S |
 | 3.13 | API | One run request in place of a route per engine function, as ORE runs a portfolio with a list of analytics: `POST /runs` with `market`, `portfolio`, `analytics` (`npv`, `exposure`, `sensitivities`, `market_risk`, `calibration`) and a `config` whose sections follow ORE's files, each setting in one place; one result with the configuration as run, which says what each figure is without the request beside it (reporting currency, dates, trade ids on every axis, each Greek array's factors, the Greeks method and calibration policy, the engine's revision and its jax, jaxlib and ORE versions); `GET /config/defaults`; an idempotency key; a Python entry, `run(RunRequest)`, in `run/`. Each analytic refuses a precision setting or configuration section it does not read, naming the field. The four routes and `/jobs` go, there being no client. The completeness test also checks each field's wiring: every field set to a non-default value arrives in the engine's configuration. A run of one analytic equals today's direct call within the margin ([design](details/configurable-engine.md#one-run-request-i-87-i-88-i-89)) | [I-87](known-issues.md#i-87), [I-88](known-issues.md#i-88), [I-89](known-issues.md#i-89), [I-95](known-issues.md#i-95) | 3.12 | M |
@@ -217,7 +219,7 @@ the results.
 | 3.15 | API | The job queue: a job status that says when the engine worker cannot start, and a failed start answered with the queued job's id; a cancel route (a pending job at once, a running one at the worker's next phase boundary); a retention policy, with a way to keep a run indefinitely (Basel P0.9 keeps regulatory runs with it); the schema migration in one transaction; the worker's lock per host, not per queue file | [I-76](known-issues.md#i-76), [I-77](known-issues.md#i-77), [I-91](known-issues.md#i-91), [I-106](known-issues.md#i-106) | 3.13 | M |
 | 3.16 | Precision | One worker per host on a Cloud TPU pod slice, with process 0 claiming each job and handing it to the other hosts, since under SPMD every host runs the same job ([details/precision.md §11.3](details/precision.md#113-multi-device-and-multi-host)); a failed host fails the whole job, which is retried whole. Measure wall time against device count on TPU and H100; a run on fewer devices than it was given (a path count with no fitting divisor) says so. The one-host split of the scenario axis is done (2026-10-04) | [I-61](known-issues.md#i-61) | 3.15 (the same worker loop) | M |
 | 3.17 | Precision | *Parallel, can start now* (it moves no number). Native FP8 and bfloat16 passes on a GPU: XLA's Triton GEMM computes FP8 products 40–70% wrong on the RTX 5060 while cuBLASLt computes them exactly, and XLA ignores the bfloat16-passes algorithm on a matrix-vector product (2026-10-11). Route FP8 products to cuBLASLt in the engine worker, timed against Triton on every other product; run product formats' matrix-vector products in a shape XLA honours or emulate them; pair e5m2 with e4m3 where the units need it; the device check on H100 and a newer jax; minimal reproductions reported to XLA. Each format turns native per device in `product_execution`'s table once the device check passes | [I-97](known-issues.md#i-97) | — | M |
-| 3.18 | Precision | The research result: on several devices of Ironwood and H100, wall time per figure at equal accuracy, many low-precision paths against fewer float64 paths, read from the precision harness's relative errors (a format r statistical errors off at N paths is worth float64 at N / (1 + r²); the evidence table's 1% path ceilings are an acceptance bar that little below float32 meets, 2026-10-11); the storage formats, then the matrix-product kernels (2026-10-10's and 3.8's) on native FP8, the native product formats' code paths confirmed on each device (`engine.precision.product_execution`'s table, TensorFloat-32 and bfloat16 passes by their algorithm, FP8 by its dtype), each format's two terms against its single pass (A-23; no cost measurable on an RTX 5060's float16, bfloat16 and TensorFloat-32 units, 2026-10-11), and FP4 compute on TPU 8t/8i. Each time is the whole job's (host preparation, the fixed float64 stages, the paired sample, transfers and reductions, the device synchronized before the clock stops), cold and warm compiles stated apart, with equal outputs on both sides; a format that does not pay is a result too | [F-07](features.md#f-07) (speed) | 3.9, 3.10, 3.16, 3.17 | M |
+| 3.18 | Precision | The research result: on several devices of Ironwood and H100, wall time per figure at equal accuracy, many low-precision paths against fewer float64 paths, read from the precision harness's relative errors (a format r statistical errors off at N paths is worth float64 at N / (1 + r²); the evidence table's 1% path ceilings are an acceptance bar that little below float32 meets, 2026-10-11); the storage formats, then the matrix-product kernels (2026-10-10's and the rollback's of 2026-10-13, compute-bound, where a shared operand's second term costs most) on native FP8, the native product formats' code paths confirmed on each device (`engine.precision.product_execution`'s table, TensorFloat-32 and bfloat16 passes by their algorithm, FP8 by its dtype), each format's two terms against its single pass (A-23; no cost measurable on an RTX 5060's float16, bfloat16 and TensorFloat-32 units for the narrow products, 2026-10-11, and 1.37 to 1.62 times the single pass for the compute-bound rollback, 2026-10-13), and FP4 compute on TPU 8t/8i. Each time is the whole job's (host preparation, the fixed float64 stages, the paired sample, transfers and reductions, the device synchronized before the clock stops), cold and warm compiles stated apart, with equal outputs on both sides; a format that does not pay is a result too | [F-07](features.md#f-07) (speed) | 3.9, 3.10, 3.16, 3.17 | M |
 
 Order within the stage:
 
@@ -226,23 +228,24 @@ Order within the stage:
   short option (I-101) is the long one's kernel and a sign, so every evidence row of a long
   option holds for the short.
 - **Low precision in full before anything else competes.** The storage harness is built
-  (2026-10-09, I-75) and the kernels it measures are rewritten (2026-10-10) but for the
-  rollback. Their first measurements found a bias floor of compute below float32 (I-96), fixed
+  (2026-10-09, I-75) and the kernels it measures are rewritten (2026-10-10; the rollback
+  2026-10-13). Their first measurements found a bias floor of compute below float32 (I-96), fixed
   on 2026-10-11 by carrying each product's shared operand in two terms (A-23), so swaps,
   Europeans and bonds have evidence rows, and since 2026-10-12 the Bermudan/American kernel is
   ORE's on the paths (its shift horizon, I-32, and its model kept as ORE built it, I-49, the
   options' rows measured again after each); FP8's own rounding leaves a bias (I-98), which the table reads as a path ceiling until
   3.10 chooses an unbiased rounding. The evidence table is built on them (I-55, 2026-10-11),
-  every result warning of figures without a passing row. The rollback family is then rewritten once, after them (3.8), its rows
-  follow, and its memory with the cube's (3.9) decides how many paths the research can run; FP4
-  (3.10) closes the arithmetic. What remains of the precision research after
+  every result warning of figures without a passing row. The rollback family was then rewritten
+  once, after them (2026-10-13), its rows measured and each option's flipped exercise decisions
+  with them; the cube's memory (3.9) now decides how many paths the research can run; FP4 (3.10)
+  closes the arithmetic. What remains of the precision research after
   the API steps, multi-host (3.16) and the timing (3.18), is measurement on hardware that has
   to be booked, not arithmetic.
 - **The Bermudan/American kernel is ORE's on the paths** (2026-10-12). Its values were
   0.5–4% from ORE's, all of it a per-path recalibration that ORE's exposure simulation never
   makes (I-49): ORE keeps the LGM it calibrated when it built the trade. So the rollback family
-  (3.8), its evidence rows and Basel's IMM exposure build on ORE's numbers, and the rollback is
-  the kernel left to rewrite; the per-path recalibration is gone, since no ORE analytic
+  (rewritten 2026-10-13), its evidence rows and Basel's IMM exposure build on ORE's numbers; the
+  per-path recalibration is gone, since no ORE analytic
   recalibrates on a path (decision A-24). A calibration that cannot fit its basket fails
   explicitly, as ORE's does (I-73, A-24), so no evidence row rests on a misfit model.
 - **3.11 alongside.** The Greeks touch no path kernel, so they can be fixed at any time; Basel's
@@ -256,9 +259,9 @@ Order within the stage:
   loop 3.15 changes.
 - **Numbers.** 3.12 to 3.16 move no number beyond the margin (3.12 refuses inputs that gave
   wrong ones). 3.11 may move the AD Greeks and a calibrated Bermudan's market-risk P&L to ORE's,
-  planned changes of the model. 3.8, 3.9 and 3.10 may move
-  float64 at rounding level, within the margin, as the kernel rewrite of 2026-10-10 did
-  (2.2e-14 of each array's scale).
+  planned changes of the model. 3.9 and 3.10 may move
+  float64 at rounding level, within the margin, as the kernel rewrite did (2026-10-10: 2.2e-14
+  of each array's scale; the rollback's, 2026-10-13, 1.2e-14, a Greek 2.2e-14 of its trade's NPV).
 
 Parity methodology: [details/ore-parity-validation.md](details/ore-parity-validation.md);
 precision: [details/precision.md](details/precision.md); layout:
@@ -339,12 +342,12 @@ and gets its rows in the evidence table (a campaign of the precision harness, I-
 
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|
-| 7.1 | Swaption smile: a strike axis in the market's volatilities, read at each option's and helper's strike; an additive market field, with ATM-only markets unchanged within the margin. The lookup it widens is written in difference form | [I-54](known-issues.md#i-54) | 3.8 | M |
-| 7.2 | Engine options: ORE's `AnalyticLgm` European engine, settlement methods, FD solver (the AD Greeks method and the market-risk engine by configuration are done) | [F-01](features.md#f-01) | 3.8 | M |
-| 7.3 | FX and equity trades on the pipeline; FX/EQ calibration; the two-currency end-to-end test (L6) against the ORE simulation oracle, extended to a second currency, and market risk's FX factors | [F-04](features.md#f-04) | 3.8 | L |
+| 7.1 | Swaption smile: a strike axis in the market's volatilities, read at each option's and helper's strike; an additive market field, with ATM-only markets unchanged within the margin. The lookup it widens is written in difference form | [I-54](known-issues.md#i-54) | — | M |
+| 7.2 | Engine options: ORE's `AnalyticLgm` European engine, settlement methods, FD solver (the AD Greeks method and the market-risk engine by configuration are done) | [F-01](features.md#f-01) | — | M |
+| 7.3 | FX and equity trades on the pipeline; FX/EQ calibration; the two-currency end-to-end test (L6) against the ORE simulation oracle, extended to a second currency, and market risk's FX factors | [F-04](features.md#f-04) | — | L |
 | 7.4 | SABR volatility | [F-02](features.md#f-02) | 7.1 | M |
 | 7.5 | CVA/DVA | [F-06](features.md#f-06) | 3.13 | M |
-| 7.6 | AMC engine | [F-03](features.md#f-03) | 3.8 | L |
+| 7.6 | AMC engine | [F-03](features.md#f-03) | — | L |
 | 7.7 | Reporting currencies other than USD for TraderX: convert at the as-of FX spot, as ORE reports in its `baseCurrency`; parity against an ORE run with that base currency | [F-08](features.md#f-08) | 4.3; an FX source ([I-18](known-issues.md#i-18), waiting on others) | S |
 | 7.8 | ORE's XML input files (`ore.xml`'s analytics, `simulation.xml`, `pricingengine.xml`, `sensitivity.xml`, `portfolio.xml`, zero-rate market data) translated into a run request, refusing by name what the engine does not support. Nice to have, not critical (owner, 2026-10-08) | [F-09](features.md#f-09) | 3.13 | M |
 

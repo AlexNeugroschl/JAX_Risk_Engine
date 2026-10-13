@@ -19,10 +19,11 @@ Each trade is priced on paths at its own precision, `Precision.precision_for(tra
 override for its id, else for its product, else the pricing stage; decision A-15), in its
 arithmetic (`engine.precision.Arithmetic`): the scenario market is loaded at the accumulate
 format, the kernels' products run in the compute format, and the trade's cube column is stored
-at the storage format. Swaps, bonds and Europeans are priced in difference form at every
-precision (F-07); the Bermudan/American rollback is not yet, so its compute format must equal
-its accumulate format, float32 or float64, until it is (`RESTRICTED_PRODUCTS`). t=0 values are float64 (A-10). `value_paths` prices the paths alone,
-as the paired float64 sample of a reduced-precision run does (decision A-13).
+at the storage format. Every product is priced in difference form at every precision (F-07;
+the Bermudan/American rollback since 2026-10-13). t=0 values are float64 (A-10). An option's
+exercise decisions on each path and date are the wrapper's (`PortfolioValuation.exercised`).
+`value_paths` prices the paths alone, as the paired float64 sample of a reduced-precision run
+does (decision A-13).
 
 Trades name their currency and index; the market supplies the curves and volatilities and the
 pricing configuration the models (audit A-3, I-63). A trade valued on another date than the
@@ -65,11 +66,6 @@ OPTIONS = (SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig)
 #: `Precision.by_product`.
 PRODUCTS: Tuple[str, ...] = tuple(t.product for t in get_args(Trade))
 
-#: The products whose path kernels are not in difference form yet, and the item that makes them
-#: so: their pricing stage computes and accumulates in one format, float32 or float64.
-RESTRICTED_PRODUCTS = {BermudanSwaptionConfig.product: "F-07", AmericanSwaptionConfig.product: "F-07"}
-
-
 @dataclass
 class PortfolioValuation:
     """t=0 NPVs `[T]` (float64) and the cube, both in the base currency, in trade order.
@@ -77,12 +73,15 @@ class PortfolioValuation:
     columns: each trade's `[S, D]` cube column, stored at its own pricing storage format
         (`Precision.precision_for`): a plain array, or a `Stored` (block scales along the
         paths) in a scaled format.
+    exercised: each option's exercise state, by trade id, `[S, D]` bool: whether the holder has
+        exercised on the path on or before the date (`engine.pricing.options.wrap`).
     """
     today: List[float]
     columns: List[Union[jax.Array, Stored]]
     num_paths: int
     num_dates: int
     warnings: List[str] = field(default_factory=list)
+    exercised: Dict[str, jax.Array] = field(default_factory=dict)
 
     @property
     def cube(self) -> jax.Array:
@@ -139,19 +138,11 @@ def validate_trades(trades: Sequence[Trade], market: Market, pricing: PricingCon
                     precision: Precision = Precision()) -> None:
     """Refuse what the pipeline cannot price as specified: a precision override that names
     no trade or product (`Precision.check_overrides`), a trade valued on another date than the
-    market's, a trade whose curves or volatilities the market lacks, one its configured engine
-    refuses, or one whose kernel cannot compute in its pricing stage's arithmetic
-    (`RESTRICTED_PRODUCTS`)."""
+    market's, a trade whose curves or volatilities the market lacks, or one its configured
+    engine refuses."""
     precision.check_overrides(trades, PRODUCTS)
     for cfg in trades:
         label = f"trade {cfg.trade_id!r} ({type(cfg).__name__})"
-        stage = precision.precision_for(cfg)
-        if cfg.product in RESTRICTED_PRODUCTS and not stage.arithmetic.plain:
-            raise ValueError(f"{label}: its pricing stage computes in {stage.compute!r} and accumulates in "
-                             f"{stage.accumulate!r}; the {cfg.product} kernel (the rollback and its recalibration) is "
-                             f"not in difference form yet ({RESTRICTED_PRODUCTS[cfg.product]}), so it computes and "
-                             f"accumulates in one format, float32 or float64: set its precision with "
-                             f"Precision.by_product or by_trade")
         if cfg.evaluation_date != market.asof:
             raise ValueError(f"{label}: evaluation_date {cfg.evaluation_date} is not the market's as-of date "
                              f"{market.asof}; book trades on the valuation date (audit A-4)")
@@ -198,9 +189,9 @@ def value_portfolio(trades: Sequence[Trade], market: Market, scenarios: Scenario
     and `value_paths` in one."""
     require_precision("value_portfolio's precision", precision)
     validate_trades(trades, market, pricing, precision)
-    return PortfolioValuation(today=_today(trades, market, base_currency, pricing),
-                              columns=_columns(trades, market, scenarios, base_currency, pricing, decay, precision),
-                              num_paths=scenarios.num_paths, num_dates=len(scenarios.dates))
+    columns, exercised = _columns(trades, market, scenarios, base_currency, pricing, decay, precision)
+    return PortfolioValuation(today=_today(trades, market, base_currency, pricing), columns=columns,
+                              num_paths=scenarios.num_paths, num_dates=len(scenarios.dates), exercised=exercised)
 
 
 def value_today(trades: Sequence[Trade], market: Market, base_currency: str,
@@ -220,7 +211,7 @@ def value_paths(trades: Sequence[Trade], market: Market, scenarios: ScenarioMark
     (`engine.run.pipeline`)."""
     require_precision("value_paths' precision", precision)
     validate_trades(trades, market, pricing, precision)
-    return _columns(trades, market, scenarios, base_currency, pricing, decay, precision)
+    return _columns(trades, market, scenarios, base_currency, pricing, decay, precision)[0]
 
 
 def _today(trades, market: Market, base_currency: str, pricing: PricingConfig,
@@ -231,13 +222,14 @@ def _today(trades, market: Market, base_currency: str, pricing: PricingConfig,
 
 
 def _columns(trades, market: Market, scenarios: ScenarioMarket, base_currency: str, pricing: PricingConfig,
-             decay: str, precision: Precision) -> List[Union[jax.Array, Stored]]:
+             decay: str, precision: Precision) -> Tuple[List[Union[jax.Array, Stored]], Dict[str, jax.Array]]:
     """Cast point 4 of docs/planning/details/precision.md §6.3, per trade: the scenario market
     is loaded at the accumulate format of `precision.precision_for(trade)` (once per format, with
     its path fixings), the trade priced in its arithmetic, and its cube column stored at its
-    storage format, named by the trade's id (`Precision.store`)."""
+    storage format, named by the trade's id (`Precision.store`); and each option's exercise state
+    by trade id (`PortfolioValuation.exercised`)."""
     loaded = {}  # accumulate dtype -> (the scenario market at it, its path fixings)
-    columns = []
+    columns, exercised = [], {}
     for cfg in trades:
         stage = precision.precision_for(cfg)
         arithmetic = stage.arithmetic
@@ -246,9 +238,11 @@ def _columns(trades, market: Market, scenarios: ScenarioMarket, base_currency: s
             loaded[arithmetic.dtype] = at_dtype, _index_fixings(trades, market, at_dtype)
         sm, fixings = loaded[arithmetic.dtype]
         fx_path = 1.0 if cfg.currency == base_currency else sm.fx[cfg.currency]
-        cube = _path_values(cfg, market, sm, fixings, pricing, decay, arithmetic)
+        cube, state = _path_values(cfg, market, sm, fixings, pricing, decay, arithmetic)
         columns.append(precision.store(cube * fx_path, stage.storage, f"values/{cfg.trade_id}"))
-    return columns
+        if state is not None:
+            exercised[cfg.trade_id] = state
+    return columns, exercised
 
 
 def _index_fixings(trades, market: Market, scenarios: ScenarioMarket) -> Dict[str, PathFixings]:
@@ -297,12 +291,14 @@ def _engine(cfg, pricing: PricingConfig):
 
 def _path_values(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricing: PricingConfig, decay: str,
                  arithmetic: Arithmetic):
-    """The `[S, D]` cube column of one trade in its own currency, in `arithmetic`."""
+    """The `[S, D]` cube column of one trade in its own currency, in `arithmetic`, and an
+    option's exercise state `[S, D]` (`wrap`; None for a swap or a bond)."""
     currency = cfg.currency
     disc = sm.discount[currency]
     if isinstance(cfg, BondConfig):
         legs = bond_legs(cfg)
-        return legs_cube(legs, path_schedule(legs, market.asof, sm.dates), sm.times, disc, disc, None, arithmetic)
+        return legs_cube(legs, path_schedule(legs, market.asof, sm.dates), sm.times, disc, disc, None,
+                         arithmetic), None
     name = index_name(currency, cfg.index_tenor_months)
     index, index_fixings = sm.index[name], fixings[name]
 
@@ -311,7 +307,7 @@ def _path_values(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricin
                          arithmetic)
 
     if isinstance(cfg, SwapConfig):
-        return swap_cube(legs_of(_swap_underlying(cfg), cfg.payer, market.asof, cfg.fixings))
+        return swap_cube(legs_of(_swap_underlying(cfg), cfg.payer, market.asof, cfg.fixings)), None
     if isinstance(cfg, SwaptionConfig):
         terms = european_terms(cfg, market.asof)
         schedule = path_schedule(terms.legs, market.asof, sm.dates)
@@ -326,7 +322,7 @@ def _path_values(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricin
         swap = _european_underlying(cfg)
         exercises, fixings_history = (cfg.exercise_date,), {}
     else:
-        option = bermudan_cube(cfg, _engine(cfg, pricing), market, sm, index_fixings)
+        option = bermudan_cube(cfg, _engine(cfg, pricing), market, sm, index_fixings, arithmetic)
         swap = _option_underlying(cfg)
         exercises, fixings_history = contract_exercise_dates(cfg), cfg.fixings
     underlyings = [swap_cube(_underlying_legs(swap, cfg.payer, market.asof, fixings_history, e)) for e in exercises]

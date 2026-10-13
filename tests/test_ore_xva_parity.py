@@ -256,13 +256,14 @@ def _assert_within(name, ours, ore, error, floor):
 @pytest.mark.parametrize("model", list(MODELS))
 @pytest.mark.parametrize("names, paths", [
     (("swap-payer", "swap-receiver-seasoned-icma", "european-payer", "european-receiver-otm-cash", "bond"), 2 ** 14),
-    (("bermudan-payer-physical", "bermudan-receiver-cash", "american-payer"), 2 ** 10),
+    (("bermudan-payer-physical", "bermudan-receiver-cash", "american-payer"), 2 ** 12),
 ], ids=["linear-and-europeans", "options"])
 def test_the_engines_simulation_and_exposure_are_ores_in_distribution(model, names, paths):
     """L4: each simulated curve's mean discount factors, and each trade's and the netting set's
     EPE, ENE and PFE on every date, within four combined standard errors of ORE's; each run on
-    its own random numbers. Options on fewer paths: their path rollback holds 0.3-0.7 MB per
-    path and date (I-83)."""
+    its own random numbers. Options on fewer paths, for ORE's time: its grid engine on every path
+    and date takes about two minutes per model at 4,096 paths (2026-10-13); the engine's took
+    1,024 at most until its rollback became one shared operator per step (I-83)."""
     market = shared.market()
     trades = [shared.trades()[n] for n in names]
     config = _simulation(model, samples=paths, seed=11)

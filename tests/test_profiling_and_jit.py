@@ -65,7 +65,7 @@ def prepared_bermudan(cfg=None):
 # =============================================================================
 class TestPreparedBermudanPytree:
     """`_PreparedBermudan` is a pytree whose static aux data is only what fixes the
-    program's shape, so `_backward_induction_arrays` is jitted once per trade shape while
+    program's shape, so the induction (`engine.pricing.lgm_grid._induction`) is jitted once per trade shape while
     Greeks differentiate through it."""
 
     def test_only_shape_fixing_fields_are_static(self):
@@ -107,7 +107,7 @@ class TestCompileCounts:
     The reference Greeks job once compiled 602 programs."""
 
     def test_bermudan_engine_compiles_few_programs(self):
-        # Measured: a handful (jit__backward_induction_arrays + small helpers).
+        # Measured: a handful (jit__induction + small helpers).
         with count_compiles() as counter:
             npv = engine_npv(n_per_std=17)
         assert npv > 0.0
@@ -187,7 +187,7 @@ class TestCompileCounts:
             curve_greeks(bermudan_cfg(), market, PRICING, 1e-4)
             vega_greek(bermudan_cfg(), market, PRICING, 1e-4)
         assert counter["jit__curve_derivatives"] == 1 and counter["jit__option_vega"] == 1, dict(counter)
-        assert counter["jit__backward_induction_arrays"] == 0, dict(counter)
+        assert counter["jit__induction"] == 0, dict(counter)
 
     @pytest.mark.slow
     def test_a_repeated_job_compiles_nothing(self):

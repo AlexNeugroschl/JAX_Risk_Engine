@@ -34,8 +34,38 @@ is with the Grid solver; ORE's FD solver is not reproduced (F-01). It rests on m
    it is precomputed as masks. A closed-form exercise value converges to the same limit but
    differs by up to ~1e-4 at a 48-point grid.
 
-The induction is one `jax.lax.scan`, so `jax.grad`/`jax.hessian` differentiate through it,
-and `jax.vmap` runs it on every simulated path at once (`engine.pricing.bermudan`).
+**The induction as matrix products** (F-07, I-83; docs/planning/details/precision.md §8.2). In
+the numeraire's units every quantity the induction rolls back is a function on the state grid,
+and neither the grid nor the rollback depends on the curves: the grid `x_k = k sqrt(zeta(t))/nx`
+and the Gaussian kernel between two times are the model's alone. So each step's rollback is one
+`[nodes, nodes]` operator (`_rollback_operator`), shared by every path, applied to every column
+(the option, the underlying, the cached coupons) of every path at once by one matrix product.
+A cashflow's value on the grid is a path's coefficient times a function of the state that is
+the model's alone (`ORE`'s `reducedDiscountBond`: `P(0, T) exp(-H_T^2 zeta_t / 2 - H_T x)`), an
+Ibor coupon projected over its index period two such terms, so every cashflow the bookkeeping
+adds on a row is one product of the paths' coefficients `[S, J]` with those functions, weighted
+by the row's actions (`_Induction.targets`). The rolled-back values are then never formed per
+path and step from the curves, and the memory is `[S, columns, nodes]` (the cached coupons in as
+few columns as are ever cached at once, `_cache_slots`), against `[S, nodes, nodes]` per step
+when the rollback interpolated each path's columns (I-83).
+
+**The difference form.** The induction runs on the level curves (no path axis, in their own
+format: float64 on the paths) and, given each path's `Deviations` from them, on each path's
+deviation, everything linear (the rollback, the bookkeeping) applying to the deviations alone in
+the stage's compute format, the products sharing their right operand (the operator, the
+functions on the grid; A-23). At an exercise, with the level's exercise value less its
+continuation value `c`, a path's deviation is `max(d_option - max(c, 0), d_exercise + min(c,
+0))`, exactly the path's `max` less the level's: the level enters a path only through `c`, in
+two terms of the accumulate format (`engine.precision.add_level`). So a format below float32
+rounds deviations, never the option's value; at float64 the paths' values are those of the
+induction run on each path's curves, to rounding. `grid_value` is the level alone: today's
+price, the AD Greeks' price function and every t=0 value.
+
+The induction is one `jax.lax.scan`, so `jax.grad`/`jax.hessian` differentiate through it. A row
+with nothing to roll back (the first, ORE's no-op rollbacks, padding) skips its products
+(`lax.cond`), so trades padded to one shape (`one_shape`: a path cube's dates) share one program
+at no cost. Many paths are priced in blocks (`path_blocks`, `blocked`) so that the induction's
+memory stays within `INDUCTION_MEMORY_BUDGET` at any path count.
 
 Seasoned trades are priced as ORE prices them: exercise dates on or before the evaluation
 date are dropped, coupons that can no longer enter any exercise are not valued, coupons
@@ -45,29 +75,27 @@ ORE prices Bermudans and Americans with this engine (`LGMGridSwaptionEngineBuild
 OREData/ored/portfolio/builders/swaption.hpp). See
 docs/instruments/american-bermudan-swaptions.md for the derivation.
 """
+import dataclasses
 import math
 from dataclasses import dataclass, fields
-from typing import Optional, Union
+from functools import partial
+from typing import List, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import ORE
+from jax import lax
 from jax.tree_util import register_pytree_node_class
 
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, ExerciseStyle, underlying_swap
 from engine.instruments.schedules import known_fixing
-from engine.market_data.curves import curve_dtype
+from engine.market_data.curves import curve_dtype, discount, log_discount_deviation
 from engine.market_data.day_counts import time_from_reference
-from engine.models.lgm import (
-    Sigma,
-    bond_price as _lgm_bond_price,
-    horizon_shift as _lgm_horizon_shift,
-    numeraire as _lgm_numeraire,
-    zeta as _lgm_zeta,
-)
-from engine.precision import matmul
+from engine.models.lgm import H as _lgm_H, Sigma, horizon_shift as _lgm_horizon_shift, zeta as _lgm_zeta
+from engine.precision import Arithmetic, add_level, matmul
+from engine.pricing.legs import Deviations
 
 # Every time here is on the simulation's time axis (`engine.market_data.day_counts`), never an
 # instrument's accrual basis.
@@ -85,10 +113,10 @@ class _PreparedBermudan:
     differentiation targets (Delta/Gamma, Vega; `engine.risk.greeks.price_functions` substitutes
     tracers into them), and every time, amount and fixing of the schedule.
 
-    So `_backward_induction_arrays` compiles once per trade shape (coupon and exercise
+    So the induction (`_induction`) compiles once per trade shape (coupon and exercise
     counts, grid size) for pricing, `jax.grad` and `jax.hessian`, whatever the trade's
-    dates, the valuation date or its size. The host-side schedule (`_build_grid_schedule`)
-    reads the concrete fields before the jit boundary.
+    dates, the valuation date or its size. The host-side rows (`induction_rows`) read the
+    concrete fields before the jit boundary.
     """
     payer: bool
     notional: float
@@ -272,6 +300,19 @@ def _index_curve_of(swap: _PreparedBermudan):
 
 # State grid and Hagan quadrature convolution, as QuantExt::LgmConvolutionSolver2
 # (QuantExt/qle/models/lgmconvolutionsolver2.cpp), in the LGM state variable x(t).
+def _safe_sqrt(z: jax.Array) -> jax.Array:
+    """sqrt(max(z, 0)) with a finite gradient at 0 (a plain `jnp.sqrt` gives NaN Vega at t=0:
+    `jax.grad` differentiates both branches of a `where`, so the root is taken of a safe
+    placeholder)."""
+    z = jnp.maximum(z, 0.0)
+    return jnp.where(z > 0.0, jnp.sqrt(jnp.where(z > 0.0, z, 1.0)), 0.0)
+
+
+def _grid_spacing(sigma, t: jax.Array, n_per_std: int) -> jax.Array:
+    """The state grid's spacing at time t, `sqrt(zeta(t))/n_per_std` (0 at t=0)."""
+    return _safe_sqrt(_lgm_zeta(sigma, t)) / n_per_std
+
+
 def _state_grid(sigma: float, t: jax.Array, n_per_std: int, std_devs: float, dtype=jnp.float64) -> jax.Array:
     """
     LGM state grid at time t: `x_k = k*sqrt(zeta(t))/n_per_std` for
@@ -279,18 +320,12 @@ def _state_grid(sigma: float, t: jax.Array, n_per_std: int, std_devs: float, dty
     `LgmConvolutionSolver2::stateGrid`. The shape is fixed (`2*mx+1`) for `lax.scan`; at
     t=0 every point is 0, as in ORE.
 
-    The sqrt is guarded so its gradient is finite at zeta == 0 (a plain `jnp.sqrt` gives
-    NaN Vega at t=0).
-
     `dtype` is passed explicitly: the caller uses `curve.pillar_rates.dtype`, which is the
     pricing or risk precision as appropriate, whereas `sigma` and `t` are float64 either
     way.
     """
     mx = grid_half_width(std_devs, n_per_std)
-    z = jnp.maximum(_lgm_zeta(sigma, t), 0.0)
-    z_safe = jnp.where(z > 0.0, z, 1.0)
-    dx = jnp.where(z > 0.0, jnp.sqrt(z_safe), 0.0) / n_per_std
-    return dx * jnp.arange(-mx, mx + 1, dtype=dtype)
+    return _grid_spacing(sigma, t, n_per_std).astype(dtype) * jnp.arange(-mx, mx + 1, dtype=dtype)
 
 
 def grid_half_width(std_devs: float, n_per_std: int) -> int:
@@ -341,24 +376,39 @@ def _quadrature_nodes(n_per_std: int, std_devs: float) -> np.ndarray:
     return np.asarray([(1.0 / n_per_std) * (i - my) for i in range(2 * my + 1)], dtype=np.float64)
 
 
-def _rollback_one_step(
-    values: jax.Array, x_from: jax.Array, x_to: jax.Array,
-    quad_y: jax.Array, quad_w: jax.Array, std_from_to: jax.Array,
-) -> jax.Array:
+def _rollback_operator(dx_from: jax.Array, x_to: jax.Array, std: jax.Array, quad_y: jax.Array,
+                       quad_w: jax.Array) -> jax.Array:
     """
-    E[values(x_from) | x_to] at every point of `x_to`, as `LgmConvolutionSolver2::rollback`.
+    `R` `[n_to, n_from]` with `R @ f` = E[f(x_from) | x_to] at every point of `x_to`, as
+    `LgmConvolutionSolver2::rollback`, for any column of values `f` on the grid
+    `x_from = dx_from * (k - mx)`, `k = 0..2 mx`.
 
     x is driftless, so x_from given x_to is Gaussian with mean x_to and standard deviation
-    `std_from_to = sqrt(zeta(t_from) - zeta(t_to))`. The expectation is
-    `sum_i w_i * f(x_to + y_i * std_from_to)`, with f linearly interpolated on the
-    `x_from` grid and flat outside it.
+    `std = sqrt(zeta(t_from) - zeta(t_to))`. The expectation is `sum_i w_i f(x_to + y_i std)`,
+    f linearly interpolated on `x_from` and flat outside it, which is linear in f: each query
+    point puts `w_i (1 - u)` on the node below it and `w_i u` on the node above, `u` its fraction
+    of the spacing. Where `std` is 0 (no variance between the two times) it is ORE's
+    interpolation alone: each point of `x_to` with weight 1 (the quadrature's middle node, y=0).
+
+    The operator depends on the model and the two times only, never on a path's curves: one
+    per step serves every path and column (see the module docstring). Built by a scatter of its
+    `2 n_to n_quad` weights (each row's query points are spread over the whole grid, so it has
+    no band structure to exploit).
     """
-    query = x_to[..., None] + quad_y[None, :] * std_from_to  # [..., n_to, n_quad]
-    interpolated = jnp.interp(
-        query.reshape(-1), x_from, values,
-        left=values[0], right=values[-1],
-    ).reshape(query.shape)
-    return jnp.sum(interpolated * quad_w[None, :], axis=-1)
+    n_from = quad_y.shape[0]
+    mx = (n_from - 1) // 2
+    middle = jnp.arange(n_from) == mx
+    weights = jnp.where(std > 0.0, quad_w, middle.astype(quad_w.dtype))                       # [n_quad]
+    query = x_to[:, None] + quad_y[None, :] * std                                           # [n_to, n_quad]
+    spacing = jnp.where(dx_from > 0.0, dx_from, 1.0)
+    position = jnp.clip(query / spacing + mx, 0.0, n_from - 1.0)
+    floor = jnp.clip(jnp.floor(position), 0.0, n_from - 2.0)
+    above_share = position - floor
+    below = floor.astype(jnp.int32)
+    rows = jnp.broadcast_to(jnp.arange(x_to.shape[0])[:, None], query.shape)
+    operator = jnp.zeros((x_to.shape[0], n_from), dtype=quad_w.dtype)
+    operator = operator.at[rows, below].add(weights * (1.0 - above_share))
+    return operator.at[rows, below + 1].add(weights * above_share)
 
 
 def _close_enough(x: float, y: float) -> bool:
@@ -473,160 +523,416 @@ def _build_grid_schedule(swap: _PreparedBermudan) -> _GridSchedule:
     )
 
 
-def _bond_prices_at_nodes(curve, a: float, sigma, t: jax.Array,
-                          maturities: jax.Array, x_nodes: jax.Array, shift) -> jax.Array:
-    """P(t, T; x) for every state node and maturity (`engine.models.lgm.bond_price`).
-    Shape [Nnodes, Nmaturities]."""
-    return jax.vmap(lambda T: _lgm_bond_price(curve, a, sigma, t, T, x_nodes, shift))(maturities).T
+# =============================================================================
+# THE INDUCTION'S ROWS: ORE's bookkeeping in the kernel's form (host)
+# =============================================================================
+def _cache_slots(schedule: _GridSchedule) -> Tuple[np.ndarray, int]:
+    """The column of the induction that holds each cashflow's cache (-1 for one never cached),
+    and how many there are: a coupon is cached from the row it starts on (`start_cache`) up to
+    and including the row it moves into the underlying (`cache_to_under`), or to the end, and a
+    column is reused once its coupon has moved, so there are as many columns as coupons are ever
+    cached at once (a Bermudan none, since it enters whole periods; an American one or two per
+    leg), not one per cashflow."""
+    num_rows, num_cashflows = schedule.start_cache.shape
+    slot_of = np.full(num_cashflows, -1, dtype=np.int64)
+    busy_until: List[int] = []   # per column, the last row its coupon holds it
+    starts = {c: int(np.argmax(column)) for c, column in enumerate(schedule.start_cache.T) if column.any()}
+    for c, start in sorted(starts.items(), key=lambda item: item[1]):
+        moved = np.nonzero(schedule.cache_to_under[:, c])[0]
+        end = int(moved[0]) if moved.size else num_rows - 1
+        free = [k for k, until in enumerate(busy_until) if until < start]
+        if free:
+            busy_until[free[0]] = end
+        else:
+            busy_until.append(end)
+        slot_of[c] = free[0] if free else len(busy_until) - 1
+    return slot_of, len(busy_until)
 
 
-def _cashflow_values_at_nodes(swap: _PreparedBermudan, curve, x_nodes: jax.Array, t: jax.Array,
-                              shift) -> jax.Array:
-    """
-    Every cashflow's value at time `t` on every state node, signed for the option holder:
-    ORE's `CashflowInfo::pv`, in the model shifted by `shift`. Shape [Nnodes, C], fixed leg
-    first, then floating.
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True, eq=False)
+class _Induction:
+    """The backward loop's rows in the kernel's form (`induction_rows`), latest first: what each
+    row does with the induction's columns `[option, underlying, cache_0, ..., cache_{K-1}]` and
+    with the cashflows' values, built from `_GridSchedule` on the host. A pytree of arrays: the
+    kernel reads it traced, so inductions of one shape share a program.
 
-      * fixed coupon: `amount * P(t, pay; x)`;
-      * Ibor coupon: `(fixing(t, x) + spread) * accrual * notional * P(t, pay; x)`, with
-        `LgmVectorised::fixing` projecting over the index period [d1, d2] on the index's
-        forwarding curve: `(P_idx(t,T1)/P_idx(t,T2) - 1) / dcf(d1, d2)`,
-        `T1 = max(t, d1)`, `T2 = max(T1, d2)`.
-        Past d1 this projects only the remaining stub, which `couponRatio` scales again;
-        that is ORE's behaviour. A fixing dated on or before the evaluation date is its
-        historical value if known, else (today's) the forecast off today's curve.
-    """
-    a, sigma = swap.reversion, swap.sigma
-    # Work in x_nodes' dtype; the float64 schedule arrays would otherwise upcast float32.
-    dtype = x_nodes.dtype
-    as_dtype = lambda values: jnp.asarray(values, dtype=dtype)  # noqa: E731
+    Per row, the cashflows' values enter through `targets` `[G, 2 + K, J]`, the weight of each
+    basis function of the cashflows (`J`: a function per fixed coupon, two per floating one,
+    `_induction`) in each of the row's targets: 0, the provisional value of the coupons not
+    cached (`non_cached * couponRatio`); 1, what is added to the underlying (`add_pv`); 2 + k, the
+    value cache column k starts with (`start_cache`). Cache column k then moves into the
+    underlying where `moves` (`cache_to_under`) and is credited to the exercise value with
+    weight `shares` (`from_cache * couponRatio`). `rollback`: whether the row rolls the columns
+    back from the one before (not the first, nor ORE's no-op rollbacks, nor padding)."""
+    times: np.ndarray        # [G] descending; padding repeats the first time
+    rollback: np.ndarray     # [G] bool
+    is_exercise: np.ndarray  # [G] bool
+    targets: np.ndarray      # [G, 2 + K, J]
+    starts: np.ndarray       # [G, K] bool
+    moves: np.ndarray        # [G, K] bool
+    shares: np.ndarray       # [G, K]
 
-    fixed = (_bond_prices_at_nodes(curve, a, sigma, t, as_dtype(swap.fixed_times), x_nodes, shift)
-             * as_dtype(swap.fixed_amounts)[None, :])
+    @property
+    def shape(self) -> Tuple[int, int]:
+        """(rows, cache columns)."""
+        return self.starts.shape
 
-    index_curve = _index_curve_of(swap)
-    index_start = as_dtype(swap.float_index_start_times)
-    index_end = as_dtype(swap.float_index_end_times)
-    index_dcf = as_dtype(swap.float_index_dcf)
-    T1 = jnp.maximum(t, index_start)
-    T2 = jnp.maximum(T1, index_end)
-    projected = (_bond_prices_at_nodes(index_curve, a, sigma, t, T1, x_nodes, shift)
-                 / _bond_prices_at_nodes(index_curve, a, sigma, t, T2, x_nodes, shift) - 1.0) / index_dcf
-    zero = jnp.zeros((), dtype=dtype)
-    fixed_today = (_lgm_bond_price(index_curve, a, sigma, zero, index_start, zero, shift)
-                   / _lgm_bond_price(index_curve, a, sigma, zero, index_end, zero, shift) - 1.0) / index_dcf
-    fixing = jnp.where(jnp.asarray(swap.float_fixed_today)[None, :], fixed_today[None, :], projected)
-    fixing = jnp.where(jnp.asarray(swap.float_is_known)[None, :], as_dtype(swap.float_known_rates)[None, :], fixing)
-    floating = (as_dtype(swap.notional) * (fixing + swap.float_spread) * as_dtype(swap.float_accrual)[None, :]
-                * _bond_prices_at_nodes(curve, a, sigma, t, as_dtype(swap.float_pay_times), x_nodes, shift))
 
-    # The holder of a payer swaption pays the fixed leg and receives the
-    # floating one; a receiver the reverse (ORE's per-leg `payrec`).
-    sign = 1.0 if swap.payer else -1.0
-    return jnp.concatenate([-sign * fixed, sign * floating], axis=1)
+def induction_rows(swap: _PreparedBermudan) -> _Induction:
+    """The induction's rows for the prepared trade (see `_Induction`), from ORE's bookkeeping
+    (`_build_grid_schedule`)."""
+    schedule = _build_grid_schedule(swap)
+    slot_of, num_slots = _cache_slots(schedule)
+    num_fixed, num_float = len(swap.fixed_times), len(swap.float_pay_times)
+    # Each basis function's cashflow: the fixed coupons, then each floating coupon twice.
+    cashflow = np.concatenate([np.arange(num_fixed + num_float), num_fixed + np.arange(num_float)])
+    in_slot = slot_of[None, :] == np.arange(num_slots)[:, None]                                # [K, C]
+    starts = schedule.start_cache[:, None, :] & in_slot[None]                                  # [G, K, C]
+    per_cashflow = np.concatenate([(schedule.non_cached * schedule.coupon_ratio)[:, None, :],
+                                   schedule.add_pv[:, None, :].astype(np.float64), starts.astype(np.float64)],
+                                  axis=1)                                                       # [G, 2 + K, C]
+    rollback = ~schedule.rollback_is_identity
+    rollback[0] = False
+    return _Induction(
+        times=schedule.times, rollback=rollback, is_exercise=schedule.is_exercise,
+        targets=per_cashflow[:, :, cashflow], starts=starts.any(axis=-1),
+        moves=(schedule.cache_to_under[:, None, :] & in_slot[None]).any(axis=-1),
+        shares=((schedule.from_cache * schedule.coupon_ratio)[:, None, :] * in_slot[None]).sum(axis=-1))
+
+
+def _padded_rows(rows: _Induction, num_rows: int, num_slots: int) -> _Induction:
+    """`rows` with rows that do nothing put before its first (its time, no rollback, no
+    exercise, no cashflow) and cache columns that are never used, to `num_rows` and
+    `num_slots`."""
+    extra_rows, extra_slots = num_rows - rows.shape[0], num_slots - rows.shape[1]
+    if extra_rows < 0 or extra_slots < 0:
+        raise ValueError(f"cannot pad an induction of shape {rows.shape} to ({num_rows}, {num_slots})")
+
+    def pad(a, slot_axis=None):
+        widths = [(extra_rows, 0)] + [(0, 0)] * (a.ndim - 1)
+        if slot_axis is not None:
+            widths[slot_axis] = (0, extra_slots)
+        return np.pad(a, widths)
+
+    return _Induction(times=np.concatenate([np.full(extra_rows, rows.times[0]), rows.times]),
+                      rollback=pad(rows.rollback), is_exercise=pad(rows.is_exercise),
+                      targets=pad(rows.targets, slot_axis=1), starts=pad(rows.starts, 1), moves=pad(rows.moves, 1),
+                      shares=pad(rows.shares, 1))
+
+
+#: `_PreparedBermudan`'s per-coupon fields, and what a coupon added to pad a trade holds: it
+#: never belongs to the underlying (no row acts on it) and is worth 0 (no amount or accrual).
+_FIXED_PADDING = {"fixed_times": 0.0, "fixed_start_times": 0.0, "fixed_end_times": 0.0,
+                  "fixed_belongs_until": -1.0, "fixed_amounts": 0.0}
+_FLOAT_PADDING = {"float_pay_times": 0.0, "float_start_times": 0.0, "float_end_times": 0.0,
+                  "float_belongs_until": -1.0, "float_accrual": 0.0, "float_index_start_times": 0.0,
+                  "float_index_end_times": 0.0, "float_index_dcf": 1.0, "float_fixing_times": 0.0,
+                  "float_fixed_today": False, "float_is_known": False, "float_known_rates": 0.0,
+                  "float_fixing_serials": 0}
+
+
+def one_shape(prepared: Sequence[_PreparedBermudan]) -> List[Tuple[_PreparedBermudan, _Induction]]:
+    """Each prepared trade and its induction's rows, padded to the largest counts among them of
+    exercise times, fixed and floating coupons, rows and cache columns (with coupons, rows and
+    columns that do nothing), so that one compiled program prices them all: a path cube's
+    dates, whose exercises and coupons run out one by one. The values are those of each trade
+    unpadded."""
+    num_fixed = max(len(p.fixed_times) for p in prepared)
+    num_float = max(len(p.float_pay_times) for p in prepared)
+    num_exercises = max(len(p.exercise_times) for p in prepared)
+
+    def pad(swap, width, padding):
+        return {name: np.concatenate([np.asarray(getattr(swap, name)),
+                                      np.full(width - len(getattr(swap, name)), value,
+                                              dtype=np.asarray(getattr(swap, name)).dtype)])
+                for name, value in padding.items()}
+
+    # An exercise time repeated is the same opportunity (ORE's grid is a set of times).
+    padded = [dataclasses.replace(p, **pad(p, num_fixed, _FIXED_PADDING), **pad(p, num_float, _FLOAT_PADDING),
+                                  **pad(p, num_exercises, {"exercise_times": p.exercise_times[-1]}))
+              for p in prepared]
+    rows = [induction_rows(p) for p in padded]
+    num_rows, num_slots = (max(r.shape[i] for r in rows) for i in (0, 1))
+    return [(p, _padded_rows(r, num_rows, num_slots)) for p, r in zip(padded, rows)]
+
+
+#: How many arrays the size of a path's columns on the grid (`[columns, nodes]`) the induction
+#: holds at once per path at its peak: the columns, their product with the operator (twice as
+#: wide with two terms of a shared operand below float32, A-23), the cashflows' values on the
+#: row's targets and the rolled and exercised copies. XLA's memory analysis of the compiled
+#: induction measured 3.1 (a Bermudan) to 5.3 (an American in FP8) on a CPU (2026-10-13); a
+#: test holds the bound.
+_WORKING_COPIES = 6
+
+
+#: The most working memory one induction over many paths or scenarios is given: a path cube's
+#: date is priced in blocks of paths (`path_blocks`), market risk in batches of scenarios
+#: (`engine.risk.market.revaluation.scenario_batch_size`), each within it. An American on the
+#: demo's grid holds about 27 KB per path at float64 (36 KB as the GPU compiles it), 9.5 GB at
+#: 262,144 paths, more than an 8 GB card holds (2026-10-13).
+INDUCTION_MEMORY_BUDGET = 2 ** 30
+
+
+def working_bytes_per_path(swap: _PreparedBermudan, itemsize: int) -> int:
+    """About how many bytes the induction holds per path, its values `itemsize` bytes each:
+    `_WORKING_COPIES` arrays of the path's columns on the grid, and the cashflows'
+    coefficients. What a block of paths or a batch of scenarios is sized by
+    (`INDUCTION_MEMORY_BUDGET`)."""
+    rows = induction_rows(swap)
+    nodes = 2 * grid_half_width(swap.std_devs, swap.n_per_std) + 1
+    _, columns, basis = rows.targets.shape
+    return itemsize * (_WORKING_COPIES * columns * nodes + 2 * basis)
+
+
+def path_blocks(paths: int, bytes_per_path: int, devices: int = 1) -> int:
+    """The fewest blocks of equal size that `paths` paths (split evenly across `devices`) are
+    priced in so that one block's induction stays within `INDUCTION_MEMORY_BUDGET`: a divisor of
+    each device's share of the paths, so every block holds as many paths on every device (1 when
+    they fit at once)."""
+    share = paths // devices
+    for blocks in range(1, share + 1):
+        if share % blocks == 0 and (paths // blocks) * bytes_per_path <= INDUCTION_MEMORY_BUDGET:
+            return blocks
+    return max(share, 1)
+
+
+def blocked(price, deviations: Deviations, blocks: int):
+    """`price(deviations)` -> `(level, deviation [S])` over `blocks` blocks of paths, one after
+    another inside the program (`lax.map`), each block's paths strided through all of them
+    (block b holds paths b, b + blocks, ...): under the scenario axis's split across devices each
+    block takes its share from every device, so every device works on every block. The values are
+    those of one call on every path. `blocks` is static (a program per count)."""
+    if blocks == 1:
+        return price(deviations)
+    by_block = jax.tree_util.tree_map(lambda a: jnp.moveaxis(a.reshape((-1, blocks) + a.shape[1:]), 1, 0),
+                                      deviations)
+    levels, moved = lax.map(price, by_block)                                          # [blocks], [blocks, S/blocks]
+    return levels[0], jnp.moveaxis(moved, 0, 1).reshape(-1)
 
 
 # =============================================================================
-# BACKWARD INDUCTION (jax.lax.scan)
+# BACKWARD INDUCTION (jax.lax.scan), level and deviations
 # =============================================================================
-def grid_value(swap: _PreparedBermudan, schedule: Optional["_GridSchedule"] = None) -> jax.Array:
+def grid_value(swap: _PreparedBermudan, rows: Optional[_Induction] = None) -> jax.Array:
     """ORE's NPV on the prepared trade's curves (`NumericLgmMultiLegOptionEngineBase::
     calculate()`): the induction's value at t=0 on the state x=0, as
     `LgmConvolutionSolver2::stateGrid(0)`. A JAX scalar, so `jax.grad` differentiates it.
 
-    `schedule` is `_build_grid_schedule(swap)`, built here when omitted; a caller inside a
-    jit builds it beforehand, since it reads the trade's times on the host.
-
-    Values are numeraire-deflated, as in ORE (`LgmVectorised::reducedDiscountBond`); x is
-    driftless, so the rollback of a deflated value is its conditional expectation. The
-    exercise max is taken in the same units."""
-    _, values = _backward_induction_arrays(swap, _build_grid_schedule(swap) if schedule is None else schedule)
-    return values[-1, values.shape[1] // 2]
+    `rows` is `induction_rows(swap)`, built here when omitted; a caller inside a jit builds it
+    beforehand, since it reads the trade's times on the host."""
+    level, _ = option_values(swap, rows)
+    return level
 
 
-@jax.jit
-def _backward_induction_arrays(swap: _PreparedBermudan, schedule: "_GridSchedule"):
-    """ORE's backward loop, returning `(x_all, option_values_all)`, each
-    `[NumGridTimes, NumStateGridPoints]` (option values re-inflated to raw units).
+def option_values(swap: _PreparedBermudan, rows: Optional[_Induction] = None,
+                  deviations: Optional[Deviations] = None,
+                  arithmetic: Optional[Arithmetic] = None) -> Tuple[jax.Array, Optional[jax.Array]]:
+    """`(level, deviation)`: the option's t=0 value on the prepared trade's curves (the level,
+    `grid_value`) and, given each path's `Deviations` from them (the discount and index curves'
+    node values `[S, K]`, each floating coupon's known rate `[S, Ncf]`), each path's deviation
+    from it `[S]` (None without them), whose products run in `arithmetic` (the deviations' own
+    format, float64 or float32, by default) and whose value is in its accumulate format; a
+    path's value is `engine.precision.add_level(level, deviation)` (see the module docstring).
+    `rows` as `grid_value`'s."""
+    rows = induction_rows(swap) if rows is None else rows
+    if deviations is not None:
+        arithmetic = arithmetic or Arithmetic.of(deviations.discount.dtype)
+    return _induction(swap, rows, deviations, arithmetic)
 
-    Per grid row, latest first, as `calculate()` orders it:
-      1. roll `option`, `underlying` and each cashflow cache back from the previous grid
-         time (`LgmConvolutionSolver2::rollback`; a no-op where ORE's is, i.e.
-         `close_enough(t0, t1)`);
-      2. apply the row's cashflow actions (see `_GridSchedule`);
-      3. at an option time, `option = max(option, underlying + provisional + non_cached)`.
 
-    Jitted with `swap` and `schedule` as pytrees: one program per trade shape.
-    """
-    a, sigma, n_per_std, std_devs = swap.reversion, swap.sigma, swap.n_per_std, swap.std_devs
-    curve = _zero_curve_of(swap)
-    # Work in the curve's dtype (pricing or risk precision); hardcoded float64 constants
-    # would upcast a float32 Greeks trace.
+@partial(jax.jit, static_argnames="arithmetic")
+def _induction(swap: _PreparedBermudan, rows: _Induction, deviations: Optional[Deviations],
+               arithmetic: Optional[Arithmetic]):
+    """ORE's backward loop on the level and, given `deviations`, on each path's deviation
+    (`option_values`). Per row, latest first, as `calculate()` orders it:
+
+      1. roll the columns (the option, the underlying, the cache columns) back from the previous
+         row's grid by the row's operator (`_rollback_operator`), one product;
+      2. add the cashflows' values to the row's targets (`_Induction`), one product of their
+         coefficients with their functions on the grid;
+      3. at an option time, `option = max(option, underlying + provisional)`, on the paths in
+         difference form.
+
+    Every value is deflated by the numeraire, as in ORE (`LgmVectorised::reducedDiscountBond`),
+    so a cashflow's value at a node is its coefficient (the curve's discount factor at its
+    payment, for an Ibor coupon times its forecast's ratio, `_Coefficients`) times
+    `exp(-q zeta(t)/2 - h x)` (`_basis`); x is driftless, so the rollback of a deflated value is
+    its conditional expectation. At t=0 and x=0 the numeraire is 1: the value is the option's
+    column at the middle node of the last row. Jitted with `swap`, `rows` and `deviations` as
+    pytrees and `arithmetic` static: one program per trade shape and arithmetic."""
+    a, sigma, n_per_std = swap.reversion, swap.sigma, swap.n_per_std
+    curve, index = _zero_curve_of(swap), _index_curve_of(swap)
+    # The level works in the curve's dtype (pricing or risk precision): float64 constants
+    # would promote a float32 Greeks trace.
     dtype = curve_dtype(curve)
-    # ORE's `LgmBuilder` shift, a traced scalar: every horizon shares the program.
+    level = _Coefficients.of(swap, curve, index, dtype)
     shift = _lgm_horizon_shift(a, swap.shift_horizon).astype(dtype)
-    quad_w = jnp.asarray(_hagan_quadrature_weights(n_per_std, std_devs), dtype=dtype)
-    quad_y = jnp.asarray(_quadrature_nodes(n_per_std, std_devs), dtype=dtype)
-    as_mask = lambda mask: jnp.asarray(mask, dtype=dtype)  # noqa: E731
-
-    num_nodes = 2 * grid_half_width(std_devs, n_per_std) + 1
-    num_cashflows = schedule.add_pv.shape[1]
-    grid_times = jnp.asarray(schedule.times, dtype=dtype)
-    t_first = grid_times[0]
-
-    def roll_back(values, x_prev, x_t, std_step, identity):
-        rolled = jnp.where(
-            std_step > 0.0,
-            _rollback_one_step(values, x_prev, x_t, quad_y, quad_w, std_step),
-            jnp.interp(x_t, x_prev, values),
-        )
-        return jnp.where(identity, values, rolled)
+    mx = grid_half_width(swap.std_devs, n_per_std)
+    middle = mx
+    nodes = jnp.arange(-mx, mx + 1, dtype=dtype)
+    quad_w = jnp.asarray(_hagan_quadrature_weights(n_per_std, swap.std_devs), dtype=dtype)
+    quad_y = jnp.asarray(_quadrature_nodes(n_per_std, swap.std_devs), dtype=dtype)
+    num_columns = rows.targets.shape[1]
+    as_level = lambda x: jnp.asarray(x, dtype=dtype)  # noqa: E731
+    on_paths = deviations is not None
+    moved = _Moved.of(swap, curve, index, level, deviations, arithmetic.dtype) if on_paths else None
 
     def step(carry, row):
-        x_prev, t_prev, option, underlying, cache = carry
-        (t, is_exercise, identity, add_pv, cache_to_under, start_cache,
-         from_cache, non_cached, coupon_ratio) = row
+        dx_prev, t_prev, values, paths = carry
+        t, roll, is_exercise, targets, starts, moves, shares = row
+        zeta_t = _lgm_zeta(sigma, t)
+        dx = _grid_spacing(sigma, t, n_per_std).astype(dtype)
+        x = dx * nodes
+        std = _safe_sqrt(_lgm_zeta(sigma, t_prev) - zeta_t).astype(dtype)
 
-        x_t = _state_grid(sigma, t, n_per_std, std_devs, dtype=dtype)
-        # Same gradient-safe sqrt guard as _state_grid: sqrt's derivative is
-        # 0/0 at 0, and jax.grad backpropagates through both jnp.where
-        # branches, so the variance must be taken off a safe placeholder.
-        var_step = jnp.maximum(_lgm_zeta(sigma, t_prev) - _lgm_zeta(sigma, t), 0.0)
-        var_step_safe = jnp.where(var_step > 0.0, var_step, 1.0)
-        std_step = jnp.where(var_step > 0.0, jnp.sqrt(var_step_safe), 0.0)
-        is_first = t == t_first
-        identity = identity | is_first
-        option = roll_back(option, x_prev, x_t, std_step, identity)
-        underlying = roll_back(underlying, x_prev, x_t, std_step, identity)
-        cache = jax.vmap(lambda column: roll_back(column, x_prev, x_t, std_step, identity),
-                         in_axes=1, out_axes=1)(cache)
+        def rolled(columns):
+            operator = _rollback_operator(dx_prev, x, std, quad_y, quad_w).T                     # [from, to]
+            level_columns, path_columns = columns
+            if path_columns is not None:
+                path_columns = arithmetic.matmul(path_columns, operator, shared="right")
+            return matmul(level_columns, operator), path_columns
 
-        numeraire = _lgm_numeraire(curve, a, sigma, t, x_t, shift)
-        pv = _cashflow_values_at_nodes(swap, curve, x_t, t, shift) / numeraire[:, None]  # reduced, [Nn, C]
+        values, paths = lax.cond(roll, rolled, lambda columns: columns, (values, paths))
+        start, end, basis = _basis(swap, t, x, zeta_t.astype(dtype), shift)
+        weighted = jnp.swapaxes(targets[:, :, None] * basis[None], 0, 1).reshape(basis.shape[0], -1)  # [J, T*N]
+        ratio = discount(index, start) / discount(index, end)
+        added = matmul(level.at_row(ratio), weighted).reshape(num_columns, -1)                   # [T, N]
+        values, exercise_value = _bookkeeping(values, added, starts, moves, shares)
+        continuation = values[0]
+        values = values.at[0].set(jnp.where(is_exercise, jnp.maximum(continuation, exercise_value), continuation))
+        if on_paths:
+            operand = moved.at_row(level, ratio, start, end)                                     # [S, J]
+            added = arithmetic.matmul(operand, weighted, shared="right").reshape(operand.shape[0], num_columns, -1)
+            paths, path_exercise = _bookkeeping(paths, added, starts, moves, shares)
+            # Each path's max less the level's (see the module docstring).
+            gain = exercise_value - continuation
+            exercised = jnp.maximum(add_level(-jnp.maximum(gain, 0.0), paths[:, 0]),
+                                    add_level(jnp.minimum(gain, 0.0), path_exercise))
+            paths = paths.at[:, 0].set(jnp.where(is_exercise, exercised, paths[:, 0]))
+        return (dx, t, values, paths), None
 
-        underlying = underlying + matmul(pv, add_pv) + matmul(cache, cache_to_under)
-        cache = jnp.where(start_cache[None, :] > 0.0, pv, cache)
-        cache = jnp.where(cache_to_under[None, :] > 0.0, 0.0, cache)
-        provisional = matmul(cache * coupon_ratio[None, :], from_cache)
-        provisional_non_cached = matmul(pv * coupon_ratio[None, :], non_cached)
+    zeros = jnp.zeros((num_columns, nodes.shape[0]), dtype=dtype)
+    paths = None
+    if on_paths:
+        paths = jnp.zeros((deviations.discount.shape[0], num_columns, nodes.shape[0]), dtype=arithmetic.dtype)
+    xs = (as_level(rows.times), jnp.asarray(rows.rollback), jnp.asarray(rows.is_exercise), as_level(rows.targets),
+          jnp.asarray(rows.starts), jnp.asarray(rows.moves), as_level(rows.shares))
+    (_, _, values, paths), _ = lax.scan(step, (jnp.zeros((), dtype), as_level(rows.times[0]), zeros, paths), xs)
+    return values[0, middle], (None if paths is None else paths[:, 0, middle])
 
-        exercise_value = underlying + provisional + provisional_non_cached
-        option = jnp.where(is_exercise, jnp.maximum(option, exercise_value), option)
-        # The carry is held in the curve's dtype, the precision the caller
-        # asked for: a float64 `Sigma` or notional would otherwise promote a
-        # float32 Greeks run, and lax.scan requires a fixed carry type.
-        x_t, option, underlying, cache = (v.astype(dtype) for v in (x_t, option, underlying, cache))
-        return (x_t, t, option, underlying, cache), (x_t, (option * numeraire).astype(dtype))
 
-    zeros = jnp.zeros((num_nodes,), dtype=dtype)
-    init = (zeros, t_first, zeros, zeros, jnp.zeros((num_nodes, num_cashflows), dtype=dtype))
-    rows = (
-        grid_times,
-        jnp.asarray(schedule.is_exercise),
-        jnp.asarray(schedule.rollback_is_identity),
-        as_mask(schedule.add_pv), as_mask(schedule.cache_to_under), as_mask(schedule.start_cache),
-        as_mask(schedule.from_cache), as_mask(schedule.non_cached),
-        jnp.asarray(schedule.coupon_ratio, dtype=dtype),
-    )
-    _, (x_all, values_all) = jax.lax.scan(step, init, rows)
-    return x_all, values_all
+def _basis(swap: _PreparedBermudan, t, x, zeta_t, shift):
+    """`(T1, T2, basis)`: the floating coupons' forecast periods on a row at time `t`
+    (`LgmVectorised::fixing`'s clamps, `T1 = max(t, start)`, `T2 = max(T1, end)`) and the
+    cashflows' basis functions on its grid `x`, `[J, nodes]`: `exp(-q zeta(t)/2 - h x)` with,
+    `H` shifted by `shift`, `h = H_T` and `q = H_T^2` for each fixed coupon's payment and each
+    floating coupon's (ORE's `reducedDiscountBond`), and `h = H_T1 - H_T2 + H_pay`, `q = H_T1^2 -
+    H_T2^2 + H_pay^2` for each floating coupon's forecast times its payment (`_Coefficients`)."""
+    as_t = lambda times: jnp.asarray(times, dtype=x.dtype)  # noqa: E731
+    h_of = lambda T: _lgm_H(swap.reversion, T, shift)  # noqa: E731
+    start = jnp.maximum(t, as_t(swap.float_index_start_times))
+    end = jnp.maximum(start, as_t(swap.float_index_end_times))
+    h_fixed, h_pay = h_of(as_t(swap.fixed_times)), h_of(as_t(swap.float_pay_times))
+    h_start, h_end = h_of(start), h_of(end)
+    h = jnp.concatenate([h_fixed, h_pay, h_start - h_end + h_pay])
+    q = jnp.concatenate([h_fixed ** 2, h_pay ** 2, h_start ** 2 - h_end ** 2 + h_pay ** 2])
+    return start, end, jnp.exp(-(0.5 * q[:, None] * zeta_t + h[:, None] * x[None, :]))
+
+
+def _bookkeeping(columns, added, starts, moves, shares):
+    """A row's cashflow actions on the induction's columns `[..., option, underlying, cache...,
+    nodes]` (the level's, or each path's), given the cashflows' values on the row's targets
+    `added` (`_Induction`): the underlying gains its coupons and the cache columns that move into
+    it, cache columns start and are cleared, and the exercise value is the underlying plus the
+    provisional values. Returns the columns and the exercise value. Linear, so it applies to the
+    level and to a path's deviation alike."""
+    cache = columns[..., 2:, :]
+    moves, starts = moves[:, None], starts[:, None]
+    underlying = columns[..., 1, :] + added[..., 1, :] + jnp.sum(jnp.where(moves, cache, 0.0), axis=-2)
+    cache = jnp.where(moves, 0.0, jnp.where(starts, added[..., 2:, :], cache))
+    provisional = added[..., 0, :] + jnp.sum(shares[:, None].astype(cache.dtype) * cache, axis=-2)
+    columns = jnp.concatenate([columns[..., :1, :], underlying[..., None, :], cache], axis=-2)
+    return columns, underlying + provisional
+
+
+class _Coefficients:
+    """Each cashflow's value at a node, in the numeraire's units, is its coefficient times a
+    basis function of the state (`_induction`): a fixed coupon's `amount P(0, T)` (signed for
+    the holder: a payer swaption pays the fixed leg) with `exp(-H_T^2 zeta/2 - H_T x)`, and an
+    Ibor coupon `N tau (F + m) P(0, pay)` with `F = (P_idx(t, T1; x) / P_idx(t, T2; x) - 1) /
+    dcf` as two: `N tau (m - 1/dcf) P(0, pay)` with the payment's function, and `N tau / dcf
+    P(0, pay) P_idx(0, T1) / P_idx(0, T2)` with the payment's times the forecast's (`T1 = max(t,
+    start)`, `T2 = max(T1, end)`: `LgmVectorised::fixing`'s clamps, so the ratio depends on the
+    row past the index start). A coupon whose rate is known (a fixing, or today's forecast off
+    today's curve) has the first alone, at `N tau (F + m) P(0, pay)`."""
+
+    def __init__(self, fixed, float_discount, forward, bps, today):
+        self.fixed = fixed                     # [Nf]
+        self.float_discount = float_discount   # [Ncf]
+        self.forward = forward                 # [Ncf]: times the forecast's ratio on a row
+        self.bps = bps                         # [Ncf]: N tau P(0, pay), signed
+        self.today = today                     # [Ncf]: today's forecast's ratio / dcf (a fixing today)
+
+    @classmethod
+    def of(cls, swap: _PreparedBermudan, curve, index, dtype) -> "_Coefficients":
+        """The coefficients on the curves `curve` and `index`, in `dtype`."""
+        cast = lambda x: jnp.asarray(x, dtype=dtype)  # noqa: E731
+        sign = 1.0 if swap.payer else -1.0
+        dcf = cast(swap.float_index_dcf)
+        bps = sign * cast(swap.notional) * cast(swap.float_accrual) * discount(curve, cast(swap.float_pay_times))
+        today = (discount(index, cast(swap.float_index_start_times))
+                 / discount(index, cast(swap.float_index_end_times))) / dcf
+        known = jnp.where(jnp.asarray(swap.float_is_known), cast(swap.float_known_rates), today - 1.0 / dcf)
+        projected = _projected(swap)
+        return cls(fixed=-sign * cast(swap.fixed_amounts) * discount(curve, cast(swap.fixed_times)),
+                   float_discount=bps * (jnp.where(projected, -1.0 / dcf, known) + cast(swap.float_spread)),
+                   forward=jnp.where(projected, bps / dcf, 0.0), bps=bps, today=today)
+
+    def at_row(self, ratio) -> jax.Array:
+        """`[J]`: every basis function's coefficient on a row whose forecasts' ratios are
+        `ratio` `[Ncf]`."""
+        return jnp.concatenate([self.fixed, self.float_discount, self.forward * ratio])
+
+
+def _projected(swap: _PreparedBermudan) -> jax.Array:
+    """Each floating coupon whose rate is forecast on the grid (neither known nor fixed today)."""
+    return ~jnp.asarray(swap.float_is_known) & ~jnp.asarray(swap.float_fixed_today)
+
+
+class _Moved:
+    """Each path's deviation of the cashflows' coefficients from the level's (`_Coefficients`),
+    in the deviations' format: with `e = expm1(dL)` the deviation of a discount factor at a
+    payment (`dL` its log's, the curve's node deviations carried to the time by its own
+    interpolation, `log_discount_deviation`), a fixed coupon's is `a e`, a floating coupon's
+    first `a e + N tau P0 dF (1 + e)` (`dF` its known rate's deviation: a path fixing's, or today's
+    forecast's off the path's curve) and its forecast's `a expm1(dL + dL_idx(T1) - dL_idx(T2))`,
+    as the legs' (`engine.pricing.legs`): each a sensitivity times a deviation."""
+
+    def __init__(self, fixed, float_discount, pay, index, index_deviation, dtype):
+        self.fixed, self.float_discount, self.pay = fixed, float_discount, pay
+        self.index, self.index_deviation, self.dtype = index, index_deviation, dtype
+
+    @classmethod
+    def of(cls, swap: _PreparedBermudan, curve, index, level: _Coefficients, deviations: Deviations,
+           dtype) -> "_Moved":
+        cast = lambda x: jnp.asarray(x, dtype=dtype)  # noqa: E731
+        at = lambda c, deviation, times: log_discount_deviation(c, deviation, cast(times))  # noqa: E731
+        e_fixed = jnp.expm1(at(curve, deviations.discount, swap.fixed_times))
+        pay = at(curve, deviations.discount, swap.float_pay_times)                            # [S, Ncf]
+        e_pay = jnp.expm1(pay)
+        start, end = swap.float_index_start_times, swap.float_index_end_times
+        today = cast(level.today) * jnp.expm1(at(index, deviations.index, start) - at(index, deviations.index, end))
+        rate = jnp.where(jnp.asarray(swap.float_is_known), deviations.fixings,
+                         jnp.where(jnp.asarray(swap.float_fixed_today), today, 0.0))
+        return cls(fixed=cast(level.fixed) * e_fixed,
+                   float_discount=cast(level.float_discount) * e_pay + cast(level.bps) * rate * (1.0 + e_pay),
+                   pay=pay, index=index, index_deviation=deviations.index, dtype=dtype)
+
+    def at_row(self, level: _Coefficients, ratio, start, end) -> jax.Array:
+        """`[S, J]`: every basis function's coefficient's deviation on a row whose forecasts
+        run from `start` to `end` `[Ncf]` at the level's ratios `ratio`."""
+        forecast = (log_discount_deviation(self.index, self.index_deviation, start.astype(self.dtype))
+                    - log_discount_deviation(self.index, self.index_deviation, end.astype(self.dtype)))
+        forward = jnp.asarray(level.forward * ratio, dtype=self.dtype) * jnp.expm1(self.pay + forecast)
+        return jnp.concatenate([self.fixed, self.float_discount, forward], axis=-1)

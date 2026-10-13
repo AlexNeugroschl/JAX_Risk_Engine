@@ -727,8 +727,9 @@ RunConfig(simulation=..., precision=Precision(
     by_trade={"swap-7": StagePrecision(storage="float32")}))     # and this swap computed in float64
 fp8 = StagePrecision(storage="float8_e4m3fn", compute="float8_e4m3fn", accumulate="float32")
 RunConfig(simulation=..., precision=Precision(
-    simulation=fp8, market=fp8, pricing=fp8,                    # FP8 products and storage
-    by_product={"bermudan_swaption": StagePrecision("float32", "float32", "float32")}))
+    simulation=fp8, market=fp8, pricing=fp8,                    # FP8 products and storage,
+    by_product={"bermudan_swaption": StagePrecision("float32", "float32", "float32")}))  # Bermudans
+                                                                # kept in float32 (a choice: any format runs)
 RunConfig(simulation=..., precision=Precision.throughout("tensorfloat32"))  # TF32 products, float32 else
 ```
 
@@ -772,9 +773,12 @@ legs, a long log discount factor, a log equity spot keep float32's precision. Ev
 the products (the levels, the option formulas, sums) runs at the accumulate format. A device
 with units for the format runs it natively; elsewhere (always on a CPU) the engine emulates it
 with the same numbers, and the result's precision report says which (`products`,
-`{"float8_e4m3fn": "emulated"}`). Bermudans and Americans compute and accumulate in one format,
-float32 or float64, until their rollback is rewritten the same way (F-07): a run
-that would compute one below float32 is refused, naming the overrides that keep it wider.
+`{"float8_e4m3fn": "emulated"}`). Bermudans and Americans too (since 2026-10-13): their rollback
+is one matrix product per step, its operator shared by every path, on each path's deviation from
+the induction on the level curves; a `by_product` override still keeps them wider if a run wants
+it. A cash-settled option whose exercise a format flips on a path moves by its whole value there:
+`PortfolioResult.exercised` holds each option's exercise state on every path and date, and the
+precision harness measures the share each format flips.
 Each product multiplies a per-path operand by one every path shares (a flow's value at the
 level, a market loading); below float32 the shared one is carried in two terms of the format
 (2026-10-11, decision A-23), since rounded once its error would move every path alike, a bias

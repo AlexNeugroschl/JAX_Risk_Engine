@@ -486,9 +486,9 @@ a product carries the operand every path shares in two terms of the format; the 
 rounds it once, a bias more paths do not remove, and is there to be measured (decision A-23). `compute` is the format of a
 stage's matrix products, `accumulate` the format they accumulate in and the rest of the stage
 runs in: float32 or float64, at least as wide as `compute`, and float32 under a compute format
-below float32; `storage` no wider than `accumulate` and not a product format. An inconsistent
-stage, or a Bermudan or American priced below float32 (its rollback is not in difference form
-yet, F-07), is a `400` naming the stage (or override, e.g. `precision.by_trade['swap-7']`), the
+below float32; `storage` no wider than `accumulate` and not a product format. Every product
+takes every compute format (the Bermudan/American rollback since 2026-10-13). An inconsistent
+stage is a `400` naming the stage (or override, e.g. `precision.by_trade['swap-7']`), the
 field and the rule. So is `"rounding": "stochastic"` or `"offset": "none"` when no stage
 stores below 32 bits:
 

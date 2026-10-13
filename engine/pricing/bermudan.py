@@ -36,6 +36,7 @@ analytics), so it is not offered (decision A-24).
 """
 import dataclasses
 from dataclasses import dataclass
+from functools import partial
 from typing import Mapping, Optional, Tuple, Union
 
 import jax
@@ -48,16 +49,15 @@ from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, underlying_swap
 from engine.market_data.curves import DiscountCurve
 from engine.market_data.market import Market, index_name
-from engine.market_simulation.scenario_market import ScenarioMarket
+from engine.market_simulation.scenario_market import ScenarioCurves, ScenarioMarket
+from engine.market_simulation.sharding import scenario_device_count
 from engine.models.lgm import Sigma
+from engine.precision import Arithmetic, add_level, deviation_from
 from engine.pricing.config import LgmSwaptionEngineConfig, reference_grid_dates
 from engine.pricing.context import PricingContext, simulation_market_today
-from engine.pricing.legs import PathFixings
+from engine.pricing.legs import Deviations, PathFixings
 from engine.pricing.lgm_grid import (
-    _backward_induction_arrays,
-    _build_grid_schedule,
-    grid_value,
-    prepare_bermudan,
+    blocked, grid_value, one_shape, option_values, path_blocks, prepare_bermudan, working_bytes_per_path,
 )
 
 OptionConfig = Union[BermudanSwaptionConfig, AmericanSwaptionConfig]
@@ -173,44 +173,78 @@ def built_sigma(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Mark
                 scenarios: ScenarioMarket) -> Sigma:
     """The LGM volatility ORE builds the trade with and keeps on every path (see the module
     docstring): calibrated on the simulation market of the as-of date (the engine's own with
-    `calibration="None"`, or with no exercise left), in the path curves' dtype. A calibration
-    that misses its basket is refused, naming the trade."""
-    dtype = scenarios.discount[cfg.currency].log_discounts.dtype
+    `calibration="None"`, or with no exercise left), in float64, as every calibration (A-10) and
+    the model the induction's level and grid are on. A calibration that misses its basket is
+    refused, naming the trade."""
     built = calibrate_on(cfg, engine, simulation_market_today(market, scenarios.tenors))
-    return Sigma.flat(engine.volatility, dtype=dtype) if built is None else built.sigma.astype(dtype)
+    return Sigma.flat(engine.volatility) if built is None else built.sigma
 
 
 def bermudan_cube(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Market, scenarios: ScenarioMarket,
-                  fixings: PathFixings) -> jax.Array:
+                  fixings: PathFixings, arithmetic: Optional[Arithmetic] = None) -> jax.Array:
     """`[S, D]` NPVs of the option (its continuation value; exercise is `engine.pricing.
     options.wrap`'s job) on every path and date, with the LGM ORE built it with
     (`built_sigma`); 0 once no exercise date is after the date.
 
-    `fixings`: FixingManager's path fixings for the trade's index, read as rates `[S, D]` (the
-    rollback is not in difference form yet: it computes in the curves' one format)."""
-    fixings = fixings.rates
+    In difference form (F-07, `engine.pricing.lgm_grid.option_values`): on each date the
+    induction runs on the curves' level (`ScenarioCurves.level`, float64) and on each path's
+    deviation from it, the discount and index curves' and the coupons' path fixings' (`fixings`,
+    FixingManager's for the trade's index), in `arithmetic` (the curves' own format, float64 or
+    float32, by default), whose accumulate format the values are in. Every date is the trade
+    padded to one shape (`one_shape`), so the dates share one compiled program."""
     asof = market.asof
-    history = dict(cfg.fixings)
-    grid_serials = np.array([d.serialNumber() for d in scenarios.dates], dtype=np.int64)
     disc_curves = scenarios.discount[cfg.currency]
     index_curves = scenarios.index[index_name(cfg.currency, cfg.index_tenor_months)]
-    fixing_serials = _fixing_serials(cfg)
+    arithmetic = arithmetic or Arithmetic.of(disc_curves.log_discounts.dtype)
     exercises = contract_exercise_dates(cfg)
-    sigma = None
-    columns = []
-    for j, date in enumerate(scenarios.dates):
-        if not any(d > date for d in exercises):
-            columns.append(jnp.zeros(scenarios.num_paths, dtype=fixings.dtype))
-            continue
-        sigma = built_sigma(cfg, engine, market, scenarios) if sigma is None else sigma
-        fixed_on_path = {ORE.Date(int(s)): 0.0 for s in fixing_serials if asof.serialNumber() <= s < date.serialNumber()}
+    alive = [j for j, date in enumerate(scenarios.dates) if any(d > date for d in exercises)]
+    columns = [jnp.zeros(scenarios.num_paths, dtype=arithmetic.dtype)] * len(scenarios.dates)
+    if not alive:
+        return jnp.stack(columns, axis=1)
+    sigma = built_sigma(cfg, engine, market, scenarios)
+    history = dict(cfg.fixings)
+    fixing_serials = _fixing_serials(cfg)
+    grid_serials = np.array([d.serialNumber() for d in scenarios.dates], dtype=np.int64)
+    fixing_levels = np.asarray(fixings.level)
+    prepared, known = [], []
+    for j in alive:
+        date = scenarios.dates[j]
+        fixed_on_path = {ORE.Date(int(s)): 0.0 for s in fixing_serials
+                         if asof.serialNumber() <= s < date.serialNumber()}
         dated = dataclasses.replace(cfg, evaluation_date=date, fixings={**history, **fixed_on_path})
-        prepared = prepared_option(dated, engine, engine.volatility, built_on=asof)
-        schedule = _build_grid_schedule(prepared)
-        known = _known_rates(prepared, history, asof, grid_serials, fixings)
-        columns.append(_rollback_every_path(prepared, schedule, disc_curves.on_date(j), index_curves.on_date(j),
-                                            sigma, known))
+        option = prepared_option(dated, engine, sigma, built_on=asof)
+        level, step, path_known = _known_rates(option, history, asof, grid_serials, fixing_levels)
+        prepared.append(dataclasses.replace(option, float_known_rates=level))
+        known.append((step, path_known))
+    shaped = one_shape(prepared)
+    blocks = path_blocks(scenarios.num_paths, working_bytes_per_path(shaped[0][0], jnp.dtype(arithmetic.dtype).itemsize),
+                         scenario_device_count(scenarios.num_paths))
+    for j, (option, rows), (step, path_known) in zip(alive, shaped, known):
+        width = (0, len(option.float_pay_times) - len(step))
+        columns[j] = _date_column(option, rows, disc_curves, index_curves, j, fixings.deviation, np.pad(step, width),
+                                  np.pad(path_known, width), arithmetic, blocks)
     return jnp.stack(columns, axis=1)
+
+
+@partial(jax.jit, static_argnames=("arithmetic", "blocks"))
+def _date_column(option, rows, disc: ScenarioCurves, index: ScenarioCurves, j, fixing_deviations: jax.Array,
+                 step: np.ndarray, path_known: np.ndarray, arithmetic: Arithmetic, blocks: int) -> jax.Array:
+    """`[S]`: the option on date `j` of the scenario curves on every path, as one program for
+    every date (the date is traced): the induction on the curves' level and each path's
+    deviation from it (`option_values`), the known coupons' deviations FixingManager's path
+    fixings' at their grid `step` where `path_known`; the paths in `blocks` blocks
+    (`engine.pricing.lgm_grid.blocked`), so the induction's memory stays within its budget at any
+    path count."""
+    def split(curves):
+        level = curves.level[j]
+        return DiscountCurve(curves.tenor_times[j], level), deviation_from(level[None], curves.log_discounts[:, j])
+
+    (disc_level, disc_moved), (index_level, index_moved) = split(disc), split(index)
+    known = jnp.where(path_known[None, :], fixing_deviations[:, step], 0.0)
+    option = dataclasses.replace(option, curve=disc_level, index_curve=index_level)
+    level, moved = blocked(lambda deviations: option_values(option, rows, deviations, arithmetic),
+                           Deviations(disc_moved, index_moved, known), blocks)
+    return add_level(level, moved)
 
 
 def _fixing_serials(cfg: OptionConfig):
@@ -218,31 +252,14 @@ def _fixing_serials(cfg: OptionConfig):
 
 
 def _known_rates(prepared, history: Mapping[ORE.Date, float], asof: ORE.Date, grid_serials: np.ndarray,
-                 fixings: jax.Array) -> jax.Array:
-    """`[S, Ncf]`: each kept coupon's known rate on every path: its history before the as-of
-    date, FixingManager's path fixing after it (unknown coupons get 0; they are projected)."""
+                 fixing_levels: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Each kept coupon's known rate as a level `[Ncf]`, and where its paths deviate from it:
+    its history before the as-of date (no deviation), FixingManager's path fixing after it (the
+    level of the fixing at its grid `step`, `PathFixings.level`, each path's deviation where
+    `path_known`); 0 for an unknown coupon, which is projected. On the host."""
     serials = prepared.float_fixing_serials
     step = np.minimum(np.searchsorted(grid_serials, serials, side="right"), grid_serials.size - 1)
     past = serials < asof.serialNumber()
-    values = np.array([history.get(ORE.Date(int(s)), 0.0) if p else 0.0 for s, p in zip(serials, past)])
+    history_rates = np.array([history.get(ORE.Date(int(s)), 0.0) if p else 0.0 for s, p in zip(serials, past)])
     path_known = prepared.float_is_known & ~past
-    return jnp.where(path_known[None, :], fixings[:, step], jnp.asarray(values, dtype=fixings.dtype))
-
-
-@jax.jit
-def _rollback_every_path(prepared, schedule, disc: DiscountCurve, index: DiscountCurve, sigma: Sigma,
-                         known: jax.Array) -> jax.Array:
-    """The grid engine's t=0 value on every path: the rollback vmapped over the path curves and
-    known fixings, the volatility the one ORE built the trade with."""
-
-    def one_path(disc_logs, index_logs, known_rates):
-        swap = dataclasses.replace(
-            prepared,
-            curve=DiscountCurve(disc.times, disc_logs), index_curve=DiscountCurve(index.times, index_logs),
-            sigma=sigma, float_known_rates=known_rates,
-            notional=jnp.asarray(prepared.notional, dtype=disc_logs.dtype),
-            fixed_amounts=jnp.asarray(prepared.fixed_amounts, dtype=disc_logs.dtype))
-        _, values = _backward_induction_arrays(swap, schedule)
-        return values[-1, values.shape[1] // 2]
-
-    return jax.vmap(one_path)(disc.log_discounts, index.log_discounts, known)
+    return np.where(path_known, fixing_levels[step], history_rates), step, path_known

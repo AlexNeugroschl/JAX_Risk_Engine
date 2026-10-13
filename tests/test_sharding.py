@@ -5,9 +5,11 @@ The scenario axis across devices (`engine.market_simulation.sharding`, I-61):
     devices and `JAX_RISK_SCENARIO_DEVICES`; on one device nothing is placed, so a one-device
     run is bit for bit what it was;
   * on four XLA host devices, a portfolio run (LGM, Bermudan included, with a paired float64
-    sample), the same run with FP8 storage and stochastic rounding, and a market-risk run
-    each hold their cube or P&L on all four devices and equal the one-device run to the
-    rounding a smaller batch shape moves.
+    sample), the same run with the Bermudan's paths priced in blocks of one path per device
+    (`engine.pricing.lgm_grid.blocked`), the same run with FP8 storage and stochastic
+    rounding, and a market-risk run each hold their cube or P&L on all four devices and equal
+    the one-device run to the rounding a smaller batch shape moves; the blocked cube the one
+    priced at once.
 
 The device count is fixed when JAX starts, so the four-device runs are a separate process
 (`tests/support/sharding_check.py`).
@@ -71,16 +73,20 @@ def test_four_devices_hold_the_scenarios_and_give_the_one_device_numbers():
         held = "pnl_devices" if name == "market-risk" else "cube_devices"
         assert split[held] == 4, f"{name}: the result is on {split[held]} device(s)"
 
-    for name in ("lgm", "fp8-stochastic"):
+    for name in ("lgm", "lgm-blocked", "fp8-stochastic"):
         one, split = runs[name]["one"], runs[name]["split"]
         cube_one, cube_split = np.asarray(one["cube"]), np.asarray(split["cube"])
         scale = np.max(np.abs(cube_one))
-        if name == "lgm":   # float64: the batch shape moves a value by about an ulp
+        if name != "fp8-stochastic":   # float64: the batch shape moves a value by about an ulp
             np.testing.assert_allclose(cube_split, cube_one, rtol=0, atol=1e-13 * scale)
         else:               # an ulp may move a value across an FP8 rounding boundary, rarely
             assert np.mean(cube_split != cube_one) <= 0.01
         for figure in ("epe", "ene"):
             np.testing.assert_allclose(split[figure], one[figure], rtol=0, atol=1e-12 * scale)
+
+    # The Bermudan's paths in blocks of one path per device: the cube priced at once.
+    blocked, whole = np.asarray(runs["lgm-blocked"]["split"]["cube"]), np.asarray(runs["lgm"]["split"]["cube"])
+    np.testing.assert_allclose(blocked, whole, rtol=0, atol=1e-13 * np.max(np.abs(whole)))
 
     one, split = runs["market-risk"]["one"], runs["market-risk"]["split"]
     pnl_one = np.asarray(one["pnl"])

@@ -427,6 +427,7 @@ full write-up (this is the quick reference).
 | `scenario_risk_available` | `bool` | Whether `exposure`/`npv_cube` were computed. |
 | `measure` | `Optional[str]` | `"risk-neutral-pricing"`, or `None` without scenario risk. |
 | `precision` | `Optional[PrecisionReport]` | The precision as run and, with a paired sample, each figure's estimate (`engine.precision` below). |
+| `exercised` | `Dict[str, jax.Array]` | Each option's exercise state by trade id, `[Scenarios, Dates]` bool: exercised on or before the date (ORE's `OptionWrapper`). Empty without scenario risk. Not in the HTTP result. |
 
 ### `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 

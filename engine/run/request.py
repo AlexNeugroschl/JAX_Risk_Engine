@@ -101,6 +101,11 @@ class PortfolioResult:
     # The precision as run, read from the run's arrays: the policy, the realized formats, the
     # devices, and with a paired float64 sample each figure's estimate (I-12).
     precision: Optional[PrecisionReport] = None
+    # Each option's exercise decisions, by trade id: `[Scenarios, TimeSteps]` bool, whether the
+    # holder has exercised on the path on or before the date (ORE's `OptionWrapper`,
+    # `engine.pricing.options.wrap`). Empty without scenario risk. A precision policy can flip
+    # them; the precision harness measures the share each format flips (decision A-24).
+    exercised: Dict[str, jax.Array] = field(default_factory=dict)
 
 
 def price_portfolio(request: PortfolioRequest) -> PortfolioResult:

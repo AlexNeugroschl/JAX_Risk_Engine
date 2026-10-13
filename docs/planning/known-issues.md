@@ -13,65 +13,47 @@ recalibrates ([I-112](#i-112)).
 
 ## Verification status
 
-Last full run, 2026-10-12, on ORE's exposure simulation for Bermudans and Americans and ORE's
-calibration acceptance ([I-49](#i-49), [I-73](#i-73), closed; decision A-24): each option's LGM
-calibrated once on the simulation market of the as-of date and kept on every path
-(`engine.pricing.bermudan.built_sigma`, `bermudan_cube`; `ScenarioMarket.tenors`), the engine's
-per-path recalibration removed with its batched bootstrap; ORE's acceptance on every bootstrap
-(`engine.calibration.ore_lgm.BootstrapResult.misses`, `require_accepted`, `CalibrationError`;
-`LgmSwaptionEngineConfig.bootstrap_tolerance` and `CamConfig.bootstrap_tolerance`, one for the
-cross-asset model, with their API fields; the helper's market value through
-`engine.models.bachelier`, shared with the European); market risk's warning of a held
-calibration ([I-112](#i-112)). 3,364 collected on Windows: the 3,349 of the run before plus 17 in
-`tests/test_calibration_acceptance.py` and 1 in `tests/test_market_risk.py` (the I-112 warning),
-less the 3 of `tests/test_root_solvers.py`'s batched path dates, which went with the per-path
-recalibration; in `tests/test_pricing.py` its 4 cases against ORE booked on the path date gave
-way to 4 of the path model ORE built (two options under both models). Each run printed its
-summary line:
+Last full run, 2026-10-13, on the Bermudan/American rollback as matrix products in difference
+form ([I-83](#i-83), closed; F-07): `engine.pricing.lgm_grid`'s induction on a level and each
+path's deviation (one rollback operator per step and the cashflows' functions of the state shared
+by every path, the coupons cached in progress in reused columns, padded rows skipped), a cube's
+dates one program (`one_shape`) with its paths in blocks within a budget (`path_blocks`,
+`blocked`); the Bermudan's market-risk P&L in difference form (`option_pnl`; every product now has
+one); `RESTRICTED_PRODUCTS` and `Arithmetic.plain` removed; the option wrapper's exercise state on
+every path and date in the result (`PortfolioResult.exercised`) and the precision harness's
+`ExerciseRow`, the storage sanity bounds judged on the cells not flipped (decision A-24 (5)); the
+`compute_options` campaign. 3,401 collected on Windows: the 3,364 of the run before plus the 37 of
+`tests/test_rollback_difference_form.py` and 1 in `tests/test_precision_harness.py` (the exercise
+rows), less 1 in `tests/test_compute_precision.py` (three refusals of a Bermudan below float32 gave
+way to two tests of it computing). The ORE distribution test (L4) prices the options on 4,096
+paths, 1,024 before. Each run printed its summary line:
 
-- **Windows**, `-n 8`: **3,361 passed, 3 skipped, 0 failed**, 9m31s (the skips as before: the two
-  accelerator-only defaults and the GPU plugin check; the six Bermudan/American L3 cases of
-  `tests/test_ore_xva_parity.py`, strict expected failures before, pass: ORE's cube to 1.9e-11 of
-  each option's largest value under either model). 15m13s before: the options' path cubes no
-  longer bootstrap on every path and date. The first run of the change found one failure, a slow
-  storage-sanity bound (`tests/test_precision.py::test_scaled_storage_on_the_sloped_shared_market_is_sane[bfloat16-simulation]`):
-  bfloat16-stored states flip one cash Bermudan's exercise on one of 768 cells (1.68e-2 of its
-  notional, every other cell as before), which the other formats' bounds already included; its
-  bound was measured again (7e-2, 2.6e-4) until the exercise decisions are measured apart
-  (A-24, roadmap 3.8).
-- **Linux** (the WSL2 clone, `JAX_PLATFORMS=cpu`, `-n 2`, the sixteen modules the change touches
-  or that price options against ORE): **850 passed, 1 skipped, 0 failed**, 7m41s (the skip: the clone has no `reference/ORE`
-  for the ORE example check).
-- **GPU** (RTX 5060, WSL2, `-n 4`, the same sixteen modules): **850 passed, 1 skipped, 0 failed**, 5m13s; ruff's pyflakes rules
-  clean on every changed file.
-- **Golden snapshot** (273 arrays, from a worktree of `ca290ad` before the change): 181 identical,
-  a planned change of the model (I-49) in the rest: only Bermudan/American arrays and the
-  aggregates holding them move. Swaps, Europeans, the bond, Jamshidian, every t=0 value, every
-  Greek and market risk are bit for bit; the options' cubes move by 2.1e-3 to 5.9e-3 of each
-  trade's scale (0.16 for the cash Bermudan under Hull-White, one exercise flipped), their EPE and
-  EE_B by up to 3.6e-2 of their scale, the netting set's by 9.3e-4. Re-baselined. Removing the
-  per-path recalibration option (A-24) moved nothing: 273 of 273 identical to the snapshot before.
-- **Precision harness**: `options` measured again (engine digest `eec51de554711f73`, 17 minutes,
-  4.6 to 7.2 s a case where it took 10 to 11) and the evidence table regenerated; every verdict
-  as before but one: the options' netting-set EPE_B under float16 market storage with block
-  offsets no longer passes at 256 paths (it had gained the count in the measurement before).
-  float16 storage of the states or curves moves the American's EPE_B by 0.16 statistical errors
-  (0.03 recalibrated), FP8 market storage without offsets the cash Bermudan's EEPE_B by up to 506
-  (126): a model kept on every path does not follow a path's rounded curves, so more exercise
-  decisions move ([precision.md §15.4](details/precision.md#154-the-storage-harness-2026-10-09)).
-  The removal of the recalibration option after it changed no number (the snapshot above), so the
-  rows stand. `market_risk` revalues on the as-of date, which the change does not touch. No case
-  compiles after its first seed.
-- **Speed** (the demo's job without Greeks, 1,024 paths, CPU, the code before and after
-  alternated three times): warm 7.9 to 9.2 s before, 3.1 to 3.6 s after; cold 53 to 57 s before,
-  41 s after.
+- **Windows**, `-n 8`: **3,398 passed, 3 skipped, 0 failed**, 6m26s (the skips as before: the two
+  accelerator-only defaults and the GPU plugin check). The first full run of the change, before the
+  campaigns, failed only the two evidence tests whose files of record the campaigns write.
+- **Linux** (the WSL2 clone, `JAX_PLATFORMS=cpu`, `-n 2`, the twenty modules the change touches or
+  that price options against ORE): **1,130 passed, 3 skipped, 0 failed**, 7m40s (the clone has no
+  `reference/ORE` for the ORE example check; the accelerator-only tests).
+- **GPU** (RTX 5060, WSL2, `-n 4`, the same twenty modules): **1,132 passed, 1 skipped, 0
+  failed**, 8m14s; ruff's pyflakes rules clean on every changed file. Earlier GPU runs of the
+  change found the demo's job at 262,144 paths out of the card's memory in one block, which the
+  blocks of paths fixed.
+- **Golden snapshot** (359 arrays with the Greeks, from a worktree of `6e85d09`): 188 identical,
+  none beyond the margin: float64 1.2e-14 of an array's scale, a Greek 2.2e-14 of its trade's NPV,
+  float32 1.2e-6 ([precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
+- **Precision harness**: every campaign measured again on one engine (digest `b0b17902865e9627`,
+  2.6 hours; the committed engine differs from it by one docstring, `_PreparedBermudan`'s, corrected
+  after the campaigns) and the evidence table regenerated; `linear` and `compute` equal their records bit for
+  bit, `market_risk` within its float64 reference's rounding; `options` at the linear campaign's
+  path counts and seeds, and `compute_options` new; no case compiles after its first seed
+  ([precision.md §15.7](details/precision.md#157-the-rollback-in-difference-form-2026-10-13)).
+- **Speed and memory** (the demo's job; profiling §2.0): 4,096 paths warm 0.26 s against 13.2 s,
+  65,536 and 262,144 paths where the code before ran out of memory (2.98 s and 2.0 GB at 262,144 on
+  the CPU, 2.37 s and 0.87 GB on the GPU).
 
-Red first, on the code before (a worktree of `ca290ad`): the six Bermudan/American L3 cases of
-`tests/test_ore_xva_parity.py` are strict expected failures there (0.50% of the physical
-Bermudan's largest value, 0.55% of the American's, 54% on one cell of the cash Bermudan), and a
-probe of the acceptance cases accepts a dip after a spike (σ at the floor from the second bucket,
-relative helper errors to 151), gives a zero volatility's helper a NaN market value and
-calibrates it at the floor, and accepts the dip in the cross-asset model.
+Red first, on the code before (a worktree of `6e85d09`): the memory assertion of
+`tests/test_rollback_difference_form.py::TestMemory` applied to its path rollback, 6.1 MB per path
+against a bound of 0.085 MB; the demo's job failed at 65,536 paths there.
 
 The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
 [README.md](README.md#verification-rules).
@@ -97,8 +79,9 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-108](#i-108) | TraderX: NaN amounts priced as `ok`, terms contradicting the row priced, duplicate rows counted twice | Medium | OPEN | API | TraderX |
 | [I-109](#i-109) | TraderX: after a failed publication a same-id retry never prices or publishes | Medium | OPEN | API | TraderX |
 | [I-110](#i-110) | The documentation contradicts the code in places; no single parity table | Low | OPEN | Tooling | Fix what exists |
+| [I-113](#i-113) | Below float64 a long option worth almost nothing on a path can come out a few rounding errors below zero | Low | OPEN | Correctness | Focus |
 | [I-111](#i-111) | Reported standard errors treat Sobol paths and historical windows as independent | Medium | FLAGGED | Correctness | Focus |
-| [I-98](#i-98) | FP8 compute keeps a bias: each path's operand is rounded to nearest on FP8's grid | Medium | OPEN | Correctness | Focus |
+| [I-98](#i-98) | FP8 compute keeps a bias, and the Bermudan/American induction in every format below float32: each path's operand is rounded to nearest on the format's grid | Medium | OPEN | Correctness | Focus |
 | [I-97](#i-97) | XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU | Medium | OPEN | Performance | Focus |
 | [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Focus |
 | [I-88](#i-88) | The API completeness test checks field names, not that a value reaches the engine | Low | OPEN | Tooling | Focus |
@@ -119,7 +102,6 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | Fix what exists |
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | Fix what exists |
 | [I-81](#i-81) | A cold job compiles about 180 one-operation programs; market risk vmaps a closure | Low | OPEN | Performance | Fix what exists |
-| [I-83](#i-83) | A Bermudan/American on the paths needs 0.3–0.7 MB per path and step: 64k paths run out of memory | Medium | OPEN | Performance | Focus |
 | [I-93](#i-93) | TraderX's submissions are priced by their own pricers, not the engine's | Medium | OPEN | API | TraderX |
 | [I-94](#i-94) | The LGM is calibrated by two implementations | Low | OPEN | Architecture | Focus |
 
@@ -225,6 +207,34 @@ With a smile: European NPV and Vega away from the money, and calibrated Bermudan
 **To close.** Decided (X-5): a strike axis in the market's volatilities, read at each
 option's and helper's strike as ORE reads its cube. SABR is [F-02](features.md#f-02).
 
+<a id="i-113"></a>
+### I-113 — Below float64 a long option worth almost nothing on a path can come out a few rounding errors below zero
+
+**Severity:** Low · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-13, the
+`compute_options` campaign (the rollback in difference form, I-83)
+
+**What is wrong.** A Bermudan's or American's path value is the induction's level plus the path's
+deviation from it (`engine.pricing.lgm_grid.option_values`). Where a path's option is worth almost
+nothing and the level is not, the deviation nearly cancels the level, so the format's rounding of
+it is the value's own error: a long option, never negative in exact arithmetic (nor in the
+float32 kernel before, which summed non-negative values with positive weights), can come out
+slightly below zero. Measured: the cash Bermudan's ENE, 0 at float64 on every date, at most
+4.9e-5 under `bfloat16_3x` products (a notional of 1e6); the evidence table's fixed rule, relative
+to that figure's scale of 0, fails the row at every path count while the Bermudan's other figures
+pass to 4,096 paths.
+
+**Reach.** The ENE (and a netting set's offset) of a long option priced below float64, by a few of
+the format's rounding errors of its level. No exposure figure moves beyond its format's error;
+float32 compute measured no movement.
+
+**Current handling.** The evidence table reports the row (A-11's rule, not redefined); every
+result warns of the figure as of any without a passing row.
+
+**To close.** Decide with the unbiased rounding of the products' per-path operands (I-98) whether a long option's path value is
+projected onto its bound (`max(value, 0)`: exact arithmetic never crosses it, and the projection
+biases by at most the rounding on paths worth nothing), or the fixed rule judges such a figure
+against the option's scale rather than its own; then the campaign's row again.
+
 <a id="i-111"></a>
 ### I-111 — Reported standard errors treat Sobol paths and historical windows as independent
 
@@ -275,7 +285,7 @@ same. Red first: on the paired cases of the `linear` campaign, the replicate sta
 standardized errors have a root mean square within 0.75 to 1.33 where today's reaches 3.3.
 
 <a id="i-98"></a>
-### I-98 — FP8 compute keeps a bias: each path's operand is rounded to nearest on FP8's grid
+### I-98 — FP8 compute keeps a bias, and the Bermudan/American induction in every format below float32: each path's operand is rounded to nearest on the format's grid
 
 **Severity:** Medium · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-11, the
 `compute` campaign rerun with the shared operands in two terms (I-96, decision A-23)
@@ -295,8 +305,18 @@ but growing with the paths as a bias does. Neither a third term of the shared op
 unrounded (eight terms) changes any FP8 case beyond its noise ([precision.md
 §15.5](details/precision.md#155-compute-below-float32-2026-10-10)).
 
-**Reach.** Runs that compute a stage in FP8 (`float8_e4m3fn`, `float8_e5m2`; opt-in). Every
-other compute format is unaffected. Means are corrected by a paired float64 sample
+The Bermudan/American induction (2026-10-13, the `compute_options` campaign) rounds each path's
+deviation columns at every step of its rollback, 6 for a Bermudan and about a hundred for the
+shared portfolio's American, so the per-path rounding's bias accumulates there on every grid
+below float32, not FP8's alone: with the pricing stage in float16 or TensorFloat-32 the
+American's mean figures are 7.0 statistical errors off at 16,384 paths (significance 99), in
+bfloat16 45, while two terms of the shared operand help the Bermudans (0.49 against the single
+pass's 6.1) and not the American (7.0 against 2.7); float32 and `bfloat16_3x` pass the 1% rule to
+16,384 and 4,096 paths ([precision.md §15.7](details/precision.md#157-the-rollback-in-difference-form-2026-10-13)).
+
+**Reach.** Runs that compute a stage in FP8 (`float8_e4m3fn`, `float8_e5m2`; opt-in), and a
+Bermudan's or American's pricing stage in any format below float32 (opt-in). The other kernels
+in the 10-bit and bfloat16 formats are unaffected. Means are corrected by a paired float64 sample
 (`Precision.paired_fraction`, A-13); quantiles are not: market risk's VaR and ES at 8,192
 scenarios are 0.26 (e4m3) and 0.42 (e5m2) statistical errors off.
 
@@ -315,7 +335,8 @@ square error, the trade storage measured too (stochastic rounding worse for VaR 
 16 storage comparisons, §15.4). So: a choice of the policy, both measured in the `compute`
 campaigns, the FP8 default decided by the evidence table's path ceilings; FP4 compute (F-07)
 meets the same rounding, coarser. Red first: an FP8 campaign case whose significance at 4,096
-paths falls below 3 with it and not without.
+paths falls below 3 with it and not without, and the `compute_options` campaign's float16 American
+likewise.
 
 
 <a id="i-97"></a>
@@ -516,37 +537,9 @@ pricing of linear trades on a CPU.
 **To close.** The Windows slowdown's cause, and the helper's price traced once per
 bucket program, the snapshot within the margin; the leg kernel's products scheduled with their
 operand fusions (or the trades of one shape priced as one product, their columns side by side,
-which a matrix unit wants anyway), timed against the code before the kernel rewrite. Related: the grid rollback's memory and time on the
-paths ([I-83](#i-83), F-07) and the cold job's one-operation programs ([I-81](#i-81)).
-
-<a id="i-83"></a>
-### I-83 — A Bermudan/American on the paths needs 0.3–0.7 MB per path and step: 64k paths run out of memory
-
-**Severity:** Medium · **Status:** OPEN · **Category:** Performance · **Found:** 2026-10-07,
-the Newton solver's baseline
-
-**What is wrong.** The grid engine on the paths (`engine.pricing.bermudan._rollback_every_path`,
-the rollback vmapped over paths) builds each step's `[nodes, nodes]` interpolation operator per
-path: arrays `[paths, steps, nodes, nodes]`, 193 nodes at the demo's grid (`n_per_std=16`,
-`std_devs=6`), 301 at ORE's default (30 and 5), so 0.3 MB (0.7 MB) per path and exercise step.
-The demo's job at 65,536 paths asked for 277 GB and failed (`Out of memory allocating
-277260800480 bytes`) on a 31 GB machine, before 2026-10-07 and after it; 4,096 paths fit, and
-their time is this rollback (the options' path cubes take 31–36 s of the CPU's 36 s pricing,
-their recalibration 0.09 s, against 2.3 s for the whole job at 256 paths). The 8 GB GPU fails
-at 1,024 paths (a 6 GB allocation).
-
-**Reach.** Every pipeline run with a Bermudan or American beyond a few thousand paths: the
-path counts the precision research needs (F-07), any exposure run of size, and the
-ORE distribution test's options (`tests/test_ore_xva_parity.py`, L4 at 1,024 paths where the
-linear trades run 16,384). Not market risk (t=0 revaluation) or the t=0 Greeks.
-
-**Current handling.** None: the job fails with XLA's out-of-memory error.
-
-**To close.** The rollback as one `[nodes, nodes]` operator per step applied to
-all columns and paths at once, as a matrix product ([details/precision.md
-§8.3](details/precision.md#83-emulation-and-native-speed)), which holds one such buffer per
-step; then the demo's job at 65,536 and 262,144 paths on the CPU and the GPU, the measurement
-the Newton solver's work could not make.
+which a matrix unit wants anyway), timed against the code before the kernel rewrite. Related: the cold job's one-operation
+programs ([I-81](#i-81)). (The grid rollback's memory and time on the paths, the other half of the 4,096-path job's time,
+went with its matrix form, [I-83](#i-83), 2026-10-13: the demo's job 0.27 s warm there, against 13.2 s.)
 
 <a id="i-105"></a>
 ### I-105 — Storage below float64 does not lower a run's peak memory: the reductions load the whole cube at float64
@@ -562,8 +555,13 @@ eight, whether or not the result exports the cube (`cube_output`).
 
 **Reach.** The path count a run reaches on one device, which the precision research's
 equal-time comparison rests on ([F-07](features.md#f-07)): many low-precision paths need the
-memory of as many float64 paths at the reductions. No number is wrong. The rollback's working
-memory ([I-83](#i-83)) is larger today and comes first.
+memory of as many float64 paths at the reductions. No number is wrong. The other per-path working
+set, a Bermudan's or American's induction (a few copies of its columns on the state grid, 10 to
+41 KB per path at float64 on the demo's and ORE's grids, since its matrix form, [I-83](#i-83),
+2026-10-13), is bounded: each date's paths are priced in blocks within a fixed budget
+(`engine.pricing.lgm_grid.INDUCTION_MEMORY_BUDGET`, 1 GiB), so the demo's job, whose cube is
+small, peaks at 2.0 GB at 262,144 paths on the CPU (9.5 GB in one block) and 0.87 GB on an RTX
+5060.
 
 **Current handling.** None.
 
@@ -571,7 +569,10 @@ memory ([I-83](#i-83)) is larger today and comes first.
 alone: a trade's profile from its column, the netting set from a running float64 sum
 `[paths, dates]`, PFE's quantiles from that sum as today (exact, not approximated); the float64
 cube built only when the result asks for it. The peak measured against path count before and
-after, at float64 and at FP8 storage; the golden snapshot within the margin.
+after, at float64 and at FP8 storage; the golden snapshot within the margin. The induction's
+block budget chosen per device rather than fixed: on the RTX 5060 the fixed 1 GiB splits the
+demo's 65,536 paths in two blocks, 2.15 s warm against 1.60 s in one (on the CPU blocks are
+faster, 2.98 s against 3.70 s at 262,144 paths).
 
 <a id="i-61"></a><a id="p-1"></a>
 ### I-61 — Nothing runs on more than one host; multi-device speed unmeasured
@@ -923,7 +924,9 @@ the reporting currency, the as-of and simulation dates, the trade ids on every p
 (today's Python `MarketRiskResult` keys its P&L columns by request order alone), each Greek
 array's factor labels (curve and tenor, or option and swap tenor), the Greeks method and
 calibration policy as run, and the engine's identity (its git revision and the versions of
-jax, jaxlib and ORE) in place of the fixed `0.1.0`.
+jax, jaxlib and ORE) in place of the fixed `0.1.0`. Each option's exercise decisions on every
+path and date (`PortfolioResult.exercised`, in the Python result since 2026-10-13, decision
+A-24) are returned on request, as the cube is (inline, by reference or not at all).
 
 <a id="i-95"></a>
 ### I-95 — A precision setting the run does not read is accepted and ignored
@@ -1223,7 +1226,7 @@ runner's limits (4 CPUs, 16 GB, no swap, no compile cache): OOM-killed, three of
 processes lost. Two causes, two test-only fixes, the engine unchanged:
 `tests/test_ore_bermudan_oracle.py::test_engine_is_grid_converged` alone peaked at 11.5 GB on
 its 384-per-std, 10-std control grid, now 192 and 8 (within 1.6e-6 of it, 3.3 GB; the
-rollback's memory is fixed properly by its matrix form, [I-83](#i-83), [details](details/precision.md#83-emulation-and-native-speed));
+rollback's memory was fixed properly by its matrix form on 2026-10-13, [I-83](#i-83), [details](details/precision.md#83-emulation-and-native-speed));
 and each test process kept every XLA program it compiled, now dropped after each module
 (`jax.clear_caches()` in `tests/conftest.py`). The same container then passed the fast tier,
 2,461 passed, 2 skipped, at a 13.1 GB peak (page cache included), in 5m22s. The full suite
@@ -1448,6 +1451,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-80"></a>I-80 | Importing `engine` changed JAX and XLA settings for the whole process (now x64 only: each matrix product states its precision through `engine.precision.matmul`; deterministic GPU kernels set by the engine worker and the tests; GPU preallocation off in the demos and the tests; 2026-10-06, decision A-22) | `tests/test_accelerator_defaults.py` (`TestImportingTheEngine`; `TestEveryMatrixProductStatesItsPrecision::test_in_every_pipeline`, red on the bare products) |
 | <a id="i-82"></a>I-82 | An American priced on a path date after the last reference-grid date in its window and before its last exercise (no calibration helper left) raised `ValueError: Need at least one array to stack` (now the engine's volatility, as a calibration today with no helper; found on 2026-10-07) | `tests/test_root_solvers.py::test_a_date_with_an_exercise_left_and_no_helper_prices_on_the_model_as_built` (since 2026-10-12 no date is recalibrated, I-49) |
 | <a id="i-84"></a>I-84 | The simulation market held each curve's tenor points at the tenors' times from the simulation date; ORE's `ScenarioSimMarket` holds them at the times from the as-of date (swaps and Europeans up to 0.45% of their largest path value off ORE's cube; found by the ORE simulation oracle's L3, 2026-10-07) | `tests/test_ore_xva_parity.py::test_every_trades_cube_equals_ores_on_ores_paths`, `tests/test_pricing.py` (path curves at ORE's times) |
+| <a id="i-83"></a>I-83 | A Bermudan/American on the paths held each step's `[nodes, nodes]` interpolation per path (0.3–0.7 MB per path and step; the demo's job asked for 277 GB at 65,536 paths) and computed in one format, float32 or float64 (now the induction as matrix products in difference form, one operator per step shared by every path and column, the cashflows a product of each path's coefficients with functions of the state, the coupons cached in progress in a few reused columns: a few copies of a path's columns on the grid, 10 to 41 KB per path at float64, a date's paths priced in blocks within a budget; the demo's job at 262,144 paths in 3.0 s and 2.0 GB on the CPU, 2.4 s on an RTX 5060, where 1,024 had run out of memory; every compute format, the Bermudan's market-risk P&L in difference form too, the exercise decisions on the paths exposed and measured, decision A-24; 2026-10-13, F-07) | `tests/test_rollback_difference_form.py::TestMemory` (red on the code before: 6.1 MB per path against a 0.085 MB bound; the demo's job failed there at 65,536 paths), `::TestDifferenceForm`, `::TestOneProgramPerTrade` |
 | <a id="i-85"></a>I-85 | Exposure profiles started from each trade's value on today's market; ORE's start from its value on the simulation market of the as-of date, the cube's `T0` (up to 4.2% on the shared portfolio) | `tests/test_ore_xva_parity.py::test_the_pipelines_profiles_start_from_ores_t0` |
 | <a id="i-86"></a>I-86 | A cash-settled option's exposure stopped at its underlying's maturity, so its time-weighted EPE kept accruing after it settled; ORE's `Trade::maturity()` is its last exercise date (2026-10-07) | `tests/test_ore_xva_parity.py::test_the_profiles_of_ores_cube_are_ores_reports` |
 | <a id="i-92"></a>I-92 | `engine/`'s packages were named for layers and two modules sat at its root (now subpackages only, each named for what it holds and layered: `market_data`, `models`, `instruments`, `traderx`, `calibration`, `market_simulation`, `pricing`, `risk/{greeks,market,counterparty}`, `run`, `api`; [details/package-layout.md](details/package-layout.md)) | `tests/test_import_layering.py::test_no_module_but_init_at_the_root`, `::test_packages_import_only_the_layers_below`, `::test_risk_kinds_import_only_the_kinds_below` |

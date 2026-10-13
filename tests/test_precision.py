@@ -56,7 +56,7 @@ from engine.run import (
 from tests import market_risk_support as mr
 from tests.support import portfolio as shared
 
-#: The formats that compute and accumulate in themselves (an `Arithmetic` that is plain).
+#: The formats that compute and accumulate in themselves (`Arithmetic.of`).
 ENABLED = ("float64", "float32")
 #: The array formats (storage and accumulate), widest first.
 ARRAYS = tuple(name for name, f in FORMATS.items() if f.array)
@@ -166,7 +166,7 @@ class TestPolicy:
     @pytest.mark.parametrize("compute", ENABLED)
     def test_float32_compute_may_accumulate_in_float64(self, compute):
         stage = StagePrecision("float32", compute, "float64")
-        assert stage.arithmetic.dtype == jnp.float64 and stage.arithmetic.plain == (compute == "float64")
+        assert stage.arithmetic == Arithmetic(compute, "float64") and stage.arithmetic.dtype == jnp.float64
 
     def test_a_format_not_enabled_for_storage_is_refused_naming_the_item(self, monkeypatch):
         """The refusal FP4 will meet until F-07 enables it (no format of the table has one today)."""
@@ -1185,24 +1185,28 @@ class TestScaledStoragePipeline:
 
 
 #: The slow sanity bounds of scaled storage (nearest) on the shared portfolio, per format and
-#: stage: the largest cube error per unit notional, and the largest bias (the mean over 256
-#: paths) per unit notional; about four times the values measured on 2026-10-02 (precision.md
-#: §15.3), without block offsets, whose step per value they never coarsen. Regression guards, not
-#: acceptance (that is the storage harness's and I-55's evidence table). The largest errors are
-#: exercise decisions that flip on a path (a cash Bermudan worth 0 or 1.7% of its notional).
-#: bfloat16 simulation storage was measured again on 2026-10-12, when the options' LGM stopped
-#: being recalibrated on every path (I-49): one cash Bermudan's exercise flips on one of its 768
-#: cells (1.68e-2 of notional, a bias of 6.5e-5), every other cell as before.
+#: stage: the largest cube error per unit notional, and the largest bias (the mean over the 256
+#: paths) per unit notional, each on the cells whose exercise decision the format did not flip
+#: (decision A-24: a cash-settled option's flipped exercise moves it by its whole value, 1.7% of
+#: its notional, a precision result the harness measures, `ExerciseRow`, not a rounding); about
+#: four times the values measured on 2026-10-13, when the rollback was rewritten in difference
+#: form. Regression guards, not acceptance (that is the storage harness's and I-55's evidence
+#: table). Until then the bounds held the flips: bfloat16's simulation and market storage
+#: (7e-2, 2.6e-4) absorbed one cash Bermudan's (1.68e-2), 30 times their rounding.
 _SCALED_BOUNDS = {
-    ("float16", "simulation"): (3e-4, 3e-6), ("float16", "market"): (4e-4, 1.2e-5),
-    ("float16", "pricing"): (2e-3, 4e-5),
-    ("bfloat16", "simulation"): (7e-2, 2.6e-4), ("bfloat16", "market"): (7e-2, 2.7e-4),
-    ("bfloat16", "pricing"): (1.4e-2, 4.3e-4),
-    ("float8_e4m3fn", "simulation"): (7e-2, 3.3e-4), ("float8_e4m3fn", "market"): (7e-2, 1.7e-3),
-    ("float8_e4m3fn", "pricing"): (1.3e-1, 2.7e-2),
-    ("float8_e5m2", "simulation"): (6.2e-2, 1.25e-3), ("float8_e5m2", "market"): (1e-1, 4.6e-3),
-    ("float8_e5m2", "pricing"): (2.6e-1, 1.5e-1),
+    ("float16", "simulation"): (3.1e-4, 2.5e-6), ("float16", "market"): (3.7e-4, 1.3e-5),
+    ("float16", "pricing"): (2.4e-4, 6.4e-6),
+    ("bfloat16", "simulation"): (2.3e-3, 1.1e-5), ("bfloat16", "market"): (3.3e-3, 1.3e-4),
+    ("bfloat16", "pricing"): (1.9e-3, 2.7e-5),
+    ("float8_e4m3fn", "simulation"): (3.9e-2, 4e-4), ("float8_e4m3fn", "market"): (4.8e-2, 7.3e-4),
+    ("float8_e4m3fn", "pricing"): (3.3e-2, 5.4e-4),
+    ("float8_e5m2", "simulation"): (6.2e-2, 1.4e-3), ("float8_e5m2", "market"): (9.7e-2, 1.3e-3),
+    ("float8_e5m2", "pricing"): (6.2e-2, 1.7e-3),
 }
+#: The largest share of the options' cells (path and date) whose exercise decision a storage
+#: format may flip in the sanity test: a sanity bound, not a measurement (at most 1% on
+#: 2026-10-13, FP8 e5m2's market storage; the harness measures the share per format).
+_FLIPPED_SHARE = 0.05
 
 
 def _shared_run(precision):
@@ -1225,17 +1229,25 @@ def shared_float64():
 @pytest.mark.parametrize("name", SCALED)
 def test_scaled_storage_on_the_sloped_shared_market_is_sane(name, stage, shared_float64):
     """§13.5 for storage below 32 bits: every trade of the shared portfolio (3% -> 5% curves),
-    one stage stored in the format (the others float64): no NaN, today's values unchanged,
-    the cube's error and its bias over the paths within the measured bounds."""
+    one stage stored in the format (the others float64): no NaN, today's values unchanged, the
+    options' flipped exercise decisions a small share, and on the cells not flipped the cube's
+    error and its bias over the paths within the measured bounds (decision A-24)."""
     exact, notional = shared_float64
     compute = "float64" if stage == "pricing" else "float32"
     stored = _shared_run(Precision(**{stage: StagePrecision(name, compute, compute)}))
     assert stored.base_npv_per_trade == exact.base_npv_per_trade
     cube, reference = np.asarray(stored.npv_cube), np.asarray(exact.npv_cube)
     assert np.all(np.isfinite(cube))
+    trades = list(shared.trades())
+    flipped = np.zeros(cube.shape, dtype=bool)
+    for trade, state in stored.exercised.items():
+        flipped[:, :, trades.index(trade)] = np.asarray(state) != np.asarray(exact.exercised[trade])
+    options = [trades.index(t) for t in exact.exercised]
+    assert np.mean(flipped[:, :, options]) <= _FLIPPED_SHARE
+    moved = np.where(flipped, 0.0, cube - reference)
     error, bias = _SCALED_BOUNDS[name, stage]
-    assert np.max(np.abs(cube - reference) / notional) < error
-    assert np.max(np.abs(np.mean(cube - reference, axis=0)) / notional) < bias
+    assert np.max(np.abs(moved) / notional) < error
+    assert np.max(np.abs(moved.sum(axis=0) / np.maximum((~flipped).sum(axis=0), 1)) / notional) < bias
 
 
 @pytest.mark.slow

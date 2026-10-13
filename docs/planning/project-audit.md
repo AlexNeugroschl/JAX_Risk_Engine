@@ -50,7 +50,7 @@ result served), so some differ from the audit's.
 | AUD-38 Worker per queue file | Confirmed | Low | [I-106](known-issues.md#i-106) |
 | AUD-39 Result provenance | Confirmed | Medium | [I-87](known-issues.md#i-87), extended; the run manifest of [F-05](features.md#f-05) |
 | AUD-40 Strictness and immutability | Confirmed for four non-strict schemas ([I-103](known-issues.md#i-103)); ignored settings known ([I-95](known-issues.md#i-95), [I-88](known-issues.md#i-88)). Set aside: deep immutability of Python inputs (a Python caller owns its objects; HTTP jobs are rebuilt from JSON in the worker) | Low | [I-103](known-issues.md#i-103) |
-| AUD-41 Rollback memory | Known and planned | Medium | [I-83](known-issues.md#i-83) |
+| AUD-41 Rollback memory | Known and planned; fixed 2026-10-13 (one operator per step shared by every path; the demo's job at 262,144 paths) | Medium | [I-83](known-issues.md#i-83) (closed) |
 | AUD-42 Full float64 cube | Confirmed | Medium | [I-105](known-issues.md#i-105) |
 | AUD-43 Host work and transfers | In part: eager programs known ([I-81](known-issues.md#i-81)); the XLA claim is documentation ([I-110](known-issues.md#i-110)). Set aside: the Brownian-bridge matrix is `[T, T]` over time steps, a few hundred, negligible | Low | [I-81](known-issues.md#i-81), [I-110](known-issues.md#i-110) |
 | AUD-44 Hessian diagonal | Not a defect: the diagonal needs one Hessian-vector product per factor, each yields its whole column anyway, and the factors are tens of pillars (an `F × F` block of kilobytes) | — | Set aside |

@@ -236,7 +236,8 @@ Every `engine/` subpackage has an `__init__.py`, so the whole thing is importabl
 repository root — no path hacks required in application code or tests.
 
 `pricing/lgm_grid.py` holds the backward-induction engine (state grid, Hagan's quadrature,
-numeraire-deflated rollback) every Bermudan and American is priced by;
+numeraire-deflated rollback as one operator per step, the level and each path's deviation)
+every Bermudan and American is priced by, today and on the paths;
 `AmericanSwaptionConfig` supplies ORE's American option times and exercise style. This
 mirrors ORE's own design, where both exercise types run through the same numeric engine
 (`QuantExt::NumericLgmMultiLegOptionEngine`) and differ only in their option times and in
@@ -476,8 +477,9 @@ loadings, the flows' values at the level), which below float32 is carried in two
 format, stacked into the same product (2026-10-11, decision A-23): rounded once, its error would
 be common to every path, a bias. The single pass is a compute format of its own,
 `<format>_1x`. The
-Bermudan/American rollback keeps one format, float32 or float64, until it is rewritten so
-(F-07, I-83).
+Bermudan/American induction is written so since 2026-10-13 (I-83): one rollback operator per
+step and the cashflows' functions on the state grid, each shared by every path, applied to each
+path's deviation from the induction on the level curves.
 
 **The cast points.** Only these read the policy; everything between them follows the dtype
 of its inputs (kernels cast their own constant inputs, coupon tables, volatilities and

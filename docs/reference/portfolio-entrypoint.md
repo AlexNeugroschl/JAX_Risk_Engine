@@ -220,6 +220,7 @@ standard error understates its error ([I-111](../planning/known-issues.md#i-111)
 | `scenario_risk_available` | `bool` | `False` when the run was `scenario_risk=False`, meaning `exposure` is **absent** and `npv_cube` zero-width. |
 | `measure` | `Optional[str]` | The exposure's measure: `"risk-neutral-pricing"` (`engine.risk.market.var_es.ENGINE_RISK_MEASURE`) whenever it was computed, `None` without scenario risk. An exposure under the pricing measure, **not** a forecast of tomorrow's loss ([I-11](../planning/known-issues.md#i-11)). |
 | `precision` | `PrecisionReport` | The precision as run, read from the run's arrays, and with a paired sample each figure's estimate ([above](#precision)). |
+| `exercised` | `Dict[str, jax.Array]` | Each option's (European, Bermudan, American) exercise decisions, by `trade_id`: `[Scenarios, Dates]` bool, whether the holder has exercised on the path on or before the date, as ORE's `OptionWrapper` decides it (a physical option is its swap from then on, a cash-settled one 0). A precision below float64 can flip a decision; the precision harness measures the share each format flips (decision A-24). Empty without scenario risk. Python only: the HTTP result does not carry it. |
 
 ## `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 

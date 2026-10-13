@@ -114,25 +114,27 @@ Every trade is a pure JAX function of its curves' pillar rates
 functions the AD Greeks differentiate), with the engine its `PricingConfig` names (decision
 A-8): a European on Bachelier or Jamshidian, a Bermudan/American on the LGM grid engine
 calibrated on today's market and held fixed under every scenario. The same function prices
-the base market and every scenario, so a trade's P&L is exactly `f(base + shift) − f(base)`.
+the base market and every scenario. A trade's P&L is its deviation from its base value in
+difference form (F-07): the legs' flows carried by matrix products in the trade's compute
+format, and a Bermudan's or American's induction run on the base curves and on each scenario's
+deviation from them (since 2026-10-13), so a scenario that moves nothing has exactly zero P&L,
+and at float64 the P&L is `f(base + shift) − f(base)` to rounding.
 
-Scenarios run in vmapped batches, which keeps the work on the accelerator; the pricers are
-jitted with the trade as an argument, so a repeated run compiles nothing. The batch is `batch_size` (default 256) for closed-form trades, and smaller
-for a Bermudan or American: its rollback interpolates every grid node at every quadrature
-node for the option, the underlying and each cashflow column, about 80 MB per scenario at
-`n_per_std=64`. `scenario_batch_size` caps each batch at `BATCH_MEMORY_BUDGET` (512 MB).
-
-Without the cap, a fixed batch of 256 on a 64-per-std American needed ~19 GB and swapped.
+Scenarios run in batches, each one program per product, trade shape and arithmetic (the P&L is
+jitted with the trade's terms as an argument), so a repeated run compiles nothing. The batch is
+`batch_size` (default 256), smaller only where a Bermudan's or American's induction would exceed
+its memory budget (`engine.pricing.lgm_grid.INDUCTION_MEMORY_BUDGET`, 1 GiB): it holds a few
+copies of its columns on the state grid per scenario, about 0.1 MB at `n_per_std=64`
+(`scenario_batch_size`). Until 2026-10-13 the rollback interpolated every grid node at every
+quadrature node per scenario, about 80 MB at `n_per_std=64`, and the batch was cut to fit 512 MB.
 
 **Cost.** Swaps, European swaptions and bonds cost microseconds to a millisecond per
-scenario. A Bermudan or American reruns its whole backward induction per scenario: on a
-CPU, a 64-per-std American costs about 0.1–0.2s per scenario, and a 16-per-std one about
-a hundredth of that. For market risk, size the exercise grid for the P&L precision the
-VaR needs rather than the finest grid a single price would use; `demos/demo.py` shows the
-base-value difference this makes. (One measurement is unexplained: the first grid
-revaluation in a process sometimes runs up to 50× faster than later ones, with identical
-results. It is part of the open performance item
-[I-53](../planning/known-issues.md#i-53).)
+scenario. A Bermudan or American runs one backward induction for a whole batch, its rollback and
+its cashflows matrix products shared by every scenario: measured on a CPU (2026-10-13, 256
+scenarios, warm), 0.035 ms per scenario at 16 points per standard deviation and 0.18 ms at 64,
+against 5.6 ms and 75 ms when the induction ran per scenario. For market risk, size the exercise
+grid for the P&L precision the VaR needs rather than the finest grid a single price would use;
+`demos/demo.py` shows the base-value difference this makes.
 
 ## Statistics
 

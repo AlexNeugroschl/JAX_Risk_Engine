@@ -21,8 +21,8 @@ both on one portfolio.
     FP8 stored     the same in FP8 (e4m3), rounded to nearest
     FP8 stochastic the same, rounded stochastically
     BF16 compute   the revaluation's matrix products in bfloat16, accumulated in float32, the
-                   P&L stored in bfloat16 (2026-10-10); the Bermudan, whose rollback is not in
-                   difference form yet, kept in float32
+                   P&L stored in bfloat16 (2026-10-10; the Bermudan's rollback too since
+                   2026-10-13)
     FP8 compute    the same with FP8 (e4m3) products and storage
 
 Storage below 32 bits keeps a power-of-two scale per block of 32 scenarios, so each
@@ -35,8 +35,8 @@ bond's values sit near their level on every path (I-75).
 
     10-day Monte Carlo shocks of every pillar of two sloped curves
         -> every trade's P&L at t=0 in its pricing stage's arithmetic: the deviation from its
-           base value, its matrix products in the compute format (a full revaluation for the
-           Bermudan)
+           base value, its matrix products in the compute format (the Bermudan's LGM rollback
+           and cashflows on the state grid included)
         -> P&L per scenario, stored at its pricing stage's storage precision
         -> VaR 99% and ES 97.5% of the portfolio P&L, reduced in float64
 
@@ -101,8 +101,7 @@ PRECISIONS = {
        for label, name, rounding in (("FP16 stored", "float16", "nearest"), ("BF16 stored", "bfloat16", "nearest"),
                                      ("FP8 stored", "float8_e4m3fn", "nearest"),
                                      ("FP8 stochastic", "float8_e4m3fn", "stochastic"))},
-    **{label: Precision(pricing=StagePrecision(name, name, "float32"),
-                        by_product={"bermudan_swaption": StagePrecision("float32", "float32", "float32")})
+    **{label: Precision(pricing=StagePrecision(name, name, "float32"))
        for label, name in (("BF16 compute", "bfloat16"), ("FP8 compute", "float8_e4m3fn"))},
 }
 

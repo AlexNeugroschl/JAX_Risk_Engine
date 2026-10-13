@@ -14,13 +14,13 @@ and market risk revalues under shocked curves (`engine.risk.market`).
                  function (or an object equal for equal settings) and `terms` the trade's
                  data as a pytree, so a caller jits it with `pricer` static and compiles once
                  per product and shape, not per trade or call (`engine.risk.greeks.ad`)
-        .pnl     for a trade priced in difference form (swaps, bonds, Europeans; F-07):
-                 `pnl(terms, curves, shifts, arithmetic)`, each scenario's change of the price
+        .pnl     `pnl(terms, curves, shifts, arithmetic)`, each scenario's change of the price
                  when the pillar rates of `curves` (`ZeroCurve`s) move by `shifts` (`[S, K]`
-                 per curve), computed as the deviation from the level in the matrix products
-                 of `arithmetic` (`engine.pricing.legs.leg_values`), so a move of nothing is
-                 exactly 0 and the legs' cancellation stays in the level. None for a
-                 Bermudan/American, which market risk revalues in full (`engine.risk.market`)
+                 per curve), every product in difference form (F-07): computed as the deviation
+                 from the level in the matrix products of `arithmetic` (the legs'
+                 `engine.pricing.legs.leg_values`, the grid engine's
+                 `engine.pricing.lgm_grid.option_values`), so a move of nothing is exactly 0
+                 and the legs' cancellation stays in the level
 
 The engines are the valuation pipeline's own (`engine.pricing`), so the price at the market's
 rates is the portfolio's t=0 NPV: swaps and bonds by `legs_npv`, Europeans by
@@ -64,7 +64,7 @@ from engine.pricing.european import (
 )
 from engine.pricing.jamshidian import jamshidian_discounts, jamshidian_npv, jamshidian_on_discounts
 from engine.pricing.legs import Deviations, Legs, leg_values, legs_npv, legs_of, today_schedule
-from engine.pricing.lgm_grid import _build_grid_schedule, _GridSchedule, _PreparedBermudan, grid_value
+from engine.pricing.lgm_grid import _Induction, _PreparedBermudan, grid_value, induction_rows, option_values
 from engine.pricing.options import position_sign
 
 #: A market curve: `("discount", currency)` or `("index", index name)`.
@@ -75,13 +75,13 @@ CurveKey = Tuple[str, str]
 class TradePriceFunction:
     """`price(*pillar_rates)`, one rates array per curve of `curves`, in that order:
     `pricer(terms, *curves)` on `ZeroCurve`s at the pillar `times`; and `pnl`, the change of
-    the price under shifts of the rates in difference form, or None (see the module
+    the price under shifts of the rates in difference form (see the module
     docstring)."""
     curves: Tuple[CurveKey, ...]
     pricer: Callable
     terms: Any
     times: Tuple[jnp.ndarray, ...]
-    pnl: Optional[Callable] = None
+    pnl: Callable
 
     def price(self, *rates):
         return self.pricer(self.terms, *on_pillars(self.times, rates))
@@ -140,7 +140,7 @@ def trade_price_function(cfg, market: Market, pricing: PricingConfig = PricingCo
     times = tuple(jnp.asarray(market_curve(market, k).times, dtype=dtype) for k in keys)
     asof = market.asof
 
-    def priced(pricer, terms=None, pnl=None):
+    def priced(pricer, terms, pnl):
         return TradePriceFunction(keys, pricer, terms, times, pnl)
 
     def positioned(long, terms, long_pnl):
@@ -154,14 +154,14 @@ def trade_price_function(cfg, market: Market, pricing: PricingConfig = PricingCo
         return priced(_legs_price, _legs_terms(legs, asof, dtype), _legs_pnl)
     if isinstance(cfg, SwaptionConfig):
         if not cfg.exercise_date > asof:
-            return priced(_zero_price, pnl=_zero_pnl)
+            return priced(_zero_price, None, _zero_pnl)
         if pricing.european == "Jamshidian":
             return positioned(JamshidianPrice(pricing.jamshidian), european_terms(cfg, asof).astype(dtype),
                               JamshidianPnl(pricing.jamshidian))
         return positioned(bachelier_price, bachelier_terms(cfg, market, dtype), bachelier_pnl)
     if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
         option = bermudan_price_function(cfg, market, pricing, dtype)
-        return priced(option.pricer, option.terms)
+        return priced(option.pricer, option.terms, _zero_pnl if option.terms is None else OnPosition(option_pnl))
     raise TypeError(f"no price function for {type(cfg).__name__}")
 
 
@@ -295,9 +295,9 @@ def vol_point(cfg: SwaptionConfig, market: Market) -> Tuple[float, float]:
 
 class OptionTerms(NamedTuple):
     """A Bermudan/American on its grid engine: the prepared trade with its LGM (no curves:
-    the pricer sets them) and the induction's schedule, built on the host."""
+    the pricer sets them) and the induction's rows, built on the host."""
     prepared: _PreparedBermudan
-    schedule: _GridSchedule
+    rows: _Induction
 
 
 def option_price(terms: OptionTerms, disc, index, values=None):
@@ -306,7 +306,18 @@ def option_price(terms: OptionTerms, disc, index, values=None):
     sigma = terms.prepared.sigma
     if values is not None:
         sigma = Sigma(times=sigma.times, values=values)
-    return grid_value(dataclasses.replace(terms.prepared, curve=disc, index_curve=index, sigma=sigma), terms.schedule)
+    return grid_value(dataclasses.replace(terms.prepared, curve=disc, index_curve=index, sigma=sigma), terms.rows)
+
+
+def option_pnl(terms: OptionTerms, curves, shifts, arithmetic: Arithmetic):
+    """The option's t=0 NPV's change under `shifts` of the pillar rates: the grid engine's
+    deviation from its value on `curves` (`engine.pricing.lgm_grid.option_values`), the
+    discount and index curves moved and the known fixings not, the LGM held."""
+    disc, index = curves
+    prepared = dataclasses.replace(terms.prepared, curve=disc, index_curve=index)
+    fixings = jnp.zeros(shifts[0].shape[:-1] + prepared.float_pay_times.shape, dtype=arithmetic.dtype)
+    _, moved = option_values(prepared, terms.rows, Deviations(shifts[0], shifts[-1], fixings), arithmetic)
+    return moved
 
 
 @dataclass(frozen=True)
@@ -340,7 +351,7 @@ def bermudan_price_function(cfg, market: Market, pricing: PricingConfig, dtype) 
     prepared = prepared_option(cfg, engine, sigma)
     prepared = dataclasses.replace(prepared, notional=jnp.asarray(prepared.notional, dtype=dtype),
                                    fixed_amounts=jnp.asarray(prepared.fixed_amounts, dtype=dtype))
-    pricer, terms = in_position(cfg, option_price, OptionTerms(prepared, _build_grid_schedule(prepared)), dtype)
+    pricer, terms = in_position(cfg, option_price, OptionTerms(prepared, induction_rows(prepared)), dtype)
     return BermudanPriceFunction(pricer, terms, sigma, calibration)
 
 

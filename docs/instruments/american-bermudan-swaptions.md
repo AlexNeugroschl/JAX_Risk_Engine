@@ -242,7 +242,7 @@ in the pricer itself.
 ### The `_state_grid`/`sqrt` gradient bug
 
 `_state_grid(sigma, t, n_per_std, std_devs)` and the backward induction's own per-step
-`std_step` computation (`_run_backward_induction`) both compute `sqrt(zeta(...))` — the
+transition standard deviation (`_induction`) both compute `sqrt(zeta(...))` (`_safe_sqrt`) — the
 grid spacing/transition standard deviation is, by definition, the square root of a
 variance. `sqrt`'s own derivative, `1/(2*sqrt(x))`, is a `0/0` indeterminate form exactly
 at `x=0` — which genuinely happens at `t=0`, where `zeta(0)=0` by construction (see
@@ -263,7 +263,7 @@ to a different singularity (`sqrt` at `0`, rather than division by `a` at `0`).
 
 ### 5. Numeraire deflation — the step that makes the rollback mathematically valid
 
-`_rollback_one_step` computes `E[values(x_from) | x_to]` by convolving the quadrature
+The rollback computes `E[values(x_from) | x_to]` by convolving the quadrature
 weights against a linearly-interpolated value function, using `x`'s own driftless Gaussian
 transition law (`E[x_from | x_to] = x_to`, `Var[x_from | x_to] = zeta(t_from) - zeta(t_to)`
 — LGM's state variable is driftless by construction, confirmed directly from
@@ -281,11 +281,19 @@ against the same bond's closed-form value at the target time showed a persistent
 non-shrinking (i.e. not a discretization-error) ~3% mismatch. Dividing every value by its
 own time's numeraire before rolling back, and multiplying the result back by the target
 time's numeraire afterward, reproduced the closed form to a genuine, grid-resolution-
-shrinking numerical error instead. `_run_backward_induction` therefore runs entirely in
+shrinking numerical error instead. The induction (`_induction`) therefore runs entirely in
 these "reduced" (numeraire-deflated) units — exactly matching
 `QuantExt::LinearGaussMarkovModel::reducedDiscountBond`'s own reason for existing.
 
-### 6. Each cashflow's value: `_cashflow_values_at_nodes`
+In these units neither the state grid (`x_k = k sqrt(zeta(t)) / nx`) nor the convolution
+depends on the curves: the rollback between two grid times is a linear map of the value
+function, the same for every path. It is built once per step as a `[nodes, nodes]` matrix
+(`_rollback_operator`: each quadrature point puts its weight on the two grid nodes it falls
+between, ORE's linear interpolation, flat beyond the grid) and applied to every column of every
+path by one matrix product (2026-10-13; until then each path interpolated each column at every
+node and quadrature point, 0.3 to 0.7 MB per path and step, I-83).
+
+### 6. Each cashflow's value: a coefficient times a function of the state
 
 ORE's `CashflowInfo::pv` calculators, at every grid node, signed by the holder's side of each
 leg:
@@ -302,7 +310,17 @@ Once `t` is past `d1` the clamp projects only the remaining stub, which `couponR
 scales again. As read, that shortens a broken American floating coupon twice. It is ORE's
 behaviour and is kept deliberately.
 
-### 7. Backward induction: ORE's own loop, `_backward_induction_arrays`
+Deflated, `P(t, T; x) / N(t, x) = P(0, T) exp(-H_T^2 zeta(t)/2 - H_T x)`: the curve enters only
+through `P(0, T)`. So a fixed coupon's value is its coefficient `amount · P(0, pay)` times a
+function of the state that is the model's alone, and an Ibor coupon's is two such terms,
+`N tau (m - 1/dcf) P(0, pay)` with the payment's function and `N tau / dcf · P(0, pay) P_idx(0,
+T1) / P_idx(0, T2)` with the payment's times the forecast's (`_Coefficients`, `_basis`); a known
+fixing, or today's forecast off today's curve, the first alone at `N tau (F + m) P(0, pay)`. On a
+path the coefficients change and the functions do not, so a row's cashflows enter the induction
+as one product of every path's coefficients with the functions on the grid
+(`tests/bermudan_references.py` holds the decomposition to the bond prices written directly).
+
+### 7. Backward induction: ORE's own loop, `_induction`
 
 The grid times are `{0} ∪ optionTimes`, deduplicated exactly (ORE's
 `std::set<Real> timeGrid`, never rounded, so an option time stays bit-identical to the
@@ -323,7 +341,11 @@ accrual time it names). Walking them from the latest to `t = 0`, at each time, e
 
 Every branch of step 2 depends only on the grid time and the cashflow's own times, never on
 the model state, so the whole Open → Cached → Done history is computed once in Python
-(`_GridSchedule`) and replayed inside one `jax.lax.scan` as 0/1 masks.
+(`_GridSchedule`) and replayed inside one `jax.lax.scan` as weights (`_Induction`): per row, the
+weight of each cashflow in what the underlying gains, in the non-cached provisional value and in
+the cache it starts. A coupon is cached only while an American's exercise enters it mid-period,
+so the cached coupons share a few columns, each reused once its coupon has moved into the
+underlying (`_cache_slots`: none for a Bermudan, one or two per leg for an American).
 
 **Why replay ORE's loop, rather than evaluate the exercise value in closed form?** Both have
 the same mathematical limit, because rolling a cashflow's value back is exactly its
@@ -336,6 +358,21 @@ mathematics.
 At `t=0` the grid collapses to `x=0`, and reading off that single node gives the NPV —
 `grid_value`.
 
+**On many curves at once: the difference form** (2026-10-13, F-07). `option_values` runs the
+induction on a level, one set of curves with no path axis (today's; on a simulation date the
+scenario curves' level, `ScenarioCurves.level`), and, given each path's `Deviations` from it, on
+each path's deviation. The rollback and the bookkeeping are linear, so they apply to a path's
+deviation alone; the cashflows' coefficients' deviations are the legs' (`expm1` of the log
+discount factors' deviation at the payment, a coupon's rate's deviation where it is known). At
+an exercise, with `c` the level's exercise value less its continuation value at a node, a path's
+deviation becomes `max(d_option - max(c, 0), d_exercise + min(c, 0))`: exactly the path's own
+`max` less the level's. So at float64 a path's value is the induction on that path's curves (to
+1e-12), and in a format below float32 a product rounds only the paths' deviations: the stage's
+compute format runs the products, the operator and the functions on the grid the operand every
+path shares (two terms below float32, decision A-23), and everything else runs at the accumulate
+format. Market risk's P&L under shifted pillar rates is the same call, its deviation exactly 0
+for a scenario that moves nothing.
+
 ### 8. On every path: `engine.pricing.bermudan.bermudan_cube`
 
 On a path date the option is priced as ORE's exposure simulation prices it. ORE builds the
@@ -343,8 +380,13 @@ trade once, on the simulation market of the as-of date, calibrating its LGM ther
 recalibrates it: its `XvaAnalytic` runs the `ValuationEngine` without the trades' model
 builders. So the engine calibrates once, on that market (`built_sigma`), and on every path and
 date runs the grid engine with that LGM, its bucket times as built, from the date on the path's
-curves, with the coupons that fixed during the simulation at their path fixings. The rollback
-is batched over paths, on the device. After the last exercise the option is worth 0; once
+curves, with the coupons that fixed during the simulation at their path fixings. All paths of a
+date are one induction in difference form (above), on the date's level curves and each path's
+deviation, and every date is the trade padded to one shape (`one_shape`: the exercises and
+coupons that have run out by later dates kept as rows and coupons that do nothing), so the
+dates share one compiled program; the memory is a few copies of a path's columns on the grid
+(10 to 41 KB per path at float64), so the demo's job runs at 262,144 paths. After the last
+exercise the option is worth 0; once
 exercised, ORE's `OptionWrapper` carries the swap entered (physical) or nothing (cash), and a
 short position is minus all of it. Under either simulation model the engine is the same: it
 reads only the path's curves.

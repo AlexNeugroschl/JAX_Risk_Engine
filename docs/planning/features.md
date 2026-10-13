@@ -60,8 +60,9 @@ adds a strike axis, SABR is a second way to supply it.
 ### F-03 — ORE's AMC engine as a valuation option
 
 **Value.** ORE's American Monte Carlo exposure engine is its alternative to classic
-revaluation, and cheaper for Bermudans than a grid rollback on every path
-([I-83](known-issues.md#i-83)), which is how ORE's classic exposure simulation values them. Out of scope so far (X-6); a candidate simulation option under
+revaluation, and cheaper for Bermudans than a grid rollback on every path (the classic
+simulation's way, which ORE's own exposure simulation and the engine take; since 2026-10-13 one
+shared operator per step, [I-83](known-issues.md#i-83)). Out of scope so far (X-6); a candidate simulation option under
 decision A-1. Parity against ORE's AMC analytic.
 
 **Depends on.** The ORE simulation oracle (`tests/support/ore_xva_oracle.py`) for parity; [F-07](#f-07)'s kernel rewrite (A-16). It adds a simulation option to `RunConfig`
@@ -128,7 +129,9 @@ formats, `tensorfloat32` and `bfloat16_3x`, accumulated in float32, each native 
 device and named in the report; since 2026-10-11 the operand every path shares in two terms of
 the format, the single pass `<format>_1x` a format of its own, A-23;
 [details/precision.md §8](details/precision.md#8-compute-below-float32);
-the Bermudan/American rollback next, its model ORE's on the paths since 2026-10-12, I-49); the evidence table and warnings (I-55,
+and on 2026-10-13 the Bermudan/American rollback, as matrix products in difference form, its
+memory a few columns per path, [I-83](known-issues.md#i-83), and each option's flipped exercise
+decisions measured by the harness, decision A-24); the evidence table and warnings (I-55,
 done 2026-10-11: [compliance/precision-evidence.md](../../compliance/precision-evidence.md));
 timing across devices on Ironwood and H100 (after the sharding of I-61); FP4 on TPU 8t/8i. Measured so far: FP8
 storage of the shocks biases a call payoff by about one Monte Carlo standard error at 4M

@@ -24,7 +24,7 @@ import pytest
 
 from engine.market_simulation.config import CamConfig, LgmConfig
 from engine.precision import OFFSETS, ROUNDINGS, STAGES, Precision, StagePrecision
-from engine.pricing.config import PricingConfig
+from engine.pricing.config import LgmSwaptionEngineConfig, PricingConfig
 from engine.risk.market.run import run_figures as market_risk_figures
 from engine.run.pipeline import run_figures as portfolio_figures
 from tests import market_risk_support as mr
@@ -169,6 +169,29 @@ class TestMeasure:
         text = summary(measure(campaign, 64))
         assert "## 64 paths" in text and "| block |" in text and "| none |" in text
         assert "### By offset, 64 paths" in text
+
+    def test_each_options_flipped_exercise_decisions_are_measured(self):
+        """Decision A-24: per option and date, the share of its paths whose exercise state a
+        case flips against float64's on the same paths, its mean over the seeds and its largest;
+        none at float64, none for a swap; the rows survive JSON and the summary shows them."""
+        names = ("swap-payer", "european-receiver-otm-cash", "bermudan-receiver-cash")
+        cases = (Case("float64", Precision()), Case("market:fp8", Precision(market=FP8)))
+        coarse = LgmSwaptionEngineConfig(n_per_std=8, std_devs=3.0)
+        dates = tuple(shared.ASOF + ORE.Period(m, ORE.Months) for m in (12, 24, 36, 48))  # the options' exercises
+        campaign = _portfolio(cases, names=names)
+        campaign = dataclasses.replace(campaign, pricing=PricingConfig(bermudan=coarse),
+                                       simulation=dataclasses.replace(campaign.simulation, dates=dates))
+        m = measure(campaign, 64)
+        rows = {(r.case, r.trade): r for r in m.exercise}
+        assert set(rows) == {(c.label, t) for c in cases for t in names[1:]}
+        assert all(r.paths == 64 and len(r.flipped) == len(r.worst) == len(dates) for r in rows.values())
+        assert all(set(rows["float64", t].flipped) == {0.0} for t in names[1:])
+        fp8 = [rows["market:fp8", t] for t in names[1:]]
+        assert all(0.0 <= f <= w <= 1.0 for r in fp8 for f, w in zip(r.flipped, r.worst))
+        assert any(w > 0.0 for r in fp8 for w in r.worst)
+        assert rows["market:fp8", "bermudan-receiver-cash"].product == "bermudan_swaption"
+        assert Measurements.from_json(m.to_json()).exercise == m.exercise
+        assert "### Exercise decisions flipped, 64 paths" in summary(m)
 
     def test_misuse_is_refused(self):
         with pytest.raises(ValueError, match="at least two"):

@@ -353,8 +353,11 @@ by default) where QuantLib's Brent stops at 1e-8.
 
 ## 7. American & Bermudan swaptions: numeric LGM backward induction
 
-**This engine:** `engine/instruments/bermudan_swaption.py` — `_lgm_bond`,
-`_hagan_quadrature_weights`, `_rollback_one_step`, `_run_backward_induction` — plus
+**This engine:** `engine/pricing/lgm_grid.py` — `_hagan_quadrature_weights`,
+`_rollback_operator` (the convolution as one matrix per step), `_basis` and `_Coefficients`
+(each cashflow's deflated value as a coefficient times a function of the state), `_induction`
+(the loop, on a level and on each path's deviation, 2026-10-13) — with the LGM's bond price in
+`engine/models/lgm.py`, plus
 `engine/instruments/american_swaption.py`, which supplies ORE's American option times and
 exercise style to this same engine; `engine/pricing/bermudan.py` calibrates each trade's
 basket and runs the engine today and on every path.
@@ -669,10 +672,10 @@ The cross-asset model's and each trade's calibration is `engine/calibration/ore_
 | European (default) | `valuation.european` | `BlackMultiLegOptionEngine` (Bachelier), `ParYieldCurve` cash settlement |
 | Jamshidian swaption decomposition | `valuation.jamshidian.jamshidian_npv`, `_solve_decreasing_root` | `QuantLib::JamshidianSwaptionEngine::calculate`, `rStarFinder` |
 | Bond option (Black-on-bond) | `hull_white.bond_call`/`bond_put` | `QuantLib::HullWhite::discountBondOption` |
-| American/Bermudan LGM bond price | `bermudan_swaption._lgm_bond` | `QuantExt::LinearGaussMarkovModel::discountBond` (`qle/models/lgm.hpp`) |
-| American/Bermudan backward induction, including ORE's cashflow bookkeeping | `bermudan_swaption._backward_induction_arrays`, `_GridSchedule` | `QuantExt::NumericLgmMultiLegOptionEngineBase::calculate`, `LgmConvolutionSolver2` — equal to ORE's own engine to 1e-10, reached in-process via `OREApp`, see [7b](#7b-ores-own-lgm-engine-reached-in-process-2026-09-23) |
+| American/Bermudan LGM bond price | `models.lgm.bond_price`; deflated, `pricing.lgm_grid._basis` | `QuantExt::LinearGaussMarkovModel::discountBond` (`qle/models/lgm.hpp`) |
+| American/Bermudan backward induction, including ORE's cashflow bookkeeping | `pricing.lgm_grid._induction`, `_rollback_operator`, `_GridSchedule` (replayed as `_Induction`) | `QuantExt::NumericLgmMultiLegOptionEngineBase::calculate`, `LgmConvolutionSolver2` — equal to ORE's own engine to 1e-10, reached in-process via `OREApp`, see [7b](#7b-ores-own-lgm-engine-reached-in-process-2026-09-23) |
 | Coupon membership and proration by exercise style | `bermudan_swaption.ExerciseStyle`, `prepare_bermudan` | `NumericLgmMultiLegOptionEngineBase::buildCashflowInfo` (`belongsToUnderlyingMaxTime_`, `couponRatio`) |
-| Ibor projection in the LGM | `bermudan_swaption._cashflow_values_at_nodes` | `QuantExt::LgmVectorised::fixing` (index fixing period) |
+| Ibor projection in the LGM | `pricing.lgm_grid._Coefficients`, `_basis` | `QuantExt::LgmVectorised::fixing` (index fixing period) |
 | American exercise-window discretization | `AmericanSwaptionConfig.option_times` | `NumericLgmMultiLegOptionEngineBase::calculate`'s American branch (truncating step count) |
 | Per-trade basket and bootstrap | `valuation.bermudan.calibration_basket`, `calibration.ore_lgm` | `IrModelBuilder::buildSwaptionBasket`, `LgmBuilder::calibrate` |
 | Exercise wrapper, and an option's position | `valuation.options.wrap`, `position_sign` | `OptionWrapper`, `BermudanOptionWrapper` (`isLong_`, `multiplier2_`) |

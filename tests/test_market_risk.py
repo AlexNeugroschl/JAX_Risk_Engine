@@ -230,18 +230,23 @@ class TestRevaluation:
         assert bachelier[0] != pytest.approx(jamshidian[0], rel=1e-3)
 
     def test_grid_pricers_get_a_memory_bounded_batch(self):
-        """A fine-grid Bermudan must not be vmapped hundreds of scenarios at a time: at
-        n_per_std=64 one scenario's rollback holds ~80 MB, and a batch of 256 thrashed a
-        32 GB machine."""
-        from engine.risk.market.revaluation import BATCH_MEMORY_BUDGET, scenario_batch_size
+        """A batch of scenarios holds the grid engine's columns on the state grid per scenario
+        (`engine.pricing.lgm_grid.working_bytes_per_path`), so a large batch of a fine grid is cut
+        to stay within the budget. At n_per_std=64 one scenario's rollback held ~80 MB when it
+        interpolated per scenario, and a batch of 256 thrashed a 32 GB machine; as matrix products
+        (2026-10-13) it holds about 0.1 MB, so the default batch of 256 is never cut."""
+        from engine.pricing.bermudan import prepared_option
+        from engine.pricing.lgm_grid import INDUCTION_MEMORY_BUDGET, working_bytes_per_path
+        from engine.risk.market.revaluation import scenario_batch_size
 
-        fine = PricingConfig(bermudan=dataclasses.replace(m.ENGINE, n_per_std=64, std_devs=6.0))
-        batch = scenario_batch_size(m.bermudan(), fine, 256, itemsize=8)
-        assert 1 <= batch < 16
-        nodes = 2 * int(64 * 6.0 + 0.5) + 1
-        assert batch * nodes * nodes * 8 <= BATCH_MEMORY_BUDGET
-        assert scenario_batch_size(m.swap(), fine, 256, itemsize=8) == 256
-        assert scenario_batch_size(m.bermudan(), m.PRICING, 64, itemsize=8) == 64
+        engine = dataclasses.replace(m.ENGINE, n_per_std=64, std_devs=6.0)
+        fine = PricingConfig(bermudan=engine)
+        per_scenario = working_bytes_per_path(prepared_option(m.bermudan(), engine, engine.volatility), 8)
+        assert per_scenario < 2 ** 20
+        batch = scenario_batch_size(m.bermudan(), fine, 10 ** 6, itemsize=8)
+        assert 1 <= batch < 10 ** 6 and batch * per_scenario <= INDUCTION_MEMORY_BUDGET
+        assert scenario_batch_size(m.bermudan(), fine, 256, itemsize=8) == 256
+        assert scenario_batch_size(m.swap(), fine, 10 ** 6, itemsize=8) == 10 ** 6
 
     @pytest.mark.parametrize("pricing", [m.PRICING, m.JAMSHIDIAN], ids=["bachelier", "jamshidian"])
     def test_the_european_price_function_keeps_float32(self, pricing):

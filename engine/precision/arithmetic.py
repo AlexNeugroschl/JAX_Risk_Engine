@@ -93,12 +93,6 @@ class Arithmetic:
         in."""
         return format_of(self.accumulate).dtype
 
-    @property
-    def plain(self) -> bool:
-        """Whether compute and accumulate are one format (float64 or float32): the arithmetic
-        of a kernel not yet split into products and accumulators computes in it throughout."""
-        return self.compute == self.accumulate
-
     def matmul(self, a, b, *, shared: str):
         """`a @ b` in this arithmetic, `shared` the operand every path shares, `"left"` or
         `"right"` (`engine.precision.products.matmul`; decision A-23)."""

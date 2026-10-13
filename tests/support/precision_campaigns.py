@@ -17,10 +17,18 @@ kernel it prices.
                  every format, rounding and block layout, float32 throughout, and each scaled
                  format with a paired sample (an eighth of the paths) for its coverage
     options      the shared portfolio's Bermudans and American on a coarse grid (8 points per
-                 standard deviation, 3 deviations); 256 paths, 8 seeds, since a path's
-                 rollback holds a [nodes, nodes] operator per step until the kernel rewrite
-                 (I-83). The formats that bound the others (float16, both FP8) to nearest in
-                 both layouts, and FP8 e4m3 stochastically
+                 standard deviation, 3 deviations); 1,024, 4,096 and 16,384 paths, 16 seeds,
+                 since the rollback's rewrite as matrix products in difference form
+                 (2026-10-13, I-83; 256 paths and 8 seeds before, when a path's rollback held
+                 a [nodes, nodes] operator per step). The formats that bound the others
+                 (float16, both FP8) to nearest in both layouts, and FP8 e4m3 stochastically;
+                 each option's flipped exercise decisions (`ExerciseRow`, decision A-24)
+    compute_options
+                 the `options` campaign's portfolio with the pricing stage, the rollback,
+                 computed in each compute format, accumulated and stored in float32, and every
+                 stage computed in each format at once (`Precision.throughout`); each format's
+                 shared operands in two terms and in its single pass (A-23); 1,024, 4,096 and
+                 16,384 paths, 16 seeds
     market_risk  market risk on the market-risk tests' sloped two-curve market
                  (tests/market_risk_support.py): offsetting payer and receiver swaps, a European,
                  a Bermudan (on the coarse grid) and a bond, 10-day Monte Carlo shifts of every
@@ -37,9 +45,8 @@ kernel it prices.
                  decision A-23); 1,024, 4,096 and 16,384 paths, 16 seeds
     compute_market_risk
                  the `market_risk` campaign's revaluation with each trade's products in each
-                 compute format, accumulated and stored in float32; its trades but the Bermudan,
-                 whose rollback is not in difference form yet (F-07); 2,048 and 8,192
-                 scenarios, 16 seeds
+                 compute format, accumulated and stored in float32, the Bermudan's since the
+                 rollback's rewrite (2026-10-13); 2,048 and 8,192 scenarios, 16 seeds
 """
 import argparse
 import dataclasses
@@ -103,14 +110,26 @@ def options() -> PortfolioCampaign:
                     "calibrated once on the simulation market of the as-of date and kept on every path date, as "
                     "ORE's exposure simulation keeps it (I-49, 2026-10-12), on a coarse grid (8 points per standard "
                     "deviation, 3 deviations); the market and simulation of the `linear` campaign, at ORE's default "
-                    "ShiftHorizon (I-32). 256 paths: a path's rollback holds a [nodes, nodes] operator per step "
-                    "until the kernel rewrite (I-83).",
+                    "ShiftHorizon (I-32). The rollback as matrix products in difference form (2026-10-13, I-83). "
+                    "Each case stores one stage in one format (computed in float64).",
         market_name=SHARED_MARKET, market=shared.market(),
         trades=_shared("bermudan-payer-physical", "bermudan-receiver-cash", "american-payer"),
         simulation=SIMULATION, pricing=PricingConfig(bermudan=COARSE_GRID, american=COARSE_GRID),
         cases=(storage_cases(formats=("float16", "float8_e4m3fn", "float8_e5m2"), roundings=("nearest",))
                + storage_cases(formats=("float8_e4m3fn",), roundings=("stochastic",), offsets=("block",))),
-        paths=(256,), seeds=tuple(range(1, 9)))
+        paths=(1024, 4096, 16384), seeds=tuple(range(1, 17)))
+
+
+def compute_options() -> PortfolioCampaign:
+    return dataclasses.replace(
+        options(), name="compute_options",
+        description="The `options` campaign's portfolio, market and simulation, computed below float32: each case "
+                    "runs the pricing stage's matrix products (the rollback's operator, the cashflows' functions "
+                    "on the grid, F-07, 2026-10-13) in one compute format, accumulated and stored in float32, every "
+                    "other stage float64 (the `float32` case is the accumulator's floor), or every stage in the "
+                    "format (`throughout`). A format below float32 carries the operand every path shares in two "
+                    "terms; `<format>_1x` is its single pass (A-23).",
+        cases=compute_cases(stages=("pricing",)) + tuple(throughout_case(name) for name in COMPUTE))
 
 
 def compute() -> PortfolioCampaign:
@@ -134,11 +153,9 @@ def compute_market_risk() -> MarketRiskCampaign:
     return dataclasses.replace(
         market_risk(), name="compute_market_risk",
         description="The `market_risk` campaign's revaluation, each trade's matrix products in one compute format, "
-                    "accumulated and stored in float32 (the `float32` case is the accumulator's floor); its trades "
-                    "but the Bermudan, whose rollback is not in difference form yet (F-07). A "
-                    "format below float32 carries the operand every path shares in two terms; `<format>_1x` is its "
-                    "single pass (A-23).",
-        trades=tuple(t for t in _market_risk_trades() if t.product != "bermudan_swaption"),
+                    "accumulated and stored in float32 (the `float32` case is the accumulator's floor), the "
+                    "Bermudan's induction in difference form (2026-10-13). A format below float32 carries the "
+                    "operand every path shares in two terms; `<format>_1x` is its single pass (A-23).",
         cases=compute_cases(stages=("pricing",)))
 
 
@@ -157,7 +174,7 @@ def market_risk() -> MarketRiskCampaign:
 
 
 CAMPAIGNS = {"linear": linear, "options": options, "market_risk": market_risk, "compute": compute,
-             "compute_market_risk": compute_market_risk}
+             "compute_market_risk": compute_market_risk, "compute_options": compute_options}
 
 
 def main(argv=None) -> int:

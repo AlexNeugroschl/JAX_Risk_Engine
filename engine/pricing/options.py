@@ -27,7 +27,7 @@ value is formed, as ORE's wrapper applies it: `wrap` on the paths, and today
 (`engine.risk.greeks.price_functions`).
 """
 from functools import partial
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -60,27 +60,34 @@ def underlying_start(accrual_starts: Sequence[ORE.Date], exercise_date: ORE.Date
 
 
 def wrap(option: jax.Array, underlyings: Sequence[jax.Array], steps: Sequence[Optional[int]],
-         physical: bool, sign: float) -> jax.Array:
-    """`[S, D]` NPV of the wrapped option from the long option's own cube `option` and each
-    exercise's underlying cube (`underlyings[i]` for contract date i), as `OptionWrapper::NPV`
-    walks the grid: the holder's exercise, the position's `sign` (`position_sign`) on the
-    value. The sign is data, so a long and a short option share one program."""
+         physical: bool, sign: float) -> Tuple[jax.Array, jax.Array]:
+    """`(value, exercised)`: the `[S, D]` NPV of the wrapped option from the long option's own
+    cube `option` and each exercise's underlying cube (`underlyings[i]` for contract date i), as
+    `OptionWrapper::NPV` walks the grid: the holder's exercise, the position's `sign`
+    (`position_sign`) on the value; and the wrapper's state on each path and date, `[S, D]` bool,
+    whether the holder has exercised on or before the date (ORE's `exercised_`): its exercise
+    decisions, which a precision policy can flip (a cash-settled option's flipped exercise moves
+    it by its whole value; the precision harness measures the share each format flips, decision
+    A-24). The sign is data, so a long and a short option share one program."""
     return _wrap(option, tuple(underlyings), tuple(steps), physical, jnp.asarray(sign, dtype=option.dtype))
 
 
 @partial(jax.jit, static_argnums=(2, 3))
-def _wrap(option: jax.Array, underlyings, steps, physical: bool, sign: jax.Array) -> jax.Array:
+def _wrap(option: jax.Array, underlyings, steps, physical: bool, sign: jax.Array):
     num_dates = option.shape[1]
     after = jnp.arange(num_dates)
     value = option
     exercised = jnp.zeros(option.shape[0], dtype=bool)
+    state = jnp.zeros(option.shape, dtype=bool)
     seen = set()
     for underlying, step in zip(underlyings, steps):
         if step is None or step in seen:
             continue
         seen.add(step)
         exercise = ~exercised & (underlying[:, step] - option[:, step] > 0.0)
+        from_now = exercise[:, None] & (after[None, :] >= step)
         settled = underlying if physical else jnp.zeros_like(underlying)
-        value = jnp.where(exercise[:, None] & (after[None, :] >= step), settled, value)
+        value = jnp.where(from_now, settled, value)
+        state = state | from_now
         exercised = exercised | exercise
-    return sign * value
+    return sign * value, state

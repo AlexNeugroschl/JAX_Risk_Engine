@@ -406,8 +406,8 @@ the CPU the repeat is unchanged at 256 paths and 3–4 s faster at 4,096: there 
 grid rollback on the paths (at 4,096 paths the options' path cubes take 31–36 s, their
 recalibration 0.07–0.09 s of it), whose memory also stops the job at 65,536
 paths on the CPU (a 277 GB allocation, the old code's too) and at 1,024 on the 8 GB GPU (6 GB),
-so the 64k and 256k job baseline cannot be taken until the kernel rewrite (F-07) gives the rollback its
-matrix form ([I-83](../planning/known-issues.md#i-83)). A cold job is 3 s (8%) slower on the CPU
+so the 64k and 256k job baseline could not be taken until the kernel rewrite (F-07) gave the rollback its
+matrix form ([I-83](../planning/known-issues.md#i-83), 2026-10-13: below). A cold job is 3 s (8%) slower on the CPU
 and 1–3 s on the GPU: each bootstrap bucket's program now holds Newton's derivative of the
 helper's price and the nested y\* solve in several places (the bracket's ends, the step, the
 model value), 5.4 s of compile for the job's ten bucket programs against 3.3 s. Evaluating a
@@ -428,6 +428,40 @@ before one Greeks call and 1.98–2.25 s after, with the old and the new code al
 ([I-53](../planning/known-issues.md#i-53)). The options' bump Greeks (each bump recalibrates)
 take 0.58–0.67 s warm on the CPU, as before (0.61–0.75 s): their cost there is the grid, not the
 calibration.
+
+#### After the rollback's matrix form (2026-10-13)
+
+The Bermudan/American rollback became one `[nodes, nodes]` operator per step shared by every path,
+the cashflows one product of each path's coefficients with functions of the state, in
+difference form ([I-83](../planning/known-issues.md#i-83), F-07); each date of a cube is one
+program, its paths in blocks within a 1 GiB budget. **The demo's job** (its request in one
+process, AD Greeks included; run 1 compiles, run 2 repeats; the peak is the process's working
+set on the CPU, the device's on the GPU; the old code a worktree of `6e85d09`, the run before;
+measured one after the other, the ratios far beyond the machine's drift):
+
+| | Paths | Run 1 (cold) | Run 2 | Peak |
+|---|---:|---:|---:|---:|
+| CPU, old | 256 | 32.0 s | 1.01 s | 2.45 GB |
+| CPU, old | 4,096 | 43.9 s | 13.2 s | 13.9 GB |
+| CPU, old | 65,536 | out of memory (a 277 GB allocation) | | |
+| CPU, new | 256 | 16.2 s | 0.23 s | 1.21 GB |
+| CPU, new | 4,096 | 16.3 s | 0.26 s | 1.33 GB |
+| CPU, new | 65,536 | 16.7 s | 0.93 s | 1.77 GB |
+| CPU, new | 262,144 | 18.2 s | 2.98 s | 2.00 GB |
+| GPU, new | 4,096 | 35.0 s | 1.66 s | 0.13 GB |
+| GPU, new | 65,536 | 39.3 s | 2.15 s | 0.58 GB |
+| GPU, new | 262,144 | 36.3 s | 2.37 s | 0.87 GB |
+| GPU, new, float32 throughout | 262,144 | 34.7 s | 1.92 s | 0.69 GB |
+
+The old code failed at 1,024 paths on the 8 GB GPU (a 6 GB allocation). Every new run's EPE
+equals the old code's on the same paths where both run (to the last digit at 256 and 4,096 on
+the CPU). In one block, before the budget, the CPU's 262,144 paths took 3.70 s and 9.5 GB, about
+31 KB per path, most of it the American's induction, and the GPU's ran out of memory there
+(65,536 in one block: 1.60 s and 2.1 GB on the GPU, where two blocks cost a third more: the
+budget's choice per device is with I-105). The cold run is now mostly the compile of the
+options' programs and the Greeks; the repeat is the pricing at scale. Market risk's Bermudan
+revaluation went from 5.6 ms to 0.035 ms per scenario at 16 points per standard deviation, and
+from 75 ms to 0.18 ms at 64 (CPU, 256 scenarios, warm).
 
 ### 2.1 and 2.2: the 4-trade pipeline before 2026-10-01 (history)
 
@@ -780,7 +814,7 @@ that shape.
 |---|---|
 | `Legs`, `PathSchedule` | `legs_npv`, `_legs_cube`, `_path_fixings` |
 | `EuropeanTerms` (expiry as a serial date) | `black_multileg_npv`, `_european_cube`, `_jamshidian_cube` |
-| `_PreparedBermudan`, `_GridSchedule` | `_backward_induction_arrays`, `_rollback_every_path` |
+| `_PreparedBermudan`, `_Induction` (and the paths' `Deviations`) | `_induction` (today and every path of a date, since 2026-10-13; every date of a cube padded to one shape) |
 | `BasketInstrument` | `_bootstrap` (I-22), the Vega Jacobian's `_residual_gradient` |
 | `CalibrationTarget` | the legacy `calibrate_lgm_sigma`'s prices and bisection |
 | `TradePriceFunction.terms` (`_LegsTerms`, `BachelierTerms`, `EuropeanTerms`, `OptionTerms`), the pricer static (since 2.4, §3.8) | the AD Greeks' `_curve_derivatives`, `_option_vega` (a European's and a Bermudan's/American's since 2026-10-11, I-101: an option's pricer is `OnPosition` of its engine's, its terms `Positioned`, the position's sign as data) |

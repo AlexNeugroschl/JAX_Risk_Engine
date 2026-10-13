@@ -289,6 +289,15 @@ def markdown(measurements: Sequence[Measurements], rows: Mapping[str, Sequence[E
               "| Campaign | Case | Scope | Figures (ceiling) |", "|---|---|---|---|"]
     for m in measurements:
         lines += _validated(rows[m.campaign], unit[m.kind])
+    lines += ["", "## Exercise decisions flipped", "",
+              "Per case of a campaign with options, the largest share of an option's paths whose exercise state on a "
+              "date (exercised on or before it) differs from float64's on the same paths: its mean over the seeds, "
+              "the option and date where it is largest, and the largest at any seed (`ExerciseRow`). A cash-settled "
+              "option's flipped exercise moves it by its whole value, a precision result rather than a rounding "
+              "(decision A-24); a case that flips none is not listed.", "",
+              "| Campaign | Case | Paths | Flipped, largest mean | Option | At any seed |", "|---|---|---|---|---|---|"]
+    for m in measurements:
+        lines += _flipped(m)
     lines += ["", "## P&L attribution (MAR32.42)", "",
               "Each market-risk case's P&L against the float64 P&L on the same scenarios, over the seeds: the smallest "
               "Spearman correlation and the largest Kolmogorov-Smirnov statistic, and whether every seed is in the "
@@ -333,6 +342,20 @@ def _validated(rows: Sequence[EvidenceRow], unit: str) -> List[str]:
                 text = "; ".join(f"{', '.join(figures)} ({ceiling:,} {unit})"
                                  for ceiling, figures in sorted(by_ceiling.items(), reverse=True))
                 lines.append(f"| `{rows[0].campaign}` | {case} | {scope} | {text} |")
+    return lines
+
+
+def _flipped(m: Measurements) -> List[str]:
+    """Per case and path count that flips any exercise decision, its largest share (see
+    `markdown`)."""
+    lines = []
+    for case in m.cases:
+        for paths in m.paths:
+            rows = [r for r in m.exercise if r.case == case and r.paths == paths]
+            if rows and max(max(r.worst) for r in rows) > 0:
+                top = max(rows, key=lambda r: max(r.flipped))
+                lines.append(f"| `{m.campaign}` | {case} | {paths:,} | {max(top.flipped):.2%} | {top.trade} | "
+                             f"{max(max(r.worst) for r in rows):.2%} |")
     return lines
 
 

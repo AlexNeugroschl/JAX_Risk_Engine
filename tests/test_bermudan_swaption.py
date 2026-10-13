@@ -19,7 +19,7 @@ import numpy as np
 import ORE
 import pytest
 
-from bermudan_references import single_exercise_value_by_integration
+from bermudan_references import cashflow_values_at_nodes, single_exercise_value_by_integration
 from date_helpers import in_years
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, exercisable_dates
 from engine.instruments.european_swaption import SwaptionConfig
@@ -422,10 +422,8 @@ class TestDegenerateSingleExerciseCases:
         cfg = _make_bermudan(fixed_rate=0.001, payer=True, exercise_dates=_in_years([3.0]))
         npv = _npv(cfg)
         swap = _prepared(cfg)
-        from engine.pricing.lgm_grid import _cashflow_values_at_nodes, _zero_curve_of
-        curve = _zero_curve_of(swap)
         t = float(swap.exercise_times[0])
-        values = np.asarray(_cashflow_values_at_nodes(swap, curve, jnp.array([0.0]), jnp.array(t), 0.0)[0])  # unshifted
+        values = np.asarray(cashflow_values_at_nodes(swap, jnp.array([0.0]), jnp.array(t), 0.0)[0])  # unshifted
         belongs = np.concatenate([swap.fixed_belongs_until, swap.float_belongs_until]) >= t
         intrinsic_at_exercise = float(np.sum(values[belongs]))
         discounted_intrinsic = intrinsic_at_exercise * np.exp(-0.03 * t)

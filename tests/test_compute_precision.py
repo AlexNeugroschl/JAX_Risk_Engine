@@ -15,11 +15,12 @@ the policy's product formats (A-22).
     below float32 its error is relative to the paths' deviation from the level, not to the level
     (the near cancellation of a swap's legs, a long log discount factor, a log equity spot stays
     in the level): the simulation scan and the bridge, the scenario market, the legs and their
-    path fixings, the Bachelier and Jamshidian Europeans, market risk's P&L.
+    path fixings, the Bachelier and Jamshidian Europeans, market risk's P&L, the Bermudan's
+    included (the grid engine's own tests are tests/test_rollback_difference_form.py).
   * The pipeline: every compute format runs end to end under strict dtype promotion, the report
-    names each format's execution, a second run compiles nothing, a Bermudan/American below
-    float32 is refused naming its item, and a scenario that moves nothing has exactly zero P&L at
-    every compute format.
+    names each format's execution, a second run compiles nothing, Bermudans and Americans compute
+    in any format (refused below float32 until 2026-10-13), and a scenario that moves nothing has
+    exactly zero P&L at every compute format.
 """
 import dataclasses
 import types
@@ -294,7 +295,7 @@ class TestProducts:
 
 class TestArithmetic:
     def test_the_default_is_float64_and_hashable(self):
-        assert Arithmetic() == FLOAT64 == Arithmetic.of(jnp.float64) and FLOAT64.plain
+        assert Arithmetic() == FLOAT64 == Arithmetic.of(jnp.float64) == Arithmetic("float64", "float64")
         assert hash(Arithmetic("bfloat16", "float32")) == hash(Arithmetic("bfloat16", "float32"))
         assert Arithmetic.of(jnp.float32) == Arithmetic("float32", "float32")
 
@@ -642,14 +643,23 @@ class TestPipeline:
             price_portfolio(request)
         assert sum(compiled.values()) == 0, dict(compiled)
 
-    @pytest.mark.parametrize("product", ["bermudan_swaption", "american_swaption"])
-    def test_a_bermudan_or_american_below_float32_is_refused_naming_the_item(self, product):
-        name = {"bermudan_swaption": "bermudan-payer-physical", "american_swaption": "american-payer"}[product]
-        with pytest.raises(ValueError, match=rf"the {product} kernel .* not in difference form yet \(F-07\)"):
-            price_portfolio(_request(names=(name,), precision=Precision(pricing=_stage("bfloat16"))))
-        with pytest.raises(ValueError, match="computes and accumulates in one format"):
-            price_portfolio(_request(names=(name,), precision=Precision(pricing=StagePrecision("float32", "float32",
-                                                                                             "float64"))))
+    @pytest.mark.parametrize("name", ["bermudan-payer-physical", "american-payer"])
+    def test_a_bermudan_or_american_computes_in_any_format(self, name):
+        """Refused below float32, and with float32 products accumulating in float64, until the
+        rollback was rewritten in difference form (2026-10-13): now any compute format, under
+        strict dtype promotion, the report naming it; float32 products accumulated in float64
+        within float32's rounding of float64's values."""
+        grid = LgmSwaptionEngineConfig(n_per_std=8, std_devs=3.0)
+        exact = np.asarray(price_portfolio(_request(names=(name,), bermudan=grid, american=grid)).npv_cube)
+        with jax.numpy_dtype_promotion("strict"):
+            low = price_portfolio(_request(names=(name,), precision=Precision(pricing=_stage("bfloat16")),
+                                           bermudan=grid, american=grid))
+        assert np.all(np.isfinite(np.asarray(low.npv_cube)))
+        assert set(low.precision.products) == {"bfloat16", "float64"}
+        wide = price_portfolio(_request(names=(name,), precision=Precision(pricing=StagePrecision("float32", "float32",
+                                                                                                "float64")),
+                                        bermudan=grid, american=grid))
+        np.testing.assert_allclose(np.asarray(wide.npv_cube), exact, rtol=0, atol=1e-6 * np.max(np.abs(exact)))
 
     def test_a_bermudan_kept_wide_beside_low_precision_trades(self):
         policy = Precision(pricing=_stage("float8_e4m3fn"),
@@ -675,7 +685,7 @@ class TestPipeline:
 # ---------------------------------------------------------------------------
 # Market risk
 # ---------------------------------------------------------------------------
-MR_TRADES = (mr.swap, mr.european, mr.bond)
+MR_TRADES = (mr.swap, mr.european, mr.bermudan, mr.bond)
 
 
 class TestMarketRisk:
@@ -712,7 +722,8 @@ class TestMarketRisk:
     @pytest.mark.parametrize("name", BELOW)
     def test_below_float32_the_pnl_is_near_float64s(self, name):
         """Within a few of the format's unit roundoffs of each trade's largest P&L (measured
-        2026-10-10: at most 1.5): the P&L is the deviation itself, no level in sight."""
+        2026-10-10: at most 1.5; the Bermudan's, rounded at every step of its induction, 3.4 on
+        2026-10-13): the P&L is the deviation itself, no level in sight."""
         trades = [make() for make in MR_TRADES]
         scenarios = monte_carlo_scenarios(mr.factors(), mr.covariance(), 10, 256, seed=5)
         exact = run_market_risk(MarketRiskRequest(trades, mr.market(), scenarios, mr.PRICING))
@@ -722,8 +733,3 @@ class TestMarketRisk:
         assert np.all(np.abs(pnl - reference) <= 4 * EPS[name] * np.max(np.abs(reference), axis=0))
         assert low.precision.products == {name: product_execution(name)}
 
-    def test_a_bermudan_below_float32_is_refused(self):
-        scenarios = monte_carlo_scenarios(mr.factors(), mr.covariance(), 10, 8, seed=5)
-        with pytest.raises(ValueError, match=r"not in difference form yet \(F-07\)"):
-            run_market_risk(MarketRiskRequest([mr.bermudan()], mr.market(), scenarios, mr.PRICING,
-                                              precision=Precision(pricing=_stage("bfloat16"))))

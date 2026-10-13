@@ -66,7 +66,7 @@ def price_on_market(request) -> "PortfolioResult":
     trades = list(request.trades)
     base = run.reporting_currency
     greeks = None
-    exposure, trade_exposures = None, []
+    exposure, trade_exposures, exercised = None, [], {}
     if request.scenario_risk:
         simulation = run.simulation
         with phase("calibration"):
@@ -81,7 +81,7 @@ def price_on_market(request) -> "PortfolioResult":
         if paired:
             with phase("paired_sample"):
                 sample = _paired_sample(trades, market, model, run, paired)
-        today, cube = valuation.today, load(valuation.cube, jnp.float64)
+        today, cube, exercised = valuation.today, load(valuation.cube, jnp.float64), valuation.exercised
         with phase("exposure"):
             start = value_today(trades, market, base, run.pricing,
                                 simulation_market_today(market, simulation.curve_tenors))
@@ -110,7 +110,7 @@ def price_on_market(request) -> "PortfolioResult":
         base_npv=float(np.sum(today)), npv_cube=cube, exposure=exposure, trade_exposures=trade_exposures,
         greeks=greeks, warnings=warnings, base_npv_per_trade=list(today),
         scenario_risk_available=request.scenario_risk, measure=ENGINE_RISK_MEASURE if request.scenario_risk else None,
-        precision=report,
+        precision=report, exercised=exercised,
     )
 
 

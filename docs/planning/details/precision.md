@@ -10,8 +10,9 @@ D-9 ([compliance/decisions.md](../../../compliance/decisions.md)). It replaces
 **Written:** 2026-10-01 · **Items:** [F-07](../features.md#f-07), [I-55](../known-issues.md#i-55),
 [I-61](../known-issues.md#i-61), in the [roadmap's focus](../roadmap.md#stage-3--the-focus); stage 1
 (done) built the mechanism, the storage harness (2026-10-09) closed
-[I-75](../known-issues.md#i-75), and the kernel rewrite (2026-10-10) enabled compute below
-float32 for every path kernel but the Bermudan/American rollback ([§8](#8-compute-below-float32))
+[I-75](../known-issues.md#i-75), and the kernel rewrite enabled compute below float32 for every
+path kernel ([§8](#8-compute-below-float32)): 2026-10-10, and the Bermudan/American rollback on
+2026-10-13
 
 ---
 
@@ -257,9 +258,6 @@ Checked before any work, by `engine/precision/policy.py`, each refusal naming it
   in itself);
 - a compute format the table marks pending is refused naming its item (none since the kernel
   rewrite, 2026-10-10; FP4 will be until F-07's FP4 part);
-- a Bermudan's or American's pricing stage computes and accumulates in one format, float32 or
-  float64, until its rollback is rewritten (`engine.pricing.cube.RESTRICTED_PRODUCTS`, F-07;
-  checked by `validate_trades`, so in portfolio and market-risk runs alike);
 - every `by_trade` key is a trade in the request, every `by_product` key a product;
 - `rounding` is `nearest` or `stochastic`, and `stochastic` only when some stage or override
   stores in a scaled format (otherwise it would be accepted and ignored); `rounding_seed` is a
@@ -487,7 +485,8 @@ float64 compute rounded it to float32; since sub-32-bit storage it stays at `mar
 that one combination's numbers at float32 rounding level (no default and no snapshot run). Since
 the kernel rewrite (2026-10-10) the grid and the curves' levels (`ScenarioCurves.level`) are
 float64 in every run, as every level is (§8.2); the precision policy neither stores nor loads
-them, and a kernel reading a curve in one format (the Bermudan's) casts the times to it.
+them, and a kernel reads a path's deviation from a curve's level at the deviation's format
+(`log_discount_deviation`, which casts the times to it).
 
 The first three live in `simulate`, the orchestrator of the simulation and market stages;
 the kernels it calls (`generate_sobol_normals`, `apply_brownian_bridge`, `evolve_states`,
@@ -602,8 +601,10 @@ product), the Bermudan rollback's bookkeeping (4) and the calibration's spread c
 (`_corrections`, 2). The kernel rewrite (2026-10-10) made the simulation step one product and
 added the scenario market's (1), the legs' flow sums (one per block of columns: the fixed flows,
 the coupons, the coupons' basis points when asked for) and the Jamshidian engine's option sum
-(1) (§8.2). NumPy products on the host are exact in their dtype and
-are left alone.
+(1) (§8.2). The rollback's rewrite (2026-10-13) replaced the four with the induction's own per
+step (§8.2): the rollback by its operator and the cashflows' values by their functions on the
+grid, each on the level (float64) and on the paths' deviations (the stage's arithmetic). NumPy
+products on the host are exact in their dtype and are left alone.
 JAX's process-wide `jax_default_matmul_precision`, which the GPU run set on import, is neither set
 nor read: anyone could override it, and the report would then be false.
 `tests/test_accelerator_defaults.py::TestEveryMatrixProductStatesItsPrecision` records every
@@ -647,13 +648,12 @@ What is known (measured 2026-10-01, [§15](#15-measurements)):
 
 ## 8. Compute below float32
 
-Built by the kernel rewrite (F-07, 2026-10-10) for every path kernel but the Bermudan/American
-rollback, whose model is ORE's on the paths since
-2026-10-12 (`ShiftHorizon`, I-32; the calibration kept as ORE built the trade, I-49), so that no
-kernel is rewritten twice; its rewrite is next (I-83). Until then a Bermudan's or
-American's pricing stage computes and accumulates in one format, float32 or float64, refused
-otherwise by name (`engine.pricing.cube.RESTRICTED_PRODUCTS`); overriding it by product keeps it
-wide inside a low-precision run.
+Built by the kernel rewrite (F-07) for every path kernel: on 2026-10-10 for all but the
+Bermudan/American rollback, and on 2026-10-13 for the rollback, once its model was ORE's on the
+paths (2026-10-12: `ShiftHorizon`, I-32; the calibration kept as ORE built the trade, I-49), so
+that no kernel was rewritten twice. Until then a Bermudan's or American's pricing stage computed
+and accumulated in one format, float32 or float64, and was refused otherwise by name; since,
+every product's pricing stage takes any compute format.
 
 ### 8.1 What blocks it
 
@@ -731,9 +731,37 @@ As built (2026-10-10), family by family:
 - **Market risk** (`engine.risk.market.revaluation`): a scenario's P&L is the deviation of a
   trade's value under its shift of the pillar rates (a zero curve's log discount factor is linear
   in its rates too), so the legs' P&L is the product alone and a scenario that moves nothing has
-  exactly zero P&L by construction; an option's P&L is its formula on the shifted values less on
+  exactly zero P&L by construction; a European's P&L is its formula on the shifted values less on
   the level, and exactly 0 where nothing moved, not left to two evaluations of one value agreeing
-  (XLA may round them apart). Bermudans and Americans are revalued in full, in one format.
+  (XLA may round them apart). A Bermudan's or American's is the induction's deviation (below),
+  exactly 0 where nothing moved, every deviation then being 0 (revalued in full, in one format,
+  until 2026-10-13).
+- **The Bermudan/American induction** (`engine.pricing.lgm_grid`, 2026-10-13, I-83): ORE's grid
+  engine in the numeraire's units, where neither the state grid nor the rollback depends on the
+  curves. Each step's rollback is one `[nodes, nodes]` operator (`_rollback_operator`, ORE's
+  interpolated Gaussian convolution as a matrix, built by a scatter of its weights), shared by
+  every path and every column (the option, the underlying, the coupons cached in progress), one
+  product `[S, columns, nodes] x [nodes, nodes]`. A cashflow's deflated value at a node is a
+  coefficient that depends on the path (its discount factor at the payment, `P(0, T)`; an Ibor
+  coupon's also its forecast's ratio `P_idx(0, T1) / P_idx(0, T2)`) times a function of the state
+  that is the model's alone (ORE's `reducedDiscountBond`, `exp(-H_T^2 zeta/2 - H_T x)`; an Ibor
+  coupon two such functions, `_basis`), so a row's cashflow actions (ORE's bookkeeping, replayed
+  on the host as weights, `_Induction`) are one product of the paths' coefficients `[S, J]` with
+  the functions weighted into the row's targets `[J, targets x nodes]`. The induction runs on the
+  level curves (no path axis, float64 on the paths) and, given each path's `Deviations`, on each
+  path's deviation, the rollback and the bookkeeping, being linear, on the deviations alone. The
+  coefficients' deviations are the legs' (`e = expm1(dL)` at a payment; a coupon's `(F0 + m) e +
+  dF (1 + e)` at its known rate's deviation; a forecast's `expm1(dL_pay + dL_idx(T1) -
+  dL_idx(T2))`). At an exercise, with `c` the level's exercise value less its continuation, a
+  path's deviation is `max(d_option - max(c, 0), d_exercise + min(c, 0))`, exactly the path's max
+  less the level's, the level entering in two terms of the accumulate format. A coupon cached in
+  progress (an American's broken period) takes a column only while it is cached, a column reused
+  once it has moved (`_cache_slots`: a Bermudan caches none, an American one or two per leg);
+  rows that roll nothing back skip their products (`lax.cond`), so a cube's dates, padded to the
+  trade's largest shape (`one_shape`), share one program. At float64 each path's value is the
+  induction on its own curves to rounding (a test holds it to 1e-12; ORE's engine to 1e-11 as
+  before), and float32 is 2 to 6 times closer to float64 than when the rollback ran in float32
+  throughout, 5 to 20 times less biased (the level is float64).
 - **Exposure** (`engine.risk.counterparty.exposure`) is a reduction over paths, float64 by
   decision (A-10): its inputs, the cube columns and the numeraire, are loaded at float64. It was
   already in its final form.
@@ -753,10 +781,10 @@ it once is a format of its own (§6.1, §15.5).
 - So the wall-clock half of the research question depends on expressing the heavy kernels as
   matrix products where they can be: leg pricing (amounts per flow × discount factors per
   path and flow), the Bermudan rollback (a fixed Gaussian kernel matrix × values), the
-  correlation mixing (already a product, but small). The kernel rewrite (2026-10-10) wrote the
-  simulation, the scenario market, the legs and the Europeans this way (§8.2), in the same
-  rewrite as the difference form, so no kernel is rewritten twice; the rollback's comes with
-  its rewrite, and the research result (F-07) times them.
+  correlation mixing (already a product, but small). The kernel rewrite wrote the simulation,
+  the scenario market, the legs and the Europeans this way (2026-10-10) and the rollback
+  (2026-10-13, §8.2), each in the same rewrite as its difference form, so no kernel is rewritten
+  twice; the research result (F-07) times them.
 - **A product's precision is the policy's, not the device's.** XLA's default runs a float32
   matrix product in TensorFloat-32 on an NVIDIA GPU (a 10-bit mantissa) and in bfloat16
   passes on a TPU. Measured on the RTX 5060 (2026-10-06): a float32 simulation's cube was
@@ -831,14 +859,18 @@ it once is a format of its own (§6.1, §15.5).
   its execution (`PrecisionReport.products`). Measured on CPU (2026-10-10, 6 × 40 by 40 × 5
   operands spanning six decades, against references built with ml_dtypes): every format within
   its unit roundoff plus float32 accumulation (`tests/test_compute_precision.py::TestProducts`).
-- The rollback's matrix form also fixes its memory. Today each column (the option, the
-  underlying, each cached cashflow) is interpolated at `[nodes, quadrature nodes]` points,
-  vmapped over the columns, although the interpolation weights depend only on the grids:
-  measured 2026-10-05, one Bermudan on a 384-per-std, 10-std grid peaked at 11.5 GB (under
-  1 MB per column at ORE's default 30 and 5). One `[nodes, nodes]` operator per step, applied
-  to all columns at once, holds one such buffer and runs on the matrix units. Rolling the
-  columns back one at a time (`lax.map`) also cut the peak, to 5.6 GB, bit for bit, but trades
-  away the batched kernel on an accelerator, so it was not adopted.
+- The rollback's matrix form also fixed its memory (2026-10-13, I-83). Each column (the option,
+  the underlying, each cached cashflow) was interpolated at `[nodes, quadrature nodes]` points
+  per path and step, vmapped over the columns and the paths, although the interpolation weights
+  depend only on the grids: measured 2026-10-05, one Bermudan on a 384-per-std, 10-std grid
+  peaked at 11.5 GB (under 1 MB per column at ORE's default 30 and 5), and the demo's job asked
+  for 277 GB at 65,536 paths. One `[nodes, nodes]` operator per step, applied to every column of
+  every path at once, holds one such buffer, shared, and runs on the matrix units: a path holds
+  3 to 5 copies of its columns `[columns, nodes]` (XLA's memory analysis, `working_bytes_per_path`;
+  10 to 41 KB per path at float64 on the demo's and ORE's grids), each date's paths priced in
+  blocks within a budget (`path_blocks`, `blocked`: strided, so every device of the scenario
+  axis's split works on every block), and the demo's job runs at 262,144 paths on the CPU and on
+  an 8 GB GPU (§15.7).
 
 ## 9. Estimation and the precision report
 
@@ -1160,9 +1192,9 @@ Decisions taken while building it (2026-10-04):
 | **The precision report** (done 2026-10-02) | Paired sample, two-level estimator for means, `PrecisionReport` with realized dtypes and device (closes I-12) | §13.6; bit for bit at the default. Met: §13.1, §13.6 | M |
 | **The engine worker** (done 2026-10-04) | Engine worker process and the SQLite queue (A-14); delete `worker_pool.py`'s pool and freeze/thaw | §13.8, including the Linux run; float64 job time and compile count no worse. Met: §13.8, §13.9 | M |
 | **The storage harness** (I-75, done 2026-10-09) | Storage relative to a level for classes whose level swamps their spread (block offsets, §6.2); a measurement harness for storage formats per class and product, at several path counts, fixed seeds, rerunnable on any kernel change (§15.4) | Harness covers every figure × class × format; thresholds fixed before measuring; I-75's FP8 bond column unbiased within its Monte Carlo standard error. Met: §15.4 | M |
-| **The kernel rewrite** (F-07; the first families done 2026-10-10) | Difference-form kernels (§8.2), one family at a time (those the recalibration fix did not change first, the Bermudan/American rollback after it; `ShiftHorizon` and the recalibration fix done 2026-10-12), as matrix products where a family can be one (§8.3); compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the snapshot within the margin (§2.1); emulated FP8/bfloat16 compute measured by the harness. Met for the simulation, the scenario market, the legs, the Europeans and market risk (§13.1, §15.5); the rollback next (I-83; its model is ORE's since 2026-10-12, I-32 and I-49) | L |
+| **The kernel rewrite** (F-07; done: the first families 2026-10-10, the rollback 2026-10-13) | Difference-form kernels (§8.2), one family at a time (those the recalibration fix did not change first, the Bermudan/American rollback after it; `ShiftHorizon` and the recalibration fix done 2026-10-12), as matrix products where a family can be one (§8.3); compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the snapshot within the margin (§2.1); emulated FP8/bfloat16 compute measured by the harness. Met for the simulation, the scenario market, the legs, the Europeans and market risk (§13.1, §15.5), and for the rollback, its memory per path a few columns on the grid (I-83, §13.1, §15.7) | L |
 | **Multi-host** (I-61) | Shard the scenario axis in the worker (I-61): one host done 2026-10-04; several hosts next | Results equal the one-device run within reduction-order rounding (one host: met, `tests/test_sharding.py`); scaling measured on TPU | M |
-| **The evidence table** (I-55, done 2026-10-11) | The evidence table and the warnings (§10), from the storage harness on each kernel family as the kernel rewrite lands it (the Bermudan/American rows measured again after `ShiftHorizon`, I-32, and after the recalibration fix, I-49, both 2026-10-12, and again after the rollback's rewrite, F-07) | Table complete; a verdict and path ceiling per row; a warning on every result without a passing row. Met: §10.4, §15.6 | S |
+| **The evidence table** (I-55, done 2026-10-11) | The evidence table and the warnings (§10), from the storage harness on each kernel family as the kernel rewrite lands it (the Bermudan/American rows measured again after `ShiftHorizon`, I-32, and after the recalibration fix, I-49, both 2026-10-12, and after the rollback's rewrite, 2026-10-13, at the linear campaign's path counts, with their compute formats and each option's flipped exercise decisions, §15.7) | Table complete; a verdict and path ceiling per row; a warning on every result without a passing row. Met: §10.4, §15.6 | S |
 | **The research result** (F-07) | After multi-host and the evidence table. Timing across devices on Ironwood and H100: storage formats, then the kernel rewrite's matrix-product kernels with native FP8 | The research result: wall time per figure and precision against float64 at equal accuracy (the evidence table's path ceilings), many low-precision paths against fewer float64 ones | M |
 | **FP4** (F-07) | FP4 storage (variance correction through the block scales), FP4 compute on TPU 8t/8i, multilevel quantile estimation | Evidence rows for FP4 | L |
 
@@ -1378,6 +1410,16 @@ record of stages 1 and 2.
   2.2e-6, market risk 8.3e-6, the raw shocked revaluation 2.5e-6, the scenario market 3.6e-7
   (margin 1e-4); before the levels met the paths in two terms (§8.2) the float32 cube had moved
   5.1e-6. This snapshot is the reference for the Bermudan/American rollback's rewrite (§2.1).
+- **Result of the rollback's rewrite (2026-10-13).** The Bermudan/American induction as matrix
+  products in difference form (§8.2), on the paths and in market risk's P&L, compute below
+  float32 enabled for it. Every ORE parity suite passes at its tolerance (the full suite, the
+  verification status). The same script with `--greeks`, 359 arrays, from a worktree of
+  `6e85d09` against the new tree, on CPU: 188 identical, none beyond the margin. Largest change
+  relative to each array's scale: float64 1.2e-14 (the demo's Bermudan's exposure; the shared
+  portfolio's option cubes 8e-15), a Greek 2.2e-14 of its trade's NPV (bump Gamma, through each
+  bump's recalibration and the induction); float32 1.2e-6 (an American's EPE; market risk's
+  ES_99 standard error), the float32 option cubes now 2 to 6 times closer to float64 than the
+  code before, which ran the rollback in float32 throughout, and 5 to 20 times less biased.
 
 ### 13.2 Configuration
 
@@ -1454,6 +1496,15 @@ At float32 throughout, on the 3% → 5% curve: no NaN, no calibration at its cei
 within a stated float32 tolerance of float64. These tests are written red first against the
 constants of §6.5.
 
+Below 32 bits (slow, `tests/test_precision.py::test_scaled_storage_on_the_sloped_shared_market_is_sane`):
+every trade of the shared portfolio with one stage stored in each scaled format, its cube's
+largest error and its bias over 256 paths within bounds about four times those measured; since
+2026-10-13 on the cells whose exercise decision the format did not flip (decision A-24 (5): a
+cash-settled option's flipped exercise moves it by its whole value, which the harness measures as
+its own result), the flipped share of the options' cells at most 5%. Judged so, the bounds came
+down: bfloat16's simulation and market storage from 7e-2 to 2.3e-3 and 3.3e-3 of notional, which
+had held one cash Bermudan's flip (1.68e-2) where their rounding is 30 times smaller.
+
 ### 13.5a Compute below float32 (2026-10-10)
 
 `tests/test_compute_precision.py`, fast tier:
@@ -1492,10 +1543,22 @@ constants of §6.5.
   of the paths' spread (plus float32's rounding of the level) with every stage in the format,
   under strict promotion; market-risk P&L within four of each trade's largest.
 - **The pipeline**: the report names every compute format of a run and its execution; a
-  repeated run compiles nothing; a Bermudan or American below float32, or computing and
-  accumulating in two formats, is refused naming F-07, and kept wider by product beside a
-  low-precision run; the paired sample corrects an FP8 run to float64; a scenario that moves
-  nothing has exactly zero P&L at every compute format and both European engines.
+  repeated run compiles nothing; a Bermudan or American computes in any format (refused below
+  float32, and computing and accumulating in two formats, until 2026-10-13), and can be kept
+  wider by product beside a low-precision run; the paired sample corrects an FP8 run to float64;
+  a scenario that moves nothing has exactly zero P&L at every compute format, both European
+  engines and the Bermudan's; the Bermudan's P&L within four unit roundoffs of its largest, as
+  the legs'.
+- **The induction** (2026-10-13, `tests/test_rollback_difference_form.py`): the rollback's
+  operator is ORE's interpolated convolution (and interpolation alone without variance), to
+  1e-14; the cashflows' coefficients times their functions are the LGM's bond prices, every
+  kind of coupon (forecast, known, fixed today, before and after its index start), to 1e-12; a
+  Bermudan caches no coupon and an American a few columns; each scenario of shifted curves and
+  each path of a cube is the induction on its own curves and fixings to 1e-12; a padded trade
+  keeps its value and a cube compiles its induction once for every date, another trade of the
+  shape not at all; its memory per path within `working_bytes_per_path` and a twentieth of the
+  old operator per step; every compute format prices the options under strict promotion within
+  its bound (slow).
 
 ### 13.6 The estimator and the report
 
@@ -1584,8 +1647,8 @@ float32 by product, and prints the report's product executions.
 ## 14. Scope
 
 **In:** float64/float32 compute and storage; float16, bfloat16 and FP8 storage; compute below
-float32 (float16, bfloat16, FP8, TensorFloat-32, bfloat16 passes; since 2026-10-10 for every path
-kernel but the Bermudan/American rollback, whose rewrite is next); per-stage, per-product and per-trade precision; block scales and both
+float32 (float16, bfloat16, FP8, TensorFloat-32, bfloat16 passes; for every path kernel, since
+2026-10-10 and the Bermudan/American rollback since 2026-10-13); per-stage, per-product and per-trade precision; block scales and both
 roundings; the paired sample, the two-level estimator for means and the report; the evidence
 table and warnings; the worker process and queue; timing on Ironwood and H100.
 
@@ -1927,8 +1990,9 @@ on the engine's product shapes (the legs `[S, 40] x [40, 3]`, the market `[6, S,
 the bridge `[24, 24] x [24, S]`, and `[S, 256] x [256, 64]`) and 0.97 to 1.08 for a whole job
 (the `linear` trades, every stage in the format): no cost measurable. The engine's products are
 narrow on their shared side (3 to 64 columns), so dispatch and memory traffic, not the doubled
-arithmetic, decide their time; a compute-bound product (the rollback's, F-07)
-is where the factor two would show, and the timing on Ironwood and H100 (F-07) measures both.
+arithmetic, decide their time; a compute-bound product, the rollback's, is where the factor
+two shows: 1.37 to 1.62 times the single pass's time on the same card (2026-10-13, §15.7), and the
+timing on Ironwood and H100 (F-07) measures both.
 
 Reading it:
 
@@ -2039,9 +2103,10 @@ every format clears, as A-11 expected, and the statistical rule decides.
 - **Path ceilings are coarse**: three path counts a factor of four apart, two for market risk, one
   for the options. A ceiling says the row passes there and fails at the next count, or that the
   next count was not measured (16,384 and 8,192 are the largest measured, not ceilings found).
-- **The options' rows are thin** (256 paths, 8 seeds, the rollback before its rewrite, F-07): they
-  were measured again after `ShiftHorizon` and after the recalibration fix (both 2026-10-12) and
-  will be after the rollback's rewrite.
+- **The options' rows were thin** (256 paths, 8 seeds, the rollback before its rewrite): they were
+  measured again after `ShiftHorizon` and after the recalibration fix (both 2026-10-12), and since
+  the rollback's rewrite (2026-10-13) at the linear campaign's path counts and seeds, with their
+  compute formats (§15.7).
 
 **A robust standard error for the paired correction, by blocks of paths** (I-55's proposal),
 measured on 2026-10-11 against a threshold fixed before: on the `linear` campaign's paired cases (a
@@ -2071,6 +2136,83 @@ paired paths alone sees what they miss; independent replicates within the run wo
 ([I-111](../known-issues.md#i-111)). The evidence table does not use these standard errors, and
 the result says so where they understate.
 
+### 15.7 The rollback in difference form (2026-10-13)
+
+The Bermudan/American induction as matrix products in difference form (§8.2, I-83): one rollback
+operator per step and the cashflows' functions of the state shared by every path, each path's
+deviation from the induction on the level curves, a cube's dates one program, its paths in blocks
+within `INDUCTION_MEMORY_BUDGET`. All on CPU unless the GPU is named; `jax==0.10.2`.
+
+**Equal at float64.** Each path of a cube is the induction run on that path's own curves and
+fixings (the code before, per path) to 1e-12 (`tests/test_rollback_difference_form.py`); the
+shared portfolio's option cubes against the code before 8.2e-15 of their scale at both grids;
+ORE's engine today (1e-11) and ORE's cube on its paths (1.9e-11) as before; the golden snapshot
+within the margin (§13.1). float32 is closer to float64 than before: the option cubes' largest
+error 2 to 6 times smaller and their bias over the paths 5 to 20 times, the level being float64
+where the code before ran the whole rollback in float32.
+
+**Memory and time.** XLA's memory analysis of the compiled induction, per path at float64: 9.7
+KB (a Bermudan) and 26.7 KB (the American) on the demo's grid of 193 nodes, 14.9 and 41.4 KB on
+ORE's 301; the code before 6.1 MB on the demo's grid, a `[nodes, nodes]` operator per path and
+step. The demo's job against path count is profiling §2.0's table: 262,144 paths in 2.98 s warm
+and a 2.0 GB peak on the CPU and 2.37 s and 0.87 GB on an RTX 5060 at float64, where the code
+before ran out of memory at 65,536 and 1,024 paths; 4,096 paths in 0.26 s against 13.2 s. Blocks
+of paths cost nothing on the CPU (3.70 s and 9.5 GB in one block at 262,144 paths) and a third
+of the warm time on the GPU where 65,536 paths take two (I-105 chooses the budget per device).
+Market risk's Bermudan revaluation 0.035 ms per scenario at 16 points per standard deviation and
+0.18 ms at 64, against 5.6 and 75 ms; the `market_risk` campaign took 34 s against about 40
+minutes.
+
+**The campaigns** (engine digest `b0b17902865e9627`, CPU, 16 seeds, 2026-10-13, about 2.6 hours;
+no case compiles after its first seed). `options` at 1,024, 4,096 and 16,384 paths (256 and 8
+seeds before), `compute_options` new (the pricing stage, the induction, computed in each format,
+and every stage in it), `compute_market_risk` with its Bermudan, `market_risk` measured again (its
+Bermudan's and portfolio's rows moved by at most 8e-11 of their relative error, the float64
+reference's rounding; 144 of 360 rows identical), and `linear` and `compute`, whose 13,680 and
+8,640 figure rows equal their records bit for bit, gaining their Europeans' exercise rows. Under
+A-11's 1% rule:
+
+| Combination (options' figures) | Ceiling |
+|---|---|
+| Pricing computed in float32 | 16,384 (the American's figures 4,096) |
+| Pricing computed in `bfloat16_3x`; every stage in float32 or `bfloat16_3x` | 4,096 (under `bfloat16_3x` the cash Bermudan's ENE at none, I-113) |
+| One stage stored in float16, or computed in float16, TensorFloat-32, bfloat16 or FP8, or every stage in them | none: 0.05 to 0.33 statistical errors at 1,024 paths for float16 and TensorFloat-32, 0.6 to 1.6 for bfloat16, 3 to 380 for FP8 |
+| Market risk: the Bermudan's P&L computed in float16, TensorFloat-32 or bfloat16 (two terms) | 0.009 to 0.18 statistical errors at 2,048 scenarios, bias significance below 2: as the other products' |
+
+**Reading it.**
+
+- **The rollback's rounding accumulates.** The induction rounds each path's columns at every
+  step of its rollback, 6 for a Bermudan and about a hundred for the American, and round to
+  nearest of a smooth function on a grid has a mean error that is not zero (I-98's mechanism, so
+  far FP8's alone): with the pricing stage in float16 the American's mean figures are 7.0
+  statistical errors off at 16,384 paths, significance 99, the Bermudans' 0.49. Two terms of the
+  shared operand (A-23) cut the Bermudans' error twelvefold against the single pass (0.49 against
+  6.1) and not the American's (7.0 against 2.7): its bias is its per-path operand's, which an
+  unbiased rounding of the per-path operand would address (I-98). Market risk's
+  revaluation today, a few steps, shows none of it.
+- **float32 is as good as float64 for the options to 16,384 paths** (their worst figure 0.011 of
+  its statistical error), its errors significant (up to 460 of their standard errors at 16,384
+  paths: float32's rounding of each step is systematic too) at a scale the 1% rule never sees.
+- **Exercise decisions flipped** (decision A-24, `ExerciseRow`; the evidence table's section): a
+  stage stored or computed in a 10-bit format flips at most 0.03–0.05% of an option's paths on a
+  date, bfloat16 compute 0.25%, FP8 storage of the states or curves 1.3 to 6% (the cash Bermudan
+  1.3–1.5% under stored states, the physical one 3% and the American 6% under e5m2 curves without
+  offsets), FP8 compute 2.8 to 11% (the American's 11% throughout e5m2). The cube's own storage
+  flips none: its decisions are made before it is stored. The Europeans of the `linear` campaign
+  flip at most 0.06% in the 16-bit formats and 0.6 to 6.9% in FP8.
+- **The storage sanity bounds judged without the flips** (§13.5): bfloat16 simulation storage's
+  bounds fell thirtyfold, to 2.3e-3 and 1.1e-5 of notional; FP8's largest errors are rounding.
+- **The second term's cost.** Emulated (the `compute_options` campaign's warm seconds, its coarse
+  grid of 49 nodes, CPU), two terms took 0.76 to 1.34 of the single pass's time, in no order
+  across formats and path counts: too small a product for the doubled width to show through the
+  CPU's emulation and dispatch. Native, on the RTX 5060's float16, bfloat16 and TensorFloat-32
+  units (the options' path pricing at 65,536 paths, warm, the two alternated five times, medians):
+  on ORE's grid of 301 nodes two terms take 1.37, 1.59 and 1.62 times the single pass's time
+  (11.2 s against 8.1 s in float16), on the coarse grid 1.23, 1.36 and 1.32. Unlike the engine's
+  narrow products (0.96 to 1.09, §15.5) the rollback is compute-bound, and the second term of its
+  shared operator costs a third to three fifths of its time; it is where the single pass's bias
+  (A-23) is traded against speed, which the timing on Ironwood and H100 (F-07) reads.
+
 ## 16. Decisions this document implements
 
 Recorded in [compliance/decisions.md](../../../compliance/decisions.md), 2026-10-01.
@@ -2088,6 +2230,7 @@ Recorded in [compliance/decisions.md](../../../compliance/decisions.md), 2026-10
 | A-16 | One kernel implementation for every precision; float64 moves at rounding level, within the margin, after ORE parity passes (the first families 2026-10-10, §8) |
 | A-22 (2026-10-06) | A matrix product's precision is its compute format's, stated by the product (`engine.precision.matmul`, §6.7), never a process-wide default (the stated product precision (2026-10-06)) |
 | A-23 (2026-10-11) | Below float32 a product carries the operand every path shares in two terms of the format; the single pass is a format of its own, `<name>_1x` (§6.1, §8.3, §15.5) |
+| A-24 (5) (2026-10-12, implemented 2026-10-13) | Exercise decisions are measured, not hidden in bounds: the option wrapper's exercise state on every path and date is in the result, the harness measures the share each format flips, and the storage sanity bounds judge rounding on the cells not flipped (§13.5, §15.7) |
 
 Engineering defaults, changeable without a decision: block size 32 along the scenario axis;
 the block layout (`offset="block"`) and the rounding (`"nearest"`), both chosen by the storage

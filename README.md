@@ -51,15 +51,17 @@ double-precision simulations in the same wall-clock time.
   format, accumulated in FP32, in kernels written so that only each path's deviation from a
   level enters a product, the operand every path shares carried in two terms of the format so
   that its rounding biases no figure, the single pass selectable to measure it; native or
-  emulated by device, the Bermudan/American rollback still
-  FP32 or FP64) and storage in FP64, FP32, FP16, BF16 or FP8 per stage (the
+  emulated by device; the Bermudan/American rollback too, as one operator per step shared by
+  every path) and storage in FP64, FP32, FP16, BF16 or FP8 per stage (the
   simulation, the scenario market, path pricing) of a portfolio or market-risk run, storage
   below 32 bits with a power-of-two scale per block of 32 paths and nearest or stochastic
   rounding; calibration, today's values, Greeks and every reduction over paths kept in FP64;
   path pricing overridable per product and per trade (say, Bermudans in FP64 inside an FP32
   run); a precision report on every result (the policy as run, the formats read from the
   arrays, the device) and an optional paired float64 sample that corrects mean figures (EPE,
-  ENE) by a two-level estimator and measures quantiles (PFE, VaR, ES) against float64; an
+  ENE) by a two-level estimator and measures quantiles (PFE, VaR, ES) against float64; each
+  option's exercise decisions on every path and date in the result, and the share a format
+  flips measured; an
   evidence table of which combinations meet the acceptance standard for which figure, up to how
   many paths ([compliance/precision-evidence.md](compliance/precision-evidence.md)), and a
   warning on every result for each figure without a passing row

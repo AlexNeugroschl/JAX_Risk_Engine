@@ -19,6 +19,10 @@ them.
           AttributionRow  per market-risk case: the P&L attribution statistics (Spearman's
                           correlation, the Kolmogorov-Smirnov statistic) of its P&L against
                           float64's (decision A-11; the thresholds are the evidence table's, I-55)
+          ExerciseRow     per portfolio case and option: the share of its paths whose exercise
+                          decisions the case flips, per date (decision A-24: a cash-settled
+                          option's flipped exercise moves it by its whole value, a precision
+                          result, not a rounding)
           CaseRun         per case: XLA programs compiled after its first seed, warm seconds
       --save / summary--> every number (gzip-compressed JSON), and a markdown summary of it
 
@@ -209,6 +213,10 @@ class PortfolioCampaign:
     def pnl(self, result) -> Optional[np.ndarray]:
         return None
 
+    def decisions(self, result) -> Dict[str, np.ndarray]:
+        """Each option's exercise state `[paths, dates]` (`PortfolioResult.exercised`)."""
+        return {trade: np.asarray(state, dtype=bool) for trade, state in result.exercised.items()}
+
 
 @dataclass(frozen=True)
 class MarketRiskCampaign:
@@ -254,6 +262,10 @@ class MarketRiskCampaign:
 
     def pnl(self, result) -> Optional[np.ndarray]:
         return np.asarray(result.portfolio_pnl, dtype=np.float64)
+
+    def decisions(self, result) -> Dict[str, np.ndarray]:
+        """None: market risk revalues today, where no option is exercised."""
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +354,20 @@ class AttributionRow:
 
 
 @dataclass(frozen=True)
+class ExerciseRow:
+    """The exercise decisions one case flips on one option at one path count: per simulation
+    date, the share of the paths whose exercise state (exercised on or before the date, ORE's
+    `OptionWrapper`) differs from the float64 run's on the same paths, its mean over the seeds
+    (`flipped`) and its largest (`worst`)."""
+    case: str
+    paths: int
+    trade: str
+    product: str
+    flipped: Tuple[float, ...]
+    worst: Tuple[float, ...]
+
+
+@dataclass(frozen=True)
 class CaseRun:
     """XLA programs compiled by a case's runs after its first seed (0 when every shape is
     compiled once), and the median wall time of those warm runs."""
@@ -373,6 +399,7 @@ class Measurements:
     coverage: List[CoverageRow] = field(default_factory=list)
     attribution: List[AttributionRow] = field(default_factory=list)
     runs: List[CaseRun] = field(default_factory=list)
+    exercise: List[ExerciseRow] = field(default_factory=list)
 
     @property
     def paths(self) -> Tuple[int, ...]:
@@ -387,7 +414,8 @@ class Measurements:
         if overlap:
             raise ValueError(f"path counts {sorted(overlap)} measured twice")
         return dataclasses.replace(self, figures=self.figures + other.figures, coverage=self.coverage + other.coverage,
-                                   attribution=self.attribution + other.attribution, runs=self.runs + other.runs)
+                                   attribution=self.attribution + other.attribution, runs=self.runs + other.runs,
+                                   exercise=self.exercise + other.exercise)
 
     def row(self, case: str, paths: int, figure: str) -> FigureRow:
         """The row of one figure of one case at one path count."""
@@ -411,9 +439,12 @@ class Measurements:
     @classmethod
     def from_json(cls, text: str) -> "Measurements":
         data = json.loads(text)
-        rows = {"figures": FigureRow, "coverage": CoverageRow, "attribution": AttributionRow, "runs": CaseRun}
+        rows = {"figures": FigureRow, "coverage": CoverageRow, "attribution": AttributionRow, "runs": CaseRun,
+                "exercise": ExerciseRow}
         for name, row in rows.items():
-            data[name] = [row(**{k: tuple(v) if isinstance(v, list) else v for k, v in r.items()}) for r in data[name]]
+            # A campaign measured before the exercise rows (2026-10-13) has none.
+            data[name] = [row(**{k: tuple(v) if isinstance(v, list) else v for k, v in r.items()})
+                          for r in data.get(name, [])]
         for name in ("seeds", "dates", "scalars"):
             data[name] = tuple(data[name])
         return cls(**data)
@@ -466,6 +497,7 @@ def measure(campaign, paths: int, cases: Optional[Sequence[Case]] = None,
         attribution = _attribution_row(campaign, case, paths, reference, results)
         if attribution is not None:
             out.attribution.append(attribution)
+        out.exercise.extend(_exercise_rows(campaign, case, paths, reference, results))
         progress(f"{campaign.name} {paths} paths: {case.label}, {time.perf_counter() - started:.1f}s"
                  f"{f', {recompiles} recompiles' if recompiles else ''}")
     return out
@@ -538,6 +570,21 @@ def _attribution_row(campaign, case: Case, paths: int, reference, results) -> Op
         case=case.label, paths=paths,
         spearman=tuple(float(stats.spearmanr(pnl[s], ref[s]).statistic) for s in seeds),
         kolmogorov_smirnov=tuple(float(stats.ks_2samp(pnl[s], ref[s]).statistic) for s in seeds))
+
+
+def _exercise_rows(campaign, case: Case, paths: int, reference, results) -> List[ExerciseRow]:
+    """Per option, the share of its paths whose exercise state the case flips, per date (none
+    without an option)."""
+    seeds = sorted(results)
+    exact = {s: campaign.decisions(reference[s]) for s in seeds}
+    found = {s: campaign.decisions(results[s]) for s in seeds}
+    rows = []
+    for trade in exact[seeds[0]]:
+        shares = np.stack([np.mean(found[s][trade] != exact[s][trade], axis=0) for s in seeds])   # [seeds, dates]
+        rows.append(ExerciseRow(case=case.label, paths=paths, trade=trade,
+                                product=_product(campaign, f"trades/{trade}"), flipped=_floats(shares.mean(axis=0)),
+                                worst=_floats(shares.max(axis=0))))
+    return rows
 
 
 def _floats(a) -> Tuple[float, ...]:
@@ -650,6 +697,7 @@ def summary(m: Measurements) -> str:
                 lines.append(f"| {_without(a, m.cases[a][setting])} | "
                              + " | ".join(cells.get(v, "") for v in values) + " |")
             lines.append("")
+        lines += _exercise_table(m, paths)
         attribution = [r for r in m.attribution if r.paths == paths]
         if attribution:
             lines += [f"### P&L attribution, {paths} scenarios", "",
@@ -659,6 +707,25 @@ def summary(m: Measurements) -> str:
             lines += [f"| {r.case} | {min(r.spearman):.6f} | {max(r.kolmogorov_smirnov):.6f} |" for r in attribution]
             lines.append("")
     return "\n".join(lines)
+
+
+def _exercise_table(m: Measurements, paths: int) -> List[str]:
+    """The exercise decisions each case flips per option at `paths` (none without an option)."""
+    rows = [r for r in m.exercise if r.paths == paths]
+    if not rows:
+        return []
+    trades = list(dict.fromkeys(r.trade for r in rows))
+    lines = [f"### Exercise decisions flipped, {paths} paths", "",
+             "Per option, the share of its paths whose exercise state on a date (exercised on or before it) differs "
+             "from float64's on the same paths: the worst date's mean over the seeds, and in brackets the largest at "
+             "any seed and date. A cash-settled option's flipped exercise moves it by its whole value (decision A-24).",
+             "", "| Case | " + " | ".join(f"`{t}`" for t in trades) + " |", "|---|" + "---|" * len(trades)]
+    for case in m.cases:
+        mine = {r.trade: r for r in rows if r.case == case}
+        if mine:
+            lines.append(f"| {case} | " + " | ".join(
+                f"{max(mine[t].flipped):.2%} ({max(mine[t].worst):.2%})" if t in mine else "" for t in trades) + " |")
+    return lines + [""]
 
 
 def _worst(rows, ratio: str, keep=lambda row: True) -> float:
