@@ -20,6 +20,9 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 | Consume a TraderX end-of-day bundle (and know what gets refused) | [The TraderX Path](reference/traderx-path.md) |
 | Actually submit an EOD bundle over HTTP, end to end | [User Guide: Pricing a TraderX EOD bundle](getting-started/user-guide.md#pricing-a-traderx-eod-bundle) |
 | Profile a pricing job's JAX vs. Python time | [User Guide](getting-started/user-guide.md#profiling-a-pricing-job) |
+| Trace Python calls and GPU kernels across both engine pipelines | [Python/GPU profiling demo](concepts/profiling-python.md) |
+| Compare CPU/GPU scaling and numerical outputs for each instrument | [GPU scaling study](concepts/gpu-scaling.md) |
+| Arrange Google Cloud permissions and hardware for CPU/GPU/TPU research | [Google Cloud research access](google-cloud-research-access.md) |
 | Understand the tracer, and why Greeks used to dominate a trace | [Profiling & the Tracer](concepts/profiling.md) |
 | Understand a term you don't recognize | [Glossary](concepts/glossary.md) |
 | **Know what's broken, approximated, or missing before trusting a number** | **[Known Issues](planning/known-issues.md)** |

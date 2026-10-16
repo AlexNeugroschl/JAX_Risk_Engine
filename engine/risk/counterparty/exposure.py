@@ -35,7 +35,8 @@ and EE_B, EEE_B, EPE_B, EEPE_B and the Basel figures follow from the corrected E
 run's own, measured on the pair. `ExposureProfile.estimates` holds each figure's estimate.
 """
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Sequence, Tuple, Union
+from functools import partial
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -43,11 +44,15 @@ import numpy as np
 import ORE
 
 from engine.precision.estimate import MeanEstimate, QuantileEstimate, paired_quantile, two_level_mean
+from engine.precision.storage import Stored, load
 from engine.risk.market.var_es import quantile_label
 
 #: A paired float64 sample: the NPVs `[n, T]` (or the cube `[n, T, N]`) and the numeraire
 #: `[n, T]` of the first n paths, run at float64 throughout.
 PairedPaths = Tuple[jnp.ndarray, jnp.ndarray]
+
+#: The paired valuation retained as columns, without assembling another float64 cube.
+PairedColumns = Tuple[Sequence[Union[jax.Array, Stored]], jax.Array]
 
 #: The figures an `ExposureProfile` reports, by name: its profiles per date (`epe` is "EPE"),
 #: its Basel scalars (`basel_epe` is "Basel_EPE"), and one "PFE_<q>" per quantile (`pfe`).
@@ -223,3 +228,80 @@ def netting_set_profile(
         jnp.sum(npv_cube, axis=-1), float(np.sum(npv0_per_trade)),
         numeraire, discount, times, quantiles, dates=dates, asof=asof, paired=paired,
     )
+
+
+def column_profiles(
+    columns: Sequence[Union[jax.Array, Stored]],
+    npv0_per_trade: Sequence[float],
+    numeraire: jax.Array,
+    discount: jax.Array,
+    times: Sequence[float],
+    quantiles: Sequence[float] = (0.95, 0.99),
+    dates: Optional[Sequence[ORE.Date]] = None,
+    asof: Optional[ORE.Date] = None,
+    maturities: Optional[Sequence[ORE.Date]] = None,
+    paired: Optional[PairedColumns] = None,
+) -> Tuple[ExposureProfile, List[ExposureProfile]]:
+    """Netting and standalone profiles directly from stored `[paths, dates]` columns.
+
+    Only one trade is loaded at float64 at a time. Running float64 sums hold the netting
+    set and, if present, its paired sample. Exact PFE and paired estimates use the same
+    `exposure_profile` as cube-based callers. Each trade's work finishes before the next
+    load: asynchronous dispatch cannot retain a whole cube of decoded temporaries (I-105).
+    The netting addition follows trade order, so differs from a cube reduction at rounding
+    level. No compile depends on a trade's identity, values, maturity or position.
+    """
+    if len(columns) != len(npv0_per_trade) or (maturities is not None and len(maturities) != len(columns)):
+        raise ValueError("columns, npv0_per_trade and maturities must have one entry per trade")
+    if any(c.shape != numeraire.shape for c in columns):
+        raise ValueError("every stored column must match numeraire shape")
+    if paired is not None:
+        high_columns, high_numeraire = paired
+        if (len(high_columns) != len(columns) or high_numeraire.shape[1:] != numeraire.shape[1:]
+                or not 0 < high_numeraire.shape[0] <= numeraire.shape[0]
+                or any(c.shape != high_numeraire.shape for c in high_columns)):
+            raise ValueError("paired columns must match trades and pair the first n paths, 0 < n <= N")
+        high_numeraire = load(high_numeraire, jnp.float64)
+        high_total = jnp.zeros_like(high_numeraire)
+
+    numeraire = load(numeraire, jnp.float64)
+    total = jnp.zeros_like(numeraire)
+    common = dict(numeraire=numeraire, discount=discount, times=times, quantiles=quantiles, dates=dates, asof=asof)
+    profiles = []
+    for i, stored in enumerate(columns):
+        total, column = _accumulate_column(total, stored)
+        sample = None
+        if paired is not None:
+            high_total, high_column = _accumulate_column(high_total, high_columns[i])
+            sample = high_column, high_numeraire
+        profile = exposure_profile(column, npv0_per_trade[i], **common,
+                                   maturity=None if maturities is None else maturities[i], paired=sample)
+        _ready(profile)
+        jax.block_until_ready(total)
+        profiles.append(profile)
+        del column, sample
+        if paired is not None:
+            jax.block_until_ready(high_total)
+            del high_column
+    sample = None if paired is None else (high_total, high_numeraire)
+    netting = exposure_profile(total, float(np.sum(npv0_per_trade)), **common, paired=sample)
+    _ready(netting)
+    return netting, profiles
+
+
+@partial(jax.jit, donate_argnums=(0,))
+def _accumulate_column(total, stored):
+    """Decode one column and add to a reusable netting buffer; one program per storage shape.
+
+    Donation reuses the running sum's buffer. The stored input is never donated: it may
+    still be needed for the output cube, and belongs to the caller.
+    """
+    column = load(stored, jnp.float64)
+    return total + column, column
+
+
+def _ready(profile: ExposureProfile) -> None:
+    """Finish reductions without copying arrays or transferring path values to the host."""
+    jax.block_until_ready((profile.epe, profile.ene, profile.ee_b, profile.eee_b, profile.pfe,
+                           profile.epe_b, profile.eepe_b,
+                           [tuple(vars(estimate).values()) for estimate in profile.estimates.values()]))

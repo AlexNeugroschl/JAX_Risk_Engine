@@ -412,7 +412,7 @@ Mirrors `engine.run.PortfolioRequest` and its run configuration
 | `pfe_quantiles` | Quantiles of the PFE profiles. Default `[0.95, 0.99]` |
 | `compute_greeks` | Default `false` |
 | `scenario_risk` | Default `true`; `false` prices today's values (and Greeks) only |
-| `cube_output` | How the result carries the NPV cube (decision A-17): `"inline"` (the default, `npv_cube`), `"artifact"` (a chunked, hashed reference, `npv_cube_artifact`, read at [`GET /jobs/{job_id}/artifacts/...`](#get-jobsjob_idartifactsnamechunk)) or `"none"` (neither; ORE too writes its cube only when asked, `cubeFile`) |
+| `cube_output` | How the result carries the NPV cube (decision A-17): `"inline"` (the default, `npv_cube`), `"artifact"` (a chunked, hashed reference, `npv_cube_artifact`, read at [`GET /jobs/{job_id}/artifacts/...`](#get-jobsjob_idartifactsnamechunk)) or `"none"` (neither; ORE too writes its cube only when asked, `cubeFile`). `"none"` also avoids allocating the float64 output cube: exposure reduces stored columns individually, retaining exact sorted PFE and paired precision estimates (I-105). |
 
 Representational differences from the dataclasses (SWIG-bound `ORE` types are not natively
 Pydantic-serializable): dates are ISO strings (`"2026-07-30"`), periods are ORE strings

@@ -184,7 +184,7 @@ below with `.venv\Scripts\python.exe` (or activate the venv first with
 
 ## Running the demos
 
-All six demos live in [`demos/`](../../demos/). Run them from the repository root, as
+The demos live in [`demos/`](../../demos/). Run them from the repository root, as
 written below — they import `engine`, which an editable install makes importable from any
 directory, but the paths in these commands are relative to the root.
 
@@ -242,6 +242,31 @@ where the engine spends its time. On CPU the job takes 33 s from scratch, 16 s w
 worker's disk cache and 1.8 s repeated, a repeat compiling nothing
 ([measured](../concepts/profiling.md#20-the-demo-measured-2026-10-05)). See [Profiling a pricing job](#profiling-a-pricing-job) below and
 [Profiling & the Tracer](../concepts/profiling.md).
+
+**Python calls and GPU kernels across both engine pipelines:**
+```bash
+python demos/demo_profile_python.py          # Linux/WSL2 GPU, Python tracing enabled
+python demos/demo_profile_python.py --split  # six smaller phase captures
+python demos/demo_profile_python.py --preset representative --baseline  # larger synthetic book, standard grids
+```
+Runs the portfolio/exposure/Greeks pipeline and the separate market-risk VaR/ES pipeline
+in the profiled process, with all trade types and a two-currency simulation. Inputs,
+warm-up, profiler options and engine calls are visible in `main()`. Use `--cold` to include
+compilation from scratch, or `--device cpu` for a native Windows check. See the
+[Python/GPU profiling walkthrough](../concepts/profiling-python.md) for setup, capture
+scope and XProf viewer commands.
+
+**Per-instrument CPU/GPU scaling, correctness comparisons and diagnostic traces:**
+```bash
+python -m pip install -e ".[gpu,profiling,benchmark]"  # Linux/WSL GPU environment
+python demos/demo_gpu_scaling.py --preset quick
+python demos/demo_gpu_scaling.py --preset standard
+```
+Measures pricing, complete exposure workflows, Greeks, market-risk scenario/batch scaling,
+both simulation models, and a mixed portfolio. Each run writes a Markdown/CSV report,
+full CPU/GPU output comparisons, PDF/PNG scaling plots and selected Python-inclusive GPU
+traces. See the [GPU scaling guide](../concepts/gpu-scaling.md) for interpretation,
+workload controls, resume support and limits.
 
 **How much precision market risk needs:**
 ```bash

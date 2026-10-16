@@ -223,9 +223,9 @@ class TestPathBlocks:
     def test_the_fewest_equal_blocks_within_the_budget(self, monkeypatch):
         """Each device's share of the paths split into the fewest equal blocks whose induction
         fits the budget; one block when every path fits."""
-        monkeypatch.setattr(lgm_grid, "INDUCTION_MEMORY_BUDGET", 1000)
+        monkeypatch.setattr(lgm_grid, "induction_memory_budget", lambda: 1000)
         assert path_blocks(64, 10) == 1
-        assert path_blocks(64, 100) == 8 and path_blocks(64, 100, devices=4) == 8
+        assert path_blocks(64, 100) == 8 and path_blocks(64, 100, devices=4) == 2
         assert path_blocks(96, 100) == 12
         assert path_blocks(7, 100) == 1
         assert path_blocks(7, 2000) == 7  # not even one path fits: one per block
@@ -241,7 +241,7 @@ class TestPathBlocks:
                                scenarios.index[index])
         whole = np.asarray(bermudan_cube(cfg, COARSE, market, scenarios, fixings))
         per_path = working_bytes_per_path(prepared_option(cfg, COARSE, COARSE.volatility), 8)
-        monkeypatch.setattr(lgm_grid, "INDUCTION_MEMORY_BUDGET", 2 * per_path)
+        monkeypatch.setattr(lgm_grid, "induction_memory_budget", lambda: 2 * per_path)
         assert path_blocks(scenarios.num_paths, per_path) == 4
         in_blocks = np.asarray(bermudan_cube(cfg, COARSE, market, scenarios, fixings))
         np.testing.assert_allclose(in_blocks, whole, rtol=0, atol=1e-12 * np.max(np.abs(whole)))

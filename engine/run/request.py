@@ -56,6 +56,9 @@ class PortfolioRequest:
     scenario_risk: whether to simulate and build `npv_cube` and the exposure profiles (needs
         `config.simulation`). Without it the result has an empty `npv_cube` and no exposure
         (absent, not zero), and `scenario_risk_available` says so.
+    include_npv_cube: whether to assemble the float64 output cube (True by default).
+        False keeps an empty `(0, 0, 0)` cube and still computes exposure and its precision
+        report. This saves the full cube allocation; all reductions read stored columns.
 
     The cube is a multi-step risk-neutral simulation, used for exposure profiles
     (`engine.risk.counterparty.exposure`). Short-horizon VaR/ES is `engine.risk.market.run_market_risk`.
@@ -66,6 +69,10 @@ class PortfolioRequest:
     pfe_quantiles: Sequence[float] = (0.95, 0.99)
     compute_greeks: bool = False
     scenario_risk: bool = True
+    #: Materialize the float64 output cube. False returns an empty `(0, 0, 0)` array;
+    #: exposure, exercise decisions and precision reports are still computed normally.
+    #: HTTP `cube_output="none"` selects False; inline and artifact select True.
+    include_npv_cube: bool = True
 
     def __post_init__(self):
         if not isinstance(self.market, Market):
@@ -89,9 +96,9 @@ class PortfolioResult:
     warnings: List[str] = field(default_factory=list)
     # t=0 NPV per trade, in request order; `base_npv` is their sum.
     base_npv_per_trade: List[float] = field(default_factory=list)
-    # Whether `npv_cube`/`exposure` were computed (`scenario_risk`). When False, `exposure`
-    # is None and `npv_cube` has no time steps. Carried on the result for consumers that
-    # never see the request.
+    # Whether scenarios and exposure were computed (`scenario_risk`). The output cube may
+    # independently be omitted (`include_npv_cube=False`). Without scenarios, `exposure`
+    # is None and `npv_cube` has no time steps.
     scenario_risk_available: bool = True
     # The measure of the exposure figures: `ENGINE_RISK_MEASURE` (risk-neutral-pricing), or
     # None without scenario risk (I-11).

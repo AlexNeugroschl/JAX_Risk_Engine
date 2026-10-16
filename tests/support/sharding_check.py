@@ -46,11 +46,11 @@ def _with_budget(budget: int, run, *args):
     """`run(*args)` with the grid engine's memory budget set to `budget` bytes."""
     from engine.pricing import lgm_grid
 
-    saved, lgm_grid.INDUCTION_MEMORY_BUDGET = lgm_grid.INDUCTION_MEMORY_BUDGET, budget
+    saved, lgm_grid.induction_memory_budget = lgm_grid.induction_memory_budget, lambda: budget
     try:
         return run(*args)
     finally:
-        lgm_grid.INDUCTION_MEMORY_BUDGET = saved
+        lgm_grid.induction_memory_budget = saved
 
 
 def _portfolio_figures(result) -> dict:

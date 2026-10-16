@@ -46,7 +46,9 @@ class Rename(str):
 
 #: engine type -> (the schema or schemas mirroring it, {field: reason it has no field, or Rename}).
 MIRRORS = {
-    PortfolioRequest: (wire.MarketPortfolioRequestSchema, {"config": "flattened: RunConfig's fields are the request's"}),
+    PortfolioRequest: (wire.MarketPortfolioRequestSchema, {
+        "config": "flattened: RunConfig's fields are the request's",
+        "include_npv_cube": Rename("cube_output")}),
     RunConfig: (wire.MarketPortfolioRequestSchema, {}),
     CamConfig: (wire.CamConfigSchema, {}),
     LgmConfig: (wire.LgmConfigSchema, {}),

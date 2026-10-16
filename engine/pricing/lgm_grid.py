@@ -65,7 +65,7 @@ The induction is one `jax.lax.scan`, so `jax.grad`/`jax.hessian` differentiate t
 with nothing to roll back (the first, ORE's no-op rollbacks, padding) skips its products
 (`lax.cond`), so trades padded to one shape (`one_shape`: a path cube's dates) share one program
 at no cost. Many paths are priced in blocks (`path_blocks`, `blocked`) so that the induction's
-memory stays within `INDUCTION_MEMORY_BUDGET` at any path count.
+memory stays within `induction_memory_budget()` per device at any path count.
 
 Seasoned trades are priced as ORE prices them: exercise dates on or before the evaluation
 date are dropped, coupons that can no longer enter any exercise are not valued, coupons
@@ -666,7 +666,7 @@ def one_shape(prepared: Sequence[_PreparedBermudan]) -> List[Tuple[_PreparedBerm
 _WORKING_COPIES = 6
 
 
-#: The most working memory one induction over many paths or scenarios is given: a path cube's
+#: CPU fallback for the working memory one induction over many paths or scenarios is given: a path cube's
 #: date is priced in blocks of paths (`path_blocks`), market risk in batches of scenarios
 #: (`engine.risk.market.revaluation.scenario_batch_size`), each within it. An American on the
 #: demo's grid holds about 27 KB per path at float64 (36 KB as the GPU compiles it), 9.5 GB at
@@ -674,11 +674,29 @@ _WORKING_COPIES = 6
 INDUCTION_MEMORY_BUDGET = 2 ** 30
 
 
+def induction_memory_budget() -> int:
+    """A stable per-device induction budget: an eighth of the smallest accelerator limit.
+
+    Leave room for the scenario market, stored columns and XLA workspaces. An eighth
+    keeps the RTX 5060's measured throughput without the extra 1.56 GB a half used
+    (precision design §17); the hardware campaign measures the tradeoff on other devices.
+    CPU devices and backends without a memory limit use `INDUCTION_MEMORY_BUDGET`.
+    Use capacity, never current free memory: identical jobs keep the same block shapes
+    and reuse their programs even when other allocations change (I-105).
+    """
+    budgets = []
+    for device in jax.local_devices():
+        stats = device.memory_stats() if device.platform != "cpu" else None
+        limit = (stats or {}).get("bytes_limit", 0)
+        budgets.append(max(1, int(limit) // 8) if limit and limit > 0 else INDUCTION_MEMORY_BUDGET)
+    return min(budgets, default=INDUCTION_MEMORY_BUDGET)
+
+
 def working_bytes_per_path(swap: _PreparedBermudan, itemsize: int) -> int:
     """About how many bytes the induction holds per path, its values `itemsize` bytes each:
     `_WORKING_COPIES` arrays of the path's columns on the grid, and the cashflows'
     coefficients. What a block of paths or a batch of scenarios is sized by
-    (`INDUCTION_MEMORY_BUDGET`)."""
+    (`induction_memory_budget`)."""
     rows = induction_rows(swap)
     nodes = 2 * grid_half_width(swap.std_devs, swap.n_per_std) + 1
     _, columns, basis = rows.targets.shape
@@ -687,12 +705,13 @@ def working_bytes_per_path(swap: _PreparedBermudan, itemsize: int) -> int:
 
 def path_blocks(paths: int, bytes_per_path: int, devices: int = 1) -> int:
     """The fewest blocks of equal size that `paths` paths (split evenly across `devices`) are
-    priced in so that one block's induction stays within `INDUCTION_MEMORY_BUDGET`: a divisor of
+    priced in so that each device's induction stays within `induction_memory_budget()`: a divisor of
     each device's share of the paths, so every block holds as many paths on every device (1 when
     they fit at once)."""
     share = paths // devices
+    budget = induction_memory_budget()
     for blocks in range(1, share + 1):
-        if share % blocks == 0 and (paths // blocks) * bytes_per_path <= INDUCTION_MEMORY_BUDGET:
+        if share % blocks == 0 and (share // blocks) * bytes_per_path <= budget:
             return blocks
     return max(share, 1)
 

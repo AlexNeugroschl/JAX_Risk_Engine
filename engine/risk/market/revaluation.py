@@ -40,7 +40,7 @@ from engine.market_simulation.sharding import scenario_device_count, shard_scena
 from engine.precision import Arithmetic
 from engine.pricing.bermudan import prepared_option
 from engine.pricing.config import PricingConfig
-from engine.pricing.lgm_grid import INDUCTION_MEMORY_BUDGET, working_bytes_per_path
+from engine.pricing.lgm_grid import induction_memory_budget, working_bytes_per_path
 from engine.risk.greeks.price_functions import curve_keys, on_pillars, trade_price_function
 from engine.risk.market.factors import RateRiskFactors, curve_name
 
@@ -52,14 +52,14 @@ def factor_indices(cfg, factors: RateRiskFactors) -> Tuple[int, ...]:
 
 def scenario_batch_size(cfg, pricing: PricingConfig, requested: int, itemsize: int) -> int:
     """Scenarios to revalue at once for `cfg`: `requested`, reduced so one batch stays within
-    the induction's budget (`engine.pricing.lgm_grid.INDUCTION_MEMORY_BUDGET`). Only the grid
+    the induction's per-device budget (`engine.pricing.lgm_grid.induction_memory_budget`). Only the grid
     engine needs it: its induction holds its columns on the state grid per scenario
     (`working_bytes_per_path`)."""
     if not isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)) or cfg.is_expired():
         return requested
     engine = pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
     per_scenario = working_bytes_per_path(prepared_option(cfg, engine, engine.volatility), itemsize)
-    return max(1, min(requested, INDUCTION_MEMORY_BUDGET // per_scenario))
+    return max(1, min(requested, induction_memory_budget() // per_scenario))
 
 
 def revalue(
@@ -77,7 +77,7 @@ def revalue(
 
     moves: `[S, F]` absolute factor moves (`ShockScenarios.shifts`).
     batch_size: the most scenarios to revalue at once; the grid engine may use fewer to stay
-        within `INDUCTION_MEMORY_BUDGET`.
+        within `induction_memory_budget()` per device.
     """
     values = [revalue_trade(cfg, market, factors, moves, pricing, batch_size, arithmetic) for cfg in trades]
     return (np.asarray([base for base, _ in values]),

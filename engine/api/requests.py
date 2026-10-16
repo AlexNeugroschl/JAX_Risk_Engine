@@ -562,7 +562,8 @@ class MarketPortfolioRequestSchema(_Strict):
     simulation's is refused. `simulation`, `pricing`, `greeks`, `base_currency` and
     `precision` are the run configuration (`engine.run.RunConfig`). `cube_output` is how
     the result carries the NPV cube: `inline` (the default), `artifact` (a chunked, hashed
-    reference, `engine.api.artifacts`) or `none` (decision A-17)."""
+    reference, `engine.api.artifacts`) or `none` (decision A-17). With `none` the engine
+    reduces stored columns without allocating a float64 output cube (I-105)."""
     market: MarketSchema
     trades: List[MarketTradeSchema]
     simulation: Optional[CamConfigSchema] = None
@@ -594,7 +595,7 @@ class MarketPortfolioRequestSchema(_Strict):
                              base_currency=self.base_currency,
                              precision=self.precision.to_dataclass()),
             pfe_quantiles=tuple(self.pfe_quantiles), compute_greeks=self.compute_greeks,
-            scenario_risk=self.scenario_risk)
+            scenario_risk=self.scenario_risk, include_npv_cube=self.cube_output != "none")
 
     def check(self) -> None:
         """Refuse what `price_portfolio` would refuse, before the job is queued (no JAX work)."""

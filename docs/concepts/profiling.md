@@ -7,6 +7,11 @@ For the step-by-step "how do I collect and open a trace" recipe, see the User Gu
 [Profiling a pricing job](../getting-started/user-guide.md#profiling-a-pricing-job). This
 document is the *why*.
 
+For a Python-inclusive GPU trace of both the portfolio pipeline and market risk, use
+[`demo_profile_python.py`](../../demos/demo_profile_python.py). Its
+[walkthrough](profiling-python.md) covers whole-engine capture, separate-phase capture,
+GPU setup, and reading the Python and device lanes in XProf.
+
 ## Plain-language summary
 
 JAX does not run your Python code on the hardware. It **traces** it — runs it once

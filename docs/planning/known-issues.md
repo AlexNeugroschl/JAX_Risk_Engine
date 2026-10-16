@@ -13,50 +13,50 @@ recalibrates ([I-112](#i-112)).
 
 ## Verification status
 
-Last full run, 2026-10-13, on the Bermudan/American rollback as matrix products in difference
-form ([I-83](#i-83), closed; F-07): `engine.pricing.lgm_grid`'s induction on a level and each
-path's deviation (one rollback operator per step and the cashflows' functions of the state shared
-by every path, the coupons cached in progress in reused columns, padded rows skipped), a cube's
-dates one program (`one_shape`) with its paths in blocks within a budget (`path_blocks`,
-`blocked`); the Bermudan's market-risk P&L in difference form (`option_pnl`; every product now has
-one); `RESTRICTED_PRODUCTS` and `Arithmetic.plain` removed; the option wrapper's exercise state on
-every path and date in the result (`PortfolioResult.exercised`) and the precision harness's
-`ExerciseRow`, the storage sanity bounds judged on the cells not flipped (decision A-24 (5)); the
-`compute_options` campaign. 3,401 collected on Windows: the 3,364 of the run before plus the 37 of
-`tests/test_rollback_difference_form.py` and 1 in `tests/test_precision_harness.py` (the exercise
-rows), less 1 in `tests/test_compute_precision.py` (three refusals of a Bermudan below float32 gave
-way to two tests of it computing). The ORE distribution test (L4) prices the options on 4,096
-paths, 1,024 before. Each run printed its summary line:
+Last full run, 2026-10-15, on streamed exposure reductions and optional cube assembly
+([I-105](#i-105), closed; [design and measurements](details/precision.md#17-exposure-storage-and-peak-memory-i-105-2026-10-15)).
+3,439 collected on Windows: the previously recorded 3,401 plus 24 exposure-storage cases,
+13 benchmark-demo cases already in the working tree and the benchmark dependency requirement.
+Each run below printed its summary line:
 
-- **Windows**, `-n 8`: **3,398 passed, 3 skipped, 0 failed**, 6m26s (the skips as before: the two
-  accelerator-only defaults and the GPU plugin check). The first full run of the change, before the
-  campaigns, failed only the two evidence tests whose files of record the campaigns write.
-- **Linux** (the WSL2 clone, `JAX_PLATFORMS=cpu`, `-n 2`, the twenty modules the change touches or
-  that price options against ORE): **1,130 passed, 3 skipped, 0 failed**, 7m40s (the clone has no
-  `reference/ORE` for the ORE example check; the accelerator-only tests).
-- **GPU** (RTX 5060, WSL2, `-n 4`, the same twenty modules): **1,132 passed, 1 skipped, 0
-  failed**, 8m14s; ruff's pyflakes rules clean on every changed file. Earlier GPU runs of the
-  change found the demo's job at 262,144 paths out of the card's memory in one block, which the
-  blocks of paths fixed.
-- **Golden snapshot** (359 arrays with the Greeks, from a worktree of `6e85d09`): 188 identical,
-  none beyond the margin: float64 1.2e-14 of an array's scale, a Greek 2.2e-14 of its trade's NPV,
-  float32 1.2e-6 ([precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity)).
-- **Precision harness**: every campaign measured again on one engine (digest `b0b17902865e9627`,
-  2.6 hours; the committed engine differs from it by one docstring, `_PreparedBermudan`'s, corrected
-  after the campaigns) and the evidence table regenerated; `linear` and `compute` equal their records bit for
-  bit, `market_risk` within its float64 reference's rounding; `options` at the linear campaign's
-  path counts and seeds, and `compute_options` new; no case compiles after its first seed
-  ([precision.md §15.7](details/precision.md#157-the-rollback-in-difference-form-2026-10-13)).
-- **Speed and memory** (the demo's job; profiling §2.0): 4,096 paths warm 0.26 s against 13.2 s,
-  65,536 and 262,144 paths where the code before ran out of memory (2.98 s and 2.0 GB at 262,144 on
-  the CPU, 2.37 s and 0.87 GB on the GPU).
+- **Windows full suite**, `.venv/Scripts/python.exe -m pytest tests/ -q -n 8`:
+  **3,436 passed, 3 skipped, 0 failed**, 7m17s. The skips are the two accelerator-only
+  defaults and the GPU plugin check. The initial full run found only the benchmark extra's
+  missing matplotlib constraint; its installed version and unpinned dependencies were pinned,
+  and a plot rendered on Linux. A later GPU budget adjustment was followed by this full run.
+- **Linux CPU**, `JAX_PLATFORMS=cpu`, `-n 2`, exposure storage, rollback, market risk and
+  portfolio HTTP modules: **151 passed**, 3m09s. The final device policy also passed
+  **138 affected Windows CPU tests** (exposure storage, rollback and market risk).
+- **GPU**, RTX 5060, WSL2, `-n 2`, exposure storage, rollback, portfolio HTTP and the selected
+  ORE parity modules (`test_ore_xva_parity`, `test_ore_parity`, `test_ore_lgm_parity`):
+  **169 passed**, 9m09s; after choosing the conservative device budget, the exposure and
+  rollback modules again: **61 passed**, 1m42s.
+- **Strict dtype promotion**, exposure storage and precision-report modules: **97 passed**.
+  The full suite also includes the four-device scenario-sharding check. Ruff's pyflakes
+  rules pass on all 14 changed Python files.
+- **Accuracy**: a pre/post snapshot against `c3d7c6a`, 675 numeric outputs on the shared
+  sloped portfolio (all five product families, Greeks, float64, float32 and mixed stored
+  precision with a paired sample), all identical. The 65,536-path GPU demo's cube, EPE and
+  ENE are identical too. Existing ORE tolerances are unchanged.
+- **Precision harness**: the FP8 pricing-storage subset of `linear`, both roundings and
+  layouts and paired cases, 1,024 and 4,096 paths, three seeds: 720 figure rows, 48 coverage
+  rows, 12 case/path runs, zero recompilations after warmup. Pricing/storage arithmetic is
+  unchanged, so the existing evidence rows were not regenerated. This subset is a regression
+  check, not a replacement for the 16-seed measurements of record.
+- **Memory and timing**: fresh-process curves at float64 and FP8 storage, CPU and GPU,
+  in precision design §17. At 65,536 paths, 24 swaps and 12 dates, FP8 exposure-only peak
+  GPU allocation is 394 MB versus 610 MB before (35% lower); Windows peak working set is
+  938 MB versus 1,052 MB. The full-output demo's GPU peak is 609 MB versus 660 MB,
+  warm observations about 1.0–1.1 s, zero warm compilations. The capacity-based rollback
+  budget uses an eighth of the device allocator limit; a measured half consumed 1.56 GB
+  more without a useful speed gain.
 
-Red first, on the code before (a worktree of `6e85d09`): the memory assertion of
-`tests/test_rollback_difference_form.py::TestMemory` applied to its path rollback, 6.1 MB per path
-against a bound of 0.085 MB; the demo's job failed at 65,536 paths there.
+Red first: `tests/test_exposure_storage.py`'s initial output-omission regression failed at
+`load(valuation.cube, float64)` on the pre-fix pipeline; HTTP conversion also failed because
+there was no engine output switch. The remaining precision work is F-07, I-98, I-111 and
+I-113, including the hardware campaign's budget/time/memory tradeoff.
 
-The fast tier (`-m "not slow"`) alone is not a full verification and is never recorded here. Rules:
-[README.md](README.md#verification-rules).
+The fast tier alone is not a full verification. Rules: [README.md](README.md#verification-rules).
 
 ## Summary
 
@@ -73,7 +73,6 @@ The fast tier (`-m "not slow"`) alone is not a full verification and is never re
 | [I-112](#i-112) | Market risk holds a calibrated Bermudan's/American's LGM under every scenario; ORE's historical P&L recalibrates it | Medium | FLAGGED | Correctness | Focus |
 | [I-103](#i-103) | Malformed market and trade inputs are accepted: an unsorted curve prices silently, a late expiry crashes | Medium | OPEN | Validation | Focus |
 | [I-104](#i-104) | Edge cases valued wrong: a zero-variance European, a bond awaiting a delayed payment, a long Theta, H at small a·t | Low | OPEN | Correctness | Fix what exists |
-| [I-105](#i-105) | Storage below float64 does not lower a run's peak memory: the reductions load the whole cube at float64 | Medium | OPEN | Performance | Focus |
 | [I-106](#i-106) | The job queue's file: an interrupted migration stops it opening; a second file starts a second worker | Low | OPEN | API | Focus |
 | [I-107](#i-107) | TraderX: `bundleId` is trusted, not recomputed, so a changed bundle can get the old result | Medium | OPEN | API | TraderX |
 | [I-108](#i-108) | TraderX: NaN amounts priced as `ok`, terms contradicting the row priced, duplicate rows counted twice | Medium | OPEN | API | TraderX |
@@ -540,39 +539,6 @@ operand fusions (or the trades of one shape priced as one product, their columns
 which a matrix unit wants anyway), timed against the code before the kernel rewrite. Related: the cold job's one-operation
 programs ([I-81](#i-81)). (The grid rollback's memory and time on the paths, the other half of the 4,096-path job's time,
 went with its matrix form, [I-83](#i-83), 2026-10-13: the demo's job 0.27 s warm there, against 13.2 s.)
-
-<a id="i-105"></a>
-### I-105 — Storage below float64 does not lower a run's peak memory: the reductions load the whole cube at float64
-
-**Severity:** Medium · **Status:** OPEN · **Category:** Performance · **Found:** 2026-10-10, the
-project audit (AUD-42); confirmed in the code 2026-10-11
-
-**What is wrong.** `engine.run.pipeline` loads the stored cube whole at float64
-(`load(valuation.cube, jnp.float64)`; `PortfolioValuation.cube` stacks every column at once),
-and the exposure reductions read it whole, beside the paired float64 cube when there is one. A
-cube stored in FP8 holds one byte per path, date and trade, but the run's peak still holds
-eight, whether or not the result exports the cube (`cube_output`).
-
-**Reach.** The path count a run reaches on one device, which the precision research's
-equal-time comparison rests on ([F-07](features.md#f-07)): many low-precision paths need the
-memory of as many float64 paths at the reductions. No number is wrong. The other per-path working
-set, a Bermudan's or American's induction (a few copies of its columns on the state grid, 10 to
-41 KB per path at float64 on the demo's and ORE's grids, since its matrix form, [I-83](#i-83),
-2026-10-13), is bounded: each date's paths are priced in blocks within a fixed budget
-(`engine.pricing.lgm_grid.INDUCTION_MEMORY_BUDGET`, 1 GiB), so the demo's job, whose cube is
-small, peaks at 2.0 GB at 262,144 paths on the CPU (9.5 GB in one block) and 0.87 GB on an RTX
-5060.
-
-**Current handling.** None.
-
-**To close.** The reductions over the stored columns trade by trade, each loaded at float64
-alone: a trade's profile from its column, the netting set from a running float64 sum
-`[paths, dates]`, PFE's quantiles from that sum as today (exact, not approximated); the float64
-cube built only when the result asks for it. The peak measured against path count before and
-after, at float64 and at FP8 storage; the golden snapshot within the margin. The induction's
-block budget chosen per device rather than fixed: on the RTX 5060 the fixed 1 GiB splits the
-demo's 65,536 paths in two blocks, 2.15 s warm against 1.60 s in one (on the CPU blocks are
-faster, 2.98 s against 3.70 s at 262,144 paths).
 
 <a id="i-61"></a><a id="p-1"></a>
 ### I-61 — Nothing runs on more than one host; multi-device speed unmeasured
@@ -1461,6 +1427,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-101"></a>I-101 | A negative option notional booked a short European but a long Bermudan or American on the reversed swap (the Bermudan payer at -1e6 was +15,017.85 where ORE's short is -35,712.95), and a zero one priced a European to NaN (now every option has ORE's `LongShort`, `long_short` on the configs and the API, `Long` by default; a short is minus the long one in every engine, today, on the paths with the holder's exercise as ORE's `OptionWrapper`, in the AD and bump Greeks and in market risk; a zero or negative option notional refused naming the trade; 2026-10-11) | `tests/test_option_position.py`, `tests/test_shared_portfolio.py::test_a_short_option_today_is_ores_short_option` (against ORE's trade builder with `LongShort` Short), `tests/test_ore_xva_parity.py::test_a_short_option_on_ores_paths_is_ores_short_option` (each red on the code before) |
 | <a id="i-102"></a>I-102 | VaR took index floor(N(1−p)), one above QuantLib's ceil(N(1−p)) − 1 where N(1−p) is a whole number (VaR 15 where ORE's is 16 on 16 scenarios at 0.9375), and quantile keys were rounded to six decimals, so close levels shared one (now QuantLib's rank, `var_rank`; each key the level's percentage exactly; a run's levels in (0, 1), each once, documented as broader than ORE's [0.9, 1); 2026-10-11) | `tests/test_var_es.py::TestExactRankBoundaryAgainstORE`, `::TestQuantileLabels`, `tests/test_market_risk.py::TestRunValidation::test_close_quantiles_keep_their_own_figures`, `tests/test_exposure.py::TestDefinitions::test_close_quantiles_keep_their_own_keys` (each red on the code before) |
 | <a id="i-55"></a><a id="a-1"></a>I-55 | No result said whether its precision combination had been shown adequate for its figures, so a float32 exposure profile looked exactly like a validated one (now the evidence table, `compliance/precision-evidence.md`, generated from the precision harness's measurements against decision A-11's standard, `compliance/precision-acceptance.json`: the statistical rule, an absolute rule for figures float64 holds fixed, MAR32.42's P&L attribution test for market risk, each row's path ceiling, code revision, market, seeds and device; every portfolio and market-risk result warns of each figure without a passing row; the paired standard errors' limits are [I-111](#i-111); 2026-10-11) | `tests/test_precision_evidence.py` (the rules, the lookup, the files of record against the measurements, a reduced run's warnings end to end; red on the code before, where an FP8 run's `warnings` were `[]`, and the ceiling test red under a ceiling that skips a failing path count), `tests/test_precision_harness.py::TestMeasure::test_the_figures_measured_are_those_the_engine_warns_of` |
+| <a id="i-105"></a>I-105 | Exposure reductions expanded every stored column into a float64 cube even when output was omitted; now streamed at float64 with an exact netting sum and PFE, paired columns retained separately, cube assembly only on request, rollback budget per device (2026-10-15; precision design §17) | `tests/test_exposure_storage.py`, `tests/test_sharding.py` (initial output-omission regression red on the pre-fix pipeline) |
 | <a id="m-4"></a>Audit M-4 | Trades were defined relative to the evaluation date (now absolute dates) | `tests/test_trade_dates.py` |
 | <a id="m-5"></a>Audit M-5 | Theta re-rolled the trade instead of ageing it | `tests/test_trade_dates.py` |
 | <a id="r-1"></a>Audit R-1 | Cube quantiles were reported as VaR/ES (now exposure profiles; market-risk VaR/ES by t=0 revaluation) | `tests/test_exposure.py`, `tests/test_market_risk.py`, `tests/test_market_risk_ore_parity.py` |

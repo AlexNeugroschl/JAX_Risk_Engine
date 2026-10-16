@@ -57,6 +57,10 @@ profiling = [
     # JAX_RISK_PROFILE_DIR opt-in and docs/getting-started/user-guide.md.
     "xprof",
 ]
+benchmark = [
+    # Standalone PDF/PNG scaling plots for demos/demo_gpu_scaling.py.
+    "matplotlib",
+]
 
 [tool.setuptools.packages.find]
 include = ["engine*"]

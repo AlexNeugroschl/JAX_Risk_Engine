@@ -95,6 +95,22 @@ class PortfolioValuation:
         dtype = dtypes.pop() if shared else jnp.float64
         return jnp.stack([load(c, dtype) for c in self.columns], axis=-1)
 
+    def float64_cube(self) -> jax.Array:
+        """The requested output cube, decoded and assembled in one compiled program.
+
+        Unlike `load(self.cube, float64)`, this allocates neither a stack at the stored
+        dtype nor a list of separately decoded columns beside the final array (I-105).
+        Exposure reductions read `columns` directly and never call this method.
+        """
+        if not self.columns:
+            return jnp.zeros((self.num_paths, self.num_dates, 0), dtype=jnp.float64)
+        return _float64_cube(tuple(self.columns))
+
+
+@jax.jit
+def _float64_cube(columns):
+    return jnp.stack([load(c, jnp.float64) for c in columns], axis=-1)
+
 
 def require_unique_ids(trades: Sequence[Trade]) -> None:
     """Trade ids are unique in a portfolio, as ORE requires: every per-trade result and

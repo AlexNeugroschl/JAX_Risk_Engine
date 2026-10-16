@@ -236,7 +236,7 @@ class TestRevaluation:
         interpolated per scenario, and a batch of 256 thrashed a 32 GB machine; as matrix products
         (2026-10-13) it holds about 0.1 MB, so the default batch of 256 is never cut."""
         from engine.pricing.bermudan import prepared_option
-        from engine.pricing.lgm_grid import INDUCTION_MEMORY_BUDGET, working_bytes_per_path
+        from engine.pricing.lgm_grid import induction_memory_budget, working_bytes_per_path
         from engine.risk.market.revaluation import scenario_batch_size
 
         engine = dataclasses.replace(m.ENGINE, n_per_std=64, std_devs=6.0)
@@ -244,7 +244,7 @@ class TestRevaluation:
         per_scenario = working_bytes_per_path(prepared_option(m.bermudan(), engine, engine.volatility), 8)
         assert per_scenario < 2 ** 20
         batch = scenario_batch_size(m.bermudan(), fine, 10 ** 6, itemsize=8)
-        assert 1 <= batch < 10 ** 6 and batch * per_scenario <= INDUCTION_MEMORY_BUDGET
+        assert 1 <= batch < 10 ** 6 and batch * per_scenario <= induction_memory_budget()
         assert scenario_batch_size(m.bermudan(), fine, 256, itemsize=8) == 256
         assert scenario_batch_size(m.swap(), fine, 10 ** 6, itemsize=8) == 10 ** 6
 

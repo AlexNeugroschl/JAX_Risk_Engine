@@ -469,7 +469,7 @@ The only places that read the configuration:
 | 2 | `simulate` | `load(shocks)` at the accumulate format; `evolve_states` in `simulation.arithmetic` (§8.2); `store(states)` |
 | 3 | `simulate` | `load(states)` at the market's accumulate format; `build_scenario_market` in `market.arithmetic` (the level from float64, one product for the deviations, §8.2); every path array of the market stored at `market.storage` (`ScenarioMarket.map_arrays`); the tenor grid and the curves' levels, which have no scenario axis, kept in float64, as every level is (§8.2) |
 | 4 | `engine.pricing.cube.value_portfolio`; `engine.risk.market.run_market_risk` | Per trade, at `stage = precision_for(trade)` (2026-10-02): `load(market)` at the stage's accumulate format (once per format; path fixings once per arithmetic), price the trade in `stage.arithmetic`, `store` its cube column at `stage.storage`. Market risk: shifts rounded to the simulation's accumulate format and stored once; per trade loaded at its stage's accumulate format, revalued in `stage.arithmetic`, the P&L stored at `stage.storage` |
-| 5 | `engine.run.pipeline` (exposure); `run_market_risk` (VaR/ES) | `load(values, float64)` and the numeraire at float64, then reduce |
+| 5 | `engine.run.pipeline` (exposure); `run_market_risk` (VaR/ES) | `load(values, float64)` and the numeraire at float64, then reduce; exposure loads one trade column at a time, retaining a float64 netting sum and sorting it for exact PFE (I-105, §17) |
 
 Before the kernel rewrite (2026-10-10) the stages loaded at, and computed in, their compute
 format, which equalled their accumulate format; since then each stage loads at its accumulate
@@ -499,7 +499,9 @@ The cube is a sequence of per-trade columns, each in its own storage format
 `PortfolioValuation.cube` sets them side by side in their shared format when it is float64 or
 float32, as before, or loaded at float64 when the formats differ or are scaled (exact: float64
 holds every format's values times their power-of-two scales).
-`PortfolioResult.npv_cube` stays an array, loaded at float64, so consumers see no change. A
+`PortfolioResult.npv_cube` stays an array, loaded at float64 when requested (the default).
+`PortfolioRequest.include_npv_cube=False` (HTTP `cube_output="none"`) leaves it empty without
+changing exposure or precision figures; reductions read stored columns directly (§17). A
 trade priced at its precision inside a mixed run gives exactly the column it gives priced
 alone with that `pricing` stage: trades share only the loaded scenario market and fixings,
 which depend on the accumulate format and the arithmetic alone.
@@ -2158,7 +2160,7 @@ step. The demo's job against path count is profiling §2.0's table: 262,144 path
 and a 2.0 GB peak on the CPU and 2.37 s and 0.87 GB on an RTX 5060 at float64, where the code
 before ran out of memory at 65,536 and 1,024 paths; 4,096 paths in 0.26 s against 13.2 s. Blocks
 of paths cost nothing on the CPU (3.70 s and 9.5 GB in one block at 262,144 paths) and a third
-of the warm time on the GPU where 65,536 paths take two (I-105 chooses the budget per device).
+of the warm time on the GPU where 65,536 paths take two (the budget is now chosen per device, §17).
 Market risk's Bermudan revaluation 0.035 ms per scenario at 16 points per standard deviation and
 0.18 ms at 64, against 5.6 and 75 ms; the `market_risk` campaign took 34 s against about 40
 minutes.
@@ -2238,3 +2240,123 @@ harness (2026-10-09, §15.4); `paired_fraction` 0 by default, 0.02 suggested for
 runs; the evidence table's location (`compliance/precision-evidence.md`) and its matching rules
 (§10.4); the fixed-entries rule's share, 1e-6 of a figure's scale (P6.2's rule for figures
 without randomness, applied where float64 holds an entry fixed; 2026-10-11).
+
+## 17. Exposure storage and peak memory (I-105, 2026-10-15)
+
+Executed plan:
+
+1. Prove the defect with a regression: a request omitting the output cube must never
+   access `PortfolioValuation.cube`, while retaining every exposure and precision figure.
+2. Reduce stored columns individually at float64, using the existing exposure definitions
+   and exact sorted PFE. Keep a running float64 netting sum and a separate paired sum;
+   keep the paired valuation as columns too. Complete each trade's reductions before loading
+   the next, bounding live temporary arrays even under asynchronous device dispatch.
+3. Add a Python output switch, defaulting to today's cube behavior, and wire HTTP
+   `cube_output="none"` to it. Materialize requested cubes after the reductions, in one
+   compiled assembly. Preserve inline and artifact results and scenario-risk metadata.
+4. Size the rollback's path blocks by a stable device memory budget, with the existing
+   CPU fallback. Avoid decisions based on fluctuating free memory and budget each device's
+   share rather than the global path count.
+5. Test mixed storage, paired estimates, cancellation, empty portfolios, compilation reuse
+   and scenario sharding. Compare pre/post snapshots, measure fresh-process peak memory
+   over increasing path counts at float64 and FP8, run ORE parity and the full suite, and
+   record results and any remaining limitations here and in the issue ledger.
+
+The arithmetic of pricing and storage stays unchanged. The netting reduction changes its
+addition order only; accuracy is judged by the existing margins, not bit identity.
+
+**Implementation.** `column_profiles` uses `exposure_profile` for both standalone trades
+and the netting set. A module-level jitted decode/add kernel donates only the running sum;
+stored input columns remain valid for a requested cube. Each profile is synchronized on
+device before proceeding, including its paired estimates, so temporary decoded arrays
+cannot accumulate behind asynchronous dispatch. Small reduced arrays remain in the result;
+path arrays are not transferred to the host. The extra reduction working set is a bounded
+number of `[paths, dates]` arrays, independent of trade count; the stored columns themselves,
+the scenario market, option exercise states and the paired sample still take memory.
+
+`PortfolioRequest.include_npv_cube=True` retains the Python default. False returns an empty
+`(0, 0, 0)` cube while keeping exposure and precision figures. HTTP `cube_output="none"`
+sets it to False; inline and artifact output keep True. `PortfolioValuation.float64_cube()`
+decodes and stacks requested output in one compiled program, after reductions and after
+releasing the paired sample. Its specialization depends on storage and shapes, not trade
+identities or values. The decode/add kernel similarly reuses programs across trades.
+
+The rollback's budget is an eighth of the smallest local accelerator allocator's `bytes_limit`,
+with the existing 1 GiB fallback on CPU or when the backend supplies no limit. It depends
+on capacity, never currently free memory. Path blocks now budget each device's share; market
+risk uses the same budget for its batches. The RTX 5060 reports 6,410,993,664 bytes of
+allocator capacity and receives 801,374,208 bytes for the induction. This is a working-set
+budget rather than a guarantee that an arbitrarily large stored market or requested cube fits.
+
+**Accuracy and regression evidence.** The initial regression failed on the pre-change
+pipeline at `load(valuation.cube, float64)` for a request omitting output, and the HTTP
+conversion test failed because there was no engine output switch. The new tests cover
+all storage formats mixed in one netting set, both roundings, partial storage blocks,
+paired corrections and quantile estimates, offsetting and empty portfolios, malformed
+column shapes, cube assembly, HTTP modes and device budgets. Growing from one to nine
+trades and changing their values compiles nothing after warming the run and paired shapes.
+The existing four-device scenario-sharding test passes with streamed exposure too.
+
+The before/after snapshot (`tests.support.exposure_storage_check --snapshot PATH`) covers
+675 numeric outputs, all identical: the shared sloped portfolio's swaps, European, Bermudan,
+American and bond, Greeks included, at float64, float32 throughout and mixed FP8/float32
+storage with a paired sample. Pricing and storage kernels are unchanged; their evidence rows
+are not regenerated. A targeted rerun of the linear precision campaign checks FP8 pricing
+storage at 1,024 and 4,096 paths, with both roundings, both layouts and paired cases.
+At three seeds this rerun produced 720 figure rows, 48 coverage rows and 12 case/path
+runs, with zero recompilations after warming each shape. Full-suite and platform results
+are recorded in [known issues' verification status](../known-issues.md#verification-status).
+
+**Peak memory.** Fresh processes of `tests.support.exposure_storage_check`, 24 alternating
+payer/receiver swaps, 12 dates, today's sloped market, no Greeks or paired sample, output
+cube omitted. Only pricing storage changes; simulation and market remain float64. The
+baseline is the original engine at `c3d7c6a`. Whole-process Windows peak working set in MB
+(decimal), including preparation, compilation, pricing and reductions:
+
+| Paths | Float64 before | Float64 after | FP8 e4m3 before | FP8 e4m3 after |
+|---|---:|---:|---:|---:|
+| 4,096 | 605.8 | 599.3 | 607.7 | 586.4 |
+| 16,384 | 701.6 | 661.2 | 678.9 | 644.2 |
+| 65,536 | 1,092.7 | 1,053.3 | 1,052.0 | 938.4 |
+
+RTX 5060 peak device allocation in MB, with the same fresh-process workload:
+
+| Paths | Float64 before | Float64 after | FP8 e4m3 before | FP8 e4m3 after |
+|---|---:|---:|---:|---:|
+| 4,096 | 152.3 | 152.3 | 152.3 | 152.3 |
+| 16,384 | 242.7 | 201.3 | 201.3 | 201.3 |
+| 65,536 | 725.6 | 459.3 | 609.7 | 394.3 |
+
+At 65,536 paths FP8's peak device allocation falls 35%. These are end-to-end peaks,
+not a claim that the entire job shrinks by
+the storage format's byte ratio. The scenario market, pricing and allocator high-water
+marks limit the gain; requested cubes necessarily still allocate their full float64 output.
+Reproduce a point in a fresh process with `python -m tests.support.exposure_storage_check
+--paths 65536 --storage float8_e4m3fn`; `--paired 0.125` adds the paired sample and `--cube`
+requests output. Measurements are local hardware evidence, not TPU/H100 speed results.
+
+**Rollback budget and timing check.** The small profiling demo's five trades at 65,536
+paths, Greeks off and the full output cube requested, run directly through the Python
+entry on the GPU. Three synchronized warm observations: 0.97–1.10 s before, 1.02–1.12 s
+after; zero warm compilations and identical cube, EPE and ENE. Peak device allocation is
+660 MB before and 609 MB after. Initial calls took 36.65 s and 8.60 s respectively, with
+compilation/cache loading included; the disk cache already held test programs, so those
+are not a controlled cold-compilation comparison. A trial budget of half the allocator
+limit raised the option-workspace peak to 2,219 MB while warm time remained about 1.04 s;
+the conservative eighth was chosen from this measurement. The hardware timing campaign
+must measure the budget/time/peak tradeoff on TPU and H100 rather than assuming a larger
+block is faster.
+
+**Other findings.** The benchmark extra already in the working tree declared matplotlib
+without a constraint, failing the full suite's dependency check. The installed Linux
+benchmark version, 3.11.2, and its previously unpinned dependencies are now constrained.
+The precision harness accepts two seeds, sufficient for its figure errors, but paired
+total-coverage checks use a leave-one-out sample variance and need at least three: with
+two it emits NumPy degrees-of-freedom warnings and reports zero total checks. Use at least
+three seeds for paired coverage; the existing standard-error research remains I-111.
+
+**Remaining plan.** I-105 is closed. FP4, the low-precision rounding bias and independent
+replicate error estimates remain the next precision work (F-07, I-98, I-111, I-113).
+Equal-accuracy timing on TPU/H100 and multi-host execution remain planned; omitting the
+cube is now an explicit output choice, so future timing comparisons must use equal output
+settings on both sides.

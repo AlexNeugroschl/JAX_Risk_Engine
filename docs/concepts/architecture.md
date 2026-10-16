@@ -490,8 +490,19 @@ calibration baskets, to the dtype of the curves they are given):
 | shocks, states | `engine.market_simulation.config.simulate` | normals generated in the simulation's accumulate format and bridged in its arithmetic, stored; states evolved in its arithmetic from the loaded shocks, stored |
 | market | `simulate` | the scenario market built in the market's arithmetic from the states loaded at its accumulate format, returned stored at `market.storage`; its tenor grid and curve levels (no scenario axis) stay float64, as every level is |
 | values | `engine.pricing.cube.value_portfolio` | per trade, at `precision_for(trade)`: the market loaded at its accumulate format (once per format), the trade priced in its arithmetic, its cube column stored at its `storage` |
-| reductions | `engine.run.pipeline` | the cube and the numeraire loaded at float64, then exposure; `PortfolioResult.npv_cube` is the float64-loaded cube, so columns stored in different formats never meet in arithmetic |
-| market risk | `engine.risk.market.run_market_risk` | shifts rounded to the simulation's accumulate format and stored; per trade, the P&L as the deviation from its base value in its `precision_for(trade)` arithmetic (in full for a Bermudan/American), stored at its `storage`; VaR/ES in float64 |
+| reductions | `engine.run.pipeline` | one stored trade column at a time loaded at float64, then standalone exposure and a running float64 netting sum; exact PFE on that sum; the paired sample stays columnar too. Only a requested `PortfolioResult.npv_cube` is assembled, after the reductions |
+| market risk | `engine.risk.market.run_market_risk` | shifts rounded to the simulation's accumulate format and stored; per trade, the P&L as the deviation from its base value in its `precision_for(trade)` arithmetic, stored at its `storage`; VaR/ES in float64 |
+
+For exposure without the output cube, pass `PortfolioRequest(..., include_npv_cube=False)`
+in Python or `cube_output: "none"` over HTTP. Python returns an empty `(0, 0, 0)` `npv_cube`;
+exposure, per-trade figures, exercise decisions, precision reporting and
+`scenario_risk_available` retain their usual meaning. The Python default remains `True`,
+and HTTP inline and artifact output still assemble a float64 cube. Working memory for the
+exposure reductions scales with paths × dates, rather than paths × dates × trades, beside
+the stored columns and scenario market. PFE still sorts all paths, without approximation.
+Each trade's reductions finish before the next is decoded, without transferring path values
+to the host. The accumulation kernel reuses its running sum's buffer and its compiled program
+across trades of the same storage shape (I-105).
 
 `store`/`load` (`engine/precision/storage.py`) are the only casts between stages, and the
 pipeline stores through `Precision.store`, which adds the policy's rounding. For float64 and

@@ -233,7 +233,7 @@ def _date_column(option, rows, disc: ScenarioCurves, index: ScenarioCurves, j, f
     every date (the date is traced): the induction on the curves' level and each path's
     deviation from it (`option_values`), the known coupons' deviations FixingManager's path
     fixings' at their grid `step` where `path_known`; the paths in `blocks` blocks
-    (`engine.pricing.lgm_grid.blocked`), so the induction's memory stays within its budget at any
+    (`engine.pricing.lgm_grid.blocked`), so each device's induction stays within its budget at any
     path count."""
     def split(curves):
         level = curves.level[j]
