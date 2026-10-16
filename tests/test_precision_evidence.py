@@ -256,13 +256,13 @@ class TestLookup:
 class TestPairedErrorLabel:
     @pytest.mark.parametrize("precision, labelled", [
         (Precision(simulation=F16, paired_fraction=0.1), True), (Precision(market=F16, paired_fraction=0.1), True),
-        (Precision(pricing=F16, paired_fraction=0.1), False), (Precision(simulation=F16), False),
-        (Precision(simulation=F32, paired_fraction=0.1), False),
+        (Precision(pricing=F16, paired_fraction=0.1), True), (Precision(simulation=F16), False),
+        (Precision(simulation=F32, paired_fraction=0.1), True),
     ])
-    def test_only_where_the_shocks_or_curves_are_stored_below_32_bits(self, precision, labelled):
-        """The correction's standard error is right for cube storage and understates the error
-        where the shocks, states or curves are stored low (I-111)."""
+    def test_a_single_scramble_cannot_measure_error_in_any_storage_format(self, precision, labelled):
         assert (paired_error_warning(precision) is not None) is labelled
+        warning = paired_error_warning(precision, replicates=8)
+        assert warning is None if not precision.paired_fraction else "independent scrambles" in warning
 
 
 # ---------------------------------------------------------------------------

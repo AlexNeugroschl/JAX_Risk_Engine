@@ -6,6 +6,7 @@ Model-independent; shared by the cross-asset simulation (`engine.market_simulati
 and the market-risk scenario generator (`engine.risk.market.scenarios`).
 """
 from functools import partial
+from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
@@ -16,20 +17,26 @@ from scipy.stats.qmc import Sobol
 from engine.precision import Arithmetic
 
 
-def generate_sobol_normals(num_scenarios: int, num_steps: int, num_assets: int, dtype, seed: int = 42) -> jax.Array:
+def generate_sobol_normals(num_scenarios: int, num_steps: int, num_assets: int, dtype, seed: int = 42,
+                           replicates: int = 1) -> jax.Array:
     """
     Scrambled Sobol uniforms (CPU) mapped to standard normals `[TimeSteps, Scenarios,
     Assets]`.
 
     `seed` selects the Owen scrambling: the same seed reproduces the draw; different seeds
-    are independent randomized-QMC replicates. The output is cast to `dtype`, because
+    are independent randomized-QMC replicates. With `replicates > 1`, concatenate independent
+    scrambles derived from the seed; a paired run takes a prefix of EACH scramble. The output is cast to `dtype`, because
     `norm.ppf` computes in float64 whenever x64 is on.
     """
+    from engine.precision.estimate import validate_replicates
+    validate_replicates(num_scenarios, replicates, "replicates")
     total_dimensions = num_steps * num_assets
 
     # Scrambling randomizes the otherwise deterministic Sobol points.
-    sobol_engine = Sobol(d=total_dimensions, scramble=True, seed=seed)
-    uniform_draws = sobol_engine.random(n=num_scenarios)
+    seeds = ([seed] if replicates == 1 else
+             [int(s.generate_state(1)[0]) for s in np.random.SeedSequence(seed).spawn(replicates)])
+    uniform_draws = np.concatenate([Sobol(d=total_dimensions, scramble=True, seed=s).random(n=num_scenarios // replicates)
+                                    for s in seeds])
 
     # The JAX half is jitted: eagerly, each op compiled separately and dominated the
     # function's cost.
@@ -124,10 +131,15 @@ def bridge_increments_matrix(time_grid) -> np.ndarray:
     return increments / np.sqrt(np.diff(times))[:, None]
 
 
-@partial(jax.jit, static_argnames="arithmetic")
+@jax.jit
 def _apply_bridge_matrix(matrix: jax.Array, Z: jax.Array, arithmetic: Arithmetic) -> jax.Array:
     """`matrix @ Z` over the time axis of `Z` `[T, ...]`, as one `[T, T] x [T, rest]` product."""
-    return arithmetic.matmul(matrix, Z.reshape(Z.shape[0], -1), shared="left").reshape(Z.shape)
+    if arithmetic.key is not None:
+        # Flattened columns are (sample, asset); retain a global column identity.
+        ids = jnp.arange(Z.shape[1], dtype=jnp.uint32) if arithmetic.sample_ids is None else arithmetic.sample_ids
+        ids = (ids[:, None] * Z.shape[2] + jnp.arange(Z.shape[2], dtype=jnp.uint32)).reshape(-1)
+        arithmetic = replace(arithmetic, sample_ids=ids)
+    return arithmetic.matmul(matrix, Z.reshape(Z.shape[0], -1), shared="left", sample_axis=1).reshape(Z.shape)
 
 
 def apply_brownian_bridge(Z: jax.Array, time_grid, arithmetic: Arithmetic = None) -> jax.Array:

@@ -39,6 +39,7 @@ from engine.market_simulation.sobol import apply_brownian_bridge, generate_sobol
 from engine.models.cam import CrossAssetModel, EqComponent, FxComponent, IrComponent, path_moments, step_moments
 from engine.models.lgm import Sigma, as_sigma
 from engine.precision import Precision, format_name, load, require_precision
+from engine.precision.estimate import validate_replicates
 from engine.solvers.roots import DEFAULT_SOLVER, check_solver
 
 #: Simulation-market curve tenors when none are configured: the yield-curve tenors of ORE's
@@ -127,7 +128,10 @@ class CamConfig:
         (`IR:USD`, `FX:EURUSD`, `EQ:SP5`), ORE's `InstantaneousCorrelations`. Unlisted pairs
         are 0.
     curve_tenors: simulation-market tenors of every discount and index curve.
-    samples / seed: paths and Sobol scrambling seed.
+    samples / seed: total paths and Sobol scrambling seed.
+    replicates: equal-sized independent scrambles, concatenated on the path axis (default 1,
+        preserving the original draw). Use at least 8 for practical uncertainty estimates;
+        paired/scaled-storage replicate boundaries must coincide with storage blocks.
     swaption_vol_decay: `ReactionToTimeDecay` of the (not simulated) swaption vols.
     bootstrap_tolerance: ORE's `BootstrapTolerance`, one for the whole model as ORE's
         `CrossAssetModelData` holds it: a currency's calibration whose error (the root mean
@@ -147,6 +151,7 @@ class CamConfig:
     seed: int = 42
     swaption_vol_decay: str = "ForwardVariance"
     bootstrap_tolerance: float = BOOTSTRAP_TOLERANCE
+    replicates: int = 1
 
     def __post_init__(self):
         dates = tuple(self.dates)
@@ -167,6 +172,7 @@ class CamConfig:
                 f"got {sorted(self.fx_volatilities)}")
         if self.samples < 1:
             raise ValueError(f"samples must be positive; got {self.samples}")
+        validate_replicates(self.samples, self.replicates, "CamConfig.replicates")
         if self.swaption_vol_decay not in SWAPTION_VOL_DECAY_MODES:
             raise ValueError(f"swaption_vol_decay must be one of {SWAPTION_VOL_DECAY_MODES}")
         check_tolerance(self.bootstrap_tolerance, "CamConfig.bootstrap_tolerance")
@@ -252,14 +258,16 @@ def simulate(market: Market, config: CamConfig, model: Optional[CrossAssetModel]
     everything else). The shocks and states are not kept: the market records the formats they
     were stored in (`ScenarioMarket.simulation_formats`)."""
     require_precision("simulate's precision", precision)
-    sim, mkt = precision.simulation.arithmetic, precision.market.arithmetic
+    precision.validate_sampling(config.samples, config.replicates, "simulation")
+    sim = precision.arithmetic_for(precision.simulation, "simulation")
+    mkt = precision.arithmetic_for(precision.market, "market")
     model = model or build_cross_asset_model(market, config)
     times = grid_times(market, config)
     moments = step_moments(model, times)
     path = path_moments(model, moments)
     # Split across the host's devices along the paths; the rest of the run follows (I-61).
     normals = shard_scenarios(generate_sobol_normals(config.samples, len(config.dates), model.dimension, sim.dtype,
-                                                     seed=config.seed), axis=1)
+                                                     seed=config.seed, replicates=config.replicates), axis=1)
     shocks = precision.store(apply_brownian_bridge(normals, times, sim), precision.simulation.storage, "shocks", axis=1)
     states = precision.store(evolve_states((path.mean, path.scale), standardized_steps(moments, path),
                                            load(shocks, sim.dtype), sim), precision.simulation.storage, "states")

@@ -102,8 +102,8 @@ a float32 product run as TensorFloat-32 or as three bfloat16 passes (2026-10-10)
 single pass, `"<format>_1x"` (2026-10-11, below). The kernels
 are in difference form, so a product multiplies each path's deviation from a level no path
 depends on: the precision a compute format loses is relative to how far the paths move. A
-Bermudan's or American's stage computes and accumulates in one format, float32 or float64,
-until its rollback is rewritten that way (refused otherwise, naming F-07).
+Bermudan's or American's rollback uses the same difference-form product machinery in
+every compute format, with float32 accumulation below float32.
 `Precision.throughout("float32")` sets every stage to float32; `Precision.throughout("bfloat16")`
 computes and stores every stage in bfloat16, accumulating in float32. The report names each
 compute format the run used and whether the device ran it natively or the engine emulated it
@@ -113,9 +113,9 @@ loading) is carried in two terms of the format (2026-10-11, decision A-23): roun
 error would move every path alike, a bias more paths do not remove
 ([I-96](../planning/known-issues.md#i-96), fixed). `"<format>_1x"` (`"float16_1x"`,
 `"bfloat16_1x"`, `"float8_e4m3fn_1x"`, `"float8_e5m2_1x"`, `"tensorfloat32_1x"`) is the single
-pass, a compute format only, kept for measuring it. FP8 compute keeps a bias of its own
-rounding ([I-98](../planning/known-issues.md#i-98)); a paired float64 sample
-(`paired_fraction`) corrects the means.
+pass, a compute format only, kept for measuring it. Nearest rounding can bias per-path
+operands; stochastic compute rounding removes that conditional bias (I-98), but nonlinear
+figures and extra variance still require measurement. A paired float64 sample corrects means.
 
 Storage below 32 bits keeps a float32 power-of-two scale per block of 32 paths that brings the
 block's largest value to the format's maximum, so the format's range never limits the values;
@@ -159,7 +159,7 @@ its `storage` is `"float32"`, and FP8 numbers times their block scales when it i
 naming the replacement (decision A-12).
 
 **The paired sample and the precision report** (decision A-13). With
-`paired_fraction > 0` the first paths are simulated and priced again at float64 throughout (the
+`paired_fraction > 0` a prefix within each independent scramble is simulated and priced again at float64 throughout (the
 same Sobol points, so the same paths a float64 run would give, bit for bit), and every figure is
 measured against float64 on them. Means are corrected by the two-level estimator,
 `mean over the run's paths + mean over the paired paths of (float64 − run)`, which turns a
@@ -174,16 +174,21 @@ the run's own, measured on the pair. Every result carries `precision`, a `Precis
 | `realized` | `{array: format}`, read from the stored arrays: `"shocks"`, `"states"`, `"market"` and `"values/<trade_id>"` (a market-risk run: `"shocks"` and the P&L per trade). |
 | `devices`, `backend`, `jax_version` | The devices holding the stored arrays (`"cpu:0 (cpu)"`), the JAX backend and version of the process that ran the job. |
 | `paths`, `paired_paths` | The run's paths (scenarios), and how many were re-run at float64. |
+| `replicates`, `uncertainty_method` | Independent scrambled Sobol replicates and the uncertainty method. One scramble preserves the previous sampling design and reports unavailable standard errors. |
 | `figures` | With a paired sample: `"netting_set/EPE"`, `"trades/<trade_id>/ENE"`, `"netting_set/PFE_95"`, ... (market risk: `"portfolio/VaR_99"`, `"portfolio/ES_97.5"`). A mean (`MeanEstimate`): `value` (the reported, corrected figure), `uncorrected`, `correction`, `standard_error`, `uncorrected_standard_error`, `correction_standard_error`, `max_difference`. A quantile (`QuantileEstimate`): `value` (the run's own), `paired`, `paired_float64`, `difference`. Arrays per simulation date (t=0 excluded). |
 
 ```python
 result = price_portfolio(PortfolioRequest(market, trades, RunConfig(
     simulation=sim, precision=Precision(pricing=StagePrecision("float8_e4m3fn"), paired_fraction=0.05))))
 epe = result.precision.figures["netting_set/EPE"]
-epe.correction, epe.correction_standard_error   # the FP8 cube's bias on EPE, and its error
+epe.correction, epe.correction_standard_error   # correction and its error across independent scrambles
 ```
 
 At float64 everywhere a paired sample measures exactly zero.
+
+Evidence rows apply to the campaign's pricing engine and grid. The current lookup omits
+those settings (I-114); an unmeasured engine or grid needs its own matched measurements
+before its precision can be called validated.
 
 Whether a combination is validated for a figure is the evidence table
 ([compliance/precision-evidence.md](../../compliance/precision-evidence.md)): per figure, product
@@ -201,9 +206,30 @@ simulation date (the cube); today's NPV is float64 at every precision.
 ```
 
 A row is evidence for the market and portfolio its campaign measured, not proof for every run
-([precision.md §10.4](../planning/details/precision.md#104-as-built-2026-10-11)). With a paired
-sample and the shocks or curves stored below 32 bits, a warning also says that the correction's
-standard error understates its error ([I-111](../planning/known-issues.md#i-111)).
+([precision.md §10.4](../planning/details/precision.md#104-as-built-2026-10-11)). Evidence keys
+include stochastic compute rounding and the replicate count; another policy or sampling
+design cannot inherit a passing row.
+
+Use `dataclasses.replace(sim, replicates=8)` (or more) to estimate uncertainty within a
+run. `samples` remains the total budget and must divide equally among the scrambles.
+For scaled storage or a paired sample, each scramble must contain a multiple of 32 paths.
+The paired fraction rounds up to a storage block **within every scramble**, so inspect
+`paired_paths` for the actual float64 work. Means are averages of the replicate estimates;
+their standard errors are the sample standard deviation across replicates divided by
+the square root of their count. This includes the paired correction and covariance.
+Student t with `replicates - 1` degrees of freedom is the approximate mean-interval
+convention. It is not a validated 95% bound for rare events: the storage campaign still
+finds undercoverage (I-111), and every paired result warns. See
+[the measured limits](../planning/details/precision-accuracy.md). With one scramble these standard errors
+are NaN (HTTP `null`) and the result warns. No paths are treated as independent.
+
+`StagePrecision(..., compute_rounding="stochastic")` enables unbiased rounding of each
+per-path product operand in float16, bfloat16, TensorFloat-32 or FP8. `rounding_seed`
+selects reproducible independent streams per stage and trade, separate from storage
+rounding. Nearest remains the default research baseline. Stochastic rounding removes
+the operand's conditional rounding bias; nonlinear payoff/exercise bias and additional
+variance still require measurement. The shared operand retains its two-term representation.
+Float32, float64 and `bfloat16_3x` refuse stochastic compute rounding by name.
 
 ## `PortfolioResult`
 

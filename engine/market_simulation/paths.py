@@ -19,7 +19,6 @@ no rounding of the mean is shared by every path. Everything multiplied is near 1
 deviation in units of its own scale, the normals, and the standardized moments (a scale's
 ratio, a correlation).
 """
-from functools import partial
 from typing import Tuple
 
 import jax
@@ -39,7 +38,7 @@ def standardized_steps(moments: StepMoments, path: PathMoments) -> np.ndarray:
     return np.concatenate([np.swapaxes(transition, 1, 2), np.swapaxes(noise, 1, 2)], axis=1)
 
 
-@partial(jax.jit, static_argnames="arithmetic")
+@jax.jit
 def evolve_states(path: Tuple[jax.Array, jax.Array], steps: jax.Array, normals: jax.Array,
                   arithmetic: Arithmetic) -> jax.Array:
     """States `[S, T, d]` at `times[1:]` from independent standard normals `[T, S, d]`
@@ -50,11 +49,12 @@ def evolve_states(path: Tuple[jax.Array, jax.Array], steps: jax.Array, normals: 
     normals = arithmetic.cast(normals)
 
     def step(deviation, inputs):
-        moments, z = inputs
-        deviation = arithmetic.matmul(jnp.concatenate([deviation, z], axis=-1), moments, shared="right")
+        moments, z, step_id = inputs
+        deviation = arithmetic.fold_in(step_id).matmul(jnp.concatenate([deviation, z], axis=-1), moments,
+                                                       shared="right")
         return deviation, deviation
 
     start = jnp.zeros(normals.shape[1:], dtype=arithmetic.dtype)
-    _, deviations = jax.lax.scan(step, start, (steps, normals))               # [T, S, d]
+    _, deviations = jax.lax.scan(step, start, (steps, normals, jnp.arange(normals.shape[0])))
     states = add_level(mean[1:, None, :], scale[1:, None, :] * deviations)
     return jnp.transpose(states, (1, 0, 2))

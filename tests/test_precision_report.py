@@ -48,9 +48,9 @@ TRADES = ("swap-payer", "european-payer", "bermudan-payer-physical", "bond")
 CHEAP = ("swap-payer", "european-payer", "bond")
 
 
-def _simulation(samples=96, seed=3, model=LgmConfig) -> CamConfig:
+def _simulation(samples=96, seed=3, model=LgmConfig, replicates=1) -> CamConfig:
     return CamConfig(dates=DATES, base_currency="USD", ir={"USD": model(0.03, 0.01, ("1Y", "2Y"), ("9Y", "8Y"))},
-                     samples=samples, seed=seed)
+                     samples=samples, seed=seed, replicates=replicates)
 
 
 def _price(policy, names=TRADES, **simulation):
@@ -165,7 +165,7 @@ class TestTwoLevelMean:
         (np.zeros(()), np.zeros(())),
     ])
     def test_a_sample_that_cannot_pair_is_refused(self, low, high):
-        with pytest.raises(ValueError, match="pairs the first n"):
+        with pytest.raises(ValueError, match="paired sample"):
             two_level_mean(low, high)
 
     def test_it_compiles_once_per_pair_of_shapes(self):
@@ -310,16 +310,16 @@ class TestPortfolioPairedSample:
     def test_a_stored_cube_bias_is_corrected_within_its_standard_error(self, seed):
         """FP8 storage, rounded to nearest, of a concentrated column (a bond's cube, I-75) is a
         bias. Against the float64 run on the same paths, the estimate's error is the paired
-        differences' mean over the other paths, whose standard error is the correction's
-        times sqrt(1 - n/N)."""
+        differences' mean over independent scrambles. No IID finite-population adjustment
+        is justified for dependent Sobol points (I-111)."""
         names = ("bond", "swap-payer")
-        exact = _price(Precision(), names, samples=256, seed=seed)
-        got = _price(Precision(pricing=StagePrecision("float8_e5m2"), paired_fraction=0.25), names, samples=256,
-                     seed=seed)
+        exact = _price(Precision(), names, samples=1024, seed=seed, replicates=8)
+        got = _price(Precision(pricing=StagePrecision("float8_e5m2"), paired_fraction=0.25), names, samples=1024,
+                     seed=seed, replicates=8)
         for key, reference in (("trades/bond/EPE", exact.trade_exposures[0]), ("netting_set/EPE", exact.exposure)):
             figure = got.precision.figures[key]
             error = np.abs(np.asarray(figure.value) - np.asarray(reference.epe[1:]))
-            bound = 3.0 * np.asarray(figure.correction_standard_error) * np.sqrt(1 - 64 / 256)
+            bound = 3.0 * np.asarray(figure.correction_standard_error)
             assert np.all(error <= bound), (key, error, bound)
 
     def test_a_repeated_paired_run_compiles_nothing(self):
@@ -408,7 +408,8 @@ class TestMarketRisk:
         assert (report.paths, report.paired_paths) == (256, 128)
         assert set(report.figures) == {"portfolio/VaR_95", "portfolio/ES_95", "portfolio/VaR_90", "portfolio/ES_90"}
         _all_figures_exactly_zero(report)
-        assert paired.risk == plain.risk
+        assert paired.risk.keys() == plain.risk.keys()
+        np.testing.assert_allclose(list(paired.risk.values()), list(plain.risk.values()), rtol=0, atol=0, equal_nan=True)
         for key, figure in report.figures.items():
             assert float(figure.value) == plain.risk[key.split("/")[1]], key
 

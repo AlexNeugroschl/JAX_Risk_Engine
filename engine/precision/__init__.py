@@ -5,7 +5,7 @@
                  format, scaled, the kind of matrix product, the shared operand's terms (each
                  format's single pass `<name>_1x` a row of its own), enabled step
     arithmetic.py  Arithmetic, a stage's compute and accumulate formats as its kernels take
-                 them (static), and their validation
+                 them (formats static, random keys/sample ids traced), and their validation
     policy.py    StagePrecision, Precision and their validation; Precision.precision_for, the
                  pricing stage of one trade (overrides per product and per trade);
                  Precision.store, storage with the policy's rounding
@@ -14,6 +14,7 @@
                  rounding
     estimate.py  the paired float64 sample: its size, the two-level estimator of a mean,
                  a quantile measured on it (decision A-13)
+    uncertainty.py  replicate deletion, jackknife errors and bounded-memory moving blocks
     report.py    PrecisionReport, on every result: the policy as run, the realized formats,
                  the devices, and each figure's estimate
     products.py  matmul, every matrix product of the engine's JAX code, in a stage's compute

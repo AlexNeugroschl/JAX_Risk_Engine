@@ -52,7 +52,9 @@ from engine.precision import Arithmetic, add_level
 from engine.pricing.config import JamshidianEngineConfig
 from engine.pricing.context import PricingContext
 from engine.pricing.european import EuropeanTerms, european_terms
-from engine.pricing.legs import PathFixings, PathSchedule, discount_deviations, discount_from, on_every_date
+from engine.pricing.legs import (
+    PathFixings, PathSchedule, date_arithmetic, discount_deviations, discount_from, on_every_date,
+)
 from engine.solvers.roots import Steps, implicit_root
 
 
@@ -136,6 +138,7 @@ def jamshidian_on_discounts(terms: EuropeanTerms, model: JamshidianEngineConfig,
     option = bond_put if legs.payer else bond_call
     std_dev = jnp.abs(dH) * jnp.sqrt(zeta)
     arithmetic = arithmetic or Arithmetic.of(dtype)
+    arithmetic = date_arithmetic(arithmetic, t)
     return arithmetic.matmul(option(p_start[..., None], p_bond, strikes, std_dev), amounts, shared="right")
 
 
@@ -161,7 +164,7 @@ def jamshidian_cube(terms: EuropeanTerms, model: JamshidianEngineConfig, schedul
     return _jamshidian_cube(terms, model, schedule, times, disc, index, fixings, alive, arithmetic)
 
 
-@partial(jax.jit, static_argnames=("model", "arithmetic"))
+@partial(jax.jit, static_argnames="model")
 def _jamshidian_cube(terms: EuropeanTerms, model: JamshidianEngineConfig, schedule: PathSchedule, times, disc, index,
                      fixings: PathFixings, alive, arithmetic: Arithmetic) -> jax.Array:
     def value(disc_j, _index, t_j, _fixed, _float, _projected, _known, deviations, alive_j):

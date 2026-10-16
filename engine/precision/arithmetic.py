@@ -22,8 +22,10 @@ emulated) and meets each path's deviation in two terms of the accumulate format
 level is shared by every path, which would be a bias more paths do not remove (measured: a
 float32 bond's mean moved 0.04 with the level rounded once, 2026-10-10) (§8.2).
 
-Kernels take an `Arithmetic` as a static argument (it is frozen and hashable), so a kernel
-compiles once per pair of formats and shapes. `StagePrecision.arithmetic` is a stage's.
+Kernels take `Arithmetic` as a pytree: compute, accumulate and rounding are static
+metadata; the random key and global sample ids are traced data. Programs compile once
+per format, rounding policy and shape, never per seed, date or trade.
+`Precision.arithmetic_for` binds a stage or trade rounding stream.
 
 Refused, naming the field, by `arithmetic_refusal` (shared with `StagePrecision`):
 
@@ -34,9 +36,10 @@ Refused, naming the field, by `arithmetic_refusal` (shared with `StagePrecision`
     units of those formats accumulate in float32, and a policy that said otherwise would not be
     what a native run computes.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional, Tuple
 
+import jax
 import jax.numpy as jnp
 
 from engine.precision.formats import Format, format_of, name_of
@@ -62,12 +65,18 @@ def arithmetic_refusal(compute: Format, accumulate: Format) -> Optional[Tuple[st
     return None
 
 
+@jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
 class Arithmetic:
     """A stage's compute and accumulate formats, by name (see the module docstring).
-    `Arithmetic()` is float64 throughout."""
+    `Arithmetic()` is float64 throughout. Stochastic products need an explicit `key`;
+    `Precision.arithmetic_for` binds it for pipelines. Keys and `sample_ids` are data,
+    never static JIT arguments."""
     compute: str = "float64"
     accumulate: str = "float64"
+    rounding: str = "nearest"
+    key: object = None
+    sample_ids: object = None
 
     def __post_init__(self):
         rows = {}
@@ -80,6 +89,22 @@ class Arithmetic:
         if refusal is not None:
             field, reason = refusal
             raise ValueError(f"Arithmetic.{field}={getattr(self, field)!r}: {reason}")
+        if self.rounding not in ("nearest", "stochastic"):
+            raise ValueError("Arithmetic.rounding must be 'nearest' or 'stochastic'")
+        if self.rounding == "stochastic" and (not rows["compute"].below_float32
+                                               or rows["compute"].product == "bfloat16_3x"):
+            raise ValueError("Arithmetic.rounding='stochastic' needs a single-grid compute format below float32")
+
+    def tree_flatten(self):
+        return (self.key, self.sample_ids), (self.compute, self.accumulate, self.rounding)
+
+    @classmethod
+    def tree_unflatten(cls, meta, data):
+        return cls(*meta, *data)
+
+    def fold_in(self, data):
+        """Derive a date/step/product stream; the key remains traced data."""
+        return self if self.key is None else replace(self, key=jax.random.fold_in(self.key, data))
 
     @classmethod
     def of(cls, dtype) -> "Arithmetic":
@@ -93,10 +118,10 @@ class Arithmetic:
         in."""
         return format_of(self.accumulate).dtype
 
-    def matmul(self, a, b, *, shared: str):
+    def matmul(self, a, b, *, shared: str, stream: int = 0, sample_axis: int = 0):
         """`a @ b` in this arithmetic, `shared` the operand every path shares, `"left"` or
         `"right"` (`engine.precision.products.matmul`; decision A-23)."""
-        return matmul(a, b, self, shared)
+        return matmul(a, b, self.fold_in(stream), shared, sample_axis=sample_axis)
 
     def cast(self, x):
         """`x` in the accumulate format."""

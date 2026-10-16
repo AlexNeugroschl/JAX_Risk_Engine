@@ -123,6 +123,7 @@ class StagePrecisionSchema(BaseModel):
     storage: FormatName = "float64"
     compute: FormatName = "float64"
     accumulate: FormatName = "float64"
+    compute_rounding: RoundingName = "nearest"
 
     @classmethod
     def from_dataclass(cls, stage: StagePrecision) -> "StagePrecisionSchema":
@@ -326,6 +327,7 @@ class CamConfigSchema(_Strict):
     curve_tenors: Optional[List[str]] = None
     samples: int = 1000
     seed: int = 42
+    replicates: int = Field(default=1, ge=1, strict=True)
     swaption_vol_decay: Literal["ForwardVariance", "ConstantVariance"] = "ForwardVariance"
     #: ORE's `BootstrapTolerance`, one for the model: a currency's calibration whose error (the
     #: root mean square of its helpers' relative price errors) is not below it is refused (I-73).
@@ -339,7 +341,7 @@ class CamConfigSchema(_Strict):
             fx_volatilities={k: _volatility(v) for k, v in self.fx_volatilities.items()},
             equity_volatilities={k: _volatility(v) for k, v in self.equity_volatilities.items()},
             correlations={(c.factor1, c.factor2): c.value for c in self.correlations},
-            samples=self.samples, seed=self.seed, swaption_vol_decay=self.swaption_vol_decay,
+            samples=self.samples, seed=self.seed, replicates=self.replicates, swaption_vol_decay=self.swaption_vol_decay,
             bootstrap_tolerance=self.bootstrap_tolerance, **extra)
 
 
@@ -639,16 +641,17 @@ class MonteCarloScenariosSchema(_ScenariosSchema):
     covariance: List[List[float]]
     num_scenarios: int
     seed: int = 42
+    replicates: int = Field(default=1, ge=1, strict=True)
 
     def check(self, market: Market) -> RateRiskFactors:
         """The factors, the other inputs checked without drawing a scenario (no JAX work)."""
         factors = self.risk_factors(market)
-        validate_monte_carlo(factors, self.covariance, self.horizon_days, self.num_scenarios)
+        validate_monte_carlo(factors, self.covariance, self.horizon_days, self.num_scenarios, self.replicates)
         return factors
 
     def to_dataclass(self, market: Market):
         return monte_carlo_scenarios(self.risk_factors(market), self.covariance, self.horizon_days,
-                                     self.num_scenarios, self.seed)
+                                     self.num_scenarios, self.seed, self.replicates)
 
 
 class HistoricalScenariosSchema(_ScenariosSchema):
@@ -658,13 +661,18 @@ class HistoricalScenariosSchema(_ScenariosSchema):
     source: Literal["historical"]
     history: List[List[float]]
     dates: Optional[List[str]] = None
+    bootstrap_replicates: int = Field(default=128, ge=2, strict=True)
+    block_length: Optional[int] = Field(default=None, ge=1, strict=True)
+    bootstrap_seed: int = Field(default=42, ge=0, strict=True)
 
     def check(self, market: Market) -> RateRiskFactors:
         """The factors, the scenarios built to check them (numpy only: no JAX work)."""
         return self.to_dataclass(market).factors
 
     def to_dataclass(self, market: Market):
-        return historical_scenarios(self.risk_factors(market), self.history, self.horizon_days, self.dates)
+        return historical_scenarios(self.risk_factors(market), self.history, self.horizon_days, self.dates,
+                                    bootstrap_replicates=self.bootstrap_replicates, block_length=self.block_length,
+                                    bootstrap_seed=self.bootstrap_seed)
 
 
 ScenariosSchema = Annotated[Union[MonteCarloScenariosSchema, HistoricalScenariosSchema],
@@ -703,6 +711,9 @@ class MarketRiskRequestSchema(_Strict):
         validate_portfolio(trades, market, self.pricing.to_dataclass(), self.precision.to_dataclass(), self.quantiles,
                            self.batch_size, self.base_currency)
         validate_factors(trades, market, self.scenarios.check(market))
+        if isinstance(self.scenarios, MonteCarloScenariosSchema):
+            self.precision.to_dataclass().validate_sampling(self.scenarios.num_scenarios,
+                                                            self.scenarios.replicates, "scenarios")
 
 
 # --- the cross-asset model's calibration ------------------------------------------------------

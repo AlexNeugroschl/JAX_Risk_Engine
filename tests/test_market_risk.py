@@ -275,6 +275,9 @@ class TestRun:
         expected = compute_risk_metrics(np.asarray(result.pnl)[:, None, :], 0.0, percentiles=(0.99, 0.975))
         assert set(result.risk) == set(expected)
         for key, value in expected.items():
+            if key.endswith("_standardError"):
+                assert np.isnan(result.risk[key])  # one dependent Sobol scramble (I-111)
+                continue
             assert result.risk[key] == pytest.approx(float(np.asarray(value)[0]), rel=1e-12)
 
     def test_basel_quantile_is_labelled_97_5(self, mixed_run):

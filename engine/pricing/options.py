@@ -41,6 +41,18 @@ def position_sign(cfg) -> float:
     return -1.0 if cfg.long_short == "Short" else 1.0
 
 
+@jax.jit
+def bound_option_pnl(pnl, base, sign):
+    """Keep a standalone option's signed value within its bound (I-113).
+
+    Project the change directly: reconstructing and subtracting a large base would
+    lose small moves. Used before storage and after decoding, which can cross the
+    bound again. This is never applied to a delivered physical underlying.
+    """
+    base, sign = jnp.asarray(base, dtype=pnl.dtype), jnp.asarray(sign, dtype=pnl.dtype)
+    return sign * jnp.maximum(sign * pnl, -sign * base)
+
+
 def effective_steps(exercise_dates: Sequence[ORE.Date], asof: ORE.Date,
                     grid: Sequence[ORE.Date]) -> List[Optional[int]]:
     """For each contract exercise date, the index of the grid date it takes effect on, or
@@ -74,6 +86,9 @@ def wrap(option: jax.Array, underlyings: Sequence[jax.Array], steps: Sequence[Op
 
 @partial(jax.jit, static_argnums=(2, 3))
 def _wrap(option: jax.Array, underlyings, steps, physical: bool, sign: jax.Array):
+    # A reconstructed long continuation can cross zero by its rounding error (I-113).
+    # Project before exercise and LongShort; delivered physical swaps retain their sign.
+    option = jnp.maximum(option, 0.0)
     num_dates = option.shape[1]
     after = jnp.arange(num_dates)
     value = option

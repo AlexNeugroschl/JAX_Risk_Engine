@@ -142,7 +142,7 @@ def rows_of(m: Measurements, standard: Standard) -> List[EvidenceRow]:
         if precision.by_product or precision.by_trade:
             raise ValueError(f"{m.campaign}/{label}: a case with overrides has a combination per product; the "
                              f"evidence table reads uniform cases only")
-        key = combination(precision, figures.stages, precision.pricing)
+        key = combination(precision, figures.stages, precision.pricing, m.replicates)
         if key is None:
             continue
         groups: Dict[Tuple[str, str], Dict[int, List[FigureRow]]] = {}
@@ -217,7 +217,7 @@ def _campaign(m: Measurements) -> dict:
             "commit": env.get("commit", "unknown"), "changes": env.get("changes", "unknown"),
             "engine": env.get("engine", "unknown"), "device": f"{env.get('backend', '?')} ({env.get('devices', '?')})",
             "jax": env.get("jax", "unknown"), "seeds": len(m.seeds), "paths": list(m.paths),
-            "measured": env.get("measured", "unknown")}
+            "measured": env.get("measured", "unknown"), "replicates": m.replicates}
 
 
 def markdown(measurements: Sequence[Measurements], rows: Mapping[str, Sequence[EvidenceRow]],
@@ -246,7 +246,8 @@ def markdown(measurements: Sequence[Measurements], rows: Mapping[str, Sequence[E
         "- **A row** is one figure kind of one scope under one case of a campaign: a product (the worst of the "
         "campaign's trades of it) or the aggregate (the netting set, the market-risk portfolio). Its combination is "
         "the precision of every stage the figure depends on, `<stage>=<storage>/<compute>/<accumulate>`, then the "
-        "rounding and block layout where a stage stores in a scaled format; its case label in the campaign's terms "
+        "rounding and block layout where a stage stores in a scaled format. Stochastic compute rounding and "
+        "nondefault replicate counts are also part of the key; its case label in the campaign's terms "
         "(`tests/support/precision_harness.py`): `<stage>:<format>[:<rounding>:<layout>]` stores one stage, "
         "`<stage>:compute:<format>` computes one stage's products in a format, `throughout:<format>` every stage, "
         "and `:paired` adds a paired float64 sample.",
@@ -263,10 +264,14 @@ def markdown(measurements: Sequence[Measurements], rows: Mapping[str, Sequence[E
         "every product of the run, with one pricing stage for all its trades; a figure the paired sample corrects "
         "(EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B, the Basel EPE and EEPE) by the rows of the largest paired share at "
         "most the run's; the smallest ceiling where rows of two campaigns match.",
-        "- **Formats below float32 were emulated** on the CPU named, which computes what native units compute "
+        "- **CPU formats below float32 are emulated**; GPU execution follows the verified native/emulated "
+        "format table in `engine.precision.products` "
         "([precision.md §8.3](../docs/planning/details/precision.md#83-emulation-and-native-speed)). Each campaign's "
         "row names the code it measured: its commit, whether the tree had local changes, and the digest of the "
-        "engine's Python sources.", "",
+        "engine's Python sources.",
+        "- **Pricing settings limit the evidence.** The lookup currently omits the pricing engine and grid "
+        "configuration ([I-114](../docs/planning/known-issues.md#i-114)). A row measured with Bachelier or one "
+        "rollback grid is not evidence for an unmeasured engine or grid; consult the campaign definition.", "",
         "## Campaigns", "",
         "| Campaign | Market | Products | Path counts | Seeds | Code | Device | Measured |",
         "|---|---|---|---|---|---|---|---|"]

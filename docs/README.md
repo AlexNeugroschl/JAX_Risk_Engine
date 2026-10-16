@@ -123,7 +123,8 @@ without credit. Their TraderX-bundle counterparts live at the integration bounda
     [configurable engine](planning/details/configurable-engine.md),
     [ORE parity validation](planning/details/ore-parity-validation.md),
     [Basel III](planning/details/basel-iii.md),
-    [precision](planning/details/precision.md) (down to FP8, and the engine worker) and the
+    [precision](planning/details/precision.md) (down to FP8, and the engine worker),
+    [rounding and uncertainty](planning/details/precision-accuracy.md), and the
     [TraderX integration](planning/details/traderx-integration.md) (the agreed EOD contract
     and what is open with TraderX).
 - **[Decisions](../compliance/decisions.md)** — the dated modelling decisions behind the

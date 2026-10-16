@@ -28,6 +28,10 @@ def _portfolio_runs():
         "lgm": {"simulation": {"samples": 64, "seed": 5}, "precision": {"paired_fraction": 0.25}},
         "fp8-stochastic": {"simulation": {"samples": 64, "seed": 5},
                            "precision": {"market": fp8, "pricing": fp8, "rounding": "stochastic"}},
+        "compute-stochastic": {"simulation": {"samples": 128, "seed": 5, "replicates": 4},
+                               "precision": {s: {"storage": "float32", "compute": "float8_e4m3fn",
+                                                  "accumulate": "float32", "compute_rounding": "stochastic"}
+                                             for s in ("simulation", "market", "pricing")}},
     }
     for name, extra in bodies.items():
         body = {"market": shared.market_json(), "trades": trades,

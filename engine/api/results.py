@@ -80,6 +80,8 @@ class PrecisionReportSchema(BaseModel):
     paths: int
     paired_paths: int
     figures: Dict[str, Union[MeanEstimateSchema, QuantileEstimateSchema]] = Field(default_factory=dict)
+    replicates: int = 1
+    uncertainty_method: str = "unavailable"
 
     @classmethod
     def from_dataclass(cls, report: PrecisionReport) -> "PrecisionReportSchema":
@@ -87,7 +89,8 @@ class PrecisionReportSchema(BaseModel):
                    trades={k: StagePrecisionSchema.from_dataclass(v) for k, v in report.trades.items()},
                    realized=dict(report.realized), products=dict(report.products), devices=list(report.devices),
                    backend=report.backend, jax_version=report.jax_version, paths=report.paths,
-                   paired_paths=report.paired_paths, figures={k: _estimate_schema(v) for k, v in report.figures.items()})
+                   paired_paths=report.paired_paths, figures={k: _estimate_schema(v) for k, v in report.figures.items()},
+                   replicates=report.replicates, uncertainty_method=report.uncertainty_method)
 
 
 class RiskMetricsSchema(BaseModel):
@@ -244,7 +247,7 @@ class PortfolioResultSchema(BaseModel):
 class MarketRiskResultSchema(BaseModel):
     """`engine.risk.market.MarketRiskResult` on the wire: VaR/ES of the portfolio P&L
     (`risk`: `VaR_99`, `ES_97.5`, `ES_97.5_tailCount`, `ES_97.5_standardError` (scenarios
-    treated as independent: indicative, as `warnings` says), ...; NaN as null), each trade's
+    assessed by independent scrambles or historical moving blocks), ...; NaN as null), each trade's
     t=0 value, the scenarios' description, and the P&L matrix
     `[Scenarios, Trades]` (trade axis in `trades`' order) inline (`pnl`), by reference
     (`pnl_artifact`) or absent, as the request's `pnl_output` asked. The portfolio P&L the
@@ -264,6 +267,7 @@ class MarketRiskResultSchema(BaseModel):
     pnl_artifact: Optional[ArrayArtifactSchema] = None
     warnings: List[str] = Field(default_factory=list)
     precision: Optional[PrecisionReportSchema] = None
+    uncertainty: Dict[str, Union[str, int]] = Field(default_factory=dict)
 
     @classmethod
     def from_dataclass(cls, result: MarketRiskResult, trade_ids: List[str], pnl_output: str = "inline",
@@ -278,6 +282,7 @@ class MarketRiskResultSchema(BaseModel):
             num_scenarios=result.num_scenarios, risk_factors=list(result.risk_factors),
             pnl=np.asarray(result.pnl, dtype=np.float64).tolist() if pnl_output == "inline" else None,
             pnl_artifact=pnl_artifact, warnings=list(result.warnings),
+            uncertainty=result.uncertainty,
             precision=(PrecisionReportSchema.from_dataclass(result.precision)
                        if result.precision is not None else None),
         )

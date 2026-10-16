@@ -38,7 +38,6 @@ evaluates them (`engine.precision.arithmetic`).
 """
 import dataclasses
 from dataclasses import dataclass
-from functools import partial
 from typing import Optional
 
 import jax
@@ -177,7 +176,7 @@ def european_cube(terms: EuropeanTerms, schedule: PathSchedule, times: np.ndarra
                           np.asarray(variances, dtype=arithmetic.dtype), alive, arithmetic)
 
 
-@partial(jax.jit, static_argnames="arithmetic")
+@jax.jit
 def _european_cube(terms: EuropeanTerms, schedule: PathSchedule, times, disc: ScenarioCurves, index: ScenarioCurves,
                    fixings: PathFixings, variances, alive, arithmetic: Arithmetic) -> jax.Array:
     def value(disc_j, idx_j, t_j, _fixed, _float, projected_j, known_j, deviations, variance_j, alive_j):

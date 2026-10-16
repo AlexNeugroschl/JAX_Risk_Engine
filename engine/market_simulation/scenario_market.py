@@ -232,14 +232,14 @@ def _layout(model: CrossAssetModel, times: np.ndarray, taus: np.ndarray,
                    len(model.fx), len(model.eq))
 
 
-@partial(jax.jit, static_argnames=("arithmetic", "counts"))
+@partial(jax.jit, static_argnames="counts")
 def _market_values(states, mean, scale, level, loading, arithmetic: Arithmetic, counts: Tuple[int, int, int, int]):
     """The scenario market's path arrays from the states `[S, D, d]` (see `build_scenario_market`):
     `(curves' log discount factors [S, D, K+1] each, numeraire [S, D], FX [S, D] each, equity
     [S, D] each)`, in `arithmetic`'s accumulate format."""
     curves, tenors, fx, equity = counts
     deviation = deviation_from(mean, states) / arithmetic.cast(scale)                        # [S, D, d]
-    product = arithmetic.matmul(jnp.swapaxes(deviation, 0, 1), loading, shared="right")      # [D, S, C]
+    product = arithmetic.matmul(jnp.swapaxes(deviation, 0, 1), loading, shared="right", sample_axis=1)
     values = add_level(level, jnp.swapaxes(product, 0, 1))                                    # [S, D, C]
     floor = jnp.asarray(np.log(DISCOUNT_FLOOR), dtype=arithmetic.dtype)
     logs = tuple(jnp.maximum(values[:, :, k * tenors:(k + 1) * tenors], floor) for k in range(curves))

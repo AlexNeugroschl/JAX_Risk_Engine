@@ -454,6 +454,22 @@ values themselves. `paired_fraction` (in [0, 1], 0 by default; outside it a
 `422`) is the share of paths also run at float64, whose estimates the result's `precision`
 carries (2026-10-02). Unknown fields are refused.
 
+Each stage also accepts `compute_rounding: "nearest" | "stochastic"` (default `"nearest"`).
+Stochastic compute rounding is supported for single-grid formats below float32, and uses
+`rounding_seed` in streams separate from storage rounding. Keys are traced data: changing
+the seed reuses compiled programs. Float32, float64 and bfloat16 passes refuse this setting;
+market risk also refuses it on `simulation` and `market`, which have no products there.
+
+`simulation.replicates` (default 1) divides `samples` into equal independent scrambled Sobol
+draws. Set at least 8 for practical uncertainty estimates, and use a power of two per
+scramble for Sobol balance. Paired/scaled-storage runs need
+each replicate's path count to be a multiple of 32. The paired sample takes a whole-block
+prefix of every scramble. `precision.replicates` and `precision.uncertainty_method` describe
+the result. Paired mean errors use the independent replicate estimates, including covariance;
+one scramble produces `null` standard errors and a warning. Student t intervals use
+`replicates - 1` degrees of freedom and remain approximate: rare-event coverage fails
+I-111's gate, explicitly warned on paired results.
+
 ```json
 "precision": {"simulation": {"storage": "float32", "compute": "float32", "accumulate": "float32"},
               "pricing": {"storage": "float32"},
@@ -541,6 +557,17 @@ expected labels.
   overlapping `horizon_days` window of a `[D][F]` history of the factors' levels, oldest first;
   `dates`, optional, label each window (`historical_scenarios`).
 
+Monte Carlo scenarios also accept `replicates` (default 1), with the same equal-size and
+whole-block pairing requirements as portfolio simulation. ES standard errors recompute
+the pooled tail after deleting each independent scramble; with one scramble they are null.
+Historical scenarios accept `bootstrap_replicates` (default 128, at least 2),
+`bootstrap_seed` (default 42), and `block_length` (horizon windows per moving block;
+default max(horizon_days, ceil(num_scenarios ** (1/3)))). An explicit block length must be
+between the horizon and scenario count. Fewer than two blocks gives unavailable error.
+These are conditional bootstrap estimates, dependent on stationarity and block length;
+they do not measure forecast/model uncertainty. `uncertainty` echoes the method and settings.
+
+
 ```json
 {"market": {"...": "..."}, "trades": [{"trade_type": "swap", "trade_id": "swap-1", "...": "..."}],
  "scenarios": {"source": "monte-carlo", "factors": ["discount:USD/0y", "discount:USD/1y", "..."],
@@ -601,7 +628,8 @@ Mirrors `engine.risk.market.MarketRiskResult`:
 | `measure`, `source`, `horizon_days`, `num_scenarios` | The scenarios' description (`historical-forecast`, `monte-carlo` or `historical`) |
 | `risk_factors` | The factors shocked, `"<curve>/<pillar time>y"`, in the scenarios' order |
 | `pnl` / `pnl_artifact` | The P&L `[Scenarios, Trades]`, inline or by reference (`pnl_output`); the portfolio P&L the statistics use is each scenario's sum |
-| `warnings` | Volatility held fixed for options; FX held at today's spot; a tail too thin for a stable estimate; the ES standard errors treating the scenarios as independent; at a precision below float64, each figure without a passing row in the precision evidence table |
+| `warnings` | Volatility held fixed for options; FX held at today's spot; a thin tail; unavailable uncertainty with one Sobol scramble or insufficient history; conditional historical bootstrap assumptions; at reduced precision, each figure without a passing evidence row |
+| `uncertainty` | ES uncertainty metadata. Monte Carlo: `method` (`"replicate_jackknife"` or `"unavailable"`) and `replicates`. Historical: `method: "moving_block_bootstrap"`, `replicates`, `block_length` and `seed`. |
 | `precision` | The precision report, as the portfolio result's; with a paired float64 sample each VaR/ES measured on it |
 
 ## Example: a Python `requests` session

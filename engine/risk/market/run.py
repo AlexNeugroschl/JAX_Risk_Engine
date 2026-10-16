@@ -6,7 +6,7 @@ by full revaluation at t=0 under shocked curves.
         -> shocked curves at t=0
         -> every trade repriced under every scenario   (revaluation)
         -> P&L per scenario                             [S]
-        -> VaR / ES, with tail counts and MC standard errors
+        -> VaR / ES, with tail counts and dependence-aware error estimates
 
 The statistics are `engine.risk.market.var_es` -- ORE's `RiskStatistics`
 conventions, already pinned against ORE -- applied to a one-date P&L sample.
@@ -34,7 +34,7 @@ stochastic rounding (`Precision.store`). A trade's base value is its value on th
 curves in its accumulate format; a zero shift is exactly zero P&L at every precision, in every
 storage format.
 
-With `precision.paired_fraction > 0` the first scenarios are revalued again at float64 (the
+With `precision.paired_fraction > 0` a prefix within each scramble is revalued at float64 (the
 paired sample, decision A-13), and the result's `PrecisionReport` measures each VaR and ES on
 it: the figure at the run's precision and at float64 on the same scenarios. They are quantiles,
 so the reported VaR/ES are the run's own, not corrected. The result's `warnings` name every
@@ -42,6 +42,7 @@ figure whose precision has no passing row of the evidence table (`run_figures`,
 `engine.precision.evidence`, I-55; a float64 run has none).
 """
 from dataclasses import dataclass, field
+import dataclasses
 from typing import Dict, List, Optional, Sequence
 
 import jax
@@ -54,18 +55,22 @@ from engine.instruments.european_swaption import SwaptionConfig
 from engine.market_data.market import Market
 from engine.market_simulation.sharding import shard_scenarios
 from engine.precision import (
-    Arithmetic, Precision, PrecisionReport, RunFigures, evidence_warnings, format_name, load, paired_paths,
+    Arithmetic, Precision, PrecisionReport, RunFigures, evidence_warnings, format_name, load,
     paired_quantile, require_precision,
 )
+from engine.precision.estimate import paired_count
 from engine.pricing.config import PricingConfig
+from engine.pricing.options import bound_option_pnl, position_sign
 from engine.pricing.cube import (
     DEFAULT_REPORTING_CURRENCY, reads_swaption_vols, reporting_fx_spots, require_unique_ids, validate_trades,
 )
 from engine.risk.market.factors import RateRiskFactors
 from engine.risk.market.revaluation import factor_indices, revalue_trade, scenario_batch_size
 from engine.risk.market.scenarios import ShockScenarios
+from engine.risk.market.scenarios import SOURCE_HISTORICAL
 from engine.risk.market.var_es import (
-    compute_risk_metrics, expected_shortfall, quantile_label, validate_quantiles, value_at_risk, var_rank,
+    compute_risk_metrics, expected_shortfall, historical_es_error, quantile_label, replicated_es_error, tail_sample_size,
+    validate_quantiles, value_at_risk, var_rank,
 )
 
 OPTION_TYPES = (SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig)
@@ -114,10 +119,9 @@ class MarketRiskResult:
     `base_currency`.
 
     risk: `VaR_99`, `ES_97.5`, ... as positive losses, plus
-        `ES_<q>_tailCount` (observations the ES averaged) and
-        `ES_<q>_standardError` (its Monte Carlo standard error, treating the scenarios as
-        independent draws, which Sobol and overlapping historical scenarios are not: indicative,
-        as the warnings say); NaN where a tail is empty.
+        `ES_<q>_tailCount` and `ES_<q>_standardError`: delete-one-scramble jackknife
+        for RQMC, conditional moving-block bootstrap for history. NaN with one scramble
+        or an unestimable tail. `uncertainty` records the method and its settings.
     pnl: `[S, N]` P&L of each trade under each scenario, in request order, loaded at float64
         from its storage format and converted at its FX spot.
     portfolio_pnl: `[S]` the sum across trades, which the statistics use (float64).
@@ -137,6 +141,7 @@ class MarketRiskResult:
     #: The precision as run, read from the run's arrays, and with a paired float64 sample each
     #: VaR/ES measured on it ("portfolio/VaR_99", "portfolio/ES_97.5"); see `PrecisionReport`.
     precision: Optional[PrecisionReport] = None
+    uncertainty: Dict = field(default_factory=dict)
 
 
 def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
@@ -151,16 +156,28 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     base, columns, stored = [], [], []
     for cfg, spot in zip(request.trades, spots):
         stage = precision.precision_for(cfg)
-        value, trade_pnl = _trade_pnl(cfg, request, load(shifts, stage.arithmetic.dtype), stage.arithmetic)
+        arithmetic = precision.arithmetic_for(stage, f"values/{cfg.trade_id}")
+        value, trade_pnl = _trade_pnl(cfg, request, load(shifts, arithmetic.dtype), arithmetic)
         base.append(value * spot)
         stored.append(precision.store(trade_pnl, stage.storage, f"values/{cfg.trade_id}"))
-        columns.append(load(stored[-1], jnp.float64))
+        column = load(stored[-1], jnp.float64)
+        if isinstance(cfg, OPTION_TYPES):
+            column = bound_option_pnl(column, value, position_sign(cfg))
+        columns.append(column)
     pnl, portfolio_pnl = _in_reporting_currency(tuple(columns), jnp.asarray(spots, dtype=jnp.float64))
 
-    metrics = compute_risk_metrics(pnl[:, None, :], 0.0, percentiles=request.quantiles)
+    metrics = compute_risk_metrics(pnl[:, None, :], 0.0, percentiles=request.quantiles, include_diagnostics=False)
     risk = {key: _scalar(value) for key, value in metrics.items()}
+    for q in request.quantiles:
+        risk[f"ES_{quantile_label(q)}_tailCount"] = float(tail_sample_size(portfolio_pnl[:, None], q)[0])
+        if scenarios.source == SOURCE_HISTORICAL:
+            error = historical_es_error(portfolio_pnl, jax.random.key(scenarios.bootstrap_seed), q,
+                                        _block_length(scenarios), scenarios.bootstrap_replicates)
+        else:
+            error = replicated_es_error(portfolio_pnl, q, scenarios.replicates)
+        risk[f"ES_{quantile_label(q)}_standardError"] = float(error)
 
-    paired = paired_paths(scenarios.num_scenarios, precision.paired_fraction)
+    paired = paired_count(scenarios.num_scenarios, precision.paired_fraction, scenarios.replicates)
     figures = _paired_figures(request, spots, portfolio_pnl, paired) if paired else {}
     realized = {"shocks": format_name(shifts),
                 **{f"values/{cfg.trade_id}": format_name(s) for cfg, s in zip(request.trades, stored)}}
@@ -178,8 +195,17 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
         risk_factors=scenarios.factors.labels(),
         base_currency=request.base_currency,
         warnings=_warnings(request),
-        precision=PrecisionReport.of(precision, request.trades, realized, stored, scenarios.num_scenarios, paired,
-                                     figures, [precision.precision_for(cfg).compute for cfg in request.trades]),
+        precision=dataclasses.replace(PrecisionReport.of(precision, request.trades, realized, stored,
+                                     scenarios.num_scenarios, paired, figures,
+                                     [precision.precision_for(cfg).compute for cfg in request.trades]),
+                                     replicates=scenarios.replicates, uncertainty_method=(
+                                         "moving_block_bootstrap" if scenarios.source == SOURCE_HISTORICAL else
+                                         "replicate_jackknife" if scenarios.replicates > 1 else "unavailable")),
+        uncertainty={"method": "moving_block_bootstrap", "replicates": scenarios.bootstrap_replicates,
+                     "block_length": _block_length(scenarios), "seed": scenarios.bootstrap_seed}
+                    if scenarios.source == SOURCE_HISTORICAL else
+                    {"method": "replicate_jackknife" if scenarios.replicates > 1 else "unavailable",
+                     "replicates": scenarios.replicates},
     )
 
 
@@ -211,9 +237,14 @@ def _paired_figures(request: MarketRiskRequest, spots: Sequence[float], portfoli
     moves = jnp.asarray(request.scenarios.shifts, dtype=jnp.float64)
     total = moves.shape[0]
 
+    replicates = request.scenarios.replicates
+    per_rep, paired_rep = total // replicates, paired // replicates
+
     def float64_pnl(cfg):
         batch = scenario_batch_size(cfg, request.pricing, request.batch_size, moves.dtype.itemsize)
-        return _trade_pnl(cfg, request, moves[:min(total, -(-paired // batch) * batch)])[1][:paired]
+        size = min(per_rep, -(-paired_rep // batch) * batch)
+        return jnp.concatenate([_trade_pnl(cfg, request, moves[i:i + size])[1][:paired_rep]
+                                for i in range(0, total, per_rep)])
 
     _, paired_pnl = _in_reporting_currency(tuple(float64_pnl(cfg) for cfg in request.trades),
                                            jnp.asarray(spots, dtype=jnp.float64))
@@ -221,7 +252,8 @@ def _paired_figures(request: MarketRiskRequest, spots: Sequence[float], portfoli
     for q in request.quantiles:
         for name, statistic in (("VaR", value_at_risk), ("ES", expected_shortfall)):
             figures[f"portfolio/{name}_{quantile_label(q)}"] = paired_quantile(
-                lambda sample, statistic=statistic, q=q: statistic(sample[:, None], q)[0], portfolio_pnl, paired_pnl)
+                lambda sample, statistic=statistic, q=q: statistic(sample[:, None], q)[0], portfolio_pnl, paired_pnl,
+                replicates)
     return figures
 
 
@@ -234,6 +266,8 @@ def validate_request(request: MarketRiskRequest) -> None:
     validate_portfolio(request.trades, request.market, request.pricing, request.precision, request.quantiles,
                        request.batch_size, request.base_currency)
     validate_factors(request.trades, request.market, request.scenarios.factors)
+    scenarios = request.scenarios
+    request.precision.validate_sampling(scenarios.num_scenarios, scenarios.replicates, "scenarios")
 
 
 def validate_factors(trades, market: Market, factors: RateRiskFactors) -> None:
@@ -263,6 +297,9 @@ def validate_portfolio(trades, market: Market, pricing: PricingConfig, precision
     if not trades:
         raise ValueError("a market-risk run needs at least one trade")
     require_precision("MarketRiskRequest.precision", precision)
+    for name in ("simulation", "market"):
+        if getattr(precision, name).compute_rounding != "nearest":
+            raise ValueError(f"precision.{name}.compute_rounding is not read by market risk: that stage has no products")
     if batch_size < 1:
         raise ValueError(f"batch_size must be at least 1; got {batch_size}")
     validate_quantiles("quantiles", quantiles)
@@ -314,12 +351,23 @@ def _warnings(request: MarketRiskRequest) -> List[str]:
                 f"only {request.scenarios.num_scenarios} scenarios: the {q:.1%} tail holds about "
                 f"{tail} observations, too few for a stable estimate."
             )
-    out.append(
-        "the ES standard errors (ES_<q>_standardError) treat the scenarios as independent draws, which Sobol "
-        "(Monte Carlo) scenarios and overlapping historical horizons are not: read them as indicative (I-111)."
-    )
+    if request.scenarios.source == SOURCE_HISTORICAL:
+        out.append("ES standard errors use a conditional moving-block bootstrap of historical horizon windows; "
+                   "they depend on block_length and stationarity, and do not measure forecast/model error (I-111).")
+        if 2 * _block_length(request.scenarios) > request.scenarios.num_scenarios:
+            out.append("ES uncertainty is unavailable: history is too short for two dependence blocks (I-111).")
+    elif request.scenarios.replicates == 1:
+        out.append("ES standard errors are unavailable with one Sobol scramble; set scenarios.replicates to at "
+                   "least 2 independent scrambles (8 or more recommended; I-111).")
+    else:
+        out.append("ES standard errors use independent-scramble deletion. Jackknife/Student t intervals are "
+                   "approximate and require adequate tail observations; they are not guaranteed coverage bounds (I-111).")
     return out + evidence_warnings(request.precision, request.trades, request.scenarios.num_scenarios,
-                                   run_figures(request.quantiles))
+                                   run_figures(request.quantiles), replicates=request.scenarios.replicates)
+
+
+def _block_length(scenarios: ShockScenarios) -> int:
+    return scenarios.block_length or max(scenarios.horizon_days, int(np.ceil(scenarios.num_scenarios ** (1 / 3))))
 
 
 def run_figures(quantiles: Sequence[float]) -> RunFigures:

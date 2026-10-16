@@ -248,7 +248,7 @@ def _columns(trades, market: Market, scenarios: ScenarioMarket, base_currency: s
     columns, exercised = [], {}
     for cfg in trades:
         stage = precision.precision_for(cfg)
-        arithmetic = stage.arithmetic
+        arithmetic = precision.arithmetic_for(stage, f"values/{cfg.trade_id}")
         if arithmetic.dtype not in loaded:
             at_dtype = scenarios.map_arrays(lambda a: load(a, arithmetic.dtype), grid=lambda grid: grid)
             loaded[arithmetic.dtype] = at_dtype, _index_fixings(trades, market, at_dtype)

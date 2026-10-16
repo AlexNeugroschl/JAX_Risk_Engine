@@ -50,7 +50,6 @@ program is compiled once per shape (coupon counts, paths, dates), not per trade 
 """
 import dataclasses
 from dataclasses import dataclass, field
-from functools import partial
 from typing import Dict, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 import jax
@@ -176,6 +175,17 @@ def discount_deviations(curve, t, times, deviation):
     return level, jnp.expm1(log_discount_deviation(curve, deviation, jnp.asarray(times) - t))
 
 
+def date_arithmetic(arithmetic: Arithmetic, t) -> Arithmetic:
+    """Independent rounding on an Actual365Fixed valuation date, with time as traced data.
+
+    Round back to a calendar day: truncation aliases days 2 and 3 because 3 / 365 * 365
+    is slightly below 3. Shared by the leg and Jamshidian products.
+    """
+    if arithmetic.key is None:
+        return arithmetic
+    return arithmetic.fold_in(jnp.asarray(jnp.rint(t * 365.0), dtype=jnp.uint32))
+
+
 def leg_values(legs: Legs, disc, index, t, alive_fixed, alive_float, projected, known_rates,
                deviations: Optional[Deviations] = None, discount_at=None, outputs: Tuple[str, ...] = ("value",),
                arithmetic: Optional[Arithmetic] = None) -> Tuple[LegValues, Optional[LegValues]]:
@@ -228,11 +238,12 @@ def leg_values(legs: Legs, disc, index, t, alive_fixed, alive_float, projected, 
     asked = [name for name in OUTPUTS if name in outputs]
     arithmetic = arithmetic or Arithmetic.of(e.dtype)
     moved = 0.0
-    for operand, coefficients in blocks:
+    arithmetic = date_arithmetic(arithmetic, t)
+    for stream, (operand, coefficients) in enumerate(blocks):
         if any(name in coefficients for name in asked):
             none = jnp.zeros_like(next(iter(coefficients.values())))
             moved = moved + arithmetic.matmul(operand, jnp.stack([coefficients.get(name, none) for name in asked], -1),
-                                              shared="right")
+                                              shared="right", stream=stream)
     by_name = {name: moved[..., i] for i, name in enumerate(asked)}
     extra = jnp.asarray(extra_df, dtype=dtype) * e_extra
     return level, LegValues(*(by_name.get(name) for name in OUTPUTS), extra)
@@ -377,7 +388,7 @@ def legs_cube(legs: Legs, schedule: PathSchedule, times: np.ndarray, disc: Scena
     return _legs_cube(legs, schedule, times, disc, index, fixings, arithmetic)
 
 
-@partial(jax.jit, static_argnames="arithmetic")
+@jax.jit
 def _legs_cube(legs: Legs, schedule: PathSchedule, times, disc: ScenarioCurves, index: ScenarioCurves,
                fixings: Optional[PathFixings], arithmetic: Arithmetic) -> jax.Array:
     def value(disc_j, index_j, t, alive_fixed, alive_float, projected, known, deviations):

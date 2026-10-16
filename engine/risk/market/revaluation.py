@@ -27,6 +27,7 @@ values (the surface, a calibrated LGM, the Jamshidian model), so volatility risk
 captured. `run_market_risk` says so in its warnings for every option trade.
 """
 from functools import partial
+import dataclasses
 from typing import Optional, Sequence, Tuple
 
 import jax
@@ -35,12 +36,14 @@ import numpy as np
 
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.instruments.european_swaption import SwaptionConfig
 from engine.market_data.market import Market
 from engine.market_simulation.sharding import scenario_device_count, shard_scenarios
 from engine.precision import Arithmetic
 from engine.pricing.bermudan import prepared_option
 from engine.pricing.config import PricingConfig
 from engine.pricing.lgm_grid import induction_memory_budget, working_bytes_per_path
+from engine.pricing.options import bound_option_pnl, position_sign
 from engine.risk.greeks.price_functions import curve_keys, on_pillars, trade_price_function
 from engine.risk.market.factors import RateRiskFactors, curve_name
 
@@ -98,11 +101,15 @@ def revalue_trade(cfg, market: Market, factors: RateRiskFactors, moves, pricing:
     value = float(fn.price(*[base[s] for s in own]))
     batch = scenario_batch_size(cfg, pricing, batch_size, jnp.dtype(arithmetic.dtype).itemsize)
     curves = on_pillars(fn.times, [base[s] for s in own])
-    return value, _map_scenarios(
-        lambda shifts: _pnl(fn.pnl, fn.terms, curves, tuple(shifts[..., s] for s in own), arithmetic), moves, batch)
+    pnl = _map_scenarios(
+        lambda shifts, ids: _pnl(fn.pnl, fn.terms, curves, tuple(shifts[..., s] for s in own),
+                                 dataclasses.replace(arithmetic, sample_ids=ids)), moves, batch)
+    if isinstance(cfg, (SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig)):
+        pnl = bound_option_pnl(pnl, value, position_sign(cfg))
+    return value, pnl
 
 
-@partial(jax.jit, static_argnames=("pnl", "arithmetic"))
+@partial(jax.jit, static_argnames="pnl")
 def _pnl(pnl, terms, curves, shifts, arithmetic: Arithmetic):
     """`pnl(terms, curves, shifts, arithmetic)`: one program per product, shape and arithmetic."""
     return pnl(terms, curves, shifts, arithmetic)
@@ -114,9 +121,13 @@ def _map_scenarios(batched, moves, batch_size):
     `batch_size` scenarios from every device's share, so every device works on every batch
     and holds one batch's memory."""
     devices = scenario_device_count(moves.shape[0])
+    ids = jnp.arange(moves.shape[0], dtype=jnp.uint32)
     if devices == 1:
-        return jnp.concatenate([batched(moves[i:i + batch_size]) for i in range(0, moves.shape[0], batch_size)])
+        return jnp.concatenate([batched(moves[i:i + batch_size], ids[i:i + batch_size])
+                                for i in range(0, moves.shape[0], batch_size)])
     shares = shard_scenarios(moves.reshape(devices, -1, moves.shape[-1]), axis=0)   # [devices, S / devices, F]
     per_device = jax.vmap(batched)
-    values = [per_device(shares[:, i:i + batch_size]) for i in range(0, shares.shape[1], batch_size)]
+    ids = ids.reshape(devices, -1)
+    values = [per_device(shares[:, i:i + batch_size], ids[:, i:i + batch_size])
+              for i in range(0, shares.shape[1], batch_size)]
     return jnp.concatenate(values, axis=1).reshape(-1)

@@ -34,7 +34,9 @@ double-precision simulations in the same wall-clock time.
   Greeks by automatic differentiation, a Bermudan's Vega through its calibration
 - Short-horizon VaR and Expected Shortfall by full revaluation of the portfolio under
   Monte Carlo or historical shocks of every curve pillar, with ORE's `RiskStatistics`
-  conventions and Monte Carlo error estimates, in one reporting currency (each trade
+  conventions and uncertainty from independent Sobol scrambles or historical moving blocks
+  (one scramble reports unavailable errors; rare-event interval calibration remains
+  [I-111](docs/planning/known-issues.md#i-111)), in one reporting currency (each trade
   converted at the as-of FX spot, which is not shocked)
 - One run configuration (`RunConfig`), as ORE configures a run with its files and with
   ORE's defaults: the simulation and its model per currency (LGM or Hull-White), the engine

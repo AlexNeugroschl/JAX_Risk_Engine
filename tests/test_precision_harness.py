@@ -140,7 +140,7 @@ class TestMeasure:
         rows = [r for r in m.coverage if r.case == "pricing:fp8:paired"]
         assert {r.figure for r in rows} == {f"{s}/{n}" for s in ["netting_set", "trades/swap-payer", "trades/bond"]
                                             for n in ("EPE", "ENE")}
-        assert sum(r.total_checks for r in rows) > 0
+        assert sum(r.total_checks for r in rows) == 0  # one scramble: uncertainty is unavailable
         for r in rows:
             assert 0 <= r.precision_covered <= r.precision_checks <= len(campaign.seeds) * len(DATES)
             assert 0 <= r.total_covered <= r.total_checks <= len(campaign.seeds) * len(DATES)

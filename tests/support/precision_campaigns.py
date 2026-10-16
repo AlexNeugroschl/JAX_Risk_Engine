@@ -61,9 +61,10 @@ from engine.pricing.config import LgmSwaptionEngineConfig, PricingConfig
 from tests import market_risk_support as mr
 from tests.support import portfolio as shared
 from tests.support.precision_harness import (
-    COMPUTE, SCALED, MarketRiskCampaign, Measurements, PortfolioCampaign, compute_cases, measure, storage_cases,
+    COMPUTE, SCALED, Case, MarketRiskCampaign, Measurements, PortfolioCampaign, compute_cases, measure, storage_cases,
     summary, throughout_case,
 )
+from engine.precision import Precision, StagePrecision
 
 #: Where the measurements of record are kept.
 RECORD = Path(__file__).resolve().parents[2] / "compliance" / "precision-measurements"
@@ -173,8 +174,50 @@ def market_risk() -> MarketRiskCampaign:
         paths=(2048, 8192), seeds=tuple(range(1, 17)))
 
 
+def rounding_cases(stages, formats):
+    """Matched nearest/stochastic product policies. Storage stays float32."""
+    return tuple(Case(f"{stage}:compute:{name}:{rounding}",
+                      Precision(**{stage: StagePrecision("float32", name, "float32", rounding)}))
+                 for stage in stages for name in formats for rounding in ("nearest", "stochastic"))
+
+
+def rounding():
+    return dataclasses.replace(compute(), name="rounding",
+        description="FP8 product rounding on the linear portfolio, nearest versus stochastic per-path operands; "
+                    "shared operands retain two terms. Matched single-scramble draws; stochastic seed varies with the outer seed.",
+        cases=rounding_cases(("simulation", "market", "pricing"), ("float8_e4m3fn", "float8_e5m2")))
+
+
+def rounding_options():
+    return dataclasses.replace(compute_options(), name="rounding_options",
+        description="Rollback product rounding for Bermudans and Americans, nearest versus stochastic per-path "
+                    "operands, with long continuation values projected onto zero before wrapping. Shared operands retain two terms.",
+        cases=rounding_cases(("pricing",), ("float16", "tensorfloat32", "bfloat16", "float8_e4m3fn", "float8_e5m2")))
+
+
+def rounding_market_risk():
+    return dataclasses.replace(compute_market_risk(), name="rounding_market_risk",
+        description="Market-risk product rounding, nearest versus stochastic per-path operands, matched draws; "
+                    "the pooled VaR and ES estimators remain unchanged.",
+        cases=rounding_cases(("pricing",), ("float16", "bfloat16", "float8_e4m3fn", "float8_e5m2")))
+
+
+def replicated_storage():
+    return dataclasses.replace(linear(), name="replicated_storage",
+        description="Eight independent scrambled Sobol replicates per run; a float64 prefix paired within each. "
+                    "Mean errors use independent replicate estimates and Student t intervals (7 degrees of freedom). "
+                    "Matched float64 draws. Paired counts round up to whole storage blocks within each replicate.",
+        simulation=dataclasses.replace(SIMULATION, replicates=8), seeds=tuple(range(1, 33)),
+        cases=(storage_cases(stages=("simulation", "market"), formats=("float16", "bfloat16"),
+                             offsets=("block",), paired_fraction=PAIRED)
+               + storage_cases(stages=("pricing",), formats=("float8_e4m3fn", "float8_e5m2"),
+                               offsets=("block",), paired_fraction=PAIRED)))
+
+
 CAMPAIGNS = {"linear": linear, "options": options, "market_risk": market_risk, "compute": compute,
-             "compute_market_risk": compute_market_risk, "compute_options": compute_options}
+             "compute_market_risk": compute_market_risk, "compute_options": compute_options,
+             "rounding": rounding, "rounding_options": rounding_options,
+             "rounding_market_risk": rounding_market_risk, "replicated_storage": replicated_storage}
 
 
 def main(argv=None) -> int:

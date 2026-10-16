@@ -1,19 +1,19 @@
 """
 Estimates from a paired float64 sample (docs/planning/details/precision.md §9; decision A-13).
 
-A run at reduced precision can re-run its first `n` paths (or scenarios) at float64 throughout:
+A run at reduced precision can re-run a prefix within each independent scramble at float64:
 the same random numbers, since a scrambled Sobol sequence's first `n` points do not depend on
 how many follow, and every kernel is per path, so the float64 re-run equals those paths of a
 float64 run bit for bit. Each figure then compares the two on the same paths.
 
 **Means** (EPE, ENE): the two-level estimator. With `f` the per-path quantity at the run's
-precision on all `N` paths and `g` the same at float64 on the first `n`,
+precision on all `N` paths and `g` the same at float64 on the `n` paired paths,
 
     F = mean_N(f) + mean_n(g - f)
 
 is an unbiased estimate of the float64 figure: the precision error becomes variance, which
-shrinks as `n` grows, instead of bias. Its variance counts both terms and their covariance
-(the paired paths are among the `N`): with `d = g - f`,
+shrinks as `n` grows, instead of bias. For standalone IID samples only, its variance
+counts both terms and their covariance (the paired paths are among the `N`): with `d = g - f`,
 
     Var(F) = Var(f) / N + Var(d) / n + 2 Cov(f, d) / N,
 
@@ -22,9 +22,17 @@ Carlo as Giles and Sheridan-Methven use it for reduced-precision random variable
 corrected value is the figure the run reports.
 
 **Quantiles** (PFE, VaR, ES): not means, so not corrected (A-13; multilevel quantile
-estimation is F-07's FP4 part). The figure is the run's own, from every path at its precision;
+estimation is a separate conditional F-07 experiment). The figure is the run's own, from every path at its precision;
 the paired sample measures the precision error as the same statistic at the run's precision
 and at float64 on the paired paths, and their difference.
+
+With `replicates=R`, samples are concatenated equal-sized independent scrambles.
+Pair a prefix within EACH scramble. Compute the low mean and paired correction within
+each, then their average and sample standard deviation / sqrt(R). This measures both
+terms and their covariance without assuming independence of paths or storage blocks.
+One scramble returns NaN standard errors; Student t with R-1 degrees of freedom gives
+the interval convention. `replicates=None` retains the explicitly IID estimator for
+standalone callers with independent observations.
 
 Every estimate is computed in float64 (decision A-10: reductions over paths are float64).
 Depends on JAX and NumPy only.
@@ -32,11 +40,49 @@ Depends on JAX and NumPy only.
 import math
 from dataclasses import dataclass
 from typing import Callable, Tuple
+from functools import partial
+from numbers import Integral
 
 import jax
 import jax.numpy as jnp
 
 from engine.precision.storage import BLOCK
+
+
+def validate_replicates(paths: int, replicates: int, name: str = "replicates") -> None:
+    """Equal, nonempty independent replicates, checked on the host before any work."""
+    if (not isinstance(replicates, Integral) or isinstance(replicates, bool)
+            or replicates < 1 or paths % replicates or paths < replicates):
+        raise ValueError(f"{name} must be a positive integer dividing the sample count {paths}; got {replicates!r}")
+
+
+def paired_count(paths: int, fraction: float, replicates: int = 1) -> int:
+    """A whole-block prefix of each equal-sized replicate, concatenated in replicate order."""
+    validate_replicates(paths, replicates)
+    return replicates * paired_paths(paths // replicates, fraction)
+
+
+def paired_indices(paths: int, paired: int, replicates: int = 1):
+    """Indices of the prefix paired within each replicate; no random draw or repricing."""
+    validate_replicates(paths, replicates)
+    validate_replicates(paired, replicates)
+    if paired > paths:
+        raise ValueError("paired sample cannot exceed the run's sample count")
+    return (jnp.arange(replicates)[:, None] * (paths // replicates)
+            + jnp.arange(paired // replicates)[None, :]).reshape(-1)
+
+
+@jax.jit
+def replicate_standard_error(estimates):
+    """SE of a mean of independent equal-sized replicate estimates, in float64.
+
+    One replicate cannot estimate its sampling uncertainty. Student t, R-1 degrees of
+    freedom, is the corresponding interval convention; this function returns one SE.
+    """
+    estimates = jnp.asarray(estimates, dtype=jnp.float64)
+    if estimates.shape[0] < 2:
+        return jnp.full(estimates.shape[1:], jnp.nan, dtype=jnp.float64)
+    return jnp.std(estimates, axis=0, ddof=1) / jnp.sqrt(estimates.shape[0])
 
 
 def paired_paths(num_paths: int, fraction: float) -> int:
@@ -63,12 +109,8 @@ class MeanEstimate:
         several of these from zero is a bias the uncorrected figure carries.
     max_difference: the largest paired difference, |float64 - run| on one path.
 
-    Every standard error treats the paths as independent, which Sobol paths are not: measured
-    across independent seeds (the precision harness, 2026-10-09 and 2026-10-11), the total
-    one is about three times too wide, and the correction's is right for storage of the cube
-    but too small for figures that differ from float64 on few paths when the shocks, states or
-    curves are stored below 32 bits (I-111; the result warns). A standard error by blocks of
-    paths was measured and is no better.
+    Pipeline standard errors use independent scrambles (I-111), with NaN when there is
+    only one. Standalone `two_level_mean(..., replicates=None)` is the IID estimator.
     """
     value: jax.Array
     uncorrected: jax.Array
@@ -98,18 +140,22 @@ class QuantileEstimate:
     paired_paths: int
 
 
-def two_level_mean(low, high) -> MeanEstimate:
+def two_level_mean(low, high, replicates=None) -> MeanEstimate:
     """The two-level estimate of the mean over axis 0 of `low` (`[N, ...]`, every path at the
-    run's precision), corrected by `high` (`[n, ...]`, the first `n` paths at float64)."""
+    run's precision), corrected by `high` (`[n, ...]`, the paired prefixes at float64).
+    With `replicates=None`, the paired sample is a single prefix of IID observations."""
     low, high = _paired(low, high)
-    return MeanEstimate(*_two_level(low, high), paths=low.shape[0], paired_paths=high.shape[0])
+    arrays = _two_level(low, high) if replicates is None else _two_level_replicates(low, high, replicates)
+    return MeanEstimate(*arrays, paths=low.shape[0], paired_paths=high.shape[0])
 
 
-def paired_quantile(statistic: Callable[[jax.Array], jax.Array], low, high) -> QuantileEstimate:
+def paired_quantile(statistic: Callable[[jax.Array], jax.Array], low, high, replicates=None) -> QuantileEstimate:
     """`statistic` (a sample `[k, ...]` -> the figure) on every path of `low` (`[N, ...]`, the
-    run's precision), and on the first `n` paths of `low` and of `high` (`[n, ...]`, float64)."""
+    run's precision), and on the paired prefixes of `low` and `high` (`[n, ...]`, float64).
+    With `replicates=None`, the paired sample is a single prefix."""
     low, high = _paired(low, high)
-    paired, paired_float64 = statistic(low[:high.shape[0]]), statistic(high)
+    sample = low[:high.shape[0]] if replicates is None else low[paired_indices(len(low), len(high), replicates)]
+    paired, paired_float64 = statistic(sample), statistic(high)
     return QuantileEstimate(value=statistic(low), paired=paired, paired_float64=paired_float64,
                             difference=paired - paired_float64, paths=low.shape[0], paired_paths=high.shape[0])
 
@@ -117,8 +163,8 @@ def paired_quantile(statistic: Callable[[jax.Array], jax.Array], low, high) -> Q
 def _paired(low, high) -> Tuple[jax.Array, jax.Array]:
     """Both samples at float64; the paired one no longer than the run, with the same figure shape."""
     low, high = jnp.asarray(low, dtype=jnp.float64), jnp.asarray(high, dtype=jnp.float64)
-    if low.ndim == 0 or high.shape[1:] != low.shape[1:] or not 0 < high.shape[0] <= low.shape[0]:
-        raise ValueError(f"a paired sample [n, ...] pairs the first n of the run's [N, ...] paths, 0 < n <= N; "
+    if low.ndim == 0 or high.ndim == 0 or high.shape[1:] != low.shape[1:] or not 0 < high.shape[0] <= low.shape[0]:
+        raise ValueError(f"a paired sample [n, ...] must match the run's [N, ...] figure shape, 0 < n <= N; "
                          f"got {high.shape} against {low.shape}")
     return low, high
 
@@ -137,3 +183,21 @@ def _two_level(low, high):
     variance = var_low / num + var_difference / paired + 2.0 * covariance / num
     return (uncorrected + correction, uncorrected, correction, jnp.sqrt(jnp.maximum(variance, 0.0)),
             jnp.sqrt(var_low / num), jnp.sqrt(var_difference / paired), jnp.max(jnp.abs(difference), axis=0))
+
+
+def _two_level_replicates(low, high, replicates):
+    validate_replicates(len(low), replicates)
+    validate_replicates(len(high), replicates)
+    return _replicated_mean(low, high, replicates)
+
+
+@partial(jax.jit, static_argnames="replicates")
+def _replicated_mean(low, high, replicates):
+    low = low.reshape((replicates, -1) + low.shape[1:])
+    high = high.reshape((replicates, -1) + high.shape[1:])
+    difference = high - low[:, :high.shape[1]]
+    means, corrections = jnp.mean(low, axis=1), jnp.mean(difference, axis=1)
+    uncorrected, correction = jnp.mean(means, axis=0), jnp.mean(corrections, axis=0)
+    return (uncorrected + correction, uncorrected, correction, replicate_standard_error(means + corrections),
+            replicate_standard_error(means), replicate_standard_error(corrections),
+            jnp.max(jnp.abs(difference), axis=(0, 1)))

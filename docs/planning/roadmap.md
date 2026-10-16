@@ -4,15 +4,18 @@ The order in which to work through [known-issues.md](known-issues.md) and
 [features.md](features.md). Every open item appears here exactly once; an item that is not
 here is not planned ([rules](README.md#lifecycle)).
 
-**How the order is decided** (decision A-19, revised 2026-10-10).
+**How the order is decided** (decision A-19, revised 2026-10-10; precision priorities
+updated by the owner, 2026-10-15).
 
 1. **The near-term milestone**: `demos/demo_profile_small.py` runs on the owner's local GPU
    and its profiler trace covers the whole job (stage 2, done 2026-10-07).
 2. **The focus** (stage 3), three goals, in this order of priority where they compete:
-   1. **Low precision, done**: every path kernel in its final form at every precision down to
-      FP8 and FP4, each format's error measured and stated on every result (the evidence
-      table), then timed on TPU and H100. The precision research is the project's purpose
-      (root [README](../../README.md)).
+   1. **Accuracy and measurement of existing precision formats**: fix rounding bias and
+      error estimates in the supported formats through FP8, each format's error measured
+      and stated on every result (the evidence table), then measure time versus accuracy
+      on TPU and H100. FP4 and multilevel quantile correction are later, independent research
+      extensions; neither blocks this first research result. The precision research is the
+      project's purpose (root [README](../../README.md)).
    2. **Critical bugs**: a High defect (a wrong number on an ordinary input, or another
       caller's result served), and the numbers that are wrong or unproven where the precision
       work and every later stage build on them (Bermudans and Americans against ORE, the
@@ -60,7 +63,7 @@ other documents cite the item (I-NN, F-NN), the decision (A-n), or a date, and
   relative to each array's largest magnitude (a Greek's to its trade's NPV): float64 to 1e-10,
   float32 to 1e-4. Formats below float32 are judged by the storage harness's statistical
   thresholds, not by the snapshot. A change beyond the margin is either a planned change of the
-  model (as I-49 moved default Bermudan/American values on the paths onto ORE's, 2026-10-12) or a
+  model or sampling design (as I-49 moved default Bermudan/American values on the paths onto ORE's, 2026-10-12) or a
   bug; a planned one states its largest change per array and re-baselines. Nothing is held to bit-for-bit
   equality for its own sake, on CPU or GPU; the bisection solver stays as A-21's reference.
 - **Speed and JAX.** A new or changed pricer is a module-level jitted function that takes the
@@ -179,7 +182,7 @@ rate, so it is where correctness and the trace are checked, not where speed is m
 <a id="stage-3--the-focus"></a>
 ## Stage 3 — The focus: low precision, critical bugs, a robust API
 
-Low precision first where the three compete. The critical bugs are here because the precision
+Existing-format precision fixes first where the three compete. The critical bugs are here because the precision
 work and the later stages build on the numbers they fix (3.10; the Bermudans and Americans on
 the paths, I-49 and I-73, closed 2026-10-12). Both High defects
 the project audit of 2026-10-10 found, each small and touching no path kernel, are fixed:
@@ -205,12 +208,24 @@ failing by one to ten times the rule and FP8 by tenths to a hundred
 ([precision.md §15.6](details/precision.md#156-the-evidence-table-2026-10-11)). So the rule is an
 acceptance bar, not the research's equal-accuracy measure, which 3.17 reads off the same
 measurements. A standard error by blocks of paths was measured for the paired correction and
-does not fix it; the correction's and the total standard errors are I-111 (3.9), flagged on
-the results.
+does not fix it. Independent scrambles now replace IID-path errors (2026-10-16), but
+rare-event interval coverage remains I-111 (3.9), explicitly flagged on results;
+[implementation and measurements](details/precision-accuracy.md).
+
+**Precision scope (owner, 2026-10-15).** Fix the existing formats' rounding bias, option
+bounds and error estimates first (3.9), then measure their time versus accuracy (3.17).
+PFE and VaR in that first comparison use the existing, uncorrected quantile estimators;
+ES uses the existing tail estimator. The paired mean correction remains available, with
+corrected and uncorrected means distinguished and its float64 work included in timing.
+A format that fails to reach the required accuracy is a valid research result. Multilevel
+quantile correction is a separate experiment only if the measurements justify its cost
+(7.9); FP4 is lower-priority capability work (7.10). These take precedence over the earlier
+grouping of quantile correction with FP4 in F-07's precision design. Neither extension
+blocks the API, TraderX or Basel work.
 
 | Step | Goal | Work | Closes | After | Size |
 |---|---|---|---|---|---|
-| 3.9 | Precision | FP4: storage with a variance correction through the block scales, compute emulated as FP8's is (2026-10-10); an unbiased rounding of the products' per-path operands, which FP8 compute needs already (round to nearest on its grid leaves a bias, I-98), and the Bermudan/American induction in every format below float32 (it rounds each path's columns at every step: float16 moves the American's means 7 statistical errors at 16,384 paths, 2026-10-13), and FP4's coarser grid more, chosen by the evidence table's path ceilings; a long option's path value projected onto its bound or the fixed rule judged against its scale (I-113); multilevel estimation of quantiles (PFE, VaR, ES); standard errors from independent replicates within a run (randomized quasi-Monte Carlo; historical windows by block), since the paired correction's understates where the shocks or curves are stored in float16 or bfloat16 and blocks of paths did not fix it (I-111); its rows in the evidence table. Native FP4 compute on TPU 8t/8i is timed in 3.17 | [F-07](features.md#f-07) (FP4), [I-98](known-issues.md#i-98), [I-111](known-issues.md#i-111), [I-113](known-issues.md#i-113) | — | L |
+| 3.9 | Precision | **Remaining: calibrated uncertainty for rare events.** Keyed stochastic compute rounding, nearest/stochastic campaigns, long-option bounds, independent Sobol replicates, per-replicate float64 pairing and historical moving-block errors are implemented (2026-10-16; I-98 and I-113 closed). The replicated-storage experiment still fails interval-coverage/RMS criteria on rare ENE and correction events; increasing the scramble count alone did not fix selected cases. Establish calibrated intervals or a principled availability rule, preserving the predeclared criteria and explicit warnings. [Implementation and remaining gate](details/precision-accuracy.md). FP4 and multilevel quantile correction remain deferred to 7.10 and 7.9 | [I-111](known-issues.md#i-111) (partial) | — | L |
 | 3.10 | Critical bug | *Parallel, can start now* (it moves no path kernel). Sensitivities against ORE's sensitivity analytic on the shared portfolio; the AD Greeks against the bump Greeks on the same sloped portfolio, until AD is ORE's Greek or is labelled as the derivative of a different quantity, with the gap stated; a calibrated Bermudan's/American's LGM recalibrated inside the revaluation's price function under each market-risk scenario, as ORE's historical P&L recalibrates it, against ORE so recalibrating (the one calibration inside the price function serves the AD Greeks' fixed-calibration gap too) | [I-51](known-issues.md#i-51), [I-78](known-issues.md#i-78), [I-112](known-issues.md#i-112) | — | M |
 | 3.11 | API | *Parallel, can start now.* Every input checked before any work, on the host: a curve's pillars (non-empty, as many rates as times, finite, strictly increasing; negative rates allowed), an option's exercise leaving a whole period of each leg, the standalone calibration's notional positive, every API model strict (`extra="forbid"`); each refusal names the field or trade. 3.12's preflight runs them all | [I-103](known-issues.md#i-103) | — | S |
 | 3.12 | API | One run request in place of a route per engine function, as ORE runs a portfolio with a list of analytics: `POST /runs` with `market`, `portfolio`, `analytics` (`npv`, `exposure`, `sensitivities`, `market_risk`, `calibration`) and a `config` whose sections follow ORE's files, each setting in one place; one result with the configuration as run, which says what each figure is without the request beside it (reporting currency, dates, trade ids on every axis, each Greek array's factors, the Greeks method and calibration policy, the engine's revision and its jax, jaxlib and ORE versions); `GET /config/defaults`; an idempotency key; a Python entry, `run(RunRequest)`, in `run/`. Each analytic refuses a precision setting or configuration section it does not read, naming the field. The four routes and `/jobs` go, there being no client. The completeness test also checks each field's wiring: every field set to a non-default value arrives in the engine's configuration. A run of one analytic equals today's direct call within the margin ([design](details/configurable-engine.md#one-run-request-i-87-i-88-i-89)) | [I-87](known-issues.md#i-87), [I-88](known-issues.md#i-88), [I-89](known-issues.md#i-89), [I-95](known-issues.md#i-95) | 3.11 | M |
@@ -218,7 +233,7 @@ the results.
 | 3.14 | API | The job queue: a job status that says when the engine worker cannot start, and a failed start answered with the queued job's id; a cancel route (a pending job at once, a running one at the worker's next phase boundary); a retention policy, with a way to keep a run indefinitely (Basel P0.9 keeps regulatory runs with it); the schema migration in one transaction; the worker's lock per host, not per queue file | [I-76](known-issues.md#i-76), [I-77](known-issues.md#i-77), [I-91](known-issues.md#i-91), [I-106](known-issues.md#i-106) | 3.12 | M |
 | 3.15 | Precision | One worker per host on a Cloud TPU pod slice, with process 0 claiming each job and handing it to the other hosts, since under SPMD every host runs the same job ([details/precision.md §11.3](details/precision.md#113-multi-device-and-multi-host)); a failed host fails the whole job, which is retried whole. Measure wall time against device count on TPU and H100; a run on fewer devices than it was given (a path count with no fitting divisor) says so. The one-host split of the scenario axis is done (2026-10-04) | [I-61](known-issues.md#i-61) | 3.14 (the same worker loop) | M |
 | 3.16 | Precision | *Parallel, can start now* (it moves no number). Native FP8 and bfloat16 passes on a GPU: XLA's Triton GEMM computes FP8 products 40–70% wrong on the RTX 5060 while cuBLASLt computes them exactly, and XLA ignores the bfloat16-passes algorithm on a matrix-vector product (2026-10-11). Route FP8 products to cuBLASLt in the engine worker, timed against Triton on every other product; run product formats' matrix-vector products in a shape XLA honours or emulate them; pair e5m2 with e4m3 where the units need it; the device check on H100 and a newer jax; minimal reproductions reported to XLA. Each format turns native per device in `product_execution`'s table once the device check passes | [I-97](known-issues.md#i-97) | — | M |
-| 3.17 | Precision | The research result: on several devices of Ironwood and H100, wall time per figure at equal accuracy, many low-precision paths against fewer float64 paths, read from the precision harness's relative errors (a format r statistical errors off at N paths is worth float64 at N / (1 + r²); the evidence table's 1% path ceilings are an acceptance bar that little below float32 meets, 2026-10-11); the storage formats, then the matrix-product kernels (2026-10-10's and the rollback's of 2026-10-13, compute-bound, where a shared operand's second term costs most) on native FP8, the native product formats' code paths confirmed on each device (`engine.precision.product_execution`'s table, TensorFloat-32 and bfloat16 passes by their algorithm, FP8 by its dtype), each format's two terms against its single pass (A-23; no cost measurable on an RTX 5060's float16, bfloat16 and TensorFloat-32 units for the narrow products, 2026-10-11, and 1.37 to 1.62 times the single pass for the compute-bound rollback, 2026-10-13), and FP4 compute on TPU 8t/8i. Each time is the whole job's (host preparation, the fixed float64 stages, the paired sample, transfers and reductions, the device synchronized before the clock stops), cold and warm compiles stated apart, with equal outputs on both sides; measure the induction budget/time/peak tradeoff per device (precision design §17); a format that does not pay is a result too | [F-07](features.md#f-07) (speed) | 3.9, 3.15, 3.16 | M |
+| 3.17 | Precision | The first research result on existing precision formats: on several devices of Ironwood and H100, wall time per figure at equal accuracy, many low-precision paths against fewer float64 paths, read from the precision harness's relative errors (equal accuracy must use observed RQMC error scaling and covariance; the evidence table's 1% path ceilings are an acceptance bar that little below float32 meets, 2026-10-11); the storage formats, then the matrix-product kernels (2026-10-10's and the rollback's of 2026-10-13, compute-bound, where a shared operand's second term costs most) on native FP8, the native product formats' code paths confirmed on each device (`engine.precision.product_execution`'s table, TensorFloat-32 and bfloat16 passes by their algorithm, FP8 by its dtype), each format's two terms against its single pass (A-23; no cost measurable on an RTX 5060's float16, bfloat16 and TensorFloat-32 units for the narrow products, 2026-10-11, and 1.37 to 1.62 times the single pass for the compute-bound rollback, 2026-10-13). Each time is the whole job's (host preparation, the fixed float64 stages, the paired sample, transfers and reductions, the device synchronized before the clock stops), cold and warm compiles stated apart, with equal outputs on both sides; measure the induction budget/time/peak tradeoff per device (precision design §17); a format that does not pay is a result too | [F-07](features.md#f-07) (speed), [I-114](known-issues.md#i-114) (engine/grid evidence matching before timing) | 3.9, 3.15, 3.16 | M |
 
 Order within the stage:
 
@@ -226,21 +241,25 @@ Order within the stage:
   precision campaign, all in one currency; every later market-risk figure has a currency. A
   short option (I-101) is the long one's kernel and a sign, so every evidence row of a long
   option holds for the short.
-- **Low precision in full before anything else competes.** The storage harness is built
+- **Existing formats before precision extensions.** The storage harness is built
   (2026-10-09, I-75) and the kernels it measures are rewritten (2026-10-10; the rollback
   2026-10-13). Their first measurements found a bias floor of compute below float32 (I-96), fixed
   on 2026-10-11 by carrying each product's shared operand in two terms (A-23), so swaps,
   Europeans and bonds have evidence rows, and since 2026-10-12 the Bermudan/American kernel is
   ORE's on the paths (its shift horizon, I-32, and its model kept as ORE built it, I-49, the
-  options' rows measured again after each); FP8's own rounding leaves a bias (I-98), which the table reads as a path ceiling until
-  3.9 chooses an unbiased rounding. The evidence table is built on them (I-55, 2026-10-11),
+  options' rows measured again after each). Stochastic operand rounding is now available
+  (I-98, closed); nonlinear precision bias and variance still limit FP8's measured path
+  ceilings. The evidence table is built on them (I-55, 2026-10-11),
   every result warning of figures without a passing row. The rollback family was then rewritten
   once, after them (2026-10-13), its rows measured and each option's flipped exercise decisions
   with them; the exposure reductions now read stored columns without a float64 cube
-  (I-105, closed 2026-10-15; [measurements](details/precision.md#17-exposure-storage-and-peak-memory-i-105-2026-10-15)); FP4 (3.9)
-  closes the arithmetic. What remains of the precision research after
-  the API steps, multi-host (3.15) and the timing (3.17), is measurement on hardware that has
-  to be booked, not arithmetic.
+  (I-105, closed 2026-10-15; [measurements](details/precision.md#17-exposure-storage-and-peak-memory-i-105-2026-10-15)).
+  Keyed stochastic rounding and option bounds are implemented (2026-10-16). Independent
+  replicate errors are implemented too, but rare-event interval calibration remains
+  in 3.9; its failed acceptance gate stays open. The first research
+  result then measures the existing formats, after the API steps and multi-host (3.15), on
+  hardware that has to be booked (3.17). Quantile correction (7.9) and FP4 (7.10) follow
+  separately, without delaying that measurement.
 - **The Bermudan/American kernel is ORE's on the paths** (2026-10-12). Its values were
   0.5–4% from ORE's, all of it a per-path recalibration that ORE's exposure simulation never
   makes (I-49): ORE keeps the LGM it calibrated when it built the trade. So the rollback family
@@ -259,9 +278,11 @@ Order within the stage:
   loop 3.14 changes.
 - **Numbers.** 3.11 to 3.15 move no number beyond the margin (3.11 refuses inputs that gave
   wrong ones). 3.10 may move the AD Greeks and a calibrated Bermudan's market-risk P&L to ORE's,
-  planned changes of the model. 3.9 may move
-  float64 at rounding level, within the margin, as the kernel rewrite did (2026-10-10: 2.2e-14
-  of each array's scale; the rollback's, 2026-10-13, 1.2e-14, a Greek 2.2e-14 of its trade's NPV).
+  planned changes of the model. On fixed paths, 3.9's arithmetic changes keep float64 within
+  the margin. I-111's independent replicates intentionally change the sampling design:
+  compare precisions on matched replicate draws, validate distributions and interval coverage,
+  and document and re-baseline the changed sample rather than treating different draws as
+  arithmetic drift. ORE parity tolerances stay unchanged.
 
 Parity methodology: [details/ore-parity-validation.md](details/ore-parity-validation.md);
 precision: [details/precision.md](details/precision.md); layout:
@@ -350,12 +371,17 @@ and gets its rows in the evidence table (a campaign of the precision harness, I-
 | 7.6 | AMC engine | [F-03](features.md#f-03) | — | L |
 | 7.7 | Reporting currencies other than USD for TraderX: convert at the as-of FX spot, as ORE reports in its `baseCurrency`; parity against an ORE run with that base currency | [F-08](features.md#f-08) | 4.3; an FX source ([I-18](known-issues.md#i-18), waiting on others) | S |
 | 7.8 | ORE's XML input files (`ore.xml`'s analytics, `simulation.xml`, `pricingengine.xml`, `sensitivity.xml`, `portfolio.xml`, zero-rate market data) translated into a run request, refusing by name what the engine does not support. Nice to have, not critical (owner, 2026-10-08) | [F-09](features.md#f-09) | 3.12 | M |
+| 7.9 | **Conditional research experiment: multilevel quantile correction.** Only if the existing-format timing/accuracy results show a useful opportunity, combine many low-precision paths with paired float64 paths to estimate PFE/VaR through a corrected distribution or equivalent estimator, with a related tail-estimation method for ES. Compare against the uncorrected estimators and float64 at equal total wall time, including paired simulation, correction and inversion costs; validate tail accuracy and uncertainty. Retain raw results alongside corrected ones. Independent of FP4; do not implement merely to make a failing format pass | [F-07](features.md#f-07) (quantile/tail estimation) | 3.9, 3.17; evidence of likely benefit | L |
+| 7.10 | **Deferred: FP4 storage and compute.** Storage with a variance correction through block scales, emulated compute using the existing precision architecture and rounding lessons from I-98, and its own precision campaigns and evidence rows; native compute on TPU 8t/8i measured when available. Lower priority than the supported formats' first time/accuracy comparison; quantile correction is not a prerequisite | [F-07](features.md#f-07) (FP4) | 3.9, 3.17 | L |
 
 Order within the stage: the smile first (no market given to the engine so far has one, so it
 changes no number yet, but SABR builds on it); then the smallest gaps in ORE's own choices
 (7.2), the largest scope gap (7.3: the model already simulates FX and equity, but nothing
 prices them), SABR (7.4), and the analytics built on proven exposure (7.5, 7.6). 7.7 as soon
-as its FX source arrives; 7.8 last, since nothing waits on it.
+as its FX source arrives; 7.8 has no dependants. The deferred precision extensions (7.9, 7.10)
+come after the first existing-format research result: quantile correction only when its
+measured opportunity warrants an experiment, and FP4 separately at lower priority. Neither
+is required to complete stage 3.
 
 <a id="waiting-on-others"></a>
 ## Waiting on others

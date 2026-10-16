@@ -27,5 +27,28 @@ change to a kernel it prices, from the repository's root, then regenerate the ev
 .venv/Scripts/python.exe -m tests.support.precision_evidence
 ```
 
-Timings are CPU timings of the machine named in each file: evidence of compiles (none after a
-case's first seed), not of speed.
+Timings belong to the device and machine named in each file. They establish compile reuse
+(none after a case's first seed), not a controlled comparison of speed. The 2026-10-16
+refresh includes concurrent CPU/GPU runs and a suspended long-running CPU campaign;
+its elapsed-time outliers must not be used for throughput claims. Dedicated hardware
+timing remains separate work.
+
+The 2026-10-16 accuracy campaigns compare per-path product rounding through FP8:
+`rounding` (linear products), `rounding_options` (rollback) and `rounding_market_risk`.
+Each compares nearest with stochastic rounding on matched draws; the seed varies as
+traced data. Stochastic operands are conditionally unbiased; nonlinear figures need
+not be. Long continuation values are bounded at zero before LongShort and delivery.
+The options storage/compute campaigns are rerun after that projection.
+
+`replicated_storage` measures paired means with eight independent scrambles within
+each run and 32 independent outer seeds. Pair a whole-block prefix within each scramble.
+Coverage uses Student t intervals (7 degrees of freedom); the earlier single-scramble
+coverage rows describe the old IID estimates and are historical measurements. The
+precision acceptance table uses errors against matched float64 draws across outer
+seeds, independently of any reported standard error. Its keys distinguish replicate
+count and compute rounding. Formats that fail the unchanged standard remain failures.
+
+Rows establish accuracy only for the pricing engine and grid measured in the campaign
+definition. Runtime lookup currently omits these settings (I-114), so a passing lookup
+must not establish acceptance for an unmeasured engine or grid. This must be resolved
+before the hardware timing comparison.

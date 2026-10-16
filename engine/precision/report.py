@@ -19,6 +19,8 @@ run's precision was, read from what it did, and how far its figures are from flo
       jax_version   str
       paths, paired_paths                          the run's paths (or scenarios), and how many
                                                    of them were re-run at float64
+      replicates, uncertainty_method               independent scrambles and the error method;
+                                                   one scramble reports unavailable errors
       figures       {figure: MeanEstimate | QuantileEstimate}
                                                    with a paired sample (`paired_fraction`),
                                                    per figure: "netting_set/EPE",
@@ -60,6 +62,8 @@ class PrecisionReport:
     paired_paths: int = 0
     figures: Mapping[str, Estimate] = field(default_factory=dict)
     products: Mapping[str, str] = field(default_factory=dict)
+    replicates: int = 1
+    uncertainty_method: str = "unavailable"
 
     @classmethod
     def of(cls, policy: Precision, trades: Iterable, realized: Mapping[str, str], arrays: Iterable,

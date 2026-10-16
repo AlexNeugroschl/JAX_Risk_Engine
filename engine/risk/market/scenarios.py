@@ -26,6 +26,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from engine.market_simulation.sobol import generate_sobol_normals
+from engine.precision.estimate import validate_replicates
 from engine.risk.market.factors import RateRiskFactors
 from engine.risk.market.var_es import RISK_MEASURE_HISTORICAL
 
@@ -49,6 +50,10 @@ class ShockScenarios:
     source: str
     measure: str = RISK_MEASURE_HISTORICAL
     windows: Optional[Tuple[Tuple[str, str], ...]] = None
+    replicates: int = 1
+    bootstrap_replicates: int = 128
+    block_length: Optional[int] = None
+    bootstrap_seed: int = 42
 
     def __post_init__(self):
         shifts = np.asarray(self.shifts, dtype=np.float64)
@@ -66,6 +71,20 @@ class ShockScenarios:
             raise ValueError(f"source must be one of {SOURCES}; got {self.source!r}")
         if self.windows is not None and len(self.windows) != shifts.shape[0]:
             raise ValueError(f"{len(self.windows)} windows for {shifts.shape[0]} scenarios")
+        validate_replicates(shifts.shape[0], self.replicates, "scenarios.replicates")
+        if self.source == SOURCE_HISTORICAL and self.replicates != 1:
+            raise ValueError("historical scenarios use moving blocks, not independent scrambles")
+        if self.source == SOURCE_MONTE_CARLO and (self.block_length is not None
+                or self.bootstrap_replicates != 128 or self.bootstrap_seed != 42):
+            raise ValueError("block_length, bootstrap_replicates and bootstrap_seed apply only to historical scenarios")
+        if (not isinstance(self.bootstrap_replicates, int) or isinstance(self.bootstrap_replicates, bool)
+                or self.bootstrap_replicates < 2):
+            raise ValueError("bootstrap_replicates must be an integer at least 2")
+        if self.block_length is not None and (not isinstance(self.block_length, int)
+                or isinstance(self.block_length, bool) or not self.horizon_days <= self.block_length <= len(shifts)):
+            raise ValueError("block_length must be an integer between horizon_days and the scenario count")
+        if not isinstance(self.bootstrap_seed, int) or isinstance(self.bootstrap_seed, bool) or self.bootstrap_seed < 0:
+            raise ValueError("bootstrap_seed must be a non-negative integer")
         object.__setattr__(self, "shifts", shifts)
 
     @property
@@ -79,6 +98,7 @@ def monte_carlo_scenarios(
     horizon_days: int,
     num_scenarios: int,
     seed: int = 42,
+    replicates: int = 1,
 ) -> ShockScenarios:
     """Zero-mean Gaussian factor moves with the given horizon covariance.
 
@@ -89,26 +109,30 @@ def monte_carlo_scenarios(
     num_scenarios: a power of two keeps the Sobol sequence balanced.
     seed: Sobol scrambling seed.
     """
-    cov = validate_monte_carlo(factors, covariance, horizon_days, num_scenarios)
+    cov = validate_monte_carlo(factors, covariance, horizon_days, num_scenarios, replicates)
     eigenvalues, eigenvectors = np.linalg.eigh(cov)
     # Eigenvalues below round-off of the largest are zero: a rank-deficient
     # covariance otherwise gains ~1e-10 of spurious noise per move from the
     # square roots of its ~1e-21 numerical eigenvalues.
     eigenvalues = np.where(eigenvalues > 1e-12 * eigenvalues[-1], eigenvalues, 0.0)
     root = eigenvectors * np.sqrt(eigenvalues)[None, :]   # cov = root @ root.T
-    normals = np.asarray(generate_sobol_normals(num_scenarios, 1, factors.size, jnp.float64, seed=seed)[0])
+    normals = np.asarray(generate_sobol_normals(num_scenarios, 1, factors.size, jnp.float64, seed=seed,
+                                               replicates=replicates)[0])
     return ShockScenarios(
         factors=factors, shifts=normals @ root.T, horizon_days=horizon_days, source=SOURCE_MONTE_CARLO,
+        replicates=replicates,
     )
 
 
-def validate_monte_carlo(factors: RateRiskFactors, covariance, horizon_days: int, num_scenarios: int) -> np.ndarray:
+def validate_monte_carlo(factors: RateRiskFactors, covariance, horizon_days: int, num_scenarios: int,
+                         replicates: int = 1) -> np.ndarray:
     """`monte_carlo_scenarios`' inputs checked without drawing a scenario (no JAX work, so the
     HTTP route checks them before queueing a job); the covariance, symmetrized."""
     if horizon_days < 1:
         raise ValueError(f"horizon_days must be at least 1; got {horizon_days}")
     if num_scenarios < 2:
         raise ValueError(f"num_scenarios must be at least 2; got {num_scenarios}")
+    validate_replicates(num_scenarios, replicates, "scenarios.replicates")
     return _validated_covariance(covariance, factors.size)
 
 
@@ -134,6 +158,7 @@ def historical_scenarios(
     history,
     horizon_days: int,
     dates: Optional[Sequence[str]] = None,
+    *, bootstrap_replicates: int = 128, block_length: Optional[int] = None, bootstrap_seed: int = 42,
 ) -> ShockScenarios:
     """One scenario per overlapping `horizon_days` window of `history`.
 
@@ -152,6 +177,7 @@ def historical_scenarios(
         windows = tuple((str(dates[i]), str(dates[i + horizon_days])) for i in range(moves.shape[0]))
     return ShockScenarios(
         factors=factors, shifts=moves, horizon_days=horizon_days, source=SOURCE_HISTORICAL, windows=windows,
+        bootstrap_replicates=bootstrap_replicates, block_length=block_length, bootstrap_seed=bootstrap_seed,
     )
 
 

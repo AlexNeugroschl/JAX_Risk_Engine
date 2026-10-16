@@ -46,7 +46,6 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from engine.precision.formats import format_of
 from engine.precision.policy import Precision, StagePrecision
 
 #: Where the table for people is, from the repository's root (each warning names it).
@@ -88,17 +87,23 @@ class Row:
     products: Tuple[str, ...] = ()
 
 
-def combination(precision: Precision, stages: Sequence[str], pricing: StagePrecision) -> Optional[str]:
+def combination(precision: Precision, stages: Sequence[str], pricing: StagePrecision,
+                replicates: int = 1) -> Optional[str]:
     """The combination a figure is validated under: each of `stages` as
     `"<stage>=<storage>/<compute>/<accumulate>"` (the pricing stage `pricing`, a trade's own or
     the aggregate's), then the rounding and block layout if one of them stores in a scaled
-    format (they change nothing otherwise). None when every stage is float64: the reference."""
+    format (they change nothing otherwise). Stochastic compute rounding and nondefault
+    replicate counts also enter the key. None when every stage is float64: the reference."""
     chosen = [(s, pricing if s == "pricing" else getattr(precision, s)) for s in stages]
     if all(stage == StagePrecision() for _, stage in chosen):
         return None
     parts = [f"{s}={stage.storage}/{stage.compute}/{stage.accumulate}" for s, stage in chosen]
+    parts += [f"{s}.compute_rounding={stage.compute_rounding}" for s, stage in chosen
+               if stage.compute_rounding != "nearest"]
     if any(stage.scaled_storage for _, stage in chosen):
         parts += [f"rounding={precision.rounding}", f"offset={precision.offset}"]
+    if replicates != 1:
+        parts.append(f"replicates={replicates}")
     return " ".join(parts)
 
 
@@ -168,7 +173,7 @@ def shipped() -> Evidence:
 
 
 def evidence_warnings(precision: Precision, trades: Sequence, paths: int, figures: RunFigures,
-                      evidence: Optional[Evidence] = None) -> List[str]:
+                      evidence: Optional[Evidence] = None, *, replicates: int = 1) -> List[str]:
     """The warnings of a run of `trades` (each with `trade_id` and `product`) at `paths` paths
     or scenarios under `precision`: one for each product, and one for the aggregate, whose
     figures in `figures` have no passing row in `evidence` (the engine's own by default), each
@@ -178,7 +183,7 @@ def evidence_warnings(precision: Precision, trades: Sequence, paths: int, figure
     out = []
     by_product: Dict[Tuple[str, Optional[str]], List[str]] = {}
     for trade in trades:
-        key = combination(precision, figures.stages, precision.precision_for(trade))
+        key = combination(precision, figures.stages, precision.precision_for(trade), replicates)
         if key is not None:
             by_product.setdefault((trade.product, key), []).append(trade.trade_id)
     for (product, key), ids in by_product.items():
@@ -191,7 +196,7 @@ def evidence_warnings(precision: Precision, trades: Sequence, paths: int, figure
                    f"pricing stages differ ({sorted(_stage_text(s) for s in stages)}), and no campaign measures one "
                    f"of mixed stages (acceptance standard, decision A-11). The run is not refused (D-9).")
     elif stages:
-        key = combination(precision, figures.stages, stages.pop())
+        key = combination(precision, figures.stages, stages.pop(), replicates)
         if key is not None:
             products = sorted({t.product for t in trades})
             missing = _missing(evidence, key, figures.aggregate, figures.total, paths, precision, figures, products)
@@ -201,19 +206,17 @@ def evidence_warnings(precision: Precision, trades: Sequence, paths: int, figure
     return out
 
 
-def paired_error_warning(precision: Precision) -> Optional[str]:
-    """The label of the paired correction's standard error where it is known to understate the
-    error: a paired sample with the shocks and states (`simulation`) or the curves (`market`)
-    stored below 32 bits (I-111); None elsewhere."""
-    low = [s for s in ("simulation", "market") if format_of(getattr(precision, s).storage).bits < 32]
-    if not precision.paired_fraction or not low:
+def paired_error_warning(precision: Precision, replicates: int = 1) -> Optional[str]:
+    """A paired RQMC mean needs independent scrambles to estimate its error (I-111)."""
+    if not precision.paired_fraction:
         return None
-    return (f"precision: the paired correction's standard errors (the precision report's figures) treat paths as "
-            f"independent; with the {' and '.join(low)} {'stages' if len(low) > 1 else 'stage'} stored below 32 bits "
-            f"they understate the error of "
-            f"figures that differ from float64 on few paths (measured 2026-10-11: standardized errors' root mean "
-            f"square up to 3.3, single errors up to 74 standard errors; I-111). The evidence table judges such runs "
-            f"by their errors across independent seeds ({TABLE}).")
+    if replicates > 1:
+        return (f"precision: standard errors use {replicates} independent scrambles. Student t intervals are "
+                "approximate: rare exposure and rounding/exercise events under-cover in the replicated-storage "
+                "campaign (I-111). Do not read these variance estimates as validated 95% bounds; see "
+                "docs/planning/details/precision-accuracy.md.")
+    return ("precision: standard errors are unavailable with one Sobol scramble; set simulation.replicates "
+            "to at least 2 independent scrambles (8 or more recommended; I-111).")
 
 
 def _missing(evidence: Evidence, key: str, scope: str, kinds: Sequence[str], paths: int, precision: Precision,

@@ -40,8 +40,9 @@ from engine.market_data.market import Market
 from engine.market_simulation.config import build_cross_asset_model, simulate
 from engine.precision import (
     STAGES, Precision, PrecisionReport, RunFigures, evidence_warnings, format_name, load, paired_error_warning,
-    paired_paths, realized_format,
+    realized_format,
 )
+from engine.precision.estimate import paired_count
 from engine.pricing.context import simulation_market_today
 from engine.pricing.cube import (
     reporting_fx_spots, trade_maturity, validate_trades, value_paths, value_portfolio, value_today,
@@ -76,7 +77,7 @@ def price_on_market(request) -> "PortfolioResult":
         with phase("pricing"):
             valuation = value_portfolio(trades, market, scenarios, base, run.pricing, simulation.swaption_vol_decay,
                                         run.precision)
-        paired = paired_paths(scenarios.num_paths, run.precision.paired_fraction)
+        paired = paired_count(scenarios.num_paths, run.precision.paired_fraction, simulation.replicates)
         sample = None
         if paired:
             with phase("paired_sample"):
@@ -87,7 +88,7 @@ def price_on_market(request) -> "PortfolioResult":
                                 simulation_market_today(market, simulation.curve_tenors))
             exposure, trade_exposures = _exposures(trades, start, valuation.columns, scenarios, market, base,
                                                    request.pfe_quantiles,
-                                                   sample)
+                                                   sample, simulation.replicates)
         # Assemble only an explicitly requested output, after the reduction working set
         # has been released. The float64 sample also stays columnar throughout.
         del sample
@@ -101,7 +102,10 @@ def price_on_market(request) -> "PortfolioResult":
                     *(run.precision.precision_for(t).compute for t in trades)]
         report = PrecisionReport.of(run.precision, trades, realized, valuation.columns, scenarios.num_paths,
                                     paired, figures, computed)
-        warnings = precision_warnings(run.precision, trades, scenarios.num_paths, request.pfe_quantiles)
+        report = dataclasses.replace(report, replicates=simulation.replicates,
+                                     uncertainty_method="independent_scrambles" if simulation.replicates > 1 else "unavailable")
+        warnings = precision_warnings(run.precision, trades, scenarios.num_paths, request.pfe_quantiles,
+                                       simulation.replicates)
     else:
         with phase("base_npv"):
             today = value_today(trades, market, base, run.pricing)
@@ -130,12 +134,16 @@ def run_figures(quantiles: Sequence[float]) -> RunFigures:
                              "float64 at every precision.")
 
 
-def precision_warnings(precision: Precision, trades: Sequence, paths: int, quantiles: Sequence[float]) -> List[str]:
+def precision_warnings(precision: Precision, trades: Sequence, paths: int, quantiles: Sequence[float],
+                       replicates: int = 1) -> List[str]:
     """A portfolio run's precision warnings: every figure (`run_figures`) without a passing row
     in the evidence table (`engine.precision.evidence`, I-55), and the label of the paired
-    correction's standard error where it is known to understate it. None at float64."""
-    label = paired_error_warning(precision)
-    return evidence_warnings(precision, trades, paths, run_figures(quantiles)) + ([label] if label else [])
+    correction's unavailable or unvalidated sampling uncertainty (I-111)."""
+    warnings = evidence_warnings(precision, trades, paths, run_figures(quantiles), replicates=replicates)
+    label = paired_error_warning(precision, replicates)
+    if label:
+        warnings.append(label)
+    return warnings
 
 
 def _paired_sample(trades: Sequence, market: Market, model, run, paths: int) -> PairedColumns:
@@ -173,6 +181,8 @@ def validate_request(request) -> None:
                          "today's NPVs and Greeks only")
     validate_trades(request.trades, request.market, run.pricing, run.precision)
     if request.scenario_risk:
+        simulation = run.simulation
+        run.precision.validate_sampling(simulation.samples, simulation.replicates, "simulation")
         for cfg in request.trades:
             if cfg.currency not in run.simulation.ir:
                 raise ValueError(f"trade {cfg.trade_id!r} is in {cfg.currency}, which the simulation does not model; "
@@ -181,7 +191,7 @@ def validate_request(request) -> None:
 
 
 def _exposures(trades: Sequence, start: List[float], columns, scenarios, market: Market, base: str, quantiles,
-               paired: Optional[PairedColumns] = None) -> "tuple[ExposureProfile, List[ExposureProfile]]":
+               paired: Optional[PairedColumns] = None, replicates: int = 1) -> "tuple[ExposureProfile, List[ExposureProfile]]":
     """Netting-set and per-trade profiles, deflated by the LGM numeraire, EE_B against the base
     currency's discount curve, time weights on the simulation dates; with the `paired` float64
     sample, their two-level estimates. Reductions over paths load `columns` individually and
@@ -196,4 +206,5 @@ def _exposures(trades: Sequence, start: List[float], columns, scenarios, market:
     numeraire = load(scenarios.numeraire, jnp.float64)
     common = dict(numeraire=numeraire, discount=p0, times=scenarios.times, quantiles=quantiles,
                   dates=scenarios.dates, asof=market.asof)
-    return column_profiles(columns, start, maturities=[trade_maturity(t) for t in trades], paired=paired, **common)
+    return column_profiles(columns, start, maturities=[trade_maturity(t) for t in trades], paired=paired,
+                           replicates=replicates, **common)

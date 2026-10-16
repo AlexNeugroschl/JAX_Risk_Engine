@@ -226,7 +226,7 @@ def bermudan_cube(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, market: Ma
     return jnp.stack(columns, axis=1)
 
 
-@partial(jax.jit, static_argnames=("arithmetic", "blocks"))
+@partial(jax.jit, static_argnames="blocks")
 def _date_column(option, rows, disc: ScenarioCurves, index: ScenarioCurves, j, fixing_deviations: jax.Array,
                  step: np.ndarray, path_known: np.ndarray, arithmetic: Arithmetic, blocks: int) -> jax.Array:
     """`[S]`: the option on date `j` of the scenario curves on every path, as one program for
@@ -242,8 +242,14 @@ def _date_column(option, rows, disc: ScenarioCurves, index: ScenarioCurves, j, f
     (disc_level, disc_moved), (index_level, index_moved) = split(disc), split(index)
     known = jnp.where(path_known[None, :], fixing_deviations[:, step], 0.0)
     option = dataclasses.replace(option, curve=disc_level, index_curve=index_level)
-    level, moved = blocked(lambda deviations: option_values(option, rows, deviations, arithmetic),
-                           Deviations(disc_moved, index_moved, known), blocks)
+    arithmetic = arithmetic.fold_in(j)
+    deviations = Deviations(disc_moved, index_moved, known)
+    if arithmetic.key is None:
+        level, moved = blocked(lambda d: option_values(option, rows, d, arithmetic), deviations, blocks)
+    else:
+        ids = jnp.arange(disc_moved.shape[0], dtype=jnp.uint32)
+        level, moved = blocked(lambda item: option_values(option, rows, item[0],
+                                dataclasses.replace(arithmetic, sample_ids=item[1])), (deviations, ids), blocks)
     return add_level(level, moved)
 
 

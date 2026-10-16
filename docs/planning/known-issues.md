@@ -13,48 +13,49 @@ recalibrates ([I-112](#i-112)).
 
 ## Verification status
 
-Last full run, 2026-10-15, on streamed exposure reductions and optional cube assembly
-([I-105](#i-105), closed; [design and measurements](details/precision.md#17-exposure-storage-and-peak-memory-i-105-2026-10-15)).
-3,439 collected on Windows: the previously recorded 3,401 plus 24 exposure-storage cases,
-13 benchmark-demo cases already in the working tree and the benchmark dependency requirement.
-Each run below printed its summary line:
+Last full run, 2026-10-16, on existing-format rounding, option bounds and independent
+uncertainty ([plan and measurements](details/precision-accuracy.md)).
+3,462 collected on Windows: the previously recorded 3,439 plus 23 precision-accuracy
+cases. Every green run below printed its summary line:
 
 - **Windows full suite**, `.venv/Scripts/python.exe -m pytest tests/ -q -n 8`:
-  **3,436 passed, 3 skipped, 0 failed**, 7m17s. The skips are the two accelerator-only
-  defaults and the GPU plugin check. The initial full run found only the benchmark extra's
-  missing matplotlib constraint; its installed version and unpinned dependencies were pinned,
-  and a plot rendered on Linux. A later GPU budget adjustment was followed by this full run.
-- **Linux CPU**, `JAX_PLATFORMS=cpu`, `-n 2`, exposure storage, rollback, market risk and
-  portfolio HTTP modules: **151 passed**, 3m09s. The final device policy also passed
-  **138 affected Windows CPU tests** (exposure storage, rollback and market risk).
-- **GPU**, RTX 5060, WSL2, `-n 2`, exposure storage, rollback, portfolio HTTP and the selected
-  ORE parity modules (`test_ore_xva_parity`, `test_ore_parity`, `test_ore_lgm_parity`):
-  **169 passed**, 9m09s; after choosing the conservative device budget, the exposure and
-  rollback modules again: **61 passed**, 1m42s.
-- **Strict dtype promotion**, exposure storage and precision-report modules: **97 passed**.
-  The full suite also includes the four-device scenario-sharding check. Ruff's pyflakes
-  rules pass on all 14 changed Python files.
-- **Accuracy**: a pre/post snapshot against `c3d7c6a`, 675 numeric outputs on the shared
-  sloped portfolio (all five product families, Greeks, float64, float32 and mixed stored
-  precision with a paired sample), all identical. The 65,536-path GPU demo's cube, EPE and
-  ENE are identical too. Existing ORE tolerances are unchanged.
-- **Precision harness**: the FP8 pricing-storage subset of `linear`, both roundings and
-  layouts and paired cases, 1,024 and 4,096 paths, three seeds: 720 figure rows, 48 coverage
-  rows, 12 case/path runs, zero recompilations after warmup. Pricing/storage arithmetic is
-  unchanged, so the existing evidence rows were not regenerated. This subset is a regression
-  check, not a replacement for the 16-seed measurements of record.
-- **Memory and timing**: fresh-process curves at float64 and FP8 storage, CPU and GPU,
-  in precision design §17. At 65,536 paths, 24 swaps and 12 dates, FP8 exposure-only peak
-  GPU allocation is 394 MB versus 610 MB before (35% lower); Windows peak working set is
-  938 MB versus 1,052 MB. The full-output demo's GPU peak is 609 MB versus 660 MB,
-  warm observations about 1.0–1.1 s, zero warm compilations. The capacity-based rollback
-  budget uses an eighth of the device allocator limit; a measured half consumed 1.56 GB
-  more without a useful speed gain.
+  **3,459 passed, 3 skipped, 0 failed**, 7m40s. The skips are the two accelerator-only
+  defaults and the GPU plugin check. Existing ORE tolerances are unchanged.
+- **Strict dtype promotion**, precision accuracy, precision reports, evidence and
+  Jamshidian modules, `JAX_NUMPY_DTYPE_PROMOTION=strict`, `-n 2`:
+  **290 passed**, 36s. This includes the explicit int32 bootstrap/deletion indices and
+  the adjacent-calendar-date stream regressions for legs and Jamshidian.
+- **GPU**, RTX 5060 Laptop, WSL2/Linux, JAX/jaxlib 0.10.2 and ORE 1.8.16.0:
+  precision accuracy, reports, accelerator defaults and the ORE XVA/algorithm/LGM/market-risk
+  parity modules: **227 passed**, 11m29s. After the final shared date-stream helper,
+  all accuracy and Jamshidian cases (including its ORE comparisons): **182 passed**, 51s.
+  These runs overlap; their counts are not a count of unique tests.
+- **Compilation and sharding**: the full suite includes four virtual CPU devices,
+  stochastic compute, stable sample identities under batching/blocking, and zero warm
+  compilation when simulation, rounding or historical-bootstrap seeds change.
+  Ruff's pyflakes rules pass on the changed Python files.
+- **Accuracy**: pre/post shared-portfolio snapshots cover all five product families,
+  Greeks, float64, float32 and mixed paired storage precision. Valuations, exposures,
+  Greeks and exercise flags are identical. Numeric outputs increase from 675 to 678
+  through three replicate-count fields; the only changed existing arrays are 72
+  standard-error fields deliberately becoming NaN with one scramble. Greek comparisons
+  use trade NPV as scale.
+- **Precision evidence**: eight campaigns added/refreshed, **11,680 figure rows**, zero
+  warm recompilations; the ten records contain **34,000 figure rows** in total. The
+  shipped table and JSON are regenerated and checked against those records. The
+  nearest/R=1 linear and compute numerical paths are unchanged. The late key/index
+  refinements preserve recorded draws and values; see the detailed plan. Concurrent
+  runs and suspension make these elapsed times unsuitable for device speed comparisons.
+- **Research acceptance**: I-98 and I-113 are closed. **I-111 remains PARTIAL**:
+  independent-replicate errors remove the IID assumption, but rare-event interval
+  coverage fails the predeclared gate. No fitted inflation factor or relaxed threshold
+  is used. **I-114 remains OPEN**: evidence matching must distinguish the pricing engine
+  and grid before hardware timing. FP4 and quantile correction remain later research.
 
-Red first: `tests/test_exposure_storage.py`'s initial output-omission regression failed at
-`load(valuation.cube, float64)` on the pre-fix pipeline; HTTP conversion also failed because
-there was no engine output switch. The remaining precision work is F-07, I-98, I-111 and
-I-113, including the hardware campaign's budget/time/memory tradeoff.
+Red first: the initial eight rounding/replicate/wrapper regressions, the stressed
+bfloat16 revaluation (-40.1640625), adjacent-day stream collisions and Jamshidian's
+missing date stream all failed before their fixes. Strict promotion also exposed the
+implicit Boolean/integer deletion index, now guarded by regression tests.
 
 The fast tier alone is not a full verification. Rules: [README.md](README.md#verification-rules).
 
@@ -78,9 +79,8 @@ The fast tier alone is not a full verification. Rules: [README.md](README.md#ver
 | [I-108](#i-108) | TraderX: NaN amounts priced as `ok`, terms contradicting the row priced, duplicate rows counted twice | Medium | OPEN | API | TraderX |
 | [I-109](#i-109) | TraderX: after a failed publication a same-id retry never prices or publishes | Medium | OPEN | API | TraderX |
 | [I-110](#i-110) | The documentation contradicts the code in places; no single parity table | Low | OPEN | Tooling | Fix what exists |
-| [I-113](#i-113) | Below float64 a long option worth almost nothing on a path can come out a few rounding errors below zero | Low | OPEN | Correctness | Focus |
-| [I-111](#i-111) | Reported standard errors treat Sobol paths and historical windows as independent | Medium | FLAGGED | Correctness | Focus |
-| [I-98](#i-98) | FP8 compute keeps a bias, and the Bermudan/American induction in every format below float32: each path's operand is rounded to nearest on the format's grid | Medium | OPEN | Correctness | Focus |
+| [I-111](#i-111) | Independent-replicate intervals under-cover rare exposure and correction events | Medium | PARTIAL | Correctness | Focus |
+| [I-114](#i-114) | Precision evidence lookup omits pricing-engine and grid settings | Medium | OPEN | Validation | Focus |
 | [I-97](#i-97) | XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU | Medium | OPEN | Performance | Focus |
 | [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Focus |
 | [I-88](#i-88) | The API completeness test checks field names, not that a value reaches the engine | Low | OPEN | Tooling | Focus |
@@ -206,137 +206,75 @@ With a smile: European NPV and Vega away from the money, and calibrated Bermudan
 **To close.** Decided (X-5): a strike axis in the market's volatilities, read at each
 option's and helper's strike as ORE reads its cube. SABR is [F-02](features.md#f-02).
 
-<a id="i-113"></a>
-### I-113 — Below float64 a long option worth almost nothing on a path can come out a few rounding errors below zero
-
-**Severity:** Low · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-13, the
-`compute_options` campaign (the rollback in difference form, I-83)
-
-**What is wrong.** A Bermudan's or American's path value is the induction's level plus the path's
-deviation from it (`engine.pricing.lgm_grid.option_values`). Where a path's option is worth almost
-nothing and the level is not, the deviation nearly cancels the level, so the format's rounding of
-it is the value's own error: a long option, never negative in exact arithmetic (nor in the
-float32 kernel before, which summed non-negative values with positive weights), can come out
-slightly below zero. Measured: the cash Bermudan's ENE, 0 at float64 on every date, at most
-4.9e-5 under `bfloat16_3x` products (a notional of 1e6); the evidence table's fixed rule, relative
-to that figure's scale of 0, fails the row at every path count while the Bermudan's other figures
-pass to 4,096 paths.
-
-**Reach.** The ENE (and a netting set's offset) of a long option priced below float64, by a few of
-the format's rounding errors of its level. No exposure figure moves beyond its format's error;
-float32 compute measured no movement.
-
-**Current handling.** The evidence table reports the row (A-11's rule, not redefined); every
-result warns of the figure as of any without a passing row.
-
-**To close.** Decide with the unbiased rounding of the products' per-path operands (I-98) whether a long option's path value is
-projected onto its bound (`max(value, 0)`: exact arithmetic never crosses it, and the projection
-biases by at most the rounding on paths worth nothing), or the fixed rule judges such a figure
-against the option's scale rather than its own; then the campaign's row again.
 
 <a id="i-111"></a>
-### I-111 — Reported standard errors treat Sobol paths and historical windows as independent
+### I-111 - Independent-replicate intervals under-cover rare exposure and correction events
 
-**Severity:** Medium · **Status:** FLAGGED · **Category:** Correctness · **Found:** 2026-10-09,
-the storage harness's coverage (I-75); 2026-10-10, the project audit (AUD-19); split from
-[I-55](#i-55) when the evidence table closed it, 2026-10-11
+**Severity:** Medium · **Status:** PARTIAL · **Category:** Correctness · **Found:** 2026-10-09,
+the storage harness; independent-replicate implementation and coverage experiment 2026-10-16
 
-**What is wrong.** Every standard error a result reports is a sample standard deviation over
-the square root of a count, as if the paths or scenarios were independent draws. They are not:
-a scrambled Sobol sequence's points are dependent within a draw, the 32 paths of a storage block
-share a scale and offset, and overlapping historical horizons share days. Measured across
-independent seeds by the precision harness (16 seeds; §15.4 and §15.6 of
-[details/precision.md](details/precision.md)):
+**What is wrong.** The IID-path assumption is removed: runs can concatenate independent
+scrambled Sobol replicates, pair a float64 prefix within each, and estimate mean variance from
+the replicate estimates (including covariance). Market-risk ES uses independent-scramble
+deletion, or conditional moving-block bootstrap for historical windows. One scramble reports
+NaN/HTTP null errors. Python and HTTP expose the controls and report the method as run.
 
-- the paired estimate's total standard error (`MeanEstimate.standard_error`) is about three
-  times too wide on Sobol paths (standardized errors' root mean square 0.30 to 0.40);
-- the paired correction's (`MeanEstimate.correction_standard_error`) is right for storage of
-  the cube (root mean square 0.95 to 1.03 in every format) and for FP8 shocks and curves (0.94
-  to 1.09), but too small with the shocks, states or curves stored in float16 or bfloat16: root
-  mean square 1.5 to 3.3 and single errors up to 74 standard errors, at 1,024 and 4,096 paths,
-  in figures that differ from float64 on few paths (a rounded curve that flips an option's
-  payoff on one path), though pooled coverage stays 0.91 to 0.97. A standard error by blocks of
-  paths (batch means over the storage blocks, the fix I-55 proposed) was measured on 2026-10-11
-  against a threshold fixed before (root mean square within 0.75 to 1.33 and coverage at least
-  0.90 for every case): it fails it, being no better (root mean square 1.0 to 3.2, coverage
-  0.83 to 0.94), the misses being rare large differences that no block structure explains;
-- market risk's `ES_<q>_standardError` is the tail's standard deviation over the square root of
-  its count; its calibration on Sobol or historical scenarios is unmeasured.
+The remaining defect is interval calibration on rare events. The replicated-storage campaign
+(eight scrambles, 32 outer seeds, 1,024/4,096/16,384 paths) fails the predeclared RMS/coverage
+criteria for some ENE and paired-correction figures. More scrambles alone did not fix selected
+cases. The variance estimate is an estimate, not a validated 95% bound. Implementation,
+measurements and the remaining gate: [details/precision-accuracy.md](details/precision-accuracy.md).
 
-**Reach.** The standard errors in the precision report and market risk's ES standard error: a
-reader who takes one as a 95% interval is wrong by the factors above. No figure is wrong: the
-figures themselves and the evidence table, which judges every row by its errors across
-independent seeds, never by these standard errors, are unaffected.
+**Reach.** Uncertainty intervals for rare exposure and rounding/exercise events. Prices, paired
+mean corrections and precision acceptance verdicts are unaffected by this limitation: the table
+uses errors against matched float64 draws across independent outer seeds, never reported SEs.
+Analytic mean and ES coverage tests pass on their specified Gaussian examples; that does not
+prove rare-event coverage.
 
-**Current handling.** Flagged on the result: a paired run with the shocks, states or curves
-stored below 32 bits carries a warning that its correction's standard errors understate the
-error (`engine.precision.evidence.paired_error_warning`), and every market-risk result one that
-its ES standard errors treat the scenarios as independent; `MeanEstimate`'s docstring states
-the measurements.
+The low-level `expected_shortfall_standard_error`/`compute_risk_metrics` helpers still
+expose the legacy conditional tail-spread diagnostic: it holds a fitted threshold fixed,
+so even an IID interpretation is not the complete ES estimator's sampling error. Their
+docstrings now state this limit; `run_market_risk` replaces it with the methods above.
 
-**To close.** Standard errors from independent replicates within a run: the run's paths as K
-independently scrambled Sobol sequences (randomized quasi-Monte Carlo), each figure's standard
-error the spread of its K replicate values over sqrt(K), the paired correction's likewise per
-replicate; for historical scenarios, block resampling over non-overlapping windows. The
-replicates move the run's numbers (their union is not one Sobol sequence), so the precision
-harness measures both the coverage and the change; the project audit (AUD-19) recommends the
-same. Red first: on the paired cases of the `linear` campaign, the replicate standard error's
-standardized errors have a root mean square within 0.75 to 1.33 where today's reaches 3.3.
+**Current handling.** Every paired report with independent scrambles warns that rare-event
+intervals remain unvalidated; one-scramble errors are unavailable. Market-risk results identify
+jackknife or conditional historical bootstrap assumptions. Rounding and replicate counts have
+distinct evidence keys. No acceptance threshold is relaxed.
 
-<a id="i-98"></a>
-### I-98 — FP8 compute keeps a bias, and the Bermudan/American induction in every format below float32: each path's operand is rounded to nearest on the format's grid
+**To close.** Establish calibrated uncertainty intervals or a principled availability rule for
+rare events. Validate on independent outer seeds, including the independent reference's own
+uncertainty; do not apply an IID finite-population adjustment to dependent Sobol points. Retain
+the predeclared standardized-error RMS range 0.75–1.33 and coverage at least 0.90 for every
+case. The current coverage audit omits zero-SE observations. Distinguish known constants
+and numerical roundoff from unobserved rare events; count a nonzero residual beyond
+roundoff as a failed interval instead of dropping it. Replace or rename
+the legacy low-level ES diagnostic without presenting it as complete-estimator uncertainty.
+Do not fit an inflation factor to the failing campaign. See the detailed plan above.
 
-**Severity:** Medium · **Status:** OPEN · **Category:** Correctness · **Found:** 2026-10-11, the
-`compute` campaign rerun with the shared operands in two terms (I-96, decision A-23)
 
-**What is wrong.** Since each product carries the operand every path shares in two terms of
-its format (A-23), what is left of its error below float32 is the per-path operand's own
-rounding. On the 10-bit grids (float16, TensorFloat-32) and bfloat16's that averages out: one
-stage computed in the format moves no mean figure by more than 1.2 of its statistical errors at
-16,384 paths (compliance/precision-measurements/compute.md). On FP8's it does not. Rounded to
-nearest on a grid whose spacing doubles at every power of two, a smooth spread of values has a
-mean error that is not zero: on 786,432 operands near 1 ± 0.3, each row scaled as the products
-scale it, −2.7% of the rounding's own spread for e4m3, −5% for e5m2 (float16's 0.02%). So a stage
-computed in FP8 still moves its figures systematically: pricing in e4m3 9.5 statistical errors on
-a mean at 4,096 paths and 30 at 16,384 (significance 35 and 86), e5m2 a quantile 73 and 213 (a
-payer swap's 5-year PFE), one stage's means 8 to 34 times closer than the single pass's (I-96)
-but growing with the paths as a bias does. Neither a third term of the shared operand nor the shared operand
-unrounded (eight terms) changes any FP8 case beyond its noise ([precision.md
-§15.5](details/precision.md#155-compute-below-float32-2026-10-10)).
+<a id="i-114"></a>
+### I-114 — Precision evidence lookup omits pricing-engine and grid settings
 
-The Bermudan/American induction (2026-10-13, the `compute_options` campaign) rounds each path's
-deviation columns at every step of its rollback, 6 for a Bermudan and about a hundred for the
-shared portfolio's American, so the per-path rounding's bias accumulates there on every grid
-below float32, not FP8's alone: with the pricing stage in float16 or TensorFloat-32 the
-American's mean figures are 7.0 statistical errors off at 16,384 paths (significance 99), in
-bfloat16 45, while two terms of the shared operand help the Bermudans (0.49 against the single
-pass's 6.1) and not the American (7.0 against 2.7); float32 and `bfloat16_3x` pass the 1% rule to
-16,384 and 4,096 paths ([precision.md §15.7](details/precision.md#157-the-rollback-in-difference-form-2026-10-13)).
+**Severity:** Medium · **Status:** OPEN · **Category:** Validation · **Found:** 2026-10-16,
+review of compute-rounding coverage and `engine.precision.evidence.combination`
 
-**Reach.** Runs that compute a stage in FP8 (`float8_e4m3fn`, `float8_e5m2`; opt-in), and a
-Bermudan's or American's pricing stage in any format below float32 (opt-in). The other kernels
-in the 10-bit and bfloat16 formats are unaffected. Means are corrected by a paired float64 sample
-(`Precision.paired_fraction`, A-13); quantiles are not: market risk's VaR and ES at 8,192
-scenarios are 0.26 (e4m3) and 0.42 (e5m2) statistical errors off.
+**What is wrong.** The acceptance key records formats, roundings, layout, pairing and
+replicate count, but not `PricingConfig`. A European using Jamshidian can match a row
+measured with Bachelier; a different rollback grid can match the coarse grid's row. Those
+settings change the arithmetic and its error, so that lookup does not establish accuracy.
 
-**Current handling.** The precision report names the compute format; the precision harness
-measures the bias, and the evidence table (2026-10-11,
-[compliance/precision-evidence.md](../../compliance/precision-evidence.md)) passes FP8 compute
-for no figure it moves at any path count measured (only figures no format moves, such as a
-bond's ENE, pass), so every run that computes a stage in FP8 carries the table's warning,
-naming its figures.
+**Reach.** Precision validation labels and missing-evidence warnings under unmeasured
+pricing settings. The measured errors and verdicts for the campaign's own settings remain
+valid; the issue does not alter prices, ORE parity or the numerical acceptance thresholds.
 
-**To close.** Round the per-path operand without bias: stochastically, as storage can
-(`Precision.rounding`), each path drawing its own uniforms so that its rounding depends on no
-other path (I-75's rule). On the product alone it removes the per-path part (e4m3 at 65,536
-paths: significance 12.3 to 4.7, the rest the second term's own rounding) at 40% more root mean
-square error, the trade storage measured too (stochastic rounding worse for VaR and ES in 12 of
-16 storage comparisons, §15.4). So: a choice of the policy, both measured in the `compute`
-campaigns, the FP8 default decided by the evidence table's path ceilings; FP4 compute (F-07)
-meets the same rounding, coarser. Red first: an FP8 campaign case whose significance at 4,096
-paths falls below 3 with it and not without, and the `compute_options` campaign's float16 American
-likewise.
+**Current handling.** The generated table and measurement documentation state the scope
+limit and point to the exact campaign definitions. Runtime lookup does not yet enforce it.
 
+**To close.** Carry the pricing engine and accuracy-relevant settings into campaign
+metadata and runtime matching, conservatively warn for an unmeasured configuration, and
+add regressions proving that Bachelier cannot validate Jamshidian and one grid cannot
+validate another. Measure additional configurations when useful. Do this before the
+equal-accuracy hardware comparison; do not duplicate or relabel existing rows as new evidence.
 
 <a id="i-97"></a>
 ### I-97 — XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU
@@ -1434,3 +1372,5 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="p-3"></a>Audit P-3 | The precision study bypassed the engine's own FP32 path | `demos/demo_precision.py` |
 | <a id="a-5"></a>Audit A-5 | Instruments imported validators from the layer above | `tests/test_import_layering.py` |
 | <a id="a-7"></a>Audit A-7 | The bond pricer was a separate plain-Python implementation | `tests/test_market_risk.py::TestRevaluation` |
+| <a id="i-98"></a>I-98 | Per-path product operands had no unbiased rounding policy; keyed stochastic compute rounding removes their conditional rounding bias, nearest retained as the measured baseline and nonlinear FP8 failures left failing (2026-10-16) | `tests/test_precision_accuracy.py::test_stochastic_product_has_no_binade_rounding_bias`, `::test_stochastic_keys_are_data_and_sample_prefixes_reproduce`; `rounding` and `rounding_options` campaigns |
+| <a id="i-113"></a>I-113 | Long continuation values and stressed market-risk revaluations crossed zero; bound before LongShort/delivery and before/after P&L storage (2026-10-16) | `tests/test_precision_accuracy.py::test_long_option_bound_precedes_position_and_physical_delivery`, `::test_market_risk_cannot_revalue_a_long_option_below_zero` (both red before fix) |

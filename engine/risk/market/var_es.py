@@ -143,7 +143,8 @@ def _expected_shortfall_jit(pnl: jax.Array, percentile: float) -> jax.Array:
 def tail_sample_size(pnl: jax.Array, percentile: float) -> jax.Array:
     """
     [Scenarios, TimeSteps] P&L -> [TimeSteps] number of observations in the ES mean (the
-    strict tail `pnl < -VaR`). The effective sample size of the tail estimate: at 99% over
+    strict tail `pnl < -VaR`). This is an observation count, not an effective independent
+    sample size: at 99% over
     10,000 scenarios, about 100. 0 where `expected_shortfall` is NaN.
     """
     return _tail_sample_size_jit(pnl, float(percentile))
@@ -157,13 +158,44 @@ def _tail_sample_size_jit(pnl: jax.Array, percentile: float) -> jax.Array:
 
 def expected_shortfall_standard_error(pnl: jax.Array, percentile: float) -> jax.Array:
     """
-    [Scenarios, TimeSteps] P&L -> [TimeSteps] Monte Carlo standard error of the ES estimate:
+    [Scenarios, TimeSteps] P&L -> [TimeSteps] legacy conditional tail-spread diagnostic:
     `s / sqrt(n)`, with `s` the sample standard deviation (ddof=1) of the tail and `n` the
-    tail count. Makes a sparse tail visible (I-11).
+    tail count. It holds the fitted threshold fixed and assumes IID tail observations;
+    it is not the sampling error of the complete ES estimator (I-111). Market-risk runs
+    use replicate deletion or historical moving blocks instead.
 
     NaN where `n < 2` (no spread can be estimated), never 0.
     """
     return _es_standard_error_jit(pnl, float(percentile))
+
+
+@partial(jax.jit, static_argnames=("percentile", "replicates"))
+def replicated_es_error(pnl, percentile: float, replicates: int):
+    """SE of the pooled ES by deleting independent randomized-QMC replicates.
+
+    The tail and its threshold are recomputed after each deletion. A single scramble
+    or a non-estimable delete-one tail yields NaN, rather than an IID tail error.
+    """
+    from engine.precision.uncertainty import delete_group, jackknife_error
+    if replicates < 2:
+        return jnp.asarray(jnp.nan, dtype=jnp.float64)
+    estimates = jax.lax.map(lambda i: expected_shortfall(delete_group(pnl, i, replicates)[:, None], percentile)[0],
+                            jnp.arange(replicates))
+    return jackknife_error(estimates)
+
+
+@partial(jax.jit, static_argnames=("percentile", "block", "replicates"))
+def historical_es_error(pnl, key, percentile: float, block: int, replicates: int):
+    """Conditional moving-block bootstrap SE, preserving within-block dependence."""
+    from engine.precision.uncertainty import moving_block_indices
+    if block * 2 > pnl.shape[0]:
+        return jnp.asarray(jnp.nan, dtype=jnp.float64)
+    def resample(index):
+        indices = moving_block_indices(jax.random.fold_in(key, index), pnl.shape[0], block, 1)[0]
+        return expected_shortfall(pnl[indices, None], percentile)[0]
+    # Only one resampled history is live at once, including at large bootstrap counts.
+    estimates = jax.lax.map(resample, jnp.arange(replicates))
+    return jnp.std(estimates, ddof=1)
 
 
 @partial(jax.jit, static_argnums=1)
@@ -199,7 +231,8 @@ def compute_risk_metrics(
     "ES_95": [T], ...}`, VaR and ES together at each percentile, as ORE reports them.
 
     With `include_diagnostics` (the default), also `ES_<q>_tailCount` and
-    `ES_<q>_standardError` per percentile.
+    `ES_<q>_standardError` per percentile. The latter is the legacy conditional tail-spread
+    diagnostic above, not dependence-aware ES uncertainty; market-risk runs replace it.
 
     The risk measure is not labelled here, because a cube does not say which measure
     produced it; `RISK_MEASURE_*` and `engine.traderx.result` carry it (I-11).

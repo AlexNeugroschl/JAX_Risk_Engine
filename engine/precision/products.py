@@ -40,9 +40,16 @@ rounding, each next one the rounding of what the terms before leave, each scaled
 by its own powers of two. The terms are stacked along the shared operand's free axis, so the
 product stays one product, that many times as wide, and the terms' products are summed in
 float32, the smallest first: the shared operand's rounding is then the last term's, far below
-the per-path operand's, which is each path's own and averages out over the paths. Two terms by
+the per-path operand's. Its remaining rounding error still depends on the rounding policy
+(nearest can retain a bias; stochastic rounding is described below). Two terms by
 default; the single pass (`<name>_1x`, one term) is what one native product does, kept so that
 its bias and its speed are measured (the evidence table, the timing).
+
+`Arithmetic.rounding="stochastic"` rounds only the per-path operand between its two
+neighbours with the exact distance probability. This removes its conditional mean
+rounding error (I-98); it does not make nonlinear payoffs or exercise decisions unbiased.
+Nearest remains the baseline. Named keys and global sample ids are traced pytree leaves,
+so changing a seed, sample batch, date or trade does not require a new program.
 
 Every format below float32 accumulates in float32, as the matrix units that run it do
 (`engine.precision.arithmetic`). A product format is **native** on a device with units for it,
@@ -136,7 +143,7 @@ def product_precision(compute, device: Optional[jax.Device] = None):
     return lax.Precision.HIGHEST
 
 
-def matmul(a, b, arithmetic=None, shared: Optional[str] = None):
+def matmul(a, b, arithmetic=None, shared: Optional[str] = None, *, sample_axis: int = 0):
     """`a @ b` (`jnp.matmul`: broadcast over leading axes, a 1-D operand as a vector) in
     `arithmetic`'s compute format, accumulated and returned in its accumulate format (an
     `engine.precision.Arithmetic`), `shared` the operand every path shares, `"left"` or `"right"`,
@@ -172,7 +179,7 @@ def matmul(a, b, arithmetic=None, shared: Optional[str] = None):
         product = _matmul32(a.astype(jnp.float32), b.astype(jnp.float32), precision)
     else:
         carrier = fmt.dtype if product_execution(compute) == "native" else _CARRIERS.get(fmt.base, fmt.dtype)
-        product = _rounded_product(a, b, fmt, carrier, precision, shared)
+        product = _rounded_product(a, b, fmt, carrier, precision, shared, arithmetic, sample_axis)
     product = product[..., 0, :] if vector_a else product
     return (product[..., 0] if vector_b else product).astype(out)
 
@@ -184,14 +191,22 @@ def _matmul32(a, b, precision):
     return jnp.matmul(a, b, precision=precision, preferred_element_type=jnp.float32)
 
 
-def _rounded_product(a, b, fmt: Format, carrier, precision, shared: str):
+def _rounded_product(a, b, fmt: Format, carrier, precision, shared: str, arithmetic, sample_axis: int):
     """`a @ b` on operands rounded to `fmt`'s grid (below float32), each row of `a` and column of
     `b` scaled into its range by a power of two, the `shared` operand in `fmt.shared_terms` terms,
     held in `carrier` (the format's dtype, or one that holds it exactly), as one product: see the
     module docstring."""
     terms = fmt.shared_terms
-    qa, ka = _terms(a, fmt, axis=-1, count=terms if shared == "left" else 1)    # ka [..., terms M, 1]: per row
-    qb, kb = _terms(b, fmt, axis=-2, count=terms if shared == "right" else 1)   # kb [..., 1, terms N]: per column
+    uniforms = None
+    if arithmetic.rounding == "stochastic":
+        if arithmetic.key is None:
+            raise ValueError("stochastic product rounding needs an explicit random key")
+        operand = b if shared == "left" else a
+        uniforms = _operand_uniforms(operand, arithmetic, sample_axis)
+    qa, ka = _terms(a, fmt, axis=-1, count=terms if shared == "left" else 1,
+                    uniforms=uniforms if shared == "right" else None)
+    qb, kb = _terms(b, fmt, axis=-2, count=terms if shared == "right" else 1,
+                    uniforms=uniforms if shared == "left" else None)
     product = _matmul32(qa.astype(carrier), qb.astype(carrier), precision)
     product = product * pow2(-ka, jnp.float32) * pow2(-kb, jnp.float32)
     parts = jnp.split(product, terms, axis=-2 if shared == "left" else -1)
@@ -201,14 +216,14 @@ def _rounded_product(a, b, fmt: Format, carrier, precision, shared: str):
     return total
 
 
-def _terms(x, fmt: Format, axis: int, count: int):
+def _terms(x, fmt: Format, axis: int, count: int, uniforms=None):
     """`x` as `count` terms of `fmt`, each rounded and scaled along `axis` by `_quantize`, the
     first `x`'s rounding and each next one the rounding of what the terms before leave, stacked
     along the other matrix axis; and their scale exponents, stacked alike. What a term leaves is
     exact in `x`'s dtype (float32 or float64), being a rounding error onto a coarser grid."""
     terms, exponents, rest = [], [], x
     for i in range(count):
-        term, k = _quantize(rest, fmt, axis)
+        term, k = _quantize(rest, fmt, axis, uniforms)
         terms.append(term)
         exponents.append(k)
         if i + 1 < count:
@@ -218,7 +233,7 @@ def _terms(x, fmt: Format, axis: int, count: int):
     return jnp.concatenate(terms, axis=stack), jnp.concatenate(exponents, axis=stack)
 
 
-def _quantize(x, fmt: Format, axis: int):
+def _quantize(x, fmt: Format, axis: int, uniforms=None):
     """`x` scaled along `axis` by the powers of two `2^k` that bring each slice's largest finite
     magnitude into (max/2, max] of `fmt`, rounded to its grid and cast to it; and `k`. A format
     with float32's range (bfloat16, TensorFloat-32) needs no scale: `k` is 0, and scaling it to
@@ -229,7 +244,25 @@ def _quantize(x, fmt: Format, axis: int):
         amax = jnp.max(jnp.where(jnp.isfinite(x), jnp.abs(x), 0), axis=axis, keepdims=True, initial=0)
         k = scale_exponent(amax, fmt.max)
     scaled = x * pow2(k, x.dtype)
-    return round_to_grid(scaled, fmt.mantissa_bits, fmt.min_exponent).astype(fmt.dtype), k
+    return round_to_grid(scaled, fmt.mantissa_bits, fmt.min_exponent, uniforms).astype(fmt.dtype), k
+
+
+def _operand_uniforms(x, arithmetic, sample_axis):
+    """One independent stream per global sample, stable under prefixes and batches.
+
+    Non-sample coordinates have the operand's fixed shape. Randomness is independent of
+    operand values; using their bits to seed rounding would introduce a new bias.
+    """
+    axis = sample_axis % x.ndim
+    ids = arithmetic.sample_ids
+    if ids is None:
+        ids = jnp.arange(x.shape[axis], dtype=jnp.uint32)
+    if ids.shape != (x.shape[axis],):
+        raise ValueError(f"rounding sample_ids {ids.shape} must match operand sample axis {x.shape[axis]}")
+    shape = x.shape[:axis] + x.shape[axis + 1:]
+    keys = jax.vmap(lambda i: jax.random.fold_in(arithmetic.key, i))(ids)
+    draws = jax.vmap(lambda k: jax.random.uniform(k, shape, dtype=x.dtype))(keys)
+    return jnp.moveaxis(draws, 0, axis)
 
 
 def _split_bfloat16(x):

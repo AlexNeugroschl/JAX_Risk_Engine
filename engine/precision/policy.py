@@ -16,6 +16,12 @@ The precision of a run (docs/planning/details/precision.md §3, §4; decisions A
                                                 each block scale, or none (I-75)
       paired_fraction  float in [0, 1]          the share of paths also run at float64 (A-13)
 
+Each stage also has `compute_rounding`: nearest (the default research baseline) or
+stochastic for single-grid compute below float32. Stochastic products round each per-path
+operand with an independent keyed draw; the shared operand retains its configured
+representation (two terms normally, one for a single-pass research baseline).
+`rounding_seed` seeds both storage and compute rounding in separate named streams.
+
 Each adjustable stage has three precisions: `storage`, the format its output is kept in until
 the next stage reads it; `compute`, the format of its matrix products; `accumulate`, the format
 those products accumulate in and every other operation of the stage is evaluated in (its
@@ -41,7 +47,7 @@ rounding draws from `rounding_seed` and that name, so arrays round independently
 column rounds the same in a mixed run as alone, and a run reproduces.
 
 With `paired_fraction > 0`, that share of the paths (or market-risk scenarios), rounded up to
-whole blocks (`engine.precision.estimate.paired_paths`), is also run at float64 throughout, and
+whole blocks within each independent scramble (`engine.precision.estimate.paired_count`), is also run at float64 throughout, and
 the result's precision report gives each figure's distance from float64 on it: means are
 corrected by the two-level estimator, quantiles measured (decision A-13). At float64 everywhere
 it measures zero, and is allowed as a check of the pairing.
@@ -61,13 +67,15 @@ stage stores in a scaled format (it would change nothing), and a `paired_fractio
 The 32/64 shape retired on 2026-10-01 (`PrecisionConfig`) is refused, not translated (A-12): `RETIRED_SHAPE` says what replaces it.
 """
 import math
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from numbers import Real
 from typing import Iterable, Iterator, Mapping, Sequence
 
 from engine.precision.arithmetic import Arithmetic, arithmetic_refusal
 from engine.precision.formats import format_of
 from engine.precision.storage import OFFSETS, ROUNDINGS, rounding_key, store
+from engine.precision.estimate import validate_replicates
+from engine.precision.storage import BLOCK
 
 #: The adjustable stages, in pipeline order.
 STAGES = ("simulation", "market", "pricing")
@@ -95,10 +103,13 @@ class StagePrecision:
     storage: str = "float64"
     compute: str = "float64"
     accumulate: str = "float64"
+    compute_rounding: str = "nearest"
 
     def __post_init__(self):
         rows = {}
         for f in fields(self):
+            if f.name == "compute_rounding":
+                continue
             value = getattr(self, f.name)
             if not isinstance(value, str):
                 raise TypeError(f"StagePrecision.{f.name} must be a format name such as 'float32', got {value!r}; "
@@ -119,6 +130,11 @@ class StagePrecision:
         if storage.bits > accumulate.bits:
             _refuse("storage", storage.name, f"wider than accumulate={accumulate.name!r}; storing wider than the "
                                              f"stage computes adds no precision")
+        # The arithmetic owns the validation shared by direct and configured kernels.
+        try:
+            Arithmetic(self.compute, self.accumulate, self.compute_rounding)
+        except ValueError as exc:
+            raise ValueError(f"StagePrecision.compute_rounding={self.compute_rounding!r}: {exc}") from None
 
     @property
     def storage_dtype(self):
@@ -127,7 +143,7 @@ class StagePrecision:
     @property
     def arithmetic(self) -> Arithmetic:
         """The stage's compute and accumulate formats, as its kernels take them."""
-        return Arithmetic(self.compute, self.accumulate)
+        return Arithmetic(self.compute, self.accumulate, self.compute_rounding)
 
     @property
     def scaled_storage(self) -> bool:
@@ -245,6 +261,20 @@ class Precision:
         if self.rounding == "stochastic" and format_of(storage).scaled:
             return store(x, storage, "stochastic", rounding_key(self.rounding_seed, stream), axis, self.offset)
         return store(x, storage, axis=axis, offset=self.offset)
+
+    def arithmetic_for(self, stage: StagePrecision, stream: str) -> Arithmetic:
+        """The stage's arithmetic with its own traced rounding stream (stage or trade)."""
+        arithmetic = stage.arithmetic
+        return (replace(arithmetic, key=rounding_key(self.rounding_seed, "compute/" + stream))
+                if arithmetic.rounding == "stochastic" else arithmetic)
+
+    def validate_sampling(self, paths: int, replicates: int, owner: str) -> None:
+        """Replicate boundaries coincide with stored/paired block boundaries."""
+        validate_replicates(paths, replicates, f"{owner}.replicates")
+        if replicates > 1 and (self.paired_fraction or any(s.scaled_storage for s in self._stages())):
+            if (paths // replicates) % BLOCK:
+                raise ValueError(f"{owner}: sample count / replicates must be a multiple of storage block {BLOCK} "
+                                 "for paired or scaled-storage runs")
 
     def check_overrides(self, trades: Iterable, products: Sequence[str]) -> None:
         """Refuse an override that selects nothing, before any work: a `by_product` key outside

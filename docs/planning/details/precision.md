@@ -996,16 +996,20 @@ Bermudans the path work does. The same runs show what the report is for: the FP8
 correction is 11 (2%) to 79 (100%) of its standard errors from zero, the nearest-rounding bias
 of [I-75](../known-issues.md#i-75), measured on the run itself.
 
-**Limits.** The standard errors treat paths as independent. Sobol paths are not, and the
-rounding errors of the 32 paths of a block share a scale and offset. The storage harness
-measured their coverage on the pipeline (2026-10-09, §15.4): the correction's standard error
-is right for cube storage and too small in heavy-tailed figures for storage of the shocks,
-states and curves; the total standard error is about three times too wide on Sobol paths. A
-standard error by blocks of paths does not fix the first (§15.6); independent replicates within
-a run would fix both ([I-111](../known-issues.md#i-111)). Until then a run whose correction's
-standard error is known to understate says so in its warnings, and the evidence table judges
-every row by its errors across independent seeds, never by these standard errors. A quantile's
-paired measurement needs a tail on the paired paths: ES at 99% on 64 scenarios is NaN.
+**Uncertainty (2026-10-16).** `CamConfig.replicates` divides the total path budget into
+independently scrambled Sobol draws. A paired sample takes a whole-block prefix within
+each draw. Mean standard errors use the spread of complete replicate estimates over
+sqrt(R), including correction covariance. One scramble reports unavailable errors;
+`PrecisionReport.replicates` and `uncertainty_method` identify the design. Market-risk
+ES errors delete whole scrambles and recompute the tail, or use a conditional moving-block
+bootstrap for historical windows. Point estimates and pooled quantile rules remain ORE's.
+
+Variance estimation is implemented, but **I-111 remains partial**: Student t intervals
+under-cover rare ENE and correction events in the replicated-storage campaign. Results
+warn against interpreting these variance estimates as validated 95% bounds. The
+[implementation, experiments and remaining gate](precision-accuracy.md) state the failed
+criteria without changing them. A quantile's paired measurement still needs a tail:
+ES at 99% on 64 scenarios is NaN.
 
 ## 10. Acceptance standard and evidence
 
@@ -1094,9 +1098,9 @@ matching rules, each the conservative reading:
   without a sample;
 - rows of two campaigns for one combination give the smaller ceiling.
 
-A paired run with the shocks, states or curves stored below 32 bits also carries the label of
-its correction's standard error ([I-111](../known-issues.md#i-111)), and every market-risk run
-one for its ES standard errors, which treat the scenarios as independent.
+A paired run reports unavailable uncertainty with one scramble, or independent-replicate
+variance estimates with an explicit rare-event interval warning ([I-111](../known-issues.md#i-111)).
+Market-risk ES identifies its replicate jackknife or conditional historical block bootstrap.
 
 **What a row does not say.** A row is evidence for the market and portfolio its campaign
 names, measured on a CPU, where every format below float32 is emulated with the numbers a
@@ -2355,8 +2359,35 @@ total-coverage checks use a leave-one-out sample variance and need at least thre
 two it emits NumPy degrees-of-freedom warnings and reports zero total checks. Use at least
 three seeds for paired coverage; the existing standard-error research remains I-111.
 
-**Remaining plan.** I-105 is closed. FP4, the low-precision rounding bias and independent
-replicate error estimates remain the next precision work (F-07, I-98, I-111, I-113).
+**Remaining plan at this measurement (2026-10-15).** I-105 is closed. The following
+section records the subsequent rounding, bounds and independent-replicate implementation;
+rare-event interval calibration remains open (I-111). FP4 remains deferred (F-07).
 Equal-accuracy timing on TPU/H100 and multi-host execution remain planned; omitting the
 cube is now an explicit output choice, so future timing comparisons must use equal output
 settings on both sides.
+
+## 18. Existing-format rounding and independent errors (2026-10-16)
+
+`StagePrecision.compute_rounding` selects nearest (default) or stochastic rounding of
+single-grid per-path product operands below float32. Shared operands retain two terms.
+Keys and sample identities are traced data; arithmetic formats and rounding policy are
+pytree metadata. Dates, products and rollback steps use independent derived streams;
+blocking and sharding preserve sample identities. The control reaches Python and HTTP,
+and a setting a product-free market-risk stage cannot read is refused by name.
+
+A long option's continuation is projected onto zero before exercise/LongShort; physical
+delivery can still produce a negative underlying. Market-risk changes are projected
+before storage and after decoding, without subtracting a large reconstructed base.
+The zero-bound rule is unchanged in the evidence table (I-113).
+
+Nearest and stochastic compute rounding have distinct evidence keys, as do replicate
+counts. `rounding`, `rounding_options`, `rounding_market_risk` and `replicated_storage`
+measure their errors; the affected option/market-risk campaigns are refreshed. Stochastic
+rounding is conditionally unbiased at an operand, but can increase nonlinear payoff bias
+and variance. Failing FP8 rows remain failures. Nearest remains the default baseline.
+At 4,096 paths the float16 rollback's worst bias significance falls from 41.4 to 2.66;
+FP8 e4m3 market-stage European EPE from 5.32 to 1.80. That does not establish A-11 acceptance.
+
+The full design, verification and open rare-event uncertainty gate are in
+[precision-accuracy.md](precision-accuracy.md). FP4 and quantile correction remain separate
+later research, with the current raw quantiles retained.

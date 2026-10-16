@@ -78,7 +78,6 @@ docs/instruments/american-bermudan-swaptions.md for the derivation.
 import dataclasses
 import math
 from dataclasses import dataclass, fields
-from functools import partial
 from typing import List, Optional, Sequence, Tuple, Union
 
 import jax
@@ -760,7 +759,7 @@ def option_values(swap: _PreparedBermudan, rows: Optional[_Induction] = None,
     return _induction(swap, rows, deviations, arithmetic)
 
 
-@partial(jax.jit, static_argnames="arithmetic")
+@jax.jit
 def _induction(swap: _PreparedBermudan, rows: _Induction, deviations: Optional[Deviations],
                arithmetic: Optional[Arithmetic]):
     """ORE's backward loop on the level and, given `deviations`, on each path's deviation
@@ -779,7 +778,7 @@ def _induction(swap: _PreparedBermudan, rows: _Induction, deviations: Optional[D
     `exp(-q zeta(t)/2 - h x)` (`_basis`); x is driftless, so the rollback of a deflated value is
     its conditional expectation. At t=0 and x=0 the numeraire is 1: the value is the option's
     column at the middle node of the last row. Jitted with `swap`, `rows` and `deviations` as
-    pytrees and `arithmetic` static: one program per trade shape and arithmetic."""
+    pytrees and arithmetic formats static (keys traced): one program per trade shape and arithmetic."""
     a, sigma, n_per_std = swap.reversion, swap.sigma, swap.n_per_std
     curve, index = _zero_curve_of(swap), _index_curve_of(swap)
     # The level works in the curve's dtype (pricing or risk precision): float64 constants
@@ -799,7 +798,8 @@ def _induction(swap: _PreparedBermudan, rows: _Induction, deviations: Optional[D
 
     def step(carry, row):
         dx_prev, t_prev, values, paths = carry
-        t, roll, is_exercise, targets, starts, moves, shares = row
+        t, roll, is_exercise, targets, starts, moves, shares, row_id = row
+        row_arithmetic = arithmetic.fold_in(row_id) if on_paths else None
         zeta_t = _lgm_zeta(sigma, t)
         dx = _grid_spacing(sigma, t, n_per_std).astype(dtype)
         x = dx * nodes
@@ -809,7 +809,7 @@ def _induction(swap: _PreparedBermudan, rows: _Induction, deviations: Optional[D
             operator = _rollback_operator(dx_prev, x, std, quad_y, quad_w).T                     # [from, to]
             level_columns, path_columns = columns
             if path_columns is not None:
-                path_columns = arithmetic.matmul(path_columns, operator, shared="right")
+                path_columns = row_arithmetic.matmul(path_columns, operator, shared="right", stream=0)
             return matmul(level_columns, operator), path_columns
 
         values, paths = lax.cond(roll, rolled, lambda columns: columns, (values, paths))
@@ -822,7 +822,7 @@ def _induction(swap: _PreparedBermudan, rows: _Induction, deviations: Optional[D
         values = values.at[0].set(jnp.where(is_exercise, jnp.maximum(continuation, exercise_value), continuation))
         if on_paths:
             operand = moved.at_row(level, ratio, start, end)                                     # [S, J]
-            added = arithmetic.matmul(operand, weighted, shared="right").reshape(operand.shape[0], num_columns, -1)
+            added = row_arithmetic.matmul(operand, weighted, shared="right", stream=1).reshape(operand.shape[0], num_columns, -1)
             paths, path_exercise = _bookkeeping(paths, added, starts, moves, shares)
             # Each path's max less the level's (see the module docstring).
             gain = exercise_value - continuation
@@ -836,7 +836,7 @@ def _induction(swap: _PreparedBermudan, rows: _Induction, deviations: Optional[D
     if on_paths:
         paths = jnp.zeros((deviations.discount.shape[0], num_columns, nodes.shape[0]), dtype=arithmetic.dtype)
     xs = (as_level(rows.times), jnp.asarray(rows.rollback), jnp.asarray(rows.is_exercise), as_level(rows.targets),
-          jnp.asarray(rows.starts), jnp.asarray(rows.moves), as_level(rows.shares))
+          jnp.asarray(rows.starts), jnp.asarray(rows.moves), as_level(rows.shares), jnp.arange(len(rows.times)))
     (_, _, values, paths), _ = lax.scan(step, (jnp.zeros((), dtype), as_level(rows.times[0]), zeros, paths), xs)
     return values[0, middle], (None if paths is None else paths[:, 0, middle])
 

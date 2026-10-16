@@ -52,17 +52,17 @@ trade's EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B and PFE per simulation date and the
 and EEPE; for market risk, the portfolio's VaR and ES and each trade's mean P&L. Coverage, per
 paired case, per seed and date of each two-level estimate (`MeanEstimate`):
 
-  * precision: |value - the float64 run's figure on the same paths| within 1.96 times its
-    standard error, `correction_standard_error * sqrt(1 - n/N)` (the paired paths are among
-    the N, so the estimate's error against the run's own float64 figure is the paired
-    differences' mean less their mean over every path);
-  * total: |value - the other seeds' mean float64 figure| within 1.96 times
+  * precision: |correction - the other seeds' mean full-draw correction| within the critical
+    multiple of `sqrt(correction_standard_error^2 + s_c^2 / (m - 1))`, where s_c is the
+    independent outer correction's spread;
+  * total: |value - the other seeds' mean float64 figure| within the critical multiple of
     `sqrt(standard_error^2 + s^2 / (m - 1))`, s the float64 figure's spread over the m seeds:
     the report's standard error against an independent estimate of the float64 expectation.
 
-Both are 95% intervals if the standard errors are right; the estimator's treat paths as
-independent, which Sobol paths and the 32 paths of a block, which share their rounding's scale
-and offset, are not (I-55).
+The critical multiple is Student t with R-1 degrees of freedom for R independent inner
+scrambles; a single scramble has unavailable errors and no coverage checks. There is no
+IID finite-population adjustment. These are diagnostic 95% intervals, not calibrated
+coverage guarantees: rare events still fail I-111's predeclared acceptance criteria.
 """
 import dataclasses
 import datetime
@@ -236,11 +236,12 @@ class MarketRiskCampaign:
     paths: Tuple[int, ...]
     seeds: Tuple[int, ...]
     quantiles: Tuple[float, ...] = (0.99, 0.975)
+    replicates: int = 1
     kind = "market_risk"
 
     def scenarios(self, paths: int, seed: int):
         return monte_carlo_scenarios(RateRiskFactors.from_market(self.market), self.covariance, self.horizon_days,
-                                     paths, seed=seed)
+                                     paths, seed=seed, replicates=self.replicates)
 
     def run(self, scenarios, precision: Precision):
         return run_market_risk(MarketRiskRequest(list(self.trades), self.market, scenarios, self.pricing,
@@ -400,6 +401,7 @@ class Measurements:
     attribution: List[AttributionRow] = field(default_factory=list)
     runs: List[CaseRun] = field(default_factory=list)
     exercise: List[ExerciseRow] = field(default_factory=list)
+    replicates: int = 1
 
     @property
     def paths(self) -> Tuple[int, ...]:
@@ -407,8 +409,8 @@ class Measurements:
 
     def merge(self, other: "Measurements") -> "Measurements":
         """These measurements and `other`'s (the same campaign at other path counts)."""
-        if (other.campaign, other.market, other.cases, other.seeds) != (self.campaign, self.market, self.cases,
-                                                                        self.seeds):
+        if (other.campaign, other.market, other.cases, other.seeds, other.replicates) != (
+                self.campaign, self.market, self.cases, self.seeds, self.replicates):
             raise ValueError("only measurements of one campaign, its cases and seeds merge")
         overlap = set(self.paths) & set(other.paths)
         if overlap:
@@ -474,13 +476,14 @@ def measure(campaign, paths: int, cases: Optional[Sequence[Case]] = None,
         campaign=campaign.name, kind=campaign.kind, description=campaign.description, market=campaign.market_name,
         cases={c.label: PrecisionSchema.from_dataclass(c.precision).model_dump() for c in cases}, seeds=seeds,
         dates=campaign.dates(), scalars=tuple(k for k, v in figures.items() if np.ndim(v) == 0),
-        products={t.trade_id: t.product for t in campaign.trades}, environment=environment())
+        products={t.trade_id: t.product for t in campaign.trades}, environment=environment(),
+        replicates=campaign.simulation.replicates if campaign.kind == "portfolio" else campaign.replicates)
     for case in cases:
         started = time.perf_counter()
         results, recompiles, warm = {}, 0, []
         for i, seed in enumerate(seeds):
             precision = case.precision
-            if precision.rounding == "stochastic":
+            if precision.rounding == "stochastic" or any(s.compute_rounding == "stochastic" for s in precision._stages()):
                 precision = dataclasses.replace(precision, rounding_seed=seed)
             tick = time.perf_counter()
             if i == 0:
@@ -535,21 +538,30 @@ def _coverage_rows(campaign, case: Case, paths: int, reference: Mapping[int, Map
     rows = []
     for figure in estimates[seeds[0]]:
         ref = np.stack([reference[s][figure] for s in seeds])                      # [m, D] float64 runs
+        corrections = np.stack([ref[i] - np.asarray(estimates[s][figure].uncorrected)
+                                 for i, s in enumerate(seeds)])
         precision_z, total_z = [], []
         for i, s in enumerate(seeds):
             e = estimates[s][figure]
             value = np.asarray(e.value, dtype=np.float64)
-            precision_se = np.asarray(e.correction_standard_error) * math.sqrt(1 - e.paired_paths / e.paths)
+            replicates = results[s].precision.replicates
+            # The reported correction SE estimates error against the expected correction,
+            # not against a dependent full-draw correction. Estimate that expectation on
+            # independent outer seeds, including its own uncertainty in the comparison.
+            other_corrections = np.delete(corrections, i, axis=0)
+            precision_se = np.sqrt(np.asarray(e.correction_standard_error) ** 2
+                                   + other_corrections.var(axis=0, ddof=1) / len(other_corrections))
             others = np.delete(ref, i, axis=0)
             total_se = np.sqrt(np.asarray(e.standard_error) ** 2 + others.var(axis=0, ddof=1) / len(others))
-            precision_z.append(_standardized(value - ref[i], precision_se))
+            precision_z.append(_standardized(np.asarray(e.correction) - other_corrections.mean(axis=0), precision_se))
             total_z.append(_standardized(value - others.mean(axis=0), total_se))
         precision_z, total_z = np.concatenate(precision_z), np.concatenate(total_z)
+        critical = stats.t.ppf(.975, replicates - 1) if replicates > 1 else Z95
         rows.append(CoverageRow(
             case=case.label, paths=paths, figure=figure, product=_product(campaign, figure),
-            precision_checks=int(precision_z.size), precision_covered=int(np.sum(np.abs(precision_z) <= Z95)),
+            precision_checks=int(precision_z.size), precision_covered=int(np.sum(np.abs(precision_z) <= critical)),
             precision_z_rms=_rms(precision_z), total_checks=int(total_z.size),
-            total_covered=int(np.sum(np.abs(total_z) <= Z95)), total_z_rms=_rms(total_z)))
+            total_covered=int(np.sum(np.abs(total_z) <= critical)), total_z_rms=_rms(total_z)))
     return rows
 
 

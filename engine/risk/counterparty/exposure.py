@@ -102,8 +102,12 @@ def exposure_profile(
     asof: Optional[ORE.Date] = None,
     maturity: Optional[ORE.Date] = None,
     paired: Optional[PairedPaths] = None,
+    replicates: Optional[int] = None,
 ) -> ExposureProfile:
     """ORE exposure statistics for one trade or netting set.
+
+    `replicates` describes equal-sized independent scrambles and their paired prefixes.
+    Pipelines always pass it explicitly; None retains the standalone IID estimator.
 
     npv: `[S, T]` undiscounted NPV on each path at each simulated date.
     npv0: the t=0 NPV.
@@ -149,8 +153,8 @@ def exposure_profile(
                              f"{num_dates}]")
         paired_deflated = paired_npv / paired_numeraire
         positive_of = lambda x: jnp.maximum(x, 0.0)  # noqa: E731
-        estimates["EPE"] = two_level_mean(positive_of(deflated), positive_of(paired_deflated))
-        estimates["ENE"] = two_level_mean(positive_of(-deflated), positive_of(-paired_deflated))
+        estimates["EPE"] = two_level_mean(positive_of(deflated), positive_of(paired_deflated), replicates)
+        estimates["ENE"] = two_level_mean(positive_of(-deflated), positive_of(-paired_deflated), replicates)
         positive, negative = (estimates[k].value.astype(dtype) for k in ("EPE", "ENE"))
 
     epe = jnp.concatenate([jnp.maximum(npv0, zero)[None], positive])
@@ -165,7 +169,8 @@ def exposure_profile(
         key = f"PFE_{quantile_label(q)}"
         pfe[key] = jnp.concatenate([jnp.maximum(npv0, zero)[None], _pfe(ordered, q)])
         if paired is not None:
-            estimates[key] = paired_quantile(lambda x, q=q: _pfe(jnp.sort(x, axis=0), q), deflated, paired_deflated)
+            estimates[key] = paired_quantile(lambda x, q=q: _pfe(jnp.sort(x, axis=0), q), deflated,
+                                              paired_deflated, replicates)
 
     epe_b, eepe_b, basel_epe, basel_eepe = _time_weighted(ee_b, eee_b, times, dates, asof, maturity)
     return ExposureProfile(
@@ -241,6 +246,7 @@ def column_profiles(
     asof: Optional[ORE.Date] = None,
     maturities: Optional[Sequence[ORE.Date]] = None,
     paired: Optional[PairedColumns] = None,
+    replicates: Optional[int] = None,
 ) -> Tuple[ExposureProfile, List[ExposureProfile]]:
     """Netting and standalone profiles directly from stored `[paths, dates]` columns.
 
@@ -266,7 +272,8 @@ def column_profiles(
 
     numeraire = load(numeraire, jnp.float64)
     total = jnp.zeros_like(numeraire)
-    common = dict(numeraire=numeraire, discount=discount, times=times, quantiles=quantiles, dates=dates, asof=asof)
+    common = dict(numeraire=numeraire, discount=discount, times=times, quantiles=quantiles, dates=dates, asof=asof,
+                  replicates=replicates)
     profiles = []
     for i, stored in enumerate(columns):
         total, column = _accumulate_column(total, stored)
