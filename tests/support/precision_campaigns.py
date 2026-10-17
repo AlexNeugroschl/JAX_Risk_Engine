@@ -205,7 +205,9 @@ def rounding_market_risk():
 def replicated_storage():
     return dataclasses.replace(linear(), name="replicated_storage",
         description="Eight independent scrambled Sobol replicates per run; a float64 prefix paired within each. "
-                    "Mean errors use independent replicate estimates and Student t intervals (7 degrees of freedom). "
+                    "Mean errors use independent replicate estimates; Student t intervals (7 degrees of freedom) "
+                    "are audited per date as diagnostics, with zero-width misses retained. Nominal confidence "
+                    "intervals are unavailable without a validated tail bound (I-111). "
                     "Matched float64 draws. Paired counts round up to whole storage blocks within each replicate.",
         simulation=dataclasses.replace(SIMULATION, replicates=8), seeds=tuple(range(1, 33)),
         cases=(storage_cases(stages=("simulation", "market"), formats=("float16", "bfloat16"),

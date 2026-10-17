@@ -42,7 +42,9 @@ The options storage/compute campaigns are rerun after that projection.
 
 `replicated_storage` measures paired means with eight independent scrambles within
 each run and 32 independent outer seeds. Pair a whole-block prefix within each scramble.
-Coverage uses Student t intervals (7 degrees of freedom); the earlier single-scramble
+Coverage audits diagnostic Student t intervals (7 degrees of freedom) per date,
+including zero-width misses beyond roundoff. Nominal intervals are unavailable without
+a validated tail bound (I-111), and are counted separately from diagnostic checks; the earlier single-scramble
 coverage rows describe the old IID estimates and are historical measurements. The
 precision acceptance table uses errors against matched float64 draws across outer
 seeds, independently of any reported standard error. Its keys distinguish replicate

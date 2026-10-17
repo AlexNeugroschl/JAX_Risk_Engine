@@ -194,10 +194,12 @@ float64.
 - **FX risk.** A trade converted into the reporting currency is converted at today's spot in
   every scenario ([Reporting currency](#reporting-currency)).
 - **Thin tails.** Fewer than 10 observations beyond a quantile's rank is flagged.
-- **The ES standard error's assumption.** `ES_<q>_standardError` is the tail's standard
-  deviation over the square root of its count, as if the scenarios were independent draws;
-  Sobol scenarios and overlapping historical horizons are not, so it is indicative
-  ([I-111](../planning/known-issues.md#i-111)). Every result says so.
+- **Sampling uncertainty.** `ES_<q>_standardError` estimates variance by deleting
+  independent scrambles, or by conditional moving-block bootstrap for historical
+  horizons. It is NaN with one scramble or an unestimable tail. The method and settings
+  are in `uncertainty`; `uncertainty.interval` explicitly reports nominal intervals
+  unavailable without a validated tail bound, including zero empirical errors.
+  See [Sampling uncertainty](../reference/sampling-uncertainty.md) (I-111).
 - **Unvalidated precision.** At a precision below float64, each figure (each trade's mean P&L,
   the portfolio's with its VaR and ES) without a passing row in the precision evidence table
   ([compliance/precision-evidence.md](../../compliance/precision-evidence.md); decision A-11:

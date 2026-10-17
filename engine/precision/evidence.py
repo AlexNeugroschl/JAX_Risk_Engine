@@ -211,10 +211,9 @@ def paired_error_warning(precision: Precision, replicates: int = 1) -> Optional[
     if not precision.paired_fraction:
         return None
     if replicates > 1:
-        return (f"precision: standard errors use {replicates} independent scrambles. Student t intervals are "
-                "approximate: rare exposure and rounding/exercise events under-cover in the replicated-storage "
-                "campaign (I-111). Do not read these variance estimates as validated 95% bounds; see "
-                "docs/planning/details/precision-accuracy.md.")
+        return (f"precision: standard errors use {replicates} independent scrambles as variance diagnostics. "
+                "Confidence intervals are unavailable: no validated tail bound, including when the empirical "
+                "standard error is zero (I-111); see docs/reference/sampling-uncertainty.md.")
     return ("precision: standard errors are unavailable with one Sobol scramble; set simulation.replicates "
             "to at least 2 independent scrambles (8 or more recommended; I-111).")
 

@@ -1,12 +1,36 @@
 """Sampling uncertainty without treating dependent observations as IID.
 
-Reusable array operations only. Pricing owns which observations belong to a scramble;
-market risk owns the statistic and historical block length. All reductions are float64.
+Pricing owns which observations belong to a scramble; market risk owns the statistic
+and historical block length. All reductions are float64. Interval availability is
+host metadata and never enters a JAX trace.
 """
+from dataclasses import dataclass
 from functools import partial
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
+
+
+@dataclass(frozen=True)
+class IntervalAvailability:
+    """Nominal sampling intervals for all figures and entries of a result (I-111).
+
+    Current estimators provide empirical variance diagnostics, but no validated
+    tail bound. Even nonzero variance and many observed events cannot rule out an
+    unseen, arbitrarily large contribution. Consequently none is eligible for a
+    nominal interval. This rule depends on the estimator's supported assumptions,
+    never a fitted event-count cutoff, the sample, precision, or replicate count.
+
+    Null endpoints/level mean unavailable, not a zero-width interval or 0% coverage.
+    A future supported interval method must supply its own assumptions and validation
+    before extending this contract. See docs/reference/sampling-uncertainty.md.
+    """
+    status: Literal["unavailable"] = "unavailable"
+    reason: Literal["no_validated_tail_bound"] = "no_validated_tail_bound"
+    confidence_level: None = None
+    lower: None = None
+    upper: None = None
 
 
 @partial(jax.jit, static_argnames="groups")

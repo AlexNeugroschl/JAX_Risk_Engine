@@ -13,49 +13,48 @@ recalibrates ([I-112](#i-112)).
 
 ## Verification status
 
-Last full run, 2026-10-16, on existing-format rounding, option bounds and independent
-uncertainty ([plan and measurements](details/precision-accuracy.md)).
-3,462 collected on Windows: the previously recorded 3,439 plus 23 precision-accuracy
-cases. Every green run below printed its summary line:
+Last full run, 2026-10-16, on I-111's conservative interval-availability rule
+([plan and measurements](details/precision-accuracy.md)). **3,470 collected** on
+Windows: the previous 3,462 plus eight interval/audit regression cases. Every green
+run below printed its summary line:
 
-- **Windows full suite**, `.venv/Scripts/python.exe -m pytest tests/ -q -n 8`:
-  **3,459 passed, 3 skipped, 0 failed**, 7m40s. The skips are the two accelerator-only
-  defaults and the GPU plugin check. Existing ORE tolerances are unchanged.
-- **Strict dtype promotion**, precision accuracy, precision reports, evidence and
-  Jamshidian modules, `JAX_NUMPY_DTYPE_PROMOTION=strict`, `-n 2`:
-  **290 passed**, 36s. This includes the explicit int32 bootstrap/deletion indices and
-  the adjacent-calendar-date stream regressions for legs and Jamshidian.
-- **GPU**, RTX 5060 Laptop, WSL2/Linux, JAX/jaxlib 0.10.2 and ORE 1.8.16.0:
-  precision accuracy, reports, accelerator defaults and the ORE XVA/algorithm/LGM/market-risk
-  parity modules: **227 passed**, 11m29s. After the final shared date-stream helper,
-  all accuracy and Jamshidian cases (including its ORE comparisons): **182 passed**, 51s.
-  These runs overlap; their counts are not a count of unique tests.
-- **Compilation and sharding**: the full suite includes four virtual CPU devices,
-  stochastic compute, stable sample identities under batching/blocking, and zero warm
-  compilation when simulation, rounding or historical-bootstrap seeds change.
-  Ruff's pyflakes rules pass on the changed Python files.
-- **Accuracy**: pre/post shared-portfolio snapshots cover all five product families,
-  Greeks, float64, float32 and mixed paired storage precision. Valuations, exposures,
-  Greeks and exercise flags are identical. Numeric outputs increase from 675 to 678
-  through three replicate-count fields; the only changed existing arrays are 72
-  standard-error fields deliberately becoming NaN with one scramble. Greek comparisons
-  use trade NPV as scale.
-- **Precision evidence**: eight campaigns added/refreshed, **11,680 figure rows**, zero
-  warm recompilations; the ten records contain **34,000 figure rows** in total. The
-  shipped table and JSON are regenerated and checked against those records. The
-  nearest/R=1 linear and compute numerical paths are unchanged. The late key/index
-  refinements preserve recorded draws and values; see the detailed plan. Concurrent
-  runs and suspension make these elapsed times unsuitable for device speed comparisons.
-- **Research acceptance**: I-98 and I-113 are closed. **I-111 remains PARTIAL**:
-  independent-replicate errors remove the IID assumption, but rare-event interval
-  coverage fails the predeclared gate. No fitted inflation factor or relaxed threshold
-  is used. **I-114 remains OPEN**: evidence matching must distinguish the pricing engine
-  and grid before hardware timing. FP4 and quantile correction remain later research.
+- **Windows full suite**, `.venv/Scripts/python.exe -m pytest tests/ -q -n 8 --durations=15`:
+  **3,467 passed, 3 skipped, 0 failed**, 7m37s. The skips are the two accelerator-only
+  defaults and the GPU plugin check. Every existing ORE suite passes at its unchanged
+  tolerance. This includes API/worker tests and four virtual CPU devices.
+- **Linux/GPU with strict dtype promotion**, RTX 5060 Laptop, WSL2, JAX/jaxlib 0.10.2,
+  ORE 1.8.16.0: `JAX_NUMPY_DTYPE_PROMOTION=strict`, uncertainty availability,
+  precision accuracy/reports, tail diagnostics, ORE XVA and market-risk parity:
+  **172 passed**, 8m09s. Warm seed changes compile nothing.
+- **Numerical compatibility**: all **678 numeric arrays** in the shared-portfolio
+  before/after snapshots are identical, including NaN positions: all five product
+  families, float64, float32, mixed paired storage, exposures, Greeks and exercise flags.
+  Interval status is host metadata and introduces no JAX trace or compile key.
+- **Replicated-storage audit**: rerun all cases at 1,024/4,096/16,384 paths, eight
+  scrambles per run and 32 independent outer seeds. All **2,160 figure measurements
+  are identical** to the previous record; **zero warm recompilations**. The **2,592
+  per-date diagnostic rows** record nominal interval unavailability separately.
+  Diagnostic failures remain failures under coverage >=0.90 and RMS 0.75-1.33;
+  zero-width numerical equality never certifies a constant. The other numerical
+  campaigns are unchanged. Concurrent validation means these timings cannot rank devices.
+- **Precision evidence**: regenerated and checked against the measurements. All verdicts
+  and path ceilings are unchanged; only the replicated campaign's provenance changes.
+  The ten records retain **34,000 figure rows**. Evidence does not certify nominal intervals.
+- **Research acceptance**: I-98, I-111 and I-113 are closed. I-111 uses its allowed
+  conservative availability-rule alternative: nominal intervals are unavailable for
+  every figure/entry without a validated tail bound. Raw variance estimates remain
+  diagnostics; calibrated interval support is future capability **F-10**. No fitted
+  inflation factor or relaxed acceptance threshold is used. **I-114 remains OPEN**:
+  evidence matching must distinguish the pricing engine and grid before hardware timing.
+  FP4 and multilevel quantile correction remain later research.
+- **Lint**: Ruff's pyflakes rules pass on every changed Python file.
 
-Red first: the initial eight rounding/replicate/wrapper regressions, the stressed
-bfloat16 revaluation (-40.1640625), adjacent-day stream collisions and Jamshidian's
-missing date stream all failed before their fixes. Strict promotion also exposed the
-implicit Boolean/integer deletion index, now guarded by regression tests.
+Red first: the five initial availability/legacy-name regressions failed before the
+implementation. The original coverage helper also reproduced dropping both nonzero
+zero-SE misses; the regression now requires infinite standardized errors. Rare-event
+examples across 256 independent outer seeds with 1/8/32 replicates distinguish empirical
+zero from a known nonzero expectation. Per-date audit tests also cover two-seed reference
+unavailability without invalid sample-variance warnings, and record round-trips.
 
 The fast tier alone is not a full verification. Rules: [README.md](README.md#verification-rules).
 
@@ -79,7 +78,6 @@ The fast tier alone is not a full verification. Rules: [README.md](README.md#ver
 | [I-108](#i-108) | TraderX: NaN amounts priced as `ok`, terms contradicting the row priced, duplicate rows counted twice | Medium | OPEN | API | TraderX |
 | [I-109](#i-109) | TraderX: after a failed publication a same-id retry never prices or publishes | Medium | OPEN | API | TraderX |
 | [I-110](#i-110) | The documentation contradicts the code in places; no single parity table | Low | OPEN | Tooling | Fix what exists |
-| [I-111](#i-111) | Independent-replicate intervals under-cover rare exposure and correction events | Medium | PARTIAL | Correctness | Focus |
 | [I-114](#i-114) | Precision evidence lookup omits pricing-engine and grid settings | Medium | OPEN | Validation | Focus |
 | [I-97](#i-97) | XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU | Medium | OPEN | Performance | Focus |
 | [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Focus |
@@ -205,51 +203,6 @@ With a smile: European NPV and Vega away from the money, and calibrated Bermudan
 
 **To close.** Decided (X-5): a strike axis in the market's volatilities, read at each
 option's and helper's strike as ORE reads its cube. SABR is [F-02](features.md#f-02).
-
-
-<a id="i-111"></a>
-### I-111 - Independent-replicate intervals under-cover rare exposure and correction events
-
-**Severity:** Medium · **Status:** PARTIAL · **Category:** Correctness · **Found:** 2026-10-09,
-the storage harness; independent-replicate implementation and coverage experiment 2026-10-16
-
-**What is wrong.** The IID-path assumption is removed: runs can concatenate independent
-scrambled Sobol replicates, pair a float64 prefix within each, and estimate mean variance from
-the replicate estimates (including covariance). Market-risk ES uses independent-scramble
-deletion, or conditional moving-block bootstrap for historical windows. One scramble reports
-NaN/HTTP null errors. Python and HTTP expose the controls and report the method as run.
-
-The remaining defect is interval calibration on rare events. The replicated-storage campaign
-(eight scrambles, 32 outer seeds, 1,024/4,096/16,384 paths) fails the predeclared RMS/coverage
-criteria for some ENE and paired-correction figures. More scrambles alone did not fix selected
-cases. The variance estimate is an estimate, not a validated 95% bound. Implementation,
-measurements and the remaining gate: [details/precision-accuracy.md](details/precision-accuracy.md).
-
-**Reach.** Uncertainty intervals for rare exposure and rounding/exercise events. Prices, paired
-mean corrections and precision acceptance verdicts are unaffected by this limitation: the table
-uses errors against matched float64 draws across independent outer seeds, never reported SEs.
-Analytic mean and ES coverage tests pass on their specified Gaussian examples; that does not
-prove rare-event coverage.
-
-The low-level `expected_shortfall_standard_error`/`compute_risk_metrics` helpers still
-expose the legacy conditional tail-spread diagnostic: it holds a fitted threshold fixed,
-so even an IID interpretation is not the complete ES estimator's sampling error. Their
-docstrings now state this limit; `run_market_risk` replaces it with the methods above.
-
-**Current handling.** Every paired report with independent scrambles warns that rare-event
-intervals remain unvalidated; one-scramble errors are unavailable. Market-risk results identify
-jackknife or conditional historical bootstrap assumptions. Rounding and replicate counts have
-distinct evidence keys. No acceptance threshold is relaxed.
-
-**To close.** Establish calibrated uncertainty intervals or a principled availability rule for
-rare events. Validate on independent outer seeds, including the independent reference's own
-uncertainty; do not apply an IID finite-population adjustment to dependent Sobol points. Retain
-the predeclared standardized-error RMS range 0.75–1.33 and coverage at least 0.90 for every
-case. The current coverage audit omits zero-SE observations. Distinguish known constants
-and numerical roundoff from unobserved rare events; count a nonzero residual beyond
-roundoff as a failed interval instead of dropping it. Replace or rename
-the legacy low-level ES diagnostic without presenting it as complete-estimator uncertainty.
-Do not fit an inflation factor to the failing campaign. See the detailed plan above.
 
 
 <a id="i-114"></a>
@@ -1374,3 +1327,4 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="a-7"></a>Audit A-7 | The bond pricer was a separate plain-Python implementation | `tests/test_market_risk.py::TestRevaluation` |
 | <a id="i-98"></a>I-98 | Per-path product operands had no unbiased rounding policy; keyed stochastic compute rounding removes their conditional rounding bias, nearest retained as the measured baseline and nonlinear FP8 failures left failing (2026-10-16) | `tests/test_precision_accuracy.py::test_stochastic_product_has_no_binade_rounding_bias`, `::test_stochastic_keys_are_data_and_sample_prefixes_reproduce`; `rounding` and `rounding_options` campaigns |
 | <a id="i-113"></a>I-113 | Long continuation values and stressed market-risk revaluations crossed zero; bound before LongShort/delivery and before/after P&L storage (2026-10-16) | `tests/test_precision_accuracy.py::test_long_option_bound_precedes_position_and_physical_delivery`, `::test_market_risk_cannot_revalue_a_long_option_below_zero` (both red before fix) |
+| <a id="i-111"></a>I-111 | Raw variance diagnostics could be read as nominal confidence bounds despite rare-event undercoverage; the shared Python/HTTP availability contract now declines all nominal intervals without a validated tail bound, retains raw errors, audits each date including zero-width misses, and renames the conditional ES diagnostic (2026-10-16). Supported intervals are F-10 | `tests/test_uncertainty_availability.py`, `tests/test_precision_harness.py::TestMeasure::test_replicated_diagnostics_are_per_date_and_never_certify_empirical_constants`, `tests/test_precision_accuracy.py` (wire metadata and warm compile reuse) |

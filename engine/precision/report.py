@@ -45,6 +45,7 @@ from engine.precision.formats import name_of
 from engine.precision.policy import Precision, StagePrecision
 from engine.precision.products import product_execution
 from engine.precision.storage import Stored
+from engine.precision.uncertainty import IntervalAvailability
 
 Estimate = Union[MeanEstimate, QuantileEstimate]
 
@@ -64,6 +65,9 @@ class PrecisionReport:
     products: Mapping[str, str] = field(default_factory=dict)
     replicates: int = 1
     uncertainty_method: str = "unavailable"
+    #: Applies to every figure/entry, including zero empirical SEs and unpaired runs.
+    #: Standard errors above remain raw variance diagnostics, never nominal bounds.
+    interval: IntervalAvailability = field(default_factory=IntervalAvailability)
 
     @classmethod
     def of(cls, policy: Precision, trades: Iterable, realized: Mapping[str, str], arrays: Iterable,

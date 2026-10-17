@@ -41,6 +41,7 @@ from engine.precision.policy import (
 from engine.precision.products import SHARED, matmul, product_execution, product_precision
 from engine.precision.report import PrecisionReport, devices_of, format_name, realized_format
 from engine.precision.storage import BLOCK, OFFSETS, ROUNDINGS, Stored, load, rounding_key, store
+from engine.precision.uncertainty import IntervalAvailability
 
 __all__ = [
     "Arithmetic",
@@ -49,6 +50,7 @@ __all__ = [
     "FORMATS",
     "FORMAT_NAMES",
     "Format",
+    "IntervalAvailability",
     "MeanEstimate",
     "OFFSETS",
     "OVERRIDES",

@@ -35,6 +35,7 @@ market risk with the portfolio's expected drift and roll-down. The cube's known 
 """
 import math
 import numbers
+import warnings
 from decimal import Decimal
 from functools import partial
 from typing import Dict, Sequence
@@ -156,7 +157,7 @@ def _tail_sample_size_jit(pnl: jax.Array, percentile: float) -> jax.Array:
     return jnp.sum(pnl < -var[None, :], axis=0)
 
 
-def expected_shortfall_standard_error(pnl: jax.Array, percentile: float) -> jax.Array:
+def conditional_tail_standard_error(pnl: jax.Array, percentile: float) -> jax.Array:
     """
     [Scenarios, TimeSteps] P&L -> [TimeSteps] legacy conditional tail-spread diagnostic:
     `s / sqrt(n)`, with `s` the sample standard deviation (ddof=1) of the tail and `n` the
@@ -166,7 +167,17 @@ def expected_shortfall_standard_error(pnl: jax.Array, percentile: float) -> jax.
 
     NaN where `n < 2` (no spread can be estimated), never 0.
     """
-    return _es_standard_error_jit(pnl, float(percentile))
+    return _conditional_tail_standard_error_jit(pnl, float(percentile))
+
+
+def expected_shortfall_standard_error(pnl: jax.Array, percentile: float) -> jax.Array:
+    """Deprecated compatibility name for `conditional_tail_standard_error` (I-111).
+
+    This is not the complete ES estimator's sampling standard error.
+    """
+    warnings.warn("expected_shortfall_standard_error is a conditional tail-spread diagnostic, not ES sampling "
+                  "uncertainty; use conditional_tail_standard_error", DeprecationWarning, stacklevel=2)
+    return conditional_tail_standard_error(pnl, percentile)
 
 
 @partial(jax.jit, static_argnames=("percentile", "replicates"))
@@ -199,7 +210,7 @@ def historical_es_error(pnl, key, percentile: float, block: int, replicates: int
 
 
 @partial(jax.jit, static_argnums=1)
-def _es_standard_error_jit(pnl: jax.Array, percentile: float) -> jax.Array:
+def _conditional_tail_standard_error_jit(pnl: jax.Array, percentile: float) -> jax.Array:
     var = _value_at_risk_jit(pnl, percentile)
     tail_mask = pnl < -var[None, :]
     masked = jnp.where(tail_mask, pnl, jnp.nan)
@@ -245,5 +256,7 @@ def compute_risk_metrics(
         metrics[f"ES_{label}"] = expected_shortfall(pnl, p)
         if include_diagnostics:
             metrics[f"ES_{label}_tailCount"] = tail_sample_size(pnl, p)
-            metrics[f"ES_{label}_standardError"] = expected_shortfall_standard_error(pnl, p)
+            # Keep the published key for compatibility; its conditional meaning is
+            # explicit in the canonical helper's name and the API documentation.
+            metrics[f"ES_{label}_standardError"] = conditional_tail_standard_error(pnl, p)
     return metrics

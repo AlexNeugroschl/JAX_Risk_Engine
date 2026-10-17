@@ -141,6 +141,9 @@ class TestMeasure:
         assert {r.figure for r in rows} == {f"{s}/{n}" for s in ["netting_set", "trades/swap-payer", "trades/bond"]
                                             for n in ("EPE", "ENE")}
         assert sum(r.total_checks for r in rows) == 0  # one scramble: uncertainty is unavailable
+        assert {r.entry for r in rows} == {d.ISO() for d in DATES}
+        assert all(r.interval_status == "unavailable" and r.interval_unavailable == len(campaign.seeds) for r in rows)
+        assert not any(r.total_passes or r.precision_passes for r in rows)
         for r in rows:
             assert 0 <= r.precision_covered <= r.precision_checks <= len(campaign.seeds) * len(DATES)
             assert 0 <= r.total_covered <= r.total_checks <= len(campaign.seeds) * len(DATES)
@@ -162,6 +165,28 @@ class TestMeasure:
         assert merged.paths == (32, 64) and len(merged.figures) == len(m.figures) + len(other.figures)
         with pytest.raises(ValueError, match="measured twice"):
             merged.merge(other)
+
+    @pytest.mark.parametrize("seeds", [(1, 2), (1, 2, 3, 4)])
+    def test_replicated_diagnostics_are_per_date_and_never_certify_empirical_constants(self, seeds):
+        import warnings
+        campaign = _portfolio((Case("paired", Precision(paired_fraction=.5)),), seeds=seeds, names=("bond",))
+        campaign = dataclasses.replace(campaign, simulation=dataclasses.replace(campaign.simulation, replicates=8))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            measurements = measure(campaign, 256)
+        rows = measurements.coverage
+        assert len(rows) == 8  # two dates, two figures, trade and netting set
+        assert all(r.interval_unavailable == len(seeds) and r.interval_status == "unavailable" for r in rows)
+        assert not any(r.precision_passes for r in rows)  # paired float64 is identically equal
+        assert all(r.precision_checks == 0 for r in rows)
+        if len(seeds) >= 3:
+            assert all(r.precision_zero_width_equal == len(seeds) for r in rows)
+            assert any(r.total_checks == len(seeds) for r in rows)
+        else:
+            assert all(r.total_checks == 0 for r in rows)  # reference variance unavailable
+        text = summary(measurements)
+        assert "Diagnostic intervals by entry" in text and "unavailable" in text
+        assert Measurements.from_json(measurements.to_json()).to_json() == measurements.to_json()
 
     def test_the_summary_names_every_case_and_compares_layouts(self, tiny):
         campaign = _portfolio((Case("block", Precision(pricing=FP8)),

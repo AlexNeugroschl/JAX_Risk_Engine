@@ -175,6 +175,7 @@ the run's own, measured on the pair. Every result carries `precision`, a `Precis
 | `devices`, `backend`, `jax_version` | The devices holding the stored arrays (`"cpu:0 (cpu)"`), the JAX backend and version of the process that ran the job. |
 | `paths`, `paired_paths` | The run's paths (scenarios), and how many were re-run at float64. |
 | `replicates`, `uncertainty_method` | Independent scrambled Sobol replicates and the uncertainty method. One scramble preserves the previous sampling design and reports unavailable standard errors. |
+| `interval` | Availability of nominal sampling intervals for every figure and entry: `status="unavailable"`, `reason="no_validated_tail_bound"`; confidence level and endpoints are `None`. Standard errors remain variance diagnostics. [Details](sampling-uncertainty.md). |
 | `figures` | With a paired sample: `"netting_set/EPE"`, `"trades/<trade_id>/ENE"`, `"netting_set/PFE_95"`, ... (market risk: `"portfolio/VaR_99"`, `"portfolio/ES_97.5"`). A mean (`MeanEstimate`): `value` (the reported, corrected figure), `uncorrected`, `correction`, `standard_error`, `uncorrected_standard_error`, `correction_standard_error`, `max_difference`. A quantile (`QuantileEstimate`): `value` (the run's own), `paired`, `paired_float64`, `difference`. Arrays per simulation date (t=0 excluded). |
 
 ```python
@@ -217,10 +218,10 @@ The paired fraction rounds up to a storage block **within every scramble**, so i
 `paired_paths` for the actual float64 work. Means are averages of the replicate estimates;
 their standard errors are the sample standard deviation across replicates divided by
 the square root of their count. This includes the paired correction and covariance.
-Student t with `replicates - 1` degrees of freedom is the approximate mean-interval
-convention. It is not a validated 95% bound for rare events: the storage campaign still
-finds undercoverage (I-111), and every paired result warns. See
-[the measured limits](../planning/details/precision-accuracy.md). With one scramble these standard errors
+Nominal confidence intervals are unavailable under the
+[conservative availability rule](sampling-uncertainty.md) (I-111), even when a raw
+standard error is zero. Student t intervals remain harness diagnostics; more scrambles
+do not certify their coverage. Every paired result warns. With one scramble these standard errors
 are NaN (HTTP `null`) and the result warns. No paths are treated as independent.
 
 `StagePrecision(..., compute_rounding="stochastic")` enables unbiased rounding of each

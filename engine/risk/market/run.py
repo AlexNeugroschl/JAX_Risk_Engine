@@ -182,6 +182,18 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     realized = {"shocks": format_name(shifts),
                 **{f"values/{cfg.trade_id}": format_name(s) for cfg, s in zip(request.trades, stored)}}
 
+    report = dataclasses.replace(PrecisionReport.of(precision, request.trades, realized, stored,
+                                 scenarios.num_scenarios, paired, figures,
+                                 [precision.precision_for(cfg).compute for cfg in request.trades]),
+                                 replicates=scenarios.replicates, uncertainty_method=(
+                                     "moving_block_bootstrap" if scenarios.source == SOURCE_HISTORICAL else
+                                     "replicate_jackknife" if scenarios.replicates > 1 else "unavailable"))
+    uncertainty = ({"method": "moving_block_bootstrap", "replicates": scenarios.bootstrap_replicates,
+                    "block_length": _block_length(scenarios), "seed": scenarios.bootstrap_seed}
+                   if scenarios.source == SOURCE_HISTORICAL else
+                   {"method": report.uncertainty_method, "replicates": scenarios.replicates})
+    uncertainty["interval"] = dataclasses.asdict(report.interval)
+
     return MarketRiskResult(
         base_npv=float(np.sum(base)),
         base_npv_per_trade=[float(v) for v in base],
@@ -195,17 +207,8 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
         risk_factors=scenarios.factors.labels(),
         base_currency=request.base_currency,
         warnings=_warnings(request),
-        precision=dataclasses.replace(PrecisionReport.of(precision, request.trades, realized, stored,
-                                     scenarios.num_scenarios, paired, figures,
-                                     [precision.precision_for(cfg).compute for cfg in request.trades]),
-                                     replicates=scenarios.replicates, uncertainty_method=(
-                                         "moving_block_bootstrap" if scenarios.source == SOURCE_HISTORICAL else
-                                         "replicate_jackknife" if scenarios.replicates > 1 else "unavailable")),
-        uncertainty={"method": "moving_block_bootstrap", "replicates": scenarios.bootstrap_replicates,
-                     "block_length": _block_length(scenarios), "seed": scenarios.bootstrap_seed}
-                    if scenarios.source == SOURCE_HISTORICAL else
-                    {"method": "replicate_jackknife" if scenarios.replicates > 1 else "unavailable",
-                     "replicates": scenarios.replicates},
+        precision=report,
+        uncertainty=uncertainty,
     )
 
 
@@ -360,8 +363,10 @@ def _warnings(request: MarketRiskRequest) -> List[str]:
         out.append("ES standard errors are unavailable with one Sobol scramble; set scenarios.replicates to at "
                    "least 2 independent scrambles (8 or more recommended; I-111).")
     else:
-        out.append("ES standard errors use independent-scramble deletion. Jackknife/Student t intervals are "
-                   "approximate and require adequate tail observations; they are not guaranteed coverage bounds (I-111).")
+        out.append("ES standard errors use independent-scramble deletion (variance diagnostics only; I-111).")
+    out.append("Sampling confidence intervals are unavailable: no validated tail bound for these estimators "
+               "(I-111). Standard errors do not certify nominal coverage, including when zero; see "
+               "docs/reference/sampling-uncertainty.md.")
     return out + evidence_warnings(request.precision, request.trades, request.scenarios.num_scenarios,
                                    run_figures(request.quantiles), replicates=request.scenarios.replicates)
 

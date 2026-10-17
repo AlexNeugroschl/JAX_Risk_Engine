@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from engine.api.requests import PrecisionSchema, StagePrecisionSchema
 from engine.calibration.cam import CamCalibration
-from engine.precision import MeanEstimate, PrecisionReport
+from engine.precision import IntervalAvailability, MeanEstimate, PrecisionReport
 from engine.risk.counterparty.exposure import ExposureProfile
 from engine.risk.market import MarketRiskResult
 from engine.run import PortfolioResult
@@ -82,6 +82,7 @@ class PrecisionReportSchema(BaseModel):
     figures: Dict[str, Union[MeanEstimateSchema, QuantileEstimateSchema]] = Field(default_factory=dict)
     replicates: int = 1
     uncertainty_method: str = "unavailable"
+    interval: IntervalAvailability = Field(default_factory=IntervalAvailability)
 
     @classmethod
     def from_dataclass(cls, report: PrecisionReport) -> "PrecisionReportSchema":
@@ -90,7 +91,8 @@ class PrecisionReportSchema(BaseModel):
                    realized=dict(report.realized), products=dict(report.products), devices=list(report.devices),
                    backend=report.backend, jax_version=report.jax_version, paths=report.paths,
                    paired_paths=report.paired_paths, figures={k: _estimate_schema(v) for k, v in report.figures.items()},
-                   replicates=report.replicates, uncertainty_method=report.uncertainty_method)
+                   replicates=report.replicates, uncertainty_method=report.uncertainty_method,
+                   interval=report.interval)
 
 
 class RiskMetricsSchema(BaseModel):
@@ -267,7 +269,7 @@ class MarketRiskResultSchema(BaseModel):
     pnl_artifact: Optional[ArrayArtifactSchema] = None
     warnings: List[str] = Field(default_factory=list)
     precision: Optional[PrecisionReportSchema] = None
-    uncertainty: Dict[str, Union[str, int]] = Field(default_factory=dict)
+    uncertainty: Dict[str, Union[str, int, Dict[str, Optional[str]]]] = Field(default_factory=dict)
 
     @classmethod
     def from_dataclass(cls, result: MarketRiskResult, trade_ids: List[str], pnl_output: str = "inline",

@@ -192,6 +192,10 @@ def test_replicated_portfolio_pairs_all_scrambles_and_reuses_programs():
     result = price_portfolio(request)
     assert result.precision.paired_paths == 128  # at least one storage block in each scramble
     assert result.precision.replicates == 4
+    from engine.api.results import PortfolioResultSchema
+    assert result.precision.interval.status == "unavailable"
+    wire = PortfolioResultSchema.from_dataclass(result).model_dump(mode="json")
+    assert wire["precision"]["interval"] == dataclasses.asdict(result.precision.interval)
     assert np.isfinite(result.precision.figures["netting_set/EPE"].standard_error).all()
     request.config = dataclasses.replace(request.config, simulation=dataclasses.replace(simulation, seed=14),
                                         precision=dataclasses.replace(precision, rounding_seed=9))
@@ -210,7 +214,8 @@ def test_market_risk_reports_replicate_and_historical_uncertainty_on_wire():
     with jax.numpy_dtype_promotion("strict"):
         result = run_market_risk(request)
     assert result.risk["ES_95_standardError"] > 0
-    assert result.uncertainty == {"method": "replicate_jackknife", "replicates": 8}
+    assert result.uncertainty == {"method": "replicate_jackknife", "replicates": 8,
+                                  "interval": dataclasses.asdict(result.precision.interval)}
     assert MarketRiskResultSchema.from_dataclass(result, [mr.swap().trade_id]).uncertainty == result.uncertainty
     history = np.cumsum(np.random.default_rng(6).normal(size=(1024, mr.factors().size)) * 1e-4, axis=0)
     request.scenarios = historical_scenarios(mr.factors(), history, 10, block_length=32, bootstrap_replicates=64)
@@ -223,6 +228,7 @@ def test_market_risk_reports_replicate_and_historical_uncertainty_on_wire():
     assert historical.risk["ES_95_standardError"] > 0
     assert historical.uncertainty["block_length"] == 32
     assert historical.uncertainty["method"] == "moving_block_bootstrap"
+    assert historical.uncertainty["interval"] == result.uncertainty["interval"]
 
 
 def test_replicate_tail_error_recomputes_threshold_in_each_deletion():

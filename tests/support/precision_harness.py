@@ -61,8 +61,10 @@ paired case, per seed and date of each two-level estimate (`MeanEstimate`):
 
 The critical multiple is Student t with R-1 degrees of freedom for R independent inner
 scrambles; a single scramble has unavailable errors and no coverage checks. There is no
-IID finite-population adjustment. These are diagnostic 95% intervals, not calibrated
-coverage guarantees: rare events still fail I-111's predeclared acceptance criteria.
+IID finite-population adjustment. These are diagnostic 95% intervals, never available
+production confidence intervals. Rows are per entry/date so pooling cannot hide a
+failure. Zero-width misses beyond numerical roundoff count as infinite standardized
+errors; numerical equality is recorded separately and never proves a constant.
 """
 import dataclasses
 import datetime
@@ -343,6 +345,25 @@ class CoverageRow:
     total_checks: int
     total_covered: int
     total_z_rms: float
+    #: Empty on historical records, which pooled dates and omitted zero-width misses.
+    entry: str = ""
+    interval_status: str = "legacy_diagnostic"
+    interval_unavailable: int = 0
+    precision_zero_width_equal: int = 0
+    total_zero_width_equal: int = 0
+
+    @property
+    def precision_passes(self) -> bool:
+        return _coverage_passes(self.precision_checks, self.precision_covered, self.precision_z_rms)
+
+    @property
+    def total_passes(self) -> bool:
+        return _coverage_passes(self.total_checks, self.total_covered, self.total_z_rms)
+
+
+def _coverage_passes(checks: int, covered: int, rms: float) -> bool:
+    """I-111's predeclared diagnostic criteria, unchanged; no checks is not a pass."""
+    return checks > 0 and covered / checks >= .90 and .75 <= rms <= 1.33
 
 
 @dataclass(frozen=True)
@@ -540,7 +561,7 @@ def _coverage_rows(campaign, case: Case, paths: int, reference: Mapping[int, Map
         ref = np.stack([reference[s][figure] for s in seeds])                      # [m, D] float64 runs
         corrections = np.stack([ref[i] - np.asarray(estimates[s][figure].uncorrected)
                                  for i, s in enumerate(seeds)])
-        precision_z, total_z = [], []
+        precision_errors, total_errors, precision_errors_se, total_errors_se = [], [], [], []
         for i, s in enumerate(seeds):
             e = estimates[s][figure]
             value = np.asarray(e.value, dtype=np.float64)
@@ -549,27 +570,56 @@ def _coverage_rows(campaign, case: Case, paths: int, reference: Mapping[int, Map
             # not against a dependent full-draw correction. Estimate that expectation on
             # independent outer seeds, including its own uncertainty in the comparison.
             other_corrections = np.delete(corrections, i, axis=0)
-            precision_se = np.sqrt(np.asarray(e.correction_standard_error) ** 2
-                                   + other_corrections.var(axis=0, ddof=1) / len(other_corrections))
+            # Two outer seeds suffice for matched-draw precision errors, but not
+            # the independent reference variance of a coverage comparison.
+            correction_variance = (other_corrections.var(axis=0, ddof=1) / len(other_corrections)
+                                   if len(seeds) >= 3 else np.full(ref.shape[1:], np.nan))
+            precision_se = np.sqrt(np.asarray(e.correction_standard_error) ** 2 + correction_variance)
             others = np.delete(ref, i, axis=0)
-            total_se = np.sqrt(np.asarray(e.standard_error) ** 2 + others.var(axis=0, ddof=1) / len(others))
-            precision_z.append(_standardized(np.asarray(e.correction) - other_corrections.mean(axis=0), precision_se))
-            total_z.append(_standardized(value - others.mean(axis=0), total_se))
-        precision_z, total_z = np.concatenate(precision_z), np.concatenate(total_z)
+            reference_variance = (others.var(axis=0, ddof=1) / len(others)
+                                  if len(seeds) >= 3 else np.full(ref.shape[1:], np.nan))
+            total_se = np.sqrt(np.asarray(e.standard_error) ** 2 + reference_variance)
+            precision_errors.append(np.asarray(e.correction) - other_corrections.mean(axis=0))
+            total_errors.append(value - others.mean(axis=0))
+            precision_errors_se.append(precision_se)
+            total_errors_se.append(total_se)
         critical = stats.t.ppf(.975, replicates - 1) if replicates > 1 else Z95
-        rows.append(CoverageRow(
-            case=case.label, paths=paths, figure=figure, product=_product(campaign, figure),
-            precision_checks=int(precision_z.size), precision_covered=int(np.sum(np.abs(precision_z) <= critical)),
-            precision_z_rms=_rms(precision_z), total_checks=int(total_z.size),
-            total_covered=int(np.sum(np.abs(total_z) <= critical)), total_z_rms=_rms(total_z)))
+        scale = float(np.max(np.abs(ref)))
+        matrices = [np.asarray(a).reshape(len(seeds), -1) for a in
+                    (precision_errors, total_errors, precision_errors_se, total_errors_se)]
+        entries = campaign.dates() if ref.ndim > 1 else ("scalar",)
+        for entry, pe, te, ps, ts in zip(entries, *(a.T for a in matrices)):
+            precision_z = standardized_errors(pe, ps, scale)
+            total_z = standardized_errors(te, ts, scale)
+            rows.append(CoverageRow(
+                case=case.label, paths=paths, figure=figure, product=_product(campaign, figure), entry=entry,
+                precision_checks=int(precision_z.size), precision_covered=int(np.sum(np.abs(precision_z) <= critical)),
+                precision_z_rms=_rms(precision_z), total_checks=int(total_z.size),
+                total_covered=int(np.sum(np.abs(total_z) <= critical)), total_z_rms=_rms(total_z),
+                interval_status=results[seeds[0]].precision.interval.status, interval_unavailable=len(seeds),
+                precision_zero_width_equal=int(np.sum((ps == 0) & (np.abs(pe) <= _roundoff(scale)))),
+                total_zero_width_equal=int(np.sum((ts == 0) & (np.abs(te) <= _roundoff(scale))))))
     return rows
 
 
-def _standardized(error: np.ndarray, standard_error: np.ndarray) -> np.ndarray:
-    """`error / standard_error` where the standard error is positive (a figure with no spread,
-    such as a matured trade's, states no interval to check)."""
-    keep = standard_error > 0
-    return error[keep] / standard_error[keep]
+def _roundoff(scale: float) -> float:
+    # Numerical equality allowance only, not a statistical threshold or tail bound.
+    return 32 * np.finfo(np.float64).eps * abs(scale)
+
+
+def standardized_errors(error: np.ndarray, standard_error: np.ndarray, scale: float = 0.) -> np.ndarray:
+    """Diagnostic z scores including zero-width misses (I-111).
+
+    NaN/nonfinite observations are unavailable; zero-width numerical equalities are
+    uninformative, not successful intervals. No empirical equality certifies a known
+    constant. A nonzero residual beyond roundoff with zero SE is an infinite miss.
+    """
+    error, standard_error = np.broadcast_arrays(error, standard_error)
+    keep = np.isfinite(error) & np.isfinite(standard_error) & (standard_error >= 0)
+    keep &= (standard_error > 0) | (np.abs(error) > _roundoff(scale))
+    error, standard_error = error[keep], standard_error[keep]
+    z = np.copysign(np.full(error.shape, np.inf), error)
+    return np.divide(error, standard_error, out=z, where=standard_error > 0)
 
 
 def _attribution_row(campaign, case: Case, paths: int, reference, results) -> Optional[AttributionRow]:
@@ -670,7 +720,13 @@ def summary(m: Measurements) -> str:
              "dates. Entries float64 holds fixed (a statistical error below 1e-9 of the figure's largest value: a "
              "netting set's ENE where every path is in the money, an EEE_B at its t=0 value) are left out of the "
              "ratios; Fixed moved is the largest error on them relative to the figure's largest value. Generated "
-             "by `tests/support/precision_harness.py`; the module docstring defines every quantity.", ""]
+             "by `tests/support/precision_harness.py`; the module docstring defines every quantity.", "",
+             "Coverage below is diagnostic Student t coverage, not available confidence bounds. "
+             "Current runs report nominal intervals unavailable for every figure and entry (I-111). "
+             "The per-entry audit retains the predeclared >=0.90 coverage and 0.75–1.33 standardized-error "
+             "RMS criteria; unavailable or uninformative diagnostics never count as passes. A diagnostic pass "
+             "does not make a nominal interval available. Historical rows "
+             "without an entry label pooled dates and omitted zero-width misses.", ""]
     for paths in m.paths:
         lines += [f"## {paths} paths", "",
                   "| Case | Relative error | Where | Means | Quantiles | Relative bias | Significance | Fixed moved | "
@@ -690,6 +746,24 @@ def summary(m: Measurements) -> str:
                          f"{_coverage(m, case, paths)} | {run.recompiles} | "
                          f"{run.seconds:.2f} |")
         lines.append("")
+        audited = [r for r in m.coverage if r.paths == paths and r.entry]
+        if audited:
+            lines += [f"### Diagnostic intervals by entry, {paths} paths", "",
+                      "Zero-width residuals beyond 32 float64 epsilons of the figure scale are infinite misses. "
+                      "Zero-width numerical equalities are counted separately and do not certify constants. "
+                      "No nominal production interval is eligible; the unavailable column counts outer seeds.", "",
+                      "| Case | Figure | Entry | Precision covered/checks | Precision RMS | Total covered/checks | "
+                      "Total RMS | Diagnostic criteria, precision / total | Zero-width equal, precision / total | "
+                      "Nominal intervals unavailable |",
+                      "|---|---|---|---|---|---|---|---|---|---|"]
+            for r in audited:
+                verdict = lambda passed: "pass" if passed else "fail/uninformative"  # noqa: E731
+                lines.append(f"| {r.case} | {r.figure} | {r.entry} | {r.precision_covered}/{r.precision_checks} | "
+                             f"{_fmt(r.precision_z_rms)} | {r.total_covered}/{r.total_checks} | {_fmt(r.total_z_rms)} | "
+                             f"{verdict(r.precision_passes)} / {verdict(r.total_passes)} | "
+                             f"{r.precision_zero_width_equal} / {r.total_zero_width_equal} | "
+                             f"{r.interval_unavailable} |")
+            lines.append("")
         for setting in ("offset", "rounding"):
             pairs = _pairs(m, setting)
             if not pairs:

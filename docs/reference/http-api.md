@@ -466,9 +466,12 @@ scramble for Sobol balance. Paired/scaled-storage runs need
 each replicate's path count to be a multiple of 32. The paired sample takes a whole-block
 prefix of every scramble. `precision.replicates` and `precision.uncertainty_method` describe
 the result. Paired mean errors use the independent replicate estimates, including covariance;
-one scramble produces `null` standard errors and a warning. Student t intervals use
-`replicates - 1` degrees of freedom and remain approximate: rare-event coverage fails
-I-111's gate, explicitly warned on paired results.
+one scramble produces `null` standard errors and a warning. `precision.interval` applies
+to all figures and entries: `status: "unavailable"`, `reason: "no_validated_tail_bound"`,
+with `confidence_level`, `lower` and `upper` all `null`. Market risk repeats this object
+in `uncertainty.interval`. Raw errors are variance diagnostics and cannot certify
+nominal coverage, even when zero. More scrambles do not enable nominal intervals.
+See [Sampling uncertainty](sampling-uncertainty.md).
 
 ```json
 "precision": {"simulation": {"storage": "float32", "compute": "float32", "accumulate": "float32"},

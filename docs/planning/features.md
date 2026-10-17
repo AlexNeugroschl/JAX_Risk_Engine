@@ -18,6 +18,7 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 | [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | — | Focus |
 | [F-08](#f-08) | Reporting currencies other than USD for TraderX | S | I-18 (an FX source), I-59 | New |
 | [F-09](#f-09) | ORE's XML input files as a run request | M | I-87 | New |
+| [F-10](#f-10) | Supported sampling confidence intervals with validated tail assumptions | L | I-111 availability rule; first precision timing result | New |
 
 ---
 
@@ -186,3 +187,26 @@ curves, so bootstrapping curves from instrument quotes is out of scope.
 
 **Depends on.** The run request ([I-87](known-issues.md#i-87)), whose configuration sections follow ORE's files, so the adapter
 is a translation and adds no setting of its own. **Size.** M.
+
+<a id="f-10"></a>
+### F-10 — Supported sampling confidence intervals with validated tail assumptions
+
+**Value.** Offer nominal sampling intervals for a stated estimator/model domain where
+mathematical tail bounds or a validated model-specific method support them. I-111
+currently declines nominal intervals for all figures and entries while retaining raw
+variance diagnostics. This is explicit supported behavior, not a claim that rare-event
+Student t intervals have become calibrated.
+
+**Scope.** Establish the assumptions for the complete estimator, including paired
+correction covariance and ES threshold estimation. Validate on independent outer seeds,
+rare and unseen-event examples, numerical constants and zero-width misses. Preserve
+the predeclared coverage >=0.90 and standardized-error RMS 0.75–1.33 criteria where
+applicable; unavailable entries never pass by exclusion. A model-independent event-count
+cutoff or fitted variance inflation is insufficient. Extend the shared interval contract
+only for the validated domain, keeping other inputs explicitly unavailable.
+
+**Depends on.** I-111's conservative availability rule (implemented). Scheduled after
+the first existing-format timing/accuracy result so it does not block that research;
+its uncertainty can be measured across independent outer runs. **Size.** L.
+**Details.** [Public uncertainty contract](../reference/sampling-uncertainty.md),
+[precision experiments](details/precision-accuracy.md).

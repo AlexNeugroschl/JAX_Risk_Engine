@@ -17,6 +17,7 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 | Look up exact function signatures and data shapes | [API Reference](reference/api-reference.md) |
 | Price a whole portfolio in one call, from Python | [The Portfolio Entry Point](reference/portfolio-entrypoint.md) |
 | Price a whole portfolio over HTTP | [HTTP API](reference/http-api.md) |
+| Interpret standard errors and confidence-interval availability | [Sampling uncertainty](reference/sampling-uncertainty.md) |
 | Consume a TraderX end-of-day bundle (and know what gets refused) | [The TraderX Path](reference/traderx-path.md) |
 | Actually submit an EOD bundle over HTTP, end to end | [User Guide: Pricing a TraderX EOD bundle](getting-started/user-guide.md#pricing-a-traderx-eod-bundle) |
 | Profile a pricing job's JAX vs. Python time | [User Guide](getting-started/user-guide.md#profiling-a-pricing-job) |

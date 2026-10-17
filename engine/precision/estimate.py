@@ -30,8 +30,8 @@ With `replicates=R`, samples are concatenated equal-sized independent scrambles.
 Pair a prefix within EACH scramble. Compute the low mean and paired correction within
 each, then their average and sample standard deviation / sqrt(R). This measures both
 terms and their covariance without assuming independence of paths or storage blocks.
-One scramble returns NaN standard errors; Student t with R-1 degrees of freedom gives
-the interval convention. `replicates=None` retains the explicitly IID estimator for
+One scramble returns NaN standard errors. These are variance diagnostics; Student t
+intervals are not certified for unobserved tails (I-111). `replicates=None` retains the explicitly IID estimator for
 standalone callers with independent observations.
 
 Every estimate is computed in float64 (decision A-10: reductions over paths are float64).
@@ -76,8 +76,8 @@ def paired_indices(paths: int, paired: int, replicates: int = 1):
 def replicate_standard_error(estimates):
     """SE of a mean of independent equal-sized replicate estimates, in float64.
 
-    One replicate cannot estimate its sampling uncertainty. Student t, R-1 degrees of
-    freedom, is the corresponding interval convention; this function returns one SE.
+    One replicate cannot estimate its sampling uncertainty. This function returns one
+    empirical SE, not a nominal confidence bound; see `IntervalAvailability` (I-111).
     """
     estimates = jnp.asarray(estimates, dtype=jnp.float64)
     if estimates.shape[0] < 2:

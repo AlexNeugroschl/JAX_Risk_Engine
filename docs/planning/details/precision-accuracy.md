@@ -4,11 +4,33 @@
 
 Low precision can introduce systematic pricing errors. This work adds randomized operand
 rounding, enforces valid option values, and estimates sampling uncertainty from independent
-runs within the same path budget. The remaining problem is rare events: many runs observe
-none, making ordinary confidence intervals too optimistic. Those intervals remain explicitly
-unvalidated; the numerical acceptance rules are unchanged.
+runs within the same path budget. Rare events can make ordinary confidence intervals
+too optimistic. Nominal intervals now
+report unavailable under a conservative rule; raw variance estimates remain available for
+research. The numerical acceptance rules and their failures are unchanged.
 
 ## Plan
+
+Completion plan, 2026-10-16 (I-111):
+
+1. Add failing regressions for a zero-standard-error miss, rare-event interval
+   availability, Python/HTTP metadata and the misleading low-level ES name.
+2. Adopt a conservative availability rule: no nominal confidence interval without a
+   validated tail bound or interval method for the estimator. The current pipeline
+   has neither, so all figures and entries report intervals unavailable. Preserve
+   every point estimate and raw standard error; no empirical event-count threshold,
+   variance inflation or relaxed acceptance criterion.
+3. Make that rule machine-readable in precision reports and market-risk uncertainty
+   metadata, using one shared immutable description. Keep it outside JAX kernels.
+   Rename the conditional ES diagnostic with a deprecated compatibility entry.
+4. Audit diagnostic Student t coverage per date. Include nonzero zero-width misses,
+   distinguish numerical equality from proof of a constant, and record unavailable
+   intervals separately from diagnostic successes. Keep the 0.75–1.33 RMS and >=0.90
+   coverage criteria unchanged, including their failures.
+5. Validate rare-event examples on independent outer seeds, rerun the replicated
+   campaign, verify warm compile reuse, numerical compatibility and ORE parity, run
+   the full suite, and update planning and public documentation. Numerical precision
+   evidence remains based on matched float64 errors, independently of interval status.
 
 Implementation plan, 2026-10-15. The scope is the current formats through FP8;
 FP4 and multilevel quantile correction remain independent later experiments.
@@ -66,8 +88,9 @@ before storage and after decoding. A regression found a stressed bfloat16 Bermud
 worth -40.1640625 before this bound and passes after it. The initial eight rounding,
 replicate and wrapper regressions failed on the original implementation.
 
-**I-111 is partial, not closed.** Independent-replicate variance estimates remove the
-IID-path assumption. They do not establish nominal Student t coverage for rare events.
+**The initial interval experiment failed calibration.** Independent-replicate variance
+estimates remove the IID-path assumption. They do not establish nominal Student t coverage
+for rare events. The completion below uses the availability-rule alternative.
 The eight-scramble storage experiment at 1,024, 4,096 and 16,384 total paths, with 32
 outer seeds, found substantial undercoverage on rare netting-set ENE and correction
 events. Increasing to 16 and 32 scrambles on selected 4,096-path cases did not solve
@@ -91,12 +114,28 @@ paths, market float16 with nearest storage has European ENE correction coverage 
 Pooled coverage can conceal these failures: acceptance must inspect individual figures
 and dates, including zero-error estimates that miss their independent reference.
 
-Remaining acceptance work for I-111: an uncertainty/interval method with calibrated
-coverage on rare events, or a principled rule that reports an interval as unavailable
-when its data cannot support one. Preserve raw variance estimates for research, validate
-on independent outer seeds, and retain the predeclared RMS/coverage criteria. This
-remains focus work before hardware timing. The implementation must not be described as
-completing that acceptance gate merely because the dependence assumption is corrected.
+**I-111 completion: conservative interval availability.** The shared immutable
+`IntervalAvailability` metadata reports `status="unavailable"` and
+`reason="no_validated_tail_bound"`, with null confidence level and endpoints, for all
+figures and entries. Python and HTTP expose it in `precision.interval`, market risk
+also in `uncertainty.interval`. Nonzero empirical variance, many observed events,
+additional scrambles and a passing precision row cannot establish the missing tail
+assumption. This deliberately declines intervals even on apparently benign entries;
+it does not claim calibrated finite intervals for rare events. The raw standard errors,
+point estimates and paired corrections are unchanged. See the constructive rare-event
+argument and public contract in [Sampling uncertainty](../../reference/sampling-uncertainty.md).
+
+The coverage audit now retains zero-width misses beyond numerical roundoff as infinite
+standardized errors, records zero-width numerical equalities separately without
+certifying constants, and reports each date independently. It counts nominal interval
+unavailability separately; unavailable/uninformative diagnostics never pass the
+unchanged >=0.90 coverage and 0.75–1.33 RMS criteria. A diagnostic pass does not make
+a nominal interval available. Fewer than three outer seeds
+reports unavailable coverage diagnostics without invalid sample-variance warnings.
+The renamed `conditional_tail_standard_error` makes the low-level ES diagnostic's
+meaning explicit; its old name remains with a deprecation warning and identical numbers.
+Future supported confidence intervals are an independent capability (F-10), not an
+implicit promise that more scrambles fix the failed experiment.
 
 The review also found an existing evidence-scope gap (I-114): lookup keys distinguish
 formats, rounding, pairing and replicate counts, but omit pricing-engine and rollback-grid
@@ -105,6 +144,12 @@ That is tracked before hardware timing. Equal-accuracy timing must also measure 
 RQMC error scaling and covariance, rather than assume an IID variance/path-count formula.
 
 ## Numerical compatibility
+
+The I-111 availability-rule completion changes **none of the 678 numeric arrays** in
+the before/after snapshot: float64, float32 and mixed paired storage, all five product
+families, exposures, Greeks and exercise flags are identical, including NaN positions.
+The new interval fields are host metadata and introduce no JAX program or compile key.
+The following paragraph describes the earlier independent-scramble implementation.
 
 The before/after shared-portfolio snapshots cover all five product families and Greeks at
 float64, float32 and mixed paired storage precision. Matched valuations, exposures,
@@ -115,6 +160,24 @@ as their scale; ORE parity tolerances are unchanged. Changing the replicate coun
 the draws by design, so compare precision policies on matched replicate draws.
 
 ## Campaign refresh
+
+The I-111 completion reran `replicated_storage` on CPU: 32 independent outer seeds,
+eight scrambles per run, 1,024/4,096/16,384 total paths, every existing case. All **2,160
+figure measurements are identical** to the previous record, with zero warm recompilations.
+The **2,592 per-date coverage rows** record 82,944 nominal interval unavailability
+decisions, separately from diagnostic Student t coverage. Among entries with diagnostic
+checks, correction/total criteria fail on 119/77 entries at 1,024 paths, 134/193 at
+4,096, and 134/98 at 16,384. These failures remain failures. For example, stochastic
+bfloat16 simulation storage's netting-set ENE at 4,096 paths on 2029-07-30 covers only
+12/32 independent outer references, RMS 2.29. No observed zero-width miss beyond
+roundoff occurred in this campaign; explicit regressions exercise that failure mode.
+Numerical equalities never count as interval-availability evidence.
+
+The refreshed record and generated evidence table retain the same numerical precision
+verdicts. The other campaigns need no numerical rerun for metadata or audit changes;
+their historical interval diagnostics remain historical. The following paragraphs
+describe the preceding rounding/bounds refresh. Concurrent validation runs again make
+these elapsed times unsuitable for device throughput claims.
 
 Eight campaigns were added or refreshed: `options`, `compute_options`, `market_risk`,
 `compute_market_risk`, `rounding`, `rounding_options`, `rounding_market_risk` and
@@ -133,6 +196,11 @@ accuracy and compile reuse, not a device speed ranking.
 
 ## Tested by
 
+- `tests/test_uncertainty_availability.py`: rare-event runs with 1/8/32 independent
+  replicates, empirical zero versus a known nonzero expectation, infinite zero-width
+  misses, unchanged diagnostic criteria and the deprecated ES entry.
+- `tests/test_precision_harness.py`: per-date diagnostics, interval-unavailability counts,
+  numerical equalities, two-seed reference unavailability and record round-trips.
 - `tests/test_precision_accuracy.py`: operand bias, explicit keys, prefix/batch/block
   invariance, option bounds before delivery and after storage, replicate covariance,
   analytic mean/ES coverage, historical dependence, wire controls and warm compile reuse.

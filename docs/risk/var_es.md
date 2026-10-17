@@ -172,13 +172,18 @@ one, and a bare float cannot tell you which you have. So each percentile also ge
 
 ```python
 def tail_sample_size(pnl, percentile)                 -> jax.Array  # [TimeSteps]
-def expected_shortfall_standard_error(pnl, percentile) -> jax.Array  # [TimeSteps]
+def conditional_tail_standard_error(pnl, percentile) -> jax.Array  # [TimeSteps]
 ```
 
 surfaced through `compute_risk_metrics` as `"ES_99_tailCount"` and
 `"ES_99_standardError"`.
 
-**`tailCount` is the effective sample size** — the number of observations that actually
+`expected_shortfall_standard_error` is a deprecated compatibility name. This conditional
+diagnostic holds the fitted threshold fixed; it is not the sampling uncertainty of the
+complete ES estimator. Market-risk runs replace it with replicate deletion or historical
+moving blocks. Nominal intervals remain [unavailable](../reference/sampling-uncertainty.md).
+
+**`tailCount` is the observation count** — the number of observations that actually
 entered the ES mean. It is usually far smaller than the scenario count: **at 99% over 10,000
 scenarios roughly 100 observations carry the estimate**, and every one of them sits in the
 part of the distribution the Monte Carlo sampled least. It counts the same *strict
@@ -186,7 +191,7 @@ value-based* tail (`pnl < -VaR`) that `expected_shortfall` averages — not a po
 of the `index` worst observations, which disagrees whenever there are ties at the VaR boundary
 (the same distinction described above for ES itself).
 
-**`standardError`** is the standard error of that tail mean, `s/√n`, with the *sample*
+**`standardError`** is the conditional tail-spread diagnostic, `s/√n`, with the *sample*
 standard deviation (`ddof=1`) — the tail is a sample, and the population form would
 understate the spread. It is **NaN, never `0.0`, when `n < 2`**: with one observation the ES
 is defined but its spread is not, and `0.0` would read as "perfectly converged" for exactly

@@ -1004,11 +1004,13 @@ sqrt(R), including correction covariance. One scramble reports unavailable error
 ES errors delete whole scrambles and recompute the tail, or use a conditional moving-block
 bootstrap for historical windows. Point estimates and pooled quantile rules remain ORE's.
 
-Variance estimation is implemented, but **I-111 remains partial**: Student t intervals
-under-cover rare ENE and correction events in the replicated-storage campaign. Results
-warn against interpreting these variance estimates as validated 95% bounds. The
-[implementation, experiments and remaining gate](precision-accuracy.md) state the failed
-criteria without changing them. A quantile's paired measurement still needs a tail:
+Nominal intervals are explicitly unavailable under I-111's conservative rule:
+`PrecisionReport.interval` states `no_validated_tail_bound`, with null confidence level
+and endpoints, for all figures and entries. Raw standard errors remain variance
+diagnostics. Neither zero empirical error nor additional scrambles certifies a tail
+bound. The [implementation and experiments](precision-accuracy.md) retain the failed
+criteria without changing them; [Sampling uncertainty](../../reference/sampling-uncertainty.md)
+defines the public contract. A quantile's paired measurement still needs a tail:
 ES at 99% on 64 scenarios is NaN.
 
 ## 10. Acceptance standard and evidence
@@ -2138,8 +2140,8 @@ of freedom) much noisier. The misses are not correlation within a block but rare
 differences (single errors to 74 standard errors), with float16 and bfloat16 shocks or curves and
 not with FP8, whose errors are many and small: a rounded curve flips a payoff on one path, and a
 paired sample that misses those paths states too small an error. No standard error from the
-paired paths alone sees what they miss; independent replicates within the run would
-([I-111](../known-issues.md#i-111)). The evidence table does not use these standard errors, and
+paired paths alone sees what they miss. Independent replicates estimate variance but
+also miss rare events; I-111 now declines nominal intervals without a validated tail bound. The evidence table does not use these standard errors, and
 the result says so where they understate.
 
 ### 15.7 The rollback in difference form (2026-10-13)
@@ -2357,11 +2359,13 @@ benchmark version, 3.11.2, and its previously unpinned dependencies are now cons
 The precision harness accepts two seeds, sufficient for its figure errors, but paired
 total-coverage checks use a leave-one-out sample variance and need at least three: with
 two it emits NumPy degrees-of-freedom warnings and reports zero total checks. Use at least
-three seeds for paired coverage; the existing standard-error research remains I-111.
+three seeds for paired coverage. I-111 now reports unavailable diagnostics for two
+outer seeds, without invalid sample-variance warnings.
 
 **Remaining plan at this measurement (2026-10-15).** I-105 is closed. The following
 section records the subsequent rounding, bounds and independent-replicate implementation;
-rare-event interval calibration remains open (I-111). FP4 remains deferred (F-07).
+I-111 subsequently adopts the conservative interval-availability rule. Supported
+confidence intervals remain future capability F-10; FP4 remains deferred (F-07).
 Equal-accuracy timing on TPU/H100 and multi-host execution remain planned; omitting the
 cube is now an explicit output choice, so future timing comparisons must use equal output
 settings on both sides.
@@ -2388,6 +2392,6 @@ and variance. Failing FP8 rows remain failures. Nearest remains the default base
 At 4,096 paths the float16 rollback's worst bias significance falls from 41.4 to 2.66;
 FP8 e4m3 market-stage European EPE from 5.32 to 1.80. That does not establish A-11 acceptance.
 
-The full design, verification and open rare-event uncertainty gate are in
+The full design, verification and conservative interval-availability rule are in
 [precision-accuracy.md](precision-accuracy.md). FP4 and quantile correction remain separate
 later research, with the current raw quantiles retained.
