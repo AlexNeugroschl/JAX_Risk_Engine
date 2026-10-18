@@ -18,12 +18,17 @@ ORE instruments and engines:
     bond        FixedRateBond (ACT/ACT ISMA, no settlement lag) + DiscountingBondEngine
     Bermudan    NumericLgmMultiLegOptionEngine through an in-process OREApp
                 (tests.support.ore_lgm_oracle), both at the same fixed LGM
-                (`calibration="None"`), the index forwarding on its own curve
+                (`calibration="None"`), the index forwarding on its own curve; or, the
+                Bermudan and the American, both calibrated (`Bootstrap`), ORE's LGM built
+                and calibrated on each scenario's curves as its historical P&L recalibrates
+                the trades' model builders under every scenario (I-112)
 
 Measured agreement per scenario, which the tolerances below are set from:
 swap ~1e-14 and bond ~1e-16 relative (the same arithmetic); Bermudan ~2e-13
-(the same LGM grid); Bachelier European ~2e-14 (measured 1.6e-14, 2026-09-29); Jamshidian
-European within QuantLib's Brent tolerance on its root (tests/test_jamshidian.py).
+(the same LGM grid); calibrated Bermudan and American recalibrated per scenario 6e-12 and 7e-11
+(ORE's Levenberg-Marquardt calibration converges to its tolerance, the engine's roots to
+rounding; measured 2026-10-17); Bachelier European ~2e-14 (measured 1.6e-14, 2026-09-29);
+Jamshidian European within QuantLib's Brent tolerance on its root (tests/test_jamshidian.py).
 
 ORE's `ParametricVarCalculator` and `ExposureCalculator` have no constructor
 in the Python bindings, so VaR/ES parity is established this way -- full
@@ -41,7 +46,8 @@ from engine.risk.market import (
     monte_carlo_scenarios,
     run_market_risk,
 )
-from tests.support.ore_lgm_oracle import ore_lgm_swaption_npv
+from engine.instruments.american_swaption import AmericanSwaptionConfig
+from tests.support.ore_lgm_oracle import OreLgmEngine, ore_lgm_swaption_npv
 from tests import market_risk_support as m
 
 FACTORS = m.factors()
@@ -50,7 +56,14 @@ IBOR = FACTORS.slice_of(FACTORS.index_of(f"index:{m.INDEX}"))
 BASE = FACTORS.base_rates()
 
 
-def _ore_bermudan_npv(cfg, disc_rates, fwd_rates) -> float:
+def _ore_option_npv(cfg, disc_rates, fwd_rates, pricing) -> float:
+    """ORE's NPV of a Bermudan/American on the curves, its LGM as `pricing` configures it:
+    fixed, or calibrated to `m.VOLS` on these curves."""
+    engine = pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
+    if isinstance(cfg, AmericanSwaptionConfig):
+        style, exercises = "American", [cfg.first_exercise_date, cfg.last_exercise_date]
+    else:
+        style, exercises = "Bermudan", list(cfg.exercise_dates)
     swap = build_vanilla_swap(
         notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer, effective_date=cfg.effective_date,
         maturity_date=cfg.maturity_date, index_tenor_months=cfg.index_tenor_months,
@@ -59,25 +72,25 @@ def _ore_bermudan_npv(cfg, disc_rates, fwd_rates) -> float:
     return ore_lgm_swaption_npv(
         evaluation_date=m.TODAY, curve_times=m.PILLAR_TIMES, curve_rates=list(disc_rates), swap=swap,
         notional=cfg.notional, fixed_rate=cfg.fixed_rate, payer=cfg.payer,
-        floating_spread=cfg.floating_spread, index_tenor_months=cfg.index_tenor_months, style="Bermudan",
-        exercise_dates=list(cfg.exercise_dates), hw_a=m.ENGINE.reversion, hw_sigma=m.ENGINE.volatility,
-        n_per_std=m.ENGINE.n_per_std, std_devs=m.ENGINE.std_devs,
-        exercise_time_steps_per_year=m.ENGINE.exercise_time_steps_per_year, index_curve_rates=list(fwd_rates),
-        shift_horizon=m.ENGINE.shift_horizon,
+        floating_spread=cfg.floating_spread, index_tenor_months=cfg.index_tenor_months, style=style,
+        exercise_dates=exercises, hw_a=engine.reversion, hw_sigma=engine.volatility,
+        n_per_std=engine.n_per_std, std_devs=engine.std_devs,
+        exercise_time_steps_per_year=engine.exercise_time_steps_per_year, index_curve_rates=list(fwd_rates),
+        shift_horizon=engine.shift_horizon, swaption_vols=m.VOLS, calibration=OreLgmEngine.of(engine).calibration,
     ).npv
 
 
-def _ore_npv(cfg, factor_vector, european: str = "Bachelier") -> float:
+def _ore_npv(cfg, factor_vector, pricing=m.PRICING) -> float:
     """ORE's price of one trade at a full factor vector."""
     disc, fwd = factor_vector[OIS], factor_vector[IBOR]
     name = type(cfg).__name__
     if name == "SwapConfig":
         return m.ore_swap_npv(cfg, disc, fwd)
     if name == "SwaptionConfig":
-        return m.ore_european_npv(cfg, disc, fwd, european)
+        return m.ore_european_npv(cfg, disc, fwd, pricing.european)
     if name == "BondConfig":
         return m.ore_bond_npv(cfg, disc)
-    return _ore_bermudan_npv(cfg, disc, fwd)
+    return _ore_option_npv(cfg, disc, fwd, pricing)
 
 
 def _ore_pnl(trades, shifts) -> np.ndarray:
@@ -101,14 +114,17 @@ def _ore_statistics(pnl: np.ndarray) -> "ORE.RiskStatistics":
     (m.european, m.PRICING, 32, 1e-10),
     (m.european, m.JAMSHIDIAN, 32, 5e-6),
     (m.bermudan, m.PRICING, 6, 1e-10),
-], ids=["swap", "bond", "european", "european-jamshidian", "bermudan"])
+    (m.bermudan, m.CALIBRATED, 6, 5e-10),
+    (m.american, m.CALIBRATED, 6, 5e-10),
+], ids=["swap", "bond", "european", "european-jamshidian", "bermudan", "bermudan-recalibrated",
+        "american-recalibrated"])
 def test_every_scenario_revalues_as_ore_does(make, pricing, scenarios, rtol):
     cfg = make()
     shocks = monte_carlo_scenarios(FACTORS, m.covariance(), horizon_days=10, num_scenarios=scenarios, seed=11)
     result = run_market_risk(MarketRiskRequest([cfg], m.market(), shocks, pricing))
 
     engine_values = result.base_npv_per_trade[0] + np.asarray(result.pnl[:, 0])
-    ore_values = np.asarray([_ore_npv(cfg, BASE + row, pricing.european) for row in shocks.shifts])
+    ore_values = np.asarray([_ore_npv(cfg, BASE + row, pricing) for row in shocks.shifts])
     np.testing.assert_allclose(engine_values, ore_values, rtol=rtol, atol=1e-6)
 
 

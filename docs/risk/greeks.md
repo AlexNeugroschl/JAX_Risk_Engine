@@ -2,7 +2,7 @@
 
 Two methods, chosen by the run configuration's `greeks` (decision A-5,
 [compliance/decisions.md](../../compliance/decisions.md)), for every trade type and either
-simulation model, with the same keys:
+simulation model, with the same keys on the same factors:
 
 ```python
 config = RunConfig(greeks=GreeksConfig(method="Bump",            # or "AD"
@@ -14,8 +14,9 @@ greeks = price_portfolio(PortfolioRequest(market=market, trades=trades, config=c
 
 **Modules:** [`engine/risk/greeks/bump.py`](../../engine/risk/greeks/bump.py) (`Bump`,
 `portfolio_sensitivities`, and Theta for both), [`engine/risk/greeks/ad.py`](../../engine/risk/greeks/ad.py)
-(`AD`, `portfolio_greeks`), [`engine/risk/greeks/price_functions.py`](../../engine/risk/greeks/price_functions.py)
-(each trade's price as a JAX function of its market curves)
+(`AD`, `portfolio_greeks`, `trade_greeks`), [`engine/risk/greeks/price_functions.py`](../../engine/risk/greeks/price_functions.py)
+(each trade's price as a JAX function of its market: its curves' node values and its volatility
+quotes)
 
 ## Plain-language summary
 
@@ -37,13 +38,15 @@ P&L.
 
 ## The keys
 
-Per trade (by request index), in the reporting currency:
+Per trade (by request index), in the reporting currency, every curve on ORE's sensitivity
+market (each curve sampled at `SensitivityConfig.curve_tenors`, log-linear in the discount
+factor, flat forward beyond):
 
-| Key | Bump (ORE's defaults) | AD |
+| Key | Bump (ORE's sensitivity analysis) | AD |
 |---|---|---|
-| `delta:discount:<ccy>`, `delta:index:<name>` | `NPV(up) − NPV(base)`, an absolute 1bp zero-rate shift of one curve tenor (`ShiftScheme::Forward`), per `SensitivityConfig.curve_tenors` tenor | `dNPV/dz_i · shift` per pillar of the market curve |
-| `gamma:discount:<ccy>`, `gamma:index:<name>` | `NPV(up) − 2·NPV(base) + NPV(down)` | `d²NPV/dz_i² · shift²` (the diagonal, as ORE computes no cross-gammas by default) |
-| `vega:<ccy>` `[option tenors, swap tenors]` | `NPV(up) − NPV(base)` per swaption quote, absolute 1bp normal-vol shift | `dNPV/dquote · vol_shift` |
+| `delta:discount:<ccy>`, `delta:index:<name>` `[tenors]` | `NPV(up) − NPV(base)`, an absolute zero-rate shift of `curve_shift` at one tenor (`ShiftScheme::Forward`) | `dNPV/dz_k · curve_shift` in the tenor's zero rate |
+| `gamma:discount:<ccy>`, `gamma:index:<name>` `[tenors]` | `NPV(up) − 2·NPV(base) + NPV(down)` | `d²NPV/dz_k² · curve_shift²` (the diagonal, as ORE computes no cross-gammas by default) |
+| `vega:<ccy>` `[option tenors, swap tenors]` | `NPV(up) − NPV(base)` per swaption quote, an absolute normal-vol shift of `vol_shift` | `dNPV/dquote · vol_shift` |
 | `theta` | `NPV(thetaDate) − NPV(base) + flows paid in (asof, thetaDate]`, `thetaDate = asof + theta_days` calendar days | the same function |
 
 Vega is present for a trade whose engine reads the swaption volatilities: a European on
@@ -59,63 +62,85 @@ model (the Greeks are of today's value; the model only simulates).
 
 `portfolio_sensitivities` reproduces ORE's `SensitivityAnalysis` (`sensitivityanalysis.cpp`,
 `sensitivitycube.cpp`): each trade is priced with its t=0 engine on ORE's sensitivity
-simulation market — every curve sampled at the curve tenors, log-linear between them,
-flat-forward beyond — with one tenor's zero rate (or one volatility quote) shifted at a time.
-A Bermudan/American is recalibrated under every shift, as ORE does. These follow ORE's source
-(gates V-2, V-3 in [ORE Parity](../reference/ore-parity.md#verification-gates)) but are not yet
-checked against an OREApp sensitivity run ([I-51](../planning/known-issues.md#i-51)).
+simulation market, with one tenor's zero rate (or one volatility quote) shifted at a time. A
+Bermudan/American is recalibrated under every shift, as ORE does (`recalibrateModels`, its
+default). **It equals ORE's own sensitivity analytic**, run in-process on the shared
+portfolio's sloped two-curve market (`tests/test_sensitivity_ore_parity.py`, the oracle
+`tests/support/ore_sensitivity_oracle.py`; I-51, 2026-10-17): every Delta, Gamma, Vega and
+Theta of every trade, calibrated Bermudans and the American included, within 2e-14 of the
+trade's NPV.
 
-## Why it's built this way: matching ORE's exact convention, via autodiff instead of finite differences
+One engine curve is two of ORE's factors: ORE's LGM builder takes its model's and its helpers'
+discount curve from the swap index's discounting index, and a bond discounts on its reference
+curve, each an index curve of its own in ORE's sensitivity market beside the currency's discount
+curve. The engine has one discount curve per currency, which the option's calibration and the
+bond read too, so its discount Delta is ORE's two factors moved together (the oracle reads
+ORE's cross gammas to put them together exactly).
 
-The AD method gives the derivatives exactly, in one pass per trade, where the bump method
-reprices once per tenor and quote. Each trade's price is a pure JAX function of its market
-curves' pillar rates (`trade_price_function`: discounting legs, Bachelier or Jamshidian, the
-grid engine on the calibrated LGM, discounted bond flows), and `curve_greeks` takes its
-gradient and the diagonal of its Hessian — one linearization of the gradient over all the
-trade's curves, then one Hessian-vector product per pillar, batched with `vmap`, never the
-full Hessian (`_gradients_and_hessian_diagonals`). Scaled by the shift (Delta) and its square
-(Gamma), they are the shift → 0 limit of ORE's numbers. Each trade's Delta and Gamma are one
-compiled program, and its Vega gradient another, shared by every trade of the same product
-and shape ([profiling §3.8](../concepts/profiling.md#38-the-ad-greeks-as-one-program-per-product-2026-10-06)).
+## AD: ORE's Greek in the limit of a vanishing shift
 
-**How the two methods differ, beyond the shift size.**
+ORE computes AD sensitivities in its sensitivity analysis itself (`UseAD` with a
+`SensitivityDelta` run: the engine's gradient in its market's parameters, taken once on the
+sensitivity market, each shift scenario's NPV then the base plus the gradient times the move).
+The engine's AD Greeks are the same thing: each trade's price is a pure JAX function of its
+market on ORE's sensitivity market (`trade_price_function(..., tenors=...)`: discounting legs,
+Bachelier or Jamshidian, the grid engine, discounted bond flows; its base value is the bump
+method's base), differentiated in what ORE shifts, each tenor's zero rate and each volatility
+quote. So ORE's forward-difference Delta is `Delta + Gamma/2 + O(h³)` of the AD Greeks and its
+Gamma `Gamma + O(h⁴)`.
 
-- *Axis.* Bump Deltas are per sensitivity tenor on ORE's resampled curve; AD Deltas per pillar
-  of the market's own curve. Summed, both are the parallel Delta.
-- *Curvature.* ORE's Delta is a forward difference, `Δh + ½Γh²`; with the curvature removed
-  (Delta − Gamma/2) the parallel Deltas agree to O(h³): 1e-4 on flat curves
-  (`tests/test_greeks.py::TestAgainstTheBumpMethod`). Uncorrected, a European's differs by
-  0.6%.
-- *Curve representation.* On a sloped curve the sensitivity market (log-linear in the
-  discount factor between tenors) is not the market's curve (linear in the zero rate between
-  pillars), so the two methods differentiate slightly different curves: a near-par swap's
-  small discount Delta differed by 2%, a European's Vega by 0.9%.
-- *Bermudans/Americans.* AD Delta and Gamma hold the calibrated volatility fixed; the bump
-  method recalibrates under each bump. AD Vega moves the volatility through the calibration
-  (below), as the bump method's recalibration does.
+Measured on the shared portfolio's sloped market (2026-10-17, I-78): for swaps, Europeans and
+the bond, ORE's Delta less half its Gamma is the AD Delta within 2e-5 of each curve's largest
+Delta, and the Gammas agree within 4e-6 (against ORE itself, `tests/test_sensitivity_ore_parity.py`,
+and against the bump method, `tests/test_greeks.py`); ORE's Vega, a forward difference, is
+`Vega + O(h)`, and extrapolated from two shifts (Richardson) it is the AD Vega to 1e-5.
 
-Showing the two agree as the bump halves, beyond flat curves, is
-[F-01](../planning/features.md#f-01).
+**A calibrated Bermudan/American calibrates inside its price function**, so its Delta and Gamma
+move the calibration with the curve, as ORE's recalibrating bumps do, and its Vega moves the
+calibration with the quotes. The calibration's derivatives are the implicit function theorem's
+on the whole basket (below).
+
+**Where AD is not ORE's Greek: the grid engine.** A Bermudan's/American's price on the LGM grid
+(ORE's own engine, to 1e-11) is piecewise smooth in the rates: its exercise switches on the state
+grid's nodes, so the price has many small kinks. Its AD Greeks are the derivatives of that price
+at the market, exactly (central differences at steps small enough to stay on one smooth piece,
+1e-7, agree to 1e-9 for Delta); ORE's 1bp bump is a secant across the kinks. On the shared
+portfolio the AD Delta was within 0.4% of each curve's largest bump Delta less half its Gamma,
+and the bump Gamma, a second difference across kinks, is not a curvature (at one tenor it moved
+from 1.9e8 to 3.9e9 as the step shrank from 1e-4 to 1e-6, against a smooth curvature of 8e6;
+`tests/test_greeks_bermudan.py`). An AD run with such a trade says so in its warnings; the bump
+method gives ORE's numbers.
+
+**One program per product and shape.** A trade's Delta, Gamma and Vega are one compiled program
+(`_derivatives`), shared by every trade of the same product and shape: forward differentiation
+along every node value (a forward pass of a forward pass gives the first and second directional
+derivative) and every quote, the directions batched with `vmap` and the price itself computed
+once. Forward differentiation holds no tape: an option recalibrated under the shift moves its
+LGM's grid and rollback operator with the curve, and reverse mode held their tangents on every
+row of the induction for every direction (13 GB for an American on ORE's 301-node grid, against
+2 GB forward). ([profiling §3.8](../concepts/profiling.md#38-the-ad-greeks-as-one-program-per-product-2026-10-06))
 
 ## Vega (Bermudan/American only)
 
-(Section title kept for links; a European on Bachelier has Vega too.) A European's Vega is
-`dNPV/dσ` times the weight of each quote in the volatility it reads: the surface is bilinear
-in its quotes, so `SwaptionVolSurface.weights` gives `dσ/dquote` exactly.
+(Section title kept for links; a European on Bachelier has Vega too.) A European's volatility is
+read on the quotes through the surface's bilinear weights (`SwaptionVolSurface.weights`), so its
+price is a function of the quotes and its Vega a derivative in them.
 
 A Bermudan's/American's volatility comes from its calibration: the bootstrap fits bucket j's
-σ_j so that the model reprices helper j at its market volatility v_j, with ζ_j = Σ_{k≤j} σ_k²
-dt_k. A quote moves the helpers' volatilities (by the same bilinear weights), which move every
-later bucket. By the implicit function theorem, row by row,
+σ_j so that the model reprices helper j at its market volatility v_j (read on the quotes the
+same way), with ζ_j = Σ_{k≤j} σ_k² dt_k. Together the buckets solve the lower-triangular system
+`G(σ; curves, quotes) = model(ζ(σ)) − market = 0` (`engine.calibration.ore_lgm.basket_residuals`),
+and by the implicit function theorem
 
 ```
-J[j] = −(Σ_{k<j} ∂g_j/∂σ_k · J[k] + e_j ∂g_j/∂v_j) / (∂g_j/∂σ_j),     g_j = model_j(ζ_j) − market_j(v_j)
+dσ = −(∂G/∂σ)⁻¹ (∂G/∂(curves, quotes) · d(curves, quotes))
 ```
 
-(`_bootstrap_jacobian`; `∂g_j/∂v_j` includes the model's side, since a deal strike beyond 3
-ATM standard deviations is clipped there and moves with its volatility), and
-`Vega = dNPV/dσ · J · weights · vol_shift`. Checked against central differences of the full
-recalibrating pricing to 1e-4 (`tests/test_greeks_bermudan.py`).
+(`calibrated_values`, `engine.solvers.roots.implicit_solution`: ∂G/∂σ by forward
+differentiation, the triangular system by forward substitution). The bootstrap's own root
+finding is never differentiated; the rule is itself differentiable, so the second derivatives
+(Gamma through the recalibration) are right too. Checked against central differences of the
+full recalibrating price (`tests/test_greeks_bermudan.py`).
 
 ## Why no Vega for swaps or European swaptions
 
@@ -124,27 +149,31 @@ Hull-White model, not the market's quotes, so it has no Vega either; on Bachelie
 
 ## Theta: advance the evaluation date, hold the market fixed
 
-Both methods report ORE's Theta (`trade_theta`): the trade repriced on the market rebuilt at
-`thetaDate = asof + theta_days` calendar days ([I-38](../planning/known-issues.md#i-38)) —
-each curve's tenor points take the original curve's discount factor at `thetaDate + tenor`,
-fixed in dates and not renormalized; swaption volatilities are today's surface seen from the
-Theta date; fixings between the dates backfilled with the index's forecast — plus the
-cashflows paid in `(asof, thetaDate]` ([I-39](../planning/known-issues.md#i-39)). A bond
-maturing on the Theta date is worth 0 there and its redemption is a paid flow
-([I-70](../planning/known-issues.md#i-70)). On a flat curve, curves fixed in dates mean a
-bill's Theta is 0, not a pull to par.
+Both methods report ORE's Theta (`trade_theta`), equal to ORE's sensitivity analytic's: the
+trade repriced on the sensitivity market rebuilt on `thetaDate = asof + theta_days` calendar
+days ([I-38](../planning/known-issues.md#i-38)), plus the cashflows paid in `(asof, thetaDate]`
+([I-39](../planning/known-issues.md#i-39)). ORE's simulation-market curves hold their tenor
+points at the tenors' times from the as-of date, with the as-of curve's discount factors there,
+and take their reference date from the evaluation date (`InterpolatedDiscountCurve2`, the same
+rule as on a simulated path, I-84): on the Theta date each curve is the sensitivity market's own
+as a function of the time from its reference date, and the ATM volatility matrix, a simulated
+factor, floats with it (its option dates roll from the Theta date). Fixings between the dates
+are backfilled with the index's forecast there. A bond maturing on the Theta date is worth 0
+there and its redemption is a paid flow ([I-70](../planning/known-issues.md#i-70)). Until
+2026-10-17 the engine's Theta market kept each curve's discount factors fixed in dates, off
+ORE's by 60–290% of each trade's Theta (I-51).
 
 <a id="differentiating-through-bisection-root-finds"></a>
 ## Differentiating through root-finds
 
-Two prices depend on a root found by the engine's root solver
+Prices depend on roots found by the engine's root solver
 ([the root solver](../reference/calibration.md#the-root-solver)), whose iterations carry no
-derivative of the root: the Jamshidian engine's critical state x*, and each calibration
-bucket's σ. Both get the implicit function theorem's derivative instead: the Jamshidian root
-through a `jax.custom_jvp` (`engine.solvers.roots.implicit_root`: `dx = −(∂g/∂p · dp) /
-(∂g/∂x)`, itself differentiable, so Gamma is right too), the calibration through
-`_bootstrap_jacobian` above. Before these, a bisection's gradient was silently zero. The ORE
-helper's y* needs none: its price is stationary in y*.
+derivative of the root: the Jamshidian engine's critical state x*, each ORE helper's y*, and
+the calibration's buckets. Each gets the implicit function theorem's derivative instead, itself
+differentiable, so Gamma is right too: x* and y* elementwise (`engine.solvers.roots.implicit_root`:
+`dx = −(∂g/∂p · dp) / (∂g/∂x)`, ∂g/∂x a forward derivative), the calibration as one system
+(`implicit_solution`, above). The helper's price is stationary in its y*, so first derivatives
+need none of y*'s; a calibration's second derivatives do.
 
 ## The functions
 
@@ -152,21 +181,26 @@ helper's y* needs none: its price is stationary in y*.
 |---|---|
 | `engine.risk.greeks.bump.portfolio_sensitivities(trades, market, base_currency, pricing, config)` | Bump Greeks per trade |
 | `engine.risk.greeks.ad.portfolio_greeks(trades, market, base_currency, pricing, config)` | AD Greeks per trade |
-| `engine.risk.greeks.ad.curve_greeks(cfg, market, pricing, shift)` | AD Delta/Gamma per pillar of each curve a trade reads, in its currency |
-| `engine.risk.greeks.ad.vega_greek(cfg, market, pricing, shift)` | AD Vega per quote, or None |
-| `engine.risk.greeks.price_functions.trade_price_function(cfg, market, pricing, dtype)` | `TradePriceFunction(curves, pricer, terms, times)`: the trade's price as a JAX function of its curves' pillar rates, `.price(*rates)` (shared with market risk); `pricer(terms, *curves)` is the same function as data, a module-level pricer and the trade's terms as a pytree, which the AD Greeks jit once per product and shape |
+| `engine.risk.greeks.ad.trade_greeks(cfg, market, pricing, config)` | AD Delta/Gamma per tenor of each curve a trade reads and Vega per quote, in its currency |
+| `engine.risk.greeks.ad.ad_warnings(trades)` | The label an AD run carries for its grid-priced options |
+| `engine.risk.greeks.price_functions.trade_price_function(cfg, market, pricing, dtype, tenors)` | `TradePriceFunction`: the trade's price as a JAX function of its curves' node values (on ORE's sensitivity market at `tenors`, or on the market's pillars, market risk's) and its quotes, `.price(*rates, quotes=None)`; `pricer(terms, curves, quotes)` is the same function as data, a module-level pricer and the trade's terms as a pytree, which the AD Greeks jit once per product and shape |
 
 ## Tested by
 
-- `tests/test_greeks.py` — AD Delta per market pillar against central differences of the
-  engine's own price (swaps, Europeans on both engines, bonds, 1e-6), Gamma against
-  differences of the AD Delta, Vega per quote, agreement with the bump method (keys, Theta,
-  parallel Deltas to O(h³), Vega), EUR trades in USD, and the Jamshidian root's derivatives.
-- `tests/test_greeks_bermudan.py` — a Bermudan's Delta/Gamma with the volatility held, Vega
-  through the recalibration, an American.
+- `tests/test_sensitivity_ore_parity.py` — the bump Greeks against ORE's sensitivity analytic,
+  every trade, factor and tenor of the shared portfolio, Theta included; the AD Greeks of its
+  smooth trades against ORE's as the shift vanishes.
+- `tests/test_greeks.py` — the AD Greeks as derivatives of the price on the sensitivity market
+  (central differences: swaps, Europeans on both engines, bonds), Vega per quote, and against the
+  bump method on the sloped market per trade, factor and tenor (Delta and Gamma to O(h³), Vega by
+  Richardson extrapolation), EUR trades in USD.
+- `tests/test_greeks_bermudan.py` — a Bermudan's Delta, Gamma and Vega through its
+  recalibration against central differences of the recalibrating price; its forward differences
+  are the bump method's; the shared options within the grid's gap of ORE's bump Delta; an
+  American.
 - `tests/test_sensitivities.py`, `tests/test_trade_dates.py` — the bump method and Theta
   against ORE's definitions (calendar-day roll, paid flows, seasoned trades).
 - `tests/test_portfolio_gap_fixes.py`, `tests/test_portfolio_bond_wire_through.py` — every
   trade type gets its Greeks through `price_portfolio` (I-01, I-02, I-26).
-- `tests/test_profiling_and_jit.py` — the Hessian-diagonal route equals the full Hessian,
-  gradients survive the jit boundary, compile counts.
+- `tests/test_profiling_and_jit.py` — the forward derivatives equal the gradient and the full
+  Hessian's diagonal, gradients survive the jit boundary, compile counts.

@@ -64,13 +64,16 @@ def _portfolio_figures(result) -> dict:
             "cube_devices": len(result.npv_cube.devices())}
 
 
-def _market_risk_run():
+def _market_risk_run(recalibrated: bool = False):
+    """The mixed portfolio, or a calibrated Bermudan recalibrated under each scenario (its
+    calibration pass and its per-scenario inductions across the devices too)."""
     from engine.risk.market import MarketRiskRequest, monte_carlo_scenarios, run_market_risk
     from tests import market_risk_support as m
 
     scenarios = monte_carlo_scenarios(m.factors(), m.covariance(horizon_days=10), 10, 64, seed=3)
-    trades = [m.swap(), m.european(), m.bermudan(), m.bond()]
-    request = MarketRiskRequest(trades, m.market(), scenarios, m.PRICING, batch_size=8)
+    trades, pricing = ([m.bermudan()], m.CALIBRATED) if recalibrated else ([m.swap(), m.european(), m.bermudan(),
+                                                                             m.bond()], m.PRICING)
+    request = MarketRiskRequest(trades, m.market(), scenarios, pricing, batch_size=8)
     result = run_market_risk(request)
     return {"pnl": np.asarray(result.pnl).tolist(), "risk": result.risk, "devices": list(result.precision.devices),
             "pnl_devices": len(result.pnl.devices())}
@@ -82,6 +85,7 @@ def main() -> None:
     jax.config.update("jax_enable_x64", True)
     runs = dict(_portfolio_runs())
     runs["market-risk"] = _market_risk_run
+    runs["market-risk-recalibrated"] = lambda: _market_risk_run(recalibrated=True)
     out = {"device_count": len(jax.local_devices())}
     for name, run in runs.items():
         os.environ["JAX_RISK_SCENARIO_DEVICES"] = "1"

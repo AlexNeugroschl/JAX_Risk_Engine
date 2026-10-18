@@ -401,7 +401,6 @@ class SensitivityConfigSchema(_Strict):
     curve_shift: float = 1e-4
     vol_shift: float = 1e-4
     theta_days: int = 1
-    swaption_vol_decay: Literal["ForwardVariance", "ConstantVariance"] = "ForwardVariance"
 
     def to_dataclass(self) -> SensitivityConfig:
         fields = self.model_dump(exclude={"curve_tenors"})

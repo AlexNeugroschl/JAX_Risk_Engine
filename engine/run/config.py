@@ -54,9 +54,9 @@ class GreeksConfig:
 
     method: `Bump` (ORE's sensitivity analysis, `engine.risk.greeks.bump`; the default) or
         `AD` (automatic differentiation, `engine.risk.greeks.ad`), for any model and engine.
-    sensitivity: ORE's `sensitivity.xml`: curve tenors, shift sizes, Theta horizon, volatility
-        decay on the Theta date. The AD method reads the shift sizes (Greeks per unit shift),
-        the Theta horizon and decay; its Deltas are per market-curve pillar, not per tenor.
+    sensitivity: ORE's `sensitivity.xml`: curve tenors, shift sizes, Theta horizon. Both methods
+        read every setting, on the same factors: the AD Greeks are the derivatives on ORE's
+        sensitivity market at the tenors, scaled by the shift sizes.
     """
     method: str = "Bump"
     sensitivity: SensitivityConfig = field(default_factory=SensitivityConfig)

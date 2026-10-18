@@ -104,7 +104,7 @@ def greeks():
               SwaptionConfig(notional=1_000_000.0, fixed_rate=0.044, payer=True, swap_tenor="5Y",
                              forward_start=ORE.Period(3, ORE.Years), evaluation_date=EVAL_DATE, trade_id="european")]
     for method, compute in (("bump (ORE's sensitivity analysis, per curve tenor)", portfolio_sensitivities),
-                            ("AD (per market-curve pillar)", portfolio_greeks)):
+                            ("AD (the same tenors, the shift -> 0 limit)", portfolio_greeks)):
         print(f"--- {method} ---")
         for i, greeks in compute(trades, market, "USD").items():
             print(f"{trades[i].trade_id}:")

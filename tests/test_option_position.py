@@ -15,7 +15,6 @@ trade builder, today) and tests/test_ore_xva_parity.py (on ORE's paths).
 """
 import dataclasses
 
-import jax.numpy as jnp
 import numpy as np
 import ORE
 import pytest
@@ -29,7 +28,7 @@ from engine.market_simulation.config import CamConfig, LgmConfig, build_cross_as
 from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
 from engine.pricing.cube import OPTIONS, value_paths, value_today
 from engine.precision import Precision, StagePrecision
-from engine.risk.greeks.ad import curve_greeks, portfolio_greeks, vega_greek
+from engine.risk.greeks.ad import portfolio_greeks, trade_greeks
 from engine.risk.greeks.bump import portfolio_sensitivities
 from engine.risk.market import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
 from tests.support import portfolio as shared
@@ -143,12 +142,10 @@ def test_a_short_option_after_its_long_one_compiles_nothing(scenarios):
     programs on the paths and in the AD Greeks."""
     market, cfg = shared.market(), shared.trades()["bermudan-payer-physical"]
     value_paths([cfg], market, scenarios, "USD", PRICING)
-    curve_greeks(cfg, market, PRICING, 1e-4)
-    vega_greek(cfg, market, PRICING, 1e-4)
+    trade_greeks(cfg, market, PRICING)
     with count_compiles() as counter:
         value_paths([short(cfg)], market, scenarios, "USD", PRICING)
-        curve_greeks(short(cfg), market, PRICING, 1e-4)
-        vega_greek(short(cfg), market, PRICING, 1e-4)
+        trade_greeks(short(cfg), market, PRICING)
     assert sum(counter.values()) == 0, dict(counter)
 
 

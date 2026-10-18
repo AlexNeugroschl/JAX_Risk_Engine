@@ -558,7 +558,8 @@ class TestLegs:
         cfg = shared.trades()["swap-payer"]
         legs = legs_of(underlying_swap(cfg), cfg.payer, shared.ASOF, cfg.fixings)
         schedule = path_schedule(legs, shared.ASOF, sm.dates)
-        loaded = sm.map_arrays(lambda a: a.astype(jnp.float32))
+        # Loaded as the pipeline loads it: the paths in float32, the tenor times and levels as they are.
+        loaded = sm.map_arrays(lambda a: a.astype(jnp.float32), grid=lambda grid: grid)
         disc, index = loaded.discount["USD"], loaded.index[shared.INDEX]
         exact = np.asarray(legs_cube(legs, schedule, sm.times, sm.discount["USD"], sm.index[shared.INDEX],
                                      path_fixings(6, shared.ASOF, sm.dates, sm.times, sm.index[shared.INDEX])))

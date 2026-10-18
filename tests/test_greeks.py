@@ -1,39 +1,47 @@
 """
 Greeks by automatic differentiation (`engine.risk.greeks.ad`, `GreeksConfig.method = "AD"`) for
-swaps, Europeans (Bachelier and Jamshidian) and bonds; Bermudans/Americans are
-tests/test_greeks_bermudan.py.
+swaps, Europeans (Bachelier and Jamshidian) and bonds: ORE's sensitivity analysis in the limit
+of a vanishing shift (I-78). Bermudans/Americans, calibrated inside their price function, are
+tests/test_greeks_bermudan.py; the bump Greeks against ORE's own sensitivity analytic are
+tests/test_sensitivity_ore_parity.py.
 
-  * Delta/Gamma per pillar of each market curve equal central differences of the engine's own
-    price in that pillar's zero rate (Gamma: of the AD Delta, as the price's second difference
-    drowns in cancellation).
-  * The AD and Bump methods agree to first order (parallel Delta, Vega) and exactly (Theta,
-    the same function). Their Deltas sit on different axes: the market curve's pillars vs ORE's
-    sensitivity tenors.
-  * Vega is the derivative in each quote of the volatility surface.
+  * The price differentiated is the trade's on ORE's sensitivity market
+    (`trade_price_function(..., tenors=...)`), whose value at its base is the bump method's base.
+  * Delta, Gamma and Vega are its derivatives in each tenor's zero rate and each volatility quote:
+    central differences of the same price (Gamma: of its gradient, as the price's second
+    difference drowns in cancellation).
+  * Against the bump method on the shared portfolio's sloped market, per trade, factor and tenor:
+    ORE's forward-difference Delta less half its Gamma is the AD Delta to O(shift^3), the Gammas
+    agree to O(shift^4), and the bump Vega extrapolated from two shifts (Richardson) is the AD
+    Vega to O(shift^2). Theta is the same function in both.
 
 The Jamshidian engine's root x* has the implicit function theorem's derivative
-(`engine.solvers.roots.implicit_root`, tests/test_root_solvers.py). The t=0 prices differentiated here equal ORE's (tests/test_shared_portfolio.py).
+(`engine.solvers.roots.implicit_root`, tests/test_root_solvers.py). The t=0 prices differentiated
+here equal ORE's (tests/test_shared_portfolio.py).
 """
 import dataclasses
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import ORE
 import pytest
 
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
-from engine.market_data.market import CurrencyMarket, Market, ZeroCurveConfig
 from engine.pricing.config import PricingConfig
-from engine.pricing.cube import value_today
-from engine.risk.greeks.ad import curve_greeks, portfolio_greeks, vega_greek
-from engine.risk.greeks.bump import SensitivityConfig, portfolio_sensitivities
+from engine.pricing.cube import value_on
+from engine.risk.greeks.ad import portfolio_greeks, trade_greeks
+from engine.risk.greeks.bump import SensitivityConfig, portfolio_sensitivities, sensitivity_context
+from engine.risk.greeks.price_functions import trade_price_function
 from engine.run import JamshidianEngineConfig
 from tests.support import portfolio as shared
-from tests.support.greeks import assert_close, bumped_market
+from tests.support.greeks import assert_close
 
 ASOF = shared.ASOF
 JAMSHIDIAN = PricingConfig(european="Jamshidian", jamshidian=JamshidianEngineConfig(0.03, 0.01))
-SHIFT = 1e-4
+CONFIG = SensitivityConfig()
+SHIFT = CONFIG.curve_shift
 
 
 def swap(**fields) -> SwapConfig:
@@ -49,20 +57,6 @@ def european(**fields) -> SwaptionConfig:
     return SwaptionConfig(**base)
 
 
-def central_delta(cfg, kind: str, pricing=PricingConfig(), h=1e-6) -> np.ndarray:
-    """d NPV / d z_k * SHIFT by central differences of `value_today`, per market pillar."""
-    price = lambda m: value_today([cfg], m, "USD", pricing)[0]  # noqa: E731
-    return np.array([(price(bumped_market(kind, k, h)) - price(bumped_market(kind, k, -h))) / (2 * h) * SHIFT
-                     for k in range(len(shared.PILLARS))])
-
-
-def central_gamma(cfg, kind: str, pricing=PricingConfig(), h=1e-5) -> np.ndarray:
-    """d^2 NPV / d z_k^2 * SHIFT^2 by central differences of the AD Delta."""
-    key = f"delta:{kind}:{'USD' if kind == 'discount' else shared.INDEX}"
-    delta_at = lambda k, s: curve_greeks(cfg, bumped_market(kind, k, s), pricing, SHIFT)[key][k]  # noqa: E731
-    return np.array([(delta_at(k, h) - delta_at(k, -h)) / (2 * h) * SHIFT for k in range(len(shared.PILLARS))])
-
-
 CASES = {
     "swap": (swap(), PricingConfig()),
     "receiver-swap": (swap(payer=False, fixed_rate=0.03), PricingConfig()),
@@ -70,127 +64,149 @@ CASES = {
     "european-otm-receiver": (european(payer=False, fixed_rate=0.035, swap_tenor="4Y",
                                        forward_start=ORE.Period(2, ORE.Years)), PricingConfig()),
     "european-jamshidian": (european(), JAMSHIDIAN),
+    "bond": (shared.trades()["bond"], PricingConfig()),
 }
 
 
-class TestCurveDeltaGamma:
-    @pytest.mark.parametrize("name", CASES)
-    @pytest.mark.parametrize("kind", ["discount", "index"])
-    def test_delta_is_the_derivative_in_each_market_pillar(self, name, kind):
-        cfg, pricing = CASES[name]
-        greeks = curve_greeks(cfg, shared.market(), pricing, SHIFT)
-        key = f"delta:{kind}:{'USD' if kind == 'discount' else shared.INDEX}"
-        assert greeks[key].shape == (len(shared.PILLARS),)
-        assert_close(greeks[key], central_delta(cfg, kind, pricing), rtol=1e-6)
+def sensitivity_price(cfg, pricing):
+    """The trade's price function on ORE's sensitivity market, and its node values there."""
+    fn = trade_price_function(cfg, shared.market(), pricing, tenors=CONFIG.curve_tenors)
+    return fn, [jnp.asarray(r) for r in fn.rates]
 
-    @pytest.mark.parametrize("name", ["swap", "european-bachelier", "european-jamshidian"])
+
+def moved(rates, curve, k, h):
+    out = list(rates)
+    out[curve] = rates[curve].at[k].add(h)
+    return out
+
+
+class TestTheDifferentiatedPrice:
+    @pytest.mark.parametrize("name", CASES)
+    def test_its_base_value_is_the_bump_methods(self, name):
+        cfg, pricing = CASES[name]
+        fn, rates = sensitivity_price(cfg, pricing)
+        expected = value_on(cfg, sensitivity_context(shared.market(), CONFIG), pricing)
+        assert float(fn.price(*rates)) == pytest.approx(expected, rel=1e-12, abs=1e-9)
+
+    @pytest.mark.parametrize("name", CASES)
+    def test_delta_is_the_derivative_in_each_tenor(self, name):
+        cfg, pricing = CASES[name]
+        fn, rates = sensitivity_price(cfg, pricing)
+        greeks = trade_greeks(cfg, shared.market(), pricing, CONFIG)
+        h = 1e-6
+        for curve, (kind, key) in enumerate(fn.curves):
+            delta = greeks[f"delta:{kind}:{key}"]
+            assert delta.shape == (len(CONFIG.curve_tenors),)
+            central = np.array([float(fn.price(*moved(rates, curve, k, h)) - fn.price(*moved(rates, curve, k, -h)))
+                                / (2 * h) * SHIFT for k in range(delta.size)])
+            assert_close(delta, central, rtol=1e-6)
+
+    @pytest.mark.parametrize("name", ["swap", "european-bachelier", "european-jamshidian", "bond"])
     def test_gamma_is_the_derivative_of_delta(self, name):
         cfg, pricing = CASES[name]
-        greeks = curve_greeks(cfg, shared.market(), pricing, SHIFT)
-        assert_close(greeks["gamma:discount:USD"], central_gamma(cfg, "discount", pricing), rtol=1e-5)
+        fn, rates = sensitivity_price(cfg, pricing)
+        greeks = trade_greeks(cfg, shared.market(), pricing, CONFIG)
+        gradient = jax.grad(fn.price, argnums=0)
+        h = 1e-5
+        gamma = greeks["gamma:discount:USD"]
+        central = np.array([float(gradient(*moved(rates, 0, k, h))[k] - gradient(*moved(rates, 0, k, -h))[k])
+                            / (2 * h) * SHIFT ** 2 for k in range(gamma.size)])
+        assert_close(gamma, central, rtol=1e-5)
 
-    def test_a_pillar_beyond_the_trade_has_no_delta(self):
-        """A 5Y swap reads nothing beyond the 10Y pillar's left neighbourhood: the 30Y
-        pillar's Delta is exactly 0."""
-        greeks = curve_greeks(swap(), shared.market(), PricingConfig(), SHIFT)
+    def test_a_tenor_beyond_the_trade_has_no_delta(self):
+        """A 5Y swap reads nothing beyond the 7Y tenor: the 30Y tenor's Delta is exactly 0."""
+        greeks = trade_greeks(swap(), shared.market(), PricingConfig(), CONFIG)
         assert greeks["delta:discount:USD"][-1] == 0.0
 
-    def test_payer_and_receiver_deltas_are_negations(self):
-        payer = curve_greeks(swap(), shared.market(), PricingConfig(), SHIFT)
-        receiver = curve_greeks(swap(payer=False), shared.market(), PricingConfig(), SHIFT)
+    def test_payer_and_receiver_greeks_are_negations(self):
+        payer = trade_greeks(swap(), shared.market(), PricingConfig(), CONFIG)
+        receiver = trade_greeks(swap(payer=False), shared.market(), PricingConfig(), CONFIG)
         for key in payer:
             np.testing.assert_allclose(receiver[key], -payer[key], rtol=1e-12, atol=1e-12)
 
     def test_a_bond_has_discount_greeks_only(self):
-        bond = shared.trades()["bond"]
-        greeks = curve_greeks(bond, shared.market(), PricingConfig(), SHIFT)
+        greeks = trade_greeks(CASES["bond"][0], shared.market(), PricingConfig(), CONFIG)
         assert set(greeks) == {"delta:discount:USD", "gamma:discount:USD"}
-        assert_close(greeks["delta:discount:USD"], central_delta(bond, "discount"), rtol=1e-6)
 
     def test_the_jamshidian_delta_differs_from_the_bachelier_one(self):
         """The engine is the configured one, not the default."""
         cfg = european()
-        bachelier = curve_greeks(cfg, shared.market(), PricingConfig(), SHIFT)
-        jamshidian = curve_greeks(cfg, shared.market(), JAMSHIDIAN, SHIFT)
+        bachelier = trade_greeks(cfg, shared.market(), PricingConfig(), CONFIG)
+        jamshidian = trade_greeks(cfg, shared.market(), JAMSHIDIAN, CONFIG)
         assert not np.allclose(bachelier["delta:index:" + shared.INDEX], jamshidian["delta:index:" + shared.INDEX])
 
 
 class TestVega:
     def test_a_european_vega_is_the_derivative_in_each_quote(self):
-        cfg, market = european(), shared.market()
-        vega = vega_greek(cfg, market, PricingConfig(), SHIFT)
-        surface = market.swaption_vols("USD")
-        assert vega.shape == (len(surface.option_tenors), len(surface.swap_tenors))
+        cfg = european()
+        fn, rates = sensitivity_price(cfg, PricingConfig())
+        vega = trade_greeks(cfg, shared.market(), PricingConfig(), CONFIG)["vega:USD"]
+        assert vega.shape == fn.quotes.shape
         h = 1e-6
         expected = np.zeros_like(vega)
-        for i in range(vega.shape[0]):
-            for j in range(vega.shape[1]):
-                values = []
-                for s in (h, -h):
-                    vols = np.array(surface.vols)
-                    vols[i, j] += s
-                    moved = dataclasses.replace(surface, vols=tuple(map(tuple, vols)))
-                    usd = dataclasses.replace(market.currency("USD"), swaption_vols=moved)
-                    values.append(value_today([cfg], dataclasses.replace(market, currencies={"USD": usd}), "USD")[0])
-                expected[i, j] = (values[0] - values[1]) / (2 * h) * SHIFT
+        for i, j in np.ndindex(vega.shape):
+            up, down = (jnp.asarray(fn.quotes).at[i, j].add(s) for s in (h, -h))
+            expected[i, j] = float(fn.price(*rates, quotes=up) - fn.price(*rates, quotes=down)) / (2 * h) * CONFIG.vol_shift
         assert_close(vega, expected, rtol=1e-6)
         # A 1Yx5Y option reads the 1Y and 2Y rows of the 5Y column only.
         assert np.count_nonzero(vega) <= 4 and vega.sum() > 0
 
     def test_engines_that_read_no_volatility_have_no_vega(self):
-        assert vega_greek(swap(), shared.market(), PricingConfig(), SHIFT) is None
-        assert vega_greek(european(), shared.market(), JAMSHIDIAN, SHIFT) is None
+        assert "vega:USD" not in trade_greeks(swap(), shared.market(), PricingConfig(), CONFIG)
+        assert "vega:USD" not in trade_greeks(european(), shared.market(), JAMSHIDIAN, CONFIG)
 
 
-def flat_market() -> Market:
-    """The shared market with flat curves: there the bump method's sensitivity market (the
-    curves resampled at ORE's tenors, log-linear in the discount factor) is the market's own
-    curve (linear in the zero rate), which on a sloped curve it is only near the pillars."""
-    flat = lambda r: ZeroCurveConfig(list(shared.PILLARS), [r] * len(shared.PILLARS))  # noqa: E731
-    return Market(ASOF, {"USD": CurrencyMarket(flat(0.035), {shared.INDEX: flat(0.038)}, shared.VOLS)})
+#: The shared portfolio's trades of smooth price (the grid-priced options are
+#: tests/test_greeks_bermudan.py's).
+SMOOTH = ["swap-payer", "swap-receiver-seasoned-icma", "european-payer", "european-receiver-otm-cash", "bond"]
 
 
 class TestAgainstTheBumpMethod:
-    """Both methods on the same trades: the same keys, the same Theta, and Deltas and Vegas
-    that agree to the forward difference's curvature term. On flat curves, where the two
-    methods' curve representations coincide (`flat_market`); on the sloped market the near-par
-    swap's small discount Delta differs by 2% and the European's Vega by 0.9% between the two
-    representations, which is not a derivative error (the finite-difference tests above hold
-    there to 1e-6)."""
+    """Both methods on the shared portfolio's sloped market, per trade, factor and tenor (I-78).
+
+    ORE's Delta is a forward difference, `up - base = Delta h + Gamma h^2 / 2 + O(h^3)`, and its
+    Gamma `up - 2 base + down = Gamma h^2 + O(h^4)`: with the curvature taken out, the Deltas
+    agree to O(h^3), measured within 2e-5 of each curve's largest Delta (an out-of-the-money
+    European's index Delta; the swaps' and the bond's within 1e-7) and the Gammas within 4e-6 of
+    the largest Gamma (2026-10-17). The bump Vega is a forward difference too; its Richardson
+    extrapolation from the shifts h and h/2 removes the O(h) term."""
 
     @pytest.fixture(scope="class")
     def both(self):
-        trades = [CASES[n][0] for n in ("swap", "european-bachelier")]
-        trades[1] = dataclasses.replace(trades[1], trade_id="european-2")
-        market = flat_market()
-        return (portfolio_greeks(trades, market, "USD"), portfolio_sensitivities(trades, market, "USD"))
+        trades = [shared.trades()[name] for name in SMOOTH]
+        market = shared.market()
+        half = dataclasses.replace(CONFIG, vol_shift=CONFIG.vol_shift / 2)
+        return (portfolio_greeks(trades, market, "USD"), portfolio_sensitivities(trades, market, "USD"),
+                portfolio_sensitivities(trades, market, "USD", config=half))
 
     def test_the_same_keys(self, both):
-        ad, bump = both
+        ad, bump, _ = both
         for i in ad:
             assert ad[i].keys() == bump[i].keys()
 
     def test_the_same_theta(self, both):
-        ad, bump = both
+        ad, bump, _ = both
         for i in ad:
             assert float(ad[i]["theta"]) == float(bump[i]["theta"])
 
-    def test_parallel_deltas_agree_to_third_order(self, both):
-        """ORE's Delta is a forward difference, up - base = Delta h + Gamma h^2 / 2 + O(h^3),
-        and its Gamma up - 2 base + down = Gamma h^2 + O(h^4): with the curvature taken out
-        the parallel Deltas agree to O(h^3). (Uncorrected, the European's differs by 0.6%.)
-        The Gammas are not compared this way: both are diagonal (no cross-gammas, as ORE's
-        default), so their sum depends on the axis, 6 pillars here and 13 tenors there."""
-        ad, bump = both
-        for i in ad:
-            for key in ad[i]:
-                if key.startswith("delta"):
-                    forward = bump[i][key] - 0.5 * bump[i]["gamma" + key[len("delta"):]]
-                    assert ad[i][key].sum() == pytest.approx(forward.sum(), rel=1e-4), (i, key)
+    @pytest.mark.parametrize("index", range(len(SMOOTH)), ids=SMOOTH)
+    def test_deltas_and_gammas_agree_in_every_tenor(self, both, index):
+        ad, bump, _ = both
+        for key in ad[index]:
+            if key.startswith("delta"):
+                gamma = "gamma" + key[len("delta"):]
+                forward = bump[index][key] - 0.5 * bump[index][gamma]
+                assert_close(ad[index][key], forward, rtol=1e-4)
+                assert_close(ad[index][gamma], bump[index][gamma], rtol=1e-4)
 
-    def test_vegas_agree(self, both):
-        ad, bump = both
-        assert_close(ad[1]["vega:USD"], bump[1]["vega:USD"], rtol=1e-3)
+    @pytest.mark.parametrize("index", [2, 3], ids=SMOOTH[2:4])
+    def test_vegas_agree_as_the_shift_halves(self, both, index):
+        ad, bump, half = both
+        h = CONFIG.vol_shift
+        extrapolated = (2.0 * half[index]["vega:USD"] / (h / 2) - bump[index]["vega:USD"] / h) * h
+        assert_close(ad[index]["vega:USD"], extrapolated, rtol=1e-5)
+        # The forward difference alone is O(h) away: the extrapolation is what agrees.
+        assert not np.allclose(ad[index]["vega:USD"], bump[index]["vega:USD"], rtol=1e-6)
 
     def test_the_shift_sizes_scale_the_ad_greeks(self):
         """The AD Greeks are per unit shift: twice the shift, twice the Delta, four times the
@@ -211,5 +227,3 @@ class TestAgainstTheBumpMethod:
         in_usd = portfolio_greeks([cfg], market, "USD")[0]
         for key in in_eur:
             np.testing.assert_allclose(in_usd[key], 1.10 * np.asarray(in_eur[key]), rtol=1e-14)
-
-

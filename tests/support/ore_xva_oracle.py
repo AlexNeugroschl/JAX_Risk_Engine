@@ -45,13 +45,13 @@ import ORE
 
 from engine.market_data.curves import log_discount
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER
-from engine.market_data.market import Market
+from engine.market_data.market import Market, SwaptionVolSurface
 from engine.market_simulation.config import CamConfig, LgmConfig
 from engine.models.lgm import H as lgm_H, Sigma
 from engine.pricing.config import PricingConfig
 from tests.support.ore_inputs import (
     CCY, DISCOUNT_INDEX, NETTING_SET, OreCurves, OreLgmEngine, fixing_lines, index_name, inputs, market_lines,
-    netting_xml, portfolio_xml, pricingengine_xml, report_columns, run_app, trade_xml,
+    netting_xml, portfolio_xml, pricingengine_xml, report_columns, run_app, sim_market_xml, trade_xml,
 )
 
 #: ORE's exposure report columns the oracle returns, each from t=0.
@@ -100,15 +100,14 @@ def _volatility_xml(lgm: LgmConfig) -> str:
         </Volatility>"""
 
 
-def simulation_xml(asof: ORE.Date, config: CamConfig, indices: Sequence[str], vol_expiries: Sequence[str],
-                   vol_terms: Sequence[str]) -> str:
+def simulation_xml(asof: ORE.Date, config: CamConfig, indices: Sequence[str], vols: SwaptionVolSurface) -> str:
     """ORE's `simulation.xml` (Parameters, CrossAssetModel, Market) for `config`."""
     _require_supported(config)
     lgm = config.ir[CCY]
     grid = ",".join(f"{d - asof}D" for d in config.dates)
     basket = (f"<Expiries>{','.join(lgm.calibration_expiries)}</Expiries><Terms>{','.join(lgm.calibration_terms)}"
               f"</Terms>") if lgm.calibrated else "<Expiries>1Y</Expiries><Terms>1Y</Terms>"
-    index_xml = "".join(f"<Index>{name}</Index>" for name in indices)
+    market = sim_market_xml(config.curve_tenors, indices, vols, simulate_vols=False, vol_decay=config.swaption_vol_decay)
     return f"""<Simulation>
   <Parameters>
     <Grid>{grid}</Grid>
@@ -145,30 +144,7 @@ def simulation_xml(asof: ORE.Date, config: CamConfig, indices: Sequence[str], vo
     <ForeignExchangeModels/>
     <InstantaneousCorrelations/>
   </CrossAssetModel>
-  <Market>
-    <BaseCurrency>{CCY}</BaseCurrency>
-    <Currencies><Currency>{CCY}</Currency></Currencies>
-    <YieldCurves>
-      <Configuration>
-        <Tenors>{",".join(config.curve_tenors)}</Tenors>
-        <Interpolation>LogLinear</Interpolation>
-        <Extrapolation>FlatFwd</Extrapolation>
-      </Configuration>
-    </YieldCurves>
-    <Indices>{index_xml}</Indices>
-    <SwapIndices>
-      <SwapIndex><Name>{CCY}-CMS-1Y</Name><DiscountingIndex>{DISCOUNT_INDEX}</DiscountingIndex></SwapIndex>
-      <SwapIndex><Name>{CCY}-CMS-30Y</Name><DiscountingIndex>{DISCOUNT_INDEX}</DiscountingIndex></SwapIndex>
-    </SwapIndices>
-    <SwaptionVolatilities>
-      <Simulate>false</Simulate>
-      <ReactionToTimeDecay>{config.swaption_vol_decay}</ReactionToTimeDecay>
-      <Keys><Key>{CCY}</Key></Keys>
-      <Expiries>{",".join(vol_expiries)}</Expiries>
-      <Terms>{",".join(vol_terms)}</Terms>
-    </SwaptionVolatilities>
-    <AggregationScenarioDataCurrencies><Currency>{CCY}</Currency></AggregationScenarioDataCurrencies>
-  </Market>
+  {market}
 </Simulation>"""
 
 
@@ -198,7 +174,7 @@ def ore_xva_run(market: Market, trades: Sequence, simulation: CamConfig, pricing
     vols = data.swaption_vols
     engines = pricingengine_xml(OreLgmEngine.of(pricing.bermudan), OreLgmEngine.of(pricing.american))
     parameters = inputs(market.asof, index, curves, vols, engines, portfolio_xml(trade_xml(t) for t in trades))
-    sim = simulation_xml(market.asof, simulation, (index, DISCOUNT_INDEX), vols.option_tenors, vols.swap_tenors)
+    sim = simulation_xml(market.asof, simulation, (index, DISCOUNT_INDEX), vols)
     parameters.setExposureSimMarketParams(sim)
     parameters.setScenarioGeneratorData(sim)
     parameters.setCrossAssetModelData(sim)

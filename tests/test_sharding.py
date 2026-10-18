@@ -7,7 +7,8 @@ The scenario axis across devices (`engine.market_simulation.sharding`, I-61):
   * on four XLA host devices, a portfolio run (LGM, Bermudan included, with a paired float64
     sample), the same run with the Bermudan's paths priced in blocks of one path per device
     (`engine.pricing.lgm_grid.blocked`), the same run with FP8 storage and stochastic
-    rounding, and a market-risk run each hold their cube or P&L on all four devices and equal
+    rounding, and two market-risk runs (the mixed portfolio, and a calibrated Bermudan
+    recalibrated under each scenario) each hold their cube or P&L on all four devices and equal
     the one-device run to the rounding a smaller batch shape moves; the blocked cube the one
     priced at once.
 
@@ -70,7 +71,7 @@ def test_four_devices_hold_the_scenarios_and_give_the_one_device_numbers():
     for name, run in runs.items():
         one, split = run["one"], run["split"]
         assert len(one["devices"]) == 1 and len(split["devices"]) == 4, name
-        held = "pnl_devices" if name == "market-risk" else "cube_devices"
+        held = "pnl_devices" if name.startswith("market-risk") else "cube_devices"
         assert split[held] == 4, f"{name}: the result is on {split[held]} device(s)"
 
     for name in ("lgm", "lgm-blocked", "fp8-stochastic", "compute-stochastic"):
@@ -91,8 +92,9 @@ def test_four_devices_hold_the_scenarios_and_give_the_one_device_numbers():
     blocked, whole = np.asarray(runs["lgm-blocked"]["split"]["cube"]), np.asarray(runs["lgm"]["split"]["cube"])
     np.testing.assert_allclose(blocked, whole, rtol=0, atol=1e-13 * np.max(np.abs(whole)))
 
-    one, split = runs["market-risk"]["one"], runs["market-risk"]["split"]
-    pnl_one = np.asarray(one["pnl"])
-    np.testing.assert_allclose(split["pnl"], pnl_one, rtol=0, atol=1e-13 * np.max(np.abs(pnl_one)))
-    for key, value in one["risk"].items():
-        np.testing.assert_allclose(split["risk"][key], value, rtol=1e-12, equal_nan=True, err_msg=key)
+    for name in ("market-risk", "market-risk-recalibrated"):
+        one, split = runs[name]["one"], runs[name]["split"]
+        pnl_one = np.asarray(one["pnl"])
+        np.testing.assert_allclose(split["pnl"], pnl_one, rtol=0, atol=1e-13 * np.max(np.abs(pnl_one)), err_msg=name)
+        for key, value in one["risk"].items():
+            np.testing.assert_allclose(split["risk"][key], value, rtol=1e-12, equal_nan=True, err_msg=f"{name} {key}")

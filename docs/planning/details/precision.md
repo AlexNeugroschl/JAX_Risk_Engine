@@ -737,7 +737,16 @@ As built (2026-10-10), family by family:
   the level, and exactly 0 where nothing moved, not left to two evaluations of one value agreeing
   (XLA may round them apart). A Bermudan's or American's is the induction's deviation (below),
   exactly 0 where nothing moved, every deviation then being 0 (revalued in full, in one format,
-  until 2026-10-13).
+  until 2026-10-13). One calibrated to the market is recalibrated under each scenario (I-112,
+  2026-10-17), so its model, the state grid and the rollback operator are the scenario's own:
+  the calibration in float64 (A-10), a first pass; then per scenario its own induction in
+  difference form, the level the scenario's model on the base curves (in the curves' format, the
+  accumulate format, as market risk's levels are), the deviation the curves' move in the compute
+  format, `P&L = (level − base) + deviation` added in two terms (`add_level`), exactly 0 where
+  nothing moved (`engine.risk.greeks.price_functions.recalibrated_pnl`). The level is no longer
+  shared by every scenario, so its operator is per scenario too (`working_bytes_per_model`
+  sizes the batch); the evidence rows of the `market_risk` campaigns were measured on a fixed
+  LGM and do not cover this kernel (I-114).
 - **The Bermudan/American induction** (`engine.pricing.lgm_grid`, 2026-10-13, I-83): ORE's grid
   engine in the numeraire's units, where neither the state grid nor the rollback depends on the
   curves. Each step's rollback is one `[nodes, nodes]` operator (`_rollback_operator`, ORE's

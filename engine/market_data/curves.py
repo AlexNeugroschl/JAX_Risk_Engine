@@ -159,6 +159,14 @@ def node_values(curve) -> jax.Array:
     return curve.log_discounts if isinstance(curve, DiscountCurve) else curve.pillar_rates
 
 
+def with_node_deviation(curve, deviation: jax.Array):
+    """The curve with its node values (`node_values`) moved by `deviation`, of their shape: a
+    `ZeroCurve`'s pillar rates, a `DiscountCurve`'s log discount factors."""
+    if isinstance(curve, DiscountCurve):
+        return DiscountCurve(curve.times, curve.log_discounts + deviation)
+    return ZeroCurve(curve.pillar_times, curve.pillar_rates + deviation)
+
+
 def log_discount_deviation(curve, deviation: jax.Array, t: jax.Array) -> jax.Array:
     """`[..., *t.shape]`: how far ln P(t) moves when the curve's node values (`node_values`)
     move by `deviation` `[..., K]` (any batch axes leading it). ln P is linear in the node values

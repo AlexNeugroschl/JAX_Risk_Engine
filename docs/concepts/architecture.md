@@ -86,6 +86,8 @@ JAX_Risk_Engine/
 │   │                                     boundary (decision A-21): safeguarded Newton (the
 │   │                                     default) or bisection (the reference), a fixed
 │   │                                     number of steps on every backend; implicit_root
+│   │                                     and implicit_solution, a root's and a calibration's
+│   │                                     derivatives
 │   ├── market_data/                      Today's market
 │   │   ├── market.py                     Market, CurrencyMarket: curves per currency and
 │   │   │                                 index, the ATM normal swaption matrix, FX and
@@ -311,11 +313,13 @@ netting set and for each trade. See [Exposure](../risk/exposure.md).
 ### Greeks (`engine/risk/greeks/bump.py`, `engine/risk/greeks/ad.py`)
 
 **Bump** (the default, ORE's sensitivity analysis): every trade repriced on today's
-sensitivity market with one curve tenor or volatility quote shifted, and Theta on the
-market rolled one day. **AD** (`GreeksConfig.method="AD"`): the same keys by automatic
-differentiation of each trade's price as a function of the market curves' pillar rates
-(`engine/risk/greeks/price_functions.py`), a Bermudan's Vega through its calibration by the
-implicit function theorem; Theta shared with the bump method. See
+sensitivity market with one curve tenor or volatility quote shifted, option models
+recalibrated, and Theta on the market rolled one day; equal to ORE's sensitivity analytic.
+**AD** (`GreeksConfig.method="AD"`): the same keys on the same factors by automatic
+differentiation of each trade's price on that sensitivity market as a function of its tenors'
+zero rates and its volatility quotes (`engine/risk/greeks/price_functions.py`), a calibrated
+option calibrating inside its price function (its derivatives the implicit function theorem's
+on the whole basket): ORE's Greek as the shift vanishes; Theta shared with the bump method. See
 [Greeks](../risk/greeks.md).
 
 ### Market Risk (`engine/risk/market/`)

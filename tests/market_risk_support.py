@@ -12,11 +12,14 @@ cashflow, so extrapolation is not exercised.
 The European is priced by ORE's default Bachelier engine on `VOLS` (`PricingConfig()`) or by
 the Jamshidian engine on a Hull-White model (`JAMSHIDIAN`); the Bermudan by the LGM grid
 engine, uncalibrated at `ENGINE`'s reversion and volatility (`PRICING`) so that ORE's engine
-can be given the same model under every shocked curve.
+can be given the same model under every shocked curve, or calibrated to `VOLS` (`CALIBRATED`,
+the Bermudan and the American), recalibrated under every scenario as ORE's historical P&L
+recalibrates it (I-112).
 """
 import numpy as np
 import ORE
 
+from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
@@ -41,6 +44,9 @@ VOLS = SwaptionVolSurface(("1Y", "2Y", "5Y", "10Y"), ("1Y", "5Y", "10Y"),
 ENGINE = LgmSwaptionEngineConfig(reversion=HW_A, volatility=HW_SIGMA, calibration="None", n_per_std=16,
                                  std_devs=5.0)
 PRICING = PricingConfig(bermudan=ENGINE)
+#: The Bermudan/American engine calibrated to `VOLS` (ORE's default `CoterminalDealStrike`).
+CALIBRATED_ENGINE = LgmSwaptionEngineConfig(reversion=HW_A, n_per_std=16, std_devs=5.0)
+CALIBRATED = PricingConfig(bermudan=CALIBRATED_ENGINE, american=CALIBRATED_ENGINE)
 JAMSHIDIAN = PricingConfig(european="Jamshidian", jamshidian=JamshidianEngineConfig(HW_A, HW_SIGMA), bermudan=ENGINE)
 
 
@@ -104,6 +110,13 @@ def bermudan() -> BermudanSwaptionConfig:
     return BermudanSwaptionConfig(notional=3e6, fixed_rate=0.035, payer=True,
                                   exercise_dates=[TODAY + ORE.Period(y, ORE.Years) for y in (1, 2, 3, 4)],
                                   swap_tenor="5Y", evaluation_date=TODAY, trade_id="bermudan")
+
+
+def american() -> AmericanSwaptionConfig:
+    return AmericanSwaptionConfig(notional=2e6, fixed_rate=0.034, payer=False, swap_tenor="5Y",
+                                  first_exercise_date=TODAY + ORE.Period(1, ORE.Years),
+                                  last_exercise_date=TODAY + ORE.Period(4, ORE.Years), evaluation_date=TODAY,
+                                  trade_id="american")
 
 
 def bond() -> BondConfig:

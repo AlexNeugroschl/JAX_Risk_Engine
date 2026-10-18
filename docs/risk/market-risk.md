@@ -112,9 +112,14 @@ Both sources are real-world forecasts of the horizon move and carry the measure 
 Every trade is a pure JAX function of its curves' pillar rates
 ([`engine/risk/greeks/price_functions.py`](../../engine/risk/greeks/price_functions.py), the same
 functions the AD Greeks differentiate), with the engine its `PricingConfig` names (decision
-A-8): a European on Bachelier or Jamshidian, a Bermudan/American on the LGM grid engine
-calibrated on today's market and held fixed under every scenario. The same function prices
-the base market and every scenario. A trade's P&L is its deviation from its base value in
+A-8): a European on Bachelier or Jamshidian, a Bermudan/American on the LGM grid engine. The
+same function prices the base market and every scenario. A calibrated Bermudan/American is
+recalibrated on every scenario's curves, the volatilities held, as ORE's historical P&L
+recalibrates the trades' model builders (I-112, since 2026-10-17; equal to ORE recalibrating to
+7e-11, `tests/test_market_risk_ore_parity.py`): a first pass calibrates every scenario in float64
+(decision A-10) and refuses the run, naming the trade and the scenarios, where a calibration
+misses its basket; each scenario's P&L is then its own induction, its level the scenario's model
+on the base curves and its deviation the curves' move in the trade's compute format. A trade's P&L is its deviation from its base value in
 difference form (F-07): the legs' flows carried by matrix products in the trade's compute
 format, and a Bermudan's or American's induction run on the base curves and on each scenario's
 deviation from them (since 2026-10-13), so a scenario that moves nothing has exactly zero P&L,
@@ -189,8 +194,8 @@ float64.
 `run_market_risk` states these in `result.warnings` where they apply:
 
 - **Volatility risk.** Volatilities are held at their base values: the market's swaption
-  volatilities, a Bermudan's calibrated LGM, the Jamshidian engine's model. Only curve pillars
-  move, so an option's vega is not in the VaR/ES.
+  volatilities (to which a calibrated LGM is recalibrated under each scenario), a fixed LGM, the
+  Jamshidian engine's model. Only curve pillars move, so an option's vega is not in the VaR/ES.
 - **FX risk.** A trade converted into the reporting currency is converted at today's spot in
   every scenario ([Reporting currency](#reporting-currency)).
 - **Thin tails.** Fewer than 10 observations beyond a quantile's rank is flagged.

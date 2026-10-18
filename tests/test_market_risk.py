@@ -4,16 +4,16 @@ the VaR/ES run. ORE parity is in tests/test_market_risk_ore_parity.py.
 """
 import dataclasses
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from engine.market_data.market import ZeroCurveConfig
-from engine.precision import Precision, StagePrecision
+from engine.precision import Arithmetic, Precision, StagePrecision
 from engine.pricing.config import PricingConfig
 from engine.pricing.cube import value_today
-from engine.risk.greeks.ad import curve_greeks
-from engine.risk.greeks.price_functions import curves_of, trade_price_function
+from engine.risk.greeks.price_functions import trade_price_function
 from engine.risk.market import (
     MarketRiskRequest,
     SOURCE_HISTORICAL,
@@ -209,15 +209,16 @@ class TestRevaluation:
         assert float(shocked[0, 0]) == pytest.approx(expected, rel=1e-14)
 
     def test_swap_pnl_is_first_order_its_delta(self):
-        """A 0.1bp parallel move of the discount curve: P&L equals the summed AD discount
-        Delta (per 1bp) scaled by 0.1, to second order."""
+        """A 0.1bp parallel move of the discount curve: P&L equals the price function's summed
+        derivative in the discount curve's pillar rates times the move, to second order."""
         swap = m.swap()
         shift = np.zeros((2, FACTORS.size))
         shift[:, FACTORS.slice_of(0)] = 1e-5
         base, shocked = revalue([swap], m.market(), FACTORS, shift, m.PRICING)
         pnl = float(shocked[0, 0]) - base[0]
-        delta = curve_greeks(swap, m.market(), m.PRICING, 1e-4)["delta:discount:USD"]
-        assert pnl == pytest.approx(0.1 * float(np.sum(delta)), rel=1e-4)
+        fn = trade_price_function(swap, m.market(), m.PRICING)
+        delta = jax.grad(fn.price)(*[jnp.asarray(r) for r in fn.rates])
+        assert pnl == pytest.approx(1e-5 * float(jnp.sum(delta)), rel=1e-4)
 
     def test_the_european_engine_is_the_configured_one(self):
         """Bachelier by default, Jamshidian when configured: not chosen by the trade (A-8)."""
@@ -253,10 +254,84 @@ class TestRevaluation:
         """Regression: dtype-less constants inside a European price function promoted a
         float32 curve to float64, so float32 market risk silently ran partly in float64."""
         fn32 = trade_price_function(m.european(), m.market(), pricing, jnp.float32)
-        value32 = fn32.price(*curves_of(fn32, m.market(), jnp.float32))
+        value32 = fn32.price(*fn32.rates)
         assert value32.dtype == jnp.float32
         fn64 = trade_price_function(m.european(), m.market(), pricing, jnp.float64)
-        assert float(value32) == pytest.approx(float(fn64.price(*curves_of(fn64, m.market(), jnp.float64))), rel=1e-5)
+        assert float(value32) == pytest.approx(float(fn64.price(*fn64.rates)), rel=1e-5)
+
+
+def _shocked_market(shift):
+    """The market with every factor curve's pillar rates moved by its slice of `shift`."""
+    market = m.market()
+    usd = market.currency("USD")
+    curve = lambda c, s: ZeroCurveConfig(list(c.times), [r + float(d) for r, d in zip(c.rates, s)])  # noqa: E731
+    usd = dataclasses.replace(
+        usd, discount_curve=curve(usd.discount_curve, shift[FACTORS.slice_of(0)]),
+        index_curves={m.INDEX: curve(usd.index_curves[m.INDEX], shift[FACTORS.slice_of(1)])})
+    return dataclasses.replace(market, currencies={"USD": usd})
+
+
+class TestRecalibration:
+    """A calibrated Bermudan/American is recalibrated under every scenario, as ORE's historical
+    P&L recalibrates it (I-112; against ORE itself in tests/test_market_risk_ore_parity.py)."""
+
+    @pytest.mark.parametrize("make", [m.bermudan, m.american])
+    def test_each_scenario_is_the_option_calibrated_on_its_curves(self, make):
+        """Each scenario's value is the valuation pipeline's on the shocked market, which builds
+        and calibrates the trade there (`value_today`): the same calibration by another route."""
+        cfg, scenarios = make(), _scenarios(num=4)
+        base, shocked = revalue([cfg], m.market(), FACTORS, scenarios.shifts, m.CALIBRATED)
+        expected = [value_today([cfg], _shocked_market(row), "USD", m.CALIBRATED)[0] for row in scenarios.shifts]
+        np.testing.assert_allclose(np.asarray(shocked[:, 0]), expected, rtol=1e-12)
+        assert base[0] == pytest.approx(value_today([cfg], m.market(), "USD", m.CALIBRATED)[0], rel=1e-12)
+
+    @pytest.mark.parametrize("arithmetic", [None, Arithmetic.of(jnp.float32)], ids=["float64", "float32"])
+    def test_a_zero_shift_is_zero_pnl(self, arithmetic):
+        moves = np.zeros((3, FACTORS.size))
+        moves[1] = _scenarios(num=4).shifts[0]
+        dtype = jnp.float64 if arithmetic is None else jnp.float32
+        _, pnl = revalue_trade(m.bermudan(), m.market(), FACTORS, jnp.asarray(moves, dtype=dtype), m.CALIBRATED,
+                               arithmetic=arithmetic)
+        assert pnl.dtype == dtype
+        assert float(pnl[0]) == 0.0 and float(pnl[2]) == 0.0 and float(pnl[1]) != 0.0
+
+    def test_float32_is_near_float64(self):
+        """Float32 revaluation of the recalibrated option: its calibration in float64 (A-10), its
+        induction's level and deviation in float32."""
+        moves = _scenarios(num=8).shifts
+        _, pnl64 = revalue_trade(m.bermudan(), m.market(), FACTORS, moves, m.CALIBRATED)
+        _, pnl32 = revalue_trade(m.bermudan(), m.market(), FACTORS, jnp.asarray(moves, dtype=jnp.float32),
+                                 m.CALIBRATED)
+        assert pnl32.dtype == jnp.float32
+        scale = float(np.max(np.abs(np.asarray(pnl64))))
+        np.testing.assert_allclose(np.asarray(pnl32, np.float64), np.asarray(pnl64), rtol=0.0, atol=1e-4 * scale)
+
+    def test_a_scenario_whose_calibration_misses_is_refused(self):
+        """A calibration that misses ORE's acceptance in a scenario is refused, naming the trade
+        and the scenario (here a scenario no calibration can fit: its curves are not finite)."""
+        from engine.calibration.ore_lgm import CalibrationError
+        moves = np.zeros((4, FACTORS.size))
+        moves[2, 3] = np.nan
+        with pytest.raises(CalibrationError, match=r"bermudan.*1 of 4 scenarios.*scenarios 2"):
+            revalue_trade(m.bermudan(), m.market(), FACTORS, moves, m.CALIBRATED)
+
+    def test_its_batch_holds_each_scenarios_model(self):
+        """A scenario of a recalibrated option holds its own model's induction
+        (`working_bytes_per_model`) beside its deviation's, so its batch is sized for both."""
+        from engine.pricing.bermudan import prepared_option
+        from engine.pricing.lgm_grid import induction_memory_budget, working_bytes_per_model, working_bytes_per_path
+        from engine.risk.market.revaluation import scenario_batch_size
+        engine = m.CALIBRATED_ENGINE
+        prepared = prepared_option(m.bermudan(), engine, engine.volatility)
+        per_scenario = working_bytes_per_path(prepared, 8) + working_bytes_per_model(prepared, 8)
+        batch = scenario_batch_size(m.bermudan(), m.CALIBRATED, 10 ** 6, itemsize=8)
+        assert batch == induction_memory_budget() // per_scenario
+        assert batch < scenario_batch_size(m.bermudan(), m.PRICING, 10 ** 6, itemsize=8)
+
+    def test_no_warning_of_a_held_calibration(self):
+        result = run_market_risk(MarketRiskRequest([m.bermudan()], m.market(), _scenarios(num=16), m.CALIBRATED,
+                                                   quantiles=(0.99,)))
+        assert not any("I-112" in w for w in result.warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -307,13 +382,6 @@ class TestRun:
                    for w in result.warnings)
         assert not any("I-112" in w for w in result.warnings), "an uncalibrated LGM is ORE's in every scenario"
 
-    def test_warns_that_a_calibrated_lgm_is_held_where_ore_recalibrates(self):
-        """I-112: ORE's historical P&L recalibrates a calibrated LGM to each scenario's curves;
-        the revaluation holds today's calibration, and the result says so."""
-        calibrated = PricingConfig(bermudan=dataclasses.replace(m.ENGINE, calibration="Bootstrap"))
-        result = run_market_risk(MarketRiskRequest([m.bermudan()], m.market(), _scenarios(num=64), calibrated,
-                                                   quantiles=(0.99,)))
-        assert any("I-112" in w and "['bermudan']" in w for w in result.warnings)
 
     def test_warns_about_a_thin_tail(self):
         result = run_market_risk(MarketRiskRequest([m.swap()], m.market(), _scenarios(num=64), quantiles=(0.99,)))

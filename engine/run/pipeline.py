@@ -27,7 +27,8 @@ With `precision.paired_fraction > 0` the first paths are simulated and priced ag
 throughout (`_paired_sample`, decision A-13): the exposure means are the two-level estimates,
 and each figure's estimate is in the result's `PrecisionReport`, which every result carries.
 The result's `warnings` name every figure whose precision has no passing row of the evidence
-table (`precision_warnings`, I-55; a float64 run has none).
+table (`precision_warnings`, I-55; a float64 run has none), and an AD run's Greeks that are not
+ORE's (`engine.risk.greeks.ad.ad_warnings`, I-78).
 """
 import dataclasses
 from typing import TYPE_CHECKING, List, Optional, Sequence
@@ -115,6 +116,9 @@ def price_on_market(request) -> "PortfolioResult":
     if request.compute_greeks:
         with phase("greeks"):
             greeks = _greeks(run.greeks.method)(trades, market, base, run.pricing, run.greeks.sensitivity)
+        if run.greeks.method == "AD":
+            from engine.risk.greeks.ad import ad_warnings
+            warnings = warnings + ad_warnings(trades)
     return PortfolioResult(
         base_npv=float(np.sum(today)), npv_cube=cube, exposure=exposure, trade_exposures=trade_exposures,
         greeks=greeks, warnings=warnings, base_npv_per_trade=list(today),

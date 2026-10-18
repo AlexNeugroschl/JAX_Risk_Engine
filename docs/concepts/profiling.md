@@ -674,8 +674,9 @@ second partial (ORE's `SensitivityCube::gamma` is a cross-scenario second differ
 there is no cross-pillar term to match). Building the full `[n, n]` Hessian to keep `n`
 entries meant tracing the pricer `n` times over and discarding `n² − n` results.
 Each diagonal entry is one Hessian-vector product against a basis vector instead —
-`hvp(f, x, eᵢ)[i] == ∂²f/∂xᵢ²` — batched under `vmap` (since §3.8 from one linearization of
-the gradient over all of a trade's curves, `_gradients_and_hessian_diagonals`).
+`hvp(f, x, eᵢ)[i] == ∂²f/∂xᵢ²` — batched under `vmap` (from §3.8 one linearization of the
+gradient over all of a trade's curves; since §3.9 a forward pass of a forward pass along each
+basis vector, `_directional_derivatives`).
 
 **Jitted Theta valuations.** `swaption_theta` measured **56 compilations** — worse than
 the entire Delta/Gamma pair — because both Jamshidian valuations ran eagerly. Now 2.
@@ -820,9 +821,9 @@ that shape.
 | `Legs`, `PathSchedule` | `legs_npv`, `_legs_cube`, `_path_fixings` |
 | `EuropeanTerms` (expiry as a serial date) | `black_multileg_npv`, `_european_cube`, `_jamshidian_cube` |
 | `_PreparedBermudan`, `_Induction` (and the paths' `Deviations`) | `_induction` (today and every path of a date, since 2026-10-13; every date of a cube padded to one shape) |
-| `BasketInstrument` | `_bootstrap` (I-22), the Vega Jacobian's `_residual_gradient` |
+| `BasketInstrument` | `_bootstrap` (I-22); a calibrated option's `CalibrationTerms`, the basket inside its AD program and its scenario calibration (§3.9) |
 | `CalibrationTarget` | the legacy `calibrate_lgm_sigma`'s prices and bisection |
-| `TradePriceFunction.terms` (`_LegsTerms`, `BachelierTerms`, `EuropeanTerms`, `OptionTerms`), the pricer static (since 2.4, §3.8) | the AD Greeks' `_curve_derivatives`, `_option_vega` (a European's and a Bermudan's/American's since 2026-10-11, I-101: an option's pricer is `OnPosition` of its engine's, its terms `Positioned`, the position's sign as data) |
+| `TradePriceFunction.terms` (`_LegsTerms`, `BachelierTerms`, `EuropeanTerms`, `OptionTerms`), the pricer static (since 2.4, §3.8) | the AD Greeks' `_derivatives` (one program for Delta, Gamma and Vega since 2026-10-17, §3.9; a European's and a Bermudan's/American's since 2026-10-11, I-101: an option's pricer is `OnPosition` of its engine's, its terms `Positioned`, the position's sign as data) |
 
 Callers that build a fresh closure per call were deliberately *not* jitted as a whole: the
 AD Greeks and market risk (`revalue_trade`) differentiated or vmapped closures over the
@@ -905,6 +906,40 @@ demo Bermudan's discount-curve Gamma), and all but three Greeks of the demo's op
 in both of its runs) by less than 1e-14; everything else, cubes, exposures, today's values,
 bump Greeks, market risk and the float32 runs, is bit for bit. On the GPU the cube and exposure are bit for bit with the old code, the AD Greeks
 within 6.6e-16 of their scale (planning `details/precision.md` §13.1).
+
+### 3.9 The AD Greeks through a calibration, forward mode (2026-10-17)
+
+Since I-78 the AD Greeks are the derivatives on ORE's sensitivity market, a calibrated
+Bermudan/American calibrating inside its price function (`engine.risk.greeks.price_functions`).
+The program is still one per product and shape (`engine.risk.greeks.ad._derivatives`); what
+changed is how it differentiates.
+
+**Forward, not reverse.** The recalibration moves the LGM's volatility with the curve, so the
+grid's state spacing and its rollback operator, `[nodes, nodes]` per row, now depend on every
+input. Reverse mode (`jax.linearize` of the gradient, then a Hessian-vector product per
+direction) held the operator's tangent on every row of the induction for every direction: an
+American on ORE's 301-node grid, about 160 rows and 26 directions, passed 12 GB and was stopped.
+Forward differentiation holds no tape (a forward pass of a forward pass gives each direction's
+first and second derivative, the directions batched by `vmap`, the price itself unbatched):
+1.7 GB for a Bermudan on that grid against 3.6 GB reverse, 4.2 GB for the American.
+
+**The calibration by the implicit function theorem on the whole basket.** Differentiating the
+bootstrap's own Newton loops (each bucket's, with each helper's y\* loop inside) under batched
+forward mode passed 10 GB compiling for the American's 16 helpers, at first order. The
+calibrated buckets are instead `engine.solvers.roots.implicit_solution` of the basket's residual
+system: the bootstrap gives the primal, never differentiated; the derivative solves the
+triangular Jacobian (built by forward differentiation of the residuals). The residuals' second
+derivatives compile in 12 s and 1.8 GB for the American; the grid's, given the volatility as an
+input, in 0.6 s.
+
+**What it costs.** Measured old and new code alternately, the shared portfolio's AD Greeks on
+ORE's default grid with no disk cache: 159 s cold against 32 s, 4.7 s warm against 0.7 s (the
+bump method: 8.7 s warm). The American alone: 87 s cold, 0.6 s warm. Tried and measured worse:
+the triangular solve unrolled row by row (over 9 GB), and `jax.lax.custom_linear_solve` for the
+tangent system, whose derivative takes one directional derivative of the Jacobian instead of all
+of it (108 s, 8.4 GB). Without y\*'s implicit derivative (which Gamma needs) the American compiles
+in 75 s: the bulk is the helpers' prices traced again in every derivative context. The cold cost
+is [I-115](../planning/known-issues.md#i-115)'s, which plans the program's split in two.
 
 ---
 

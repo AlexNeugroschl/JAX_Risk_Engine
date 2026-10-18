@@ -204,9 +204,9 @@ class TestEveryMatrixProductStatesItsPrecision:
     @pytest.mark.slow
     def test_in_every_pipeline(self, products):
         """The simulation (LGM and Hull-White, its calibration and the Brownian bridge), the
-        scenario market, every product's path pricing (the Bermudan's and American's per-path
-        recalibration included), today's values, the AD Greeks and market risk, at float64 and
-        float32. A product without its compute format's precision would run at the device's
+        scenario market, every product's path pricing, today's values, the AD Greeks (a calibrated
+        option's through its calibration) and market risk (a calibrated Bermudan recalibrated under
+        each scenario), at float64 and float32. A product without its compute format's precision would run at the device's
         default; one outside the engine's code would be a product the engine cannot vouch for.
         Red first: with the nine products bare (before 2026-10-06), it named `cam.py:501`,
         `random.py:115`, `ore_lgm.py:270` and `bermudan_swaption.py:697, 700, 701` (the modules'
@@ -226,14 +226,18 @@ class TestEveryMatrixProductStatesItsPrecision:
         scenarios = monte_carlo_scenarios(mr.factors(), mr.covariance(), 10, 16, seed=3)
         run_market_risk(MarketRiskRequest([mr.swap(), mr.european(), mr.bermudan(), mr.bond()], mr.market(),
                                           scenarios, mr.PRICING, precision=Precision.throughout("float32")))
+        run_market_risk(MarketRiskRequest([mr.bermudan()], mr.market(), scenarios, mr.CALIBRATED,
+                                          precision=Precision.throughout("float32")))
 
         wrong = sorted({(line, str(dtype), str(precision)) for line, dtype, precision in products
                         if line == "outside the engine" or precision != (product_precision(dtype),) * 2})
         assert not wrong, f"{len(wrong)} matrix products without their stated precision: {wrong}"
         lines = {line.rsplit(":", 1)[0] for line, _, _ in products}
+        # roots.py: a calibration's implicit derivative, its triangular solve's (2026-10-17).
         assert lines == {"engine/market_simulation/paths.py", "engine/market_simulation/sobol.py",
                          "engine/market_simulation/scenario_market.py", "engine/pricing/legs.py",
-                         "engine/calibration/ore_lgm.py", "engine/pricing/lgm_grid.py"}, lines
+                         "engine/calibration/ore_lgm.py", "engine/pricing/lgm_grid.py",
+                         "engine/solvers/roots.py"}, lines
         assert {str(dtype) for _, dtype, _ in products} == {"float64", "float32"}
 
 

@@ -7,8 +7,8 @@ trades' own history.
 `from_market` is today's market. `simulation_market_today` is ORE's simulation market on the
 as-of date, every curve sampled at the simulation tenors: where ORE's exposure starts
 (`engine.run.pipeline`) and its sensitivity analysis bumps
-(`engine.risk.greeks.bump`, which also builds rolled contexts the same way), so one set of
-pricers values them all.
+(`engine.risk.greeks.bump`, whose Theta market is the same curves on a later date), so one set
+of pricers values them all.
 """
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Mapping, Sequence
@@ -57,13 +57,15 @@ def from_market(market: Market) -> PricingContext:
     return PricingContext(date=market.asof, discount=discount, index=index, volatility=volatility)
 
 
-def sampled_curve(curve: ZeroCurve, asof: ORE.Date, reference: ORE.Date, tenors: Sequence[str]) -> DiscountCurve:
-    """ORE's simulation-market curve on `reference` (`ScenarioSimMarket::addYieldCurve`): points
-    at `reference + tenor` carrying the original (as-of) curve's discount factors there, and 1 at
-    `reference`; log-linear between them, flat forward beyond."""
-    dates = [reference + ORE.Period(t) for t in tenors]
-    times = [0.0] + [TIME_AXIS_DAY_COUNTER.yearFraction(reference, d) for d in dates]
-    values = [0.0] + [float(log_discount(curve, TIME_AXIS_DAY_COUNTER.yearFraction(asof, d))) for d in dates]
+def sampled_curve(curve: ZeroCurve, asof: ORE.Date, tenors: Sequence[str]) -> DiscountCurve:
+    """ORE's simulation-market curve (`ScenarioSimMarket::addYieldCurve`): points at the times of
+    `asof + tenor` from the as-of date, carrying the as-of curve's discount factors there, and 1
+    at t=0; log-linear between them, flat forward beyond. ORE holds the points at these times as
+    its reference date moves (on a simulated path, I-84, and on the sensitivity analysis's Theta
+    date, `engine.risk.greeks.bump`)."""
+    dates = [asof + ORE.Period(t) for t in tenors]
+    times = [0.0] + [TIME_AXIS_DAY_COUNTER.yearFraction(asof, d) for d in dates]
+    values = [0.0] + [float(log_discount(curve, t)) for t in times[1:]]
     return DiscountCurve(times=jnp.asarray(times), log_discounts=jnp.asarray(values))
 
 
@@ -75,7 +77,7 @@ def simulation_market_today(market: Market, tenors: Sequence[str]) -> PricingCon
     curves' interpolation between the tenors."""
     discount, index = {}, {}
     for code, data in market.currencies.items():
-        discount[code] = sampled_curve(ZeroCurve.from_config(data.discount_curve), market.asof, market.asof, tenors)
-        index.update({name: sampled_curve(ZeroCurve.from_config(c), market.asof, market.asof, tenors)
+        discount[code] = sampled_curve(ZeroCurve.from_config(data.discount_curve), market.asof, tenors)
+        index.update({name: sampled_curve(ZeroCurve.from_config(c), market.asof, tenors)
                       for name, c in data.index_curves.items()})
     return PricingContext(market.asof, discount, index, from_market(market).volatility)

@@ -547,6 +547,41 @@ def trade_xml(cfg) -> str:
                               f"and coupon bonds redeemed at par")
 
 
+def sim_market_xml(curve_tenors: Sequence[str], indices: Sequence[str], vols: SwaptionVolSurface,
+                   simulate_vols: bool, vol_decay: str = "ForwardVariance") -> str:
+    """The `<Market>` of ORE's `simulation.xml` (`ScenarioSimMarketParameters`) on `CCY`: every
+    curve at `curve_tenors`, log-linear in the discount factor and flat forward beyond (the
+    engine's `DiscountCurve`), the `indices`' forwarding curves, the swap indices discounting on
+    `DISCOUNT_INDEX`, and the swaption volatilities at the surface's own expiries and terms,
+    simulated (a risk factor: the sensitivity analysis bumps it) or decayed by `vol_decay`
+    (`ReactionToTimeDecay`, the exposure simulation's)."""
+    index_xml = "".join(f"<Index>{name}</Index>" for name in indices)
+    return f"""<Market>
+    <BaseCurrency>{CCY}</BaseCurrency>
+    <Currencies><Currency>{CCY}</Currency></Currencies>
+    <YieldCurves>
+      <Configuration>
+        <Tenors>{",".join(curve_tenors)}</Tenors>
+        <Interpolation>LogLinear</Interpolation>
+        <Extrapolation>FlatFwd</Extrapolation>
+      </Configuration>
+    </YieldCurves>
+    <Indices>{index_xml}</Indices>
+    <SwapIndices>
+      <SwapIndex><Name>{CCY}-CMS-1Y</Name><DiscountingIndex>{DISCOUNT_INDEX}</DiscountingIndex></SwapIndex>
+      <SwapIndex><Name>{CCY}-CMS-30Y</Name><DiscountingIndex>{DISCOUNT_INDEX}</DiscountingIndex></SwapIndex>
+    </SwapIndices>
+    <SwaptionVolatilities>
+      <Simulate>{str(simulate_vols).lower()}</Simulate>
+      <ReactionToTimeDecay>{vol_decay}</ReactionToTimeDecay>
+      <Keys><Key>{CCY}</Key></Keys>
+      <Expiries>{",".join(vols.option_tenors)}</Expiries>
+      <Terms>{",".join(vols.swap_tenors)}</Terms>
+    </SwaptionVolatilities>
+    <AggregationScenarioDataCurrencies><Currency>{CCY}</Currency></AggregationScenarioDataCurrencies>
+  </Market>"""
+
+
 def portfolio_xml(trades: Iterable[str]) -> str:
     return "<Portfolio>\n" + "\n".join(trades) + "\n</Portfolio>"
 

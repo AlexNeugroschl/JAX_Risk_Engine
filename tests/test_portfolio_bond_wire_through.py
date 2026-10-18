@@ -161,14 +161,15 @@ class TestBondGreeksReachThePortfolioPath:
                                               compute_greeks=True))
         assert abs(delta(result.greeks[1])) > abs(delta(result.greeks[0]))
 
-    def test_theta_is_the_dates_fixed_roll(self):
-        """ORE's Theta market keeps each discount factor fixed in dates (not re-anchored at the
-        Theta date), so on a flat curve a bill's value does not move: Theta 0, not the "pull
-        to par" of a re-anchored curve. On a sloped curve it is not 0."""
-        assert float(price_portfolio(bond_request([make_bill()], compute_greeks=True)).greeks[0]["theta"]) == 0.0
-        sloped = ZeroCurveConfig(times=FLAT_3PCT.times, rates=(0.02, 0.02, 0.03, 0.04, 0.045, 0.05))
-        result = price_portfolio(bond_request([make_note()], compute_greeks=True, market=make_market(sloped)))
-        assert float(result.greeks[0]["theta"]) != 0.0
+    def test_theta_is_the_curve_rolled_with_the_date(self):
+        """ORE's Theta market holds each curve's discount factors at the same times from its
+        reference date as that date moves one day (I-51: equal to ORE's sensitivity analytic,
+        tests/test_sensitivity_ore_parity.py), so on a flat curve a bill accrues one day's
+        carry, `PV (exp(r / 365) - 1)`: not 0, as the curve fixed in dates (the engine's until
+        2026-10-17) gave."""
+        bill = make_bill()
+        theta = float(price_portfolio(bond_request([bill], compute_greeks=True)).greeks[0]["theta"])
+        assert theta == pytest.approx(price_alone(bill) * np.expm1(FLAT_3PCT.rates[0] / 365.0), rel=1e-9)
 
     def test_theta_adds_back_a_coupon_paid_the_next_day(self):
         """I-39: ORE's Theta adds back the flows paid in (t, t + 1 day]. Valued the day before

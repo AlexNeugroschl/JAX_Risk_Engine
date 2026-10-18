@@ -300,10 +300,13 @@ widened side by side to 2, 8, 128, 32768, 2^31 or 2^63 times itself, the first t
 sign change, all candidates evaluated at once (one vectorized evaluation, not a loop).
 
 **Derivatives.** A root carries no derivative of its own (`solve` stops its inputs'
-tangents). The ORE helper's price is stationary in y\*, so its derivatives with y\* held fixed
-are exact (the AD Vega's bootstrap Jacobian, `engine.risk.greeks.ad`, uses them). Where a price
-is not stationary in its root — x\* here and in the Jamshidian engine — `implicit_root` gives
-the root its derivative by the implicit function theorem, below.
+tangents). Where a price depends on its root — x\* here and in the Jamshidian engine, and the
+ORE helper's y\* — `implicit_root` gives the root its derivative by the implicit function
+theorem, below; the helper's price is stationary in y\*, so only its second derivatives need
+y\*'s. A whole calibration's buckets get theirs from the basket's system of residuals
+(`implicit_solution`, `engine.calibration.ore_lgm.calibrated_values`): what an option
+calibrated inside its price function responds with ([Greeks](../risk/greeks.md), market risk's
+recalibration per scenario).
 
 <a id="acceptance"></a>
 ## Acceptance: when a calibration misses its basket

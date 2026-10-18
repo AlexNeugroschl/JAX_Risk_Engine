@@ -7,54 +7,51 @@ issues keep one line in the [closed ledger](#closed).
 
 Read this before trusting a figure: every trade of the shared portfolio equals ORE's
 exposure simulation path by path (swaps, Europeans and bonds since 2026-10-07, Bermudans and
-Americans since 2026-10-12, [I-49](#i-49)); sensitivities are not yet shown equal to ORE's
-([I-51](#i-51)), and a calibrated Bermudan's market-risk P&L holds its calibration where ORE
-recalibrates ([I-112](#i-112)).
+Americans since 2026-10-12, [I-49](#i-49)); the bump Greeks equal ORE's sensitivity analytic and
+a calibrated Bermudan's market-risk P&L ORE's recalibrating historical P&L (I-51, I-112,
+2026-10-17); the AD Greeks are ORE's in the limit of a vanishing shift, but for a grid-priced
+option, whose price is piecewise smooth, the result says how they differ (I-78).
 
 ## Verification status
 
-Last full run, 2026-10-16, on I-111's conservative interval-availability rule
-([plan and measurements](details/precision-accuracy.md)). **3,470 collected** on
-Windows: the previous 3,462 plus eight interval/audit regression cases. Every green
-run below printed its summary line:
+Last full run, 2026-10-17, on the Greeks and calibrated market risk made ORE's (I-51, I-78,
+I-112). **3,494 collected** on Windows: the previous 3,470 plus 24, every one reconciled by test
+id against the code before (the sensitivity parity, the AD Greeks on ORE's sensitivity market and
+through the calibration, market risk's recalibration and its ORE parity cases). Every green run
+below printed its summary line:
 
 - **Windows full suite**, `.venv/Scripts/python.exe -m pytest tests/ -q -n 8 --durations=15`:
-  **3,467 passed, 3 skipped, 0 failed**, 7m37s. The skips are the two accelerator-only
-  defaults and the GPU plugin check. Every existing ORE suite passes at its unchanged
-  tolerance. This includes API/worker tests and four virtual CPU devices.
-- **Linux/GPU with strict dtype promotion**, RTX 5060 Laptop, WSL2, JAX/jaxlib 0.10.2,
-  ORE 1.8.16.0: `JAX_NUMPY_DTYPE_PROMOTION=strict`, uncertainty availability,
-  precision accuracy/reports, tail diagnostics, ORE XVA and market-risk parity:
-  **172 passed**, 8m09s. Warm seed changes compile nothing.
-- **Numerical compatibility**: all **678 numeric arrays** in the shared-portfolio
-  before/after snapshots are identical, including NaN positions: all five product
-  families, float64, float32, mixed paired storage, exposures, Greeks and exercise flags.
-  Interval status is host metadata and introduces no JAX trace or compile key.
-- **Replicated-storage audit**: rerun all cases at 1,024/4,096/16,384 paths, eight
-  scrambles per run and 32 independent outer seeds. All **2,160 figure measurements
-  are identical** to the previous record; **zero warm recompilations**. The **2,592
-  per-date diagnostic rows** record nominal interval unavailability separately.
-  Diagnostic failures remain failures under coverage >=0.90 and RMS 0.75-1.33;
-  zero-width numerical equality never certifies a constant. The other numerical
-  campaigns are unchanged. Concurrent validation means these timings cannot rank devices.
-- **Precision evidence**: regenerated and checked against the measurements. All verdicts
-  and path ceilings are unchanged; only the replicated campaign's provenance changes.
-  The ten records retain **34,000 figure rows**. Evidence does not certify nominal intervals.
-- **Research acceptance**: I-98, I-111 and I-113 are closed. I-111 uses its allowed
-  conservative availability-rule alternative: nominal intervals are unavailable for
-  every figure/entry without a validated tail bound. Raw variance estimates remain
-  diagnostics; calibrated interval support is future capability **F-10**. No fitted
-  inflation factor or relaxed acceptance threshold is used. **I-114 remains OPEN**:
-  evidence matching must distinguish the pricing engine and grid before hardware timing.
-  FP4 and multilevel quantile correction remain later research.
-- **Lint**: Ruff's pyflakes rules pass on every changed Python file.
+  **3,491 passed, 3 skipped, 0 failed**, 7m44s, Python's working sets at most 16 GB of 32. The
+  skips are the two accelerator-only defaults and the GPU plugin check. Every existing ORE suite
+  passes at its unchanged tolerance; the new ones (sensitivity analytic, recalibrating market
+  risk) at theirs. An earlier run of the same tree lost a worker after 1,843 tests
+  ([I-27](#i-27)'s abort, no message, memory not exhausted); the run before this one failed one
+  test asserting the Theta market ORE's analytic disproved, rewritten to ORE's rule (a flat
+  bill's carry) and then green with its file.
+- **Fast tier under strict dtype promotion**, as CI's `fast-strict-dtypes` job runs it:
+  **3,355 passed, 3 skipped, 0 failed**. Fifteen fast tests failed there on the code before
+  (a float32 market loaded with float64 tenor times, an integer grid times a float), fixed in the
+  tests; CI's job was red on them.
+- **Golden snapshot** (361 arrays, CPU, before against after): every move beyond the margin is
+  planned: the AD Greeks (on ORE's sensitivity tenors since I-78, so their shapes changed, and
+  through the calibration), every Theta (ORE's market since I-51; trade 0's 836.7 is now ORE's
+  -435.2), and the calibrated Bermudan's market-risk P&L (I-112, 3.8e-3 of its scale). The rest:
+  bump Delta, Gamma and Vega within 1.4e-14 of their trade's NPV, float64 arrays within 3.3e-15
+  of their scale, and float32 market risk identical (a European's variance read in float64 from
+  the quotes, as before), so no evidence row moved.
+- **Measured**: the bump Greeks against ORE's sensitivity analytic within 2e-14 of each trade's
+  NPV; a calibrated Bermudan's and American's recalibrated scenarios against ORE to 6e-12 and
+  7e-11; the AD Greeks of the shared portfolio's smooth trades ORE's as the shift vanishes to
+  2e-5 of each curve's largest; a calibrated option's AD Delta against central differences of its
+  recalibrating price to 1e-9. AD's cold compile 5 times the code before's ([I-115](#i-115)).
+- **Lint**: pyflakes passes on every changed Python file.
+- **Not run**: Linux and the GPU (no process, path or platform default changed); the precision
+  campaigns (no campaign's kernel changed: theirs price a fixed LGM, and float32 market risk is
+  bit for bit).
 
-Red first: the five initial availability/legacy-name regressions failed before the
-implementation. The original coverage helper also reproduced dropping both nonzero
-zero-SE misses; the regression now requires infinite standardized errors. Rare-event
-examples across 256 independent outer seeds with 1/8/32 replicates distinguish empirical
-zero from a known nonzero expectation. Per-date audit tests also cover two-seed reference
-unavailability without invalid sample-variance warnings, and record round-trips.
+Red first: the sensitivity parity failed on Theta for all eight trades of the shared portfolio;
+the recalibrated market-risk parity cases failed on the code before by up to 89.4 (0.19% of the
+value); the AD Greeks' agreement with the bump method per tenor is new (their axes differed).
 
 The fast tier alone is not a full verification. Rules: [README.md](README.md#verification-rules).
 
@@ -70,22 +67,21 @@ The fast tier alone is not a full verification. Rules: [README.md](README.md#ver
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
 | [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | TraderX |
 | [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | Fix what exists |
-| [I-112](#i-112) | Market risk holds a calibrated Bermudan's/American's LGM under every scenario; ORE's historical P&L recalibrates it | Medium | FLAGGED | Correctness | Focus |
 | [I-103](#i-103) | Malformed market and trade inputs are accepted: an unsorted curve prices silently, a late expiry crashes | Medium | OPEN | Validation | Focus |
 | [I-104](#i-104) | Edge cases valued wrong: a zero-variance European, a bond awaiting a delayed payment, a long Theta, H at small a·t | Low | OPEN | Correctness | Fix what exists |
 | [I-106](#i-106) | The job queue's file: an interrupted migration stops it opening; a second file starts a second worker | Low | OPEN | API | Focus |
 | [I-107](#i-107) | TraderX: `bundleId` is trusted, not recomputed, so a changed bundle can get the old result | Medium | OPEN | API | TraderX |
 | [I-108](#i-108) | TraderX: NaN amounts priced as `ok`, terms contradicting the row priced, duplicate rows counted twice | Medium | OPEN | API | TraderX |
 | [I-109](#i-109) | TraderX: after a failed publication a same-id retry never prices or publishes | Medium | OPEN | API | TraderX |
-| [I-110](#i-110) | The documentation contradicts the code in places; no single parity table | Low | OPEN | Tooling | Fix what exists |
-| [I-114](#i-114) | Precision evidence lookup omits pricing-engine and grid settings | Medium | OPEN | Validation | Focus |
+| [I-110](#i-110) | The documentation contradicts the code in places | Low | OPEN | Tooling | Fix what exists |
+| [I-116](#i-116) | ORE parity is shown on one market and the default settings: a Theta 60–290% off went unseen | Medium | OPEN | Validation | Focus |
+| [I-114](#i-114) | Precision evidence lookup omits pricing-engine, grid and calibration settings | Medium | OPEN | Validation | Focus |
+| [I-115](#i-115) | The Greeks on an accelerator: bumps one at a time, a calibrated option's AD compiling for a minute, nothing measured on a GPU | Medium | OPEN | Performance | Focus |
 | [I-97](#i-97) | XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU | Medium | OPEN | Performance | Focus |
 | [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Focus |
 | [I-88](#i-88) | The API completeness test checks field names, not that a value reaches the engine | Low | OPEN | Tooling | Focus |
 | [I-89](#i-89) | A retried job submission runs the job twice | Low | OPEN | API | Focus |
 | [I-95](#i-95) | A precision setting the run does not read is accepted and ignored | Low | OPEN | API | Focus |
-| [I-51](#i-51) | Sensitivities not checked against ORE's sensitivity analytic | Medium | OPEN | Validation | Focus |
-| [I-78](#i-78) | AD and bump Greeks differ by up to 2% on a sloped market | Medium | OPEN | Validation | Focus |
 | [I-53](#i-53) | On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch | Low | PARTIAL | Performance | Fix what exists |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | New |
 | [I-58](#i-58) | TraderX: two concurrent submissions of one workload under different ids both execute | Medium | PARTIAL | API | TraderX |
@@ -113,38 +109,6 @@ model" before 2026-10-01 meant the separate pipeline removed that day.
 ---
 
 ## Correctness
-
-<a id="i-112"></a>
-### I-112 — Market risk holds a calibrated Bermudan's/American's LGM under every scenario; ORE's historical P&L recalibrates it
-
-**Severity:** Medium · **Status:** FLAGGED · **Category:** Correctness · **Found:** 2026-10-12,
-reading ORE's valuation engine while closing [I-49](#i-49)
-
-**What is wrong.** `run_market_risk` revalues a Bermudan/American with the LGM calibrated on
-today's market and held under every shock (`engine.risk.market.revaluation`, through
-`engine.risk.greeks.price_functions.bermudan_price_function`). ORE's market-risk report runs
-its historical P&L with the trades' model builders (`MarketRiskReport` ->
-`HistoricalPnlGenerator` -> `ValuationEngine(..., factory->modelBuilders())`, whose
-`recalibrate` is true by default), so in each scenario the LGM is recalibrated to the
-unshocked swaption volatilities on the shocked curves: the helpers' market values move with the
-curves, and σ with them. (ORE's exposure simulation is the other way round: it never
-recalibrates, which the engine follows since 2026-10-12, I-49.)
-
-**Reach.** The P&L, VaR and ES of every calibrated Bermudan/American in a market-risk run; an
-uncalibrated one (`calibration="None"`) is ORE's in every scenario. Not measured: the
-market-risk ORE parity test prices its Bermudan uncalibrated on both sides
-(`tests/test_market_risk_ore_parity.py`). The AD Greeks hold the calibration the same way
-([I-78](#i-78)); the bump Greeks recalibrate under every bump, as ORE's sensitivity analysis
-does.
-
-**Current handling.** Every market-risk result with a calibrated Bermudan/American warns of it,
-naming the trades (`tests/test_market_risk.py::TestRun::test_warns_that_a_calibrated_lgm_is_held_where_ore_recalibrates`).
-
-**To close.** Recalibrate the LGM inside the revaluation's price function under each scenario,
-as ORE does (a bootstrap per scenario, batched over scenarios), and add a calibrated Bermudan to the market-risk ORE parity test,
-ORE recalibrating per scenario (`tests/support/ore_lgm_oracle.py` with `Bootstrap`). With
-I-78, whose AD Greeks need the same calibration inside the price function (the implicit-function
-Jacobian of `engine.risk.greeks.ad` already differentiates it for Vega).
 
 <a id="i-104"></a>
 ### I-104 — Edge cases valued wrong: a zero-variance European, a bond awaiting a delayed payment, a long Theta, H at small a·t
@@ -206,15 +170,19 @@ option's and helper's strike as ORE reads its cube. SABR is [F-02](features.md#f
 
 
 <a id="i-114"></a>
-### I-114 — Precision evidence lookup omits pricing-engine and grid settings
+### I-114 — Precision evidence lookup omits pricing-engine, grid and calibration settings
 
 **Severity:** Medium · **Status:** OPEN · **Category:** Validation · **Found:** 2026-10-16,
 review of compute-rounding coverage and `engine.precision.evidence.combination`
 
 **What is wrong.** The acceptance key records formats, roundings, layout, pairing and
 replicate count, but not `PricingConfig`. A European using Jamshidian can match a row
-measured with Bachelier; a different rollback grid can match the coarse grid's row. Those
-settings change the arithmetic and its error, so that lookup does not establish accuracy.
+measured with Bachelier; a different rollback grid can match the coarse grid's row; and since
+2026-10-17 a calibrated Bermudan/American in market risk, recalibrated under every scenario
+(I-112: each scenario its own induction, its level the scenario's model on the base curves),
+matches the rows the `market_risk` campaigns measured on a fixed LGM (`calibration="None"`),
+whose one level every scenario shares. Those settings change the arithmetic and its error, so
+that lookup does not establish accuracy.
 
 **Reach.** Precision validation labels and missing-evidence warnings under unmeasured
 pricing settings. The measured errors and verdicts for the campaign's own settings remain
@@ -225,8 +193,9 @@ limit and point to the exact campaign definitions. Runtime lookup does not yet e
 
 **To close.** Carry the pricing engine and accuracy-relevant settings into campaign
 metadata and runtime matching, conservatively warn for an unmeasured configuration, and
-add regressions proving that Bachelier cannot validate Jamshidian and one grid cannot
-validate another. Measure additional configurations when useful. Do this before the
+add regressions proving that Bachelier cannot validate Jamshidian, one grid cannot
+validate another, and a fixed LGM cannot validate a recalibrated one. Measure additional
+configurations when useful (a calibrated Bermudan in the market-risk campaigns). Do this before the
 equal-accuracy hardware comparison; do not duplicate or relabel existing rows as new evidence.
 
 <a id="i-97"></a>
@@ -279,51 +248,59 @@ today (FP8 0.7 off) and passes after.
 
 ## Validation
 
-<a id="i-51"></a>
-### I-51 — Sensitivities not checked against ORE's sensitivity analytic
+<a id="i-116"></a>
+### I-116 — ORE parity is shown on one market and the default settings: a Theta 60–290% off went unseen
 
-**Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-29
+**Severity:** Medium · **Status:** OPEN · **Category:** Validation · **Found:** 2026-10-17, closing
+[I-51](#i-51): the first run of ORE's sensitivity analytic found every trade's Theta off
 
-**What is missing.** `engine.risk.greeks.bump` implements ORE's definitions (zero-rate
-shifts at the curve tenors, forward-difference Delta, `up − 2·base + down` Gamma, Vega per
-quote, Theta on the rolled market), checked for internal consistency
-(`tests/test_sensitivities.py`), but never against an OREApp sensitivity run. A different
-shift convention in ORE's simulation market would pass every current test.
+**What is wrong.** Each analytic is compared with ORE on one configuration: the shared portfolio's
+eight trades on one sloped USD market (`tests/support/portfolio.py`), at the default settings, and
+until 2026-10-17 the Greeks on none. The engine accepts far more than that, and nothing compares it:
 
-**To close.** Run ORE's sensitivity analytic through the oracle on the shared portfolio
-(`tests/support/portfolio.py`), compare per trade, factor and tenor to 1e-8 relative
-([details](details/ore-parity-validation.md)). Check Theta's rolled market in particular:
-the ORE simulation oracle found that ORE's simulation market holds its tenor points at the times from the
-as-of date as its reference date moves ([I-84](#i-84)), where the engine's Theta market
-measures them from the Theta date (`engine.risk.greeks.bump.theta_context`).
+- **Sensitivities**: ORE's analytic at `SensitivityConfig`'s defaults only (13 tenors, 1bp, a
+  one-day Theta from a Thursday). Not compared: other tenors and shift sizes, a Theta across a
+  weekend or onto a coupon, fixing or exercise date, `theta_days` above 1 (where [I-104](#i-104)'s
+  add-back reads a missing fixing as 0%), short options, `CoterminalATM` and uncalibrated options,
+  the Jamshidian engine (the oracle refuses it), seasoned and near-expiry options.
+- **Today's values**: eight trades. Not compared: a sweep of strikes (deep in and out of the money),
+  tenors, effective dates, seasoning with fixings, settlement and position, on other markets
+  (inverted, negative, flat, steep first segment).
+- **Market risk**: each scenario repriced by ORE and its `RiskStatistics`, but never ORE's own
+  market-risk analytic end to end (its historical P&L generator, scenario construction and
+  report); a calibrated option on six scenarios.
+- **The AD Greeks**: against ORE for the smooth trades of the shared portfolio only.
 
-<a id="i-78"></a>
-### I-78 — AD and bump Greeks agree on flat curves only; on a sloped market they differ by up to 2%
+A defect outside these cells passes the suite, as Theta did: every Delta, Gamma and Vega already
+matched ORE, so the Greeks looked right while one Greek of every trade was wrong.
 
-**Severity:** Medium · **Status:** OPEN · **Category:** Validation · **Found:** 2026-10-04,
-roadmap review (moved from F-01)
+**Reach.** Every result outside the compared configurations is unproven against ORE, though every
+component it is built from is; no number is known to be wrong.
 
-**What is wrong.** The AD Greeks method (decision A-5, `GreeksConfig.method="AD"`) is a
-shipped option for every model and engine. It agrees with ORE's bump-and-revalue Greeks on
-flat curves (`tests/test_greeks.py::TestAgainstTheBumpMethod`: parallel Deltas to 1e-4 once
-the forward difference's curvature is removed). On the sloped shared market the two differ:
-a near-par swap's discount Delta by 2% and a European's Vega by 0.9%. The AD derivatives are
-correct derivatives of the engine's own curves (finite differences hold to 1e-6 there); the
-gap is that the bump method differentiates ORE's sensitivity market and AD the market's curve
-representation, so an AD Greek is not ORE's Greek on a sloped curve. A Bermudan's AD Delta
-also holds its calibration fixed while its bump Delta recalibrates.
+**Current handling.** [docs/reference/ore-parity.md](../reference/ore-parity.md) states per
+component what is compared; no table says what is not, per product and analytic, to what
+tolerance and by which test, so "matches ORE" reads broader than it is (a grid-priced option's AD
+Greeks, for one, are the price's derivatives, not ORE's 1bp bump Greeks, [I-78](#i-78)).
 
-**Reach.** Every sloped-market result run with `method="AD"`, by the percentages above;
-the default (bump) is unaffected.
+**To close.**
 
-**Current handling.** The difference is stated in the test's docstring, not on the result.
+1. **A parity matrix**, products by analytics by settings, generated from the parity tests (each
+   test declares the cells it covers) and published in docs/reference/ore-parity.md, so an
+   unproven cell is visible; a test fails if a public setting or analytic has no cell or no
+   stated reason for none; linked from the README and the overview.
+2. **Seeded randomized parity sweeps** against the in-process ORE oracles: random trades (dates,
+   strikes, tenors, seasoning and fixings, position, settlement) on several markets (sloped,
+   inverted, negative, flat), for today's values, both Greek methods (AD for the smooth trades)
+   and Theta (dates across weekends, coupons, fixings and exercises), and market risk (calibrated
+   options on more scenarios, historical scenarios). A small fixed sample in the fast tier, the
+   whole sweep in the full tier; every failure reproducible from its seed.
+3. **The settings each analytic accepts** compared with ORE: the sensitivity configuration's,
+   the calibration strategies, `ShiftHorizon`, shorts; and ORE's own market-risk analytic end to
+   end where OREApp runs it.
+4. What ORE cannot express (the oracle's refusals) listed in the matrix as such, not left blank.
 
-**To close.** With [I-51](#i-51): differentiate the sensitivity market's representation
-(so AD equals the bump halves on the sloped shared portfolio, `tests/support/portfolio.py`,
-per trade, factor and tenor), or label AD Greeks as the derivative of a different quantity
-and state the gap; measure and document the Bermudan's fixed-calibration difference, which
-market risk's revaluation shares ([I-112](#i-112)): one calibration inside the price function
-serves both.
+Every new option or analytic already arrives with its ORE parity test (roadmap goals); this
+covers what is already there.
 
 <a id="i-103"></a>
 ### I-103 — Malformed market and trade inputs are accepted: an unsorted curve prices silently, a late expiry crashes
@@ -373,6 +350,54 @@ retires it); every API model strict (`extra="forbid"`). The run request's prefli
 
 ## Performance
 
+<a id="i-115"></a>
+### I-115 — The Greeks on an accelerator: bumps one at a time in a host loop, a calibrated option's AD compiling for a minute, nothing measured on a GPU
+
+**Severity:** Medium · **Status:** OPEN · **Category:** Performance · **Found:** 2026-10-17, closing
+I-51, I-78 and I-112
+
+**What is wrong.**
+
+- **The bump Greeks reprice one shift at a time.** `engine.risk.greeks.bump.portfolio_sensitivities`
+  values each trade on about sixty shifted markets in a Python loop (`value_on` per shift, a
+  calibrated option recalibrated in each), every value a host round trip: an accelerator idles
+  between small programs. The shifts are independent scenarios on the sensitivity market, which
+  market risk already revalues as one batch, its options recalibrated per scenario
+  (`engine.risk.market.revaluation`, `engine.risk.greeks.price_functions`).
+- **A calibrated option's AD Greeks compile for about a minute.** Measured old and new code
+  alternately, the shared portfolio's AD Greeks on ORE's default grid with no disk cache: 159 s
+  against 32 s before 2026-10-17, warm 4.7 s against 0.7 s (the bump method 8.7 s); its American,
+  16 helpers, alone 87 s cold, 0.6 s warm, 4.2 GB peak. Most of it is the helpers' prices, each
+  with its own y\* solve, traced again in every derivative context of the basket's residuals in
+  one program; compiled apart, the calibration's second derivatives took 12 s and the grid's
+  along a given volatility 0.6 s (profiling §3.9). Two other forms of the tangent solve were
+  measured and are worse.
+- **Nothing of 2026-10-17's is measured on an accelerator**: the AD program through a calibration
+  (batched forward derivatives over 26 directions, each moving the grid's operator), and market
+  risk's recalibration (each scenario its own operator, batched, where a fixed model shares one).
+
+**Reach.** Wall time only; no number. Bump Greeks on an accelerator; the first AD Greeks of a
+calibrated option's shape in a process; calibrated options in market risk on a GPU or TPU.
+
+**Current handling.** The disk cache keeps the compiled programs, so a repeated job does not pay
+the compile; bump Greeks on a CPU are as before. Where the float64 stages (calibrations, Greeks)
+run on a host with an accelerator is the owner's open decision A-25
+([compliance/decisions.md](../../compliance/decisions.md)), which step 1's measurements inform.
+
+**To close**, in this order, the numbers equal before and after within the margin (the ORE parity
+suites, the golden snapshot), measured old against new alternately:
+
+1. Measure on the RTX 5060 (WSL): the 2026-10-17 tests, the shared portfolio's bump and AD Greeks
+   cold and warm, peak memory, and recalibrated market risk's time per scenario against a fixed
+   model's, so the work below is aimed at what costs on the device.
+2. The bump Greeks as one batched revaluation: the shifts as scenarios of the sensitivity market
+   (the price functions on `TenorNodes`, a calibrated option recalibrated per shift as market
+   risk recalibrates per scenario, Theta as it is), one program per trade shape; equal to ORE's
+   sensitivity analytic as now (tests/test_sensitivity_ore_parity.py).
+3. The AD program in two: the calibration's first and second derivatives along each direction
+   (the implicit function theorem on the basket's residuals, as now), then the grid's along the
+   combined direction; the same Greeks.
+
 <a id="i-53"></a>
 ### I-53 — On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch
 
@@ -383,7 +408,7 @@ re-measured 2026-10-02, 2026-10-05, 2026-10-06, 2026-10-07
 date, bump and call (pricers jitted once per shape, 2026-10-02; [I-21](#i-21), [I-22](#i-22));
 then a repeated job compiled 9 programs, the AD Greeks' derivatives living only in JAX's internal
 caches (`tests/test_profiling_and_jit.py::TestCompileCounts::test_a_repeated_job_compiles_nothing`,
-`::test_an_option_s_greeks_are_a_program_per_derivative`, both red on the code before); and the
+`::test_an_option_s_greeks_are_one_program`, both red on the code before); and the
 recalibration of every Bermudan/American, on every path date and in its Greeks, ran bisections
 of 60 steps per bucket around 160 per y\*, the dates one after another (decision
 A-21: one root solver, Newton by default, the dates of one basket shape calibrated together;
@@ -420,7 +445,7 @@ times on the RTX 5060 (7.3 s to 0.19 s); the demo's repeated job on the GPU 5.4�
   exists.
 
 **Reach.** Wall time only; no number. Windows CPU runs; a worker's first job; float64 path
-pricing of linear trades on a CPU.
+pricing of linear trades on a CPU. (A calibrated option's AD compile is [I-115](#i-115)'s.)
 
 **Current handling.** None needed for correctness.
 
@@ -1183,7 +1208,7 @@ then reused (a repeated demo job compiles nothing). No number is wrong.
 **To close.** Jit the scenario market's construction and the other eager sites as
 module-level functions with their data as arguments, and give market risk's batch a
 module-level jitted function of `TradePriceFunction.pricer` and `.terms`, as the AD Greeks
-(`engine.risk.greeks.ad._curve_derivatives`). Jitting can move float64 at rounding level (XLA
+(`engine.risk.greeks.ad._derivatives`). Jitting can move float64 at rounding level (XLA
 fuses what ran op by op), so it shows the golden snapshot's change per array. Measured by the
 compile probe of profiling §3.8 on the demo's job.
 
@@ -1209,7 +1234,7 @@ to a non-default value, convert it, and assert the value arrives in the engine's
 configuration. Red first: a schema that drops a field must fail the test.
 
 <a id="i-110"></a>
-### I-110 — The documentation contradicts the code in places; no single parity table
+### I-110 — The documentation contradicts the code in places
 
 **Severity:** Low · **Status:** OPEN · **Category:** Tooling · **Found:** 2026-10-10, the
 project audit (AUD-15, AUD-46, AUD-47); checked 2026-10-11
@@ -1224,17 +1249,10 @@ project audit (AUD-15, AUD-46, AUD-47); checked 2026-10-11
   draws and other host work do not.
 - `pyproject.toml` says ORE-parity tests are never marked slow; two in
   `tests/test_ore_xva_parity.py` are.
-- ORE parity is stated per component ([docs/reference/ore-parity.md](../reference/ore-parity.md)),
-  but no one table says, per product and analytic (t=0 value, path values, exposure, Greeks,
-  VaR/ES), what is shown equal to ORE, to what tolerance and by which test, so "matches ORE"
-  reads broader than it is (Greeks, [I-51](#i-51); a calibrated Bermudan's market risk,
-  [I-112](#i-112)).
-
 **Reach.** Readers; no number.
 
-**To close.** Each statement corrected; one table of products by analytics in
-docs/reference/ore-parity.md, linked from the README and the overview, which a change that
-moves a cell updates.
+**To close.** Each statement corrected. (The table of what equals ORE, per product and
+analytic, was this entry's until 2026-10-17 and is now [I-116](#i-116)'s parity matrix.)
 
 ---
 
@@ -1328,3 +1346,6 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-98"></a>I-98 | Per-path product operands had no unbiased rounding policy; keyed stochastic compute rounding removes their conditional rounding bias, nearest retained as the measured baseline and nonlinear FP8 failures left failing (2026-10-16) | `tests/test_precision_accuracy.py::test_stochastic_product_has_no_binade_rounding_bias`, `::test_stochastic_keys_are_data_and_sample_prefixes_reproduce`; `rounding` and `rounding_options` campaigns |
 | <a id="i-113"></a>I-113 | Long continuation values and stressed market-risk revaluations crossed zero; bound before LongShort/delivery and before/after P&L storage (2026-10-16) | `tests/test_precision_accuracy.py::test_long_option_bound_precedes_position_and_physical_delivery`, `::test_market_risk_cannot_revalue_a_long_option_below_zero` (both red before fix) |
 | <a id="i-111"></a>I-111 | Raw variance diagnostics could be read as nominal confidence bounds despite rare-event undercoverage; the shared Python/HTTP availability contract now declines all nominal intervals without a validated tail bound, retains raw errors, audits each date including zero-width misses, and renames the conditional ES diagnostic (2026-10-16). Supported intervals are F-10 | `tests/test_uncertainty_availability.py`, `tests/test_precision_harness.py::TestMeasure::test_replicated_diagnostics_are_per_date_and_never_certify_empirical_constants`, `tests/test_precision_accuracy.py` (wire metadata and warm compile reuse) |
+| <a id="i-51"></a>I-51 | The sensitivities were never run against ORE's sensitivity analytic, and their Theta market kept each curve's discount factors fixed in dates where ORE's holds its tenor points at their times from the as-of date as the reference date moves (60-290% of every trade's Theta off ORE's); now every Delta, Gamma, Vega and Theta of the shared portfolio equals ORE's own analytic, run in-process, within 2e-14 of the trade's NPV, calibrated options recalibrated, and `SensitivityConfig.swaption_vol_decay`, which a simulated volatility does not read, is gone (2026-10-17) | `tests/test_sensitivity_ore_parity.py` (red first: all eight trades on Theta) |
+| <a id="i-78"></a>I-78 | The AD Greeks differentiated the market curves' pillars, not ORE's sensitivity market (a near-par swap's discount Delta 2% off the bump method's), and held a Bermudan's calibration where the bump recalibrates; now they are derivatives on ORE's sensitivity market with the calibration inside the price function (its implicit derivative on the whole basket), ORE's Greek as the shift vanishes for swaps, Europeans and bonds, and for a grid-priced option, whose price is piecewise smooth, labelled with the gap on the result (2026-10-17) | `tests/test_greeks.py::TestAgainstTheBumpMethod`, `tests/test_greeks_bermudan.py`, `tests/test_sensitivity_ore_parity.py::test_the_ad_greeks_are_ores_as_the_shift_vanishes` |
+| <a id="i-112"></a>I-112 | Market risk held a calibrated Bermudan's/American's LGM under every scenario where ORE's historical P&L recalibrates it (up to 0.19% of the value, flagged); now recalibrated on every scenario's curves, in float64, a scenario that misses refused, each scenario priced on its own model in difference form, equal to ORE recalibrating to 7e-11 (2026-10-17) | `tests/test_market_risk_ore_parity.py::test_every_scenario_revalues_as_ore_does[bermudan-recalibrated]`, `[american-recalibrated]` (red first: 89.4 off), `tests/test_market_risk.py::TestRecalibration` |

@@ -16,8 +16,9 @@ simulated path.
     `FloatSpreadMapping::proRata`: the swaption is priced on the discount curve alone, and the
     difference between each floating coupon and its discount-curve "flat" amount is moved
     onto the fixed coupons (`S_j`) and the start (`S_m1`).
-  * Bootstrap (`bootstrap_sigma`): `calibrateVolatilitiesIterative` -- one piecewise-constant
-    bucket per helper, ending at the helper's expiry (the last open), each solved so the model
+  * Bootstrap (`bootstrap_sigma`; `bootstrap` inside a traced function):
+    `calibrateVolatilitiesIterative` -- one piecewise-constant bucket per helper, ending at the
+    helper's expiry (the last open), each solved so the model
     matches the market with the earlier buckets fixed. ORE minimises the relative price error
     with Levenberg-Marquardt to `EndCriteria(1000, 500, 1e-8, 1e-8, 1e-8)`, and finds y* with
     Brent at accuracy 1e-6; here each bucket's volatility is the root on [1e-6, 0.2], and y*
@@ -32,6 +33,11 @@ simulated path.
     0), and a bucket at the bracket's ceiling, where ORE's unbounded optimizer would go on
     (I-73). ORE then fails the build unless `ContinueOnCalibrationError`; the engine refuses a
     miss the same way (`CalibrationError`; `ContinueOnCalibrationError` is not offered, A-24).
+  * Derivatives (`calibrated_values`): the calibrated buckets as a function of the curves and the
+    helpers' volatilities, differentiated by the implicit function theorem on the whole basket's
+    system of residuals (`basket_residuals`), to any order, the bootstrap's own root-finding never
+    differentiated: what an option recalibrated under a bump or a scenario responds with
+    (`engine.risk.greeks.price_functions`; I-78).
 
 Every pricing function takes discount and index curves of either type (`ZeroCurve` today,
 `DiscountCurve` on a path) and broadcasts over their leading batch axes.
@@ -57,7 +63,7 @@ from engine.market_data.market import (
 from engine.models.bachelier import bachelier
 from engine.models.lgm import H as lgm_H
 from engine.precision import matmul
-from engine.solvers.roots import DEFAULT_SOLVER, Steps, solve
+from engine.solvers.roots import DEFAULT_SOLVER, Steps, implicit_root, implicit_solution, solve
 
 #: `IrModelBuilder::maxAtmStdDev`: a helper strike further from ATM is moved to this many ATM
 #: standard deviations (fallback rule 1).
@@ -326,8 +332,10 @@ def _analytic_lgm(instrument, legs: _Legs, reversion, zeta_expiry, strike, recei
     from 0. A helper is struck within `MAX_ATM_STD_DEV` of the money, so y* is near 0, and from
     there Newton converges in 3 steps; from the y* of another volatility (a warm start) it can
     start far up the boundary's steep side and need more (measured in float32 on a path:
-    5 steps from -0.5 left a helper 2% off). The price is stationary in y* at the root, so y*
-    carries no derivative and the price's derivatives with it held fixed are exact."""
+    5 steps from -0.5 left a helper 2% off). The price is stationary in y* at the root, so its
+    first derivatives with y* held fixed are exact; y* still carries its implicit derivative
+    (`implicit_root`), which the second derivatives need: a calibration's second-order response
+    to the curves (`calibrated_values`), an option's Gamma through its recalibration."""
     S, S_m1 = _corrections(instrument, legs)
     amounts = jnp.asarray(instrument.fixed_accrual) * strike[..., None] - S      # [..., Nf]
     H0 = lgm_H(reversion, jnp.asarray(instrument.float_start[0]))
@@ -335,8 +343,9 @@ def _analytic_lgm(instrument, legs: _Legs, reversion, zeta_expiry, strike, recei
     zeta = jnp.asarray(zeta_expiry)[..., None]
     D = legs.fixed_df
     shape = jnp.broadcast_shapes(legs.d0.shape, zeta.shape[:-1])
-    y_star = solve(_y_star_helper, (amounts, D, dH, zeta, S_m1, legs.d0), jnp.zeros(shape, dtype=legs.d0.dtype),
-                   solver=solver, steps=Y_STAR_STEPS, increasing=False, window=Y_STAR_WINDOW)
+    y_star = implicit_root(_y_star_helper, (amounts, D, dH, zeta, S_m1, legs.d0),
+                           jnp.zeros(shape, dtype=legs.d0.dtype), solver=solver, steps=Y_STAR_STEPS,
+                           increasing=False, window=Y_STAR_WINDOW)
     sqrt_zeta = jnp.sqrt(zeta[..., 0])
     w = jnp.where(receiver, 1.0, -1.0)   # ORE: Call (payer) -> -1, Put (receiver) -> +1
     Phi = lambda arg: norm.cdf(w * arg / sqrt_zeta)  # noqa: E731
@@ -419,41 +428,66 @@ def bootstrap_sigma(basket: Sequence[BasketInstrument], disc, index, vols, rever
     [expiry_{i-1}, expiry_i) (the last is open), and zeta(expiry_i) = zeta(expiry_{i-1}) +
     sigma_i^2 (expiry_i - expiry_{i-1}). `vols` is `[..., n]` (or `[n]`), matched to the
     curves' batch axes. Computed in the curves' dtype (float64: every calibration is on a
-    market of the as-of date, A-10), each root by `solver`. Newton starts each bucket
-    at its helper's market volatility, close to the bucket's in level, and never at an edge of
-    the bracket (where a bucket after a floored one would start, the slope vanishes).
+    market of the as-of date, A-10), each root by `solver` (`bootstrap`)."""
+    expiries = basket_expiries(basket)
+    dtype = curve_dtype(disc)
+    values, market, model, hit = bootstrap(tuple(b.astype(dtype) for b in basket), disc, index, vols,
+                                           np.diff(expiries, prepend=0.0), reversion, solver)
+    return BootstrapResult(times=expiries[:-1], values=values, market=market, model=model, hit_ceiling=hit,
+                           rmse=_calibration_error(market, model))
 
-    Each bucket is one jitted program per helper shape and curve shape (`_bootstrap_bucket`),
-    whatever the dates, rates and volatilities (I-22); a basket's helpers recur in the
-    baskets of other trades and bumped markets, which reuse them."""
+
+def basket_expiries(basket: Sequence[BasketInstrument]) -> np.ndarray:
+    """The helpers' expiry times, on the host: the bootstrap's bucket ends. A basket must have at
+    least one helper and strictly increasing expiries."""
     if not basket:
         raise ValueError("a bootstrap needs at least one helper")
-    expiries = np.array([b.expiry_time for b in basket])
+    expiries = np.array([float(b.expiry_time) for b in basket])
     if np.any(np.diff(expiries) <= 0.0):
         raise ValueError("basket expiries must increase strictly")
+    return expiries
+
+
+def bootstrap(basket: Sequence[BasketInstrument], disc, index, vols, dt, reversion: float,
+              solver: str = DEFAULT_SOLVER):
+    """`bootstrap_sigma`'s buckets, traceable: the helpers in the curves' dtype and `dt`, each
+    bucket's length (the first from 0), as data, so a price function calibrates inside its own
+    program (`engine.risk.greeks.price_functions`). Returns `(values, market, model,
+    hit_ceiling)`, each `[..., n]`.
+
+    Newton starts each bucket at its helper's market volatility, close to the bucket's in level,
+    and never at an edge of the bracket (where a bucket after a floored one would start, the
+    slope vanishes). The values carry no derivative; `calibrated_values` gives them the
+    calibration's.
+
+    Each bucket is one jitted program per helper shape and curve shape (`_bootstrap_bucket`),
+    whatever the dates, rates and volatilities (I-22); a basket's helpers recur in the baskets
+    of other trades and bumped markets, which reuse them."""
     dtype = curve_dtype(disc)
     vols = jnp.asarray(vols, dtype=dtype)
-    dt = np.diff(expiries, prepend=0.0)
     values, markets, models, ceiling = [], [], [], []
     zeta_before = jnp.zeros(vols.shape[:-1], dtype=dtype)
     for i, instrument in enumerate(basket):
         sigma, market, model, hit, zeta_before = _bootstrap_bucket(
-            instrument.astype(dtype), disc, index, vols[..., i], zeta_before, jnp.asarray(dt[i], dtype=dtype),
-            reversion, solver)
+            instrument, disc, index, vols[..., i], zeta_before, jnp.asarray(dt[i], dtype=dtype), reversion, solver)
         values.append(sigma)
         markets.append(market)
         models.append(model)
         ceiling.append(hit)
     stack = lambda xs: jnp.stack(xs, axis=-1)  # noqa: E731
-    market, model = stack(markets), stack(models)
-    return BootstrapResult(times=expiries[:-1], values=stack(values), market=market, model=model,
-                           hit_ceiling=stack(ceiling), rmse=_calibration_error(market, model))
+    return stack(values), stack(markets), stack(models), stack(ceiling)
 
 
 @jax.jit
 def _calibration_error(market: jax.Array, model: jax.Array) -> jax.Array:
     """`getCalibrationError` with `RelativePriceError` over the last axis, the basket."""
     return jnp.sqrt(jnp.mean(jnp.square((market - model) / market), axis=-1))
+
+
+def calibration_misses(market: jax.Array, model: jax.Array, hit_ceiling: jax.Array, tolerance) -> jax.Array:
+    """`[...]`: True where a calibration's helpers' `market` and `model` values `[..., n]` miss
+    ORE's acceptance (`BootstrapResult.misses`), traceable."""
+    return _misses(_calibration_error(market, model), hit_ceiling, tolerance)
 
 
 @partial(jax.jit, static_argnums=(7,))
@@ -467,7 +501,8 @@ def _bucket(instrument: BasketInstrument, disc, index, vol, zeta_before, dt, *, 
     helper's expiry): its volatility, the root on `SIGMA_BRACKET` of the helper's model value
     less its market value, found from the helper's market volatility. Returns `(sigma, market,
     model, hit_ceiling, zeta at this expiry)`, each over the batch: the curves' batch axes
-    broadcast with the volatility's (either may be unbatched)."""
+    broadcast with the volatility's (either may be unbatched). The root carries no derivative:
+    a calibration's is the whole basket's (`calibrated_values`)."""
     dtype = curve_dtype(disc)
     # `price_pair` with what does not depend on the bucket's volatility taken out of the
     # solve: the helper's legs, its market value, strike and type.
@@ -488,3 +523,30 @@ def _bucket(instrument: BasketInstrument, disc, index, vol, zeta_before, dt, *, 
     zeta = base + sigma ** 2 * dt
     hit = sigma >= SIGMA_BRACKET[1] * (1.0 - ceiling_tolerance(dtype))
     return sigma, market, model_value(zeta), hit, zeta
+
+
+def basket_residuals(basket: Sequence[BasketInstrument], disc, index, vols, values, dt, reversion: float,
+                     solver: str = DEFAULT_SOLVER) -> jax.Array:
+    """`[n]`: each helper's model value less its market value on the LGM with the buckets
+    `values` (`zeta(expiry_j) = sum_{i<=j} values_i^2 dt_i`), the system the bootstrap solves one
+    bucket at a time. Lower triangular in the values: helper j reads the buckets up to its own."""
+    zeta = jnp.cumsum(jnp.square(values) * dt)
+    pairs = [price_pair(helper, disc, index, vols[j], reversion, zeta[j], solver) for j, helper in enumerate(basket)]
+    return jnp.stack([model - market for market, model in pairs])
+
+
+def calibrated_values(basket: Sequence[BasketInstrument], disc, index, vols, dt, reversion: float,
+                      solver: str = DEFAULT_SOLVER) -> jax.Array:
+    """`[n]`: the bootstrap's bucket values on one market (`bootstrap`), with the implicit
+    function theorem's derivative in the curves and the volatilities: the calibration's
+    response to them, of any order (`engine.solvers.roots.implicit_solution` on
+    `basket_residuals`). What a price function differentiated through its calibration reads
+    (`engine.risk.greeks.price_functions`): exact for an accepted calibration, every bucket a root
+    inside the bracket (one at an edge misses ORE's acceptance and is refused)."""
+    def solution(market):
+        return bootstrap(basket, *market, dt, reversion, solver)[0]
+
+    def residual(x, market):
+        return basket_residuals(basket, *market, x, dt, reversion, solver)
+
+    return implicit_solution(residual, solution, (disc, index, vols))

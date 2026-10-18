@@ -702,6 +702,19 @@ def working_bytes_per_path(swap: _PreparedBermudan, itemsize: int) -> int:
     return itemsize * (_WORKING_COPIES * columns * nodes + 2 * basis)
 
 
+def working_bytes_per_model(swap: _PreparedBermudan, itemsize: int) -> int:
+    """About how many bytes one induction's level holds, its values `itemsize` bytes each: the
+    row's `[nodes, nodes]` rollback operator, its cashflows' functions on the grid and
+    `_WORKING_COPIES` arrays of its columns. What each scenario of a batch adds when it has a
+    model of its own, an option recalibrated under each market-risk scenario
+    (`engine.risk.market.revaluation.scenario_batch_size`), on top of its path's
+    `working_bytes_per_path`."""
+    rows = induction_rows(swap)
+    nodes = 2 * grid_half_width(swap.std_devs, swap.n_per_std) + 1
+    _, columns, basis = rows.targets.shape
+    return itemsize * nodes * (nodes + basis + _WORKING_COPIES * columns)
+
+
 def path_blocks(paths: int, bytes_per_path: int, devices: int = 1) -> int:
     """The fewest blocks of equal size that `paths` paths (split evenly across `devices`) are
     priced in so that each device's induction stays within `induction_memory_budget()`: a divisor of

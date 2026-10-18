@@ -1,10 +1,11 @@
 # ORE parity validation
 
-How the engine is shown to equal ORE, what is proven, and the work that remains:
-[I-51](../known-issues.md#i-51) and [I-112](../known-issues.md#i-112), both in the
-[roadmap's focus](../roadmap.md#stage-3--the-focus). The work of
-2026-10-07 built the ORE simulation oracle and closed I-50 and I-34; that of 2026-10-12 closed
-I-32, I-49 and I-73, so every trade of the shared portfolio equals ORE's simulation on its paths. The formula-by-formula
+How the engine is shown to equal ORE, what is proven, and the work that remains (a second
+currency, [F-04](../features.md#f-04)). The work of 2026-10-07 built the ORE simulation oracle
+and closed I-50 and I-34; that of 2026-10-12 closed I-32, I-49 and I-73, so every trade of the
+shared portfolio equals ORE's simulation on its paths; that of 2026-10-17 built the ORE
+sensitivity oracle and closed I-51, I-78 and I-112, so the Greeks and a calibrated option's
+market risk equal ORE's too. The formula-by-formula
 mapping is in [ORE Parity](../../reference/ore-parity.md); the differences from ORE that remain
 by decision (X-1 to X-11) are in [compliance/decisions.md](../../../compliance/decisions.md) §3.
 
@@ -33,7 +34,7 @@ by decision (X-1 to X-11) are in [compliance/decisions.md](../../../compliance/d
 | L2 Components | ζ, H, bond price, numeraire, step covariance (`ORE.CrossAssetModel`); each pricer on a fixed or path curve against its ORE engine; calibrated σ against ORE's calibration | ORE bindings, OREApp | 1e-12 analytics; 1e-10 pricers; ORE's end criteria for σ | Done (`tests/test_cam.py`, `test_pricing.py`, `test_ore_lgm_calibration.py`, `test_ore_lgm_parity.py`) |
 | L3 Path parity | ORE's paths priced by the engine: each path's state read from ORE's scenario dump rebuilds every simulated curve; each trade's cube against ORE's per path and date; t=0 (ORE's `T0`); the engine's exposure definitions on ORE's own cube | OREApp XVA (`EXPOSURE`, `PFE`) with the scenario dump and a double-precision cube | Curves 1e-10 relative; a trade's cube 1e-10 of its largest value; `T0` and the profiles 1e-10 relative | Done for every trade under both models (`tests/test_ore_xva_parity.py`: measured 1.2e-11, 3.0e-11, 3.9e-11, 1.8e-13); Bermudans and Americans since 2026-10-12, their cubes to 1.9e-11, each LGM calibrated when ORE built the trade on the simulation market of the as-of date and kept on every path, as ORE's exposure simulation keeps it ([I-49](../known-issues.md#i-49)), at ORE's default `ShiftHorizon` ([I-32](../known-issues.md#i-32)); uncalibrated too, to 2e-11 |
 | L4 Distribution parity | The engine's simulation against ORE's, independent random numbers: EPE, ENE, PFE per trade and netting set; the mean of every simulated discount factor | OREApp XVA | 4 combined standard errors at each grid date; linear trades at 2^14 paths, options at 2^12 for ORE's time (2^10 until the engine's rollback became one shared operator per step, 2026-10-13, [I-83](../known-issues.md#i-83)); PFE by an order-statistic interval | Done (`tests/test_ore_xva_parity.py`, `slow`). EE_B, EEE_B, EPE_B and EEPE_B follow from EPE (L3 checks the definitions); FX and EQ wait for a second currency (F-04) |
-| L5 Risk parity | Delta, Gamma, Vega, Theta per trade; market-risk VaR/ES | OREApp sensitivity analytic; ORE `RiskStatistics` | 1e-8 relative | VaR/ES done (`tests/test_market_risk_ore_parity.py`); sensitivities open ([I-51](../known-issues.md#i-51)) |
+| L5 Risk parity | Delta, Gamma, Vega, Theta per trade; market-risk VaR/ES | OREApp sensitivity analytic; ORE `RiskStatistics` | 1e-11 of the trade's NPV (Greeks); 1e-8 relative (VaR/ES) | Done: VaR/ES (`tests/test_market_risk_ore_parity.py`), a calibrated Bermudan and American recalibrated per scenario since 2026-10-17 ([I-112](../known-issues.md#i-112), 7e-11); every Greek of the shared portfolio against ORE's sensitivity analytic, measured within 2e-14 of the NPV (`tests/test_sensitivity_ore_parity.py`, [I-51](../known-issues.md#i-51)) |
 | L6 End to end | HTTP submit → poll → schema → NPVs equal the direct call; TraderX fixtures unchanged; demos run; full suite on Windows and Linux | The engine's own paths, published schemas | Exact | Done for one currency (`tests/test_api_portfolio.py`); two currencies wait for [F-04](../features.md#f-04) |
 
 ### The shared portfolio
@@ -90,16 +91,41 @@ Not compared yet: the Basel EPE/EEPE scalars (ORE writes them in the XVA report,
 credit curves; the time-weighted profiles they are read from are compared), and a second
 currency (FX, EQ; [F-04](../features.md#f-04) extends the oracle).
 
+## The ORE sensitivity oracle (2026-10-17)
+
+`tests/support/ore_sensitivity_oracle.py` runs ORE's `SENSITIVITY` analytic in-process over the
+same in-memory inputs as the other oracles (`tests/support/ore_inputs.py`): ORE's
+`sensitivity.xml` and sensitivity simulation market written from the engine's
+`SensitivityConfig` (every curve at its tenors, absolute zero-rate shifts at the same tenors,
+forward scheme, Gamma; the ATM volatilities simulated and shifted per quote; Theta; models
+recalibrated), its report read into the engine's keys.
+
+- **One engine curve is two ORE factors.** ORE's LGM builder discounts its model and its
+  calibration helpers on the swap index's discounting index (`IrModelBuilder`:
+  `swapIndex_->discountingTermStructure()`), and a bond on its reference curve; in ORE's
+  sensitivity market each is an `IndexCurve` factor beside the `DiscountCurve`, though both are
+  the engine's one discount curve. Compared against ORE's `DiscountCurve` alone, a calibrated
+  Bermudan's 7Y discount Delta was 30 times ORE's and the bond had none. The oracle shifts both
+  factors and reads the engine's curve as both moved: ORE's own cross scenario (both up at once)
+  gives the joint Delta exactly, and a second run at the negated shift the joint Gamma (the
+  up-up cross term standing for the missing down-down one was a third off where the grid's price
+  has kinks).
+- **ORE's cross-gamma filter names an index curve by its currency** (`IndexCurve/USD` for every
+  USD index), so its pair is the discount curve with every index curve.
+- **What it found.** Every Delta, Gamma and Vega already equalled ORE's to 2e-14 of the trade's
+  NPV once read this way; Theta was 60–290% off on every trade, the engine's Theta market fixed
+  in dates where ORE's holds its tenor points at their times as the reference date moves (the
+  rule of the simulated paths, I-84). Fixed, every Theta equals ORE's to 1e-13.
+- **Cost.** Two OREApp runs, about a minute on the shared portfolio (the cross scenarios
+  reprice every option with its recalibration); `tests/test_sensitivity_ore_parity.py` holds two
+  tests, each over every trade, so pytest-xdist runs the oracle on two workers, not one per
+  trade.
+
+Market risk's calibrated options (I-112) are checked by the LGM oracle (`ore_lgm_swaption_npv`)
+calibrating on each shocked scenario's curves, as ORE's historical P&L recalibrates the trades'
+model builders under every scenario.
+
 ## Remaining work
 
-**Market risk with a calibrated Bermudan ([I-112](../known-issues.md#i-112)).** ORE's historical
-P&L recalibrates a calibrated LGM to each scenario's curves; the engine's revaluation holds
-today's calibration, and its market-risk parity test prices the Bermudan uncalibrated on both
-sides. Recalibrate inside the price function and add a calibrated Bermudan to
-`tests/test_market_risk_ore_parity.py`, ORE recalibrating per scenario.
-
-**Sensitivities ([I-51](../known-issues.md#i-51)).** Run ORE's sensitivity analytic
-through the same oracle on the shared portfolio; compare per trade, factor and tenor to 1e-8
-relative.
-
-
+A second currency (FX and equity factors in the simulation, a cross-currency portfolio):
+[F-04](../features.md#f-04) extends the oracles.

@@ -133,8 +133,8 @@ print(f"Basel EPE {exposure.basel_epe:,.0f}, EEPE {exposure.basel_eepe:,.0f} "
 
 
 # =============================================================================
-# Greeks on the Bermudan, by AD: per market-curve pillar, Vega per swaption quote through the
-# calibration.
+# Greeks on the Bermudan, by AD: per tenor of ORE's sensitivity market, the calibration inside
+# the price (Delta and Gamma recalibrate as ORE's bumps do), Vega per swaption quote through it.
 # =============================================================================
 section("Greeks (Bermudan, automatic differentiation)")
 

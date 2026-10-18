@@ -30,8 +30,9 @@ from engine.pricing.bermudan import calibrate_on
 from engine.pricing.config import LgmSwaptionEngineConfig, PricingConfig
 from engine.pricing.context import from_market
 from engine.pricing.lgm_grid import _PreparedBermudan
-from engine.risk.greeks.ad import curve_greeks, portfolio_greeks, vega_greek
-from engine.risk.greeks.price_functions import bermudan_price_function, curves_of, trade_price_function
+from engine.risk.greeks.ad import portfolio_greeks, trade_greeks
+from engine.risk.greeks.bump import SensitivityConfig
+from engine.risk.greeks.price_functions import trade_price_function
 from engine.run.trace import PHASES
 from tests.support import portfolio as shared
 from tests.support.compiles import count_compiles
@@ -176,17 +177,17 @@ class TestCompileCounts:
             np.testing.assert_array_equal(warm[key], cold[key], err_msg=key)
 
     @pytest.mark.slow
-    def test_an_option_s_greeks_are_a_program_per_derivative(self):
-        """A Bermudan's Delta and Gamma on every curve are one program and its
-        Vega gradient another, each jitted with the trade as an argument. Differentiated
+    def test_an_option_s_greeks_are_one_program(self):
+        """A calibrated Bermudan's Delta and Gamma on every curve and its Vega, through its
+        calibration, are one program, jitted with the trade as an argument. Differentiated
         eagerly they were a forward and a backward program per curve and derivative, about
         ten for one option."""
         market = shared.market()
+        trade_greeks(bermudan_cfg(), market, PRICING)   # the calibration at the base (host)
         jax.clear_caches()
         with count_compiles() as counter:
-            curve_greeks(bermudan_cfg(), market, PRICING, 1e-4)
-            vega_greek(bermudan_cfg(), market, PRICING, 1e-4)
-        assert counter["jit__curve_derivatives"] == 1 and counter["jit__option_vega"] == 1, dict(counter)
+            trade_greeks(bermudan_cfg(), market, PRICING)
+        assert counter["jit__derivatives"] == 1, dict(counter)
         assert counter["jit__induction"] == 0, dict(counter)
 
     @pytest.mark.slow
@@ -218,20 +219,20 @@ class TestCompileCounts:
     def test_greeks_scale_linearly_with_notional(self):
         """7x the notional gives exactly 7x the Delta (`notional` is a traced child)."""
         market = shared.market()
-        base = curve_greeks(bermudan_cfg(notional=1_000_000.0), market, PRICING, 1e-4)
-        scaled = curve_greeks(bermudan_cfg(notional=7_000_000.0), market, PRICING, 1e-4)
+        base = trade_greeks(bermudan_cfg(notional=1_000_000.0), market, PRICING)
+        scaled = trade_greeks(bermudan_cfg(notional=7_000_000.0), market, PRICING)
         for key in base:
             np.testing.assert_allclose(scaled[key], 7.0 * base[key], rtol=1e-9, atol=1e-9)
 
 
 # =============================================================================
-# HESSIAN DIAGONAL VIA HVP == DIAGONAL OF THE FULL HESSIAN
+# FORWARD DERIVATIVES == THE GRADIENT AND THE DIAGONAL OF THE FULL HESSIAN
 # =============================================================================
 class TestHessianDiagonalEquivalence:
-    """`curve_greeks`' Delta and Gamma, each curve's gradient and Hessian diagonal from one
-    linearization over all of the trade's curves (`engine.risk.greeks.ad`), equal `jax.grad` and
+    """`trade_greeks`' Delta and Gamma, each node value's first and second directional derivative
+    by forward differentiation (`engine.risk.greeks.ad`), equal `jax.grad` and
     `jnp.diagonal(jax.hessian(...))` of the price function in each curve, for every trade's
-    price function."""
+    price function, a calibrated Bermudan's through its calibration."""
 
     @pytest.mark.parametrize("cfg", [
         SwapConfig(notional=1e6, fixed_rate=0.032, payer=True, swap_tenor="3Y", evaluation_date=ASOF,
@@ -241,16 +242,17 @@ class TestHessianDiagonalEquivalence:
         pytest.param(bermudan_cfg(), marks=pytest.mark.slow),
     ], ids=["swap", "european", "bermudan"])
     def test_matches_the_gradient_and_full_hessian_of_every_curve(self, cfg):
-        market, shift = shared.market(), 1e-4
-        greeks = curve_greeks(cfg, market, PRICING, shift)
-        fn = trade_price_function(cfg, market, PRICING)
-        rates = curves_of(fn, market, jnp.float64)
+        market, config = shared.market(), SensitivityConfig()
+        shift = config.curve_shift
+        greeks = trade_greeks(cfg, market, PRICING, config)
+        fn = trade_price_function(cfg, market, PRICING, tenors=config.curve_tenors)
+        rates = [jnp.asarray(r) for r in fn.rates]
         for k, (kind, name) in enumerate(fn.curves):
             grad = np.asarray(jax.grad(fn.price, argnums=k)(*rates))
             full = np.diagonal(np.asarray(jax.hessian(fn.price, argnums=k)(*rates)))
             np.testing.assert_allclose(greeks[f"delta:{kind}:{name}"] / shift, grad, rtol=1e-12,
                                        atol=1e-12 * float(np.max(np.abs(grad))))
-            # atol scaled to the compared magnitude: a pillar whose true Gamma is zero lands on
+            # atol scaled to the compared magnitude: a tenor whose true Gamma is zero lands on
             # different tiny values by the two routes, so rtol alone is meaningless there.
             np.testing.assert_allclose(greeks[f"gamma:{kind}:{name}"] / shift ** 2, full, rtol=1e-7,
                                        atol=1e-6 * float(np.max(np.abs(full))))
@@ -265,18 +267,16 @@ class TestGradientsSurviveTheJitBoundary:
 
     @pytest.fixture(scope="class")
     def option(self):
-        market = shared.market()
-        fn = bermudan_price_function(bermudan_cfg(), market, PRICING, jnp.float64)
-        disc, index = (jnp.asarray(market.currency("USD").discount_curve.rates),
-                       jnp.asarray(market.index_curve("USD", shared.INDEX).rates))
+        """The calibrated Bermudan's price function on the market's pillars, and its node
+        values."""
+        fn = trade_price_function(bermudan_cfg(), shared.market(), PRICING)
+        disc, index = (jnp.asarray(r) for r in fn.rates)
         return fn, disc, index
 
     @staticmethod
     def _price(option, disc_rates):
-        from engine.market_data.curves import ZeroCurve
         fn, _disc, index = option
-        times = jnp.asarray(shared.PILLARS)
-        return fn.price(ZeroCurve(times, disc_rates), ZeroCurve(times, index))
+        return fn.price(disc_rates, index)
 
     def test_delta_is_nonzero(self, option):
         delta = np.asarray(jax.grad(lambda r: self._price(option, r))(option[1]))

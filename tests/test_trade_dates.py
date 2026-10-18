@@ -61,9 +61,9 @@ from engine.pricing.context import PricingContext
 from engine.pricing.cube import value_today
 from engine.pricing.european import european_terms
 from engine.pricing.jamshidian import jamshidian_value
-from engine.risk.greeks.ad import curve_greeks, portfolio_greeks
+from engine.risk.greeks.ad import portfolio_greeks, trade_greeks
 from engine.risk.greeks.bump import SensitivityConfig, portfolio_sensitivities, sensitivity_context, theta_context
-from engine.risk.greeks.price_functions import curves_of, trade_price_function
+from engine.risk.greeks.price_functions import trade_price_function
 from tests.support.lgm_engine import grid_npv
 from tests.support.ore_lgm_oracle import ore_lgm_swaption_npv
 
@@ -267,7 +267,7 @@ def _engine_swap_npvs(cfg: SwapConfig):
     market = _market(cfg.evaluation_date)
     by_pipeline = value_today([cfg], market, "USD")[0]
     fn = trade_price_function(cfg, market)
-    by_function = float(fn.price(*curves_of(fn, market, jnp.float64)))
+    by_function = float(fn.price(*fn.rates))
     return by_pipeline, by_function
 
 
@@ -380,7 +380,7 @@ def test_an_expired_european_is_worth_zero_like_ore(offset):
     for pricing in (PricingConfig(), JAMSHIDIAN):
         market = _market(cfg.evaluation_date, [FLAT_RATE] * len(PILLARS), [FLAT_RATE] * len(PILLARS))
         assert value_today([cfg], market, "USD", pricing) == [0.0]
-        assert all(np.all(v == 0.0) for v in curve_greeks(cfg, market, pricing, 1e-4).values())
+        assert all(np.all(v == 0.0) for v in trade_greeks(cfg, market, pricing).values())
 
 
 # =============================================================================
@@ -460,7 +460,7 @@ def test_an_expired_option_is_worth_zero(make):
     engine = LgmSwaptionEngineConfig(reversion=0.03, volatility=0.01, calibration="None")
     market = _market(cfg.evaluation_date, LGM_RATES, LGM_RATES)
     fn = trade_price_function(cfg, market, PricingConfig(bermudan=engine, american=engine))
-    assert float(fn.price(*curves_of(fn, market, jnp.float64))) == 0.0
+    assert float(fn.price(*fn.rates)) == 0.0
 
 
 def test_a_bermudan_missing_a_fixing_it_needs_is_refused():

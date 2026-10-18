@@ -41,8 +41,9 @@ product** (A-8: `engine.risk.market` takes the `PricingConfig`). Left:
 - **Bermudan/American solver** (A-3): ORE's `LgmFdSolver` beside the Grid solver. ORE's two
   solvers disagree by up to 1e-3 on broken-period exercise, so understand that gap first.
 
-The AD Greeks method's agreement with the bump method on sloped curves is an open issue,
-[I-78](known-issues.md#i-78).
+The AD Greeks are ORE's in the limit of a vanishing shift on ORE's sensitivity market since
+2026-10-17 ([I-78](known-issues.md#i-78)); a grid-priced option's are the derivatives of its
+piecewise-smooth price, labelled on the result.
 
 **Depends on.** [F-07](#f-07)'s kernel rewrite: each option adds a path-pricing kernel, written in
 its form (A-16); the FD solver takes ORE's shift horizon, as the Grid solver does since I-32
@@ -93,7 +94,8 @@ its paragraph, reproduced by an independent oracle, and refused outside scope: F
 SA-CCR and BA-CVA, a precision gate per figure, and an evidence pack.
 
 **Depends on.** P0 and P2's data acquisition can start any time (P2 is calendar time).
-P1 (FRTB-SA) needs [I-51](known-issues.md#i-51) (sensitivities proven against ORE).
+P1 (FRTB-SA)'s sensitivities are proven against ORE's sensitivity analytic (2026-10-17,
+[I-51](known-issues.md#i-51)).
 P5's IMM needs the exposure proven: done for linear trades on 2026-10-07, for Bermudans and Americans on 2026-10-12 ([I-49](known-issues.md#i-49)). USD swaps need
 [I-05](known-issues.md#i-05). P6's precision gate reuses
 [I-55](known-issues.md#i-55)'s evidence table (built 2026-10-11), adding the regulatory figures'

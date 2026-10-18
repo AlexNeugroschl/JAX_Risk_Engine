@@ -74,7 +74,7 @@ reports exposure profiles (EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B, PFE, ORE's
 
 | Basel requirement | Today | Gap |
 |---|---|---|
-| SBM delta at prescribed GIRR tenors (0.25y … 30y) | ORE's bump-and-revalue delta (forward difference, absolute zero shift) at the configured curve tenors (`engine.risk.greeks.bump`); not yet checked against ORE's analytic ([I-51](../known-issues.md#i-51)) | Basel vertices (re-pillaring, P1.1); the one-sided definition already matches |
+| SBM delta at prescribed GIRR tenors (0.25y … 30y) | ORE's bump-and-revalue delta (forward difference, absolute zero shift) at the configured curve tenors (`engine.risk.greeks.bump`), equal to ORE's sensitivity analytic since 2026-10-17 ([I-51](../known-issues.md#i-51)) | Basel vertices (re-pillaring, P1.1); the one-sided definition already matches |
 | SBM vega to implied vol × vol | Vega per swaption vol quote for Europeans and Bermudans/Americans (the pipeline) | Vertices, the × σ scaling |
 | SBM curvature (full reval at ±RW shift) | Full t=0 revaluation exists (`engine.risk.market.revaluation`) | Curvature formula and shifts |
 | SBM aggregation, 3 correlation scenarios | None | New |
@@ -98,8 +98,6 @@ precondition, not a side issue:
 | Issue | Why it blocks | Blocks |
 |---|---|---|
 | [I-05](../known-issues.md#i-05) no faithful USD-SOFR swap construction | Every USD swap sensitivity rests on it | P1 for USD swaps (other books can proceed) |
-| [I-51](../known-issues.md#i-51) sensitivities not checked against ORE | SA figures rest on them | P1 |
-| [I-112](../known-issues.md#i-112) a calibrated Bermudan's/American's market-risk P&L holds its calibration where ORE's historical P&L recalibrates it (flagged on the result) | IMA's expected shortfall and P&L attribution rest on it for those trades | P3, P4 for calibrated Bermudans/Americans |
 | [I-18](../known-issues.md#i-18) no equity spot/FX | EQ risk class impossible | EQ only; refused until fixed |
 | [I-27](../known-issues.md#i-27) full-suite runs can abort inside XLA | An evidence pack needs a complete, reproducible suite run | P7 |
 | [I-08](../known-issues.md#i-08) a running EOD attempt is lost on restart (portfolio jobs durable since 2026-10-04) | Regulatory runs must survive restart and stay retrievable | P0 |
@@ -284,7 +282,7 @@ is met, not when its tasks are merged.
 | P0.5 | Measure guards: IMA functions accept only `HistoricalScenarioSet`; passing a risk-neutral cube raises | `measures.py` | Test that `ima.es` given a simulated exposure cube raises with a message naming the measure | Guard in place, red-first shown |
 | P0.6 | Desk, book and currency on every trade and result (the trade id is on every result row since 2026-10-07, I-10 closed) | `run/request.py`, `api/results.py` | Tests that each result row carries the trade's desk and book | Every row attributable to a desk and book |
 | P0.7 | Run manifest on every regulatory result | `manifest.py` | Test: manifest has git SHA, dirty flag, package versions, JAX backend and dtype, profile hash, input hashes; two identical runs give identical output hashes | Deterministic reruns proven byte-identical on CPU FP64 |
-| P0.8 | Extend the OREApp oracles of 2026-10-07 (`tests/support/ore_xva_oracle.py`; sensitivity with I-51) to the remaining analytics (stress, SA-CCR, BA-CVA, HistSimVaR, backtest) | `tests/support/` oracle | Smoke test per analytic against an ORE Example's `ExpectedOutput` | Each analytic reproduces its ORE example output |
+| P0.8 | Extend the OREApp oracles of 2026-10-07 (`tests/support/ore_xva_oracle.py`; the sensitivity analytic's, `tests/support/ore_sensitivity_oracle.py`, built 2026-10-17 with I-51) to the remaining analytics (stress, SA-CCR, BA-CVA, HistSimVaR, backtest) | `tests/support/` oracle | Smoke test per analytic against an ORE Example's `ExpectedOutput` | Each analytic reproduces its ORE example output |
 | P0.9 | Regulatory runs through the durable job queue (built for portfolio jobs on 2026-10-04); a retention rule that keeps them (I-76); TraderX's half of I-08 | `api/job_queue.py`, `integration/` | I-08's and I-76's closing criteria | I-08 FIXED, I-76 FIXED |
 
 ### Phase 1 — FRTB standardised approach (≈6 weeks)
@@ -295,7 +293,7 @@ currency position exists, CSR for Treasuries per D-4. EQ is refused until I-18 c
 | ID | Task | Detail | Oracle | Exit |
 |---|---|---|---|---|
 | P1.1 | Risk-factor mapping | Re-pillar each pricing curve onto the union of its market pillars and the Basel vertices, so a vertex bump is an exact risk-factor move rather than an interpolated one. Map each curve to a GIRR bucket (currency) and curve type | Independent check that the re-pillared curve reprices the portfolio to 1e-12 | Base NPV unchanged by re-pillaring (1e-12 relative) |
-| P1.2 | GIRR delta **per Basel's definition** | Basel defines `s = (V(r + 1bp) − V(r)) / 0.0001`, a one-sided difference: ORE's forward scheme, which `engine.risk.greeks.bump` already implements. Apply it at the Basel vertices of P1.1. Where AD is configured ([F-01](../features.md#f-01)), its gap to the definition must equal `½·Γ·1bp` | ORE `SensitivityAnalysis` via `ore_app_oracle` with shift tenors at the Basel vertices, absolute zero shift of 1bp, forward scheme | Matches ORE to 1e-8 relative per vertex (after [I-51](../known-issues.md#i-51)) |
+| P1.2 | GIRR delta **per Basel's definition** | Basel defines `s = (V(r + 1bp) − V(r)) / 0.0001`, a one-sided difference: ORE's forward scheme, which `engine.risk.greeks.bump` already implements. Apply it at the Basel vertices of P1.1. Where AD is configured, its gap to the definition is `½·Γ·1bp` to O(1bp²) for a smooth price (shown against ORE, I-78); a grid-priced option's AD Delta is its price's derivative, so that option's GIRR delta is the bump method's | ORE `SensitivityAnalysis` via `ore_app_oracle` with shift tenors at the Basel vertices, absolute zero shift of 1bp, forward scheme | Matches ORE to 1e-11 of the trade's NPV per vertex, as the sensitivities do at their tenors ([I-51](../known-issues.md#i-51)) |
 | P1.3 | GIRR vega | `s = (∂V/∂σ)·σ` at option-maturity × underlying-maturity vertices. The pipeline already reports Vega per swaption vol quote for Europeans (Bachelier on market vols) and Bermudans/Americans (recalibrated); map the quotes to the vertices and scale by σ | ORE `SensitivityAnalysis` swaption vol shifts | 1e-6 relative to ORE per vertex |
 | P1.4 | GIRR curvature | `CVR± = V(r ± RW_curv) − V(r) ∓ Σ RW·s` with a parallel shift of all vertices; `CVR = −min(CVR+, CVR−)` per bucket. Needs full reval: bonds included (closed-form, so I-24 does not block t=0 shifts) | ORE `StressTest` with parallel shifts; independent reference implementation | 1e-10 relative |
 | P1.5 | SBM aggregation | Weighted sensitivities, within-bucket `K_b`, across-bucket with the alternative `S_b` when the square root argument is negative, curvature ρ² and the ψ indicator, **three correlation scenarios** (high/medium/low), total = max over scenarios of the sum across risk classes | Independent numpy implementation (§7.3); hand-computed golden cases | Agrees with the reference to 1e-12; all golden cases pass |

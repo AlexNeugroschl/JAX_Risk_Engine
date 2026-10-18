@@ -29,9 +29,11 @@ double-precision simulations in the same wall-clock time.
   engine), and US Treasury bills and notes
 - Exposure profiles with ORE's `ExposureCalculator` definitions: EPE, ENE, EE_B, EEE_B, PFE,
   time-weighted EPE_B/EEPE_B and the Basel one-year figures
-- Sensitivities as ORE's sensitivity analysis defines them: bump-and-revalue Delta and Gamma
-  per curve tenor, Vega per swaption quote, and Theta on the rolled market; or the same
-  Greeks by automatic differentiation, a Bermudan's Vega through its calibration
+- Sensitivities as ORE's sensitivity analysis computes them: bump-and-revalue Delta and Gamma
+  per curve tenor, Vega per swaption quote, and Theta on the rolled market, each option model
+  recalibrated under every shift; or the same Greeks by automatic differentiation on ORE's
+  sensitivity market, ORE's in the limit of a vanishing shift, a calibrated option's through its
+  calibration
 - Short-horizon VaR and Expected Shortfall by full revaluation of the portfolio under
   Monte Carlo or historical shocks of every curve pillar, with ORE's `RiskStatistics`
   conventions and uncertainty from independent Sobol scrambles or historical moving blocks
@@ -99,15 +101,20 @@ against ORE running in the same process:
   under either interest-rate model.
 - Market-risk VaR and ES agree with ORE repricing every shocked scenario and running its
   own `RiskStatistics`: swaps, bonds and European swaptions per scenario to about `1e-14`,
-  Bermudans (on a fixed LGM) to `2e-13`. A calibrated Bermudan keeps today's calibration under
-  every scenario where ORE recalibrates it, and the result says so
-  ([I-112](docs/planning/known-issues.md#i-112)).
+  Bermudans (on a fixed LGM) to `2e-13`, and calibrated Bermudans and Americans, recalibrated
+  under every scenario as ORE's historical P&L recalibrates them, to `7e-11`.
 - The assembled simulation and exposure against ORE's own exposure simulation, run in-process:
   on ORE's paths every trade's NPV equals ORE's cube to `3e-11` of its scale, calibrated
   Bermudans and Americans included (each keeps the LGM calibrated when the trade was built on
   the as-of date, as ORE's simulation does), ORE's exposure definitions hold on its cube to
-  `2e-13`, and the profiles agree in distribution. The sensitivities are not yet compared with
-  ORE's ([I-51](docs/planning/known-issues.md#i-51)).
+  `2e-13`, and the profiles agree in distribution.
+- The bump-and-revalue sensitivities against ORE's own sensitivity analytic, run in-process on
+  the shared portfolio: every Delta, Gamma, Vega and Theta of every trade, calibrated Bermudans
+  and Americans recalibrated, to `2e-14` of the trade's NPV. The AD Greeks are ORE's as the
+  shift vanishes (its forward-difference Delta less half its Gamma to `2e-5` of the largest, for
+  swaps, Europeans and bonds); a grid-priced option's price is piecewise smooth in the rates, so
+  its AD Greeks are the price's derivatives rather than ORE's 1bp differences, and the result
+  says so ([I-78](docs/planning/known-issues.md#i-78)).
 
 See [ORE Parity](docs/reference/ore-parity.md) for the full mapping.
 

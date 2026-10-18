@@ -70,7 +70,8 @@ class TestRollbackOperator:
         y, w = jnp.asarray(_quadrature_nodes(n_per_std, std_devs)), jnp.asarray(_hagan_quadrature_weights(n_per_std,
                                                                                                           std_devs))
         dx_from, dx_to = 0.0125, 0.009
-        x_from, x_to = dx_from * jnp.arange(-mx, mx + 1), dx_to * jnp.arange(-mx, mx + 1)
+        nodes = jnp.arange(-mx, mx + 1, dtype=jnp.float64)
+        x_from, x_to = dx_from * nodes, dx_to * nodes
         std = std_ratio * dx_from * n_per_std
         operator = _rollback_operator(jnp.asarray(dx_from), x_to, jnp.asarray(std), y, w)
         for f in (jnp.exp(3.0 * x_from) - 1.0, jax.random.normal(jax.random.key(1), x_from.shape)):
@@ -82,7 +83,8 @@ class TestRollbackOperator:
         """Where no variance lies between the two times (a volatility of 0), ORE interpolates:
         each point with weight 1, not the quadrature's mass."""
         y, w = jnp.asarray(_quadrature_nodes(8, 3.0)), jnp.asarray(_hagan_quadrature_weights(8, 3.0))
-        x_from, x_to = 0.01 * jnp.arange(-24, 25), 0.007 * jnp.arange(-24, 25)
+        nodes = jnp.arange(-24, 25, dtype=jnp.float64)
+        x_from, x_to = 0.01 * nodes, 0.007 * nodes
         f = jnp.sin(40.0 * x_from)
         operator = _rollback_operator(jnp.asarray(0.01), x_to, jnp.asarray(0.0), y, w)
         np.testing.assert_allclose(np.asarray(operator @ f), np.asarray(jnp.interp(x_to, x_from, f)), atol=1e-15)

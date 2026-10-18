@@ -410,10 +410,13 @@ Two methods, the run configuration's `GreeksConfig.method` ([Greeks](../risk/gre
 - **Bump** (ORE's sensitivity analysis, the default): the option is repriced on the
   sensitivity market with one curve tenor or one volatility quote shifted, its LGM
   recalibrated under every shift, as ORE does.
-- **AD**: the grid engine is a `jax.lax.scan`, differentiable end to end. Delta and Gamma
-  differentiate the price in each market-curve pillar with the calibrated volatility held;
-  Vega differentiates through the calibration by the implicit function theorem (a quote moves
-  the helpers' volatilities, which move every later bucket of the bootstrap).
+- **AD**: the grid engine is a `jax.lax.scan`, differentiable end to end, and the option
+  calibrates inside its price function, so Delta and Gamma in each tenor of ORE's sensitivity
+  market recalibrate as the bumps do, and Vega moves the calibration with the quotes, each by the
+  implicit function theorem on the whole basket. The grid's price is piecewise smooth in the
+  rates (its exercise switches on the state grid's nodes), so these are the price's derivatives,
+  not ORE's 1bp differences across the kinks: the Delta within 0.4% of the largest, the Gamma not
+  comparable, and an AD run says so (I-78).
 
 Theta is the same function for both: the trade repriced on the market rolled one day, its
 exercise and schedule *dates* fixed and every time re-derived from the new date, as ORE does

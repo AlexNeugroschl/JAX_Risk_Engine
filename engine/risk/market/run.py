@@ -62,7 +62,7 @@ from engine.precision.estimate import paired_count
 from engine.pricing.config import PricingConfig
 from engine.pricing.options import bound_option_pnl, position_sign
 from engine.pricing.cube import (
-    DEFAULT_REPORTING_CURRENCY, reads_swaption_vols, reporting_fx_spots, require_unique_ids, validate_trades,
+    DEFAULT_REPORTING_CURRENCY, reporting_fx_spots, require_unique_ids, validate_trades,
 )
 from engine.risk.market.factors import RateRiskFactors
 from engine.risk.market.revaluation import factor_indices, revalue_trade, scenario_batch_size
@@ -90,9 +90,9 @@ class MarketRiskRequest:
         (`RateRiskFactors.from_market`), each equal to the market's curve of its name. Every
         curve a trade reads must be a factor.
     pricing: the engine per product (`PricingConfig`), as in a portfolio run: a European's
-        engine, and a Bermudan's/American's LGM engine, calibrated on today's market and held
-        fixed under every scenario (ORE's historical P&L recalibrates it under each, I-112; the
-        result warns of it).
+        engine, and a Bermudan's/American's LGM engine, its calibration redone on every
+        scenario's curves as ORE's historical P&L redoes it (I-112), the volatilities held; a
+        scenario whose calibration misses its basket is refused, naming the trade.
     quantiles: VaR/ES confidence levels in (0, 1), each once, e.g. 0.99 for VaR and 0.975 for
         Basel's ES (ORE's statistics take [0.9, 1); the rank rule is the same).
     precision: the `Precision` of the run (see the module docstring); float64 by default.
@@ -329,17 +329,9 @@ def _warnings(request: MarketRiskRequest) -> List[str]:
     options = [cfg.trade_id for cfg in request.trades if isinstance(cfg, OPTION_TYPES)]
     if options:
         out.append(
-            f"trades {options} are options priced with fixed volatility (the swaption volatility surface, "
-            f"a calibrated LGM or the Jamshidian model): only curve pillar rates are shocked, so volatility "
-            f"risk is not in this VaR/ES."
-        )
-    calibrated = [cfg.trade_id for cfg in request.trades
-                  if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig))
-                  and reads_swaption_vols(cfg, request.pricing)]
-    if calibrated:
-        out.append(
-            f"trades {calibrated} keep the LGM calibrated on today's market under every scenario, where ORE's "
-            f"historical P&L recalibrates it to each scenario's curves (I-112)."
+            f"trades {options} are options priced with their volatilities held (the swaption volatility surface, "
+            f"to which a calibrated LGM is recalibrated in every scenario, a fixed LGM or the Jamshidian model): "
+            f"only curve pillar rates are shocked, so volatility risk is not in this VaR/ES."
         )
     converted = [cfg.trade_id for cfg in request.trades if cfg.currency != request.base_currency]
     if converted:

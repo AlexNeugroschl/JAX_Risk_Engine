@@ -12,14 +12,19 @@ there with its t=0 engine (`engine.pricing`), so Bermudans recalibrate under eve
     by `exp(-shift t)` in its discount factor). ORE's default `ShiftScheme::Forward`:
         delta = NPV(up) - NPV(base),   gamma = NPV(up) - 2 NPV(base) + NPV(down).
   * Vega per swaption volatility quote: an absolute shift of `vol_shift`, forward difference.
-  * Theta (`sensitivityanalysis.cpp`, theta block): the date moves to
+  * Theta (`sensitivityanalysis.cpp`, theta block): the evaluation date moves to
     `thetaDate = asof + theta_days` (calendar days, I-38) and a new simulation market is built
-    there from the original market: each curve's tenor points take the original curve's
-    discount factor at `thetaDate + tenor`, with 1 at `thetaDate` (fixed in dates, not
-    renormalised); swaption volatilities are the as-of surface seen from `thetaDate`
-    (`DynamicSwaptionVolatilityMatrix`). `FixingManager` backfills the fixings from the as-of
+    from today's market. Its curves are the base market's as a function of the time from their
+    reference date: ORE's simulation-market curve holds its tenor points at the tenors' times
+    from the as-of date, with the as-of curve's discount factors there, and takes its reference
+    date from the evaluation date (`InterpolatedDiscountCurve2`, `setAdjustReferenceDate(false)`;
+    the same rule as on a simulated path, I-84). The ATM volatility matrix, a simulated factor
+    (Vega bumps it), floats with it: its option dates roll from `thetaDate`
+    (`SwaptionVolatilityMatrix` on tenors). `FixingManager` backfills the fixings from the as-of
     date to `thetaDate` with the index's forecast on that market, trades are rebuilt there, and
         theta = NPV(thetaDate) - NPV(base) + cash flows paid in (asof, thetaDate].
+    Equal to ORE's sensitivity analytic, every trade of the shared portfolio
+    (tests/test_sensitivity_ore_parity.py, I-51).
 
 AD Greeks (`engine.risk.greeks.ad`, `GreeksConfig.method = "AD"`) are the other method (decision
 A-5): the same keys, Delta/Gamma/Vega by differentiation, and this module's Theta.
@@ -35,27 +40,26 @@ import ORE
 from engine.instruments.schedules import SWAP_CALENDAR, ibor_index
 from engine.instruments.swap import SwapConfig, underlying_swap as _swap_underlying
 from engine.instruments.treasury import BondConfig
-from engine.market_data.curves import DiscountCurve, ZeroCurve, log_discount
+from engine.market_data.curves import DiscountCurve, log_discount
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER
 from engine.market_data.market import Market, index_name
 from engine.market_simulation.config import DEFAULT_CURVE_TENORS
 from engine.pricing.config import PricingConfig
-from engine.pricing.context import PricingContext, sampled_curve, simulation_market_today
+from engine.pricing.context import PricingContext, simulation_market_today
 from engine.pricing.cube import Trade, bond_legs, reads_swaption_vols, validate_trades, value_on
-from engine.pricing.european import volatility_on_path
 from engine.pricing.legs import Legs, legs_of
 
 
 @dataclass(frozen=True)
 class SensitivityConfig:
     """ORE's `sensitivity.xml` and the sensitivity simulation market: curve tenors (also the
-    shift tenors), absolute shift sizes, Theta horizon, and the volatility decay on the Theta
-    date."""
+    shift tenors), absolute shift sizes and the Theta horizon. The swaption volatilities are a
+    simulated factor of that market, as Vega needs them to be, so ORE's `ReactionToTimeDecay`
+    (read for a volatility that is not simulated) has no setting here."""
     curve_tenors: Sequence[str] = DEFAULT_CURVE_TENORS
     curve_shift: float = 1e-4
     vol_shift: float = 1e-4
     theta_days: int = 1
-    swaption_vol_decay: str = "ForwardVariance"
 
 
 def _shifted(curve: DiscountCurve, k: int, shift: float) -> DiscountCurve:
@@ -71,21 +75,16 @@ def sensitivity_context(market: Market, config: SensitivityConfig) -> PricingCon
 
 
 def theta_context(market: Market, config: SensitivityConfig) -> PricingContext:
-    """The Theta market (see the module docstring), fixings backfilled."""
+    """The Theta market (see the module docstring): the sensitivity market's curves on the Theta
+    date, the volatility matrix read from it, fixings backfilled."""
+    base = sensitivity_context(market, config)
     asof, theta_date = market.asof, market.asof + config.theta_days
-    discount, index, fixings = {}, {}, {}
-    for code, data in market.currencies.items():
-        discount[code] = sampled_curve(ZeroCurve.from_config(data.discount_curve), asof, theta_date,
-                                       config.curve_tenors)
-        for name, curve in data.index_curves.items():
-            index[name] = sampled_curve(ZeroCurve.from_config(curve), asof, theta_date, config.curve_tenors)
-            fixings[name] = _backfilled_fixings(name, index[name], asof, theta_date)
+    fixings = {name: _backfilled_fixings(name, curve, asof, theta_date) for name, curve in base.index.items()}
 
     def volatility(currency, option_time, swap_length):
-        return volatility_on_path(market.swaption_vols(currency), asof, theta_date, option_time, swap_length,
-                                  config.swaption_vol_decay)
+        return float(market.swaption_vols(currency).volatility(theta_date, option_time, swap_length))
 
-    return PricingContext(theta_date, discount, index, volatility, fixings)
+    return PricingContext(theta_date, base.discount, base.index, volatility, fixings)
 
 
 def _backfilled_fixings(name: str, curve: DiscountCurve, asof: ORE.Date, theta_date: ORE.Date) -> Dict[ORE.Date, float]:
