@@ -52,10 +52,16 @@ import numpy as np
 import ORE
 import pytest
 
+from engine.calibration.ore_lgm import SwapIndexConventions
 from engine.instruments.american_swaption import AmericanSwaptionConfig
-from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, exercisable_dates
+from engine.instruments.bermudan_swaption import underlying_swap as option_underlying
 from engine.instruments.european_swaption import SwaptionConfig
+from engine.instruments.swap import SwapConfig
+from engine.instruments.treasury import BondConfig, CouponPeriod
 from engine.market_data.curves import ZeroCurve, discount
+from engine.market_data.market import CurrencyMarket, Market, index_name
+from engine.models.lgm import Sigma
 from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfig, build_cross_asset_model, simulate
 from engine.market_simulation.scenario_market import build_scenario_market
 from engine.pricing.config import LgmSwaptionEngineConfig, PricingConfig
@@ -65,6 +71,7 @@ from engine.risk.counterparty.exposure import exposure_profile, netting_set_prof
 from engine.run import PortfolioRequest, RunConfig, price_portfolio
 from tests.support import portfolio as shared
 from tests.support.ore_inputs import DISCOUNT_INDEX, report_columns, run_app, _scratch_dir
+from tests.support.ore_parity_matrix import cells
 from tests.support.ore_xva_oracle import NETTING_SET_PROFILE, implied_states, ore_xva_run
 
 MODELS = {"LGM": LgmConfig, "HullWhite": HullWhiteConfig}
@@ -93,10 +100,21 @@ def _trades():
     return list(shared.trades().values())
 
 
-def _on_ores_paths(trades, model: str, pricing: PricingConfig = PRICING):
-    """ORE's run of `trades` on 32 paths, and the engine's simulation market and cube on ORE's
-    paths."""
-    market, config = shared.market(), _simulation(model, samples=32)
+def _declared(trades, pricing=PRICING, models=tuple(MODELS), pfe_quantiles=None, samples=32):
+    """The matrix cells of an exposure comparison of `trades` under each of `models`."""
+    return [cell for model in models for cell in cells("exposure", trades, pricing, pfe_quantiles=pfe_quantiles,
+                                                       simulation=_simulation(model, samples))]
+
+
+def _shorts():
+    return [dataclasses.replace(cfg, long_short="Short", trade_id=f"{cfg.trade_id}-short") for cfg in _trades()
+            if isinstance(cfg, (SwaptionConfig,) + OPTIONS)]
+
+
+def _on_ores_paths(trades, model: str, pricing: PricingConfig = PRICING, market=None, config=None):
+    """ORE's run of `trades` on 32 paths (on the shared market under `model`, unless `market` and
+    `config` say otherwise), and the engine's simulation market and cube on ORE's paths."""
+    market, config = market or shared.market(), config or _simulation(model, samples=32)
     ore = ore_xva_run(market, trades, config, pricing, PFE_QUANTILE)
     cam = build_cross_asset_model(market, config)
     index_curves = {name: ("USD", ZeroCurve.from_config(curve))
@@ -125,6 +143,9 @@ def shorts_on_ores_paths():
     return trades, _on_ores_paths(trades, "LGM")
 
 
+@pytest.mark.ore_parity([c for model in MODELS for c in cells("calibration", models=["cross_asset_model"],
+                                                             simulation=_simulation(model, 32))],
+                        tolerance="every simulated curve 1e-10 relative, rebuilt from the calibrated model's states")
 def test_the_scenario_dump_is_the_engines_simulation_market_on_ores_paths(on_ores_paths):
     """Gate V-4: one state per path and date (read from the numeraire) rebuilds every curve
     ORE dumped, so ORE's paths can be priced by the engine (L3)."""
@@ -138,6 +159,7 @@ def test_the_scenario_dump_is_the_engines_simulation_market_on_ores_paths(on_ore
     np.testing.assert_allclose(ore.index[DISCOUNT_INDEX], ore.discount, rtol=1e-14)
 
 
+@pytest.mark.ore_parity(_declared(_trades()), tolerance="each cell 1e-10 of the trade's largest value")
 @pytest.mark.parametrize("name", list(shared.trades()))
 def test_every_trades_cube_equals_ores_on_ores_paths(on_ores_paths, name):
     """L3: each cell within `CUBE_RTOL` of the trade's largest value; a Bermudan's or
@@ -149,6 +171,9 @@ def test_every_trades_cube_equals_ores_on_ores_paths(on_ores_paths, name):
     assert np.max(np.abs(cube[:, :, j] - ore.cube[:, :, j])) <= CUBE_RTOL * scale
 
 
+@pytest.mark.ore_parity(_declared([c for c in _trades() if isinstance(c, OPTIONS)],
+                                  PricingConfig(bermudan=UNCALIBRATED, american=UNCALIBRATED), models=("LGM",)),
+                        tolerance="each cell 1e-10 of the trade's largest value")
 def test_an_uncalibrated_option_equals_ores_cube_on_ores_paths():
     """L3 for Bermudans and Americans apart from their calibration: with the LGM
     uncalibrated, every cell of every option equals ORE's. ORE builds the trade once, on the
@@ -163,6 +188,7 @@ def test_an_uncalibrated_option_equals_ores_cube_on_ores_paths():
         assert np.max(np.abs(cube[:, :, j] - ore.cube[:, :, j])) <= CUBE_RTOL * scale, name
 
 
+@pytest.mark.ore_parity(_declared(_shorts(), models=("LGM",)), tolerance="each cell 1e-10 of the trade's largest value")
 def test_a_short_option_on_ores_paths_is_ores_short_option(shorts_on_ores_paths):
     """I-101: ORE's `OptionWrapper` multiplies a short option's NPV by -1, its exercise the
     holder's, so ORE's cube and T0 of a short option are minus the long one's; the engine's
@@ -179,6 +205,106 @@ def test_a_short_option_on_ores_paths_is_ores_short_option(shorts_on_ores_paths)
         assert np.max(np.abs(cube[:, :, j + 1] - ore.cube[:, :, j + 1])) <= CUBE_RTOL * scale, sold.trade_id
 
 
+# --- the settings the shared run leaves at their defaults (I-116) ---------------------------------
+
+ICMA_3M = SwapIndexConventions(fixed_tenor="6M", fixed_day_counter="ACT/ACT (ICMA)", index_tenor_months=3)
+#: Name -> (the index's tenor in months, the simulation, the option engines).
+SETTINGS = {
+    "lgm-uncalibrated-piecewise-6m": (6, CamConfig(
+        dates=DATES, base_currency="USD", samples=32, seed=7, swaption_vol_decay="ConstantVariance",
+        curve_tenors=("3M", "6M", "1Y", "2Y", "5Y", "10Y", "30Y"),
+        ir={"USD": LgmConfig(0.0, Sigma(jnp.asarray([1.0, 2.0]), jnp.asarray([0.008, 0.010, 0.009])))}),
+        PricingConfig(bermudan=dataclasses.replace(FAST, strategy="CoterminalATM", shift_horizon=1.0, reversion=0.02,
+                                                   volatility=0.008, reference_calibration_grid="400,1M",
+                                                   bootstrap_tolerance=1e-3, solver="Bisection"),
+                      american=dataclasses.replace(FAST, exercise_time_steps_per_year=12,
+                                                   reference_calibration_grid="100,6M"))),
+    "hull-white-calibrated-3m": (3, CamConfig(
+        dates=DATES, base_currency="USD", samples=32, seed=7, bootstrap_tolerance=1e-3,
+        ir={"USD": HullWhiteConfig(-0.01, 0.01, swap_index=ICMA_3M, solver="Bisection", **BASKET)}),
+        PricingConfig(bermudan=dataclasses.replace(FAST, swap_index=ICMA_3M),
+                      american=dataclasses.replace(FAST, strategy="CoterminalATM", swap_index=ICMA_3M, shift_horizon=1.5,
+                                                   reversion=0.01, volatility=0.009, bootstrap_tolerance=1e-3,
+                                                   solver="Bisection"))),
+}
+
+
+def _market_on(index_months: int) -> Market:
+    """The shared market, its forwarding curve the index of `index_months`'."""
+    data = shared.market().currency("USD")
+    curve = next(iter(data.index_curves.values()))
+    return Market(shared.ASOF, {"USD": CurrencyMarket(data.discount_curve, {index_name("USD", index_months): curve},
+                                                      data.swaption_vols)})
+
+
+def _settings_trades(index_months: int):
+    """A trade of each product with the settings the shared portfolio leaves at their defaults:
+    on the index of `index_months`, receivers with a spread, the options on a seasoned underlying
+    with its past fixings (the American's window opened before the as-of date, cash settled), a
+    bond accruing ACT/365 and a bill."""
+    asof = shared.ASOF
+    common = dict(notional=1e6, fixed_rate=0.043, payer=False, index_tenor_months=index_months,
+                  floating_spread=0.0015, evaluation_date=asof)
+    underlying = dict(effective_date=ORE.Date(3, 2, 2026), maturity_date=ORE.Date(3, 2, 2033))
+    probe = BermudanSwaptionConfig(**common, **underlying, exercise_dates=[ORE.Date(3, 2, 2032)], trade_id="probe")
+    fixed = [ORE.as_floating_rate_coupon(c).fixingDate() for c in option_underlying(probe).floatingLeg()]
+    fixings = {d: 0.033 + 0.0001 * k for k, d in enumerate(d for d in fixed if d < asof)}
+    starts = [d for d in exercisable_dates(probe) if d > asof]
+    return [
+        SwapConfig(**common, swap_tenor="5Y", trade_id="swap"),
+        SwaptionConfig(**common, swap_tenor="5Y", forward_start=ORE.Period(1, ORE.Years), trade_id="european"),
+        BermudanSwaptionConfig(**common, **underlying, exercise_dates=starts[:-1], fixings=fixings,
+                               trade_id="bermudan"),
+        AmericanSwaptionConfig(**common, **underlying, first_exercise_date=asof - 30, last_exercise_date=starts[-2],
+                               fixings=fixings, settlement="Cash", trade_id="american"),
+        BondConfig(face_amount=1e6, maturity_date=ORE.Date(15, 8, 2029), coupon_rate=0.0375, accrual_day_count="ACT/365",
+                   coupon_schedule=tuple(CouponPeriod(a, b) for a, b in zip(
+                       [ORE.Date(15, 8, 2026 + k) for k in range(3)], [ORE.Date(15, 8, 2027 + k) for k in range(3)])),
+                   evaluation_date=asof, trade_id="bond"),
+        BondConfig(face_amount=1e6, maturity_date=ORE.Date(15, 1, 2027), evaluation_date=asof, trade_id="bill"),
+    ]
+
+
+def _settings_declared(analytic):
+    out = []
+    for months, simulation, pricing in SETTINGS.values():
+        out += (cells("exposure", _settings_trades(months), pricing, simulation=simulation) if analytic == "exposure"
+                else cells("calibration", models=["cross_asset_model"], simulation=simulation))
+    return out
+
+
+@pytest.fixture(scope="module", params=list(SETTINGS))
+def settings_on_ores_paths(request):
+    months, simulation, pricing = SETTINGS[request.param]
+    trades = _settings_trades(months)
+    return trades, _on_ores_paths(trades, "", pricing, _market_on(months), simulation)
+
+
+@pytest.mark.ore_parity(_settings_declared("exposure"), tolerance="each cell 1e-10 of the trade's largest value")
+@pytest.mark.ore_parity(_settings_declared("calibration"),
+                        tolerance="every simulated curve 1e-10 relative, rebuilt from the model's states")
+def test_other_settings_equal_ores_simulation_on_ores_paths(settings_on_ores_paths):
+    """The simulation's and the engines' settings the shared run leaves at their defaults, and
+    the trades': an uncalibrated LGM with a piecewise volatility, ConstantVariance and other
+    tenors; a calibrated Hull-White model with a negative reversion, its own tolerance, the
+    reference solver and a semi-annual ACT/ACT (ICMA) swap index on a 3M index; the option
+    engines' strategies, shift horizons, reversions, grids and tolerances. On ORE's paths every
+    simulated curve is rebuilt from the model's states and every trade's cube equals ORE's.
+    Measured (2026-10-18): the curves within 2.4e-11 relative, the cubes within 3.1e-11 of each
+    trade's largest value. Found by this test: the American, its window opened before the as-of
+    date, was never exercised on a path, where ORE's `ExerciseBuilder` makes it exercisable from
+    the day after (`contract_exercise_dates`; the cash-settled one 0.39 of its largest value off
+    ORE's on 20 cells)."""
+    trades, (ore, scenarios, cube) = settings_on_ores_paths
+    np.testing.assert_allclose(np.exp(np.asarray(scenarios.discount["USD"].log_discounts))[:, :, 1:], ore.discount,
+                               rtol=RTOL)
+    for j, cfg in enumerate(trades):
+        scale = np.max(np.abs(ore.cube[:, :, j]))
+        assert scale > 0.0, cfg.trade_id
+        assert np.max(np.abs(cube[:, :, j] - ore.cube[:, :, j])) <= CUBE_RTOL * scale, cfg.trade_id
+
+
+@pytest.mark.ore_parity(_declared(_trades()), tolerance="T0 1e-10 relative")
 def test_t0_is_the_value_on_the_simulation_market_of_the_as_of_date(on_ores_paths):
     """ORE's cube starts from each trade's value on the `ScenarioSimMarket` of the as-of date
     (the curves sampled at the simulation tenors), and so do the engine's profiles."""
@@ -190,6 +316,7 @@ def test_t0_is_the_value_on_the_simulation_market_of_the_as_of_date(on_ores_path
         "today's market should differ from the simulation market's, or this test checks nothing"
 
 
+@pytest.mark.ore_parity(_declared(_trades(), pfe_quantiles=(PFE_QUANTILE,)), tolerance="EPE, ENE at t=0 1e-10 relative")
 def test_the_pipelines_profiles_start_from_ores_t0(on_ores_paths, request):
     """I-85: `price_portfolio`'s exposure at t=0 is ORE's, each trade's and the netting set's
     (until 2026-10-07 it started from today's value, up to 4.2% away on this portfolio)."""
@@ -203,6 +330,8 @@ def test_the_pipelines_profiles_start_from_ores_t0(on_ores_paths, request):
             assert float(getattr(profile, field)[0]) == pytest.approx(ore.exposure[key][column][0], rel=RTOL, abs=1e-6)
 
 
+@pytest.mark.ore_parity(_declared(_trades(), pfe_quantiles=(PFE_QUANTILE,)),
+                        tolerance="every profile on ORE's cube 1e-10 relative")
 def test_the_profiles_of_ores_cube_are_ores_reports(on_ores_paths):
     """ORE's `ExposureCalculator` definitions (`engine.risk.counterparty.exposure`), on ORE's own cube and
     numeraire, per trade and for the netting set."""
@@ -253,6 +382,8 @@ def _assert_within(name, ours, ore, error, floor):
 
 
 @pytest.mark.slow
+@pytest.mark.ore_parity(_declared(_trades(), pfe_quantiles=(PFE_QUANTILE,), samples=2 ** 12),
+                        tolerance="EPE, ENE, PFE within four combined standard errors (independent paths)")
 @pytest.mark.parametrize("model", list(MODELS))
 @pytest.mark.parametrize("names, paths", [
     (("swap-payer", "swap-receiver-seasoned-icma", "european-payer", "european-receiver-otm-cash", "bond"), 2 ** 14),

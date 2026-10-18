@@ -19,7 +19,8 @@ engine's `SensitivityConfig` (`sensitivity_xml`, `ore_inputs.sim_market_xml`):
 What it returns (`OreSensitivityRun`) is ORE's report read into the engine's keys
 (`engine.risk.greeks.bump.portfolio_sensitivities`), per trade: `delta:<kind>:<name>` and
 `gamma:<kind>:<name>` per curve tenor, `vega:<ccy>` per quote, `theta`, and ORE's base NPV
-(each trade on the sensitivity market). A factor ORE omits (its Delta is 0) reads 0.
+(each trade on the sensitivity market). A factor ORE omits (its Delta is 0) reads 0, a Vega too
+for a trade whose ORE engine reads the volatilities (`_reads_vols`).
 
 **One engine curve is two ORE factors.** ORE's LGM model builder takes its term structure and
 its calibration helpers' discounting from the swap index's discounting curve
@@ -44,7 +45,8 @@ keyName`: `IndexCurve/USD` for every USD index), so the filter asks for the disc
 cross gammas with every index curve, and the oracle reads those with `DISCOUNT_INDEX` at the
 same tenor.
 
-One currency, one Ibor index; what the oracle cannot express is refused by name.
+One currency, one Ibor index; what the oracle cannot express is refused by name
+(`tests.support.ore_inputs.portfolio_inputs`).
 """
 from __future__ import annotations
 
@@ -56,13 +58,13 @@ from typing import Dict, Sequence
 import numpy as np
 import ORE
 
+from engine.instruments.american_swaption import AmericanSwaptionConfig
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.instruments.european_swaption import SwaptionConfig
 from engine.market_data.market import Market
 from engine.pricing.config import PricingConfig
 from engine.risk.greeks.bump import SensitivityConfig
-from tests.support.ore_inputs import (
-    CCY, DISCOUNT_INDEX, OreCurves, OreLgmEngine, fixing_lines, index_name, inputs, market_lines, portfolio_xml,
-    pricingengine_xml, report_columns, run_app, sim_market_xml, trade_xml,
-)
+from tests.support.ore_inputs import CCY, DISCOUNT_INDEX, portfolio_inputs, report_columns, sim_market_xml
 
 #: ORE's names of the two factors that are the engine's discount curve.
 _DISCOUNT, _SWAP_DISCOUNT = f"DiscountCurve/{CCY}", f"IndexCurve/{DISCOUNT_INDEX}"
@@ -114,22 +116,11 @@ def ore_sensitivity_run(market: Market, trades: Sequence, pricing: PricingConfig
                         config: SensitivityConfig = SensitivityConfig()) -> OreSensitivityRun:
     """ORE's sensitivity analysis of `trades` on `market` (see the module docstring): two
     `OREApp` runs. Raises `RuntimeError` with ORE's messages if a trade or the market fails to
-    build."""
-    if pricing.european != "Bachelier":
-        raise NotImplementedError("the sensitivity oracle prices Europeans by ORE's Bachelier engine "
-                                  "(PricingConfig's default)")
-    if set(market.currencies) != {CCY}:
-        raise NotImplementedError(f"the sensitivity oracle's market is {CCY} alone")
-    data = market.currency(CCY)
-    tenors = {t.index_tenor_months for t in trades if hasattr(t, "index_tenor_months")}
-    index = index_name(tenors.pop() if len(tenors) == 1 else 6)
-    if tenors or set(data.index_curves) != {index} or \
-            list(data.index_curves[index].times) != list(data.discount_curve.times):
-        raise NotImplementedError(f"the sensitivity oracle's market is {CCY}'s discount curve and one index's, on one "
-                                  f"set of pillars")
-    up = _run(market, trades, pricing, config, index, discount_only=False)
-    down = _run(market, trades, pricing, dataclasses.replace(config, curve_shift=-config.curve_shift), index,
+    build, `NotImplementedError` for what the oracle cannot express (`portfolio_inputs`)."""
+    up = _run(market, trades, pricing, config, discount_only=False)
+    down = _run(market, trades, pricing, dataclasses.replace(config, curve_shift=-config.curve_shift),
                 discount_only=True)
+    index = up.index
     greeks = {}
     for cfg in trades:
         trade = cfg.trade_id
@@ -138,18 +129,29 @@ def ore_sensitivity_run(market: Market, trades: Sequence, pricing: PricingConfig
         if hasattr(cfg, "index_tenor_months"):
             out[f"delta:index:{index}"] = ore[("IndexCurve", index, "delta")]
             out[f"gamma:index:{index}"] = ore[("IndexCurve", index, "gamma")]
-        if trade in up.vega:
-            out[f"vega:{CCY}"] = up.vega[trade]
-        out["theta"] = np.asarray(up.theta[trade])
+        if trade in up.vega or _reads_vols(cfg, pricing):
+            out[f"vega:{CCY}"] = up.vega.get(trade, np.zeros(np.shape(market.currency(CCY).swaption_vols.vols)))
+        out["theta"] = np.asarray(up.theta.get(trade, 0.0))  # no row at all: every Greek and Theta 0
         greeks[trade] = out
     return OreSensitivityRun(up.base_npv, greeks)
+
+
+def _reads_vols(cfg, pricing: PricingConfig) -> bool:
+    """Whether the trade's ORE engine reads the swaption volatilities, so ORE's report omits its
+    Vega only where every quote's is 0: a European's Bachelier engine, and the LGM engine of a
+    Bermudan or American calibrated to its basket."""
+    if isinstance(cfg, SwaptionConfig):
+        return True
+    engine = pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
+    return isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)) and engine.calibration == "Bootstrap"
 
 
 @dataclass(frozen=True)
 class _Report:
     """One run's report: per trade, ORE's Delta and Gamma per factor (`(kind, name, "delta" |
     "gamma")` -> `[K]`), the joint forward difference of the two discount factors `[K]`, Vega,
-    Theta and the base NPV."""
+    Theta and the base NPV; and the run's Ibor index."""
+    index: str
     base_npv: Dict[str, float]
     greeks: Dict[str, Dict[tuple, np.ndarray]]
     joint: Dict[str, np.ndarray]
@@ -157,13 +159,10 @@ class _Report:
     theta: Dict[str, float]
 
 
-def _run(market: Market, trades: Sequence, pricing: PricingConfig, config: SensitivityConfig, index: str,
+def _run(market: Market, trades: Sequence, pricing: PricingConfig, config: SensitivityConfig,
          discount_only: bool) -> _Report:
-    data = market.currency(CCY)
-    curves = OreCurves(data.discount_curve.times, data.discount_curve.rates, data.index_curves[index].rates)
-    vols = data.swaption_vols
-    engines = pricingengine_xml(OreLgmEngine.of(pricing.bermudan), OreLgmEngine.of(pricing.american))
-    parameters = inputs(market.asof, index, curves, vols, engines, portfolio_xml(trade_xml(t) for t in trades))
+    run = portfolio_inputs(market, trades, pricing, "the sensitivity oracle")
+    index, vols, parameters = run.index, run.vols, run.parameters
     parameters.setSensiSimMarketParams(
         f"<Simulation>{sim_market_xml(config.curve_tenors, (index, DISCOUNT_INDEX), vols, simulate_vols=True)}"
         f"</Simulation>")
@@ -173,12 +172,10 @@ def _run(market: Market, trades: Sequence, pricing: PricingConfig, config: Sensi
     parameters.setComputeTheta(not discount_only)
     parameters.setThetaPeriod(ORE.Period(config.theta_days, ORE.Days))
     parameters.insertAnalytic("SENSITIVITY")
-    fixings = [line for t in trades for line in fixing_lines(index, getattr(t, "fixings", None))]
-    app = run_app(parameters, market.asof, market_lines(market.asof, curves, vols), fixings, "sensitivity")
-    return _read(report_columns(app, "sensitivity"), len(config.curve_tenors), vols)
+    return _read(index, report_columns(run.run("sensitivity"), "sensitivity"), len(config.curve_tenors), vols)
 
 
-def _read(report, tenors: int, vols) -> _Report:
+def _read(index: str, report, tenors: int, vols) -> _Report:
     columns = len(vols.swap_tenors)
     greeks: Dict[str, Dict[tuple, np.ndarray]] = defaultdict(lambda: defaultdict(lambda: np.zeros(tenors)))
     cross: Dict[str, np.ndarray] = defaultdict(lambda: np.zeros(tenors))
@@ -205,4 +202,4 @@ def _read(report, tenors: int, vols) -> _Report:
     joint = defaultdict(lambda: np.zeros(tenors))
     joint.update({trade: (factors[("DiscountCurve", CCY, "delta")] + factors[("IndexCurve", DISCOUNT_INDEX, "delta")]
                           + cross[trade]) for trade, factors in greeks.items()})
-    return _Report(base, greeks, joint, vega, theta)
+    return _Report(index, base, greeks, joint, vega, theta)

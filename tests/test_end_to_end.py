@@ -34,6 +34,7 @@ from engine.risk.market.var_es import compute_risk_metrics
 from engine.run import (
     CamConfig, HullWhiteConfig, JamshidianEngineConfig, PortfolioRequest, PricingConfig, RunConfig, price_portfolio,
 )
+from tests.support.ore_parity_matrix import cells
 
 TODAY = ORE.Date(30, 7, 2026)
 HW_A, HW_SIGMA = 0.03, 0.01
@@ -155,6 +156,8 @@ class TestEndToEndEngineVsORE:
         assert comparison["base"][0] == pytest.approx(comparison["ore_base"][0], rel=1e-12)
         np.testing.assert_allclose(comparison["base"][1:], comparison["ore_base"][1:], rtol=5e-6)
 
+    @pytest.mark.ore_parity(cells("exposure", _trades(), PRICING, simulation=_request(4).config.simulation),
+                            tolerance="1e-10 relative (the swap), 5e-6 (the Jamshidian Europeans), each path")
     def test_every_paths_value_matches_ore(self, comparison):
         """Pathwise, per trade, not only in summary statistics."""
         scale = np.maximum(np.abs(comparison["ore_values"]), 1.0)

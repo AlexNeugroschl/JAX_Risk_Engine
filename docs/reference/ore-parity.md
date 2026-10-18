@@ -54,7 +54,7 @@ model was a separate pipeline with known differences from ORE, closed with it
 | `ExposureCalculator` (orea/aggregation/exposurecalculator.cpp): EPE, ENE, EE_B, EEE_B, PFE, time-weighted EPE_B/EEPE_B, Basel horizon | `engine.risk.counterparty.exposure` | tests/test_ore_xva_parity.py: the engine's profiles of ORE's own cube are ORE's reports, per trade and netting set; tests/test_pipeline.py (a bill's EE_B identity) | 1.8e-13 |
 | The assembled pipeline: `XvaAnalytic` (`EXPOSURE`, `PFE`) | `price_portfolio` | tests/test_ore_xva_parity.py: on ORE's paths each trade's cube against ORE's (L3); independent simulations within four standard errors (L4) | every trade 3.0e-11 of its scale; Bermudans/Americans since 2026-10-12 ([I-49](../planning/known-issues.md#i-49)) |
 | `SensitivityAnalysis`, `SensitivityCube` (orea/engine/sensitivityanalysis.cpp, orea/cube/sensitivitycube.cpp), its Theta and `recalibrateModels` | `engine.risk.greeks.bump` (Bump), `engine.risk.greeks.ad` (AD, ORE's `UseAD` semantics) | **OREApp run** (tests/test_sensitivity_ore_parity.py, `tests/support/ore_sensitivity_oracle.py`): every Delta, Gamma, Vega and Theta of the shared portfolio, calibrated options recalibrated ([I-51](../planning/known-issues.md#i-51), 2026-10-17); the AD Greeks of its swaps, Europeans and bond as the shift vanishes; tests/test_greeks.py, tests/test_greeks_bermudan.py | 2e-14 of the trade's NPV (Bump); 2e-5 of the curve's largest Delta (AD, O(h³)) |
-| `HistoricalPnlGenerator` / `MarketRiskReport` (orea/engine/historicalpnlgenerator.cpp, marketriskreport.cpp): the `ValuationEngine` with the trades' model builders, recalibrating under every scenario | `engine.risk.market` (`revaluation`: a calibrated option's LGM recalibrated per scenario, `price_functions.recalibrated_pnl`) | tests/test_market_risk_ore_parity.py: each scenario of a calibrated Bermudan and American against ORE's LGM engine calibrated on that scenario's curves ([I-112](../planning/known-issues.md#i-112), 2026-10-17) | 7e-11 |
+| `HistoricalPnlGenerator` / `MarketRiskReport` (orea/engine/historicalpnlgenerator.cpp, marketriskreport.cpp): the `ValuationEngine` with the trades' model builders, recalibrating under every scenario | `engine.risk.market` (`revaluation`: a calibrated option's LGM recalibrated per scenario, `price_functions.recalibrated_pnl`) | tests/test_market_risk_ore_parity.py: each scenario of a calibrated Bermudan and American against ORE's LGM engine calibrated on that scenario's curves ([I-112](../planning/known-issues.md#i-112), 2026-10-17); **ORE's `HISTSIM_VAR` analytic end to end** (tests/test_ore_parity_sweep.py, `tests/support/ore_market_risk_oracle.py`, 2026-10-18): every trade's P&L in every Monte Carlo or historical scenario of the seeded sweeps, and ORE's VaR | 7e-11; 5e-13 of the notional (sweeps) |
 
 The whole portfolio at t=0 against ORE, trade by trade, on one sloped market:
 tests/test_shared_portfolio.py ([the shared portfolio](../planning/details/ore-parity-validation.md#the-shared-portfolio)), worst case 3.8e-11 (a calibrated Bermudan).
@@ -78,7 +78,7 @@ by an OREApp run; the column says which.
 |---|---|---|---|
 | V-1 | `ValuationEngine` recalibrates the model builders it is given on each scenario (`recalibrate = true` by default, `recalibrateModels` → `LgmBuilder::recalibrate`), but `XvaAnalytic` gives it none (single-threaded) or `recalibrateModels = false` (multi-threaded), so ORE's exposure simulation never recalibrates; its sensitivity analysis and historical P&L, on the as-of date, do. Non-simulated swaption vols are the t=0 surface seen from the scenario date (`DynamicSwaptionVolatilityMatrix`) | valuationengine.cpp, xvaanalytic.cpp, historicalpnlgenerator.cpp, lgmbuilder.cpp, qle/termstructures/dynamicswaptionvolmatrix.cpp | **OREApp run** (tests/test_ore_xva_parity.py): Europeans on the decayed vols, and calibrated Bermudans and Americans on their as-of models, equal ORE on its paths (closed 2026-10-12, [I-49](../planning/known-issues.md#i-49); ORE's debug log of the run shows no recalibration after the build) |
 | V-2 | Absolute shift, `ShiftScheme::Forward`; delta `up − base`, gamma `up − 2·base + down`; scaling by target over actual shift | sensitivitycube.cpp, sensitivityscenariogenerator.cpp | Source; tests/test_sensitivities.py |
-| V-3 | `thetaDate = asof + thetaPeriod` (calendar); a new sim market from today's market with the evaluation date moved: its curves hold their tenor points at the tenors' times from the as-of date and take their reference date from the evaluation date (`InterpolatedDiscountCurve2`, `setAdjustReferenceDate(false)`), the simulated ATM vol matrix floats with it (the reading of 'fixed in dates', the engine's until 2026-10-17, was wrong by 60-290% of Theta); fixings backfilled; period flows added | sensitivityanalysis.cpp, scenariosimmarket.cpp | **OREApp run** (tests/test_sensitivity_ore_parity.py: every trade's Theta to 1e-13 of its NPV, [I-51](../planning/known-issues.md#i-51)); tests/test_sensitivities.py, tests/test_trade_dates.py |
+| V-3 | `thetaDate = asof + thetaPeriod` (calendar); a new sim market from today's market with the evaluation date moved: its curves hold their tenor points at the tenors' times from the as-of date and take their reference date from the evaluation date (`InterpolatedDiscountCurve2`, `setAdjustReferenceDate(false)`), the simulated ATM vol matrix floats with it, from its reference date, the first business day on or after the Theta date (the reading of 'fixed in dates', the engine's until 2026-10-17, was wrong by 60-290% of Theta; the Theta date's own reference, the engine's until 2026-10-18, by a weekend's variance); fixings backfilled; the period flows ORE adds are read after the roll, where they have occurred, so none (the engine added them until 2026-10-18, I-116) | sensitivityanalysis.cpp, scenariosimmarket.cpp | **OREApp run** (tests/test_sensitivity_ore_parity.py: every trade's Theta to 1e-13 of its NPV, [I-51](../planning/known-issues.md#i-51)); tests/test_sensitivities.py, tests/test_trade_dates.py |
 | V-4 | Can ORE's scenario dump reprice the cube? Yes: its numeraire gives each path's LGM state, which rebuilds every dumped curve | crossassetmodelscenariogenerator.cpp, scenariowriter.cpp | **OREApp run**: tests/test_ore_xva_parity.py, 1.2e-11 (2026-10-07) |
 | V-5 | Co-terminal basket from the trade's exercise dates; `CoterminalDealStrike` (first fixed rate less spread) with the ±3 std-dev fallback, or ATM; `ReferenceCalibrationGrid` keeps one helper per interval; an American's expiries are the grid dates in its window | lgmbuilder.cpp, irmodelbuilder.cpp | **OREApp run**: tests/test_ore_lgm_calibration.py, calibrated price = ORE's to 2e-11 |
 | V-6 | `CalibrationSwaptions`: tenor-based expiries and terms, ATM | crossassetmodelbuilder.cpp | **OREApp run**: tests/test_ore_xva_parity.py (ORE's calibrated simulation rebuilt by the engine's calibration, both models) |
@@ -547,8 +547,26 @@ guarded by `QL_ENSURE(N != 0, "no data below the target")` — the exact error m
 string this project's own tests assert against, confirmed here as the literal C++
 source text (not independently re-derived).
 
+**ORE's historical simulation VaR analytic** (`HISTSIM_VAR`,
+OREAnalytics/orea/engine/historicalsimulationvar.cpp) has an estimator of its own: its quantile
+is boost's right tail quantile of the P&L (`HistoricalSimulationVarCalculator::var`), the same
+scenario as `RiskStatistics`' wherever `N p` is not a whole number (the `floor(N p) + 1`-th
+smallest P&L), and undefined (NaN) with fewer than `1 / p` scenarios, where `RiskStatistics` and
+the engine take the worst P&L. At a whole `N p` the report reads the `(N p + 1)`-th smallest
+always, `RiskStatistics` the `ceil(N (1 - c))`-th, which is the one below where `1 - c` rounds
+low in binary (c = 0.8, 0.9: 90% of ten moves, ORE's second worst, `RiskStatistics`' the worst)
+and the same where it rounds high (0.95, 0.975), measured 2026-10-18. The report's quantile is
+the P&L itself, so a tail of gains reports a negative VaR where `RiskStatistics` floors it at
+zero. Its expected shortfall averages the P&L **at or below** that quantile, the VaR scenario
+included, where `RiskStatistics` averages strictly below. The engine's figures are `RiskStatistics`' (decision X-12); against ORE's own analytic run
+in-process the VaR is the report's and every trade's P&L ORE's
+(`tests/test_ore_parity_sweep.py::test_market_risk_is_ores`, and at ORE's default option
+engine `tests/test_ore_parity_settings.py::test_market_risk_of_options_at_ores_default_engine_is_ores`),
+the whole-`N p` difference held by `test_at_a_whole_n_p_the_var_is_risk_statistics_not_ores_report`.
+
 **Verified:** `tests/test_var_es.py` (all classes; direct `ORE.RiskStatistics`
-comparison, including the tie-at-VaR-boundary and empty-tail edge cases).
+comparison, including the tie-at-VaR-boundary and empty-tail edge cases);
+`tests/test_ore_parity_sweep.py` (ORE's `HISTSIM_VAR` analytic end to end).
 
 ## 9. Delta, Gamma, Vega, and Theta
 
@@ -604,14 +622,24 @@ textbook Rho.
 
 **Theta:** `generateSensitivities`'s theta branch advances the evaluation date by a
 configured period (calendar days, [I-38](../planning/known-issues.md#i-38)), builds a new
-simulation market from today's, reprices, and adds back the interim cashflows:
-`Theta = NPV(t+dt) − NPV(t) + CF(t, t+dt]`. The simulation market's curves hold their tenor
-points at the tenors' times from the as-of date and take their reference date from the
-evaluation date (`InterpolatedDiscountCurve2`, `setAdjustReferenceDate(false)`), so on the Theta
-date every curve is the base sensitivity market's as a function of the time from its reference
-date, and the simulated ATM volatility matrix floats with it. Both methods report it
-(`trade_theta`), equal to ORE's sensitivity analytic; the engine's curves fixed in dates were
-60–290% off ORE's Theta until 2026-10-17 ([I-51](../planning/known-issues.md#i-51)).
+simulation market from today's, reprices, and means to add back the interim cashflows,
+`Theta = NPV(t+dt) − NPV(t) + CF(t, t+dt]`; but it reads them with `aggregateTradeFlow` from the
+trade's cash flows on the Theta date without its past flows (`Trade::cashflows(...,
+includePastCashflows = false)`), where every flow of the roll has occurred
+(`CashFlow::hasOccurred`, `includeTodaysCashFlows` unset), so the sum is empty and ORE's Theta
+is `NPV(t+dt) − NPV(t)`: a coupon paid in the roll leaves Theta as it leaves the NPV. The
+simulation market's curves hold their tenor points at the tenors' times from the as-of date and
+take their reference date from the evaluation date (`InterpolatedDiscountCurve2`,
+`setAdjustReferenceDate(false)`), so on the Theta date every curve is the base sensitivity
+market's as a function of the time from its reference date; the simulated ATM volatility matrix
+(`SwaptionVolatilityMatrix` on a calendar, no settlement days) floats to the first business day
+on or after the Theta date, where each option's variance starts
+(`engine.pricing.context.floating_volatility_date`). Both methods report it (`trade_theta`),
+equal to ORE's sensitivity analytic; the engine's curves fixed in dates were 60–290% off ORE's
+Theta until 2026-10-17 ([I-51](../planning/known-issues.md#i-51)), and its add-back of the
+roll's flows ([I-39](../planning/known-issues.md#i-39)) and the Theta date's own volatility
+reference until 2026-10-18, both found by the seeded sweeps
+([I-116](../planning/known-issues.md#i-116)).
 
 **Root-finds.** Naively differentiating through a root solver gives a silently wrong
 gradient (a bisection's comparisons have none, Newton's iterations only the steps'). The
@@ -620,7 +648,9 @@ derivative instead (`engine.solvers.roots.implicit_root`'s `custom_jvp`, and `im
 on the basket's system, `engine.calibration.ore_lgm.calibrated_values`); see [Greeks](../risk/greeks.md#differentiating-through-bisection-root-finds).
 
 **Verified:** `tests/test_sensitivity_ore_parity.py` (both methods against an OREApp sensitivity
-run), `tests/test_sensitivities.py`, `tests/test_trade_dates.py` (Theta's rules),
+run), `tests/test_ore_parity_sweep.py` and `tests/test_ore_parity_settings.py` (random portfolios,
+markets, settings and Theta rolls against it), `tests/test_sensitivities.py`,
+`tests/test_trade_dates.py` (Theta's rules),
 `tests/test_greeks.py` and `tests/test_greeks_bermudan.py` (AD against finite differences
 through the recalibration, agreement with the bump method).
 
@@ -680,6 +710,587 @@ The cross-asset model's and each trade's calibration is `engine/calibration/ore_
 **Verified:** `tests/test_calibration_basket.py` (15 tests), `tests/test_calibration_lgm.py`
 (9 tests), `tests/test_calibration_integration.py` (6 tests) — see
 [Calibration: Tested by](calibration.md#tested-by) for the full breakdown.
+
+## The parity matrix
+
+What is compared with ORE, product by analytic by setting, and what is not, with the reason
+([I-116](../planning/known-issues.md#i-116), closed 2026-10-18). Each parity test declares the
+cells it compares (an `ore_parity` marker, derived from the very trades and configurations it
+runs: tests/support/ore_parity_matrix.py); tests/test_ore_parity_matrix.py fails on a public
+setting, a value of one or an analytic with neither a test nor a reason, on a field of a request
+that is neither a setting nor an input, and on this table when it is not what the tests declare.
+The seeded sweeps (tests/test_ore_parity_sweep.py, cases from tests/support/parity_sweep.py:
+random markets, as-of dates, trades and settings, each case rebuilt from its seed) declare what
+each case draws; the fast tier runs their fixed sample, the full tier the whole sweep. Trade
+terms (notionals, strikes, dates) and market data are inputs the sweeps draw, not rows.
+
+<!-- ore-parity-matrix:begin -->
+
+*Generated by `python -m tests.support.ore_parity_matrix --write` from the parity tests' `ore_parity` markers; do not edit by hand. tests/test_ore_parity_matrix.py fails if it is stale, or if a public setting or analytic has neither a test nor a reason.*
+
+Each cell names the tests that compare it with ORE (**T**n, listed below with their tolerances; *full* where only the full tier's sweep reaches it), or the reason it is not compared (**R**n); · where the setting does not apply to the product. The first row of each table is the product compared at all.
+
+#### Today's value (`npv`)
+
+| Setting | Value | Swap | European | Bermudan | American | Bond |
+|---|---|---|---|---|---|---|
+| *compared* |  | T21, T36, T40, T41, T43 | T2, T3, T4, T21, T32, T39, T40 | T9, T10, T11, T12, T21, T34, T39, T40, T42 | T10, T11, T13, T21, T34, T39, T40, T42 | T21, T40 |
+| `SwapConfig.payer` | payer | T21, T36, T40, T41, T43 | · | · | · | · |
+| `SwapConfig.payer` | receiver | T21, T36, T40, T43 | · | · | · | · |
+| `SwapConfig.index_tenor_months` | = 6 | T21, T36, T40, T41, T43 | · | · | · | · |
+| `SwapConfig.index_tenor_months` | ≠ 6 | T21 | · | · | · | · |
+| `SwapConfig.floating_spread` | = 0.0 | T21, T36, T40, T41, T43 | · | · | · | · |
+| `SwapConfig.floating_spread` | ≠ 0.0 | T21, T36 | · | · | · | · |
+| `SwapConfig.currency` | = USD | T21, T36, T40, T41, T43 | · | · | · | · |
+| `SwapConfig.currency` | ≠ USD | R1 | · | · | · | · |
+| `SwapConfig.fixings` | none | T21, T36, T40 | · | · | · | · |
+| `SwapConfig.fixings` | past fixings | T21, T36, T40, T41, T43 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | ACT/365 | T21, T36, T40, T41, T43 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | ACT/ACT (ICMA) | T21, T36, T40, T41 | · | · | · | · |
+| `SwaptionConfig.payer` | payer | · | T2, T3, T4, T21, T32, T39, T40 | · | · | · |
+| `SwaptionConfig.payer` | receiver | · | T2, T3, T4, T21, T32, T39, T40 | · | · | · |
+| `SwaptionConfig.index_tenor_months` | = 6 | · | T2, T3, T4, T21, T32, T39, T40 | · | · | · |
+| `SwaptionConfig.index_tenor_months` | ≠ 6 | · | T21 | · | · | · |
+| `SwaptionConfig.floating_spread` | = 0.0 | · | T2, T3, T4, T21, T32, T39, T40 | · | · | · |
+| `SwaptionConfig.floating_spread` | ≠ 0.0 | · | T21, T32, T39, T40 | · | · | · |
+| `SwaptionConfig.currency` | = USD | · | T2, T3, T4, T21, T32, T39, T40 | · | · | · |
+| `SwaptionConfig.currency` | ≠ USD | · | R1 | · | · | · |
+| `SwaptionConfig.settlement` | Physical | · | T2, T3, T4, T21, T32, T39, T40 | · | · | · |
+| `SwaptionConfig.settlement` | Cash | · | T21, T39, T40 | · | · | · |
+| `SwaptionConfig.long_short` | Long | · | T2, T3, T4, T21, T32, T40 | · | · | · |
+| `SwaptionConfig.long_short` | Short | · | T21, T39 | · | · | · |
+| `BermudanSwaptionConfig.payer` | payer | · | · | T9, T11, T12, T21, T34, T39, T40, T42 | · | · |
+| `BermudanSwaptionConfig.payer` | receiver | · | · | T10, T11, T21, T34, T39, T40, T42 | · | · |
+| `BermudanSwaptionConfig.index_tenor_months` | = 6 | · | · | T9, T10, T11, T12, T21, T34, T39, T40, T42 | · | · |
+| `BermudanSwaptionConfig.index_tenor_months` | ≠ 6 | · | · | T21 | · | · |
+| `BermudanSwaptionConfig.floating_spread` | = 0.0 | · | · | T9, T10, T11, T12, T21, T34, T39, T40, T42 | · | · |
+| `BermudanSwaptionConfig.floating_spread` | ≠ 0.0 | · | · | T21, T34 | · | · |
+| `BermudanSwaptionConfig.currency` | = USD | · | · | T9, T10, T11, T12, T21, T34, T39, T40, T42 | · | · |
+| `BermudanSwaptionConfig.currency` | ≠ USD | · | · | R1 | · | · |
+| `BermudanSwaptionConfig.fixings` | none | · | · | T9, T10, T11, T12, T21, T34, T39, T40 | · | · |
+| `BermudanSwaptionConfig.fixings` | past fixings | · | · | T21, T42 | · | · |
+| `BermudanSwaptionConfig.settlement` | Physical | · | · | T9, T10, T11, T12, T21, T34, T39, T40, T42 | · | · |
+| `BermudanSwaptionConfig.settlement` | Cash | · | · | T21, T39, T40 | · | · |
+| `BermudanSwaptionConfig.long_short` | Long | · | · | T9, T10, T11, T12, T21, T34, T40, T42 | · | · |
+| `BermudanSwaptionConfig.long_short` | Short | · | · | T21, T39 | · | · |
+| `AmericanSwaptionConfig.payer` | payer | · | · | · | T10, T11, T13, T21, T34, T39, T40, T42 | · |
+| `AmericanSwaptionConfig.payer` | receiver | · | · | · | T11, T21, T42 | · |
+| `AmericanSwaptionConfig.index_tenor_months` | = 6 | · | · | · | T10, T11, T13, T21, T34, T39, T40, T42 | · |
+| `AmericanSwaptionConfig.index_tenor_months` | ≠ 6 | · | · | · | T21 | · |
+| `AmericanSwaptionConfig.floating_spread` | = 0.0 | · | · | · | T10, T11, T13, T21, T34, T39, T40, T42 | · |
+| `AmericanSwaptionConfig.floating_spread` | ≠ 0.0 | · | · | · | T21 | · |
+| `AmericanSwaptionConfig.currency` | = USD | · | · | · | T10, T11, T13, T21, T34, T39, T40, T42 | · |
+| `AmericanSwaptionConfig.currency` | ≠ USD | · | · | · | R1 | · |
+| `AmericanSwaptionConfig.fixings` | none | · | · | · | T10, T11, T21, T34, T39, T40, T42 | · |
+| `AmericanSwaptionConfig.fixings` | past fixings | · | · | · | T13, T21, T42 | · |
+| `AmericanSwaptionConfig.settlement` | Physical | · | · | · | T10, T11, T13, T21, T34, T39, T40, T42 | · |
+| `AmericanSwaptionConfig.settlement` | Cash | · | · | · | T21 | · |
+| `AmericanSwaptionConfig.long_short` | Long | · | · | · | T10, T11, T13, T21, T34, T40, T42 | · |
+| `AmericanSwaptionConfig.long_short` | Short | · | · | · | T21, T39 | · |
+| `BondConfig.currency` | = USD | · | · | · | · | T21, T40 |
+| `BondConfig.currency` | ≠ USD | · | · | · | · | R1 |
+| `BondConfig.accrual_day_count` | ACT/365 | · | · | · | · | T21 |
+| `BondConfig.accrual_day_count` | ACT/ACT (ICMA) | · | · | · | · | T21, T40 |
+| `BondConfig.coupon_schedule` | coupons | · | · | · | · | T21, T40 |
+| `BondConfig.coupon_schedule` | none (a bill) | · | · | · | · | T21 |
+| `BondConfig.redemption_fraction` | = 1.0 | · | · | · | · | T21, T40 |
+| `BondConfig.redemption_fraction` | ≠ 1.0 | · | · | · | · | R2 |
+| `BondConfig.coupon_schedule.payment_date` | at each period's end | · | · | · | · | T21, T40 |
+| `BondConfig.coupon_schedule.payment_date` | delayed | · | · | · | · | R3 |
+| `LgmSwaptionEngineConfig.calibration` | Bootstrap | · | · | T9, T12, T21, T34, T39, T40 | T13, T21, T34, T39, T40 | · |
+| `LgmSwaptionEngineConfig.calibration` | None | · | · | T10, T11, T21, T42 | T10, T11, T21, T42 | · |
+| `LgmSwaptionEngineConfig.strategy` | CoterminalDealStrike | · | · | T9, T12, T21, T34, T39, T40 | T13, T21, T34, T39, T40 | · |
+| `LgmSwaptionEngineConfig.strategy` | CoterminalATM | · | · | T9, T21 | T21 | · |
+| `LgmSwaptionEngineConfig.bootstrap_tolerance` | = 0.0001 | · | · | T12, T21, T34, T39, T40 | T13, T21, T34, T39, T40 | · |
+| `LgmSwaptionEngineConfig.bootstrap_tolerance` | ≠ 0.0001 | · | · | T9, T21 | T21 | · |
+| `LgmSwaptionEngineConfig.reversion` | = 0.0 | · | · | T12, T21, T34, T39, T40 | T13, T21, T34, T39, T40 | · |
+| `LgmSwaptionEngineConfig.reversion` | ≠ 0.0 | · | · | T9, T10, T11, T21, T42 | T10, T11, T21, T42 | · |
+| `LgmSwaptionEngineConfig.volatility` | = 0.01 | · | · | T9, T10, T11, T12, T34, T39, T40, T42 | T10, T11, T13, T34, T39, T40, T42 | · |
+| `LgmSwaptionEngineConfig.volatility` | ≠ 0.01 | · | · | T21 | T21 | · |
+| `LgmSwaptionEngineConfig.reference_calibration_grid` | = 400,3M | · | · | T9, T10, T11, T12, T21, T34, T39, T40, T42 | T10, T11, T21, T34, T39, T40, T42 | · |
+| `LgmSwaptionEngineConfig.reference_calibration_grid` | ≠ 400,3M | · | · | T21 | T13, T21 | · |
+| `LgmSwaptionEngineConfig.shift_horizon` | = 0.5 | · | · | T9, T11, T12, T21, T34, T39, T40 | T11, T13, T21, T34, T39, T40 | · |
+| `LgmSwaptionEngineConfig.shift_horizon` | ≠ 0.5 | · | · | T9, T10, T11, T21, T42 | T10, T11, T21, T42 | · |
+| `LgmSwaptionEngineConfig.n_per_std` | = 30 | · | · | T34, T39, T40 | T34, T39, T40 | · |
+| `LgmSwaptionEngineConfig.n_per_std` | ≠ 30 | · | · | T9, T10, T11, T12, T21, T42 | T10, T11, T13, T21, T42 | · |
+| `LgmSwaptionEngineConfig.std_devs` | = 5.0 | · | · | T21, T34, T39, T40 | T21, T34, T39, T40 | · |
+| `LgmSwaptionEngineConfig.std_devs` | ≠ 5.0 | · | · | T9, T10, T11, T12, T21, T42 | T10, T11, T13, T21, T42 | · |
+| `LgmSwaptionEngineConfig.exercise_time_steps_per_year` | = 24 | · | · | · | T10, T11, T13, T21, T34, T39, T40, T42 | · |
+| `LgmSwaptionEngineConfig.exercise_time_steps_per_year` | ≠ 24 | · | · | · | T21 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_tenor` | = 1Y | · | · | T9, T12, T21, T34, T39, T40 | T13, T21, T34, T39, T40 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_tenor` | ≠ 1Y | · | · | T21 | T21 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_day_counter` | = ACT/365 | · | · | T9, T12, T21, T34, T39, T40 | T13, T21, T34, T39, T40 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_day_counter` | ≠ ACT/365 | · | · | T12, T21 | T21 | · |
+| `LgmSwaptionEngineConfig.swap_index.index_tenor_months` | = 6 | · | · | T9, T12, T21, T34, T39, T40 | T13, T21, T34, T39, T40 | · |
+| `LgmSwaptionEngineConfig.swap_index.index_tenor_months` | ≠ 6 | · | · | T21 | T21 | · |
+| `LgmSwaptionEngineConfig.solver` | Newton | · | · | T9, T10, T11, T12, T21, T34, T39, T40, T42 | T10, T11, T13, T21, T34, T39, T40, T42 | · |
+| `LgmSwaptionEngineConfig.solver` | Bisection | · | · | T21 | T21 | · |
+| `PricingConfig.european` | Bachelier | · | T21, T32, T39, T40 | · | · | · |
+| `PricingConfig.european` | Jamshidian | · | T2, T3, T4 | · | · | · |
+| `JamshidianEngineConfig.reversion` | any | · | T2, T3, T4 | · | · | · |
+| `JamshidianEngineConfig.volatility` | any | · | T2, T3, T4 | · | · | · |
+| `JamshidianEngineConfig.solver` | Newton | · | T2, T3, T4 | · | · | · |
+| `JamshidianEngineConfig.solver` | Bisection | · | R4 | · | · | · |
+| `RunConfig.base_currency` | USD | T21, T36, T40, T41, T43 | T2, T3, T4, T21, T32, T39, T40 | T9, T10, T11, T12, T21, T34, T39, T40, T42 | T10, T11, T13, T21, T34, T39, T40, T42 | T21, T40 |
+| `RunConfig.base_currency` | another currency | R1 | R1 | R1 | R1 | R1 |
+
+#### Exposure: the cube on ORE's paths, the profiles, the simulation in distribution (`exposure`)
+
+| Setting | Value | Swap | European | Bermudan | American | Bond |
+|---|---|---|---|---|---|---|
+| *compared* |  | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `SwapConfig.payer` | payer | T1, T24, T26, T27, T28, T29, T33 | · | · | · | · |
+| `SwapConfig.payer` | receiver | T24, T25, T26, T27, T28, T29, T33 | · | · | · | · |
+| `SwapConfig.index_tenor_months` | = 6 | T1, T24, T25, T26, T27, T28, T29, T33 | · | · | · | · |
+| `SwapConfig.index_tenor_months` | ≠ 6 | T25 | · | · | · | · |
+| `SwapConfig.floating_spread` | = 0.0 | T1, T24, T26, T27, T28, T29, T33 | · | · | · | · |
+| `SwapConfig.floating_spread` | ≠ 0.0 | T25, T33 | · | · | · | · |
+| `SwapConfig.currency` | = USD | T1, T24, T25, T26, T27, T28, T29, T33 | · | · | · | · |
+| `SwapConfig.currency` | ≠ USD | R1 | · | · | · | · |
+| `SwapConfig.fixings` | none | T1, T24, T25, T26, T27, T28, T29, T33 | · | · | · | · |
+| `SwapConfig.fixings` | past fixings | T24, T26, T27, T28, T29, T33 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | ACT/365 | T1, T24, T25, T26, T27, T28, T29, T33 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | ACT/ACT (ICMA) | T24, T26, T27, T28, T29, T33 | · | · | · | · |
+| `SwaptionConfig.payer` | payer | · | T1, T22, T24, T26, T27, T28, T29, T31 | · | · | · |
+| `SwaptionConfig.payer` | receiver | · | T1, T22, T24, T25, T26, T27, T28, T29, T31 | · | · | · |
+| `SwaptionConfig.index_tenor_months` | = 6 | · | T1, T22, T24, T25, T26, T27, T28, T29, T31 | · | · | · |
+| `SwaptionConfig.index_tenor_months` | ≠ 6 | · | T25 | · | · | · |
+| `SwaptionConfig.floating_spread` | = 0.0 | · | T1, T22, T24, T26, T27, T28, T29, T31 | · | · | · |
+| `SwaptionConfig.floating_spread` | ≠ 0.0 | · | T22, T24, T25, T26, T27, T28, T29, T31 | · | · | · |
+| `SwaptionConfig.currency` | = USD | · | T1, T22, T24, T25, T26, T27, T28, T29, T31 | · | · | · |
+| `SwaptionConfig.currency` | ≠ USD | · | R1 | · | · | · |
+| `SwaptionConfig.settlement` | Physical | · | T1, T22, T24, T25, T26, T27, T28, T29, T31 | · | · | · |
+| `SwaptionConfig.settlement` | Cash | · | T22, T24, T26, T27, T28, T29, T31 | · | · | · |
+| `SwaptionConfig.long_short` | Long | · | T1, T24, T25, T26, T27, T28, T29, T31 | · | · | · |
+| `SwaptionConfig.long_short` | Short | · | T22 | · | · | · |
+| `BermudanSwaptionConfig.payer` | payer | · | · | T22, T23, T24, T26, T27, T28, T29, T35 | · | · |
+| `BermudanSwaptionConfig.payer` | receiver | · | · | T22, T23, T24, T25, T26, T27, T28, T29 | · | · |
+| `BermudanSwaptionConfig.index_tenor_months` | = 6 | · | · | T22, T23, T24, T25, T26, T27, T28, T29, T35 | · | · |
+| `BermudanSwaptionConfig.index_tenor_months` | ≠ 6 | · | · | T25 | · | · |
+| `BermudanSwaptionConfig.floating_spread` | = 0.0 | · | · | T22, T23, T24, T26, T27, T28, T29, T35 | · | · |
+| `BermudanSwaptionConfig.floating_spread` | ≠ 0.0 | · | · | T25 | · | · |
+| `BermudanSwaptionConfig.currency` | = USD | · | · | T22, T23, T24, T25, T26, T27, T28, T29, T35 | · | · |
+| `BermudanSwaptionConfig.currency` | ≠ USD | · | · | R1 | · | · |
+| `BermudanSwaptionConfig.fixings` | none | · | · | T22, T23, T24, T26, T27, T28, T29, T35 | · | · |
+| `BermudanSwaptionConfig.fixings` | past fixings | · | · | T25 | · | · |
+| `BermudanSwaptionConfig.settlement` | Physical | · | · | T22, T23, T24, T25, T26, T27, T28, T29, T35 | · | · |
+| `BermudanSwaptionConfig.settlement` | Cash | · | · | T22, T23, T24, T26, T27, T28, T29 | · | · |
+| `BermudanSwaptionConfig.long_short` | Long | · | · | T23, T24, T25, T26, T27, T28, T29, T35 | · | · |
+| `BermudanSwaptionConfig.long_short` | Short | · | · | T22 | · | · |
+| `AmericanSwaptionConfig.payer` | payer | · | · | · | T22, T23, T24, T26, T27, T28, T29, T35 | · |
+| `AmericanSwaptionConfig.payer` | receiver | · | · | · | T25 | · |
+| `AmericanSwaptionConfig.index_tenor_months` | = 6 | · | · | · | T22, T23, T24, T25, T26, T27, T28, T29, T35 | · |
+| `AmericanSwaptionConfig.index_tenor_months` | ≠ 6 | · | · | · | T25 | · |
+| `AmericanSwaptionConfig.floating_spread` | = 0.0 | · | · | · | T22, T23, T24, T26, T27, T28, T29, T35 | · |
+| `AmericanSwaptionConfig.floating_spread` | ≠ 0.0 | · | · | · | T25 | · |
+| `AmericanSwaptionConfig.currency` | = USD | · | · | · | T22, T23, T24, T25, T26, T27, T28, T29, T35 | · |
+| `AmericanSwaptionConfig.currency` | ≠ USD | · | · | · | R1 | · |
+| `AmericanSwaptionConfig.fixings` | none | · | · | · | T22, T23, T24, T26, T27, T28, T29, T35 | · |
+| `AmericanSwaptionConfig.fixings` | past fixings | · | · | · | T25 | · |
+| `AmericanSwaptionConfig.settlement` | Physical | · | · | · | T22, T23, T24, T26, T27, T28, T29, T35 | · |
+| `AmericanSwaptionConfig.settlement` | Cash | · | · | · | T25 | · |
+| `AmericanSwaptionConfig.long_short` | Long | · | · | · | T23, T24, T25, T26, T27, T28, T29, T35 | · |
+| `AmericanSwaptionConfig.long_short` | Short | · | · | · | T22 | · |
+| `BondConfig.currency` | = USD | · | · | · | · | T24, T25, T26, T27, T28, T29 |
+| `BondConfig.currency` | ≠ USD | · | · | · | · | R1 |
+| `BondConfig.accrual_day_count` | ACT/365 | · | · | · | · | T25 |
+| `BondConfig.accrual_day_count` | ACT/ACT (ICMA) | · | · | · | · | T24, T25, T26, T27, T28, T29 |
+| `BondConfig.coupon_schedule` | coupons | · | · | · | · | T24, T25, T26, T27, T28, T29 |
+| `BondConfig.coupon_schedule` | none (a bill) | · | · | · | · | T25 |
+| `BondConfig.redemption_fraction` | = 1.0 | · | · | · | · | T24, T25, T26, T27, T28, T29 |
+| `BondConfig.redemption_fraction` | ≠ 1.0 | · | · | · | · | R2 |
+| `BondConfig.coupon_schedule.payment_date` | at each period's end | · | · | · | · | T24, T25, T26, T27, T28, T29 |
+| `BondConfig.coupon_schedule.payment_date` | delayed | · | · | · | · | R3 |
+| `LgmSwaptionEngineConfig.calibration` | Bootstrap | · | · | T22, T24, T25, T26, T27, T28, T29, T35 | T22, T24, T25, T26, T27, T28, T29, T35 | · |
+| `LgmSwaptionEngineConfig.calibration` | None | · | · | T23 | T23 | · |
+| `LgmSwaptionEngineConfig.strategy` | CoterminalDealStrike | · | · | T22, T24, T25, T26, T27, T28, T29, T35 | T22, T24, T25, T26, T27, T28, T29, T35 | · |
+| `LgmSwaptionEngineConfig.strategy` | CoterminalATM | · | · | T25 | T25 | · |
+| `LgmSwaptionEngineConfig.bootstrap_tolerance` | = 0.0001 | · | · | T22, T24, T25, T26, T27, T28, T29, T35 | T22, T24, T25, T26, T27, T28, T29, T35 | · |
+| `LgmSwaptionEngineConfig.bootstrap_tolerance` | ≠ 0.0001 | · | · | T25 | T25 | · |
+| `LgmSwaptionEngineConfig.reversion` | = 0.0 | · | · | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | · |
+| `LgmSwaptionEngineConfig.reversion` | ≠ 0.0 | · | · | T25 | T25 | · |
+| `LgmSwaptionEngineConfig.volatility` | = 0.01 | · | · | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | · |
+| `LgmSwaptionEngineConfig.volatility` | ≠ 0.01 | · | · | T25 | T25 | · |
+| `LgmSwaptionEngineConfig.reference_calibration_grid` | = 400,3M | · | · | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | · |
+| `LgmSwaptionEngineConfig.reference_calibration_grid` | ≠ 400,3M | · | · | T25 | T25 | · |
+| `LgmSwaptionEngineConfig.shift_horizon` | = 0.5 | · | · | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | · |
+| `LgmSwaptionEngineConfig.shift_horizon` | ≠ 0.5 | · | · | T25 | T25 | · |
+| `LgmSwaptionEngineConfig.n_per_std` | = 30 | · | · | T35 | T35 | · |
+| `LgmSwaptionEngineConfig.n_per_std` | ≠ 30 | · | · | T22, T23, T24, T25, T26, T27, T28, T29 | T22, T23, T24, T25, T26, T27, T28, T29 | · |
+| `LgmSwaptionEngineConfig.std_devs` | = 5.0 | · | · | T35 | T35 | · |
+| `LgmSwaptionEngineConfig.std_devs` | ≠ 5.0 | · | · | T22, T23, T24, T25, T26, T27, T28, T29 | T22, T23, T24, T25, T26, T27, T28, T29 | · |
+| `LgmSwaptionEngineConfig.exercise_time_steps_per_year` | = 24 | · | · | · | T22, T23, T24, T25, T26, T27, T28, T29, T35 | · |
+| `LgmSwaptionEngineConfig.exercise_time_steps_per_year` | ≠ 24 | · | · | · | T25 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_tenor` | = 1Y | · | · | T22, T24, T25, T26, T27, T28, T29, T35 | T22, T24, T25, T26, T27, T28, T29, T35 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_tenor` | ≠ 1Y | · | · | T25 | T25 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_day_counter` | = ACT/365 | · | · | T22, T24, T25, T26, T27, T28, T29, T35 | T22, T24, T25, T26, T27, T28, T29, T35 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_day_counter` | ≠ ACT/365 | · | · | T25 | T25 | · |
+| `LgmSwaptionEngineConfig.swap_index.index_tenor_months` | = 6 | · | · | T22, T24, T25, T26, T27, T28, T29, T35 | T22, T24, T25, T26, T27, T28, T29, T35 | · |
+| `LgmSwaptionEngineConfig.swap_index.index_tenor_months` | ≠ 6 | · | · | T25 | T25 | · |
+| `LgmSwaptionEngineConfig.solver` | Newton | · | · | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | · |
+| `LgmSwaptionEngineConfig.solver` | Bisection | · | · | T25 | T25 | · |
+| `PricingConfig.european` | Bachelier | · | T22, T24, T25, T26, T27, T28, T29, T31 | · | · | · |
+| `PricingConfig.european` | Jamshidian | · | T1 | · | · | · |
+| `JamshidianEngineConfig.reversion` | any | · | T1 | · | · | · |
+| `JamshidianEngineConfig.volatility` | any | · | T1 | · | · | · |
+| `JamshidianEngineConfig.solver` | Newton | · | T1 | · | · | · |
+| `JamshidianEngineConfig.solver` | Bisection | · | R4 | · | · | · |
+| `CamConfig.ir` | LgmConfig | T24, T25, T26, T27, T28, T29, T33 | T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `CamConfig.ir` | HullWhiteConfig | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T24, T25, T26, T27, T28, T29, T31 | T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `CamConfig.curve_tenors` | = the 13 defaults | T1, T24, T25, T26, T27, T28, T29 | T1, T22, T24, T25, T26, T27, T28, T29 | T22, T23, T24, T25, T26, T27, T28, T29 | T22, T23, T24, T25, T26, T27, T28, T29 | T24, T25, T26, T27, T28, T29 |
+| `CamConfig.curve_tenors` | ≠ the 13 defaults | T25, T33 | T25, T31 | T25, T35 | T25, T35 | T25 |
+| `CamConfig.swaption_vol_decay` | ForwardVariance | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `CamConfig.swaption_vol_decay` | ConstantVariance | T25 | T25 | T25 | T25 | T25 |
+| `CamConfig.bootstrap_tolerance` | = 0.0001 | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `CamConfig.bootstrap_tolerance` | ≠ 0.0001 | T25 | T25 | T25 | T25 | T25 |
+| `CamConfig.replicates` | = 1 | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `CamConfig.replicates` | ≠ 1 | R5 | R5 | R5 | R5 | R5 |
+| `CamConfig.base_currency` | USD | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `CamConfig.base_currency` | another currency | R1 | R1 | R1 | R1 | R1 |
+| `CamConfig.fx_volatilities` | none | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `CamConfig.fx_volatilities` | FX simulated | R1 | R1 | R1 | R1 | R1 |
+| `CamConfig.equity_volatilities` | none | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `CamConfig.equity_volatilities` | equities simulated | R6 | R6 | R6 | R6 | R6 |
+| `CamConfig.correlations` | none | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `CamConfig.correlations` | correlated | R1 | R1 | R1 | R1 | R1 |
+| `LgmConfig.reversion` | zero | T25 | T25 | T25 | T25 | T25 |
+| `LgmConfig.reversion` | positive | T1, T24, T26, T27, T28, T29, T33 | T1, T22, T24, T26, T27, T28, T29, T31 | T22, T23, T24, T26, T27, T28, T29, T35 | T22, T23, T24, T26, T27, T28, T29, T35 | T24, T26, T27, T28, T29 |
+| `LgmConfig.reversion` | negative | T25 | T25 | T25 | T25 | T25 |
+| `LgmConfig.volatility` | constant | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `LgmConfig.volatility` | piecewise | T25 | T25 | T25 | T25 | T25 |
+| `LgmConfig.calibration_expiries` | calibrated | T24, T25, T26, T27, T28, T29 | T22, T24, T25, T26, T27, T28, T29 | T22, T23, T24, T25, T26, T27, T28, T29 | T22, T23, T24, T25, T26, T27, T28, T29 | T24, T25, T26, T27, T28, T29 |
+| `LgmConfig.calibration_expiries` | not calibrated | T1, T25, T33 | T1, T25, T31 | T25, T35 | T25, T35 | T25 |
+| `LgmConfig.swap_index.fixed_tenor` | = 1Y | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `LgmConfig.swap_index.fixed_tenor` | ≠ 1Y | T25 | T25 | T25 | T25 | T25 |
+| `LgmConfig.swap_index.fixed_day_counter` | = ACT/365 | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `LgmConfig.swap_index.fixed_day_counter` | ≠ ACT/365 | T25 | T25 | T25 | T25 | T25 |
+| `LgmConfig.swap_index.index_tenor_months` | = 6 | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `LgmConfig.swap_index.index_tenor_months` | ≠ 6 | T25 | T25 | T25 | T25 | T25 |
+| `LgmConfig.solver` | Newton | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `LgmConfig.solver` | Bisection | T25 | T25 | T25 | T25 | T25 |
+| `PortfolioRequest.pfe_quantiles` | = (0.95, 0.99) | R7 | R7 | R7 | R7 | R7 |
+| `PortfolioRequest.pfe_quantiles` | ≠ (0.95, 0.99) | T27, T28, T29 | T27, T28, T29 | T27, T28, T29 | T27, T28, T29 | T27, T28, T29 |
+| `RunConfig.base_currency` | USD | T1, T24, T25, T26, T27, T28, T29, T33 | T1, T22, T24, T25, T26, T27, T28, T29, T31 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T22, T23, T24, T25, T26, T27, T28, T29, T35 | T24, T25, T26, T27, T28, T29 |
+| `RunConfig.base_currency` | another currency | R1 | R1 | R1 | R1 | R1 |
+
+#### Sensitivities: Delta, Gamma, Vega, Theta (`sensitivities`)
+
+| Setting | Value | Swap | European | Bermudan | American | Bond |
+|---|---|---|---|---|---|---|
+| *compared* |  | T16, T18, T20, T37, T38 | T16, T17, T20, T37, T38 | T14, T20, T37 | T14, T20, T37 | T16, T18, T20, T37, T38 |
+| `SwapConfig.payer` | payer | T16, T18, T20, T37, T38 | · | · | · | · |
+| `SwapConfig.payer` | receiver | T16, T18, T20, T37, T38 | · | · | · | · |
+| `SwapConfig.index_tenor_months` | = 6 | T16, T18, T20, T37, T38 | · | · | · | · |
+| `SwapConfig.index_tenor_months` | ≠ 6 | T20 | · | · | · | · |
+| `SwapConfig.floating_spread` | = 0.0 | T16, T18, T20, T37, T38 | · | · | · | · |
+| `SwapConfig.floating_spread` | ≠ 0.0 | T20 | · | · | · | · |
+| `SwapConfig.currency` | = USD | T16, T18, T20, T37, T38 | · | · | · | · |
+| `SwapConfig.currency` | ≠ USD | R1 | · | · | · | · |
+| `SwapConfig.fixings` | none | T16, T18, T20, T37, T38 | · | · | · | · |
+| `SwapConfig.fixings` | past fixings | T16, T18, T20, T37, T38 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | ACT/365 | T16, T18, T20, T37, T38 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | ACT/ACT (ICMA) | T16, T18, T20, T37, T38 | · | · | · | · |
+| `SwaptionConfig.payer` | payer | · | T16, T17, T20, T37, T38 | · | · | · |
+| `SwaptionConfig.payer` | receiver | · | T16, T17, T20, T37, T38 | · | · | · |
+| `SwaptionConfig.index_tenor_months` | = 6 | · | T16, T17, T20, T37, T38 | · | · | · |
+| `SwaptionConfig.index_tenor_months` | ≠ 6 | · | T20 | · | · | · |
+| `SwaptionConfig.floating_spread` | = 0.0 | · | T16, T17, T20, T37, T38 | · | · | · |
+| `SwaptionConfig.floating_spread` | ≠ 0.0 | · | T16, T17, T20, T37, T38 | · | · | · |
+| `SwaptionConfig.currency` | = USD | · | T16, T17, T20, T37, T38 | · | · | · |
+| `SwaptionConfig.currency` | ≠ USD | · | R1 | · | · | · |
+| `SwaptionConfig.settlement` | Physical | · | T16, T17, T20, T37, T38 | · | · | · |
+| `SwaptionConfig.settlement` | Cash | · | T16, T17, T20, T37, T38 | · | · | · |
+| `SwaptionConfig.long_short` | Long | · | T16, T17, T20, T37, T38 | · | · | · |
+| `SwaptionConfig.long_short` | Short | · | T20 | · | · | · |
+| `BermudanSwaptionConfig.payer` | payer | · | · | T14, T20, T37 | · | · |
+| `BermudanSwaptionConfig.payer` | receiver | · | · | T14, T20, T37 | · | · |
+| `BermudanSwaptionConfig.index_tenor_months` | = 6 | · | · | T14, T20, T37 | · | · |
+| `BermudanSwaptionConfig.index_tenor_months` | ≠ 6 | · | · | T20 | · | · |
+| `BermudanSwaptionConfig.floating_spread` | = 0.0 | · | · | T14, T20, T37 | · | · |
+| `BermudanSwaptionConfig.floating_spread` | ≠ 0.0 | · | · | T20 | · | · |
+| `BermudanSwaptionConfig.currency` | = USD | · | · | T14, T20, T37 | · | · |
+| `BermudanSwaptionConfig.currency` | ≠ USD | · | · | R1 | · | · |
+| `BermudanSwaptionConfig.fixings` | none | · | · | T14, T20, T37 | · | · |
+| `BermudanSwaptionConfig.fixings` | past fixings | · | · | T20 | · | · |
+| `BermudanSwaptionConfig.settlement` | Physical | · | · | T14, T20, T37 | · | · |
+| `BermudanSwaptionConfig.settlement` | Cash | · | · | T14, T20, T37 | · | · |
+| `BermudanSwaptionConfig.long_short` | Long | · | · | T20, T37 | · | · |
+| `BermudanSwaptionConfig.long_short` | Short | · | · | T14, T20 | · | · |
+| `AmericanSwaptionConfig.payer` | payer | · | · | · | T14, T20, T37 | · |
+| `AmericanSwaptionConfig.payer` | receiver | · | · | · | T20 | · |
+| `AmericanSwaptionConfig.index_tenor_months` | = 6 | · | · | · | T14, T20, T37 | · |
+| `AmericanSwaptionConfig.index_tenor_months` | ≠ 6 | · | · | · | T20 | · |
+| `AmericanSwaptionConfig.floating_spread` | = 0.0 | · | · | · | T14, T20, T37 | · |
+| `AmericanSwaptionConfig.floating_spread` | ≠ 0.0 | · | · | · | T20 | · |
+| `AmericanSwaptionConfig.currency` | = USD | · | · | · | T14, T20, T37 | · |
+| `AmericanSwaptionConfig.currency` | ≠ USD | · | · | · | R1 | · |
+| `AmericanSwaptionConfig.fixings` | none | · | · | · | T14, T20, T37 | · |
+| `AmericanSwaptionConfig.fixings` | past fixings | · | · | · | T20 | · |
+| `AmericanSwaptionConfig.settlement` | Physical | · | · | · | T14, T20, T37 | · |
+| `AmericanSwaptionConfig.settlement` | Cash | · | · | · | T20 | · |
+| `AmericanSwaptionConfig.long_short` | Long | · | · | · | T20, T37 | · |
+| `AmericanSwaptionConfig.long_short` | Short | · | · | · | T14, T20 | · |
+| `BondConfig.currency` | = USD | · | · | · | · | T16, T18, T20, T37, T38 |
+| `BondConfig.currency` | ≠ USD | · | · | · | · | R1 |
+| `BondConfig.accrual_day_count` | ACT/365 | · | · | · | · | T20 |
+| `BondConfig.accrual_day_count` | ACT/ACT (ICMA) | · | · | · | · | T16, T18, T20, T37, T38 |
+| `BondConfig.coupon_schedule` | coupons | · | · | · | · | T16, T18, T20, T37, T38 |
+| `BondConfig.coupon_schedule` | none (a bill) | · | · | · | · | T20 |
+| `BondConfig.redemption_fraction` | = 1.0 | · | · | · | · | T16, T18, T20, T37, T38 |
+| `BondConfig.redemption_fraction` | ≠ 1.0 | · | · | · | · | R2 |
+| `BondConfig.coupon_schedule.payment_date` | at each period's end | · | · | · | · | T16, T18, T20, T37, T38 |
+| `BondConfig.coupon_schedule.payment_date` | delayed | · | · | · | · | R3 |
+| `LgmSwaptionEngineConfig.calibration` | Bootstrap | · | · | T14, T20, T37 | T14, T20, T37 | · |
+| `LgmSwaptionEngineConfig.calibration` | None | · | · | T14, T20 | T14, T20 | · |
+| `LgmSwaptionEngineConfig.strategy` | CoterminalDealStrike | · | · | T14, T20, T37 | T14, T20, T37 | · |
+| `LgmSwaptionEngineConfig.strategy` | CoterminalATM | · | · | T14, T20 | T14, T20 | · |
+| `LgmSwaptionEngineConfig.bootstrap_tolerance` | = 0.0001 | · | · | T14, T20, T37 | T14, T20, T37 | · |
+| `LgmSwaptionEngineConfig.bootstrap_tolerance` | ≠ 0.0001 | · | · | T20 | T20 | · |
+| `LgmSwaptionEngineConfig.reversion` | = 0.0 | · | · | T14, T20, T37 | T14, T20, T37 | · |
+| `LgmSwaptionEngineConfig.reversion` | ≠ 0.0 | · | · | T14, T20 | T14, T20 | · |
+| `LgmSwaptionEngineConfig.volatility` | = 0.01 | · | · | T14, T37 | T14, T37 | · |
+| `LgmSwaptionEngineConfig.volatility` | ≠ 0.01 | · | · | T14, T20 | T14, T20 | · |
+| `LgmSwaptionEngineConfig.reference_calibration_grid` | = 400,3M | · | · | T14, T20, T37 | T14, T20, T37 | · |
+| `LgmSwaptionEngineConfig.reference_calibration_grid` | ≠ 400,3M | · | · | T20 | T20 | · |
+| `LgmSwaptionEngineConfig.shift_horizon` | = 0.5 | · | · | T14, T20, T37 | T14, T20, T37 | · |
+| `LgmSwaptionEngineConfig.shift_horizon` | ≠ 0.5 | · | · | T14, T20 | T14, T20 | · |
+| `LgmSwaptionEngineConfig.n_per_std` | = 30 | · | · | T37 | T37 | · |
+| `LgmSwaptionEngineConfig.n_per_std` | ≠ 30 | · | · | T14, T20 | T14, T20 | · |
+| `LgmSwaptionEngineConfig.std_devs` | = 5.0 | · | · | T20, T37 | T20, T37 | · |
+| `LgmSwaptionEngineConfig.std_devs` | ≠ 5.0 | · | · | T14, T20 | T14, T20 | · |
+| `LgmSwaptionEngineConfig.exercise_time_steps_per_year` | = 24 | · | · | · | T14, T20, T37 | · |
+| `LgmSwaptionEngineConfig.exercise_time_steps_per_year` | ≠ 24 | · | · | · | T20 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_tenor` | = 1Y | · | · | T14, T20, T37 | T14, T20, T37 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_tenor` | ≠ 1Y | · | · | T20 | T20 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_day_counter` | = ACT/365 | · | · | T14, T20, T37 | T14, T20, T37 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_day_counter` | ≠ ACT/365 | · | · | T20 | T20 | · |
+| `LgmSwaptionEngineConfig.swap_index.index_tenor_months` | = 6 | · | · | T14, T20, T37 | T14, T20, T37 | · |
+| `LgmSwaptionEngineConfig.swap_index.index_tenor_months` | ≠ 6 | · | · | T20 | T20 | · |
+| `LgmSwaptionEngineConfig.solver` | Newton | · | · | T14, T20, T37 | T14, T20, T37 | · |
+| `LgmSwaptionEngineConfig.solver` | Bisection | · | · | T20 | T20 | · |
+| `PricingConfig.european` | Bachelier | · | T16, T17, T20, T37, T38 | · | · | · |
+| `PricingConfig.european` | Jamshidian | · | R4 | · | · | · |
+| `JamshidianEngineConfig.reversion` | any | · | R4 | · | · | · |
+| `JamshidianEngineConfig.volatility` | any | · | R4 | · | · | · |
+| `JamshidianEngineConfig.solver` | Newton | · | R4 | · | · | · |
+| `JamshidianEngineConfig.solver` | Bisection | · | R4 | · | · | · |
+| `GreeksConfig.method` | Bump | T16, T18, T20, T37 | T16, T17, T20, T37 | T14, T20, T37 | T14, T20, T37 | T16, T18, T20, T37 |
+| `GreeksConfig.method` | AD | T20, T38 | T20, T38 | R8 | R8 | T20, T38 |
+| `SensitivityConfig.curve_tenors` | = the 13 defaults | T20, T37, T38 | T20, T37, T38 | T20, T37 | T20, T37 | T20, T37, T38 |
+| `SensitivityConfig.curve_tenors` | ≠ the 13 defaults | T16, T18, T20 | T16, T17, T20 | T14, T20 | T14, T20 | T16, T18, T20 |
+| `SensitivityConfig.curve_shift` | = 0.0001 | T18, T20, T37, T38 | T17, T20, T37, T38 | T14, T20, T37 | T14, T20, T37 | T18, T20, T37, T38 |
+| `SensitivityConfig.curve_shift` | ≠ 0.0001 | T16, T20 | T16, T20 | T20 | T20 | T16, T20 |
+| `SensitivityConfig.vol_shift` | = 0.0001 | · | T17, T20, T37, T38 | T14, T20, T37 | T14, T20, T37 | · |
+| `SensitivityConfig.vol_shift` | ≠ 0.0001 | · | T16, T20 | T20 | T20 | · |
+| `SensitivityConfig.theta_days` | = 1 | T20, T37, T38 | T20, T37, T38 | T14, T20, T37 | T14, T20, T37 | T20, T37, T38 |
+| `SensitivityConfig.theta_days` | ≠ 1 | T16, T18, T20 | T16, T17, T20 | T20 | T20 | T16, T18, T20 |
+| `RunConfig.base_currency` | USD | T16, T18, T20, T37, T38 | T16, T17, T20, T37, T38 | T14, T20, T37 | T14, T20, T37 | T16, T18, T20, T37, T38 |
+| `RunConfig.base_currency` | another currency | R1 | R1 | R1 | R1 | R1 |
+
+#### Market risk: the P&L of every scenario, VaR and ES (`market_risk`)
+
+| Setting | Value | Swap | European | Bermudan | American | Bond |
+|---|---|---|---|---|---|---|
+| *compared* |  | T5, T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T15, T19 | T8, T15, T19 | T5, T6, T7, T8, T19 |
+| `SwapConfig.payer` | payer | T5, T6, T7, T8, T19 | · | · | · | · |
+| `SwapConfig.payer` | receiver | T19 | · | · | · | · |
+| `SwapConfig.index_tenor_months` | = 6 | T5, T6, T7, T8, T19 | · | · | · | · |
+| `SwapConfig.index_tenor_months` | ≠ 6 | T19 | · | · | · | · |
+| `SwapConfig.floating_spread` | = 0.0 | T5, T6, T7, T8, T19 | · | · | · | · |
+| `SwapConfig.floating_spread` | ≠ 0.0 | T19 | · | · | · | · |
+| `SwapConfig.currency` | = USD | T5, T6, T7, T8, T19 | · | · | · | · |
+| `SwapConfig.currency` | ≠ USD | R1 | · | · | · | · |
+| `SwapConfig.fixings` | none | T5, T6, T7, T8, T19 | · | · | · | · |
+| `SwapConfig.fixings` | past fixings | T19 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | ACT/365 | T5, T6, T7, T8, T19 | · | · | · | · |
+| `SwapConfig.accrual_day_count` | ACT/ACT (ICMA) | T19 | · | · | · | · |
+| `SwaptionConfig.payer` | payer | · | T19 | · | · | · |
+| `SwaptionConfig.payer` | receiver | · | T6, T7, T8, T19 | · | · | · |
+| `SwaptionConfig.index_tenor_months` | = 6 | · | T6, T7, T8, T19 | · | · | · |
+| `SwaptionConfig.index_tenor_months` | ≠ 6 | · | T19 | · | · | · |
+| `SwaptionConfig.floating_spread` | = 0.0 | · | T6, T7, T8, T19 | · | · | · |
+| `SwaptionConfig.floating_spread` | ≠ 0.0 | · | T19 | · | · | · |
+| `SwaptionConfig.currency` | = USD | · | T6, T7, T8, T19 | · | · | · |
+| `SwaptionConfig.currency` | ≠ USD | · | R1 | · | · | · |
+| `SwaptionConfig.settlement` | Physical | · | T6, T7, T8, T19 | · | · | · |
+| `SwaptionConfig.settlement` | Cash | · | T19 | · | · | · |
+| `SwaptionConfig.long_short` | Long | · | T6, T7, T8, T19 | · | · | · |
+| `SwaptionConfig.long_short` | Short | · | T19 | · | · | · |
+| `BermudanSwaptionConfig.payer` | payer | · | · | T8, T15, T19 | · | · |
+| `BermudanSwaptionConfig.payer` | receiver | · | · | T15, T19 | · | · |
+| `BermudanSwaptionConfig.index_tenor_months` | = 6 | · | · | T8, T15, T19 | · | · |
+| `BermudanSwaptionConfig.index_tenor_months` | ≠ 6 | · | · | T19 | · | · |
+| `BermudanSwaptionConfig.floating_spread` | = 0.0 | · | · | T8, T15, T19 | · | · |
+| `BermudanSwaptionConfig.floating_spread` | ≠ 0.0 | · | · | T19 | · | · |
+| `BermudanSwaptionConfig.currency` | = USD | · | · | T8, T15, T19 | · | · |
+| `BermudanSwaptionConfig.currency` | ≠ USD | · | · | R1 | · | · |
+| `BermudanSwaptionConfig.fixings` | none | · | · | T8, T15, T19 | · | · |
+| `BermudanSwaptionConfig.fixings` | past fixings | · | · | T19 | · | · |
+| `BermudanSwaptionConfig.settlement` | Physical | · | · | T8, T15, T19 | · | · |
+| `BermudanSwaptionConfig.settlement` | Cash | · | · | T15, T19 | · | · |
+| `BermudanSwaptionConfig.long_short` | Long | · | · | T8, T15, T19 | · | · |
+| `BermudanSwaptionConfig.long_short` | Short | · | · | T19 | · | · |
+| `AmericanSwaptionConfig.payer` | payer | · | · | · | T15, T19 | · |
+| `AmericanSwaptionConfig.payer` | receiver | · | · | · | T8, T19 | · |
+| `AmericanSwaptionConfig.index_tenor_months` | = 6 | · | · | · | T8, T15, T19 | · |
+| `AmericanSwaptionConfig.index_tenor_months` | ≠ 6 | · | · | · | T19 | · |
+| `AmericanSwaptionConfig.floating_spread` | = 0.0 | · | · | · | T8, T15, T19 | · |
+| `AmericanSwaptionConfig.floating_spread` | ≠ 0.0 | · | · | · | T19 | · |
+| `AmericanSwaptionConfig.currency` | = USD | · | · | · | T8, T15, T19 | · |
+| `AmericanSwaptionConfig.currency` | ≠ USD | · | · | · | R1 | · |
+| `AmericanSwaptionConfig.fixings` | none | · | · | · | T8, T15, T19 | · |
+| `AmericanSwaptionConfig.fixings` | past fixings | · | · | · | T19 | · |
+| `AmericanSwaptionConfig.settlement` | Physical | · | · | · | T8, T15, T19 | · |
+| `AmericanSwaptionConfig.settlement` | Cash | · | · | · | T19 | · |
+| `AmericanSwaptionConfig.long_short` | Long | · | · | · | T8, T15, T19 | · |
+| `AmericanSwaptionConfig.long_short` | Short | · | · | · | T19 | · |
+| `BondConfig.currency` | = USD | · | · | · | · | T5, T6, T7, T8, T19 |
+| `BondConfig.currency` | ≠ USD | · | · | · | · | R1 |
+| `BondConfig.accrual_day_count` | ACT/365 | · | · | · | · | T19 |
+| `BondConfig.accrual_day_count` | ACT/ACT (ICMA) | · | · | · | · | T5, T6, T7, T8, T19 |
+| `BondConfig.coupon_schedule` | coupons | · | · | · | · | T5, T6, T7, T8, T19 |
+| `BondConfig.coupon_schedule` | none (a bill) | · | · | · | · | T19 |
+| `BondConfig.redemption_fraction` | = 1.0 | · | · | · | · | T5, T6, T7, T8, T19 |
+| `BondConfig.redemption_fraction` | ≠ 1.0 | · | · | · | · | R2 |
+| `BondConfig.coupon_schedule.payment_date` | at each period's end | · | · | · | · | T5, T6, T7, T8, T19 |
+| `BondConfig.coupon_schedule.payment_date` | delayed | · | · | · | · | R3 |
+| `LgmSwaptionEngineConfig.calibration` | Bootstrap | · | · | T8, T15, T19 | T8, T15, T19 | · |
+| `LgmSwaptionEngineConfig.calibration` | None | · | · | T8, T19 | T19 | · |
+| `LgmSwaptionEngineConfig.strategy` | CoterminalDealStrike | · | · | T8, T15, T19 | T8, T15, T19 | · |
+| `LgmSwaptionEngineConfig.strategy` | CoterminalATM | · | · | T19 | T19 | · |
+| `LgmSwaptionEngineConfig.bootstrap_tolerance` | = 0.0001 | · | · | T8, T15, T19 | T8, T15, T19 | · |
+| `LgmSwaptionEngineConfig.bootstrap_tolerance` | ≠ 0.0001 | · | · | T19 | T19 | · |
+| `LgmSwaptionEngineConfig.reversion` | = 0.0 | · | · | T15, T19 | T15, T19 | · |
+| `LgmSwaptionEngineConfig.reversion` | ≠ 0.0 | · | · | T8, T19 | T8, T19 | · |
+| `LgmSwaptionEngineConfig.volatility` | = 0.01 | · | · | T8, T15 | T8, T15 | · |
+| `LgmSwaptionEngineConfig.volatility` | ≠ 0.01 | · | · | T19 | T19 | · |
+| `LgmSwaptionEngineConfig.reference_calibration_grid` | = 400,3M | · | · | T8, T15, T19 | T8, T15, T19 | · |
+| `LgmSwaptionEngineConfig.reference_calibration_grid` | ≠ 400,3M | · | · | T19 | T19 | · |
+| `LgmSwaptionEngineConfig.shift_horizon` | = 0.5 | · | · | T8, T15, T19 | T8, T15, T19 | · |
+| `LgmSwaptionEngineConfig.shift_horizon` | ≠ 0.5 | · | · | T19 | T19 | · |
+| `LgmSwaptionEngineConfig.n_per_std` | = 30 | · | · | T15 | T15 | · |
+| `LgmSwaptionEngineConfig.n_per_std` | ≠ 30 | · | · | T8, T19 | T8, T19 | · |
+| `LgmSwaptionEngineConfig.std_devs` | = 5.0 | · | · | T8, T15, T19 | T8, T15, T19 | · |
+| `LgmSwaptionEngineConfig.std_devs` | ≠ 5.0 | · | · | T19 | T19 | · |
+| `LgmSwaptionEngineConfig.exercise_time_steps_per_year` | = 24 | · | · | · | T8, T15, T19 | · |
+| `LgmSwaptionEngineConfig.exercise_time_steps_per_year` | ≠ 24 | · | · | · | T19 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_tenor` | = 1Y | · | · | T8, T15, T19 | T8, T15, T19 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_tenor` | ≠ 1Y | · | · | T19 | T19 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_day_counter` | = ACT/365 | · | · | T8, T15, T19 | T8, T15, T19 | · |
+| `LgmSwaptionEngineConfig.swap_index.fixed_day_counter` | ≠ ACT/365 | · | · | T19 | T19 | · |
+| `LgmSwaptionEngineConfig.swap_index.index_tenor_months` | = 6 | · | · | T8, T15, T19 | T8, T15, T19 | · |
+| `LgmSwaptionEngineConfig.swap_index.index_tenor_months` | ≠ 6 | · | · | T19 | T19 | · |
+| `LgmSwaptionEngineConfig.solver` | Newton | · | · | T8, T15, T19 | T8, T15, T19 | · |
+| `LgmSwaptionEngineConfig.solver` | Bisection | · | · | T19 | T19 | · |
+| `PricingConfig.european` | Bachelier | · | T6, T7, T8, T19 | · | · | · |
+| `PricingConfig.european` | Jamshidian | · | T8 | · | · | · |
+| `JamshidianEngineConfig.reversion` | any | · | T8 | · | · | · |
+| `JamshidianEngineConfig.volatility` | any | · | T8 | · | · | · |
+| `JamshidianEngineConfig.solver` | Newton | · | T8 | · | · | · |
+| `JamshidianEngineConfig.solver` | Bisection | · | R4 | · | · | · |
+| `ShockScenarios.source` | monte-carlo | T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T19 | T8, T19 | T6, T7, T8, T19 |
+| `ShockScenarios.source` | historical | T5, T19 | T19 | T15, T19 | T15, T19 | T5, T19 |
+| `ShockScenarios.replicates` | one | T5, T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T15, T19 | T8, T15, T19 | T5, T6, T7, T8, T19 |
+| `ShockScenarios.replicates` | several | R9 | R9 | R9 | R9 | R9 |
+| `ShockScenarios.bootstrap_replicates` | = 128 | T5, T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T15, T19 | T8, T15, T19 | T5, T6, T7, T8, T19 |
+| `ShockScenarios.bootstrap_replicates` | ≠ 128 | R9 | R9 | R9 | R9 | R9 |
+| `ShockScenarios.block_length` | = None | T5, T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T15, T19 | T8, T15, T19 | T5, T6, T7, T8, T19 |
+| `ShockScenarios.block_length` | ≠ None | R9 | R9 | R9 | R9 | R9 |
+| `ShockScenarios.bootstrap_seed` | = 42 | T5, T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T15, T19 | T8, T15, T19 | T5, T6, T7, T8, T19 |
+| `ShockScenarios.bootstrap_seed` | ≠ 42 | R9 | R9 | R9 | R9 | R9 |
+| `MarketRiskRequest.quantiles` | = (0.99, 0.975) | T7, T8, T19 | T7, T8, T19 | T8, T19 | T8, T19 | T7, T8, T19 |
+| `MarketRiskRequest.quantiles` | ≠ (0.99, 0.975) | T5, T6, T19 | T6, T19 | T15, T19 | T15, T19 | T5, T6, T19 |
+| `MarketRiskRequest.batch_size` | = 256 | T5, T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T15, T19 | T8, T15, T19 | T5, T6, T7, T8, T19 |
+| `MarketRiskRequest.batch_size` | ≠ 256 | R10 | R10 | R10 | R10 | R10 |
+| `MarketRiskRequest.base_currency` | = USD | T5, T6, T7, T8, T19 | T6, T7, T8, T19 | T8, T15, T19 | T8, T15, T19 | T5, T6, T7, T8, T19 |
+| `MarketRiskRequest.base_currency` | ≠ USD | R1 | R1 | R1 | R1 | R1 |
+
+#### Calibration of the simulation's model (`calibration`)
+
+| Setting | Value | Cross-asset model (POST /calibration/cam) | Standalone LGM (POST /calibration/lgm) |
+|---|---|---|---|
+| *compared* |  | T25, T30 | R11 |
+| `CamConfig.ir` | LgmConfig | T25, T30 | · |
+| `CamConfig.ir` | HullWhiteConfig | T25, T30 | · |
+| `CamConfig.bootstrap_tolerance` | = 0.0001 | T25, T30 | · |
+| `CamConfig.bootstrap_tolerance` | ≠ 0.0001 | T25 | · |
+| `LgmConfig.reversion` | zero | T25 | · |
+| `LgmConfig.reversion` | positive | T30 | · |
+| `LgmConfig.reversion` | negative | T25 | · |
+| `LgmConfig.volatility` | constant | T25, T30 | · |
+| `LgmConfig.volatility` | piecewise | T25 | · |
+| `LgmConfig.calibration_expiries` | calibrated | T25, T30 | · |
+| `LgmConfig.calibration_expiries` | not calibrated | T25 | · |
+| `LgmConfig.swap_index.fixed_tenor` | = 1Y | T25, T30 | · |
+| `LgmConfig.swap_index.fixed_tenor` | ≠ 1Y | T25 | · |
+| `LgmConfig.swap_index.fixed_day_counter` | = ACT/365 | T25, T30 | · |
+| `LgmConfig.swap_index.fixed_day_counter` | ≠ ACT/365 | T25 | · |
+| `LgmConfig.swap_index.index_tenor_months` | = 6 | T25, T30 | · |
+| `LgmConfig.swap_index.index_tenor_months` | ≠ 6 | T25 | · |
+| `LgmConfig.solver` | Newton | T25, T30 | · |
+| `LgmConfig.solver` | Bisection | T25 | · |
+
+**Tests.**
+
+- **T1** `tests/test_end_to_end.py::TestEndToEndEngineVsORE::test_every_paths_value_matches_ore`: 1e-10 relative (the swap), 5e-6 (the Jamshidian Europeans), each path
+- **T2** `tests/test_jamshidian.py::TestAgainstQuantLibJamshidianEngine::test_grid`: 5e-6 relative (QuantLib's Brent root on r*)
+- **T3** `tests/test_jamshidian.py::TestAgainstQuantLibJamshidianEngine::test_matches_quantlib_forward_starting`: 5e-6 relative (QuantLib's Brent root on r*)
+- **T4** `tests/test_jamshidian.py::TestAgainstQuantLibJamshidianEngine::test_matches_quantlib_spot_starting`: 5e-6 relative (QuantLib's Brent root on r*)
+- **T5** `tests/test_market_risk_ore_parity.py::TestHistoricalVarEsMatchesOre::test_var_and_es_match`: VaR, ES 1e-10 relative to ORE's RiskStatistics on ORE's P&L
+- **T6** `tests/test_market_risk_ore_parity.py::TestMonteCarloVarEsMatchesOre::test_pnl_vector_matches`: P&L 1e-6 relative; VaR, ES 1e-6 relative to ORE's RiskStatistics
+- **T7** `tests/test_market_risk_ore_parity.py::test_base_value_is_ores`: 1e-10 relative
+- **T8** `tests/test_market_risk_ore_parity.py::test_every_scenario_revalues_as_ore_does`: 5e-10 relative, each scenario's value
+- **T9** `tests/test_ore_lgm_calibration.py::test_calibrated_bermudan_equals_ores_bootstrap`: 1e-9 relative
+- **T10** `tests/test_ore_lgm_parity.py::test_a_shift_horizon_beyond_the_maturity_is_ores`: 1e-10 relative
+- **T11** `tests/test_ore_lgm_parity.py::test_engine_equals_ore_lgm_engine`: 1e-10 relative
+- **T12** `tests/test_ore_parity_settings.py::test_a_calibrated_bermudans_helpers_are_ores`: 1e-12 of the notional
+- **T13** `tests/test_ore_parity_settings.py::test_an_american_without_a_calibrating_helper_is_refused_as_ore_refuses_it`: refused, as ORE refuses it
+- **T14** `tests/test_ore_parity_settings.py::test_each_calibration_strategy_and_shift_horizon_is_ores`: 1e-10 of the notional
+- **T15** `tests/test_ore_parity_settings.py::test_market_risk_of_options_at_ores_default_engine_is_ores`: P&L 1e-10 of the notional; VaR 1e-9 relative
+- **T16** `tests/test_ore_parity_settings.py::test_the_sensitivity_settings_are_ores`: 1e-12 of the notional
+- **T17** `tests/test_ore_parity_settings.py::test_theta_across_a_weekend_reads_the_volatilities_from_the_monday_as_ore`: 1e-12 of the notional
+- **T18** `tests/test_ore_parity_settings.py::test_theta_onto_a_coupon_adds_nothing_back_as_ores`: 1e-12 of the notional
+- **T19** `tests/test_ore_parity_sweep.py::test_market_risk_is_ores`: each trade's P&L in every scenario 1e-11 of the notional; VaR 1e-9 relative to ORE's report; ES to ORE's RiskStatistics on ORE's P&L
+- **T20** `tests/test_ore_parity_sweep.py::test_the_greeks_are_ores`: bump Greeks 1e-10 of the notional (Bermudans, Americans), 1e-12 (the rest); AD as the shift vanishes (Richardson), 1e-5 of each curve's largest
+- **T21** `tests/test_ore_parity_sweep.py::test_todays_values_are_ores`: 2e-11 of the notional (Bermudans, Americans), 1e-12 (the rest); a trade ORE refuses to build refused
+- **T22** `tests/test_ore_xva_parity.py::test_a_short_option_on_ores_paths_is_ores_short_option`: each cell 1e-10 of the trade's largest value
+- **T23** `tests/test_ore_xva_parity.py::test_an_uncalibrated_option_equals_ores_cube_on_ores_paths`: each cell 1e-10 of the trade's largest value
+- **T24** `tests/test_ore_xva_parity.py::test_every_trades_cube_equals_ores_on_ores_paths`: each cell 1e-10 of the trade's largest value
+- **T25** `tests/test_ore_xva_parity.py::test_other_settings_equal_ores_simulation_on_ores_paths`: every simulated curve 1e-10 relative, rebuilt from the model's states
+- **T26** `tests/test_ore_xva_parity.py::test_t0_is_the_value_on_the_simulation_market_of_the_as_of_date`: T0 1e-10 relative
+- **T27** `tests/test_ore_xva_parity.py::test_the_engines_simulation_and_exposure_are_ores_in_distribution` (full tier only): EPE, ENE, PFE within four combined standard errors (independent paths)
+- **T28** `tests/test_ore_xva_parity.py::test_the_pipelines_profiles_start_from_ores_t0`: EPE, ENE at t=0 1e-10 relative
+- **T29** `tests/test_ore_xva_parity.py::test_the_profiles_of_ores_cube_are_ores_reports`: every profile on ORE's cube 1e-10 relative
+- **T30** `tests/test_ore_xva_parity.py::test_the_scenario_dump_is_the_engines_simulation_market_on_ores_paths`: every simulated curve 1e-10 relative, rebuilt from the calibrated model's states
+- **T31** `tests/test_pricing.py::test_european_on_every_path_equals_quantlibs_bachelier_engine`: QuantLib's Bachelier engine on each path, each cell
+- **T32** `tests/test_pricing.py::test_european_today_equals_ores_default_engine`: 1e-10 relative
+- **T33** `tests/test_pricing.py::test_every_path_and_date_equals_ores_discounting_swap_engine`: 1e-12 relative, each cell
+- **T34** `tests/test_pricing.py::test_option_today_equals_ores_calibrated_grid_engine`: 1e-9 relative
+- **T35** `tests/test_pricing.py::test_the_path_model_is_the_calibration_ore_built_the_trade_with`: 1e-10 of the value, each cell (ORE's grid engine on the model as built)
+- **T36** `tests/test_pricing.py::test_today_equals_ores_discounting_swap_engine`: 1e-12 relative
+- **T37** `tests/test_sensitivity_ore_parity.py::test_every_greek_of_every_trade_is_ores`: 1e-11 of the NPV
+- **T38** `tests/test_sensitivity_ore_parity.py::test_the_ad_greeks_are_ores_as_the_shift_vanishes`: Delta, Gamma 1e-4 of each curve's largest, as the shift vanishes; Theta 1e-11 of the NPV
+- **T39** `tests/test_shared_portfolio.py::test_a_short_option_today_is_ores_short_option`: 1e-10 relative (1e-9 calibrated Bermudans, Americans)
+- **T40** `tests/test_shared_portfolio.py::test_every_trade_today_equals_ore`: 1e-12 relative (1e-9 calibrated Bermudans, Americans)
+- **T41** `tests/test_trade_dates.py::test_any_leg_day_count_equals_ore`: 1e-10 relative
+- **T42** `tests/test_trade_dates.py::test_seasoned_bermudan_and_american_equal_ore`: 1e-10 relative
+- **T43** `tests/test_trade_dates.py::test_seasoned_swap_equals_ore`: 1e-10 relative
+
+**Reasons.**
+
+- **R1** (not compared yet) a second currency: the oracles are one-currency until F-04 extends them.
+- **R2** (ORE cannot express it) the oracle books a coupon bond redeemed at par; a bill redeemed below par is a TraderX instrument priced by its own pricer (I-93).
+- **R3** (ORE cannot express it) the oracle's bond pays each coupon at its period's end (ORE's leg data pays at a lag in days, not on a date per period), and a delayed last payment is valued wrong today (I-104).
+- **R4** (ORE cannot express it) ORE has no builder for QuantLib's Jamshidian engine, so no ORE analytic prices with it; its value and every market-risk scenario are QuantLib's engine's, in tests/test_jamshidian.py and tests/test_market_risk_ore_parity.py.
+- **R5** (not ORE's) the engine's own scrambles of its paths (X-1); on ORE's paths (L3) a cell is compared whatever drew them.
+- **R6** (not compared yet) an equity in the simulation: no equity trade yet (I-18, F-04).
+- **R7** (ORE cannot express it) ORE's exposure analytic reports one PFE quantile (`PfeQuantile`); each quantile is its own figure of one definition, compared at 0.95.
+- **R8** (not ORE's) a grid-priced option's AD Greeks are its price's derivatives, not ORE's 1bp secants across the grid's kinks (I-78); tests/test_greeks_bermudan.py holds them to central differences of the engine's own recalibrating price, and the result says so.
+- **R9** (not ORE's) a sampling-uncertainty setting (I-111, F-10): ORE has no error estimate of a VaR; every scenario's P&L is compared, whatever the setting.
+- **R10** (not ORE's) how many scenarios are revalued at once, a memory setting; the same P&L within the margin (tests/test_market_risk.py).
+- **R11** (not compared yet) the standalone bootstrap (`calibrate_lgm_sigma`) is the second LGM calibration, which retires or moves to tests/support once the run request's calibration analytic replaces it (I-94); the trades' and the cross-asset model's calibrations are ORE's.
+
+<!-- ore-parity-matrix:end -->
 
 ## Summary table (the algorithms)
 

@@ -42,18 +42,30 @@ import pytest
 from engine.instruments.schedules import build_vanilla_swap
 from engine.risk.market import (
     MarketRiskRequest,
+    ShockScenarios,
     historical_scenarios,
     monte_carlo_scenarios,
     run_market_risk,
 )
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from tests.support.ore_lgm_oracle import OreLgmEngine, ore_lgm_swaption_npv
+from tests.support.ore_parity_matrix import cells
 from tests import market_risk_support as m
 
 FACTORS = m.factors()
 OIS = FACTORS.slice_of(FACTORS.index_of("discount:USD"))
 IBOR = FACTORS.slice_of(FACTORS.index_of(f"index:{m.INDEX}"))
 BASE = FACTORS.base_rates()
+QUANTILES = (0.99, 0.975, 0.95)
+
+
+def _declared(trades, pricing, source, quantiles=(0.99, 0.975)):
+    """The matrix cells of a run of `trades` under `pricing` on scenarios of `source`, the
+    quantiles `quantiles` (a stand-in request with the run's settings; the shifts are drawn in
+    the test)."""
+    scenarios = ShockScenarios(FACTORS, np.zeros((2, FACTORS.size)), horizon_days=10, source=source)
+    return cells("market_risk", market_risk=MarketRiskRequest(list(trades), m.market(), scenarios, pricing,
+                                                              quantiles=quantiles))
 
 
 def _ore_option_npv(cfg, disc_rates, fwd_rates, pricing) -> float:
@@ -108,16 +120,20 @@ def _ore_statistics(pnl: np.ndarray) -> "ORE.RiskStatistics":
 # ---------------------------------------------------------------------------
 # Per-scenario revaluation, instrument by instrument
 # ---------------------------------------------------------------------------
+def _revaluation(make, pricing, scenarios, rtol, name):
+    return pytest.param(make, pricing, scenarios, rtol, id=name, marks=pytest.mark.ore_parity(
+        _declared([make()], pricing, "monte-carlo"), tolerance=f"{rtol:g} relative, each scenario's value"))
+
+
 @pytest.mark.parametrize("make, pricing, scenarios, rtol", [
-    (m.swap, m.PRICING, 32, 1e-12),
-    (m.bond, m.PRICING, 32, 1e-12),
-    (m.european, m.PRICING, 32, 1e-10),
-    (m.european, m.JAMSHIDIAN, 32, 5e-6),
-    (m.bermudan, m.PRICING, 6, 1e-10),
-    (m.bermudan, m.CALIBRATED, 6, 5e-10),
-    (m.american, m.CALIBRATED, 6, 5e-10),
-], ids=["swap", "bond", "european", "european-jamshidian", "bermudan", "bermudan-recalibrated",
-        "american-recalibrated"])
+    _revaluation(m.swap, m.PRICING, 32, 1e-12, "swap"),
+    _revaluation(m.bond, m.PRICING, 32, 1e-12, "bond"),
+    _revaluation(m.european, m.PRICING, 32, 1e-10, "european"),
+    _revaluation(m.european, m.JAMSHIDIAN, 32, 5e-6, "european-jamshidian"),
+    _revaluation(m.bermudan, m.PRICING, 6, 1e-10, "bermudan"),
+    _revaluation(m.bermudan, m.CALIBRATED, 6, 5e-10, "bermudan-recalibrated"),
+    _revaluation(m.american, m.CALIBRATED, 6, 5e-10, "american-recalibrated"),
+])
 def test_every_scenario_revalues_as_ore_does(make, pricing, scenarios, rtol):
     cfg = make()
     shocks = monte_carlo_scenarios(FACTORS, m.covariance(), horizon_days=10, num_scenarios=scenarios, seed=11)
@@ -128,6 +144,8 @@ def test_every_scenario_revalues_as_ore_does(make, pricing, scenarios, rtol):
     np.testing.assert_allclose(engine_values, ore_values, rtol=rtol, atol=1e-6)
 
 
+@pytest.mark.ore_parity(_declared([m.swap(), m.european(), m.bond()], m.PRICING, "monte-carlo"),
+                        tolerance="1e-10 relative")
 def test_base_value_is_ores():
     trades = [m.swap(), m.european(), m.bond()]
     shocks = monte_carlo_scenarios(FACTORS, m.covariance(), horizon_days=10, num_scenarios=4, seed=1)
@@ -140,7 +158,6 @@ def test_base_value_is_ores():
 # ---------------------------------------------------------------------------
 # VaR / ES: ORE's statistics on ORE's own P&L
 # ---------------------------------------------------------------------------
-QUANTILES = (0.99, 0.975, 0.95)
 
 
 def _assert_statistics_match(result, ore_pnl, quantiles, rtol):
@@ -172,6 +189,8 @@ def historical_run():
 
 
 class TestMonteCarloVarEsMatchesOre:
+    @pytest.mark.ore_parity(_declared([m.swap(), m.european(), m.bond()], m.PRICING, "monte-carlo", QUANTILES),
+                            tolerance="P&L 1e-6 relative; VaR, ES 1e-6 relative to ORE's RiskStatistics")
     def test_pnl_vector_matches(self, monte_carlo_run):
         trades, shocks, result = monte_carlo_run
         np.testing.assert_allclose(np.asarray(result.pnl), _ore_pnl(trades, shocks.shifts), rtol=1e-6, atol=0.05)
@@ -187,6 +206,9 @@ class TestHistoricalVarEsMatchesOre:
         assert result.num_scenarios == 300 - 10
         assert result.source == "historical"
 
+    @pytest.mark.ore_parity(_declared([m.swap(), m.bond()], m.PRICING, "historical", QUANTILES),
+                            tolerance="VaR, ES 1e-10 relative to ORE's RiskStatistics on ORE's P&L")
     def test_var_and_es_match(self, historical_run):
         trades, shocks, result = historical_run
         _assert_statistics_match(result, _ore_pnl(trades, shocks.shifts), QUANTILES, rtol=1e-10)
+

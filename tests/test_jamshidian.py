@@ -24,6 +24,7 @@ from engine.pricing.context import PricingContext
 from engine.pricing.cube import validate_trades
 from engine.pricing.european import european_terms
 from engine.pricing.jamshidian import jamshidian_value
+from tests.support.ore_parity_matrix import cells
 
 TODAY = ORE.Date(30, 7, 2026)
 HW_A = 0.03
@@ -88,6 +89,15 @@ def _ore_swap_npv(fixed_rate, payer, tenor="5Y"):
     return swap.NPV()
 
 
+#: The matrix cells of the comparisons with QuantLib's engine: spot and forward starting, payers and
+#: receivers.
+DECLARED = cells("npv", [_make_cfg(0.03, True), _make_cfg(0.03, False, "5Y", 2)],
+                 PricingConfig(european="Jamshidian", jamshidian=MODEL))
+
+
+PARITY = pytest.mark.ore_parity(DECLARED, tolerance="5e-6 relative (QuantLib's Brent root on r*)")
+
+
 class TestAgainstQuantLibJamshidianEngine:
     @pytest.mark.parametrize("fixed_rate,payer,tenor", [
         (0.03, True, "5Y"),   # ATM payer
@@ -97,6 +107,7 @@ class TestAgainstQuantLibJamshidianEngine:
         (0.05, False, "2Y"),  # ITM receiver
         (0.02, False, "10Y"),  # deep OTM receiver
     ])
+    @PARITY
     def test_matches_quantlib_spot_starting(self, fixed_rate, payer, tenor):
         mine = _price_at_t0(_make_cfg(fixed_rate, payer, tenor))
         assert mine == pytest.approx(_ore_years(fixed_rate, payer, tenor), rel=RTOL, abs=1e-6)
@@ -104,6 +115,7 @@ class TestAgainstQuantLibJamshidianEngine:
     @pytest.mark.parametrize("fixed_rate,payer,tenor,forward_years", [
         (0.03, True, "2Y", 3), (0.03, False, "2Y", 3), (0.025, True, "5Y", 5),
     ])
+    @PARITY
     def test_matches_quantlib_forward_starting(self, fixed_rate, payer, tenor, forward_years):
         """The forward-start decomposition: strikes relative to the bond maturing on the
         swap's start, bond options from it (`discountBondOption(..., bondStart, ...)`)."""
@@ -118,6 +130,7 @@ class TestAgainstQuantLibJamshidianEngine:
     @pytest.mark.parametrize("fixed_rate", [0.01, 0.02, 0.03, 0.04, 0.06])
     @pytest.mark.parametrize("payer", [True, False])
     @pytest.mark.parametrize("tenor,forward_years", [("2Y", 0), ("5Y", 0), ("10Y", 2), ("5Y", 5)])
+    @PARITY
     def test_grid(self, fixed_rate, payer, tenor, forward_years):
         mine = _price_at_t0(_make_cfg(fixed_rate, payer, tenor, forward_years))
         assert mine == pytest.approx(_ore_years(fixed_rate, payer, tenor, forward_years), rel=RTOL, abs=1e-6)

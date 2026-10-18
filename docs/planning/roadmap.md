@@ -233,7 +233,6 @@ blocks the API, TraderX or Basel work.
 
 | Step | Goal | Work | Closes | After | Size |
 |---|---|---|---|---|---|
-| 3.10 | Critical bug | *Parallel, can start now* (it moves no number; it may find wrong ones, each then fixed or entered as an issue). ORE parity beyond the shared portfolio's one market and default settings, which let a Theta 60–290% off pass until 2026-10-17: a parity matrix of products by analytics by settings, generated from the tests and published in docs/reference/ore-parity.md, a test failing on a public setting or analytic with no cell or no stated reason; seeded randomized sweeps against the in-process ORE oracles (random trades, seasoning and positions on sloped, inverted, negative and flat markets; today's values, both Greek methods, Theta across weekends, coupons, fixings and exercises, market risk with calibrated options on more scenarios and historical scenarios), a fixed sample in the fast tier and the whole sweep in the full tier, each failure reproducible from its seed; every sensitivity setting, calibration strategy, `ShiftHorizon` and short against ORE, and ORE's own market-risk analytic end to end where OREApp runs it | [I-116](known-issues.md#i-116) | — | L |
 | 3.11 | Precision | *Parallel, can start now* (it moves no valuation). The evidence table keyed by every pricing setting that changes a kernel's arithmetic: the European engine, the rollback grid, and whether an option is recalibrated under each market-risk scenario (its own induction per scenario since 2026-10-17, where the `market_risk` campaigns measured a fixed LGM); a conservative warning for an unmeasured configuration, with regressions that one engine, grid or calibration cannot validate another; a calibrated Bermudan added to the market-risk campaigns and measured. Before the equal-accuracy timing, which reads these rows | [I-114](known-issues.md#i-114) | — | M |
 | 3.12 | API | *Parallel, can start now.* Every input checked before any work, on the host: a curve's pillars (non-empty, as many rates as times, finite, strictly increasing; negative rates allowed), an option's exercise leaving a whole period of each leg, the standalone calibration's notional positive, every API model strict (`extra="forbid"`); each refusal names the field or trade. 3.13's preflight runs them all | [I-103](known-issues.md#i-103) | — | S |
 | 3.13 | API | One run request in place of a route per engine function, as ORE runs a portfolio with a list of analytics: `POST /runs` with `market`, `portfolio`, `analytics` (`npv`, `exposure`, `sensitivities`, `market_risk`, `calibration`) and a `config` whose sections follow ORE's files, each setting in one place; one result with the configuration as run, which says what each figure is without the request beside it (reporting currency, dates, trade ids on every axis, each Greek array's factors, the Greeks method and calibration policy, the engine's revision and its jax, jaxlib and ORE versions); `GET /config/defaults`; an idempotency key; a Python entry, `run(RunRequest)`, in `run/`. Each analytic refuses a precision setting or configuration section it does not read, naming the field. The four routes and `/jobs` go, there being no client. The completeness test also checks each field's wiring: every field set to a non-default value arrives in the engine's configuration. A run of one analytic equals today's direct call within the margin ([design](details/configurable-engine.md#one-run-request-i-87-i-88-i-89)) | [I-87](known-issues.md#i-87), [I-88](known-issues.md#i-88), [I-89](known-issues.md#i-89), [I-95](known-issues.md#i-95) | 3.12 | M |
@@ -282,12 +281,15 @@ Order within the stage:
   rest on numbers shown equal to ORE's sensitivity analytic, and IMA's expected shortfall on a
   calibrated option's P&L shown equal to ORE's recalibrating historical P&L. The recalibrated
   option is a market-risk kernel the evidence table has not measured (I-114 now names it).
-- **ORE parity breadth before anything builds on more of it** (3.10, 2026-10-17). The first run
-  of ORE's sensitivity analytic found every trade's Theta wrong while its other Greeks matched:
-  each analytic had been compared on one configuration. Numbers that are unproven where later
-  work builds on them are the focus's second goal, so the sweeps and the parity matrix come
-  first among the remaining steps, beside the evidence keying (3.11), which keeps the precision
-  research's acceptance from validating a configuration it never measured. Both move no number.
+- **ORE parity breadth is shown** (done 2026-10-18, I-116). Each analytic had been compared on
+  one configuration, which let a Theta 60–290% off pass; the
+  [parity matrix](../reference/ore-parity.md#the-parity-matrix) now names, for every product,
+  analytic and public setting, the test that compares it with ORE or the reason none does, and
+  seeded sweeps compare random markets, portfolios and settings with ORE's NPV, sensitivity and
+  historical-simulation VaR analytics. They found six defects, each fixed as a planned change
+  (below), and four configurations where ORE's sensitivity analytic disagrees with itself or
+  fails a calibration the engine fits (I-117, stage 6). The evidence keying (3.11) is the remaining step that keeps the precision
+  research's acceptance from validating a configuration it never measured.
 - **The Greeks on an accelerator before the timing** (3.18). The first research result times whole
   jobs (3.19), the fixed float64 stages included; the Greeks' host loop and a calibrated option's
   compile are measured and fixed first, so the timing does not measure them.
@@ -298,9 +300,14 @@ Order within the stage:
   written once on them. A setting added before 3.13 gets its API field in the request shape of
   the day, and 3.13 carries it over. 3.15 comes before 3.16, which is written on the worker
   loop 3.15 changes.
-- **Numbers.** 3.10 to 3.18 move no number beyond the margin (3.12 refuses inputs that gave
-  wrong ones; 3.10 may find a wrong one, fixed as its own planned change). The AD Greeks and a calibrated Bermudan's market-risk P&L moved to ORE's on
-  2026-10-17, a planned change of the model. On fixed paths, the completed rounding/bounds work keeps
+- **Numbers.** 3.11 to 3.18 move no number beyond the margin (3.12 refuses inputs that gave
+  wrong ones). The AD Greeks and a calibrated Bermudan's market-risk P&L moved to ORE's on
+  2026-10-17, a planned change of the model; on 2026-10-18 the parity sweeps' fixes moved what
+  ORE showed wrong (I-116): every Theta whose roll pays a flow (no add-back), a Theta across a
+  weekend or holiday of an option reading volatilities, a calibrated option whose deal strike has
+  more than six decimals or whose underlying matures on a non-business day, and an American's
+  path values whose window opened before the as-of date; and an American without a calibrating
+  helper is refused. The shared portfolio's numbers moved by none of them. On fixed paths, the completed rounding/bounds work keeps
   float64 within the margin. I-111's interval metadata and diagnostic-audit fixes move no
   valuation. I-111's independent replicates intentionally change the sampling design:
   compare precisions on matched replicate draws, validate distributions and interval coverage,
@@ -364,13 +371,14 @@ then tooling; the two parallel steps at any time.
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|
 | 6.1 | *Parallel, start now* (A-20). Ruff in `pyproject.toml` and CI with pyflakes' rules only (ruff's `F` set: unused imports and variables, undefined names, empty f-strings; no style or formatting rules). Fix or mark each finding; an "unused" import that other modules import from there is a re-export and goes in `__all__`, checked one by one. Earlier is cheaper: every later step's code is then written lint-clean once. `pandas`, which nothing imports, leaves the dependencies | [I-66](known-issues.md#i-66) (linter) | — | S |
-| 6.2 | *Parallel, start now.* The documentation's contradictions corrected (ORE described as single-threaded, three independent modules, the precision demo's count, the whole job as one XLA computation, parity tests never slow); the parity table is 3.10's | [I-110](known-issues.md#i-110) | — | S |
-| 6.3 | The narrow cases: a European's liveness by its expiry date, not its variance; a bond valued until its last payment; Theta's add-back on the rolled market's fixings, `theta_days` bounded; the LGM's H by `expm1`, host and JAX alike | [I-104](known-issues.md#i-104) | — | S |
+| 6.2 | *Parallel, start now.* The documentation's contradictions corrected (ORE described as single-threaded, three independent modules, the precision demo's count, the whole job as one XLA computation); the parity table is the parity matrix (done 2026-10-18) | [I-110](known-issues.md#i-110) | — | S |
+| 6.3 | The narrow cases: a European's liveness by its expiry date, not its variance; a bond valued until its last payment; the LGM's H by `expm1`, host and JAX alike | [I-104](known-issues.md#i-104) | — | S |
 | 6.4 | Characterize the full-suite aborts and lost worker processes. The fast tier's CI deaths were memory and are fixed (2026-10-05: the grid-convergence test's grid, compiled programs dropped per module). Still to do: show the full suite on CI's 16 GB runner (`-n 4` peaked at 24.2 GB with page cache before those fixes), then repeated full runs against a known-bad baseline, then the full tier on a schedule. Before Basel P7 (5.2), whose evidence pack rests on a complete suite run | [I-27](known-issues.md#i-27) | — | M |
 | 6.5 | The cold job's one-operation programs: jit the scenario market's construction and the other eager sites, and market risk's batch on the price function as data, as was done for the AD Greeks; the snapshot within the margin | [I-81](known-issues.md#i-81) | — | S |
 | 6.6 | The pipeline's remaining speed: find why, on Windows' CPU only, pricing runs 10–25% slower in a process that has run AD Greeks (the Windows heap is suspected, not shown; Linux is unaffected); and win back the 3 s (8%) a cold job lost to the bootstrap's compile under Newton, by tracing the helper's price once per bucket program where it is traced at the bracket's ends, the step and the model value today | [I-53](known-issues.md#i-53) | — | S |
 | 6.7 | Shared test helpers in `tests/support/`; public-entry tests where stage 1 made private-symbol tests obsolete | [I-67](known-issues.md#i-67) | — | S |
 | 6.8 | A type checker on `engine/` (A-20) | [I-66](known-issues.md#i-66) (type checker) | 6.1 | S |
+| 6.9 | ORE's sensitivity analytic where it disagrees with itself or fails: the two inconsistencies reported to ORE with one-trade reproductions (a holiday as-of date's volatility reference; a deal strike its fallback moves on an ACT/ACT (ICMA) swap index), and its optimiser's miss of a large basket under a 5bp volatility shift, each then a parity test or a difference by decision; whether an as-of date that is not a business day is refused, decided with the run request's preflight (3.12, 3.13) | [I-117](known-issues.md#i-117) | — | S |
 
 6.4's runs can be made whenever a full run is being made anyway. Five full runs under WSL2
 (2026-10-06, `-n 4`, a 23 GB VM; four on the GPU, one on CPU) all printed their summary lines,
@@ -398,12 +406,13 @@ and gets its rows in the evidence table (a campaign of the precision harness, I-
 | 7.9 | **Conditional research experiment: multilevel quantile correction.** Only if the existing-format timing/accuracy results show a useful opportunity, combine many low-precision paths with paired float64 paths to estimate PFE/VaR through a corrected distribution or equivalent estimator, with a related tail-estimation method for ES. Compare against the uncorrected estimators and float64 at equal total wall time, including paired simulation, correction and inversion costs; validate tail accuracy and uncertainty. Retain raw results alongside corrected ones. Independent of FP4; do not implement merely to make a failing format pass | [F-07](features.md#f-07) (quantile/tail estimation) | 3.19; evidence of likely benefit | L |
 | 7.10 | **Deferred: FP4 storage and compute.** Storage with a variance correction through block scales, emulated compute using the existing precision architecture and rounding lessons from I-98, and its own precision campaigns and evidence rows; native compute on TPU 8t/8i measured when available. Lower priority than the supported formats' first time/accuracy comparison; quantile correction is not a prerequisite | [F-07](features.md#f-07) (FP4) | 3.19 | L |
 | 7.11 | Supported sampling confidence intervals in a stated estimator/model domain, with validated tail assumptions or bounds; independent outer-seed rare-event validation, unchanged diagnostic criteria and explicit unavailability elsewhere. The conservative I-111 availability rule is complete and does not block hardware timing | [F-10](features.md#f-10) | 3.19 (priority) | L |
+| 7.12 | The cash flows paid in Theta's roll reported beside Theta, per trade, from both Greek methods, never folded into Theta, which stays ORE's (A-26); tested against the trades' schedules and ORE's cash-flow report on the Theta date | [F-11](features.md#f-11) | 3.13 | S |
 
 Order within the stage: the smile first (no market given to the engine so far has one, so it
 changes no number yet, but SABR builds on it); then the smallest gaps in ORE's own choices
 (7.2), the largest scope gap (7.3: the model already simulates FX and equity, but nothing
 prices them), SABR (7.4), and the analytics built on proven exposure (7.5, 7.6). 7.7 as soon
-as its FX source arrives; 7.8 has no dependants. The deferred precision extensions (7.9, 7.10)
+as its FX source arrives; 7.8 has no dependants; 7.12 is small and can follow 3.13 at any time. The deferred precision extensions (7.9, 7.10)
 come after the first existing-format research result: quantile correction only when its
 measured opportunity warrants an experiment, and FP4 separately at lower priority. Neither
 is required to complete stage 3.

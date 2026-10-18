@@ -6,8 +6,9 @@ simulated path and date (plan T-13, 5.3, 5.4).
 
 Calibration basket (`calibration_basket`, plan V-5): one `SwaptionHelper` per alive exercise
 date (an American: per `ReferenceCalibrationGrid` date inside its window), each into the
-underlying's maturity, struck at the deal strike (`CoterminalDealStrike`: the fixed rate
-less the float spread) or ATM, at most one per interval of the reference grid
+underlying's last payment date (`underlying_maturity`), struck at the deal strike
+(`CoterminalDealStrike`: the fixed rate less the float spread, to six decimals as ORE's builder
+writes it, `calibration_strike`) or ATM, at most one per interval of the reference grid
 (`IrModelBuilder::buildSwaptionBasket`). The LGM's volatility is bootstrapped to it
 (`engine.calibration.ore_lgm`), with the engine's constant reversion.
 
@@ -44,7 +45,7 @@ import jax.numpy as jnp
 import numpy as np
 import ORE
 
-from engine.calibration.ore_lgm import BasketInstrument, bootstrap_sigma, build_basket, require_accepted
+from engine.calibration.ore_lgm import BasketInstrument, CalibrationError, bootstrap_sigma, build_basket, require_accepted
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, underlying_swap
 from engine.market_data.curves import DiscountCurve
@@ -64,10 +65,15 @@ OptionConfig = Union[BermudanSwaptionConfig, AmericanSwaptionConfig]
 
 
 def contract_exercise_dates(cfg: OptionConfig) -> Tuple[ORE.Date, ...]:
-    """The dates ORE's option wrapper and trade builder work with: a Bermudan's exercise
-    dates; an American's window, first and last day (`ExerciseBuilder`)."""
+    """The dates ORE's option wrapper and trade builder work with, the trade built on its
+    evaluation date: a Bermudan's exercise dates; an American's window, first and last day, the
+    first no earlier than the day after (`ExerciseBuilder` keeps an American's two notice dates
+    alive, `max(today + 1, first)`, OREData/ored/portfolio/optiondata.cpp), so a window opened
+    before the as-of date is exercisable from the first simulation date on (until 2026-10-18 the
+    wrapper never exercised it on a path, found by tests/test_ore_xva_parity.py's settings
+    runs, I-116)."""
     if isinstance(cfg, AmericanSwaptionConfig):
-        return cfg.first_exercise_date, cfg.last_exercise_date
+        return max(cfg.evaluation_date + 1, cfg.first_exercise_date), cfg.last_exercise_date
     return tuple(cfg.exercise_dates)
 
 
@@ -93,12 +99,31 @@ def basket_expiries(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, built_on
     return tuple(kept)
 
 
+def underlying_maturity(cfg: OptionConfig) -> ORE.Date:
+    """ORE's `underlying_->maturity()` (OREData/ored/portfolio/swaption.cpp): the underlying swap
+    trade's last payment date, the maturity date adjusted when it is not a business day. Each
+    calibration helper's term and the shift horizon end there; a helper ending on the unadjusted
+    date has another last accrual under ACT/ACT (ICMA), 1e-3 of its value (found by the ORE parity
+    sweep, I-116)."""
+    return underlying_swap(cfg).maturityDate()
+
+
+def calibration_strike(cfg: OptionConfig) -> float:
+    """A `CoterminalDealStrike` helper's strike as ORE's builder hands it to the model: the
+    fixed rate less the float spread (`getCalibrationStrikesFromLegs`,
+    OREData/ored/portfolio/swaption.cpp), written as text by `std::to_string`, six decimals, and
+    read back (`LGMSwaptionEngineBuilder`, OREData/ored/portfolio/builders/swaption.cpp). ORE's
+    helper is struck at the rounded rate; for a deep in-the-money basket the exact one moved
+    the option's value by up to 1e-7 of it (found by the ORE parity sweep, I-116)."""
+    return float(f"{cfg.fixed_rate - cfg.floating_spread:f}")
+
+
 def calibration_basket(cfg: OptionConfig, engine: LgmSwaptionEngineConfig,
                        built_on: ORE.Date) -> Tuple[BasketInstrument, ...]:
     """The helpers of the trade built on `built_on` (see the module docstring)."""
     expiries = basket_expiries(cfg, engine, built_on)
-    strike = cfg.fixed_rate - cfg.floating_spread if engine.strategy == "CoterminalDealStrike" else None
-    return tuple(build_basket(built_on, list(expiries), [cfg.maturity_date] * len(expiries), engine.swap_index,
+    strike = calibration_strike(cfg) if engine.strategy == "CoterminalDealStrike" else None
+    return tuple(build_basket(built_on, list(expiries), [underlying_maturity(cfg)] * len(expiries), engine.swap_index,
                               [strike] * len(expiries)))
 
 
@@ -107,8 +132,7 @@ def shift_horizon_time(cfg: OptionConfig, shift_horizon: float, built_on: ORE.Da
     `ShiftHorizon`, a fraction) of the ActualActual(ISDA) time from `built_on` to the underlying's
     maturity, its last payment date (`LGMBermudanAmericanSwaptionEngineBuilder::model`, which
     measures it from the evaluation date to the trade's `maturity()`)."""
-    maturity = underlying_swap(cfg).maturityDate()
-    return ORE.ActualActual(ORE.ActualActual.ISDA).yearFraction(built_on, maturity) * shift_horizon
+    return ORE.ActualActual(ORE.ActualActual.ISDA).yearFraction(built_on, underlying_maturity(cfg)) * shift_horizon
 
 
 def prepared_option(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, sigma, curve=None, index_curve=None,
@@ -143,12 +167,21 @@ class Calibration:
 def calibrate_on(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, context: PricingContext) -> Optional[Calibration]:
     """The trade's LGM on the context's date, as a trade built on that date (None with
     `calibration="None"`, or when no exercise is left); a calibration that misses ORE's
-    acceptance is refused, naming the trade (`engine.calibration.ore_lgm.CalibrationError`)."""
+    acceptance is refused, naming the trade (`engine.calibration.ore_lgm.CalibrationError`), and
+    so is a live option without a helper (an American whose window holds no date of the
+    reference calibration grid), as ORE's `LgmBuilder` refuses to build it ("no calibrating
+    swaption provided"; until 2026-10-18 the engine priced it on the uncalibrated volatility,
+    found by the ORE parity sweep, I-116)."""
     if engine.calibration == "None":
         return None
     basket = calibration_basket(cfg, engine, context.date)
     if not basket:
-        return None
+        if dataclasses.replace(cfg, evaluation_date=context.date).is_expired():
+            return None
+        raise CalibrationError(
+            f"{cfg.product} {cfg.trade_id!r} on {context.date}: no calibration helper, since no date of the reference "
+            f"calibration grid {engine.reference_calibration_grid!r} lies in its exercise window; ORE's LgmBuilder "
+            f"refuses to build it (no calibrating swaption provided)")
     disc, index = context.curves(cfg.currency, index_name(cfg.currency, cfg.index_tenor_months))
     vols = np.array([context.volatility(cfg.currency, b.vol_option_time, b.vol_swap_length) for b in basket])
     result = bootstrap_sigma(basket, disc, index, vols, engine.reversion, engine.solver)

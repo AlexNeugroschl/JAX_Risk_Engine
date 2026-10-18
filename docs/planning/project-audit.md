@@ -25,7 +25,7 @@ result served), so some differ from the audit's.
 | AUD-09 Zero and negative notionals | Confirmed, *run*, and worse than reported: a negative-notional Bermudan is a long option on the reversed swap (+15,018 where the short is −35,713), a European the short; zero notional NaN | High | [I-101](known-issues.md#i-101), fixed 2026-10-11 |
 | AUD-10 Late exercise | Confirmed, *run* (`StopIteration`) | Medium | [I-103](known-issues.md#i-103) |
 | AUD-11 Delayed last payment | Confirmed; a window of the days between maturity and payment | Low | [I-104](known-issues.md#i-104) |
-| AUD-12 Theta fixings | Confirmed; only when `theta_days` reaches a coupon fixing and paying inside the roll | Low | [I-104](known-issues.md#i-104) |
+| AUD-12 Theta fixings | Confirmed; only when `theta_days` reaches a coupon fixing and paying inside the roll. Moot since 2026-10-18: ORE's analytic adds back no flow of the roll, and neither does the engine | Low | [I-116](known-issues.md#i-116) (closed) |
 | AUD-13 Root solver contract | In part. The missing fit check is real ([I-73](known-issues.md#i-73), closed 2026-10-12). Set aside: a general status from a fixed-step solver (its design, A-21: a root beyond a bounded bracket is that end, and the calibration's acceptance judges it); derivatives at a clipped root (the unbounded problems widen to 2^63; bounded bootstrap roots carry no tangent) | — | [I-73](known-issues.md#i-73) (closed 2026-10-12) |
 | AUD-14 H at small reversion | Confirmed; float32 only, about one rounding of a log discount | Low | [I-104](known-issues.md#i-104) |
 | AUD-15 Qualification matrix | Valid (documentation) | Low | [I-110](known-issues.md#i-110) |

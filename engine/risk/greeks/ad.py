@@ -114,7 +114,7 @@ def portfolio_greeks(trades: Sequence[Trade], market: Market, base_currency: str
             fx = market.fx_spot(cfg.currency, base_currency)
             greeks = {key: value * fx for key, value in trade_greeks(cfg, market, pricing, config).items()}
             value = lambda context, _cfg=cfg: value_on(_cfg, context, pricing) * fx  # noqa: E731
-            greeks["theta"] = trade_theta(value, value(base_context), cfg, theta_ctx, fx)
+            greeks["theta"] = trade_theta(value, value(base_context), theta_ctx)
             result[i] = greeks
     return result
 

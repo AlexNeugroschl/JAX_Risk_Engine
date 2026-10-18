@@ -81,7 +81,9 @@ ambitions (see the root [README.md](../../README.md) for the full roadmap):
   engine used by actual financial institutions. Every pricing formula and risk formula
   in this codebase has been checked line-by-line against ORE's own installed software,
   and the test suite includes tests that run ORE itself and compare answers directly. This
-  is described more in [Architecture](../concepts/architecture.md).
+  is described more in [Architecture](../concepts/architecture.md); exactly which products,
+  analytics and settings are compared with ORE, and why the rest are not, is the
+  [parity matrix](../reference/ore-parity.md#the-parity-matrix).
 - **A live API, now built.** The engine is exposed as a web API that another system
   ("TraderX") can call, rather than only running as an overnight batch script. Two separate
   contracts are served: a general portfolio-pricing one, and a stricter end-of-day one for

@@ -18,21 +18,26 @@ import ORE
 
 from engine.market_data.curves import DiscountCurve, ZeroCurve, log_discount
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER
-from engine.market_data.market import Market
+from engine.market_data.market import VOL_BUSINESS_DAY_CONVENTION, VOL_CALENDAR, Market
 
-#: (currency, option time from the date, swap length) -> normal volatility.
+#: (currency, option time from the date, swap length) -> the normal volatility ORE reads for an
+#: option expiring then.
 VolatilityLookup = Callable[[str, float, float], float]
 
 
 @dataclass(frozen=True)
 class PricingContext:
     """See the module docstring. `fixings[index name]` adds to each trade's history (the
-    theta roll backfills the fixings of the day it skips)."""
+    theta roll backfills the fixings of the day it skips). `volatility_offset` is the time, in
+    years, from `date` to the date the swaption volatilities run from, where an option's
+    variance starts (`floating_volatility_date`: the sensitivity analysis's Theta market on a
+    day that is not a business day); 0 on every other market."""
     date: ORE.Date
     discount: Mapping[str, object]
     index: Mapping[str, object]
     volatility: VolatilityLookup
     fixings: Mapping[str, Mapping[ORE.Date, float]] = field(default_factory=dict)
+    volatility_offset: float = 0.0
 
     def curves(self, currency: str, index_name: str):
         if currency not in self.discount:
@@ -40,6 +45,16 @@ class PricingContext:
         if index_name not in self.index:
             raise KeyError(f"no forwarding curve for index {index_name!r} in {currency}")
         return self.discount[currency], self.index[index_name]
+
+
+def floating_volatility_date(date: ORE.Date) -> ORE.Date:
+    """The date ORE's simulation-market swaption volatilities run from on an evaluation date
+    `date`: the reference date of its `SwaptionVolatilityMatrix` built on a calendar and no
+    settlement days (`ScenarioSimMarket`, OREAnalytics/orea/scenario/scenariosimmarket.cpp),
+    `calendar.advance(date, 0 days)`, the first business day on or after `date`. On a Saturday
+    Theta date the volatilities run from the Monday, so an option's variance is two days
+    shorter than its discounting (measured against ORE's sensitivity analytic, I-116)."""
+    return VOL_CALENDAR.adjust(date, VOL_BUSINESS_DAY_CONVENTION)
 
 
 def from_market(market: Market) -> PricingContext:

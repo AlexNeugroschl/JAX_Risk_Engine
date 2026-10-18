@@ -5,12 +5,14 @@ ORE's sensitivity analysis on today's market (`engine.risk.greeks.bump`, plan T-
     times the shift plus half the second-derivative term, and Gamma the second derivative
     term, to O(shift^3) (plan X-3: AD and ORE's Greeks agree to the bump's order).
   * Theta: the date moves one calendar day (Friday -> Saturday, I-38), a coupon paid on the
-    Theta date is added back (I-39), and a fixing of the as-of date is backfilled from the
-    Theta market rather than refused.
+    Theta date leaves Theta as it leaves the NPV, as in ORE's analytic (no flow is added back:
+    `engine.risk.greeks.bump`'s module docstring; I-39's add-back reversed on 2026-10-18,
+    I-116), and a fixing of the as-of date is backfilled from the Theta market rather than
+    refused.
   * Vega: the matrix of quote bumps adds up to a parallel volatility bump.
 
-Parity with ORE's own sensitivity analytic (an OREApp sensitivity run) is not yet in the
-suite; see docs/planning/known-issues.md I-51.
+Parity with ORE's own sensitivity analytic is tests/test_sensitivity_ore_parity.py (the shared
+portfolio) and tests/test_ore_parity_sweep.py (seeded random portfolios, settings and rolls).
 """
 import dataclasses
 
@@ -88,19 +90,20 @@ def test_theta_rolls_one_calendar_day_from_a_friday():
     assert theta_context(_market(friday), CONFIG).date == ORE.Date(1, 8, 2026)
 
 
-def test_theta_adds_back_a_coupon_paid_on_the_theta_date():
+def test_a_coupon_paid_on_the_theta_date_leaves_theta_as_it_leaves_the_npv():
     """The swap's fixed and floating coupons pay on 2026-08-03 (a Monday): valued on the
-    Sunday before, the Theta date is the payment date. Without the add-back Theta would be
-    about minus the net coupon; with it only the day's carry remains (I-39)."""
+    Sunday before, the Theta date is the payment date, where the coupons have occurred. ORE's
+    Theta adds back no flow (its period flows are read after the roll), so Theta is the rolled
+    value less the base, about minus the net coupon (until 2026-10-18 the engine added the
+    coupons back, I-39, leaving only the day's carry; ORE's analytic disproved it, I-116)."""
     asof = ORE.Date(2, 8, 2026)
     cfg = _swap(asof, effective_date=ORE.Date(3, 8, 2025), maturity_date=ORE.Date(3, 8, 2030))
     market = _market(asof)
     theta = float(portfolio_sensitivities([cfg], market, "USD", config=CONFIG)[0]["theta"])
     base = value_on(cfg, sensitivity_context(market, CONFIG), PricingConfig())
     rolled = value_on(cfg, theta_context(market, CONFIG), PricingConfig())
-    coupon = rolled - base - theta   # minus the flow the theta adds back
-    assert abs(coupon) > 1_000.0
-    assert abs(theta) < 0.05 * abs(coupon)
+    assert theta == rolled - base
+    assert abs(theta) > 1_000.0
 
 
 def test_a_fixing_on_the_as_of_date_is_backfilled_on_the_theta_date():
@@ -129,8 +132,9 @@ def test_the_vega_matrix_adds_up_to_a_parallel_bump():
     assert float(np.sum(vega)) == pytest.approx(parallel, rel=1e-3)
 
 
-def test_theta_adds_back_a_bond_coupon_paid_on_the_theta_date():
-    """A bond's coupon paid on the Theta date is added back too (I-39 in the pipeline)."""
+def test_a_bond_coupon_paid_on_the_theta_date_leaves_theta_too():
+    """A bond's coupon paid on the Theta date leaves Theta as the swap's does: about minus the
+    2,000 coupon, plus a day's carry."""
     from engine.instruments.treasury import BondConfig, CouponPeriod
     asof = ORE.Date(14, 8, 2026)
     periods = (CouponPeriod(ORE.Date(15, 2, 2026), ORE.Date(15, 8, 2026)),
@@ -141,5 +145,5 @@ def test_theta_adds_back_a_bond_coupon_paid_on_the_theta_date():
     theta = float(portfolio_sensitivities([bond], market, "USD", config=CONFIG)[0]["theta"])
     rolled = value_on(bond, theta_context(market, CONFIG), PricingConfig())
     base = value_on(bond, sensitivity_context(market, CONFIG), PricingConfig())
-    assert theta == pytest.approx(rolled - base + 2_000.0, abs=1e-8)
-    assert 0.0 < theta < 50.0
+    assert theta == rolled - base
+    assert -2_000.0 < theta < -1_950.0

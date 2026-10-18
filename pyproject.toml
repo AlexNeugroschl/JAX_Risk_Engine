@@ -76,10 +76,13 @@ include = ["engine*"]
 testpaths = ["tests"]
 # `slow` marks the tests CI's fast tier skips (`pytest -m "not slow"`): the
 # HTTP-job and engine-worker tests that start worker processes, and tests taking
-# 5 s or more. ORE-parity tests are never marked slow, so the fast tier runs
-# all of them. --strict-markers turns a misspelt marker into an error instead of
+# 5 s or more. Every ORE-parity test runs in the fast tier, whatever it takes;
+# only its statistical (L4) or swept extension is slow: the seeded sweeps'
+# fixed sample runs fast, the rest of the sweep in the full tier.
+# --strict-markers turns a misspelt marker into an error instead of
 # a test that silently lands in the wrong tier.
 addopts = "--strict-markers"
 markers = [
     "slow: starts worker processes or takes 5 s or more; skipped by CI's fast tier",
+    "ore_parity: the ORE parity matrix cells a test compares with ORE, and its tolerance (tests/support/ore_parity_matrix.py)",
 ]

@@ -278,7 +278,7 @@ def value_on(cfg: Trade, context: PricingContext, pricing: PricingConfig) -> flo
     if isinstance(cfg, BondConfig):
         if context.date >= cfg.maturity_date:
             # Rolled to or past maturity (the Theta date): nothing left to value; a flow paid on
-            # that date is ORE's excluded settlement-date flow, counted by Theta's paid flows.
+            # that date has occurred, so it leaves Theta as it leaves ORE's (I-116).
             return 0.0
         disc = context.discount[currency]
         return float(today_npv(bond_legs(dataclasses.replace(cfg, evaluation_date=context.date)), context.date,

@@ -24,7 +24,9 @@ from engine.market_data.curves import ZeroCurve
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER as DC, resolve_accrual_day_count
 from engine.market_data.market import CurrencyMarket, Market, ZeroCurveConfig, index_name
 from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfig, simulate
+from engine.pricing.config import PricingConfig
 from engine.pricing.legs import legs_cube, legs_of, path_fixings, path_schedule, today_npv
+from tests.support.ore_parity_matrix import cells
 
 ASOF = ORE.Date(30, 7, 2026)
 PILLARS = [0.0, 73 / 365, 1.0, 2.0, 5.0, 10.0, 30.0]
@@ -110,6 +112,7 @@ SWAPS = {
 }
 
 
+@pytest.mark.ore_parity(cells("npv", [_swap(**o) for o in SWAPS.values()]), tolerance="1e-12 relative")
 @pytest.mark.parametrize("name", SWAPS)
 def test_today_equals_ores_discounting_swap_engine(name):
     cfg = _swap(**SWAPS[name])
@@ -120,15 +123,23 @@ def test_today_equals_ores_discounting_swap_engine(name):
     assert ours == pytest.approx(ore, rel=1e-10, abs=1e-6)
 
 
-@pytest.fixture(scope="module", params=MODELS)
-def scenarios(request):
+def _path_config(model: str) -> CamConfig:
     """A few paths over dates that fall between fixing and payment dates, on a holiday
     (Good Friday 2027: FixingManager fixes on the next business day), and after maturity."""
     dates = (ORE.Date(15, 10, 2026), ORE.Date(2, 2, 2027), ORE.Date(26, 3, 2027), ORE.Date(5, 8, 2027),
              ORE.Date(1, 2, 2029), ORE.Date(3, 8, 2031), ORE.Date(10, 2, 2032))
-    config = CamConfig(dates=dates, base_currency="USD", ir={"USD": MODELS[request.param](0.03, 0.012)},
-                       curve_tenors=TENORS, samples=4, seed=7)
-    return simulate(_market(), config)
+    return CamConfig(dates=dates, base_currency="USD", ir={"USD": MODELS[model](0.03, 0.012)}, curve_tenors=TENORS,
+                     samples=4, seed=7)
+
+
+def _on_paths(trades, config=_path_config, pricing=PricingConfig()):
+    """The matrix cells of `trades` compared on the paths of `config(model)`, each model."""
+    return [cell for model in MODELS for cell in cells("exposure", trades, pricing, simulation=config(model))]
+
+
+@pytest.fixture(scope="module", params=MODELS)
+def scenarios(request):
+    return simulate(_market(), _path_config(request.param))
 
 
 def test_path_fixings_are_ores_index_forecast_on_the_path_curve(scenarios):
@@ -146,6 +157,7 @@ def test_path_fixings_are_ores_index_forecast_on_the_path_curve(scenarios):
 
 
 @pytest.mark.parametrize("name", SWAPS)
+@pytest.mark.ore_parity(_on_paths([_swap(**o) for o in SWAPS.values()]), tolerance="1e-12 relative, each cell")
 def test_every_path_and_date_equals_ores_discounting_swap_engine(name, scenarios):
     """Paid cashflows drop out, historical fixings stay, and every fixing between the as-of
     date and the simulation date pays FixingManager's path value."""
@@ -233,6 +245,7 @@ EUROPEANS = {
 }
 
 
+@pytest.mark.ore_parity(cells("npv", [_european(**o) for o in EUROPEANS.values()]), tolerance="1e-10 relative")
 @pytest.mark.parametrize("name", EUROPEANS)
 def test_european_today_equals_ores_default_engine(name):
     """ORE's `EuropeanSwaptionEngineBuilder` (`BlackMultiLegOptionEngine`) through the
@@ -296,6 +309,8 @@ def test_a_cash_settled_european_uses_the_par_yield_annuity(name):
     assert abs(physical / reference - 1.0) > 5e-3
 
 
+@pytest.mark.ore_parity(_on_paths([_european(**o) for o in {**EUROPEANS, **CASH_EUROPEANS}.values()]),
+                        tolerance="QuantLib's Bachelier engine on each path, each cell")
 @pytest.mark.parametrize("name", {**EUROPEANS, **CASH_EUROPEANS})
 def test_european_on_every_path_equals_quantlibs_bachelier_engine(name, scenarios):
     """On each path and date before expiry: QuantLib's `BachelierSwaptionEngine` (the same
@@ -420,6 +435,8 @@ OPTIONS = {
 }
 
 
+@pytest.mark.ore_parity(cells("npv", [make() for make in OPTIONS.values()], PricingConfig(bermudan=ENGINE, american=ENGINE)),
+                        tolerance="1e-9 relative")
 @pytest.mark.parametrize("name", OPTIONS)
 def test_option_today_equals_ores_calibrated_grid_engine(name):
     """ORE builds the co-terminal basket from the trade, bootstraps its LGM to the vol matrix
@@ -429,12 +446,15 @@ def test_option_today_equals_ores_calibrated_grid_engine(name):
     assert ours == pytest.approx(_ore_option(cfg, ASOF, VOLS), rel=1e-9)
 
 
+def _option_path_config(model: str) -> CamConfig:
+    dates = (ORE.Date(15, 12, 2026), ORE.Date(10, 2, 2027), ORE.Date(3, 8, 2028))
+    return CamConfig(dates=dates, base_currency="USD", ir={"USD": MODELS[model](0.03, 0.012)}, curve_tenors=TENORS,
+                     samples=3, seed=11)
+
+
 @pytest.fixture(scope="module", params=MODELS)
 def option_scenarios(request):
-    dates = (ORE.Date(15, 12, 2026), ORE.Date(10, 2, 2027), ORE.Date(3, 8, 2028))
-    config = CamConfig(dates=dates, base_currency="USD", ir={"USD": MODELS[request.param](0.03, 0.012)},
-                       curve_tenors=TENORS, samples=3, seed=11)
-    return simulate(_oracle_market(FLAT_VOLS), config)
+    return simulate(_oracle_market(FLAT_VOLS), _option_path_config(request.param))
 
 
 def _as_of_shift_horizon(cfg, date) -> float:
@@ -471,6 +491,9 @@ def _before_the_window(cfg, dates):
     return [j for j, date in enumerate(dates) if date + 1 <= cfg.first_exercise_date]
 
 
+@pytest.mark.ore_parity(_on_paths([OPTIONS["bermudan-payer"](), OPTIONS["american-payer"]()], _option_path_config,
+                                  PricingConfig(bermudan=ENGINE, american=ENGINE)),
+                        tolerance="1e-10 of the value, each cell (ORE's grid engine on the model as built)")
 @pytest.mark.parametrize("name", ["bermudan-payer", "american-payer"])
 def test_the_path_model_is_the_calibration_ore_built_the_trade_with(option_scenarios, name):
     """ORE's exposure simulation builds the trade once, on the simulation market of the as-of
@@ -514,7 +537,6 @@ def test_an_americans_basket_is_the_reference_grid_inside_its_window():
 from engine.calibration.cam import calibrate_cam  # noqa: E402
 from engine.instruments.treasury import BondConfig, CouponPeriod, _remaining_cashflows  # noqa: E402
 from engine.market_data.market import EquityMarket  # noqa: E402
-from engine.pricing.config import PricingConfig  # noqa: E402
 from engine.pricing.cube import value_portfolio, value_today  # noqa: E402
 
 FAST_ENGINE = LgmSwaptionEngineConfig(n_per_std=12, std_devs=4.0)

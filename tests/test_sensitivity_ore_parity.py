@@ -29,10 +29,13 @@ from engine.risk.greeks.ad import portfolio_greeks
 from engine.risk.greeks.bump import portfolio_sensitivities
 from tests.support import portfolio as shared
 from tests.support.greeks import assert_close
+from engine.run import GreeksConfig
+from tests.support.ore_parity_matrix import cells
 from tests.support.ore_sensitivity_oracle import ore_sensitivity_run
 
 PRICING = PricingConfig(bermudan=shared.ENGINE, american=shared.ENGINE)
 TRADES = list(shared.trades().values())
+SMOOTH = [cfg for cfg in TRADES if cfg.product in ("swap", "european_swaption", "bond")]
 #: Of the trade's NPV, for every Greek (see the module docstring).
 TOLERANCE = 1e-11
 
@@ -44,6 +47,7 @@ def ore():
 
 # One test per method, each over every trade (its name in every message): pytest-xdist would run
 # the module's ORE fixture once per worker for a test per trade.
+@pytest.mark.ore_parity(cells("sensitivities", TRADES, PRICING, greeks=GreeksConfig()), tolerance="1e-11 of the NPV")
 def test_every_greek_of_every_trade_is_ores(ore):
     engine = portfolio_sensitivities(TRADES, shared.market(), "USD", PRICING)
     for index, cfg in enumerate(TRADES):
@@ -55,15 +59,16 @@ def test_every_greek_of_every_trade_is_ores(ore):
                                        err_msg=f"{cfg.trade_id} {key}")
 
 
+@pytest.mark.ore_parity(cells("sensitivities", SMOOTH, PRICING, greeks=GreeksConfig("AD")),
+                        tolerance="Delta, Gamma 1e-4 of each curve's largest, as the shift vanishes; Theta 1e-11 of the NPV")
 def test_the_ad_greeks_are_ores_as_the_shift_vanishes(ore):
     """For the trades of smooth price (swaps, Europeans, the bond): ORE's forward-difference
     Delta less half its Gamma is the AD Delta to O(shift^3), and ORE's Gamma the AD Gamma to
     O(shift^4), per factor and tenor, measured within 2e-5 of each curve's largest (2026-10-17);
     Theta is the bump method's. (Vega's forward difference has an O(shift) term;
     tests/test_greeks.py extrapolates it away.)"""
-    smooth = [cfg for cfg in TRADES if cfg.product in ("swap", "european_swaption", "bond")]
-    ad = portfolio_greeks(smooth, shared.market(), "USD", PRICING)
-    for index, cfg in enumerate(smooth):
+    ad = portfolio_greeks(SMOOTH, shared.market(), "USD", PRICING)
+    for index, cfg in enumerate(SMOOTH):
         theirs, mine = ore.greeks[cfg.trade_id], ad[index]
         assert mine.keys() == theirs.keys(), cfg.trade_id
         for key in mine:

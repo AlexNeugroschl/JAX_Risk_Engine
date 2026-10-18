@@ -43,8 +43,10 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.schedules import build_vanilla_swap, resolve_swap_dates
 from engine.market_data.market import ZeroCurveConfig
 from engine.models.lgm import Sigma
+from engine.pricing.config import LgmSwaptionEngineConfig, PricingConfig
 from tests.support.lgm_engine import grid_npv
 from tests.support.ore_lgm_oracle import ore_lgm_swaption_npv
+from tests.support.ore_parity_matrix import cells
 
 jax.config.update("jax_enable_x64", True)
 
@@ -144,6 +146,25 @@ def _ore_npv(case: Case, exercise_dates: list, curve=(CURVE_TIMES, CURVE_RATES),
     ).npv
 
 
+def _declared(shift_horizons, cases=CASES):
+    """The matrix cells of `cases` priced on the grid at each of `shift_horizons`: the
+    configuration of ORE's engine the cases give it (`Calibration=None`)."""
+    out = []
+    for horizon in shift_horizons:
+        engine = LgmSwaptionEngineConfig(reversion=HW_A, calibration="None", shift_horizon=horizon,
+                                         n_per_std=N_PER_STD, std_devs=STD_DEVS,
+                                         exercise_time_steps_per_year=STEPS_PER_YEAR)
+        for case in cases:
+            common = dict(notional=NOTIONAL, fixed_rate=case.fixed_rate, payer=case.payer, swap_tenor=SWAP_TENOR,
+                          evaluation_date=EVAL_DATE, trade_id=case.id)
+            dates = case.exercise(_swap(case.fixed_rate, case.payer))
+            cfg = (BermudanSwaptionConfig(exercise_dates=dates, **common) if case.style == "Bermudan" else
+                   AmericanSwaptionConfig(first_exercise_date=dates[0], last_exercise_date=dates[1], **common))
+            out += cells("npv", [cfg], PricingConfig(bermudan=engine, american=engine))
+    return out
+
+
+@pytest.mark.ore_parity(_declared(SHIFT_HORIZONS), tolerance="1e-10 relative")
 @pytest.mark.parametrize("shift_horizon", SHIFT_HORIZONS, ids=[f"shift-{h}" for h in SHIFT_HORIZONS])
 @pytest.mark.parametrize("case", CASES, ids=[c.id for c in CASES])
 def test_engine_equals_ore_lgm_engine(case, shift_horizon):
@@ -154,8 +175,11 @@ def test_engine_equals_ore_lgm_engine(case, shift_horizon):
     assert engine == pytest.approx(ore, rel=RTOL, abs=ATOL)
 
 
-@pytest.mark.parametrize("case", [c for c in CASES if c.id in ("bermudan-mid-period-receiver-0.04",
-                                                                "american-payer-0.04")], ids=lambda c: c.id)
+BEYOND = [c for c in CASES if c.id in ("bermudan-mid-period-receiver-0.04", "american-payer-0.04")]
+
+
+@pytest.mark.ore_parity(_declared([1.5], BEYOND), tolerance="1e-10 relative")
+@pytest.mark.parametrize("case", BEYOND, ids=lambda c: c.id)
 def test_a_shift_horizon_beyond_the_maturity_is_ores(case):
     """ORE takes any non-negative `ShiftHorizon`: at 1.5 H vanishes after the last cashflow."""
     exercise_dates = case.exercise(_swap(case.fixed_rate, case.payer))

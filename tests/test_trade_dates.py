@@ -66,6 +66,7 @@ from engine.risk.greeks.bump import SensitivityConfig, portfolio_sensitivities, 
 from engine.risk.greeks.price_functions import trade_price_function
 from tests.support.lgm_engine import grid_npv
 from tests.support.ore_lgm_oracle import ore_lgm_swaption_npv
+from tests.support.ore_parity_matrix import cells
 
 TODAY = ORE.Date(30, 7, 2026)  # a Thursday
 DC = TIME_AXIS_DAY_COUNTER
@@ -284,26 +285,32 @@ SEASONED_SWAP_DATES = {
 }
 
 
+def _seasoned_swap(date_id, **overrides):
+    booked = _swap_cfg(**overrides)
+    later = SEASONED_SWAP_DATES[date_id]
+    return dataclasses.replace(booked, evaluation_date=later, fixings=_history(underlying_swap(booked), later))
+
+
+@pytest.mark.ore_parity(cells("npv", [_seasoned_swap(d, payer=p) for d in SEASONED_SWAP_DATES for p in (True, False)]),
+                        tolerance="1e-10 relative")
 @pytest.mark.parametrize("payer", [True, False], ids=["payer", "receiver"])
 @pytest.mark.parametrize("date_id", SEASONED_SWAP_DATES)
 def test_seasoned_swap_equals_ore(date_id, payer):
-    booked = _swap_cfg(payer=payer)
-    later = SEASONED_SWAP_DATES[date_id]
-    cfg = dataclasses.replace(booked, evaluation_date=later, fixings=_history(underlying_swap(booked), later))
+    cfg = _seasoned_swap(date_id, payer=payer)
     ore = _ore_swap_npv(cfg)
     for engine in _engine_swap_npvs(cfg):
         assert engine == pytest.approx(ore, rel=1e-10, abs=1e-6)
 
 
+@pytest.mark.ore_parity(cells("npv", [_seasoned_swap("mid-coupon", accrual_day_count=d)
+                                      for d in SUPPORTED_ACCRUAL_DAY_COUNTS]), tolerance="1e-10 relative")
 @pytest.mark.parametrize("day_count", sorted(SUPPORTED_ACCRUAL_DAY_COUNTS))
 @pytest.mark.parametrize("date_id", ["fixed-not-started", "mid-coupon", "last-coupon"])
 def test_any_leg_day_count_equals_ore(date_id, day_count):
     """The at-par forecast is annualized by the INDEX day count's spanning time and paid
     over the LEG's accrual (I-36). Before the fix the engine divided by the leg's accrual,
     which is right only for an ACT/365 leg: a 1mm 5Y ACT/ACT (ICMA) payer was 161 off."""
-    booked = _swap_cfg(accrual_day_count=day_count)
-    later = SEASONED_SWAP_DATES[date_id]
-    cfg = dataclasses.replace(booked, evaluation_date=later, fixings=_history(underlying_swap(booked), later))
+    cfg = _seasoned_swap(date_id, accrual_day_count=day_count)
     ore = _ore_swap_npv(cfg)
     for engine in _engine_swap_npvs(cfg):
         assert engine == pytest.approx(ore, rel=1e-10, abs=1e-6)
@@ -435,6 +442,13 @@ LGM_CASES = {
 }
 
 
+#: The configuration of ORE's engine the seasoned options are priced with (`MODEL`, uncalibrated).
+LGM_ENGINE = LgmSwaptionEngineConfig(reversion=MODEL["a"], volatility=MODEL["sigma"], calibration="None",
+                                     shift_horizon=0.0, n_per_std=MODEL["n_per_std"], std_devs=MODEL["std_devs"])
+
+
+@pytest.mark.ore_parity(cells("npv", [_seasoned(make(p), date) for make, date in LGM_CASES.values() for p in (True, False)],
+                              PricingConfig(bermudan=LGM_ENGINE, american=LGM_ENGINE)), tolerance="1e-10 relative")
 @pytest.mark.parametrize("payer", [True, False], ids=["payer", "receiver"])
 @pytest.mark.parametrize("case_id", LGM_CASES)
 def test_seasoned_bermudan_and_american_equal_ore(case_id, payer):
@@ -505,12 +519,14 @@ def _ore_flows_between(swap, payer: bool, start: ORE.Date, end: ORE.Date) -> flo
 @pytest.mark.parametrize("base", [TODAY, ORE.Date(2, 2, 2027), FRIDAY],
                          ids=["booking-date", "day-before-a-payment", "friday"])
 def test_swap_theta_equals_ore(base):
-    """Theta = NPV(Theta date, Theta market) - NPV(base date, sensitivity market) + flows paid
-    in between, everything but the markets priced by ORE: the booked schedule one calendar day
-    older (a Friday rolls to the Saturday, I-38), the fixings printed in between backfilled at
-    the index's forecast on the Theta market (ORE's `FixingManager`). On 2027-02-02 the first
-    floating coupon pays the next day, so the flow term is material. Both Greeks methods give
-    this Theta."""
+    """Theta = NPV(Theta date, Theta market) - NPV(base date, sensitivity market), everything but
+    the markets priced by ORE: the booked schedule one calendar day older (a Friday rolls to the
+    Saturday, I-38), the fixings printed in between backfilled at the index's forecast on the
+    Theta market (ORE's `FixingManager`). On 2027-02-02 the first floating coupon pays the next
+    day: it leaves the rolled NPV and is not added back, as in ORE's sensitivity analytic, whose
+    period flows are read after the roll (`engine.risk.greeks.bump`; until 2026-10-18 this test
+    added it back, I-39, which ORE's analytic disproved, I-116). Both Greeks methods give this
+    Theta."""
     booked = _swap_cfg()
     swap = underlying_swap(booked)
     cfg = dataclasses.replace(booked, evaluation_date=base, fixings=_history(swap, base))
@@ -525,7 +541,7 @@ def test_swap_theta_equals_ore(base):
     fixings = {**cfg.fixings, **theta_ctx.fixings[INDEX]}
     theta_npv, flows = _ore_swap(aged, _ore_curve_of(theta_ctx.discount["USD"], theta_date),
                                  _ore_curve_of(theta_ctx.index[INDEX], theta_date), fixings, flows_after=base)
-    expected = theta_npv - base_npv + flows
+    expected = theta_npv - base_npv
 
     for greeks in (portfolio_sensitivities, portfolio_greeks):
         assert float(greeks([cfg], market, "USD", config=CONFIG)[0]["theta"]) == pytest.approx(

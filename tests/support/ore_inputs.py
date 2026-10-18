@@ -1,9 +1,11 @@
 """
 ORE's inputs built in memory, and an `OREApp` run over them in this process: the conventions,
 curves, today's market configuration and pricing engines as XML strings, the trades as ORE's
-trade XML, and the market data and fixings as ORE's text lines. Shared by the two oracles:
-tests/support/ore_lgm_oracle.py (one swaption's NPV) and tests/support/ore_xva_oracle.py (an
-exposure simulation of a portfolio).
+trade XML, and the market data and fixings as ORE's text lines. Shared by every oracle:
+tests/support/ore_lgm_oracle.py (one swaption's NPV), ore_npv_oracle.py (a portfolio's NPVs),
+ore_sensitivity_oracle.py (its sensitivity analysis), ore_market_risk_oracle.py (its historical
+simulation VaR) and ore_xva_oracle.py (its exposure simulation); the portfolio oracles build
+their inputs with `portfolio_inputs`, which refuses by name what they cannot express.
 
 Test tooling: the engine never imports it. One currency (`CCY`) with its discount curve, one
 Ibor index's forwarding curve and an ATM normal swaption matrix: the market of the parity tests
@@ -52,9 +54,11 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, underly
 from engine.instruments.european_swaption import SwaptionConfig, underlying_swap as european_underlying
 from engine.instruments.swap import SwapConfig, underlying_swap as swap_underlying
 from engine.instruments.treasury import BondConfig
+from engine.calibration.ore_lgm import SwapIndexConventions
 from engine.market_data.day_counts import resolve_accrual_day_count
-from engine.market_data.market import SwaptionVolSurface
+from engine.market_data.market import Market, SwaptionVolSurface
 from engine.models.lgm import Sigma
+from engine.pricing.config import PricingConfig
 
 CCY = "USD"
 CURVE_ID = "SIMCURVE"
@@ -134,7 +138,16 @@ def _number(value) -> str:
 
 # --- configuration ------------------------------------------------------------------------------
 
-def conventions_xml(index: str) -> str:
+#: ORE's frequency name of a swap index's fixed tenor (`SwapIndexConventions.fixed_tenor`).
+_FIXED_FREQUENCIES = {"1Y": "Annual", "6M": "Semiannual", "3M": "Quarterly", "1M": "Monthly"}
+
+
+def conventions_xml(index: str, swap_index: SwapIndexConventions = SwapIndexConventions()) -> str:
+    """The zero, Ibor and swap conventions; the swap index's fixed leg is `swap_index`'s, on
+    `index` (the calibration helpers' conventions, `engine.calibration.ore_lgm._helper`)."""
+    if swap_index.fixed_tenor not in _FIXED_FREQUENCIES:
+        raise NotImplementedError(f"the oracle's swap index fixed tenor is one of {list(_FIXED_FREQUENCIES)}; got "
+                                  f"{swap_index.fixed_tenor!r}")
     return f"""<Conventions>
   <Zero>
     <Id>SIM-ZERO</Id>
@@ -161,9 +174,9 @@ def conventions_xml(index: str) -> str:
   <Swap>
     <Id>SIM-SWAP-CONVENTIONS</Id>
     <FixedCalendar>TARGET</FixedCalendar>
-    <FixedFrequency>Annual</FixedFrequency>
+    <FixedFrequency>{_FIXED_FREQUENCIES[swap_index.fixed_tenor]}</FixedFrequency>
     <FixedConvention>MF</FixedConvention>
-    <FixedDayCounter>A365</FixedDayCounter>
+    <FixedDayCounter>{_day_counter_name(swap_index.fixed_day_counter)}</FixedDayCounter>
     <Index>{index}</Index>
   </Swap>
   <SwapIndex><Id>{CCY}-CMS-1Y</Id><Conventions>SIM-SWAP-CONVENTIONS</Conventions></SwapIndex>
@@ -516,11 +529,15 @@ def trade_xml(cfg) -> str:
         return swaption_trade_xml(cfg.trade_id, option_underlying(cfg), cfg.notional, cfg.fixed_rate, cfg.payer,
                                   cfg.floating_spread, index, "Bermudan", cfg.exercise_dates, settlement=cfg.settlement,
                                   long_short=cfg.long_short)
-    if isinstance(cfg, BondConfig) and cfg.coupon_schedule and cfg.redemption_fraction == 1.0:
+    if isinstance(cfg, BondConfig) and (cfg.redemption_fraction == 1.0 or not cfg.coupon_schedule):
         periods = cfg.coupon_schedule
         if any(p.payment_date not in (None, p.end_date) for p in periods):
             raise NotImplementedError(f"bond {cfg.trade_id!r}: a payment date off the period end")
-        dates = [periods[0].start_date] + [p.end_date for p in periods]
+        # A bill: one period at a zero rate from its valuation date, its redemption discounted.
+        dates = [periods[0].start_date] + [p.end_date for p in periods] if periods else \
+            [cfg.evaluation_date, cfg.maturity_date]
+        face = cfg.face_amount * (1.0 if periods else cfg.redemption_fraction)
+        rate = cfg.coupon_rate if periods else 0.0
         return f"""  <Trade id="{cfg.trade_id}">
     <TradeType>Bond</TradeType>
     {_envelope()}
@@ -535,23 +552,25 @@ def trade_xml(cfg) -> str:
         <LegType>Fixed</LegType>
         <Payer>false</Payer>
         <Currency>{CCY}</Currency>
-        <Notionals><Notional>{_number(cfg.face_amount)}</Notional></Notionals>
+        <Notionals><Notional>{_number(face)}</Notional></Notionals>
         <DayCounter>{_day_counter_name(cfg.accrual_day_count)}</DayCounter>
         <PaymentConvention>Unadjusted</PaymentConvention>
-        <FixedLegData><Rates><Rate>{_number(cfg.coupon_rate)}</Rate></Rates></FixedLegData>
+        <FixedLegData><Rates><Rate>{_number(rate)}</Rate></Rates></FixedLegData>
         {_schedule_xml(dates, "NullCalendar", "Unadjusted")}
       </LegData>
     </BondData>
   </Trade>"""
-    raise NotImplementedError(f"trade {cfg.trade_id!r} ({type(cfg).__name__}): the oracle builds swaps, swaptions "
-                              f"and coupon bonds redeemed at par")
+    raise NotImplementedError(f"trade {cfg.trade_id!r} ({type(cfg).__name__}): the oracle builds swaps, swaptions, "
+                              f"bills and coupon bonds redeemed at par")
 
 
 def sim_market_xml(curve_tenors: Sequence[str], indices: Sequence[str], vols: SwaptionVolSurface,
-                   simulate_vols: bool, vol_decay: str = "ForwardVariance") -> str:
+                   simulate_vols: bool, vol_decay: str = "ForwardVariance", interpolation: str = "LogLinear",
+                   extrapolation: str = "FlatFwd") -> str:
     """The `<Market>` of ORE's `simulation.xml` (`ScenarioSimMarketParameters`) on `CCY`: every
-    curve at `curve_tenors`, log-linear in the discount factor and flat forward beyond (the
-    engine's `DiscountCurve`), the `indices`' forwarding curves, the swap indices discounting on
+    curve at `curve_tenors`, by default log-linear in the discount factor and flat forward beyond
+    (the engine's `DiscountCurve`; `LinearZero` and `FlatZero` is the engine's `ZeroCurve` between
+    its pillars), the `indices`' forwarding curves, the swap indices discounting on
     `DISCOUNT_INDEX`, and the swaption volatilities at the surface's own expiries and terms,
     simulated (a risk factor: the sensitivity analysis bumps it) or decayed by `vol_decay`
     (`ReactionToTimeDecay`, the exposure simulation's)."""
@@ -562,8 +581,8 @@ def sim_market_xml(curve_tenors: Sequence[str], indices: Sequence[str], vols: Sw
     <YieldCurves>
       <Configuration>
         <Tenors>{",".join(curve_tenors)}</Tenors>
-        <Interpolation>LogLinear</Interpolation>
-        <Extrapolation>FlatFwd</Extrapolation>
+        <Interpolation>{interpolation}</Interpolation>
+        <Extrapolation>{extrapolation}</Extrapolation>
       </Configuration>
     </YieldCurves>
     <Indices>{index_xml}</Indices>
@@ -624,7 +643,7 @@ def fixing_lines(index: str, fixings: Optional[Mapping[ORE.Date, float]]) -> lis
 # --- the run ------------------------------------------------------------------------------------
 
 def inputs(asof: ORE.Date, index: str, curves: OreCurves, vols: SwaptionVolSurface, engines: str,
-           portfolio: str) -> "ORE.InputParameters":
+           portfolio: str, swap_index: SwapIndexConventions = SwapIndexConventions()) -> "ORE.InputParameters":
     """The `InputParameters` every run shares; the caller adds its analytics."""
     parameters = ORE.InputParameters()
     parameters.setAsOfDate(iso(asof))
@@ -633,7 +652,7 @@ def inputs(asof: ORE.Date, index: str, curves: OreCurves, vols: SwaptionVolSurfa
     parameters.setEntireMarket(True)
     parameters.setAllFixings(True)
     parameters.setBuildFailedTrades(False)
-    parameters.setConventions(conventions_xml(index))
+    parameters.setConventions(conventions_xml(index, swap_index))
     parameters.setCurveConfigs(curveconfig_xml(asof, curves, vols))
     parameters.setTodaysMarketParams(todaysmarket_xml(index, curves.separate_index_curve))
     parameters.setPricingEngine(engines)
@@ -652,25 +671,103 @@ def run_app(parameters, evaluation_date: ORE.Date, market: Sequence[str], fixing
         app = ORE.OREApp(parameters, log_file, 31, False)
         app.run(ORE.StrVector(list(market)), ORE.StrVector(list(fixings)))
         if required_report not in app.getReportNames():
-            with open(log_file, encoding="utf-8", errors="replace") as log:
-                alerts = [line.strip() for line in log if "ALERT" in line or "ERROR" in line]
+            alerts = [line.strip() for line in log_lines() if "ALERT" in line or "ERROR" in line]
             raise RuntimeError(f"ORE produced no {required_report} report:\n" + "\n".join(list(app.getErrors()) + alerts))
         return app
     finally:
         ORE.Settings.instance().evaluationDate = previous
 
 
+def log_lines() -> list:
+    """The lines of the log of the last `OREApp` run in this process (each run rewrites it)."""
+    with open(f"{_scratch_dir()}/log.txt", encoding="utf-8", errors="replace") as log:
+        return log.read().splitlines()
+
+
 def report_columns(app, name: str) -> dict:
     """An ORE report as `{column: values}`: real columns as float arrays, string columns as
-    lists; other column types (dates) are left out."""
+    lists of strings, date columns as lists of `ORE.Date`; other column types are left out."""
     report = app.getReport(name)
     columns = {}
+    readers = (lambda i: np.asarray(report.dataAsReal(i), dtype=np.float64),
+               lambda i: [str(v) for v in report.dataAsString(i)],
+               lambda i: list(report.dataAsDate(i)))
     for i in range(report.columns()):
-        try:
-            columns[report.header(i)] = np.asarray(report.dataAsReal(i), dtype=np.float64)
-        except RuntimeError:
+        for read in readers:
             try:
-                columns[report.header(i)] = [str(v) for v in report.dataAsString(i)]
+                columns[report.header(i)] = read(i)
+                break
             except RuntimeError:
-                pass
+                continue
     return columns
+
+
+# --- a portfolio's run --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PortfolioInputs:
+    """One currency's market and a portfolio as one ORE run's inputs (`portfolio_inputs`):
+    `parameters` holds every input but the analytic's own, which the caller adds before `run`."""
+    asof: ORE.Date
+    index: str
+    curves: OreCurves
+    vols: SwaptionVolSurface
+    engines: str
+    swap_index: SwapIndexConventions
+    parameters: "ORE.InputParameters"
+    market: Sequence[str]
+    fixings: Sequence[str]
+
+    def run(self, required_report: str) -> "ORE.OREApp":
+        return run_app(self.parameters, self.asof, self.market, self.fixings, required_report)
+
+
+def _option_engines(trades, pricing: PricingConfig):
+    """The `LgmSwaptionEngineConfig` of each Bermudan/American in `trades`."""
+    return [pricing.american if isinstance(t, AmericanSwaptionConfig) else pricing.bermudan
+            for t in trades if isinstance(t, (BermudanSwaptionConfig, AmericanSwaptionConfig))]
+
+
+def portfolio_inputs(market: Market, trades: Sequence, pricing: PricingConfig, oracle: str,
+                     index: Optional[str] = None, swap_index: Optional[SwapIndexConventions] = None
+                     ) -> PortfolioInputs:
+    """`trades` on `market` priced by `pricing`'s engines, as ORE's inputs. What these inputs
+    cannot express is refused by name (`NotImplementedError`, naming `oracle`): another
+    currency than `CCY`; other than one Ibor index (`index`, else the trades' one, else the 6M
+    index) on the discount curve's pillars; the `Jamshidian` European engine (ORE has no
+    builder for it); and swap-index conventions that differ between the calibrated option
+    engines, or from `swap_index` (the simulation model's, which ORE calibrates on the same swap
+    index), or whose Ibor index is not the market's (ORE's calibration helpers are built on one
+    swap index, on the market's index)."""
+    if pricing.european != "Bachelier":
+        raise NotImplementedError(f"{oracle} prices Europeans by ORE's Bachelier engine: ORE has no builder for "
+                                  f"QuantLib's Jamshidian engine")
+    if set(market.currencies) != {CCY}:
+        raise NotImplementedError(f"{oracle}'s market is {CCY} alone (a second currency is F-04)")
+    data = market.currency(CCY)
+    if index is None:
+        tenors = {t.index_tenor_months for t in trades if not isinstance(t, BondConfig)}
+        if len(tenors) > 1:
+            raise NotImplementedError(f"{oracle} prices trades on one Ibor index; got tenors {sorted(tenors)}")
+        index = index_name(tenors.pop() if tenors else 6)
+    if set(data.index_curves) != {index} or list(data.index_curves[index].times) != list(data.discount_curve.times):
+        raise NotImplementedError(f"{oracle}'s market is {CCY}'s discount curve and {index}'s, on one set of "
+                                  f"pillars")
+    calibrated = [e for e in _option_engines(trades, pricing) if e.calibration != "None"]
+    conventions = {e.swap_index for e in calibrated} | ({swap_index} if swap_index is not None else set())
+    if len(conventions) > 1:
+        raise NotImplementedError(f"{oracle} builds every calibration on one swap index; got {conventions}")
+    if conventions:
+        swap_index = conventions.pop()
+        if index_name(swap_index.index_tenor_months) != index:
+            raise NotImplementedError(f"{oracle}'s swap index is on the market's index {index}; got {swap_index}")
+    else:
+        swap_index = SwapIndexConventions()  # no helper reads it
+    curves = OreCurves(data.discount_curve.times, data.discount_curve.rates, data.index_curves[index].rates)
+    vols = data.swaption_vols
+    engine_xml = pricingengine_xml(OreLgmEngine.of(pricing.bermudan), OreLgmEngine.of(pricing.american))
+    parameters = inputs(market.asof, index, curves, vols, engine_xml, portfolio_xml(trade_xml(t) for t in trades),
+                        swap_index)
+    fixings = [line for t in trades for line in fixing_lines(index, getattr(t, "fixings", None))]
+    return PortfolioInputs(market.asof, index, curves, vols, engine_xml, swap_index, parameters,
+                           market_lines(market.asof, curves, vols), fixings)

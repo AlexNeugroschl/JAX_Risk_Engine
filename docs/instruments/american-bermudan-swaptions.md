@@ -111,7 +111,19 @@ Bermudan dates on or before the evaluation date are not exercise opportunities (
 refDate)`). An American window never includes the evaluation date itself: ORE's trade builder
 moves its first day to `max(first, evaluation date + 1)` (`ExerciseBuilder`), so a window
 that is already open starts tomorrow. Starting it at `t = 0` instead was 7e-4 off ORE for a
-window opening on the evaluation date.
+window opening on the evaluation date. The option wrapper on the paths takes the same first day
+(`contract_exercise_dates`): a window opened before the as-of date is exercisable from the first
+simulation date (until 2026-10-18 the wrapper never exercised it, a cash-settled American 0.39 of
+its largest value off ORE's cube on the cells it had exercised).
+
+The calibration basket ([calibration](../reference/calibration.md)) is ORE's builder's in two
+details the parity sweeps found (2026-10-18, I-116): each helper ends on the underlying's last
+payment date, its maturity adjusted (`underlying_maturity`; on a Saturday maturity the unadjusted
+date changed an ACT/ACT (ICMA) helper's last accrual, 1.7e-4 of the option), and a
+`CoterminalDealStrike` helper is struck at the fixed rate less the spread written to six decimals,
+as ORE's builder writes it with `std::to_string` (`calibration_strike`). An American whose window
+holds no date of the reference calibration grid has no helper and is refused, as ORE's
+`LgmBuilder` refuses it ("no calibrating swaption provided").
 
 A short option is booked by `long_short="Short"` (ORE's `LongShort`) on a positive notional,
 and is worth exactly minus the long one, today and on every path: the engine values the long

@@ -290,7 +290,7 @@ The Greeks — see [Greeks](../risk/greeks.md) for the keys and the two methods.
 | `portfolio_greeks(trades, market, base_currency, pricing=PricingConfig(), config=SensitivityConfig())` | AD Greeks, the same keys. |
 | `trade_greeks(cfg, market, pricing=PricingConfig(), config=SensitivityConfig())` | AD Delta/Gamma per tenor of each curve the trade reads and, where its engine reads the quotes, Vega `[option tenors, swap tenors]`, in its currency. |
 | `ad_warnings(trades)` | The label an AD run carries for its grid-priced options (I-78). |
-| `trade_theta(value, base, cfg, theta_context, fx)` | ORE's Theta, shared by both methods. |
+| `trade_theta(value, base, theta_context)` | ORE's Theta, `value(theta_context) - base`, shared by both methods. |
 | `trade_price_function(cfg, market, pricing=PricingConfig(), dtype=jnp.float64, tenors=None)` | `TradePriceFunction`: the trade's t=0 price as a JAX function of its curves' node values (the market curves' pillar rates, market risk's factors; with `tenors`, the zero rates of ORE's sensitivity market at them, the Greeks') and its volatility quotes, `.price(*rates, quotes=None)` at `.rates` and `.quotes` by default; `curves` are `(kind, name)` keys (`("discount", "USD")`, `("index", "USD-SIMINDEX-6M")`). The same function as data: `pricer(terms, curves, quotes)`, with `pricer` a module-level function (static under `jax.jit`) and `terms` the trade's data as a pytree; `pnl` its P&L under scenario moves in difference form; `calibration` a calibrated option's recalibration under each scenario. A calibrated Bermudan/American calibrates inside it. Shared by the AD Greeks and market-risk revaluation. |
 
 ## `engine.risk.counterparty.exposure`

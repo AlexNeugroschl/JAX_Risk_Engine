@@ -33,8 +33,10 @@ from engine.market_data.curves import DiscountCurve, ZeroCurve, log_discount
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER as DC
 from engine.market_data.market import SwaptionVolSurface, ZeroCurveConfig
 from engine.models.lgm import Sigma
+from engine.pricing.config import LgmSwaptionEngineConfig, PricingConfig
 from tests.support.lgm_engine import grid_npv
 from tests.support.ore_lgm_oracle import OreCalibration, ore_lgm_swaption_npv
+from tests.support.ore_parity_matrix import cells
 
 ASOF = ORE.Date(30, 7, 2026)
 PILLARS = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
@@ -110,10 +112,20 @@ def _bermudan(fixed_rate):
     return dataclasses.replace(booked, exercise_dates=exercisable_dates(booked)[1:])
 
 
+CALIBRATIONS = [("CoterminalATM", 0.03), ("CoterminalDealStrike", 0.03), ("CoterminalDealStrike", 0.09)]
+
+
+def _declared():
+    """The matrix cells of the cases: the configuration of ORE's engine they give it."""
+    return [cell for strategy, fixed_rate in CALIBRATIONS for horizon in (0.0, 0.5)
+            for cell in cells("npv", [_bermudan(fixed_rate)], PricingConfig(bermudan=LgmSwaptionEngineConfig(
+                reversion=REVERSION, strategy=strategy, shift_horizon=horizon, n_per_std=48, std_devs=6.0,
+                bootstrap_tolerance=1e-8)))]
+
+
+@pytest.mark.ore_parity(_declared(), tolerance="1e-9 relative")
 @pytest.mark.parametrize("shift_horizon", [0.0, 0.5], ids=["unshifted", "shift-0.5"])
-@pytest.mark.parametrize("strategy, fixed_rate", [
-    ("CoterminalATM", 0.03), ("CoterminalDealStrike", 0.03), ("CoterminalDealStrike", 0.09),
-], ids=["atm", "deal-strike", "deal-strike-beyond-3-std-devs"])
+@pytest.mark.parametrize("strategy, fixed_rate", CALIBRATIONS, ids=["atm", "deal-strike", "deal-strike-beyond-3-std-devs"])
 def test_calibrated_bermudan_equals_ores_bootstrap(strategy, fixed_rate, shift_horizon):
     """I-47: the basket is built from the trade's own exercise dates and maturity, struck ATM
     or at the deal strike, and calibrated per trade, as ORE does. ORE calibrates the shifted

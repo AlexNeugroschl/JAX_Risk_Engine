@@ -115,6 +115,15 @@ against ORE running in the same process:
   swaps, Europeans and bonds); a grid-priced option's price is piecewise smooth in the rates, so
   its AD Greeks are the price's derivatives rather than ORE's 1bp differences, and the result
   says so ([I-78](docs/planning/known-issues.md#i-78)).
+- Beyond the shared portfolio: seeded random markets (sloped, inverted, negative, flat), portfolios
+  (strikes far in and out of the money, seasoned trades with their fixings, both positions and
+  settlements) and settings (every calibration strategy, `ShiftHorizon`, grid and sensitivity
+  setting, Theta across weekends, coupons, fixings and exercises) against ORE's NPV and
+  sensitivity analytics and its own historical-simulation VaR analytic, end to end: every trade's
+  value and Greeks to 1e-10 of its notional, every scenario's P&L to 1e-11. The
+  [parity matrix](docs/reference/ore-parity.md#the-parity-matrix) names, for every product,
+  analytic and public setting, the test that compares it with ORE or the reason none does,
+  generated from the tests.
 
 See [ORE Parity](docs/reference/ore-parity.md) for the full mapping.
 
@@ -132,8 +141,8 @@ Requires Python 3.11 or later.
 ```bash
 python -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements.txt   # Linux/macOS: .venv/bin/python
-.venv/Scripts/python.exe -m pytest tests/ -m "not slow" -q -n 8   # fast tier, as CI runs it: about 2 minutes
-.venv/Scripts/python.exe -m pytest tests/ -q -n 8                  # full suite: about 8 minutes
+.venv/Scripts/python.exe -m pytest tests/ -m "not slow" -q -n 8   # fast tier, as CI runs it: about 4 minutes
+.venv/Scripts/python.exe -m pytest tests/ -q -n 8                  # full suite: about 27 minutes
 ```
 
 `-n 8` runs the tests in 8 processes; choose the count by memory (1.5–3 GB each), not by

@@ -315,6 +315,16 @@ also guards [I-28](../planning/known-issues.md#i-28).
 (`.venv/bin/python` on Linux.) Use the virtualenv's interpreter: the system one lacks the API
 and schema dependencies.
 
+**The ORE parity sweeps** (`tests/test_ore_parity_sweep.py`) compare seeded random markets,
+portfolios and settings with ORE run in-process: the fast tier runs a fixed sample of seeds,
+the full tier the whole sweep. A failure prints its case; rerun it alone with
+`-k seed-17`, or print it with
+`python -c "from tests.support.parity_sweep import case; print(case(17).describe())"`. A new or
+changed parity test declares the cells it compares (`@pytest.mark.ore_parity(cells(...),
+tolerance=...)`); `python -m tests.support.ore_parity_matrix --write` then republishes the
+[parity matrix](../reference/ore-parity.md#the-parity-matrix), which
+`tests/test_ore_parity_matrix.py` checks.
+
 See each deep-dive doc's "Tested by" section for what's covered where, and
 [Architecture: Testing philosophy](../concepts/architecture.md#testing-philosophy)
 for the general approach (every formula is checked both for internal mathematical
@@ -348,7 +358,9 @@ Measured on the reference Windows machine on 2026-10-02 (2,254 fast-tier tests):
 | `-n 8 --dist loadscope`, warm `.jax_cache/` | 2m05s |
 
 The full suite, `-n 8`, with the fast tier's programs already on disk: 7m45s (2,340 tests).
-Before this change it took 46 minutes in one process (2026-09-29), and longer since.
+Before this change it took 46 minutes in one process (2026-09-29), and longer since. Since the
+ORE parity sweeps (2026-10-18) the fast tier takes about 4 minutes at `-n 6` and the full suite
+27 (3,633 tests), most of it ORE's runs of the whole sweep.
 
 **While changing one area**, run its test files directly (they are named by area:
 `test_pricing.py`, `test_ore_lgm_*.py`, `test_greeks*.py`, `test_market_risk*.py`,

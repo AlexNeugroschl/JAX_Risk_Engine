@@ -19,12 +19,21 @@ there with its t=0 engine (`engine.pricing`), so Bermudans recalibrate under eve
     from the as-of date, with the as-of curve's discount factors there, and takes its reference
     date from the evaluation date (`InterpolatedDiscountCurve2`, `setAdjustReferenceDate(false)`;
     the same rule as on a simulated path, I-84). The ATM volatility matrix, a simulated factor
-    (Vega bumps it), floats with it: its option dates roll from `thetaDate`
-    (`SwaptionVolatilityMatrix` on tenors). `FixingManager` backfills the fixings from the as-of
+    (Vega bumps it), floats with it: its option dates roll from its reference date, the first
+    business day on or after `thetaDate` (`SwaptionVolatilityMatrix` on tenors, a calendar and no
+    settlement days: `engine.pricing.context.floating_volatility_date`), where an option's
+    variance starts, a Saturday's from the Monday. `FixingManager` backfills the fixings from the as-of
     date to `thetaDate` with the index's forecast on that market, trades are rebuilt there, and
-        theta = NPV(thetaDate) - NPV(base) + cash flows paid in (asof, thetaDate].
-    Equal to ORE's sensitivity analytic, every trade of the shared portfolio
-    (tests/test_sensitivity_ore_parity.py, I-51).
+        theta = NPV(thetaDate) - NPV(base).
+    ORE adds `aggregateTradeFlow`'s flows paid in (asof, thetaDate], but reads them from the
+    trade's cash flows on the Theta date without its past flows (`Trade::cashflows(...,
+    includePastCashflows = false)`), where every flow of the roll has occurred
+    (`CashFlow::hasOccurred(thetaDate)`, a flow on the Theta date too, `includeTodaysCashFlows`
+    unset), so under ORE's settings the sum is empty: a coupon paid in the roll leaves Theta as
+    it leaves the NPV. (The engine added those flows back until 2026-10-18, I-39, read from the
+    source; ORE's analytic showed none, I-116.) Equal to ORE's sensitivity analytic: every trade
+    of the shared portfolio (tests/test_sensitivity_ore_parity.py, I-51) and of the seeded sweeps
+    (tests/test_ore_parity_sweep.py), rolls across weekends, coupons, fixings and exercises.
 
 AD Greeks (`engine.risk.greeks.ad`, `GreeksConfig.method = "AD"`) are the other method (decision
 A-5): the same keys, Delta/Gamma/Vega by differentiation, and this module's Theta.
@@ -38,16 +47,14 @@ import numpy as np
 import ORE
 
 from engine.instruments.schedules import SWAP_CALENDAR, ibor_index
-from engine.instruments.swap import SwapConfig, underlying_swap as _swap_underlying
 from engine.instruments.treasury import BondConfig
 from engine.market_data.curves import DiscountCurve, log_discount
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER
-from engine.market_data.market import Market, index_name
+from engine.market_data.market import VOL_DAY_COUNTER, Market, index_name
 from engine.market_simulation.config import DEFAULT_CURVE_TENORS
 from engine.pricing.config import PricingConfig
-from engine.pricing.context import PricingContext, simulation_market_today
-from engine.pricing.cube import Trade, bond_legs, reads_swaption_vols, validate_trades, value_on
-from engine.pricing.legs import Legs, legs_of
+from engine.pricing.context import PricingContext, floating_volatility_date, simulation_market_today
+from engine.pricing.cube import Trade, reads_swaption_vols, validate_trades, value_on
 
 
 @dataclass(frozen=True)
@@ -81,10 +88,13 @@ def theta_context(market: Market, config: SensitivityConfig) -> PricingContext:
     asof, theta_date = market.asof, market.asof + config.theta_days
     fixings = {name: _backfilled_fixings(name, curve, asof, theta_date) for name, curve in base.index.items()}
 
-    def volatility(currency, option_time, swap_length):
-        return float(market.swaption_vols(currency).volatility(theta_date, option_time, swap_length))
+    reference = floating_volatility_date(theta_date)
+    offset = VOL_DAY_COUNTER.yearFraction(theta_date, reference)
 
-    return PricingContext(theta_date, base.discount, base.index, volatility, fixings)
+    def volatility(currency, option_time, swap_length):
+        return float(market.swaption_vols(currency).volatility(reference, max(option_time - offset, 0.0), swap_length))
+
+    return PricingContext(theta_date, base.discount, base.index, volatility, fixings, offset)
 
 
 def _backfilled_fixings(name: str, curve: DiscountCurve, asof: ORE.Date, theta_date: ORE.Date) -> Dict[ORE.Date, float]:
@@ -138,16 +148,16 @@ def portfolio_sensitivities(trades: Sequence[Trade], market: Market, base_curren
                 greeks[f"gamma:{kind}:{key}"] = np.asarray(gammas)
             if reads_swaption_vols(cfg, pricing):
                 greeks[f"vega:{currency}"] = _vega(value, base, market, currency, base_context, config.vol_shift)
-            greeks["theta"] = trade_theta(value, base, cfg, theta_ctx, fx)
+            greeks["theta"] = trade_theta(value, base, theta_ctx)
             result[i] = greeks
     return result
 
 
-def trade_theta(value, base: float, cfg: Trade, theta: PricingContext, fx: float) -> np.ndarray:
+def trade_theta(value, base: float, theta: PricingContext) -> np.ndarray:
     """ORE's Theta (see the module docstring) in the base currency, from the trade's
     valuation on a context `value(context)` and its value `base` on the sensitivity market;
     shared by both Greeks methods (`engine.risk.greeks.ad` for AD)."""
-    return np.asarray(value(theta) - base + _period_flows(cfg, theta) * fx)
+    return np.asarray(value(theta) - base)
 
 
 def _with(context: PricingContext, kind: str, key: str, curve: DiscountCurve) -> PricingContext:
@@ -171,26 +181,3 @@ def _vega(value, base: float, market: Market, currency: str, context: PricingCon
 
             vega[i, j] = value(dataclasses.replace(context, volatility=volatility)) - base
     return vega
-
-
-def _period_flows(cfg: Trade, theta: PricingContext) -> float:
-    """Cash flows paid in (asof, thetaDate] (`aggregateTradeFlow`), in the trade's currency:
-    swap coupons at their fixings, bond flows. Options pay nothing."""
-    if isinstance(cfg, SwapConfig):
-        legs = legs_of(_swap_underlying(cfg), cfg.payer, cfg.evaluation_date, cfg.fixings)
-        return _flows_between(legs, cfg.evaluation_date, theta.date)
-    if isinstance(cfg, BondConfig):
-        return _flows_between(bond_legs(cfg), cfg.evaluation_date, theta.date)
-    return 0.0
-
-
-def _flows_between(legs: Legs, start: ORE.Date, end: ORE.Date) -> float:
-    """Signed amounts of the flows paid in (start, end]; a floating coupon paying then fixed
-    before `start`, so its history rate is known."""
-    window = lambda serials: (serials > start.serialNumber()) & (serials <= end.serialNumber())  # noqa: E731
-    fixed = float(np.sum(legs.fixed_amount[window(legs.fixed_pay_serial)]))
-    paying = window(legs.float_pay_serial)
-    floating = float(np.sum(legs.float_nominal[paying] * (np.nan_to_num(legs.history[paying]) + legs.float_spread)
-                            * legs.float_accrual[paying]))
-    net = floating - fixed
-    return net if legs.payer else -net

@@ -50,8 +50,7 @@ from engine.market_simulation.config import CamConfig, LgmConfig
 from engine.models.lgm import H as lgm_H, Sigma
 from engine.pricing.config import PricingConfig
 from tests.support.ore_inputs import (
-    CCY, DISCOUNT_INDEX, NETTING_SET, OreCurves, OreLgmEngine, fixing_lines, index_name, inputs, market_lines,
-    netting_xml, portfolio_xml, pricingengine_xml, report_columns, run_app, sim_market_xml, trade_xml,
+    CCY, DISCOUNT_INDEX, NETTING_SET, index_name, netting_xml, portfolio_inputs, report_columns, sim_market_xml,
 )
 
 #: ORE's exposure report columns the oracle returns, each from t=0.
@@ -102,7 +101,6 @@ def _volatility_xml(lgm: LgmConfig) -> str:
 
 def simulation_xml(asof: ORE.Date, config: CamConfig, indices: Sequence[str], vols: SwaptionVolSurface) -> str:
     """ORE's `simulation.xml` (Parameters, CrossAssetModel, Market) for `config`."""
-    _require_supported(config)
     lgm = config.ir[CCY]
     grid = ",".join(f"{d - asof}D" for d in config.dates)
     basket = (f"<Expiries>{','.join(lgm.calibration_expiries)}</Expiries><Terms>{','.join(lgm.calibration_terms)}"
@@ -152,9 +150,6 @@ def _require_supported(config: CamConfig) -> None:
     if set(config.ir) != {CCY} or config.fx_volatilities or config.equity_volatilities or config.correlations:
         raise NotImplementedError(f"the XVA oracle simulates {CCY} alone (no FX, equity or correlations); the "
                                   f"two-currency test is F-04")
-    conventions = config.ir[CCY].swap_index
-    if (conventions.fixed_tenor, conventions.fixed_day_counter) != ("1Y", "ACT/365"):
-        raise NotImplementedError(f"the XVA oracle's swap index is annual ACT/365; got {conventions}")
 
 
 def ore_xva_run(market: Market, trades: Sequence, simulation: CamConfig, pricing: PricingConfig = PricingConfig(),
@@ -162,18 +157,11 @@ def ore_xva_run(market: Market, trades: Sequence, simulation: CamConfig, pricing
     """ORE's exposure simulation of `trades` on `market` under `simulation` and `pricing` (see
     the module docstring). Raises `RuntimeError` with ORE's messages if a trade or the model
     fails to build."""
-    if pricing.european != "Bachelier":
-        raise NotImplementedError("the XVA oracle prices Europeans by ORE's Bachelier engine (PricingConfig's "
-                                  "default)")
-    data = market.currency(CCY)
-    index = index_name(simulation.ir[CCY].swap_index.index_tenor_months)
-    if set(data.index_curves) != {index} or list(data.index_curves[index].times) != list(data.discount_curve.times):
-        raise NotImplementedError(f"the XVA oracle's market is {CCY}'s discount curve and {index}'s, on one set of "
-                                  f"pillars")
-    curves = OreCurves(data.discount_curve.times, data.discount_curve.rates, data.index_curves[index].rates)
-    vols = data.swaption_vols
-    engines = pricingengine_xml(OreLgmEngine.of(pricing.bermudan), OreLgmEngine.of(pricing.american))
-    parameters = inputs(market.asof, index, curves, vols, engines, portfolio_xml(trade_xml(t) for t in trades))
+    _require_supported(simulation)
+    lgm = simulation.ir[CCY]
+    run = portfolio_inputs(market, trades, pricing, "the XVA oracle", index_name(lgm.swap_index.index_tenor_months),
+                           lgm.swap_index if lgm.calibrated else None)
+    index, vols, engines, parameters = run.index, run.vols, run.engines, run.parameters
     sim = simulation_xml(market.asof, simulation, (index, DISCOUNT_INDEX), vols)
     parameters.setExposureSimMarketParams(sim)
     parameters.setScenarioGeneratorData(sim)
@@ -191,9 +179,7 @@ def ore_xva_run(market: Market, trades: Sequence, simulation: CamConfig, pricing
     parameters.setXvaUseDoublePrecisionCubes(True)
     parameters.insertAnalytic("EXPOSURE")
     parameters.insertAnalytic("PFE")
-    fixings = [line for t in trades for line in fixing_lines(index, getattr(t, "fixings", None))]
-    app = run_app(parameters, market.asof, market_lines(market.asof, curves, vols), fixings, "scenario")
-    return _read(app, market.asof, simulation, [t.trade_id for t in trades])
+    return _read(run.run("scenario"), market.asof, simulation, [t.trade_id for t in trades])
 
 
 def _read(app, asof: ORE.Date, simulation: CamConfig, trade_ids) -> OreXvaRun:

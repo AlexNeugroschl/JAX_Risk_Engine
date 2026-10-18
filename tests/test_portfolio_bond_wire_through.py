@@ -171,22 +171,24 @@ class TestBondGreeksReachThePortfolioPath:
         theta = float(price_portfolio(bond_request([bill], compute_greeks=True)).greeks[0]["theta"])
         assert theta == pytest.approx(price_alone(bill) * np.expm1(FLAT_3PCT.rates[0] / 365.0), rel=1e-9)
 
-    def test_theta_adds_back_a_coupon_paid_the_next_day(self):
-        """I-39: ORE's Theta adds back the flows paid in (t, t + 1 day]. Valued the day before
-        the 2025-12-15 coupon, a one-day reprice drops the $2,000 coupon; Theta must not."""
+    def test_a_coupon_paid_the_next_day_leaves_theta_as_ores(self):
+        """Valued the day before the 2025-12-15 coupon, a one-day reprice drops the $2,000 coupon
+        and so does Theta: ORE's sensitivity analytic adds back no flow of the roll (its period
+        flows are read after the roll, where they have occurred; I-39's add-back, reversed on
+        2026-10-18 against ORE's analytic, I-116)."""
         note = replace(make_note(), evaluation_date=_date("2025-12-14"))
         market = make_market(asof=note.evaluation_date)
         theta = float(price_portfolio(bond_request([note], compute_greeks=True, market=market)).greeks[0]["theta"])
-        assert 0.0 < theta < 50.0
+        assert -2_000.0 < theta < -1_950.0
 
     def test_a_bond_maturing_tomorrow_does_not_crash_the_greeks(self):
         """Regression: Theta's one-day move lands on maturity, and pricing the bond there raised
-        `BondPricingError` (a date the caller never gave). A matured bond is worth 0 and its
-        redemption, paid on the Theta date, is a paid flow: Theta = redemption - NPV."""
+        `BondPricingError` (a date the caller never gave). A matured bond is worth 0, its
+        redemption paid on the Theta date having occurred there, so Theta = -NPV, as ORE's."""
         bill = make_bill(maturity="2025-06-03")
         greeks = price_portfolio(bond_request([bill], compute_greeks=True)).greeks[0]
         assert DISCOUNT in greeks
-        assert float(greeks["theta"]) == pytest.approx(bill.face_amount - price_alone(bill), rel=1e-12)
+        assert float(greeks["theta"]) == pytest.approx(-price_alone(bill), rel=1e-12)
 
     def test_no_vega_is_reported(self):
         """A fixed-coupon bond reads no volatility: Vega is omitted, not 0.0."""

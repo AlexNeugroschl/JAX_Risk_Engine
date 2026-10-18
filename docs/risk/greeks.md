@@ -47,7 +47,7 @@ factor, flat forward beyond):
 | `delta:discount:<ccy>`, `delta:index:<name>` `[tenors]` | `NPV(up) − NPV(base)`, an absolute zero-rate shift of `curve_shift` at one tenor (`ShiftScheme::Forward`) | `dNPV/dz_k · curve_shift` in the tenor's zero rate |
 | `gamma:discount:<ccy>`, `gamma:index:<name>` `[tenors]` | `NPV(up) − 2·NPV(base) + NPV(down)` | `d²NPV/dz_k² · curve_shift²` (the diagonal, as ORE computes no cross-gammas by default) |
 | `vega:<ccy>` `[option tenors, swap tenors]` | `NPV(up) − NPV(base)` per swaption quote, an absolute normal-vol shift of `vol_shift` | `dNPV/dquote · vol_shift` |
-| `theta` | `NPV(thetaDate) − NPV(base) + flows paid in (asof, thetaDate]`, `thetaDate = asof + theta_days` calendar days | the same function |
+| `theta` | `NPV(thetaDate) − NPV(base)`, `thetaDate = asof + theta_days` calendar days | the same function |
 
 Vega is present for a trade whose engine reads the swaption volatilities: a European on
 Bachelier, a Bermudan/American calibrated to them. A swap, a bond, a Jamshidian European and
@@ -151,15 +151,25 @@ Hull-White model, not the market's quotes, so it has no Vega either; on Bachelie
 
 Both methods report ORE's Theta (`trade_theta`), equal to ORE's sensitivity analytic's: the
 trade repriced on the sensitivity market rebuilt on `thetaDate = asof + theta_days` calendar
-days ([I-38](../planning/known-issues.md#i-38)), plus the cashflows paid in `(asof, thetaDate]`
-([I-39](../planning/known-issues.md#i-39)). ORE's simulation-market curves hold their tenor
+days ([I-38](../planning/known-issues.md#i-38)), less its value there. A flow paid in the roll
+leaves Theta as it leaves the NPV: ORE adds back the flows paid in `(asof, thetaDate]`, but reads
+them from the trade's cash flows on the Theta date without its past ones, where every flow of the
+roll has occurred, so with ORE's settings it adds back nothing (until 2026-10-18 the engine added
+them back, [I-39](../planning/known-issues.md#i-39), which ORE's analytic disproved,
+[I-116](../planning/known-issues.md#i-116)); the owner kept ORE's definition (decision A-26,
+2026-10-18). For a carry with the cash received, add the flows paid in the roll, which are to be
+reported beside Theta as a figure of their own ([F-11](../planning/features.md#f-11)). ORE's
+simulation-market curves hold their tenor
 points at the tenors' times from the as-of date, with the as-of curve's discount factors there,
 and take their reference date from the evaluation date (`InterpolatedDiscountCurve2`, the same
 rule as on a simulated path, I-84): on the Theta date each curve is the sensitivity market's own
 as a function of the time from its reference date, and the ATM volatility matrix, a simulated
-factor, floats with it (its option dates roll from the Theta date). Fixings between the dates
+factor, floats with it: its option dates roll from its reference date, the first business day on
+or after the Theta date, where each option's variance starts (a Theta across a weekend reads the
+volatilities from the Monday). Fixings between the dates
 are backfilled with the index's forecast there. A bond maturing on the Theta date is worth 0
-there and its redemption is a paid flow ([I-70](../planning/known-issues.md#i-70)). Until
+there ([I-70](../planning/known-issues.md#i-70)), its redemption having occurred, so its Theta is
+minus its value. Until
 2026-10-17 the engine's Theta market kept each curve's discount factors fixed in dates, off
 ORE's by 60–290% of each trade's Theta (I-51).
 

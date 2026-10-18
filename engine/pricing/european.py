@@ -152,14 +152,15 @@ def black_multileg_npv(terms: EuropeanTerms, disc, index, t, variance, projected
 
 def european_value(cfg: SwaptionConfig, context: PricingContext) -> jax.Array:
     """ORE's NPV on the context's date (0 once expired: `isExpired`, exercise on or before
-    the date), the volatility read where the engine reads it."""
+    the date), the volatility read where the engine reads it, its variance from the date the
+    volatilities run from (`PricingContext.volatility_offset`, ORE's `blackVariance`)."""
     if not cfg.exercise_date > context.date:
         return jnp.zeros(())
     extra = context.fixings.get(index_name(cfg.currency, cfg.index_tenor_months), {})
     terms = european_terms(cfg, context.date, extra)
     disc, index = context.curves(cfg.currency, index_name(cfg.currency, cfg.index_tenor_months))
     t = VOL_DAY_COUNTER.yearFraction(context.date, cfg.exercise_date)
-    variance = context.volatility(cfg.currency, t, terms.swap_length) ** 2 * t
+    variance = context.volatility(cfg.currency, t, terms.swap_length) ** 2 * max(t - context.volatility_offset, 0.0)
     known = today_schedule(terms.legs, context.date)
     return black_multileg_npv(terms, disc, index, 0.0, variance, known.projected, known.known_rates)
 

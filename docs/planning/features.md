@@ -19,6 +19,7 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 | [F-08](#f-08) | Reporting currencies other than USD for TraderX | S | I-18 (an FX source), I-59 | New |
 | [F-09](#f-09) | ORE's XML input files as a run request | M | I-87 | New |
 | [F-10](#f-10) | Supported sampling confidence intervals with validated tail assumptions | L | I-111 availability rule; first precision timing result | New |
+| [F-11](#f-11) | The cash flows paid in Theta's roll, reported beside Theta | S | I-87 | New |
 
 ---
 
@@ -212,3 +213,23 @@ the first existing-format timing/accuracy result so it does not block that resea
 its uncertainty can be measured across independent outer runs. **Size.** L.
 **Details.** [Public uncertainty contract](../reference/sampling-uncertainty.md),
 [precision experiments](details/precision-accuracy.md).
+
+<a id="f-11"></a>
+### F-11 — The cash flows paid in Theta's roll, reported beside Theta
+
+**Value.** Theta is ORE's, the change in NPV over the roll with nothing added back (decision
+A-26, 2026-10-18), so a coupon paid in the roll shows as a fall in Theta by about the coupon. A
+P&L explain or a carry with the cash received needs those flows: report them per trade, in the
+reporting currency, as a figure of their own beside Theta (`theta + roll_cash_flows` is the
+carry with the cash), from both Greek methods, so that Theta itself stays equal to ORE's
+sensitivity analytic.
+
+**Scope.** The flows of each trade paid in `(asof, thetaDate]` by ORE's `hasOccurred` rule on
+the Theta date (coupons, a bond's redemption, a cash-settled option's settlement), each in the
+currency it is paid and converted as the NPV is; no discounting, as ORE's add-back would have
+summed them. Tested against the trades' own cash-flow schedules and, where ORE reports the
+flows (its cash-flow report on the Theta date), against ORE. The matrix's cells for Theta gain
+the figure's row.
+
+**Depends on.** The run request's one result ([I-87](known-issues.md#i-87)), which names each
+figure and its units. **Size.** S.
