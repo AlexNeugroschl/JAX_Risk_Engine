@@ -91,7 +91,9 @@ from engine.precision import OFFSETS, ROUNDINGS, STAGES, MeanEstimate, Precision
 from engine.pricing.config import PricingConfig
 from engine.risk.counterparty.exposure import BASEL_FIGURES, PROFILE_FIGURES
 from engine.risk.market import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
+from engine.risk.market.run import pricing_settings as market_risk_pricing_settings
 from engine.run import PortfolioRequest, RunConfig, price_portfolio
+from engine.run.pipeline import pricing_settings as portfolio_pricing_settings
 from tests.support.compiles import count_compiles
 
 #: The scaled storage formats, widest first.
@@ -191,6 +193,10 @@ class PortfolioCampaign:
             market=self.market, trades=list(self.trades), pfe_quantiles=self.pfe_quantiles,
             config=RunConfig(simulation=scenarios, pricing=self.pricing, precision=precision)))
 
+    def settings(self) -> Dict[str, str]:
+        """Each product's pricing settings, as the portfolio run keys its evidence (I-114)."""
+        return portfolio_pricing_settings(self.pricing, self.trades)
+
     def dates(self) -> Tuple[str, ...]:
         """The simulation dates, the entries of a profile figure."""
         return tuple(d.ISO() for d in self.simulation.dates)
@@ -248,6 +254,10 @@ class MarketRiskCampaign:
     def run(self, scenarios, precision: Precision):
         return run_market_risk(MarketRiskRequest(list(self.trades), self.market, scenarios, self.pricing,
                                                  quantiles=self.quantiles, precision=precision))
+
+    def settings(self) -> Dict[str, str]:
+        """Each product's pricing settings, as the market-risk run keys its evidence (I-114)."""
+        return market_risk_pricing_settings(self.pricing, self.trades)
 
     def dates(self) -> Tuple[str, ...]:
         """None: every market-risk figure is a scalar."""
@@ -406,7 +416,9 @@ class Measurements:
     market: the campaign's `market_name`. cases: each case's policy, in its wire form
         (`PrecisionSchema`); a stochastic rounding's seed is each run's Sobol seed. dates: the
         entries of a profile figure; a scalar figure (`scalars`) has one. products: each
-        trade's product. environment: what they ran on (`environment()`)."""
+        trade's product. settings: each product's pricing settings that change its kernel's
+        arithmetic, as the campaign's analytic ran them (`campaign.settings()`, the evidence
+        table's key, I-114). environment: what they ran on (`environment()`)."""
     campaign: str
     kind: str
     description: str
@@ -416,6 +428,7 @@ class Measurements:
     dates: Tuple[str, ...]
     scalars: Tuple[str, ...]
     products: Dict[str, str]
+    settings: Dict[str, str]
     environment: Dict[str, str]
     figures: List[FigureRow] = field(default_factory=list)
     coverage: List[CoverageRow] = field(default_factory=list)
@@ -430,9 +443,9 @@ class Measurements:
 
     def merge(self, other: "Measurements") -> "Measurements":
         """These measurements and `other`'s (the same campaign at other path counts)."""
-        if (other.campaign, other.market, other.cases, other.seeds, other.replicates) != (
-                self.campaign, self.market, self.cases, self.seeds, self.replicates):
-            raise ValueError("only measurements of one campaign, its cases and seeds merge")
+        if (other.campaign, other.market, other.cases, other.seeds, other.replicates, other.settings) != (
+                self.campaign, self.market, self.cases, self.seeds, self.replicates, self.settings):
+            raise ValueError("only measurements of one campaign, its cases, seeds and pricing settings merge")
         overlap = set(self.paths) & set(other.paths)
         if overlap:
             raise ValueError(f"path counts {sorted(overlap)} measured twice")
@@ -497,7 +510,8 @@ def measure(campaign, paths: int, cases: Optional[Sequence[Case]] = None,
         campaign=campaign.name, kind=campaign.kind, description=campaign.description, market=campaign.market_name,
         cases={c.label: PrecisionSchema.from_dataclass(c.precision).model_dump() for c in cases}, seeds=seeds,
         dates=campaign.dates(), scalars=tuple(k for k, v in figures.items() if np.ndim(v) == 0),
-        products={t.trade_id: t.product for t in campaign.trades}, environment=environment(),
+        products={t.trade_id: t.product for t in campaign.trades}, settings=campaign.settings(),
+        environment=environment(),
         replicates=campaign.simulation.replicates if campaign.kind == "portfolio" else campaign.replicates)
     for case in cases:
         started = time.perf_counter()
@@ -713,6 +727,8 @@ def summary(m: Measurements) -> str:
              f"engine digest {m.environment.get('engine', '?')}), "
              f"JAX {m.environment.get('jax', '?')} on {m.environment.get('backend', '?')} "
              f"({m.environment.get('devices', '?')}), {m.environment.get('measured', '?')}.", "",
+             "Pricing settings (the evidence table's key, I-114): "
+             + "; ".join(f"`{product}` {value}" for product, value in sorted(m.settings.items())) + ".", "",
              "Each figure's precision error is its value less the float64 run's on the same paths, per seed. "
              "Relative error: its root mean square over the seeds in units of the figure's statistical error (the "
              "float64 figure's spread over the seeds). Relative bias: its mean over the seeds in the same units. "

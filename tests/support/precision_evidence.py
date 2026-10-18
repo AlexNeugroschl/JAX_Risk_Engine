@@ -31,6 +31,9 @@ Rerun this after any campaign.
                           rule, and for market risk green (A-11); NaN fails
       --ceiling--> the largest path count at which a row passes and passes at every smaller one
 
+Every row holds under its campaign's pricing settings (`Measurements.settings`, I-114), which
+the engine's evidence file carries per campaign and the engine's lookup matches.
+
 The harness measures a figure's precision error across independent seeds, so no row rests on
 the paired estimator's own standard errors (I-111): a paired case is judged as any other.
 """
@@ -210,10 +213,14 @@ def generate(measurements: Sequence[Measurements], standard: Standard) -> Tuple[
 
 def _campaign(m: Measurements) -> dict:
     """What names a campaign's rows (I-55): its market, code revision, device, seeds and path
-    counts; and what `Evidence.from_json` reads."""
+    counts; and what `Evidence.from_json` reads, its products' pricing settings (I-114) among
+    them."""
+    if set(m.settings) != set(m.products.values()):
+        raise ValueError(f"{m.campaign}: pricing settings for {sorted(m.settings)}, but its trades are "
+                         f"{sorted(set(m.products.values()))}")
     figures, env = FIGURES[m.kind], m.environment
     return {"kind": m.kind, "market": m.market, "aggregate": figures.aggregate,
-            "products": sorted(set(m.products.values())), "corrected": sorted(figures.corrected),
+            "settings": dict(sorted(m.settings.items())), "corrected": sorted(figures.corrected),
             "commit": env.get("commit", "unknown"), "changes": env.get("changes", "unknown"),
             "engine": env.get("engine", "unknown"), "device": f"{env.get('backend', '?')} ({env.get('devices', '?')})",
             "jax": env.get("jax", "unknown"), "seeds": len(m.seeds), "paths": list(m.paths),
@@ -259,25 +266,32 @@ def markdown(measurements: Sequence[Measurements], rows: Mapping[str, Sequence[E
         "none if it fails at the smallest. On Sobol paths the precision error grows against the statistical error "
         "with the path count ([precision.md §15.4](../docs/planning/details/precision.md#154-the-storage-harness-"
         "2026-10-09)), so a run with fewer paths than a ceiling is validated, and one with more is not.",
-        "- **A run's figure is validated** by the rows of its combination, scope and kind "
-        "(`engine.precision.evidence`): a trade's by its product's rows; the aggregate's by a row whose campaign held "
-        "every product of the run, with one pricing stage for all its trades; a figure the paired sample corrects "
-        "(EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B, the Basel EPE and EEPE) by the rows of the largest paired share at "
-        "most the run's; the smallest ceiling where rows of two campaigns match.",
+        "- **A run's figure is validated** by the rows of its combination, scope, kind and pricing settings "
+        "(`engine.precision.evidence`): a trade's by its product's rows measured under the run's settings for it; the "
+        "aggregate's by a row whose campaign held every product of the run, each under the run's settings, with one "
+        "pricing stage for all its trades; a figure the paired sample corrects (EPE, ENE, EE_B, EEE_B, EPE_B, EEPE_B, "
+        "the Basel EPE and EEPE) by the rows of the largest paired share at most the run's; the smallest ceiling where "
+        "rows of two campaigns match.",
+        "- **Pricing settings** ([I-114](../docs/planning/known-issues.md#i-114)) are each product's settings that "
+        "change its kernel's arithmetic (`engine.pricing.config.PricingConfig.kernel_settings`), as the campaign's "
+        "analytic ran them: the European engine (and Jamshidian's root solver), the rollback grid (ORE's `nx` and "
+        "`sx`, an American's exercise steps per year), and whether a calibrated option keeps one model "
+        "(`model=fixed`: on every path of the exposure simulation, A-24, or a fixed LGM) or is recalibrated under each "
+        "market-risk scenario (`model=recalibrated`, I-112). A row measured under other settings validates nothing: "
+        "the run's warning names what it was measured with. The model's parameters (reversion, volatility, "
+        "calibration strategy, shift horizon) are part of the campaign, like its market, not of the key.",
         "- **CPU formats below float32 are emulated**; GPU execution follows the verified native/emulated "
         "format table in `engine.precision.products` "
         "([precision.md §8.3](../docs/planning/details/precision.md#83-emulation-and-native-speed)). Each campaign's "
         "row names the code it measured: its commit, whether the tree had local changes, and the digest of the "
-        "engine's Python sources.",
-        "- **Pricing settings limit the evidence.** The lookup currently omits the pricing engine and grid "
-        "configuration ([I-114](../docs/planning/known-issues.md#i-114)). A row measured with Bachelier or one "
-        "rollback grid is not evidence for an unmeasured engine or grid; consult the campaign definition.", "",
+        "engine's Python sources.", "",
         "## Campaigns", "",
-        "| Campaign | Market | Products | Path counts | Seeds | Code | Device | Measured |",
+        "| Campaign | Market | Products and pricing settings | Path counts | Seeds | Code | Device | Measured |",
         "|---|---|---|---|---|---|---|---|"]
     for m in measurements:
         c = _campaign(m)
-        lines.append(f"| `{m.campaign}` | {m.market} | {', '.join(c['products'])} | "
+        settings = "; ".join(f"`{product}` {value}" for product, value in c["settings"].items())
+        lines.append(f"| `{m.campaign}` | {m.market} | {settings} | "
                      f"{', '.join(f'{p:,}' for p in c['paths'])} {unit[m.kind]} | {c['seeds']} | "
                      f"`{c['commit'][:12]}` (local changes: {c['changes']}), engine `{c['engine']}` | {c['device']}, "
                      f"jax {c['jax']} | {c['measured']} |")

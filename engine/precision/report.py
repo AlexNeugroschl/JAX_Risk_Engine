@@ -30,8 +30,8 @@ run's precision was, read from what it did, and how far its figures are from flo
 what ran even if a cast point were wrong. Built in the process that ran the job, so an HTTP
 job reports its worker's device, not the API's (I-12). Whether each figure's combination has
 passed the acceptance standard (A-11) is not here but in the result's `warnings`, one for each
-product and aggregate whose figures have no passing row of the evidence table
-(`engine.precision.evidence`, I-55).
+product and aggregate whose figures have no passing row of the evidence table under the run's
+pricing settings (`engine.precision.evidence`, I-55, I-114).
 
 Depends on JAX and NumPy only.
 """

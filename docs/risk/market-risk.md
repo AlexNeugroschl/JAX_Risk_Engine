@@ -210,6 +210,11 @@ float64.
   ([compliance/precision-evidence.md](../../compliance/precision-evidence.md); decision A-11:
   the P&L attribution test's green zone and a precision error within 1% of the figure's
   statistical error) is named, with what is validated for it and up to how many scenarios.
+  A row holds only for the pricing settings its campaign ran (I-114,
+  `engine.risk.market.run.pricing_settings`): a calibrated Bermudan or American is
+  `model=recalibrated` here, its own model and induction under each scenario, and only the
+  `market_risk_calibrated` campaign measures that kernel; the fixed-LGM campaigns
+  (`model=fixed`) validate a fixed model alone.
 
 Not yet covered: equity, FX, credit and volatility risk factors; stressed calibration and
 the liquidity-horizon cascade Basel's ES needs (plan phase P3).

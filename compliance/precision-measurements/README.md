@@ -9,7 +9,7 @@ them.
 
 | File | Holds |
 |---|---|
-| `<campaign>.json.gz` | Every number: per case, figure and path count the precision error's mean (bias), standard error and root mean square, and the figure's statistical error, per date; the paired estimator's coverage; the P&L attribution statistics; recompiles and timings; the market; the commit, whether the tree had local changes, and the digest of the engine's Python sources. `tests.support.precision_harness.Measurements.from_json` reads it |
+| `<campaign>.json.gz` | Every number: per case, figure and path count the precision error's mean (bias), standard error and root mean square, and the figure's statistical error, per date; the paired estimator's coverage; the P&L attribution statistics; recompiles and timings; the market; each product's pricing settings; the commit, whether the tree had local changes, and the digest of the engine's Python sources. `tests.support.precision_harness.Measurements.from_json` reads it |
 | `<campaign>.md` | The summary generated from it |
 
 The campaigns are `linear` (the shared portfolio's swaps, Europeans and bond), `options` (its
@@ -50,7 +50,19 @@ precision acceptance table uses errors against matched float64 draws across oute
 seeds, independently of any reported standard error. Its keys distinguish replicate
 count and compute rounding. Formats that fail the unchanged standard remain failures.
 
-Rows establish accuracy only for the pricing engine and grid measured in the campaign
-definition. Runtime lookup currently omits these settings (I-114), so a passing lookup
-must not establish acceptance for an unmeasured engine or grid. This must be resolved
-before the hardware timing comparison.
+Every record names its products' pricing settings (`settings`, I-114): per product, the
+settings that change its kernel's arithmetic, as the campaign's analytic ran them
+(`PricingConfig.kernel_settings`): the European engine, the rollback grid (ORE's `nx` and
+`sx`, an American's exercise steps) and whether a calibrated option keeps one model
+(`model=fixed`) or is recalibrated under each market-risk scenario (`model=recalibrated`).
+The evidence table carries them per campaign and the engine's lookup matches them, so a row
+validates a run only under the settings it was measured with. The campaigns measured
+before 2026-10-18 had their settings recorded on that date from their definitions, which
+are unchanged from each record's commit (no number of theirs moved); a campaign measured
+since records its own.
+
+`market_risk_calibrated` (2026-10-18) measures the kernel the three fixed-LGM market-risk
+campaigns do not: their trades, market, shifts and coarse grid, with the Bermudan calibrated
+and recalibrated under every scenario (I-112), in every combination they measure: the
+storage cases, each compute format to nearest, and the `rounding_market_risk` formats
+stochastically.

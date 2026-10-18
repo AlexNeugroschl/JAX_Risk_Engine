@@ -16,14 +16,31 @@ model, as in ORE's `pricingengine.xml`, and on a path it prices on the path's cu
 Bermudan/American defaults are ORE's example configuration (Examples/Products/Input/pricingengine.xml,
 `BermudanSwaption`), `shift_horizon` its builder's default 0.5 (decisions A-3, D-10; I-32), and
 `bootstrap_tolerance` (ORE's `Tolerance`) its shared example configuration's 1e-4 (I-73).
+
+**Kernel settings** (`PricingConfig.kernel_settings`, I-114). The precision evidence
+(`engine.precision.evidence`) validates a product's figures only under the settings that change
+the arithmetic of its kernel, where its rounding happens and accumulates: the European engine
+(Bachelier's formula, or Jamshidian's root x* found by its solver in the stage's format), the
+grid engine's state grid (`n_per_std`, `std_devs`: the operator's size), an American's exercise
+steps (the rollback's length), and whether the analytic runs a calibrated option on one model
+or recalibrates it under each scenario (market risk, I-112: each scenario its own operator).
+The model's parameters (reversion, volatility, calibration strategy, tolerance, reference grid,
+shift horizon, the calibration's solver, all float64 work, A-10) change the numbers a kernel
+rounds, as the market does, not the kernel: the evidence names them in each campaign's
+definition, not in its key.
 """
 import math
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Dict, Iterable, Optional
 
 import ORE
 
 from engine.calibration.ore_lgm import BOOTSTRAP_TOLERANCE, SwapIndexConventions, check_tolerance
+from engine.instruments.american_swaption import AmericanSwaptionConfig
+from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
+from engine.instruments.european_swaption import SwaptionConfig
+from engine.instruments.swap import SwapConfig
+from engine.instruments.treasury import BondConfig
 from engine.solvers.roots import DEFAULT_SOLVER, check_solver
 
 #: European swaption engines; the first is ORE's default.
@@ -92,6 +109,12 @@ class LgmSwaptionEngineConfig:
                              f"horizon); got {self.shift_horizon!r}")
         reference_grid_dates(ORE.Date(1, 1, 2020), self.reference_calibration_grid)
 
+    @property
+    def calibrates(self) -> bool:
+        """Whether the trade's LGM is calibrated to its basket (`calibration="Bootstrap"`), or
+        fixed at `reversion` and `volatility`."""
+        return self.calibration != "None"
+
 
 @dataclass(frozen=True)
 class JamshidianEngineConfig:
@@ -137,6 +160,31 @@ class PricingConfig:
         if self.european != "Jamshidian" and self.jamshidian is not None:
             raise ValueError(f"PricingConfig.jamshidian is the Jamshidian engine's model, which european="
                              f"{self.european!r} does not read; leave it unset")
+
+    def kernel_settings(self, products: Iterable[str], *, recalibrated: bool) -> Dict[str, str]:
+        """Per product of `products`, the settings of this configuration that change its kernel's
+        arithmetic, as the precision evidence keys them (see the module docstring), e.g.
+        `"engine=LgmGrid nx=30 sx=5 model=fixed"`. `recalibrated`: whether the analytic
+        recalibrates a calibrated option under each of its scenarios (market risk, I-112); the
+        exposure simulation keeps on every path the model calibrated when the trade was built
+        (A-24), a fixed model as `calibration="None"` is. In product order."""
+        return {product: self._kernel_settings(product, recalibrated) for product in sorted(set(products))}
+
+    def _kernel_settings(self, product: str, recalibrated: bool) -> str:
+        if product in (SwapConfig.product, BondConfig.product):
+            return "engine=Discounting"
+        if product == SwaptionConfig.product:
+            if self.european == "Jamshidian":
+                return f"engine=Jamshidian solver={self.jamshidian.solver}"
+            return f"engine={self.european}"
+        if product in (BermudanSwaptionConfig.product, AmericanSwaptionConfig.product):
+            american = product == AmericanSwaptionConfig.product
+            engine = self.american if american else self.bermudan
+            steps = f" steps_per_year={engine.exercise_time_steps_per_year}" if american else ""
+            model = "recalibrated" if recalibrated and engine.calibrates else "fixed"
+            # The state grid by ORE's names, `nx`/`sx`.
+            return f"engine=LgmGrid nx={engine.n_per_std} sx={engine.std_devs:g}{steps} model={model}"
+        raise ValueError(f"no pricing engine for product {product!r}")
 
 
 def reference_grid_dates(reference: ORE.Date, grid: str):

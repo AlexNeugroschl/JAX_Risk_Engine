@@ -27,11 +27,11 @@ With `precision.paired_fraction > 0` the first paths are simulated and priced ag
 throughout (`_paired_sample`, decision A-13): the exposure means are the two-level estimates,
 and each figure's estimate is in the result's `PrecisionReport`, which every result carries.
 The result's `warnings` name every figure whose precision has no passing row of the evidence
-table (`precision_warnings`, I-55; a float64 run has none), and an AD run's Greeks that are not
-ORE's (`engine.risk.greeks.ad.ad_warnings`, I-78).
+table under the run's pricing settings (`precision_warnings`, I-55, I-114; a float64 run has
+none), and an AD run's Greeks that are not ORE's (`engine.risk.greeks.ad.ad_warnings`, I-78).
 """
 import dataclasses
-from typing import TYPE_CHECKING, List, Optional, Sequence
+from typing import TYPE_CHECKING, Dict, List, Mapping, Optional, Sequence
 
 import jax.numpy as jnp
 import numpy as np
@@ -44,6 +44,7 @@ from engine.precision import (
     realized_format,
 )
 from engine.precision.estimate import paired_count
+from engine.pricing.config import PricingConfig
 from engine.pricing.context import simulation_market_today
 from engine.pricing.cube import (
     reporting_fx_spots, trade_maturity, validate_trades, value_paths, value_portfolio, value_today,
@@ -106,7 +107,7 @@ def price_on_market(request) -> "PortfolioResult":
         report = dataclasses.replace(report, replicates=simulation.replicates,
                                      uncertainty_method="independent_scrambles" if simulation.replicates > 1 else "unavailable")
         warnings = precision_warnings(run.precision, trades, scenarios.num_paths, request.pfe_quantiles,
-                                       simulation.replicates)
+                                       pricing_settings(run.pricing, trades), simulation.replicates)
     else:
         with phase("base_npv"):
             today = value_today(trades, market, base, run.pricing)
@@ -138,12 +139,22 @@ def run_figures(quantiles: Sequence[float]) -> RunFigures:
                              "float64 at every precision.")
 
 
+def pricing_settings(pricing: PricingConfig, trades: Sequence) -> Dict[str, str]:
+    """The pricing settings of each product of `trades` that change its kernel's arithmetic, as
+    the evidence table keys a portfolio run's rows (`PricingConfig.kernel_settings`, I-114): a
+    Bermudan or American keeps on every path the model calibrated when it was built, as ORE's
+    exposure simulation keeps it (A-24)."""
+    return pricing.kernel_settings({t.product for t in trades}, recalibrated=False)
+
+
 def precision_warnings(precision: Precision, trades: Sequence, paths: int, quantiles: Sequence[float],
-                       replicates: int = 1) -> List[str]:
+                       settings: Mapping[str, str], replicates: int = 1) -> List[str]:
     """A portfolio run's precision warnings: every figure (`run_figures`) without a passing row
-    in the evidence table (`engine.precision.evidence`, I-55), and the label of the paired
-    correction's unavailable or unvalidated sampling uncertainty (I-111)."""
-    warnings = evidence_warnings(precision, trades, paths, run_figures(quantiles), replicates=replicates)
+    in the evidence table (`engine.precision.evidence`, I-55) under the run's pricing `settings`
+    (`pricing_settings`), and the label of the paired correction's unavailable or unvalidated
+    sampling uncertainty (I-111)."""
+    warnings = evidence_warnings(precision, trades, paths, run_figures(quantiles), settings=settings,
+                                 replicates=replicates)
     label = paired_error_warning(precision, replicates)
     if label:
         warnings.append(label)

@@ -136,7 +136,8 @@ the format, the single pass `<format>_1x` a format of its own, A-23;
 and on 2026-10-13 the Bermudan/American rollback, as matrix products in difference form, its
 memory a few columns per path, [I-83](known-issues.md#i-83), and each option's flipped exercise
 decisions measured by the harness, decision A-24); the evidence table and warnings (I-55,
-done 2026-10-11: [compliance/precision-evidence.md](../../compliance/precision-evidence.md));
+done 2026-10-11: [compliance/precision-evidence.md](../../compliance/precision-evidence.md)),
+each row keyed by its products' pricing settings since 2026-10-18 (I-114);
 timing across devices on Ironwood and H100 (after the sharding of I-61); FP4 on TPU 8t/8i. Measured so far: FP8
 storage of the shocks biases a call payoff by about one Monte Carlo standard error at 4M
 paths (stochastic rounding: 0.15), so the earlier rejection of FP8, which compared error per

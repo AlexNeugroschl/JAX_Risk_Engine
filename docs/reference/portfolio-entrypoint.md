@@ -187,10 +187,6 @@ epe.correction, epe.correction_standard_error   # correction and its error acros
 
 At float64 everywhere a paired sample measures exactly zero.
 
-Evidence rows apply to the campaign's pricing engine and grid. The current lookup omits
-those settings (I-114); an unmeasured engine or grid needs its own matched measurements
-before its precision can be called validated.
-
 Whether a combination is validated for a figure is the evidence table
 ([compliance/precision-evidence.md](../../compliance/precision-evidence.md)): per figure, product
 and precision combination, whether it meets decision A-11's acceptance standard (its precision
@@ -200,16 +196,27 @@ set's figures without a passing row, with what is validated for them, for exampl
 
 ```
 precision: no passing row in the evidence table (compliance/precision-evidence.md) for trades
-['bond'] (bond) at 16,384 paths under simulation=float64/float64/float64 market=float64/float64/
-float64 pricing=float32/float64/float64: NPV validated up to 4,096 paths (acceptance
-standard, decision A-11). The run is not refused (D-9). NPV here is the paths' mean value per
-simulation date (the cube); today's NPV is float64 at every precision.
+['bond'] (bond, engine=Discounting) at 16,384 paths under simulation=float64/float64/float64
+market=float64/float64/float64 pricing=float32/float64/float64: NPV validated up to 4,096 paths
+(acceptance standard, decision A-11). The run is not refused (D-9). NPV here is the paths' mean
+value per simulation date (the cube); today's NPV is float64 at every precision.
 ```
 
 A row is evidence for the market and portfolio its campaign measured, not proof for every run
 ([precision.md §10.4](../planning/details/precision.md#104-as-built-2026-10-11)). Evidence keys
 include stochastic compute rounding and the replicate count; another policy or sampling
 design cannot inherit a passing row.
+
+Nor can another pricing configuration (I-114): a row holds for the pricing settings that change
+its product's kernel, as its campaign ran them (`PricingConfig.kernel_settings`; each run's are
+`engine.run.pipeline.pricing_settings`): the European engine (`engine=Bachelier`, or
+`engine=Jamshidian solver=Newton`), the rollback grid (`engine=LgmGrid nx=8 sx=3`, ORE's `nx` and
+`sx`; an American's `steps_per_year` too) and `model=fixed`, since the exposure simulation keeps
+an option's calibrated model on every path. The campaigns measured Bachelier and an 8 by 3 grid,
+so a Jamshidian European or a Bermudan on ORE's default 30 by 5 grid below float64 is warned of
+as `not measured with these pricing settings (measured with ...)`. The model's parameters
+(reversion, volatility, calibration strategy, shift horizon) are part of a campaign, like its
+market, not of the key.
 
 Use `dataclasses.replace(sim, replicates=8)` (or more) to estimate uncertainty within a
 run. `samples` remains the total budget and must divide equally among the scrambles.

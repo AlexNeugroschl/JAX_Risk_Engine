@@ -172,7 +172,7 @@ def calibrate_on(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, context: Pr
     reference calibration grid), as ORE's `LgmBuilder` refuses to build it ("no calibrating
     swaption provided"; until 2026-10-18 the engine priced it on the uncalibrated volatility,
     found by the ORE parity sweep, I-116)."""
-    if engine.calibration == "None":
+    if not engine.calibrates:
         return None
     basket = calibration_basket(cfg, engine, context.date)
     if not basket:

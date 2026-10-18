@@ -137,11 +137,13 @@ meaning explicit; its old name remains with a deprecation warning and identical 
 Future supported confidence intervals are an independent capability (F-10), not an
 implicit promise that more scrambles fix the failed experiment.
 
-The review also found an existing evidence-scope gap (I-114): lookup keys distinguish
-formats, rounding, pairing and replicate counts, but omit pricing-engine and rollback-grid
-settings. Measured Bachelier/grid rows must not establish acceptance for unmeasured settings.
-That is tracked before hardware timing. Equal-accuracy timing must also measure the actual
-RQMC error scaling and covariance, rather than assume an IID variance/path-count formula.
+The review also found an evidence-scope gap (I-114, closed 2026-10-18): lookup keys
+distinguished formats, rounding, pairing and replicate counts, but not the pricing engine,
+rollback grid or market risk's per-scenario recalibration. Each row now holds under its
+campaign's pricing settings ([precision.md §10.4](precision.md#104-as-built-2026-10-11)), so
+Bachelier or coarse-grid rows establish nothing for unmeasured settings. Equal-accuracy timing
+must also measure the actual RQMC error scaling and covariance, rather than assume an IID
+variance/path-count formula.
 
 ## Numerical compatibility
 

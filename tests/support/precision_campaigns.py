@@ -47,6 +47,19 @@ kernel it prices.
                  the `market_risk` campaign's revaluation with each trade's products in each
                  compute format, accumulated and stored in float32, the Bermudan's since the
                  rollback's rewrite (2026-10-13); 2,048 and 8,192 scenarios, 16 seeds
+    rounding, rounding_options, rounding_market_risk
+                 nearest against stochastic product rounding (2026-10-16)
+    replicated_storage
+                 the `linear` campaign with eight independent scrambles per run (I-111)
+    market_risk_calibrated
+                 the `market_risk` campaign with the Bermudan calibrated and recalibrated under
+                 every scenario (I-112, 2026-10-17), which the fixed-LGM campaigns do not
+                 measure (I-114): the `market_risk` storage cases, the `compute_market_risk`
+                 compute cases and the `rounding_market_risk` formats rounded stochastically;
+                 2,048 and 8,192 scenarios, 16 seeds
+
+Every campaign records its products' pricing settings (`Measurements.settings`, the evidence
+table's key, I-114): rows validate a run only under the settings they were measured with.
 """
 import argparse
 import dataclasses
@@ -174,11 +187,30 @@ def market_risk() -> MarketRiskCampaign:
         paths=(2048, 8192), seeds=tuple(range(1, 17)))
 
 
-def rounding_cases(stages, formats):
-    """Matched nearest/stochastic product policies. Storage stays float32."""
+def market_risk_calibrated() -> MarketRiskCampaign:
+    base = market_risk()
+    calibrated = dataclasses.replace(mr.CALIBRATED_ENGINE, n_per_std=8, std_devs=3.0)
+    return dataclasses.replace(
+        base, name="market_risk_calibrated",
+        description="The `market_risk` campaign's market, trades, shifts and coarse grid with the Bermudan calibrated "
+                    "to the market's swaptions (ORE's CoterminalDealStrike) and recalibrated under every scenario, as "
+                    "ORE's historical P&L recalibrates it (I-112): each scenario its own model and induction, where "
+                    "the `market_risk` campaigns share one fixed LGM. Each case stores the shifts (`simulation`) or "
+                    "each trade's P&L (`pricing`) in one format, revalued in float64; or computes each trade's "
+                    "matrix products in one compute format, accumulated and stored in float32 (the `float32` case "
+                    "is the accumulator's floor; `<format>_1x` the single pass, A-23), to nearest, and the "
+                    "`rounding_market_risk` formats stochastically.",
+        pricing=dataclasses.replace(base.pricing, bermudan=calibrated),
+        cases=(base.cases + compute_cases(stages=("pricing",))
+               + rounding_cases(("pricing",), ("float16", "bfloat16", "float8_e4m3fn", "float8_e5m2"),
+                                roundings=("stochastic",))))
+
+
+def rounding_cases(stages, formats, roundings=("nearest", "stochastic")):
+    """Matched product policies in each of `roundings`. Storage stays float32."""
     return tuple(Case(f"{stage}:compute:{name}:{rounding}",
                       Precision(**{stage: StagePrecision("float32", name, "float32", rounding)}))
-                 for stage in stages for name in formats for rounding in ("nearest", "stochastic"))
+                 for stage in stages for name in formats for rounding in roundings)
 
 
 def rounding():
@@ -219,7 +251,8 @@ def replicated_storage():
 CAMPAIGNS = {"linear": linear, "options": options, "market_risk": market_risk, "compute": compute,
              "compute_market_risk": compute_market_risk, "compute_options": compute_options,
              "rounding": rounding, "rounding_options": rounding_options,
-             "rounding_market_risk": rounding_market_risk, "replicated_storage": replicated_storage}
+             "rounding_market_risk": rounding_market_risk, "replicated_storage": replicated_storage,
+             "market_risk_calibrated": market_risk_calibrated}
 
 
 def main(argv=None) -> int:

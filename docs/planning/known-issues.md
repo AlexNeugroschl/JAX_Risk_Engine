@@ -16,38 +16,36 @@ shared portfolio, what is compared with ORE and what is not is the
 
 ## Verification status
 
-Last full run, 2026-10-18, on the ORE parity matrix and sweeps (I-116). **3,633 collected** on
-Windows: the previous 3,494 plus 139, every one reconciled by test id against the code before
-(the sweep's 40 seeds by three analytics, eleven settings and regression tests, six matrix
-tests, two settings runs on ORE's paths). Every green run below printed its summary line:
+Last full run, 2026-10-18, on the evidence keyed by pricing settings (I-114). **3,653
+collected** on Windows: the previous 3,633 plus 20, reconciled by test id against the code
+before (none removed: the kernel settings, the lookup under settings, the end-to-end runs on the
+shipped table, the record checks and the new campaign's definition). Every green run below
+printed its summary line:
 
 - **Windows full suite**, `.venv/Scripts/python.exe -m pytest tests/ -q -n 6 --durations=15`:
-  **3,630 passed, 3 skipped, 0 failed**, 26m49s; the skips are the two accelerator-only defaults
-  and the GPU plugin check. The whole sweep is most of the time: its slowest case (seed 28, a
-  32-helper American recalibrated under 128 scenarios) takes 314 s in market risk and 172 s in
-  its Greeks, ORE's run most of each. The run of the same tree before the sweep's heaviest draws
-  were bounded took 48m15s at `-n 6`, with two tests asserting Theta's old add-back, rewritten
-  to ORE's rule and green since.
+  **3,650 passed, 3 skipped, 0 failed**, 23m42s; the skips are the two accelerator-only defaults
+  and the GPU plugin check. The ORE parity sweep is most of the time (its slowest case, seed 28,
+  316 s in market risk and 166 s in its Greeks).
 - **Fast tier under strict dtype promotion**, as CI's `fast-strict-dtypes` job runs it:
-  **3,392 passed, 3 skipped, 0 failed**, 4m01s at `-n 6` (the sweep's fixed sample and the
-  settings tests run ORE in-process).
-- **Golden snapshot** (361 arrays, CPU, `--greeks`, before against after): all 361 identical:
-  no snapshot Theta rolls onto a flow or a weekend, and no snapshot option has a deal strike
-  beyond six decimals, a helper on a Saturday maturity or an opened American window.
-- **Asserted** (worst cases measured in each test's docstring): every sweep case's values within 2e-11 of the notional of ORE's NPV analytic
-  (options; linear 1e-12), its bump Greeks within 1e-10 (1e-12) of ORE's sensitivity analytic,
-  its AD Greeks ORE's to 1e-5 relative after Richardson extrapolation of the bump, its P&L
-  within 1e-11 of ORE's HISTSIM_VAR and its VaR the report's to 1e-9; the calibrated options at
-  ORE's default 30-point grid the same in market risk; each regression test red on the code
-  before by the figures in its docstring.
+  **3,412 passed, 3 skipped, 0 failed**, 3m56s at `-n 6`.
+- **Precision campaigns**: `market_risk_calibrated` measured on the final engine (digest
+  `9276035e71494e18`), 34 cases at 2,048 and 8,192 scenarios over 16 seeds, 16 min, no program
+  compiled after a case's first seed; a run on the tree before its last edit (the warning's
+  wording only) gave the same 680 figure rows and 68 attribution rows exactly. The ten earlier
+  records had their pricing settings recorded from their definitions (unchanged from each
+  record's commit to this one), every number loading as before; the regenerated evidence file's
+  241 earlier case rows are unchanged, and the table's `--check` passes.
 - **Lint**: pyflakes passes on every changed Python file.
-- **Not run**: Linux and the GPU (no process, path or platform default changed); the precision
-  campaigns (no campaign's kernel changed).
+- **Not run**: Linux and the GPU (no process, path or platform default changed); the golden
+  snapshot (no kernel or number path changed: the edits are the evidence lookup, plain Python
+  over a run's warnings, and `LgmSwaptionEngineConfig.calibrates` in place of two
+  `calibration != "None"` tests).
 
-Red first: each of the six defects the sweeps and settings runs found failed its regression test
-on the code before (tests/test_ore_parity_settings.py and the settings runs of
-tests/test_ore_xva_parity.py, figures in their docstrings); the matrix test failed on every
-cell the tests did not yet declare.
+Red first: on the code before, with its shipped table, a Jamshidian European, a Bermudan on ORE's
+default grid and a Bermudan recalibrated under each market-risk scenario at precisions the
+measured rows validate had no precision warning, each validated by rows of Bachelier, the coarse
+grid or the fixed LGM (`TestSettingsEndToEnd`'s runs; on the code after, one warning each,
+naming the unmeasured settings and what was measured).
 
 The fast tier alone is not a full verification. Rules: [README.md](README.md#verification-rules).
 
@@ -71,7 +69,6 @@ The fast tier alone is not a full verification. Rules: [README.md](README.md#ver
 | [I-109](#i-109) | TraderX: after a failed publication a same-id retry never prices or publishes | Medium | OPEN | API | TraderX |
 | [I-110](#i-110) | The documentation contradicts the code in places | Low | OPEN | Tooling | Fix what exists |
 | [I-117](#i-117) | ORE's sensitivity analytic is inconsistent with itself, or fails a calibration the engine fits, in four configurations | Low | OPEN | Validation | Fix what exists |
-| [I-114](#i-114) | Precision evidence lookup omits pricing-engine, grid and calibration settings | Medium | OPEN | Validation | Focus |
 | [I-115](#i-115) | The Greeks on an accelerator: bumps one at a time, a calibrated option's AD compiling for a minute, nothing measured on a GPU | Medium | OPEN | Performance | Focus |
 | [I-97](#i-97) | XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU | Medium | OPEN | Performance | Focus |
 | [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Focus |
@@ -158,35 +155,6 @@ With a smile: European NPV and Vega away from the money, and calibrated Bermudan
 **To close.** Decided (X-5): a strike axis in the market's volatilities, read at each
 option's and helper's strike as ORE reads its cube. SABR is [F-02](features.md#f-02).
 
-
-<a id="i-114"></a>
-### I-114 — Precision evidence lookup omits pricing-engine, grid and calibration settings
-
-**Severity:** Medium · **Status:** OPEN · **Category:** Validation · **Found:** 2026-10-16,
-review of compute-rounding coverage and `engine.precision.evidence.combination`
-
-**What is wrong.** The acceptance key records formats, roundings, layout, pairing and
-replicate count, but not `PricingConfig`. A European using Jamshidian can match a row
-measured with Bachelier; a different rollback grid can match the coarse grid's row; and since
-2026-10-17 a calibrated Bermudan/American in market risk, recalibrated under every scenario
-(I-112: each scenario its own induction, its level the scenario's model on the base curves),
-matches the rows the `market_risk` campaigns measured on a fixed LGM (`calibration="None"`),
-whose one level every scenario shares. Those settings change the arithmetic and its error, so
-that lookup does not establish accuracy.
-
-**Reach.** Precision validation labels and missing-evidence warnings under unmeasured
-pricing settings. The measured errors and verdicts for the campaign's own settings remain
-valid; the issue does not alter prices, ORE parity or the numerical acceptance thresholds.
-
-**Current handling.** The generated table and measurement documentation state the scope
-limit and point to the exact campaign definitions. Runtime lookup does not yet enforce it.
-
-**To close.** Carry the pricing engine and accuracy-relevant settings into campaign
-metadata and runtime matching, conservatively warn for an unmeasured configuration, and
-add regressions proving that Bachelier cannot validate Jamshidian, one grid cannot
-validate another, and a fixed LGM cannot validate a recalibrated one. Measure additional
-configurations when useful (a calibrated Bermudan in the market-risk campaigns). Do this before the
-equal-accuracy hardware comparison; do not duplicate or relabel existing rows as new evidence.
 
 <a id="i-97"></a>
 ### I-97 — XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU
@@ -1329,6 +1297,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="a-5"></a>Audit A-5 | Instruments imported validators from the layer above | `tests/test_import_layering.py` |
 | <a id="a-7"></a>Audit A-7 | The bond pricer was a separate plain-Python implementation | `tests/test_market_risk.py::TestRevaluation` |
 | <a id="i-98"></a>I-98 | Per-path product operands had no unbiased rounding policy; keyed stochastic compute rounding removes their conditional rounding bias, nearest retained as the measured baseline and nonlinear FP8 failures left failing (2026-10-16) | `tests/test_precision_accuracy.py::test_stochastic_product_has_no_binade_rounding_bias`, `::test_stochastic_keys_are_data_and_sample_prefixes_reproduce`; `rounding` and `rounding_options` campaigns |
+| <a id="i-114"></a>I-114 | The precision evidence lookup ignored pricing settings, so rows measured with Bachelier, on the coarse grid or on a fixed LGM validated a Jamshidian European, ORE's default grid and a Bermudan recalibrated under each market-risk scenario; every row now holds under its campaign's per-product kernel settings (`PricingConfig.kernel_settings`: the European engine and Jamshidian's solver, the grid's `nx`/`sx` and an American's steps, `model=fixed`/`recalibrated`), an unmeasured configuration is warned of naming what was measured, and the `market_risk_calibrated` campaign measures the recalibrated kernel (2026-10-18) | `tests/test_precision_evidence.py::TestSettingsEndToEnd` (each red on the code before: no warning), `::TestSettingsLookup`, `::TestKernelSettings`, `::TestRecord::test_each_record_holds_its_campaigns_pricing_settings` |
 | <a id="i-116"></a>I-116 | ORE parity was shown on one market and the default settings, so a Theta 60–290% off had passed: the parity matrix (every product by analytic by setting, a test or a stated reason, generated from the tests' `ore_parity` markers into docs/reference/ore-parity.md) and seeded sweeps against ORE's NPV, sensitivity and historical-simulation VaR analytics, which found five defects, each fixed (a deal strike ORE writes to six decimals, a helper ending on the underlying's last payment date, an American without a calibrating helper refused, Theta without an add-back, the Theta market's volatilities from the next business day), and the settings runs on ORE's paths a sixth (an American whose window opened before the as-of date never exercised on a path) (2026-10-18) | `tests/test_ore_parity_matrix.py`, `tests/test_ore_parity_sweep.py`, `tests/test_ore_parity_settings.py`, `tests/test_ore_xva_parity.py::test_other_settings_equal_ores_simulation_on_ores_paths` (each red on the code before) |
 | <a id="i-113"></a>I-113 | Long continuation values and stressed market-risk revaluations crossed zero; bound before LongShort/delivery and before/after P&L storage (2026-10-16) | `tests/test_precision_accuracy.py::test_long_option_bound_precedes_position_and_physical_delivery`, `::test_market_risk_cannot_revalue_a_long_option_below_zero` (both red before fix) |
 | <a id="i-111"></a>I-111 | Raw variance diagnostics could be read as nominal confidence bounds despite rare-event undercoverage; the shared Python/HTTP availability contract now declines all nominal intervals without a validated tail bound, retains raw errors, audits each date including zero-width misses, and renames the conditional ES diagnostic (2026-10-16). Supported intervals are F-10 | `tests/test_uncertainty_availability.py`, `tests/test_precision_harness.py::TestMeasure::test_replicated_diagnostics_are_per_date_and_never_certify_empirical_constants`, `tests/test_precision_accuracy.py` (wire metadata and warm compile reuse) |

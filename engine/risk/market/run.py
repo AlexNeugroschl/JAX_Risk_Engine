@@ -38,8 +38,8 @@ With `precision.paired_fraction > 0` a prefix within each scramble is revalued a
 paired sample, decision A-13), and the result's `PrecisionReport` measures each VaR and ES on
 it: the figure at the run's precision and at float64 on the same scenarios. They are quantiles,
 so the reported VaR/ES are the run's own, not corrected. The result's `warnings` name every
-figure whose precision has no passing row of the evidence table (`run_figures`,
-`engine.precision.evidence`, I-55; a float64 run has none).
+figure whose precision has no passing row of the evidence table under the run's pricing settings
+(`run_figures`, `pricing_settings`, `engine.precision.evidence`, I-55, I-114; a float64 run has none).
 """
 from dataclasses import dataclass, field
 import dataclasses
@@ -360,11 +360,21 @@ def _warnings(request: MarketRiskRequest) -> List[str]:
                "(I-111). Standard errors do not certify nominal coverage, including when zero; see "
                "docs/reference/sampling-uncertainty.md.")
     return out + evidence_warnings(request.precision, request.trades, request.scenarios.num_scenarios,
-                                   run_figures(request.quantiles), replicates=request.scenarios.replicates)
+                                   run_figures(request.quantiles),
+                                   settings=pricing_settings(request.pricing, request.trades),
+                                   replicates=request.scenarios.replicates)
 
 
 def _block_length(scenarios: ShockScenarios) -> int:
     return scenarios.block_length or max(scenarios.horizon_days, int(np.ceil(scenarios.num_scenarios ** (1 / 3))))
+
+
+def pricing_settings(pricing: PricingConfig, trades: Sequence) -> Dict[str, str]:
+    """The pricing settings of each product of `trades` that change its kernel's arithmetic, as
+    the evidence table keys a market-risk run's rows (`PricingConfig.kernel_settings`, I-114): a
+    calibrated Bermudan or American is recalibrated under each scenario, its own induction per
+    scenario (I-112); a fixed one shares one model."""
+    return pricing.kernel_settings({t.product for t in trades}, recalibrated=True)
 
 
 def run_figures(quantiles: Sequence[float]) -> RunFigures:

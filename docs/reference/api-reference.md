@@ -188,6 +188,13 @@ See [Instruments](../instruments/swaps.md).
 | `jamshidian` | `Optional[JamshidianEngineConfig]` | `None` | The Jamshidian engine's Hull-White model, `(reversion, volatility)`, both finite and > 0. Required with `european="Jamshidian"`, refused without. |
 | `bermudan`, `american` | `LgmSwaptionEngineConfig` | ORE's builder defaults | `reversion` (`0.0`), `volatility` (`0.01`, the start or the fixed model), `calibration` (`"Bootstrap"` \| `"None"`), `strategy` (`"CoterminalDealStrike"`), `reference_calibration_grid` (`"400,3M"`), `bootstrap_tolerance` (`1e-4`, ORE's `Tolerance`: a calibration whose root mean square of relative helper price errors is not below it is refused, naming the trade), `shift_horizon` (`0.5`, ORE's `ShiftHorizon`: the fraction of the time from the trade's build to its underlying's maturity where the LGM's H is shifted to vanish, which centres the grid; any value >= 0, 0 the unshifted model), `n_per_std` (`30`), `std_devs` (`5.0`), `exercise_time_steps_per_year` (`24`), `swap_index`. |
 
+`PricingConfig.kernel_settings(products, *, recalibrated) -> Dict[str, str]`: per product, the
+settings that change its kernel's arithmetic, the precision evidence table's key (I-114):
+`engine=Discounting` (swaps, bonds), `engine=Bachelier` or `engine=Jamshidian solver=<solver>`,
+`engine=LgmGrid nx=<n_per_std> sx=<std_devs>[ steps_per_year=<American's>] model=fixed|recalibrated`
+(`recalibrated` only where the analytic recalibrates a calibrated option under each scenario,
+market risk). `LgmSwaptionEngineConfig.calibrates`: `calibration != "None"`.
+
 ### `engine.pricing.cube`
 
 | Function | Returns |
@@ -461,7 +468,7 @@ nothing from the pipeline. `Precision` and `StagePrecision` are also exported by
 | `IntervalAvailability` | frozen dataclass | Nominal sampling intervals for all figures/entries: `status="unavailable"`, `reason="no_validated_tail_bound"`, null confidence level and endpoints; raw standard errors remain diagnostics. [Sampling uncertainty](sampling-uncertainty.md) |
 | `PrecisionReport` | frozen dataclass | `policy`, `trades`, `realized`, `devices`, `backend`, `jax_version`, `paths`, `paired_paths`, `figures`, `interval`, `products` (each compute format the run used: `"native"` or `"emulated"`); `PrecisionReport.of(policy, trades, realized, arrays, paths, paired_paths=0, figures=None, computed=())` reads the devices from the stored `arrays` |
 | `format_name(x)`, `realized_format(arrays)`, `devices_of(arrays)` | functions | A stored array's format, read from its dtype; a class's (formats joined by `+` should they differ); the devices holding the arrays |
-| `RunFigures(stages, aggregate, trade, total, corrected=frozenset(), unit="paths", legend="")`, `evidence_warnings(precision, trades, paths, figures, evidence=None)`, `paired_error_warning(precision)` | dataclass, functions | The evidence table at run time (I-55, `engine.precision.evidence`): the figures a run reports (`engine.run.pipeline.run_figures`, `engine.risk.market.run.run_figures`), and the warnings for each product's and the aggregate's figures without a passing row in the engine's table (`evidence.json`, generated with `compliance/precision-evidence.md` by `python -m tests.support.precision_evidence`), each saying what is validated and up to how many paths; none at float64. `paired_error_warning`: the warning that raw variance diagnostics cannot certify nominal intervals (I-111) |
+| `RunFigures(stages, aggregate, trade, total, corrected=frozenset(), unit="paths", legend="")`, `evidence_warnings(precision, trades, paths, figures, evidence=None, *, settings, replicates=1)`, `paired_error_warning(precision)` | dataclass, functions | The evidence table at run time (I-55, `engine.precision.evidence`): the figures a run reports (`engine.run.pipeline.run_figures`, `engine.risk.market.run.run_figures`), and the warnings for each product's and the aggregate's figures without a passing row in the engine's table under the run's pricing `settings` per product (`engine.run.pipeline.pricing_settings`, `engine.risk.market.run.pricing_settings`, I-114; a product without settings is refused) (`evidence.json`, generated with `compliance/precision-evidence.md` by `python -m tests.support.precision_evidence`), each saying what is validated and up to how many paths; none at float64. `paired_error_warning`: the warning that raw variance diagnostics cannot certify nominal intervals (I-111) |
 
 ---
 

@@ -88,6 +88,22 @@ class TestCases:
         assert {c.label.split(":")[1] for c in linear.cases if c.precision.paired_fraction} == set(SCALED)
         assert linear.simulation == SIMULATION and linear.paths == (1024, 4096, 16384)
 
+    def test_the_calibrated_market_risk_campaign_differs_in_the_bermudans_model_alone(self):
+        """`market_risk_calibrated` measures the kernel the fixed-LGM campaigns do not (I-114):
+        the same trades, market, shifts and grid, the Bermudan recalibrated under each scenario,
+        and every combination the three market-risk campaigns measure on the fixed LGM."""
+        fixed, calibrated = CAMPAIGNS["market_risk"](), CAMPAIGNS["market_risk_calibrated"]()
+        assert (calibrated.trades, calibrated.paths, calibrated.seeds) == (fixed.trades, fixed.paths, fixed.seeds)
+        assert calibrated.pricing.bermudan.calibrates and not fixed.pricing.bermudan.calibrates
+        assert dataclasses.replace(calibrated.pricing.bermudan, calibration="None", volatility=0.0) == \
+            dataclasses.replace(fixed.pricing.bermudan, volatility=0.0)
+        differ = {p for p, s in calibrated.settings().items() if fixed.settings()[p] != s}
+        assert differ == {"bermudan_swaption"} and calibrated.settings()["bermudan_swaption"].endswith(
+            "model=recalibrated")
+        measured = {c.precision for name in ("market_risk", "compute_market_risk", "rounding_market_risk")
+                    for c in CAMPAIGNS[name]().cases}
+        assert measured == {c.precision for c in calibrated.cases}
+
 
 class TestMeasure:
     def test_a_float64_case_measures_exactly_zero(self, tiny):
@@ -109,6 +125,7 @@ class TestMeasure:
                 assert f"{scope}/{name}" in figures
         assert set(m.scalars) == {f for f in figures if f.endswith(("Basel_EPE", "Basel_EEPE"))}
         assert m.dates == tuple(d.ISO() for d in DATES) and m.products == {"swap-payer": "swap", "bond": "bond"}
+        assert m.settings == {"bond": "engine=Discounting", "swap": "engine=Discounting"}  # the evidence's key, I-114
         assert m.row("pricing:fp8", 64, "trades/bond/NPV").product == "bond"
         assert m.row("pricing:fp8", 64, "netting_set/EPE").product == "netting_set"
 
@@ -161,6 +178,8 @@ class TestMeasure:
         with pytest.raises(ValueError, match="only measurements of one campaign"):
             m.merge(other)
         other = dataclasses.replace(other, cases=m.cases)
+        with pytest.raises(ValueError, match="only measurements of one campaign"):
+            m.merge(dataclasses.replace(other, settings={**other.settings, "bond": "engine=Other"}))
         merged = m.merge(other)
         assert merged.paths == (32, 64) and len(merged.figures) == len(m.figures) + len(other.figures)
         with pytest.raises(ValueError, match="measured twice"):

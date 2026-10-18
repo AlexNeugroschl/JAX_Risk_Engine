@@ -746,7 +746,8 @@ As built (2026-10-10), family by family:
   nothing moved (`engine.risk.greeks.price_functions.recalibrated_pnl`). The level is no longer
   shared by every scenario, so its operator is per scenario too (`working_bytes_per_model`
   sizes the batch); the evidence rows of the `market_risk` campaigns were measured on a fixed
-  LGM and do not cover this kernel (I-114).
+  LGM and do not cover this kernel: the evidence keys it apart (`model=recalibrated`, I-114,
+  2026-10-18) and the `market_risk_calibrated` campaign measures it (§10.4).
 - **The Bermudan/American induction** (`engine.pricing.lgm_grid`, 2026-10-13, I-83): ORE's grid
   engine in the numeraire's units, where neither the state grid nor the rollback depends on the
   curves. Each step's rollback is one `[nodes, nodes]` operator (`_rollback_operator`, ORE's
@@ -1099,6 +1100,20 @@ matching rules, each the conservative reading:
 
 - a trade's figures by its product's rows, its pricing stage its own (`precision_for`); a trade
   whose stages are all float64 is the reference and is never warned of;
+- every row under its campaign's **pricing settings** (since 2026-10-18, I-114): per product, the
+  settings that change its kernel's arithmetic (`PricingConfig.kernel_settings`), as the
+  campaign's analytic ran them (`pricing_settings` of the portfolio pipeline and of market
+  risk): the European engine (Bachelier's formula, or Jamshidian's x* root by its solver in the
+  stage's format), the grid engine's state grid (`nx`, `sx`: the operator's size), an
+  American's exercise steps per year (the rollback's length), and `model=fixed` or
+  `model=recalibrated` (market risk recalibrates a calibrated option under each scenario,
+  I-112, each its own operator; the exposure simulation keeps one, A-24). A trade's figure
+  takes the rows measured under the run's settings for its product, the aggregate's those whose
+  campaign held each of the run's products under the run's settings; rows of other settings
+  validate nothing, and the warning names what they were measured with ("not measured with
+  these pricing settings (measured with ...)"). The model's parameters (reversion, volatility,
+  calibration strategy, tolerance, shift horizon, the calibration's float64 solver) change the
+  numbers a kernel rounds, not the kernel, and are named by the campaign as its market is;
 - the aggregate's by a row whose campaign held every product of the run, and only when every
   trade has one pricing stage (no campaign measures a mix: such a run's aggregate is warned of);
 - fewer paths than a ceiling validate: in every campaign the precision error grows against the
@@ -1119,6 +1134,27 @@ native unit computes (§8.3); a format runs natively on a device only once its d
 passes (`product_execution`, I-97). Another market, model or product mix may need its own
 campaign; the warning says what was validated, not that a run is right. A passing row is not a
 regulatory approval.
+
+**The pricing settings measured** (2026-10-18). European rows are Bachelier's alone, and
+every option row is on the coarse grid (`nx=8 sx=3`; an American's 24 steps per year): a
+Jamshidian European, or a Bermudan or American on ORE's default grid (30 by 5) below float64, is
+warned of as unmeasured. Market risk's Bermudan rows are of the fixed LGM (`market_risk`,
+`compute_market_risk`, `rounding_market_risk`) and, since 2026-10-18, recalibrated under every
+scenario (`market_risk_calibrated`: the same trades, market, shifts and grid, every combination
+the three measure). The records measured before then had their settings recorded from their
+definitions, unchanged from each record's commit; no row moved.
+
+The recalibrated kernel's rows differ from the fixed LGM's where the float32 accumulator shows:
+in float32 compute (and `bfloat16_3x`, as close to it) the Bermudan's mean P&L is biased (its
+significance 21 at 2,048 scenarios, 37 at 8,192), its error 1.8% of the statistical error at
+8,192 against the fixed model's 0.9%, so its ceiling is 2,048 scenarios where the fixed rows
+give 8,192. It is the accumulator's floor (these cases accumulate in float32), larger where each
+scenario's level, its model on the base curves, is held in it rather than one level shared:
+with the products in float32 and a float64 accumulator the bias is 2e-5 for either model, in a
+float32 accumulator 0.016 for the fixed model and 0.035 recalibrated (8 seeds at 8,192
+scenarios, against a statistical error of 2). Formats below float32 are dominated by their own
+rounding and differ little (float16 compute 6.9% against 7.5% at 8,192). Of the portfolio's 170
+figure ceilings, 9 differ, its VaR and ES at a ceiling's edge in both directions.
 
 ## 11. Execution architecture
 

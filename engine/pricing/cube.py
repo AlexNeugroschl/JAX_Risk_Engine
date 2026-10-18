@@ -194,7 +194,7 @@ def reads_swaption_vols(cfg: Trade, pricing: PricingConfig) -> bool:
     if isinstance(cfg, SwaptionConfig):
         return pricing.european == "Bachelier"
     if isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)):
-        return _engine(cfg, pricing).calibration != "None"
+        return _engine(cfg, pricing).calibrates
     return False
 
 

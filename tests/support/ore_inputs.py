@@ -753,7 +753,7 @@ def portfolio_inputs(market: Market, trades: Sequence, pricing: PricingConfig, o
     if set(data.index_curves) != {index} or list(data.index_curves[index].times) != list(data.discount_curve.times):
         raise NotImplementedError(f"{oracle}'s market is {CCY}'s discount curve and {index}'s, on one set of "
                                   f"pillars")
-    calibrated = [e for e in _option_engines(trades, pricing) if e.calibration != "None"]
+    calibrated = [e for e in _option_engines(trades, pricing) if e.calibrates]
     conventions = {e.swap_index for e in calibrated} | ({swap_index} if swap_index is not None else set())
     if len(conventions) > 1:
         raise NotImplementedError(f"{oracle} builds every calibration on one swap index; got {conventions}")

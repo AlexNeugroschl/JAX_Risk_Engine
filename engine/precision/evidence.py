@@ -19,12 +19,18 @@ module, by case: `evidence_json`). A row:
     figure           the figure's kind: "NPV" (the cube's mean), "EPE", "PFE_95", "VaR_99", "PnL"
     ceiling          the path ceiling: the largest path count measured at which the row passes
                      and passes at every smaller one; None if it fails at the smallest
-    products         for an aggregate, the products of the campaign's netting set or portfolio
+    settings         the campaign's products, each with its pricing settings that change its
+                     kernel's arithmetic (`PricingConfig.kernel_settings`, I-114), as the
+                     analytic that measured it ran them: the European engine, the rollback
+                     grid, whether a calibrated option was recalibrated under each scenario
 
-**Validated.** A figure of a run is validated when the rows of its combination, scope and kind
-have a ceiling of at least the run's path count (or scenario count). A trade's figure is its
-product's; an aggregate's needs a row whose campaign held every product of the run, and one
-pricing stage for every trade (no campaign measures a mix). A figure the paired sample corrects
+**Validated.** A figure of a run is validated when the rows of its combination, scope, kind and
+pricing settings have a ceiling of at least the run's path count (or scenario count). A trade's
+figure is its product's, measured under the run's settings for that product; an aggregate's
+needs a row whose campaign held every product of the run, each under the run's settings, and
+one pricing stage for every trade (no campaign measures a mix). Rows measured under other
+settings validate nothing (one engine, grid or calibration cannot validate another): the
+warning says what they were measured with. A figure the paired sample corrects
 takes the rows of the largest paired share at most the run's (a larger share only shrinks the
 correction's error; with no paired sample, the rows without one); every other figure is the
 run's own whatever the sample, and takes the rows without one. Several rows that match (two
@@ -76,7 +82,8 @@ class RunFigures:
 
 @dataclass(frozen=True)
 class Row:
-    """One row of the table (see the module docstring)."""
+    """One row of the table (see the module docstring); `settings` as sorted (product, settings)
+    pairs."""
     campaign: str
     case: str
     combination: str
@@ -84,7 +91,12 @@ class Row:
     scope: str
     figure: str
     ceiling: Optional[int]
-    products: Tuple[str, ...] = ()
+    settings: Tuple[Tuple[str, str], ...]
+
+    def holds(self, settings: Mapping[str, str]) -> bool:
+        """Whether the row's campaign held each product of `settings` under its settings."""
+        own = dict(self.settings)
+        return all(own.get(product) == value for product, value in settings.items())
 
 
 def combination(precision: Precision, stages: Sequence[str], pricing: StagePrecision,
@@ -126,37 +138,47 @@ class Evidence:
         for case in data["cases"]:
             campaign = campaigns[case["campaign"]]
             corrected = set(campaign["corrected"])
+            settings = tuple(sorted(campaign["settings"].items()))
             for scope, ceilings in case["ceilings"].items():
-                products = tuple(campaign["products"]) if scope == campaign["aggregate"] else ()
                 for figure, ceiling in ceilings.items():
                     rows.append(Row(case["campaign"], case["case"], case["combination"],
-                                    case["paired"] if figure in corrected else 0.0, scope, figure, ceiling, products))
+                                    case["paired"] if figure in corrected else 0.0, scope, figure, ceiling, settings))
         return cls(rows, campaigns)
 
-    def ceiling(self, combination: str, scope: str, figure: str, paired: float = 0.0,
-                products: Optional[Iterable[str]] = None) -> Tuple[bool, Optional[int]]:
-        """Whether any row measures `figure` of `scope` under `combination` with the paired
-        share `paired` (see the module docstring; 0 for a figure the sample does not correct),
-        and the path ceiling they give (None if one of them passes at no path count). With
-        `products`, only rows whose campaign held each of them count (an aggregate's)."""
-        rows = self._index.get((combination, scope, figure), [])
-        if products is not None:
-            rows = [r for r in rows if set(products) <= set(r.products)]
-        if paired > 0:
-            rows = [r for r in rows if 0 < r.paired <= paired]
-        else:
-            rows = [r for r in rows if r.paired == 0]
+    def ceiling(self, combination: str, scope: str, figure: str, settings: Mapping[str, str],
+                paired: float = 0.0) -> Tuple[bool, Optional[int]]:
+        """Whether any row measures `figure` of `scope` under `combination` and `settings` (the
+        pricing settings of a trade's product, or of every product of an aggregate) with the
+        paired share `paired` (see the module docstring; 0 for a figure the sample does not
+        correct), and the path ceiling they give (None if one of them passes at no path count)."""
+        rows = [r for r in self._candidates(combination, scope, figure, paired) if r.holds(settings)]
         if not rows:
             return False, None
         nearest = max(r.paired for r in rows)
         ceilings = [r.ceiling for r in rows if r.paired == nearest]
         return True, (None if None in ceilings else min(ceilings))
 
+    def measured_elsewhere(self, combination: str, scope: str, figure: str, settings: Mapping[str, str],
+                           paired: float = 0.0) -> Tuple[Tuple[Tuple[str, str], ...], ...]:
+        """The settings of the campaigns whose rows would measure `figure` but for `settings`
+        (other pricing settings, or for an aggregate other products), in sorted order."""
+        return tuple(sorted({r.settings for r in self._candidates(combination, scope, figure, paired)
+                             if not r.holds(settings)}))
+
+    def _candidates(self, combination: str, scope: str, figure: str, paired: float) -> List[Row]:
+        """The rows of `figure` of `scope` under `combination` for the paired share `paired`:
+        with a paired sample, the rows of a paired share at most its own; without, the rows
+        without one."""
+        rows = self._index.get((combination, scope, figure), [])
+        if paired > 0:
+            return [r for r in rows if 0 < r.paired <= paired]
+        return [r for r in rows if r.paired == 0]
+
 
 def evidence_json(campaigns: Mapping[str, Mapping], cases: Sequence[Mapping]) -> str:
-    """An evidence file: `campaigns`, each campaign's description by name (at least its
-    `aggregate` scope, the `products` it priced and the figure kinds a paired sample `corrected`,
-    which `Evidence.from_json` reads, and what names its rows: market, revision, device, seeds),
+    """An evidence file: `campaigns`, each campaign's description by name (at least the
+    `settings` of each product it priced and the figure kinds a paired sample `corrected`, which
+    `Evidence.from_json` reads, and what names its rows: market, revision, device, seeds),
     and `cases`, each `{"campaign", "case", "combination", "paired": the case's paired share,
     "ceilings": {scope: {figure: ceiling}}}`; one case to a line, so a regenerated file's diff
     shows the cases that moved."""
@@ -173,13 +195,18 @@ def shipped() -> Evidence:
 
 
 def evidence_warnings(precision: Precision, trades: Sequence, paths: int, figures: RunFigures,
-                      evidence: Optional[Evidence] = None, *, replicates: int = 1) -> List[str]:
+                      evidence: Optional[Evidence] = None, *, settings: Mapping[str, str],
+                      replicates: int = 1) -> List[str]:
     """The warnings of a run of `trades` (each with `trade_id` and `product`) at `paths` paths
-    or scenarios under `precision`: one for each product, and one for the aggregate, whose
+    or scenarios under `precision` and the pricing `settings` of each of its products (the
+    analytic's `pricing_settings`): one for each product, and one for the aggregate, whose
     figures in `figures` have no passing row in `evidence` (the engine's own by default), each
     saying what is validated and up to how many paths. None for a run at float64: it is the
     reference."""
     evidence = shipped() if evidence is None else evidence
+    unset = sorted({t.product for t in trades} - set(settings))
+    if unset:
+        raise ValueError(f"no pricing settings for products {unset}: the evidence table keys every product's")
     out = []
     by_product: Dict[Tuple[str, Optional[str]], List[str]] = {}
     for trade in trades:
@@ -187,9 +214,11 @@ def evidence_warnings(precision: Precision, trades: Sequence, paths: int, figure
         if key is not None:
             by_product.setdefault((trade.product, key), []).append(trade.trade_id)
     for (product, key), ids in by_product.items():
-        missing = _missing(evidence, key, product, figures.trade, paths, precision, figures)
+        own = {product: settings[product]}
+        missing = _missing(evidence, key, product, figures.trade, own, paths, precision, figures)
         if missing:
-            out.append(_warning(f"trades {ids} ({product})", key, paths, precision, figures, missing))
+            out.append(_warning(f"trades {ids} ({product}, {settings[product]})", key, paths, precision, figures,
+                                missing))
     stages = {precision.precision_for(t) for t in trades}
     if len(stages) > 1:
         out.append(f"precision: the {_aggregate(figures)} has no row in the evidence table ({TABLE}): its trades' "
@@ -199,10 +228,11 @@ def evidence_warnings(precision: Precision, trades: Sequence, paths: int, figure
         key = combination(precision, figures.stages, stages.pop(), replicates)
         if key is not None:
             products = sorted({t.product for t in trades})
-            missing = _missing(evidence, key, figures.aggregate, figures.total, paths, precision, figures, products)
+            own = {product: settings[product] for product in products}
+            missing = _missing(evidence, key, figures.aggregate, figures.total, own, paths, precision, figures)
             if missing:
-                out.append(_warning(f"the {_aggregate(figures)} (products {products})", key, paths, precision, figures,
-                                    missing))
+                out.append(_warning(f"the {_aggregate(figures)} (products {products}; {_settings_text(own)})", key,
+                                    paths, precision, figures, missing))
     return out
 
 
@@ -218,19 +248,35 @@ def paired_error_warning(precision: Precision, replicates: int = 1) -> Optional[
             "to at least 2 independent scrambles (8 or more recommended; I-111).")
 
 
-def _missing(evidence: Evidence, key: str, scope: str, kinds: Sequence[str], paths: int, precision: Precision,
-             figures: RunFigures, products: Optional[Sequence[str]] = None) -> Dict[str, List[str]]:
+def _missing(evidence: Evidence, key: str, scope: str, kinds: Sequence[str], settings: Mapping[str, str],
+             paths: int, precision: Precision, figures: RunFigures) -> Dict[str, List[str]]:
     """The kinds without a passing row, grouped by what the table says of them."""
     missing: Dict[str, List[str]] = {}
     for kind in kinds:
         paired = precision.paired_fraction if kind in figures.corrected else 0.0
-        measured, ceiling = evidence.ceiling(key, scope, kind, paired, products)
+        measured, ceiling = evidence.ceiling(key, scope, kind, settings, paired)
         if measured and ceiling is not None and paths <= ceiling:
             continue
-        status = ("not measured" if not measured else f"fails at every {figures.unit[:-1]} count measured"
-                  if ceiling is None else f"validated up to {ceiling:,} {figures.unit}")
+        if measured:
+            status = (f"fails at every {figures.unit[:-1]} count measured" if ceiling is None
+                      else f"validated up to {ceiling:,} {figures.unit}")
+        else:
+            status = _unmeasured(evidence.measured_elsewhere(key, scope, kind, settings, paired), scope, settings)
         missing.setdefault(status, []).append(kind)
     return missing
+
+
+def _unmeasured(elsewhere: Sequence[Tuple[Tuple[str, str], ...]], scope: str, settings: Mapping[str, str]) -> str:
+    """The status of a figure of `scope` no row measures under `settings`: what the rows that
+    would measure it but for the settings were measured with (a product's settings; an
+    aggregate's campaign's products and settings), so a reader sees why they do not validate it."""
+    if not elsewhere:
+        return "not measured"
+    if scope in settings:
+        found = sorted({dict(s)[scope] for s in elsewhere})
+        return f"not measured with these pricing settings (measured with {' | '.join(found)})"
+    found = sorted(_settings_text(dict(s)) for s in elsewhere)
+    return f"not measured with these products and pricing settings (measured with {' | '.join(found)})"
 
 
 def _warning(who: str, key: str, paths: int, precision: Precision, figures: RunFigures,
@@ -250,3 +296,7 @@ def _aggregate(figures: RunFigures) -> str:
 
 def _stage_text(stage: StagePrecision) -> str:
     return f"{stage.storage}/{stage.compute}/{stage.accumulate}"
+
+
+def _settings_text(settings: Mapping[str, str]) -> str:
+    return "; ".join(f"{product}: {value}" for product, value in sorted(settings.items()))

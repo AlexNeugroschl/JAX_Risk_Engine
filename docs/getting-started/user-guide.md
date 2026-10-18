@@ -832,7 +832,11 @@ the precision harness's measurements are in
 against decision A-11's acceptance standard in the evidence table
 ([compliance/precision-evidence.md](../../compliance/precision-evidence.md)). A run is never
 refused on precision; its `warnings` name every figure whose combination has no passing row,
-with what is validated for it and up to how many paths.
+with what is validated for it and up to how many paths. A row holds only for the pricing
+settings its campaign measured (the European engine, the rollback grid, whether market risk
+recalibrated an option): the campaigns measured Bachelier Europeans and options on an 8 by 3
+grid, so a Jamshidian European or an option on ORE's default 30 by 5 grid is warned of as
+unmeasured ([details](../reference/portfolio-entrypoint.md#precision)).
 The 32/64 shape of before 2026-10-01 (`PrecisionConfig(simulation=32)`) is refused
 with a message naming its replacement. See
 [Architecture: Adjustable precision](../concepts/architecture.md#adjustable-precision).
