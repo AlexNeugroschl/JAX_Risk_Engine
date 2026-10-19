@@ -500,7 +500,7 @@ The cube is a sequence of per-trade columns, each in its own storage format
 float32, as before, or loaded at float64 when the formats differ or are scaled (exact: float64
 holds every format's values times their power-of-two scales).
 `PortfolioResult.npv_cube` stays an array, loaded at float64 when requested (the default).
-`PortfolioRequest.include_npv_cube=False` (HTTP `cube_output="none"`) leaves it empty without
+`PortfolioRequest.include_npv_cube=False` (HTTP `outputs.npv_cube: "none"`) leaves it empty without
 changing exposure or precision figures; reductions read stored columns directly (§17). A
 trade priced at its precision inside a mixed run gives exactly the column it gives priced
 alone with that `pricing` stage: trades share only the loaded scenario market and fixings,
@@ -536,8 +536,8 @@ the cube came out float64, while path fixings ran in float32.
 
 Found while designing; fixed or derived from the dtype in the precision mechanism (2026-10-01):
 
-- `hi * (1.0 - 1e-9)` (`engine/calibration/ore_lgm.py:354`) rounds to `hi` in float32. The same
-  bisection runs per path in the Bermudan recalibration.
+- `hi * (1.0 - 1e-9)` (in the standalone bootstrap, `engine/calibration/lgm.py` until 2026-10-18)
+  rounds to `hi` in float32. The same bisection ran per path in the Bermudan recalibration.
 - `jnp.finfo(dtype).eps` in the Sobol clip (`engine/market_simulation/sobol.py:42`) must use the
   compute dtype once storage is narrower.
 - `scenario_batch_size(itemsize)` (`engine/risk/market/revaluation.py`) must use the compute
@@ -549,7 +549,7 @@ each from the dtype or shows it holds at float32.
 Outcome (the precision mechanism (2026-10-01)):
 
 - The ceiling: `hi * (1 - ceiling_tolerance(dtype))`, with `ceiling_tolerance = max(1e-9,
-  4 eps)` (`engine.calibration.ore_lgm`), unchanged at float64. Red first: with the fixed 1e-9 a
+  4 eps)` (`engine.calibration.lgm`), unchanged at float64. Red first: with the fixed 1e-9 a
   float32 bisection stuck below the top was not flagged
   (`tests/test_precision.py::TestRecalibrationInFloat32`). Since 2026-10-12 the flag is part of
   ORE's acceptance on every bootstrap ([I-73](../known-issues.md#i-73)), and every calibration is
@@ -1167,7 +1167,7 @@ writes the result back. The worker is single-threaded and owns every device on i
 
 As built: `engine/api/job_queue.py` (the queue and the worker lock), `engine/api/worker.py`
 (the worker, command `jax-risk-worker`), `engine/api/supervisor.py` (the API's supervision);
-the user-facing description is [HTTP API: Jobs](../../reference/http-api.md#jobs-the-queue-and-the-engine-worker).
+the user-facing description is [HTTP API: Jobs](../../reference/http-api.md#runs-the-queue-and-the-engine-worker).
 
 ### 11.2 Why
 
@@ -1218,7 +1218,8 @@ Decisions taken while building it (2026-10-04):
 - **The result is stored in the row**, not as a reference to a file: one atomic write, and
   the poll route splices the stored document into its response without parsing it. SQLite's
   1 GB limit fails such a job as `infrastructure`; a cube that large is asked for by reference
-  instead (`cube_output: "artifact"`), stored as chunks of at most 8 MiB.
+  instead (`outputs.npv_cube: "artifact"`, the default since 2026-10-18), stored as chunks of at
+  most 8 MiB.
 - **Supervision without a thread.** In `spawn` mode the API checks its child on every
   submission and poll and restarts it if dead; a dead worker matters only then. With several
   API processes (`uvicorn --workers`), a supervisor starts no worker while another process's
@@ -1234,6 +1235,28 @@ Decisions taken while building it (2026-10-04):
   `missing-market-data`; `NotImplementedError`/`UnsupportedDayCountError` →
   `unsupported-product`; `ArithmeticError` → `numerical-failure`; other `ValueError`/
   `TypeError` → `bad-terms`; anything else → `infrastructure`.
+
+Revised with the run request (2026-10-18; schema version 3):
+
+- **One kind of job, a run request** (I-87); the rows of the per-route kinds a version-2 file
+  held are kept, the unrun ones marked `interrupted`. The migration is one `BEGIN IMMEDIATE`
+  transaction, the version read inside it, so a crash or a second process mid-migration leaves
+  the file at its old version (I-106).
+- **One worker per host, not per queue file** (I-106): the lock is `JAX_RISK_WORKER_LOCK`, by
+  default one fixed path in the temp directory, and its holder records the queue it serves; an
+  API whose queue is not that one refuses runs (`503`) rather than queueing runs no worker will
+  take.
+- **A retried submission is the same job** (I-89): the key unique in the table and the body's
+  canonical hash beside it, so two API processes racing on one key get one job.
+- **Cancelling** (I-91): a pending job at once; a running one flagged, the worker looking at the
+  flag at every phase boundary of the run (`engine.run.trace.at_phase_boundaries`) and stopping
+  with a `BaseException`, so no handler on its way out turns it into a failure; the worker and
+  its compiled programs go on.
+- **Retention** (I-76): the worker purges finished jobs past `JAX_RISK_RETENTION_DAYS` (30 by
+  default) between jobs, never one submitted with `keep`.
+- **A worker that cannot start is reported** (I-77): the supervisor sends its child's stderr to
+  `<queue>.worker.log`, records each exit, and reports two failed starts running (an error exit
+  having served no job), or one it could not launch, on a pending run's status and `/health`.
 
 ## 12. Plan
 
@@ -2326,8 +2349,8 @@ number of `[paths, dates]` arrays, independent of trade count; the stored column
 the scenario market, option exercise states and the paired sample still take memory.
 
 `PortfolioRequest.include_npv_cube=True` retains the Python default. False returns an empty
-`(0, 0, 0)` cube while keeping exposure and precision figures. HTTP `cube_output="none"`
-sets it to False; inline and artifact output keep True. `PortfolioValuation.float64_cube()`
+`(0, 0, 0)` cube while keeping exposure and precision figures. HTTP `outputs.npv_cube: "none"`
+(`cube_output="none"` until 2026-10-18) sets it to False; inline and artifact output keep True. `PortfolioValuation.float64_cube()`
 decodes and stacks requested output in one compiled program, after reductions and after
 releasing the paired sample. Its specialization depends on storage and shapes, not trade
 identities or values. The decode/add kernel similarly reuses programs across trades.

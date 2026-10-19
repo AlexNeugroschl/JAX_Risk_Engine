@@ -26,7 +26,8 @@ from engine.market_data.market import Market, ZeroCurveConfig
 @dataclass(frozen=True, eq=False)
 class RateRiskFactors:
     """Named curves whose pillar zero rates are the risk factors. A trade reads its curves
-    by name (see the module docstring), so the names must be the market's."""
+    by name (see the module docstring), so the names must be the market's. Each curve's pillars
+    were checked when it was built (`ZeroCurveConfig`)."""
     curves: Tuple[ZeroCurveConfig, ...]
     names: Tuple[str, ...]
 
@@ -38,14 +39,8 @@ class RateRiskFactors:
         if len(set(self.names)) != len(self.names):
             raise ValueError(f"curve names must be unique; got {list(self.names)}")
         for name, curve in zip(self.names, self.curves):
-            times = np.asarray(curve.times, dtype=np.float64)
-            rates = np.asarray(curve.rates, dtype=np.float64)
-            if times.ndim != 1 or times.size == 0 or times.shape != rates.shape:
-                raise ValueError(f"curve {name!r}: times and rates must be non-empty and the same length")
-            if np.any(np.diff(times) <= 0.0):
-                raise ValueError(f"curve {name!r}: pillar times must be strictly increasing")
-            if not (np.all(np.isfinite(times)) and np.all(np.isfinite(rates))):
-                raise ValueError(f"curve {name!r}: pillar times and rates must be finite")
+            if not isinstance(curve, ZeroCurveConfig):
+                raise TypeError(f"curve {name!r} must be a ZeroCurveConfig; got {type(curve).__name__}")
 
     @classmethod
     def from_curves(cls, curves: Sequence[ZeroCurveConfig], names: Optional[Sequence[str]] = None) -> "RateRiskFactors":

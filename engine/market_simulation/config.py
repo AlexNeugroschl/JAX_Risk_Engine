@@ -28,7 +28,7 @@ from typing import ClassVar, Mapping, Optional, Tuple, Union
 import numpy as np
 import ORE
 
-from engine.calibration.ore_lgm import BOOTSTRAP_TOLERANCE, SwapIndexConventions, check_tolerance
+from engine.calibration.lgm import BOOTSTRAP_TOLERANCE, SwapIndexConventions, check_tolerance
 from engine.market_data.curves import ZeroCurve
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER
 from engine.market_data.market import Market
@@ -137,7 +137,7 @@ class CamConfig:
         `CrossAssetModelData` holds it: a currency's calibration whose error (the root mean
         square of its helpers' relative price errors) is not below it misses its basket and is
         refused, naming the currency, as ORE's `CrossAssetModelBuilder` fails (I-73,
-        `engine.calibration.ore_lgm.BootstrapResult.misses`). ORE has no default; 1e-4 is every
+        `engine.calibration.lgm.BootstrapResult.misses`). ORE has no default; 1e-4 is every
         example simulation's (decision A-24).
     """
     dates: Tuple[ORE.Date, ...]

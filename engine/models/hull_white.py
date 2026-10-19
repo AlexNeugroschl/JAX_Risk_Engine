@@ -1,8 +1,7 @@
 """
 Black's formula on zero-coupon bonds, as `QuantLib::HullWhite::discountBondOption` evaluates
-it once the bond's volatility is known: shared by the Jamshidian European engine
-(`engine.pricing.jamshidian`) and the standalone calibration's LGM swaption pricer
-(`engine.calibration.basket`).
+it once the bond's volatility is known: the Jamshidian European engine's
+(`engine.pricing.jamshidian`).
 
 The Hull-White model itself is the LGM with the Hull-White volatility parametrization
 (`engine.models.lgm`: `hull_white_zeta`), simulated by the cross-asset model

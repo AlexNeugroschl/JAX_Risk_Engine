@@ -10,12 +10,14 @@ Day count as a per-instrument input. `Actual365Fixed` plays two roles:
 configurable. Also: defaults unchanged, ACT/ACT (ICMA) supported, unsupported day counts
 refused rather than defaulted.
 """
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
 import ORE
 
-from engine.instruments.schedules import build_vanilla_swap, fixed_leg_cashflows, resolve_swap_dates
+from engine.instruments.schedules import build_vanilla_swap, is_live, resolve_swap_dates
 from engine.instruments.swap import SwapConfig
 from engine.market_data.day_counts import (
     DEFAULT_ACCRUAL_DAY_COUNT,
@@ -26,6 +28,17 @@ from engine.market_data.day_counts import (
 )
 
 EVAL_DATE = ORE.DateParser.parseISO("2025-06-02")
+
+
+def fixed_leg_cashflows(swap, today):
+    """The swap's remaining fixed coupons as the pricers read them (`engine.pricing.legs.legs_of`):
+    payment and accrual times on the time axis, and ORE's `accrualPeriod()`s."""
+    t_of = lambda d: TIME_AXIS_DAY_COUNTER.yearFraction(today, d)  # noqa: E731
+    coupons = [c for c in map(ORE.as_fixed_rate_coupon, swap.fixedLeg()) if is_live(c.date(), today)]
+    return SimpleNamespace(payment_times=np.array([t_of(c.date()) for c in coupons]),
+                           accrual_start_times=np.array([t_of(c.accrualStartDate()) for c in coupons]),
+                           accrual_end_times=np.array([t_of(c.accrualEndDate()) for c in coupons]),
+                           accrual_fractions=np.array([c.accrualPeriod() for c in coupons]))
 
 
 def _swap(accrual=None, tenor="5Y"):

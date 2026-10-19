@@ -129,7 +129,7 @@ price is a function of the quotes and its Vega a derivative in them.
 A Bermudan's/American's volatility comes from its calibration: the bootstrap fits bucket j's
 σ_j so that the model reprices helper j at its market volatility v_j (read on the quotes the
 same way), with ζ_j = Σ_{k≤j} σ_k² dt_k. Together the buckets solve the lower-triangular system
-`G(σ; curves, quotes) = model(ζ(σ)) − market = 0` (`engine.calibration.ore_lgm.basket_residuals`),
+`G(σ; curves, quotes) = model(ζ(σ)) − market = 0` (`engine.calibration.lgm.basket_residuals`),
 and by the implicit function theorem
 
 ```

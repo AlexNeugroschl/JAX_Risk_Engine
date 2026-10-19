@@ -1,7 +1,8 @@
 """
-Arrays returned by reference instead of inline (decision A-17, I-09): a result's
-NPV cube or P&L matrix, split into chunks of bytes that the job queue stores beside the result
-(`engine.api.job_queue`, `artifacts`) and `GET /jobs/{job_id}/artifacts/{name}/{chunk}` serves.
+Arrays returned by reference instead of inline (decision A-17, I-09): a run's NPV cube, its
+options' exercise decisions or its P&L matrix, split into chunks of bytes that the job queue
+stores beside the result (`engine.api.job_queue`, `artifacts`) and
+`GET /runs/{run_id}/artifacts/{name}/{chunk}` serves.
 
 A reference says everything needed to rebuild and verify the array without reading the result
 again (the contract `docs/planning/details/traderx-integration.md` settled for the TraderX path's cube):
@@ -28,7 +29,7 @@ import numpy as np
 #: The largest chunk in bytes (whole rows of the first axis, so a row larger than this is one chunk).
 CHUNK_BYTES = 8 * 1024 * 1024
 
-#: How a request asks for a large array: in the result (`inline`, the default), by reference
+#: How a request asks for a large array: in the result (`inline`), by reference
 #: (`artifact`), or not at all (`none`), as ORE writes its cube only when asked (A-17).
 ARRAY_OUTPUTS = ("inline", "artifact", "none")
 

@@ -23,7 +23,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.calibration.ore_lgm import CalibrationError, SwapIndexConventions
+from engine.calibration.lgm import CalibrationError, SwapIndexConventions
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, exercisable_dates, underlying_swap
 from engine.instruments.european_swaption import SwaptionConfig

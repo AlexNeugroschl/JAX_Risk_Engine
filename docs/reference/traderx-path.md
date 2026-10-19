@@ -1405,7 +1405,7 @@ and the later record replaces the earlier (within a process the attempt store's 
 serializes bindings).
 
 And it is **EOD-only**. The portfolio path has its own durable store since 2026-10-04 (the
-SQLite job queue, [HTTP API](http-api.md#jobs-the-queue-and-the-engine-worker)); a *running*
+SQLite job queue, [HTTP API](http-api.md#runs-the-queue-and-the-engine-worker)); a *running*
 EOD attempt is still memory-only, which is why [I-08](../planning/known-issues.md#i-08) is
 `PARTIAL` rather than closed.
 

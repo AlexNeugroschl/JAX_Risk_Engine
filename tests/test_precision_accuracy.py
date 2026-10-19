@@ -157,11 +157,11 @@ def test_replicate_controls_reject_invalid_groups():
 
 
 def test_sampling_wire_controls_refuse_bool_and_ignored_settings():
-    from engine.api.requests import CamConfigSchema, HistoricalScenariosSchema, MonteCarloScenariosSchema
+    from engine.api.requests import HistoricalScenariosSchema, MonteCarloScenariosSchema, SimulationSchema
     from engine.risk.market.scenarios import ShockScenarios
     from tests import market_risk_support as mr
     for cls, body in (
-        (CamConfigSchema, {"dates": ["2027-01-01"], "base_currency": "USD", "ir": {}, "replicates": True}),
+        (SimulationSchema, {"dates": ["2027-01-01"], "replicates": True}),
         (MonteCarloScenariosSchema, {"source": "monte-carlo", "factors": [], "horizon_days": 10,
                                     "covariance": [], "num_scenarios": 128, "replicates": True}),
         (HistoricalScenariosSchema, {"source": "historical", "factors": [], "horizon_days": 10,
@@ -192,10 +192,10 @@ def test_replicated_portfolio_pairs_all_scrambles_and_reuses_programs():
     result = price_portfolio(request)
     assert result.precision.paired_paths == 128  # at least one storage block in each scramble
     assert result.precision.replicates == 4
-    from engine.api.results import PortfolioResultSchema
+    from engine.api.results import PrecisionReportSchema
     assert result.precision.interval.status == "unavailable"
-    wire = PortfolioResultSchema.from_dataclass(result).model_dump(mode="json")
-    assert wire["precision"]["interval"] == dataclasses.asdict(result.precision.interval)
+    wire = PrecisionReportSchema.from_dataclass(result.precision).model_dump(mode="json")
+    assert wire["interval"] == dataclasses.asdict(result.precision.interval)
     assert np.isfinite(result.precision.figures["netting_set/EPE"].standard_error).all()
     request.config = dataclasses.replace(request.config, simulation=dataclasses.replace(simulation, seed=14),
                                         precision=dataclasses.replace(precision, rounding_seed=9))
@@ -205,7 +205,9 @@ def test_replicated_portfolio_pairs_all_scrambles_and_reuses_programs():
 
 
 def test_market_risk_reports_replicate_and_historical_uncertainty_on_wire():
-    from engine.api.results import MarketRiskResultSchema
+    from pydantic import TypeAdapter
+
+    from engine.api.results import MarketRiskSectionSchema
     from engine.risk.market import MarketRiskRequest, monte_carlo_scenarios, run_market_risk
     from engine.risk.market.scenarios import historical_scenarios
     from tests import market_risk_support as mr
@@ -216,7 +218,8 @@ def test_market_risk_reports_replicate_and_historical_uncertainty_on_wire():
     assert result.risk["ES_95_standardError"] > 0
     assert result.uncertainty == {"method": "replicate_jackknife", "replicates": 8,
                                   "interval": dataclasses.asdict(result.precision.interval)}
-    assert MarketRiskResultSchema.from_dataclass(result, [mr.swap().trade_id]).uncertainty == result.uncertainty
+    wire = TypeAdapter(MarketRiskSectionSchema.model_fields["uncertainty"].annotation)
+    assert wire.validate_python(result.uncertainty) == result.uncertainty
     history = np.cumsum(np.random.default_rng(6).normal(size=(1024, mr.factors().size)) * 1e-4, axis=0)
     request.scenarios = historical_scenarios(mr.factors(), history, 10, block_length=32, bootstrap_replicates=64)
     with jax.numpy_dtype_promotion("strict"):

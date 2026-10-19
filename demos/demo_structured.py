@@ -5,8 +5,8 @@ The portfolio of `demo_api.py`, split into the four stages an integrator meets:
                       values with no server or schema concepts.
   2. SERVER SETUP     starting an engine.api server, with the pricing-job profiler on
                       (JAX_RISK_PROFILE_DIR; see PROFILE_DIR below). Same for any portfolio.
-  3. SERVER INPUTS    reshaping stage 1 into the portfolio request's JSON
-                      (`engine.api.requests.MarketPortfolioRequestSchema`).
+  3. SERVER INPUTS    reshaping stage 1 into the run request's JSON
+                      (`engine.api.requests.RunRequestSchema`).
   4. SUBMIT AND PRINT send, poll, print.
 
 Meant as a template for a real integration: it shows what a caller must supply versus what
@@ -145,7 +145,7 @@ def stop_server(process: subprocess.Popen) -> None:
 
 # =============================================================================
 # STAGE 3 -- SERVER INPUTS
-# Stage 1 reshaped into the portfolio request (docs/reference/http-api.md); no new facts.
+# Stage 1 reshaped into the run request (docs/reference/http-api.md); no new facts.
 # =============================================================================
 
 def build_market() -> dict:
@@ -155,75 +155,87 @@ def build_market() -> dict:
         "swaption_vols": {"option_tenors": VOL_OPTION_TENORS, "swap_tenors": VOL_SWAP_TENORS, "vols": VOLS}}}}
 
 
-def build_simulation() -> dict:
-    return {"dates": SIMULATION_DATES, "base_currency": "USD", "samples": NUM_PATHS,
-            "ir": {"USD": {"model": MODEL, "reversion": MEAN_REVERSION, "calibration_expiries": CALIBRATION_EXPIRIES,
-                           "calibration_terms": CALIBRATION_TERMS}}}
-
-
-def build_portfolio_request() -> dict:
+def build_config() -> dict:
+    """The run's configuration, one section per ORE file: the model per currency (`models`, ORE's
+    simulation.xml `CrossAssetModel`), the grid (`simulation`), the engines (`pricing`), the PFE
+    quantiles, and the Greeks method."""
     coarse_grid = {"n_per_std": 16}  # a quicker Bermudan/American grid than the default 30
+    config = {
+        "base_currency": "USD",
+        "models": {"ir": {"USD": {"model": MODEL, "reversion": MEAN_REVERSION,
+                                  "calibration_expiries": CALIBRATION_EXPIRIES,
+                                  "calibration_terms": CALIBRATION_TERMS}}},
+        "simulation": {"dates": SIMULATION_DATES, "samples": NUM_PATHS},
+        "pricing": {"bermudan": coarse_grid, "american": coarse_grid},
+        "exposure": {"pfe_quantiles": RISK_PERCENTILES},
+    }
+    if COMPUTE_GREEKS:
+        config["sensitivity"] = {"method": GREEKS_METHOD}
+    return config
+
+
+def build_run_request() -> dict:
+    """What to compute (`analytics`) and how (`config`), with the cube inline."""
     return {
         "market": build_market(),
-        "trades": PORTFOLIO_TRADES,
-        "simulation": build_simulation(),
-        "pricing": {"bermudan": coarse_grid, "american": coarse_grid},
-        "pfe_quantiles": RISK_PERCENTILES,
-        "compute_greeks": COMPUTE_GREEKS,
-        "greeks": {"method": GREEKS_METHOD},
+        "portfolio": PORTFOLIO_TRADES,
+        "analytics": ["npv", "exposure"] + (["sensitivities"] if COMPUTE_GREEKS else []),
+        "config": build_config(),
+        "outputs": {"npv_cube": "inline"},
     }
 
 
 # =============================================================================
 # STAGE 4 -- SUBMIT AND PRINT
-# Send stage 3's request to stage 2's server, poll the async job
+# Send stage 3's request to stage 2's server, long-poll the run
 # (docs/reference/http-api.md#why-async-not-sync), and print the result.
 # =============================================================================
 
 def submit_and_wait(request_body: dict) -> dict:
-    submit = httpx.post(f"{API_BASE}/portfolio/price", json=request_body, timeout=30.0)
+    submit = httpx.post(f"{API_BASE}/runs", json=request_body, timeout=30.0)
     if submit.status_code != 202:
         raise RuntimeError(f"submission failed ({submit.status_code}): {submit.text}")
-    job_id = submit.json()["job_id"]
-    print(f"job_id: {job_id} (202 Accepted -- pricing is running in the background)")
+    run_id = submit.json()["run_id"]
+    print(f"run_id: {run_id} (202 Accepted -- the run is going in the background)")
 
     start = time.time()
     while True:
-        poll = httpx.get(f"{API_BASE}/jobs/{job_id}", timeout=30.0)
+        # A long poll: answered as soon as the run is finished, or after 30 s.
+        poll = httpx.get(f"{API_BASE}/runs/{run_id}", params={"wait": 30}, timeout=60.0)
         poll.raise_for_status()
         status = poll.json()
         print(f"  [{time.time() - start:6.1f}s] status: {status['status']}")
-        if status["status"] in ("done", "failed", "interrupted"):  # the final statuses
+        if status["status"] not in ("pending", "running"):
             break
-        time.sleep(2.0)
 
     if status["status"] != "done":
-        raise RuntimeError(f"pricing job {status['status']}:\n{status['error']}")
+        raise RuntimeError(f"run {status['status']}:\n{status['error']}")
     return status["result"]
 
 
 def print_result(result: dict) -> None:
     rows = result["trades"]  # one row per trade, in request order: the cube's trade axis
     trade_ids = [row["trade_id"] for row in rows]
-    npv_cube = result["npv_cube"]  # [Paths, Dates, Trades]
+    exposure = result["exposure"]
+    npv_cube = exposure["npv_cube"]["values"]  # [scenario, date, trade]
     num_paths = len(npv_cube)
 
     print("\nmean NPV across paths, at each simulation date:")
-    print("  time  " + "".join(f"{n:>12}" for n in trade_ids))
-    print("  0.00  " + "".join(f"{row['base_npv']:>12,.0f}" for row in rows))
-    for i, t in enumerate(result["exposure"]["times"][1:]):  # the cube's dates (times[0] is t=0)
+    print("        date  " + "".join(f"{n:>12}" for n in trade_ids))
+    print(f"  {result['asof']}  " + "".join(f"{row['npv']:>12,.0f}" for row in rows))
+    for i, date in enumerate(exposure["dates"]):
         means = [sum(npv_cube[s][i][j] for s in range(num_paths)) / num_paths for j in range(len(trade_ids))]
-        print(f"  {t:>4.2f}  " + "".join(f"{m:>12,.0f}" for m in means))
-    print(f"\nportfolio NPV today: {result['base_npv']:,.2f}")
+        print(f"  {date}  " + "".join(f"{m:>12,.0f}" for m in means))
+    print(f"\nportfolio NPV today: {result['npv']:,.2f}")
 
     print("\nexposure profile:")
-    exposure = result["exposure"]
-    columns = ["epe", "ene", "ee_b"] + list(exposure["pfe"])
+    netting_set = exposure["netting_set"]
+    columns = ["epe", "ene", "ee_b"] + list(netting_set["pfe"])
     print("  time  " + "".join(f"{c.upper():>12}" for c in columns))
-    for i, t in enumerate(exposure["times"]):
-        values = [exposure[c][i] if c in exposure else exposure["pfe"][c][i] for c in columns]
+    for i, t in enumerate(netting_set["times"]):
+        values = [netting_set[c][i] if c in netting_set else netting_set["pfe"][c][i] for c in columns]
         print(f"  {t:>4.2f}" + "".join(f"{v:>12,.0f}" for v in values))
-    print(f"(netting set; ORE's ExposureCalculator definitions; measure: {result['measure']})")
+    print(f"(netting set; ORE's ExposureCalculator definitions; measure: {exposure['measure']})")
 
     greeks = next(row for row in rows if row["trade_id"] == "bermudan")["greeks"]
     if greeks is not None:
@@ -257,8 +269,8 @@ def main() -> None:
 
     try:
         print("\n=== stage 3: server inputs ===")
-        request_body = build_portfolio_request()
-        print(f"built the portfolio request: {len(request_body['trades'])} trades, "
+        request_body = build_run_request()
+        print(f"built the run request: {len(request_body['portfolio'])} trades, "
               f"{MODEL} calibrated to {len(CALIBRATION_EXPIRIES)} swaption quotes")
 
         print("\n=== stage 4: submit and print ===")

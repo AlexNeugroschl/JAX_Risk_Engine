@@ -52,7 +52,7 @@ from engine.pricing.cube import (
 from engine.risk.counterparty.exposure import (
     CORRECTED_FIGURES, ExposureProfile, PairedColumns, column_profiles, figure_names,
 )
-from engine.risk.market.var_es import ENGINE_RISK_MEASURE
+from engine.risk.market.var_es import ENGINE_RISK_MEASURE, validate_quantiles
 from engine.run.trace import phase
 
 if TYPE_CHECKING:
@@ -184,8 +184,8 @@ def _greeks(method: str):
 
 def validate_request(request) -> None:
     """Refuse, before any JAX work, a request the pipeline cannot price: a setting it does
-    not implement: scenario risk without a simulation, or with a trade in a currency the
-    simulation does not model; a trade the market cannot value or its engine refuses, a
+    not implement: scenario risk without a simulation, a PFE quantile outside (0, 1) or given twice,
+    or a trade in a currency the simulation does not model; a trade the market cannot value or its engine refuses, a
     precision override naming no trade or product (`validate_trades`); a reporting currency the
     market lacks, or a trade with no FX spot into it (`reporting_fx_spots`). The configuration
     itself is validated when it is built. The HTTP route runs it synchronously so such a request
@@ -197,6 +197,7 @@ def validate_request(request) -> None:
     validate_trades(request.trades, request.market, run.pricing, run.precision)
     if request.scenario_risk:
         simulation = run.simulation
+        validate_quantiles("pfe_quantiles", request.pfe_quantiles)
         run.precision.validate_sampling(simulation.samples, simulation.replicates, "simulation")
         for cfg in request.trades:
             if cfg.currency not in run.simulation.ir:

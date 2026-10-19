@@ -3,18 +3,27 @@ The engine worker: one single-threaded process per host that takes jobs from the
 (`engine.api.job_queue`), runs them and writes the results back (decision A-14;
 docs/planning/details/precision.md §11).
 
-    jax-risk-worker [--queue PATH] [--parent-pid PID]
+    jax-risk-worker [--queue PATH] [--lock PATH] [--parent-pid PID]
 
 (or `python -c "from engine.api.worker import main; main()" ...`). The API starts and
 supervises one itself unless `JAX_RISK_WORKER=external` (`engine.api.supervisor`).
 
-A job is the HTTP body as the API received it, and its kind. The worker parses the body exactly
-as the route did (the kind's request schema, `JOB_KINDS`), so nothing is pickled and no ORE
-object crosses a process boundary, runs the kind's engine entry point in this process
-(`price_portfolio`, `run_market_risk`), and stores the result document the kind's result schema
-serializes, the bytes a route would have sent, with the arrays the request asked for by
-reference as chunked artifacts (`engine.api.artifacts`). Jobs run one at a time, in submission
-order. The process owns every device JAX sees on its host; no device
+A job is a run request's HTTP body as the API received it. The worker parses the body exactly
+as the route did (`engine.api.requests.RunRequestSchema`), so nothing is pickled and no ORE
+object crosses a process boundary, runs it in this process (`engine.run.run`), and stores the
+result document (`engine.api.results.run_result_document`), with the arrays the request asked
+for by reference as chunked artifacts (`engine.api.artifacts`). Jobs run one at a time, in
+submission order.
+
+**Cancelling** (I-91): before a job starts and at each phase boundary of its run
+(`engine.run.trace.at_phase_boundaries`: the calibration, the simulation, each trade's pricing,
+the Greeks, ...) the worker looks whether a cancel has reached the job, and stops it there with
+`JobCancelled`; the job reads `cancelled`, and the worker goes on to the next one with its
+compiled programs. Between boundaries a job is never interrupted.
+
+**Retention** (I-76): between jobs, at most every `PURGE_INTERVAL_SECONDS`, the worker deletes the
+finished jobs older than the retention period (`engine.api.job_queue.retention_seconds`,
+`JAX_RISK_RETENTION_DAYS`), but those submitted with `keep`. The process owns every device JAX sees on its host; no device
 is pinned or shared with another engine process (the API keeps its own JAX on the CPU,
 `engine.api.app.keep_jax_on_the_cpu`), so the worker keeps JAX's default of preallocating
 75% of a GPU; set `XLA_PYTHON_CLIENT_PREALLOCATE=false` where other processes share the card
@@ -35,12 +44,13 @@ A failing job fails only its own row, with a failure class (`failure_class`) and
 traceback; the worker goes on to the next job. A worker that dies mid-job leaves the row
 `running`; the next worker to take the queue marks it `interrupted` before claiming anything.
 
-The queue's lock is taken before JAX is imported, so a redundant worker (another already
-holds the queue) exits within milliseconds with `EXIT_QUEUE_OWNED`. With `--parent-pid` the
-worker exits once that process is gone (checked between jobs), so a killed API or test run
-leaves no engine process behind.
+The host's worker lock (`engine.api.job_queue.worker_lock_path`, I-106) is taken before JAX is
+imported, so a redundant worker (another already serves the host) exits within milliseconds with
+`EXIT_HOST_OWNED`; the lock records the queue its holder serves. With `--parent-pid` the worker
+exits once that process is gone (checked between jobs), so a killed API or test run leaves no
+engine process behind.
 
-Profiling (opt-in): with `JAX_RISK_PROFILE_DIR` set, each job's `price_portfolio` (or, with
+Profiling (opt-in): with `JAX_RISK_PROFILE_DIR` set, each job's `run` (or, with
 `JAX_RISK_PROFILE_PHASE`, one phase of it) runs under the JAX profiler, written to
 `$JAX_RISK_PROFILE_DIR/pid-<pid>/` (see `_profiled`).
 """
@@ -53,16 +63,15 @@ import sys
 import time
 import traceback
 import warnings
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, Mapping, Optional, Sequence
 
 from engine.api.job_queue import (
-    BAD_TERMS, INFRASTRUCTURE, MARKET_RISK, MISSING_MARKET_DATA, NUMERICAL_FAILURE, PORTFOLIO, UNSUPPORTED_PRODUCT,
-    Job, JobQueue, WorkerLock, default_queue_path,
+    BAD_TERMS, INFRASTRUCTURE, MISSING_MARKET_DATA, NUMERICAL_FAILURE, RUN, UNSUPPORTED_PRODUCT, Job, JobQueue,
+    WorkerLock, default_queue_path, retention_seconds, worker_lock_path,
 )
-
-#: Exit status of a worker that found another worker serving its queue.
-EXIT_QUEUE_OWNED = 3
+from engine.api.supervisor import EXIT_HOST_OWNED
 #: How long a starting worker retries the lock: a supervisor's probe holds it for an instant
 #: (`engine.api.job_queue.worker_lock_held`).
 LOCK_WAIT_SECONDS = 2.0
@@ -70,6 +79,8 @@ LOCK_WAIT_SECONDS = 2.0
 #: connection (`engine.api.job_queue`), so a 5 ms period is well under 1% of a core and adds
 #: 2.5 ms to a job's latency on average.
 POLL_SECONDS = 0.005
+#: The least time between two retention purges (`JobQueue.purge`): a purge is one indexed delete.
+PURGE_INTERVAL_SECONDS = 60.0
 
 #: The persistent compilation cache's directory beside the queue file, when
 #: `JAX_COMPILATION_CACHE_DIR` is unset.
@@ -97,6 +108,8 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(prog="jax-risk-worker", description=__doc__.split("\n\n")[0])
     parser.add_argument("--queue", default=str(default_queue_path()),
                         help="the job queue's SQLite file (default: JAX_RISK_JOB_QUEUE or the temp directory)")
+    parser.add_argument("--lock", default=str(worker_lock_path()),
+                        help="the host's worker lock (default: JAX_RISK_WORKER_LOCK or the temp directory)")
     parser.add_argument("--parent-pid", type=int, default=None,
                         help="exit once this process is gone (the supervising API)")
     parser.add_argument("--poll-seconds", type=float, default=POLL_SECONDS)
@@ -104,7 +117,7 @@ def main(argv=None) -> None:
     # Before JAX is imported (`serve` imports it after taking the lock), which reads these.
     os.environ.update(compilation_cache_environment(args.queue, os.environ))
     os.environ.update(deterministic_kernels_environment(os.environ))
-    sys.exit(serve(args.queue, parent_pid=args.parent_pid, poll_seconds=args.poll_seconds))
+    sys.exit(serve(args.queue, lock_path=args.lock, parent_pid=args.parent_pid, poll_seconds=args.poll_seconds))
 
 
 def compilation_cache_environment(queue_path, environ) -> dict:
@@ -134,22 +147,32 @@ def deterministic_kernels_environment(environ) -> dict:
     return {"XLA_FLAGS": f"{flags} {DETERMINISTIC_KERNELS_FLAG}".strip()}
 
 
-def serve(queue_path, *, price: Optional[Pricer] = None, parent_pid: Optional[int] = None,
-          poll_seconds: float = POLL_SECONDS, drain: bool = False) -> int:
-    """Be the queue's engine worker until the parent is gone (or, with `drain`, until no job
-    is pending); the process exit status. `price` defaults to `price_job`."""
-    lock = WorkerLock(queue_path)
-    if not lock.acquire(wait_seconds=LOCK_WAIT_SECONDS):
-        return EXIT_QUEUE_OWNED
+def serve(queue_path, *, lock_path=None, price: Optional[Pricer] = None, parent_pid: Optional[int] = None,
+          poll_seconds: float = POLL_SECONDS, drain: bool = False, retention: Optional[float] = None,
+          environ: Optional[Mapping[str, str]] = None) -> int:
+    """Be the host's engine worker, serving the queue at `queue_path`, until the parent is gone
+    (or, with `drain`, until no job is pending); the process exit status. `lock_path` defaults to
+    `worker_lock_path(environ)`, `price` to `price_job`, and the retention period in seconds to
+    `retention_seconds(environ)`."""
+    lock = WorkerLock(lock_path if lock_path is not None else worker_lock_path(environ))
+    host, pid = socket.gethostname(), os.getpid()
+    if not lock.acquire(wait_seconds=LOCK_WAIT_SECONDS,
+                        owner={"queue": str(Path(queue_path).resolve()), "host": host, "pid": pid}):
+        return EXIT_HOST_OWNED
     compiles = queue = None
     try:
+        keep_for = retention if retention is not None else retention_seconds(environ)
         queue = JobQueue(queue_path)
         queue.interrupt_running()
         compiles = _CompileCounter()
         price = price or price_job
         parent = _ParentWatch(parent_pid)
-        worker = f"{socket.gethostname()}:{os.getpid()}"
+        worker = f"{host}:{pid}"
+        next_purge = 0.0
         while parent.alive():
+            if keep_for is not None and time.monotonic() >= next_purge:
+                queue.purge(time.time() - keep_for)
+                next_purge = time.monotonic() + PURGE_INTERVAL_SECONDS
             job = queue.claim(worker)
             if job is None:
                 if drain:
@@ -166,17 +189,50 @@ def serve(queue_path, *, price: Optional[Pricer] = None, parent_pid: Optional[in
         lock.release()
 
 
+class JobCancelled(BaseException):
+    """Raised at a phase boundary of a job a cancel has reached (I-91). A `BaseException`, as
+    asyncio's `CancelledError` is, so that no `except Exception` on its way out of the engine
+    turns it into a failure."""
+
+
+#: The running job's cancellation check (`phase_boundary`), set by `run_job` around its pricer.
+_CANCELLATION: ContextVar[Optional[Callable[[str], None]]] = ContextVar("cancellation", default=None)
+
+
+def phase_boundary(name: str) -> None:
+    """A phase boundary of the running job: raises `JobCancelled` if a cancel has reached it.
+    `price_job` installs it at the run's phases (`engine.run.trace.at_phase_boundaries`); a
+    test's pricer calls it directly."""
+    check = _CANCELLATION.get()
+    if check is not None:
+        check(name)
+
+
 def run_job(queue: JobQueue, job: Job, price: Pricer, compiles: "_CompileCounter") -> None:
-    """Price one claimed job and close its row: `done` with the result document, or `failed`
-    with the failure class and traceback. Nothing raised by the job escapes; a result the
-    queue cannot store (larger than SQLite's 1 GB limit) fails the job as `infrastructure`.
-    Only a queue that cannot be written at all stops the worker."""
+    """Price one claimed job and close its row: `done` with the result document, `failed`
+    with the failure class and traceback, or `cancelled` at the phase boundary where a cancel
+    stopped it. Nothing raised by the job escapes; a result the queue cannot store (larger than
+    SQLite's 1 GB limit) fails the job as `infrastructure`. Only a queue that cannot be written
+    at all stops the worker."""
     before = compiles.count
+
+    def stop_if_cancelled(name: str) -> None:
+        if queue.cancel_requested(job.id):
+            raise JobCancelled(name)
+
+    token = _CANCELLATION.set(stop_if_cancelled)
     try:
+        phase_boundary("start")
         result = price(job)
+    except JobCancelled as stop:
+        queue.cancel_running(job.id, f"cancelled at the {stop.args[0]!r} phase boundary",
+                             compiles=compiles.count - before)
+        return
     except Exception as exc:
         queue.fail(job.id, failure_class(exc), _describe(exc), compiles=compiles.count - before)
         return
+    finally:
+        _CANCELLATION.reset(token)
     try:
         queue.finish(job.id, result.document, compiles=compiles.count - before, artifacts=result.artifacts)
     except Exception as exc:
@@ -191,57 +247,33 @@ def _describe(exc: BaseException) -> str:
 def price_job(job: Job) -> JobResult:
     """One job's work, by its kind (`JOB_KINDS`): the HTTP body -> the engine -> the result
     document. Parsed as the route parsed it, so the dataclass request is the one the route
-    validated, and serialized as the route would have, so the document is the bytes it would
-    have sent."""
+    validated."""
     return JOB_KINDS[job.kind](job)
 
 
-def _portfolio_job(job: Job) -> JobResult:
-    from engine.api.requests import MarketPortfolioRequestSchema
-    from engine.api.results import PortfolioResultSchema
-    from engine.run import price_portfolio
+def _run_job(job: Job) -> JobResult:
+    """A run request (`engine.run.run`), stopping at a phase boundary once cancelled."""
+    from engine.api.requests import RunRequestSchema
+    from engine.api.results import run_result_document
+    from engine.run import run
+    from engine.run.trace import at_phase_boundaries
 
-    schema = MarketPortfolioRequestSchema.model_validate(json.loads(job.request))
+    schema = RunRequestSchema.model_validate_json(job.request)
     request = schema.to_dataclass()
-    result = _profiled(lambda: price_portfolio(request), lambda r: r.npv_cube)
-    # Without scenario risk nothing was simulated: there is no cube to return by reference.
-    output = schema.cube_output if result.scenario_risk_available or schema.cube_output != "artifact" else "none"
-    reference, artifacts = _array_output(job, output, "npv_cube", result.npv_cube, ("scenario", "date", "trade"),
-                                         result.trade_ids)
-    return JobResult(PortfolioResultSchema.from_dataclass(result, output, reference).model_dump_json(), artifacts)
+    with at_phase_boundaries(phase_boundary):
+        result = _profiled(lambda: run(request), _arrays)
+    document, artifacts = run_result_document(result, schema, job.id, f"/runs/{job.id}/artifacts")
+    return JobResult(document.model_dump_json(), artifacts)
 
 
-def _market_risk_job(job: Job) -> JobResult:
-    from engine.api.requests import MarketRiskRequestSchema
-    from engine.api.results import MarketRiskResultSchema
-    from engine.risk.market import run_market_risk
-
-    schema = MarketRiskRequestSchema.model_validate(json.loads(job.request))
-    request = schema.to_dataclass()
-    trade_ids = [t.trade_id for t in request.trades]
-    result = _profiled(lambda: run_market_risk(request), lambda r: r.pnl)
-    reference, artifacts = _array_output(job, schema.pnl_output, "pnl", result.pnl, ("scenario", "trade"), trade_ids)
-    return JobResult(MarketRiskResultSchema.from_dataclass(result, trade_ids, schema.pnl_output, reference)
-                     .model_dump_json(), artifacts)
+def _arrays(result) -> tuple:
+    """The arrays a run is done once computed (`_profiled`'s `ready`): its cube and its P&L."""
+    return (result.portfolio.npv_cube if result.portfolio is not None else None,
+            result.market_risk.pnl if result.market_risk is not None else None)
 
 
 #: The work of each job kind (`engine.api.job_queue.KINDS`).
-JOB_KINDS: Dict[str, Pricer] = {PORTFOLIO: _portfolio_job, MARKET_RISK: _market_risk_job}
-
-
-def _array_output(job: Job, output: str, name: str, array, axes: Tuple[str, ...],
-                  trade_ids: List[str]) -> Tuple[Optional[dict], Dict[str, List[bytes]]]:
-    """The reference and chunks of `array` when the request asked for it as an artifact
-    (`output == "artifact"`), else nothing; its trade axis named by `trade_ids`."""
-    if output != "artifact":
-        return None, {}
-    import numpy as np
-
-    from engine.api.artifacts import array_artifact, items_record
-
-    reference, chunks = array_artifact(np.asarray(array, dtype=np.float64), name, f"/jobs/{job.id}/artifacts/{name}",
-                                       axes, items_record("trade", trade_ids))
-    return reference, {name: chunks}
+JOB_KINDS: Dict[str, Pricer] = {RUN: _run_job}
 
 
 def failure_class(exc: BaseException) -> str:

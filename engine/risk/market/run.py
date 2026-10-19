@@ -153,17 +153,23 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
     spots = reporting_fx_spots(request.trades, request.market, request.base_currency, "base_currency")
     shifts = precision.store(shard_scenarios(precision.simulation.arithmetic.cast(scenarios.shifts), axis=0),
                              precision.simulation.storage, "shocks")
+    # At call time: importing `engine.run` imports the pipeline, which imports the Greeks and this
+    # package's revaluation.
+    from engine.run.trace import phase, trade_pricing_phase
+
     base, columns, stored = [], [], []
-    for cfg, spot in zip(request.trades, spots):
-        stage = precision.precision_for(cfg)
-        arithmetic = precision.arithmetic_for(stage, f"values/{cfg.trade_id}")
-        value, trade_pnl = _trade_pnl(cfg, request, load(shifts, arithmetic.dtype), arithmetic)
-        base.append(value * spot)
-        stored.append(precision.store(trade_pnl, stage.storage, f"values/{cfg.trade_id}"))
-        column = load(stored[-1], jnp.float64)
-        if isinstance(cfg, OPTION_TYPES):
-            column = bound_option_pnl(column, value, position_sign(cfg))
-        columns.append(column)
+    with phase("revaluation"):
+        for i, (cfg, spot) in enumerate(zip(request.trades, spots)):
+            with trade_pricing_phase(i, cfg):
+                stage = precision.precision_for(cfg)
+                arithmetic = precision.arithmetic_for(stage, f"values/{cfg.trade_id}")
+                value, trade_pnl = _trade_pnl(cfg, request, load(shifts, arithmetic.dtype), arithmetic)
+                base.append(value * spot)
+                stored.append(precision.store(trade_pnl, stage.storage, f"values/{cfg.trade_id}"))
+                column = load(stored[-1], jnp.float64)
+                if isinstance(cfg, OPTION_TYPES):
+                    column = bound_option_pnl(column, value, position_sign(cfg))
+                columns.append(column)
     pnl, portfolio_pnl = _in_reporting_currency(tuple(columns), jnp.asarray(spots, dtype=jnp.float64))
 
     metrics = compute_risk_metrics(pnl[:, None, :], 0.0, percentiles=request.quantiles, include_diagnostics=False)
@@ -178,7 +184,10 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
         risk[f"ES_{quantile_label(q)}_standardError"] = float(error)
 
     paired = paired_count(scenarios.num_scenarios, precision.paired_fraction, scenarios.replicates)
-    figures = _paired_figures(request, spots, portfolio_pnl, paired) if paired else {}
+    figures = {}
+    if paired:
+        with phase("paired_sample"):
+            figures = _paired_figures(request, spots, portfolio_pnl, paired)
     realized = {"shocks": format_name(shifts),
                 **{f"values/{cfg.trade_id}": format_name(s) for cfg, s in zip(request.trades, stored)}}
 
@@ -268,9 +277,17 @@ def validate_request(request: MarketRiskRequest) -> None:
     """Refuse a request `run_market_risk` cannot run, naming the field, before any work."""
     validate_portfolio(request.trades, request.market, request.pricing, request.precision, request.quantiles,
                        request.batch_size, request.base_currency)
-    validate_factors(request.trades, request.market, request.scenarios.factors)
-    scenarios = request.scenarios
-    request.precision.validate_sampling(scenarios.num_scenarios, scenarios.replicates, "scenarios")
+    validate_scenarios(request.trades, request.market, request.precision, request.scenarios)
+
+
+def validate_scenarios(trades, market: Market, precision: Precision, scenarios) -> None:
+    """The scenarios against the portfolio, the market and the precision (`validate_factors`, and
+    the sampling a scaled storage format's blocks need). `scenarios` is drawn (`ShockScenarios`)
+    or not yet (`MonteCarloScenarios`, whose inputs were checked when it was built): only its
+    factors, its count and its replicates are read, so a run request is checked before any
+    scenario is drawn (no JAX work)."""
+    validate_factors(trades, market, scenarios.factors)
+    precision.validate_sampling(scenarios.num_scenarios, scenarios.replicates, "scenarios")
 
 
 def validate_factors(trades, market: Market, factors: RateRiskFactors) -> None:
@@ -293,10 +310,7 @@ def validate_factors(trades, market: Market, factors: RateRiskFactors) -> None:
 
 def validate_portfolio(trades, market: Market, pricing: PricingConfig, precision: Precision,
                        quantiles: Sequence[float], batch_size: int, base_currency: str) -> None:
-    """Everything of a market-risk request but its scenarios: the HTTP route checks this before
-    queueing the job, then the scenarios' inputs without drawing them (no JAX work:
-    `engine.risk.market.scenarios.validate_monte_carlo`, `historical_scenarios`) and
-    `validate_factors`."""
+    """Everything of a market-risk request but its scenarios (`validate_scenarios`)."""
     if not trades:
         raise ValueError("a market-risk run needs at least one trade")
     require_precision("MarketRiskRequest.precision", precision)

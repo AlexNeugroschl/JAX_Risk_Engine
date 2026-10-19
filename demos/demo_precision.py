@@ -11,7 +11,9 @@ both on one portfolio.
 `engine.precision.Precision` settings:
 
     FP64           Precision(): float64 everywhere, the default
-    FP32           Precision.throughout("float32"): shifts, revaluation and P&L in float32
+    FP32           the shifts (`simulation`) and the revaluation and P&L (`pricing`) in float32;
+                   market risk has no scenario market, so its `market` stage is left at
+                   float64 (a run request refuses a stage the analytic does not read, I-95)
     FP32 stored    Precision(pricing=StagePrecision("float32")): revalued in float64,
                    the P&L stored in float32
     FP32, Berm 64  FP32, but the Bermudan revalued and stored in float64
@@ -92,7 +94,8 @@ SEEDS = (1, 2, 3, 4, 5)
 QUANTILES = (0.99, 0.975)
 PRECISIONS = {
     "FP64": Precision(),
-    "FP32": Precision.throughout("float32"),
+    "FP32": Precision(simulation=StagePrecision("float32", "float32", "float32"),
+                      pricing=StagePrecision("float32", "float32", "float32")),
     "FP32 stored": Precision(pricing=StagePrecision("float32", "float64", "float64")),
     "FP32, Berm 64": Precision(simulation=StagePrecision("float32", "float32", "float32"),
                                pricing=StagePrecision("float32", "float32", "float32"),

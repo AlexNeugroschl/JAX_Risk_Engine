@@ -330,9 +330,8 @@ Short-horizon VaR/ES by full revaluation at t=0 — see [Market Risk](../risk/ma
 
 | Module | Contents |
 |---|---|
-| `engine.calibration.cam` | `calibrate_cam(market, ir_configs) -> Dict[str, Calibration]`: each currency with a basket bootstrapped to the market's swaption volatilities, in its own parametrization (a Hull-White currency's σ by `hull_white_matching_zeta`). |
-| `engine.calibration.ore_lgm` | ORE's `LgmBuilder`: `build_basket(reference, expiries, terms, conventions, deal_strikes)` (QuantLib `SwaptionHelper`s), `basket_vols`, `price_pair(helper, disc, index, vol, reversion, zeta)` (market and model value), the bootstrap, batched over path curves. Used by the CAM's and every option's calibration. |
-| `engine.calibration.basket`, `engine.calibration.lgm` | The standalone `POST /calibration/lgm` route's co-terminal basket (`build_coterminal_basket`, `CalibrationTarget`) and Hagan bootstrap (`calibrate_lgm_sigma -> CalibrationResult`: `sigma`, `market_prices`, `model_prices`, `rmse`). See [Calibration](calibration.md). |
+| `engine.calibration.cam` | `calibrate_cam(market, ir_configs) -> Dict[str, CamCalibration]` (`sigma`, the helpers' `market` and `model` values, ORE's calibration `error`): each currency with a basket bootstrapped to the market's swaption volatilities, in its own parametrization (a Hull-White currency's σ by `hull_white_matching_zeta`). |
+| `engine.calibration.lgm` | ORE's `LgmBuilder`: `build_basket(reference, expiries, terms, conventions, deal_strikes)` (QuantLib `SwaptionHelper`s), `basket_vols`, `price_pair(helper, disc, index, vol, reversion, zeta)` (market and model value), the bootstrap, batched over path curves. Used by the CAM's and every option's calibration. |
 
 ---
 
@@ -395,6 +394,38 @@ basket's fixed leg).
 The top-level entry point — see [The Portfolio Entry Point](portfolio-entrypoint.md) for the
 full write-up (this is the quick reference).
 
+### `run(request: RunRequest) -> RunResult` (`engine/run/run_request.py`)
+
+The one way in for every analytic (I-87), over HTTP too. `validate_run(request)` checks the
+whole request before any work; then each analytic is its entry point's direct call: `npv`,
+`exposure`, `sensitivities` one `price_portfolio` (`portfolio_request(request)`), `market_risk`
+`run_market_risk` (`market_risk_request(request, scenarios)`), `calibration` `calibrate_cam`.
+
+| `RunRequest` field | Type | Default | Meaning |
+|---|---|---|---|
+| `market` | `Market` | *required* | Today's market. |
+| `analytics` | `Tuple[str, ...]` | *required* | From `ANALYTICS`: `npv`, `exposure`, `sensitivities`, `market_risk`, `calibration`, each once. |
+| `portfolio` | `Tuple[TradeConfig, ...]` | `()` | The trades, `trade_id`s unique; empty only for calibration alone. |
+| `config` | `RunRequestConfig` | `RunRequestConfig()` | One section per ORE file (below). |
+| `include_npv_cube` | `bool` | `True` | Whether the exposure analytic assembles its float64 cube. |
+
+| `RunRequestConfig` section | Type | Default | Read by |
+|---|---|---|---|
+| `base_currency` | `str` | `"USD"` | every analytic but `calibration`; the simulation's domestic currency |
+| `models` | `Optional[ModelsConfig]` | `None` | `exposure`, `calibration`: `ir`, `fx_volatilities`, `equity_volatilities`, `correlations`, `bootstrap_tolerance` |
+| `simulation` | `Optional[SimulationParameters]` | `None` | `exposure`: `dates`, `samples`, `seed`, `replicates`, `curve_tenors`, `swaption_vol_decay` |
+| `pricing` | `PricingConfig` | ORE's | `npv`, `exposure`, `sensitivities`, `market_risk` |
+| `sensitivity` | `GreeksConfig` | `Bump` | `sensitivities` |
+| `exposure` | `ExposureConfig` | `(0.95, 0.99)` | `exposure`: `pfe_quantiles` |
+| `market_risk` | `Optional[MarketRiskConfig]` | `None` | `market_risk`: `scenarios` (`ShockScenarios` or `MonteCarloScenarios`), `quantiles`, `batch_size` |
+| `precision` | `Precision` | float64 | `exposure`; `market_risk` (not its `market` stage) |
+
+`RunRequestConfig.cam()` is the exposure analytic's `CamConfig`. A section, or a setting differing
+from its default, that no requested analytic reads is refused. `RunResult`: `request` (as run),
+`engine` (`EngineIdentity`: `version`, `revision`, `modified`, `jax`, `jaxlib`, `ore`;
+`engine_identity()`), `portfolio` (`PortfolioResult`), `market_risk` (`MarketRiskResult`),
+`calibration` (`Dict[str, CamCalibration]`), `trade_ids`.
+
 ### `PortfolioRequest`
 
 | Field | Type | Default | Meaning |
@@ -438,9 +469,9 @@ full write-up (this is the quick reference).
 ### `price_portfolio(request: PortfolioRequest) -> PortfolioResult`
 
 The main entry point — see [The Portfolio Entry Point](portfolio-entrypoint.md#price_portfoliorequest-portfoliorequest---portfolioresult).
-Over HTTP it runs in the engine worker (`engine.api.worker.price_job(body) -> result JSON`,
-the request body in, the result document out), fed by the job queue (`engine.api.job_queue`);
-see [HTTP API: Jobs](http-api.md#jobs-the-queue-and-the-engine-worker).
+Over HTTP it runs through the run request in the engine worker (`engine.api.worker.price_job(job)
+-> JobResult`, the request body in, the result document out), fed by the job queue
+(`engine.api.job_queue`); see [HTTP API: Runs](http-api.md#runs-the-queue-and-the-engine-worker).
 
 ---
 
@@ -497,9 +528,9 @@ has no dependency on this package.
 | Module | Contents |
 |---|---|
 | `engine.api.app` | `create_app() -> FastAPI` / `app`. Run with `uvicorn engine.api.app:app`. |
-| `engine.api.routes` | `GET /health`, `GET /version`, `POST /portfolio/price`, `POST /portfolio/market-risk`, `GET /jobs/{job_id}`, `GET /jobs/{job_id}/artifacts/{name}/{chunk}`, `POST /calibration/cam`, `POST /calibration/lgm`. |
-| `engine.api.requests` | The requests and the wire forms they share (curves, coupon periods, the precision policy): `MarketPortfolioRequestSchema` and its parts (market, trades, `CamConfigSchema` with `LgmConfigSchema`/`HullWhiteConfigSchema` and piecewise volatilities, `PricingConfigSchema`, `GreeksConfigSchema`), `MarketRiskRequestSchema` (Monte Carlo or historical scenarios), `CamCalibrationRequestSchema`, the LGM calibration route's `CalibrationRequestSchema`; each with `.to_dataclass()`, the queued ones with `.check()` (the route's validation, no JAX work). Refuses unknown fields and the retired Hull-White shape. |
-| `engine.api.results` | The results: `PortfolioResultSchema` (one `TradeResultSchema` row per trade), `MarketRiskResultSchema`, `CamCalibrationResultSchema`, `ArrayArtifactSchema`, `GreeksSchema`, `ExposureProfileSchema`, `JobStatusSchema`, the precision report, the LGM calibration route's result. |
+| `engine.api.routes` | `GET /health`, `GET /version`, `GET /config/defaults`, `POST /runs`, `GET /runs/{run_id}` (`?wait=`), `POST /runs/{run_id}/cancel`, `GET /runs/{run_id}/artifacts/{name}/{chunk}`. |
+| `engine.api.requests` | The run request and the wire forms it shares (curves, coupon periods, the precision policy): `RunRequestSchema` (`.check()`, `.body_sha256()`) and its parts (market, trades, `RunRequestConfigSchema` with `ModelsSchema` (`LgmConfigSchema`/`HullWhiteConfigSchema`, piecewise volatilities), `SimulationSchema`, `PricingConfigSchema`, `SensitivitySchema`, `ExposureSchema`, `MarketRiskSchema` (Monte Carlo or historical scenarios), `PrecisionSchema`; `OutputsSchema`). |
+| `engine.api.results` | The run's result: `RunResultSchema` (one `TradeRowSchema` per trade; `ExposureSectionSchema`, `SensitivitiesSectionSchema`, `MarketRiskSectionSchema`, `CalibrationSectionSchema`; every array an `InlineArraySchema` or `ArrayArtifactSchema`), `run_result_document`, the precision report, `RunStatusSchema`, `HealthSchema`, `VersionSchema`. |
 | `engine.api.artifacts` | `array_artifact`, `items_record`, `read_array`: an array as chunked, hashed bytes with its trade order (decision A-17). |
 | `engine.api.traderx_routes` | `router` (prefix `/eod`) — the TraderX path's contract, plain dicts under a published JSON Schema. See [The TraderX Path](traderx-path.md#w164--the-eod-http-routes). |
 

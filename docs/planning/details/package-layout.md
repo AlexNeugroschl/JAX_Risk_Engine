@@ -64,7 +64,7 @@ their own profile, catalogue and manifest.
 | `models/` | `lgm.py`, `hull_white.py`; ORE's cross-asset model and its exact discretization's step moments (`cam.py`) | `models/` without `curves.py` and `ore_builders.py`; `simulation/cam.py` without its path recursion |
 | `instruments/` | The trade dataclasses; ORE's schedules, fixings and trade builders (`schedules.py`) | `instruments/` without the grid engine, `models/ore_builders.py` without the time axis |
 | `traderx/` | Everything in `integration/` | `integration/` |
-| `calibration/` | `ore_lgm.py` (ORE's bootstrap), `cam.py`, and until §3's merge the standalone `lgm.py` and `basket.py` | unchanged |
+| `calibration/` | `lgm.py` (ORE's bootstrap, `ore_lgm.py` until §3's merge retired the standalone `lgm.py` and `basket.py`, 2026-10-18), `cam.py` | unchanged |
 | `market_simulation/` | `config.py` (`simulate`), `sobol.py`, `paths.py` (the state recursion on every path), `scenario_market.py`, `sharding.py` | `simulation/`, with `random.py` renamed and `evolve_states` from `cam.py` |
 | `pricing/` | The engines per product, with ORE's LGM grid engine as `lgm_grid.py`; the valuation engine as `cube.py`; `config.py`, `context.py`, `options.py`, `legs.py`, `bermudan.py`, `european.py`, `jamshidian.py` | `valuation/`, `instruments/bermudan_swaption.py`'s engine, `valuation/portfolio.py` renamed |
 | `risk/greeks/` | `bump.py` (ORE's), `ad.py`, `price_functions.py` | `risk/sensitivities.py`, `risk/greeks.py`, `risk/price_functions.py` |
@@ -107,11 +107,13 @@ end-of-day bundle).
   the time axis's deprecated alias `DAY_COUNTER` were deleted with their callers updated; a
   test now fails if any module binds `DAY_COUNTER`
   (`tests/test_day_count_roles.py::TestOnlyTheAccrualRoleIsConfigurable::test_the_time_axis_has_one_name`).
-- **One import runs against the layers.** The Greeks label each trade's region of a profiler
-  trace with the run's phase names, so `risk/greeks/` imports `run/trace.py` at call time.
-  `trace.py` imports no engine module (a test checks it), and the import is the only entry of
-  the layering test's `EXCEPTIONS`. Moving the labels below `risk/` would split the pipeline's
-  phase names from the pipeline; the exception is the smaller cost.
+- **One module is imported against the layers.** The Greeks, the cube (`pricing/cube.py`) and
+  market risk's revaluation (`risk/market/run.py`) label each trade's region of a profiler
+  trace with the run's phase names, and since 2026-10-18 each phase is also a boundary at which
+  a cancelled run stops (I-91), so they import `run/trace.py` at call time. `trace.py` imports
+  no engine module (a test checks it), and it is the only module of the layering test's
+  `EXCEPTIONS`. Moving the phases below every layer would split the run's phase names from the
+  run; one leaf module imported at call time is the smaller cost.
 - **Tests and docs follow.** Test files named after a retired package or phrase were renamed
   (`test_integration_*` to `test_traderx_*`, `test_integration_eod_routes` to
   `test_traderx_routes`, `test_portfolio_market_path` to `test_pipeline`,
@@ -139,8 +141,11 @@ Each changes what runs, so each is a step of its own, after the renames.
   exporter's figure, the result document, the attempt store. The engine's bond and the
   TraderX note must first agree on every bundle row of the tests, on the assumed profile's
   flat curve, to rounding. Part of the API goal: one way into the engine.
-- **One LGM calibration.** `calibration/lgm.py` and `basket.py` retire once the run request's
-  `calibration` analytic returns what `POST /calibration/lgm` returns, or move to
-  `tests/support/` as an independent check of the bootstrap if their tests are worth keeping.
-  Decision A-1 (nothing that works is removed without a replacement) is met by the analytic;
-  `calibration/ore_lgm.py` then becomes `calibration/lgm.py`.
+- **One LGM calibration** (done 2026-10-18, I-94). The standalone `calibration/lgm.py` and
+  `basket.py` retired with `POST /calibration/lgm`: the run request's `calibration` analytic
+  returns what the route returned (each currency's sigma, each helper's market and model value,
+  the calibration's error), from ORE's bootstrap. Their tests were not kept as an independent
+  check: they re-derived the standalone's own formulas, while ORE's bootstrap is compared with
+  ORE itself (`tests/test_ore_lgm_calibration.py`). Decision A-1 (nothing that works is removed
+  without a replacement) is met by the analytic; `calibration/ore_lgm.py` became
+  `calibration/lgm.py`.

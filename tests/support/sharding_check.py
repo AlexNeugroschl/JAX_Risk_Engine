@@ -17,9 +17,10 @@ import numpy as np
 def _portfolio_runs():
     import ORE
 
-    from engine.api.requests import MarketPortfolioRequestSchema
     from engine.run import price_portfolio
+    from engine.run.run_request import portfolio_request
     from tests.support import portfolio as shared
+    from tests.support.runs import request_of
 
     dates = [(shared.ASOF + ORE.Period(m, ORE.Months)).ISO() for m in (6, 12)]
     trades = [shared.trades_json()[n] for n in ("swap-payer", "european-payer", "bermudan-payer-physical", "bond")]
@@ -34,12 +35,11 @@ def _portfolio_runs():
                                              for s in ("simulation", "market", "pricing")}},
     }
     for name, extra in bodies.items():
-        body = {"market": shared.market_json(), "trades": trades,
-                "pricing": {"bermudan": {"n_per_std": 12, "std_devs": 4.0}},
-                "simulation": {"dates": dates, "base_currency": "USD", "ir": {"USD": {"model": "LGM", "reversion": 0.03}},
-                               **extra["simulation"]},
-                "precision": extra["precision"]}
-        request = MarketPortfolioRequestSchema.model_validate(body).to_dataclass()
+        body = {"market": shared.market_json(), "portfolio": trades, "analytics": ["npv", "exposure"],
+                "config": {"pricing": {"bermudan": {"n_per_std": 12, "std_devs": 4.0}},
+                           "models": {"ir": {"USD": {"model": "LGM", "reversion": 0.03}}},
+                           "simulation": {"dates": dates, **extra["simulation"]}, "precision": extra["precision"]}}
+        request = portfolio_request(request_of(body))
         yield name, lambda request=request: _portfolio_figures(price_portfolio(request))
         if name == "lgm":
             # The Bermudan's paths priced in blocks of one path per device (`engine.pricing.lgm_grid.blocked`).

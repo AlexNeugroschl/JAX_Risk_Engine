@@ -149,8 +149,8 @@ option is 0 and, if physically settled, the path carries the swap it entered
   (`TestConfiguration`), trade validation.
 - `tests/test_end_to_end.py` — the Hull-White simulation's paths priced by QuantLib's
   Jamshidian engine on each path's curve, pathwise and in VaR/ES.
-- `tests/test_greeks.py::TestJamshidianRootDerivative` — the implicit-function derivative of
-  x*, first and second order.
+- `tests/test_root_solvers.py::TestImplicitRoot` — the implicit-function derivative of a root
+  (x* among them), first and second order.
 - `tests/test_option_position.py` and
   `tests/test_shared_portfolio.py::test_a_short_option_today_is_ores_short_option` — a short
   European is minus the long one under both engines, on every path and in every risk figure,

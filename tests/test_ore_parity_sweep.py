@@ -61,7 +61,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.calibration.ore_lgm import CalibrationError
+from engine.calibration.lgm import CalibrationError
 from engine.pricing.cube import value_today
 from engine.risk.greeks.ad import portfolio_greeks
 from engine.risk.greeks.bump import portfolio_sensitivities

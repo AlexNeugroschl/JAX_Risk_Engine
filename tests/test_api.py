@@ -1,273 +1,220 @@
 """
-`engine.api` through FastAPI's in-process TestClient: /health and /version; /portfolio/price
-returns 202 and a job id, and polling `/jobs/{job_id}` reaches a result equal to a direct
-`price_portfolio` call, here with the Hull-White model named in the request's `simulation.ir`
-(the pipeline over HTTP on the shared portfolio is tests/test_api_portfolio.py, market risk
-tests/test_api_market_risk.py); the Hull-White request shape retired on 2026-10-01 is a 422
-naming its replacement, and so are the names retired on 2026-10-07; invalid bodies give a 4xx with
-the validator's message (malformed schemas a 422); /calibration/cam and /calibration/lgm.
+`engine.api` through FastAPI's in-process TestClient: the run request's contract (I-87).
+`/health`, `/version` (the engine's identity) and `/config/defaults`; `POST /runs` returns 202 and
+a run id, and `GET /runs/{run_id}` reaches a result equal to `engine.run.run` on the same request,
+here with the Hull-White model in `config.models` and the Jamshidian engine; the routes of
+2026-10-07 are gone; a body the schema refuses is a 422 naming its field (every model strict,
+I-103), a request the engine refuses a 400 naming its field and no run created; the calibration
+analytic is the cross-asset model a run simulates with (I-94); `wait` long-polls; precision on the
+wire (the HTTP side of tests/test_precision.py). The other analytics over HTTP are
+tests/test_api_portfolio.py and tests/test_api_market_risk.py; idempotency, cancelling, retention
+and the worker's start over HTTP are tests/test_engine_worker.py.
 """
-import copy
 import time
 
 import numpy as np
-import ORE
 import pytest
 
-from demos.demo_scenarios import demo_market_json, demo_simulation_json
-from engine.api.requests import MarketPortfolioRequestSchema
+from engine.api.requests import RunRequestConfigSchema, RunRequestSchema
 from engine.precision import Precision, StagePrecision
-from engine.run import price_portfolio
+from engine.run import engine_identity
 from tests.support import portfolio as shared
+from tests.support.runs import models, request_of, run_body, run_in_process, run_over_http, simulation
 
-ZERO_CURVE_SCHEMA = {"times": [0.0, 1.0, 2.0, 5.0, 10.0, 30.0], "rates": [0.03, 0.03, 0.032, 0.035, 0.038, 0.04]}
-
-
-def _simulation(samples=64, model="HullWhite"):
-    dates = [(shared.ASOF + ORE.Period(m, ORE.Months)).ISO() for m in (6, 12, 24)]
-    return {"dates": dates, "base_currency": "USD", "samples": samples, "seed": 3,
-            "ir": {"USD": {"model": model, "reversion": 0.03, "volatility": 0.01}}}
+SWAP = {"trade_type": "swap", "notional": 1_000_000.0, "fixed_rate": 0.032, "payer": True, "swap_tenor": "2Y"}
+EUROPEAN = {"trade_type": "european_swaption", "notional": 500_000.0, "fixed_rate": 0.031, "payer": True,
+            "swap_tenor": "2Y", "forward_start": "1Y"}
+BASKET = {"calibration_expiries": ["1Y", "2Y", "5Y"], "calibration_terms": ["5Y", "4Y", "1Y"]}
 
 
-def _swap(**overrides):
-    return {"trade_type": "swap", "notional": 1_000_000.0, "fixed_rate": 0.032, "payer": True, "swap_tenor": "2Y",
-            **overrides}
+def _exposure_body(trades=(SWAP, EUROPEAN), model="HullWhite", **config):
+    return run_body(["npv", "exposure"], trades, outputs={"npv_cube": "inline"},
+                    **{"models": models(model), "simulation": simulation(),
+                       "exposure": {"pfe_quantiles": [0.95]}, **config})
 
 
-def _european(**overrides):
-    return {"trade_type": "european_swaption", "notional": 500_000.0, "fixed_rate": 0.031, "payer": True,
-            "swap_tenor": "2Y", "forward_start": "1Y", **overrides}
+def _add_eur_without_fx_volatility(body):
+    body["config"]["models"]["ir"]["EUR"] = {"model": "HullWhite", "reversion": 0.02, "volatility": 0.008}
 
 
-def _body(trades, **overrides):
-    body = {"market": shared.market_json(), "trades": trades, "simulation": _simulation(), "pfe_quantiles": [0.95]}
-    body.update(overrides)
-    return body
+class TestHealthVersionAndDefaults:
+    def test_health_returns_ok_and_the_worker(self, test_client):
+        body = test_client.get("/health").json()
+        assert body["status"] == "ok" and body["worker"]["mode"] == "spawn"
 
-
-def _submit_and_poll(client, body, timeout_s=300):
-    r = client.post("/portfolio/price", json=body)
-    assert r.status_code == 202, r.text
-    job_id = r.json()["job_id"]
-    deadline = time.time() + timeout_s
-    data = None
-    while time.time() < deadline:
-        r = client.get(f"/jobs/{job_id}")
-        assert r.status_code == 200
-        data = r.json()
-        if data["status"] in ("done", "failed"):
-            break
-        time.sleep(0.2)
-    assert data is not None and data["status"] == "done", data.get("error") if data else "never terminal"
-    return data["result"]
-
-
-def _direct(body):
-    return price_portfolio(MarketPortfolioRequestSchema.model_validate(body).to_dataclass())
-
-
-class TestHealthAndVersion:
-    def test_health_returns_ok(self, test_client):
-        r = test_client.get("/health")
-        assert r.status_code == 200 and r.json() == {"status": "ok"}
-
-    def test_version_returns_engine_info(self, test_client):
+    def test_version_is_the_engines_identity(self, test_client):
         body = test_client.get("/version").json()
-        assert "engine_version" in body and "jax_backend" in body
+        identity = engine_identity()
+        assert body["engine"] == {"version": identity.version, "revision": identity.revision,
+                                  "modified": identity.modified, "jax": identity.jax, "jaxlib": identity.jaxlib,
+                                  "ore": identity.ore}
+        assert body["engine"]["jax"] and body["engine"]["ore"] and "jax_backend" in body
+
+    def test_the_defaults_are_the_whole_config_to_copy(self, test_client):
+        defaults = test_client.get("/config/defaults").json()
+        assert defaults == RunRequestConfigSchema().model_dump(mode="json")
+        assert defaults["models"] is None and defaults["pricing"]["bermudan"]["shift_horizon"] == 0.5
+        assert defaults["sensitivity"]["method"] == "Bump" and defaults["exposure"]["pfe_quantiles"] == [0.95, 0.99]
+        RunRequestSchema.model_validate({"market": shared.market_json(), "analytics": ["npv"], "config": defaults})
 
 
 @pytest.mark.slow
-class TestPortfolioPriceHappyPath:
-    def test_result_matches_direct_price_portfolio_call(self, test_client):
-        """The polled result equals `price_portfolio` on the equivalent dataclass request."""
-        body = _body([_swap(), _european()], pfe_quantiles=[0.95, 0.99])
-        result = _submit_and_poll(test_client, body)
-        direct = _direct(body)
-        assert result["base_npv"] == direct.base_npv
-        np.testing.assert_array_equal(np.asarray(result["npv_cube"]), np.asarray(direct.npv_cube))
-        for name in ("times", "epe", "ene", "ee_b", "eee_b"):
-            np.testing.assert_array_equal(np.asarray(result["exposure"][name]),
-                                          np.asarray(getattr(direct.exposure, name)))
-        for key, values in direct.exposure.pfe.items():
-            np.testing.assert_array_equal(np.asarray(result["exposure"]["pfe"][key]), np.asarray(values))
-        assert [t["trade_id"] for t in result["trades"]] == ["trade-0", "trade-1"]
-        assert all(t["exposure"] is not None and t["greeks"] is None for t in result["trades"])
-        np.testing.assert_array_equal([t["base_npv"] for t in result["trades"]], direct.base_npv_per_trade)
-        for row, profile in zip(result["trades"], direct.trade_exposures):
-            np.testing.assert_array_equal(row["exposure"]["epe"], np.asarray(profile.epe))
-
-    def test_the_model_and_engine_are_the_requests(self, test_client):
-        """The Hull-White model and the Jamshidian engine reach the worker: the result differs
-        from the LGM/Bachelier run's, and equals the direct call's."""
+class TestRunsOverHttp:
+    def test_the_result_is_the_in_process_runs(self, test_client):
+        """The polled result equals `engine.run.run` on the request the API built: every row's
+        value, the cube and the netting set's profile, with the Hull-White model and the
+        Jamshidian engine reaching the worker (the value differs from the LGM/Bachelier run's)."""
         jamshidian = {"european": "Jamshidian", "jamshidian": {"reversion": 0.03, "volatility": 0.01}}
-        body = _body([_european(trade_id="e")], pricing=jamshidian)
-        other = _body([_european(trade_id="e")], simulation=_simulation(model="LGM"))
-        result, baseline = _submit_and_poll(test_client, body), _submit_and_poll(test_client, other)
-        assert result["base_npv"] == _direct(body).base_npv
-        assert result["base_npv"] != baseline["base_npv"]
+        body = _exposure_body(pricing=jamshidian)
+        result, direct = run_over_http(test_client, body), run_in_process(body).portfolio
+        assert [t["trade_id"] for t in result["trades"]] == ["trade-0", "trade-1"]
+        assert [t["npv"] for t in result["trades"]] == direct.base_npv_per_trade
+        assert result["npv"] == direct.base_npv
+        cube = result["exposure"]["npv_cube"]
+        assert cube["form"] == "inline" and cube["axes"] == ["scenario", "date", "trade"]
+        np.testing.assert_array_equal(np.asarray(cube["values"]), np.asarray(direct.npv_cube))
+        for name in ("times", "epe", "ene", "ee_b", "eee_b"):
+            np.testing.assert_array_equal(result["exposure"]["netting_set"][name], getattr(direct.exposure, name))
+        assert result["exposure"]["dates"] == body["config"]["simulation"]["dates"]
+        baseline = run_over_http(test_client, _exposure_body(model="LGM"))
+        assert result["trades"][1]["npv"] != baseline["trades"][1]["npv"]
 
-    def test_greeks_included_when_requested(self, test_client):
-        result = _submit_and_poll(test_client, _body([_european()], compute_greeks=True))
-        entry = result["trades"][0]["greeks"]
-        assert "vega:USD" in entry["values"] and entry["theta"] is not None
+    def test_the_result_says_what_each_figure_is(self, test_client):
+        """I-87 (the project audit, AUD-39): the configuration as run with every default, the
+        as-of date, the reporting currency, the engine's identity, the products and pricing
+        settings, without the request beside it."""
+        body = _exposure_body()
+        result = run_over_http(test_client, body)
+        assert result["asof"] == shared.ASOF_ISO and result["base_currency"] == "USD"
+        assert result["analytics"] == ["npv", "exposure"]
+        assert result["config"] == RunRequestSchema.model_validate(body).config.model_dump(mode="json")
+        assert result["config"]["pricing"]["bermudan"]["n_per_std"] == 30
+        assert result["engine"]["revision"] == engine_identity().revision
+        assert [t["product"] for t in result["trades"]] == ["swap", "european_swaption"]
+        assert result["exposure"]["pricing_settings"] == {"european_swaption": "engine=Bachelier",
+                                                          "swap": "engine=Discounting"}
+        assert result["market_risk"] is None and result["sensitivities"] is None
 
+    def test_runs_submitted_back_to_back_get_their_own_results(self, test_client):
+        from tests.support.runs import poll, submit
 
-@pytest.mark.slow
-class TestPortfolioPriceAtScale:
-    def test_empty_trades_list_prices_to_a_zero_width_result(self, test_client):
-        result = _submit_and_poll(test_client, _body([]))
-        assert result["base_npv"] == 0.0 and np.asarray(result["npv_cube"]).shape[-1] == 0
+        one = submit(test_client, _exposure_body(trades=({**SWAP, "notional": 1e6},)))
+        nine = submit(test_client, _exposure_body(trades=({**SWAP, "notional": 9e6},)))
+        assert one != nine
+        cubes = [np.asarray(poll(test_client, r)["result"]["exposure"]["npv_cube"]["values"]) for r in (one, nine)]
+        np.testing.assert_allclose(cubes[1], 9.0 * cubes[0], rtol=1e-12)
 
-    def test_many_identical_trades_price_identically(self, test_client):
-        result = _submit_and_poll(test_client, _body([_swap(trade_id=f"s{i}") for i in range(8)]))
-        cube = np.asarray(result["npv_cube"])
-        for j in range(1, 8):
-            np.testing.assert_array_equal(cube[:, :, j], cube[:, :, 0])
+    def test_an_empty_portfolio_prices_to_a_zero_width_result(self, test_client):
+        result = run_over_http(test_client, _exposure_body(trades=()))
+        assert result["npv"] == 0.0 and result["exposure"]["npv_cube"]["shape"][-1] == 0
 
-    def test_multiple_concurrent_jobs_do_not_cross_contaminate_results(self, test_client):
-        """Two portfolios submitted back to back each get only their own result."""
-        job_a = test_client.post("/portfolio/price", json=_body([_swap(notional=1e6)])).json()["job_id"]
-        job_b = test_client.post("/portfolio/price", json=_body([_swap(notional=9e6)])).json()["job_id"]
-        assert job_a != job_b
-        deadline = time.time() + 120
-        data = {}
-        while time.time() < deadline and not all(data.get(j, {}).get("status") in ("done", "failed")
-                                                  for j in (job_a, job_b)):
-            data = {j: test_client.get(f"/jobs/{j}").json() for j in (job_a, job_b)}
-            time.sleep(0.2)
-        npv = [np.asarray(data[j]["result"]["npv_cube"])[:, :, 0] for j in (job_a, job_b)]
-        np.testing.assert_allclose(npv[1], 9.0 * npv[0], rtol=1e-12)
+    def test_wait_answers_once_the_run_is_done(self, test_client):
+        from tests.support.runs import submit
 
-
-class TestPortfolioPriceInvalidPayload:
-    def test_the_retired_hull_white_shape_is_a_422_naming_its_replacement(self, test_client):
-        body = {"evaluation_date": "2026-07-30", "market": {"time_grid": [0.0, 1.0], "rates": {}},
-                "trades": [_swap()]}
-        r = test_client.post("/portfolio/price", json=body)
-        assert r.status_code == 422
-        assert "retired on 2026-10-01" in r.text and "simulation.ir" in r.text
-
-    @pytest.mark.parametrize("retired", [{"schema_version": "2"}])
-    def test_the_names_retired_as_false_versions_are_refused(self, test_client, retired):
-        """`schema_version: "2"` and `/v2/portfolio/price` looked like versions and were not
-        (decision A-2); `GET /portfolio/price/{job_id}` is now `GET /jobs/{job_id}`."""
-        assert test_client.post("/portfolio/price", json=_body([_swap()], **retired)).status_code == 422
-        assert test_client.post("/v2/portfolio/price", json=_body([_swap()])).status_code == 404
-        assert test_client.get("/portfolio/price/any-id").status_code in (404, 405)
-
-    def test_a_market_with_equities_is_not_mistaken_for_the_retired_shape(self):
-        """The retired market had `equities` too; the current one must not be refused for it
-        (the demo's two-currency request, with an equity, was)."""
-        body = {"market": demo_market_json(("USD", "EUR")), "trades": [_swap()],
-                "simulation": demo_simulation_json(samples=8, currencies=("USD", "EUR"))}
-        assert body["market"]["equities"]
-        request = MarketPortfolioRequestSchema.model_validate(body).to_dataclass()
-        assert set(request.market.equities) == set(body["market"]["equities"])
-        body["market"]["equities"] = {}
-        MarketPortfolioRequestSchema.model_validate(body)
-
-    def test_a_trade_carrying_model_parameters_is_a_422(self, test_client):
-        r = test_client.post("/portfolio/price", json=_body([_european(hw_a=0.03, hw_sigma=0.01)]))
-        assert r.status_code == 422 and "hw_a" in r.text
-
-    def test_an_unknown_model_is_a_422(self, test_client):
-        body = _body([_swap()])
-        body["simulation"]["ir"]["USD"]["model"] = "CIR"
-        assert test_client.post("/portfolio/price", json=body).status_code == 422
-
-    def test_an_invalid_correlation_is_a_400_with_the_validators_message(self, test_client):
-        body = _body([_swap()])
-        body["simulation"] = copy.deepcopy(body["simulation"])
-        body["simulation"]["ir"]["EUR"] = {"model": "HullWhite", "reversion": 0.02, "volatility": 0.008}
-        r = test_client.post("/portfolio/price", json=body)
-        assert 400 <= r.status_code < 500
-
-    def test_a_currency_the_market_lacks_is_a_400_naming_the_trade(self, test_client):
-        r = test_client.post("/portfolio/price", json=_body([_swap(currency="GBP", trade_id="gbp-swap")]))
-        assert r.status_code == 400 and "gbp-swap" in r.json()["detail"]
-
-    def test_malformed_schema_returns_422(self, test_client):
-        assert test_client.post("/portfolio/price", json={"market": 12345}).status_code == 422
-
-    def test_missing_required_field_returns_422(self, test_client):
-        assert test_client.post("/portfolio/price", json={"market": shared.market_json()}).status_code == 422
-
-    def test_invalid_trade_type_discriminator_returns_422(self, test_client):
-        body = _body([{"trade_type": "not_a_real_type"}])
-        assert test_client.post("/portfolio/price", json=body).status_code == 422
+        run_id = submit(test_client, _exposure_body())
+        started = time.monotonic()
+        status = test_client.get(f"/runs/{run_id}", params={"wait": 30}).json()
+        assert status["status"] == "done" and time.monotonic() - started < 30
+        assert status["submitted"] <= status["started"] <= status["finished"]
 
 
-class TestPortfolioPriceUnknownJob:
-    def test_unknown_job_id_returns_404(self, test_client):
-        assert test_client.get("/jobs/not-a-real-job-id").status_code == 404
+class TestTheCalibrationAnalytic:
+    """The cross-asset model's calibration per currency (`engine.calibration.cam`), the one a run's
+    exposure analytic simulates with, which replaces `POST /calibration/cam` and the standalone
+    `POST /calibration/lgm` (I-94)."""
 
-
-class TestCalibrationEndpoint:
-    """The standalone calibration route (its own Hagan bootstrap on the basket it is given;
-    the portfolio's calibration is the CAM's, per currency)."""
-
-    def test_valid_calibration_request_returns_fitted_sigma(self, test_client):
-        body = {"evaluation_date": shared.ASOF_ISO, "exercise_times": [1.0, 2.0, 3.0, 4.0], "final_maturity_time": 5.0,
-                "notional": 1_000_000.0, "payer": True, "market_vols": [0.0080, 0.0088, 0.0095, 0.0100],
-                "zero_curve": ZERO_CURVE_SCHEMA, "hw_a": 0.03}
-        r = test_client.post("/calibration/lgm", json=body)
-        assert r.status_code == 200, r.text
-        assert len(r.json()["sigma_values"]) == 4 and r.json()["rmse"] < 1e-6
-
-    def test_calibration_malformed_schema_returns_422(self, test_client):
-        assert test_client.post("/calibration/lgm", json={"evaluation_date": shared.ASOF_ISO}).status_code == 422
-
-
-class TestCamCalibrationEndpoint:
-    """`POST /calibration/cam`: the cross-asset model's calibration per currency, the one a
-    portfolio run simulates with (`engine.calibration.cam`, I-56)."""
-
-    BASKET = {"calibration_expiries": ["1Y", "2Y", "5Y"], "calibration_terms": ["5Y", "4Y", "1Y"]}
-
+    @pytest.mark.slow
     @pytest.mark.parametrize("model", ["LGM", "HullWhite"])
-    def test_the_result_is_the_calibration_a_portfolio_run_uses(self, test_client, model):
+    def test_the_result_is_the_calibration_a_run_simulates_with(self, test_client, model):
         from engine.calibration.cam import calibrate_cam
         from engine.market_simulation.config import build_cross_asset_model
 
-        ir = {"USD": {"model": model, "reversion": 0.03, "volatility": 0.01, **self.BASKET}}
-        r = test_client.post("/calibration/cam", json={"market": shared.market_json(), "ir": ir})
-        assert r.status_code == 200, r.text
-        usd = r.json()["currencies"]["USD"]
-        simulation = MarketPortfolioRequestSchema.model_validate(
-            _body([_swap()], simulation={**_simulation(), "ir": ir})).to_dataclass().config.simulation
-        direct = calibrate_cam(shared.market(), simulation.ir)["USD"]
+        body = run_body(["calibration"], models=models(model, **BASKET))
+        usd = run_over_http(test_client, body)["calibration"]["currencies"]["USD"]
         assert usd["model"] == model and usd["reversion"] == 0.03
+        request = request_of(body)
+        direct = calibrate_cam(shared.market(), request.config.models.ir)["USD"]
         np.testing.assert_array_equal(usd["sigma_times"], np.asarray(direct.sigma.times))
         np.testing.assert_array_equal(usd["sigma_values"], np.asarray(direct.sigma.values))
-        model_sigma = build_cross_asset_model(shared.market(), simulation).ir[0].sigma
-        np.testing.assert_array_equal(usd["sigma_values"], np.asarray(model_sigma.values))
+        exposure = request_of(run_body(["exposure"], ["swap-payer"], models=models(model, **BASKET),
+                                       simulation=simulation()))
+        simulated = build_cross_asset_model(shared.market(), exposure.config.cam()).ir[0].sigma
+        np.testing.assert_array_equal(usd["sigma_values"], np.asarray(simulated.values))
         assert [(h["expiry"], h["term"]) for h in usd["helpers"]] == [("1Y", "5Y"), ("2Y", "4Y"), ("5Y", "1Y")]
         np.testing.assert_allclose([h["model_value"] for h in usd["helpers"]],
                                    [h["market_value"] for h in usd["helpers"]], rtol=1e-8)
+        assert usd["error"] == direct.error and 0.0 <= usd["error"] < 1e-4
 
-    def test_a_currency_without_a_basket_is_a_422(self, test_client):
-        r = test_client.post("/calibration/cam", json={"market": shared.market_json(),
-                                                       "ir": {"USD": {"reversion": 0.03}}})
-        assert r.status_code == 422 and "nothing to calibrate" in r.text
+    def test_a_currency_without_a_basket_is_refused_alone(self, test_client):
+        r = test_client.post("/runs", json=run_body(["calibration"], models=models()))
+        assert r.status_code == 400 and "no calibration basket" in r.json()["detail"]
 
     def test_a_currency_the_market_lacks_is_a_400(self, test_client):
-        r = test_client.post("/calibration/cam", json={"market": shared.market_json(),
-                                                       "ir": {"EUR": {"reversion": 0.03, **self.BASKET}}})
+        body = run_body(["calibration"], models={"ir": {"EUR": {"reversion": 0.03, **BASKET}}})
+        r = test_client.post("/runs", json=body)
         assert r.status_code == 400 and "EUR" in r.json()["detail"]
 
 
-class TestPortfolioPricePrecision:
-    """The HTTP precision block, `engine.precision.Precision` on the wire (the dataclass level
-    is tests/test_precision.py)."""
+class TestTheRequestIsRefusedBeforeAnyRun:
+    def test_the_routes_of_2026_10_07_are_gone(self, test_client):
+        for route in ("/portfolio/price", "/portfolio/market-risk", "/calibration/cam", "/calibration/lgm"):
+            assert test_client.post(route, json={}).status_code == 404, route
+        assert test_client.get("/jobs/any-id").status_code == 404
+
+    @pytest.mark.parametrize("change, field", [
+        (lambda b: b["portfolio"][0].update(hw_sigma=0.01), "hw_sigma"),
+        (lambda b: b["market"]["currencies"]["USD"]["discount_curve"].update(day_count="ACT/360"), "day_count"),
+        (lambda b: b["config"].update(scenario_risk=True), "scenario_risk"),
+        (lambda b: b.update(trades=[]), "trades"),
+        (lambda b: b["config"]["models"]["ir"]["USD"].update(model="CIR"), "CIR"),
+        (lambda b: b.update(analytics=["xva"]), "xva"),
+        (lambda b: b.update(market=12345), "market"),
+        (lambda b: b["portfolio"].append({"trade_type": "not_a_real_type"}), "not_a_real_type"),
+    ], ids=["trade-model", "curve-field", "retired-flag", "retired-trades", "model", "analytic", "market", "product"])
+    def test_a_body_the_schema_refuses_is_a_422_naming_it(self, test_client, change, field):
+        """Every model refuses an unknown field (I-103), so nothing is silently stripped."""
+        body = _exposure_body()
+        change(body)
+        r = test_client.post("/runs", json=body)
+        assert r.status_code == 422 and field in r.text
+
+    @pytest.mark.parametrize("change, message", [
+        (lambda b: b["config"].pop("simulation"), "config.simulation: the exposure analytic needs it"),
+        (lambda b: b["config"].pop("models"), "config.models: the exposure analytic needs it"),
+        (lambda b: b.update(analytics=["npv"]), "config.models: no requested analytic reads it"),
+        (lambda b: b.update(analytics=["npv", "npv"]), "named more than once"),
+        (lambda b: b.update(analytics=[]), "name at least one"),
+        (lambda b: b["config"].update(sensitivity={"method": "AD"}), "config.sensitivity: no requested analytic"),
+        (lambda b: b.update(outputs={"pnl": "inline"}), "outputs.pnl: the market_risk analytic"),
+        (lambda b: b.update(portfolio=[{**SWAP, "currency": "GBP", "trade_id": "gbp"}]), "trade 'gbp'"),
+        (lambda b: b["portfolio"][0].update(trade_id="a"), "every trade or on none"),
+        (_add_eur_without_fx_volatility, "fx_volatilities"),
+        (lambda b: b["config"].update(base_currency="EUR"), "config.base_currency"),
+        (lambda b: b["market"]["currencies"]["USD"]["discount_curve"].update(times=[5.0, 1.0, 10.0, 15.0, 20.0, 30.0]),
+         "market.currencies.USD.discount_curve: a zero curve's pillar times must be non-negative and strictly "
+         "increasing"),
+    ], ids=["no-simulation", "no-models", "unread-models", "repeated", "none", "unread-sensitivity",
+            "unread-output", "currency", "ids", "fx-volatility", "base-currency", "unsorted-curve"])
+    def test_a_request_the_engine_refuses_is_a_400_naming_it(self, test_client, change, message):
+        body = _exposure_body()
+        change(body)
+        r = test_client.post("/runs", json=body)
+        assert r.status_code == 400, r.text
+        assert message in r.json()["detail"]
+
+
+class TestPrecisionOnTheWire:
+    """`engine.precision.Precision` as `config.precision` (the dataclass level is
+    tests/test_precision.py)."""
 
     @pytest.mark.parametrize("old", [{"simulation": 32}, {"pricing": 64}, {"risk": 32}, {"calibration": 64}])
     def test_the_retired_32_64_shape_is_a_422_naming_the_replacement(self, test_client, old):
         """Refused, not translated (decision A-12)."""
-        r = test_client.post("/portfolio/price", json=_body([_swap()], precision=old))
+        r = test_client.post("/runs", json=_exposure_body(precision=old))
         assert r.status_code == 422 and "retired on 2026-10-01" in r.text and "StagePrecision" in r.text
 
     def test_a_format_outside_the_table_is_a_422(self, test_client):
-        r = test_client.post("/portfolio/price", json=_body([_swap()], precision={"pricing": {"compute": "fp32"}}))
+        r = test_client.post("/runs", json=_exposure_body(precision={"pricing": {"compute": "fp32"}}))
         assert r.status_code == 422 and "float8_e4m3fn" in r.text
 
     @pytest.mark.parametrize("stage, block, message", [
@@ -279,44 +226,44 @@ class TestPortfolioPricePrecision:
          "a matrix-product format"),
     ])
     def test_a_refused_stage_is_a_400_naming_the_stage_and_field(self, test_client, stage, block, message):
-        r = test_client.post("/portfolio/price", json=_body([_swap()], precision={stage: block}))
-        assert r.status_code == 400 and f"precision.{stage}" in r.json()["detail"] and message in r.json()["detail"]
+        r = test_client.post("/runs", json=_exposure_body(precision={stage: block}))
+        detail = r.json()["detail"]
+        assert r.status_code == 400 and f"config.precision.{stage}" in detail and message in detail
 
-    def test_overrides_per_product_and_trade_reach_the_run_configuration(self):
+    def test_overrides_per_product_and_trade_reach_the_run(self):
         """Decision A-15: `by_product` keyed by `trade_type`, `by_trade` by `trade_id`."""
         f32 = {"storage": "float32", "compute": "float32", "accumulate": "float32"}
-        body = _body([_swap(trade_id="s"), _european(trade_id="e")],
-                     precision={"by_product": {"european_swaption": f32}, "by_trade": {"s": {"storage": "float32"}}})
-        request = MarketPortfolioRequestSchema.model_validate(body).to_dataclass()
+        body = _exposure_body(trades=({**SWAP, "trade_id": "s"}, {**EUROPEAN, "trade_id": "e"}),
+                              precision={"by_product": {"european_swaption": f32}, "by_trade": {"s": {"storage": "float32"}}})
+        request = request_of(body)
         precision = request.config.precision
-        assert [precision.precision_for(t) for t in request.trades] == [
+        assert [precision.precision_for(t) for t in request.portfolio] == [
             StagePrecision("float32", "float64", "float64"), StagePrecision("float32", "float32", "float32")]
 
     def test_an_unknown_product_is_a_422_listing_the_products(self, test_client):
-        r = test_client.post("/portfolio/price", json=_body([_swap()], precision={"by_product": {"swaption": {}}}))
+        r = test_client.post("/runs", json=_exposure_body(precision={"by_product": {"swaption": {}}}))
         assert r.status_code == 422 and "european_swaption" in r.text and "bermudan_swaption" in r.text
 
     def test_an_override_naming_no_trade_is_a_400(self, test_client):
-        """Checked synchronously with the request (`validate_request`): no job is created."""
-        r = test_client.post("/portfolio/price", json=_body([_swap(trade_id="s")],
-                                                            precision={"by_trade": {"s2": {"storage": "float32"}}}))
+        body = _exposure_body(trades=({**SWAP, "trade_id": "s"},), precision={"by_trade": {"s2": {"storage": "float32"}}})
+        r = test_client.post("/runs", json=body)
         assert r.status_code == 400 and "Precision.by_trade: ['s2'] not the id of a trade" in r.json()["detail"]
 
     @pytest.mark.parametrize("name", ["by_product", "by_trade"])
     def test_an_override_not_enabled_is_a_400_naming_its_key(self, test_client, name):
         key = "swap" if name == "by_product" else "s"
-        r = test_client.post("/portfolio/price", json=_body([_swap(trade_id="s")],
-                                                            precision={name: {key: {"compute": "float16"}}}))
-        assert r.status_code == 400 and f"precision.{name}['{key}']" in r.json()["detail"]
+        body = _exposure_body(trades=({**SWAP, "trade_id": "s"},), precision={name: {key: {"compute": "float16"}}})
+        r = test_client.post("/runs", json=body)
+        assert r.status_code == 400 and f"config.precision.{name}['{key}']" in r.json()["detail"]
 
-    def test_scaled_storage_and_its_rounding_reach_the_run_configuration(self):
+    def test_scaled_storage_and_its_rounding_reach_the_run(self):
         """Float16, bfloat16 and FP8 storage, `rounding` and `rounding_seed`."""
         fp8 = {"storage": "float8_e4m3fn", "compute": "float32", "accumulate": "float32"}
-        body = _body([_swap()], precision={"simulation": fp8, "pricing": {"storage": "bfloat16"},
-                                           "rounding": "stochastic", "rounding_seed": 7})
-        precision = MarketPortfolioRequestSchema.model_validate(body).to_dataclass().config.precision
-        assert precision == Precision(simulation=StagePrecision("float8_e4m3fn", "float32", "float32"),
-                                      pricing=StagePrecision("bfloat16"), rounding="stochastic", rounding_seed=7)
+        body = _exposure_body(precision={"simulation": fp8, "pricing": {"storage": "bfloat16"},
+                                         "rounding": "stochastic", "rounding_seed": 7})
+        assert request_of(body).config.precision == Precision(
+            simulation=StagePrecision("float8_e4m3fn", "float32", "float32"), pricing=StagePrecision("bfloat16"),
+            rounding="stochastic", rounding_seed=7)
 
     @pytest.mark.parametrize("precision, status, message", [
         ({"rounding": "up"}, 422, "stochastic"),
@@ -324,61 +271,41 @@ class TestPortfolioPricePrecision:
         ({"rounding": "stochastic"}, 400, "no stage or override stores in one"),
     ])
     def test_a_rounding_that_cannot_apply_is_refused(self, test_client, precision, status, message):
-        r = test_client.post("/portfolio/price", json=_body([_swap()], precision=precision))
+        r = test_client.post("/runs", json=_exposure_body(precision=precision))
         assert r.status_code == status and message in r.text
+
+    def test_a_precision_no_analytic_reads_is_a_400(self, test_client):
+        """Today's values are float64 at every precision (A-10): a precision with only `npv` is
+        accepted and then ignored, which is refused (I-95)."""
+        body = run_body(["npv"], [SWAP], precision={"pricing": {"storage": "float32"}})
+        r = test_client.post("/runs", json=body)
+        assert r.status_code == 400 and "config.precision: no requested analytic reads it" in r.json()["detail"]
 
     @pytest.mark.slow
     def test_omitted_precision_equals_explicit_float64(self, test_client):
         f64 = {"storage": "float64", "compute": "float64", "accumulate": "float64"}
-        a = _submit_and_poll(test_client, _body([_swap()]))
-        b = _submit_and_poll(test_client, _body([_swap()], precision={s: f64 for s in ("simulation", "market",
-                                                                                         "pricing")}))
-        np.testing.assert_array_equal(np.asarray(a["npv_cube"]), np.asarray(b["npv_cube"]))
+        a = run_over_http(test_client, _exposure_body())
+        b = run_over_http(test_client, _exposure_body(precision={s: f64 for s in ("simulation", "market", "pricing")}))
+        assert a["exposure"]["npv_cube"]["values"] == b["exposure"]["npv_cube"]["values"]
 
+    @pytest.mark.slow
+    def test_two_precisions_submitted_back_to_back_each_run_at_their_own(self, test_client):
+        from tests.support.runs import poll, submit
 
-@pytest.mark.slow
-class TestPortfolioPriceJobQueueDispatch:
-    """`/portfolio/price` queues jobs of every precision for the one engine worker
-    (`engine.api.worker`, decision A-14)."""
-
-    def test_two_precisions_submitted_back_to_back_both_complete_correctly(self, test_client):
         f32 = {"storage": "float32", "compute": "float32", "accumulate": "float32"}
-        body_64 = _body([_swap(), _european()])
-        body_32 = _body([_swap(), _european()], precision={"simulation": f32, "market": f32, "pricing": f32})
-        job_64 = test_client.post("/portfolio/price", json=body_64).json()["job_id"]
-        job_32 = test_client.post("/portfolio/price", json=body_32).json()["job_id"]
-        deadline = time.time() + 180
-        data = {}
-        while time.time() < deadline and not all(data.get(j, {}).get("status") in ("done", "failed")
-                                                  for j in (job_64, job_32)):
-            data = {j: test_client.get(f"/jobs/{j}").json() for j in (job_64, job_32)}
-            time.sleep(0.1)
-        r64, r32 = data[job_64]["result"], data[job_32]["result"]
-        np.testing.assert_array_equal(np.asarray(r64["npv_cube"]), np.asarray(_direct(body_64).npv_cube))
-        np.testing.assert_array_equal(np.asarray(r32["npv_cube"]), np.asarray(_direct(body_32).npv_cube))
-        assert r64["npv_cube"] != r32["npv_cube"], "the float32 job was not priced in float32"
-
-    def test_the_route_queues_the_job_rather_than_pricing_it(self, test_client):
-        """The route returns as soon as the job is queued; the 202 rules out blocking."""
-        r = test_client.post("/portfolio/price", json=_body([_swap(), _european()], simulation=_simulation(2048)))
-        assert r.status_code == 202, r.text
-        status = test_client.get(f"/jobs/{r.json()['job_id']}").json()["status"]
-        assert status in ("pending", "running", "done")
+        body_64 = _exposure_body()
+        body_32 = _exposure_body(precision={"simulation": f32, "market": f32, "pricing": f32})
+        runs = [submit(test_client, b) for b in (body_64, body_32)]
+        r64, r32 = (poll(test_client, r)["result"]["exposure"]["npv_cube"]["values"] for r in runs)
+        np.testing.assert_array_equal(np.asarray(r64), np.asarray(run_in_process(body_64).portfolio.npv_cube))
+        np.testing.assert_array_equal(np.asarray(r32), np.asarray(run_in_process(body_32).portfolio.npv_cube))
+        assert r64 != r32, "the float32 run was not priced in float32"
 
 
-@pytest.mark.slow
-class TestGapFixesSurviveTheHttpBoundary:
-    """The fixes of tests/test_portfolio_gap_fixes.py survive serialization and the
-    worker-process boundary."""
+def test_a_currency_market_and_its_equities_reach_the_market():
+    """The demo's two-currency request, with an equity."""
+    from demos.demo_scenarios import demo_market_json
 
-    def test_swap_greeks_present_over_http(self, test_client):
-        result = _submit_and_poll(test_client, _body([_swap()], compute_greeks=True))
-        entry = result["trades"][0]["greeks"]
-        assert "delta:discount:USD" in entry["values"] and f"delta:index:{shared.INDEX}" in entry["values"]
-        assert entry["theta"] is not None
-
-    def test_per_trade_base_npv_present_and_reconciles_over_http(self, test_client):
-        result = _submit_and_poll(test_client, _body([_swap(), _swap(notional=250_000.0)]))
-        values = [t["base_npv"] for t in result["trades"]]
-        assert len(values) == 2
-        assert result["base_npv"] == pytest.approx(sum(values), rel=0.0, abs=1e-9)
+    body = run_body(["npv"], [SWAP], market=demo_market_json(("USD", "EUR")))
+    market = request_of(body).market
+    assert set(market.equities) == set(body["market"]["equities"]) and set(market.currencies) == {"USD", "EUR"}

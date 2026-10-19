@@ -15,7 +15,7 @@ import dataclasses
 
 import pytest
 
-from engine.api.requests import MarketPortfolioRequestSchema
+from engine.api.requests import RunRequestSchema
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.pricing.cube import OPTIONS, value_today
@@ -49,8 +49,8 @@ def test_a_short_option_today_is_ores_short_option(name):
 
 
 def test_the_http_body_is_the_portfolio():
-    body = {"market": portfolio.market_json(), "trades": list(portfolio.trades_json().values()),
-            "scenario_risk": False}
-    request = MarketPortfolioRequestSchema(**body).to_dataclass()
+    body = {"market": portfolio.market_json(), "portfolio": list(portfolio.trades_json().values()),
+            "analytics": ["npv"]}
+    request = RunRequestSchema.model_validate(body).to_dataclass()
     assert request.market == portfolio.market()
-    assert request.trades == list(TRADES.values())
+    assert list(request.portfolio) == list(TRADES.values())

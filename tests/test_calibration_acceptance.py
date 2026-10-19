@@ -1,5 +1,5 @@
 """
-ORE's calibration acceptance on every LGM bootstrap (I-73; `engine.calibration.ore_lgm`):
+ORE's calibration acceptance on every LGM bootstrap (I-73; `engine.calibration.lgm`):
 `LgmBuilder::calibrate` computes the calibration error, the root mean square of the helpers'
 relative price errors |market - model| / market (`getCalibrationError`), and fails the build
 when it is not below the tolerance (a trade's `Tolerance`, the cross-asset model's
@@ -26,9 +26,9 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.api.requests import CamCalibrationRequestSchema, CamConfigSchema, LgmEngineSchema
+from engine.api.requests import LgmEngineSchema, RunRequestSchema
 from engine.calibration.cam import calibrate_cam
-from engine.calibration.ore_lgm import BOOTSTRAP_TOLERANCE, CalibrationError, build_basket, market_price
+from engine.calibration.lgm import BOOTSTRAP_TOLERANCE, CalibrationError, build_basket, market_price
 from engine.market_data.curves import ZeroCurve
 from engine.market_data.market import CurrencyMarket, Market, SwaptionVolSurface
 from engine.market_simulation.config import CamConfig, LgmConfig, build_cross_asset_model
@@ -161,11 +161,13 @@ class TestTheSetting:
         assert BOOTSTRAP_TOLERANCE == 1e-4
 
     def test_the_api_fields_reach_the_configurations(self):
+        """A trade's engine's, and the cross-asset model's, which its exposure simulation and its
+        calibration analytic both read (`config.models.bootstrap_tolerance`)."""
         assert LgmEngineSchema(bootstrap_tolerance=0.2).to_dataclass().bootstrap_tolerance == 0.2
-        simulation = CamConfigSchema(dates=["2027-07-30"], base_currency="USD", ir={"USD": {"reversion": 0.03}},
-                                     bootstrap_tolerance=0.2)
-        assert simulation.to_dataclass().bootstrap_tolerance == 0.2
-        calibration = CamCalibrationRequestSchema(
-            market=shared.market_json(), bootstrap_tolerance=0.2,
-            ir={"USD": {"reversion": 0.03, "calibration_expiries": ["1Y"], "calibration_terms": ["5Y"]}})
-        assert calibration.to_dataclass()[2] == 0.2
+        body = {"market": shared.market_json(), "analytics": ["exposure", "calibration"],
+                "portfolio": [shared.trades_json()["swap-payer"]],
+                "config": {"models": {"ir": {"USD": {"reversion": 0.03, "calibration_expiries": ["1Y"],
+                                                     "calibration_terms": ["5Y"]}}, "bootstrap_tolerance": 0.2},
+                           "simulation": {"dates": ["2027-07-30"]}}}
+        request = RunRequestSchema.model_validate(body).to_dataclass()
+        assert request.config.models.bootstrap_tolerance == request.config.cam().bootstrap_tolerance == 0.2

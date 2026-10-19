@@ -54,7 +54,7 @@ from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, underly
 from engine.instruments.european_swaption import SwaptionConfig, underlying_swap as european_underlying
 from engine.instruments.swap import SwapConfig, underlying_swap as swap_underlying
 from engine.instruments.treasury import BondConfig
-from engine.calibration.ore_lgm import SwapIndexConventions
+from engine.calibration.lgm import SwapIndexConventions
 from engine.market_data.day_counts import resolve_accrual_day_count
 from engine.market_data.market import Market, SwaptionVolSurface
 from engine.models.lgm import Sigma
@@ -144,7 +144,7 @@ _FIXED_FREQUENCIES = {"1Y": "Annual", "6M": "Semiannual", "3M": "Quarterly", "1M
 
 def conventions_xml(index: str, swap_index: SwapIndexConventions = SwapIndexConventions()) -> str:
     """The zero, Ibor and swap conventions; the swap index's fixed leg is `swap_index`'s, on
-    `index` (the calibration helpers' conventions, `engine.calibration.ore_lgm._helper`)."""
+    `index` (the calibration helpers' conventions, `engine.calibration.lgm._helper`)."""
     if swap_index.fixed_tenor not in _FIXED_FREQUENCIES:
         raise NotImplementedError(f"the oracle's swap index fixed tenor is one of {list(_FIXED_FREQUENCIES)}; got "
                                   f"{swap_index.fixed_tenor!r}")

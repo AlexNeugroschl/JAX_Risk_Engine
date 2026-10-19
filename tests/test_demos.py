@@ -36,14 +36,16 @@ class TestComponentDemosRun:
 @pytest.mark.parametrize("demo", [demo_structured, demo_profile_small], ids=lambda m: m.__name__.split(".")[-1])
 class TestTheHttpDemosPolling:
     """Until 2026-10-06 each HTTP demo polled until `done` or `failed`, so a job whose worker
-    died (`interrupted`, final too) was polled forever. Each demo polls with its own code
-    (`demo_api.py` too, which runs as a script on import and is not tested here)."""
+    died (`interrupted`, final too) was polled forever; since the run request (2026-10-18) a demo
+    polls until the run is neither pending nor running, so a `cancelled` run ends the poll too.
+    Each demo polls with its own code (`demo_api.py` too, which runs as a script on import and is
+    not tested here)."""
 
     @pytest.fixture
     def statuses(self, monkeypatch):
         """The job's statuses, one per poll; the requests go nowhere and nothing sleeps."""
         polls = []
-        submit = httpx.Response(202, json={"job_id": "j"}, request=httpx.Request("POST", "http://demo"))
+        submit = httpx.Response(202, json={"run_id": "r"}, request=httpx.Request("POST", "http://demo"))
 
         def get(url, **_):
             return httpx.Response(200, json=polls.pop(0), request=httpx.Request("GET", url))
@@ -53,14 +55,14 @@ class TestTheHttpDemosPolling:
         monkeypatch.setattr(time, "sleep", lambda seconds: None)
         return polls
 
-    def test_a_done_job_returns_its_result(self, statuses, demo):
+    def test_a_done_run_returns_its_result(self, statuses, demo):
         statuses += [{"status": "pending"}, {"status": "running"}, {"status": "done", "result": {"x": 1}}]
         assert demo.submit_and_wait({}) == {"x": 1}
 
-    @pytest.mark.parametrize("final", ["failed", "interrupted"])
-    def test_a_job_that_did_not_finish_raises(self, statuses, demo, final):
+    @pytest.mark.parametrize("final", ["failed", "interrupted", "cancelled"])
+    def test_a_run_that_did_not_finish_raises(self, statuses, demo, final):
         statuses += [{"status": "running"}, {"status": final, "error": "why"}]
-        with pytest.raises(RuntimeError, match=f"pricing job {final}:\nwhy"):
+        with pytest.raises(RuntimeError, match=f"run {final}:\nwhy"):
             demo.submit_and_wait({})
         assert not statuses
 

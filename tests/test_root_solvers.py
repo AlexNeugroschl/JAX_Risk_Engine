@@ -10,9 +10,8 @@ solves with it.
   * `implicit_root`'s first and second derivatives on roots with known derivatives.
   * On the parity markets (the shared sloped portfolio's options and a tenor basket today):
     every bootstrap bucket reprices its helper to
-    rounding under Newton and equals Bisection's; Jamshidian's x* and the standalone
-    `/calibration/lgm` bootstrap likewise. Newton's step counts have two steps of margin: two
-    fewer reach the same roots.
+    rounding under Newton and equals Bisection's; Jamshidian's x* likewise. Newton's step counts
+    have two steps of margin: two fewer reach the same roots.
   * The setting on every configuration that solves a root, with its API field, refused by
     name when unknown; ORE parity at t=0 under the reference solver.
   * An American on a path date with an exercise left after its last calibration helper
@@ -28,18 +27,13 @@ import ORE
 import pytest
 from pydantic import ValidationError
 
-import engine.calibration.basket as basket_module
-import engine.calibration.lgm as lgm_module
-import engine.calibration.ore_lgm as ore_lgm
+import engine.calibration.lgm as ore_lgm
 import engine.pricing.jamshidian as jamshidian
 from engine.api.requests import (
     HullWhiteConfigSchema, JamshidianEngineSchema, LgmConfigSchema, LgmEngineSchema,
 )
-from engine.calibration.basket import build_coterminal_basket
-from engine.calibration.lgm import calibrate_lgm_sigma
-from engine.calibration.ore_lgm import basket_vols, bootstrap_sigma, build_basket
+from engine.calibration.lgm import basket_vols, bootstrap_sigma, build_basket
 from engine.market_data.curves import ZeroCurve
-from engine.market_data.curves import ZeroCurve as HwZeroCurve
 from engine.market_data.market import index_name
 from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfig, simulate
 from engine.pricing.bermudan import bermudan_cube, calibration_basket
@@ -237,7 +231,7 @@ def newton_steps(monkeypatch, **counts):
     """Each `module.CONSTANT` of `counts` (`"ore_lgm.SIGMA_STEPS"`: a Newton count, or a change
     of it when negative) set for the block, with JAX's caches cleared on entry and exit: jitted
     programs read the counts when traced, and wrappers of one function share their traces."""
-    modules = {"ore_lgm": ore_lgm, "basket": basket_module, "lgm": lgm_module, "jamshidian": jamshidian}
+    modules = {"ore_lgm": ore_lgm, "jamshidian": jamshidian}
     for name, count in counts.items():
         module, constant = name.split("__", 1)
         steps = getattr(modules[module], constant)
@@ -350,49 +344,23 @@ def test_jamshidian_s_x_star_at_extreme_strikes(tenor, forward, payer):
         assert abs(values["Newton"] - values["Bisection"]) <= 1e-11 * cfg.notional, (rate, values)
 
 
-def _standalone_baskets():
-    curves = [HwZeroCurve(jnp.asarray([0.0, 1.0, 5.0, 10.0]), jnp.asarray([0.02, 0.025, 0.035, 0.04])),
-              HwZeroCurve(jnp.asarray([0.0, 30.0]), jnp.asarray([0.03, 0.03]))]
-    return [(curve, build_coterminal_basket([1.0, 2.0, 3.0, 4.0], 5.0, 1e6, payer, vols, curve, ASOF))
-            for curve in curves for payer in (True, False)
-            for vols in ([0.008, 0.0085, 0.009, 0.0088], [0.02, 0.005, 0.012, 0.01])]
-
-
-def _gap_of(result):
-    return np.max(np.abs(np.asarray(result.model_prices) - np.asarray(result.market_prices))
-                  / np.asarray(result.market_prices))
-
-
-def test_the_standalone_bootstrap_is_the_same_under_both_solvers():
-    """`POST /calibration/lgm`'s bootstrap (x* inside each bucket's price), on a sloped and a
-    flat curve, payer and receiver, a smooth and a spiked volatility term structure."""
-    for curve, targets in _standalone_baskets():
-        newton, bisection = (calibrate_lgm_sigma(targets, curve, 0.03, s) for s in ("Newton", "Bisection"))
-        np.testing.assert_allclose(np.asarray(newton.sigma.values), np.asarray(bisection.sigma.values),
-                                   rtol=AGREEMENT)
-        assert _gap_of(newton) <= max(RESIDUAL_FACTOR * _gap_of(bisection), RESIDUAL_FLOOR)
-
-
 def test_the_x_star_step_counts_have_two_steps_of_margin(jamshidian_cases, monkeypatch):
-    """Two fewer steps for x* (and the standalone bootstrap's buckets) reach the same roots;
-    one step does not, which shows the counts were changed."""
+    """Two fewer steps for x* reach the same roots; one step does not, which shows the count
+    was changed."""
     model = JamshidianEngineConfig(0.03, 0.01)
 
     def roots_now():
         npv = jax.jit(jamshidian.jamshidian_npv, static_argnums=1)
-        return ([np.asarray(calibrate_lgm_sigma(t, c, 0.03, "Newton").sigma.values) for c, t in _standalone_baskets()],
-                [np.asarray(npv(terms, model, disc, t)) for terms, disc, t in jamshidian_cases])
+        return [np.asarray(npv(terms, model, disc, t)) for terms, disc, t in jamshidian_cases]
 
     full = roots_now()
-    with newton_steps(monkeypatch, basket__X_STAR_STEPS=-2, lgm___SIGMA_STEPS=-2, jamshidian__X_STAR_STEPS=-2):
+    with newton_steps(monkeypatch, jamshidian__X_STAR_STEPS=-2):
         fewer = roots_now()
-    with newton_steps(monkeypatch, basket__X_STAR_STEPS=1, lgm___SIGMA_STEPS=1, jamshidian__X_STAR_STEPS=1):
+    with newton_steps(monkeypatch, jamshidian__X_STAR_STEPS=1):
         one = roots_now()
-    for a, b in zip(full[0], fewer[0]):
-        np.testing.assert_allclose(b, a, rtol=AGREEMENT)
-    for a, b, (terms, _, _) in zip(full[1], fewer[1], jamshidian_cases):
+    for a, b, (terms, _, _) in zip(full, fewer, jamshidian_cases):
         np.testing.assert_allclose(b, a, atol=NPV_AGREEMENT * terms.nominal, rtol=0)
-    assert any(not np.allclose(a, b, rtol=1e-8, atol=0) for a, b in zip(full[0] + full[1], one[0] + one[1]))
+    assert any(not np.allclose(a, b, rtol=1e-8, atol=0) for a, b in zip(full, one))
 
 
 @pytest.mark.parametrize("name", [cfg.trade_id for cfg in OPTIONS])
@@ -420,7 +388,6 @@ class TestTheSetting:
         (lambda: JamshidianEngineConfig(0.03, 0.01, "Brent"), "JamshidianEngineConfig.solver"),
         (lambda: LgmConfig(0.03, solver="Brent"), "LgmConfig.solver"),
         (lambda: HullWhiteConfig(0.03, solver="Brent"), "HullWhiteConfig.solver"),
-        (lambda: calibrate_lgm_sigma([], None, 0.03, "Brent"), "solver"),
     ])
     def test_an_unknown_solver_is_refused_naming_the_field(self, build, field):
         with pytest.raises(ValueError, match=f"{field} must be one of"):
@@ -436,15 +403,6 @@ class TestTheSetting:
         assert LgmEngineSchema().to_dataclass().solver == "Newton"
         with pytest.raises(ValidationError):
             LgmEngineSchema(solver="Brent")
-
-    def test_the_standalone_route_takes_the_solver(self, test_client):
-        body = {"evaluation_date": shared.ASOF_ISO, "exercise_times": [1.0, 2.0, 3.0, 4.0], "final_maturity_time": 5.0,
-                "notional": 1_000_000.0, "payer": True, "market_vols": [0.0080, 0.0088, 0.0095, 0.0100],
-                "zero_curve": {"times": [0.0, 1.0, 5.0, 10.0], "rates": [0.02, 0.025, 0.035, 0.04]}, "hw_a": 0.03}
-        values = {s: test_client.post("/calibration/lgm", json={**body, "solver": s}).json()["sigma_values"]
-                  for s in SOLVERS}
-        np.testing.assert_allclose(values["Newton"], values["Bisection"], rtol=AGREEMENT)
-        assert test_client.post("/calibration/lgm", json={**body, "solver": "Brent"}).status_code == 422
 
 
 # =============================================================================

@@ -4,7 +4,7 @@ Calibration of the cross-asset model's interest-rate components, as ORE's
 bootstrapped (`LgmBuilder`, `Calibration = Bootstrap`) to its `CalibrationSwaptions` basket --
 tenor-based expiries and terms, ATM -- on today's discount curve and the swap index's
 forwarding curve, with the configured constant reversion. The same helpers and bootstrap as
-a trade's calibration (`engine.calibration.ore_lgm`), which match ORE's to ~1e-12.
+a trade's calibration (`engine.calibration.lgm`), which match ORE's to ~1e-12.
 
 A Hull-White currency (`HullWhiteConfig`, ORE's `VolatilityType HullWhite`) is calibrated to
 the same helpers: a helper's model price depends on the volatility only through zeta at its
@@ -25,7 +25,7 @@ from typing import Dict, Mapping
 import jax.numpy as jnp
 import numpy as np
 
-from engine.calibration.ore_lgm import (
+from engine.calibration.lgm import (
     BOOTSTRAP_TOLERANCE, basket_vols, bootstrap_sigma, build_basket, check_tolerance, require_accepted,
 )
 from engine.market_data.curves import ZeroCurve
@@ -35,11 +35,14 @@ from engine.models.lgm import Sigma, hull_white_matching_zeta
 
 @dataclass
 class CamCalibration:
-    """One currency's calibrated volatility, in its model's parametrization, and each
-    helper's market and model value."""
+    """One currency's calibrated volatility, in its model's parametrization, each helper's
+    market and model value, and the calibration's error as ORE measures it against its
+    `BootstrapTolerance` (the root mean square of the helpers' relative price errors,
+    `getCalibrationError`)."""
     sigma: Sigma
     market: np.ndarray
     model: np.ndarray
+    error: float
 
 
 def calibrate_currency(market: Market, currency: str, lgm, tolerance: float = BOOTSTRAP_TOLERANCE) -> CamCalibration:
@@ -56,7 +59,7 @@ def calibrate_currency(market: Market, currency: str, lgm, tolerance: float = BO
     sigma = Sigma(jnp.asarray(result.times), result.values)
     if lgm.volatility_type == "HullWhite":
         sigma = hull_white_matching_zeta(lgm.reversion, sigma, basket[-1].expiry_time)
-    return CamCalibration(sigma, np.asarray(result.market), np.asarray(result.model))
+    return CamCalibration(sigma, np.asarray(result.market), np.asarray(result.model), float(result.rmse))
 
 
 def calibrate_cam(market: Market, lgm_configs: Mapping,

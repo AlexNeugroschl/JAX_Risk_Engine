@@ -83,8 +83,7 @@ ANALYTICS = {
 PRODUCTS = {"swap": "Swap", "european_swaption": "European", "bermudan_swaption": "Bermudan",
             "american_swaption": "American", "bond": "Bond"}
 #: The calibration analytic's columns: what is calibrated.
-MODELS = {"cross_asset_model": "Cross-asset model (POST /calibration/cam)",
-          "standalone_lgm": "Standalone LGM (POST /calibration/lgm)"}
+MODELS = {"cross_asset_model": "Cross-asset model"}
 TRADE_ANALYTICS = ("npv", "exposure", "sensitivities", "market_risk")
 TRADE_CLASSES = (SwapConfig, SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig, BondConfig)
 LGM_OPTIONS = ("bermudan_swaption", "american_swaption")
@@ -449,10 +448,6 @@ REASONS: Dict[Tuple[str, str, str, str], Reason] = {
     ("exposure", "*", "CamConfig.replicates", "≠ 1"): Reason(
         NOT_ORES, "the engine's own scrambles of its paths (X-1); on ORE's paths (L3) a cell is compared whatever "
                   "drew them"),
-    ("calibration", "standalone_lgm", "", ""): Reason(
-        NOT_YET, "the standalone bootstrap (`calibrate_lgm_sigma`) is the second LGM calibration, which retires or "
-                 "moves to tests/support once the run request's calibration analytic replaces it (I-94); the "
-                 "trades' and the cross-asset model's calibrations are ORE's"),
 }
 
 
@@ -564,15 +559,15 @@ def unclassified_fields() -> List[str]:
 
 
 #: Each HTTP route of `engine.api.app.app` (its OpenAPI paths): the analytics it runs, space-separated
-#: ("" for a route that computes no figure: status, jobs, artifacts, schemas). TraderX's `/eod/price` prices
-#: Treasury bills and notes by its own pricers (I-93), the `npv` analytic's bond column once it moves onto the
-#: engine.
+#: ("" for a route that computes no figure: status, runs, artifacts, schemas). `POST /runs` runs every analytic,
+#: as its request's `analytics` list names them (I-87); its settings are the entry points' (`ROOTS`), onto
+#: which tests/test_api_completeness.py proves the run request maps every field. TraderX's `/eod/price`
+#: prices Treasury bills and notes by its own pricers (I-93), the `npv` analytic's bond column once it moves
+#: onto the engine.
 ROUTES = {
-    "/health": "", "/version": "", "/jobs/{job_id}": "", "/jobs/{job_id}/artifacts/{name}/{chunk}": "",
-    "/portfolio/price": "npv exposure sensitivities",
-    "/portfolio/market-risk": "market_risk",
-    "/calibration/cam": "calibration",
-    "/calibration/lgm": "calibration",
+    "/health": "", "/version": "", "/config/defaults": "", "/runs/{run_id}": "", "/runs/{run_id}/cancel": "",
+    "/runs/{run_id}/artifacts/{name}/{chunk}": "",
+    "/runs": "npv exposure sensitivities market_risk calibration",
     "/eod/capabilities": "", "/eod/schemas/result": "", "/eod/schemas/capabilities": "",
     "/eod/price": "npv",
     "/eod/results/by-workload/{workload_key_value}": "", "/eod/attempts/{attempt_id}": "",

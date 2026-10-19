@@ -71,7 +71,7 @@ class PortfolioRequest:
     scenario_risk: bool = True
     #: Materialize the float64 output cube. False returns an empty `(0, 0, 0)` array;
     #: exposure, exercise decisions and precision reports are still computed normally.
-    #: HTTP `cube_output="none"` selects False; inline and artifact select True.
+    #: The run request's `include_npv_cube` (HTTP `outputs.npv_cube: "none"`) is False's way in.
     include_npv_cube: bool = True
 
     def __post_init__(self):

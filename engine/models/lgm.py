@@ -69,9 +69,8 @@ class Sigma:
     `alphaTimes`/`alpha`, so `len(values) == len(times) + 1`. Empty `times` means flat.
 
     Registered as a pytree with both fields as children, so tangents propagate when a
-    `Sigma` is nested inside a larger argument (e.g. `(a, sigma)` in
-    `engine.calibration.basket`). As an unregistered leaf it would silently get a zero
-    tangent.
+    `Sigma` is nested inside a larger argument (a model's `(a, sigma)`). As an unregistered
+    leaf it would silently get a zero tangent.
     """
     times: jax.Array    # [B-1], strictly increasing, B = number of buckets
     values: jax.Array   # [B]

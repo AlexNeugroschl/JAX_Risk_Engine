@@ -90,7 +90,7 @@ bucket's own partial contribution — live-verified against
 both `times` and `values` as children (not static/auxiliary data). This is required for
 `jax.jvp`/`jax.custom_jvp`/`jax.grad` to differentiate correctly whenever a `Sigma` is
 passed as part of a **larger** pytree argument — e.g.
-`engine.calibration.basket.price_lgm_swaption`'s x* params, the `(a, sigma)` tuple — rather than
+a model's `(a, sigma)` tuple, as the retired standalone calibration's x* params were — rather than
 having its own `.values` array unpacked and passed directly as a bare `jax.Array`.
 
 **This was a real, not merely theoretical, gap.** An unregistered `@dataclass` is treated
@@ -100,7 +100,7 @@ simply comes back as zero (or, worse, partially correct in a way that's hard to 
 from a legitimately small effect). Before this registration was added, `_bisect_xstar`'s
 own implicit-function-theorem correction (see [Calibration](calibration.md#the-_bisect_xstar-gradient-bug))
 produced a systematic ~6% wrong gradient even *with* that correction in place, because
-`jax.jvp` was differentiating `price_lgm_swaption` with respect to `sigma` as an opaque
+`jax.jvp` was differentiating the standalone's LGM swaption price with respect to `sigma` as an opaque
 object, contributing zero tangent through `Sigma.values`, silently understating the
 correction term. Both fixes — the `custom_jvp` implicit-function-theorem correction and
 this pytree registration — were required together; either one alone still produced a

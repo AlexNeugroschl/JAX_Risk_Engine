@@ -28,7 +28,7 @@ trade, in the base currency (`portfolio_greeks`):
 A calibrated Bermudan/American calibrates inside its price function, so its Delta and Gamma move
 the calibration with the curve, as ORE's sensitivity analysis recalibrates under every shift, and
 its Vega moves it with the quotes; each by the implicit function theorem on the whole calibration
-(`engine.calibration.ore_lgm.calibrated_values`).
+(`engine.calibration.lgm.calibrated_values`).
 
 **Where AD is not ORE's Greek: the grid engine** (I-78). A Bermudan's/American's price on the
 LGM grid (ORE's own, to 1e-11) is piecewise smooth in the rates: its exercise switches on the

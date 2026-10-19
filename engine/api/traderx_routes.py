@@ -21,7 +21,7 @@ not be published, 500. A refused instrument is a 200 whose coverage block names 
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from engine.traderx.bundle import BundleIntegrityError, load_bundle
 from engine.traderx.capabilities import ENGINE_VERSION, capabilities
@@ -62,7 +62,9 @@ STORE = AttemptStore(store=RESULT_STORE)
 
 class EodSubmissionSchema(BaseModel):
     """An EOD pricing submission. Only `bundlePath` is required. Omitting `marketInputs` is
-    legal and prices nothing; no curve is ever substituted."""
+    legal and prices nothing; no curve is ever substituted. An unknown field is refused (422),
+    as in every API model (I-103), so a misspelt option is never silently dropped."""
+    model_config = ConfigDict(extra="forbid")
     bundlePath: str = Field(
         description="Filesystem path to the bundle directory to price.",
     )

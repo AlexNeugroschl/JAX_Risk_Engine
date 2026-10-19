@@ -1,5 +1,5 @@
 """
-I-11 regressions: `PortfolioResult.measure` (and `PortfolioResultSchema.measure`) labels the
+I-11 regressions: `PortfolioResult.measure` (and the run result's `exposure.measure`) labels the
 risk figures of a direct `price_portfolio` call, and is set exactly when there are risk
 figures. (I-28's demo test is in tests/test_demos.py.)
 """
@@ -7,12 +7,13 @@ import json
 
 import ORE
 
-from demos.demo_scenarios import EVAL_DATE, demo_market, demo_simulation
-from engine.api.results import PortfolioResultSchema
+from demos.demo_scenarios import EVAL_DATE, demo_config_json, demo_market, demo_market_json, demo_simulation
+from engine.api.requests import RunRequestSchema
+from engine.api.results import run_result_document
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig
 from engine.risk.market.var_es import ENGINE_RISK_MEASURE, RISK_MEASURE_RISK_NEUTRAL, RISK_MEASURES
-from engine.run import PortfolioRequest, RunConfig, price_portfolio
+from engine.run import PortfolioRequest, RunConfig, price_portfolio, run
 
 
 def _swap() -> SwapConfig:
@@ -53,12 +54,21 @@ class TestPortfolioResultStatesItsMeasure:
         assert result.measure is None
 
     def test_the_label_is_serialized_over_http(self):
-        result = price_portfolio(_request([_swap()]))
-        body = json.loads(PortfolioResultSchema.from_dataclass(result).model_dump_json())
-        assert body["measure"] == RISK_MEASURE_RISK_NEUTRAL
+        body = _document(["npv", "exposure"])
+        assert body["exposure"]["measure"] == RISK_MEASURE_RISK_NEUTRAL
 
-    def test_an_absent_label_serializes_as_null(self):
-        result = price_portfolio(_request([_bill()], scenario_risk=False))
-        body = json.loads(PortfolioResultSchema.from_dataclass(result).model_dump_json())
-        assert "measure" in body
-        assert body["measure"] is None
+    def test_without_risk_figures_there_is_no_exposure_section_to_label(self):
+        body = _document(["npv"])
+        assert "exposure" in body and body["exposure"] is None
+
+
+def _document(analytics) -> dict:
+    """The wire result of the swap run with `analytics`, as the engine worker serializes it."""
+    dates = [(EVAL_DATE + ORE.Period(m, ORE.Months)).ISO() for m in (6, 12)]
+    config = demo_config_json("HullWhite", samples=32, dates=[ORE.DateParser.parseISO(d) for d in dates])
+    swap = {"trade_type": "swap", "trade_id": "swap", "notional": 1_000_000.0, "fixed_rate": 0.03, "payer": True,
+            "swap_tenor": "2Y"}
+    body = {"market": demo_market_json(("USD",)), "portfolio": [swap], "analytics": analytics,
+            "config": config if "exposure" in analytics else {}}
+    schema = RunRequestSchema.model_validate(body)
+    return json.loads(run_result_document(run(schema.check()), schema, "r", "/runs/r/artifacts")[0].model_dump_json())

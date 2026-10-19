@@ -39,7 +39,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from engine.calibration.ore_lgm import CalibrationError
+from engine.calibration.lgm import CalibrationError
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
@@ -134,7 +134,7 @@ def revalue_trade(cfg, market: Market, factors: RateRiskFactors, moves, pricing:
 
 def _require_calibrated(cfg, pricing: PricingConfig, misses: np.ndarray) -> None:
     """Refuse a revaluation whose option misses ORE's calibration acceptance in a scenario, as
-    every calibration that misses is refused (`engine.calibration.ore_lgm.require_accepted`)."""
+    every calibration that misses is refused (`engine.calibration.lgm.require_accepted`)."""
     engine = pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
     failed = np.flatnonzero(misses)
     if failed.size:

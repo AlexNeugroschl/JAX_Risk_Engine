@@ -38,7 +38,7 @@ import pytest
 
 from engine.api.requests import MarketTradeSchema
 from engine.api.requests import PrecisionSchema, StagePrecisionSchema
-from engine.calibration.ore_lgm import SIGMA_BRACKET, bootstrap_sigma, ceiling_tolerance
+from engine.calibration.lgm import SIGMA_BRACKET, bootstrap_sigma, ceiling_tolerance
 from engine.market_data.curves import ZeroCurve
 from engine.market_simulation.config import simulate
 from engine.precision import (

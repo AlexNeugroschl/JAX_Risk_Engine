@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from engine.api.requests import MarketPortfolioRequestSchema
+from engine.api.requests import RunRequestSchema
 from engine.pricing.cube import PortfolioValuation
 from engine.precision import FORMATS, Precision, StagePrecision, load, rounding_key, store
 from engine.risk.counterparty.exposure import column_profiles, exposure_profile, netting_set_profile
@@ -19,8 +19,8 @@ from tests.support.exposure_storage_check import _arrays
 
 
 def test_http_none_reaches_the_engine():
-    schema = MarketPortfolioRequestSchema.model_validate({
-        "market": shared.market_json(), "trades": [], "scenario_risk": False, "cube_output": "none"})
+    schema = RunRequestSchema.model_validate({
+        "market": shared.market_json(), "analytics": ["exposure"], "outputs": {"npv_cube": "none"}})
     assert schema.to_dataclass().include_npv_cube is False
 
 
@@ -118,8 +118,8 @@ def test_trade_count_and_values_reuse_reduction_programs():
 
 @pytest.mark.parametrize("output, expected", [("none", False), ("inline", True), ("artifact", True)])
 def test_http_cube_modes(output, expected):
-    schema = MarketPortfolioRequestSchema.model_validate({
-        "market": shared.market_json(), "trades": [], "scenario_risk": False, "cube_output": output})
+    schema = RunRequestSchema.model_validate({
+        "market": shared.market_json(), "analytics": ["exposure"], "outputs": {"npv_cube": output}})
     assert schema.to_dataclass().include_npv_cube is expected
 
 

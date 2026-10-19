@@ -545,6 +545,7 @@ refused. Against ORE's own trade builder with `LongShort` Short:
 `tests/test_shared_portfolio.py::test_a_short_option_today_is_ores_short_option` and, on ORE's
 paths, `tests/test_ore_xva_parity.py::test_a_short_option_on_ores_paths_is_ores_short_option`.
 
-`tests/test_calibration_integration.py` (6 tests) — a calibrated `Sigma` from
-`engine.calibration.lgm.calibrate_lgm_sigma` fed into the grid engine and priced end to end,
-confirming a piecewise `Sigma` works as a flat scalar does throughout.
+`tests/test_ore_lgm_calibration.py` — a Bermudan calibrated to its co-terminal basket
+(`engine.calibration.lgm`, ORE's bootstrap) and priced on the grid end to end equals ORE's
+`LGMGridSwaptionEngineBuilder` with `Calibration=Bootstrap`, so a piecewise `Sigma` prices as ORE's
+does throughout.

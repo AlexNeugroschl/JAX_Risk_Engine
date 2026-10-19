@@ -1,5 +1,5 @@
 """
-ORE's LGM calibration (`engine.calibration.ore_lgm`) against ORE.
+ORE's LGM calibration (`engine.calibration.lgm`) against ORE.
 
   * Helper market values against QuantLib's own `SwaptionHelper.marketValue()`: tenor- and
     date-based helpers, ATM and deal strikes, on a sloped two-curve market.
@@ -22,7 +22,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.calibration.ore_lgm import (
+from engine.calibration.lgm import (
     SwapIndexConventions, basket_vols, bootstrap_sigma, build_basket, market_price,
 )
 from engine.instruments.bermudan_swaption import (
@@ -84,7 +84,7 @@ def test_tenor_helper_market_value_equals_quantlib(expiry, term, strike):
 
 
 def _atm(instrument):
-    from engine.calibration.ore_lgm import _legs
+    from engine.calibration.lgm import _legs
     return float(_legs(instrument, _curve(DISC_RATES), _curve(INDEX_RATES)).forward)
 
 

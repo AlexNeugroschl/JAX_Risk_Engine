@@ -119,12 +119,11 @@ JAX_Risk_Engine/
 │   │                                     pricer, no FastAPI, no Pydantic, no JAX
 │   │                                     (one module per W-task; see traderx-path.md)
 │   ├── calibration/
-│   │   ├── ore_lgm.py                    ORE's LgmBuilder: SwaptionHelper baskets and the
-│   │   │                                 bootstrap, batched over path curves (and dates)
+│   │   ├── lgm.py                        ORE's LgmBuilder: SwaptionHelper baskets and the
+│   │   │                                 bootstrap, batched over curves; every LGM
+│   │   │                                 calibration (the standalone one retired, I-94)
 │   │   ├── cam.py                        The CAM's IR calibration to CalibrationSwaptions
 │   │   │                                 (either parametrization)
-│   │   ├── basket.py, lgm.py             The standalone /calibration/lgm route's basket
-│   │   │                                 and Hagan bootstrap
 │   ├── market_simulation/
 │   │   ├── config.py                     CamConfig/LgmConfig/HullWhiteConfig (ORE's
 │   │   │                                 simulation.xml) and simulate(market, config)
@@ -170,26 +169,34 @@ JAX_Risk_Engine/
 │   │       └── exposure.py               EPE/ENE/EE_B/EEE_B/PFE over the simulated cube
 │   │                                     (ORE's ExposureCalculator definitions)
 │   ├── run/
-│   │   ├── __init__.py                   The public surface: PortfolioRequest/Result,
-│   │   │                                 price_portfolio, RunConfig and its parts
-│   │   ├── config.py                     RunConfig: simulation, engines, Greeks, precision
+│   │   ├── __init__.py                   The public surface: run, RunRequest and its
+│   │   │                                 sections, price_portfolio, RunConfig and its parts
+│   │   ├── run_request.py                RunRequest/RunRequestConfig/RunResult and run():
+│   │   │                                 every analytic in one request (I-87), checked
+│   │   │                                 before any work (validate_run)
+│   │   ├── config.py                     RunConfig: price_portfolio's configuration
+│   │   │                                 (simulation, pricing, Greeks, precision)
 │   │   ├── request.py                    PortfolioRequest/PortfolioResult/price_portfolio
 │   │   │                                 (unique trade ids)
 │   │   ├── pipeline.py                   The pipeline: calibrate the CAM, simulate, value,
 │   │   │                                 exposure, Greeks; validate_request
+│   │   ├── identity.py                   The engine's identity on every result (revision,
+│   │   │                                 jax, jaxlib and ORE versions)
 │   │   └── trace.py                      phase() -- the TraceAnnotation/named_scope pair
-│   │                                     that labels each pricing stage on a trace
+│   │                                     that labels each stage on a trace, and the phase
+│   │                                     boundaries a cancelled run stops at
 │   └── api/                              FastAPI HTTP boundary -- TWO separate contracts
 │       ├── app.py                        FastAPI app factory, mounting both routers
-│       ├── routes.py                     /health, /version; jobs (async): /portfolio/price,
-│       │                                 /portfolio/market-risk, /jobs/{id} and its
-│       │                                 artifact chunks; /calibration/cam, /calibration/lgm
-│       ├── requests.py                   The requests and the wire forms they share
-│       │                                 (curves, precision); refuses unknown fields and
-│       │                                 the retired Hull-White shape
-│       ├── results.py                    The results, the precision report, jobs, health
+│       ├── routes.py                     /health, /version, /config/defaults; the run
+│       │                                 request (async): POST /runs, GET /runs/{id}
+│       │                                 (?wait=), its cancel and its artifact chunks
+│       ├── requests.py                   The run request and the wire forms it shares
+│       │                                 (curves, precision); refuses unknown fields
+│       ├── results.py                    The run's result, the precision report, status,
+│       │                                 health
 │       ├── artifacts.py                  Arrays by reference: chunked, hashed, trade order
-│       ├── job_queue.py                  The durable SQLite job queue and the worker lock
+│       ├── job_queue.py                  The durable SQLite job queue (idempotency, cancel,
+│       │                                 retention) and the host's worker lock
 │       ├── worker.py                     The engine worker (jax-risk-worker): one process
 │       │                                 per host prices queued jobs; the opt-in XProf
 │       │                                 hook and its trace summary (profiling.md)
@@ -264,7 +271,7 @@ A real trading desk calibrates a model's volatility to reproduce the market-quot
 simpler, liquid options before pricing a more complex trade off it. `engine/calibration/`
 does that step as ORE's `LgmBuilder` does: per currency for the cross-asset model
 (`cam.py`, the CAM's `CalibrationSwaptions`, for the LGM or the Hull-White model) and per
-Bermudan/American for its own engine (`ore_lgm.py`, a co-terminal basket built from the
+Bermudan/American for its own engine (`lgm.py`, a co-terminal basket built from the
 trade, calibrated where ORE builds the trade and kept on every path, or recalibrated on every
 path as an option), each fit accepted or refused as ORE's builder accepts it. See
 [Calibration](../reference/calibration.md).
@@ -348,6 +355,13 @@ a synthetic cube and a portfolio run's). See [Risk Statistics](../risk/var_es.md
 
 ## The Public API
 
+**The run request** (`engine/run/run_request.py`, I-87): `run(RunRequest(market, analytics,
+portfolio, config))` runs any of the analytics `npv`, `exposure`, `sensitivities`,
+`market_risk` and `calibration` with one configuration in sections that follow ORE's files, and
+returns a `RunResult` holding each analytic's result and the engine's identity. It is the one way
+in, over HTTP too (`POST /runs`); each analytic is the entry point below, or market risk's
+(`run_market_risk`) or the calibration's (`calibrate_cam`), called as it is.
+
 **Input:** a `PortfolioRequest` (`engine/run/request.py`): today's `Market`, a
 heterogeneous list of trades (each with a unique `trade_id`), the `RunConfig`, the PFE
 quantiles, and whether to compute Greeks and scenario risk.
@@ -360,13 +374,15 @@ valued on another date than the market's, a curve the market lacks, an engine's 
 precision the pipeline does not implement yet), naming the trade and the field. See
 [The Portfolio Entry Point](../reference/portfolio-entrypoint.md).
 
-`engine/api/` wraps `price_portfolio` behind a FastAPI HTTP API — a thin transport layer,
-not a second place orchestration logic lives. The request schema
-(`engine/api/requests.py`) mirrors the market, trades and run configuration
-field for field, converting to the dataclasses at the HTTP boundary; `engine.run` and
+`engine.run.run(RunRequest)` is the one way in for every analytic (I-87): `npv`, `exposure` and
+`sensitivities` are one `price_portfolio`, `market_risk` is `run_market_risk`, `calibration` is
+`calibrate_cam`, each the entry point's own call, after one check of the whole request
+(`validate_run`). `engine/api/` puts it behind a FastAPI HTTP API — a thin transport layer, not a
+second place orchestration logic lives. The request schema (`engine/api/requests.py`) mirrors the
+run request field for field, converting to the dataclasses at the HTTP boundary; `engine.run` and
 everything below it has no Pydantic/FastAPI dependency, so the engine does not require the
 `api` extra as a plain Python library. See [HTTP API](../reference/http-api.md), including
-why `POST /portfolio/price` returns a job id and polls rather than blocking.
+why `POST /runs` returns a run id and is polled rather than blocking.
 
 ## Design principle: modules agree on shapes, not code
 
@@ -406,7 +422,7 @@ in two different roles, and it's important to keep them distinct:
 2. **As a runtime dependency, for schedules and day counts.** Trade configs, the valuation
    layer and the calibration build ORE's own objects (`ORE.VanillaSwap` schedules, day
    counters, calendars, `SwaptionHelper` baskets) through `engine/instruments/schedules.py` and
-   `engine/calibration/ore_lgm.py`. This runs once per trade or basket, not once per path:
+   `engine/calibration/lgm.py`. This runs once per trade or basket, not once per path:
    schedule logic is fiddly, well tested in ORE, and not performance-critical. The
    simulation (`engine/market_simulation/`) and the risk statistics (`engine/risk/market/var_es.py`) are
    pure JAX/NumPy.
@@ -498,10 +514,11 @@ calibration baskets, to the dtype of the curves they are given):
 | market risk | `engine.risk.market.run_market_risk` | shifts rounded to the simulation's accumulate format and stored; per trade, the P&L as the deviation from its base value in its `precision_for(trade)` arithmetic, stored at its `storage`; VaR/ES in float64 |
 
 For exposure without the output cube, pass `PortfolioRequest(..., include_npv_cube=False)`
-in Python or `cube_output: "none"` over HTTP. Python returns an empty `(0, 0, 0)` `npv_cube`;
-exposure, per-trade figures, exercise decisions, precision reporting and
-`scenario_risk_available` retain their usual meaning. The Python default remains `True`,
-and HTTP inline and artifact output still assemble a float64 cube. Working memory for the
+in Python (`RunRequest(..., include_npv_cube=False)`) or `outputs: {"npv_cube": "none"}` over
+HTTP. Python returns an empty `(0, 0, 0)` `npv_cube`; exposure, per-trade figures, exercise
+decisions, precision reporting and `scenario_risk_available` retain their usual meaning. The
+Python default remains `True`, and HTTP inline and artifact output still assemble a float64
+cube. Working memory for the
 exposure reductions scales with paths × dates, rather than paths × dates × trades, beside
 the stored columns and scenario market. PFE still sorts all paths, without approximation.
 Each trade's reductions finish before the next is decoded, without transferring path values
@@ -589,7 +606,7 @@ starts and restarts the worker (`engine/api/supervisor.py`), never by fork (fork
 that has initialized JAX hangs, I-33), unless `JAX_RISK_WORKER=external` leaves that to
 systemd or a container. Until 1.8 a `ProcessPoolExecutor` ran jobs side by side, each worker
 compiling its own programs and receiving the request pickled, its ORE dates frozen as text
-(I-72). See [HTTP API: Jobs](../reference/http-api.md#jobs-the-queue-and-the-engine-worker).
+(I-72). See [HTTP API: Jobs](../reference/http-api.md#runs-the-queue-and-the-engine-worker).
 
 ### Below float32
 

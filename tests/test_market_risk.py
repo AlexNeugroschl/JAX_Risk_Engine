@@ -67,9 +67,6 @@ class TestRateRiskFactors:
         ([], [], "at least one curve"),
         ([m.OIS], ["a", "b"], "names for"),
         ([m.OIS, m.IBOR], ["a", "a"], "unique"),
-        ([ZeroCurveConfig([0.0, 2.0, 1.0], [0.01] * 3)], ["x"], "strictly increasing"),
-        ([ZeroCurveConfig([0.0, 1.0], [0.01])], ["x"], "same length"),
-        ([ZeroCurveConfig([0.0, 1.0], [0.01, float("nan")])], ["x"], "finite"),
     ])
     def test_rejects_malformed_curves(self, curves, names, match):
         with pytest.raises(ValueError, match=match):
@@ -309,7 +306,7 @@ class TestRecalibration:
     def test_a_scenario_whose_calibration_misses_is_refused(self):
         """A calibration that misses ORE's acceptance in a scenario is refused, naming the trade
         and the scenario (here a scenario no calibration can fit: its curves are not finite)."""
-        from engine.calibration.ore_lgm import CalibrationError
+        from engine.calibration.lgm import CalibrationError
         moves = np.zeros((4, FACTORS.size))
         moves[2, 3] = np.nan
         with pytest.raises(CalibrationError, match=r"bermudan.*1 of 4 scenarios.*scenarios 2"):

@@ -20,7 +20,7 @@ itself is never modified by this project — it exists purely as a read-only ref
 
 ## One pipeline
 
-`price_portfolio` on an `engine.market_data.market.Market` (HTTP `POST /portfolio/price`) reproduces ORE's
+`price_portfolio` on an `engine.market_data.market.Market` (the run request's `npv`, `exposure` and `sensitivities`, HTTP `POST /runs`) reproduces ORE's
 classic exposure and sensitivity pipeline: `CrossAssetModel` simulation, `ScenarioSimMarket`,
 `ValuationEngine` with each trade's own t=0 engine, `ExposureCalculator` and
 `SensitivityAnalysis`. The next section maps it; sections 1 to 10 map the individual
@@ -48,7 +48,7 @@ model was a separate pipeline with known differences from ORE, closed with it
 | `DiscountingSwapEngine` with at-par coupons (`IborCouponPricer::initializeCachedData`), `hasOccurred` | `engine.pricing.legs` | tests/test_pricing.py (t=0 and every path/date), tests/test_shared_portfolio.py | 1e-10 |
 | `BlackMultiLegOptionEngine` (qle/pricingengines/blackmultilegoptionengine.cpp), incl. `ParYieldCurve` cash settlement; `DynamicSwaptionVolatilityMatrix` on paths | `engine.pricing.european` | OREApp oracle at t=0; QuantLib `BachelierSwaptionEngine` on every path | 1e-10 (t=0), 2e-14 (cash) |
 | QuantLib `JamshidianSwaptionEngine` (configured, not ORE's default) | `engine.pricing.jamshidian` | tests/test_jamshidian.py (QuantLib's engine, and its formula at the exact root); tests/test_end_to_end.py on Hull-White paths | Brent's 1e-8 on r* (≤ 5e-6); 1e-10 at the exact root |
-| `LgmBuilder` + `IrModelBuilder::buildSwaptionBasket` (OREData/ored/model/), `AnalyticLgmSwaptionEngine`, `NumericLgmMultiLegOptionEngine`; `LgmBuilder::calibrate`'s acceptance (`getCalibrationError` against `Tolerance`, since 2026-10-12, [I-73](../planning/known-issues.md#i-73)) | `engine.pricing.bermudan`, `engine.calibration.ore_lgm` | tests/test_ore_lgm_calibration.py (OREApp, `Calibration=Bootstrap`), tests/test_pricing.py (on ORE's path curves, the model as built), tests/test_calibration_acceptance.py | 2e-11 (t=0), 1e-10 (paths) |
+| `LgmBuilder` + `IrModelBuilder::buildSwaptionBasket` (OREData/ored/model/), `AnalyticLgmSwaptionEngine`, `NumericLgmMultiLegOptionEngine`; `LgmBuilder::calibrate`'s acceptance (`getCalibrationError` against `Tolerance`, since 2026-10-12, [I-73](../planning/known-issues.md#i-73)) | `engine.pricing.bermudan`, `engine.calibration.lgm` | tests/test_ore_lgm_calibration.py (OREApp, `Calibration=Bootstrap`), tests/test_pricing.py (on ORE's path curves, the model as built), tests/test_calibration_acceptance.py | 2e-11 (t=0), 1e-10 (paths) |
 | `OptionWrapper` / `BermudanOptionWrapper` (OREData/ored/portfolio/optionwrapper.cpp), its position (`OptionData/LongShort`: the NPV times -1 for a short, the exercise the holder's) | `engine.pricing.options` (`wrap`, `position_sign`) | tests/test_pricing.py (exercise, physical vs cash); a short option against ORE's trade builder with `LongShort` Short, today (tests/test_shared_portfolio.py) and on ORE's paths (tests/test_ore_xva_parity.py) | rule-level; a short 1e-10 (Europeans), 1e-9 (calibrated) of ORE's |
 | `DiscountingRiskyBondEngine` without credit | `engine.pricing.cube.bond_legs` | tests/test_shared_portfolio.py vs `DiscountingBondEngine` | 2e-16 |
 | `ExposureCalculator` (orea/aggregation/exposurecalculator.cpp): EPE, ENE, EE_B, EEE_B, PFE, time-weighted EPE_B/EEPE_B, Basel horizon | `engine.risk.counterparty.exposure` | tests/test_ore_xva_parity.py: the engine's profiles of ORE's own cube are ORE's reports, per trade and netting set; tests/test_pipeline.py (a bill's EE_B identity) | 1.8e-13 |
@@ -645,7 +645,7 @@ reference until 2026-10-18, both found by the seeded sweeps
 gradient (a bisection's comparisons have none, Newton's iterations only the steps'). The
 Jamshidian root, each helper's y* and a whole calibration get the implicit function theorem's
 derivative instead (`engine.solvers.roots.implicit_root`'s `custom_jvp`, and `implicit_solution`
-on the basket's system, `engine.calibration.ore_lgm.calibrated_values`); see [Greeks](../risk/greeks.md#differentiating-through-bisection-root-finds).
+on the basket's system, `engine.calibration.lgm.calibrated_values`); see [Greeks](../risk/greeks.md#differentiating-through-bisection-root-finds).
 
 **Verified:** `tests/test_sensitivity_ore_parity.py` (both methods against an OREApp sensitivity
 run), `tests/test_ore_parity_sweep.py` and `tests/test_ore_parity_settings.py` (random portfolios,
@@ -656,60 +656,48 @@ through the recalibration, agreement with the bump method).
 
 ## 10. LGM calibration: bootstrap fit of a piecewise sigma to market swaption vols
 
-**This engine:** `engine/calibration/basket.py::build_coterminal_basket`,
-`price_lgm_swaption`; `engine/calibration/lgm.py::calibrate_lgm_sigma`.
+**This engine:** `engine/calibration/lgm.py` (`build_basket`, `market_price`, `price_pair`,
+`bootstrap_sigma`), every LGM calibration the engine makes: each currency's of the cross-asset
+model (`engine/calibration/cam.py`) and each Bermudan's/American's
+(`engine/pricing/bermudan.py::calibration_basket`).
 
 **ORE:** `ore::data::IrModelBuilder::buildSwaptionBasket()`
 (`OREData/ored/model/irmodelbuilder.cpp`) for the basket; `ore::data::LgmBuilder::calibrate()`
 (`OREData/ored/model/lgmbuilder.cpp`, lines 209-212, `calibrateVolatilitiesIterative`) for
-the bootstrap itself, which calls `QuantLib::CalibratedModel::calibrateIterative`; the LGM
-analogue of `QuantExt::AnalyticLgmSwaptionEngine` (`QuantExt/qle/pricingengines/`) for the
-per-instrument pricer.
+the bootstrap itself, which calls `QuantLib::CalibratedModel::calibrateIterative`;
+`QuantExt::AnalyticLgmSwaptionEngine` (`QuantExt/qle/pricingengines/`) with
+`FloatSpreadMapping::proRata` for each helper's model value.
 
-**Full writeup in [Calibration](calibration.md)**, which is more extensive than a
-single-section summary can cover here — includes the `aTimes = swaptionExpiries[:-1]`
-triangular-bootstrap construction, why mean reversion is never calibrated, and the
-x* gradient bug (cross-referenced above in section 9), and the root solver both
-calibrations use ([decision A-21](../../compliance/decisions.md): Newton by default, the
-bisection kept as the reference; each reaches ORE's root more exactly than ORE's own
-solvers). Two findings worth
-calling out directly on this page:
+**Full writeup in [Calibration](calibration.md)** — the `aTimes = swaptionExpiries[:-1]`
+triangular-bootstrap construction, why mean reversion is never calibrated, the helpers'
+values, ORE's acceptance, the x* gradient bug (cross-referenced above in section 9), and the
+root solver every calibration uses ([decision A-21](../../compliance/decisions.md): Newton by
+default, the bisection kept as the reference; each reaches ORE's root more exactly than ORE's
+own solvers).
 
-**`price_lgm_swaption` could not be checked against ORE's own engine directly.**
-`QuantExt::AnalyticLgmSwaptionEngine`'s constructor is not exposed through this codebase's
-installed ORE Python bindings — confirmed by reading
-`ORE-SWIG/QuantExt-SWIG/SWIG/qle_pricingengines.i` directly, which declares only
-`enableCache`/`clearCache`/`setZetaShift`/`resetZetaShift` for
-`ORE.AnalyticLgmSwaptionEngine`, no usable constructor. Verification therefore runs two
-independent routes instead of a single direct NPV comparison: every individual formula
-piece (`bond_price`, `bond_option_sigma`, `numeraire`) checked to machine precision against
-`ORE.LinearGaussMarkovModel`'s own exposed methods, and the full swaption price
-cross-checked against a numeraire-deflated Monte Carlo simulation of `x(T0) ~ N(0,
-zeta(T0))` — LGM's own exact terminal distribution, per
-`QuantExt::IrLgm1fStateProcess::variance`. See [Calibration: two-route
-verification](calibration.md#two-route-verification) for the full account, including the
-Monte Carlo test's own bug (naive `P(0,T0)` discounting instead of numeraire deflation,
-initially showing a spurious ~11% "error" that was fixed once the test correctly deflated
-by `engine.models.lgm.numeraire` — a lesson about LGM's own measure, not a pricer defect).
-
-**Scope note:** the missing constructor blocks a direct NPV comparison for
-`price_lgm_swaption` specifically, against the *analytic* LGM engine. It does **not** mean
-Bermudan/American values have no external oracle — `ORE.TreeSwaptionEngine` and
-`ORE.FdHullWhiteSwaptionEngine` are constructible and supply one; see
-[7a](#7a-an-external-multi-exercise-oracle-does-exist-correction-2026-09-18).
+**`AnalyticLgmSwaptionEngine` has no Python constructor** (`ORE-SWIG/QuantExt-SWIG/SWIG/
+qle_pricingengines.i` declares only `enableCache`/`clearCache`/`setZetaShift`/`resetZetaShift`),
+so a helper's model value is checked through the end-to-end NPV: a Bermudan calibrated to its
+co-terminal basket and priced on the grid equals ORE's `LGMGridSwaptionEngineBuilder` with
+`Calibration=Bootstrap`, where any error in it would move the calibrated volatility and the
+price; the helpers' market values are checked against QuantLib's own
+`SwaptionHelper.marketValue()` directly.
 
 **The parametrizations.** Section 3's ["parametrization note"](#a-parametrization-note-lgm-vs-plain-hull-white)
 applies here: the calibration is of the LGM ORE's Bermudan engine uses. A Hull-White currency
 of the cross-asset model is bootstrapped to the same helpers and converted bucket by bucket
 (`hull_white_matching_zeta`): helper prices depend on the model only through ζ at their
 expiry and H, so matching ζ at every bucket end is exact (`tests/test_hull_white_model.py::TestCalibration`).
-The cross-asset model's and each trade's calibration is `engine/calibration/ore_lgm.py`
-(QuantLib's `SwaptionHelper`s, ORE's bootstrap, 2e-11 against `LgmBuilder`,
-`tests/test_ore_lgm_calibration.py`); `basket.py`/`lgm.py` serve the standalone route.
 
-**Verified:** `tests/test_calibration_basket.py` (15 tests), `tests/test_calibration_lgm.py`
-(9 tests), `tests/test_calibration_integration.py` (6 tests) — see
-[Calibration: Tested by](calibration.md#tested-by) for the full breakdown.
+Until 2026-10-18 a second, standalone bootstrap (`calibrate_lgm_sigma`, `POST /calibration/lgm`)
+was checked only by re-derivation (its formula pieces against `ORE.LinearGaussMarkovModel` and
+its price against a numeraire-deflated Monte Carlo); it is retired (I-94), and the run request's
+`calibration` analytic is ORE's bootstrap.
+
+**Verified:** `tests/test_ore_lgm_calibration.py` (2e-11 against `LgmBuilder`, through the
+OREApp oracle), `tests/test_calibration_acceptance.py` (ORE's acceptance, I-73),
+`tests/test_ore_xva_parity.py` (the cross-asset model's calibration through ORE's own
+simulation) — see [Calibration: Tested by](calibration.md#tested-by) for the full breakdown.
 
 ## The parity matrix
 
@@ -1207,28 +1195,28 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 
 #### Calibration of the simulation's model (`calibration`)
 
-| Setting | Value | Cross-asset model (POST /calibration/cam) | Standalone LGM (POST /calibration/lgm) |
-|---|---|---|---|
-| *compared* |  | T25, T30 | R11 |
-| `CamConfig.ir` | LgmConfig | T25, T30 | · |
-| `CamConfig.ir` | HullWhiteConfig | T25, T30 | · |
-| `CamConfig.bootstrap_tolerance` | = 0.0001 | T25, T30 | · |
-| `CamConfig.bootstrap_tolerance` | ≠ 0.0001 | T25 | · |
-| `LgmConfig.reversion` | zero | T25 | · |
-| `LgmConfig.reversion` | positive | T30 | · |
-| `LgmConfig.reversion` | negative | T25 | · |
-| `LgmConfig.volatility` | constant | T25, T30 | · |
-| `LgmConfig.volatility` | piecewise | T25 | · |
-| `LgmConfig.calibration_expiries` | calibrated | T25, T30 | · |
-| `LgmConfig.calibration_expiries` | not calibrated | T25 | · |
-| `LgmConfig.swap_index.fixed_tenor` | = 1Y | T25, T30 | · |
-| `LgmConfig.swap_index.fixed_tenor` | ≠ 1Y | T25 | · |
-| `LgmConfig.swap_index.fixed_day_counter` | = ACT/365 | T25, T30 | · |
-| `LgmConfig.swap_index.fixed_day_counter` | ≠ ACT/365 | T25 | · |
-| `LgmConfig.swap_index.index_tenor_months` | = 6 | T25, T30 | · |
-| `LgmConfig.swap_index.index_tenor_months` | ≠ 6 | T25 | · |
-| `LgmConfig.solver` | Newton | T25, T30 | · |
-| `LgmConfig.solver` | Bisection | T25 | · |
+| Setting | Value | Cross-asset model |
+|---|---|---|
+| *compared* |  | T25, T30 |
+| `CamConfig.ir` | LgmConfig | T25, T30 |
+| `CamConfig.ir` | HullWhiteConfig | T25, T30 |
+| `CamConfig.bootstrap_tolerance` | = 0.0001 | T25, T30 |
+| `CamConfig.bootstrap_tolerance` | ≠ 0.0001 | T25 |
+| `LgmConfig.reversion` | zero | T25 |
+| `LgmConfig.reversion` | positive | T30 |
+| `LgmConfig.reversion` | negative | T25 |
+| `LgmConfig.volatility` | constant | T25, T30 |
+| `LgmConfig.volatility` | piecewise | T25 |
+| `LgmConfig.calibration_expiries` | calibrated | T25, T30 |
+| `LgmConfig.calibration_expiries` | not calibrated | T25 |
+| `LgmConfig.swap_index.fixed_tenor` | = 1Y | T25, T30 |
+| `LgmConfig.swap_index.fixed_tenor` | ≠ 1Y | T25 |
+| `LgmConfig.swap_index.fixed_day_counter` | = ACT/365 | T25, T30 |
+| `LgmConfig.swap_index.fixed_day_counter` | ≠ ACT/365 | T25 |
+| `LgmConfig.swap_index.index_tenor_months` | = 6 | T25, T30 |
+| `LgmConfig.swap_index.index_tenor_months` | ≠ 6 | T25 |
+| `LgmConfig.solver` | Newton | T25, T30 |
+| `LgmConfig.solver` | Bisection | T25 |
 
 **Tests.**
 
@@ -1288,7 +1276,6 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 - **R8** (not ORE's) a grid-priced option's AD Greeks are its price's derivatives, not ORE's 1bp secants across the grid's kinks (I-78); tests/test_greeks_bermudan.py holds them to central differences of the engine's own recalibrating price, and the result says so.
 - **R9** (not ORE's) a sampling-uncertainty setting (I-111, F-10): ORE has no error estimate of a VaR; every scenario's P&L is compared, whatever the setting.
 - **R10** (not ORE's) how many scenarios are revalued at once, a memory setting; the same P&L within the margin (tests/test_market_risk.py).
-- **R11** (not compared yet) the standalone bootstrap (`calibrate_lgm_sigma`) is the second LGM calibration, which retires or moves to tests/support once the run request's calibration analytic replaces it (I-94); the trades' and the cross-asset model's calibrations are ORE's.
 
 <!-- ore-parity-matrix:end -->
 
@@ -1311,15 +1298,14 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
 | Coupon membership and proration by exercise style | `bermudan_swaption.ExerciseStyle`, `prepare_bermudan` | `NumericLgmMultiLegOptionEngineBase::buildCashflowInfo` (`belongsToUnderlyingMaxTime_`, `couponRatio`) |
 | Ibor projection in the LGM | `pricing.lgm_grid._Coefficients`, `_basis` | `QuantExt::LgmVectorised::fixing` (index fixing period) |
 | American exercise-window discretization | `AmericanSwaptionConfig.option_times` | `NumericLgmMultiLegOptionEngineBase::calculate`'s American branch (truncating step count) |
-| Per-trade basket and bootstrap | `valuation.bermudan.calibration_basket`, `calibration.ore_lgm` | `IrModelBuilder::buildSwaptionBasket`, `LgmBuilder::calibrate` |
+| Per-trade basket and bootstrap | `valuation.bermudan.calibration_basket`, `calibration.lgm` | `IrModelBuilder::buildSwaptionBasket`, `LgmBuilder::calibrate` |
 | Exercise wrapper, and an option's position | `valuation.options.wrap`, `position_sign` | `OptionWrapper`, `BermudanOptionWrapper` (`isLong_`, `multiplier2_`) |
 | VaR | `var_es.value_at_risk` | `QuantLib::RiskStatistics::valueAtRisk` → `GeneralStatistics::percentile` |
 | Expected Shortfall | `var_es.expected_shortfall` | `QuantLib::RiskStatistics::expectedShortfall` |
 | Delta / Gamma / Vega (bump) | `sensitivities.portfolio_sensitivities` | `SensitivityScenarioGenerator`, `ShiftScenarioGenerator::applyShift`, `SensitivityCube` |
 | Delta / Gamma / Vega (AD) | `greeks.portfolio_greeks` | the limit of the above; `DiscountingSwapEngineDeltaGamma`-style closed forms |
 | Theta (evaluation-date roll) | `sensitivities.trade_theta` | `SensitivityAnalysis::generateSensitivities`'s theta branch |
-| Co-terminal swaption basket (standalone route) | `calibration.basket.build_coterminal_basket` | `IrModelBuilder::buildSwaptionBasket` |
-| LGM sigma bootstrap (standalone route) | `calibration.lgm.calibrate_lgm_sigma` | `LgmBuilder::calibrate` → `calibrateVolatilitiesIterative`, `CalibratedModel::calibrateIterative` |
+| The cross-asset model's basket and bootstrap | `calibration.cam.calibrate_currency`, `calibration.lgm.build_basket`, `bootstrap_sigma` | `CrossAssetModelBuilder` → `IrModelBuilder::buildSwaptionBasket`, `LgmBuilder::calibrate` → `calibrateVolatilitiesIterative`, `CalibratedModel::calibrateIterative` |
 
 ## Tested by
 
@@ -1339,10 +1325,9 @@ Each cell names the tests that compare it with ORE (**T**n, listed below with th
   *installed* `ORE` package's actual runtime behavior — this page's own contribution is
   connecting those already-passing behavioral tests to the specific C++ source lines that
   produce that behavior.
-- `tests/test_models_piecewise_sigma.py`, `tests/test_calibration_basket.py`,
-  `tests/test_calibration_lgm.py`, `tests/test_calibration_integration.py`,
-  `tests/test_greeks.py`, `tests/test_greeks_bermudan.py` — the tests specific to sections
-  9-10 (Greeks, calibration); see
+- `tests/test_models_piecewise_sigma.py`, `tests/test_ore_lgm_calibration.py`,
+  `tests/test_calibration_acceptance.py`, `tests/test_greeks.py`, `tests/test_greeks_bermudan.py`
+  — the tests specific to sections 9-10 (Greeks, calibration); see
   [Delta, Gamma, and Theta](../risk/greeks.md#tested-by),
   [Models & Trades](models-and-trades.md#tested-by), and
   [Calibration](calibration.md#tested-by) for the full per-file breakdown.

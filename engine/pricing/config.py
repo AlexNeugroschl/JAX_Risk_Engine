@@ -35,7 +35,7 @@ from typing import Dict, Iterable, Optional
 
 import ORE
 
-from engine.calibration.ore_lgm import BOOTSTRAP_TOLERANCE, SwapIndexConventions, check_tolerance
+from engine.calibration.lgm import BOOTSTRAP_TOLERANCE, SwapIndexConventions, check_tolerance
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
@@ -59,9 +59,9 @@ class LgmSwaptionEngineConfig:
         strike (`CoterminalDealStrike`) or ATM (`CoterminalATM`), or `None`.
     bootstrap_tolerance: ORE's `Tolerance`: a calibration whose error (the root mean square of
         its helpers' relative price errors) is not below it misses its basket and is refused,
-        as ORE's `LgmBuilder` fails (`engine.calibration.ore_lgm.BootstrapResult.misses`, I-73).
+        as ORE's `LgmBuilder` fails (`engine.calibration.lgm.BootstrapResult.misses`, I-73).
         ORE has no default; 1e-4 is its shared example configuration's
-        (`engine.calibration.ore_lgm.BOOTSTRAP_TOLERANCE`).
+        (`engine.calibration.lgm.BOOTSTRAP_TOLERANCE`).
     reference_calibration_grid: ORE's `ReferenceCalibrationGrid`: at most one helper per
         interval of this grid, and an American's basket expiries.
     shift_horizon: ORE's `ShiftHorizon`, a fraction of the time from the trade's build to its

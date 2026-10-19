@@ -1,30 +1,39 @@
 """
-The requests of the HTTP API (decision A-2: one request shape per analytic, reaching every
-setting the engine has; `tests/test_api_completeness.py` fails on a setting without a field):
+The run request on the wire (decision A-2, I-87): `RunRequestSchema` (`POST /runs`) mirrors
+`engine.run.RunRequest`, one request for every analytic, reaching every setting the engine has
+(`tests/test_api_completeness.py` fails on a setting without a field, and on a field whose value
+does not arrive in the engine's configuration):
 
-  * `MarketPortfolioRequestSchema` (`POST /portfolio/price`): today's market (curves per currency
-    and index, swaption volatilities, FX and equity spots), trades that name their currency and
-    index but carry no model or curve of their own (audit A-3, I-63), and the run configuration
-    (`engine.run.RunConfig`): the simulation with the model of each currency (`"model":
-    "LGM"`, the default, or `"HullWhite"`), the engine per product (the European's `Bachelier` or
-    `Jamshidian` with its model), the Greeks method and ORE's sensitivity settings, precision and
-    reporting currency;
-  * `MarketRiskRequestSchema` (`POST /portfolio/market-risk`): the same market and trades, shock
-    scenarios (Monte Carlo from a covariance, or historical from a history of the factors), the
-    engines, quantiles and precision (`engine.risk.market.MarketRiskRequest`);
-  * `CamCalibrationRequestSchema` (`POST /calibration/cam`): the market and each currency's model
-    with its calibration basket (`engine.calibration.cam.calibrate_cam`).
+    {"market": ..., "portfolio": [...], "analytics": ["npv", "exposure", ...],
+     "config": {"base_currency", "models", "simulation", "pricing", "sensitivity", "exposure",
+                "market_risk", "precision"},
+     "outputs": {"npv_cube", "exercised", "pnl"}, "idempotency_key": ..., "keep": false}
 
-Until 2026-10-01 `POST /portfolio/price` took the Hull-White model's own request (a
-`SimulationConfig` market, model parameters on the trades); that shape is refused with a message
-naming its replacement. On 2026-10-07 the API dropped the `/v2/portfolio/price` route and the request's
-`schema_version: "2"`, names that looked like versions but were not.
+  * `market`: today's market (curves per currency and index, swaption volatilities, FX and
+    equity spots);
+  * `portfolio`: trades that name their currency and index but carry no model or curve of their
+    own (audit A-3, I-63), each valued on `market.asof`;
+  * `config`: one section per ORE file (`engine.run.RunRequestConfig`): the model per currency
+    (`"model": "LGM"`, the default, or `"HullWhite"`) in `models`, the simulation grid in
+    `simulation`, the engine per product, the Greeks method and ORE's sensitivity settings, the
+    PFE quantiles, the market-risk scenarios (Monte Carlo from a covariance, or historical from
+    a history of the factors), and the precision;
+  * `outputs`: how the result carries each large array: `artifact` (a chunked, hashed reference,
+    `engine.api.artifacts`, the default for the cube and the P&L since this revision of the
+    contract, decision A-17), `inline`, or `none` (the default for the exercise decisions, which
+    are returned on request);
+  * `idempotency_key`: a retried submission with the same key and body is the same run (I-89);
+  * `keep`: the run is kept by the job queue's retention policy indefinitely (I-76).
 
 Conventions: ISO dates, ORE periods ("5Y"), fixings `{"YYYY-MM-DD": rate}`. Unknown fields are
-refused (422), so a trade carrying `hw_sigma` or a curve is not silently stripped of its model.
+refused (422) in every model, so a trade carrying `hw_sigma` or a curve is not silently stripped
+of its model (I-103). A value the engine refuses when it is built is a 400 naming its field
+(`market.currencies.USD.discount_curve: ...`).
 """
 import dataclasses
-from typing import Annotated, Dict, List, Literal, Optional, Tuple, Union
+import hashlib
+import json
+from typing import Annotated, Callable, ClassVar, Dict, List, Literal, Optional, Tuple, TypeVar, Union
 
 import jax.numpy as jnp
 import numpy as np
@@ -32,14 +41,14 @@ import ORE
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from engine.api.artifacts import ARRAY_OUTPUTS
-from engine.calibration.ore_lgm import BOOTSTRAP_TOLERANCE, SwapIndexConventions
+from engine.calibration.lgm import BOOTSTRAP_TOLERANCE, SwapIndexConventions
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig
 from engine.instruments.treasury import BondConfig, CouponPeriod
 from engine.market_data.market import CurrencyMarket, EquityMarket, Market, SwaptionVolSurface, ZeroCurveConfig
-from engine.market_simulation.config import CamConfig, HullWhiteConfig, LgmConfig
+from engine.market_simulation.config import DEFAULT_CURVE_TENORS, HullWhiteConfig, LgmConfig
 from engine.models.lgm import Sigma
 from engine.precision import (
     FORMAT_NAMES, OFFSETS, OVERRIDES, RETIRED_SHAPE as RETIRED_PRECISION_SHAPE, ROUNDINGS, STAGES, Precision,
@@ -47,12 +56,23 @@ from engine.precision import (
 )
 from engine.pricing.config import JamshidianEngineConfig, LgmSwaptionEngineConfig, PricingConfig
 from engine.pricing.cube import DEFAULT_REPORTING_CURRENCY, PRODUCTS
-from engine.risk.market import (
-    MarketRiskRequest, RateRiskFactors, historical_scenarios, monte_carlo_scenarios, validate_monte_carlo,
+from engine.risk.market import MonteCarloScenarios, RateRiskFactors, historical_scenarios
+from engine.risk.greeks.bump import SensitivityConfig
+from engine.run import (
+    ANALYTICS, ExposureConfig, GreeksConfig, MarketRiskConfig, ModelsConfig, RunRequest, RunRequestConfig,
+    SimulationParameters, validate_run,
 )
-from engine.risk.market.run import validate_factors, validate_portfolio
-from engine.run import GreeksConfig, PortfolioRequest, RunConfig, SensitivityConfig
 from engine.solvers.roots import DEFAULT_SOLVER, SOLVERS
+
+_Built = TypeVar("_Built")
+
+
+def _named(where: str, build: Callable[[], _Built]) -> _Built:
+    """`build()`, a refusal of the engine's own validation naming the wire field `where`."""
+    try:
+        return build()
+    except (ValueError, TypeError) as exc:
+        raise type(exc)(f"{where}: {exc}") from None
 
 
 def _parse_ore_date(value: str) -> ORE.Date:
@@ -77,25 +97,33 @@ def _parse_fixings(fixings: Dict[str, float]) -> Dict[ORE.Date, float]:
     return {_parse_ore_date(date): rate for date, rate in fixings.items()}
 
 
-class ZeroCurveConfigSchema(BaseModel):
+class _Strict(BaseModel):
+    """Refuses unknown fields (see the module docstring)."""
+    model_config = ConfigDict(extra="forbid")
+
+
+class ZeroCurveConfigSchema(_Strict):
+    """`engine.market_data.market.ZeroCurveConfig`: pillar times and continuously compounded zero
+    rates, checked when built (non-empty, equal lengths, finite, times non-negative and strictly
+    increasing; I-103)."""
     times: List[float]
     rates: List[float]
 
-    def to_dataclass(self) -> ZeroCurveConfig:
-        return ZeroCurveConfig(times=self.times, rates=self.rates)
-
-    @classmethod
-    def from_dataclass(cls, cfg: ZeroCurveConfig) -> "ZeroCurveConfigSchema":
-        return cls(times=list(cfg.times), rates=list(cfg.rates))
+    def to_dataclass(self, where: str = "zero curve") -> ZeroCurveConfig:
+        return _named(where, lambda: ZeroCurveConfig(times=self.times, rates=self.rates))
 
 
-class CouponPeriodSchema(BaseModel):
+class CouponPeriodSchema(_Strict):
     """One explicit coupon period of a bond; enumerated, not generated (see
     `engine.instruments.treasury.CouponPeriod`)."""
     start_date: str
     end_date: str
     #: Defaults to `end_date`.
     payment_date: Optional[str] = None
+
+    def to_dataclass(self) -> CouponPeriod:
+        return CouponPeriod(_parse_ore_date(self.start_date), _parse_ore_date(self.end_date),
+                            _parse_optional_date(self.payment_date))
 
 
 #: A number format of `engine.precision.FORMATS`, by name.
@@ -116,10 +144,12 @@ SolverName = Literal[SOLVERS]
 #: How a result carries a large array (`engine.api.artifacts.ARRAY_OUTPUTS`, decision A-17).
 ArrayOutputName = Literal[ARRAY_OUTPUTS]
 
+#: An analytic of the run request (`engine.run.ANALYTICS`).
+AnalyticName = Literal[ANALYTICS]
 
-class StagePrecisionSchema(BaseModel):
+
+class StagePrecisionSchema(_Strict):
     """`engine.precision.StagePrecision`; validated by the dataclass."""
-    model_config = ConfigDict(extra="forbid")
     storage: FormatName = "float64"
     compute: FormatName = "float64"
     accumulate: FormatName = "float64"
@@ -129,8 +159,11 @@ class StagePrecisionSchema(BaseModel):
     def from_dataclass(cls, stage: StagePrecision) -> "StagePrecisionSchema":
         return cls(**dataclasses.asdict(stage))
 
+    def to_dataclass(self, where: str = "precision stage") -> StagePrecision:
+        return _named(where, lambda: StagePrecision(**self.model_dump()))
 
-class PrecisionSchema(BaseModel):
+
+class PrecisionSchema(_Strict):
     """`engine.precision.Precision`: storage, compute and accumulate per adjustable stage, each
     float64 by default, and the pricing stage overridden per product (`by_product`, keyed by
     `trade_type`) and per trade (`by_trade`, keyed by `trade_id`); the rounding into a scaled
@@ -138,7 +171,6 @@ class PrecisionSchema(BaseModel):
     scale, or none; I-75). The 32/64 shape retired on 2026-10-01 is refused, naming the
     replacement (decision A-12). `paired_fraction`: the share of paths also run at float64, whose
     estimates the result's `precision` report carries (decision A-13)."""
-    model_config = ConfigDict(extra="forbid")
     simulation: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
     market: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
     pricing: StagePrecisionSchema = Field(default_factory=StagePrecisionSchema)
@@ -158,12 +190,13 @@ class PrecisionSchema(BaseModel):
             raise ValueError(RETIRED_PRECISION_SHAPE)
         return data
 
-    def to_dataclass(self) -> Precision:
-        stages = {stage: _stage(f"precision.{stage}", getattr(self, stage)) for stage in STAGES}
-        overrides = {name: {key: _stage(f"precision.{name}[{key!r}]", value)
+    def to_dataclass(self, where: str = "precision") -> Precision:
+        stages = {stage: getattr(self, stage).to_dataclass(f"{where}.{stage}") for stage in STAGES}
+        overrides = {name: {key: value.to_dataclass(f"{where}.{name}[{key!r}]")
                             for key, value in getattr(self, name).items()} for name in OVERRIDES}
-        return Precision(**stages, **overrides, rounding=self.rounding, rounding_seed=self.rounding_seed,
-                         offset=self.offset, paired_fraction=self.paired_fraction)
+        return _named(where, lambda: Precision(**stages, **overrides, rounding=self.rounding,
+                                               rounding_seed=self.rounding_seed, offset=self.offset,
+                                               paired_fraction=self.paired_fraction))
 
     @classmethod
     def from_dataclass(cls, precision: Precision) -> "PrecisionSchema":
@@ -174,19 +207,7 @@ class PrecisionSchema(BaseModel):
                    paired_fraction=precision.paired_fraction)
 
 
-def _stage(where: str, schema: StagePrecisionSchema) -> StagePrecision:
-    """The dataclass of one `StagePrecisionSchema`, its refusal naming the wire field."""
-    try:
-        return StagePrecision(**schema.model_dump())
-    except ValueError as exc:
-        raise ValueError(f"{where}: {exc}") from None
-
-
-
-class _Strict(BaseModel):
-    """Refuses unknown fields (see the module docstring)."""
-    model_config = ConfigDict(extra="forbid")
-
+# --- today's market -----------------------------------------------------------------------------
 
 class SwaptionVolSurfaceSchema(_Strict):
     """ATM normal volatilities, `vols[i][j]` for `option_tenors[i]` x `swap_tenors[j]`."""
@@ -194,9 +215,9 @@ class SwaptionVolSurfaceSchema(_Strict):
     swap_tenors: List[str]
     vols: List[List[float]]
 
-    def to_dataclass(self) -> SwaptionVolSurface:
-        return SwaptionVolSurface(tuple(self.option_tenors), tuple(self.swap_tenors),
-                                  tuple(tuple(row) for row in self.vols))
+    def to_dataclass(self, where: str = "swaption_vols") -> SwaptionVolSurface:
+        return _named(where, lambda: SwaptionVolSurface(tuple(self.option_tenors), tuple(self.swap_tenors),
+                                                        tuple(tuple(row) for row in self.vols)))
 
 
 class CurrencyMarketSchema(_Strict):
@@ -205,11 +226,11 @@ class CurrencyMarketSchema(_Strict):
     index_curves: Dict[str, ZeroCurveConfigSchema] = Field(default_factory=dict)
     swaption_vols: Optional[SwaptionVolSurfaceSchema] = None
 
-    def to_dataclass(self) -> CurrencyMarket:
+    def to_dataclass(self, where: str = "currency market") -> CurrencyMarket:
         return CurrencyMarket(
-            discount_curve=self.discount_curve.to_dataclass(),
-            index_curves={k: v.to_dataclass() for k, v in self.index_curves.items()},
-            swaption_vols=self.swaption_vols.to_dataclass() if self.swaption_vols else None)
+            discount_curve=self.discount_curve.to_dataclass(f"{where}.discount_curve"),
+            index_curves={k: v.to_dataclass(f"{where}.index_curves.{k}") for k, v in self.index_curves.items()},
+            swaption_vols=self.swaption_vols.to_dataclass(f"{where}.swaption_vols") if self.swaption_vols else None)
 
 
 class EquityMarketSchema(_Strict):
@@ -217,9 +238,9 @@ class EquityMarketSchema(_Strict):
     spot: float
     dividend_curve: Optional[ZeroCurveConfigSchema] = None
 
-    def to_dataclass(self) -> EquityMarket:
+    def to_dataclass(self, where: str = "equity") -> EquityMarket:
         return EquityMarket(self.currency, self.spot,
-                            self.dividend_curve.to_dataclass() if self.dividend_curve else None)
+                            self.dividend_curve.to_dataclass(f"{where}.dividend_curve") if self.dividend_curve else None)
 
 
 class MarketSchema(_Strict):
@@ -230,11 +251,13 @@ class MarketSchema(_Strict):
     equities: Dict[str, EquityMarketSchema] = Field(default_factory=dict)
 
     def to_dataclass(self) -> Market:
-        return Market(asof=_parse_ore_date(self.asof),
-                      currencies={k: v.to_dataclass() for k, v in self.currencies.items()},
-                      fx_spots=dict(self.fx_spots),
-                      equities={k: v.to_dataclass() for k, v in self.equities.items()})
+        currencies = {k: v.to_dataclass(f"market.currencies.{k}") for k, v in self.currencies.items()}
+        equities = {k: v.to_dataclass(f"market.equities.{k}") for k, v in self.equities.items()}
+        return _named("market", lambda: Market(asof=_parse_ore_date(self.asof), currencies=currencies,
+                                               fx_spots=dict(self.fx_spots), equities=equities))
 
+
+# --- models -------------------------------------------------------------------------------------
 
 class SwapIndexConventionsSchema(_Strict):
     fixed_tenor: str = "1Y"
@@ -305,7 +328,7 @@ class HullWhiteConfigSchema(LgmConfigSchema):
     _config = HullWhiteConfig
 
 
-#: One currency's model in `simulation.ir` and the calibration request's `ir`.
+#: One currency's model in `config.models.ir`.
 IrModelSchema = Union[LgmConfigSchema, HullWhiteConfigSchema]
 
 
@@ -316,34 +339,44 @@ class CorrelationSchema(_Strict):
     value: float
 
 
-class CamConfigSchema(_Strict):
-    """`engine.market_simulation.config.CamConfig`."""
-    dates: List[str]
-    base_currency: str
+class ModelsSchema(_Strict):
+    """`engine.run.ModelsConfig`, simulation.xml's `CrossAssetModel`: the model per currency, the
+    FX volatility of every currency but `config.base_currency`, the equities', the correlations,
+    and ORE's `BootstrapTolerance` (one for the model: a currency's calibration whose error, the
+    root mean square of its helpers' relative price errors, is not below it is refused, I-73)."""
     ir: Dict[str, IrModelSchema]
     fx_volatilities: Dict[str, VolatilitySchema] = Field(default_factory=dict)
     equity_volatilities: Dict[str, VolatilitySchema] = Field(default_factory=dict)
     correlations: List[CorrelationSchema] = Field(default_factory=list)
-    curve_tenors: Optional[List[str]] = None
+    bootstrap_tolerance: float = BOOTSTRAP_TOLERANCE
+
+    def to_dataclass(self) -> ModelsConfig:
+        ir = {k: _named(f"config.models.ir.{k}", v.to_dataclass) for k, v in self.ir.items()}
+        return _named("config.models", lambda: ModelsConfig(
+            ir=ir, fx_volatilities={k: _volatility(v) for k, v in self.fx_volatilities.items()},
+            equity_volatilities={k: _volatility(v) for k, v in self.equity_volatilities.items()},
+            correlations={(c.factor1, c.factor2): c.value for c in self.correlations},
+            bootstrap_tolerance=self.bootstrap_tolerance))
+
+
+class SimulationSchema(_Strict):
+    """`engine.run.SimulationParameters`, simulation.xml's `Parameters` and `Market`: the grid's
+    `dates`, `samples` paths in `replicates` independent scrambles from `seed`, the scenario
+    market's `curve_tenors`, and the swaption volatilities' `ReactionToTimeDecay`."""
+    dates: List[str]
     samples: int = 1000
     seed: int = 42
     replicates: int = Field(default=1, ge=1, strict=True)
+    curve_tenors: List[str] = Field(default_factory=lambda: list(DEFAULT_CURVE_TENORS))
     swaption_vol_decay: Literal["ForwardVariance", "ConstantVariance"] = "ForwardVariance"
-    #: ORE's `BootstrapTolerance`, one for the model: a currency's calibration whose error (the
-    #: root mean square of its helpers' relative price errors) is not below it is refused (I-73).
-    bootstrap_tolerance: float = BOOTSTRAP_TOLERANCE
 
-    def to_dataclass(self) -> CamConfig:
-        extra = {"curve_tenors": tuple(self.curve_tenors)} if self.curve_tenors else {}
-        return CamConfig(
-            dates=tuple(_parse_ore_date(d) for d in self.dates), base_currency=self.base_currency,
-            ir={k: v.to_dataclass() for k, v in self.ir.items()},
-            fx_volatilities={k: _volatility(v) for k, v in self.fx_volatilities.items()},
-            equity_volatilities={k: _volatility(v) for k, v in self.equity_volatilities.items()},
-            correlations={(c.factor1, c.factor2): c.value for c in self.correlations},
-            samples=self.samples, seed=self.seed, replicates=self.replicates, swaption_vol_decay=self.swaption_vol_decay,
-            bootstrap_tolerance=self.bootstrap_tolerance, **extra)
+    def to_dataclass(self) -> SimulationParameters:
+        return SimulationParameters(dates=tuple(_parse_ore_date(d) for d in self.dates), samples=self.samples,
+                                    seed=self.seed, replicates=self.replicates, curve_tenors=tuple(self.curve_tenors),
+                                    swaption_vol_decay=self.swaption_vol_decay)
 
+
+# --- pricing and sensitivities ------------------------------------------------------------------
 
 class LgmEngineSchema(_Strict):
     """`engine.pricing.config.LgmSwaptionEngineConfig` (ORE's LGM Grid engine)."""
@@ -382,46 +415,52 @@ class JamshidianEngineSchema(_Strict):
 
 
 class PricingConfigSchema(_Strict):
-    """`engine.pricing.config.PricingConfig`: the engine per product. `jamshidian` is required
-    with `european: "Jamshidian"` and refused without it."""
+    """`engine.pricing.config.PricingConfig`, pricingengine.xml: the engine per product.
+    `jamshidian` is required with `european: "Jamshidian"` and refused without it."""
     european: Literal["Bachelier", "Jamshidian"] = "Bachelier"
     jamshidian: Optional[JamshidianEngineSchema] = None
     bermudan: LgmEngineSchema = Field(default_factory=LgmEngineSchema)
     american: LgmEngineSchema = Field(default_factory=LgmEngineSchema)
 
     def to_dataclass(self) -> PricingConfig:
-        return PricingConfig(european=self.european,
-                             jamshidian=self.jamshidian.to_dataclass() if self.jamshidian else None,
-                             bermudan=self.bermudan.to_dataclass(), american=self.american.to_dataclass())
+        jamshidian = _named("config.pricing.jamshidian", self.jamshidian.to_dataclass) if self.jamshidian else None
+        bermudan = _named("config.pricing.bermudan", self.bermudan.to_dataclass)
+        american = _named("config.pricing.american", self.american.to_dataclass)
+        return _named("config.pricing", lambda: PricingConfig(european=self.european, jamshidian=jamshidian,
+                                                             bermudan=bermudan, american=american))
 
 
-class SensitivityConfigSchema(_Strict):
-    """`engine.risk.greeks.bump.SensitivityConfig` (ORE's `sensitivity.xml`)."""
-    curve_tenors: Optional[List[str]] = None
+class SensitivitySchema(_Strict):
+    """`engine.run.GreeksConfig`, sensitivity.xml and the Greeks method in one section: ORE's
+    bump-and-revalue (`Bump`, the default) or `AD`, on the sensitivity market's curve tenors
+    (also the shift tenors), with absolute shift sizes and the Theta horizon
+    (`engine.risk.greeks.bump.SensitivityConfig`)."""
+    method: Literal["Bump", "AD"] = "Bump"
+    curve_tenors: List[str] = Field(default_factory=lambda: list(SensitivityConfig().curve_tenors))
     curve_shift: float = 1e-4
     vol_shift: float = 1e-4
     theta_days: int = 1
 
-    def to_dataclass(self) -> SensitivityConfig:
-        fields = self.model_dump(exclude={"curve_tenors"})
-        if self.curve_tenors:
-            fields["curve_tenors"] = tuple(self.curve_tenors)
-        return SensitivityConfig(**fields)
-
-
-class GreeksConfigSchema(_Strict):
-    """`engine.run.GreeksConfig`: ORE's bump-and-revalue (`Bump`, the default) or `AD`."""
-    method: Literal["Bump", "AD"] = "Bump"
-    sensitivity: SensitivityConfigSchema = Field(default_factory=SensitivityConfigSchema)
-
     def to_dataclass(self) -> GreeksConfig:
-        return GreeksConfig(method=self.method, sensitivity=self.sensitivity.to_dataclass())
+        settings = SensitivityConfig(curve_tenors=tuple(self.curve_tenors), curve_shift=self.curve_shift,
+                                     vol_shift=self.vol_shift, theta_days=self.theta_days)
+        return _named("config.sensitivity", lambda: GreeksConfig(method=self.method, sensitivity=settings))
 
+
+class ExposureSchema(_Strict):
+    """`engine.run.ExposureConfig`: the PFE quantiles, each in (0, 1) and given once."""
+    pfe_quantiles: List[float] = Field(default_factory=lambda: list(ExposureConfig().pfe_quantiles))
+
+    def to_dataclass(self) -> ExposureConfig:
+        return ExposureConfig(pfe_quantiles=tuple(self.pfe_quantiles))
+
+
+# --- trades -------------------------------------------------------------------------------------
 
 class _Trade(_Strict):
-    #: The trade's id (ORE's `<Trade id>`), unique in the request and echoed as `trade_ids` on
-    #: the result (I-10). Give one on every trade or on none; none numbers them `trade-0`,
-    #: `trade-1`, ... in request order.
+    #: The trade's id (ORE's `<Trade id>`), unique in the request and echoed on every per-trade
+    #: figure of the result (I-10). Give one on every trade or on none; none numbers them
+    #: `trade-0`, `trade-1`, ... in request order.
     trade_id: Optional[str] = None
 
 
@@ -519,8 +558,7 @@ class BondTradeSchema(_Trade):
         return BondConfig(
             face_amount=self.face_amount, maturity_date=_parse_ore_date(self.maturity_date),
             evaluation_date=evaluation_date, trade_id=trade_id, currency=self.currency, coupon_rate=self.coupon_rate,
-            coupon_schedule=tuple(CouponPeriod(_parse_ore_date(p.start_date), _parse_ore_date(p.end_date),
-                                               _parse_optional_date(p.payment_date)) for p in self.coupon_schedule),
+            coupon_schedule=tuple(p.to_dataclass() for p in self.coupon_schedule),
             redemption_fraction=self.redemption_fraction, accrual_day_count=self.accrual_day_count)
 
 
@@ -530,82 +568,20 @@ MarketTradeSchema = Annotated[
 ]
 
 
-#: Fields of the Hull-White request shape retired on 2026-10-01, at the top of the body and in
-#: its market; a body carrying one is refused with `RETIRED_SHAPE`. Only fields the current
-#: shape does not have: its market's `equities` is the current market's too.
-RETIRED_FIELDS = ("evaluation_date", "calibration_basket")
-RETIRED_MARKET_FIELDS = ("time_grid", "rates", "joint_covariance")
-RETIRED_SHAPE = (
-    "the Hull-White request shape (a SimulationConfig market with time_grid/rates/joint_covariance, model "
-    "parameters on the trades, calibration_basket) was retired on 2026-10-01. Send the portfolio request: "
-    "today's market (market.asof, currencies), trades naming their currency and index, and the Hull-White "
-    "model per currency in simulation.ir, e.g. {\"USD\": {\"model\": \"HullWhite\", \"reversion\": 0.03, "
-    "\"volatility\": 0.01}}; Jamshidian Europeans are pricing.european=\"Jamshidian\" with pricing.jamshidian "
-    "(docs/reference/http-api.md)")
-
-
 def _trades(trades: List[MarketTradeSchema], market: Market) -> list:
     """The trade configs, each valued on the market's date. `trade_id` on every trade or on none;
-    none numbers them `trade-0`, `trade-1`, ... in request order."""
+    none numbers them `trade-0`, `trade-1`, ... in request order. A trade the engine refuses
+    when it is built is named by its position and id."""
     ids = [t.trade_id for t in trades]
     if any(i is not None for i in ids) and None in ids:
-        raise ValueError("give trade_id on every trade or on none")
+        raise ValueError("portfolio: give trade_id on every trade or on none")
     if not ids or ids[0] is None:
         ids = [f"trade-{i}" for i in range(len(trades))]
-    return [t.to_dataclass(market.asof, i) for t, i in zip(trades, ids)]
+    return [_named(f"portfolio[{n}] ({i!r})", lambda t=t, i=i: t.to_dataclass(market.asof, i))
+            for n, (t, i) in enumerate(zip(trades, ids))]
 
 
-class MarketPortfolioRequestSchema(_Strict):
-    """The portfolio request (see the module docstring). Every trade is valued on
-    `market.asof`.
-    `simulation` is required with `scenario_risk`. `base_currency` is the reporting currency:
-    omitted, the simulation's base currency (USD without a simulation); one contradicting the
-    simulation's is refused. `simulation`, `pricing`, `greeks`, `base_currency` and
-    `precision` are the run configuration (`engine.run.RunConfig`). `cube_output` is how
-    the result carries the NPV cube: `inline` (the default), `artifact` (a chunked, hashed
-    reference, `engine.api.artifacts`) or `none` (decision A-17). With `none` the engine
-    reduces stored columns without allocating a float64 output cube (I-105)."""
-    market: MarketSchema
-    trades: List[MarketTradeSchema]
-    simulation: Optional[CamConfigSchema] = None
-    pricing: PricingConfigSchema = Field(default_factory=PricingConfigSchema)
-    greeks: GreeksConfigSchema = Field(default_factory=GreeksConfigSchema)
-    base_currency: Optional[str] = None
-    pfe_quantiles: List[float] = Field(default_factory=lambda: [0.95, 0.99])
-    compute_greeks: bool = False
-    scenario_risk: bool = True
-    precision: PrecisionSchema = Field(default_factory=PrecisionSchema)
-    cube_output: ArrayOutputName = "inline"
-
-    @model_validator(mode="before")
-    @classmethod
-    def _refuse_the_retired_hull_white_shape(cls, data):
-        if isinstance(data, dict):
-            market = data.get("market")
-            if any(f in data for f in RETIRED_FIELDS) or (
-                    isinstance(market, dict) and any(f in market for f in RETIRED_MARKET_FIELDS)):
-                raise ValueError(RETIRED_SHAPE)
-        return data
-
-    def to_dataclass(self) -> PortfolioRequest:
-        market = self.market.to_dataclass()
-        return PortfolioRequest(
-            market=market, trades=_trades(self.trades, market),
-            config=RunConfig(simulation=self.simulation.to_dataclass() if self.simulation else None,
-                             pricing=self.pricing.to_dataclass(), greeks=self.greeks.to_dataclass(),
-                             base_currency=self.base_currency,
-                             precision=self.precision.to_dataclass()),
-            pfe_quantiles=tuple(self.pfe_quantiles), compute_greeks=self.compute_greeks,
-            scenario_risk=self.scenario_risk, include_npv_cube=self.cube_output != "none")
-
-    def check(self) -> None:
-        """Refuse what `price_portfolio` would refuse, before the job is queued (no JAX work)."""
-        from engine.run.pipeline import validate_request
-
-        validate_request(self.to_dataclass())
-
-
-# --- market risk ------------------------------------------------------------------------------
+# --- market risk --------------------------------------------------------------------------------
 
 class _ScenariosSchema(_Strict):
     """What both scenario sources share. `factors` names the risk factors, the pillar zero rates of
@@ -623,40 +599,38 @@ class _ScenariosSchema(_Strict):
         names = list(dict.fromkeys(label.rpartition("/")[0] for label in self.factors))
         unknown = [n for n in names if n not in curves]
         if unknown:
-            raise ValueError(f"scenarios.factors: {unknown} are not curves of the market; its curves are "
-                             f"{list(every.names)}")
+            raise ValueError(f"config.market_risk.scenarios.factors: {unknown} are not curves of the market; its "
+                             f"curves are {list(every.names)}")
         factors = RateRiskFactors.from_curves([curves[n] for n in names], names)
         if factors.labels() != list(self.factors):
-            raise ValueError(f"scenarios.factors must give each curve's pillars in the market's order, curve after "
-                             f"curve: {factors.labels()}; got {list(self.factors)}")
+            raise ValueError(f"config.market_risk.scenarios.factors must give each curve's pillars in the market's "
+                             f"order, curve after curve: {factors.labels()}; got {list(self.factors)}")
         return factors
 
 
 class MonteCarloScenariosSchema(_ScenariosSchema):
-    """`engine.risk.market.monte_carlo_scenarios`: `num_scenarios` zero-mean Gaussian moves over
+    """`engine.risk.market.MonteCarloScenarios`: `num_scenarios` zero-mean Gaussian moves over
     `horizon_days` with the `covariance` of the factors (`[F][F]`, in `factors`' order), scrambled
-    Sobol normals seeded by `seed`."""
+    Sobol normals seeded by `seed`, in `replicates` independent scrambles; drawn when the run
+    starts, in the engine worker."""
     source: Literal["monte-carlo"]
     covariance: List[List[float]]
     num_scenarios: int
     seed: int = 42
     replicates: int = Field(default=1, ge=1, strict=True)
 
-    def check(self, market: Market) -> RateRiskFactors:
-        """The factors, the other inputs checked without drawing a scenario (no JAX work)."""
+    def to_dataclass(self, market: Market) -> MonteCarloScenarios:
         factors = self.risk_factors(market)
-        validate_monte_carlo(factors, self.covariance, self.horizon_days, self.num_scenarios, self.replicates)
-        return factors
-
-    def to_dataclass(self, market: Market):
-        return monte_carlo_scenarios(self.risk_factors(market), self.covariance, self.horizon_days,
-                                     self.num_scenarios, self.seed, self.replicates)
+        return _named("config.market_risk.scenarios", lambda: MonteCarloScenarios(
+            factors, self.covariance, self.horizon_days, self.num_scenarios, self.seed, self.replicates))
 
 
 class HistoricalScenariosSchema(_ScenariosSchema):
     """`engine.risk.market.historical_scenarios`: one scenario per overlapping `horizon_days`
     window of `history` (`[D][F]` factor levels on consecutive business dates, oldest first, in
-    `factors`' order), each labelled with its window when `dates` (`D` labels) are given."""
+    `factors`' order), each labelled with its window when `dates` (`D` labels) are given; the ES
+    standard error by a moving-block bootstrap of `bootstrap_replicates` resamples of blocks of
+    `block_length` from `bootstrap_seed`."""
     source: Literal["historical"]
     history: List[List[float]]
     dates: Optional[List[str]] = None
@@ -664,98 +638,113 @@ class HistoricalScenariosSchema(_ScenariosSchema):
     block_length: Optional[int] = Field(default=None, ge=1, strict=True)
     bootstrap_seed: int = Field(default=42, ge=0, strict=True)
 
-    def check(self, market: Market) -> RateRiskFactors:
-        """The factors, the scenarios built to check them (numpy only: no JAX work)."""
-        return self.to_dataclass(market).factors
-
     def to_dataclass(self, market: Market):
-        return historical_scenarios(self.risk_factors(market), self.history, self.horizon_days, self.dates,
-                                    bootstrap_replicates=self.bootstrap_replicates, block_length=self.block_length,
-                                    bootstrap_seed=self.bootstrap_seed)
+        factors = self.risk_factors(market)
+        return _named("config.market_risk.scenarios", lambda: historical_scenarios(
+            factors, self.history, self.horizon_days, self.dates,
+            bootstrap_replicates=self.bootstrap_replicates, block_length=self.block_length,
+            bootstrap_seed=self.bootstrap_seed))
 
 
 ScenariosSchema = Annotated[Union[MonteCarloScenariosSchema, HistoricalScenariosSchema],
                             Field(discriminator="source")]
 
 
-class MarketRiskRequestSchema(_Strict):
-    """`engine.risk.market.MarketRiskRequest` (`POST /portfolio/market-risk`): the market and
-    trades as the portfolio request takes them, the shock `scenarios`, the engine per product
-    (`pricing`), the VaR/ES `quantiles`, `precision`, the scenarios vmapped at once (`batch_size`),
-    the reporting currency (`base_currency`, USD by default, as the portfolio's without a
-    simulation; each trade in another currency converted at `market.fx_spots`), and how the
-    result carries the P&L matrix (`pnl_output`, as the portfolio's `cube_output`)."""
-    market: MarketSchema
-    trades: List[MarketTradeSchema]
+class MarketRiskSchema(_Strict):
+    """`engine.run.MarketRiskConfig`: the shock `scenarios`, the VaR/ES `quantiles`, and the
+    scenarios revalued at once (`batch_size`; lower it if a large Bermudan runs out of memory)."""
     scenarios: ScenariosSchema
-    pricing: PricingConfigSchema = Field(default_factory=PricingConfigSchema)
     quantiles: List[float] = Field(default_factory=lambda: [0.99, 0.975])
-    precision: PrecisionSchema = Field(default_factory=PrecisionSchema)
     batch_size: int = 256
+
+    def to_dataclass(self, market: Market) -> MarketRiskConfig:
+        scenarios = self.scenarios.to_dataclass(market)
+        return MarketRiskConfig(scenarios=scenarios, quantiles=tuple(self.quantiles), batch_size=self.batch_size)
+
+
+# --- the run request ----------------------------------------------------------------------------
+
+class RunRequestConfigSchema(_Strict):
+    """`engine.run.RunRequestConfig`: how the run computes its analytics, one section per ORE file
+    (see the module docstring). Every section is optional; the defaults are ORE's
+    (`GET /config/defaults`). A section, or a setting differing from its default, that no
+    requested analytic reads is refused (400), naming it."""
     base_currency: str = DEFAULT_REPORTING_CURRENCY
-    pnl_output: ArrayOutputName = "inline"
+    models: Optional[ModelsSchema] = None
+    simulation: Optional[SimulationSchema] = None
+    pricing: PricingConfigSchema = Field(default_factory=PricingConfigSchema)
+    sensitivity: SensitivitySchema = Field(default_factory=SensitivitySchema)
+    exposure: ExposureSchema = Field(default_factory=ExposureSchema)
+    market_risk: Optional[MarketRiskSchema] = None
+    precision: PrecisionSchema = Field(default_factory=PrecisionSchema)
 
-    def to_dataclass(self) -> MarketRiskRequest:
-        market = self.market.to_dataclass()
-        return MarketRiskRequest(trades=_trades(self.trades, market), market=market,
-                                 scenarios=self.scenarios.to_dataclass(market), pricing=self.pricing.to_dataclass(),
-                                 quantiles=tuple(self.quantiles), precision=self.precision.to_dataclass(),
-                                 batch_size=self.batch_size, base_currency=self.base_currency)
-
-    def check(self) -> None:
-        """Refuse what `run_market_risk` would refuse, before the job is queued; the Monte Carlo
-        scenarios are drawn by the worker, not here (no JAX work)."""
-        market = self.market.to_dataclass()
-        trades = _trades(self.trades, market)
-        validate_portfolio(trades, market, self.pricing.to_dataclass(), self.precision.to_dataclass(), self.quantiles,
-                           self.batch_size, self.base_currency)
-        validate_factors(trades, market, self.scenarios.check(market))
-        if isinstance(self.scenarios, MonteCarloScenariosSchema):
-            self.precision.to_dataclass().validate_sampling(self.scenarios.num_scenarios,
-                                                            self.scenarios.replicates, "scenarios")
+    def to_dataclass(self, market: Market) -> RunRequestConfig:
+        sections = dict(
+            models=self.models.to_dataclass() if self.models else None,
+            simulation=_named("config.simulation", self.simulation.to_dataclass) if self.simulation else None,
+            pricing=self.pricing.to_dataclass(), sensitivity=self.sensitivity.to_dataclass(),
+            exposure=_named("config.exposure", self.exposure.to_dataclass),
+            market_risk=self.market_risk.to_dataclass(market) if self.market_risk else None,
+            precision=self.precision.to_dataclass("config.precision"))
+        return RunRequestConfig(base_currency=self.base_currency, **sections)
 
 
-# --- the cross-asset model's calibration ------------------------------------------------------
+class OutputsSchema(_Strict):
+    """How the result carries each large array (decision A-17, revised with this contract): the
+    exposure analytic's NPV cube `[scenario, date, trade]` (`npv_cube`) and each option's exercise
+    decisions `[scenario, date, option]` (`exercised`), the market-risk P&L `[scenario, trade]`
+    (`pnl`). `artifact` is a chunked, hashed reference read at `GET /runs/{run_id}/artifacts/...`;
+    `none` leaves the array out (and the exposure analytic then never assembles its float64 cube,
+    I-105). A setting other than its default for an analytic not requested is refused."""
+    npv_cube: ArrayOutputName = "artifact"
+    exercised: ArrayOutputName = "none"
+    pnl: ArrayOutputName = "artifact"
 
-class CamCalibrationRequestSchema(_Strict):
-    """`engine.calibration.cam.calibrate_cam` (`POST /calibration/cam`): today's market and the
-    model of each currency to calibrate, as the simulation's `ir` gives it; each must have a
-    calibration basket (`calibration_expiries` x `calibration_terms`). `bootstrap_tolerance` is
-    the simulation's (ORE's `BootstrapTolerance`)."""
+    #: The analytic that produces each array.
+    PRODUCED_BY: ClassVar[Dict[str, str]] = {"npv_cube": "exposure", "exercised": "exposure", "pnl": "market_risk"}
+
+
+class RunRequestSchema(_Strict):
+    """The run request (see the module docstring): `engine.run.RunRequest` on the wire, plus what
+    only the job queue reads (`idempotency_key`, `keep`)."""
     market: MarketSchema
-    ir: Dict[str, IrModelSchema]
-    bootstrap_tolerance: float = BOOTSTRAP_TOLERANCE
+    portfolio: List[MarketTradeSchema] = Field(default_factory=list)
+    analytics: List[AnalyticName]
+    config: RunRequestConfigSchema = Field(default_factory=RunRequestConfigSchema)
+    outputs: OutputsSchema = Field(default_factory=OutputsSchema)
+    #: A caller's key for this submission (I-89): the same key with the same body is the run
+    #: already submitted, whose id is returned again; with another body it is refused (409).
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    #: Keep the run, its result and its artifacts whatever the queue's retention policy (I-76),
+    #: as a regulatory run must be kept.
+    keep: bool = False
 
-    @model_validator(mode="after")
-    def _each_has_a_basket(self):
-        if not self.ir:
-            raise ValueError("ir: give at least one currency's model to calibrate")
-        missing = [c for c, model in self.ir.items() if not model.calibration_expiries]
-        if missing:
-            raise ValueError(f"ir{missing}: no calibration basket (calibration_expiries and calibration_terms), "
-                             f"so nothing to calibrate")
-        return self
+    def to_dataclass(self) -> RunRequest:
+        market = self.market.to_dataclass()
+        portfolio, config = tuple(_trades(self.portfolio, market)), self.config.to_dataclass(market)
+        return _named("portfolio", lambda: RunRequest(market=market, analytics=tuple(self.analytics),
+                                                      portfolio=portfolio, config=config,
+                                                      include_npv_cube=self.outputs.npv_cube != "none"))
 
-    def to_dataclass(self) -> Tuple[Market, Dict[str, LgmConfig], float]:
-        """Today's market, each currency's model and the tolerance (`calibrate_cam`'s arguments)."""
-        return (self.market.to_dataclass(), {c: model.to_dataclass() for c, model in self.ir.items()},
-                self.bootstrap_tolerance)
+    def check(self) -> RunRequest:
+        """Refuse what `engine.run.run` would refuse, before the run is queued (`validate_run`: no
+        JAX work, the Monte Carlo scenarios not drawn), and an output of an analytic not
+        requested; the request, built."""
+        request = self.to_dataclass()
+        validate_run(request)
+        default = OutputsSchema()
+        for name, analytic in OutputsSchema.PRODUCED_BY.items():
+            if getattr(self.outputs, name) != getattr(default, name) and analytic not in self.analytics:
+                raise ValueError(f"outputs.{name}: the {analytic} analytic, which produces it, is not requested")
+        return request
+
+    def body_sha256(self) -> str:
+        """The request's identity for `idempotency_key` (I-89): the SHA-256 of its canonical JSON,
+        every default filled in, the key itself left out, so a retry with its fields reordered or
+        a default spelt out is the same body."""
+        canonical = json.dumps(self.model_dump(mode="json", exclude={"idempotency_key"}), sort_keys=True,
+                               separators=(",", ":"), ensure_ascii=True)
+        return hashlib.sha256(canonical.encode("ascii")).hexdigest()
 
 
-__all__: Tuple[str, ...] = ("CamCalibrationRequestSchema", "MarketPortfolioRequestSchema", "MarketRiskRequestSchema")
-
-
-class CalibrationRequestSchema(BaseModel):
-    """Inputs to `build_coterminal_basket` + `calibrate_lgm_sigma`, for a caller that wants
-    a fitted `Sigma` without a full portfolio request."""
-    evaluation_date: str
-    exercise_times: List[float]
-    final_maturity_time: float
-    notional: float
-    payer: bool
-    market_vols: List[float]
-    zero_curve: ZeroCurveConfigSchema
-    hw_a: float
-    index_tenor_months: int = 6
-    #: The bootstrap's root solver (decision A-21).
-    solver: SolverName = DEFAULT_SOLVER
+__all__: Tuple[str, ...] = ("RunRequestConfigSchema", "RunRequestSchema")

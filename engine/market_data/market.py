@@ -30,12 +30,36 @@ class ZeroCurveConfig:
     it. `None` means unstated, which `engine.traderx` treats as not observed when it
     reports a result's market provenance (I-11). See
     `engine.traderx.market_inputs.CurveProvenance`.
+
+    Checked on construction, before any pricing (I-103): at least one pillar, as many rates as
+    times, every value finite, times non-negative and strictly increasing. Rates may be zero or
+    negative. The interpolation assumes all of it: an unsorted curve priced silently wrong, and
+    a NaN rate gave a NaN price.
     """
     times: List[float]
     rates: List[float]
     # Optional[object] rather than CurveProvenance, so this module does not import
     # engine.traderx (the dependency runs the other way).
     provenance: Optional[object] = None
+
+    def __post_init__(self):
+        _check_pillars(self.times, self.rates)
+
+
+def _check_pillars(times, rates) -> None:
+    """Refuse pillars a zero curve cannot be built on (see `ZeroCurveConfig`), on the host."""
+    times, rates = np.asarray(times, dtype=np.float64), np.asarray(rates, dtype=np.float64)
+    if times.ndim != 1 or times.size == 0:
+        raise ValueError(f"a zero curve needs at least one pillar time; got {times.tolist()}")
+    if rates.shape != times.shape:
+        raise ValueError(f"a zero curve needs as many rates as times, the same length; got {times.size} times "
+                         f"and {rates.size} rates")
+    if not (np.all(np.isfinite(times)) and np.all(np.isfinite(rates))):
+        raise ValueError(f"a zero curve's times and rates must be finite; got times {times.tolist()}, "
+                         f"rates {rates.tolist()}")
+    if times[0] < 0.0 or np.any(np.diff(times) <= 0.0):
+        raise ValueError(f"a zero curve's pillar times must be non-negative and strictly increasing; got "
+                         f"{times.tolist()}")
 
 
 #: Conventions of every swaption volatility matrix: ORE's `SwaptionVolatilityCurveConfig`

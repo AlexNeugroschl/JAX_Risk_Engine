@@ -32,11 +32,14 @@ LAYERS = (
 #: labels of the market-risk estimators, and market risk revalues with the Greeks' price
 #: functions.
 RISK_LAYERS = (("greeks",), ("market",), ("counterparty",))
-#: The one import against the layers, as `(importing package, imported module)`. The Greeks label
-#: each trade's region of a profiler trace with the run's phase names (`engine.run.trace`, which
-#: imports no engine module: `test_the_exception_is_a_leaf`). The import is made at call time,
-#: since importing `engine.run` imports the pipeline, which imports the Greeks.
-EXCEPTIONS = {("engine.risk.greeks", "engine.run.trace")}
+#: The one module imported against the layers, as `(importing package, imported module)`: the
+#: run's phases (`engine.run.trace`, which imports no engine module: `test_the_exception_is_a_leaf`).
+#: The Greeks, the cube and market risk's revaluation label each trade's region of a profiler
+#: trace with the run's phase names, and each such region is a boundary a cancelled run stops at
+#: (I-91). The import is made at call time, since importing `engine.run` imports the pipeline,
+#: which imports them.
+EXCEPTIONS = {("engine.risk.greeks", "engine.run.trace"), ("engine.pricing", "engine.run.trace"),
+              ("engine.risk.market", "engine.run.trace")}
 
 
 def _imported_modules(path: pathlib.Path):

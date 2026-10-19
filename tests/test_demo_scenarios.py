@@ -73,8 +73,8 @@ class TestDemoSimulation:
 
 
 class TestTheHttpForms:
-    """The HTTP demos send `demo_market_json`/`demo_simulation_json`: the same market and
-    simulation as the dataclass demos, through the request schema."""
+    """The HTTP demos send `demo_market_json`/`demo_config_json`: the same market and
+    simulation as the dataclass demos, through the run request's schema."""
 
     def test_the_market_round_trips(self):
         from demos.demo_scenarios import demo_market_json
@@ -88,8 +88,9 @@ class TestTheHttpForms:
 
     @pytest.mark.parametrize("model", MODELS)
     def test_the_simulation_round_trips(self, model):
-        from demos.demo_scenarios import demo_simulation_json
-        from engine.api.requests import CamConfigSchema
-        body = demo_simulation_json(model, 8, currencies=("USD", "EUR"), calibrated=True)
-        assert CamConfigSchema.model_validate(body).to_dataclass() == \
+        from demos.demo_scenarios import demo_config_json, demo_market_json
+        from engine.api.requests import RunRequestSchema
+        body = {"market": demo_market_json(("USD", "EUR")), "analytics": ["exposure"],
+                "config": demo_config_json(model, 8, currencies=("USD", "EUR"), calibrated=True)}
+        assert RunRequestSchema.model_validate(body).to_dataclass().config.cam() == \
             demo_simulation(model, 8, currencies=("USD", "EUR"), calibrated=True)

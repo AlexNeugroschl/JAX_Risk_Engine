@@ -51,7 +51,9 @@ from engine.precision import Arithmetic, Precision, Stored, load, require_precis
 from engine.pricing.bermudan import bermudan_cube, bermudan_value, contract_exercise_dates
 from engine.pricing.config import PricingConfig
 from engine.pricing.context import PricingContext, from_market
-from engine.pricing.european import european_cube, european_terms, european_value, variance_on_path
+from engine.pricing.european import (
+    check_exercise_into_whole_periods, european_cube, european_terms, european_value, variance_on_path,
+)
 from engine.pricing.jamshidian import jamshidian_cube, jamshidian_value, validate_jamshidian
 from engine.pricing.legs import Legs, PathFixings, legs_cube, legs_of, path_fixings, path_schedule, today_npv
 from engine.pricing.options import effective_steps, position_sign, underlying_start, wrap
@@ -171,8 +173,10 @@ def validate_trades(trades: Sequence[Trade], market: Market, pricing: PricingCon
                 market.swaption_vols(currency)
         except KeyError as exc:
             raise KeyError(f"{label}: {exc.args[0]}") from None
-        if isinstance(cfg, SwaptionConfig) and pricing.european == "Jamshidian":
-            validate_jamshidian(cfg)
+        if isinstance(cfg, SwaptionConfig) and cfg.exercise_date > market.asof:
+            check_exercise_into_whole_periods(cfg)
+            if pricing.european == "Jamshidian":
+                validate_jamshidian(cfg)
 
 
 def trade_maturity(cfg: Trade) -> ORE.Date:
@@ -243,21 +247,26 @@ def _columns(trades, market: Market, scenarios: ScenarioMarket, base_currency: s
     is loaded at the accumulate format of `precision.precision_for(trade)` (once per format, with
     its path fixings), the trade priced in its arithmetic, and its cube column stored at its
     storage format, named by the trade's id (`Precision.store`); and each option's exercise state
-    by trade id (`PortfolioValuation.exercised`)."""
+    by trade id (`PortfolioValuation.exercised`). Each trade is a phase of its own
+    (`trade_pricing_phase`), labelled in a profiler trace and a boundary a run can stop at."""
+    # At call time: importing `engine.run` imports the pipeline, which imports this module.
+    from engine.run.trace import trade_pricing_phase
+
     loaded = {}  # accumulate dtype -> (the scenario market at it, its path fixings)
     columns, exercised = [], {}
-    for cfg in trades:
-        stage = precision.precision_for(cfg)
-        arithmetic = precision.arithmetic_for(stage, f"values/{cfg.trade_id}")
-        if arithmetic.dtype not in loaded:
-            at_dtype = scenarios.map_arrays(lambda a: load(a, arithmetic.dtype), grid=lambda grid: grid)
-            loaded[arithmetic.dtype] = at_dtype, _index_fixings(trades, market, at_dtype)
-        sm, fixings = loaded[arithmetic.dtype]
-        fx_path = 1.0 if cfg.currency == base_currency else sm.fx[cfg.currency]
-        cube, state = _path_values(cfg, market, sm, fixings, pricing, decay, arithmetic)
-        columns.append(precision.store(cube * fx_path, stage.storage, f"values/{cfg.trade_id}"))
-        if state is not None:
-            exercised[cfg.trade_id] = state
+    for i, cfg in enumerate(trades):
+        with trade_pricing_phase(i, cfg):
+            stage = precision.precision_for(cfg)
+            arithmetic = precision.arithmetic_for(stage, f"values/{cfg.trade_id}")
+            if arithmetic.dtype not in loaded:
+                at_dtype = scenarios.map_arrays(lambda a: load(a, arithmetic.dtype), grid=lambda grid: grid)
+                loaded[arithmetic.dtype] = at_dtype, _index_fixings(trades, market, at_dtype)
+            sm, fixings = loaded[arithmetic.dtype]
+            fx_path = 1.0 if cfg.currency == base_currency else sm.fx[cfg.currency]
+            cube, state = _path_values(cfg, market, sm, fixings, pricing, decay, arithmetic)
+            columns.append(precision.store(cube * fx_path, stage.storage, f"values/{cfg.trade_id}"))
+            if state is not None:
+                exercised[cfg.trade_id] = state
     return columns, exercised
 
 
@@ -324,7 +333,13 @@ def _path_values(cfg: Trade, market: Market, sm: ScenarioMarket, fixings, pricin
 
     if isinstance(cfg, SwapConfig):
         return swap_cube(legs_of(_swap_underlying(cfg), cfg.payer, market.asof, cfg.fixings)), None
-    if isinstance(cfg, SwaptionConfig):
+    if isinstance(cfg, SwaptionConfig) and not cfg.exercise_date > market.asof:
+        # Expired: no exercise is left, so the option is worth nothing on any date, as ORE builds
+        # no option for it (`Swaption::build`, step 6), and its exercise-into coupons are not read.
+        option = jnp.zeros((sm.num_paths, len(sm.dates)), dtype=arithmetic.dtype)
+        swap = _european_underlying(cfg)
+        exercises, fixings_history = (cfg.exercise_date,), {}
+    elif isinstance(cfg, SwaptionConfig):
         terms = european_terms(cfg, market.asof)
         schedule = path_schedule(terms.legs, market.asof, sm.dates)
         if pricing.european == "Jamshidian":

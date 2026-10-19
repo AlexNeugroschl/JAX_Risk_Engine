@@ -12,9 +12,7 @@ must be refused, not priced here; see I-05 in docs/planning/known-issues.md.
 """
 import math
 from contextlib import contextmanager
-from dataclasses import dataclass
 
-import numpy as np
 import ORE
 
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER, resolve_accrual_day_count
@@ -198,31 +196,7 @@ def par_coupon_forecast_period(coupon) -> "tuple[ORE.Date, ORE.Date, float]":
     return start, end, index.dayCounter().yearFraction(start, end)
 
 
-@dataclass
-class LegCashflows:
-    """One fixed leg's remaining coupons on `today`, times in years from `today`, for the
-    standalone calibration basket (`engine.calibration.basket`)."""
-    payment_times: np.ndarray        # [N]
-    accrual_start_times: np.ndarray  # [N]
-    accrual_end_times: np.ndarray    # [N]
-    accrual_fractions: np.ndarray    # [N]
-    notional: float
-
-
 def is_live(cashflow_date: ORE.Date, today: ORE.Date) -> bool:
     """Whether a cashflow is still live on `today`: QuantLib's `CashFlow::hasOccurred`
     under ORE defaults, where a cashflow paid on the evaluation date has occurred."""
     return cashflow_date > today
-
-
-def fixed_leg_cashflows(swap: ORE.VanillaSwap, today: ORE.Date) -> LegCashflows:
-    """Remaining fixed coupons' payment/accrual times and ORE `accrualPeriod()`s."""
-    t_of = lambda d: TIME_AXIS_DAY_COUNTER.yearFraction(today, d)  # noqa: E731
-    coupons = [c for c in map(ORE.as_fixed_rate_coupon, swap.fixedLeg()) if is_live(c.date(), today)]
-    return LegCashflows(
-        payment_times=np.array([t_of(c.date()) for c in coupons]),
-        accrual_start_times=np.array([t_of(c.accrualStartDate()) for c in coupons]),
-        accrual_end_times=np.array([t_of(c.accrualEndDate()) for c in coupons]),
-        accrual_fractions=np.array([c.accrualPeriod() for c in coupons]),
-        notional=swap.fixedNominals()[0] if swap.fixedNominals() else swap.nominal(),
-    )

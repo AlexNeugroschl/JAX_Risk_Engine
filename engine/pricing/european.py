@@ -83,15 +83,40 @@ class EuropeanTerms:
         return dataclasses.replace(self, legs=self.legs.astype(dtype), par_yield=par_yield)
 
 
-def european_terms(cfg: SwaptionConfig, asof: ORE.Date, fixings=None) -> EuropeanTerms:
-    """Keep the coupons with pay date > expiry and accrual start >= expiry (the engine's filter
-    for exercise into whole periods). Times are measured from `asof`; `fixings` is history."""
+def _exercise_into(cfg: SwaptionConfig):
+    """The underlying swap, its fixed and floating coupons, and the index of each leg's first
+    coupon the exercise enters: the first paying after the expiry and accruing from it on (the
+    engine's filter for exercise into whole periods). An expiry inside a leg's last accrual
+    period leaves that leg nothing to enter, which the engine cannot price: refused, naming the
+    trade and the dates (I-103)."""
     swap = underlying_swap(cfg)
     fixed = [ORE.as_fixed_rate_coupon(c) for c in swap.fixedLeg()]
     floating = [ORE.as_floating_rate_coupon(c) for c in swap.floatingLeg()]
-    in_exercise = lambda c: c.date() > cfg.exercise_date and c.accrualStartDate() >= cfg.exercise_date  # noqa: E731
-    first_fixed = next(i for i, c in enumerate(fixed) if in_exercise(c))
-    first_float = next(i for i, c in enumerate(floating) if in_exercise(c))
+
+    def first(coupons, leg: str) -> int:
+        for i, c in enumerate(coupons):
+            if c.date() > cfg.exercise_date and c.accrualStartDate() >= cfg.exercise_date:
+                return i
+        last = coupons[-1]
+        raise ValueError(f"trade {cfg.trade_id!r}: exercise date {cfg.exercise_date.ISO()} leaves no whole period "
+                         f"of its {leg} leg to exercise into (the last accrues from "
+                         f"{last.accrualStartDate().ISO()} to {last.accrualEndDate().ISO()}); a European enters the "
+                         f"coupons accruing from its expiry on")
+
+    return swap, fixed, floating, first(fixed, "fixed"), first(floating, "floating")
+
+
+def check_exercise_into_whole_periods(cfg: SwaptionConfig) -> None:
+    """Refuse, before any pricing, a European whose expiry leaves a leg no whole period to enter
+    (`_exercise_into`)."""
+    _exercise_into(cfg)
+
+
+def european_terms(cfg: SwaptionConfig, asof: ORE.Date, fixings=None) -> EuropeanTerms:
+    """Keep the coupons with pay date > expiry and accrual start >= expiry (the engine's filter
+    for exercise into whole periods, `_exercise_into`). Times are measured from `asof`;
+    `fixings` is history."""
+    swap, fixed, floating, first_fixed, first_float = _exercise_into(cfg)
     starts = [c.accrualStartDate() for c in fixed[first_fixed:] + floating[first_float:]]
     ends = [c.accrualEndDate() for c in fixed[first_fixed:] + floating[first_float:]]
     start = min(starts)

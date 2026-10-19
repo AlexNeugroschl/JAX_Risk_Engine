@@ -198,15 +198,15 @@ class TestCompileCounts:
         JAX's internal caches of 2,048 traced programs, which the rest of the job overflowed."""
         script = (
             "import json, jax\n"
-            "from demos.demo_profile_small import build_portfolio_request\n"
-            "from engine.api.requests import MarketPortfolioRequestSchema\n"
-            "from engine.run import price_portfolio\n"
+            "from demos.demo_profile_small import build_run_request\n"
+            "from engine.api.requests import RunRequestSchema\n"
+            "from engine.run import run\n"
             "from tests.support.compiles import count_compiles\n"
-            "request = MarketPortfolioRequestSchema.model_validate(build_portfolio_request()).to_dataclass()\n"
+            "request = RunRequestSchema.model_validate(build_run_request()).to_dataclass()\n"
             "counts = []\n"
             "for _ in range(2):\n"
             "    with count_compiles() as counter:\n"
-            "        jax.block_until_ready(price_portfolio(request).npv_cube)\n"
+            "        jax.block_until_ready(run(request).portfolio.npv_cube)\n"
             "    counts.append(dict(counter))\n"
             "print(json.dumps(counts))\n")
         process = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, cwd=ROOT,

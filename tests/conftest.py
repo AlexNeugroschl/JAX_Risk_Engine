@@ -16,9 +16,15 @@ XLA programs are cached on disk across runs (JAX's persistent compilation cache)
 directory. A program is keyed on its HLO, the compile options and the jax/jaxlib versions, so
 a hit is the executable a fresh compile would build. Set through the environment as well, so
 worker processes the tests start use it too. Delete the directory to measure cold compiles.
+
+The engine worker's lock is one per host (`engine.api.job_queue.worker_lock_path`, I-106), so each
+test process takes a lock of its own (`JAX_RISK_WORKER_LOCK`), as each has its own job queue:
+otherwise the first process's worker would serve its queue alone, and every other process's
+runs would be refused.
 """
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from engine.api.worker import deterministic_kernels_environment
@@ -29,6 +35,10 @@ os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", str(Path(__file__).resolve().
 # Cache every program: the suite compiles thousands of small ones, each cheaper to read back.
 os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
 os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
+# Assigned, not defaulted: xdist's processes inherit the controller's environment, and each needs
+# its own.
+os.environ["JAX_RISK_WORKER_LOCK"] = str(Path(tempfile.gettempdir()) / "jax-risk-engine-tests"
+                                         / f"worker-{os.getpid()}.lock")
 
 import jax
 jax.config.update("jax_enable_x64", True)
@@ -99,8 +109,8 @@ def _stop_the_engine_worker_after_each_module():
 @pytest.fixture(scope="session")
 def test_client(tmp_path_factory):
     """In-process `TestClient` over `engine.api.app`, on a job queue of this session's own (each
-    xdist process has its own, and so its own engine worker). Session-scoped; the only state is
-    the queue, and each submission gets a unique job_id. The worker, started by the first job,
+    xdist process has its own, and so its own engine worker under its own lock). Session-scoped;
+    the only state is the queue, and each submission gets a unique run_id. The worker, started by the first job,
     is stopped at the end of the session (it would exit with this process anyway)."""
     from fastapi.testclient import TestClient
     from engine.api import routes

@@ -97,7 +97,7 @@ def _parse_date(raw: Optional[str], field: str) -> ORE.Date:
     except (ValueError, TypeError, RuntimeError) as exc:
         # ORE.Date raises RuntimeError for a well-formed but impossible date (2025-02-30);
         # catching it keeps one bad row from failing the whole bundle
-        # (tests/test_traderx_bill.py::TestImpossibleCalendarDates).
+        # (tests/test_traderx_note.py::TestImpossibleCalendarDates).
         raise BillPricingError(
             TERMS_INCOMPLETE, f"{field}={raw!r} is not a valid ISO YYYY-MM-DD date ({exc})",
         ) from exc

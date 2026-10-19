@@ -23,17 +23,20 @@ from engine.risk.market.run import MarketRiskRequest, MarketRiskResult, run_mark
 from engine.risk.market.scenarios import (
     SOURCE_HISTORICAL,
     SOURCE_MONTE_CARLO,
+    MonteCarloScenarios,
     ShockScenarios,
     covariance_from_history,
     historical_scenarios,
     horizon_moves,
     monte_carlo_scenarios,
+    shock_scenarios,
     validate_monte_carlo,
 )
 
 __all__ = [
     "MarketRiskRequest",
     "MarketRiskResult",
+    "MonteCarloScenarios",
     "RateRiskFactors",
     "SOURCE_HISTORICAL",
     "SOURCE_MONTE_CARLO",
@@ -43,5 +46,6 @@ __all__ = [
     "horizon_moves",
     "monte_carlo_scenarios",
     "run_market_risk",
+    "shock_scenarios",
     "validate_monte_carlo",
 ]

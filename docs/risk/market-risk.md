@@ -50,11 +50,17 @@ result.pnl                                               # [S, N] per-trade P&L
 `demos/demo.py` ends with a worked run; `demos/demo_precision.py` runs it at FP64, FP32,
 and with the P&L only stored in FP32.
 
-Over HTTP the same run is a job: `POST /portfolio/market-risk` with the market, the trades and
-the scenarios' inputs (a covariance or a history of the factors, the factors named in the
-order of its columns), polled at `GET /jobs/{job_id}`; the P&L comes inline, by hashed
-reference or not at all (`pnl_output`). `demos/demo_api.py` runs one
-([HTTP API](../reference/http-api.md#post-portfoliomarket-risk)).
+Over HTTP the same run is the run request's `market_risk` analytic: `POST /runs` with the market,
+the trades (`portfolio`) and `config.market_risk` (the scenarios' inputs, a covariance or a
+history of the factors, the factors named in the order of its columns; the quantiles; the batch
+size), polled at `GET /runs/{run_id}`; the P&L comes by hashed reference (the default), inline or
+not at all (`outputs.pnl`). In Python, `engine.run.run(RunRequest(market, ("market_risk",),
+trades, RunRequestConfig(market_risk=MarketRiskConfig(scenarios))))` is the same call, the Monte
+Carlo scenarios given undrawn (`MonteCarloScenarios`) so the request is checked before any is
+drawn. Market risk has no scenario market: a run request refuses a `precision.market` stage and
+a `simulation.compute` other than its accumulate format, which it would not read (I-95).
+`demos/demo_api.py` runs one
+([HTTP API](../reference/http-api.md#market-risk-scenarios)).
 
 ## Reporting currency
 

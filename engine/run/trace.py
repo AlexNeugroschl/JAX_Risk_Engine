@@ -21,18 +21,28 @@ which keeps at most about `JSON_EXPORT_EVENT_CAP` events. See docs/concepts/prof
 phase does. On a GPU the profiler costs per kernel launch whatever it records (measured: a
 repeated demo job 5.8 s untraced, 33 s traced, under every CUPTI setting), so a phase's window
 is the way to trace it at the cost of that phase alone.
+
+Every phase's entry is also a boundary at which a run can stop: `at_phase_boundaries` installs
+a check, called with the phase's name as it is entered, which the engine worker uses to stop a
+cancelled job (I-91). The check raises to stop the run; outside the block nothing is called.
 """
 import dataclasses
 import os
 import time
 from collections import Counter
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Callable, Dict, Optional
 
-#: The pipeline's phases (`engine.run.pipeline`), in the order they run.
-PHASES = ("calibration", "simulation", "pricing", "paired_sample", "exposure", "base_npv", "greeks")
+#: The phases of a run (`engine.run.pipeline`, then market risk's `engine.risk.market.run` and the
+#: run request's `engine.run.run_request`), in the order they run.
+PHASES = ("calibration", "simulation", "pricing", "paired_sample", "exposure", "base_npv", "greeks", "scenarios",
+          "revaluation")
 #: One region per trade inside "greeks", named `greeks/trade<index>/<config type>`.
 GREEKS_TRADE_PREFIX = "greeks/"
+#: One region per trade inside "pricing" (its cube column) and "revaluation" (its P&L), named
+#: `pricing/trade<index>/<config type>`.
+PRICING_TRADE_PREFIX = "pricing/"
 #: The events the profiler's `.trace.json.gz` export keeps at most, the earliest-starting
 #: (measured, jax 0.10: a 45 s, 1,500,332-event trace exported 1,000,116, nothing that started
 #: after 23 s but the regions that began before it). xprof reads the `.xplane.pb`, which holds
@@ -45,9 +55,12 @@ def phase(name: str):
     """Label a region of the pricing path as `name` in a profiler trace (both mechanisms;
     see the module docstring), and trace it when it is the `traced_phase`. JAX is imported
     here, not at module scope, so the engine worker's profiler hook imports nothing when
-    `JAX_RISK_PROFILE_DIR` is unset."""
+    `JAX_RISK_PROFILE_DIR` is unset. Entering it is a phase boundary (`at_phase_boundaries`)."""
     import jax
 
+    check = _BOUNDARY.get()
+    if check is not None:
+        check(name)
     window = _window
     if window is not None and window.name == name and window.wall_seconds is None:
         with window.open():
@@ -62,6 +75,27 @@ def phase(name: str):
 def trade_greeks_phase(index: int, trade):
     """The `phase` of one trade's Greeks, by its index in the request and its config type."""
     return phase(f"{GREEKS_TRADE_PREFIX}trade{index}/{type(trade).__name__}")
+
+
+def trade_pricing_phase(index: int, trade):
+    """The `phase` of one trade's pricing on every path or scenario, as `trade_greeks_phase`."""
+    return phase(f"{PRICING_TRADE_PREFIX}trade{index}/{type(trade).__name__}")
+
+
+#: The check `phase` calls on entry (`at_phase_boundaries`), per thread and context.
+_BOUNDARY: ContextVar[Optional[Callable[[str], None]]] = ContextVar("phase_boundary", default=None)
+
+
+@contextmanager
+def at_phase_boundaries(check: Callable[[str], None]):
+    """Within the block, call `check(name)` as each phase is entered on this thread, before its
+    work: the boundaries at which a run can stop (the engine worker's cancellation, I-91),
+    `check` stopping it by raising. Between boundaries a run is never interrupted."""
+    token = _BOUNDARY.set(check)
+    try:
+        yield
+    finally:
+        _BOUNDARY.reset(token)
 
 
 @dataclasses.dataclass
@@ -98,10 +132,10 @@ _window: Optional[PhaseWindow] = None
 
 @contextmanager
 def traced_phase(name: str, start: Callable[[], None], stop: Callable[[], None]):
-    """Within the block, `start()` when the phase `name` (a label of `PHASES`, or one
-    trade's Greeks, `greeks/trade<i>/<type>`) is entered for the first time and `stop()` when
-    it is left: the profiler hook's window. Yields the `PhaseWindow`, whose `wall_seconds`
-    stays None if the phase never ran."""
+    """Within the block, `start()` when the phase `name` (a label of `PHASES`, or one trade's
+    Greeks or pricing, `greeks/trade<i>/<type>`, `pricing/trade<i>/<type>`) is entered for the
+    first time and `stop()` when it is left: the profiler hook's window. Yields the
+    `PhaseWindow`, whose `wall_seconds` stays None if the phase never ran."""
     global _window
     if _window is not None:
         raise RuntimeError(f"a traced phase ({_window.name!r}) is already open")
@@ -165,7 +199,7 @@ def summarize_trace(path: str) -> TraceSummary:
                 threads[line.name] += 1
                 first, last = min(first, event.start_ns), max(last, event.start_ns + event.duration_ns)
                 name = event.name
-                if name in PHASES or name.startswith(GREEKS_TRADE_PREFIX):
+                if name in PHASES or name.startswith((GREEKS_TRADE_PREFIX, PRICING_TRADE_PREFIX)):
                     phases[name] = phases.get(name, 0.0) + event.duration_ns / 1e9
     directory = os.path.dirname(path)
     size = sum(os.path.getsize(os.path.join(directory, name)) for name in os.listdir(directory))

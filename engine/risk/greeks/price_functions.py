@@ -50,7 +50,7 @@ engine.
 
 **A calibrated Bermudan/American calibrates inside its price function**, as ORE's sensitivity
 analysis and historical P&L recalibrate its model builder under every shift and scenario
-(I-78, I-112): the bootstrap (`engine.calibration.ore_lgm.bootstrap`) on the curves it is given
+(I-78, I-112): the bootstrap (`engine.calibration.lgm.bootstrap`) on the curves it is given
 and the quotes, in float64 whatever the curves' dtype (decision A-10), then the grid engine with
 the calibrated volatility. Its derivatives are the implicit function theorem's through every
 bucket, so a Delta moves the calibration with the curve and a Vega moves it with the quotes.
@@ -77,7 +77,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from engine.calibration.ore_lgm import (
+from engine.calibration.lgm import (
     BasketInstrument, basket_expiries, bootstrap, calibrated_values, calibration_misses,
 )
 from engine.instruments.american_swaption import AmericanSwaptionConfig
@@ -494,7 +494,7 @@ class CalibratedOptionPrice:
     """`(terms, curves, quotes) -> NPV` of an option whose LGM is calibrated on the curves and
     quotes it is priced on (see the module docstring), with the engine's constant `reversion`
     and root `solver`: a pricer equal for equal settings. The calibration is
-    `engine.calibration.ore_lgm.calibrated_values`, whose derivatives are the implicit function
+    `engine.calibration.lgm.calibrated_values`, whose derivatives are the implicit function
     theorem's on the whole basket."""
     reversion: float
     solver: str

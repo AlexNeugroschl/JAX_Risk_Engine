@@ -85,14 +85,19 @@ def demo_market_json(currencies=("USD",)) -> dict:
     }
 
 
-def demo_simulation_json(model: str = "HullWhite", samples: int = 4096, dates=DATES, currencies=("USD",),
-                         calibrated: bool = False) -> dict:
-    """`demo_simulation(...)` as the HTTP request's `simulation`, one currency's model each."""
+def demo_config_json(model: str = "HullWhite", samples: int = 4096, dates=DATES, currencies=("USD",),
+                     calibrated: bool = False) -> dict:
+    """`demo_simulation(...)` as the run request's `config` sections the exposure analytic reads
+    (docs/reference/http-api.md): the reporting currency, the cross-asset model's `models` (one
+    model per currency, the FX and equity volatilities, the correlations) and the `simulation`
+    grid."""
     config = demo_simulation(model, samples, dates, currencies, calibrated)
     ir = {code: {"model": model, "reversion": m.reversion, "volatility": m.volatility,
                  "calibration_expiries": list(m.calibration_expiries), "calibration_terms": list(m.calibration_terms)}
           for code, m in config.ir.items()}
-    return {"dates": [d.ISO() for d in config.dates], "base_currency": config.base_currency, "ir": ir,
-            "fx_volatilities": dict(config.fx_volatilities), "equity_volatilities": dict(config.equity_volatilities),
-            "correlations": [{"factor1": a, "factor2": b, "value": v} for (a, b), v in config.correlations.items()],
-            "samples": config.samples, "seed": config.seed}
+    return {"base_currency": config.base_currency,
+            "models": {"ir": ir, "fx_volatilities": dict(config.fx_volatilities),
+                       "equity_volatilities": dict(config.equity_volatilities),
+                       "correlations": [{"factor1": a, "factor2": b, "value": v}
+                                        for (a, b), v in config.correlations.items()]},
+            "simulation": {"dates": [d.ISO() for d in config.dates], "samples": config.samples, "seed": config.seed}}

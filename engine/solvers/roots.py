@@ -1,8 +1,8 @@
 """
 The root solver of every calibration and exercise boundary (decision A-21): each
-bucket of an LGM bootstrap (`engine.calibration.ore_lgm`, `engine.calibration.lgm`) and each
-exercise boundary, the LGM's y* (`ore_lgm`), Jamshidian's x* (`engine.pricing.jamshidian`)
-and the co-terminal basket's x* (`engine.calibration.basket`).
+bucket of the LGM bootstrap (`engine.calibration.lgm`, ORE's `LgmBuilder`) and each
+exercise boundary, the LGM helpers' y* (`engine.calibration.lgm`) and Jamshidian's x*
+(`engine.pricing.jamshidian`).
 
 A problem is `f(x, params)`, monotone in `x` and elementwise over a batch (element i of the
 result depends on element i of `x` only: paths, dates). Two solvers, chosen by name:
@@ -127,7 +127,7 @@ def implicit_solution(residual: Callable, solution: Callable, params):
     their precision, decision A-22). `solution`'s own steps are never differentiated (an
     iterative solver's loops, which a derivative would otherwise unroll through every order); the
     rule is itself differentiable, so second derivatives are right too. For a whole calibration's
-    response (`engine.calibration.ore_lgm.calibrated_values`); `implicit_root` is the elementwise
+    response (`engine.calibration.lgm.calibrated_values`); `implicit_root` is the elementwise
     scalar case. `params` must be an explicit argument, as `implicit_root`'s.
 
     Measured on an American's AD Greeks (16 helpers, 2026-10-17), against two other forms of the

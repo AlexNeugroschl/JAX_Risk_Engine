@@ -173,22 +173,27 @@ def stop_server(process: subprocess.Popen) -> None:
 # STAGE 3 -- SERVER INPUTS
 # =============================================================================
 
-def build_portfolio_request() -> dict:
+def build_run_request() -> dict:
+    """The run request (`POST /runs`): today's values, the exposure and the Greeks (always on,
+    see the module docstring) of the portfolio, the cube inline."""
     curve = lambda rates: {"times": CURVE_TIMES, "rates": rates}  # noqa: E731
     return {
         "market": {"asof": EVALUATION_DATE, "currencies": {"USD": {
             "discount_curve": curve(DISCOUNT_RATES), "index_curves": {INDEX_NAME: curve(INDEX_RATES)},
             "swaption_vols": VOLS}}},
-        "trades": PORTFOLIO_TRADES,
-        "simulation": {"dates": SIMULATION_DATES, "base_currency": "USD", "samples": NUM_PATHS,
-                       "ir": {"USD": {"model": MODEL, "reversion": MEAN_REVERSION,
+        "portfolio": PORTFOLIO_TRADES,
+        "analytics": ["npv", "exposure", "sensitivities"],
+        "config": {
+            "base_currency": "USD",
+            "models": {"ir": {"USD": {"model": MODEL, "reversion": MEAN_REVERSION,
                                       "calibration_expiries": CALIBRATION_EXPIRIES,
                                       "calibration_terms": CALIBRATION_TERMS}}},
-        "pricing": {"bermudan": ENGINE, "american": ENGINE},
-        "pfe_quantiles": RISK_PERCENTILES,
-        # Always on (see the module docstring).
-        "compute_greeks": True,
-        "greeks": {"method": GREEKS_METHOD},
+            "simulation": {"dates": SIMULATION_DATES, "samples": NUM_PATHS},
+            "pricing": {"bermudan": ENGINE, "american": ENGINE},
+            "exposure": {"pfe_quantiles": RISK_PERCENTILES},
+            "sensitivity": {"method": GREEKS_METHOD},
+        },
+        "outputs": {"npv_cube": "inline"},
     }
 
 
@@ -197,48 +202,50 @@ def build_portfolio_request() -> dict:
 # =============================================================================
 
 def submit_and_wait(request_body: dict) -> dict:
-    submit = httpx.post(f"{API_BASE}/portfolio/price", json=request_body, timeout=30.0)
+    submit = httpx.post(f"{API_BASE}/runs", json=request_body, timeout=30.0)
     if submit.status_code != 202:
         raise RuntimeError(f"submission failed ({submit.status_code}): {submit.text}")
-    job_id = submit.json()["job_id"]
-    print(f"job_id: {job_id} (202 Accepted -- pricing is running in the background)")
+    run_id = submit.json()["run_id"]
+    print(f"run_id: {run_id} (202 Accepted -- the run is going in the background)")
 
     start = time.time()
     while True:
-        poll = httpx.get(f"{API_BASE}/jobs/{job_id}", timeout=30.0)
+        # A long poll: answered as soon as the run is finished, or after 30 s.
+        poll = httpx.get(f"{API_BASE}/runs/{run_id}", params={"wait": 30}, timeout=60.0)
         poll.raise_for_status()
         status = poll.json()
         print(f"  [{time.time() - start:6.1f}s] status: {status['status']}")
-        if status["status"] in ("done", "failed", "interrupted"):  # the final statuses
+        if status["status"] not in ("pending", "running"):
             break
-        time.sleep(1.0)
 
     if status["status"] != "done":
-        raise RuntimeError(f"pricing job {status['status']}:\n{status['error']}")
+        raise RuntimeError(f"run {status['status']}:\n{status['error']}")
     return status["result"]
 
 
 def print_result(result: dict) -> None:
     rows = result["trades"]  # one row per trade, in request order: the cube's trade axis
     trade_ids = [row["trade_id"] for row in rows]
-    npv_cube = result["npv_cube"]
+    exposure = result["exposure"]
+    npv_cube = exposure["npv_cube"]["values"]  # [scenario, date, trade]
     num_paths = len(npv_cube)
 
     print("\nmean NPV across paths, at each simulation date:")
-    print("  time  " + "".join(f"{n:>12}" for n in trade_ids))
-    for i, t in enumerate(result["exposure"]["times"][1:]):  # the cube's dates (times[0] is t=0)
+    print("        date  " + "".join(f"{n:>12}" for n in trade_ids))
+    for i, date in enumerate(exposure["dates"]):
         means = [sum(npv_cube[s][i][j] for s in range(num_paths)) / num_paths for j in range(len(trade_ids))]
-        print(f"  {t:>4.2f}  " + "".join(f"{m:>12,.0f}" for m in means))
-    print(f"\nportfolio NPV today: {result['base_npv']:,.2f}")
+        print(f"  {date}  " + "".join(f"{m:>12,.0f}" for m in means))
+    print(f"\nportfolio NPV today: {result['npv']:,.2f}")
     # Where the engine worker ran the job (its precision report), not the API process.
-    print(f"ran on: {result['precision']['backend']} ({', '.join(result['precision']['devices'])})")
+    precision = exposure["precision"]
+    print(f"ran on: {precision['backend']} ({', '.join(precision['devices'])})")
 
     print("\nexposure profile:")
-    exposure = result["exposure"]
-    columns = ["epe", "ene", "ee_b"] + list(exposure["pfe"])
+    netting_set = exposure["netting_set"]
+    columns = ["epe", "ene", "ee_b"] + list(netting_set["pfe"])
     print("  time  " + "".join(f"{c.upper():>12}" for c in columns))
-    for i, t in enumerate(exposure["times"]):
-        values = [exposure[c][i] if c in exposure else exposure["pfe"][c][i] for c in columns]
+    for i, t in enumerate(netting_set["times"]):
+        values = [netting_set[c][i] if c in netting_set else netting_set["pfe"][c][i] for c in columns]
         print(f"  {t:>4.2f}" + "".join(f"{v:>12,.0f}" for v in values))
 
     print("\nGreeks (discount-curve Delta per tenor, Theta):")
@@ -319,8 +326,9 @@ def main(argv=None) -> None:
 
     try:
         print("\n=== stage 3: server inputs ===")
-        request_body = build_portfolio_request()
-        print(f"built the portfolio request: {len(request_body['trades'])} trades")
+        request_body = build_run_request()
+        print(f"built the run request: {len(request_body['portfolio'])} trades, analytics "
+              f"{request_body['analytics']}")
 
         print("\n=== stage 4: submit and print ===")
         result = submit_and_wait(request_body)

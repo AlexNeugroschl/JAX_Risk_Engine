@@ -52,7 +52,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.calibration.ore_lgm import SwapIndexConventions
+from engine.calibration.lgm import SwapIndexConventions
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, exercisable_dates
 from engine.instruments.bermudan_swaption import underlying_swap as option_underlying

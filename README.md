@@ -40,7 +40,11 @@ double-precision simulations in the same wall-clock time.
   (one scramble reports unavailable errors; nominal confidence intervals are
   [unavailable without a validated tail bound](docs/reference/sampling-uncertainty.md)), in one reporting currency (each trade
   converted at the as-of FX spot, which is not shocked)
-- One run configuration (`RunConfig`), as ORE configures a run with its files and with
+- One run request for every analytic, as ORE runs a portfolio with a list of analytics:
+  `engine.run.run(RunRequest)` in Python and `POST /runs` over HTTP, with `npv`, `exposure`,
+  `sensitivities`, `market_risk` and `calibration`, the whole request checked before any work and
+  a setting no requested analytic reads refused by name
+- One run configuration, as ORE configures a run with its files and with
   ORE's defaults: the simulation and its model per currency (LGM or Hull-White), the engine
   per product (Bachelier or Jamshidian Europeans, ORE's LGM grid for Bermudans/Americans),
   the root solver of every calibration and exercise boundary (a safeguarded Newton method, or
@@ -70,11 +74,13 @@ double-precision simulations in the same wall-clock time.
   many paths ([compliance/precision-evidence.md](compliance/precision-evidence.md)), and a
   warning on every result for each figure without a passing row
   ([design](docs/planning/details/precision.md))
-- HTTP API reaching every setting the engine has: portfolio pricing and exposure, market-risk
-  VaR/ES and the cross-asset model's calibration, each per-trade figure a row keyed by its
-  trade, a cube or P&L inline or by chunked, hashed reference; jobs priced by one engine worker
-  process per host behind a durable job queue; plus a versioned end-of-day contract for hash-verified
-  portfolio bundles
+- HTTP API reaching every setting the engine has, each field's value shown to arrive in the
+  engine: one run request, its result saying what each figure is (the configuration as run, each
+  per-trade figure a row keyed by its trade, each Greek's factors, the engine's revision and
+  library versions), a cube or P&L by chunked, hashed reference or inline; runs executed by one
+  engine worker process per host behind a durable job queue, a retried submission one run, a run
+  cancellable at a phase boundary, finished runs kept for a set period; plus a versioned end-of-day
+  contract for hash-verified portfolio bundles
 
 ## ORE and hardware acceleration
 

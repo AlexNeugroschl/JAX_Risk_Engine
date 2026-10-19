@@ -236,7 +236,7 @@ class TestEveryMatrixProductStatesItsPrecision:
         # roots.py: a calibration's implicit derivative, its triangular solve's (2026-10-17).
         assert lines == {"engine/market_simulation/paths.py", "engine/market_simulation/sobol.py",
                          "engine/market_simulation/scenario_market.py", "engine/pricing/legs.py",
-                         "engine/calibration/ore_lgm.py", "engine/pricing/lgm_grid.py",
+                         "engine/calibration/lgm.py", "engine/pricing/lgm_grid.py",
                          "engine/solvers/roots.py"}, lines
         assert {str(dtype) for _, dtype, _ in products} == {"float64", "float32"}
 

@@ -15,7 +15,7 @@ import ORE
 import pytest
 
 from engine.calibration.cam import calibrate_cam
-from engine.calibration.ore_lgm import basket_vols, build_basket, price_pair
+from engine.calibration.lgm import basket_vols, build_basket, price_pair
 from engine.market_data.curves import ZeroCurve
 from engine.market_data.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
 from engine.market_simulation.config import HullWhiteConfig, LgmConfig

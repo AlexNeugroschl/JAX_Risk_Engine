@@ -53,7 +53,7 @@ from typing import Dict, List, Sequence, Tuple
 import numpy as np
 import ORE
 
-from engine.calibration.ore_lgm import SwapIndexConventions
+from engine.calibration.lgm import SwapIndexConventions
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, exercisable_dates, underlying_swap
 from engine.instruments.european_swaption import SwaptionConfig

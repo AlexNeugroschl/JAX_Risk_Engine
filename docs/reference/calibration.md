@@ -1,9 +1,15 @@
 # Calibration: Fitting LGM's Sigma to Market Swaption Volatilities
 
 **Module:** [`engine/calibration/`](../../engine/calibration) —
-[`basket.py`](../../engine/calibration/basket.py),
-[`lgm.py`](../../engine/calibration/lgm.py), [`ore_lgm.py`](../../engine/calibration/ore_lgm.py);
-the root solver, [`engine/solvers/roots.py`](../../engine/solvers/roots.py)
+[`lgm.py`](../../engine/calibration/lgm.py) (ORE's `LgmBuilder` bootstrap, every LGM calibration
+the engine makes: each currency's in the cross-asset model and each Bermudan's/American's),
+[`cam.py`](../../engine/calibration/cam.py) (the cross-asset model's, per currency); the root
+solver, [`engine/solvers/roots.py`](../../engine/solvers/roots.py)
+
+Until 2026-10-18 a second, standalone bootstrap (`calibrate_lgm_sigma`, with its own co-terminal
+basket and Bachelier helper prices, behind `POST /calibration/lgm`) calibrated an LGM to a
+caller-given curve and volatilities. It is retired (I-94): the run request's `calibration`
+analytic returns what it returned, from ORE's bootstrap, which is compared with ORE itself.
 
 ## Plain-language summary
 
@@ -15,9 +21,9 @@ parameter that reproduces those prices — a process called **calibration**. Onl
 that fitted parameter used to price the more complex trade (a Bermudan swaption) that
 doesn't trade liquidly enough to have its own quoted price.
 
-This module is that missing step: given a handful of market-quoted European swaption
-volatilities, it finds the piecewise-constant LGM volatility term structure that exactly
-reprices every one of them. It exists specifically because
+This module is that missing step: given a basket of market-quoted European swaption
+volatilities, it finds the piecewise-constant LGM volatility term structure that reprices every
+one of them, as ORE's `LgmBuilder` does. It exists specifically because
 [Bermudan/American Vega](../risk/greeks.md#vega-bermudanamerican-only) has no meaning
 without it — "how much does this Bermudan's value change if a market quote moves" is only
 a well-posed question once there's an actual market-quote-to-model relationship to
@@ -39,10 +45,10 @@ if (calibrationType == CalibrationType::Bootstrap) {
 `calibrateVolatilitiesIterative` (`QuantLib::CalibratedModel::calibrateIterative`) doesn't
 run one joint multi-parameter optimization over the whole basket at once — it calibrates
 one instrument at a time, in sequence, each time solving for exactly one new free
-parameter while holding every earlier one fixed. This module's own bootstrap is a direct
-JAX-native analogue of that same per-instrument sequence, not a simplification of it: the
-underlying construction makes this the *mathematically correct* thing to do, not just a
-convenient shortcut, because of how ORE sets up the piecewise sigma's bucket breakpoints.
+parameter while holding every earlier one fixed. `engine.calibration.lgm.bootstrap_sigma` is
+the same per-instrument sequence in JAX, not a simplification of it: the underlying
+construction makes this the *mathematically correct* thing to do, not just a convenient
+shortcut, because of how ORE sets up the piecewise sigma's bucket breakpoints.
 
 ### The `aTimes = swaptionExpiries[:-1]` convention, and why it makes calibration triangular
 
@@ -64,22 +70,16 @@ at whatever it was already calibrated to. This is precisely what
 this way confirms the bootstrap isn't a simplified stand-in for `BestFit`, it's ORE's own
 default algorithm for exactly this reason.
 
-`engine.calibration.lgm.calibrate_lgm_sigma` (`engine/calibration/lgm.py`) implements this
-directly: for each target `i` (targets must be supplied in increasing expiry order,
-asserted explicitly), the bucket breakpoints so far are `targets[0].expiry_time, ...,
-targets[i-1].expiry_time`, and bucket `i`'s sigma value is the root of
-
-```
-price_lgm_swaption(Sigma(times=[T0_0..T0_{i-1}], values=[s_0..s_{i-1}, s_i]), targets[i])
-    == bachelier_swaption_price(targets[i])
-```
-
-found by the configured root solver (`_solve_bucket_sigma`, [below](#the-root-solver)) on
-`sigma in [1e-6, 0.20]` — a fixed (not expanded) bracket, deliberately: a piecewise LGM sigma
-bucket calibrating outside a 1bp-20% annual vol range indicates a misconfigured basket
-(e.g. a market vol far outside realistic rates levels), not a case this bootstrap should
-silently paper over the way an exercise boundary's widened window does for its own, different
-reason (an exercise boundary has no natural bound).
+`engine.calibration.lgm.bootstrap_sigma` implements this directly: the helpers in increasing
+expiry order, bucket `i` ending at helper `i`'s expiry (the last open), each bucket's volatility
+the root, with the earlier buckets fixed, of the helper's model value less its market value
+(below), found by the configured root solver ([below](#the-root-solver)) on `sigma in
+[1e-6, 0.20]` — a fixed (not expanded) bracket, deliberately: a piecewise LGM sigma bucket
+calibrating outside a 1bp-20% annual vol range indicates a misconfigured basket (e.g. a market
+vol far outside realistic rates levels), not a case this bootstrap should silently paper over
+the way an exercise boundary's widened window does for its own, different reason (an exercise
+boundary has no natural bound). A bucket that ends at an edge is a miss of the calibration
+([Acceptance](#acceptance)).
 
 An exact bootstrap reprices every basket instrument exactly (to the rounding of the
 instrument's price) — unlike a joint least-squares/`BestFit`
@@ -89,10 +89,9 @@ turn.
 
 ### Why a joint optimizer was never built
 
-`engine/calibration/lgm.py`'s own module docstring notes a general Levenberg-Marquardt
-joint optimizer was considered during this module's design but turned out unnecessary: the
+A general Levenberg-Marquardt joint optimizer was considered and turned out unnecessary: the
 bootstrap is a sequence of independent 1D root-finds, each with a closed, monotonic
-relationship between one sigma bucket and one target price (see "Monotonicity" below), not
+relationship between one sigma bucket and one helper's price (see "Monotonicity" below), not
 a joint multi-parameter fit. A JAX-native LM implementation would only be needed for an
 ORE-style `BestFit` calibration mode — genuinely fitting several sigma buckets (or sigma
 and mean reversion together) jointly against a basket where no exact reprice is expected —
@@ -101,7 +100,8 @@ needed here," not a stub or an unfinished component.
 
 ### Why mean reversion is never calibrated
 
-`a` (mean reversion / kappa) is always an input to `calibrate_lgm_sigma`, never an output.
+`a` (mean reversion / kappa) is always an input to the bootstrap (the model's `reversion`),
+never an output.
 This matches ORE's own default: `LgmData::calibrateH() == false` unless a trade
 configuration explicitly opts in, meaning ORE itself calibrates only the piecewise sigma
 term structure by default and treats mean reversion as a fixed, separately-chosen
@@ -113,19 +113,26 @@ not `Bootstrap`, precisely because a joint `(a, sigma...)` fit has no natural tr
 ordering the way sigma-only calibration does). Supporting it would mean building the joint
 optimizer described above, which this module deliberately does not do.
 
-## The co-terminal calibration basket
+## The calibration basket
 
-**This engine:** `engine.calibration.basket.build_coterminal_basket`.
+**This engine:** `engine.calibration.lgm.build_basket`, each helper QuantLib's own
+`SwaptionHelper` read into arrays (`BasketInstrument`, a pytree, so one jitted bootstrap serves
+every basket of a shape).
 
 **ORE:** `ore::data::IrModelBuilder::buildSwaptionBasket()`
-(`OREData/ored/model/irmodelbuilder.cpp`).
+(`OREData/ored/model/irmodelbuilder.cpp`), on the currency's swap index conventions
+(`SwapIndexConventions`: the fixed leg's tenor and day counter, the Ibor index's tenor).
 
-Builds one `CalibrationTarget` (one European swaption) per Bermudan/American exercise
-date, each into a swap that matures on the **same final date** as the trade being
-calibrated for — ORE's own "diagonal"/co-terminal basket convention (as opposed to a
-"co-initial" basket, which ORE also supports but does not use by default). An exercise
-schedule `[1Y, 2Y, 3Y, 4Y]` against a trade maturing in `5Y` produces basket instruments
-`1Yx4Y, 2Yx3Y, 3Yx2Y, 4Yx1Y` (expiry x tenor-to-the-shared-final-maturity).
+Two baskets, as ORE builds them:
+
+- **The cross-asset model's** (`engine.calibration.cam`): ORE's `CalibrationSwaptions`, an
+  expiry and a term per helper given as tenors (`LgmConfig.calibration_expiries`,
+  `calibration_terms`), struck at the money, on today's market.
+- **A Bermudan's or American's** (`engine.pricing.bermudan.calibration_basket`): ORE's
+  co-terminal basket, one helper per exercise date into the swap to the trade's maturity
+  (`CoterminalDealStrike`, struck at the deal's strike, or `CoterminalATM`), a deal strike
+  further from the money than 3 ATM standard deviations moved there (`createSwaptionHelper`'s
+  fallback rule 1); an American's on the reference calibration grid inside its window.
 
 This is the natural choice, not an arbitrary one: exercising a Bermudan at `t_i` always
 means entering the *same* underlying swap that runs to the trade's own final maturity,
@@ -133,115 +140,45 @@ just with a shorter remaining tenor — a co-terminal basket calibrates the mode
 instruments that are economically the closest available liquid proxy for each of the
 Bermudan's own exercise decisions.
 
-Each underlying swap is struck **at-the-money** — its own par rate under the supplied
-`ZeroCurve`, computed from the swap's own annuity/discount factors (the standard
-par-swap-rate identity: `par_rate = (P(0,T_start) - P(0,T_end)) / annuity`) — matching
-`ore::data::IrModelBuilder::getStrike` returning `Null<Real>()`, ORE's own sentinel for
-"use the ATM strike," whenever no explicit strike is configured (the common case this
-module targets). Both the swap schedule and the par rate are computed from a real
-`ORE.VanillaSwap`/`ORE.MakeVanillaSwap` build (via
-[`engine.instruments.schedules`](models-and-trades.md#engineinstrumentsschedulespy)) against
-the *caller-supplied* `ZeroCurve`, not ORE's own discount curve — deliberately, so
-calibration prices consistently against the same curve `engine.models.lgm` itself
-discounts with.
+Each helper's volatility is read from the market's ATM normal surface where ORE reads it
+(`basket_vols`: its option date and swap length), in the normal (Bachelier) convention of
+[Bermudan Vega](../risk/greeks.md#vega-bermudanamerican-only).
 
-`build_coterminal_basket` does not fetch a live market volatility surface — `market_vols`
-is a caller-supplied list, one normal (basis-point) volatility per exercise date, in the
-same order as `exercise_times`. This module's normal-vol (Bachelier) convention matches
-[Bermudan Vega](../risk/greeks.md#vega-bermudanamerican-only)'s own convention throughout.
+## The helpers' values
 
-## `price_lgm_swaption`: LGM's own closed-form European swaption pricer
+**Market value** (`market_price`): the helper's `BachelierSwaptionEngine` value on its own ATM
+forward and annuity (nominal 1), out of the money (receiver when the strike is at or below the
+forward), checked against QuantLib's own `SwaptionHelper.marketValue()`
+(`tests/test_ore_lgm_calibration.py`).
 
-**This engine:** `engine.calibration.basket.price_lgm_swaption`.
-
-**ORE:** the LGM analogue of `QuantExt::AnalyticLgmSwaptionEngine` — Jamshidian's
-bond-option decomposition expressed in LGM's own `H`/`zeta`/`x` state variables
-(`engine.models.lgm`), rather than Hull-White's `A`/`B`/`r` state variables
-(`engine.models.hull_white`, which `engine.instruments.european_swaption` uses — see
-[Models & Trades](models-and-trades.md) for why these are not interchangeable for `t>0`).
-
-This is a genuinely separate closed-form pricer from `european_swaption.py`'s own
-Jamshidian decomposition, not a duplicate of it, for two reasons: (1) it prices under a
-different model realization (LGM, not HW1F — see the divergence finding documented in
-[ORE Parity](ore-parity.md#a-parametrization-note-lgm-vs-plain-hull-white) and
-[Models & Trades](models-and-trades.md)), and (2) its whole purpose is to be evaluated
-repeatedly with a *trial* `Sigma` during calibration — `european_swaption.py`'s HW1F-only
-formulas only support a constant sigma (see
-[Models & Trades](models-and-trades.md#enginemodelshull_whitepy)), which cannot express
-the piecewise structure calibration itself is fitting.
-
-**`QuantExt::AnalyticLgmSwaptionEngine` could not be used directly.** Its constructor is
-not exposed through this codebase's installed ORE Python bindings — confirmed directly by
-reading `ORE-SWIG/QuantExt-SWIG/SWIG/qle_pricingengines.i`, which declares only
-`enableCache`/`clearCache`/`setZetaShift`/`resetZetaShift` for `ORE.AnalyticLgmSwaptionEngine`,
-with no `%extend` constructor. Building an independent closed-form pricer directly against
-`engine.models.lgm`'s own already-verified primitives was the only route available, which
-is why this module's two-route verification (below) matters more here than it might
-otherwise — there's no way to simply instantiate ORE's own engine and compare NPVs
-directly, the way `european_swaption.py` compares against
-`ORE.JamshidianSwaptionEngine`.
-
-### Two-route verification
-
-**Route 1: every individual formula piece, checked to machine precision.** `bond_price`,
-`bond_option_sigma`, and `numeraire` (`engine.models.lgm`) are each independently
-live-verified against `ORE.LinearGaussMarkovModel`'s own exposed methods
-(`discountBond`, `numeraire`, `zeta`) — see
-[Models & Trades](models-and-trades.md#enginemodelslgmpy) and
-`tests/test_models_piecewise_sigma.py`. This confirms every building block
-`price_lgm_swaption` is assembled from is individually correct, but not that the assembly
-(Jamshidian's decomposition itself, applied to these particular building blocks) is.
-
-**Route 2: the full price, checked against a numeraire-deflated Monte Carlo simulation.**
-`price_lgm_swaption`'s complete output is cross-checked against a Monte Carlo simulation of
-`x(T0) ~ N(0, zeta(T0))` — LGM's own exact terminal distribution (`x` is driftless, so its
-distribution at any time is Gaussian with variance `zeta`, per
-`QuantExt::IrLgm1fStateProcess::variance`) — pricing the same swaption's payoff at each
-sampled `x(T0)` and averaging.
-
-**The key requirement: LGM's own measure is not the T0-forward measure.** LGM's state
-variable `x` is defined under LGM's own measure, not the `T0`-forward measure — a payoff
-sampled from `x(T0)`'s own distribution must be deflated by the model's own numeraire,
-`N(T0,x) = exp(0.5*H(T0)^2*zeta(T0) + H(T0)*x) / P(0,T0)` (`engine.models.lgm.numeraire`,
-the same numeraire
-[`bermudan_swaption.py`'s backward induction](../instruments/american-bermudan-swaptions.md#5-numeraire-deflation--the-step-that-makes-the-rollback-mathematically-valid)
-deflates by, for exactly the same underlying reason), not simply discounted by `P(0,T0)`.
-Dividing each sampled payoff by `N(T0,x)` matches the closed form to ~0.05% — well within
-Monte Carlo standard error for `N=3,000,000` paths.
-
-This is the same "raw values aren't martingales, only numeraire-deflated ones are" lesson
-`bermudan_swaption.py`'s own backward induction ran into independently while first being
-built (see
-[American & Bermudan Swaptions](../instruments/american-bermudan-swaptions.md#5-numeraire-deflation--the-step-that-makes-the-rollback-mathematically-valid))
-— surfacing twice, in two different pieces of this codebase's LGM machinery, from two
-different kinds of mistake (a rollback recursion vs. a Monte Carlo discounting convention),
-is a useful independent confirmation that it's a genuine property of the model, not a
-one-off implementation slip.
+**Model value** (`price_pair`): ORE's `AnalyticLgmSwaptionEngine` with its default
+`FloatSpreadMapping::proRata` (the swaption priced on the discount curve alone, each floating
+coupon's difference from its discount-curve amount moved onto the fixed coupons and the start),
+the exercise boundary y\* the root of `yStarHelper`. `AnalyticLgmSwaptionEngine` has no Python
+constructor, so it is checked through the end-to-end NPV: a Bermudan calibrated to its basket and
+priced on the grid equals ORE's `LGMGridSwaptionEngineBuilder` with `Calibration=Bootstrap`, where
+any error in the model value would move the calibrated volatility and the price.
 
 ### Monotonicity
 
-`price_lgm_swaption` is monotonically increasing in the newest (most recently added)
-sigma bucket's own value — a swaption is long volatility, and raising the newest bucket's
-sigma strictly increases the model's total `zeta(T0_i)` for every `t` in that bucket. This
-property (confirmed directly,
-`tests/test_calibration_basket.py::TestPriceLgmSwaptionSanity::test_higher_sigma_gives_higher_price`)
-is exactly what makes each bucket's calibration a simple, well-posed scalar root: bracketed,
-monotone, with one root when the market value is attainable.
+The model value is monotonically increasing in the newest (most recently added) sigma bucket's
+own value — a swaption is long volatility, and raising the newest bucket's sigma strictly
+increases the model's total `zeta(T0_i)` for every `t` in that bucket. This is exactly what
+makes each bucket's calibration a simple, well-posed scalar root: bracketed, monotone, with one
+root when the market value is attainable.
 
 ## The root solver
 
 **This engine:** `engine.solvers.roots` (decision A-21), for every root the
-engine solves: each bucket of ORE's bootstrap (`engine.calibration.ore_lgm`: the CAM's
-calibration and every Bermudan's/American's, today and on every path date), each helper's
-exercise boundary y\*, the standalone bootstrap here (`calibrate_lgm_sigma`) and its x\*, and
-the Jamshidian European engine's x\*.
+engine solves: each bucket of ORE's bootstrap (`engine.calibration.lgm`: the CAM's
+calibration and every Bermudan's/American's, today, under every bump and scenario), each
+helper's exercise boundary y\*, and the Jamshidian European engine's x\*.
 
 | Setting | Where | Default |
 |---|---|---|
 | `LgmSwaptionEngineConfig.solver` (`pricing.bermudan.solver`, `pricing.american.solver`) | the option's calibration and its helpers' y\* | `"Newton"` |
-| `LgmConfig.solver`, `HullWhiteConfig.solver` (`simulation.ir.<ccy>.solver`) | the CAM's calibration | `"Newton"` |
+| `LgmConfig.solver`, `HullWhiteConfig.solver` (`models.ir.<ccy>.solver`) | the CAM's calibration | `"Newton"` |
 | `JamshidianEngineConfig.solver` (`pricing.jamshidian.solver`) | x\* | `"Newton"` |
-| `calibrate_lgm_sigma(..., solver)` (`POST /calibration/lgm`'s `solver`) | the buckets and x\* | `"Newton"` |
 
 Two solvers, both a fixed number of steps on every backend (a data-dependent stop would make
 a GPU report to the host each step; a fixed count is one loop on the device):
@@ -266,7 +203,7 @@ a GPU report to the host each step; a fixed count is one loop on the device):
   which a helper's lies (it is struck within 3 ATM standard deviations), not from the y\* of
   the previous evaluation, which can sit far up the boundary's steep side (tried: in float32
   on a path, a helper's model value ended 2% off its market value). Steps: 7 per bucket, 5 per y\*, 26 per
-  Jamshidian x\*, 5 per the standalone bootstrap's x\*.
+  Jamshidian x\*.
 - **`"Bisection"`**, the reference: the engine's halvings before 2.5 (60 per bucket, 100 per
   y\* and x\*), reproducing its numbers bit for bit. It keeps one path date per calibration
   call: under Newton a Bermudan's/American's path dates of one basket shape are calibrated in
@@ -275,10 +212,10 @@ a GPU report to the host each step; a fixed count is one loop on the device):
   roots move within their resolution, 1.7e-13).
 
 Newton's counts are measured (2026-10-07, the shared sloped market today and on 256 LGM and
-Hull-White paths, the shared European struck from 0% to 15%, and the standalone baskets on a
-sloped and a flat curve): a bucket reaches the rounding of its residual in 5 steps, a y\* from 0
-in 3, Jamshidian's x\* in 5 (in 24 for a strike of -99%, where its coupons cancel the
-nominal and the coupon bond is not monotone across the window), the standalone x\* in 3, and each count keeps two steps of margin, which `tests/test_root_solvers.py` checks (two
+Hull-White paths, and the shared European struck from 0% to 15%): a bucket reaches the
+rounding of its residual in 5 steps, a y\* from 0 in 3, Jamshidian's x\* in 5 (in 24 for a
+strike of -99%, where its coupons cancel the nominal and the coupon bond is not monotone across
+the window), and each count keeps two steps of margin, which `tests/test_root_solvers.py` checks (two
 steps fewer give the same roots, one step does not). Both solvers reach the same root: on those
 markets a bucket's volatility under one equals the other's to 7e-13 and a Jamshidian NPV to
 3e-16 of its nominal (a root is resolvable only to its residual's rounding over its slope), and
@@ -304,14 +241,14 @@ tangents). Where a price depends on its root — x\* here and in the Jamshidian 
 ORE helper's y\* — `implicit_root` gives the root its derivative by the implicit function
 theorem, below; the helper's price is stationary in y\*, so only its second derivatives need
 y\*'s. A whole calibration's buckets get theirs from the basket's system of residuals
-(`implicit_solution`, `engine.calibration.ore_lgm.calibrated_values`): what an option
+(`implicit_solution`, `engine.calibration.lgm.calibrated_values`): what an option
 calibrated inside its price function responds with ([Greeks](../risk/greeks.md), market risk's
 recalibration per scenario).
 
 <a id="acceptance"></a>
 ## Acceptance: when a calibration misses its basket
 
-**This engine:** `engine.calibration.ore_lgm.BootstrapResult.misses` and `require_accepted`, on
+**This engine:** `engine.calibration.lgm.BootstrapResult.misses` and `require_accepted`, on
 every ORE-style bootstrap: a Bermudan's/American's (`engine.pricing.bermudan.calibrate_on`) and
 each currency's in the cross-asset model (`engine.calibration.cam`). Since 2026-10-12 (I-73).
 
@@ -342,107 +279,82 @@ the paths nothing is calibrated: ORE's exposure simulation keeps the model it bu
 <a id="the-_bisect_xstar-gradient-bug"></a>
 ## The x\* gradient bug
 
-**This engine:** `engine.solvers.roots.implicit_root`, which `price_lgm_swaption` (and the
-Jamshidian engine) find x\* with. Before 2026-10-07 this was `engine.calibration.basket.
-_bisect_xstar`/`_bisect_xstar_raw`, the history below.
+**This engine:** `engine.solvers.roots.implicit_root`, which the Jamshidian engine's x\* and
+ORE's helpers' y\* are found with, and `implicit_solution` (`engine.calibration.lgm.
+calibrated_values`), which gives a whole calibration's buckets their derivatives.
 
-`price_lgm_swaption` finds the exercise boundary — the state `x*` at which the signed
-coupon bond (every fixed cashflow, the final notional, minus the notional received back at
-the swap's own accrual start) is worth exactly `0` — then a 100-iteration bisection,
-`_bisect_xstar_raw`. The Hull-White European engine's bisection for Jamshidian's critical
+**The bug, found in the retired standalone bootstrap's exercise boundary x\*.** A
+bisection narrows a bracket with `jnp.where(val > 0.0, ...)` at every iteration, and that
+comparison has zero gradient everywhere: differentiating straight through the unrolled loop
+captures only a price's *direct* dependence on its parameters, at a fixed root, and drops the
+*indirect* contribution `d(price)/d(x*) * d(x*)/d(sigma)` — the effect of `sigma` moving `x*`
+itself. Not a precision shortfall: it silently omits a whole term of the derivative (a
+systematic ~6% error in Bermudan Vega, caught by its finite-difference cross-check against a
+literal recalibration). The Hull-White European engine's bisection for Jamshidian's critical
 short rate `r*` (see
 [ORE Parity](ore-parity.md#6-european-swaption-pricing-jamshidians-decomposition)) had the
 identical bug, for the identical underlying reason.
 
-**The bug.** `_bisect_xstar_raw`'s bisection loop narrows a bracket using
-`jnp.where(val > 0.0, ...)` at every iteration. `val > 0.0`'s comparison has zero gradient
-everywhere — differentiating straight through the unrolled loop with plain `jax.grad`
-therefore captures only `price_lgm_swaption`'s *direct* dependence on `sigma` (through `K`,
-`sigma_p`, and `P0_Ti`, each evaluated *at* a fixed `x*`), completely dropping the
-*indirect* contribution `d(price)/d(x*) * d(x*)/d(sigma)` — the effect of `sigma` moving
-`x*` itself, which then moves every downstream quantity evaluated at `x*`. This isn't a
-precision shortfall; it silently omits an entire term of the true derivative, giving a
-gradient that is **wrong**, not merely approximate.
-
-Concretely: this produced a systematic ~6% error in `price_lgm_swaption`'s own `jax.grad`
-with respect to `sigma`, caught by
-[`engine.risk.greeks.bermudan_vega`](../risk/greeks.md#vega-bermudanamerican-only)'s own
-finite-difference cross-check against a literal recalibration (bump one market vol, rerun
-`calibrate_lgm_sigma`, reprice) — not by any test inside this module itself, since the
-*forward* value of `price_lgm_swaption` was always correct; only its gradient was wrong,
-and nothing calling this module for a forward price alone (i.e. `calibrate_lgm_sigma`
-itself, whose bisections never need `price_lgm_swaption`'s gradient) could have noticed.
-
-**The fix.** `_bisect_xstar` wrapped `_bisect_xstar_raw` with the
-[implicit function theorem](https://en.wikipedia.org/wiki/Implicit_function_theorem)
-correction (see
-[Delta, Gamma, and Theta](../risk/greeks.md#differentiating-through-bisection-root-finds)) —
-a `jax.custom_jvp` implementing, at a root of `f(x*, params) = 0`:
+**The fix.** A root carries the derivative of the
+[implicit function theorem](https://en.wikipedia.org/wiki/Implicit_function_theorem) (see
+[Delta, Gamma, and Theta](../risk/greeks.md#differentiating-through-bisection-root-finds)) — a
+`jax.custom_jvp` implementing, at a root of `f(x*, params) = 0`:
 
 ```
 dx*/dparams · v = -(df/dparams · v) / (df/dx)
 ```
 
-for any tangent direction `v`, computed via one `jax.grad` (for `df/dx`, at the
-stop-gradient'd converged root) and one `jax.jvp` (for the directional derivative
-`df/dparams · v`) — cheap relative to the solve itself, and exact rather than approximate.
-This requires `coupon_bond_value_fn`'s parameters to be passed as an explicit pytree
-(`params = (a, sigma)`) rather than only captured in a Python closure, since
-`jax.custom_jvp` needs an explicit primal argument to attach a JVP rule to. Newton's
-iterations would carry a derivative of their own, but only of the steps taken, not of the
-root: the rule is the same for either solver (`implicit_root`).
+for any tangent direction `v`, from one derivative of `f` in `x` at the converged root and one
+`jax.jvp` in the parameters — cheap relative to the solve itself, and exact rather than
+approximate. The parameters must be an explicit pytree (`params = (a, sigma)`), since
+`jax.custom_jvp` attaches its rule to an explicit primal argument. Newton's iterations would
+carry a derivative of their own, but only of the steps taken, not of the root: the rule is the
+same for either solver (`implicit_root`). ORE's helpers' prices are stationary in y\*, so only
+their second derivatives need y\*'s.
 
-**A second, related fix this bug's investigation surfaced: `Sigma` needed pytree
-registration.** The implicit-function-theorem correction above only works if a tangent can
-actually reach `Sigma.values` when `Sigma` is nested inside a larger `params` tuple. Before
-`engine.models.lgm.Sigma` was registered with `@jax.tree_util.register_pytree_node_class`,
-an unregistered dataclass was treated by `jax.tree_util` as an opaque leaf — `jax.jvp`
-would differentiate `price_lgm_swaption` with respect to `sigma` as a single indivisible
-object, contributing zero tangent through its `.values` field, silently truncating the
-correction term above even after `_bisect_xstar`'s own `custom_jvp` was in place. Both
-fixes were required together; either alone still produced a systematically wrong gradient.
-See [Models & Trades](models-and-trades.md#the-pytree-registration-bug) for the full
-account of this second bug, which is really about `Sigma`'s own JAX integration rather
-than about calibration specifically, but was only ever exposed by this calibration code
-path — nothing outside `engine/calibration/` passes a `Sigma` inside a larger
-differentiated pytree.
+**A second, related fix: `Sigma` needed pytree registration.** The correction only works if a
+tangent can reach `Sigma.values` when `Sigma` is nested inside a larger `params` tuple: before
+`engine.models.lgm.Sigma` was registered with `@jax.tree_util.register_pytree_node_class`, an
+unregistered dataclass was an opaque leaf to `jax.tree_util`, which contributed zero tangent
+through its `.values` field and silently truncated the correction above. Both fixes were
+required together. See [Models & Trades](models-and-trades.md#the-pytree-registration-bug).
 
-Both bugs are fixed now, cross-checked to within ~0.005%-0.03% of a literal
-finite-difference recalibration — see
-`tests/test_calibration_basket.py`'s gradient-correctness tests and
-`tests/test_greeks_bermudan.py::TestBermudanVega`.
+Cross-checked against a literal finite-difference recalibration
+(`tests/test_greeks_bermudan.py::TestBermudanVega`) and against ORE's sensitivity analytic, which
+recalibrates under every bump (`tests/test_sensitivity_ore_parity.py`).
 
 ## Over HTTP
 
-`POST /calibration/cam` returns the cross-asset model's calibration per currency
+The run request's `calibration` analytic (`POST /runs` with `"analytics": ["calibration"]`)
+returns the cross-asset model's calibration per currency of `config.models.ir` that has a basket
 (`engine.calibration.cam.calibrate_cam`, the bootstrap of each currency's LGM or Hull-White
-volatility to its tenor basket on today's market): the calibration a portfolio run with the same
-market and models simulates with, which was checked on 2026-10-07 against ORE's own
-`CrossAssetModelBuilder` through its simulation (`tests/test_ore_xva_parity.py`).
-`POST /calibration/lgm` is the standalone bootstrap of this page's co-terminal basket on a
-caller-given curve and volatilities ([HTTP API](http-api.md#post-calibrationcam)).
+volatility to its tenor basket on today's market): each currency's sigma (times and values, in
+its model's parametrization), the reversion it was calibrated with, each helper's market and model
+value, and the calibration's error as ORE measures it against `config.models.bootstrap_tolerance`.
+It is the calibration a run's exposure analytic simulates with on the same market and models,
+which was checked on 2026-10-07 against ORE's own `CrossAssetModelBuilder` through its simulation
+(`tests/test_ore_xva_parity.py`). It replaced `POST /calibration/cam` and the standalone
+`POST /calibration/lgm` on 2026-10-18 ([HTTP API](http-api.md#the-run-request-post-runs)).
 
 ## Tested by
 
-- `tests/test_calibration_basket.py` (15 tests) — `build_coterminal_basket`'s schedule/par-
-  rate construction, `price_lgm_swaption`'s two-route verification described above (formula
-  pieces against live `ORE.LinearGaussMarkovModel` objects, full price against the
-  numeraire-deflated Monte Carlo), monotonicity, and the x\* gradient-correctness
-  regression tests (value-level, not just sign/finiteness, cross-checks against finite
-  difference).
-- `tests/test_calibration_lgm.py` (9 tests) — `calibrate_lgm_sigma`'s bootstrap: exact
-  reprice of every basket instrument, the triangular
-  `aTimes = swaptionExpiries[:-1]` bucket construction, ordering assertions, and
-  `CalibrationResult`'s diagnostic fields.
-- `tests/test_calibration_integration.py` (6 tests) — end-to-end: build a basket, calibrate
-  a `Sigma`, price a Bermudan on it with the grid engine, confirming
-  the calibrated `Sigma` behaves correctly as a drop-in replacement for a flat scalar
-  throughout the full pricing pipeline.
+- `tests/test_ore_lgm_calibration.py` — against ORE: the helpers' market values against
+  QuantLib's `SwaptionHelper.marketValue()` (tenor- and date-based helpers, ATM and deal
+  strikes, a sloped two-curve market); the bootstrap reprices every helper; end to end, a
+  Bermudan calibrated to its co-terminal basket and priced on the grid equals ORE's
+  `LGMGridSwaptionEngineBuilder` with `Calibration=Bootstrap` (`CoterminalATM` and
+  `CoterminalDealStrike`, a strike far enough out that the fallback rule moves it); batched
+  curves calibrate as one curve at a time.
+- `tests/test_calibration_acceptance.py` — ORE's acceptance (I-73): the misses, the tolerance
+  settings and their API fields.
+- `tests/test_cam.py`, `tests/test_hull_white_model.py::TestCalibration` — the cross-asset
+  model's calibration, the Hull-White model's by matching zeta bucket by bucket.
 - `tests/test_root_solvers.py` — the solver (2026-10-07): both solvers on known roots,
   brackets, widening, Newton's fallback, the implicit derivatives (first and second); on the
   parity markets every root under Newton equal to Bisection's and at rounding, with two
   steps of margin; the setting and its API fields; the path dates batched.
-- `tests/test_greeks_bermudan.py::TestBermudanVega` — the x\* fix's
-  real-world consequence: Vega matches a literal finite-difference recalibration to within
-  ~0.005% for every bucket in a 4-instrument basket (see
+- `tests/test_greeks_bermudan.py::TestBermudanVega` — Vega through the calibration matches a
+  literal finite-difference recalibration (see
   [Delta, Gamma, and Theta](../risk/greeks.md#vega-bermudanamerican-only)).
+- `tests/test_api.py::TestTheCalibrationAnalytic` — the calibration analytic over HTTP is the
+  calibration a run simulates with.

@@ -19,13 +19,14 @@ A-1 to A-9 ([compliance/decisions.md](../../../compliance/decisions.md) §1–2)
 
 ## Today
 
-Every choice is one `RunConfig` (`engine/run/config.py`) on
-`PortfolioRequest.config`, and every run is one pipeline (`engine.run.pipeline`):
+Every analytic is one run request (`engine.run.run`, since 2026-10-18), whose portfolio
+analytics are one `RunConfig` (`engine/run/config.py`) on `PortfolioRequest.config` and one
+pipeline (`engine.run.pipeline`):
 
 | | |
 |---|---|
-| Entry | `price_portfolio(PortfolioRequest(market=Market(...), trades=[...], config=RunConfig(...)))` |
-| HTTP | `POST /portfolio/price`, `POST /portfolio/market-risk`, `POST /calibration/cam`, every job polled at `GET /jobs/{job_id}`; every setting has an API field (`tests/test_api_completeness.py`) |
+| Entry | `run(RunRequest(market, analytics, portfolio, RunRequestConfig(...)))`; under it `price_portfolio(PortfolioRequest(market=Market(...), trades=[...], config=RunConfig(...)))`, `run_market_risk`, `calibrate_cam` |
+| HTTP | `POST /runs`, polled at `GET /runs/{run_id}`; every setting has an API field and every field's value arrives in its setting (`tests/test_api_completeness.py`) |
 | Simulation | `config.simulation` (`CamConfig`), `engine.models.cam`: per currency `LgmConfig` or `HullWhiteConfig`, exact step moments, LGM numeraire |
 | Valuation | `engine.pricing`: every trade by its t=0 engine on every path (scenario market, legs, `OptionWrapper`, bond legs, per-trade basket) |
 | European engine | `Bachelier` (ORE's default) or `Jamshidian` with `PricingConfig.jamshidian` |
@@ -135,87 +136,77 @@ against the acceptance standard (A-11), shared with Basel P6, read off the stora
 (§15.4, 2026-10-09, which closed I-75; built 2026-10-11, §10.4, which closed I-55); then the
 kernels in difference form, one implementation for every precision (A-16).
 
-## One run request (I-87, I-88, I-89)
+<a id="one-run-request-i-87-i-88-i-89"></a>
+## One run request (I-87, I-88, I-89, I-95) — done 2026-10-18
 
-The API of 2026-10-07 made every setting reachable but kept one route per engine function, so the API is shaped
-like the engine's Python entry points rather than like a user's task
-([I-87](../known-issues.md#i-87)). The run request does what A-2 says: a single route and a single
-request, as ORE runs a portfolio, market data and its configuration files with a list of
-analytics.
+The API of 2026-10-07 made every setting reachable but kept one route per engine function, so
+the API was shaped like the engine's Python entry points rather than like a user's task. The run
+request does what A-2 says: a single route and a single request, as ORE runs a portfolio, market
+data and its configuration files with a list of analytics.
 
-**The request.** `POST /runs`, validated before any job starts, then queued (202, `run_id`):
+**As built.** `engine/run/run_request.py`: `RunRequest(market, analytics, portfolio, config,
+include_npv_cube)`, `RunRequestConfig` with its sections (`base_currency`, `models`
+(`ModelsConfig`, simulation.xml's `CrossAssetModel`), `simulation` (`SimulationParameters`, its
+`Parameters` and `Market`), `pricing`, `sensitivity` (`GreeksConfig`), `exposure`
+(`ExposureConfig`), `market_risk` (`MarketRiskConfig`), `precision`), `run()`, `validate_run()`
+and `RunResult`; `engine/run/identity.py` (the engine's identity); `engine/api/requests.py`'s
+`RunRequestSchema` mirroring it; `engine/api/results.py`'s `RunResultSchema`; the routes
+`POST /runs`, `GET /runs/{run_id}` (`?wait=`, at most 30 s), `POST /runs/{run_id}/cancel`,
+`GET /runs/{run_id}/artifacts/...` and `GET /config/defaults` ([HTTP API](../../reference/http-api.md)).
 
-```jsonc
-{
-  "market":    { ... },                       // as today
-  "portfolio": [ ... ],                       // today's `trades`; absent only for calibration alone
-  "analytics": ["npv", "exposure", "sensitivities", "market_risk", "calibration"],
-  "config": {                                 // every section optional; defaults are ORE's
-    "base_currency": "USD",
-    "models":      { "ir": {"USD": {"model": "LGM", ...}}, "fx_volatilities": {}, "correlations": {} },
-    "simulation":  { "dates": [...], "samples": 4096, "seed": 42, "curve_tenors": [...] },
-    "pricing":     { "european": {...}, "bermudan": {...}, "american": {...} },
-    "sensitivity": { "method": "Bump", "curve_shift": 1e-4, ... },
-    "exposure":    { "pfe_quantiles": [0.95, 0.99] },
-    "market_risk": { "scenarios": {...}, "quantiles": [0.99, 0.975], "batch_size": 256 },
-    "precision":   { ... }
-  },
-  "outputs": { "npv_cube": "inline", "pnl": "inline" },
-  "idempotency_key": "optional"
-}
-```
-
-- **What to compute is the `analytics` list; how is `config`.** The list replaces
-  `scenario_risk` and `compute_greeks`. Each analytic names the sections it needs: `exposure`
-  needs `models` and `simulation`, `market_risk` its own section, `calibration` `models` with
-  a basket. A missing section is refused, naming the analytic. So is a section no requested
-  analytic reads, because an input that is accepted and then ignored is a defect here (I-59).
-  `npv` is today's values; every analytic on a portfolio returns them in the trade rows anyway.
+- **What to compute is the `analytics` list; how is `config`.** The list replaced
+  `scenario_risk` and `compute_greeks`. Each analytic names the sections it needs (`exposure`:
+  `models` and `simulation`; `market_risk` its section; `calibration` `models` with a basket),
+  and a section, a portfolio or a setting differing from its default that no requested analytic
+  reads is refused, naming it (I-59's rule). Calibration alone reads only the calibrated
+  currencies' models and the tolerance.
+- **Each analytic is its entry point.** `npv`, `exposure` and `sensitivities` are one
+  `price_portfolio` (today's values are in all three), `market_risk` is `run_market_risk`,
+  `calibration` is `calibrate_cam`, each unchanged: a run of one analytic is its direct call bit
+  for bit, a run of several each alone, compiling nothing they would not
+  (`tests/test_run_request.py`). Sharing work between analytics in one run is not done:
+  [I-118](../known-issues.md#i-118).
 - **Each setting in one place.** The model per currency is `config.models`, which calibration
-  and exposure both read; today it is `simulation.ir` in one request and `ir` in another. The
-  reporting currency is `config.base_currency`; today it is both a top-level field and
-  `simulation.base_currency`, and a contradiction between them is a 400. The sections follow
-  ORE's files (`simulation.xml`'s model and parameters, `pricingengine.xml`,
-  `sensitivity.xml`), so [F-09](../features.md#f-09)'s XML input is a translation onto them.
-- **One result.** `GET /runs/{run_id}` returns `{status, result, config}`, where `config` is
-  the configuration as run, every default filled in, so a result reproduces itself. The result
-  has one row per trade (`trade_id`, NPV, exposure and Greeks when asked), one section per
-  analytic (`exposure` for the netting set, `market_risk`, `calibration` per currency), each
-  analytic's precision report, the arrays per `outputs` (`GET /runs/{id}/artifacts/...`), and
-  the warnings. `GET /runs/{id}?wait=N` (N at most 30) answers as soon as the run is terminal
-  or N seconds pass, so a quick calibration needs one poll, not a sleep loop.
-- **The defaults, visible.** `GET /config/defaults` returns the complete `config` with every
-  default, to copy and edit; `/docs` shows the one request schema.
-- **Idempotent submission** ([I-89](../known-issues.md#i-89)). The same `idempotency_key`
-  and body return the first `run_id`. The same key with a different body is a `409`, checked
-  before anything is returned, which is I-57's lesson on the TraderX path.
-
-**In Python too.** `engine.run(RunRequest) -> RunResult` dispatches to `price_portfolio`,
-`run_market_risk` and `calibrate_cam`, which stay as they are. The HTTP schema mirrors
-`RunRequest`, the worker calls `engine.run`, and `tests/test_api_completeness.py` walks from
-`RunRequest` alone. The first version may run each analytic's entry point in turn; sharing
-work between analytics in one run (the market build, today's values, the calibration) is an
-optimization for later, not a requirement.
+  and exposure both read; the reporting currency is `config.base_currency` (default `"USD"`),
+  also the simulation's domestic currency (`RunRequestConfig.cam()` builds the `CamConfig`).
+  The Greeks method and sensitivity.xml are one section, `sensitivity`, flattened on the wire.
+- **Checked before any work, with no JAX work** (`validate_run`, which the route runs): the Monte
+  Carlo scenarios are a spec drawn when the run starts (`engine.risk.market.MonteCarloScenarios`,
+  which `monte_carlo_scenarios` now draws through, bit for bit), so the request is checked whole
+  without drawing one; `engine.risk.market.run.validate_scenarios` reads only their factors,
+  count and replicates.
+- **Precision per analytic** (I-95): only `exposure` and `market_risk` read it (today's values,
+  Greeks and calibration are float64, A-10). Market risk refuses a `market` stage and a
+  `simulation.compute` other than its accumulate format, also beside `exposure`, so its
+  precision report never states a policy it did not run; a run of both at another market-stage
+  precision is two runs (A-27, confirmed by the owner).
+- **One result** that says what each figure is without the request beside it: the
+  configuration as run (the request's `config` as parsed, every default filled in), the as-of
+  date and the simulation dates, the reporting currency, one row per trade (its `product`, `npv`,
+  `exposure`, `greeks`), each Greek's factor labels, each analytic's pricing settings (its
+  calibration policy: `model=fixed` in the exposure simulation, `recalibrated` under the shifts
+  and scenarios), every array described alike inline or by reference (name, dtype, shape, axes,
+  the hashed trade or option order), the exercise decisions on request, and the engine's identity
+  (version, git revision and whether the tree was modified, jax, jaxlib and ORE versions) in place
+  of the fixed `0.1.0`. `GET /runs/{run_id}` returns the run's status with the result in it, not
+  the `{status, result, config}` the design sketched: the configuration as run is the result's.
+- **Outputs** (decided in the step, as the design asked, and confirmed by the owner; A-17's revision,
+  A-27): the cube and
+  the P&L by reference by default, the exercise decisions on request.
+- **Idempotent submission** (I-89): the same `idempotency_key` and body (its canonical JSON,
+  defaults filled in) return the first `run_id`; another body is a `409`; the key is unique in
+  the queue, so two API processes get one run. `keep` exempts a run from retention (I-76).
+- **Wiring, not only names** (I-88): for every field of every schema, the completeness test sets
+  it to a value other than its default, converts the schema, and asserts the value changed its
+  own setting and nothing else; the run request's mapping onto `price_portfolio`,
+  `run_market_risk` and the cross-asset model is checked field by field.
 
 **Removed, there being no clients** (A-2, revised 2026-10-07): `POST /portfolio/price`,
-`POST /portfolio/market-risk`, `POST /calibration/cam`, `POST /calibration/lgm` (its Python
-function `calibrate_lgm_sigma` stays), `GET /jobs/...`, and the fields `scenario_risk`,
-`compute_greeks`, `cube_output` and `pnl_output`. `/health`, `/version` and the EOD routes
-stay; the `/eod` contract is TraderX's. A version-2 queue file is migrated in place, as version 1
-was on 2026-10-07.
-
-**Wiring, not only names** ([I-88](../known-issues.md#i-88)). For every field the
-completeness walk finds, a test builds a request with that field set to a non-default value,
-converts it with `.to_dataclass()`, and asserts the value arrives in the engine's
-configuration.
-
-**Decide at the start of the step.** Whether `outputs` defaults to `"artifact"`: A-17 keeps
-the cube inline until a deliberate revision of the result contract, and this step is one.
-
-**Tests.** A run of one analytic equals today's direct call bit for bit, and a run of several
-equals each alone. Each refusal is a `400` or `422` naming its section or field. A combined
-run compiles nothing that its analytics alone would not, and a repeated run compiles nothing.
-The demos and `docs/reference/http-api.md` move to the run request. No engine number moves.
+`POST /portfolio/market-risk`, `POST /calibration/cam`, `POST /calibration/lgm` (and with it the
+standalone bootstrap, I-94: the `calibration` analytic is ORE's), `GET /jobs/...`, and the fields
+`scenario_risk`, `compute_greeks`, `cube_output` and `pnl_output`. `/health`, `/version` and the
+EOD routes stay; the `/eod` contract is TraderX's. A version-2 queue file is migrated in place
+(schema 3, one transaction, I-106), its unrun jobs marked `interrupted`.
 
 Saving a market or a configuration on the server to use by reference is not planned.
 

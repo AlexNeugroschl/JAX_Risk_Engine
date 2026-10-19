@@ -1,7 +1,7 @@
 """
 The normal (Bachelier) option formula, QuantLib's `bachelierBlackFormula` without the discount:
 shared by the European engine (`engine.pricing.european`) and the market value of an LGM
-calibration helper (`engine.calibration.ore_lgm`), so both read a zero volatility as QuantLib
+calibration helper (`engine.calibration.lgm`), so both read a zero volatility as QuantLib
 does, as the option's intrinsic value.
 """
 import jax

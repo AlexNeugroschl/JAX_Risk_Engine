@@ -109,7 +109,7 @@ CUDA wheels.
 
 **What the engine sets, and what you set.** Importing `engine` changes no device setting:
 only x64 (decision A-22). The engine's matrix products state their own precision, so a float32
-run is float32 on any device (see [Precision](#precision-float32-vs-float64)), and the engine
+run is float32 on any device (see [Precision](#precision-float64-down-to-fp8)), and the engine
 worker runs deterministic kernels (below). How a process holds GPU memory is the deployment's
 choice, made in the environment before the process first opens the GPU:
 
@@ -130,10 +130,10 @@ on demand. To run your own server beside a notebook or the tests on one card:
 XLA_PYTHON_CLIENT_PREALLOCATE=false .venv/bin/python -m uvicorn engine.api.app:app
 ```
 
-The API server keeps its own JAX on the CPU (it prices nothing; `/version` and
-`/calibration/lgm` are its only JAX work), so the engine worker is the one process with a GPU
-client. `/version` therefore says `cpu`; a job's result names the GPU in its `precision`
-report. The demo's whole job peaked at 2.6 GB of the card.
+The API server keeps its own JAX on the CPU (it prices nothing; building a run request's few
+arrays to check it is its only JAX work), so the engine worker is the one process with a GPU
+client. `/version` therefore says `cpu`; a run's result names the GPU in its precision
+reports. The demo's whole job peaked at 2.6 GB of the card.
 
 **Tests on the GPU.** Each test process opens its own GPU client (the suite turns
 preallocation off and deterministic kernels on for itself, in `tests/conftest.py`), so choose
@@ -207,12 +207,12 @@ python demos/demo_api.py
 Requires the `api` extra (see [Running the API](#running-the-api) below). Launches its own
 `uvicorn` server (or reuses one already running at `http://127.0.0.1:8000` if
 `JAX_RISK_ENGINE_DEMO_SKIP_SERVER=1` is set), builds the same market, portfolio and
-configuration as `demo.py` as the portfolio request's JSON, calibrates the cross-asset model
-(`POST /calibration/cam`), submits the portfolio to `POST /portfolio/price` (its cube returned by
-reference, each chunk's hash checked), polls `GET /jobs/{job_id}` until it completes, prints the
-same summary read back out of the JSON response, and then runs the trades' market-risk VaR and
-ES (`POST /portfolio/market-risk`) — see [HTTP API](../reference/http-api.md) for what's on the
-wire.
+configuration as `demo.py` as one run request's JSON, submits it to `POST /runs` with the
+analytics `npv`, `exposure`, `sensitivities` and `calibration` (the cube returned by reference,
+each chunk's hash checked), long-polls `GET /runs/{run_id}?wait=30` until it completes, prints
+the same summary read back out of the JSON response, and then runs the trades' market-risk VaR
+and ES as a second run, submitted twice with one idempotency key to show it is one run — see
+[HTTP API](../reference/http-api.md) for what's on the wire.
 
 **The same portfolio again, restructured to show the shape of a real integration:**
 ```bash
@@ -424,34 +424,38 @@ Then visit `http://127.0.0.1:8000/docs` for FastAPI's interactive Swagger UI, or
 request directly:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/portfolio/price \
+curl -X POST http://127.0.0.1:8000/runs \
   -H "Content-Type: application/json" \
   -d '{
     "market": {"asof": "2026-07-30", "currencies": {"USD": {
       "discount_curve": {"times": [0.0,1.0,2.0,5.0,10.0,30.0], "rates": [0.030,0.030,0.034,0.040,0.046,0.050]},
       "index_curves": {"USD-SIMINDEX-6M": {"times": [0.0,1.0,2.0,5.0,10.0,30.0], "rates": [0.034,0.034,0.038,0.044,0.049,0.052]}}}}},
-    "trades": [{"trade_type": "swap", "trade_id": "swap-1", "notional": 1000000.0, "fixed_rate": 0.036,
-                "payer": true, "swap_tenor": "2Y"}],
-    "simulation": {"dates": ["2027-01-30", "2027-07-30", "2028-07-30"], "base_currency": "USD", "samples": 4096,
-                   "ir": {"USD": {"model": "HullWhite", "reversion": 0.03, "volatility": 0.01}}},
-    "pfe_quantiles": [0.95, 0.99]
+    "portfolio": [{"trade_type": "swap", "trade_id": "swap-1", "notional": 1000000.0, "fixed_rate": 0.036,
+                   "payer": true, "swap_tenor": "2Y"}],
+    "analytics": ["npv", "exposure"],
+    "config": {"models": {"ir": {"USD": {"model": "HullWhite", "reversion": 0.03, "volatility": 0.01}}},
+               "simulation": {"dates": ["2027-01-30", "2027-07-30", "2028-07-30"], "samples": 4096},
+               "exposure": {"pfe_quantiles": [0.95, 0.99]}}
   }'
 ```
 
-This returns `202 Accepted` with a `job_id` — pricing runs in the background (see
+This returns `202 Accepted` with a `run_id` — the run goes in the background (see
 [HTTP API: Why async, not sync](../reference/http-api.md#why-async-not-sync-the-measured-latency)
-for why). Poll for the result:
+for why). Wait for the result (answered as soon as the run is done, or after 30 seconds):
 
 ```bash
-curl http://127.0.0.1:8000/jobs/<job_id>
+curl "http://127.0.0.1:8000/runs/<run_id>?wait=30"
 ```
 
 The done result has one row per trade in `trades` (its `trade_id`, today's value, exposure and
-Greeks), the netting set's `exposure`, and the cube inline (add `"cube_output": "artifact"` to
-the request to receive it as hashed chunks, or `"none"` to leave it out). The same server runs
-market-risk VaR and ES (`POST /portfolio/market-risk`, polled at the same route) and calibrates
-the cross-asset model (`POST /calibration/cam`). See [HTTP API](../reference/http-api.md) for
-the full endpoint reference, request/response schemas, and the async job pattern's reasoning.
+Greeks), the netting set's profile in `exposure`, and the cube by reference (add `"outputs":
+{"npv_cube": "inline"}` to the request to receive it in the result, or `"none"` to leave it out),
+with the configuration as run and the engine's identity. The same request runs the Greeks
+(`sensitivities`), market-risk VaR and ES (`market_risk`, its scenarios in `config.market_risk`)
+and the cross-asset model's calibration (`calibration`): name them in `analytics`.
+`GET /config/defaults` returns every section with ORE's defaults to copy, and `POST
+/runs/<run_id>/cancel` cancels a run. See [HTTP API](../reference/http-api.md) for the full
+endpoint reference, request/response schemas, and the async pattern's reasoning.
 
 The same app also mounts a second router at `/eod`, the TraderX overnight batch contract —
 see [Pricing a TraderX EOD bundle](#pricing-a-traderx-eod-bundle) below.
@@ -462,11 +466,11 @@ The same server also exposes a **second, separate contract** under `/eod` — th
 batch boundary for TraderX. It is worth knowing which one you are talking to, because they
 behave differently on purpose:
 
-| | `/portfolio/price` (and `/portfolio/market-risk`) | `/eod/price` |
+| | `/runs` | `/eod/price` |
 |---|---|---|
-| Shape | **Asynchronous** — `202` + `job_id`, then poll | **Synchronous** — one call returns the result |
-| Body | the portfolio request (`MarketPortfolioRequestSchema`, Pydantic) | `EodSubmissionSchema`, pointing at a bundle on disk |
-| Durability | A durable SQLite job queue; a job survives restarts, and one killed mid-run reads `interrupted` (2026-10-04) | Published to a crash-safe store; survives restart ([I-08](../planning/known-issues.md#i-08): a running attempt does not) |
+| Shape | **Asynchronous** — `202` + `run_id`, then poll | **Synchronous** — one call returns the result |
+| Body | the run request (`RunRequestSchema`, Pydantic) | `EodSubmissionSchema`, pointing at a bundle on disk |
+| Durability | A durable SQLite job queue; a run survives restarts, and one killed mid-run reads `interrupted` (2026-10-04) | Published to a crash-safe store; survives restart ([I-08](../planning/known-issues.md#i-08): a running attempt does not) |
 | Refusals | An unsupported trade is an error | An unsupported instrument is a **`200`** whose coverage names the refusal |
 
 That last row is the design: returning an HTTP error for a refusal would make "we correctly
@@ -676,7 +680,7 @@ model = LgmConfig(0.03, 0.01, ("1Y", "2Y"), ("9Y", "8Y"), solver="Bisection")  #
 ```
 
 Over HTTP the same field sits in `pricing.bermudan`, `pricing.american`,
-`pricing.jamshidian`, each `simulation.ir` currency, and `POST /calibration/lgm`'s body
+`pricing.jamshidian`, and each `config.models.ir` currency
 ([Calibration: the root solver](../reference/calibration.md#the-root-solver)).
 
 ## Pricing without the whole pipeline

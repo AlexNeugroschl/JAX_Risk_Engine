@@ -109,19 +109,44 @@ def monte_carlo_scenarios(
     num_scenarios: a power of two keeps the Sobol sequence balanced.
     seed: Sobol scrambling seed.
     """
-    cov = validate_monte_carlo(factors, covariance, horizon_days, num_scenarios, replicates)
-    eigenvalues, eigenvectors = np.linalg.eigh(cov)
-    # Eigenvalues below round-off of the largest are zero: a rank-deficient
-    # covariance otherwise gains ~1e-10 of spurious noise per move from the
-    # square roots of its ~1e-21 numerical eigenvalues.
-    eigenvalues = np.where(eigenvalues > 1e-12 * eigenvalues[-1], eigenvalues, 0.0)
-    root = eigenvectors * np.sqrt(eigenvalues)[None, :]   # cov = root @ root.T
-    normals = np.asarray(generate_sobol_normals(num_scenarios, 1, factors.size, jnp.float64, seed=seed,
-                                               replicates=replicates)[0])
-    return ShockScenarios(
-        factors=factors, shifts=normals @ root.T, horizon_days=horizon_days, source=SOURCE_MONTE_CARLO,
-        replicates=replicates,
-    )
+    return MonteCarloScenarios(factors, covariance, horizon_days, num_scenarios, seed, replicates).draw()
+
+
+@dataclass(frozen=True, eq=False)
+class MonteCarloScenarios:
+    """Monte Carlo scenarios not drawn yet: `monte_carlo_scenarios`' inputs, checked when built
+    (`validate_monte_carlo`, no JAX work), drawn by `draw()`. A run request holds them so that it
+    is checked whole before any scenario is drawn; like `ShockScenarios` it has the `factors`,
+    `num_scenarios`, `replicates` and `source` a check reads. `covariance` is kept symmetrized."""
+    factors: RateRiskFactors
+    covariance: np.ndarray
+    horizon_days: int
+    num_scenarios: int
+    seed: int = 42
+    replicates: int = 1
+    source = SOURCE_MONTE_CARLO
+
+    def __post_init__(self):
+        object.__setattr__(self, "covariance", validate_monte_carlo(self.factors, self.covariance, self.horizon_days,
+                                                                    self.num_scenarios, self.replicates))
+
+    def draw(self) -> ShockScenarios:
+        """The `ShockScenarios`: scrambled Sobol normals times a root of the covariance."""
+        eigenvalues, eigenvectors = np.linalg.eigh(self.covariance)
+        # Eigenvalues below round-off of the largest are zero: a rank-deficient
+        # covariance otherwise gains ~1e-10 of spurious noise per move from the
+        # square roots of its ~1e-21 numerical eigenvalues.
+        eigenvalues = np.where(eigenvalues > 1e-12 * eigenvalues[-1], eigenvalues, 0.0)
+        root = eigenvectors * np.sqrt(eigenvalues)[None, :]   # cov = root @ root.T
+        normals = np.asarray(generate_sobol_normals(self.num_scenarios, 1, self.factors.size, jnp.float64,
+                                                    seed=self.seed, replicates=self.replicates)[0])
+        return ShockScenarios(factors=self.factors, shifts=normals @ root.T, horizon_days=self.horizon_days,
+                              source=SOURCE_MONTE_CARLO, replicates=self.replicates)
+
+
+def shock_scenarios(scenarios) -> ShockScenarios:
+    """`scenarios` drawn: a `MonteCarloScenarios` drawn now, a `ShockScenarios` as it is."""
+    return scenarios.draw() if isinstance(scenarios, MonteCarloScenarios) else scenarios
 
 
 def validate_monte_carlo(factors: RateRiskFactors, covariance, horizon_days: int, num_scenarios: int,

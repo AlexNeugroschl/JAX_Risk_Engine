@@ -16,36 +16,43 @@ shared portfolio, what is compared with ORE and what is not is the
 
 ## Verification status
 
-Last full run, 2026-10-18, on the evidence keyed by pricing settings (I-114). **3,653
-collected** on Windows: the previous 3,633 plus 20, reconciled by test id against the code
-before (none removed: the kernel settings, the lookup under settings, the end-to-end runs on the
-shipped table, the record checks and the new campaign's definition). Every green run below
-printed its summary line:
+Last full run, 2026-10-18, on the run request (I-87, I-88, I-89, I-94, I-95, I-103, I-76, I-77,
+I-91, I-106). **3,887 collected** on Windows: the previous 3,653 plus 234, reconciled by test id
+against the code before: removed, the standalone bootstrap's four files (48 ids, I-94), the
+retired routes' tests and the standalone cases of `tests/test_root_solvers.py`; added,
+`tests/test_run_request.py` and `tests/test_input_checks.py`, the run-request versions of the
+HTTP tests, the queue's migration, idempotency, cancel, retention, lock and supervisor tests, and
+the completeness test's value check (195 parametrized cases, I-88). Every green run below printed
+its summary line:
 
 - **Windows full suite**, `.venv/Scripts/python.exe -m pytest tests/ -q -n 6 --durations=15`:
-  **3,650 passed, 3 skipped, 0 failed**, 23m42s; the skips are the two accelerator-only defaults
-  and the GPU plugin check. The ORE parity sweep is most of the time (its slowest case, seed 28,
-  316 s in market risk and 166 s in its Greeks).
-- **Fast tier under strict dtype promotion**, as CI's `fast-strict-dtypes` job runs it:
-  **3,412 passed, 3 skipped, 0 failed**, 3m56s at `-n 6`.
-- **Precision campaigns**: `market_risk_calibrated` measured on the final engine (digest
-  `9276035e71494e18`), 34 cases at 2,048 and 8,192 scenarios over 16 seeds, 16 min, no program
-  compiled after a case's first seed; a run on the tree before its last edit (the warning's
-  wording only) gave the same 680 figure rows and 68 attribution rows exactly. The ten earlier
-  records had their pricing settings recorded from their definitions (unchanged from each
-  record's commit to this one), every number loading as before; the regenerated evidence file's
-  241 earlier case rows are unchanged, and the table's `--check` passes.
+  **3,883 passed, 3 skipped, 1 failed**, 25m28s. The failure was a real race in the new queue
+  code: processes opening a file together had one fail switching it to WAL (`database is
+  locked`; SQLite does not wait for that lock). Fixed (`JobQueue._use_wal`), measured 38 failed
+  opens in 720 before and 0 after, the test strengthened to 30 trials per kind (red 3 of 3 times
+  on the code before the fix, green after); the eleven files it and the line-ending restore
+  touched rerun: **502 passed**.
+- **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, as CI's
+  `fast-strict-dtypes` job runs it): **3,646 passed, 3 skipped, 0 failed**, 4m08s at `-n 6`, on
+  the final code.
+- **Linux** (rule 5: the worker's lock path, its `fcntl` lock and owner record, the supervisor),
+  WSL2 Ubuntu, `JAX_PLATFORMS=cpu`, `-n 2`, the final code: the worker, API, run-request, input,
+  demo, layering and completeness files, **479 passed**.
 - **Lint**: pyflakes passes on every changed Python file.
-- **Not run**: Linux and the GPU (no process, path or platform default changed); the golden
-  snapshot (no kernel or number path changed: the edits are the evidence lookup, plain Python
-  over a run's warnings, and `LgmSwaptionEngineConfig.calibrates` in place of two
-  `calibration != "None"` tests).
+- **The demo over HTTP**: `demos/demo_api.py` ran end to end against a real server and worker
+  (one run of four analytics, the cube by reference with every hash checked, an idempotent
+  market-risk run).
+- **Not run**: the GPU (nothing device-specific changed); the golden snapshot (no kernel or
+  number path changed: each analytic is its entry point's direct call, shown bit for bit equal
+  by `tests/test_run_request.py`; the cube's new branch prices an expired European as the zeros it
+  priced before; the rest is host-side checks and labels); the precision campaigns (no kernel
+  changed).
 
-Red first: on the code before, with its shipped table, a Jamshidian European, a Bermudan on ORE's
-default grid and a Bermudan recalibrated under each market-risk scenario at precisions the
-measured rows validate had no precision warning, each validated by rows of Bachelier, the coarse
-grid or the fixed LGM (`TestSettingsEndToEnd`'s runs; on the code after, one warning each,
-naming the unmeasured settings and what was measured).
+Red first: on the code before, an unsorted curve priced the European payer at 50,679.68 for
+51,133.41 and a late European expiry raised `StopIteration` (I-103); a half-migrated version-1 file
+failed to open (`duplicate column name: kind`) and two queue files on one host each took a worker
+lock (I-106); every submission was a new job (I-89); the value check fails on a schema that drops
+a field (I-88).
 
 The fast tier alone is not a full verification. Rules: [README.md](README.md#verification-rules).
 
@@ -61,38 +68,30 @@ The fast tier alone is not a full verification. Rules: [README.md](README.md#ver
 | [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
 | [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | TraderX |
 | [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | Fix what exists |
-| [I-103](#i-103) | Malformed market and trade inputs are accepted: an unsorted curve prices silently, a late expiry crashes | Medium | OPEN | Validation | Focus |
 | [I-104](#i-104) | Edge cases valued wrong: a zero-variance European, a bond awaiting a delayed payment, H at small a·t | Low | OPEN | Correctness | Fix what exists |
-| [I-106](#i-106) | The job queue's file: an interrupted migration stops it opening; a second file starts a second worker | Low | OPEN | API | Focus |
 | [I-107](#i-107) | TraderX: `bundleId` is trusted, not recomputed, so a changed bundle can get the old result | Medium | OPEN | API | TraderX |
 | [I-108](#i-108) | TraderX: NaN amounts priced as `ok`, terms contradicting the row priced, duplicate rows counted twice | Medium | OPEN | API | TraderX |
 | [I-109](#i-109) | TraderX: after a failed publication a same-id retry never prices or publishes | Medium | OPEN | API | TraderX |
 | [I-110](#i-110) | The documentation contradicts the code in places | Low | OPEN | Tooling | Fix what exists |
 | [I-117](#i-117) | ORE's sensitivity analytic is inconsistent with itself, or fails a calibration the engine fits, in four configurations | Low | OPEN | Validation | Fix what exists |
 | [I-115](#i-115) | The Greeks on an accelerator: bumps one at a time, a calibrated option's AD compiling for a minute, nothing measured on a GPU | Medium | OPEN | Performance | Focus |
+| [I-118](#i-118) | A run of several analytics repeats the work they share | Low | OPEN | Performance | Fix what exists |
 | [I-97](#i-97) | XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU | Medium | OPEN | Performance | Focus |
-| [I-87](#i-87) | The HTTP API is one route per engine function, not one run request | Medium | OPEN | API | Focus |
-| [I-88](#i-88) | The API completeness test checks field names, not that a value reaches the engine | Low | OPEN | Tooling | Focus |
-| [I-89](#i-89) | A retried job submission runs the job twice | Low | OPEN | API | Focus |
-| [I-95](#i-95) | A precision setting the run does not read is accepted and ignored | Low | OPEN | API | Focus |
 | [I-53](#i-53) | On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch | Low | PARTIAL | Performance | Fix what exists |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | New |
 | [I-58](#i-58) | TraderX: two concurrent submissions of one workload under different ids both execute | Medium | PARTIAL | API | TraderX |
 | [I-59](#i-59) | TraderX: `calculations` and `reportingCurrency` accepted, keyed, then ignored | Medium | OPEN | API | TraderX |
 | [I-60](#i-60) | TraderX result schema has no stated policy on added fields | Low | ASSUMPTION | API | TraderX |
-| [I-76](#i-76) | The job queue keeps every job and result forever | Low | OPEN | API | Focus |
-| [I-77](#i-77) | A worker that cannot start leaves jobs `pending` with no signal | Low | OPEN | API | Focus |
-| [I-91](#i-91) | A long job delays every job behind it, and no job can be cancelled | Low | OPEN | API | Focus |
 | [I-90](#i-90) | The HTTP API has no authentication, rate limit or body-size limit | Low | OPEN | API | TraderX |
 | [I-61](#i-61) | Nothing runs on more than one host; multi-device speed unmeasured | Medium | PARTIAL | Performance | Focus |
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | Fix what exists |
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | Fix what exists |
 | [I-81](#i-81) | A cold job compiles about 180 one-operation programs; market risk vmaps a closure | Low | OPEN | Performance | Fix what exists |
 | [I-93](#i-93) | TraderX's submissions are priced by their own pricers, not the engine's | Medium | OPEN | API | TraderX |
-| [I-94](#i-94) | The LGM is calibrated by two implementations | Low | OPEN | Architecture | Focus |
 
 **One pipeline.** Since 2026-10-01 every run is `price_portfolio` on a `Market`
-(`engine.run.pipeline`; HTTP `POST /portfolio/price`): ORE's cross-asset model with a
+(`engine.run.pipeline`; since 2026-10-18 reached through the run request, `engine.run.run` and
+HTTP `POST /runs`, I-87): ORE's cross-asset model with a
 model per currency
 (`CamConfig.ir`: the LGM by default, or Hull-White, decision A-1 in
 [compliance/decisions.md](../../compliance/decisions.md)), and ORE's valuation of every trade on
@@ -154,7 +153,6 @@ With a smile: European NPV and Vega away from the money, and calibrated Bermudan
 
 **To close.** Decided (X-5): a strike axis in the market's volatilities, read at each
 option's and helper's strike as ORE reads its cube. SABR is [F-02](features.md#f-02).
-
 
 <a id="i-97"></a>
 ### I-97 — XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU
@@ -249,52 +247,8 @@ above (tests/test_ore_parity_sweep.py's docstring).
 
 **To close.** Report the first two to ORE with minimal reproductions (an OREApp sensitivity run
 of one trade), the fourth as a limit of ORE's optimiser; decide whether an as-of date that is not a business day is refused (the run
-request's preflight, [I-103](#i-103)); a test per case once ORE's numbers are consistent, or each
+request's preflight, `engine.run.validate_run`); a test per case once ORE's numbers are consistent, or each
 recorded as a difference by decision.
-
-<a id="i-103"></a>
-### I-103 — Malformed market and trade inputs are accepted: an unsorted curve prices silently, a late expiry crashes
-
-**Severity:** Medium · **Status:** OPEN · **Category:** Validation · **Found:** 2026-10-10, the
-project audit (AUD-05, AUD-10, AUD-35, AUD-40); measured 2026-10-11
-
-**What is wrong.** The checks before work stop short of what the pricers assume:
-
-- **Curves.** `ZeroCurveConfig` (`engine/market_data/market.py`) and its API schema check
-  nothing. On the shared test portfolio's market, a discount curve with pillars [5, 1, 10]
-  prices the European payer at 50,697.19 instead of 51,133.41, with no error; a NaN rate gives
-  a NaN price; three times and two rates fail inside the interpolation (`xp and fp must be
-  one-dimensional arrays of equal size`), after the job has started.
-- **An expiry inside the last accrual period.** `SwaptionConfig` checks that expiry precedes
-  maturity, but `european_terms` (`engine/pricing/european.py`) looks for each leg's first
-  whole period after expiry with `next` and no default: an expiry of 2028-12-01 on a
-  2027-01-15 → 2029-01-15 swap passes the config and raises a bare `StopIteration` when
-  priced.
-- **The standalone calibration's notional.** `POST /calibration/lgm` (`CalibrationRequestSchema`,
-  `build_coterminal_basket`) takes any `notional`, though its helpers' prices scale with it: on
-  a 1Y/2Y/3Y basket into 6Y at 0.9% normal volatility, 1e6 fits σ 0.0096–0.0110, while 0 returns
-  σ ≈ 7e-5 and −1e6 every bucket at the bracket's floor, 1e-6, both with no error (measured
-  2026-10-11; trade options refuse such a notional since I-101).
-- **Preflight.** `validate_request` (`engine/run/pipeline.py`) and market risk's
-  `validate_portfolio` check trades against the market's names, not the market's values, so
-  these become failed jobs, not `400`s.
-- **Unknown fields.** Four API models accept and drop fields they do not know, though the API
-  documents refusing them: `ZeroCurveConfigSchema`, `CouponPeriodSchema`,
-  `CalibrationRequestSchema` (`engine/api/requests.py`, plain `BaseModel`, not `_Strict`) and
-  TraderX's `EodSubmissionSchema`.
-
-**Reach.** A caller's mistake: a mis-ordered or NaN curve gives a wrong or NaN number with no
-error, the others an error late. Well-formed inputs are unaffected. The swaption volatility
-surface is validated (shape, finite, non-negative, increasing tenors).
-
-**Current handling.** None.
-
-**To close.** Host-side checks on construction, before any JAX work: a curve's pillars
-non-empty, as many rates as times, finite, times non-negative and strictly increasing
-(negative rates allowed); an exercise that leaves no whole period of a leg refused, naming the
-trade and the dates; the standalone calibration's notional positive (until [I-94](#i-94)
-retires it); every API model strict (`extra="forbid"`). The run request's preflight
-([I-87](#i-87)) then runs them all. A test per refusal, red first.
 
 ---
 
@@ -446,6 +400,33 @@ it was given says so in its precision report (or pads its paths to a multiple of
 and drops the padding before any reduction); the storage blocks' alignment with each device's
 share is checked on the real devices.
 
+<a id="i-118"></a>
+### I-118 — A run of several analytics repeats the work they share
+
+**Severity:** Low · **Status:** OPEN · **Category:** Performance · **Found:** 2026-10-18, building
+the run request ([I-87](#closed))
+
+**What is wrong.** `engine.run.run` calls each analytic's entry point as it is
+(`engine/run/run_request.py`), so work two analytics share is done once per analytic: a run of
+`exposure` and `calibration` bootstraps every calibrated currency of the cross-asset model twice
+(`calibrate_cam`, then `build_cross_asset_model`); `market_risk` beside a portfolio analytic
+values each trade on today's curves again (its base values) and builds its ORE schedules again;
+and the request is validated once by `validate_run` and again by each entry point
+(`validate_request`, `validate_portfolio`), each building every trade's ORE swap.
+
+**Reach.** Wall time of a run of several analytics, not measured (the bootstrap of a few helpers
+and the host-side checks are small beside a simulation; a large portfolio's schedules are not).
+No number: each analytic equals its direct call bit for bit, by design
+(`tests/test_run_request.py`).
+
+**Current handling.** Documented ([HTTP API](../reference/http-api.md#design-one-request-for-every-analytic)).
+
+**To close.** Share what the analytics read in common, where it is the same computation: the
+cross-asset model's calibration handed from `calibration` to `exposure`
+(`build_cross_asset_model(..., sigmas=...)` takes it), the request validated once, the trades'
+schedules built once per run. A test that the combined run still equals each analytic alone, bit
+for bit, and that each shared stage runs once (a call count), timed against the code before.
+
 ---
 
 ## API
@@ -455,9 +436,9 @@ share is checked on the real devices.
 
 **Severity:** Medium · **Status:** PARTIAL
 
-**Closed part (2026-10-04).** Portfolio jobs: the durable SQLite job queue
-(`engine/api/job_queue.py`, decision A-14) replaced the in-memory `_JOBS` dict. A job
-survives restarts, every API process on the queue serves every `job_id`, a job running when
+**Closed part (2026-10-04).** Portfolio jobs (the run requests since 2026-10-18): the durable
+SQLite job queue (`engine/api/job_queue.py`, decision A-14) replaced the in-memory `_JOBS` dict.
+A job survives restarts, every API process on the queue serves every run id, a job running when
 its worker died reads `interrupted`, and a failure names its class (`bad-terms`,
 `missing-market-data`, `unsupported-product`, `numerical-failure`, `infrastructure`).
 Tests: `tests/test_engine_worker.py` (`test_jobs_survive_reopening_the_file`,
@@ -656,162 +637,6 @@ shape. TraderX's validator does, so the next field added breaks them. Proposed t
 **To close.** Their answer, recorded as a decision; then state it in the published schema
 with a test.
 
-<a id="i-76"></a>
-### I-76 — The job queue keeps every job and result forever
-
-**Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-04, building
-the job queue
-
-**What is wrong.** `engine/api/job_queue.py` never deletes a row, so the SQLite file grows by
-each job's request and result document (a 4096-path cube is tens of MB of JSON inline, or
-as many bytes of artifact chunks since 2026-10-07).
-
-**Reach.** Disk on a long-running API host; no number. A result stays retrievable, which the
-Basel plan's audit trail wants (P0).
-
-**Current handling.** None; delete the file, or old rows, by hand.
-
-**To close.** A retention policy chosen by the owner (an age or a count, kept results for
-regulatory runs), applied by the worker between jobs; a test that a purged id is a `404` and a
-kept one is served.
-
-<a id="i-77"></a>
-### I-77 — A worker that cannot start leaves jobs `pending` with no signal
-
-**Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-04, building
-the job queue
-
-**What is wrong.** If the engine worker dies at startup (a broken install, an unwritable
-queue directory), the API restarts it on every poll and the job stays `pending`; the client
-sees no error. The worker's traceback reaches the server's stderr, not the job.
-
-**Reach.** HTTP portfolio jobs, only when the worker cannot run at all. A job that kills a
-running worker is `interrupted`, not stuck.
-
-**Current handling.** The traceback in the server log.
-
-The route also queues the job before it starts the worker (`_validate_and_submit`,
-`engine/api/routes.py`): if starting it raises, the client gets an error for a job that is
-queued, and a retry queues a second (project audit, AUD-37).
-
-**To close.** The supervisor records its child's exit status, and a poll of a `pending` job
-while the worker has exited at startup N times running reports it (in `error`, or a
-`worker` field on `/health`, which today shows only that the HTTP process is up); a failed
-worker start answered with the queued job's id; a test with a worker command that exits at
-once.
-
-<a id="i-106"></a>
-### I-106 — The job queue's file: an interrupted migration stops it opening; a second file starts a second worker
-
-**Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-10, the project
-audit (AUD-36, AUD-38); confirmed in the code 2026-10-11
-
-**What is wrong.** `JobQueue.__init__` (`engine/api/job_queue.py`) migrates a version-1 file in
-autocommit statements: an `ALTER TABLE` adds the `kind` column, the schema script runs (and
-commits), then `user_version` is set. A crash between the first and the last leaves the
-column at version 1, and the next start repeats the `ALTER` and fails on the duplicate
-column; two processes opening an old file at once can race the same way. Separately, the
-worker lock is per queue file (`<queue>.worker.lock`, `engine/api/supervisor.py`), so two API
-instances on one host with different `JAX_RISK_JOB_QUEUE` paths start two workers on the same
-devices, against decision A-14's one worker per host.
-
-**Reach.** Only a version-1 queue file (none outside development) and a host serving two queue
-files. No number.
-
-**Current handling.** None.
-
-**To close.** The migration in one `BEGIN IMMEDIATE` transaction, or idempotent (the column
-added only if missing), and a test that interrupts it; the worker's lock taken per host (a
-fixed path per device set), or a second queue file on one host refused; a test each.
-
-<a id="i-87"></a>
-### I-87 — The HTTP API is one route per engine function, not one run request
-
-**Severity:** Medium · **Status:** OPEN · **Category:** API · **Found:** 2026-10-08, owner
-review of the API of 2026-10-07
-
-**What is wrong.** Decision A-2 asks for a single route and a single request. The API of
-2026-10-07 reached every setting but kept one route per engine function: `POST /portfolio/price`,
-`POST /portfolio/market-risk`, `POST /calibration/cam` and `POST /calibration/lgm`.
-
-- **The same input is sent twice.** Exposure and VaR on one book are two requests with the
-  same market, trades, pricing and precision, and two jobs.
-- **One setting has two places.** The model per currency is `simulation.ir` in one request and
-  `ir` in another. The reporting currency is both `base_currency` and
-  `simulation.base_currency`.
-- **What to compute is mixed in with how.** `scenario_risk` and `compute_greeks` are flags
-  beside the configuration they switch on.
-- **The routes behave differently.** Two are queued jobs and two answer at once, and
-  `/calibration/lgm` takes year fractions and `hw_a` instead of a market.
-
-**Reach.** Every HTTP caller. No number is wrong. There are no clients yet, so this is the
-cheapest time to change the contract.
-
-**Current handling.** None; [docs/reference/http-api.md](../reference/http-api.md) documents
-each route.
-
-**To close.** One `POST /runs` with `market`, `portfolio`, an `analytics` list
-and a `config` whose sections follow ORE's files, as
-[details/configurable-engine.md](details/configurable-engine.md#one-run-request-i-87-i-88-i-89)
-describes. A run of one analytic must equal today's direct call within the margin. The one
-result says what each figure is without the request beside it (the project audit, AUD-39):
-the reporting currency, the as-of and simulation dates, the trade ids on every per-trade axis
-(today's Python `MarketRiskResult` keys its P&L columns by request order alone), each Greek
-array's factor labels (curve and tenor, or option and swap tenor), the Greeks method and
-calibration policy as run, and the engine's identity (its git revision and the versions of
-jax, jaxlib and ORE) in place of the fixed `0.1.0`. Each option's exercise decisions on every
-path and date (`PortfolioResult.exercised`, in the Python result since 2026-10-13, decision
-A-24) are returned on request, as the cube is (inline, by reference or not at all).
-
-<a id="i-95"></a>
-### I-95 — A precision setting the run does not read is accepted and ignored
-
-**Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-09, building the
-storage harness (I-75)
-
-**What is wrong.** A market-risk run has no scenario market: it reads `Precision.simulation`
-for its shifts and `pricing` (with its overrides) for its revaluation, and accepts a `market`
-stage, which `Precision.throughout` also sets, without reading it. Since the kernel rewrite
-(2026-10-10) a stage's `compute` is the format of its matrix products, and market risk's
-simulation stage has none (the shifts are drawn before the run, then rounded to the stage's
-accumulate format and stored): its `simulation.compute` is accepted and not read either. A portfolio run with
-`scenario_risk=False` simulates nothing and accepts every stage, the rounding, the block layout
-and `paired_fraction`, and reads none of them. Both are inputs accepted and then ignored, which
-the API otherwise refuses ([I-59](#i-59)'s rule; a stochastic rounding with nothing stored
-below 32 bits is refused for that reason).
-
-**Reach.** No number: the setting does nothing. But the result's precision report echoes the
-policy as given, so it states a precision the run did not use. `demos/demo_precision.py` runs
-market risk with `Precision.throughout("float32")`, whose `market` stage is one of these.
-
-**Current handling.** None.
-
-**To close.** In the run request ([I-87](#i-87)): each analytic refuses a precision setting it
-does not read, naming the field, as it refuses a configuration section no requested analytic
-reads (market risk: the `market` stage, and `simulation.compute` other than its accumulate
-format); a test per analytic; the demo's market-risk policies set the two stages they use.
-
-<a id="i-89"></a>
-### I-89 — A retried job submission runs the job twice
-
-**Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-08, review of
-the API of 2026-10-07
-
-**What is wrong.** `POST /portfolio/price` and `POST /portfolio/market-risk` give every
-submission a new `job_id` (`engine/api/job_queue.py`, `submit`). A client that loses the
-`202` and retries queues the job a second time, and the worker prices both. TraderX's routes
-have `submissionId` for this; the job routes have nothing.
-
-**Reach.** Engine time, and a duplicate result a client may not know about. No number is
-wrong.
-
-**Current handling.** None.
-
-**To close.** An optional `idempotency_key`. The same key and body return the
-first `run_id`; the same key with a different body is a `409`, checked before anything is
-returned (the binding I-57 found missing on the TraderX path). Tests for a retry, a conflicting
-body, and two API processes on one queue.
-
 <a id="i-90"></a>
 ### I-90 — The HTTP API has no authentication, rate limit or body-size limit
 
@@ -838,27 +663,6 @@ authentication chosen with TraderX (a bearer token or mutual TLS), a body-size l
 per-caller limit on queued jobs; bundle paths confined to configured roots, every artifact
 path resolved inside its bundle (symlinks included), and a byte limit per artifact; a test per
 refusal (`401`, `413`, `429`, a path outside the root).
-
-<a id="i-91"></a>
-### I-91 — A long job delays every job behind it, and no job can be cancelled
-
-**Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-08, review of
-the API of 2026-10-07
-
-**What is wrong.** The engine worker runs jobs one at a time in submission order (decision
-A-14), so a calibration queued behind a ten-minute simulation waits ten minutes. There is no
-route to cancel a job, so a job submitted by mistake runs to the end.
-
-**Reach.** Wall time of HTTP jobs when several are queued. No number is wrong. Running one
-job at a time on every device is deliberate.
-
-**Current handling.** None; stop the worker, which marks its job `interrupted`.
-
-**To close.** With the worker loop's other changes. A cancel route: a pending
-job becomes `cancelled` at once, and a running job stops at the worker's next phase boundary
-(calibration, simulation, each trade's pricing, Greeks) and reads `cancelled`, with the
-worker kept alive and its compiled programs kept. A test for each case. Priorities between
-callers are not planned until there are several callers.
 
 <a id="i-93"></a>
 ### I-93 — TraderX's submissions are priced by their own pricers, not the engine's
@@ -890,35 +694,6 @@ engine's bond and the TraderX note agree on every bundle row of the tests, to ro
 shares a layer with `models` and `instruments`): its orchestration moves above `run/` (or into
 `api/`), its terms and provenance types stay low, rather than an exception in the layer test
 (project audit).
-
----
-
-## Architecture
-
-<a id="i-94"></a>
-### I-94 — The LGM is calibrated by two implementations
-
-**Severity:** Low · **Status:** OPEN · **Category:** Architecture · **Found:** 2026-10-08,
-evaluating the package layout
-
-**What is wrong.** Every run calibrates with ORE's bootstrap (`engine.calibration.ore_lgm`).
-An older standalone bootstrap (`engine.calibration.lgm.calibrate_lgm_sigma`, with
-`engine.calibration.basket`: Bachelier helper prices, its own solver steps) serves only
-`POST /calibration/lgm`, which the run request of [I-87](#i-87) removes.
-
-**Reach.** `POST /calibration/lgm` and its Python function. The two are tested separately and
-can drift; a fix to one is not made to the other. They have: since 2026-10-12 ORE's bootstrap
-refuses a calibration that misses its basket by ORE's acceptance (the root mean square of the
-helpers' relative price errors against a tolerance, [I-73](#i-73)), while the standalone one
-reports the root mean square of absolute price errors and refuses only a bucket at the
-bracket's ceiling.
-
-**Current handling.** None.
-
-**To close.** Once the run request's `calibration` analytic returns what
-`POST /calibration/lgm` returns, retire the standalone bootstrap, or move it to
-`tests/support/` as an independent check of ORE's if its tests are worth keeping
-([details/package-layout.md §3](details/package-layout.md#3-merges)).
 
 ---
 
@@ -1165,27 +940,6 @@ module-level jitted function of `TradePriceFunction.pricer` and `.terms`, as the
 fuses what ran op by op), so it shows the golden snapshot's change per array. Measured by the
 compile probe of profiling §3.8 on the demo's job.
 
-<a id="i-88"></a>
-### I-88 — The API completeness test checks field names, not that a value reaches the engine
-
-**Severity:** Low · **Status:** OPEN · **Category:** Tooling · **Found:** 2026-10-08, review
-of the API of 2026-10-07
-
-**What is wrong.** `tests/test_api_completeness.py` fails on a configuration setting without
-an API field of the same name, but it does not check what a schema's `.to_dataclass()` does
-with the field. A field that is accepted, then dropped or sent to the wrong setting, passes.
-
-**Reach.** Any setting not exercised by a route test that compares the HTTP result with a
-direct call (`tests/test_api_portfolio.py`, `tests/test_api_market_risk.py`,
-`tests/test_api.py`). Those cover the defaults and the commonly used settings, not every
-field. No such field is known to be dropped today.
-
-**Current handling.** The route tests above.
-
-**To close.** For every field the walk finds, build a request with that field set
-to a non-default value, convert it, and assert the value arrives in the engine's
-configuration. Red first: a schema that drops a field must fail the test.
-
 <a id="i-110"></a>
 ### I-110 — The documentation contradicts the code in places
 
@@ -1222,8 +976,8 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-03"></a>I-03 | No per-instrument NPV | `tests/test_portfolio_gap_fixes.py::TestPerTradeBaseNpv` |
 | <a id="i-06"></a>I-06 | American exercise ignored ORE's broken-period `couponRatio` (up to 6× off) | `tests/test_ore_lgm_parity.py`, `tests/test_bermudan_swaption.py::TestMidPeriodBermudanExercise` |
 | <a id="i-11"></a>I-11 | Risk measure unlabelled; no Monte Carlo error reported | `tests/test_risk_measure_label.py::TestPortfolioResultStatesItsMeasure` |
-| <a id="i-09"></a>I-09 | The whole scenario cube was serialized into the JSON response (a request now asks for it inline, as a chunked, hashed artifact reference, or not at all: `cube_output`, decision A-17) | `tests/test_api_portfolio.py::test_the_cube_by_reference_is_the_inline_cube_and_none_leaves_it_out`, `tests/test_api_artifacts.py` |
-| <a id="i-10"></a>I-10 (results) | Per-trade results were keyed by position beside the echoed ids (now one row per trade with its `trade_id`, the arrays' trade axes in that order) | `tests/test_api_portfolio.py::test_result_matches_direct_price_portfolio_call`, `tests/test_api_market_risk.py::test_the_result_equals_a_direct_run` |
+| <a id="i-09"></a>I-09 | The whole scenario cube was serialized into the JSON response (a request now asks for it inline, as a chunked, hashed artifact reference, or not at all: `cube_output`, decision A-17) | `tests/test_api_portfolio.py::test_arrays_by_reference_are_the_inline_arrays_and_none_leaves_them_out`, `tests/test_api_artifacts.py` |
+| <a id="i-10"></a>I-10 (results) | Per-trade results were keyed by position beside the echoed ids (now one row per trade with its `trade_id`, the arrays' trade axes in that order) | `tests/test_api_portfolio.py::test_the_result_equals_the_in_process_run`, `tests/test_api_market_risk.py::test_the_result_equals_the_in_process_run` |
 | <a id="i-10-configs"></a>I-10 (configs) | Trade configs had no identity (now a required `trade_id`, echoed as `PortfolioResult.trade_ids`) | `tests/test_trade_configs.py::TestEveryTradeNamesItselfAndItsDate`, `tests/test_pipeline.py::test_a_repeated_trade_id_is_refused` |
 | <a id="i-12"></a>I-12 | `/version` named the API process's backend, the only device a result could be attributed to (every result now carries a `PrecisionReport` built where the job ran: its devices, backend and the formats read from its arrays) | `tests/test_api_portfolio.py::test_a_result_carries_the_workers_precision_report`, `tests/test_precision_report.py::TestReport` |
 | <a id="i-13"></a>I-13 | A negative curve index priced against the wrong curve (trades now name a currency and index; a missing curve is refused before pricing, naming the trade) | `tests/test_portfolio_gap_fixes.py::TestCurveIndexValidatedBeforeAllPricing` |
@@ -1253,7 +1007,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-41"></a>I-41 | A European at zero mean reversion priced at intrinsic value (now refused) | `tests/test_jamshidian.py::TestConfiguration::test_non_positive_reversion_is_refused` |
 | <a id="i-42"></a><a id="m-1"></a>I-42 | Hull-White simulated curves were not arbitrage-free against the input curve (deflated 10y bond +6.8% at 2y on a 3→5% curve) | `tests/test_hull_white_model.py::TestCurveFittedDrift`, `tests/test_cam.py` |
 | <a id="i-43"></a><a id="m-3"></a>I-43 | Hull-White options were worth 0 after expiry instead of carrying the swap | `tests/test_pricing.py::test_an_exercised_physical_option_becomes_its_swap_and_a_cash_one_leaves` (both models) |
-| <a id="i-44"></a><a id="a-2"></a>I-44 | Hull-White scenario pricing mixed Hull-White and LGM | `tests/test_pricing.py::test_bermudan_on_every_path_equals_ore_recalibrated_on_the_path_curves` (both models), `tests/test_hull_white_model.py::TestOneModelOnePipeline` |
+| <a id="i-44"></a><a id="a-2"></a>I-44 | Hull-White scenario pricing mixed Hull-White and LGM | `tests/test_pricing.py::test_the_path_model_is_the_calibration_ore_built_the_trade_with` (both models), `tests/test_hull_white_model.py::TestOneModelOnePipeline` |
 | <a id="i-45"></a>I-45 | The Hull-White numeraire was a left-point bank account (E[1/N] +1.8% at 3y) | `tests/test_hull_white_model.py::TestExactNumeraire` |
 | <a id="i-46"></a>I-46 | Hull-White Europeans were priced off the model volatility, without Vega | `tests/test_hull_white_model.py::TestEuropeansOnTheMarketVolatility` |
 | <a id="i-47"></a>I-47 | Hull-White options calibrated to one caller basket, not their own | `tests/test_pricing.py::test_option_today_equals_ores_calibrated_grid_engine`, `tests/test_hull_white_model.py::TestOneModelOnePipeline` |
@@ -1261,16 +1015,16 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-49"></a>I-49 | Bermudans and Americans were recalibrated on every path and date, 0.5–4% above ORE's exposure simulation (and one decision in 160 cells the other way); ORE never recalibrates there (its `XvaAnalytic` gives the valuation engine no model builders) and keeps the LGM it calibrated when it built the trade on the simulation market of the as-of date, which the engine now keeps: ORE's cube to 1.9e-11 under either model (calibrated on today's market instead, 1e-5). Per-path recalibration, which no ORE analytic does, is removed (decision A-24) | `tests/test_ore_xva_parity.py::test_every_trades_cube_equals_ores_on_ores_paths` (the six option cases, strict expected failures before), `tests/test_pricing.py::test_the_path_model_is_the_calibration_ore_built_the_trade_with` |
 | <a id="i-50"></a>I-50 | Nothing compared the assembled simulation, cube or exposure with an ORE simulation (now an OREApp XVA oracle: its scenario dump rebuilds the engine's simulation market, swaps, Europeans and bonds equal ORE's cube path by path, the exposure definitions on ORE's cube are ORE's, and L4 holds; Bermudans/Americans wait on I-49) | `tests/test_ore_xva_parity.py` |
 | <a id="i-52"></a>I-52 | Cash settlement was priced as physical | `tests/test_pricing.py::test_a_cash_settled_european_uses_the_par_yield_annuity` |
-| <a id="i-56"></a>I-56 | Market risk and the CAM calibration had no route, and two routes were named like versions (now `POST /portfolio/market-risk` and `POST /calibration/cam`, one poll route for every job, `/v2/portfolio/price` and `schema_version` removed, and a test that fails on any setting without an API field; 2026-10-07, decision A-2) | `tests/test_api_market_risk.py`, `tests/test_api.py::TestCamCalibrationEndpoint`, `tests/test_api_completeness.py` |
+| <a id="i-56"></a>I-56 | Market risk and the CAM calibration had no route, and two routes were named like versions (now `POST /portfolio/market-risk` and `POST /calibration/cam`, one poll route for every job, `/v2/portfolio/price` and `schema_version` removed, and a test that fails on any setting without an API field; 2026-10-07, decision A-2) | `tests/test_api_market_risk.py`, `tests/test_api.py::TestTheCalibrationAnalytic`, `tests/test_api_completeness.py` |
 | <a id="i-57"></a>I-57 | TraderX: a cached result was served before the submission id's binding was checked, so an id reused for a cached workload came back with that workload's result (TraderX case A-02; now one atomic `AttemptStore.submit` checks the binding, then the cache, binds the id to whatever it returns, and records the binding durably first; 2026-10-10) | `tests/test_traderx_routes.py::TestTheSubmissionIdBindsBeforeAnyCacheReturn`, `::TestSubmissionIdCannotCrossWorkloads::test_store_level_conflict_raises_even_when_the_target_is_cached`, `tests/test_traderx_publication.py::TestSubmissionBindingsAreDurable` |
-| <a id="i-62"></a><a id="p-2"></a>I-62 | Hull-White Bermudan/American scenario pricing ran on the host (that pricer is removed; options are priced by the vectorized per-path engine) | `tests/test_pricing.py::test_bermudan_on_every_path_equals_ore_recalibrated_on_the_path_curves` |
+| <a id="i-62"></a><a id="p-2"></a>I-62 | Hull-White Bermudan/American scenario pricing ran on the host (that pricer is removed; options are priced by the vectorized per-path engine) | `tests/test_pricing.py::test_the_path_model_is_the_calibration_ore_built_the_trade_with` |
 | <a id="i-63"></a><a id="a-3"></a>I-63 | Hull-White trade configs carried copies of model parameters | `tests/test_trade_configs.py::TestEveryTradeNamesItselfAndItsDate::test_a_model_or_curve_on_the_trade_is_refused` |
 | <a id="i-64"></a><a id="a-4"></a>I-64 | A trade's evaluation date defaulted to ORE's thread-local global | `tests/test_trade_configs.py::TestEveryTradeNamesItselfAndItsDate::test_without_an_evaluation_date_it_is_refused` |
 | <a id="i-65"></a><a id="a-6"></a>I-65 | Demo data, the modules' `__main__` demos and the ORE test oracle shipped inside `engine/` (now `demos/`, `tests/support/`) | `tests/test_import_layering.py::test_engine_ships_no_demo_or_test_code` |
 | <a id="i-68"></a>I-68 | The Hull-White model was chosen by the market's type, not by the configuration (now `HullWhiteConfig` in `CamConfig.ir`) | `tests/test_run_config.py::TestEveryModelRunsWithEveryEngineAndMethod` |
-| <a id="i-69"></a>I-69 | The market path silently ignored `precision.pricing`/`risk`/`calibration`, `calibration_targets`, and a `base_currency` contradicting the simulation (now refused by name) | `tests/test_run_config.py::TestWhatThePipelineDoesNotImplementIsRefused`, `::TestConfigurationValues`, `tests/test_api_portfolio.py::test_an_unpriceable_request_is_a_400_and_no_job` |
+| <a id="i-69"></a>I-69 | The market path silently ignored `precision.pricing`/`risk`/`calibration`, `calibration_targets`, and a `base_currency` contradicting the simulation (now refused by name) | `tests/test_run_config.py::TestWhatThePipelineDoesNotImplementIsRefused`, `::TestConfigurationValues`, `tests/test_api_portfolio.py::test_an_unpriceable_request_is_a_400_and_no_run` |
 | <a id="i-70"></a>I-70 | Bump Theta of a bond maturing the next day raised `BondPricingError` (now redemption − NPV, as ORE) | `tests/test_portfolio_bond_wire_through.py::TestBondGreeksReachThePortfolioPath::test_a_bond_maturing_tomorrow_does_not_crash_the_greeks` |
-| <a id="i-71"></a>I-71 | A float32-tier worker turned x64 off, so its pricing and exposure ran in float32 where an in-process run used float64 | `tests/test_engine_worker.py::TestEngineWorkerPricing::test_jobs_queued_together_give_the_bits_of_jobs_run_one_after_another` (float64 and float32 jobs equal the direct call) |
+| <a id="i-71"></a>I-71 | A float32-tier worker turned x64 off, so its pricing and exposure ran in float32 where an in-process run used float64 | `tests/test_engine_worker.py::TestEngineWorkerPricing::test_runs_queued_together_give_the_bits_of_runs_one_after_another` (float64 and float32 jobs equal the direct call) |
 | <a id="i-72"></a>I-72 | HTTP jobs ran in a process pool that pickled each request with its ORE dates frozen as text, compiled every job shape once per worker, broke for every later job when one worker died (`BrokenProcessPool`), and would have needed chip pinning on TPU (now one engine worker per host behind a durable queue) | `tests/test_engine_worker.py` (`test_a_second_identical_job_compiles_nothing`, `test_a_failing_job_fails_only_its_own_row`, `test_a_worker_killed_mid_job_leaves_it_interrupted`, `test_the_worker_prices_the_request_the_route_validated`) |
 | <a id="i-73"></a>I-73 | A calibration that missed its basket was accepted unless a bucket hit the bracket's ceiling, and on a path not even then: a volatility dip after a spike priced at σ's floor (relative helper errors to 151), a zero volatility gave a NaN market value. Now ORE's acceptance on every bootstrap (the root mean square of the relative helper errors below `bootstrap_tolerance`, ORE's `Tolerance` and `BootstrapTolerance`, 1e-4 by default, one for the cross-asset model, decision A-24), a miss refused naming the trade or currency | `tests/test_calibration_acceptance.py` |
 | <a id="i-75"></a>I-75 | Storage below 32 bits kept few bits of a concentrated column's spread: FP8 put its bits on the level of a bond's cube (1e6 ± 1e4) or a long log discount factor, and every path of a block rounded alike, a bias more paths did not remove (now a concentrated block, one sign and the farthest entry at most three times the nearest, is stored as its deviations from its midpoint, `Precision.offset="block"`, the default; the storage harness measures every format, 2026-10-09) | `tests/test_precision_harness.py::test_a_bonds_fp8_cube_column_is_unbiased_with_block_offsets`, `tests/test_precision.py::TestBlockOffsets` |
@@ -1304,3 +1058,13 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="i-51"></a>I-51 | The sensitivities were never run against ORE's sensitivity analytic, and their Theta market kept each curve's discount factors fixed in dates where ORE's holds its tenor points at their times from the as-of date as the reference date moves (60-290% of every trade's Theta off ORE's); now every Delta, Gamma, Vega and Theta of the shared portfolio equals ORE's own analytic, run in-process, within 2e-14 of the trade's NPV, calibrated options recalibrated, and `SensitivityConfig.swaption_vol_decay`, which a simulated volatility does not read, is gone (2026-10-17) | `tests/test_sensitivity_ore_parity.py` (red first: all eight trades on Theta) |
 | <a id="i-78"></a>I-78 | The AD Greeks differentiated the market curves' pillars, not ORE's sensitivity market (a near-par swap's discount Delta 2% off the bump method's), and held a Bermudan's calibration where the bump recalibrates; now they are derivatives on ORE's sensitivity market with the calibration inside the price function (its implicit derivative on the whole basket), ORE's Greek as the shift vanishes for swaps, Europeans and bonds, and for a grid-priced option, whose price is piecewise smooth, labelled with the gap on the result (2026-10-17) | `tests/test_greeks.py::TestAgainstTheBumpMethod`, `tests/test_greeks_bermudan.py`, `tests/test_sensitivity_ore_parity.py::test_the_ad_greeks_are_ores_as_the_shift_vanishes` |
 | <a id="i-112"></a>I-112 | Market risk held a calibrated Bermudan's/American's LGM under every scenario where ORE's historical P&L recalibrates it (up to 0.19% of the value, flagged); now recalibrated on every scenario's curves, in float64, a scenario that misses refused, each scenario priced on its own model in difference form, equal to ORE recalibrating to 7e-11 (2026-10-17) | `tests/test_market_risk_ore_parity.py::test_every_scenario_revalues_as_ore_does[bermudan-recalibrated]`, `[american-recalibrated]` (red first: 89.4 off), `tests/test_market_risk.py::TestRecalibration` |
+| <a id="i-103"></a>I-103 | Malformed inputs were accepted: an unsorted curve priced silently wrong, a NaN rate or a negative pillar time priced, unequal times and rates failed inside the interpolation, a European expiry inside a leg's last accrual period raised a bare `StopIteration`, and four API models dropped unknown fields; now a curve's pillars are checked when built (`ZeroCurveConfig`), a live European entering no whole period is refused naming the trade and the dates (an expired one is worth nothing, as ORE builds no option; a Bermudan's empty exercise stays ORE's), every API model is strict, and PFE quantiles are checked (2026-10-18) | `tests/test_input_checks.py` (red first, measured: 50,679.68 for 51,133.41), `tests/test_run_request.py::TestTheCheckBeforeAnyWork::test_a_pfe_quantile_outside_the_unit_interval_or_repeated_is_refused` |
+| <a id="i-87"></a>I-87 | The HTTP API was one route per engine function: now one run request, `POST /runs` with `market`, `portfolio`, an `analytics` list and a `config` whose sections follow ORE's files, one result that says what each figure is (the configuration as run, the dates, the reporting currency, trade ids on every axis, each Greek's factors, each analytic's pricing settings, the engine's revision and its jax, jaxlib and ORE versions), the exercise decisions on request, `GET /config/defaults`, `?wait=` long polls, and `engine.run.run` in Python; the four routes and `/jobs` removed; a run of one analytic is its entry point's direct call, a run of several each alone (2026-10-18) | `tests/test_run_request.py::TestOneAnalyticIsItsEntryPoint`, `::test_a_run_of_several_analytics_equals_each_alone_and_compiles_nothing_more`, `tests/test_api.py::TestRunsOverHttp` |
+| <a id="i-88"></a>I-88 | The API completeness test checked field names only; now every field of every request schema set to a value other than its default must change its own setting of the engine's configuration and nothing else, and the run request's mapping onto `price_portfolio`, `run_market_risk` and the cross-asset model is checked field by field (2026-10-18) | `tests/test_api_completeness.py::test_every_fields_value_arrives_in_its_setting_and_only_there` (red: `::test_a_schema_that_drops_a_field_fails_the_value_check`) |
+| <a id="i-89"></a>I-89 | A retried submission ran twice; now an optional `idempotency_key`: the same key and body (its canonical JSON, defaults filled in) return the first run's id, another body is a `409` checked before anything is returned, and two API processes on one queue get one job (2026-10-18) | `tests/test_engine_worker.py::TestIdempotency`, `::TestRoutesOverTheQueue::test_a_retried_submission_is_the_same_run_and_another_body_a_409` |
+| <a id="i-95"></a>I-95 | A precision setting the run did not read was accepted, and echoed by its precision report; now refused, naming the field: any precision with no analytic that reads it (today's values, Greeks and calibration are float64, A-10), and by market risk its `market` stage and a `simulation.compute` other than its accumulate format; the precision demo's market-risk policy sets only the two stages it uses (2026-10-18) | `tests/test_run_request.py::TestTheCheckBeforeAnyWork::test_market_risk_refuses_the_precision_it_does_not_read`, `tests/test_api.py::TestPrecisionOnTheWire::test_a_precision_no_analytic_reads_is_a_400` |
+| <a id="i-94"></a>I-94 | The LGM was calibrated by two implementations: the standalone bootstrap (`calibrate_lgm_sigma`, its basket and Bachelier helper prices, `POST /calibration/lgm`) is removed with its tests, the run request's `calibration` analytic returning each currency's sigma, each helper's market and model value and ORE's calibration error; ORE's bootstrap is `engine.calibration.lgm` (2026-10-18) | `tests/test_api.py::TestTheCalibrationAnalytic`, `tests/test_ore_lgm_calibration.py` |
+| <a id="i-76"></a>I-76 | The job queue kept every job and result forever; now the worker purges, between jobs, the finished jobs older than `JAX_RISK_RETENTION_DAYS` (30 by default; `off` keeps every one) with their artifacts, never a run submitted with `keep` (2026-10-18) | `tests/test_engine_worker.py::TestCancelAndRetention`, `::TestWorkerLoop::test_the_worker_purges_finished_jobs_past_the_retention_period` |
+| <a id="i-77"></a>I-77 | A worker that could not start left jobs `pending` with no signal, and a start that raised was an error for a job already queued; now the supervisor records each child's exit, a pending run's status and `/health` say the worker cannot start (two failed starts running, or one it could not launch) with the tail of its output, and the submission is answered with the run's id (2026-10-18) | `tests/test_engine_worker.py::TestSupervisor`, `::TestRoutesOverTheQueue::test_a_worker_that_cannot_start_leaves_the_run_pending_with_the_reason` |
+| <a id="i-91"></a>I-91 | No job could be cancelled; now `POST /runs/{run_id}/cancel`: a pending run at once, a running one at its next phase boundary (each phase of the pipeline and of market risk, each trade's pricing and Greeks), the worker going on to the next run with its compiled programs (2026-10-18) | `tests/test_engine_worker.py::test_a_real_run_stops_at_the_phase_boundary_a_cancel_reaches`, `::TestWorkerLoop::test_a_job_cancelled_while_running_stops_at_its_next_phase_boundary`, `::TestRoutesOverTheQueue::test_cancelling_a_pending_run_and_a_finished_one` |
+| <a id="i-106"></a>I-106 | The queue's migration ran in autocommit statements, so a crash after its `ALTER` stopped the file opening (`duplicate column name: kind`), and the worker's lock was per queue file, so two queues on one host had two workers; now the migration (to schema 3) is one `BEGIN IMMEDIATE` transaction, and the lock is per host (`JAX_RISK_WORKER_LOCK` for another device set), recording the queue its worker serves, a run on another queue of the host refused with a `503` (2026-10-18) | `tests/test_engine_worker.py::TestMigration` (red first on the code before), `::TestRoutesOverTheQueue::test_a_host_whose_worker_serves_another_queue_refuses_the_run`, `::TestWorkerLoop::test_a_second_worker_on_the_host_exits_at_once` |

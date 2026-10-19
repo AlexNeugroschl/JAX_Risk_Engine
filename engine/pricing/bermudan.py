@@ -10,7 +10,7 @@ underlying's last payment date (`underlying_maturity`), struck at the deal strik
 (`CoterminalDealStrike`: the fixed rate less the float spread, to six decimals as ORE's builder
 writes it, `calibration_strike`) or ATM, at most one per interval of the reference grid
 (`IrModelBuilder::buildSwaptionBasket`). The LGM's volatility is bootstrapped to it
-(`engine.calibration.ore_lgm`), with the engine's constant reversion.
+(`engine.calibration.lgm`), with the engine's constant reversion.
 
 Every calibration on a market of the as-of date (today's, the simulation market's, a bumped
 one) is checked as ORE's `LgmBuilder` checks it, against the engine's `bootstrap_tolerance`
@@ -45,7 +45,7 @@ import jax.numpy as jnp
 import numpy as np
 import ORE
 
-from engine.calibration.ore_lgm import BasketInstrument, CalibrationError, bootstrap_sigma, build_basket, require_accepted
+from engine.calibration.lgm import BasketInstrument, CalibrationError, bootstrap_sigma, build_basket, require_accepted
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig, underlying_swap
 from engine.market_data.curves import DiscountCurve
@@ -167,7 +167,7 @@ class Calibration:
 def calibrate_on(cfg: OptionConfig, engine: LgmSwaptionEngineConfig, context: PricingContext) -> Optional[Calibration]:
     """The trade's LGM on the context's date, as a trade built on that date (None with
     `calibration="None"`, or when no exercise is left); a calibration that misses ORE's
-    acceptance is refused, naming the trade (`engine.calibration.ore_lgm.CalibrationError`), and
+    acceptance is refused, naming the trade (`engine.calibration.lgm.CalibrationError`), and
     so is a live option without a helper (an American whose window holds no date of the
     reference calibration grid), as ORE's `LgmBuilder` refuses to build it ("no calibrating
     swaption provided"; until 2026-10-18 the engine priced it on the uncalibrated volatility,

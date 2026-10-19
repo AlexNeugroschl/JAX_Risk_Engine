@@ -19,7 +19,7 @@ import numpy as np
 import ORE
 import pytest
 
-from engine.api.requests import MarketPortfolioRequestSchema
+from tests.support.runs import request_of, run_body
 from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
@@ -199,21 +199,20 @@ def test_a_short_options_pnl_is_minus_the_long_ones(stage):
 def _body(**european):
     trade = {"trade_type": "european_swaption", "notional": 2e6, "fixed_rate": 0.044, "payer": True,
              "swap_tenor": "5Y", "forward_start": "1Y", "trade_id": "e", **european}
-    return {"market": shared.market_json(), "trades": [trade], "scenario_risk": False}
+    return run_body(["npv"], [trade])
 
 
 def test_the_api_books_a_short_option_by_long_short():
-    request = MarketPortfolioRequestSchema(**_body(long_short="Short")).to_dataclass()
-    assert request.trades[0].long_short == "Short"
-    assert MarketPortfolioRequestSchema(**_body()).to_dataclass().trades[0].long_short == "Long"
+    assert request_of(_body(long_short="Short")).portfolio[0].long_short == "Short"
+    assert request_of(_body()).portfolio[0].long_short == "Long"
 
 
 def test_over_http_a_negative_option_notional_is_a_400_naming_the_trade(test_client):
-    r = test_client.post("/portfolio/price", json=_body(notional=-2e6))
+    r = test_client.post("/runs", json=_body(notional=-2e6))
     assert r.status_code == 400, r.text
     assert "trade 'e'" in r.json()["detail"] and "long_short='Short'" in r.json()["detail"]
 
 
 def test_over_http_an_unknown_position_is_a_422(test_client):
-    r = test_client.post("/portfolio/price", json=_body(long_short="Sell"))
+    r = test_client.post("/runs", json=_body(long_short="Sell"))
     assert r.status_code == 422 and "long_short" in r.text

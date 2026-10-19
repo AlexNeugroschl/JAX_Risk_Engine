@@ -20,6 +20,30 @@ risk-neutral measure, so its risk output is an exposure profile (EPE, ENE, PFE t
 time — [Exposure](../risk/exposure.md)), not a VaR. Short-horizon market-risk VaR/ES is
 `engine.risk.market.run_market_risk` ([Market Risk](../risk/market-risk.md)).
 
+## The run request: `run(RunRequest) -> RunResult`
+
+Since 2026-10-18 the one way in for every analytic, as ORE runs a portfolio with a list of
+analytics (I-87, [`engine/run/run_request.py`](../../engine/run/run_request.py)); the HTTP API's
+`POST /runs` is the same request ([HTTP API](http-api.md#the-run-request-post-runs)):
+
+```python
+from engine.run import ModelsConfig, RunRequest, RunRequestConfig, SimulationParameters, run
+
+config = RunRequestConfig(models=ModelsConfig(ir={"USD": HullWhiteConfig(0.03, 0.01)}),
+                          simulation=SimulationParameters(dates=dates, samples=1024))
+result = run(RunRequest(market, ("npv", "exposure", "sensitivities"), trades, config))
+result.portfolio.base_npv_per_trade, result.portfolio.exposure.epe, result.portfolio.greeks
+result.engine                     # EngineIdentity: version, git revision, jax, jaxlib, ORE
+```
+
+`npv`, `exposure` and `sensitivities` are one `price_portfolio` of the `PortfolioRequest` the
+run builds (`portfolio_request`: the cross-asset model is `config.models` on
+`config.simulation`'s grid, `config.cam()`), `market_risk` is `run_market_risk`, `calibration`
+is `calibrate_cam`, so a run of one analytic is its entry point's direct call. The whole request
+is checked first (`validate_run`): a section an analytic needs, and nothing given that no
+requested analytic reads (a precision with only today's values and Greeks, which are float64,
+is refused). The rest of this page is `price_portfolio`, which the run calls.
+
 ## `PortfolioRequest`
 
 | Field | Type | Default | Meaning |
