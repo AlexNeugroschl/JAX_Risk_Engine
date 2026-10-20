@@ -39,6 +39,7 @@ import numpy as np
 from engine.market_data.curves import ZeroCurve, discount
 from engine.market_data.market import Market
 from engine.market_simulation.config import build_cross_asset_model, simulate
+from engine.market_simulation.sharding import unused_devices_warning
 from engine.precision import (
     STAGES, Precision, PrecisionReport, RunFigures, evidence_warnings, format_name, load, paired_error_warning,
     realized_format,
@@ -108,6 +109,7 @@ def price_on_market(request) -> "PortfolioResult":
                                      uncertainty_method="independent_scrambles" if simulation.replicates > 1 else "unavailable")
         warnings = precision_warnings(run.precision, trades, scenarios.num_paths, request.pfe_quantiles,
                                        pricing_settings(run.pricing, trades), simulation.replicates)
+        warnings += [w for w in [unused_devices_warning(scenarios.num_paths, "paths")] if w]
     else:
         with phase("base_npv"):
             today = value_today(trades, market, base, run.pricing)

@@ -4,17 +4,17 @@ maps a name to a dtype, a bit count, a range or a kind of matrix product
 (docs/planning/details/precision.md §6.1); validation, the HTTP schema, storage, the matrix
 products and the report read it.
 
-| Name | Bits | Mantissa bits | Min normal exponent | Max | Array | Scaled when stored | Product | Shared terms | Storage | Compute |
-|---|---|---|---|---|---|---|---|---|---|---|
-| float64 | 64 | 52 | -1022 | 1.8e308 | yes | no | its dtype | 1 | yes | yes |
-| float32 | 32 | 23 | -126 | 3.4e38 | yes | no | its dtype | 1 | yes | yes |
-| float16 | 16 | 10 | -14 | 65,504 | yes | yes | its dtype | 2 | yes | yes |
-| bfloat16 | 16 | 7 | -126 | 3.4e38 | yes | yes | its dtype | 2 | yes | yes |
-| float8_e4m3fn | 8 | 3 | -6 | 448 | yes | yes | its dtype | 2 | yes | yes |
-| float8_e5m2 | 8 | 2 | -14 | 57,344 | yes | yes | its dtype | 2 | yes | yes |
-| tensorfloat32 | 32 | 10 | -126 | 3.4e38 | no | no | TensorFloat-32 | 2 | no | yes |
-| bfloat16_3x | 32 | 16 | -126 | 3.4e38 | no | no | three bfloat16 passes | 1 | no | yes |
-| `<name>_1x` | as `<name>` | | | | no | no | as `<name>` | 1 | no | yes |
+| Name | Bits | Mantissa bits | Min normal exponent | Max | Array | Scaled when stored | Product | Shared terms | Shared operand held in | Storage | Compute |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| float64 | 64 | 52 | -1022 | 1.8e308 | yes | no | its dtype | 1 | its dtype | yes | yes |
+| float32 | 32 | 23 | -126 | 3.4e38 | yes | no | its dtype | 1 | its dtype | yes | yes |
+| float16 | 16 | 10 | -14 | 65,504 | yes | yes | its dtype | 2 | its dtype | yes | yes |
+| bfloat16 | 16 | 7 | -126 | 3.4e38 | yes | yes | its dtype | 2 | its dtype | yes | yes |
+| float8_e4m3fn | 8 | 3 | -6 | 448 | yes | yes | its dtype | 2 | its dtype | yes | yes |
+| float8_e5m2 | 8 | 2 | -14 | 57,344 | yes | yes | its dtype | 2 | float8_e4m3fn | yes | yes |
+| tensorfloat32 | 32 | 10 | -126 | 3.4e38 | no | no | TensorFloat-32 | 2 | its dtype | no | yes |
+| bfloat16_3x | 32 | 16 | -126 | 3.4e38 | no | no | three bfloat16 passes | 1 | its dtype | no | yes |
+| `<name>_1x` | as `<name>` | | | | no | no | as `<name>` | 1 | as `<name>` | no | yes |
 
 An **array format** has a dtype of its own: values can be stored and accumulated in it. A
 **product format** is only a way of running a matrix product, a compute format only, never
@@ -34,6 +34,16 @@ first leaves), and its single pass is a product format of its own, `<name>_1x` (
 under another name, neither stored nor accumulated in, with one term. `bfloat16_3x` carries each
 operand in two bfloat16 terms already. `base` names the row whose grid, dtype and units a row's
 products use: itself, or the format a single pass is of.
+
+**The shared operand's dtype** (`shared_dtype`, I-97, 2026-10-19): FP8 matrix units take an e5m2
+operand only beside an e4m3 one (an NVIDIA GPU's: cuBLASLt multiplies two e5m2 operands on its
+other units, measured on an RTX 5060). So float8_e5m2's products hold the operand every path shares
+in e4m3: each of its terms keeps e5m2's 2-bit mantissa, scaled to e4m3's top and rounded on
+e4m3's subnormal spacing below e4m3's smallest normal number, a grid whose every value e4m3
+holds exactly; the per-path operand is e5m2's own. The one difference from e5m2 throughout is
+the shared operand's range: a value more than 2^-15 below its slice's largest is rounded on a
+coarser grid, a change below 2^-15 of the slice's largest, far below e5m2's own rounding (2^-3).
+Emulated or native, the products are these numbers (`engine.precision.products`).
 
 "Storage" and "compute" say whether each use is enabled, or name the planning item
 (docs/planning) whose work enables it; a format used before then is refused, naming the item
@@ -64,7 +74,9 @@ class Format:
     of the format such a product carries the operand every path shares in; `base`: the row whose
     grid, dtype and units its products use (see the module docstring).
     `storage_pending`/`compute_pending`: the planning item (docs/planning) whose work enables
-    the format for storage/compute, `None` once it is enabled."""
+    the format for storage/compute, `None` once it is enabled. `shared_dtype`: the format whose
+    range and dtype the operand every path shares is held in, `None` for its own (see the module
+    docstring)."""
     name: str
     dtype: np.dtype
     bits: int
@@ -78,6 +90,7 @@ class Format:
     base: str
     storage_pending: Optional[str]
     compute_pending: Optional[str]
+    shared_dtype: Optional[str] = None
 
     @property
     def below_float32(self) -> bool:
@@ -107,7 +120,8 @@ def _single_pass(row: Format) -> Format:
 
 
 _TWO_TERMS = (_row("float16", 16, scaled=True), _row("bfloat16", 16, scaled=True),
-              _row("float8_e4m3fn", 8, scaled=True), _row("float8_e5m2", 8, scaled=True),
+              _row("float8_e4m3fn", 8, scaled=True),
+              replace(_row("float8_e5m2", 8, scaled=True), shared_dtype="float8_e4m3fn"),
               _product_row("tensorfloat32", 10, shared_terms=2))
 
 #: Name -> format: the array formats widest first, then the product formats, the single passes
@@ -145,3 +159,13 @@ def name_of(dtype) -> str:
         if f.array and f.dtype == dtype:
             return f.name
     raise ValueError(f"dtype {dtype} is not a number format of the table")
+
+
+def shared_format(fmt: Format) -> Format:
+    """The grid and dtype a product in `fmt` holds the operand every path shares in: `fmt`'s own,
+    or its mantissa on the range and in the dtype of `fmt.shared_dtype` (see the module
+    docstring)."""
+    if fmt.shared_dtype is None:
+        return fmt
+    held = format_of(fmt.shared_dtype)
+    return replace(fmt, dtype=held.dtype, max=held.max, min_exponent=held.min_exponent)

@@ -58,15 +58,53 @@ class TestDeviceCount:
         assert shard_scenarios(array, axis=1) is array
 
 
+def _check_env(devices_per_host: int) -> dict:
+    """The environment of a sharding check: CPU devices (on a GPU host JAX would otherwise default to
+    its one GPU), `devices_per_host` XLA host devices each."""
+    env = {**os.environ, "XLA_FLAGS": f"--xla_force_host_platform_device_count={devices_per_host}",
+           "JAX_PLATFORMS": "cpu", "JAX_ENABLE_COMPILATION_CACHE": "false"}
+    env.pop(SCENARIO_DEVICES_ENV, None)
+    return env
+
+
 @pytest.mark.slow
 def test_four_devices_hold_the_scenarios_and_give_the_one_device_numbers():
-    # Four XLA host devices are CPU devices: on a GPU host JAX would otherwise default to its one GPU.
-    env = {**os.environ, "XLA_FLAGS": "--xla_force_host_platform_device_count=4", "JAX_PLATFORMS": "cpu"}
-    env.pop(SCENARIO_DEVICES_ENV, None)
-    completed = subprocess.run([sys.executable, "-m", "tests.support.sharding_check"], cwd=ROOT, env=env,
+    completed = subprocess.run([sys.executable, "-m", "tests.support.sharding_check"], cwd=ROOT, env=_check_env(4),
                                capture_output=True, text=True, timeout=1800)
     assert completed.returncode == 0, completed.stderr[-4000:]
-    runs = json.loads(completed.stdout)
+    _assert_split_runs(json.loads(completed.stdout))
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="JAX's CPU collectives (gloo) are built on Linux")
+def test_two_hosts_hold_the_scenarios_and_give_the_one_device_numbers():
+    """The same runs on two hosts of two devices each (I-61): two processes of a `jax.distributed`
+    cluster on localhost, every host running each run, the scenarios split across all four
+    devices; the one-device run is each host's alone."""
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("localhost", 0))
+        port = s.getsockname()[1]
+    processes = []
+    for host in range(2):
+        env = {**_check_env(2), "JAX_CPU_COLLECTIVES_IMPLEMENTATION": "gloo",
+               "JAX_RISK_COORDINATOR": f"localhost:{port}", "JAX_RISK_NUM_PROCESSES": "2",
+               "JAX_RISK_PROCESS_ID": str(host)}
+        processes.append(subprocess.Popen([sys.executable, "-m", "tests.support.sharding_check"], cwd=ROOT, env=env,
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+    outputs = [p.communicate(timeout=3600) for p in processes]
+    for p, (_, err) in zip(processes, outputs):
+        assert p.returncode == 0, err[-4000:]
+    runs = json.loads(outputs[0][0].strip().splitlines()[-1])   # after the collectives' own lines
+    assert runs.pop("hosts") == 2
+    _assert_split_runs(runs)
+
+
+def _assert_split_runs(runs: dict) -> None:
+    """Every run of `tests/support/sharding_check.py` holds its result on all four devices and
+    equals its one-device run to the rounding a smaller batch shape moves."""
+    runs.pop("hosts", None)
     assert runs.pop("device_count") == 4
     for name, run in runs.items():
         one, split = run["one"], run["split"]

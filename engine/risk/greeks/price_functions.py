@@ -22,17 +22,22 @@ market risk revalues under shocked curves (`engine.risk.market`).
                  caller jits it with `pricer` static and compiles once per product and shape,
                  not per trade or call (`engine.risk.greeks.ad`)
         .pnl     `pnl(terms, curves, quotes, moves, arithmetic)`, each scenario's change of the
-                 price when the node values of `curves` move by `moves.shifts` (`[S, K]` per
-                 curve), every product in difference form (F-07): computed as the deviation from
-                 the level in the matrix products of `arithmetic` (the legs'
-                 `engine.pricing.legs.leg_values`, the grid engine's
+                 price when `curves` move by `moves.shifts` (each curve's node deviation
+                 `[S, K]`, `nodes[i].deviation` of a move of its node values) and the quotes by
+                 `moves.quotes` (`[S, ...]`, or None: held), every product in difference form
+                 (F-07): computed as the deviation from the level in the matrix products of
+                 `arithmetic` (the legs' `engine.pricing.legs.leg_values`, the grid engine's
                  `engine.pricing.lgm_grid.option_values`), so a move of nothing is exactly 0
-                 and the legs' cancellation stays in the level
+                 and the legs' cancellation stays in the level. What market risk's scenarios and
+                 the bump Greeks' shifts revalue (`engine.risk.greeks.scenario_pnl`)
         .calibration
                  for an option whose engine calibrates its LGM, `calibration(terms, curves,
-                 quotes, shifts)`: the LGM recalibrated under each scenario, `(values [S, n],
+                 quotes, moves)`: the LGM recalibrated under each scenario, `(values [S, n],
                  misses [S])` in float64 (A-10), which `pnl` then reads as `moves.models`; None
                  for every other trade
+        .stages  for that option, its price in two stages (`Stages`: the calibration's buckets,
+                 then the grid engine on them), each differentiated in a program of its own by
+                 the AD Greeks; None for every other trade
 
 **The curves' nodes.** A curve is a function of its node values, and the representation is the
 analytic's: market risk shocks the market curves' pillar zero rates (`PillarNodes`: ORE's
@@ -54,11 +59,12 @@ analysis and historical P&L recalibrate its model builder under every shift and 
 and the quotes, in float64 whatever the curves' dtype (decision A-10), then the grid engine with
 the calibrated volatility. Its derivatives are the implicit function theorem's through every
 bucket, so a Delta moves the calibration with the curve and a Vega moves it with the quotes.
-Under market-risk scenarios the calibration is a first pass (`calibration`, refused by the
-revaluation where a scenario's misses ORE's acceptance), and the P&L of each scenario its own
-induction (`recalibrated_pnl`): the scenario's model on the base curves is its level, the
-curves' move its deviation in the compute format. An option on a fixed model (`calibration =
-"None"`) prices with it everywhere; its P&L's level is shared by every scenario.
+Under market-risk scenarios and the bump Greeks' shifts the calibration is a first pass
+(`calibration`, refused by the revaluation where a scenario's misses ORE's acceptance), and the
+P&L of each scenario its own induction (`recalibrated_pnl`): the scenario's model on the base
+curves is its level, the curves' move its deviation in the compute format. An option on a fixed
+model (`calibration = "None"`) prices with it everywhere; its P&L's level is shared by every
+scenario.
 
 An option's price is in its position (`long_short`, ORE's `LongShort`): its engine prices the
 long option and `OnPosition` multiplies by the position's sign, carried in its `Positioned`
@@ -118,6 +124,12 @@ class PillarNodes:
     def curve(self, rates) -> ZeroCurve:
         return ZeroCurve(pillar_times=self.times, pillar_rates=rates)
 
+    @staticmethod
+    def deviation(moves):
+        """The curve's node deviation (`with_node_deviation`) when its node values move by
+        `moves` `[..., K]`: the moves themselves, the node values being the curve's."""
+        return moves
+
     def tree_flatten(self):
         return (self.times,), None
 
@@ -136,8 +148,13 @@ class TenorNodes:
     times: Any
 
     def curve(self, rates) -> DiscountCurve:
-        return DiscountCurve(self.times, jnp.concatenate([jnp.zeros_like(rates[..., :1]), -rates * self.times[1:]],
-                                                         axis=-1))
+        return DiscountCurve(self.times, self.deviation(rates))
+
+    def deviation(self, moves):
+        """The curve's node deviation (`with_node_deviation`, its log discount factors `[..., K + 1]`)
+        when its node values move by `moves` `[..., K]`: `ln P(t_k)` by `-move_k t_k`, `ln P(0)`
+        by nothing. Linear, so a curve is the deviation of its rates from none."""
+        return jnp.concatenate([jnp.zeros_like(moves[..., :1]), -moves * self.times[1:].astype(moves.dtype)], axis=-1)
 
     def tree_flatten(self):
         return (self.times,), None
@@ -165,11 +182,15 @@ def curves_on(nodes: Sequence, rates: Sequence) -> Tuple:
 # The price function
 # ---------------------------------------------------------------------------
 class Moves(NamedTuple):
-    """Each scenario's market-risk move, its leading axis the scenarios: the node values' shift
-    of each curve `[S, K]`, and the LGM volatilities an option recalibrated under the scenario
-    `[S, n]` (float64; None for every other trade)."""
+    """Each scenario's move of the market, its leading axis the scenarios: each curve's node
+    deviation `[S, K]` (`with_node_deviation`: the pillar rates' shift of a market-risk scenario,
+    a bumped tenor's log discount factor), the LGM volatilities an option recalibrated under the
+    scenario `[S, n]` (float64; None for every other trade), and the quotes' shift
+    `[S, option tenors, swap tenors]` (float64; None where the quotes are held, as market risk
+    holds them: a Vega bump moves them)."""
     shifts: Tuple
     models: Optional[jax.Array] = None
+    quotes: Optional[jax.Array] = None
 
 
 @dataclass(frozen=True)
@@ -183,6 +204,7 @@ class TradePriceFunction:
     terms: Any
     pnl: Callable
     calibration: Optional[Callable] = None
+    stages: Optional["Stages"] = None
 
     def price(self, *rates, quotes=None):
         return self.pricer(self.terms, curves_on(self.nodes, rates), self.quotes if quotes is None else quotes)
@@ -265,8 +287,9 @@ def trade_price_function(cfg, market: Market, pricing: PricingConfig = PricingCo
         terms = option_terms(cfg, engine, context, market, dtype)
         if terms.calibration is None:
             return positioned(option_price, terms, option_pnl)
-        price = CalibratedOptionPrice(engine.reversion, engine.solver)
-        return positioned(price, terms, recalibrated_pnl, ScenarioCalibration(price))
+        model = CalibratedModel(engine.reversion, engine.solver)
+        fn = positioned(CalibratedOptionPrice(model), terms, recalibrated_pnl, ScenarioCalibration(model))
+        return dataclasses.replace(fn, stages=Stages(OnTerms(model), OnPosition(option_on_model)))
     raise TypeError(f"no price function for {type(cfg).__name__}")
 
 
@@ -288,18 +311,27 @@ def _deviations(terms_legs: Legs, shifts) -> Deviations:
     return Deviations(discount, index, jnp.zeros(discount.shape[:-1] + terms_legs.float_pay.shape, discount.dtype))
 
 
-def _changed(level_value, shocked_value, shifts):
+def _changed(level_value, shocked_value, moves: Moves):
     """`shocked - level` per scenario, exactly 0 where nothing moved (rather than the difference
     of one value evaluated twice, which XLA may round apart)."""
-    return jnp.where(_moved(shifts), shocked_value - level_value, 0.0)
+    return jnp.where(_moved(moves), shocked_value - level_value, 0.0)
 
 
-def _moved(shifts):
-    """`[S]`: whether any node of any curve moves in the scenario."""
-    moved = jnp.zeros(shifts[0].shape[:-1], dtype=bool)
-    for shift in shifts:
+def _moved(moves: Moves):
+    """`[S]`: whether any node of any curve, or any quote, moves in the scenario."""
+    moved = jnp.zeros(moves.shifts[0].shape[:-1], dtype=bool)
+    for shift in moves.shifts:
         moved = moved | jnp.any(shift != 0, axis=-1)
+    if moves.quotes is not None:
+        moved = moved | jnp.any(moves.quotes != 0, axis=(-2, -1))
     return moved
+
+
+def moved_quotes(quotes, moves: Moves):
+    """The quotes in each scenario `[S, ...]` (float64), or the quotes themselves where the
+    scenarios hold them."""
+    quotes = jnp.asarray(quotes, dtype=jnp.float64)
+    return quotes if moves.quotes is None else quotes + jnp.asarray(moves.quotes, dtype=jnp.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +394,7 @@ class JamshidianPnl:
         deviations = _deviations(terms.legs, moves.shifts)
         p_bond, p_start = jamshidian_discounts(terms, disc, 0.0, deviations.discount)
         return _changed(jamshidian_npv(terms, self.model, disc, 0.0),
-                        jamshidian_on_discounts(terms, self.model, p_bond, p_start, 0.0, arithmetic), moves.shifts)
+                        jamshidian_on_discounts(terms, self.model, p_bond, p_start, 0.0, arithmetic), moves)
 
 
 class BachelierTerms(NamedTuple):
@@ -402,16 +434,20 @@ def bachelier_price(terms: BachelierTerms, curves, quotes):
 
 
 def bachelier_pnl(terms: BachelierTerms, curves, quotes, moves: Moves, arithmetic: Arithmetic):
-    """The European's t=0 NPV's change under the moves of the node values, the quotes held: the
+    """The European's t=0 NPV's change under the moves of the node values and of the quotes: the
     exercise-into swap's values in difference form (`european_legs`), the Bachelier formula at
-    the level and on each scenario in the accumulate format."""
+    the level and on each scenario, with the scenario's variance (`moved_quotes`), in the
+    accumulate format."""
     disc, index = curves
     deviations = _deviations(terms.terms.legs, moves.shifts)
     level, moved = european_legs(terms.terms, disc, index, 0.0, terms.projected, terms.known_rates, deviations,
                                  arithmetic)
-    variance = terms.variance(quotes, curve_dtype(disc))
+    dtype = curve_dtype(disc)
+    variance = terms.variance(quotes, dtype)
+    moved_variance = variance if moves.quotes is None else \
+        jax.vmap(lambda q: terms.variance(q, dtype))(moved_quotes(quotes, moves))
     return _changed(bachelier_on_legs(terms.terms, level, variance),
-                    bachelier_on_legs(terms.terms, on_path(level, moved), variance), moves.shifts)
+                    bachelier_on_legs(terms.terms, on_path(level, moved), moved_variance), moves)
 
 
 def vol_point(cfg: SwaptionConfig, market: Market) -> Tuple[float, float]:
@@ -490,10 +526,10 @@ def option_pnl(terms: OptionTerms, curves, _quotes, moves: Moves, arithmetic: Ar
 
 
 @dataclass(frozen=True)
-class CalibratedOptionPrice:
-    """`(terms, curves, quotes) -> NPV` of an option whose LGM is calibrated on the curves and
-    quotes it is priced on (see the module docstring), with the engine's constant `reversion`
-    and root `solver`: a pricer equal for equal settings. The calibration is
+class CalibratedModel:
+    """`(terms, curves, quotes) -> values [n]`: the buckets of an option's LGM calibrated on the
+    curves and quotes it is priced on (see the module docstring), with the engine's constant
+    `reversion` and root `solver`: equal for equal settings. The calibration is
     `engine.calibration.lgm.calibrated_values`, whose derivatives are the implicit function
     theorem's on the whole basket."""
     reversion: float
@@ -501,39 +537,83 @@ class CalibratedOptionPrice:
 
     def __call__(self, terms: OptionTerms, curves, quotes):
         calibration = terms.calibration
-        values = calibrated_values(calibration.basket, *self.market(calibration, curves, quotes), calibration.dt,
-                                   self.reversion, self.solver)
-        return grid_value(_on(terms, curves, values), terms.rows)
+        return calibrated_values(calibration.basket, *self.market(calibration, curves, quotes), calibration.dt,
+                                 self.reversion, self.solver)
 
     @staticmethod
     def market(calibration: CalibrationTerms, curves, quotes):
         """`(disc, index, vols)`: the calibration's market in float64 (A-10), the helpers'
-        volatilities read on the quotes."""
+        volatilities read on the quotes `[..., option tenors, swap tenors]` (any batch axes, the
+        curves' too)."""
         disc, index = (jax.tree_util.tree_map(lambda a: jnp.asarray(a, dtype=jnp.float64), c) for c in curves)
         # The surface is bilinear in the quotes: each helper's volatility is a weighted sum of them.
-        vols = jnp.sum(calibration.weights * jnp.asarray(quotes, dtype=jnp.float64), axis=(-2, -1))
+        quotes = jnp.asarray(quotes, dtype=jnp.float64)[..., None, :, :]
+        vols = jnp.sum(calibration.weights * quotes, axis=(-2, -1))
         return disc, index, vols
+
+
+def option_on_model(terms: OptionTerms, curves, values):
+    """`(terms, curves, values) -> NPV` on the grid engine, its LGM's buckets `values`."""
+    return grid_value(_on(terms, curves, values), terms.rows)
+
+
+@dataclass(frozen=True)
+class CalibratedOptionPrice:
+    """`(terms, curves, quotes) -> NPV` of an option whose LGM is calibrated on the curves and
+    quotes it is priced on: `option_on_model` on its `model`'s buckets. A pricer equal for equal
+    settings."""
+    model: CalibratedModel
+
+    def __call__(self, terms: OptionTerms, curves, quotes):
+        return option_on_model(terms, curves, self.model(terms, curves, quotes))
+
+
+class Stages(NamedTuple):
+    """A price in two stages, each a callable on the price function's terms equal for equal
+    settings, so each stage's derivatives are a program of their own (`engine.risk.greeks.ad`):
+    `model(terms, curves, quotes) -> values` (an option's calibration) and
+    `priced(terms, curves, values) -> NPV` (its grid engine on those values), the price being
+    `priced(terms, curves, model(terms, curves, quotes))`."""
+    model: Callable
+    priced: Callable
+
+
+@dataclass(frozen=True)
+class OnTerms:
+    """`f` of an option's terms whatever its position: `f(terms.terms, ...)` on `Positioned`
+    terms (a calibration, which the position does not move)."""
+    f: Callable
+
+    def __call__(self, terms: Positioned, *args):
+        return self.f(terms.terms, *args)
 
 
 @dataclass(frozen=True)
 class ScenarioCalibration:
-    """`(terms, curves, quotes, shifts) -> (values [S, n], misses [S])`: an option's LGM
-    recalibrated under each scenario's moves of the node values, the quotes held, in float64
-    (A-10), and whether each calibration misses ORE's acceptance, as ORE's historical P&L
-    recalibrates its model builders (I-112). The values reach `recalibrated_pnl` as
-    `Moves.models`."""
-    price: CalibratedOptionPrice
+    """`(terms, curves, quotes, moves) -> (values [S, n], misses [S])`: an option's LGM
+    recalibrated under each scenario's moves of the node values and of the quotes
+    (`moved_quotes`; market risk holds them), in float64 (A-10), and whether each calibration
+    misses ORE's acceptance, as ORE's historical P&L and sensitivity analysis recalibrate their
+    model builders (I-112). The values reach `recalibrated_pnl` as `Moves.models`.
 
-    def __call__(self, terms: Positioned, curves, quotes, shifts):
-        calibration = terms.terms.calibration
+    Mapped over the scenarios (`jax.vmap`) outside any jit of its own, so each bucket of the
+    bootstrap stays its own program per helper shape and batch (`engine.calibration.lgm.bootstrap`),
+    shared by every option whose basket has a helper of that shape: in one program the whole
+    basket compiled for 4 s an option (2026-10-19)."""
+    model: CalibratedModel
 
-        def one(*shift):
+    def __call__(self, terms: Positioned, curves, quotes, moves: Moves):
+        calibration, model = terms.terms.calibration, self.model
+
+        def one(shift, scenario_quotes):
             moved = tuple(with_node_deviation(c, s) for c, s in zip(curves, shift))
-            values, market, model, hit = bootstrap(calibration.basket, *self.price.market(calibration, moved, quotes),
-                                                   calibration.dt, self.price.reversion, self.price.solver)
-            return values, calibration_misses(market, model, hit, calibration.tolerance)
+            values, market, fitted, hit = bootstrap(calibration.basket,
+                                                    *model.market(calibration, moved, scenario_quotes),
+                                                    calibration.dt, model.reversion, model.solver)
+            return values, calibration_misses(market, fitted, hit, calibration.tolerance)
 
-        return jax.vmap(one)(*shifts)
+        return jax.vmap(one, in_axes=(0, None if moves.quotes is None else 0))(moves.shifts,
+                                                                                moved_quotes(quotes, moves))
 
 
 def recalibrated_pnl(terms: OptionTerms, curves, _quotes, moves: Moves, arithmetic: Arithmetic):
@@ -560,4 +640,4 @@ def recalibrated_pnl(terms: OptionTerms, curves, _quotes, moves: Moves, arithmet
         return level, moved[0]
 
     level, moved = jax.vmap(one)(moves.models, shifts[0], shifts[-1], ids)
-    return jnp.where(_moved(shifts), add_level(level - base, moved), 0.0)
+    return jnp.where(_moved(moves), add_level(level - base, moved), 0.0)

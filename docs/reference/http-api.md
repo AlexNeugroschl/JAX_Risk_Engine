@@ -373,9 +373,19 @@ Since 2026-10-04 (decision A-14; [details/precision.md §11](../planning/details
   simulation's paths, market risk's shocks) are split across the host's devices
   (`engine/market_simulation/sharding.py`): as many devices as divide the scenario count evenly,
   at most `JAX_RISK_SCENARIO_DEVICES` if set (`1` keeps a run on one device). The result's
-  precision reports list the devices. Several hosts (a TPU pod slice) are not yet supported
-  ([I-61](../planning/known-issues.md#i-61)). Priorities between callers are not planned until
-  there are several callers.
+  precision reports list the devices, and a run on fewer devices than it has (a scenario count
+  without a fitting divisor: a power of two uses them all) says so in its warnings. Priorities
+  between callers are not planned until there are several callers.
+- **On a TPU pod slice, one worker per host** (I-61). Start `jax-risk-worker --distributed --queue
+  PATH` on every host (`JAX_RISK_WORKER=external`; the API beside process 0, whose disk holds the
+  queue). The workers join one `jax.distributed` cluster, detected by JAX on a Cloud TPU VM or
+  given by `JAX_RISK_COORDINATOR` (`host:port` of process 0), `JAX_RISK_NUM_PROCESSES` and
+  `JAX_RISK_PROCESS_ID`. Process 0 claims each run and every host runs it, the scenarios split
+  across every host's devices; a cancel stops every host at the same phase boundary. A failure
+  the request determines fails the run as on one host; any other stops every worker of the set
+  (their supervisor restarts them), and the restarted process 0 runs the run again once, whole:
+  claimed a second time and stopped again, it is `interrupted`. Process 0 alone purges finished
+  runs.
 
 **The TraderX path keeps its own store.** `POST /eod/price` publishes every *terminal* attempt
 through a crash-safe filesystem store (`engine/traderx/publication.py`), so an EOD result

@@ -120,6 +120,14 @@ choice, made in the environment before the process first opens the GPU:
 | The test suite | `false` (`tests/conftest.py`), unless set | Added (`tests/conftest.py`), unless set |
 | Your own script or notebook | JAX's default; set `false` to share the card | JAX's default; set the flag for reproducible bits |
 
+**Native FP8 on a GPU** (I-97). XLA's own GEMM emitter (Triton) computes a GPU's FP8 matrix
+products wrong, so the engine emulates FP8 there, exactly, unless the process sends its products
+to cuBLAS, whose FP8 path is right: set `XLA_FLAGS=--xla_gpu_enable_triton_gemm=false` (beside the
+determinism flag) for the worker, a script or a timing run, and a GPU from compute capability 8.9
+runs FP8 natively, as each result's precision report says. Not the default: cuBLAS ran the
+engine's float64 jobs 15% slower on the RTX 5060. Check a new card or jax with
+`python -m tests.support.precision_devices --platform gpu`, with and without the flag.
+
 **Device memory.** XLA's default is to take 75% of a GPU's memory in every process that opens
 it, which leaves nothing for a second process: on WSL2 the default's 6 GB request failed on the
 8 GB card while another process held it, and XLA logged out-of-memory errors until a 4 GB one

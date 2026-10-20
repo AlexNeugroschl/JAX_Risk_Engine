@@ -31,11 +31,18 @@ in the table, so two API processes racing on one key get one job.
 artifacts, but never a job submitted with `keep`; the worker applies the policy between jobs
 (`retention_seconds`, from `JAX_RISK_RETENTION_DAYS`).
 
-**The schema** is at version 3 (2026-10-18). Versions 1 and 2 (the per-route jobs of 2026-10-04
-and 2026-10-07) are migrated in place in one `BEGIN IMMEDIATE` transaction (I-106), so a crash
-or a second process mid-migration leaves the file at its old version, intact. Their rows keep
-their kinds (`LEGACY_KINDS`): their results stay readable, and a job of theirs that had not run
-is marked `interrupted` (its route was removed, so no worker runs it).
+**The schema** is at version 4 (2026-10-19: each job's `attempts`, how many times a worker has
+claimed it). Versions 1 to 3 (the per-route jobs of 2026-10-04 and 2026-10-07, the run requests
+of 2026-10-18) are migrated in place in one `BEGIN IMMEDIATE` transaction (I-106), so a crash or
+a second process mid-migration leaves the file at its old version, intact. The rows of versions
+1 and 2 keep their kinds (`LEGACY_KINDS`): their results stay readable, and a job of theirs that
+had not run is marked `interrupted` (its route was removed, so no worker runs it).
+
+**A worker that stopped mid-job** (`interrupt_running`): its job is `interrupted` and never run
+again, so a job that kills its worker cannot crash-loop it; but a worker set of several hosts
+(`engine.api.hosts`) stops whole when one of its hosts fails, likely for a reason of that host's
+(I-61), so its job is put back once and run again whole (`MAX_ATTEMPTS`), unless a cancel had
+reached it.
 
 **One engine worker per host** (decision A-14, I-106): the worker holds `WorkerLock` on one path
 per host (`worker_lock_path`: `JAX_RISK_WORKER_LOCK`, else a fixed path in the system temp
@@ -93,10 +100,14 @@ INTERRUPTED_ERROR = ("the engine worker stopped while running this job (killed, 
 RETIRED_ROUTE_ERROR = ("this job was submitted to a route that was removed on 2026-10-18 and never ran; "
                        "submit it as a run request (POST /runs)")
 CANCELLED_PENDING = "cancelled before it started"
+CANCELLED_STOPPED = "cancelled: the engine worker stopped before the cancel's phase boundary"
+#: How many times a job may be claimed when its worker set may run it again (`requeue_running`):
+#: once, and once more after a host of the set failed.
+MAX_ATTEMPTS = 2
 
 # `UPDATE ... RETURNING` makes the claim one atomic statement.
 _MIN_SQLITE = (3, 35, 0)
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _in(values) -> str:
@@ -121,7 +132,8 @@ CREATE TABLE {{name}} (
     idempotency_key  TEXT    UNIQUE,                     -- the caller's key, if any (I-89)
     request_sha256   TEXT,                               -- the canonical body's hash, with a key
     cancel_requested INTEGER NOT NULL DEFAULT 0,         -- a cancel reached it while running (I-91)
-    keep             INTEGER NOT NULL DEFAULT 0          -- exempt from retention (I-76)
+    keep             INTEGER NOT NULL DEFAULT 0,         -- exempt from retention (I-76)
+    attempts         INTEGER NOT NULL DEFAULT 0          -- times a worker claimed it (I-61)
 )"""
 _INDEXES = ("CREATE INDEX IF NOT EXISTS jobs_by_status ON jobs (status, seq)",
             "CREATE INDEX IF NOT EXISTS jobs_by_finished ON jobs (finished)")
@@ -139,18 +151,22 @@ _V1_COLUMNS = "id, request, status, failure_class, error, result, worker, compil
 
 def migration_statements(version: int) -> Tuple[str, ...]:
     """The statements that bring a file at schema `version` (0: new) to `SCHEMA_VERSION`, run in
-    one transaction by `JobQueue`. A version-1 or -2 file's table is rebuilt (SQLite cannot widen
-    a CHECK in place): its rows copied with their kinds, a job of theirs that never ran marked
-    `interrupted` (`RETIRED_ROUTE_ERROR`)."""
+    one transaction by `JobQueue`. A version-3 file gains the `attempts` column (each of its
+    jobs claimed as many times as it has started, once at most). A version-1 or -2 file's table
+    is rebuilt (SQLite cannot widen a CHECK in place): its rows copied with their kinds, a job of
+    theirs that never ran marked `interrupted` (`RETIRED_ROUTE_ERROR`)."""
     if version == 0:
         return (_JOBS.format(name="jobs"), *_INDEXES, _ARTIFACTS)
+    if version == 3:
+        return ("ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+                "UPDATE jobs SET attempts = 1 WHERE started IS NOT NULL")
     kind = "'portfolio'" if version == 1 else "kind"
     return (
-        _JOBS.format(name="jobs_v3"),
-        f"INSERT INTO jobs_v3 (seq, kind, {_V1_COLUMNS}) SELECT seq, {kind}, {_V1_COLUMNS} FROM jobs ORDER BY seq",
+        _JOBS.format(name="jobs_v4"),
+        f"INSERT INTO jobs_v4 (seq, kind, {_V1_COLUMNS}) SELECT seq, {kind}, {_V1_COLUMNS} FROM jobs ORDER BY seq",
         "DROP INDEX IF EXISTS jobs_by_status",
         "DROP TABLE jobs",
-        "ALTER TABLE jobs_v3 RENAME TO jobs",
+        "ALTER TABLE jobs_v4 RENAME TO jobs",
         *_INDEXES,
         _ARTIFACTS,
         f"UPDATE jobs SET status = '{INTERRUPTED}', error = '{RETIRED_ROUTE_ERROR}', finished = submitted "
@@ -208,18 +224,19 @@ class Job:
     finished: Optional[float] = None
     cancel_requested: bool = False
     keep: bool = False
+    attempts: int = 0
 
 
 _COLUMN_NAMES = ("id", "kind", "status", "request", "failure_class", "error", "result", "worker", "compiles",
-                 "submitted", "started", "finished", "cancel_requested", "keep")
+                 "submitted", "started", "finished", "cancel_requested", "keep", "attempts")
 _COLUMNS = ", ".join(_COLUMN_NAMES)
 #: `_COLUMNS` without the two that can be large: the request and the result document.
 _SUMMARY_COLUMNS = ", ".join("NULL" if c in ("request", "result") else c for c in _COLUMN_NAMES)
 
 
 def _job(row) -> Job:
-    *head, cancel_requested, keep = row
-    return Job(*head, cancel_requested=bool(cancel_requested), keep=bool(keep))
+    *head, cancel_requested, keep, attempts = row
+    return Job(*head, cancel_requested=bool(cancel_requested), keep=bool(keep), attempts=attempts)
 
 
 class IdempotencyConflict(ValueError):
@@ -250,9 +267,9 @@ class JobQueue:
             # then finds the file at the current version.
             version = con.execute("PRAGMA user_version").fetchone()[0]
             if version != SCHEMA_VERSION:
-                if version not in (0, 1, 2):
+                if version not in (0, 1, 2, 3):
                     raise RuntimeError(f"{self.path}: job queue schema version {version}, this engine reads "
-                                       f"{SCHEMA_VERSION} (and migrates 1 and 2); move the file aside")
+                                       f"{SCHEMA_VERSION} (and migrates 1 to 3); move the file aside")
                 for statement in migration_statements(version):
                     con.execute(statement)
                 con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -342,9 +359,9 @@ class JobQueue:
 
     def claim(self, worker: str) -> Optional[Job]:
         """Mark the oldest pending job `running` for `worker` and return it, or None if none is
-        pending. One statement, so two claimers can never take the same row."""
+        pending, counting the attempt. One statement, so two claimers can never take the same row."""
         rows = self._execute(
-            "UPDATE jobs SET status = ?, worker = ?, started = ? "
+            "UPDATE jobs SET status = ?, worker = ?, started = ?, attempts = attempts + 1 "
             "WHERE seq = (SELECT seq FROM jobs WHERE status = ? ORDER BY seq LIMIT 1) "
             f"RETURNING {_COLUMNS}",
             (RUNNING, worker, time.time(), PENDING))
@@ -409,6 +426,17 @@ class JobQueue:
             (status, result, failure_class, error, compiles, time.time(), job_id, RUNNING))
         if not rows:
             raise RuntimeError(f"job {job_id} is not running; cannot mark it {status}")
+
+    def requeue_running(self) -> int:
+        """Put every `running` job claimed fewer than `MAX_ATTEMPTS` times back to `pending`, to
+        be run again whole, and mark one a cancel had reached `cancelled`; the number put back.
+        Called by the primary of a worker set of several hosts that has just started, before
+        `interrupt_running` closes the rest (see the module docstring)."""
+        with self._transaction() as con:
+            con.execute("UPDATE jobs SET status = ?, error = ?, finished = ? WHERE status = ? AND cancel_requested = 1",
+                        (CANCELLED, CANCELLED_STOPPED, time.time(), RUNNING))
+            return con.execute("UPDATE jobs SET status = ?, worker = NULL, started = NULL "
+                               "WHERE status = ? AND attempts < ?", (PENDING, RUNNING, MAX_ATTEMPTS)).rowcount
 
     def interrupt_running(self) -> int:
         """Mark every `running` job `interrupted`; the number marked. Called by a worker that

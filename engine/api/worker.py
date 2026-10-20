@@ -38,7 +38,19 @@ A worker started by `main` also runs deterministic GPU kernels, so a compiled jo
 same bits on every run (`deterministic_kernels_environment`, decision A-22): it appends
 `--xla_gpu_exclude_nondeterministic_ops=true` to its `XLA_FLAGS`, unless they name either XLA
 determinism flag. XLA has no per-computation switch, so it is set for the process whose
-results the engine vouches for; it changes nothing on a CPU.
+results the engine vouches for; it changes nothing on a CPU. A GPU's FP8 products run on its FP8
+units only where the operator sends its matrix products to cuBLAS
+(`XLA_FLAGS=--xla_gpu_enable_triton_gemm=false`, I-97), which the worker inherits and the engine
+reads (`engine.precision.products.cublas_gemms`); by default they are emulated, exactly, since
+cuBLAS slowed the engine's float64 products on an RTX 5060.
+
+**On a pod slice** (`--distributed`, I-61): one worker on every host, all running each job at
+once, as SPMD requires (`engine.api.hosts`). Process 0 alone serves the queue and hands each
+job to the others; each phase boundary's cancel is decided by process 0 for every host, so all
+stop at the same one; a failure the request determines is reported by every host, and any other
+stops the whole worker set, whose job the restarted process 0 runs again once. Each host holds
+its own worker lock; start every host's worker externally (`JAX_RISK_WORKER=external`), the API
+beside process 0.
 
 A failing job fails only its own row, with a failure class (`failure_class`) and the
 traceback; the worker goes on to the next job. A worker that dies mid-job leaves the row
@@ -71,6 +83,9 @@ from engine.api.job_queue import (
     BAD_TERMS, INFRASTRUCTURE, MISSING_MARKET_DATA, NUMERICAL_FAILURE, RUN, UNSUPPORTED_PRODUCT, Job, JobQueue,
     WorkerLock, default_queue_path, retention_seconds, worker_lock_path,
 )
+from engine.api.hosts import (
+    CANCELLED, DONE, FAILED, IDLE, JOB, LOCAL, OUTCOME_NAMES, STOP, Command, Hosts, distributed_hosts, fail_stop,
+)
 from engine.api.supervisor import EXIT_HOST_OWNED
 #: How long a starting worker retries the lock: a supervisor's probe holds it for an instant
 #: (`engine.api.job_queue.worker_lock_held`).
@@ -81,6 +96,9 @@ LOCK_WAIT_SECONDS = 2.0
 POLL_SECONDS = 0.005
 #: The least time between two retention purges (`JobQueue.purge`): a purge is one indexed delete.
 PURGE_INTERVAL_SECONDS = 60.0
+#: Idle sleep of a worker set of several hosts: each look at the queue is a broadcast to every
+#: host (`engine.api.hosts.Hosts.share`), a few milliseconds across a network.
+DISTRIBUTED_POLL_SECONDS = 0.05
 
 #: The persistent compilation cache's directory beside the queue file, when
 #: `JAX_COMPILATION_CACHE_DIR` is unset.
@@ -112,12 +130,20 @@ def main(argv=None) -> None:
                         help="the host's worker lock (default: JAX_RISK_WORKER_LOCK or the temp directory)")
     parser.add_argument("--parent-pid", type=int, default=None,
                         help="exit once this process is gone (the supervising API)")
-    parser.add_argument("--poll-seconds", type=float, default=POLL_SECONDS)
+    parser.add_argument("--distributed", action="store_true",
+                        help="one worker of a set on every host of a pod slice (engine.api.hosts): process 0 "
+                             "serves the queue and every host runs each job")
+    parser.add_argument("--poll-seconds", type=float, default=None,
+                        help=f"idle wait between looks at the queue (default {POLL_SECONDS} s, "
+                             f"{DISTRIBUTED_POLL_SECONDS} s with --distributed)")
     args = parser.parse_args(argv)
+    poll = args.poll_seconds if args.poll_seconds is not None else \
+        DISTRIBUTED_POLL_SECONDS if args.distributed else POLL_SECONDS
     # Before JAX is imported (`serve` imports it after taking the lock), which reads these.
     os.environ.update(compilation_cache_environment(args.queue, os.environ))
     os.environ.update(deterministic_kernels_environment(os.environ))
-    sys.exit(serve(args.queue, lock_path=args.lock, parent_pid=args.parent_pid, poll_seconds=args.poll_seconds))
+    sys.exit(serve(args.queue, lock_path=args.lock, parent_pid=args.parent_pid, poll_seconds=poll,
+                   distributed=args.distributed))
 
 
 def compilation_cache_environment(queue_path, environ) -> dict:
@@ -149,11 +175,17 @@ def deterministic_kernels_environment(environ) -> dict:
 
 def serve(queue_path, *, lock_path=None, price: Optional[Pricer] = None, parent_pid: Optional[int] = None,
           poll_seconds: float = POLL_SECONDS, drain: bool = False, retention: Optional[float] = None,
-          environ: Optional[Mapping[str, str]] = None) -> int:
+          environ: Optional[Mapping[str, str]] = None, distributed: bool = False) -> int:
     """Be the host's engine worker, serving the queue at `queue_path`, until the parent is gone
     (or, with `drain`, until no job is pending); the process exit status. `lock_path` defaults to
     `worker_lock_path(environ)`, `price` to `price_job`, and the retention period in seconds to
-    `retention_seconds(environ)`."""
+    `retention_seconds(environ)`.
+
+    With `distributed`, one worker of a set, one on every host of a cluster (I-61,
+    `engine.api.hosts`): once its host's lock is taken it joins the cluster; the primary (JAX's
+    process 0) alone opens the queue, puts back the job its set was running when it stopped
+    (`JobQueue.requeue_running`), purges finished jobs and claims each job, which every host of
+    the set then runs (`run_job`); the primary's parent and `drain` decide when the set exits."""
     lock = WorkerLock(lock_path if lock_path is not None else worker_lock_path(environ))
     host, pid = socket.gethostname(), os.getpid()
     if not lock.acquire(wait_seconds=LOCK_WAIT_SECONDS,
@@ -161,32 +193,52 @@ def serve(queue_path, *, lock_path=None, price: Optional[Pricer] = None, parent_
         return EXIT_HOST_OWNED
     compiles = queue = None
     try:
-        keep_for = retention if retention is not None else retention_seconds(environ)
-        queue = JobQueue(queue_path)
-        queue.interrupt_running()
+        hosts = distributed_hosts(environ) if distributed else LOCAL
+        if hosts.primary:
+            queue = JobQueue(queue_path)
+            if hosts.count > 1:
+                queue.requeue_running()
+            queue.interrupt_running()
         compiles = _CompileCounter()
         price = price or price_job
-        parent = _ParentWatch(parent_pid)
-        worker = f"{host}:{pid}"
-        next_purge = 0.0
-        while parent.alive():
-            if keep_for is not None and time.monotonic() >= next_purge:
-                queue.purge(time.time() - keep_for)
-                next_purge = time.monotonic() + PURGE_INTERVAL_SECONDS
-            job = queue.claim(worker)
-            if job is None:
-                if drain:
-                    return 0
+        claim = _Claims(queue, f"{host}:{pid}", _ParentWatch(parent_pid), drain,
+                        retention if retention is not None else retention_seconds(environ)) if hosts.primary else None
+        while True:
+            command = hosts.share(claim.next() if hosts.primary else None)
+            if command.kind == STOP:
+                return 0
+            if command.kind == IDLE:
                 time.sleep(poll_seconds)
                 continue
-            run_job(queue, job, price, compiles)
-        return 0
+            run_job(queue, command.job, price, compiles, hosts)
     finally:
         if compiles is not None:
             compiles.close()
         if queue is not None:
             queue.close()
         lock.release()
+
+
+class _Claims:
+    """The primary's next `Command`: `STOP` once its parent is gone (or, with `drain`, once no job
+    is pending), else the oldest pending job claimed for `worker`, or `IDLE`; finished jobs past
+    the retention period `keep_for` (seconds, None: forever) purged at most every
+    `PURGE_INTERVAL_SECONDS`."""
+
+    def __init__(self, queue: JobQueue, worker: str, parent: "_ParentWatch", drain: bool, keep_for: Optional[float]):
+        self.queue, self.worker, self.parent, self.drain, self.keep_for = queue, worker, parent, drain, keep_for
+        self._next_purge = 0.0
+
+    def next(self) -> Command:
+        if not self.parent.alive():
+            return Command(STOP)
+        if self.keep_for is not None and time.monotonic() >= self._next_purge:
+            self.queue.purge(time.time() - self.keep_for)
+            self._next_purge = time.monotonic() + PURGE_INTERVAL_SECONDS
+        job = self.queue.claim(self.worker)
+        if job is None:
+            return Command(STOP if self.drain else IDLE)
+        return Command(JOB, job)
 
 
 class JobCancelled(BaseException):
@@ -208,36 +260,54 @@ def phase_boundary(name: str) -> None:
         check(name)
 
 
-def run_job(queue: JobQueue, job: Job, price: Pricer, compiles: "_CompileCounter") -> None:
+def run_job(queue: Optional[JobQueue], job: Job, price: Pricer, compiles: "_CompileCounter",
+            hosts: Hosts = LOCAL) -> None:
     """Price one claimed job and close its row: `done` with the result document, `failed`
     with the failure class and traceback, or `cancelled` at the phase boundary where a cancel
     stopped it. Nothing raised by the job escapes; a result the queue cannot store (larger than
     SQLite's 1 GB limit) fails the job as `infrastructure`. Only a queue that cannot be written
-    at all stops the worker."""
+    at all stops the worker.
+
+    On several hosts (`hosts`, the primary's `queue`; None on the others) every host runs the job:
+    a cancel stops each at the same phase boundary, the primary's look at the flag shared
+    (`Hosts.agree`); a failure of a class the request determines is reported by every host, any
+    other stops the worker set (`engine.api.hosts.fail_stop`); the primary closes the row from
+    every host's outcome, a job the hosts ended differently failed as `infrastructure`."""
     before = compiles.count
 
     def stop_if_cancelled(name: str) -> None:
-        if queue.cancel_requested(job.id):
+        if hosts.agree(hosts.primary and queue.cancel_requested(job.id)):
             raise JobCancelled(name)
 
     token = _CANCELLATION.set(stop_if_cancelled)
     try:
         phase_boundary("start")
-        result = price(job)
+        result, outcome = price(job), DONE
     except JobCancelled as stop:
-        queue.cancel_running(job.id, f"cancelled at the {stop.args[0]!r} phase boundary",
-                             compiles=compiles.count - before)
-        return
+        stopped_at, outcome = stop.args[0], CANCELLED
     except Exception as exc:
-        queue.fail(job.id, failure_class(exc), _describe(exc), compiles=compiles.count - before)
-        return
+        if hosts.count > 1 and failure_class(exc) == INFRASTRUCTURE:
+            fail_stop(exc)
+        failure, outcome = exc, FAILED
     finally:
         _CANCELLATION.reset(token)
-    try:
-        queue.finish(job.id, result.document, compiles=compiles.count - before, artifacts=result.artifacts)
-    except Exception as exc:
-        queue.fail(job.id, INFRASTRUCTURE, f"storing the result failed: {_describe(exc)}",
-                   compiles=compiles.count - before)
+    outcomes = hosts.outcomes(outcome)
+    if not hosts.primary:
+        return
+    compiled = compiles.count - before
+    if len(set(outcomes)) > 1:
+        ended = ", ".join(f"host {i}: {OUTCOME_NAMES[o]}" for i, o in enumerate(outcomes))
+        detail = f"; this host's: {_describe(failure)}" if outcome == FAILED else ""
+        queue.fail(job.id, INFRASTRUCTURE, f"the hosts ended the job differently ({ended}){detail}", compiles=compiled)
+    elif outcome == CANCELLED:
+        queue.cancel_running(job.id, f"cancelled at the {stopped_at!r} phase boundary", compiles=compiled)
+    elif outcome == FAILED:
+        queue.fail(job.id, failure_class(failure), _describe(failure), compiles=compiled)
+    else:
+        try:
+            queue.finish(job.id, result.document, compiles=compiled, artifacts=result.artifacts)
+        except Exception as exc:
+            queue.fail(job.id, INFRASTRUCTURE, f"storing the result failed: {_describe(exc)}", compiles=compiled)
 
 
 def _describe(exc: BaseException) -> str:

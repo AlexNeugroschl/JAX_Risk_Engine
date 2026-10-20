@@ -169,7 +169,7 @@ def main(argv=None):
     from engine.risk.greeks.ad import portfolio_greeks
     from engine.risk.greeks.bump import portfolio_sensitivities
     from engine.risk.market import MarketRiskRequest, RateRiskFactors, monte_carlo_scenarios, run_market_risk
-    from engine.risk.market.revaluation import scenario_batch_size
+    from engine.risk.greeks.scenario_pnl import scenario_batch_size
     from engine.run import GreeksConfig, PortfolioRequest, RunConfig, price_portfolio
 
     devices = jax.local_devices()

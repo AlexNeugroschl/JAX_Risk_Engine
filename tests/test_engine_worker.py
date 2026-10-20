@@ -163,6 +163,27 @@ class TestJobQueue:
         assert queue.get(pending).status == jq.INTERRUPTED and queue.get(pending).error == jq.INTERRUPTED_ERROR
         assert queue.get(running).status == jq.PENDING
 
+    def test_a_claim_counts_its_attempt(self, queue):
+        job_id = queue.submit(_body())
+        assert queue.get(job_id).attempts == 0
+        assert queue.claim("w").attempts == 1 and queue.get(job_id).attempts == 1
+
+    def test_a_worker_set_puts_its_running_job_back_once(self, queue):
+        """A worker set of several hosts stops whole when one host fails (I-61): its job is put
+        back to run again, claimed at most `MAX_ATTEMPTS` times; one a cancel had reached is
+        cancelled instead; the rest are interrupted as on one host."""
+        once, twice, cancelled = (queue.submit(_body(n=n)) for n in range(3))
+        for _ in range(3):
+            queue.claim("w")
+        queue.cancel(cancelled)
+        assert queue.requeue_running() == 2
+        assert queue.claim("w").id == once and queue.claim("w").id == twice
+        assert queue.requeue_running() == 0 and queue.interrupt_running() == 2
+        assert {queue.get(i).status for i in (once, twice)} == {jq.INTERRUPTED}
+        assert queue.get(once).attempts == jq.MAX_ATTEMPTS
+        stopped = queue.get(cancelled)
+        assert (stopped.status, stopped.error) == (jq.CANCELLED, jq.CANCELLED_STOPPED)
+
     def test_jobs_survive_reopening_the_file(self, queue):
         """Durability (I-08): a restarted API or worker sees every job."""
         job_id = queue.submit(_body(a=1))
@@ -203,7 +224,21 @@ class TestJobQueue:
 
 
 class TestMigration:
-    """Versions 1 and 2 become version 3 in place, in one transaction (I-106)."""
+    """Versions 1 to 3 become version 4 in place, in one transaction (I-106)."""
+
+    def test_a_version_3_file_counts_the_attempts_of_its_started_jobs(self, tmp_path):
+        """Version 3 (2026-10-18) had no `attempts`: a job that had started was claimed once."""
+        path = tmp_path / "v3.sqlite3"
+        old = JobQueue(path)
+        started, queued = old.submit(_body(n=0)), old.submit(_body(n=1))
+        old.claim("w")
+        old.close()
+        with sqlite3.connect(path) as con:
+            con.executescript("ALTER TABLE jobs DROP COLUMN attempts; PRAGMA user_version=3;")
+        migrated = JobQueue(path)
+        assert _version(path) == jq.SCHEMA_VERSION
+        assert (migrated.get(started).attempts, migrated.get(queued).attempts) == (1, 0)
+        assert migrated.claim("w").attempts == 1
 
     def test_a_version_2_file_keeps_its_rows_and_its_unrun_job_is_interrupted(self, tmp_path):
         path = tmp_path / "v2.sqlite3"

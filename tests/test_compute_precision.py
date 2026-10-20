@@ -44,6 +44,7 @@ from engine.precision import (
     FLOAT64, FORMAT_NAMES, FORMATS, Arithmetic, Precision, StagePrecision, add_level, deviation_from, level_terms,
     matmul, product_execution, product_precision,
 )
+from engine.precision.products import TRITON_GEMM_OFF
 from engine.pricing.legs import legs_cube, legs_npv, legs_of, path_fixings, path_schedule
 from engine.risk.market import MarketRiskRequest, monte_carlo_scenarios, run_market_risk
 from engine.risk.market.revaluation import revalue, revalue_trade
@@ -81,30 +82,40 @@ def _simulation(samples=64, seed=3) -> CamConfig:
 # ---------------------------------------------------------------------------
 # The products
 # ---------------------------------------------------------------------------
-def _reference_operand(x: np.ndarray, name: str, axis: int) -> np.ndarray:
+def _reference_operand(x: np.ndarray, name: str, axis: int, shared: bool = False) -> np.ndarray:
     """`x` as a unit of format `name` (an array format, or TensorFloat-32) sees it, independently
     of the engine: scaled along `axis` by the power of two that brings each slice's largest
     magnitude to the format's top (none for bfloat16 and TensorFloat-32, whose range is
     float32's), rounded by ml_dtypes' correct conversion (TensorFloat-32: to a 10-bit mantissa),
-    scaled back."""
+    scaled back. The `shared` operand of a format held in another (`Format.shared_dtype`: e5m2 in
+    e4m3) is scaled to that one's top and rounded with the format's mantissa on its range: below
+    its smallest normal number, on its subnormals' spacing at the format's mantissa, every value
+    one the other format holds."""
     fmt = FORMATS[name]
     if name == "tensorfloat32":
         return _round_mantissa(x, fmt.mantissa_bits)
     if name == "bfloat16":
         return x.astype(fmt.dtype).astype(np.float64)
+    held = FORMATS[fmt.shared_dtype] if shared and fmt.shared_dtype else fmt
     amax = np.max(np.abs(x), axis=axis, keepdims=True)
     mantissa, exponent = np.frexp(amax)
-    top_mantissa, top_exponent = np.frexp(fmt.max)
+    top_mantissa, top_exponent = np.frexp(held.max)
     k = np.where(amax > 0, top_exponent - exponent - (mantissa > top_mantissa), 0)
-    return (x * 2.0 ** k).astype(fmt.dtype).astype(np.float64) / 2.0 ** k
+    scaled = x * 2.0 ** k
+    rounded = scaled.astype(fmt.dtype).astype(np.float64)
+    if held is not fmt:
+        step = 2.0 ** (held.min_exponent - fmt.mantissa_bits)
+        rounded = np.where(np.abs(scaled) < 2.0 ** held.min_exponent, np.round(scaled / step) * step, rounded)
+        assert np.array_equal(rounded.astype(held.dtype).astype(np.float64), rounded)
+    return rounded / 2.0 ** k
 
 
-def _reference_terms(x: np.ndarray, name: str, axis: int, count: int) -> list:
+def _reference_terms(x: np.ndarray, name: str, axis: int, count: int, shared: bool = False) -> list:
     """`x` as `count` terms of format `name` (`_reference_operand`), each the rounding of what the
     ones before leave."""
     terms = []
     for _ in range(count):
-        terms.append(_reference_operand(x - sum(terms), name, axis))
+        terms.append(_reference_operand(x - sum(terms), name, axis, shared))
     return terms
 
 
@@ -136,8 +147,8 @@ class TestProducts:
         of it (one for a single pass), the products of the terms accumulated in float32 and
         summed there."""
         fmt = FORMATS[name]
-        a_terms = _reference_terms(self.A, fmt.base, -1, fmt.shared_terms if side == "left" else 1)
-        b_terms = _reference_terms(self.B, fmt.base, -2, fmt.shared_terms if side == "right" else 1)
+        a_terms = _reference_terms(self.A, fmt.base, -1, fmt.shared_terms if side == "left" else 1, side == "left")
+        b_terms = _reference_terms(self.B, fmt.base, -2, fmt.shared_terms if side == "right" else 1, side == "right")
         a, b = sum(a_terms), sum(b_terms)
         result = np.asarray(matmul(self.A, self.B, Arithmetic(name, "float32"), side), dtype=np.float64)
         bound = sum(self._bound(np.abs(x), np.abs(y)) for x in a_terms for y in b_terms) \
@@ -265,21 +276,53 @@ class TestProducts:
     @pytest.mark.parametrize("platform, kind, capability, expected", [
         ("cpu", "cpu", None, {"float64": "native", "float32": "native"}),
         ("gpu", "NVIDIA GeForce RTX 5060", "12.0", {"float64": "native", "float32": "native", "float16": "native",
-                                                     "bfloat16": "native", "tensorfloat32": "native"}),
+                                                     "bfloat16": "native", "tensorfloat32": "native",
+                                                     "bfloat16_3x": "native", "float8_e4m3fn": "native",
+                                                     "float8_e5m2": "native"}),
         ("gpu", "Tesla V100", "7.0", {"float64": "native", "float32": "native", "float16": "native"}),
         ("gpu", "NVIDIA A100", "8.0", {"float64": "native", "float32": "native", "float16": "native",
-                                        "bfloat16": "native", "tensorfloat32": "native"}),
+                                        "bfloat16": "native", "tensorfloat32": "native", "bfloat16_3x": "native"}),
+        ("gpu", "NVIDIA H100", "9.0", {"float64": "native", "float32": "native", "float16": "native",
+                                        "bfloat16": "native", "tensorfloat32": "native", "bfloat16_3x": "native",
+                                        "float8_e4m3fn": "native", "float8_e5m2": "native"}),
         ("tpu", "TPU v5 lite", None, {"float32": "native", "bfloat16": "native", "bfloat16_3x": "native"}),
         ("tpu", "TPU7x", None, {"float32": "native", "bfloat16": "native", "bfloat16_3x": "native"}),
     ])
     def test_native_where_the_device_has_units_for_the_format_else_emulated(self, platform, kind, capability,
-                                                                             expected):
-        """FP8 nowhere, and bfloat16 passes not on a GPU, until a device's are shown right
-        (`tests/support/precision_devices.py`: an RTX 5060's were not, 2026-10-10). A single pass
-        runs on its format's units."""
+                                                                             expected, monkeypatch):
+        """A GPU's FP8 from Ada (8.9) and its bfloat16 passes from Ampere, shown right on an RTX
+        5060 (`tests/support/precision_devices.py`, 2026-10-19), FP8 where the process sends its
+        products to cuBLAS (the worker's and the tests' setting, I-97); a TPU's FP8 not until
+        Ironwood's is shown right. A single pass runs on its format's units."""
+        monkeypatch.setenv("XLA_FLAGS", TRITON_GEMM_OFF)
         device = types.SimpleNamespace(platform=platform, device_kind=kind, compute_capability=capability)
         assert {name: product_execution(name, device) for name in FORMAT_NAMES} == {
             name: expected.get(name.removesuffix("_1x"), "emulated") for name in FORMAT_NAMES}
+
+    def test_a_gpus_fp8_is_emulated_where_triton_computes_its_products(self, monkeypatch):
+        """Red first on an RTX 5060 with FP8 marked native under XLA's default GEMM emitter: its
+        products 0.4 to 0.8 of their scale off (2026-10-19, I-97)."""
+        monkeypatch.setenv("XLA_FLAGS", "")
+        device = types.SimpleNamespace(platform="gpu", device_kind="NVIDIA H100", compute_capability="9.0")
+        assert product_execution("float8_e4m3fn", device) == product_execution("float8_e5m2_1x", device) == "emulated"
+
+    @pytest.mark.parametrize("side", ["left", "right"])
+    def test_native_e5m2_multiplies_the_shared_operand_held_in_e4m3(self, side, monkeypatch):
+        """An FP8 unit takes e5m2 beside e4m3 only: natively the per-path operand is e5m2, the
+        shared one e4m3 (`Format.shared_dtype`), and the product the emulation's numbers. On the
+        CPU, whose FP8 products are exact: whether a device's are is the device check's
+        (`tests/support/precision_devices.py`; under XLA's Triton emitter a GPU's are wrong, I-97)."""
+        from engine.precision import products
+
+        with jax.default_device(jax.devices("cpu")[0]):
+            emulated = np.asarray(matmul(self.A, self.B, Arithmetic("float8_e5m2", "float32"), side))
+            monkeypatch.setattr(products, "product_execution", lambda name, device=None: "native")
+            program = jax.make_jaxpr(lambda a, b: matmul(a, b, Arithmetic("float8_e5m2", "float32"), side))
+            (dot,) = [e for e in program(self.A, self.B).eqns if e.primitive.name == "dot_general"]
+            e4m3, e5m2 = jnp.dtype(jnp.float8_e4m3fn), jnp.dtype(jnp.float8_e5m2)
+            assert [v.aval.dtype for v in dot.invars] == ([e4m3, e5m2] if side == "left" else [e5m2, e4m3])
+            native = np.asarray(matmul(self.A, self.B, Arithmetic("float8_e5m2", "float32"), side))
+        np.testing.assert_allclose(native, emulated, rtol=0, atol=2.0 ** -22 * float(np.max(np.abs(emulated))))
 
     def test_a_native_product_format_states_its_algorithm(self):
         ampere = types.SimpleNamespace(platform="gpu", device_kind="NVIDIA A100", compute_capability="8.0")
@@ -287,7 +330,11 @@ class TestProducts:
         assert product_precision("tensorfloat32", ampere) == product_precision("tensorfloat32_1x", ampere) \
             == jax.lax.DotAlgorithmPreset.TF32_TF32_F32
         assert product_precision("bfloat16_3x", tpu) == jax.lax.DotAlgorithmPreset.BF16_BF16_F32_X3
-        assert product_precision("bfloat16_3x", ampere) == jax.lax.Precision.HIGHEST
+        assert product_precision("bfloat16_3x", ampere) == jax.lax.DotAlgorithmPreset.BF16_BF16_F32_X3
+        # A GPU's matrix-vector product ignores the passes' algorithm (I-97): emulated there.
+        assert product_precision("bfloat16_3x", ampere, matrix_vector=True) == jax.lax.Precision.HIGHEST
+        assert product_precision("bfloat16_3x", tpu, matrix_vector=True) == jax.lax.DotAlgorithmPreset.BF16_BF16_F32_X3
+        assert product_precision("tensorfloat32", ampere, matrix_vector=True) == jax.lax.DotAlgorithmPreset.TF32_TF32_F32
         cpu = jax.devices("cpu")[0]
         assert product_precision("tensorfloat32", cpu) == product_precision("bfloat16_3x", cpu) \
             == jax.lax.Precision.HIGHEST

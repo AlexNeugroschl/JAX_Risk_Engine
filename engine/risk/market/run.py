@@ -53,7 +53,7 @@ from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.market_data.market import Market
-from engine.market_simulation.sharding import shard_scenarios
+from engine.market_simulation.sharding import shard_scenarios, unused_devices_warning
 from engine.precision import (
     Arithmetic, Precision, PrecisionReport, RunFigures, evidence_warnings, format_name, load,
     paired_quantile, require_precision,
@@ -65,7 +65,8 @@ from engine.pricing.cube import (
     DEFAULT_REPORTING_CURRENCY, reporting_fx_spots, require_unique_ids, validate_trades,
 )
 from engine.risk.market.factors import RateRiskFactors
-from engine.risk.market.revaluation import factor_indices, revalue_trade, scenario_batch_size
+from engine.risk.greeks.scenario_pnl import scenario_batch_size
+from engine.risk.market.revaluation import factor_indices, revalue_trade
 from engine.risk.market.scenarios import ShockScenarios
 from engine.risk.market.scenarios import SOURCE_HISTORICAL
 from engine.risk.market.var_es import (
@@ -215,7 +216,7 @@ def run_market_risk(request: MarketRiskRequest) -> MarketRiskResult:
         num_scenarios=scenarios.num_scenarios,
         risk_factors=scenarios.factors.labels(),
         base_currency=request.base_currency,
-        warnings=_warnings(request),
+        warnings=_warnings(request) + [w for w in [unused_devices_warning(scenarios.num_scenarios)] if w],
         precision=report,
         uncertainty=uncertainty,
     )

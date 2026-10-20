@@ -18,6 +18,7 @@ import gzip
 import json
 import math
 
+import jax
 import numpy as np
 import ORE
 import pytest
@@ -187,10 +188,12 @@ class TestMeasure:
 
     @pytest.mark.parametrize("seeds", [(1, 2), (1, 2, 3, 4)])
     def test_replicated_diagnostics_are_per_date_and_never_certify_empirical_constants(self, seeds):
+        """On the CPU, whose paired float64 sample is the full run's bit for bit: on a GPU a prefix of
+        the paths is an ulp from them (the batch shape), which is not what this tests."""
         import warnings
         campaign = _portfolio((Case("paired", Precision(paired_fraction=.5)),), seeds=seeds, names=("bond",))
         campaign = dataclasses.replace(campaign, simulation=dataclasses.replace(campaign.simulation, replicates=8))
-        with warnings.catch_warnings():
+        with warnings.catch_warnings(), jax.default_device(jax.devices("cpu")[0]):
             warnings.simplefilter("error", RuntimeWarning)
             measurements = measure(campaign, 256)
         rows = measurements.coverage

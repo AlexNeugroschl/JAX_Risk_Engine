@@ -10,6 +10,9 @@ ORE's sensitivity analysis on today's market (`engine.risk.greeks.bump`, plan T-
     I-116), and a fixing of the as-of date is backfilled from the Theta market rather than
     refused.
   * Vega: the matrix of quote bumps adds up to a parallel volatility bump.
+  * One batched revaluation (I-115): a trade's shifts are scenarios of one revaluation of its
+    price function, each Greek equal to the values on the shifted and the base market, valued
+    one shift at a time, and only Theta values the trade on a market of its own.
 
 Parity with ORE's own sensitivity analytic is tests/test_sensitivity_ore_parity.py (the shared
 portfolio) and tests/test_ore_parity_sweep.py (seeded random portfolios, settings and rolls).
@@ -24,14 +27,16 @@ import pytest
 
 from engine.instruments.european_swaption import SwaptionConfig
 from engine.instruments.swap import SwapConfig, underlying_swap
+from engine.instruments.treasury import BondConfig
 from engine.market_data.curves import DiscountCurve
 from engine.market_data.market import CurrencyMarket, Market, SwaptionVolSurface, ZeroCurveConfig, index_name
-from engine.pricing.config import PricingConfig
-from engine.pricing.cube import value_on
+from engine.pricing.config import LgmSwaptionEngineConfig, PricingConfig
+from engine.pricing.cube import reads_swaption_vols, value_on
 from engine.pricing.legs import legs_of, today_npv
 from engine.risk.greeks.bump import (
     SensitivityConfig, portfolio_sensitivities, sensitivity_context, theta_context,
 )
+from tests.support import portfolio as shared
 
 PILLARS = [0.0, 1.0, 2.0, 5.0, 10.0, 30.0]
 DISC = [0.020, 0.020, 0.025, 0.030, 0.035, 0.040]
@@ -147,3 +152,91 @@ def test_a_bond_coupon_paid_on_the_theta_date_leaves_theta_too():
     base = value_on(bond, sensitivity_context(market, CONFIG), PricingConfig())
     assert theta == rolled - base
     assert -2_000.0 < theta < -1_950.0
+
+
+# ---------------------------------------------------------------------------
+# One batched revaluation (I-115)
+# ---------------------------------------------------------------------------
+#: The grid engine at a resolution a fast test affords, calibrated and on a fixed model.
+SMALL_GRID = LgmSwaptionEngineConfig(n_per_std=8, std_devs=5.0)
+BATCHED = PricingConfig(bermudan=SMALL_GRID, american=SMALL_GRID)
+FIXED = PricingConfig(bermudan=dataclasses.replace(SMALL_GRID, calibration="None"))
+
+
+def _batched_trades():
+    """One trade of each price function the bump Greeks revalue: legs, Bachelier, a bond, and
+    calibrated options (the shared portfolio's, on `SMALL_GRID`)."""
+    shared_trades = shared.trades()
+    return [shared_trades[name] for name in ("swap-receiver-seasoned-icma", "european-receiver-otm-cash", "bond",
+                                             "bermudan-payer-physical", "american-payer")]
+
+
+def _one_shift_at_a_time(cfg, market, pricing, config):
+    """The bump Greeks as ORE computes them and the engine did until 2026-10-19: the trade valued
+    on its sensitivity market with one tenor's zero rate, or one quote, shifted at a time
+    (`value_on`), each Greek a difference of two values."""
+    base_context = sensitivity_context(market, config)
+    value = lambda context: value_on(cfg, context, pricing)  # noqa: E731
+    base = value(base_context)
+    greeks = {}
+    keys = [("discount", cfg.currency)]
+    if not isinstance(cfg, BondConfig):
+        keys.append(("index", index_name(cfg.currency, cfg.index_tenor_months)))
+    for kind, key in keys:
+        curve = getattr(base_context, kind)[key]
+
+        def shifted(k, shift, _kind=kind, _key=key, _curve=curve):
+            logs = np.asarray(_curve.log_discounts).copy()
+            logs[k] -= shift * float(_curve.times[k])
+            table = {**getattr(base_context, _kind), _key: DiscountCurve(_curve.times, jnp.asarray(logs))}
+            return value(dataclasses.replace(base_context, **{_kind: table}))
+
+        ups = np.array([shifted(k, config.curve_shift) for k in range(1, len(curve.times))])
+        downs = np.array([shifted(k, -config.curve_shift) for k in range(1, len(curve.times))])
+        greeks[f"delta:{kind}:{key}"] = ups - base
+        greeks[f"gamma:{kind}:{key}"] = ups - 2.0 * base + downs
+    if reads_swaption_vols(cfg, pricing):
+        surface = market.swaption_vols(cfg.currency)
+        vega = np.zeros((len(surface.option_tenors), len(surface.swap_tenors)))
+        for i, j in np.ndindex(vega.shape):
+            vols = np.array(surface.vols)
+            vols[i, j] += config.vol_shift
+            bumped = dataclasses.replace(surface, vols=tuple(map(tuple, vols)))
+            reading = lambda ccy, t, length, _b=bumped: float(_b.volatility(market.asof, t, length))  # noqa: E731
+            vega[i, j] = value(dataclasses.replace(base_context, volatility=reading)) - base
+        greeks[f"vega:{cfg.currency}"] = vega
+    return base, greeks
+
+
+class TestOneBatchedRevaluation:
+    """A trade's shifts are the scenarios of one revaluation of its price function on the
+    sensitivity market (`engine.risk.greeks.scenario_pnl`, market risk's), an option recalibrated
+    under each, rather than one valuation per shift on the host."""
+
+    def test_no_shift_is_valued_on_its_own(self, monkeypatch):
+        """Only Theta values the trade on a market of its own: its base and its roll. One
+        valuation per shift was about sixty host round trips per trade, which left an accelerator
+        idle between small programs (I-115)."""
+        from engine.risk.greeks import bump
+        calls = []
+        monkeypatch.setattr(bump, "value_on", lambda *a, **k: calls.append(a[0]) or value_on(*a, **k))
+        trades = _batched_trades()
+        greeks = portfolio_sensitivities(trades, shared.market(), "USD", BATCHED, CONFIG)
+        assert len(greeks) == len(trades)
+        assert len(calls) == 2 * len(trades), len(calls)
+
+    @pytest.mark.parametrize("pricing", [BATCHED, FIXED], ids=["calibrated", "fixed"])
+    def test_each_shift_is_the_value_on_its_shifted_market(self, pricing):
+        """Every Delta, Gamma and Vega equals the difference of the trade's values on the shifted
+        and the base sensitivity market, valued one shift at a time, to 1e-13 of its NPV (the
+        difference form carries the shift exactly; the values differ in their last bits)."""
+        market = shared.market()
+        trades = _batched_trades()
+        batched = portfolio_sensitivities(trades, market, "USD", pricing, CONFIG)
+        for index, cfg in enumerate(trades):
+            base, expected = _one_shift_at_a_time(cfg, market, pricing, CONFIG)
+            mine = {key: value for key, value in batched[index].items() if key != "theta"}
+            assert mine.keys() == expected.keys(), cfg.trade_id
+            for key in expected:
+                np.testing.assert_allclose(mine[key], expected[key], rtol=0.0, atol=1e-13 * abs(base),
+                                           err_msg=f"{cfg.trade_id} {key}")

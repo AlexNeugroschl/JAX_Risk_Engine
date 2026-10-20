@@ -70,6 +70,19 @@ portfolio's sloped two-curve market (`tests/test_sensitivity_ore_parity.py`, the
 Theta of every trade, calibrated Bermudans and the American included, within 2e-14 of the
 trade's NPV.
 
+**One batched revaluation** (I-115, 2026-10-19). A trade's shifts are the scenarios of one
+revaluation of its price function on the sensitivity market, the one market risk runs
+(`engine.risk.greeks.scenario_pnl.price_function_pnl`): per curve an up and a down shift of
+each tenor, then one shift of each quote its engine reads, each scenario's NPV change computed in
+float64 in difference form, an option recalibrated under every shift first (its bootstrap
+batched over the shifts). So a trade's Delta, Gamma and Vega are a few compiled programs rather
+than one valuation per shift on the host, about sixty round trips per trade, between which an
+accelerator idled. Delta is the up shift's change, Gamma the up and down shifts' changes added,
+Vega a quote's shift's change: the same differences as ORE's, each carried exactly, equal to the
+values on the shifted and the base market valued one shift at a time to 1e-13 of the trade's NPV
+(`tests/test_sensitivities.py`). Theta values the trade on the rolled market and the base, as
+before.
+
 One engine curve is two of ORE's factors: ORE's LGM builder takes its model's and its helpers'
 discount curve from the swap index's discounting index, and a bond discounts on its reference
 curve, each an index curve of its own in ORE's sensitivity market beside the currency's discount
@@ -113,12 +126,22 @@ method gives ORE's numbers.
 
 **One program per product and shape.** A trade's Delta, Gamma and Vega are one compiled program
 (`_derivatives`), shared by every trade of the same product and shape: forward differentiation
-along every node value (a forward pass of a forward pass gives the first and second directional
-derivative) and every quote, the directions batched with `vmap` and the price itself computed
-once. Forward differentiation holds no tape: an option recalibrated under the shift moves its
-LGM's grid and rollback operator with the curve, and reverse mode held their tangents on every
-row of the induction for every direction (13 GB for an American on ORE's 301-node grid, against
-2 GB forward). ([profiling §3.8](../concepts/profiling.md#38-the-ad-greeks-as-one-program-per-product-2026-10-06))
+along every node value and quote at once (a forward pass of a forward pass gives the value and
+the first and second directional derivatives), the directions batched with `vmap` and the price
+itself computed once. Forward differentiation holds no tape: an option recalibrated under the
+shift moves its LGM's grid and rollback operator with the curve, and reverse mode held their
+tangents on every row of the induction for every direction (13 GB for an American on ORE's
+301-node grid, against 2 GB forward). ([profiling §3.8](../concepts/profiling.md#38-the-ad-greeks-as-one-program-per-product-2026-10-06))
+
+**A calibrated option's Greeks are two programs** (I-115, 2026-10-19): its calibration's values
+and their first and second derivatives along every direction (`_model_derivatives`), then its
+grid engine's along each direction combined with the calibration's response
+(`_staged_derivatives`): along a node value `e`, with the buckets moving by `dv` and `d2v`, the
+first derivative `Dg[(e, dv)]` and the second `D²g[(e, dv), (e, dv)] + d2v · ∇ᵥg`; along a quote
+`dv · ∇ᵥg`. The chain rule, so the Greeks are the one program's to 1e-12
+(`tests/test_profiling_and_jit.py`). With the basket's helpers priced as one (below), an
+American's AD Greeks compile in 22 s instead of 72 s on the CPU, the shared portfolio's in 37 s
+instead of 124 s, the same warm ([profiling §3.10](../concepts/profiling.md#310-the-greeks-on-an-accelerator-2026-10-19)).
 
 ## Vega (Bermudan/American only)
 
@@ -128,16 +151,16 @@ price is a function of the quotes and its Vega a derivative in them.
 
 A Bermudan's/American's volatility comes from its calibration: the bootstrap fits bucket j's
 σ_j so that the model reprices helper j at its market volatility v_j (read on the quotes the
-same way), with ζ_j = Σ_{k≤j} σ_k² dt_k. Together the buckets solve the lower-triangular system
-`G(σ; curves, quotes) = model(ζ(σ)) − market = 0` (`engine.calibration.lgm.basket_residuals`),
-and by the implicit function theorem
+same way), with ζ_j = Σ_{k≤j} σ_k² dt_k. Helper j reads ζ_j alone, so each ζ_j is the root of its
+own equation `G_j(ζ_j; curves, quotes) = model_j(ζ_j) − market_j = 0`
+(`engine.calibration.lgm.helper_residuals`), and by the implicit function theorem, elementwise,
 
 ```
-dσ = −(∂G/∂σ)⁻¹ (∂G/∂(curves, quotes) · d(curves, quotes))
+dζ_j = −(∂G_j/∂(curves, quotes) · d(curves, quotes)) / (∂G_j/∂ζ_j),   dσ_j = (dζ_j − dζ_{j−1}) / (2 σ_j dt_j)
 ```
 
-(`calibrated_values`, `engine.solvers.roots.implicit_solution`: ∂G/∂σ by forward
-differentiation, the triangular system by forward substitution). The bootstrap's own root
+(`calibrated_values`, `engine.solvers.roots.elementwise_root_tangent`: ∂G/∂ζ one forward
+derivative along ones, the helpers priced as one `HelperStack`). The bootstrap's own root
 finding is never differentiated; the rule is itself differentiable, so the second derivatives
 (Gamma through the recalibration) are right too. Checked against central differences of the
 full recalibrating price (`tests/test_greeks_bermudan.py`).
@@ -181,9 +204,14 @@ Prices depend on roots found by the engine's root solver
 derivative of the root: the Jamshidian engine's critical state x*, each ORE helper's y*, and
 the calibration's buckets. Each gets the implicit function theorem's derivative instead, itself
 differentiable, so Gamma is right too: x* and y* elementwise (`engine.solvers.roots.implicit_root`:
-`dx = −(∂g/∂p · dp) / (∂g/∂x)`, ∂g/∂x a forward derivative), the calibration as one system
-(`implicit_solution`, above). The helper's price is stationary in its y*, so first derivatives
-need none of y*'s; a calibration's second derivatives do.
+`dx = −(∂g/∂p · dp) / (∂g/∂x)`, ∂g/∂x a forward derivative, `elementwise_root_tangent`). The
+calibration is elementwise too: helper j's equation reads the LGM's zeta at its own expiry
+alone, so each zeta is its helper's root (`engine.calibration.lgm.helper_residuals`), its
+derivative the same rule, and the buckets' follow from `zeta_j = Σ_{i≤j} σᵢ² Δtᵢ`:
+`dσᵢ = (dζᵢ − dζᵢ₋₁) / (2 σᵢ Δtᵢ)`. The helpers are priced as one, padded to the basket's most
+coupons with coupons that add exactly 0 (`stack_helpers`), so a derivative traces one helper's
+price, not each one's. The helper's price is stationary in its y*, so first derivatives need
+none of y*'s; a calibration's second derivatives do.
 
 ## The functions
 

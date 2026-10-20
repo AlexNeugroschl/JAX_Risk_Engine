@@ -667,7 +667,7 @@ _WORKING_COPIES = 6
 
 #: CPU fallback for the working memory one induction over many paths or scenarios is given: a path cube's
 #: date is priced in blocks of paths (`path_blocks`), market risk in batches of scenarios
-#: (`engine.risk.market.revaluation.scenario_batch_size`), each within it. An American on the
+#: (`engine.risk.greeks.scenario_pnl.scenario_batch_size`), each within it. An American on the
 #: demo's grid holds about 27 KB per path at float64 (36 KB as the GPU compiles it), 9.5 GB at
 #: 262,144 paths, more than an 8 GB card holds (2026-10-13).
 INDUCTION_MEMORY_BUDGET = 2 ** 30
@@ -707,7 +707,7 @@ def working_bytes_per_model(swap: _PreparedBermudan, itemsize: int) -> int:
     row's `[nodes, nodes]` rollback operator, its cashflows' functions on the grid and
     `_WORKING_COPIES` arrays of its columns. What each scenario of a batch adds when it has a
     model of its own, an option recalibrated under each market-risk scenario
-    (`engine.risk.market.revaluation.scenario_batch_size`), on top of its path's
+    (`engine.risk.greeks.scenario_pnl.scenario_batch_size`), on top of its path's
     `working_bytes_per_path`."""
     rows = induction_rows(swap)
     nodes = 2 * grid_half_width(swap.std_devs, swap.n_per_std) + 1

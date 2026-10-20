@@ -8,8 +8,9 @@ Value at Risk and Expected Shortfall. The models are ported from
 The engine is designed to run across multiple TPUs, with a Google Cloud TPU VM as the
 target deployment, and also runs on CPU and on NVIDIA GPUs (Linux or WSL2, the `gpu` extra;
 [user guide](docs/getting-started/user-guide.md#on-a-gpu-linux-or-wsl2-on-windows)). Each job's scenarios are split across the
-devices of its host; several hosts (a TPU pod slice) are planned
-([I-61](docs/planning/known-issues.md#i-61)). A main research goal is to measure how
+devices of its host, or of every host of a TPU pod slice, one engine worker per host running
+each job together ([I-61](docs/planning/known-issues.md#i-61): built and tested on CPU processes;
+its speed against device count is to be measured on TPU and H100). A main research goal is to measure how
 much numeric precision Monte Carlo risk needs: whether many lower-precision simulations,
 run concurrently across TPU devices, can match the VaR and Expected Shortfall of fewer
 double-precision simulations in the same wall-clock time.

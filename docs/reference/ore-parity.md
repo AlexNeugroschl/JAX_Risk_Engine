@@ -644,8 +644,8 @@ reference until 2026-10-18, both found by the seeded sweeps
 **Root-finds.** Naively differentiating through a root solver gives a silently wrong
 gradient (a bisection's comparisons have none, Newton's iterations only the steps'). The
 Jamshidian root, each helper's y* and a whole calibration get the implicit function theorem's
-derivative instead (`engine.solvers.roots.implicit_root`'s `custom_jvp`, and `implicit_solution`
-on the basket's system, `engine.calibration.lgm.calibrated_values`); see [Greeks](../risk/greeks.md#differentiating-through-bisection-root-finds).
+derivative instead (`engine.solvers.roots.implicit_root`'s `custom_jvp`, and each helper's equation
+in its own zeta, `engine.calibration.lgm.calibrated_values`); see [Greeks](../risk/greeks.md#differentiating-through-bisection-root-finds).
 
 **Verified:** `tests/test_sensitivity_ore_parity.py` (both methods against an OREApp sensitivity
 run), `tests/test_ore_parity_sweep.py` and `tests/test_ore_parity_settings.py` (random portfolios,

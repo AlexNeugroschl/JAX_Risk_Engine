@@ -5,12 +5,22 @@ V-3), OREAnalytics/orea/engine/sensitivityanalysis.cpp and cube/sensitivitycube.
 The sensitivity market is ORE's `ScenarioSimMarket` on the as-of date: every discount and
 index curve sampled at the configured tenors (`asof + tenor`, discount factors log-linear
 between them, flat forward beyond), the swaption volatilities as given. Each trade is priced
-there with its t=0 engine (`engine.pricing`), so Bermudans recalibrate under every bump.
+there with its t=0 engine, as a function of the market it reads
+(`engine.risk.greeks.price_functions.trade_price_function` on the tenors' zero rates and the
+quotes), so Bermudans recalibrate under every bump.
+
+**One batched revaluation.** A trade's shifts are the scenarios of one revaluation of its price
+function (`engine.risk.greeks.scenario_pnl.price_function_pnl`, the one market risk runs): per
+curve an up and a down shift of each tenor, then one shift of each quote its engine reads,
+each scenario's NPV change in float64 in difference form (`TradePriceFunction.pnl`), an option
+recalibrated under every shift first as ORE's sensitivity analysis rebuilds its model, all in
+one program per product and shape rather than one revaluation per shift on the host.
 
   * Delta / Gamma per curve and tenor: an absolute zero-rate shift of `curve_shift` at that
     tenor (`ShiftType::Absolute`, shift tenors = the curve tenors: the shifted point alone moves,
     by `exp(-shift t)` in its discount factor). ORE's default `ShiftScheme::Forward`:
-        delta = NPV(up) - NPV(base),   gamma = NPV(up) - 2 NPV(base) + NPV(down).
+        delta = NPV(up) - NPV(base),   gamma = NPV(up) - 2 NPV(base) + NPV(down),
+    each difference a scenario's P&L: delta = pnl(up), gamma = pnl(up) + pnl(down).
   * Vega per swaption volatility quote: an absolute shift of `vol_shift`, forward difference.
   * Theta (`sensitivityanalysis.cpp`, theta block): the evaluation date moves to
     `thetaDate = asof + theta_days` (calendar days, I-38) and a new simulation market is built
@@ -38,23 +48,25 @@ there with its t=0 engine (`engine.pricing`), so Bermudans recalibrate under eve
 AD Greeks (`engine.risk.greeks.ad`, `GreeksConfig.method = "AD"`) are the other method (decision
 A-5): the same keys, Delta/Gamma/Vega by differentiation, and this module's Theta.
 """
-import dataclasses
 from dataclasses import dataclass
-from typing import Dict, Sequence
+from typing import Callable, Dict, Sequence
 
 import jax.numpy as jnp
 import numpy as np
 import ORE
 
 from engine.instruments.schedules import SWAP_CALENDAR, ibor_index
-from engine.instruments.treasury import BondConfig
 from engine.market_data.curves import DiscountCurve, log_discount
 from engine.market_data.day_counts import TIME_AXIS_DAY_COUNTER
-from engine.market_data.market import VOL_DAY_COUNTER, Market, index_name
+from engine.market_data.market import VOL_DAY_COUNTER, Market
 from engine.market_simulation.config import DEFAULT_CURVE_TENORS
+from engine.market_simulation.sharding import host_array
+from engine.precision import Arithmetic
 from engine.pricing.config import PricingConfig
 from engine.pricing.context import PricingContext, floating_volatility_date, simulation_market_today
-from engine.pricing.cube import Trade, reads_swaption_vols, validate_trades, value_on
+from engine.pricing.cube import Trade, validate_trades, value_on
+from engine.risk.greeks.price_functions import Moves, TradePriceFunction, trade_price_function
+from engine.risk.greeks.scenario_pnl import price_function_pnl
 
 
 @dataclass(frozen=True)
@@ -67,12 +79,6 @@ class SensitivityConfig:
     curve_shift: float = 1e-4
     vol_shift: float = 1e-4
     theta_days: int = 1
-
-
-def _shifted(curve: DiscountCurve, k: int, shift: float) -> DiscountCurve:
-    """The tenor point k's zero rate shifted by `shift` (its log discount by `-shift t_k`)."""
-    bump = jnp.zeros_like(curve.log_discounts).at[k].set(-shift * curve.times[k])
-    return DiscountCurve(curve.times, curve.log_discounts + bump)
 
 
 def sensitivity_context(market: Market, config: SensitivityConfig) -> PricingContext:
@@ -120,64 +126,83 @@ def portfolio_sensitivities(trades: Sequence[Trade], market: Market, base_curren
     `gamma:index:<name>` `[K]` per curve tenor (the trade's own curves), `vega:<ccy>`
     `[option tenors, swap tenors]` for a trade whose engine reads the swaption volatilities
     (`reads_swaption_vols`), and `theta`."""
+    return greeks_by_trade(trade_sensitivities, trades, market, base_currency, pricing, config)
+
+
+#: `(cfg, market, pricing, config) -> {key: Greek}`: one trade's Delta, Gamma and Vega in its
+#: currency, by one method (`trade_sensitivities`, `engine.risk.greeks.ad.trade_greeks`).
+TradeGreeks = Callable[..., Dict[str, np.ndarray]]
+
+
+def greeks_by_trade(trade_greeks: TradeGreeks, trades: Sequence[Trade], market: Market, base_currency: str,
+                    pricing: PricingConfig, config: SensitivityConfig) -> Dict[int, Dict[str, np.ndarray]]:
+    """Per trade (by request index), `trade_greeks`' Greeks and ORE's Theta (`trade_theta`) in
+    the base currency, each trade in its own profiler phase: the portfolio loop of both
+    methods."""
     # Not at module scope: importing engine.run runs its __init__, which imports engine.risk.
     from engine.run.trace import trade_greeks_phase
 
     validate_trades(trades, market, pricing)
-    base_context = sensitivity_context(market, config)
-    theta_ctx = theta_context(market, config)
+    base_context, theta_ctx = sensitivity_context(market, config), theta_context(market, config)
     result: Dict[int, Dict[str, np.ndarray]] = {}
     for i, cfg in enumerate(trades):
         with trade_greeks_phase(i, cfg):
-            currency = cfg.currency
-            fx = market.fx_spot(currency, base_currency)
-            value = lambda context: value_on(cfg, context, pricing) * fx  # noqa: E731
-            base = value(base_context)
-            greeks: Dict[str, np.ndarray] = {}
-            curves = [("discount", currency, base_context.discount)]
-            if not isinstance(cfg, BondConfig):
-                curves.append(("index", index_name(currency, cfg.index_tenor_months), base_context.index))
-            for kind, key, table in curves:
-                deltas, gammas = [], []
-                for k in range(1, len(table[key].times)):
-                    up = value(_with(base_context, kind, key, _shifted(table[key], k, config.curve_shift)))
-                    down = value(_with(base_context, kind, key, _shifted(table[key], k, -config.curve_shift)))
-                    deltas.append(up - base)
-                    gammas.append(up - 2.0 * base + down)
-                greeks[f"delta:{kind}:{key}"] = np.asarray(deltas)
-                greeks[f"gamma:{kind}:{key}"] = np.asarray(gammas)
-            if reads_swaption_vols(cfg, pricing):
-                greeks[f"vega:{currency}"] = _vega(value, base, market, currency, base_context, config.vol_shift)
-            greeks["theta"] = trade_theta(value, base, theta_ctx)
+            fx = market.fx_spot(cfg.currency, base_currency)
+            greeks = {key: value * fx for key, value in trade_greeks(cfg, market, pricing, config).items()}
+            value = lambda context, _cfg=cfg: value_on(_cfg, context, pricing) * fx  # noqa: E731
+            greeks["theta"] = trade_theta(value, value(base_context), theta_ctx)
             result[i] = greeks
     return result
+
+
+def trade_sensitivities(cfg, market: Market, pricing: PricingConfig = PricingConfig(),
+                        config: SensitivityConfig = SensitivityConfig()) -> Dict[str, np.ndarray]:
+    """ORE's Delta and Gamma per tenor of each curve the trade reads and, where its engine reads
+    the quotes, its Vega per quote, in the trade's currency: every shift a scenario of one
+    revaluation of its price function on the sensitivity market (see the module docstring)."""
+    fn = trade_price_function(cfg, market, pricing, tenors=config.curve_tenors)
+    moves = bump_moves(fn, config)
+    count = moves.shifts[0].shape[0]
+    _, pnl = price_function_pnl(cfg, fn, fn.rates, moves, pricing, count, Arithmetic())
+    pnl = host_array(pnl).astype(np.float64)
+    greeks: Dict[str, np.ndarray] = {}
+    row = 0
+    for (kind, name), rates in zip(fn.curves, fn.rates):
+        size = rates.shape[-1]
+        up, down = pnl[row:row + size], pnl[row + size:row + 2 * size]
+        greeks[f"delta:{kind}:{name}"] = up
+        greeks[f"gamma:{kind}:{name}"] = up + down
+        row += 2 * size
+    if fn.quotes is not None:
+        greeks[f"vega:{cfg.currency}"] = pnl[row:].reshape(fn.quotes.shape)
+    return greeks
+
+
+def bump_moves(fn: TradePriceFunction, config: SensitivityConfig) -> Moves:
+    """The scenarios of a trade's shifts, in the node values of its price function: per curve
+    (`fn.curves`, in order) an up shift of `curve_shift` at each tenor, then a down shift at each,
+    then a shift of `vol_shift` of each quote (`fn.quotes`, row-major) where the engine reads
+    them. Each scenario moves one node or one quote."""
+    sizes = [rates.shape[-1] for rates in fn.rates]
+    quotes = 0 if fn.quotes is None else fn.quotes.size
+    count = 2 * sum(sizes) + quotes
+    shifts, row = [], 0
+    for size in sizes:
+        shift = np.zeros((count, size))
+        shift[row:row + size] = config.curve_shift * np.eye(size)
+        shift[row + size:row + 2 * size] = -config.curve_shift * np.eye(size)
+        shifts.append(shift)
+        row += 2 * size
+    vega = None
+    if fn.quotes is not None:
+        vega = np.zeros((count, quotes))
+        vega[row:] = config.vol_shift * np.eye(quotes)
+        vega = vega.reshape((count,) + fn.quotes.shape)
+    return Moves(tuple(jnp.asarray(s) for s in shifts), quotes=None if vega is None else jnp.asarray(vega))
 
 
 def trade_theta(value, base: float, theta: PricingContext) -> np.ndarray:
     """ORE's Theta (see the module docstring) in the base currency, from the trade's
     valuation on a context `value(context)` and its value `base` on the sensitivity market;
-    shared by both Greeks methods (`engine.risk.greeks.ad` for AD)."""
+    shared by both Greeks methods (`greeks_by_trade`)."""
     return np.asarray(value(theta) - base)
-
-
-def _with(context: PricingContext, kind: str, key: str, curve: DiscountCurve) -> PricingContext:
-    table = dict(context.discount if kind == "discount" else context.index)
-    table[key] = curve
-    return dataclasses.replace(context, **{kind: table})
-
-
-def _vega(value, base: float, market: Market, currency: str, context: PricingContext, shift: float) -> np.ndarray:
-    surface = market.swaption_vols(currency)
-    vega = np.zeros((len(surface.option_tenors), len(surface.swap_tenors)))
-    for i in range(vega.shape[0]):
-        for j in range(vega.shape[1]):
-            vols = np.array(surface.vols)
-            vols[i, j] += shift
-            bumped = dataclasses.replace(surface, vols=tuple(map(tuple, vols)))
-
-            def volatility(ccy, option_time, swap_length, _bumped=bumped):
-                chosen = _bumped if ccy == currency else market.swaption_vols(ccy)
-                return float(chosen.volatility(market.asof, option_time, swap_length))
-
-            vega[i, j] = value(dataclasses.replace(context, volatility=volatility)) - base
-    return vega

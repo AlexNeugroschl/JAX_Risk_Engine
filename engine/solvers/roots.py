@@ -28,16 +28,15 @@ last candidate is taken there, as a bounded problem's.
 
 Derivatives. A root is computed on `params` with their tangents stopped and has none itself
 (`solve`). Where a price depends on the root and is not stationary in it, `implicit_root`
-gives the root its derivative by the implicit function theorem, and `implicit_solution` a
-whole system's solution (a calibration's buckets) its. The ORE helper's price is stationary in
-its y*, so its first derivatives with y* held fixed are exact; its second need y*'s.
+gives the root its derivative by the implicit function theorem (`elementwise_root_tangent`,
+which a calibration's buckets share). The ORE helper's price is stationary in its y*, so its
+first derivatives with y* held fixed are exact; its second need y*'s.
 """
 from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
-import jax.scipy.linalg
 
 #: The solvers, the default first (decision A-21).
 SOLVERS = ("Newton", "Bisection")
@@ -111,43 +110,22 @@ def implicit_root(f: Callable, params, start: jax.Array, **options) -> jax.Array
     def root_jvp(primals, tangents):
         (p, x0), (p_dot, _) = primals, tangents
         x = root(p, x0)
-        _, df_dx = jax.jvp(lambda y: f(y, p), (x,), (jnp.ones_like(x),))
-        _, df = jax.jvp(lambda q: f(x, q), (p,), (p_dot,))
-        return x, -df / df_dx
+        return x, elementwise_root_tangent(f, x, p, p_dot)
 
     return root(params, start)
 
 
-def implicit_solution(residual: Callable, solution: Callable, params):
-    """`solution(params)`: the solution x `[n]` of a lower-triangular system `residual(x, params)
-    = 0` (`[n]`: equation j reads x_0..x_j, a bootstrap's), found by any method, with the
-    implicit function theorem's derivative in `params`: dx = -(dG/dx)^-1 (dG/dp . dp), dG/dx by
-    forward differentiation (`jax.jacfwd`, one direction per unknown), dG/dp . dp by one, and the
-    triangular system solved as one (`solve_triangular`, whose own derivatives' products state
-    their precision, decision A-22). `solution`'s own steps are never differentiated (an
-    iterative solver's loops, which a derivative would otherwise unroll through every order); the
-    rule is itself differentiable, so second derivatives are right too. For a whole calibration's
-    response (`engine.calibration.lgm.calibrated_values`); `implicit_root` is the elementwise
-    scalar case. `params` must be an explicit argument, as `implicit_root`'s.
-
-    Measured on an American's AD Greeks (16 helpers, 2026-10-17), against two other forms of the
-    tangent solve: a substitution unrolled row by row compiled to more than twice the memory, and
-    `jax.lax.custom_linear_solve` on the linear map (whose derivative needs one directional
-    derivative of dG/dx rather than all of it) to 2 times the memory and 1.25 times the time."""
-
-    @jax.custom_jvp
-    def root(p):
-        return jax.lax.stop_gradient(solution(p))
-
-    @root.defjvp
-    def root_jvp(primals, tangents):
-        (p,), (p_dot,) = primals, tangents
-        x = root(p)
-        jacobian = jax.jacfwd(lambda y: residual(y, p))(x)
-        _, moved = jax.jvp(lambda q: residual(x, q), (p,), (p_dot,))
-        return x, -jax.scipy.linalg.solve_triangular(jacobian, moved, lower=True)
-
-    return root(params)
+def elementwise_root_tangent(f: Callable, x, params, params_dot):
+    """The tangent of the roots `x` of `f(x, params) = 0` when `params` move by `params_dot`, by
+    the implicit function theorem: `-(df/dp . dp) / (df/dx)`, for a problem elementwise in `x`
+    (element i of `f` reads element i of `x` alone), so df/dx is f's directional derivative along
+    ones, exact. Both derivatives are forward, so the tangent holds no reverse pass to transpose
+    when a derivative of it is taken; it is itself differentiable, so second derivatives are
+    right too. The rule of `implicit_root`, and of a calibration's buckets
+    (`engine.calibration.lgm.calibrated_values`, each helper's equation a root in its own zeta)."""
+    _, df_dx = jax.jvp(lambda y: f(y, params), (x,), (jnp.ones_like(x),))
+    _, df = jax.jvp(lambda q: f(x, q), (params,), (params_dot,))
+    return -df / df_dx
 
 
 # ---------------------------------------------------------------------------

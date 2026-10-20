@@ -49,6 +49,18 @@ eagerly instead compiled a forward and a backward program per curve and per deri
 ten per option), and kept them only while JAX's internal caches of 2,048 traced programs did: a
 job that traced more than that evicted the first trades' derivative programs, so the same job
 compiled them again on its next run.
+
+**A calibrated option's derivatives are two programs** (`TradePriceFunction.stages`, I-115): its
+calibration's first and second derivatives along every direction (`_model_derivatives`, the
+implicit function theorem on the basket's residuals), then its grid engine's along each
+direction combined with the calibration's response (`_staged_derivatives`). Along a direction
+`d` of the node values, with the calibration's buckets `v(x)` moving by `v'd` and `v''[d, d]`,
+the price `g(x, v(x))` has the derivatives of `t -> g(x + t d, v + t v'd + t^2 v''[d, d] / 2)`
+at 0, its first and second, by the chain rule; along a quote only the buckets move. Each program
+traces its price once for every direction (`_directional_derivatives`), and the calibration
+prices its basket's helpers as one (`engine.calibration.lgm.stack_helpers`): an American of 16
+helpers on ORE's grid compiles in 22 s where the one program took 72 s (CPU, 2026-10-19,
+docs/concepts/profiling.md §3.10).
 """
 from functools import partial
 from typing import Dict, List, Sequence
@@ -61,41 +73,49 @@ from engine.instruments.american_swaption import AmericanSwaptionConfig
 from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
 from engine.market_data.market import Market
 from engine.pricing.config import PricingConfig
-from engine.pricing.cube import Trade, validate_trades, value_on
-from engine.risk.greeks.bump import SensitivityConfig, sensitivity_context, theta_context, trade_theta
+from engine.pricing.cube import Trade
+from engine.risk.greeks.bump import SensitivityConfig, greeks_by_trade
 from engine.risk.greeks.price_functions import curves_on, trade_price_function
 
 
 def _directional_derivatives(f, xs, q):
-    """Per array `x` of the tuple `xs`, `(df/dx_i, d^2f/dx_i^2)` for every `i`, and `df/dq` of
-    every entry of `q` (None when `q` is), all by forward differentiation.
+    """`f(xs, q)` and, per array `x` of the tuple `xs`, `(df/dx_i, d^2f/dx_i^2)` for every `i`,
+    and `df/dq` of every entry of `q` (None when `q` is), all by forward differentiation; `f`'s
+    value may be an array, whose axes then follow the directions'.
 
-    Along each basis direction of `xs`, one forward pass of a forward pass (`jax.jvp` of
-    `jax.jvp`) gives the first and the second directional derivative together; along each entry
-    of `q`, one forward pass. The directions are batched with `vmap`, the price itself not: its
-    inputs are the same in every direction, only the tangents carry the batch. Forward
-    differentiation holds no tape: an option recalibrated under the shift moves its LGM's grid
-    and rollback operator with the curve, and the reverse pass held their tangents on every row
-    of its induction for every direction (13 GB for an American on ORE's 301-node grid, against
-    2 GB forward; 2026-10-17). Checked against `jax.grad` and `jnp.diagonal(jax.hessian(...))`
-    in `tests/test_profiling_and_jit.py::TestHessianDiagonalEquivalence`.
+    Along each basis direction of the node values and the quotes together, one forward pass of
+    a forward pass (`jax.jvp` of `jax.jvp`) gives the value and the first and second directional
+    derivatives at once (a quote's second derivative is not kept: one trace of `f` serves every
+    direction, where a quote's own forward pass traced it again, the calibration of a calibrated
+    option alone 16 s to compile; 2026-10-19). The directions are batched with `vmap`, the price
+    itself not: its inputs are the same in every direction, only the tangents carry the batch.
+    Forward differentiation holds no tape: an option recalibrated under the shift moves its LGM's
+    grid and rollback operator with the curve, and the reverse pass held their tangents on every
+    row of its induction for every direction (13 GB for an American on ORE's 301-node grid,
+    against 2 GB forward; 2026-10-17). Checked against `jax.grad` and
+    `jnp.diagonal(jax.hessian(...))` in `tests/test_profiling_and_jit.py::TestHessianDiagonalEquivalence`.
     """
-    sizes = [x.shape[0] for x in xs]
-    cuts = list(np.cumsum(sizes)[:-1])
-    flat = jnp.concatenate(xs)
-    price = lambda x: f(tuple(jnp.split(x, cuts)), q)  # noqa: E731
+    parts = xs if q is None else (*xs, q.reshape(-1))
+    cuts = _cuts(parts)
+    flat = jnp.concatenate(parts)
+
+    def at(x):
+        split = jnp.split(x, cuts)
+        return f(tuple(split[:len(xs)]), None if q is None else split[-1].reshape(q.shape))
 
     def along(direction):
-        return jax.jvp(lambda x: jax.jvp(price, (x,), (direction,))[1], (flat,), (direction,))
+        (value, first), (_, second) = jax.jvp(lambda x: jax.jvp(at, (x,), (direction,)), (flat,), (direction,))
+        return value, first, second
 
-    first, second = jax.vmap(along)(jnp.eye(flat.shape[0], dtype=flat.dtype))
-    curves = tuple(zip(jnp.split(first, cuts), jnp.split(second, cuts)))
-    if q is None:
-        return curves, None
-    entries = q.reshape(-1)
-    vega = jax.vmap(lambda d: jax.jvp(lambda v: f(xs, v.reshape(q.shape)), (entries,), (d,))[1])(
-        jnp.eye(entries.shape[0], dtype=entries.dtype))
-    return curves, vega.reshape(q.shape)
+    value, first, second = jax.vmap(along, out_axes=(None, 0, 0))(jnp.eye(flat.shape[0], dtype=flat.dtype))
+    firsts, seconds = jnp.split(first, cuts), jnp.split(second, cuts)
+    curves = tuple(zip(firsts[:len(xs)], seconds[:len(xs)]))
+    return value, curves, None if q is None else firsts[-1].reshape(q.shape + first.shape[1:])
+
+
+def _cuts(xs):
+    """Where the concatenation of the arrays `xs` splits back into them."""
+    return list(np.cumsum([x.shape[0] for x in xs])[:-1])
 
 
 def portfolio_greeks(trades: Sequence[Trade], market: Market, base_currency: str,
@@ -103,20 +123,7 @@ def portfolio_greeks(trades: Sequence[Trade], market: Market, base_currency: str
                      config: SensitivityConfig = SensitivityConfig()) -> Dict[int, Dict[str, np.ndarray]]:
     """Per trade (by request index), the AD Greeks in the base currency (see the module
     docstring)."""
-    # Not at module scope: importing engine.run runs its __init__, which imports engine.risk.
-    from engine.run.trace import trade_greeks_phase
-
-    validate_trades(trades, market, pricing)
-    base_context, theta_ctx = sensitivity_context(market, config), theta_context(market, config)
-    result: Dict[int, Dict[str, np.ndarray]] = {}
-    for i, cfg in enumerate(trades):
-        with trade_greeks_phase(i, cfg):
-            fx = market.fx_spot(cfg.currency, base_currency)
-            greeks = {key: value * fx for key, value in trade_greeks(cfg, market, pricing, config).items()}
-            value = lambda context, _cfg=cfg: value_on(_cfg, context, pricing) * fx  # noqa: E731
-            greeks["theta"] = trade_theta(value, value(base_context), theta_ctx)
-            result[i] = greeks
-    return result
+    return greeks_by_trade(trade_greeks, trades, market, base_currency, pricing, config)
 
 
 def ad_warnings(trades: Sequence[Trade]) -> List[str]:
@@ -139,7 +146,11 @@ def trade_greeks(cfg, market: Market, pricing: PricingConfig = PricingConfig(),
     fn = trade_price_function(cfg, market, pricing, tenors=config.curve_tenors)
     rates = tuple(jnp.asarray(r) for r in fn.rates)
     quotes = None if fn.quotes is None else jnp.asarray(fn.quotes)
-    curves, vega = _derivatives(fn.pricer, fn.terms, fn.nodes, rates, quotes)
+    if fn.stages is None:
+        curves, vega = _derivatives(fn.pricer, fn.terms, fn.nodes, rates, quotes)
+    else:
+        model = _model_derivatives(fn.stages.model, fn.terms, fn.nodes, rates, quotes)
+        curves, vega = _staged_derivatives(fn.stages.priced, fn.terms, fn.nodes, rates, model)
     out: Dict[str, np.ndarray] = {}
     for (kind, name), (delta, gamma) in zip(fn.curves, curves):
         out[f"delta:{kind}:{name}"] = np.asarray(delta) * config.curve_shift
@@ -153,4 +164,47 @@ def trade_greeks(cfg, market: Market, pricing: PricingConfig = PricingConfig(),
 def _derivatives(pricer, terms, nodes, rates, quotes):
     """Per curve `(dNPV/dz, diag d^2NPV/dz^2)` in its node values `z`, and `dNPV/dquotes`: one
     program per pricer and trade shape (see the module docstring)."""
-    return _directional_derivatives(lambda moved, q: pricer(terms, curves_on(nodes, moved), q), rates, quotes)
+    _, curves, vega = _directional_derivatives(lambda moved, q: pricer(terms, curves_on(nodes, moved), q), rates,
+                                               quotes)
+    return curves, vega
+
+
+@partial(jax.jit, static_argnums=0)
+def _model_derivatives(model, terms, nodes, rates, quotes):
+    """`(values, curves, quotes)` of a two-stage price's first stage (`Stages.model`): its values
+    `v` `[n]` at the market, per curve `(dv/dz, diag d^2v/dz^2)` `[K, n]` each, and `dv/dquotes`
+    `[*quotes, n]` (None when the price reads no quotes): one program per model and trade shape
+    (see the module docstring)."""
+    return _directional_derivatives(lambda moved, q: model(terms, curves_on(nodes, moved), q), rates, quotes)
+
+
+@partial(jax.jit, static_argnums=0)
+def _staged_derivatives(priced, terms, nodes, rates, model):
+    """Per curve `(dNPV/dz, diag d^2NPV/dz^2)` and `dNPV/dquotes` of `g = priced(terms, curves,
+    v(z, quotes))` (`Stages.priced`), from the first stage's `_model_derivatives` (see the module
+    docstring): along each node value `e`, with `u = (e, dv)`, the first derivative `Dg[u]` and
+    the second `D^2g[u, u] + d2v . grad_v g`, a forward pass of a forward pass along `u` and the
+    gradient in the buckets; along each quote `dv . grad_v g`. The primal is the same in every
+    direction, only the tangents are batched, so the induction runs once for the price. One
+    program per stage and trade shape."""
+    values, by_curve, by_quote = model
+    cuts = _cuts(rates)
+    flat = jnp.concatenate(rates)
+    dv = jnp.concatenate([first for first, _ in by_curve])                # [D, n]
+    d2v = jnp.concatenate([second for _, second in by_curve])             # [D, n]
+
+    def price(x, v):
+        return priced(terms, curves_on(nodes, tuple(jnp.split(x, cuts))), v)
+
+    def along(direction, dv_i):
+        tangent = (direction, dv_i)
+        return jax.jvp(lambda x, v: jax.jvp(price, (x, v), tangent)[1], (flat, values), tangent)
+
+    first, curvature = jax.vmap(along)(jnp.eye(flat.shape[0], dtype=flat.dtype), dv)
+    by_value = jax.vmap(lambda e: jax.jvp(lambda v: price(flat, v), (values,), (e,))[1])(
+        jnp.eye(values.shape[-1], dtype=values.dtype))                       # [n]: grad_v g
+    second = curvature + jnp.sum(d2v * by_value, axis=-1)
+    curves = tuple(zip(jnp.split(first, cuts), jnp.split(second, cuts)))
+    if by_quote is None:
+        return curves, None
+    return curves, jnp.sum(by_quote * by_value, axis=-1)

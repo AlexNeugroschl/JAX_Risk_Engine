@@ -540,7 +540,7 @@ Found while designing; fixed or derived from the dtype in the precision mechanis
   rounds to `hi` in float32. The same bisection ran per path in the Bermudan recalibration.
 - `jnp.finfo(dtype).eps` in the Sobol clip (`engine/market_simulation/sobol.py:42`) must use the
   compute dtype once storage is narrower.
-- `scenario_batch_size(itemsize)` (`engine/risk/market/revaluation.py`) must use the compute
+- `scenario_batch_size(itemsize)` (`engine/risk/greeks/scenario_pnl.py`) must use the compute
   itemsize.
 
 The precision mechanism (2026-10-01) also searches every path kernel for literal tolerances (`1e-`) and either derives
@@ -850,27 +850,48 @@ it once is a format of its own (§6.1, §15.5).
 
   `product_execution(format, device)` says which ran: native where the device has units for the
   format and they were shown to give its numbers (`tests/support/precision_devices.py`, every
-  arithmetic a stage accepts against its emulation on four shapes): an NVIDIA GPU's float16 from compute capability
-  7.0, bfloat16 and TensorFloat-32 from 8.0; a TPU's bfloat16 and its passes (XLA's own float32
-  there; to be checked on the device). Else emulated: a CPU emulates every format below float32;
-  every device emulates FP8, and a GPU bfloat16 passes, until a device's are shown right. On an
-  RTX 5060 (compute capability 12.0, jax 0.10.2, 2026-10-10) the check found XLA's FP8 product
-  70% off for some shapes and precisions (and its `ANY_F8_ANY_F8_F32` algorithm unsupported or
-  wrong), and its `BF16_BF16_F32_X3` a single pass's error for some shapes; with both emulated,
-  every format equals its emulation there. TensorFloat-32 was within its unit roundoff of it
-  (4.5e-4 of the scale, the device rounding the operands its own way) until the engine rounded
-  them itself (2026-10-11): since, 3e-7, the float32 sums' order, with either operand shared and
-  every single pass (`<name>_1x`) as close as its format. The faults are XLA's, not the card's (2026-10-11,
-  [I-97](../known-issues.md#i-97)): its Triton GEMM emitter computes the FP8 products wrong,
-  while the same products through cuBLASLt (`--xla_gpu_enable_triton_gemm=false`) are exact; and
-  it compiles a matrix-vector product as a fusion that ignores the bfloat16-passes algorithm.
-  Native FP8 and passes on a GPU wait on the work I-97 names. Emulated and native give the same numbers up to the order of
-  the float32 sums: the engine rounds the operands as the unit would, and an emulated FP8
-  product multiplies them as float16 values, which hold every FP8 value, with exact products.
-  Native FP8 is for the timing (F-07) to enable per device, after the check. The report names each compute format the run used and
-  its execution (`PrecisionReport.products`). Measured on CPU (2026-10-10, 6 × 40 by 40 × 5
-  operands spanning six decades, against references built with ml_dtypes): every format within
-  its unit roundoff plus float32 accumulation (`tests/test_compute_precision.py::TestProducts`).
+  arithmetic a stage accepts against its emulation on four shapes): an NVIDIA GPU's float16 from
+  compute capability 7.0, bfloat16, TensorFloat-32 and bfloat16 passes from 8.0, FP8 from 8.9 where
+  the process sends its products to cuBLAS; a TPU's bfloat16 and its passes (XLA's own float32
+  there; to be checked on the device). Else emulated: a CPU emulates every format below float32, a
+  TPU FP8 until Ironwood's is shown right. Emulated and native give the same numbers up to the
+  order of the float32 sums: the engine rounds the operands as the unit would, and an emulated FP8
+  product multiplies them as float16 values, which hold every FP8 value, with exact products. The
+  report names each compute format the run used and its execution (`PrecisionReport.products`).
+  Measured on CPU (2026-10-10, 6 × 40 by 40 × 5 operands spanning six decades, against references
+  built with ml_dtypes): every format within its unit roundoff plus float32 accumulation
+  (`tests/test_compute_precision.py::TestProducts`).
+
+  **On a GPU** ([I-97](../known-issues.md#i-97)). On an RTX 5060 (compute capability 12.0, jax
+  0.10.2, 2026-10-10) the check found XLA's FP8 product 70% off for some shapes and precisions, and
+  its `BF16_BF16_F32_X3` a single pass's error for some shapes. The faults are XLA's, not the card's
+  (located 2026-10-11, reduced to plain JAX in [xla-gpu-reproductions.md](xla-gpu-reproductions.md)):
+  its Triton GEMM emitter computes every FP8 product on a matrix shape 0.54 to 0.79 of `|a|·|b|`
+  off under the worker's determinism flag (without it XLA's autotuner picks cuBLASLt for most
+  shapes, and only the smallest is wrong), while the same products through cuBLASLt (`--xla_gpu_enable_triton_gemm=false`) are exact on
+  its FP8 path (`__cublas$lt$matmul$f8`); and it compiles a matrix-vector product as a fusion that
+  ignores the bfloat16-passes algorithm (FP8's matrix-vector fusion is exact, off the FP8 units).
+  Since 2026-10-19:
+
+  - FP8 is native on a GPU only in a process whose `XLA_FLAGS` send its products to cuBLAS
+    (`engine.precision.products.cublas_gemms`). Not the engine worker's default: timed against
+    Triton alternately on the RTX 5060 (three rounds, the base tree, the shared portfolio at 16,384
+    paths and market risk at 8,192 scenarios, warm medians), cuBLAS ran the float64 portfolio job
+    in 6.31–6.44 s against 5.54–5.60 s (15% slower), the float32 job in 1.98–2.06 s against
+    2.22–2.33 s, the TensorFloat-32 job and market risk alike. A slower float64 is what this plan
+    rules out (§13.9), so the research timing (§19) sets the flag, and FP8 is emulated elsewhere.
+  - FP8 units take e5m2 only beside e4m3 (cuBLASLt multiplied two e5m2 operands on its non-FP8
+    path), so float8_e5m2 holds the operand every path shares in e4m3 (`Format.shared_dtype`: e5m2's
+    mantissa on e4m3's range), emulated and native alike; natively its products then run on the FP8
+    path, exact. The only difference from e5m2 throughout is a value of the shared operand more than
+    2^-15 below its slice's largest, rounded on e4m3's subnormal spacing; the seven campaigns with e5m2 compute cases measured again (2026-10-19): every e5m2 row's relative error within 2e-6 of its record (median 1e-13), no verdict or path ceiling of the evidence table moved.
+  - bfloat16 passes are native on a GPU from Ampere, their matrix-vector products emulated
+    (`EMULATED_MATRIX_VECTOR`, decided by the product's static shape).
+
+  The device check passes every format on the RTX 5060 under either emitter, FP8 native under
+  cuBLAS and emulated under Triton (red first: FP8 marked native under Triton, 0.71 to 0.80 of
+  the scale off). TensorFloat-32 is within 3e-7 of its emulation since the engine rounds its operands
+  itself (2026-10-11). Still to check: H100 under both emitters, and each new jax.
 - The rollback's matrix form also fixed its memory (2026-10-13, I-83). Each column (the option,
   the underlying, each cached cashflow) was interpolated at `[nodes, quadrature nodes]` points
   per path and step, vmapped over the columns and the paths, although the interpolation weights
@@ -1193,13 +1214,31 @@ thread pool, and the TraderX path its locks (`engine/traderx/`), which the engin
   capped by `JAX_RISK_SCENARIO_DEVICES`; one device places nothing, so one-device runs are
   unchanged bit for bit. Four CPU host devices equal one to about 6e-16 relative
   (`tests/test_sharding.py`). No threads, no pinning.
-- **Several hosts (a TPU pod slice):** one worker per host, all running the same program
-  (`jax.distributed.initialize`). Under SPMD every host must run *the same job* at the same
-  time, so the hosts cannot each claim from the queue as one host's worker does: process 0
-  claims and the others receive the body from it (`jax.experimental.multihost_utils`, or the
-  distributed client's key-value store), and only process 0 writes the row. SQLite on a
-  shared filesystem is not a safe multi-host lock. Multi-host (I-61) designs this; the engine worker built the
-  one-host case.
+- **Several hosts (a TPU pod slice; built 2026-10-19, `engine/api/hosts.py`):** one worker per
+  host, all running the same program (`jax-risk-worker --distributed`: `jax.distributed.initialize`,
+  the cluster detected by JAX or given by `JAX_RISK_COORDINATOR`, `JAX_RISK_NUM_PROCESSES` and
+  `JAX_RISK_PROCESS_ID`). Under SPMD every host must run *the same job* at the same time, so the
+  hosts cannot each claim from the queue as one host's worker does: the primary (process 0)
+  alone opens the queue (SQLite on a shared filesystem is not a safe multi-host lock), claims
+  each job and broadcasts it, as fixed-shape chunks so the broadcast compiles once
+  (`jax.experimental.multihost_utils.broadcast_one_to_all`); at each phase boundary it decides
+  for every host whether a cancel has reached the job (one broadcast), so all stop at the same
+  boundary; after the job every host's outcome is gathered (`process_allgather`) and the
+  primary writes the row, a job the hosts ended differently failing as `infrastructure`; the
+  primary alone purges finished jobs. A failure the request determines (`bad-terms`,
+  `missing-market-data`, `unsupported-product`, `numerical-failure`) is raised alike on every
+  host and reported by all; any other may be one host's while the others wait in a collective,
+  so that host exits (`fail_stop`), and JAX's distributed service stops the rest (measured:
+  "Terminating process because the JAX distributed service detected fatal errors"). The
+  restarted primary puts the job back once and runs it again whole (`JobQueue.requeue_running`,
+  the queue's `attempts`, schema version 4); a job claimed twice is `interrupted`. The scenario
+  mesh spans every host's devices, the same number from each (`scenario_device_count`); an
+  array split across hosts is read with a gather (`host_array`). A run on fewer devices than it
+  has (a scenario count without a fitting divisor) says so in its warnings. Tested on CPU: two
+  processes of two devices each, JAX's gloo collectives (Linux): the runs of the four-device
+  check give the one-device numbers (`tests/test_sharding.py`), and a stub worker set serves,
+  cancels, fails and retries jobs (`tests/test_multihost_worker.py`). Its speed against device
+  count is measured on TPU and H100 (I-61).
 
 ### 11.4 The queue (A-14; not a main priority)
 
@@ -1269,9 +1308,9 @@ Revised with the run request (2026-10-18; schema version 3):
 | **The engine worker** (done 2026-10-04) | Engine worker process and the SQLite queue (A-14); delete `worker_pool.py`'s pool and freeze/thaw | §13.8, including the Linux run; float64 job time and compile count no worse. Met: §13.8, §13.9 | M |
 | **The storage harness** (I-75, done 2026-10-09) | Storage relative to a level for classes whose level swamps their spread (block offsets, §6.2); a measurement harness for storage formats per class and product, at several path counts, fixed seeds, rerunnable on any kernel change (§15.4) | Harness covers every figure × class × format; thresholds fixed before measuring; I-75's FP8 bond column unbiased within its Monte Carlo standard error. Met: §15.4 | M |
 | **The kernel rewrite** (F-07; done: the first families 2026-10-10, the rollback 2026-10-13) | Difference-form kernels (§8.2), one family at a time (those the recalibration fix did not change first, the Bermudan/American rollback after it; `ShiftHorizon` and the recalibration fix done 2026-10-12), as matrix products where a family can be one (§8.3); compute below float32 enabled; `accumulate` honoured | Per family: ORE parity suites at their tolerances, then the snapshot within the margin (§2.1); emulated FP8/bfloat16 compute measured by the harness. Met for the simulation, the scenario market, the legs, the Europeans and market risk (§13.1, §15.5), and for the rollback, its memory per path a few columns on the grid (I-83, §13.1, §15.7) | L |
-| **Multi-host** (I-61) | Shard the scenario axis in the worker (I-61): one host done 2026-10-04; several hosts next | Results equal the one-device run within reduction-order rounding (one host: met, `tests/test_sharding.py`); scaling measured on TPU | M |
+| **Multi-host** (I-61) | Shard the scenario axis in the worker (I-61): one host done 2026-10-04; several hosts done 2026-10-19 (§11.3) | Results equal the one-device run within reduction-order rounding (met on one host and on two CPU processes, `tests/test_sharding.py`, `tests/test_multihost_worker.py`); scaling measured on TPU | M |
 | **The evidence table** (I-55, done 2026-10-11) | The evidence table and the warnings (§10), from the storage harness on each kernel family as the kernel rewrite lands it (the Bermudan/American rows measured again after `ShiftHorizon`, I-32, and after the recalibration fix, I-49, both 2026-10-12, and after the rollback's rewrite, 2026-10-13, at the linear campaign's path counts, with their compute formats and each option's flipped exercise decisions, §15.7) | Table complete; a verdict and path ceiling per row; a warning on every result without a passing row. Met: §10.4, §15.6 | S |
-| **The research result** (F-07) | After multi-host and the evidence table. Timing across devices on Ironwood and H100: storage formats, then the kernel rewrite's matrix-product kernels with native FP8 | The research result: wall time per figure and precision against float64 at equal accuracy (the evidence table's path ceilings), many low-precision paths against fewer float64 ones | M |
+| **The research result** (F-07) | After multi-host and the evidence table. Timing across devices on Ironwood and H100: storage formats, then the kernel rewrite's matrix-product kernels with native FP8; the harness built 2026-10-19 (§19) | The research result: wall time per figure and precision against float64 at equal accuracy (measured over seeds, §19), many low-precision paths against fewer float64 ones | M |
 | **FP4** (F-07) | FP4 storage (variance correction through the block scales), FP4 compute on TPU 8t/8i, multilevel quantile estimation | Evidence rows for FP4 | L |
 
 **Order (decided: A-19, revised 2026-10-10):** the structure first (stage 1, done); then
@@ -2463,3 +2502,65 @@ FP8 e4m3 market-stage European EPE from 5.32 to 1.80. That does not establish A-
 The full design, verification and conservative interval-availability rule are in
 [precision-accuracy.md](precision-accuracy.md). FP4 and quantile correction remain separate
 later research, with the current raw quantiles retained.
+
+## 19. The research timing: wall time per figure at equal accuracy (F-07, 2026-10-19)
+
+The first research result (F-07) times the existing formats against float64 at equal
+accuracy. Its harness is `tests/support/precision_timing.py`; its method is fixed here before
+anything is measured on the hardware of record (Ironwood, H100), and a format that does not
+pay is a result.
+
+**What is timed.** Each case of a campaign of record (the precision harness's campaigns,
+`tests/support/precision_campaigns.py`; by default its `throughout:` cases, every stage in
+one format) and float64 at each path count, in a process of its own, the persistent
+compilation cache off. Each seed's run is the whole job, its scenarios drawn and `campaign.run` (host preparation,
+calibrations and every fixed float64 stage, the simulation, pricing, a paired sample if the
+case asks for one, the reductions), the clock stopped once its figures are on the host (each
+array transferred, so the device has finished). Both sides compute the same outputs (the
+campaign's figures, the cube included where the campaign reads it). The first seed's run is
+the cold run, its XLA compile time stated apart (`backend_compile_duration`); the median of
+the other seeds' runs, which compile nothing (recorded), is the case's time. Each process
+also records the device's peak allocation, the grid engine's induction budget and how each
+compute format's products ran there (`product_execution`, native or emulated: the timing of
+an emulated format measures the emulation, and says so).
+
+**Accuracy, measured.** Per figure entry, the truth is float64's mean over the seeds at the
+largest path count. A case's error at N paths is the root mean square over the seeds of its
+figure less the truth: the statistical error, the precision error, their covariance and any
+bias, as observed on the Sobol paths (RQMC), no convergence rate assumed. A figure's error is
+the root mean square over its entries float64 does not hold fixed (`precision_harness.FIXED`),
+relative to its scale. The truth's own error, float64's spread at the largest count over the
+square root of the seeds, is why that count is never a target.
+
+**Equal accuracy.** For each float64 path count but the largest, the target is float64's
+error there. A case reaches it at the path count where its error falls to the target,
+log-linear between the two measured counts that bracket it (the first measured count when it
+is already there), and costs its warm time there, log-linear between measured counts alike;
+a case whose error stays above the target at every measured count does not reach it. The
+speedup is float64's time over the case's. A job's figures must all be equally accurate, so
+its speedup is the worst over its figures; the record keeps every figure's.
+
+**The induction budget** (§17). `--budget-divisors D ...` times every case at the largest
+path count again with the grid engine's budget at `1/D` of the accelerator's allocator limit
+(1/8 by default): the time and peak-memory tradeoff per device, read from the same record.
+
+**Where it runs.** On any devices the process has: `python -m tests.support.precision_timing
+compute --paths 4096 16384 65536 262144 --seeds 8`, then `compute_options` and
+`compute_market_risk`, writes `compliance/precision-timing/<campaign>-<device>.json.gz` and its
+summary. Multi-device: the scenario axis is split as any run's (`engine.market_simulation.
+sharding`, I-61), so a host's devices time one job together; a pod slice's hosts run jobs as a
+worker set (`jax-risk-worker --distributed`, §11.3), whose queue records each job's start and end.
+A CPU or a consumer GPU (float64 at 1/64 of its float32 rate) gives local evidence, not the
+research result.
+
+**The first runs (2026-10-19, local evidence).** `compute` and `compute_market_risk` at 6 seeds on
+the CPU and the RTX 5060 (its products through cuBLAS, FP8 native), every case compiling nothing
+warm (`compliance/precision-timing/`). On the CPU, whose formats below float32 are emulated, no
+format pays: each case's worst speedup at equal accuracy is 0.34 to 1.04. On the card a whole job
+takes 0.41 to 0.48 s whatever its format and paths, 1,024 to 16,384 (market risk 0.14 to 0.40 s;
+worst speedups 0.39 to 1.13, the times' noise): the
+fixed work of a job, its host preparation, float64 stages and dispatch, is all of it at these
+sizes, and its float64 runs at 1/64 of the card's float32 rate. FP8 reaches float64's accuracy
+on few figures (it misses 50 to 55 of the portfolio's 55 at the targets, 4 to 8 of market risk's
+10). So the research result needs path counts where the paths' own work dominates the job (from
+65,536 up), and reads FP8 against the figures it can reach.

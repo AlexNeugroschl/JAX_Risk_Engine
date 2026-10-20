@@ -55,6 +55,7 @@ from engine.market_data.market import Market, index_name
 from engine.market_simulation.config import (
     DEFAULT_CURVE_TENORS, CamConfig, IrModelConfig, LgmConfig, Volatility,
 )
+from engine.market_simulation.sharding import whole_on_every_host
 from engine.precision import Precision, StagePrecision, require_precision
 from engine.pricing.config import PricingConfig
 from engine.pricing.cube import DEFAULT_REPORTING_CURRENCY, require_unique_ids
@@ -242,7 +243,8 @@ class RunResult:
 
 def run(request: RunRequest) -> RunResult:
     """Run every analytic of `request` (see the module docstring), each by the engine's entry
-    point, after `validate_run`."""
+    point, after `validate_run`; on several hosts (a pod slice) every array of the result whole on
+    each (`engine.market_simulation.sharding.whole_on_every_host`)."""
     validate_run(request)
     result = RunResult(request=request, engine=engine_identity())
     if request.wants(*PORTFOLIO_ANALYTICS):
@@ -255,7 +257,7 @@ def run(request: RunRequest) -> RunResult:
         models = request.config.models
         with phase("calibration"):
             result.calibration = calibrate_cam(request.market, models.ir, models.bootstrap_tolerance)
-    return result
+    return whole_on_every_host(result)
 
 
 def portfolio_request(request: RunRequest) -> PortfolioRequest:

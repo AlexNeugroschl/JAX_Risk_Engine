@@ -86,8 +86,8 @@ JAX_Risk_Engine/
 │   │                                     boundary (decision A-21): safeguarded Newton (the
 │   │                                     default) or bisection (the reference), a fixed
 │   │                                     number of steps on every backend; implicit_root
-│   │                                     and implicit_solution, a root's and a calibration's
-│   │                                     derivatives
+│   │                                     and elementwise_root_tangent, a root's derivative
+│   │                                     (a calibration's buckets' too)
 │   ├── market_data/                      Today's market
 │   │   ├── market.py                     Market, CurrencyMarket: curves per currency and
 │   │   │                                 index, the ATM normal swaption matrix, FX and
@@ -156,6 +156,9 @@ JAX_Risk_Engine/
 │   │   ├── greeks/
 │   │   │   ├── price_functions.py        Each trade's t=0 price as a JAX function of its
 │   │   │   │                             market curves -- shared by AD Greeks and market risk
+│   │   │   ├── scenario_pnl.py           A trade's P&L under scenarios of that market, in
+│   │   │   │                             batches -- the bump Greeks' shifts, market risk's
+│   │   │   │                             shocks
 │   │   │   ├── bump.py                   ORE's bump-and-revalue sensitivities, and Theta
 │   │   │   └── ad.py                     AD Delta / Gamma / Vega (Theta shared)
 │   │   ├── market/                       Short-horizon VaR/ES by full revaluation at t=0:
@@ -200,6 +203,8 @@ JAX_Risk_Engine/
 │       ├── worker.py                     The engine worker (jax-risk-worker): one process
 │       │                                 per host prices queued jobs; the opt-in XProf
 │       │                                 hook and its trace summary (profiling.md)
+│       ├── hosts.py                      A pod slice's worker set: process 0 shares each
+│       │                                 job, cancel and outcome with every host (I-61)
 │       ├── supervisor.py                 Starts and restarts the worker from the API
 │       └── traderx_routes.py             /eod/* -- the TraderX path's contract. Plain
 │                                         dicts under a published JSON Schema, NOT Pydantic
@@ -321,12 +326,15 @@ netting set and for each trade. See [Exposure](../risk/exposure.md).
 
 **Bump** (the default, ORE's sensitivity analysis): every trade repriced on today's
 sensitivity market with one curve tenor or volatility quote shifted, option models
-recalibrated, and Theta on the market rolled one day; equal to ORE's sensitivity analytic.
+recalibrated, and Theta on the market rolled one day; equal to ORE's sensitivity analytic. The
+shifts are the scenarios of one batched revaluation per trade, market risk's
+(`engine/risk/greeks/scenario_pnl.py`).
 **AD** (`GreeksConfig.method="AD"`): the same keys on the same factors by automatic
 differentiation of each trade's price on that sensitivity market as a function of its tenors'
 zero rates and its volatility quotes (`engine/risk/greeks/price_functions.py`), a calibrated
 option calibrating inside its price function (its derivatives the implicit function theorem's
-on the whole basket): ORE's Greek as the shift vanishes; Theta shared with the bump method. See
+on each helper's equation, the calibration's and the grid's in two programs): ORE's Greek as the
+shift vanishes; Theta shared with the bump method. See
 [Greeks](../risk/greeks.md).
 
 ### Market Risk (`engine/risk/market/`)
@@ -597,8 +605,9 @@ as the route did, calls `price_portfolio` with x64 on, as every engine process h
 stores the result document, so a job prices bit for bit as a direct call. Jobs run one at a
 time in submission order: the worker owns every device on its host (the API server keeps its
 own JAX on the CPU), splits each job's scenarios across them
-(`engine/market_simulation/sharding.py`, I-61), runs deterministic GPU kernels (the XLA flag
-it adds to its own environment at start-up; decision A-22), and keeps its compiled
+(`engine/market_simulation/sharding.py`, I-61), runs deterministic GPU kernels and sends a GPU's
+matrix products to cuBLAS (the XLA flags it adds to its own environment at start-up; decision
+A-22, I-97), and keeps its compiled
 programs, in memory and in JAX's persistent compilation cache on disk, so a repeated job
 shape compiles nothing and a restarted worker reads its programs back. A failing job fails only its own row; a
 worker that dies mid-job leaves it `interrupted` for the next worker to record. The API
@@ -606,7 +615,11 @@ starts and restarts the worker (`engine/api/supervisor.py`), never by fork (fork
 that has initialized JAX hangs, I-33), unless `JAX_RISK_WORKER=external` leaves that to
 systemd or a container. Until 1.8 a `ProcessPoolExecutor` ran jobs side by side, each worker
 compiling its own programs and receiving the request pickled, its ORE dates frozen as text
-(I-72). See [HTTP API: Jobs](../reference/http-api.md#runs-the-queue-and-the-engine-worker).
+(I-72). On a TPU pod slice (`jax-risk-worker --distributed`, `engine/api/hosts.py`) one worker
+runs on every host and every host runs each job, SPMD: process 0 alone serves the queue and
+broadcasts each job, each cancel and the end of each job, and the scenario axis spans every
+host's devices; a failure of one host's stops the set, whose job process 0 runs again once.
+See [HTTP API: Jobs](../reference/http-api.md#runs-the-queue-and-the-engine-worker).
 
 ### Below float32
 

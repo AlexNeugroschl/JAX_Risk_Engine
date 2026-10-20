@@ -34,9 +34,9 @@ simulated path.
     (I-73). ORE then fails the build unless `ContinueOnCalibrationError`; the engine refuses a
     miss the same way (`CalibrationError`; `ContinueOnCalibrationError` is not offered, A-24).
   * Derivatives (`calibrated_values`): the calibrated buckets as a function of the curves and the
-    helpers' volatilities, differentiated by the implicit function theorem on the whole basket's
-    system of residuals (`basket_residuals`), to any order, the bootstrap's own root-finding never
-    differentiated: what an option recalibrated under a bump or a scenario responds with
+    helpers' volatilities, differentiated by the implicit function theorem on each helper's
+    equation in its own zeta (`helper_residuals`), to any order, the bootstrap's own root-finding
+    never differentiated: what an option recalibrated under a bump or a scenario responds with
     (`engine.risk.greeks.price_functions`; I-78).
 
 Every pricing function takes discount and index curves of either type (`ZeroCurve` today,
@@ -46,7 +46,7 @@ import dataclasses
 import math
 from dataclasses import dataclass, fields
 from functools import partial
-from typing import List, Optional, Sequence, Union
+from typing import List, NamedTuple, Optional, Sequence, Union
 
 import jax
 import jax.numpy as jnp
@@ -63,7 +63,7 @@ from engine.market_data.market import (
 from engine.models.bachelier import bachelier
 from engine.models.lgm import H as lgm_H
 from engine.precision import matmul
-from engine.solvers.roots import DEFAULT_SOLVER, Steps, implicit_root, implicit_solution, solve
+from engine.solvers.roots import DEFAULT_SOLVER, Steps, elementwise_root_tangent, implicit_root, solve
 
 #: `IrModelBuilder::maxAtmStdDev`: a helper strike further from ATM is moved to this many ATM
 #: standard deviations (fallback rule 1).
@@ -143,6 +143,11 @@ class BasketInstrument:
     lambda2: np.ndarray
     deal_strike: Optional[float] = None
 
+    @property
+    def last(self) -> int:
+        """The index of the last fixed coupon, where the swap's notional is repaid."""
+        return self.fixed_pay.size - 1
+
     def astype(self, dtype) -> "BasketInstrument":
         """The same helper with every real-valued array in `dtype`, so it prices in the
         dtype of the curves it is given."""
@@ -164,6 +169,69 @@ class BasketInstrument:
 
 #: `BasketInstrument` fields kept on the host when it crosses a `jax.jit` boundary.
 _STATIC_FIELDS = ("owner", "lambda2")
+
+
+class HelperStack(NamedTuple):
+    """A basket's helpers as one helper of arrays with a leading helper axis, each padded to the
+    basket's most fixed and floating coupons, so its pricing is traced once and mapped over the
+    helpers (`helper_residuals`) rather than traced per helper. A padded coupon is inert: no
+    accrual, paid when the helper's last coupon is (a fixed one) or starting and ending there (a
+    floating one, owned by no fixed coupon), so it adds exactly 0 to every sum; `last` is each
+    helper's last real fixed coupon, where its notional is repaid; `deal_strike` NaN where the
+    helper is at the money (`stack_helpers`)."""
+    expiry_time: jax.Array
+    vol_option_time: jax.Array
+    vol_swap_length: jax.Array
+    fixed_pay: jax.Array
+    fixed_accrual: jax.Array
+    float_pay: jax.Array
+    float_start: jax.Array
+    float_end: jax.Array
+    float_accrual: jax.Array
+    forecast_start: jax.Array
+    forecast_end: jax.Array
+    spanning: jax.Array
+    owner: jax.Array
+    lambda2: jax.Array
+    last: jax.Array
+    deal_strike: Optional[jax.Array]
+
+
+def stack_helpers(basket: Sequence[BasketInstrument]) -> HelperStack:
+    """The basket as a `HelperStack`: traceable, so a price function stacks the helpers it is
+    given inside its own program."""
+    n_fixed = max(b.fixed_pay.size for b in basket)
+    n_float = max(b.float_pay.size for b in basket)
+
+    def padded(values, size, fill):
+        values = jnp.asarray(values)
+        return jnp.concatenate([values, jnp.broadcast_to(fill, (size - values.shape[0],)).astype(values.dtype)])
+
+    def stacked(name, size, fill):
+        """Field `name` of every helper, padded to `size` with `fill(helper)`."""
+        return jnp.stack([padded(getattr(b, name), size, fill(b)) for b in basket])
+
+    last_of = lambda name: lambda b: getattr(b, name)[-1]  # noqa: E731
+    nothing = lambda b: 0.0  # noqa: E731
+    strikes = [b.deal_strike for b in basket]
+    return HelperStack(
+        expiry_time=jnp.stack([jnp.asarray(b.expiry_time) for b in basket]),
+        vol_option_time=jnp.stack([jnp.asarray(b.vol_option_time) for b in basket]),
+        vol_swap_length=jnp.stack([jnp.asarray(b.vol_swap_length) for b in basket]),
+        fixed_pay=stacked("fixed_pay", n_fixed, last_of("fixed_pay")),
+        fixed_accrual=stacked("fixed_accrual", n_fixed, nothing),
+        float_pay=stacked("float_pay", n_float, last_of("float_pay")),
+        float_start=stacked("float_start", n_float, last_of("float_end")),
+        float_end=stacked("float_end", n_float, last_of("float_end")),
+        float_accrual=stacked("float_accrual", n_float, nothing),
+        forecast_start=stacked("forecast_start", n_float, last_of("forecast_end")),
+        forecast_end=stacked("forecast_end", n_float, last_of("forecast_end")),
+        spanning=stacked("spanning", n_float, lambda b: 1.0),
+        owner=np.stack([np.pad(b.owner, (0, n_float - b.owner.size), constant_values=-1) for b in basket]),
+        lambda2=np.stack([np.pad(b.lambda2, (0, n_float - b.lambda2.size)) for b in basket]),
+        last=np.array([b.last for b in basket]),
+        deal_strike=None if all(k is None for k in strikes) else jnp.stack(
+            [jnp.asarray(np.nan if k is None else k, dtype=jnp.result_type(basket[0].fixed_accrual)) for k in strikes]))
 
 
 def _helper(reference: ORE.Date, expiry, term, conventions: SwapIndexConventions):
@@ -279,7 +347,9 @@ def _strike_and_receiver(instrument: BasketInstrument, legs: _Legs, atm_std_dev)
     if instrument.deal_strike is None:
         return legs.forward, jnp.ones_like(legs.forward, dtype=bool)
     band = MAX_ATM_STD_DEV * atm_std_dev
-    strike = jnp.clip(instrument.deal_strike, legs.forward - band, legs.forward + band)
+    clipped = jnp.clip(instrument.deal_strike, legs.forward - band, legs.forward + band)
+    # A stack's helper at the money has a NaN deal strike (`stack_helpers`).
+    strike = jnp.where(jnp.isnan(instrument.deal_strike), legs.forward, clipped)
     return strike, strike <= legs.forward
 
 
@@ -311,12 +381,12 @@ def _corrections(instrument: BasketInstrument, legs: _Legs):
     """proRata `S_j` per fixed coupon and `S_m1` at the start (`AnalyticLgmSwaptionEngine::
     calculate`, nominal 1)."""
     correction = (legs.float_amount - legs.flat_amount) * legs.float_df
-    owned = instrument.owner >= 0
-    owner = np.where(owned, instrument.owner, 0)
-    lambda2 = np.where(owned, instrument.lambda2, 0.0)
-    lambda1 = np.where(owned, 1.0 - instrument.lambda2, 0.0)
-    n_fixed = instrument.fixed_pay.size
-    to_fixed = np.eye(n_fixed, dtype=lambda2.dtype)[owner] * owned[:, None]  # [Nc, Nf]
+    dtype = correction.dtype
+    owned = jnp.asarray(instrument.owner) >= 0
+    lambda2 = jnp.where(owned, jnp.asarray(instrument.lambda2, dtype=dtype), 0.0)
+    lambda1 = jnp.where(owned, 1.0 - jnp.asarray(instrument.lambda2, dtype=dtype), 0.0)
+    n_fixed = instrument.fixed_pay.shape[-1]
+    to_fixed = (jnp.asarray(instrument.owner)[:, None] == jnp.arange(n_fixed)).astype(dtype)   # [Nc, Nf]
     sum1 = matmul(correction * lambda1, to_fixed)               # [..., Nf]
     sum2 = matmul(correction * lambda2, to_fixed)
     # S_j = sum2_j / D_j + sum1_{j+1} / D_j; S_m1 = sum1_0 / D0.
@@ -342,8 +412,11 @@ def _analytic_lgm(instrument, legs: _Legs, reversion, zeta_expiry, strike, recei
     dH = lgm_H(reversion, jnp.asarray(instrument.fixed_pay)) - H0                # [Nf]
     zeta = jnp.asarray(zeta_expiry)[..., None]
     D = legs.fixed_df
+    # The notional is repaid with the last fixed coupon (`last`: a stack's helper may have
+    # padded coupons after it).
+    D_last, dH_last = jnp.take(D, instrument.last, axis=-1), jnp.take(dH, instrument.last, axis=-1)
     shape = jnp.broadcast_shapes(legs.d0.shape, zeta.shape[:-1])
-    y_star = implicit_root(_y_star_helper, (amounts, D, dH, zeta, S_m1, legs.d0),
+    y_star = implicit_root(_y_star_helper, (amounts, D, dH, zeta, S_m1, legs.d0, D_last, dH_last),
                            jnp.zeros(shape, dtype=legs.d0.dtype), solver=solver, steps=Y_STAR_STEPS,
                            increasing=False, window=Y_STAR_WINDOW)
     sqrt_zeta = jnp.sqrt(zeta[..., 0])
@@ -352,16 +425,16 @@ def _analytic_lgm(instrument, legs: _Legs, reversion, zeta_expiry, strike, recei
     total = jnp.sum(amounts * D * norm.cdf(w[..., None] * (y_star[..., None] + dH * zeta) / sqrt_zeta[..., None]),
                     axis=-1)
     total = total - S_m1 * legs.d0 * Phi(y_star)
-    total = total + D[..., -1] * Phi(y_star + dH[-1] * zeta[..., 0]) - legs.d0 * Phi(y_star)
+    total = total + D_last * Phi(y_star + dH_last * zeta[..., 0]) - legs.d0 * Phi(y_star)
     return w * total
 
 
 def _y_star_helper(y, params):
     """`yStarHelper`: the underlying at expiry as a function of the state y, decreasing in it."""
-    amounts, D, dH, zeta, S_m1, d0 = params
-    y = y[..., None]
-    bonds = jnp.exp(-dH * y - 0.5 * dH ** 2 * zeta)
-    return jnp.sum(amounts * D * bonds, axis=-1) - S_m1 * d0 + D[..., -1] * bonds[..., -1] - d0
+    amounts, D, dH, zeta, S_m1, d0, D_last, dH_last = params
+    bond = lambda h, y: jnp.exp(-h * y - 0.5 * h ** 2 * zeta[..., 0])  # noqa: E731
+    bonds = jnp.exp(-dH * y[..., None] - 0.5 * dH ** 2 * zeta)
+    return jnp.sum(amounts * D * bonds, axis=-1) - S_m1 * d0 + D_last * bond(dH_last, y) - d0
 
 
 # ---------------------------------------------------------------------------
@@ -525,28 +598,52 @@ def _bucket(instrument: BasketInstrument, disc, index, vol, zeta_before, dt, *, 
     return sigma, market, model_value(zeta), hit, zeta
 
 
-def basket_residuals(basket: Sequence[BasketInstrument], disc, index, vols, values, dt, reversion: float,
+def helper_residuals(basket: Sequence[BasketInstrument], disc, index, vols, zeta, reversion: float,
                      solver: str = DEFAULT_SOLVER) -> jax.Array:
-    """`[n]`: each helper's model value less its market value on the LGM with the buckets
-    `values` (`zeta(expiry_j) = sum_{i<=j} values_i^2 dt_i`), the system the bootstrap solves one
-    bucket at a time. Lower triangular in the values: helper j reads the buckets up to its own."""
-    zeta = jnp.cumsum(jnp.square(values) * dt)
-    pairs = [price_pair(helper, disc, index, vols[j], reversion, zeta[j], solver) for j, helper in enumerate(basket)]
-    return jnp.stack([model - market for market, model in pairs])
+    """`[n]`: each helper's model value less its market value on the LGM whose zeta at helper j's
+    expiry is `zeta[j]`. Elementwise in zeta: helper j reads its own expiry's alone, so the
+    bootstrap's buckets, `zeta(expiry_j) = sum_{i<=j} values_i^2 dt_i`, make each helper's
+    equation a root in its own zeta. The helpers are one `HelperStack`, priced by one trace mapped
+    over them: a derivative of the residuals traces a helper's price (its y* root included) once,
+    not once per helper (an American's 16 helpers' second derivatives compiled for 33 s traced one
+    by one; 2026-10-19)."""
+    def residual(helper, vol, z):
+        market, model = price_pair(helper, disc, index, vol, reversion, z, solver)
+        return model - market
+
+    return jax.vmap(residual, in_axes=(0, -1, -1), out_axes=-1)(stack_helpers(basket), vols, zeta)
 
 
 def calibrated_values(basket: Sequence[BasketInstrument], disc, index, vols, dt, reversion: float,
                       solver: str = DEFAULT_SOLVER) -> jax.Array:
     """`[n]`: the bootstrap's bucket values on one market (`bootstrap`), with the implicit
     function theorem's derivative in the curves and the volatilities: the calibration's
-    response to them, of any order (`engine.solvers.roots.implicit_solution` on
-    `basket_residuals`). What a price function differentiated through its calibration reads
-    (`engine.risk.greeks.price_functions`): exact for an accepted calibration, every bucket a root
-    inside the bracket (one at an edge misses ORE's acceptance and is refused)."""
-    def solution(market):
-        return bootstrap(basket, *market, dt, reversion, solver)[0]
+    response to them, of any order. What a price function differentiated through its
+    calibration reads (`engine.risk.greeks.price_functions`): exact for an accepted calibration,
+    every bucket a root inside the bracket (one at an edge misses ORE's acceptance and is
+    refused).
 
-    def residual(x, market):
-        return basket_residuals(basket, *market, x, dt, reversion, solver)
+    Each helper's equation is a root in its own zeta (`helper_residuals`), so zeta's tangent is
+    elementwise (`engine.solvers.roots.elementwise_root_tangent`: one forward pass along ones in
+    zeta, one in the market), and the buckets' follows from `zeta_j = sum_{i<=j} values_i^2 dt_i`:
+    `d values_i = (d zeta_i - d zeta_{i-1}) / (2 values_i dt_i)`. The bootstrap's own steps are never
+    differentiated. Against the triangular system in the buckets themselves (a Jacobian of a
+    forward pass per bucket and a triangular solve, 2026-10-17), an American's second derivatives
+    traced each helper's price in fewer derivative contexts (2026-10-19)."""
+    dt = jnp.asarray(dt, dtype=jnp.result_type(vols))
 
-    return implicit_solution(residual, solution, (disc, index, vols))
+    @jax.custom_jvp
+    def buckets(market):
+        return jax.lax.stop_gradient(bootstrap(basket, *market, dt, reversion, solver)[0])
+
+    @buckets.defjvp
+    def buckets_jvp(primals, tangents):
+        (market,), (market_dot,) = primals, tangents
+        values = buckets(market)
+        residual = lambda zeta, m: helper_residuals(basket, *m, zeta, reversion, solver)  # noqa: E731
+        zeta_dot = elementwise_root_tangent(residual, jnp.cumsum(jnp.square(values) * dt, axis=-1), market,
+                                            market_dot)
+        moved = zeta_dot - jnp.concatenate([jnp.zeros_like(zeta_dot[..., :1]), zeta_dot[..., :-1]], axis=-1)
+        return values, moved / (2.0 * values * dt)
+
+    return buckets((disc, index, vols))

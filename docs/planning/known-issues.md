@@ -16,43 +16,54 @@ shared portfolio, what is compared with ORE and what is not is the
 
 ## Verification status
 
-Last full run, 2026-10-18, on the run request (I-87, I-88, I-89, I-94, I-95, I-103, I-76, I-77,
-I-91, I-106). **3,887 collected** on Windows: the previous 3,653 plus 234, reconciled by test id
-against the code before: removed, the standalone bootstrap's four files (48 ids, I-94), the
-retired routes' tests and the standalone cases of `tests/test_root_solvers.py`; added,
-`tests/test_run_request.py` and `tests/test_input_checks.py`, the run-request versions of the
-HTTP tests, the queue's migration, idempotency, cancel, retention, lock and supervisor tests, and
-the completeness test's value check (195 parametrized cases, I-88). Every green run below printed
-its summary line:
+Last full run, 2026-10-19, on stage 3's multi-host, GPU-product and Greeks work (I-61, I-97, I-115)
+and the timing harness. **3,916 collected** on Windows: the 3,888 of the code before (one more
+than the 3,887 recorded on 2026-10-18, its commit's), plus 20 new tests and 2 renumbered
+parameter ids, less 3 ids, reconciled by test id: added, `tests/test_multihost_worker.py` (5),
+the two-host sharding check, the batched bump Greeks' (3), the two-program AD Greeks' (2), the
+queue's attempts and migration (3), the GPU products' (6), `tests/test_precision_timing.py` (9);
+removed, `test_an_option_s_greeks_are_one_program` (renamed) and two TPU ids (renumbered by the
+H100 one). Every green run below printed its summary line:
 
-- **Windows full suite**, `.venv/Scripts/python.exe -m pytest tests/ -q -n 6 --durations=15`:
-  **3,883 passed, 3 skipped, 1 failed**, 25m28s. The failure was a real race in the new queue
-  code: processes opening a file together had one fail switching it to WAL (`database is
-  locked`; SQLite does not wait for that lock). Fixed (`JobQueue._use_wal`), measured 38 failed
-  opens in 720 before and 0 after, the test strengthened to 30 trials per kind (red 3 of 3 times
-  on the code before the fix, green after); the eleven files it and the line-ending restore
-  touched rerun: **502 passed**.
-- **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`, as CI's
-  `fast-strict-dtypes` job runs it): **3,646 passed, 3 skipped, 0 failed**, 4m08s at `-n 6`, on
-  the final code.
-- **Linux** (rule 5: the worker's lock path, its `fcntl` lock and owner record, the supervisor),
-  WSL2 Ubuntu, `JAX_PLATFORMS=cpu`, `-n 2`, the final code: the worker, API, run-request, input,
-  demo, layering and completeness files, **479 passed**.
+- **Windows full suite**, `.venv/Scripts/python.exe -m pytest tests/ -q -n 6 --durations=15`, at
+  3,907 collected: **3,897 passed, 9 skipped, 1 failed**, 35m14s. The failure was this change's (a
+  docstring citing a roadmap step), fixed. The 9 skips: the 3 before and the 6 multi-host tests,
+  Linux only (JAX's gloo collectives). Every file changed after it (the GPU fixes below, the
+  market-risk oracle, the timing harness and its 9 tests, the evidence table), rerun: **363 passed,
+  2 skipped**.
+- **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`):
+  **3,666 passed, 3 skipped, 0 failed**, 4m29s at `-n 6`.
+- **Linux** (rule 5: the worker set's processes and collectives), WSL2 Ubuntu, `JAX_PLATFORMS=cpu`:
+  the worker, sharding and multi-host files, **106 passed** at `-n 2`; the real run request on two
+  hosts and the two-host check, **6 passed**.
+- **GPU** (RTX 5060, WSL2): two full runs (`-n 4`, `-n 3`) lost the VM near their end (I-27); split,
+  **3,761 passed, 3 failed, 1 skipped** (all but the ORE sweeps, `-n 3`, peak 6.0 GB a process),
+  then the ORE sweeps alone, **152 passed, 1 skipped** (peak 23.8 GB). The 3 failures failed on the
+  code before too, and are fixed: the market-risk ORE oracle handed ORE its scenarios as a string,
+  which on Linux it rejected as a file name ("File name too long"; now a file, so the Linux
+  market-risk parity runs at all); the precision harness's test of identically equal paired
+  samples and the Bermudan's Gamma reference ran on a GPU, whose float64 differs by an ulp with the
+  batch and whose XLA cannot compile that reverse-mode gradient ([I-119](#i-119)): both now on the
+  CPU. The fixed files on the GPU: **232 passed**.
+- **The device check** on the RTX 5060 under XLA's Triton emitter and under cuBLAS: every
+  format passes both ways (FP8 emulated, then native).
+- **Golden snapshot** (295 arrays: the shared portfolio's today values, float64/float32/Hull-White/
+  Jamshidian cubes, fixed and recalibrated market risk, bump and AD Greeks on three engines), before
+  against after on the CPU: 137 identical; the bump Greeks moved by at most 3.5e-14 of their trade's
+  NPV, the AD Greeks 4e-17, a recalibrated market-risk P&L 1.3e-14 of its scale; every cube,
+  exposure, fixed-model P&L and today value bit for bit.
+- **Precision campaigns**: the seven with float8_e5m2 compute cases (`compute`, `compute_options`,
+  `compute_market_risk`, `market_risk_calibrated`, `rounding`, `rounding_options`,
+  `rounding_market_risk`) measured again on the frozen engine and the evidence table regenerated:
+  every e5m2 row's relative error within 2e-6 of its record, every other row within 1.6e-7, no
+  verdict or path ceiling moved (`tests/test_precision_evidence.py`, 54 passed).
+- **The timing harness** end to end: `compute` (every stage in each format, 1,024 to 16,384 paths) and `compute_market_risk` (each format's revaluation, 2,048 and 8,192 scenarios), 6 seeds, on the CPU and on the RTX 5060 with its products through cuBLAS (FP8 native there, as each record says), every case in a process of its own and compiling nothing warm (`compliance/precision-timing/`; local evidence, precision design §19).
 - **Lint**: pyflakes passes on every changed Python file.
-- **The demo over HTTP**: `demos/demo_api.py` ran end to end against a real server and worker
-  (one run of four analytics, the cube by reference with every hash checked, an idempotent
-  market-risk run).
-- **Not run**: the GPU (nothing device-specific changed); the golden snapshot (no kernel or
-  number path changed: each analytic is its entry point's direct call, shown bit for bit equal
-  by `tests/test_run_request.py`; the cube's new branch prices an expired European as the zeros it
-  priced before; the rest is host-side checks and labels); the precision campaigns (no kernel
-  changed).
 
-Red first: on the code before, an unsorted curve priced the European payer at 50,679.68 for
-51,133.41 and a late European expiry raised `StopIteration` (I-103); a half-migrated version-1 file
-failed to open (`duplicate column name: kind`) and two queue files on one host each took a worker
-lock (I-106); every submission was a new job (I-89); the value check fails on a schema that drops
-a field (I-88).
+Red first: on the code before, the bump Greeks valued five trades 280 times on the host (10 now:
+Theta's), a calibrated option's AD Greeks were one program, and the two-host check found every
+result on 2 of the 4 devices; with FP8 marked native under Triton the device check fails at 0.71 to
+0.80 of the scale; the market-risk ORE parity fails on Linux.
 
 The fast tier alone is not a full verification. Rules: [README.md](README.md#verification-rules).
 
@@ -74,16 +85,16 @@ The fast tier alone is not a full verification. Rules: [README.md](README.md#ver
 | [I-109](#i-109) | TraderX: after a failed publication a same-id retry never prices or publishes | Medium | OPEN | API | TraderX |
 | [I-110](#i-110) | The documentation contradicts the code in places | Low | OPEN | Tooling | Fix what exists |
 | [I-117](#i-117) | ORE's sensitivity analytic is inconsistent with itself, or fails a calibration the engine fits, in four configurations | Low | OPEN | Validation | Fix what exists |
-| [I-115](#i-115) | The Greeks on an accelerator: bumps one at a time, a calibrated option's AD compiling for a minute, nothing measured on a GPU | Medium | OPEN | Performance | Focus |
 | [I-118](#i-118) | A run of several analytics repeats the work they share | Low | OPEN | Performance | Fix what exists |
-| [I-97](#i-97) | XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU | Medium | OPEN | Performance | Focus |
+| [I-119](#i-119) | On a GPU, XLA cannot compile a reverse-mode derivative of a calibrated option's price | Low | OPEN | Scope | Fix what exists |
+| [I-97](#i-97) | XLA computes some native GPU products wrong: FP8 is native only through cuBLAS, unchecked on H100 | Medium | PARTIAL | Performance | Focus |
 | [I-53](#i-53) | On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch | Low | PARTIAL | Performance | Fix what exists |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | New |
 | [I-58](#i-58) | TraderX: two concurrent submissions of one workload under different ids both execute | Medium | PARTIAL | API | TraderX |
 | [I-59](#i-59) | TraderX: `calculations` and `reportingCurrency` accepted, keyed, then ignored | Medium | OPEN | API | TraderX |
 | [I-60](#i-60) | TraderX result schema has no stated policy on added fields | Low | ASSUMPTION | API | TraderX |
 | [I-90](#i-90) | The HTTP API has no authentication, rate limit or body-size limit | Low | OPEN | API | TraderX |
-| [I-61](#i-61) | Nothing runs on more than one host; multi-device speed unmeasured | Medium | PARTIAL | Performance | Focus |
+| [I-61](#i-61) | Multi-device and multi-host speed unmeasured | Medium | PARTIAL | Performance | Focus |
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | Fix what exists |
 | [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | Fix what exists |
 | [I-81](#i-81) | A cold job compiles about 180 one-operation programs; market risk vmaps a closure | Low | OPEN | Performance | Fix what exists |
@@ -155,50 +166,56 @@ With a smile: European NPV and Vega away from the money, and calibrated Bermudan
 option's and helper's strike as ORE reads its cube. SABR is [F-02](features.md#f-02).
 
 <a id="i-97"></a>
-### I-97 — XLA computes some native GPU products wrong, so FP8 and bfloat16 passes run emulated on a GPU
+### I-97 — XLA computes some native GPU products wrong: FP8 is native only through cuBLAS, unchecked on H100
 
-**Severity:** Medium (a stated goal unmet: the speed of native units) · **Status:** OPEN ·
+**Severity:** Medium (a stated goal unmet: the speed of native units) · **Status:** PARTIAL ·
 **Category:** Performance · **Found:** 2026-10-10, the device check (`tests/support/precision_devices.py`);
 located 2026-10-11
 
-**What is wrong.** Three matrix products XLA compiles for the GPU return wrong numbers without
-an error (RTX 5060, compute capability 12.0, jax and jaxlib 0.10.2, driver 592.01; each against
-the exact product of the same operands, relative to `|a|·|b|`, five shapes):
+**Closed part (2026-10-19).** A GPU's FP8 and bfloat16 passes run natively where they are right
+(`engine.precision.products`):
 
-- **FP8** (e4m3 and e5m2 operands, float32 result): 0.39 to 0.72 off on every shape but the
-  matrix-vector one, under any precision flag. XLA compiles these products with its own Triton
-  GEMM emitter; with `--xla_gpu_enable_triton_gemm=false` it calls cuBLASLt instead
-  (`__cublas$lt$matmul$f8` for e4m3) and every shape is exact to 3e-8. The card's FP8 units
-  and NVIDIA's library are right; XLA's Triton code for FP8 on this architecture is not.
-  e5m2 by e5m2 goes to cuBLASLt's non-FP8 path, consistent with FP8 units that do not take two
-  e5m2 operands: a native e5m2 product would pair it with e4m3.
-- **bfloat16 passes** (`BF16_BF16_F32_X3`): 2e-6 to 1.4e-5, as three passes should be, on every
-  matrix shape, Triton or cuBLASLt; 9.9e-4, a single pass's error, on the matrix-vector shape
-  (512 by 64 by 1), which XLA compiles as a fusion, not a GEMM, ignoring the requested
-  algorithm. `--xla_allow_excess_precision=false` changes nothing.
-- **float32 operands with a float64 result** (`preferred_element_type`): float32's error (2e-7)
-  through Triton; cuBLASLt refuses it ("GEMM is not supported"), so only Triton's answer is
-  silent. Fixed in the engine on 2026-10-11 (`engine.precision.products`: float32's values
-  multiplied as float64).
+- **FP8 through cuBLASLt.** In a process whose `XLA_FLAGS` hold `--xla_gpu_enable_triton_gemm=false`
+  (`cublas_gemms`), a GPU's FP8 products go to cuBLASLt's FP8 path (`__cublas$lt$matmul$f8`),
+  exact on every matrix shape on the RTX 5060 (compute capability 8.9 and up counts as having the
+  units); elsewhere they stay emulated, exactly. Not the worker's default: timed against XLA's
+  Triton emitter alternately on the RTX 5060, cuBLAS ran the shared portfolio's float64 job 15%
+  slower (6.31–6.44 s against 5.54–5.60 s at 16,384 paths), its float32 job 11% faster and market
+  risk alike, so float64 would get slower (precision design §13.9); the research timing sets the
+  flag (precision design §19).
+- **e5m2 beside e4m3.** FP8 units take e5m2 only beside e4m3 (cuBLASLt multiplied two e5m2
+  operands on its other path): float8_e5m2 holds the operand every path shares in e4m3, its
+  mantissa e5m2's on e4m3's range (`Format.shared_dtype`), emulated or native alike; e5m2's
+  products on the RTX 5060 then ran as `__cublas$lt$matmul$f8`, exact. The only change from e5m2
+  throughout is the shared operand's range, below 2^-15 of a slice's largest value; the seven campaigns with e5m2 compute cases measured again (2026-10-19): every e5m2 row's relative error within 2e-6 of its record (median 1e-13), no verdict or path ceiling of the evidence table moved.
+- **bfloat16 passes on matrix shapes.** `BF16_BF16_F32_X3` is right on every matrix shape under
+  either emitter, so the passes are native on a GPU from Ampere; a matrix-vector product, which
+  XLA compiles as a fusion ignoring the algorithm (1.1e-3 off, a single pass's error, either
+  emitter), is emulated there (`EMULATED_MATRIX_VECTOR`).
 
-**Reach.** No number the engine reports: `product_execution` marks FP8 and bfloat16 passes
-emulated on every GPU, and the emulation is exact. What it costs is speed: on a GPU the FP8
-compute formats run on float16 units, and bfloat16 passes as three float32 products, so their
-timing on a GPU (F-07's research result) is not yet measurable. Unknown elsewhere: H100
-(compute capability 9.0) is XLA's most exercised FP8 target and may compile FP8 another way;
-the matrix-vector and float64-result faults look independent of the architecture.
+The device check passes every format under both emitters on the RTX 5060 (FP8 native under
+cuBLAS, emulated under Triton); red first: with FP8 marked native under Triton, 0.71 to 0.80 of the
+scale off.
 
-**Current handling.** Emulated on a GPU; the precision report says so per format. The device
-check covers every allowed arithmetic and a matrix-vector shape.
+**What is wrong.** Two of XLA's GPU faults remain its own, and both stay unchecked beyond one
+card and one jax: its Triton GEMM emitter computes FP8 products 0.54 to 0.79 off on every matrix
+shape under the worker's determinism flag (`--xla_gpu_exclude_nondeterministic_ops=true`, which
+keeps XLA's autotuner off cuBLASLt; without it only the smallest shape is wrong), on an RTX 5060
+(compute capability 12.0, jax 0.10.2, the newest jax on 2026-10-19), and its
+matrix-vector fusion ignores the bfloat16-passes algorithm. H100 (compute capability 9.0, XLA's
+most exercised FP8 target) may compile either another way. Minimal reproductions are written
+([details/xla-gpu-reproductions.md](details/xla-gpu-reproductions.md)) and not yet reported to
+XLA (the owner's to file).
 
-**To close.** Native FP8 and bfloat16 passes on any GPU that has the units, each shown right by
-the device check: (1) route the engine's FP8 products to cuBLASLt (the engine worker's
-`--xla_gpu_enable_triton_gemm=false`, timed against Triton on every other product, or a
-narrower mechanism if XLA offers one per product); (2) a product format's matrix-vector product
-run in a shape XLA honours the algorithm for, or emulated; (3) e5m2 paired with e4m3 where the
-units need it; (4) the device check on H100 and on a newer jax, and minimal reproductions
-reported to XLA. Red first: the device check with the formats marked native fails on the RTX 5060
-today (FP8 0.7 off) and passes after.
+**Reach.** No number: a format runs natively only where the device check showed it right, and
+the precision report names each format's execution. Speed: under XLA's default emitter a GPU's
+FP8 runs emulated on its float16 units.
+
+**Current handling.** As above; the precision report says native or emulated per format.
+
+**To close.** The device check on H100 under both emitters (and on each new jax); the XLA
+reports filed; native FP8 under XLA's default emitter once its Triton code is right, or a
+per-product route to cuBLASLt if XLA offers one.
 
 ---
 
@@ -254,57 +271,6 @@ recorded as a difference by decision.
 
 ## Performance
 
-<a id="i-115"></a>
-### I-115 — The Greeks on an accelerator: bumps one at a time in a host loop, a calibrated option's AD compiling for a minute, nothing measured on a GPU
-
-**Severity:** Medium · **Status:** OPEN · **Category:** Performance · **Found:** 2026-10-17, closing
-I-51, I-78 and I-112
-
-**What is wrong.**
-
-- **The bump Greeks reprice one shift at a time.** `engine.risk.greeks.bump.portfolio_sensitivities`
-  values each trade on about sixty shifted markets in a Python loop (`value_on` per shift, a
-  calibrated option recalibrated in each), every value a host round trip: an accelerator idles
-  between small programs. The shifts are independent scenarios on the sensitivity market, which
-  market risk already revalues as one batch, its options recalibrated per scenario
-  (`engine.risk.market.revaluation`, `engine.risk.greeks.price_functions`).
-- **A calibrated option's AD Greeks compile for about a minute.** Measured old and new code
-  alternately, the shared portfolio's AD Greeks on ORE's default grid with no disk cache: 159 s
-  against 32 s before 2026-10-17, warm 4.7 s against 0.7 s (the bump method 8.7 s); its American,
-  16 helpers, alone 87 s cold, 0.6 s warm, 4.2 GB peak. Most of it is the helpers' prices, each
-  with its own y\* solve, traced again in every derivative context of the basket's residuals in
-  one program; compiled apart, the calibration's second derivatives took 12 s and the grid's
-  along a given volatility 0.6 s (profiling §3.9). Two other forms of the tangent solve were
-  measured and are worse.
-- **Nothing of 2026-10-17's is measured on an accelerator**: the AD program through a calibration
-  (batched forward derivatives over 26 directions, each moving the grid's operator), and market
-  risk's recalibration (each scenario its own operator, batched, where a fixed model shares one).
-  On the CPU, the parity sweep's heaviest case (2026-10-18: an American of 32 helpers on a
-  301-node grid, 52 exercise steps a year, recalibrated under 256 scenarios) took the engine
-  183 s cold and 170 s warm, and ORE's own analytic 1,041 s: compute, not compilation.
-
-**Reach.** Wall time only; no number. Bump Greeks on an accelerator; the first AD Greeks of a
-calibrated option's shape in a process; calibrated options in market risk on a GPU or TPU.
-
-**Current handling.** The disk cache keeps the compiled programs, so a repeated job does not pay
-the compile; bump Greeks on a CPU are as before. Where the float64 stages (calibrations, Greeks)
-run on a host with an accelerator is the owner's open decision A-25
-([compliance/decisions.md](../../compliance/decisions.md)), which step 1's measurements inform.
-
-**To close**, in this order, the numbers equal before and after within the margin (the ORE parity
-suites, the golden snapshot), measured old against new alternately:
-
-1. Measure on the RTX 5060 (WSL): the 2026-10-17 tests, the shared portfolio's bump and AD Greeks
-   cold and warm, peak memory, and recalibrated market risk's time per scenario against a fixed
-   model's, so the work below is aimed at what costs on the device.
-2. The bump Greeks as one batched revaluation: the shifts as scenarios of the sensitivity market
-   (the price functions on `TenorNodes`, a calibrated option recalibrated per shift as market
-   risk recalibrates per scenario, Theta as it is), one program per trade shape; equal to ORE's
-   sensitivity analytic as now (tests/test_sensitivity_ore_parity.py).
-3. The AD program in two: the calibration's first and second derivatives along each direction
-   (the implicit function theorem on the basket's residuals, as now), then the grid's along the
-   combined direction; the same Greeks.
-
 <a id="i-53"></a>
 ### I-53 — On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch
 
@@ -352,7 +318,8 @@ times on the RTX 5060 (7.3 s to 0.19 s); the demo's repeated job on the GPU 5.4�
   exists.
 
 **Reach.** Wall time only; no number. Windows CPU runs; a worker's first job; float64 path
-pricing of linear trades on a CPU. (A calibrated option's AD compile is [I-115](#i-115)'s.)
+pricing of linear trades on a CPU. (A calibrated option's AD compile was [I-115](#closed)'s: 22 s for an
+American since 2026-10-19.)
 
 **Current handling.** None needed for correctness.
 
@@ -364,41 +331,43 @@ programs ([I-81](#i-81)). (The grid rollback's memory and time on the paths, the
 went with its matrix form, [I-83](#i-83), 2026-10-13: the demo's job 0.27 s warm there, against 13.2 s.)
 
 <a id="i-61"></a><a id="p-1"></a>
-### I-61 — Nothing runs on more than one host; multi-device speed unmeasured
+### I-61 — Multi-device and multi-host speed unmeasured
 
 **Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-24, audit P-1
 
-**Closed part (2026-10-04, the one-host half).** A job's scenarios are split across
-the devices of its host (`engine/market_simulation/sharding.py`): the simulation's Sobol normals and
-market risk's shifts are placed on a one-axis mesh along the scenario axis, and XLA's sharding
-propagation carries the split through path evolution, the scenario market, pricing and the
-stored cube, gathering at the reductions (exposure, VaR/ES). Market risk's memory-bounded
-batches take their scenarios from every device's share. The device count is the largest that
-divides the scenario count, capped by `JAX_RISK_SCENARIO_DEVICES`; on one device nothing is
-placed, so one-device runs are unchanged bit for bit. On four XLA host devices a portfolio run
-(LGM, Bermudan, paired sample), an FP8 stochastic-rounding run and a market-risk run hold
-their results on all four devices and equal the one-device run to about 6e-16 relative (the
-batch shape's rounding; FP8 bit for bit). Tests: `tests/test_sharding.py`; red first: before
-the change every result sat on one device.
+**Closed parts.** *One host (2026-10-04).* A job's scenarios are split across the devices of its
+host (`engine/market_simulation/sharding.py`): the simulation's Sobol normals and market risk's
+shifts are placed on a one-axis mesh along the scenario axis, and XLA's sharding propagation
+carries the split through path evolution, the scenario market, pricing and the stored cube,
+gathering at the reductions (exposure, VaR/ES). On four XLA host devices a portfolio run (LGM,
+Bermudan, paired sample), an FP8 stochastic-rounding run and a market-risk run hold their results
+on all four devices and equal the one-device run to about 6e-16 relative (the batch shape's
+rounding; FP8 bit for bit).
 
-**What is wrong.** The project's goal is to run across multiple TPUs and compare many
-low-precision paths against fewer FP64 paths in equal wall time. Two parts are missing:
+*Several hosts (2026-10-19).* One engine worker per host of a pod slice (`jax-risk-worker
+--distributed`, `engine/api/hosts.py`): the hosts join one `jax.distributed` cluster; process 0
+alone serves the queue, broadcasts each job (fixed-shape chunks, compiled once), decides each
+phase boundary's cancel for every host and gathers every host's outcome; a failure the request
+determines is reported by every host, any other stops the set (JAX's distributed service stops
+the other hosts) and the restarted process 0 runs the job again once (`JobQueue.requeue_running`,
+the queue's `attempts`, schema version 4). The scenario mesh spans every host's devices, the same
+number from each, and an array split across hosts is read whole with a gather (`host_array`). A
+run on fewer devices than it has (a scenario count with no fitting divisor: 1,001 paths on eight
+devices ran on seven, silently) says so in its warnings (`unused_devices_warning`, AUD-45). Tests,
+Linux CPU, JAX's gloo collectives: two hosts of two devices each give the one-device numbers on
+every run of the four-device check (`tests/test_sharding.py`); a stub worker set runs jobs on both
+hosts, fails, cancels and retries them, and a real run request (every analytic, the scenarios across
+both hosts' four devices) gives one host's result document (`tests/test_multihost_worker.py`);
+red first: on the code before, each host split the scenarios across its own two devices only
+(the two-host check found every result on 2 of the 4 devices), and no worker took `--distributed`.
 
-- **Several hosts.** On a pod slice every host must run the same job (SPMD); the worker
-  claims jobs for its own host only and uses `jax.local_devices()`.
-- **Speed.** The split is verified for its numbers on CPU host devices, which share the
-  host's cores, so it says nothing about speed. Scaling on real devices is unmeasured.
-- **Awkward path counts use fewer devices, silently.** The device count is the largest divisor
-  of the path count (`scenario_device_count`): 1,001 paths on eight devices run on seven, a
-  prime count on one, with no warning (found by the project audit, AUD-45).
+**What is wrong.** Speed. The split is verified for its numbers on CPU host devices and processes,
+which share the host's cores, so it says nothing about speed: scaling on TPU and H100 is
+unmeasured, and the storage blocks' alignment with each device's share is unchecked there.
 
-**To close.** One worker per host (`jax.distributed.initialize`), process 0
-claiming each job and handing it to the others
-([details](details/precision.md#113-multi-device-and-multi-host)); then wall time against
-device count on TPU (and H100), feeding the research result ([F-07](features.md#f-07)). A run on fewer devices than
-it was given says so in its precision report (or pads its paths to a multiple of the devices
-and drops the padding before any reduction); the storage blocks' alignment with each device's
-share is checked on the real devices.
+**To close.** Wall time against device count on TPU (and H100) by the timing harness
+(`tests/support/precision_timing.py`, precision design §19), on one host and on a pod slice with
+the cluster's variables set, feeding the research result ([F-07](features.md#f-07)).
 
 <a id="i-118"></a>
 ### I-118 — A run of several analytics repeats the work they share
@@ -824,6 +793,14 @@ four-device sharding test (a fifth JAX process with four XLA host devices) timed
 30 minutes at a cgroup peak of 24.4 GB of 25.2; one on a quiet host where the Docker VM went
 down at 98%. Memory is the leading suspect: the suite now runs at the VM's limit.
 
+**2026-10-19, two GPU full runs under WSL2 lost the VM** (a 24 GB VM, the RTX 5060): at `-n 4` and
+at `-n 3` the whole VM restarted near the end, among the ORE parity sweeps, with no summary line.
+Split in two, the suite ran: everything but `tests/test_ore_parity_sweep.py` and
+`tests/test_ore_xva_parity.py` at `-n 3` (peak 6.0 GB a process), then those two alone (152
+passed, one process peaking at 23.8 GB). The batched bump Greeks hold a batch of shifts up to the
+grid engine's induction budget where the shifts valued one at a time held one: the sweeps'
+heaviest Greeks case (seed 28, CPU) peaked at 3.0 GB against 1.5 GB on the code before.
+
 **2026-10-05, five Linux full runs under WSL2, all with summary lines** (a 23 GB
 VM, `-n 4`): four on the GPU (the first two with failures in the code since fixed, none a lost
 process or an abort; the last two green, 20–22 min) and one on CPU, green in 9m24s. WSL2 is the steadier Linux host here;
@@ -923,10 +900,14 @@ compilation plus their tracing. Most come from the scenario market's constructio
 (`lgm_numeraire`, `implied_log_discounts` in `engine/market_simulation/scenario_market.py`, about 60),
 the CAM calibration (`cam.py`'s `zeta`, `calibrate_currency`), the options' known path
 fixings (`engine/pricing/bermudan.py::_known_rates`) and the sensitivity market. Separately,
-market risk vmaps a fresh closure over the jitted pricers per run (`revalue_trade`), the
-pattern whose derivative programs were found (2026-10-06) to be kept by JAX only in internal caches of 2,048
-entries (profiling §3.8): a market-risk job large enough to overflow them would compile its
-batched programs again on the next run.
+an option recalibrated under scenarios (market risk's, and the bump Greeks' shifts since
+2026-10-19) maps a closure over the bootstrap's jitted buckets (`ScenarioCalibration`), and a
+scenario axis split across devices maps its batches' closure (`_map_scenarios`): the pattern
+whose derivative programs were found (2026-10-06) to be kept by JAX only in internal caches of
+2,048 entries (profiling §3.8), so a job large enough to overflow them would compile its batched
+programs again on the next run. The batched buckets are programs of their own beside the
+unbatched ones of the base calibration: the shared portfolio's bump Greeks compile in 27 s cold
+against 16 s before they were batched, the same warm (2026-10-19, CPU).
 
 **Reach.** First-call time only: each such program is compiled once per process and shape and
 then reused (a repeated demo job compiles nothing). No number is wrong.
@@ -934,11 +915,33 @@ then reused (a repeated demo job compiles nothing). No number is wrong.
 **Current handling.** None.
 
 **To close.** Jit the scenario market's construction and the other eager sites as
-module-level functions with their data as arguments, and give market risk's batch a
-module-level jitted function of `TradePriceFunction.pricer` and `.terms`, as the AD Greeks
-(`engine.risk.greeks.ad._derivatives`). Jitting can move float64 at rounding level (XLA
+module-level functions with their data as arguments, and the scenario calibration as one
+module-level program per basket shape whose compile does not grow with the basket (the AD
+Greeks' helpers priced as one `HelperStack` show the way: an American's calibration
+derivatives compiled in 10 s instead of 33). Jitting can move float64 at rounding level (XLA
 fuses what ran op by op), so it shows the golden snapshot's change per array. Measured by the
 compile probe of profiling §3.8 on the demo's job.
+
+<a id="i-119"></a>
+### I-119 — On a GPU, XLA cannot compile a reverse-mode derivative of a calibrated option's price
+
+**Severity:** Low · **Status:** OPEN · **Category:** Scope · **Found:** 2026-10-19, the GPU suite of
+the stage-3 work (also on the code before it)
+
+**What is wrong.** `jax.jit(jax.grad(fn.price))` of a calibrated Bermudan's price function fails on
+the RTX 5060 (jax 0.10.2) with `FAILED_PRECONDITION: Failed to evaluate instruction (min.NNN) since
+it depends on infeed or parameters to its parent computation`, an XLA compiler error in a loop's
+sunk computations; the same program compiles on the CPU. Found by
+`tests/test_greeks_bermudan.py::TestBermudanDeltaGamma::test_gamma_is_the_derivative_of_delta`,
+whose independent reference is that gradient, on the code before the stage-3 changes too.
+
+**Reach.** No engine path: the AD Greeks are forward mode (`engine.risk.greeks.ad`) and compile on
+the GPU. A caller differentiating a price function in reverse mode on a GPU gets the error.
+
+**Current handling.** The test computes its reference on the CPU.
+
+**To close.** Reduce it to a minimal JAX program (the y* root's bracket clamp under a reverse pass
+is the first suspect), report it to XLA beside I-97's, and check each new jax.
 
 <a id="i-110"></a>
 ### I-110 — The documentation contradicts the code in places
@@ -1052,6 +1055,7 @@ or the register's text at commit `8306073`). The test named guards the fix.
 | <a id="a-7"></a>Audit A-7 | The bond pricer was a separate plain-Python implementation | `tests/test_market_risk.py::TestRevaluation` |
 | <a id="i-98"></a>I-98 | Per-path product operands had no unbiased rounding policy; keyed stochastic compute rounding removes their conditional rounding bias, nearest retained as the measured baseline and nonlinear FP8 failures left failing (2026-10-16) | `tests/test_precision_accuracy.py::test_stochastic_product_has_no_binade_rounding_bias`, `::test_stochastic_keys_are_data_and_sample_prefixes_reproduce`; `rounding` and `rounding_options` campaigns |
 | <a id="i-114"></a>I-114 | The precision evidence lookup ignored pricing settings, so rows measured with Bachelier, on the coarse grid or on a fixed LGM validated a Jamshidian European, ORE's default grid and a Bermudan recalibrated under each market-risk scenario; every row now holds under its campaign's per-product kernel settings (`PricingConfig.kernel_settings`: the European engine and Jamshidian's solver, the grid's `nx`/`sx` and an American's steps, `model=fixed`/`recalibrated`), an unmeasured configuration is warned of naming what was measured, and the `market_risk_calibrated` campaign measures the recalibrated kernel (2026-10-18) | `tests/test_precision_evidence.py::TestSettingsEndToEnd` (each red on the code before: no warning), `::TestSettingsLookup`, `::TestKernelSettings`, `::TestRecord::test_each_record_holds_its_campaigns_pricing_settings` |
+| <a id="i-115"></a>I-115 | The Greeks were slow on an accelerator: the bump Greeks revalued each shift on the host (about sixty round trips per trade), a calibrated option's AD Greeks compiled for 72-87 s, nothing was measured on a GPU (now one batched revaluation of each trade's shifts, market risk's; the AD Greeks of a calibrated option two programs over its basket priced as one helper: the American 22 s cold, measured on the RTX 5060 and the CPU, profiling §3.10) | `tests/test_sensitivities.py::TestOneBatchedRevaluation`, `tests/test_profiling_and_jit.py::TestCompileCounts::test_an_option_s_greeks_are_two_programs`, `::test_the_two_programs_are_the_one_program_s_derivatives` |
 | <a id="i-116"></a>I-116 | ORE parity was shown on one market and the default settings, so a Theta 60–290% off had passed: the parity matrix (every product by analytic by setting, a test or a stated reason, generated from the tests' `ore_parity` markers into docs/reference/ore-parity.md) and seeded sweeps against ORE's NPV, sensitivity and historical-simulation VaR analytics, which found five defects, each fixed (a deal strike ORE writes to six decimals, a helper ending on the underlying's last payment date, an American without a calibrating helper refused, Theta without an add-back, the Theta market's volatilities from the next business day), and the settings runs on ORE's paths a sixth (an American whose window opened before the as-of date never exercised on a path) (2026-10-18) | `tests/test_ore_parity_matrix.py`, `tests/test_ore_parity_sweep.py`, `tests/test_ore_parity_settings.py`, `tests/test_ore_xva_parity.py::test_other_settings_equal_ores_simulation_on_ores_paths` (each red on the code before) |
 | <a id="i-113"></a>I-113 | Long continuation values and stressed market-risk revaluations crossed zero; bound before LongShort/delivery and before/after P&L storage (2026-10-16) | `tests/test_precision_accuracy.py::test_long_option_bound_precedes_position_and_physical_delivery`, `::test_market_risk_cannot_revalue_a_long_option_below_zero` (both red before fix) |
 | <a id="i-111"></a>I-111 | Raw variance diagnostics could be read as nominal confidence bounds despite rare-event undercoverage; the shared Python/HTTP availability contract now declines all nominal intervals without a validated tail bound, retains raw errors, audits each date including zero-width misses, and renames the conditional ES diagnostic (2026-10-16). Supported intervals are F-10 | `tests/test_uncertainty_availability.py`, `tests/test_precision_harness.py::TestMeasure::test_replicated_diagnostics_are_per_date_and_never_certify_empirical_constants`, `tests/test_precision_accuracy.py` (wire metadata and warm compile reuse) |

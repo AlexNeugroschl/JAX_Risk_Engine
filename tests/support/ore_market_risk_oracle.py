@@ -20,7 +20,7 @@ module adds:
     curve is flat in the first day, where no flow of a trade valued today lies. Beyond the last
     pillar the two extrapolate differently (ORE flat zero, the engine flat forward): the
     histories' curves reach beyond every flow.
-  * **The scenarios** (`setScenarioReader`, a scenario buffer): on each history date each
+  * **The scenarios** (`setScenarioReader`, a scenario file): on each history date each
     simulated curve's discount factors at the tenors, `exp(-z t)` with `z` the date's zero rate
     at the tenor's time, linear in the zero rate between the engine's pillars. ORE's return of a
     discount factor is logarithmic (`ReturnConfiguration`'s default), applied to its base
@@ -55,7 +55,10 @@ One currency, one Ibor index; what the oracle cannot express is refused by name.
 """
 from __future__ import annotations
 
+import gc
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Sequence, Tuple
 
 import numpy as np
@@ -175,7 +178,6 @@ def _run(market: Market, trades, levels: np.ndarray, dates, horizon_days: int, t
     market_xml = sim_market_xml([f"{d}D" for d in key_days], (run.index, DISCOUNT_INDEX), run.vols,
                                 simulate_vols=False, interpolation="LinearZero", extrapolation="FlatZero")
     parameters.setHistVarSimMarketParams(f"<Simulation>{market_xml}</Simulation>")
-    parameters.setScenarioReader("\n".join(lines))
     parameters.setBenchmarkVarPeriod(f"{iso(dates[horizon_days])},{iso(dates[-1])}")
     parameters.setMporDays(horizon_days)
     parameters.setMporCalendar("TARGET")
@@ -184,5 +186,16 @@ def _run(market: Market, trades, levels: np.ndarray, dates, horizon_days: int, t
     parameters.setIncludeExpectedShortfall(True)
     parameters.setTradePnl(trade_pnl)
     parameters.insertAnalytic("HISTSIM_VAR")
-    app = run.run("historical_PnL" if trade_pnl else "var")
-    return {name: report_columns(app, name) for name in ("historical_PnL",) + (() if trade_pnl else ("var",))}
+    # The scenarios as a file ORE reads. Given the text itself, ORE keeps it as its `scenarioFile`
+    # parameter, whose path the analytic then asks the filesystem about: on Linux that fails on so
+    # long a name ("File name too long"). ORE holds the file open while its reader lives (on
+    # Windows the directory cannot be removed then), so its objects go before the directory.
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "scenarios.csv"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        parameters.setScenarioReader(str(path))
+        app = run.run("historical_PnL" if trade_pnl else "var")
+        reports = {name: report_columns(app, name) for name in ("historical_PnL",) + (() if trade_pnl else ("var",))}
+        del app, parameters, run
+        gc.collect()
+    return reports

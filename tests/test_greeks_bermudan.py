@@ -114,8 +114,10 @@ class TestBermudanDeltaGamma:
         fn, rates, greeks = option
         gradient = jax.jit(jax.grad(fn.price, argnums=0))
         gamma, h = greeks["gamma:discount:USD"], 1e-7
-        central = np.array([float(gradient(*moved(rates, 0, k, h))[k] - gradient(*moved(rates, 0, k, -h))[k])
-                            / (2 * h) * SHIFT ** 2 for k in range(gamma.size)])
+        # On the CPU: XLA cannot compile this reverse-mode program for a GPU (I-119).
+        with jax.default_device(jax.devices("cpu")[0]):
+            central = np.array([float(gradient(*moved(rates, 0, k, h))[k] - gradient(*moved(rates, 0, k, -h))[k])
+                                / (2 * h) * SHIFT ** 2 for k in range(gamma.size)])
         assert_close(gamma, central, rtol=1e-6)
 
     def test_the_delta_holds_the_calibrations_response(self, option):

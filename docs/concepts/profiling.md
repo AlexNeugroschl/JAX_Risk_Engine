@@ -939,7 +939,82 @@ the triangular solve unrolled row by row (over 9 GB), and `jax.lax.custom_linear
 tangent system, whose derivative takes one directional derivative of the Jacobian instead of all
 of it (108 s, 8.4 GB). Without y\*'s implicit derivative (which Gamma needs) the American compiles
 in 75 s: the bulk is the helpers' prices traced again in every derivative context. The cold cost
-is [I-115](../planning/known-issues.md#i-115)'s, which plans the program's split in two.
+is [I-115](../planning/known-issues.md#closed)'s, closed by §3.10.
+
+### 3.10 The Greeks on an accelerator (2026-10-19)
+
+I-115's three parts, each equal to the code before within the margin (the ORE parity suites; the
+golden snapshot: the bump Greeks by at most 3.5e-14 of their trade's NPV, the AD Greeks 4e-17, a
+recalibrated market-risk P&L 1.3e-14 of its scale, every cube, exposure and fixed-model P&L bit for
+bit), measured on the shared portfolio (eight trades on ORE's default grid, its Bermudans and
+American calibrated) in a fresh process per measurement, no disk cache, old and new code
+alternated, cold the first call (compile included) and warm the median of three.
+
+**First, where the time went** (the code before, RTX 5060 against the CPU):
+
+| | CPU cold | CPU warm | RTX 5060 cold | RTX 5060 warm |
+|---|---:|---:|---:|---:|
+| Bump Greeks, shared portfolio | 16.1 s | 8.73 s | 29.9 s | 13.2 s |
+| Bump Greeks, the American alone | 13.3 s | 7.31 s | 21.1 s | 8.03 s |
+| AD Greeks, shared portfolio | 124 s | 4.09 s | 171 s | 8.84 s |
+| AD Greeks, the American alone | 72.1 s | 3.59 s | 107 s | 6.67 s |
+| Market risk, the Bermudan on a fixed LGM, 256 / 1,024 scenarios | 1.0 s | 0.015 / 0.041 s | 2.8 s | 0.027 / 0.046 s |
+| Market risk, the Bermudan recalibrated, 256 / 1,024 scenarios | 8.0 s | 1.09 / 4.33 s | 15.1 s | 0.84 / 3.17 s |
+
+The bump Greeks were slower on the card than on the CPU: about sixty host round trips per trade,
+each a small program the device idled between. A recalibrated scenario costs about 3 ms against
+0.02 ms on a fixed model, on either device (each scenario its own calibration and induction).
+
+**The bump Greeks as one batched revaluation.** A trade's shifts are the scenarios of market
+risk's revaluation of its price function (`engine.risk.greeks.scenario_pnl`), an option
+recalibrated under each first, its bootstrap batched over the shifts:
+
+| | CPU cold | CPU warm | RTX 5060 cold | RTX 5060 warm |
+|---|---:|---:|---:|---:|
+| Bump Greeks, shared portfolio | 27.0 s | 8.22 s | 47.5 s | **6.48 s** |
+| Bump Greeks, the American alone | 23.7 s | 7.40 s | 31.7 s | **4.52 s** |
+
+Twice as fast warm on the card; on the CPU, whose work was already compute-bound, the same. It
+holds more: a batch of shifts up to the grid engine's induction budget (§17) where the loop held
+one, the parity sweeps' heaviest Greeks case (an American, seed 28) peaking at 3.0 GB against 1.5 GB
+on the CPU. Cold it is slower: each bucket of the bootstrap compiles again batched over the shifts beside its
+unbatched program (21 against 10 bucket programs, 9.5 s of the CPU's compile;
+[I-81](../planning/known-issues.md#i-81)). A first attempt that jitted the whole basket's
+calibration as one program per option compiled 13.4 s for three options and was dropped.
+
+**A calibrated option's AD Greeks in two programs, its basket priced as one helper.** Split as
+planned (the calibration's derivatives, then the grid's along each direction combined with them),
+the American compiled for 76 s, no better: the calibration's derivatives alone took 54 s, the
+grid's 0.85 s. The 2026-10-17 estimate of 12 s for the calibration's part had measured the
+residuals' second derivatives alone, not the calibration's in every derivative context. What cost was each of the basket's 16 helpers
+traced on its own in every derivative context, measured by order (`calib_compile`, the
+American's calibration alone): the primal 5.6 s to compile, first derivatives 14 s, second 31 s,
+whatever the number of directions. Three changes took it to 9.6 s:
+
+- one forward pass of a forward pass over every direction, the quotes' with the node values'
+  (whose second derivatives are not kept), the value read off its primal: no separate trace of the
+  quotes' first derivatives (16 s) or of the value (5.6 s);
+- each helper's equation solved for its own zeta (`helper_residuals`), the derivative elementwise
+  (`elementwise_root_tangent`) rather than a triangular system's (a Jacobian of a pass per bucket
+  and a solve): 1.3 s less;
+- the helpers priced as one (`stack_helpers`: each padded to the basket's most coupons with
+  coupons that add exactly 0, mapped with `vmap`), so a derivative traces one helper's price:
+  33 s to 9.6 s.
+
+| | CPU cold | CPU warm | RTX 5060 cold | RTX 5060 warm |
+|---|---:|---:|---:|---:|
+| AD Greeks, shared portfolio | **36.5 s** | 4.04 s | **75.2 s** | 9.26 s |
+| AD Greeks, the American alone | **22.3 s** | 3.55 s | **44.3 s** | 6.87 s |
+
+A third of the cold time; warm the same on the CPU and 3–5% slower on the card, two programs where
+there was one. Market risk is unchanged warm on both devices (recalibrated 4.33 s and 3.20 s at
+1,024 scenarios), its cold 1.4 s longer on the card for the batched buckets.
+
+**For decision A-25** (where the float64 stages run on an accelerator host): on the RTX 5060,
+whose float64 runs at 1/64 of its float32 rate, the batched bump Greeks are faster than the CPU's
+(6.5 s against 8.2 s), the AD Greeks slower (9.3 s against 4.0 s), and the recalibrated market risk
+faster (3.2 s against 4.3 s at 1,024 scenarios). The fixed stages' share of a whole job on Ironwood
+and H100 is the timing's to measure (precision design §19).
 
 ---
 

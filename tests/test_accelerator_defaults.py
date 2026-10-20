@@ -104,6 +104,33 @@ class TestTheWorkerRunsDeterministicKernels:
         assert PREALLOCATE in os.environ
 
 
+class TestAGpusFp8GoesToCublasOnRequest:
+    """I-97: XLA's Triton GEMM emitter computes a GPU's FP8 products wrong and cuBLASLt exactly,
+    but cuBLAS slowed the engine's float64 products by 15% on an RTX 5060, so neither the worker
+    nor the tests set it: a GPU's FP8 counts as native only in a process whose operator sent its
+    products to cuBLAS (`engine.precision.products.cublas_gemms`), emulated elsewhere."""
+
+    def test_the_flag_is_read_from_the_process_flags(self):
+        from engine.precision import products
+
+        assert products.cublas_gemms({XLA_FLAGS: f"{DETERMINISTIC} {products.TRITON_GEMM_OFF}"})
+        assert not products.cublas_gemms({XLA_FLAGS: "--xla_gpu_enable_triton_gemm=true"})
+        assert not products.cublas_gemms({})
+
+    def test_a_gpu_s_fp8_is_native_only_through_cublas(self, monkeypatch):
+        from engine.precision import products
+
+        gpu = type("Gpu", (), {"platform": "gpu", "compute_capability": "12.0", "device_kind": "test"})()
+        monkeypatch.setenv(XLA_FLAGS, products.TRITON_GEMM_OFF)
+        assert products.product_execution("float8_e5m2", gpu) == "native"
+        monkeypatch.setenv(XLA_FLAGS, "")
+        assert products.product_execution("float8_e4m3fn", gpu) == "emulated"
+        assert products.product_execution("bfloat16_3x", gpu) == "native"
+        old = type("Gpu", (), {"platform": "gpu", "compute_capability": "8.6", "device_kind": "test"})()
+        monkeypatch.setenv(XLA_FLAGS, products.TRITON_GEMM_OFF)
+        assert products.product_execution("float8_e4m3fn", old) == "emulated"
+
+
 #: The demos that start a server, each starting it in its own way. `demo_api.py` does the same
 #: but runs as a script on import.
 DEMO_SERVERS = {"demo_structured": lambda: demo_structured.start_server(),
@@ -233,11 +260,12 @@ class TestEveryMatrixProductStatesItsPrecision:
                         if line == "outside the engine" or precision != (product_precision(dtype),) * 2})
         assert not wrong, f"{len(wrong)} matrix products without their stated precision: {wrong}"
         lines = {line.rsplit(":", 1)[0] for line, _, _ in products}
-        # roots.py: a calibration's implicit derivative, its triangular solve's (2026-10-17).
+        # A calibration's implicit derivative has no product of its own since 2026-10-19: each
+        # helper's equation is a root in its own zeta (elementwise), where it solved a triangular
+        # system (engine/solvers/roots.py, 2026-10-17).
         assert lines == {"engine/market_simulation/paths.py", "engine/market_simulation/sobol.py",
                          "engine/market_simulation/scenario_market.py", "engine/pricing/legs.py",
-                         "engine/calibration/lgm.py", "engine/pricing/lgm_grid.py",
-                         "engine/solvers/roots.py"}, lines
+                         "engine/calibration/lgm.py", "engine/pricing/lgm_grid.py"}, lines
         assert {str(dtype) for _, dtype, _ in products} == {"float64", "float32"}
 
 

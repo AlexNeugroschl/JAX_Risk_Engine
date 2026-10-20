@@ -9,4 +9,6 @@
                         curves' node values and its volatility quotes), with its configured
                         engine and a calibrated option's calibration inside it (also what
                         `engine.risk.market` revalues)
+    scenario_pnl.py     a trade's P&L under scenarios of that market, in batches: the bump
+                        Greeks' shifts and market risk's shocks, one revaluation
 """

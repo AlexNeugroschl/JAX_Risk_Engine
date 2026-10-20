@@ -6,12 +6,15 @@ test compares them. The device count is fixed when JAX starts, so this cannot ru
 test's own process.
 
     python -m tests.support.sharding_check
+
+With `JAX_RISK_COORDINATOR`, `JAX_RISK_NUM_PROCESSES` and `JAX_RISK_PROCESS_ID` set
+(`engine.api.hosts.CLUSTER_ENV`), one host of a `jax.distributed` cluster, every host running
+the same runs (I-61): the split runs' scenarios across every host's devices, the one-device runs
+each host's alone; process 0 prints.
 """
 import json
 import os
 import sys
-
-import numpy as np
 
 
 def _portfolio_runs():
@@ -58,10 +61,12 @@ def _with_budget(budget: int, run, *args):
 
 
 def _portfolio_figures(result) -> dict:
+    from engine.market_simulation.sharding import host_array
+
     exposure = result.exposure
-    return {"cube": np.asarray(result.npv_cube).tolist(), "epe": np.asarray(exposure.epe).tolist(),
-            "ene": np.asarray(exposure.ene).tolist(), "devices": list(result.precision.devices),
-            "cube_devices": len(result.npv_cube.devices())}
+    return {"cube": host_array(result.npv_cube).tolist(), "epe": host_array(exposure.epe).tolist(),
+            "ene": host_array(exposure.ene).tolist(), "devices": list(result.precision.devices),
+            "cube_devices": len(result.npv_cube.sharding.device_set)}
 
 
 def _market_risk_run(recalibrated: bool = False):
@@ -75,24 +80,32 @@ def _market_risk_run(recalibrated: bool = False):
                                                                              m.bond()], m.PRICING)
     request = MarketRiskRequest(trades, m.market(), scenarios, pricing, batch_size=8)
     result = run_market_risk(request)
-    return {"pnl": np.asarray(result.pnl).tolist(), "risk": result.risk, "devices": list(result.precision.devices),
-            "pnl_devices": len(result.pnl.devices())}
+    from engine.market_simulation.sharding import host_array
+
+    return {"pnl": host_array(result.pnl).tolist(), "risk": result.risk, "devices": list(result.precision.devices),
+            "pnl_devices": len(result.pnl.sharding.device_set)}
 
 
 def main() -> None:
     import jax
 
     jax.config.update("jax_enable_x64", True)
+    hosts = 1
+    if os.environ.get("JAX_RISK_COORDINATOR"):
+        from engine.api.hosts import distributed_hosts
+
+        hosts = distributed_hosts().count
     runs = dict(_portfolio_runs())
     runs["market-risk"] = _market_risk_run
     runs["market-risk-recalibrated"] = lambda: _market_risk_run(recalibrated=True)
-    out = {"device_count": len(jax.local_devices())}
+    out = {"device_count": jax.device_count(), "hosts": hosts}
     for name, run in runs.items():
         os.environ["JAX_RISK_SCENARIO_DEVICES"] = "1"
         one = run()
         del os.environ["JAX_RISK_SCENARIO_DEVICES"]
         out[name] = {"one": one, "split": run()}
-    json.dump(out, sys.stdout)
+    if jax.process_index() == 0:
+        json.dump(out, sys.stdout)
 
 
 if __name__ == "__main__":

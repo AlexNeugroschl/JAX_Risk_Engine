@@ -235,7 +235,7 @@ class TestRevaluation:
         (2026-10-13) it holds about 0.1 MB, so the default batch of 256 is never cut."""
         from engine.pricing.bermudan import prepared_option
         from engine.pricing.lgm_grid import induction_memory_budget, working_bytes_per_path
-        from engine.risk.market.revaluation import scenario_batch_size
+        from engine.risk.greeks.scenario_pnl import scenario_batch_size
 
         engine = dataclasses.replace(m.ENGINE, n_per_std=64, std_devs=6.0)
         fine = PricingConfig(bermudan=engine)
@@ -317,7 +317,7 @@ class TestRecalibration:
         (`working_bytes_per_model`) beside its deviation's, so its batch is sized for both."""
         from engine.pricing.bermudan import prepared_option
         from engine.pricing.lgm_grid import induction_memory_budget, working_bytes_per_model, working_bytes_per_path
-        from engine.risk.market.revaluation import scenario_batch_size
+        from engine.risk.greeks.scenario_pnl import scenario_batch_size
         engine = m.CALIBRATED_ENGINE
         prepared = prepared_option(m.bermudan(), engine, engine.volatility)
         per_scenario = working_bytes_per_path(prepared, 8) + working_bytes_per_model(prepared, 8)

@@ -177,18 +177,43 @@ class TestCompileCounts:
             np.testing.assert_array_equal(warm[key], cold[key], err_msg=key)
 
     @pytest.mark.slow
-    def test_an_option_s_greeks_are_one_program(self):
+    def test_an_option_s_greeks_are_two_programs(self):
         """A calibrated Bermudan's Delta and Gamma on every curve and its Vega, through its
-        calibration, are one program, jitted with the trade as an argument. Differentiated
-        eagerly they were a forward and a backward program per curve and derivative, about
-        ten for one option."""
+        calibration, are two programs, each jitted with the trade as an argument: its
+        calibration's derivatives, then its grid engine's along them (I-115; in one program each
+        helper's price was traced again in every derivative context of the grid's: an American
+        compiled for 87 s). Differentiated eagerly they were a forward and a backward program per
+        curve and derivative, about ten for one option."""
         market = shared.market()
         trade_greeks(bermudan_cfg(), market, PRICING)   # the calibration at the base (host)
         jax.clear_caches()
         with count_compiles() as counter:
             trade_greeks(bermudan_cfg(), market, PRICING)
-        assert counter["jit__derivatives"] == 1, dict(counter)
+        assert counter["jit__model_derivatives"] == 1, dict(counter)
+        assert counter["jit__staged_derivatives"] == 1, dict(counter)
+        assert counter["jit__derivatives"] == 0, dict(counter)
         assert counter["jit__induction"] == 0, dict(counter)
+
+    def test_the_two_programs_are_the_one_program_s_derivatives(self):
+        """The calibrated option's Greeks by its two stages equal those of its whole price in one
+        program (`_derivatives` of the price function's pricer), to 1e-12 of each Greek's
+        largest: the chain rule, not an approximation."""
+        from engine.risk.greeks.ad import _derivatives
+        market, config = shared.market(), SensitivityConfig()
+        cfg = bermudan_cfg()
+        staged = trade_greeks(cfg, market, PRICING, config)
+        fn = trade_price_function(cfg, market, PRICING, tenors=config.curve_tenors)
+        assert fn.stages is not None
+        curves, vega = _derivatives(fn.pricer, fn.terms, fn.nodes, tuple(jnp.asarray(r) for r in fn.rates),
+                                    jnp.asarray(fn.quotes))
+        whole = {f"vega:{cfg.currency}": np.asarray(vega) * config.vol_shift}
+        for (kind, name), (delta, gamma) in zip(fn.curves, curves):
+            whole[f"delta:{kind}:{name}"] = np.asarray(delta) * config.curve_shift
+            whole[f"gamma:{kind}:{name}"] = np.asarray(gamma) * config.curve_shift ** 2
+        assert staged.keys() == whole.keys()
+        for key in whole:
+            np.testing.assert_allclose(staged[key], whole[key], rtol=0.0,
+                                       atol=1e-12 * float(np.max(np.abs(whole[key]))), err_msg=key)
 
     @pytest.mark.slow
     def test_a_repeated_job_compiles_nothing(self):

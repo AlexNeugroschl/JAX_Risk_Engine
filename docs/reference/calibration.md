@@ -240,8 +240,9 @@ sign change, all candidates evaluated at once (one vectorized evaluation, not a 
 tangents). Where a price depends on its root — x\* here and in the Jamshidian engine, and the
 ORE helper's y\* — `implicit_root` gives the root its derivative by the implicit function
 theorem, below; the helper's price is stationary in y\*, so only its second derivatives need
-y\*'s. A whole calibration's buckets get theirs from the basket's system of residuals
-(`implicit_solution`, `engine.calibration.lgm.calibrated_values`): what an option
+y\*'s. A whole calibration's buckets get theirs from each helper's equation, a root in the
+LGM's zeta at its own expiry (`engine.calibration.lgm.calibrated_values`, the same rule,
+`elementwise_root_tangent`, since 2026-10-19; a triangular system in the buckets before): what an option
 calibrated inside its price function responds with ([Greeks](../risk/greeks.md), market risk's
 recalibration per scenario).
 
@@ -280,8 +281,8 @@ the paths nothing is calibrated: ORE's exposure simulation keeps the model it bu
 ## The x\* gradient bug
 
 **This engine:** `engine.solvers.roots.implicit_root`, which the Jamshidian engine's x\* and
-ORE's helpers' y\* are found with, and `implicit_solution` (`engine.calibration.lgm.
-calibrated_values`), which gives a whole calibration's buckets their derivatives.
+ORE's helpers' y\* are found with, and `engine.calibration.lgm.calibrated_values`, which gives
+a whole calibration's buckets their derivatives by the same rule (`elementwise_root_tangent`).
 
 **The bug, found in the retired standalone bootstrap's exercise boundary x\*.** A
 bisection narrows a bracket with `jnp.where(val > 0.0, ...)` at every iteration, and that

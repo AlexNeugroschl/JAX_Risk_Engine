@@ -10,10 +10,11 @@ shift carried by matrix products in the trade's compute format (`TradePriceFunct
 legs' flows, the grid engine's induction for Bermudans and Americans since 2026-10-13), so a
 scenario that moves nothing has exactly zero P&L and the legs' cancellation stays in the base.
 
-Scenarios are evaluated in batches (`_pnl`, one program per product, shape and arithmetic). The
-batch is bounded by memory per trade (`scenario_batch_size`): a Bermudan's induction holds its
-columns on the state grid for every scenario of the batch. The P&L is jitted on the trade's terms
-as an argument, so a repeated run, or another trade of the same shape, reuses its programs.
+The revaluation itself is the bump Greeks' (`engine.risk.greeks.scenario_pnl.price_function_pnl`):
+scenarios in batches bounded by memory per trade (`scenario_batch_size`: a Bermudan's induction
+holds its columns on the state grid for every scenario of the batch), one program per product,
+shape and arithmetic, with the trade's terms as an argument, so a repeated run, or another trade
+of the same shape, reuses its programs.
 
 **Engines.** Each product's engine is the pricing configuration's (`PricingConfig`): a European
 on ORE's Bachelier engine (the normal volatility read from the market, held fixed) or on
@@ -31,27 +32,16 @@ engine refuses a misfit everywhere, A-24); each scenario is then priced on its o
 values (the surface, the Jamshidian model), so volatility risk is not captured.
 `run_market_risk` says so in its warnings for every option trade.
 """
-from functools import partial
-import dataclasses
 from typing import Optional, Sequence, Tuple
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 
-from engine.calibration.lgm import CalibrationError
-from engine.instruments.american_swaption import AmericanSwaptionConfig
-from engine.instruments.bermudan_swaption import BermudanSwaptionConfig
-from engine.instruments.european_swaption import SwaptionConfig
 from engine.market_data.market import Market
-from engine.market_simulation.sharding import scenario_device_count, shard_scenarios
 from engine.precision import Arithmetic
-from engine.pricing.bermudan import prepared_option
 from engine.pricing.config import PricingConfig
-from engine.pricing.cube import reads_swaption_vols
-from engine.pricing.lgm_grid import induction_memory_budget, working_bytes_per_model, working_bytes_per_path
-from engine.pricing.options import bound_option_pnl, position_sign
-from engine.risk.greeks.price_functions import Moves, curve_keys, curves_on, trade_price_function
+from engine.risk.greeks.price_functions import Moves, curve_keys, trade_price_function
+from engine.risk.greeks.scenario_pnl import price_function_pnl
 from engine.risk.market.factors import RateRiskFactors, curve_name
 
 
@@ -59,22 +49,6 @@ def factor_indices(cfg, factors: RateRiskFactors) -> Tuple[int, ...]:
     """The factor curves a trade reads, by position in `factors`; a curve that is not a factor
     is refused (`RateRiskFactors.index_of`)."""
     return tuple(factors.index_of(curve_name(*key)) for key in curve_keys(cfg))
-
-
-def scenario_batch_size(cfg, pricing: PricingConfig, requested: int, itemsize: int) -> int:
-    """Scenarios to revalue at once for `cfg`: `requested`, reduced so one batch stays within
-    the induction's per-device budget (`engine.pricing.lgm_grid.induction_memory_budget`). Only the grid
-    engine needs it: its induction holds its columns on the state grid per scenario
-    (`working_bytes_per_path`), and an option recalibrated under each scenario its own model's
-    too (`working_bytes_per_model`)."""
-    if not isinstance(cfg, (BermudanSwaptionConfig, AmericanSwaptionConfig)) or cfg.is_expired():
-        return requested
-    engine = pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
-    prepared = prepared_option(cfg, engine, engine.volatility)
-    per_scenario = working_bytes_per_path(prepared, itemsize)
-    if reads_swaption_vols(cfg, pricing):
-        per_scenario += working_bytes_per_model(prepared, itemsize)
-    return max(1, min(requested, induction_memory_budget() // per_scenario))
 
 
 def revalue(
@@ -113,68 +87,5 @@ def revalue_trade(cfg, market: Market, factors: RateRiskFactors, moves, pricing:
     base = arithmetic.cast(factors.base_rates())
     fn = trade_price_function(cfg, market, pricing, arithmetic.dtype)
     own = [factors.slice_of(i) for i in factor_indices(cfg, factors)]
-    rates = [base[s] for s in own]
-    value = float(fn.price(*rates))
-    batch = scenario_batch_size(cfg, pricing, batch_size, jnp.dtype(arithmetic.dtype).itemsize)
-    curves = curves_on(fn.nodes, rates)
-    quotes = None if fn.quotes is None else jnp.asarray(fn.quotes)
-    shifts = tuple(moves[..., s] for s in own)
-    models = None
-    if fn.calibration is not None:
-        models, misses = _map_scenarios(
-            lambda per, _ids: _calibrations(fn.calibration, fn.terms, curves, quotes, per), shifts, batch)
-        _require_calibrated(cfg, pricing, np.asarray(misses))
-    pnl = _map_scenarios(
-        lambda per, ids: _pnl(fn.pnl, fn.terms, curves, quotes, per, dataclasses.replace(arithmetic, sample_ids=ids)),
-        Moves(shifts, models), batch)
-    if isinstance(cfg, (SwaptionConfig, BermudanSwaptionConfig, AmericanSwaptionConfig)):
-        pnl = bound_option_pnl(pnl, value, position_sign(cfg))
-    return value, pnl
-
-
-def _require_calibrated(cfg, pricing: PricingConfig, misses: np.ndarray) -> None:
-    """Refuse a revaluation whose option misses ORE's calibration acceptance in a scenario, as
-    every calibration that misses is refused (`engine.calibration.lgm.require_accepted`)."""
-    engine = pricing.american if isinstance(cfg, AmericanSwaptionConfig) else pricing.bermudan
-    failed = np.flatnonzero(misses)
-    if failed.size:
-        shown = ", ".join(str(i) for i in failed[:10]) + (", ..." if failed.size > 10 else "")
-        raise CalibrationError(
-            f"{cfg.product} {cfg.trade_id!r}: the LGM recalibrated under {failed.size} of {misses.size} scenarios "
-            f"misses its basket (ORE's LgmBuilder acceptance, tolerance {engine.bootstrap_tolerance:g}): scenarios {shown}")
-
-
-@partial(jax.jit, static_argnames="calibration")
-def _calibrations(calibration, terms, curves, quotes, shifts):
-    """`calibration(terms, curves, quotes, shifts)`: one program per option shape."""
-    return calibration(terms, curves, quotes, shifts)
-
-
-@partial(jax.jit, static_argnames="pnl")
-def _pnl(pnl, terms, curves, quotes, moves: Moves, arithmetic: Arithmetic):
-    """`pnl(terms, curves, quotes, moves, arithmetic)`: one program per product, shape and
-    arithmetic."""
-    return pnl(terms, curves, quotes, moves, arithmetic)
-
-
-def _map_scenarios(batched, per_scenario, batch_size):
-    """`batched(per_scenario[i:j], ids[i:j])` for every batch of `batch_size` scenarios,
-    concatenated along the scenarios (`per_scenario` and the result are pytrees of arrays whose
-    leading axis is the scenarios). With the scenarios split across devices
-    (`engine.market_simulation.sharding`), each batch takes `batch_size` scenarios from every
-    device's share, so every device works on every batch and holds one batch's memory."""
-    count = jax.tree_util.tree_leaves(per_scenario)[0].shape[0]
-    devices = scenario_device_count(count)
-    ids = jnp.arange(count, dtype=jnp.uint32)
-    tree_map = jax.tree_util.tree_map
-    if devices == 1:
-        parts = [batched(tree_map(lambda a: a[i:i + batch_size], per_scenario), ids[i:i + batch_size])
-                 for i in range(0, count, batch_size)]
-        return tree_map(lambda *a: jnp.concatenate(a), *parts)
-    shares = tree_map(lambda a: shard_scenarios(a.reshape((devices, -1) + a.shape[1:]), axis=0), per_scenario)
-    per_device = jax.vmap(batched)
-    ids = ids.reshape(devices, -1)
-    share = count // devices
-    parts = [per_device(tree_map(lambda a: a[:, i:i + batch_size], shares), ids[:, i:i + batch_size])
-             for i in range(0, share, batch_size)]
-    return tree_map(lambda *a: jnp.concatenate(a, axis=1).reshape((-1,) + a[0].shape[2:]), *parts)
+    return price_function_pnl(cfg, fn, [base[s] for s in own], Moves(tuple(moves[..., s] for s in own)), pricing,
+                              batch_size, arithmetic)
