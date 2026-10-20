@@ -23,6 +23,9 @@ its peak device memory is its own:
     each compute format's products ran on the device (`product_execution`: native or emulated);
   * each seed's figures, from which the parent measures accuracy.
 
+The bounded CPU/accelerator comparison composes these workers with named snapshots and
+observed execution metadata: `python -m benchmarks.comparison` (benchmarks/README.md).
+
 **Accuracy** is measured, never assumed: per figure entry, the truth is the float64 figure's
 mean over the seeds at the largest path count, and a case's error at `N` paths is the root mean
 square over the seeds of its figure less the truth, so it holds the statistical error, the
@@ -56,6 +59,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
+from collections.abc import Mapping
 
 #: Where the timings of record are kept.
 RECORD = Path(__file__).resolve().parents[2] / "compliance" / "precision-timing"
@@ -80,6 +84,9 @@ class CaseTiming:
     induction_budget: int
     products: Dict[str, str]
     figures: Dict[str, List[List[float]]]   # figure -> per seed, its entries
+    seeds: Tuple[int, ...] = ()
+    snapshots: Dict[str, str] = dataclasses.field(default_factory=dict)
+    metadata: dict = dataclasses.field(default_factory=dict)
 
     @property
     def warm(self) -> float:
@@ -107,7 +114,8 @@ class EqualAccuracy:
 # ---------------------------------------------------------------------------
 # One case's process
 # ---------------------------------------------------------------------------
-def _child(campaign: str, label: str, paths: int, seeds: Sequence[int], budget_divisor: Optional[int]) -> dict:
+def _child(campaign: str, label: str, paths: int, seeds: Sequence[int], budget_divisor: Optional[int],
+           snapshot_directory: Optional[str] = None, cpu_inputs: bool = False) -> dict:
     """Run one case at one path count over `seeds` in this process and return its `CaseTiming`
     as JSON-ready data."""
     os.environ["JAX_ENABLE_COMPILATION_CACHE"] = "false"
@@ -115,11 +123,11 @@ def _child(campaign: str, label: str, paths: int, seeds: Sequence[int], budget_d
     import numpy as np
 
     jax.config.update("jax_enable_compilation_cache", False)
-    from engine.precision import Precision, product_execution
+    from engine.precision import Precision
     from engine.pricing import lgm_grid
-    from tests.support.precision_campaigns import CAMPAIGNS
+    from tests.support.precision_campaigns import timing_campaign
 
-    campaign = CAMPAIGNS[campaign]()
+    campaign = timing_campaign(campaign)
     precision = Precision() if label == FLOAT64 else next(c.precision for c in campaign.cases if c.label == label)
     budget = lgm_grid.induction_memory_budget()
     if budget_divisor:
@@ -133,27 +141,134 @@ def _child(campaign: str, label: str, paths: int, seeds: Sequence[int], budget_d
             compiled.append(duration)
 
     jax.monitoring.register_event_duration_secs_listener(listen)
-    seconds, compiles, figures = [], [], {}
-    for seed in seeds:
-        run_precision = precision
-        if precision.rounding == "stochastic" or any(s.compute_rounding == "stochastic" for s in precision._stages()):
-            run_precision = dataclasses.replace(precision, rounding_seed=seed)
-        before = len(compiled)
-        start = time.perf_counter()
-        result = campaign.run(campaign.scenarios(paths, seed), run_precision)
-        figured = {name: np.asarray(value, dtype=np.float64) for name, value in campaign.figures(result).items()}
-        seconds.append(time.perf_counter() - start)
-        compiles.append(compiled[before:])
-        for name, value in figured.items():
-            figures.setdefault(name, []).append(np.atleast_1d(value).tolist())
-    stats = jax.devices()[0].memory_stats() if jax.devices()[0].platform != "cpu" else None
-    names = sorted({s.compute for s in precision._stages()})
+    seconds, compiles, figures, snapshots = [], [], {}, {}
+    # Resolve devices before the clock, as the original harness does for its memory budget.
+    # Input generation on CPU makes the numerical experiment independent of device math.
+    input_device = jax.devices("cpu")[0] if cpu_inputs else jax.devices()[0]
+    try:
+        for seed in seeds:
+            # Do not retain a previous job's cube while the next job allocates its output.
+            result = figured = observable = scenarios = None
+            run_precision = precision
+            if precision.rounding == "stochastic" or any(s.compute_rounding == "stochastic" for s in precision._stages()):
+                run_precision = dataclasses.replace(precision, rounding_seed=seed)
+            before = len(compiled)
+            start = time.perf_counter()
+            with jax.default_device(input_device):
+                scenarios = campaign.scenarios(paths, seed)
+            result = campaign.run(scenarios, run_precision)
+            figured = {name: np.asarray(value, dtype=np.float64) for name, value in campaign.figures(result).items()}
+            observable = campaign.snapshot(result) if snapshot_directory else {}
+            seconds.append(time.perf_counter() - start)
+            compiles.append(compiled[before:])
+            for name, value in figured.items():
+                figures.setdefault(name, []).append(np.atleast_1d(value).tolist())
+            if snapshot_directory:
+                destination = Path(snapshot_directory)
+                destination.mkdir(parents=True, exist_ok=True)
+                filename = f"seed-{seed}.npz"
+                np.savez_compressed(destination / filename, **observable, **{"inputs/shifts": scenarios.shifts})
+                snapshots[str(seed)] = filename
+    finally:
+        jax.monitoring.unregister_event_duration_listener(listen)
+    devices = [{"device": str(d), "kind": d.device_kind, "platform": d.platform,
+                "compute_capability": getattr(d, "compute_capability", None),
+                "memory": d.memory_stats()} for d in jax.local_devices()]
+    peaks = [d["memory"].get("peak_bytes_in_use") for d in devices if d["memory"]]
+    # A maximum per-device peak, never a fictional total or a missing counter reported as zero.
+    peak = max(peaks) if peaks and len(peaks) == len(devices) and all(p is not None for p in peaks) else None
     return dataclasses.asdict(CaseTiming(
         case=label, paths=paths, budget_divisor=budget_divisor, cold_seconds=seconds[0],
         compile_seconds=float(sum(compiles[0])), compiles=len(compiles[0]), warm_seconds=tuple(seconds[1:]),
         warm_compiles=sum(len(c) for c in compiles[1:]),
-        device_peak_bytes=None if not stats else int(stats.get("peak_bytes_in_use", 0)), induction_budget=budget,
-        products={name: product_execution(name) for name in names}, figures=figures))
+        device_peak_bytes=None if peak is None else int(peak), induction_budget=budget,
+        products=dict(result.precision.products), figures=figures, seeds=tuple(seeds), snapshots=snapshots,
+        metadata={"environment": execution_environment(), "workload": workload_settings(campaign),
+                  "policy": json_settings(precision), "realized": dict(result.precision.realized),
+                  "execution_devices": list(result.precision.devices),
+                  "warnings": list(result.warnings), "devices": devices,
+                  "input_generation": "cpu" if cpu_inputs else jax.default_backend(),
+                  "memory_scope": "maximum per-device allocator high-water mark across cold and warm jobs; "
+                                  "host RSS unavailable; missing counters are null",
+                  "native_evidence": "dispatch labels only; lowering/trace qualification required (I-97, I-121)"}))
+
+
+def json_settings(value):
+    """Canonical, explicit settings; never fall back to an unstable object repr."""
+    import numpy as np
+    import ORE
+
+    if dataclasses.is_dataclass(value):
+        return {"type": type(value).__name__, **{f.name: json_settings(getattr(value, f.name))
+                                               for f in dataclasses.fields(value)}}
+    if isinstance(value, Mapping):
+        return {str(k): json_settings(v) for k, v in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [json_settings(v) for v in value]
+    if isinstance(value, ORE.Date):
+        return {"date": value.ISO()}
+    if isinstance(value, ORE.Period):
+        return {"period_length": value.length(), "period_units": int(value.units())}
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError(f"unsupported reproduction setting: {type(value).__name__}")
+
+
+def workload_settings(campaign):
+    """Full inputs, independent of the selected policy/count/seed."""
+    settings = {f.name: json_settings(getattr(campaign, f.name)) for f in dataclasses.fields(campaign)
+                if f.name not in {"cases", "paths", "seeds"}}
+    if campaign.kind == "market_risk":
+        from engine.risk.market import MarketRiskRequest
+        fields = {f.name: f for f in dataclasses.fields(MarketRiskRequest)}
+        settings["request_defaults"] = {name: json_settings(fields[name].default)
+                                        for name in ("batch_size", "base_currency")}
+    return settings
+
+
+def execution_environment():
+    """Versions and process flags from the actual measuring worker."""
+    import hashlib
+    import importlib.metadata
+    import platform
+    from tests.support.precision_harness import environment
+
+    root = Path(__file__).resolve().parents[2]
+    digest = hashlib.sha256()
+    for folder in ("benchmarks", "tests/support", "demos"):
+        for path in sorted((root / folder).glob("*.py")):
+            digest.update(path.relative_to(root).as_posix().encode() + b"\0")
+            digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
+    versions = {name: importlib.metadata.version(name) for name in
+                ("jaxlib", "numpy", "scipy", "ml_dtypes", "open-source-risk-engine")}
+    accelerator_libraries = {d.metadata["Name"]: d.version for d in importlib.metadata.distributions()
+                            if d.metadata["Name"].lower().startswith(("jax-cuda", "nvidia-", "libtpu"))}
+    cpu_model = platform.processor() or os.environ.get("PROCESSOR_IDENTIFIER") or None
+    try:
+        cpu_info = Path("/proc/cpuinfo")
+        if cpu_info.is_file():
+            cpu_model = next((line.partition(":")[2].strip() for line in cpu_info.read_text().splitlines()
+                              if line.startswith("model name")), cpu_model)
+    except OSError:
+        pass  # Optional host information: unavailable counters must not invalidate a job.
+    try:
+        affinity = sorted(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        affinity = None
+    performance_flags = {"CUDA_VISIBLE_DEVICES", "TPU_VISIBLE_DEVICES", "NVIDIA_TF32_OVERRIDE",
+                         "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS",
+                         "VECLIB_MAXIMUM_THREADS", "CUBLAS_WORKSPACE_CONFIG", "LIBTPU_INIT_ARGS"}
+    import jax
+    return {**environment(), "versions": versions, "tool_digest": digest.hexdigest(),
+            "accelerator_libraries": accelerator_libraries,
+            "host": {"cpu_model": cpu_model, "logical_cpus": os.cpu_count(), "affinity": affinity},
+            "platform_version": jax.devices()[0].client.platform_version,
+            "flags": {k: v for k, v in os.environ.items() if k.startswith(("JAX_", "XLA_")) or k in performance_flags},
+            "compilation_cache": "disabled"}
 
 
 def _device_limit() -> Optional[int]:
@@ -331,10 +446,10 @@ def main(argv=None) -> int:
         print(json.dumps(_child(**json.loads(args.child))), flush=True)
         return 0
 
-    from tests.support.precision_campaigns import CAMPAIGNS
+    from tests.support.precision_campaigns import timing_campaign
     from tests.support.precision_harness import FIXED
 
-    campaign = CAMPAIGNS[args.campaign]()
+    campaign = timing_campaign(args.campaign)
     seeds = campaign.seeds[:args.seeds] if args.seeds else campaign.seeds
     if len(seeds) < 3:
         raise SystemExit("an error over the seeds needs at least three")

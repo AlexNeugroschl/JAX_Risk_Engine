@@ -15,7 +15,7 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 | [F-04](#f-04) | FX and equity trades on the pipeline; FX/EQ vol calibration | L | F-07's kernel rewrite | New |
 | [F-05](#f-05) | Basel III regulatory figures | L | See entry | Basel |
 | [F-06](#f-06) | CVA/DVA from the exposure profiles | M | I-87 | New |
-| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | Stage 1 on the target hardware (I-121, I-61) | Research; FP4 and quantile correction New |
+| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | Comparison tooling done; target-device validation (I-121, I-97); I-61 for cluster claims | Comparison and research; FP4 and quantile correction New |
 | [F-09](#f-09) | ORE's XML input files as a run request | M | I-87 | New |
 | [F-10](#f-10) | Supported sampling confidence intervals with validated tail assumptions | L | I-111 availability rule; first precision timing result | New |
 | [F-11](#f-11) | The cash flows paid in Theta's roll, reported beside Theta | S | I-87 | New |
@@ -156,9 +156,37 @@ evidence table (2026-10-11, [details/precision.md
 §15.6](details/precision.md#156-the-evidence-table-2026-10-11)) judges them by decision A-11's
 1% rule.
 
+**Deadline deliverable (owner, 2026-10-19).** First extend the existing accuracy, timing and
+snapshot-reporting tools into one reproducible comparison of CPU FP64/FP32 references and
+accelerator FP64/FP32, native FP8 and supported BF16. Report per-trade scenario PV and
+portfolio P&L/VaR/ES errors beside whole-job cold/compile/warm time, memory and native/fallback
+evidence. Use matched scenarios for precision error and several seeds/counts for
+equal-accuracy timing, with the FP64 reference's sampling uncertainty stated. Begin with
+a single trade and a small representative portfolio at existing measured pricing settings;
+retain the fixed FP64 stages (A-10), counting their cost. Hardware qualification starts
+alongside the tool. The first verified target device produces a bounded result while other
+hardware and cluster checks continue; a correct cuBLAS route suffices for GPU FP8 without
+waiting for an upstream compiler fix. Failures and no speedup remain reportable results.
+
+**Comparison tooling complete, 2026-10-20.** [`benchmarks.comparison`](../../benchmarks/README.md)
+composes the existing campaigns, timing and reporting tools. It retains named matched-scenario
+errors, cold/compile/warm times, memory availability, observed output devices, dispatch labels,
+exact reproduction settings and finite-reference sampling diagnostics together. Both bounded
+workloads smoke-checked on CPU and the RTX 5060, with unavailable TPU cases and failed precision
+targets retained; no warm compilation. The [execution plan and outcome](details/comparison-report.md)
+describe the checks and limitations. This completes tooling, not target-device qualification,
+native-unit proof, larger-count research or cluster scaling.
+
+INT8, additional multi-pass methods/Qwix integration and reduced-precision today's PV or
+Greeks are outside this deadline, not prerequisites or promised new capabilities. FP4,
+quantile correction and supported confidence intervals stay separate later experiments.
+Exhaustive sweeps and tuning follow only when the first measurements justify them.
+
 **Depends on.** The mechanism and cast points (done 2026-10-01; [I-55](known-issues.md#i-55)).
-The speed case needs the engine's numbers shown right on the target hardware
-([I-121](known-issues.md#i-121)) and its scaling measured there ([I-61](known-issues.md#i-61)).
+Comparison tooling is available. Each speed claim needs the engine's numbers
+shown right on that target device ([I-121](known-issues.md#i-121)), and native FP8 needs its
+execution path verified ([I-97](known-issues.md#i-97), I-121). Cluster claims additionally need
+scaling measured there ([I-61](known-issues.md#i-61)); a single-device report does not wait for it.
 **Size.** L.
 **Details.** [details/precision.md](details/precision.md).
 

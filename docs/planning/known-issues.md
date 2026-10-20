@@ -16,56 +16,38 @@ shared portfolio, what is compared with ORE and what is not is the
 
 ## Verification status
 
-Last full run, 2026-10-19, on the multi-host, GPU-product and Greeks work (I-61, I-97, I-115)
-and the timing harness. **3,916 collected** on Windows: the 3,888 of the code before (one more
-than the 3,887 recorded on 2026-10-18, its commit's), plus 20 new tests and 2 renumbered
-parameter ids, less 3 ids, reconciled by test id: added, `tests/test_multihost_worker.py` (5),
-the two-host sharding check, the batched bump Greeks' (3), the two-program AD Greeks' (2), the
-queue's attempts and migration (3), the GPU products' (6), `tests/test_precision_timing.py` (9);
-removed, `test_an_option_s_greeks_are_one_program` (renamed) and two TPU ids (renumbered by the
-H100 one). Every green run below printed its summary line:
+Comparison tooling (F-07), 2026-10-20. **3,959 collected** with
+`.venv/Scripts/python.exe -m pytest --collect-only -q tests/`: the previous 3,916 plus
+41 new comparison tests and two ORE snapshot checks. Pricing/precision production code
+and the published acceptance evidence are unchanged. Every green run below printed its
+summary line:
 
-- **Windows full suite**, `.venv/Scripts/python.exe -m pytest tests/ -q -n 6 --durations=15`, at
-  3,907 collected: **3,897 passed, 9 skipped, 1 failed**, 35m14s. The failure was this change's (a
-  docstring citing a roadmap step), fixed. The 9 skips: the 3 before and the 6 multi-host tests,
-  Linux only (JAX's gloo collectives). Every file changed after it (the GPU fixes below, the
-  market-risk oracle, the timing harness and its 9 tests, the evidence table), rerun: **363 passed,
-  2 skipped**.
-- **Fast tier under strict dtype promotion** (`JAX_NUMPY_DTYPE_PROMOTION=strict`):
-  **3,666 passed, 3 skipped, 0 failed**, 4m29s at `-n 6`.
-- **Linux** (rule 5: the worker set's processes and collectives), WSL2 Ubuntu, `JAX_PLATFORMS=cpu`:
-  the worker, sharding and multi-host files, **106 passed** at `-n 2`; the real run request on two
-  hosts and the two-host check, **6 passed**.
-- **GPU** (RTX 5060, WSL2): two full runs (`-n 4`, `-n 3`) lost the VM near their end (I-27); split,
-  **3,761 passed, 3 failed, 1 skipped** (all but the ORE sweeps, `-n 3`, peak 6.0 GB a process),
-  then the ORE sweeps alone, **152 passed, 1 skipped** (peak 23.8 GB). The 3 failures failed on the
-  code before too, and are fixed: the market-risk ORE oracle handed ORE its scenarios as a string,
-  which on Linux it rejected as a file name ("File name too long"; now a file, so the Linux
-  market-risk parity runs at all); the precision harness's test of identically equal paired
-  samples and the Bermudan's Gamma reference ran on a GPU, whose float64 differs by an ulp with the
-  batch and whose XLA cannot compile that reverse-mode gradient ([I-119](#i-119)): both now on the
-  CPU. The fixed files on the GPU: **232 passed**.
-- **The device check** on the RTX 5060 under XLA's Triton emitter and under cuBLAS: every
-  format passes both ways (FP8 emulated, then native).
-- **Golden snapshot** (295 arrays: the shared portfolio's today values, float64/float32/Hull-White/
-  Jamshidian cubes, fixed and recalibrated market risk, bump and AD Greeks on three engines), before
-  against after on the CPU: 137 identical; the bump Greeks moved by at most 3.5e-14 of their trade's
-  NPV, the AD Greeks 4e-17, a recalibrated market-risk P&L 1.3e-14 of its scale; every cube,
-  exposure, fixed-model P&L and today value bit for bit.
-- **Precision campaigns**: the seven with float8_e5m2 compute cases (`compute`, `compute_options`,
-  `compute_market_risk`, `market_risk_calibrated`, `rounding`, `rounding_options`,
-  `rounding_market_risk`) measured again on the frozen engine and the evidence table regenerated:
-  every e5m2 row's relative error within 2e-6 of its record, every other row within 1.6e-7, no
-  verdict or path ceiling moved (`tests/test_precision_evidence.py`, 54 passed).
-- **The timing harness** end to end: `compute` (every stage in each format, 1,024 to 16,384 paths) and `compute_market_risk` (each format's revaluation, 2,048 and 8,192 scenarios), 6 seeds, on the CPU and on the RTX 5060 with its products through cuBLAS (FP8 native there, as each record says), every case in a process of its own and compiling nothing warm (`compliance/precision-timing/`; local evidence, precision design §19).
-- **Lint**: pyflakes passes on every changed Python file.
+- **Windows fast tier**, `.venv/Scripts/python.exe -m pytest tests/ -q -n 4 -m "not slow"`:
+  **3,707 passed, 3 skipped**, 9m24s. Includes the core ORE parity suites at their existing
+  tolerances. The full tier additionally contains the extended sweeps and process tests.
+- **All affected files**, comparison report, timing, precision evidence, precision harness,
+  market-risk ORE parity and import layering: **153 passed**, 28s. Includes the final
+  regression refusing different JAX Python versions, demonstrated failing before its fix.
+  The two registry regressions were first reproduced failing, then fixed by keeping comparison workloads
+  separate from acceptance campaigns; neither the evidence nor its tests were weakened.
+- **Linux CPU**, WSL2 Ubuntu with `JAX_PLATFORMS=cpu`: comparison, timing and environment
+  checks, **75 passed**, 27s, including both real process-isolated CLI workloads and the
+  final JAX-version join regression.
+- **Final expanded-sweep case in a fresh process**,
+  `tests/test_ore_parity_sweep.py::test_market_risk_is_ores[seed-39]`: **1 passed**, 34s,
+  including teardown, with its existing scenarios and tolerances.
+- **Local comparison smoke**: both workloads at 128/512 scenarios, seeds 1/2/3, CPU and
+  RTX 5060 through cuBLAS, FP64/FP32/BF16/both FP8; unavailable TPU cases explicit. See
+  [the record](../../compliance/precision-timing/comparison-local-2026-10-20.md) for all
+  results, settings and limits. Native-unit/target-device qualification remains I-97/I-121.
 
-Red first: on the code before, the bump Greeks valued five trades 280 times on the host (10 now:
-Theta's), a calibrated option's AD Greeks were one program, and the two-host check found every
-result on 2 of the 4 devices; with FP8 marked native under Triton the device check fails at 0.71 to
-0.80 of the scale; the market-risk ORE parity fails on Linux.
-
-The fast tier alone is not a full verification. Rules: [README.md](README.md#verification-rules).
+**The Windows full-suite attempt is incomplete, not green.** At `-n 6` it reported the
+same two acceptance-registry failures subsequently reproduced and fixed above. Its last
+worker reached `test_market_risk_is_ores[seed-39] (teardown)`, retained roughly 12 GiB
+resident, and continued consuming CPU without a summary line. It was interrupted after
+more than an hour; the final case then passed in isolation. No full-suite pass or exact
+pass count is inferred from the progress log. This is recorded under [I-27](#i-27).
+The isolated/scoped successes above do not claim a fresh full GPU, TPU or H100 qualification.
 
 ## Summary
 
@@ -629,6 +611,16 @@ processes at 7.8 GB (`tests/test_ore_xva_parity.py`'s simulation tests) and 8.8 
 (`tests/test_profiling_and_jit.py`'s Greeks compile counts). A Linux full run here now uses
 `-n 2`, and `-n auto` on a 16 GB CI runner would not fit.
 
+**2026-10-20, Windows CPU validation of the comparison tools.** A full `-n 6` attempt reached
+the expanded sweep's last case (`test_market_risk_is_ores[seed-39]`) in teardown but did not
+emit a summary; the worker retained roughly 12 GiB resident and the host had only 1.5 GiB
+available at one observation. It was interrupted after more than an hour. The same final
+case passed with teardown in 34s in a fresh process. The responsible cleanup operation is
+not established. The preceding slow seed-28 case also showed ORE repeatedly valuing the
+eight-trade, 128-scenario cube for its historical-VaR risk groups, while the oracle consumes
+the aggregate results. These are validation costs; the bounded comparison's warm jobs
+compiled nothing. The green fast tier and scoped reruns are in the verification status.
+
 **Current handling.** Since 2026-10-04 no pool, and no executor thread, exists: HTTP tests
 start one engine worker, a separate process with no thread in the test process, and each
 module stops it when it ends (`tests/conftest.py`); a worker also exits once its parent is
@@ -640,7 +632,10 @@ or slim the heaviest fixtures. Then repeated clean full runs against a known-bad
 with `JAX_COMPILATION_CACHE_DIR` on an empty directory to rule the cache in or out; one green
 run proves nothing. Once the full tier fits CI's runner, run it on a schedule as well as by
 hand: it holds the slow ORE simulation tests (L4) and the worker tests, which no automatic run
-covers today (project audit, AUD-47).
+covers today (project audit, AUD-47). Also measure the expanded sweeps' cache growth and
+cleanup cost in bounded fresh-process batches. Investigate requesting only the ORE risk
+groups the oracle compares, proving the same trade P&L and aggregate VaR/ES against the
+unfiltered oracle before retaining any optimization; keep the scenarios and tolerances.
 
 <a id="i-66"></a><a id="q-2"></a>
 ### I-66 — No linter or type checker

@@ -1314,18 +1314,16 @@ Revised with the run request (2026-10-18; schema version 3):
 | **The research result** (F-07) | After multi-host and the evidence table. Timing across devices on Ironwood and H100: storage formats, then the kernel rewrite's matrix-product kernels with native FP8; the harness built 2026-10-19 (§19) | The research result: wall time per figure and precision against float64 at equal accuracy (measured over seeds, §19), many low-precision paths against fewer float64 ones | M |
 | **FP4** (F-07) | FP4 storage (variance correction through the block scales), FP4 compute on TPU 8t/8i, multilevel quantile estimation | Evidence rows for FP4 | L |
 
-**Order (decided: A-19, revised 2026-10-19):** the structure (done 2026-10-04) and the
-profiling demo on a local GPU (done 2026-10-07) came first, then the low-precision kernels, the
-evidence table and the multi-host worker set (all done). Next, the roadmap's stage 1 shows the
-engine accurate and fast on TPU and GPU clusters (I-121, I-97, I-61). Its stage 2 then times
-the research result (F-07), and Basel III waits for that. The storage measurement (I-75) is done. The kernel
-rewrite (F-07), difference form and matrix products together, took first the families the recalibration
-fix (I-49) did not change, and takes the Bermudan/American rollback after it (`ShiftHorizon`,
-I-32, and the recalibration fix, both done 2026-10-12), so no kernel is rewritten twice; new capabilities' kernels and the strike
-axis (I-54) come after it. The evidence table (I-55) is read off each family as it lands, so it
-describes the kernels that ship. FP4 storage and emulated compute (F-07) close the arithmetic.
-Multi-host (I-61) moves no arithmetic and follows the job queue's changes to the worker loop;
-timing (the research result, native FP8 and FP4 included) needs it and the table.
+**Order (decided: A-19, deadline scope clarified 2026-10-19):** the structure, local GPU
+profiling, existing low-precision kernels, evidence table and multi-host worker set are built.
+First extend the existing comparison tools (F-07), alongside target-device correctness and
+native FP8 qualification (I-121, I-97). Publish the first verified target-device result without
+waiting for the other platform or cluster scaling; qualify scaling (I-61) before making
+multi-device/host claims. Basel III follows the cluster research result. FP4, INT8, additional
+multi-pass/Qwix methods and reduced-precision today's PV/Greeks are outside the first result;
+FP4 and quantile correction remain separate later experiments. The current evidence table
+continues to hold per kernel and pricing setting (I-114). See the roadmap and §19 for the
+bounded deadline comparison; new capabilities do not gate it.
 
 ## 13. Testing
 
@@ -2511,6 +2509,44 @@ The first research result (F-07) times the existing formats against float64 at e
 accuracy. Its harness is `tests/support/precision_timing.py`; its method is fixed here before
 anything is measured on the hardware of record (Ironwood, H100), and a format that does not
 pay is a result.
+
+**The deadline comparison (implemented 2026-10-20).** [`benchmarks.comparison`](../../../benchmarks/README.md)
+composes this harness with `precision_harness.py` and `demos/benchmark_reporting.py`, reusing
+campaign inputs and estimators. It joins CPU-reference errors, whole-job timings, memory
+availability, dispatch and exact reproduction settings. Both bounded workloads smoke-checked
+on CPU and the RTX 5060; target-device qualification and larger-count research remain open.
+The [plan and outcome](comparison-report.md) record the implementation and its limits.
+Use that report for the remaining research work below:
+
+- Run one single trade and a representative portfolio of simple trades and options, using
+  existing measured engine/grid settings. Compare CPU FP64/FP32 references and accelerator
+  FP64/FP32, native FP8 and BF16 where supported. State the mixed-precision policy: A-10's
+  fixed stages stay FP64. Greeks need no precision change and need not be requested.
+- Reuse identical source shocks for matched-scenario precision comparisons, distinguishing
+  generation differences from arithmetic differences. Keep named trade scenario PV and
+  portfolio P&L/VaR/ES errors, including absolute errors near zero, with accuracy targets and
+  the FP64 reference's own sampling uncertainty. Use multiple independent seeds and scenario
+  counts for accuracy-versus-time; do not turn empirical diagnostics into certified bounds.
+- Join cold, compile and synchronized warm whole-job time with peak memory and execution
+  evidence. Count host preparation, calibration, conversions, transfers, any pairing,
+  aggregation and required output. State whether scenario generation is inside the timed
+  analytic or supplied beforehand; include generation when claiming simulation throughput.
+  Hold output settings and timing boundaries equal, including the fixed FP64 work.
+- Qualify native FP8 on the actual device and representative engine shapes using device
+  checks and lowering/trace evidence, recording fallbacks, hardware, revision, libraries and
+  process flags. The format-level native label alone does not establish that every product
+  reached FP8 units. The verified cuBLAS route can supply the H100 result while upstream XLA
+  work continues; TPU FP8 needs its own verification and device dispatch.
+- Smoke-check at small sizes, then include counts from 65,536 upward as memory permits to
+  determine when scenario work dominates on the target. Keep failures, unavailable memory
+  metrics and targets not reached explicit. Publish a scoped first-device report while
+  other hardware and cluster scaling proceed. Extend that report to measured device/host
+  counts before claiming cluster speedup. Tuning and exhaustive sweeps follow the report.
+
+INT8, new multi-pass methods/Qwix, configurable precision for today's PV and Greeks, FP4,
+quantile correction and confidence-interval extensions are outside the deadline. The
+roadmap assigns the existing-format comparison first and retains separately planned later
+experiments; none is a prerequisite to obtaining an honest accuracy/speed result.
 
 **What is timed.** Each case of a campaign of record (the precision harness's campaigns,
 `tests/support/precision_campaigns.py`; by default its `throughout:` cases, every stage in

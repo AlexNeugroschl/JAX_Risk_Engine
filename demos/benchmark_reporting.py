@@ -108,6 +108,46 @@ def compare_snapshots(cpu_path, gpu_path, rtol, atol):
                 "max_absolute_difference": absolute, "worst_output": worst, "elements": count}
 
 
+def named_errors(reference_path, candidate_path, rtol, atol):
+    """Named errors with a figure-wide scale and an absolute floor near zero.
+
+    Numerical comparisons are refused unless the stored scenario inputs match exactly.
+    A failure is evidence and stays in the report; NaNs never become a passing max().
+    """
+    import numpy as np
+
+    with np.load(reference_path, allow_pickle=False) as reference, np.load(candidate_path, allow_pickle=False) as candidate:
+        if set(reference.files) != set(candidate.files):
+            raise ValueError("snapshot output names differ")
+        if "inputs/shifts" not in reference.files or not np.array_equal(reference["inputs/shifts"], candidate["inputs/shifts"]):
+            raise ValueError("scenario inputs differ; matched-scenario comparison unavailable")
+        rows = {}
+        for key in reference.files:
+            if key.startswith("inputs/"):
+                continue
+            a, b = reference[key], candidate[key]
+            if a.shape != b.shape:
+                raise ValueError(f"snapshot shape differs: {key}")
+            if not (np.isfinite(a).all() and np.isfinite(b).all()):
+                rows[key] = {"status": "FAIL", "reason": "non-finite output"}
+                continue
+            scale = float(np.max(np.abs(a), initial=0))
+            with np.errstate(over="ignore", invalid="ignore"):
+                difference = np.asarray(b, dtype=np.float64) - a
+            if not np.isfinite(difference).all():
+                rows[key] = {"status": "FAIL", "reason": "error overflow"}
+                continue
+            maximum = float(np.max(np.abs(difference), initial=0))
+            rms = maximum * float(np.sqrt(np.mean((difference / maximum) ** 2))) if maximum else 0.
+            rows[key] = {"status": "PASS" if maximum <= atol + rtol * scale else "FAIL",
+                         "max_absolute_error": maximum, "rms_absolute_error": rms,
+                         "bias": maximum * float(np.mean(difference / maximum)) if maximum else 0.,
+                         "reference_scale": scale,
+                         "relative_error": maximum / scale if scale else None,
+                         "tolerance": atol + rtol * scale, "elements": a.size}
+        return rows
+
+
 def union_seconds(intervals, start, end):
     total, previous = 0, start
     for left, right in sorted((max(left, start), min(right, end)) for left, right in intervals

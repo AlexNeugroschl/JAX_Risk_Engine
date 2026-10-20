@@ -15,6 +15,9 @@ much numeric precision Monte Carlo risk needs: whether many lower-precision simu
 run concurrently across TPU devices, can match the VaR and Expected Shortfall of fewer
 double-precision simulations in the same wall-clock time.
 
+The [precision comparison command](benchmarks/README.md) reports matched-scenario accuracy,
+whole-job time, memory availability and execution settings together on CPU and accelerators.
+
 ## Features
 
 - ORE's exposure pipeline, reproduced component by component: the cross-asset model (per

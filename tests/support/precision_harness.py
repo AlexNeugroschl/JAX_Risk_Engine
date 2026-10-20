@@ -276,6 +276,25 @@ class MarketRiskCampaign:
     def pnl(self, result) -> Optional[np.ndarray]:
         return np.asarray(result.portfolio_pnl, dtype=np.float64)
 
+    def snapshot(self, result) -> Dict[str, np.ndarray]:
+        """Required observable outputs, with trade identities preserved.
+
+        Scenario PV is the reported arithmetic-consistent P&L anchor plus P&L, not an
+        independently repriced FP64 today's value. Do not change the engine's anchor.
+        """
+        pnl = np.asarray(result.pnl, dtype=np.float64)
+        base = np.asarray(result.base_npv_per_trade, dtype=np.float64)
+        out = {"portfolio/PnL": np.asarray(result.portfolio_pnl),
+               "portfolio/scenario_PV": np.asarray(result.portfolio_pnl) + result.base_npv,
+               "portfolio/base_PV": np.asarray(result.base_npv)}
+        for i, trade in enumerate(self.trades):
+            out.update({f"trades/{trade.trade_id}/PnL": pnl[:, i],
+                        f"trades/{trade.trade_id}/scenario_PV": base[i] + pnl[:, i],
+                        f"trades/{trade.trade_id}/base_PV": np.asarray(base[i])})
+        out.update({k: v for k, v in self.figures(result).items() if k.startswith("portfolio/")
+                    and k != "portfolio/PnL"})
+        return out
+
     def decisions(self, result) -> Dict[str, np.ndarray]:
         """None: market risk revalues today, where no option is exercised."""
         return {}
@@ -692,7 +711,11 @@ def environment() -> Dict[str, str]:
         except (OSError, subprocess.CalledProcessError):
             return "unknown"
 
-    return {"commit": git("rev-parse", "HEAD"), "changes": "yes" if git("status", "--porcelain") else "no",
+    # Runtime code is engine/ plus the installed ORE library, not reference submodules'
+    # working files. Preserve changed gitlinks but avoid scanning their large file trees
+    # for every timing point (particularly costly on a WSL mounted checkout).
+    return {"commit": git("rev-parse", "HEAD"),
+            "changes": "yes" if git("status", "--porcelain", "--ignore-submodules=dirty") else "no",
             "engine": engine_digest(),
             "jax": jax.__version__, "backend": jax.default_backend(),
             "devices": ", ".join(sorted({d.device_kind for d in jax.devices()})),

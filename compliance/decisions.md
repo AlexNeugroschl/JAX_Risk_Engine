@@ -22,6 +22,16 @@ code does it today. The design for the configurable engine is
 precision and the execution architecture,
 [details/precision.md](../docs/planning/details/precision.md).
 
+**A-19 deadline clarification (owner, 2026-10-19).** Prioritize one reproducible comparison
+of accuracy, whole-job runtime and memory using existing tools and formats; qualify native
+FP8 on the target hardware alongside that work. A verified first-device report can precede
+the other platform and cluster completion; TPU and cluster claims still require their own
+measurements. Keep A-10's fixed FP64 stages. INT8, new multi-pass/Qwix methods and precision
+choices for today's PV/Greeks are outside this deadline. A working native cuBLAS route does
+not wait for upstream XLA resolution, and placement redesign or tuning follows only a
+measured bottleneck. This narrows the first deliverable, not the required accuracy or the
+eventual cluster goal; [the roadmap](../docs/planning/roadmap.md) carries the order.
+
 ---
 
 ## 1. Direction: a configurable engine (decided 2026-09-30)

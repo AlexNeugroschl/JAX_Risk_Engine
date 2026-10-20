@@ -155,6 +155,28 @@ def test_base_value_is_ores():
     )
 
 
+@pytest.mark.parametrize("name", ["comparison_single", "comparison_portfolio"])
+def test_comparison_snapshots_preserve_ore_scenario_prices(name):
+    """The reporting snapshot's PV reconstruction, on its actual coarse-grid workload.
+
+    Reuse the independent ORE oracle above; no new pricing implementation in the benchmark.
+    The statistical estimators and their ORE references remain tested below.
+    """
+    from engine.precision import Precision
+    from tests.support.precision_campaigns import COMPARISON_CAMPAIGNS
+
+    campaign = COMPARISON_CAMPAIGNS[name]()
+    scenarios = campaign.scenarios(128, 11)
+    result = campaign.run(scenarios, Precision())
+    snapshot = campaign.snapshot(result)
+    for cfg in campaign.trades:
+        ore = np.asarray([_ore_npv(cfg, BASE + row, campaign.pricing) for row in scenarios.shifts[:3]])
+        np.testing.assert_allclose(snapshot[f"trades/{cfg.trade_id}/scenario_PV"][:3], ore, rtol=1e-10, atol=1e-6)
+    np.testing.assert_allclose(snapshot["portfolio/scenario_PV"],
+                               sum(snapshot[f"trades/{t.trade_id}/scenario_PV"] for t in campaign.trades),
+                               rtol=1e-13, atol=1e-8)
+
+
 # ---------------------------------------------------------------------------
 # VaR / ES: ORE's statistics on ORE's own P&L
 # ---------------------------------------------------------------------------

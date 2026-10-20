@@ -206,6 +206,24 @@ def market_risk_calibrated() -> MarketRiskCampaign:
                                 roundings=("stochastic",))))
 
 
+def comparison(single=False) -> MarketRiskCampaign:
+    """Bounded F-07 comparison on the existing fixed-LGM market-risk workload.
+
+    Keep FP64 simulation inputs, varying pricing compute/storage together; the market-risk
+    simulation has no matrix product. Calibrated-scenario research remains a separate campaign.
+    """
+    base = market_risk()
+    formats = ("float32", "bfloat16", "float8_e4m3fn", "float8_e5m2")
+    return dataclasses.replace(
+        base, name="comparison_single" if single else "comparison_portfolio",
+        description="F-07 bounded comparison: " + ("one payer swap" if single else "the existing five-trade portfolio")
+                    + " on the market-risk campaign's curves and shocks, fixed-LGM coarse grid; "
+                    "FP64 inputs, pricing compute/storage varied together; arithmetic-consistent P&L anchor.",
+        trades=base.trades[:1] if single else base.trades,
+        cases=tuple(Case(f"pricing:{name}", Precision(pricing=Precision.throughout(name).pricing))
+                    for name in formats))
+
+
 def rounding_cases(stages, formats, roundings=("nearest", "stochastic")):
     """Matched product policies in each of `roundings`. Storage stays float32."""
     return tuple(Case(f"{stage}:compute:{name}:{rounding}",
@@ -253,6 +271,14 @@ CAMPAIGNS = {"linear": linear, "options": options, "market_risk": market_risk, "
              "rounding": rounding, "rounding_options": rounding_options,
              "rounding_market_risk": rounding_market_risk, "replicated_storage": replicated_storage,
              "market_risk_calibrated": market_risk_calibrated}
+# Campaigns of record above must have published acceptance measurements. These bounded
+# workloads reuse their inputs but supply comparison evidence, not acceptance qualification.
+COMPARISON_CAMPAIGNS = {"comparison_single": lambda: comparison(True), "comparison_portfolio": comparison}
+
+
+def timing_campaign(name):
+    """Build a recorded campaign or a bounded comparison workload for timing."""
+    return (CAMPAIGNS | COMPARISON_CAMPAIGNS)[name]()
 
 
 def main(argv=None) -> int:

@@ -1,5 +1,10 @@
 # Precision timing records
 
+For the joined CPU/accelerator report with matched scenario outputs, use
+[`python -m benchmarks.comparison`](../../benchmarks/README.md). It composes the same
+campaigns and timing workers; its collection retains snapshots, failures, unavailable
+hardware, exact settings and empirical reference uncertainty in one report.
+
 What the timing harness (`tests/support/precision_timing.py`; method:
 [docs/planning/details/precision.md §19](../../docs/planning/details/precision.md#19-the-research-timing-wall-time-per-figure-at-equal-accuracy-f-07-2026-10-19))
 measured: per campaign of record and device, `<campaign>-<device>.json.gz` holds every number (each

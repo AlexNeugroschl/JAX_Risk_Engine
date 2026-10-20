@@ -13,6 +13,7 @@ optimized for TPU. See the root [README.md](../README.md) for a quick overview a
 |---|---|
 | Understand what this project does, no finance/math background needed | [Overview](getting-started/overview.md) |
 | Actually run the code | [User Guide](getting-started/user-guide.md) |
+| Compare precision, whole-job runtime and memory across devices | [Precision comparison](../benchmarks/README.md) |
 | Understand how the code is organized as software | [Architecture](concepts/architecture.md) |
 | Look up exact function signatures and data shapes | [API Reference](reference/api-reference.md) |
 | Price a whole portfolio in one call, from Python | [The Portfolio Entry Point](reference/portfolio-entrypoint.md) |

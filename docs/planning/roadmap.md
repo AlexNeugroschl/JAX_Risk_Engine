@@ -6,10 +6,10 @@ here is not planned ([rules](README.md#lifecycle)).
 
 **How the order is decided** (decision A-19, revised by the owner on 2026-10-19).
 
-1. **Accurate and fast on TPU and GPU clusters** (stage 1). This is the absolute priority: the
-   engine's numbers are shown to be right on the target accelerators (TPU, H100), its products
-   run natively wherever they are right, and its speed is measured across one host's devices and
-   across a pod slice's hosts. Stage 1 holds only work that is critical to this goal.
+1. **A reproducible comparison and verified accelerator execution** (stage 1). First extend
+   the existing comparison and timing tools to report accuracy, whole-job time and memory
+   together. In parallel, qualify the target accelerators (TPU, H100), especially native FP8,
+   and measure speed across devices and hosts. Stage 1 holds only work critical to this goal.
 2. **The precision research result** (stage 2): wall time per figure at equal accuracy on those
    clusters, which is the project's purpose (root [README](../../README.md)).
 3. **Basel III** (stage 3): regulatory figures as the Basel Framework specifies them, each
@@ -25,6 +25,31 @@ Any other defect goes into stage 4, or before the step it blocks. Within a stage
 order of its table. Items marked *parallel* touch code that no earlier step changes, and can
 start at any time. Items waiting on someone outside the project are listed
 [separately](#waiting-on-others), with who to chase.
+
+**Deadline scope** (owner, 2026-10-19). The first deliverable is one reproducible comparison
+on existing formats: CPU FP64/FP32 references, accelerator FP64/FP32 baselines, native FP8,
+and BF16 where already supported. Cover a single trade and a small representative portfolio
+with simple trades and options; compare scenario PV, portfolio P&L, VaR and ES. Keep the
+market, model, pricing settings and output requirements fixed. Use matched scenarios to
+isolate precision error, then multiple seeds and scenario counts to measure accuracy versus
+total runtime. Today's portfolio PV, calibration, Greeks and final reductions keep their
+current FP64 policy (A-10); the market-risk P&L anchor keeps its existing consistent arithmetic.
+
+Build the comparison first; start hardware access and native FP8 qualification alongside it.
+Publish a verified first-device result as soon as it is ready, explicitly limited to that
+device and workload. A TPU claim requires TPU measurements; a multi-device or multi-host
+claim requires measured scaling. Those measurements complete the cluster result, but need
+not delay the first-device report. Emulation is accuracy evidence, never native FP8 speed
+evidence. Failure to reach the accuracy target, or no speedup, is a valid result.
+
+INT8, additional multi-pass algorithms or Qwix integration, and configurable precision for
+today's PV and Greeks are outside this deadline and are not scheduled prerequisites. Revisit
+them after the existing-format results identify a useful opportunity. FP4, quantile
+correction and supported confidence intervals stay in stage 5. Broad refactoring, new APIs,
+extra plots, exhaustive product/format sweeps and upstream compiler fixes do not gate the
+first report. Only a correctness defect or a measured bottleneck that prevents a defensible
+comparison moves ahead of it. A later task marked *parallel* remains lower priority when it
+competes for the same engineer or hardware.
 
 **Step numbers belong to this page alone.** Steps are numbered in the order of work and are
 renumbered whenever that order changes. Nothing else cites a step: code, error messages, tests
@@ -100,39 +125,43 @@ through cuBLAS ([I-97](known-issues.md#i-97)). It has never run on a TPU or an H
 ---
 
 <a id="stage-1"></a>
-## Stage 1 — Accurate and fast on TPU and GPU clusters
+## Stage 1 — Comparison tooling and verified TPU/GPU execution
 
-The engine is to show its numbers right on a TPU and an H100, run its products natively where
-they are right, and have its speed against device and host count measured. Nothing else is in
-this stage.
+The [comparison tooling](../../benchmarks/README.md) is complete (2026-10-20), reusing the
+existing harnesses; [plan and smoke outcome](details/comparison-report.md). Qualify correctness
+and native execution before reading target-device speed results; keep the first workload
+bounded by the deadline scope.
 
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|
-| 1.1 | *Parallel, can start now.* Install on a TPU VM: a `tpu` extra in `pyproject.toml` at the pinned jax; `tests/test_environment.py` passing on a TPU VM against `constraints.txt`; a TPU section in the user guide beside the GPU one | [I-121](known-issues.md#i-121) (install) | — | S |
-| 1.2 | The engine's numbers on a TPU and an H100. On each: the device check (`tests/support/precision_devices.py`; on a TPU, its bfloat16 and bfloat16 passes, and Ironwood's FP8); the full suite (split as [I-27](known-issues.md#i-27) requires); every ORE parity suite at its tolerance; the golden snapshot within the margin of the CPU's. This qualifies the TPU's emulated float64, which the fixed stages and every kernel's float64 level run on. Each difference found is a defect of stage 1, fixed before 1.4. A format shown right natively is marked native for that device | [I-121](known-issues.md#i-121) | 1.1; booked hardware | M |
-| 1.3 | The H100's products: the device check under both GEMM emitters (XLA's Triton, and cuBLAS with `--xla_gpu_enable_triton_gemm=false`), repeated on each new jax; the two XLA reproductions filed ([details/xla-gpu-reproductions.md](details/xla-gpu-reproductions.md), the owner's to file). FP8 runs natively under XLA's default emitter once XLA's Triton code is right | [I-97](known-issues.md#i-97) | Booked hardware | S |
-| 1.4 | Speed across devices and hosts. Measure wall time against device count on TPU and H100, on one host and on a pod slice (`jax-risk-worker --distributed`, with the cluster's variables set), using the timing harness (precision design §19). Check the storage blocks' alignment with each device's share of the scenarios. Measure the float64 fixed stages' share of a whole job there, decide where they run (decision A-25: on the accelerator as today, on the host's CPU, or per device), and build the choice if it is not the accelerator | [I-61](known-issues.md#i-61) | 1.2, 1.3 | M |
+| 1.1 | *Parallel.* Secure the hardware slots and install on a TPU VM: a `tpu` extra in `pyproject.toml` at the pinned jax; `tests/test_environment.py` passing against `constraints.txt`; a TPU section in the user guide beside the GPU one | [I-121](known-issues.md#i-121) (install) | Booked hardware for installation | S |
+| 1.2 | The engine's numbers on a TPU and an H100. On each: the device check (`tests/support/precision_devices.py`); the full suite (split as [I-27](known-issues.md#i-27) requires); every ORE parity suite at its tolerance; the golden snapshot within the margin of the CPU's. Verify the first comparison's workloads and formats early. This qualifies the TPU's emulated float64, which the fixed stages and every kernel's float64 level run on. Fix discrepancies affecting a measurement before publishing it | [I-121](known-issues.md#i-121) (correctness) | 1.1 for TPU; booked hardware for H100 | M |
+| 1.3 | **Native FP8, alongside correctness checks as hardware permits.** On H100, check XLA's default emitter and cuBLAS (`--xla_gpu_enable_triton_gemm=false`); use the correct native route without waiting for an upstream fix. On Ironwood, qualify native FP8 before enabling its device dispatch. Compare against CPU emulation and FP64; inspect lowering or a device trace for the representative engine shapes to establish which operations actually use FP8 units, recording fallbacks and the process flags/library versions. An execution label alone is not proof of FP8 hardware use. Include supported BF16 checks. Record an unavailable native route as a limitation | [I-97](known-issues.md#i-97) (target GPU qualification); [I-121](known-issues.md#i-121) (native TPU products) | Booked hardware; 1.1 for TPU | M |
+| 1.4 | Speed across devices and hosts, with the same representative workload and accuracy checks: one device versus several on TPU and H100, then a pod slice's hosts (`jax-risk-worker --distributed`). Check scenario/storage-block alignment and collective completion. Keep total scenarios fixed for the scaling comparison; separately compare accuracy gained within a time budget. Record the FP64 fixed stages' share (A-25). Change their placement only if measurements show a bottleneck that materially blocks the research; a host-placement redesign is not an automatic prerequisite | [I-61](known-issues.md#i-61) | Comparison tooling complete; 1.2, 1.3 for measured formats/devices | M |
 
-1.1 comes first because nothing runs on a TPU without it. 1.2 comes before 1.4 because speed
-measured on unverified numbers shows nothing. 1.3 runs alongside 1.2 on the same H100. A speed
-defect that 1.4 finds dominating a cluster job, such as the cold job's compiles
-([I-81](known-issues.md#i-81)) or Newton's bootstrap compile ([I-53](known-issues.md#i-53)),
-moves into this stage before the research timing.
+The first verified target device's comparison proceeds to 2.1 while the other device and
+1.4 remain in progress. Tooling smoke results on CPU/the RTX 5060 do not qualify those targets.
+Compiler bug reports and rechecking an eventual upstream fix remain useful follow-up work
+(4.12), but a correct cuBLAS route is sufficient for the first H100 measurement. A defect
+such as excessive compilation (I-81, I-53) moves ahead of a report only when it prevents a
+correct or representative measurement; otherwise its cost is included and reported.
 
 <a id="stage-2"></a>
 ## Stage 2 — The precision research result
 
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|
-| 2.1 | The first research result on the existing precision formats, on several devices of Ironwood and H100: wall time per figure at equal accuracy, many low-precision paths against fewer float64 paths, measured by the timing harness (`tests/support/precision_timing.py`, precision design §19). The harness times each case's whole job cold and warm, keeps compiles apart, and records peak memory and how its products ran. It measures accuracy over seeds against float64's truth and reads equal accuracy off the observed errors, assuming no rate; a format that does not pay is a result too. The order: the storage formats; then the matrix-product kernels on native FP8 (H100 with `--xla_gpu_enable_triton_gemm=false`, I-97); then each format's two terms against its single pass (A-23); then the induction's budget, time and peak tradeoff (`--budget-divisors`). The research's path counts start at 65,536, since on a CPU and the RTX 5060 a job of up to 16,384 paths was all fixed work. A figure timed on another engine or grid than its campaign's has its rows measured first, or is timed on the measured one (I-114) | [F-07](features.md#f-07) (speed) | Stage 1 | M |
+| 2.1 | **First deadline deliverable: a reproducible result on the first verified target device.** Use the [comparison report](../../benchmarks/README.md) on one single trade and one small portfolio of simple trades and options, with scenario PV and portfolio P&L/VaR/ES. Compare CPU FP64/FP32 references, accelerator FP64/FP32, native FP8 and supported BF16; label the current mixed-precision policy, including FP64 calibration and reductions. Include matched-scenario precision errors and accuracy over multiple seeds/counts, an FP64 reference whose sampling uncertainty is stated, and warm whole-job time at equal accuracy. Count host preparation, calibration, conversions, transfers, pairing if used, reductions and required output; separate compile/cold time. Report peak memory (or explicit unavailability), native/fallback evidence and exact reproduction settings. Start with existing measured pricing settings (I-114); small counts smoke-check the tool, then include counts from 65,536 upward as memory permits to test whether scenario work dominates on this device. Keep failed accuracy targets, memory failures and no-speedup cases visible. Do not wait for exhaustive format/product sweeps, tuning or cluster completion | [F-07](features.md#f-07) (first measured result) | Comparison tooling complete; 1.2 and 1.3 on the device/formats measured | M |
+| 2.2 | Complete the cluster research result: extend the same report to the other target platform and the device/host counts qualified by 1.4. Report end-to-end speed at equal accuracy and scaling separately. Every hardware claim is limited to measured devices, workloads and native execution. Compare existing two-term and single-pass methods (A-23) where useful; sweep the induction budget (`--budget-divisors`) or isolate storage/compute costs only when the first measurements identify a bottleneck. Broader sweeps follow the deadline result | [F-07](features.md#f-07) (cluster result) | 2.1; 1.2 to 1.4 on the added devices | M |
 
 **Precision scope** (owner, 2026-10-15). In this first comparison, PFE and VaR use the
 existing, uncorrected quantile estimators, and ES uses the existing tail estimator. The paired
 mean correction remains available: corrected and uncorrected means are told apart, and its
 float64 work is included in the timing. A format that fails to reach the required accuracy is a
-valid research result. Three extensions follow separately, in stage 5, and none of them delays
-this measurement: multilevel quantile correction (only if the measurements justify its cost),
-FP4, and supported confidence intervals (F-10).
+valid research result. INT8, new multi-pass/Qwix methods and lower-precision today's PV or
+Greeks are outside the deadline scope. Three already-planned extensions follow separately,
+in stage 5, and none delays this measurement: multilevel quantile correction (only if the
+measurements justify its cost), FP4, and supported confidence intervals (F-10).
 
 Precision design: [details/precision.md](details/precision.md); its rounding and uncertainty
 work: [details/precision-accuracy.md](details/precision-accuracy.md).
@@ -177,7 +206,7 @@ steps at any time, then unchecked behaviour, then speed, then tooling.
 | 4.9 | A type checker on `engine/` (A-20) | [I-66](known-issues.md#i-66) (type checker) | 4.1 | S |
 | 4.10 | Where ORE's sensitivity analytic disagrees with itself or fails. Report the two inconsistencies to ORE, each with a one-trade reproduction: a holiday as-of date's volatility reference, and a deal strike that its fallback moves on an ACT/ACT (ICMA) swap index. Report its optimiser's miss on a large basket under a 5bp volatility shift. Each then becomes a parity test or a difference by decision. Decide in the run request's preflight (`engine.run.validate_run`) whether an as-of date that is not a business day is refused | [I-117](known-issues.md#i-117) | — | S |
 | 4.11 | *Parallel, can start now* (the run request's dispatch alone). Do once the work that several analytics in one run share: hand the cross-asset model's calibration from `calibration` to `exposure`, validate the request once, build the trades' ORE schedules once per run. The result still equals each analytic alone bit for bit; each shared stage is counted and timed against the code before | [I-118](known-issues.md#i-118) | — | S |
-| 4.12 | XLA's reverse-mode compile failure on a GPU for a calibrated option's price: a minimal reproduction, reported with I-97's (1.3), rechecked on each new jax | [I-119](known-issues.md#i-119) | — | S |
+| 4.12 | XLA follow-up: the calibrated option's reverse-mode compile failure (I-119) and the two existing native-product reproductions ([details/xla-gpu-reproductions.md](details/xla-gpu-reproductions.md), I-97), reported upstream and rechecked on new jax versions. Retain the verified cuBLAS workaround for native FP8 while the default emitter is wrong; neither upstream resolution nor reverse-mode support gates the first report using existing supported methods | [I-119](known-issues.md#i-119); [I-97](known-issues.md#i-97) (upstream follow-up) | — | S |
 | 4.13 | Before the API is reachable from outside a trusted network: authentication, a body-size limit, a per-caller limit on queued jobs | [I-90](known-issues.md#i-90) | — | S |
 
 4.2 comes before 4.8 because it removes the fixtures that 15 test files repeat. 4.5's runs can
@@ -220,7 +249,8 @@ None of these is engineering work until its input arrives. Chase the dependency,
 
 | Item | Waiting for | From |
 |---|---|---|
-| Steps 1.2 to 1.4 and 2.1 | Booked time on TPUs (Ironwood, and a pod slice for 1.4) and H100s ([access request](../google-cloud-research-access.md)) | Owner, the cloud administrator |
+| Hardware measurements in 1.1 to 1.4, 2.1 and 2.2 | Booked time on TPUs (Ironwood, and a pod slice for 1.4) and H100s ([access request](../google-cloud-research-access.md)); comparison tooling is complete; measurements await access | Owner, the cloud administrator |
+| [I-97](known-issues.md#i-97) upstream resolution | A corrected default GPU compiler path; use the verified cuBLAS route for the first native FP8 result | XLA maintainers, after the owner files the existing reproductions |
 | [I-05](known-issues.md#i-05) USD-SOFR swaps | The convention set to build (D03/D04) | Owner, with the caller booking SOFR swaps |
 | [I-07](known-issues.md#i-07) corporate bonds, listed options | Demand, and for corporate bonds a credit model | Owner |
 | The project's licence (no `LICENSE` file or licence metadata; project audit, AUD-49) | A decision on first-party licensing | Owner |
