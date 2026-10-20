@@ -15,8 +15,7 @@ Size: **S** ≤ 3 days, **M** ≤ 2 weeks, **L** longer.
 | [F-04](#f-04) | FX and equity trades on the pipeline; FX/EQ vol calibration | L | F-07's kernel rewrite | New |
 | [F-05](#f-05) | Basel III regulatory figures | L | See entry | Basel |
 | [F-06](#f-06) | CVA/DVA from the exposure profiles | M | I-87 | New |
-| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | — | Focus |
-| [F-08](#f-08) | Reporting currencies other than USD for TraderX | S | I-18 (an FX source), I-59 | New |
+| [F-07](#f-07) | Precision below float32, down to FP8 (FP4 later), per stage, product and trade | L | Stage 1 on the target hardware (I-121, I-61) | Research; FP4 and quantile correction New |
 | [F-09](#f-09) | ORE's XML input files as a run request | M | I-87 | New |
 | [F-10](#f-10) | Supported sampling confidence intervals with validated tail assumptions | L | I-111 availability rule; first precision timing result | New |
 | [F-11](#f-11) | The cash flows paid in Theta's roll, reported beside Theta | S | I-87 | New |
@@ -82,9 +81,8 @@ L6) within reach. With FX trades priced, market risk shocks FX spots as factors 
 then it converts at the fixed as-of spot and says FX is not shocked (since 2026-10-11,
 [I-100](known-issues.md#i-100)).
 
-**Depends on.** [F-07](#f-07)'s kernel rewrite: the new trades' path kernels are written in its form (A-16).
-Equity positions from TraderX additionally need
-[I-18](known-issues.md#i-18)'s market data. **Size.** L.
+**Depends on.** [F-07](#f-07)'s kernel rewrite: the new trades' path kernels are written in
+its form (A-16). Equity trades also need an equity spot in the market. **Size.** L.
 
 <a id="f-05"></a>
 ### F-05 — Basel III regulatory figures
@@ -158,25 +156,11 @@ evidence table (2026-10-11, [details/precision.md
 §15.6](details/precision.md#156-the-evidence-table-2026-10-11)) judges them by decision A-11's
 1% rule.
 
-**Depends on.** The mechanism and cast points (done 2026-10-01; [I-55](known-issues.md#i-55));
-the speed case needs the target hardware, which the owner has. **Size.** L.
+**Depends on.** The mechanism and cast points (done 2026-10-01; [I-55](known-issues.md#i-55)).
+The speed case needs the engine's numbers shown right on the target hardware
+([I-121](known-issues.md#i-121)) and its scaling measured there ([I-61](known-issues.md#i-61)).
+**Size.** L.
 **Details.** [details/precision.md](details/precision.md).
-
-<a id="f-08"></a>
-### F-08 — Reporting currencies other than USD for TraderX
-
-**Value.** A TraderX submission's `reportingCurrency` lets a consumer ask for results in its
-own currency, as ORE reports in the `baseCurrency` of its run, converting with its market's
-FX. Decision A-18 refuses anything but USD until then
-([I-59](known-issues.md#i-59)), so a request for EUR gets a 400 rather than
-USD numbers labelled EUR. This feature turns that refusal into a conversion: t=0 figures
-at the as-of FX spot, ORE's convention; the capability document's `reportingCurrencies`
-lists each currency the FX source covers. Parity against an ORE run with that
-`baseCurrency`.
-
-**Depends on.** An FX source at the boundary ([I-18](known-issues.md#i-18), blocked on
-TraderX or a market-data decision); I-59's refusal first, so the field is never silently
-ignored meanwhile. **Size.** S once the FX source exists.
 
 <a id="f-09"></a>
 ### F-09 — ORE's XML input files as a run request

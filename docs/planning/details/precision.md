@@ -8,8 +8,9 @@ D-9 ([compliance/decisions.md](../../../compliance/decisions.md)). It replaces
 `sub-fp32-precision.md`; its findings are kept, corrected, in [§15](#15-measurements).
 
 **Written:** 2026-10-01 · **Items:** [F-07](../features.md#f-07), [I-55](../known-issues.md#i-55),
-[I-61](../known-issues.md#i-61), in the [roadmap's focus](../roadmap.md#stage-3--the-focus); stage 1
-(done) built the mechanism, the storage harness (2026-10-09) closed
+[I-61](../known-issues.md#i-61), in the roadmap's [stage 1](../roadmap.md#stage-1) (accurate
+and fast on TPU and GPU clusters) and [stage 2](../roadmap.md#stage-2) (the research result).
+The structure stage (2026-10-01 to 10-04, done) built the mechanism, the storage harness (2026-10-09) closed
 [I-75](../known-issues.md#i-75), and the kernel rewrite enabled compute below float32 for every
 path kernel ([§8](#8-compute-below-float32)): 2026-10-10, and the Bermudan/American rollback on
 2026-10-13
@@ -41,12 +42,12 @@ conflicts with one is redesigned rather than excused.
 
 - **The default is float64 everywhere,** and every ORE parity suite runs on the default. Parity
   at the default is therefore never traded for precision features.
-- **Stage 1's precision work (2026-10-01 to 10-04) kept the default bit for bit.** Their cast points are no-ops at float64
+- **The structure stage's precision work (2026-10-01 to 10-04) kept the default bit for bit.** Their cast points are no-ops at float64
   (`astype` to the same dtype, which XLA removes), and a golden snapshot proves it
   ([§13.1](#131-bit-for-bit-and-ore-parity)). One change between per-trade precision and sub-32-bit storage was allowed to
   move float64 at rounding level, by decision of 2026-10-02: jitting the pricers with the
   trade as a traced argument (I-21, I-22). It followed the kernel rewrite's procedure below, and the
-  snapshot was re-baselined after it (§13.1); the rest of stage 1 is bit for bit against that.
+  snapshot was re-baselined after it (§13.1); the rest of the structure stage is bit for bit against that.
   The compiled Greeks (2026-10-06) re-baselined the AD Greeks alone in the same way, each now one compiled program
   (§13.1); every other array stayed bit for bit.
 - **The kernel rewrite (F-07) moves float64 numbers at rounding level.** It rewrites the kernels
@@ -1313,10 +1314,11 @@ Revised with the run request (2026-10-18; schema version 3):
 | **The research result** (F-07) | After multi-host and the evidence table. Timing across devices on Ironwood and H100: storage formats, then the kernel rewrite's matrix-product kernels with native FP8; the harness built 2026-10-19 (§19) | The research result: wall time per figure and precision against float64 at equal accuracy (measured over seeds, §19), many low-precision paths against fewer float64 ones | M |
 | **FP4** (F-07) | FP4 storage (variance correction through the block scales), FP4 compute on TPU 8t/8i, multilevel quantile estimation | Evidence rows for FP4 | L |
 
-**Order (decided: A-19, revised 2026-10-10):** the structure first (stage 1, done); then
-the roadmap's near-term milestone (stage 2: the profiling demo on a local GPU, done); then the
-focus (stage 3), where low precision comes first, ahead of the critical bugs and the API, and
-TraderX and Basel III wait for it. The storage measurement (I-75) is done. The kernel
+**Order (decided: A-19, revised 2026-10-19):** the structure (done 2026-10-04) and the
+profiling demo on a local GPU (done 2026-10-07) came first, then the low-precision kernels, the
+evidence table and the multi-host worker set (all done). Next, the roadmap's stage 1 shows the
+engine accurate and fast on TPU and GPU clusters (I-121, I-97, I-61). Its stage 2 then times
+the research result (F-07), and Basel III waits for that. The storage measurement (I-75) is done. The kernel
 rewrite (F-07), difference form and matrix products together, took first the families the recalibration
 fix (I-49) did not change, and takes the Bermudan/American rollback after it (`ShiftHorizon`,
 I-32, and the recalibration fix, both done 2026-10-12), so no kernel is rewritten twice; new capabilities' kernels and the strike
@@ -1343,7 +1345,7 @@ record of stages 1 and 2.
 - Before the precision mechanism (2026-10-01), save a golden snapshot from `main` in a separate worktree: the shared
   portfolio's t=0 NPVs, cube, exposure and per-trade EPE at float64 and with a float32
   simulation, bump Greeks, AD Greeks, a market-risk run at 64 and 32. Compare with
-  `np.array_equal` (value, dtype, shape) after every change of stage 1. The Greeks run
+  `np.array_equal` (value, dtype, shape) after every change of the structure stage. The Greeks run
   takes about 16 minutes and 10 GB.
 - Every ORE parity suite runs unchanged at the default after every step.
 - **Result of the precision mechanism (2026-10-01).** 164 arrays at the default precision (today's values under
@@ -1378,7 +1380,7 @@ record of stages 1 and 2.
   5.1e-14 of its trade's NPV (a Gamma's own relative change looks larger, up to 2e-7, since it
   is a second difference of NPVs). float32 runs, at float32 rounding: the cube 2.7e-6, the
   raw shocked revaluation 1.6e-6, market-risk statistics 7.5e-6. Every ORE parity suite
-  passes at its tolerance. The rest of stage 1 compares against a snapshot of the commit that
+  passes at its tolerance. The rest of the structure stage compares against a snapshot of the commit that
   made this change, not of `a6c63bf`. The
   whole snapshot took 14 minutes instead of 69 (bump Greeks 21 s instead of 29 minutes),
   both measured with other jobs running.
@@ -2335,7 +2337,7 @@ Recorded in [compliance/decisions.md](../../../compliance/decisions.md), 2026-10
 | # | Decision |
 |---|---|
 | D-9 (revised) | Precision is a free choice for the adjustable stages, per run, product and trade; a run is never refused on precision; unvalidated combinations carry a warning |
-| A-9 | Adjustable precision, the old mechanism removed once the replacement works (stage 1, 2026-10-01 to 10-04) |
+| A-9 | Adjustable precision, the old mechanism removed once the replacement works (the structure stage, 2026-10-01 to 10-04) |
 | A-10 | Only the heavy scenario-axis stages are adjustable; calibration, t=0, Greeks and reductions stay float64, built on the same mechanism so a stage can be opened later |
 | A-11 | Acceptance standard: Basel III tests where they exist (P&L attribution, plus the Basel plan's P6.2 rule); the P6.2 statistical rule, labelled as engineering, for figures Basel does not cover |
 | A-12 | The old precision configuration is refused, not translated |

@@ -118,8 +118,8 @@ without credit. Their TraderX-bundle counterparts live at the integration bounda
     its closed ledger.
   - **[Features](planning/features.md)** — additive work beyond today's scope (Basel III
     figures, sub-FP32 precision, FX/equity trades, CVA, engine options).
-  - **[Roadmap](planning/roadmap.md)** — the order of work: structure, then correctness,
-    performance, API, tests, features.
+  - **[Roadmap](planning/roadmap.md)** — the order of work: first accurate and fast on TPU
+    and GPU clusters, then the precision research result, Basel III, fixes, and new features.
   - **[details/](planning/details/)** — design for the large items: the
     [configurable engine](planning/details/configurable-engine.md),
     [ORE parity validation](planning/details/ore-parity-validation.md),

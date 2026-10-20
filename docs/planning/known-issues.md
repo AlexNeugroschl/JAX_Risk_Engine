@@ -16,7 +16,7 @@ shared portfolio, what is compared with ORE and what is not is the
 
 ## Verification status
 
-Last full run, 2026-10-19, on stage 3's multi-host, GPU-product and Greeks work (I-61, I-97, I-115)
+Last full run, 2026-10-19, on the multi-host, GPU-product and Greeks work (I-61, I-97, I-115)
 and the timing harness. **3,916 collected** on Windows: the 3,888 of the code before (one more
 than the 3,887 recorded on 2026-10-18, its commit's), plus 20 new tests and 2 renumbered
 parameter ids, less 3 ids, reconciled by test id: added, `tests/test_multihost_worker.py` (5),
@@ -71,34 +71,27 @@ The fast tier alone is not a full verification. Rules: [README.md](README.md#ver
 
 | ID | Issue | Sev. | Status | Category | Roadmap |
 |---|---|---|---|---|---|
-| [I-04](#i-04) | Seasoned TraderX swaps: the export has no past fixings | High | OPEN | Scope | External |
-| [I-05](#i-05) | No faithful USD-SOFR / ACT-360 swap construction | High | OPEN | Scope | External |
-| [I-07](#i-07) | No corporate bond, equity or listed-option pricer | Medium | OPEN | Scope | By demand |
-| [I-08](#i-08) | A running TraderX attempt is lost on restart | Medium | PARTIAL | API | TraderX |
-| [I-16](#i-16) | `rateSensitivity` is parallel-only | Medium | OPEN | Scope | External |
-| [I-18](#i-18) | No equity spot or FX source; equity positions refused | Medium | OPEN | Scope | External |
-| [I-23](#i-23) | `accrualBasis` strictness rests on an unconfirmed reading | Medium | ASSUMPTION | API | TraderX |
-| [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | Fix what exists |
-| [I-104](#i-104) | Edge cases valued wrong: a zero-variance European, a bond awaiting a delayed payment, H at small a·t | Low | OPEN | Correctness | Fix what exists |
-| [I-107](#i-107) | TraderX: `bundleId` is trusted, not recomputed, so a changed bundle can get the old result | Medium | OPEN | API | TraderX |
-| [I-108](#i-108) | TraderX: NaN amounts priced as `ok`, terms contradicting the row priced, duplicate rows counted twice | Medium | OPEN | API | TraderX |
-| [I-109](#i-109) | TraderX: after a failed publication a same-id retry never prices or publishes | Medium | OPEN | API | TraderX |
+| [I-121](#i-121) | Never run on a TPU or an H100: no TPU install, float64 emulation and the device check unverified there | Medium | OPEN | Validation | Clusters |
+| [I-97](#i-97) | XLA computes some native GPU products wrong: FP8 is native only through cuBLAS, unchecked on H100 | Medium | PARTIAL | Performance | Clusters |
+| [I-61](#i-61) | Multi-device and multi-host speed unmeasured | Medium | PARTIAL | Performance | Clusters |
+| [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | Fix what exists |
+| [I-120](#i-120) | The retired TraderX path (`/eod`) still ships, with its own pricers and its own defects | Medium | OPEN | API | Fix what exists |
 | [I-110](#i-110) | The documentation contradicts the code in places | Low | OPEN | Tooling | Fix what exists |
+| [I-104](#i-104) | Edge cases valued wrong: a zero-variance European, a bond awaiting a delayed payment, H at small a·t | Low | OPEN | Correctness | Fix what exists |
+| [I-27](#i-27) | Long full-suite runs can hard-abort inside XLA or lose a worker process | Medium | OPEN | Tooling | Fix what exists |
+| [I-81](#i-81) | A cold job compiles about 180 one-operation programs; market risk vmaps a closure | Low | OPEN | Performance | Fix what exists |
+| [I-53](#i-53) | On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch | Low | PARTIAL | Performance | Fix what exists |
+| [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | Fix what exists |
 | [I-117](#i-117) | ORE's sensitivity analytic is inconsistent with itself, or fails a calibration the engine fits, in four configurations | Low | OPEN | Validation | Fix what exists |
 | [I-118](#i-118) | A run of several analytics repeats the work they share | Low | OPEN | Performance | Fix what exists |
 | [I-119](#i-119) | On a GPU, XLA cannot compile a reverse-mode derivative of a calibrated option's price | Low | OPEN | Scope | Fix what exists |
-| [I-97](#i-97) | XLA computes some native GPU products wrong: FP8 is native only through cuBLAS, unchecked on H100 | Medium | PARTIAL | Performance | Focus |
-| [I-53](#i-53) | On Windows, pricing runs slower after AD Greeks; Newton's bootstrap compiles 3–4 s longer from scratch | Low | PARTIAL | Performance | Fix what exists |
+| [I-90](#i-90) | The HTTP API has no authentication, rate limit or body-size limit | Low | OPEN | API | Fix what exists |
 | [I-54](#i-54) | No swaption smile: options away from the money read the ATM vol | Medium | OPEN | Correctness | New |
-| [I-58](#i-58) | TraderX: two concurrent submissions of one workload under different ids both execute | Medium | PARTIAL | API | TraderX |
-| [I-59](#i-59) | TraderX: `calculations` and `reportingCurrency` accepted, keyed, then ignored | Medium | OPEN | API | TraderX |
-| [I-60](#i-60) | TraderX result schema has no stated policy on added fields | Low | ASSUMPTION | API | TraderX |
-| [I-90](#i-90) | The HTTP API has no authentication, rate limit or body-size limit | Low | OPEN | API | TraderX |
-| [I-61](#i-61) | Multi-device and multi-host speed unmeasured | Medium | PARTIAL | Performance | Focus |
-| [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | Fix what exists |
-| [I-67](#i-67) | Test modules import each other and repeat fixtures | Low | OPEN | Tooling | Fix what exists |
-| [I-81](#i-81) | A cold job compiles about 180 one-operation programs; market risk vmaps a closure | Low | OPEN | Performance | Fix what exists |
-| [I-93](#i-93) | TraderX's submissions are priced by their own pricers, not the engine's | Medium | OPEN | API | TraderX |
+| [I-05](#i-05) | No faithful USD-SOFR / ACT-360 swap construction | Medium | OPEN | Scope | Waiting |
+| [I-07](#i-07) | No corporate bond, equity or listed-option pricer | Medium | OPEN | Scope | Waiting |
+
+The rows are in the roadmap's order. *Clusters* is stage 1, accurate and fast on TPU and GPU
+clusters.
 
 **One pipeline.** Since 2026-10-01 every run is `price_portfolio` on a `Market`
 (`engine.run.pipeline`; since 2026-10-18 reached through the run request, `engine.run.run` and
@@ -220,6 +213,41 @@ per-product route to cuBLASLt if XLA offers one.
 ---
 
 ## Validation
+
+<a id="i-121"></a>
+### I-121 — Never run on a TPU or an H100: no TPU install, float64 emulation and the device check unverified there
+
+**Severity:** Medium (a stated goal unmet: running across TPUs) · **Status:** OPEN ·
+**Category:** Validation · **Found:** 2026-10-19, the roadmap's review for the owner's priority
+(TPU and GPU clusters); the project audit's advice to check the target hardware before the
+research timing
+
+**What is wrong.** The root README targets a TPU pod slice, and the research targets Ironwood and
+H100, but every run so far has been on a CPU and on one consumer GPU, the RTX 5060.
+
+- **No TPU install.** `pyproject.toml` has a `gpu` extra and no `tpu` one, and no TPU
+  environment is qualified against `constraints.txt`.
+- **float64 emulation unverified.** A TPU emulates float64. The engine's fixed stages
+  (calibration, today's values, Greeks, reductions; A-10) run in float64, and so does the level
+  of every kernel in difference form. Nobody knows whether the emulation gives the engine's
+  float64 numbers within the margin.
+- **Device check not run on a TPU.** A TPU's bfloat16 passes are marked native but "to be
+  checked on the device", and its FP8 stays emulated until Ironwood's is shown right (precision
+  design §8).
+- **The H100 is not the RTX 5060.** It differs in its float64 units, its FP8 path and the code
+  XLA emits for it. Its products are I-97's to check; everything else about it is unchecked.
+
+**Reach.** Every figure of a run on a TPU or an H100 is unverified, though none is known to be
+wrong. CPU and the RTX 5060 are verified ([verification status](#verification-status)).
+
+**Current handling.** None. The user guide covers CPU and NVIDIA GPU only.
+
+**To close.** Add a `tpu` extra at the pinned jax, and get `tests/test_environment.py` passing on
+a TPU VM. Then, on a TPU and on an H100, run the device check, the full suite (split as
+[I-27](#i-27) requires), every ORE parity suite at its tolerance, and the golden snapshot
+against the CPU's within the margin (1e-10 at float64, 1e-4 at float32). Each difference found
+becomes a defect of its own, fixed before speed is measured ([I-61](#i-61)). A format shown
+right natively is marked native for that device, and the precision report says so.
 
 <a id="i-117"></a>
 ### I-117 — ORE's sensitivity analytic is inconsistent with itself, or fails a calibration the engine fits, in four configurations
@@ -365,9 +393,16 @@ red first: on the code before, each host split the scenarios across its own two 
 which share the host's cores, so it says nothing about speed: scaling on TPU and H100 is
 unmeasured, and the storage blocks' alignment with each device's share is unchecked there.
 
-**To close.** Wall time against device count on TPU (and H100) by the timing harness
+The float64 fixed stages' cost on an accelerator host is also unmeasured. An H100 runs float64
+natively, a TPU emulates it, and the RTX 5060 runs it at 1/64 of its float32 rate. Where those
+stages run is decision A-25, which is open and is to be decided on these measurements.
+
+**To close.** Once [I-121](#i-121) has shown the numbers right on the device, measure wall time
+against device count on TPU and H100 with the timing harness
 (`tests/support/precision_timing.py`, precision design §19), on one host and on a pod slice with
-the cluster's variables set, feeding the research result ([F-07](features.md#f-07)).
+the cluster's variables set. Measure the fixed stages' share of a whole job there, decide A-25
+(on the accelerator, on the host's CPU, or per device), and build the choice if it is not the
+accelerator. These measurements feed the research result ([F-07](features.md#f-07)).
 
 <a id="i-118"></a>
 ### I-118 — A run of several analytics repeats the work they share
@@ -400,211 +435,59 @@ for bit, and that each shared stage runs once (a call count), timed against the 
 
 ## API
 
-<a id="i-08"></a>
-### I-08 — A running TraderX attempt is lost on restart
+<a id="i-120"></a><a id="i-04"></a><a id="m-2"></a><a id="i-08"></a><a id="i-16"></a><a id="i-18"></a><a id="i-23"></a><a id="i-58"></a><a id="i-59"></a><a id="i-60"></a><a id="i-93"></a><a id="i-107"></a><a id="i-108"></a><a id="i-109"></a>
+### I-120 — The retired TraderX path (`/eod`) still ships, with its own pricers and its own defects
 
-**Severity:** Medium · **Status:** PARTIAL
+**Severity:** Medium · **Status:** OPEN · **Category:** API · **Found:** 2026-10-19, owner:
+TraderX submits through the run request
 
-**Closed part (2026-10-04).** Portfolio jobs (the run requests since 2026-10-18): the durable
-SQLite job queue (`engine/api/job_queue.py`, decision A-14) replaced the in-memory `_JOBS` dict.
-A job survives restarts, every API process on the queue serves every run id, a job running when
-its worker died reads `interrupted`, and a failure names its class (`bad-terms`,
-`missing-market-data`, `unsupported-product`, `numerical-failure`, `infrastructure`).
-Tests: `tests/test_engine_worker.py` (`test_jobs_survive_reopening_the_file`,
-`test_a_worker_killed_mid_job_leaves_it_interrupted`,
-`test_supervisors_of_one_queue_share_one_worker`, the failure classes); red first: on the code
-before 2026-10-04 a job id from one app process was a `404` in the next.
+**What is wrong.** TraderX now submits through the run request (`POST /runs`), as every other
+caller does (owner, 2026-10-19). Its old path is still served, though. `POST /eod/price` and the
+other `/eod` routes (`engine/api/traderx_routes.py`) price end-of-day bundles with the
+closed-form pricers in `engine/traderx/`, which value bills and notes on a flat assumed rate,
+instead of the engine's pricers. They also keep their own attempt and result stores beside the
+job queue. Until today the path's defects were filed separately. They are retired with the path
+instead of being fixed, and this entry carries their anchors:
 
-**What is wrong.** The TraderX path is durable for finished work
-(`engine/traderx/publication.py`: manifest as commit point, scan recovery, idempotent
-`submissionId` across restarts), but a *running* attempt is memory only and reads as unknown
-after a restart. The store is single-machine.
+- **I-93:** the path prices with its own pricers, not the engine's.
+- **I-107:** `bundleId` is trusted, not recomputed, so a changed bundle can get the old result
+  (AUD-22).
+- **I-108:** NaN amounts are priced `ok`, terms that contradict their row are priced, duplicate
+  rows are counted twice, and structural errors come back as a `500` (AUD-27 to AUD-31).
+- **I-109:** after a failed publication, a retry under the same id never prices or publishes
+  (AUD-23).
+- **I-08:** a running attempt is lost on restart; a failed workload reads as unknown after a
+  restart; bindings belong to one process; the directory is not fsynced after a publication
+  (AUD-24 to AUD-26).
+- **I-58:** two concurrent submissions of one workload under different ids both execute.
+- **I-59:** `calculations` and `reportingCurrency` are accepted, keyed and then ignored, because
+  decision A-18's refusal was never built (AUD-32).
+- **I-04, I-16, I-18:** the path's inputs. The export has no past fixings, `rateSensitivity` is
+  parallel-only on a flat profile, and there is no equity spot or FX source.
+- **I-23, I-60:** the open questions of its contract with TraderX (the `accrualBasis` values,
+  and fields added to its result schema).
+- `bundlePath` is joined to manifest paths without containment, and its files are read whole
+  with no size bound (AUD-34).
 
-Three more gaps of the same store (found by the project audit, AUD-24 to AUD-26, confirmed
-2026-10-11):
+**Reach.** Only callers of `/eod`. The run request and the engine's pricers are unaffected.
 
-- **A failed workload is unknown after a restart.** `ResultStore.lookup` serves successes only,
-  by design, and `AttemptStore.lookup` falls back to attempts in memory; after a restart a
-  workload whose only attempt failed, published, reads as `UNKNOWN_WORKLOAD` (its attempt is
-  still found by id).
-- **Bindings and publication are one process's.** `AttemptStore` holds an in-process lock and
-  `ResultStore` has no cross-process coordination, so two API processes on one directory can
-  bind one id to two workloads and both publish.
-- **Power loss.** Publication fsyncs each file and renames it atomically, but does not fsync
-  the directory after the rename, so on Linux a published manifest may not survive a power cut
-  that the code's comments call durable; a failed stage can leave its temporary file behind.
+**Current handling.** None; the routes are served as before.
 
-**To close.** On the TraderX path, the durable accepted-attempt record, a boot sweep
-and an `interrupted` lookup state (TraderX acceptance case A-09); the portfolio queue's
-`interrupt_running` is the pattern. With it, attempts, bindings and terminal states in the
-queue's SQLite transactions (one owner across processes), a workload's latest terminal state
-served when it has no success, and stale stages swept at boot. Until then one TraderX process
-per store, as [docs/reference/traderx-path.md](../reference/traderx-path.md) ("What this is
-still not") says of publication, and now of bindings too. Tests: a
-fresh store finds a published failure by workload; two processes binding one id to two
-workloads, one refused.
+**To close.** First, the owner confirms that TraderX needs nothing that only `/eod` gives it,
+such as the accrued interest reconciled against the export or the coverage block naming each
+refusal; anything it does need becomes a feature first. Then delete:
 
-<a id="i-23"></a>
-### I-23 — `accrualBasis` strictness rests on an unconfirmed reading
+- `engine/traderx/`, `engine/api/traderx_routes.py`, and the router in `engine/api/app.py`;
+- their tests (`tests/test_traderx_*.py`, the `/eod` cases elsewhere) and `tests/fixtures/traderx-eod`;
+- [docs/reference/traderx-path.md](../reference/traderx-path.md) and
+  [details/traderx-integration.md](details/traderx-integration.md), moving the cube-artifact
+  contract that `engine/api/artifacts.py` cites into the HTTP API reference;
+- the `traderx` layer in `tests/test_import_layering.py`;
+- the `jsonschema` dev dependency, if nothing else uses it;
+- the root README's end-of-day bullet.
 
-**Severity:** Medium · **Status:** ASSUMPTION · **Raised:** 2026-09-16
-
-**The premise.** `engine/traderx/terms.py` accepts exactly `dateBasis = SESSION_DATE`,
-`settlementAdjustment = NONE`, `rounding = HALF_EVEN`, schema
-`traderx.accrual-basis.v1`, and refuses anything else. TraderX has not said whether new
-values land in `v1` or force a `v2` (asked in responses v4, v6 and v7).
-
-**Risk.** If they add values in place, bundles they consider valid are refused on the day a
-real calendar is exported. That fails safe (a refusal, not a wrong number), but reads as a
-defect on call. A `TermsJoinError` naming these fields may be this allowlist, not a bad
-bundle.
-
-**To close.** Their answer. "New version": close with no change. "In place": widen
-`SUPPORTED_DATE_BASES` / `SUPPORTED_SETTLEMENT_ADJUSTMENTS` / `SUPPORTED_ACCRUAL_ROUNDING`
-with a test per value. `tests/test_traderx_terms_v2.py::TestUnrecognizedValuesAreRefused`
-pins today's rule.
-
-<a id="i-58"></a>
-### I-58 — TraderX: two concurrent submissions of one workload under different ids both execute
-
-**Severity:** Medium · **Status:** PARTIAL · **Found:** 2026-09-17, TraderX case A-03 (FR-08)
-
-**Closed part (2026-10-10, with [I-57](#i-57)).** A retry under the *same* `submissionId`
-while its attempt is pricing is answered `200 {"state": "running", "reused": true}` and
-not executed: `AttemptStore.submit` returns `reused` for an attempt it did not create, and
-the route prices only a new one. Before, the retry priced the same attempt again and the
-second to finish raised on the immutable attempt, a `500`. Test:
-`tests/test_traderx_routes.py::TestARetryOfARunningSubmissionIsNotExecutedAgain`; TraderX's
-A-03 starter retries under one id, so it now passes and does not exercise the open part.
-
-**What is wrong.** Two submissions of one workload under *different* ids, or with none, while
-nothing is completed (or with `reuseExistingResult=false`) each get a running attempt, and
-both run `price_bundle`. The lock protects the binding, not the computation.
-
-**To close.** In `AttemptStore.submit`, under its lock, a per-workload running-attempt index:
-a submission of a workload with a running attempt joins it (`reused`, so the route does not
-price it), and its id is bound to that attempt. Decide there whether a joined or retried
-running attempt answers `200 running` (today's retry) or `202`, the same for both.
-Regression test with a deterministic barrier, not timing. Cross-process exclusion is not
-claimed.
-
-<a id="i-59"></a>
-### I-59 — TraderX: `calculations` and `reportingCurrency` accepted, keyed, then ignored
-
-**Severity:** Medium · **Status:** OPEN · **Found:** 2026-09-17, TraderX cases A-04, A-05
-(FR-06); still present
-
-**What is wrong.** `EodSubmissionSchema` accepts both, `_key_for` hashes both into the
-workload key, and `price_bundle(bundle, request.marketInputs)` receives neither. An `EUR`
-request returns USD results with 200 OK, cached separately from the identical USD run; an
-unknown calculation name is accepted.
-
-**To close.** As decided (A-18, as ORE fails on an unknown analytic): reject
-an unknown calculation (400 `UNKNOWN_CALCULATION`, allowlist
-`engine.traderx.result.CALCULATIONS`); add `reportingCurrencies: ["USD"]` to the
-capability document and reject others (400 `UNSUPPORTED_REPORTING_CURRENCY`). Tests assert
-the consequence, not that the field parses. Reporting in other currencies is
-[F-08](features.md#f-08), once an FX source exists.
-
-<a id="i-107"></a>
-### I-107 — TraderX: `bundleId` is trusted, not recomputed, so a changed bundle can get the old result
-
-**Severity:** Medium · **Status:** OPEN · **Category:** API · **Found:** 2026-10-10, the project
-audit (AUD-22); confirmed in the code 2026-10-11
-
-**What is wrong.** The exchange contract
-(`reference/traderX/specs/YU18-eod-risk-bundles/contracts/bundle-v2-and-terms.md`) defines
-`bundleId` as the SHA-256 of the canonical manifest without it (sorted keys, two-space
-indentation, ASCII escaping, finite numbers, UTF-8, one final LF). `engine.traderx.bundle`
-checks each artifact against the hash the manifest gives, but takes `bundleId` as given
-(`Bundle.bundle_id`), and the workload key is built from it (`_key_for`,
-`engine/api/traderx_routes.py`), not from the manifest's content. A bundle re-exported with a
-corrected artifact and that artifact's new hash, under the old `bundleId`, loads, gets the old
-workload key, and with `reuseExistingResult` is answered with the old bundle's result.
-
-**Reach.** Only a bundle that breaks the contract's identity rule (an exporter defect or a hand
-edit); then a stale result for changed positions or terms, with `200`. A conforming exporter
-changes the id with any artifact.
-
-**Current handling.** Artifact hashes are checked against the manifest; the id is not.
-
-**To close.** On load, the canonical manifest hash recomputed and a mismatch refused (`422`,
-naming both ids); test fixtures that edit an artifact rebuild the id. Tests: a changed artifact
-under the old id refused; the rebuilt bundle gets a new workload key.
-
-<a id="i-108"></a>
-### I-108 — TraderX: NaN amounts priced as `ok`, terms contradicting the row priced, duplicate rows counted twice
-
-**Severity:** Medium · **Status:** OPEN · **Category:** API · **Found:** 2026-10-10, the project
-audit (AUD-27 to AUD-31); confirmed in the code 2026-10-11
-
-**What is wrong.** A bundle's rows are checked for shape and identity, not for every property
-the pricers assume:
-
-- **Non-finite numbers.** `normalize._parse_float` accepts `nan` and `inf` as Python's `float`
-  does (`quantity`, `coupon`, `closingMark`, `accruedInterestFraction`), and so do the terms'
-  numbers (`note._terms_float`, `bill.py`). A NaN quantity is priced to a NaN value with status
-  `ok`; publication writes it as `json.dumps`' `NaN`, which is not JSON, and an HTTP answer
-  that serializes it fails.
-- **Terms that contradict the row.** `terms.join_terms` matches rows to entries by identity and
-  refuses duplicate or unused entries, but compares no economics: the row's `coupon` is parsed
-  and the terms' `couponRatePercent` priced, never checked against each other, though the
-  contract forbids a supplement changing a booked rate, index, date, currency or direction.
-- **Duplicate rows.** Duplicate terms entries are refused; a position row repeated (one account
-  and security twice) or a contract row repeated is priced and aggregated twice.
-- **Structure.** A manifest that is not a JSON object, or a field of the wrong type, fails
-  outside `BundleIntegrityError` (a `500`, not a `422`); `CalculationOutcome.to_dict`
-  (`engine/traderx/result.py`) lets a `payload` overwrite `status` and `value`.
-
-**Reach.** Bundles with such rows, an exporter defect: then a NaN or double-counted figure
-reported `ok`, or a `500`. Conforming fixtures are unaffected.
-
-**Current handling.** Artifacts are hash-checked, terms entries de-duplicated, and accrued
-interest reconciled against the exporter's figure, which can catch a contradicting coupon when
-the accrual is not zero.
-
-**To close.** Every parsed number finite (the row refused with a reason, not priced); each
-joined row's booked fields reconciled with its terms (rate, currency, maturity, direction), a
-contradiction refused with its own reason; repeated position and contract identities refused;
-the manifest's structure validated before `Bundle` is built (`422` naming the field);
-`CalculationOutcome` keeping its own keys; publication with `allow_nan=False`. A test per case,
-from the CSV to the HTTP answer.
-
-<a id="i-109"></a>
-### I-109 — TraderX: after a failed publication a same-id retry never prices or publishes
-
-**Severity:** Medium · **Status:** OPEN · **Category:** API · **Found:** 2026-10-10, the project
-audit (AUD-23); confirmed in the code 2026-10-11
-
-**What is wrong.** `Attempt.complete` (`engine/traderx/workload.py`) publishes before it changes
-state, so a publication error leaves the attempt `running` and its priced result dropped. The
-route answers `500 RESULT_NOT_PUBLISHED` and asks the coordinator to retry; the retry under the
-same `submissionId` gets the bound attempt back as `reused` ([I-58](#i-58)'s closed part), and
-the route returns `running` without pricing or publishing. Until the process restarts, that
-submission cannot complete, even after the storage recovers. The staging file's open, write
-and fsync also raise outside the `PublicationError` the route catches.
-
-**Reach.** A TraderX submission whose publication fails transiently (a full or unavailable
-disk). A new `submissionId` recovers it; the retry the route asks for does not.
-
-**Current handling.** None.
-
-**To close.** A priced-but-unpublished state that keeps the result, a same-id retry publishing
-it (or the attempt failed retryably and the retry pricing again); every staging error a
-`PublicationError`. Test: the first publication fails, storage is restored, a retry under the
-same id yields one discoverable result; red first.
-
-<a id="i-60"></a>
-### I-60 — TraderX result schema has no stated policy on added fields
-
-**Severity:** Low · **Status:** ASSUMPTION · **Raised:** 2026-09-17, response v7 §5.2
-
-**The premise.** `jaxrisk.eod-result.v1` does not say whether consumers may pin its exact
-shape. TraderX's validator does, so the next field added breaks them. Proposed to TraderX:
-`additionalProperties: false` at the root and any new field is a schema version bump.
-
-**To close.** Their answer, recorded as a decision; then state it in the published schema
-with a test.
+Mark decision A-18 retired. The collection count drops by the deleted tests only, reconciled by
+file.
 
 <a id="i-90"></a>
 ### I-90 — The HTTP API has no authentication, rate limit or body-size limit
@@ -612,149 +495,55 @@ with a test.
 **Severity:** Low · **Status:** OPEN · **Category:** API · **Found:** 2026-10-08, review of
 the API of 2026-10-07
 
-**What is wrong.** Every route, TraderX's included, serves anyone who can reach the
-port. Nothing limits how many jobs a caller queues or how large a body it sends; one large
-body is held in memory and stored in the queue whole.
+**What is wrong.** Every route serves anyone who can reach the port. Nothing limits how many
+jobs a caller queues or how large a body it sends; one large body is held in memory and stored
+in the queue whole.
 
-**Reach.** Only a server reachable from outside a trusted network. uvicorn binds
-`127.0.0.1` unless started with `--host`, and every use so far has been local.
+**Reach.** Only a server reachable from outside a trusted network. uvicorn binds `127.0.0.1`
+unless started with `--host`, and every use so far has been local.
 
-**Current handling.** None; deploy behind a trusted network or a reverse proxy that
+**Current handling.** None. Deploy behind a trusted network or behind a reverse proxy that
 authenticates.
 
-TraderX's `POST /eod/price` also reads a server-side `bundlePath` and joins each manifest
-path to it without containment (`engine/traderx/bundle.py`): an absolute path or `..` reads
-any file the server can, its hash supplied by the same manifest; files are read whole, unbounded
-(project audit, AUD-34).
-
-**To close.** Before the API is reachable from outside a trusted network:
-authentication chosen with TraderX (a bearer token or mutual TLS), a body-size limit, and a
-per-caller limit on queued jobs; bundle paths confined to configured roots, every artifact
-path resolved inside its bundle (symlinks included), and a byte limit per artifact; a test per
-refusal (`401`, `413`, `429`, a path outside the root).
-
-<a id="i-93"></a>
-### I-93 — TraderX's submissions are priced by their own pricers, not the engine's
-
-**Severity:** Medium · **Status:** OPEN · **Category:** API · **Found:** 2026-10-08, owner
-review of the roadmap
-
-**What is wrong.** The engine has two ways in. Portfolio, market-risk and calibration
-requests reach the engine's pipeline; TraderX's end-of-day bundles (`POST /eod/price`) are
-priced by the TraderX path's own closed-form pricers (`engine/traderx/bill.py`,
-`note.py`) on a flat assumed rate, while the engine prices the same bills and notes in
-`engine/instruments/treasury.py` on any curve, today and on every path. Two pricers of one
-product can disagree, every fix is made twice, and nothing the engine gains (curves, paths,
-Greeks, precision, Basel figures) reaches TraderX.
-
-**Reach.** Every TraderX result. No disagreement between the two is known: both discount the
-same cashflows, and on the assumed profile's flat curve they should agree to rounding, which
-no test checks today.
-
-**Current handling.** None.
-
-**To close.** The TraderX path builds a run request from its bundle, after its convention
-checks and refusals (so a refused booking never reaches a pricer, I-05), and the engine
-prices it; its own pricers go. Its routes, result document, attempt store and the
-accrued-interest reconciliation against the exporter's figure stay. First, a test that the
-engine's bond and the TraderX note agree on every bundle row of the tests, to rounding
-([details/package-layout.md §3](details/package-layout.md#3-merges)). The adapter then calls
-`run/`, which sits above it in the layers `tests/test_import_layering.py` enforces (`traderx`
-shares a layer with `models` and `instruments`): its orchestration moves above `run/` (or into
-`api/`), its terms and provenance types stay low, rather than an exception in the layer test
-(project audit).
+**To close.** Before the API is reachable from outside a trusted network, add authentication (a
+bearer token or mutual TLS), a body-size limit and a per-caller limit on queued jobs, with a
+test per refusal (`401`, `413`, `429`).
 
 ---
 
 ## Scope gaps
 
-Refused with an identified reason, never approximated. Each is listed because a current
-consumer (TraderX) sends the input.
-
-<a id="i-04"></a><a id="m-2"></a>
-### I-04 — Seasoned TraderX swaps: the export has no past fixings
-
-**Severity:** High · **Status:** OPEN · blocked on TraderX · **Found:** TraderX EOD review;
-widened by the 2026-09-24 audit (M-2)
-
-**What is wrong.** A coupon fixed before the as-of date needs its historical fixing. Every
-trade config takes `fixings` and refuses a missing one (`MissingFixingError`), as ORE does,
-but TraderX exports no `pastFixings`, so a seasoned TraderX swap cannot be priced.
-
-**Reach.** Seasoned swaps from the TraderX path only; the engine itself prices seasoned
-swaps given their fixings, and on every path paid flows drop out and coupons fix by
-`FixingManager`'s rule, under either model (the first half of this entry, the Hull-White
-model keeping paid flows, closed on 2026-10-01: `tests/test_hull_white_model.py::
-TestPaidFlowsAndMaturity`, `tests/test_pricing.py`).
-
-**To close.** `pastFixings` from TraderX ([details](details/traderx-integration.md)).
+Each of these inputs is refused with an identified reason, never approximated.
 
 <a id="i-05"></a>
 ### I-05 — No faithful USD-SOFR / ACT-360 swap construction
 
-**Severity:** High · **Status:** OPEN · blocked on the D03/D04 convention agreement
+**Severity:** Medium (a scope gap; nothing is priced wrong) · **Status:** OPEN · blocked on a
+convention set (D03/D04)
 
-**What is wrong.** `build_vanilla_swap` builds a generic term-IBOR swap (`SimIndex6M`,
-ACT/365 legs, TARGET, no compounding). A USD-SOFR booking is overnight, ACT/360, US
-calendars, compounded in arrears, with lookback/lockout/payment lag. ACT/360 vs ACT/365 alone
-moves every accrual by 1.389% (about 46 × a 1bp DV01 on a 5Y fixed leg).
+**What is wrong.** `build_vanilla_swap` builds a generic term-IBOR swap (`SimIndex6M`, ACT/365
+legs, TARGET, no compounding). A USD-SOFR booking is overnight, ACT/360, on US calendars, and
+compounded in arrears, with a lookback, a lockout and a payment lag. ACT/360 against ACT/365
+alone moves every accrual by 1.389%, about 46 times a 1bp DV01 on a 5Y fixed leg.
 
-**Current handling.** The TraderX path refuses any booking outside an explicit allowlist
-(`engine/traderx/conventions.py`, `CONVENTION_NOT_SUPPORTED` naming the fields; the
-TraderX SOFR fixture's 13 missing terms). A direct Python caller cannot express SOFR in a
-`SwapConfig`.
+**Current handling.** A `SwapConfig` cannot express SOFR, so no caller can book one.
 
-**To close.** The convention set from TraderX, then a new builder beside the existing one,
-accepted against a same-terms ORE reference
-([details/traderx-integration.md](details/traderx-integration.md)). Do not start on guessed
-conventions.
+**To close.** Agree the convention set, then add a new builder beside the existing one,
+accepted against an ORE reference on the same terms. Do not start on guessed conventions.
+Basel's USD swaps need it ([F-05](features.md#f-05)).
 
 <a id="i-07"></a>
 ### I-07 — No corporate bond, equity or listed-option pricer
 
 **Severity:** Medium · **Status:** OPEN
 
-**What is wrong.** Treasuries price today and on every path; TraderX's position export also carries
-corporate bonds (refused: a Treasury-discounted corporate is not credit pricing, it needs a
-credit model), cash equities ([I-18](#i-18): a market-data gap, not a pricer gap), listed
-options, TIPS and FRNs. The simulation's equities (`CamConfig.equity_volatilities`) drive risk-factor paths; they
-are not a position pricer. FX and equity trades are [F-04](features.md#f-04).
+**What is wrong.** Treasuries price today and on every path. Corporate bonds, cash equities,
+listed options, TIPS and FRNs have no pricer. A Treasury-discounted corporate bond would not be
+credit pricing, so corporates need a credit model. The simulation's equities
+(`CamConfig.equity_volatilities`) drive risk-factor paths; they are not a position pricer. FX
+and equity trades are [F-04](features.md#f-04).
 
-**To close.** Per instrument, on demand: a config, a pricer, ORE parity tests.
-
-<a id="i-16"></a>
-### I-16 — `rateSensitivity` is parallel-only
-
-**Severity:** Medium · **Status:** OPEN · blocked on an observed curve (TraderX W2)
-
-**What is wrong.** The note's `rateSensitivity` is a 1bp parallel shift, labelled
-`shockedFactor: "zero-curve-parallel"`. The only market input the TraderX path accepts is an
-assumed flat profile, so there is no pillar structure to shift. Parallel DV01 cannot tell a
-2y position from a 10y one of equal duration.
-
-**Do not close it** by bumping the flat profile per pillar: that yields an all-equal or
-single-non-zero vector that passes a shape check.
-
-**To close.** `marketInputs.mode: "package"` with bootstrapped pillars (W2); the bump loop
-then shifts one pillar at a time and names it.
-
-<a id="i-18"></a>
-### I-18 — No equity spot or FX source; equity positions refused
-
-**Severity:** Medium · **Status:** OPEN · blocked on a market-data decision
-
-**What is wrong.** An equity position is `signedQuantity × multiplier × spot × fx`, and the
-TraderX path has no spot or FX input (`engine/traderx/market_inputs.py` registers flat
-rate profiles only). Positions are read, validated and refused (`SPOT_SOURCE_NOT_SUPPLIED`,
-`FX_SOURCE_NOT_SUPPLIED`), echoing the quantities read; `capabilities()` reports equity NPV
-as `blockedOnMarketInput`.
-
-**Do not close it** with `closingMark`: `quantity × closingMark × multiplier` reproduces
-TraderX's own `marketValue` exactly, an echo presented as a valuation.
-`tests/test_traderx_equity.py::TestDoesNotEchoTheExportedMark` fails against it.
-
-**To close.** A registered spot/FX surface in `marketInputs`, or observed spots in the
-bundle. The pricer is four multiplications.
+**To close.** Per instrument, on demand: a config, a pricer, and ORE parity tests.
 
 ---
 
@@ -957,6 +746,11 @@ project audit (AUD-15, AUD-46, AUD-47); checked 2026-10-11
   independent modules, and `demo_precision.py` a demo at three precisions; it runs ten.
 - The README says the full pipeline compiles through XLA; ORE schedules and calendars, Sobol
   draws and other host work do not.
+- [docs/google-cloud-research-access.md](../google-cloud-research-access.md) says FP8 products
+  are emulated on every backend and that multi-host TPU execution is a planned capability.
+  Since 2026-10-19 a GPU's FP8 runs natively through cuBLAS (I-97), and the worker set spans a
+  pod slice's hosts (I-61).
+
 **Reach.** Readers; no number.
 
 **To close.** Each statement corrected. (The table of what equals ORE, per product and

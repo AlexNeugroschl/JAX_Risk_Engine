@@ -4,458 +4,223 @@ The order in which to work through [known-issues.md](known-issues.md) and
 [features.md](features.md). Every open item appears here exactly once; an item that is not
 here is not planned ([rules](README.md#lifecycle)).
 
-**How the order is decided** (decision A-19, revised 2026-10-10; precision priorities
-updated by the owner, 2026-10-15).
+**How the order is decided** (decision A-19, revised by the owner on 2026-10-19).
 
-1. **The near-term milestone**: `demos/demo_profile_small.py` runs on the owner's local GPU
-   and its profiler trace covers the whole job (stage 2, done 2026-10-07).
-2. **The focus** (stage 3), three goals, in this order of priority where they compete:
-   1. **Accuracy and measurement of existing precision formats**: fix rounding bias and
-      error estimates in the supported formats through FP8, each format's error measured
-      and stated on every result (the evidence table), then measure time versus accuracy
-      on TPU and H100. FP4 and multilevel quantile correction are later, independent research
-      extensions; neither blocks this first research result. The precision research is the
-      project's purpose (root [README](../../README.md)).
-   2. **Critical bugs**: a High defect (a wrong number on an ordinary input, or another
-      caller's result served), and the numbers that are wrong or unproven where the precision
-      work and every later stage build on them (Bermudans and Americans against ORE, the
-      Greeks).
-   3. **A robust API on every feature** (done 2026-10-18): one run request for every analytic,
-      over HTTP and in Python; every input checked before any work, every setting reaching the
-      engine, a setting the run does not read refused by name, a retried submission run once, a
-      job that can be cancelled and a worker failure that is reported.
-3. **TraderX integration** (stage 4): its submissions through the run request into the
-   engine's pricers, and the defects of its path.
-4. **Basel III** (stage 5): regulatory figures as the Basel Framework specifies them, each
-   traceable and reproduced by an oracle. It waits for the focus and for TraderX; the
-   precision research's acceptance standard (A-11) already uses its tests, transcribed.
-5. **Fix what exists** (stage 6): the remaining narrow defects, then speed, test and tooling
-   defects.
-6. **New capabilities** (stage 7): what the engine does not do yet.
+1. **Accurate and fast on TPU and GPU clusters** (stage 1). This is the absolute priority: the
+   engine's numbers are shown to be right on the target accelerators (TPU, H100), its products
+   run natively wherever they are right, and its speed is measured across one host's devices and
+   across a pod slice's hosts. Stage 1 holds only work that is critical to this goal.
+2. **The precision research result** (stage 2): wall time per figure at equal accuracy on those
+   clusters, which is the project's purpose (root [README](../../README.md)).
+3. **Basel III** (stage 3): regulatory figures as the Basel Framework specifies them, each
+   traceable and reproduced by an oracle.
+4. **Fix what exists** (stage 4): the remaining defects in what the engine already does, then
+   its speed, tests and tooling.
+5. **New capabilities** (stage 5): what the engine does not do yet.
 
-A clear `engine/` (packages named for what they hold, nothing at the root but `__init__.py`,
-[details/package-layout.md](details/package-layout.md)) was done first (2026-10-08), so that
-every later step is written in the final layout.
+A defect found along the way goes into stage 1, ahead of the step it blocks, if it makes a run
+on a TPU or GPU cluster wrong, or slow enough to matter for stage 1's goal. A High defect (a
+wrong number on an ordinary input, or another caller's result served) also goes into stage 1.
+Any other defect goes into stage 4, or before the step it blocks. Within a stage, work in the
+order of its table. Items marked *parallel* touch code that no earlier step changes, and can
+start at any time. Items waiting on someone outside the project are listed
+[separately](#waiting-on-others), with who to chase.
 
-Within a stage, work in the order of its table. Items marked *parallel* touch code that no
-earlier step changes, and can start at any time. Items waiting on someone outside the project
-are listed [separately](#waiting-on-others), with who to chase. A defect found along the way
-goes to stage 3 if it is High or blocks a step there, ahead of the work it affects; otherwise
-to stage 6, or before the step it blocks.
-
-The project audit of 2026-10-10 ([project-audit.md](project-audit.md)) is merged into this
-plan (2026-10-11): each of its findings is an item here, part of one, or set aside with its
-reason in the audit's [disposition](project-audit.md#disposition-2026-10-11).
-
-**Step numbers are this page's alone.** Steps are numbered in the order of work and
-renumbered whenever it changes. Nothing else cites a step: code, error messages, tests and the
-other documents cite the item (I-NN, F-NN), the decision (A-n), or a date, and
+**Step numbers belong to this page alone.** Steps are numbered in the order of work and are
+renumbered whenever that order changes. Nothing else cites a step: code, error messages, tests
+and the other documents cite the item (I-NN, F-NN), the decision (A-n) or a date.
 `tests/test_import_layering.py` fails on a step number in code.
 
-**Every step keeps the project's goals.** Nothing above trades one away:
+**Every step keeps the project's goals.** None of the rules below trades one goal for another:
 
 - **ORE parity.** Every ORE parity suite passes at its existing tolerance after every step. A
-  new capability comes with its own ORE parity test (through the ORE simulation oracle,
-  `tests/support/ore_xva_oracle.py`, where it needs a simulation), or it is refused by name.
-- **Accuracy: correct, not bit for bit** (owner, 2026-10-10). A step may move numbers; it may
-  not make them wrong. After a step, every ORE parity suite and every test passes at its
-  tolerance, and the golden snapshot agrees with the one before within a small margin,
-  relative to each array's largest magnitude (a Greek's to its trade's NPV): float64 to 1e-10,
+  new capability comes with its own ORE parity test, or it is refused by name. Where the test
+  needs a simulation, it runs through the ORE simulation oracle,
+  `tests/support/ore_xva_oracle.py`. The [parity matrix](../reference/ore-parity.md#the-parity-matrix)
+  gains the capability's cells.
+- **Accuracy: correct, not bit for bit** (owner, 2026-10-10). A step may move numbers, but it
+  may not make them wrong. After a step, every ORE parity suite and every test passes at its
+  tolerance. The golden snapshot agrees with the one before within a small margin, relative to
+  each array's largest magnitude (for a Greek, relative to its trade's NPV): float64 to 1e-10,
   float32 to 1e-4. Formats below float32 are judged by the storage harness's statistical
-  thresholds, not by the snapshot. A change beyond the margin is either a planned change of the
-  model or sampling design (as I-49 moved default Bermudan/American values on the paths onto ORE's, 2026-10-12) or a
-  bug; a planned one states its largest change per array and re-baselines. Nothing is held to bit-for-bit
-  equality for its own sake, on CPU or GPU; the bisection solver stays as A-21's reference.
+  thresholds, not by the snapshot. A change beyond the margin is either a bug or a planned
+  change of the model or sampling design; a planned change states its largest change per array
+  and re-baselines. On a TPU or a GPU, the margin is measured against the CPU's snapshot.
 - **Speed and JAX.** A new or changed pricer is a module-level jitted function that takes the
   trade's data as a pytree argument
   ([profiling §3.7](../concepts/profiling.md#37-trade-data-as-traced-arguments-2026-10-02)),
-  so there is no compile per trade, date, bump or call. It runs under the scenario-axis
+  so nothing is compiled again per trade, date, bump or call. It runs under the scenario-axis
   sharding, and the compile-count tests cover it.
-- **Precision research.** Every path kernel is written in difference form, its matrix products
-  in the stage's compute format and everything else in its accumulate format, one
-  implementation for every precision (A-16; [details/precision.md
-  §8](details/precision.md#8-compute-below-float32), 2026-10-10), and gets its rows in the
-  precision harness (`tests/support/precision_harness.py`). Calibration, Greeks,
-  reductions and the other fixed stages (A-10) stay float64. A formula, interpolation,
-  arithmetic or storage change to a kernel reruns its rows; old rows are not reused because
-  the format's name is unchanged.
+- **Precision research.** Every path kernel is written in difference form: its matrix products
+  run in the stage's compute format and everything else in its accumulate format, with one
+  implementation for every precision (A-16;
+  [details/precision.md §8](details/precision.md#8-compute-below-float32)). Each kernel has rows
+  in the precision harness (`tests/support/precision_harness.py`). Calibration, Greeks,
+  reductions and the other fixed stages (A-10) stay float64. A change to a kernel's formula,
+  interpolation, arithmetic or storage reruns its rows; old rows are not reused just because the
+  format's name is unchanged. The evidence holds per pricing setting (I-114).
 - **Basel III.** Nothing a regulatory figure relies on is approximated silently: an input
-  outside scope is refused by name, as today. Results stay auditable: the job queue keeps
-  them for its retention period (30 days by default, A-27), and a run submitted with `keep`
-  indefinitely, which regulatory runs will be.
-- **API compatibility.** Once the HTTP API has a client, changes are additive: every route,
+  outside scope is refused by name. Results stay auditable: the job queue keeps them for its
+  retention period (30 days by default, A-27), and keeps a run submitted with `keep`
+  indefinitely, as regulatory runs will be.
+- **API compatibility.** Once the HTTP API has a client, changes are additive. Every route,
   field, default and result shape keeps working, and a change of the contract is a revision of
-  it (A-2; the names A-2 retired were removed outright on 2026-10-07, there being no client
-  yet, by the owner's revision of that day). The run request replaced the routes on the same
-  terms on 2026-10-18, before any client existed (I-87). A new setting arrives with its API
-  field in a section of the run request's `config`, which `tests/test_api_completeness.py`
-  checks, its value's arrival included. The narrowings are each deliberate (as were the refusal
-  of a zero or negative option notional, a short option taking ORE's `LongShort`, I-101,
-  2026-10-11, and of malformed inputs, I-103, 2026-10-18: an unsorted or NaN curve, a European
-  expiry entering no whole period, an unknown field in any model): 4.1 refuses bundles that
-  break their contract,
-  4.3 refuses inputs that are now accepted and then ignored (the old answer is wrong); a default
-  changed to ORE's moved a number (`ShiftHorizon` 0.5, decision A-3, I-32, 2026-10-12). TraderX's routes (`/eod/...`) are
-  TraderX's contract and keep their shape when 4.2 changes what runs behind them.
-- **Tests.** A step that breaks a test of a private symbol rewrites it against the public
-  entry ([I-67](known-issues.md#i-67)'s rule), so restructuring does not wait for 6.7.
+  it (A-2). A new setting arrives with its API field in a section of the run request's
+  `config`, and `tests/test_api_completeness.py` checks that the field's value reaches the
+  engine. A narrowing (an input that is now refused) is deliberate and stated, because the
+  answer it gave before was wrong.
+- **Tests.** A step that breaks a test of a private symbol rewrites that test against the
+  public entry point ([I-67](known-issues.md#i-67)'s rule), so restructuring does not wait for
+  I-67.
 
 ## Where things stand
 
-One pipeline, ORE's: a cross-asset model with a model per currency (the LGM by default, or
-Hull-White, both ORE's `<LGM>` parametrizations), every trade valued on every path as ORE's
-valuation engine does. It matches ORE component by component: t=0 prices to 1e-14 (swaps,
-Europeans, bonds) and 4e-11 (calibrated Bermudans/Americans, at ORE's default `ShiftHorizon`
-since 2026-10-12, I-32), model analytics to 1e-12
-(the Hull-White model's bonds against QuantLib's `HullWhite` too), pricers on path curves to
-1e-10 – 1e-12 under either model, market-risk VaR/ES per scenario to 2e-13, and since
-2026-10-07 an ORE simulation run in-process is the reference for the assembled pipeline: every
-trade of the shared portfolio equals it path by path, Bermudans and Americans since 2026-10-12
-(to 1.9e-11), each the trade as ORE built it on the as-of date with the LGM it calibrated there,
-kept on every path, since ORE's exposure simulation never recalibrates (I-49; decision A-24
-removed the engine's per-path recalibration, which no ORE analytic does). Every LGM calibration
-is accepted or refused as ORE's builder accepts it, a miss named (I-73, 2026-10-12; the
-tolerance 1e-4 and one for the cross-asset model, A-24). Since 2026-10-17 the bump Greeks equal
-ORE's sensitivity analytic run in-process, every Delta, Gamma, Vega and Theta of the shared
-portfolio (I-51; the Theta market was ORE's only then); the AD Greeks are derivatives on ORE's
-sensitivity market, ORE's Greek as the shift vanishes for swaps, Europeans and bonds, and for a
-grid-priced option, whose price is piecewise smooth, labelled on the result with the gap (I-78);
-and a calibrated Bermudan's/American's LGM is calibrated inside its price function, so its Greeks
-and its market-risk P&L recalibrate as ORE's do (each scenario's P&L equal to ORE recalibrating,
-I-112). Since 2026-10-11 an option
-has ORE's `LongShort` (I-101): a short is minus the long one in every engine, today, on the paths
-and in every risk figure, and equals ORE's short option booked through ORE's own trade builder,
-today and on ORE's paths.
-Since 2026-10-11 market risk reports in one currency, each trade converted at the as-of FX spot
-(FX is not a shocked factor, and the result says so), and takes QuantLib's VaR rank at exact
-boundaries (I-100, I-102).
+The engine has one pipeline, ORE's. It uses a cross-asset model with one model per currency
+(the LGM by default, or Hull-White) and values every trade on every path as ORE's valuation
+engine does. It matches ORE component by component and on the assembled pipeline: today's
+prices, the exposure simulation path by path, the bump Greeks against ORE's sensitivity
+analytic, and market-risk VaR and ES. The [parity matrix](../reference/ore-parity.md#the-parity-matrix)
+says what is compared with ORE, per product, analytic and setting. Every analytic is one run
+request (`engine.run.run`, HTTP `POST /runs`, I-87). The request is checked whole before any
+work, and its result says what each figure is. TraderX submits through that request like any
+other caller, so its own `/eod` path is to be retired ([I-120](known-issues.md#i-120)).
 
-Every model, engine, Greeks and precision choice is one run configuration with ORE's
-defaults. The simulation, the scenario market and path pricing each take a storage, a compute
-and an accumulate precision (since 2026-10-10 compute down to FP8, TensorFloat-32 and bfloat16
-passes in kernels in difference form, each product's operand that every path shares in two terms
-of the format since 2026-10-11, native or emulated by device; the Bermudan/American rollback since
-2026-10-13, as matrix products, one operator per step shared by every path, so the demo's job runs
-at 262,144 paths; storage down to float16, bfloat16 and FP8
-with block scales, block offsets that keep a concentrated column's spread, and nearest or
-stochastic rounding), set per product and per trade for pricing, in portfolio and market-risk
-runs alike; every result carries a precision report, and a paired float64 sample corrects the
-mean figures by a two-level estimator and measures the quantiles. Since 2026-10-09 a storage
-harness measures every format's error against float64 per stage, figure, product and path
-count, over independent seeds, rerunnable on any kernel change (I-75); since 2026-10-11 the
-evidence table reads A-11's verdicts and path ceilings off it, and every result warns of each
-figure whose combination has no passing row (I-55), and since 2026-10-13 it measures the share
-of each option's exercise decisions a format flips (decision A-24). HTTP jobs go through a durable SQLite job queue to one single-threaded engine
-worker process per host, which owns the host's devices (decision A-14) and splits each job's
-scenarios across them. The engine runs on an NVIDIA GPU (Linux or WSL2, the `gpu` extra) with
-deterministic kernels, and each matrix product states its own precision (A-22). A repeated job
-compiles nothing; every calibration and exercise boundary is solved by one configurable root
-solver (A-21). Since 2026-10-18 every analytic is one run request (`engine.run.run`, HTTP
-`POST /runs`, I-87): today's values, exposure, sensitivities, market risk and the cross-asset
-model's calibration, each its entry point's direct call, the request checked whole before any
-work (every input, nothing accepted and then ignored), every setting's value shown to reach the
-engine; the result says what each figure is (the configuration as run, the engine's revision and
-library versions). A retried submission is one run, a run can be cancelled at a phase boundary,
-a worker that cannot start is reported, finished runs are kept 30 days unless kept for good, and
-one worker serves each host. The LGM has one calibration, ORE's (I-94). Nothing runs on more than
-one host. TraderX submits end-of-day bundles through its own routes (`/eod/...`),
-which price its Treasuries with their own pricers and refuse everything else by name; a
-submission id binds to one workload before any cached result is returned (2026-10-10). Since
-2026-10-08 `engine/` holds subpackages only, each named for what it holds and importing only
-the layers below it ([details/package-layout.md](details/package-layout.md)).
+Precision is set per stage, product and trade, down to FP8 for storage and compute. Every
+result carries a precision report and warns of each figure whose format has no passing row in
+the evidence table (`compliance/precision-evidence.md`). The timing harness for the research
+(`tests/support/precision_timing.py`, precision design §19) runs end to end.
+
+On hardware: one engine worker per host splits each job's scenarios across the host's devices.
+With `--distributed`, one worker per host of a pod slice runs each job together
+([I-61](known-issues.md#i-61)); this is built and tested on CPU processes only. The engine is
+verified on CPU and on one consumer GPU (the owner's RTX 5060, Linux or WSL2), where FP8 is native
+through cuBLAS ([I-97](known-issues.md#i-97)). It has never run on a TPU or an H100
+([I-121](known-issues.md#i-121)), and no number or speed has been measured on either.
 
 ---
 
-<a id="stage-1--structure"></a>
-Stage 1, structure (the configurable engine, decision A-1), is done (2026-10-04): one run
-configuration, the precision mechanism through storage below 32 bits and the precision
-report, and the engine worker behind the job queue, each change reproducing the numbers
-before it bit for bit; the evidence is in
-[details/precision.md §13.1](details/precision.md#131-bit-for-bit-and-ore-parity) and the
-designs in [details/configurable-engine.md](details/configurable-engine.md) and
-[details/precision.md](details/precision.md).
+<a id="stage-1"></a>
+## Stage 1 — Accurate and fast on TPU and GPU clusters
 
-<a id="stage-2--the-demo-on-a-local-gpu"></a>
-Stage 2, the demo on a local GPU with a whole trace, is done (2026-10-07):
-`demos/demo_profile_small.py` runs through the HTTP API and the engine worker on the owner's
-RTX 5060 (Linux or WSL2, the `gpu` extra) as on the CPU, and its trace covers the whole job,
-each phase labelled, or one phase on request. On the way: importing `engine` sets only x64 and
-every matrix product states its precision (A-22); each trade's AD Greeks are one program per
-product, and a repeated job compiles nothing; every calibration and exercise boundary is
-solved by one configurable root solver, a safeguarded Newton method by default with the
-bisection kept as the reference (A-21), and an option's path dates of one basket shape are
-calibrated together. The recalibration is 35–55 times faster on the CPU and 15–38 times on the
-GPU, where a repeated demo job went from 5.5 s to 1.4 s
-([profiling §2.0](../concepts/profiling.md#20-the-demo-measured-2026-10-05)). It left: the
-cold job's one-operation programs (6.5), a slower pricing on Windows after AD Greeks and a cold
-job 3 s slower for Newton's compile (6.6), and the grid rollback's memory, which stopped the
-demo's job beyond a few thousand paths (fixed 2026-10-13, I-83: 262,144 paths run in 3.0 s and
-2.0 GB on the CPU, 2.4 s on the GPU). The card's float64 runs at 1/64 of its float32
-rate, so it is where correctness and the trace are checked, not where speed is measured (3.15).
-
-<a id="stage-3--the-focus"></a>
-## Stage 3 — The focus: low precision, critical bugs, a robust API
-
-Existing-format precision fixes first where the three compete. The critical bugs are here because the precision
-work and the later stages build on the numbers they fix (the Greeks and a calibrated option's
-market risk, I-51, I-78 and I-112, closed 2026-10-17; the Bermudans and Americans on the paths,
-I-49 and I-73, closed 2026-10-12). Both High defects
-the project audit of 2026-10-10 found, each small and touching no path kernel, are fixed:
-market risk added trades' currencies unconverted (I-100, 2026-10-11, with VaR's rank at exact
-boundaries and colliding quantile keys, I-102), and a negative option notional meant a short
-European but a long Bermudan (I-101, 2026-10-11: ORE's `LongShort` on every option). The High
-defect of 2026-10-10 (I-57, one caller served another's result) is fixed.
-
-The robust API is built (2026-10-18): one run request for every analytic, in Python and over
-HTTP (I-87), every input checked before any work (I-103), every field's value shown to reach
-the engine (I-88), a precision setting an analytic does not read refused (I-95), a retried
-submission one run (I-89), one LGM calibration (I-94), and a job queue that cancels, keeps runs
-for a set period, reports a worker that cannot start and has one worker per host (I-76, I-77,
-I-91, I-106). Its defaults chosen in the step are confirmed by the owner (A-27); the work two
-analytics of one run share is done twice (I-118, stage 6).
-
-The evidence table is built (I-55, 2026-10-11): `compliance/precision-evidence.md`, generated
-from the precision harness's campaigns of record against A-11's standard as cited data
-(`compliance/precision-acceptance.json`: the P6.2 statistical rule, an absolute rule for
-figures float64 holds fixed, MAR32.42's P&L attribution test transcribed once from the BIS
-text, its second entry Basel P0.3's), each row with its path ceiling, code revision, market,
-seeds and device; every portfolio and market-risk result warns of each figure without a
-passing row. All five campaigns were measured again on one revision for it, every row equal to
-its record. Under the 1% rule float32 storage and compute and the three bfloat16 passes pass
-every figure to 4,096 or 16,384 paths (8,192 scenarios; a European under the bfloat16 passes
-in the market stage to 1,024); below them, market risk's ES (and in
-float16 and TensorFloat-32 compute its VaR) passes to 8,192 scenarios (ES_99 with the P&L stored in
-float16 by stochastic rounding to 2,048 since its re-measurement after I-32, 2026-10-12), while no format at 10
-bits or fewer passes a portfolio figure it moves beyond a few float16 ones, the 10-bit formats
-failing by one to ten times the rule and FP8 by tenths to a hundred
-([precision.md §15.6](details/precision.md#156-the-evidence-table-2026-10-11)). So the rule is an
-acceptance bar, not the research's equal-accuracy measure, which 3.15 reads off the same
-measurements. A standard error by blocks of paths was measured for the paired correction and
-does not fix it. Independent scrambles now replace IID-path errors (2026-10-16), but
-I-111 now explicitly declines nominal intervals without a validated tail bound; raw
-variance diagnostics remain available, and supported confidence intervals are F-10;
-[implementation and measurements](details/precision-accuracy.md).
-
-**Precision scope (owner, 2026-10-15).** Fix the existing formats' rounding bias, option
-bounds and error estimates first (done 2026-10-16: I-98, I-111, I-113), then measure
-their time versus accuracy (3.15).
-PFE and VaR in that first comparison use the existing, uncorrected quantile estimators;
-ES uses the existing tail estimator. The paired mean correction remains available, with
-corrected and uncorrected means distinguished and its float64 work included in timing.
-A format that fails to reach the required accuracy is a valid research result. Multilevel
-quantile correction is a separate experiment only if the measurements justify its cost
-(7.9); FP4 is lower-priority capability work (7.10). These take precedence over the earlier
-grouping of quantile correction with FP4 in F-07's precision design. Neither extension
-blocks the API, TraderX or Basel work.
-
-| Step | Goal | Work | Closes | After | Size |
-|---|---|---|---|---|---|
-| 3.12 | Precision | Measure wall time against device count on TPU and H100, on one host and on a pod slice, with the timing harness (`tests/support/precision_timing.py`, precision design §19) and the storage blocks' alignment with each device's share. The worker set is built (2026-10-19, [I-61](known-issues.md#i-61)): one worker per host (`jax-risk-worker --distributed`), process 0 claiming each job and broadcasting it, each cancel and each job's end, a host's own failure stopping the set and the job retried once, the scenario mesh across every host's devices, a run on fewer devices than it has saying so; tested on CPU processes | [I-61](known-issues.md#i-61) | Booked hardware | S |
-| 3.13 | Precision | *Parallel* (it moves no number). The device check on H100 under both GEMM emitters, and on each new jax; the two XLA reproductions filed ([details/xla-gpu-reproductions.md](details/xla-gpu-reproductions.md), the owner's). Built 2026-10-19: a GPU's FP8 native through cuBLASLt where the process sends its products there (not by default: cuBLAS ran float64 15% slower on the RTX 5060), e5m2 paired with e4m3, bfloat16 passes native on matrix shapes and emulated on matrix-vector ones; the RTX 5060 passes every format both ways | [I-97](known-issues.md#i-97) | Booked hardware | S |
-| 3.15 | Precision | The first research result on existing precision formats: on several devices of Ironwood and H100, wall time per figure at equal accuracy, many low-precision paths against fewer float64 paths, by the timing harness (`tests/support/precision_timing.py`, precision design §19: each case's whole job cold and warm, compiles apart, peak memory, how its products ran; accuracy measured over seeds against float64's truth, equal accuracy read off the observed errors, no rate assumed; a format that does not pay is a result too). The storage formats, then the matrix-product kernels on native FP8 (H100 with `--xla_gpu_enable_triton_gemm=false`, I-97), each format's two terms against its single pass (A-23; 1.37 to 1.62 times the single pass for the compute-bound rollback on an RTX 5060, 2026-10-13), and the induction budget/time/peak tradeoff (`--budget-divisors`). The evidence holds per pricing setting (I-114): a figure timed on another engine or grid than its campaign's has its rows measured first, or is timed on the measured one. The harness ran end to end on the CPU and the RTX 5060 (2026-10-19, local evidence only), where a job of up to 16,384 paths was all fixed work (0.41 to 0.48 s whatever its format): the research's path counts start at 65,536 (precision design §19) | [F-07](features.md#f-07) (speed) | 3.12, 3.13 | M |
-
-Order within the stage:
-
-- **The High defects first** (both done 2026-10-11). Market risk in one unit (I-100) moved no
-  precision campaign, all in one currency; every later market-risk figure has a currency. A
-  short option (I-101) is the long one's kernel and a sign, so every evidence row of a long
-  option holds for the short.
-- **Existing formats before precision extensions.** The storage harness is built
-  (2026-10-09, I-75) and the kernels it measures are rewritten (2026-10-10; the rollback
-  2026-10-13). Their first measurements found a bias floor of compute below float32 (I-96), fixed
-  on 2026-10-11 by carrying each product's shared operand in two terms (A-23), so swaps,
-  Europeans and bonds have evidence rows, and since 2026-10-12 the Bermudan/American kernel is
-  ORE's on the paths (its shift horizon, I-32, and its model kept as ORE built it, I-49, the
-  options' rows measured again after each). Stochastic operand rounding is now available
-  (I-98, closed); nonlinear precision bias and variance still limit FP8's measured path
-  ceilings. The evidence table is built on them (I-55, 2026-10-11),
-  every result warning of figures without a passing row. The rollback family was then rewritten
-  once, after them (2026-10-13), its rows measured and each option's flipped exercise decisions
-  with them; the exposure reductions now read stored columns without a float64 cube
-  (I-105, closed 2026-10-15; [measurements](details/precision.md#17-exposure-storage-and-peak-memory-i-105-2026-10-15)).
-  Keyed stochastic rounding and option bounds are implemented (2026-10-16). Independent
-  replicate errors are implemented too. I-111 closes with an explicit conservative
-  availability rule: nominal intervals are unavailable for all figures/entries without
-  a validated tail bound; the raw diagnostic coverage failures remain failures. F-10
-  tracks supported calibrated intervals after the first timing result. The first research
-  result then measures the existing formats, after multi-host (3.12), on
-  hardware that has to be booked (3.15), its evidence keyed by every pricing setting (I-114, 2026-10-18). Quantile correction (7.9) and FP4 (7.10) follow
-  separately, without delaying that measurement.
-- **The Bermudan/American kernel is ORE's on the paths** (2026-10-12). Its values were
-  0.5–4% from ORE's, all of it a per-path recalibration that ORE's exposure simulation never
-  makes (I-49): ORE keeps the LGM it calibrated when it built the trade. So the rollback family
-  (rewritten 2026-10-13), its evidence rows and Basel's IMM exposure build on ORE's numbers; the
-  per-path recalibration is gone, since no ORE analytic
-  recalibrates on a path (decision A-24). A calibration that cannot fit its basket fails
-  explicitly, as ORE's does (I-73, A-24), so no evidence row rests on a misfit model.
-- **The Greeks are ORE's** (2026-10-17, I-51, I-78, I-112), so Basel's FRTB-SA sensitivities
-  rest on numbers shown equal to ORE's sensitivity analytic, and IMA's expected shortfall on a
-  calibrated option's P&L shown equal to ORE's recalibrating historical P&L. The recalibrated
-  option is a market-risk kernel of its own: the evidence keys it apart and measures it
-  (I-114, 2026-10-18).
-- **ORE parity breadth is shown** (done 2026-10-18, I-116). Each analytic had been compared on
-  one configuration, which let a Theta 60–290% off pass; the
-  [parity matrix](../reference/ore-parity.md#the-parity-matrix) now names, for every product,
-  analytic and public setting, the test that compares it with ORE or the reason none does, and
-  seeded sweeps compare random markets, portfolios and settings with ORE's NPV, sensitivity and
-  historical-simulation VaR analytics. They found six defects, each fixed as a planned change
-  (below), and four configurations where ORE's sensitivity analytic disagrees with itself or
-  fails a calibration the engine fits (I-117, stage 6).
-- **The evidence keyed by pricing settings** (done 2026-10-18, I-114), so the precision
-  research's acceptance validates no configuration it never measured: each row holds under its
-  campaign's per-product kernel settings (the European engine, the rollback grid, a fixed or a
-  per-scenario recalibrated model), and the `market_risk_calibrated` campaign measured the
-  recalibrated Bermudan. No row moved; an option on ORE's default grid or a Jamshidian European
-  below float64 is now warned of as unmeasured, which 3.15 meets by measuring those settings or
-  timing the measured ones.
-- **The Greeks on an accelerator before the timing** (done 2026-10-19, I-115). The first research
-  result times whole jobs (3.15), the fixed float64 stages included; the bump Greeks are one
-  batched revaluation of each trade's shifts (market risk's), and a calibrated option's AD Greeks
-  two programs over a basket priced as one helper, so the timing does not measure a host loop or
-  a minute's compile ([profiling §3.10](../concepts/profiling.md#310-the-greeks-on-an-accelerator-2026-10-19)).
-- **The API before TraderX and Basel** (done 2026-10-18). The run request is the HTTP contract
-  and the way into the engine (I-87), so the analytics Basel (stage 5) and stage 7 add arrive as
-  entries of its `analytics` list rather than as routes, and TraderX's submissions move onto it
-  (4.2). Multi-host was built on the worker loop of that day (2026-10-19: its cancels at phase
-  boundaries decided by process 0 for every host, its retention purge process 0's alone).
-- **Numbers.** 3.12 to 3.14 moved no number beyond the margin (2026-10-19, the golden snapshot:
-  the bump Greeks by at most 3.5e-14 of their trade's NPV, the AD Greeks 4e-17, a recalibrated
-  market-risk P&L 1.3e-14 of its scale, everything else bit for bit), but float8_e5m2's
-  products, whose operand every path shares is now held in e4m3 for the FP8 units (I-97), a
-  change below 2^-15 of a slice's largest value: the seven campaigns with e5m2 compute cases measured again (2026-10-19): every e5m2 row's relative error within 2e-6 of its record (median 1e-13), no verdict or path ceiling of the evidence table moved. The run request (2026-10-18)
-  moved none: a run of one analytic is its entry point's direct call, and the inputs it now
-  refuses (I-103) gave wrong numbers or none. The AD Greeks and a calibrated Bermudan's market-risk P&L moved to ORE's on
-  2026-10-17, a planned change of the model; on 2026-10-18 the parity sweeps' fixes moved what
-  ORE showed wrong (I-116): every Theta whose roll pays a flow (no add-back), a Theta across a
-  weekend or holiday of an option reading volatilities, a calibrated option whose deal strike has
-  more than six decimals or whose underlying matures on a non-business day, and an American's
-  path values whose window opened before the as-of date; and an American without a calibrating
-  helper is refused. The shared portfolio's numbers moved by none of them. On fixed paths, the completed rounding/bounds work keeps
-  float64 within the margin. I-111's interval metadata and diagnostic-audit fixes move no
-  valuation. I-111's independent replicates intentionally change the sampling design:
-  compare precisions on matched replicate draws, validate distributions and interval coverage,
-  and document and re-baseline the changed sample rather than treating different draws as
-  arithmetic drift. ORE parity tolerances stay unchanged.
-
-Parity methodology: [details/ore-parity-validation.md](details/ore-parity-validation.md);
-precision: [details/precision.md](details/precision.md); layout:
-[details/package-layout.md](details/package-layout.md).
-
-<a id="stage-4--traderx"></a>
-## Stage 4 — TraderX integration
-
-One way into the engine for TraderX's submissions, and the defects of its path. After the
-focus, before Basel.
+The engine is to show its numbers right on a TPU and an H100, run its products natively where
+they are right, and have its speed against device and host count measured. Nothing else is in
+this stage.
 
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|
-| 4.1 | *Parallel, can start now* (the adapter's loader and attempt store, which stay). TraderX's contract checked at the door: `bundleId` recomputed from the canonical manifest and a mismatch refused; every parsed number finite; each joined row's booked rate, currency, maturity and direction reconciled with its terms; repeated position and contract identities refused; the manifest's structure checked before use (`422` naming the field); outcomes that cannot be overwritten by their payload, publication with strict JSON. A publication that fails leaves a state a same-id retry completes, every staging error a `PublicationError` | [I-107](known-issues.md#i-107), [I-108](known-issues.md#i-108), [I-109](known-issues.md#i-109) | — | M |
-| 4.2 | One way into the engine for TraderX: its bundle becomes a run request, after its convention checks and refusals (so a refused booking still never reaches a pricer, I-05), and the engine prices its bills and notes; the TraderX path's own pricers go. Its routes, result document, attempt store and accrued-interest reconciliation stay. First, the engine's bond and the TraderX note agree on every bundle row of the tests to rounding ([design](details/package-layout.md#3-merges)); the adapter's orchestration moves above `run/` in the import layers, its terms and provenance types staying low | [I-93](known-issues.md#i-93) | 3.13 | M |
-| 4.3 | TraderX's submissions: one execution owner per workload (a retry under the same id has had one since 2026-10-10); refuse unknown calculations and a reporting currency other than USD (A-18, as ORE rejects an unknown analytic) | [I-58](known-issues.md#i-58), [I-59](known-issues.md#i-59) | 4.2 | S |
-| 4.4 | TraderX's attempts in the job queue: the accepted-attempt record, boot sweep and `interrupted` state that portfolio jobs have had since 2026-10-04; bindings and terminal states in the queue's transactions, so one owner holds across processes; a workload's latest failure served when it has no success; stale stages swept | [I-08](known-issues.md#i-08) | 4.2 | S |
-| 4.5 | Before the API is reachable from outside a trusted network: authentication chosen with TraderX, a body-size limit, a per-caller limit on queued jobs, bundle paths confined to configured roots and each artifact to its bundle | [I-90](known-issues.md#i-90) | — | S |
-| 4.6 | Chase TraderX's answers; apply them (a widened allowlist, a schema statement). When they arrive | [I-23](known-issues.md#i-23), [I-60](known-issues.md#i-60) | Their answers | S |
+| 1.1 | *Parallel, can start now.* Install on a TPU VM: a `tpu` extra in `pyproject.toml` at the pinned jax; `tests/test_environment.py` passing on a TPU VM against `constraints.txt`; a TPU section in the user guide beside the GPU one | [I-121](known-issues.md#i-121) (install) | — | S |
+| 1.2 | The engine's numbers on a TPU and an H100. On each: the device check (`tests/support/precision_devices.py`; on a TPU, its bfloat16 and bfloat16 passes, and Ironwood's FP8); the full suite (split as [I-27](known-issues.md#i-27) requires); every ORE parity suite at its tolerance; the golden snapshot within the margin of the CPU's. This qualifies the TPU's emulated float64, which the fixed stages and every kernel's float64 level run on. Each difference found is a defect of stage 1, fixed before 1.4. A format shown right natively is marked native for that device | [I-121](known-issues.md#i-121) | 1.1; booked hardware | M |
+| 1.3 | The H100's products: the device check under both GEMM emitters (XLA's Triton, and cuBLAS with `--xla_gpu_enable_triton_gemm=false`), repeated on each new jax; the two XLA reproductions filed ([details/xla-gpu-reproductions.md](details/xla-gpu-reproductions.md), the owner's to file). FP8 runs natively under XLA's default emitter once XLA's Triton code is right | [I-97](known-issues.md#i-97) | Booked hardware | S |
+| 1.4 | Speed across devices and hosts. Measure wall time against device count on TPU and H100, on one host and on a pod slice (`jax-risk-worker --distributed`, with the cluster's variables set), using the timing harness (precision design §19). Check the storage blocks' alignment with each device's share of the scenarios. Measure the float64 fixed stages' share of a whole job there, decide where they run (decision A-25: on the accelerator as today, on the host's CPU, or per device), and build the choice if it is not the accelerator | [I-61](known-issues.md#i-61) | 1.2, 1.3 | M |
 
-4.1 goes first because 4.2's row-by-row agreement is only as good as the rows it is given, and
-because I-107 and I-109 are the path's remaining ways to serve a stale result or hang a retry.
-4.4 makes the TraderX path's ownership the job queue's, so the two do not keep separate
-recovery rules.
+1.1 comes first because nothing runs on a TPU without it. 1.2 comes before 1.4 because speed
+measured on unverified numbers shows nothing. 1.3 runs alongside 1.2 on the same H100. A speed
+defect that 1.4 finds dominating a cluster job, such as the cold job's compiles
+([I-81](known-issues.md#i-81)) or Newton's bootstrap compile ([I-53](known-issues.md#i-53)),
+moves into this stage before the research timing.
 
-Integration notes and the open asks: [details/traderx-integration.md](details/traderx-integration.md).
+<a id="stage-2"></a>
+## Stage 2 — The precision research result
 
-<a id="stage-5--basel-iii"></a>
-## Stage 5 — Basel III
+| Step | Work | Closes | After | Size |
+|---|---|---|---|---|
+| 2.1 | The first research result on the existing precision formats, on several devices of Ironwood and H100: wall time per figure at equal accuracy, many low-precision paths against fewer float64 paths, measured by the timing harness (`tests/support/precision_timing.py`, precision design §19). The harness times each case's whole job cold and warm, keeps compiles apart, and records peak memory and how its products ran. It measures accuracy over seeds against float64's truth and reads equal accuracy off the observed errors, assuming no rate; a format that does not pay is a result too. The order: the storage formats; then the matrix-product kernels on native FP8 (H100 with `--xla_gpu_enable_triton_gemm=false`, I-97); then each format's two terms against its single pass (A-23); then the induction's budget, time and peak tradeoff (`--budget-divisors`). The research's path counts start at 65,536, since on a CPU and the RTX 5060 a job of up to 16,384 paths was all fixed work. A figure timed on another engine or grid than its campaign's has its rows measured first, or is timed on the measured one (I-114) | [F-07](features.md#f-07) (speed) | Stage 1 | M |
+
+**Precision scope** (owner, 2026-10-15). In this first comparison, PFE and VaR use the
+existing, uncorrected quantile estimators, and ES uses the existing tail estimator. The paired
+mean correction remains available: corrected and uncorrected means are told apart, and its
+float64 work is included in the timing. A format that fails to reach the required accuracy is a
+valid research result. Three extensions follow separately, in stage 5, and none of them delays
+this measurement: multilevel quantile correction (only if the measurements justify its cost),
+FP4, and supported confidence intervals (F-10).
+
+Precision design: [details/precision.md](details/precision.md); its rounding and uncertainty
+work: [details/precision-accuracy.md](details/precision-accuracy.md).
+
+<a id="stage-3"></a>
+## Stage 3 — Basel III
 
 Regulatory figures as the Basel Framework specifies them, each traceable and reproduced by an
-oracle, after the focus and TraderX. Each figure is an entry of the run request's `analytics`.
+oracle. Each figure is an entry in the run request's `analytics` list.
 
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|
-| 5.1 | Basel P0 (decisions D-1 to D-10, pinned text, the BCBS profile, the requirement catalogue and traceability check, measure guards, desk and book on every row, the run manifest, the remaining ORE oracles; P0.9 keeps regulatory runs with the job queue's `keep`, 2026-10-18) and P2's data acquisition, which is calendar time and so is started first | [F-05](features.md#f-05) (P0, P2) | Stage 4 | L |
-| 5.2 | Basel P1 (FRTB-SA) onward, phase by phase of the [Basel plan](details/basel-iii.md#6-phases-and-tasks): historical scenarios and IMA expected shortfall, backtesting and PLA, SA-CCR and BA-CVA, the precision gate, the evidence pack | [F-05](features.md#f-05) | 5.1's P0 (USD swaps also I-05); P7's evidence pack 6.4 | L |
+| 3.1 | Basel P0 (decisions D-1 to D-10, pinned text, the BCBS profile, the requirement catalogue and traceability check, measure guards, desk and book on every row, the run manifest, the remaining ORE oracles; P0.9 keeps regulatory runs with the job queue's `keep`), and P2's data acquisition, which takes calendar time and so starts first | [F-05](features.md#f-05) (P0, P2) | Stage 2 | L |
+| 3.2 | Basel P1 (FRTB-SA) onward, phase by phase of the [Basel plan](details/basel-iii.md#6-phases-and-tasks): historical scenarios and IMA expected shortfall, backtesting and PLA, SA-CCR and BA-CVA, the precision gate, the evidence pack | [F-05](features.md#f-05) | 3.1's P0 (USD swaps also need [I-05](known-issues.md#i-05)); P7's evidence pack needs 4.5 | L |
 
-5.2 follows the Basel plan's phases, each waiting only for what its row lists: FRTB-SA's
-sensitivities are ORE's since 2026-10-17 (I-51), as is a calibrated option's historical P&L
-(I-112); P5's IMM needed a Bermudan's exposure equal to ORE's,
-which it is since 2026-10-12 (I-49). P6's precision gate is the evidence table (built 2026-10-11, I-55), one table shared
-with the precision research: P6 adds the regulatory figures' rows, and moves MAR32's
-thresholds into the regulatory profile once P0.3 has entered them a second time. The
-precision research uses Basel's criteria (A-11) as an engineering acceptance standard; a row
-that passes them is not a regulatory approval, and the evidence table says so. Basel III:
+3.2 follows the Basel plan's phases, and each phase waits only for what its row lists. Several
+prerequisites are already met: FRTB-SA's sensitivities are ORE's (I-51), as is a calibrated
+option's historical P&L (I-112), and P5's IMM exposure equals ORE's (I-49). P6's precision gate
+is the evidence table, one table shared with the precision research. P6 adds the regulatory
+figures' rows, and moves MAR32's thresholds into the regulatory profile once P0.3 has entered
+them a second time. The research uses Basel's criteria (A-11) as an engineering acceptance
+standard, and a row that passes them is not a regulatory approval. Basel III:
 [details/basel-iii.md](details/basel-iii.md).
 
-<a id="stage-6--fix-what-exists"></a>
-## Stage 6 — Fix what exists
+<a id="stage-4"></a>
+## Stage 4 — Fix what exists
 
-The remaining defects of what the engine already does: numbers wrong only on inputs nothing
-uses yet, documentation, speed, tests and tooling. In order: unchecked behaviour, then speed,
-then tooling; the two parallel steps at any time.
-
-| Step | Work | Closes | After | Size |
-|---|---|---|---|---|
-| 6.1 | *Parallel, start now* (A-20). Ruff in `pyproject.toml` and CI with pyflakes' rules only (ruff's `F` set: unused imports and variables, undefined names, empty f-strings; no style or formatting rules). Fix or mark each finding; an "unused" import that other modules import from there is a re-export and goes in `__all__`, checked one by one. Earlier is cheaper: every later step's code is then written lint-clean once. `pandas`, which nothing imports, leaves the dependencies | [I-66](known-issues.md#i-66) (linter) | — | S |
-| 6.2 | *Parallel, start now.* The documentation's contradictions corrected (ORE described as single-threaded, three independent modules, the precision demo's count, the whole job as one XLA computation); the parity table is the parity matrix (done 2026-10-18) | [I-110](known-issues.md#i-110) | — | S |
-| 6.3 | The narrow cases: a European's liveness by its expiry date, not its variance; a bond valued until its last payment; the LGM's H by `expm1`, host and JAX alike | [I-104](known-issues.md#i-104) | — | S |
-| 6.4 | Characterize the full-suite aborts and lost worker processes. The fast tier's CI deaths were memory and are fixed (2026-10-05: the grid-convergence test's grid, compiled programs dropped per module). Still to do: show the full suite on CI's 16 GB runner (`-n 4` peaked at 24.2 GB with page cache before those fixes), then repeated full runs against a known-bad baseline, then the full tier on a schedule. Before Basel P7 (5.2), whose evidence pack rests on a complete suite run | [I-27](known-issues.md#i-27) | — | M |
-| 6.5 | The cold job's one-operation programs: jit the scenario market's construction and the other eager sites, and market risk's batch on the price function as data, as was done for the AD Greeks; the snapshot within the margin | [I-81](known-issues.md#i-81) | — | S |
-| 6.6 | The pipeline's remaining speed: find why, on Windows' CPU only, pricing runs 10–25% slower in a process that has run AD Greeks (the Windows heap is suspected, not shown; Linux is unaffected); and win back the 3 s (8%) a cold job lost to the bootstrap's compile under Newton, by tracing the helper's price once per bucket program where it is traced at the bracket's ends, the step and the model value today | [I-53](known-issues.md#i-53) | — | S |
-| 6.7 | Shared test helpers in `tests/support/`; public-entry tests where stage 1 made private-symbol tests obsolete | [I-67](known-issues.md#i-67) | — | S |
-| 6.8 | A type checker on `engine/` (A-20) | [I-66](known-issues.md#i-66) (type checker) | 6.1 | S |
-| 6.9 | ORE's sensitivity analytic where it disagrees with itself or fails: the two inconsistencies reported to ORE with one-trade reproductions (a holiday as-of date's volatility reference; a deal strike its fallback moves on an ACT/ACT (ICMA) swap index), and its optimiser's miss of a large basket under a 5bp volatility shift, each then a parity test or a difference by decision; whether an as-of date that is not a business day is refused, decided in the run request's preflight (`engine.run.validate_run`) | [I-117](known-issues.md#i-117) | — | S |
-| 6.10 | *Parallel, can start now* (the run request's dispatch alone). The work a run of several analytics shares done once: the cross-asset model's calibration handed from `calibration` to `exposure`, the request validated once, the trades' ORE schedules built once per run; still equal to each analytic alone bit for bit, each shared stage counted, timed against the code before | [I-118](known-issues.md#i-118) | — | S |
-| 6.11 | XLA's reverse-mode compile failure on a GPU for a calibrated option's price: a minimal reproduction, reported beside I-97's, checked on each new jax | [I-119](known-issues.md#i-119) | — | S |
-
-6.4's runs can be made whenever a full run is being made anyway. Five full runs under WSL2
-(2026-10-06, `-n 4`, a 23 GB VM; four on the GPU, one on CPU) all printed their summary lines,
-the last of each green; see the verification status. Only the conclusion waits for repeated
-runs.
-
-<a id="stage-7--new-capabilities"></a>
-## Stage 7 — New capabilities
-
-What the engine does not do yet, beyond the focus, TraderX and Basel. A step that adds a
-path-pricing kernel (7.2, 7.3, 7.4, 7.6) writes it in difference form, one implementation for
-every precision (A-16, [details/precision.md §8](details/precision.md#8-compute-below-float32)),
-and gets its rows in the evidence table (a campaign of the precision harness, I-55's table).
+The remaining defects in what the engine already does: numbers that are wrong only on inputs
+nothing uses yet, documentation, speed, tests and tooling. Work in this order: the parallel
+steps at any time, then unchecked behaviour, then speed, then tooling.
 
 | Step | Work | Closes | After | Size |
 |---|---|---|---|---|
-| 7.1 | Swaption smile: a strike axis in the market's volatilities, read at each option's and helper's strike; an additive market field, with ATM-only markets unchanged within the margin. The lookup it widens is written in difference form | [I-54](known-issues.md#i-54) | — | M |
-| 7.2 | Engine options: ORE's `AnalyticLgm` European engine, settlement methods, FD solver (the AD Greeks method and the market-risk engine by configuration are done) | [F-01](features.md#f-01) | — | M |
-| 7.3 | FX and equity trades on the pipeline; FX/EQ calibration; the two-currency end-to-end test (L6) against the ORE simulation oracle, extended to a second currency, and market risk's FX factors | [F-04](features.md#f-04) | — | L |
-| 7.4 | SABR volatility | [F-02](features.md#f-02) | 7.1 | M |
-| 7.5 | CVA/DVA | [F-06](features.md#f-06) | — | M |
-| 7.6 | AMC engine | [F-03](features.md#f-03) | — | L |
-| 7.7 | Reporting currencies other than USD for TraderX: convert at the as-of FX spot, as ORE reports in its `baseCurrency`; parity against an ORE run with that base currency | [F-08](features.md#f-08) | 4.3; an FX source ([I-18](known-issues.md#i-18), waiting on others) | S |
-| 7.8 | ORE's XML input files (`ore.xml`'s analytics, `simulation.xml`, `pricingengine.xml`, `sensitivity.xml`, `portfolio.xml`, zero-rate market data) translated into a run request, refusing by name what the engine does not support. Nice to have, not critical (owner, 2026-10-08) | [F-09](features.md#f-09) | — | M |
-| 7.9 | **Conditional research experiment: multilevel quantile correction.** Only if the existing-format timing/accuracy results show a useful opportunity, combine many low-precision paths with paired float64 paths to estimate PFE/VaR through a corrected distribution or equivalent estimator, with a related tail-estimation method for ES. Compare against the uncorrected estimators and float64 at equal total wall time, including paired simulation, correction and inversion costs; validate tail accuracy and uncertainty. Retain raw results alongside corrected ones. Independent of FP4; do not implement merely to make a failing format pass | [F-07](features.md#f-07) (quantile/tail estimation) | 3.19; evidence of likely benefit | L |
-| 7.10 | **Deferred: FP4 storage and compute.** Storage with a variance correction through block scales, emulated compute using the existing precision architecture and rounding lessons from I-98, and its own precision campaigns and evidence rows; native compute on TPU 8t/8i measured when available. Lower priority than the supported formats' first time/accuracy comparison; quantile correction is not a prerequisite | [F-07](features.md#f-07) (FP4) | 3.19 | L |
-| 7.11 | Supported sampling confidence intervals in a stated estimator/model domain, with validated tail assumptions or bounds; independent outer-seed rare-event validation, unchanged diagnostic criteria and explicit unavailability elsewhere. The conservative I-111 availability rule is complete and does not block hardware timing | [F-10](features.md#f-10) | 3.19 (priority) | L |
-| 7.12 | The cash flows paid in Theta's roll reported beside Theta, per trade, from both Greek methods, never folded into Theta, which stays ORE's (A-26); tested against the trades' schedules and ORE's cash-flow report on the Theta date | [F-11](features.md#f-11) | — | S |
+| 4.1 | *Parallel, can start now* (A-20). Ruff in `pyproject.toml` and CI with pyflakes' rules only (ruff's `F` set: unused imports and variables, undefined names, empty f-strings; no style or formatting rules). Fix or mark each finding; an "unused" import that other modules import from there is a re-export and goes in `__all__`, checked one by one. `pandas`, which nothing imports, leaves the dependencies | [I-66](known-issues.md#i-66) (linter) | — | S |
+| 4.2 | *Parallel, can start now.* Retire the `/eod` path: delete `engine/traderx/`, its routes, tests, fixtures and documents, once the owner has confirmed that TraderX needs nothing that only that path gives it | [I-120](known-issues.md#i-120) | — | S |
+| 4.3 | *Parallel, can start now.* Correct the documentation's contradictions | [I-110](known-issues.md#i-110) | — | S |
+| 4.4 | The narrow cases: a European's liveness by its expiry date, not its variance; a bond valued until its last payment; the LGM's H by `expm1`, host and JAX alike | [I-104](known-issues.md#i-104) | — | S |
+| 4.5 | The full-suite aborts and lost worker processes. Show the full suite on CI's 16 GB runner; then run it repeatedly against a known-bad baseline; then put the full tier on a schedule. This comes before Basel P7 (3.2), whose evidence pack rests on a complete suite run | [I-27](known-issues.md#i-27) | — | M |
+| 4.6 | The cold job's one-operation programs: jit the scenario market's construction and the other eager sites, and market risk's batch on the price function as data, as was done for the AD Greeks; the snapshot within the margin | [I-81](known-issues.md#i-81) | — | S |
+| 4.7 | The pipeline's remaining speed. Find why, on a Windows CPU only, pricing runs 10–25% slower in a process that has run AD Greeks. Win back the 3 s that a cold job lost to the bootstrap's compile under Newton. Schedule the leg kernel's products with their operand fusions | [I-53](known-issues.md#i-53) | — | S |
+| 4.8 | Shared test helpers in `tests/support/`; public-entry tests where private-symbol tests are obsolete | [I-67](known-issues.md#i-67) | 4.2 | S |
+| 4.9 | A type checker on `engine/` (A-20) | [I-66](known-issues.md#i-66) (type checker) | 4.1 | S |
+| 4.10 | Where ORE's sensitivity analytic disagrees with itself or fails. Report the two inconsistencies to ORE, each with a one-trade reproduction: a holiday as-of date's volatility reference, and a deal strike that its fallback moves on an ACT/ACT (ICMA) swap index. Report its optimiser's miss on a large basket under a 5bp volatility shift. Each then becomes a parity test or a difference by decision. Decide in the run request's preflight (`engine.run.validate_run`) whether an as-of date that is not a business day is refused | [I-117](known-issues.md#i-117) | — | S |
+| 4.11 | *Parallel, can start now* (the run request's dispatch alone). Do once the work that several analytics in one run share: hand the cross-asset model's calibration from `calibration` to `exposure`, validate the request once, build the trades' ORE schedules once per run. The result still equals each analytic alone bit for bit; each shared stage is counted and timed against the code before | [I-118](known-issues.md#i-118) | — | S |
+| 4.12 | XLA's reverse-mode compile failure on a GPU for a calibrated option's price: a minimal reproduction, reported with I-97's (1.3), rechecked on each new jax | [I-119](known-issues.md#i-119) | — | S |
+| 4.13 | Before the API is reachable from outside a trusted network: authentication, a body-size limit, a per-caller limit on queued jobs | [I-90](known-issues.md#i-90) | — | S |
 
-Order within the stage: the smile first (no market given to the engine so far has one, so it
-changes no number yet, but SABR builds on it); then the smallest gaps in ORE's own choices
-(7.2), the largest scope gap (7.3: the model already simulates FX and equity, but nothing
-prices them), SABR (7.4), and the analytics built on proven exposure (7.5, 7.6). 7.7 as soon
-as its FX source arrives; 7.8 has no dependants; 7.12 is small and can start at any time. The deferred precision extensions (7.9, 7.10)
-come after the first existing-format research result: quantile correction only when its
-measured opportunity warrants an experiment, and FP4 separately at lower priority. Neither
-is required to complete stage 3.
+4.2 comes before 4.8 because it removes the fixtures that 15 test files repeat. 4.5's runs can
+be made whenever a full run is being made anyway; only the conclusion waits for repeated runs.
+
+<a id="stage-5"></a>
+## Stage 5 — New capabilities
+
+What the engine does not do yet. A step that adds a path-pricing kernel (5.2, 5.3, 5.4, 5.6)
+writes it in difference form, with one implementation for every precision (A-16,
+[details/precision.md §8](details/precision.md#8-compute-below-float32)), and gets its rows in
+the evidence table.
+
+| Step | Work | Closes | After | Size |
+|---|---|---|---|---|
+| 5.1 | Swaption smile: a strike axis in the market's volatilities, read at each option's and helper's strike. It is an additive market field, and ATM-only markets are unchanged within the margin. The lookup it widens is written in difference form | [I-54](known-issues.md#i-54) | — | M |
+| 5.2 | Engine options: ORE's `AnalyticLgm` European engine, settlement methods, the FD solver | [F-01](features.md#f-01) | — | M |
+| 5.3 | FX and equity trades on the pipeline; FX/EQ calibration; the two-currency end-to-end test (L6) against the ORE simulation oracle, extended to a second currency; market risk's FX factors | [F-04](features.md#f-04) | — | L |
+| 5.4 | SABR volatility | [F-02](features.md#f-02) | 5.1 | M |
+| 5.5 | CVA/DVA | [F-06](features.md#f-06) | — | M |
+| 5.6 | AMC engine | [F-03](features.md#f-03) | — | L |
+| 5.7 | ORE's XML input files (`ore.xml`'s analytics, `simulation.xml`, `pricingengine.xml`, `sensitivity.xml`, `portfolio.xml`, zero-rate market data) translated into a run request, refusing by name whatever the engine does not support. Nice to have, not critical (owner, 2026-10-08) | [F-09](features.md#f-09) | — | M |
+| 5.8 | **Conditional research experiment: multilevel quantile correction.** Do it only if 2.1's results show a useful opportunity. Combine many low-precision paths with paired float64 paths to estimate PFE and VaR through a corrected distribution or an equivalent estimator, and ES by a related tail-estimation method. Compare against the uncorrected estimators and float64 at equal total wall time, including the costs of the paired simulation, the correction and the inversion. Validate the tail accuracy and its uncertainty, and keep the raw results beside the corrected ones. Do not implement it merely to make a failing format pass | [F-07](features.md#f-07) (quantile and tail estimation) | 2.1; evidence of likely benefit | L |
+| 5.9 | **Deferred: FP4 storage and compute.** Storage with a variance correction through block scales; emulated compute using the existing precision architecture and the rounding lessons of I-98; its own precision campaigns and evidence rows; native compute measured on TPU 8t/8i when available | [F-07](features.md#f-07) (FP4) | 2.1 | L |
+| 5.10 | Supported sampling confidence intervals in a stated estimator and model domain, with validated tail assumptions or bounds; rare-event validation on independent outer seeds, the diagnostic criteria unchanged, and intervals explicitly unavailable everywhere else | [F-10](features.md#f-10) | 2.1 | L |
+| 5.11 | The cash flows paid in Theta's roll, reported per trade beside Theta from both Greek methods and never folded into Theta, which stays ORE's (A-26); tested against the trades' schedules and ORE's cash-flow report on the Theta date | [F-11](features.md#f-11) | — | S |
+
+Order within the stage: the smile comes first. No market given to the engine so far has a
+smile, so it changes no number yet, but SABR builds on it. Then come the smallest gaps in ORE's
+own choices (5.2); then the largest scope gap (5.3: the model already simulates FX and equity,
+but nothing prices them); then SABR (5.4); then the analytics built on proven exposure (5.5,
+5.6). 5.7 has no dependants, and 5.11 is small and can start at any time. The precision
+extensions (5.8 to 5.10) come after the first research result: quantile correction only when
+its measured opportunity warrants an experiment, and FP4 separately, at lower priority.
 
 <a id="waiting-on-others"></a>
 ## Waiting on others
 
-Not engineering work until the input arrives. Chase the dependency, not the code.
+None of these is engineering work until its input arrives. Chase the dependency, not the code.
 
 | Item | Waiting for | From |
 |---|---|---|
-| [I-05](known-issues.md#i-05) USD-SOFR swaps | The D03/D04 convention set | TraderX |
-| [I-04](known-issues.md#i-04) seasoned TraderX swaps | `pastFixings` in the export | TraderX |
-| [I-16](known-issues.md#i-16) per-pillar `rateSensitivity` | An observed market-data package (W2) | TraderX |
-| [I-18](known-issues.md#i-18) equity positions; [F-08](features.md#f-08) reporting currencies (step 7.7) | A spot/FX source | TraderX or a market-data decision |
-| [I-23](known-issues.md#i-23), [I-60](known-issues.md#i-60) | Answers on versioning and added fields | TraderX (then step 4.6) |
-| [I-07](known-issues.md#i-07) corporate bonds, listed options | Demand, and for corporates a credit model | Owner |
+| Steps 1.2 to 1.4 and 2.1 | Booked time on TPUs (Ironwood, and a pod slice for 1.4) and H100s ([access request](../google-cloud-research-access.md)) | Owner, the cloud administrator |
+| [I-05](known-issues.md#i-05) USD-SOFR swaps | The convention set to build (D03/D04) | Owner, with the caller booking SOFR swaps |
+| [I-07](known-issues.md#i-07) corporate bonds, listed options | Demand, and for corporate bonds a credit model | Owner |
 | The project's licence (no `LICENSE` file or licence metadata; project audit, AUD-49) | A decision on first-party licensing | Owner |
-
-Open TraderX asks are collected in
-[details/traderx-integration.md](details/traderx-integration.md#open-with-traderx).

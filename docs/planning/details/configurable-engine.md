@@ -1,6 +1,6 @@
 # Configurable engine
 
-Design for roadmap [stage 1](../roadmap.md#stage-1--structure), the API reaching every setting (done
+Design for the structure stage (done 2026-10-04), the API reaching every setting (done
 2026-10-07) and the run request (I-87): one run configuration whose options are
 models, engines, methods and precision, as ORE configures a run. Implements owner decisions
 A-1 to A-9 ([compliance/decisions.md](../../../compliance/decisions.md) §1–2).
