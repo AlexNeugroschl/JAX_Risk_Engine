@@ -38,11 +38,11 @@ A worker started by `main` also runs deterministic GPU kernels, so a compiled jo
 same bits on every run (`deterministic_kernels_environment`, decision A-22): it appends
 `--xla_gpu_exclude_nondeterministic_ops=true` to its `XLA_FLAGS`, unless they name either XLA
 determinism flag. XLA has no per-computation switch, so it is set for the process whose
-results the engine vouches for; it changes nothing on a CPU. A GPU's FP8 products run on its FP8
-units only where the operator sends its matrix products to cuBLAS
-(`XLA_FLAGS=--xla_gpu_enable_triton_gemm=false`, I-97), which the worker inherits and the engine
-reads (`engine.precision.products.cublas_gemms`); by default they are emulated, exactly, since
-cuBLAS slowed the engine's float64 products on an RTX 5060.
+results the engine vouches for; it changes nothing on a CPU. Supported GPU formats request
+native products by default. `--gpu-gemm cublas` is an explicit compiler-route override
+(including the local RTX 5060 FP8 workaround, I-97), not a prerequisite for native dispatch.
+`JAX_RISK_EMULATE_PRODUCTS` explicitly emulates selected compute formats when testing a
+compiler limitation; both settings must precede tracing in a fresh process.
 
 **On a pod slice** (`--distributed`, I-61): one worker on every host, all running each job at
 once, as SPMD requires (`engine.api.hosts`). Process 0 alone serves the queue and hands each

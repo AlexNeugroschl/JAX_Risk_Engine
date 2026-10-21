@@ -107,6 +107,13 @@ class TestCases:
 
 
 class TestMeasure:
+    @pytest.mark.parametrize("setting", ["product_emulation", "xla_flags"])
+    def test_different_execution_settings_cannot_be_merged(self, tiny, setting):
+        _, measured = tiny
+        changed = dataclasses.replace(measured, environment={**measured.environment, setting: "different"})
+        with pytest.raises(ValueError, match="implementations"):
+            measured.merge(changed)
+
     def test_large_path_memory_does_not_grow_with_seed_count(self, monkeypatch):
         """Only one seed's reference and current candidate may remain alive (I-122)."""
         import weakref

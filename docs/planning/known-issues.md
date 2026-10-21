@@ -16,6 +16,12 @@ shared portfolio, what is compared with ORE and what is not is the
 
 ## Verification status
 
+Native-default follow-up, 2026-10-21: the latest dispatch change has scoped CPU and real
+GPU checks in the [routing record](../../compliance/precision-research/2026-10-21/README.md).
+The complete-suite numbers below apply to the archived 2026-10-20 source, not this later
+dispatch revision. The local default compiler failure remains visible; its workaround
+passes separately. H100 remains unmeasured.
+
 Implementation and research, 2026-10-20 (overnight verification completed 2026-10-21 UTC).
 **4,011 collected; 4,002 passed, 9 skipped, zero failures/errors.** The complete
 Windows CPU suite ran on one frozen Python source in fresh batches of eight, as disjoint
@@ -49,7 +55,7 @@ the reviewed records, all 127 precision-evidence/report checks pass with a print
 | ID | Issue | Sev. | Status | Category | Roadmap |
 |---|---|---|---|---|---|
 | [I-121](#i-121) | Never run on a TPU or an H100: no TPU install, float64 emulation and the device check unverified there | Medium | OPEN | Validation | Clusters |
-| [I-97](#i-97) | XLA computes some native GPU products wrong: FP8 is native only through cuBLAS, unchecked on H100 | Medium | PARTIAL | Performance | Clusters |
+| [I-97](#i-97) | Local XLA FP8/BF16 faults need explicit workarounds; H100 remains unchecked | Medium | PARTIAL | Performance | Clusters |
 | [I-61](#i-61) | Multi-device and multi-host speed unmeasured | Medium | PARTIAL | Performance | Clusters |
 | [I-122](#i-122) | FP16/FP8 accuracy qualification remains narrow; expanded comparison and campaign tools implemented | Medium | PARTIAL | Validation | Precision research |
 | [I-66](#i-66) | No linter or type checker | Low | OPEN | Tooling | Fix what exists |
@@ -102,61 +108,35 @@ With a smile: European NPV and Vega away from the money, and calibrated Bermudan
 option's and helper's strike as ORE reads its cube. SABR is [F-02](features.md#f-02).
 
 <a id="i-97"></a>
-### I-97 — XLA computes some native GPU products wrong: FP8 is native only through cuBLAS, unchecked on H100
+### I-97 — Local XLA FP8/BF16 faults need explicit workarounds; H100 remains unchecked
 
-**Severity:** Medium (a stated goal unmet: the speed of native units) · **Status:** PARTIAL ·
-**Category:** Performance · **Found:** 2026-10-10, the device check (`tests/support/precision_devices.py`);
-located 2026-10-11
+**Severity:** Medium · **Status:** PARTIAL · **Category:** Correctness ·
+**Found:** 2026-10-10, device checks; compiler faults located 2026-10-11
 
-**Closed part (2026-10-19).** A GPU's FP8 and bfloat16 passes run natively where they are right
-(`engine.precision.products`):
+**What is wrong.** On the RTX 5060 / JAX 0.10.2, XLA's default Triton emitter produces
+wrong FP8 products, and a BF16_3x vector fusion ignores its requested algorithm. These
+compiler failures are unmeasured on H100; they do not establish that another GPU needs
+the same workaround. Reduced-precision arithmetic acceptance is separately I-122.
 
-- **FP8 through cuBLASLt.** In a process whose `XLA_FLAGS` hold `--xla_gpu_enable_triton_gemm=false`
-  (`cublas_gemms`), a GPU's FP8 products go to cuBLASLt's FP8 path (`__cublas$lt$matmul$f8`),
-  exact on every matrix shape on the RTX 5060 (compute capability 8.9 and up counts as having the
-  units); elsewhere they stay emulated, exactly. Not the worker's default: timed against XLA's
-  Triton emitter alternately on the RTX 5060, cuBLAS ran the shared portfolio's float64 job 15%
-  slower (6.31–6.44 s against 5.54–5.60 s at 16,384 paths), its float32 job 11% faster and market
-  risk alike, so float64 would get slower (precision design §13.9); the research timing sets the
-  flag (precision design §19).
-- **e5m2 beside e4m3.** FP8 units take e5m2 only beside e4m3 (cuBLASLt multiplied two e5m2
-  operands on its other path): float8_e5m2 holds the operand every path shares in e4m3, its
-  mantissa e5m2's on e4m3's range (`Format.shared_dtype`), emulated or native alike; e5m2's
-  products on the RTX 5060 then ran as `__cublas$lt$matmul$f8`, exact. The only change from e5m2
-  throughout is the shared operand's range, below 2^-15 of a slice's largest value; the seven campaigns with e5m2 compute cases measured again (2026-10-19): every e5m2 row's relative error within 2e-6 of its record (median 1e-13), no verdict or path ceiling of the evidence table moved.
-- **bfloat16 passes on matrix shapes.** `BF16_BF16_F32_X3` is right on every matrix shape under
-  either emitter, so the passes are native on a GPU from Ampere; a matrix-vector product, which
-  XLA compiles as a fusion ignoring the algorithm (1.1e-3 off, a single pass's error, either
-  emitter), is emulated there (`EMULATED_MATRIX_VECTOR`).
+**Reach.** Actual wrong arithmetic on the affected compiler/device combination when it
+uses the faulty route. Native dispatch is now the default wherever the backend/device
+supports the format, including H100 FP8; capability is not numerical qualification.
 
-The device check passes every format under both emitters on the RTX 5060 (FP8 native under
-cuBLAS, emulated under Triton); red first: with FP8 marked native under Triton, 0.71 to 0.80 of the
-scale off.
+**Current handling.** The 2026-10-21 change removes the blanket FP8 cuBLAS prerequisite
+and BF16 vector fallback. Normal workers inherit the emitter; comparison `--gemm auto`
+preserves the same inherited emitter for all formats. Local tests explicitly select
+`--gemm cublas` / `--gpu-gemm cublas` for FP8 and
+`JAX_RISK_EMULATE_PRODUCTS=bfloat16_3x` for the vector-fusion fault. The latter preserves
+operand rounding using FP32 products and is reported as emulated. Settings precede
+tracing in a fresh process and are retained in evidence; incompatible settings cannot
+be merged. The qualification tool recognizes both cuBLAS and Triton FP8 lowering and
+retains default numerical failures. No GPU-name blacklist or automatic emulation is used.
 
-**What is wrong.** Two of XLA's GPU faults remain its own, and both stay unchecked beyond one
-card and one jax: its Triton GEMM emitter computes FP8 products 0.54 to 0.79 off on every matrix
-shape under the worker's determinism flag (`--xla_gpu_exclude_nondeterministic_ops=true`, which
-keeps XLA's autotuner off cuBLASLt; without it only the smallest shape is wrong), on an RTX 5060
-(compute capability 12.0, jax 0.10.2, the newest jax on 2026-10-19), and its
-matrix-vector fusion ignores the bfloat16-passes algorithm. H100 (compute capability 9.0, XLA's
-most exercised FP8 target) may compile either another way. Minimal reproductions are written
-([details/xla-gpu-reproductions.md](details/xla-gpu-reproductions.md)) and not yet reported to
-XLA (the owner's to file).
-
-**Reach.** No number: a format runs natively only where the device check showed it right, and
-the precision report names each format's execution. Speed: under XLA's default emitter a GPU's
-FP8 runs emulated on its float16 units.
-
-**Current handling.** As above; the precision report says native or emulated per format.
-`jax-risk-worker --gpu-gemm cublas` selects the route before JAX starts; comparison workers
-select it automatically for GPU FP8. Extended local checks pass 504 operations with 264
-observed FP8 lowerings; twelve warm workload traces establish actual GPU execution with
-zero in-capture recompiles. [Artifacts and scope](../../compliance/precision-research/2026-10-20/README.md#native-execution-evidence).
-No H100 host was available, so neither emitter is qualified there.
-
-**To close.** The device check on H100 under both emitters (and on each new jax); the XLA
-reports filed; native FP8 under XLA's default emitter once its Triton code is right, or a
-per-product route to cuBLASLt if XLA offers one.
+**To close.** Qualify actual H100 arithmetic and instruction use under the normal emitter
+and explicit alternatives, then recheck runtime upgrades. File the existing minimal
+[XLA reproductions](details/xla-gpu-reproductions.md); resolve or retain explicit local
+workarounds. No H100 host is available. See the
+[routing change and validation](../../compliance/precision-research/2026-10-21/README.md).
 
 ---
 

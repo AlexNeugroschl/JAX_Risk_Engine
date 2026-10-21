@@ -26,9 +26,9 @@ def worker(arguments, destination):
     os.environ["JAX_ENABLE_COMPILATION_CACHE"] = "false"
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     route = arguments.get("gemm", "auto")
-    if arguments["backend"] == "gpu" and (route != "auto" or "float8" in arguments["label"]):
+    if arguments["backend"] == "gpu" and route != "auto":
         from engine.api.worker import gemm_environment
-        os.environ.update(gemm_environment("cublas" if route == "auto" else route, os.environ))
+        os.environ.update(gemm_environment(route, os.environ))
     from engine.api.worker import deterministic_kernels_environment
     os.environ.update(deterministic_kernels_environment(os.environ))
     import jax
@@ -318,7 +318,7 @@ def main(argv=None):
     parser.add_argument("--reference-seeds", type=int, nargs="+", help="disjoint CPU FP64 reference seeds")
     parser.add_argument("--reference-paths", type=int, nargs="+", help="reference convergence counts (default: largest count)")
     parser.add_argument("--gemm", choices=("auto", "default", "cublas"), default="auto",
-                        help="auto uses cuBLAS for GPU FP8; explicit routes permit paired baseline measurements")
+                        help="auto preserves the inherited emitter for every format; explicit routes override it")
     parser.add_argument("--expected-gpu", help="required GPU model substring, e.g. H100")
     parser.add_argument("--workloads", nargs="+", choices=WORKLOADS, default=list(WORKLOADS))
     parser.add_argument("--timeout", type=float, default=3600)

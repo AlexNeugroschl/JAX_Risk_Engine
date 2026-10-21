@@ -61,22 +61,25 @@ product runs its rounded operands as float16 values, which hold them exactly. On
 format below float32 is emulated; `product_execution` says which ran, and the precision report
 names it per compute format (`PrecisionReport.products`).
 
-**On an NVIDIA GPU** (I-97) XLA's own GEMM emitter (Triton) computes FP8 products 40-70% wrong
-(RTX 5060, jax 0.10.2), while cuBLASLt computes them exactly on its FP8 units: FP8 is native
-only in a process whose operator sends its matrix products to cuBLAS (`cublas_gemms`: XLA_FLAGS
-with `TRITON_GEMM_OFF`, which the engine worker inherits; not by default, since cuBLAS ran the
-engine's float64 products 15% slower than Triton on an RTX 5060, 2026-10-19), and e5m2 only beside
-e4m3, as the units take it (`Format.shared_dtype`). A matrix-vector product compiles to a fusion
-rather than a GEMM: FP8's is exact there, off the FP8 units; bfloat16 passes ignore their
-algorithm there and give one pass's error, so a GPU's bfloat16-passes matrix-vector products are
-emulated (`EMULATED_MATRIX_VECTOR`), the format's matrix products native. Measured by the device
-check (`tests/support/precision_devices.py`) under either GEMM emitter, 2026-10-19.
+**Native execution is the default** wherever the backend/device supports the format,
+independently of the GEMM emitter. E5M2 uses an E4M3 shared operand (`Format.shared_dtype`).
+A dispatch label states the requested arithmetic; lowering/traces establish which shapes
+actually use matrix units. A compiler may fuse a matrix-vector product instead.
+
+**Explicit compiler workarounds** (I-97): the RTX 5060 / JAX 0.10.2 checks found wrong FP8
+under Triton and a bfloat16-passes GEMV fusion ignoring its algorithm. Configure that test
+process with cuBLAS (`TRITON_GEMM_OFF`) and `JAX_RISK_EMULATE_PRODUCTS=bfloat16_3x`.
+These are not defaults for other GPUs. `JAX_RISK_EMULATE_PRODUCTS` accepts comma-separated
+compute formats; a base name includes its single-pass variant. It preserves operand rounding
+but uses float32 carriers/products, and the report calls the format emulated. Set it before
+tracing, in a fresh process, as with XLA flags; changing it cannot alter cached executables.
 
 `tests/test_accelerator_defaults.py::TestEveryMatrixProductStatesItsPrecision` traces the
 pipelines and fails on any product of the engine's that does not state its precision.
 """
 import math
 import os
+from functools import lru_cache
 from typing import Mapping, Optional
 
 import jax
@@ -91,17 +94,14 @@ from engine.precision.grid import pow2, round_to_grid, scale_exponent
 #: float16 from Volta (7.0), TensorFloat-32, bfloat16 and its passes from Ampere (8.0), FP8 from Ada
 #: (8.9), each shown equal to the emulation on an RTX 5060 (compute capability 12.0, jax 0.10.2,
 #: `tests/support/precision_devices.py`: 2026-10-10; FP8 and the passes 2026-10-19, see the module
-#: docstring). FP8 only through cuBLAS (`_CUBLAS_ONLY`).
+#: docstring). Qualification remains specific to the actual compiler/device.
 _GPU_UNITS = {"float16": 7.0, "bfloat16": 8.0, "tensorfloat32": 8.0, "bfloat16_3x": 8.0, "float8_e4m3fn": 8.9,
               "float8_e5m2": 8.9}
-#: The formats a GPU runs natively only where its products go to cuBLAS (`cublas_gemms`).
-_CUBLAS_ONLY = ("float8_e4m3fn", "float8_e5m2")
 #: XLA's flag that sends a GPU's matrix products to cuBLAS/cuBLASLt instead of its Triton GEMM
 #: emitter (I-97). XLA reads it when it opens the GPU.
 TRITON_GEMM_OFF = "--xla_gpu_enable_triton_gemm=false"
-#: Per platform, the product formats whose matrix-vector products are emulated where the format
-#: is native (see the module docstring).
-EMULATED_MATRIX_VECTOR = {"gpu": ("bfloat16_3x",)}
+#: Optional process-level numerical control or compiler workaround, never set on import.
+EMULATE_PRODUCTS = "JAX_RISK_EMULATE_PRODUCTS"
 #: The formats below float32 a TPU's matrix units run, by base: bfloat16 and its passes on every
 #: generation, XLA's own way of running a float32 product there, to be shown right on the device
 #: as on a GPU (FP8, from Ironwood, emulated until then).
@@ -123,10 +123,11 @@ def product_execution(name: str, device: Optional[jax.Device] = None) -> str:
     """`"native"` if `device` (`default_device()` by default: the one a product traced now runs
     on) has matrix units for compute format `name`, else `"emulated"` (see the module docstring). float64 and
     float32 are native on a CPU and a GPU; a TPU emulates float64 and runs float32 in bfloat16
-    passes, which XLA arranges itself (native). A GPU's FP8 is native only in a process whose
-    products go to cuBLAS (`cublas_gemms`); a native format's matrix-vector products may be
-    emulated (`EMULATED_MATRIX_VECTOR`)."""
+    passes, which XLA arranges itself (native). Explicit process emulation overrides capability;
+    the GEMM emitter never changes this default. Actual instruction use needs lowering evidence."""
     fmt = format_of(name)
+    if _explicit_emulation(fmt):
+        return "emulated"
     device = device or default_device()
     platform = device.platform
     if not fmt.below_float32:
@@ -134,12 +135,26 @@ def product_execution(name: str, device: Optional[jax.Device] = None) -> str:
     if platform == "gpu":
         capability = getattr(device, "compute_capability", None)
         units = _GPU_UNITS.get(fmt.base)
-        if fmt.base in _CUBLAS_ONLY and not cublas_gemms():
-            return "emulated"
         return "native" if None not in (capability, units) and float(capability) >= units else "emulated"
     if platform == "tpu" and fmt.base in _TPU_UNITS:
         return "native" if _TPU_UNITS[fmt.base] in device.device_kind else "emulated"
     return "emulated"
+
+
+@lru_cache(maxsize=32)
+def _emulation_formats(value: str):
+    names = frozenset(name.strip() for name in value.split(",") if name.strip())
+    try:
+        if any(not format_of(name).below_float32 for name in names):
+            raise ValueError("only compute formats below float32 can be emulated")
+    except ValueError as error:
+        raise ValueError(f"invalid {EMULATE_PRODUCTS}: {error}") from None
+    return names
+
+
+def _explicit_emulation(fmt: Format) -> bool:
+    names = _emulation_formats(os.environ.get(EMULATE_PRODUCTS, ""))
+    return fmt.name in names or fmt.base in names
 
 
 def cublas_gemms(environ: Optional[Mapping[str, str]] = None) -> bool:
@@ -160,14 +175,12 @@ def default_device() -> jax.Device:
 def product_precision(compute, device: Optional[jax.Device] = None, matrix_vector: bool = False):
     """The precision a product in compute format `compute` (a name, or the dtype of an array
     format) states in the program: its algorithm where a product format runs natively, else full
-    precision on the (rounded) operands; a matrix-vector product (`matrix_vector`) of a format in
-    `EMULATED_MATRIX_VECTOR` full precision."""
+    precision on the (rounded) operands. The same algorithm is requested for matrix and
+    matrix-vector products; compiler-specific exceptions require explicit emulation."""
     fmt = format_of(compute if isinstance(compute, str) else name_of(compute))
     if fmt.compute_pending is not None:
         raise ValueError(f"a matrix product in {fmt.name} is not enabled yet ({fmt.compute_pending})")
     device = device or default_device()
-    if matrix_vector and fmt.product in EMULATED_MATRIX_VECTOR.get(device.platform, ()):
-        return lax.Precision.HIGHEST
     if fmt.product in _ALGORITHMS and product_execution(fmt.name, device) == "native":
         return _ALGORITHMS[fmt.product]
     return lax.Precision.HIGHEST
@@ -241,7 +254,7 @@ def _rounded_product(a, b, fmt: Format, native: bool, precision, shared: str, ar
     qb, kb = _terms(b, held if shared == "right" else fmt, axis=-2, count=terms if shared == "right" else 1,
                     uniforms=uniforms if shared == "left" else None)
     if not native:
-        carrier = _CARRIERS.get(fmt.base, fmt.dtype)
+        carrier = jnp.float32 if _explicit_emulation(fmt) else _CARRIERS.get(fmt.base, fmt.dtype)
         qa, qb = qa.astype(carrier), qb.astype(carrier)
     product = _matmul32(qa, qb, precision)
     product = product * pow2(-ka, jnp.float32) * pow2(-kb, jnp.float32)

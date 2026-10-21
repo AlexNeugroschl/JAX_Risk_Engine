@@ -104,11 +104,8 @@ class TestTheWorkerRunsDeterministicKernels:
         assert PREALLOCATE in os.environ
 
 
-class TestAGpusFp8GoesToCublasOnRequest:
-    """I-97: XLA's Triton GEMM emitter computes a GPU's FP8 products wrong and cuBLASLt exactly,
-    but cuBLAS slowed the engine's float64 products by 15% on an RTX 5060, so neither the worker
-    nor the tests set it: a GPU's FP8 counts as native only in a process whose operator sent its
-    products to cuBLAS (`engine.precision.products.cublas_gemms`), emulated elsewhere."""
+class TestNativeGpuDefaults:
+    """Native dispatch follows hardware capability, independent of explicit emitter overrides."""
 
     def test_the_flag_is_read_from_the_process_flags(self):
         from engine.precision import products
@@ -117,14 +114,15 @@ class TestAGpusFp8GoesToCublasOnRequest:
         assert not products.cublas_gemms({XLA_FLAGS: "--xla_gpu_enable_triton_gemm=true"})
         assert not products.cublas_gemms({})
 
-    def test_a_gpu_s_fp8_is_native_only_through_cublas(self, monkeypatch):
+    def test_a_gpu_s_fp8_is_native_with_or_without_cublas(self, monkeypatch):
         from engine.precision import products
 
         gpu = type("Gpu", (), {"platform": "gpu", "compute_capability": "12.0", "device_kind": "test"})()
+        monkeypatch.delenv(products.EMULATE_PRODUCTS, raising=False)
         monkeypatch.setenv(XLA_FLAGS, products.TRITON_GEMM_OFF)
         assert products.product_execution("float8_e5m2", gpu) == "native"
         monkeypatch.setenv(XLA_FLAGS, "")
-        assert products.product_execution("float8_e4m3fn", gpu) == "emulated"
+        assert products.product_execution("float8_e4m3fn", gpu) == "native"
         assert products.product_execution("bfloat16_3x", gpu) == "native"
         old = type("Gpu", (), {"platform": "gpu", "compute_capability": "8.6", "device_kind": "test"})()
         monkeypatch.setenv(XLA_FLAGS, products.TRITON_GEMM_OFF)

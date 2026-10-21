@@ -1,9 +1,10 @@
 # Precision comparison
 
 The comparison includes FP16. `--policies combined compute storage` separates product and
-storage errors; the default remains `combined` for bounded comparisons. GPU FP8 workers
-select cuBLAS before JAX starts (`--gemm auto`). Use `--gemm default` and `--gemm cublas`
-in separate collections to compare emitter costs; process flags remain in the evidence.
+storage errors; the default remains `combined` for bounded comparisons. Supported GPU formats
+request native arithmetic by default. `--gemm auto` preserves the inherited emitter for every
+format. Use `--gemm default` and `--gemm cublas` for explicit emitter comparisons; process
+flags remain in the evidence. No format silently selects a different emitter.
 `--expected-gpu H100` refuses a different GPU model.
 
 Independent reference seeds can be collected alongside matched-path references:
@@ -26,19 +27,21 @@ reference and an empirical SE do not supply a nominal confidence bound.
 
 On the target Linux host, in the pinned GPU environment:
 
-For a production worker, `jax-risk-worker --gpu-gemm cublas` selects the same route
-before backend initialization. It is a process setting; it cannot switch a running worker
-per job. Omitting it preserves the inherited environment and current FP64 defaults.
+The worker requests native arithmetic on capable GPUs without an emitter override.
+`jax-risk-worker --gpu-gemm cublas` explicitly selects cuBLAS before backend initialization
+when qualification calls for it. It cannot switch a running worker per job.
 
 ```bash
 python -m tests.support.precision_devices --platform gpu --expected-device H100 \
-  --gemm cublas --formats float16 float16_1x float8_e4m3fn float8_e4m3fn_1x \
+  --formats float16 float16_1x float8_e4m3fn float8_e4m3fn_1x \
   float8_e5m2 float8_e5m2_1x --require-native-fp8 \
   --out .profile-out-h100-native --engine-workloads comparison_single comparison_portfolio
 ```
 
 This retains numerical comparisons with CPU emulation, per-operation optimized HLO,
-actual workload HLO and a device trace. The matrix includes batched, odd-sized and
+actual workload HLO and a device trace. FP8 cuBLAS calls and Triton FP8/FP32 dot fusions
+are recognized separately; actual instruction use still requires trace inspection.
+The matrix includes batched, odd-sized and
 matrix-vector products, zeros, cancellation and stochastic rounding. An FP8 custom call
 is recorded independently of the dispatch label. Inspect the actual workload trace for
 hardware use; these synthetic checks do not certify financial accuracy. Incomplete runs
@@ -99,12 +102,27 @@ formats. Every requested point appears in the report, including unavailable devi
 timeouts, compilation failures and formats that miss the numerical tolerance. Use a new,
 empty output directory for each collection. Never run competing jobs when measuring speed.
 
-For an NVIDIA GPU use Linux/WSL2 and the pinned `gpu` environment. GPU FP8 workers
-automatically select cuBLAS (`--gemm auto`); `--gemm default` deliberately selects the
-default emitter for a separate comparison and currently uses the emulated FP8 route.
+For an NVIDIA GPU use Linux/WSL2 and the pinned `gpu` environment. GPU FP8 is native by
+default on capable hardware. `--gemm auto` keeps inherited settings for all formats;
+`--gemm default` explicitly restores the compiler's default emitter.
 `--gemm cublas` explicitly selects cuBLAS for every GPU format. The report records flags
 and dispatch. BF16/FP8 on CPU are emulated. A missing backend remains unmeasured.
 Native dispatch alone is not hardware proof; retain lowering and trace qualification.
+
+The RTX 5060 / JAX 0.10.2 compiler faults are explicit **local test configuration**:
+
+```bash
+XLA_FLAGS=--xla_gpu_enable_triton_gemm=false \
+JAX_RISK_EMULATE_PRODUCTS=bfloat16_3x \
+python -m tests.support.precision_devices --platform gpu --out .profile-out-local-device
+```
+
+This keeps FP8 native through cuBLAS and emulates BF16_3x for its local vector-fusion fault.
+Neither override is a project default. `JAX_RISK_EMULATE_PRODUCTS` accepts comma-separated
+compute formats; a base name includes its `_1x` variant. Set it before tracing in a fresh
+process. The report records emulated dispatch and the environment; incompatible execution
+settings cannot be merged into one campaign. Default compiler failures remain failures.
+See the [routing change and validation](../compliance/precision-research/2026-10-21/README.md).
 
 The command does not initialize a multi-host JAX worker set; cluster qualification remains I-61.
 Every worker explicitly selects its requested device, verifies the devices holding its

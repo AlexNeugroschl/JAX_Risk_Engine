@@ -2,10 +2,32 @@
 import jax
 import json
 import numpy as np
+import os
 import pytest
 import sys
 
-from tests.support.precision_devices import normalized_error, qualify
+from tests.support.precision_devices import fp8_lowering, normalized_error, qualify
+
+
+TRITON_FP8 = '''%gemm (lhs: f8e4m3fn[3,4], rhs: f8e5m2[4,2]) -> f32[3,2] {
+  %lhs = f8e4m3fn[3,4]{1,0} parameter(0)
+  %rhs = f8e5m2[4,2]{1,0} parameter(1)
+  ROOT %dot = f32[3,2]{1,0} dot(%lhs, %rhs), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+}
+  ROOT %fusion = f32[3,2]{1,0} fusion(%a, %b), kind=kCustom, calls=%gemm, backend_config={"kind":"__triton_nested_gemm_fusion"}
+'''
+
+
+def test_native_lowering_accepts_triton_as_well_as_cublas():
+    assert fp8_lowering(TRITON_FP8) == "triton"
+    assert fp8_lowering('custom-call(), custom_call_target="__cublas$lt$matmul$f8"') == "cublas"
+
+
+@pytest.mark.parametrize("hlo", [TRITON_FP8.replace("f8e5m2", "f16"),
+    TRITON_FP8.replace("f32[3,2]{1,0} dot", "f16[3,2]{1,0} dot"),
+    TRITON_FP8.replace("calls=%gemm,", "calls=%other,"), TRITON_FP8.replace("__triton", "__other")])
+def test_unrelated_types_algorithms_and_fusions_are_not_native_fp8_evidence(hlo):
+    assert fp8_lowering(hlo) is None
 
 
 def test_worker_gemm_selection_preserves_determinism_and_other_flags():
@@ -37,9 +59,12 @@ def test_fp8_cpu_emulation_has_numerical_evidence_without_native_claims(tmp_path
 
 
 @pytest.mark.slow
-def test_device_cli_runs_single_pass_and_product_format_engine_controls(tmp_path):
+def test_device_cli_runs_single_pass_and_product_format_engine_controls(tmp_path, monkeypatch):
     from demos.benchmark_reporting import launch_worker
     out = tmp_path / "qualification"
+    flags = [f for f in os.environ.get("XLA_FLAGS", "").split()
+             if not f.startswith("--xla_gpu_enable_triton_gemm=")]
+    monkeypatch.setenv("XLA_FLAGS", " ".join([*flags, "--xla_gpu_enable_triton_gemm=true"]))
     script = """
 from tests.support import precision_devices as p
 original = p.qualify
@@ -52,6 +77,7 @@ raise SystemExit(p.main(["--platform", "cpu", "--formats", "float8_e4m3fn_1x", "
     assert launch_worker([sys.executable, "-c", script], tmp_path / "process", 120.) == 0
     result = json.loads((out / "qualification.json").read_text())
     assert result["passes"] and result["complete"]
+    assert "--xla_gpu_enable_triton_gemm=true" in result["environment"]["flags"]["XLA_FLAGS"].split()
     assert {r["timing"]["case"] for r in result["engine_workloads"]} == {
         "pricing:compute:float8_e4m3fn_1x", "pricing:compute:bfloat16_3x"}
     assert all(r["timing"]["warm_compiles"] == 0 for r in result["engine_workloads"])

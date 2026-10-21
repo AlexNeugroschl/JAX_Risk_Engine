@@ -44,7 +44,6 @@ from engine.precision import (
     FLOAT64, FORMAT_NAMES, FORMATS, Arithmetic, Precision, StagePrecision, add_level, deviation_from, level_terms,
     matmul, product_execution, product_precision,
 )
-from engine.precision.products import TRITON_GEMM_OFF
 from engine.pricing.legs import legs_cube, legs_npv, legs_of, path_fixings, path_schedule
 from engine.risk.market import MarketRiskRequest, monte_carlo_scenarios, run_market_risk
 from engine.risk.market.revaluation import revalue, revalue_trade
@@ -249,14 +248,18 @@ class TestProducts:
     @pytest.mark.parametrize("side", ["left", "right"])
     @pytest.mark.parametrize("name", LOW_ARRAYS + tuple(f"{name}_1x" for name in LOW_ARRAYS))
     def test_the_program_is_one_product_of_operands_of_the_format_into_float32(self, name, side):
-        """Native, the format's own dtype; emulated FP8 (on every device until one's FP8 product
-        is shown right), float16, which holds every FP8 value. The shared operand's terms are one
+        """Native, each operand's own dtype; CPU-emulated FP8 uses float16 carriers. The shared operand's terms are one
         product with it, as wide as its terms (twice the work for two terms, A-23)."""
         program = jax.make_jaxpr(lambda a, b: matmul(a, b, Arithmetic(name, "float32"), side))
         (dot,) = [e for e in program(self.A, self.B).eqns if e.primitive.name == "dot_general"]
         base = FORMATS[name].base
-        carrier = jnp.float16 if base.startswith("float8") else jnp.dtype(base)
-        assert [v.aval.dtype for v in dot.invars] == [jnp.dtype(carrier)] * 2
+        if product_execution(name) == "native":
+            held = FORMATS[name].shared_dtype or base
+            expected = [held, base] if side == "left" else [base, held]
+        else:
+            carrier = "float16" if base.startswith("float8") else base
+            expected = [carrier, carrier]
+        assert [v.aval.dtype for v in dot.invars] == [jnp.dtype(dtype) for dtype in expected]
         terms = FORMATS[name].shared_terms
         assert [v.aval.shape for v in dot.invars] == ([(6 * terms, 40), (40, 5)] if side == "left"
                                                       else [(6, 40), (40, 5 * terms)])
@@ -290,21 +293,19 @@ class TestProducts:
     ])
     def test_native_where_the_device_has_units_for_the_format_else_emulated(self, platform, kind, capability,
                                                                              expected, monkeypatch):
-        """A GPU's FP8 from Ada (8.9) and its bfloat16 passes from Ampere, shown right on an RTX
-        5060 (`tests/support/precision_devices.py`, 2026-10-19), FP8 where the process sends its
-        products to cuBLAS (the worker's and the tests' setting, I-97); a TPU's FP8 not until
-        Ironwood's is shown right. A single pass runs on its format's units."""
-        monkeypatch.setenv("XLA_FLAGS", TRITON_GEMM_OFF)
+        """Hardware capability selects native dispatch; single passes use their base's units.
+        Actual compiler/device arithmetic is checked separately by precision_devices."""
+        monkeypatch.delenv("JAX_RISK_EMULATE_PRODUCTS", raising=False)
+        monkeypatch.setenv("XLA_FLAGS", "")
         device = types.SimpleNamespace(platform=platform, device_kind=kind, compute_capability=capability)
         assert {name: product_execution(name, device) for name in FORMAT_NAMES} == {
             name: expected.get(name.removesuffix("_1x"), "emulated") for name in FORMAT_NAMES}
 
-    def test_a_gpus_fp8_is_emulated_where_triton_computes_its_products(self, monkeypatch):
-        """Red first on an RTX 5060 with FP8 marked native under XLA's default GEMM emitter: its
-        products 0.4 to 0.8 of their scale off (2026-10-19, I-97)."""
+    def test_a_gpus_fp8_is_native_under_the_default_emitter(self, monkeypatch):
+        monkeypatch.delenv("JAX_RISK_EMULATE_PRODUCTS", raising=False)
         monkeypatch.setenv("XLA_FLAGS", "")
         device = types.SimpleNamespace(platform="gpu", device_kind="NVIDIA H100", compute_capability="9.0")
-        assert product_execution("float8_e4m3fn", device) == product_execution("float8_e5m2_1x", device) == "emulated"
+        assert product_execution("float8_e4m3fn", device) == product_execution("float8_e5m2_1x", device) == "native"
 
     @pytest.mark.parametrize("side", ["left", "right"])
     def test_native_e5m2_multiplies_the_shared_operand_held_in_e4m3(self, side, monkeypatch):
@@ -324,15 +325,16 @@ class TestProducts:
             native = np.asarray(matmul(self.A, self.B, Arithmetic("float8_e5m2", "float32"), side))
         np.testing.assert_allclose(native, emulated, rtol=0, atol=2.0 ** -22 * float(np.max(np.abs(emulated))))
 
-    def test_a_native_product_format_states_its_algorithm(self):
+    def test_a_native_product_format_states_its_algorithm(self, monkeypatch):
+        monkeypatch.delenv("JAX_RISK_EMULATE_PRODUCTS", raising=False)
         ampere = types.SimpleNamespace(platform="gpu", device_kind="NVIDIA A100", compute_capability="8.0")
         tpu = types.SimpleNamespace(platform="tpu", device_kind="TPU v5 lite", compute_capability=None)
         assert product_precision("tensorfloat32", ampere) == product_precision("tensorfloat32_1x", ampere) \
             == jax.lax.DotAlgorithmPreset.TF32_TF32_F32
         assert product_precision("bfloat16_3x", tpu) == jax.lax.DotAlgorithmPreset.BF16_BF16_F32_X3
         assert product_precision("bfloat16_3x", ampere) == jax.lax.DotAlgorithmPreset.BF16_BF16_F32_X3
-        # A GPU's matrix-vector product ignores the passes' algorithm (I-97): emulated there.
-        assert product_precision("bfloat16_3x", ampere, matrix_vector=True) == jax.lax.Precision.HIGHEST
+        # Compiler-specific GEMV workarounds are explicit process settings, not defaults.
+        assert product_precision("bfloat16_3x", ampere, matrix_vector=True) == jax.lax.DotAlgorithmPreset.BF16_BF16_F32_X3
         assert product_precision("bfloat16_3x", tpu, matrix_vector=True) == jax.lax.DotAlgorithmPreset.BF16_BF16_F32_X3
         assert product_precision("tensorfloat32", ampere, matrix_vector=True) == jax.lax.DotAlgorithmPreset.TF32_TF32_F32
         cpu = jax.devices("cpu")[0]

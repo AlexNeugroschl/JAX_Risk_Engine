@@ -51,7 +51,9 @@ honoured, or the dot refused, rather than computed at a lower precision than ask
 
 ## What the engine does meanwhile
 
-FP8 runs natively on a GPU only in a process whose products go to cuBLAS (`engine.precision.
-products.cublas_gemms`), emulated exactly elsewhere; bfloat16 passes run natively on matrix
-shapes, emulated on matrix-vector ones (`EMULATED_MATRIX_VECTOR`); the device check passes every
-format both ways.
+Native execution is the default on capable GPUs (2026-10-21). These local compiler
+faults are handled through explicit test/process settings: select cuBLAS for the RTX 5060
+FP8 check, and `JAX_RISK_EMULATE_PRODUCTS=bfloat16_3x` for its BF16 vector fusion. Normal
+H100 usage does not inherit this card's workarounds. Default qualification failures are
+retained rather than converted to passing emulation; optimized lowering recognizes
+both cuBLAS and Triton FP8 products. [Validation and settings](../../../compliance/precision-research/2026-10-21/README.md).

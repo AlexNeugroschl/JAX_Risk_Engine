@@ -87,8 +87,8 @@ block on Windows).
 ### On a GPU (Linux, or WSL2 on Windows)
 
 For H100 precision qualification, use the [native checks and reproducible accuracy
-commands](../../benchmarks/README.md#h100-native-qualification). FP8 benchmark workers
-select cuBLAS automatically; normal FP64 workers keep their existing emitter settings.
+commands](../../benchmarks/README.md#h100-native-qualification). Supported GPU formats
+request native arithmetic by default; compiler-route overrides are explicit.
 An H100 claim requires H100 measurements, regardless of results on another GPU.
 
 The engine runs on an NVIDIA GPU through JAX's CUDA 13 plugin, the `gpu` extra. JAX publishes
@@ -125,13 +125,15 @@ choice, made in the environment before the process first opens the GPU:
 | The test suite | `false` (`tests/conftest.py`), unless set | Added (`tests/conftest.py`), unless set |
 | Your own script or notebook | JAX's default; set `false` to share the card | JAX's default; set the flag for reproducible bits |
 
-**Native FP8 on a GPU** (I-97). XLA's own GEMM emitter (Triton) computes a GPU's FP8 matrix
-products wrong, so the engine emulates FP8 there, exactly, unless the process sends its products
-to cuBLAS, whose FP8 path is right: set `XLA_FLAGS=--xla_gpu_enable_triton_gemm=false` (beside the
-determinism flag) for the worker, a script or a timing run, and a GPU from compute capability 8.9
-runs FP8 natively, as each result's precision report says. Not the default: cuBLAS ran the
-engine's float64 jobs 15% slower on the RTX 5060. Check a new card or jax with
-`python -m tests.support.precision_devices --platform gpu`, with and without the flag.
+**Native FP8 on a GPU** (I-97). Capable GPUs (compute capability 8.9 and above) request
+native FP8 by default, under either compiler emitter. Check a new device/runtime with
+`python -m tests.support.precision_devices --platform gpu`; a dispatch label is not proof
+of instruction use or numerical correctness. The RTX 5060 / JAX 0.10.2 compiler faults
+require explicit local test settings: `XLA_FLAGS=--xla_gpu_enable_triton_gemm=false` for
+FP8 and `JAX_RISK_EMULATE_PRODUCTS=bfloat16_3x` for its BF16 vector fusion. They are not
+defaults on other hardware. `jax-risk-worker --gpu-gemm cublas` selects the same explicit
+emitter override. Apply settings before tracing in a fresh process; results identify any
+emulated formats. See [test configuration and commands](../../benchmarks/README.md).
 
 **Device memory.** XLA's default is to take 75% of a GPU's memory in every process that opens
 it, which leaves nothing for a second process: on WSL2 the default's 6 GB request failed on the

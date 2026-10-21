@@ -72,6 +72,7 @@ import gzip
 import hashlib
 import json
 import math
+import os
 import platform
 import statistics
 import subprocess
@@ -466,7 +467,8 @@ class Measurements:
                 self.campaign, self.market, self.cases, self.seeds, self.replicates, self.settings):
             raise ValueError("only measurements of one campaign, its cases, seeds and pricing settings merge")
         if self.products != other.products or self.dates != other.dates or any(
-                self.environment.get(k) != other.environment.get(k) for k in ("engine", "jax", "backend", "devices")):
+                self.environment.get(k, "") != other.environment.get(k, "")
+                for k in ("engine", "jax", "backend", "devices", "product_emulation", "xla_flags")):
             raise ValueError("measurement implementations, devices, products or dates differ")
         overlap = set(self.paths) & set(other.paths)
         if overlap:
@@ -749,6 +751,8 @@ def environment() -> Dict[str, str]:
             "engine": engine_digest(),
             "jax": jax.__version__, "backend": jax.default_backend(),
             "devices": ", ".join(sorted({d.device_kind for d in jax.devices()})),
+            "product_emulation": os.environ.get("JAX_RISK_EMULATE_PRODUCTS", ""),
+            "xla_flags": os.environ.get("XLA_FLAGS", ""),
             "platform": platform.platform(), "python": platform.python_version(),
             "measured": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
 

@@ -200,7 +200,9 @@ the [research report](../../compliance/precision-research/2026-10-20/README.md) 
 experimental rows. Remaining work is domain-specific policy qualification, independent
 sampling/grid convergence, H100/TPU execution and controlled equal-accuracy timing
 ([I-122](known-issues.md#i-122)). Retain FP32/FP64 wherever required figures fail.
-Supported intervals remain F-10.
+Supported intervals remain F-10. Since 2026-10-21, supported GPU formats request native
+execution by default; emitter/emulation workarounds are explicit process or test settings.
+See the [dispatch validation](../../compliance/precision-research/2026-10-21/README.md).
 
 **Details.** [details/precision.md](details/precision.md);
 [native execution and numerical reliability plan](details/native-fp8-reliability.md).

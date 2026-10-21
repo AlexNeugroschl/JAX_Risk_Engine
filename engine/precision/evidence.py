@@ -41,7 +41,8 @@ with the path count in every campaign measured (§15.4), so a ceiling bounds fro
 A figure whose stages are all float64 is the reference itself and needs no row. Rows were
 measured on the markets and portfolios the campaigns name, with every format below float32
 emulated on a CPU, which computes what a device's native units compute (§8.3;
-`engine.precision.product_execution` calls a format native only once its device check passes).
+`engine.precision.product_execution` requests native arithmetic by hardware capability;
+the device check separately qualifies actual compiler behavior, with workarounds explicit).
 
 Plain Python, no JAX work: the portfolio pipeline and market risk call it once their figures
 are computed, so it compiles nothing.

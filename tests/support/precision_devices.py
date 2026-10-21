@@ -2,9 +2,8 @@
 Whether a device's matrix products give each compute format's numbers (F-07;
 docs/planning/details/precision.md §8.3): every arithmetic a stage accepts (each compute format
 with each accumulate format it allows) multiplied on the device, against the same product
-emulated on the CPU, and against the exact product. Run it on each device
-before `engine.precision.products` counts a format as native there, and after a JAX or driver
-upgrade:
+emulated on the CPU, and against the exact product. Native dispatch follows device capability;
+run this check to qualify the actual compiler/device, and after a JAX or driver upgrade:
 
     python -m tests.support.precision_devices [--platform gpu]
 
@@ -14,16 +13,18 @@ device's own rounding of the operands (a few of the format's unit roundoffs); an
 must equal it up to the sums' order. On an RTX 5060 (2026-10-10, jax 0.10.2) this check found
 XLA's FP8 product 70% off for some shapes and its bfloat16 passes (`BF16_BF16_F32_X3`) a single
 pass's error for some shapes (XLA's faults, not the card's: its Triton GEMM emitter for FP8, and a
-matrix-vector product compiled without the algorithm; I-97). The engine emulates a GPU's
-bfloat16-passes matrix-vector products (`engine.precision.products.EMULATED_MATRIX_VECTOR`), and
-its FP8 under Triton, XLA's default; run the check both ways, as the engine runs:
+matrix-vector product compiled without the algorithm; I-97). These are local compiler
+failures, not reasons to emulate on every GPU. Run the native default and an explicit emitter
+override in separate processes:
 
     python -m tests.support.precision_devices --platform gpu --gemm default
     python -m tests.support.precision_devices --platform gpu --gemm cublas
 
-the second with the GPU's products through cuBLAS, where FP8 is native (exact on every shape,
-2026-10-19). Every format passes both ways, TensorFloat-32 within 4.5e-4 of the scale of the
-emulation (the device rounds its operands its own way, within the format's unit roundoff). The same card summed float32
+The local FP8 workaround is `--gemm cublas`; the local bfloat16-passes fusion workaround is
+`JAX_RISK_EMULATE_PRODUCTS=bfloat16_3x`. Both are explicit test/process settings. A default
+compiler failure remains a failed qualification, never an automatic passing emulation.
+TensorFloat-32 is within 4.5e-4 of emulation on this card (the device rounds operands within
+its unit roundoff). The same card summed float32
 operands asked for a float64 result in float32 (7.6e-7 off, 2026-10-11): the engine now
 multiplies them as float64 values on float32's grid.
 
@@ -32,6 +33,7 @@ Exit status 1 when a format fails.
 import argparse
 import itertools
 import os
+import re
 import sys
 
 from engine.api.worker import deterministic_kernels_environment  # noqa: E402  (no JAX)
@@ -47,6 +49,24 @@ from pathlib import Path
 # below supplements these adversarial synthetic cases with the actual compiled workloads.
 SHAPES = ((512, 64, 8), (512, 64, 1), (64, 64, 64), (16, 32, 16),
           (33, 13, 7), (1, 13, 7), (2, 33, 13, 7))
+
+
+def fp8_lowering(hlo):
+    """Recognize optimized FP8 products, independently of their numerical qualification.
+
+    Triton evidence requires the *called computation* to contain FP8 operands and an FP32
+    dot. An unrelated FP8 conversion or another Triton fusion is insufficient. This is
+    lowering evidence; it does not prove the generated kernel's matrix instructions.
+    """
+    if 'custom_call_target="__cublas$lt$matmul$f8"' in hlo:
+        return "cublas"
+    for name, body in re.findall(r"^%([^\s(]+)[^\n]*\{\n(.*?)^\}", hlo, re.M | re.S):
+        operands = set(re.findall(r"^\s*%(\S+)\s*=\s*f8(?:e4m3fn|e5m2)\[", body, re.M))
+        dots = re.findall(r"=\s*f32\[[^\n]*?\s+dot\(%([^,\s]+),\s*%([^)\s]+)\)", body)
+        if any(a in operands and b in operands for a, b in dots) and re.search(
+                rf"fusion\([^\n]*calls=%{re.escape(name)}(?:,|\s)[^\n]*__triton", hlo):
+            return "triton"
+    return None
 
 
 def normalized_error(actual, expected, scale):
@@ -110,13 +130,14 @@ def qualify(device, formats=None, out=None, *, roundings=("nearest", "stochastic
             tolerance = 64 * np.finfo(arithmetic.accumulate).eps / 2
             if fmt.product != "dtype" and execution == "native":
                 tolerance = 4 * 2. ** -(fmt.mantissa_bits + 1)
-            fp8_gemm = "__cublas$lt$matmul$f8" in hlo
+            lowering = fp8_lowering(hlo)
             artifact = f"operation-{len(rows):04d}.hlo.txt"
             if out is not None:
                 Path(out, artifact).write_text(hlo, encoding="utf-8")
             rows.append({"format": fmt.name, "accumulate": arithmetic.accumulate, "rounding": rounding,
                          "shape": list(shape), "shared": shared, "pattern": pattern, "dispatch": execution,
-                         "observed_fp8_gemm": fp8_gemm, "hlo": artifact if out is not None else None,
+                         "observed_fp8_gemm": lowering is not None, "fp8_lowering": lowering,
+                         "hlo": artifact if out is not None else None,
                          "device_emulation_error": error if np.isfinite(error) else None,
                          "device_exact_error": (lambda e: e if np.isfinite(e) else None)(
                              normalized_error(actual, a @ b, scale)),
@@ -129,7 +150,7 @@ def qualify(device, formats=None, out=None, *, roundings=("nearest", "stochastic
             "compute_capability": getattr(device, "compute_capability", None),
             "environment": metadata, "operations": rows, "complete": True,
             "passes": all(r["passes"] for r in rows),
-            "native_scope": "optimized FP8 cuBLAS custom calls observed per operation; device trace is separate"}
+            "native_scope": "optimized FP8 cuBLAS calls or Triton FP8 dots observed per operation; matrix instructions require device traces"}
 
 
 def check(device) -> int:
@@ -142,7 +163,8 @@ def main(argv=None) -> int:
     parser.add_argument("--platform", default=None, help="gpu, tpu or cpu (default: JAX's default backend)")
     parser.add_argument("--formats", nargs="+", help="compute formats to check (default: every accepted format)")
     parser.add_argument("--out", type=Path, help="new output directory for JSON, optimized HLO and engine traces")
-    parser.add_argument("--gemm", choices=("default", "cublas"), default="cublas")
+    parser.add_argument("--gemm", choices=("default", "cublas"),
+                        help="explicit emitter override; omitted keeps the runtime/inherited settings")
     parser.add_argument("--expected-device", help="required device-kind substring, e.g. H100")
     parser.add_argument("--require-native-fp8", action="store_true", help="fail unless each selected FP8 format has an observed FP8 GEMM")
     parser.add_argument("--engine-workloads", nargs="*", choices=("comparison_single", "comparison_portfolio"), default=[])

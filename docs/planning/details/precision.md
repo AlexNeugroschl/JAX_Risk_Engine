@@ -872,27 +872,25 @@ it once is a format of its own (§6.1, §15.5).
   shapes, and only the smallest is wrong), while the same products through cuBLASLt (`--xla_gpu_enable_triton_gemm=false`) are exact on
   its FP8 path (`__cublas$lt$matmul$f8`); and it compiles a matrix-vector product as a fusion that
   ignores the bfloat16-passes algorithm (FP8's matrix-vector fusion is exact, off the FP8 units).
-  Since 2026-10-19:
+  Since 2026-10-21, native execution follows backend/device capability independently of
+  the emitter. FP8 retains its scaled operands, E5M2/E4M3 shared-operand layout and FP32
+  accumulation. The blanket cuBLAS prerequisite and BF16 vector fallback are removed.
+  Normal usage requests native operations; qualification checks their actual arithmetic
+  and lowering separately. A compiler failure remains a failure.
 
-  - FP8 is native on a GPU only in a process whose `XLA_FLAGS` send its products to cuBLAS
-    (`engine.precision.products.cublas_gemms`). Not the engine worker's default: timed against
-    Triton alternately on the RTX 5060 (three rounds, the base tree, the shared portfolio at 16,384
-    paths and market risk at 8,192 scenarios, warm medians), cuBLAS ran the float64 portfolio job
-    in 6.31–6.44 s against 5.54–5.60 s (15% slower), the float32 job in 1.98–2.06 s against
-    2.22–2.33 s, the TensorFloat-32 job and market risk alike. A slower float64 is what this plan
-    rules out (§13.9), so the research timing (§19) sets the flag, and FP8 is emulated elsewhere.
-  - FP8 units take e5m2 only beside e4m3 (cuBLASLt multiplied two e5m2 operands on its non-FP8
-    path), so float8_e5m2 holds the operand every path shares in e4m3 (`Format.shared_dtype`: e5m2's
-    mantissa on e4m3's range), emulated and native alike; natively its products then run on the FP8
-    path, exact. The only difference from e5m2 throughout is a value of the shared operand more than
-    2^-15 below its slice's largest, rounded on e4m3's subnormal spacing; the seven campaigns with e5m2 compute cases measured again (2026-10-19): every e5m2 row's relative error within 2e-6 of its record (median 1e-13), no verdict or path ceiling of the evidence table moved.
-  - bfloat16 passes are native on a GPU from Ampere, their matrix-vector products emulated
-    (`EMULATED_MATRIX_VECTOR`, decided by the product's static shape).
+  The affected local process explicitly selects `--gpu-gemm cublas` (or the corresponding
+  XLA flag) for FP8, and `JAX_RISK_EMULATE_PRODUCTS=bfloat16_3x` for the vector fusion.
+  The latter uses explicit FP32 products over the same rounded operands and reports
+  emulated dispatch. Neither setting is inferred from a GPU name or imposed on H100.
+  Process settings must precede tracing in a fresh interpreter; cached executables do not
+  change when environment variables change. Reports retain the overrides and measurements
+  with different execution settings cannot merge.
 
-  The device check passes every format on the RTX 5060 under either emitter, FP8 native under
-  cuBLAS and emulated under Triton (red first: FP8 marked native under Triton, 0.71 to 0.80 of
-  the scale off). TensorFloat-32 is within 3e-7 of its emulation since the engine rounds its operands
-  itself (2026-10-11). Still to check: H100 under both emitters, and each new jax.
+  The 2026-10-19/20 measurements and source snapshots retain the prior dispatch rules as
+  historical evidence. The [2026-10-21 routing record](../../../compliance/precision-research/2026-10-21/README.md)
+  records this change, default numerical failures and passing explicit workarounds. The
+  qualification tool recognizes both cuBLAS FP8 calls and Triton FP8/FP32 dot fusions;
+  actual matrix instructions still require trace inspection. H100 remains unmeasured.
 - The rollback's matrix form also fixed its memory (2026-10-13, I-83). Each column (the option,
   the underlying, each cached cashflow) was interpolated at `[nodes, quadrature nodes]` points
   per path and step, vmapped over the columns and the paths, although the interpolation weights

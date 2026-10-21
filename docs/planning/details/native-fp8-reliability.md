@@ -1,6 +1,6 @@
 # Native FP8 and numerical reliability
 
-Execution plan and implementation status, 2026-10-20; overnight source verification
+Execution plan and implementation status, updated 2026-10-21; prior overnight source verification
 completed 2026-10-21 UTC. Tracks [I-97](../known-issues.md#i-97),
 [I-121](../known-issues.md#i-121), [I-122](../known-issues.md#i-122) and
 [F-07](../features.md#f-07). The [roadmap](../roadmap.md) lists remaining work.
@@ -14,7 +14,7 @@ contains raw records, source snapshots, failures, traces and reproduction comman
 | Comparison matrix and reference | FP16, combined/compute/storage policies, explicit independent seed identities, independent FP64 references with empirical SE/convergence and an adequacy gate | Real FP16 reference study completed; two of 64 equal-accuracy rows unresolved and their speedups withheld; no confidence-coverage claim |
 | Numerical boundaries | Stable `expm1`/series H(t) with zero-reversion derivatives; zero-volatility European liveness by expiry; bond redemption with its final coupon and liveness through the last payment | Eight tests fail on the old engine; all nine pass after fixes. 460 FP64/FP32 golden arrays remain within existing margins; I-104 closed |
 | Native qualification | Seven shape families, awkward/batched/GEMV cases, wide ranges/zeros/cancellation, both shared directions and rounding modes, two-term/single-pass controls; optimized HLO and actual engine captures | RTX 5060/cuBLAS: 504 passing operation checks, 264 observed FP8 lowerings; twelve warm workload captures with finite figures and zero in-capture recompiles. H100/TPU unmeasured |
-| Worker route | `jax-risk-worker --gpu-gemm cublas`; comparison GPU FP8 auto-selects cuBLAS before JAX starts | Process flags preserved in evidence; default FP64 worker environment remains available |
+| Worker route | Native dispatch by capability; worker `--gpu-gemm cublas` and benchmark `--gemm cublas` are explicit overrides | Process flags preserved in evidence; default FP64 worker environment remains available |
 | Accuracy harness | Bounded full-array lifetime per seed; fresh-process, resumable campaigns; fixture/model/grid/correlated-FX variants; missing/failed counts cannot extend ceilings | All eleven original campaigns refreshed, original configurations preserved, four ceilings changed; no A-11 relaxation |
 | Larger counts | Selected single-swap market risk 65K/262K/1M/4M ×32 seeds; exposure 16K/65K/262K ×16 seeds under both IR models | Mean/quantile/tail figures have different limits; FP8 E4M3 passes none of the large single-swap figures, FP16 passes some ES figures |
 | Holdout/oracles | Disjoint stress seeds and ORE fixture families; default/refined option grids; independent component pricing | 68 today NPVs and 68 trade cubes agree with ORE. Both option grids agree with ORE individually, yet FP64 American cube moves up to $54.44 between grids. Joint multicurrency oracle remains open |
@@ -37,7 +37,7 @@ and final reductions (A-10); a full job is mixed precision.
 
 The available NVIDIA device has a correct cuBLASLt FP8 route when
 `--xla_gpu_enable_triton_gemm=false` is set before backend initialization. Its default
-emitter produced wrong FP8 products in the recorded checks, so that route stays emulated.
+emitter produced wrong FP8 products in the recorded checks. Native dispatch remains the normal default; the affected local test process explicitly selects cuBLAS.
 E5M2 uses an E4M3 shared operand on the verified mixed-format cuBLAS route. GEMV fusions
 can bypass matrix units even when a format has a native dispatch label. Emulation also
 supports CPU, unqualified devices and matched numerical controls.
@@ -46,7 +46,10 @@ This follows [JAX's matrix precision controls](https://docs.jax.dev/en/latest/20
 and [NVIDIA's FP8 cuBLASLt operations](https://docs.nvidia.com/cuda/cublas/index.html).
 [Ironwood documents native FP8](https://docs.cloud.google.com/tpu/docs/ironwood-performance),
 but neither that capability nor accepting a dtype qualifies this engine/runtime/shapes.
-No H100 host was available. No local consumer-GPU optimization is required before H100
+No H100 host was available. BF16_3x vector emulation is now an explicit local setting,
+`JAX_RISK_EMULATE_PRODUCTS=bfloat16_3x`, rather than a blanket GPU fallback.
+The [routing follow-up](../../../compliance/precision-research/2026-10-21/README.md) retains
+both failed default checks and successful explicit workarounds. No local consumer-GPU optimization is required before H100
 work; the correct cuBLAS route is already selectable and the target commands are ready.
 
 ## Remaining gates, in execution order
